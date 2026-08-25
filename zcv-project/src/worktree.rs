@@ -29,6 +29,12 @@ pub struct Worktree {
     filter: TreeFilter,
 }
 
+#[derive(Clone)]
+pub(crate) struct WorktreeSearchPlan {
+    pub(crate) root: PathBuf,
+    filter: TreeFilter,
+}
+
 impl Worktree {
     pub fn new(root: PathBuf) -> Self {
         Self {
@@ -83,15 +89,30 @@ impl Worktree {
             })
             .collect()
     }
+
+    pub(crate) fn search_plan(&self) -> WorktreeSearchPlan {
+        WorktreeSearchPlan {
+            root: self.root.clone(),
+            filter: self.filter.clone(),
+        }
+    }
 }
 
 /// 项目树的过滤规则：扫描排除（glob 名单）。
 ///
 /// file_scan_exclusions 命中的条目根本不在行模型中加载；
 /// 忽略（gitignore/info/exclude）由 git 状态统一判定（`FileStatus::Ignored`）。
+#[derive(Clone)]
 struct TreeFilter {
     /// 用户配置的扫描排除 glob。
     exclusions: GlobSet,
+}
+
+impl WorktreeSearchPlan {
+    pub(crate) fn is_excluded(&self, path: &Path) -> bool {
+        path.strip_prefix(&self.root)
+            .is_ok_and(|relative| self.filter.is_excluded(relative))
+    }
 }
 
 impl TreeFilter {

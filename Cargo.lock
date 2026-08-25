@@ -18,6 +18,7 @@ dependencies = [
  "zcv-keymap",
  "zcv-preview-svg",
  "zcv-project",
+ "zcv-search",
  "zcv-settings",
  "zcv-terminal",
  "zcv-theme",
@@ -7723,6 +7724,22 @@ dependencies = [
  "zcv-language",
  "zcv-multi-buffer",
  "zcv-text",
+]
+
+[[package]]
+name = "zcv-search"
+version = "0.7.7"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "zcv-actions",
+ "zcv-editor",
+ "zcv-multi-buffer",
+ "zcv-project",
+ "zcv-text",
+ "zcv-theme",
+ "zcv-ui",
+ "zcv-workspace",
 ]
 
 [[package]]

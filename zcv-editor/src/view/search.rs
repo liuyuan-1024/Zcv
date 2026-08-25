@@ -2,8 +2,11 @@
 
 use std::ops::Range;
 
-use zcv_text::{RegexSearchOptions, RegexSearchResult, SearchMatch, SearchOptions, SearchResult};
-use zcv_workspace::{Direction, SearchEvent, SearchQuery, SearchableItem};
+use zcv_text::{
+    BufferVersion, RegexSearchResult, SearchMatch, SearchQuery, SearchQueryResult, SearchResult,
+    TextRange,
+};
+use zcv_workspace::{Direction, SearchEvent, SearchableItem};
 
 use crate::selection::EditOutcome;
 
@@ -11,10 +14,13 @@ use super::Editor;
 
 impl gpui::EventEmitter<SearchEvent> for Editor {}
 
-/// 引擎搜索结果，literal 与 regex 二选一（均绑定搜索时的 BufferVersion）。
+/// 搜索结果，literal 与 regex 二选一（均绑定搜索时的 BufferVersion）。
 pub(crate) enum SearchResultKind {
-    Literal(SearchResult),
-    Regex(RegexSearchResult),
+    Query(SearchQueryResult),
+    External {
+        version: BufferVersion,
+        matches: Vec<SearchMatch>,
+    },
 }
 
 /// Editor 的搜索状态（搜索条执行过一次搜索后存在）。
@@ -27,8 +33,8 @@ pub(crate) struct EditorSearch {
 impl EditorSearch {
     fn matches(&self) -> &[SearchMatch] {
         match &self.result {
-            Some(SearchResultKind::Literal(result)) => result.matches(),
-            Some(SearchResultKind::Regex(result)) => result.matches(),
+            Some(SearchResultKind::Query(result)) => result.matches(),
+            Some(SearchResultKind::External { matches, .. }) => matches,
             None => &[],
         }
     }
@@ -44,8 +50,11 @@ impl EditorSearch {
 
     fn is_stale(&self, version: zcv_text::BufferVersion) -> bool {
         match &self.result {
-            Some(SearchResultKind::Literal(result)) => result.is_stale(version),
-            Some(SearchResultKind::Regex(result)) => result.is_stale(version),
+            Some(SearchResultKind::Query(result)) => result.is_stale(version),
+            Some(SearchResultKind::External {
+                version: result_version,
+                ..
+            }) => *result_version != version,
             None => false,
         }
     }
@@ -53,8 +62,13 @@ impl EditorSearch {
     /// 拆分搜索结果中的 literal / regex 变体（编辑闭包按类型分派）。
     fn cloned_result(&self) -> (Option<SearchResult>, Option<RegexSearchResult>) {
         match &self.result {
-            Some(SearchResultKind::Literal(result)) => (Some(result.clone()), None),
-            Some(SearchResultKind::Regex(result)) => (None, Some(result.clone())),
+            Some(SearchResultKind::Query(SearchQueryResult::Literal(result))) => {
+                (Some(result.clone()), None)
+            }
+            Some(SearchResultKind::Query(SearchQueryResult::Regex(result))) => {
+                (None, Some(result.clone()))
+            }
+            Some(SearchResultKind::External { .. }) => (None, None),
             None => (None, None),
         }
     }
@@ -178,6 +192,36 @@ impl SearchableItem for Editor {
 }
 
 impl Editor {
+    /// 使用调用方提供的精确范围建立只读搜索高亮，供 MultiBuffer excerpts 等组合结果使用。
+    pub fn set_search_ranges(
+        &mut self,
+        query: SearchQuery,
+        ranges: Vec<TextRange>,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        let version = self.text_buffer(cx).read(cx).snapshot().version();
+        let matches = ranges
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, range)| SearchMatch::new(ordinal, range))
+            .collect::<Vec<_>>();
+        let active_index = (!matches.is_empty()).then_some(0);
+        self.search = Some(EditorSearch {
+            query,
+            result: Some(SearchResultKind::External { version, matches }),
+            active_index,
+        });
+        if let Some(range) = self
+            .search
+            .as_ref()
+            .and_then(|search| search.active_index.map(|index| search.match_range(index)))
+        {
+            self.select_byte_range(range, cx);
+        }
+        cx.notify();
+        cx.emit(SearchEvent::MatchesInvalidated);
+    }
+
     /// 执行引擎搜索并返回新的搜索状态；`None` 表示无结果（query 为空或引擎报错）。
     fn execute_search(
         &self,
@@ -187,22 +231,8 @@ impl Editor {
         if query.query.is_empty() {
             return None;
         }
-        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
-        let result = if query.regex {
-            let options = RegexSearchOptions::new().with_case_sensitive(query.case_sensitive);
-            snapshot
-                .search_regex(&query.query, options)
-                .ok()
-                .map(SearchResultKind::Regex)
-        } else {
-            let options = SearchOptions::new()
-                .with_case_sensitive(query.case_sensitive)
-                .with_whole_word(query.whole_word);
-            snapshot
-                .search(&query.query, options)
-                .ok()
-                .map(SearchResultKind::Literal)
-        }?;
+        let snapshot = self.text_buffer(cx).read(cx).snapshot();
+        let result = query.search(&snapshot).ok().map(SearchResultKind::Query)?;
         let search = EditorSearch {
             query: query.clone(),
             result: Some(result),
@@ -225,7 +255,7 @@ impl Editor {
         if search.query.query.is_empty() {
             return;
         }
-        let version = self.singleton_buffer(cx).read(cx).snapshot().version();
+        let version = self.text_buffer(cx).read(cx).snapshot().version();
         if !search.is_stale(version) {
             return;
         }

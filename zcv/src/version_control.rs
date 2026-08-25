@@ -24,7 +24,7 @@ use zcv_git::{DiffStat, FileStatus, StatusCode};
 use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, space, typography};
 use zcv_ui::tree::{self, TreeRow, TreeState};
-use zcv_ui::{Checkbox, Glyph, Scrollbar};
+use zcv_ui::{Button, Checkbox, Glyph, Scrollbar};
 use zcv_workspace::{Panel, PanelEvent};
 
 use crate::git_status::git_status_color;
@@ -779,22 +779,12 @@ fn render_commit_footer(
                 .flex()
                 .justify_end()
                 .child(
-                    div()
-                        .id("version-control-commit")
-                        .px(space::S12)
-                        .py(space::S6)
-                        .rounded_md()
-                        .border_1()
-                        .border_color(colors.border_variant)
-                        .bg(colors.panel_background)
+                    Button::new("version-control-commit", "提交")
                         .text_color(if message.trim().is_empty() {
                             colors.text_muted
                         } else {
                             colors.text
                         })
-                        .cursor_pointer()
-                        .hover(|style| style.bg(colors.element_hover))
-                        .child("提交")
                         .on_click(move |_, window, cx| {
                             window.dispatch_action(Box::new(Commit), cx);
                         }),

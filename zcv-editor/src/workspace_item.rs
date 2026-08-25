@@ -31,11 +31,12 @@ impl Item for Editor {
             }
             EditorEvent::DirtyChanged => emit(ItemEvent::UpdateTab),
             EditorEvent::Edited => emit(ItemEvent::Edit),
+            EditorEvent::OpenExcerptsRequested { .. } => {}
         }
     }
 
     fn can_save(&self, cx: &App) -> bool {
-        self.file_path(cx).is_some()
+        !self.multi_buffer().read(cx).file_buffers(cx).is_empty()
     }
 
     fn is_dirty(&self, cx: &App) -> bool {
@@ -82,19 +83,41 @@ impl Item for Editor {
         Some(self.multi_buffer())
     }
 
+    fn navigate_to_byte_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if range.end > self.text_buffer(cx).read(cx).len_bytes().get() {
+            return false;
+        }
+        self.select_byte_range(range, cx);
+        true
+    }
+
+    fn navigate_to_line_column(
+        &mut self,
+        line: usize,
+        column: usize,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        Editor::navigate_to_line_column(self, line, column, cx)
+    }
+
     fn save(
         &mut self,
         project: Entity<Project>,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<()>> {
-        let Some(path) = self.file_path(cx) else {
-            return Task::ready(Ok(()));
-        };
-        let multi_buffer = self.multi_buffer();
-        let result = project.update(cx, |project, cx| {
-            project.save_buffer(&multi_buffer, &path, cx)
-        });
+        let buffers = self
+            .multi_buffer()
+            .read(cx)
+            .file_buffers(cx)
+            .into_iter()
+            .filter(|(buffer, _)| buffer.read(cx).is_dirty())
+            .collect::<Vec<_>>();
+        let result = project.update(cx, |project, cx| project.save_file_buffers(buffers, cx));
         Task::ready(result.map_err(|error| anyhow::anyhow!("{error}")))
     }
 
@@ -112,7 +135,9 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use gpui::{AppContext as _, TestAppContext};
+    use gpui::{AppContext as _, Empty, TestAppContext};
+    use zcv_multi_buffer::MultiBufferExcerpt;
+    use zcv_text::{ByteOffset, TextRange};
 
     use super::*;
 
@@ -151,13 +176,56 @@ mod tests {
         assert!(events.borrow().contains(&EditorEvent::DirtyChanged));
 
         events.borrow_mut().clear();
-        let buffer = cx.read_entity(&editor, |editor, cx| editor.singleton_buffer(cx));
+        let buffer = cx.read_entity(&editor, |editor, cx| editor.text_buffer(cx));
         cx.update_entity(&buffer, |buffer, cx| {
             buffer.mark_saved();
             cx.notify();
         });
         cx.run_until_parked();
         assert!(events.borrow().contains(&EditorEvent::DirtyChanged));
+    }
+
+    #[gpui::test]
+    fn composite_editor_saves_dirty_source_files(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let root = directory.path().canonicalize().expect("临时目录应可规范化");
+        let path = root.join("source.txt");
+        std::fs::write(&path, "旧内容\n").expect("应创建源文件");
+        let project = cx.new(|cx| Project::new(root, cx));
+        let source = project.update(cx, |project, cx| {
+            project.open_buffer(&path, cx).expect("应打开源文件")
+        });
+        let source_len =
+            cx.read_entity(&source, |source, cx| source.snapshot(cx).text().len_bytes());
+        let combined = cx.new(MultiBuffer::empty);
+        combined.update(cx, |combined, cx| {
+            combined.set_excerpts(
+                vec![MultiBufferExcerpt::new(
+                    source,
+                    TextRange::new(ByteOffset::ZERO, source_len).expect("完整范围应有效"),
+                    Vec::new(),
+                )],
+                cx,
+            )
+        });
+        let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
+        editor.update(cx, |editor, cx| editor.set_text("新内容\n", cx));
+
+        let item: Box<dyn zcv_workspace::ItemHandle> = Box::new(editor.clone());
+        cx.update(|cx| {
+            assert!(item.can_save(cx));
+            assert!(item.is_dirty(cx));
+        });
+        let window = cx.add_window(|_, _| Empty);
+        let _save = window
+            .update(cx, |_, window, cx| item.save(project, window, cx))
+            .expect("测试窗口应保持可用");
+
+        assert_eq!(
+            std::fs::read_to_string(path).expect("应读取已保存文件"),
+            "新内容\n"
+        );
+        cx.update(|cx| assert!(!item.is_dirty(cx)));
     }
 
     /// 复现「重命名后保存失败」：重命名必须同步 Editor 的路径，否则保存会落到旧路径（旧路径已不存在 → IO 失败）。

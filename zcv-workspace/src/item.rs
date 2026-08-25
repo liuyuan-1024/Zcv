@@ -4,6 +4,7 @@
 //! 预览视图等可选能力通过 [`Item::as_preview_item`] 桥接获取（对齐 Zed 的 `as_searchable` 模式），不占用 Item 主接口。
 
 use std::any::TypeId;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use gpui::{
@@ -69,6 +70,21 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
         None
     }
 
+    /// 把 Item 定位到 UTF-8 字节范围；不支持文本定位的 Item 返回 false。
+    fn navigate_to_byte_range(&mut self, _range: Range<usize>, _cx: &mut Context<Self>) -> bool {
+        false
+    }
+
+    /// 定位到 0-indexed 逻辑行列；列按 Unicode scalar value 计数。
+    fn navigate_to_line_column(
+        &mut self,
+        _line: usize,
+        _column: usize,
+        _cx: &mut Context<Self>,
+    ) -> bool {
+        false
+    }
+
     /// 预览视图 Item 把自己暴露给 Pane（对齐 Zed 的 `as_searchable` 桥接模式）。
     /// 非预览视图返回 None，无需实现。
     fn as_preview_item(
@@ -126,6 +142,8 @@ pub trait ItemHandle: Send + 'static {
     fn active_path(&self, cx: &App) -> Option<PathBuf>;
     fn rename_path(&self, from: &Path, to: &Path, cx: &mut App);
     fn multi_buffer(&self, cx: &App) -> Option<Entity<MultiBuffer>>;
+    fn navigate_to_byte_range(&self, range: Range<usize>, cx: &mut App) -> bool;
+    fn navigate_to_line_column(&self, line: usize, column: usize, cx: &mut App) -> bool;
     fn as_preview_item(&self, cx: &App) -> Option<Box<dyn PreviewItemHandle>>;
     fn as_searchable(&self, cx: &App) -> Option<Box<dyn SearchableItemHandle>>;
     fn can_save(&self, cx: &App) -> bool;
@@ -196,6 +214,16 @@ impl<T: Item> ItemHandle for Entity<T> {
 
     fn multi_buffer(&self, cx: &App) -> Option<Entity<MultiBuffer>> {
         self.read(cx).multi_buffer(cx)
+    }
+
+    fn navigate_to_byte_range(&self, range: Range<usize>, cx: &mut App) -> bool {
+        self.update(cx, |item, cx| item.navigate_to_byte_range(range, cx))
+    }
+
+    fn navigate_to_line_column(&self, line: usize, column: usize, cx: &mut App) -> bool {
+        self.update(cx, |item, cx| {
+            item.navigate_to_line_column(line, column, cx)
+        })
     }
 
     fn as_preview_item(&self, cx: &App) -> Option<Box<dyn PreviewItemHandle>> {

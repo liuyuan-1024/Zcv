@@ -2,7 +2,8 @@
 
 use gpui::{TestAppContext, VisualTestContext};
 use zcv_text::ByteOffset;
-use zcv_workspace::{Direction, SearchQuery, SearchableItem};
+use zcv_text::SearchQuery;
+use zcv_workspace::{Direction, SearchableItem};
 
 use super::common::test_buffer;
 use super::*;

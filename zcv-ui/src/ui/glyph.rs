@@ -117,7 +117,9 @@ impl RenderOnce for Glyph {
         // 默认色依赖主题，只能在有 cx 的 render 中解析
         let disabled = self.disabled;
         let color = if disabled {
-            color::current(cx).text_disabled
+            let mut disabled_color = color::current(cx).text_disabled;
+            disabled_color.a *= 0.55;
+            disabled_color
         } else {
             self.color.unwrap_or_else(|| color::current(cx).text)
         };

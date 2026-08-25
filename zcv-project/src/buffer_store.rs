@@ -10,6 +10,7 @@ use crate::translate_path;
 use gpui::{App, AppContext, Entity, WeakEntity};
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::MultiBuffer;
+use zcv_text::Snapshot;
 use zcv_text::{Buffer, BufferConfig, BufferLoadError};
 
 pub struct BufferStore {
@@ -41,6 +42,16 @@ impl BufferStore {
         let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));
         self.opened_buffers.insert(path, multi_buffer.downgrade());
         Ok(multi_buffer)
+    }
+
+    pub(crate) fn opened_snapshots(&self, cx: &App) -> HashMap<PathBuf, Snapshot> {
+        self.opened_buffers
+            .iter()
+            .filter_map(|(path, buffer)| {
+                let buffer = buffer.upgrade()?;
+                Some((path.clone(), buffer.read(cx).snapshot(cx).text().clone()))
+            })
+            .collect()
     }
 
     /// 如果路径对应某个已打开的 Buffer，从磁盘重新加载其内容。

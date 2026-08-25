@@ -6,10 +6,69 @@ use regex::{Regex, RegexBuilder};
 use regex_automata::meta;
 
 use crate::{
-    BufferConfig, BufferVersion, ByteOffset, CoordinateError, SearchError, Stickiness, TextError,
-    TextRange, TextResult, VersionedResult, position_map::MappingResult, storage::TextRead,
-    transaction::DeltaEvent,
+    BufferConfig, BufferVersion, ByteOffset, CoordinateError, SearchError, Snapshot, Stickiness,
+    TextError, TextRange, TextResult, VersionedResult, position_map::MappingResult,
+    storage::TextRead, transaction::DeltaEvent,
 };
+
+/// 与宿主和搜索范围无关的统一文本查询。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchQuery {
+    pub query: String,
+    pub case_sensitive: bool,
+    pub whole_word: bool,
+    pub regex: bool,
+}
+
+impl SearchQuery {
+    /// 在一个不可变文本快照上执行查询。
+    pub fn search(&self, snapshot: &Snapshot) -> TextResult<SearchQueryResult> {
+        if self.regex {
+            snapshot
+                .search_regex(
+                    &self.query,
+                    RegexSearchOptions::new().with_case_sensitive(self.case_sensitive),
+                )
+                .map(SearchQueryResult::Regex)
+        } else {
+            snapshot
+                .search(
+                    &self.query,
+                    SearchOptions::new()
+                        .with_case_sensitive(self.case_sensitive)
+                        .with_whole_word(self.whole_word),
+                )
+                .map(SearchQueryResult::Literal)
+        }
+    }
+}
+
+/// 统一查询的版本化结果；保留 literal/regex 变体以支持各自的替换语义。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SearchQueryResult {
+    Literal(SearchResult),
+    Regex(RegexSearchResult),
+}
+
+impl SearchQueryResult {
+    pub fn matches(&self) -> &[SearchMatch] {
+        match self {
+            Self::Literal(result) => result.matches(),
+            Self::Regex(result) => result.matches(),
+        }
+    }
+
+    pub fn ranges(&self) -> impl Iterator<Item = TextRange> + '_ {
+        self.matches().iter().map(|matched| matched.range())
+    }
+
+    pub fn is_stale(&self, current_version: BufferVersion) -> bool {
+        match self {
+            Self::Literal(result) => result.is_stale(current_version),
+            Self::Regex(result) => result.is_stale(current_version),
+        }
+    }
+}
 
 /// 普通字符串搜索选项。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,7 +234,7 @@ pub struct SearchMatch {
 }
 
 impl SearchMatch {
-    const fn new(ordinal: usize, range: TextRange) -> Self {
+    pub const fn new(ordinal: usize, range: TextRange) -> Self {
         Self { ordinal, range }
     }
 

@@ -1,25 +1,134 @@
-//! SearchBar —— 文件内搜索条（pane 编辑区顶部浮层，对齐 Zed 的 BufferSearchBar）。
+//! 文件内搜索与项目搜索共享的搜索会话控制器及界面。
 //!
-//! 只做 UI 壳：把用户输入与选项组装成 [`SearchQuery`]，经当前 Item 的 `SearchableItemHandle` 执行搜索/替换；匹配数据由 Item 侧持有。
+//! 持有查询、选项、替换文本、可见性和输入焦点等会话状态，把用户操作组装成 [`SearchQuery`] 并派发给当前 Item 的 [`SearchableItemHandle`]；
+//! 匹配与结果数据仍由具体 Item 持有。
+//! Pane/Workspace 接线位于 `buffer_search`，跨文件搜索执行位于 `project_search`。
 
 use std::sync::Arc;
 
-use gpui::{App, Context, IntoElement, ParentElement, Render, Styled, Window, div, prelude::*, px};
+use gpui::{
+    AnyElement, App, Component, Context, IntoElement, ParentElement, Render, RenderOnce,
+    SharedString, Styled, Window, div, prelude::*, px,
+};
 use zcv_actions::{
     Backtab, ClearSearch, FindNext, FindPrevious, ReplaceAll, ReplaceNext, Tab,
     ToggleCaseSensitive, ToggleRegex, ToggleReplace, ToggleWholeWord,
 };
+use zcv_text::SearchQuery;
 use zcv_theme::{color, space, typography};
 use zcv_ui::{ErasedEditor, Glyph};
 
-use crate::item::ItemHandle;
-use crate::searchable::{Direction, SearchQuery, SearchableItemHandle};
+use zcv_workspace::{
+    Direction, ItemHandle, SearchableItemHandle, ToolbarItemEvent, ToolbarItemLocation,
+};
 
 #[derive(Clone, Copy)]
 enum SearchOption {
     CaseSensitive,
     WholeWord,
     Regex,
+}
+
+/// SearchBar 内部唯一的查询输入外观。
+struct SearchInput {
+    id: SharedString,
+    input: AnyElement,
+    case_sensitive: bool,
+    whole_word: bool,
+    regex: bool,
+}
+
+impl SearchInput {
+    fn new(
+        id: impl Into<SharedString>,
+        input: AnyElement,
+        case_sensitive: bool,
+        whole_word: bool,
+        regex: bool,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            input,
+            case_sensitive,
+            whole_word,
+            regex,
+        }
+    }
+}
+
+impl IntoElement for SearchInput {
+    type Element = Component<Self>;
+
+    fn into_element(self) -> Self::Element {
+        Component::new(self)
+    }
+}
+
+impl RenderOnce for SearchInput {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let colors = color::current(cx);
+        let case_id = (self.id.clone(), 0);
+        let word_id = (self.id.clone(), 1);
+        let regex_id = (self.id, 2);
+
+        div()
+            .flex_1()
+            .flex()
+            .items_center()
+            .h(px(26.))
+            .px(space::S6)
+            .rounded(px(4.))
+            .border_1()
+            .border_color(colors.border)
+            .bg(colors.background)
+            .child(self.input)
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(
+                        Glyph::icon(case_id, "icons/case_sensitive.svg")
+                            .label("区分大小写")
+                            .shortcut(&ToggleCaseSensitive, cx)
+                            .color(if self.case_sensitive {
+                                colors.icon_accent
+                            } else {
+                                colors.text_muted
+                            })
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(ToggleCaseSensitive), cx)
+                            }),
+                    )
+                    .child(
+                        Glyph::icon(word_id, "icons/whole_word.svg")
+                            .label("整词匹配")
+                            .shortcut(&ToggleWholeWord, cx)
+                            .color(if self.whole_word {
+                                colors.icon_accent
+                            } else {
+                                colors.text_muted
+                            })
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(ToggleWholeWord), cx)
+                            }),
+                    )
+                    .child(
+                        Glyph::icon(regex_id, "icons/regex.svg")
+                            .label("正则表达式")
+                            .shortcut(&ToggleRegex, cx)
+                            .color(if self.regex {
+                                colors.icon_accent
+                            } else {
+                                colors.text_muted
+                            })
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(ToggleRegex), cx)
+                            }),
+                    ),
+            )
+    }
 }
 
 pub(crate) struct SearchBar {
@@ -34,8 +143,11 @@ pub(crate) struct SearchBar {
     active_item: Option<Box<dyn SearchableItemHandle>>,
     query_input: Option<Arc<dyn ErasedEditor>>,
     replace_input: Option<Arc<dyn ErasedEditor>>,
-    subscriptions: Vec<gpui::Subscription>,
+    input_subscriptions: Vec<gpui::Subscription>,
+    active_item_subscription: Option<gpui::Subscription>,
 }
+
+impl gpui::EventEmitter<ToolbarItemEvent> for SearchBar {}
 
 impl SearchBar {
     pub(crate) fn new(_cx: &mut Context<Self>) -> Self {
@@ -51,12 +163,13 @@ impl SearchBar {
             active_item: None,
             query_input: None,
             replace_input: None,
-            subscriptions: Vec::new(),
+            input_subscriptions: Vec::new(),
+            active_item_subscription: None,
         }
     }
 
     /// pane 的活动 item 变化时同步搜索目标；搜索条可见时在新 item 上重跑当前 query。
-    pub(crate) fn set_active_item(
+    pub(super) fn set_active_item(
         &mut self,
         item: Option<&dyn ItemHandle>,
         window: &mut Window,
@@ -64,10 +177,10 @@ impl SearchBar {
     ) {
         let new_item = item.and_then(|item| item.as_searchable(cx));
         // 重建订阅：item 切换后旧订阅失效（emit 方已释放）。
-        self.subscriptions.clear();
+        self.active_item_subscription = None;
         if let Some(item) = &new_item {
             let weak = cx.weak_entity();
-            self.subscriptions.push(item.subscribe_to_search_events(
+            self.active_item_subscription = Some(item.subscribe_to_search_events(
                 window,
                 cx,
                 Box::new(move |_, _window, cx| {
@@ -84,6 +197,13 @@ impl SearchBar {
                 .is_none_or(|old| old.item_id() != new.item_id())
         });
         self.active_item = new_item;
+        if self
+            .active_item
+            .as_ref()
+            .is_some_and(|item| !item.supports_replace(cx))
+        {
+            self.show_replace = false;
+        }
         if item_changed && self.visible {
             self.run_search(window, cx);
         }
@@ -103,7 +223,7 @@ impl SearchBar {
         query_input.set_placeholder_text("搜索...", cx);
         replace_input.set_placeholder_text("替换为...", cx);
         let weak = cx.weak_entity();
-        self.subscriptions.push(query_input.subscribe(
+        self.input_subscriptions.push(query_input.subscribe(
             Box::new({
                 let weak = weak.clone();
                 move |_, window, cx| {
@@ -117,7 +237,7 @@ impl SearchBar {
             window,
             cx,
         ));
-        self.subscriptions.push(replace_input.subscribe(
+        self.input_subscriptions.push(replace_input.subscribe(
             Box::new({
                 let weak = weak.clone();
                 move |_, _window, cx| {
@@ -140,7 +260,7 @@ impl SearchBar {
 
     /// 部署搜索条（cmd-f / 工具栏按钮）：无论当前状态，一律打开并把焦点移到搜索框；
     /// 关闭只由 esc / ✕ 触发（对齐 Zed：cmd-f 永不关闭搜索条）。
-    pub(crate) fn deploy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn deploy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let was_visible = self.visible;
         self.visible = true;
         self.ensure_inputs(window, cx);
@@ -150,7 +270,18 @@ impl SearchBar {
         if !was_visible {
             self.run_search(window, cx);
         }
+        cx.emit(ToolbarItemEvent::ChangeLocation(
+            ToolbarItemLocation::Secondary,
+        ));
         cx.notify();
+    }
+
+    pub(super) fn location(&self) -> ToolbarItemLocation {
+        if self.visible {
+            ToolbarItemLocation::Secondary
+        } else {
+            ToolbarItemLocation::Hidden
+        }
     }
 
     /// 关闭搜索条（esc / ✕）：清空搜索状态并把焦点还给活动 item（对齐 Zed 的 dismiss）。
@@ -160,6 +291,9 @@ impl SearchBar {
             item.clear_search(window, cx);
             window.focus(&item.item_focus_handle(cx));
         }
+        cx.emit(ToolbarItemEvent::ChangeLocation(
+            ToolbarItemLocation::Hidden,
+        ));
         cx.notify();
     }
 
@@ -199,6 +333,13 @@ impl SearchBar {
     }
 
     fn toggle_replace_mode(&mut self, cx: &mut Context<Self>) {
+        if self
+            .active_item
+            .as_ref()
+            .is_some_and(|item| !item.supports_replace(cx))
+        {
+            return;
+        }
         self.show_replace = !self.show_replace;
         if self.show_replace
             && let Some(replace_input) = &self.replace_input
@@ -261,36 +402,6 @@ impl Render for SearchBar {
         let colors = color::current(cx);
         // 按钮点击经弱引用更新组件状态（对齐 zcv 现有 on_click 模式）。
         let weak = cx.weak_entity();
-        let toggle_case = {
-            let weak = weak.clone();
-            move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
-                if let Some(search_bar) = weak.upgrade() {
-                    search_bar.update(cx, |search_bar, cx| {
-                        search_bar.toggle_option(SearchOption::CaseSensitive, window, cx)
-                    });
-                }
-            }
-        };
-        let toggle_word = {
-            let weak = weak.clone();
-            move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
-                if let Some(search_bar) = weak.upgrade() {
-                    search_bar.update(cx, |search_bar, cx| {
-                        search_bar.toggle_option(SearchOption::WholeWord, window, cx)
-                    });
-                }
-            }
-        };
-        let toggle_regex = {
-            let weak = weak.clone();
-            move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
-                if let Some(search_bar) = weak.upgrade() {
-                    search_bar.update(cx, |search_bar, cx| {
-                        search_bar.toggle_option(SearchOption::Regex, window, cx)
-                    });
-                }
-            }
-        };
         let toggle_replace = {
             let weak = weak.clone();
             move |_: &gpui::ClickEvent, _window: &mut Window, cx: &mut App| {
@@ -356,6 +467,10 @@ impl Render for SearchBar {
             .active_item
             .as_ref()
             .map_or((0, None), |item| item.search_count(cx));
+        let supports_replace = self
+            .active_item
+            .as_ref()
+            .is_some_and(|item| item.supports_replace(cx));
         // 计数文案：无匹配时用占位色（对齐 Zed 的错误态计数）。
         let count_color = if match_count > 0 {
             colors.text_muted
@@ -395,60 +510,14 @@ impl Render for SearchBar {
                     .items_center()
                     .gap(space::S6)
                     // 输入框容器：边框包裹，选项按钮内嵌右侧（对齐 Zed 的 input_style 结构）。
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .items_center()
-                            .h(px(26.))
-                            .px(space::S6)
-                            .rounded(px(4.))
-                            .border_1()
-                            .border_color(colors.border)
-                            .bg(colors.background)
-                            .child(self.query_input.as_ref().unwrap().render())
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(4.))
-                                    .child(
-                                        Glyph::icon("search-case", "icons/case_sensitive.svg")
-                                            .label("区分大小写")
-                                            .shortcut(&ToggleCaseSensitive, cx)
-                                            .color(if self.case_sensitive {
-                                                colors.icon_accent
-                                            } else {
-                                                colors.text_muted
-                                            })
-                                            .on_click(toggle_case),
-                                    )
-                                    .child(
-                                        Glyph::icon("search-word", "icons/whole_word.svg")
-                                            .label("整词匹配")
-                                            .shortcut(&ToggleWholeWord, cx)
-                                            .color(if self.whole_word {
-                                                colors.icon_accent
-                                            } else {
-                                                colors.text_muted
-                                            })
-                                            .on_click(toggle_word),
-                                    )
-                                    .child(
-                                        Glyph::icon("search-regex", "icons/regex.svg")
-                                            .label("正则表达式")
-                                            .shortcut(&ToggleRegex, cx)
-                                            .color(if self.regex {
-                                                colors.icon_accent
-                                            } else {
-                                                colors.text_muted
-                                            })
-                                            .on_click(toggle_regex),
-                                    ),
-                            ),
-                    )
-                    // 替换模式 toggle（对齐 Zed 的 Replace 图标按钮；激活时高亮）。
+                    .child(SearchInput::new(
+                        "buffer-search-input",
+                        self.query_input.as_ref().unwrap().render(),
+                        self.case_sensitive,
+                        self.whole_word,
+                        self.regex,
+                    ))
+                    // 替换模式 toggle（对齐 Zed 的 Replace 图标按钮；只读目标保留相同布局并显示禁用态）。
                     .child(
                         Glyph::icon("search-toggle-replace", "icons/replace.svg")
                             .label("替换")
@@ -458,7 +527,8 @@ impl Render for SearchBar {
                             } else {
                                 colors.text_muted
                             })
-                            .on_click(toggle_replace),
+                            .on_click(toggle_replace)
+                            .disabled(!supports_replace),
                     )
                     // 计数 + 上下跳转（对齐 Zed 的 matches_column：ChevronLeft/Right）。
                     .child(
@@ -494,7 +564,7 @@ impl Render for SearchBar {
                             .on_click(close),
                     ),
             )
-            .when(self.show_replace, |this| {
+            .when(self.show_replace && supports_replace, |this| {
                 // 替换行：替换输入框 + 替换 / 全部替换（对齐 Zed 的替换栏）。
                 this.child(
                     div()

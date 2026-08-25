@@ -12,10 +12,11 @@ use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakE
 use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 use zcv_git::FileStatus;
 use zcv_multi_buffer::MultiBuffer;
-use zcv_text::{Buffer, BufferLoadError, BufferSaveError};
+use zcv_text::{Buffer, BufferLoadError, BufferSaveError, SearchQuery};
 
 use super::buffer_store::BufferStore;
 use super::git_store::{GitStore, StatusEntry};
+use super::search::{self, ProjectSearchResults};
 use super::worktree::{Worktree, WorktreeEntry};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,6 +168,30 @@ impl Project {
         self.buffer_store.open_buffer(path, cx)
     }
 
+    /// 在后台扫描当前本地 worktree，并在 UI 线程把命中文件装配为 ordered excerpts。
+    pub fn search(
+        &mut self,
+        query: SearchQuery,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<ProjectSearchResults>> {
+        let Some(worktree) = &self.worktree else {
+            return Task::ready(Ok(ProjectSearchResults::empty()));
+        };
+        let plan = worktree.snapshot.search_plan();
+        let opened_snapshots = self.buffer_store.opened_snapshots(cx);
+        let search = cx
+            .background_executor()
+            .spawn(async move { search::search_worktree(plan, opened_snapshots, query) });
+        cx.spawn(async move |project, cx| {
+            let matches = search.await?;
+            project
+                .update(cx, |project, cx| {
+                    search::materialize_results(matches, &mut project.buffer_store, cx)
+                })
+                .map_err(|_| anyhow::anyhow!("项目搜索完成前 Project 已释放"))?
+        })
+    }
+
     pub fn save_buffer(
         &mut self,
         multi_buffer: &Entity<MultiBuffer>,
@@ -177,21 +202,33 @@ impl Project {
             .read(cx)
             .as_singleton(cx)
             .expect("当前 Project 只保存 singleton MultiBuffer");
-        let result = buffer.update(cx, |buffer, cx| {
-            let result = write_buffer_to_path(buffer, path);
-            if result.is_ok() {
+        self.save_file_buffers(vec![(buffer, path.to_path_buf())], cx)
+    }
+
+    /// 保存 MultiBuffer 引用的真实源文件 Buffer；
+    /// 组合投影不会参与落盘。
+    pub fn save_file_buffers(
+        &mut self,
+        buffers: Vec<(Entity<Buffer>, PathBuf)>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), BufferSaveError> {
+        let mut saved_paths = Vec::with_capacity(buffers.len());
+        for (buffer, path) in buffers {
+            buffer.update(cx, |buffer, cx| {
+                write_buffer_to_path(buffer, &path)?;
                 cx.notify();
-            }
-            result
-        });
+                Ok::<_, BufferSaveError>(())
+            })?;
+            saved_paths.push(path);
+        }
         // 保存成功后立即刷新 git 状态（快路径，不等 fs 事件；
         // fs 事件晚到会被 job 去重吸收）。
-        if result.is_ok() {
+        if !saved_paths.is_empty() {
             self.git_store.update(cx, |store, cx| {
-                store.refresh_statuses_for_paths(std::slice::from_ref(&path.to_path_buf()), cx);
+                store.refresh_statuses_for_paths(&saved_paths, cx);
             });
         }
-        result
+        Ok(())
     }
 
     /// 在同一父目录内重命名文件或目录，并迁移项目持有的路径状态。

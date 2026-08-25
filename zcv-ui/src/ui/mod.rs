@@ -1,6 +1,7 @@
 //! 设计系统与基础展示组件。
 //! 此文件是 `zcv-ui` crate 的公共入口。
 
+mod button;
 mod checkbox;
 mod glyph;
 mod icon;
@@ -11,6 +12,7 @@ mod tab;
 mod tooltip;
 pub mod tree;
 
+pub use button::Button;
 pub use checkbox::Checkbox;
 pub use glyph::Glyph;
 pub use icon::SvgIcon;

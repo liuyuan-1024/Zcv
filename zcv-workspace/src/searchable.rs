@@ -3,6 +3,7 @@
 //! 对齐 Zed 的 `workspace::searchable`：搜索条只面向此 trait 编程，Editor 等 Item 提供搜索执行与匹配跳转。
 
 use gpui::{App, Context, Entity, EventEmitter, Subscription, Window};
+use zcv_text::SearchQuery;
 
 use crate::item::{Item, ItemHandle};
 
@@ -25,20 +26,16 @@ pub enum Direction {
     Next,
 }
 
-/// 宿主层搜索参数（对齐 Zed 的 `project::search::SearchQuery`；
-/// zcv 只保留文件内搜索所需字段，regex 选项直接映射到引擎的 `RegexSearchOptions`）。
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SearchQuery {
-    pub query: String,
-    pub case_sensitive: bool,
-    pub whole_word: bool,
-    pub regex: bool,
-}
-
 /// 可在自身内容中搜索的 Item。
 ///
-/// 实现方持有搜索状态（结果绑定 BufferVersion，编辑后自动重搜），搜索条只做UI 壳：把用户输入转成 [`SearchQuery`]，经 handle 调用本 trait 的方法。
+/// 实现方持有匹配结果与活动位置；搜索会话控制器通过本协议派发统一的
+/// [`zcv_text::SearchQuery`]。
 pub trait SearchableItem: Item + EventEmitter<SearchEvent> {
+    /// 是否支持替换。项目搜索等只读搜索目标返回 false，SearchBar 据此禁用替换入口。
+    fn supports_replace(&self) -> bool {
+        true
+    }
+
     /// 执行搜索。同步执行：引擎搜索是内存内匹配，单文件代价可控。
     /// 结果由实现方持有（绑定 BufferVersion，编辑后自动重搜），搜索条经 `search_count` 读取计数。
     fn search(&mut self, query: &SearchQuery, window: &mut Window, cx: &mut Context<Self>);
@@ -87,6 +84,7 @@ pub trait SearchableItemHandle: ItemHandle {
     fn search(&self, query: &SearchQuery, window: &mut Window, cx: &mut App);
     fn clear_search(&self, window: &mut Window, cx: &mut App);
     fn search_count(&self, cx: &App) -> (usize, Option<usize>);
+    fn supports_replace(&self, cx: &App) -> bool;
     fn activate_match_in_direction(
         &self,
         direction: Direction,
@@ -124,6 +122,10 @@ impl<T: SearchableItem> SearchableItemHandle for Entity<T> {
 
     fn search_count(&self, cx: &App) -> (usize, Option<usize>) {
         self.read(cx).search_count(cx)
+    }
+
+    fn supports_replace(&self, cx: &App) -> bool {
+        self.read(cx).supports_replace()
     }
 
     fn activate_match_in_direction(

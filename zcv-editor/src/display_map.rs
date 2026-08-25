@@ -5,10 +5,12 @@
 //! - FoldMap：维护折叠范围和折叠后的文本拓扑；
 //! - TabMap：在 FoldSnapshot 之上处理硬 Tab 的显示列；
 //! - WrapMap：在 TabSnapshot 之上按像素宽度软换行。
+//! - BlockMap：在换行结果上插入文件标题、片段分隔线等非文本虚拟块。
 //!
 //! 每一层都持有自己的 Map 和不可变 Snapshot；
 //! 上一层 Snapshot 固化下一层 Snapshot，从而让一次渲染只能看到一条内部一致的显示状态。
 
+mod block_map;
 mod chunk;
 mod display_width;
 mod error;
@@ -18,6 +20,11 @@ mod line_stream;
 mod tab_map;
 mod wrap_map;
 
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+use block_map::{BlockSnapshot, DisplayViewportSlice};
+pub(crate) use block_map::{DisplayBlock, DisplayBlockKind};
 pub use chunk::{Chunk, RenderChunks, chunks_to_runs, render_plain_line};
 #[cfg(test)]
 pub(crate) use chunk::{LineStyles, ViewportChunkSource, render_viewport_chunks};
@@ -36,8 +43,8 @@ pub(crate) use line_stream::{InsertedLines, StreamLineSource};
 pub use line_stream::{StyledLine, StyledSpan};
 use tab_map::TabMap;
 pub(crate) use tab_map::byte_for_display_column;
+pub(crate) use wrap_map::WrapViewportRowKind;
 use wrap_map::{WrapMap, WrapSnapshot};
-pub(crate) use wrap_map::{WrapViewportRowKind, WrapViewportSlice};
 use zcv_language::{HighlightSpan, SyntaxSnapshot};
 use zcv_multi_buffer::MultiBufferSnapshot;
 use zcv_text::{
@@ -135,6 +142,8 @@ impl DisplayPoint {
 #[derive(Debug, Clone)]
 pub(super) struct DisplaySnapshot {
     wrap_snapshot: WrapSnapshot,
+    block_snapshot: BlockSnapshot,
+    multi_buffer_snapshot: MultiBufferSnapshot,
     /// 折叠拓扑快照（渲染侧查询折叠状态与合并行段）。
     fold_snapshot: FoldSnapshot,
     /// 语法快照（插值树与 buffer 版本同步；渲染按可见范围懒查询高亮）。
@@ -159,11 +168,36 @@ impl DisplaySnapshot {
     /// 折叠行则查询其每个有源段对应的真实 buffer 行。
     pub(super) fn highlighted_spans_for_viewport(
         &self,
-        viewport: &WrapViewportSlice<'_>,
+        viewport: &DisplayViewportSlice<'_>,
     ) -> Vec<HighlightSpan> {
+        if self.multi_buffer_snapshot.is_composite() {
+            let mut start = usize::MAX;
+            let mut end = 0usize;
+            for row in viewport.rows() {
+                if row.block().is_some() {
+                    continue;
+                }
+                let WrapViewportRowKind::Text {
+                    global_byte_start,
+                    byte_range,
+                    ..
+                } = row.kind();
+                start = start.min(global_byte_start.saturating_add(byte_range.start));
+                end = end.max(global_byte_start.saturating_add(byte_range.end));
+            }
+            return if start < end {
+                self.multi_buffer_snapshot.highlights(start..end)
+            } else {
+                Vec::new()
+            };
+        }
+
         let mut buffer_lines = std::collections::BTreeSet::new();
         let stream = self.fold_snapshot.inlay_snapshot().stream();
         for row in viewport.rows() {
+            if row.block().is_some() {
+                continue;
+            }
             let WrapViewportRowKind::Text {
                 source, segments, ..
             } = row.kind();
@@ -213,7 +247,7 @@ impl DisplaySnapshot {
     }
 
     pub(super) fn line_count(&self) -> usize {
-        self.wrap_snapshot.line_count()
+        self.block_snapshot.line_count()
     }
 
     /// 折叠入口行集合（crease 折叠态与占位符命中判断）。
@@ -237,9 +271,7 @@ impl DisplaySnapshot {
             .buffer_snapshot()
             .position_to_byte(Position::new(line, LogicalColumn::ZERO))
             .ok()?;
-        self.offset_to_display_point(offset)
-            .ok()
-            .map(DisplayPoint::row)
+        self.block_snapshot.line_to_display_row(offset)
     }
 
     pub(super) fn is_wrapped(&self) -> bool {
@@ -250,29 +282,29 @@ impl DisplaySnapshot {
         &self,
         start_row: DisplayRow,
         line_count: usize,
-    ) -> DisplayMapResult<WrapViewportSlice<'_>> {
-        self.wrap_snapshot.slice_viewport(start_row, line_count)
+    ) -> DisplayMapResult<DisplayViewportSlice<'_>> {
+        self.block_snapshot.slice_viewport(start_row, line_count)
     }
 
     pub(super) fn project_text_range(
         &self,
         range: TextRange,
     ) -> DisplayMapResult<Vec<ProjectedRange>> {
-        self.wrap_snapshot.project_text_range(range)
+        self.block_snapshot.project_text_range(range)
     }
 
     pub(super) fn offset_to_display_point(
         &self,
         offset: ByteOffset,
     ) -> DisplayMapResult<DisplayPoint> {
-        self.wrap_snapshot.offset_to_display_point(offset)
+        self.block_snapshot.offset_to_display_point(offset)
     }
 
     pub(super) fn display_point_to_offset(
         &self,
         point: DisplayPoint,
     ) -> DisplayMapResult<ByteOffset> {
-        self.wrap_snapshot.display_point_to_offset(point)
+        self.block_snapshot.display_point_to_offset(point)
     }
 
     pub(super) fn display_to_logical_column(
@@ -280,9 +312,14 @@ impl DisplaySnapshot {
         line: Line,
         column: DisplayColumn,
     ) -> DisplayMapResult<LogicalColumn> {
-        self.wrap_snapshot
-            .tab_snapshot()
-            .display_to_logical_column(line, column)
+        self.block_snapshot.display_to_logical_column(line, column)
+    }
+
+    pub(super) fn excerpt_for_output_line(
+        &self,
+        line: usize,
+    ) -> Option<&zcv_multi_buffer::ExcerptSnapshot> {
+        self.multi_buffer_snapshot.excerpt_for_output_line(line)
     }
 }
 
@@ -292,6 +329,7 @@ pub(crate) struct DisplayMap {
     fold_map: FoldMap,
     tab_map: TabMap,
     wrap_map: WrapMap,
+    multi_buffer_snapshot: MultiBufferSnapshot,
     /// 合成行配置（删除块展开的被删除行等外部文本；变化时整链重建）。
     inserted: InsertedLines,
     /// 行内提示配置（inlay 注入；变化时整链重建）。
@@ -302,6 +340,8 @@ pub(crate) struct DisplayMap {
     capture_names: std::sync::Arc<[std::sync::Arc<str>]>,
     /// capture 索引 → 样式的预展开表（渲染每 run 一次数组索引）。
     highlight_styles: std::sync::Arc<[HighlightStyle]>,
+    /// 由 BufferHeader 控制的整文件折叠；BlockMap 在 WrapMap 之上隐藏对应文本行。
+    folded_buffers: HashSet<PathBuf>,
 }
 
 impl DisplayMap {
@@ -311,19 +351,23 @@ impl DisplayMap {
         let (inlay_map, inlay_snapshot) = InlayMap::new(stream);
         let (fold_map, fold_snapshot) = FoldMap::new(inlay_snapshot);
         let (tab_map, tab_snapshot) = TabMap::new(fold_snapshot);
-        let (wrap_map, _) = WrapMap::new(tab_snapshot);
+        let (wrap_map, wrap_snapshot) = WrapMap::new(tab_snapshot);
+        let _ = wrap_snapshot;
         let mut this = Self {
             inlay_map,
             fold_map,
             tab_map,
             wrap_map,
+            multi_buffer_snapshot: snapshot.clone(),
             inserted: InsertedLines::new(),
             inlays: Vec::new(),
             syntax_snapshot: SyntaxSnapshot::empty(snapshot.text().version()),
             capture_names: std::sync::Arc::from([]),
             highlight_styles: std::sync::Arc::from([]),
+            folded_buffers: HashSet::new(),
         };
         this.set_syntax_snapshot(snapshot.syntax().clone());
+        this.set_capture_names(snapshot.capture_names());
         this
     }
 
@@ -331,8 +375,12 @@ impl DisplayMap {
     ///
     /// 渲染按可见范围懒查询高亮；capture 名字表未变化时复用已展开的样式表。
     pub(crate) fn set_syntax_snapshot(&mut self, syntax_snapshot: SyntaxSnapshot) {
-        let capture_names = syntax_snapshot.capture_names();
         self.syntax_snapshot = syntax_snapshot;
+        let capture_names = self.syntax_snapshot.capture_names();
+        self.set_capture_names(capture_names);
+    }
+
+    fn set_capture_names(&mut self, capture_names: std::sync::Arc<[std::sync::Arc<str>]>) {
         if self.capture_names != capture_names {
             self.capture_names = capture_names;
             self.highlight_styles = std::sync::Arc::from(syntax::style_table(&self.capture_names));
@@ -350,6 +398,8 @@ impl DisplayMap {
     pub(super) fn snapshot(&self) -> DisplaySnapshot {
         DisplaySnapshot {
             wrap_snapshot: self.wrap_map.snapshot().clone(),
+            block_snapshot: self.current_block_snapshot(),
+            multi_buffer_snapshot: self.multi_buffer_snapshot.clone(),
             fold_snapshot: self.fold_map.snapshot().clone(),
             syntax_snapshot: self.syntax_snapshot.clone(),
             highlight_styles: std::sync::Arc::clone(&self.highlight_styles),
@@ -362,11 +412,23 @@ impl DisplayMap {
     }
 
     pub(crate) fn line_count(&self) -> usize {
-        self.wrap_map.snapshot().line_count()
+        self.current_block_snapshot().line_count()
     }
 
     pub(crate) fn is_wrapped(&self) -> bool {
         self.wrap_map.snapshot().is_wrapped()
+    }
+
+    pub(crate) fn is_buffer_folded(&self, path: &Path) -> bool {
+        self.folded_buffers.contains(path)
+    }
+
+    pub(crate) fn set_buffer_folded(&mut self, path: PathBuf, folded: bool) {
+        if folded {
+            self.folded_buffers.insert(path);
+        } else {
+            self.folded_buffers.remove(&path);
+        }
     }
 
     /// 设置软换行宽度与字体；宽度/字体变化时内部重建，返回是否发生变化。
@@ -389,12 +451,17 @@ impl DisplayMap {
         let end = start_row
             .get()
             .saturating_add(line_count)
-            .min(self.fold_map.snapshot().line_count());
-        for row in start_row.get()..end {
+            .min(self.line_count());
+        let block_snapshot = self.current_block_snapshot();
+        for display_row in start_row.get()..end {
+            let Some(row) = block_snapshot.display_row_to_wrap_row(DisplayRow::new(display_row))
+            else {
+                continue;
+            };
             if let Some(line) = self
                 .fold_map
                 .snapshot()
-                .projected_line_kind(ProjectedLineIndex::new(row))
+                .projected_line_kind(ProjectedLineIndex::new(row.get()))
             {
                 self.tab_map.measure_line(line.logical_line())?;
             }
@@ -412,7 +479,10 @@ impl DisplayMap {
                 }
             })
             .max_by_key(|(_, width)| *width)
-            .map(|(row, _)| DisplayRow::from(row))
+            .map(|(row, _)| {
+                self.current_block_snapshot()
+                    .projected_wrap_row_to_display_row(row.get())
+            })
             .unwrap_or(DisplayRow::ZERO)
     }
 
@@ -424,6 +494,8 @@ impl DisplayMap {
     ) -> ApplyOutcome {
         let current_snapshot = current_snapshot.into();
         self.set_syntax_snapshot(current_snapshot.syntax().clone());
+        self.set_capture_names(current_snapshot.capture_names());
+        self.multi_buffer_snapshot = current_snapshot.clone();
         let mut stream = LineStream::new(current_snapshot.text().clone());
         // 空配置不注入：避免每次 sync 都推进合成行版本导致增量路径失效。
         if !self.inserted.is_empty() {
@@ -487,14 +559,15 @@ impl DisplayMap {
         &self,
         offset: ByteOffset,
     ) -> DisplayMapResult<DisplayPoint> {
-        self.wrap_map.snapshot().offset_to_display_point(offset)
+        self.current_block_snapshot()
+            .offset_to_display_point(offset)
     }
 
     pub(crate) fn display_point_to_offset(
         &self,
         point: DisplayPoint,
     ) -> DisplayMapResult<ByteOffset> {
-        self.wrap_map.snapshot().display_point_to_offset(point)
+        self.current_block_snapshot().display_point_to_offset(point)
     }
 
     pub(crate) fn beginning_of_row(&self, offset: ByteOffset) -> DisplayMapResult<ByteOffset> {
@@ -503,6 +576,14 @@ impl DisplayMap {
 
     pub(crate) fn end_of_row(&self, offset: ByteOffset) -> DisplayMapResult<ByteOffset> {
         self.wrap_map.snapshot().end_of_row(offset)
+    }
+
+    fn current_block_snapshot(&self) -> BlockSnapshot {
+        BlockSnapshot::new(
+            self.wrap_map.snapshot().clone(),
+            self.multi_buffer_snapshot.excerpts(),
+            &self.folded_buffers,
+        )
     }
 
     #[cfg(test)]

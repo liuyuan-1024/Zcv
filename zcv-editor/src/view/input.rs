@@ -95,7 +95,7 @@ impl EditorPresentation {
 
 impl Editor {
     fn selection_for_utf16_range(&self, range: Range<usize>, cx: &App) -> Option<SelectionSet> {
-        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
+        let snapshot = self.text_buffer(cx).read(cx).snapshot();
         let start = snapshot
             .utf16_cu_to_byte(Utf16Offset::new(range.start))
             .ok()?;
@@ -111,6 +111,9 @@ impl Editor {
         text: &str,
         cx: &mut Context<Self>,
     ) {
+        if self.is_read_only(cx) {
+            return;
+        }
         let before_selections = self.resolved_selections();
         let composition = self.composition.take();
         // 自动闭合行为只作用于普通单字符输入（IME 组合会话与指定替换范围不进入）。
@@ -208,7 +211,7 @@ impl Editor {
         relative_range: Range<usize>,
         cx: &App,
     ) -> Option<TextRange> {
-        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
+        let snapshot = self.text_buffer(cx).read(cx).snapshot();
         let text = snapshot.slice_text(containing_range).ok()?;
         let text = text.as_str();
         let utf16_len = utf16_len(text);
@@ -222,7 +225,7 @@ impl Editor {
     }
 
     fn is_current_history_transaction(&self, transaction_id: TransactionId, cx: &App) -> bool {
-        let buffer_entity = self.singleton_buffer(cx);
+        let buffer_entity = self.text_buffer(cx);
         let buffer = buffer_entity.read(cx);
         buffer
             .current_history_node()
@@ -261,7 +264,7 @@ impl Editor {
         }
 
         let before = before.normalized();
-        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
+        let snapshot = self.text_buffer(cx).read(cx).snapshot();
 
         // 逐选区决策，产出目标编辑、编辑后落点与新区域（以编辑前坐标为基准）。
         let mut targets: Vec<(Selection, Arc<str>)> = Vec::new();
@@ -382,7 +385,7 @@ impl Editor {
             Ok((EditOutcome::from_transaction(outcome), after))
         });
         if result.is_ok() {
-            let version = self.singleton_buffer(cx).read(cx).snapshot().version();
+            let version = self.text_buffer(cx).read(cx).snapshot().version();
             self.autoclose_regions
                 .extend(
                     new_regions_after
@@ -423,7 +426,7 @@ impl Editor {
 
     /// 光标贴着自动补全闭合符起点时扩展选区覆盖整对（对齐 Zed `select_autoclose_pair`），使退格一次删除整对；非空选区或未命中区域时选区不变。
     pub(super) fn select_autoclose_pair(&mut self, cx: &App) {
-        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
+        let snapshot = self.text_buffer(cx).read(cx).snapshot();
         let before = self.resolved_selections();
         let mut changed = false;
         let selections: Vec<Selection> = before
@@ -599,7 +602,7 @@ impl EntityInputHandler for Editor {
         });
         // 会话提交后当前历史节点即本次编辑的归属节点（MergeWithPrevious 时指向前节点），用它作为组合会话的事务身份：连续候选更新据此合并进同一撤销步。
         // 不能用编辑 outcome 的 history_transaction_id——会话 id 在合并进前节点后不指向任何历史节点，后续合并判断会失败。
-        let buffer_entity = self.singleton_buffer(cx);
+        let buffer_entity = self.text_buffer(cx);
         let buffer = buffer_entity.read(cx);
         let history_transaction_id = buffer
             .current_history_node()

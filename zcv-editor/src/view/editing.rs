@@ -22,6 +22,9 @@ impl Editor {
         description: &'static str,
         cx: &mut Context<Self>,
     ) {
+        if self.is_read_only(cx) {
+            return;
+        }
         self.composition = None;
         let before_selections = self.resolved_selections();
         let targets = self.delete_targets(&before_selections, Some((direction, unit)), cx);
@@ -34,10 +37,13 @@ impl Editor {
         description: &'static str,
         cx: &mut Context<Self>,
     ) {
+        if self.is_read_only(cx) {
+            return;
+        }
         self.composition = None;
         let before_selections = self.resolved_selections();
         let targets = {
-            let buffer_entity = self.singleton_buffer(cx);
+            let buffer_entity = self.text_buffer(cx);
             let buffer = buffer_entity.read(cx);
             before_selections
                 .as_slice()
@@ -102,7 +108,7 @@ impl Editor {
         caret_motion: Option<(MovementDirection, MovementUnit)>,
         cx: &App,
     ) -> TextResult<SelectionSet> {
-        let buffer_entity = self.singleton_buffer(cx);
+        let buffer_entity = self.text_buffer(cx);
         let buffer = buffer_entity.read(cx);
         let mut targets = Vec::new();
         for selection in selections.as_slice() {
@@ -131,11 +137,11 @@ impl Editor {
     }
 
     pub(super) fn indent(&mut self, cx: &mut Context<Self>) {
-        if self.propagate_if_single_line(cx) {
+        if self.is_read_only(cx) || self.propagate_if_single_line(cx) {
             return;
         }
         let before = self.resolved_selections().normalized();
-        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
+        let snapshot = self.text_buffer(cx).read(cx).snapshot();
         let tab = snapshot.config().tab;
         let all_carets = before
             .as_slice()
@@ -199,11 +205,11 @@ impl Editor {
     }
 
     pub(super) fn outdent(&mut self, cx: &mut Context<Self>) {
-        if self.propagate_if_single_line(cx) {
+        if self.is_read_only(cx) || self.propagate_if_single_line(cx) {
             return;
         }
         let before = self.resolved_selections();
-        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
+        let snapshot = self.text_buffer(cx).read(cx).snapshot();
         let targets = touched_lines(&snapshot, &before).and_then(|lines| {
             lines
                 .into_iter()
@@ -226,12 +232,12 @@ impl Editor {
     }
 
     pub(super) fn insert_newline(&mut self, cx: &mut Context<Self>) {
-        if self.propagate_if_single_line(cx) {
+        if self.is_read_only(cx) || self.propagate_if_single_line(cx) {
             return;
         }
         self.composition = None;
         let before = self.resolved_selections().normalized();
-        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
+        let snapshot = self.text_buffer(cx).read(cx).snapshot();
         // 逐选区计算插入文本与光标落点：
         // 光标处于声明了 newline 的括号对之间时，闭合符前额外补一个基准缩进空行对齐 Zed `insert_extra_newline_brackets`，与自动缩进共用同一回车路径）。
         let mut trailing_lens = Vec::new();
@@ -314,7 +320,7 @@ impl Editor {
     }
 
     fn selected_text(&self, cx: &App) -> Option<String> {
-        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
+        let snapshot = self.text_buffer(cx).read(cx).snapshot();
         let mut parts = Vec::new();
         for selection in self.resolved_selections().as_slice() {
             if selection.is_caret() {
@@ -343,8 +349,49 @@ impl Editor {
     ///
     /// 对齐 Zed：历史回放不经过编辑事务会话（`change` 会开启新会话并记录选区），这里直接回放 Buffer 历史并以被回放事务的身份只读恢复 SelectionHistory。
     fn replay_history(&mut self, redo: bool, cx: &mut Context<Self>) {
+        if self.is_read_only(cx) {
+            return;
+        }
         let action = if redo { "Redo" } else { "Undo" };
-        let buffer = self.singleton_buffer(cx);
+        if self.multi_buffer.read(cx).is_composite() {
+            let outcome = self.multi_buffer.update(cx, |buffer, cx| {
+                if redo {
+                    buffer.redo(cx)
+                } else {
+                    buffer.undo(cx)
+                }
+            });
+            match outcome {
+                Ok(Some(outcome)) => {
+                    self.update_autoclose_regions_with(
+                        outcome.position_map(),
+                        outcome.old_version(),
+                        outcome.new_version(),
+                    );
+                    if let Some(selections) = self
+                        .selection_history
+                        .transaction(outcome.transaction_id())
+                        .and_then(|history| {
+                            if redo {
+                                history.redo().cloned()
+                            } else {
+                                Some(history.undo().clone())
+                            }
+                        })
+                    {
+                        self.selections = EditorSelections::from_selection_set(
+                            outcome.new_version(),
+                            &selections,
+                        );
+                    }
+                    self.synchronize_after_history_edit(cx);
+                }
+                Ok(None) => {}
+                Err(error) => eprintln!("Editor {action} 失败：{error}"),
+            }
+            return;
+        }
+        let buffer = self.text_buffer(cx);
         let outcome = buffer.update(cx, |buffer, cx| {
             let outcome = if redo { buffer.redo() } else { buffer.undo() };
             cx.notify();
@@ -371,7 +418,7 @@ impl Editor {
                         }
                     })
                 {
-                    let version = self.singleton_buffer(cx).read(cx).snapshot().version();
+                    let version = self.text_buffer(cx).read(cx).snapshot().version();
                     self.selections = EditorSelections::from_selection_set(version, &selections);
                 }
                 self.synchronize_after_history_edit(cx);
@@ -479,6 +526,9 @@ impl Editor {
     }
 
     pub(crate) fn handle_cut(&mut self, _: &Cut, _: &mut Window, cx: &mut Context<Self>) {
+        if self.is_read_only(cx) {
+            return;
+        }
         let Some(text) = self.selected_text(cx) else {
             return;
         };
@@ -534,7 +584,7 @@ impl Editor {
     /// 下移：把行块文本（含换行符）移到后面一行之后。
     /// 所有行块在同一个事务内完成，选区由 position_map 自动映射跟随行块。
     fn move_lines(&mut self, direction: MovementDirection, cx: &mut Context<Self>) {
-        if self.propagate_if_single_line(cx) {
+        if self.is_read_only(cx) || self.propagate_if_single_line(cx) {
             return;
         }
         self.composition = None;
@@ -543,7 +593,7 @@ impl Editor {
             MovementDirection::Previous => "移动行到上方",
             MovementDirection::Next => "移动行到下方",
         };
-        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
+        let snapshot = self.text_buffer(cx).read(cx).snapshot();
         let _ = self.change_with_after(before.clone(), cx, |buffer| {
             let (targets, plans) = line_blocks(&snapshot, &before).and_then(|blocks| {
                 let targets = move_line_targets(&snapshot, &blocks, direction)?;

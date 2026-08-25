@@ -22,6 +22,7 @@ use zcv_editor::Editor;
 use zcv_project::{
     ActiveProjectRoot, GitOperationKind, GitOperationOutcome, GitStoreEvent, Project,
 };
+use zcv_search::ProjectSearchButton;
 use zcv_settings::SettingsStore;
 use zcv_theme::{ThemeChoice, color, typography};
 use zcv_workspace::{
@@ -34,7 +35,6 @@ use crate::active_buffer_language::ActiveBufferLanguage;
 use crate::breadcrumbs::Breadcrumbs;
 use crate::cursor_position::CursorPosition;
 use crate::harness::HarnessButton;
-use crate::project_search::ProjectSearchButton;
 use crate::project_tree::ProjectTreePanel;
 use crate::version_control::VersionControlPanel;
 use zcv_terminal::TerminalPanel;
@@ -230,6 +230,8 @@ fn initialize_common_workspace(
             }
         });
     });
+
+    zcv_search::install(workspace, window, cx);
 
     let status_bar = workspace.status_bar().clone();
     let left_dock = workspace.left_dock.clone();

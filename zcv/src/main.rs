@@ -6,7 +6,6 @@ mod cursor_position;
 mod git_status;
 mod harness;
 mod preview;
-mod project_search;
 mod project_tree;
 mod version_control;
 mod workspace;

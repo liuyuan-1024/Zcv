@@ -16,6 +16,7 @@ zcv-git.workspace = true
 zcv-keymap.workspace = true
 zcv-preview-svg.workspace = true
 zcv-project.workspace = true
+zcv-search.workspace = true
 zcv-settings.workspace = true
 zcv-terminal.workspace = true
 zcv-theme.workspace = true

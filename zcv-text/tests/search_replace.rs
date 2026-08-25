@@ -3,6 +3,35 @@ pub mod common;
 use common::*;
 
 #[test]
+fn unified_search_query_dispatches_literal_and_regex_with_the_same_options() {
+    let buffer = buffer("Cat catalog cat c42");
+    let literal = SearchQuery {
+        query: "cat".to_string(),
+        case_sensitive: false,
+        whole_word: true,
+        regex: false,
+    }
+    .search(&buffer.snapshot())
+    .unwrap();
+    assert!(matches!(literal, SearchQueryResult::Literal(_)));
+    assert_eq!(
+        literal.ranges().collect::<Vec<_>>(),
+        vec![range(0, 3), range(12, 15)]
+    );
+
+    let regex = SearchQuery {
+        query: r"c\d+".to_string(),
+        case_sensitive: false,
+        whole_word: false,
+        regex: true,
+    }
+    .search(&buffer.snapshot())
+    .unwrap();
+    assert!(matches!(regex, SearchQueryResult::Regex(_)));
+    assert_eq!(regex.ranges().collect::<Vec<_>>(), vec![range(16, 19)]);
+}
+
+#[test]
 fn literal_search_should_return_versioned_byte_ranges_with_case_and_range_options() {
     let buffer = buffer("Alpha alpha ALPHA");
     let result = buffer

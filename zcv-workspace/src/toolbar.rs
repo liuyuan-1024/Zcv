@@ -11,7 +11,6 @@ use zcv_ui::Glyph;
 
 use crate::ItemHandle;
 use crate::preview::provider_for;
-use crate::search_bar::SearchBar;
 
 // ═══ ToolbarItemLocation ═════════════════════════════════════════════
 
@@ -21,6 +20,8 @@ pub enum ToolbarItemLocation {
     Hidden,
     PrimaryLeft,
     PrimaryRight,
+    /// 位于主工具栏行下方的全宽扩展区域。
+    Secondary,
 }
 
 // ═══ ToolbarItemEvent ════════════════════════════════════════════════
@@ -87,7 +88,6 @@ impl<T: ToolbarItemView + 'static> ToolbarItemViewHandle for Entity<T> {
 pub struct Toolbar {
     active_item: Option<Box<dyn ItemHandle>>,
     items: Vec<(Box<dyn ToolbarItemViewHandle>, ToolbarItemLocation)>,
-    search_bar: Option<Entity<SearchBar>>,
 }
 
 impl Default for Toolbar {
@@ -101,13 +101,7 @@ impl Toolbar {
         Self {
             active_item: None,
             items: Vec::new(),
-            search_bar: None,
         }
-    }
-
-    /// 挂载文件内搜索条。
-    pub(crate) fn set_search_bar(&mut self, search_bar: Entity<SearchBar>) {
-        self.search_bar = Some(search_bar);
     }
 
     /// 注册一个子项。
@@ -165,18 +159,22 @@ impl Render for Toolbar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut left_elements: Vec<AnyView> = Vec::new();
         let mut right_elements: Vec<AnyView> = Vec::new();
+        let mut secondary_elements: Vec<AnyView> = Vec::new();
 
         for (item, location) in &self.items {
             match location {
                 ToolbarItemLocation::Hidden => {}
                 ToolbarItemLocation::PrimaryLeft => left_elements.push(item.to_any()),
                 ToolbarItemLocation::PrimaryRight => right_elements.push(item.to_any()),
+                ToolbarItemLocation::Secondary => secondary_elements.push(item.to_any()),
             }
         }
 
-        if left_elements.is_empty() && right_elements.is_empty() {
+        if left_elements.is_empty() && right_elements.is_empty() && secondary_elements.is_empty() {
             return div();
         }
+
+        let has_primary = !left_elements.is_empty() || !right_elements.is_empty();
 
         div()
             .group("toolbar")
@@ -188,31 +186,31 @@ impl Render for Toolbar {
             .border_b_1()
             .border_color(color::current(cx).border_variant)
             .bg(color::current(cx).toolbar_background)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(space::S6)
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .justify_start()
-                            .overflow_x_hidden()
-                            .children(left_elements),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .justify_end()
-                            .children(right_elements),
-                    ),
-            )
-            .when_some(self.search_bar.clone(), |this, search_bar| {
-                this.child(search_bar)
+            .when(has_primary, |this| {
+                this.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(space::S6)
+                        .child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .justify_start()
+                                .overflow_x_hidden()
+                                .children(left_elements),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .justify_end()
+                                .children(right_elements),
+                        ),
+                )
             })
+            .children(secondary_elements)
     }
 }
 

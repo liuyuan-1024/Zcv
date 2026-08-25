@@ -148,17 +148,12 @@ pub(super) enum WrapFragmentKind {
 /// 视口内单条显示行。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WrapViewportRow<'a> {
-    index: DisplayRow,
     kind: WrapViewportRowKind<'a>,
 }
 
 impl<'a> WrapViewportRow<'a> {
-    pub fn new(index: DisplayRow, kind: WrapViewportRowKind<'a>) -> Self {
-        Self { index, kind }
-    }
-
-    pub fn index(&self) -> DisplayRow {
-        self.index
+    pub fn new(kind: WrapViewportRowKind<'a>) -> Self {
+        Self { kind }
     }
 
     pub fn kind(&self) -> &WrapViewportRowKind<'a> {
@@ -420,7 +415,7 @@ impl WrapSnapshot {
                     }
                 }
             };
-            rows.push(WrapViewportRow::new(DisplayRow::new(row), kind));
+            rows.push(WrapViewportRow::new(kind));
         }
         Ok(WrapViewportSlice { rows })
     }

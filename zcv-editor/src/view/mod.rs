@@ -12,19 +12,19 @@ use zcv_actions::{
     Backspace, Copy, Cut, Delete, DeleteToBeginningOfLine, DeleteToEndOfLine, DeleteToNextWordEnd,
     DeleteToPreviousWordStart, ExpandSelection, Indent, MoveDown, MoveLeft, MoveLineDown,
     MoveLineUp, MovePageDown, MovePageUp, MoveRight, MoveToBeginning, MoveToBeginningOfLine,
-    MoveToEnd, MoveToEndOfLine, MoveToNextWord, MoveToPreviousWord, MoveUp, Newline, Outdent,
-    Paste, Redo, SelectAll, SelectDown, SelectLeft, SelectPageDown, SelectPageUp, SelectRight,
-    SelectToBeginning, SelectToBeginningOfLine, SelectToEnd, SelectToEndOfLine, SelectToNextWord,
-    SelectToPreviousWord, SelectUp, ToggleFold, Undo, UnfoldAll,
+    MoveToEnd, MoveToEndOfLine, MoveToNextWord, MoveToPreviousWord, MoveUp, Newline, OpenExcerpts,
+    Outdent, Paste, Redo, SelectAll, SelectDown, SelectLeft, SelectPageDown, SelectPageUp,
+    SelectRight, SelectToBeginning, SelectToBeginningOfLine, SelectToEnd, SelectToEndOfLine,
+    SelectToNextWord, SelectToPreviousWord, SelectUp, ToggleFold, Undo, UnfoldAll,
 };
 use zcv_git::{DiffHunk, DiffHunkKind};
 use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer};
-use zcv_multi_buffer::{MultiBuffer, MultiBufferSubscription};
+use zcv_multi_buffer::{ExcerptLocation, ExcerptSnapshot, MultiBuffer, MultiBufferSubscription};
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
-    Buffer, BufferConfig, BufferVersion, ByteOffset, DeltaEvent, Line, LineRange,
-    MovementDirection, MovementUnit, PositionMap, Snapshot, TextError, TextRange, TextResult,
-    TransactionId, TransactionMergePolicy, TransactionMetadata, TransactionSource,
+    Buffer, BufferConfig, BufferVersion, ByteOffset, DeltaEvent, Edit, Line, LineRange,
+    LogicalColumn, MovementDirection, MovementUnit, Position, PositionMap, Snapshot, TextRange,
+    TextResult, TransactionId, TransactionMergePolicy, TransactionMetadata, TransactionSource,
 };
 use zcv_theme::{color, typography};
 
@@ -53,6 +53,11 @@ pub enum EditorEvent {
     Edited,
     /// 文档是否包含未保存修改发生变化。
     DirtyChanged,
+    /// 复合文档请求宿主打开底层文件。
+    OpenExcerptsRequested {
+        locations: Vec<ExcerptLocation>,
+        split: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,11 +248,76 @@ impl Editor {
         self.multi_buffer.clone()
     }
 
-    pub(crate) fn singleton_buffer(&self, cx: &App) -> Entity<Buffer> {
-        self.multi_buffer
-            .read(cx)
-            .as_singleton(cx)
-            .expect("当前 Editor 只支持 singleton MultiBuffer")
+    pub(crate) fn text_buffer(&self, cx: &App) -> Entity<Buffer> {
+        self.multi_buffer.read(cx).text_buffer(cx)
+    }
+
+    pub fn is_read_only(&self, cx: &App) -> bool {
+        self.multi_buffer.read(cx).is_read_only()
+    }
+
+    pub fn excerpt_location(&self, cx: &App) -> Option<ExcerptLocation> {
+        let range = self.resolved_selections().primary().range();
+        self.multi_buffer.read(cx).location_for_range(range)
+    }
+
+    pub(crate) fn open_excerpt(
+        &mut self,
+        excerpt: &ExcerptSnapshot,
+        split: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let start = excerpt.source_range().start();
+        cx.emit(EditorEvent::OpenExcerptsRequested {
+            locations: vec![ExcerptLocation {
+                path: excerpt.path().to_path_buf(),
+                // Header 的 Open File 是“跳到 excerpt 起点”，不是选中整段 excerpt。
+                source_range: TextRange::new(start, start).expect("同点源范围必须有效"),
+            }],
+            split,
+        });
+    }
+
+    pub(crate) fn is_buffer_folded(&self, path: &std::path::Path) -> bool {
+        self.display_map.is_buffer_folded(path)
+    }
+
+    /// 折叠/展开 MultiBuffer 中一个文件的全部 excerpts。
+    /// 这是 BlockMap 变换，不修改组合文本，也不借用语法折叠范围。
+    pub(crate) fn toggle_buffer_fold(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        let folded = !self.display_map.is_buffer_folded(&path);
+        self.display_map.set_buffer_folded(path, folded);
+        self.request_autoscroll();
+        self.input_layout = None;
+        cx.notify();
+    }
+
+    pub(super) fn handle_open_excerpts(
+        &mut self,
+        _: &OpenExcerpts,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.multi_buffer.read(cx).as_singleton(cx).is_some() {
+            cx.propagate();
+            return;
+        }
+        let locations = self
+            .resolved_selections()
+            .as_slice()
+            .iter()
+            .filter_map(|selection| {
+                self.multi_buffer
+                    .read(cx)
+                    .location_for_range(selection.range())
+            })
+            .collect::<Vec<_>>();
+        if !locations.is_empty() {
+            cx.emit(EditorEvent::OpenExcerptsRequested {
+                locations,
+                split: false,
+            });
+        }
     }
 
     /// 覆盖换行模式（UI 场景强制使用，不随全局设置变化）；`None` 清除覆盖恢复设置值。
@@ -305,7 +375,7 @@ impl Editor {
     ///
     /// 记录注入时的 buffer 版本：注入后发生的编辑会让行号失配，渲染侧（`diff_hunks`）按版本比对拒绝使用，等待下次刷新重新注入。
     pub fn set_diff_hunks(&mut self, hunks: Vec<DiffHunk>, cx: &mut Context<Self>) {
-        let version = self.singleton_buffer(cx).read(cx).snapshot().version();
+        let version = self.text_buffer(cx).read(cx).snapshot().version();
         if self.diff_hunks == hunks && self.diff_hunks_version == Some(version) {
             return;
         }
@@ -438,7 +508,7 @@ impl Editor {
     /// 与当前 buffer 版本匹配的 diff hunks；未注入或注入后发生编辑时返回空。
     pub(crate) fn diff_hunks(&self, cx: &App) -> &[DiffHunk] {
         if let Some(version) = self.diff_hunks_version
-            && version == self.singleton_buffer(cx).read(cx).snapshot().version()
+            && version == self.text_buffer(cx).read(cx).snapshot().version()
         {
             &self.diff_hunks
         } else {
@@ -447,7 +517,7 @@ impl Editor {
     }
 
     pub fn text(&self, cx: &App) -> String {
-        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
+        let snapshot = self.text_buffer(cx).read(cx).snapshot();
         snapshot
             .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
             .expect("完整 Editor Snapshot 范围必须可读取")
@@ -485,11 +555,14 @@ impl Editor {
     }
 
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        if self.is_read_only(cx) {
+            return;
+        }
         self.composition = None;
         let before_selections = self.resolved_selections();
         let targets = SelectionSet::new(vec![Selection::new(
             ByteOffset::ZERO,
-            self.singleton_buffer(cx).read(cx).len_bytes(),
+            self.text_buffer(cx).read(cx).len_bytes(),
         )]);
         let text = if self.mode == EditorMode::SingleLine {
             text.replace(['\r', '\n'], "")
@@ -503,7 +576,7 @@ impl Editor {
 
     /// 将单个选择区设置为给定的 UTF-8 字节范围。
     pub fn select_byte_range(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
-        let end = self.singleton_buffer(cx).read(cx).len_bytes();
+        let end = self.text_buffer(cx).read(cx).len_bytes();
         assert!(range.start <= range.end && ByteOffset::new(range.end) <= end);
         self.change_selections(
             SelectionSet::new(vec![Selection::new(
@@ -512,6 +585,24 @@ impl Editor {
             )]),
             cx,
         );
+    }
+
+    /// 跳转到 0-indexed 逻辑行列，并把目标滚动到可视区域。
+    /// 列按 Unicode scalar value 计数，与文本引擎 Position 坐标一致。
+    pub fn navigate_to_line_column(
+        &mut self,
+        line: usize,
+        column: usize,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let snapshot = self.render_snapshot();
+        let Ok(offset) =
+            snapshot.position_to_byte(Position::new(Line::new(line), LogicalColumn::new(column)))
+        else {
+            return false;
+        };
+        self.change_selections(SelectionSet::caret(offset), cx);
+        true
     }
 
     /// 选区变更样板：结束组合会话、重锚定选区、请求自动滚动并清空 IME 布局缓存。
@@ -682,7 +773,7 @@ impl Editor {
         extend: bool,
         cx: &mut Context<Self>,
     ) {
-        let buffer_entity = self.singleton_buffer(cx);
+        let buffer_entity = self.text_buffer(cx);
         let buffer = buffer_entity.read(cx);
         let Ok(char_offset) = buffer.byte_to_char(offset) else {
             return;
@@ -777,7 +868,7 @@ impl Editor {
         let Some(pending) = self.pending_selection.clone() else {
             return;
         };
-        let buffer_entity = self.singleton_buffer(cx);
+        let buffer_entity = self.text_buffer(cx);
         let buffer = buffer_entity.read(cx);
         let Ok(char_offset) = buffer.byte_to_char(offset) else {
             return;
@@ -1079,7 +1170,58 @@ impl Editor {
         f: impl FnOnce(&mut Buffer) -> TextResult<T>,
     ) -> TextResult<(Option<TransactionId>, T)> {
         let session_id = self.start_transaction(before_selections.clone(), cx)?;
-        let buffer = self.singleton_buffer(cx);
+        if self.multi_buffer.read(cx).is_composite() {
+            let projection_snapshot = self.text_buffer(cx).read(cx).snapshot();
+            let projection_text = projection_snapshot
+                .slice_text(TextRange::new(
+                    ByteOffset::ZERO,
+                    projection_snapshot.len_bytes(),
+                )?)?
+                .as_str()
+                .to_owned();
+            let mut planner =
+                Buffer::scratch(projection_text, projection_snapshot.config().clone())?;
+            let subscription = planner.subscribe();
+            let outcome = match f(&mut planner) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    self.end_transaction(cx);
+                    eprintln!("Editor 编辑事务失败：{error}");
+                    self.selections = EditorSelections::from_selection_set(
+                        projection_snapshot.version(),
+                        &before_selections,
+                    );
+                    return Err(error);
+                }
+            };
+            let changes = subscription.consume();
+            if !changes.is_empty() {
+                let after = planner.snapshot();
+                let edits = changes
+                    .patch()
+                    .edits()
+                    .iter()
+                    .map(|patch| {
+                        let replacement = after.slice_text(patch.new_range())?.as_str().to_owned();
+                        Ok(Edit::replace(patch.old_range(), replacement))
+                    })
+                    .collect::<TextResult<Vec<_>>>()?;
+                self.multi_buffer.update(cx, |buffer, cx| {
+                    buffer.edit(
+                        edits,
+                        TransactionMetadata::new(TransactionSource::Programmatic)
+                            .with_description("MultiBuffer 编辑"),
+                        cx,
+                    )
+                })?;
+            }
+            let node_id = self.end_transaction(cx);
+            if node_id != Some(session_id) {
+                self.selection_history.remove_transaction(session_id);
+            }
+            return Ok((node_id, outcome));
+        }
+        let buffer = self.text_buffer(cx);
         let outcome = buffer.update(cx, |buffer, cx| {
             let outcome = f(buffer)?;
             cx.notify();
@@ -1090,7 +1232,7 @@ impl Editor {
             Err(error) => {
                 self.end_transaction(cx);
                 eprintln!("Editor 编辑事务失败：{error}");
-                let version = self.singleton_buffer(cx).read(cx).snapshot().version();
+                let version = self.text_buffer(cx).read(cx).snapshot().version();
                 self.selections = EditorSelections::from_selection_set(version, &before_selections);
                 return Err(error);
             }
@@ -1102,8 +1244,7 @@ impl Editor {
         Ok((node_id, outcome))
     }
 
-    /// 开启编辑会话并记录 undo 选区（对齐 Zed 的 `start_transaction_at`；
-    /// zcv 无 Zed 的时间合并需求，故不提供 `now` 参数）。
+    /// 开启编辑会话并记录 undo 选区。
     ///
     /// Editor 不嵌套会话：引擎会话已开启时视为内部错误。
     fn start_transaction(
@@ -1112,12 +1253,8 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> TextResult<TransactionId> {
         let transaction_id = self
-            .singleton_buffer(cx)
-            .update(cx, |buffer, _| buffer.start_transaction())?
-            .ok_or_else(|| TextError::InvariantViolation {
-                location: "Editor::start_transaction",
-                detail: "编辑会话已开启，Editor 不允许嵌套会话".to_string(),
-            })?;
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.start_transaction(cx))?;
         self.selection_history
             .insert_transaction(transaction_id, undo_selections);
         Ok(transaction_id)
@@ -1125,16 +1262,15 @@ impl Editor {
 
     /// 提交编辑会话；会话内无编辑时返回 `None`（编辑失败路径）。
     fn end_transaction(&mut self, cx: &mut Context<Self>) -> Option<TransactionId> {
-        self.singleton_buffer(cx)
-            .update(cx, |buffer, _| buffer.end_transaction())
-            .ok()
-            .flatten()
+        self.multi_buffer
+            .update(cx, |buffer, cx| buffer.end_transaction(cx))
     }
 
     /// 编辑事务结果落位：选区锚点映射、redo 选区记录、display_map 同步与搜索重搜。
     ///
     /// 会话提交后的历史节点身份（与本次编辑的事件身份分离，合并进前节点时指向被合并的既有节点）；
-    /// `None` 表示空会话或历史被预算清空，此时不记录选区历史。编辑失败路径由 `change` 统一处理，这里只消费成功结果。
+    /// `None` 表示空会话或历史被预算清空，此时不记录选区历史。
+    /// 编辑失败路径由 `change` 统一处理，这里只消费成功结果。
     fn apply_edit_outcome(
         &mut self,
         transaction_id: Option<TransactionId>,
@@ -1142,9 +1278,18 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> TextResult<EditOutcome> {
         if let Some(transaction) = outcome.transaction() {
-            self.update_autoclose_regions(transaction.event());
+            if self.multi_buffer.read(cx).is_composite() {
+                let version = self.text_buffer(cx).read(cx).snapshot().version();
+                self.update_autoclose_regions_with(
+                    transaction.event().position_map(),
+                    self.selections.version(),
+                    version,
+                );
+            } else {
+                self.update_autoclose_regions(transaction.event());
+            }
             // 用本次事务的坐标映射批量推进选区端点锚点，选区自动跟随文本变化。
-            let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
+            let snapshot = self.text_buffer(cx).read(cx).snapshot();
             let new_version = snapshot.version();
             let position_map = transaction.event().position_map();
             self.selections.map_through_position_map(
@@ -1176,7 +1321,16 @@ impl Editor {
     ) -> TextResult<(EditOutcome, SelectionSet)> {
         let (outcome, after_selections) = outcome;
         if let Some(transaction) = outcome.transaction() {
-            self.update_autoclose_regions(transaction.event());
+            if self.multi_buffer.read(cx).is_composite() {
+                let version = self.text_buffer(cx).read(cx).snapshot().version();
+                self.update_autoclose_regions_with(
+                    transaction.event().position_map(),
+                    self.selections.version(),
+                    version,
+                );
+            } else {
+                self.update_autoclose_regions(transaction.event());
+            }
         }
         if let Some(transaction_id) = transaction_id
             && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
@@ -1184,7 +1338,7 @@ impl Editor {
             transaction.set_redo(after_selections.clone());
         }
         // 编辑后 display_map 尚未同步，重锚定用 Buffer 快照的当前版本。
-        let version = self.singleton_buffer(cx).read(cx).snapshot().version();
+        let version = self.text_buffer(cx).read(cx).snapshot().version();
         self.selections = EditorSelections::from_selection_set(version, &after_selections);
         self.finish_edit(cx);
         self.research_after_edit(cx);
@@ -1306,7 +1460,7 @@ impl Editor {
                                 .with_goal(None)
                             });
                         }
-                        let buffer_entity = self.singleton_buffer(cx);
+                        let buffer_entity = self.text_buffer(cx);
                         let buffer = buffer_entity.read(cx);
                         let head = buffer.byte_to_char(base)?;
                         let target = buffer.movement_boundary(head, direction, unit)?;
@@ -1383,7 +1537,7 @@ impl Editor {
                     }
                     Motion::DocumentEdge => match direction {
                         MovementDirection::Previous => ByteOffset::ZERO,
-                        MovementDirection::Next => self.singleton_buffer(cx).read(cx).len_bytes(),
+                        MovementDirection::Next => self.text_buffer(cx).read(cx).len_bytes(),
                     },
                 };
                 // 垂直移动持久保留本次使用的目标列（即使被行尾钳制）；其余移动清除 goal。
@@ -1453,7 +1607,7 @@ impl Editor {
 
     /// 重算语言层折叠范围；语法快照与 buffer 版本不一致时置空（等待语法更新后由 observe 刷新）。
     fn refresh_fold_ranges(&mut self, cx: &App) {
-        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
+        let snapshot = self.text_buffer(cx).read(cx).snapshot();
         let syntax_snapshot = self.display_map.syntax_snapshot();
         if syntax_snapshot.version() != snapshot.version() {
             self.fold_ranges = Vec::new();
@@ -1782,7 +1936,7 @@ impl Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let end = self.singleton_buffer(cx).read(cx).len_bytes();
+        let end = self.text_buffer(cx).read(cx).len_bytes();
         self.change_selections(
             SelectionSet::new(vec![Selection::new(ByteOffset::ZERO, end)]),
             cx,
@@ -1795,7 +1949,7 @@ impl Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let snapshot = self.singleton_buffer(cx).read(cx).snapshot();
+        let snapshot = self.text_buffer(cx).read(cx).snapshot();
         let expanded = self
             .resolved_selections()
             .as_slice()

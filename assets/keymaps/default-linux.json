@@ -47,7 +47,8 @@
       "alt-up": "editor::MoveLineUp",
       "alt-down": "editor::MoveLineDown",
       "alt-ctrl-[": "editor::ToggleFold",
-      "alt-ctrl-]": "editor::UnfoldAll"
+      "alt-ctrl-]": "editor::UnfoldAll",
+      "alt-enter": "editor::OpenExcerpts"
     }
   },
   {
@@ -142,7 +143,7 @@
       "ctrl-shift-e": ["dock::FocusOrHidePanel", { "panel": "project-tree" }],
       "ctrl-shift-g": ["dock::FocusOrHidePanel", { "panel": "version-control" }],
       "ctrl-shift-o": ["dock::FocusOrHidePanel", { "panel": "outline" }],
-      "ctrl-shift-f": ["dock::FocusOrHidePanel", { "panel": "project-search" }],
+      "ctrl-shift-f": "project_search::Deploy",
       "ctrl-`": ["dock::FocusOrHidePanel", { "panel": "terminal" }],
       "ctrl-shift-h": "harness::ToggleHarnessMode",
       "ctrl-s": "workspace::Save"

@@ -1,0 +1,23 @@
+[package]
+name = "zcv-search"
+version.workspace = true
+edition.workspace = true
+description = "统一搜索体验：共享搜索栏、文件内搜索协调与项目搜索视图"
+
+[lib]
+path = "src/search.rs"
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+zcv-actions.workspace = true
+zcv-editor.workspace = true
+zcv-multi-buffer.workspace = true
+zcv-project.workspace = true
+zcv-theme.workspace = true
+zcv-text.workspace = true
+zcv-ui.workspace = true
+zcv-workspace.workspace = true
+
+[lints]
+workspace = true

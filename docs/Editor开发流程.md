@@ -35,7 +35,8 @@ zcv-language::LanguageBuffer
   │
   ▼
 zcv-multi-buffer::MultiBuffer
-  │ 当前由 BufferStore 按规范化路径复用 singleton 文档实体
+  ├── singleton：BufferStore 按规范化路径复用文件文档
+  └── ordered excerpts：组合多个源文档片段并保留双向坐标映射
   ▼
 Editor Entity
   ├── EditorMode
@@ -73,6 +74,7 @@ zcv ──▶ zcv-editor ──▶ zcv-workspace
   │          ├───────▶ zcv-text
   │          ├───────▶ zcv-language ──▶ zcv-text
   │          └───────▶ zcv-theme
+  ├────▶ zcv-search ──▶ zcv-editor / zcv-project / zcv-workspace
   └──────────────────▶ zcv-language
 
 zcv-picker ──▶ zcv-ui::ErasedEditor ◀── zcv-editor
@@ -114,6 +116,16 @@ Buffer 与 Editor 必须分离。同一个 Buffer 可以被多个 Editor 共享�
 `Entity<MultiBuffer>`。`LanguageBuffer` 不越过组合文档边界；BufferStore 只保留弱引用，
 不持有选区、滚动或 Editor 生命周期状态。
 BufferStore 由项目级 `Project` Entity 持有，不注册为 App Global；`Workspace` 通过 `Entity<Project>` 打开、保存和监听文件，避免多个窗口或项目共享同一个全局缓存。
+
+项目搜索是 ordered excerpts 的第一个真实消费者。`Project` 在后台遍历本地 worktree，优先
+搜索已打开文档的当前 Snapshot，再把各文件命中的上下文范围按路径顺序装配成只读
+`MultiBuffer`。搜索能力统一位于 `zcv-search`：`buffer_search.rs` 持有文件内搜索状态机，
+`project_search.rs` 持有独立的项目搜索状态机与跨文件结果 Item，`search_bar.rs` 提供两者
+共用的 UI 和交互实现。两种搜索共享快捷键上下文和 `SearchableItem` 契约，但不共享
+可见性、查询文本或活动目标，并直接使用唯一的 `zcv_text::SearchQuery` 与
+`SearchQuery::search(&Snapshot)`；其他 crate 不重导出该查询类型。差异只在搜索目标范围；
+`ProjectSearchView` 只持有结果 Editor 和组合文档。
+结果 Editor 使用组合坐标中的真实命中范围高亮，激活结果时再由 MultiBuffer 映射回源文件字节范围。项目结果只读，因此替换 Glyph 保持可见以维持相同布局，但通过能力查询进入禁用态且不展开替换行。
 
 Buffer 不得持有 `selection` 字段，也不得通过 `selection()` / `set_selection()` 暴露全局当前选区。接受选区的编辑入口必须把 SelectionSet 作为参数，并把编辑后的 SelectionSet 作为结果返回。
 

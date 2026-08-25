@@ -3,6 +3,7 @@
 //! 对齐 Zed：Workspace 只管理工作区框架与通用命令，
 //! 面板、顶栏、状态项与项目相关订阅由宿主（binary 装配层）注入。
 
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,6 +41,11 @@ pub type OpenSettingsPathProvider = Box<dyn Fn(&mut App) -> Option<PathBuf> + Se
 
 type WorkspaceAction =
     Box<dyn Fn(gpui::Stateful<gpui::Div>, &mut Context<Workspace>) -> gpui::Stateful<gpui::Div>>;
+
+enum ItemNavigation {
+    ByteRange(Range<usize>),
+    LineColumn { line: usize, column: usize },
+}
 
 pub struct Workspace {
     pub focus: FocusHandle,
@@ -397,7 +403,7 @@ impl Workspace {
         let generation = self.file_click_generation;
 
         if focus_opened_item || provider_for(&path, cx).is_none() {
-            self.open_path_now(path, focus_opened_item, window, cx);
+            self.open_path_now(path, focus_opened_item, None, window, cx);
             return;
         }
 
@@ -408,7 +414,7 @@ impl Workspace {
             workspace
                 .update_in(cx, |workspace, window, cx| {
                     if workspace.file_click_generation == generation {
-                        workspace.open_path_now(path, false, window, cx);
+                        workspace.open_path_now(path, false, None, window, cx);
                     }
                 })
                 .ok();
@@ -416,11 +422,62 @@ impl Workspace {
         .detach();
     }
 
+    /// 打开文件并把文本 Item 定位到指定 UTF-8 字节范围。
+    pub fn open_path_at(
+        &mut self,
+        path: PathBuf,
+        range: Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.file_click_generation = self.file_click_generation.wrapping_add(1);
+        self.open_path_now(
+            path,
+            true,
+            Some(ItemNavigation::ByteRange(range)),
+            window,
+            cx,
+        );
+    }
+
+    /// 打开文件并定位到 0-indexed 逻辑行列（列按 Unicode scalar value 计数）。
+    pub fn open_path_at_line_column(
+        &mut self,
+        path: PathBuf,
+        line: usize,
+        column: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.file_click_generation = self.file_click_generation.wrapping_add(1);
+        self.open_path_now(
+            path,
+            true,
+            Some(ItemNavigation::LineColumn { line, column }),
+            window,
+            cx,
+        );
+    }
+
+    /// 打开一个已经构造完成的工作区 Item。
+    pub fn open_item(
+        &mut self,
+        item: Box<dyn ItemHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let focus = self
+            .pane
+            .update(cx, |pane, cx| pane.open_item(item, false, window, cx));
+        window.focus(&focus);
+    }
+
     /// 已完成点击判定后的实际文件打开流程：经 ItemProvider 注册表创建 Item。
     fn open_path_now(
         &mut self,
         path: PathBuf,
         focus_opened_item: bool,
+        navigation: Option<ItemNavigation>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -452,7 +509,22 @@ impl Workspace {
             workspace
                 .update_in(cx, |_workspace, window, cx| {
                     let focus = pane.update(cx, |pane, cx| {
-                        pane.open_item(item, !focus_opened_item, window, cx)
+                        let focus = pane.open_item(item, !focus_opened_item, window, cx);
+                        // `open_item` 可能复用已经打开的同路径标签。
+                        // 导航必须作用于 Pane 最终激活的 Item，而不是可能被丢弃的新建候选 Item。
+                        if let Some(navigation) = navigation
+                            && let Some(active_item) = pane.active_item()
+                        {
+                            match navigation {
+                                ItemNavigation::ByteRange(range) => {
+                                    active_item.navigate_to_byte_range(range, cx);
+                                }
+                                ItemNavigation::LineColumn { line, column } => {
+                                    active_item.navigate_to_line_column(line, column, cx);
+                                }
+                            }
+                        }
+                        focus
                     });
                     if focus_opened_item {
                         window.focus(&focus);

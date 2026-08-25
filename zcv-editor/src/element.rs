@@ -9,21 +9,21 @@ use gpui::{
     ElementId, ElementInputHandler, Entity, GlobalElementId, HitboxBehavior, InspectorElementId,
     InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine, Style, TextRun, Window,
-    fill, point, px, relative, size,
+    div, fill, point, prelude::*, px, relative, size,
 };
 use zcv_actions::ToggleFold;
 use zcv_git::DiffHunkKind;
 use zcv_language::BracketPair;
 use zcv_text::{ByteOffset, Line, LogicalColumn, SearchMatch, TextRange};
-use zcv_theme::color;
-use zcv_ui::Glyph;
+use zcv_theme::{color, space, typography};
+use zcv_ui::{Button, Glyph};
 
 use crate::SelectionSet;
 
 use super::display_map::{
-    BufferPoint, DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot, FoldRowSegment,
-    ProjectedRange, RowStyleInput, WrapRowInfo, WrapViewportRowKind, byte_for_display_column,
-    render_viewport_row,
+    BufferPoint, DisplayBlock, DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot,
+    FoldRowSegment, ProjectedRange, RowStyleInput, WrapRowInfo, WrapViewportRowKind,
+    byte_for_display_column, render_viewport_row,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
@@ -93,6 +93,7 @@ impl EditorElement {
             .on_action(cx.listener(Editor::handle_move_line_down))
             .on_action(cx.listener(Editor::handle_toggle_fold))
             .on_action(cx.listener(Editor::handle_unfold_all))
+            .on_action(cx.listener(Editor::handle_open_excerpts))
     }
 }
 
@@ -112,9 +113,20 @@ struct LayoutLine {
     is_placeholder: bool,
 }
 
+#[derive(Clone)]
+struct LayoutBlock {
+    row: DisplayRow,
+    height: usize,
+    origin: Point<Pixels>,
+    block: DisplayBlock,
+}
+
 struct EditorLayout {
     lines: Vec<LayoutLine>,
+    blocks: Vec<LayoutBlock>,
     gutter: Option<GutterLayout>,
+    /// 文件标题和 excerpt 分界块覆盖 gutter；正文仍裁剪在 text_clip_bounds 内。
+    block_clip_bounds: Bounds<Pixels>,
     text_clip_bounds: Bounds<Pixels>,
     line_height: Pixels,
     display_snapshot: DisplaySnapshot,
@@ -125,6 +137,9 @@ impl EditorLayout {
     fn translate(&mut self, delta: Point<Pixels>) {
         for line in &mut self.lines {
             line.origin += delta;
+        }
+        for block in &mut self.blocks {
+            block.origin += point(Pixels::ZERO, delta.y);
         }
         if let Some(gutter) = &mut self.gutter {
             for row in &mut gutter.rows {
@@ -270,6 +285,8 @@ pub(super) struct PrepaintState {
     gutter_hitbox: Option<gpui::Hitbox>,
     /// hunk 色带 hitbox（起点行可见时插入；点击切换折叠/展开；类型 + 展开态标志）。
     deleted_hunk_hitboxes: Arc<Vec<HunkHitbox>>,
+    /// 折叠删除 hunk 的交互三角标记（Glyph，禁止渲染层手绘交互图标）。
+    deleted_hunk_glyphs: Vec<AnyElement>,
     /// crease 折叠开关（Glyph 组件，已按 gutter 绝对坐标布局；自带点击与 tooltip）。
     crease_toggles: Vec<Option<AnyElement>>,
     /// 折叠占位符点击 hitbox（合并行占位符段；点击展开）。
@@ -279,6 +296,7 @@ pub(super) struct PrepaintState {
     /// 展开态行区间（内容区与 gutter 行背景只画这些行）。
     expanded_rows: Arc<Vec<Range<usize>>>,
     scrollbar: Option<ScrollbarLayout>,
+    block_elements: Vec<AnyElement>,
 }
 
 /// hunk 色带 hitbox：命中区域 + 点击目标范围 + 类型 + 展开态标志。
@@ -328,6 +346,188 @@ fn build_crease_toggles(
         toggles.push(Some(toggle));
     }
     toggles
+}
+
+fn build_deleted_hunk_glyphs(
+    hitboxes: &[HunkHitbox],
+    editor: &Entity<Editor>,
+    line_height: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) -> Vec<AnyElement> {
+    let mut glyphs = Vec::new();
+    for (index, (hitbox, old_range, kind, expanded)) in hitboxes.iter().enumerate() {
+        if *kind != DiffHunkKind::Deleted || *expanded {
+            continue;
+        }
+        let editor = editor.clone();
+        let old_range = old_range.clone();
+        let mut glyph = Glyph::icon(("deleted-hunk-toggle", index), "icons/triangle_right.svg")
+            .color(color::current(cx).status_deleted)
+            .label("展开删除内容")
+            .on_click(move |_event, _window, cx| {
+                cx.stop_propagation();
+                editor.update(cx, |editor, cx| {
+                    editor.toggle_deleted_hunk(old_range.clone(), cx)
+                });
+            })
+            .into_any_element();
+        let available_space = size(AvailableSpace::MinContent, AvailableSpace::MinContent);
+        let glyph_size = glyph.layout_as_root(available_space, window, cx);
+        let origin = point(
+            hitbox.bounds.left(),
+            hitbox.bounds.bottom() - glyph_size.height / 2.0 - line_height * 0.05,
+        );
+        glyph.prepaint_as_root(origin, available_space, window, cx);
+        glyphs.push(glyph);
+    }
+    glyphs
+}
+
+/// 把 BlockMap 的虚拟块布局成真实 GPUI 元素。
+/// 文件标题属于 Editor 基础设施；
+/// 搜索、diff 等宿主只通过 MultiBuffer 元数据参与。
+fn build_block_elements(
+    layout: &EditorLayout,
+    editor: &Entity<Editor>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Vec<AnyElement> {
+    let colors = *color::current(cx);
+    let available_width = layout.block_clip_bounds.size.width;
+    let mut elements = Vec::with_capacity(layout.blocks.len());
+
+    for block in &layout.blocks {
+        let height = layout.line_height * block.height as f32;
+        let mut element = match block.block.kind {
+            super::display_map::DisplayBlockKind::ExcerptBoundary => div()
+                .id(("excerpt-boundary", block.row.get()))
+                .w_full()
+                .h_full()
+                .flex()
+                .items_center()
+                .px(space::S6)
+                .child(div().w_full().h(px(1.)).bg(colors.border_variant))
+                .into_any_element(),
+            super::display_map::DisplayBlockKind::BufferHeader => {
+                let display_path = block.block.excerpt.display_path();
+                let filename = display_path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| display_path.display().to_string());
+                let parent = display_path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .map(|parent| format!(" {}/", parent.display()));
+                let open_excerpt = block.block.excerpt.clone();
+                let open_from_path = block.block.excerpt.clone();
+                let fold_path = block.block.excerpt.path().to_path_buf();
+                let folded = editor.read(cx).is_buffer_folded(&fold_path);
+                let editor_for_button = editor.clone();
+                let editor_for_path = editor.clone();
+                let editor_for_fold = editor.clone();
+
+                div()
+                    .id(("buffer-header-block", block.row.get()))
+                    .w_full()
+                    .h_full()
+                    .p(space::S2)
+                    .child(
+                        div()
+                            .id(("buffer-header", block.row.get()))
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(space::S6)
+                            .px(space::S6)
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(colors.border)
+                            .bg(colors.editor_subheader_background)
+                            .hover(|style| style.bg(colors.element_hover))
+                            .child(
+                                div()
+                                    .id(("buffer-header-path", block.row.get()))
+                                    .min_w_0()
+                                    .flex_1()
+                                    .flex()
+                                    .items_center()
+                                    .gap(space::S2)
+                                    .cursor_pointer()
+                                    .on_click(move |_event, _window, cx| {
+                                        editor_for_path.update(cx, |editor, cx| {
+                                            editor.open_excerpt(&open_from_path, false, cx)
+                                        });
+                                    })
+                                    .child(
+                                        Glyph::icon(
+                                            ("buffer-header-chevron", block.row.get()),
+                                            if folded {
+                                                "icons/chevron_right.svg"
+                                            } else {
+                                                "icons/chevron_down.svg"
+                                            },
+                                        )
+                                        .label(if folded {
+                                            "展开文件"
+                                        } else {
+                                            "折叠文件"
+                                        })
+                                        .on_click(
+                                            move |_event, _window, cx| {
+                                                cx.stop_propagation();
+                                                editor_for_fold.update(cx, |editor, cx| {
+                                                    editor.toggle_buffer_fold(fold_path.clone(), cx)
+                                                });
+                                            },
+                                        ),
+                                    )
+                                    .child(Glyph::icon(
+                                        ("buffer-header-file", block.row.get()),
+                                        "icons/file.svg",
+                                    ))
+                                    .child(
+                                        div()
+                                            .text_size(typography::editor())
+                                            .text_color(colors.text)
+                                            .whitespace_nowrap()
+                                            .child(filename),
+                                    )
+                                    .when_some(parent, |element, parent| {
+                                        element.child(
+                                            div()
+                                                .min_w_0()
+                                                .truncate()
+                                                .text_size(typography::editor())
+                                                .text_color(colors.text_muted)
+                                                .child(parent),
+                                        )
+                                    }),
+                            )
+                            .child(
+                                Button::new(("buffer-header-open", block.row.get()), "打开文件")
+                                    .on_click(move |_event, _window, cx| {
+                                        cx.stop_propagation();
+                                        editor_for_button.update(cx, |editor, cx| {
+                                            editor.open_excerpt(&open_excerpt, false, cx)
+                                        });
+                                    }),
+                            ),
+                    )
+                    .into_any_element()
+            }
+        };
+
+        let available_space = size(
+            AvailableSpace::Definite(available_width),
+            AvailableSpace::Definite(height),
+        );
+        element.layout_as_root(available_space, window, cx);
+        element.prepaint_as_root(block.origin, available_space, window, cx);
+        elements.push(element);
+    }
+    elements
 }
 
 /// 滚动轴布局：thumb 几何 + diff marker（折叠的删除块行内无标记，滚动条 marker 仍指示删除位置）。
@@ -607,6 +807,7 @@ impl Element for EditorElement {
             ime_caret_bounds =
                 ime_caret_bounds.map(|bounds| Bounds::new(bounds.origin + delta, bounds.size));
         }
+        let block_elements = build_block_elements(&layout, &self.editor, window, cx);
         let layout = Arc::new(layout);
         let (mut selections, carets) = layout_selections(&selections, &layout, line_height, cx);
         if let Some(pair) = matching_bracket_pair {
@@ -664,6 +865,13 @@ impl Element for EditorElement {
             }
             hitboxes
         });
+        let deleted_hunk_glyphs = build_deleted_hunk_glyphs(
+            &deleted_hunk_hitboxes,
+            &self.editor,
+            line_height,
+            window,
+            cx,
+        );
         // 折叠占位符点击 hitbox：合并行占位符段区域（点击展开；交互型直接调 Entity 方法）。
         let placeholder_hitboxes = {
             let mut hitboxes = Vec::new();
@@ -719,11 +927,13 @@ impl Element for EditorElement {
             hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
             gutter_hitbox,
             deleted_hunk_hitboxes,
+            deleted_hunk_glyphs,
             crease_toggles,
             placeholder_hitboxes,
             hunk_strips,
             expanded_rows,
             scrollbar,
+            block_elements,
         }
     }
 
@@ -961,25 +1171,12 @@ impl Element for EditorElement {
                     ));
                 }
             }
-            // 折叠的删除块：gutter 红色三角,行内无整行着色，点击展开。
-            // 分界线 = 锚定行底部（删除点在被删行原位置，即锚定行之后一行）。
-            for (hitbox, _, kind, expanded) in prepaint.deleted_hunk_hitboxes.iter() {
-                if *kind == DiffHunkKind::Deleted && !expanded {
-                    let bounds = hitbox.bounds;
-                    let half = strip_width * 0.8;
-                    let mut triangle = gpui::PathBuilder::fill();
-                    triangle.move_to(point(bounds.left(), bounds.bottom() - half));
-                    triangle.line_to(point(bounds.left(), bounds.bottom() + half));
-                    triangle.line_to(point(bounds.right(), bounds.bottom()));
-                    triangle.close();
-                    if let Ok(path) = triangle.build() {
-                        window.paint_path(path, colors.status_deleted);
-                    }
-                }
-            }
             // crease 折叠开关：Glyph 组件（chevron 图标 + tooltip + 点击），
             // prepaint 已按 gutter 绝对坐标布局，这里在 gutter 区域内绘制。
             window.paint_layer(gutter.bounds, |window| {
+                for glyph in &mut prepaint.deleted_hunk_glyphs {
+                    glyph.paint(window, cx);
+                }
                 for toggle in prepaint.crease_toggles.iter_mut().flatten() {
                     toggle.paint(window, cx);
                 }
@@ -996,6 +1193,18 @@ impl Element for EditorElement {
             }
         }
         let show_cursor = self.editor.read(cx).show_cursor(window, cx);
+        // 对齐 Zed 的 `overlaps_gutter` block：文件 header 与 excerpt 分隔块
+        // 使用独立的整编辑器裁剪区，并在 gutter 之后绘制以覆盖行号区域。
+        window.with_content_mask(
+            Some(ContentMask {
+                bounds: prepaint.layout.block_clip_bounds,
+            }),
+            |window| {
+                for block in &mut prepaint.block_elements {
+                    block.paint(window, cx);
+                }
+            },
+        );
         window.with_content_mask(
             Some(ContentMask {
                 bounds: prepaint.layout.text_clip_bounds,
@@ -1226,6 +1435,9 @@ fn layout_line_width(
     let Some(row) = viewport.rows().first() else {
         return Pixels::ZERO;
     };
+    if row.block().is_some() {
+        return Pixels::ZERO;
+    }
     let WrapViewportRowKind::Text {
         text, byte_range, ..
     } = row.kind();
@@ -1282,7 +1494,18 @@ fn layout_visible_lines(
     let text_style = window.text_style();
     let font_size = text_style.font_size.to_pixels(window.rem_size());
     let mut lines = Vec::with_capacity(end.saturating_sub(start));
+    let mut blocks = Vec::new();
     let mut gutter_rows = Vec::with_capacity(end.saturating_sub(start));
+    let block_left = gutter_geometry
+        .as_ref()
+        .map_or(text_clip_bounds.left(), |(bounds, _)| bounds.left());
+    let block_clip_bounds = Bounds::new(
+        point(block_left, text_clip_bounds.top()),
+        size(
+            (text_clip_bounds.right() - block_left).max(Pixels::ZERO),
+            text_clip_bounds.size.height,
+        ),
+    );
     let viewport = display_snapshot
         .slice_viewport(DisplayRow::new(start), end.saturating_sub(start))
         .ok();
@@ -1335,6 +1558,7 @@ fn layout_visible_lines(
     let mut push_line = |row: usize,
                          logical_line: Option<Line>,
                          gutter_line: Option<Line>,
+                         gutter_number: Option<usize>,
                          text: &str,
                          utf16_start: usize,
                          wrap_info: Option<WrapRowInfo>,
@@ -1362,7 +1586,9 @@ fn layout_visible_lines(
         if let (Some(logical_line), Some((gutter_bounds, dimensions))) =
             (gutter_line, gutter_geometry)
         {
-            let number = (logical_line.get() + 1).to_string();
+            let number = gutter_number
+                .unwrap_or_else(|| logical_line.get() + 1)
+                .to_string();
             let active = active_lines.contains(&logical_line);
             let colors = color::current(cx);
             // 行号按 diff 状态着色（对齐 Zed：DiffAdded → version_control_added）。
@@ -1411,6 +1637,23 @@ fn layout_visible_lines(
 
     if let Some(viewport) = viewport {
         for row in viewport.rows() {
+            if let Some(block) = row.block() {
+                blocks.push(LayoutBlock {
+                    row: row.index(),
+                    height: row.height(),
+                    origin: point(
+                        block_clip_bounds.left(),
+                        // A multi-row block is returned with its real first display row even
+                        // when the viewport starts in the middle of that block. Its origin is
+                        // then intentionally above the clip bounds, so this delta may be
+                        // negative (for example, row 0 for a viewport starting at row 1).
+                        text_bounds.top() + line_height * (row.index().get() as f32 - start as f32)
+                            - scroll_offset.y,
+                    ),
+                    block: block.clone(),
+                });
+                continue;
+            }
             match row.kind() {
                 WrapViewportRowKind::Text { .. } => {
                     // 对齐 Zed highlighted_chunks：行解构、四层快照链穿透、chunk 合成与 run 映射都在管线侧完成，这里只消费渲染结果。
@@ -1426,10 +1669,17 @@ fn layout_visible_lines(
                         base.clone(),
                         cx,
                     );
+                    let gutter_number = rendered.gutter_line.map(|line| {
+                        display_snapshot
+                            .excerpt_for_output_line(line.get())
+                            .and_then(|excerpt| excerpt.source_line_for_output_line(line.get()))
+                            .unwrap_or_else(|| line.get() + 1)
+                    });
                     push_line(
                         row.index().get(),
                         rendered.logical_line,
                         rendered.gutter_line,
+                        gutter_number,
                         &rendered.display_text,
                         rendered.utf16_start,
                         rendered.wrap_info,
@@ -1443,12 +1693,14 @@ fn layout_visible_lines(
 
     EditorLayout {
         lines,
+        blocks,
         gutter: gutter_geometry.map(|(bounds, dimensions)| GutterLayout {
             bounds,
             line_height,
             rows: gutter_rows,
             crease_width: dimensions.crease_width,
         }),
+        block_clip_bounds,
         text_clip_bounds,
         line_height,
         // 命中测试用真实 buffer 的快照（placeholder 行的映射已单独拦截）。
@@ -1686,7 +1938,8 @@ mod tests {
     use std::path::PathBuf;
     use zcv_git::DiffHunk;
     use zcv_language::{LanguageBuffer, SyntaxSnapshot};
-    use zcv_text::{Buffer, BufferConfig, ByteOffset, Line};
+    use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
+    use zcv_text::{Buffer, BufferConfig, ByteOffset, Line, TextRange};
 
     /// 行级标记的显示行区间（`hunk_rendering` 的薄包装，测试专用）。
     fn diff_hunk_rows(
@@ -1785,6 +2038,90 @@ mod tests {
                     inserted.shaped.text.as_ref(),
                     "// 展开产生的新行在重建时现查 git 状态，无需单独补齐。"
                 );
+            })
+            .expect("测试窗口应保持可用");
+    }
+
+    #[gpui::test]
+    fn multibuffer_header_can_start_above_viewport(cx: &mut TestAppContext) {
+        let text = "引擎\n";
+        let source_text = cx.new(|_| {
+            Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("应创建源 Buffer")
+        });
+        let source = cx.new({
+            let source_text = source_text.clone();
+            move |cx| LanguageBuffer::new(source_text, Some(PathBuf::from("文档/引擎.md")), cx)
+        });
+        let source = cx.new(move |cx| MultiBuffer::singleton(source, cx));
+        let combined = cx.new(MultiBuffer::empty);
+        cx.update_entity(&combined, |combined, cx| {
+            combined.set_excerpts(
+                vec![
+                    MultiBufferExcerpt::new(
+                        source,
+                        TextRange::new(ByteOffset::ZERO, ByteOffset::new(text.len()))
+                            .expect("片段范围应有效"),
+                        Vec::new(),
+                    )
+                    .with_display_path(PathBuf::from("文档/引擎.md")),
+                ],
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        let multi_snapshot = cx.read_entity(&combined, |combined, cx| combined.snapshot(cx));
+        let text_snapshot = multi_snapshot.text().clone();
+        let display_snapshot = DisplayMap::new(multi_snapshot).snapshot();
+        let window = cx.add_window(|_, _| Empty);
+        window
+            .update(cx, |_, window, cx| {
+                let dimensions = GutterDimensions {
+                    crease_width: px(8.),
+                    left_padding: px(8.),
+                    right_padding: px(8.),
+                    width: px(56.),
+                    margin: px(3.),
+                };
+                let gutter_bounds =
+                    Bounds::new(point(px(0.), px(0.)), size(dimensions.width, px(80.)));
+                // 文件标题占两行。视口从标题的第二行开始时，标题真实起点在
+                // viewport 上方一行；这是合法的负布局偏移，不能用 usize 相减。
+                let layout = layout_visible_lines(
+                    display_snapshot,
+                    None,
+                    EditorPresentation::new(&text_snapshot, None),
+                    None,
+                    VisibleLineLayoutParams {
+                        geometry: EditorGeometry {
+                            text_bounds: Bounds::new(
+                                point(px(59.), px(0.)),
+                                size(px(341.), px(80.)),
+                            ),
+                            text_clip_bounds: Bounds::new(
+                                point(px(56.), px(0.)),
+                                size(px(344.), px(80.)),
+                            ),
+                            gutter: Some((gutter_bounds, dimensions)),
+                        },
+                        active_lines: &BTreeSet::new(),
+                        foldable_lines: &BTreeSet::new(),
+                        fold_anchor_lines: &BTreeSet::new(),
+                        start_row: DisplayRow::new(1),
+                        scroll_offset: point(px(0.), px(0.)),
+                        line_height: px(20.),
+                        diff_rows: &[],
+                    },
+                    window,
+                    cx,
+                );
+
+                assert_eq!(layout.blocks.len(), 1);
+                assert_eq!(layout.blocks[0].row, DisplayRow::ZERO);
+                assert_eq!(layout.blocks[0].origin.x, px(0.));
+                assert_eq!(layout.blocks[0].origin.y, px(-20.));
+                assert_eq!(layout.block_clip_bounds.size.width, px(400.));
+                assert_eq!(layout.lines[0].shaped.text.as_ref(), "引擎");
             })
             .expect("测试窗口应保持可用");
     }

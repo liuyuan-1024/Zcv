@@ -4,6 +4,7 @@
 mod buffer_store;
 mod git_store;
 mod project_store;
+mod search;
 
 #[cfg(test)]
 #[path = "test/test_support.rs"]
@@ -16,4 +17,5 @@ pub use git_store::{
     RemoteOperationState, RepositorySnapshot, StatusEntry,
 };
 pub use project_store::{ActiveProjectRoot, Project, ProjectEvent};
+pub use search::ProjectSearchResults;
 pub use worktree::{WorktreeEntry, new_entry_destination, rename_destination, translate_path};

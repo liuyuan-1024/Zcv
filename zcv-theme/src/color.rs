@@ -81,6 +81,8 @@ pub struct ThemeColors {
     pub panel_background: Rgba,
     /// 编辑区背景。
     pub editor_background: Rgba,
+    /// 多文件编辑器文件标题等编辑器次级标题背景。
+    pub editor_subheader_background: Rgba,
     /// 编辑器活动行背景。
     pub editor_active_line_background: Rgba,
     /// 编辑器普通行号颜色。

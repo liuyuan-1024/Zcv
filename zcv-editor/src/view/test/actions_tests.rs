@@ -1,4 +1,6 @@
 use gpui::{TestAppContext, point, px, size};
+use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
+use zcv_text::TextRange;
 use zcv_text::{ByteOffset, Edit, TransactionId, TransactionMetadata};
 
 use super::common::{buffer_text, engine_buffer, test_buffer};
@@ -27,7 +29,7 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
             .transaction_mut(TransactionId::new(1))
             .expect("插入后应存在")
             .set_redo(selections);
-        editor.singleton_buffer(cx).update(cx, |buffer, cx| {
+        editor.text_buffer(cx).update(cx, |buffer, cx| {
             buffer
                 .edit(
                     [Edit::insert(ByteOffset::new(3), "d").unwrap()],
@@ -40,9 +42,9 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
 
     cx.read_entity(&second, |editor, cx| {
         assert_eq!(editor.mode, EditorMode::Full);
-        assert_eq!(editor.singleton_buffer(cx), buffer.read(cx).buffer());
+        assert_eq!(editor.text_buffer(cx), buffer.read(cx).buffer());
         assert_eq!(
-            editor.singleton_buffer(cx).read(cx).len_bytes(),
+            editor.text_buffer(cx).read(cx).len_bytes(),
             ByteOffset::new(4)
         );
         assert_eq!(editor.render_snapshot().len_bytes(), ByteOffset::new(4));
@@ -68,6 +70,62 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
             history.redo(),
             Some(&SelectionSet::caret(ByteOffset::new(1)))
         );
+    });
+}
+
+#[gpui::test]
+fn multibuffer_editor_edits_the_underlying_file(cx: &mut TestAppContext) {
+    let source = test_buffer(cx, "abc\n");
+    cx.update_entity(&source, |buffer, cx| {
+        buffer.set_file_path(std::path::PathBuf::from("src/a.rs"), cx)
+    });
+    let source_multi = cx.new({
+        let source = source.clone();
+        move |cx| MultiBuffer::singleton(source, cx)
+    });
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![MultiBufferExcerpt::new(
+                source_multi,
+                TextRange::new(ByteOffset::ZERO, ByteOffset::new(4)).unwrap(),
+                Vec::new(),
+            )],
+            cx,
+        )
+    });
+    let editor = cx.new({
+        let combined = combined.clone();
+        move |cx| Editor::for_multi_buffer(combined, cx)
+    });
+
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(ByteOffset::new(3)));
+        editor.replace_text(None, "X", cx);
+    });
+
+    assert_eq!(buffer_text(&source, cx), "abcX\n");
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(editor.text(cx), "abcX\n");
+        assert_eq!(editor.selections().primary().head(), ByteOffset::new(4));
+    });
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&source, cx), "abc\n");
+    cx.update_entity(&editor, |editor, cx| editor.redo(cx));
+    assert_eq!(buffer_text(&source, cx), "abcX\n");
+}
+
+#[gpui::test]
+fn navigate_to_line_column_uses_unicode_logical_columns(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "a你😀\nsecond");
+    let editor = cx.new(|cx| Editor::for_language_buffer(buffer, cx));
+
+    editor.update(cx, |editor, cx| {
+        assert!(editor.navigate_to_line_column(0, 2, cx));
+        assert_eq!(editor.selections().primary().head(), ByteOffset::new(4));
+        assert!(editor.navigate_to_line_column(1, 3, cx));
+        assert_eq!(editor.selections().primary().head(), ByteOffset::new(12));
+        assert!(!editor.navigate_to_line_column(99, 0, cx));
     });
 }
 #[gpui::test]
@@ -154,10 +212,10 @@ fn constructors_create_expected_modes_and_independent_scratch_buffers(cx: &mut T
         assert_eq!(editor.selections(), SelectionSet::default());
         assert_eq!(
             editor.display_map.version(),
-            editor.singleton_buffer(cx).read(cx).version()
+            editor.text_buffer(cx).read(cx).version()
         );
         let _focus = editor.focus_handle();
-        editor.singleton_buffer(cx)
+        editor.text_buffer(cx)
     });
     let auto_height_buffer = cx.read_entity(&auto_height, |editor, cx| {
         assert_eq!(
@@ -167,7 +225,7 @@ fn constructors_create_expected_modes_and_independent_scratch_buffers(cx: &mut T
                 max_lines: Some(6),
             }
         );
-        editor.singleton_buffer(cx)
+        editor.text_buffer(cx)
     });
 
     assert_ne!(single_buffer, auto_height_buffer);

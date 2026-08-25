@@ -1,7 +1,9 @@
 use gpui::{TestAppContext, point, px};
-use zcv_text::{ByteOffset, Edit, TransactionMetadata};
+use std::path::PathBuf;
+use zcv_multi_buffer::MultiBufferExcerpt;
+use zcv_text::{ByteOffset, Edit, TextRange, TransactionMetadata};
 
-use super::common::test_buffer;
+use super::common::{engine_buffer, test_buffer};
 use super::*;
 
 #[gpui::test]
@@ -336,4 +338,67 @@ fn soft_wrap_renders_continuation_rows_and_click_hits_fragment(cx: &mut TestAppC
         );
     });
     assert!(line_count > 0);
+}
+
+#[gpui::test]
+fn multibuffer_soft_wrap_uses_the_regular_display_map_pipeline(cx: &mut TestAppContext) {
+    let source = test_buffer(
+        cx,
+        "    引擎内容很长，需要在多文件编辑器中正常软换行。".repeat(30),
+    );
+    source.update(cx, |source, cx| {
+        source.set_file_path(PathBuf::from("文档/引擎.md"), cx)
+    });
+    let source_end = {
+        let buffer = engine_buffer(&source, cx);
+        cx.read_entity(&buffer, |buffer, _| buffer.len_bytes())
+    };
+    let source_multi = cx.new({
+        let source = source.clone();
+        move |cx| MultiBuffer::singleton(source, cx)
+    });
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |combined, cx| {
+        combined.set_excerpts(
+            vec![MultiBufferExcerpt::new(
+                source_multi,
+                TextRange::new(ByteOffset::ZERO, source_end).expect("完整片段范围应有效"),
+                Vec::new(),
+            )],
+            cx,
+        );
+    });
+
+    let (editor, cx) = cx.add_window_view({
+        let combined = combined.clone();
+        move |_, cx| Editor::for_multi_buffer(combined, cx)
+    });
+    cx.run_until_parked();
+    let unwrapped_rows = cx.read_entity(&editor, |editor, _| editor.display_map.line_count());
+
+    editor.update(cx, |editor, cx| {
+        editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx);
+    });
+    cx.run_until_parked();
+    let wrapped_rows = cx.read_entity(&editor, |editor, _| editor.display_map.line_count());
+
+    assert!(
+        wrapped_rows > unwrapped_rows,
+        "MultiBuffer 应经过与普通 Editor 相同的 WrapMap；{unwrapped_rows} -> {wrapped_rows}"
+    );
+
+    editor.update(cx, |editor, cx| {
+        editor.toggle_buffer_fold(PathBuf::from("文档/引擎.md"), cx)
+    });
+    let folded_rows = cx.read_entity(&editor, |editor, _| editor.display_map.line_count());
+    assert_eq!(folded_rows, 2, "整文件折叠后只保留两行高的 BufferHeader");
+
+    editor.update(cx, |editor, cx| {
+        editor.toggle_buffer_fold(PathBuf::from("文档/引擎.md"), cx)
+    });
+    assert_eq!(
+        cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+        wrapped_rows,
+        "再次点击 header chevron 应完整恢复 excerpts"
+    );
 }

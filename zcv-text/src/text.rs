@@ -32,7 +32,10 @@ pub use errors::{
 };
 pub use movement::{MovementDirection, MovementUnit};
 pub use position_map::{Affinity, Bias, MappingResult, PositionMap, Stickiness};
-pub use search::{RegexSearchOptions, RegexSearchResult, SearchMatch, SearchOptions, SearchResult};
+pub use search::{
+    RegexSearchOptions, RegexSearchResult, SearchMatch, SearchOptions, SearchQuery,
+    SearchQueryResult, SearchResult,
+};
 pub use slicing::{LineContent, LineSlice, TextSlice};
 pub use snapshot::Snapshot;
 pub use text_changes::{PatchEdit, TextChangeBatch, TextPatch, TextSubscription};

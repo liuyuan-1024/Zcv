@@ -137,6 +137,9 @@ fn display_row_is_inserted(snapshot: &DisplaySnapshot, row: usize) -> bool {
         .slice_viewport(DisplayRow::new(row), 1)
         .is_ok_and(|viewport| {
             viewport.rows().first().is_some_and(|row| {
+                if row.block().is_some() {
+                    return false;
+                }
                 matches!(
                     row.kind(),
                     WrapViewportRowKind::Text {

@@ -114,6 +114,7 @@ fn parse_colors(colors: &toml::Table) -> Option<ThemeColors> {
         toolbar_background: parse("toolbar.background")?,
         panel_background: parse("panel.background")?,
         editor_background: parse("editor.background")?,
+        editor_subheader_background: parse("editor.subheader.background")?,
         editor_active_line_background: parse("editor.active_line.background")?,
         editor_line_number: parse("editor.line_number")?,
         editor_active_line_number: parse("editor.active_line_number")?,
@@ -264,6 +265,7 @@ mod tests {
         assert_eq!(colors.status_bar_background, gpui::rgba(0x3b414dff));
         assert_eq!(colors.panel_background, gpui::rgba(0x2f343eff));
         assert_eq!(colors.editor_background, gpui::rgba(0x282c33ff));
+        assert_eq!(colors.editor_subheader_background, gpui::rgba(0x2f343eff));
         assert_eq!(colors.text, gpui::rgba(0xdce0e5ff));
         assert_eq!(colors.editor_selection_background, gpui::rgba(0x74ade81a));
         assert_eq!(
@@ -283,6 +285,7 @@ mod tests {
         assert_eq!(colors.background, gpui::rgba(0xdcdcddff));
         assert_eq!(colors.status_bar_background, gpui::rgba(0xdcdcddff));
         assert_eq!(colors.editor_background, gpui::rgba(0xfafafaff));
+        assert_eq!(colors.editor_subheader_background, gpui::rgba(0xebebecff));
         assert_eq!(colors.text, gpui::rgba(0x242529ff));
         assert_eq!(colors.editor_selection_background, gpui::rgba(0x5c78e225));
         assert_eq!(colors.ghost_element_hover, gpui::rgba(0xc9c9caff));
@@ -327,6 +330,7 @@ mod tests {
             "toolbar.background" = "#111111ff"
             "panel.background" = "#222222ff"
             "editor.background" = "#333333ff"
+            "editor.subheader.background" = "#292929ff"
             "editor.active_line.background" = "#33333380"
             "editor.line_number" = "#888888ff"
             "editor.active_line_number" = "#666666ff"

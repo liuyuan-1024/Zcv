@@ -72,6 +72,7 @@ actions!(
         Outdent,
         ToggleFold,
         UnfoldAll,
+        OpenExcerpts,
         IncreaseFontSize,
         DecreaseFontSize,
         ResetFontSize,
@@ -138,6 +139,8 @@ actions!(
 actions!(harness, [ToggleHarnessMode]);
 
 actions!(branch_picker, [SelectGitBranch]);
+
+actions!(project_search, [Deploy]);
 
 actions!(
     project_picker,

@@ -11,13 +11,12 @@ use gpui::{
     AnyElement, App, Context, Entity, EntityId, EventEmitter, FocusHandle, Render, ScrollHandle,
     Window, div, prelude::*, px,
 };
-use zcv_actions::{CloseTab, DeploySearch, NextTab, PrevTab, TogglePreview};
+use zcv_actions::{CloseTab, NextTab, PrevTab, TogglePreview};
 use zcv_theme::{FileIcons, color};
 use zcv_ui::{Glyph, SvgIcon, Tab};
 
 use crate::layout_state::SerializedPane;
 use crate::preview::{PreviewDocument, provider_for};
-use crate::search_bar::SearchBar;
 use crate::tab_bar::{TabBar, TabBarTrailing};
 use crate::toolbar::Toolbar;
 use crate::{ItemEvent, ItemHandle};
@@ -91,7 +90,6 @@ pub struct Pane {
     /// 当前唯一的临时标签；固定打开或发生编辑时提升为固定标签。
     transient_item_id: Option<EntityId>,
     toolbar: Entity<Toolbar>,
-    search_bar: Entity<SearchBar>,
     scroll_handle: ScrollHandle,
     /// 面板注入的标签栏右侧插槽构建器；渲染时原样转发给 TabBar（插槽本体在 TabBar 组件内）。
     tab_bar_trailing: Option<TabBarTrailing>,
@@ -99,18 +97,12 @@ pub struct Pane {
 
 impl Pane {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let search_bar = cx.new(SearchBar::new);
-        let toolbar = cx.new(|_| {
-            let mut toolbar = Toolbar::new();
-            toolbar.set_search_bar(search_bar.clone());
-            toolbar
-        });
+        let toolbar = cx.new(|_| Toolbar::new());
         Self {
             focus: cx.focus_handle(),
             tabs: Vec::new(),
             active: None,
             transient_item_id: None,
-            search_bar,
             toolbar,
             scroll_handle: ScrollHandle::new(),
             tab_bar_trailing: None,
@@ -498,9 +490,6 @@ impl Pane {
         self.toolbar.update(cx, |toolbar, cx| {
             toolbar.set_active_pane_item(active_item, window, cx);
         });
-        self.search_bar.update(cx, |search_bar, cx| {
-            search_bar.set_active_item(active_item, window, cx);
-        });
     }
 }
 
@@ -578,17 +567,6 @@ impl Pane {
         window.refresh();
     }
 
-    fn handle_deploy_search(
-        &mut self,
-        _: &DeploySearch,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.search_bar.update(cx, |search_bar, cx| {
-            search_bar.deploy(window, cx);
-        });
-    }
-
     fn handle_toggle_preview(
         &mut self,
         _: &TogglePreview,
@@ -623,7 +601,6 @@ impl Render for Pane {
             .on_action(cx.listener(Self::handle_next_tab))
             .on_action(cx.listener(Self::handle_prev_tab))
             .on_action(cx.listener(Self::handle_toggle_preview))
-            .on_action(cx.listener(Self::handle_deploy_search))
             .child(render_tab_bar(
                 &self.tabs,
                 active_item_id,

@@ -18,7 +18,7 @@ use crate::tree_sitter_utils::{
 /// `parsed_version` 表示 Tree 真正完成解析的版本；
 /// `interpolated_version` 表示旧树已经通过 `InputEdit` 推进到的文本版本。
 /// 两者分离后，前台可以立即使用坐标正确的旧树，真正的增量解析则交给后台完成。
-pub struct SyntaxMap {
+pub(crate) struct SyntaxMap {
     language: Option<Language>,
     tree: Option<tree_sitter::Tree>,
     injections: Vec<SyntaxLayer>,
@@ -66,7 +66,7 @@ impl SyntaxMap {
         self.language.as_ref()
     }
 
-    pub fn new(snapshot: &Snapshot) -> Self {
+    pub(crate) fn new(snapshot: &Snapshot) -> Self {
         Self {
             language: None,
             tree: None,
@@ -78,7 +78,7 @@ impl SyntaxMap {
         }
     }
 
-    pub fn set_language_for_file(&mut self, path: &Path, snapshot: &Snapshot) -> bool {
+    pub(crate) fn set_language_for_file(&mut self, path: &Path, snapshot: &Snapshot) -> bool {
         let first_line = snapshot
             .slice_line(zcv_text::Line::ZERO)
             .ok()
@@ -86,7 +86,7 @@ impl SyntaxMap {
         self.set_language(language_for_file(path, first_line.as_deref()), snapshot)
     }
 
-    pub fn set_language(&mut self, language: Option<Language>, snapshot: &Snapshot) -> bool {
+    pub(crate) fn set_language(&mut self, language: Option<Language>, snapshot: &Snapshot) -> bool {
         let unchanged =
             self.language.as_ref().map(Language::name) == language.as_ref().map(Language::name);
         if unchanged {
@@ -109,7 +109,7 @@ impl SyntaxMap {
     }
 
     /// 只把旧树推进到新坐标，不在调用线程执行解析。
-    pub fn interpolate(
+    pub(crate) fn interpolate(
         &mut self,
         old_snapshot: &Snapshot,
         new_snapshot: &Snapshot,
@@ -159,7 +159,7 @@ impl SyntaxMap {
         self.interpolated_version = new_snapshot.version();
     }
 
-    pub fn snapshot(&self) -> SyntaxSnapshot {
+    pub(crate) fn snapshot(&self) -> SyntaxSnapshot {
         SyntaxSnapshot {
             language: self.language.clone(),
             tree: self.tree.clone(),
@@ -170,7 +170,7 @@ impl SyntaxMap {
         }
     }
 
-    pub fn did_parse(&mut self, mut parsed: SyntaxSnapshot) -> bool {
+    pub(crate) fn did_parse(&mut self, mut parsed: SyntaxSnapshot) -> bool {
         if parsed.version != self.interpolated_version
             || parsed.language.as_ref().map(Language::name)
                 != self.language.as_ref().map(Language::name)

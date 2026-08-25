@@ -47,11 +47,11 @@ const TAB_HOVER_GROUP: &str = "pane.tab";
 /// 仅支持同 Pane 内拖拽（drop 目标绑定在当前 Pane 的标签容器上）。
 /// `pane` 引用只用于幽灵视图读取标签数据，不参与 drop 的跨 Pane 判断（跨 Pane 拖拽暂不支持）。
 #[derive(Clone)]
-pub struct DraggedTab {
-    pub pane: Entity<Pane>,
-    pub item_id: EntityId,
-    pub ix: usize,
-    pub is_active: bool,
+struct DraggedTab {
+    pane: Entity<Pane>,
+    item_id: EntityId,
+    ix: usize,
+    is_active: bool,
 }
 
 impl Render for DraggedTab {
@@ -118,7 +118,7 @@ impl Pane {
     }
 
     /// 序列化当前标签快照：文件型 item 记录路径与激活位置（终端等无路径 item 不持久化）。
-    pub fn serialized(&self, cx: &App) -> SerializedPane {
+    pub(crate) fn serialized(&self, cx: &App) -> SerializedPane {
         SerializedPane {
             items: self
                 .tabs
@@ -506,7 +506,7 @@ impl Pane {
     }
 
     /// 处理标签拖拽放置（drop 目标在本 Pane 内，天然同 Pane）。
-    pub fn handle_tab_drop(
+    fn handle_tab_drop(
         &mut self,
         dragged: &DraggedTab,
         target_ix: usize,
@@ -939,7 +939,7 @@ mod tests {
     use zcv_text::{Buffer, BufferConfig};
 
     use super::*;
-    use crate::{Item, PreviewItem, PreviewItemHandle, PreviewProvider};
+    use crate::{Item, PreviewItem, PreviewItemHandle, PreviewProvider, register};
 
     /// 辅助视图类型，仅用于测试中创建窗口。
     struct TestView;
@@ -1166,7 +1166,7 @@ mod tests {
     }
 
     fn init_previews(cx: &mut TestAppContext) {
-        cx.update(|cx| crate::register(FakePreviewProvider, cx));
+        cx.update(|cx| register(FakePreviewProvider, cx));
     }
 
     /// 断言辅助：当前活动标签是否预览视图。

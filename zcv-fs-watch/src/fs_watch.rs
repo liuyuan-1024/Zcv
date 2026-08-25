@@ -4,4 +4,4 @@
 
 mod fs_watcher;
 
-pub use fs_watcher::{FsWatcher, PathEvent, PathEventKind, Watcher};
+pub use fs_watcher::{FsEventStream, FsWatcher, PathEvent, PathEventKind, Watcher};

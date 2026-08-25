@@ -17,9 +17,9 @@ use zcv_text::{ByteOffset, CoordinateError, Line, LogicalColumn, Position, Snaps
 
 use super::display_width::DisplayColumn;
 use super::error::DisplayMapResult;
-use super::fold_map::{FoldBias, StreamProjectedKind};
 use super::fold_map::{
-    FoldEdit, LogicalPoint, LogicalRange, ProjectedLineIndex, ProjectedPoint, ProjectedRange,
+    FoldBias, FoldEdit, FoldRowSegment, FoldRowSegmentKind, LogicalPoint, LogicalProjection,
+    LogicalRange, ProjectedLineIndex, ProjectedPoint, ProjectedRange, StreamProjectedKind,
 };
 use super::line_stream::StreamLineSource;
 use super::tab_map::{TabSnapshot, advance_display_column, byte_for_display_column, line_content};
@@ -147,16 +147,16 @@ pub(super) enum WrapFragmentKind {
 
 /// 视口内单条显示行。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WrapViewportRow<'a> {
+pub(super) struct WrapViewportRow<'a> {
     kind: WrapViewportRowKind<'a>,
 }
 
 impl<'a> WrapViewportRow<'a> {
-    pub fn new(kind: WrapViewportRowKind<'a>) -> Self {
+    pub(super) fn new(kind: WrapViewportRowKind<'a>) -> Self {
         Self { kind }
     }
 
-    pub fn kind(&self) -> &WrapViewportRowKind<'a> {
+    pub(super) fn kind(&self) -> &WrapViewportRowKind<'a> {
         &self.kind
     }
 }
@@ -170,7 +170,7 @@ impl<'a> WrapViewportRow<'a> {
 /// 该段起始的逻辑字符列用于命中测试与选区列换算。
 /// 折叠合并行（anchor 文本 + 占位符 + 闭合尾段）携带段表，渲染端按段合成高亮与命中。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WrapViewportRowKind<'a> {
+pub(crate) enum WrapViewportRowKind<'a> {
     Text {
         source: StreamLineSource,
         text: std::borrow::Cow<'a, str>,
@@ -179,18 +179,18 @@ pub enum WrapViewportRowKind<'a> {
         fragment_index: usize,
         indent: usize,
         column_base: usize,
-        segments: Option<Vec<super::fold_map::FoldRowSegment>>,
+        segments: Option<Vec<FoldRowSegment>>,
     },
 }
 
 /// 一次显示行视口读取结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WrapViewportSlice<'a> {
+pub(super) struct WrapViewportSlice<'a> {
     rows: Vec<WrapViewportRow<'a>>,
 }
 
 impl<'a> WrapViewportSlice<'a> {
-    pub fn rows(&self) -> &[WrapViewportRow<'a>] {
+    pub(super) fn rows(&self) -> &[WrapViewportRow<'a>] {
         &self.rows
     }
 }
@@ -304,7 +304,7 @@ impl WrapSnapshot {
     /// 尾段映射到 close 行的真实字节。
     fn merged_byte_to_offset(
         &self,
-        segments: &[super::fold_map::FoldRowSegment],
+        segments: &[FoldRowSegment],
         merged_byte: usize,
     ) -> DisplayMapResult<ByteOffset> {
         let inlay = self.tab_snapshot.fold_snapshot().inlay_snapshot();
@@ -312,7 +312,7 @@ impl WrapSnapshot {
         let placeholder = &segments[1];
         let tail = &segments[2];
         if merged_byte < anchor.merged_range.end {
-            let super::fold_map::FoldRowSegmentKind::Text {
+            let FoldRowSegmentKind::Text {
                 stream_line,
                 global_start,
                 ..
@@ -325,7 +325,7 @@ impl WrapSnapshot {
         }
         if merged_byte < placeholder.merged_range.end {
             // 占位符列吸附折叠起点：右箭头一步跨过折叠，左箭头从尾段可回到 anchor 行尾。
-            let super::fold_map::FoldRowSegmentKind::Text {
+            let FoldRowSegmentKind::Text {
                 stream_line,
                 global_start,
                 ..
@@ -336,7 +336,7 @@ impl WrapSnapshot {
             let anchor_end = inlay.to_original_offset(*stream_line, anchor.merged_range.end);
             return Ok(ByteOffset::new(*global_start + anchor_end));
         }
-        let super::fold_map::FoldRowSegmentKind::Text {
+        let FoldRowSegmentKind::Text {
             stream_line,
             projected_range,
             global_start,
@@ -889,8 +889,8 @@ impl WrapMap {
         let mut rows: Vec<usize> = changed_lines
             .iter()
             .filter_map(|line| match fold.logical_to_projected(*line).ok()? {
-                super::fold_map::LogicalProjection::Visible(row) => Some(row.get()),
-                super::fold_map::LogicalProjection::Hidden => None,
+                LogicalProjection::Visible(row) => Some(row.get()),
+                LogicalProjection::Hidden => None,
             })
             .collect();
         rows.sort_unstable();

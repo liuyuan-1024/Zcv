@@ -15,6 +15,7 @@ use gpui::{
 use zcv_editor::{StyledSpan, chunks_to_runs, render_plain_line};
 use zcv_theme::{color, typography};
 
+use crate::mappings::mouse::{grid_point, grid_point_and_side};
 use crate::{Cell, Content, CursorShape, IndexedCell, TerminalBounds, palette};
 
 /// 同一行的渲染数据：文本段、起点与起始网格列。
@@ -393,7 +394,7 @@ fn register_mouse_listeners(
         let delta = event.delta.pixel_delta(line_height);
         let scroll_lines = (f32::from(delta.y) / f32::from(line_height)).trunc() as i32;
         // 慢滚（单事件增量小于行高）不提前丢弃：像素累积在滚动状态机内跨事件进行。
-        let point = crate::mappings::mouse::grid_point(
+        let point = grid_point(
             event.position,
             origin,
             cell_width,
@@ -416,7 +417,7 @@ fn register_mouse_listeners(
         // 点击聚焦终端：光标显隐与键盘输入都绑定焦点。
         let focus = down_view.read(cx).focus_handle();
         window.focus(&focus);
-        let (point, side) = crate::mappings::mouse::grid_point_and_side(
+        let (point, side) = grid_point_and_side(
             event.position,
             origin,
             cell_width,
@@ -439,7 +440,7 @@ fn register_mouse_listeners(
         {
             return;
         }
-        let (point, side) = crate::mappings::mouse::grid_point_and_side(
+        let (point, side) = grid_point_and_side(
             event.position,
             origin,
             cell_width,
@@ -465,7 +466,7 @@ fn register_mouse_listeners(
         if phase != gpui::DispatchPhase::Bubble || !up_hitbox.is_hovered(window) {
             return;
         }
-        let point = crate::mappings::mouse::grid_point(
+        let point = grid_point(
             event.position,
             origin,
             cell_width,

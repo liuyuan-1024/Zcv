@@ -188,7 +188,7 @@ fn classify_utf8(bytes: &[u8]) -> ValidPrefix {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::BufferConfig;
+    use crate::{BufferConfig, EncodingConfig, TextError};
 
     fn decode(bytes: &[u8]) -> Rope {
         decode_stream(bytes, &BufferConfig::default()).expect("decode")
@@ -206,7 +206,6 @@ mod tests {
 
     #[test]
     fn bom_preserved_when_policy_says_so() {
-        use crate::EncodingConfig;
         let cfg = BufferConfig {
             encoding: EncodingConfig::new(BomPolicy::Preserve, InvalidUtf8Policy::Reject),
             ..BufferConfig::default()
@@ -220,13 +219,12 @@ mod tests {
         let err = decode_stream(&b"abc\xFFdef"[..], &BufferConfig::default()).unwrap_err();
         assert!(matches!(
             err,
-            StreamDecodeError::Text(crate::TextError::Storage(StorageError::InvalidUtf8 { .. }))
+            StreamDecodeError::Text(TextError::Storage(StorageError::InvalidUtf8 { .. }))
         ));
     }
 
     #[test]
     fn invalid_utf8_replaced_when_policy_says_so() {
-        use crate::EncodingConfig;
         let cfg = BufferConfig {
             encoding: EncodingConfig::new(BomPolicy::Strip, InvalidUtf8Policy::Replace),
             ..BufferConfig::default()

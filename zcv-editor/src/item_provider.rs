@@ -11,7 +11,7 @@ use zcv_workspace::{ItemHandle, ItemProvider};
 use crate::Editor;
 
 /// 任何有扩展名的普通文件都交给编辑器打开（文本兜底）。
-pub struct TextFileProvider;
+pub(crate) struct TextFileProvider;
 
 impl ItemProvider for TextFileProvider {
     fn supports(&self, path: &Path, _cx: &App) -> bool {
@@ -34,6 +34,6 @@ impl ItemProvider for TextFileProvider {
 }
 
 /// 注册文本文件 Provider；可重复调用（按具体 Provider 类型去重）。
-pub fn init(cx: &mut App) {
+pub(crate) fn init(cx: &mut App) {
     zcv_workspace::register_item_provider(TextFileProvider, cx);
 }

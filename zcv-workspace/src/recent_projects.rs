@@ -10,13 +10,13 @@ use zcv_settings::config_dir;
 // ═══ 数据 ════════════════════════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProjectEntry {
+pub(crate) struct ProjectEntry {
     pub path: String,
 }
 
 impl ProjectEntry {
     /// 显示名：从规范化的绝对路径取末段。
-    pub fn label(&self) -> String {
+    pub(crate) fn label(&self) -> String {
         Path::new(&self.path)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -38,7 +38,7 @@ fn recent_path() -> PathBuf {
 // ═══ 读写 ════════════════════════════════════════════════════════
 
 /// 从磁盘加载最近项目列表。
-pub fn load_recent_projects() -> Vec<ProjectEntry> {
+pub(crate) fn load_recent_projects() -> Vec<ProjectEntry> {
     let path = recent_path();
     if !path.exists() {
         return Vec::new();
@@ -78,7 +78,7 @@ fn canonical_project_path(path: &Path) -> Option<PathBuf> {
 }
 
 /// 保存最近项目列表到磁盘。
-pub fn save_recent_projects(projects: &[ProjectEntry]) {
+pub(crate) fn save_recent_projects(projects: &[ProjectEntry]) {
     let dir = config_dir();
     let _ = std::fs::create_dir_all(dir);
     let data = RecentProjects {
@@ -90,7 +90,7 @@ pub fn save_recent_projects(projects: &[ProjectEntry]) {
 }
 
 /// 从最近项目列表移除一条路径（幂等，不存在时无副作用）。
-pub fn remove_from_recent(path: &str) {
+pub(crate) fn remove_from_recent(path: &str) {
     let mut projects = load_recent_projects();
     let before = projects.len();
     projects.retain(|p| p.path != path);

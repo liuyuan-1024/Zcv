@@ -5,7 +5,7 @@ use std::sync::LazyLock;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
-pub struct IconTheme {
+pub(crate) struct IconTheme {
     #[serde(default)]
     file_stems: BTreeMap<String, String>,
     #[serde(default)]
@@ -29,22 +29,22 @@ struct DirectoryIcons {
 }
 
 impl IconTheme {
-    pub fn file_type_for(&self, key: &str) -> Option<&str> {
+    pub(crate) fn file_type_for(&self, key: &str) -> Option<&str> {
         self.file_stems
             .get(key)
             .or_else(|| self.file_suffixes.get(key))
             .map(String::as_str)
     }
 
-    pub fn icon_for_type(&self, typ: &str) -> Option<&str> {
+    pub(crate) fn icon_for_type(&self, typ: &str) -> Option<&str> {
         self.file_icons.get(typ).map(|icon| icon.path.as_str())
     }
 
-    pub fn folder_icon(&self, expanded: bool) -> Option<&str> {
+    pub(crate) fn folder_icon(&self, expanded: bool) -> Option<&str> {
         directory_icon(&self.directory_icons, expanded)
     }
 
-    pub fn named_folder_icon(&self, name: &str, expanded: bool) -> Option<&str> {
+    pub(crate) fn named_folder_icon(&self, name: &str, expanded: bool) -> Option<&str> {
         self.named_directory_icons
             .get(name)
             .and_then(|icons| directory_icon(icons, expanded))
@@ -119,7 +119,7 @@ static DEFAULT_ICON_THEME: LazyLock<IconTheme> = LazyLock::new(|| {
     serde_json::from_str(&source).expect("内置默认图标主题应合法")
 });
 
-pub fn default_icon_theme() -> &'static IconTheme {
+pub(crate) fn default_icon_theme() -> &'static IconTheme {
     &DEFAULT_ICON_THEME
 }
 

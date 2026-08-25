@@ -24,7 +24,7 @@ pub struct WorktreeEntry {
 }
 
 /// 项目目录快照层：持有根路径与扫描排除规则，提供静态目录查询。
-pub struct Worktree {
+pub(crate) struct Worktree {
     root: PathBuf,
     filter: TreeFilter,
 }
@@ -36,7 +36,7 @@ pub(crate) struct WorktreeSearchPlan {
 }
 
 impl Worktree {
-    pub fn new(root: PathBuf) -> Self {
+    pub(crate) fn new(root: PathBuf) -> Self {
         Self {
             root,
             filter: TreeFilter::new(&[]),
@@ -44,19 +44,19 @@ impl Worktree {
     }
 
     /// 更换项目根目录（展开与选中状态由 UI 层重置，本层只换根）。
-    pub fn set_root(&mut self, root: PathBuf) {
+    pub(crate) fn set_root(&mut self, root: PathBuf) {
         self.root = root;
     }
 
     /// 更新扫描排除规则（设置变化时由 Project 调用）。
-    pub fn set_exclusions(&mut self, exclusions: &[String]) {
+    pub(crate) fn set_exclusions(&mut self, exclusions: &[String]) {
         self.filter = TreeFilter::new(exclusions);
     }
 
     /// 读取 `dir` 的直接子项：目录优先、名称升序，扫描排除名单命中即过滤。
     ///
     /// 只返回静态条目；git 状态由 Project 查询后填充，展开与深度由 UI 层决定。
-    pub fn children(&self, dir: &Path) -> Vec<WorktreeEntry> {
+    pub(crate) fn children(&self, dir: &Path) -> Vec<WorktreeEntry> {
         let mut entries: Vec<_> = match std::fs::read_dir(dir) {
             Ok(rd) => rd.filter_map(|e| e.ok()).map(|e| e.path()).collect(),
             Err(_) => return Vec::new(),
@@ -142,7 +142,7 @@ impl TreeFilter {
 /// 在 `path` 自身或任一祖先目录中向上查找 `.git` 目录，命中则打开仓库。
 ///
 /// 只认 `.git` 目录：worktree/子模块的 `.git` 是文件（`gitdir:` 指针），v1 不支持这类布局，向上继续查找外层普通仓库。
-pub fn discover_git_repository(path: &Path) -> anyhow::Result<Option<RealGitRepository>> {
+pub(crate) fn discover_git_repository(path: &Path) -> anyhow::Result<Option<RealGitRepository>> {
     for dir in path.ancestors() {
         let dot_git = dir.join(DOT_GIT);
         if dot_git.is_dir() {
@@ -156,7 +156,7 @@ pub fn discover_git_repository(path: &Path) -> anyhow::Result<Option<RealGitRepo
 ///
 /// 找到仓库后跳过其 `.git` 子树（objects/refs 等）不深入；
 /// 跳过常见重型依赖目录，避免 node_modules、target 这类目录拖慢遍历。
-pub fn find_git_repositories(root: &Path) -> anyhow::Result<Vec<RealGitRepository>> {
+pub(crate) fn find_git_repositories(root: &Path) -> anyhow::Result<Vec<RealGitRepository>> {
     fn visit(dir: &Path, repositories: &mut Vec<RealGitRepository>) -> anyhow::Result<()> {
         let dot_git = dir.join(DOT_GIT);
         if dot_git.is_dir() {
@@ -187,7 +187,7 @@ pub fn find_git_repositories(root: &Path) -> anyhow::Result<Vec<RealGitRepositor
 ///
 /// 外层仓库必须前置：root 在外层仓库内时 find 只返回嵌套仓库，不补上祖先会导致 root 直下文件匹配不到任何仓库（状态/hunks 全部丢失）。
 /// 去重依据 working_directory：两条发现路径都经 `RealGitRepository::open` 的 canonicalize，比较天然一致。
-pub fn discover_repositories(root: &Path) -> anyhow::Result<Vec<RealGitRepository>> {
+pub(crate) fn discover_repositories(root: &Path) -> anyhow::Result<Vec<RealGitRepository>> {
     let mut repositories = find_git_repositories(root)?;
     let known: HashSet<&Path> = repositories
         .iter()

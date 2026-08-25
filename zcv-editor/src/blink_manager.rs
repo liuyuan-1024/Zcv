@@ -11,7 +11,7 @@ use gpui::Context;
 /// 光标闪烁间隔。
 const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
 
-pub struct BlinkManager {
+pub(crate) struct BlinkManager {
     blink_interval: Duration,
     blink_epoch: usize,
     blinking_paused: bool,
@@ -26,7 +26,7 @@ impl Default for BlinkManager {
 }
 
 impl BlinkManager {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             blink_interval: CURSOR_BLINK_INTERVAL,
             blink_epoch: 0,
@@ -42,7 +42,7 @@ impl BlinkManager {
     }
 
     /// 输入时暂停闪烁：立即显示光标，500ms 后恢复闪烁。
-    pub fn pause_blinking(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn pause_blinking(&mut self, cx: &mut Context<Self>) {
         self.show_cursor(cx);
 
         let epoch = self.next_blink_epoch();
@@ -78,7 +78,7 @@ impl BlinkManager {
     }
 
     /// 确保光标可见。
-    pub fn show_cursor(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn show_cursor(&mut self, cx: &mut Context<Self>) {
         if !self.visible {
             self.visible = true;
             cx.notify();
@@ -86,7 +86,7 @@ impl BlinkManager {
     }
 
     /// 启用闪烁（编辑器获得焦点时调用）。
-    pub fn enable(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn enable(&mut self, cx: &mut Context<Self>) {
         if self.enabled {
             return;
         }
@@ -98,7 +98,7 @@ impl BlinkManager {
     }
 
     /// 禁用闪烁（编辑器失去焦点时调用）。
-    pub fn disable(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn disable(&mut self, cx: &mut Context<Self>) {
         let was_visible = self.visible;
         self.visible = false;
         self.enabled = false;
@@ -108,7 +108,7 @@ impl BlinkManager {
     }
 
     /// 光标当前应绘制。
-    pub fn visible(&self) -> bool {
+    pub(crate) fn visible(&self) -> bool {
         self.visible
     }
 

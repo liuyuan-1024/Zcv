@@ -9,7 +9,7 @@ use gpui::{
 };
 
 use crate::{
-    Event, Modes, Terminal, TerminalSettings,
+    Event, Modes, Point, SelectionType, Terminal, TerminalSettings,
     element::TerminalElement,
     mappings::{keys, mouse},
 };
@@ -22,7 +22,7 @@ pub struct TerminalView {
     focus: FocusHandle,
     pub(crate) focused: bool,
     /// 进行中的拖拽选择：起点与选择类型。
-    dragging: Option<(crate::Point, crate::SelectionType)>,
+    dragging: Option<(Point, SelectionType)>,
     /// 输入法合成中的 marked 文本。
     ime_marked_text: Option<String>,
     /// 光标格的像素 bounds（元素相对坐标），IME 候选窗定位用。
@@ -184,9 +184,9 @@ impl TerminalView {
             return;
         }
         let ty = match event.click_count {
-            2 => crate::SelectionType::Semantic,
-            3 => crate::SelectionType::Lines,
-            _ => crate::SelectionType::Simple,
+            2 => SelectionType::Semantic,
+            3 => SelectionType::Lines,
+            _ => SelectionType::Simple,
         };
         self.dragging = Some((point, ty));
         self.terminal.update(cx, |terminal, cx| {

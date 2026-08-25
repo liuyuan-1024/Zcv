@@ -5,6 +5,7 @@ use zcv_text::{ByteOffset, Edit, TextRange, TransactionMetadata};
 
 use super::common::{engine_buffer, test_buffer};
 use super::*;
+use crate::display_map::{ProjectedLineIndex, ProjectedPoint, WrapViewportRowKind};
 
 #[gpui::test]
 fn deleted_hunk_expands_and_collapses_inserted_lines(cx: &mut TestAppContext) {
@@ -167,7 +168,7 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
     let viewport = snapshot
         .slice_viewport(DisplayRow::ZERO, 1)
         .expect("视口应可读取");
-    let crate::display_map::WrapViewportRowKind::Text { text, .. } = viewport.rows()[0].kind();
+    let WrapViewportRowKind::Text { text, .. } = viewport.rows()[0].kind();
     assert_eq!(text.as_ref(), "fn main() {…}\n");
     // 真实 `}` 范围投影到合并行占位符之后的列（anchor 11 字符 + 占位符 1 列 = 12）。
     let projected = snapshot
@@ -182,17 +183,11 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
     assert_eq!(projected.len(), 1);
     assert_eq!(
         projected[0].start(),
-        super::super::display_map::ProjectedPoint::new(
-            super::super::display_map::ProjectedLineIndex::new(0),
-            zcv_text::LogicalColumn::new(12)
-        )
+        ProjectedPoint::new(ProjectedLineIndex::new(0), zcv_text::LogicalColumn::new(12))
     );
     assert_eq!(
         projected[0].end(),
-        super::super::display_map::ProjectedPoint::new(
-            super::super::display_map::ProjectedLineIndex::new(0),
-            zcv_text::LogicalColumn::new(13)
-        )
+        ProjectedPoint::new(ProjectedLineIndex::new(0), zcv_text::LogicalColumn::new(13))
     );
 }
 

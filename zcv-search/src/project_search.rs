@@ -24,7 +24,7 @@ use zcv_workspace::{
 use crate::search_bar::SearchBar;
 
 #[derive(Clone, Debug)]
-pub enum ProjectSearchEvent {
+pub(crate) enum ProjectSearchEvent {
     Updated,
     Edited,
     DirtyChanged,
@@ -39,7 +39,7 @@ enum SearchState {
     Error(String),
 }
 
-pub struct ProjectSearchView {
+pub(crate) struct ProjectSearchView {
     project: Entity<Project>,
     results_editor: Entity<Editor>,
     excerpts: Entity<MultiBuffer>,

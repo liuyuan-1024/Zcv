@@ -856,6 +856,7 @@ impl Drop for Terminal {
 mod tests {
     use alacritty_terminal::{
         event::VoidListener,
+        grid::Scroll as AlacScroll,
         term::{Term, test::mock_term},
     };
 
@@ -908,7 +909,6 @@ mod tests {
     /// 滚动映射往返。
     #[test]
     fn scroll_mapping() {
-        use alacritty_terminal::grid::Scroll as AlacScroll;
         assert!(matches!(
             Scroll::Delta(3).to_alacritty(),
             AlacScroll::Delta(3)
@@ -968,6 +968,7 @@ mod pty_tests {
     };
 
     use super::*;
+    use crate::TerminalView;
 
     #[derive(Default)]
     struct EmptyView;
@@ -1036,7 +1037,7 @@ mod pty_tests {
     #[gpui::test]
     async fn ime_cursor_bounds(cx: &mut TestAppContext) {
         let terminal = build_terminal(cx);
-        let (view, cx) = cx.add_window_view(|_window, cx| crate::TerminalView::new(terminal, cx));
+        let (view, cx) = cx.add_window_view(|_window, cx| TerminalView::new(terminal, cx));
         cx.run_until_parked();
         cx.background_executor
             .timer(Duration::from_millis(100))
@@ -1058,7 +1059,7 @@ mod pty_tests {
     #[gpui::test]
     async fn cursor_focus_binding(cx: &mut TestAppContext) {
         let terminal = build_terminal(cx);
-        let (view, cx) = cx.add_window_view(|_window, cx| crate::TerminalView::new(terminal, cx));
+        let (view, cx) = cx.add_window_view(|_window, cx| TerminalView::new(terminal, cx));
         cx.run_until_parked();
 
         let (unfocused, focused) = cx.update(|_window, cx| {
@@ -1075,7 +1076,7 @@ mod pty_tests {
     #[gpui::test]
     async fn render_smoke(cx: &mut TestAppContext) {
         let terminal = build_terminal(cx);
-        let (view, cx) = cx.add_window_view(|_window, cx| crate::TerminalView::new(terminal, cx));
+        let (view, cx) = cx.add_window_view(|_window, cx| TerminalView::new(terminal, cx));
         cx.run_until_parked();
         cx.background_executor
             .timer(Duration::from_millis(100))

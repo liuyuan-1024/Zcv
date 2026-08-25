@@ -11,13 +11,13 @@ use unicode_width::UnicodeWidthChar;
 pub(crate) struct DisplayColumn(usize);
 
 impl DisplayColumn {
-    pub const ZERO: Self = Self(0);
+    pub(crate) const ZERO: Self = Self(0);
 
-    pub const fn new(value: usize) -> Self {
+    pub(crate) const fn new(value: usize) -> Self {
         Self(value)
     }
 
-    pub const fn get(self) -> usize {
+    pub(crate) const fn get(self) -> usize {
         self.0
     }
 }

@@ -4,8 +4,8 @@
 
 use super::{Buffer, coordinates::is_crlf_middle};
 use crate::{
-    CharOffset, CoordinateError, EditError, Line, MovementDirection, MovementUnit, TextResult,
-    WordBoundaryPolicy, config::WordBoundaryClassifier, storage::TextRead,
+    CharOffset, CoordinateError, EditError, Line, MovementDirection, MovementUnit, TextError,
+    TextResult, WordBoundaryPolicy, config::WordBoundaryClassifier, storage::TextRead,
 };
 
 impl Buffer {
@@ -149,7 +149,7 @@ fn word_boundary<T: TextRead>(
 }
 
 fn movement_unit_bug<T>(unit: MovementUnit) -> TextResult<T> {
-    Err(crate::TextError::InvariantViolation {
+    Err(TextError::InvariantViolation {
         location: "word_boundary",
         detail: format!("非词类移动粒度不应进入词边界策略: {unit:?}"),
     })

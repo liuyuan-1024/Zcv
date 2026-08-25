@@ -7,6 +7,7 @@ use super::common::{scrollbar_geometry, scrolling_text, test_buffer};
 use super::*;
 use crate::SelectionSet;
 use crate::scroll::ScrollbarThumbState;
+use crate::scrollbar::marker_geometry;
 
 #[gpui::test]
 fn moving_caret_beyond_viewport_scrolls_it_back_into_view(cx: &mut TestAppContext) {
@@ -282,7 +283,7 @@ fn dragging_thumb_to_marker_position_scrolls_to_that_row(cx: &mut TestAppContext
     let (track_bounds, thumb_bounds, per_pixel) = scrollbar_geometry(&editor, cx);
     let thumb_bounds = thumb_bounds.expect("内容超视口时应有 thumb");
     // marker 的轨道位置（绝对定位：行 50 在文档中的位置）。
-    let markers = crate::scrollbar::marker_geometry(
+    let markers = marker_geometry(
         [(50..51, DiffHunkKind::Modified)],
         track_bounds,
         per_pixel,

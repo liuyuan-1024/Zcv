@@ -847,10 +847,15 @@ struct JobPreparation {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
+    #[cfg(unix)]
+    use std::time::{Duration, Instant};
+
     use super::*;
     use crate::git_store::diff_coordinator::HunkRecord;
     use crate::test_support::{rev_parse, run_git, test_git_repo};
-    use std::fs;
 
     use gpui::AppContext;
     use zcv_git::StatusCode;
@@ -1273,9 +1278,6 @@ mod tests {
     fn cancelling_running_push_allows_clean_retry_after_process_exit(
         cx: &mut gpui::TestAppContext,
     ) {
-        use std::os::unix::fs::PermissionsExt as _;
-        use std::time::{Duration, Instant};
-
         let temp_dir = tempfile::tempdir().expect("应创建临时目录");
         let remote = temp_dir.path().join("remote.git");
         run_git(

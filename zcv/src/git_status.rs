@@ -9,7 +9,7 @@ use zcv_theme::color;
 /// git 状态 → 文本颜色（对齐 Zed `entry_git_aware_label_color` 的优先级）。
 ///
 /// conflict > deleted > modified > added/untracked > ignored（渲染层淡显）。
-pub fn git_status_color(status: FileStatus, cx: &App) -> Option<gpui::Rgba> {
+pub(crate) fn git_status_color(status: FileStatus, cx: &App) -> Option<gpui::Rgba> {
     let colors = color::current(cx);
     match status {
         FileStatus::Unmerged => Some(colors.status_conflict),

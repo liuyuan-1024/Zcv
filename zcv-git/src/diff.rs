@@ -38,7 +38,7 @@ pub enum DiffHunkKind {
 ///
 /// 生产路径使用多段解析的 [`parse_diff_hunks_per_path`]（带路径核对），本函数仅测试用。
 #[cfg(test)]
-pub fn parse_diff_hunks(output: &[u8]) -> Vec<DiffHunk> {
+pub(crate) fn parse_diff_hunks(output: &[u8]) -> Vec<DiffHunk> {
     let mut hunks = Vec::new();
     for line in output.split(|byte| *byte == b'\n') {
         if line.starts_with(b"@@ -") {
@@ -157,6 +157,11 @@ fn parse_diff_git_path(rest: &[u8]) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::ffi::OsStr;
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStrExt;
+
     use super::*;
     use DiffHunkKind::*;
 
@@ -366,9 +371,6 @@ index 111..222 100644
     #[cfg(unix)]
     #[test]
     fn parses_non_utf8_paths_as_bytes() {
-        use std::ffi::OsStr;
-        use std::os::unix::ffi::OsStrExt;
-
         let path = b"src/\xff\xfe.rs";
         let mut output = b"diff --git a/".to_vec();
         output.extend_from_slice(path);

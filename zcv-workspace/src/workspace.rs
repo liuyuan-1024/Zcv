@@ -29,7 +29,7 @@ mod window_controls;
 mod workspace_state;
 
 pub use activity_indicator::ActivityIndicator;
-pub use branch_picker::{GitBranchAction, OnBranchSelected};
+pub use branch_picker::{BranchPicker, GitBranchAction, OnBranchSelected};
 pub use dock::{
     Dock, DockData, DockEvent, DockPosition, DockStructure, FocusOrHidePanel, ToggleBottomDock,
     ToggleLeftDock, ToggleRightDock,
@@ -40,11 +40,12 @@ pub use pane::{Pane, PaneEvent};
 pub use panel::{Panel, PanelEvent, PanelHandle};
 pub use panel_buttons::PanelButtons;
 pub use preview::{PreviewDocument, PreviewItem, PreviewItemHandle, PreviewProvider, register};
-pub use project_picker::OnProjectSelected;
+pub use project_picker::{OnProjectSelected, ProjectPicker};
 pub use recent_projects::{add_to_recent, most_recent_valid_project};
 pub use searchable::{Direction, SearchEvent, SearchableItem, SearchableItemHandle};
-pub use status_bar::StatusItemView;
+pub use status_bar::{StatusBar, StatusItemView};
 pub use toast::{ToastAction, ToastKind};
+pub use toolbar::Toolbar;
 pub use toolbar::{FileToolbarControls, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 pub use top_bar::TopBar;
 pub use window_bounds::{load_window_bounds, save_window_bounds};

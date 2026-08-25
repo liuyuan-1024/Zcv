@@ -60,6 +60,7 @@ impl<T> VersionedResult<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Stickiness;
     use crate::{
         ByteOffset, ChangeSet, Delta, Edit, PositionMap, TextError, TextRange, TransactionId,
         TransactionSource, transaction::EditList,
@@ -104,7 +105,7 @@ mod tests {
         let remapped = result
             .try_remap(&event, |range, map| {
                 Ok(map
-                    .map_old_range_with_stickiness(range, crate::Stickiness::default())
+                    .map_old_range_with_stickiness(range, Stickiness::default())
                     .value())
             })
             .unwrap();
@@ -116,7 +117,7 @@ mod tests {
         let err = stale
             .try_remap(&event, |range, map| {
                 Ok(map
-                    .map_old_range_with_stickiness(range, crate::Stickiness::default())
+                    .map_old_range_with_stickiness(range, Stickiness::default())
                     .value())
             })
             .unwrap_err();

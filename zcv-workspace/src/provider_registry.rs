@@ -8,14 +8,14 @@ use std::sync::Arc;
 use gpui::{App, BorrowAppContext, Global};
 
 /// 注册表中的一条记录：具体 Provider 类型 + trait object 形式的实例。
-pub struct RegisteredProvider<T: ?Sized> {
-    pub type_id: TypeId,
-    pub provider: Arc<T>,
+pub(crate) struct RegisteredProvider<T: ?Sized> {
+    pub(crate) type_id: TypeId,
+    pub(crate) provider: Arc<T>,
 }
 
 /// 全局 Provider 注册表；同一具体类型只保留一次注册。
-pub struct ProviderRegistry<T: ?Sized> {
-    pub providers: Vec<RegisteredProvider<T>>,
+pub(crate) struct ProviderRegistry<T: ?Sized> {
+    pub(crate) providers: Vec<RegisteredProvider<T>>,
 }
 
 impl<T: ?Sized> Default for ProviderRegistry<T> {
@@ -32,7 +32,7 @@ impl<T: ?Sized + 'static> ProviderRegistry<T> {
     /// 注册 Provider；同一具体类型重复注册时忽略。
     ///
     /// `type_id` 必须是具体 Provider 类型的 `TypeId`（而非 trait object 的），由调用方在把实例上转为 `Arc<T>` 时同步提供。
-    pub fn register(provider: Arc<T>, type_id: TypeId, cx: &mut App) {
+    pub(crate) fn register(provider: Arc<T>, type_id: TypeId, cx: &mut App) {
         if !cx.has_global::<ProviderRegistry<T>>() {
             cx.set_global(ProviderRegistry::<T>::default());
         }
@@ -50,7 +50,7 @@ impl<T: ?Sized + 'static> ProviderRegistry<T> {
     }
 
     /// 返回最后注册且满足条件的 Provider。
-    pub fn find(cx: &App, mut predicate: impl FnMut(&T) -> bool) -> Option<Arc<T>> {
+    pub(crate) fn find(cx: &App, mut predicate: impl FnMut(&T) -> bool) -> Option<Arc<T>> {
         cx.try_global::<ProviderRegistry<T>>()?
             .providers
             .iter()

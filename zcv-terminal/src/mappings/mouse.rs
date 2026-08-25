@@ -4,7 +4,7 @@
 
 use gpui::{MouseButton, Pixels, Point};
 
-use crate::{Modes, Point as GridPoint};
+use crate::{Modes, Point as GridPoint, SelectionSide};
 
 /// 像素坐标 → 网格绝对坐标。
 ///
@@ -51,9 +51,9 @@ pub(crate) fn grid_point_and_side(
     );
     let cell_x = pos.x - origin.x - point.column as f32 * cell_width;
     let side = if cell_x > cell_width / 2. {
-        crate::SelectionSide::Right
+        SelectionSide::Right
     } else {
-        crate::SelectionSide::Left
+        SelectionSide::Left
     };
     (point, side)
 }

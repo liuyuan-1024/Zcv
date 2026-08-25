@@ -486,7 +486,7 @@ fn placeholder_div(cx: &gpui::App) -> gpui::Div {
 /// 渲染 workbench 主体（不包含顶栏和底栏）。
 ///
 /// 三个 Dock 始终挂载；关闭时由 Dock 自身收缩为零，确保 focus/action 生命周期稳定。
-pub fn render_body(
+pub(crate) fn render_body(
     center: &Entity<Pane>,
     left_dock: Entity<Dock>,
     right_dock: Entity<Dock>,
@@ -526,7 +526,7 @@ mod tests {
     use gpui::{App, Context, FocusHandle, Render, TestAppContext, Window, div, prelude::*, px};
 
     use super::*;
-    use crate::{Panel, PanelHandle};
+    use crate::{Panel, PanelEvent, PanelHandle};
 
     macro_rules! test_panel {
         ($name:ident, $persistent_name:literal) => {
@@ -534,7 +534,7 @@ mod tests {
                 focus: FocusHandle,
             }
 
-            impl gpui::EventEmitter<crate::panel::PanelEvent> for $name {}
+            impl EventEmitter<PanelEvent> for $name {}
 
             impl Panel for $name {
                 fn icon() -> &'static str {

@@ -6,6 +6,7 @@ use crate::{
     BufferConfig, BufferVersion, ByteOffset, Line, LineContent, LineRange, LineSlice,
     RegexSearchOptions, RegexSearchResult, SearchOptions, SearchResult, TextRange, TextResult,
     TextSlice,
+    search::{search_in_text, search_regex_in_text},
     slicing::{
         line_content_for_text, text_range_for_byte_range, text_range_for_line,
         text_range_for_line_range,
@@ -106,7 +107,7 @@ impl Snapshot {
     ///
     /// 本方法只执行同步匹配；后台调度、取消和进度由宿主搜索层负责。
     pub fn search(&self, query: &str, options: SearchOptions) -> TextResult<SearchResult> {
-        crate::search::search_in_text(&self.storage, self.version, &self.config, query, options)
+        search_in_text(&self.storage, self.version, &self.config, query, options)
     }
 
     /// 使用默认选项执行大小写敏感的全文 literal 搜索。
@@ -120,6 +121,6 @@ impl Snapshot {
         pattern: &str,
         options: RegexSearchOptions,
     ) -> TextResult<RegexSearchResult> {
-        crate::search::search_regex_in_text(&self.storage, self.version, pattern, options)
+        search_regex_in_text(&self.storage, self.version, pattern, options)
     }
 }

@@ -21,9 +21,9 @@ use zcv_ui::{Button, Glyph};
 use crate::SelectionSet;
 
 use super::display_map::{
-    BufferPoint, DisplayBlock, DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot,
-    FoldRowSegment, ProjectedRange, RowStyleInput, WrapRowInfo, WrapViewportRowKind,
-    byte_for_display_column, render_viewport_row,
+    BufferPoint, DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint, DisplayRow,
+    DisplaySnapshot, FoldRowSegment, ProjectedLineIndex, ProjectedRange, RowStyleInput,
+    WrapRowInfo, WrapViewportRowKind, byte_for_display_column, render_viewport_row,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
@@ -400,7 +400,7 @@ fn build_block_elements(
     for block in &layout.blocks {
         let height = layout.line_height * block.height as f32;
         let mut element = match block.block.kind {
-            super::display_map::DisplayBlockKind::ExcerptBoundary => div()
+            DisplayBlockKind::ExcerptBoundary => div()
                 .id(("excerpt-boundary", block.row.get()))
                 .w_full()
                 .h_full()
@@ -409,7 +409,7 @@ fn build_block_elements(
                 .px(space::S6)
                 .child(div().w_full().h(px(1.)).bg(colors.border_variant))
                 .into_any_element(),
-            super::display_map::DisplayBlockKind::BufferHeader => {
+            DisplayBlockKind::BufferHeader => {
                 let display_path = block.block.excerpt.display_path();
                 let filename = display_path
                     .file_name()
@@ -881,8 +881,8 @@ impl Element for EditorElement {
                 };
                 let indent = line.wrap_info.map_or(0, |info| info.indent);
                 // 占位符段 = 合并文本中 anchor 段之后；显示文本 = 假空格 + 合并文本。
-                let start = indent + segments[0].merged_range.end;
-                let end = start + segments[1].merged_range.len();
+                let start = indent + segments[0].merged_range().end;
+                let end = start + segments[1].merged_range().len();
                 if start >= line.shaped.text.len() {
                     continue;
                 }
@@ -1799,7 +1799,7 @@ fn layout_projected_range(
     let start = range.start();
     let end = range.end();
     for line in &layout.lines {
-        let row = super::display_map::ProjectedLineIndex::new(line.row.get());
+        let row = ProjectedLineIndex::new(line.row.get());
         if row < start.line() || row > end.line() {
             continue;
         }
@@ -1933,7 +1933,7 @@ fn column_to_byte(text: &str, column: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::display_map::{DisplayMap, StyledLine};
+    use crate::display_map::{DisplayMap, InsertedLines, StyledLine};
     use gpui::{AppContext, Empty, TestAppContext};
     use std::path::PathBuf;
     use zcv_git::DiffHunk;
@@ -1992,7 +1992,7 @@ mod tests {
                     .snapshot();
                 let mut map = DisplayMap::new(snapshot.clone());
                 // 展开删除块：锚定行 0 后插入含中文的 HEAD 行；锚定行短，span 端点在锚定行外。
-                map.set_inserted(crate::display_map::InsertedLines::from([(
+                map.set_inserted(InsertedLines::from([(
                     Line::ZERO,
                     vec![StyledLine::plain(std::sync::Arc::from(
                         "// 展开产生的新行在重建时现查 git 状态，无需单独补齐。",
@@ -2532,7 +2532,7 @@ mod tests {
         .expect("应创建 Buffer");
         let mut map = DisplayMap::new(buffer.snapshot());
         // 删除块展开：锚定行 1 后插入 2 行被删除文本（HEAD 的 1..3 行）。
-        map.set_inserted(crate::display_map::InsertedLines::from([(
+        map.set_inserted(InsertedLines::from([(
             Line::new(1),
             vec![
                 StyledLine::plain(std::sync::Arc::from("old 1")),
@@ -2580,7 +2580,7 @@ mod tests {
         )
         .expect("应创建 Buffer");
         let mut map = DisplayMap::new(buffer.snapshot());
-        map.set_inserted(crate::display_map::InsertedLines::from([(
+        map.set_inserted(InsertedLines::from([(
             Line::ZERO, // 修改块锚定 range.start - 1（旧行在修改行上方）。
             vec![StyledLine::plain(std::sync::Arc::from("old 1"))],
         )]));
@@ -2626,7 +2626,7 @@ mod tests {
         )
         .expect("应创建 Buffer");
         let mut map = DisplayMap::new(buffer.snapshot());
-        map.set_inserted(crate::display_map::InsertedLines::from([(
+        map.set_inserted(InsertedLines::from([(
             Line::ZERO,
             vec![StyledLine::plain(std::sync::Arc::from("old 1"))],
         )]));

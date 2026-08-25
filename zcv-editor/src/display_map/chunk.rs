@@ -33,7 +33,7 @@ pub(crate) const CHUNK_SIZE: usize = 128;
 pub(crate) struct InlayInfo<'a> {
     pub(crate) anchor: usize,
     pub(crate) projected: usize,
-    pub text: &'a str,
+    pub(crate) text: &'a str,
 }
 
 /// 渲染 chunk：文本切片 + 字符/tab 位图 + 样式标记（对齐 Zed Chunk 的 is_tab/is_inlay/highlight_style）。
@@ -266,13 +266,13 @@ pub(crate) struct LineStyles<'a> {
 }
 
 pub(crate) struct ViewportChunkSource<'a> {
-    pub text: &'a str,
-    pub global_byte_start: usize,
-    pub stream_line: Line,
-    pub segments: Option<&'a [FoldRowSegment]>,
-    pub inlay: &'a InlaySnapshot,
+    pub(crate) text: &'a str,
+    pub(crate) global_byte_start: usize,
+    pub(crate) stream_line: Line,
+    pub(crate) segments: Option<&'a [FoldRowSegment]>,
+    pub(crate) inlay: &'a InlaySnapshot,
     /// 合成行的行内样式（buffer 行为 None；终端等宿主注入逐格样式）。
-    pub inserted_styles: Option<&'a [StyledSpan]>,
+    pub(crate) inserted_styles: Option<&'a [StyledSpan]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

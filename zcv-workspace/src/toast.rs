@@ -60,7 +60,7 @@ struct ActiveToast {
 }
 
 /// 全局提示层：Workspace 持有并叠加渲染。
-pub struct ToastLayer {
+pub(crate) struct ToastLayer {
     toast: Option<ActiveToast>,
     _dismiss_task: Option<Task<()>>,
     /// 自动消失的剩余时长；鼠标悬浮时暂停计时并记录，离开后按剩余时长恢复。
@@ -70,7 +70,7 @@ pub struct ToastLayer {
 }
 
 impl ToastLayer {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             toast: None,
             _dismiss_task: None,
@@ -80,7 +80,7 @@ impl ToastLayer {
     }
 
     /// 展示一条提示；`dismiss_after` 之后自动消失（None 表示仅手动关闭）。
-    pub fn show(
+    pub(crate) fn show(
         &mut self,
         kind: ToastKind,
         message: impl Into<SharedString>,
@@ -142,7 +142,7 @@ impl ToastLayer {
     }
 
     /// 关闭当前 toast。
-    pub fn hide(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn hide(&mut self, cx: &mut Context<Self>) {
         self._dismiss_task = None;
         self.dismiss_remaining = None;
         self.dismiss_started_at = None;

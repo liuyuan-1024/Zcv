@@ -224,7 +224,7 @@ impl WatcherState {
 /// - 管理原生 `notify::RecommendedWatcher` 和轮询 `notify::PollWatcher` 两个后端
 /// - 提供专用调度线程，批量处理事件并对同类 Rescan 去重
 /// - 所有 `FsWatcher` 实例共享此单例
-pub struct GlobalWatcher {
+pub(crate) struct GlobalWatcher {
     state: Mutex<WatcherState>,
     native_watcher: Mutex<Option<Box<dyn WatchBackend>>>,
     poll_watcher: Mutex<Option<Box<dyn WatchBackend>>>,
@@ -284,7 +284,7 @@ impl GlobalWatcher {
     }
 
     /// 移除一条监听注册。
-    pub fn remove(&self, id: WatcherRegistrationId) {
+    pub(crate) fn remove(&self, id: WatcherRegistrationId) {
         let mut state = self.state.lock().unwrap();
         if let Some((path, mode)) = state.remove_registration(id) {
             drop(state);

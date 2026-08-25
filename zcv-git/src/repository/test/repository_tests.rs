@@ -1,9 +1,18 @@
 use super::*;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
+#[cfg(unix)]
+use std::sync::Arc;
+#[cfg(unix)]
+use std::sync::atomic::{AtomicU32, Ordering};
+#[cfg(unix)]
+use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
 use crate::FileStatus;
+use crate::diff::DiffHunkKind::{Added, Deleted, Modified};
 use crate::status::StatusCode;
 
 /// 创建带一个初始提交的临时 git 仓库，返回 (仓库根, 目录句柄)。
@@ -357,11 +366,6 @@ fn fetch_pull_push_work_against_remote() {
 #[cfg(unix)]
 #[test]
 fn cancelling_push_terminates_git_and_hook_process_tree() {
-    use std::os::unix::fs::PermissionsExt as _;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
-    use std::time::{Duration, Instant};
-
     let (root, _remote, _temp) = test_repo_with_remote();
     fs::write(root.join("cancel.txt"), "等待取消\n").expect("应写入待推送文件");
     run_in(&root, &["git", "add", "cancel.txt"]);
@@ -484,8 +488,6 @@ fn hunks_for(repository: &RealGitRepository, path: &Path) -> Vec<DiffHunk> {
 
 #[test]
 fn diff_hunks_reports_worktree_changes() {
-    use crate::diff::DiffHunkKind::*;
-
     let (root, _temp) = test_repo();
     let repository = open_repo(&root);
     let tracked = Path::new("tracked.txt");

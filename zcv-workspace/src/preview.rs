@@ -54,7 +54,7 @@ pub fn register<P: PreviewProvider>(provider: P, cx: &mut App) {
 }
 
 /// 返回最后注册且支持该路径的 Preview Provider。
-pub fn provider_for(path: &Path, cx: &App) -> Option<Arc<dyn PreviewProvider>> {
+pub(crate) fn provider_for(path: &Path, cx: &App) -> Option<Arc<dyn PreviewProvider>> {
     ProviderRegistry::<dyn PreviewProvider>::find(cx, |provider| provider.supports(path, cx))
 }
 

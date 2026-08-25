@@ -182,12 +182,13 @@ fn push_refined_edit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ByteOffset;
     use crate::PositionMap;
 
     fn map_offset(patch: &TextPatch, offset: usize) -> usize {
         let position_map = PositionMap::from_text_patch(patch);
         position_map
-            .map_old_position(crate::ByteOffset::new(offset))
+            .map_old_position(ByteOffset::new(offset))
             .value()
             .get()
     }

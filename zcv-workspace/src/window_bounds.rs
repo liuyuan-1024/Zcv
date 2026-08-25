@@ -18,7 +18,7 @@ const WINDOW_BOUNDS_VERSION: u32 = 1;
 
 /// 窗口边界的可持久化形式：整数坐标，i32 足以覆盖屏幕尺寸。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum WindowBoundsJson {
+pub(crate) enum WindowBoundsJson {
     Windowed {
         x: i32,
         y: i32,
@@ -224,6 +224,7 @@ pub fn load_window_bounds(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout_state;
 
     fn windowed(x: f32, y: f32, width: f32, height: f32) -> WindowBounds {
         WindowBounds::Windowed(Bounds {
@@ -325,11 +326,11 @@ mod tests {
         // 项目键与布局文件的文件名哈希一致，保证两个文件域身份统一。
         assert_eq!(
             file.projects.keys().next().map(String::as_str),
-            Some(crate::persistence::workspace_identity(Some(root)).as_str())
+            Some(persistence::workspace_identity(Some(root)).as_str())
         );
         assert_eq!(
             file.projects.keys().next().map(String::as_str),
-            crate::layout_state::path_for_workspace(Some(root))
+            layout_state::path_for_workspace(Some(root))
                 .file_stem()
                 .and_then(|name| name.to_str())
         );

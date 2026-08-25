@@ -37,7 +37,7 @@ const LAYOUT_SAVE_THROTTLE: Duration = Duration::from_millis(200);
 const FILE_SINGLE_CLICK_DELAY: Duration = Duration::from_millis(300);
 
 /// 打开设置文件的路径提供者：宿主注入，返回设置文件路径。
-pub type OpenSettingsPathProvider = Box<dyn Fn(&mut App) -> Option<PathBuf> + Send + Sync>;
+pub(crate) type OpenSettingsPathProvider = Box<dyn Fn(&mut App) -> Option<PathBuf> + Send + Sync>;
 
 type WorkspaceAction =
     Box<dyn Fn(gpui::Stateful<gpui::Div>, &mut Context<Workspace>) -> gpui::Stateful<gpui::Div>>;
@@ -841,7 +841,7 @@ mod tests {
     use super::{DockPosition, LAYOUT_SAVE_THROTTLE, Workspace};
     use crate::DockData;
     use crate::panel::PanelEvent;
-    use crate::{FocusOrHidePanel, Panel, PanelHandle};
+    use crate::{FocusOrHidePanel, Panel, PanelHandle, layout_state};
     use gpui::EventEmitter;
 
     struct TestPanel {
@@ -941,7 +941,7 @@ mod tests {
         cx.executor().advance_clock(LAYOUT_SAVE_THROTTLE);
         cx.run_until_parked();
 
-        let saved = crate::layout_state::load(&layout_path).expect("应保存布局快照");
+        let saved = layout_state::load(&layout_path).expect("应保存布局快照");
         assert!(saved.docks.bottom.visible, "dock 开合应触发保存");
     }
 
@@ -972,7 +972,7 @@ mod tests {
         });
         cx.executor().advance_clock(LAYOUT_SAVE_THROTTLE);
         cx.run_until_parked();
-        let saved = crate::layout_state::load(&layout_path).expect("应保存布局快照");
+        let saved = layout_state::load(&layout_path).expect("应保存布局快照");
         let dragged = saved.docks.bottom.size.expect("拖拽尺寸应保存");
         assert_ne!(dragged, f32::from(DockPosition::Bottom.default_size()));
 
@@ -984,7 +984,7 @@ mod tests {
         });
         cx.executor().advance_clock(LAYOUT_SAVE_THROTTLE);
         cx.run_until_parked();
-        let saved = crate::layout_state::load(&layout_path).expect("应保存布局快照");
+        let saved = layout_state::load(&layout_path).expect("应保存布局快照");
         assert_eq!(
             saved.docks.bottom.size,
             Some(f32::from(DockPosition::Bottom.default_size())),
@@ -1064,7 +1064,7 @@ mod tests {
 
         cx.executor().advance_clock(LAYOUT_SAVE_THROTTLE);
         cx.run_until_parked();
-        let saved = crate::layout_state::load(&layout_path).expect("应保存布局快照");
+        let saved = layout_state::load(&layout_path).expect("应保存布局快照");
         assert!(saved.docks.left.visible);
         assert_eq!(saved.docks.left.active_panel.as_deref(), Some("test-panel"));
     }

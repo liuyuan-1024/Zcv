@@ -31,7 +31,7 @@ pub fn register_item_provider<P: ItemProvider>(provider: P, cx: &mut App) {
 }
 
 /// 返回最后注册且支持该路径的 Item Provider。
-pub fn item_provider_for_path(path: &Path, cx: &App) -> Option<Arc<dyn ItemProvider>> {
+pub(crate) fn item_provider_for_path(path: &Path, cx: &App) -> Option<Arc<dyn ItemProvider>> {
     ProviderRegistry::<dyn ItemProvider>::find(cx, |provider| provider.supports(path, cx))
 }
 

@@ -62,7 +62,7 @@ impl Buffer {
 
     fn verify_transaction_base_version(&self, base_version: BufferVersion) -> TextResult<()> {
         if base_version != self.version {
-            return Err(crate::TransactionError::VersionMismatch {
+            return Err(TransactionError::VersionMismatch {
                 expected: self.version,
                 actual: base_version,
             }

@@ -962,6 +962,7 @@ fn ranges_disjoint_or_nested(left: TextRange, right: TextRange) -> bool {
 mod tests {
     use zcv_text::{Buffer, BufferConfig, Edit, TransactionMetadata};
 
+    use super::super::error::DisplayMapError;
     use super::super::inlay_map::InlayMap;
     use super::*;
 
@@ -1000,7 +1001,7 @@ mod tests {
         let error = map.write().fold(text_range(0, 3)).unwrap_err();
         assert!(matches!(
             error,
-            super::super::error::DisplayMapError::Fold(FoldError::OverlapWithoutNesting { .. })
+            DisplayMapError::Fold(FoldError::OverlapWithoutNesting { .. })
         ));
         assert_eq!(map.snapshot.folds.summary().count, 2);
     }
@@ -1188,14 +1189,20 @@ mod tests {
         // 隐藏行按 bias 吸附到合并行（anchor 行 0）的折叠起点/终点列；
         // anchor 行 "a" 内容 1 字符，占位符 1 字符。
         let left = snapshot
-            .logical_to_projected_point(LogicalPoint::line_start(Line::new(1)), FoldBias::Left)
+            .logical_to_projected_point(
+                LogicalPoint::new(Line::new(1), LogicalColumn::ZERO),
+                FoldBias::Left,
+            )
             .unwrap();
         assert_eq!(
             left,
             ProjectedPoint::new(ProjectedLineIndex::new(0), LogicalColumn::new(1))
         );
         let right = snapshot
-            .logical_to_projected_point(LogicalPoint::line_start(Line::new(1)), FoldBias::Right)
+            .logical_to_projected_point(
+                LogicalPoint::new(Line::new(1), LogicalColumn::ZERO),
+                FoldBias::Right,
+            )
             .unwrap();
         assert_eq!(
             right,
@@ -1211,39 +1218,39 @@ mod tests {
 
 /// FoldSnapshot 中投影行的 0-indexed 索引。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct ProjectedLineIndex(usize);
+pub(crate) struct ProjectedLineIndex(usize);
 
 impl ProjectedLineIndex {
-    pub const ZERO: Self = Self(0);
+    pub(crate) const ZERO: Self = Self(0);
 
-    pub const fn new(value: usize) -> Self {
+    pub(crate) const fn new(value: usize) -> Self {
         Self(value)
     }
 
-    pub const fn get(self) -> usize {
+    pub(crate) const fn get(self) -> usize {
         self.0
     }
 }
 
 /// 可见逻辑行投影。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TextLine {
+pub(crate) struct TextLine {
     logical_line: Line,
 }
 
 impl TextLine {
-    pub fn new(logical_line: Line) -> Self {
+    pub(crate) fn new(logical_line: Line) -> Self {
         Self { logical_line }
     }
 
-    pub fn logical_line(self) -> Line {
+    pub(crate) fn logical_line(self) -> Line {
         self.logical_line
     }
 }
 
 /// 逻辑行 -> 投影空间的查询结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum LogicalProjection {
+pub(super) enum LogicalProjection {
     /// 逻辑行可见，对应投影行索引。
     Visible(ProjectedLineIndex),
     /// 逻辑行被某段 fold 隐藏。
@@ -1252,32 +1259,25 @@ pub enum LogicalProjection {
 
 /// 逻辑文档内的 (line, column) 点。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct LogicalPoint {
-    pub line: Line,
-    pub column: LogicalColumn,
+pub(super) struct LogicalPoint {
+    line: Line,
+    column: LogicalColumn,
 }
 
 impl LogicalPoint {
-    pub const fn new(line: Line, column: LogicalColumn) -> Self {
+    pub(super) const fn new(line: Line, column: LogicalColumn) -> Self {
         Self { line, column }
     }
 
-    pub const fn line_start(line: Line) -> Self {
-        Self {
-            line,
-            column: LogicalColumn::ZERO,
-        }
-    }
-
-    pub const fn line(self) -> Line {
+    pub(super) const fn line(self) -> Line {
         self.line
     }
 
-    pub const fn column(self) -> LogicalColumn {
+    pub(super) const fn column(self) -> LogicalColumn {
         self.column
     }
 
-    pub fn into_position(self) -> Position {
+    pub(super) fn into_position(self) -> Position {
         Position::new(self.line, self.column)
     }
 }
@@ -1301,21 +1301,21 @@ impl From<LogicalPoint> for Position {
 ///
 /// `column` 与对应逻辑行的 `LogicalColumn` 同义（投影行均为可见文本行）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct ProjectedPoint {
-    pub line: ProjectedLineIndex,
-    pub column: LogicalColumn,
+pub(crate) struct ProjectedPoint {
+    line: ProjectedLineIndex,
+    column: LogicalColumn,
 }
 
 impl ProjectedPoint {
-    pub const fn new(line: ProjectedLineIndex, column: LogicalColumn) -> Self {
+    pub(crate) const fn new(line: ProjectedLineIndex, column: LogicalColumn) -> Self {
         Self { line, column }
     }
 
-    pub const fn line(self) -> ProjectedLineIndex {
+    pub(crate) const fn line(self) -> ProjectedLineIndex {
         self.line
     }
 
-    pub const fn column(self) -> LogicalColumn {
+    pub(crate) const fn column(self) -> LogicalColumn {
         self.column
     }
 }
@@ -1324,8 +1324,14 @@ impl ProjectedPoint {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FoldRowSegment {
     /// 段在合并文本中的投影字节范围。
-    pub merged_range: Range<usize>,
-    pub kind: FoldRowSegmentKind,
+    pub(super) merged_range: Range<usize>,
+    pub(super) kind: FoldRowSegmentKind,
+}
+
+impl FoldRowSegment {
+    pub(crate) fn merged_range(&self) -> &Range<usize> {
+        &self.merged_range
+    }
 }
 
 /// 折叠合并行段的来源。
@@ -1368,14 +1374,14 @@ struct FoldMergedGeometry {
 
 /// 逻辑文档内的有序点对范围。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct LogicalRange {
+pub(super) struct LogicalRange {
     start: LogicalPoint,
     end: LogicalPoint,
 }
 
 impl LogicalRange {
     /// 要求 `start <= end`（按 line, column 字典序）。
-    pub fn new(start: LogicalPoint, end: LogicalPoint) -> Result<Self, CoordinateError> {
+    pub(super) fn new(start: LogicalPoint, end: LogicalPoint) -> Result<Self, CoordinateError> {
         if !is_ordered_logical(start, end) {
             return Err(CoordinateError::InvalidLineRange {
                 start: start.line,
@@ -1385,29 +1391,29 @@ impl LogicalRange {
         Ok(Self { start, end })
     }
 
-    pub const fn start(self) -> LogicalPoint {
+    pub(super) const fn start(self) -> LogicalPoint {
         self.start
     }
 
-    pub const fn end(self) -> LogicalPoint {
+    pub(super) const fn end(self) -> LogicalPoint {
         self.end
     }
 
-    pub fn is_empty(self) -> bool {
+    pub(super) fn is_empty(self) -> bool {
         self.start == self.end
     }
 }
 
 /// 投影空间内的有序点对范围。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ProjectedRange {
+pub(crate) struct ProjectedRange {
     start: ProjectedPoint,
     end: ProjectedPoint,
 }
 
 impl ProjectedRange {
     /// 要求 `start <= end`（按 projected line, column 字典序）。
-    pub fn new(start: ProjectedPoint, end: ProjectedPoint) -> Result<Self, CoordinateError> {
+    pub(crate) fn new(start: ProjectedPoint, end: ProjectedPoint) -> Result<Self, CoordinateError> {
         if !is_ordered_projected(start, end) {
             return Err(CoordinateError::InvalidLineRange {
                 start: Line::new(start.line.get()),
@@ -1417,11 +1423,11 @@ impl ProjectedRange {
         Ok(Self { start, end })
     }
 
-    pub const fn start(self) -> ProjectedPoint {
+    pub(crate) const fn start(self) -> ProjectedPoint {
         self.start
     }
 
-    pub const fn end(self) -> ProjectedPoint {
+    pub(crate) const fn end(self) -> ProjectedPoint {
         self.end
     }
 }

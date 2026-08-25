@@ -17,7 +17,7 @@ pub enum SearchEvent {
 }
 
 /// 类型擦除后的搜索事件回调。
-pub type SearchEventHandler = Box<dyn Fn(&SearchEvent, &mut Window, &mut App) + Send>;
+pub(crate) type SearchEventHandler = Box<dyn Fn(&SearchEvent, &mut Window, &mut App) + Send>;
 
 /// 跳转方向。
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

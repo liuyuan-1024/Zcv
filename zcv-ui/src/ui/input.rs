@@ -19,9 +19,9 @@ pub enum ErasedEditorEvent {
     Edited,
 }
 
-pub type ErasedEditorEventHandler =
+pub(crate) type ErasedEditorEventHandler =
     Box<dyn FnMut(ErasedEditorEvent, &mut Window, &mut App) + 'static>;
-pub type ErasedEditorFactory = fn(&mut App) -> Arc<dyn ErasedEditor>;
+pub(crate) type ErasedEditorFactory = fn(&mut App) -> Arc<dyn ErasedEditor>;
 
 pub trait ErasedEditor: 'static {
     fn text(&self, cx: &App) -> String;

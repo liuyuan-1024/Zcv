@@ -133,11 +133,13 @@ impl Item for Editor {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::fs;
     use std::rc::Rc;
 
     use gpui::{AppContext as _, Empty, TestAppContext};
     use zcv_multi_buffer::MultiBufferExcerpt;
     use zcv_text::{ByteOffset, TextRange};
+    use zcv_workspace::ItemHandle;
 
     use super::*;
 
@@ -231,10 +233,6 @@ mod tests {
     /// 复现「重命名后保存失败」：重命名必须同步 Editor 的路径，否则保存会落到旧路径（旧路径已不存在 → IO 失败）。
     #[gpui::test]
     fn rename_then_save_writes_to_new_path(cx: &mut TestAppContext) {
-        use std::fs;
-        use zcv_project::Project;
-        use zcv_workspace::ItemHandle;
-
         // 项目根与打开路径统一走 canonical 形式（与真实装配一致）。
         let directory = tempfile::tempdir().expect("应创建临时项目目录");
         let root = directory.path().canonicalize().expect("临时目录应可规范化");

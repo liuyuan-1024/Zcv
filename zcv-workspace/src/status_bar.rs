@@ -20,7 +20,7 @@ pub trait StatusItemView: Render + 'static {
 }
 
 /// 类型擦除桥接，让 StatusBar 存储异构 item 列表。
-pub trait StatusItemViewHandle: Send {
+pub(crate) trait StatusItemViewHandle: Send {
     fn element(&self) -> AnyElement;
     fn set_active_pane_item(&self, item: Option<&dyn ItemHandle>, cx: &mut App);
 }

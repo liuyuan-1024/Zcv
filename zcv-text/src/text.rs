@@ -34,7 +34,7 @@ pub use movement::{MovementDirection, MovementUnit};
 pub use position_map::{Affinity, Bias, MappingResult, PositionMap, Stickiness};
 pub use search::{
     RegexSearchOptions, RegexSearchResult, SearchMatch, SearchOptions, SearchQuery,
-    SearchQueryResult, SearchResult,
+    SearchQueryResult, SearchResult, SearchResultSet,
 };
 pub use slicing::{LineContent, LineSlice, TextSlice};
 pub use snapshot::Snapshot;

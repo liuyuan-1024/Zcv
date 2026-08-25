@@ -10,6 +10,8 @@ use std::sync::{Arc, LazyLock, RwLock};
 use gpui::HighlightStyle;
 
 use crate::theme_data::ThemeData;
+#[cfg(test)]
+use crate::theme_data::theme_by_id;
 
 /// 预展开 capture 名字表为按索引直接取用的样式表。
 ///
@@ -60,7 +62,7 @@ mod tests {
 
     #[test]
     fn dark_provides_color_for_common_rust_names() {
-        set_theme(crate::theme_data::theme_by_id("dark").expect("内置深色主题应存在"));
+        set_theme(theme_by_id("dark").expect("内置深色主题应存在"));
         for name in &["keyword", "string", "comment", "function", "type"] {
             assert!(style_for(name).color.is_some(), "dark 必须给 `{name}` 上色");
         }
@@ -68,7 +70,7 @@ mod tests {
 
     #[test]
     fn dot_prefix_fallback_uses_parent_rule() {
-        set_theme(crate::theme_data::theme_by_id("dark").expect("内置深色主题应存在"));
+        set_theme(theme_by_id("dark").expect("内置深色主题应存在"));
         assert_eq!(
             style_for("function.method").color,
             style_for("function").color
@@ -82,13 +84,13 @@ mod tests {
 
     #[test]
     fn lsp_parameter_resolves_to_color_via_variable_parameter() {
-        set_theme(crate::theme_data::theme_by_id("dark").expect("内置深色主题应存在"));
+        set_theme(theme_by_id("dark").expect("内置深色主题应存在"));
         assert!(style_for("variable.parameter").color.is_some());
     }
 
     #[test]
     fn lsp_method_falls_back_to_function() {
-        set_theme(crate::theme_data::theme_by_id("dark").expect("内置深色主题应存在"));
+        set_theme(theme_by_id("dark").expect("内置深色主题应存在"));
         assert_eq!(
             style_for("function.method").color,
             style_for("function").color
@@ -97,19 +99,19 @@ mod tests {
 
     #[test]
     fn lsp_enum_member_resolves_via_variable_other_member() {
-        set_theme(crate::theme_data::theme_by_id("dark").expect("内置深色主题应存在"));
+        set_theme(theme_by_id("dark").expect("内置深色主题应存在"));
         assert!(style_for("variable.other.member").color.is_some());
     }
 
     #[test]
     fn lsp_macro_resolves_via_function_dot_macro() {
-        set_theme(crate::theme_data::theme_by_id("dark").expect("内置深色主题应存在"));
+        set_theme(theme_by_id("dark").expect("内置深色主题应存在"));
         assert!(style_for("function.macro").color.is_some());
     }
 
     #[test]
     fn markdown_capture_rules_keep_theme_modifiers() {
-        set_theme(crate::theme_data::theme_by_id("dark").expect("内置深色主题应存在"));
+        set_theme(theme_by_id("dark").expect("内置深色主题应存在"));
         assert_eq!(
             style_for("text.strong").font_weight,
             Some(gpui::FontWeight::BOLD)

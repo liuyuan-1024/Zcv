@@ -28,7 +28,7 @@ enum SvgPreviewState {
     Error(String),
 }
 
-pub struct SvgPreviewView {
+pub(crate) struct SvgPreviewView {
     /// 源码 Item（通常是编辑器），渲染数据源与标签元数据都转发给它。
     source_item: Box<dyn ItemHandle>,
     multi_buffer: Entity<MultiBuffer>,
@@ -42,12 +42,12 @@ pub struct SvgPreviewView {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SvgPreviewEvent {
+pub(crate) enum SvgPreviewEvent {
     SourcePathChanged,
 }
 
 impl SvgPreviewView {
-    pub fn new(document: PreviewDocument, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(document: PreviewDocument, cx: &mut Context<Self>) -> Self {
         let source_item = document.source_item;
         let multi_buffer = document.multi_buffer;
         let resources_dir = document.path.parent().map(PathBuf::from);

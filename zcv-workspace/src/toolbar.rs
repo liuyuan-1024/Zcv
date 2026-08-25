@@ -49,7 +49,7 @@ pub trait ToolbarItemView: Render + EventEmitter<ToolbarItemEvent> {
 // ═══ ToolbarItemViewHandle trait object ═══════════════════════════════
 
 /// 抹消具体类型的 Toolbar 子项句柄。
-pub trait ToolbarItemViewHandle: Send {
+pub(crate) trait ToolbarItemViewHandle: Send {
     fn id(&self) -> EntityId;
     fn to_any(&self) -> AnyView;
     fn set_active_pane_item(

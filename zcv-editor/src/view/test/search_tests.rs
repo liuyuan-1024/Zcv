@@ -7,6 +7,10 @@ use zcv_workspace::{Direction, SearchableItem};
 
 use super::common::test_buffer;
 use super::*;
+use crate::display_map::{
+    DisplayMap, DisplayRow, LineStyles, StreamLineSource, ViewportChunkSource, WrapViewportRowKind,
+    render_viewport_chunks,
+};
 
 fn editor_with_text<'a>(
     cx: &'a mut TestAppContext,
@@ -270,10 +274,8 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
             editor.search(&query("abc"), window, cx);
         });
         let engine_snapshot = editor.read(cx).render_snapshot();
-        let display = crate::display_map::DisplayMap::new(engine_snapshot.clone()).snapshot();
-        let viewport = display
-            .slice_viewport(crate::display_map::DisplayRow::new(0), 1)
-            .unwrap();
+        let display = DisplayMap::new(engine_snapshot.clone()).snapshot();
+        let viewport = display.slice_viewport(DisplayRow::new(0), 1).unwrap();
         // 与 element.rs 相同的背景层构建。
         let search_highlights = editor.read(cx).search_highlights().unwrap();
         let colors = zcv_theme::color::current(cx);
@@ -295,7 +297,7 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
             .collect();
         assert_eq!(search_backgrounds.len(), 3, "三个匹配都应进入背景层");
         for row in viewport.rows() {
-            let crate::display_map::WrapViewportRowKind::Text {
+            let WrapViewportRowKind::Text {
                 source,
                 text,
                 byte_range,
@@ -309,14 +311,14 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
                     .fold_snapshot()
                     .inlay_snapshot();
                 let stream_line = match source {
-                    crate::display_map::StreamLineSource::Buffer(line) => inlay_snapshot
+                    StreamLineSource::Buffer(line) => inlay_snapshot
                         .stream()
                         .buffer_to_stream(zcv_text::Line::new(*line)),
                     _ => continue,
                 };
                 let tab_width = display.buffer_snapshot().config().tab.tab_width();
-                let rendered = crate::display_map::render_viewport_chunks(
-                    crate::display_map::ViewportChunkSource {
+                let rendered = render_viewport_chunks(
+                    ViewportChunkSource {
                         text: text.as_ref(),
                         global_byte_start: *global_byte_start,
                         stream_line,
@@ -325,7 +327,7 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
                         inserted_styles: None,
                     },
                     tab_width,
-                    crate::display_map::LineStyles {
+                    LineStyles {
                         spans: &[],
                         styles: &[],
                         backgrounds: &search_backgrounds,
@@ -354,7 +356,7 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
             editor.search(&query("abc"), window, cx);
         });
         let engine_snapshot = editor.read(cx).render_snapshot();
-        let display = crate::display_map::DisplayMap::new(engine_snapshot.clone()).snapshot();
+        let display = DisplayMap::new(engine_snapshot.clone()).snapshot();
         // 渲染全部 4 行，统计带背景的 chunk。
         let search_highlights = editor.read(cx).search_highlights().unwrap();
         let colors = zcv_theme::color::current(cx);
@@ -374,12 +376,10 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
                 )
             })
             .collect();
-        let viewport = display
-            .slice_viewport(crate::display_map::DisplayRow::new(0), 4)
-            .unwrap();
+        let viewport = display.slice_viewport(DisplayRow::new(0), 4).unwrap();
         let mut with_bg = 0usize;
         for row in viewport.rows() {
-            let crate::display_map::WrapViewportRowKind::Text {
+            let WrapViewportRowKind::Text {
                 source,
                 text,
                 byte_range,
@@ -393,14 +393,14 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
                     .fold_snapshot()
                     .inlay_snapshot();
                 let stream_line = match source {
-                    crate::display_map::StreamLineSource::Buffer(line) => inlay_snapshot
+                    StreamLineSource::Buffer(line) => inlay_snapshot
                         .stream()
                         .buffer_to_stream(zcv_text::Line::new(*line)),
                     _ => continue,
                 };
                 let tab_width = display.buffer_snapshot().config().tab.tab_width();
-                let rendered = crate::display_map::render_viewport_chunks(
-                    crate::display_map::ViewportChunkSource {
+                let rendered = render_viewport_chunks(
+                    ViewportChunkSource {
                         text: text.as_ref(),
                         global_byte_start: *global_byte_start,
                         stream_line,
@@ -409,7 +409,7 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
                         inserted_styles: None,
                     },
                     tab_width,
-                    crate::display_map::LineStyles {
+                    LineStyles {
                         spans: &[],
                         styles: &[],
                         backgrounds: &search_backgrounds,
@@ -466,7 +466,7 @@ zcv final
         });
         // 用引擎快照构造 DisplayMap（与 element 渲染相同路径）。
         let engine_snapshot = editor.read(cx).render_snapshot();
-        let display = crate::display_map::DisplayMap::new(engine_snapshot.clone()).snapshot();
+        let display = DisplayMap::new(engine_snapshot.clone()).snapshot();
         let line_count = display.line_count();
         let search_highlights = editor.read(cx).search_highlights().unwrap();
         assert_eq!(
@@ -493,11 +493,11 @@ zcv final
             .collect();
         // 渲染全部行，统计带背景的 chunk（应与匹配数一致）。
         let viewport = display
-            .slice_viewport(crate::display_map::DisplayRow::new(0), line_count)
+            .slice_viewport(DisplayRow::new(0), line_count)
             .unwrap();
         let mut with_bg = 0usize;
         for row in viewport.rows() {
-            let crate::display_map::WrapViewportRowKind::Text {
+            let WrapViewportRowKind::Text {
                 source,
                 text,
                 byte_range,
@@ -511,14 +511,14 @@ zcv final
                     .fold_snapshot()
                     .inlay_snapshot();
                 let stream_line = match source {
-                    crate::display_map::StreamLineSource::Buffer(line) => inlay_snapshot
+                    StreamLineSource::Buffer(line) => inlay_snapshot
                         .stream()
                         .buffer_to_stream(zcv_text::Line::new(*line)),
                     _ => continue,
                 };
                 let tab_width = display.buffer_snapshot().config().tab.tab_width();
-                let rendered = crate::display_map::render_viewport_chunks(
-                    crate::display_map::ViewportChunkSource {
+                let rendered = render_viewport_chunks(
+                    ViewportChunkSource {
                         text: text.as_ref(),
                         global_byte_start: *global_byte_start,
                         stream_line,
@@ -527,7 +527,7 @@ zcv final
                         inserted_styles: None,
                     },
                     tab_width,
-                    crate::display_map::LineStyles {
+                    LineStyles {
                         // 与 element 相同：语法高亮 spans + 搜索背景层共存。
                         spans: &display.highlighted_spans_for_viewport(&viewport),
                         styles: display.highlight_styles(),

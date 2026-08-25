@@ -13,19 +13,19 @@ use zcv_multi_buffer::MultiBuffer;
 use zcv_text::Snapshot;
 use zcv_text::{Buffer, BufferConfig, BufferLoadError};
 
-pub struct BufferStore {
+pub(crate) struct BufferStore {
     opened_buffers: HashMap<PathBuf, WeakEntity<MultiBuffer>>,
 }
 
 impl BufferStore {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             opened_buffers: HashMap::new(),
         }
     }
 
     /// 打开文件；同一个规范化路径始终复用仍然存活的 MultiBuffer。
-    pub fn open_buffer(
+    pub(crate) fn open_buffer(
         &mut self,
         path: &Path,
         cx: &mut App,
@@ -55,7 +55,7 @@ impl BufferStore {
     }
 
     /// 如果路径对应某个已打开的 Buffer，从磁盘重新加载其内容。
-    pub fn reload_buffer_for_path(&mut self, path: &Path, cx: &mut App) {
+    pub(crate) fn reload_buffer_for_path(&mut self, path: &Path, cx: &mut App) {
         let Ok(canonical) = path.canonicalize() else {
             return;
         };
@@ -81,7 +81,7 @@ impl BufferStore {
     }
 
     /// 将已打开 Buffer 的路径索引随文件或目录重命名一起迁移。
-    pub fn rename_path(&mut self, from: &Path, to: &Path) {
+    pub(crate) fn rename_path(&mut self, from: &Path, to: &Path) {
         self.opened_buffers = self
             .opened_buffers
             .drain()
@@ -90,7 +90,7 @@ impl BufferStore {
     }
 
     /// 移除被删除文件或目录对应的路径索引；目录删除时连同其中已打开的 Buffer 一起移除。
-    pub fn remove_path(&mut self, path: &Path) {
+    pub(crate) fn remove_path(&mut self, path: &Path) {
         self.opened_buffers
             .retain(|indexed, _| indexed.strip_prefix(path).is_err());
     }

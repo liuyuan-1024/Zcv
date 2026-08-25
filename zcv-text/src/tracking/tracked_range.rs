@@ -10,7 +10,7 @@ use super::{
 use crate::{
     TextResult,
     errors::AnchorError,
-    position_map::{MappingResult, PositionMap, Stickiness},
+    position_map::{BoundarySide, MappingResult, PositionMap, Stickiness, boundary_affinity},
     transaction::DeltaEvent,
     types::{BufferVersion, TextRange},
 };
@@ -133,18 +133,10 @@ impl TrackedRange {
     }
 
     fn from_valid_range(version: BufferVersion, range: TextRange, stickiness: Stickiness) -> Self {
-        let start = Anchor::new(version, range.start()).with_affinity(
-            crate::position_map::boundary_affinity(
-                stickiness,
-                crate::position_map::BoundarySide::Start,
-            ),
-        );
-        let end = Anchor::new(version, range.end()).with_affinity(
-            crate::position_map::boundary_affinity(
-                stickiness,
-                crate::position_map::BoundarySide::End,
-            ),
-        );
+        let start = Anchor::new(version, range.start())
+            .with_affinity(boundary_affinity(stickiness, BoundarySide::Start));
+        let end = Anchor::new(version, range.end())
+            .with_affinity(boundary_affinity(stickiness, BoundarySide::End));
 
         Self {
             start,
@@ -187,10 +179,10 @@ fn should_invalidate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AnchorError, TextError};
+    use crate::{AnchorError, ByteOffset, TextError};
 
-    fn b(value: usize) -> crate::ByteOffset {
-        crate::ByteOffset::new(value)
+    fn b(value: usize) -> ByteOffset {
+        ByteOffset::new(value)
     }
 
     #[test]

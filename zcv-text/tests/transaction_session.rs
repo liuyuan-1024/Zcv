@@ -2,7 +2,7 @@
 
 use zcv_text::*;
 
-pub mod common;
+mod common;
 use common::*;
 
 #[test]

@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use super::{HistoryEntry, HistoryNodeId, HistoryStatus};
 use crate::{
-    TextError, TextResult, TransactionId, TransactionSource,
+    TextError, TextRange, TextResult, TransactionId, TransactionSource,
     buffer::Buffer,
+    position_map::{Affinity, PositionMap},
     transaction::{ChangeSet, Delta, Edit, EditList, TransactionMergePolicy, TransactionMetadata},
 };
 
@@ -240,7 +241,7 @@ impl Buffer {
         &self,
         edits: &EditList,
     ) -> TextResult<EditList> {
-        let position_map = crate::position_map::PositionMap::from_edits(edits.as_slice());
+        let position_map = PositionMap::from_edits(edits.as_slice());
 
         let mut inverse = Vec::with_capacity(edits.len());
 
@@ -251,10 +252,7 @@ impl Buffer {
             // 旧位置 → 新位置（与 ChangeSet::changed_ranges 用同一算法）。
             // 单点映射在事务 edit 数很小时比批量映射更快（零临时分配）。
             let new_start = position_map
-                .map_old_position_with_affinity(
-                    edit.range().start(),
-                    crate::position_map::Affinity::Before,
-                )
+                .map_old_position_with_affinity(edit.range().start(), Affinity::Before)
                 .value();
             let replacement_bytes = edit.replacement().len();
             let new_end = new_start.checked_add(replacement_bytes).ok_or_else(|| {
@@ -264,7 +262,7 @@ impl Buffer {
                 }
             })?;
 
-            let new_range = crate::TextRange::new(new_start, new_end)?;
+            let new_range = TextRange::new(new_start, new_end)?;
             inverse.push(Edit::replace(new_range, deleted_text));
         }
 

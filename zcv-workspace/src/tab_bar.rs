@@ -10,17 +10,17 @@ use zcv_theme::{color, space};
 
 /// 标签栏右侧功能插槽的构建器：每次渲染时调用生成插槽元素。
 /// 元素不可复制（ArenaBox 独占所有权），无法缓存实例，只能以构建器形式保存。
-pub type TabBarTrailing = Rc<dyn Fn(&App) -> AnyElement>;
+pub(crate) type TabBarTrailing = Rc<dyn Fn(&App) -> AnyElement>;
 
 /// 标签栏容器，标签渲染由调用方提供子元素。
-pub struct TabBar {
+pub(crate) struct TabBar {
     scroll_handle: Option<ScrollHandle>,
     /// 右侧功能插槽的构建器。
     trailing: Option<TabBarTrailing>,
 }
 
 impl TabBar {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             scroll_handle: None,
             trailing: None,
@@ -28,19 +28,19 @@ impl TabBar {
     }
 
     /// 关联 ScrollHandle，使标签栏可程序化滚动。
-    pub fn track_scroll(mut self, handle: &ScrollHandle) -> Self {
+    pub(crate) fn track_scroll(mut self, handle: &ScrollHandle) -> Self {
         self.scroll_handle = Some(handle.clone());
         self
     }
 
     /// 设置右侧功能插槽的构建器（不随标签滚动）。
-    pub fn with_trailing(mut self, build: TabBarTrailing) -> Self {
+    pub(crate) fn with_trailing(mut self, build: TabBarTrailing) -> Self {
         self.trailing = Some(build);
         self
     }
 
     /// 设置外层容器样式并填入子元素，然后渲染。
-    pub fn with_bar(
+    pub(crate) fn with_bar(
         self,
         cx: &gpui::App,
         f: impl FnOnce(Div) -> Div,

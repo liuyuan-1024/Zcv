@@ -5,6 +5,8 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Read, Write as _};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -332,7 +334,6 @@ impl RealGitRepository {
     ) -> Result<Output> {
         #[cfg(unix)]
         {
-            use std::os::unix::process::CommandExt as _;
             command.process_group(0);
         }
 

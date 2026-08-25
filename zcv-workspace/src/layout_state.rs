@@ -16,26 +16,26 @@ pub(crate) const LAYOUT_VERSION: u32 = 2;
 
 /// 中心 Pane 的标签快照：文件路径按 tab 顺序排列，active_item 为活动标签索引。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct SerializedPane {
-    pub items: Vec<PathBuf>,
-    pub active_item: Option<usize>,
+pub(crate) struct SerializedPane {
+    pub(crate) items: Vec<PathBuf>,
+    pub(crate) active_item: Option<usize>,
 }
 
 /// 面板自持状态（面板经 `Panel::serialized_state` 提供，如终端会话列表）。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct PanelState {
+pub(crate) struct PanelState {
     /// 面板持久化标识（persistent_name）。
-    pub name: String,
+    pub(crate) name: String,
     /// 面板自定义序列化数据。
-    pub data: serde_json::Value,
+    pub(crate) data: serde_json::Value,
 }
 
 #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct WorkspaceLayout {
-    pub version: u32,
-    pub docks: DockStructure,
-    pub pane: SerializedPane,
-    pub panels: Vec<PanelState>,
+pub(crate) struct WorkspaceLayout {
+    pub(crate) version: u32,
+    pub(crate) docks: DockStructure,
+    pub(crate) pane: SerializedPane,
+    pub(crate) panels: Vec<PanelState>,
 }
 
 pub(crate) fn path_for_workspace(root: Option<&Path>) -> PathBuf {

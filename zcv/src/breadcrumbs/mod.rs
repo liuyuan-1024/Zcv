@@ -23,7 +23,7 @@ impl Default for Breadcrumbs {
 }
 
 impl Breadcrumbs {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             active_item: None,
             subscription: None,

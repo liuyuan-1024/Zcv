@@ -18,4 +18,6 @@ pub use git_store::{
 };
 pub use project_store::{ActiveProjectRoot, Project, ProjectEvent};
 pub use search::ProjectSearchResults;
-pub use worktree::{WorktreeEntry, new_entry_destination, rename_destination, translate_path};
+pub use worktree::{
+    NewEntryDestination, WorktreeEntry, new_entry_destination, rename_destination, translate_path,
+};

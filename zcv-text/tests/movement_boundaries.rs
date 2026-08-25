@@ -1,4 +1,4 @@
-pub mod common;
+mod common;
 
 use common::*;
 use zcv_text::{CoordinateError, MovementDirection, MovementUnit, TextError};

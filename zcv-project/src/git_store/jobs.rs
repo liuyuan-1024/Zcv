@@ -12,7 +12,7 @@ use zcv_git::GitCancellation;
 use super::{GitOperationOutcome, GitStore, GitStoreEvent};
 
 /// job 标识。
-pub type GitJobId = u64;
+pub(super) type GitJobId = u64;
 
 /// job 执行阶段。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

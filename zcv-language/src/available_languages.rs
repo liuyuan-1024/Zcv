@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tree_sitter::Query;
 
 use crate::AutoClosePair;
-use crate::registry::{LanguageEntry, LanguageMatcher, LanguageQueries};
+use crate::registry::{LanguageEntry, LanguageMatcher as M, LanguageQueries};
 
 /// tree-sitter 本身不提供查询继承；语言规格在加载时将基础查询与扩展查询合并编译。
 #[derive(Clone, Copy)]
@@ -119,7 +119,6 @@ const COMMON_PAIRS: &[AutoClosePair] = &[
 
 /// 内置语言数据：注册表初始化来源（新增语言在此加一条即可）。
 pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
-    use LanguageMatcher as M;
     vec![
         LanguageEntry {
             name: "Rust",

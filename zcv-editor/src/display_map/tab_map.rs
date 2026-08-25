@@ -93,10 +93,10 @@ impl TabSnapshot {
         let inlay = self.fold_snapshot.inlay_snapshot();
         match self.projected_kind(line)? {
             StreamProjectedKind::Text(source) => match source {
-                super::line_stream::StreamLineSource::Buffer(buffer_line) => {
+                StreamLineSource::Buffer(buffer_line) => {
                     Some(inlay.stream().buffer_to_stream(Line::new(buffer_line)))
                 }
-                super::line_stream::StreamLineSource::Inserted { anchor, index } => {
+                StreamLineSource::Inserted { anchor, index } => {
                     let start = inlay.stream().inserted_block_start(anchor)?;
                     Some(Line::new(start.get() + index))
                 }
@@ -281,7 +281,7 @@ pub(super) fn advance_display_column(column: usize, grapheme: &str, snapshot: &S
 ///
 /// 文本首字符所处的显示列（软换行续行从假空格缩进后的列开始，tab 对齐必须基于行内绝对列而非片段内相对列）。
 /// 目标列落在某个 grapheme 中间时吸附到最近边界（距离相等取前）；超出文本末尾返回 `text.len()`。
-pub fn byte_for_display_column(
+pub(crate) fn byte_for_display_column(
     text: &str,
     start_column: usize,
     target_column: usize,

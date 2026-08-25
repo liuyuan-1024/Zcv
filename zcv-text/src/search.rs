@@ -7,8 +7,10 @@ use regex_automata::meta;
 
 use crate::{
     BufferConfig, BufferVersion, ByteOffset, CoordinateError, SearchError, Snapshot, Stickiness,
-    TextError, TextRange, TextResult, VersionedResult, position_map::MappingResult,
-    storage::TextRead, transaction::DeltaEvent,
+    TextError, TextRange, TextResult, VersionedResult,
+    position_map::{MappingResult, PositionMap},
+    storage::TextRead,
+    transaction::DeltaEvent,
 };
 
 /// 与宿主和搜索范围无关的统一文本查询。
@@ -345,10 +347,7 @@ impl<O: Copy> SearchResultSet<O> {
 /// 推进到新坐标；只保留 `Mapped` 的匹配，`Deleted` / `Collapsed` / `Ambiguous`
 /// 一律丢弃。保留下来的匹配按出现顺序连续重排 ordinal 从 0 开始，与原始
 /// 搜索结果构造时的 ordinal 约定保持一致。
-fn remap_search_matches(
-    matches: Vec<SearchMatch>,
-    position_map: &crate::position_map::PositionMap,
-) -> Vec<SearchMatch> {
+fn remap_search_matches(matches: Vec<SearchMatch>, position_map: &PositionMap) -> Vec<SearchMatch> {
     let mut remapped = Vec::with_capacity(matches.len());
     for search_match in matches {
         if let MappingResult::Mapped(new_range) =

@@ -212,14 +212,26 @@ impl GitStore {
         Some(id)
     }
 
-    /// 当前可见任务。远程操作（含排队、取消、确认阶段）优先，确保用户点击后立即获得反馈。
+    /// 当前可见任务。远程操作（含排队、取消、确认阶段）优先，确保用户点击后立即获得反馈；
+    /// 后台自动扫描/刷新静默执行（指示器只展示用户可见操作）。
     pub fn current_job(&self) -> Option<GitJobStatus> {
         let record = self
             .jobs
             .values()
             .filter(|job| job.operation.is_some())
             .min_by_key(|job| job.id)
-            .or_else(|| self.in_flight.and_then(|id| self.jobs.get(&id)))?;
+            .or_else(|| {
+                self.in_flight
+                    .and_then(|id| self.jobs.get(&id))
+                    .filter(|job| {
+                        !matches!(
+                            job.key,
+                            GitJobKey::ReloadGitState
+                                | GitJobKey::RefreshStatuses
+                                | GitJobKey::RefreshHunks
+                        )
+                    })
+            })?;
         Some(GitJobStatus {
             name: record.name.clone(),
             operation: record.operation,

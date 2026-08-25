@@ -497,6 +497,14 @@ impl GitStore {
             .and_then(|repository| repository.snapshot.branch.as_deref())
     }
 
+    /// 当前活动仓库 HEAD 提交的完整 oid（detached HEAD 时存在；空仓库无提交时为 None）。
+    pub fn current_head_commit(&self) -> Option<&str> {
+        self.active_repo_workdir
+            .as_ref()
+            .and_then(|workdir| self.repo_by_workdir(workdir))
+            .and_then(|repository| repository.snapshot.head.as_deref())
+    }
+
     /// 活动仓库的本地分支列表（无仓库、active 未建立时为 None；空仓库为空列表）。
     ///
     /// 与 current_branch 同仓库选择策略，保证分支按钮与列表一致。

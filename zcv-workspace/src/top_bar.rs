@@ -45,6 +45,12 @@ impl TopBar {
             .update(cx, |picker, _| picker.set_branch(branch));
     }
 
+    /// 设置活动仓库 HEAD 提交的 oid（detached HEAD 时分支选择器显示短 SHA）。
+    pub fn set_head_commit(&mut self, head_commit: Option<String>, cx: &mut gpui::Context<Self>) {
+        self.branch_picker
+            .update(cx, |picker, _| picker.set_head_commit(head_commit));
+    }
+
     pub fn set_branches(&mut self, branches: Vec<Branch>, cx: &mut gpui::Context<Self>) {
         self.branch_picker
             .update(cx, |picker, _| picker.set_branches(branches));

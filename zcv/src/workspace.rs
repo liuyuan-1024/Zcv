@@ -521,6 +521,7 @@ fn initialize_workspace(
     let git_store = project.read(cx).git_store();
     let git_subscription = cx.subscribe(&git_store, move |workspace, store, event, cx| {
         let branch = store.read(cx).current_branch().map(str::to_string);
+        let head_commit = store.read(cx).current_head_commit().map(str::to_string);
         let has_repositories = store.read(cx).has_repositories();
         let remote_operation_state = store.read(cx).remote_operation_state();
         // 分支列表随事件推送（活动仓库；选择器打开时同步渲染，无加载态）。
@@ -531,6 +532,7 @@ fn initialize_workspace(
             .unwrap_or_default();
         top_bar.update(cx, |bar, cx| {
             bar.set_branch(branch, cx);
+            bar.set_head_commit(head_commit, cx);
             bar.set_branches(branch_list, cx);
             bar.set_has_repositories(has_repositories);
             bar.set_remote_operation_state(remote_operation_state);

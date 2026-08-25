@@ -24,12 +24,24 @@ pub(super) enum ScrollbarThumbState {
     Dragging,
 }
 
+/// 待应用的自动滚动请求。
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PendingAutoscroll {
+    /// 最小滚动：目标行进出视口才滚动（正常编辑跟随）。
+    Fit(DisplayPoint),
+    /// 顶部相对定位：目标行固定在视口顶部下方指定行数（导航跳转）。
+    TopRelative {
+        point: DisplayPoint,
+        offset_rows: usize,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct ScrollManager {
     anchor: DisplayPoint,
     offset: Point<Pixels>,
     viewport: Option<ScrollViewport>,
-    pending_autoscroll: Option<DisplayPoint>,
+    pending_autoscroll: Option<PendingAutoscroll>,
     /// 本次自动滚动请求的水平部分待布局后钳制（垂直部分已在布局前应用）。
     pending_horizontal_autoscroll: bool,
     thumb_state: ScrollbarThumbState,
@@ -67,8 +79,8 @@ impl ScrollManager {
         let old_offset = self.offset;
         self.set_scroll_left(self.offset.x);
         self.set_scroll_top(self.scroll_top());
-        if let Some(point) = self.pending_autoscroll {
-            self.ensure_visible(point);
+        if let Some(pending) = self.pending_autoscroll {
+            self.apply_autoscroll(pending);
         }
         self.anchor != old_anchor || self.offset != old_offset
     }
@@ -86,7 +98,25 @@ impl ScrollManager {
     }
 
     pub(super) fn request_autoscroll(&mut self, point: DisplayPoint) {
-        self.pending_autoscroll = Some(point);
+        self.pending_autoscroll = Some(PendingAutoscroll::Fit(point));
+    }
+
+    /// 顶部相对定位：目标行固定在视口顶部下方指定行数。
+    pub(super) fn request_scroll_to_top(&mut self, point: DisplayPoint, offset_rows: usize) {
+        self.pending_autoscroll = Some(PendingAutoscroll::TopRelative { point, offset_rows });
+    }
+
+    fn apply_autoscroll(&mut self, pending: PendingAutoscroll) {
+        match pending {
+            PendingAutoscroll::Fit(point) => self.ensure_visible(point),
+            PendingAutoscroll::TopRelative { point, offset_rows } => {
+                let Some(viewport) = self.viewport else {
+                    return;
+                };
+                let target_row = point.row().get().saturating_sub(offset_rows);
+                self.set_scroll_top(viewport.line_height * target_row);
+            }
+        }
     }
 
     pub(super) fn page_row_count(&self) -> Option<usize> {
@@ -160,14 +190,19 @@ impl ScrollManager {
     /// 垂直部分只依赖光标行与视口几何，不依赖布局；
     /// 在布局前应用可让首遍布局即为最终布局，避免光标移动帧的第二遍全量重排。
     pub(super) fn apply_pending_autoscroll_vertical(&mut self) -> bool {
-        let Some(point) = self.pending_autoscroll.take() else {
+        // 视口未就绪（首帧布局前）时保留请求，由布局时的 update_viewport 应用；
+        // 否则 take 会吞掉请求导致导航定位丢失。
+        if self.viewport.is_none() {
+            return false;
+        }
+        let Some(pending) = self.pending_autoscroll.take() else {
             return false;
         };
         // 本次请求的水平部分留给布局后钳制（需要光标像素坐标）。
         self.pending_horizontal_autoscroll = true;
         let old_anchor = self.anchor;
         let old_offset = self.offset;
-        self.ensure_visible(point);
+        self.apply_autoscroll(pending);
         self.anchor != old_anchor || self.offset != old_offset
     }
 

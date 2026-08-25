@@ -1,5 +1,8 @@
 //! Editor View 的跨帧状态与交互。
 
+/// 导航跳转（打开文件/行列定位）时目标行距视口顶部的固定行数，留出上下文。
+pub(super) const NAVIGATION_TOP_OFFSET: usize = 4;
+
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -587,7 +590,7 @@ impl Editor {
         );
     }
 
-    /// 跳转到 0-indexed 逻辑行列，并把目标滚动到可视区域。
+    /// 跳转到 0-indexed 逻辑行列，并把目标固定在视口顶部下方。
     /// 列按 Unicode scalar value 计数，与文本引擎 Position 坐标一致。
     pub fn navigate_to_line_column(
         &mut self,
@@ -602,6 +605,7 @@ impl Editor {
             return false;
         };
         self.change_selections(SelectionSet::caret(offset), cx);
+        self.request_scroll_to_top(NAVIGATION_TOP_OFFSET);
         true
     }
 
@@ -1574,6 +1578,15 @@ impl Editor {
         let head = self.resolved_selections().primary().head();
         if let Ok(point) = self.display_map.offset_to_display_point(head) {
             self.scroll_manager.request_autoscroll(point);
+        }
+    }
+
+    /// 导航跳转定位：把光标行固定在视口顶部下方指定行数。
+    pub(super) fn request_scroll_to_top(&mut self, offset_rows: usize) {
+        let head = self.resolved_selections().primary().head();
+        if let Ok(point) = self.display_map.offset_to_display_point(head) {
+            self.scroll_manager
+                .request_scroll_to_top(point, offset_rows);
         }
     }
 

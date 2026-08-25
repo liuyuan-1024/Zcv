@@ -103,7 +103,7 @@ actions!(
     ]
 );
 
-actions!(terminal, [NewTerminal, Clear]);
+actions!(terminal, [NewTerminal, Clear, Interrupt]);
 
 actions!(dock, [ToggleLeftDock, ToggleBottomDock, ToggleRightDock,]);
 

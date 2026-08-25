@@ -963,9 +963,10 @@ mod pty_tests {
     use std::time::{Duration, Instant};
 
     use gpui::{
-        Context, Entity, EntityInputHandler, IntoElement, Render, TestAppContext,
+        Context, Entity, EntityInputHandler, IntoElement, KeyBinding, Render, TestAppContext,
         VisualTestContext, Window, div, prelude::*, px,
     };
+    use zcv_actions::Interrupt;
 
     use super::*;
     use crate::TerminalView;
@@ -1029,6 +1030,39 @@ mod pty_tests {
 
         wait_for_content(cx, &terminal, |content| {
             all_text(content).contains("zcv-terminal-ok")
+        })
+        .await;
+    }
+
+    /// 终端上下文的 Ctrl-C 必须中断前台进程，并让 shell 继续接收后续命令。
+    #[gpui::test]
+    async fn ctrl_c_interrupts_foreground_process(cx: &mut TestAppContext) {
+        let terminal = build_terminal(cx);
+        let terminal_for_view = terminal.clone();
+        let (view, cx) = cx.add_window_view(move |_window, cx| {
+            cx.bind_keys([KeyBinding::new("ctrl-c", Interrupt, Some("terminal"))]);
+            TerminalView::new(terminal_for_view, cx)
+        });
+        cx.update(|window, cx| {
+            window.focus(&view.read(cx).focus_handle());
+            let _ = window.draw(cx);
+            terminal.update(cx, |terminal, cx| {
+                terminal.write_input(b"sleep 30\n".to_vec(), cx);
+            });
+        });
+        cx.background_executor
+            .timer(Duration::from_millis(100))
+            .await;
+
+        cx.simulate_keystrokes("ctrl-c");
+        cx.update(|_window, cx| {
+            terminal.update(cx, |terminal, cx| {
+                terminal.write_input(b"echo zcv-ctrl-c-ok\n".to_vec(), cx);
+            });
+        });
+
+        wait_for_content(cx, &terminal, |content| {
+            all_text(content).contains("zcv-ctrl-c-ok")
         })
         .await;
     }

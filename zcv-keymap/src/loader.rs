@@ -396,4 +396,28 @@ mod tests {
             }
         });
     }
+
+    /// Ctrl-C 在终端中必须发送中断字符，不能落到编辑器复制或全局取消动作。
+    #[test]
+    fn terminal_keymap_binds_ctrl_c_to_interrupt_on_every_platform() {
+        for source in [
+            "default-macos.json",
+            "default-linux.json",
+            "default-windows.json",
+        ] {
+            let json = zcv_assets::text(&format!("keymaps/{source}"))
+                .unwrap_or_else(|_| panic!("缺少内置快捷键 {source}"));
+            let groups: Vec<RawBindingGroup> =
+                serde_json::from_str(&json).expect("keymap 必须是合法 JSON");
+            let terminal = groups
+                .iter()
+                .find(|group| group.context.as_deref() == Some("terminal"))
+                .unwrap_or_else(|| panic!("{source} 缺少 terminal 上下文"));
+            assert_eq!(
+                terminal.bindings.get("ctrl-c").map(RawAction::name),
+                Some("terminal::Interrupt"),
+                "{source} 的 Ctrl-C 必须发送终端中断"
+            );
+        }
+    }
 }

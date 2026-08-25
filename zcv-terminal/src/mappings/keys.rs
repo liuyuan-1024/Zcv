@@ -128,7 +128,7 @@ fn modifier_code(modifiers: &Modifiers) -> u32 {
 
 /// Ctrl 控制码：ctrl+a..z → 0x01..0x1a；标点符号按 ASCII 相对位置。
 fn control_key(key_char: Option<&str>, key: &str) -> Option<String> {
-    if let Some(char) = key_char {
+    if let Some(char) = key_char.or_else(|| printable_key(key)) {
         let char = char.chars().next()?;
         // ctrl+[a-z] 与 ctrl+[A-Z]。
         if char.is_ascii_alphabetic() {
@@ -294,6 +294,21 @@ mod tests {
         );
         assert_eq!(
             to_esc_str(&ks("c"), &Modes::NONE, false).as_deref(),
+            Some("\x03")
+        );
+    }
+
+    #[test]
+    fn ctrl_letters_fall_back_to_physical_key_without_key_char() {
+        let ctrl_c = keystroke(
+            "c",
+            Modifiers {
+                control: true,
+                ..Modifiers::none()
+            },
+        );
+        assert_eq!(
+            to_esc_str(&ctrl_c, &Modes::NONE, false).as_deref(),
             Some("\x03")
         );
     }

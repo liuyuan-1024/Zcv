@@ -123,6 +123,7 @@
   {
     "context": "terminal",
     "bindings": {
+      "ctrl-c": "terminal::Interrupt",
       "cmd-c": "editor::Copy",
       "cmd-v": "editor::Paste",
       "cmd-k": "terminal::Clear",

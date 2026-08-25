@@ -14,7 +14,7 @@ use crate::{
     mappings::{keys, mouse},
 };
 
-use zcv_actions::{Clear, Copy, Paste};
+use zcv_actions::{Clear, Copy, Interrupt, Paste};
 use zcv_workspace::{Item, ItemEvent};
 
 pub struct TerminalView {
@@ -147,6 +147,13 @@ impl TerminalView {
     /// 清空屏幕与滚动回看。
     fn handle_clear(&mut self, _: &Clear, _window: &mut Window, cx: &mut Context<Self>) {
         self.terminal.update(cx, |terminal, cx| terminal.clear(cx));
+    }
+
+    /// 向前台进程发送 ETX（0x03），由终端驱动解释为 SIGINT。
+    fn handle_interrupt(&mut self, _: &Interrupt, _window: &mut Window, cx: &mut Context<Self>) {
+        self.terminal
+            .update(cx, |terminal, cx| terminal.write_input(vec![0x03], cx));
+        cx.stop_propagation();
     }
 
     /// 鼠标按下：报告模式转发字节；否则开始选择（双击语义选择、三击整行）。
@@ -474,6 +481,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::handle_copy))
             .on_action(cx.listener(Self::handle_paste))
             .on_action(cx.listener(Self::handle_clear))
+            .on_action(cx.listener(Self::handle_interrupt))
             .child(TerminalElement::new(cx.entity()))
     }
 }

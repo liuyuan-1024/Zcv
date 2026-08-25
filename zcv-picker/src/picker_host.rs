@@ -1,6 +1,6 @@
 //! PickerHost —— 「按钮 + 浮层」外壳：打开状态、dismiss、焦点与浮层渲染。
 //!
-//! ProjectPicker / BranchPicker 各自持有数据源与 glyph 内容，共用的开关交互、焦点管理、全屏拦截与浮层样式链收敛到这里。
+//! ProjectPicker / BranchPicker 各自持有数据源与按钮内容，共用的开关交互、焦点管理、全屏拦截与浮层样式链收敛到这里。
 //! 打开状态与互斥统一由全局 `ModalLayer` 管理（同一时刻最多一个浮层）。
 
 use std::cell::Cell;

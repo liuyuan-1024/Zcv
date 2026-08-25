@@ -4,7 +4,7 @@
 //! 换行点由 gpui 的 LineWrapper 计算（与 Zed 同源算法：词边界优先、长词硬断、首行缩进继承）。
 //! 续行的视觉缩进是一段"假空格"，作为显示文本的前缀参与布局、命中测试与坐标换算，因此渲染端无需为续行做任何特殊定位。
 //!
-//! 与 FoldMap 一样，WrapMap 用 SumTree<Transform> 维护"输入 tab 行 → 输出显示行"的拓扑：Isomorphic 段把连续不换行行合并，Wrap 段把单个宽行拆成 `wrap_points.len() + 1` 个显示行。
+//! 与 FoldMap 一样，WrapMap 用 `SumTree<Transform>` 维护"输入 tab 行 → 输出显示行"的拓扑：Isomorphic 段把连续不换行行合并，Wrap 段把单个宽行拆成 `wrap_points.len() + 1` 个显示行。
 //! 折叠与换行是正交的两层变换：折叠先塌缩文本，换行再按像素宽度切分。
 
 use std::ops::Range;

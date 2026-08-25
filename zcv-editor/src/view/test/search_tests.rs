@@ -464,9 +464,9 @@ zcv final
         editor.update(cx, |editor, cx| {
             editor.search(&query("zcv"), window, cx);
         });
-        // 用引擎快照构造 DisplayMap（与 element 渲染相同路径）。
-        let engine_snapshot = editor.read(cx).render_snapshot();
-        let display = DisplayMap::new(engine_snapshot.clone()).snapshot();
+        // 用 zcv-text 快照构造 DisplayMap（与 element 渲染相同路径）。
+        let snapshot = editor.read(cx).render_snapshot();
+        let display = DisplayMap::new(snapshot.clone()).snapshot();
         let line_count = display.line_count();
         let search_highlights = editor.read(cx).search_highlights().unwrap();
         assert_eq!(

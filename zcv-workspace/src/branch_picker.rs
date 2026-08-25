@@ -1,6 +1,6 @@
 //! BranchPicker —— git 分支选择器。
 //!
-//! 自含 glyph 按钮 + 浮层，浮层内嵌 `Picker<BranchPickerDelegate>`。
+//! 自含按钮 + 浮层，浮层内嵌 `Picker<BranchPickerDelegate>`。
 //! 分支列表由 Workspace 订阅 GitStore 事件后推送（同步快照，打开即渲染，无加载态）；
 //! 切换/创建分支通过回调转发到 git_store 后台执行，完成后 GitStore 自动重扫并推送新列表。
 //!
@@ -162,9 +162,9 @@ impl PickerDelegate for BranchPickerDelegate {
 
 // ═══ Entity ═════════════════════════════════════════════════════
 
-/// 分支选择器 —— 自含 glyph 按钮 + 浮层。
+/// 分支选择器 —— 自含按钮 + 浮层。
 ///
-/// glyph 显示当前分支名，无分支（空仓库/detached）时显示占位 `--`。
+/// 显示当前分支名，无分支（空仓库/detached）时显示占位 `--`。
 pub struct BranchPicker {
     host: PickerHost,
     picker: Entity<Picker<BranchPickerDelegate>>,
@@ -192,7 +192,7 @@ impl BranchPicker {
         }
     }
 
-    /// 设置当前分支名（glyph 显示）。
+    /// 设置当前分支名。
     pub fn set_branch(&mut self, branch: Option<String>) {
         self.current_branch = branch;
     }
@@ -202,7 +202,7 @@ impl BranchPicker {
         self.branches = branches;
     }
 
-    /// 外部切换（快捷键/glyph 点击等）。
+    /// 外部切换（快捷键/点击等）。
     pub fn toggle(&mut self, window: &mut Window, cx: &mut App) {
         if !self.host.is_open(cx) {
             // 打开时用最新快照重建列表，清空搜索框。
@@ -236,8 +236,8 @@ impl Render for BranchPicker {
             color::current(cx).text
         };
 
-        // glyph 上显示当前分支名，没有时显示占位。
-        let glyph = Button::icon_text(
+        // 按钮上显示当前分支名，没有时显示占位。
+        let button = Button::icon_text(
             "top-bar.branch",
             "icons/git_branch.svg",
             self.current_branch.as_deref().unwrap_or("--"),
@@ -255,7 +255,7 @@ impl Render for BranchPicker {
             .key_context("BranchPicker")
             .on_action(cx.listener(Self::handle_toggle))
             .relative()
-            .child(glyph);
+            .child(button);
 
         // 浮层
         if self.host.is_open(cx) {

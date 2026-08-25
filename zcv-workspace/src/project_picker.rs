@@ -1,7 +1,7 @@
 //! ProjectPicker —— 项目选择器。
 //!
-//! 自含 glyph 按钮 + 浮层，浮层内嵌 `Picker<ProjectPickerDelegate>`。
-//! glyph 内联在布局中，浮层用 deferred + anchored 逃逸。
+//! 自含按钮 + 浮层，浮层内嵌 `Picker<ProjectPickerDelegate>`。
+//! 按钮内联在布局中，浮层用 deferred + anchored 逃逸。
 //!
 //! 最近项目从 `~/.zcv/recent_projects.json` 读取，"打开本地项目"调用系统文件选择器选择目录。
 
@@ -191,9 +191,9 @@ impl PickerDelegate for ProjectPickerDelegate {
 
 // ═══ Entity ═════════════════════════════════════════════════════
 
-/// 项目选择器 —— 自含 glyph 按钮 + 浮层。
+/// 项目选择器 —— 自含按钮 + 浮层。
 ///
-/// glyph 显示当前项目名称，无项目时显示「选择项目」。
+/// 显示当前项目名称，无项目时显示「选择项目」。
 pub struct ProjectPicker {
     host: PickerHost,
     picker: Entity<Picker<ProjectPickerDelegate>>,
@@ -201,7 +201,7 @@ pub struct ProjectPicker {
     pending_path: Rc<RefCell<Option<String>>>,
     /// 项目选中回调
     on_selected: OnProjectSelected,
-    /// 当前项目名称（glyph 上显示）
+    /// 当前项目名称
     current_label: String,
 }
 
@@ -249,7 +249,7 @@ impl ProjectPicker {
                 }
                 cx.notify();
             });
-            // 同步 glyph 上显示的当前项目名
+            // 同步按钮上显示的当前项目名
             let delegate = self.picker.read(cx).delegate();
             if let Some(entry) = delegate.projects.first() {
                 self.current_label = entry.label();
@@ -346,14 +346,14 @@ impl Render for ProjectPicker {
             color::current(cx).text
         };
 
-        // glyph 上显示当前项目名称，没有时显示「选择项目」
-        let glyph_text: &str = if self.current_label.is_empty() {
+        // 按钮上显示当前项目名称，没有时显示「选择项目」
+        let button_text: &str = if self.current_label.is_empty() {
             "选择项目"
         } else {
             &self.current_label
         };
 
-        let glyph = Button::text("project-picker", glyph_text.to_string())
+        let button = Button::text("project-picker", button_text.to_string())
             .label("项目选择器")
             .shortcut(&ToggleProjectPicker, cx)
             .color(color_value)
@@ -369,7 +369,7 @@ impl Render for ProjectPicker {
             .on_action(cx.listener(Self::handle_delete_recent))
             .on_action(cx.listener(Self::handle_open_local_project))
             .relative()
-            .child(glyph);
+            .child(button);
 
         // 浮层
         if self.host.is_open(cx) {

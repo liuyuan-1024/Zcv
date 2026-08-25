@@ -72,7 +72,7 @@ impl RopeyStorage {
 
     /// 从已构建的 `Rope` 直接接管所有权，避免再做一次全量 `from_str`。
     ///
-    /// 给流式加载路径（[`crate::Buffer::from_reader`]）走——decoder 已经把
+    /// 给流式加载路径（`Buffer::from_reader`）走——decoder 已经把
     /// 字节增量喂进 `RopeBuilder`，`finish()` 返回 `Rope` 后我们只是把它装进
     /// storage，不再二次拷贝。
     pub(crate) fn from_rope(rope: Rope) -> Self {

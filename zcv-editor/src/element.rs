@@ -286,7 +286,7 @@ pub(super) struct PrepaintState {
     /// hunk 色带 hitbox（起点行可见时插入；点击切换折叠/展开；类型 + 展开态标志）。
     deleted_hunk_hitboxes: Arc<Vec<HunkHitbox>>,
     /// 折叠删除 hunk 的交互三角标记（禁止渲染层手绘交互图标）。
-    deleted_hunk_glyphs: Vec<AnyElement>,
+    deleted_hunk_buttons: Vec<AnyElement>,
     /// crease 折叠开关（已按 gutter 绝对坐标布局；自带点击与 tooltip）。
     crease_toggles: Vec<Option<AnyElement>>,
     /// 折叠占位符点击 hitbox（合并行占位符段；点击展开）。
@@ -348,21 +348,21 @@ fn build_crease_toggles(
     toggles
 }
 
-fn build_deleted_hunk_glyphs(
+fn build_deleted_hunk_buttons(
     hitboxes: &[HunkHitbox],
     editor: &Entity<Editor>,
     line_height: Pixels,
     window: &mut Window,
     cx: &mut App,
 ) -> Vec<AnyElement> {
-    let mut glyphs = Vec::new();
+    let mut buttons = Vec::new();
     for (index, (hitbox, old_range, kind, expanded)) in hitboxes.iter().enumerate() {
         if *kind != DiffHunkKind::Deleted || *expanded {
             continue;
         }
         let editor = editor.clone();
         let old_range = old_range.clone();
-        let mut glyph = Button::icon(("deleted-hunk-toggle", index), "icons/triangle_right.svg")
+        let mut button = Button::icon(("deleted-hunk-toggle", index), "icons/triangle_right.svg")
             .color(color::current(cx).status_deleted)
             .label("展开删除内容")
             .on_click(move |_event, _window, cx| {
@@ -373,15 +373,15 @@ fn build_deleted_hunk_glyphs(
             })
             .into_any_element();
         let available_space = size(AvailableSpace::MinContent, AvailableSpace::MinContent);
-        let glyph_size = glyph.layout_as_root(available_space, window, cx);
+        let button_size = button.layout_as_root(available_space, window, cx);
         let origin = point(
             hitbox.bounds.left(),
-            hitbox.bounds.bottom() - glyph_size.height / 2.0 - line_height * 0.05,
+            hitbox.bounds.bottom() - button_size.height / 2.0 - line_height * 0.05,
         );
-        glyph.prepaint_as_root(origin, available_space, window, cx);
-        glyphs.push(glyph);
+        button.prepaint_as_root(origin, available_space, window, cx);
+        buttons.push(button);
     }
-    glyphs
+    buttons
 }
 
 /// 把 BlockMap 的虚拟块布局成真实 GPUI 元素。
@@ -867,7 +867,7 @@ impl Element for EditorElement {
             }
             hitboxes
         });
-        let deleted_hunk_glyphs = build_deleted_hunk_glyphs(
+        let deleted_hunk_buttons = build_deleted_hunk_buttons(
             &deleted_hunk_hitboxes,
             &self.editor,
             line_height,
@@ -929,7 +929,7 @@ impl Element for EditorElement {
             hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
             gutter_hitbox,
             deleted_hunk_hitboxes,
-            deleted_hunk_glyphs,
+            deleted_hunk_buttons,
             crease_toggles,
             placeholder_hitboxes,
             hunk_strips,
@@ -1175,8 +1175,8 @@ impl Element for EditorElement {
             }
             // crease 折叠开关：Button 组件（chevron 图标 + tooltip + 点击），prepaint 已按 gutter 绝对坐标布局，这里在 gutter 区域内绘制。
             window.paint_layer(gutter.bounds, |window| {
-                for glyph in &mut prepaint.deleted_hunk_glyphs {
-                    glyph.paint(window, cx);
+                for button in &mut prepaint.deleted_hunk_buttons {
+                    button.paint(window, cx);
                 }
                 for toggle in prepaint.crease_toggles.iter_mut().flatten() {
                     toggle.paint(window, cx);

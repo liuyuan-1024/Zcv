@@ -142,7 +142,7 @@ fn query_cursor_pool() -> &'static Mutex<Vec<QueryCursor>> {
     QUERY_CURSORS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-/// 把 tree-sitter 的文本回调适配到引擎快照的分块读取。
+/// 把 tree-sitter 的文本回调适配到 zcv-text 快照的分块读取。
 pub(crate) struct SnapshotTextProvider<'a>(pub(crate) &'a Snapshot);
 
 impl<'a> tree_sitter::TextProvider<&'a [u8]> for SnapshotTextProvider<'a> {

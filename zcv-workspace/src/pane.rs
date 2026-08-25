@@ -68,7 +68,7 @@ impl Render for DraggedTab {
             .selected(self.is_active)
             .italic(is_transient)
             .start_slot(item_icon(item.as_deref(), cx))
-            .end_slot(tab_end_glyph(
+            .end_slot(tab_end_button(
                 &self.pane,
                 self.item_id,
                 item.as_deref().is_some_and(|item| item.is_dirty(cx)),
@@ -708,7 +708,7 @@ fn render_tab(
         .selected(is_active)
         .italic(is_transient)
         .start_slot(item_icon(Some(item), cx))
-        .end_slot(tab_end_glyph(
+        .end_slot(tab_end_button(
             &close_entity,
             item_id,
             item.is_dirty(cx),
@@ -840,7 +840,7 @@ fn tab_end_state(is_dirty: bool, is_preview: bool) -> TabEndState {
 /// 标签尾部状态槽：未保存优先显示圆点，预览其次显示眼睛；悬停后都切换为关闭按钮。
 ///
 /// 槽位宽度由内容撑开：三种状态同为展示图标/按钮，状态切换（圆点/眼睛 ↔ 关闭叉）不改变槽位尺寸，tab 宽度稳定。
-fn tab_end_glyph(
+fn tab_end_button(
     pane_entity: &gpui::Entity<Pane>,
     item_id: EntityId,
     is_dirty: bool,

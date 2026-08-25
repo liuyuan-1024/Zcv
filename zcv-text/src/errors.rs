@@ -282,7 +282,7 @@ pub(crate) use invariant;
 /// 不进 [`TextError`]：`io::Error` 不可比较 / 不可哈希，混入 `TextError`
 /// 会破坏现有的 `PartialEq` 派生与测试模式。
 ///
-/// 实现由 [`define_buffer_io_error!`] 生成，与 [`BufferSaveError`] 共享同一份定义模板。
+/// 实现由 `define_buffer_io_error!` 生成，与 `BufferSaveError` 共享同一份定义模板。
 #[derive(Debug)]
 pub enum BufferLoadError {
     Io(std::io::Error),
@@ -300,7 +300,7 @@ impl From<StorageError> for BufferLoadError {
 /// 流式保存（`Buffer::write_to`）失败的统一错误类型。
 ///
 /// 保存路径同时跨 `io::Write` 与文本内核版本检查两个边界；任一侧失败都用本类型上抛。
-/// 实现由 [`define_buffer_io_error!`] 生成，与 [`BufferLoadError`] 共享同一份定义模板。
+/// 实现由 `define_buffer_io_error!` 生成，与 `BufferLoadError` 共享同一份定义模板。
 #[derive(Debug)]
 pub enum BufferSaveError {
     Io(std::io::Error),

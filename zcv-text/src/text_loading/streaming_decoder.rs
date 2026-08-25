@@ -17,7 +17,7 @@ const UTF8_BOM: &[u8; 3] = b"\xEF\xBB\xBF";
 /// 流式解码 `reader` 为 UTF-8 文本，按 `config` 应用 BOM / 非法 UTF-8 策略。
 ///
 /// **错误来源**：
-/// - `io::Error` 由调用方 wrap（见 [`crate::BufferLoadError`]）；本函数仅在 `read` 返回 `Err` 时把它直接上抛。
+/// - `io::Error` 由调用方 wrap（见 `BufferLoadError`）；本函数仅在 `read` 返回 `Err` 时把它直接上抛。
 /// - 非法 UTF-8（策略为 `Reject`）转 [`StorageError::InvalidUtf8`]。
 ///
 /// 不完整 UTF-8 codepoint（最多 3 字节）保留在读缓冲首端，下一轮拼接。
@@ -145,7 +145,7 @@ pub(crate) fn decode_stream<R: io::Read>(
 
 /// `decode_stream` 失败原因。
 ///
-/// 单独抽出这层以允许调用方（[`crate::Buffer::from_reader`]）把 IO 与解码错误上升为统一的 [`crate::BufferLoadError`]。
+/// 单独抽出这层以允许调用方（`Buffer::from_reader`）把 IO 与解码错误上升为统一的 `BufferLoadError`。
 #[derive(Debug)]
 pub(crate) enum StreamDecodeError {
     Io(io::Error),

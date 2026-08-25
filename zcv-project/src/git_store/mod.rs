@@ -499,7 +499,7 @@ impl GitStore {
 
     /// 活动仓库的本地分支列表（无仓库、active 未建立时为 None；空仓库为空列表）。
     ///
-    /// 与 current_branch 同仓库选择策略，保证分支 glyph 与列表一致。
+    /// 与 current_branch 同仓库选择策略，保证分支按钮与列表一致。
     pub fn active_branch_list(&self) -> Option<&[Branch]> {
         self.active_repo_workdir
             .as_ref()

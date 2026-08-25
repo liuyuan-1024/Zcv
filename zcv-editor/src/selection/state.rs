@@ -1,6 +1,6 @@
 //! Editor 视图选区状态、历史与 selection 编辑语义。
 //!
-//! Editor 的选区端点以引擎 `Anchor` 表达：
+//! Editor 的选区端点以 zcv-text `Anchor` 表达：
 //! 任何文本变更（本编辑器编辑、共享 Buffer 的其他 Editor 编辑、外部加载）之后，统一通过 PositionMap 批量映射端点，选区自动跟随；
 //! 消费时按当前 Snapshot 解析为字节偏移。
 //! `Selection` / `SelectionSet` 是编辑算法与历史快照使用的 Editor 领域原语。
@@ -32,7 +32,7 @@ impl EditOutcome {
         }
     }
 
-    /// 折叠引擎事务结果：`None`（无实际编辑）视为未变化，`Some` 视为一次编辑。
+    /// 折叠事务结果：`None`（无实际编辑）视为未变化，`Some` 视为一次编辑。
     pub(crate) fn from_transaction(transaction: Option<TransactionOutcome>) -> Self {
         match transaction {
             Some(transaction) => Self::edited(transaction),
@@ -183,7 +183,7 @@ pub(crate) struct EditorSelection {
     end: Anchor,
     /// 方向：anchor 在右端、head 在左端时为 true。
     reversed: bool,
-    /// 垂直移动持久保留的目标显示列，对齐引擎 `Selection::goal`。
+    /// 垂直移动持久保留的目标显示列。
     goal: Option<DisplayColumn>,
 }
 

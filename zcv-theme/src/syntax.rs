@@ -1,6 +1,6 @@
 //! 语法高亮：tree-sitter capture name → GPUI HighlightStyle。
 //!
-//! 本模块只提供查询机制，不定义色值。色值来自主题 TOML，由 [`crate::theme_data`] 单一解析器解析后经 `set_theme` 注入。
+//! 本模块只提供查询机制，不定义色值。色值来自主题 TOML，由 `theme_data` 单一解析器解析后经 `set_theme` 注入。
 //! 查询走点分前缀回退：`keyword.control.import` 未命中 → `keyword.control` → `keyword` → 默认样式。
 
 use std::collections::BTreeMap;
@@ -46,7 +46,7 @@ pub(crate) fn set_theme(theme: &ThemeData) {
     }
 }
 
-/// 当前主题的高亮表（由 [`crate::theme_data`] 解析，主题切换时整体替换）。
+/// 当前主题的高亮表（由 `theme_data` 解析，主题切换时整体替换）。
 static ACTIVE_THEME: LazyLock<RwLock<Arc<BTreeMap<&'static str, HighlightStyle>>>> =
     LazyLock::new(|| RwLock::new(Arc::new(BTreeMap::new())));
 

@@ -36,7 +36,7 @@ pub trait SearchableItem: Item + EventEmitter<SearchEvent> {
         true
     }
 
-    /// 执行搜索。同步执行：引擎搜索是内存内匹配，单文件代价可控。
+    /// 执行搜索。同步执行：搜索是内存内匹配，单文件代价可控。
     /// 结果由实现方持有（绑定 BufferVersion，编辑后自动重搜），搜索条经 `search_count` 读取计数。
     fn search(&mut self, query: &SearchQuery, window: &mut Window, cx: &mut Context<Self>);
 

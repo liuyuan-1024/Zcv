@@ -1,4 +1,4 @@
-//! Editor 的文件内搜索：持有引擎搜索结果（绑定 BufferVersion），编辑后自动重搜。
+//! Editor 的文件内搜索：持有搜索结果（绑定 BufferVersion），编辑后自动重搜。
 
 use std::ops::Range;
 
@@ -222,7 +222,7 @@ impl Editor {
         cx.emit(SearchEvent::MatchesInvalidated);
     }
 
-    /// 执行引擎搜索并返回新的搜索状态；`None` 表示无结果（query 为空或引擎报错）。
+    /// 执行搜索并返回新的搜索状态；`None` 表示无结果（query 为空或搜索报错）。
     fn execute_search(
         &self,
         query: &SearchQuery,

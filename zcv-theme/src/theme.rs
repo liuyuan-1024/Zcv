@@ -2,7 +2,7 @@
 //! 此文件是 `zcv-theme` crate 的公共入口。
 //!
 //! [`ThemeChoice`] 是主题配置入口：`System` 或注册表中的主题 id。
-//! 主题数据（语义色 + 语法高亮）由 [`theme_data`] 注册表统一持有，新增主题只需添加 TOML 文件并在注册表登记，无需改动本模块逻辑。
+//! 主题数据（语义色 + 语法高亮）由 `theme_data` 注册表统一持有，新增主题只需添加 TOML 文件并在注册表登记，无需改动本模块逻辑。
 
 use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 

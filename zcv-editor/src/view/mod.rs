@@ -591,7 +591,7 @@ impl Editor {
     }
 
     /// 跳转到 0-indexed 逻辑行列，并把目标固定在视口顶部下方。
-    /// 列按 Unicode scalar value 计数，与文本引擎 Position 坐标一致。
+    /// 列按 Unicode scalar value 计数，与 zcv-text Position 坐标一致。
     pub fn navigate_to_line_column(
         &mut self,
         line: usize,
@@ -1250,7 +1250,7 @@ impl Editor {
 
     /// 开启编辑会话并记录 undo 选区。
     ///
-    /// Editor 不嵌套会话：引擎会话已开启时视为内部错误。
+    /// Editor 不嵌套会话：zcv-text 会话已开启时视为内部错误。
     fn start_transaction(
         &mut self,
         undo_selections: SelectionSet,
@@ -1603,7 +1603,7 @@ impl Editor {
             self.selections =
                 EditorSelections::from_selection_set(text_version, &SelectionSet::default());
         } else if let Some(old_version) = changes.old_version() {
-            // 共享 Buffer 的其他 Editor 或引擎直接编辑：批量映射端点锚点。
+            // 共享 Buffer 的其他 Editor 或 zcv-text 直接编辑：批量映射端点锚点。
             // 本 Editor 自己发起的编辑已在 apply_edit_outcome 映射过，版本已推进，跳过。
             if old_version == self.selections.version() {
                 let position_map = PositionMap::from_text_patch(changes.patch());

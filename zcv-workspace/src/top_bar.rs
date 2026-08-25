@@ -14,7 +14,7 @@ use crate::window_controls::render as render_window_controls;
 
 pub struct TopBar {
     pub project_picker: Entity<ProjectPicker>,
-    /// 分支选择器（glyph 显示当前分支名；由 Workspace 订阅 GitStore 事件刷新）。
+    /// 分支选择器（显示当前分支名；由 Workspace 订阅 GitStore 事件刷新）。
     pub branch_picker: Entity<BranchPicker>,
     /// 项目是否已发现 git 仓库（非 git 项目不显示分支与同步/推送/拉取按钮）。
     has_repositories: bool,
@@ -39,7 +39,7 @@ impl TopBar {
         }
     }
 
-    /// 分支数据由 Workspace 订阅 GitStore 事件后推送（glyph 与列表同仓库）。
+    /// 分支数据由 Workspace 订阅 GitStore 事件后推送（按钮与列表同仓库）。
     pub fn set_branch(&mut self, branch: Option<String>, cx: &mut gpui::Context<Self>) {
         self.branch_picker
             .update(cx, |picker, _| picker.set_branch(branch));
@@ -119,7 +119,7 @@ fn leading_slots(
 
     // Git 分支与同步/推送/拉取操作：项目不是 git 仓库时不显示（对齐 Zed 静默降级）。
     if has_repositories {
-        // Git 分支：glyph 由分支选择器自含（点击弹出分支列表）。
+        // Git 分支：按钮由分支选择器自含（点击弹出分支列表）。
         out.push(branch_picker.clone().into_any_element());
         // 无 remote 时 fetch/pull/push 都会报错，不给出入口；
         // 有 remote 时同步常显（主动检查更新的兜底），推送/拉取仅在可推/可拉时出现。

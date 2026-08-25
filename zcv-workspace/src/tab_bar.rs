@@ -48,7 +48,14 @@ impl TabBar {
     ) -> impl gpui::IntoElement {
         let border_color = color::current(cx).border;
         let trailing = self.trailing;
-        let outer = f(div()).border_b_1().border_color(border_color);
+        let outer = f(div()).relative().child(
+            // 先绘制底线，活动标签的实色背景会覆盖对应区域。
+            div()
+                .absolute()
+                .inset_0()
+                .border_b_1()
+                .border_color(border_color),
+        );
 
         let mut bar = outer.child(
             div()

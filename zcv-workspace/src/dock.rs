@@ -61,7 +61,7 @@ impl DockPosition {
     pub fn default_size(self) -> Pixels {
         match self {
             Self::Left | Self::Right => px(240.0),
-            Self::Bottom => px(234.0),
+            Self::Bottom => px(233.0),
         }
     }
 }

@@ -1,8 +1,31 @@
-use gpui::{AppContext as _, TestAppContext};
+use gpui::{AppContext as _, Entity, TestAppContext};
 use std::process::Command;
 use zcv_text::SearchQuery;
 
 use crate::Project;
+use crate::search::FileSearchResult;
+
+/// 收集一次流式搜索的全部命中（直到后台关闭通道）。
+async fn collect_search(
+    project: &Entity<Project>,
+    query: SearchQuery,
+    cx: &mut TestAppContext,
+) -> Vec<FileSearchResult> {
+    let stream = project.update(cx, |project, cx| project.search(query, cx));
+    let mut results = Vec::new();
+    while let Ok(item) = stream.rx.recv().await {
+        results.push(item);
+    }
+    stream.task.await;
+    results
+}
+
+fn match_count(results: &[FileSearchResult]) -> usize {
+    results
+        .iter()
+        .flat_map(|file| file.excerpts.iter().map(|excerpt| excerpt.matches.len()))
+        .sum()
+}
 
 #[gpui::test]
 async fn searches_file_contents_and_builds_ordered_excerpts(cx: &mut TestAppContext) {
@@ -14,20 +37,25 @@ async fn searches_file_contents_and_builds_ordered_excerpts(cx: &mut TestAppCont
     std::fs::write(root.join("src/c.rs"), "nothing\n").expect("应创建文件");
 
     let project = cx.new(|cx| Project::new(root, cx));
-    let task = project.update(cx, |project, cx| {
-        project.search(
-            SearchQuery {
-                query: "needle".to_string(),
-                ..Default::default()
-            },
-            cx,
-        )
-    });
-    let results = task.await.expect("项目搜索应成功");
+    let results = collect_search(
+        &project,
+        SearchQuery {
+            query: "needle".to_string(),
+            ..Default::default()
+        },
+        cx,
+    )
+    .await;
 
-    assert_eq!(results.match_count, 2);
-    assert_eq!(results.file_count, 2);
-    assert_eq!(results.into_excerpts().len(), 2);
+    assert_eq!(results.len(), 2);
+    assert_eq!(match_count(&results), 2);
+    assert!(
+        results.iter().all(|file| file
+            .excerpts
+            .iter()
+            .any(|excerpt| excerpt.matches.len() == 1)),
+        "每个文件应产出带单个命中的上下文块"
+    );
 }
 
 #[gpui::test]
@@ -42,30 +70,30 @@ async fn honors_exclusions_and_reports_invalid_regex(cx: &mut TestAppContext) {
     project.update(cx, |project, _| {
         project.set_exclusions(&["**/target".to_string()]);
     });
-    let search = project.update(cx, |project, cx| {
-        project.search(
-            SearchQuery {
-                query: "needle".to_string(),
-                ..Default::default()
-            },
-            cx,
-        )
-    });
-    let results = search.await.expect("项目搜索应成功");
-    assert_eq!(results.match_count, 1);
-    assert_eq!(results.file_count, 1);
+    let results = collect_search(
+        &project,
+        SearchQuery {
+            query: "needle".to_string(),
+            ..Default::default()
+        },
+        cx,
+    )
+    .await;
+    assert_eq!(results.len(), 1);
+    assert_eq!(match_count(&results), 1);
 
-    let invalid = project.update(cx, |project, cx| {
-        project.search(
-            SearchQuery {
-                query: "(".to_string(),
-                regex: true,
-                ..Default::default()
-            },
-            cx,
-        )
-    });
-    assert!(invalid.await.is_err());
+    // 非法正则不产出任何命中，流正常关闭且不 panic。
+    let invalid = collect_search(
+        &project,
+        SearchQuery {
+            query: "(".to_string(),
+            regex: true,
+            ..Default::default()
+        },
+        cx,
+    )
+    .await;
+    assert!(invalid.is_empty());
 }
 
 #[gpui::test]
@@ -86,19 +114,16 @@ async fn git_search_skips_ignored_build_outputs(cx: &mut TestAppContext) {
     std::fs::write(root.join("target/deep/generated.txt"), "生成引擎\n").expect("应创建被忽略文件");
 
     let project = cx.new(|cx| Project::new(root, cx));
-    let results = project
-        .update(cx, |project, cx| {
-            project.search(
-                SearchQuery {
-                    query: "引擎".to_string(),
-                    ..Default::default()
-                },
-                cx,
-            )
-        })
-        .await
-        .expect("项目搜索应成功");
+    let results = collect_search(
+        &project,
+        SearchQuery {
+            query: "引擎".to_string(),
+            ..Default::default()
+        },
+        cx,
+    )
+    .await;
 
-    assert_eq!(results.match_count, 1);
-    assert_eq!(results.file_count, 1);
+    assert_eq!(results.len(), 1);
+    assert_eq!(match_count(&results), 1);
 }

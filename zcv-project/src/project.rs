@@ -17,7 +17,7 @@ pub use git_store::{
     RemoteOperationState, RepositorySnapshot, StatusEntry,
 };
 pub use project_store::{ActiveProjectRoot, Project, ProjectEvent};
-pub use search::ProjectSearchResults;
+pub use search::{ExcerptMatches, FileSearchResult, SearchResults};
 pub use worktree::{
     NewEntryDestination, WorktreeEntry, new_entry_destination, rename_destination, translate_path,
 };

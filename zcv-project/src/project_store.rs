@@ -16,7 +16,7 @@ use zcv_text::{Buffer, BufferLoadError, BufferSaveError, SearchQuery};
 
 use super::buffer_store::BufferStore;
 use super::git_store::{GitStore, StatusEntry};
-use super::search::{self, ProjectSearchResults};
+use super::search::{self, SearchResults};
 use super::worktree::{Worktree, WorktreeEntry};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -168,28 +168,29 @@ impl Project {
         self.buffer_store.open_buffer(path, cx)
     }
 
-    /// 在后台扫描当前本地 worktree，并在 UI 线程把命中文件装配为 ordered excerpts。
-    pub fn search(
-        &mut self,
-        query: SearchQuery,
-        cx: &mut Context<Self>,
-    ) -> Task<anyhow::Result<ProjectSearchResults>> {
+    /// 在后台逐文件扫描 worktree 并预加载命中文件，
+    /// 结果经流式通道产出，由 UI 线程按批装配进 MultiBuffer。
+    pub fn search(&mut self, query: SearchQuery, cx: &mut Context<Self>) -> SearchResults {
         let Some(worktree) = &self.worktree else {
-            return Task::ready(Ok(ProjectSearchResults::empty()));
+            return SearchResults::empty();
         };
         let plan = worktree.snapshot.search_plan();
         let opened_snapshots = self.buffer_store.opened_snapshots(cx);
-        let search = cx
-            .background_executor()
-            .spawn(async move { search::search_worktree(plan, opened_snapshots, query) });
-        cx.spawn(async move |project, cx| {
-            let matches = search.await?;
-            project
-                .update(cx, |project, cx| {
-                    search::materialize_results(matches, &mut project.buffer_store, cx)
-                })
-                .map_err(|_| anyhow::anyhow!("项目搜索完成前 Project 已释放"))?
-        })
+        let (tx, rx) = async_channel::bounded(8);
+        let task = cx.background_executor().spawn(async move {
+            let _ = search::search_worktree(plan, opened_snapshots, query, tx).await;
+        });
+        SearchResults { task, rx }
+    }
+
+    /// 注册搜索任务在后台加载完成的 Buffer，与已打开文档共享同一缓存。
+    pub fn register_loaded_buffer(
+        &mut self,
+        path: PathBuf,
+        buffer: Buffer,
+        cx: &mut Context<Self>,
+    ) -> Result<Entity<MultiBuffer>, BufferLoadError> {
+        self.buffer_store.register_loaded_buffer(path, buffer, cx)
     }
 
     pub fn save_buffer(

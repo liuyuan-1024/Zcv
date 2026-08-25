@@ -30,13 +30,32 @@ impl BufferStore {
         path: &Path,
         cx: &mut App,
     ) -> Result<Entity<MultiBuffer>, BufferLoadError> {
+        let file = File::open(path).map_err(BufferLoadError::Io)?;
+        let buffer = Buffer::from_reader(file, BufferConfig::default())?;
+        self.insert_buffer(path.to_path_buf(), buffer, cx)
+    }
+
+    /// 注册搜索任务在后台加载完成的 Buffer，与 `open_buffer` 共享同一缓存。
+    pub(crate) fn register_loaded_buffer(
+        &mut self,
+        path: PathBuf,
+        buffer: Buffer,
+        cx: &mut App,
+    ) -> Result<Entity<MultiBuffer>, BufferLoadError> {
+        self.insert_buffer(path, buffer, cx)
+    }
+
+    /// 按规范化路径注册 Buffer；缓存命中时直接复用仍然存活的实例。
+    fn insert_buffer(
+        &mut self,
+        path: PathBuf,
+        buffer: Buffer,
+        cx: &mut App,
+    ) -> Result<Entity<MultiBuffer>, BufferLoadError> {
         let path = path.canonicalize().map_err(BufferLoadError::Io)?;
         if let Some(buffer) = self.opened_buffers.get(&path).and_then(WeakEntity::upgrade) {
             return Ok(buffer);
         }
-
-        let file = File::open(&path).map_err(BufferLoadError::Io)?;
-        let buffer = Buffer::from_reader(file, BufferConfig::default())?;
         let buffer = cx.new(|_| buffer);
         let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(path.clone()), cx));
         let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));

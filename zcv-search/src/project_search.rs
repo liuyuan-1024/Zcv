@@ -4,6 +4,7 @@
 //! 本 Item 搜索整个 Project，并把 ordered excerpts 写入 MultiBuffer。
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, Render, SharedString, Subscription,
@@ -11,10 +12,10 @@ use gpui::{
 };
 use zcv_actions::Deploy;
 use zcv_editor::{Editor, EditorEvent};
-use zcv_multi_buffer::{ExcerptLocation, MultiBuffer};
+use zcv_multi_buffer::{ExcerptLocation, MultiBuffer, MultiBufferExcerpt};
 use zcv_project::Project;
 use zcv_text::SearchQuery;
-use zcv_theme::{color, space, typography};
+use zcv_theme::color;
 use zcv_ui::Glyph;
 use zcv_workspace::{
     Direction, Item, ItemEvent, ItemHandle, SearchEvent, SearchableItem, SearchableItemHandle,
@@ -31,20 +32,21 @@ pub(crate) enum ProjectSearchEvent {
     OpenExcerptsRequested(Vec<ExcerptLocation>),
 }
 
-#[derive(Clone, Debug)]
-enum SearchState {
-    Idle,
-    Searching,
-    Results { match_count: usize },
-    Error(String),
-}
+/// 输入防抖窗口：快速连续击键合并为一次全项目扫描。
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(100);
+/// 流式装配的批大小：收满该数量片段才重建一次 MultiBuffer。
+const SEARCH_BATCH_SIZE: usize = 16;
+/// 批次间的让出间隔：每批装配后给主循环一次重绘机会。
+const SEARCH_BATCH_YIELD: Duration = Duration::from_millis(1);
 
 pub(crate) struct ProjectSearchView {
     project: Entity<Project>,
     results_editor: Entity<Editor>,
     excerpts: Entity<MultiBuffer>,
-    state: SearchState,
+    // 最近一次成功搜索的命中数；None 表示尚未完成任何搜索。
+    match_count: Option<usize>,
     search_generation: u64,
+    debounce_task: Option<Task<()>>,
     pending_search: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -71,8 +73,9 @@ impl ProjectSearchView {
             project,
             results_editor,
             excerpts,
-            state: SearchState::Idle,
+            match_count: None,
             search_generation: 0,
+            debounce_task: None,
             pending_search: None,
             _subscriptions: subscriptions,
         }
@@ -86,10 +89,10 @@ impl ProjectSearchView {
             return;
         }
 
-        let task = self
+        let stream = self
             .project
             .update(cx, |project, cx| project.search(query.clone(), cx));
-        self.state = SearchState::Searching;
+        self.match_count = None;
         self.excerpts.update(cx, |buffer, cx| buffer.clear(cx));
         self.results_editor.update(cx, |editor, cx| {
             SearchableItem::clear_search(editor, window, cx)
@@ -97,29 +100,62 @@ impl ProjectSearchView {
         cx.emit(SearchEvent::MatchesInvalidated);
         cx.notify();
 
-        let excerpts = self.excerpts.clone();
+        let project = self.project.clone();
         let results_editor = self.results_editor.clone();
         self.pending_search = Some(cx.spawn_in(window, async move |this, cx| {
-            let result = task.await;
-            this.update_in(cx, |this, _window, cx| {
-                if this.search_generation != generation {
-                    return;
+            let mut batched = Vec::<MultiBufferExcerpt>::new();
+            let mut match_count = 0usize;
+            loop {
+                // 被更新的查询取代时放弃本次流式装配；
+                // 放弃通道会让后台在下次发送时感知并提前结束扫描。
+                if this
+                    .update_in(cx, |this, _, _| this.search_generation != generation)
+                    .unwrap_or(true)
+                {
+                    break;
                 }
-                this.pending_search = None;
-                match result {
-                    Ok(results) => {
-                        let match_count = results.match_count;
-                        excerpts.update(cx, |buffer, cx| {
-                            buffer.set_excerpts(results.into_excerpts(), cx)
-                        });
-                        let match_ranges = excerpts.read(cx).match_ranges().to_vec();
-                        results_editor.update(cx, |editor, cx| {
-                            editor.set_search_ranges(query, match_ranges, cx)
-                        });
-                        this.state = SearchState::Results { match_count };
+                let item = match stream.rx.recv().await {
+                    Ok(item) => item,
+                    // 通道关闭：后台扫描结束，装配剩余批次。
+                    Err(_) => break,
+                };
+                // Project 已释放或文档注册失败时跳过该文件。
+                let Ok(Ok(source)) = project.update(cx, |project, cx| {
+                    if let Some(buffer) = item.loaded_buffer {
+                        project.register_loaded_buffer(item.path, buffer, cx)
+                    } else {
+                        project.open_buffer(&item.path, cx)
                     }
-                    Err(error) => this.state = SearchState::Error(error.to_string()),
+                }) else {
+                    continue;
+                };
+                for excerpt in item.excerpts {
+                    match_count += excerpt.matches.len();
+                    batched.push(MultiBufferExcerpt::new(
+                        source.clone(),
+                        excerpt.range,
+                        excerpt.matches,
+                    ));
                 }
+                if batched.len() < SEARCH_BATCH_SIZE {
+                    continue;
+                }
+                this.update_in(cx, |this, _window, cx| {
+                    this.flush_search_batch(
+                        batched.clone(),
+                        match_count,
+                        &results_editor,
+                        query.clone(),
+                        cx,
+                    );
+                })
+                .ok();
+                // 让出主循环：每批装配后重绘，结果渐进可见。
+                cx.background_executor().timer(SEARCH_BATCH_YIELD).await;
+            }
+            this.update_in(cx, |this, _window, cx| {
+                this.flush_search_batch(batched, match_count, &results_editor, query, cx);
+                this.pending_search = None;
                 cx.emit(SearchEvent::MatchesInvalidated);
                 cx.emit(ProjectSearchEvent::Updated);
                 cx.notify();
@@ -128,9 +164,29 @@ impl ProjectSearchView {
         }));
     }
 
+    /// 把已累积的片段整体写入 MultiBuffer，并更新匹配高亮与命中计数。
+    fn flush_search_batch(
+        &mut self,
+        excerpts: Vec<MultiBufferExcerpt>,
+        match_count: usize,
+        results_editor: &Entity<Editor>,
+        query: SearchQuery,
+        cx: &mut Context<Self>,
+    ) {
+        self.excerpts
+            .update(cx, |buffer, cx| buffer.set_excerpts(excerpts, cx));
+        let match_ranges = self.excerpts.read(cx).match_ranges().to_vec();
+        results_editor.update(cx, |editor, cx| {
+            editor.set_search_ranges(query, match_ranges, cx)
+        });
+        self.match_count = Some(match_count);
+        cx.emit(SearchEvent::MatchesInvalidated);
+        cx.notify();
+    }
+
     fn reset_results(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pending_search = None;
-        self.state = SearchState::Idle;
+        self.match_count = None;
         self.excerpts.update(cx, |buffer, cx| buffer.clear(cx));
         self.results_editor.update(cx, |editor, cx| {
             SearchableItem::clear_search(editor, window, cx)
@@ -138,15 +194,6 @@ impl ProjectSearchView {
         cx.emit(SearchEvent::MatchesInvalidated);
         cx.emit(ProjectSearchEvent::Updated);
         cx.notify();
-    }
-
-    fn status_text(&self) -> Option<String> {
-        match &self.state {
-            SearchState::Idle => Some("在搜索栏输入内容以搜索整个项目".to_string()),
-            SearchState::Searching => Some("正在搜索项目…".to_string()),
-            SearchState::Results { .. } => None,
-            SearchState::Error(error) => Some(format!("搜索失败：{error}")),
-        }
     }
 }
 
@@ -162,16 +209,8 @@ impl Focusable for ProjectSearchView {
 impl Render for ProjectSearchView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         let colors = color::current(cx);
-        let has_results = matches!(
-            self.state,
-            SearchState::Results {
-                match_count: 1..,
-                ..
-            }
-        );
-        let show_empty = matches!(self.state, SearchState::Results { match_count: 0, .. });
-        let error = matches!(self.state, SearchState::Error(_));
-        let status_text = self.status_text();
+        let has_results = self.match_count.is_some_and(|count| count > 0);
+        let show_empty = self.match_count == Some(0);
 
         div()
             .key_context("ProjectSearchView")
@@ -179,21 +218,6 @@ impl Render for ProjectSearchView {
             .flex()
             .flex_col()
             .bg(colors.editor_background)
-            .when_some(status_text, |element, status_text| {
-                element.child(
-                    div()
-                        .flex_none()
-                        .px(space::S8)
-                        .py(space::S2)
-                        .text_size(typography::ui() * 0.85)
-                        .text_color(if error {
-                            colors.status_error
-                        } else {
-                            colors.text_muted
-                        })
-                        .child(status_text),
-                )
-            })
             .child(
                 div()
                     .flex_1()
@@ -282,7 +306,19 @@ impl SearchableItem for ProjectSearchView {
     }
 
     fn search(&mut self, query: &SearchQuery, window: &mut Window, cx: &mut Context<Self>) {
-        self.run_search(query.clone(), window, cx);
+        // 防抖合并击键；等窗内出现更新的查询（或搜索被清空）时放弃本次搜索。
+        self.search_generation = self.search_generation.wrapping_add(1);
+        let generation = self.search_generation;
+        let query = query.clone();
+        self.debounce_task = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(SEARCH_DEBOUNCE).await;
+            this.update_in(cx, |this, window, cx| {
+                if this.search_generation == generation {
+                    this.run_search(query, window, cx);
+                }
+            })
+            .ok();
+        }));
     }
 
     fn clear_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -1,7 +1,8 @@
 //! 本地项目内容搜索。
 //!
-//! 磁盘遍历和文本匹配在后台完成；
-//! 命中文件回到 Project 的 BufferStore 打开，最终产出 MultiBuffer ordered excerpts。
+//! 磁盘遍历、文本匹配与未打开文件的加载全部在后台完成；
+//! 命中文件随扫描进度逐文件通过通道流出，UI 线程按批装配进 MultiBuffer ordered excerpts。
+//! 接收方放弃通道（新搜索取代或视图关闭）时，后台在下次发送时感知并提前结束扫描。
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -11,64 +12,56 @@ use std::process::Command;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 
-use gpui::App;
-use zcv_multi_buffer::MultiBufferExcerpt;
+use async_channel::{Receiver, Sender};
+use gpui::Task;
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Line, SearchQuery, Snapshot, TextRange};
 
-use crate::buffer_store::BufferStore;
 use crate::worktree::WorktreeSearchPlan;
 
 const CONTEXT_LINES: usize = 2;
 const MAX_MATCHES: usize = 10_000;
 
-pub struct ProjectSearchResults {
-    excerpts: Vec<MultiBufferExcerpt>,
-    pub match_count: usize,
-    pub file_count: usize,
-    pub limit_reached: bool,
+/// 后台搜索逐文件产出的命中；由 UI 线程逐批装配。
+pub struct FileSearchResult {
+    pub path: PathBuf,
+    pub display_path: PathBuf,
+    pub excerpts: Vec<ExcerptMatches>,
+    // 未打开文件的预加载内容；命中已打开文件时为空（走 BufferStore 缓存）。
+    pub loaded_buffer: Option<Buffer>,
 }
 
-impl ProjectSearchResults {
+/// 单个命中在源文件中的上下文块：整块范围与块内全部命中范围。
+pub struct ExcerptMatches {
+    pub range: TextRange,
+    pub matches: Vec<TextRange>,
+}
+
+/// 项目搜索的流式结果：后台扫描任务 + 逐文件结果通道。
+pub struct SearchResults {
+    pub task: Task<()>,
+    pub rx: Receiver<FileSearchResult>,
+}
+
+impl SearchResults {
+    /// 构造立即关闭的空结果流（无 worktree 时使用）。
     pub fn empty() -> Self {
+        let (tx, rx) = async_channel::bounded(1);
+        drop(tx);
         Self {
-            excerpts: Vec::new(),
-            match_count: 0,
-            file_count: 0,
-            limit_reached: false,
+            task: Task::ready(()),
+            rx,
         }
     }
-
-    pub fn into_excerpts(self) -> Vec<MultiBufferExcerpt> {
-        self.excerpts
-    }
 }
 
-pub(crate) struct WorktreeMatches {
-    files: Vec<FileMatches>,
-    limit_reached: bool,
-}
-
-struct FileMatches {
-    path: PathBuf,
-    display_path: PathBuf,
-    excerpts: Vec<ExcerptMatches>,
-}
-
-struct ExcerptMatches {
-    range: TextRange,
-    matches: Vec<TextRange>,
-}
-
-pub(crate) fn search_worktree(
+pub(crate) async fn search_worktree(
     plan: WorktreeSearchPlan,
     opened_snapshots: HashMap<PathBuf, Snapshot>,
     query: SearchQuery,
-) -> anyhow::Result<WorktreeMatches> {
+    tx: Sender<FileSearchResult>,
+) -> anyhow::Result<()> {
     if query.query.is_empty() {
-        return Ok(WorktreeMatches {
-            files: Vec::new(),
-            limit_reached: false,
-        });
+        return Ok(());
     }
     validate_query(&query)?;
 
@@ -79,12 +72,12 @@ pub(crate) fn search_worktree(
     });
     paths.sort();
 
-    let mut files = Vec::new();
     let mut total_matches = 0;
-    let mut limit_reached = false;
     for path in paths {
-        let snapshot = if let Some(snapshot) = opened_snapshots.get(&path) {
-            snapshot.clone()
+        // 已打开文件用内存快照搜索；其余文件在后台读盘并保留 Buffer，
+        // 避免结果装配阶段在主线程重新读文件。
+        let (snapshot, loaded_buffer) = if let Some(snapshot) = opened_snapshots.get(&path) {
+            (snapshot.clone(), None)
         } else {
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
@@ -92,7 +85,7 @@ pub(crate) fn search_worktree(
             let Ok(buffer) = Buffer::scratch(text, BufferConfig::default()) else {
                 continue;
             };
-            buffer.snapshot()
+            (buffer.snapshot(), Some(buffer))
         };
         let mut matches = search_snapshot(&snapshot, &query)?;
         if matches.is_empty() {
@@ -101,53 +94,24 @@ pub(crate) fn search_worktree(
         let remaining = MAX_MATCHES.saturating_sub(total_matches);
         if matches.len() > remaining {
             matches.truncate(remaining);
-            limit_reached = true;
         }
         total_matches += matches.len();
         let display_path = path.strip_prefix(&plan.root).unwrap_or(&path).to_path_buf();
-        files.push(FileMatches {
+        let result = FileSearchResult {
             path,
             display_path,
             excerpts: excerpt_matches(&snapshot, &matches),
-        });
+            loaded_buffer,
+        };
+        // 接收方已放弃（新搜索取代或视图关闭）时提前结束扫描。
+        if tx.send(result).await.is_err() {
+            break;
+        }
         if total_matches == MAX_MATCHES {
-            limit_reached = true;
             break;
         }
     }
-    Ok(WorktreeMatches {
-        files,
-        limit_reached,
-    })
-}
-
-pub(crate) fn materialize_results(
-    matches: WorktreeMatches,
-    buffer_store: &mut BufferStore,
-    cx: &mut App,
-) -> anyhow::Result<ProjectSearchResults> {
-    let mut excerpts = Vec::new();
-    let mut match_count = 0;
-    let mut file_count = 0;
-    for file in matches.files {
-        let Ok(source) = buffer_store.open_buffer(&file.path, cx) else {
-            continue;
-        };
-        file_count += 1;
-        for excerpt in file.excerpts {
-            match_count += excerpt.matches.len();
-            excerpts.push(
-                MultiBufferExcerpt::new(source.clone(), excerpt.range, excerpt.matches)
-                    .with_display_path(file.display_path.clone()),
-            );
-        }
-    }
-    Ok(ProjectSearchResults {
-        excerpts,
-        match_count,
-        file_count,
-        limit_reached: matches.limit_reached,
-    })
+    Ok(())
 }
 
 fn validate_query(query: &SearchQuery) -> anyhow::Result<()> {

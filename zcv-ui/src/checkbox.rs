@@ -97,8 +97,6 @@ impl RenderOnce for Checkbox {
                 {
                     handler(window, cx);
                 }
-                // 复选框是行内交互：阻止冒泡到行的选中/打开逻辑。
-                cx.stop_propagation();
             })
     }
 }

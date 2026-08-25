@@ -101,8 +101,6 @@ impl Button {
     }
 
     /// 设置点击回调。
-    ///
-    /// 回调携带完整点击事件：行内使用时可在回调内 `cx.stop_propagation()`阻止所在行的点击行为（例如 picker 行的打开项目）。
     pub fn on_click(
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -155,6 +153,7 @@ impl RenderOnce for Button {
         if on_click.is_some() && !disabled {
             element = element.cursor_pointer();
         }
+        element = element.occlude();
         if let Some(build) = tooltip.build() {
             element = element.tooltip(build);
         }

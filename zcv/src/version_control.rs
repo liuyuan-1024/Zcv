@@ -24,7 +24,7 @@ use zcv_git::{DiffStat, FileStatus, StatusCode};
 use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, space, typography};
 use zcv_ui::tree::{self, TreeRow, TreeState};
-use zcv_ui::{Button, ButtonStyle, Checkbox, Scrollbar};
+use zcv_ui::{Button, ButtonStyle, Checkbox, Scrollbar, SvgIcon};
 use zcv_workspace::{Panel, PanelEvent};
 
 use crate::git_status::git_status_color;
@@ -188,15 +188,18 @@ fn finalize_node(node: &mut GitTreeNode) {
         .sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
 }
 
-/// 树 → 有序行列表：分组头前置（空组也带头），组内树 DFS 先序。
+/// 树 → 有序行列表：分组头前置（空组也带头），组内树 DFS 先序；折叠的分区只留标题行。
 fn flatten_rows(
     trees: &[Vec<GitTreeNode>; 2],
     expanded: &HashSet<(GitSection, PathBuf)>,
+    collapsed: &HashSet<GitSection>,
 ) -> Vec<GitRow> {
     let mut rows = Vec::new();
     for (index, section) in GitSection::ALL.iter().enumerate() {
         rows.push(GitRow::Header(*section));
-        flatten_nodes(&mut rows, &trees[index], *section, 0, expanded);
+        if !collapsed.contains(section) {
+            flatten_nodes(&mut rows, &trees[index], *section, 0, expanded);
+        }
     }
     rows
 }
@@ -254,8 +257,10 @@ pub(crate) struct VersionControlPanel {
     focus: FocusHandle,
     project: Entity<Project>,
     state: Rc<RefCell<TreeState<(GitSection, PathBuf), GitRow>>>,
-    /// 是否已执行过"首次全展开"（见 `rebuild_rows`；空态不置位）。
-    initialized: bool,
+    /// 用户显式折叠的目录（(分组, 路径)）；未折叠的目录默认展开，新出现的目录自动展开。
+    collapsed_dirs: HashSet<(GitSection, PathBuf)>,
+    /// 折叠的分区（点击分区标题行首 chevron 切换；折叠时该分区条目不渲染）。
+    collapsed_sections: Rc<RefCell<HashSet<GitSection>>>,
     scroll_handle: UniformListScrollHandle,
     scrollbar: Scrollbar<UniformListScrollHandle>,
     /// 底部提交信息编辑器。
@@ -320,7 +325,8 @@ impl VersionControlPanel {
             focus,
             project,
             state: Rc::new(RefCell::new(TreeState::new(row_entry_key))),
-            initialized: false,
+            collapsed_dirs: HashSet::new(),
+            collapsed_sections: Rc::new(RefCell::new(HashSet::new())),
             scroll_handle,
             scrollbar,
             commit_editor,
@@ -356,18 +362,49 @@ impl VersionControlPanel {
             build_section_trees(&root, store.repositories())
         };
         let mut state = self.state.borrow_mut();
-        let rows = flatten_rows(&trees, &state.expanded);
+        // 目录默认展开：未显式折叠的目录（含新出现的目录）都展开，用户折叠状态保持。
+        let directories = collect_directory_keys(&trees);
+        state.expanded.extend(
+            directories
+                .into_iter()
+                .filter(|key| !self.collapsed_dirs.contains(key)),
+        );
+        let rows = flatten_rows(&trees, &state.expanded, &self.collapsed_sections.borrow());
         state.replace_rows(rows);
-        // 首次见到目录时默认全部展开（空仓库/空态不置位，init 后仍会展开）；
-        // 之后用户折叠状态保持，git 事件触发的重建不重置。
-        if !self.initialized {
-            let directories = collect_directory_keys(&trees);
-            if !directories.is_empty() {
-                self.initialized = true;
-                state.expanded.extend(directories);
-                let rows = flatten_rows(&trees, &state.expanded);
-                state.replace_rows(rows);
-            }
+    }
+
+    /// 切换分区标题的折叠状态（点击标题行首 chevron）：折叠时该分区条目不渲染。
+    fn toggle_section_collapsed(&mut self, section: GitSection, cx: &mut Context<Self>) {
+        let mut collapsed = self.collapsed_sections.borrow_mut();
+        if collapsed.contains(&section) {
+            collapsed.remove(&section);
+        } else {
+            collapsed.insert(section);
+        }
+        drop(collapsed);
+        self.rebuild_rows(cx);
+        cx.notify();
+    }
+
+    /// 全选/取消全选分区（点击标题行右侧复选框）：未暂存组全部暂存，已暂存组全部取消暂存。
+    fn toggle_section_all(&mut self, section: GitSection, cx: &mut Context<Self>) {
+        let paths: Vec<PathBuf> = self
+            .state
+            .borrow()
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                GitRow::Entry(entry) if entry.section == section => Some(entry.path.clone()),
+                _ => None,
+            })
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        let store = self.project.read(cx).git_store();
+        match section {
+            GitSection::Staged => store.update(cx, |store, cx| store.unstage_paths(paths, cx)),
+            GitSection::Unstaged => store.update(cx, |store, cx| store.stage_paths(paths, cx)),
         }
     }
 
@@ -389,7 +426,14 @@ impl VersionControlPanel {
         };
         if entry.is_dir {
             let key = (entry.section, entry.path.clone());
+            // 翻转展开标记，并同步"用户显式折叠"记录（决定后续重建是否保持折叠）。
+            let was_expanded = self.state.borrow().expanded.contains(&key);
             self.state.borrow_mut().toggle_expand(&key);
+            if was_expanded {
+                self.collapsed_dirs.insert(key);
+            } else {
+                self.collapsed_dirs.remove(&key);
+            }
             self.rebuild_rows(cx);
         } else if let Some(callback) = self.on_open_file.clone() {
             callback(entry.path, focus_opened_item, window, cx);
@@ -418,6 +462,10 @@ impl VersionControlPanel {
     }
 
     fn handle_collapse(&mut self, _: &Collapse, window: &mut Window, cx: &mut Context<Self>) {
+        // 记录被折叠的目录，使重建后保持折叠（其余目录仍默认展开）。
+        if let Some(key) = self.selected_directory_key(true) {
+            self.collapsed_dirs.insert(key);
+        }
         let rebuild = self.state.borrow_mut().collapse_selection();
         if rebuild {
             self.rebuild_rows(cx);
@@ -427,12 +475,28 @@ impl VersionControlPanel {
     }
 
     fn handle_expand(&mut self, _: &Expand, window: &mut Window, cx: &mut Context<Self>) {
+        // 展开的目录解除折叠记录。
+        if let Some(key) = self.selected_directory_key(false) {
+            self.collapsed_dirs.remove(&key);
+        }
         let rebuild = self.state.borrow_mut().expand_selection();
         if rebuild {
             self.rebuild_rows(cx);
         }
         self.scroll_to_selection();
         window.refresh();
+    }
+
+    /// 选中行的目录键；`expanded` 为 true 时只取展开中的目录（折叠操作），否则只取折叠的目录（展开操作）。
+    fn selected_directory_key(&self, expanded: bool) -> Option<(GitSection, PathBuf)> {
+        let state = self.state.borrow();
+        let idx = state.selected_idx()?;
+        match state.rows.get(idx)? {
+            GitRow::Entry(entry) if entry.is_dir && entry.expanded == expanded => {
+                Some((entry.section, entry.path.clone()))
+            }
+            _ => None,
+        }
     }
 
     fn handle_activate(&mut self, _: &Activate, window: &mut Window, cx: &mut Context<Self>) {
@@ -523,10 +587,19 @@ impl Render for VersionControlPanel {
             .has_repositories();
         let is_focused = self.focus.contains_focused(window, cx);
         let content = if has_repositories {
+            let rows = self.state.borrow().rows.clone();
             let render_context = GitPanelRenderContext {
                 state: Rc::clone(&self.state),
-                rows: self.state.borrow().rows.clone().into(),
+                non_empty_sections: rows
+                    .iter()
+                    .filter_map(|row| match row {
+                        GitRow::Entry(entry) => Some(entry.section),
+                        _ => None,
+                    })
+                    .collect(),
+                rows: rows.into(),
                 focus: self.focus.clone(),
+                collapsed: Rc::clone(&self.collapsed_sections),
                 weak: cx.weak_entity(),
             };
             // 列表占满剩余高度；底部提交区存在时收缩。
@@ -561,8 +634,18 @@ impl Render for VersionControlPanel {
             None
         };
 
-        // 列表与提交区必须放进同一个 flex_col 容器（列表 flex_1 占满剩余高度）。
-        let mut body = div().size_full().flex().flex_col().child(content);
+        // 面板顶部：加减号图标 + 总变更行数（有仓库时显示，Diff 图标 + DiffStat）。
+        let header = has_repositories.then(|| {
+            let total = self.project.read(cx).git_store().read(cx).total_diff_stat();
+            render_total_diff_stat(total, cx)
+        });
+
+        // 顶部统计行、列表与提交区必须放进同一个 flex_col 容器（列表 flex_1 占满剩余高度）。
+        let mut body = div().size_full().flex().flex_col();
+        if let Some(header) = header {
+            body = body.child(header);
+        }
+        body = body.child(content);
         if let Some(footer) = footer {
             body = body.child(footer);
         }
@@ -585,6 +668,38 @@ impl Render for VersionControlPanel {
 }
 
 // ═══ 私有渲染辅助函数 ═══════════════════════════════════════════
+
+/// 面板顶部统计行：加减号图标 + 总新增/删除行数（全零时只留图标，对齐 Zed 的 Diff 图标 + DiffStat）。
+fn render_total_diff_stat(total: DiffStat, cx: &App) -> Div {
+    let colors = color::current(cx);
+    div()
+        .flex_none()
+        .h(typography::ui_line())
+        .pl(space::S6)
+        .pr(space::S6)
+        .flex()
+        .items_center()
+        .gap(space::S2)
+        .text_color(colors.text_muted)
+        .child(
+            SvgIcon::new("icons/diff.svg")
+                .id(ElementId::Name("version-control-total-diff".into()))
+                .label("变更行数统计")
+                .color(colors.icon_muted),
+        )
+        .when(total.added > 0 || total.deleted > 0, |el| {
+            el.child(
+                div()
+                    .text_color(colors.status_created)
+                    .child(format!("+{}", total.added)),
+            )
+            .child(
+                div()
+                    .text_color(colors.status_deleted)
+                    .child(format!("−{}", total.deleted)),
+            )
+        })
+}
 
 fn render_list(
     scroll_handle: &UniformListScrollHandle,
@@ -619,14 +734,75 @@ fn render_row(
     cx: &mut App,
 ) -> Div {
     match row {
-        // 分组头：不可选择、不可折叠（对齐 Zed Section Header）。
-        GitRow::Header(section) => div()
-            .h(typography::ui_line())
-            .pl(space::S6)
-            .flex()
-            .items_center()
-            .text_color(color::current(cx).text_muted)
-            .child(section.label()),
+        // 分组头：不可选择；行首 chevron 折叠/展开分区，行尾复选框全选/取消全选（空分区不显示复选框，对齐 Zed）。
+        GitRow::Header(section) => {
+            let is_collapsed = render_context.collapsed.borrow().contains(section);
+            let weak = render_context.weak.clone();
+            let section = *section;
+            let checkbox_weak = weak.clone();
+            let section_has_entries = render_context.non_empty_sections.contains(&section);
+            div()
+                .w_full()
+                .h(typography::ui_line())
+                .pl(space::S6)
+                .pr(space::S6)
+                .flex()
+                .items_center()
+                .justify_between()
+                .text_color(color::current(cx).text_muted)
+                .cursor_pointer()
+                .hover(|style| style.bg(color::current(cx).element_hover))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(space::S6)
+                        .child(
+                            SvgIcon::new(if is_collapsed {
+                                "icons/chevron_right.svg"
+                            } else {
+                                "icons/chevron_down.svg"
+                            })
+                            .id(ElementId::Name(
+                                format!("version-control-section-{section:?}").into(),
+                            ))
+                            .label("折叠或展开分区")
+                            .color(color::current(cx).icon_muted),
+                        )
+                        .child(section.label()),
+                )
+                .when(section_has_entries, |el| {
+                    // 已暂存组显示勾选（点击 = 全部取消暂存）、未暂存组显示未勾选（点击 = 全部暂存）。
+                    el.child(
+                        Checkbox::new(
+                            ElementId::Name(
+                                format!("version-control-header-checkbox-{section:?}").into(),
+                            ),
+                            section == GitSection::Staged,
+                        )
+                        .tooltip(if section == GitSection::Staged {
+                            "全部取消暂存"
+                        } else {
+                            "全部暂存"
+                        })
+                        .on_click(move |_window, cx| {
+                            if let Some(panel) = checkbox_weak.upgrade() {
+                                panel.update(cx, |panel, cx| {
+                                    panel.toggle_section_all(section, cx);
+                                });
+                            }
+                        }),
+                    )
+                })
+                // 整行点击折叠/展开。
+                .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
+                    if let Some(panel) = weak.upgrade() {
+                        panel.update(cx, |panel, cx| {
+                            panel.toggle_section_collapsed(section, cx);
+                        });
+                    }
+                })
+        }
         GitRow::Entry(entry) => {
             let section = entry.section;
             let path = entry.path.clone();
@@ -962,6 +1138,10 @@ struct GitPanelRenderContext {
     state: Rc<RefCell<TreeState<(GitSection, PathBuf), GitRow>>>,
     rows: Rc<[GitRow]>,
     focus: FocusHandle,
+    /// 折叠的分区（标题行 chevron 渲染与点击共享）。
+    collapsed: Rc<RefCell<HashSet<GitSection>>>,
+    /// 有条目的分区（空分区标题行不显示全选复选框，对齐 Zed）。
+    non_empty_sections: HashSet<GitSection>,
     /// 条目点击直接调用 Entity 方法（对齐 Zed 的 `cx.listener` 路径）。
     weak: WeakEntity<VersionControlPanel>,
 }
@@ -1014,7 +1194,7 @@ mod tests {
 
     fn build_rows(root: &Path, repos: &[(&Path, &RepositorySnapshot)]) -> Vec<GitRow> {
         let trees = build_section_trees(root, repos.iter().copied());
-        flatten_rows(&trees, &HashSet::new())
+        flatten_rows(&trees, &HashSet::new(), &HashSet::new())
     }
 
     /// 行列表 → (分组, 显示名) 序列。
@@ -1133,7 +1313,7 @@ mod tests {
         let trees = build_section_trees(&root, [(root.as_path(), &snapshot)].into_iter());
 
         // 折叠：只显示顶层目录 src。
-        let rows = flatten_rows(&trees, &HashSet::new());
+        let rows = flatten_rows(&trees, &HashSet::new(), &HashSet::new());
         assert_eq!(
             entry_keys(&rows),
             vec![(GitSection::Unstaged, "src".into())]
@@ -1159,7 +1339,7 @@ mod tests {
         // 展开 src：sub（目录优先）与 a.rs 都出现，sub 未展开时其子项不可见。
         let mut expanded = HashSet::new();
         expanded.insert((GitSection::Unstaged, root.join("src")));
-        let rows = flatten_rows(&trees, &expanded);
+        let rows = flatten_rows(&trees, &expanded, &HashSet::new());
         assert_eq!(
             entry_keys(&rows),
             vec![
@@ -1171,7 +1351,7 @@ mod tests {
 
         // 再展开 sub：叶子出现，目录优先排序（sub 子树在 a.rs 之前）。
         expanded.insert((GitSection::Unstaged, root.join("src").join("sub")));
-        let rows = flatten_rows(&trees, &expanded);
+        let rows = flatten_rows(&trees, &expanded, &HashSet::new());
         assert_eq!(
             entry_keys(&rows),
             vec![
@@ -1195,7 +1375,7 @@ mod tests {
         // vendor 为目录行，优先于根文件 README.md；展开后 lib.rs 归入其下。
         let mut expanded = HashSet::new();
         expanded.insert((GitSection::Unstaged, root.join("vendor")));
-        let rows = flatten_rows(&trees, &expanded);
+        let rows = flatten_rows(&trees, &expanded, &HashSet::new());
         let paths: Vec<_> = rows
             .iter()
             .filter_map(|row| match row {
@@ -1307,8 +1487,9 @@ mod tests {
         // 行高为 ui_line()，以临时标签打开（focus_opened_item=false）。
         let row_height = typography::ui_line();
         let click = |cx: &mut VisualTestContext| {
+            // y 加 1 行偏移：顶部统计行占一行高度。
             cx.simulate_click(
-                point(px(100.), px(f32::from(row_height) * 2.5)),
+                point(px(100.), px(f32::from(row_height) * 3.5)),
                 gpui::Modifiers::default(),
             );
             cx.run_until_parked();
@@ -1405,6 +1586,145 @@ mod tests {
     }
 
     #[gpui::test]
+    fn new_directories_expand_by_default_while_manually_collapsed_stay(cx: &mut TestAppContext) {
+        let (root, _temp) = test_repo();
+        std::fs::create_dir_all(root.join("src")).expect("应创建目录");
+        std::fs::write(root.join("src/a.txt"), "改动\n").expect("应写入文件");
+
+        let project_root = root.clone();
+        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+        cx.run_until_parked(); // 扫描 + 重建
+
+        // 首次：src 默认展开，子文件可见。
+        let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
+        assert!(entries.contains(&(GitSection::Unstaged, "a.txt".into())));
+
+        // 用户折叠 src（模拟点击目录行折叠）；树键用 canonicalize 后的根（macOS /var → /private/var）。
+        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        cx.update_entity(&panel, |panel, cx| {
+            let key = (GitSection::Unstaged, canonical_root.join("src"));
+            panel.collapsed_dirs.insert(key.clone());
+            panel.state.borrow_mut().expanded.remove(&key);
+            panel.rebuild_rows(cx);
+        });
+        let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
+        assert!(
+            !entries.contains(&(GitSection::Unstaged, "a.txt".into())),
+            "用户折叠的目录应保持折叠"
+        );
+
+        // 新目录 src2 出现：增量刷新 GitStore（fs watch 是真实线程，测试里走公开刷新入口）→ Statuses 事件 → 面板重建。
+        std::fs::create_dir_all(root.join("src2")).expect("应创建目录");
+        std::fs::write(root.join("src2/b.txt"), "改动\n").expect("应写入文件");
+        let git_store = cx.read_entity(&panel, |panel, cx| {
+            panel.project.read(cx).git_store().clone()
+        });
+        cx.update_entity(&git_store, |store, cx| {
+            store.refresh_statuses_for_paths(&[canonical_root.join("src2")], cx);
+        });
+        cx.run_until_parked(); // 增量扫描落地
+        cx.run_until_parked(); // Statuses 事件触发的面板重建落地
+        let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
+        assert!(entries.contains(&(GitSection::Unstaged, "src2".into())));
+        assert!(
+            entries.contains(&(GitSection::Unstaged, "b.txt".into())),
+            "新出现的目录应默认展开"
+        );
+        assert!(
+            !entries.contains(&(GitSection::Unstaged, "a.txt".into())),
+            "用户折叠的 src 在重建后仍保持折叠"
+        );
+    }
+
+    #[gpui::test]
+    fn section_header_collapse_hides_entries_and_expand_restores(cx: &mut TestAppContext) {
+        let (root, _temp) = test_repo();
+        std::fs::write(root.join("tracked.txt"), "改动\n").expect("应写入文件");
+
+        let project_root = root.clone();
+        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+        cx.run_until_parked(); // 扫描 + 重建
+
+        // 初始：未暂存组条目可见。
+        let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
+        assert!(entries.contains(&(GitSection::Unstaged, "tracked.txt".into())));
+
+        // 折叠未暂存分区：条目不渲染，标题行保留。
+        cx.update_entity(&panel, |panel, cx| {
+            panel.toggle_section_collapsed(GitSection::Unstaged, cx);
+        });
+        let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
+        assert!(entries.is_empty(), "折叠后该分区条目应隐藏（仅剩标题行）");
+
+        // 再展开：条目恢复。
+        cx.update_entity(&panel, |panel, cx| {
+            panel.toggle_section_collapsed(GitSection::Unstaged, cx);
+        });
+        let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
+        assert!(entries.contains(&(GitSection::Unstaged, "tracked.txt".into())));
+    }
+
+    #[gpui::test]
+    fn header_checkbox_selects_all_entries_in_section(cx: &mut TestAppContext) {
+        // 两个未暂存文件：header 全选 → 全部暂存，未暂存组清空、已暂存组出现两项。
+        let (root, _temp) = test_repo();
+        std::fs::write(root.join("tracked.txt"), "改动\n").expect("应写入文件");
+        std::fs::write(root.join("second.txt"), "第二个文件\n").expect("应写入文件");
+
+        let project_root = root.clone();
+        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+        cx.run_until_parked();
+
+        let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|(s, _)| *s == GitSection::Unstaged)
+                .count(),
+            2,
+            "两个文件都在未暂存组"
+        );
+
+        cx.update_entity(&panel, |panel, cx| {
+            panel.toggle_section_all(GitSection::Unstaged, cx);
+        });
+        cx.run_until_parked(); // stage job 完成
+        cx.run_until_parked(); // 其触发的重扫落地
+        let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|(s, _)| *s == GitSection::Staged)
+                .count(),
+            2,
+            "全选后两个文件都应进入已暂存组"
+        );
+        assert!(
+            entries.iter().all(|(s, _)| *s == GitSection::Staged),
+            "未暂存组应清空"
+        );
+
+        // 已暂存组 header 全选：全部取消暂存，回到未暂存组。
+        cx.update_entity(&panel, |panel, cx| {
+            panel.toggle_section_all(GitSection::Staged, cx);
+        });
+        cx.run_until_parked();
+        cx.run_until_parked();
+        let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|(s, _)| *s == GitSection::Unstaged)
+                .count(),
+            2,
+            "取消全选后两个文件都应回到未暂存组"
+        );
+    }
+
+    #[gpui::test]
     fn space_toggles_staging_and_moves_row_between_sections(cx: &mut TestAppContext) {
         let (root, _temp) = test_repo();
         let project_root = root.clone();
@@ -1442,12 +1762,13 @@ mod tests {
     /// 悬停指定行尾的复选框并断言 tooltip 气泡出现。
     ///
     /// 测试时钟不会自动推进：手动拨过 500ms tooltip 显示延迟后再渲染一帧。
+    /// 顶部统计行占一行高度，行坐标加 1 行偏移。
     fn assert_hover_tooltip(cx: &mut gpui::VisualTestContext, row_index: usize) {
         let row_height = typography::ui_line();
         cx.simulate_mouse_move(
             point(
                 px(1907.),
-                px(f32::from(row_height) * (row_index as f32 + 0.5)),
+                px(f32::from(row_height) * (row_index as f32 + 1.5)),
             ),
             None,
             gpui::Modifiers::default(),
@@ -1498,9 +1819,9 @@ mod tests {
         cx.update(|_, _| {});
         cx.run_until_parked();
 
-        // 悬停可视区第 5 行（未暂存组的一个文件）行尾复选框。
+        // 悬停可视区第 5 行（未暂存组的一个文件）行尾复选框；顶部统计行占一行，坐标加偏移。
         let row_height = typography::ui_line();
-        let hover_y = f32::from(row_height) * 4.5;
+        let hover_y = f32::from(row_height) * 5.5;
         cx.simulate_mouse_move(
             point(px(1907.), px(hover_y)),
             None,
@@ -1532,10 +1853,10 @@ mod tests {
         cx.update(|_, _| {});
         cx.run_until_parked();
 
-        // 先悬停第 4 行（tracked.txt，未暂存组）复选框，确认 tooltip 正常。
+        // 先悬停第 4 行（tracked.txt，未暂存组）复选框，确认 tooltip 正常；顶部统计行占一行，坐标加偏移。
         let row_height = typography::ui_line();
         cx.simulate_mouse_move(
-            point(px(1907.), px(f32::from(row_height) * 2.5)),
+            point(px(1907.), px(f32::from(row_height) * 3.5)),
             None,
             gpui::Modifiers::default(),
         );
@@ -1560,15 +1881,15 @@ mod tests {
         cx.update(|_, _| {});
         cx.run_until_parked();
 
-        // 移开鼠标再移回 tracked.txt 的复选框（行号可能已变，取第 4 行）。
+        // 移开鼠标再移回 tracked.txt 的复选框（行号可能已变，取第 4 行；顶部统计行占一行）。
         cx.simulate_mouse_move(
-            point(px(100.), px(f32::from(row_height) * 2.5)),
+            point(px(100.), px(f32::from(row_height) * 3.5)),
             None,
             gpui::Modifiers::default(),
         );
         cx.run_until_parked();
         cx.simulate_mouse_move(
-            point(px(1907.), px(f32::from(row_height) * 2.5)),
+            point(px(1907.), px(f32::from(row_height) * 3.5)),
             None,
             gpui::Modifiers::default(),
         );
@@ -1601,11 +1922,12 @@ mod tests {
         cx.update(|_, _| {});
         cx.run_until_parked();
 
-        // 行布局：3 个分组头 + 已暂存组 tracked.txt（第 4 行）+ 未暂存组 tracked.txt（第 5 行）。
+        // 行布局：3 个分组头 + 已暂存组 tracked.txt（第 4 行）+ 未暂存组 tracked.txt（第 5 行）；
+        // 顶部统计行占一行，坐标加偏移。
         let row_height = typography::ui_line();
         // 先悬停未暂存组的复选框（第 5 行）。
         cx.simulate_mouse_move(
-            point(px(1907.), px(f32::from(row_height) * 3.5)),
+            point(px(1907.), px(f32::from(row_height) * 4.5)),
             None,
             gpui::Modifiers::default(),
         );
@@ -1665,10 +1987,11 @@ mod tests {
         cx.update(|_, _| {});
         cx.run_until_parked();
 
-        // 第 4 行（tracked.txt，未暂存组）行尾复选框：窗口 1920 宽，右边缘 6px + 复选框半宽 7px。
+        // 第 4 行（tracked.txt，未暂存组）行尾复选框：窗口 1920 宽，右边缘 6px + 复选框半宽 7px；
+        // 顶部统计行占一行，坐标加偏移。
         let row_height = typography::ui_line();
         cx.simulate_click(
-            point(px(1907.), px(f32::from(row_height) * 2.5)),
+            point(px(1907.), px(f32::from(row_height) * 3.5)),
             gpui::Modifiers::default(),
         );
         cx.run_until_parked();

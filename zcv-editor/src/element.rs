@@ -366,7 +366,6 @@ fn build_deleted_hunk_buttons(
             .color(color::current(cx).status_deleted)
             .label("展开删除内容")
             .on_click(move |_event, _window, cx| {
-                cx.stop_propagation();
                 editor.update(cx, |editor, cx| {
                     editor.toggle_deleted_hunk(old_range.clone(), cx)
                 });
@@ -510,7 +509,6 @@ fn build_block_elements(
                                 Button::text(("buffer-header-open", block.row.get()), "打开文件")
                                     .style(ButtonStyle::Solid)
                                     .on_click(move |_event, _window, cx| {
-                                        cx.stop_propagation();
                                         editor_for_button.update(cx, |editor, cx| {
                                             editor.open_excerpt(&open_excerpt, false, cx)
                                         });

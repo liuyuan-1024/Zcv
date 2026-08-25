@@ -505,6 +505,21 @@ impl GitStore {
             .and_then(|repository| repository.snapshot.head.as_deref())
     }
 
+    /// 全部仓库变更行数汇总（staged 与 unstaged 合并计数），版本控制面板顶部统计用。
+    pub fn total_diff_stat(&self) -> DiffStat {
+        let mut total = DiffStat::default();
+        for repository in &self.repositories {
+            for entry in repository.snapshot.statuses_by_path.values() {
+                if entry.status.is_ignored() {
+                    continue;
+                }
+                total.added += entry.staged_diff_stat.added + entry.unstaged_diff_stat.added;
+                total.deleted += entry.staged_diff_stat.deleted + entry.unstaged_diff_stat.deleted;
+            }
+        }
+        total
+    }
+
     /// 活动仓库的本地分支列表（无仓库、active 未建立时为 None；空仓库为空列表）。
     ///
     /// 与 current_branch 同仓库选择策略，保证分支按钮与列表一致。
@@ -883,6 +898,32 @@ mod tests {
         let entry = entry.expect("应有 tracked.txt 的状态");
         assert!(entry.status.is_modified());
         assert!(entry.diff_stat.added >= 1);
+
+        // 汇总行数：未暂存修改计 2 增（第一行改写为已修改 → 1 删 1 增？numstat 按行粒度），
+        // 这里只断言 added 不为零且 deleted 反映改写。
+        let total = cx.read_entity(&git_store, |store, _| store.total_diff_stat());
+        assert!(total.added >= 1, "未暂存新增应计入汇总");
+    }
+
+    #[gpui::test]
+    fn total_diff_stat_merges_staged_and_unstaged(cx: &mut gpui::TestAppContext) {
+        let (root, _temp) = test_git_repo();
+        // 先做一次未暂存修改（1 增 1 删：改写第二行内容）。
+        std::fs::write(root.join("tracked.txt"), "第一行\n第二行（改）\n").expect("应写入文件");
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+        let total = cx.read_entity(&git_store, |store, _| store.total_diff_stat());
+        assert_eq!((total.added, total.deleted), (1, 1), "未暂存 1 增 1 删");
+
+        // 暂存后再次修改：staged 与 unstaged 各计一份，合并计数。
+        run_git(&root, &["add", "tracked.txt"]);
+        std::fs::write(root.join("tracked.txt"), "第一行\n第二行（改）\n第三行\n")
+            .expect("应写入文件");
+        cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+        let total = cx.read_entity(&git_store, |store, _| store.total_diff_stat());
+        assert_eq!((total.added, total.deleted), (2, 1), "暂存与未暂存合并计数");
 
         let branch = cx.read_entity(&git_store, |store, _| {
             store.current_branch().map(str::to_string)

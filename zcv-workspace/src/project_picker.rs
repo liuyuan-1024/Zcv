@@ -133,8 +133,6 @@ impl PickerDelegate for ProjectPickerDelegate {
         let entry = &self.projects[self.filtered[index]];
         let icon_color = color::current(cx).icon_muted;
         let remove = cx.listener(move |this, _: &ClickEvent, window, cx| {
-            // 阻止冒泡，避免触发所在行的打开项目行为
-            cx.stop_propagation();
             this.delegate_mut().remove_project(index);
             cx.notify();
             window.refresh();

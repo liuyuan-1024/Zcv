@@ -1,6 +1,6 @@
 # Builder 组件开发流程
 
-> 基于当前项目中 `Glyph` 组件的实践提炼的标准。
+> 基于当前项目中 `Button` 组件的实践提炼的标准。
 > Builder 组件是设计系统的原子 UI 原语——封装可配置的交互性标记，供全项目跨模块复用。
 
 ---
@@ -23,7 +23,7 @@
 | 实现 trait | 不需要 | 实现 `IntoElement` | 实现 `Render` |
 | 内部状态 | 无 | 构建期持有配置 | 跨帧持有状态 |
 | 终结方式 | 返回 `Div` 等具体类型 | `IntoElement`，调用方直接做子元素 | `impl IntoElement` |
-| 调用方用法 | `组件.child(fn(...))` | `组件.child(Glyph::icon(...))` | `组件.child(entity.clone())` |
+| 调用方用法 | `组件.child(fn(...))` | `组件.child(Button::icon(...))` | `组件.child(entity.clone())` |
 | 复用范围 | 单模块或 shared | 全项目 | 按 Entity 定位 |
 | 典型规模 | 1–10 行 | 80–200 行 | 200+ 行 |
 
@@ -43,7 +43,7 @@
 
 ```rust
 #[derive(Clone)]
-enum GlyphContent {
+enum ButtonContent {
     Icon(&'static str),                    // 纯图标
     Text(String),                          // 纯文字
     IconText { icon: &'static str, text: String },  // 图标 + 文字
@@ -60,60 +60,76 @@ enum GlyphContent {
 ### 第 2 步：定义 Struct、工厂构造函数与 Builder 方法
 
 ```rust
-pub(crate) struct Glyph {
+pub struct Button {
     id: ElementId,                                      // 必需：稳定标识
-    content: GlyphContent,                              // 必需：内容变体
-    color: gpui::Rgba,                                  // 有默认值
-    tooltip: Option<String>,                            // 可选
-    on_click: Option<Rc<dyn Fn(&mut Window, &mut App)>>, // 可选
+    content: ButtonContent,                             // 必需：内容变体
+    style: ButtonStyle,                                 // 视觉样式（Ghost 默认）
+    color: Option<gpui::Rgba>,                          // 可选，默认延迟到 render 解析
+    tooltip: TooltipSpec,                               // 可选：label + 快捷键
+    on_click: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>, // 可选
+    disabled: bool,                                     // 可选：禁用交互
 }
 
-impl Glyph {
+impl Button {
     // 工厂构造函数——直接确定变体，不暴露 content 字段
-    pub(crate) fn icon(id: impl Into<ElementId>, path: &'static str) -> Self {
-        Self::new(id, GlyphContent::Icon(path))
+    pub fn icon(id: impl Into<ElementId>, path: &'static str) -> Self {
+        Self::new(id, ButtonContent::Icon(path))
     }
 
-    pub(crate) fn text(id: impl Into<ElementId>, text: impl Into<String>) -> Self {
-        Self::new(id, GlyphContent::Text(text.into()))
+    pub fn text(id: impl Into<ElementId>, text: impl Into<String>) -> Self {
+        Self::new(id, ButtonContent::Text(text.into()))
     }
 
-    pub(crate) fn icon_text(
+    pub fn icon_text(
         id: impl Into<ElementId>,
         path: &'static str,
         text: impl Into<String>,
     ) -> Self {
-        Self::new(id, GlyphContent::IconText { icon: path, text: text.into() })
+        Self::new(id, ButtonContent::IconText { icon: path, text: text.into() })
     }
 
     // 私有构造函数：设置默认值
-    fn new(id: impl Into<ElementId>, content: GlyphContent) -> Self {
+    fn new(id: impl Into<ElementId>, content: ButtonContent) -> Self {
         Self {
             id: id.into(),
             content,
-            color: color::glyph_default(),
-            tooltip: None,
+            style: ButtonStyle::Ghost,
+            color: None,
+            tooltip: TooltipSpec::default(),
             on_click: None,
+            disabled: false,
         }
     }
 
     // ── Builder 方法 ──
 
-    /// 覆写默认颜色。
-    pub(crate) fn color(mut self, color: gpui::Rgba) -> Self {
-        self.color = color;
+    /// 设置视觉样式。
+    pub fn style(mut self, style: ButtonStyle) -> Self {
+        self.style = style;
         self
     }
 
-    /// 设置悬停 tooltip 文案。
-    pub(crate) fn tooltip(mut self, label: impl Into<String>) -> Self {
-        self.tooltip = Some(label.into());
+    /// 覆写默认颜色。
+    pub fn color(mut self, color: gpui::Rgba) -> Self {
+        self.color = Some(color);
+        self
+    }
+
+    /// 设置悬停 tooltip 文案（需配合快捷键时可再调 shortcut）。
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.tooltip = TooltipSpec::new(label);
         self
     }
 
     /// 设置点击回调。
-    pub(crate) fn on_click(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+    pub fn on_click(mut self, handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
         self.on_click = Some(Rc::new(handler));
+        self
+    }
+
+    /// 禁用交互，但保留图形作为可见的操作反馈。
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
         self
     }
 }
@@ -137,54 +153,29 @@ impl Glyph {
 Builder 组件的最后一个环节是实现 `IntoElement`，让 builder 表达式本身可以直接作为 GPUI 子元素使用。
 
 ```rust
-impl IntoElement for Glyph {
-    type Element = gpui::AnyElement;
+impl IntoElement for Button {
+    type Element = Component<Self>;
 
     fn into_element(self) -> Self::Element {
-        let color_value = self.color;
-        let has_tooltip = self.tooltip.is_some();
-        let tooltip_text = self.tooltip.unwrap_or_default();
-        let on_click = self.on_click;
+        Component::new(self)
+    }
+}
 
-        // 基础行为注入
-        let apply_base = |mut el: gpui::Stateful<gpui::Div>| {
-            if has_tooltip {
-                el = el.cursor_pointer().tooltip(move |_, cx| {
-                    cx.new(|_| GlyphTooltip { label: tooltip_text.clone() }).into()
-                });
-            }
-            if let Some(ref handler) = on_click {
-                let h = Rc::clone(handler);
-                el = el.on_click(move |_, window, cx| h(window, cx));
-            }
-            el
+impl RenderOnce for Button {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // 容器：按样式选择视觉外壳（Ghost 悬停显背景 / Solid 常驻边框背景）。
+        let mut element = match self.style {
+            ButtonStyle::Ghost => div().id(self.id).rounded_sm().p(space::S2),
+            ButtonStyle::Solid => div()
+                .id(self.id)
+                .px(space::S12).py(space::S6)
+                .rounded_md()
+                .border_1().border_color(colors.border_variant)
+                .bg(colors.panel_background),
         };
-
-        // 内容分支
-        let el = match self.content {
-            GlyphContent::Text(text) => apply_base(
-                div()
-                    .id(self.id)
-                    .text_size(font_size)
-                    .text_color(color_value)
-                    .child(text),
-            ),
-            GlyphContent::Icon(path) => apply_base(
-                div()
-                    .id(self.id)
-                    .flex().items_center().justify_center()
-                    .child(svg().path(path).size(icon_size).text_color(color_value)),
-            ),
-            GlyphContent::IconText { icon: path, text } => apply_base(
-                div()
-                    .id(self.id)
-                    .flex().flex_row().items_center().gap(space::S2)
-                    .child(svg_icon(path, color_value, icon_size))
-                    .child(div().text_size(font_size).text_color(color_value).child(text)),
-            ),
-        };
-
-        el.into_any_element()
+        // 公共交互注入：手型光标、tooltip、悬停背景、点击回调。
+        // 内容分支：图标经 SvgIcon 渲染，文字直接 div。
+        element.child(content)
     }
 }
 ```
@@ -197,39 +188,22 @@ impl IntoElement for Glyph {
 
 ---
 
-## 三、内部辅助 Entity
+## 三、tooltip 与快捷键
 
-当 Builder 组件需要 tooltip 等浮动 UI 时，需要配套的内部 Entity：
+悬停提示统一复用 `zcv-ui::TooltipSpec`：组件持有规格（label + 可选快捷键文本），
+在 `IntoElement` 中 `tooltip.build()` 构建气泡。无需自定义内部 Entity：
 
 ```rust
-/// Builder 组件内部使用的 tooltip 视图。
-/// 不对外公开，仅由 IntoElement 中的 tooltip 回调创建。
-struct GlyphTooltip {
-    label: String,
-}
-
-impl Render for GlyphTooltip {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().p(space::S6).child(
-            div()
-                .px(space::S6).py(space::S4)
-                .bg(color::current().elevated_surface_background)
-                .border_1().border_color(color::current().border_variant)
-                .rounded(radius::R4)
-                .child(div()
-                    .text_size(typography::ui())
-                    .text_color(color::current().text)
-                    .child(self.label.clone()),
-                ),
-        )
-    }
+// Button 中通过 label()/shortcut() 组装规格，render 时挂载。
+if let Some(build) = self.tooltip.build() {
+    element = element.tooltip(build);
 }
 ```
 
 **规则：**
-- 内部 Entity 只被 Builder 组件自身使用，不对外
-- 放在 Builder 组件的同一个 `.rs` 文件中
-- 内部 Entity 实现 `Render`（不走 `IntoElement`）
+- 组件持有 `TooltipSpec` 而非视图，悬停时才构建气泡 Entity
+- 快捷键文本由 `TooltipSpec::with_action` 从 keymap 预查询，不依赖悬停时机
+- 纯展示组件（如 `SvgIcon`）同样复用该机制，但 tooltip 依赖 stateful 元素，需先设置 `id`
 
 ---
 
@@ -245,32 +219,32 @@ enum BadgeContent {
     Count(u32),
 }
 
-pub(crate) struct Badge {
+pub struct Badge {
     id: ElementId,
     content: BadgeContent,
-    color: gpui::Rgba,
-    on_click: Option<Rc<dyn Fn(&mut Window, &mut App)>>,
+    color: Option<gpui::Rgba>,
+    on_click: Option<Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
 }
 
 impl Badge {
-    pub(crate) fn text(id: impl Into<ElementId>, text: impl Into<String>) -> Self {
+    pub fn text(id: impl Into<ElementId>, text: impl Into<String>) -> Self {
         Self::new(id, BadgeContent::Text(text.into()))
     }
 
-    pub(crate) fn count(id: impl Into<ElementId>, count: u32) -> Self {
+    pub fn count(id: impl Into<ElementId>, count: u32) -> Self {
         Self::new(id, BadgeContent::Count(count))
     }
 
     fn new(id: impl Into<ElementId>, content: BadgeContent) -> Self {
-        Self { id: id.into(), content, color: gpui::red(), on_click: None }
+        Self { id: id.into(), content, color: None, on_click: None }
     }
 
-    pub(crate) fn color(mut self, color: gpui::Rgba) -> Self {
-        self.color = color;
+    pub fn color(mut self, color: gpui::Rgba) -> Self {
+        self.color = Some(color);
         self
     }
 
-    pub(crate) fn on_click(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+    pub fn on_click(mut self, handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
         self.on_click = Some(Rc::new(handler));
         self
     }
@@ -312,15 +286,15 @@ impl IntoElement for Badge {
 ```rust
 // 方法一：直接作为子元素（IntoElement 自动转换）
 div().child(
-    Glyph::icon("my-button", "icons/action.svg")
-        .tooltip("操作")
-        .on_click(|_, _| println!("点击")),
+    Button::icon("my-button", "icons/action.svg")
+        .label("操作")
+        .on_click(|_, _, _| println!("点击")),
 )
 
 // 方法二：放入 Vec<AnyElement> 集合时，用 .into_any_element()
 div().children(vec![
-    Glyph::icon("btn-a", "icons/a.svg").tooltip("A").into_any_element(),
-    Glyph::icon("btn-b", "icons/b.svg").tooltip("B").into_any_element(),
+    Button::icon("btn-a", "icons/a.svg").label("A").into_any_element(),
+    Button::icon("btn-b", "icons/b.svg").label("B").into_any_element(),
 ])
 ```
 
@@ -336,7 +310,7 @@ div().children(vec![
 | 1 个变体、1 个消费方、有 tooltip/click | 函数式返回 `Stateful<Div>` 即可 |
 | 多个变体（icon/text/icon_text）、0–2 个可选配置 | 函数式 + 枚举参数 |
 | **多个变体、3+ 个可选配置、2+ 消费方** | **Builder 组件** |
-| 变体固定、但可选配置持续增长到 6+ | Builder 组件（已到 Glyph 水准） |
+| 变体固定、但可选配置持续增长到 6+ | Builder 组件（已到 Button 水准） |
 
 ---
 
@@ -344,7 +318,8 @@ div().children(vec![
 
 | 组件 | 位置 | 内容变体 | 可选配置 |
 |---|---|---|---|
-| `Glyph` | `ui/glyph.rs` | icon / text / icon_text | color, tooltip, on_click |
+| `Button` | `ui/button.rs` | icon / text / icon_text | style, color, label, shortcut, on_click, disabled |
+| `SvgIcon` | `ui/icon.rs` | icon | color, size, id, label, shortcut |
 
 ---
 

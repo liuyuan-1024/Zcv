@@ -4,7 +4,7 @@
 
 use gpui::{Context, Entity, Render, Subscription, Window, prelude::*};
 use zcv_editor::Editor;
-use zcv_ui::Glyph;
+use zcv_ui::Button;
 use zcv_workspace::ItemHandle;
 use zcv_workspace::StatusItemView;
 
@@ -55,8 +55,9 @@ impl ActiveBufferLanguage {
 
 impl Render for ActiveBufferLanguage {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        Glyph::text("status-bar.language", self.language.clone())
+        Button::text("status-bar.language", self.language.clone())
             .label("当前语言")
+            .disabled(true)
             .into_any_element()
     }
 }

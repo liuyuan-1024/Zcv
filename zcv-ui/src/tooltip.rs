@@ -1,6 +1,6 @@
 //! Tooltip —— 悬停提示视图。
 //!
-//! 单一实现，供 Glyph、Checkbox 等组件复用。
+//! 单一实现，供 Button、SvgIcon、Checkbox 等组件复用。
 //! 快捷键的查询与显示也是 Tooltip 的职责：消费方只需提供 action 名称。
 //! 悬停延迟与触发由 gpui 的 `div.tooltip()` 机制承担，这里只负责气泡视觉与快捷键查询。
 
@@ -8,7 +8,7 @@ use gpui::{AnyView, App, Context, Render, Window, div, prelude::*, rems};
 use zcv_keymap::KeyBindings;
 use zcv_theme::{color, space, typography};
 
-/// 构造提示气泡视图（label + 可选快捷键两段式，与 Glyph 原有提示一致）。
+/// 构造提示气泡视图（label + 可选快捷键两段式）。
 pub fn tooltip_view(cx: &mut App, label: Option<String>, shortcut: Option<String>) -> AnyView {
     cx.new(|_| TooltipView { label, shortcut }).into()
 }
@@ -37,7 +37,7 @@ impl TooltipSpec {
         self
     }
 
-    /// 从当前 keymap 中查询 action 的快捷键并设为提示（Glyph/Checkbox 等共用）。
+    /// 从当前 keymap 中查询 action 的快捷键并设为提示（Button/SvgIcon/Checkbox 等共用）。
     pub fn with_action(mut self, action: &dyn gpui::Action, cx: &App) -> Self {
         if let Some(s) = cx
             .try_global::<KeyBindings>()

@@ -8,7 +8,7 @@ use gpui::{
     prelude::*,
 };
 use zcv_theme::{color, space};
-use zcv_ui::Glyph;
+use zcv_ui::Button;
 
 use crate::{FocusOrHidePanel, ItemHandle, Workspace};
 use crate::{
@@ -82,7 +82,7 @@ impl Render for PanelButtons {
                     }
                 };
 
-                Glyph::icon(ElementId::Name(icon_path.into()), icon_path)
+                Button::icon(ElementId::Name(icon_path.into()), icon_path)
                     .label(label)
                     .shortcut(&shortcut_action, cx)
                     .color(fg)

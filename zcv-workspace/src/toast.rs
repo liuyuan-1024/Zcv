@@ -12,7 +12,7 @@ use gpui::{
     WeakEntity, Window, div, hsla, point, prelude::*, px, relative,
 };
 use zcv_theme::{color, space, typography};
-use zcv_ui::{Glyph, SvgIcon};
+use zcv_ui::{Button, SvgIcon};
 
 /// 复制反馈的展示时长。
 const COPIED_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
@@ -203,7 +203,7 @@ impl Render for ToastLayer {
         } else {
             ("icons/copy.svg", color::current(cx).text_muted, "复制")
         };
-        let copy_button = Glyph::icon("toast-copy", copy_icon)
+        let copy_button = Button::icon("toast-copy", copy_icon)
             .color(copy_color)
             .label(copy_label)
             .on_click(move |_, _window, cx| {
@@ -212,7 +212,7 @@ impl Render for ToastLayer {
             });
 
         let layer = cx.entity().clone();
-        let close_button = Glyph::icon("toast-close", "icons/close.svg")
+        let close_button = Button::icon("toast-close", "icons/close.svg")
             .color(color::current(cx).text_muted)
             .label("关闭")
             .on_click(move |_, _window, cx| {

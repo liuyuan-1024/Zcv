@@ -16,7 +16,7 @@ use zcv_multi_buffer::{ExcerptLocation, MultiBuffer, MultiBufferExcerpt};
 use zcv_project::Project;
 use zcv_text::SearchQuery;
 use zcv_theme::color;
-use zcv_ui::Glyph;
+use zcv_ui::Button;
 use zcv_workspace::{
     Direction, Item, ItemEvent, ItemHandle, SearchEvent, SearchableItem, SearchableItemHandle,
     StatusItemView, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView, Workspace,
@@ -479,7 +479,7 @@ impl StatusItemView for ProjectSearchButton {
 
 impl Render for ProjectSearchButton {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        Glyph::icon("search-button", "icons/magnifying_glass.svg")
+        Button::icon("search-button", "icons/magnifying_glass.svg")
             .label("项目搜索")
             .shortcut(&Deploy, cx)
             .on_click(|_, window, cx| window.dispatch_action(Box::new(Deploy), cx))

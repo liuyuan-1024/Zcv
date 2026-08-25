@@ -16,7 +16,7 @@ use zcv_actions::{
 };
 use zcv_text::SearchQuery;
 use zcv_theme::{color, space, typography};
-use zcv_ui::{ErasedEditor, Glyph};
+use zcv_ui::{Button, ErasedEditor};
 
 use zcv_workspace::{
     Direction, ItemHandle, SearchableItemHandle, ToolbarItemEvent, ToolbarItemLocation,
@@ -80,7 +80,6 @@ impl RenderOnce for SearchInput {
             .rounded(px(4.))
             .border_1()
             .border_color(colors.border)
-            .bg(colors.background)
             .child(self.input)
             .child(
                 div()
@@ -89,7 +88,7 @@ impl RenderOnce for SearchInput {
                     .items_center()
                     .gap(px(4.))
                     .child(
-                        Glyph::icon(case_id, "icons/case_sensitive.svg")
+                        Button::icon(case_id, "icons/case_sensitive.svg")
                             .label("区分大小写")
                             .shortcut(&ToggleCaseSensitive, cx)
                             .color(if self.case_sensitive {
@@ -102,7 +101,7 @@ impl RenderOnce for SearchInput {
                             }),
                     )
                     .child(
-                        Glyph::icon(word_id, "icons/whole_word.svg")
+                        Button::icon(word_id, "icons/whole_word.svg")
                             .label("整词匹配")
                             .shortcut(&ToggleWholeWord, cx)
                             .color(if self.whole_word {
@@ -115,7 +114,7 @@ impl RenderOnce for SearchInput {
                             }),
                     )
                     .child(
-                        Glyph::icon(regex_id, "icons/regex.svg")
+                        Button::icon(regex_id, "icons/regex.svg")
                             .label("正则表达式")
                             .shortcut(&ToggleRegex, cx)
                             .color(if self.regex {
@@ -519,7 +518,7 @@ impl Render for SearchBar {
                     ))
                     // 替换模式 toggle（对齐 Zed 的 Replace 图标按钮；只读目标保留相同布局并显示禁用态）。
                     .child(
-                        Glyph::icon("search-toggle-replace", "icons/replace.svg")
+                        Button::icon("search-toggle-replace", "icons/replace.svg")
                             .label("替换")
                             .shortcut(&ToggleReplace, cx)
                             .color(if self.show_replace {
@@ -544,13 +543,13 @@ impl Render for SearchBar {
                                     .child(count_text),
                             )
                             .child(
-                                Glyph::icon("search-prev", "icons/chevron_left.svg")
+                                Button::icon("search-prev", "icons/chevron_left.svg")
                                     .label("上一个匹配")
                                     .shortcut(&FindPrevious, cx)
                                     .on_click(find_prev),
                             )
                             .child(
-                                Glyph::icon("search-next", "icons/chevron_right.svg")
+                                Button::icon("search-next", "icons/chevron_right.svg")
                                     .label("下一个匹配")
                                     .shortcut(&FindNext, cx)
                                     .on_click(find_next),
@@ -558,7 +557,7 @@ impl Render for SearchBar {
                     )
                     // 关闭搜索条。
                     .child(
-                        Glyph::icon("search-close", "icons/close.svg")
+                        Button::icon("search-close", "icons/close.svg")
                             .label("关闭")
                             .shortcut(&ClearSearch, cx)
                             .on_click(close),
@@ -585,13 +584,13 @@ impl Render for SearchBar {
                                 .child(self.replace_input.as_ref().unwrap().render()),
                         )
                         .child(
-                            Glyph::icon("search-replace-next", "icons/replace_next.svg")
+                            Button::icon("search-replace-next", "icons/replace_next.svg")
                                 .label("替换")
                                 .shortcut(&ReplaceNext, cx)
                                 .on_click(replace_next),
                         )
                         .child(
-                            Glyph::icon("search-replace-all", "icons/replace_all.svg")
+                            Button::icon("search-replace-all", "icons/replace_all.svg")
                                 .label("全部替换")
                                 .shortcut(&ReplaceAll, cx)
                                 .on_click(replace_all),

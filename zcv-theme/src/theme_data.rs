@@ -305,6 +305,7 @@ mod tests {
             background = "#000000ff"
             "surface.background" = "#111111ff"
             "elevated_surface.background" = "#222222ff"
+            "ghost_element.hover" = "#333333ff"
             "element.hover" = "#333333ff"
             "element.selected" = "#333333ff"
             "border.variant" = "#444444ff"

@@ -3,7 +3,6 @@
 
 mod button;
 mod checkbox;
-mod glyph;
 mod icon;
 mod input;
 mod list_item;
@@ -12,9 +11,8 @@ mod tab;
 mod tooltip;
 pub mod tree;
 
-pub use button::Button;
+pub use button::{Button, ButtonStyle};
 pub use checkbox::Checkbox;
-pub use glyph::Glyph;
 pub use icon::SvgIcon;
 pub use input::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent};
 pub use list_item::ListItem;

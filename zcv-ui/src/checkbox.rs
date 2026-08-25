@@ -1,6 +1,5 @@
 //! Checkbox —— 复选方框组件。
 //!
-//! 对齐 Zed `ui::Checkbox`（crates/ui/src/components/toggle.rs）的形态与用法：
 //! 组件自封装视觉与悬停提示，点击回调由调用方注入。
 
 use std::rc::Rc;

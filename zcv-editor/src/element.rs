@@ -16,7 +16,7 @@ use zcv_git::DiffHunkKind;
 use zcv_language::BracketPair;
 use zcv_text::{ByteOffset, Line, LogicalColumn, SearchMatch, TextRange};
 use zcv_theme::{color, space, typography};
-use zcv_ui::{Button, Glyph};
+use zcv_ui::{Button, ButtonStyle, SvgIcon};
 
 use crate::SelectionSet;
 
@@ -285,9 +285,9 @@ pub(super) struct PrepaintState {
     gutter_hitbox: Option<gpui::Hitbox>,
     /// hunk 色带 hitbox（起点行可见时插入；点击切换折叠/展开；类型 + 展开态标志）。
     deleted_hunk_hitboxes: Arc<Vec<HunkHitbox>>,
-    /// 折叠删除 hunk 的交互三角标记（Glyph，禁止渲染层手绘交互图标）。
+    /// 折叠删除 hunk 的交互三角标记（禁止渲染层手绘交互图标）。
     deleted_hunk_glyphs: Vec<AnyElement>,
-    /// crease 折叠开关（Glyph 组件，已按 gutter 绝对坐标布局；自带点击与 tooltip）。
+    /// crease 折叠开关（已按 gutter 绝对坐标布局；自带点击与 tooltip）。
     crease_toggles: Vec<Option<AnyElement>>,
     /// 折叠占位符点击 hitbox（合并行占位符段；点击展开）。
     placeholder_hitboxes: Arc<Vec<(gpui::Hitbox, Line)>>,
@@ -302,7 +302,7 @@ pub(super) struct PrepaintState {
 /// hunk 色带 hitbox：命中区域 + 点击目标范围 + 类型 + 展开态标志。
 type HunkHitbox = (gpui::Hitbox, Range<usize>, DiffHunkKind, bool);
 
-/// 构建 crease 折叠开关：Glyph 组件（chevron 图标 + tooltip + 点击），按 gutter 绝对坐标 as_root 独立布局（对齐 Zed 的 prepaint_crease_toggles）。
+/// 构建 crease 折叠开关：Button 组件（chevron 图标 + tooltip + 点击），按 gutter 绝对坐标 as_root 独立布局。
 fn build_crease_toggles(
     layout: &EditorLayout,
     editor: &Entity<Editor>,
@@ -329,7 +329,7 @@ fn build_crease_toggles(
         };
         let line = row.logical_line;
         let editor = editor.clone();
-        let mut toggle = Glyph::icon(("gutter_crease", line.get()), path)
+        let mut toggle = Button::icon(("gutter_crease", line.get()), path)
             .label(if folded { "展开" } else { "折叠" })
             .shortcut(&ToggleFold, cx)
             .on_click(move |_event, _window, cx| {
@@ -362,7 +362,7 @@ fn build_deleted_hunk_glyphs(
         }
         let editor = editor.clone();
         let old_range = old_range.clone();
-        let mut glyph = Glyph::icon(("deleted-hunk-toggle", index), "icons/triangle_right.svg")
+        let mut glyph = Button::icon(("deleted-hunk-toggle", index), "icons/triangle_right.svg")
             .color(color::current(cx).status_deleted)
             .label("展开删除内容")
             .on_click(move |_event, _window, cx| {
@@ -445,8 +445,31 @@ fn build_block_elements(
                             .border_1()
                             .border_color(colors.border)
                             .bg(colors.editor_subheader_background)
-                            .hover(|style| style.bg(colors.element_hover))
                             .child(
+                                Button::icon(
+                                    ("buffer-header-chevron", block.row.get()),
+                                    if folded {
+                                        "icons/chevron_right.svg"
+                                    } else {
+                                        "icons/chevron_down.svg"
+                                    },
+                                )
+                                .label(if folded {
+                                    "展开文件"
+                                } else {
+                                    "折叠文件"
+                                })
+                                .on_click(
+                                    move |_event, _window, cx| {
+                                        editor_for_fold.update(cx, |editor, cx| {
+                                            editor.toggle_buffer_fold(fold_path.clone(), cx)
+                                        });
+                                    },
+                                ),
+                            )
+                            .child(
+                                // 悬停反馈只在路径区（点击区）生效；
+                                // 悬浮在"打开文件"等子按钮上时 header 背景保持不变。
                                 div()
                                     .id(("buffer-header-path", block.row.get()))
                                     .min_w_0()
@@ -455,38 +478,16 @@ fn build_block_elements(
                                     .items_center()
                                     .gap(space::S2)
                                     .cursor_pointer()
+                                    .hover(move |style| style.bg(colors.element_hover))
                                     .on_click(move |_event, _window, cx| {
                                         editor_for_path.update(cx, |editor, cx| {
                                             editor.open_excerpt(&open_from_path, false, cx)
                                         });
                                     })
                                     .child(
-                                        Glyph::icon(
-                                            ("buffer-header-chevron", block.row.get()),
-                                            if folded {
-                                                "icons/chevron_right.svg"
-                                            } else {
-                                                "icons/chevron_down.svg"
-                                            },
-                                        )
-                                        .label(if folded {
-                                            "展开文件"
-                                        } else {
-                                            "折叠文件"
-                                        })
-                                        .on_click(
-                                            move |_event, _window, cx| {
-                                                cx.stop_propagation();
-                                                editor_for_fold.update(cx, |editor, cx| {
-                                                    editor.toggle_buffer_fold(fold_path.clone(), cx)
-                                                });
-                                            },
-                                        ),
+                                        SvgIcon::new("icons/file.svg")
+                                            .id(("buffer-header-file", block.row.get())),
                                     )
-                                    .child(Glyph::icon(
-                                        ("buffer-header-file", block.row.get()),
-                                        "icons/file.svg",
-                                    ))
                                     .child(
                                         div()
                                             .text_size(typography::editor())
@@ -506,7 +507,8 @@ fn build_block_elements(
                                     }),
                             )
                             .child(
-                                Button::new(("buffer-header-open", block.row.get()), "打开文件")
+                                Button::text(("buffer-header-open", block.row.get()), "打开文件")
+                                    .style(ButtonStyle::Solid)
                                     .on_click(move |_event, _window, cx| {
                                         cx.stop_propagation();
                                         editor_for_button.update(cx, |editor, cx| {
@@ -986,7 +988,7 @@ impl Element for EditorElement {
                 return;
             }
             // 折叠占位符点击：展开该行（交互型，直接调 Entity 方法；先于 gutter 行号选行）。
-            // crease 箭头点击由 Glyph 组件自带的 on_click 处理。
+            // crease 箭头点击由 Button 组件自带的 on_click 处理。
             if let Some((_, line)) = placeholder_hitboxes
                 .iter()
                 .find(|(hitbox, _)| hitbox.is_hovered(window))
@@ -1109,7 +1111,7 @@ impl Element for EditorElement {
                     window.set_cursor_style(gpui::CursorStyle::PointingHand, hitbox);
                 }
             }
-            // 折叠占位符可点击：hover 时手型光标（crease 箭头由 Glyph 自带 cursor_pointer）。
+            // 折叠占位符可点击：hover 时手型光标（crease 箭头由 Button 自带 cursor_pointer）。
             for (hitbox, _) in prepaint.placeholder_hitboxes.iter() {
                 if hitbox.is_hovered(window) {
                     window.set_cursor_style(gpui::CursorStyle::PointingHand, hitbox);
@@ -1171,8 +1173,7 @@ impl Element for EditorElement {
                     ));
                 }
             }
-            // crease 折叠开关：Glyph 组件（chevron 图标 + tooltip + 点击），
-            // prepaint 已按 gutter 绝对坐标布局，这里在 gutter 区域内绘制。
+            // crease 折叠开关：Button 组件（chevron 图标 + tooltip + 点击），prepaint 已按 gutter 绝对坐标布局，这里在 gutter 区域内绘制。
             window.paint_layer(gutter.bounds, |window| {
                 for glyph in &mut prepaint.deleted_hunk_glyphs {
                     glyph.paint(window, cx);

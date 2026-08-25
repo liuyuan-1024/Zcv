@@ -13,8 +13,8 @@ use zcv_actions::SelectGitBranch;
 use zcv_git::Branch;
 use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, PickerHost};
 use zcv_theme::color;
-use zcv_ui::Glyph;
 use zcv_ui::ListItem;
+use zcv_ui::{Button, SvgIcon};
 
 // ═══ 回调 ════════════════════════════════════════════════════════
 
@@ -128,7 +128,7 @@ impl PickerDelegate for BranchPickerDelegate {
         &self,
         index: usize,
         is_selected: bool,
-        _cx: &mut Context<Picker<Self>>,
+        cx: &mut Context<Picker<Self>>,
     ) -> gpui::AnyElement {
         if index == self.filtered.len() {
             return ListItem::new(("create-branch", index))
@@ -141,9 +141,14 @@ impl PickerDelegate for BranchPickerDelegate {
         let row = ListItem::new(index)
             .toggle_state(is_selected)
             .child(branch.name.clone());
-        // 当前分支行尾标 ✓。
+        // 当前分支行首标 ✓。
         let row = if branch.is_head {
-            row.end_slot(Glyph::icon(("head", index), "icons/check.svg").label("当前分支"))
+            row.start_slot(
+                SvgIcon::new("icons/check.svg")
+                    .id(("head", index))
+                    .label("当前分支")
+                    .color(color::current(cx).icon_accent),
+            )
         } else {
             row
         };
@@ -232,7 +237,7 @@ impl Render for BranchPicker {
         };
 
         // glyph 上显示当前分支名，没有时显示占位。
-        let glyph = Glyph::icon_text(
+        let glyph = Button::icon_text(
             "top-bar.branch",
             "icons/git_branch.svg",
             self.current_branch.as_deref().unwrap_or("--"),

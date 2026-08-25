@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [lib]
-path = "src/ui/mod.rs"
+path = "src/ui.rs"
 
 [dependencies]
 gpui.workspace = true

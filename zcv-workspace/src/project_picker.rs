@@ -15,7 +15,7 @@ use zcv_actions::{DeleteRecentProject, OpenLocalProject, ToggleProjectPicker};
 use zcv_keymap::KeyBindings;
 use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, PickerHost, picker_divider};
 use zcv_theme::{color, typography};
-use zcv_ui::Glyph;
+use zcv_ui::Button;
 use zcv_ui::ListItem;
 
 use crate::recent_projects::{self, ProjectEntry};
@@ -148,7 +148,7 @@ impl PickerDelegate for ProjectPickerDelegate {
             )
             .subtitle(entry.path.clone())
             .end_slot(
-                Glyph::icon(("delete-project", index), "icons/trash.svg")
+                Button::icon(("delete-project", index), "icons/trash.svg")
                     .color(icon_color)
                     .label("移除")
                     .shortcut(&DeleteRecentProject, cx)
@@ -353,7 +353,7 @@ impl Render for ProjectPicker {
             &self.current_label
         };
 
-        let glyph = Glyph::text("project-picker", glyph_text.to_string())
+        let glyph = Button::text("project-picker", glyph_text.to_string())
             .label("项目选择器")
             .shortcut(&ToggleProjectPicker, cx)
             .color(color_value)

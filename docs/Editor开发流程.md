@@ -125,7 +125,7 @@ BufferStore 由项目级 `Project` Entity 持有，不注册为 App Global；`Wo
 可见性、查询文本或活动目标，并直接使用唯一的 `zcv_text::SearchQuery` 与
 `SearchQuery::search(&Snapshot)`；其他 crate 不重导出该查询类型。差异只在搜索目标范围；
 `ProjectSearchView` 只持有结果 Editor 和组合文档。
-结果 Editor 使用组合坐标中的真实命中范围高亮，激活结果时再由 MultiBuffer 映射回源文件字节范围。项目结果只读，因此替换 Glyph 保持可见以维持相同布局，但通过能力查询进入禁用态且不展开替换行。
+结果 Editor 使用组合坐标中的真实命中范围高亮，激活结果时再由 MultiBuffer 映射回源文件字节范围。项目结果只读，因此替换 Button 保持可见以维持相同布局，但通过能力查询进入禁用态且不展开替换行。
 
 Buffer 不得持有 `selection` 字段，也不得通过 `selection()` / `set_selection()` 暴露全局当前选区。接受选区的编辑入口必须把 SelectionSet 作为参数，并把编辑后的 SelectionSet 作为结果返回。
 

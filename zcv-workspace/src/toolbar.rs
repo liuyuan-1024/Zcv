@@ -7,7 +7,7 @@ use gpui::{
 };
 use zcv_actions::{DeploySearch, TogglePreview};
 use zcv_theme::{color, space};
-use zcv_ui::Glyph;
+use zcv_ui::Button;
 
 use crate::ItemHandle;
 use crate::preview::provider_for;
@@ -298,7 +298,7 @@ impl Render for FileToolbarControls {
                     ),
                 };
                 controls.child(
-                    Glyph::icon("toolbar-preview", icon)
+                    Button::icon("toolbar-preview", icon)
                         .label(label)
                         .color(icon_color)
                         .on_click(|_, window, cx| {
@@ -307,7 +307,7 @@ impl Render for FileToolbarControls {
                 )
             })
             .child(
-                Glyph::icon("toolbar-file-search", "icons/magnifying_glass.svg")
+                Button::icon("toolbar-file-search", "icons/magnifying_glass.svg")
                     .label("搜索")
                     .shortcut(&DeploySearch, cx)
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(DeploySearch), cx)),

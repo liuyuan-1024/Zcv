@@ -8,7 +8,7 @@ use gpui::{
 };
 use serde::{Deserialize, Serialize};
 use zcv_actions::NewTerminal;
-use zcv_ui::Glyph;
+use zcv_ui::Button;
 use zcv_workspace::{Pane, PaneEvent, Panel, PanelEvent};
 
 /// 终端会话快照：重建 PTY 所需的最小信息。
@@ -39,7 +39,7 @@ impl TerminalPanel {
         pane.update(cx, |pane, _| {
             pane.set_tab_bar_trailing(move |_cx: &App| {
                 let weak_for_click = weak.clone();
-                Glyph::icon(("terminal-new-terminal", 0usize), "icons/plus.svg")
+                Button::icon(("terminal-new-terminal", 0usize), "icons/plus.svg")
                     .label("新建终端")
                     .shortcut(&NewTerminal, _cx)
                     .on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {

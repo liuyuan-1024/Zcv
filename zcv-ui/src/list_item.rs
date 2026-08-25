@@ -12,6 +12,7 @@ use zcv_theme::{color, space, typography};
 pub struct ListItem {
     id: ElementId,
     toggle_state: bool,
+    start_slot: Option<AnyElement>,
     child: Option<AnyElement>,
     subtitle: Option<AnyElement>,
     end_slot: Option<AnyElement>,
@@ -22,10 +23,17 @@ impl ListItem {
         Self {
             id: id.into(),
             toggle_state: false,
+            start_slot: None,
             child: None,
             subtitle: None,
             end_slot: None,
         }
+    }
+
+    /// 首部插槽。
+    pub fn start_slot(mut self, slot: impl IntoElement) -> Self {
+        self.start_slot = Some(slot.into_any_element());
+        self
     }
 
     /// 选中态（高亮背景）。
@@ -72,6 +80,7 @@ impl RenderOnce for ListItem {
             .flex_row()
             .items_center()
             .justify_between()
+            .gap(space::S6)
             .p(space::S6)
             .cursor_pointer()
             // test cfg 下注册 debug bounds，供行高断言使用。
@@ -80,6 +89,11 @@ impl RenderOnce for ListItem {
 
         if self.toggle_state {
             row = row.bg(color::current(cx).element_selected);
+        }
+
+        // 首部插槽
+        if let Some(slot) = self.start_slot {
+            row = row.child(slot);
         }
 
         // 主内容（含次行时两行排列）。

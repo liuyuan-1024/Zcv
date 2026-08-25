@@ -4,7 +4,7 @@
 
 use gpui::{Context, Render, Subscription, Window, prelude::*};
 use zcv_editor::Editor;
-use zcv_ui::Glyph;
+use zcv_ui::Button;
 use zcv_workspace::ItemHandle;
 use zcv_workspace::StatusItemView;
 
@@ -45,8 +45,9 @@ impl StatusItemView for CursorPosition {
 
 impl Render for CursorPosition {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        Glyph::text("status-bar.cursor", self.cursor_text.clone())
+        Button::text("status-bar.cursor", self.cursor_text.clone())
             .label("跳转到行/列")
+            .disabled(true)
             .into_any_element()
     }
 }

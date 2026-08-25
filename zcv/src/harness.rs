@@ -5,7 +5,7 @@
 use gpui::{Context, ElementId, Render, Window, div, prelude::*, px};
 use zcv_actions::ToggleHarnessMode;
 use zcv_theme::{color, space};
-use zcv_ui::Glyph;
+use zcv_ui::Button;
 use zcv_workspace::{ItemHandle, StatusItemView};
 
 pub(crate) struct HarnessButton {
@@ -45,7 +45,7 @@ impl Render for HarnessButton {
             .gap(space::S8)
             .child(divider)
             .child(
-                Glyph::icon(ElementId::Name("harness".into()), "icons/zed_assistant.svg")
+                Button::icon(ElementId::Name("harness".into()), "icons/zed_assistant.svg")
                     .label("Harness 模式")
                     .shortcut(&ToggleHarnessMode, cx)
                     .color(fg)

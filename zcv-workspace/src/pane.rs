@@ -13,7 +13,7 @@ use gpui::{
 };
 use zcv_actions::{CloseTab, NextTab, PrevTab, TogglePreview};
 use zcv_theme::{FileIcons, color};
-use zcv_ui::{Glyph, SvgIcon, Tab};
+use zcv_ui::{Button, SvgIcon, Tab};
 
 use crate::layout_state::SerializedPane;
 use crate::preview::{PreviewDocument, provider_for};
@@ -801,14 +801,14 @@ fn is_preview_item(item: &dyn ItemHandle, cx: &App) -> bool {
     item.as_preview_item(cx).is_some()
 }
 
-/// 标签关闭按钮（叉 glyph）。
-fn close_glyph(
+/// 标签关闭按钮。
+fn close_button(
     pane_entity: &gpui::Entity<Pane>,
     item_id: EntityId,
     cx: &App,
 ) -> impl gpui::IntoElement {
     let entity = pane_entity.clone();
-    Glyph::icon(("tab-close", item_id), "icons/close.svg")
+    Button::icon(("tab-close", item_id), "icons/close.svg")
         .label("关闭")
         .shortcut(&CloseTab, cx)
         .on_click(
@@ -839,7 +839,7 @@ fn tab_end_state(is_dirty: bool, is_preview: bool) -> TabEndState {
 
 /// 标签尾部状态槽：未保存优先显示圆点，预览其次显示眼睛；悬停后都切换为关闭按钮。
 ///
-/// 槽位宽度由内容撑开：三种状态内容同为 Glyph 组件，状态切换（圆点/眼睛 ↔ 关闭叉）不改变槽位尺寸，tab 宽度稳定。
+/// 槽位宽度由内容撑开：三种状态同为展示图标/按钮，状态切换（圆点/眼睛 ↔ 关闭叉）不改变槽位尺寸，tab 宽度稳定。
 fn tab_end_glyph(
     pane_entity: &gpui::Entity<Pane>,
     item_id: EntityId,
@@ -849,7 +849,7 @@ fn tab_end_glyph(
 ) -> AnyElement {
     let state = tab_end_state(is_dirty, is_preview);
     if state == TabEndState::Close {
-        return close_glyph(pane_entity, item_id, cx).into_any_element();
+        return close_button(pane_entity, item_id, cx).into_any_element();
     }
 
     let (id, icon, icon_color) = match state {
@@ -873,7 +873,7 @@ fn tab_end_glyph(
         .child(
             div()
                 .group_hover(TAB_HOVER_GROUP, |style| style.opacity(0.0))
-                .child(Glyph::icon(id, icon).color(icon_color)),
+                .child(SvgIcon::new(icon).id(id).color(icon_color)),
         )
         .child(
             div()
@@ -884,7 +884,7 @@ fn tab_end_glyph(
                 .justify_center()
                 .opacity(0.0)
                 .group_hover(TAB_HOVER_GROUP, |style| style.opacity(1.0))
-                .child(close_glyph(pane_entity, item_id, cx)),
+                .child(close_button(pane_entity, item_id, cx)),
         )
         .into_any_element()
 }

@@ -5,7 +5,7 @@ use zcv_actions::{GitFetch, GitPull, GitPush, OpenSettings};
 use zcv_git::Branch;
 use zcv_project::{GitJobPhase, GitOperationKind, RemoteOperationState};
 use zcv_theme::{color, space};
-use zcv_ui::Glyph;
+use zcv_ui::Button;
 
 use crate::OnProjectSelected;
 use crate::branch_picker::{BranchPicker, OnBranchSelected};
@@ -73,7 +73,6 @@ impl gpui::Render for TopBar {
                 &self.branch_picker,
                 self.has_repositories,
                 self.remote_operation_state,
-                cx,
             )))
             .child(drag_spacer())
             .child(cluster(trailing_slots(cx)))
@@ -109,13 +108,11 @@ fn leading_slots(
     branch_picker: &gpui::Entity<BranchPicker>,
     has_repositories: bool,
     state: RemoteOperationState,
-    cx: &gpui::App,
 ) -> Vec<AnyElement> {
     let mut out: Vec<AnyElement> = Vec::new();
 
-    // macOS 使用无标题栏窗口，因此在应用顶栏提供原生习惯的三色控制。
-    #[cfg(target_os = "macos")]
-    out.push(render_window_controls(window, cx).into_any_element());
+    // 无标题栏窗口，因此在应用顶栏提供三色控制。
+    out.push(render_window_controls(window).into_any_element());
 
     // 项目选择器
     out.push(project_picker.clone().into_any_element());
@@ -130,7 +127,7 @@ fn leading_slots(
             let busy = state.operation.is_some();
             let operation_label = remote_operation_label(state);
             out.push(
-                Glyph::icon("top-bar.git-fetch", "icons/arrow_circle.svg")
+                Button::icon("top-bar.git-fetch", "icons/arrow_circle.svg")
                     .label(operation_label.unwrap_or("同步"))
                     .disabled(busy)
                     .on_click(|_, window, cx| {
@@ -140,7 +137,7 @@ fn leading_slots(
             );
             if state.behind > 0 {
                 out.push(
-                    Glyph::icon_text(
+                    Button::icon_text(
                         "top-bar.git-pull",
                         "icons/arrow_down.svg",
                         state.behind.to_string(),
@@ -155,7 +152,7 @@ fn leading_slots(
             }
             if state.ahead > 0 {
                 out.push(
-                    Glyph::icon_text(
+                    Button::icon_text(
                         "top-bar.git-push",
                         "icons/arrow_up.svg",
                         state.ahead.to_string(),
@@ -194,7 +191,7 @@ fn remote_operation_label(state: RemoteOperationState) -> Option<&'static str> {
 
 fn trailing_slots(cx: &gpui::App) -> Vec<AnyElement> {
     vec![
-        Glyph::icon("top-bar.settings", "icons/settings.svg")
+        Button::icon("top-bar.settings", "icons/settings.svg")
             .label("设置")
             .shortcut(&OpenSettings, cx)
             .on_click(|_, window, cx| {

@@ -24,7 +24,7 @@ use zcv_git::{DiffStat, FileStatus, StatusCode};
 use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, space, typography};
 use zcv_ui::tree::{self, TreeRow, TreeState};
-use zcv_ui::{Button, Checkbox, Glyph, Scrollbar};
+use zcv_ui::{Button, ButtonStyle, Checkbox, Scrollbar};
 use zcv_workspace::{Panel, PanelEvent};
 
 use crate::git_status::git_status_color;
@@ -761,33 +761,37 @@ fn render_commit_footer(
     let has_last_commit = last_commit_message.is_some();
     // child 接受 'static 内容，&str 借用先转为 owned。
     let last_commit_text = last_commit_message.unwrap_or("暂无提交").to_string();
-    // 整个提交区是编辑器背景块（bg(editor_background)），顶部用普通边框与列表区分隔；内边距由各区块管理，分隔线保持全宽。
     div()
         .border_t_1()
         .border_color(colors.border)
-        .bg(colors.editor_background)
         .flex()
         .flex_col()
         // 提交信息编辑器（observe 已让按键即时触发重绘）。
-        .child(div().pt(space::S8).px(space::S8).child(editor.clone()))
-        // 容器内底部 commit-footer：提交按钮（空消息时淡显，点击由 handler 兜底聚焦回编辑器）。
         .child(
             div()
-                .id("version-control-commit-footer")
-                .px(space::S8)
-                .py(space::S6)
+                .bg(colors.editor_background)
                 .flex()
-                .justify_end()
+                .flex_col()
+                .child(div().pt(space::S8).px(space::S8).child(editor.clone()))
+                // 容器内底部 commit-footer：提交按钮（空消息时淡显，点击由 handler 兜底聚焦回编辑器）。
                 .child(
-                    Button::new("version-control-commit", "提交")
-                        .text_color(if message.trim().is_empty() {
-                            colors.text_muted
-                        } else {
-                            colors.text
-                        })
-                        .on_click(move |_, window, cx| {
-                            window.dispatch_action(Box::new(Commit), cx);
-                        }),
+                    div()
+                        .id("version-control-commit-footer")
+                        .p(space::S6)
+                        .flex()
+                        .justify_end()
+                        .child(
+                            Button::text("version-control-commit", "提交")
+                                .style(ButtonStyle::Solid)
+                                .color(if message.trim().is_empty() {
+                                    colors.text_muted
+                                } else {
+                                    colors.text
+                                })
+                                .on_click(move |_, window, cx| {
+                                    window.dispatch_action(Box::new(Commit), cx);
+                                }),
+                        ),
                 ),
         )
         // 上次提交信息。
@@ -816,7 +820,7 @@ fn render_commit_footer(
                 // 图标对齐 Zed（IconName::Undo / undo.svg），hover 提示"撤销提交"。
                 .when(has_last_commit, |element| {
                     element.child(
-                        Glyph::icon("version-control-uncommit", "icons/undo.svg")
+                        Button::icon("version-control-uncommit", "icons/undo.svg")
                             .label("撤销提交")
                             .on_click(move |_, window, cx| {
                                 window.dispatch_action(Box::new(Uncommit), cx);

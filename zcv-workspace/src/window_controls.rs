@@ -2,7 +2,7 @@
 
 use gpui::{Pixels, Window, div, prelude::*, px, rgb, svg};
 pub(crate) use zcv_actions::{MinimizeWindow, QuitWindow, ToggleMaximizeWindow};
-use zcv_theme::{color, space};
+use zcv_theme::space;
 
 use crate::window_bounds;
 
@@ -24,7 +24,7 @@ pub(crate) fn handle_toggle_maximize(
     window_bounds::save_window_bounds(window, cx);
 }
 
-pub(crate) fn render(window: &Window, cx: &gpui::App) -> gpui::Stateful<gpui::Div> {
+pub(crate) fn render(window: &Window) -> gpui::Stateful<gpui::Div> {
     let active = window.is_window_active();
 
     div()
@@ -35,15 +35,15 @@ pub(crate) fn render(window: &Window, cx: &gpui::App) -> gpui::Stateful<gpui::Di
         .items_center()
         .gap(space::S8)
         .child(
-            pip(Pip::Close, active, cx)
+            pip(Pip::Close, active)
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(QuitWindow), cx)),
         )
         .child(
-            pip(Pip::Minimize, active, cx)
+            pip(Pip::Minimize, active)
                 .on_click(|_, window, cx| window.dispatch_action(Box::new(MinimizeWindow), cx)),
         )
         .child(
-            pip(Pip::Maximize, active, cx).on_click(|_, window, cx| {
+            pip(Pip::Maximize, active).on_click(|_, window, cx| {
                 window.dispatch_action(Box::new(ToggleMaximizeWindow), cx)
             }),
         )
@@ -51,7 +51,7 @@ pub(crate) fn render(window: &Window, cx: &gpui::App) -> gpui::Stateful<gpui::Di
 
 // ── 私有渲染辅助函数 ─────────────────────────────────────────────────
 
-fn pip(pip: Pip, active: bool, cx: &gpui::App) -> gpui::Stateful<gpui::Div> {
+fn pip(pip: Pip, active: bool) -> gpui::Stateful<gpui::Div> {
     let id = match pip {
         Pip::Close => "window-controls.close",
         Pip::Minimize => "window-controls.minimize",
@@ -82,7 +82,8 @@ fn pip(pip: Pip, active: bool, cx: &gpui::App) -> gpui::Stateful<gpui::Div> {
             svg()
                 .path(pip.svg_path())
                 .size(px(10.0))
-                .text_color(color::current(cx).icon_on_accent)
+                // 符号为该按钮色的深色调。
+                .text_color(pip.symbol_color())
                 .opacity(0.0)
                 .group_hover(PIP_GROUP, |style| style.opacity(1.0)),
         )
@@ -114,6 +115,15 @@ impl Pip {
             Pip::Close => "icons/generic_close.svg",
             Pip::Minimize => "icons/minimize.svg",
             Pip::Maximize => "icons/maximize.svg",
+        }
+    }
+
+    /// 悬停符号色（近似 macOS 交通灯：按钮色的深色调，红按钮深红褐、黄按钮深黄褐、绿按钮深绿）。
+    fn symbol_color(self) -> gpui::Rgba {
+        match self {
+            Pip::Close => rgb(0x460804),
+            Pip::Minimize => rgb(0x90591d),
+            Pip::Maximize => rgb(0x2a6218),
         }
     }
 }

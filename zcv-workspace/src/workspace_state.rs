@@ -618,7 +618,7 @@ impl Workspace {
         window.refresh();
     }
 
-    /// 处理 Glyph 的鼠标意图：只切换指定 Panel 的可见性。
+    /// 处理面板按钮的鼠标意图：只切换指定 Panel 的可见性。
     pub(crate) fn toggle_panel_visibility_from_button(
         &mut self,
         position: DockPosition,

@@ -239,7 +239,7 @@ impl ProjectPicker {
 
     /// 外部切换（快捷键/按钮等）。
     pub fn toggle(&mut self, window: &mut Window, cx: &mut App) {
-        if !self.host.is_open() {
+        if !self.host.is_open(cx) {
             // 打开时从磁盘重新加载最近项目列表
             self.picker.update(cx, |picker, cx| {
                 picker.delegate_mut().reload_projects();
@@ -325,13 +325,13 @@ impl ProjectPicker {
 impl Render for ProjectPicker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 检查是否需要关闭（Escape / 点击外部）
-        if self.host.consume_dismiss() {
-            self.host.close_and_refocus(window);
+        if self.host.consume_dismiss(cx) {
+            self.host.close_and_refocus(window, cx);
         }
 
         // 处理异步「打开本地项目」返回的路径
         if let Some(path) = self.pending_path.borrow_mut().take() {
-            self.host.close_and_refocus(window);
+            self.host.close_and_refocus(window, cx);
             // 从路径提取项目名
             if let Some(file_name) = std::path::Path::new(&path).file_name() {
                 self.current_label = file_name.to_string_lossy().to_string();
@@ -340,7 +340,7 @@ impl Render for ProjectPicker {
             window.defer(cx, move |window, cx| cb(path, window, cx));
         }
 
-        let color_value = if self.host.is_open() {
+        let color_value = if self.host.is_open(cx) {
             color::current(cx).icon_accent
         } else {
             color::current(cx).text
@@ -372,7 +372,7 @@ impl Render for ProjectPicker {
             .child(glyph);
 
         // 浮层
-        if self.host.is_open() {
+        if self.host.is_open(cx) {
             root = root.child(self.host.overlay(window, cx, &self.picker));
         }
 

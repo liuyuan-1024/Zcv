@@ -204,7 +204,7 @@ impl BranchPicker {
 
     /// 外部切换（快捷键/glyph 点击等）。
     pub fn toggle(&mut self, window: &mut Window, cx: &mut App) {
-        if !self.host.is_open() {
+        if !self.host.is_open(cx) {
             // 打开时用最新快照重建列表，清空搜索框。
             let branches = self.branches.clone();
             self.picker.update(cx, |picker, cx| {
@@ -226,11 +226,11 @@ impl BranchPicker {
 impl Render for BranchPicker {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 检查是否需要关闭（Escape / 点击外部）。
-        if self.host.consume_dismiss() {
-            self.host.close_and_refocus(window);
+        if self.host.consume_dismiss(cx) {
+            self.host.close_and_refocus(window, cx);
         }
 
-        let color_value = if self.host.is_open() {
+        let color_value = if self.host.is_open(cx) {
             color::current(cx).icon_accent
         } else {
             color::current(cx).text
@@ -258,7 +258,7 @@ impl Render for BranchPicker {
             .child(glyph);
 
         // 浮层
-        if self.host.is_open() {
+        if self.host.is_open(cx) {
             root = root.child(self.host.overlay(window, cx, &self.picker));
         }
 

@@ -18,6 +18,7 @@ dependencies = [
  "zcv-keymap",
  "zcv-preview-svg",
  "zcv-project",
+ "zcv-project-tree",
  "zcv-search",
  "zcv-settings",
  "zcv-terminal",
@@ -7724,6 +7725,23 @@ dependencies = [
  "zcv-language",
  "zcv-multi-buffer",
  "zcv-text",
+]
+
+[[package]]
+name = "zcv-project-tree"
+version = "0.7.7"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "tempfile",
+ "zcv-actions",
+ "zcv-editor",
+ "zcv-git",
+ "zcv-project",
+ "zcv-settings",
+ "zcv-theme",
+ "zcv-ui",
+ "zcv-workspace",
 ]
 
 [[package]]

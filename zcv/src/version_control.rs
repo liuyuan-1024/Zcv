@@ -27,8 +27,8 @@ use zcv_ui::tree::{self, TreeRow, TreeState};
 use zcv_ui::{Button, ButtonStyle, Checkbox, Scrollbar, SvgIcon};
 use zcv_workspace::{Panel, PanelEvent};
 
-use crate::git_status::git_status_color;
-use crate::workspace::OnOpenFile;
+use zcv_project_tree::OnOpenFile;
+use zcv_project_tree::git_status_color;
 
 // 版本控制快捷键归属于 `VersionControl` 上下文，由统一快捷键注册表加载；组件内不重复注册。
 

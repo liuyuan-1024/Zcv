@@ -551,6 +551,21 @@ impl Workspace {
         Ok(())
     }
 
+    /// 在项目内移动文件或目录，并让打开的标签页跟随新路径。
+    pub fn move_path(
+        &mut self,
+        from: &Path,
+        to: &Path,
+        overwrite: bool,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        self.project
+            .update(cx, |project, cx| project.move_path(from, to, overwrite, cx))?;
+        self.pane
+            .update(cx, |pane, cx| pane.rename_path(from, to, cx));
+        Ok(())
+    }
+
     pub fn create_path(
         &mut self,
         path: &Path,

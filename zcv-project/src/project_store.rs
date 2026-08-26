@@ -3,11 +3,12 @@
 //! `Project` 管理项目根、目录快照（Worktree）、文件 Buffer 生命周期和文件系统监听。
 //! 窗口布局、Pane、Dock 与其他界面状态仍由 `Workspace` 管理。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 use zcv_git::FileStatus;
@@ -17,7 +18,7 @@ use zcv_text::{Buffer, BufferLoadError, BufferSaveError, SearchQuery};
 use super::buffer_store::BufferStore;
 use super::git_store::{GitStore, StatusEntry};
 use super::search::{self, SearchResults};
-use super::worktree::{Worktree, WorktreeEntry};
+use super::worktree::{Worktree, WorktreeEntry, collect_visible_entries};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectEvent {
@@ -111,24 +112,25 @@ impl Project {
         }
     }
 
-    /// 查询目录的直接子项：worktree 读取 + git 状态合并。
+    /// 后台收集当前展开状态下的可见行（不含 git 状态），返回后台任务。
     ///
-    /// git 状态现查 `GitStore`（目录行聚合、文件行精确），展开产生的新行因此立即携带状态，无需二次补齐。
-    /// 展开、深度与可见行是视图状态，由项目树 UI 层自行构建。
-    pub fn children(&self, path: &Path, cx: &App) -> Vec<WorktreeEntry> {
-        self.worktree
-            .as_ref()
-            .into_iter()
-            .flat_map(|worktree| worktree.snapshot.children(path))
-            .map(|mut entry| {
-                entry.git_status = if entry.is_dir {
-                    self.git_status_for_directory(&entry.path, cx)
-                } else {
-                    self.git_status_for_path(&entry.path, cx).map(|e| e.status)
-                };
-                entry
-            })
-            .collect()
+    /// 遍历在后台线程执行（排序与排除规则与 `Worktree::children` 一致）；
+    /// 完成后由调用方在 UI 线程用 `git_statuses_for_rows` 批量回填 git 状态。
+    pub fn collect_visible_rows(
+        &self,
+        expanded: HashSet<PathBuf>,
+        cx: &App,
+    ) -> Task<Vec<WorktreeEntry>> {
+        let Some(worktree) = &self.worktree else {
+            // 无 worktree 的空态：直接返回空结果。
+            return cx
+                .background_executor()
+                .spawn(async { Vec::<WorktreeEntry>::new() });
+        };
+        let root = worktree.root.clone();
+        let filter = worktree.snapshot.filter();
+        cx.background_executor()
+            .spawn(async move { collect_visible_entries(&root, &expanded, &filter) })
     }
 
     /// 批量查询可见行的 git 状态（git 事件驱动，不重扫目录）。
@@ -328,6 +330,123 @@ impl Project {
         Ok(())
     }
 
+    /// 在项目内移动文件或目录到新位置（可跨目录），并迁移项目持有的路径状态。
+    ///
+    /// 与 `rename_path` 的区别：不要求同父目录；`overwrite` 为真时允许替换已存在的目标。
+    pub fn move_path(
+        &mut self,
+        from: &Path,
+        to: &Path,
+        overwrite: bool,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(from != to, "新旧路径不能相同");
+        let root = self
+            .root()
+            .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?
+            .to_path_buf();
+        anyhow::ensure!(from != root, "不能移动项目根目录");
+        anyhow::ensure!(from.starts_with(&root), "条目不在当前项目中");
+        anyhow::ensure!(to.starts_with(&root), "目标不在当前项目中");
+        anyhow::ensure!(!to.starts_with(from), "不能把条目移动到自身内部");
+        // 对称守卫：目标是源的祖先目录时，覆盖路径的「先删目标」会把源一起递归删掉。
+        anyhow::ensure!(
+            !from.starts_with(to),
+            "不能把条目移动到自身的祖先目录：{}",
+            to.display()
+        );
+        if to.exists() {
+            anyhow::ensure!(overwrite, "目标已存在：{}", to.display());
+        }
+        let indexed_from = from.canonicalize()?;
+        let parent = to
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("无法确定移动目标路径"))?;
+        let name = to
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("无法确定移动目标路径"))?;
+        // 目标父目录必须已存在：目录移动场景下由调用方保证，缺失时在 canonicalize 处报错。
+        let indexed_to = parent.canonicalize()?.join(name);
+        // 优先直接 rename：同文件系统上 POSIX rename 原子替换文件/空目录目标，没有「先删后写」的危险中间态；
+        // 仅当失败且目标是非空目录（rename 无法原地替换的唯一情形）才退化为「删目标再 rename」，最终失败经 Result 向上传播。
+        if let Err(error) = std::fs::rename(from, to) {
+            let is_nonempty_dir = to.is_dir()
+                && std::fs::read_dir(to).is_ok_and(|mut entries| entries.next().is_some());
+            if !(overwrite && is_nonempty_dir) {
+                return Err(error)
+                    .with_context(|| format!("移动失败：{} → {}", from.display(), to.display()));
+            }
+            remove_entry(to)?;
+            std::fs::rename(from, to)
+                .with_context(|| format!("移动失败：{} → {}", from.display(), to.display()))?;
+        }
+        self.buffer_store.rename_path(&indexed_from, &indexed_to);
+        // from 不可能是根（校验已排除），条目变化无需区分 RootChanged。
+        cx.emit(ProjectEvent::EntriesChanged);
+        Ok(())
+    }
+
+    /// 在项目内递归复制文件或目录到新位置（后台执行，不阻塞 UI 线程）。
+    ///
+    /// 同步完成参数校验后返回驱动任务：复制本体在后台线程执行，完成后由任务内部发出 `EntriesChanged`；
+    /// 任务返回值携带执行结果（调用方驱动进度用）。
+    /// 失败详情已在此层输出日志（条目未变化时不发出事件），调用方可静默跳过失败项。
+    pub fn copy_path(
+        &mut self,
+        source: &Path,
+        destination: &Path,
+        overwrite: bool,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<Task<anyhow::Result<()>>> {
+        let root = self
+            .root()
+            .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?
+            .to_path_buf();
+        anyhow::ensure!(source != root, "不能复制项目根目录");
+        anyhow::ensure!(source.starts_with(&root), "条目不在当前项目中");
+        anyhow::ensure!(destination.starts_with(&root), "目标不在当前项目中");
+        anyhow::ensure!(!destination.starts_with(source), "不能把条目复制到自身内部");
+        // 对称守卫：目标是源的祖先目录时，覆盖路径的「先删目标」会把源一起递归删掉。
+        anyhow::ensure!(
+            !source.starts_with(destination),
+            "不能把条目复制到自身的祖先目录：{}",
+            destination.display()
+        );
+        anyhow::ensure!(
+            overwrite || !destination.exists(),
+            "目标已存在：{}",
+            destination.display()
+        );
+        anyhow::ensure!(source.exists(), "源条目不存在：{}", source.display());
+        // 不在同步阶段预删已存在目标：后台复制先把完整副本落到同级临时条目，成功后才替换目标（见 `copy_entry_overwrite`），任何一步失败原目标内容完好。
+        let source = source.to_path_buf();
+        let destination = destination.to_path_buf();
+        // 任务交由调用方驱动（drop 即取消）：进度面板逐项 await 推进，不随 Project 持久保存字段。
+        Ok(
+            cx.spawn(move |project: WeakEntity<Self>, asynccx: &mut AsyncApp| {
+                let mut cx = asynccx.clone();
+                async move {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move { copy_entry_overwrite(&source, &destination) })
+                        .await;
+                    match result {
+                        Ok(()) => {
+                            let _ = project.update(&mut cx, |_, cx| {
+                                cx.emit(ProjectEvent::EntriesChanged);
+                            });
+                            Ok(())
+                        }
+                        Err(error) => {
+                            eprintln!("项目复制失败：{error}");
+                            Err(error)
+                        }
+                    }
+                }
+            }),
+        )
+    }
+
     fn process_fs_events(&mut self, events: Vec<PathEvent>, cx: &mut Context<Self>) {
         let Some(worktree) = &self.worktree else {
             return;
@@ -418,6 +537,117 @@ fn write_buffer_to_path(buffer: &mut Buffer, path: &Path) -> Result<(), BufferSa
     buffer.write_to(version, &mut file)?;
     file.sync_all()?;
     buffer.mark_saved();
+    Ok(())
+}
+
+/// 删除已存在的文件或目录（移动/复制以 overwrite 替换目标时调用）。
+///
+/// 用 `symlink_metadata` 判断类型：符号链接删除链接本身（`remove_dir_all` 对链接会失败）。
+fn remove_entry(path: &Path) -> anyhow::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.is_dir() {
+        std::fs::remove_dir_all(path)?;
+    } else {
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+/// 生成目标的同级临时路径：同父目录，名称追加 `.zcv-copy-tmp` 后缀。
+fn sibling_tmp_path(destination: &Path) -> PathBuf {
+    let name = destination
+        .file_name()
+        .map(|name| format!("{}.zcv-copy-tmp", name.to_string_lossy()))
+        .unwrap_or_else(|| ".zcv-copy-tmp".to_string());
+    destination.with_file_name(name)
+}
+
+/// 递归复制并替换已存在目标：完整副本先落到目标的同级临时条目，成功后再 rename 入位。
+///
+/// 触碰已存在目标的唯一时机是复制完全成功之后（目录：删旧目标再 rename；
+/// 文件：rename 原地替换），任何一步失败都清理临时产物并把错误传出，原目标内容不会被损坏。
+fn copy_entry_overwrite(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    let tmp = sibling_tmp_path(destination);
+    let result = copy_entry_overwrite_inner(source, destination, &tmp);
+    if result.is_err() && tmp.symlink_metadata().is_ok() {
+        // 失败清理：临时产物不残留（失败路径未触碰原目标，无需恢复）。
+        let _ = remove_entry(&tmp);
+    }
+    result
+}
+
+fn copy_entry_overwrite_inner(source: &Path, destination: &Path, tmp: &Path) -> anyhow::Result<()> {
+    let metadata = std::fs::symlink_metadata(source)
+        .with_context(|| format!("读取源条目失败：{}", source.display()))?;
+    if metadata.file_type().is_dir() {
+        // 目录：整树复制到临时目录 → 删除旧目标 → rename 入位。
+        copy_entry_recursive(source, tmp)?;
+        if destination.exists() {
+            remove_entry(destination)?;
+        }
+        std::fs::rename(tmp, destination)
+            .with_context(|| format!("临时目录入位失败：{}", destination.display()))?;
+    } else {
+        // 文件与符号链接：先写临时文件再 rename 入位（POSIX rename 原子替换文件目标）。
+        copy_single_entry(source, tmp, metadata.file_type())?;
+        // 已存在目标类型不匹配（如文件覆盖目录）时 rename 会失败：先行删除。
+        if destination.exists() && !destination.is_file() {
+            remove_entry(destination)?;
+        }
+        if std::fs::rename(tmp, destination).is_err() {
+            // 兜底：个别平台 rename 不自动替换已存在文件目标，删除后重试一次。
+            if destination.exists() {
+                remove_entry(destination)?;
+            }
+            std::fs::rename(tmp, destination)
+                .with_context(|| format!("临时文件入位失败：{}", destination.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// 复制单个非目录条目（文件或符号链接）到目标路径。
+///
+/// 符号链接按链接本身复制（读出链接目标后重建），不跟随链接指向的内容。
+fn copy_single_entry(
+    source: &Path,
+    destination: &Path,
+    file_type: std::fs::FileType,
+) -> anyhow::Result<()> {
+    if file_type.is_symlink() {
+        let target = std::fs::read_link(source)
+            .with_context(|| format!("读取符号链接失败：{}", source.display()))?;
+        std::os::unix::fs::symlink(&target, destination)
+            .with_context(|| format!("重建符号链接失败：{}", destination.display()))?;
+    } else {
+        std::fs::copy(source, destination)
+            .with_context(|| format!("复制文件失败：{}", source.display()))?;
+    }
+    Ok(())
+}
+
+/// 递归复制文件或目录（同步实现，供后台线程调用）。
+///
+/// 类型判断基于 `symlink_metadata`：符号链接按链接本身复制，不跟随链接目标，避免指向祖先目录的链接环引发无限递归。
+fn copy_entry_recursive(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    let metadata = std::fs::symlink_metadata(source)
+        .with_context(|| format!("读取源条目失败：{}", source.display()))?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        copy_single_entry(source, destination, file_type)?;
+    } else if file_type.is_dir() {
+        std::fs::create_dir_all(destination)
+            .with_context(|| format!("创建目录失败：{}", destination.display()))?;
+        for entry in std::fs::read_dir(source)
+            .with_context(|| format!("读取目录失败：{}", source.display()))?
+        {
+            let entry = entry?;
+            copy_entry_recursive(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+    } else {
+        std::fs::copy(source, destination)
+            .with_context(|| format!("复制文件失败：{}", source.display()))?;
+    }
     Ok(())
 }
 
@@ -589,6 +819,317 @@ mod tests {
     }
 
     #[gpui::test]
+    fn moving_file_across_directories_keeps_open_buffer_indexed_by_new_path(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let old_path = directory.path().join("old.txt");
+        let new_path = directory.path().join("sub").join("new.txt");
+        fs::create_dir(directory.path().join("sub")).expect("应创建子目录");
+        fs::write(&old_path, "content").expect("应创建测试文件");
+
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let original = project.update(cx, |project, cx| {
+            project.open_buffer(&old_path, cx).expect("应打开测试文件")
+        });
+        project
+            .update(cx, |project, cx| {
+                project.move_path(&old_path, &new_path, false, cx)
+            })
+            .expect("应跨目录移动测试文件");
+        let reopened = project.update(cx, |project, cx| {
+            project
+                .open_buffer(&new_path, cx)
+                .expect("应从新路径打开文件")
+        });
+
+        assert_eq!(original, reopened);
+        assert!(!old_path.exists());
+        assert!(new_path.exists());
+    }
+
+    #[gpui::test]
+    fn moving_directory_into_itself_is_rejected(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let dir = directory.path().join("dir");
+        fs::create_dir_all(dir.join("sub")).expect("应创建嵌套目录");
+        fs::write(dir.join("file.txt"), "内容").expect("应创建测试文件");
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+
+        let destination = dir.join("sub").join("x");
+        assert!(
+            project
+                .update(cx, |project, cx| {
+                    project.move_path(&dir, &destination, false, cx)
+                })
+                .is_err(),
+            "不应允许把目录移动到自身内部"
+        );
+        assert!(dir.is_dir(), "原目录应完好");
+        assert!(dir.join("file.txt").is_file(), "原目录内文件应完好");
+        assert!(!destination.exists(), "目标不应被创建");
+    }
+
+    #[gpui::test]
+    fn moving_file_overwrites_or_rejects_existing_destination(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let source = directory.path().join("source.txt");
+        let target = directory.path().join("target.txt");
+        fs::write(&source, "源内容").expect("应创建源文件");
+        fs::write(&target, "目标内容").expect("应创建目标文件");
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+
+        assert!(
+            project
+                .update(cx, |project, cx| {
+                    project.move_path(&source, &target, false, cx)
+                })
+                .is_err(),
+            "无 overwrite 时冲突应被拒绝"
+        );
+        assert_eq!(
+            fs::read_to_string(&target).expect("应读取目标文件"),
+            "目标内容",
+            "冲突被拒后目标内容不应变化"
+        );
+
+        project
+            .update(cx, |project, cx| {
+                project.move_path(&source, &target, true, cx)
+            })
+            .expect("overwrite 时应替换目标文件");
+        assert_eq!(
+            fs::read_to_string(&target).expect("应读取目标文件"),
+            "源内容",
+            "替换后目标内容应为源内容"
+        );
+        assert!(!source.exists(), "源文件应已移走");
+    }
+
+    #[gpui::test]
+    fn moving_directory_moves_nested_files(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let source_dir = directory.path().join("src");
+        let target_dir = directory.path().join("dest");
+        fs::create_dir_all(source_dir.join("nested")).expect("应创建嵌套目录");
+        fs::write(source_dir.join("nested").join("file.txt"), "内容").expect("应创建测试文件");
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+
+        project
+            .update(cx, |project, cx| {
+                project.move_path(&source_dir, &target_dir, false, cx)
+            })
+            .expect("应移动目录");
+
+        assert!(!source_dir.exists(), "旧目录不应再存在");
+        assert_eq!(
+            fs::read_to_string(target_dir.join("nested").join("file.txt"))
+                .expect("应读取迁移后的文件"),
+            "内容"
+        );
+    }
+
+    #[gpui::test]
+    fn moving_directory_with_overwrite_replaces_existing_directory(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let source_dir = directory.path().join("src");
+        let target_dir = directory.path().join("dest");
+        fs::create_dir_all(source_dir.join("nested")).expect("应创建源目录");
+        fs::write(source_dir.join("nested").join("file.txt"), "新内容").expect("应创建测试文件");
+        fs::create_dir_all(target_dir.join("old")).expect("应创建目标目录");
+        fs::write(target_dir.join("old").join("legacy.txt"), "旧内容").expect("应创建测试文件");
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+
+        project
+            .update(cx, |project, cx| {
+                project.move_path(&source_dir, &target_dir, true, cx)
+            })
+            .expect("overwrite 时应替换目标目录");
+
+        assert!(!source_dir.exists(), "源目录应已移走");
+        assert_eq!(
+            fs::read_to_string(target_dir.join("nested").join("file.txt"))
+                .expect("应读取替换后的文件"),
+            "新内容"
+        );
+        assert!(
+            !target_dir.join("old").join("legacy.txt").exists(),
+            "目标目录原有内容应被移除"
+        );
+    }
+
+    #[gpui::test]
+    async fn copying_directory_recursively_replicates_contents(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let source_dir = directory.path().join("src");
+        fs::create_dir_all(source_dir.join("嵌套")).expect("应创建嵌套目录");
+        fs::write(source_dir.join("顶层.md"), "顶层内容").expect("应创建测试文件");
+        fs::write(source_dir.join("嵌套").join("中文文件.txt"), "嵌套内容")
+            .expect("应创建测试文件");
+        let destination_dir = directory.path().join("copy");
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+
+        let task = project
+            .update(cx, |project, cx| {
+                project.copy_path(&source_dir, &destination_dir, false, cx)
+            })
+            .expect("应复制目录");
+        // 复制本体在后台线程执行，await 任务后新路径才存在。
+        task.await.expect("复制任务应成功");
+
+        assert_eq!(
+            fs::read_to_string(destination_dir.join("顶层.md")).expect("应读取复制出的文件"),
+            "顶层内容"
+        );
+        assert_eq!(
+            fs::read_to_string(destination_dir.join("嵌套").join("中文文件.txt"))
+                .expect("应读取复制出的文件"),
+            "嵌套内容"
+        );
+        // 复制不改动源目录。
+        assert!(source_dir.join("嵌套").join("中文文件.txt").is_file());
+    }
+
+    #[gpui::test]
+    fn copying_into_own_subtree_is_rejected(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let source_dir = directory.path().join("src");
+        fs::create_dir_all(&source_dir).expect("应创建源目录");
+        fs::write(source_dir.join("file.txt"), "内容").expect("应创建测试文件");
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+
+        let destination = source_dir.join("copy");
+        assert!(
+            project
+                .update(cx, |project, cx| {
+                    project.copy_path(&source_dir, &destination, false, cx)
+                })
+                .is_err(),
+            "不应允许把目录复制到自身内部"
+        );
+        assert!(!destination.exists(), "目标不应被创建");
+    }
+
+    #[gpui::test]
+    fn copying_without_overwrite_rejects_existing_destination(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let source = directory.path().join("source.txt");
+        let destination = directory.path().join("destination.txt");
+        fs::write(&source, "源内容").expect("应创建源文件");
+        fs::write(&destination, "目标内容").expect("应创建目标文件");
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+
+        assert!(
+            project
+                .update(cx, |project, cx| {
+                    project.copy_path(&source, &destination, false, cx)
+                })
+                .is_err(),
+            "无 overwrite 时冲突应被拒绝"
+        );
+        assert_eq!(
+            fs::read_to_string(&destination).expect("应读取目标文件"),
+            "目标内容",
+            "冲突被拒后目标内容不应变化"
+        );
+        assert!(source.is_file(), "源文件不应被删除");
+    }
+
+    #[gpui::test]
+    async fn copying_file_completes_in_background(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let source = directory.path().join("source.txt");
+        let destination = directory.path().join("destination.txt");
+        fs::write(&source, "内容").expect("应创建测试文件");
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+
+        let task = project
+            .update(cx, |project, cx| {
+                project.copy_path(&source, &destination, false, cx)
+            })
+            .expect("应复制文件");
+        // 复制本体在后台线程执行，await 任务后新路径才存在。
+        task.await.expect("复制任务应成功");
+
+        assert_eq!(
+            fs::read_to_string(&destination).expect("应读取复制出的文件"),
+            "内容"
+        );
+        assert!(source.is_file(), "复制不删除源文件");
+    }
+
+    #[gpui::test]
+    async fn copying_with_overwrite_replaces_existing_destination(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let source = directory.path().join("source.txt");
+        let destination = directory.path().join("destination.txt");
+        fs::write(&source, "新内容").expect("应创建源文件");
+        fs::write(&destination, "旧内容").expect("应创建目标文件");
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+
+        let task = project
+            .update(cx, |project, cx| {
+                project.copy_path(&source, &destination, true, cx)
+            })
+            .expect("overwrite 时应替换目标文件");
+        task.await.expect("复制任务应成功");
+
+        assert_eq!(
+            fs::read_to_string(&destination).expect("应读取目标文件"),
+            "新内容",
+            "复制后目标内容应为源内容"
+        );
+        assert!(source.is_file(), "复制不删除源文件");
+    }
+
+    #[gpui::test]
+    fn moving_directory_into_own_ancestor_is_rejected_even_with_overwrite(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let ancestor = directory.path().join("dir");
+        let source = ancestor.join("sub");
+        fs::create_dir_all(&source).expect("应创建源目录");
+        fs::write(source.join("file.txt"), "源内容").expect("应创建测试文件");
+        fs::write(ancestor.join("keep.txt"), "原有内容").expect("应创建测试文件");
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+
+        // 目标是源的祖先目录；若不拦截，覆盖路径的「先删目标」会把源一起递归删掉。
+        let result = project.update(cx, |project, cx| {
+            project.move_path(&source, &ancestor, true, cx)
+        });
+        assert!(result.is_err(), "不应允许把条目移动到自身的祖先目录");
+        assert!(source.is_dir(), "源目录应完好");
+        assert_eq!(
+            fs::read_to_string(source.join("file.txt")).expect("应读取源目录内文件"),
+            "源内容",
+            "源目录内容不应被破坏"
+        );
+        assert_eq!(
+            fs::read_to_string(ancestor.join("keep.txt")).expect("应读取祖先目录原有文件"),
+            "原有内容",
+            "祖先目录原有内容不应被破坏"
+        );
+    }
+
+    #[gpui::test]
+    fn copying_directory_into_own_ancestor_is_rejected(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let source = directory.path().join("src");
+        fs::create_dir_all(&source).expect("应创建源目录");
+        fs::write(source.join("file.txt"), "内容").expect("应创建测试文件");
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+
+        // 目标是项目根（源的祖先）：即便允许覆盖也必须拒绝。
+        let destination = directory.path().to_path_buf();
+        let result = project.update(cx, |project, cx| {
+            project.copy_path(&source, &destination, true, cx)
+        });
+        assert!(result.is_err(), "不应允许把条目复制到自身的祖先目录");
+        assert!(source.join("file.txt").is_file(), "源目录内容应完好");
+    }
+
+    #[gpui::test]
     fn fs_events_trigger_incremental_git_status_refresh(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
         let project = cx.new(|cx| Project::new(root.clone(), cx));
@@ -741,6 +1282,92 @@ mod tests {
             .update(cx, |project, cx| project.git_status_for_path(&file, cx))
             .expect("保存后应有 git 状态");
         assert!(entry.status.is_modified());
+    }
+
+    /// 复制失败的注入点选在同步入口（源不存在）：直接调内部函数验证失败路径。
+    /// （copy_path 后台任务的失败同样从 `copy_entry_overwrite` 起源，覆盖同一条失败链。）
+    #[test]
+    fn failed_copy_preserves_existing_destination_and_leaves_no_tmp() {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let source = directory.path().join("missing.txt");
+        let destination = directory.path().join("destination.txt");
+        fs::write(&destination, "目标内容").expect("应创建目标文件");
+
+        assert!(
+            copy_entry_overwrite(&source, &destination).is_err(),
+            "源不存在时复制应失败"
+        );
+        assert_eq!(
+            fs::read_to_string(&destination).expect("应读取目标文件"),
+            "目标内容",
+            "复制失败不应破坏原目标"
+        );
+        assert!(
+            !sibling_tmp_path(&destination).exists(),
+            "失败后不应残留临时文件"
+        );
+    }
+
+    #[test]
+    fn overwrite_copy_replaces_existing_file_and_directory() {
+        // 文件覆盖文件：目标内容被替换，源不动。
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let source_file = directory.path().join("source.txt");
+        let dest_file = directory.path().join("destination.txt");
+        fs::write(&source_file, "新内容").expect("应创建源文件");
+        fs::write(&dest_file, "旧内容").expect("应创建目标文件");
+        copy_entry_overwrite(&source_file, &dest_file).expect("应覆盖文件");
+        assert_eq!(
+            fs::read_to_string(&dest_file).expect("应读取目标文件"),
+            "新内容"
+        );
+
+        // 目录覆盖目录：旧内容被移除，新内容入位。
+        let source_dir = directory.path().join("source-dir");
+        let dest_dir = directory.path().join("destination-dir");
+        fs::create_dir_all(&source_dir).expect("应创建源目录");
+        fs::write(source_dir.join("new.txt"), "新目录内容").expect("应创建测试文件");
+        fs::create_dir_all(&dest_dir).expect("应创建目标目录");
+        fs::write(dest_dir.join("old.txt"), "旧目录内容").expect("应创建测试文件");
+        copy_entry_overwrite(&source_dir, &dest_dir).expect("应覆盖目录");
+        assert_eq!(
+            fs::read_to_string(dest_dir.join("new.txt")).expect("应读取替换后的文件"),
+            "新目录内容"
+        );
+        assert!(!dest_dir.join("old.txt").exists(), "目标目录旧内容应被移除");
+        assert!(source_dir.join("new.txt").is_file(), "源目录不应被删除");
+    }
+
+    #[test]
+    fn copying_directory_with_ancestor_symlink_does_not_hang() {
+        // 链接指向自身祖先目录（链接环）：按链接本身复制，不跟随目标、不挂死。
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let source_dir = directory.path().join("dir");
+        fs::create_dir_all(&source_dir).expect("应创建源目录");
+        fs::write(source_dir.join("real.txt"), "内容").expect("应创建测试文件");
+        std::os::unix::fs::symlink(directory.path(), source_dir.join("loop"))
+            .expect("应创建指向祖先目录的符号链接");
+        let destination = directory.path().join("copy");
+
+        copy_entry_recursive(&source_dir, &destination).expect("应完成含链接环的复制");
+
+        assert_eq!(
+            fs::read_to_string(destination.join("real.txt")).expect("应读取复制出的文件"),
+            "内容"
+        );
+        let link = destination.join("loop");
+        assert!(
+            link.symlink_metadata()
+                .expect("应读取链接元信息")
+                .file_type()
+                .is_symlink(),
+            "链接应按链接本身复制"
+        );
+        assert_eq!(
+            fs::read_link(&link).expect("应读取链接目标"),
+            directory.path().to_path_buf(),
+            "链接目标应保持原样"
+        );
     }
 
     fn test_file_path() -> PathBuf {

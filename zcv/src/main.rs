@@ -3,10 +3,8 @@
 mod active_buffer_language;
 mod breadcrumbs;
 mod cursor_position;
-mod git_status;
 mod harness;
 mod preview;
-mod project_tree;
 mod version_control;
 mod workspace;
 

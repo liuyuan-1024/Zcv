@@ -19,6 +19,7 @@ members = [
     "zcv-language",
     "zcv-multi-buffer",
     "zcv-picker",
+    "zcv-project-tree",
     "zcv-preview-svg",
     "zcv-project",
     "zcv-search",
@@ -40,6 +41,7 @@ default-members = [
     "zcv-language",
     "zcv-multi-buffer",
     "zcv-picker",
+    "zcv-project-tree",
     "zcv-preview-svg",
     "zcv-project",
     "zcv-search",
@@ -71,6 +73,7 @@ zcv-multi-buffer = { path = "zcv-multi-buffer" }
 zcv-picker = { path = "zcv-picker" }
 zcv-preview-svg = { path = "zcv-preview-svg" }
 zcv-project = { path = "zcv-project" }
+zcv-project-tree = { path = "zcv-project-tree" }
 zcv-search = { path = "zcv-search" }
 zcv-settings = { path = "zcv-settings" }
 zcv-terminal = { path = "zcv-terminal" }

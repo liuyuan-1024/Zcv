@@ -3,6 +3,7 @@
 
 mod button;
 mod checkbox;
+mod confirm;
 mod icon;
 mod input;
 mod list_item;
@@ -13,6 +14,7 @@ pub mod tree;
 
 pub use button::{Button, ButtonStyle};
 pub use checkbox::Checkbox;
+pub use confirm::{ConfirmAnswer, ConfirmOverlay};
 pub use icon::SvgIcon;
 pub use input::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent};
 pub use list_item::ListItem;

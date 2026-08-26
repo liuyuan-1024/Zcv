@@ -53,41 +53,9 @@ impl Worktree {
         self.filter = TreeFilter::new(exclusions);
     }
 
-    /// 读取 `dir` 的直接子项：目录优先、名称升序，扫描排除名单命中即过滤。
-    ///
-    /// 只返回静态条目；git 状态由 Project 查询后填充，展开与深度由 UI 层决定。
-    pub(crate) fn children(&self, dir: &Path) -> Vec<WorktreeEntry> {
-        let mut entries: Vec<_> = match std::fs::read_dir(dir) {
-            Ok(rd) => rd.filter_map(|e| e.ok()).map(|e| e.path()).collect(),
-            Err(_) => return Vec::new(),
-        };
-        entries.sort_by(|a, b| {
-            let a_dir = a.is_dir();
-            let b_dir = b.is_dir();
-            if a_dir != b_dir {
-                b_dir.cmp(&a_dir)
-            } else {
-                a.file_name().cmp(&b.file_name())
-            }
-        });
-        entries
-            .into_iter()
-            .filter_map(|entry| {
-                let name = entry.file_name()?.to_string_lossy().to_string();
-                // 扫描排除名单命中的条目根本不加载。
-                let rel = entry.strip_prefix(&self.root).ok()?;
-                if self.filter.is_excluded(rel) {
-                    return None;
-                }
-                let is_dir = entry.is_dir();
-                Some(WorktreeEntry {
-                    path: entry,
-                    name,
-                    is_dir,
-                    git_status: None,
-                })
-            })
-            .collect()
+    /// 当前过滤规则的克隆（后台可见行收集任务捕获用）。
+    pub(crate) fn filter(&self) -> TreeFilter {
+        self.filter.clone()
     }
 
     pub(crate) fn search_plan(&self) -> WorktreeSearchPlan {
@@ -103,7 +71,7 @@ impl Worktree {
 /// file_scan_exclusions 命中的条目根本不在行模型中加载；
 /// 忽略（gitignore/info/exclude）由 git 状态统一判定（`FileStatus::Ignored`）。
 #[derive(Clone)]
-struct TreeFilter {
+pub(crate) struct TreeFilter {
     /// 用户配置的扫描排除 glob。
     exclusions: GlobSet,
 }
@@ -133,6 +101,88 @@ impl TreeFilter {
         rel_path
             .ancestors()
             .any(|ancestor| self.exclusions.is_match(ancestor))
+    }
+}
+
+/// 读取 `dir` 的直接子项（纯函数，可在后台线程执行）：目录优先、名称升序，扫描排除名单命中即过滤。
+///
+/// `collect_visible_entries` 逐层递归复用本函数，排序与排除规则天然一致。
+fn children_sorted(dir: &Path, root: &Path, filter: &TreeFilter) -> Vec<WorktreeEntry> {
+    let mut entries: Vec<_> = match std::fs::read_dir(dir) {
+        Ok(rd) => rd.filter_map(|e| e.ok()).map(|e| e.path()).collect(),
+        Err(_) => return Vec::new(),
+    };
+    entries.sort_by(|a, b| {
+        let a_dir = a.is_dir();
+        let b_dir = b.is_dir();
+        if a_dir != b_dir {
+            b_dir.cmp(&a_dir)
+        } else {
+            a.file_name().cmp(&b.file_name())
+        }
+    });
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            let name = entry.file_name()?.to_string_lossy().to_string();
+            // 扫描排除名单命中的条目根本不加载。
+            let rel = entry.strip_prefix(root).ok()?;
+            if filter.is_excluded(rel) {
+                return None;
+            }
+            let is_dir = entry.is_dir();
+            Some(WorktreeEntry {
+                path: entry,
+                name,
+                is_dir,
+                git_status: None,
+            })
+        })
+        .collect()
+}
+
+/// 收集可见行（纯函数，可在后台线程执行）：根行 + 按 `expanded` 递归展开。
+///
+/// 排序与排除规则与 `Worktree::children` 一致；
+/// 不含 git 状态，由调用方在 UI 线程批量查询回填。
+/// 展开、深度与选中是视图状态，由 UI 层决定。
+pub(crate) fn collect_visible_entries(
+    root: &Path,
+    expanded: &HashSet<PathBuf>,
+    filter: &TreeFilter,
+) -> Vec<WorktreeEntry> {
+    let root_name = root
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| root.to_string_lossy().to_string());
+    let mut rows = vec![WorktreeEntry {
+        path: root.to_path_buf(),
+        name: root_name,
+        is_dir: true,
+        git_status: None,
+    }];
+    if expanded.contains(root) {
+        collect_expanded_children(root, root, expanded, filter, &mut rows);
+    }
+    rows
+}
+
+/// 递归收集目录下已展开的子项（`collect_visible_entries` 的递归体）。
+fn collect_expanded_children(
+    dir: &Path,
+    root: &Path,
+    expanded: &HashSet<PathBuf>,
+    filter: &TreeFilter,
+    rows: &mut Vec<WorktreeEntry>,
+) {
+    for entry in children_sorted(dir, root, filter) {
+        if entry.is_dir && expanded.contains(&entry.path) {
+            let path = entry.path.clone();
+            rows.push(entry);
+            collect_expanded_children(&path, root, expanded, filter, rows);
+        } else {
+            rows.push(entry);
+        }
     }
 }
 
@@ -283,7 +333,7 @@ mod tests {
         std::fs::write(directory.path().join("banana.rs"), "fn main() {}").expect("应创建文件");
 
         let worktree = Worktree::new(directory.path().to_path_buf());
-        let entries = worktree.children(directory.path());
+        let entries = children_sorted(directory.path(), directory.path(), &worktree.filter());
 
         // 目录优先、名称升序；git 状态由 Project 注入，本层恒 None。
         assert_eq!(
@@ -296,9 +346,12 @@ mod tests {
         assert!(entries.iter().all(|entry| entry.git_status.is_none()));
         // 不存在或不可读目录返回空。
         assert!(
-            worktree
-                .children(&directory.path().join("missing"))
-                .is_empty()
+            children_sorted(
+                &directory.path().join("missing"),
+                directory.path(),
+                &worktree.filter()
+            )
+            .is_empty()
         );
     }
 
@@ -315,22 +368,58 @@ mod tests {
         worktree.set_exclusions(&["**/target".to_string()]);
 
         assert!(
-            !worktree
-                .children(directory.path())
+            !children_sorted(directory.path(), directory.path(), &worktree.filter())
                 .iter()
                 .any(|entry| entry.path == target),
             "排除名单命中的目录不应出现"
         );
         assert!(
-            worktree.children(&target).is_empty(),
+            children_sorted(&target, directory.path(), &worktree.filter()).is_empty(),
             "被排除目录内部也不加载"
         );
         assert!(
-            worktree
-                .children(directory.path())
+            children_sorted(directory.path(), directory.path(), &worktree.filter())
                 .iter()
                 .any(|entry| entry.path == visible)
         );
+    }
+
+    #[test]
+    fn collect_visible_entries_returns_root_then_expanded_descendants() {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let src = directory.path().join("src");
+        std::fs::create_dir_all(src.join("feature")).expect("应创建嵌套目录");
+        std::fs::write(src.join("feature").join("mod.rs"), "x").expect("应创建文件");
+        std::fs::write(directory.path().join("root.rs"), "x").expect("应创建文件");
+        let mut worktree = Worktree::new(directory.path().to_path_buf());
+        worktree.set_exclusions(&["**/root.rs".to_string()]);
+
+        // 只展开根：行集 = [根, src]（root.rs 被排除，src 折叠不深入）。
+        let expanded = HashSet::from([directory.path().to_path_buf()]);
+        let rows = collect_visible_entries(directory.path(), &expanded, &worktree.filter());
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].is_dir);
+        assert_eq!(rows[0].path, directory.path());
+        assert_eq!(rows[1].path, src);
+
+        // 根、src、feature 都展开：行集 = [根, src, feature, mod.rs]，排序与 children 一致。
+        let expanded = HashSet::from([
+            directory.path().to_path_buf(),
+            src.clone(),
+            src.join("feature"),
+        ]);
+        let rows = collect_visible_entries(directory.path(), &expanded, &worktree.filter());
+        let paths: Vec<_> = rows.iter().map(|row| row.path.clone()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                directory.path().to_path_buf(),
+                src.clone(),
+                src.join("feature"),
+                src.join("feature").join("mod.rs"),
+            ]
+        );
+        assert!(rows.iter().all(|row| row.git_status.is_none()));
     }
 
     #[test]

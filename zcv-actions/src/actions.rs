@@ -167,6 +167,8 @@ actions!(
     [
         TreeSelectPrev,
         TreeSelectNext,
+        TreeSelectPrevExtend,
+        TreeSelectNextExtend,
         TreeCollapse,
         TreeExpand,
         TreeActivate,
@@ -174,6 +176,12 @@ actions!(
         TreeNewEntry,
         TreeTrash,
         TreeConfirmEdit,
-        TreeCancelEdit
+        TreeCancelEdit,
+        TreeCopy,
+        TreeCut,
+        TreePaste,
+        TreeCancelConflict,
+        // 取消挂起的复制/剪切状态，清空面板剪贴板（非编辑态按 escape 触发）。
+        TreeClearClipboard
     ]
 );

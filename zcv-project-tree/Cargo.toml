@@ -1,25 +1,20 @@
 [package]
-name = "Zcv"
+name = "zcv-project-tree"
 version.workspace = true
 edition.workspace = true
-description = "Zcv —— 新一代 GPUI 桌面编辑器（Zed的忠实粉丝）"
+description = "项目文件树面板（多选、剪贴板复制/剪切/粘贴、拖拽移动、冲突确认）"
+
+[lib]
+path = "src/project_tree.rs"
 
 [dependencies]
 anyhow.workspace = true
 gpui.workspace = true
-serde_json.workspace = true
-trash.workspace = true
 zcv-actions.workspace = true
-zcv-assets.workspace = true
 zcv-editor.workspace = true
 zcv-git.workspace = true
-zcv-keymap.workspace = true
-zcv-preview-svg.workspace = true
 zcv-project.workspace = true
-zcv-project-tree.workspace = true
-zcv-search.workspace = true
 zcv-settings.workspace = true
-zcv-terminal.workspace = true
 zcv-theme.workspace = true
 zcv-ui.workspace = true
 zcv-workspace.workspace = true

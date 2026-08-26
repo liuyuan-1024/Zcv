@@ -35,23 +35,9 @@ use crate::active_buffer_language::ActiveBufferLanguage;
 use crate::breadcrumbs::Breadcrumbs;
 use crate::cursor_position::CursorPosition;
 use crate::harness::HarnessButton;
-use crate::project_tree::ProjectTreePanel;
 use crate::version_control::VersionControlPanel;
+use zcv_project_tree::{OnCreate, OnMove, OnOpenFile, OnRename, OnTrash, ProjectTreePanel};
 use zcv_terminal::TerminalPanel;
-
-/// 打开文件回调：面板请求 Workspace 打开路径（弱引用防循环持有）。
-pub(crate) type OnOpenFile = Rc<dyn Fn(PathBuf, bool, &mut Window, &mut gpui::App)>;
-
-/// 重命名文件或目录回调。
-pub(crate) type OnRename = Rc<dyn Fn(PathBuf, PathBuf, &mut gpui::App) -> anyhow::Result<()>>;
-
-/// 新建文件或目录回调。
-pub(crate) type OnCreate = Rc<dyn Fn(PathBuf, bool, &mut gpui::App) -> anyhow::Result<()>>;
-
-/// 将文件或目录移到系统废纸篓回调。
-///
-/// 带 `Window`：删除文件后需要关闭打开它的 tab，工具栏更新需要 window。
-pub(crate) type OnTrash = Rc<dyn Fn(PathBuf, &mut Window, &mut gpui::App) -> anyhow::Result<()>>;
 
 /// 构造打开文件回调（两个面板共用同一契约）。
 fn on_open_file_callback(weak: &WeakEntity<Workspace>) -> OnOpenFile {
@@ -485,6 +471,16 @@ fn initialize_workspace(
             workspace.update(cx, |workspace, cx| workspace.trash_path(&path, window, cx))
         });
         tree.set_on_trash(on_trash);
+        let weak_move = weak_self.clone();
+        let on_move: OnMove = Rc::new(move |from, to, overwrite, cx| {
+            let Some(workspace) = weak_move.upgrade() else {
+                anyhow::bail!("工作区已关闭");
+            };
+            workspace.update(cx, |workspace, cx| {
+                workspace.move_path(&from, &to, overwrite, cx)
+            })
+        });
+        tree.set_on_move(on_move);
         tree
     });
 
@@ -587,7 +583,7 @@ fn initialize_workspace(
                     });
                 }
                 zcv_project::ProjectEvent::EntriesChanged => {
-                    project_tree_for_project.update(cx, |tree, cx| tree.refresh(cx));
+                    project_tree_for_project.update(cx, |tree, cx| tree.schedule_refresh(cx));
                 }
             },
         );

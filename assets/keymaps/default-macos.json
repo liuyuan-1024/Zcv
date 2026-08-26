@@ -56,13 +56,25 @@
     "bindings": {
       "up": "project_tree::TreeSelectPrev",
       "down": "project_tree::TreeSelectNext",
+      "shift-up": "project_tree::TreeSelectPrevExtend",
+      "shift-down": "project_tree::TreeSelectNextExtend",
       "left": "project_tree::TreeCollapse",
       "right": "project_tree::TreeExpand",
       "space": "project_tree::TreeActivate",
       "enter": "project_tree::TreeRename",
       "cmd-n": "project_tree::TreeNewEntry",
       "cmd-backspace": "project_tree::TreeTrash",
-      "cmd-delete": "project_tree::TreeTrash"
+      "cmd-delete": "project_tree::TreeTrash",
+      "cmd-c": "project_tree::TreeCopy",
+      "cmd-x": "project_tree::TreeCut",
+      "cmd-v": "project_tree::TreePaste",
+      "escape": "project_tree::TreeClearClipboard"
+    }
+  },
+  {
+    "context": "ProjectTree && conflict",
+    "bindings": {
+      "escape": "project_tree::TreeCancelConflict"
     }
   },
   {

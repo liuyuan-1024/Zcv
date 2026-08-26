@@ -12,7 +12,7 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use zcv_actions::{CloseTab, NextTab, PrevTab, TogglePreview};
-use zcv_theme::{FileIcons, color};
+use zcv_theme::{FileIcons, color, typography};
 use zcv_ui::{Button, SvgIcon, Tab};
 
 use crate::layout_state::SerializedPane;
@@ -837,9 +837,10 @@ fn tab_end_state(is_dirty: bool, is_preview: bool) -> TabEndState {
     }
 }
 
-/// 标签尾部状态槽：未保存优先显示圆点，预览其次显示眼睛；悬停后都切换为关闭按钮。
+/// 标签尾部状态槽：未保存优先显示圆点，预览其次显示眼睛；悬停后都切换为关闭按钮，无脏无预览时关闭按钮常显。
 ///
-/// 槽位宽度由内容撑开：三种状态同为展示图标/按钮，状态切换（圆点/眼睛 ↔ 关闭叉）不改变槽位尺寸，tab 宽度稳定。
+/// 三种状态共用同一槽结构（图标位 + 关闭按钮位），高度恒为图标尺寸：
+/// 状态切换（圆点/眼睛 ↔ 关闭叉）只改透明度，不改变槽位高度，tab 高度稳定不抖动。
 fn tab_end_button(
     pane_entity: &gpui::Entity<Pane>,
     item_id: EntityId,
@@ -848,22 +849,19 @@ fn tab_end_button(
     cx: &App,
 ) -> AnyElement {
     let state = tab_end_state(is_dirty, is_preview);
-    if state == TabEndState::Close {
-        return close_button(pane_entity, item_id, cx).into_any_element();
-    }
-
-    let (id, icon, icon_color) = match state {
-        TabEndState::Dirty => (
+    let is_close = state == TabEndState::Close;
+    let indicator = match state {
+        TabEndState::Close => None,
+        TabEndState::Dirty => Some((
             ("tab-dirty", item_id),
             "icons/circle.svg",
             color::current(cx).icon_accent,
-        ),
-        TabEndState::Preview => (
+        )),
+        TabEndState::Preview => Some((
             ("tab-preview", item_id),
             "icons/eye.svg",
             color::current(cx).icon_muted,
-        ),
-        TabEndState::Close => unreachable!(),
+        )),
     };
     div()
         .relative()
@@ -871,19 +869,35 @@ fn tab_end_button(
         .items_center()
         .justify_center()
         .child(
+            // 图标位：Close 态用透明占位保持槽高；脏/预览态 hover 时让位给关闭按钮。
             div()
-                .group_hover(TAB_HOVER_GROUP, |style| style.opacity(0.0))
-                .child(SvgIcon::new(icon).id(id).color(icon_color)),
+                .opacity(if is_close { 0.0 } else { 1.0 })
+                .group_hover(TAB_HOVER_GROUP, move |style| {
+                    if is_close { style } else { style.opacity(0.0) }
+                })
+                .child(
+                    indicator
+                        .map(|(id, icon, icon_color)| {
+                            SvgIcon::new(icon)
+                                .id(id)
+                                .color(icon_color)
+                                .into_any_element()
+                        })
+                        .unwrap_or_else(|| div().size(typography::ui()).into_any_element()),
+                ),
         )
         .child(
+            // 关闭按钮位：Close 态常显；脏/预览态 hover 时浮现。
             div()
                 .absolute()
                 .inset_0()
                 .flex()
                 .items_center()
                 .justify_center()
-                .opacity(0.0)
-                .group_hover(TAB_HOVER_GROUP, |style| style.opacity(1.0))
+                .opacity(if is_close { 1.0 } else { 0.0 })
+                .group_hover(TAB_HOVER_GROUP, move |style| {
+                    if is_close { style } else { style.opacity(1.0) }
+                })
                 .child(close_button(pane_entity, item_id, cx)),
         )
         .into_any_element()

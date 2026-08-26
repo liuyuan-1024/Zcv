@@ -153,13 +153,13 @@ fn collect_highlight_events(
     let Some(capture_table) = snapshot.capture_index_table(language) else {
         return;
     };
+    // 无高亮查询的语言不产出 capture。
+    let Some(highlights) = language.highlights() else {
+        return;
+    };
     let mut cursor = QueryCursorHandle::new();
     cursor.set_byte_range(range.clone());
-    let mut captures = cursor.captures(
-        language.highlights(),
-        tree.root_node(),
-        SnapshotTextProvider(text),
-    );
+    let mut captures = cursor.captures(highlights, tree.root_node(), SnapshotTextProvider(text));
     while let Some((query_match, capture_index)) = captures.next() {
         let capture = query_match.captures[*capture_index];
         let capture_range = capture.node.byte_range();

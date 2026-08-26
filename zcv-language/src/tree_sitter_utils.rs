@@ -69,7 +69,9 @@ pub(crate) fn parse_tree(
 ) -> Option<tree_sitter::Tree> {
     let mut handle = ParserHandle::new();
     let parser = handle.0.as_mut()?;
-    parser.set_language(language.grammar()).ok()?;
+    // 无语法树的语言无法解析，视为无语法树。
+    let grammar = language.grammar()?;
+    parser.set_language(grammar).ok()?;
     if let Some(range) = included_range {
         let start = point_at(snapshot, ByteOffset::new(range.start)).ok()?;
         let end = point_at(snapshot, ByteOffset::new(range.end)).ok()?;

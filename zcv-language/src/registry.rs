@@ -8,12 +8,12 @@ use tree_sitter::Query;
 use crate::AutoClosePair;
 use crate::available_languages::{LanguageQuerySources, QuerySource, builtin_languages};
 
-/// 一门可由 tree-sitter 解析和高亮的语言。
+/// 一门语言：可由 tree-sitter 解析和高亮，或仅作纯文本兜底（无语法树）。
 #[derive(Clone, Debug)]
 pub struct Language {
     name: &'static str,
-    grammar: tree_sitter::Language,
-    highlights: Arc<Query>,
+    grammar: Option<tree_sitter::Language>,
+    highlights: Option<Arc<Query>>,
     injections: Option<Arc<Query>>,
     queries: LanguageQueries,
     capture_names: Arc<[Arc<str>]>,
@@ -32,12 +32,12 @@ impl Language {
         self.name
     }
 
-    pub(crate) fn grammar(&self) -> &tree_sitter::Language {
-        &self.grammar
+    pub(crate) fn grammar(&self) -> Option<&tree_sitter::Language> {
+        self.grammar.as_ref()
     }
 
-    pub(crate) fn highlights(&self) -> &Arc<Query> {
-        &self.highlights
+    pub(crate) fn highlights(&self) -> Option<&Arc<Query>> {
+        self.highlights.as_ref()
     }
 
     pub(crate) fn injections(&self) -> Option<&Arc<Query>> {
@@ -96,27 +96,38 @@ pub(crate) struct LanguageEntry {
 
 impl LanguageEntry {
     fn load(&self) -> Option<Language> {
-        let grammar = (self.grammar?)();
-        let highlights = self.highlights?.compile(&grammar).ok()?;
-        let injections = self
-            .injections
-            .map(|source| source.compile(&grammar))
-            .transpose()
-            .ok()?;
-        let queries = self
-            .queries
-            .map(|sources| sources.compile_all(&grammar))
-            .unwrap_or_default();
+        let grammar = self.grammar.map(|grammar| grammar());
+        // 无语法树的语言跳过查询编译，结构与查询能力为空。
+        let highlights = match (grammar.as_ref(), self.highlights) {
+            (Some(grammar), Some(source)) => source.compile(grammar).ok().map(Arc::new),
+            _ => None,
+        };
+        let injections = match (grammar.as_ref(), self.injections) {
+            (Some(grammar), Some(source)) => source.compile(grammar).ok().map(Arc::new),
+            _ => None,
+        };
+        let queries = match grammar.as_ref() {
+            Some(grammar) => self
+                .queries
+                .map(|sources| sources.compile_all(grammar))
+                .unwrap_or_default(),
+            None => LanguageQueries::default(),
+        };
         let capture_names = highlights
-            .capture_names()
-            .iter()
-            .map(|name| Arc::<str>::from(*name))
-            .collect();
+            .as_ref()
+            .map(|highlights| {
+                highlights
+                    .capture_names()
+                    .iter()
+                    .map(|name| Arc::<str>::from(*name))
+                    .collect()
+            })
+            .unwrap_or_default();
         Some(Language {
             name: self.name,
             grammar,
-            highlights: Arc::new(highlights),
-            injections: injections.map(Arc::new),
+            highlights,
+            injections,
             queries,
             capture_names,
             auto_close_pairs: self.auto_close_pairs.unwrap_or(&[]),
@@ -213,7 +224,8 @@ impl LanguageRegistry {
             });
         }
 
-        matched
+        // 纯文本兜底：任何未识别文件都以纯文本打开，编辑器始终有语言名可显示。
+        matched.or_else(|| self.languages.iter().find(|entry| entry.name == "纯文本"))
     }
 }
 
@@ -275,21 +287,92 @@ mod tests {
     }
 
     #[test]
+    fn unknown_files_fall_back_to_plain_text() {
+        // .gitignore 等无扩展名文件与未知后缀都以 Plain Text 兜底，语言名始终可显示。
+        assert_eq!(
+            language_for_file(Path::new(".gitignore"), None)
+                .unwrap()
+                .name(),
+            "纯文本"
+        );
+        assert_eq!(
+            language_for_file(Path::new("Makefile"), None)
+                .unwrap()
+                .name(),
+            "纯文本"
+        );
+        assert_eq!(
+            language_for_file(Path::new("archive.unknown_ext"), None)
+                .unwrap()
+                .name(),
+            "纯文本"
+        );
+        // .txt 显式匹配 Plain Text；无语法树语言不产出高亮查询。
+        let plain = language_for_file(Path::new("notes.txt"), None).unwrap();
+        assert_eq!(plain.name(), "纯文本");
+        assert!(plain.highlights.is_none(), "纯文本语言不应有高亮查询");
+    }
+
+    #[test]
     fn javascript_family_compiles_declared_query_layers() {
         let jsx = language_for_file(Path::new("view.jsx"), None).unwrap();
-        assert!(jsx.highlights.capture_names().contains(&"variable"));
-        assert!(jsx.highlights.capture_names().contains(&"tag"));
+        assert!(
+            jsx.highlights
+                .as_ref()
+                .unwrap()
+                .capture_names()
+                .contains(&"variable")
+        );
+        assert!(
+            jsx.highlights
+                .as_ref()
+                .unwrap()
+                .capture_names()
+                .contains(&"tag")
+        );
         assert!(jsx.injections.is_some());
 
         let typescript = language_for_file(Path::new("main.ts"), None).unwrap();
-        assert!(typescript.highlights.capture_names().contains(&"variable"));
-        assert!(typescript.highlights.capture_names().contains(&"type"));
+        assert!(
+            typescript
+                .highlights
+                .as_ref()
+                .unwrap()
+                .capture_names()
+                .contains(&"variable")
+        );
+        assert!(
+            typescript
+                .highlights
+                .as_ref()
+                .unwrap()
+                .capture_names()
+                .contains(&"type")
+        );
         assert!(typescript.injections.is_some());
 
         let tsx = language_for_file(Path::new("view.tsx"), None).unwrap();
-        assert!(tsx.highlights.capture_names().contains(&"variable"));
-        assert!(tsx.highlights.capture_names().contains(&"tag"));
-        assert!(tsx.highlights.capture_names().contains(&"type"));
+        assert!(
+            tsx.highlights
+                .as_ref()
+                .unwrap()
+                .capture_names()
+                .contains(&"variable")
+        );
+        assert!(
+            tsx.highlights
+                .as_ref()
+                .unwrap()
+                .capture_names()
+                .contains(&"tag")
+        );
+        assert!(
+            tsx.highlights
+                .as_ref()
+                .unwrap()
+                .capture_names()
+                .contains(&"type")
+        );
         assert!(tsx.injections.is_some());
     }
 

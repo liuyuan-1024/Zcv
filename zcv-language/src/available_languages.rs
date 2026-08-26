@@ -509,5 +509,19 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
             queries: None,
             auto_close_pairs: None,
         },
+        // 纯文本兜底：匹配 .txt 并作为未识别文件的最终兜底，无语法树，编辑器始终有语言名可显示。
+        LanguageEntry {
+            name: "纯文本",
+            matcher: M {
+                suffixes: &["txt", "text"],
+                first_line_pattern: None,
+            },
+            grammar: None,
+            highlights: None,
+            injections: None,
+            injection_alias: None,
+            queries: None,
+            auto_close_pairs: None,
+        },
     ]
 }

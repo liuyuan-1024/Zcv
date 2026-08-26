@@ -181,7 +181,11 @@ mod tests {
             cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("script")), cx));
 
         cx.read_entity(&language_buffer, |language_buffer, _| {
-            assert_eq!(language_buffer.language_name(), None)
+            // 未识别文件以”纯文本“兜底，且无语法树。
+            assert_eq!(language_buffer.language_name(), Some("纯文本"));
+            let language = language_buffer.language().expect("兜底语言应存在");
+            assert_eq!(language.name(), "纯文本");
+            assert!(language.grammar().is_none(), "纯文本兜底不应有语法树");
         });
         buffer.update(cx, |buffer, cx| {
             buffer

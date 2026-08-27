@@ -192,15 +192,16 @@ impl Editor {
                     .collect()
             })
         };
-        if let Ok(targets) = &targets {
-            // 缩进目标即光标语义：编辑前把选区端点重锚到 targets。
-            let target_selections =
-                SelectionSet::new(targets.iter().map(|(selection, _)| *selection).collect());
-            self.set_selections(target_selections);
-        }
-        let _ = self.change(before, cx, |buffer| {
+        let _ = self.change_with_after(before.clone(), cx, |buffer| {
             let targets = targets?;
-            apply_targeted_edits(buffer, targets, edit_metadata("增加缩进"))
+            let outcome = apply_targeted_edits(buffer, targets, edit_metadata("增加缩进"))?;
+            // 行首插入是文本编辑目标，不是新的用户选区。
+            // 显式映射原选区的两端，既让端点越过新增缩进，又保持原有选区数量、方向和 primary 归属。
+            let after = outcome.transaction().map_or_else(
+                || before.clone(),
+                |transaction| before.map_through_position_map(transaction.event().position_map()),
+            );
+            Ok((outcome, after))
         });
     }
 
@@ -220,14 +221,14 @@ impl Editor {
                 })
                 .collect::<TextResult<Vec<_>>>()
         });
-        if let Ok(targets) = &targets {
-            let target_selections =
-                SelectionSet::new(targets.iter().map(|(selection, _)| *selection).collect());
-            self.set_selections(target_selections);
-        }
-        let _ = self.change(before, cx, |buffer| {
+        let _ = self.change_with_after(before.clone(), cx, |buffer| {
             let targets = targets?;
-            apply_targeted_edits(buffer, targets, edit_metadata("减少缩进"))
+            let outcome = apply_targeted_edits(buffer, targets, edit_metadata("减少缩进"))?;
+            let after = outcome.transaction().map_or_else(
+                || before.clone(),
+                |transaction| before.map_through_position_map(transaction.event().position_map()),
+            );
+            Ok((outcome, after))
         });
     }
 
@@ -239,7 +240,7 @@ impl Editor {
         let before = self.resolved_selections().normalized();
         let snapshot = self.text_buffer(cx).read(cx).snapshot();
         // 逐选区计算插入文本与光标落点：
-        // 光标处于声明了 newline 的括号对之间时，闭合符前额外补一个基准缩进空行对齐 Zed `insert_extra_newline_brackets`，与自动缩进共用同一回车路径）。
+        // 光标处于声明了 newline 的括号对之间时，闭合符前额外补一个基准缩进空行，与自动缩进共用同一回车路径）。
         let mut trailing_lens = Vec::new();
         let targets = before
             .as_slice()

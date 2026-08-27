@@ -48,9 +48,26 @@ fn indent_and_outdent_are_editor_owned_selection_edits(cx: &mut TestAppContext) 
 
     cx.update_entity(&editor, |editor, cx| editor.indent(cx));
     assert_eq!(buffer_text(&buffer, cx), "    a\n    b");
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(
+            editor.selections(),
+            SelectionSet::new(vec![Selection::new(
+                ByteOffset::new(4),
+                ByteOffset::new(11),
+            )]),
+            "多行缩进后应保持一个覆盖原内容的选区"
+        );
+    });
 
     cx.update_entity(&editor, |editor, cx| editor.outdent(cx));
     assert_eq!(buffer_text(&buffer, cx), "a\nb");
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(
+            editor.selections(),
+            SelectionSet::new(vec![Selection::new(ByteOffset::ZERO, ByteOffset::new(3))]),
+            "减少缩进后应恢复原选区"
+        );
+    });
 }
 
 #[gpui::test]

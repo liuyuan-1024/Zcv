@@ -1,14 +1,33 @@
 //! tree-sitter 适配工具：池化游标与解析器、文本提供者、树编辑与偏移映射。
 
 use std::any::Any;
+use std::ops::ControlFlow;
 use std::ops::{Deref, DerefMut, Range};
-use std::sync::{Mutex, OnceLock, mpsc};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 
 use tree_sitter::{InputEdit, Parser, Point, QueryCursor};
 use zcv_text::{ByteOffset, Snapshot};
 
 use crate::Language;
+
+/// 一次语法解析的协作取消标记。
+///
+/// Tree-sitter 在解析进度回调中读取它；
+/// 任务所有者取消旧解析时无需等待整棵树完成。
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ParseCancellation(Arc<AtomicBool>);
+
+impl ParseCancellation {
+    pub(crate) fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
 
 /// 把值移交给专用后台线程释放，避免主线程释放大语法树卡顿（对齐 Zed `SyntaxSnapshot::drop`）。
 pub(crate) fn drop_offloaded<T: Send + 'static>(value: T) {
@@ -66,7 +85,11 @@ pub(crate) fn parse_tree(
     snapshot: &Snapshot,
     old_tree: Option<&tree_sitter::Tree>,
     included_range: Option<Range<usize>>,
+    cancellation: &ParseCancellation,
 ) -> Option<tree_sitter::Tree> {
+    if cancellation.is_cancelled() {
+        return None;
+    }
     let mut handle = ParserHandle::new();
     let parser = handle.0.as_mut()?;
     // 无语法树的语言无法解析，视为无语法树。
@@ -87,10 +110,18 @@ pub(crate) fn parse_tree(
         // 池化后必须显式清空上一次注入解析留下的范围限制，否则主树解析会被裁剪。
         parser.set_included_ranges(&[]).ok()?;
     }
+    let mut progress = |_: &tree_sitter::ParseState| {
+        if cancellation.is_cancelled() {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    };
+    let options = tree_sitter::ParseOptions::new().progress_callback(&mut progress);
     parser.parse_with_options(
         &mut |offset, _| chunk_from(snapshot, offset),
         old_tree,
-        None,
+        Some(options),
     )
 }
 

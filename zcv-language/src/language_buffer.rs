@@ -5,6 +5,7 @@ use zcv_text::{Buffer, Line, Snapshot, TextChangeBatch, TextSubscription};
 
 use crate::Language;
 use crate::syntax_map::{SyntaxMap, SyntaxSnapshot};
+use crate::tree_sitter_utils::ParseCancellation;
 
 /// 语言 Buffer 的显式更新语义；
 /// 文本插值、后台解析和元数据变化具有不同消费成本。
@@ -17,6 +18,17 @@ pub enum LanguageBufferEvent {
 
 impl EventEmitter<LanguageBufferEvent> for LanguageBuffer {}
 
+struct ParseTask {
+    cancellation: ParseCancellation,
+    _task: Task<()>,
+}
+
+impl Drop for ParseTask {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+    }
+}
+
 /// 将文本 Buffer 与语言派生状态绑定在一起。
 ///
 /// 语法树跟随文本而不是某个 Editor。
@@ -28,8 +40,7 @@ pub struct LanguageBuffer {
     syntax_map: SyntaxMap,
     file_path: Option<PathBuf>,
     language_detection_first_line: String,
-    parse_task: Option<Task<()>>,
-    parse_again: bool,
+    parse_task: Option<ParseTask>,
 }
 
 impl LanguageBuffer {
@@ -55,7 +66,6 @@ impl LanguageBuffer {
             file_path,
             language_detection_first_line: first_line,
             parse_task: None,
-            parse_again: false,
         };
         this.start_reparse(cx);
         this
@@ -130,37 +140,35 @@ impl LanguageBuffer {
     }
 
     fn start_reparse(&mut self, cx: &mut Context<Self>) {
-        if !self.syntax_map.snapshot().has_language() {
-            return;
-        }
-        if self.parse_task.is_some() {
-            self.parse_again = true;
+        // `ParseTask::drop` 会先通知 Tree-sitter 中止旧工作，再取消等待结果的前台任务。
+        self.parse_task = None;
+        if self.syntax_map.language().is_none() {
             return;
         }
 
-        self.parse_again = false;
         let text = self.text_snapshot.clone();
         let syntax = self.syntax_map.snapshot();
-        let parse_task = cx.background_spawn(async move { syntax.reparse(&text) });
-        self.parse_task = Some(cx.spawn(async move |this, cx| {
-            let parsed = parse_task.await;
+        let cancellation = ParseCancellation::default();
+        let parse_cancellation = cancellation.clone();
+        let parse_task =
+            cx.background_spawn(async move { syntax.reparse(&text, &parse_cancellation) });
+        let task = cx.spawn(async move |this, cx| {
+            let Some(parsed) = parse_task.await else {
+                return;
+            };
             let _ = this.update(cx, |this, cx| {
                 this.parse_task = None;
-                let parsed_version = parsed.version();
                 let installed = this.syntax_map.did_parse(parsed);
-                let parse_again = this.parse_again
-                    || parsed_version != this.text_snapshot.version()
-                    || !installed;
-                this.parse_again = false;
                 if installed {
                     cx.emit(LanguageBufferEvent::Reparsed);
                     cx.notify();
                 }
-                if parse_again {
-                    this.start_reparse(cx);
-                }
             });
-        }));
+        });
+        self.parse_task = Some(ParseTask {
+            cancellation,
+            _task: task,
+        });
     }
 }
 
@@ -316,6 +324,51 @@ mod tests {
         assert_eq!(
             events.borrow().as_slice(),
             [LanguageBufferEvent::MetadataChanged]
+        );
+    }
+
+    #[gpui::test]
+    fn rapid_edits_install_only_the_latest_parse(cx: &mut TestAppContext) {
+        let buffer = cx.new(|_| {
+            Buffer::scratch("fn main() {}\n".to_owned(), BufferConfig::default())
+                .expect("应创建测试 Buffer")
+        });
+        let language_buffer =
+            cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("main.rs")), cx));
+        cx.run_until_parked();
+
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let observed = Rc::clone(&events);
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&language_buffer, move |_, event, _| {
+                observed.borrow_mut().push(*event);
+            })
+        });
+
+        for text in ["a", "b", "c"] {
+            buffer.update(cx, |buffer, cx| {
+                buffer
+                    .edit(
+                        [Edit::insert(buffer.len_bytes(), text).unwrap()],
+                        TransactionMetadata::default(),
+                    )
+                    .expect("测试编辑应成功");
+                cx.notify();
+            });
+        }
+        let latest_version = cx.read_entity(&buffer, |buffer, _| buffer.version());
+        cx.run_until_parked();
+
+        language_buffer.read_with(cx, |language_buffer, _| {
+            assert_eq!(language_buffer.syntax_snapshot().version(), latest_version);
+        });
+        assert_eq!(
+            events
+                .borrow()
+                .iter()
+                .filter(|event| **event == LanguageBufferEvent::Reparsed)
+                .count(),
+            1
         );
     }
 }

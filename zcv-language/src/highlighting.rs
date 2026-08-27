@@ -55,12 +55,12 @@ impl HighlightEvent {
 }
 
 impl SyntaxSnapshot {
-    /// 查询指定字节范围，并像 Zed 的 BufferChunks 一样让更内层、后出现的 capture 覆盖外层。
+    /// 查询指定字节范围，并让更内层、后出现的 capture 覆盖外层。
     pub fn highlights(&self, range: Range<usize>, text: &Snapshot) -> Vec<HighlightSpan> {
         if text.version() != self.version || range.start >= range.end {
             return Vec::new();
         }
-        let (Some(language), Some(tree)) = (&self.language, &self.tree) else {
+        let (Some(language), Some(tree)) = (&self.language, self.root_tree()) else {
             return Vec::new();
         };
 
@@ -76,7 +76,7 @@ impl SyntaxSnapshot {
             &mut events,
         );
         let mut injections: Vec<_> = self
-            .injections
+            .injection_layers()
             .iter()
             .filter(|layer| ranges_overlap(&layer.range, &range))
             .collect();
@@ -225,7 +225,7 @@ mod tests {
         let syntax = syntax.snapshot();
         assert!(
             syntax
-                .injections
+                .injection_layers()
                 .iter()
                 .any(|layer| layer.language.name() == "Markdown Inline")
         );
@@ -251,13 +251,13 @@ mod tests {
         let syntax = syntax.snapshot();
         assert!(
             syntax
-                .injections
+                .injection_layers()
                 .iter()
                 .any(|layer| layer.language.name() == "CSS")
         );
         assert!(
             syntax
-                .injections
+                .injection_layers()
                 .iter()
                 .any(|layer| layer.language.name() == "JavaScript")
         );

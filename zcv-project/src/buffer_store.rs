@@ -73,7 +73,8 @@ impl BufferStore {
             .collect()
     }
 
-    /// 如果路径对应某个已打开的 Buffer，从磁盘重新加载其内容。
+    /// 如果路径对应某个干净的已打开 Buffer，从磁盘重新加载其内容。
+    /// 脏 Buffer 由用户编辑拥有，文件事件不能覆盖它。
     pub(crate) fn reload_buffer_for_path(&mut self, path: &Path, cx: &mut App) {
         let Ok(canonical) = path.canonicalize() else {
             return;
@@ -93,6 +94,11 @@ impl BufferStore {
             .as_singleton(cx)
             .expect("当前 BufferStore 只创建 singleton MultiBuffer");
         buffer.update(cx, |buffer, cx| {
+            // 脏 Buffer 的文本由用户编辑拥有；文件事件不能用磁盘内容覆盖它。
+            // 保存产生的延迟事件也可能在用户已经继续编辑或撤销后到达。
+            if buffer.is_dirty() {
+                return;
+            }
             if buffer.reload_from_text(text).is_ok() {
                 cx.notify();
             }

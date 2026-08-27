@@ -1284,6 +1284,83 @@ mod tests {
         assert!(entry.status.is_modified());
     }
 
+    #[gpui::test]
+    fn save_events_preserve_undo_history(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let file = directory.path().join("document.txt");
+        fs::write(&file, "原内容").expect("应创建测试文件");
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let multi_buffer = project
+            .update(cx, |project, cx| project.open_buffer(&file, cx))
+            .expect("应打开测试文件");
+        let buffer = cx.read_entity(&multi_buffer, |multi_buffer, cx| {
+            multi_buffer
+                .as_singleton(cx)
+                .expect("测试文档应是 singleton")
+        });
+        buffer
+            .update(cx, |buffer, _| {
+                buffer.edit(
+                    [Edit::insert(buffer.len_bytes(), " + 修改").unwrap()],
+                    TransactionMetadata::default(),
+                )
+            })
+            .expect("编辑应成功");
+
+        project
+            .update(cx, |project, cx| {
+                project.save_buffer(&multi_buffer, &file, cx)
+            })
+            .expect("保存应成功");
+        project.update(cx, |project, cx| {
+            project.process_fs_events(
+                vec![PathEvent {
+                    path: file.clone(),
+                    kind: Some(PathEventKind::Changed),
+                }],
+                cx,
+            );
+        });
+
+        buffer.read_with(cx, |buffer, _| assert!(buffer.can_undo()));
+        buffer
+            .update(cx, |buffer, _| buffer.undo())
+            .expect("撤销应成功")
+            .expect("保存前的编辑应仍在历史中");
+        buffer.read_with(cx, |buffer, _| {
+            assert_eq!(
+                buffer
+                    .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
+                    .expect("应读取完整文本")
+                    .as_str(),
+                "原内容"
+            );
+            assert!(buffer.is_dirty());
+            assert!(buffer.can_redo());
+        });
+
+        // 同一次保存可能产生重复或延迟事件；用户撤销后文档已变脏，事件不能反向覆盖。
+        project.update(cx, |project, cx| {
+            project.process_fs_events(
+                vec![PathEvent {
+                    path: file.clone(),
+                    kind: Some(PathEventKind::Changed),
+                }],
+                cx,
+            );
+        });
+        buffer.read_with(cx, |buffer, _| {
+            assert_eq!(
+                buffer
+                    .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
+                    .expect("应读取完整文本")
+                    .as_str(),
+                "原内容"
+            );
+            assert!(buffer.can_redo());
+        });
+    }
+
     /// 复制失败的注入点选在同步入口（源不存在）：直接调内部函数验证失败路径。
     /// （copy_path 后台任务的失败同样从 `copy_entry_overwrite` 起源，覆盖同一条失败链。）
     #[test]

@@ -15,7 +15,10 @@ use crate::{
 impl Buffer {
     /// 用外部文本重新加载 Buffer。
     ///
-    /// reload 表示外部文本源成为新的干净基线：文本存储重建、版本递增、history 清空，dirty 状态恢复为 clean。
+    /// reload 表示外部文本源成为新的干净基线。
+    /// 文本发生变化时重建存储、递增版本并清空 history；
+    /// 文本相同时只推进保存点，保留现有版本和 history。
+    /// 两种情况都会把 dirty 状态恢复为 clean。
     /// 对外发布旧文本 -> 新文本的 diff patch，使选区 / 折叠端点跟随外部变更后的具体位置。
     pub fn reload_from_text(&mut self, text: String) -> TextResult<()> {
         let old_version = self.version;
@@ -24,6 +27,10 @@ impl Buffer {
             TextRange::new(ByteOffset::ZERO, self.storage.len_bytes())
                 .expect("全文范围必须满足 start <= end"),
         )?;
+        if old_text == text {
+            self.mark_saved();
+            return Ok(());
+        }
         let patch = diff_patch(&old_text, &text);
         let new_storage = RopeyStorage::new(text);
         let new_version = self.version.next().ok_or(TextError::VersionOverflow)?;

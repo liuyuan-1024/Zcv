@@ -172,6 +172,29 @@ fn reload_should_replace_storage_clear_history_and_leave_view_selection_to_host(
 }
 
 #[test]
+fn reload_with_same_text_should_preserve_history_and_refresh_saved_baseline() {
+    let mut buffer = buffer("old");
+    buffer
+        .edit(
+            [Edit::insert(b(3), "!").unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    let version = buffer.version();
+    assert!(buffer.is_dirty());
+    assert!(buffer.can_undo());
+
+    buffer.reload_from_text("old!".to_string()).unwrap();
+
+    assert_eq!(buffer.version(), version);
+    assert!(!buffer.is_dirty());
+    assert!(buffer.can_undo());
+    buffer.undo().unwrap().unwrap();
+    assert_eq!(buffer_text(&buffer), "old");
+    assert!(buffer.is_dirty());
+}
+
+#[test]
 fn write_to_should_reject_stale_version_and_normalize_configured_line_endings() {
     let mut buffer = buffer("a\nb");
     let stale = buffer.version();

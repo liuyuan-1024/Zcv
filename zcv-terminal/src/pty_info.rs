@@ -73,6 +73,11 @@ impl PtyProcessInfo {
         }
     }
 
+    #[cfg(all(test, unix))]
+    pub(crate) fn foreground_pid(&self) -> Option<Pid> {
+        self.pid_getter.foreground_pid()
+    }
+
     fn load(&self) -> Option<PathBuf> {
         let foreground_pid = self.pid_getter.foreground_pid()?;
         let mut system = self.system.lock();

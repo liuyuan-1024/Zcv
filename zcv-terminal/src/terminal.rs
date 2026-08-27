@@ -1055,6 +1055,27 @@ mod pty_tests {
         }
     }
 
+    /// 等待 PTY 的前台进程组发生变化，确保命令已经真正接管终端。
+    async fn wait_for_foreground_process(
+        cx: &mut VisualTestContext,
+        terminal: &Entity<Terminal>,
+        shell_process_group: sysinfo::Pid,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            let foreground_pid =
+                cx.update(|_window, cx| terminal.read(cx).process_info.foreground_pid());
+            if foreground_pid.is_some_and(|pid| pid != shell_process_group) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "等待前台进程启动超时");
+            cx.background_executor
+                .timer(Duration::from_millis(20))
+                .await;
+            cx.run_until_parked();
+        }
+    }
+
     /// 把快照中全部单元格按顺序拼接为文本（含空格）。
     fn all_text(content: &Content) -> String {
         content.cells.iter().map(|ic| ic.cell.character()).collect()
@@ -1091,17 +1112,28 @@ mod pty_tests {
             window.focus(&view.read(cx).focus_handle());
             let _ = window.draw(cx);
             terminal.update(cx, |terminal, cx| {
+                terminal.write_input(b"printf 'zcv-%s\\n' shell-ready\n".to_vec(), cx);
+            });
+        });
+
+        wait_for_content(cx, &terminal, |content| {
+            all_text(content).contains("zcv-shell-ready")
+        })
+        .await;
+        let shell_process_group = cx
+            .update(|_window, cx| terminal.read(cx).process_info.foreground_pid())
+            .expect("shell 应持有 PTY 前台进程组");
+        cx.update(|_window, cx| {
+            terminal.update(cx, |terminal, cx| {
                 terminal.write_input(b"sleep 30\n".to_vec(), cx);
             });
         });
-        cx.background_executor
-            .timer(Duration::from_millis(100))
-            .await;
+        wait_for_foreground_process(cx, &terminal, shell_process_group).await;
 
         cx.simulate_keystrokes("ctrl-c");
         cx.update(|_window, cx| {
             terminal.update(cx, |terminal, cx| {
-                terminal.write_input(b"echo zcv-ctrl-c-ok\n".to_vec(), cx);
+                terminal.write_input(b"printf 'zcv-%s\\n' ctrl-c-ok\n".to_vec(), cx);
             });
         });
 

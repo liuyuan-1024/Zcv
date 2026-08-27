@@ -621,8 +621,8 @@ impl Element for EditorElement {
         let text_style = window.text_style();
         let font = text_style.font();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
-        // 用上一帧的 snapshot 计算文本区域宽度；wrap 生效后行数变化会让 gutter
-        // 位数在下一帧自动修正，不影响正确性。
+        // 用上一帧的 snapshot 计算文本区域宽度；
+        // wrap 生效后行数变化会让 gutter 位数在下一帧自动修正，不影响正确性。
         let (
             display_snapshot,
             presentation,
@@ -690,31 +690,17 @@ impl Element for EditorElement {
             },
             gutter: gutter_bounds.zip(gutter_dimensions),
         };
-        let wrap_width = match soft_wrap {
-            SoftWrap::None => None,
-            SoftWrap::EditorWidth => Some(text_bounds.size.width),
-            SoftWrap::Bounded => {
-                // em 宽用 'm' 的字形 advance 近似，与 Zed 的 wrap_width_for 一致。
-                let run = TextRun {
-                    len: 1,
-                    font: font.clone(),
-                    color: text_style.color,
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                };
-                let em_width = window
-                    .text_system()
-                    .shape_line("m".into(), font_size, &[run], None)
-                    .width;
-                Some(
-                    text_bounds
-                        .size
-                        .width
-                        .min(em_width * preferred_line_length as f32),
-                )
-            }
-        };
+        let font_id = window.text_system().resolve_font(&font);
+        let em_advance = window
+            .text_system()
+            .em_advance(font_id, font_size)
+            .expect("编辑器字体必须包含拉丁字形");
+        let wrap_width = calculate_wrap_width(
+            soft_wrap,
+            text_bounds.size.width,
+            preferred_line_length,
+            em_advance,
+        );
         // 设置换行宽度（变化才重排），随后读取最新 snapshot 供本帧布局使用。
         let display_snapshot = self.editor.update(cx, |editor, cx| {
             editor.set_wrap_width(wrap_width, font, font_size, cx);
@@ -733,8 +719,7 @@ impl Element for EditorElement {
         };
         self.editor.update(cx, |editor, _| {
             editor.prepare_scroll_viewport(text_bounds.size, content_width, line_height);
-            // 垂直自动滚动在布局前应用：光标行进出视口的锚点修正只依赖行与视口几何，
-            // 提前消费后首遍布局即为最终布局，光标移动帧不再整帧重排。
+            // 垂直自动滚动在布局前应用：光标行进出视口的锚点修正只依赖行与视口几何，提前消费后首遍布局即为最终布局，光标移动帧不再整帧重排。
             editor.apply_pending_autoscroll_vertical();
         });
         let (start_row, scroll_offset) = {
@@ -758,8 +743,7 @@ impl Element for EditorElement {
                 })
                 .collect()
         };
-        // git diff 渲染数据：行标记、竖条与点击区域单遍计算共用（只依赖 snapshot 与注入 hunks，
-        // 与滚动位置无关，autoscroll 重排可复用）。
+        // git diff 渲染数据：行标记、竖条与点击区域单遍计算共用（只依赖 snapshot 与注入 hunks，与滚动位置无关，autoscroll 重排可复用）。
         let hunk_render = {
             let editor = self.editor.read(cx);
             hunk_rendering(
@@ -1185,15 +1169,14 @@ impl Element for EditorElement {
                     row.shaped_line_number
                         .paint(row.origin, gutter.line_height, window, cx)
                 {
-                    // 单个字形绘制失败只跳过该行，不能让整个窗口崩溃（对齐 Zed 的降级策略）。
+                    // 单个字形绘制失败只跳过该行，不能让整个窗口崩溃。
                     eprintln!("Editor gutter 行号绘制失败：{error}");
                     continue;
                 }
             }
         }
         let show_cursor = self.editor.read(cx).show_cursor(window, cx);
-        // 对齐 Zed 的 `overlaps_gutter` block：文件 header 与 excerpt 分隔块
-        // 使用独立的整编辑器裁剪区，并在 gutter 之后绘制以覆盖行号区域。
+        // 文件 header 与 excerpt 分隔块使用独立的整编辑器裁剪区，并在 gutter 之后绘制以覆盖行号区域。
         window.with_content_mask(
             Some(ContentMask {
                 bounds: prepaint.layout.block_clip_bounds,
@@ -1242,8 +1225,7 @@ impl Element for EditorElement {
                 for selection in prepaint.selections.drain(..) {
                     window.paint_quad(selection);
                 }
-                // run 背景（搜索高亮、语法背景等）：gpui 原生 paint_background
-                // 用 decoration_runs 精确绘制，覆盖在选区之上、文本之下（对齐 Zed）。
+                // run 背景（搜索高亮、语法背景等）：gpui 原生 paint_background用 decoration_runs 精确绘制，覆盖在选区之上、文本之下。
                 for line in &prepaint.layout.lines {
                     if let Err(error) = line.shaped.paint_background(
                         line.origin,
@@ -1259,7 +1241,7 @@ impl Element for EditorElement {
                         line.shaped
                             .paint(line.origin, prepaint.layout.line_height, window, cx)
                     {
-                        // 单个字形绘制失败只跳过该行，不能让整个窗口崩溃（对齐 Zed 的降级策略）。
+                        // 单个字形绘制失败只跳过该行，不能让整个窗口崩溃。
                         eprintln!("Editor 文本行绘制失败：{error}");
                         continue;
                     }
@@ -1322,7 +1304,7 @@ impl EditorElement {
     ///
     /// 三个 handler 都在文本 MouseDown / ScrollWheel handler 之后注册，gpui 的 Bubble 阶段逆序分发保证滚动轴优先处理并 stop_propagation；
     /// 点击轨道时用 hitbox.is_hovered 门控，文本区点击不会被误判为跳页。
-    /// 按下/松开按上一帧状态条件注册（对齐 Zed）：未拖动时注册 MouseDown，拖动中注册 MouseUp，松开后的兜底由无按键 MouseMove 复位。
+    /// 按下/松开按上一帧状态条件注册：未拖动时注册 MouseDown，拖动中注册 MouseUp，松开后的兜底由无按键 MouseMove 复位。
     fn register_scrollbar_handlers(
         &self,
         scrollbar_layout: &ScrollbarLayout,
@@ -1457,6 +1439,22 @@ fn layout_line_width(
         .width
 }
 
+fn calculate_wrap_width(
+    soft_wrap: SoftWrap,
+    text_width: Pixels,
+    preferred_line_length: usize,
+    em_advance: Pixels,
+) -> Option<Pixels> {
+    // 折行点只需为行尾光标让出实际宽度；按字体 em 预留会浪费可见空间，
+    // 使本可容纳的中文和标点过早进入下一行。
+    let available_width = (text_width - CARET_WIDTH).max(Pixels::ZERO);
+    match soft_wrap {
+        SoftWrap::None => None,
+        SoftWrap::EditorWidth => Some(available_width),
+        SoftWrap::Bounded => Some(available_width.min(em_advance * preferred_line_length as f32)),
+    }
+}
+
 fn layout_visible_lines(
     display_snapshot: DisplaySnapshot,
     placeholder: Option<DisplaySnapshot>,
@@ -1481,8 +1479,8 @@ fn layout_visible_lines(
         line_height,
         diff_rows,
     } = params;
-    // placeholder 模式：行数据源替换为 placeholder 快照（折行/行高与真实文本同一管线，
-    // 对齐 Zed 的行层替换）；无高亮/折叠的查询对 placeholder 快照自然返回空。
+    // placeholder 模式：行数据源替换为 placeholder 快照（折行/行高与真实文本同一管线）；
+    // 无高亮/折叠的查询对 placeholder 快照自然返回空。
     let placeholder_mode = placeholder.is_some();
     let display_snapshot = placeholder.as_ref().unwrap_or(&display_snapshot);
     let line_count = display_snapshot.line_count();
@@ -1516,7 +1514,7 @@ fn layout_visible_lines(
         .unwrap_or_default();
     // capture 索引 → 样式的预展开表：渲染每 run 一次数组索引，不再逐 run 做字符串回退查找。
     let highlight_styles = display_snapshot.highlight_styles();
-    // 搜索高亮：独立背景覆盖层（对齐 Zed 的 background highlights）。
+    // 搜索高亮：独立背景覆盖层。
     let search_backgrounds: Vec<(Range<usize>, gpui::Rgba)> = match search_highlights {
         Some((matches, active_index)) => {
             let colors = color::current(cx);
@@ -1543,7 +1541,7 @@ fn layout_visible_lines(
     let base = TextRun {
         len: 0,
         font: text_style.font(),
-        // placeholder 行用提示色（对齐 Zed element.rs 的 placeholder_color）。
+        // placeholder 行用提示色。
         color: if placeholder_mode {
             color::current(cx).text_placeholder.into()
         } else {
@@ -1590,7 +1588,7 @@ fn layout_visible_lines(
                 .to_string();
             let active = active_lines.contains(&logical_line);
             let colors = color::current(cx);
-            // 行号按 diff 状态着色（对齐 Zed：DiffAdded → version_control_added）。
+            // 行号按 diff 状态着色。
             let number_color = match (active, git_diff) {
                 (_, Some(DiffHunkKind::Added)) => colors.status_created,
                 (_, Some(DiffHunkKind::Deleted)) => colors.status_deleted,
@@ -1642,10 +1640,8 @@ fn layout_visible_lines(
                     height: row.height(),
                     origin: point(
                         block_clip_bounds.left(),
-                        // A multi-row block is returned with its real first display row even
-                        // when the viewport starts in the middle of that block. Its origin is
-                        // then intentionally above the clip bounds, so this delta may be
-                        // negative (for example, row 0 for a viewport starting at row 1).
+                        // 即使视口从多行块的中间开始，多行块也会返回其真实的第一显示行。
+                        // 此时，其原点有意位于裁剪边界之上，因此该增量可能为负值（例如，对于从第 1 行开始的视口，则为第 0 行）。
                         text_bounds.top() + line_height * (row.index().get() as f32 - start as f32)
                             - scroll_offset.y,
                     ),
@@ -1655,7 +1651,7 @@ fn layout_visible_lines(
             }
             match row.kind() {
                 WrapViewportRowKind::Text { .. } => {
-                    // 对齐 Zed highlighted_chunks：行解构、四层快照链穿透、chunk 合成与 run 映射都在管线侧完成，这里只消费渲染结果。
+                    // 行解构、四层快照链穿透、chunk 合成与 run 映射都在管线侧完成，这里只消费渲染结果。
                     let rendered = render_viewport_row(
                         row.kind(),
                         display_snapshot,
@@ -1980,9 +1976,86 @@ mod tests {
     }
 
     #[gpui::test]
+    fn editor_width_soft_wrap_keeps_mixed_cjk_inside_text_bounds(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| Empty);
+        window
+            .update(cx, |_, window, _cx| {
+                let text = "新增 Zcv 架构维护技能并整合可见性清理、架构体检与架构减法流程";
+                let snapshot = Buffer::scratch(text.to_owned(), BufferConfig::default())
+                    .expect("测试 Buffer 应能创建")
+                    .snapshot();
+                let font = typography::ui_font();
+                let font_size = typography::ui();
+                let font_id = window.text_system().resolve_font(&font);
+                let em_advance = window
+                    .text_system()
+                    .em_advance(font_id, font_size)
+                    .expect("UI 字体必须包含拉丁字形");
+                let mut map = DisplayMap::new(snapshot);
+
+                for quarter_pixels in 720..=2_400 {
+                    let text_width = px(quarter_pixels as f32 / 4.);
+                    let wrap_width =
+                        calculate_wrap_width(SoftWrap::EditorWidth, text_width, 80, em_advance);
+                    map.set_wrap_width(wrap_width, font.clone(), font_size, window.text_system());
+                    let display = map.snapshot();
+                    let viewport = display
+                        .slice_viewport(DisplayRow::ZERO, display.line_count())
+                        .expect("应读取完整软换行视口");
+                    if quarter_pixels == 720 {
+                        let rows: Vec<_> = viewport
+                            .rows()
+                            .iter()
+                            .map(|row| {
+                                let WrapViewportRowKind::Text {
+                                    text, byte_range, ..
+                                } = row.kind();
+                                text.as_ref()[byte_range.clone()].to_owned()
+                            })
+                            .collect();
+                        assert_eq!(
+                            rows,
+                            [
+                                "新增 Zcv 架构维护技能并整合可见性清理、",
+                                "架构体检与架构减法流程",
+                            ]
+                        );
+                    }
+
+                    for row in viewport.rows() {
+                        let WrapViewportRowKind::Text {
+                            text, byte_range, ..
+                        } = row.kind();
+                        let row_text = &text.as_ref()[byte_range.clone()];
+                        let run = TextRun {
+                            len: row_text.len(),
+                            font: font.clone(),
+                            color: gpui::black(),
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        };
+                        let shaped = window.text_system().shape_line(
+                            row_text.to_owned().into(),
+                            font_size,
+                            &[run],
+                            None,
+                        );
+                        assert!(
+                            shaped.width + CARET_WIDTH <= text_width,
+                            "软换行行尾应保留光标宽度：width={}, shaped={}，row={row_text:?}",
+                            f32::from(text_width),
+                            f32::from(shaped.width),
+                        );
+                    }
+                }
+            })
+            .expect("测试窗口应保持可用");
+    }
+
+    #[gpui::test]
     fn inserted_lines_render_without_applying_anchor_spans(cx: &mut TestAppContext) {
-        // 回归：合成行（外部文本）无语法高亮/选区——锚定行的 span 端点套用到合成行文本
-        // 会落在中文中间（非字符边界切片 panic）。
+        // 回归：合成行（外部文本）无语法高亮/选区——锚定行的 span 端点套用到合成行文本会落在中文中间（非字符边界切片 panic）。
         let window = cx.add_window(|_, _| Empty);
         window
             .update(cx, |_, window, cx| {

@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use gpui::{Context, Window, div, prelude::*};
+use gpui::{App, Context, Div, FontWeight, Window, div, prelude::*, px};
 use zcv_theme::{FileIcons, color, space, typography};
 use zcv_ui::SvgIcon;
 
@@ -35,12 +35,19 @@ impl TreeDrag {
     }
 }
 
-/// 拖拽跟随预览视图（拖拽幽灵）：与面板行一致的布局（图标 + 名称，多选附数量徽标）。
+/// 拖拽跟随预览视图（拖拽幽灵）：单项为单行（图标 + 名称）；
+/// 多选为堆叠卡片——顶层被拖行附醒目数量徽标，其后最多两层后景卡片（真实选中项，逐层右下偏移），使选区拖影与单项拖影一眼可辨。
 ///
 /// 对齐 pane DraggedTab 的 Render 模式：由行元素 `on_drag` 构造为 Entity 注册，拖拽进行时由 gpui 拖拽系统跟随光标渲染。
 pub(crate) struct DraggedEntryView {
     drag: TreeDrag,
 }
+
+/// 顶层之外的后景卡片层数：堆叠共 3 层，精确数量由徽标传达。
+const STACK_BACK_LAYERS: usize = 6;
+/// 后景卡片逐层向右下偏移的步长（px）：步长要足够露出堆叠轮廓，与单项拖影一眼可辨。
+const LAYER_OFFSET_X: f32 = 6.;
+const LAYER_OFFSET_Y: f32 = 8.;
 
 impl DraggedEntryView {
     pub(crate) fn new(drag: TreeDrag) -> Self {
@@ -50,34 +57,94 @@ impl DraggedEntryView {
 
 impl Render for DraggedEntryView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // 图标与名称都取被拖行（对齐 Zed 预览用 active 行细节）；数量徽标以载荷 items 为准。
+        let theme = *color::current(cx);
+        let items = self.drag.items();
+        let count = items.len();
+        if count == 1 {
+            // 单项拖影：单行图标 + 名称，无徽标，保持简洁。
+            return entry_card(cx)
+                .child(SvgIcon::new(entry_icon(&self.drag.active_selection)).size(typography::ui()))
+                .child(self.drag.preview_name.clone());
+        }
+        // 多选堆叠卡片：后景层绝对定位逐层右下偏移、先挂载（越远越先），顶层卡片常流最后挂载；
+        // gpui 子元素按序绘制，保证顶层在最上且撑起容器尺寸；
+        // 后景层越界溢出容器是预期效果（拖拽幽灵不裁剪）。
         let active = &self.drag.active_selection;
-        let icon_path = if active.is_dir() {
-            FileIcons::get_folder_icon(false, active)
-        } else {
-            FileIcons::get_icon(active)
-        };
-        let count = self.drag.items().len();
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(space::S6)
-            .px(space::S6)
-            .h(typography::ui_line())
-            .rounded_xs()
-            .bg(color::current(cx).element_selected)
-            .child(SvgIcon::new(icon_path).size(typography::ui()))
-            .child(self.drag.preview_name.clone())
-            .when(count > 1, |element| {
-                // 多选徽标：淡显数量，与面板行风格一致。
-                element.child(
+        let mut stack = div().relative();
+        // 后景层取选区内除被拖行外的前几项（被拖行在快照中的位置不一定居首）。
+        let back_layers: Vec<_> = items
+            .iter()
+            .filter(|path| *path != active)
+            .take(STACK_BACK_LAYERS)
+            .collect();
+        let layer_total = back_layers.len();
+        for (i, path) in back_layers.into_iter().rev().enumerate() {
+            let depth = (layer_total - i) as f32;
+            stack = stack.child(
+                entry_card(cx)
+                    .border_1()
+                    .border_color(theme.border_variant)
+                    .absolute()
+                    .top(px(LAYER_OFFSET_Y * depth))
+                    .left(px(LAYER_OFFSET_X * depth))
+                    .text_color(theme.text_muted)
+                    .child(SvgIcon::new(entry_icon(path)).size(typography::ui()))
+                    .child(entry_name(path)),
+            );
+        }
+        stack.child(
+            entry_card(cx)
+                .border_1()
+                .border_color(theme.border_variant)
+                .shadow_sm()
+                .child(SvgIcon::new(entry_icon(active)).size(typography::ui()))
+                .child(self.drag.preview_name.clone())
+                // 数量徽标：反色实心圆角胶囊（正文色底 + 底色字），任何主题下都高对比醒目。
+                .child(
                     div()
-                        .text_color(color::current(cx).text_muted)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .h(px(16.))
+                        .min_w(px(16.))
+                        .px(space::S2)
+                        .rounded_full()
+                        .bg(theme.text)
+                        .text_color(theme.background)
+                        .font_weight(FontWeight::BOLD)
                         .child(format!("{count} 项")),
-                )
-            })
+                ),
+        )
     }
+}
+
+/// 幽灵卡片基调：与面板行同源（一行高、选中色底、图标 + 名称）。
+fn entry_card(cx: &App) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(space::S6)
+        .px(space::S6)
+        .h(typography::ui_line())
+        .rounded_xs()
+        .bg(color::current(cx).element_selected)
+}
+
+/// 选中条目的图标：目录/文件按本地 metadata 实时判断（后景层每帧至多 2 次，开销可忽略）。
+fn entry_icon(path: &Path) -> String {
+    if path.is_dir() {
+        FileIcons::get_folder_icon(false, path)
+    } else {
+        FileIcons::get_icon(path)
+    }
+}
+
+/// 后景卡片显示的条目名：取路径文件名。
+fn entry_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default()
 }
 
 /// 落点目标目录解析（纯函数）：目录行（含根行）→自身路径；文件行→其父目录。

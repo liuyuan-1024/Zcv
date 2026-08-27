@@ -206,7 +206,8 @@ pub(super) fn render_row(
             let weak = render_context.weak.clone();
             element.on_drag(drag, move |drag, _, _, cx| {
                 // 拖拽正式开始：清掉上一次拖拽遗留的悬停展开状态。
-                // 载荷即渲染期冻结的选区快照（见 drag_payload 处源码结论），与用户按下时所见选区一致；预览的「N 项」徽标以载荷 items 为准。
+                // 载荷即渲染期冻结的选区快照（见 drag_payload 处源码结论），与用户按下时所见选区一致；
+                // 堆叠预览与数量徽标都以载荷 items 为准。
                 if let Some(tree) = weak.upgrade() {
                     tree.update(cx, |tree, _| tree.reset_drag_hover());
                 }

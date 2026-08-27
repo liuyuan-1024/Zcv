@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Subscription};
 use zcv_language::{
-    AutoClosePair, HighlightSpan, LanguageBuffer, LanguageBufferEvent, SyntaxSnapshot,
+    AutoClosePair, FoldRange, HighlightSpan, LanguageBuffer, LanguageBufferEvent, SyntaxSnapshot,
 };
 use zcv_text::{
     Buffer, BufferConfig, BufferVersion, ByteOffset, Edit, PositionMap, Snapshot, Stickiness,
@@ -58,6 +58,25 @@ pub struct ExcerptLocation {
     pub source_range: TextRange,
 }
 
+/// 一个源组合文档的去重共享状态：文本、语法与 capture 映射各保存一份，
+/// 该源的所有 excerpt 映射只引用 `source_index`，避免同一文件大量搜索片段重复克隆。
+#[derive(Clone, Debug)]
+struct ExcerptSource {
+    /// 源组合文档实体（更新时按 id 定位）。
+    entity: Entity<MultiBuffer>,
+    text: Snapshot,
+    syntax: SyntaxSnapshot,
+    capture_map: Arc<[u32]>,
+}
+
+/// 不可变快照帧中的源状态（不携带实体引用）。
+#[derive(Clone, Debug)]
+struct ExcerptSourceSnapshot {
+    text: Snapshot,
+    syntax: SyntaxSnapshot,
+    capture_map: Arc<[u32]>,
+}
+
 #[derive(Clone, Debug)]
 struct ExcerptMapping {
     excerpt_index: usize,
@@ -68,17 +87,17 @@ struct ExcerptMapping {
     output_start_line: usize,
     output_end_line: usize,
     source_start_line: usize,
-    source_text: Snapshot,
-    source_syntax: SyntaxSnapshot,
-    capture_map: Arc<[u32]>,
+    /// 指向源表（`ExcerptState::sources` / 快照的 `excerpt_sources`）的索引。
+    source_index: usize,
 }
 
-fn rebuild_capture_table(mappings: &mut [ExcerptMapping]) -> Arc<[Arc<str>]> {
+/// 按源重建 capture 映射（源局部 capture index → 组合全局 index）。
+fn rebuild_capture_table(sources: &mut [ExcerptSource]) -> Arc<[Arc<str>]> {
     let mut capture_names = Vec::<Arc<str>>::new();
     let mut capture_indices = HashMap::<Arc<str>, u32>::new();
-    for mapping in mappings {
-        mapping.capture_map = mapping
-            .source_syntax
+    for source in sources {
+        source.capture_map = source
+            .syntax
             .capture_names()
             .iter()
             .map(|name| {
@@ -154,6 +173,8 @@ pub struct MultiBufferSnapshot {
     syntax: SyntaxSnapshot,
     excerpts: Arc<[ExcerptSnapshot]>,
     excerpt_mappings: Arc<[ExcerptMapping]>,
+    /// 按源去重的 (text, syntax, capture_map) 表（映射经 `source_index` 引用）。
+    excerpt_sources: Arc<[ExcerptSourceSnapshot]>,
     capture_names: Arc<[Arc<str>]>,
 }
 
@@ -220,6 +241,7 @@ impl MultiBufferSnapshot {
             syntax,
             excerpts: Arc::from([]),
             excerpt_mappings: Arc::from([]),
+            excerpt_sources: Arc::from([]),
             capture_names,
         }
     }
@@ -273,15 +295,16 @@ impl MultiBufferSnapshot {
             if start >= end {
                 continue;
             }
+            let source = &self.excerpt_sources[excerpt.source_index];
             let source_start = excerpt.source_range.start().get() + start - output_start;
             let source_end = excerpt.source_range.start().get() + end - output_start;
             spans.extend(
-                excerpt
-                    .source_syntax
-                    .highlights(source_start..source_end, &excerpt.source_text)
+                source
+                    .syntax
+                    .highlights(source_start..source_end, &source.text)
                     .into_iter()
                     .filter_map(|span| {
-                        let capture = *excerpt.capture_map.get(span.capture as usize)?;
+                        let capture = *source.capture_map.get(span.capture as usize)?;
                         Some(HighlightSpan {
                             range: (output_start + span.range.start
                                 - excerpt.source_range.start().get())
@@ -315,6 +338,8 @@ struct ExcerptState {
     source_subscriptions: Vec<SourceSubscription>,
     source_event_subscriptions: Vec<Subscription>,
     mappings: Vec<ExcerptMapping>,
+    /// 按源去重的 (text, syntax, capture_map) 表。
+    sources: Vec<ExcerptSource>,
     match_ranges: Vec<TextRange>,
     capture_names: Arc<[Arc<str>]>,
     next_transaction_id: TransactionId,
@@ -374,6 +399,7 @@ impl MultiBuffer {
                 source_subscriptions: Vec::new(),
                 source_event_subscriptions: Vec::new(),
                 mappings: Vec::new(),
+                sources: Vec::new(),
                 match_ranges: Vec::new(),
                 capture_names: Arc::from([]),
                 next_transaction_id: TransactionId::INITIAL,
@@ -426,11 +452,14 @@ impl MultiBuffer {
             source_subscriptions,
             source_event_subscriptions,
             mappings,
+            sources,
             match_ranges,
             capture_names: composite_capture_names,
             ..
         } = state.as_mut();
 
+        // 按源去重构建 (text, syntax) 表：同一文件的大量片段共享一份源状态。
+        let mut next_sources: Vec<ExcerptSource> = Vec::new();
         let mut output = String::new();
         let mut next_mappings = Vec::with_capacity(excerpts.len());
         let mut next_match_ranges = Vec::new();
@@ -440,12 +469,28 @@ impl MultiBuffer {
             let Some(path) = excerpt.source.read(cx).file_path(cx) else {
                 continue;
             };
-            let source_snapshot = excerpt.source.read(cx).snapshot(cx);
-            let Ok(text) = source_snapshot.text().slice_text(excerpt.source_range) else {
+            let source_index = match next_sources
+                .iter()
+                .position(|source| source.entity.entity_id() == excerpt.source.entity_id())
+            {
+                Some(index) => index,
+                None => {
+                    let source_snapshot = excerpt.source.read(cx).snapshot(cx);
+                    next_sources.push(ExcerptSource {
+                        entity: excerpt.source.clone(),
+                        text: source_snapshot.text().clone(),
+                        syntax: source_snapshot.syntax().clone(),
+                        capture_map: Arc::from([]),
+                    });
+                    next_sources.len() - 1
+                }
+            };
+            let source_snapshot = &next_sources[source_index];
+            let Ok(text) = source_snapshot.text.slice_text(excerpt.source_range) else {
                 continue;
             };
             let start_line = source_snapshot
-                .text()
+                .text
                 .byte_to_line(excerpt.source_range.start())
                 .map_or(1, |line| line.get() + 1);
             if !output.is_empty() && !output.ends_with('\n') {
@@ -493,9 +538,7 @@ impl MultiBuffer {
                 output_start_line,
                 output_end_line,
                 source_start_line: start_line,
-                source_text: source_snapshot.text().clone(),
-                source_syntax: source_snapshot.syntax().clone(),
-                capture_map: Arc::from([]),
+                source_index,
             });
             valid_excerpts.push(excerpt);
         }
@@ -511,8 +554,9 @@ impl MultiBuffer {
         *source_event_subscriptions = next_source_event_subscriptions;
         *stored_excerpts = valid_excerpts;
         *mappings = next_mappings;
+        *sources = next_sources;
         *match_ranges = next_match_ranges;
-        *composite_capture_names = rebuild_capture_table(mappings);
+        *composite_capture_names = rebuild_capture_table(sources);
         cx.notify();
     }
 
@@ -565,16 +609,16 @@ impl MultiBuffer {
         let MultiBufferKind::Excerpts(state) = &mut self.kind else {
             return;
         };
-        let excerpts = &state.excerpts;
-        for mapping in state
-            .mappings
+        // 按源去重：只更新该源共享的一份 (text, syntax)，所有映射自动跟随。
+        if let Some(excerpt_source) = state
+            .sources
             .iter_mut()
-            .filter(|mapping| excerpts[mapping.excerpt_index].source.entity_id() == source_id)
+            .find(|source| source.entity.entity_id() == source_id)
         {
-            mapping.source_text = source_snapshot.text().clone();
-            mapping.source_syntax = source_snapshot.syntax().clone();
+            excerpt_source.text = source_snapshot.text().clone();
+            excerpt_source.syntax = source_snapshot.syntax().clone();
         }
-        state.capture_names = rebuild_capture_table(&mut state.mappings);
+        state.capture_names = rebuild_capture_table(&mut state.sources);
         cx.emit(MultiBufferEvent::Reparsed);
         cx.notify();
     }
@@ -1029,6 +1073,17 @@ impl MultiBuffer {
                     syntax,
                     excerpts,
                     excerpt_mappings: Arc::from(state.mappings.clone()),
+                    excerpt_sources: Arc::from(
+                        state
+                            .sources
+                            .iter()
+                            .map(|source| ExcerptSourceSnapshot {
+                                text: source.text.clone(),
+                                syntax: source.syntax.clone(),
+                                capture_map: Arc::clone(&source.capture_map),
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
                     capture_names: Arc::clone(&state.capture_names),
                 }
             }
@@ -1182,6 +1237,17 @@ impl MultiBuffer {
         match &self.kind {
             MultiBufferKind::Singleton(singleton) => singleton.read(cx).language_name(),
             MultiBufferKind::Excerpts(_) => None,
+        }
+    }
+
+    /// 当前已安装解析对应的折叠范围（Arc 共享，O(1) 克隆）。
+    ///
+    /// singleton 直接返回 LanguageBuffer 的共享缓存（多个 Editor 不重复计算）；
+    /// 组合文档的投影没有语言层，不提供折叠。
+    pub fn fold_ranges(&self, cx: &App) -> Arc<[FoldRange]> {
+        match &self.kind {
+            MultiBufferKind::Singleton(singleton) => singleton.read(cx).fold_ranges(),
+            MultiBufferKind::Excerpts(_) => Arc::from([]),
         }
     }
 

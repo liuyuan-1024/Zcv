@@ -648,6 +648,8 @@ pub(crate) struct RenderedViewportRow {
     pub(crate) gutter_line: Option<Line>,
     pub(crate) wrap_info: Option<WrapRowInfo>,
     pub(crate) fold_segments: Option<Vec<FoldRowSegment>>,
+    /// 水平窗口化后 shaped 文本起点在行内的显示列（0 = 未窗口化，渲染端据此补偿行原点）。
+    pub(crate) window_start_column: usize,
 }
 
 /// 渲染一行的样式输入：语法高亮 / 搜索背景 / 标记范围，管线内组装为行样式。
@@ -666,6 +668,7 @@ pub(crate) fn render_viewport_row(
     display_snapshot: &DisplaySnapshot,
     style_input: &RowStyleInput<'_>,
     base: gpui::TextRun,
+    window_columns: Option<(usize, usize)>,
     cx: &gpui::App,
 ) -> RenderedViewportRow {
     let WrapViewportRowKind::Text {
@@ -713,6 +716,39 @@ pub(crate) fn render_viewport_row(
         ),
     };
     let tab_width = display_snapshot.buffer_snapshot().config().tab.tab_width();
+    // 超长行预算：chunk 合成在渲染上限处提前停止（clip_chunks_to_len 之前），避免兆字节单行先合成整行 chunk 再被裁剪。
+    // 水平视口窗口化：只合成/塑形可见列附近（±边距）的文本。
+    // 列 ↔ 字节按等宽换算，行首区域含 tab 时换算不精确，退回整行上限。
+    let mut window_start_column = 0usize;
+    let mut clipped_byte_range = byte_range.clone();
+    if let Some((start_col, end_col)) = window_columns {
+        let row_text = text.as_ref();
+        let prefix = &row_text[..row_text.len().min(MAX_RENDERED_LINE_LEN)];
+        if !prefix.contains('\t') {
+            let mut start = start_col.min(row_text.len());
+            let mut end = end_col.min(row_text.len());
+            while !row_text.is_char_boundary(start) {
+                start -= 1;
+            }
+            while !row_text.is_char_boundary(end) {
+                end -= 1;
+            }
+            if start > clipped_byte_range.start {
+                clipped_byte_range.start = start;
+                window_start_column = start_col;
+            }
+            clipped_byte_range.end = clipped_byte_range.end.min(end);
+        }
+    }
+    // 超长行预算：chunk 合成在渲染上限处提前停止（clip_chunks_to_len 之前），避免兆字节单行先合成整行 chunk 再被裁剪。
+    let budget = MAX_RENDERED_LINE_LEN.saturating_sub(*indent);
+    if clipped_byte_range.len() > budget {
+        let mut end = clipped_byte_range.start + budget;
+        while !text.as_ref().is_char_boundary(end) {
+            end -= 1;
+        }
+        clipped_byte_range.end = clipped_byte_range.end.min(end);
+    }
     let mut rendered = render_viewport_chunks(
         ViewportChunkSource {
             text: text.as_ref(),
@@ -724,7 +760,7 @@ pub(crate) fn render_viewport_row(
         },
         tab_width,
         line_styles,
-        byte_range.clone(),
+        clipped_byte_range,
     );
     clip_chunks_to_len(
         &mut rendered.chunks,
@@ -784,6 +820,7 @@ pub(crate) fn render_viewport_row(
         gutter_line,
         wrap_info,
         fold_segments: segments.clone(),
+        window_start_column,
     }
 }
 

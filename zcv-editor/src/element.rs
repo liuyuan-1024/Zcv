@@ -23,7 +23,8 @@ use crate::SelectionSet;
 use super::display_map::{
     BufferPoint, DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint, DisplayRow,
     DisplaySnapshot, FoldRowSegment, ProjectedLineIndex, ProjectedRange, RowStyleInput,
-    WrapRowInfo, WrapViewportRowKind, byte_for_display_column, render_viewport_row,
+    StreamLineSource, WrapRowInfo, WrapViewportRowKind, byte_for_display_column,
+    render_viewport_row,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
@@ -1552,6 +1553,24 @@ fn layout_visible_lines(
         strikethrough: None,
     };
 
+    // 水平视口窗口化：未换行时只塑形可见列附近（±边距）的文本；换行行已受行宽约束。
+    // 列 ↔ 字节按等宽换算，行首含 tab 的行在管线侧退回整行上限。
+    let font_id = window.text_system().resolve_font(&text_style.font());
+    let em_advance = window
+        .text_system()
+        .em_advance(font_id, font_size)
+        .expect("编辑器字体必须包含拉丁字形");
+    let horizontal_window = if !display_snapshot.is_wrapped() {
+        let scroll_cols = (scroll_offset.x / em_advance).floor() as usize;
+        let visible_cols = (text_clip_bounds.size.width / em_advance).ceil() as usize;
+        let margin = 64usize;
+        Some((
+            scroll_cols.saturating_sub(margin),
+            scroll_cols + visible_cols + margin,
+        ))
+    } else {
+        None
+    };
     let mut push_line = |row: usize,
                          logical_line: Option<Line>,
                          gutter_line: Option<Line>,
@@ -1560,6 +1579,7 @@ fn layout_visible_lines(
                          utf16_start: usize,
                          wrap_info: Option<WrapRowInfo>,
                          fold_segments: Option<Vec<FoldRowSegment>>,
+                         window_start_column: usize,
                          runs: Vec<TextRun>| {
         let shaped =
             window
@@ -1570,7 +1590,8 @@ fn layout_visible_lines(
             row: DisplayRow::new(row),
             logical_line,
             origin: point(
-                text_bounds.left() - scroll_offset.x,
+                // 窗口化行：shaped 文本从窗口起点开始，行原点随窗口起点列右移。
+                text_bounds.left() - scroll_offset.x + em_advance * window_start_column as f32,
                 text_bounds.top() + line_height * (row - start) - scroll_offset.y,
             ),
             shaped,
@@ -1651,6 +1672,15 @@ fn layout_visible_lines(
             }
             match row.kind() {
                 WrapViewportRowKind::Text { .. } => {
+                    // 光标行不窗口化：光标像素定位基于 shaped 文本，窗口外光标会被夹到窗口内，导致水平 autoscroll 失效；
+                    // 光标行退回整行上限（超长行仍有 1024 兜底）。
+                    let window_for_row = match row.kind() {
+                        WrapViewportRowKind::Text {
+                            source: StreamLineSource::Buffer(line),
+                            ..
+                        } if active_lines.contains(&Line::new(*line)) => None,
+                        _ => horizontal_window,
+                    };
                     // 行解构、四层快照链穿透、chunk 合成与 run 映射都在管线侧完成，这里只消费渲染结果。
                     let rendered = render_viewport_row(
                         row.kind(),
@@ -1662,6 +1692,7 @@ fn layout_visible_lines(
                             marked_ranges: presentation.marked_ranges(),
                         },
                         base.clone(),
+                        window_for_row,
                         cx,
                     );
                     let gutter_number = rendered.gutter_line.map(|line| {
@@ -1679,6 +1710,7 @@ fn layout_visible_lines(
                         rendered.utf16_start,
                         rendered.wrap_info,
                         rendered.fold_segments,
+                        rendered.window_start_column,
                         rendered.runs,
                     );
                 }

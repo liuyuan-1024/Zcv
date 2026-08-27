@@ -397,3 +397,184 @@ fn multibuffer_soft_wrap_uses_the_regular_display_map_pipeline(cx: &mut TestAppC
         "再次点击 header chevron 应完整恢复 excerpts"
     );
 }
+
+#[gpui::test]
+fn viewport_highlight_cache_reuses_identical_query_frames(cx: &mut TestAppContext) {
+    // 光标闪烁/焦点切换等重复帧：相同版本与区间的高亮查询直接命中跨帧缓存，不重复执行树查询。
+    let buffer = cx.new(|_| {
+        Buffer::scratch(
+            "fn main() { let value = 1; }\n".to_owned(),
+            BufferConfig::default(),
+        )
+        .expect("测试 Buffer 应能创建")
+    });
+    let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
+    let editor = cx.new(|cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx));
+    cx.run_until_parked();
+
+    let (first_ptr, second_ptr, first_len) = cx.read_entity(&editor, |editor, _| {
+        let snapshot = editor.display_map.snapshot();
+        let viewport = snapshot
+            .slice_viewport(DisplayRow::ZERO, 1)
+            .expect("视口应可读取");
+        let first = snapshot.highlighted_spans_for_viewport(&viewport);
+        let first_ptr = Arc::as_ptr(&first);
+        let first_len = first.len();
+        let second = snapshot.highlighted_spans_for_viewport(&viewport);
+        (first_ptr, Arc::as_ptr(&second), first_len)
+    });
+    assert!(first_len > 0, "rust 源码视口应产出高亮 spans");
+    assert_eq!(
+        first_ptr, second_ptr,
+        "相同帧的重复查询应命中缓存（同一 Arc）"
+    );
+}
+
+#[gpui::test]
+fn viewport_highlight_cache_invalidates_after_text_edit(cx: &mut TestAppContext) {
+    let buffer = cx.new(|_| {
+        Buffer::scratch(
+            "fn main() { let value = 1; }\n".to_owned(),
+            BufferConfig::default(),
+        )
+        .expect("测试 Buffer 应能创建")
+    });
+    let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
+    let engine = engine_buffer(&buffer, cx);
+    let editor = cx.new(|cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx));
+    cx.run_until_parked();
+
+    let first_ptr = cx.read_entity(&editor, |editor, _| {
+        let snapshot = editor.display_map.snapshot();
+        let viewport = snapshot
+            .slice_viewport(DisplayRow::ZERO, 1)
+            .expect("视口应可读取");
+        Arc::as_ptr(&snapshot.highlighted_spans_for_viewport(&viewport))
+    });
+
+    // 编辑文本：版本推进后同一视口的查询结果必须重新计算。
+    cx.update_entity(&engine, |buffer, cx| {
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::new(20), " // 注释").unwrap()],
+                TransactionMetadata::default(),
+            )
+            .expect("插入应成功");
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    let second_ptr = cx.read_entity(&editor, |editor, _| {
+        let snapshot = editor.display_map.snapshot();
+        let viewport = snapshot
+            .slice_viewport(DisplayRow::ZERO, 1)
+            .expect("视口应可读取");
+        Arc::as_ptr(&snapshot.highlighted_spans_for_viewport(&viewport))
+    });
+    assert_ne!(first_ptr, second_ptr, "编辑后高亮必须重新查询");
+}
+
+#[gpui::test]
+fn long_line_highlight_query_is_clipped_to_render_budget(cx: &mut TestAppContext) {
+    // 超长单行：高亮查询只覆盖可见前缀（渲染端同样只塑形前 MAX_RENDERED_LINE_LEN 字节）。
+    let long = "let text = \"".to_owned() + &"a".repeat(8192) + "\";\n";
+    let buffer =
+        cx.new(|_| Buffer::scratch(long, BufferConfig::default()).expect("测试 Buffer 应能创建"));
+    let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
+    let editor = cx.new(|cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx));
+    cx.run_until_parked();
+
+    cx.read_entity(&editor, |editor, _| {
+        let snapshot = editor.display_map.snapshot();
+        let viewport = snapshot
+            .slice_viewport(DisplayRow::ZERO, 1)
+            .expect("视口应可读取");
+        let spans = snapshot.highlighted_spans_for_viewport(&viewport);
+        let buffer = editor.display_map.buffer_snapshot();
+        let second_line = buffer
+            .line_start_byte(Line::new(1))
+            .expect("第二行行首应存在");
+        // 查询范围不超过渲染预算：spans 终点不超过第一行的前 MAX_RENDERED_LINE_LEN 字节。
+        let covered = spans.iter().map(|span| span.range.end).max().unwrap_or(0);
+        assert!(
+            covered <= 1024 && covered < second_line.get(),
+            "超长行高亮终点应在预算内，实际 {covered}（第二行行首 {}）",
+            second_line.get()
+        );
+    });
+}
+
+#[gpui::test]
+fn horizontal_windowing_clips_wide_rows_to_the_visible_window(cx: &mut TestAppContext) {
+    // 未换行 + 超长行：非光标行只合成/塑形可见列窗口（±边距）内的文本，
+    // 并回报窗口起点列供渲染端补偿行原点；光标行保持整行 shaping（autoscroll 依赖光标像素）。
+    let long = "a".repeat(4096) + "tail";
+    let buffer = cx.new(|_| {
+        Buffer::scratch(format!("{long}\n{long}\n"), BufferConfig::default())
+            .expect("测试 Buffer 应能创建")
+    });
+    let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
+    });
+    cx.run_until_parked();
+
+    let (windowed_len, window_start, full_len) = cx.read_entity(&editor, |editor, app| {
+        let snapshot = editor.display_map.snapshot();
+        let viewport = snapshot
+            .slice_viewport(DisplayRow::ZERO, 2)
+            .expect("视口应可读取");
+        let base = gpui::TextRun {
+            len: 0,
+            font: gpui::Font {
+                family: ".SystemUIFont".into(),
+                features: Default::default(),
+                fallbacks: None,
+                weight: gpui::FontWeight::default(),
+                style: gpui::FontStyle::default(),
+            },
+            color: gpui::white().into(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let style = crate::display_map::RowStyleInput {
+            visible_highlights: &[],
+            highlight_styles: &[],
+            search_backgrounds: &[],
+            marked_ranges: &[],
+        };
+        let window = Some((200usize, 500usize));
+        let row0 = crate::display_map::render_viewport_row(
+            viewport.rows()[0].kind(),
+            &snapshot,
+            &style,
+            base.clone(),
+            window,
+            app,
+        );
+        let row1 = crate::display_map::render_viewport_row(
+            viewport.rows()[1].kind(),
+            &snapshot,
+            &style,
+            base.clone(),
+            None,
+            app,
+        );
+        (
+            row0.display_text.len(),
+            row0.window_start_column,
+            row1.display_text.len(),
+        )
+    });
+    assert!(
+        windowed_len < 4096,
+        "非光标超长行应被窗口化裁剪，实际 {windowed_len}"
+    );
+    assert_eq!(window_start, 200, "窗口化行应回报窗口起点列");
+    assert_eq!(
+        full_len, 1024,
+        "无窗口参数时整行 shaping 受 1024 上限约束，实际 {full_len}"
+    );
+}

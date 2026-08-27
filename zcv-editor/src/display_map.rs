@@ -21,10 +21,13 @@ mod tab_map;
 mod wrap_map;
 
 use std::collections::HashSet;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use block_map::{BlockSnapshot, DisplayViewportSlice};
 pub(crate) use block_map::{DisplayBlock, DisplayBlockKind};
+use chunk::MAX_RENDERED_LINE_LEN;
 pub use chunk::{Chunk, RenderChunks, chunks_to_runs, render_plain_line};
 #[cfg(test)]
 pub(crate) use chunk::{LineStyles, ViewportChunkSource, render_viewport_chunks};
@@ -135,6 +138,23 @@ impl DisplayPoint {
     }
 }
 
+/// 视口高亮缓存键：文本版本、语法版本、capture 表身份（Arc 指针）与查询区间。
+///
+/// capture 表身份用 Arc 指针：组合文档的源重解析会重建 capture 表（新 Arc），即使投影文本版本未变也能正确失效。
+type HighlightCacheKey = (
+    zcv_text::BufferVersion,
+    zcv_text::BufferVersion,
+    usize,
+    Arc<[Range<usize>]>,
+);
+
+/// 视口高亮缓存：光标闪烁、焦点切换等重复渲染帧直接命中，不重复执行树查询。
+#[derive(Clone, Debug, Default)]
+struct ViewportHighlightCache {
+    key: Option<HighlightCacheKey>,
+    spans: Arc<[HighlightSpan]>,
+}
+
 /// 一帧渲染使用的只读显示快照。
 ///
 /// FoldSnapshot、TabSnapshot 与 WrapSnapshot 都是低成本克隆；渲染持有此值时
@@ -150,6 +170,8 @@ pub(super) struct DisplaySnapshot {
     syntax_snapshot: SyntaxSnapshot,
     /// capture 索引 → 样式的预展开表（capture 名表变化时重建）。
     highlight_styles: std::sync::Arc<[HighlightStyle]>,
+    /// 视口高亮缓存（与 DisplayMap 共享，跨帧复用查询结果）。
+    highlight_cache: Arc<Mutex<ViewportHighlightCache>>,
 }
 
 impl DisplaySnapshot {
@@ -166,32 +188,17 @@ impl DisplaySnapshot {
     /// 和 Zed 的 `BufferChunks -> InlayChunks -> FoldChunks -> TabChunks -> WrapChunks` 顺序一致：语法坐标只存在于最底层 buffer 行。
     /// 软换行片段的投影长度绝不能反推成 buffer 字节范围；
     /// 折叠行则查询其每个有源段对应的真实 buffer 行。
+    ///
+    /// 连续可见 buffer 行合并为一个字节区间（一次查询覆盖整段），不再逐行建立查询游标；
+    /// 超长单行只查询其可见前缀（渲染端同样只塑形前 `MAX_RENDERED_LINE_LEN` 字节）。
+    /// 相同版本与区间的重复帧（光标闪烁、焦点切换）直接命中跨帧缓存。
     pub(super) fn highlighted_spans_for_viewport(
         &self,
         viewport: &DisplayViewportSlice<'_>,
-    ) -> Vec<HighlightSpan> {
-        if self.multi_buffer_snapshot.is_composite() {
-            let mut start = usize::MAX;
-            let mut end = 0usize;
-            for row in viewport.rows() {
-                if row.block().is_some() {
-                    continue;
-                }
-                let WrapViewportRowKind::Text {
-                    global_byte_start,
-                    byte_range,
-                    ..
-                } = row.kind();
-                start = start.min(global_byte_start.saturating_add(byte_range.start));
-                end = end.max(global_byte_start.saturating_add(byte_range.end));
-            }
-            return if start < end {
-                self.multi_buffer_snapshot.highlights(start..end)
-            } else {
-                Vec::new()
-            };
-        }
-
+    ) -> Arc<[HighlightSpan]> {
+        let buffer = self.buffer_snapshot();
+        let mut ranges: Vec<Range<usize>> = Vec::new();
+        // 收集视口内真实 buffer 行（合成行与虚拟块无语法来源），去重排序后合并连续行。
         let mut buffer_lines = std::collections::BTreeSet::new();
         let stream = self.fold_snapshot.inlay_snapshot().stream();
         for row in viewport.rows() {
@@ -213,14 +220,13 @@ impl DisplaySnapshot {
                 buffer_lines.insert(*line);
             }
         }
-
-        let buffer = self.buffer_snapshot();
-        let mut spans = Vec::new();
         let mut lines = buffer_lines.into_iter().peekable();
         while let Some(start_line) = lines.next() {
             let mut end_line = start_line;
+            let mut run_lines = 1usize;
             while lines.peek().is_some_and(|line| *line == end_line + 1) {
                 end_line = lines.next().expect("peek 已确认下一行存在");
+                run_lines += 1;
             }
             let Ok(start) = buffer.line_start_byte(Line::new(start_line)) else {
                 continue;
@@ -233,11 +239,42 @@ impl DisplaySnapshot {
             } else {
                 buffer.len_bytes()
             };
-            spans.extend(
-                self.syntax_snapshot
-                    .highlights(start.get()..end.get(), buffer),
-            );
+            let mut end = end.get();
+            // 超长单行预算：只查询可见前缀（渲染端 clip 到同一上限，区间外的 spans 不可见）。
+            if run_lines == 1 && end - start.get() > MAX_RENDERED_LINE_LEN {
+                end = start.get() + MAX_RENDERED_LINE_LEN;
+            }
+            ranges.push(start.get()..end);
         }
+
+        // 相同 (文本版本, 语法版本, capture 表身份, 查询区间) 的重复帧直接复用结果。
+        let key = (
+            buffer.version(),
+            self.syntax_snapshot.version(),
+            Arc::as_ptr(&self.multi_buffer_snapshot.capture_names()) as *const u8 as usize,
+            Arc::from(ranges.clone()),
+        );
+        let mut cache = self.highlight_cache.lock().expect("视口高亮缓存锁不应中毒");
+        if let Some((text_version, syntax_version, capture_table, cached_ranges)) = &cache.key
+            && key.0 == *text_version
+            && key.1 == *syntax_version
+            && key.2 == *capture_table
+            && key.3 == *cached_ranges
+        {
+            return Arc::clone(&cache.spans);
+        }
+
+        let mut spans = Vec::new();
+        for range in &ranges {
+            if self.multi_buffer_snapshot.is_composite() {
+                spans.extend(self.multi_buffer_snapshot.highlights(range.clone()));
+            } else {
+                spans.extend(self.syntax_snapshot.highlights(range.clone(), buffer));
+            }
+        }
+        let spans = Arc::from(spans);
+        cache.key = Some(key);
+        cache.spans = Arc::clone(&spans);
         spans
     }
 
@@ -347,6 +384,8 @@ pub(crate) struct DisplayMap {
     highlight_styles: std::sync::Arc<[HighlightStyle]>,
     /// 由 BufferHeader 控制的整文件折叠；BlockMap 在 WrapMap 之上隐藏对应文本行。
     folded_buffers: HashSet<PathBuf>,
+    /// 视口高亮缓存（每次 snapshot 共享同一份，跨帧复用查询结果）。
+    viewport_highlight_cache: Arc<Mutex<ViewportHighlightCache>>,
 }
 
 impl DisplayMap {
@@ -370,6 +409,7 @@ impl DisplayMap {
             capture_names: std::sync::Arc::from([]),
             highlight_styles: std::sync::Arc::from([]),
             folded_buffers: HashSet::new(),
+            viewport_highlight_cache: Arc::new(Mutex::new(ViewportHighlightCache::default())),
         };
         this.set_syntax_snapshot(snapshot.syntax().clone());
         this.set_capture_names(snapshot.capture_names());
@@ -408,6 +448,7 @@ impl DisplayMap {
             fold_snapshot: self.fold_map.snapshot().clone(),
             syntax_snapshot: self.syntax_snapshot.clone(),
             highlight_styles: std::sync::Arc::clone(&self.highlight_styles),
+            highlight_cache: Arc::clone(&self.viewport_highlight_cache),
         }
     }
 

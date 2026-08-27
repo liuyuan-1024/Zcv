@@ -169,7 +169,8 @@ pub struct Editor {
     expanded_modified_hunks: Vec<Range<usize>>,
     /// 语言层提供的可折叠范围（crease 显示与折叠命令的数据源；
     /// 在 buffer 编辑或语法快照更新时刷新）。
-    fold_ranges: Vec<FoldRange>,
+    /// 折叠范围（共享 LanguageBuffer 缓存：Reparsed 后整体替换，多个 Editor 复用同一份）。
+    fold_ranges: Arc<[FoldRange]>,
     /// 匹配括号缓存：键 = (primary head, buffer 版本, 语法版本)。
     /// 光标移动或任一版本推进即重查；
     /// 滚动/纯重绘帧直接命中，不再跑 tree-sitter 查询。
@@ -1110,7 +1111,7 @@ impl Editor {
                 &SelectionSet::default(),
             ),
             selection_history: SelectionHistory::default(),
-            fold_ranges: Vec::new(),
+            fold_ranges: Arc::from([]),
             bracket_pair_cache: None,
             scroll_manager: ScrollManager::default(),
             diff_hunks: Vec::new(),
@@ -1631,15 +1632,11 @@ impl Editor {
         // 编辑时立即全量查询既在主线程跑 O(N) fold 查询，又会因版本不匹配把折叠清空。
     }
 
-    /// 重算语言层折叠范围；语法快照与 buffer 版本不一致时置空（等待语法更新后由 observe 刷新）。
+    /// 读取共享 LanguageBuffer 的折叠缓存（后台解析时已计算，主线程零查询）。
+    ///
+    /// 缓存只在 Reparsed 安装后整体替换；文本已编辑但新解析未安装的窗口期保留上一版结果。
     fn refresh_fold_ranges(&mut self, cx: &App) {
-        let snapshot = self.text_buffer(cx).read(cx).snapshot();
-        let syntax_snapshot = self.display_map.syntax_snapshot();
-        if syntax_snapshot.version() != snapshot.version() {
-            self.fold_ranges = Vec::new();
-            return;
-        }
-        self.fold_ranges = syntax_snapshot.fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
+        self.fold_ranges = self.multi_buffer.read(cx).fold_ranges(cx);
     }
 
     pub(super) fn handle_toggle_fold(

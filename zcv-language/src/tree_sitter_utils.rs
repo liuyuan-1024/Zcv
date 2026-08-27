@@ -6,11 +6,15 @@ use std::ops::{Deref, DerefMut, Range};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use tree_sitter::{InputEdit, Parser, Point, QueryCursor};
 use zcv_text::{ByteOffset, Snapshot};
 
 use crate::Language;
+
+/// 单次解析允许占用的后台时间片（对齐 Neovim 的 ~3ms 异步解析切片）。
+pub(crate) const PARSE_TIME_SLICE: Duration = Duration::from_millis(3);
 
 /// 一次语法解析的协作取消标记。
 ///
@@ -45,6 +49,81 @@ pub(crate) fn drop_offloaded<T: Send + 'static>(value: T) {
     });
     // 无界通道：send 永不阻塞，drop 路径只付出一次入队开销。
     let _ = tx.send(Box::new(value));
+}
+
+/// 支持分片恢复的树解析器：每个时间片内经 progress callback 检查预算，
+/// 预算用尽即中断但保留 parser 状态，下一片从断点恢复（对齐 Neovim 的时间片解析）。
+///
+/// ParserHandle 在分片间存活，不归还池（池取用会 reset，清掉 outstanding 状态）。
+pub(crate) struct IncrementalParser {
+    handle: ParserHandle,
+    /// 是否已开始解析（首片传入旧树做增量；恢复片由 outstanding 状态接管，不再传旧树）。
+    started: bool,
+}
+
+impl IncrementalParser {
+    pub(crate) fn new() -> Self {
+        Self {
+            handle: ParserHandle::new(),
+            started: false,
+        }
+    }
+
+    /// 解析一个时间片；预算用尽（未取消）返回 None，调用方应在下一片继续调用恢复。
+    ///
+    /// 语言无语法树或范围换算失败也返回 None——调用方需先用 `language.grammar()` 排除"不可解析"路径，避免与预算用尽混淆。
+    pub(crate) fn parse_slice(
+        &mut self,
+        language: &Language,
+        snapshot: &Snapshot,
+        old_tree: Option<&tree_sitter::Tree>,
+        included_range: Option<Range<usize>>,
+        cancellation: &ParseCancellation,
+        budget: Duration,
+    ) -> Option<tree_sitter::Tree> {
+        if cancellation.is_cancelled() {
+            return None;
+        }
+        let parser = self.handle.0.as_mut()?;
+        let grammar = language.grammar()?;
+        if !self.started {
+            // 语言与范围限制只在首片设置：`set_language` 会 reset parser 并清掉 outstanding 状态，恢复片再调用会摧毁断点。
+            parser.set_language(grammar).ok()?;
+            if let Some(range) = included_range {
+                let start = point_at(snapshot, ByteOffset::new(range.start)).ok()?;
+                let end = point_at(snapshot, ByteOffset::new(range.end)).ok()?;
+                parser
+                    .set_included_ranges(&[tree_sitter::Range {
+                        start_byte: range.start,
+                        end_byte: range.end,
+                        start_point: start,
+                        end_point: end,
+                    }])
+                    .ok()?;
+            } else {
+                // 首片必须显式清空池中解析器可能残留的范围限制（对齐 parse_tree）。
+                parser.set_included_ranges(&[]).ok()?;
+            }
+        }
+        let deadline = Instant::now() + budget;
+        let mut progress = |_: &tree_sitter::ParseState| {
+            if cancellation.is_cancelled() || Instant::now() >= deadline {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        };
+        let options = tree_sitter::ParseOptions::new().progress_callback(&mut progress);
+        // 首片带旧树（增量）；恢复片无旧树——parser 的 outstanding 状态从断点继续。
+        let old = if self.started { None } else { old_tree };
+        let tree = parser.parse_with_options(
+            &mut |offset, _| chunk_from(snapshot, offset),
+            old,
+            Some(options),
+        );
+        self.started = true;
+        tree
+    }
 }
 
 /// 池化 tree-sitter 解析器句柄，Drop 时归还（对齐 Zed `with_parser`）。
@@ -313,18 +392,6 @@ pub(crate) fn ranges_overlap(
     right: &std::ops::Range<usize>,
 ) -> bool {
     left.start < right.end && right.start < left.end
-}
-
-/// 查询范围与层范围相交（空查询视为一个点，落在层内即可）。
-pub(crate) fn range_touches(
-    layer: &std::ops::Range<usize>,
-    query: &std::ops::Range<usize>,
-) -> bool {
-    if query.is_empty() {
-        layer.start <= query.start && query.start < layer.end
-    } else {
-        ranges_overlap(layer, query)
-    }
 }
 
 pub(crate) fn encloses(outer: &std::ops::Range<usize>, inner: &std::ops::Range<usize>) -> bool {

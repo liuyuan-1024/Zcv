@@ -15,12 +15,5 @@ thiserror.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
 
-[dev-dependencies]
-criterion.workspace = true
-
-[[bench]]
-name = "buffer_edits"
-harness = false
-
 [lints]
 workspace = true

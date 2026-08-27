@@ -14,7 +14,7 @@ use zcv_workspace::{Pane, PaneEvent, Panel, PanelEvent};
 /// 终端会话快照：重建 PTY 所需的最小信息。
 #[derive(Debug, Serialize, Deserialize)]
 struct SerializedTerminal {
-    /// 启动时的工作目录。
+    /// 会话保存时的工作目录。
     cwd: Option<std::path::PathBuf>,
 }
 

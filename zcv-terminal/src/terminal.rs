@@ -8,7 +8,11 @@ mod element;
 mod mappings;
 mod palette;
 mod panel;
+mod pty_info;
 mod view;
+
+#[cfg(test)]
+mod test;
 
 use std::{
     collections::HashMap,
@@ -26,7 +30,10 @@ pub use panel::TerminalPanel;
 pub use view::TerminalView;
 pub use vte::ansi::{Color, CursorShape, NamedColor, Rgb};
 
-use crate::alacritty::{AlacrittyTermLock, PtySender};
+use crate::{
+    alacritty::{AlacrittyTermLock, PtySender},
+    pty_info::PtyProcessInfo,
+};
 
 /// 关闭终端后给 shell 与前台任务的优雅退出宽限期，超时后升级为 SIGKILL。
 /// 必须低于 gpui 的退出超时，保证应用退出时升级也能完成。
@@ -443,10 +450,12 @@ pub struct Terminal {
     event_loop_task: Option<Task<()>>,
     last_content: Option<Content>,
     title: Option<String>,
+    shell_name: String,
     scroll_px: Pixels,
     pty_pid: Option<u32>,
+    process_info: Arc<PtyProcessInfo>,
     background_executor: BackgroundExecutor,
-    /// 启动时的工作目录（持久化恢复终端会话用）。
+    /// 当前工作目录（持久化恢复终端会话用）。
     cwd: Option<PathBuf>,
 }
 
@@ -454,6 +463,7 @@ impl Terminal {
     pub fn new(builder: &TerminalBuilder, cx: &mut Context<Self>) -> Result<Terminal> {
         let settings = TerminalSettings::load(cx);
         let bounds = TerminalBounds::default();
+        let shell_name = configured_shell_name(settings.shell.as_deref());
 
         // 注入终端环境变量，保证 shell 以终端语义启动。
         let env = HashMap::from([
@@ -478,7 +488,9 @@ impl Terminal {
             DUMMY_WINDOW_ID,
         )
         .context("启动终端失败：无法创建 PTY")?;
-        let pty_pid = pty.child().id();
+        let process_id_getter = alacritty::process_id_getter(&pty);
+        let pty_pid = process_id_getter.fallback_pid().as_u32();
+        let process_info = Arc::new(PtyProcessInfo::new(process_id_getter));
         let pty_tx = alacritty::spawn_event_loop(term.clone(), &events_tx, pty, true)?;
         let background_executor = cx.background_executor().clone();
 
@@ -490,8 +502,10 @@ impl Terminal {
             event_loop_task: None,
             last_content: None,
             title: None,
+            shell_name,
             scroll_px: Pixels::ZERO,
             pty_pid: Some(pty_pid),
+            process_info,
             background_executor,
             cwd: builder.cwd.clone(),
         };
@@ -641,7 +655,10 @@ impl Terminal {
                 InternalEvent::Bell => {
                     cx.emit(Event::Bell);
                 }
-                InternalEvent::Wakeup => cx.emit(Event::Wakeup),
+                InternalEvent::Wakeup => {
+                    cx.emit(Event::Wakeup);
+                    self.process_info.clone().refresh(cx);
+                }
                 InternalEvent::ChildExit(status) => {
                     eprintln!("终端子进程退出：{status}");
                 }
@@ -774,12 +791,21 @@ impl Terminal {
         cx.notify();
     }
 
-    /// 终端标题（来自 OSC 0/2 或默认）。
+    /// shell 通过 OSC 0/2 上报的标题。
     pub fn title(&self) -> Option<&str> {
         self.title.as_deref()
     }
 
-    /// 启动时的工作目录（持久化恢复终端会话用）。
+    pub fn tab_title(&self) -> String {
+        let directory_name = self
+            .cwd
+            .as_deref()
+            .and_then(path_name)
+            .unwrap_or_else(|| "终端".to_owned());
+        format!("{directory_name} — {}", self.shell_name)
+    }
+
+    /// 当前工作目录。
     pub fn working_directory(&self) -> Option<&Path> {
         self.cwd.as_deref()
     }
@@ -834,6 +860,24 @@ impl Terminal {
                 .detach();
         }
     }
+}
+
+fn configured_shell_name(configured_shell: Option<&str>) -> String {
+    configured_shell
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("SHELL").map(PathBuf::from))
+        .as_deref()
+        .and_then(path_name)
+        .map(|name| name.trim_start_matches('-').to_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "shell".to_owned())
+}
+
+fn path_name(path: &Path) -> Option<String> {
+    path.file_name()
+        .or_else(|| (!path.as_os_str().is_empty()).then_some(path.as_os_str()))
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
 }
 
 /// 把 RGBA 转换回 alacritty 的 RGB（OSC 颜色查询应答用）。

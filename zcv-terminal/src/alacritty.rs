@@ -3,6 +3,8 @@
 //! 依赖的 alacritty_terminal 是 Zed 维护的 fork（MIT/Apache-2.0），与上游差异仅在 tty 进程组管理。
 //! 本模块参考 Zed 对上游的职责划分（其代码为 GPL-3.0，本文件独立实现）。
 
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
 use std::{borrow::Cow, io, path::PathBuf, sync::Arc};
 
 use alacritty_terminal::{
@@ -21,7 +23,7 @@ use async_channel::Sender;
 
 use crate::{
     Cell, Content, Cursor, IndexedCell, Modes, Point, PtyEvent, Scroll, Selection, SelectionRange,
-    SelectionSide, SelectionType, TerminalBounds, TerminalSize,
+    SelectionSide, SelectionType, TerminalBounds, TerminalSize, pty_info::ProcessIdGetter,
 };
 
 pub(super) type AlacrittyTerm = Term<TerminalListener>;
@@ -139,6 +141,17 @@ pub(super) fn open_pty(
     window_id: u64,
 ) -> io::Result<tty::Pty> {
     tty::new(options, window_size_from_bounds(bounds), window_id)
+}
+
+#[cfg(unix)]
+pub(super) fn process_id_getter(pty: &tty::Pty) -> ProcessIdGetter {
+    ProcessIdGetter::new(pty.file().as_raw_fd(), pty.child().id())
+}
+
+#[cfg(windows)]
+pub(super) fn process_id_getter(pty: &tty::Pty) -> ProcessIdGetter {
+    let fallback_pid = pty.child_watcher().pid().map(u32::from).unwrap_or_default();
+    ProcessIdGetter::new(fallback_pid)
 }
 
 /// 创建终端模拟器实例（网格状态机），包裹在公平锁中以供 IO 线程与 UI 线程共享。

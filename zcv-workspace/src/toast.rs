@@ -8,11 +8,11 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, AsyncApp, BoxShadow, ClipboardItem, Context, MouseButton, Render, SharedString, Task,
-    WeakEntity, Window, div, hsla, point, prelude::*, px, relative,
+    App, AsyncApp, BoxShadow, ClipboardItem, Context, Render, SharedString, Task, WeakEntity,
+    Window, div, hsla, point, prelude::*, px, relative,
 };
 use zcv_theme::{color, space, typography};
-use zcv_ui::{Button, SvgIcon};
+use zcv_ui::{Button, ButtonStyle, SvgIcon};
 
 /// 复制反馈的展示时长。
 const COPIED_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
@@ -307,14 +307,14 @@ impl Render for ToastLayer {
             let on_click = action.on_click.clone();
             let layer = cx.entity().clone();
             bubble = bubble.child(
-                div()
-                    .flex_shrink_0()
-                    .text_color(color::current(cx).icon_accent)
-                    .child(label)
-                    .on_mouse_up(MouseButton::Left, move |_, window, cx| {
-                        on_click(window, cx);
-                        layer.update(cx, |layer, cx| layer.hide(cx));
-                    }),
+                div().flex_shrink_0().flex().justify_end().child(
+                    Button::text("toast-action", label)
+                        .style(ButtonStyle::Solid)
+                        .on_click(move |_, window, cx| {
+                            on_click(window, cx);
+                            layer.update(cx, |layer, cx| layer.hide(cx));
+                        }),
+                ),
             );
         }
 

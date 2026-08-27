@@ -453,10 +453,10 @@ impl Pane {
 
     /// Pane 自身或其当前 item 是否持有焦点（决定关闭后是否归还焦点）。
     fn has_focus(&self, window: &Window, cx: &App) -> bool {
-        self.focus.is_focused(window)
+        self.focus.contains_focused(window, cx)
             || self
                 .active_item()
-                .is_some_and(|item| item.item_focus_handle(cx).is_focused(window))
+                .is_some_and(|item| item.item_focus_handle(cx).contains_focused(window, cx))
     }
 
     /// 当前活动标签的 ItemHandle。
@@ -960,6 +960,29 @@ mod tests {
     impl Render for TestView {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div()
+        }
+    }
+
+    struct TestToolbarItem {
+        focus: FocusHandle,
+    }
+
+    impl EventEmitter<crate::ToolbarItemEvent> for TestToolbarItem {}
+
+    impl Render for TestToolbarItem {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().track_focus(&self.focus)
+        }
+    }
+
+    impl crate::ToolbarItemView for TestToolbarItem {
+        fn set_active_pane_item(
+            &mut self,
+            _: Option<&dyn ItemHandle>,
+            _: &mut Window,
+            _: &mut Context<Self>,
+        ) -> crate::ToolbarItemLocation {
+            crate::ToolbarItemLocation::Secondary
         }
     }
 
@@ -1566,6 +1589,64 @@ mod tests {
             "remove_path 关闭 tab 应发射 Removed"
         );
         cx.read_entity(&pane, |pane, _| assert!(pane.tabs.is_empty()));
+    }
+
+    #[gpui::test]
+    fn closing_active_tab_from_toolbar_focuses_next_tab(cx: &mut TestAppContext) {
+        let (pane, cx) = cx.add_window_view(|_, cx| Pane::new(cx));
+        let first_buffer = test_buffer(cx, "第一个标签");
+        let second_buffer = test_buffer(cx, "项目搜索标签");
+        let toolbar_item = cx.new(|cx| TestToolbarItem {
+            focus: cx.focus_handle(),
+        });
+
+        cx.update(|window, cx| {
+            let toolbar = pane.read(cx).toolbar().clone();
+            toolbar.update(cx, |toolbar, cx| {
+                toolbar.add_item(toolbar_item.clone(), window, cx);
+            });
+
+            pane.update(cx, |pane, cx| {
+                let first = cx.new(|cx| {
+                    TestSourceItem::new(first_buffer.clone(), PathBuf::from("first.txt"), cx)
+                });
+                pane.open_item(Box::new(first), false, window, cx);
+
+                let second = cx.new(|cx| {
+                    TestSourceItem::new(
+                        second_buffer.clone(),
+                        PathBuf::from("project-search.txt"),
+                        cx,
+                    )
+                });
+                pane.open_item(Box::new(second), false, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.refresh().expect("测试窗口应可刷新");
+
+        let toolbar_focus = cx.read_entity(&toolbar_item, |item, _| item.focus.clone());
+        cx.update(|window, _| window.focus(&toolbar_focus));
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            assert!(
+                pane.read(cx).focus.contains_focused(window, cx),
+                "工具栏子项焦点应属于 Pane"
+            );
+            let item_id = pane.read(cx).active.expect("应有活动标签");
+            pane.update(cx, |pane, cx| pane.close_tab(item_id, window, cx));
+
+            let active_focus = pane
+                .read(cx)
+                .active_item()
+                .expect("关闭后应激活另一个标签")
+                .item_focus_handle(cx);
+            assert!(
+                active_focus.is_focused(window),
+                "关闭工具栏所属标签后应将焦点交给新活动标签"
+            );
+        });
     }
 
     #[gpui::test]

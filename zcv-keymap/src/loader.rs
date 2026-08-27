@@ -345,6 +345,30 @@ mod tests {
         .expect("复合 context 必须可解析");
     }
 
+    /// 提交快捷键必须限制在版本控制上下文，并遵循各平台主修饰键约定。
+    #[test]
+    fn version_control_keymap_binds_commit_on_every_platform() {
+        for (source, keys) in [
+            ("default-macos.json", "cmd-enter"),
+            ("default-linux.json", "ctrl-enter"),
+            ("default-windows.json", "ctrl-enter"),
+        ] {
+            let json = zcv_assets::text(&format!("keymaps/{source}"))
+                .unwrap_or_else(|_| panic!("缺少内置快捷键 {source}"));
+            let groups: Vec<RawBindingGroup> =
+                serde_json::from_str(&json).expect("keymap 必须是合法 JSON");
+            let version_control = groups
+                .iter()
+                .find(|group| group.context.as_deref() == Some("VersionControl"))
+                .unwrap_or_else(|| panic!("{source} 缺少 VersionControl 上下文"));
+            assert_eq!(
+                version_control.bindings.get(keys).map(RawAction::name),
+                Some("version_control::Commit"),
+                "{source} 的 {keys} 应提交当前暂存"
+            );
+        }
+    }
+
     /// macOS 显示格式：修饰键与功能键都使用键帽符号。
     #[cfg(target_os = "macos")]
     #[test]

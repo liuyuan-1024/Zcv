@@ -1,7 +1,7 @@
 //! VersionControlPanel —— 版本管理面板 Entity 组件。
 //!
 //! 无 git 仓库时居中显示"初始化仓库"按钮（点击对项目根执行 `git init`）；
-//! 有仓库时按 已暂存/未暂存 两组展示变更目录树（对齐 Zed git panel 的树模式），部分暂存文件同时出现在已暂存与未暂存两组。
+//! 有仓库时按 已暂存/未暂存 两组展示变更目录树，部分暂存文件同时出现在已暂存与未暂存两组。
 //! 冲突文件暂不展示（待后续版本处理）。
 //! 行尾复选框（或空格键）切换条目的暂存/取消暂存：已暂存组勾选、未暂存组未勾选。
 //! 行模型由 GitStore 快照构建，订阅 Repositories/Statuses 事件重建。
@@ -313,7 +313,7 @@ impl VersionControlPanel {
                         panel.pending_uncommit = false;
                     }
                 }
-                GitStoreEvent::ActiveRepositoryChanged => {}
+                GitStoreEvent::ActiveRepositoryChanged => cx.notify(),
                 GitStoreEvent::HunksChanged => {}
                 GitStoreEvent::JobsUpdated => {}
             }
@@ -555,8 +555,12 @@ impl VersionControlPanel {
         self.last_commit_message = store.read(cx).last_commit_message().map(str::to_string);
     }
 
-    /// cmd-enter 或提交按钮：读编辑器文本提交；空消息时焦点回到编辑器（对齐 Zed）。
+    /// 存在已暂存改动时读取编辑器文本提交；空消息时焦点回到编辑器。
     fn handle_commit(&mut self, _: &Commit, window: &mut Window, cx: &mut Context<Self>) {
+        let store = self.project.read(cx).git_store();
+        if !store.read(cx).has_staged_changes() {
+            return;
+        }
         let message = self.commit_editor.read(cx).text(cx);
         if message.trim().is_empty() {
             let focus = self.commit_editor.read(cx).focus_handle();
@@ -564,7 +568,6 @@ impl VersionControlPanel {
             return;
         }
         self.pending_commit = true;
-        let store = self.project.read(cx).git_store();
         store.update(cx, |store, cx| store.commit(message, cx));
     }
 
@@ -585,6 +588,12 @@ impl Render for VersionControlPanel {
             .git_store()
             .read(cx)
             .has_repositories();
+        let has_staged_changes = self
+            .project
+            .read(cx)
+            .git_store()
+            .read(cx)
+            .has_staged_changes();
         let is_focused = self.focus.contains_focused(window, cx);
         let content = if has_repositories {
             let rows = self.state.borrow().rows.clone();
@@ -628,6 +637,7 @@ impl Render for VersionControlPanel {
             Some(render_commit_footer(
                 &commit_editor,
                 last_commit_message.as_deref(),
+                has_staged_changes,
                 cx,
             ))
         } else {
@@ -929,6 +939,7 @@ fn render_row(
 fn render_commit_footer(
     editor: &Entity<Editor>,
     last_commit_message: Option<&str>,
+    has_staged_changes: bool,
     cx: &App,
 ) -> Div {
     let colors = color::current(cx);
@@ -959,6 +970,9 @@ fn render_commit_footer(
                         .child(
                             Button::text("version-control-commit", "提交")
                                 .style(ButtonStyle::Solid)
+                                .disabled(!has_staged_changes)
+                                .label("提交当前暂存")
+                                .shortcut(&Commit, cx)
                                 .color(if message.trim().is_empty() {
                                     colors.text_muted
                                 } else {
@@ -2013,10 +2027,11 @@ mod tests {
     #[gpui::test]
     fn commit_flow_clears_editor_and_refreshes_last_commit(cx: &mut TestAppContext) {
         let (root, _temp) = test_repo();
+        run_in(&root, &["git", "add", "tracked.txt"]);
         let project_root = root.clone();
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
         let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
-        cx.run_until_parked(); // 首次扫描完成（test_repo 的 tracked.txt 已有未暂存修改）
+        cx.run_until_parked(); // 首次扫描完成（tracked.txt 已暂存）。
         cx.run_until_parked();
 
         // 底部提交区显示初始提交的 subject。
@@ -2057,14 +2072,53 @@ mod tests {
                 .repositories()
                 .next()
                 .map(|(_, snapshot)| snapshot.statuses_by_path.len());
-            assert_eq!(statuses, Some(0), "未暂存改动应随提交清空");
+            assert_eq!(statuses, Some(0), "已暂存改动应随提交清空");
         });
     }
 
     #[gpui::test]
-    fn commit_without_staged_changes_stages_tracked_first(cx: &mut TestAppContext) {
+    fn commit_shortcut_submits_staged_changes_from_editor(cx: &mut TestAppContext) {
         let (root, _temp) = test_repo();
-        // 未跟踪文件：不应被自动暂存/提交（对齐 Zed：只自动暂存已跟踪改动）。
+        run_in(&root, &["git", "add", "tracked.txt"]);
+        let project_root = root.clone();
+        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let (panel, cx) = cx.add_window_view(move |_, cx| {
+            let keybindings = zcv_keymap::load(cx).expect("应加载内置快捷键");
+            cx.bind_keys(keybindings.bindings);
+            VersionControlPanel::new(project, cx)
+        });
+        cx.run_until_parked();
+        cx.run_until_parked();
+
+        let editor_focus = cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel
+                    .commit_editor
+                    .update(cx, |editor, cx| editor.set_text("快捷键提交", cx));
+                panel.commit_editor.read(cx).focus_handle()
+            })
+        });
+        cx.update(|window, _| window.focus(&editor_focus));
+
+        #[cfg(target_os = "macos")]
+        cx.simulate_keystrokes("cmd-enter");
+        #[cfg(not(target_os = "macos"))]
+        cx.simulate_keystrokes("ctrl-enter");
+        cx.run_until_parked();
+        cx.run_until_parked();
+
+        cx.update(|_, cx| {
+            assert_eq!(
+                panel.read(cx).last_commit_message.as_deref(),
+                Some("快捷键提交"),
+                "提交信息框聚焦时，提交快捷键应提交当前暂存"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn commit_without_staged_changes_is_ignored(cx: &mut TestAppContext) {
+        let (root, _temp) = test_repo();
         std::fs::write(root.join("untracked.txt"), "新文件\n").expect("应创建未跟踪文件");
 
         let project_root = root.clone();
@@ -2084,33 +2138,40 @@ mod tests {
         cx.run_until_parked();
         cx.run_until_parked();
 
-        // untracked.txt 未入库；快照中仍为未跟踪。
-        let output = std::process::Command::new("git")
-            .args(["ls-files"])
-            .current_dir(&root)
-            .output()
-            .expect("应执行 git ls-files");
-        let listed = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            !listed.contains("untracked.txt"),
-            "未跟踪文件不应被自动提交，实际跟踪列表：{listed}"
-        );
         cx.update(|_, cx| {
-            let untracked_remaining = panel
-                .read(cx)
-                .project
-                .read(cx)
-                .git_store()
-                .read(cx)
+            let panel = panel.read(cx);
+            assert!(!panel.pending_commit, "无已暂存改动时不应发起提交");
+            assert_eq!(
+                panel.commit_editor.read(cx).text(cx),
+                "改动提交",
+                "未发起提交时应保留提交信息"
+            );
+            assert_eq!(
+                panel.last_commit_message.as_deref(),
+                Some("initial"),
+                "无已暂存改动时 HEAD 不应变化"
+            );
+            let store = panel.project.read(cx).git_store();
+            let store = store.read(cx);
+            let snapshot = store
                 .repositories()
                 .next()
-                .is_some_and(|(_, snapshot)| {
-                    snapshot
-                        .statuses_by_path
-                        .get(Path::new("untracked.txt"))
-                        .is_some_and(|entry| entry.status.is_untracked())
-                });
-            assert!(untracked_remaining, "未跟踪文件应保留在快照中");
+                .map(|(_, snapshot)| snapshot)
+                .expect("应存在仓库快照");
+            assert!(
+                snapshot
+                    .statuses_by_path
+                    .get(Path::new("tracked.txt"))
+                    .is_some_and(|entry| entry.status.has_unstaged()),
+                "已跟踪改动应保持未暂存"
+            );
+            assert!(
+                snapshot
+                    .statuses_by_path
+                    .get(Path::new("untracked.txt"))
+                    .is_some_and(|entry| entry.status.is_untracked()),
+                "未跟踪文件应保持未暂存"
+            );
         });
     }
 

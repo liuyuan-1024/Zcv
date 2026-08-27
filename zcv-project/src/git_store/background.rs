@@ -147,17 +147,11 @@ pub(super) async fn execute_job(
             }
             JobResult::GitOperation(result)
         }
-        // 提交：prepare 已算好需要先暂存的路径（无已暂存改动时 = 全部已跟踪改动），随后 commit。
+        // 提交：只提交已经暂存的内容。
         GitJob::Commit { message } => {
-            let result = repositories.first().map(|repository| {
-                let paths = grouped_paths
-                    .first()
-                    .map_or(&[][..], |paths| paths.as_slice());
-                if !paths.is_empty() {
-                    repository.stage_paths(paths)?;
-                }
-                repository.commit(&message)
-            });
+            let result = repositories
+                .first()
+                .map(|repository| repository.commit(&message));
             JobResult::GitOperation(result.unwrap_or(Ok(())))
         }
         // 撤销提交：被撤销消息随结果回传，UI 线程暂存供面板填回编辑器。

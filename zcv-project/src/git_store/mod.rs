@@ -1,13 +1,13 @@
 //! git 状态编排：仓库发现、status 扫描与增量刷新、事件分发。
 //!
-//! Git 层的命令全部同步阻塞，这里负责把它们调度到后台线程，并维护每个仓库的状态快照（对齐 Zed `RepositorySnapshot`）。
+//! Git 层的命令全部同步阻塞，这里负责把它们调度到后台线程，并维护每个仓库的状态快照。
 //! 后台执行与扫描/合并纯函数在 [`background`] 子模块（可脱离 gpui 单测）。
 //!
-//! 刷新策略（对齐 Zed）：
+//! 刷新策略：
 //! - 全量（`ReloadGitState`）：仓库发现 + 每个仓库 head/status/双 diff_stat 全扫；
 //! - 增量（`RefreshStatuses`）：只对变更路径重查，合并进旧快照；仅当批次含 `.git` 路径时才顺带重读head/branch（外部 checkout 只触发 fs 事件走增量路径，不重读会滞后；纯文件变化走快路径不重读）。
 //!
-//! 同 key 的排队 job 直接丢弃（对齐 Zed `spawn_local_git_worker` 的 keyed job）。
+//! 同 key 的排队 job 直接丢弃。
 
 mod background;
 mod diff_coordinator;
@@ -32,7 +32,7 @@ const MAX_INCREMENTAL_PATHS: usize = 500;
 
 /// GitStore 通知事件。
 ///
-/// 单窗口简化（对齐 Zed 的 per-repository payload 事件）：事件均无 payload，订阅方收到后按需重读 GitStore 状态。
+/// 单窗口简化：事件均无 payload，订阅方收到后按需重读 GitStore 状态。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GitStoreEvent {
     /// 仓库集合发生变化（发现/消失）。
@@ -324,13 +324,16 @@ impl GitStore {
         );
     }
 
-    /// 提交暂存内容（消息来自面板提交信息编辑器）；无已暂存改动时自动暂存全部已跟踪改动。
+    /// 提交暂存内容（消息来自面板提交信息编辑器）。
     ///
     /// 成功后重扫，Head/Statuses 事件驱动面板清空编辑器并刷新上次提交信息。
     pub fn commit(&mut self, message: String, cx: &mut Context<Self>) {
         if self.repositories.is_empty() {
             eprintln!("git 仓库尚未就绪，跳过 commit（等待首次扫描完成后重试）");
             self.schedule_scan(cx);
+            return;
+        }
+        if !self.has_staged_changes() {
             return;
         }
         self.schedule_job(GitJob::Commit { message }, cx);
@@ -536,6 +539,17 @@ impl GitStore {
     pub fn last_commit_message(&self) -> Option<&str> {
         self.active_repository()
             .and_then(|repository| repository.snapshot.last_commit_message.as_deref())
+    }
+
+    /// 活动仓库是否存在已暂存改动（提交按钮与提交动作的资格判断来源）。
+    pub fn has_staged_changes(&self) -> bool {
+        self.active_repository().is_some_and(|repository| {
+            repository
+                .snapshot
+                .statuses_by_path
+                .values()
+                .any(|entry| entry.status.has_staged())
+        })
     }
 
     /// 取出 uncommit 成功后被撤销的提交消息（面板在 Head 事件后调用填回编辑器）。
@@ -791,32 +805,13 @@ impl GitStore {
                     grouped_paths,
                 })
             }
-            // 提交/撤销提交：作用于活动仓库（与 GitOperation 同选择策略）；
-            // commit 时无已暂存改动则自动暂存全部已跟踪改动（对齐 Zed，未跟踪文件须手动暂存）。
+            // 提交/撤销提交：作用于活动仓库（与 GitOperation 同选择策略）。
             GitJob::Commit { .. } | GitJob::Uncommit => {
                 let repository = self.active_repository()?;
-                let has_staged = repository
-                    .snapshot
-                    .statuses_by_path
-                    .values()
-                    .any(|entry| entry.status.has_staged());
-                let paths_to_stage = if matches!(job, GitJob::Uncommit) || has_staged {
-                    Vec::new()
-                } else {
-                    repository
-                        .snapshot
-                        .statuses_by_path
-                        .iter()
-                        .filter(|(_, entry)| {
-                            !entry.status.is_created() && entry.status.has_unstaged()
-                        })
-                        .map(|(path, _)| path.clone())
-                        .collect()
-                };
                 Some(JobPreparation {
                     root,
                     repositories: vec![repository.repository.clone()],
-                    grouped_paths: vec![paths_to_stage],
+                    grouped_paths: Vec::new(),
                 })
             }
         }
@@ -1449,6 +1444,10 @@ mod tests {
             )
         });
         assert!(unstaged, "修改后应为未暂存状态");
+        assert!(
+            !cx.read_entity(&git_store, |store, _| store.has_staged_changes()),
+            "只有未暂存改动时不应具备提交资格"
+        );
 
         // 暂存 → 后台 job + 重扫 → index 变为 Modified。
         git_store.update(cx, |store, cx| {
@@ -1468,6 +1467,10 @@ mod tests {
             )
         });
         assert!(staged, "暂存后 index 应为 Modified、worktree 干净");
+        assert!(
+            cx.read_entity(&git_store, |store, _| store.has_staged_changes()),
+            "存在已暂存改动时应具备提交资格"
+        );
 
         // 取消暂存 → 回到未暂存。
         git_store.update(cx, |store, cx| {
@@ -1487,6 +1490,10 @@ mod tests {
             )
         });
         assert!(unstaged_again, "取消暂存后应回到未暂存状态");
+        assert!(
+            !cx.read_entity(&git_store, |store, _| store.has_staged_changes()),
+            "取消全部暂存后应失去提交资格"
+        );
     }
 
     #[gpui::test]

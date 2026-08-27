@@ -30,31 +30,9 @@ members = [
     "zcv-ui",
     "zcv-workspace",
 ]
-default-members = [
-    "zcv",
-    "zcv-actions",
-    "zcv-assets",
-    "zcv-editor",
-    "zcv-fs-watch",
-    "zcv-git",
-    "zcv-keymap",
-    "zcv-language",
-    "zcv-multi-buffer",
-    "zcv-picker",
-    "zcv-project-tree",
-    "zcv-preview-svg",
-    "zcv-project",
-    "zcv-search",
-    "zcv-settings",
-    "zcv-terminal",
-    "zcv-text",
-    "zcv-theme",
-    "zcv-ui",
-    "zcv-workspace",
-]
 resolver = "3"
 [workspace.package]
-version = "0.8.2"
+version = "0.8.3"
 edition = "2024"
 
 [workspace.lints.clippy]

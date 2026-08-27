@@ -8,8 +8,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use gpui::{App, AppContext, Context, Entity, Subscription};
-use zcv_language::{AutoClosePair, HighlightSpan, LanguageBuffer, SyntaxSnapshot};
+use gpui::{App, AppContext, Context, Entity, EventEmitter, Subscription};
+use zcv_language::{
+    AutoClosePair, HighlightSpan, LanguageBuffer, LanguageBufferEvent, SyntaxSnapshot,
+};
 use zcv_text::{
     Buffer, BufferConfig, BufferVersion, ByteOffset, Edit, PositionMap, Snapshot, Stickiness,
     TextChangeBatch, TextError, TextRange, TextResult, TextSubscription, TransactionId,
@@ -69,6 +71,29 @@ struct ExcerptMapping {
     source_text: Snapshot,
     source_syntax: SyntaxSnapshot,
     capture_map: Arc<[u32]>,
+}
+
+fn rebuild_capture_table(mappings: &mut [ExcerptMapping]) -> Arc<[Arc<str>]> {
+    let mut capture_names = Vec::<Arc<str>>::new();
+    let mut capture_indices = HashMap::<Arc<str>, u32>::new();
+    for mapping in mappings {
+        mapping.capture_map = mapping
+            .source_syntax
+            .capture_names()
+            .iter()
+            .map(|name| {
+                if let Some(index) = capture_indices.get(name) {
+                    *index
+                } else {
+                    let index = capture_names.len() as u32;
+                    capture_names.push(Arc::clone(name));
+                    capture_indices.insert(Arc::clone(name), index);
+                    index
+                }
+            })
+            .collect();
+    }
+    Arc::from(capture_names)
 }
 
 /// 多文件文档中一个可见片段的一帧元数据。
@@ -179,6 +204,14 @@ struct SourceSubscription {
     text: MultiBufferSubscription,
 }
 
+/// MultiBuffer 对消费方公开的文本与语法更新边界。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MultiBufferEvent {
+    TextChanged,
+    Reparsed,
+    MetadataChanged,
+}
+
 impl MultiBufferSnapshot {
     pub fn singleton(text: Snapshot, syntax: SyntaxSnapshot) -> Self {
         let capture_names = syntax.capture_names();
@@ -280,7 +313,7 @@ struct ExcerptState {
     projection: Entity<LanguageBuffer>,
     excerpts: Vec<MultiBufferExcerpt>,
     source_subscriptions: Vec<SourceSubscription>,
-    source_observers: Vec<Subscription>,
+    source_event_subscriptions: Vec<Subscription>,
     mappings: Vec<ExcerptMapping>,
     match_ranges: Vec<TextRange>,
     capture_names: Arc<[Arc<str>]>,
@@ -301,11 +334,19 @@ pub struct MultiBuffer {
     kind: MultiBufferKind,
 }
 
+impl EventEmitter<MultiBufferEvent> for MultiBuffer {}
+
 impl MultiBuffer {
     pub fn singleton(singleton: Entity<LanguageBuffer>, cx: &mut Context<Self>) -> Self {
-        let text_buffer = singleton.read(cx).buffer();
-        cx.observe(&singleton, |_, _, cx| cx.notify()).detach();
-        cx.observe(&text_buffer, |_, _, cx| cx.notify()).detach();
+        cx.subscribe(&singleton, |_, _, event, cx| {
+            cx.emit(match event {
+                LanguageBufferEvent::TextChanged => MultiBufferEvent::TextChanged,
+                LanguageBufferEvent::Reparsed => MultiBufferEvent::Reparsed,
+                LanguageBufferEvent::MetadataChanged => MultiBufferEvent::MetadataChanged,
+            });
+            cx.notify();
+        })
+        .detach();
         Self {
             kind: MultiBufferKind::Singleton(singleton),
         }
@@ -317,14 +358,21 @@ impl MultiBuffer {
             .expect("空组合文档 Buffer 应能创建");
         let text = cx.new(|_| text);
         let projection = cx.new(|cx| LanguageBuffer::new(text.clone(), None, cx));
-        cx.observe(&projection, |_, _, cx| cx.notify()).detach();
-        cx.observe(&text, |_, _, cx| cx.notify()).detach();
+        cx.subscribe(&projection, |_, _, event, cx| {
+            cx.emit(match event {
+                LanguageBufferEvent::TextChanged => MultiBufferEvent::TextChanged,
+                LanguageBufferEvent::Reparsed => MultiBufferEvent::Reparsed,
+                LanguageBufferEvent::MetadataChanged => MultiBufferEvent::MetadataChanged,
+            });
+            cx.notify();
+        })
+        .detach();
         Self {
             kind: MultiBufferKind::Excerpts(Box::new(ExcerptState {
                 projection,
                 excerpts: Vec::new(),
                 source_subscriptions: Vec::new(),
-                source_observers: Vec::new(),
+                source_event_subscriptions: Vec::new(),
                 mappings: Vec::new(),
                 match_ranges: Vec::new(),
                 capture_names: Arc::from([]),
@@ -355,12 +403,17 @@ impl MultiBuffer {
                 text: source.update(cx, |source, cx| source.subscribe_and_snapshot(cx).0),
             })
             .collect::<Vec<_>>();
-        let next_source_observers = unique_sources
+        let next_source_event_subscriptions = unique_sources
             .into_iter()
             .map(|source| {
                 let observed = source.clone();
-                cx.observe(&source, move |this, _, cx| {
-                    this.source_changed(observed.entity_id(), cx)
+                cx.subscribe(&source, move |this, _, event, cx| match event {
+                    MultiBufferEvent::TextChanged => this.source_changed(observed.entity_id(), cx),
+                    MultiBufferEvent::Reparsed => this.source_reparsed(observed.entity_id(), cx),
+                    MultiBufferEvent::MetadataChanged => {
+                        cx.emit(MultiBufferEvent::MetadataChanged);
+                        cx.notify();
+                    }
                 })
             })
             .collect::<Vec<_>>();
@@ -371,7 +424,7 @@ impl MultiBuffer {
             projection,
             excerpts: stored_excerpts,
             source_subscriptions,
-            source_observers,
+            source_event_subscriptions,
             mappings,
             match_ranges,
             capture_names: composite_capture_names,
@@ -381,8 +434,6 @@ impl MultiBuffer {
         let mut output = String::new();
         let mut next_mappings = Vec::with_capacity(excerpts.len());
         let mut next_match_ranges = Vec::new();
-        let mut capture_names = Vec::<Arc<str>>::new();
-        let mut capture_indices = HashMap::<Arc<str>, u32>::new();
         let mut output_line = 0usize;
         let mut valid_excerpts = Vec::with_capacity(excerpts.len());
         for excerpt in excerpts {
@@ -432,20 +483,6 @@ impl MultiBuffer {
                         .saturating_sub(excerpt.source_range.start().get());
                 TextRange::new(ByteOffset::new(start), ByteOffset::new(end)).ok()
             }));
-            let local_capture_names = source_snapshot.syntax().capture_names();
-            let capture_map = local_capture_names
-                .iter()
-                .map(|name| {
-                    if let Some(index) = capture_indices.get(name) {
-                        *index
-                    } else {
-                        let index = capture_names.len() as u32;
-                        capture_names.push(Arc::clone(name));
-                        capture_indices.insert(Arc::clone(name), index);
-                        index
-                    }
-                })
-                .collect::<Arc<[_]>>();
             let excerpt_index = valid_excerpts.len();
             next_mappings.push(ExcerptMapping {
                 excerpt_index,
@@ -458,7 +495,7 @@ impl MultiBuffer {
                 source_start_line: start_line,
                 source_text: source_snapshot.text().clone(),
                 source_syntax: source_snapshot.syntax().clone(),
-                capture_map,
+                capture_map: Arc::from([]),
             });
             valid_excerpts.push(excerpt);
         }
@@ -471,11 +508,11 @@ impl MultiBuffer {
             cx.notify();
         });
         *source_subscriptions = next_source_subscriptions;
-        *source_observers = next_source_observers;
+        *source_event_subscriptions = next_source_event_subscriptions;
         *stored_excerpts = valid_excerpts;
         *mappings = next_mappings;
         *match_ranges = next_match_ranges;
-        *composite_capture_names = Arc::from(capture_names);
+        *composite_capture_names = rebuild_capture_table(mappings);
         cx.notify();
     }
 
@@ -510,6 +547,36 @@ impl MultiBuffer {
             }
         }
         self.rebuild_projection(cx);
+    }
+
+    fn source_reparsed(&mut self, source_id: gpui::EntityId, cx: &mut Context<Self>) {
+        let source = match &self.kind {
+            MultiBufferKind::Singleton(_) => return,
+            MultiBufferKind::Excerpts(state) => state
+                .source_subscriptions
+                .iter()
+                .find(|state| state.source.entity_id() == source_id)
+                .map(|state| state.source.clone()),
+        };
+        let Some(source) = source else {
+            return;
+        };
+        let source_snapshot = source.read(cx).snapshot(cx);
+        let MultiBufferKind::Excerpts(state) = &mut self.kind else {
+            return;
+        };
+        let excerpts = &state.excerpts;
+        for mapping in state
+            .mappings
+            .iter_mut()
+            .filter(|mapping| excerpts[mapping.excerpt_index].source.entity_id() == source_id)
+        {
+            mapping.source_text = source_snapshot.text().clone();
+            mapping.source_syntax = source_snapshot.syntax().clone();
+        }
+        state.capture_names = rebuild_capture_table(&mut state.mappings);
+        cx.emit(MultiBufferEvent::Reparsed);
+        cx.notify();
     }
 
     pub fn clear(&mut self, cx: &mut Context<Self>) {

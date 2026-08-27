@@ -22,7 +22,9 @@ use zcv_actions::{
 };
 use zcv_git::{DiffHunk, DiffHunkKind};
 use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer};
-use zcv_multi_buffer::{ExcerptLocation, ExcerptSnapshot, MultiBuffer, MultiBufferSubscription};
+use zcv_multi_buffer::{
+    ExcerptLocation, ExcerptSnapshot, MultiBuffer, MultiBufferEvent, MultiBufferSubscription,
+};
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
     Buffer, BufferConfig, BufferVersion, ByteOffset, DeltaEvent, Edit, Line, LineRange,
@@ -1073,8 +1075,18 @@ impl Editor {
                 editor.last_dirty = dirty;
                 cx.emit(EditorEvent::DirtyChanged);
             }
-            editor.sync_display_map(cx);
-            editor.refresh_fold_ranges(cx);
+            cx.notify();
+        })
+        .detach();
+        cx.subscribe(&multi_buffer, |editor, _, event, cx| {
+            match event {
+                MultiBufferEvent::TextChanged => editor.sync_display_map(cx),
+                MultiBufferEvent::Reparsed => {
+                    editor.sync_display_map(cx);
+                    editor.refresh_fold_ranges(cx);
+                }
+                MultiBufferEvent::MetadataChanged => {}
+            }
             editor.input_layout = None;
             cx.notify();
         })
@@ -1086,7 +1098,7 @@ impl Editor {
         // 对齐 Zed：换行模式默认来自全局设置，与编辑器模式无关；
         // UI 场景可用 set_soft_wrap_mode 覆盖（覆盖存在时设置变化不生效）。
         let settings = SettingsStore::try_get(cx);
-        let this = Self {
+        let mut this = Self {
             multi_buffer,
             multi_buffer_subscription,
             last_dirty,
@@ -1136,6 +1148,7 @@ impl Editor {
             }
         })
         .detach();
+        this.refresh_fold_ranges(cx);
         this
     }
 

@@ -100,6 +100,29 @@ fn excerpts_preserve_order_and_map_output_to_source(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn source_reparse_does_not_reload_composite_text(cx: &mut TestAppContext) {
+    let source = singleton("src/main.rs", "fn main() {\n    println!(\"ok\");\n}\n", cx);
+    let source_len = cx.read_entity(&source, |source, cx| source.snapshot(cx).text().len_bytes());
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |combined, cx| {
+        combined.set_excerpts(
+            vec![MultiBufferExcerpt::new(
+                source,
+                TextRange::new(ByteOffset::ZERO, source_len).unwrap(),
+                Vec::new(),
+            )],
+            cx,
+        );
+    });
+    let before = cx.read_entity(&combined, |combined, cx| combined.snapshot(cx).version());
+
+    cx.run_until_parked();
+
+    let after = cx.read_entity(&combined, |combined, cx| combined.snapshot(cx).version());
+    assert_eq!(after, before, "语法解析完成不应重载组合投影文本");
+}
+
+#[gpui::test]
 fn composite_edits_are_applied_to_the_underlying_buffer(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "zero\none\ntwo\n", cx);
     let source_text = cx.read_entity(&source, |buffer, cx| {

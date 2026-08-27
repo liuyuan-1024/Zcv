@@ -25,6 +25,9 @@ use zcv_theme::color;
 /// chunk 文本字节上限（与 Zed rope Chunk 的 MAX_BASE 一致）。
 pub(crate) const CHUNK_SIZE: usize = 128;
 
+/// 单个显示行交给文字 shaping 的最大字节数。
+pub(crate) const MAX_RENDERED_LINE_LEN: usize = 1024;
+
 /// 行内提示（inlay）的显示信息：注入在投影文本中的一段文本。
 ///
 /// 锚定字符之后的原始行内字节偏移，与注入后（含此前所有注入文本）的投影偏移；
@@ -710,7 +713,7 @@ pub(crate) fn render_viewport_row(
         ),
     };
     let tab_width = display_snapshot.buffer_snapshot().config().tab.tab_width();
-    let rendered = render_viewport_chunks(
+    let mut rendered = render_viewport_chunks(
         ViewportChunkSource {
             text: text.as_ref(),
             global_byte_start: *global_byte_start,
@@ -722,6 +725,10 @@ pub(crate) fn render_viewport_row(
         tab_width,
         line_styles,
         byte_range.clone(),
+    );
+    clip_chunks_to_len(
+        &mut rendered.chunks,
+        MAX_RENDERED_LINE_LEN.saturating_sub(*indent),
     );
     // 显示文本：wrap 假空格 + 展开 chunk 文本拼接（对齐 Zed from_chunks）。
     let display_len: usize = *indent
@@ -780,6 +787,28 @@ pub(crate) fn render_viewport_row(
     }
 }
 
+fn clip_chunks_to_len(chunks: &mut Vec<Chunk<'_>>, max_len: usize) {
+    let mut remaining = max_len;
+    let mut keep = 0usize;
+    for chunk in chunks.iter_mut() {
+        if chunk.text.len() <= remaining {
+            remaining -= chunk.text.len();
+            keep += 1;
+            continue;
+        }
+        let mut end = remaining.min(chunk.text.len());
+        while !chunk.text.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end > 0 {
+            *chunk = chunk.clone().split_at(end).0;
+            keep += 1;
+        }
+        break;
+    }
+    chunks.truncate(keep);
+}
+
 /// 渲染端把 chunk 流转成 TextRun（对齐 Zed from_chunks：每 chunk 一个 run，base 合并样式）。
 pub fn chunks_to_runs(chunks: &[Chunk<'_>], base: gpui::TextRun) -> Vec<gpui::TextRun> {
     chunks
@@ -828,6 +857,16 @@ pub fn chunks_to_runs(chunks: &[Chunk<'_>], base: gpui::TextRun) -> Vec<gpui::Te
 mod tests {
     use super::*;
     use zcv_text::ByteOffset;
+
+    #[test]
+    fn clips_shaped_line_at_utf8_boundary() {
+        let text = format!("{}文", "a".repeat(MAX_RENDERED_LINE_LEN - 1));
+        let mut chunks = TextChunks::new(&text).collect::<Vec<_>>();
+        clip_chunks_to_len(&mut chunks, MAX_RENDERED_LINE_LEN);
+        let clipped = chunks.iter().map(|chunk| chunk.text).collect::<String>();
+        assert_eq!(clipped.len(), MAX_RENDERED_LINE_LEN - 1);
+        assert!(text.starts_with(&clipped));
+    }
 
     fn expand_tabs(text: &str, tab_width: usize, start_column: usize) -> Vec<Chunk<'_>> {
         TabExpandedChunks::from_chunks(TextChunks::new(text), tab_width, start_column).collect()

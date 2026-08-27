@@ -19,7 +19,7 @@ use crate::tree_sitter_utils::{
 /// `interpolated_version` 表示旧树已经通过 `InputEdit` 推进到的文本版本。
 /// 两者分离后，前台可以立即使用坐标正确的旧树，真正的增量解析则交给后台完成。
 pub(crate) struct SyntaxMap {
-    language: Option<Language>,
+    language: Option<Arc<Language>>,
     tree: Option<tree_sitter::Tree>,
     injections: Vec<SyntaxLayer>,
     parsed_version: BufferVersion,
@@ -34,7 +34,7 @@ pub(crate) struct SyntaxMap {
 /// 字段对 crate 内可见：高亮与结构查询模块以 `impl SyntaxSnapshot` 扩展查询方法。
 #[derive(Clone, Debug)]
 pub struct SyntaxSnapshot {
-    pub(crate) language: Option<Language>,
+    pub(crate) language: Option<Arc<Language>>,
     pub(crate) tree: Option<tree_sitter::Tree>,
     pub(crate) injections: Vec<SyntaxLayer>,
     pub(crate) version: BufferVersion,
@@ -55,7 +55,7 @@ impl Drop for SyntaxSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) struct SyntaxLayer {
-    pub(crate) language: Language,
+    pub(crate) language: Arc<Language>,
     pub(crate) tree: tree_sitter::Tree,
     pub(crate) range: Range<usize>,
     pub(crate) depth: u32,
@@ -63,7 +63,7 @@ pub(crate) struct SyntaxLayer {
 
 impl SyntaxMap {
     pub(crate) fn language(&self) -> Option<&Language> {
-        self.language.as_ref()
+        self.language.as_deref()
     }
 
     pub(crate) fn new(snapshot: &Snapshot) -> Self {
@@ -78,17 +78,25 @@ impl SyntaxMap {
         }
     }
 
-    pub(crate) fn set_language_for_file(&mut self, path: &Path, snapshot: &Snapshot) -> bool {
-        let first_line = snapshot
-            .slice_line(zcv_text::Line::ZERO)
-            .ok()
-            .map(|line| line.as_str().trim_end_matches(['\r', '\n']).to_owned());
-        self.set_language(language_for_file(path, first_line.as_deref()), snapshot)
+    pub(crate) fn set_language_for_file(
+        &mut self,
+        path: &Path,
+        first_line: Option<&str>,
+        snapshot: &Snapshot,
+    ) -> bool {
+        self.set_language(language_for_file(path, first_line), snapshot)
     }
 
-    pub(crate) fn set_language(&mut self, language: Option<Language>, snapshot: &Snapshot) -> bool {
-        let unchanged =
-            self.language.as_ref().map(Language::name) == language.as_ref().map(Language::name);
+    pub(crate) fn set_language(
+        &mut self,
+        language: Option<Arc<Language>>,
+        snapshot: &Snapshot,
+    ) -> bool {
+        let unchanged = match (&self.language, &language) {
+            (Some(current), Some(next)) => Arc::ptr_eq(current, next),
+            (None, None) => true,
+            _ => false,
+        };
         if unchanged {
             return false;
         }
@@ -171,10 +179,12 @@ impl SyntaxMap {
     }
 
     pub(crate) fn did_parse(&mut self, mut parsed: SyntaxSnapshot) -> bool {
-        if parsed.version != self.interpolated_version
-            || parsed.language.as_ref().map(Language::name)
-                != self.language.as_ref().map(Language::name)
-        {
+        let same_language = match (&parsed.language, &self.language) {
+            (Some(parsed), Some(current)) => Arc::ptr_eq(parsed, current),
+            (None, None) => true,
+            _ => false,
+        };
+        if parsed.version != self.interpolated_version || !same_language {
             return false;
         }
         // 被替换的旧树/旧注入层移交给后台线程释放，避免每次解析完成时主线程卡顿。
@@ -260,7 +270,7 @@ impl SyntaxSnapshot {
     ) -> impl Iterator<Item = SyntaxLayerRef<'a>> + 'a {
         let main = match (&self.language, &self.tree) {
             (Some(language), Some(tree)) => Some(SyntaxLayerRef {
-                language,
+                language: language.as_ref(),
                 tree,
                 depth: 0,
             }),
@@ -271,7 +281,7 @@ impl SyntaxSnapshot {
                 .iter()
                 .filter(move |layer| range_touches(&layer.range, range))
                 .map(|layer| SyntaxLayerRef {
-                    language: &layer.language,
+                    language: layer.language.as_ref(),
                     tree: &layer.tree,
                     depth: layer.depth,
                 }),
@@ -446,7 +456,13 @@ pub(crate) fn parsed_syntax(path: &str, text: &str) -> (zcv_text::Buffer, Syntax
         zcv_text::Buffer::from_text(text.to_owned(), zcv_text::BufferConfig::default()).unwrap();
     let snapshot = buffer.snapshot();
     let mut syntax = SyntaxMap::new(&snapshot);
-    syntax.set_language_for_file(Path::new(path), &snapshot);
+    let first_line = snapshot
+        .slice_line(zcv_text::Line::ZERO)
+        .unwrap()
+        .as_str()
+        .trim_end_matches(['\r', '\n'])
+        .to_owned();
+    syntax.set_language_for_file(Path::new(path), Some(&first_line), &snapshot);
     let parsed = syntax.snapshot().reparse(&snapshot);
     assert!(syntax.did_parse(parsed));
     (buffer, syntax)

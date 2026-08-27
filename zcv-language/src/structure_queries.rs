@@ -196,12 +196,10 @@ impl SyntaxSnapshot {
                 continue;
             };
             let start = line_newline_position(text, anchor_line);
+            let pair_index = pairs.partition_point(|pair| pair.open.start < byte_range.start);
             let end = pairs
-                .iter()
-                .filter(|pair| {
-                    pair.open.start >= byte_range.start && pair.close.end <= byte_range.end
-                })
-                .min_by_key(|pair| pair.open.start)
+                .get(pair_index)
+                .filter(|pair| pair.open.start < byte_range.end && pair.close.end <= byte_range.end)
                 .map_or_else(
                     || {
                         // 无括号对（注释组等）：整行兜底，终点 = 末隐藏行内容末尾。

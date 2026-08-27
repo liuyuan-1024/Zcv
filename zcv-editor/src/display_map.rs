@@ -216,12 +216,17 @@ impl DisplaySnapshot {
 
         let buffer = self.buffer_snapshot();
         let mut spans = Vec::new();
-        for line in buffer_lines {
-            let Ok(start) = buffer.line_start_byte(Line::new(line)) else {
+        let mut lines = buffer_lines.into_iter().peekable();
+        while let Some(start_line) = lines.next() {
+            let mut end_line = start_line;
+            while lines.peek().is_some_and(|line| *line == end_line + 1) {
+                end_line = lines.next().expect("peek 已确认下一行存在");
+            }
+            let Ok(start) = buffer.line_start_byte(Line::new(start_line)) else {
                 continue;
             };
-            let end = if line + 1 < buffer.line_count() {
-                match buffer.line_start_byte(Line::new(line + 1)) {
+            let end = if end_line + 1 < buffer.line_count() {
+                match buffer.line_start_byte(Line::new(end_line + 1)) {
                     Ok(end) => end,
                     Err(_) => continue,
                 }

@@ -1,7 +1,8 @@
 //! 语言注册与查询。
 
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tree_sitter::Query;
 
@@ -9,7 +10,7 @@ use crate::AutoClosePair;
 use crate::available_languages::{LanguageQuerySources, QuerySource, builtin_languages};
 
 /// 一门语言：可由 tree-sitter 解析和高亮，或仅作纯文本兜底（无语法树）。
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Language {
     name: &'static str,
     grammar: Option<tree_sitter::Language>,
@@ -95,15 +96,23 @@ pub(crate) struct LanguageEntry {
 }
 
 impl LanguageEntry {
-    fn load(&self) -> Option<Language> {
+    fn load(&self) -> Language {
         let grammar = self.grammar.map(|grammar| grammar());
         // 无语法树的语言跳过查询编译，结构与查询能力为空。
         let highlights = match (grammar.as_ref(), self.highlights) {
-            (Some(grammar), Some(source)) => source.compile(grammar).ok().map(Arc::new),
+            (Some(grammar), Some(source)) => {
+                Some(Arc::new(source.compile(grammar).unwrap_or_else(|error| {
+                    panic!("{} 高亮查询编译失败：{error}", self.name)
+                })))
+            }
             _ => None,
         };
         let injections = match (grammar.as_ref(), self.injections) {
-            (Some(grammar), Some(source)) => source.compile(grammar).ok().map(Arc::new),
+            (Some(grammar), Some(source)) => {
+                Some(Arc::new(source.compile(grammar).unwrap_or_else(|error| {
+                    panic!("{} 注入查询编译失败：{error}", self.name)
+                })))
+            }
             _ => None,
         };
         let queries = match grammar.as_ref() {
@@ -123,7 +132,7 @@ impl LanguageEntry {
                     .collect()
             })
             .unwrap_or_default();
-        Some(Language {
+        Language {
             name: self.name,
             grammar,
             highlights,
@@ -131,7 +140,7 @@ impl LanguageEntry {
             queries,
             capture_names,
             auto_close_pairs: self.auto_close_pairs.unwrap_or(&[]),
-        })
+        }
     }
 
     /// 注入名匹配：别名（如 `markdown_inline`）、语言名与后缀均忽略大小写。
@@ -154,6 +163,7 @@ impl LanguageEntry {
 /// 若未来支持用户配置覆盖 matcher，在此注册表上扩展即可。
 pub(crate) struct LanguageRegistry {
     languages: Vec<LanguageEntry>,
+    loaded_languages: Mutex<HashMap<&'static str, Arc<Language>>>,
 }
 
 pub(crate) fn registry() -> &'static LanguageRegistry {
@@ -165,15 +175,25 @@ impl LanguageRegistry {
     fn new() -> Self {
         Self {
             languages: builtin_languages(),
+            loaded_languages: Mutex::new(HashMap::new()),
         }
     }
 
+    fn load(&self, entry: &LanguageEntry) -> Arc<Language> {
+        let mut loaded = self.loaded_languages.lock().expect("语言缓存锁不应中毒");
+        Arc::clone(
+            loaded
+                .entry(entry.name)
+                .or_insert_with(|| Arc::new(entry.load())),
+        )
+    }
+
     /// 按注入名查语言（语法树注入层使用）。
-    pub(crate) fn language_for_injection(&self, name: &str) -> Option<Language> {
+    pub(crate) fn language_for_injection(&self, name: &str) -> Option<Arc<Language>> {
         self.languages
             .iter()
             .find(|entry| entry.matches_injection_name(name))
-            .and_then(LanguageEntry::load)
+            .map(|entry| self.load(entry))
     }
 
     /// 按文件名和首行内容选择已注册且可高亮的语言。
@@ -181,19 +201,9 @@ impl LanguageRegistry {
         &self,
         path: &Path,
         first_line: Option<&str>,
-    ) -> Option<Language> {
+    ) -> Option<Arc<Language>> {
         self.matched_language(path, first_line)
-            .and_then(|entry| entry.load())
-    }
-
-    /// 返回语言显示名；即使暂未注册 grammar，也保留文件类型识别能力。
-    pub(crate) fn language_name_for_file(
-        &self,
-        path: &Path,
-        first_line: Option<&str>,
-    ) -> Option<&'static str> {
-        self.matched_language(path, first_line)
-            .map(|entry| entry.name)
+            .map(|entry| self.load(entry))
     }
 
     fn matched_language(&self, path: &Path, first_line: Option<&str>) -> Option<&LanguageEntry> {
@@ -239,21 +249,13 @@ fn ends_with_dot_suffix(filename: &str, suffix: &str) -> bool {
 // ── 顶层查询入口（调用方经此处访问注册表）────────────────────────────
 
 /// 按注入名查语言（语法树注入层使用）。
-pub(crate) fn language_for_injection(name: &str) -> Option<Language> {
+pub(crate) fn language_for_injection(name: &str) -> Option<Arc<Language>> {
     registry().language_for_injection(name)
 }
 
 /// 根据文件名和首行内容选择已注册且可高亮的语言。
-pub(crate) fn language_for_file(path: &Path, first_line: Option<&str>) -> Option<Language> {
+pub(crate) fn language_for_file(path: &Path, first_line: Option<&str>) -> Option<Arc<Language>> {
     registry().language_for_file(path, first_line)
-}
-
-/// 返回语言显示名；即使暂未注册 grammar，也保留文件类型识别能力。
-pub(crate) fn language_name_for_file(
-    path: &Path,
-    first_line: Option<&str>,
-) -> Option<&'static str> {
-    registry().language_name_for_file(path, first_line)
 }
 
 #[cfg(test)]
@@ -274,6 +276,17 @@ mod tests {
                 .name(),
             "TSX"
         );
+    }
+
+    #[test]
+    fn reuses_loaded_language_and_compiled_queries() {
+        let first = language_for_file(Path::new("main.rs"), None).unwrap();
+        let second = language_for_file(Path::new("lib.rs"), None).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(Arc::ptr_eq(
+            first.highlights.as_ref().unwrap(),
+            second.highlights.as_ref().unwrap()
+        ));
     }
 
     #[test]

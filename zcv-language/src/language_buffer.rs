@@ -1,15 +1,25 @@
 use std::path::{Path, PathBuf};
 
-use gpui::{AppContext, Context, Entity, Task};
-use zcv_text::{Buffer, Snapshot, TextSubscription};
+use gpui::{AppContext, Context, Entity, EventEmitter, Task};
+use zcv_text::{Buffer, Line, Snapshot, TextChangeBatch, TextSubscription};
 
 use crate::Language;
-use crate::registry::language_name_for_file;
 use crate::syntax_map::{SyntaxMap, SyntaxSnapshot};
+
+/// 语言 Buffer 的显式更新语义；
+/// 文本插值、后台解析和元数据变化具有不同消费成本。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LanguageBufferEvent {
+    TextChanged,
+    Reparsed,
+    MetadataChanged,
+}
+
+impl EventEmitter<LanguageBufferEvent> for LanguageBuffer {}
 
 /// 将文本 Buffer 与语言派生状态绑定在一起。
 ///
-/// 和 Zed 的 language::Buffer 一样，语法树跟随文本而不是某个 Editor。
+/// 语法树跟随文本而不是某个 Editor。
 /// 多个 Editor 可以共享一个 `LanguageBuffer`，后台也只会存在一个解析任务。
 pub struct LanguageBuffer {
     buffer: Entity<Buffer>,
@@ -17,6 +27,7 @@ pub struct LanguageBuffer {
     text_snapshot: Snapshot,
     syntax_map: SyntaxMap,
     file_path: Option<PathBuf>,
+    language_detection_first_line: String,
     parse_task: Option<Task<()>>,
     parse_again: bool,
 }
@@ -25,9 +36,10 @@ impl LanguageBuffer {
     pub fn new(buffer: Entity<Buffer>, file_path: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
         let (subscription, snapshot) =
             buffer.update(cx, |buffer, _| (buffer.subscribe(), buffer.snapshot()));
+        let first_line = first_line(&snapshot);
         let mut syntax_map = SyntaxMap::new(&snapshot);
         if let Some(path) = file_path.as_deref() {
-            syntax_map.set_language_for_file(path, &snapshot);
+            syntax_map.set_language_for_file(path, Some(&first_line), &snapshot);
         }
 
         cx.observe(&buffer, |language_buffer, _, cx| {
@@ -41,6 +53,7 @@ impl LanguageBuffer {
             text_snapshot: snapshot,
             syntax_map,
             file_path,
+            language_detection_first_line: first_line,
             parse_task: None,
             parse_again: false,
         };
@@ -62,24 +75,22 @@ impl LanguageBuffer {
     }
 
     pub fn language_name(&self) -> Option<&'static str> {
-        let path = self.file_path.as_deref()?;
-        let first_line = self
-            .text_snapshot
-            .slice_line(zcv_text::Line::ZERO)
-            .ok()
-            .map(|line| line.as_str().trim_end_matches(['\r', '\n']).to_owned());
-        language_name_for_file(path, first_line.as_deref())
+        self.file_path.as_ref()?;
+        self.language().map(Language::name)
     }
 
     pub fn set_file_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.sync(cx);
-        let language_changed = self
-            .syntax_map
-            .set_language_for_file(&path, &self.text_snapshot);
+        let language_changed = self.syntax_map.set_language_for_file(
+            &path,
+            Some(&self.language_detection_first_line),
+            &self.text_snapshot,
+        );
         self.file_path = Some(path);
         if language_changed {
             self.start_reparse(cx);
         }
+        cx.emit(LanguageBufferEvent::MetadataChanged);
         cx.notify();
     }
 
@@ -90,17 +101,31 @@ impl LanguageBuffer {
     fn sync(&mut self, cx: &mut Context<Self>) {
         let changes = self.subscription.consume();
         if changes.is_empty() {
+            cx.emit(LanguageBufferEvent::MetadataChanged);
+            cx.notify();
             return;
         }
         let new_snapshot = self.buffer.read(cx).snapshot();
+        let first_line_may_have_changed =
+            changes_touch_first_line(&self.text_snapshot, &new_snapshot, &changes);
         self.syntax_map
             .interpolate(&self.text_snapshot, &new_snapshot, &changes);
         self.text_snapshot = new_snapshot;
-        if let Some(path) = self.file_path.as_deref() {
-            self.syntax_map
-                .set_language_for_file(path, &self.text_snapshot);
+        if first_line_may_have_changed {
+            let next_first_line = first_line(&self.text_snapshot);
+            if next_first_line != self.language_detection_first_line {
+                self.language_detection_first_line = next_first_line;
+                if let Some(path) = self.file_path.as_deref() {
+                    self.syntax_map.set_language_for_file(
+                        path,
+                        Some(&self.language_detection_first_line),
+                        &self.text_snapshot,
+                    );
+                }
+            }
         }
         self.start_reparse(cx);
+        cx.emit(LanguageBufferEvent::TextChanged);
         cx.notify();
     }
 
@@ -128,6 +153,7 @@ impl LanguageBuffer {
                     || !installed;
                 this.parse_again = false;
                 if installed {
+                    cx.emit(LanguageBufferEvent::Reparsed);
                     cx.notify();
                 }
                 if parse_again {
@@ -138,8 +164,46 @@ impl LanguageBuffer {
     }
 }
 
+fn first_line(snapshot: &Snapshot) -> String {
+    snapshot
+        .slice_line(Line::ZERO)
+        .expect("文本快照始终至少包含第 0 行")
+        .as_str()
+        .trim_end_matches(['\r', '\n'])
+        .to_owned()
+}
+
+fn changes_touch_first_line(
+    old_snapshot: &Snapshot,
+    new_snapshot: &Snapshot,
+    changes: &TextChangeBatch,
+) -> bool {
+    if changes.requires_reset() {
+        return true;
+    }
+    changes.patch().edits().iter().any(|edit| {
+        offset_touches_first_line(old_snapshot, edit.old_range().start().get())
+            || offset_touches_first_line(new_snapshot, edit.new_range().start().get())
+    })
+}
+
+fn offset_touches_first_line(snapshot: &Snapshot, offset: usize) -> bool {
+    if snapshot.line_count() == 1 {
+        offset <= snapshot.len_bytes().get()
+    } else {
+        offset
+            < snapshot
+                .line_start_byte(Line::new(1))
+                .expect("多行快照必须存在第 1 行")
+                .get()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     use gpui::TestAppContext;
     use zcv_text::{BufferConfig, ByteOffset, Edit, TransactionMetadata};
 
@@ -205,5 +269,53 @@ mod tests {
             assert_eq!(language_buffer.language_name(), Some("Python"));
             assert!(language_buffer.syntax_snapshot().has_language());
         });
+    }
+
+    #[gpui::test]
+    fn distinguishes_text_parse_and_metadata_events(cx: &mut TestAppContext) {
+        let buffer = cx.new(|_| {
+            Buffer::scratch("fn main() {}\n".to_owned(), BufferConfig::default())
+                .expect("应创建测试 Buffer")
+        });
+        let language_buffer =
+            cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("main.rs")), cx));
+        cx.run_until_parked();
+
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let observed = Rc::clone(&events);
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&language_buffer, move |_, event, _| {
+                observed.borrow_mut().push(*event);
+            })
+        });
+
+        buffer.update(cx, |buffer, cx| {
+            buffer
+                .edit(
+                    [Edit::insert(ByteOffset::new(3), "async ").unwrap()],
+                    TransactionMetadata::default(),
+                )
+                .expect("测试编辑应成功");
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            events.borrow().as_slice(),
+            [
+                LanguageBufferEvent::TextChanged,
+                LanguageBufferEvent::Reparsed
+            ]
+        );
+
+        events.borrow_mut().clear();
+        buffer.update(cx, |buffer, cx| {
+            buffer.mark_saved();
+            cx.notify();
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            events.borrow().as_slice(),
+            [LanguageBufferEvent::MetadataChanged]
+        );
     }
 }

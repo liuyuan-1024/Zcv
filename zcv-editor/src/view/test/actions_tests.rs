@@ -448,6 +448,17 @@ fn matching_brackets_come_from_tree_sitter_query(cx: &mut TestAppContext) {
         assert_eq!(&source[pair.open], "(");
         assert_eq!(&source[pair.close], ")");
     });
+
+    cx.update_entity(&editor, |editor, _| {
+        editor.set_selections(SelectionSet::new(vec![
+            Selection::caret(ByteOffset::new(open + 1)),
+            Selection::new(ByteOffset::new(0), ByteOffset::new(2)),
+        ]));
+        assert!(
+            editor.matching_bracket_pair().is_none(),
+            "任一非空选区都应隐藏括号匹配高亮"
+        );
+    });
 }
 #[gpui::test]
 fn word_and_line_delete_actions_follow_editor_boundaries(cx: &mut TestAppContext) {

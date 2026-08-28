@@ -1770,6 +1770,7 @@ fn layout_selections(
 ) -> (Vec<PaintQuad>, Vec<PaintQuad>) {
     let mut selection_quads = Vec::new();
     let mut caret_quads = Vec::new();
+    let selection_background = color::current(cx).editor_selection_background;
 
     for selection in selections.as_slice().iter().copied() {
         // 选区存在时也在 head（活动端）绘制光标，表示输入插入点。
@@ -1785,7 +1786,13 @@ fn layout_selections(
             .project_text_range(selection.range())
         {
             for range in ranges {
-                layout_projected_range(range, layout, line_height, &mut selection_quads, cx);
+                layout_projected_range(
+                    range,
+                    layout,
+                    line_height,
+                    selection_background,
+                    &mut selection_quads,
+                );
             }
             if let Some(caret) = caret {
                 caret_quads.push(caret);
@@ -1804,6 +1811,7 @@ fn layout_bracket_pair(
     quads: &mut Vec<PaintQuad>,
     cx: &App,
 ) {
+    let bracket_background = color::current(cx).editor_document_highlight_bracket_background;
     for range in [pair.open, pair.close] {
         let Ok(range) = TextRange::new(ByteOffset::new(range.start), ByteOffset::new(range.end))
         else {
@@ -1813,7 +1821,7 @@ fn layout_bracket_pair(
             continue;
         };
         for range in projected {
-            layout_projected_range(range, layout, line_height, quads, cx);
+            layout_projected_range(range, layout, line_height, bracket_background, quads);
         }
     }
 }
@@ -1822,8 +1830,8 @@ fn layout_projected_range(
     range: ProjectedRange,
     layout: &EditorLayout,
     line_height: Pixels,
+    background: gpui::Rgba,
     selection_quads: &mut Vec<PaintQuad>,
-    cx: &App,
 ) {
     let start = range.start();
     let end = range.end();
@@ -1869,7 +1877,7 @@ fn layout_projected_range(
                 point(line.origin.x + start_x, line.origin.y),
                 point(line.origin.x + end_x, line.origin.y + line_height),
             ),
-            color::current(cx).editor_selection_background,
+            background,
         ));
     }
 }

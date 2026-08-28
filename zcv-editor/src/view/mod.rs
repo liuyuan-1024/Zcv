@@ -691,13 +691,18 @@ impl Editor {
     }
 
     pub(super) fn matching_bracket_pair(&mut self) -> Option<BracketPair> {
-        // 存在选区时不显示匹配括号高亮，避免选区与括号高亮同色时产生"括号被选中"的视觉混淆；
+        // 任一选区非空时都不显示匹配括号高亮，避免把括号强调误认成选区的一部分；
         // 判断在缓存之前，选区状态变化不会命中陈旧缓存。
-        if !self.resolved_selections().primary().is_caret() {
+        let selections = self.resolved_selections();
+        if selections
+            .as_slice()
+            .iter()
+            .any(|selection| !selection.is_caret())
+        {
             return None;
         }
         let snapshot = self.display_map.buffer_snapshot();
-        let caret = self.resolved_selections().primary().head();
+        let caret = selections.primary().head();
         let buffer_version = snapshot.version();
         let syntax_snapshot = self.display_map.syntax_snapshot();
         let syntax_version = syntax_snapshot.version();

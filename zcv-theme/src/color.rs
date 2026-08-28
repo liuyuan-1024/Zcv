@@ -91,6 +91,8 @@ pub struct ThemeColors {
     pub editor_active_line_number: Rgba,
     /// 编辑器选区背景。
     pub editor_selection_background: Rgba,
+    /// 光标所在作用域的匹配括号背景。
+    pub editor_document_highlight_bracket_background: Rgba,
     /// 搜索匹配背景。
     pub search_match_background: Rgba,
     /// 搜索活动匹配背景。

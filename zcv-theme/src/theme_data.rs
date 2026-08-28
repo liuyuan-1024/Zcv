@@ -119,6 +119,9 @@ fn parse_colors(colors: &toml::Table) -> Option<ThemeColors> {
         editor_line_number: parse("editor.line_number")?,
         editor_active_line_number: parse("editor.active_line_number")?,
         editor_selection_background: parse("editor.selection.background")?,
+        editor_document_highlight_bracket_background: parse(
+            "editor.document_highlight.bracket_background",
+        )?,
         search_match_background: parse("search.match_background")?,
         search_active_match_background: parse("search.active_match_background")?,
         editor_cursor: parse("editor.cursor")?,
@@ -267,7 +270,15 @@ mod tests {
         assert_eq!(colors.editor_background, gpui::rgba(0x282c33ff));
         assert_eq!(colors.editor_subheader_background, gpui::rgba(0x2f343eff));
         assert_eq!(colors.text, gpui::rgba(0xdce0e5ff));
-        assert_eq!(colors.editor_selection_background, gpui::rgba(0x74ade81a));
+        assert_eq!(colors.editor_selection_background, gpui::rgba(0x74ade83d));
+        assert_eq!(
+            colors.editor_document_highlight_bracket_background,
+            gpui::rgba(0x74ade81a)
+        );
+        assert_ne!(
+            colors.editor_document_highlight_bracket_background,
+            colors.editor_selection_background
+        );
         assert_eq!(
             colors.scrollbar_thumb_active_background,
             gpui::rgba(0x363c46ff)
@@ -287,7 +298,15 @@ mod tests {
         assert_eq!(colors.editor_background, gpui::rgba(0xfafafaff));
         assert_eq!(colors.editor_subheader_background, gpui::rgba(0xebebecff));
         assert_eq!(colors.text, gpui::rgba(0x242529ff));
-        assert_eq!(colors.editor_selection_background, gpui::rgba(0x5c78e225));
+        assert_eq!(colors.editor_selection_background, gpui::rgba(0x5c78e23d));
+        assert_eq!(
+            colors.editor_document_highlight_bracket_background,
+            gpui::rgba(0x5c78e225)
+        );
+        assert_ne!(
+            colors.editor_document_highlight_bracket_background,
+            colors.editor_selection_background
+        );
         assert_eq!(colors.ghost_element_hover, gpui::rgba(0xc9c9caff));
         // 终端 ANSI 色与 Zed 官方一致。
         assert_eq!(colors.terminal_ansi_yellow, gpui::rgba(0xd2b67cff));
@@ -336,6 +355,7 @@ mod tests {
             "editor.line_number" = "#888888ff"
             "editor.active_line_number" = "#666666ff"
             "editor.selection.background" = "#5555553d"
+            "editor.document_highlight.bracket_background" = "#00ff004d"
             "search.match_background" = "#5555558c"
             "search.active_match_background" = "#ffff0066"
             "editor.cursor" = "#555555ff"

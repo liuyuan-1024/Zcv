@@ -1,5 +1,6 @@
 //! Editor 的逐帧文本布局、绘制与像素命中测试。
 
+use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::sync::Arc;
@@ -279,7 +280,8 @@ impl EditorInputLayout {
 
 pub(super) struct PrepaintState {
     layout: Arc<EditorLayout>,
-    selections: Vec<PaintQuad>,
+    selections: Vec<SelectionHighlight>,
+    bracket_matches: Vec<PaintQuad>,
     carets: Vec<PaintQuad>,
     ime_caret_bounds: Option<Bounds<Pixels>>,
     hitbox: gpui::Hitbox,
@@ -302,6 +304,109 @@ pub(super) struct PrepaintState {
 
 /// hunk 色带 hitbox：命中区域 + 点击目标范围 + 类型 + 展开态标志。
 type HunkHitbox = (gpui::Hitbox, Range<usize>, DiffHunkKind, bool);
+
+#[derive(Debug)]
+struct SelectionHighlight {
+    start_y: Pixels,
+    line_height: Pixels,
+    lines: Vec<SelectionHighlightLine>,
+    color: gpui::Rgba,
+    corner_radius: Pixels,
+}
+
+#[derive(Debug)]
+struct SelectionHighlightLine {
+    start_x: Pixels,
+    end_x: Pixels,
+}
+
+impl SelectionHighlight {
+    fn paint(&self, window: &mut Window) {
+        // 首行起点落在后续窄行终点右侧时，单条轮廓会自交；与 Zed 一致拆成两个轮廓。
+        if self.lines.len() >= 2 && self.lines[0].start_x > self.lines[1].end_x {
+            self.paint_lines(self.start_y, &self.lines[..1], window);
+            self.paint_lines(self.start_y + self.line_height, &self.lines[1..], window);
+        } else {
+            self.paint_lines(self.start_y, &self.lines, window);
+        }
+    }
+
+    fn paint_lines(&self, start_y: Pixels, lines: &[SelectionHighlightLine], window: &mut Window) {
+        let Some(first_line) = lines.first() else {
+            return;
+        };
+        let last_line = lines.last().expect("非空选区轮廓必须有末行");
+        let first_top_left = point(first_line.start_x, start_y);
+        let first_top_right = point(first_line.end_x, start_y);
+        let curve_height = point(Pixels::ZERO, self.corner_radius);
+        let curve_width = |start_x: Pixels, end_x: Pixels| {
+            point(
+                ((end_x - start_x) / 2.).min(self.corner_radius),
+                Pixels::ZERO,
+            )
+        };
+
+        let top_curve_width = curve_width(first_line.start_x, first_line.end_x);
+        let mut builder = gpui::PathBuilder::fill();
+        builder.move_to(first_top_right - top_curve_width);
+        builder.curve_to(first_top_right + curve_height, first_top_right);
+
+        let mut iter = lines.iter().enumerate().peekable();
+        while let Some((index, line)) = iter.next() {
+            let bottom_right = point(line.end_x, start_y + (index + 1) as f32 * self.line_height);
+            if let Some((_, next_line)) = iter.peek() {
+                let next_top_right = point(next_line.end_x, bottom_right.y);
+                match next_top_right
+                    .x
+                    .partial_cmp(&bottom_right.x)
+                    .expect("选区横坐标必须可比较")
+                {
+                    Ordering::Equal => builder.line_to(bottom_right),
+                    Ordering::Less => {
+                        let width = curve_width(next_top_right.x, bottom_right.x);
+                        builder.line_to(bottom_right - curve_height);
+                        builder.curve_to(bottom_right - width, bottom_right);
+                        builder.line_to(next_top_right + width);
+                        builder.curve_to(next_top_right + curve_height, next_top_right);
+                    }
+                    Ordering::Greater => {
+                        let width = curve_width(bottom_right.x, next_top_right.x);
+                        builder.line_to(bottom_right - curve_height);
+                        builder.curve_to(bottom_right + width, bottom_right);
+                        builder.line_to(next_top_right - width);
+                        builder.curve_to(next_top_right + curve_height, next_top_right);
+                    }
+                }
+            } else {
+                let width = curve_width(line.start_x, line.end_x);
+                builder.line_to(bottom_right - curve_height);
+                builder.curve_to(bottom_right - width, bottom_right);
+
+                let bottom_left = point(line.start_x, bottom_right.y);
+                builder.line_to(bottom_left + width);
+                builder.curve_to(bottom_left - curve_height, bottom_left);
+            }
+        }
+
+        if first_line.start_x > last_line.start_x {
+            let width = curve_width(last_line.start_x, first_line.start_x);
+            let second_top_left = point(last_line.start_x, start_y + self.line_height);
+            builder.line_to(second_top_left + curve_height);
+            builder.curve_to(second_top_left + width, second_top_left);
+            let first_bottom_left = point(first_line.start_x, second_top_left.y);
+            builder.line_to(first_bottom_left - width);
+            builder.curve_to(first_bottom_left - curve_height, first_bottom_left);
+        }
+
+        builder.line_to(first_top_left + curve_height);
+        builder.curve_to(first_top_left + top_curve_width, first_top_left);
+        builder.line_to(first_top_right - top_curve_width);
+
+        if let Ok(path) = builder.build() {
+            window.paint_path(path, self.color);
+        }
+    }
+}
 
 /// 构建 crease 折叠开关：Button 组件（chevron 图标 + tooltip + 点击），按 gutter 绝对坐标 as_root 独立布局。
 fn build_crease_toggles(
@@ -796,9 +901,10 @@ impl Element for EditorElement {
         }
         let block_elements = build_block_elements(&layout, &self.editor, window, cx);
         let layout = Arc::new(layout);
-        let (mut selections, carets) = layout_selections(&selections, &layout, line_height, cx);
+        let (selections, carets) = layout_selections(&selections, &layout, line_height, cx);
+        let mut bracket_matches = Vec::new();
         if let Some(pair) = matching_bracket_pair {
-            layout_bracket_pair(pair, &layout, line_height, &mut selections, cx);
+            layout_bracket_pair(pair, &layout, line_height, &mut bracket_matches, cx);
         }
         let gutter_hitbox = layout
             .gutter
@@ -909,6 +1015,7 @@ impl Element for EditorElement {
         PrepaintState {
             layout,
             selections,
+            bracket_matches,
             carets,
             ime_caret_bounds,
             hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
@@ -1226,7 +1333,10 @@ impl Element for EditorElement {
                     ));
                 }
                 for selection in prepaint.selections.drain(..) {
-                    window.paint_quad(selection);
+                    selection.paint(window);
+                }
+                for bracket_match in prepaint.bracket_matches.drain(..) {
+                    window.paint_quad(bracket_match);
                 }
                 // run 背景（搜索高亮、语法背景等）：gpui 原生 paint_background用 decoration_runs 精确绘制，覆盖在选区之上、文本之下。
                 for line in &prepaint.layout.lines {
@@ -1767,8 +1877,8 @@ fn layout_selections(
     layout: &EditorLayout,
     line_height: Pixels,
     cx: &App,
-) -> (Vec<PaintQuad>, Vec<PaintQuad>) {
-    let mut selection_quads = Vec::new();
+) -> (Vec<SelectionHighlight>, Vec<PaintQuad>) {
+    let mut selection_highlights = Vec::new();
     let mut caret_quads = Vec::new();
     let selection_background = color::current(cx).editor_selection_background;
 
@@ -1786,13 +1896,12 @@ fn layout_selections(
             .project_text_range(selection.range())
         {
             for range in ranges {
-                layout_projected_range(
+                selection_highlights.extend(layout_selection_range(
                     range,
                     layout,
                     line_height,
                     selection_background,
-                    &mut selection_quads,
-                );
+                ));
             }
             if let Some(caret) = caret {
                 caret_quads.push(caret);
@@ -1801,7 +1910,83 @@ fn layout_selections(
         }
     }
 
-    (selection_quads, caret_quads)
+    (selection_highlights, caret_quads)
+}
+
+fn layout_selection_range(
+    range: ProjectedRange,
+    layout: &EditorLayout,
+    line_height: Pixels,
+    color: gpui::Rgba,
+) -> Vec<SelectionHighlight> {
+    let corner_radius = line_height * 0.15;
+    let line_end_overshoot = corner_radius * 2.;
+    let start = range.start();
+    let end = range.end();
+    let mut highlights = Vec::new();
+    let mut current_lines = Vec::new();
+    let mut current_start_y = None;
+    let mut previous_y = None;
+
+    for line in &layout.lines {
+        let row = ProjectedLineIndex::new(line.row.get());
+        if row < start.line() || row > end.line() {
+            continue;
+        }
+        if row == end.line() && row != start.line() && end.column() == LogicalColumn::ZERO {
+            continue;
+        }
+
+        let line_columns = line.shaped.text.chars().count();
+        let start_column = if row == start.line() {
+            start.column().get().min(line_columns)
+        } else {
+            0
+        };
+        let end_column = if row == end.line() {
+            end.column().get().min(line_columns)
+        } else {
+            line_columns
+        };
+        let start_x = line.origin.x
+            + line
+                .shaped
+                .x_for_index(column_to_byte(&line.shaped.text, start_column));
+        let mut end_x = line.origin.x
+            + line
+                .shaped
+                .x_for_index(column_to_byte(&line.shaped.text, end_column));
+        if row != end.line() {
+            end_x += line_end_overshoot;
+        }
+        if end_x <= start_x {
+            continue;
+        }
+        if previous_y.is_some_and(|previous| line.origin.y != previous + line_height) {
+            highlights.push(SelectionHighlight {
+                start_y: current_start_y.expect("选区轮廓分段必须有起始纵坐标"),
+                line_height,
+                lines: std::mem::take(&mut current_lines),
+                color,
+                corner_radius,
+            });
+            current_start_y = None;
+        }
+        current_start_y.get_or_insert(line.origin.y);
+        current_lines.push(SelectionHighlightLine { start_x, end_x });
+        previous_y = Some(line.origin.y);
+    }
+
+    if let Some(start_y) = current_start_y {
+        highlights.push(SelectionHighlight {
+            start_y,
+            line_height,
+            lines: current_lines,
+            color,
+            corner_radius,
+        });
+    }
+    highlights
 }
 
 fn layout_bracket_pair(
@@ -1821,12 +2006,12 @@ fn layout_bracket_pair(
             continue;
         };
         for range in projected {
-            layout_projected_range(range, layout, line_height, bracket_background, quads);
+            layout_projected_range_quad(range, layout, line_height, bracket_background, quads);
         }
     }
 }
 
-fn layout_projected_range(
+fn layout_projected_range_quad(
     range: ProjectedRange,
     layout: &EditorLayout,
     line_height: Pixels,
@@ -2485,6 +2670,71 @@ mod tests {
                 // 折叠合并行：anchor 文本 + 占位符拼成同一显示行。
                 assert_eq!(layout.lines[0].shaped.text.as_ref(), "anchor…");
                 assert_eq!(layout.lines[1].shaped.text.as_ref(), "after");
+            })
+            .expect("测试窗口应保持可用");
+    }
+
+    #[gpui::test]
+    fn multi_line_selection_uses_one_rounded_contour_with_inner_turns(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| Empty);
+        window
+            .update(cx, |_, window, cx| {
+                let snapshot =
+                    Buffer::scratch("abcdef\nx\nabcde".to_owned(), BufferConfig::default())
+                        .expect("测试 Buffer 应能创建")
+                        .snapshot();
+                let layout = layout_visible_lines(
+                    DisplayMap::new(snapshot.clone()).snapshot(),
+                    None,
+                    EditorPresentation::new(&snapshot, None),
+                    None,
+                    VisibleLineLayoutParams {
+                        geometry: EditorGeometry {
+                            text_bounds: Bounds::new(
+                                point(px(0.), px(0.)),
+                                size(px(400.), px(100.)),
+                            ),
+                            text_clip_bounds: Bounds::new(
+                                point(px(0.), px(0.)),
+                                size(px(400.), px(100.)),
+                            ),
+                            gutter: None,
+                        },
+                        active_lines: &BTreeSet::new(),
+                        foldable_lines: &BTreeSet::new(),
+                        fold_anchor_lines: &BTreeSet::new(),
+                        start_row: DisplayRow::ZERO,
+                        scroll_offset: point(px(0.), px(0.)),
+                        line_height: px(20.),
+                        diff_rows: &[],
+                    },
+                    window,
+                    cx,
+                );
+                let selections = SelectionSet::new(vec![crate::Selection::new(
+                    ByteOffset::new(2),
+                    ByteOffset::new(12),
+                )]);
+                let (highlights, _) = layout_selections(&selections, &layout, px(20.), cx);
+
+                assert_eq!(highlights.len(), 1, "连续多行选区应生成一条整体轮廓");
+                let highlight = &highlights[0];
+                assert_eq!(highlight.corner_radius, px(3.));
+                assert_eq!(highlight.lines.len(), 3);
+                assert!(
+                    highlight.lines[0].start_x > highlight.lines[1].start_x,
+                    "首行左边界转入后续行时应形成内凹倒圆角"
+                );
+                assert!(
+                    highlight.lines[0].end_x > highlight.lines[1].end_x
+                        && highlight.lines[2].end_x > highlight.lines[1].end_x,
+                    "相邻行宽度收缩与扩张应形成两种圆角转折"
+                );
+                assert_eq!(
+                    highlight.lines[0].end_x,
+                    layout.lines[0].origin.x + layout.lines[0].shaped.width + px(6.),
+                    "非末行应按 Zed 语义延伸两个圆角半径"
+                );
             })
             .expect("测试窗口应保持可用");
     }

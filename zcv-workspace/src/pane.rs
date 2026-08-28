@@ -601,15 +601,17 @@ impl Render for Pane {
             .on_action(cx.listener(Self::handle_next_tab))
             .on_action(cx.listener(Self::handle_prev_tab))
             .on_action(cx.listener(Self::handle_toggle_preview))
-            .child(render_tab_bar(
-                &self.tabs,
-                active_item_id,
-                transient_item_id,
-                pane_entity,
-                &self.scroll_handle,
-                trailing,
-                cx,
-            ))
+            .when(active_item_id.is_some(), |pane| {
+                pane.child(render_tab_bar(
+                    &self.tabs,
+                    active_item_id,
+                    transient_item_id,
+                    pane_entity,
+                    &self.scroll_handle,
+                    trailing,
+                    cx,
+                ))
+            })
             .child(self.toolbar.clone())
             .child(render_content(active_item_id, active_item, cx))
     }
@@ -669,6 +671,7 @@ fn render_tab_bar(
     // 外层包裹 on_drag_move 实现拖拽到边缘自动滚动 event.bounds 就是本 div 的边界，无需 Y 坐标判断
     div()
         .id("tab-bar-area")
+        .debug_selector(|| "tab-bar-area".into())
         .flex_shrink_0()
         .child(tab_bar)
         .on_drag_move::<DraggedTab>(move |event, window, _cx| {
@@ -1647,6 +1650,31 @@ mod tests {
                 "关闭工具栏所属标签后应将焦点交给新活动标签"
             );
         });
+    }
+
+    #[gpui::test]
+    fn tab_bar_is_only_rendered_when_pane_has_an_active_item(cx: &mut TestAppContext) {
+        let (pane, cx) = cx.add_window_view(|_, cx| Pane::new(cx));
+        cx.run_until_parked();
+        cx.refresh().expect("测试窗口应可刷新");
+        assert!(
+            cx.debug_bounds("tab-bar-area").is_none(),
+            "空 Pane 不应残留 TabBar 下边框"
+        );
+
+        let buffer = test_buffer(cx, "内容");
+        cx.update(|window, cx| {
+            pane.update(cx, |pane, cx| {
+                let item = cx.new(|cx| TestSourceItem::new(buffer, PathBuf::from("demo.txt"), cx));
+                pane.open_item(Box::new(item), false, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.refresh().expect("测试窗口应可刷新");
+        assert!(
+            cx.debug_bounds("tab-bar-area").is_some(),
+            "存在活动项时应恢复 TabBar"
+        );
     }
 
     #[gpui::test]

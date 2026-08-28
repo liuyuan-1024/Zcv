@@ -119,6 +119,7 @@ fn parse_colors(colors: &toml::Table) -> Option<ThemeColors> {
         editor_line_number: parse("editor.line_number")?,
         editor_active_line_number: parse("editor.active_line_number")?,
         editor_selection_background: parse("editor.selection.background")?,
+        editor_invisible: parse("editor.invisible")?,
         editor_document_highlight_bracket_background: parse(
             "editor.document_highlight.bracket_background",
         )?,
@@ -271,6 +272,7 @@ mod tests {
         assert_eq!(colors.editor_subheader_background, gpui::rgba(0x2f343eff));
         assert_eq!(colors.text, gpui::rgba(0xdce0e5ff));
         assert_eq!(colors.editor_selection_background, gpui::rgba(0x74ade83d));
+        assert_eq!(colors.editor_invisible, gpui::rgba(0x4e5a5fff));
         assert_eq!(
             colors.editor_document_highlight_bracket_background,
             gpui::rgba(0x74ade81a)
@@ -299,6 +301,7 @@ mod tests {
         assert_eq!(colors.editor_subheader_background, gpui::rgba(0xebebecff));
         assert_eq!(colors.text, gpui::rgba(0x242529ff));
         assert_eq!(colors.editor_selection_background, gpui::rgba(0x5c78e23d));
+        assert_eq!(colors.editor_invisible, gpui::rgba(0xb4b4bbff));
         assert_eq!(
             colors.editor_document_highlight_bracket_background,
             gpui::rgba(0x5c78e225)
@@ -355,6 +358,7 @@ mod tests {
             "editor.line_number" = "#888888ff"
             "editor.active_line_number" = "#666666ff"
             "editor.selection.background" = "#5555553d"
+            "editor.invisible" = "#888888ff"
             "editor.document_highlight.bracket_background" = "#00ff004d"
             "search.match_background" = "#5555558c"
             "search.active_match_background" = "#ffff0066"

@@ -23,8 +23,8 @@ use crate::SelectionSet;
 
 use super::display_map::{
     BufferPoint, DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint, DisplayRow,
-    DisplaySnapshot, FoldRowSegment, ProjectedLineIndex, ProjectedRange, RowStyleInput,
-    StreamLineSource, WrapRowInfo, WrapViewportRowKind, byte_for_display_column,
+    DisplaySnapshot, FoldRowSegment, ProjectedLineIndex, ProjectedRange, RenderedWhitespace,
+    RowStyleInput, StreamLineSource, WrapRowInfo, WrapViewportRowKind, byte_for_display_column,
     render_viewport_row,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
@@ -105,6 +105,7 @@ struct LayoutLine {
     logical_line: Option<Line>,
     origin: Point<Pixels>,
     shaped: ShapedLine,
+    whitespaces: Vec<RenderedWhitespace>,
     global_utf16_start: usize,
     wrap_info: Option<WrapRowInfo>,
     /// 折叠合并行的段表（anchor 文本 + 占位符 + 闭合尾段；命中测试与占位符点击用）。
@@ -282,6 +283,7 @@ pub(super) struct PrepaintState {
     layout: Arc<EditorLayout>,
     selections: Vec<SelectionHighlight>,
     bracket_matches: Vec<PaintQuad>,
+    selected_whitespace: Option<SelectedWhitespaceMarkers>,
     carets: Vec<PaintQuad>,
     ime_caret_bounds: Option<Bounds<Pixels>>,
     hitbox: gpui::Hitbox,
@@ -318,6 +320,22 @@ struct SelectionHighlight {
 struct SelectionHighlightLine {
     start_x: Pixels,
     end_x: Pixels,
+}
+
+struct SelectedWhitespaceMarkers {
+    symbol: ShapedLine,
+    origins: Vec<Point<Pixels>>,
+    line_height: Pixels,
+}
+
+impl SelectedWhitespaceMarkers {
+    fn paint(&self, window: &mut Window, cx: &mut App) {
+        for origin in &self.origins {
+            if let Err(error) = self.symbol.paint(*origin, self.line_height, window, cx) {
+                eprintln!("Editor 空白标记绘制失败：{error}");
+            }
+        }
+    }
 }
 
 impl SelectionHighlight {
@@ -901,6 +919,8 @@ impl Element for EditorElement {
         }
         let block_elements = build_block_elements(&layout, &self.editor, window, cx);
         let layout = Arc::new(layout);
+        let selected_whitespace =
+            layout_selected_whitespace(&selections, &layout, line_height, window, cx);
         let (selections, carets) = layout_selections(&selections, &layout, line_height, cx);
         let mut bracket_matches = Vec::new();
         if let Some(pair) = matching_bracket_pair {
@@ -1016,6 +1036,7 @@ impl Element for EditorElement {
             layout,
             selections,
             bracket_matches,
+            selected_whitespace,
             carets,
             ime_caret_bounds,
             hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
@@ -1359,6 +1380,9 @@ impl Element for EditorElement {
                         continue;
                     }
                 }
+                if let Some(markers) = &prepaint.selected_whitespace {
+                    markers.paint(window, cx);
+                }
                 if show_cursor {
                     for caret in prepaint.carets.drain(..) {
                         window.paint_quad(caret);
@@ -1691,6 +1715,7 @@ fn layout_visible_lines(
                          utf16_start: usize,
                          wrap_info: Option<WrapRowInfo>,
                          fold_segments: Option<Vec<FoldRowSegment>>,
+                         whitespaces: Vec<RenderedWhitespace>,
                          window_start_column: usize,
                          runs: Vec<TextRun>| {
         let shaped =
@@ -1707,6 +1732,7 @@ fn layout_visible_lines(
                 text_bounds.top() + line_height * (row - start) - scroll_offset.y,
             ),
             shaped,
+            whitespaces,
             global_utf16_start: utf16_start,
             wrap_info,
             fold_segments,
@@ -1822,6 +1848,7 @@ fn layout_visible_lines(
                         rendered.utf16_start,
                         rendered.wrap_info,
                         rendered.fold_segments,
+                        rendered.whitespaces,
                         rendered.window_start_column,
                         rendered.runs,
                     );
@@ -1911,6 +1938,90 @@ fn layout_selections(
     }
 
     (selection_highlights, caret_quads)
+}
+
+fn layout_selected_whitespace(
+    selections: &SelectionSet,
+    layout: &EditorLayout,
+    line_height: Pixels,
+    window: &mut Window,
+    cx: &App,
+) -> Option<SelectedWhitespaceMarkers> {
+    let mut ranges = Vec::new();
+    for selection in selections
+        .as_slice()
+        .iter()
+        .copied()
+        .filter(|selection| !selection.is_caret())
+    {
+        if let Ok(projected) = layout
+            .display_snapshot
+            .project_text_range(selection.range())
+        {
+            ranges.extend(projected);
+        }
+    }
+    if ranges.is_empty() {
+        return None;
+    }
+
+    let mut positions = Vec::new();
+    for line in &layout.lines {
+        let row = ProjectedLineIndex::new(line.row.get());
+        for whitespace in &line.whitespaces {
+            let column = LogicalColumn::new(whitespace.display_column);
+            let selected = ranges.iter().any(|range| {
+                let start = range.start();
+                let end = range.end();
+                (row > start.line() || (row == start.line() && column >= start.column()))
+                    && (row < end.line() || (row == end.line() && column < end.column()))
+            });
+            if !selected || whitespace.byte_range.end > line.shaped.text.len() {
+                continue;
+            }
+            let start_x = line.shaped.x_for_index(whitespace.byte_range.start);
+            let end_x = line.shaped.x_for_index(whitespace.byte_range.end);
+            positions.push((
+                point(line.origin.x + start_x, line.origin.y),
+                end_x - start_x,
+            ));
+        }
+    }
+    if positions.is_empty() {
+        return None;
+    }
+
+    let marker = "•";
+    let text_style = window.text_style();
+    let font_size = text_style.font_size.to_pixels(window.rem_size()) / 2.;
+    let symbol = window.text_system().shape_line(
+        marker.into(),
+        font_size,
+        &[TextRun {
+            len: marker.len(),
+            font: text_style.font(),
+            color: color::current(cx).editor_invisible.into(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }],
+        None,
+    );
+    let origins = positions
+        .into_iter()
+        .map(|(origin, whitespace_width)| {
+            point(
+                origin.x + (whitespace_width - symbol.width).max(Pixels::ZERO) / 2.,
+                origin.y,
+            )
+        })
+        .collect();
+
+    Some(SelectedWhitespaceMarkers {
+        symbol,
+        origins,
+        line_height,
+    })
 }
 
 fn layout_selection_range(
@@ -2734,6 +2845,70 @@ mod tests {
                     highlight.lines[0].end_x,
                     layout.lines[0].origin.x + layout.lines[0].shaped.width + px(6.),
                     "非末行应按 Zed 语义延伸两个圆角半径"
+                );
+            })
+            .expect("测试窗口应保持可用");
+    }
+
+    #[gpui::test]
+    fn selected_spaces_render_one_dot_each_without_treating_tabs_as_spaces(
+        cx: &mut TestAppContext,
+    ) {
+        let window = cx.add_window(|_, _| Empty);
+        window
+            .update(cx, |_, window, cx| {
+                let snapshot = Buffer::scratch("a  b\tc".to_owned(), BufferConfig::default())
+                    .expect("测试 Buffer 应能创建")
+                    .snapshot();
+                let layout = layout_visible_lines(
+                    DisplayMap::new(snapshot.clone()).snapshot(),
+                    None,
+                    EditorPresentation::new(&snapshot, None),
+                    None,
+                    VisibleLineLayoutParams {
+                        geometry: EditorGeometry {
+                            text_bounds: Bounds::new(
+                                point(px(0.), px(0.)),
+                                size(px(400.), px(40.)),
+                            ),
+                            text_clip_bounds: Bounds::new(
+                                point(px(0.), px(0.)),
+                                size(px(400.), px(40.)),
+                            ),
+                            gutter: None,
+                        },
+                        active_lines: &BTreeSet::new(),
+                        foldable_lines: &BTreeSet::new(),
+                        fold_anchor_lines: &BTreeSet::new(),
+                        start_row: DisplayRow::ZERO,
+                        scroll_offset: point(px(0.), px(0.)),
+                        line_height: px(20.),
+                        diff_rows: &[],
+                    },
+                    window,
+                    cx,
+                );
+
+                assert_eq!(layout.lines[0].whitespaces.len(), 2);
+                let selected_spaces = SelectionSet::new(vec![crate::Selection::new(
+                    ByteOffset::new(1),
+                    ByteOffset::new(3),
+                )]);
+                let markers =
+                    layout_selected_whitespace(&selected_spaces, &layout, px(20.), window, cx)
+                        .expect("选中的两个空格都应生成圆点标记");
+                assert_eq!(markers.symbol.text.as_ref(), "•");
+                assert_eq!(markers.origins.len(), 2);
+                assert!(markers.origins[0].x < markers.origins[1].x);
+
+                let selected_tab = SelectionSet::new(vec![crate::Selection::new(
+                    ByteOffset::new(4),
+                    ByteOffset::new(5),
+                )]);
+                assert!(
+                    layout_selected_whitespace(&selected_tab, &layout, px(20.), window, cx,)
+                        .is_none(),
+                    "tab 展开的空格不能被误画成多个圆点"
                 );
             })
             .expect("测试窗口应保持可用");

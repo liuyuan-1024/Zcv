@@ -643,6 +643,9 @@ pub(crate) struct WrapRowInfo {
 pub(crate) struct RenderedViewportRow {
     pub(crate) display_text: String,
     pub(crate) runs: Vec<gpui::TextRun>,
+    /// 可显示为空白标记的真实空白字符；
+    /// 排除 tab 展开、行内提示、折叠占位符与软换行假缩进。
+    pub(crate) whitespaces: Vec<RenderedWhitespace>,
     pub utf16_start: usize,
     pub(crate) logical_line: Option<Line>,
     pub(crate) gutter_line: Option<Line>,
@@ -650,6 +653,15 @@ pub(crate) struct RenderedViewportRow {
     pub(crate) fold_segments: Option<Vec<FoldRowSegment>>,
     /// 水平窗口化后 shaped 文本起点在行内的显示列（0 = 未窗口化，渲染端据此补偿行原点）。
     pub(crate) window_start_column: usize,
+}
+
+/// 已进入最终塑形文本的真实空白字符位置。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RenderedWhitespace {
+    /// 在 `display_text` 中的 UTF-8 字节范围。
+    pub(crate) byte_range: Range<usize>,
+    /// 在完整显示行中的字符列，用于判断是否落入选区。
+    pub(crate) display_column: usize,
 }
 
 /// 渲染一行的样式输入：语法高亮 / 搜索背景 / 标记范围，管线内组装为行样式。
@@ -780,6 +792,28 @@ pub(crate) fn render_viewport_row(
     for chunk in &rendered.chunks {
         display_text.push_str(chunk.text);
     }
+    let mut whitespaces = Vec::new();
+    let mut shaped_byte_offset = *indent;
+    let mut display_column = window_start_column + *indent;
+    for chunk in &rendered.chunks {
+        if !chunk.is_tab && !chunk.is_inlay && !chunk.is_placeholder {
+            whitespaces.extend(
+                chunk
+                    .text
+                    .char_indices()
+                    .filter_map(|(byte_offset, character)| {
+                        character.is_whitespace().then_some(RenderedWhitespace {
+                            byte_range: shaped_byte_offset + byte_offset
+                                ..shaped_byte_offset + byte_offset + character.len_utf8(),
+                            display_column: display_column
+                                + chunk.text[..byte_offset].chars().count(),
+                        })
+                    }),
+            );
+        }
+        shaped_byte_offset += chunk.text.len();
+        display_column += chunk.text.chars().count();
+    }
     let mut runs = Vec::with_capacity(rendered.chunks.len() + 1);
     if *indent > 0 {
         runs.push(gpui::TextRun {
@@ -815,6 +849,7 @@ pub(crate) fn render_viewport_row(
     RenderedViewportRow {
         display_text,
         runs,
+        whitespaces,
         utf16_start,
         logical_line,
         gutter_line,

@@ -47,7 +47,6 @@ impl Render for CursorPosition {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
         Button::text("status-bar.cursor", self.cursor_text.clone())
             .label("跳转到行/列")
-            .disabled(true)
             .into_any_element()
     }
 }

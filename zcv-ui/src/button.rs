@@ -6,14 +6,24 @@
 use std::rc::Rc;
 
 use gpui::{
-    Action, App, ClickEvent, Component, ElementId, IntoElement, MouseButton, RenderOnce, Window,
-    div, prelude::*,
+    Action, App, ClickEvent, Component, CursorStyle, ElementId, IntoElement, MouseButton,
+    RenderOnce, Window, div, prelude::*,
 };
 use zcv_theme::{color, space, typography};
 
 use crate::{SvgIcon, TooltipSpec};
 
 type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+
+fn cursor_for_state(disabled: bool, has_click_handler: bool) -> Option<CursorStyle> {
+    if disabled {
+        Some(CursorStyle::OperationNotAllowed)
+    } else if has_click_handler {
+        Some(CursorStyle::PointingHand)
+    } else {
+        None
+    }
+}
 
 /// 按钮视觉样式。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -150,14 +160,16 @@ impl RenderOnce for Button {
                 .border_color(colors.border_variant)
                 .bg(colors.panel_background),
         };
-        // 只有可点击的按钮才显示手型光标。
         let clickable = on_click.is_some() && !disabled;
+        match cursor_for_state(disabled, on_click.is_some()) {
+            Some(CursorStyle::OperationNotAllowed) => element = element.cursor_not_allowed(),
+            Some(CursorStyle::PointingHand) => element = element.cursor_pointer(),
+            _ => {}
+        }
         if clickable {
-            element = element
-                .cursor_pointer()
-                .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-                    cx.stop_propagation()
-                });
+            element = element.on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                cx.stop_propagation()
+            });
         }
         element = element.occlude();
         if let Some(build) = tooltip.build() {
@@ -195,5 +207,31 @@ impl RenderOnce for Button {
                 .into_any_element(),
         };
         element.child(content)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disabled_state_uses_not_allowed_cursor() {
+        assert_eq!(
+            cursor_for_state(true, true),
+            Some(CursorStyle::OperationNotAllowed)
+        );
+        assert_eq!(
+            cursor_for_state(true, false),
+            Some(CursorStyle::OperationNotAllowed)
+        );
+    }
+
+    #[test]
+    fn enabled_state_preserves_existing_interaction() {
+        assert_eq!(
+            cursor_for_state(false, true),
+            Some(CursorStyle::PointingHand)
+        );
+        assert_eq!(cursor_for_state(false, false), None);
     }
 }

@@ -57,7 +57,6 @@ impl Render for ActiveBufferLanguage {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
         Button::text("status-bar.language", self.language.clone())
             .label("当前语言")
-            .disabled(true)
             .into_any_element()
     }
 }

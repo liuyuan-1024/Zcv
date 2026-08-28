@@ -98,6 +98,80 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn toggle_fold_action_uses_the_cursor_block_and_the_whole_folded_row(cx: &mut TestAppContext) {
+    let text = "fn main() {\n    if true {\n        let x = 1;\n    }\n}\nfn other() {}";
+    let buffer = cx.new(|_| {
+        Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+    });
+    let language_buffer =
+        cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
+    let editor = cx.new(|cx| Editor::from_language_buffer(language_buffer, EditorMode::Full, cx));
+    cx.run_until_parked();
+
+    // 光标在 if 块内部时，折叠包含它的最内层范围，而不要求位于 crease 所在行。
+    editor.update(cx, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(ByteOffset::new(
+            text.find("let x").expect("测试文本应包含 let x"),
+        )));
+        editor.toggle_fold_at_cursor(cx);
+    });
+    assert_eq!(
+        cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+        4,
+        "应只折叠内层 if 块"
+    );
+
+    // 光标位于折叠占位符之后的闭合尾段时，仍按同一显示行展开。
+    editor.update(cx, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(ByteOffset::new(
+            text.find("    }\n}").expect("测试文本应包含内层闭合括号") + 4,
+        )));
+        editor.toggle_fold_at_cursor(cx);
+    });
+    assert_eq!(
+        cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+        6,
+        "折叠合并行任意位置都应能展开"
+    );
+}
+
+#[gpui::test]
+fn clicking_the_crease_toggles_fold_without_selecting_the_line(cx: &mut TestAppContext) {
+    let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
+    let buffer = cx.new(|_| {
+        Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+    });
+    let language_buffer =
+        cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
+    let (editor, cx) = cx.add_window_view({
+        let language_buffer = language_buffer.clone();
+        move |_, cx| Editor::from_language_buffer(language_buffer, EditorMode::Full, cx)
+    });
+    cx.run_until_parked();
+
+    let initial_selection = SelectionSet::caret(ByteOffset::new(3));
+    editor.update(cx, |editor, _| {
+        editor.set_selections(initial_selection.clone());
+    });
+
+    // 默认测试字体下，首行 crease 位于 gutter 右侧的折叠指示列中心。
+    cx.simulate_click(point(px(54.), px(12.)), gpui::Modifiers::default());
+
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(
+            editor.display_map.line_count(),
+            4,
+            "点击 crease 应折叠首个函数"
+        );
+        assert_eq!(
+            editor.selections(),
+            initial_selection,
+            "crease 点击不应继续冒泡成 gutter 整行选择"
+        );
+    });
+}
+
+#[gpui::test]
 fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
     // 回归：编辑后折叠范围与折叠状态必须保持（crease 箭头显示依赖 fold_ranges / fold_anchor_lines）。
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";

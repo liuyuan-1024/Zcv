@@ -330,10 +330,12 @@ fn build_crease_toggles(
         };
         let line = row.logical_line;
         let editor = editor.clone();
+        let focus = editor.read(cx).focus_handle();
         let mut toggle = Button::icon(("gutter_crease", line.get()), path)
             .label(if folded { "展开" } else { "折叠" })
             .shortcut(&ToggleFold, cx)
-            .on_click(move |_event, _window, cx| {
+            .on_click(move |_event, window, cx| {
+                window.focus(&focus);
                 editor.update(cx, |editor, cx| editor.toggle_fold_at_line(line, cx));
             })
             .into_any_element();

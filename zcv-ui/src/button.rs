@@ -6,7 +6,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    Action, App, ClickEvent, Component, ElementId, IntoElement, RenderOnce, Window, div, prelude::*,
+    Action, App, ClickEvent, Component, ElementId, IntoElement, MouseButton, RenderOnce, Window,
+    div, prelude::*,
 };
 use zcv_theme::{color, space, typography};
 
@@ -150,8 +151,13 @@ impl RenderOnce for Button {
                 .bg(colors.panel_background),
         };
         // 只有可点击的按钮才显示手型光标。
-        if on_click.is_some() && !disabled {
-            element = element.cursor_pointer();
+        let clickable = on_click.is_some() && !disabled;
+        if clickable {
+            element = element
+                .cursor_pointer()
+                .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                    cx.stop_propagation()
+                });
         }
         element = element.occlude();
         if let Some(build) = tooltip.build() {
@@ -166,7 +172,10 @@ impl RenderOnce for Button {
         }
         if !disabled && let Some(ref handler) = on_click {
             let h = Rc::clone(handler);
-            element = element.on_click(move |event, window, cx| h(event, window, cx));
+            element = element.on_click(move |event, window, cx| {
+                h(event, window, cx);
+                cx.stop_propagation();
+            });
         }
 
         // 内容形态；图标统一经 SvgIcon 渲染。

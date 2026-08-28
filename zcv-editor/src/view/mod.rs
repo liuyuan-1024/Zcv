@@ -479,6 +479,67 @@ impl Editor {
         cx.notify();
     }
 
+    /// 按当前光标所在显示行切换折叠。
+    ///
+    /// 已折叠时，入口文本、占位符与闭合尾段属于同一显示行，从其中任意位置触发都展开该行的折叠；
+    /// 未折叠时，折叠包含光标逻辑行的最内层范围。
+    fn toggle_fold_at_cursor(&mut self, cx: &mut Context<Self>) {
+        let head = self.resolved_selections().primary().head();
+        let display_snapshot = self.display_map.snapshot();
+        let Ok(display_row) = display_snapshot
+            .offset_to_display_point(head)
+            .map(DisplayPoint::row)
+        else {
+            return;
+        };
+        let folded_anchor_lines = display_snapshot
+            .fold_anchor_lines()
+            .into_iter()
+            .filter(|line| display_snapshot.line_to_display_row(*line) == Some(display_row))
+            .collect::<Vec<_>>();
+
+        if !folded_anchor_lines.is_empty() {
+            for line in folded_anchor_lines {
+                let line_range =
+                    LineRange::new(line, Line::new(line.get() + 1)).expect("折叠入口行 +1 应合法");
+                if let Err(error) = self.display_map.unfold_lines(line_range) {
+                    eprintln!("展开折叠失败：{error}");
+                }
+            }
+            cx.notify();
+            return;
+        }
+
+        let snapshot = self.render_snapshot();
+        let Ok(head_line) = snapshot.byte_to_line(head) else {
+            return;
+        };
+        let range = self
+            .fold_ranges
+            .iter()
+            .filter_map(|range| {
+                let start = snapshot
+                    .byte_to_line(ByteOffset::new(range.range.start))
+                    .ok()?;
+                let end = snapshot
+                    .byte_to_line(ByteOffset::new(range.range.end))
+                    .ok()?;
+                (start <= head_line && head_line <= end).then_some((range, start, end))
+            })
+            .min_by_key(|(_, start, end)| (head_line.get() - start.get(), end.get() - start.get()))
+            .map(|(range, _, _)| range.range.clone());
+
+        if let Some(range) = range
+            && let Err(error) = self.display_map.fold_range(
+                TextRange::new(ByteOffset::new(range.start), ByteOffset::new(range.end))
+                    .expect("折叠范围应合法"),
+            )
+        {
+            eprintln!("折叠失败：{error}");
+        }
+        cx.notify();
+    }
+
     /// 从"已展开的删除 hunk × HEAD 文本"重建合成行配置（锚定新侧行，文本按旧行范围切片）。
     fn rebuild_inserted(&mut self, cx: &App) {
         let mut inserted = InsertedLines::new();
@@ -1645,11 +1706,7 @@ impl Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let snapshot = self.render_snapshot();
-        let head = self.resolved_selections().primary().head();
-        if let Ok(position) = snapshot.byte_to_position(head) {
-            self.toggle_fold_at_line(position.line(), cx);
-        }
+        self.toggle_fold_at_cursor(cx);
     }
 
     pub(super) fn handle_unfold_all(

@@ -1,6 +1,5 @@
 //! Editor 的逐帧文本布局、绘制与像素命中测试。
 
-use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::sync::Arc;
@@ -105,6 +104,8 @@ struct LayoutLine {
     logical_line: Option<Line>,
     origin: Point<Pixels>,
     shaped: ShapedLine,
+    /// run 背景源（搜索高亮、语法背景）：shaped 文本内的字节区间 + 颜色，与选区一同进入背景片段合成管线。
+    background_runs: Vec<(Range<usize>, gpui::Rgba)>,
     whitespaces: Vec<RenderedWhitespace>,
     global_utf16_start: usize,
     wrap_info: Option<WrapRowInfo>,
@@ -281,7 +282,8 @@ impl EditorInputLayout {
 
 pub(super) struct PrepaintState {
     layout: Arc<EditorLayout>,
-    selections: Vec<SelectionHighlight>,
+    /// 每行一个背景片段表（选区 + run 背景合成，互不重叠，一次绘制）。
+    background_fragments: Vec<Vec<BackgroundFragment>>,
     bracket_matches: Vec<PaintQuad>,
     selected_whitespace: Option<SelectedWhitespaceMarkers>,
     carets: Vec<PaintQuad>,
@@ -315,19 +317,225 @@ struct DiffHunkControls {
     element: Option<AnyElement>,
 }
 
-#[derive(Debug)]
-struct SelectionHighlight {
-    start_y: Pixels,
-    line_height: Pixels,
-    lines: Vec<SelectionHighlightLine>,
-    color: gpui::Rgba,
-    corner_radius: Pixels,
+/// 背景片段合成管线：把选区与 run 背景（搜索高亮、语法背景）合成为每行互不重叠的着色片段，一次绘制。
+/// 源按边界切分、重叠处按 base → 选区 → run 顺序混合（维持既有视觉层级），选区片段携带角样式（轮廓首末行外角圆角、行阶梯处宽行内凹/窄行外凸），run 片段为直角矩形。
+const TOP_LEFT: usize = 0;
+const TOP_RIGHT: usize = 1;
+const BOTTOM_RIGHT: usize = 2;
+const BOTTOM_LEFT: usize = 3;
+
+/// 片段角样式。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CornerStyle {
+    /// 直角（内部接缝与 run 片段）。
+    Straight,
+    /// 外角圆角（选区轮廓首末行）。
+    Round,
+    /// 内凹切角（阶梯处更宽一行）。
+    Concave,
+    /// 外凸补角（阶梯处更窄一行）。
+    Convex,
 }
 
-#[derive(Debug)]
-struct SelectionHighlightLine {
+/// 角样式 + 曲线横向跨度（Round 取轮廓行宽，阶梯角取两行外缘差，均封顶圆角半径）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Corner {
+    style: CornerStyle,
+    width: Pixels,
+}
+
+const STRAIGHT_CORNER: Corner = Corner {
+    style: CornerStyle::Straight,
+    width: Pixels::ZERO,
+};
+
+const ALL_STRAIGHT: [Corner; 4] = [STRAIGHT_CORNER; 4];
+
+/// 选区在单行的投影片段：角样式携带轮廓上下文（首末行圆角、阶梯宽行内凹/窄行外凸）。
+#[derive(Clone, Debug)]
+struct SelectionLineSegment {
     start_x: Pixels,
     end_x: Pixels,
+    corners: [Corner; 4],
+}
+
+/// 合成后的背景片段：一行内互不重叠的着色区间。
+#[derive(Debug)]
+struct BackgroundFragment {
+    start_x: Pixels,
+    end_x: Pixels,
+    color: gpui::Rgba,
+    /// 是否选区源（混合层级与绘制顺序：选区片段在下、run 片段在上）。
+    selection: bool,
+    corners: [Corner; 4],
+}
+
+impl BackgroundFragment {
+    /// 全直角片段直接画矩形；带角样式的选区片段按四角规则构建轮廓路径。
+    fn paint(&self, y: Pixels, line_height: Pixels, corner_radius: Pixels, window: &mut Window) {
+        let top_left = point(self.start_x, y);
+        let top_right = point(self.end_x, y);
+        let bottom_right = point(self.end_x, y + line_height);
+        let bottom_left = point(self.start_x, y + line_height);
+        let curve_height = point(Pixels::ZERO, corner_radius);
+        let [
+            top_left_corner,
+            top_right_corner,
+            bottom_right_corner,
+            bottom_left_corner,
+        ] = self.corners;
+
+        if self
+            .corners
+            .iter()
+            .all(|corner| corner.style == CornerStyle::Straight)
+        {
+            window.paint_quad(fill(
+                Bounds::from_corners(top_left, bottom_right),
+                self.color,
+            ));
+            return;
+        }
+
+        // 顺时针：左上 → 顶边 → 右上 → 右边 → 右下 → 底边 → 左下 → 左边。
+        let mut builder = gpui::PathBuilder::fill();
+        builder.move_to(match top_left_corner.style {
+            CornerStyle::Round | CornerStyle::Concave => {
+                top_left + point(top_left_corner.width, Pixels::ZERO)
+            }
+            CornerStyle::Convex => top_left - point(top_left_corner.width, Pixels::ZERO),
+            CornerStyle::Straight => top_left,
+        });
+        match top_right_corner.style {
+            CornerStyle::Straight => builder.line_to(top_right),
+            CornerStyle::Round | CornerStyle::Concave => {
+                builder.line_to(top_right - point(top_right_corner.width, Pixels::ZERO));
+                builder.curve_to(top_right + curve_height, top_right);
+            }
+            CornerStyle::Convex => {
+                builder.line_to(top_right + point(top_right_corner.width, Pixels::ZERO));
+                builder.curve_to(top_right + curve_height, top_right);
+            }
+        }
+        match bottom_right_corner.style {
+            CornerStyle::Straight => builder.line_to(bottom_right),
+            CornerStyle::Round | CornerStyle::Concave => {
+                builder.line_to(bottom_right - curve_height);
+                builder.curve_to(
+                    bottom_right - point(bottom_right_corner.width, Pixels::ZERO),
+                    bottom_right,
+                );
+            }
+            CornerStyle::Convex => {
+                builder.line_to(bottom_right - curve_height);
+                builder.curve_to(
+                    bottom_right + point(bottom_right_corner.width, Pixels::ZERO),
+                    bottom_right,
+                );
+            }
+        }
+        match bottom_left_corner.style {
+            CornerStyle::Straight => builder.line_to(bottom_left),
+            CornerStyle::Round | CornerStyle::Concave => {
+                builder.line_to(bottom_left + point(bottom_left_corner.width, Pixels::ZERO));
+                builder.curve_to(bottom_left - curve_height, bottom_left);
+            }
+            CornerStyle::Convex => {
+                builder.line_to(bottom_left - point(bottom_left_corner.width, Pixels::ZERO));
+                builder.curve_to(bottom_left - curve_height, bottom_left);
+            }
+        }
+        match top_left_corner.style {
+            CornerStyle::Straight => builder.line_to(top_left),
+            CornerStyle::Round | CornerStyle::Concave => {
+                builder.line_to(top_left + curve_height);
+                builder.curve_to(
+                    top_left + point(top_left_corner.width, Pixels::ZERO),
+                    top_left,
+                );
+            }
+            CornerStyle::Convex => {
+                builder.line_to(top_left + curve_height);
+                builder.curve_to(
+                    top_left - point(top_left_corner.width, Pixels::ZERO),
+                    top_left,
+                );
+            }
+        }
+        if let Ok(path) = builder.build() {
+            window.paint_path(path, self.color);
+        }
+    }
+}
+
+/// 阶梯角：本行外缘比邻行更远（右缘更大、左缘更小）→ 本行更宽 → 内凹；反之外凸；齐平 → 直角。
+fn step_corner(own: Pixels, other: Pixels, right_side: bool, corner_radius: Pixels) -> Corner {
+    if own == other {
+        return STRAIGHT_CORNER;
+    }
+    let width = if own > other {
+        own - other
+    } else {
+        other - own
+    };
+    let wider = if right_side { own > other } else { own < other };
+    Corner {
+        style: if wider {
+            CornerStyle::Concave
+        } else {
+            CornerStyle::Convex
+        },
+        width: (width / 2.).min(corner_radius),
+    }
+}
+
+/// 按轮廓上下文为每行计算四角样式：首行外角圆角、末行下外角圆角，行阶梯处宽行内凹/窄行外凸。
+fn finish_selection_contour(
+    contour: &[(usize, Pixels, Pixels)],
+    corner_radius: Pixels,
+    per_line: &mut [Vec<SelectionLineSegment>],
+) {
+    let count = contour.len();
+    if count == 0 {
+        return;
+    }
+    for (index, &(line_ix, start_x, end_x)) in contour.iter().enumerate() {
+        let round_width = ((end_x - start_x) / 2.).min(corner_radius);
+        let mut corners = ALL_STRAIGHT;
+        if index == 0 {
+            corners[TOP_LEFT] = Corner {
+                style: CornerStyle::Round,
+                width: round_width,
+            };
+            corners[TOP_RIGHT] = Corner {
+                style: CornerStyle::Round,
+                width: round_width,
+            };
+        } else {
+            let (_, prev_start, prev_end) = contour[index - 1];
+            corners[TOP_LEFT] = step_corner(start_x, prev_start, false, corner_radius);
+            corners[TOP_RIGHT] = step_corner(end_x, prev_end, true, corner_radius);
+        }
+        if index == count - 1 {
+            corners[BOTTOM_LEFT] = Corner {
+                style: CornerStyle::Round,
+                width: round_width,
+            };
+            corners[BOTTOM_RIGHT] = Corner {
+                style: CornerStyle::Round,
+                width: round_width,
+            };
+        } else {
+            let (_, next_start, next_end) = contour[index + 1];
+            corners[BOTTOM_LEFT] = step_corner(start_x, next_start, false, corner_radius);
+            corners[BOTTOM_RIGHT] = step_corner(end_x, next_end, true, corner_radius);
+        }
+        per_line[line_ix].push(SelectionLineSegment {
+            start_x,
+            end_x,
+            corners,
+        });
+    }
 }
 
 struct SelectedWhitespaceMarkers {
@@ -342,94 +550,6 @@ impl SelectedWhitespaceMarkers {
             if let Err(error) = self.symbol.paint(*origin, self.line_height, window, cx) {
                 eprintln!("Editor 空白标记绘制失败：{error}");
             }
-        }
-    }
-}
-
-impl SelectionHighlight {
-    fn paint(&self, window: &mut Window) {
-        // 首行起点落在后续窄行终点右侧时，单条轮廓会自交；与 Zed 一致拆成两个轮廓。
-        if self.lines.len() >= 2 && self.lines[0].start_x > self.lines[1].end_x {
-            self.paint_lines(self.start_y, &self.lines[..1], window);
-            self.paint_lines(self.start_y + self.line_height, &self.lines[1..], window);
-        } else {
-            self.paint_lines(self.start_y, &self.lines, window);
-        }
-    }
-
-    fn paint_lines(&self, start_y: Pixels, lines: &[SelectionHighlightLine], window: &mut Window) {
-        let Some(first_line) = lines.first() else {
-            return;
-        };
-        let last_line = lines.last().expect("非空选区轮廓必须有末行");
-        let first_top_left = point(first_line.start_x, start_y);
-        let first_top_right = point(first_line.end_x, start_y);
-        let curve_height = point(Pixels::ZERO, self.corner_radius);
-        let curve_width = |start_x: Pixels, end_x: Pixels| {
-            point(
-                ((end_x - start_x) / 2.).min(self.corner_radius),
-                Pixels::ZERO,
-            )
-        };
-
-        let top_curve_width = curve_width(first_line.start_x, first_line.end_x);
-        let mut builder = gpui::PathBuilder::fill();
-        builder.move_to(first_top_right - top_curve_width);
-        builder.curve_to(first_top_right + curve_height, first_top_right);
-
-        let mut iter = lines.iter().enumerate().peekable();
-        while let Some((index, line)) = iter.next() {
-            let bottom_right = point(line.end_x, start_y + (index + 1) as f32 * self.line_height);
-            if let Some((_, next_line)) = iter.peek() {
-                let next_top_right = point(next_line.end_x, bottom_right.y);
-                match next_top_right
-                    .x
-                    .partial_cmp(&bottom_right.x)
-                    .expect("选区横坐标必须可比较")
-                {
-                    Ordering::Equal => builder.line_to(bottom_right),
-                    Ordering::Less => {
-                        let width = curve_width(next_top_right.x, bottom_right.x);
-                        builder.line_to(bottom_right - curve_height);
-                        builder.curve_to(bottom_right - width, bottom_right);
-                        builder.line_to(next_top_right + width);
-                        builder.curve_to(next_top_right + curve_height, next_top_right);
-                    }
-                    Ordering::Greater => {
-                        let width = curve_width(bottom_right.x, next_top_right.x);
-                        builder.line_to(bottom_right - curve_height);
-                        builder.curve_to(bottom_right + width, bottom_right);
-                        builder.line_to(next_top_right - width);
-                        builder.curve_to(next_top_right + curve_height, next_top_right);
-                    }
-                }
-            } else {
-                let width = curve_width(line.start_x, line.end_x);
-                builder.line_to(bottom_right - curve_height);
-                builder.curve_to(bottom_right - width, bottom_right);
-
-                let bottom_left = point(line.start_x, bottom_right.y);
-                builder.line_to(bottom_left + width);
-                builder.curve_to(bottom_left - curve_height, bottom_left);
-            }
-        }
-
-        if first_line.start_x > last_line.start_x {
-            let width = curve_width(last_line.start_x, first_line.start_x);
-            let second_top_left = point(last_line.start_x, start_y + self.line_height);
-            builder.line_to(second_top_left + curve_height);
-            builder.curve_to(second_top_left + width, second_top_left);
-            let first_bottom_left = point(first_line.start_x, second_top_left.y);
-            builder.line_to(first_bottom_left - width);
-            builder.curve_to(first_bottom_left - curve_height, first_bottom_left);
-        }
-
-        builder.line_to(first_top_left + curve_height);
-        builder.curve_to(first_top_left + top_curve_width, first_top_left);
-        builder.line_to(first_top_right - top_curve_width);
-
-        if let Ok(path) = builder.build() {
-            window.paint_path(path, self.color);
         }
     }
 }
@@ -1138,7 +1258,9 @@ impl Element for EditorElement {
         let layout = Arc::new(layout);
         let selected_whitespace =
             layout_selected_whitespace(&selections, &layout, line_height, window, cx);
-        let (selections, carets) = layout_selections(&selections, &layout, line_height, cx);
+        // 背景片段合成：选区与 run 背景逐行合成为互不重叠的片段。
+        let (selection_segments, carets) = layout_selections(&selections, &layout, line_height, cx);
+        let background_fragments = layout_background_fragments(&layout, &selection_segments, cx);
         let mut bracket_matches = Vec::new();
         if let Some(pair) = matching_bracket_pair {
             layout_bracket_pair(pair, &layout, line_height, &mut bracket_matches, cx);
@@ -1259,7 +1381,7 @@ impl Element for EditorElement {
         let expanded_rows = Arc::new(hunk_render.expanded_rows.clone());
         PrepaintState {
             layout,
-            selections,
+            background_fragments,
             bracket_matches,
             selected_whitespace,
             carets,
@@ -1600,21 +1722,27 @@ impl Element for EditorElement {
                         background,
                     ));
                 }
-                for selection in prepaint.selections.drain(..) {
-                    selection.paint(window);
+                // 背景片段合成管线：选区与 run 背景逐行合成为互不重叠的片段，一次绘制。
+                // 选区片段在前、run 片段在后（与既有层级一致：run 背景覆盖选区之上、文本之下）。
+                let line_height = prepaint.layout.line_height;
+                let corner_radius = line_height * 0.15;
+                for (ix, line) in prepaint.layout.lines.iter().enumerate() {
+                    for fragment in prepaint.background_fragments[ix]
+                        .iter()
+                        .filter(|fragment| fragment.selection)
+                    {
+                        fragment.paint(line.origin.y, line_height, corner_radius, window);
+                    }
                 }
                 for bracket_match in prepaint.bracket_matches.drain(..) {
                     window.paint_quad(bracket_match);
                 }
-                // run 背景（搜索高亮、语法背景等）：gpui 原生 paint_background用 decoration_runs 精确绘制，覆盖在选区之上、文本之下。
-                for line in &prepaint.layout.lines {
-                    if let Err(error) = line.shaped.paint_background(
-                        line.origin,
-                        prepaint.layout.line_height,
-                        window,
-                        cx,
-                    ) {
-                        eprintln!("Editor 行背景绘制失败：{error}");
+                for (ix, line) in prepaint.layout.lines.iter().enumerate() {
+                    for fragment in prepaint.background_fragments[ix]
+                        .iter()
+                        .filter(|fragment| !fragment.selection)
+                    {
+                        fragment.paint(line.origin.y, line_height, corner_radius, window);
                     }
                 }
                 for line in &prepaint.layout.lines {
@@ -1986,6 +2114,15 @@ fn layout_visible_lines(
             window
                 .text_system()
                 .shape_line(text.to_owned().into(), font_size, &runs, None);
+        // 收集 run 背景源（字节区间累计自 runs 的覆盖）；无背景的 run 跳过。
+        let mut background_runs = Vec::new();
+        let mut byte_offset = 0usize;
+        for run in &runs {
+            if let Some(background) = run.background_color {
+                background_runs.push((byte_offset..byte_offset + run.len, background.into()));
+            }
+            byte_offset += run.len;
+        }
         let git_diff = diff_kind_for_row(diff_rows, row);
         lines.push(LayoutLine {
             row: DisplayRow::new(row),
@@ -1996,6 +2133,7 @@ fn layout_visible_lines(
                 text_bounds.top() + line_height * (row - start) - scroll_offset.y,
             ),
             shaped,
+            background_runs,
             whitespaces,
             global_utf16_start: utf16_start,
             wrap_info,
@@ -2169,20 +2307,15 @@ pub(crate) fn gutter_dimensions(
     )
 }
 
+/// 把选区布局为每行的投影片段（供背景片段合成管线使用）与光标 quad。
 fn layout_selections(
     selections: &SelectionSet,
     layout: &EditorLayout,
     line_height: Pixels,
     cx: &App,
-) -> (Vec<SelectionHighlight>, Vec<PaintQuad>) {
-    let mut selection_highlights = Vec::new();
+) -> (Vec<Vec<SelectionLineSegment>>, Vec<PaintQuad>) {
+    let mut per_line_segments = vec![Vec::new(); layout.lines.len()];
     let mut caret_quads = Vec::new();
-    let colors = color::current(cx);
-    // 行背景合成：先把半透明 selection 色与 Editor 基础背景展平，再交给文本选区绘制。
-    // 这样 MultiBuffer 的 diff 行、普通上下文行与单文件 Editor 使用同一个最终选区颜色，而不会因后方背景不同产生另一种视觉颜色。
-    let selection_background = colors
-        .editor_background
-        .blend(colors.editor_selection_background);
 
     for selection in selections.as_slice().iter().copied() {
         // 选区存在时也在 head（活动端）绘制光标，表示输入插入点。
@@ -2198,12 +2331,7 @@ fn layout_selections(
             .project_text_range(selection.range())
         {
             for range in ranges {
-                selection_highlights.extend(layout_selection_range(
-                    range,
-                    layout,
-                    line_height,
-                    selection_background,
-                ));
+                layout_selection_segments(range, layout, line_height, &mut per_line_segments);
             }
             if let Some(caret) = caret {
                 caret_quads.push(caret);
@@ -2212,7 +2340,7 @@ fn layout_selections(
         }
     }
 
-    (selection_highlights, caret_quads)
+    (per_line_segments, caret_quads)
 }
 
 fn layout_selected_whitespace(
@@ -2299,22 +2427,22 @@ fn layout_selected_whitespace(
     })
 }
 
-fn layout_selection_range(
+/// 把单个投影选区切分为各显示行的片段：跨行连续段合并为轮廓（行间隙处断开），轮廓上下文在 finish_selection_contour 中计算每行四角样式。
+fn layout_selection_segments(
     range: ProjectedRange,
     layout: &EditorLayout,
     line_height: Pixels,
-    color: gpui::Rgba,
-) -> Vec<SelectionHighlight> {
+    per_line: &mut [Vec<SelectionLineSegment>],
+) {
     let corner_radius = line_height * 0.15;
     let line_end_overshoot = corner_radius * 2.;
     let start = range.start();
     let end = range.end();
-    let mut highlights = Vec::new();
-    let mut current_lines = Vec::new();
-    let mut current_start_y = None;
-    let mut previous_y = None;
 
-    for line in &layout.lines {
+    // 轮廓：连续显示行（行间隙处断开），行内为 (布局行索引, 起点 x, 终点 x)。
+    let mut contour: Vec<(usize, Pixels, Pixels)> = Vec::new();
+    let mut previous_y: Option<Pixels> = None;
+    for (ix, line) in layout.lines.iter().enumerate() {
         let row = ProjectedLineIndex::new(line.row.get());
         if row < start.line() || row > end.line() {
             continue;
@@ -2349,30 +2477,126 @@ fn layout_selection_range(
             continue;
         }
         if previous_y.is_some_and(|previous| line.origin.y != previous + line_height) {
-            highlights.push(SelectionHighlight {
-                start_y: current_start_y.expect("选区轮廓分段必须有起始纵坐标"),
-                line_height,
-                lines: std::mem::take(&mut current_lines),
-                color,
-                corner_radius,
-            });
-            current_start_y = None;
+            finish_selection_contour(&contour, corner_radius, per_line);
+            contour.clear();
         }
-        current_start_y.get_or_insert(line.origin.y);
-        current_lines.push(SelectionHighlightLine { start_x, end_x });
+        contour.push((ix, start_x, end_x));
         previous_y = Some(line.origin.y);
     }
+    finish_selection_contour(&contour, corner_radius, per_line);
+}
 
-    if let Some(start_y) = current_start_y {
-        highlights.push(SelectionHighlight {
-            start_y,
-            line_height,
-            lines: current_lines,
+/// 背景片段合成：逐行把选区与 run 背景（搜索高亮、语法背景）合成为互不重叠的片段。
+/// 混合顺序 base → 选区 → run，与既有视觉层级一致（run 背景覆盖选区之上、文本之下）。
+fn layout_background_fragments(
+    layout: &EditorLayout,
+    selection_segments: &[Vec<SelectionLineSegment>],
+    cx: &App,
+) -> Vec<Vec<BackgroundFragment>> {
+    let colors = color::current(cx);
+    // 先与 Editor 基础背景展平：MultiBuffer 的 diff 行、普通上下文行与单文件 Editor 使用同一个最终选区颜色，不因后方背景不同产生另一种视觉颜色。
+    let selection_background = colors
+        .editor_background
+        .blend(colors.editor_selection_background);
+    layout
+        .lines
+        .iter()
+        .zip(selection_segments)
+        .map(|(line, segments)| {
+            layout_line_background_fragments(line, segments, selection_background)
+        })
+        .collect()
+}
+
+fn layout_line_background_fragments(
+    line: &LayoutLine,
+    selection_segments: &[SelectionLineSegment],
+    selection_background: gpui::Rgba,
+) -> Vec<BackgroundFragment> {
+    // 收集所有源的 x 边界（选区 + run 背景），按边界切分后逐段着色，再合并相邻同色段。
+    let mut boundaries =
+        Vec::with_capacity(selection_segments.len() * 2 + line.background_runs.len() * 2);
+    for segment in selection_segments {
+        boundaries.push(segment.start_x);
+        boundaries.push(segment.end_x);
+    }
+    for (byte_range, _) in &line.background_runs {
+        boundaries.push(line.shaped.x_for_index(byte_range.start));
+        boundaries.push(line.shaped.x_for_index(byte_range.end));
+    }
+    if boundaries.is_empty() {
+        return Vec::new();
+    }
+    boundaries.sort_unstable_by(|a, b| a.partial_cmp(b).expect("背景边界坐标必须可比较"));
+    boundaries.dedup();
+
+    let mut fragments: Vec<BackgroundFragment> = Vec::new();
+    for span in boundaries.windows(2) {
+        let start_x = span[0];
+        let end_x = span[1];
+        if end_x <= start_x {
+            continue;
+        }
+        let selection = selection_segments
+            .iter()
+            .find(|segment| segment.start_x <= start_x && end_x <= segment.end_x);
+        let run = line.background_runs.iter().find(|(byte_range, _)| {
+            let run_start = line.shaped.x_for_index(byte_range.start);
+            let run_end = line.shaped.x_for_index(byte_range.end);
+            run_start <= start_x && end_x <= run_end
+        });
+        let (color, is_selection, corners) = match (selection, run) {
+            (Some(segment), Some((_, run_color))) => (
+                selection_background.blend(*run_color),
+                true,
+                segment_corners(segment, start_x, end_x),
+            ),
+            (Some(segment), None) => (
+                selection_background,
+                true,
+                segment_corners(segment, start_x, end_x),
+            ),
+            (None, Some((_, run_color))) => (*run_color, false, ALL_STRAIGHT),
+            (None, None) => continue,
+        };
+        // 相邻片段同色且接缝两侧无角样式时合并，保持片段数最小。
+        if let Some(last) = fragments.last_mut()
+            && last.end_x == start_x
+            && last.selection == is_selection
+            && last.color == color
+            && last.corners[TOP_RIGHT].style == CornerStyle::Straight
+            && last.corners[BOTTOM_RIGHT].style == CornerStyle::Straight
+            && corners[TOP_LEFT].style == CornerStyle::Straight
+            && corners[BOTTOM_LEFT].style == CornerStyle::Straight
+        {
+            last.end_x = end_x;
+            last.corners[TOP_RIGHT] = corners[TOP_RIGHT];
+            last.corners[BOTTOM_RIGHT] = corners[BOTTOM_RIGHT];
+            continue;
+        }
+        fragments.push(BackgroundFragment {
+            start_x,
+            end_x,
             color,
-            corner_radius,
+            selection: is_selection,
+            corners,
         });
     }
-    highlights
+    fragments
+}
+
+/// 片段角样式：只有与选区轮廓外缘重合的角才携带样式，内部接缝一律直角。
+fn segment_corners(segment: &SelectionLineSegment, start_x: Pixels, end_x: Pixels) -> [Corner; 4] {
+    let mut corners = ALL_STRAIGHT;
+    if start_x == segment.start_x {
+        corners[TOP_LEFT] = segment.corners[TOP_LEFT];
+        corners[BOTTOM_LEFT] = segment.corners[BOTTOM_LEFT];
+    }
+    if end_x == segment.end_x {
+        corners[TOP_RIGHT] = segment.corners[TOP_RIGHT];
+        corners[BOTTOM_RIGHT] = segment.corners[BOTTOM_RIGHT];
+    }
+    corners
 }
 
 fn layout_bracket_pair(
@@ -3193,23 +3417,28 @@ mod tests {
                     ByteOffset::new(2),
                     ByteOffset::new(12),
                 )]);
-                let (highlights, _) = layout_selections(&selections, &layout, px(20.), cx);
+                let (segments, _) = layout_selections(&selections, &layout, px(20.), cx);
+                let segments = segments
+                    .into_iter()
+                    .filter(|line| !line.is_empty())
+                    .map(|mut line| line.remove(0))
+                    .collect::<Vec<_>>();
 
-                assert_eq!(highlights.len(), 1, "连续多行选区应生成一条整体轮廓");
-                let highlight = &highlights[0];
-                assert_eq!(highlight.corner_radius, px(3.));
-                assert_eq!(highlight.lines.len(), 3);
+                assert_eq!(segments.len(), 3, "连续多行选区应生成三条行片段");
+                // 首行携带顶角圆角，末行携带底角圆角，宽度封顶于圆角半径（20 × 0.15）。
+                assert_eq!(segments[0].corners[TOP_LEFT].style, CornerStyle::Round);
+                assert_eq!(segments[0].corners[TOP_LEFT].width, px(3.));
+                assert_eq!(segments[2].corners[BOTTOM_RIGHT].style, CornerStyle::Round);
                 assert!(
-                    highlight.lines[0].start_x > highlight.lines[1].start_x,
+                    segments[0].start_x > segments[1].start_x,
                     "首行左边界转入后续行时应形成内凹倒圆角"
                 );
                 assert!(
-                    highlight.lines[0].end_x > highlight.lines[1].end_x
-                        && highlight.lines[2].end_x > highlight.lines[1].end_x,
+                    segments[0].end_x > segments[1].end_x && segments[2].end_x > segments[1].end_x,
                     "相邻行宽度收缩与扩张应形成两种圆角转折"
                 );
                 assert_eq!(
-                    highlight.lines[0].end_x,
+                    segments[0].end_x,
                     layout.lines[0].origin.x + layout.lines[0].shaped.width + px(6.),
                     "非末行应按 Zed 语义延伸两个圆角半径"
                 );
@@ -3398,39 +3627,58 @@ mod tests {
                     cx,
                 );
 
-                let (single_highlights, single_carets) =
+                let (single_segments, single_carets) =
                     layout_selections(&selection, &single_layout, px(20.), cx);
-                let (multi_highlights, multi_carets) =
+                let (multi_segments, multi_carets) =
                     layout_selections(&selection, &multi_layout, px(20.), cx);
-                let single = single_highlights.first().expect("单文件应生成文本选区");
-                let multi = multi_highlights
-                    .first()
-                    .expect("MultiBuffer 应生成文本选区");
+                let single_fragments =
+                    layout_background_fragments(&single_layout, &single_segments, cx);
+                let multi_fragments =
+                    layout_background_fragments(&multi_layout, &multi_segments, cx);
 
-                assert_eq!(multi.lines.len(), single.lines.len());
+                assert_eq!(multi_fragments.len(), single_fragments.len());
+                for (multi_line, single_line) in multi_fragments.iter().zip(&single_fragments) {
+                    assert_eq!(
+                        multi_line
+                            .iter()
+                            .map(|fragment| (fragment.start_x, fragment.end_x))
+                            .collect::<Vec<_>>(),
+                        single_line
+                            .iter()
+                            .map(|fragment| (fragment.start_x, fragment.end_x))
+                            .collect::<Vec<_>>()
+                    );
+                }
+                // 角样式也应与单文件一致（合成管线与缓冲形态无关）。
                 assert_eq!(
-                    multi
-                        .lines
+                    multi_fragments
                         .iter()
-                        .map(|line| (line.start_x, line.end_x))
+                        .flatten()
+                        .map(|fragment| fragment.corners)
                         .collect::<Vec<_>>(),
-                    single
-                        .lines
+                    single_fragments
                         .iter()
-                        .map(|line| (line.start_x, line.end_x))
+                        .flatten()
+                        .map(|fragment| fragment.corners)
                         .collect::<Vec<_>>()
                 );
                 assert_eq!(multi_carets.len(), single_carets.len());
-                assert_eq!(multi.corner_radius, single.corner_radius);
-                assert_eq!(multi.color, single.color);
                 let colors = color::current(cx);
+                let selection_fragment = single_fragments
+                    .iter()
+                    .flatten()
+                    .find(|fragment| fragment.selection)
+                    .expect("应有选区片段");
                 assert_eq!(
-                    multi.color,
+                    selection_fragment.color,
                     colors
                         .editor_background
                         .blend(colors.editor_selection_background)
                 );
-                assert_eq!(multi.color.a, 1.0, "选区颜色应在 Editor 背景上展平");
+                assert_eq!(
+                    selection_fragment.color.a, 1.0,
+                    "选区颜色应在 Editor 背景上展平"
+                );
             })
             .expect("测试窗口应保持可用");
     }

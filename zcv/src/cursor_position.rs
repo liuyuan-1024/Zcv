@@ -2,7 +2,7 @@
 //!
 //! 实现 StatusItemView，在 set_active_pane_item 中订阅 Editor 变化，读取 cursor_text 并更新显示。
 
-use gpui::{Context, Render, Subscription, Window, prelude::*};
+use gpui::{Context, Render, Subscription, Window, div, prelude::*};
 use zcv_editor::Editor;
 use zcv_ui::Button;
 use zcv_workspace::ItemHandle;
@@ -30,11 +30,11 @@ impl StatusItemView for CursorPosition {
         if let Some(editor) = item.and_then(|item| item.act_as::<Editor>(cx)) {
             // 订阅 Editor 变化（选区移动、编辑等都会触发 notify）
             self._subscription = Some(cx.observe(&editor, |this, ed, cx| {
-                this.cursor_text = ed.read(cx).cursor_text();
+                this.cursor_text = ed.read(cx).cursor_text(cx);
                 cx.notify();
             }));
             // 立即读取当前值
-            self.cursor_text = editor.read(cx).cursor_text();
+            self.cursor_text = editor.read(cx).cursor_text(cx);
         } else {
             self.cursor_text = String::new();
         }
@@ -45,6 +45,10 @@ impl StatusItemView for CursorPosition {
 
 impl Render for CursorPosition {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        // 无活动编辑器时隐藏（终端、空工作区等场景不显示空按钮）。
+        if self.cursor_text.is_empty() {
+            return div().into_any_element();
+        }
         Button::text("status-bar.cursor", self.cursor_text.clone())
             .label("跳转到行/列")
             .into_any_element()

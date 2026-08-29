@@ -1454,10 +1454,22 @@ impl MultiBuffer {
         }
     }
 
-    pub fn language_name(&self, cx: &App) -> Option<&'static str> {
+    /// `offset` 处所在 excerpt 的源语言名（组合文档按光标所在源文件显示语言）。
+    pub fn language_at(&self, offset: ByteOffset, cx: &App) -> Option<&'static str> {
         match &self.kind {
             MultiBufferKind::Singleton(singleton) => singleton.read(cx).language_name(),
-            MultiBufferKind::Excerpts(_) => None,
+            MultiBufferKind::Excerpts(state) => {
+                // 定位 offset 所属的映射（输出范围），换算源内偏移后递归查询源的语言。
+                let mapping = state.mappings.iter().find(|mapping| {
+                    offset >= mapping.output_range.start() && offset < mapping.output_range.end()
+                })?;
+                let excerpt = state.excerpts.get(mapping.excerpt_index)?;
+                let delta = offset
+                    .get()
+                    .saturating_sub(mapping.output_range.start().get());
+                let source_offset = ByteOffset::new(mapping.source_range.start().get() + delta);
+                excerpt.source.read(cx).language_at(source_offset, cx)
+            }
         }
     }
 

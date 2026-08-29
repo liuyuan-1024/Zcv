@@ -3,7 +3,7 @@
 //! 实现 StatusItemView，在 set_active_pane_item 中订阅 Editor 变化，显示当前编辑器语言名。
 //! 当前仅取 Editor 的语言名；文件扩展名/首行检测为规划能力。
 
-use gpui::{Context, Entity, Render, Subscription, Window, prelude::*};
+use gpui::{Context, Entity, Render, Subscription, Window, div, prelude::*};
 use zcv_editor::Editor;
 use zcv_ui::Button;
 use zcv_workspace::ItemHandle;
@@ -56,6 +56,10 @@ impl ActiveBufferLanguage {
 
 impl Render for ActiveBufferLanguage {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        // 无活动编辑器或无语言时隐藏（终端、空工作区等场景不显示空按钮）。
+        if self.language.is_empty() {
+            return div().into_any_element();
+        }
         Button::text("status-bar.language", self.language.clone())
             .label("当前语言")
             .into_any_element()

@@ -406,7 +406,9 @@ impl Editor {
     }
 
     pub fn language_name(&self, cx: &App) -> Option<&'static str> {
-        self.multi_buffer.read(cx).language_name(cx)
+        // 组合文档按光标所在 excerpt 的源语言显示。
+        let offset = self.resolved_selections().primary().head();
+        self.multi_buffer.read(cx).language_at(offset, cx)
     }
 
     pub fn set_file_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -867,15 +869,27 @@ impl Editor {
     }
 
     /// 光标位置的 "行:列" 文本，行和列均从 1 开始计数。
-    pub fn cursor_text(&self) -> String {
-        let point = self
-            .display_map
-            .buffer_snapshot()
-            .byte_to_position(self.resolved_selections().primary().head());
-        match point {
-            Ok(p) => format!("{}:{}", p.line().get() + 1, p.column().get() + 1),
-            Err(_) => String::new(),
-        }
+    /// 组合文档（多文件编辑器）按光标所在 excerpt 映射回源文件内的真实行列。
+    pub fn cursor_text(&self, cx: &App) -> String {
+        let head = self.resolved_selections().primary().head();
+        let multi_snapshot = self.multi_buffer.read(cx).snapshot(cx);
+        let Ok(point) = multi_snapshot.text().byte_to_position(head) else {
+            return String::new();
+        };
+        let (line, column) = match multi_snapshot.excerpt_for_output_line(point.line().get()) {
+            // 片段内输出文本与源文本一致，列号直接沿用；
+            // 删除片段无源行号时隐藏。
+            Some(excerpt) => {
+                let Some(source_line) = excerpt.source_line_for_output_line(point.line().get())
+                else {
+                    return String::new();
+                };
+                (source_line, point.column().get())
+            }
+            // 单文件文档：组合坐标即源坐标。
+            None => (point.line().get(), point.column().get()),
+        };
+        format!("{}:{}", line + 1, column + 1)
     }
 
     pub(super) fn presentation(&self) -> EditorPresentation {

@@ -10,7 +10,6 @@ use gpui::{
     uniform_list,
 };
 use zcv_editor::Editor;
-use zcv_git::FileStatus;
 use zcv_theme::color;
 use zcv_ui::Scrollbar;
 use zcv_ui::tree::{self, TreeState};
@@ -154,7 +153,6 @@ pub(super) fn render_row(
             row.git_status
                 .and_then(|status| git_status_color(status, cx))
         };
-        let is_ignored = !is_cut && matches!(row.git_status, Some(FileStatus::Ignored));
         div()
             .flex_1()
             .overflow_hidden()
@@ -164,9 +162,6 @@ pub(super) fn render_row(
             })
             .when_some(status_color, |element, status_color| {
                 element.text_color(status_color)
-            })
-            .when(is_ignored && status_color.is_none(), |element| {
-                element.text_color(color::current(cx).text_muted)
             })
             .child(name)
     };

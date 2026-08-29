@@ -13,7 +13,8 @@ pub fn git_status_color(status: FileStatus, cx: &App) -> Option<gpui::Rgba> {
     match status {
         FileStatus::Unmerged => Some(colors.status_conflict),
         FileStatus::Untracked => Some(colors.version_control_added),
-        FileStatus::Ignored => None,
+        // 忽略文件用占位文本色淡显（与普通文件区分，值对应主题的 ignored 语义）。
+        FileStatus::Ignored => Some(colors.text_placeholder),
         FileStatus::Tracked {
             index_status,
             worktree_status,
@@ -57,7 +58,7 @@ mod tests {
                 Some(colors.version_control_added)
             );
             assert_eq!(color(FileStatus::Unmerged), Some(colors.status_conflict));
-            assert_eq!(color(FileStatus::Ignored), None);
+            assert_eq!(color(FileStatus::Ignored), Some(colors.text_placeholder));
             // 已跟踪：deleted > modified > added 优先级。
             let tracked = |index, worktree| FileStatus::Tracked {
                 index_status: index,

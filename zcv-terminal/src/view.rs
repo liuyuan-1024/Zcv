@@ -17,7 +17,7 @@ use crate::{
 use zcv_actions::{Clear, Copy, Interrupt, Paste};
 use zcv_workspace::{Item, ItemEvent};
 
-pub struct TerminalView {
+pub(crate) struct TerminalView {
     pub(crate) terminal: Entity<Terminal>,
     focus: FocusHandle,
     pub(crate) focused: bool,

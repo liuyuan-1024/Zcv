@@ -62,8 +62,10 @@ mod tests {
     use super::*;
     use crate::Stickiness;
     use crate::{
-        ByteOffset, ChangeSet, Delta, Edit, PositionMap, TextError, TextRange, TransactionId,
-        TransactionSource, transaction::EditList,
+        errors::TextError,
+        position_map::PositionMap,
+        transaction::{ChangeSet, Delta, Edit, EditList, TransactionSource},
+        types::{ByteOffset, TextRange, TransactionId},
     };
 
     fn b(value: usize) -> ByteOffset {

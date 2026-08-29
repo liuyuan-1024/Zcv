@@ -21,8 +21,8 @@ pub fn style_table(names: &[Arc<str>]) -> Vec<HighlightStyle> {
     names.iter().map(|name| style_for(name)).collect()
 }
 
-/// 按 capture name 解析完整样式，走点分前缀回退（一次 BTreeMap range 查询，对齐 zed）。
-pub fn style_for(name: &str) -> HighlightStyle {
+/// 按 capture name 解析完整样式，走点分前缀回退（一次 BTreeMap range 查询）。
+pub(crate) fn style_for(name: &str) -> HighlightStyle {
     // range 覆盖「首段 … 全名」：命中候选都是 name 的前缀，rfind 取最长（最深）的一条。
     let first_segment = name.split('.').next().unwrap_or(name);
     let Ok(theme) = ACTIVE_THEME.read() else {

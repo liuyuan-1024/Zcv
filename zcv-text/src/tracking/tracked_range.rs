@@ -179,7 +179,10 @@ fn should_invalidate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AnchorError, ByteOffset, TextError};
+    use crate::{
+        errors::{AnchorError, TextError},
+        types::ByteOffset,
+    };
 
     fn b(value: usize) -> ByteOffset {
         ByteOffset::new(value)

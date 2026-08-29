@@ -18,7 +18,7 @@ use zcv_text::{ByteOffset, Line, LogicalColumn, SearchMatch, TextRange};
 use zcv_theme::{color, space, typography};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon};
 
-use crate::SelectionSet;
+use crate::selection::SelectionSet;
 
 use super::display_map::{
     BufferPoint, DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint, DisplayRow,
@@ -3413,7 +3413,7 @@ mod tests {
                     window,
                     cx,
                 );
-                let selections = SelectionSet::new(vec![crate::Selection::new(
+                let selections = SelectionSet::new(vec![crate::selection::Selection::new(
                     ByteOffset::new(2),
                     ByteOffset::new(12),
                 )]);
@@ -3486,7 +3486,7 @@ mod tests {
                 );
 
                 assert_eq!(layout.lines[0].whitespaces.len(), 2);
-                let selected_spaces = SelectionSet::new(vec![crate::Selection::new(
+                let selected_spaces = SelectionSet::new(vec![crate::selection::Selection::new(
                     ByteOffset::new(1),
                     ByteOffset::new(3),
                 )]);
@@ -3497,7 +3497,7 @@ mod tests {
                 assert_eq!(markers.origins.len(), 2);
                 assert!(markers.origins[0].x < markers.origins[1].x);
 
-                let selected_tab = SelectionSet::new(vec![crate::Selection::new(
+                let selected_tab = SelectionSet::new(vec![crate::selection::Selection::new(
                     ByteOffset::new(4),
                     ByteOffset::new(5),
                 )]);
@@ -3582,7 +3582,7 @@ mod tests {
         let single_text =
             Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("应创建单文件 Buffer");
         let single_snapshot = single_text.snapshot();
-        let selection = SelectionSet::new(vec![crate::Selection::new(
+        let selection = SelectionSet::new(vec![crate::selection::Selection::new(
             ByteOffset::new(2),
             ByteOffset::new(12),
         )]);

@@ -155,8 +155,8 @@ pub(crate) fn select_hunk_patch(output: &[u8], target: &DiffHunk) -> Option<Vec<
     for line in output.split_inclusive(|byte| *byte == b'\n') {
         if line.starts_with(b"@@ -") {
             first_hunk_start.get_or_insert(offset);
-            if target_range.is_some() {
-                target_range.as_mut().expect("范围已存在").end = offset;
+            if let Some(range) = &mut target_range {
+                range.end = offset;
                 break;
             }
             let header = line.strip_suffix(b"\n").unwrap_or(line);

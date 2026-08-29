@@ -9,7 +9,7 @@ use zcv_keymap::KeyBindings;
 use zcv_theme::{color, space, typography};
 
 /// 构造提示气泡视图（label + 可选快捷键两段式）。
-pub fn tooltip_view(cx: &mut App, label: Option<String>, shortcut: Option<String>) -> AnyView {
+fn tooltip_view(cx: &mut App, label: Option<String>, shortcut: Option<String>) -> AnyView {
     cx.new(|_| TooltipView { label, shortcut }).into()
 }
 

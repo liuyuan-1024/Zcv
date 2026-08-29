@@ -6,9 +6,10 @@ use std::io::{self, Write};
 
 use super::Buffer;
 use crate::{
-    BufferSaveError, BufferVersion, ByteOffset, LineEndingConfig, TextError, TextRange, TextResult,
-    TransactionError,
+    BufferSaveError, BufferVersion, ByteOffset, TextError, TextRange, TextResult,
+    config::LineEndingConfig,
     diff::diff_patch,
+    errors::TransactionError,
     storage::{RopeyStorage, TextRead},
 };
 

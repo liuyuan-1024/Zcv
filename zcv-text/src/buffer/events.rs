@@ -1,7 +1,12 @@
 //! Buffer 文本变化订阅与事务身份推进。
 
 use super::Buffer;
-use crate::{DeltaEvent, TextError, TextPatch, TextResult, TextSubscription, TransactionId};
+use crate::{
+    errors::{TextError, TextResult},
+    text_changes::{TextPatch, TextSubscription},
+    transaction::DeltaEvent,
+    types::TransactionId,
+};
 
 impl Buffer {
     pub fn subscribe(&self) -> TextSubscription {

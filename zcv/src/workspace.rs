@@ -764,12 +764,12 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
 /// 占位面板：大纲/调试（后续接入真实功能）。
 macro_rules! make_placeholder_panel {
     ($name:ident, $persistent:expr, $icon:expr, $label:expr) => {
-        pub(crate) struct $name {
+        struct $name {
             focus: FocusHandle,
         }
 
         impl $name {
-            pub(crate) fn new(cx: &mut Context<Self>) -> Self {
+            fn new(cx: &mut Context<Self>) -> Self {
                 Self {
                     focus: cx.focus_handle(),
                 }

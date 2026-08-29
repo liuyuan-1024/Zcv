@@ -4,8 +4,8 @@
 //! 不负责 Buffer 提交、事件分发、anchor 生命周期或 UI 选择策略。
 
 use crate::{
-    TextPatch,
     errors::invariant,
+    text_changes::TextPatch,
     transaction::Edit,
     types::{ByteOffset, TextRange},
 };

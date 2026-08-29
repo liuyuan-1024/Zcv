@@ -6,9 +6,9 @@ use zcv_text::ByteOffset;
 
 use super::common::{scrollbar_geometry, scrolling_text, test_buffer};
 use super::*;
-use crate::SelectionSet;
 use crate::scroll::ScrollbarThumbState;
 use crate::scrollbar::marker_geometry;
+use crate::selection::SelectionSet;
 
 #[gpui::test]
 fn composite_refresh_restores_scroll_from_source_anchor(cx: &mut TestAppContext) {

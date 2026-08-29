@@ -10,8 +10,11 @@ use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
 
 use super::{TextFingerprint, TextRead, TextStorage};
 use crate::{
-    ByteOffset, CharOffset, CoordinateError, EditError, Line, LineEndingStyle, LogicalColumn,
-    Position, TextRange, TextResult, Utf16Offset, Utf16Position,
+    errors::{CoordinateError, EditError, TextResult},
+    types::{
+        ByteOffset, CharOffset, Line, LineEndingStyle, LogicalColumn, Position, TextRange,
+        Utf16Offset, Utf16Position,
+    },
 };
 
 #[inline]

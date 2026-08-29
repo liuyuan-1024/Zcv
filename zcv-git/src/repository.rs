@@ -233,32 +233,17 @@ pub trait GitRepository: Send + Sync {
     /// 批量读取 revision（如 `HEAD:path`、`:path`）的 blob 内容，缺失的 revision 为 `None`。
     fn load_revisions(&self, revs: &[&str]) -> Result<Vec<Option<Vec<u8>>>>;
 
-    /// 拉取远程引用（`git fetch`，默认 remote/upstream）。
-    fn fetch(&self) -> Result<()>;
+    /// 可取消的远端同步（`git fetch`，默认 remote/upstream）。
+    /// 实现负责在取消时终止底层进程树。
+    fn fetch_cancellable(&self, cancellation: &GitCancellation) -> Result<()>;
 
-    /// 可取消的远端同步。实现可覆盖该方法来终止底层进程树。
-    fn fetch_cancellable(&self, cancellation: &GitCancellation) -> Result<()> {
-        let _ = cancellation;
-        self.fetch()
-    }
+    /// 可取消的拉取并合并（`git pull`，默认 upstream）。
+    fn pull_cancellable(&self, cancellation: &GitCancellation) -> Result<()>;
 
-    /// 拉取并合并当前分支（`git pull`，默认 upstream）。
-    fn pull(&self) -> Result<()>;
+    /// 可取消的推送（`git push`，默认 upstream）。
+    fn push_cancellable(&self, cancellation: &GitCancellation) -> Result<()>;
 
-    fn pull_cancellable(&self, cancellation: &GitCancellation) -> Result<()> {
-        let _ = cancellation;
-        self.pull()
-    }
-
-    /// 推送当前分支到上游（`git push`，默认 upstream）。
-    fn push(&self) -> Result<()>;
-
-    fn push_cancellable(&self, cancellation: &GitCancellation) -> Result<()> {
-        let _ = cancellation;
-        self.push()
-    }
-
-    /// 暂存路径（`git update-index --add --remove -- <paths>`，对齐 Zed）。
+    /// 暂存路径（`git update-index --add --remove -- <paths>`）。
     ///
     /// 路径相对仓库根；空列表为无操作。`--remove` 让已删除文件的删除进入 index。
     fn stage_paths(&self, paths: &[PathBuf]) -> Result<()>;
@@ -763,10 +748,6 @@ impl GitRepository for RealGitRepository {
         Ok(())
     }
 
-    fn fetch(&self) -> Result<()> {
-        self.fetch_cancellable(&GitCancellation::new())
-    }
-
     fn fetch_cancellable(&self, cancellation: &GitCancellation) -> Result<()> {
         self.run_cancellable_command(
             &mut self.build_command(&["fetch", "--progress"]),
@@ -776,10 +757,6 @@ impl GitRepository for RealGitRepository {
         Ok(())
     }
 
-    fn pull(&self) -> Result<()> {
-        self.pull_cancellable(&GitCancellation::new())
-    }
-
     fn pull_cancellable(&self, cancellation: &GitCancellation) -> Result<()> {
         self.run_cancellable_command(
             &mut self.build_command(&["pull", "--progress"]),
@@ -787,10 +764,6 @@ impl GitRepository for RealGitRepository {
             cancellation,
         )?;
         Ok(())
-    }
-
-    fn push(&self) -> Result<()> {
-        self.push_cancellable(&GitCancellation::new())
     }
 
     fn push_cancellable(&self, cancellation: &GitCancellation) -> Result<()> {

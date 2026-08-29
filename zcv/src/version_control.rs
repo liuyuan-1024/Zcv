@@ -274,8 +274,6 @@ pub(crate) struct VersionControlPanel {
     last_commit_message: Option<String>,
     /// 自己发起的提交在途：Head 事件时清空编辑器并复位（外部 checkout/commit 不清草稿）。
     pending_commit: bool,
-    /// 自己发起的 uncommit 在途：Head 事件时把被撤销消息填回编辑器并复位。
-    pending_uncommit: bool,
     on_open_file: Option<OnOpenGitDiff>,
 }
 
@@ -298,7 +296,7 @@ impl VersionControlPanel {
                 }
                 GitStoreEvent::Head => {
                     // HEAD 变化（提交/撤销提交/外部 checkout）：提交信息随之刷新；
-                    // 只清空/填回自己发起的操作，外部变更保留草稿。
+                    // 只清空自己发起的提交，外部变更保留草稿。
                     panel.refresh_last_commit_message(cx);
                     if panel.pending_commit {
                         panel
@@ -306,17 +304,12 @@ impl VersionControlPanel {
                             .update(cx, |editor, cx| editor.set_text("", cx));
                         panel.pending_commit = false;
                     }
-                    if panel.pending_uncommit {
-                        let store = panel.project.read(cx).git_store();
-                        if let Some(message) =
-                            store.update(cx, |store, _| store.take_pending_uncommitted_message())
-                        {
-                            panel
-                                .commit_editor
-                                .update(cx, |editor, cx| editor.set_text(&message, cx));
-                        }
-                        panel.pending_uncommit = false;
-                    }
+                }
+                // 撤销提交成功：事件直接携带被撤销消息，填回提交信息编辑器。
+                GitStoreEvent::Uncommitted(message) => {
+                    panel
+                        .commit_editor
+                        .update(cx, |editor, cx| editor.set_text(message, cx));
                 }
                 GitStoreEvent::ActiveRepositoryChanged => cx.notify(),
                 GitStoreEvent::HunksChanged => {}
@@ -337,7 +330,6 @@ impl VersionControlPanel {
             commit_editor,
             last_commit_message: None,
             pending_commit: false,
-            pending_uncommit: false,
             on_open_file: None,
         };
         panel.rebuild_rows(cx);
@@ -580,9 +572,8 @@ impl VersionControlPanel {
         store.update(cx, |store, cx| store.commit(message, cx));
     }
 
-    /// 撤销最近一次提交（上次提交行右侧按钮）：成功后 Head 事件把消息填回编辑器。
+    /// 撤销最近一次提交（上次提交行右侧按钮）：成功后 Uncommitted 事件把消息填回编辑器。
     fn handle_uncommit(&mut self, _: &Uncommit, _window: &mut Window, cx: &mut Context<Self>) {
-        self.pending_uncommit = true;
         let store = self.project.read(cx).git_store();
         store.update(cx, |store, cx| store.uncommit(cx));
     }

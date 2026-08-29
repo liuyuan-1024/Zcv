@@ -30,7 +30,7 @@ pub(crate) use block_map::{
     DisplayBlock, DisplayBlockKind, FILE_HEADER_HEIGHT, StickyBufferHeader,
 };
 use chunk::MAX_RENDERED_LINE_LEN;
-pub use chunk::{Chunk, RenderChunks, chunks_to_runs, render_plain_line};
+pub use chunk::{Chunk, chunks_to_runs, render_plain_line};
 #[cfg(test)]
 pub(crate) use chunk::{LineStyles, ViewportChunkSource, render_viewport_chunks};
 pub(crate) use chunk::{RenderedWhitespace, RowStyleInput, WrapRowInfo, render_viewport_row};

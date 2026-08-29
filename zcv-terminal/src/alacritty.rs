@@ -23,7 +23,7 @@ use async_channel::Sender;
 
 use crate::{
     Cell, Content, Cursor, IndexedCell, Modes, Point, PtyEvent, Scroll, Selection, SelectionRange,
-    SelectionSide, SelectionType, TerminalBounds, TerminalSize, pty_info::ProcessIdGetter,
+    SelectionSide, SelectionType, TerminalBounds, pty_info::ProcessIdGetter,
 };
 
 pub(super) type AlacrittyTerm = Term<TerminalListener>;
@@ -309,9 +309,6 @@ impl Scroll {
     pub(super) fn to_alacritty(self) -> AlacScroll {
         match self {
             Scroll::Delta(lines) => AlacScroll::Delta(lines),
-            Scroll::PageUp => AlacScroll::PageUp,
-            Scroll::PageDown => AlacScroll::PageDown,
-            Scroll::Top => AlacScroll::Top,
             Scroll::Bottom => AlacScroll::Bottom,
         }
     }
@@ -400,20 +397,6 @@ impl Modes {
             result |= Modes::FOCUS_IN_OUT;
         }
         result
-    }
-}
-
-impl Dimensions for TerminalSize {
-    fn total_lines(&self) -> usize {
-        self.screen_lines
-    }
-
-    fn screen_lines(&self) -> usize {
-        self.screen_lines
-    }
-
-    fn columns(&self) -> usize {
-        self.columns
     }
 }
 

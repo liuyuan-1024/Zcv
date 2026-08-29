@@ -10,7 +10,9 @@ use gpui::{
 use zcv_theme::{color, space};
 use zcv_ui::Button;
 
-use crate::{FocusOrHidePanel, ItemHandle, Workspace};
+use zcv_actions::FocusOrHidePanel;
+
+use crate::{ItemHandle, Workspace};
 use crate::{
     dock::{Dock, DockPosition},
     status_bar::StatusItemView,

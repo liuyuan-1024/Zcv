@@ -282,7 +282,9 @@ impl ProjectDiffView {
                     view.rebuild_excerpts(cx);
                     view.load_missing_revision_text(cx);
                 }
-                GitStoreEvent::ActiveRepositoryChanged | GitStoreEvent::JobsUpdated => {}
+                GitStoreEvent::ActiveRepositoryChanged
+                | GitStoreEvent::JobsUpdated
+                | GitStoreEvent::Uncommitted(_) => {}
             }),
         ];
         let mut view = Self {

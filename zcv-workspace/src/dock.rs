@@ -13,7 +13,6 @@ use gpui::{
     Subscription, WeakEntity, Window, deferred, div, prelude::*, px,
 };
 use serde::{Deserialize, Serialize};
-pub use zcv_actions::{FocusOrHidePanel, ToggleBottomDock, ToggleLeftDock, ToggleRightDock};
 use zcv_theme::{color, space};
 
 use crate::pane::Pane;

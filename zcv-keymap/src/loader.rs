@@ -166,12 +166,12 @@ pub fn init(cx: &mut App) -> Result<()> {
 }
 
 /// 加载当前平台的内置 keymap。
-pub fn load(cx: &App) -> Result<KeyBindings> {
+fn load(cx: &App) -> Result<KeyBindings> {
     let (source, json) = platform_keymap()?;
     load_json(source, &json, cx)
 }
 
-pub fn load_json(source: &str, json: &str, cx: &App) -> Result<KeyBindings> {
+pub(crate) fn load_json(source: &str, json: &str, cx: &App) -> Result<KeyBindings> {
     let groups: Vec<RawBindingGroup> = serde_json::from_str(&strip_line_comments(json))
         .with_context(|| format!("{source} 不是合法的 keymap JSON"))?;
 
@@ -348,6 +348,38 @@ mod tests {
     use zcv_actions::FocusOrHidePanel;
 
     use super::*;
+
+    /// 三个平台的内置 keymap 都必须能构建，且引用的 action 已注册（集成校验：注册来自 zcv-actions）。
+    #[gpui::test]
+    fn every_platform_keymap_builds_every_registered_action(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            for (source, json) in [
+                (
+                    "default-macos.json",
+                    zcv_assets::text("keymaps/default-macos.json")
+                        .expect("内置 macOS 快捷键应存在"),
+                ),
+                (
+                    "default-linux.json",
+                    zcv_assets::text("keymaps/default-linux.json")
+                        .expect("内置 Linux 快捷键应存在"),
+                ),
+                (
+                    "default-windows.json",
+                    zcv_assets::text("keymaps/default-windows.json")
+                        .expect("内置 Windows 快捷键应存在"),
+                ),
+            ] {
+                let keybindings =
+                    load_json(source, &json, cx).expect("每个平台的全部内置绑定都应能构建");
+                assert!(!keybindings.bindings.is_empty());
+                assert!(
+                    cx.build_action("workspace::Save", None).is_ok(),
+                    "workspace::Save 应已注册且 keymap 可引用"
+                );
+            }
+        });
+    }
 
     #[gpui::test]
     fn built_in_keymap_rejects_unknown_actions(cx: &mut TestAppContext) {

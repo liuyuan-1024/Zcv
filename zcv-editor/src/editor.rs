@@ -17,13 +17,8 @@ mod selection;
 mod view;
 mod workspace_item;
 
-pub use display_map::{
-    Chunk, RenderChunks, StyledLine, StyledSpan, chunks_to_runs, render_plain_line,
-};
-pub use selection::{Selection, SelectionSet};
-pub use view::{
-    DiffHunkDelegate, Editor, EditorEvent, EditorScrollAnchor, MaterializedDiffHunk, SoftWrap,
-};
+pub use display_map::{Chunk, StyledSpan, chunks_to_runs, render_plain_line};
+pub use view::{DiffHunkDelegate, Editor, EditorEvent, EditorScrollAnchor, MaterializedDiffHunk};
 
 pub fn init(cx: &mut App) {
     EDITOR_FACTORY.get_or_init(|| |cx| Arc::new(ErasedEditorHandle(cx.new(Editor::single_line))));

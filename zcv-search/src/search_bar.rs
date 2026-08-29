@@ -4,19 +4,18 @@
 //! 匹配与结果数据仍由具体 Item 持有。
 //! Pane/Workspace 接线位于 `buffer_search`，跨文件搜索执行位于 `project_search`。
 
-use std::sync::Arc;
-
 use gpui::{
-    AnyElement, App, Component, Context, IntoElement, ParentElement, Render, RenderOnce,
+    AnyElement, App, Component, Context, Entity, IntoElement, ParentElement, Render, RenderOnce,
     SharedString, Styled, Window, div, prelude::*, px,
 };
 use zcv_actions::{
     Backtab, ClearSearch, FindNext, FindPrevious, ReplaceAll, ReplaceNext, Tab,
     ToggleCaseSensitive, ToggleRegex, ToggleReplace, ToggleWholeWord,
 };
+use zcv_editor::{Editor, EditorEvent};
 use zcv_text::SearchQuery;
 use zcv_theme::{color, space, typography};
-use zcv_ui::{Button, ErasedEditor};
+use zcv_ui::Button;
 
 use zcv_workspace::{
     Direction, ItemHandle, SearchableItemHandle, ToolbarItemEvent, ToolbarItemLocation,
@@ -140,8 +139,8 @@ pub(crate) struct SearchBar {
     replacement: String,
     /// 当前搜索目标（pane 的活动 item 的可搜索句柄）。
     active_item: Option<Box<dyn SearchableItemHandle>>,
-    query_input: Option<Arc<dyn ErasedEditor>>,
-    replace_input: Option<Arc<dyn ErasedEditor>>,
+    query_input: Option<Entity<Editor>>,
+    replace_input: Option<Entity<Editor>>,
     input_subscriptions: Vec<gpui::Subscription>,
     active_item_subscription: Option<gpui::Subscription>,
 }
@@ -213,46 +212,45 @@ impl SearchBar {
         if self.query_input.is_some() {
             return;
         }
-        // 工厂未初始化（无装配环境，如 Pane 单测）时输入框缺席，搜索条降级为只显示按钮。
-        let Some(factory) = zcv_ui::EDITOR_FACTORY.get() else {
-            return;
-        };
-        let query_input = factory(cx);
-        let replace_input = factory(cx);
-        query_input.set_placeholder_text("搜索...", cx);
-        replace_input.set_placeholder_text("替换为...", cx);
+        // 输入框懒创建（首次打开搜索条时）：Editor 的创建与订阅都需要 window，且避免在无装配（如 Pane 单测）环境下构造。
+        let query_input = cx.new(Editor::single_line);
+        let replace_input = cx.new(Editor::single_line);
+        query_input.update(cx, |editor, cx| editor.set_placeholder_text("搜索...", cx));
+        replace_input.update(cx, |editor, cx| {
+            editor.set_placeholder_text("替换为...", cx)
+        });
         let weak = cx.weak_entity();
-        self.input_subscriptions.push(query_input.subscribe(
-            Box::new({
+        self.input_subscriptions
+            .push(window.subscribe(&query_input, cx, {
                 let weak = weak.clone();
-                move |_, window, cx| {
+                move |_, event: &EditorEvent, window, cx| {
+                    if *event != EditorEvent::Edited {
+                        return;
+                    }
                     if let Some(search_bar) = weak.upgrade() {
                         search_bar.update(cx, |search_bar, cx| {
                             search_bar.run_search(window, cx);
                         });
                     }
                 }
-            }),
-            window,
-            cx,
-        ));
-        self.input_subscriptions.push(replace_input.subscribe(
-            Box::new({
+            }));
+        self.input_subscriptions
+            .push(window.subscribe(&replace_input, cx, {
                 let weak = weak.clone();
-                move |_, _window, cx| {
+                move |_, event: &EditorEvent, _window, cx| {
+                    if *event != EditorEvent::Edited {
+                        return;
+                    }
                     if let Some(search_bar) = weak.upgrade() {
                         search_bar.update(cx, |search_bar, cx| {
                             search_bar.replacement = search_bar
                                 .replace_input
                                 .as_ref()
-                                .map_or(String::new(), |input| input.text(cx));
+                                .map_or(String::new(), |input| input.read(cx).text(cx));
                         });
                     }
                 }
-            }),
-            window,
-            cx,
-        ));
+            }));
         self.query_input = Some(query_input);
         self.replace_input = Some(replace_input);
     }
@@ -264,8 +262,8 @@ impl SearchBar {
         self.visible = true;
         self.ensure_inputs(window, cx);
         let query_input = self.query_input.as_ref().unwrap();
-        query_input.set_text(&self.query, cx);
-        window.focus(&query_input.focus_handle(cx));
+        query_input.update(cx, |editor, cx| editor.set_text(&self.query, cx));
+        window.focus(&query_input.read(cx).focus_handle());
         if !was_visible {
             self.run_search(window, cx);
         }
@@ -301,7 +299,7 @@ impl SearchBar {
         self.query = self
             .query_input
             .as_ref()
-            .map_or(String::new(), |input| input.text(cx));
+            .map_or(String::new(), |input| input.read(cx).text(cx));
         let Some(item) = &self.active_item else {
             return;
         };
@@ -343,7 +341,7 @@ impl SearchBar {
         if self.show_replace
             && let Some(replace_input) = &self.replace_input
         {
-            replace_input.set_text(&self.replacement, cx);
+            replace_input.update(cx, |editor, cx| editor.set_text(&self.replacement, cx));
         }
         cx.notify();
     }
@@ -352,7 +350,7 @@ impl SearchBar {
         self.replacement = self
             .replace_input
             .as_ref()
-            .map_or(String::new(), |input| input.text(cx));
+            .map_or(String::new(), |input| input.read(cx).text(cx));
         if let Some(item) = &self.active_item
             && item.replace_current(&self.replacement, window, cx)
         {
@@ -365,17 +363,17 @@ impl SearchBar {
         self.replacement = self
             .replace_input
             .as_ref()
-            .map_or(String::new(), |input| input.text(cx));
+            .map_or(String::new(), |input| input.read(cx).text(cx));
         if let Some(item) = &self.active_item {
             item.replace_all(&self.replacement, window, cx);
         }
     }
 
-    /// 焦点在 query 输入框 → 替换输入框 → 活动 item 间循环（对齐 Zed 的 cycle_field）。
+    /// 焦点在 query 输入框 → 替换输入框 → 活动 item 间循环。
     fn cycle_focus(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
-        let mut handles = vec![self.query_input.as_ref().unwrap().focus_handle(cx)];
+        let mut handles = vec![self.query_input.as_ref().unwrap().read(cx).focus_handle()];
         if self.show_replace {
-            handles.push(self.replace_input.as_ref().unwrap().focus_handle(cx));
+            handles.push(self.replace_input.as_ref().unwrap().read(cx).focus_handle());
         }
         if let Some(item) = &self.active_item {
             handles.push(item.item_focus_handle(cx));
@@ -511,7 +509,11 @@ impl Render for SearchBar {
                     // 输入框容器：边框包裹，选项按钮内嵌右侧（对齐 Zed 的 input_style 结构）。
                     .child(SearchInput::new(
                         "buffer-search-input",
-                        self.query_input.as_ref().unwrap().render(),
+                        self.query_input
+                            .as_ref()
+                            .unwrap()
+                            .clone()
+                            .into_any_element(),
                         self.case_sensitive,
                         self.whole_word,
                         self.regex,
@@ -581,7 +583,13 @@ impl Render for SearchBar {
                                 .border_1()
                                 .border_color(colors.border)
                                 .bg(colors.background)
-                                .child(self.replace_input.as_ref().unwrap().render()),
+                                .child(
+                                    self.replace_input
+                                        .as_ref()
+                                        .unwrap()
+                                        .clone()
+                                        .into_any_element(),
+                                ),
                         )
                         .child(
                             Button::icon("search-replace-next", "icons/replace_next.svg")

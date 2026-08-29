@@ -8,7 +8,7 @@ use zcv_language::LanguageBuffer;
 use zcv_text::{Buffer, BufferConfig, ByteOffset};
 
 use super::Editor;
-use crate::{Selection, SelectionSet};
+use crate::selection::{Selection, SelectionSet};
 
 /// 带 Rust 语言的窗口化编辑器：语言在构造时同步识别（见 `LanguageBuffer::new`），自动闭合行为依赖语言提供的配对表。
 fn editor_with_rust<'a>(

@@ -8,7 +8,7 @@ use zcv_text::{ByteOffset, TextRange};
 
 use super::common::{buffer_text, scrolling_text, test_buffer};
 use super::*;
-use crate::{Selection, SelectionSet};
+use crate::selection::{Selection, SelectionSet};
 
 /// 字节偏移构造辅助（测试文本均为 ASCII，字节数即字符数）。
 fn b(value: usize) -> ByteOffset {

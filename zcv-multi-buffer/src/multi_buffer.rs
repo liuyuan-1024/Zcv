@@ -1526,10 +1526,8 @@ fn distinct_neighbor_paths<'a>(
 ) -> Vec<PathBuf> {
     let mut seen = HashSet::new();
     mappings
-        .filter_map(|mapping| {
-            (mapping.path != anchor_path && seen.insert(mapping.path.clone()))
-                .then(|| mapping.path.clone())
-        })
+        .filter(|mapping| mapping.path != anchor_path && seen.insert(mapping.path.clone()))
+        .map(|mapping| mapping.path.clone())
         .collect()
 }
 

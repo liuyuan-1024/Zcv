@@ -6,8 +6,11 @@
 use std::borrow::Cow;
 
 use crate::{
-    ByteOffset, CharOffset, Line, LineEndingStyle, Position, TextRange, TextResult, Utf16Offset,
-    Utf16Position,
+    errors::TextResult,
+    types::{
+        ByteOffset, CharOffset, Line, LineEndingStyle, Position, TextRange, Utf16Offset,
+        Utf16Position,
+    },
 };
 
 /// 只读文本视图。

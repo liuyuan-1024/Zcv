@@ -4,9 +4,11 @@
 
 use super::Buffer;
 use crate::{
-    ByteOffset, Line, LineRange, LineSlice, TextRange, TextResult, TextSlice,
+    errors::TextResult,
+    slicing::{LineSlice, TextSlice},
     slicing::{text_range_for_byte_range, text_range_for_line, text_range_for_line_range},
     storage::TextRead,
+    types::{ByteOffset, Line, LineRange, TextRange},
 };
 
 impl Buffer {

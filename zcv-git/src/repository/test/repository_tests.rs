@@ -321,7 +321,8 @@ fn fetch_pull_push_work_against_remote() {
     run_in(&root, &["git", "reset", "-q", "--hard", "HEAD~1"]);
 
     // fetch：本地引用更新为远程状态，工作树不动。
-    repo.fetch().expect("fetch 应成功");
+    repo.fetch_cancellable(&GitCancellation::new())
+        .expect("fetch 应成功");
     let ahead = run_in(
         &root,
         &["git", "rev-list", "--count", "HEAD..origin/master"],
@@ -333,7 +334,8 @@ fn fetch_pull_push_work_against_remote() {
     );
 
     // pull：合并远程提交，本地追上远程。
-    repo.pull().expect("pull 应成功");
+    repo.pull_cancellable(&GitCancellation::new())
+        .expect("pull 应成功");
     let behind = run_in(
         &root,
         &["git", "rev-list", "--count", "HEAD..origin/master"],
@@ -352,7 +354,8 @@ fn fetch_pull_push_work_against_remote() {
     std::fs::write(root.join("again.txt"), "再推一次\n").expect("应写入文件");
     run_in(&root, &["git", "add", "again.txt"]);
     run_in(&root, &["git", "commit", "-q", "-m", "再推一次"]);
-    repo.push().expect("push 应成功");
+    repo.push_cancellable(&GitCancellation::new())
+        .expect("push 应成功");
     // 从远程裸仓库验证提交已到达（bare 仓库 HEAD 指向 master）。
     let remote_head = run_in(&remote, &["git", "rev-parse", "master"]);
     let local_head = run_in(&root, &["git", "rev-parse", "HEAD"]);
@@ -468,7 +471,8 @@ fn status_reports_branch_tracking() {
     assert_eq!((branch.ahead, branch.behind), (1, 0));
 
     // push 后回到同步（徽标消失的依据）。
-    repo.push().expect("push 应成功");
+    repo.push_cancellable(&GitCancellation::new())
+        .expect("push 应成功");
     let branch = repo
         .status(&[])
         .expect("status 应成功")

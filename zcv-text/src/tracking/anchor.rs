@@ -1,7 +1,5 @@
-//! Anchor / Mark：可跟随文本变更的位置标记。
-//!
-//! Anchor 是绑定 `BufferVersion` 的稳定位置；Mark 是不绑定版本的轻量位置标记。
-//! 两者都通过 `PositionMap` 更新，不持有 Buffer，也不参与事务提交。
+//! Anchor：绑定 `BufferVersion` 的稳定位置标记。
+//! 通过 `PositionMap` 更新，不持有 Buffer，也不参与事务提交。
 
 use crate::{
     errors::AnchorError,
@@ -9,48 +7,6 @@ use crate::{
     transaction::DeltaEvent,
     types::{BufferVersion, ByteOffset},
 };
-
-/// 不绑定 BufferVersion 的轻量位置标记。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Mark {
-    offset: ByteOffset,
-    affinity: Affinity,
-}
-
-impl Mark {
-    pub fn new(offset: ByteOffset) -> Self {
-        Self {
-            offset,
-            affinity: Affinity::default(),
-        }
-    }
-
-    pub fn with_affinity(mut self, affinity: Affinity) -> Self {
-        self.affinity = affinity;
-        self
-    }
-
-    pub fn offset(self) -> ByteOffset {
-        self.offset
-    }
-
-    pub fn affinity(self) -> Affinity {
-        self.affinity
-    }
-
-    pub fn map_through_position_map(self, position_map: &PositionMap) -> MappingResult<Self> {
-        map_mark_result(
-            position_map.map_old_position_with_affinity(self.offset, self.affinity),
-            self.affinity,
-        )
-    }
-}
-
-impl Default for Mark {
-    fn default() -> Self {
-        Self::new(ByteOffset::ZERO)
-    }
-}
 
 /// 绑定 BufferVersion 的稳定位置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -133,10 +89,6 @@ impl Default for Anchor {
     }
 }
 
-fn map_mark_result(result: MappingResult<ByteOffset>, affinity: Affinity) -> MappingResult<Mark> {
-    result.map(|offset| Mark::new(offset).with_affinity(affinity))
-}
-
 fn map_anchor_result(
     result: MappingResult<ByteOffset>,
     version: BufferVersion,
@@ -149,8 +101,9 @@ fn map_anchor_result(
 mod tests {
     use super::*;
     use crate::{
-        ChangeSet, Delta, Edit, PositionMap, TransactionId, TransactionSource,
-        transaction::EditList,
+        position_map::PositionMap,
+        transaction::{ChangeSet, Delta, Edit, EditList, TransactionSource},
+        types::TransactionId,
     };
 
     fn b(value: usize) -> ByteOffset {
@@ -177,14 +130,13 @@ mod tests {
     }
 
     #[test]
-    fn anchor_and_mark_should_map_through_delta_with_affinity() {
+    fn anchor_should_map_through_delta_with_affinity() {
         let insert_event = event_for_edits(
             BufferVersion::INITIAL,
             BufferVersion::new(1),
             vec![Edit::insert(b(2), "XX".to_string()).unwrap()],
         );
         let anchor = Anchor::new(BufferVersion::INITIAL, b(2)).with_affinity(Affinity::Before);
-        let mark = Mark::new(b(2)).with_affinity(Affinity::After);
 
         assert_eq!(
             anchor
@@ -193,12 +145,6 @@ mod tests {
                 .value()
                 .offset(),
             b(2)
-        );
-        assert_eq!(
-            mark.map_through_position_map(insert_event.position_map())
-                .value()
-                .offset(),
-            b(4)
         );
     }
 }

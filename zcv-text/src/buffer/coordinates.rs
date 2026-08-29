@@ -4,7 +4,7 @@
 //! 坐标方法由 `text_coordinate_gateway` 宏统一生成，与 `Snapshot` 共用一份实现。
 
 use super::Buffer;
-use crate::{CharOffset, storage::TextRead, storage::text_coordinate_gateway};
+use crate::{storage::TextRead, storage::text_coordinate_gateway, types::CharOffset};
 
 impl Buffer {
     text_coordinate_gateway!();

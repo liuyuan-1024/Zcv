@@ -688,7 +688,7 @@ impl Editor {
 
     pub(crate) fn materialized_diff_hunks(&self, cx: &App) -> Option<&[Option<Range<usize>>]> {
         (self.diff_hunks_version == Some(self.text_buffer(cx).read(cx).snapshot().version()))
-            .then(|| self.materialized_diff_hunks.as_deref())
+            .then_some(self.materialized_diff_hunks.as_deref())
             .flatten()
     }
 
@@ -843,7 +843,7 @@ impl Editor {
         result
     }
 
-    pub fn selections(&self) -> SelectionSet {
+    pub(crate) fn selections(&self) -> SelectionSet {
         self.resolved_selections()
     }
 

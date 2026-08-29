@@ -67,7 +67,7 @@ impl Default for TabConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::LargeFilePolicy;
+    use crate::config::LargeFilePolicy;
 
     #[test]
     fn config_strategy_values_should_expose_stable_defaults_and_boundaries() {

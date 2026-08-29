@@ -35,8 +35,8 @@ const MAX_INCREMENTAL_PATHS: usize = 500;
 
 /// GitStore 通知事件。
 ///
-/// 单窗口简化：事件均无 payload，订阅方收到后按需重读 GitStore 状态。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// 单窗口简化：事件均无 payload（除 `Uncommitted`），订阅方收到后按需重读 GitStore 状态。
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GitStoreEvent {
     /// 仓库集合发生变化（发现/消失）。
     Repositories,
@@ -50,6 +50,8 @@ pub enum GitStoreEvent {
     ActiveRepositoryChanged,
     /// 后台 job 集合变化（开始/完成/取消）；订阅方重读 `current_job()`（对齐 Zed 的 JobsUpdated）。
     JobsUpdated,
+    /// 撤销提交成功：携带被撤销的提交消息（面板填回提交信息编辑器）。
+    Uncommitted(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,8 +122,6 @@ pub struct GitStore {
     revision_text_cache: HashMap<(GitRevision, PathBuf), Arc<str>>,
     /// 分修订递增的缓存版本；失效前启动的后台读取不得回填新缓存。
     revision_text_generations: HashMap<GitRevision, u64>,
-    /// uncommit 成功后暂存的被撤销消息（Head 事件后由面板读取填回提交信息编辑器）。
-    pending_uncommitted_message: Option<String>,
     background: BackgroundExecutor,
     /// 自身弱句柄：后台任务完成后回填缓存等状态用（构造时注入）。
     self_handle: WeakEntity<Self>,
@@ -256,7 +256,6 @@ impl GitStore {
                 (GitRevision::Head, 1),
                 (GitRevision::Index, 1),
             ]),
-            pending_uncommitted_message: None,
             background,
             self_handle,
             job_sender,
@@ -578,11 +577,6 @@ impl GitStore {
                 .values()
                 .any(|entry| entry.status.has_staged())
         })
-    }
-
-    /// 取出 uncommit 成功后被撤销的提交消息（面板在 Head 事件后调用填回编辑器）。
-    pub fn take_pending_uncommitted_message(&mut self) -> Option<String> {
-        self.pending_uncommitted_message.take()
     }
 
     /// 按 working_directory 查找仓库。

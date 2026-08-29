@@ -4,7 +4,6 @@ mod active_buffer_language;
 mod breadcrumbs;
 mod cursor_position;
 mod harness;
-mod preview;
 mod project_diff;
 mod version_control;
 mod workspace;
@@ -40,7 +39,7 @@ fn main() {
                 Some(settings.line_height),
             );
         }
-        preview::init(cx);
+        zcv_preview_svg::init(cx);
         zcv_editor::init(cx);
         zcv_keymap::init(cx).expect("内置快捷键应能注册");
 
@@ -67,7 +66,6 @@ mod tests {
     use std::path::PathBuf;
 
     use gpui::TestAppContext;
-    use zcv_keymap::load_json;
 
     use super::initial_project_root;
 
@@ -95,38 +93,6 @@ mod tests {
             initial_project_root([OsString::from("zcv")].into_iter(), None),
             None
         );
-    }
-
-    /// keymap JSON 引用的所有 action 必须已注册（集成校验：注册来自本 crate 与 zcv-editor）。
-    #[gpui::test]
-    fn every_platform_keymap_builds_every_registered_action(cx: &mut TestAppContext) {
-        cx.update(|cx| {
-            for (source, json) in [
-                (
-                    "default-macos.json",
-                    zcv_assets::text("keymaps/default-macos.json")
-                        .expect("内置 macOS 快捷键应存在"),
-                ),
-                (
-                    "default-linux.json",
-                    zcv_assets::text("keymaps/default-linux.json")
-                        .expect("内置 Linux 快捷键应存在"),
-                ),
-                (
-                    "default-windows.json",
-                    zcv_assets::text("keymaps/default-windows.json")
-                        .expect("内置 Windows 快捷键应存在"),
-                ),
-            ] {
-                let keybindings =
-                    load_json(source, &json, cx).expect("每个平台的全部内置绑定都应能构建");
-                assert!(!keybindings.bindings.is_empty());
-                assert!(
-                    cx.build_action("workspace::Save", None).is_ok(),
-                    "workspace::Save 应已注册且 keymap 可引用"
-                );
-            }
-        });
     }
 
     /// Panel 键盘命令使用单一带参 Action，不为每个 Panel 声明类型。

@@ -83,7 +83,11 @@ fn share_repeated_replacements(edits: &mut [Edit]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ByteOffset, Edit, EditError, TextRange};
+    use crate::{
+        errors::EditError,
+        transaction::Edit,
+        types::{ByteOffset, TextRange},
+    };
 
     fn b(value: usize) -> ByteOffset {
         ByteOffset::new(value)

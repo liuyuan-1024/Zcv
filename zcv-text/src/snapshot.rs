@@ -3,10 +3,10 @@
 //! 本文件保证后台读取可脱离可变 Buffer；它不提交编辑、不维护历史，也不暴露 Ropey 内部类型。
 
 use crate::{
-    BufferConfig, BufferVersion, ByteOffset, Line, LineContent, LineRange, LineSlice,
-    RegexSearchOptions, RegexSearchResult, SearchOptions, SearchResult, TextRange, TextResult,
-    TextSlice,
-    search::{search_in_text, search_regex_in_text},
+    BufferConfig, BufferVersion, ByteOffset, Line, LineRange, RegexSearchResult, SearchResult,
+    TextRange, TextResult,
+    search::{RegexSearchOptions, SearchOptions, search_in_text, search_regex_in_text},
+    slicing::{LineContent, LineSlice, TextSlice},
     slicing::{
         line_content_for_text, text_range_for_byte_range, text_range_for_line,
         text_range_for_line_range,

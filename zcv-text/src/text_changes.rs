@@ -7,7 +7,10 @@ use std::mem;
 use std::ops::Range;
 use std::sync::{Arc, Mutex, Weak};
 
-use crate::{BufferVersion, ByteOffset, Delta, TextRange};
+use crate::{
+    transaction::Delta,
+    types::{BufferVersion, ByteOffset, TextRange},
+};
 
 /// 一段文本变化在旧、新坐标空间中的覆盖范围。
 #[derive(Clone, Debug, PartialEq, Eq)]

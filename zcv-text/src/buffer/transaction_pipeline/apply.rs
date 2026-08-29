@@ -5,10 +5,13 @@
 use super::prepared::PreparedTransaction;
 use crate::buffer::{Buffer, history::HistoryEntry};
 use crate::{
-    BufferVersion, LargeTransactionPolicy, TextError, TextResult, TransactionOutcome,
+    config::LargeTransactionPolicy,
     errors::{EditError, StorageError, TransactionError},
+    errors::{TextError, TextResult},
     storage::{RopeyPreparedReplace, TextStorage},
+    transaction::TransactionOutcome,
     transaction::{ChangeSet, Delta, DeltaEvent, EditList, Transaction, TransactionSource},
+    types::BufferVersion,
 };
 
 /// 单个 `EditList` 内所有 `Edit::replacement` 的 UTF-8 字节和。

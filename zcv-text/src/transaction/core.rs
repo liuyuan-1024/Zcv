@@ -47,7 +47,7 @@ impl Transaction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BufferVersion, TransactionError, transaction::EditList};
+    use crate::{errors::TransactionError, transaction::EditList, types::BufferVersion};
 
     #[test]
     fn transaction_empty_edit_list_should_be_rejected_before_state_transition() {

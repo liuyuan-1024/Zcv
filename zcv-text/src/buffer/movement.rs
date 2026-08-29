@@ -4,8 +4,11 @@
 
 use super::{Buffer, coordinates::is_crlf_middle};
 use crate::{
-    CharOffset, CoordinateError, EditError, Line, MovementDirection, MovementUnit, TextError,
-    TextResult, WordBoundaryPolicy, config::WordBoundaryClassifier, storage::TextRead,
+    config::{WordBoundaryClassifier, WordBoundaryPolicy},
+    errors::{CoordinateError, EditError, TextError, TextResult},
+    movement::{MovementDirection, MovementUnit},
+    storage::TextRead,
+    types::{CharOffset, Line},
 };
 
 impl Buffer {

@@ -2,7 +2,7 @@
 //!
 //! 指纹不是相等性证明；命中时仍由 RopeyStorage 回到精确文本比较。
 
-use crate::{ByteOffset, CharOffset};
+use crate::types::{ByteOffset, CharOffset};
 
 /// 文本内容指纹，用于保存点、缓存和低成本脏状态判断。
 ///

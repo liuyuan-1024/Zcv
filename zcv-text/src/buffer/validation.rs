@@ -4,9 +4,10 @@
 
 use super::Buffer;
 use crate::{
-    ByteOffset, CoordinateError, EditError, StorageError, TextRange, TextResult,
+    errors::{CoordinateError, EditError, StorageError, TextResult},
     storage::{TextRead, TextStorage},
     transaction::EditList,
+    types::{ByteOffset, TextRange},
 };
 
 impl Buffer {

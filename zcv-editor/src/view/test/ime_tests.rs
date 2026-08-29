@@ -3,7 +3,7 @@ use zcv_text::ByteOffset;
 
 use super::common::{buffer_text, test_buffer};
 use super::*;
-use crate::SelectionSet;
+use crate::selection::SelectionSet;
 
 #[gpui::test]
 fn marked_text_updates_buffer_and_unmark_finishes_composition(cx: &mut TestAppContext) {

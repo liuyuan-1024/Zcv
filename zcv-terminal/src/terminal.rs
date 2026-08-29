@@ -22,13 +22,15 @@ use std::{
     time::Duration,
 };
 
-use alacritty_terminal::{grid::GridCell, term::cell::Flags, vte};
+use alacritty_terminal::{
+    term::cell::Flags,
+    vte::ansi::{Color, CursorShape, Rgb},
+};
 use anyhow::{Context as _, Result};
 use async_channel::{Receiver, unbounded};
 use gpui::{App, BackgroundExecutor, Context, EventEmitter, Pixels, Size, Task, Window};
 pub use panel::TerminalPanel;
-pub use view::TerminalView;
-pub use vte::ansi::{Color, CursorShape, NamedColor, Rgb};
+pub(crate) use view::TerminalView;
 
 use crate::{
     alacritty::{AlacrittyTermLock, PtySender},
@@ -48,16 +50,9 @@ const DUMMY_WINDOW_ID: u64 = 0;
 
 // ─── 尺寸与坐标 ───────────────────────────────────────────────────
 
-/// 行列尺寸，实现 alacritty 的 `Dimensions` 契约供 `Term` 使用。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TerminalSize {
-    pub columns: usize,
-    pub screen_lines: usize,
-}
-
 /// 像素边界：由视图每帧计算，携带单元格宽高。
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct TerminalBounds {
+pub(crate) struct TerminalBounds {
     size: Size<Pixels>,
     cell_width: Pixels,
     cell_height: Pixels,
@@ -108,7 +103,7 @@ impl Default for TerminalBounds {
 
 /// 网格坐标，行号为绝对坐标：滚动回看顶行为负行号。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Point {
+pub(crate) struct Point {
     pub line: i32,
     pub column: usize,
 }
@@ -117,7 +112,7 @@ pub struct Point {
 
 /// 一次渲染所需的全部终端状态快照；渲染层只读快照，不触碰终端锁。
 #[derive(Clone, Debug, PartialEq)]
-pub struct Content {
+pub(crate) struct Content {
     /// 全部显示行（含滚动回看）的单元格，绝对坐标。
     pub cells: Vec<IndexedCell>,
     pub mode: Modes,
@@ -138,14 +133,14 @@ pub struct Content {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct IndexedCell {
+pub(crate) struct IndexedCell {
     pub point: Point,
     pub cell: Cell,
 }
 
 /// 单元格的薄包装，公开样式查询接口；内部直接持有关联的 alacritty 单元格。
 #[derive(Clone, Debug, PartialEq)]
-pub struct Cell {
+pub(crate) struct Cell {
     cell: alacritty::AlacrittyCell,
 }
 
@@ -202,27 +197,18 @@ impl Cell {
     pub fn zerowidth(&self) -> Option<&[char]> {
         self.cell.zerowidth()
     }
-
-    pub fn underline_color(&self) -> Option<Color> {
-        self.cell.underline_color()
-    }
-
-    /// 是否为空单元格：空白且无可见样式。
-    pub fn is_empty(&self) -> bool {
-        self.cell.is_empty()
-    }
 }
 
 /// 光标：形状与网格坐标（绝对坐标）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Cursor {
+pub(crate) struct Cursor {
     pub shape: CursorShape,
     pub point: Point,
 }
 
 /// 终端模式子集（渲染与输入映射需要的位）；完整模式保留在封装层。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Modes(u32);
+pub(crate) struct Modes(u32);
 
 impl Modes {
     pub const SHOW_CURSOR: Modes = Modes(1 << 0);
@@ -274,7 +260,7 @@ impl std::ops::BitOrAssign for Modes {
 // ─── 选择 ─────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SelectionType {
+pub(crate) enum SelectionType {
     Simple,
     Semantic,
     Lines,
@@ -282,19 +268,19 @@ pub enum SelectionType {
 
 /// 选择锚点所在格子的侧边（决定半格命中与扩展方向）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SelectionSide {
+pub(crate) enum SelectionSide {
     Left,
     Right,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SelectionPoint {
+pub(crate) struct SelectionPoint {
     pub point: Point,
     pub side: SelectionSide,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Selection {
+pub(crate) struct Selection {
     pub ty: SelectionType,
     pub start: SelectionPoint,
     pub end: SelectionPoint,
@@ -302,7 +288,7 @@ pub struct Selection {
 
 /// 网格坐标下的选择范围（绝对坐标，start 在 end 之上）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SelectionRange {
+pub(crate) struct SelectionRange {
     pub start: Point,
     pub end: Point,
     pub is_block: bool,
@@ -317,11 +303,8 @@ impl SelectionRange {
 // ─── 滚动 ─────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Scroll {
+pub(crate) enum Scroll {
     Delta(i32),
-    PageUp,
-    PageDown,
-    Top,
     Bottom,
 }
 
@@ -360,7 +343,7 @@ pub(crate) enum InternalEvent {
 
 /// 终端向视图层上抛的事件。
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Event {
+pub(crate) enum Event {
     TitleChanged(Option<String>),
     Bell,
     Wakeup,
@@ -373,7 +356,7 @@ impl EventEmitter<Event> for Terminal {}
 
 /// 终端行为设置快照，从 zcv-settings 的用户配置读取。
 #[derive(Clone, Debug)]
-pub struct TerminalSettings {
+pub(crate) struct TerminalSettings {
     /// 终端字号：显式配置优先，缺省跟随编辑器字号。
     pub font_size: f32,
     pub line_height: f32,
@@ -414,7 +397,7 @@ impl TerminalSettings {
 // ─── 终端构造参数 ────────────────────────────────────────────────
 
 /// 终端构造参数：只承载工作目录，其余设置读取用户配置。
-pub struct TerminalBuilder {
+pub(crate) struct TerminalBuilder {
     cwd: Option<PathBuf>,
 }
 
@@ -442,7 +425,7 @@ impl TerminalBuilder {
 // ─── 终端 ─────────────────────────────────────────────────────────
 
 /// 终端状态机：持有 alacritty 模拟器、PTY 发送句柄与主线程事件队列。
-pub struct Terminal {
+pub(crate) struct Terminal {
     term: Arc<AlacrittyTermLock>,
     pty_tx: PtySender,
     events: std::collections::VecDeque<InternalEvent>,
@@ -747,13 +730,6 @@ impl Terminal {
         updated
     }
 
-    pub fn has_selection(&self) -> bool {
-        self.last_content
-            .as_ref()
-            .map(|content| content.selection.is_some())
-            .unwrap_or(false)
-    }
-
     /// 当前选择文本（来自最新渲染快照）。
     pub fn selection_text(&self) -> Option<String> {
         self.last_content.as_ref()?.selection_text.clone()
@@ -789,11 +765,6 @@ impl Terminal {
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         alacritty::clear(&mut self.term.lock());
         cx.notify();
-    }
-
-    /// shell 通过 OSC 0/2 上报的标题。
-    pub fn title(&self) -> Option<&str> {
-        self.title.as_deref()
     }
 
     pub fn tab_title(&self) -> String {
@@ -957,8 +928,6 @@ mod tests {
             Scroll::Delta(3).to_alacritty(),
             AlacScroll::Delta(3)
         ));
-        assert!(matches!(Scroll::PageUp.to_alacritty(), AlacScroll::PageUp));
-        assert!(matches!(Scroll::Top.to_alacritty(), AlacScroll::Top));
         assert!(matches!(Scroll::Bottom.to_alacritty(), AlacScroll::Bottom));
     }
 
@@ -1232,17 +1201,23 @@ mod pty_tests {
                 );
                 t.sync(window, cx);
             });
-            terminal.read(cx).has_selection()
+            terminal
+                .read(cx)
+                .last_content()
+                .is_some_and(|content| content.selection.is_some())
         });
-        assert!(has_selection, "设置选择后应报告存在选择");
+        assert!(has_selection, "设置选择后内容快照应携带选择");
 
         let cleared = cx.update(|window, cx| {
             terminal.update(cx, |t, cx| {
                 t.write_input(Vec::new(), cx);
                 t.sync(window, cx);
             });
-            !terminal.read(cx).has_selection()
+            terminal
+                .read(cx)
+                .last_content()
+                .is_some_and(|content| content.selection.is_none())
         });
-        assert!(cleared, "清除选择后不应再有选择");
+        assert!(cleared, "清除选择后内容快照不应再有选择");
     }
 }

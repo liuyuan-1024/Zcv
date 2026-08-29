@@ -178,10 +178,14 @@ impl GitStore {
                 }
             }
             (GitJob::Uncommit, JobResult::Uncommit(result)) => match result {
-                Ok(message) => {
-                    // 被撤销消息暂存，Head 事件后由面板读取填回提交信息编辑器。
-                    self.pending_uncommitted_message = message;
+                Ok(Some(message)) => {
+                    // 事件直接携带被撤销消息，面板订阅后填回提交信息编辑器，无需跨事件暂存。
+                    cx.emit(GitStoreEvent::Uncommitted(message));
                     eprintln!("git uncommit 成功");
+                    self.schedule_scan(cx);
+                }
+                Ok(None) => {
+                    eprintln!("git uncommit 成功（无可撤销消息）");
                     self.schedule_scan(cx);
                 }
                 Err(error) => {

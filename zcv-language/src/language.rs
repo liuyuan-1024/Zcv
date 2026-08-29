@@ -13,7 +13,7 @@ mod tree_sitter_utils;
 pub use highlighting::HighlightSpan;
 pub use language_buffer::{LanguageBuffer, LanguageBufferEvent};
 pub use registry::Language;
-pub use structure_queries::{BracketPair, FoldRange, IndentRange, NewlineIndent};
+pub use structure_queries::{BracketPair, FoldRange, NewlineIndent};
 pub use syntax_map::SyntaxSnapshot;
 
 /// 输入级自动闭合配对（对齐 Zed 语言配置中的 `[[brackets]]`）。

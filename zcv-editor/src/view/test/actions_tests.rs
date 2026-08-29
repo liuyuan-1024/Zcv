@@ -6,7 +6,7 @@ use zcv_text::{ByteOffset, Edit, TransactionId, TransactionMetadata};
 use super::common::{buffer_text, engine_buffer, test_buffer};
 use super::*;
 use crate::display_map::{DisplayPoint, DisplayRow};
-use crate::{Selection, SelectionSet};
+use crate::selection::{Selection, SelectionSet};
 
 #[gpui::test]
 fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext) {

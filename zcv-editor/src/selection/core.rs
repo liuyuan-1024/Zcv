@@ -2,7 +2,7 @@
 //!
 //! 本文件只维护单个 selection 的方向、范围和映射；排序、合并和 primary 归属在 SelectionSet。
 
-use zcv_text::{ByteOffset, PositionMap, TextRange};
+use zcv_text::{ByteOffset, TextRange};
 
 /// 一个选区，使用 anchor/head 模型。
 ///
@@ -77,15 +77,6 @@ impl Selection {
         Self {
             anchor: self.anchor,
             head,
-            goal: self.goal,
-        }
-    }
-
-    /// 编辑后按 PositionMap 映射坐标；goal 随选区保留，等待下一次移动决策。
-    pub fn map_through_position_map(self, position_map: &PositionMap) -> Self {
-        Self {
-            anchor: position_map.map_old_position(self.anchor).value(),
-            head: position_map.map_old_position(self.head).value(),
             goal: self.goal,
         }
     }

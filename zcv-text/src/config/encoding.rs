@@ -2,7 +2,7 @@
 //!
 //! 这里只保存策略选择；实际 UTF-8 校验、BOM 剥离和替换发生在 Buffer 加载边界。
 
-use crate::{BomPolicy, InvalidUtf8Policy};
+use crate::text_loading::{BomPolicy, InvalidUtf8Policy};
 
 /// 外部文本进入 Buffer 时的编码与恢复策略。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

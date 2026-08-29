@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use super::Selection;
-use zcv_text::{Affinity, ByteOffset, PositionMap, TextRange};
+use zcv_text::{Affinity, ByteOffset, PositionMap};
 
 /// 归一化后的多选区 / 多光标集合。
 ///
@@ -43,24 +43,12 @@ impl SelectionSet {
         self.selections.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.selections.is_empty()
-    }
-
     pub fn primary_index(&self) -> usize {
         self.primary_index
     }
 
     pub fn primary(&self) -> &Selection {
         &self.selections[self.primary_index]
-    }
-
-    pub fn ranges(&self) -> Vec<TextRange> {
-        self.selections
-            .iter()
-            .copied()
-            .map(Selection::range)
-            .collect()
     }
 
     pub fn normalized(&self) -> Self {
@@ -177,6 +165,7 @@ fn contains_offset(selection: Selection, offset: ByteOffset) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zcv_text::TextRange;
 
     fn b(value: usize) -> ByteOffset {
         ByteOffset::new(value)
@@ -201,7 +190,6 @@ mod tests {
             1,
         );
 
-        assert_eq!(set.ranges(), vec![range(1, 1), range(2, 6), range(8, 8)]);
         assert_eq!(set.primary_index(), 1);
         assert_eq!(set.primary().range(), range(2, 6));
     }

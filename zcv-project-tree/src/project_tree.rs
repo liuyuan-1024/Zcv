@@ -27,7 +27,7 @@ use zcv_workspace::{Panel, PanelEvent};
 
 use zcv_settings::SettingsStore;
 
-pub mod git_status;
+mod git_status;
 
 /// git 状态 → 展示颜色（消费方：项目树与版本控制面板共用）。
 pub use git_status::git_status_color;

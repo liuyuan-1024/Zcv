@@ -7,9 +7,13 @@ use std::sync::Arc;
 
 use super::Buffer;
 use crate::{
-    Edit, RegexSearchResult, SearchError, SearchResult, TextRange, TextResult, TransactionMetadata,
     TransactionOutcome, TransactionSource,
+    errors::SearchError,
+    errors::TextResult,
+    search::{RegexSearchResult, SearchResult},
     search::{SearchResultSet, regex_replacement_for_match, regex_replacements_in_text},
+    transaction::{Edit, TransactionMetadata},
+    types::TextRange,
 };
 
 impl Buffer {

@@ -5,7 +5,7 @@ use zcv_language::LanguageBuffer;
 use zcv_text::{Buffer, BufferConfig, ByteOffset};
 
 use super::Editor;
-use crate::{Selection, SelectionSet};
+use crate::selection::{Selection, SelectionSet};
 
 fn editor_with_text(
     cx: &mut TestAppContext,

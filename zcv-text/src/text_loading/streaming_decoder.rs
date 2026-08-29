@@ -4,7 +4,11 @@ use std::io;
 
 use ropey::{Rope, RopeBuilder};
 
-use crate::{BomPolicy, BufferConfig, InvalidUtf8Policy, StorageError};
+use crate::{
+    config::BufferConfig,
+    errors::StorageError,
+    text_loading::{BomPolicy, InvalidUtf8Policy},
+};
 
 /// 单次 `read` 系统调用最多吃多少字节。
 ///
@@ -188,7 +192,10 @@ fn classify_utf8(bytes: &[u8]) -> ValidPrefix {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BufferConfig, EncodingConfig, TextError};
+    use crate::{
+        config::{BufferConfig, EncodingConfig},
+        errors::TextError,
+    };
 
     fn decode(bytes: &[u8]) -> Rope {
         decode_stream(bytes, &BufferConfig::default()).expect("decode")

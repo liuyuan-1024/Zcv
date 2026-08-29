@@ -34,22 +34,16 @@ pub use movement::{MovementDirection, MovementUnit};
 pub use position_map::{Affinity, Bias, MappingResult, PositionMap, Stickiness};
 pub use search::{
     RegexSearchOptions, RegexSearchResult, SearchMatch, SearchOptions, SearchQuery,
-    SearchQueryResult, SearchResult, SearchResultSet,
+    SearchQueryResult, SearchResult,
 };
-pub use slicing::{LineContent, LineSlice, TextSlice};
 pub use snapshot::Snapshot;
-pub use text_changes::{PatchEdit, TextChangeBatch, TextPatch, TextSubscription};
-pub use text_loading::{BomPolicy, InvalidUtf8Policy};
-pub use tracking::{
-    Anchor, Mark, TrackedRange, TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy,
-    TrackedRangeUpdate, TrackedRangeUpdatePolicy,
-};
+pub use text_changes::{TextChangeBatch, TextSubscription};
+pub use tracking::{Anchor, TrackedRange, TrackedRangeUpdatePolicy};
 pub use transaction::{
-    ChangeSet, Delta, DeltaEvent, Edit, TransactionMergePolicy, TransactionMetadata,
-    TransactionOutcome, TransactionSource,
+    DeltaEvent, Edit, TransactionMergePolicy, TransactionMetadata, TransactionOutcome,
+    TransactionSource,
 };
 pub use types::{
     BufferVersion, ByteOffset, CharOffset, Line, LineEndingStyle, LineRange, LogicalColumn,
     Position, TextRange, TransactionId, Utf16Offset, Utf16Position,
 };
-pub use versioned::VersionedResult;

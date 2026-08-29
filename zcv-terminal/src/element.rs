@@ -16,7 +16,8 @@ use zcv_editor::{StyledSpan, chunks_to_runs, render_plain_line};
 use zcv_theme::{color, typography};
 
 use crate::mappings::mouse::{grid_point, grid_point_and_side};
-use crate::{Cell, Content, CursorShape, IndexedCell, TerminalBounds, palette};
+use crate::{Cell, Content, IndexedCell, TerminalBounds, TerminalView, palette};
+use alacritty_terminal::vte::ansi::CursorShape;
 
 /// 同一行的渲染数据：文本段、起点与起始网格列。
 struct LineRun {
@@ -60,9 +61,10 @@ pub(super) struct TerminalLayout {
 }
 
 pub(super) struct TerminalElement {
-    view: gpui::Entity<crate::TerminalView>,
+    view: gpui::Entity<TerminalView>,
     /// 文本段 shape 缓存：滚动等重绘帧直接命中，避免每帧全量字体 shaping。
-    /// 键为文本与样式投影（TextRun 本身无 Hash）；容量超限时整体清空（视口内行数有限，重建成本低，滚动场景命中率不受影响）。
+    /// 键为文本与样式投影（TextRun 本身无 Hash）；
+    /// 容量超限时整体清空（视口内行数有限，重建成本低，滚动场景命中率不受影响）。
     shaped_runs: HashMap<ShapedRunKey, ShapedLine>,
     /// 行转换缓存：内容指纹 → 转换结果（文本/样式段/背景区间）。
     /// 滚动只移动视口，行内容不变则指纹不变直接命中，跳过每格的主题颜色解析。
@@ -121,7 +123,7 @@ impl From<&TextRun> for RunStyle {
 const SHAPED_RUN_CACHE_LIMIT: usize = 4096;
 
 impl TerminalElement {
-    pub(super) fn new(view: gpui::Entity<crate::TerminalView>) -> Self {
+    pub(super) fn new(view: gpui::Entity<TerminalView>) -> Self {
         TerminalElement {
             view,
             shaped_runs: HashMap::new(),
@@ -373,7 +375,7 @@ impl Element for TerminalElement {
 /// 注册滚轮与鼠标监听（每帧重新注册，闭包捕获当帧的坐标度量与快照状态）。
 fn register_mouse_listeners(
     layout: &TerminalLayout,
-    view: gpui::Entity<crate::TerminalView>,
+    view: gpui::Entity<TerminalView>,
     window: &mut Window,
     _cx: &mut App,
 ) {

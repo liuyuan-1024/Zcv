@@ -6,11 +6,13 @@ use regex::{Regex, RegexBuilder};
 use regex_automata::meta;
 
 use crate::{
-    BufferConfig, BufferVersion, ByteOffset, CoordinateError, SearchError, Snapshot, Stickiness,
-    TextError, TextRange, TextResult, VersionedResult,
+    BufferConfig, BufferVersion, ByteOffset, CoordinateError, Snapshot, Stickiness, TextError,
+    TextRange, TextResult,
+    errors::SearchError,
     position_map::{MappingResult, PositionMap},
     storage::TextRead,
     transaction::DeltaEvent,
+    versioned::VersionedResult,
 };
 
 /// 与宿主和搜索范围无关的统一文本查询。

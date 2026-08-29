@@ -20,4 +20,4 @@ pub use input::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent};
 pub use list_item::ListItem;
 pub use scrollbar::{MIN_THUMB_SIZE, ScrollableHandle, Scrollbar};
 pub use tab::Tab;
-pub use tooltip::{TooltipSpec, tooltip_view};
+pub use tooltip::TooltipSpec;

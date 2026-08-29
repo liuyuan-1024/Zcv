@@ -850,10 +850,11 @@ mod tests {
     };
 
     use super::{DockPosition, LAYOUT_SAVE_THROTTLE, Workspace};
-    use crate::DockData;
+    use crate::dock::DockData;
     use crate::panel::PanelEvent;
-    use crate::{FocusOrHidePanel, Panel, PanelHandle, layout_state};
+    use crate::{Panel, PanelHandle, layout_state};
     use gpui::EventEmitter;
+    use zcv_actions::FocusOrHidePanel;
 
     struct TestPanel {
         focus: FocusHandle,

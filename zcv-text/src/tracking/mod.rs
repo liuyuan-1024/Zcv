@@ -7,7 +7,7 @@ mod policy;
 mod tracked_range;
 mod update;
 
-pub use anchor::{Anchor, Mark};
+pub use anchor::Anchor;
 pub use policy::{
     TrackedRangeCollapsePolicy, TrackedRangeInvalidationPolicy, TrackedRangeUpdatePolicy,
 };

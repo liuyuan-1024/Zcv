@@ -5,7 +5,7 @@
 
 use gpui::{App, Rgba, Window};
 
-use crate::{Color, NamedColor};
+use alacritty_terminal::vte::ansi::{Color, NamedColor};
 
 const fn rgb_u8(r: u8, g: u8, b: u8) -> Rgba {
     Rgba {

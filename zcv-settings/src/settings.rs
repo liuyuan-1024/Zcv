@@ -21,7 +21,7 @@ pub fn config_dir() -> &'static Path {
     CONFIG_DIR.get_or_init(|| home_dir().join(".zcv")).as_path()
 }
 
-pub fn settings_file() -> &'static Path {
+fn settings_file() -> &'static Path {
     static SETTINGS_FILE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     SETTINGS_FILE
         .get_or_init(|| config_dir().join("settings.json"))

@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use crate::git_status::git_status_color;
+use crate::git_status_color;
 use gpui::{
     App, Div, ElementId, Entity, MouseButton, UniformListScrollHandle, WeakEntity, div, prelude::*,
     uniform_list,

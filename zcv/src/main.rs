@@ -5,6 +5,7 @@ mod breadcrumbs;
 mod cursor_position;
 mod harness;
 mod preview;
+mod project_diff;
 mod version_control;
 mod workspace;
 
@@ -41,6 +42,7 @@ fn main() {
         }
         preview::init(cx);
         zcv_editor::init(cx);
+        zcv_keymap::init(cx).expect("内置快捷键应能注册");
 
         match initial_project_root(std::env::args_os(), most_recent_valid_project()) {
             Some(root) => {

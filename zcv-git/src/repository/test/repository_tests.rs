@@ -373,10 +373,11 @@ fn cancelling_push_terminates_git_and_hook_process_tree() {
 
     let pid_path = root.join("hook-child.pid");
     let hook_path = root.join(".git/hooks/pre-push");
+    // 进度行必须先于 PID 文件写入：取消线程见到 PID 文件即触发 SIGINT，若进度行在其后书写，高负载下钩子可能在两行之间被抢占，导致进度丢失。
     fs::write(
         &hook_path,
         format!(
-            "#!/bin/sh\nsleep 30 &\nchild=$!\necho $child > '{}'\necho '正在等待测试钩子' >&2\nwait $child\n",
+            "#!/bin/sh\necho '正在等待测试钩子' >&2\nsleep 30 &\nchild=$!\necho $child > '{}'\nwait $child\n",
             pid_path.display()
         ),
     )
@@ -479,7 +480,7 @@ fn status_reports_branch_tracking() {
 /// 批量查询单路径的 hunks（路径不在结果中视为空）。
 fn hunks_for(repository: &RealGitRepository, path: &Path) -> Vec<DiffHunk> {
     repository
-        .diff_hunks_for_paths(&[path.to_path_buf()])
+        .diff_hunks_for_paths(DiffBase::Head, &[path.to_path_buf()])
         .expect("diff_hunks_for_paths 应成功")
         .into_iter()
         .find_map(|(parsed, hunks)| (parsed == path).then_some(hunks))
@@ -571,7 +572,10 @@ fn diff_hunks_batch_maps_results_to_paths() {
     fs::write(root.join("b.txt"), "b\nb\n").expect("应修改文件");
 
     let results = repository
-        .diff_hunks_for_paths(&[PathBuf::from("a.txt"), PathBuf::from("b.txt")])
+        .diff_hunks_for_paths(
+            DiffBase::Head,
+            &[PathBuf::from("a.txt"), PathBuf::from("b.txt")],
+        )
         .expect("批量 diff 应成功");
     let paths: Vec<_> = results.iter().map(|(path, _)| path.as_path()).collect();
     assert_eq!(paths, [Path::new("a.txt"), Path::new("b.txt")]);
@@ -581,6 +585,179 @@ fn diff_hunks_batch_maps_results_to_paths() {
         results
             .iter()
             .all(|(path, _)| path.as_os_str() != "tracked.txt")
+    );
+}
+
+#[test]
+fn diff_hunks_separate_staged_and_unstaged_changes() {
+    let (root, _temp) = test_repo();
+    let repository = open_repo(&root);
+    let tracked = PathBuf::from("tracked.txt");
+
+    fs::write(root.join(&tracked), "第一行\n已暂存修改\n").expect("应写入已暂存版本");
+    run_in(&root, &["git", "add", "tracked.txt"]);
+    fs::write(root.join(&tracked), "未暂存修改\n已暂存修改\n").expect("应写入工作区版本");
+
+    let staged = repository
+        .diff_hunks_for_paths(DiffBase::Staged, std::slice::from_ref(&tracked))
+        .expect("应读取已暂存差异")
+        .pop()
+        .expect("应返回已暂存文件")
+        .1;
+    let unstaged = repository
+        .diff_hunks_for_paths(DiffBase::Index, std::slice::from_ref(&tracked))
+        .expect("应读取未暂存差异")
+        .pop()
+        .expect("应返回未暂存文件")
+        .1;
+
+    assert_eq!(staged.len(), 1);
+    assert_eq!(staged[0].range, 1..2);
+    assert_eq!(unstaged.len(), 1);
+    assert_eq!(unstaged[0].range, 0..1);
+}
+
+#[test]
+fn hunk_operations_stage_restore_and_unstage_independently() {
+    let (root, _temp) = test_repo();
+    let repository = open_repo(&root);
+    let tracked = PathBuf::from("tracked.txt");
+    let original = (0..12)
+        .map(|line| format!("line{line}"))
+        .collect::<Vec<_>>();
+    fs::write(root.join(&tracked), format!("{}\n", original.join("\n"))).expect("应写入基准文件");
+    run_in(&root, &["git", "add", "tracked.txt"]);
+    run_in(&root, &["git", "commit", "-q", "-m", "baseline"]);
+
+    let mut changed = original.clone();
+    changed[2] = "暂存这一块".into();
+    changed[9] = "还原这一块".into();
+    fs::write(root.join(&tracked), format!("{}\n", changed.join("\n")))
+        .expect("应写入两个独立 hunk");
+
+    let hunks = repository
+        .diff_hunks_for_paths(DiffBase::Index, std::slice::from_ref(&tracked))
+        .expect("应读取未暂存 hunks")
+        .pop()
+        .expect("应返回文件")
+        .1;
+    assert_eq!(hunks.len(), 2);
+    repository
+        .apply_hunk(GitHunkOperation::Stage, &tracked, &hunks[0])
+        .expect("应只暂存第一块");
+
+    let staged = repository
+        .diff_hunks_for_paths(DiffBase::Staged, std::slice::from_ref(&tracked))
+        .expect("应读取已暂存 hunks")
+        .pop()
+        .expect("应返回已暂存文件")
+        .1;
+    let unstaged = repository
+        .diff_hunks_for_paths(DiffBase::Index, std::slice::from_ref(&tracked))
+        .expect("应读取剩余未暂存 hunks")
+        .pop()
+        .expect("应返回未暂存文件")
+        .1;
+    assert_eq!(staged, vec![hunks[0].clone()]);
+    assert_eq!(unstaged, vec![hunks[1].clone()]);
+
+    repository
+        .apply_hunk(GitHunkOperation::Restore, &tracked, &unstaged[0])
+        .expect("应还原第二块");
+    assert!(
+        repository
+            .diff_hunks_for_paths(DiffBase::Index, std::slice::from_ref(&tracked))
+            .expect("应读取还原后的差异")
+            .into_iter()
+            .flat_map(|(_, hunks)| hunks)
+            .next()
+            .is_none()
+    );
+
+    repository
+        .apply_hunk(GitHunkOperation::Unstage, &tracked, &staged[0])
+        .expect("应取消暂存第一块");
+    let unstaged = repository
+        .diff_hunks_for_paths(DiffBase::Index, std::slice::from_ref(&tracked))
+        .expect("应读取取消暂存后的差异")
+        .pop()
+        .expect("应返回未暂存文件")
+        .1;
+    assert_eq!(unstaged, vec![hunks[0].clone()]);
+    assert_eq!(
+        fs::read_to_string(root.join(&tracked)).expect("应读取工作区文件"),
+        format!("{}\n", {
+            let mut expected = original;
+            expected[2] = "暂存这一块".into();
+            expected.join("\n")
+        })
+    );
+}
+
+#[test]
+fn staging_a_later_hunk_uses_index_coordinates_instead_of_worktree_line_numbers() {
+    let (root, _temp) = test_repo();
+    let repository = open_repo(&root);
+    let tracked = PathBuf::from("offset-hunks.txt");
+    let original = (0..220)
+        .map(|line| format!("line{line}"))
+        .collect::<Vec<_>>();
+    fs::write(root.join(&tracked), format!("{}\n", original.join("\n"))).expect("应写入基准文件");
+    run_in(&root, &["git", "add", "offset-hunks.txt"]);
+    run_in(&root, &["git", "commit", "-q", "-m", "baseline"]);
+
+    let mut changed = original.clone();
+    changed.splice(
+        10..10,
+        (0..120).map(|line| format!("前序未暂存新增 {line}")),
+    );
+    changed.insert(270, "只暂存这一行".into());
+    fs::write(root.join(&tracked), format!("{}\n", changed.join("\n")))
+        .expect("应写入带大幅行偏移的工作区文本");
+
+    let hunks = repository
+        .diff_hunks_for_paths(DiffBase::Index, std::slice::from_ref(&tracked))
+        .expect("应读取未暂存 hunks")
+        .pop()
+        .expect("应返回文件")
+        .1;
+    assert_eq!(hunks.len(), 2);
+    repository
+        .apply_hunk(GitHunkOperation::Stage, &tracked, &hunks[1])
+        .expect("应暂存后一个 hunk");
+
+    let index_text = repository
+        .load_revisions(&[":offset-hunks.txt"])
+        .expect("应读取 index 文本")
+        .pop()
+        .flatten()
+        .expect("index 应包含文件");
+    let mut expected_index = original.clone();
+    expected_index.insert(150, "只暂存这一行".into());
+    assert_eq!(
+        String::from_utf8(index_text).expect("index 应为 UTF-8"),
+        format!("{}\n", expected_index.join("\n"))
+    );
+
+    let staged = repository
+        .diff_hunks_for_paths(DiffBase::Staged, std::slice::from_ref(&tracked))
+        .expect("应读取已暂存 hunk")
+        .pop()
+        .expect("应返回已暂存文件")
+        .1;
+    assert_eq!(staged.len(), 1);
+    repository
+        .apply_hunk(GitHunkOperation::Unstage, &tracked, &staged[0])
+        .expect("应取消暂存后一个 hunk");
+    let index_text = repository
+        .load_revisions(&[":offset-hunks.txt"])
+        .expect("应重新读取 index 文本")
+        .pop()
+        .flatten()
+        .expect("index 应包含文件");
+    assert_eq!(
+        String::from_utf8(index_text).expect("index 应为 UTF-8"),
+        format!("{}\n", original.join("\n"))
     );
 }
 

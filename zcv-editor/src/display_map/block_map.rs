@@ -15,7 +15,7 @@ use super::fold_map::{ProjectedLineIndex, ProjectedPoint, ProjectedRange};
 use super::wrap_map::{WrapSnapshot, WrapViewportRowKind};
 use super::{DisplayPoint, DisplayRow};
 
-pub(super) const FILE_HEADER_HEIGHT: usize = 2;
+pub(crate) const FILE_HEADER_HEIGHT: usize = 2;
 pub(super) const EXCERPT_BOUNDARY_HEIGHT: usize = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,6 +28,17 @@ pub(crate) enum DisplayBlockKind {
 pub(crate) struct DisplayBlock {
     pub(crate) kind: DisplayBlockKind,
     pub(crate) excerpt: ExcerptSnapshot,
+}
+
+/// 由当前滚动位置派生的悬浮文件标题。
+///
+/// `source_row` 标识它对应的真实边界块；`next_buffer_header_row` 用于在下一个文件到达时把当前标题向上顶出。
+/// 该结构只是一帧投影，不保存当前文件状态。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StickyBufferHeader {
+    pub(crate) source_row: DisplayRow,
+    pub(crate) excerpt: ExcerptSnapshot,
+    pub(crate) next_buffer_header_row: Option<DisplayRow>,
 }
 
 #[derive(Clone, Debug)]
@@ -122,6 +133,7 @@ impl BlockSnapshot {
 
         let excerpt_starts = excerpts
             .iter()
+            .filter(|excerpt| excerpt.starts_new_excerpt())
             .filter_map(|excerpt| {
                 wrap_snapshot
                     .offset_to_display_point(excerpt.output_range().start())
@@ -219,6 +231,27 @@ impl BlockSnapshot {
 
     pub(super) fn line_count(&self) -> usize {
         self.rows.len()
+    }
+
+    /// 返回视口顶部所在 excerpt 的文件标题，以及下一个文件标题的位置。
+    ///
+    /// 同一文件的后续 excerpt 只有分隔块，但它同样会更新标题所代表的 excerpt，使“打开文件”等操作仍以当前可见片段为目标。
+    pub(super) fn sticky_buffer_header(&self, top_row: DisplayRow) -> Option<StickyBufferHeader> {
+        let (index, placement) = self
+            .placements
+            .iter()
+            .enumerate()
+            .take_while(|(_, placement)| placement.display_row <= top_row.get())
+            .last()?;
+        let next_buffer_header_row = self.placements[index + 1..]
+            .iter()
+            .find(|placement| placement.block.kind == DisplayBlockKind::BufferHeader)
+            .map(|placement| DisplayRow::new(placement.display_row));
+        Some(StickyBufferHeader {
+            source_row: DisplayRow::new(placement.display_row),
+            excerpt: placement.block.excerpt.clone(),
+            next_buffer_header_row,
+        })
     }
 
     fn wrap_row_to_display_row(&self, wrap_row: usize) -> usize {

@@ -11,7 +11,7 @@ use crate::status::path_from_bytes;
 /// - Added/Modified：range 为新增行的行号区间（纯增时旧侧计数为 0）；
 /// - Deleted：range 为空区间，锚定 newStart−1 行（删除发生处的行），渲染侧展开为一个显示行。
 /// - `old_range` 是旧侧（HEAD 版本）的行范围：Deleted 时用它从 HEAD 文本切片出被删除的行。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DiffHunk {
     pub range: Range<usize>,
     /// 旧侧（HEAD）行范围：Deleted 为被删除行；Added 为 oldStart..oldStart；Modified 两侧同行。
@@ -20,7 +20,7 @@ pub struct DiffHunk {
 }
 
 /// hunk 变化类型（判定规则对齐 Zed buffer_diff：旧侧空→Added、新侧空→Deleted）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DiffHunkKind {
     /// 旧侧计数为 0（纯新增）。
     Added,
@@ -143,6 +143,87 @@ pub(crate) fn parse_diff_hunks_per_path(
         .collect()
 }
 
+/// 从单文件 `git diff --unified=0` 输出中提取一个可独立应用的 hunk patch。
+///
+/// 文件头只保留一份，目标 hunk 之外的 body 不进入结果；
+/// 调用方可把结果交给 `git apply --unidiff-zero`，用于 hunk 级暂存、取消暂存或还原。
+pub(crate) fn select_hunk_patch(output: &[u8], target: &DiffHunk) -> Option<Vec<u8>> {
+    let mut first_hunk_start = None;
+    let mut target_range: Option<Range<usize>> = None;
+    let mut offset = 0usize;
+
+    for line in output.split_inclusive(|byte| *byte == b'\n') {
+        if line.starts_with(b"@@ -") {
+            first_hunk_start.get_or_insert(offset);
+            if target_range.is_some() {
+                target_range.as_mut().expect("范围已存在").end = offset;
+                break;
+            }
+            let header = line.strip_suffix(b"\n").unwrap_or(line);
+            if parse_hunk_header(header).as_ref() == Some(target) {
+                target_range = Some(offset..output.len());
+            }
+        }
+        offset += line.len();
+    }
+
+    let first_hunk_start = first_hunk_start?;
+    let target_range = target_range?;
+    let mut patch = Vec::with_capacity(first_hunk_start + target_range.len());
+    patch.extend_from_slice(&output[..first_hunk_start]);
+    patch.extend_from_slice(&output[target_range]);
+    Some(patch)
+}
+
+/// 返回目标 hunk 在旧侧和新侧的真实行编辑范围。
+///
+/// `DiffHunk` 的空侧范围为显示而锚在前一行；index 编辑则必须使用
+/// unified diff header 中的边界值，否则纯新增和纯删除会产生一行偏差。
+pub(crate) fn select_hunk_edit_ranges(
+    output: &[u8],
+    target: &DiffHunk,
+) -> Option<(Range<usize>, Range<usize>)> {
+    output
+        .split(|byte| *byte == b'\n')
+        .filter(|line| line.starts_with(b"@@ -"))
+        .find_map(|line| {
+            (parse_hunk_header(line).as_ref() == Some(target))
+                .then(|| parse_hunk_edit_ranges(line))
+                .flatten()
+        })
+}
+
+fn parse_hunk_edit_ranges(line: &[u8]) -> Option<(Range<usize>, Range<usize>)> {
+    let mut tokens = line
+        .split(|byte| byte.is_ascii_whitespace())
+        .filter(|token| !token.is_empty());
+    if tokens.next()? != b"@@".as_slice() {
+        return None;
+    }
+    let old = tokens.next()?.strip_prefix(b"-")?;
+    let new = tokens.next()?.strip_prefix(b"+")?;
+    if tokens.next()? != b"@@".as_slice() {
+        return None;
+    }
+    let (old_start, old_count) = parse_range_part(old)?;
+    let (new_start, new_count) = parse_range_part(new)?;
+    Some((
+        edit_range(old_start, old_count.unwrap_or(1))?,
+        edit_range(new_start, new_count.unwrap_or(1))?,
+    ))
+}
+
+fn edit_range(start: u64, count: u64) -> Option<Range<usize>> {
+    let start = usize::try_from(start).ok()?;
+    let count = usize::try_from(count).ok()?;
+    let start = if count == 0 {
+        start
+    } else {
+        start.saturating_sub(1)
+    };
+    Some(start..start.checked_add(count)?)
+}
+
 /// 解析 `diff --git a/X b/Y` 头中的 b 侧路径（当前工作树路径）。
 ///
 /// 含 `"` 的路径是 C 引用格式（quotepath=false 下仅控制字符路径仍会引用），无法可靠解码，返回 None。
@@ -192,6 +273,27 @@ mod tests {
                 old_range: 29..31,
                 kind: Deleted,
             }]
+        );
+    }
+
+    #[test]
+    fn isolated_hunk_edits_keep_true_empty_side_boundaries() {
+        let added = b"@@ -0,0 +1,2 @@\n+first\n+second\n";
+        let added_hunk = parse("@@ -0,0 +1,2 @@\n+first\n+second\n")
+            .pop()
+            .expect("应解析新增 hunk");
+        assert_eq!(
+            select_hunk_edit_ranges(added, &added_hunk),
+            Some((0..0, 0..2))
+        );
+
+        let deleted = b"@@ -1,2 +0,0 @@\n-first\n-second\n";
+        let deleted_hunk = parse("@@ -1,2 +0,0 @@\n-first\n-second\n")
+            .pop()
+            .expect("应解析删除 hunk");
+        assert_eq!(
+            select_hunk_edit_ranges(deleted, &deleted_hunk),
+            Some((0..2, 0..0))
         );
     }
 
@@ -449,5 +551,20 @@ index 111..222 100644
         let requested = vec![PathBuf::from("a.rs")];
         let parsed = parse_diff_hunks_per_path(output.as_bytes(), &requested);
         assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn selects_one_hunk_as_an_independent_patch() {
+        let output = b"diff --git a/a.txt b/a.txt\nindex 123..456 100644\n--- a/a.txt\n+++ b/a.txt\n@@ -2 +2 @@\n-old two\n+new two\n@@ -8 +8 @@\n-old eight\n+new eight\n";
+        let target = DiffHunk {
+            range: 7..8,
+            old_range: 7..8,
+            kind: Modified,
+        };
+
+        assert_eq!(
+            select_hunk_patch(output, &target).unwrap(),
+            b"diff --git a/a.txt b/a.txt\nindex 123..456 100644\n--- a/a.txt\n+++ b/a.txt\n@@ -8 +8 @@\n-old eight\n+new eight\n"
+        );
     }
 }

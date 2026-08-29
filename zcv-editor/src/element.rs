@@ -12,20 +12,20 @@ use gpui::{
     MouseUpEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine, Style, TextRun, Window,
     div, fill, point, prelude::*, px, relative, size,
 };
-use zcv_actions::ToggleFold;
+use zcv_actions::{OpenExcerpts, ToggleFold};
 use zcv_git::DiffHunkKind;
 use zcv_language::BracketPair;
 use zcv_text::{ByteOffset, Line, LogicalColumn, SearchMatch, TextRange};
 use zcv_theme::{color, space, typography};
-use zcv_ui::{Button, ButtonStyle, SvgIcon};
+use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon};
 
 use crate::SelectionSet;
 
 use super::display_map::{
     BufferPoint, DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint, DisplayRow,
-    DisplaySnapshot, FoldRowSegment, ProjectedLineIndex, ProjectedRange, RenderedWhitespace,
-    RowStyleInput, StreamLineSource, WrapRowInfo, WrapViewportRowKind, byte_for_display_column,
-    render_viewport_row,
+    DisplaySnapshot, FILE_HEADER_HEIGHT, FoldRowSegment, ProjectedLineIndex, ProjectedRange,
+    RenderedWhitespace, RowStyleInput, StickyBufferHeader, StreamLineSource, WrapRowInfo,
+    WrapViewportRowKind, byte_for_display_column, render_viewport_row,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
@@ -292,20 +292,28 @@ pub(super) struct PrepaintState {
     deleted_hunk_hitboxes: Arc<Vec<HunkHitbox>>,
     /// 折叠删除 hunk 的交互三角标记（禁止渲染层手绘交互图标）。
     deleted_hunk_buttons: Vec<AnyElement>,
+    /// 由宿主提供内容、Editor 定位到 hunk 右上角并按整块悬停显隐的操作栏。
+    diff_hunk_controls: Vec<DiffHunkControls>,
     /// crease 折叠开关（已按 gutter 绝对坐标布局；自带点击与 tooltip）。
     crease_toggles: Vec<Option<AnyElement>>,
     /// 折叠占位符点击 hitbox（合并行占位符段；点击展开）。
     placeholder_hitboxes: Arc<Vec<(gpui::Hitbox, Line)>>,
     /// hunk 竖条范围与状态色（竖条色不随展开变化；行背景按行状态另行绘制）。
     hunk_strips: Arc<Vec<(Range<usize>, DiffHunkKind)>>,
-    /// 展开态行区间（内容区与 gutter 行背景只画这些行）。
+    /// 整行差异背景范围（新增行始终包含，修改/删除只在展开时包含）。
     expanded_rows: Arc<Vec<Range<usize>>>,
     scrollbar: Option<ScrollbarLayout>,
     block_elements: Vec<AnyElement>,
+    sticky_buffer_header: Option<AnyElement>,
 }
 
 /// hunk 色带 hitbox：命中区域 + 点击目标范围 + 类型 + 展开态标志。
 type HunkHitbox = (gpui::Hitbox, Range<usize>, DiffHunkKind, bool);
+
+struct DiffHunkControls {
+    hover_bounds: Bounds<Pixels>,
+    element: Option<AnyElement>,
+}
 
 #[derive(Debug)]
 struct SelectionHighlight {
@@ -509,11 +517,236 @@ fn build_deleted_hunk_buttons(
     buttons
 }
 
+fn build_diff_hunk_controls(
+    layout: &EditorLayout,
+    hunks: &[(Range<usize>, zcv_git::DiffHunk)],
+    sticky_header_height: Pixels,
+    editor: &Entity<Editor>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Vec<DiffHunkControls> {
+    let Some(delegate) = editor.read(cx).diff_hunk_delegate() else {
+        return Vec::new();
+    };
+    let mut controls = Vec::new();
+    let sticky_top = layout.text_clip_bounds.top() + sticky_header_height;
+    for (rows, hunk) in hunks {
+        let Some(visible_line) = layout
+            .lines
+            .iter()
+            .find(|line| rows.contains(&line.row.get()))
+        else {
+            continue;
+        };
+        let hunk_start_y = visible_line.origin.y
+            - layout.line_height * visible_line.row.get().saturating_sub(rows.start) as f32;
+        let hunk_end_y = hunk_start_y + layout.line_height * rows.len() as f32;
+        let visible_top = hunk_start_y.max(sticky_top);
+        let visible_bottom = hunk_end_y.min(layout.text_clip_bounds.bottom());
+        if visible_top >= visible_bottom {
+            continue;
+        }
+        let hover_bounds = Bounds {
+            origin: point(layout.text_clip_bounds.left(), visible_top),
+            size: size(
+                layout.text_clip_bounds.size.width,
+                visible_bottom - visible_top,
+            ),
+        };
+        let element = if hover_bounds.contains(&window.mouse_position()) {
+            let mut element = delegate.render_hunk_controls(
+                rows.start,
+                hunk,
+                layout.line_height,
+                editor,
+                window,
+                cx,
+            );
+            let available_space = size(AvailableSpace::MinContent, AvailableSpace::MinContent);
+            let element_size = element.layout_as_root(available_space, window, cx);
+            let origin_y = if hunk_start_y >= sticky_top {
+                hunk_start_y
+            } else {
+                sticky_top.min(hunk_end_y - layout.line_height)
+            };
+            let origin = point(
+                (layout.text_clip_bounds.right() - element_size.width - px(4.))
+                    .max(layout.text_clip_bounds.left()),
+                origin_y,
+            );
+            element.prepaint_as_root(origin, available_space, window, cx);
+            Some(element)
+        } else {
+            None
+        };
+        controls.push(DiffHunkControls {
+            hover_bounds,
+            element,
+        });
+    }
+    controls
+}
+
+/// 普通文件标题与悬浮文件标题共用的唯一渲染入口。
+fn buffer_header_element(
+    block: &DisplayBlock,
+    row: DisplayRow,
+    sticky: bool,
+    editor: &Entity<Editor>,
+    cx: &mut App,
+) -> AnyElement {
+    let colors = *color::current(cx);
+    let display_path = block.excerpt.display_path();
+    let filename = display_path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| display_path.display().to_string());
+    let parent = display_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(|parent| format!(" {}/", parent.display()));
+    let open_excerpt = block.excerpt.clone();
+    let open_from_path = block.excerpt.clone();
+    let fold_path = block.excerpt.path().to_path_buf();
+    let folded = editor.read(cx).is_buffer_folded(&fold_path);
+    let editor_for_button = editor.clone();
+    let editor_for_path = editor.clone();
+    let editor_for_fold = editor.clone();
+    let block_id: ElementId = if sticky {
+        ("sticky-buffer-header-block", row.get()).into()
+    } else {
+        ("buffer-header-block", row.get()).into()
+    };
+    let header_id: ElementId = if sticky {
+        ("sticky-buffer-header", row.get()).into()
+    } else {
+        ("buffer-header", row.get()).into()
+    };
+    let chevron_id: ElementId = if sticky {
+        ("sticky-buffer-header-chevron", row.get()).into()
+    } else {
+        ("buffer-header-chevron", row.get()).into()
+    };
+    let path_id: ElementId = if sticky {
+        ("sticky-buffer-header-path", row.get()).into()
+    } else {
+        ("buffer-header-path", row.get()).into()
+    };
+    let file_id: ElementId = if sticky {
+        ("sticky-buffer-header-file", row.get()).into()
+    } else {
+        ("buffer-header-file", row.get()).into()
+    };
+    let open_id: ElementId = if sticky {
+        ("sticky-buffer-header-open", row.get()).into()
+    } else {
+        ("buffer-header-open", row.get()).into()
+    };
+
+    div()
+        .id(block_id)
+        .w_full()
+        .h_full()
+        .when(sticky, |element| element.bg(colors.editor_background))
+        .when(sticky, |element| {
+            element
+                .occlude()
+                .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                    cx.stop_propagation()
+                })
+        })
+        .p(space::S2)
+        .child(
+            div()
+                .id(header_id)
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(space::S6)
+                .px(space::S6)
+                .rounded_sm()
+                .border_1()
+                .border_color(colors.border)
+                .bg(colors.editor_subheader_background)
+                .child(
+                    Button::icon(
+                        chevron_id,
+                        if folded {
+                            "icons/chevron_right.svg"
+                        } else {
+                            "icons/chevron_down.svg"
+                        },
+                    )
+                    .label(if folded {
+                        "展开文件"
+                    } else {
+                        "折叠文件"
+                    })
+                    .on_click(move |_event, _window, cx| {
+                        editor_for_fold.update(cx, |editor, cx| {
+                            editor.toggle_buffer_fold(fold_path.clone(), cx)
+                        });
+                    }),
+                )
+                .child(
+                    // 悬停反馈只在路径区（点击区）生效；
+                    // 悬浮在“打开文件”等子按钮上时 header 背景保持不变。
+                    div()
+                        .id(path_id)
+                        .min_w_0()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .gap(space::S2)
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(colors.element_hover))
+                        .on_click(move |_event, _window, cx| {
+                            editor_for_path.update(cx, |editor, cx| {
+                                editor.open_excerpt(&open_from_path, false, cx)
+                            });
+                        })
+                        .child(SvgIcon::new("icons/file.svg").id(file_id))
+                        .child(
+                            div()
+                                .text_size(typography::editor())
+                                .text_color(colors.text)
+                                .whitespace_nowrap()
+                                .child(filename),
+                        )
+                        .when_some(parent, |element, parent| {
+                            element.child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(typography::editor())
+                                    .text_color(colors.text_muted)
+                                    .child(parent),
+                            )
+                        }),
+                )
+                .child(
+                    Button::text(open_id, "打开文件")
+                        .style(ButtonStyle::Solid)
+                        .size(ButtonSize::Loose)
+                        .label("打开文件并跳转到指定位置")
+                        .shortcut(&OpenExcerpts, cx)
+                        .on_click(move |_event, _window, cx| {
+                            editor_for_button.update(cx, |editor, cx| {
+                                editor.open_excerpt(&open_excerpt, false, cx)
+                            });
+                        }),
+                ),
+        )
+        .into_any_element()
+}
+
 /// 把 BlockMap 的虚拟块布局成真实 GPUI 元素。
 /// 文件标题属于 Editor 基础设施；
 /// 搜索、diff 等宿主只通过 MultiBuffer 元数据参与。
 fn build_block_elements(
     layout: &EditorLayout,
+    sticky_source_row: Option<DisplayRow>,
     editor: &Entity<Editor>,
     window: &mut Window,
     cx: &mut App,
@@ -523,6 +756,11 @@ fn build_block_elements(
     let mut elements = Vec::with_capacity(layout.blocks.len());
 
     for block in &layout.blocks {
+        if block.block.kind == DisplayBlockKind::BufferHeader
+            && sticky_source_row == Some(block.row)
+        {
+            continue;
+        }
         let height = layout.line_height * block.height as f32;
         let mut element = match block.block.kind {
             DisplayBlockKind::ExcerptBoundary => div()
@@ -535,113 +773,7 @@ fn build_block_elements(
                 .child(div().w_full().h(px(1.)).bg(colors.border_variant))
                 .into_any_element(),
             DisplayBlockKind::BufferHeader => {
-                let display_path = block.block.excerpt.display_path();
-                let filename = display_path
-                    .file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| display_path.display().to_string());
-                let parent = display_path
-                    .parent()
-                    .filter(|parent| !parent.as_os_str().is_empty())
-                    .map(|parent| format!(" {}/", parent.display()));
-                let open_excerpt = block.block.excerpt.clone();
-                let open_from_path = block.block.excerpt.clone();
-                let fold_path = block.block.excerpt.path().to_path_buf();
-                let folded = editor.read(cx).is_buffer_folded(&fold_path);
-                let editor_for_button = editor.clone();
-                let editor_for_path = editor.clone();
-                let editor_for_fold = editor.clone();
-
-                div()
-                    .id(("buffer-header-block", block.row.get()))
-                    .w_full()
-                    .h_full()
-                    .p(space::S2)
-                    .child(
-                        div()
-                            .id(("buffer-header", block.row.get()))
-                            .size_full()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap(space::S6)
-                            .px(space::S6)
-                            .rounded_sm()
-                            .border_1()
-                            .border_color(colors.border)
-                            .bg(colors.editor_subheader_background)
-                            .child(
-                                Button::icon(
-                                    ("buffer-header-chevron", block.row.get()),
-                                    if folded {
-                                        "icons/chevron_right.svg"
-                                    } else {
-                                        "icons/chevron_down.svg"
-                                    },
-                                )
-                                .label(if folded {
-                                    "展开文件"
-                                } else {
-                                    "折叠文件"
-                                })
-                                .on_click(
-                                    move |_event, _window, cx| {
-                                        editor_for_fold.update(cx, |editor, cx| {
-                                            editor.toggle_buffer_fold(fold_path.clone(), cx)
-                                        });
-                                    },
-                                ),
-                            )
-                            .child(
-                                // 悬停反馈只在路径区（点击区）生效；
-                                // 悬浮在"打开文件"等子按钮上时 header 背景保持不变。
-                                div()
-                                    .id(("buffer-header-path", block.row.get()))
-                                    .min_w_0()
-                                    .flex_1()
-                                    .flex()
-                                    .items_center()
-                                    .gap(space::S2)
-                                    .cursor_pointer()
-                                    .hover(move |style| style.bg(colors.element_hover))
-                                    .on_click(move |_event, _window, cx| {
-                                        editor_for_path.update(cx, |editor, cx| {
-                                            editor.open_excerpt(&open_from_path, false, cx)
-                                        });
-                                    })
-                                    .child(
-                                        SvgIcon::new("icons/file.svg")
-                                            .id(("buffer-header-file", block.row.get())),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(typography::editor())
-                                            .text_color(colors.text)
-                                            .whitespace_nowrap()
-                                            .child(filename),
-                                    )
-                                    .when_some(parent, |element, parent| {
-                                        element.child(
-                                            div()
-                                                .min_w_0()
-                                                .truncate()
-                                                .text_size(typography::editor())
-                                                .text_color(colors.text_muted)
-                                                .child(parent),
-                                        )
-                                    }),
-                            )
-                            .child(
-                                Button::text(("buffer-header-open", block.row.get()), "打开文件")
-                                    .style(ButtonStyle::Solid)
-                                    .on_click(move |_event, _window, cx| {
-                                        editor_for_button.update(cx, |editor, cx| {
-                                            editor.open_excerpt(&open_excerpt, false, cx)
-                                        });
-                                    }),
-                            ),
-                    )
-                    .into_any_element()
+                buffer_header_element(&block.block, block.row, false, editor, cx)
             }
         };
 
@@ -654,6 +786,63 @@ fn build_block_elements(
         elements.push(element);
     }
     elements
+}
+
+/// 把当前文件标题固定在视口顶部；
+/// 下一个文件标题接近时把它逐行顶出。
+fn build_sticky_buffer_header(
+    layout: &EditorLayout,
+    sticky: StickyBufferHeader,
+    start_row: DisplayRow,
+    scroll_offset: Point<Pixels>,
+    editor: &Entity<Editor>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let width = layout.block_clip_bounds.size.width;
+    let height = layout.line_height * FILE_HEADER_HEIGHT as f32;
+    let origin = point(
+        layout.block_clip_bounds.left(),
+        sticky_buffer_header_origin_y(
+            layout.block_clip_bounds.top(),
+            layout.line_height,
+            start_row,
+            scroll_offset.y,
+            sticky.next_buffer_header_row,
+        ),
+    );
+    let block = DisplayBlock {
+        kind: DisplayBlockKind::BufferHeader,
+        excerpt: sticky.excerpt,
+    };
+    let mut element = buffer_header_element(&block, sticky.source_row, true, editor, cx);
+    let available_space = size(
+        AvailableSpace::Definite(width),
+        AvailableSpace::Definite(height),
+    );
+    element.layout_as_root(available_space, window, cx);
+    element.prepaint_as_root(origin, available_space, window, cx);
+    element
+}
+
+fn sticky_buffer_header_origin_y(
+    viewport_top: Pixels,
+    line_height: Pixels,
+    start_row: DisplayRow,
+    scroll_offset_y: Pixels,
+    next_buffer_header_row: Option<DisplayRow>,
+) -> Pixels {
+    let height = line_height * FILE_HEADER_HEIGHT as f32;
+    let Some(next_row) = next_buffer_header_row else {
+        return viewport_top;
+    };
+    let next_y = viewport_top + line_height * (next_row.get() as f32 - start_row.get() as f32)
+        - scroll_offset_y;
+    if next_y < viewport_top + height {
+        next_y - height
+    } else {
+        viewport_top
+    }
 }
 
 /// 滚动轴布局：thumb 几何 + diff marker（折叠的删除块行内无标记，滚动条 marker 仍指示删除位置）。
@@ -843,8 +1032,16 @@ impl Element for EditorElement {
         } else {
             layout_line_width(&display_snapshot, longest_row, window) + CARET_WIDTH
         };
+        let sticky_header_height = display_snapshot
+            .sticky_buffer_header(DisplayRow::ZERO)
+            .map_or(Pixels::ZERO, |_| line_height * FILE_HEADER_HEIGHT as f32);
         self.editor.update(cx, |editor, _| {
-            editor.prepare_scroll_viewport(text_bounds.size, content_width, line_height);
+            editor.prepare_scroll_viewport(
+                text_bounds.size,
+                content_width,
+                line_height,
+                sticky_header_height,
+            );
             // 垂直自动滚动在布局前应用：光标行进出视口的锚点修正只依赖行与视口几何，提前消费后首遍布局即为最终布局，光标移动帧不再整帧重排。
             editor.apply_pending_autoscroll_vertical();
         });
@@ -877,6 +1074,7 @@ impl Element for EditorElement {
                 editor.diff_hunks(cx),
                 editor.expanded_deleted_hunks(),
                 editor.expanded_modified_hunks(),
+                editor.materialized_diff_hunks(cx),
             )
         };
         let diff_rows = &hunk_render.diff_rows;
@@ -917,7 +1115,26 @@ impl Element for EditorElement {
             ime_caret_bounds =
                 ime_caret_bounds.map(|bounds| Bounds::new(bounds.origin + delta, bounds.size));
         }
-        let block_elements = build_block_elements(&layout, &self.editor, window, cx);
+        let sticky_buffer_header = display_snapshot.sticky_buffer_header(start_row);
+        let sticky_source_row = sticky_buffer_header
+            .as_ref()
+            .map(|header| header.source_row);
+        let block_elements =
+            build_block_elements(&layout, sticky_source_row, &self.editor, window, cx);
+        let sticky_buffer_header = if let Some(sticky) = sticky_buffer_header {
+            let element = build_sticky_buffer_header(
+                &layout,
+                sticky,
+                start_row,
+                scroll_offset,
+                &self.editor,
+                window,
+                cx,
+            );
+            Some(element)
+        } else {
+            None
+        };
         let layout = Arc::new(layout);
         let selected_whitespace =
             layout_selected_whitespace(&selections, &layout, line_height, window, cx);
@@ -1020,6 +1237,14 @@ impl Element for EditorElement {
             Arc::new(hitboxes)
         };
         let crease_toggles = build_crease_toggles(&layout, &self.editor, window, cx);
+        let diff_hunk_controls = build_diff_hunk_controls(
+            &layout,
+            &hunk_render.controls,
+            sticky_header_height,
+            &self.editor,
+            window,
+            cx,
+        );
         let scrollbar = layout_scrollbar(
             &mode,
             scrollbar_bounds,
@@ -1030,7 +1255,7 @@ impl Element for EditorElement {
             window,
         );
 
-        // 展开态行区间（内容区与 gutter 行背景共用；未展开的 hunk 只由竖条/三角提示）。
+        // 整行差异背景范围（内容区与 gutter 共用；未展开的修改/删除 hunk 只由竖条/三角提示）。
         let expanded_rows = Arc::new(hunk_render.expanded_rows.clone());
         PrepaintState {
             layout,
@@ -1043,12 +1268,14 @@ impl Element for EditorElement {
             gutter_hitbox,
             deleted_hunk_hitboxes,
             deleted_hunk_buttons,
+            diff_hunk_controls,
             crease_toggles,
             placeholder_hitboxes,
             hunk_strips,
             expanded_rows,
             scrollbar,
             block_elements,
+            sticky_buffer_header,
         }
     }
 
@@ -1074,6 +1301,26 @@ impl Element for EditorElement {
         let deleted_hunk_hitboxes = prepaint.deleted_hunk_hitboxes.clone();
         let placeholder_hitboxes = prepaint.placeholder_hitboxes.clone();
         let mouse_focus = focus.clone();
+        let hunk_hover_bounds = Arc::new(
+            prepaint
+                .diff_hunk_controls
+                .iter()
+                .map(|controls| controls.hover_bounds)
+                .collect::<Vec<_>>(),
+        );
+        let hovered_hunk = hunk_hover_bounds
+            .iter()
+            .position(|bounds| bounds.contains(&window.mouse_position()));
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, _cx| {
+            if phase == DispatchPhase::Capture
+                && hunk_hover_bounds
+                    .iter()
+                    .position(|bounds| bounds.contains(&event.position))
+                    != hovered_hunk
+            {
+                window.refresh();
+            }
+        });
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble
                 || event.button != MouseButton::Left
@@ -1387,6 +1634,23 @@ impl Element for EditorElement {
                     for caret in prepaint.carets.drain(..) {
                         window.paint_quad(caret);
                     }
+                }
+                for controls in &mut prepaint.diff_hunk_controls {
+                    if let Some(element) = &mut controls.element {
+                        element.paint(window, cx);
+                    }
+                }
+            },
+        );
+        // 悬浮文件标题最后覆盖正文和 gutter；
+        // 完整背景遮住其下文本，避免透明区域泄漏。
+        window.with_content_mask(
+            Some(ContentMask {
+                bounds: prepaint.layout.block_clip_bounds,
+            }),
+            |window| {
+                if let Some(header) = &mut prepaint.sticky_buffer_header {
+                    header.paint(window, cx);
                 }
             },
         );
@@ -1833,16 +2097,22 @@ fn layout_visible_lines(
                         window_for_row,
                         cx,
                     );
-                    let gutter_number = rendered.gutter_line.map(|line| {
-                        display_snapshot
-                            .excerpt_for_output_line(line.get())
-                            .and_then(|excerpt| excerpt.source_line_for_output_line(line.get()))
-                            .unwrap_or_else(|| line.get() + 1)
-                    });
+                    let (gutter_line, gutter_number) = match rendered.gutter_line {
+                        Some(line) => match display_snapshot.excerpt_for_output_line(line.get()) {
+                            Some(excerpt) => {
+                                match excerpt.source_line_for_output_line(line.get()) {
+                                    Some(number) => (Some(line), Some(number)),
+                                    None => (None, None),
+                                }
+                            }
+                            None => (Some(line), Some(line.get() + 1)),
+                        },
+                        None => (None, None),
+                    };
                     push_line(
                         row.index().get(),
                         rendered.logical_line,
-                        rendered.gutter_line,
+                        gutter_line,
                         gutter_number,
                         &rendered.display_text,
                         rendered.utf16_start,
@@ -1907,7 +2177,12 @@ fn layout_selections(
 ) -> (Vec<SelectionHighlight>, Vec<PaintQuad>) {
     let mut selection_highlights = Vec::new();
     let mut caret_quads = Vec::new();
-    let selection_background = color::current(cx).editor_selection_background;
+    let colors = color::current(cx);
+    // 行背景合成：先把半透明 selection 色与 Editor 基础背景展平，再交给文本选区绘制。
+    // 这样 MultiBuffer 的 diff 行、普通上下文行与单文件 Editor 使用同一个最终选区颜色，而不会因后方背景不同产生另一种视觉颜色。
+    let selection_background = colors
+        .editor_background
+        .blend(colors.editor_selection_background);
 
     for selection in selections.as_slice().iter().copied() {
         // 选区存在时也在 head（活动端）绘制光标，表示输入插入点。
@@ -2268,7 +2543,7 @@ mod tests {
     use super::*;
     use crate::display_map::{DisplayMap, InsertedLines, StyledLine};
     use gpui::{AppContext, Empty, TestAppContext};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use zcv_git::DiffHunk;
     use zcv_language::{LanguageBuffer, SyntaxSnapshot};
     use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
@@ -2281,7 +2556,7 @@ mod tests {
         expanded_deleted: &[Range<usize>],
         expanded_modified: &[Range<usize>],
     ) -> Vec<(Range<usize>, DiffHunkKind)> {
-        hunk_rendering(snapshot, hunks, expanded_deleted, expanded_modified).diff_rows
+        hunk_rendering(snapshot, hunks, expanded_deleted, expanded_modified, None).diff_rows
     }
 
     /// hunk 竖条范围与状态色（`hunk_rendering` 的薄包装，测试专用）。
@@ -2291,7 +2566,7 @@ mod tests {
         expanded_deleted: &[Range<usize>],
         expanded_modified: &[Range<usize>],
     ) -> Vec<(Range<usize>, DiffHunkKind)> {
-        hunk_rendering(snapshot, hunks, expanded_deleted, expanded_modified).strips
+        hunk_rendering(snapshot, hunks, expanded_deleted, expanded_modified, None).strips
     }
 
     /// 可点击的 hunk 色带区域（`hunk_rendering` 的薄包装，测试专用）。
@@ -2301,7 +2576,7 @@ mod tests {
         expanded_deleted: &[Range<usize>],
         expanded_modified: &[Range<usize>],
     ) -> Vec<(Range<usize>, Range<usize>, DiffHunkKind)> {
-        hunk_rendering(snapshot, hunks, expanded_deleted, expanded_modified).hit_regions
+        hunk_rendering(snapshot, hunks, expanded_deleted, expanded_modified, None).hit_regions
     }
     #[test]
     fn logical_columns_map_to_utf8_boundaries() {
@@ -2534,6 +2809,98 @@ mod tests {
                 assert_eq!(layout.lines[0].shaped.text.as_ref(), "引擎");
             })
             .expect("测试窗口应保持可用");
+    }
+
+    #[gpui::test]
+    fn sticky_buffer_header_follows_excerpts_and_points_to_the_next_file(cx: &mut TestAppContext) {
+        let first_text = "a0\na1\na2\na3\na4\na5\na6\na7\n";
+        let first_buffer = cx.new(|_| {
+            Buffer::scratch(first_text.to_owned(), BufferConfig::default())
+                .expect("应创建第一个源 Buffer")
+        });
+        let first = cx
+            .new(move |cx| LanguageBuffer::new(first_buffer, Some(PathBuf::from("src/a.rs")), cx));
+        let first = cx.new(move |cx| MultiBuffer::singleton(first, cx));
+
+        let second_text = "b0\nb1\n";
+        let second_buffer = cx.new(|_| {
+            Buffer::scratch(second_text.to_owned(), BufferConfig::default())
+                .expect("应创建第二个源 Buffer")
+        });
+        let second = cx
+            .new(move |cx| LanguageBuffer::new(second_buffer, Some(PathBuf::from("src/b.rs")), cx));
+        let second = cx.new(move |cx| MultiBuffer::singleton(second, cx));
+
+        let combined = cx.new(MultiBuffer::empty);
+        cx.update_entity(&combined, |combined, cx| {
+            combined.set_excerpts(
+                vec![
+                    MultiBufferExcerpt::line_range(first.clone(), 0..2, cx),
+                    MultiBufferExcerpt::line_range(first, 5..7, cx),
+                    MultiBufferExcerpt::line_range(second, 0..2, cx),
+                ],
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        let snapshot = cx.read_entity(&combined, |combined, cx| combined.snapshot(cx));
+        let display = DisplayMap::new(snapshot).snapshot();
+        let blocks = display
+            .slice_viewport(DisplayRow::ZERO, display.line_count())
+            .expect("应读取完整显示投影")
+            .rows()
+            .iter()
+            .filter_map(|row| {
+                row.block()
+                    .map(|block| (row.index(), block.kind, block.excerpt.source_start_line()))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            blocks.iter().map(|(_, kind, _)| *kind).collect::<Vec<_>>(),
+            vec![
+                DisplayBlockKind::BufferHeader,
+                DisplayBlockKind::ExcerptBoundary,
+                DisplayBlockKind::BufferHeader,
+            ]
+        );
+
+        let first_header = display
+            .sticky_buffer_header(DisplayRow::new(blocks[0].0.get() + FILE_HEADER_HEIGHT))
+            .expect("第一个文件正文应有悬浮标题");
+        assert_eq!(first_header.excerpt.path(), Path::new("src/a.rs"));
+        assert_eq!(first_header.excerpt.source_start_line(), 1);
+
+        let later_excerpt = display
+            .sticky_buffer_header(blocks[1].0)
+            .expect("同文件后续 excerpt 应更新悬浮标题目标");
+        assert_eq!(later_excerpt.excerpt.path(), Path::new("src/a.rs"));
+        assert_eq!(later_excerpt.excerpt.source_start_line(), 6);
+        assert_eq!(later_excerpt.next_buffer_header_row, Some(blocks[2].0));
+
+        let second_header = display
+            .sticky_buffer_header(blocks[2].0)
+            .expect("到达下一个文件后应切换悬浮标题");
+        assert_eq!(second_header.excerpt.path(), Path::new("src/b.rs"));
+        assert_eq!(second_header.next_buffer_header_row, None);
+    }
+
+    #[test]
+    fn next_file_header_pushes_sticky_header_out() {
+        let start = DisplayRow::new(10);
+        let next = Some(DisplayRow::new(12));
+        assert_eq!(
+            sticky_buffer_header_origin_y(px(100.), px(20.), start, px(0.), next),
+            px(100.)
+        );
+        assert_eq!(
+            sticky_buffer_header_origin_y(px(100.), px(20.), start, px(10.), next),
+            px(90.)
+        );
+        assert_eq!(
+            sticky_buffer_header_origin_y(px(100.), px(20.), start, px(10.), None),
+            px(100.)
+        );
     }
 
     #[gpui::test]
@@ -2959,6 +3326,111 @@ mod tests {
                     layout_selections(&SelectionSet::caret(ByteOffset::ZERO), &layout, px(20.), cx);
 
                 assert!(carets.is_empty());
+            })
+            .expect("测试窗口应保持可用");
+    }
+
+    #[gpui::test]
+    fn multibuffer_excerpt_uses_the_same_text_selection_geometry_as_a_single_buffer(
+        cx: &mut TestAppContext,
+    ) {
+        let text = "abcdef\nx\nabcde\n";
+        let source_buffer = cx.new(|_| {
+            Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("应创建源 Buffer")
+        });
+        let source = cx.new(move |cx| {
+            LanguageBuffer::new(source_buffer, Some(PathBuf::from("src/example.rs")), cx)
+        });
+        let source = cx.new(move |cx| MultiBuffer::singleton(source, cx));
+        let combined = cx.new(MultiBuffer::empty);
+        cx.update_entity(&combined, |combined, cx| {
+            combined.set_excerpts(vec![MultiBufferExcerpt::line_range(source, 0..3, cx)], cx)
+        });
+        cx.run_until_parked();
+
+        let multi_snapshot = cx.read_entity(&combined, |combined, cx| combined.snapshot(cx));
+        let multi_text = multi_snapshot.text().clone();
+        let single_text =
+            Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("应创建单文件 Buffer");
+        let single_snapshot = single_text.snapshot();
+        let selection = SelectionSet::new(vec![crate::Selection::new(
+            ByteOffset::new(2),
+            ByteOffset::new(12),
+        )]);
+
+        let window = cx.add_window(|_, _| Empty);
+        window
+            .update(cx, |_, window, cx| {
+                let geometry = EditorGeometry {
+                    text_bounds: Bounds::new(point(px(0.), px(0.)), size(px(400.), px(160.))),
+                    text_clip_bounds: Bounds::new(point(px(0.), px(0.)), size(px(400.), px(160.))),
+                    gutter: None,
+                };
+                let active_lines = BTreeSet::new();
+                let foldable_lines = BTreeSet::new();
+                let fold_anchor_lines = BTreeSet::new();
+                let params = |geometry| VisibleLineLayoutParams {
+                    geometry,
+                    active_lines: &active_lines,
+                    foldable_lines: &foldable_lines,
+                    fold_anchor_lines: &fold_anchor_lines,
+                    start_row: DisplayRow::ZERO,
+                    scroll_offset: point(px(0.), px(0.)),
+                    line_height: px(20.),
+                    diff_rows: &[],
+                };
+                let single_layout = layout_visible_lines(
+                    DisplayMap::new(single_snapshot.clone()).snapshot(),
+                    None,
+                    EditorPresentation::new(&single_snapshot, None),
+                    None,
+                    params(geometry),
+                    window,
+                    cx,
+                );
+                let multi_layout = layout_visible_lines(
+                    DisplayMap::new(multi_snapshot).snapshot(),
+                    None,
+                    EditorPresentation::new(&multi_text, None),
+                    None,
+                    params(geometry),
+                    window,
+                    cx,
+                );
+
+                let (single_highlights, single_carets) =
+                    layout_selections(&selection, &single_layout, px(20.), cx);
+                let (multi_highlights, multi_carets) =
+                    layout_selections(&selection, &multi_layout, px(20.), cx);
+                let single = single_highlights.first().expect("单文件应生成文本选区");
+                let multi = multi_highlights
+                    .first()
+                    .expect("MultiBuffer 应生成文本选区");
+
+                assert_eq!(multi.lines.len(), single.lines.len());
+                assert_eq!(
+                    multi
+                        .lines
+                        .iter()
+                        .map(|line| (line.start_x, line.end_x))
+                        .collect::<Vec<_>>(),
+                    single
+                        .lines
+                        .iter()
+                        .map(|line| (line.start_x, line.end_x))
+                        .collect::<Vec<_>>()
+                );
+                assert_eq!(multi_carets.len(), single_carets.len());
+                assert_eq!(multi.corner_radius, single.corner_radius);
+                assert_eq!(multi.color, single.color);
+                let colors = color::current(cx);
+                assert_eq!(
+                    multi.color,
+                    colors
+                        .editor_background
+                        .blend(colors.editor_selection_background)
+                );
+                assert_eq!(multi.color.a, 1.0, "选区颜色应在 Editor 背景上展平");
             })
             .expect("测试窗口应保持可用");
     }

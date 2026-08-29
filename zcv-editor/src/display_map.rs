@@ -26,7 +26,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use block_map::{BlockSnapshot, DisplayViewportSlice};
-pub(crate) use block_map::{DisplayBlock, DisplayBlockKind};
+pub(crate) use block_map::{
+    DisplayBlock, DisplayBlockKind, FILE_HEADER_HEIGHT, StickyBufferHeader,
+};
 use chunk::MAX_RENDERED_LINE_LEN;
 pub use chunk::{Chunk, RenderChunks, chunks_to_runs, render_plain_line};
 #[cfg(test)]
@@ -362,6 +364,13 @@ impl DisplaySnapshot {
         line: usize,
     ) -> Option<&zcv_multi_buffer::ExcerptSnapshot> {
         self.multi_buffer_snapshot.excerpt_for_output_line(line)
+    }
+
+    pub(super) fn sticky_buffer_header(
+        &self,
+        top_row: DisplayRow,
+    ) -> Option<block_map::StickyBufferHeader> {
+        self.block_snapshot.sticky_buffer_header(top_row)
     }
 }
 

@@ -1,4 +1,4 @@
-use gpui::{TestAppContext, point, px};
+use gpui::{Modifiers, TestAppContext, point, px};
 use std::path::PathBuf;
 use zcv_multi_buffer::MultiBufferExcerpt;
 use zcv_text::{ByteOffset, Edit, TextRange, TransactionMetadata};
@@ -6,6 +6,123 @@ use zcv_text::{ByteOffset, Edit, TextRange, TransactionMetadata};
 use super::common::{engine_buffer, test_buffer};
 use super::*;
 use crate::display_map::{ProjectedLineIndex, ProjectedPoint, WrapViewportRowKind};
+
+struct OccludingHunkControls;
+
+impl DiffHunkDelegate for OccludingHunkControls {
+    fn render_hunk_controls(
+        &self,
+        _row: usize,
+        _hunk: &DiffHunk,
+        line_height: Pixels,
+        _editor: &Entity<Editor>,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> AnyElement {
+        div()
+            .id("test-hunk-controls")
+            .debug_selector(|| "test-hunk-controls".into())
+            .w(px(80.))
+            .h(line_height)
+            .occlude()
+            .into_any_element()
+    }
+}
+
+#[gpui::test]
+fn hunk_controls_remain_visible_when_pointer_enters_controls(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "line0\nline1\nline2\n");
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)
+    });
+    editor.update(cx, |editor, cx| {
+        editor.set_diff_hunk_delegate(Some(Arc::new(OccludingHunkControls)), cx);
+        editor.set_diff_hunks(
+            vec![DiffHunk {
+                range: 1..2,
+                old_range: 1..1,
+                kind: DiffHunkKind::Added,
+            }],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    cx.refresh().expect("测试窗口应可刷新");
+
+    let (window_bounds, line_height) =
+        cx.update(|window, _| (window.bounds(), window.line_height()));
+    let hunk_point = point(
+        window_bounds.right() - px(120.),
+        window_bounds.top() + line_height * 1.5,
+    );
+    cx.simulate_mouse_move(hunk_point, None, Modifiers::default());
+    cx.refresh().expect("进入 hunk 后应刷新");
+    let controls = cx
+        .debug_bounds("test-hunk-controls")
+        .expect("悬停 hunk 时应显示操作栏");
+
+    let controls_center = point(
+        controls.left() + controls.size.width * 0.5,
+        controls.top() + controls.size.height * 0.5,
+    );
+    cx.simulate_mouse_move(controls_center, None, Modifiers::default());
+    cx.refresh().expect("进入操作栏后应刷新");
+    assert!(
+        cx.debug_bounds("test-hunk-controls").is_some(),
+        "操作栏自身的命中区域不能让 hunk 悬停状态失效"
+    );
+}
+
+#[gpui::test]
+fn hunk_controls_stick_to_viewport_while_hunk_start_is_scrolled_out(cx: &mut TestAppContext) {
+    let text = (0..80)
+        .map(|line| format!("line{line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let buffer = test_buffer(cx, text);
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)
+    });
+    editor.update(cx, |editor, cx| {
+        editor.set_diff_hunk_delegate(Some(Arc::new(OccludingHunkControls)), cx);
+        editor.set_diff_hunks(
+            vec![DiffHunk {
+                range: 1..50,
+                old_range: 1..1,
+                kind: DiffHunkKind::Added,
+            }],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    cx.refresh().expect("测试窗口应可刷新");
+
+    let (window_bounds, line_height) =
+        cx.update(|window, _| (window.bounds(), window.line_height()));
+    cx.update_entity(&editor, |editor, cx| {
+        assert!(editor.scroll_to(line_height * 10., cx));
+    });
+    cx.run_until_parked();
+    cx.refresh().expect("滚动后测试窗口应可刷新");
+
+    let visible_hunk_point = point(
+        window_bounds.right() - px(120.),
+        window_bounds.top() + line_height * 2.5,
+    );
+    cx.simulate_mouse_move(visible_hunk_point, None, Modifiers::default());
+    cx.refresh().expect("悬停可见 hunk 后应刷新");
+
+    let controls = cx
+        .debug_bounds("test-hunk-controls")
+        .expect("hunk 起点滚出视口后，操作栏仍应显示");
+    let top_offset = (controls.top() - window_bounds.top()).abs() / px(1.);
+    assert!(
+        top_offset <= 1.,
+        "操作栏应吸附在可见区顶部，实际偏移 {top_offset}px"
+    );
+}
 
 #[gpui::test]
 fn deleted_hunk_expands_and_collapses_inserted_lines(cx: &mut TestAppContext) {
@@ -48,6 +165,65 @@ fn deleted_hunk_expands_and_collapses_inserted_lines(cx: &mut TestAppContext) {
         3,
         "折叠后应回到 3 行"
     );
+}
+
+#[gpui::test]
+fn inserted_diff_lines_sync_a_replaced_multibuffer_projection(cx: &mut TestAppContext) {
+    let first = test_buffer(cx, "first\n");
+    first.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("first.txt"), cx)
+    });
+    let first_multi = cx.new(move |cx| MultiBuffer::singleton(first, cx));
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |combined, cx| {
+        combined.set_excerpts(
+            vec![MultiBufferExcerpt::line_range(first_multi, 0..2, cx)],
+            cx,
+        );
+    });
+    let editor = cx.new({
+        let combined = combined.clone();
+        move |cx| Editor::for_multi_buffer(combined, cx)
+    });
+    editor.update(cx, |editor, cx| {
+        editor.set_diff_hunks(
+            vec![DiffHunk {
+                range: 0..1,
+                old_range: 0..1,
+                kind: DiffHunkKind::Modified,
+            }],
+            cx,
+        );
+        editor.set_deleted_hunk_text(Some(Arc::from("old first\n")), cx);
+        editor.expand_all_diff_hunks(cx);
+    });
+
+    let second = test_buffer(cx, "second\nline 2\nline 3\n");
+    second.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("second.txt"), cx)
+    });
+    let second_multi = cx.new(move |cx| MultiBuffer::singleton(second, cx));
+    // 模拟 Git hunk、HEAD 文本与新 MultiBuffer 投影在同一个 App 更新周期到达：
+    // TextChanged 订阅尚未运行时，合成行入口必须主动同步最新文本流。
+    cx.update(|cx| {
+        combined.update(cx, |combined, cx| {
+            combined.set_excerpts(
+                vec![MultiBufferExcerpt::line_range(second_multi, 0..4, cx)],
+                cx,
+            );
+        });
+        editor.update(cx, |editor, cx| {
+            editor.set_deleted_hunk_text(Some(Arc::from("old second\n")), cx);
+            editor.expand_all_diff_hunks(cx);
+        });
+    });
+
+    let expected_version =
+        cx.read_entity(&combined, |combined, cx| combined.snapshot(cx).version());
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(editor.display_map.version(), expected_version);
+        assert_eq!(editor.text(cx), "second\nline 2\nline 3\n");
+    });
 }
 #[gpui::test]
 fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {

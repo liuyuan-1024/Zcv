@@ -6,5 +6,8 @@ mod repository;
 mod status;
 
 pub use diff::{DiffHunk, DiffHunkKind};
-pub use repository::{Branch, GitCancellation, GitRepository, RealGitRepository, init};
+pub use repository::{
+    Branch, DiffBase, GitCancellation, GitHunkOperation, GitRepository, GitRevision,
+    RealGitRepository, init,
+};
 pub use status::{BranchStatus, DiffStat, FileStatus, GitStatus, StatusCode};

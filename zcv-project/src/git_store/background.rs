@@ -6,9 +6,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use zcv_git::DiffHunk;
-use zcv_git::{Branch, DiffStat, GitCancellation, GitRepository};
+use zcv_git::{Branch, DiffBase, DiffStat, GitCancellation, GitRepository};
 
-use super::{GitJob, GitOperationKind, GitOperationOutcome, RepositorySnapshot, StatusEntry};
+use super::{
+    DiffRequest, GitJob, GitOperationKind, GitOperationOutcome, RepositorySnapshot, StatusEntry,
+};
 use crate::worktree::discover_repositories;
 
 /// 后台 job 的执行结果。
@@ -47,7 +49,7 @@ pub(super) struct RefreshData {
 }
 
 /// 按需 hunk 查询结果：仓库索引 → 路径 → hunks。
-pub(super) type HunksByRepo = Vec<(usize, Vec<(PathBuf, Result<Vec<DiffHunk>, String>)>)>;
+pub(super) type HunksByRepo = Vec<(usize, Vec<(DiffRequest, Result<Vec<DiffHunk>, String>)>)>;
 
 /// 后台线程：执行一个 job（所有 git 命令在这里同步阻塞运行）。
 pub(super) async fn execute_job(
@@ -55,6 +57,7 @@ pub(super) async fn execute_job(
     job: GitJob,
     repositories: Vec<Arc<dyn GitRepository>>,
     grouped_paths: Vec<Vec<PathBuf>>,
+    grouped_diff_requests: Vec<Vec<DiffRequest>>,
     cancellation: Option<GitCancellation>,
 ) -> JobResult {
     match job {
@@ -90,11 +93,11 @@ pub(super) async fn execute_job(
         GitJob::RefreshHunks => {
             let mut refreshed = Vec::new();
             for (index, repository) in repositories.into_iter().enumerate() {
-                let paths = &grouped_paths[index];
-                if paths.is_empty() {
+                let requests = &grouped_diff_requests[index];
+                if requests.is_empty() {
                     continue;
                 }
-                refreshed.push((index, fetch_hunks_sync(&repository, paths)));
+                refreshed.push((index, fetch_hunks_sync(&repository, requests)));
             }
             JobResult::RefreshHunks(refreshed)
         }
@@ -145,6 +148,20 @@ pub(super) async fn execute_job(
                     break;
                 }
             }
+            JobResult::GitOperation(result)
+        }
+        GitJob::HunkOperation {
+            operation, hunk, ..
+        } => {
+            let result = repositories
+                .into_iter()
+                .enumerate()
+                .find_map(|(index, repository)| {
+                    grouped_paths[index]
+                        .first()
+                        .map(|path| repository.apply_hunk(operation, path, &hunk))
+                })
+                .unwrap_or_else(|| Err(anyhow::anyhow!("hunk 所属仓库已不可用")));
             JobResult::GitOperation(result)
         }
         // 提交：只提交已经暂存的内容。
@@ -222,30 +239,42 @@ pub(super) fn reconcile_cancelled_operation(
 /// 无差异路径也返回空集合；整批失败时为每个请求路径返回失败，保证状态机中的每个 Loading 都能进入终态。
 fn fetch_hunks_sync(
     repository: &Arc<dyn GitRepository>,
-    paths: &[PathBuf],
-) -> Vec<(PathBuf, Result<Vec<DiffHunk>, String>)> {
-    match repository.diff_hunks_for_paths(paths) {
-        Ok(hunks) => {
-            let mut hunks: HashMap<PathBuf, Vec<DiffHunk>> = hunks.into_iter().collect();
-            paths
-                .iter()
-                .cloned()
-                .map(|path| {
-                    let path_hunks = hunks.remove(&path).unwrap_or_default();
-                    (path, Ok(path_hunks))
-                })
-                .collect()
+    requests: &[DiffRequest],
+) -> Vec<(DiffRequest, Result<Vec<DiffHunk>, String>)> {
+    let mut results = Vec::with_capacity(requests.len());
+    for base in [DiffBase::Head, DiffBase::Index, DiffBase::Staged] {
+        let base_requests = requests
+            .iter()
+            .filter(|request| request.base == base)
+            .cloned()
+            .collect::<Vec<_>>();
+        if base_requests.is_empty() {
+            continue;
         }
-        Err(error) => {
-            eprintln!("读取 diff hunks 失败：{error}");
-            let error = format!("{error:#}");
-            paths
-                .iter()
-                .cloned()
-                .map(|path| (path, Err(error.clone())))
-                .collect()
+        let paths = base_requests
+            .iter()
+            .map(|request| request.path.clone())
+            .collect::<Vec<_>>();
+        match repository.diff_hunks_for_paths(base, &paths) {
+            Ok(hunks) => {
+                let mut hunks: HashMap<PathBuf, Vec<DiffHunk>> = hunks.into_iter().collect();
+                results.extend(base_requests.into_iter().map(|request| {
+                    let path_hunks = hunks.remove(&request.path).unwrap_or_default();
+                    (request, Ok(path_hunks))
+                }));
+            }
+            Err(error) => {
+                eprintln!("读取 {base:?} diff hunks 失败：{error}");
+                let error = format!("{error:#}");
+                results.extend(
+                    base_requests
+                        .into_iter()
+                        .map(|request| (request, Err(error.clone()))),
+                );
+            }
         }
     }
+    results
 }
 
 /// 后台线程：全量扫描一个仓库（head_commit + status + 双 diff_stat + 分支列表）。
@@ -498,7 +527,10 @@ mod tests {
 
         let results = fetch_hunks_sync(
             &repository,
-            &[PathBuf::from("tracked.txt"), PathBuf::from("clean.txt")],
+            &[
+                DiffRequest::new(DiffBase::Head, PathBuf::from("tracked.txt")),
+                DiffRequest::new(DiffBase::Head, PathBuf::from("clean.txt")),
+            ],
         );
 
         assert_eq!(results.len(), 2);

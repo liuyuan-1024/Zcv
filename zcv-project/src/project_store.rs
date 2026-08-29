@@ -170,6 +170,18 @@ impl Project {
         self.buffer_store.open_buffer(path, cx)
     }
 
+    /// 为 Git 删除状态打开空的工作区侧文档。
+    ///
+    /// 该入口只负责文件 Buffer 生命周期；
+    /// HEAD 文本和 hunk 仍由 GitStore 持有。
+    pub fn open_deleted_buffer(
+        &mut self,
+        path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Result<Entity<MultiBuffer>, BufferLoadError> {
+        self.buffer_store.open_deleted_buffer(path, cx)
+    }
+
     /// 在后台逐文件扫描 worktree 并预加载命中文件，
     /// 结果经流式通道产出，由 UI 线程按批装配进 MultiBuffer。
     pub fn search(&mut self, query: SearchQuery, cx: &mut Context<Self>) -> SearchResults {

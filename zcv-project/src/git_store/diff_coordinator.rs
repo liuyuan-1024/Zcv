@@ -4,12 +4,11 @@
 //! GitStore 只负责提供仓库事实（status 查询）和驱动后台执行（schedule_job）。
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::Context;
-use zcv_git::DiffHunk;
-use zcv_git::FileStatus;
+use zcv_git::{DiffBase, DiffHunk, FileStatus};
 
 use super::{GitJob, GitStore, GitStoreEvent, canonicalize_path};
 
@@ -35,12 +34,25 @@ pub(super) struct HunkRecord {
     pub(super) state: HunkState,
 }
 
+/// 一个明确比较范围下的文件差异需求。
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct DiffRequest {
+    pub base: DiffBase,
+    pub path: PathBuf,
+}
+
+impl DiffRequest {
+    pub fn new(base: DiffBase, path: PathBuf) -> Self {
+        Self { base, path }
+    }
+}
+
 /// 打开文件差异的需求、版本与任务生命周期。
 pub(super) struct DiffCoordinator {
-    pub(super) interests: BTreeSet<PathBuf>,
-    pub(super) records: HashMap<PathBuf, HunkRecord>,
-    pub(super) pending: BTreeMap<PathBuf, u64>,
-    pub(super) in_flight: HashMap<PathBuf, u64>,
+    pub(super) interests: BTreeSet<DiffRequest>,
+    pub(super) records: HashMap<DiffRequest, HunkRecord>,
+    pub(super) pending: BTreeMap<DiffRequest, u64>,
+    pub(super) in_flight: HashMap<DiffRequest, u64>,
     pub(super) next_generation: u64,
 }
 
@@ -66,14 +78,14 @@ impl DiffCoordinator {
     /// 返回是否有记录状态变化（供调用方决定是否发事件）。
     pub(super) fn complete_batch(
         &mut self,
-        completed: impl IntoIterator<Item = (PathBuf, Result<Vec<DiffHunk>, String>)>,
+        completed: impl IntoIterator<Item = (DiffRequest, Result<Vec<DiffHunk>, String>)>,
     ) -> bool {
         let mut changed = false;
-        for (path, result) in completed {
-            let Some(dispatched_generation) = self.in_flight.remove(&path) else {
+        for (request, result) in completed {
+            let Some(dispatched_generation) = self.in_flight.remove(&request) else {
                 continue;
             };
-            let Some(record) = self.records.get_mut(&path) else {
+            let Some(record) = self.records.get_mut(&request) else {
                 continue;
             };
             if record.generation != dispatched_generation
@@ -88,8 +100,8 @@ impl DiffCoordinator {
             changed = true;
         }
         // 同一时刻只运行一个差异批次；仓库在任务期间消失时，无法映射的遗留项也必须进入失败终态。
-        for (path, generation) in self.in_flight.drain() {
-            if let Some(record) = self.records.get_mut(&path)
+        for (request, generation) in self.in_flight.drain() {
+            if let Some(record) = self.records.get_mut(&request)
                 && record.generation == generation
                 && matches!(record.state, HunkState::Loading)
             {
@@ -104,59 +116,68 @@ impl DiffCoordinator {
 impl GitStore {
     /// 用当前打开编辑器集合替换差异需求。
     /// 任务调度由状态机单向驱动，不依赖任务状态事件反向触发。
-    pub fn set_hunk_interests(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
-        let interests: BTreeSet<PathBuf> = paths
+    pub fn set_hunk_interests(&mut self, requests: &[DiffRequest], cx: &mut Context<Self>) {
+        let interests: BTreeSet<DiffRequest> = requests
             .iter()
-            .map(|path| canonicalize_path(path))
-            .filter(|path| {
+            .map(|request| DiffRequest {
+                base: request.base,
+                path: canonicalize_path(&request.path),
+            })
+            .filter(|request| {
                 self.root
                     .as_deref()
-                    .is_some_and(|root| path.starts_with(root))
+                    .is_some_and(|root| request.path.starts_with(root))
             })
             .collect();
         self.diff_coordinator.interests = interests;
         let interests = &self.diff_coordinator.interests;
         self.diff_coordinator
             .records
-            .retain(|path, _| interests.contains(path));
+            .retain(|request, _| interests.contains(request));
         self.diff_coordinator
             .pending
-            .retain(|path, _| interests.contains(path));
+            .retain(|request, _| interests.contains(request));
         self.ensure_interested_hunks(cx);
     }
 
     /// 增量增加差异需求，供无需维护完整打开文件集合的调用方使用。
-    pub fn request_hunks(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
-        let paths: Vec<PathBuf> = paths
+    pub fn request_hunks(&mut self, base: DiffBase, paths: &[PathBuf], cx: &mut Context<Self>) {
+        let requests: Vec<DiffRequest> = paths
             .iter()
-            .map(|path| canonicalize_path(path))
-            .filter(|path| {
+            .map(|path| DiffRequest::new(base, canonicalize_path(path)))
+            .filter(|request| {
                 self.root
                     .as_deref()
-                    .is_some_and(|root| path.starts_with(root))
+                    .is_some_and(|root| request.path.starts_with(root))
             })
             .collect();
-        if paths.is_empty() {
+        if requests.is_empty() {
             return;
         }
-        self.diff_coordinator.interests.extend(paths);
+        self.diff_coordinator.interests.extend(requests);
         self.ensure_interested_hunks(cx);
     }
 
-    pub(super) fn path_needs_hunks(&self, path: &Path) -> bool {
-        self.status_for_path(path)
-            .is_some_and(|entry| matches!(entry.status, FileStatus::Tracked { .. }))
+    pub(super) fn request_needs_hunks(&self, request: &DiffRequest) -> bool {
+        self.status_for_path(&request.path).is_some_and(|entry| {
+            matches!(entry.status, FileStatus::Tracked { .. })
+                && match request.base {
+                    DiffBase::Head => entry.status.has_staged() || entry.status.has_unstaged(),
+                    DiffBase::Index => entry.status.has_unstaged(),
+                    DiffBase::Staged => entry.status.has_staged(),
+                }
+        })
     }
 
     /// 把尚未建模的关注路径归类，并仅将 Unloaded 状态推进到 Queued。
     pub(super) fn ensure_interested_hunks(&mut self, cx: &mut Context<Self>) {
-        let interests: Vec<PathBuf> = self.diff_coordinator.interests.iter().cloned().collect();
-        for path in interests {
-            let needs_hunks = self.path_needs_hunks(&path);
-            if !self.diff_coordinator.records.contains_key(&path) {
+        let interests: Vec<DiffRequest> = self.diff_coordinator.interests.iter().cloned().collect();
+        for request in interests {
+            let needs_hunks = self.request_needs_hunks(&request);
+            if !self.diff_coordinator.records.contains_key(&request) {
                 let generation = self.diff_coordinator.next_generation();
                 self.diff_coordinator.records.insert(
-                    path.clone(),
+                    request.clone(),
                     HunkRecord {
                         generation,
                         state: if needs_hunks {
@@ -167,14 +188,14 @@ impl GitStore {
                     },
                 );
             }
-            let Some(record) = self.diff_coordinator.records.get_mut(&path) else {
+            let Some(record) = self.diff_coordinator.records.get_mut(&request) else {
                 continue;
             };
             if needs_hunks && matches!(record.state, HunkState::Unloaded) {
                 record.state = HunkState::Queued;
                 self.diff_coordinator
                     .pending
-                    .insert(path, record.generation);
+                    .insert(request, record.generation);
             }
         }
         self.schedule_pending_hunks(cx);
@@ -192,38 +213,43 @@ impl GitStore {
         changed_paths: &[PathBuf],
         cx: &mut Context<Self>,
     ) {
-        let affected: Vec<PathBuf> = self
+        let affected: Vec<DiffRequest> = self
             .diff_coordinator
             .interests
             .iter()
-            .filter(|path| {
+            .filter(|request| {
                 changed_paths
                     .iter()
-                    .any(|changed| path.starts_with(changed))
+                    .any(|changed| request.path.starts_with(changed))
             })
             .cloned()
             .collect();
         if affected.is_empty() {
             return;
         }
-        for path in &affected {
+        for request in &affected {
             let generation = self.diff_coordinator.next_generation();
-            let state = if self.path_needs_hunks(path) {
+            let state = if self.request_needs_hunks(request) {
                 HunkState::Unloaded
             } else {
                 HunkState::NotNeeded
             };
             self.diff_coordinator
                 .records
-                .insert(path.clone(), HunkRecord { generation, state });
-            self.diff_coordinator.pending.remove(path);
+                .insert(request.clone(), HunkRecord { generation, state });
+            self.diff_coordinator.pending.remove(request);
         }
         self.ensure_interested_hunks(cx);
         cx.emit(GitStoreEvent::HunksChanged);
     }
 
     pub(super) fn invalidate_all_hunks(&mut self, cx: &mut Context<Self>) {
-        let interests: Vec<PathBuf> = self.diff_coordinator.interests.iter().cloned().collect();
-        self.invalidate_hunks_for_paths(&interests, cx);
+        let paths: Vec<PathBuf> = self
+            .diff_coordinator
+            .interests
+            .iter()
+            .map(|request| request.path.clone())
+            .collect();
+        self.invalidate_hunks_for_paths(&paths, cx);
     }
 }

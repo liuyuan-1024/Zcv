@@ -51,10 +51,11 @@ impl GitStore {
                 }
                 if head_changed {
                     // HEAD 变化 → 旧 HEAD 文本失效。
-                    self.committed_text_cache.clear();
+                    self.invalidate_revision_text(zcv_git::GitRevision::Head);
                     cx.emit(GitStoreEvent::Head);
                 }
                 if statuses_changed {
+                    self.invalidate_revision_text(zcv_git::GitRevision::Index);
                     cx.emit(GitStoreEvent::Statuses);
                 }
                 self.repositories = scans
@@ -100,9 +101,15 @@ impl GitStore {
                     statuses_changed |= statuses;
                     head_changed |= head;
                 }
+                if !changed_paths.is_empty() {
+                    self.invalidate_revision_text_for_paths(
+                        zcv_git::GitRevision::Index,
+                        &changed_paths,
+                    );
+                }
                 if head_changed {
                     // HEAD 变化 → 旧 HEAD 文本失效。
-                    self.committed_text_cache.clear();
+                    self.invalidate_revision_text(zcv_git::GitRevision::Head);
                     cx.emit(GitStoreEvent::Head);
                 }
                 if statuses_changed {
@@ -125,11 +132,12 @@ impl GitStore {
                     else {
                         continue;
                     };
-                    completed.extend(
-                        results
-                            .into_iter()
-                            .map(|(path, result)| (workdir.join(path), result)),
-                    );
+                    completed.extend(results.into_iter().map(|(request, result)| {
+                        (
+                            super::DiffRequest::new(request.base, workdir.join(request.path)),
+                            result,
+                        )
+                    }));
                 }
                 if self.diff_coordinator.complete_batch(completed) {
                     cx.emit(GitStoreEvent::HunksChanged);
@@ -152,6 +160,7 @@ impl GitStore {
             (
                 job @ (GitJob::GitInit
                 | GitJob::StageFiles { .. }
+                | GitJob::HunkOperation { .. }
                 | GitJob::Commit { .. }
                 | GitJob::CheckoutBranch { .. }
                 | GitJob::CreateBranch { .. }),

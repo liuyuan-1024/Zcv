@@ -12,7 +12,7 @@ mod tab;
 mod tooltip;
 pub mod tree;
 
-pub use button::{Button, ButtonStyle};
+pub use button::{Button, ButtonSize, ButtonStyle};
 pub use checkbox::Checkbox;
 pub use confirm::{ConfirmAnswer, ConfirmOverlay};
 pub use icon::SvgIcon;

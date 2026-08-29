@@ -1,4 +1,5 @@
 use gpui::{Context, Entity, Render, TestAppContext, Window, div, prelude::*};
+use zcv_multi_buffer::MultiBufferExcerpt;
 
 use super::common::test_buffer;
 use super::*;
@@ -48,6 +49,37 @@ fn focused_editor_stops_blinking_when_window_deactivates(cx: &mut TestAppContext
     cx.update(|window, cx| {
         assert!(window.is_window_active());
         assert!(editor.read(cx).blink_manager.read(cx).enabled());
+    });
+}
+
+#[gpui::test]
+fn focused_read_only_editor_keeps_editor_selection_and_shows_a_steady_caret(
+    cx: &mut TestAppContext,
+) {
+    let source = test_buffer(cx, "已暂存内容\n");
+    cx.update_entity(&source, |buffer, cx| {
+        buffer.set_file_path("staged.rs".into(), cx)
+    });
+    let source = cx.new(|cx| MultiBuffer::singleton(source, cx));
+    let combined = cx.new(MultiBuffer::empty_read_only);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(vec![MultiBufferExcerpt::line_range(source, 0..1, cx)], cx)
+    });
+    let (editor, cx) = cx.add_window_view(move |window, cx| {
+        let editor = Editor::for_multi_buffer(combined, cx);
+        window.focus(&editor.focus_handle());
+        editor
+    });
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+
+    cx.update(|window, cx| {
+        let editor = editor.read(cx);
+        assert!(editor.is_read_only(cx));
+        assert!(editor.focus.is_focused(window));
+        assert!(!editor.blink_manager.read(cx).enabled());
+        assert!(editor.show_cursor(window, cx));
+        assert!(editor.resolved_selections().primary().is_caret());
     });
 }
 

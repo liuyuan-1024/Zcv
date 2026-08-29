@@ -14,6 +14,8 @@ zcv-assets.workspace = true
 zcv-editor.workspace = true
 zcv-git.workspace = true
 zcv-keymap.workspace = true
+zcv-language.workspace = true
+zcv-multi-buffer.workspace = true
 zcv-preview-svg.workspace = true
 zcv-project.workspace = true
 zcv-project-tree.workspace = true
@@ -21,6 +23,7 @@ zcv-search.workspace = true
 zcv-settings.workspace = true
 zcv-terminal.workspace = true
 zcv-theme.workspace = true
+zcv-text.workspace = true
 zcv-ui.workspace = true
 zcv-workspace.workspace = true
 

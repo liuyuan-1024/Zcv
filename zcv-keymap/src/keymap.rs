@@ -5,4 +5,4 @@
 
 mod loader;
 
-pub use loader::{KeyBindings, load, load_json};
+pub use loader::{KeyBindings, init, load, load_json};

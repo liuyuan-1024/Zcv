@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{
-    App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, IntoElement, Pixels,
-    Point, Render, Styled, Window, div, point, prelude::*,
+    AnyElement, App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, IntoElement,
+    Pixels, Point, Render, Styled, Window, div, point, prelude::*,
 };
 use zcv_actions::{
     Backspace, Copy, Cut, Delete, DeleteToBeginningOfLine, DeleteToEndOfLine, DeleteToNextWordEnd,
@@ -23,7 +23,8 @@ use zcv_actions::{
 use zcv_git::{DiffHunk, DiffHunkKind};
 use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer};
 use zcv_multi_buffer::{
-    ExcerptLocation, ExcerptSnapshot, MultiBuffer, MultiBufferEvent, MultiBufferSubscription,
+    ExcerptLocation, ExcerptSnapshot, MultiBuffer, MultiBufferAnchor, MultiBufferEvent,
+    MultiBufferSubscription,
 };
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
@@ -63,6 +64,39 @@ pub enum EditorEvent {
         locations: Vec<ExcerptLocation>,
         split: bool,
     },
+}
+
+/// Editor 负责把控件定位到 hunk 右上角，具体按钮与操作由宿主视图提供。
+pub trait DiffHunkDelegate {
+    fn render_hunk_controls(
+        &self,
+        row: usize,
+        hunk: &DiffHunk,
+        line_height: Pixels,
+        editor: &Entity<Editor>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement;
+}
+
+/// 旧侧文本已经由 MultiBuffer 物化到 Editor 文档中的统一 diff hunk。
+///
+/// `hunk.range` 是新侧逻辑行范围，`old_display_range` 是同一文档中的旧侧逻辑行范围。
+/// 旧侧因此参与 Editor 的普通光标、选择和复制，不再由显示层合成正文。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MaterializedDiffHunk {
+    pub hunk: DiffHunk,
+    pub old_display_range: Option<Range<usize>>,
+}
+
+/// 绑定到底层文件位置的编辑器视口锚点。
+///
+/// 与显示行号不同，该锚点可在组合文档 excerpts 增删、重排后重新解析。
+#[derive(Clone, Debug)]
+pub struct EditorScrollAnchor {
+    buffer_anchor: MultiBufferAnchor,
+    preceding_virtual_rows: usize,
+    offset: Point<Pixels>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +192,8 @@ pub struct Editor {
     preferred_line_length: usize,
     /// 注入的行级 diff hunks 与注入时的 buffer 版本（渲染门控用）。
     diff_hunks: Vec<DiffHunk>,
+    materialized_diff_hunks: Option<Vec<Option<Range<usize>>>>,
+    diff_hunk_delegate: Option<Arc<dyn DiffHunkDelegate>>,
     /// 文件内搜索状态（搜索条执行过一次搜索后存在，编辑后自动重搜）。
     search: Option<EditorSearch>,
     diff_hunks_version: Option<BufferVersion>,
@@ -229,18 +265,20 @@ impl Editor {
         self.focus.clone()
     }
 
-    /// 光标是否应当绘制。
+    /// 本地 caret 是否应当绘制。
     ///
-    /// 窗口未激活或编辑器未聚焦时不显示；两者都满足时由 BlinkManager 控制闪烁。
+    /// 只读 Editor 仍保留稳定可见的 caret，使 MultiBuffer 与普通 Editor 共用同一套定位和选区反馈；
+    /// 可编辑 Editor 才由 BlinkManager 控制闪烁。
     pub(crate) fn show_cursor(&self, window: &Window, cx: &App) -> bool {
         window.is_window_active()
             && self.focus.is_focused(window)
-            && self.blink_manager.read(cx).visible()
+            && (self.is_read_only(cx) || self.blink_manager.read(cx).visible())
     }
 
     /// 窗口激活与编辑器焦点是两个独立条件，统一在这里决定闪烁生命周期。
     fn sync_cursor_blinking(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let should_blink = window.is_window_active() && self.focus.is_focused(window);
+        let should_blink =
+            !self.is_read_only(cx) && window.is_window_active() && self.focus.is_focused(window);
         self.blink_manager.update(cx, |manager, cx| {
             if should_blink {
                 manager.enable(cx);
@@ -381,12 +419,72 @@ impl Editor {
     ///
     /// 记录注入时的 buffer 版本：注入后发生的编辑会让行号失配，渲染侧（`diff_hunks`）按版本比对拒绝使用，等待下次刷新重新注入。
     pub fn set_diff_hunks(&mut self, hunks: Vec<DiffHunk>, cx: &mut Context<Self>) {
+        self.set_diff_hunks_inner(hunks, None, cx);
+    }
+
+    /// 注入旧侧已经属于 MultiBuffer 投影文本的 diff hunks。
+    pub fn set_materialized_diff_hunks(
+        &mut self,
+        hunks: Vec<MaterializedDiffHunk>,
+        cx: &mut Context<Self>,
+    ) {
+        let (hunks, old_display_ranges): (Vec<_>, Vec<_>) = hunks
+            .into_iter()
+            .map(|hunk| (hunk.hunk, hunk.old_display_range))
+            .unzip();
+        self.set_diff_hunks_inner(hunks, Some(old_display_ranges), cx);
+    }
+
+    fn set_diff_hunks_inner(
+        &mut self,
+        hunks: Vec<DiffHunk>,
+        materialized: Option<Vec<Option<Range<usize>>>>,
+        cx: &mut Context<Self>,
+    ) {
         let version = self.text_buffer(cx).read(cx).snapshot().version();
-        if self.diff_hunks == hunks && self.diff_hunks_version == Some(version) {
+        if self.diff_hunks == hunks
+            && self.materialized_diff_hunks == materialized
+            && self.diff_hunks_version == Some(version)
+        {
             return;
         }
         self.diff_hunks = hunks;
+        self.materialized_diff_hunks = materialized;
         self.diff_hunks_version = Some(version);
+        self.rebuild_inserted(cx);
+        cx.notify();
+    }
+
+    pub fn set_diff_hunk_delegate(
+        &mut self,
+        delegate: Option<Arc<dyn DiffHunkDelegate>>,
+        cx: &mut Context<Self>,
+    ) {
+        self.diff_hunk_delegate = delegate;
+        cx.notify();
+    }
+
+    pub(crate) fn diff_hunk_delegate(&self) -> Option<Arc<dyn DiffHunkDelegate>> {
+        self.diff_hunk_delegate.clone()
+    }
+
+    /// 展开当前全部删除与修改 hunk。
+    ///
+    /// 项目差异视图只投影 hunk 上下文，因此旧侧内容必须默认展开；
+    /// 普通单文件 Editor 不调用本入口，继续保留点击色带后按需展开的行为。
+    pub fn expand_all_diff_hunks(&mut self, cx: &mut Context<Self>) {
+        self.expanded_deleted_hunks = self
+            .diff_hunks(cx)
+            .iter()
+            .filter(|hunk| hunk.kind == DiffHunkKind::Deleted)
+            .map(|hunk| hunk.old_range.clone())
+            .collect();
+        self.expanded_modified_hunks = self
+            .diff_hunks(cx)
+            .iter()
+            .filter(|hunk| hunk.kind == DiffHunkKind::Modified)
+            .map(|hunk| hunk.old_range.clone())
+            .collect();
         self.rebuild_inserted(cx);
         cx.notify();
     }
@@ -542,8 +640,13 @@ impl Editor {
 
     /// 从"已展开的删除 hunk × HEAD 文本"重建合成行配置（锚定新侧行，文本按旧行范围切片）。
     fn rebuild_inserted(&mut self, cx: &App) {
+        // MultiBuffer 的投影替换、HEAD 文本和 hunk 可能在同一个 App 更新周期到达；
+        // 所有合成行入口必须先推进到当前文本流，不能依赖 TextChanged 订阅稍后补同步。
+        self.sync_display_map(cx);
         let mut inserted = InsertedLines::new();
-        if let Some(text) = &self.deleted_text {
+        if self.materialized_diff_hunks.is_none()
+            && let Some(text) = &self.deleted_text
+        {
             for hunk in self.diff_hunks(cx) {
                 // 删除块展开：HEAD 中被删行作为合成行；修改块展开：HEAD 中被修改行的旧版。
                 let expanded = match hunk.kind {
@@ -581,6 +684,12 @@ impl Editor {
         } else {
             &[]
         }
+    }
+
+    pub(crate) fn materialized_diff_hunks(&self, cx: &App) -> Option<&[Option<Range<usize>>]> {
+        (self.diff_hunks_version == Some(self.text_buffer(cx).read(cx).snapshot().version()))
+            .then(|| self.materialized_diff_hunks.as_deref())
+            .flatten()
     }
 
     pub fn text(&self, cx: &App) -> String {
@@ -794,6 +903,68 @@ impl Editor {
 
     pub(super) fn scroll_offset(&self) -> Point<Pixels> {
         self.scroll_manager.offset()
+    }
+
+    /// 捕获当前视口顶部对应的底层文件位置。
+    pub fn capture_scroll_anchor(&mut self, cx: &App) -> Option<EditorScrollAnchor> {
+        self.sync_display_map(cx);
+        let display_point = self.scroll_manager.anchor();
+        let output_offset = self
+            .display_map
+            .display_point_to_offset(display_point)
+            .ok()?;
+        let canonical_point = self
+            .display_map
+            .offset_to_display_point(output_offset)
+            .ok()?;
+        let buffer_anchor = self
+            .multi_buffer
+            .read(cx)
+            .anchor_for_offset(output_offset)?;
+        Some(EditorScrollAnchor {
+            buffer_anchor,
+            preceding_virtual_rows: canonical_point
+                .row()
+                .get()
+                .saturating_sub(display_point.row().get()),
+            offset: self.scroll_manager.offset(),
+        })
+    }
+
+    /// 在组合文档结构刷新后恢复视口；目标片段消失时由 MultiBuffer 解析到最近邻文件。
+    pub fn restore_scroll_anchor(
+        &mut self,
+        anchor: EditorScrollAnchor,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.sync_display_map(cx);
+        let Some(output_offset) = self
+            .multi_buffer
+            .read(cx)
+            .resolve_anchor(&anchor.buffer_anchor)
+        else {
+            return false;
+        };
+        let Ok(canonical_point) = self.display_map.offset_to_display_point(output_offset) else {
+            return false;
+        };
+        let display_point = DisplayPoint::new(
+            DisplayRow::new(
+                canonical_point
+                    .row()
+                    .get()
+                    .saturating_sub(anchor.preceding_virtual_rows),
+            ),
+            canonical_point.column(),
+        );
+        if self
+            .scroll_manager
+            .restore_anchor(display_point, anchor.offset)
+        {
+            self.input_layout = None;
+            cx.notify();
+        }
+        true
     }
 
     pub(super) fn longest_display_row(&self) -> DisplayRow {
@@ -1038,6 +1209,7 @@ impl Editor {
         viewport_size: gpui::Size<Pixels>,
         content_width: Pixels,
         line_height: Pixels,
+        top_inset: Pixels,
     ) {
         self.scroll_manager.update_viewport(
             self.display_map.line_count(),
@@ -1045,6 +1217,7 @@ impl Editor {
             viewport_size.height,
             content_width,
             line_height,
+            top_inset,
         );
     }
 
@@ -1181,6 +1354,8 @@ impl Editor {
             bracket_pair_cache: None,
             scroll_manager: ScrollManager::default(),
             diff_hunks: Vec::new(),
+            materialized_diff_hunks: None,
+            diff_hunk_delegate: None,
             diff_hunks_version: None,
             search: None,
             deleted_text: None,

@@ -11,6 +11,8 @@ struct ScrollViewport {
     height: Pixels,
     content_width: Pixels,
     line_height: Pixels,
+    /// 覆盖在正文顶部的悬浮区域；自动滚动必须把目标行放到它下方。
+    top_inset: Pixels,
 }
 
 /// 垂直滚动轴 thumb 的三态。
@@ -63,6 +65,7 @@ impl ScrollManager {
         height: Pixels,
         content_width: Pixels,
         line_height: Pixels,
+        top_inset: Pixels,
     ) -> bool {
         if line_height <= Pixels::ZERO {
             return false;
@@ -73,6 +76,7 @@ impl ScrollManager {
             height: height.max(Pixels::ZERO),
             content_width: content_width.max(Pixels::ZERO),
             line_height,
+            top_inset: top_inset.max(Pixels::ZERO).min(height.max(Pixels::ZERO)),
         });
 
         let old_anchor = self.anchor;
@@ -113,8 +117,10 @@ impl ScrollManager {
                 let Some(viewport) = self.viewport else {
                     return;
                 };
-                let target_row = point.row().get().saturating_sub(offset_rows);
-                self.set_scroll_top(viewport.line_height * target_row);
+                let row_top = viewport.line_height * point.row().get();
+                self.set_scroll_top(
+                    row_top - viewport.top_inset - viewport.line_height * offset_rows,
+                );
             }
         }
     }
@@ -163,6 +169,16 @@ impl ScrollManager {
         self.pending_horizontal_autoscroll = false;
         self.set_scroll_top(scroll_top);
         self.anchor != old_anchor || self.offset != old_offset
+    }
+
+    /// 在组合文档结构刷新后恢复已经重新解析到当前投影的锚点。
+    pub(super) fn restore_anchor(&mut self, anchor: DisplayPoint, offset: Point<Pixels>) -> bool {
+        let changed = self.anchor != anchor || self.offset != offset;
+        self.anchor = anchor;
+        self.offset = offset;
+        self.pending_autoscroll = None;
+        self.pending_horizontal_autoscroll = false;
+        changed
     }
 
     /// 滚动轴 thumb 当前三态。
@@ -241,10 +257,11 @@ impl ScrollManager {
         let scroll_top = self.scroll_top();
         let row_top = viewport.line_height * point.row().get();
         let row_bottom = row_top + viewport.line_height;
+        let viewport_top = scroll_top + viewport.top_inset;
         let viewport_bottom = scroll_top + viewport.height;
 
-        if row_top < scroll_top {
-            self.set_scroll_top(row_top);
+        if row_top < viewport_top {
+            self.set_scroll_top(row_top - viewport.top_inset);
         } else if row_bottom > viewport_bottom {
             self.set_scroll_top(row_bottom - viewport.height);
         }
@@ -307,7 +324,7 @@ mod tests {
     #[test]
     fn wheel_delta_normalizes_anchor_and_clamps_document_edges() {
         let mut manager = ScrollManager::default();
-        manager.update_viewport(100, px(100.), px(100.), px(200.), px(20.));
+        manager.update_viewport(100, px(100.), px(100.), px(200.), px(20.), px(0.));
 
         assert!(manager.scroll_by(point(px(0.), px(-55.))));
         assert_eq!(
@@ -332,21 +349,39 @@ mod tests {
             DisplayRow::new(20),
             DisplayColumn::new(4),
         ));
-        manager.update_viewport(50, px(100.), px(100.), px(200.), px(20.));
+        manager.update_viewport(50, px(100.), px(100.), px(200.), px(20.), px(0.));
 
         assert_eq!(manager.anchor().row(), DisplayRow::new(16));
         assert_eq!(manager.offset().y, px(0.));
 
         manager.request_autoscroll(DisplayPoint::new(DisplayRow::new(2), DisplayColumn::ZERO));
-        manager.update_viewport(50, px(100.), px(100.), px(200.), px(20.));
+        manager.update_viewport(50, px(100.), px(100.), px(200.), px(20.), px(0.));
         assert_eq!(manager.anchor().row(), DisplayRow::new(2));
         assert_eq!(manager.offset().y, px(0.));
     }
 
     #[test]
+    fn autoscroll_keeps_target_below_sticky_header() {
+        let mut manager = ScrollManager::default();
+        manager.update_viewport(50, px(100.), px(100.), px(200.), px(20.), px(40.));
+        manager.scroll_to(px(200.));
+
+        manager.request_autoscroll(DisplayPoint::new(DisplayRow::new(10), DisplayColumn::ZERO));
+        assert!(manager.apply_pending_autoscroll_vertical());
+        assert_eq!(manager.scroll_top(), px(160.));
+
+        manager.request_scroll_to_top(
+            DisplayPoint::new(DisplayRow::new(10), DisplayColumn::ZERO),
+            2,
+        );
+        assert!(manager.apply_pending_autoscroll_vertical());
+        assert_eq!(manager.scroll_top(), px(120.));
+    }
+
+    #[test]
     fn page_scroll_moves_one_visible_page_with_one_row_overlap() {
         let mut manager = ScrollManager::default();
-        manager.update_viewport(100, px(100.), px(100.), px(200.), px(20.));
+        manager.update_viewport(100, px(100.), px(100.), px(200.), px(20.), px(0.));
 
         assert_eq!(manager.page_row_count(), Some(4));
         assert!(manager.scroll_page(true));
@@ -358,12 +393,12 @@ mod tests {
     #[test]
     fn viewport_resize_clamps_existing_scroll_position() {
         let mut manager = ScrollManager::default();
-        manager.update_viewport(10, px(100.), px(40.), px(200.), px(20.));
+        manager.update_viewport(10, px(100.), px(40.), px(200.), px(20.), px(0.));
         manager.scroll_by(point(px(-12.), px(-500.)));
         assert_eq!(manager.offset().x, px(12.));
         assert_eq!(manager.anchor().row(), DisplayRow::new(8));
 
-        manager.update_viewport(3, px(100.), px(100.), px(200.), px(20.));
+        manager.update_viewport(3, px(100.), px(100.), px(200.), px(20.), px(0.));
         assert_eq!(manager.anchor().row(), DisplayRow::ZERO);
         assert_eq!(manager.offset().y, px(0.));
         assert_eq!(manager.offset().x, px(12.));
@@ -372,7 +407,7 @@ mod tests {
     #[test]
     fn horizontal_scroll_is_clamped_to_content_width() {
         let mut manager = ScrollManager::default();
-        manager.update_viewport(1, px(100.), px(40.), px(260.), px(20.));
+        manager.update_viewport(1, px(100.), px(40.), px(260.), px(20.), px(0.));
 
         manager.scroll_by(point(px(-10_000.), px(0.)));
         assert_eq!(manager.offset().x, px(160.));
@@ -381,14 +416,14 @@ mod tests {
         assert_eq!(manager.offset().x, px(0.));
 
         manager.scroll_by(point(px(-10_000.), px(0.)));
-        manager.update_viewport(1, px(180.), px(40.), px(220.), px(20.));
+        manager.update_viewport(1, px(180.), px(40.), px(220.), px(20.), px(0.));
         assert_eq!(manager.offset().x, px(40.));
     }
 
     #[test]
     fn caret_autoscroll_reveals_exact_bounds_without_affecting_manual_scroll() {
         let mut manager = ScrollManager::default();
-        manager.update_viewport(1, px(100.), px(40.), px(300.), px(20.));
+        manager.update_viewport(1, px(100.), px(40.), px(300.), px(20.), px(0.));
         manager.request_autoscroll(DisplayPoint::ZERO);
 
         // 垂直部分布局前应用（光标行在视口内，无变化）；水平部分布局后钳制。
@@ -406,7 +441,7 @@ mod tests {
     #[test]
     fn scroll_to_clamps_and_normalizes_anchor_and_offset() {
         let mut manager = ScrollManager::default();
-        manager.update_viewport(100, px(100.), px(100.), px(200.), px(20.));
+        manager.update_viewport(100, px(100.), px(100.), px(200.), px(20.), px(0.));
 
         assert!(manager.scroll_to(px(35.)));
         assert_eq!(manager.anchor().row(), DisplayRow::new(1));

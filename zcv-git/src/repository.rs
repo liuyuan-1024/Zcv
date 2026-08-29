@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Read, Write as _};
+use std::ops::Range;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
@@ -13,11 +14,41 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::diff::DiffHunk;
+use crate::diff::{DiffHunk, select_hunk_edit_ranges, select_hunk_patch};
 use anyhow::{Context as _, Result, bail};
 
 use crate::diff::parse_diff_hunks_per_path;
 use crate::status::{DiffStat, GitStatus, parse_numstat};
+
+/// 行级差异的比较范围。
+///
+/// - `Head`：工作区相对 HEAD，包含已暂存与未暂存变更；
+/// - `Index`：工作区相对 index，只包含未暂存变更；
+/// - `Staged`：index 相对 HEAD，只包含已暂存变更。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum DiffBase {
+    Head,
+    Index,
+    Staged,
+}
+
+/// 可作为差异文本来源的 Git 修订。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum GitRevision {
+    Head,
+    Index,
+}
+
+/// 对单个 diff hunk 执行的 Git 写操作。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GitHunkOperation {
+    /// 把工作区相对 index 的 hunk 写入 index。
+    Stage,
+    /// 把 index 相对 HEAD 的 hunk 从 index 中移除。
+    Unstage,
+    /// 用 index 内容还原工作区 hunk。
+    Restore,
+}
 
 /// 单个具体 git 进程的取消句柄。
 ///
@@ -186,12 +217,18 @@ pub trait GitRepository: Send + Sync {
     /// 查询 diff 行数统计：`staged` 为 index↔HEAD（`--cached`），否则为 worktree↔index。
     fn diff_stat(&self, staged: bool, paths: &[PathBuf]) -> Result<HashMap<PathBuf, DiffStat>>;
 
-    /// 批量查询多个路径相对 HEAD 的行级 diff hunks（单进程 `git diff --unified=0 HEAD -- <paths>`）。
+    /// 按指定比较范围批量查询多个路径的行级 diff hunks。
     ///
     /// 未跟踪/干净/二进制文件不在结果中；空仓库（无 HEAD 提交）时返回空。
-    /// base 取 HEAD（对齐 Zed 的 diff base：`HEAD:path` blob），staged + unstaged 合并显示。
     /// 单文件段解析失败仅跳过该路径，不中断整批。
-    fn diff_hunks_for_paths(&self, paths: &[PathBuf]) -> Result<Vec<(PathBuf, Vec<DiffHunk>)>>;
+    fn diff_hunks_for_paths(
+        &self,
+        base: DiffBase,
+        paths: &[PathBuf],
+    ) -> Result<Vec<(PathBuf, Vec<DiffHunk>)>>;
+
+    /// 对单个文本 hunk 执行暂存、取消暂存或工作区还原。
+    fn apply_hunk(&self, operation: GitHunkOperation, path: &Path, hunk: &DiffHunk) -> Result<()>;
 
     /// 批量读取 revision（如 `HEAD:path`、`:path`）的 blob 内容，缺失的 revision 为 `None`。
     fn load_revisions(&self, revs: &[&str]) -> Result<Vec<Option<Vec<u8>>>>;
@@ -388,6 +425,210 @@ impl RealGitRepository {
             .context("执行 git 命令失败")?;
         Ok(output.status.success().then_some(output))
     }
+
+    fn apply_index_hunk(
+        &self,
+        operation: GitHunkOperation,
+        path: &Path,
+        hunk: &DiffHunk,
+    ) -> Result<()> {
+        let relative_path = path.strip_prefix(&self.working_directory).unwrap_or(path);
+        let path_text = relative_path.to_string_lossy();
+        let index_spec = format!(":{path_text}");
+        let head_spec = format!("HEAD:{path_text}");
+
+        let mut diff_args = vec!["-c", "core.quotepath=false", "diff", "--unified=0"];
+        if operation == GitHunkOperation::Unstage {
+            diff_args.push("--cached");
+        }
+        diff_args.push("--");
+        let mut diff = self.build_command(&diff_args);
+        diff.arg(relative_path);
+        let output = self.run_command(&mut diff, "git diff --unified=0")?;
+        let (old_lines, new_lines) = select_hunk_edit_ranges(&output.stdout, hunk)
+            .with_context(|| format!("目标 hunk 已变化：{}", relative_path.display()))?;
+
+        let revisions = self.load_revisions(&[&index_spec, &head_spec])?;
+        let mut revisions = revisions.into_iter();
+        let index_text = revisions.next().flatten();
+        let head_text = revisions.next().flatten();
+
+        let next_index = match operation {
+            GitHunkOperation::Stage => {
+                let worktree_path = self.working_directory.join(relative_path);
+                let Ok(worktree_text) = std::fs::read(&worktree_path) else {
+                    self.write_index_text(relative_path, None)?;
+                    return Ok(());
+                };
+                let index_text = index_text.unwrap_or_default();
+                Some(replace_line_range(
+                    &index_text,
+                    old_lines,
+                    &worktree_text,
+                    new_lines,
+                )?)
+            }
+            GitHunkOperation::Unstage => {
+                let Some(head_text) = head_text else {
+                    self.write_index_text(relative_path, None)?;
+                    return Ok(());
+                };
+                let index_text = index_text.unwrap_or_default();
+                Some(replace_line_range(
+                    &index_text,
+                    new_lines,
+                    &head_text,
+                    old_lines,
+                )?)
+            }
+            GitHunkOperation::Restore => unreachable!("还原 hunk 不修改 index"),
+        };
+        self.write_index_text(relative_path, next_index.as_deref())
+    }
+
+    fn write_index_text(&self, path: &Path, content: Option<&[u8]>) -> Result<()> {
+        let Some(content) = content else {
+            let mut command = self.build_command(&["update-index", "--force-remove", "--"]);
+            command.arg(path);
+            self.run_command(&mut command, "git update-index --force-remove")?;
+            return Ok(());
+        };
+
+        let mode = self
+            .index_entry_mode(path)?
+            .or(self.head_entry_mode(path)?)
+            .unwrap_or_else(|| "100644".into());
+        let mut hash = self.build_command(&["hash-object", "-w", "--stdin", "--path"]);
+        hash.arg(path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = hash.spawn().context("启动 git hash-object 失败")?;
+        child
+            .stdin
+            .take()
+            .context("git hash-object stdin 不可用")?
+            .write_all(content)
+            .context("写入 index blob 失败")?;
+        let output = child
+            .wait_with_output()
+            .context("等待 git hash-object 失败")?;
+        if !output.status.success() {
+            bail!(
+                "git hash-object 失败：{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        let oid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if oid.is_empty() || !oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            bail!("git hash-object 返回了无效对象 ID");
+        }
+
+        let mut update = self.build_command(&["update-index", "-z", "--index-info"]);
+        update
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = update.spawn().context("启动 git update-index 失败")?;
+        {
+            let mut stdin = child
+                .stdin
+                .take()
+                .context("git update-index stdin 不可用")?;
+            stdin.write_all(mode.as_bytes())?;
+            stdin.write_all(b" ")?;
+            stdin.write_all(oid.as_bytes())?;
+            stdin.write_all(b"\t")?;
+            stdin.write_all(path.as_os_str().as_encoded_bytes())?;
+            stdin.write_all(b"\0")?;
+        }
+        let output = child
+            .wait_with_output()
+            .context("等待 git update-index 失败")?;
+        if !output.status.success() {
+            bail!(
+                "git update-index 失败：{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(())
+    }
+
+    fn index_entry_mode(&self, path: &Path) -> Result<Option<String>> {
+        let mut command = self.build_command(&["ls-files", "--stage", "--"]);
+        command.arg(path);
+        let output = self.run_command(&mut command, "git ls-files --stage")?;
+        Ok(parse_entry_mode(&output.stdout))
+    }
+
+    fn head_entry_mode(&self, path: &Path) -> Result<Option<String>> {
+        let mut command = self.build_command(&["ls-tree", "HEAD", "--"]);
+        command.arg(path);
+        let output = command
+            .stdin(Stdio::null())
+            .output()
+            .context("执行 git ls-tree 失败")?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        Ok(parse_entry_mode(&output.stdout))
+    }
+}
+
+fn parse_entry_mode(output: &[u8]) -> Option<String> {
+    let mode = output
+        .split(|byte| byte.is_ascii_whitespace())
+        .next()
+        .filter(|mode| !mode.is_empty())?;
+    (mode.iter().all(|byte| matches!(*byte, b'0'..=b'7')))
+        .then(|| String::from_utf8_lossy(mode).into_owned())
+}
+
+fn replace_line_range(
+    target: &[u8],
+    target_lines: Range<usize>,
+    source: &[u8],
+    source_lines: Range<usize>,
+) -> Result<Vec<u8>> {
+    let target_range =
+        line_byte_range(target, target_lines).context("index hunk 行范围已超出当前文本")?;
+    let source_range =
+        line_byte_range(source, source_lines).context("hunk 替换文本行范围已超出当前文本")?;
+    let mut result = Vec::with_capacity(target.len() - target_range.len() + source_range.len());
+    result.extend_from_slice(&target[..target_range.start]);
+    result.extend_from_slice(&source[source_range]);
+    result.extend_from_slice(&target[target_range.end..]);
+    Ok(result)
+}
+
+fn line_byte_range(text: &[u8], lines: Range<usize>) -> Option<Range<usize>> {
+    if lines.start > lines.end {
+        return None;
+    }
+    let mut starts = Vec::with_capacity(lines.end.saturating_add(1));
+    starts.push(0);
+    for (offset, byte) in text.iter().enumerate() {
+        if *byte == b'\n' {
+            starts.push(offset + 1);
+        }
+    }
+    let line_count = if text.last() == Some(&b'\n') {
+        starts.len().saturating_sub(1)
+    } else if text.is_empty() {
+        0
+    } else {
+        starts.len()
+    };
+    let offset_for_line = |line: usize| {
+        if line > line_count {
+            None
+        } else if line == line_count {
+            Some(text.len())
+        } else {
+            starts.get(line).copied()
+        }
+    };
+    Some(offset_for_line(lines.start)?..offset_for_line(lines.end)?)
 }
 
 impl GitRepository for RealGitRepository {
@@ -450,19 +691,24 @@ impl GitRepository for RealGitRepository {
         Ok(parse_numstat(&output.stdout))
     }
 
-    fn diff_hunks_for_paths(&self, paths: &[PathBuf]) -> Result<Vec<(PathBuf, Vec<DiffHunk>)>> {
+    fn diff_hunks_for_paths(
+        &self,
+        base: DiffBase,
+        paths: &[PathBuf],
+    ) -> Result<Vec<(PathBuf, Vec<DiffHunk>)>> {
         if paths.is_empty() {
             return Ok(Vec::new());
         }
         // quotepath=false：输出路径按原始字节而非 C 引用转义（控制字符路径除外，解析时跳过）。
-        let mut command = self.build_command(&[
-            "-c",
-            "core.quotepath=false",
-            "diff",
-            "--unified=0",
-            "HEAD",
-            "--",
-        ]);
+        let mut args = vec!["-c", "core.quotepath=false", "diff", "--unified=0"];
+        match base {
+            DiffBase::Head => args.push("HEAD"),
+            DiffBase::Index => {}
+            // 不显式传 HEAD：无提交仓库也能把 index 与空树比较。
+            DiffBase::Staged => args.push("--cached"),
+        }
+        args.push("--");
+        let mut command = self.build_command(&args);
         for path in paths {
             // 与单文件版本同模式：pathspec 原样传入，含空格/非 UTF-8 路径安全。
             command.arg(path);
@@ -476,6 +722,45 @@ impl GitRepository for RealGitRepository {
             return Ok(Vec::new());
         }
         Ok(parse_diff_hunks_per_path(&output.stdout, paths))
+    }
+
+    fn apply_hunk(&self, operation: GitHunkOperation, path: &Path, hunk: &DiffHunk) -> Result<()> {
+        if matches!(
+            operation,
+            GitHunkOperation::Stage | GitHunkOperation::Unstage
+        ) {
+            return self.apply_index_hunk(operation, path, hunk);
+        }
+        let mut diff_args = vec!["-c", "core.quotepath=false", "diff", "--unified=0"];
+        diff_args.push("--");
+        let mut diff = self.build_command(&diff_args);
+        diff.arg(path);
+        let output = self.run_command(&mut diff, "git diff --unified=0")?;
+        let patch = select_hunk_patch(&output.stdout, hunk)
+            .with_context(|| format!("目标 hunk 已变化：{}", path.display()))?;
+
+        let mut apply_args = vec!["apply", "--unidiff-zero"];
+        apply_args.push("--reverse");
+        let mut command = self.build_command(&apply_args);
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().context("启动 git apply 失败")?;
+        child
+            .stdin
+            .take()
+            .context("git apply stdin 不可用")?
+            .write_all(&patch)
+            .context("写入 git apply patch 失败")?;
+        let output = child.wait_with_output().context("等待 git apply 失败")?;
+        if !output.status.success() {
+            bail!(
+                "git apply 失败：{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(())
     }
 
     fn fetch(&self) -> Result<()> {

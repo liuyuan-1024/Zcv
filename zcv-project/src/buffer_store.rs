@@ -35,6 +35,21 @@ impl BufferStore {
         self.insert_buffer(path.to_path_buf(), buffer, cx)
     }
 
+    /// 打开工作区侧已经不存在的文件。
+    ///
+    /// 删除状态的 Git 变更仍需要一个空的工作区 Buffer 作为可编辑侧；
+    /// HEAD 内容由差异模型单独提供。
+    /// 若用户在该位置输入并保存，文件会按正常保存路径重新创建。
+    pub(crate) fn open_deleted_buffer(
+        &mut self,
+        path: &Path,
+        cx: &mut App,
+    ) -> Result<Entity<MultiBuffer>, BufferLoadError> {
+        let buffer = Buffer::scratch(String::new(), BufferConfig::default())
+            .expect("空的删除文件 Buffer 应能创建");
+        self.insert_buffer(path.to_path_buf(), buffer, cx)
+    }
+
     /// 注册搜索任务在后台加载完成的 Buffer，与 `open_buffer` 共享同一缓存。
     pub(crate) fn register_loaded_buffer(
         &mut self,
@@ -52,7 +67,7 @@ impl BufferStore {
         buffer: Buffer,
         cx: &mut App,
     ) -> Result<Entity<MultiBuffer>, BufferLoadError> {
-        let path = path.canonicalize().map_err(BufferLoadError::Io)?;
+        let path = index_path(&path).map_err(BufferLoadError::Io)?;
         if let Some(buffer) = self.opened_buffers.get(&path).and_then(WeakEntity::upgrade) {
             return Ok(buffer);
         }
@@ -121,6 +136,22 @@ impl BufferStore {
     }
 }
 
+/// 为已存在与刚删除的文件生成同一种规范化索引路径。
+fn index_path(path: &Path) -> std::io::Result<PathBuf> {
+    match path.canonicalize() {
+        Ok(path) => Ok(path),
+        Err(error) => {
+            let Some(parent) = path.parent() else {
+                return Err(error);
+            };
+            let Some(file_name) = path.file_name() else {
+                return Err(error);
+            };
+            parent.canonicalize().map(|parent| parent.join(file_name))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -147,6 +178,28 @@ mod tests {
 
         assert_eq!(first, second);
         fs::remove_file(path).expect("测试文件应可删除");
+    }
+
+    #[gpui::test]
+    fn deleted_file_buffer_keeps_the_same_identity_after_file_is_recreated(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().expect("应创建临时目录");
+        let path = directory.path().join("deleted.txt");
+        let mut store = BufferStore::new();
+        let deleted = cx.update(|cx| {
+            store
+                .open_deleted_buffer(&path, cx)
+                .expect("应打开删除文件的空文档")
+        });
+
+        fs::write(&path, "重新创建").expect("应重新创建文件");
+        let reopened = cx.update(|cx| store.open_buffer(&path, cx).expect("应重新打开文件"));
+
+        assert_eq!(
+            deleted, reopened,
+            "删除状态与重新创建后必须复用同一文档实体"
+        );
     }
 
     #[gpui::test]

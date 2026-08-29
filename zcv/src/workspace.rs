@@ -19,8 +19,9 @@ use zcv_actions::{
     ToggleHarnessMode, ToggleProjectPicker,
 };
 use zcv_editor::Editor;
+use zcv_git::{DiffBase, GitRevision};
 use zcv_project::{
-    ActiveProjectRoot, GitOperationKind, GitOperationOutcome, GitStoreEvent, Project,
+    ActiveProjectRoot, DiffRequest, GitOperationKind, GitOperationOutcome, GitStoreEvent, Project,
 };
 use zcv_search::ProjectSearchButton;
 use zcv_settings::SettingsStore;
@@ -35,7 +36,8 @@ use crate::active_buffer_language::ActiveBufferLanguage;
 use crate::breadcrumbs::Breadcrumbs;
 use crate::cursor_position::CursorPosition;
 use crate::harness::HarnessButton;
-use crate::version_control::VersionControlPanel;
+use crate::project_diff;
+use crate::version_control::{OnOpenGitDiff, VersionControlPanel};
 use zcv_project_tree::{OnCreate, OnMove, OnOpenFile, OnRename, OnTrash, ProjectTreePanel};
 use zcv_terminal::TerminalPanel;
 
@@ -47,6 +49,24 @@ fn on_open_file_callback(weak: &WeakEntity<Workspace>) -> OnOpenFile {
             if let Some(ws) = weak.upgrade() {
                 ws.update(cx, |ws, cx| {
                     ws.open_path(path, focus_opened_item, window, cx);
+                });
+            }
+        },
+    )
+}
+
+/// 构造版本管理面板的项目差异回调。
+fn on_open_git_diff_callback(weak: &WeakEntity<Workspace>) -> OnOpenGitDiff {
+    let weak = weak.clone();
+    Rc::new(
+        move |kind,
+              path: PathBuf,
+              focus_opened_item: bool,
+              window: &mut Window,
+              cx: &mut gpui::App| {
+            if let Some(workspace) = weak.upgrade() {
+                workspace.update(cx, |workspace, cx| {
+                    project_diff::deploy_at(workspace, kind, path, focus_opened_item, window, cx);
                 });
             }
         },
@@ -486,7 +506,7 @@ fn initialize_workspace(
 
     let version_control: Entity<VersionControlPanel> = cx.new(|cx| {
         let mut panel = VersionControlPanel::new(project.clone(), cx);
-        panel.set_on_open_file(on_open_file_callback(&weak_self));
+        panel.set_on_open_file(on_open_git_diff_callback(&weak_self));
         panel
     });
 
@@ -642,26 +662,55 @@ fn apply_theme(theme: &str, cx: &mut App, window: Option<&Window>) {
 /// 不接收 Workspace 实体：订阅注册时的初始回调发生在 Workspace 更新期间，
 /// 读取自身实体会触发 double-lease panic。
 fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App) {
-    // 先收集打开的编辑器 (editor, path)，避免持 pane 借用时再可变借用 cx。
+    // 所有打开 Item 的真实源文件共同构成差异需求；
+    // 组合文档不能再被单个 item_path 隐式代表，否则项目差异 Item 只会请求当前文件而丢失其余来源。
+    let mut interested_requests: Vec<DiffRequest> = pane
+        .read(cx)
+        .tabs()
+        .iter()
+        .filter(|item| item.act_as::<project_diff::ProjectDiffView>(cx).is_none())
+        .filter_map(|item| item.multi_buffer(cx))
+        .flat_map(|multi_buffer| {
+            multi_buffer
+                .read(cx)
+                .file_buffers(cx)
+                .into_iter()
+                .map(|(_, path)| DiffRequest::new(DiffBase::Head, path))
+        })
+        .collect();
+    // 项目差异在 hunk 首次加载完成前还没有 excerpts，不能从空 MultiBuffer 反推需求；
+    // 直接读取该 Item 由 Git 状态派生的路径集合，确保等待态不会被精确需求刷新清掉。
+    interested_requests.extend(
+        pane.read(cx)
+            .tabs()
+            .iter()
+            .filter_map(|item| item.act_as::<project_diff::ProjectDiffView>(cx))
+            .flat_map(|view| view.read(cx).diff_requests().collect::<Vec<_>>()),
+    );
+    // 单文件 Editor 仍直接消费自身 hunk；组合 Item 负责把各源 hunk 投影到组合坐标。
     let opened: Vec<(Entity<Editor>, PathBuf)> = pane
         .read(cx)
         .tabs()
         .iter()
         .filter_map(|item| {
+            if item.act_as::<project_diff::ProjectDiffView>(cx).is_some() {
+                return None;
+            }
             let editor = item.act_as::<Editor>(cx)?;
             let path = item.item_path(cx)?;
             Some((editor, path))
         })
         .collect();
-    let paths: Vec<PathBuf> = opened.iter().map(|(_, path)| path.clone()).collect();
     let store = project.read(cx).git_store();
-    store.update(cx, |store, cx| store.set_hunk_interests(&paths, cx));
+    store.update(cx, |store, cx| {
+        store.set_hunk_interests(&interested_requests, cx)
+    });
     for (editor, path) in &opened {
         let store = project.read(cx).git_store();
         // 等待态先清空旧标记；结果到达后由 HunksChanged 精确补回。
         let hunks: Vec<zcv_git::DiffHunk> = store
             .read(cx)
-            .hunks_for_path(path)
+            .hunks_for_path(DiffBase::Head, path)
             .map(|hunks| hunks.to_vec())
             .unwrap_or_default();
         editor.update(cx, |editor, cx| editor.set_diff_hunks(hunks, cx));
@@ -671,17 +720,29 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
     for (editor, path) in &opened {
         let store = project.read(cx).git_store();
         // 删除块与修改块展开都需要 HEAD 文本（被删行/旧行来源）。
-        let needs_head_text = store.read(cx).hunks_for_path(path).is_some_and(|hunks| {
-            hunks.iter().any(|hunk| {
-                matches!(
-                    hunk.kind,
-                    zcv_git::DiffHunkKind::Deleted | zcv_git::DiffHunkKind::Modified
-                )
-            })
-        });
-        if needs_head_text && store.read(cx).committed_text(path).is_none() {
+        let needs_head_text = store
+            .read(cx)
+            .hunks_for_path(DiffBase::Head, path)
+            .is_some_and(|hunks| {
+                hunks.iter().any(|hunk| {
+                    matches!(
+                        hunk.kind,
+                        zcv_git::DiffHunkKind::Deleted | zcv_git::DiffHunkKind::Modified
+                    )
+                })
+            });
+        if !needs_head_text {
+            continue;
+        }
+        if let Some(text) = store.read(cx).revision_text(GitRevision::Head, path) {
+            editor.update(cx, |editor, cx| {
+                editor.set_deleted_hunk_text(Some(text), cx)
+            });
+        } else {
             // 加载结果由 GitStore 自行回填缓存，这里只消费返回值。
-            let task = store.read(cx).load_committed_text(path, cx);
+            let task = store
+                .read(cx)
+                .load_revision_text(GitRevision::Head, path, cx);
             let editor = editor.clone();
             cx.spawn(async move |cx| {
                 if let Some(text) = task.await {
@@ -753,9 +814,14 @@ make_placeholder_panel!(OutlinePanel, "outline", "icons/list_tree.svg", "大纲"
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+    use std::process::Command;
+
     use gpui::{AppContext, TestAppContext};
+    use zcv_workspace::Item as _;
 
     use super::{Workspace, build_workspace};
+    use crate::project_diff::{self, ProjectDiffView};
 
     /// 空工作区与项目工作区走同一条装配路径：全部面板无条件注册，空态由面板自行渲染（对齐 Zed）。
     #[gpui::test]
@@ -794,5 +860,74 @@ mod tests {
             let new_root = window.root::<Workspace>().flatten().expect("新根应已就位");
             assert_ne!(new_root.entity_id(), old_id);
         });
+    }
+
+    #[gpui::test]
+    fn project_diff_keeps_hunk_interest_while_its_multibuffer_is_empty(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时仓库");
+        let root = directory.path().canonicalize().expect("应规范化仓库路径");
+        run_in(&root, &["git", "init", "-q", "-b", "master"]);
+        run_in(&root, &["git", "config", "user.email", "test@example.com"]);
+        run_in(&root, &["git", "config", "user.name", "Test User"]);
+        let path = root.join("tracked.txt");
+        std::fs::write(&path, "line0\nline1\nline2\n原内容\nline4\nline5\nline6\n")
+            .expect("应创建文件");
+        run_in(&root, &["git", "add", "tracked.txt"]);
+        run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
+        std::fs::write(&path, "line0\nline1\nline2\n新内容\nline4\nline5\nline6\n")
+            .expect("应修改文件");
+
+        cx.update(|cx| {
+            zcv_settings::init(cx);
+            zcv_editor::init(cx);
+        });
+        let project_root = Some(root);
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| build_workspace(&project_root, window, cx));
+        cx.run_until_parked();
+
+        cx.update(|window, app| {
+            workspace.update(app, |workspace, cx| {
+                project_diff::deploy_at(
+                    workspace,
+                    project_diff::ProjectDiffKind::Unstaged,
+                    path.clone(),
+                    false,
+                    window,
+                    cx,
+                )
+            });
+        });
+        cx.run_until_parked();
+        cx.run_until_parked();
+
+        let view = cx.read_entity(&workspace, |workspace, cx| {
+            workspace
+                .pane()
+                .read(cx)
+                .tabs()
+                .iter()
+                .find_map(|item| item.act_as::<ProjectDiffView>(cx))
+                .expect("应打开项目差异视图")
+        });
+        cx.read_entity(&view, |view, cx| {
+            let multi_buffer = view.multi_buffer(cx).expect("项目差异应提供组合文档");
+            let text = String::from_utf8(multi_buffer.read(cx).snapshot(cx).text_bytes())
+                .expect("投影文本应为 UTF-8");
+            assert_eq!(text, "line1\nline2\n原内容\n新内容\nline4\nline5\n");
+        });
+    }
+
+    fn run_in(directory: &Path, arguments: &[&str]) {
+        let output = Command::new(arguments[0])
+            .args(&arguments[1..])
+            .current_dir(directory)
+            .output()
+            .expect("应执行 Git 命令");
+        assert!(
+            output.status.success(),
+            "命令 {arguments:?} 失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

@@ -2,164 +2,393 @@
   {
     "context": "Editor",
     "bindings": {
-      "cmd-=": "editor::IncreaseFontSize",
-      "cmd--": "editor::DecreaseFontSize",
-      "cmd-0": "editor::ResetFontSize",
+      // =========================
+      // 编辑
+      // =========================
+
+      // 基础输入
       "enter": "editor::Newline",
       "tab": "editor::Indent",
       "shift-tab": "editor::Outdent",
-      "delete": "editor::Delete",
+
+      // 删除单个字符
       "backspace": "editor::Backspace",
-      "alt-delete": "editor::DeleteToNextWordEnd",
+      "delete": "editor::Delete",
+
+      // 按单词删除
       "alt-backspace": "editor::DeleteToPreviousWordStart",
-      "cmd-delete": "editor::DeleteToEndOfLine",
+      "alt-delete": "editor::DeleteToNextWordEnd",
+
+      // 删除到当前行边界
       "cmd-backspace": "editor::DeleteToBeginningOfLine",
-      "up": "editor::MoveUp",
-      "down": "editor::MoveDown",
-      "left": "editor::MoveLeft",
-      "right": "editor::MoveRight",
-      "shift-up": "editor::SelectUp",
-      "shift-down": "editor::SelectDown",
-      "shift-left": "editor::SelectLeft",
-      "shift-right": "editor::SelectRight",
-      "pageup": "editor::MovePageUp",
-      "pagedown": "editor::MovePageDown",
-      "shift-pageup": "editor::SelectPageUp",
-      "shift-pagedown": "editor::SelectPageDown",
-      "alt-left": "editor::MoveToPreviousWord",
-      "alt-right": "editor::MoveToNextWord",
-      "alt-shift-left": "editor::SelectToPreviousWord",
-      "alt-shift-right": "editor::SelectToNextWord",
-      "cmd-up": "editor::MoveToBeginning",
-      "cmd-down": "editor::MoveToEnd",
-      "cmd-shift-up": "editor::SelectToBeginning",
-      "cmd-shift-down": "editor::SelectToEnd",
-      "home": "editor::MoveToBeginningOfLine",
-      "end": "editor::MoveToEndOfLine",
-      "shift-home": "editor::SelectToBeginningOfLine",
-      "shift-end": "editor::SelectToEndOfLine",
+      "cmd-delete": "editor::DeleteToEndOfLine",
+
+      // 剪贴板与历史
       "cmd-a": "editor::SelectAll",
       "cmd-c": "editor::Copy",
       "cmd-v": "editor::Paste",
       "cmd-x": "editor::Cut",
+
       "cmd-z": "editor::Undo",
       "cmd-shift-z": "editor::Redo",
+
+      // Alt + 上下 = 移动整行
       "alt-up": "editor::MoveLineUp",
       "alt-down": "editor::MoveLineDown",
+
+      // =========================
+      // 导航
+      // =========================
+
+      // 字符 / 行级移动，按范围从小到大：
+      // 字符 / 行级 → 按词 → 行边界 → 翻页 → 文档边界
+      "up": "editor::MoveUp",
+      "down": "editor::MoveDown",
+      "left": "editor::MoveLeft",
+      "right": "editor::MoveRight",
+
+      // 扩展选择
+      "shift-up": "editor::SelectUp",
+      "shift-down": "editor::SelectDown",
+      "shift-left": "editor::SelectLeft",
+      "shift-right": "editor::SelectRight",
+
+      // 按词移动，Alt 表示更大的文本单位
+      "alt-left": "editor::MoveToPreviousWord",
+      "alt-right": "editor::MoveToNextWord",
+
+      "alt-shift-left": "editor::SelectToPreviousWord",
+      "alt-shift-right": "editor::SelectToNextWord",
+
+      // 行边界
+      "cmd-left": "editor::MoveToBeginningOfLine",
+      "cmd-right": "editor::MoveToEndOfLine",
+
+      "cmd-shift-left": "editor::SelectToBeginningOfLine",
+      "cmd-shift-right": "editor::SelectToEndOfLine",
+
+      // 兼容带 Home / End 的键盘。
+      "home": "editor::MoveToBeginningOfLine",
+      "end": "editor::MoveToEndOfLine",
+
+      "shift-home": "editor::SelectToBeginningOfLine",
+      "shift-end": "editor::SelectToEndOfLine",
+
+      // 翻页
+      "pageup": "editor::MovePageUp",
+      "pagedown": "editor::MovePageDown",
+
+      "shift-pageup": "editor::SelectPageUp",
+      "shift-pagedown": "editor::SelectPageDown",
+
+      // 文档边界，Cmd + 纵向方向键 = 文档边界
+      "cmd-up": "editor::MoveToBeginning",
+      "cmd-down": "editor::MoveToEnd",
+
+      "cmd-shift-up": "editor::SelectToBeginning",
+      "cmd-shift-down": "editor::SelectToEnd",
+
+      // =========================
+      // 折叠与摘录
+      // =========================
+
       "alt-cmd-[": "editor::ToggleFold",
       "alt-cmd-]": "editor::UnfoldAll",
-      "alt-enter": "editor::OpenExcerpts"
+
+      // 打开摘录
+      "alt-enter": "editor::OpenExcerpts",
+
+      // =========================
+      // 视图
+      // =========================
+
+      "cmd-=": "editor::IncreaseFontSize",
+      "cmd--": "editor::DecreaseFontSize",
+      "cmd-0": "editor::ResetFontSize"
     }
   },
+
   {
     "context": "ProjectTree && not_editing",
     "bindings": {
+      // =========================
+      // 树导航
+      // =========================
+
       "up": "project_tree::TreeSelectPrev",
       "down": "project_tree::TreeSelectNext",
+
       "shift-up": "project_tree::TreeSelectPrevExtend",
       "shift-down": "project_tree::TreeSelectNextExtend",
+
+      // 左右表示树结构的收起 / 展开
       "left": "project_tree::TreeCollapse",
       "right": "project_tree::TreeExpand",
+
+      // =========================
+      // 操作
+      // =========================
+
+      // 高频操作使用 Space
       "space": "project_tree::TreeActivate",
+
+      // Enter 用于编辑当前名称
       "enter": "project_tree::TreeRename",
+
+      // Escape 清除 Tree 内部的剪贴板状态
+      "escape": "project_tree::TreeClearClipboard",
+
+      // 新建条目
       "cmd-n": "project_tree::TreeNewEntry",
+
+      // 删除
       "cmd-backspace": "project_tree::TreeTrash",
       "cmd-delete": "project_tree::TreeTrash",
+
+      // 剪贴板
       "cmd-c": "project_tree::TreeCopy",
       "cmd-x": "project_tree::TreeCut",
-      "cmd-v": "project_tree::TreePaste",
-      "escape": "project_tree::TreeClearClipboard"
+      "cmd-v": "project_tree::TreePaste"
     }
   },
+
   {
     "context": "ProjectTree && conflict",
     "bindings": {
+      // 取消冲突处理
       "escape": "project_tree::TreeCancelConflict"
     }
   },
+
   {
     "context": "ProjectTreeEdit > Editor",
     "bindings": {
+      // 文件名编辑模式
       "enter": "project_tree::TreeConfirmEdit",
       "escape": "project_tree::TreeCancelEdit"
     }
   },
+
   {
     "context": "VersionControl",
     "bindings": {
+      // =========================
+      // 导航
+      // =========================
+
       "up": "version_control::SelectPrev",
       "down": "version_control::SelectNext",
+
+      // 左右表示列表结构的收起 / 展开
       "left": "version_control::Collapse",
       "right": "version_control::Expand",
+
+      // =========================
+      // 操作
+      // =========================
+
+      // 打开当前项
       "enter": "version_control::Activate",
+
+      // 高频 Stage / Unstage
       "space": "version_control::ToggleStaged",
+
+      // Commit 是较重操作，保留 Cmd 修饰
       "cmd-enter": "version_control::Commit"
     }
   },
+
   {
     "context": "Picker || (ProjectPicker > Picker > Editor) || (BranchPicker > Picker > Editor)",
     "bindings": {
+      // =========================
+      // Picker 导航
+      // =========================
+
       "up": "picker::PickerSelectPrev",
       "down": "picker::PickerSelectNext",
+
+      // =========================
+      // 确认 / 取消
+      // =========================
+
       "enter": "picker::PickerConfirm",
       "escape": "picker::PickerCancel",
-      "cmd-l": "project_picker::OpenLocalProject",
-      "cmd-backspace": "project_picker::DeleteRecentProject"
+
+      // =========================
+      // Project Picker 特有操作
+      // =========================
+
+      // 打开本地项目
+      "cmd-o": "project_picker::OpenLocalProject",
+
+      // 删除最近项目
+      "cmd-backspace": "project_picker::DeleteRecentProject",
+      "cmd-delete": "project_picker::DeleteRecentProject"
     }
   },
+
   {
     "context": "Pane",
     "bindings": {
-      "cmd-h": "pane::PrevTab",
-      "cmd-l": "pane::NextTab",
+      // 使用左右语义切换相邻 Tab。
+      "cmd-[": "pane::PrevTab",
+      "cmd-]": "pane::NextTab",
+
+      // 关闭当前 Tab
       "cmd-w": "pane::CloseTab",
+
+      // 当前 Pane 搜索
       "cmd-f": "pane::DeploySearch"
     }
   },
+
   {
     "context": "SearchBar",
     "bindings": {
+      // =========================
+      // 查找
+      // =========================
+
+      "enter": "search::FindNext",
+      "shift-enter": "search::FindPrevious",
+
+      // =========================
+      // 搜索选项
+      // =========================
+
       "alt-c": "search::ToggleCaseSensitive",
       "alt-w": "search::ToggleWholeWord",
       "alt-x": "search::ToggleRegex",
-      "enter": "search::FindNext",
-      "shift-enter": "search::FindPrevious",
+
+      // =========================
+      // 替换
+      // =========================
+
       "cmd-r": "search::ToggleReplace",
+
       "cmd-enter": "search::ReplaceNext",
       "cmd-shift-enter": "search::ReplaceAll",
+
+      // =========================
+      // 退出 / 焦点切换
+      // =========================
+
       "escape": "search::ClearSearch",
+
       "tab": "search::Tab",
       "shift-tab": "search::Backtab"
     }
   },
+
   {
     "context": "terminal",
     "bindings": {
+      // Shell 中断
       "ctrl-c": "terminal::Interrupt",
+
+      // 剪贴板
       "cmd-c": "editor::Copy",
       "cmd-v": "editor::Paste",
+
+      // 清屏
       "cmd-k": "terminal::Clear",
+
+      // 新终端
       "cmd-t": "terminal::NewTerminal"
     }
   },
+
   {
     "bindings": {
-      "cmd-+": "workspace::IncreaseUiFontSize",
-      "cmd-_": "workspace::DecreaseUiFontSize",
-      "cmd-)": "workspace::ResetUiFontSize",
+      // =========================
+      // 文件
+      // =========================
+
+      "cmd-s": "workspace::Save",
+
+      // =========================
+      // Picker
+      // =========================
+
+      // 高频项目选择
+      "cmd-p": "project_picker::ToggleProjectPicker",
+
+      // Git Branch
+      "cmd-shift-b": "branch_picker::SelectGitBranch",
+
+      // =========================
+      // 面板
+      // =========================
+
+      // E = Explorer / Project Tree
+      "cmd-shift-e": [
+        "dock::FocusOrHidePanel",
+        {
+          "panel": "project-tree"
+        }
+      ],
+
+      // G = Git / Version Control
+      "cmd-shift-g": [
+        "dock::FocusOrHidePanel",
+        {
+          "panel": "version-control"
+        }
+      ],
+
+      // O = Outline
+      "cmd-shift-o": [
+        "dock::FocusOrHidePanel",
+        {
+          "panel": "outline"
+        }
+      ],
+
+      // T = Terminal
+      "cmd-`": [
+        "dock::FocusOrHidePanel",
+        {
+          "panel": "terminal"
+        }
+      ],
+
+      // =========================
+      // 搜索
+      // =========================
+
+      // 当前文件：Cmd-F
+      // 整个项目：Cmd-Shift-F
+      "cmd-shift-f": "project_search::Deploy",
+
+      // =========================
+      // 设置
+      // =========================
+
+      "cmd-,": "workspace::OpenSettings",
+
+      // =========================
+      // 窗口
+      // =========================
+
       "cmd-q": "window_controls::QuitWindow",
       "cmd-m": "window_controls::MinimizeWindow",
       "ctrl-cmd-f": "window_controls::ToggleMaximizeWindow",
-      "cmd-shift-p": "project_picker::ToggleProjectPicker",
-      "cmd-shift-b": "branch_picker::SelectGitBranch",
-      "cmd-,": "workspace::OpenSettings",
-      "cmd-shift-e": ["dock::FocusOrHidePanel", { "panel": "project-tree" }],
-      "cmd-shift-g": ["dock::FocusOrHidePanel", { "panel": "version-control" }],
-      "cmd-shift-o": ["dock::FocusOrHidePanel", { "panel": "outline" }],
-      "cmd-shift-f": "project_search::Deploy",
-      "cmd-`": ["dock::FocusOrHidePanel", { "panel": "terminal" }],
-      "cmd-shift-h": "harness::ToggleHarnessMode",
-      "cmd-s": "workspace::Save"
+
+      // =========================
+      // 视图
+      // =========================
+
+      // UI 字号
+      "cmd-+": "workspace::IncreaseUiFontSize",
+      "cmd-_": "workspace::DecreaseUiFontSize",
+      "cmd-)": "workspace::ResetUiFontSize",
+
+      // =========================
+      // Harness
+      // =========================
+
+      "ctrl-shift-h": "harness::ToggleHarnessMode"
     }
   }
 ]

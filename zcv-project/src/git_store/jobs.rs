@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::Context;
-use zcv_git::GitCancellation;
+use zcv_git::{DiffHunk, GitCancellation, GitHunkOperation};
 
 use super::{GitOperationOutcome, GitStore, GitStoreEvent};
 
@@ -60,6 +60,11 @@ pub(super) enum GitJobKey {
         stage: bool,
         paths: Vec<PathBuf>,
     },
+    HunkOperation {
+        operation: GitHunkOperation,
+        path: PathBuf,
+        hunk: DiffHunk,
+    },
     /// 提交（消息参与 key：同消息双击去重，改消息重试不被去重跳过）。
     Commit {
         message: String,
@@ -90,6 +95,11 @@ pub(super) enum GitJob {
     StageFiles {
         stage: bool,
         paths: Vec<PathBuf>,
+    },
+    HunkOperation {
+        operation: GitHunkOperation,
+        path: PathBuf,
+        hunk: DiffHunk,
     },
     Commit {
         message: String,
@@ -131,6 +141,15 @@ impl GitJob {
                 stage: *stage,
                 paths: paths.clone(),
             },
+            GitJob::HunkOperation {
+                operation,
+                path,
+                hunk,
+            } => GitJobKey::HunkOperation {
+                operation: *operation,
+                path: path.clone(),
+                hunk: hunk.clone(),
+            },
             GitJob::Commit { message } => GitJobKey::Commit {
                 message: message.clone(),
             },
@@ -161,6 +180,18 @@ impl GitJob {
             GitJob::GitInit => "初始化仓库".into(),
             GitJob::StageFiles { stage: true, .. } => "暂存".into(),
             GitJob::StageFiles { stage: false, .. } => "取消暂存".into(),
+            GitJob::HunkOperation {
+                operation: GitHunkOperation::Stage,
+                ..
+            } => "暂存变更块".into(),
+            GitJob::HunkOperation {
+                operation: GitHunkOperation::Unstage,
+                ..
+            } => "取消暂存变更块".into(),
+            GitJob::HunkOperation {
+                operation: GitHunkOperation::Restore,
+                ..
+            } => "重做变更块".into(),
             GitJob::Commit { .. } => "提交".into(),
             GitJob::Uncommit => "撤销提交".into(),
             GitJob::CheckoutBranch { .. } => "切换分支".into(),

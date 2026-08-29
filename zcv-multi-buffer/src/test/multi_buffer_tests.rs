@@ -100,6 +100,104 @@ fn excerpts_preserve_order_and_map_output_to_source(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn composite_anchor_resolves_in_the_same_file_after_excerpt_refresh(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "zero\none\ntwo\nthree\nfour\n", cx);
+    let second = singleton("src/b.rs", "alpha\nbeta\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                MultiBufferExcerpt::line_range(first.clone(), 0..2, cx),
+                MultiBufferExcerpt::line_range(first.clone(), 3..5, cx),
+                MultiBufferExcerpt::line_range(second, 0..2, cx),
+            ],
+            cx,
+        );
+    });
+    let anchor = cx.read_entity(&combined, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        let excerpt = &snapshot.excerpts()[1];
+        buffer
+            .anchor_for_offset(ByteOffset::new(excerpt.output_range().start().get() + 2))
+            .expect("应捕获第二个 hunk 内的位置")
+    });
+
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(vec![MultiBufferExcerpt::line_range(first, 0..2, cx)], cx);
+        let offset = buffer
+            .resolve_anchor(&anchor)
+            .expect("同一文件仍有 excerpt 时应解析到最近位置");
+        assert_eq!(
+            offset,
+            buffer.snapshot(cx).excerpts()[0].output_range().end()
+        );
+    });
+}
+
+#[gpui::test]
+fn composite_anchor_falls_forward_when_its_file_leaves_the_diff(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "one\n", cx);
+    let second = singleton("src/b.rs", "two\n", cx);
+    let third = singleton("src/c.rs", "three\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                MultiBufferExcerpt::line_range(first.clone(), 0..1, cx),
+                MultiBufferExcerpt::line_range(second, 0..1, cx),
+                MultiBufferExcerpt::line_range(third.clone(), 0..1, cx),
+            ],
+            cx,
+        );
+    });
+    let anchor = cx.read_entity(&combined, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        let excerpt = &snapshot.excerpts()[0];
+        buffer
+            .anchor_for_offset(excerpt.output_range().start())
+            .expect("应捕获首文件位置")
+    });
+
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(vec![MultiBufferExcerpt::line_range(third, 0..1, cx)], cx);
+        let offset = buffer
+            .resolve_anchor(&anchor)
+            .expect("原文件消失后应解析到仍存在的后继文件");
+        assert_eq!(
+            offset,
+            buffer.snapshot(cx).excerpts()[0].output_range().start()
+        );
+    });
+}
+
+#[gpui::test]
+fn empty_files_keep_distinct_composite_lines_and_locations(cx: &mut TestAppContext) {
+    let first = singleton("deleted/a.rs", "", cx);
+    let second = singleton("deleted/b.rs", "", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                MultiBufferExcerpt::line_range(first, 0..1, cx),
+                MultiBufferExcerpt::line_range(second, 0..1, cx),
+            ],
+            cx,
+        );
+    });
+
+    cx.read_entity(&combined, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        assert_eq!(String::from_utf8(snapshot.text_bytes()).unwrap(), "\n\n");
+        assert_eq!(snapshot.excerpts()[0].output_start_line(), 0);
+        assert_eq!(snapshot.excerpts()[1].output_start_line(), 1);
+        assert_eq!(
+            buffer.location_for_offset(ByteOffset::new(1)).unwrap().path,
+            PathBuf::from("deleted/b.rs")
+        );
+    });
+}
+
+#[gpui::test]
 fn source_reparse_does_not_reload_composite_text(cx: &mut TestAppContext) {
     let source = singleton("src/main.rs", "fn main() {\n    println!(\"ok\");\n}\n", cx);
     let source_len = cx.read_entity(&source, |source, cx| source.snapshot(cx).text().len_bytes());
@@ -286,4 +384,108 @@ fn composite_splits_cross_excerpt_edits_across_source_buffers(cx: &mut TestAppCo
     };
     assert_eq!(read(&first_text, cx), "oX");
     assert_eq!(read(&second_text, cx), "o\n");
+}
+
+#[gpui::test]
+fn read_only_composite_rejects_edits(cx: &mut TestAppContext) {
+    let source = singleton("index.txt", "index 内容\n", cx);
+    let combined = cx.new(MultiBuffer::empty_read_only);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(vec![MultiBufferExcerpt::line_range(source, 0..1, cx)], cx);
+        assert!(buffer.is_read_only());
+        let error = buffer
+            .edit(
+                vec![Edit::insert(ByteOffset::ZERO, "不能写入").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect_err("只读组合文档必须拒绝编辑");
+        assert_eq!(
+            error,
+            zcv_text::TextError::Storage(zcv_text::StorageError::ReadOnly)
+        );
+    });
+}
+
+#[gpui::test]
+fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &mut TestAppContext) {
+    let old = singleton("src/a.rs", "旧内容\n", cx);
+    let current = singleton("src/a.rs", "上下文\n新内容\n之后\n", cx);
+    let current_buffer = cx.read_entity(&current, |source, cx| source.as_singleton(cx).unwrap());
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                MultiBufferExcerpt::line_range(current.clone(), 0..1, cx),
+                MultiBufferExcerpt::line_range(old.clone(), 0..1, cx)
+                    .with_editable(false)
+                    .with_starts_new_excerpt(false)
+                    .with_diff_kind(ExcerptDiffKind::Deleted),
+                MultiBufferExcerpt::line_range(current.clone(), 1..2, cx)
+                    .with_starts_new_excerpt(false)
+                    .with_diff_kind(ExcerptDiffKind::Added),
+                MultiBufferExcerpt::line_range(current, 2..3, cx).with_starts_new_excerpt(false),
+            ],
+            cx,
+        );
+    });
+
+    cx.read_entity(&combined, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        assert_eq!(
+            String::from_utf8(snapshot.text_bytes()).unwrap(),
+            "上下文\n旧内容\n新内容\n之后\n"
+        );
+        assert_eq!(snapshot.excerpts().len(), 4);
+        assert!(snapshot.excerpts()[0].starts_new_excerpt());
+        assert!(!snapshot.excerpts()[1].starts_new_excerpt());
+        assert_eq!(snapshot.excerpts()[1].source_line_for_output_line(1), None);
+        assert_eq!(buffer.file_buffers(cx).len(), 1, "旧修订来源不能参与保存");
+
+        let old_offset = "上下文\n".len() + 1;
+        let old_anchor = buffer
+            .anchor_for_offset(ByteOffset::new(old_offset))
+            .expect("旧侧必须能建立普通 MultiBuffer 锚点");
+        assert_eq!(
+            buffer.resolve_anchor(&old_anchor),
+            Some(ByteOffset::new(old_offset))
+        );
+    });
+
+    cx.update_entity(&combined, |buffer, cx| {
+        let old_error = buffer
+            .edit(
+                vec![Edit::insert(ByteOffset::new("上下文\n".len() + 1), "不能写").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect_err("旧侧只允许选择和导航");
+        assert_eq!(
+            old_error,
+            zcv_text::TextError::Storage(zcv_text::StorageError::ReadOnly)
+        );
+
+        buffer
+            .edit(
+                vec![Edit::insert(ByteOffset::new("上下文\n旧内容\n".len()), "可写").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("新侧行首必须归属于可编辑片段");
+    });
+
+    let current_text = cx.read_entity(&current_buffer, |buffer, _| {
+        buffer
+            .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
+            .unwrap()
+            .as_str()
+            .to_owned()
+    });
+    assert_eq!(current_text, "上下文\n可写新内容\n之后\n");
+    cx.read_entity(&combined, |buffer, cx| {
+        assert_eq!(
+            String::from_utf8(buffer.snapshot(cx).text_bytes()).unwrap(),
+            "上下文\n旧内容\n可写新内容\n之后\n"
+        );
+    });
 }

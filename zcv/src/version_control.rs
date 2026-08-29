@@ -24,11 +24,16 @@ use zcv_git::{DiffStat, FileStatus, StatusCode};
 use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, space, typography};
 use zcv_ui::tree::{self, TreeRow, TreeState};
-use zcv_ui::{Button, ButtonStyle, Checkbox, Scrollbar, SvgIcon};
+use zcv_ui::{Button, ButtonSize, ButtonStyle, Checkbox, Scrollbar, SvgIcon};
 use zcv_workspace::{Panel, PanelEvent};
 
-use zcv_project_tree::OnOpenFile;
 use zcv_project_tree::git_status_color;
+
+use crate::project_diff::ProjectDiffKind;
+
+/// 打开 Git 项目差异并定位文件的回调（弱 Workspace 引用由装配层捕获）。
+pub(crate) type OnOpenGitDiff =
+    Rc<dyn Fn(ProjectDiffKind, PathBuf, bool, &mut Window, &mut gpui::App)>;
 
 // 版本控制快捷键归属于 `VersionControl` 上下文，由统一快捷键注册表加载；组件内不重复注册。
 
@@ -271,7 +276,7 @@ pub(crate) struct VersionControlPanel {
     pending_commit: bool,
     /// 自己发起的 uncommit 在途：Head 事件时把被撤销消息填回编辑器并复位。
     pending_uncommit: bool,
-    on_open_file: Option<OnOpenFile>,
+    on_open_file: Option<OnOpenGitDiff>,
 }
 
 impl VersionControlPanel {
@@ -339,7 +344,7 @@ impl VersionControlPanel {
         panel
     }
 
-    pub(crate) fn set_on_open_file(&mut self, callback: OnOpenFile) {
+    pub(crate) fn set_on_open_file(&mut self, callback: OnOpenGitDiff) {
         self.on_open_file = Some(callback);
     }
 
@@ -436,7 +441,11 @@ impl VersionControlPanel {
             }
             self.rebuild_rows(cx);
         } else if let Some(callback) = self.on_open_file.clone() {
-            callback(entry.path, focus_opened_item, window, cx);
+            let kind = match entry.section {
+                GitSection::Staged => ProjectDiffKind::Staged,
+                GitSection::Unstaged => ProjectDiffKind::Unstaged,
+            };
+            callback(kind, entry.path, focus_opened_item, window, cx);
         }
         window.refresh();
     }
@@ -969,6 +978,7 @@ fn render_commit_footer(
                         .justify_end()
                         .child(
                             Button::text("version-control-commit", "提交")
+                                .size(ButtonSize::Loose)
                                 .style(ButtonStyle::Solid)
                                 .disabled(!has_staged_changes)
                                 .label("提交当前暂存")
@@ -1479,7 +1489,7 @@ mod tests {
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
         let (panel, cx) = cx.add_window_view(move |_, cx| {
             let mut panel = VersionControlPanel::new(project, cx);
-            panel.set_on_open_file(Rc::new(move |_, focus_opened_item, _, _| {
+            panel.set_on_open_file(Rc::new(move |_, _, focus_opened_item, _, _| {
                 callback_count.set(callback_count.get() + 1);
                 callback_focus.set(focus_opened_item);
             }));
@@ -1541,7 +1551,7 @@ mod tests {
                 KeyBinding::new("enter", Activate, Some("VersionControl")),
             ]);
             let mut panel = VersionControlPanel::new(project, cx);
-            panel.set_on_open_file(Rc::new(move |_, focus_opened_item, _, _| {
+            panel.set_on_open_file(Rc::new(move |_, _, focus_opened_item, _, _| {
                 callback_count.set(callback_count.get() + 1);
                 callback_focus.set(focus_opened_item);
             }));
@@ -1559,6 +1569,33 @@ mod tests {
             last_focus_opened.get(),
             "enter 打开应为激活（focus_opened_item=true）"
         );
+    }
+
+    #[gpui::test]
+    fn staged_section_opens_the_staged_project_diff(cx: &mut TestAppContext) {
+        let (root, _temp) = test_repo();
+        run_in(&root, &["git", "add", "tracked.txt"]);
+        let opened_kind = Rc::new(Cell::new(None));
+        let callback_kind = Rc::clone(&opened_kind);
+        let project_root = root.clone();
+        let project = cx.new(|cx| Project::new(project_root, cx));
+        let (panel, cx) = cx.add_window_view(move |_, cx| {
+            let mut panel = VersionControlPanel::new(project, cx);
+            panel.set_on_open_file(Rc::new(move |kind, _, _, _, _| {
+                callback_kind.set(Some(kind));
+            }));
+            panel
+        });
+        cx.run_until_parked();
+
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.state.borrow_mut().select_down();
+                panel.activate_selected(true, window, cx);
+            });
+        });
+
+        assert_eq!(opened_kind.get(), Some(ProjectDiffKind::Staged));
     }
 
     /// 面板行模型中各条目的 (分组, 显示名) 序列。
@@ -1991,7 +2028,7 @@ mod tests {
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
         let (panel, cx) = cx.add_window_view(move |_, cx| {
             let mut panel = VersionControlPanel::new(project, cx);
-            panel.set_on_open_file(Rc::new(move |_, _, _, _| {
+            panel.set_on_open_file(Rc::new(move |_, _, _, _, _| {
                 callback_count.set(callback_count.get() + 1);
             }));
             panel
@@ -2083,8 +2120,7 @@ mod tests {
         let project_root = root.clone();
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
         let (panel, cx) = cx.add_window_view(move |_, cx| {
-            let keybindings = zcv_keymap::load(cx).expect("应加载内置快捷键");
-            cx.bind_keys(keybindings.bindings);
+            zcv_keymap::init(cx).expect("应注册内置快捷键");
             VersionControlPanel::new(project, cx)
         });
         cx.run_until_parked();

@@ -127,6 +127,41 @@ BufferStore 由项目级 `Project` Entity 持有，不注册为 App Global；`Wo
 `ProjectSearchView` 只持有结果 Editor 和组合文档。
 结果 Editor 使用组合坐标中的真实命中范围高亮，激活结果时再由 MultiBuffer 映射回源文件字节范围。项目结果只读，因此替换 Button 保持可见以维持相同布局，但通过能力查询进入禁用态且不展开替换行。
 
+Git 项目差异是 ordered excerpts 的第二个消费者。`GitStore` 的 `RepositorySnapshot` 决定
+变更文件集合，差异请求以比较基准和路径共同标识：普通文件编辑器使用工作区相对 HEAD；
+版本管理面板的未暂存分组使用工作区相对 index；已暂存分组使用 index 相对 HEAD。
+部分暂存文件因此可以同时出现在两个独立 Item 中，但各自只显示所属分组的 hunk。
+
+`ProjectDiffView` 按路径排序，再把每个 hunk 向两侧扩展两行上下文、合并重叠范围后组成
+Editor。未暂存视图复用 BufferStore 中的工作区 singleton 文档，保持可编辑与可保存；
+已暂存视图显示 GitStore 读取的 index 文本，并通过只读 `MultiBuffer` 阻止修改。完整源 Buffer
+只承担内容所有权，不直接成为可见投影。HEAD/index 修订文本和各比较基准的 hunk 仍由
+GitStore 持有，项目差异视图只在当前 `MultiBufferSnapshot` 上计算组合坐标。只读视图保留文本
+选择与复制，但不绘制插入 caret，避免向用户暗示内容可编辑。
+
+项目差异刷新 excerpts 前，Editor 把视口顶部转换为底层文件路径和源字节位置；刷新后由
+MultiBuffer 在新 excerpts 中重新解析该锚点，并保留原有像素偏移和文件标题、excerpt
+分隔等虚拟显示行偏差。当前 hunk 消失但同一文件
+仍有差异时落到最近的源片段；整个文件退出差异时优先落到原顺序中的后继文件，再回退到前驱。
+这对应 Zed 依靠 `PathKey` 和底层 buffer anchor 保持多文件 diff 阅读位置的语义，而不是保存
+刷新后会失效的组合显示行号。Git 状态、hunk 和修订文本分批到达时，旧投影保留到本轮所需
+数据全部就绪，再原子重建一次；单路径 hunk 操作也只作废对应路径的 index 修订文本。
+
+hunk 操作栏沿用 Zed 的职责边界：Editor 只根据显示投影把控件固定在每个 hunk 的右上角，
+并以整个 hunk 作为悬停区域控制显隐；
+具体控件和 Git 行为由 `ProjectDiffView` 提供。未暂存 hunk 提供“暂存”和“重做”，分别把
+该 patch 写入 index、或用 index 内容还原工作区；已暂存 hunk 提供“取消暂存”，只从 index
+移除该 patch。GitStore 把操作排入既有后台任务队列。暂存和取消暂存对齐 Zed：从原始 hunk
+header 取得旧侧与新侧的真实行边界，把工作区或 HEAD 文本替换进对应 index 范围，再写回
+index blob；不把包含前序未选 hunk 累计行偏移的孤立 patch 直接交给 `git apply --cached`。
+只有工作区“重做”使用反向单 hunk patch。操作成功后统一重扫状态。未跟踪文件按整文件暂存，其“重做”在悬停操作栏中保持禁用，避免隐式删除用户文件。
+纯新增 hunk 天然处于展开态，内容区始终使用新增色整行背景。
+
+多文件 Editor 的当前文件标题由 `BlockMap` 根据滚动位置和 excerpt 边界逐帧派生，不由项目搜索、
+Git 项目差异或 Editor 维护另一份“当前文件”状态。普通标题与悬浮标题复用同一个渲染入口；
+当前标题固定在视口顶部，下一个文件标题接近时把它向上顶出。自动滚动把悬浮标题高度视为
+正文顶部不可见区，确保导航和编辑后的光标不会落在标题下方。
+
 Buffer 不得持有 `selection` 字段，也不得通过 `selection()` / `set_selection()` 暴露全局当前选区。接受选区的编辑入口必须把 SelectionSet 作为参数，并把编辑后的 SelectionSet 作为结果返回。
 
 ### 3.2 Selection 原语与状态所有权

@@ -18,7 +18,7 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
         editor.set_selections(SelectionSet::caret(ByteOffset::new(1)));
         editor
             .scroll_manager
-            .update_viewport(1, px(100.0), px(40.0), px(200.0), px(20.0));
+            .update_viewport(1, px(100.0), px(40.0), px(200.0), px(20.0), px(0.0));
         editor.scroll_manager.scroll_by(point(px(-4.0), px(0.0)));
         editor
             .selection_history

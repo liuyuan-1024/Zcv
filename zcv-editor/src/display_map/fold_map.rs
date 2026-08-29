@@ -329,6 +329,9 @@ impl FoldSnapshot {
     }
 
     pub(crate) fn projected_line_kind(&self, index: ProjectedLineIndex) -> Option<TextLine> {
+        if index.get() >= self.line_count() {
+            return None;
+        }
         let (start, _, transform) =
             self.transforms
                 .find::<OutputToInput, _>((), &OutputRows(index.get()), TreeBias::Right);
@@ -578,9 +581,7 @@ impl FoldSnapshot {
     ) -> Option<StreamProjectedKind> {
         let text = self.projected_line_kind(projected)?;
         Some(StreamProjectedKind::Text(
-            self.input
-                .source(text.logical_line())
-                .expect("可见投影行必须落在流内"),
+            self.input.source(text.logical_line())?,
         ))
     }
 }
@@ -968,6 +969,19 @@ mod tests {
 
     fn text_range(start: usize, end: usize) -> TextRange {
         TextRange::new(ByteOffset::new(start), ByteOffset::new(end)).unwrap()
+    }
+
+    #[test]
+    fn projected_kind_rejects_the_end_boundary() {
+        let buffer = Buffer::scratch("first\nsecond".to_string(), BufferConfig::default())
+            .expect("测试 Buffer 应能创建");
+        let (_, snapshot) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+
+        assert!(
+            snapshot
+                .projected_kind(ProjectedLineIndex::new(snapshot.line_count()))
+                .is_none()
+        );
     }
 
     #[test]

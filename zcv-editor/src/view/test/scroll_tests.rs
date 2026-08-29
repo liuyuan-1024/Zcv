@@ -1,6 +1,7 @@
 use gpui::{
     Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent, TestAppContext, point, px,
 };
+use zcv_multi_buffer::MultiBufferExcerpt;
 use zcv_text::ByteOffset;
 
 use super::common::{scrollbar_geometry, scrolling_text, test_buffer};
@@ -8,6 +9,125 @@ use super::*;
 use crate::SelectionSet;
 use crate::scroll::ScrollbarThumbState;
 use crate::scrollbar::marker_geometry;
+
+#[gpui::test]
+fn composite_refresh_restores_scroll_from_source_anchor(cx: &mut TestAppContext) {
+    let first = test_buffer(
+        cx,
+        (0..40)
+            .map(|row| format!("first {row}\n"))
+            .collect::<String>(),
+    );
+    let second = test_buffer(
+        cx,
+        (0..80)
+            .map(|row| format!("second {row}\n"))
+            .collect::<String>(),
+    );
+    cx.update_entity(&first, |buffer, cx| {
+        buffer.set_file_path("first.rs".into(), cx)
+    });
+    cx.update_entity(&second, |buffer, cx| {
+        buffer.set_file_path("second.rs".into(), cx)
+    });
+    let first = cx.new(|cx| MultiBuffer::singleton(first, cx));
+    let second = cx.new(|cx| MultiBuffer::singleton(second, cx));
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                MultiBufferExcerpt::line_range(first, 0..40, cx),
+                MultiBufferExcerpt::line_range(second.clone(), 0..80, cx),
+            ],
+            cx,
+        );
+    });
+    let (editor, cx) = cx.add_window_view({
+        let combined = combined.clone();
+        move |_, cx| Editor::for_multi_buffer(combined, cx)
+    });
+    cx.run_until_parked();
+    cx.refresh().expect("测试窗口应可刷新");
+    let line_height = cx.update(|window, _| window.line_height());
+    let (scroll_anchor, old_output_offset) = cx.update_entity(&editor, |editor, cx| {
+        assert!(editor.scroll_to(line_height * 70., cx));
+        (
+            editor
+                .capture_scroll_anchor(cx)
+                .expect("组合视口应能锚定到底层文件"),
+            editor
+                .display_map
+                .display_point_to_offset(editor.scroll_anchor())
+                .expect("旧视口顶部应能映射到组合偏移"),
+        )
+    });
+    let old_location = cx.read_entity(&combined, |buffer, _| {
+        buffer
+            .location_for_offset(old_output_offset)
+            .expect("旧视口顶部应映射到底层文件")
+    });
+
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(vec![MultiBufferExcerpt::line_range(second, 20..70, cx)], cx);
+    });
+    cx.update_entity(&editor, |editor, cx| {
+        assert!(editor.restore_scroll_anchor(scroll_anchor, cx));
+        assert_ne!(editor.scroll_anchor().row().get(), 0);
+    });
+    let new_output_offset = cx.read_entity(&editor, |editor, _| {
+        editor
+            .display_map
+            .display_point_to_offset(editor.scroll_anchor())
+            .expect("新视口顶部应能映射到组合偏移")
+    });
+    let new_location = cx.read_entity(&combined, |buffer, _| {
+        buffer
+            .location_for_offset(new_output_offset)
+            .expect("新视口顶部应映射到底层文件")
+    });
+    assert_eq!(new_location, old_location);
+}
+
+#[gpui::test]
+fn composite_refresh_keeps_the_viewport_on_a_virtual_file_header(cx: &mut TestAppContext) {
+    let source = test_buffer(
+        cx,
+        (0..80)
+            .map(|row| format!("line {row}\n"))
+            .collect::<String>(),
+    );
+    cx.update_entity(&source, |buffer, cx| {
+        buffer.set_file_path("header.rs".into(), cx)
+    });
+    let source = cx.new(|cx| MultiBuffer::singleton(source, cx));
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![MultiBufferExcerpt::line_range(source.clone(), 0..60, cx)],
+            cx,
+        );
+    });
+    let (editor, cx) = cx.add_window_view({
+        let combined = combined.clone();
+        move |_, cx| Editor::for_multi_buffer(combined, cx)
+    });
+    cx.run_until_parked();
+    cx.refresh().expect("测试窗口应可刷新");
+
+    let anchor = cx.update_entity(&editor, |editor, cx| {
+        assert_eq!(editor.scroll_anchor().row(), DisplayRow::ZERO);
+        editor
+            .capture_scroll_anchor(cx)
+            .expect("文件标题应能锚定到底层文件")
+    });
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(vec![MultiBufferExcerpt::line_range(source, 10..70, cx)], cx);
+    });
+    cx.update_entity(&editor, |editor, cx| {
+        assert!(editor.restore_scroll_anchor(anchor, cx));
+        assert_eq!(editor.scroll_anchor().row(), DisplayRow::ZERO);
+    });
+}
 
 #[gpui::test]
 fn moving_caret_beyond_viewport_scrolls_it_back_into_view(cx: &mut TestAppContext) {

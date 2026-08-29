@@ -236,7 +236,7 @@ fn ime_candidate_bounds_survive_composition_and_scroll_layout_invalidation(
                 Some(caret_bounds)
             );
 
-            editor.prepare_scroll_viewport(size(px(100.), px(100.)), px(200.), px(20.));
+            editor.prepare_scroll_viewport(size(px(100.), px(100.)), px(200.), px(20.), px(0.));
             assert!(editor.scroll_by(point(px(0.), px(-60.)), cx));
             assert_eq!(
                 editor.bounds_for_range(2..2, element_bounds, window, cx),

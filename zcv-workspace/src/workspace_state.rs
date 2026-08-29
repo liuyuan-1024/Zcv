@@ -58,14 +58,14 @@ pub struct Workspace {
     pub bottom_dock: Entity<Dock>,
     /// 统一取消来自项目树、变更树等入口的待处理单击打开。
     file_click_generation: u64,
-    /// 顶栏视图（对齐 Zed titlebar_item），由宿主注入。
+    /// 顶栏视图，由宿主注入。
     titlebar: Option<AnyView>,
     /// 打开设置文件的路径提供者（设置文件属于宿主配置，需注入）。
     open_settings_path_provider: Option<OpenSettingsPathProvider>,
     /// 宿主装配的订阅（git/settings/面板等）。
     _subscriptions: Vec<Subscription>,
     /// 经 register_action 注册的 action handler（render 时挂到根节点，焦点链全局可达）。
-    /// 对齐 Zed `workspace_actions`：组件创建时注册自己的命令 handler。
+    /// 组件创建时注册自己的命令 handler。
     workspace_actions: Vec<WorkspaceAction>,
     layout_path: PathBuf,
     _layout_save_task: Option<Task<()>>,
@@ -90,10 +90,6 @@ impl Workspace {
 
     fn build(project: Entity<Project>, window: &Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
-
-        let keybindings = zcv_keymap::load(cx).expect("内置 keymap 应完整有效");
-        cx.bind_keys(keybindings.bindings.clone());
-        cx.set_global(keybindings);
 
         let pane = cx.new(Pane::new);
         let layout_path = layout_state::path_for_workspace(project.read(cx).root());

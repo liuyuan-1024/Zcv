@@ -6,8 +6,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    Action, App, ClickEvent, Component, CursorStyle, ElementId, IntoElement, MouseButton,
-    RenderOnce, Window, div, prelude::*,
+    Action, App, ClickEvent, Component, CursorStyle, ElementId, IntoElement, MouseButton, Pixels,
+    RenderOnce, Window, div, prelude::*, rems,
 };
 use zcv_theme::{color, space, typography};
 
@@ -34,6 +34,39 @@ pub enum ButtonStyle {
     Solid,
 }
 
+/// 按钮尺寸：内边距与圆角随尺寸档位缩放，高度 = UI 字号 + 上下内边距。
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum ButtonSize {
+    /// 紧凑：小内边距、小圆角，用于工具栏/状态栏等高频轻量操作（默认）。
+    #[default]
+    Compact,
+    /// 宽松：大内边距、大圆角，用于主操作按钮。
+    Loose,
+}
+
+impl ButtonSize {
+    /// 内边距：紧凑 S2，宽松 S6。
+    fn padding(self) -> Pixels {
+        match self {
+            ButtonSize::Compact => space::S2,
+            ButtonSize::Loose => space::S6,
+        }
+    }
+
+    /// 整体高度 = UI 字号 + 上下内边距。
+    fn height(self) -> Pixels {
+        typography::ui() + self.padding() * 2.0
+    }
+
+    /// 按档位施加内边距与圆角（紧凑小圆角，宽松大圆角）。
+    fn shell<D: Styled>(self, element: D) -> D {
+        match self {
+            ButtonSize::Compact => element.rounded_sm().p(self.padding()),
+            ButtonSize::Loose => element.rounded_md().p(self.padding()),
+        }
+    }
+}
+
 #[derive(Clone)]
 enum ButtonContent {
     Icon(&'static str),
@@ -46,6 +79,7 @@ pub struct Button {
     id: ElementId,
     content: ButtonContent,
     style: ButtonStyle,
+    size: ButtonSize,
     color: Option<gpui::Rgba>,
     tooltip: TooltipSpec,
     on_click: Option<ClickHandler>,
@@ -80,6 +114,7 @@ impl Button {
             id: id.into(),
             content,
             style: ButtonStyle::Ghost,
+            size: ButtonSize::Compact,
             color: None,
             tooltip: TooltipSpec::default(),
             on_click: None,
@@ -90,6 +125,12 @@ impl Button {
     /// 设置视觉样式。
     pub fn style(mut self, style: ButtonStyle) -> Self {
         self.style = style;
+        self
+    }
+
+    /// 设置尺寸（默认紧凑）。
+    pub fn size(mut self, size: ButtonSize) -> Self {
+        self.size = size;
         self
     }
 
@@ -139,59 +180,64 @@ impl RenderOnce for Button {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = *color::current(cx);
         let disabled = self.disabled;
-        let on_click = self.on_click;
-        let tooltip = self.tooltip;
-        let style = self.style;
+        let has_click = self.on_click.is_some();
         let color = if disabled {
             colors.text_disabled
         } else {
             self.color.unwrap_or(colors.text)
         };
+        let icon_only = matches!(&self.content, ButtonContent::Icon(_));
 
-        // 容器：按样式选择视觉外壳，公共交互注入。
-        let mut element = match style {
-            ButtonStyle::Ghost => div().id(self.id).rounded_sm().p(space::S2),
-            ButtonStyle::Solid => div()
+        // 基础容器：尺寸档位决定高度、内边距与圆角。
+        let height = self.size.height();
+        let mut element = self.size.shell(
+            div()
                 .id(self.id)
-                .px(space::S6)
-                .py(space::S6)
-                .rounded_md()
+                .h(height)
+                .when(icon_only, |element| element.w(height))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .font(typography::ui_font())
+                .text_size(typography::ui())
+                .line_height(rems(1.0))
+                .occlude(),
+        );
+        if self.style == ButtonStyle::Solid {
+            element = element
                 .border_1()
                 .border_color(colors.border_variant)
-                .bg(colors.panel_background),
-        };
-        let clickable = on_click.is_some() && !disabled;
-        match cursor_for_state(disabled, on_click.is_some()) {
-            Some(CursorStyle::OperationNotAllowed) => element = element.cursor_not_allowed(),
-            Some(CursorStyle::PointingHand) => element = element.cursor_pointer(),
-            _ => {}
+                .bg(colors.panel_background);
         }
-        if clickable {
-            element = element.on_mouse_down(MouseButton::Left, |_event, _window, cx| {
-                cx.stop_propagation()
-            });
-        }
-        element = element.occlude();
-        if let Some(build) = tooltip.build() {
-            element = element.tooltip(build);
+
+        // 交互：禁用优先；有点击回调时拦截冒泡，避免触发外层点击。
+        if let Some(cursor) = cursor_for_state(disabled, has_click) {
+            element = element.cursor(cursor);
         }
         if !disabled {
-            let hover_background = match style {
+            let hover_background = match self.style {
                 ButtonStyle::Ghost => colors.ghost_element_hover,
                 ButtonStyle::Solid => colors.element_hover,
             };
             element = element.hover(move |style| style.bg(hover_background));
         }
-        if !disabled && let Some(ref handler) = on_click {
-            let h = Rc::clone(handler);
-            element = element.on_click(move |event, window, cx| {
-                h(event, window, cx);
-                cx.stop_propagation();
-            });
+        if !disabled && let Some(handler) = self.on_click {
+            element = element
+                .on_mouse_down(MouseButton::Left, |_event, _window, cx| {
+                    cx.stop_propagation()
+                })
+                .on_click(move |event, window, cx| {
+                    handler(event, window, cx);
+                    cx.stop_propagation();
+                });
+        }
+        if let Some(build) = self.tooltip.build() {
+            element = element.tooltip(build);
         }
 
         // 内容形态；图标统一经 SvgIcon 渲染。
-        let content = match self.content {
+        element.child(match self.content {
             ButtonContent::Icon(path) => SvgIcon::new(path)
                 .size(typography::ui())
                 .color(color)
@@ -205,13 +251,14 @@ impl RenderOnce for Button {
                 .child(SvgIcon::new(path).size(typography::ui()).color(color))
                 .child(div().text_color(color).child(text))
                 .into_any_element(),
-        };
-        element.child(content)
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use gpui::{Context, Render, TestAppContext};
+
     use super::*;
 
     #[test]
@@ -233,5 +280,84 @@ mod tests {
             Some(CursorStyle::PointingHand)
         );
         assert_eq!(cursor_for_state(false, false), None);
+    }
+
+    struct ButtonHeightHost;
+
+    impl Render for ButtonHeightHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .debug_selector(|| "icon-button".into())
+                        .child(Button::icon("icon", "icons/close.svg")),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "text-button".into())
+                        .child(Button::text("text", "关闭").style(ButtonStyle::Solid)),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "icon-text-button".into())
+                        .child(Button::icon_text("icon-text", "icons/close.svg", "关闭")),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn content_and_visual_style_share_the_default_height(cx: &mut TestAppContext) {
+        let (_, cx) = cx.add_window_view(|_, _| ButtonHeightHost);
+        let icon = cx.debug_bounds("icon-button").expect("图标按钮应参与布局");
+        let text = cx.debug_bounds("text-button").expect("文字按钮应参与布局");
+        let icon_text = cx
+            .debug_bounds("icon-text-button")
+            .expect("图文按钮应参与布局");
+
+        assert_eq!(icon.size.height, text.size.height);
+        assert_eq!(text.size.height, icon_text.size.height);
+        assert_eq!(icon.size.height, ButtonSize::Compact.height());
+    }
+
+    struct LooseButtonHost;
+
+    impl Render for LooseButtonHost {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .flex()
+                .flex_col()
+                .child(div().debug_selector(|| "loose-icon".into()).child(
+                    Button::icon("loose-icon-btn", "icons/close.svg").size(ButtonSize::Loose),
+                ))
+                .child(
+                    div().debug_selector(|| "loose-text".into()).child(
+                        Button::text("loose-text-btn", "确定")
+                            .size(ButtonSize::Loose)
+                            .style(ButtonStyle::Solid),
+                    ),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn loose_size_scales_height_and_padding(cx: &mut TestAppContext) {
+        let (_, cx) = cx.add_window_view(|_, _| LooseButtonHost);
+        let icon = cx
+            .debug_bounds("loose-icon")
+            .expect("宽松图标按钮应参与布局");
+        let text = cx
+            .debug_bounds("loose-text")
+            .expect("宽松文字按钮应参与布局");
+
+        // 宽松高度 = 字号 + S6×2，与紧凑档位差 2×(S6−S2)。
+        let expected = ButtonSize::Loose.height();
+        assert_eq!(icon.size.height, expected);
+        assert_eq!(text.size.height, expected);
+        assert_eq!(
+            icon.size.height,
+            ButtonSize::Compact.height() + space::S6 * 2.0 - space::S2 * 2.0
+        );
     }
 }

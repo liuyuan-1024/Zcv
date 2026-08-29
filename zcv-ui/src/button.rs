@@ -84,6 +84,8 @@ pub struct Button {
     tooltip: TooltipSpec,
     on_click: Option<ClickHandler>,
     disabled: bool,
+    /// hitbox 是否遮蔽下层元素（浮层内按钮关闭遮蔽，避免打断外层 hover 追踪）。
+    occlude: bool,
 }
 
 impl Button {
@@ -119,7 +121,14 @@ impl Button {
             tooltip: TooltipSpec::default(),
             on_click: None,
             disabled: false,
+            occlude: true,
         }
+    }
+
+    /// 关闭 hitbox 遮蔽：按钮位于浮层内时避免遮蔽外层元素的 hover 命中。
+    pub fn no_occlude(mut self) -> Self {
+        self.occlude = false;
+        self
     }
 
     /// 设置视觉样式。
@@ -202,7 +211,7 @@ impl RenderOnce for Button {
                 .font(typography::ui_font())
                 .text_size(typography::ui())
                 .line_height(rems(1.0))
-                .occlude(),
+                .when(self.occlude, |element| element.occlude()),
         );
         if self.style == ButtonStyle::Solid {
             element = element

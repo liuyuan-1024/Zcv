@@ -204,6 +204,7 @@ impl Render for ToastLayer {
             ("icons/copy.svg", color::current(cx).text_muted, "复制")
         };
         let copy_button = Button::icon("toast-copy", copy_icon)
+            .no_occlude()
             .color(copy_color)
             .label(copy_label)
             .on_click(move |_, _window, cx| {
@@ -213,6 +214,7 @@ impl Render for ToastLayer {
 
         let layer = cx.entity().clone();
         let close_button = Button::icon("toast-close", "icons/close.svg")
+            .no_occlude()
             .color(color::current(cx).text_muted)
             .label("关闭")
             .on_click(move |_, _window, cx| {
@@ -310,6 +312,7 @@ impl Render for ToastLayer {
                 div().flex_shrink_0().flex().justify_end().child(
                     Button::text("toast-action", label)
                         .style(ButtonStyle::Solid)
+                        .no_occlude()
                         .on_click(move |_, window, cx| {
                             on_click(window, cx);
                             layer.update(cx, |layer, cx| layer.hide(cx));

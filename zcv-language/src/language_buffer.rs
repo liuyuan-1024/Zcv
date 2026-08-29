@@ -23,7 +23,7 @@ impl EventEmitter<LanguageBufferEvent> for LanguageBuffer {}
 
 /// 后台解析 + 折叠计算的完成信号：结果放 Mutex，Condvar 唤醒可能正在等待的主线程。
 ///
-/// 对齐 Zed 的 ~1ms 同步解析预算：主线程在编辑轮内短等待极快的增量解析，完成后直接安装新鲜语法，显示不必停留在插值树。
+/// ~1ms 同步解析预算：主线程在编辑轮内短等待极快的增量解析，完成后直接安装新鲜语法，显示不必停留在插值树。
 type ParseCompletion = (Mutex<Option<ParseOutcome>>, Condvar);
 
 type ParseOutcome = (SyntaxSnapshot, Vec<FoldRange>);
@@ -44,7 +44,7 @@ impl ParseTask {
     }
 }
 
-/// 短等待后台解析完成：结果已就绪立即返回，否则阻塞至超时（对齐 Zed 的 ~1ms 同步解析预算）。
+/// 短等待后台解析完成：结果已就绪立即返回，否则阻塞至超时（~1ms 同步解析预算）。
 fn wait_parse_completion(completion: &ParseCompletion, timeout: Duration) -> Option<ParseOutcome> {
     let (lock, cvar) = completion;
     let mut guard = lock.lock().expect("解析完成信号锁不应中毒");

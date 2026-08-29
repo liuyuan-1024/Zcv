@@ -1,6 +1,6 @@
 //! Toast —— 一次性全局提示（成功/错误/信息）。
 //!
-//! 对齐 Zed 通知的三段式形态：头部行（左侧语义图标，右侧复制/关闭）、内容主体（固定最大宽度内自动换行）、底部操作按钮。
+//! 三段式形态：头部行（左侧语义图标，右侧复制/关闭）、内容主体（固定最大宽度内自动换行）、底部操作按钮。
 //! 由 Workspace 持有并叠加在根视图上，默认一段时间后自动消失。
 //! 容器自身不注册鼠标事件（不创建 hitbox），不会拦截下方视图的交互。
 
@@ -243,7 +243,7 @@ impl Render for ToastLayer {
                     this.restart_dismiss_timer(cx);
                 }
             }))
-            // ModalSurface 阴影（对齐 Zed elevation_3），让 toast 悬浮于内容之上。
+            // ModalSurface 阴影，让 toast 悬浮于内容之上。
             .shadow(vec![
                 BoxShadow {
                     color: hsla(0., 0., 0., 0.12),

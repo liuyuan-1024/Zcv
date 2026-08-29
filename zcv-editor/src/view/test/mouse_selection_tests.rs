@@ -386,7 +386,7 @@ fn mouse_dragging_below_viewport_autoscrolls_selection(cx: &mut TestAppContext) 
     cx.refresh().expect("测试窗口应可刷新");
 
     // 单击第一行，再按住左键拖到视口下方远处：
-    // 视口自动滚动、选区持续扩展（对齐 Zed mouse_dragged 的 autoscroll）。
+    // 视口自动滚动、选区持续扩展。
     let click = point(px(120.), px(2.));
     cx.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     cx.run_until_parked();

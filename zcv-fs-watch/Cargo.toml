@@ -2,7 +2,7 @@
 name = "zcv-fs-watch"
 version.workspace = true
 edition.workspace = true
-description = "通用 OS 文件监听基础设施（对齐 Zed 的 fs watcher）"
+description = "通用 OS 文件监听基础设施"
 
 [lib]
 path = "src/fs_watch.rs"

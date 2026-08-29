@@ -17,7 +17,7 @@ struct ScrollViewport {
 
 /// 垂直滚动轴 thumb 的三态。
 ///
-/// 状态跨帧持久存于 ScrollManager（滚动状态归属 Editor），每帧由EditorElement 读取决定绘制颜色与事件分支（对齐 Zed 的 ScrollbarThumbState）。
+/// 状态跨帧持久存于 ScrollManager（滚动状态归属 Editor），每帧由EditorElement 读取决定绘制颜色与事件分支。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum ScrollbarThumbState {
     #[default]

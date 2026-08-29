@@ -82,14 +82,14 @@ impl SearchableItem for Editor {
         cx: &mut gpui::Context<Self>,
     ) {
         self.search = self.execute_search(query, cx);
-        // 自动定位到第一个匹配（选区 + 视口滚动，对齐 Zed 搜索后的光标跟随）。
+        // 自动定位到第一个匹配（选区 + 视口滚动，光标跟随）。
         if let Some(search) = &self.search
             && let Some(index) = search.active_index
         {
             let range = search.match_range(index);
             self.select_byte_range(range, cx);
         }
-        // 立即重绘：高亮与定位不等待下一次交互触发（对齐 Zed 输入即高亮）。
+        // 立即重绘：高亮与定位不等待下一次交互触发（输入即高亮）。
         cx.notify();
         cx.emit(SearchEvent::MatchesInvalidated);
     }

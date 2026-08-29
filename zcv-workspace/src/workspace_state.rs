@@ -1,6 +1,6 @@
 //! Workspace —— 工作区实体：Pane/Dock/StatusBar 的装配与命令分发。
 //!
-//! 对齐 Zed：Workspace 只管理工作区框架与通用命令，
+//! Workspace 只管理工作区框架与通用命令，
 //! 面板、顶栏、状态项与项目相关订阅由宿主（binary 装配层）注入。
 
 use std::ops::Range;
@@ -270,7 +270,7 @@ impl Workspace {
         }
     }
 
-    /// 注册面板（对齐 Zed register_panel）。
+    /// 注册面板。
     pub fn register_panel(
         &mut self,
         handle: Arc<dyn PanelHandle>,
@@ -287,7 +287,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// 注入顶栏视图（对齐 Zed titlebar_item）。
+    /// 注入顶栏视图。
     pub fn set_titlebar(&mut self, view: AnyView, cx: &mut Context<Self>) {
         self.titlebar = Some(view);
         cx.notify();
@@ -300,7 +300,7 @@ impl Workspace {
 
     /// 注册 action handler 到 Workspace 根节点（焦点链顶端，快捷键全局可达）。
     ///
-    /// 对齐 Zed `Workspace::register_action`：不在主焦点链上的组件（如顶栏选择器）创建时把命令 handler 注册到工作区，由工作区统一派发。
+    /// 不在主焦点链上的组件（如顶栏选择器）创建时把命令 handler 注册到工作区，由工作区统一派发。
     pub fn register_action<A: Action>(
         &mut self,
         callback: impl Fn(&mut Self, &A, &mut Window, &mut Context<Self>) + 'static,

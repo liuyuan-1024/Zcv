@@ -30,14 +30,14 @@ impl Buffer {
 
     /// 以 offset 为中心取连续同类字符范围（双击选词语义）。
     ///
-    /// 语义对齐 Zed 的 `surrounding_word`：目标类别取光标前后字符中"更词"的那一个（Word > Symbol > Space），随后向左右扫描吃掉连续同类字符；
+    /// 目标类别取光标前后字符中"更词"的那一个（Word > Symbol > Space），随后向左右扫描吃掉连续同类字符；
     /// 换行不参与任何类别的连续性。
     /// 扫描按 grapheme 边界推进，零宽字符（组合音标等）随前导字符归属同一词。
     pub fn surrounding_word(&self, offset: CharOffset) -> TextResult<(CharOffset, CharOffset)> {
         surrounding_word_in_text(&self.storage, self.config.word_boundary, offset)
     }
 
-    /// 光标前后都是词字符时返回 true（对齐 Zed 的 `is_inside_word`）。
+    /// 光标前后都是词字符时返回 true。
     ///
     /// 拖拽扩展选区时用于判断光标是否仍停留在某个词内部，决定是否按整词边界吸附。
     pub fn is_inside_word(&self, offset: CharOffset) -> TextResult<bool> {
@@ -448,7 +448,7 @@ fn grapheme_before<T: TextRead>(
     Ok(Some(MovementGrapheme { start, end, first }))
 }
 
-/// 双击选词的字符三态类别，排序对齐 Zed 的 CharKind（Whitespace < Punctuation < Word）。
+/// 双击选词的字符三态类别，按 Whitespace < Punctuation < Word 排序。
 /// 换行单独一档且永不作目标，保证词/符号/空格的连续不会跨行。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum SurroundingKind {

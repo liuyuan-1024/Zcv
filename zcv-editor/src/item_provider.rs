@@ -1,6 +1,6 @@
 //! 文本文件 Item Provider：项目文件 → Editor。
 //!
-//! 打开文件时框架经 ItemProvider 注册表分发到本 provider，使 Workspace 不直接依赖 Editor 类型（对齐 Zed 的 WorkspaceItemBuilder）。
+//! 打开文件时框架经 ItemProvider 注册表分发到本 provider，使 Workspace 不直接依赖 Editor 类型。
 
 use std::io::Read;
 use std::path::{Path, PathBuf};

@@ -1,6 +1,6 @@
 //! 组件消费的语义颜色。
 //!
-//! 语义色由主题文件 `[colors]` 段直接定义（对齐 Zed themes 的 style 段），业务组件只通过本模块表达颜色的界面职责。
+//! 语义色由主题文件 `[colors]` 段直接定义，业务组件只通过本模块表达颜色的界面职责。
 //!
 //! **缓存语义**：当前主题语义色由 gpui global 承载，主题切换时构建一次并整体替换；
 //! `current(cx)` 返回借引用，每帧每元素零拷贝、零原子操作。
@@ -11,7 +11,7 @@ use gpui::{App, Global, Rgba};
 
 use crate::theme_data::ThemeData;
 
-/// 当前主题语义色的 gpui global 载体（对齐 Zed 的 ThemeRegistry）。
+/// 当前主题语义色的 gpui global 载体。
 struct ThemeColorsGlobal(ThemeColors);
 
 impl Global for ThemeColorsGlobal {}
@@ -59,12 +59,12 @@ pub struct ThemeColors {
     pub status_success: Rgba,
     /// 错误状态颜色。
     pub status_error: Rgba,
-    /// 新建/未跟踪条目颜色。
-    pub status_created: Rgba,
-    /// 已修改条目颜色。
-    pub status_modified: Rgba,
-    /// 已删除条目颜色。
-    pub status_deleted: Rgba,
+    /// 版本控制新增/未跟踪条目颜色。
+    pub version_control_added: Rgba,
+    /// 版本控制已修改条目颜色
+    pub version_control_modified: Rgba,
+    /// 版本控制已删除条目颜色。
+    pub version_control_deleted: Rgba,
     /// 冲突条目颜色。
     pub status_conflict: Rgba,
     /// 顶栏背景。
@@ -101,9 +101,9 @@ pub struct ThemeColors {
     pub search_active_match_background: Rgba,
     /// 编辑器光标颜色。
     pub editor_cursor: Rgba,
-    /// 编辑器 diff 新增行背景（status_created 的低透明版本）。
+    /// 编辑器 diff 新增行背景（version_control_added 的低透明版本）。
     pub editor_diff_added_background: Rgba,
-    /// 编辑器 diff 删除行背景（status_deleted 的低透明版本）。
+    /// 编辑器 diff 删除行背景（version_control_deleted 的低透明版本）。
     pub editor_diff_deleted_background: Rgba,
     /// 滚动轴轨道背景（默认透明，marker 与 thumb 绘制在其上方）。
     pub scrollbar_track_background: Rgba,
@@ -148,7 +148,7 @@ pub(crate) fn set_theme(theme: &ThemeData, cx: &mut App) {
     cx.set_global(ThemeColorsGlobal(theme.colors));
 }
 
-/// 返回当前主题的语义色（对齐 Zed `cx.theme()` 的借引用语义）。
+/// 返回当前主题的语义色（借引用语义）。
 ///
 /// 主题尚未设置（窗口构建前）时返回注册表首个主题的默认快照。
 pub fn current(cx: &App) -> &ThemeColors {

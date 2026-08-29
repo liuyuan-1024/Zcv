@@ -742,9 +742,9 @@ impl MultiBuffer {
 
     /// 将 MultiBuffer 坐标中的编辑拆分到各个底层 Buffer。
     ///
-    /// 对齐 Zed `MultiBuffer::edit` 的边界：投影文本只是快照，不是可变的第二份文档。
+    /// 投影文本只是快照，不是可变的第二份文档。
     /// 同一 excerpt 直接映射；跨 excerpt 替换只在起始 excerpt 插入新文本，
-    /// 并删除起始尾段、中间 excerpt 和结束首段，与 Zed `convert_edits_to_buffer_edits` 一致。
+    /// 并删除起始尾段、中间 excerpt 和结束首段。
     pub fn edit(
         &mut self,
         edits: Vec<Edit>,

@@ -27,7 +27,7 @@ impl OverlayId {
     }
 }
 
-/// 全局浮层互斥层：同一时刻最多一个浮层（对齐 Zed 的 ModalLayer 单例语义）。
+/// 全局浮层互斥层：同一时刻最多一个浮层。
 #[derive(Default)]
 struct ModalLayer {
     active: Option<ActiveOverlay>,

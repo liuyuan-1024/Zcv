@@ -1,7 +1,7 @@
 //! 工作区框架：Item 协议、Pane/Dock/StatusBar/Toolbar 与 Workspace 装配。
 //! 此文件是 `zcv-workspace` crate 的公共入口。
 //!
-//! 对齐 Zed 的 workspace crate：标签页 Item 的通用能力、文件打开/预览的注册机制、以及编辑区布局（Pane/Dock）与工具条（Toolbar/StatusBar）框架。
+//! 标签页 Item 的通用能力、文件打开/预览的注册机制、以及编辑区布局（Pane/Dock）与工具条（Toolbar/StatusBar）框架。
 //! 不依赖 Editor、具体预览格式（它们经 ItemProvider/PreviewProvider 注册接入）。
 
 mod activity_indicator;

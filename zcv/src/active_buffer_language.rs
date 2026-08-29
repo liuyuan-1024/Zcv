@@ -1,6 +1,7 @@
 //! ActiveBufferLanguage —— 底栏语言显示。
 //!
-//! 实现 StatusItemView，在 set_active_pane_item 中订阅 Editor 变化，显示当前编辑器语言名（当前仅取 Editor 的语言名；文件扩展名/首行检测为规划能力，见 Zed 的 active_buffer_language）。
+//! 实现 StatusItemView，在 set_active_pane_item 中订阅 Editor 变化，显示当前编辑器语言名。
+//! 当前仅取 Editor 的语言名；文件扩展名/首行检测为规划能力。
 
 use gpui::{Context, Entity, Render, Subscription, Window, prelude::*};
 use zcv_editor::Editor;

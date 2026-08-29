@@ -1,4 +1,4 @@
-//! 内置语言数据与查询源（对齐 Zed `available_languages`）。
+//! 内置语言数据与查询源。
 //!
 //! 新增语言只需在此数据表加一条 `LanguageEntry`；查询源与编译逻辑在此维护。
 
@@ -66,12 +66,12 @@ fn compile_query(grammar: &tree_sitter::Language, source: Option<&str>) -> Optio
     source.map(|source| {
         Arc::new(
             Query::new(grammar, source)
-                .unwrap_or_else(|error| panic!("Zed tree-sitter 查询与 grammar 不匹配：{error}")),
+                .unwrap_or_else(|error| panic!("tree-sitter 查询与 grammar 不匹配：{error}")),
         )
     })
 }
 
-/// 首行识别模式（对齐 Zed `LanguageMatcher` 的 `Option<Regex>` 形态）。
+/// 首行识别模式（`Option<Regex>` 形态）。
 ///
 /// 内置模式静态正确，编译失败直接 panic（与查询编译的失败处理一致）。
 fn first_line(pattern: &'static str) -> Option<regex::Regex> {

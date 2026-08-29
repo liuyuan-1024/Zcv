@@ -190,7 +190,7 @@ pub enum StorageError {
     #[error("只读模式下不支持此操作")]
     ReadOnly,
 
-    /// 外部 bytes 不能按当前 UTF-8 策略进入 Buffer，字段语义与 `std::str::Utf8Error` 对齐。
+    /// 外部 bytes 不能按当前 UTF-8 策略进入 Buffer。
     #[error("输入不是合法 UTF-8：valid_up_to {valid_up_to}，error_len {error_len:?}")]
     InvalidUtf8 {
         valid_up_to: usize,

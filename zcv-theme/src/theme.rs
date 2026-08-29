@@ -163,7 +163,7 @@ pub mod typography {
     pub fn editor() -> Pixels {
         px(editor_size())
     }
-    /// 编辑器行高（相对字号的倍数，缺省内置默认），与 Zed 一致：`round(font_size * 倍数)`
+    /// 编辑器行高（相对字号的倍数，缺省内置默认）：`round(font_size * 倍数)`
     pub fn editor_line() -> Pixels {
         px((editor_size() * editor_line_height()).round())
     }

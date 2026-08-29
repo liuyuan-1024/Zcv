@@ -1,6 +1,6 @@
 //! 垂直滚动轴：track/thumb 几何与逐帧布局数据。
 //!
-//! 事件处理与绘制在 EditorElement 中完成（对齐 gutter.rs 的职责划分）；
+//! 事件处理与绘制在 EditorElement 中完成；
 //! 本模块只负责几何计算，全部公式用 Pixels 模型表达。
 
 use std::ops::Range;
@@ -14,7 +14,7 @@ use zcv_ui::MIN_THUMB_SIZE;
 /// 滚动轴宽度。
 pub(super) const SCROLLBAR_WIDTH: Pixels = px(15.);
 
-/// 轨道宽 − 边框后等分的列数（对齐 Zed 的三列 marker 坐标系；第 0 列显示 git diff）。
+/// 轨道宽 − 边框后等分的列数（三列 marker 坐标系；第 0 列显示 git diff）。
 const MARKER_COLUMN_COUNT: f32 = 3.0;
 
 /// 轨道左右边框宽度。
@@ -31,7 +31,7 @@ pub(super) struct ScrollbarLayout {
     /// thumb 边界；内容不高于视口时为 None。
     pub(super) thumb_bounds: Option<Bounds<Pixels>>,
     /// 内容像素 / 轨道像素换算系数 = max_scroll / (track_length − thumb_size)。
-    /// 拖动增量与点击跳页共用（与 Zed 的 text_unit_size 数学等价）。
+    /// 拖动增量与点击跳页共用。
     pub(super) scroll_per_pixel: f32,
     /// 当前三态（每帧由 ScrollManager 的跨帧状态填充，决定绘制颜色）。
     pub(super) thumb_state: ScrollbarThumbState,
@@ -76,7 +76,7 @@ impl ScrollbarLayout {
 
 /// 纯几何：由轨道边界、内容高度与滚动位置推导 thumb 与换算系数。
 ///
-/// 数学（与 Zed 的 ScrollbarLayout::new 等价）：
+/// 数学：
 /// - total = max_scroll + track_length（内容总高，轨道高度即视口高度）
 /// - thumb_size = track_length × track_length/total，夹 [MIN_THUMB_SIZE, track_length]
 /// - travel = track_length − thumb_size（thumb 可活动行程），下限 1px 防除零
@@ -110,7 +110,7 @@ pub(super) fn thumb_geometry(
 
 /// 纯几何：显示行区间列表 → 轨道内 marker 区间列表。
 ///
-/// 公式（对齐 Zed `marker_quads_for_ranges`）：
+/// 公式：
 /// - content_y = row × line_height；track_y = track.top + content_y / scroll_per_pixel
 /// - **绝对定位**：marker 表示行在文档中的位置（与 thumb 同一坐标系，不随滚动变化），拖动 thumb 到 marker 处即精确滚动到该行
 /// - scroll_per_pixel = 0（内容不溢出视口）时 content_y 即轨道坐标（轨道高 == 视口高）
@@ -147,7 +147,7 @@ pub(super) fn marker_geometry(
             )
         })
         .collect();
-    // 相邻同色且间隙 ≤ 1px 的 marker 合并成一段（对齐 Zed 的合并策略）。
+    // 相邻同色且间隙 ≤ 1px 的 marker 合并成一段。
     let mut merged: Vec<ScrollbarMarker> = Vec::new();
     for marker in markers {
         if let Some(last) = merged.last_mut()
@@ -162,7 +162,7 @@ pub(super) fn marker_geometry(
     merged
 }
 
-/// 第 0 列（git diff）的横向区间：轨道左边 + 1px 边框起，宽一列（Zed 同式）。
+/// 第 0 列（git diff）的横向区间：轨道左边 + 1px 边框起，宽一列。
 pub(super) fn marker_column_x_range(track_bounds: Bounds<Pixels>) -> Range<Pixels> {
     let width = (track_bounds.size.width - SCROLLBAR_BORDER) * (1.0 / MARKER_COLUMN_COUNT);
     let start = track_bounds.left() + SCROLLBAR_BORDER;

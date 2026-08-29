@@ -54,7 +54,7 @@ impl TerminalView {
         self.focus.clone()
     }
 
-    /// 终端字体大小（像素）：显式配置优先，缺省跟随编辑器字号（对齐 Zed）。
+    /// 终端字体大小（像素）：显式配置优先，缺省跟随编辑器字号。
     pub(crate) fn font_size(&self, cx: &App) -> Pixels {
         px(TerminalSettings::load(cx).font_size)
     }
@@ -381,7 +381,7 @@ impl EntityInputHandler for TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // 输入法确认提交（含无合成时的普通字符输入）：清 marked 并写入终端（对齐 Zed）。
+        // 输入法确认提交（含无合成时的普通字符输入）：清 marked 并写入终端。
         self.ime_marked_text = None;
         self.terminal.update(cx, |terminal, cx| {
             terminal.write_input(text.as_bytes().to_vec(), cx)
@@ -397,7 +397,7 @@ impl EntityInputHandler for TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // 组合预览：只更新 marked 文本，不写入终端（对齐 Zed）。
+        // 组合预览：只更新 marked 文本，不写入终端。
         self.ime_marked_text = Some(new_text.to_string());
         cx.notify();
     }

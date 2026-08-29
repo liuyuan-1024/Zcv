@@ -1,4 +1,4 @@
-//! ActivityIndicator —— 状态栏后台任务指示器（对齐 zed 的 ActivityIndicator）。
+//! ActivityIndicator —— 状态栏后台任务指示器。
 //!
 //! 订阅 GitStore 的任务事件，展示排队/执行/取消/确认阶段；远程任务提供显式取消入口。
 

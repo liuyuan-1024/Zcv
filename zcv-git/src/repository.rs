@@ -1,6 +1,6 @@
 //! git 命令行的同步封装：`.git` 目录解析与命令执行。
 //!
-//! 仓库发现（沿祖先查找 / 项目树内遍历）是项目管理层的决策，由 worktree 快照层负责（对齐 Zed：发现逻辑在 worktree crate，git crate 只做命令封装与输出解析）。
+//! 仓库发现（沿祖先查找 / 项目树内遍历）是项目管理层的决策，由 worktree 快照层负责（发现逻辑在 worktree crate，git crate 只做命令封装与输出解析）。
 //! 所有方法同步阻塞执行，由调用方负责移入后台线程。
 
 use std::collections::HashMap;
@@ -248,15 +248,15 @@ pub trait GitRepository: Send + Sync {
     /// 路径相对仓库根；空列表为无操作。`--remove` 让已删除文件的删除进入 index。
     fn stage_paths(&self, paths: &[PathBuf]) -> Result<()>;
 
-    /// 取消暂存路径（`git reset --quiet -- <paths>`，对齐 Zed）。
+    /// 取消暂存路径（`git reset --quiet -- <paths>`）。
     ///
     /// 重置 index 到 HEAD；此前已暂存但 HEAD 中不存在的路径（新建后暂存）会移出 index。
     fn unstage_paths(&self, paths: &[PathBuf]) -> Result<()>;
 
-    /// 提交暂存内容（`git commit --quiet -m <msg> --cleanup=strip`，对齐 Zed）。
+    /// 提交暂存内容（`git commit --quiet -m <msg> --cleanup=strip`）。
     ///
     /// 消息经 `-m` 单参数原样传入（多行消息允许）；空消息 git 会报错，由调用方先校验。
-    /// `--cleanup=strip` 丢弃消息注释行与行尾空白（对齐 Zed repository.rs:2532）。
+    /// `--cleanup=strip` 丢弃消息注释行与行尾空白。
     fn commit(&self, message: &str) -> Result<()>;
 
     /// HEAD 提交的 oid 与 subject（首行）一次查询（`git log -1 --pretty=format:%H%x00%s`）。
@@ -264,7 +264,7 @@ pub trait GitRepository: Send + Sync {
     /// 无提交（空仓库）时两项均为 `None`；oid 异常缺失时 subject 一并置 None（空仓库语义）。
     fn head_commit(&self) -> Result<(Option<String>, Option<String>)>;
 
-    /// 撤销最近一次提交（先取完整消息，再 `git reset --soft HEAD^`，对齐 Zed uncommit）。
+    /// 撤销最近一次提交（先取完整消息，再 `git reset --soft HEAD^`）。
     ///
     /// 返回被撤销提交的完整消息（含 body，`%B`），供调用方填回提交信息编辑器；
     /// 无提交或撤销失败（如单提交仓库 `HEAD^` 不存在）时返回错误。
@@ -278,10 +278,10 @@ pub trait GitRepository: Send + Sync {
     /// 切换到本地分支（`git checkout <name>`）。
     ///
     /// 先 `git show-ref --verify --quiet refs/heads/{name}` 验证：
-    /// 防止列表生成到确认的窗口期分支被外部删除后，checkout 的 DWIM 意外创建远端跟踪分支（对齐 Zed change_branch）。
+    /// 防止列表生成到确认的窗口期分支被外部删除后，checkout 的 DWIM 意外创建远端跟踪分支。
     fn checkout(&self, name: &str) -> Result<()>;
 
-    /// 创建并切换到分支（`git switch -c <name> [base]`，对齐 Zed create_branch）。
+    /// 创建并切换到分支（`git switch -c <name> [base]`）。
     ///
     /// base 省略时从当前 HEAD 创建；空仓库（unborn HEAD）与 detached HEAD 均可用。
     fn create_branch(&self, name: &str, base: Option<&str>) -> Result<()>;
@@ -316,7 +316,7 @@ impl RealGitRepository {
 
     /// 构造 git 命令。
     ///
-    /// 固定参数对齐 Zed `build_command`（repository.rs:3695）：
+    /// 固定参数：
     /// `--no-optional-locks` 防止 `git status` 回写 index（racy-git），避免"扫描 → fs 事件 → 再扫描"的自触发循环；`--no-pager` 防止交互式分页。
     fn build_command(&self, args: &[&str]) -> Command {
         let mut command = Command::new("git");
@@ -629,7 +629,7 @@ impl GitRepository for RealGitRepository {
     }
 
     fn status(&self, paths: &[PathBuf]) -> Result<GitStatus> {
-        // 对齐 Zed `git_status_args`（repository.rs:3516），另加 `--ignored=matching`：
+        // 另加 `--ignored=matching`：
         // `--untracked-files=all` 让未跟踪文件逐条输出（非目录汇总）；
         // `--ignored=matching` 让被忽略的目录以 `!! dir/` 输出（不逐文件展开，避免 node_modules 这类目录撑爆输出），未被目录覆盖的忽略文件逐条输出；
         // `--no-renames` 保证每项恰两位状态码，`-z` 用 NUL 分隔原始字节路径。
@@ -657,7 +657,6 @@ impl GitRepository for RealGitRepository {
     }
 
     fn diff_stat(&self, staged: bool, paths: &[PathBuf]) -> Result<HashMap<PathBuf, DiffStat>> {
-        // 对齐 Zed diff_stat（repository.rs:2355）：
         // `--cached HEAD` 为 index↔HEAD，无额外参数为 worktree↔index；
         // `-z` 输出原始字节路径。
         let mut args = vec!["diff", "--numstat", "--no-renames", "-z"];
@@ -822,7 +821,7 @@ impl GitRepository for RealGitRepository {
             .next()
             .map(|subject| String::from_utf8_lossy(subject).trim().to_string())
             .filter(|subject| !subject.is_empty());
-        // oid 异常缺失时 subject 一并置 None，对齐 head() 的空仓库语义。
+        // oid 异常缺失时 subject 一并置 None。
         Ok(if oid.is_some() {
             (oid, subject)
         } else {
@@ -836,7 +835,7 @@ impl GitRepository for RealGitRepository {
             .run_optional(&["log", "-1", "--pretty=format:%B"])?
             .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
             .filter(|message| !message.is_empty());
-        // `--soft` 只回退 HEAD 指针，index 与工作树保留（对齐 Zed uncommit：`git reset HEAD^ --soft`）。
+        // `--soft` 只回退 HEAD 指针，index 与工作树保留（`git reset HEAD^ --soft`）。
         self.run_command(
             &mut self.build_command(&["reset", "--soft", "HEAD^"]),
             "git reset --soft HEAD^",
@@ -896,7 +895,7 @@ impl GitRepository for RealGitRepository {
     }
 
     fn load_revisions(&self, revs: &[&str]) -> Result<Vec<Option<Vec<u8>>>> {
-        // 单进程批量读取（对齐 Zed repository.rs:1820 的 cat-file --batch）：
+        // 单进程批量读取（`cat-file --batch`）：
         // stdin 逐行写 revision，按 header（`<oid> <type> <size>` 或 `<oid> missing`）读取对应大小的 blob。
         // 函数尾部显式 kill+wait，防止大对象读一半时进程残留阻塞管道。
         let mut child = self
@@ -962,7 +961,7 @@ impl GitRepository for RealGitRepository {
 
 /// 在 `working_directory` 初始化 git 仓库（`git init -b <branch>`）。
 ///
-/// 分支名先读 `git config --global init.defaultBranch`，未配置则用 `fallback_branch`（对齐 Zed fs.rs 的 git_init）。
+/// 分支名先读 `git config --global init.defaultBranch`，未配置则用 `fallback_branch`。
 /// `-b` 参数会覆盖 init.defaultBranch 的默认分支选择，因此必须显式传入。
 /// init 前不存在仓库对象，故为自由函数而非 trait 方法；
 /// 同步阻塞，由调用方负责移入后台线程。

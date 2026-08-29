@@ -577,7 +577,7 @@ impl FsWatcher {
 
     /// 共享轮询线程：统一等待所有 pending 路径出现后注册。
     ///
-    /// 每路径一个独立线程会随打开路径数线性增长（对齐 Zed 用执行器异步轮询的思路，这里保持纯 std 架构，用单个线程轮询全部 pending 路径）。
+    /// 每路径一个独立线程会随打开路径数线性增长（这里保持纯 std 架构，用单个线程轮询全部 pending 路径）。
     fn spawn_pending_poller(&self) {
         let registrations = self.registrations.clone();
         let pending_regs = self.pending_registrations.clone();

@@ -1,6 +1,6 @@
 //! diff 显示语义：hunks（逻辑行）→ 行级渲染数据。
 //!
-//! 与像素渲染无关的"逻辑行→显示行"映射集中在这里（对齐 Zed 把 diff 渲染数据计算放在独立单元的做法）；
+//! 与像素渲染无关的"逻辑行→显示行"映射集中在这里；
 //! 渲染端只消费计算出的 `HunkRendering` 做布局与绘制。
 
 use std::ops::Range;
@@ -28,10 +28,10 @@ pub(crate) struct HunkRendering {
 /// - `hit_regions`：可点击色带区域（显示行范围 + 点击目标 old_range + 类型）
 /// - `expanded_rows`：整行差异背景数据源（新增行始终着色，修改/删除按展开态着色）
 ///
-/// 覆盖终点取 hunk 之后第一行的行首显示行（对齐 Zed：end 行首显示行 − 1 即 hunk 最后一个显示行，左闭右开区间 [start, end) 恰好盖住全部 wrap 片段）；
+/// 覆盖终点取 hunk 之后第一行的行首显示行（end 行首显示行 − 1 即 hunk 最后一个显示行，左闭右开区间 [start, end) 恰好盖住全部 wrap 片段）；
 /// hunk 到达文件末尾时以显示快照行数为终点。
 /// 纯删除 hunk（空范围）：折叠时行内不做标记（gutter 红色三角提示），展开后标记移到被删除的合成行上；
-/// 修改 hunk 展开后：旧行（合成行）按删除色、修改行按新增色（对齐 Zed：base 旧行红、新行绿）。
+/// 修改 hunk 展开后：旧行（合成行）按删除色、修改行按新增色（base 旧行红、新行绿）。
 /// 映射失败（越界等）跳过该 hunk。
 pub(crate) fn hunk_rendering(
     snapshot: &DisplaySnapshot,

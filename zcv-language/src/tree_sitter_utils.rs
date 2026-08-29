@@ -13,7 +13,7 @@ use zcv_text::{ByteOffset, Snapshot};
 
 use crate::Language;
 
-/// 单次解析允许占用的后台时间片（对齐 Neovim 的 ~3ms 异步解析切片）。
+/// 单次解析允许占用的后台时间片（约 3ms）。
 pub(crate) const PARSE_TIME_SLICE: Duration = Duration::from_millis(3);
 
 /// 一次语法解析的协作取消标记。
@@ -33,7 +33,7 @@ impl ParseCancellation {
     }
 }
 
-/// 把值移交给专用后台线程释放，避免主线程释放大语法树卡顿（对齐 Zed `SyntaxSnapshot::drop`）。
+/// 把值移交给专用后台线程释放，避免主线程释放大语法树卡顿。
 pub(crate) fn drop_offloaded<T: Send + 'static>(value: T) {
     static DROP_TX: OnceLock<mpsc::Sender<Box<dyn Any + Send>>> = OnceLock::new();
     let tx = DROP_TX.get_or_init(|| {
@@ -52,7 +52,7 @@ pub(crate) fn drop_offloaded<T: Send + 'static>(value: T) {
 }
 
 /// 支持分片恢复的树解析器：每个时间片内经 progress callback 检查预算，
-/// 预算用尽即中断但保留 parser 状态，下一片从断点恢复（对齐 Neovim 的时间片解析）。
+/// 预算用尽即中断但保留 parser 状态，下一片从断点恢复。
 ///
 /// ParserHandle 在分片间存活，不归还池（池取用会 reset，清掉 outstanding 状态）。
 pub(crate) struct IncrementalParser {
@@ -101,7 +101,7 @@ impl IncrementalParser {
                     }])
                     .ok()?;
             } else {
-                // 首片必须显式清空池中解析器可能残留的范围限制（对齐 parse_tree）。
+                // 首片必须显式清空池中解析器可能残留的范围限制。
                 parser.set_included_ranges(&[]).ok()?;
             }
         }
@@ -126,7 +126,7 @@ impl IncrementalParser {
     }
 }
 
-/// 池化 tree-sitter 解析器句柄，Drop 时归还（对齐 Zed `with_parser`）。
+/// 池化 tree-sitter 解析器句柄，Drop 时归还。
 struct ParserHandle(Option<Parser>);
 
 impl ParserHandle {
@@ -204,7 +204,7 @@ pub(crate) fn parse_tree(
     )
 }
 
-/// 池化 tree-sitter 查询游标（对齐 Zed `QUERY_CURSORS`）。
+/// 池化 tree-sitter 查询游标。
 pub(crate) struct QueryCursorHandle(Option<QueryCursor>);
 
 impl QueryCursorHandle {
@@ -236,7 +236,7 @@ impl DerefMut for QueryCursorHandle {
 impl Drop for QueryCursorHandle {
     fn drop(&mut self) {
         if let Some(mut cursor) = self.0.take() {
-            // 归还前把范围限制重置为全域（对齐 Zed），否则下一个借出者在不设置范围时（如注入收集）会被上一次的范围限制误导。
+            // 归还前把范围限制重置为全域，否则下一个借出者在不设置范围时（如注入收集）会被上一次的范围限制误导。
             cursor.set_byte_range(0..usize::MAX);
             cursor.set_point_range(Point::new(0, 0)..Point::new(usize::MAX, usize::MAX));
             cursor.set_containing_byte_range(0..usize::MAX);

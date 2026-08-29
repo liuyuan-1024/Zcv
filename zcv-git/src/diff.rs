@@ -19,7 +19,7 @@ pub struct DiffHunk {
     pub kind: DiffHunkKind,
 }
 
-/// hunk 变化类型（判定规则对齐 Zed buffer_diff：旧侧空→Added、新侧空→Deleted）。
+/// hunk 变化类型（判定规则：旧侧空→Added、新侧空→Deleted）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DiffHunkKind {
     /// 旧侧计数为 0（纯新增）。
@@ -32,7 +32,7 @@ pub enum DiffHunkKind {
 
 /// 解析单个文件的 `git diff --unified=0` 输出（忽略全部路径头，按 hunk header 建块）。
 ///
-/// 容错风格对齐 `parse_numstat`：格式异常的行跳过而非报错。
+/// 容错风格（`parse_numstat` 式）：格式异常的行跳过而非报错。
 /// 只依赖 header 中的起止与计数，body 行（含 `\ No newline at end of file`）不参与统计；
 /// `Binary files ... differ` 与空输出均返回空。
 ///
@@ -129,7 +129,7 @@ pub(crate) fn parse_diff_hunks_per_path(
                 hunks.push(hunk);
             }
         } else if line.starts_with(b"Binary files ") {
-            // 二进制段无可显示的行差异（对齐 parse_diff_hunks 语义）。
+            // 二进制段无可显示的行差异。
             hunks.clear();
         }
     }

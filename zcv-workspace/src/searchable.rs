@@ -1,6 +1,6 @@
 //! SearchableItem —— 可在自身内容中搜索 / 替换的 Item 契约。
 //!
-//! 对齐 Zed 的 `workspace::searchable`：搜索条只面向此 trait 编程，Editor 等 Item 提供搜索执行与匹配跳转。
+//! 搜索条只面向此 trait 编程，Editor 等 Item 提供搜索执行与匹配跳转。
 
 use gpui::{App, Context, Entity, EventEmitter, Subscription, Window};
 use zcv_text::SearchQuery;
@@ -72,7 +72,7 @@ pub trait SearchableItem: Item + EventEmitter<SearchEvent> {
     ) -> usize;
 }
 
-/// SearchableItem 的类型擦除句柄（对齐 `PreviewItemHandle` 的桥接模式）。
+/// SearchableItem 的类型擦除句柄。
 pub trait SearchableItemHandle: ItemHandle {
     fn boxed_clone(&self) -> Box<dyn SearchableItemHandle>;
     fn subscribe_to_search_events(

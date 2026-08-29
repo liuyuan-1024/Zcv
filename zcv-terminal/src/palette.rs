@@ -1,7 +1,7 @@
 //! ANSI/256 色解析：把 alacritty 的颜色枚举映射为 RGBA。
 //!
-//! ANSI 16 色与 dim 变体从当前主题读取（`terminal.ansi.*` token，跟随主题切换，
-//! 与 Zed 的主题结构一致）；xterm 256 色算法与主题无关，在此内联实现。
+//! ANSI 16 色与 dim 变体从当前主题读取（`terminal.ansi.*` token，跟随主题切换）；
+//! xterm 256 色算法与主题无关，在此内联实现。
 
 use gpui::{App, Rgba, Window};
 
@@ -43,7 +43,7 @@ pub(crate) fn get_color_at_index(index: usize, _window: &Window, cx: &App) -> Rg
         256 => zcv_theme::color::current(cx).text,
         257 => zcv_theme::color::current(cx).editor_background,
         258 => zcv_theme::color::current(cx).editor_cursor,
-        // 259..267 为 dim 变体（对齐 alacritty Colors 索引布局）。
+        // 259..267 为 dim 变体。
         259..=266 => theme_ansi_dim_colors(cx)[index - 259],
         267 => zcv_theme::color::current(cx).text,
         268 => zcv_theme::color::current(cx).editor_background,

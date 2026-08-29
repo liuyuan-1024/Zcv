@@ -171,7 +171,7 @@ pub(super) fn render_row(
             .child(name)
     };
 
-    // 拖拽载荷 = 被拖行 + 渲染期冻结的多选标记快照（对齐 Zed 的 DraggedSelection）。
+    // 拖拽载荷 = 被拖行 + 渲染期冻结的多选标记快照。
     // gpui 的 on_drag 载荷在渲染期随元素构造冻结、发起时直接取用；
     // 快照与视觉同帧——任何修改选区的交互都会触发重绘，故载荷恒等于用户所见选区，发起与放下都信任它。
     // 编辑态、冲突浮层活跃或临时新建行时不允许发起拖拽。
@@ -359,7 +359,7 @@ pub(super) struct ProjectTreeRenderContext {
     pub(super) state: Rc<RefCell<TreeState<PathBuf, ProjectTreeRow>>>,
     pub(super) rows: Rc<[ProjectTreeRow]>,
     pub(super) focus: gpui::FocusHandle,
-    /// 条目点击直接调用 Entity 方法（对齐 Zed 的 `cx.listener` 路径），
+    /// 条目点击直接调用 Entity 方法，
     /// 不依赖 dispatch_action 的焦点链分发。
     pub(super) weak: WeakEntity<ProjectTreePanel>,
     pub(super) edit_state: Option<EditState>,

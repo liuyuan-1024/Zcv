@@ -300,7 +300,7 @@ impl Editor {
         });
     }
 
-    /// 光标处是否需要括号内额外空行（对齐 Zed `insert_extra_newline_brackets`）：
+    /// 光标处是否需要括号内额外空行：
     /// 光标前后跳过非换行空白后，分别紧邻声明了 `newline` 的配对起始与闭合字符。
     fn extra_newline_in_pair(&self, offset: ByteOffset, snapshot: &Snapshot, cx: &App) -> bool {
         let Some(pairs) = self.auto_close_pairs(cx) else {
@@ -348,7 +348,7 @@ impl Editor {
 
     /// 回放文本历史（undo/redo）并恢复对应选区的共享实现。
     ///
-    /// 对齐 Zed：历史回放不经过编辑事务会话（`change` 会开启新会话并记录选区），这里直接回放 Buffer 历史并以被回放事务的身份只读恢复 SelectionHistory。
+    /// 历史回放不经过编辑事务会话（`change` 会开启新会话并记录选区），这里直接回放 Buffer 历史并以被回放事务的身份只读恢复 SelectionHistory。
     fn replay_history(&mut self, redo: bool, cx: &mut Context<Self>) {
         if self.is_read_only(cx) {
             return;
@@ -400,7 +400,7 @@ impl Editor {
         });
         match outcome {
             Ok(Some(outcome)) => {
-                // 自动闭合区域随回放推进（对齐普通编辑路径）。
+                // 自动闭合区域随回放推进。
                 let delta = outcome.delta();
                 self.update_autoclose_regions_with(
                     &PositionMap::from_edits(delta.edits()),
@@ -443,7 +443,7 @@ impl Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // 光标贴着自动补全的闭合符时先扩展选区覆盖整对，一次退格删除整对（对齐 Zed）。
+        // 光标贴着自动补全的闭合符时先扩展选区覆盖整对，一次退格删除整对。
         self.select_autoclose_pair(cx);
         self.delete(
             MovementDirection::Previous,

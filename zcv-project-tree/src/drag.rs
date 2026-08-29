@@ -38,7 +38,7 @@ impl TreeDrag {
 /// 拖拽跟随预览视图（拖拽幽灵）：单项为单行（图标 + 名称）；
 /// 多选为堆叠卡片——顶层被拖行附醒目数量徽标，其后最多两层后景卡片（真实选中项，逐层右下偏移），使选区拖影与单项拖影一眼可辨。
 ///
-/// 对齐 pane DraggedTab 的 Render 模式：由行元素 `on_drag` 构造为 Entity 注册，拖拽进行时由 gpui 拖拽系统跟随光标渲染。
+/// 由行元素 `on_drag` 构造为 Entity 注册，拖拽进行时由 gpui 拖拽系统跟随光标渲染。
 pub(crate) struct DraggedEntryView {
     drag: TreeDrag,
 }

@@ -2,7 +2,7 @@
 //!
 //! FoldMap 是唯一写入口，向上层发布 FoldSnapshot 与 FoldEdit。
 //!
-//! 折叠模型对齐 Zed：折叠范围是字节级的（入口行行尾换行符 → 闭合括号前），折叠段不产生投影行，占位符文本拼入 anchor 行的合并行（anchor 全文 + 占位符 +闭合行尾段），因此闭合括号保留为真实可见文本。
+//! 折叠模型：折叠范围是字节级的（入口行行尾换行符 → 闭合括号前），折叠段不产生投影行，占位符文本拼入 anchor 行的合并行（anchor 全文 + 占位符 +闭合行尾段），因此闭合括号保留为真实可见文本。
 //! 隐藏点投影遵循 bias 约定（Left 吸附折叠起点列，Right 吸附折叠终点列）。
 
 use std::{borrow::Cow, cmp::Reverse, collections::BTreeMap, ops::Range};
@@ -130,7 +130,7 @@ impl<'a> Dimension<'a, FoldSummary> for FoldOrder {
     }
 }
 
-/// 隐藏点投影的 bias 约定（对齐 Zed `to_fold_point`）：Left 吸附折叠起点列，Right 吸附折叠终点列。
+/// 隐藏点投影的 bias 约定：Left 吸附折叠起点列，Right 吸附折叠终点列。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FoldBias {
     Left,

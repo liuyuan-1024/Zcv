@@ -35,9 +35,9 @@ pub struct ActiveProjectRoot(pub Option<PathBuf>);
 impl gpui::Global for ActiveProjectRoot {}
 
 pub struct Project {
-    /// 与 Zed 的空 WorktreeStore 语义一致：Project 始终存在，worktree 可以为空。
+    /// Project 始终存在，worktree 可以为空。
     worktree: Option<ProjectWorktree>,
-    /// 与 Zed 一致：git store 属于 Project 而非 worktree，无 worktree 时以无根状态存在（仓库查询与 git job 为空操作）。
+    /// git store 属于 Project 而非 worktree，无 worktree 时以无根状态存在（仓库查询与 git job 为空操作）。
     git_store: Entity<GitStore>,
     buffer_store: BufferStore,
 }

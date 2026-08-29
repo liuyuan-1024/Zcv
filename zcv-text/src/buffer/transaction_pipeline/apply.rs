@@ -16,8 +16,7 @@ use crate::{
 
 /// 单个 `EditList` 内所有 `Edit::replacement` 的 UTF-8 字节和。
 ///
-/// 度量口径与 `HistoryEntry::byte_size` 对齐，避免事务 prepare 阶段的预算检查
-/// 与最终 `HistoryEntry` 的字节统计漂移。
+/// 避免事务 prepare 阶段的预算检查与最终 `HistoryEntry` 的字节统计漂移。
 pub(in crate::buffer) fn edit_list_replacement_bytes(edits: &EditList) -> usize {
     edits
         .as_slice()

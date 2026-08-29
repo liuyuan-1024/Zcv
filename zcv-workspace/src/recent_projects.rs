@@ -55,8 +55,8 @@ pub(crate) fn load_recent_projects() -> Vec<ProjectEntry> {
 ///
 /// 最近项目必须是带名称的绝对目录。这样不会把从 `.app` 启动时的 `/` 或旧版本曾写入的相对路径 `.` 当成项目重新打开。
 ///
-/// 失效记录只在此处读取时跳过，不清理写回（对齐 Zed 读取时过滤失效路径的做法；
-/// 重新打开项目写盘时会以新格式覆盖，旧记录自然淘汰）。
+/// 失效记录只在此处读取时跳过，不清理写回；
+/// 重新打开项目写盘时会以新格式覆盖，旧记录自然淘汰。
 pub fn most_recent_valid_project() -> Option<PathBuf> {
     first_valid_project(&load_recent_projects())
 }

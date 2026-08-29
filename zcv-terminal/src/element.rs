@@ -22,7 +22,7 @@ use alacritty_terminal::vte::ansi::CursorShape;
 /// 同一行的渲染数据：文本段、起点与起始网格列。
 struct LineRun {
     /// 段起始网格列：宽字符占 2 列，段起点可能跳过列。
-    /// 渲染按列号 × 格宽定位（对齐 Zed：force_width 1 格 + 列号间距）。
+    /// 渲染按列号 × 格宽定位（force_width 1 格 + 列号间距）。
     start_column: usize,
     origin: Point<Pixels>,
     text: String,
@@ -254,7 +254,7 @@ impl Element for TerminalElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        // 内容整体对齐到 device pixel，避免字形在帧间抖动（对齐 Zed）。
+        // 内容整体对齐到 device pixel，避免字形在帧间抖动。
         let scale_factor = window.scale_factor();
         let snap =
             |value: Pixels| Pixels::from((f32::from(value) * scale_factor).floor() / scale_factor);
@@ -279,7 +279,7 @@ impl Element for TerminalElement {
                     run.runs.iter().map(RunStyle::from).collect(),
                 );
                 let shaped = self.shaped_runs.entry(key).or_insert_with(|| {
-                    // 强制每字形 1 格宽（对齐 Zed）：CJK 字形 advance 与格宽一致，
+                    // 强制每字形 1 格宽：CJK 字形 advance 与格宽一致，
                     // 宽字符占 2 格的间距由 run 的起始列号定位补足。
                     window.text_system().shape_line(
                         run.text.clone().into(),
@@ -330,7 +330,7 @@ impl Element for TerminalElement {
                     eprintln!("终端组合文本绘制失败：{error}");
                 }
             }
-            // 组合输入（marked 文本非空）时隐藏光标：Block 光标会盖住 marked 首字符（对齐 Zed）。
+            // 组合输入（marked 文本非空）时隐藏光标：Block 光标会盖住 marked 首字符。
             if ime_marked_text.is_none()
                 && let Some(cursor) = &layout.cursor
             {
@@ -590,7 +590,7 @@ fn layout_grid(
         }
 
         // 文本：每个样式段独立经 chunk 管线（tab 展开 / 样式分段）产出 runs。
-        // 宽字符占 2 列，段起点按列号 × 格宽定位（与 Zed 一致——force_width
+        // 宽字符占 2 列，段起点按列号 × 格宽定位（force_width
         // 强制单字符 1 格，2 格间距由列号补足）。
         for (span, &start_column) in spans.iter().zip(span_columns.iter()) {
             let segment = &text[span.range.clone()];
@@ -673,7 +673,7 @@ fn row_to_styled_line(cells: &[IndexedCell], window: &mut Window, cx: &mut App) 
 
     for (column, indexed) in cells.iter().enumerate() {
         let cell = &indexed.cell;
-        // 宽字符占位格不产生文本：宽字符自身占两格宽（对齐 Zed layout_grid 的跳过）；
+        // 宽字符占位格不产生文本：宽字符自身占两格宽；
         // 背景仍按格绘制（宽字符第二格背景不丢失）。
         if !cell.is_wide_char_spacer() {
             let ch = cell.character();
@@ -690,7 +690,7 @@ fn row_to_styled_line(cells: &[IndexedCell], window: &mut Window, cx: &mut App) 
             }
             let style = cell_highlight_style(cell, window, cx);
             // 样式变化或网格列不连续（宽字符跨 2 列）时切段；
-            // 段起点列号供渲染层按列定位（对齐 Zed：force_width 1 格 + 列号间距）。
+            // 段起点列号供渲染层按列定位（force_width 1 格 + 列号间距）。
             let col_contiguous = last_column.is_none_or(|last| column == last + 1);
             match span_style {
                 Some(prev) if prev == style && col_contiguous => {}
@@ -818,7 +818,7 @@ fn push_rect(
 }
 
 /// 光标视口行：快照中的光标行已是视口相对坐标（构建时已换算滚动偏移）。
-/// 光标滚出视口时返回 None（不绘制，对齐 Zed：视口外光标隐藏而非钳制悬浮）。
+/// 光标滚出视口时返回 None（不绘制，视口外光标隐藏而非钳制悬浮）。
 fn cursor_row(content: &Content) -> Option<usize> {
     let row = content.cursor.point.line;
     (row >= 0 && row < content.screen_lines as i32).then_some(row as usize)
@@ -869,7 +869,7 @@ fn layout_cursor(
     match cursor.shape {
         CursorShape::Block => {
             // 光标宽度取光标字符的 shaped 宽度（至少 1 格）：宽字符（中文等）光标
-            // 覆盖整个字符，避免只盖半格造成错位感（对齐 Zed cursor_text.width）。
+            // 覆盖整个字符，避免只盖半格造成错位感。
             let cursor_char = content.cursor_cell.character();
             let cursor_width = {
                 // 宽字符（CJK 等）光标直接取 2 格：字形 advance 按 1 格计算，
@@ -1065,7 +1065,7 @@ mod styled_line_tests {
     }
 
     /// 宽字符渲染：force_width 强制每字形 1 格宽（CJK 字形 advance 恰好 1 格），
-    /// 宽字符占 2 格的间距由段起始列号 × 格宽定位补足（对齐 Zed，不补空格）。
+    /// 宽字符占 2 格的间距由段起始列号 × 格宽定位补足（不补空格）。
     /// "中"（列 0）"文"（列 2）"a"（列 4）三段渲染总宽应等于 5 格。
     #[gpui::test]
     fn wide_char_force_width_aligns_render_width(cx: &mut gpui::TestAppContext) {

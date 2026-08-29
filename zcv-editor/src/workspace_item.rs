@@ -244,13 +244,13 @@ mod tests {
         fs::write(&old_path, "旧内容").expect("应创建测试文件");
 
         let project = cx.new(|cx| Project::new(root, cx));
-        // 对齐 ItemProvider 打开流程：open_buffer 返回已承载规范路径的 MultiBuffer。
+        // open_buffer 返回已承载规范路径的 MultiBuffer。
         let editor = project.update(cx, |project, cx| {
             let multi_buffer = project.open_buffer(&old_path, cx).expect("应打开测试文件");
             cx.new(|cx| Editor::for_multi_buffer(multi_buffer, cx))
         });
 
-        // 对齐 Workspace::rename_path：项目先迁移，再逐个 item 迁移路径（走真实 ItemHandle 实现）。
+        // 项目先迁移，再逐个 item 迁移路径（走真实 ItemHandle 实现）。
         project
             .update(cx, |project, cx| {
                 project.rename_path(&old_path, &new_path, cx)

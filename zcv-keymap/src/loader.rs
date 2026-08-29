@@ -66,7 +66,7 @@ fn macos_display(raw: &str) -> String {
         }
     }
 
-    /// 功能键的 macOS 键帽符号（对齐 Apple 官方键盘符号表）。
+    /// 功能键的 macOS 键帽符号（键帽符号数据来源：Apple 官方键盘符号表）。
     fn key_symbol(key: &str) -> Option<&'static str> {
         match key {
             "backspace" => Some("⌫"),

@@ -43,7 +43,7 @@ pub(crate) fn to_esc_str(
     }
 
     // 可打印字符返回 None：交给 IME 输入通道（replace_text_in_range → 写 PTY），
-    // 与 on_key_down 的特殊键通道分离，避免按键双写并保证输入法合成可用（对齐 Zed）。
+    // 与 on_key_down 的特殊键通道分离，避免按键双写并保证输入法合成可用。
     None
 }
 

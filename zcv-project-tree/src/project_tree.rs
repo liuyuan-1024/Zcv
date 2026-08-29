@@ -29,7 +29,7 @@ use zcv_settings::SettingsStore;
 
 mod git_status;
 
-/// git 状态 → 展示颜色（消费方：项目树与版本控制面板共用）。
+/// git 状态 → 展示颜色。
 pub use git_status::git_status_color;
 
 /// 打开文件回调：面板请求 Workspace 打开路径（弱引用防循环持有）。
@@ -126,7 +126,7 @@ impl ProjectTreePanel {
             .detach();
         let exclusions = SettingsStore::file_scan_exclusions(cx);
         project.update(cx, |project, _| project.set_exclusions(&exclusions));
-        // 项目根从 Project 派生：无 worktree 时为空态，面板同样注册（对齐 Zed 无条件装配）。
+        // 项目根从 Project 派生：无 worktree 时为空态，面板同样注册。
         let mut state = TreeState::new(|row: &ProjectTreeRow| Some(row.path.clone()));
         if let Some(root) = project.read(cx).root() {
             state.expanded.insert(root.to_path_buf());

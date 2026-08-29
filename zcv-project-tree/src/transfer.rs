@@ -36,7 +36,7 @@ pub(crate) fn sanitize_selection(
 pub(crate) enum TreeClipboard {
     /// 复制：粘贴为递归复制，源不受影响。
     Copied(Vec<PathBuf>),
-    /// 剪切：粘贴为移动；首次粘贴后降级为复制（对齐 Zed）。
+    /// 剪切：粘贴为移动；首次粘贴后降级为复制。
     Cut(Vec<PathBuf>),
 }
 

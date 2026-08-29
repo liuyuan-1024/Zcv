@@ -1,6 +1,6 @@
 //! 主题数据：单一解析器与主题注册表。
 //!
-//! 对齐 Zed 的 `ThemeRegistry`：每个内置主题统一解析为语义色与语法高亮表，color / syntax 各模块只消费解析结果。
+//! 每个内置主题统一解析为语义色与语法高亮表，color / syntax 各模块只消费解析结果。
 //!
 //! 新增内置主题只需提供主题描述符并登记到 `THEMES`，其余模块无需改动。
 
@@ -66,7 +66,7 @@ fn parse_theme(id: &'static str, source: &str) -> Option<ThemeData> {
     })
 }
 
-/// 解析主题明暗声明（对齐 Zed 主题文件的 appearance 字段）。
+/// 解析主题明暗声明（appearance 字段）。
 fn parse_appearance(root: &toml::Table) -> Option<WindowAppearance> {
     match root.get("appearance")?.as_str()? {
         "dark" => Some(WindowAppearance::Dark),
@@ -75,7 +75,7 @@ fn parse_appearance(root: &toml::Table) -> Option<WindowAppearance> {
     }
 }
 
-/// 解析 `[colors]` 段：主题文件直接定义的语义色（对齐 Zed themes 的 style 段）。
+/// 解析 `[colors]` 段：主题文件直接定义的语义色。
 /// 全量必填：任一 key 缺失或色值非法即解析失败。
 fn parse_colors(colors: &toml::Table) -> Option<ThemeColors> {
     let parse = |key: &str| -> Option<gpui::Rgba> {
@@ -103,9 +103,9 @@ fn parse_colors(colors: &toml::Table) -> Option<ThemeColors> {
         icon_accent: parse("icon.accent")?,
         status_success: parse("success")?,
         status_error: parse("error")?,
-        status_created: parse("created")?,
-        status_modified: parse("modified")?,
-        status_deleted: parse("deleted")?,
+        version_control_added: parse("version_control.added")?,
+        version_control_modified: parse("version_control.modified")?,
+        version_control_deleted: parse("version_control.deleted")?,
         status_conflict: parse("conflict")?,
         title_bar_background: parse("title_bar.background")?,
         status_bar_background: parse("status_bar.background")?,

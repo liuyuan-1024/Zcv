@@ -44,7 +44,7 @@ static INITIAL_USER_SETTINGS: LazyLock<Cow<'static, str>> = LazyLock::new(|| {
 const SETTINGS_RELOAD_DEBOUNCE: Duration = Duration::from_millis(75);
 const SETTINGS_RELOAD_RETRY_DELAY: Duration = Duration::from_millis(50);
 
-/// 软换行模式的设置值，语义与 Zed 的 `soft_wrap` 一致。
+/// 软换行模式的设置值。
 ///
 /// - `none`：不换行，超长行靠水平滚动查看；
 /// - `editor-width`：行宽超过编辑器文本区宽度时换行，窗口 resize 实时重排；
@@ -424,7 +424,7 @@ mod tests {
     fn comments_and_trailing_commas_are_supported() {
         let content = parse_user_settings(
             r#"{
-                // 与 Zed 一致，settings.json 使用 JSONC 语义。
+                // settings.json 使用 JSONC 语义。
                 "theme": "one-dark",
                 "soft_wrap": "editor-width",
             }"#,
@@ -459,7 +459,7 @@ mod tests {
 
     #[test]
     fn invalid_field_does_not_affect_other_fields() {
-        // 对齐 Zed 的 fallible_options：坏字段单独回退默认，好字段照常生效。
+        // 坏字段单独回退默认，好字段照常生效。
         let settings = UserSettings::merge(
             parse_user_settings(
                 r#"{"soft_wrap":"bogus","theme":"one-dark","file_scan_exclusions":["**/target"]}"#,

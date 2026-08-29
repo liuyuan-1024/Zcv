@@ -1,13 +1,14 @@
-//! 字节级 chunk：文本切片 + 字符/tab 位图（对齐 Zed rope Chunk 的位图语义）。
+//! 字节级 chunk：文本切片 + 字符/tab 位图。
 //!
 //! 位图让"任意字节边界切分"与"tab 展开/字符坐标换算"变成 O(1) 位运算，无需逐字符扫描：
 //! - `chars`：每个 UTF-8 字符的起始字节 bit=1（LSB 对应文本字节 0）；
 //! - `tabs`：每个 tab 字节 bit=1。
 //!
-//! 渲染层按行消费 chunk 流（128 字节对齐，与 Zed rope chunk 上限一致）；
-//! 跨行的换行位图在 Zed 中由 `newlines` 承担，当前行级渲染不需要，裁掉。
+//! 渲染层按行消费 chunk 流（128 字节对齐）；
+//! 跨行的换行位图当前行级渲染不需要，裁掉。
 //!
-//! 渲染对齐 Zed highlighted_chunks：基础文本 chunk 经 inlay、样式与 tab 变换，产出带样式与 is_tab/is_inlay 标记的渲染 chunk；渲染端逐 chunk 生成 TextRun 后统一 shape。
+//! 基础文本 chunk 经 inlay、样式与 tab 变换，产出带样式与 is_tab/is_inlay 标记的渲染 chunk；
+//! 渲染端逐 chunk 生成 TextRun 后统一 shape。
 
 use std::ops::Range;
 
@@ -22,7 +23,7 @@ use super::line_stream::{StreamLineSource, StyledSpan};
 use super::wrap_map::WrapViewportRowKind;
 use zcv_theme::color;
 
-/// chunk 文本字节上限（与 Zed rope Chunk 的 MAX_BASE 一致）。
+/// chunk 文本字节上限。
 pub(crate) const CHUNK_SIZE: usize = 128;
 
 /// 单个显示行交给文字 shaping 的最大字节数。
@@ -39,7 +40,7 @@ pub(crate) struct InlayInfo<'a> {
     pub(crate) text: &'a str,
 }
 
-/// 渲染 chunk：文本切片 + 字符/tab 位图 + 样式标记（对齐 Zed Chunk 的 is_tab/is_inlay/highlight_style）。
+/// 渲染 chunk：文本切片 + 字符/tab 位图 + 样式标记（is_tab/is_inlay/highlight_style）。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Chunk<'a> {
     pub text: &'a str,
@@ -79,7 +80,7 @@ impl<'a> Chunk<'a> {
 
     /// 在文本中的字符边界处切分，位图与样式元数据随 chunk 一起变换。
     ///
-    /// 与 Zed 的 `rope::ChunkSlice::split_at` 一样，本方法不修正调用者给出的坐标：
+    /// 本方法不修正调用者给出的坐标：
     /// chunk 流的构造者负责保证边界，变换层只能在 `chars` 位图标记的位置切分。
     pub(crate) fn split_at(self, mid: usize) -> (Self, Self) {
         assert!(
@@ -146,7 +147,7 @@ impl<'a> Iterator for TextChunks<'a> {
 /// 静态空格表（tab 展开的空格段借用它；tab 宽度对齐的跨度 ≤ tab_width）。
 const SPACES: &str = "                                                                ";
 
-/// 展开 tab 后的 chunk 流（tabs 位图驱动，对齐 Zed TabChunks）。
+/// 展开 tab 后的 chunk 流（tabs 位图驱动）。
 ///
 /// 展开与测量（`advance_display_column`）同规则：tab 宽度 = `tab_width - col % tab_width`；
 /// 展开前的起始列作为片段内展开的列对齐基准。
@@ -257,7 +258,7 @@ pub struct RenderChunks<'a> {
 
 /// 行的样式输入（语法高亮 + 搜索背景层 + 选区标记）。
 ///
-/// 独立于语法前景色的背景覆盖层（对齐 Zed 的 background highlights）：
+/// 独立于语法前景色的背景覆盖层：
 /// 搜索匹配等只改背景、保留语法前景色的场景走这一层，不经过 spans 的 style 替换。
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct LineStyles<'a> {
@@ -287,7 +288,7 @@ struct ChunkStyle {
     marked: bool,
 }
 
-/// Zed 式样式变换：输入只能是 `TextChunks` 产生的安全 chunk，输出也只能在输入 chunk 的字符位图边界处分段。
+/// 样式变换：输入只能是 `TextChunks` 产生的安全 chunk，输出也只能在输入 chunk 的字符位图边界处分段。
 /// 高亮、选区和 inlay 坐标只决定段的元数据，不直接作为 `str` 的切片下标。
 struct StyledChunks<'a, 'b> {
     source: TextChunks<'a>,
@@ -638,7 +639,7 @@ pub(crate) struct WrapRowInfo {
     pub(crate) column_base: usize,
 }
 
-/// 视口行的完整渲染数据（对齐 Zed highlighted_chunks 的封装目标）：
+/// 视口行的完整渲染数据：
 /// 行解构、四层快照链穿透、chunk 合成与 run 映射都在管线侧完成，渲染端只消费结果交给 shaping。
 pub(crate) struct RenderedViewportRow {
     pub(crate) display_text: String,
@@ -778,7 +779,7 @@ pub(crate) fn render_viewport_row(
         &mut rendered.chunks,
         MAX_RENDERED_LINE_LEN.saturating_sub(*indent),
     );
-    // 显示文本：wrap 假空格 + 展开 chunk 文本拼接（对齐 Zed from_chunks）。
+    // 显示文本：wrap 假空格 + 展开 chunk 文本拼接。
     let display_len: usize = *indent
         + rendered
             .chunks
@@ -881,7 +882,7 @@ fn clip_chunks_to_len(chunks: &mut Vec<Chunk<'_>>, max_len: usize) {
     chunks.truncate(keep);
 }
 
-/// 渲染端把 chunk 流转成 TextRun（对齐 Zed from_chunks：每 chunk 一个 run，base 合并样式）。
+/// 渲染端把 chunk 流转成 TextRun（每 chunk 一个 run，base 合并样式）。
 pub fn chunks_to_runs(chunks: &[Chunk<'_>], base: gpui::TextRun) -> Vec<gpui::TextRun> {
     chunks
         .iter()
@@ -891,7 +892,7 @@ pub fn chunks_to_runs(chunks: &[Chunk<'_>], base: gpui::TextRun) -> Vec<gpui::Te
                 ..base.clone()
             };
             if chunk.is_inlay {
-                // 行内提示：斜体 + 半透明（对齐 Zed inlay_hint 的呈现）。
+                // 行内提示：斜体 + 半透明。
                 run.font.style = gpui::FontStyle::Italic;
                 run.color.a *= 0.6;
                 return run;

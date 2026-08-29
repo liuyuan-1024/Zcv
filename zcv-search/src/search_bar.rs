@@ -256,7 +256,7 @@ impl SearchBar {
     }
 
     /// 部署搜索条（cmd-f / 工具栏按钮）：无论当前状态，一律打开并把焦点移到搜索框；
-    /// 关闭只由 esc / ✕ 触发（对齐 Zed：cmd-f 永不关闭搜索条）。
+    /// 关闭只由 esc / ✕ 触发（cmd-f 永不关闭搜索条）。
     pub(super) fn deploy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let was_visible = self.visible;
         self.visible = true;
@@ -281,7 +281,7 @@ impl SearchBar {
         }
     }
 
-    /// 关闭搜索条（esc / ✕）：清空搜索状态并把焦点还给活动 item（对齐 Zed 的 dismiss）。
+    /// 关闭搜索条（esc / ✕）：清空搜索状态并把焦点还给活动 item。
     fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.visible = false;
         if let Some(item) = &self.active_item {
@@ -397,7 +397,7 @@ impl Render for SearchBar {
             return div().into_any_element();
         }
         let colors = color::current(cx);
-        // 按钮点击经弱引用更新组件状态（对齐 zcv 现有 on_click 模式）。
+        // 按钮点击经弱引用更新组件状态。
         let weak = cx.weak_entity();
         let toggle_replace = {
             let weak = weak.clone();
@@ -468,7 +468,7 @@ impl Render for SearchBar {
             .active_item
             .as_ref()
             .is_some_and(|item| item.supports_replace(cx));
-        // 计数文案：无匹配时用占位色（对齐 Zed 的错误态计数）。
+        // 计数文案：无匹配时用占位色。
         let count_color = if match_count > 0 {
             colors.text_muted
         } else {
@@ -506,7 +506,7 @@ impl Render for SearchBar {
                     .flex()
                     .items_center()
                     .gap(space::S6)
-                    // 输入框容器：边框包裹，选项按钮内嵌右侧（对齐 Zed 的 input_style 结构）。
+                    // 输入框容器：边框包裹，选项按钮内嵌右侧。
                     .child(SearchInput::new(
                         "buffer-search-input",
                         self.query_input
@@ -518,7 +518,7 @@ impl Render for SearchBar {
                         self.whole_word,
                         self.regex,
                     ))
-                    // 替换模式 toggle（对齐 Zed 的 Replace 图标按钮；只读目标保留相同布局并显示禁用态）。
+                    // 替换模式 toggle（只读目标保留相同布局并显示禁用态）。
                     .child(
                         Button::icon("search-toggle-replace", "icons/replace.svg")
                             .label("替换")
@@ -531,7 +531,7 @@ impl Render for SearchBar {
                             .on_click(toggle_replace)
                             .disabled(!supports_replace),
                     )
-                    // 计数 + 上下跳转（对齐 Zed 的 matches_column：ChevronLeft/Right）。
+                    // 计数 + 上下跳转（ChevronLeft/Right）。
                     .child(
                         div()
                             .flex_none()
@@ -566,7 +566,7 @@ impl Render for SearchBar {
                     ),
             )
             .when(self.show_replace && supports_replace, |this| {
-                // 替换行：替换输入框 + 替换 / 全部替换（对齐 Zed 的替换栏）。
+                // 替换行：替换输入框 + 替换 / 全部替换。
                 this.child(
                     div()
                         .flex()

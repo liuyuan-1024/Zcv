@@ -1,7 +1,7 @@
 //! Item 协议：Workspace 标签页中文档视图的通用能力。
 //!
 //! 只定义 Item 的通用能力，不依赖 Editor、具体预览格式或 Pane 实现。
-//! 预览视图等可选能力通过 [`Item::as_preview_item`] 桥接获取（对齐 Zed 的 `as_searchable` 模式），不占用 Item 主接口。
+//! 预览视图等可选能力通过 [`Item::as_preview_item`] 桥接获取，不占用 Item 主接口。
 
 use std::any::TypeId;
 use std::ops::Range;
@@ -18,7 +18,7 @@ use crate::preview::PreviewItemHandle;
 use crate::searchable::SearchableItemHandle;
 use crate::toolbar::ToolbarItemLocation;
 
-/// Item 向 Pane/Workspace 上报的通用事件，对齐 Zed `workspace::item::ItemEvent`。
+/// Item 向 Pane/Workspace 上报的通用事件。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ItemEvent {
     /// 标签标题等内容需要刷新。
@@ -85,7 +85,7 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
         false
     }
 
-    /// 预览视图 Item 把自己暴露给 Pane（对齐 Zed 的 `as_searchable` 桥接模式）。
+    /// 预览视图 Item 把自己暴露给 Pane。
     /// 非预览视图返回 None，无需实现。
     fn as_preview_item(
         &self,
@@ -95,7 +95,7 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
         None
     }
 
-    /// 可搜索 Item 把自己暴露给搜索条（对齐 Zed 的 `as_searchable` 桥接模式）。
+    /// 可搜索 Item 把自己暴露给搜索条。
     /// 不可搜索的 Item 返回 None，无需实现。
     fn as_searchable(
         &self,

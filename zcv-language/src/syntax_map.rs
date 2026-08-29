@@ -243,7 +243,7 @@ impl SyntaxSnapshot {
         self.language.is_some()
     }
 
-    /// 返回严格包围当前范围的最小语法节点，对齐 Zed `syntax_ancestor` 的选择扩展语义。
+    /// 返回严格包围当前范围的最小语法节点，用于选择扩展。
     pub fn ancestor_range(&self, range: Range<usize>, text: &Snapshot) -> Option<Range<usize>> {
         self.can_query(&range, text).then_some(())?;
         let mut best: Option<(Range<usize>, u32)> = None;
@@ -324,7 +324,7 @@ impl SyntaxSnapshot {
         {
             let state = Arc::make_mut(&mut self.state);
             let old_tree = state.tree.take();
-            // 主树解析按时间片进行：预算用尽中断后保留 parser 状态，下一片从断点恢复（对齐 Neovim 的 ~3ms 时间片解析，避免大文件解析长期独占后台线程）。
+            // 主树解析按时间片进行：预算用尽中断后保留 parser 状态，下一片从断点恢复（每片 ~3ms，避免大文件解析长期独占后台线程）。
             let new_tree = if language.grammar().is_some() {
                 let mut parser = IncrementalParser::new();
                 loop {

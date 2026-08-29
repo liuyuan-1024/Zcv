@@ -25,7 +25,7 @@ pub(crate) struct EditorComposition {
     pub(super) history_transaction_id: Option<TransactionId>,
 }
 
-/// 自动补全的闭合符标记（对齐 Zed `AutocloseRegion`）。
+/// 自动补全的闭合符标记。
 ///
 /// 零宽 `TrackedRange` 锚在自动插入的闭合符起点（`Stickiness::Expand`）：
 /// 向配对内输入文本时末端锚跟随闭合符右移，输入闭合符且光标紧贴末端时跳过，退格时光标贴着起点时删除整对。
@@ -233,7 +233,7 @@ impl Editor {
             .is_some_and(|node| node.transaction_id == transaction_id)
     }
 
-    /// 自动闭合行为枢纽（对齐 Zed `handle_input` 的配对部分）。
+    /// 自动闭合行为枢纽。
     ///
     /// 逐选区决策：非空选区用配对包裹、光标贴着自动补全闭合符时跳过、键入 open 自动补 close；
     /// 任一选区命中行为时统一提交编辑并返回 true，否则返回 false 走普通插入路径。
@@ -424,7 +424,7 @@ impl Editor {
             .copied()
     }
 
-    /// 光标贴着自动补全闭合符起点时扩展选区覆盖整对（对齐 Zed `select_autoclose_pair`），使退格一次删除整对；非空选区或未命中区域时选区不变。
+    /// 光标贴着自动补全闭合符起点时扩展选区覆盖整对，使退格一次删除整对；非空选区或未命中区域时选区不变。
     pub(super) fn select_autoclose_pair(&mut self, cx: &App) {
         let snapshot = self.text_buffer(cx).read(cx).snapshot();
         let before = self.resolved_selections();
@@ -476,7 +476,7 @@ impl Editor {
     }
 }
 
-/// 自动闭合的后续检查（对齐 Zed `autoclose_before`）：光标后是空白、行尾或常见语句分隔符时才自动闭合，避免在标识符前键入 open 时被自动补上 close。
+/// 自动闭合的后续检查：光标后是空白、行尾或常见语句分隔符时才自动闭合，避免在标识符前键入 open 时被自动补上 close。
 const AUTOCLOSE_BEFORE: &str = ";:.,=}])>";
 
 fn following_text_allows_autoclose(snapshot: &Snapshot, offset: ByteOffset) -> bool {
@@ -489,7 +489,7 @@ fn following_text_allows_autoclose(snapshot: &Snapshot, offset: ByteOffset) -> b
     next.is_whitespace() || AUTOCLOSE_BEFORE.contains(next)
 }
 
-/// 自动闭合的前置检查（对齐 Zed）：引号类配对（start == end）前是词字符时不自动闭合，避免在单词末尾输入引号时被当成新的开启引号。
+/// 自动闭合的前置检查：引号类配对（start == end）前是词字符时不自动闭合，避免在单词末尾输入引号时被当成新的开启引号。
 fn preceding_text_allows_autoclose(
     snapshot: &Snapshot,
     offset: ByteOffset,

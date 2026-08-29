@@ -1,6 +1,6 @@
 //! 行内提示（inlay）显示层：buffer 之上、fold 之下的文本注入。
 //!
-//! 对齐 Zed InlayMap：inlay 文本以注入式投影进入行文本（不占行数、不替换文本），消费链（测量/换行/渲染）只感知投影文本；行内坐标双轨（原始偏移 ↔ 投影偏移）。
+//! InlayMap：inlay 文本以注入式投影进入行文本（不占行数、不替换文本），消费链（测量/换行/渲染）只感知投影文本；行内坐标双轨（原始偏移 ↔ 投影偏移）。
 //! 注入配置版本独立于 buffer 版本，变化时 fold 层整体重建（下游测量/换行依赖文本内容）。
 
 use std::borrow::Cow;
@@ -13,7 +13,7 @@ use super::line_stream::{LineStream, StreamLineSource, StreamLineText};
 
 /// 行内提示：锚定 buffer 字节位置（插入在其后）+ 内容文本。
 ///
-/// 对齐 Zed `Inlay { position: Anchor, content }`；本层只负责显示投影，不绑定数据来源。
+/// 本层只负责显示投影，不绑定数据来源。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Inlay {
     pub(crate) position: ByteOffset,
@@ -161,7 +161,7 @@ impl InlaySnapshot {
             .sum::<usize>()
     }
 
-    /// 投影偏移 → 行内原始字节偏移；落在注入段内时吸附到锚定之后（不可逆，对齐 Zed Left bias）。
+    /// 投影偏移 → 行内原始字节偏移；落在注入段内时吸附到锚定之后（不可逆，Left bias）。
     pub(super) fn to_original_offset(&self, line: Line, projected: usize) -> usize {
         let inlays = self.line_inlays(line);
         for inlay in &inlays {

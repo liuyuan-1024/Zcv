@@ -140,7 +140,6 @@ impl FileStatus {
 
     /// 目录聚合优先级：conflict > deleted > modified > added/untracked > ignored > 无状态。
     ///
-    /// 对齐 Zed `entry_git_aware_label_color` 的判定顺序（editor/items.rs:2200）；
     /// 目录聚合时取子项中优先级最高的状态。
     pub fn priority(self) -> u8 {
         match self {
@@ -312,7 +311,7 @@ pub struct DiffStat {
 
 /// 解析 `git diff --numstat -z` 输出，每项形如 `added\tdeleted\tpath\0`。
 ///
-/// 二进制文件的行数计为 `-`，解析失败时跳过该行（与 Zed 行为一致）。
+/// 二进制文件的行数计为 `-`，解析失败时跳过该行。
 /// 路径按原始字节解析，兼容非 UTF-8。
 pub(crate) fn parse_numstat(output: &[u8]) -> HashMap<PathBuf, DiffStat> {
     let mut entries = HashMap::new();

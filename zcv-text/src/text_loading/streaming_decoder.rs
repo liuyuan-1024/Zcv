@@ -165,7 +165,7 @@ enum TailKind {
     AllValid,
     /// 尾部是合法 UTF-8 多字节序列的开头（≤3 字节），等待下一 chunk 续命。
     IncompleteCodepoint,
-    /// 尾部存在 `n` 字节不可恢复非法序列（与 `Utf8Error::error_len` 对齐）。
+    /// 尾部存在 `n` 字节不可恢复非法序列。
     InvalidBytes(usize),
 }
 

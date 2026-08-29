@@ -48,7 +48,7 @@ pub enum GitStoreEvent {
     Head,
     /// 活动仓库变化（跟随焦点文件切换；订阅方重读 `current_branch()`，无需 payload）。
     ActiveRepositoryChanged,
-    /// 后台 job 集合变化（开始/完成/取消）；订阅方重读 `current_job()`（对齐 Zed 的 JobsUpdated）。
+    /// 后台 job 集合变化（开始/完成/取消）；订阅方重读 `current_job()`。
     JobsUpdated,
     /// 撤销提交成功：携带被撤销的提交消息（面板填回提交信息编辑器）。
     Uncommitted(String),
@@ -93,7 +93,7 @@ pub struct RepositorySnapshot {
     pub branch: Option<String>,
     pub head: Option<String>,
     /// 最近一次提交的 subject（首行；无提交时为 None）。
-    /// 底部提交区显示用，status 扫描时顺手读取（对齐 Zed branch scan 的 `%(contents:subject)`）。
+    /// 底部提交区显示用，status 扫描时顺手读取 `%(contents:subject)`。
     pub last_commit_message: Option<String>,
     /// 是否配置了 remote。
     pub has_remote: bool,
@@ -277,7 +277,7 @@ impl GitStore {
 
     /// 后台执行用户触发的 git 操作（fetch/pull/push），完成后重新扫描。
     ///
-    /// 返回的结果由发起方 await 后自行提示（对齐 Zed：操作发起方持有结果）。
+    /// 返回的结果由发起方 await 后自行提示（操作发起方持有结果）。
     /// 仓库尚未扫描完成（首次打开项目）时只触发扫描，任务立即以错误结束。
     pub fn run_operation(
         &mut self,
@@ -467,7 +467,7 @@ impl GitStore {
         }
     }
 
-    /// 查询目录的聚合状态（对齐 Zed `git_traversal` 的目录摘要）。
+    /// 查询目录的聚合状态。
     ///
     /// 目录自身被忽略时直接返回；
     /// 否则取子项中优先级最高的状态（conflict > deleted > modified > added/untracked）。
@@ -588,7 +588,7 @@ impl GitStore {
 
     /// 操作目标仓库：active 已建立时用它，否则回退「首个有分支的仓库」→「首个」。
     ///
-    /// fetch/pull/push、提交、uncommit 与底部提交信息显示共用此选择（对齐 Zed：操作以 active 仓库为目标，空仓库也执行）。
+    /// fetch/pull/push、提交、uncommit 与底部提交信息显示共用此选择（操作以 active 仓库为目标，空仓库也执行）。
     fn active_repository(&self) -> Option<&Repository> {
         self.active_repo_workdir
             .as_ref()
@@ -813,7 +813,7 @@ impl GitStore {
             GitJob::GitOperation { .. }
             | GitJob::CheckoutBranch { .. }
             | GitJob::CreateBranch { .. } => {
-                // 作用于活动仓库（对齐 Zed：fetch/pull/push 以 active 仓库为目标，空仓库也执行；
+                // 作用于活动仓库（fetch/pull/push 以 active 仓库为目标，空仓库也执行；
                 // 分支操作与 top_bar 显示的分支同仓库）。
                 let repository = self.active_repository()?.repository.clone();
                 Some(JobPreparation {
@@ -833,7 +833,7 @@ impl GitStore {
             GitJob::StageFiles { stage, paths } => {
                 let (repositories, grouped_paths) = self.group_paths_by_repo(paths);
                 // 目录路径展开为该仓库快照内状态匹配的文件（git update-index 不递归目录，直接传目录会失败；
-                // 对齐 Zed：目录勾选收集其下文件路径逐个暂存）。
+                // 目录勾选收集其下文件路径逐个暂存）。
                 // 只保留与操作方向一致的文件：reset 命中未跟踪路径会报错，且避免误暂存无关文件。
                 let grouped_paths = grouped_paths
                     .into_iter()
@@ -1283,7 +1283,7 @@ mod tests {
     #[gpui::test]
     fn ignored_directory_status_propagates_to_descendants(cx: &mut gpui::TestAppContext) {
         // `--ignored=matching` 对整棵被忽略子树只报告目录级条目（如 `!! tmp/`），子树内的文件与目录无条目；
-        // 查询时应沿祖先链继承忽略状态（对齐 Zed 快照传播）。
+        // 查询时应沿祖先链继承忽略状态。
         let (root, _temp) = test_git_repo();
         fs::write(root.join(".gitignore"), "tmp/\n").expect("应写入 .gitignore");
         fs::create_dir_all(root.join("tmp")).expect("应创建 tmp 目录");

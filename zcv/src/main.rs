@@ -45,7 +45,7 @@ fn main() {
 
         match initial_project_root(std::env::args_os(), most_recent_valid_project()) {
             Some(root) => {
-                // 打开失败（路径已失效等）回退空工作区，不阻塞启动（对齐 Zed 恢复失败的兜底）。
+                // 打开失败（路径已失效等）回退空工作区，不阻塞启动。
                 if let Err(error) = open_project_window(root, cx) {
                     eprintln!("打开项目失败：{error}");
                     open_empty_workspace(cx).expect("空工作区窗口应能创建");

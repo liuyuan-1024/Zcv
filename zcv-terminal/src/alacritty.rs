@@ -217,7 +217,7 @@ pub(super) fn update_selection(
     true
 }
 
-/// 清除滚动回看，保留光标行（prompt）并移到屏幕顶部（对齐 Zed clear_saved_screen）。
+/// 清除滚动回看，保留光标行（prompt）并移到屏幕顶部。
 pub(super) fn clear(term: &mut AlacrittyTerm) {
     term.clear_screen(ClearMode::Saved);
     let cursor = term.grid().cursor.point;

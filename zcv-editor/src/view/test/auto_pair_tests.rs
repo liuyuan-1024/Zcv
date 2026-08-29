@@ -139,7 +139,7 @@ fn nested_pairs_skip_innermost_first(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn quote_after_word_character_does_not_autoclose(cx: &mut TestAppContext) {
-    // 引号类配对前是词字符时不自动闭合（对齐 Zed 前置检查），避免打断单词末尾的引号输入。
+    // 引号类配对前是词字符时不自动闭合，避免打断单词末尾的引号输入。
     let (buffer, editor, cx) = editor_with_rust(cx, "ab", SelectionSet::caret(ByteOffset::new(2)));
 
     type_text(&editor, cx, "'");
@@ -158,7 +158,7 @@ fn quote_after_whitespace_autocloses(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn open_bracket_before_identifier_does_not_autoclose(cx: &mut TestAppContext) {
-    // 后续检查（对齐 Zed autoclose_before）：光标后是标识符时不自动闭合。
+    // 后续检查：光标后是标识符时不自动闭合。
     let (buffer, editor, cx) = editor_with_rust(cx, "ab", SelectionSet::caret(ByteOffset::new(1)));
 
     type_text(&editor, cx, "(");
@@ -285,13 +285,13 @@ fn newline_inside_quote_pair_does_not_add_extra_line(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn newline_inside_handwritten_pair_adds_extra_line(cx: &mut TestAppContext) {
-    // 文本判断（对齐 Zed insert_extra_newline_brackets）：手写的括号对同样触发。
+    // 文本判断：手写的括号对同样触发。
     let (buffer, editor, cx) =
         editor_with_rust(cx, "ab{}", SelectionSet::caret(ByteOffset::new(3)));
 
     cx.run_until_parked();
     cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
-    // 文本判断（对齐 Zed insert_extra_newline_brackets）：手写的括号对同样触发。
+    // 文本判断：手写的括号对同样触发。
     assert_eq!(buffer_text(&buffer, cx), "ab{\n    \n}");
     assert_eq!(primary_head(&editor, cx), ByteOffset::new(8));
 }

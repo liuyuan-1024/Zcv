@@ -2,7 +2,7 @@
 //!
 //! 该模块不包含具体格式实现。
 //! 格式 crate 实现 [`PreviewProvider`]，并创建一个直接实现 Item 协议的具体预览视图。
-//! 预览视图自身通过 [`PreviewItem`] 暴露与源码 Item 的关联，经 `Item::as_preview_item` 桥接获取（对齐 Zed 的 `as_searchable` 模式），不占用 Item 主接口。
+//! 预览视图自身通过 [`PreviewItem`] 暴露与源码 Item 的关联，经 `Item::as_preview_item` 桥接获取，不占用 Item 主接口。
 
 use std::any::TypeId;
 use std::path::{Path, PathBuf};

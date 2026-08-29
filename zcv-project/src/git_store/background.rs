@@ -128,7 +128,7 @@ pub(super) async fn execute_job(
                 .unwrap_or(Ok(()));
             JobResult::GitOperation(result)
         }
-        // 项目根无仓库时初始化；fallback 分支名对齐 Zed 的 "main"。
+        // 项目根无仓库时初始化；fallback 分支名 "main"。
         GitJob::GitInit => JobResult::GitOperation(zcv_git::init(&root, "main")),
         // 暂存/取消暂存：按仓库分组执行；任一仓库失败即中断并上报。
         GitJob::StageFiles { stage, .. } => {
@@ -380,7 +380,7 @@ fn refresh_repository_data_sync(
                 .and_then(|branch| branch.branch.clone())
         })
         .flatten();
-    // 分支列表与 head 同批次重读：checkout/新建分支都落在 .git 路径上（fs 事件已过滤），外部操作经增量路径即可刷新选择器列表（对齐"外部 checkout 不重读会滞后"的既有语义）。
+    // 分支列表与 head 同批次重读：checkout/新建分支都落在 .git 路径上（fs 事件已过滤），外部操作经增量路径即可刷新选择器列表。
     let branches = if touches_git {
         match repository.branches() {
             Ok(branches) => branches,

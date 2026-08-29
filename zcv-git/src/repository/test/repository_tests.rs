@@ -867,7 +867,7 @@ fn commit_creates_commit_and_reports_subject() {
         .commit("首行提交\n\n第二行详细说明")
         .expect("commit 应成功");
 
-    // subject 只取首行（对齐 Zed 的 %(contents:subject)）。
+    // subject 只取首行（%(contents:subject)）。
     let (_, subject) = repository.head_commit().expect("查询应成功");
     assert_eq!(subject.as_deref(), Some("首行提交"));
     // oid 与直接执行 git 对照。

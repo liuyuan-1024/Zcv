@@ -148,7 +148,7 @@ fn collect_files(dir: &Path, plan: &WorktreeSearchPlan, output: &mut Vec<PathBuf
 }
 
 /// Git worktree 优先使用 Git 自己的候选文件集：已跟踪 + 未跟踪但未忽略。
-/// 这与 Zed 的 worktree 搜索边界一致，避免进入 target/node_modules 等 `.gitignore` 已排除的巨大目录。
+/// 避免进入 target/node_modules 等 `.gitignore` 已排除的巨大目录。
 /// 非 Git 目录或 Git 不可用时回退到递归扫描。
 fn git_search_paths(plan: &WorktreeSearchPlan) -> Option<Vec<PathBuf>> {
     let output = Command::new("git")

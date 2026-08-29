@@ -5,7 +5,7 @@
 use gpui::{Bounds, Pixels, Point, ShapedLine, point};
 use zcv_text::Line;
 
-/// 与 Zed 默认设置一致：至少预留四位行号，避免小文件增行时 gutter 频繁抖动。
+/// 至少预留四位行号，避免小文件增行时 gutter 频繁抖动。
 pub(super) const MIN_LINE_NUMBER_DIGITS: usize = 4;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

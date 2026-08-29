@@ -38,7 +38,7 @@ impl Selection {
         self
     }
 
-    /// 垂直移动持久保留的目标显示列数值；`None` 表示未设置（对齐 Zed `SelectionGoal::None`）。
+    /// 垂直移动持久保留的目标显示列数值；`None` 表示未设置。
     pub const fn goal(self) -> Option<usize> {
         self.goal
     }

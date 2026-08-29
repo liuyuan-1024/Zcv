@@ -89,7 +89,7 @@ pub(crate) fn replace_selections(
         }
     }
 
-    // 对齐 Zed 的 `replace_selections`：替换命令的结果不是让旧选区端点被动跟随 PositionMap，而是显式成为每段插入文本末尾的 caret。
+    // 替换命令的结果不是让旧选区端点被动跟随 PositionMap，而是显式成为每段插入文本末尾的 caret。
     //
     // 这尤其重要于删除非空选区：无论选区方向、端点 affinity 或同时存在的其他编辑如何，结果都必须是删除起点的单个 caret。
     let (outcome, after_selections) = match apply_edits(buffer, &targets, metadata)? {
@@ -325,7 +325,7 @@ impl TransactionSelections {
         self.redo.as_ref()
     }
 
-    /// 事务提交后填入 redo 选区（对齐 Zed：`end_transaction` 时更新）。
+    /// 事务提交后填入 redo 选区（`end_transaction` 时更新）。
     pub(crate) fn set_redo(&mut self, redo: SelectionSet) {
         self.redo = Some(redo);
     }

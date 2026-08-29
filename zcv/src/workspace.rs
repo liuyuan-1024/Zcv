@@ -156,7 +156,7 @@ pub(crate) fn open_empty_workspace(cx: &mut App) -> anyhow::Result<()> {
 fn open_workspace_window(root: Option<PathBuf>, cx: &mut App) -> anyhow::Result<()> {
     // 项目根作为全局显示基准注册（breadcrumbs 相对化查询；RootChanged 时更新）。
     cx.set_global(ActiveProjectRoot(root.clone()));
-    // 窗口边界恢复：项目记录 → 全局默认 → 初始居中（对齐 Zed new_local 的取值链）。
+    // 窗口边界恢复：项目记录 → 全局默认 → 初始居中。
     let (window_bounds, display_id) =
         load_window_bounds(root.as_deref(), cx).unwrap_or_else(|| {
             (
@@ -188,14 +188,14 @@ fn build_workspace(
     cx: &mut Context<Workspace>,
 ) -> Workspace {
     apply_theme(&SettingsStore::get(cx).theme, cx, Some(window));
-    // 全局字号经 window rem 基准设置（对齐 Zed setup_ui_font）：
+    // 全局字号经 window rem 基准设置：
     // 字体与行高仍在元素上显式设置（见 Workspace 根元素与 tooltip）。
     window.set_rem_size(typography::ui());
     let mut workspace = match root {
         Some(root) => Workspace::new(root.clone(), window, cx),
         None => Workspace::new_empty(window, cx),
     };
-    // 装配不区分空/项目工作区（对齐 Zed）：面板无条件注册，空态由各面板自行渲染。
+    // 装配不区分空/项目工作区：面板无条件注册，空态由各面板自行渲染。
     initialize_workspace(&mut workspace, window, cx);
     // 焦点延后到首帧渲染完成后：track_focus 元素未挂载前 focus 会静默丢失，导致启动后 keymap dispatch 无焦点链，快捷键不生效，直到用户点击界面（焦点链建立）才恢复。
     let focus = workspace.focus.clone();
@@ -262,7 +262,7 @@ fn initialize_common_workspace(
         });
     });
 
-    // 编辑器字号缩放（会话内生效，不写配置文件；对齐 Zed）。
+    // 编辑器字号缩放（会话内生效，不写配置文件）。
     // 字号是 typography 的运行时状态：直接调整并强制重绘，不改 SettingsStore。
     workspace.register_action(move |_workspace, _: &IncreaseFontSize, window, _cx| {
         let editor = f32::from(typography::editor());
@@ -282,7 +282,7 @@ fn initialize_common_workspace(
 
     // UI 字号缩放（全局可用，会话内生效）。
     // UI 字号缩放（cmd-shift-= 等，全局可用，会话内生效）：只调 UI 字号，编辑器不动。
-    // UI 字号是窗口 rem 基准（对齐 Zed setup_ui_font）：字号变化必须同步更新rem_size，否则基于 rem 的文本/布局沿用旧基准，与放大后的字形错位导致截断。
+    // UI 字号是窗口 rem 基准：字号变化必须同步更新rem_size，否则基于 rem 的文本/布局沿用旧基准，与放大后的字形错位导致截断。
     workspace.register_action(move |_workspace, _: &IncreaseUiFontSize, window, _cx| {
         let ui = f32::from(typography::ui());
         typography::set_typography(None, Some(ui + 1.), None);
@@ -335,10 +335,10 @@ fn initialize_common_workspace(
 /// 装配 Workspace：顶栏注入、面板/状态项注册、订阅接线。
 ///
 /// 必须在 `Workspace::update` 闭包内调用（workspace 为 &mut），内部不得再对同一实体嵌套 update。
-/// 所有工作区（含无 worktree 的空工作区）走同一条装配路径（对齐 Zed）。
+/// 所有工作区（含无 worktree 的空工作区）走同一条装配路径。
 /// 后台执行 git 操作（fetch/pull/push）：等待结果后直接弹提示（成功/失败+错误详情）。
 ///
-/// 命令编排与结果文案属于产品层（对齐 Zed：git_ui 处理 RemoteAction 并展示结果），框架 workspace 不解释 git 领域语义，因此这里在装配层统一注册。
+/// 命令编排与结果文案属于产品层，框架 workspace 不解释 git 领域语义，因此这里在装配层统一注册。
 fn run_git_operation(
     workspace: &mut Workspace,
     operation: GitOperationKind,
@@ -445,7 +445,7 @@ fn initialize_workspace(
         });
     }
     workspace.set_titlebar(top_bar.clone().into(), cx);
-    // TopBar 组件不在主焦点链上：把选择器的命令 handler 注册到 Workspace 根节点（对齐 Zed register_action），全局可达。
+    // TopBar 组件不在主焦点链上：把选择器的命令 handler 注册到 Workspace 根节点，全局可达。
     let project_picker = top_bar.read(cx).project_picker.clone();
     workspace.register_action(move |_workspace, _: &ToggleProjectPicker, window, cx| {
         project_picker.update(cx, |picker, cx| picker.toggle(window, cx));
@@ -628,7 +628,7 @@ fn initialize_workspace(
         window.refresh();
     });
 
-    // git 操作（fetch/pull/push）：编排与文案在装配层（对齐 Zed git_ui 的 RemoteAction 处理）。
+    // git 操作（fetch/pull/push）：编排与文案在装配层。
     workspace.register_action(move |workspace, _: &GitFetch, _window, cx| {
         run_git_operation(workspace, GitOperationKind::Fetch, cx);
     });
@@ -823,7 +823,7 @@ mod tests {
     use super::{Workspace, build_workspace};
     use crate::project_diff::{self, ProjectDiffView};
 
-    /// 空工作区与项目工作区走同一条装配路径：全部面板无条件注册，空态由面板自行渲染（对齐 Zed）。
+    /// 空工作区与项目工作区走同一条装配路径：全部面板无条件注册，空态由面板自行渲染。
     #[gpui::test]
     fn empty_workspace_installs_all_panels(cx: &mut TestAppContext) {
         cx.update(|cx| {

@@ -170,7 +170,7 @@ fn insert_entry(
 
 /// 目录节点聚合子项状态（priority 最高）与 diff 统计（求和），并排序 children。
 ///
-/// 排序规则对齐项目树：目录优先，再按名称。
+/// 排序规则：目录优先，再按名称。
 fn finalize_node(node: &mut GitTreeNode) {
     if node.is_dir {
         let mut status: Option<FileStatus> = None;
@@ -679,7 +679,7 @@ impl Render for VersionControlPanel {
 
 // ═══ 私有渲染辅助函数 ═══════════════════════════════════════════
 
-/// 面板顶部统计行：加减号图标 + 总新增/删除行数（全零时只留图标，对齐 Zed 的 Diff 图标 + DiffStat）。
+/// 面板顶部统计行：加减号图标 + 总新增/删除行数（全零时只留图标）。
 fn render_total_diff_stat(total: DiffStat, cx: &App) -> Div {
     let colors = color::current(cx);
     div()
@@ -700,12 +700,12 @@ fn render_total_diff_stat(total: DiffStat, cx: &App) -> Div {
         .when(total.added > 0 || total.deleted > 0, |el| {
             el.child(
                 div()
-                    .text_color(colors.status_created)
+                    .text_color(colors.version_control_added)
                     .child(format!("+{}", total.added)),
             )
             .child(
                 div()
-                    .text_color(colors.status_deleted)
+                    .text_color(colors.version_control_deleted)
                     .child(format!("−{}", total.deleted)),
             )
         })
@@ -744,7 +744,8 @@ fn render_row(
     cx: &mut App,
 ) -> Div {
     match row {
-        // 分组头：不可选择；行首 chevron 折叠/展开分区，行尾复选框全选/取消全选（空分区不显示复选框，对齐 Zed）。
+        // 分组头：不可选择；
+        // 行首 chevron 折叠/展开分区，行尾复选框全选/取消全选（空分区不显示复选框）。
         GitRow::Header(section) => {
             let is_collapsed = render_context.collapsed.borrow().contains(section);
             let weak = render_context.weak.clone();
@@ -821,7 +822,7 @@ fn render_row(
             let status_color = entry.status.and_then(|status| git_status_color(status, cx));
             // 删除线只作用于文件行。
             let is_deleted = !is_dir && entry.status.is_some_and(|status| status.is_deleted());
-            // 文件名按 git 状态着色（对齐项目树；删除文件加删除线）。
+            // 文件名按 git 状态着色（删除文件加删除线）。
             let content = div()
                 .when_some(status_color, |label, label_color| {
                     label.text_color(label_color)
@@ -841,12 +842,12 @@ fn render_row(
                     .gap(space::S2)
                     .child(
                         div()
-                            .text_color(colors.status_created)
+                            .text_color(colors.version_control_added)
                             .child(format!("+{}", diff_stat.added)),
                     )
                     .child(
                         div()
-                            .text_color(colors.status_deleted)
+                            .text_color(colors.version_control_deleted)
                             .child(format!("−{}", diff_stat.deleted)),
                     )
             } else {
@@ -1008,7 +1009,7 @@ fn render_commit_footer(
                         .child(last_commit_text),
                 )
                 // 撤销按钮：仅在有提交时显示（无提交时 uncommit 无意义）。
-                // 图标对齐 Zed（IconName::Undo / undo.svg），hover 提示"撤销提交"。
+                // hover 提示"撤销提交"。
                 .when(has_last_commit, |element| {
                     element.child(
                         Button::icon("version-control-uncommit", "icons/undo.svg")
@@ -1071,7 +1072,7 @@ impl Panel for VersionControlPanel {
 
 // ═══ 内部类型 ════════════════════════════════════════════════════
 
-/// 分组（对齐 Zed Section 的 Staging 模式；冲突暂不展示）。
+/// 分组（冲突暂不展示）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum GitSection {
     Staged,
@@ -1096,7 +1097,7 @@ enum GitRow {
     Entry(GitTreeRow),
 }
 
-/// 变更树行（对齐项目树 TreeRow 的形态）。
+/// 变更树行。
 #[derive(Clone, Debug)]
 struct GitTreeRow {
     /// 所在分组（选中/展开键的一部分；(section, path) 在可见行内唯一）。
@@ -1155,9 +1156,9 @@ struct GitPanelRenderContext {
     focus: FocusHandle,
     /// 折叠的分区（标题行 chevron 渲染与点击共享）。
     collapsed: Rc<RefCell<HashSet<GitSection>>>,
-    /// 有条目的分区（空分区标题行不显示全选复选框，对齐 Zed）。
+    /// 有条目的分区（空分区标题行不显示全选复选框）。
     non_empty_sections: HashSet<GitSection>,
-    /// 条目点击直接调用 Entity 方法（对齐 Zed 的 `cx.listener` 路径）。
+    /// 条目点击直接调用 Entity 方法。
     weak: WeakEntity<VersionControlPanel>,
 }
 
@@ -1408,7 +1409,7 @@ mod tests {
         );
     }
 
-    /// 创建带一个修改文件的临时 git 仓库（对齐 git 层测试模式）。
+    /// 创建带一个修改文件的临时 git 仓库。
     fn test_repo() -> (PathBuf, TempDir) {
         let temp_dir = tempfile::tempdir().expect("应创建临时目录");
         let root = temp_dir.path().to_path_buf();

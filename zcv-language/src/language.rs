@@ -16,7 +16,7 @@ pub use registry::Language;
 pub use structure_queries::{BracketPair, FoldRange, NewlineIndent};
 pub use syntax_map::SyntaxSnapshot;
 
-/// 输入级自动闭合配对（对齐 Zed 语言配置中的 `[[brackets]]`）。
+/// 输入级自动闭合配对。
 ///
 /// 决定键入 `start` 时编辑器是否自动补全 `end`、选中文本时是否用该对包裹；
 /// 与语法级 `brackets.scm` 查询（折叠、括号跳转）互不相干。

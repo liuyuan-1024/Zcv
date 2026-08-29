@@ -123,7 +123,7 @@ fn leading_slots(
     // 项目选择器
     out.push(project_picker.clone().into_any_element());
 
-    // Git 分支与同步/推送/拉取操作：项目不是 git 仓库时不显示（对齐 Zed 静默降级）。
+    // Git 分支与同步/推送/拉取操作：项目不是 git 仓库时不显示。
     if has_repositories {
         // Git 分支：按钮由分支选择器自含（点击弹出分支列表）。
         out.push(branch_picker.clone().into_any_element());

@@ -68,7 +68,7 @@ impl Language {
     }
 }
 
-/// 文件识别规则（对齐 Zed `LanguageMatcher`）：扩展名 + 首行模式。
+/// 文件识别规则：扩展名 + 首行模式。
 ///
 /// 首行模式在注册表构建时一次性编译（内置模式静态正确，编译失败直接 panic），
 /// 文件匹配热路径不再每次重新编译正则。
@@ -77,7 +77,7 @@ pub(crate) struct LanguageMatcher {
     pub(crate) first_line_pattern: Option<regex::Regex>,
 }
 
-/// 语言注册条目（对齐 Zed `AvailableLanguage`）：声明 + 惰性加载。
+/// 语言注册条目：声明 + 惰性加载。
 ///
 /// 声明（名称/matcher）在注册表构建时登记，文件识别不依赖语言已加载；
 /// `load` 在真正需要语法解析/高亮时才编译 grammar 与查询。
@@ -157,7 +157,7 @@ impl LanguageEntry {
     }
 }
 
-/// 语言注册表（对齐 Zed `LanguageRegistry`）：语言声明 + 文件识别 + 惰性加载。
+/// 语言注册表：语言声明 + 文件识别 + 惰性加载。
 ///
 /// 当前尚无扩展系统，注册条目来自内置语言数据（`builtin_languages`）；
 /// 若未来支持用户配置覆盖 matcher，在此注册表上扩展即可。
@@ -405,7 +405,7 @@ mod tests {
             "data.yaml",
         ] {
             let language = language_for_file(Path::new(path), None)
-                .unwrap_or_else(|| panic!("{path} 的 Zed 结构查询应与 grammar 匹配"));
+                .unwrap_or_else(|| panic!("{path} 的结构查询应与 grammar 匹配"));
             assert!(language.brackets().is_some(), "{path} 应提供括号查询");
             assert!(
                 language.indents().is_some() || path.ends_with(".yaml"),

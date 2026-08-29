@@ -25,7 +25,7 @@ pub enum ConfirmAnswer {
 
 type AnswerHandler = Rc<dyn Fn(ConfirmAnswer, &mut Window, &mut App)>;
 
-/// 确认浮层（Builder 模式，对齐 `Button`）。
+/// 确认浮层（Builder 模式）。
 ///
 /// 按钮点击为数据型交互：直接回调 `on_answer`，不依赖焦点链分发；
 /// 默认文案为 确认/跳过/取消，可按场景覆盖（如 覆盖/跳过/取消）。

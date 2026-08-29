@@ -1,6 +1,6 @@
 //! 底部终端面板：内嵌 Pane，终端以 Item 形式打开。
 //!
-//! 对齐 Zed：面板复用编辑区的 Pane，多终端标签栏、tab 切换、关闭与编辑区同构。
+//! 面板复用编辑区的 Pane，多终端标签栏、tab 切换、关闭与编辑区同构。
 
 use gpui::{
     App, ClickEvent, Context, Entity, EntityId, EventEmitter, FocusHandle, Subscription, Window,
@@ -180,7 +180,7 @@ impl Panel for TerminalPanel {
 
 impl Render for TerminalPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // 首次渲染注册带 window 的订阅（构造函数中没有 Window，对齐 TerminalView 的初始化模式）。
+        // 首次渲染注册带 window 的订阅（构造函数中没有 Window）。
         if !self.initialized {
             self.initialized = true;
             let subscription = cx.subscribe_in(

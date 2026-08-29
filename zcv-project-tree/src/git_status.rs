@@ -1,39 +1,39 @@
 //! git 状态 → 展示颜色的映射。
 //!
-//! 消费方共享层：项目树与版本控制面板共用同一套状态着色优先级。
+//! 项目树与版本控制面板统一使用 `version_control` 色系；
+//! 优先级：conflict > deleted > modified > added/untracked > ignored（渲染层淡显）。
 
 use gpui::App;
 use zcv_git::{FileStatus, StatusCode};
 use zcv_theme::color;
 
-/// git 状态 → 文本颜色（对齐 Zed `entry_git_aware_label_color` 的优先级）。
-///
-/// conflict > deleted > modified > added/untracked > ignored（渲染层淡显）。
+/// git 状态 → 文本颜色。
 pub fn git_status_color(status: FileStatus, cx: &App) -> Option<gpui::Rgba> {
     let colors = color::current(cx);
     match status {
         FileStatus::Unmerged => Some(colors.status_conflict),
-        FileStatus::Untracked => Some(colors.status_created),
+        FileStatus::Untracked => Some(colors.version_control_added),
         FileStatus::Ignored => None,
         FileStatus::Tracked {
             index_status,
             worktree_status,
         } => {
-            let deleted = matches!(index_status, StatusCode::Deleted)
+            let is_deleted = matches!(index_status, StatusCode::Deleted)
                 || matches!(worktree_status, StatusCode::Deleted);
-            let modified = matches!(index_status, StatusCode::Modified | StatusCode::TypeChanged)
-                || matches!(
-                    worktree_status,
-                    StatusCode::Modified | StatusCode::TypeChanged
-                );
-            let added = matches!(index_status, StatusCode::Added)
+            let is_modified =
+                matches!(index_status, StatusCode::Modified | StatusCode::TypeChanged)
+                    || matches!(
+                        worktree_status,
+                        StatusCode::Modified | StatusCode::TypeChanged
+                    );
+            let is_added = matches!(index_status, StatusCode::Added)
                 || matches!(worktree_status, StatusCode::Added);
-            if deleted {
-                Some(colors.status_deleted)
-            } else if modified {
-                Some(colors.status_modified)
-            } else if added {
-                Some(colors.status_created)
+            if is_deleted {
+                Some(colors.version_control_deleted)
+            } else if is_modified {
+                Some(colors.version_control_modified)
+            } else if is_added {
+                Some(colors.version_control_added)
             } else {
                 None
             }
@@ -52,7 +52,10 @@ mod tests {
             let colors = color::current(cx);
             let color = |status| git_status_color(status, cx);
             // 特殊态。
-            assert_eq!(color(FileStatus::Untracked), Some(colors.status_created));
+            assert_eq!(
+                color(FileStatus::Untracked),
+                Some(colors.version_control_added)
+            );
             assert_eq!(color(FileStatus::Unmerged), Some(colors.status_conflict));
             assert_eq!(color(FileStatus::Ignored), None);
             // 已跟踪：deleted > modified > added 优先级。
@@ -62,28 +65,28 @@ mod tests {
             };
             assert_eq!(
                 color(tracked(StatusCode::Unmodified, StatusCode::Modified)),
-                Some(colors.status_modified)
+                Some(colors.version_control_modified)
             );
             assert_eq!(
                 color(tracked(StatusCode::Modified, StatusCode::Unmodified)),
-                Some(colors.status_modified)
+                Some(colors.version_control_modified)
             );
             assert_eq!(
                 color(tracked(StatusCode::Unmodified, StatusCode::TypeChanged)),
-                Some(colors.status_modified)
+                Some(colors.version_control_modified)
             );
             assert_eq!(
                 color(tracked(StatusCode::Unmodified, StatusCode::Added)),
-                Some(colors.status_created)
+                Some(colors.version_control_added)
             );
             assert_eq!(
                 color(tracked(StatusCode::Unmodified, StatusCode::Deleted)),
-                Some(colors.status_deleted)
+                Some(colors.version_control_deleted)
             );
             // 部分暂存：modified 优先于 added。
             assert_eq!(
                 color(tracked(StatusCode::Added, StatusCode::Modified)),
-                Some(colors.status_modified)
+                Some(colors.version_control_modified)
             );
             assert_eq!(
                 color(tracked(StatusCode::Unmodified, StatusCode::Unmodified)),

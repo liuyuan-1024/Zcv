@@ -4,7 +4,7 @@
 //! 分支列表由 Workspace 订阅 GitStore 事件后推送（同步快照，打开即渲染，无加载态）；
 //! 切换/创建分支通过回调转发到 git_store 后台执行，完成后 GitStore 自动重扫并推送新列表。
 //!
-//! 搜索无匹配时列表尾部追加"创建分支"虚拟行：以当前 HEAD 为基创建并切换（对齐 Zed 的 Entry::NewBranch）。
+//! 搜索无匹配时列表尾部追加"创建分支"虚拟行：以当前 HEAD 为基创建并切换。
 
 use std::rc::Rc;
 
@@ -172,7 +172,7 @@ pub struct BranchPicker {
     picker: Entity<Picker<BranchPickerDelegate>>,
     /// 当前分支名（由 Workspace 订阅 GitStore 的 Head 事件刷新）。
     current_branch: Option<String>,
-    /// HEAD 提交的完整 oid（detached HEAD 时用于显示短 SHA，对齐 Zed）。
+    /// HEAD 提交的完整 oid（detached HEAD 时用于显示短 SHA）。
     head_commit: Option<String>,
     /// 分支列表快照（由 Workspace 订阅 GitStore 事件推送；打开时同步渲染）。
     branches: Vec<Branch>,

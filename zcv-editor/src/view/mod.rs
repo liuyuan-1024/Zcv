@@ -113,7 +113,7 @@ impl From<MovementUnit> for Motion {
     }
 }
 
-/// 鼠标手势的选区粒度（对齐 Zed 的 SelectMode）。
+/// 鼠标手势的选区粒度。
 ///
 /// Word/Line 携带手势起点时的锚定范围：拖拽扩展与 Shift+点击按粒度扩展时，选区以该范围的两端为基准做整词/整行吸附。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,7 +143,7 @@ pub(crate) enum EditorMode {
     Full,
 }
 
-/// 软换行模式，与 Zed 的 soft_wrap 设置语义一致。
+/// 软换行模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SoftWrap {
     /// 不换行（超长行横向滚动）。
@@ -172,7 +172,7 @@ pub struct Editor {
     display_map: DisplayMap,
     mode: EditorMode,
     /// 空 buffer 时显示的提示文本（如提交信息编辑器的"输入提交信息…"）。
-    /// 独立 DisplayMap 承载（对齐 Zed：placeholder 走真实渲染管线，折行/行高一致）。
+    /// 独立 DisplayMap 承载（placeholder 走真实渲染管线，折行/行高一致）。
     placeholder_display_map: Option<DisplayMap>,
     selections: EditorSelections,
     selection_history: SelectionHistory,
@@ -216,7 +216,7 @@ pub struct Editor {
         BufferVersion,
         Option<BracketPair>,
     )>,
-    /// 最近一次鼠标手势的选区粒度；Shift+点击时按此粒度扩展（对齐 Zed 的 select_mode）。
+    /// 最近一次鼠标手势的选区粒度；Shift+点击时按此粒度扩展。
     mouse_select_mode: MouseSelectMode,
     /// 正在进行的鼠标选区手势；普通选区变更会终止它。
     pending_selection: Option<PendingSelection>,
@@ -527,7 +527,7 @@ impl Editor {
         cx.notify();
     }
 
-    /// 展开/折叠修改块：展开显示修改前的 HEAD 旧行（对齐 Zed：base 旧行插在修改行上方）。
+    /// 展开/折叠修改块：展开显示修改前的 HEAD 旧行（base 旧行插在修改行上方）。
     pub fn toggle_modified_hunk(&mut self, old_range: Range<usize>, cx: &mut Context<Self>) {
         let is_expanded = self.expanded_modified_hunks.contains(&old_range);
         if is_expanded {
@@ -705,7 +705,7 @@ impl Editor {
         self.multi_buffer.read(cx).is_dirty(cx)
     }
 
-    /// 设置空 buffer 时显示的提示文本（对齐 Zed `set_placeholder_text`）。
+    /// 设置空 buffer 时显示的提示文本。
     ///
     /// 文本放进独立 DisplayMap：渲染层在空 buffer 时把它的快照接入行管线，
     /// 折行/行高/滚动与真实文本一致；空文本清除 placeholder。
@@ -849,7 +849,7 @@ impl Editor {
 
     /// 把 offset 版选区集合重锚定到当前显示快照版本。
     pub(crate) fn set_selections(&mut self, selections: SelectionSet) {
-        // 对齐 Zed 的 MutableSelectionsCollection::select：任何普通选区替换都会终止 pending selection，避免旧鼠标锚点在之后复活。
+        // 任何普通选区替换都会终止 pending selection，避免旧鼠标锚点在之后复活。
         self.pending_selection = None;
         self.set_pending_selection(selections);
     }
@@ -1008,8 +1008,8 @@ impl Editor {
 
     /// 鼠标左键按下：按点击次数开始选区手势，并记录拖拽起点。
     ///
-    /// 单击定位光标、双击选中词、三击选中整行、四击及以上全选（对齐 Zed 的 begin_selection）；
-    /// `extend`（Shift 按下）时按上次手势粒度扩展选区（对齐 Zed 的 extend_selection）。
+    /// 单击定位光标、双击选中词、三击选中整行、四击及以上全选；
+    /// `extend`（Shift 按下）时按上次手势粒度扩展选区。
     pub(super) fn begin_selection(
         &mut self,
         offset: ByteOffset,
@@ -1072,7 +1072,7 @@ impl Editor {
             _ => (ByteOffset::ZERO, buffer.len_bytes(), MouseSelectMode::All),
         };
 
-        // Shift+点击：以上次选区锚点为固定端，按点击位置向两侧扩展；点击范围覆盖锚点时整段纳入（对齐 Zed 的 extend_selection 夹紧逻辑）。
+        // Shift+点击：以上次选区锚点为固定端，按点击位置向两侧扩展；点击范围覆盖锚点时整段纳入。
         let selection = if extend {
             let tail = self.resolved_selections().primary().anchor();
             let mut start = start;
@@ -1107,7 +1107,7 @@ impl Editor {
 
     /// 鼠标拖动：按按下时的粒度把选区活动端更新到当前位置。
     ///
-    /// 词/行粒度下按整词/整行边界吸附，避免半词截断（对齐 Zed 的 update_selection）。
+    /// 词/行粒度下按整词/整行边界吸附，避免半词截断。
     pub(super) fn update_selection(&mut self, offset: ByteOffset, cx: &mut Context<Self>) {
         let Some(pending) = self.pending_selection.clone() else {
             return;
@@ -1335,7 +1335,7 @@ impl Editor {
         let blink_manager = cx.new(|_| BlinkManager::new());
         cx.observe(&blink_manager, |_, _, cx| cx.notify()).detach();
 
-        // 对齐 Zed：换行模式默认来自全局设置，与编辑器模式无关；
+        // 换行模式默认来自全局设置，与编辑器模式无关；
         // UI 场景可用 set_soft_wrap_mode 覆盖（覆盖存在时设置变化不生效）。
         let settings = SettingsStore::try_get(cx);
         let mut this = Self {
@@ -1396,7 +1396,7 @@ impl Editor {
 
     /// 提交一次文本编辑事务的唯一入口。
     ///
-    /// 对齐 Zed 的 `transact` 会话模型：入口统一负责会话开启/提交（`start_transaction` / `end_transaction`）、Buffer 通知、编辑后选区锚点映射、SelectionHistory 记录、display_map 同步与搜索重搜（`apply_edit_outcome` 全链路）。
+    /// 会话模型：入口统一负责会话开启/提交（`start_transaction` / `end_transaction`）、Buffer 通知、编辑后选区锚点映射、SelectionHistory 记录、display_map 同步与搜索重搜（`apply_edit_outcome` 全链路）。
     /// 返回编辑结果供需要事务身份的调用方消费（如 IME 组合会话）；失败时错误已打印、选区已恢复，调用方只需处理自身特判状态。
     pub(super) fn change(
         &mut self,
@@ -1419,7 +1419,7 @@ impl Editor {
         self.apply_edit_outcome_with_after(node_id, outcome, cx)
     }
 
-    /// 会话化编辑的共享骨架：开启会话并记录 undo 选区（对齐 Zed：事务开始时记录）→ 闭包编辑（统一 Buffer 通知）→ 提交会话，返回 (节点身份, 编辑结果)。
+    /// 会话化编辑的共享骨架：开启会话并记录 undo 选区（事务开始时记录）→ 闭包编辑（统一 Buffer 通知）→ 提交会话，返回 (节点身份, 编辑结果)。
     ///
     /// 编辑失败时结束空会话（不产生历史节点）、恢复编辑前选区并回传错误；合并进前节点时清理会话自身的孤儿选区记录。
     fn commit_session<T>(
@@ -1560,7 +1560,7 @@ impl Editor {
                 && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
             {
                 // display_map 尚未同步到新版本，历史快照按 Buffer 快照解析。
-                // 对齐 Zed：事务结束时记录 redo 选区。
+                // 事务结束时记录 redo 选区。
                 let after_selections = self.selections.resolve(&snapshot);
                 transaction.set_redo(after_selections);
             }
@@ -1638,7 +1638,7 @@ impl Editor {
             if region.range.version() != old_version {
                 continue;
             }
-            // 映射结果一律保留（等价于 Zed 的 Anchor 语义：删除内容不使锚失效）：
+            // 映射结果一律保留（Anchor 语义：删除内容不使锚失效）：
             // 区域锚在闭合符起点，闭合符是否存活由使用处的文本校验兜底。
             let range = region
                 .range
@@ -1677,7 +1677,7 @@ impl Editor {
                                 MovementDirection::Next => selection.end(),
                             }
                         }
-                        // 翻页从选区底端出发（对齐 Zed：move_page_up/down 都基于 end）。
+                        // 翻页从选区底端出发（move_page_up/down 都基于 end）。
                         Motion::PageStep(_) => selection.end(),
                         _ => selection.head(),
                     }
@@ -1725,7 +1725,7 @@ impl Editor {
                         let target = buffer.movement_boundary(head, direction, unit)?;
                         let mut target = buffer.char_to_byte(target)?;
                         // 折叠感知：目标落在折叠内时按方向吸附到折叠终点/起点。
-                        // 折叠在显示上占一个字符（合并行占位符），水平移动一步跨过（对齐 Zed）。
+                        // 折叠在显示上占一个字符（合并行占位符），水平移动一步跨过。
                         if let Some((start, end)) = self
                             .display_map
                             .snapshot()

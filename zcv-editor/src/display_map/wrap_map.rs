@@ -1,7 +1,7 @@
 //! DisplayMap 的软换行（soft wrap）层。
 //!
 //! WrapMap 在 TabMap 之上，把超过指定像素宽度的逻辑行拆成多个显示行。
-//! 换行点由 gpui 的 LineWrapper 计算（与 Zed 同源算法：词边界优先、长词硬断、首行缩进继承）。
+//! 换行点由 gpui 的 LineWrapper 计算（算法：词边界优先、长词硬断、首行缩进继承）。
 //! 续行的视觉缩进是一段"假空格"，作为显示文本的前缀参与布局、命中测试与坐标换算，因此渲染端无需为续行做任何特殊定位。
 //!
 //! 与 FoldMap 一样，WrapMap 用 `SumTree<Transform>` 维护"输入 tab 行 → 输出显示行"的拓扑：Isomorphic 段把连续不换行行合并，Wrap 段把单个宽行拆成 `wrap_points.len() + 1` 个显示行。
@@ -433,7 +433,7 @@ impl WrapSnapshot {
             return Ok(Vec::new());
         }
         let fold = self.tab_snapshot.fold_snapshot();
-        // 折叠内端点按 bias 投影：起点吸附折叠起点列，终点吸附折叠终点列（对齐 Zed）。
+        // 折叠内端点按 bias 投影：起点吸附折叠起点列，终点吸附折叠终点列。
         let start = self.projected_point_to_range_point(
             fold.logical_to_projected_point(logical.start(), FoldBias::Left)?,
         )?;

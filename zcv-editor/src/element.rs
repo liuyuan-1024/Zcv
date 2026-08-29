@@ -617,7 +617,7 @@ fn build_deleted_hunk_buttons(
         let editor = editor.clone();
         let old_range = old_range.clone();
         let mut button = Button::icon(("deleted-hunk-toggle", index), "icons/triangle_right.svg")
-            .color(color::current(cx).status_deleted)
+            .color(color::current(cx).version_control_deleted)
             .label("展开删除内容")
             .on_click(move |_event, _window, cx| {
                 editor.update(cx, |editor, cx| {
@@ -1271,7 +1271,7 @@ impl Element for EditorElement {
             .map(|gutter| window.insert_hitbox(gutter.bounds, HitboxBehavior::Normal));
         // hunk 竖条范围与状态色（竖条不随展开变化；行背景按行状态另行绘制）。
         let hunk_strips = Arc::new(hunk_render.strips.clone());
-        // hunk 色带 hitbox：点击切换折叠/展开（对齐 Zed：hitbox 挂在色带区域，BlockMouse 不穿透）。
+        // hunk 色带 hitbox：点击切换折叠/展开（hitbox 挂在色带区域，BlockMouse 不穿透）。
         let deleted_hunk_hitboxes = Arc::new({
             let editor = self.editor.read(cx);
             let mut hitboxes = Vec::new();
@@ -1511,7 +1511,7 @@ impl Element for EditorElement {
 
         // 拖拽扩展选区：按住左键移动时按点击粒度更新选区；
         // 鼠标拖出文本视口边缘时视口自动滚动、选区随之扩展；
-        // 无按键移动时兜底结束拖拽（覆盖"窗口外释放后移回"等漏网场景，对齐滚动条复位策略）。
+        // 无按键移动时兜底结束拖拽（覆盖"窗口外释放后移回"等漏网场景）。
         let drag_editor = self.editor.clone();
         let drag_layout = Arc::clone(&prepaint.layout);
         let drag_text_bounds = prepaint.layout.text_clip_bounds;
@@ -1587,7 +1587,7 @@ impl Element for EditorElement {
             if let Some(hitbox) = &prepaint.gutter_hitbox {
                 window.set_cursor_style(gpui::CursorStyle::IBeam, hitbox);
             }
-            // hunk 色带可点击：hover 时手型光标（对齐 Zed 的 PointingHand）。
+            // hunk 色带可点击：hover 时手型光标。
             for (hitbox, _, _, _) in prepaint.deleted_hunk_hitboxes.iter() {
                 if hitbox.is_hovered(window) {
                     window.set_cursor_style(gpui::CursorStyle::PointingHand, hitbox);
@@ -1629,13 +1629,13 @@ impl Element for EditorElement {
                     background,
                 ));
             }
-            // git diff 竖条：hunk 状态色（不随展开变化，对齐 Zed paint_gutter_diff_hunks）；
+            // git diff 竖条：hunk 状态色（不随展开变化）；
             // 展开的修改块竖条保持黄色并覆盖整个 hunk（旧行 + 修改行）。
             for (rows, kind) in prepaint.hunk_strips.iter() {
                 let strip_color = match kind {
-                    DiffHunkKind::Added => colors.status_created,
-                    DiffHunkKind::Modified => colors.status_modified,
-                    DiffHunkKind::Deleted => colors.status_deleted,
+                    DiffHunkKind::Added => colors.version_control_added,
+                    DiffHunkKind::Modified => colors.version_control_modified,
+                    DiffHunkKind::Deleted => colors.version_control_deleted,
                 };
                 for line in prepaint
                     .layout
@@ -1789,13 +1789,13 @@ impl Element for EditorElement {
                 scrollbar.hitbox.bounds,
                 colors.scrollbar_track_background,
             ));
-            // git diff marker 列（track 之上、thumb 之下绘制；颜色对齐项目树 git 状态色）。
+            // git diff marker 列（track 之上、thumb 之下绘制；颜色同 git 状态色）。
             let column_x = marker_column_x_range(scrollbar.hitbox.bounds);
             for marker in &scrollbar.markers {
                 let marker_color = match marker.kind {
-                    DiffHunkKind::Added => colors.status_created,
-                    DiffHunkKind::Modified => colors.status_modified,
-                    DiffHunkKind::Deleted => colors.status_deleted,
+                    DiffHunkKind::Added => colors.version_control_added,
+                    DiffHunkKind::Modified => colors.version_control_modified,
+                    DiffHunkKind::Deleted => colors.version_control_deleted,
                 };
                 window.paint_quad(fill(
                     Bounds::from_corners(
@@ -1929,7 +1929,7 @@ impl EditorElement {
     }
 }
 
-/// gutter diff 色条宽度（对齐 Zed `gutter_strip_width`：0.275 × 行高）。
+/// gutter diff 色条宽度（0.275 × 行高）。
 fn gutter_strip_width(line_height: Pixels) -> Pixels {
     (line_height * 0.275).floor()
 }
@@ -2066,7 +2066,7 @@ fn layout_visible_lines(
         None => Vec::new(),
     };
 
-    // 基础 run：样式段在其上合并（对齐 Zed from_chunks 的 base 合并）。
+    // 基础 run：样式段在其上合并。
     let base = TextRun {
         len: 0,
         font: text_style.font(),
@@ -2151,9 +2151,9 @@ fn layout_visible_lines(
             let colors = color::current(cx);
             // 行号按 diff 状态着色。
             let number_color = match (active, git_diff) {
-                (_, Some(DiffHunkKind::Added)) => colors.status_created,
-                (_, Some(DiffHunkKind::Deleted)) => colors.status_deleted,
-                (_, Some(DiffHunkKind::Modified)) => colors.status_modified,
+                (_, Some(DiffHunkKind::Added)) => colors.version_control_added,
+                (_, Some(DiffHunkKind::Deleted)) => colors.version_control_deleted,
+                (_, Some(DiffHunkKind::Modified)) => colors.version_control_modified,
                 (true, None) => colors.editor_active_line_number,
                 (false, None) => colors.editor_line_number,
             };
@@ -3440,7 +3440,7 @@ mod tests {
                 assert_eq!(
                     segments[0].end_x,
                     layout.lines[0].origin.x + layout.lines[0].shaped.width + px(6.),
-                    "非末行应按 Zed 语义延伸两个圆角半径"
+                    "非末行应延伸两个圆角半径"
                 );
             })
             .expect("测试窗口应保持可用");
@@ -3878,7 +3878,7 @@ mod tests {
 
     #[test]
     fn modified_hunk_strip_stays_yellow_when_expanded() {
-        // 竖条色不随展开变化（对齐 Zed）：展开的修改块竖条保持黄色并覆盖旧行 + 修改行。
+        // 竖条色不随展开变化：展开的修改块竖条保持黄色并覆盖旧行 + 修改行。
         let buffer = Buffer::scratch(
             "line 0\nline 1\nline 2\n".to_owned(),
             BufferConfig::default(),
@@ -3908,7 +3908,7 @@ mod tests {
     }
 }
 
-/// 拖拽选择时的视口自动滚动量（对齐 Zed `mouse_dragged`）：
+/// 拖拽选择时的视口自动滚动量：
 /// 鼠标在文本视口边缘外时按超出距离的 1.2 次方缩放，垂直上限 3 像素/事件，保证平滑。
 fn drag_autoscroll_delta(
     position: Point<Pixels>,
@@ -3924,7 +3924,7 @@ fn drag_autoscroll_delta(
     } else if position.y > bottom {
         delta.y = -scale_drag_autoscroll(position.y - bottom);
     }
-    // 水平边距近似 4 个 em（行高约 1.618em），与 Zed `horizontal_scroll_margin` 默认一致。
+    // 水平边距近似 4 个 em（行高约 1.618em）。
     let horizontal_margin = 2.5 * line_height;
     let left = text_bounds.origin.x + horizontal_margin;
     let right = text_bounds.top_right().x - horizontal_margin;

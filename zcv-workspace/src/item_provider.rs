@@ -1,6 +1,6 @@
 //! ItemProvider 注册表：文件路径 → Workspace Item 的工厂。
 //!
-//! 对齐 Zed 的 WorkspaceItemBuilder 机制：具体文件类型（如文本编辑器）的Item 构造由各 crate 注册，框架打开文件时经注册表分发，不依赖具体视图类型。
+//! 具体文件类型（如文本编辑器）的 Item 构造由各 crate 注册，框架打开文件时经注册表分发，不依赖具体视图类型。
 
 use std::any::TypeId;
 use std::path::{Path, PathBuf};

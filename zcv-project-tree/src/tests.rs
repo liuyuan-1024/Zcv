@@ -665,7 +665,7 @@ fn test_git_repo() -> (PathBuf, tempfile::TempDir) {
 
 /// gitignored 目录（如 .gitignore 命中 tmp/）可展开，子项进入行模型并继承忽略状态淡显。
 ///
-/// 回归：此前被忽略目录的展开被拦截（防 node_modules 撑爆行模型的旧方案）， 表现为"点了没反应"；对齐 Zed 后展开正常，重型目录由扫描排除名单治理。
+/// 回归：此前被忽略目录的展开被拦截（防 node_modules 撑爆行模型的旧方案）， 表现为"点了没反应"；现展开正常，重型目录由扫描排除名单治理。
 #[gpui::test]
 fn ignored_directory_expands_with_ignored_children(cx: &mut TestAppContext) {
     let (root, _temp) = test_git_repo();
@@ -1231,7 +1231,7 @@ fn cut_paste_moves_file_and_degrades_clipboard(cx: &mut TestAppContext) {
     let tree = cx.new(|cx| ProjectTreePanel::new(project.clone(), cx));
     cx.run_until_parked();
 
-    // on_move 转发数据层 move_path（对齐装配层注入的真实回调）。
+    // on_move 转发数据层 move_path（装配层注入的真实回调）。
     let project_for_move = project.clone();
     tree.update(cx, |tree, _| {
         tree.set_on_move(Rc::new(
@@ -1522,7 +1522,7 @@ fn escape_keystroke_cancels_conflict_session(cx: &mut TestAppContext) {
     std::fs::write(target.join("a.txt"), "旧 a").expect("应创建冲突目标");
 
     // 面板作为窗口根视图（key_context 才能进入按键分发链），
-    // 同时注册 escape 绑定（对齐 keymap 的 ProjectTree && conflict 分组）。
+    // 同时注册 escape 绑定（keymap 的 ProjectTree && conflict 分组）。
     let (tree, cx) = cx.add_window_view(|_window, cx| {
         cx.bind_keys([KeyBinding::new(
             "escape",
@@ -1607,7 +1607,7 @@ fn cut_marks_clipboard_paths_for_dimming(cx: &mut TestAppContext) {
 fn escape_clears_cut_clipboard_and_dimming(cx: &mut TestAppContext) {
     let (_temp, project, _root, file_a, _file_b, _target) = paste_project(cx);
     // 面板作为窗口根视图（key_context 才能进入按键分发链），
-    // 注册 escape 清空绑定（对齐 keymap 的 ProjectTree && not_editing 分组）。
+    // 注册 escape 清空绑定（keymap 的 ProjectTree && not_editing 分组）。
     let (tree, cx) = cx.add_window_view(|_window, cx| {
         cx.bind_keys([KeyBinding::new(
             "escape",
@@ -1784,7 +1784,7 @@ fn drag_file_into_directory_moves_it_via_move_pipeline(cx: &mut TestAppContext) 
     let project_for_move = project.clone();
     let (tree, cx) = cx.add_window_view(move |_, cx| {
         let mut tree = ProjectTreePanel::new(project.clone(), cx);
-        // 对齐装配层注入的真实回调：转发数据层 move_path。
+        // 装配层注入的真实回调：转发数据层 move_path。
         tree.set_on_move(Rc::new(
             move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut gpui::App| {
                 project_for_move.update(cx, |project, cx| {
@@ -1857,7 +1857,7 @@ fn drag_from_marked_row_moves_the_whole_multi_selection(cx: &mut TestAppContext)
 /// 缺陷回归：按下即打开文件会在拖动时误开预览——打开文件经
 /// reveal_active_path 的 select() 清空多选集合，选区拖拽随之中途退化为单项；
 /// 拖动目录行也会误展开/折叠。修复后打开/展开动作延迟到 click（mouse_up
-/// 未拖拽）派发（对齐 Zed on_click），拖动不打开文件、不破坏选区。
+/// 未拖拽）派发，拖动不打开文件、不破坏选区。
 #[gpui::test]
 fn drag_does_not_open_file_preview_and_keeps_selection(cx: &mut TestAppContext) {
     let (_temp, project, _root, file_a, file_b, _file_c, target) = drag_project(cx);

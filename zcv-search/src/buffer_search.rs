@@ -1,6 +1,6 @@
 //! 文件内搜索协调器。
 //!
-//! 对齐 Zed `buffer_search.rs` 的职责边界，但只保留 Zcv 当前需要的部分：
+//! 职责边界：只保留 Zcv 当前需要的部分：
 //! BufferSearchBar 跟随 Pane 中的普通可搜索 Item。
 
 use gpui::{AppContext, Context, Entity, EventEmitter, Render, Window, div, prelude::*};

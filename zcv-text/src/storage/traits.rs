@@ -19,8 +19,7 @@ use crate::{
 ///
 /// **Zero-copy 纪律**：
 /// - `chunks(range)` 是**首选 API**，永不分配。
-/// - `slice_text` 在单块场景返回 `Cow::Borrowed`（零拷贝），多块时才物化为
-///   `Cow::Owned`。
+/// - `slice_text` 在单块场景返回 `Cow::Borrowed`（零拷贝），多块时才物化为 `Cow::Owned`。
 /// - `slice_to_string` 明确分配语义，命名让代价显眼。
 pub(crate) trait TextRead {
     /// 返回指定字节区间的文本。**单块快路径返回 `Cow::Borrowed`，零拷贝**；

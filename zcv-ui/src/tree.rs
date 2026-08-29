@@ -37,7 +37,7 @@ pub fn selection_border(cx: &App) -> gpui::Div {
         .border_color(color::current(cx).border_focused)
 }
 
-/// 树行点击动作（对齐 Zed：目录每次点击都切换展开/折叠；文件单击预览、双击激活）。
+/// 树行点击动作（目录每次点击都切换展开/折叠；文件单击预览、双击激活）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowClickAction {
     /// 目录：每次点击都执行（toggle 展开/折叠）。
@@ -328,7 +328,7 @@ impl<K: Eq + std::hash::Hash + Clone, Row: TreeRow> TreeState<K, Row> {
     ///
     /// 纯单选态首次打标记时把当前游标行一并入集合：普通点击/未聚焦首击选中的首项
     /// 否则留在集合之外，用户从它发起多选拖拽会被误判为集合外行而收拢为单选，
-    /// 只移动单项（与主流编辑器「cmd 点击逐项追加选中」的语义对齐）。
+    /// 只移动单项（「cmd 点击逐项追加选中」语义）。
     pub fn toggle_selection(&mut self, key: &K) {
         if self.selected_set.is_empty()
             && let Some(cursor) = self.selected.as_ref()
@@ -359,7 +359,7 @@ impl<K: Eq + std::hash::Hash + Clone, Row: TreeRow> TreeState<K, Row> {
         self.selected_set.contains(key)
     }
 
-    /// 游标的上一个可选行键（无选中时为最后一个可选行，语义对齐 select_up）。
+    /// 游标的上一个可选行键（无选中时为最后一个可选行，对应 select_up）。
     fn prev_selectable_key(&self) -> Option<K> {
         match self.selected_idx() {
             None => self
@@ -374,7 +374,7 @@ impl<K: Eq + std::hash::Hash + Clone, Row: TreeRow> TreeState<K, Row> {
         }
     }
 
-    /// 游标的下一个可选行键（无选中时为第一个可选行，语义对齐 select_down）。
+    /// 游标的下一个可选行键（无选中时为第一个可选行，对应 select_down）。
     fn next_selectable_key(&self) -> Option<K> {
         match self.selected_idx() {
             None => self

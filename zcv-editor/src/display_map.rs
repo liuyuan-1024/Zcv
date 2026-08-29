@@ -187,7 +187,7 @@ impl DisplaySnapshot {
 
     /// 从视口 chunk 的真实 buffer 来源查询高亮。
     ///
-    /// 和 Zed 的 `BufferChunks -> InlayChunks -> FoldChunks -> TabChunks -> WrapChunks` 顺序一致：语法坐标只存在于最底层 buffer 行。
+    /// chunk 层按 `BufferChunks -> InlayChunks -> FoldChunks -> TabChunks -> WrapChunks` 顺序叠加：语法坐标只存在于最底层 buffer 行。
     /// 软换行片段的投影长度绝不能反推成 buffer 字节范围；
     /// 折叠行则查询其每个有源段对应的真实 buffer 行。
     ///
@@ -1016,7 +1016,7 @@ mod tests {
 
     #[gpui::test]
     fn soft_wrap_splits_wide_lines_into_display_rows(cx: &mut TestAppContext) {
-        // 前导空白产生续行缩进（对齐 Zed 的 Boundary.next_indent 语义）。
+        // 前导空白产生续行缩进。
         let map = wrap_map("    aa bbb cccc ddddd eeee\nshort", 72., cx);
         assert!(map.is_wrapped());
         assert!(map.line_count() > 2, "宽行应拆成多个显示行");

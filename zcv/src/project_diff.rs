@@ -247,6 +247,7 @@ fn clamp_column_to_line(text: &Snapshot, line: usize, column: usize) -> usize {
 pub(crate) struct ProjectDiffView {
     kind: ProjectDiffKind,
     project: Entity<Project>,
+    empty_focus: FocusHandle,
     editor: Entity<Editor>,
     multi_buffer: Entity<MultiBuffer>,
     files: Vec<GitChangeFile>,
@@ -261,13 +262,13 @@ pub(crate) struct ProjectDiffView {
 impl ProjectDiffView {
     fn new(kind: ProjectDiffKind, project: Entity<Project>, cx: &mut Context<Self>) -> Self {
         let weak_view = cx.weak_entity();
+        let empty_focus = cx.focus_handle();
         let multi_buffer = match kind {
             ProjectDiffKind::Staged => cx.new(MultiBuffer::empty_read_only),
             ProjectDiffKind::Unstaged => cx.new(MultiBuffer::empty),
         };
         let editor = cx.new(|cx| {
             let mut editor = Editor::for_multi_buffer(multi_buffer.clone(), cx);
-            editor.set_placeholder_text(format!("没有{}", kind.title()), cx);
             editor.set_diff_hunks_expanded_by_default(true, cx);
             editor.set_diff_hunk_delegate(
                 Some(Arc::new(ProjectDiffHunkDelegate {
@@ -311,6 +312,7 @@ impl ProjectDiffView {
         let mut view = Self {
             kind,
             project,
+            empty_focus,
             editor,
             multi_buffer,
             files: Vec::new(),
@@ -323,6 +325,14 @@ impl ProjectDiffView {
         };
         view.refresh_files(cx);
         view
+    }
+
+    fn is_empty(&self, cx: &App) -> bool {
+        self.multi_buffer
+            .read(cx)
+            .snapshot(cx)
+            .excerpts()
+            .is_empty()
     }
 
     /// 从 GitStore 权威快照重建文件集合；真实内容始终复用 Project 的文档实体。
@@ -925,17 +935,30 @@ impl EventEmitter<EditorEvent> for ProjectDiffView {}
 
 impl Focusable for ProjectDiffView {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.editor.read(cx).focus_handle()
+        if self.is_empty(cx) {
+            self.empty_focus.clone()
+        } else {
+            self.editor.read(cx).focus_handle()
+        }
     }
 }
 
 impl Render for ProjectDiffView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_empty = self.is_empty(cx);
         div()
+            .debug_selector(move || {
+                if is_empty {
+                    "empty-project-diff-view".into()
+                } else {
+                    "project-diff-view".into()
+                }
+            })
+            .track_focus(&self.empty_focus)
             .key_context("ProjectDiffView")
             .size_full()
             .bg(color::current(cx).editor_background)
-            .child(self.editor.clone())
+            .when(!is_empty, |view| view.child(self.editor.clone()))
     }
 }
 
@@ -1108,6 +1131,37 @@ mod tests {
         ];
 
         assert_eq!(excerpt_line_ranges(&hunks, 30), vec![3..11, 18..23]);
+    }
+
+    #[gpui::test]
+    fn empty_project_diff_renders_blank_focusable_view(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            ProjectDiffView::new(ProjectDiffKind::Staged, project, cx)
+        });
+        cx.run_until_parked();
+        let _ = cx.refresh();
+        cx.update(|_, _| {});
+        cx.run_until_parked();
+
+        let focus = cx.read_entity(&view, |view, cx| {
+            assert!(view.is_empty(cx));
+            assert!(view.focus_handle(cx) == view.empty_focus);
+            view.focus_handle(cx)
+        });
+        assert!(
+            cx.debug_bounds("empty-project-diff-view").is_some(),
+            "空项目差异应渲染纯空白容器"
+        );
+        assert!(
+            cx.debug_bounds("project-diff-view").is_none(),
+            "空项目差异不应渲染 Editor"
+        );
+        cx.update(|window, _| window.focus(&focus));
+        cx.update(|window, _| {
+            assert!(focus.is_focused(window), "空白区域仍应能持有 Item 焦点");
+        });
     }
 
     #[gpui::test]

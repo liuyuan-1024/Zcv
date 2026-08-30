@@ -193,7 +193,7 @@ fn finalize_node(node: &mut GitTreeNode) {
         .sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
 }
 
-/// 树 → 有序行列表：分组头前置（空组也带头），组内树 DFS 先序；折叠的分区只留标题行。
+/// 树 → 有序行列表：分组头前置，展开的空组显示一行提示，非空组按 DFS 先序展开；折叠的分区只留标题行。
 fn flatten_rows(
     trees: &[Vec<GitTreeNode>; 2],
     expanded: &HashSet<(GitSection, PathBuf)>,
@@ -203,7 +203,11 @@ fn flatten_rows(
     for (index, section) in GitSection::ALL.iter().enumerate() {
         rows.push(GitRow::Header(*section));
         if !collapsed.contains(section) {
-            flatten_nodes(&mut rows, &trees[index], *section, 0, expanded);
+            if trees[index].is_empty() {
+                rows.push(GitRow::Empty(*section));
+            } else {
+                flatten_nodes(&mut rows, &trees[index], *section, 0, expanded);
+            }
         }
     }
     rows
@@ -842,6 +846,15 @@ fn render_row(
                     }
                 })
         }
+        // 空分组提示只是树内容的一部分，不参与选择、焦点或鼠标交互。
+        GitRow::Empty(section) => div()
+            .w_full()
+            .h(typography::ui_line())
+            .pl(space::S12)
+            .flex()
+            .items_center()
+            .text_color(color::current(cx).text_placeholder)
+            .child(section.empty_message()),
         GitRow::Entry(entry) => {
             let section = entry.section;
             let path = entry.path.clone();
@@ -1121,12 +1134,20 @@ impl GitSection {
             Self::Unstaged => "未暂存",
         }
     }
+
+    fn empty_message(self) -> &'static str {
+        match self {
+            Self::Staged => "没有已暂存的更改",
+            Self::Unstaged => "没有未暂存的更改",
+        }
+    }
 }
 
-/// 统一行模型：分组头不可选择、不可折叠。
+/// 统一行模型：分组头和空分组提示不可选择，只有条目行参与树交互。
 #[derive(Clone, Debug)]
 enum GitRow {
     Header(GitSection),
+    Empty(GitSection),
     Entry(GitTreeRow),
 }
 
@@ -1166,7 +1187,7 @@ impl TreeRow for GitRow {
     fn depth(&self) -> usize {
         match self {
             GitRow::Entry(entry) => entry.depth,
-            GitRow::Header(_) => 0,
+            GitRow::Header(_) | GitRow::Empty(_) => 0,
         }
     }
     fn expanded(&self) -> bool {
@@ -1174,11 +1195,11 @@ impl TreeRow for GitRow {
     }
 }
 
-/// 行 → 选中/展开键（Header 行为 None）。
+/// 行 → 选中/展开键（分组头和空分组提示为 None）。
 fn row_entry_key(row: &GitRow) -> Option<(GitSection, PathBuf)> {
     match row {
         GitRow::Entry(entry) => Some((entry.section, entry.path.clone())),
-        GitRow::Header(_) => None,
+        GitRow::Header(_) | GitRow::Empty(_) => None,
     }
 }
 
@@ -1251,7 +1272,7 @@ mod tests {
         rows.iter()
             .filter_map(|row| match row {
                 GitRow::Entry(entry) => Some((entry.section, entry.name.clone())),
-                GitRow::Header(_) => None,
+                GitRow::Header(_) | GitRow::Empty(_) => None,
             })
             .collect()
     }
@@ -1294,7 +1315,7 @@ mod tests {
             .iter()
             .filter_map(|row| match row {
                 GitRow::Header(section) => Some(section.label()),
-                GitRow::Entry(_) => None,
+                GitRow::Empty(_) | GitRow::Entry(_) => None,
             })
             .collect();
         assert_eq!(headers, vec!["已暂存", "未暂存"]);
@@ -1331,6 +1352,28 @@ mod tests {
                 deleted: 1
             }
         );
+    }
+
+    #[test]
+    fn expanded_empty_sections_show_unselectable_prompt_rows() {
+        let trees = [Vec::<GitTreeNode>::new(), Vec::new()];
+        let rows = flatten_rows(&trees, &HashSet::new(), &HashSet::new());
+
+        assert_eq!(GitSection::Staged.empty_message(), "没有已暂存的更改");
+        assert_eq!(GitSection::Unstaged.empty_message(), "没有未暂存的更改");
+        assert_eq!(rows.len(), 4);
+        assert!(matches!(rows[0], GitRow::Header(GitSection::Staged)));
+        assert!(matches!(rows[1], GitRow::Empty(GitSection::Staged)));
+        assert!(matches!(rows[2], GitRow::Header(GitSection::Unstaged)));
+        assert!(matches!(rows[3], GitRow::Empty(GitSection::Unstaged)));
+        assert!(rows.iter().all(|row| row_entry_key(row).is_none()));
+
+        let collapsed = HashSet::from([GitSection::Staged]);
+        let rows = flatten_rows(&trees, &HashSet::new(), &collapsed);
+        assert_eq!(rows.len(), 3);
+        assert!(matches!(rows[0], GitRow::Header(GitSection::Staged)));
+        assert!(matches!(rows[1], GitRow::Header(GitSection::Unstaged)));
+        assert!(matches!(rows[2], GitRow::Empty(GitSection::Unstaged)));
     }
 
     #[test]
@@ -1429,7 +1472,7 @@ mod tests {
             .iter()
             .filter_map(|row| match row {
                 GitRow::Entry(entry) => Some((entry.path.clone(), entry.depth)),
-                GitRow::Header(_) => None,
+                GitRow::Header(_) | GitRow::Empty(_) => None,
             })
             .collect();
         assert_eq!(
@@ -1495,7 +1538,7 @@ mod tests {
                 .iter()
                 .filter_map(|row| match row {
                     GitRow::Header(section) => Some(section.label()),
-                    GitRow::Entry(_) => None,
+                    GitRow::Empty(_) | GitRow::Entry(_) => None,
                 })
                 .collect();
             assert_eq!(headers, vec!["已暂存", "未暂存"]);
@@ -1522,9 +1565,9 @@ mod tests {
         });
         cx.run_until_parked(); // 扫描完成，行模型就绪。
 
-        // 行布局：三个分组头 + 未暂存组一个文件行。
+        // 行布局：已暂存标题 + 空提示 + 未暂存标题 + 一个文件行。
         let row_count = cx.read_entity(&panel, |panel, _| panel.state.borrow().rows.len());
-        assert_eq!(row_count, 3);
+        assert_eq!(row_count, 4);
 
         // 扫描完成后强制重绘：首帧是空态，点击命中测试需要最新帧的行布局。
         // refresh 只入队 effect，需要一次 update 周期 flush 后窗口才真正重绘。
@@ -1532,13 +1575,13 @@ mod tests {
         cx.update(|_, _| {});
         cx.run_until_parked();
 
-        // 单击第 4 行（tracked.txt）行内容区（x=100 避开行首复选框）：
+        // 单击 tracked.txt 行内容区（x=100 避开行首复选框）：
         // 行高为 ui_line()，以临时标签打开（focus_opened_item=false）。
         let row_height = typography::ui_line();
         let click = |cx: &mut VisualTestContext| {
             // y 加 1 行偏移：顶部统计行占一行高度。
             cx.simulate_click(
-                point(px(100.), px(f32::from(row_height) * 3.5)),
+                point(px(100.), px(f32::from(row_height) * 4.5)),
                 gpui::Modifiers::default(),
             );
             cx.run_until_parked();
@@ -1632,7 +1675,7 @@ mod tests {
             .iter()
             .filter_map(|row| match row {
                 GitRow::Entry(entry) => Some((entry.section, entry.name.clone())),
-                GitRow::Header(_) => None,
+                GitRow::Header(_) | GitRow::Empty(_) => None,
             })
             .collect()
     }
@@ -1947,8 +1990,8 @@ mod tests {
         cx.update(|_, _| {});
         cx.run_until_parked();
 
-        // 第 4 行（tracked.txt，未暂存组，无对勾）行尾复选框。
-        assert_hover_tooltip(cx, 2);
+        // 未暂存组 tracked.txt 行尾复选框；空的已暂存组占一行提示。
+        assert_hover_tooltip(cx, 3);
     }
 
     #[gpui::test]
@@ -2004,10 +2047,10 @@ mod tests {
         cx.update(|_, _| {});
         cx.run_until_parked();
 
-        // 先悬停第 4 行（tracked.txt，未暂存组）复选框，确认 tooltip 正常；顶部统计行占一行，坐标加偏移。
+        // 先悬停未暂存组的一个文件复选框，确认 tooltip 正常；顶部统计行占一行，坐标加偏移。
         let row_height = typography::ui_line();
         cx.simulate_mouse_move(
-            point(px(1907.), px(f32::from(row_height) * 3.5)),
+            point(px(1907.), px(f32::from(row_height) * 4.5)),
             None,
             gpui::Modifiers::default(),
         );
@@ -2032,15 +2075,15 @@ mod tests {
         cx.update(|_, _| {});
         cx.run_until_parked();
 
-        // 移开鼠标再移回 tracked.txt 的复选框（行号可能已变，取第 4 行；顶部统计行占一行）。
+        // 移开鼠标再移回剩余未暂存文件的复选框；顶部统计行占一行。
         cx.simulate_mouse_move(
-            point(px(100.), px(f32::from(row_height) * 3.5)),
+            point(px(100.), px(f32::from(row_height) * 4.5)),
             None,
             gpui::Modifiers::default(),
         );
         cx.run_until_parked();
         cx.simulate_mouse_move(
-            point(px(1907.), px(f32::from(row_height) * 3.5)),
+            point(px(1907.), px(f32::from(row_height) * 4.5)),
             None,
             gpui::Modifiers::default(),
         );
@@ -2073,7 +2116,7 @@ mod tests {
         cx.update(|_, _| {});
         cx.run_until_parked();
 
-        // 行布局：3 个分组头 + 已暂存组 tracked.txt（第 4 行）+ 未暂存组 tracked.txt（第 5 行）；
+        // 行布局：两个分组标题 + 已暂存组 tracked.txt + 未暂存组 tracked.txt；
         // 顶部统计行占一行，坐标加偏移。
         let row_height = typography::ui_line();
         // 先悬停未暂存组的复选框（第 5 行）。
@@ -2105,7 +2148,7 @@ mod tests {
         cx.update(|_, _| {});
         cx.run_until_parked();
 
-        // 先暂存文件（空格），行移到已暂存组（第 4 行，带对勾）。
+        // 先暂存文件（空格），行移到已暂存组（带对勾）。
         cx.update(|window, cx| window.focus(&panel.read(cx).focus));
         cx.simulate_keystrokes("down");
         cx.simulate_keystrokes("space");
@@ -2138,11 +2181,11 @@ mod tests {
         cx.update(|_, _| {});
         cx.run_until_parked();
 
-        // 第 4 行（tracked.txt，未暂存组）行尾复选框：窗口 1920 宽，右边缘 6px + 复选框半宽 7px；
+        // tracked.txt（未暂存组）行尾复选框：窗口 1920 宽，右边缘 6px + 复选框半宽 7px；
         // 顶部统计行占一行，坐标加偏移。
         let row_height = typography::ui_line();
         cx.simulate_click(
-            point(px(1907.), px(f32::from(row_height) * 3.5)),
+            point(px(1907.), px(f32::from(row_height) * 4.5)),
             gpui::Modifiers::default(),
         );
         cx.run_until_parked();

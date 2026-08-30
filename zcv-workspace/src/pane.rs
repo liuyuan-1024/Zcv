@@ -908,21 +908,14 @@ fn tab_end_button(
 
 // ── Editor Content ────────────────────────────────────────────────────
 
-/// 渲染 Pane 内容区（编辑器内容或占位文字）。
+/// 渲染 Pane 内容区；没有活动项时保持空白。
 fn render_content(
     active_item_id: Option<EntityId>,
     active_item: Option<&dyn ItemHandle>,
     cx: &App,
 ) -> impl gpui::IntoElement {
     if active_item_id.is_none() {
-        return div()
-            .flex_1()
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_color(color::current(cx).text_placeholder)
-            .child("无打开文件")
-            .into_any_element();
+        return div().flex_1().into_any_element();
     }
     let Some(item) = active_item else {
         return div()
@@ -1696,7 +1689,7 @@ mod tests {
             assert!(external_focus.is_focused(window), "前置：外部句柄应已聚焦");
         });
 
-        // 点击 pane 内容区（窗口中心，渲染了"无打开文件"）。
+        // 点击空白 pane 内容区（窗口中心）。
         let bounds = cx.update(|window, _| window.bounds());
         let click: Point<Pixels> = Point::new(bounds.size.width / 2.0, bounds.size.height / 2.0);
         cx.simulate_mouse_down(click, gpui::MouseButton::Left, gpui::Modifiers::default());

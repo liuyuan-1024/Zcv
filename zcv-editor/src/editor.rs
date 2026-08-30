@@ -18,7 +18,6 @@ mod view;
 mod workspace_item;
 
 pub use view::{DiffHunkDelegate, Editor, EditorEvent, EditorScrollAnchor};
-pub use zcv_multi_buffer::MaterializedDiffHunk;
 
 pub fn init(cx: &mut App) {
     EDITOR_FACTORY.get_or_init(|| |cx| Arc::new(ErasedEditorHandle(cx.new(Editor::single_line))));

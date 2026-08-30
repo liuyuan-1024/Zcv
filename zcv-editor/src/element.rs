@@ -309,7 +309,7 @@ pub(super) struct PrepaintState {
 }
 
 /// hunk 色带 hitbox：命中区域 + 点击目标范围 + 类型 + 展开态标志。
-type HunkHitbox = (gpui::Hitbox, Range<usize>, DiffHunkKind, bool);
+type HunkHitbox = (gpui::Hitbox, usize, DiffHunkKind, bool);
 
 struct DiffHunkControls {
     hover_bounds: Bounds<Pixels>,
@@ -950,12 +950,13 @@ fn layout_scrollbar(
         );
         // marker 每帧计算（hunks 数量级小；滚动中实时跟随，无需缓存/后台任务）。
         // scroll_per_pixel 取 layout 自身算好的值，与 thumb 换算严格一致。
+        let expanded_flags = editor.diff_hunk_expanded(cx);
         let folded_deleted_markers: Vec<(Range<usize>, DiffHunkKind)> = hunk_render
             .hit_regions
             .iter()
-            .filter(|(_, old_range, kind)| {
+            .filter(|(_, index, kind)| {
                 *kind == DiffHunkKind::Deleted
-                    && !editor.expanded_deleted_hunks(cx).contains(old_range)
+                    && !expanded_flags.get(*index).copied().unwrap_or(false)
             })
             .map(|(rows, _, _)| (rows.clone(), DiffHunkKind::Deleted))
             .collect();
@@ -1156,8 +1157,7 @@ impl Element for EditorElement {
             hunk_rendering(
                 &display_snapshot,
                 editor.diff_hunks(cx),
-                editor.expanded_deleted_hunks(cx),
-                editor.expanded_modified_hunks(cx),
+                &editor.diff_hunk_expanded(cx),
                 editor.diff_hunk_old_ranges(cx),
             )
         };
@@ -1238,10 +1238,11 @@ impl Element for EditorElement {
         // hunk 色带 hitbox：点击切换折叠/展开（hitbox 挂在色带区域，BlockMouse 不穿透）。
         let deleted_hunk_hitboxes = Arc::new({
             let editor = self.editor.read(cx);
+            let expanded_flags = editor.diff_hunk_expanded(cx);
             let mut hitboxes = Vec::new();
             if let Some(gutter) = &layout.gutter {
                 let strip_width = gutter_strip_width(line_height);
-                for (rows, old_range, kind) in &hunk_render.hit_regions {
+                for (rows, index, kind) in &hunk_render.hit_regions {
                     // 色带起点行可见才可点击（滚动后起点进入视口自然恢复）。
                     let Some(start_line) = layout
                         .lines
@@ -1251,15 +1252,7 @@ impl Element for EditorElement {
                         continue;
                     };
                     // 折叠的删除块是红色三角标记；其余是普通色带区域。
-                    let expanded = match kind {
-                        DiffHunkKind::Deleted => {
-                            editor.expanded_deleted_hunks(cx).contains(old_range)
-                        }
-                        DiffHunkKind::Modified => {
-                            editor.expanded_modified_hunks(cx).contains(old_range)
-                        }
-                        DiffHunkKind::Added => false,
-                    };
+                    let expanded = expanded_flags.get(*index).copied().unwrap_or(false);
                     let width = strip_width;
                     hitboxes.push((
                         window.insert_hitbox(
@@ -1273,7 +1266,7 @@ impl Element for EditorElement {
                             ),
                             HitboxBehavior::BlockMouse,
                         ),
-                        old_range.clone(),
+                        *index,
                         *kind,
                         expanded,
                     ));
@@ -1407,18 +1400,12 @@ impl Element for EditorElement {
                 return;
             }
             // hunk 色带点击：切换折叠/展开（先于 gutter 行号选行命中）。
-            if let Some((_, old_range, kind, _)) = deleted_hunk_hitboxes
+            if let Some((_, index, _, _)) = deleted_hunk_hitboxes
                 .iter()
                 .find(|(hitbox, _, _, _)| hitbox.is_hovered(window))
             {
                 editor.update(cx, |editor, cx| {
-                    match kind {
-                        DiffHunkKind::Deleted => editor.toggle_deleted_hunk(old_range.clone(), cx),
-                        DiffHunkKind::Modified => {
-                            editor.toggle_modified_hunk(old_range.clone(), cx)
-                        }
-                        DiffHunkKind::Added => {}
-                    }
+                    editor.toggle_diff_hunk_at(*index, cx);
                     cx.notify();
                 });
                 window.focus(&mouse_focus);
@@ -2771,58 +2758,38 @@ mod tests {
     }
 
     /// 行级标记的显示行区间（`hunk_rendering` 的薄包装，测试专用）。
+    /// 行级标记的显示行区间（hunk_rendering 的薄包装，测试专用）。
     fn diff_hunk_rows(
         snapshot: &DisplaySnapshot,
         hunks: &[DiffHunk],
-        expanded_deleted: &[Range<usize>],
-        expanded_modified: &[Range<usize>],
+        expanded: &[bool],
         old_display_ranges: &[Option<Range<usize>>],
     ) -> Vec<(Range<usize>, DiffHunkKind)> {
-        hunk_rendering(
-            snapshot,
-            hunks,
-            expanded_deleted,
-            expanded_modified,
-            old_display_ranges,
-        )
-        .diff_rows
+        hunk_rendering(snapshot, hunks, expanded, old_display_ranges).diff_rows
     }
 
     /// hunk 竖条范围与状态色（`hunk_rendering` 的薄包装，测试专用）。
+    /// hunk 竖条范围与状态色（hunk_rendering 的薄包装，测试专用）。
     fn hunk_strip_rows(
         snapshot: &DisplaySnapshot,
         hunks: &[DiffHunk],
-        expanded_deleted: &[Range<usize>],
-        expanded_modified: &[Range<usize>],
+        expanded: &[bool],
         old_display_ranges: &[Option<Range<usize>>],
     ) -> Vec<(Range<usize>, DiffHunkKind)> {
-        hunk_rendering(
-            snapshot,
-            hunks,
-            expanded_deleted,
-            expanded_modified,
-            old_display_ranges,
-        )
-        .strips
+        hunk_rendering(snapshot, hunks, expanded, old_display_ranges).strips
     }
 
     /// 可点击的 hunk 色带区域（`hunk_rendering` 的薄包装，测试专用）。
+    /// 可点击的 hunk 色带区域（hunk_rendering 的薄包装，测试专用）。
     fn hunk_hit_regions(
         snapshot: &DisplaySnapshot,
         hunks: &[DiffHunk],
-        expanded_deleted: &[Range<usize>],
-        expanded_modified: &[Range<usize>],
+        expanded: &[bool],
         old_display_ranges: &[Option<Range<usize>>],
-    ) -> Vec<(Range<usize>, Range<usize>, DiffHunkKind)> {
-        hunk_rendering(
-            snapshot,
-            hunks,
-            expanded_deleted,
-            expanded_modified,
-            old_display_ranges,
-        )
-        .hit_regions
+    ) -> Vec<(Range<usize>, usize, DiffHunkKind)> {
+        hunk_rendering(snapshot, hunks, expanded, old_display_ranges).hit_regions
     }
+
     #[test]
     fn logical_columns_map_to_utf8_boundaries() {
         let text = "a你😀";
@@ -3761,8 +3728,7 @@ mod tests {
                                 kind: DiffHunkKind::Added,
                             },
                         ],
-                        &[],
-                        &[],
+                        &[false, false, false],
                         &[],
                     ),
                     vec![
@@ -3800,8 +3766,7 @@ mod tests {
                             old_range: 0..1,
                             kind: DiffHunkKind::Modified,
                         }],
-                        &[],
-                        &[],
+                        &[false, false, false],
                         &[],
                     ),
                     vec![(0..row_1, DiffHunkKind::Modified)]
@@ -3816,8 +3781,7 @@ mod tests {
                             old_range: 1..10,
                             kind: DiffHunkKind::Modified,
                         }],
-                        &[],
-                        &[],
+                        &[false, false, false],
                         &[],
                     ),
                     vec![(row_1..line_count, DiffHunkKind::Modified)]
@@ -3847,8 +3811,7 @@ mod tests {
             diff_hunk_rows(
                 &collapsed,
                 std::slice::from_ref(&collapsed_hunk),
-                &[],
-                &[],
+                &[false],
                 &[None]
             ),
             vec![]
@@ -3857,11 +3820,10 @@ mod tests {
             hunk_hit_regions(
                 &collapsed,
                 std::slice::from_ref(&collapsed_hunk),
-                &[],
-                &[],
+                &[false],
                 &[None]
             ),
-            vec![(1..2, 1..3, DiffHunkKind::Deleted)]
+            vec![(1..2, 0, DiffHunkKind::Deleted)]
         );
 
         let expanded = DisplayMap::new(
@@ -3882,21 +3844,14 @@ mod tests {
             diff_hunk_rows(
                 &expanded,
                 std::slice::from_ref(&expanded_hunk),
-                std::slice::from_ref(&(1..3)),
-                &[],
+                &[true],
                 &[Some(2..4)]
             ),
             vec![(2..4, DiffHunkKind::Deleted)]
         );
         assert_eq!(
-            hunk_hit_regions(
-                &expanded,
-                &[expanded_hunk],
-                std::slice::from_ref(&(1..3)),
-                &[],
-                &[Some(2..4)]
-            ),
-            vec![(2..4, 1..3, DiffHunkKind::Deleted)]
+            hunk_hit_regions(&expanded, &[expanded_hunk], &[true], &[Some(2..4)]),
+            vec![(2..4, 0, DiffHunkKind::Deleted)]
         );
     }
 
@@ -3920,21 +3875,14 @@ mod tests {
             diff_hunk_rows(
                 &snapshot,
                 std::slice::from_ref(&hunk),
-                &[],
-                std::slice::from_ref(&(1..2)),
+                &[true],
                 &[Some(1..2)]
             ),
             vec![(1..2, DiffHunkKind::Deleted), (2..3, DiffHunkKind::Added),]
         );
         assert_eq!(
-            hunk_hit_regions(
-                &snapshot,
-                &[hunk],
-                &[],
-                std::slice::from_ref(&(1..2)),
-                &[Some(1..2)]
-            ),
-            vec![(1..3, 1..2, DiffHunkKind::Modified)]
+            hunk_hit_regions(&snapshot, &[hunk], &[true], &[Some(1..2)]),
+            vec![(1..3, 0, DiffHunkKind::Modified)]
         );
     }
 
@@ -3957,13 +3905,7 @@ mod tests {
         };
         // 展开：竖条仍黄，覆盖旧行 + 修改行（显示行 1..3）。
         assert_eq!(
-            hunk_strip_rows(
-                &snapshot,
-                &[hunk],
-                &[],
-                std::slice::from_ref(&(1..2)),
-                &[Some(1..2)]
-            ),
+            hunk_strip_rows(&snapshot, &[hunk], &[true], &[Some(1..2)]),
             vec![(1..3, DiffHunkKind::Modified)]
         );
     }

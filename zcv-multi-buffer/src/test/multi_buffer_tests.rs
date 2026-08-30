@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use gpui::{AppContext as _, TestAppContext};
 use std::sync::Arc;
 
+use crate::DiffFileInput;
 use zcv_git::{DiffHunk, DiffHunkKind};
 use zcv_language::LanguageBuffer;
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TextRange, TransactionMetadata};
@@ -224,7 +225,7 @@ fn source_reparse_does_not_reload_composite_text(cx: &mut TestAppContext) {
 }
 
 /// 不变量：组合编辑后 excerpt 源坐标只映射一次。
-/// 组合编辑在 `MultiBuffer::edit` 内同步映射并重建订阅，`source_changed` 的消费为空，两条路径不会重复映射——这是 hunk 文本锚点更新机制的前提。
+/// 组合编辑在 `MultiBuffer::edit` 内同步映射并重建订阅，`source_changed` 的消费为空，两条路径不会重复映射——这是 hunk 文本跟踪区间更新机制的前提。
 #[gpui::test]
 fn composite_edit_maps_excerpt_source_ranges_exactly_once(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "zero\none\ntwo\n", cx);
@@ -272,31 +273,42 @@ fn composite_edit_maps_excerpt_source_ranges_exactly_once(cx: &mut TestAppContex
     });
 }
 
-/// 文本锚点迁移：展开 hunk 后编辑工作区源（行号变化），重新注入的新 hunk 仍按文本位置识别为同一 hunk，展开状态随锚点迁移。
+/// 文本区间迁移：展开 hunk 后编辑工作区源（行号变化），已有高亮立即跟随，重新注入的新 hunk 仍按文本位置识别为同一 hunk。
 #[gpui::test]
-fn diff_expansion_migrates_by_text_anchor_across_source_edits(cx: &mut TestAppContext) {
+fn diff_expansion_migrates_by_tracked_range_across_source_edits(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "zero\none\ntwo\nthree\n", cx);
     let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_diff_hunks(
-            Some(vec![DiffHunk {
-                range: 1..2,
-                old_range: 1..2,
-                kind: DiffHunkKind::Modified,
+        buffer.set_diff_projection(
+            Some(vec![DiffFileInput {
+                working: source.clone(),
+                hunks: vec![DiffHunk {
+                    range: 1..2,
+                    old_range: 1..2,
+                    kind: DiffHunkKind::Modified,
+                }],
+                base_text: Some(Arc::from("zero\none\ntwo\nthree\n")),
+                path: PathBuf::from("src/a.rs"),
+                display_path: PathBuf::from("src/a.rs"),
+                context_lines: None,
+                is_created: false,
+                show_file_header: false,
             }]),
             cx,
         );
-        buffer.set_diff_head_text(Some(Arc::from("zero\none\ntwo\nthree\n")), cx);
-        buffer.toggle_diff_hunk(DiffHunkKind::Modified, 1..2, cx);
+        buffer.toggle_diff_hunk_at(0, cx);
     });
     assert!(
-        cx.read_entity(&combined, |buffer, _| {
-            buffer.expanded_modified_hunks().contains(&(1..2))
+        cx.read_entity(&combined, |buffer, cx| {
+            buffer
+                .diff_hunk_expanded(cx)
+                .iter()
+                .all(|&expanded| expanded)
         }),
         "展开后应记录展开状态"
     );
 
-    // 编辑工作区源：文件头部插入一行（行号整体 +1），锚点应随编辑推进。
+    // 编辑工作区源：文件头部插入一行（行号整体 +1），显示坐标应随编辑推进。
     let source_text = cx.read_entity(&source, |buffer, cx| {
         buffer.as_singleton(cx).expect("应为 singleton")
     });
@@ -311,13 +323,26 @@ fn diff_expansion_migrates_by_text_anchor_across_source_edits(cx: &mut TestAppCo
     });
     cx.run_until_parked();
 
-    // 重新注入：hunk 新侧坐标移到行 2（文件内容已变），展开状态按文本锚点迁移到新 hunk。
+    let hunks_after_edit = cx.read_entity(&combined, |buffer, cx| buffer.diff_hunks(cx).to_vec());
+    assert_eq!(hunks_after_edit.len(), 1, "编辑后已有 Git 高亮不应消失");
+    assert_eq!(hunks_after_edit[0].range, 3..4);
+
+    // 重新注入：hunk 新侧坐标移到行 2（文件内容已变），展开状态按文本跟踪区间迁移到新 hunk。
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_diff_hunks(
-            Some(vec![DiffHunk {
-                range: 2..3,
-                old_range: 1..2,
-                kind: DiffHunkKind::Modified,
+        buffer.set_diff_projection(
+            Some(vec![DiffFileInput {
+                working: source.clone(),
+                hunks: vec![DiffHunk {
+                    range: 2..3,
+                    old_range: 1..2,
+                    kind: DiffHunkKind::Modified,
+                }],
+                base_text: Some(Arc::from("pre\nzero\none\ntwo\nthree\n")),
+                path: PathBuf::from("src/a.rs"),
+                display_path: PathBuf::from("src/a.rs"),
+                context_lines: None,
+                is_created: false,
+                show_file_header: false,
             }]),
             cx,
         );
@@ -325,19 +350,19 @@ fn diff_expansion_migrates_by_text_anchor_across_source_edits(cx: &mut TestAppCo
     let (hunks, expanded) = cx.read_entity(&combined, |buffer, cx| {
         (
             buffer.diff_hunks(cx).to_vec(),
-            buffer.expanded_modified_hunks().to_vec(),
+            buffer.diff_hunk_expanded(cx),
         )
     });
     assert_eq!(hunks.len(), 1, "重新注入后应显示新坐标 hunk");
     // 显示坐标 = 源坐标 + 物化旧行偏移（展开 1 行旧行 → 2..3 显示为 3..4）。
     assert_eq!(hunks[0].range, 3..4);
     assert!(
-        expanded.contains(&(1..2)),
-        "编辑后重新注入应把展开状态迁移到文本位置相同的 hunk，实际：{expanded:?}"
+        expanded.first().copied().unwrap_or(false),
+        "编辑后重新注入应把展开状态迁移到文本位置相同的 hunk"
     );
 }
 
-/// 文本锚点在 base 版本变化（提交等）后依然有效：工作区文本未变时重新注入的 hunk
+/// 文本跟踪区间在 base 版本变化（提交等）后依然有效：工作区文本未变时重新注入的 hunk
 /// 按文本位置识别为同一 hunk，展开状态保留（对应 Zed 的
 /// `test_diff_base_change_with_expanded_diff_hunks`）。
 #[gpui::test]
@@ -345,34 +370,54 @@ fn diff_expansion_survives_base_change_when_working_text_is_unchanged(cx: &mut T
     let source = singleton("src/a.rs", "zero\none\ntwo\nthree\n", cx);
     let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_diff_hunks(
-            Some(vec![DiffHunk {
-                range: 1..2,
-                old_range: 1..2,
-                kind: DiffHunkKind::Modified,
+        buffer.set_diff_projection(
+            Some(vec![DiffFileInput {
+                working: source.clone(),
+                hunks: vec![DiffHunk {
+                    range: 1..2,
+                    old_range: 1..2,
+                    kind: DiffHunkKind::Modified,
+                }],
+                base_text: Some(Arc::from("zero\none\ntwo\nthree\n")),
+                path: PathBuf::from("src/a.rs"),
+                display_path: PathBuf::from("src/a.rs"),
+                context_lines: None,
+                is_created: false,
+                show_file_header: false,
             }]),
             cx,
         );
-        buffer.set_diff_head_text(Some(Arc::from("zero\none\ntwo\nthree\n")), cx);
-        buffer.toggle_diff_hunk(DiffHunkKind::Modified, 1..2, cx);
+        buffer.toggle_diff_hunk_at(0, cx);
     });
     // base 完全变化（模拟提交后新 HEAD）：旧侧行号空间整体失效（指向新 base 的其他行），
     // 但工作区文本未变，锚点仍把新 hunk 识别为同一 hunk。
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_diff_hunks(
-            Some(vec![DiffHunk {
-                range: 1..2,
-                old_range: 2..3,
-                kind: DiffHunkKind::Modified,
+        buffer.set_diff_projection(
+            Some(vec![DiffFileInput {
+                working: source.clone(),
+                hunks: vec![DiffHunk {
+                    range: 1..2,
+                    old_range: 2..3,
+                    kind: DiffHunkKind::Modified,
+                }],
+                base_text: Some(Arc::from("zero\none\ntwo\nthree\n")),
+                path: PathBuf::from("src/a.rs"),
+                display_path: PathBuf::from("src/a.rs"),
+                context_lines: None,
+                is_created: false,
+                show_file_header: false,
             }]),
             cx,
         );
     });
     assert!(
-        cx.read_entity(&combined, |buffer, _| {
-            buffer.expanded_modified_hunks().contains(&(2..3))
+        cx.read_entity(&combined, |buffer, cx| {
+            buffer
+                .diff_hunk_expanded(cx)
+                .iter()
+                .all(|&expanded| expanded)
         }),
-        "base 变化但工作区文本未变时，展开状态应按文本锚点保留"
+        "base 变化但工作区文本未变时，展开状态应按文本跟踪区间保留"
     );
 }
 

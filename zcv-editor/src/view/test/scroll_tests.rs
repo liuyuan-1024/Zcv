@@ -11,10 +11,11 @@ impl Render for EditorInWindow {
         self.0.clone()
     }
 }
-use zcv_multi_buffer::MultiBufferExcerpt;
+use zcv_git::DiffHunkKind;
+use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
 use zcv_text::ByteOffset;
 
-use super::common::{scrollbar_geometry, scrolling_text, test_buffer};
+use super::common::{inject_editor_diff, scrollbar_geometry, scrolling_text, test_buffer};
 use super::*;
 use crate::scroll::ScrollbarThumbState;
 use crate::scrollbar::marker_geometry;
@@ -455,16 +456,18 @@ fn dragging_thumb_to_marker_position_scrolls_to_that_row(cx: &mut TestAppContext
     cx.run_until_parked();
 
     // 注入行 50 的 diff hunk（行 50 内容 y = 50 × line_height）。
-    editor.update(cx, |editor, cx| {
-        editor.set_diff_hunks(
-            Some(vec![DiffHunk {
-                range: 50..51,
-                old_range: 50..51,
-                kind: DiffHunkKind::Modified,
-            }]),
-            cx,
-        );
-    });
+    let source = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    inject_editor_diff(
+        &editor,
+        &source,
+        vec![DiffHunk {
+            range: 50..51,
+            old_range: 50..51,
+            kind: DiffHunkKind::Modified,
+        }],
+        None,
+        cx,
+    );
     cx.run_until_parked();
 
     let (track_bounds, thumb_bounds, per_pixel) = scrollbar_geometry(&editor, cx);

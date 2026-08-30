@@ -47,6 +47,35 @@ pub(super) fn scrollbar_geometry(
         (track_bounds, thumb_bounds, per_pixel)
     })
 }
+
+/// 为普通编辑器注入统一 diff 投影（source 模式单文件数据源）。
+///
+/// 与 item_provider 打开路径一致：工作区源实体由测试创建并跨注入复用
+/// （同一实体重新注入时展开状态按文本跟踪区间迁移）。
+pub(super) fn inject_editor_diff(
+    editor: &Entity<Editor>,
+    source: &Entity<MultiBuffer>,
+    hunks: Vec<DiffHunk>,
+    base_text: Option<Arc<str>>,
+    cx: &mut TestAppContext,
+) {
+    editor.update(cx, |editor, cx| {
+        editor.set_diff_projection(
+            Some(vec![zcv_multi_buffer::DiffFileInput {
+                working: source.clone(),
+                hunks,
+                base_text,
+                path: PathBuf::from("src/a.rs"),
+                display_path: PathBuf::from("src/a.rs"),
+                context_lines: None,
+                is_created: false,
+                show_file_header: false,
+            }]),
+            cx,
+        );
+    });
+}
+
 pub(super) fn scrolling_text() -> String {
     (0..100)
         .map(|row| format!("line {row}\n"))

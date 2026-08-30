@@ -14,7 +14,7 @@ use crate::display_map::DisplaySnapshot;
 pub(crate) struct HunkRendering {
     pub(crate) diff_rows: Vec<(Range<usize>, DiffHunkKind)>,
     pub(crate) strips: Vec<(Range<usize>, DiffHunkKind)>,
-    pub(crate) hit_regions: Vec<(Range<usize>, Range<usize>, DiffHunkKind)>,
+    pub(crate) hit_regions: Vec<(Range<usize>, usize, DiffHunkKind)>,
     /// hunk 操作栏的锚定显示范围；控件取范围起点作为右上角所在行。
     pub(crate) controls: Vec<(Range<usize>, DiffHunk)>,
     /// 需要整行差异背景的显示行区间；新增行始终包含，修改/删除只在展开时包含。
@@ -36,8 +36,7 @@ pub(crate) struct HunkRendering {
 pub(crate) fn hunk_rendering(
     snapshot: &DisplaySnapshot,
     hunks: &[DiffHunk],
-    expanded_deleted: &[Range<usize>],
-    expanded_modified: &[Range<usize>],
+    expanded: &[bool],
     old_display_ranges: &[Option<Range<usize>>],
 ) -> HunkRendering {
     let mut diff_rows = Vec::new();
@@ -46,6 +45,7 @@ pub(crate) fn hunk_rendering(
     let mut controls = Vec::new();
     let mut expanded_rows = Vec::new();
     for (index, hunk) in hunks.iter().enumerate() {
+        let is_expanded = expanded.get(index).copied().unwrap_or(false);
         let old_rows = old_display_ranges
             .get(index)
             .and_then(|range| range.as_ref())
@@ -61,43 +61,33 @@ pub(crate) fn hunk_rendering(
                 }
             }
             DiffHunkKind::Deleted => {
-                let expanded = expanded_deleted.contains(&hunk.old_range);
-                if expanded && let Some(rows) = old_rows {
+                if is_expanded && let Some(rows) = old_rows {
                     diff_rows.push((rows.clone(), DiffHunkKind::Deleted));
                     strips.push((rows.clone(), DiffHunkKind::Deleted));
                     expanded_rows.push(rows.clone());
-                    hit_regions.push((rows.clone(), hunk.old_range.clone(), DiffHunkKind::Deleted));
+                    hit_regions.push((rows.clone(), index, DiffHunkKind::Deleted));
                     controls.push((rows, hunk.clone()));
                 } else if let Some(rows) =
                     old_rows.or_else(|| logical_anchor_rows(snapshot, hunk.range.start))
                 {
-                    hit_regions.push((rows.clone(), hunk.old_range.clone(), DiffHunkKind::Deleted));
+                    hit_regions.push((rows.clone(), index, DiffHunkKind::Deleted));
                     controls.push((rows, hunk.clone()));
                 }
             }
             DiffHunkKind::Modified => {
-                let expanded = expanded_modified.contains(&hunk.old_range);
-                if expanded && let (Some(old_rows), Some(new_rows)) = (&old_rows, &new_rows) {
+                if is_expanded && let (Some(old_rows), Some(new_rows)) = (&old_rows, &new_rows) {
                     diff_rows.push((old_rows.clone(), DiffHunkKind::Deleted));
                     diff_rows.push((new_rows.clone(), DiffHunkKind::Added));
                     expanded_rows.push(old_rows.clone());
                     expanded_rows.push(new_rows.clone());
                     let rows = old_rows.start.min(new_rows.start)..old_rows.end.max(new_rows.end);
                     strips.push((rows.clone(), DiffHunkKind::Modified));
-                    hit_regions.push((
-                        rows.clone(),
-                        hunk.old_range.clone(),
-                        DiffHunkKind::Modified,
-                    ));
+                    hit_regions.push((rows.clone(), index, DiffHunkKind::Modified));
                     controls.push((rows, hunk.clone()));
                 } else if let Some(rows) = new_rows {
                     diff_rows.push((rows.clone(), DiffHunkKind::Modified));
                     strips.push((rows.clone(), DiffHunkKind::Modified));
-                    hit_regions.push((
-                        rows.clone(),
-                        hunk.old_range.clone(),
-                        DiffHunkKind::Modified,
-                    ));
+                    hit_regions.push((rows.clone(), index, DiffHunkKind::Modified));
                     controls.push((rows, hunk.clone()));
                 }
             }
@@ -197,7 +187,12 @@ mod tests {
             },
         ];
 
-        let rendered = hunk_rendering(&snapshot, &hunks, &[], &[], &[None, None, None]);
+        let rendered = hunk_rendering(
+            &snapshot,
+            &hunks,
+            &[false, false, false],
+            &[None, None, None],
+        );
         assert_eq!(
             rendered
                 .controls
@@ -225,13 +220,7 @@ mod tests {
         };
         let old_ranges = vec![Some(1..2)];
 
-        let rendered = hunk_rendering(
-            &snapshot,
-            std::slice::from_ref(&hunk),
-            &[],
-            std::slice::from_ref(&(10..11)),
-            &old_ranges,
-        );
+        let rendered = hunk_rendering(&snapshot, std::slice::from_ref(&hunk), &[true], &old_ranges);
 
         assert_eq!(
             rendered.diff_rows,
@@ -241,7 +230,7 @@ mod tests {
         assert_eq!(rendered.controls, vec![(1..3, hunk)]);
         assert_eq!(
             rendered.hit_regions,
-            vec![(1..3, 10..11, DiffHunkKind::Modified)],
+            vec![(1..3, 0, DiffHunkKind::Modified)],
             "物化旧侧与普通编辑器共用 gutter 折叠入口"
         );
     }

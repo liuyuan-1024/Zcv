@@ -3,17 +3,17 @@
 //! singleton 文档直接投影一个语言 Buffer；
 //! 组合文档按调用方给出的顺序物化多个来源的 excerpts，并保留组合坐标到源文件坐标的映射。
 //! Editor 始终只消费本层，不感知来源数量。
-//! diff 投影（git hunks、展开状态、锚点与显示坐标）也归本层，见 [`diff_projection`]。
+//! diff 投影（git hunks、展开状态、跟踪区间与显示坐标）也归本层，见 [`diff_projection`]。
 
 mod diff_projection;
 
+pub use diff_projection::{DiffFileInput, DiffHunkSourceInfo};
+
 use std::collections::{HashMap, HashSet};
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Subscription};
-use zcv_git::DiffHunk;
 use zcv_language::{
     AutoClosePair, FoldRange, HighlightSpan, LanguageBuffer, LanguageBufferEvent, SyntaxSnapshot,
 };
@@ -40,16 +40,6 @@ pub struct MultiBufferExcerpt {
 pub enum ExcerptDiffKind {
     Added,
     Deleted,
-}
-
-/// 旧侧文本已经由 MultiBuffer 物化到组合文档中的统一 diff hunk。
-///
-/// `hunk.range` 是新侧逻辑行范围，`old_display_range` 是同一文档中的旧侧逻辑行范围。
-/// 旧侧因此参与 Editor 的普通光标、选择和复制，不再由显示层合成正文。
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MaterializedDiffHunk {
-    pub hunk: DiffHunk,
-    pub old_display_range: Option<Range<usize>>,
 }
 
 impl MultiBufferExcerpt {
@@ -484,7 +474,7 @@ pub struct MultiBuffer {
     /// singleton → excerpts 转换时的工作区 source（普通编辑器展开 diff 用；
     /// 转换后 excerpts 里引用自身的片段改写为该 source，避免自引用）。
     working_source: Option<Entity<MultiBuffer>>,
-    /// git 行级 diff 投影（hunks、展开状态、锚点与显示坐标）；`None` = 无 diff 需求。
+    /// git 行级 diff 投影（hunks、展开状态、跟踪区间与显示坐标）；`None` = 无 diff 需求。
     diff: Option<Box<diff_projection::DiffProjection>>,
 }
 
@@ -781,10 +771,21 @@ impl MultiBuffer {
                     }
                 }
             }
-            // 工作区源被外部编辑：hunk 锚点随文本位置推进（组合编辑已在 edit 内同步映射）。
+            // 工作区源被外部编辑：hunk 显示坐标随文本位置推进（组合编辑已在 edit 内同步映射）。
+            let mut diff_changed = false;
             if let Some(new_version) = patch.new_version() {
-                self.map_diff_hunk_anchors(&position_map, new_version);
+                diff_changed = self.map_diff_hunks_through_edit(
+                    Some(source_id),
+                    &position_map,
+                    new_version,
+                    cx,
+                );
             }
+            self.rebuild_projection(cx);
+            if diff_changed {
+                self.rebuild_diff_projection(cx);
+            }
+            return;
         }
         self.rebuild_projection(cx);
     }
@@ -842,6 +843,14 @@ impl MultiBuffer {
                 .read(cx)
                 .buffer()
                 .update(cx, |buffer, _| buffer.edit(edits.clone(), metadata))?;
+            if self.map_diff_hunks_through_edit(
+                None,
+                outcome.event().position_map(),
+                outcome.event().new_version(),
+                cx,
+            ) {
+                self.rebuild_diff_projection(cx);
+            }
             return Ok(outcome.event().position_map().clone());
         }
 
@@ -1038,11 +1047,16 @@ impl MultiBuffer {
                 }
             }
         }
-        // 组合编辑写回工作区源：hunk 锚点随本次编辑同步推进（source_changed 的消费为空，不会重复映射）。
-        for (_, position_map, new_version) in &source_maps {
-            self.map_diff_hunk_anchors(position_map, *new_version);
+        // 组合编辑写回工作区源：hunk 显示坐标随本次编辑同步推进（source_changed 的消费为空，不会重复映射）。
+        let mut diff_changed = false;
+        for (source_id, position_map, new_version) in &source_maps {
+            diff_changed |=
+                self.map_diff_hunks_through_edit(Some(*source_id), position_map, *new_version, cx);
         }
         self.rebuild_projection(cx);
+        if diff_changed {
+            self.rebuild_diff_projection(cx);
+        }
         Ok(global_map)
     }
 

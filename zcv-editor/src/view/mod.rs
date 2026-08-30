@@ -22,7 +22,7 @@ use zcv_actions::{
     SelectRight, SelectToBeginning, SelectToBeginningOfLine, SelectToEnd, SelectToEndOfLine,
     SelectToNextWord, SelectToPreviousWord, SelectUp, ToggleFold, Undo, UnfoldAll,
 };
-use zcv_git::{DiffHunk, DiffHunkKind};
+use zcv_git::DiffHunk;
 use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer};
 use zcv_multi_buffer::{
     ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot, MultiBuffer, MultiBufferAnchor,
@@ -401,29 +401,21 @@ impl Editor {
         cx.emit(EditorEvent::PathChanged);
     }
 
-    /// 注入滚动轴 marker 的行级 diff hunks（git 状态刷新后由 bin 层调用）。
+    /// 统一注入 git diff 投影（普通编辑器与多文件投影共用）。
     ///
-    /// `None` 是加载态（新 diff 尚未算完）：保留现有 hunks 与用户展开状态，不再被中间空列表清空；展开状态按工作区文本锚点跨刷新迁移。
+    /// `None` 是加载态（新 diff 尚未算完）：保留现有 hunks 与用户展开状态，不再被中间空列表清空；展开状态按工作区文本跟踪区间跨刷新迁移。
     /// 状态与投影归属 MultiBuffer，本方法只转发并同步视图层状态。
     /// 返回 `true` 表示组合文档被重建（光标已落回开头）。
-    pub fn set_diff_hunks(&mut self, hunks: Option<Vec<DiffHunk>>, cx: &mut Context<Self>) -> bool {
+    pub fn set_diff_projection(
+        &mut self,
+        files: Option<Vec<zcv_multi_buffer::DiffFileInput>>,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let rebuilt = self
             .multi_buffer
-            .update(cx, |buffer, cx| buffer.set_diff_hunks(hunks, cx));
+            .update(cx, |buffer, cx| buffer.set_diff_projection(files, cx));
         self.after_diff_projection_rebuild(rebuilt, cx);
         rebuilt
-    }
-
-    /// 注入旧侧已经属于 MultiBuffer 投影文本的 diff hunks（多文件投影模式）。
-    pub fn set_materialized_diff_hunks(
-        &mut self,
-        hunks: Vec<zcv_multi_buffer::MaterializedDiffHunk>,
-        cx: &mut Context<Self>,
-    ) {
-        self.multi_buffer.update(cx, |buffer, cx| {
-            buffer.set_materialized_diff_hunks(hunks, cx)
-        });
-        cx.notify();
     }
 
     pub fn set_diff_hunk_delegate(
@@ -447,19 +439,7 @@ impl Editor {
         self.after_diff_projection_rebuild(rebuilt, cx);
     }
 
-    /// hunk 的当前展开状态；尚未进入投影的新 hunk 直接采用默认策略。
-    pub fn is_diff_hunk_expanded(
-        &self,
-        kind: DiffHunkKind,
-        old_range: &Range<usize>,
-        cx: &App,
-    ) -> bool {
-        self.multi_buffer
-            .read(cx)
-            .is_diff_hunk_expanded(kind, old_range)
-    }
-
-    /// base 版本变化后由宿主调用：重置展开状态（materialized 模式旧侧坐标空间失效时）。
+    /// base 版本变化后由宿主调用：重置展开状态（旧侧坐标空间失效时）。
     pub fn reset_diff_hunk_expansion_state(&mut self, cx: &mut Context<Self>) {
         let rebuilt = self
             .multi_buffer
@@ -467,22 +447,38 @@ impl Editor {
         self.after_diff_projection_rebuild(rebuilt, cx);
     }
 
-    /// 已展开的删除 hunk（按旧侧行范围标识；渲染背景色用，宿主重建片段按此判断）。
-    pub fn expanded_deleted_hunks<'a>(&self, cx: &'a App) -> &'a [Range<usize>] {
-        self.multi_buffer.read(cx).expanded_deleted_hunks()
+    /// 与当前组合文档版本匹配的显示坐标 hunks。
+    pub fn diff_hunks<'a>(&'a self, cx: &'a App) -> &'a [DiffHunk] {
+        self.multi_buffer.read(cx).diff_hunks(cx)
     }
 
-    /// 已展开的修改 hunk（按旧侧行范围标识；渲染背景色用，宿主重建片段按此判断）。
-    pub fn expanded_modified_hunks<'a>(&self, cx: &'a App) -> &'a [Range<usize>] {
-        self.multi_buffer.read(cx).expanded_modified_hunks()
+    /// 每个 hunk 在组合文档中的旧侧显示行范围（与 diff_hunks 同门控）。
+    pub fn diff_hunk_old_ranges<'a>(&'a self, cx: &'a App) -> &'a [Option<Range<usize>>] {
+        self.multi_buffer.read(cx).diff_hunk_old_ranges(cx)
     }
 
-    /// 注入 HEAD 全文（删除块展开的数据源）；到达后重建删除块。
-    pub fn set_deleted_hunk_text(&mut self, text: Option<Arc<str>>, cx: &mut Context<Self>) {
-        let rebuilt = self
-            .multi_buffer
-            .update(cx, |buffer, cx| buffer.set_diff_head_text(text, cx));
+    /// 与 diff_hunks 平行的展开标志（渲染层按显示 hunk 索引查询）。
+    pub fn diff_hunk_expanded(&self, cx: &App) -> Vec<bool> {
+        self.multi_buffer.read(cx).diff_hunk_expanded(cx)
+    }
+
+    /// 按显示 hunk 索引切换展开/折叠（渲染层点击入口）。
+    pub fn toggle_diff_hunk_at(&mut self, display_index: usize, cx: &mut Context<Self>) {
+        let rebuilt = self.multi_buffer.update(cx, |buffer, cx| {
+            buffer.toggle_diff_hunk_at(display_index, cx)
+        });
         self.after_diff_projection_rebuild(rebuilt, cx);
+    }
+
+    /// 显示 hunk 到源定位（hunk 操作与导航用）。
+    pub fn diff_hunk_source_at(
+        &self,
+        display_index: usize,
+        cx: &App,
+    ) -> Option<zcv_multi_buffer::DiffHunkSourceInfo> {
+        self.multi_buffer
+            .read(cx)
+            .diff_hunk_source_at(display_index, cx)
     }
 
     /// diff 投影重建后同步视图层状态：组合文档文本版本变化时同步 DisplayMap 并把光标落回开头。
@@ -501,22 +497,6 @@ impl Editor {
     /// 语言层可折叠范围（crease 渲染与折叠命令共用）。
     pub(crate) fn fold_ranges(&self) -> &[FoldRange] {
         &self.fold_ranges
-    }
-
-    /// 展开/折叠删除块（按 hunk 的 old_range 标识）。
-    pub fn toggle_deleted_hunk(&mut self, old_range: Range<usize>, cx: &mut Context<Self>) {
-        let rebuilt = self.multi_buffer.update(cx, |buffer, cx| {
-            buffer.toggle_diff_hunk(DiffHunkKind::Deleted, old_range, cx)
-        });
-        self.after_diff_projection_rebuild(rebuilt, cx);
-    }
-
-    /// 展开/折叠修改块：展开显示修改前的 HEAD 旧行（base 旧行插在修改行上方）。
-    pub fn toggle_modified_hunk(&mut self, old_range: Range<usize>, cx: &mut Context<Self>) {
-        let rebuilt = self.multi_buffer.update(cx, |buffer, cx| {
-            buffer.toggle_diff_hunk(DiffHunkKind::Modified, old_range, cx)
-        });
-        self.after_diff_projection_rebuild(rebuilt, cx);
     }
 
     /// 折叠/展开指定逻辑行（crease 点击与 ToggleFold 命令的共享实现）。
@@ -615,15 +595,6 @@ impl Editor {
             eprintln!("折叠失败：{error}");
         }
         cx.notify();
-    }
-
-    /// 与当前 buffer 版本匹配的 diff hunks；未注入或注入后发生编辑时返回空。
-    pub(crate) fn diff_hunks<'a>(&self, cx: &'a App) -> &'a [DiffHunk] {
-        self.multi_buffer.read(cx).diff_hunks(cx)
-    }
-
-    pub(crate) fn diff_hunk_old_ranges<'a>(&self, cx: &'a App) -> &'a [Option<Range<usize>>] {
-        self.multi_buffer.read(cx).diff_hunk_old_ranges(cx)
     }
 
     pub fn text(&self, cx: &App) -> String {

@@ -3,7 +3,7 @@
 //! Workspace 框架（Pane/Dock/命令分发）在 zcv-workspace；
 //! 本模块只做 binary 侧的具体装配：面板（项目树/版本控制）、状态栏按钮、git/settings 订阅与 diff hunks 推送。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -598,7 +598,7 @@ fn initialize_workspace(
             cx.notify();
         });
         // 任务事件只更新任务界面，不能反向触发差异业务；其余状态事件同步当前结果。
-        // 展开状态按工作区文本锚点跨刷新迁移（HEAD 变化不重置，见 diff_projection 模块说明）。
+        // 展开状态按工作区文本跟踪区间跨刷新迁移（HEAD 变化不重置，见 diff_projection 模块说明）。
         if matches!(
             event,
             GitStoreEvent::Repositories
@@ -731,7 +731,6 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
             .filter_map(|item| item.act_as::<project_diff::ProjectDiffView>(cx))
             .flat_map(|view| view.read(cx).diff_requests().collect::<Vec<_>>()),
     );
-    // 单文件 Editor 仍直接消费自身 hunk；组合 Item 负责把各源 hunk 投影到组合坐标。
     let opened: Vec<(Entity<Editor>, PathBuf)> = pane
         .read(cx)
         .tabs()
@@ -749,59 +748,79 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
     store.update(cx, |store, cx| {
         store.set_hunk_interests(&interested_requests, cx)
     });
+    // 普通编辑器统一注入：工作区 hunks + HEAD 全文作为单文件投影输入。
     for (editor, path) in &opened {
-        let store = project.read(cx).git_store();
-        // 显式传递加载态：None（新 diff 尚未算完）由 MultiBuffer 保留旧 hunk 与展开状态；
-        // 终态（含空）按锚点迁移后注入。
-        let hunks = store
-            .read(cx)
-            .hunks_for_path(DiffBase::Head, path)
-            .map(|hunks| hunks.to_vec());
-        editor.update(cx, |editor, cx| {
-            editor.set_diff_hunks(hunks, cx);
-        });
+        inject_editor_diff(editor, path, project, cx);
     }
-    // 预取 HEAD 文本：含 Deleted hunk 的文件展开删除块需要。
+}
+
+/// 把单个普通编辑器的工作区 hunks 与 HEAD 全文统一注入（source 模式数据源）。
+///
+/// 加载态（hunks 尚未算完）传 `None` 保留旧投影与展开状态；
+/// HEAD 全文未到时旧侧展开先降级不物化，文本加载完成后由本函数重新注入补全（GitStore 缓存命中即复用实体）。
+fn inject_editor_diff(
+    editor: &Entity<Editor>,
+    path: &Path,
+    project: &Entity<Project>,
+    cx: &mut App,
+) {
+    let store = project.read(cx).git_store();
+    let hunks = store
+        .read(cx)
+        .hunks_for_path(DiffBase::Head, path)
+        .map(|hunks| hunks.to_vec());
+    let base_text = store.read(cx).revision_text(GitRevision::Head, path);
+    let Some(working) = editor.read(cx).multi_buffer().read(cx).working_source() else {
+        return;
+    };
+    let input = hunks.map(|hunks| {
+        vec![zcv_multi_buffer::DiffFileInput {
+            working,
+            hunks,
+            base_text,
+            path: path.to_path_buf(),
+            display_path: path.to_path_buf(),
+            context_lines: None,
+            is_created: false,
+            show_file_header: false,
+        }]
+    });
+    editor.update(cx, |editor, cx| {
+        editor.set_diff_projection(input, cx);
+    });
+    // 含 Deleted/Modified hunk 且 HEAD 全文尚未加载时触发加载；到达后重新注入补全旧侧数据。
     // 每路径每 HEAD 一次，缓存命中后不再重复加载；HEAD 变化时 git_store 自动清缓存。
-    for (editor, path) in &opened {
-        let store = project.read(cx).git_store();
-        // 删除块与修改块展开都需要 HEAD 文本（被删行/旧行来源）。
-        let needs_head_text = store
-            .read(cx)
-            .hunks_for_path(DiffBase::Head, path)
-            .is_some_and(|hunks| {
-                hunks.iter().any(|hunk| {
-                    matches!(
-                        hunk.kind,
-                        zcv_git::DiffHunkKind::Deleted | zcv_git::DiffHunkKind::Modified
-                    )
-                })
-            });
-        if !needs_head_text {
-            continue;
-        }
-        if let Some(text) = store.read(cx).revision_text(GitRevision::Head, path) {
-            editor.update(cx, |editor, cx| {
-                editor.set_deleted_hunk_text(Some(text), cx)
-            });
-        } else {
-            // 加载结果由 GitStore 自行回填缓存，这里只消费返回值。
-            let task = store
-                .read(cx)
-                .load_revision_text(GitRevision::Head, path, cx);
-            let editor = editor.clone();
-            cx.spawn(async move |cx| {
-                if let Some(text) = task.await {
-                    cx.update(|app| {
-                        editor.update(app, |editor, cx| {
-                            editor.set_deleted_hunk_text(Some(Arc::from(text)), cx);
-                        });
-                    })
-                    .ok();
-                }
+    let store = project.read(cx).git_store();
+    let needs_head_text = store
+        .read(cx)
+        .hunks_for_path(DiffBase::Head, path)
+        .is_some_and(|hunks| {
+            hunks.iter().any(|hunk| {
+                matches!(
+                    hunk.kind,
+                    zcv_git::DiffHunkKind::Deleted | zcv_git::DiffHunkKind::Modified
+                )
             })
-            .detach();
-        }
+        });
+    if needs_head_text
+        && store
+            .read(cx)
+            .revision_text(GitRevision::Head, path)
+            .is_none()
+    {
+        let task = store
+            .read(cx)
+            .load_revision_text(GitRevision::Head, path, cx);
+        let project = project.clone();
+        let editor = editor.clone();
+        let path = path.to_path_buf();
+        cx.spawn(async move |cx| {
+            if task.await.is_some() {
+                cx.update(|app| inject_editor_diff(&editor, &path, &project, app))
+                    .ok();
+            }
+        })
+        .detach();
     }
 }
 
@@ -1008,10 +1027,15 @@ mod tests {
                 .find_map(|item| item.act_as::<Editor>(cx))
                 .expect("应打开普通编辑器")
         });
-        editor.update(cx, |editor, cx| editor.toggle_modified_hunk(1..2, cx));
+        editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
         assert!(
             cx.read_entity(&editor, |editor, cx| {
-                editor.expanded_modified_hunks(cx).contains(&(1..2))
+                editor
+                    .multi_buffer()
+                    .read(cx)
+                    .diff_hunk_expanded(cx)
+                    .iter()
+                    .all(|&expanded| expanded)
             }),
             "展开修改块后应记录展开状态"
         );
@@ -1033,10 +1057,13 @@ mod tests {
         cx.run_until_parked();
 
         cx.read_entity(&editor, |editor, cx| {
+            let hunks = editor.multi_buffer().read(cx).diff_hunks(cx).to_vec();
+            let expanded = editor.multi_buffer().read(cx).diff_hunk_expanded(cx);
+            assert_eq!(hunks.len(), 1, "保存后两处改动应合并为一个 hunk");
+            assert_eq!(hunks[0].old_range, 1..3, "合并后 hunk 旧侧应为 1..3");
             assert!(
-                editor.expanded_modified_hunks(cx).contains(&(1..3)),
-                "保存刷新后展开状态应迁移到合并后的新 hunk（旧侧 1..3），实际：{:?}",
-                editor.expanded_modified_hunks(cx)
+                expanded.first().copied().unwrap_or(false),
+                "保存刷新后展开状态应迁移到合并后的新 hunk"
             );
         });
     }

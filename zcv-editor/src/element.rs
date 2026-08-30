@@ -1895,10 +1895,12 @@ fn gutter_strip_width(line_height: Pixels) -> Pixels {
 
 fn deleted_hunk_triangle_points(bounds: Bounds<Pixels>, strip_width: Pixels) -> [Point<Pixels>; 3] {
     let half = strip_width * 0.8;
+    // 三角锚定在删除点行的行首（bounds.top）：
+    // 删除点 = hunk.range.start 对应行的起始边界，软换行时 hitbox 覆盖整行，行首即该行第一个子行的行首（与上一行的边界）。
     [
-        point(bounds.left(), bounds.bottom() - half),
-        point(bounds.left(), bounds.bottom() + half),
-        point(bounds.right(), bounds.bottom()),
+        point(bounds.left(), bounds.top() - half),
+        point(bounds.left(), bounds.top() + half),
+        point(bounds.right(), bounds.top()),
     ]
 }
 
@@ -2750,9 +2752,9 @@ mod tests {
         assert_eq!(
             deleted_hunk_triangle_points(bounds, px(5.)),
             [
-                point(px(0.), px(56.)),
-                point(px(0.), px(64.)),
-                point(px(5.), px(60.)),
+                point(px(0.), px(16.)),
+                point(px(0.), px(24.)),
+                point(px(5.), px(20.)),
             ]
         );
     }

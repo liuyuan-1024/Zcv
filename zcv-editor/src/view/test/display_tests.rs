@@ -987,6 +987,68 @@ fn plain_editor_expanding_deleted_hunk_uses_excerpts_and_allows_cursor(cx: &mut 
     });
 }
 
+/// 折叠的删除块三角锚点：删除第 17 行（1-based，0-based 16）后，锚点行必须是组合 0-based 16 行（16/17 行边界），不能是 15 或 17。
+#[gpui::test]
+fn folded_deleted_hunk_anchor_is_at_the_deletion_row_boundary(cx: &mut TestAppContext) {
+    let buffer = test_buffer(
+        cx,
+        (1..=20)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)
+    });
+    let source = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    inject_editor_diff(
+        &editor,
+        &source,
+        vec![DiffHunk {
+            range: 16..16,
+            old_range: 16..17,
+            kind: DiffHunkKind::Deleted,
+        }],
+        Some(Arc::from(
+            (1..=20)
+                .map(|line| format!("line {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n",
+        )),
+        cx,
+    );
+    cx.run_until_parked();
+
+    cx.read_entity(&editor, |editor, cx| {
+        // 折叠态：组合保持新侧 20 行（普通编辑器整文件模式）。
+        assert_eq!(
+            editor.text(cx),
+            (1..=20)
+                .map(|line| format!("line {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let snapshot = editor.display_map.snapshot();
+        let rendering = hunk_rendering(
+            &snapshot,
+            editor.diff_hunks(cx),
+            &editor.diff_hunk_expanded(cx),
+            editor.diff_hunk_old_ranges(cx),
+        );
+        eprintln!("DEBUG hit_regions={:?}", rendering.hit_regions);
+        assert_eq!(
+            rendering.hit_regions,
+            vec![(16..17, 0, DiffHunkKind::Deleted)],
+            "折叠删除块锚点应在组合 0-based 16 行（16/17 行边界）"
+        );
+    });
+}
+
 /// 回归：diff 刷新移除已展开 hunk 时，旧侧只读 excerpt 也必须随权威 hunk 数据消失。
 #[gpui::test]
 fn refreshing_diff_hunks_removes_stale_expanded_excerpt(cx: &mut TestAppContext) {

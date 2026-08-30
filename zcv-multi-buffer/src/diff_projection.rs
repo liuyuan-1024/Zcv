@@ -6,7 +6,6 @@
 //!
 //! 展开状态跨 diff 刷新迁移：按工作区文本跟踪区间匹配新旧 hunk，文本位置未变即视为同一hunk——编辑移位、HEAD/index 变化都不丢失状态；
 /// base 版本变化导致旧侧坐标失效时由宿主调用 MultiBuffer::reset_diff_hunk_expansion_state 重置。
-
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

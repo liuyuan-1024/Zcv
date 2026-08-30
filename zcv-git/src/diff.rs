@@ -9,7 +9,7 @@ use crate::status::path_from_bytes;
 /// 单块行级 diff：新侧逻辑行范围（0-based，左闭右开）+ 旧侧范围 + 变化类型。
 ///
 /// - Added/Modified：range 为新增行的行号区间（纯增时旧侧计数为 0）；
-/// - Deleted：range 为空区间，锚定 newStart−1 行（删除发生处的行），渲染侧展开为一个显示行。
+/// - Deleted：range 为空区间，锚定 newStart 行（git 的 newStart 是删除点所在的新侧行，该行内容保留、删除发生在其后；文件开头删除时 newStart=0），渲染侧展开为一个显示行。
 /// - `old_range` 是旧侧（HEAD 版本）的行范围：Deleted 时用它从 HEAD 文本切片出被删除的行。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DiffHunk {
@@ -79,10 +79,13 @@ fn parse_hunk_header(line: &[u8]) -> Option<DiffHunk> {
     };
     let old_start = old_start.saturating_sub(1) as usize;
     let old_range = old_start..old_start + old_count as usize;
-    let new_start = new_start.saturating_sub(1) as usize;
     let range = if new_count == 0 {
+        // Deleted：git 的 new_start（1-based）是删除点所在的新侧行，该行内容保留、删除发生在其后；
+        // 0-based 删除点 = new_start 不减 1（git 对文件开头删除输出 0，同样作为 0 处理）。
+        let new_start = new_start as usize;
         new_start..new_start
     } else {
+        let new_start = new_start.saturating_sub(1) as usize;
         new_start..new_start + new_count as usize
     };
     Some(DiffHunk {
@@ -269,7 +272,7 @@ mod tests {
         assert_eq!(
             parse(output),
             vec![DiffHunk {
-                range: 32..32,
+                range: 33..33,
                 old_range: 29..31,
                 kind: Deleted,
             }]
@@ -335,7 +338,7 @@ mod tests {
                     kind: Added,
                 },
                 DiffHunk {
-                    range: 12..12,
+                    range: 13..13,
                     old_range: 9..11,
                     kind: Deleted,
                 },
@@ -373,7 +376,7 @@ mod tests {
         assert_eq!(
             parse(output),
             vec![DiffHunk {
-                range: 32..32,
+                range: 33..33,
                 old_range: 29..31,
                 kind: Deleted,
             }]

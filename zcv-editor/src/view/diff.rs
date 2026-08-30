@@ -114,8 +114,13 @@ fn logical_rows(snapshot: &DisplaySnapshot, range: &Range<usize>) -> Option<Rang
 }
 
 fn logical_anchor_rows(snapshot: &DisplaySnapshot, line: usize) -> Option<Range<usize>> {
-    let row = snapshot.line_to_display_row(Line::new(line))?.get();
-    Some(row..row + 1)
+    // 折叠的纯删除块锚定到删除点逻辑行：
+    // 软换行拆出的全部子行都属于该行，范围延伸到下一逻辑行的行首（与 logical_rows 的终点换算一致），点击区域与三角标记因此覆盖整行而不是仅第一个子行。
+    let start = snapshot.line_to_display_row(Line::new(line))?.get();
+    let end = snapshot
+        .line_to_display_row(Line::new(line + 1))
+        .map_or_else(|| snapshot.line_count(), |row| row.get());
+    Some(start..end.max(start + 1))
 }
 
 /// 查询显示行所属的 diff 类型（gutter 与内容背景共用；线性扫描，hunks 数量级小）。
@@ -133,7 +138,126 @@ pub(crate) fn diff_kind_for_row(
 mod tests {
     use super::*;
     use crate::display_map::DisplayMap;
-    use zcv_text::{Buffer, BufferConfig};
+    use gpui::{Empty, TestAppContext, px};
+    use zcv_text::{Buffer, BufferConfig, Line};
+
+    #[gpui::test]
+    fn folded_deleted_hunk_anchor_covers_all_wrapped_subrows(cx: &mut TestAppContext) {
+        // 删除点逻辑行软换行拆成多个子行时，折叠的纯删除块锚点必须覆盖全部子行：
+        // 三角标记落在删除点行尾（最后子行行尾 = 与下一行的边界），
+        // 点击区域整行可点，而不是只落在第一个子行之间。
+        let window = cx.add_window(|_, _| Empty);
+        window
+            .update(cx, |_, window, _| {
+                let text_system = window.text_system().clone();
+                let font = window.text_style().font();
+                let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+                let lines = (0..24)
+                    .map(|i| {
+                        if i == 20 {
+                            "x".repeat(120)
+                        } else {
+                            format!("line {i}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let buffer =
+                    Buffer::scratch(lines, BufferConfig::default()).expect("应创建测试 Buffer");
+                let mut map = DisplayMap::new(buffer.snapshot());
+                assert!(
+                    map.set_wrap_width(Some(px(100.)), font.clone(), font_size, &text_system),
+                    "第 20 行应产生软换行"
+                );
+                let snapshot = map.snapshot();
+                let start_row = snapshot
+                    .line_to_display_row(Line::new(20))
+                    .expect("第 20 行应可映射");
+                let end_row = snapshot
+                    .line_to_display_row(Line::new(21))
+                    .expect("第 21 行应可映射");
+                assert!(
+                    end_row.get() > start_row.get() + 1,
+                    "软换行行应拆成多个子行"
+                );
+
+                let hunk = DiffHunk {
+                    range: 20..20,
+                    old_range: 20..21,
+                    kind: DiffHunkKind::Deleted,
+                };
+                let rendered =
+                    hunk_rendering(&snapshot, std::slice::from_ref(&hunk), &[false], &[None]);
+                assert_eq!(
+                    rendered.hit_regions,
+                    vec![(start_row.get()..end_row.get(), 0, DiffHunkKind::Deleted)],
+                    "折叠删除块锚点应覆盖软换行的全部子行（三角落在删除点行尾）"
+                );
+            })
+            .expect("测试窗口应保持可用");
+    }
+
+    #[gpui::test]
+    fn folded_deleted_hunk_before_wrapped_row_anchors_to_wrapped_first_subrow(
+        cx: &mut TestAppContext,
+    ) {
+        // 删除点行（第 15 行）无软换行、紧跟在它后面的第 16 行软换行：
+        // 三角落在删除点行行尾 = 软换行第一子行行首（被删行在软换行之前）。
+        let window = cx.add_window(|_, _| Empty);
+        window
+            .update(cx, |_, window, _| {
+                let text_system = window.text_system().clone();
+                let font = window.text_style().font();
+                let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+                let lines = (0..24)
+                    .map(|i| {
+                        if i == 16 {
+                            "x".repeat(120)
+                        } else {
+                            format!("line {i}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let buffer =
+                    Buffer::scratch(lines, BufferConfig::default()).expect("应创建测试 Buffer");
+                let mut map = DisplayMap::new(buffer.snapshot());
+                assert!(
+                    map.set_wrap_width(Some(px(100.)), font.clone(), font_size, &text_system),
+                    "第 16 行应产生软换行"
+                );
+                let snapshot = map.snapshot();
+                let del_start = snapshot
+                    .line_to_display_row(Line::new(15))
+                    .expect("删除点行应可映射")
+                    .get();
+                let wrapped_first = snapshot
+                    .line_to_display_row(Line::new(16))
+                    .expect("第 16 行应可映射")
+                    .get();
+                let wrapped_next = snapshot
+                    .line_to_display_row(Line::new(17))
+                    .expect("第 17 行应可映射")
+                    .get();
+                assert!(wrapped_next > wrapped_first + 1, "第 16 行应拆成多个子行");
+                assert_eq!(wrapped_first, del_start + 1, "删除点行应为单显示行");
+
+                let hunk = DiffHunk {
+                    range: 15..15,
+                    old_range: 15..16,
+                    kind: DiffHunkKind::Deleted,
+                };
+                let rendered =
+                    hunk_rendering(&snapshot, std::slice::from_ref(&hunk), &[false], &[None]);
+                // 删除点行是单行 [del_start, del_start+1)，三角在该行行尾 = 软换行第一子行行首。
+                assert_eq!(
+                    rendered.hit_regions,
+                    vec![(del_start..del_start + 1, 0, DiffHunkKind::Deleted)],
+                    "删除点在软换行之前时锚点应落在软换行第一子行行首"
+                );
+            })
+            .expect("测试窗口应保持可用");
+    }
 
     #[test]
     fn diff_kind_for_row_matches_display_row_ranges() {

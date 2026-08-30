@@ -170,7 +170,7 @@
   },
 
   {
-    "context": "VersionControl",
+    "context": "VersionControlChangesTree",
     "bindings": {
       // =========================
       // 导航
@@ -191,8 +191,13 @@
       "enter": "version_control::Activate",
 
       // 高频 Stage / Unstage
-      "space": "version_control::ToggleStaged",
+      "space": "version_control::ToggleStaged"
+    }
+  },
 
+  {
+    "context": "VersionControlChangesTree || VersionControlCommitEditor",
+    "bindings": {
       // Commit 是较重操作，保留 Cmd 修饰
       "cmd-enter": "version_control::Commit"
     }
@@ -311,10 +316,10 @@
       // Picker
       // =========================
 
-      // 高频项目选择
-      "cmd-p": "project_picker::ToggleProjectPicker",
+      // 项目选择
+      "cmd-shift-p": "project_picker::ToggleProjectPicker",
 
-      // Git Branch
+      // Git 分支
       "cmd-shift-b": "branch_picker::SelectGitBranch",
 
       // =========================

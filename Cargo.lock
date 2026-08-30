@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "Zcv"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "anyhow",
  "futures",
@@ -7450,7 +7450,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-actions"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "gpui",
  "schemars",
@@ -7459,7 +7459,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-assets"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "anyhow",
  "gpui",
@@ -7468,7 +7468,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-editor"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "anyhow",
  "gpui",
@@ -7491,7 +7491,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-fs-watch"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "anyhow",
  "async-channel 1.9.0",
@@ -7503,7 +7503,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-git"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "anyhow",
  "libc",
@@ -7512,7 +7512,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-keymap"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "anyhow",
  "gpui",
@@ -7524,7 +7524,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-language"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "gpui",
  "regex",
@@ -7546,7 +7546,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-multi-buffer"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "gpui",
  "zcv-language",
@@ -7555,7 +7555,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-picker"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "gpui",
  "zcv-actions",
@@ -7566,7 +7566,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-preview-svg"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "anyhow",
  "gpui",
@@ -7580,7 +7580,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-project"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "anyhow",
  "async-channel 1.9.0",
@@ -7597,7 +7597,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-project-tree"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "anyhow",
  "gpui",
@@ -7614,7 +7614,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-search"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "anyhow",
  "gpui",
@@ -7630,7 +7630,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-settings"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "anyhow",
  "gpui",
@@ -7642,7 +7642,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-terminal"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -7666,7 +7666,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-text"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "regex",
  "regex-automata",
@@ -7678,7 +7678,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-theme"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "gpui",
  "serde",
@@ -7689,7 +7689,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-ui"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "gpui",
  "zcv-keymap",
@@ -7698,7 +7698,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-update"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "anyhow",
  "async_zip",
@@ -7715,7 +7715,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-workspace"
-version = "0.8.19"
+version = "0.8.20"
 dependencies = [
  "anyhow",
  "gpui",

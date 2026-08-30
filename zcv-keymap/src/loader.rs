@@ -502,7 +502,7 @@ mod tests {
         });
     }
 
-    /// 提交快捷键必须限制在版本控制上下文，并遵循各平台主修饰键约定。
+    /// 提交快捷键必须覆盖版本控制变更树和提交信息编辑器，并遵循各平台主修饰键约定。
     #[test]
     fn version_control_keymap_binds_commit_on_every_platform() {
         for (source, keys) in [
@@ -513,12 +513,36 @@ mod tests {
             let groups = parse_builtin_keymap(source);
             let version_control = groups
                 .iter()
-                .find(|group| group.context.as_deref() == Some("VersionControl"))
-                .unwrap_or_else(|| panic!("{source} 缺少 VersionControl 上下文"));
+                .find(|group| {
+                    group.context.as_deref()
+                        == Some("VersionControlChangesTree || VersionControlCommitEditor")
+                })
+                .unwrap_or_else(|| panic!("{source} 缺少版本控制提交上下文"));
             assert_eq!(
                 version_control.bindings.get(keys).map(RawAction::name),
                 Some("version_control::Commit"),
                 "{source} 的 {keys} 应提交当前暂存"
+            );
+        }
+    }
+
+    /// 变更树快捷键不得泄漏到同一面板内的提交信息编辑器。
+    #[test]
+    fn version_control_tree_keymap_is_scoped_on_every_platform() {
+        for source in [
+            "default-macos.json",
+            "default-linux.json",
+            "default-windows.json",
+        ] {
+            let groups = parse_builtin_keymap(source);
+            let changes_tree = groups
+                .iter()
+                .find(|group| group.context.as_deref() == Some("VersionControlChangesTree"))
+                .unwrap_or_else(|| panic!("{source} 缺少版本控制变更树上下文"));
+            assert_eq!(
+                changes_tree.bindings.get("space").map(RawAction::name),
+                Some("version_control::ToggleStaged"),
+                "{source} 的空格键只应在版本控制变更树内切换暂存"
             );
         }
     }

@@ -670,6 +670,7 @@ impl Render for VersionControlPanel {
                 &commit_editor,
                 last_commit_message.as_deref(),
                 has_staged_changes,
+                cx.weak_entity(),
                 cx,
             ))
         } else {
@@ -987,6 +988,7 @@ fn render_commit_footer(
     editor: &Entity<Editor>,
     last_commit_message: Option<&str>,
     has_staged_changes: bool,
+    weak: WeakEntity<VersionControlPanel>,
     cx: &App,
 ) -> Div {
     let colors = color::current(cx);
@@ -1015,20 +1017,31 @@ fn render_commit_footer(
                         .flex()
                         .justify_end()
                         .child(
-                            Button::text("version-control-commit", "提交")
-                                .size(ButtonSize::Loose)
-                                .style(ButtonStyle::Solid)
-                                .disabled(!has_staged_changes)
-                                .label("提交当前暂存")
-                                .shortcut(&Commit, cx)
-                                .color(if message.trim().is_empty() {
-                                    colors.text_muted
-                                } else {
-                                    colors.text
-                                })
-                                .on_click(move |_, window, cx| {
-                                    window.dispatch_action(Box::new(Commit), cx);
-                                }),
+                            div()
+                                .debug_selector(|| "version-control-commit-button".into())
+                                .child(
+                                    Button::text("version-control-commit", "提交")
+                                        .size(ButtonSize::Loose)
+                                        .style(ButtonStyle::Solid)
+                                        .disabled(!has_staged_changes)
+                                        .label("提交当前暂存")
+                                        .shortcut(&Commit, cx)
+                                        .color(if message.trim().is_empty() {
+                                            colors.text_muted
+                                        } else {
+                                            colors.text
+                                        })
+                                        .on_click({
+                                            let weak = weak.clone();
+                                            move |_, window, cx| {
+                                                if let Some(panel) = weak.upgrade() {
+                                                    panel.update(cx, |panel, cx| {
+                                                        panel.handle_commit(&Commit, window, cx);
+                                                    });
+                                                }
+                                            }
+                                        }),
+                                ),
                         ),
                 ),
         )
@@ -1058,11 +1071,22 @@ fn render_commit_footer(
                 // hover 提示"撤销提交"。
                 .when(has_last_commit, |element| {
                     element.child(
-                        Button::icon("version-control-uncommit", "icons/undo.svg")
-                            .label("撤销提交")
-                            .on_click(move |_, window, cx| {
-                                window.dispatch_action(Box::new(Uncommit), cx);
-                            }),
+                        div()
+                            .debug_selector(|| "version-control-uncommit-button".into())
+                            .child(
+                                Button::icon("version-control-uncommit", "icons/undo.svg")
+                                    .label("撤销提交")
+                                    .on_click({
+                                        let weak = weak.clone();
+                                        move |_, window, cx| {
+                                            if let Some(panel) = weak.upgrade() {
+                                                panel.update(cx, |panel, cx| {
+                                                    panel.handle_uncommit(&Uncommit, window, cx);
+                                                });
+                                            }
+                                        }
+                                    }),
+                            ),
                     )
                 }),
         )
@@ -2205,6 +2229,51 @@ mod tests {
     }
 
     #[gpui::test]
+    fn commit_button_commits_without_panel_focus(cx: &mut TestAppContext) {
+        // 回归：焦点不在版本控制面板时，点击"提交"按钮也应生效。
+        // dispatch_action 从当前焦点沿焦点链派发，面板 handler 收不到动作，按钮必须直接调用面板方法而不是依赖焦点链。
+        let (root, _temp) = test_repo();
+        run_in(&root, &["git", "add", "tracked.txt"]);
+        let project_root = root.clone();
+        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+        cx.run_until_parked(); // 首次扫描完成（tracked.txt 已暂存）。
+        cx.run_until_parked();
+
+        let panel_focused =
+            cx.update(|window, cx| panel.read(cx).focus.contains_focused(window, cx));
+        assert!(!panel_focused, "前置条件：面板不应持有焦点");
+
+        cx.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel
+                    .commit_editor
+                    .update(cx, |editor, cx| editor.set_text("按钮提交", cx));
+            });
+        });
+        let _ = cx.refresh();
+        cx.update(|_, _| {});
+        cx.run_until_parked();
+
+        let bounds = cx
+            .debug_bounds("version-control-commit-button")
+            .expect("提交按钮应可定位");
+        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+        cx.run_until_parked(); // commit job 完成
+        cx.run_until_parked(); // 重扫落地 → Head/Statuses 事件
+
+        cx.update(|_, cx| {
+            assert_eq!(
+                panel.read(cx).last_commit_message.as_deref(),
+                Some("按钮提交"),
+                "焦点不在面板时点击提交按钮也应提交"
+            );
+            let text = panel.read(cx).commit_editor.read(cx).text(cx);
+            assert!(text.is_empty(), "提交成功后编辑器应清空，实际：{text:?}");
+        });
+    }
+
+    #[gpui::test]
     fn commit_flow_clears_editor_and_refreshes_last_commit(cx: &mut TestAppContext) {
         let (root, _temp) = test_repo();
         run_in(&root, &["git", "add", "tracked.txt"]);
@@ -2390,6 +2459,53 @@ mod tests {
                 panel.read(cx).last_commit_message.as_deref(),
                 Some("initial"),
                 "上次提交信息应回到被撤销提交之前的提交"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn uncommit_button_restores_message_without_panel_focus(cx: &mut TestAppContext) {
+        // 回归：焦点不在版本控制面板时，点击"撤销"按钮也应生效（与 commit 按钮同理：不依赖焦点链派发）。
+        let (root, _temp) = test_repo();
+        std::fs::write(root.join("tracked.txt"), "第二次内容\n").expect("应修改文件");
+        run_in(&root, &["git", "add", "tracked.txt"]);
+        run_in(
+            &root,
+            &["git", "commit", "-q", "-m", "第二次提交", "-m", "详细说明"],
+        );
+        std::fs::write(root.join("tracked.txt"), "第三次内容\n").expect("应再次修改文件");
+
+        let project_root = root.clone();
+        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+        cx.run_until_parked();
+        cx.run_until_parked();
+
+        let panel_focused =
+            cx.update(|window, cx| panel.read(cx).focus.contains_focused(window, cx));
+        assert!(!panel_focused, "前置条件：面板不应持有焦点");
+
+        let _ = cx.refresh();
+        cx.update(|_, _| {});
+        cx.run_until_parked();
+
+        let bounds = cx
+            .debug_bounds("version-control-uncommit-button")
+            .expect("撤销按钮应可定位");
+        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+        cx.run_until_parked(); // uncommit job 完成
+        cx.run_until_parked(); // 重扫落地 → Head 事件
+
+        cx.update(|_, cx| {
+            let text = panel.read(cx).commit_editor.read(cx).text(cx);
+            assert_eq!(
+                text, "第二次提交\n\n详细说明",
+                "焦点不在面板时点击撤销按钮也应撤销提交并填回消息"
+            );
+            assert_eq!(
+                panel.read(cx).last_commit_message.as_deref(),
+                Some("initial"),
+                "撤销后上次提交信息应回到 initial"
             );
         });
     }

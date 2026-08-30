@@ -828,3 +828,41 @@ fn horizontal_windowing_clips_wide_rows_to_the_visible_window(cx: &mut TestAppCo
         "无窗口参数时整行 shaping 受 1024 上限约束，实际 {full_len}"
     );
 }
+
+/// 回归：多文件编辑器中 cursor_text 必须显示源文件的真实行（1 起始）。
+///
+/// `source_start_line` 约定为 1 起始（gutter、悬浮标题直接使用），光标显示不得再次 +1，否则会显示成比实际大 1 的行号。
+#[gpui::test]
+fn cursor_text_maps_excerpt_output_to_real_source_line(cx: &mut TestAppContext) {
+    // 源文件 8 行（0 起始 0..7）；excerpt 只取 0 起始第 5、6 行（a5 / a6）。
+    let source = test_buffer(cx, "a0\na1\na2\na3\na4\na5\na6\n");
+    source.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let source_multi = cx.new(move |cx| MultiBuffer::singleton(source, cx));
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |combined, cx| {
+        combined.set_excerpts(
+            vec![MultiBufferExcerpt::line_range(source_multi, 5..7, cx)],
+            cx,
+        );
+    });
+    let editor = cx.new(move |cx| Editor::for_multi_buffer(combined, cx));
+
+    editor.update(cx, |editor, cx| {
+        // excerpt 首行对应源文件第 6 行（1 起始）。
+        editor.select_byte_range(0..0, cx);
+        assert_eq!(editor.cursor_text(cx), "6:1");
+        // 源文件第 7 行第 2 列（1 起始）。
+        editor.select_byte_range(4..4, cx);
+        assert_eq!(editor.cursor_text(cx), "7:2");
+    });
+
+    // 单文件文档：组合坐标即源坐标（0 起始 → 1 起始显示）。
+    let single_buffer = test_buffer(cx, "x\ny\n");
+    let single = cx.new(|cx| Editor::for_language_buffer(single_buffer, cx));
+    single.update(cx, |editor, cx| {
+        editor.select_byte_range(2..2, cx);
+        assert_eq!(editor.cursor_text(cx), "2:1");
+    });
+}

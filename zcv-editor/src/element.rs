@@ -2521,8 +2521,9 @@ fn layout_line_background_fragments(
         boundaries.push(segment.end_x);
     }
     for (byte_range, _) in &line.background_runs {
-        boundaries.push(line.shaped.x_for_index(byte_range.start));
-        boundaries.push(line.shaped.x_for_index(byte_range.end));
+        // run 背景的字节区间是 shaped 文本内偏移，必须叠加行原点才能与文本/选区同处绝对坐标。
+        boundaries.push(line.origin.x + line.shaped.x_for_index(byte_range.start));
+        boundaries.push(line.origin.x + line.shaped.x_for_index(byte_range.end));
     }
     if boundaries.is_empty() {
         return Vec::new();
@@ -2541,8 +2542,8 @@ fn layout_line_background_fragments(
             .iter()
             .find(|segment| segment.start_x <= start_x && end_x <= segment.end_x);
         let run = line.background_runs.iter().find(|(byte_range, _)| {
-            let run_start = line.shaped.x_for_index(byte_range.start);
-            let run_end = line.shaped.x_for_index(byte_range.end);
+            let run_start = line.origin.x + line.shaped.x_for_index(byte_range.start);
+            let run_end = line.origin.x + line.shaped.x_for_index(byte_range.end);
             run_start <= start_x && end_x <= run_end
         });
         let (color, is_selection, corners) = match (selection, run) {
@@ -2810,6 +2811,88 @@ mod tests {
         assert_eq!(column_to_byte(text, 2), 4);
         assert_eq!(column_to_byte(text, 3), 8);
         assert_eq!(column_to_byte(text, 99), 8);
+    }
+
+    /// 回归：run 背景（搜索高亮等）片段必须叠加行原点 x。
+    ///
+    /// 背景片段与选区片段同处窗口绝对坐标；
+    /// run 背景的字节区间是 shaped 文本内偏移，只取 `x_for_index` 而不加 `line.origin.x` 会把高亮整体左移（漏掉文本区起点偏移）。
+    #[gpui::test]
+    fn background_fragments_include_line_origin_x(cx: &mut TestAppContext) {
+        let text = "代码 abc 代码\n";
+        let buffer = cx.new(|_| {
+            Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("应创建 Buffer")
+        });
+        let language_buffer =
+            cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("README.md")), cx));
+        cx.run_until_parked();
+        let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.snapshot());
+        let syntax = cx.read_entity(&language_buffer, |buffer, _| buffer.syntax_snapshot());
+
+        let matches = vec![
+            SearchMatch::new(
+                0,
+                TextRange::new(ByteOffset::new(0), ByteOffset::new(6)).unwrap(),
+            ),
+            SearchMatch::new(
+                1,
+                TextRange::new(ByteOffset::new(11), ByteOffset::new(17)).unwrap(),
+            ),
+        ];
+        let window = cx.add_window(|_, _| Empty);
+        window
+            .update(cx, |_, window, cx| {
+                let mut map = DisplayMap::new(snapshot.clone());
+                map.set_syntax_snapshot(syntax);
+                let display = map.snapshot();
+                // 文本区起点 = 60px（真实编辑器带 gutter 时的典型偏移）。
+                let text_origin_x = px(60.);
+                let layout = layout_visible_lines(
+                    display,
+                    None,
+                    EditorPresentation::new(&snapshot, None),
+                    Some((&matches, 0)),
+                    VisibleLineLayoutParams {
+                        geometry: EditorGeometry {
+                            text_bounds: Bounds::new(
+                                point(text_origin_x, px(0.)),
+                                size(px(700.), px(80.)),
+                            ),
+                            text_clip_bounds: Bounds::new(
+                                point(text_origin_x, px(0.)),
+                                size(px(700.), px(80.)),
+                            ),
+                            gutter: None,
+                        },
+                        active_lines: &BTreeSet::new(),
+                        foldable_lines: &BTreeSet::new(),
+                        fold_anchor_lines: &BTreeSet::new(),
+                        start_row: DisplayRow::new(0),
+                        scroll_offset: point(px(0.), px(0.)),
+                        line_height: px(20.),
+                        diff_rows: &[],
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(layout.lines[0].row, DisplayRow::new(0));
+                let line = &layout.lines[0];
+                assert_eq!(line.background_runs.len(), 2, "两个匹配都应进入背景层");
+                // 每个 run 背景的片段像素区间必须与“行原点 + 字形偏移”一致。
+                let fragments = layout_line_background_fragments(line, &[], gpui::rgba(0xff0000ff));
+                assert_eq!(fragments.len(), line.background_runs.len());
+                for (fragment, (byte_range, _)) in fragments.iter().zip(&line.background_runs) {
+                    let expected_start =
+                        line.origin.x + line.shaped.x_for_index(byte_range.start);
+                    let expected_end = line.origin.x + line.shaped.x_for_index(byte_range.end);
+                    assert!(
+                        (fragment.start_x - expected_start).abs() < px(1.)
+                            && (fragment.end_x - expected_end).abs() < px(1.),
+                        "run 背景片段必须与文本对齐：片段 {fragment:?}，期望 {expected_start:?}..{expected_end:?}"
+                    );
+                }
+            })
+            .expect("测试窗口应保持可用");
     }
 
     #[gpui::test]

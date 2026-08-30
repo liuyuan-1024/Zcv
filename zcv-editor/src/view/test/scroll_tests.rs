@@ -1,6 +1,16 @@
 use gpui::{
-    Modifiers, MouseButton, Pixels, ScrollDelta, ScrollWheelEvent, TestAppContext, point, px,
+    Context, Entity, IntoElement, Modifiers, MouseButton, Pixels, Render, ScrollDelta,
+    ScrollWheelEvent, TestAppContext, Window, point, px,
 };
+
+/// 测试包装：把预先创建的 Editor 实体作为窗口视图（布局由窗口首帧触发）。
+struct EditorInWindow(Entity<Editor>);
+
+impl Render for EditorInWindow {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<'_, Self>) -> impl IntoElement {
+        self.0.clone()
+    }
+}
 use zcv_multi_buffer::MultiBufferExcerpt;
 use zcv_text::ByteOffset;
 
@@ -202,6 +212,63 @@ fn vertical_movement_preserves_goal_column_across_short_rows(cx: &mut TestAppCon
         assert_eq!(position.column().get(), 10);
     });
 }
+
+/// 回归：打开文件后的导航（open_path_at / open_path_at_line_column）若发生在软换行布局之前，滚动目标点必须按布局后的显示行换算，否则长行文件会滚不到目标行。
+#[gpui::test]
+fn navigation_before_wrap_layout_lands_on_target_row(cx: &mut TestAppContext) {
+    // 深文件 + 长行：软换行生效后目标行的显示行号远大于 buffer 行号。
+    let text = (0..120)
+        .map(|row| format!("line {row} {}", "x".repeat(250)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let buffer = test_buffer(cx, text);
+    // 模拟 open_path_now 新建的 Editor：尚未放入窗口、从未布局（wrap 宽度未设置）。
+    let editor = cx.new(|cx| Editor::for_language_buffer(buffer, cx));
+    // 真实环境默认软换行（EditorWidth）。
+    editor.update(cx, |editor, cx| {
+        editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx);
+    });
+    let target_line = 100;
+    let target_offset = cx.read_entity(&editor, |editor, _| {
+        editor
+            .render_snapshot()
+            .position_to_byte(zcv_text::Position::new(
+                zcv_text::Line::new(target_line),
+                zcv_text::LogicalColumn::ZERO,
+            ))
+            .expect("目标行应有效")
+    });
+    let before_nav = cx.read_entity(&editor, |editor, _| editor.display_map.line_count());
+    assert_eq!(before_nav, 120, "导航前 Editor 未布局，不应换行");
+    editor.update(cx, |editor, cx| {
+        editor.select_byte_range(target_offset.get()..target_offset.get(), cx);
+        editor.request_scroll_to_top(4);
+    });
+
+    // 再把 Editor 放入窗口：布局（含软换行重排）发生在导航请求之后。
+    let editor_in_window = editor.clone();
+    cx.add_window_view(move |_, _cx| EditorInWindow(editor_in_window));
+    cx.run_until_parked();
+    cx.refresh().expect("测试窗口应可刷新");
+
+    cx.read_entity(&editor, |editor, _| {
+        let head = editor.selections().primary().head();
+        let point = editor
+            .display_map
+            .offset_to_display_point(head)
+            .expect("目标显示点应可映射");
+        let viewport_top = editor.scroll_anchor().row().get();
+        // 导航语义：目标行固定在视口顶部下方 4 行（NAVIGATION_TOP_OFFSET）。
+        assert_eq!(
+            point.row().get().saturating_sub(viewport_top),
+            4,
+            "目标行必须按换行后的显示行定位在视口顶部下方：目标显示行 {}，视口顶部 {}",
+            point.row().get(),
+            viewport_top
+        );
+    });
+}
+
 #[gpui::test]
 fn wheel_input_updates_editor_scroll_state(cx: &mut TestAppContext) {
     let text = (0..120)

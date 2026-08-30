@@ -877,7 +877,9 @@ impl Editor {
         let Ok(point) = multi_snapshot.text().byte_to_position(head) else {
             return String::new();
         };
-        let (line, column) = match multi_snapshot.excerpt_for_output_line(point.line().get()) {
+        // 行号：excerpt 映射回的源行已是 1 起始（source_start_line 约定，与 gutter/悬浮标题一致）；
+        // 单文件文档的组合行是 0 起始，需转 1 起始显示。
+        let line = match multi_snapshot.excerpt_for_output_line(point.line().get()) {
             // 片段内输出文本与源文本一致，列号直接沿用；
             // 删除片段无源行号时隐藏。
             Some(excerpt) => {
@@ -885,12 +887,13 @@ impl Editor {
                 else {
                     return String::new();
                 };
-                (source_line, point.column().get())
+                source_line
             }
             // 单文件文档：组合坐标即源坐标。
-            None => (point.line().get(), point.column().get()),
+            None => point.line().get() + 1,
         };
-        format!("{}:{}", line + 1, column + 1)
+        let column = point.column().get() + 1;
+        format!("{line}:{column}")
     }
 
     pub(super) fn presentation(&self) -> EditorPresentation {
@@ -1247,8 +1250,13 @@ impl Editor {
     }
 
     /// 布局前消费待自动滚动点并应用垂直部分（见 `ScrollManager::apply_pending_autoscroll_vertical`）。
+    ///
+    /// 目标显示点按当前布局换算：软换行宽度在此帧已确定，换算出的行号与最终布局一致，避免导航请求在换行重排前固化错误的目标行。
     pub(super) fn apply_pending_autoscroll_vertical(&mut self) -> bool {
-        self.scroll_manager.apply_pending_autoscroll_vertical()
+        self.scroll_manager
+            .apply_pending_autoscroll_vertical(|head| {
+                self.display_map.offset_to_display_point(head).ok()
+            })
     }
 
     /// 布局后做水平自动滚动钳制（见 `ScrollManager::complete_autoscroll_horizontal`）。
@@ -1846,18 +1854,13 @@ impl Editor {
 
     fn request_autoscroll(&mut self) {
         let head = self.resolved_selections().primary().head();
-        if let Ok(point) = self.display_map.offset_to_display_point(head) {
-            self.scroll_manager.request_autoscroll(point);
-        }
+        self.scroll_manager.request_autoscroll(head);
     }
 
     /// 导航跳转定位：把光标行固定在视口顶部下方指定行数。
     pub(super) fn request_scroll_to_top(&mut self, offset_rows: usize) {
         let head = self.resolved_selections().primary().head();
-        if let Ok(point) = self.display_map.offset_to_display_point(head) {
-            self.scroll_manager
-                .request_scroll_to_top(point, offset_rows);
-        }
+        self.scroll_manager.request_scroll_to_top(head, offset_rows);
     }
 
     fn sync_display_map(&mut self, cx: &App) {

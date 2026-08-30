@@ -9,14 +9,15 @@ use std::sync::Arc;
 
 use std::time::Duration;
 
+use anyhow::Context as _;
 use gpui::{
-    App, AsyncApp, Context, Entity, FocusHandle, Focusable, Render, TitlebarOptions, WeakEntity,
-    Window, WindowBounds, WindowOptions, div, point, prelude::*, px, size,
+    App, AsyncApp, Context, Entity, FocusHandle, Focusable, PromptLevel, Render, TitlebarOptions,
+    WeakEntity, Window, WindowBounds, WindowOptions, div, point, prelude::*, px, size,
 };
 use zcv_actions::{
     DecreaseFontSize, DecreaseUiFontSize, GitFetch, GitPull, GitPush, IncreaseFontSize,
-    IncreaseUiFontSize, NewTerminal, ResetFontSize, ResetUiFontSize, SelectGitBranch,
-    ToggleHarnessMode, ToggleProjectPicker,
+    IncreaseUiFontSize, NewTerminal, ResetFontSize, ResetUiFontSize, RestartToUpdate,
+    SelectGitBranch, ToggleHarnessMode, ToggleProjectPicker,
 };
 use zcv_editor::Editor;
 use zcv_git::{DiffBase, GitRevision};
@@ -33,6 +34,7 @@ use zcv_workspace::{
 };
 
 use crate::active_buffer_language::ActiveBufferLanguage;
+use crate::auto_update::{UpdateButton, UpdateManager};
 use crate::breadcrumbs::Breadcrumbs;
 use crate::cursor_position::CursorPosition;
 use crate::harness::HarnessButton;
@@ -239,6 +241,42 @@ fn initialize_common_workspace(
 
     zcv_search::install(workspace, window, cx);
 
+    workspace.register_action(|workspace, _: &RestartToUpdate, window, cx| {
+        let has_unsaved_items = workspace
+            .pane()
+            .read(cx)
+            .tabs()
+            .iter()
+            .any(|item| item.is_dirty(cx));
+        if has_unsaved_items {
+            drop(window.prompt(
+                PromptLevel::Warning,
+                "存在未保存的文件",
+                Some("请先保存或关闭未保存的文件，再重启完成更新。"),
+                &["知道了"],
+                cx,
+            ));
+            return;
+        }
+
+        let result = UpdateManager::get(cx)
+            .context("自动更新管理器未初始化")
+            .and_then(|manager| manager.update(cx, |manager, _| manager.launch_helper()));
+        if let Err(error) = result {
+            workspace.show_toast(
+                ToastKind::Error,
+                format!("无法开始更新：{error:#}"),
+                None,
+                Some(Duration::from_secs(8)),
+                cx,
+            );
+            return;
+        }
+        save_window_bounds(window, cx);
+        workspace.flush_layout(cx);
+        cx.quit();
+    });
+
     let status_bar = workspace.status_bar().clone();
     let left_dock = workspace.left_dock.clone();
     let bottom_dock = workspace.bottom_dock.clone();
@@ -433,6 +471,11 @@ fn initialize_workspace(
     });
 
     let top_bar = cx.new(|cx| TopBar::new(switch_project_callback(), on_branch, window, cx));
+    let update_workspace = weak_self.clone();
+    let update_button = cx.new(|cx| UpdateButton::new(update_workspace, cx));
+    top_bar.update(cx, |bar, cx| {
+        bar.set_update_control(update_button.into(), cx);
+    });
     if let Some(root) = workspace.project().read(cx).root() {
         let label = root
             .file_name()

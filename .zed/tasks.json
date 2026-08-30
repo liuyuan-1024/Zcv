@@ -37,8 +37,8 @@
   },
   {
     "label": "5. macOS 打包",
-    "command": "bash",
-    "args": ["scripts/bundle-mac.txt", "--arch", "arm64"],
+    "command": "scripts/bundle-mac",
+    "args": [],
     "cwd": "$ZED_WORKTREE_ROOT",
     "save": "all",
     "reveal": "always",

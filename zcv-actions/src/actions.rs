@@ -98,7 +98,8 @@ actions!(
         GitPush,
         IncreaseUiFontSize,
         DecreaseUiFontSize,
-        ResetUiFontSize
+        ResetUiFontSize,
+        RestartToUpdate
     ]
 );
 

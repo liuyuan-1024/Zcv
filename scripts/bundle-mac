@@ -4,10 +4,10 @@
 # Release 资产命名: Zcv_xx.xx.xx_darwin_arm64.zip
 #
 # 用法:
-#   bash scripts/bundle-mac.txt                 # 输出 .app、zip 和 .dmg
-#   bash scripts/bundle-mac.txt --no-dmg        # 输出 .app 和 zip
-#   bash scripts/bundle-mac.txt --arch arm64    # Apple Silicon
-#   bash scripts/bundle-mac.txt --arch amd64    # Intel Mac
+#   scripts/bundle-mac                 # 输出 .app、zip 和 .dmg
+#   scripts/bundle-mac --no-dmg        # 输出 .app 和 zip
+#
+# 仅支持 Apple Silicon（arm64）。
 
 set -euo pipefail
 
@@ -18,15 +18,14 @@ APP_NAME="Zcv"
 BUNDLE_ID="dev.liuyuan.zcv"
 BIN_NAME="Zcv"
 PACKAGE="Zcv"
+HELPER_PACKAGE="zcv-update"
+HELPER_BIN_NAME="zcv-update-helper"
 VERSION="$(grep '^version' Cargo.toml | head -n1 | cut -d'"' -f2)"
 
 MAKE_DMG=1
-ARCH="arm64"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --arch)
-            ARCH="$2"; shift 2 ;;
         --no-dmg)
             MAKE_DMG=0; shift ;;
         -h|--help)
@@ -36,18 +35,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-case "$ARCH" in
-    arm64)
-        TARGET="aarch64-apple-darwin" ;;
-    amd64|x64|x86_64)
-        ARCH="amd64"
-        TARGET="x86_64-apple-darwin" ;;
-    *)
-        echo "未知架构: $ARCH，仅支持 arm64 或 amd64" >&2
-        exit 1 ;;
-esac
+TARGET="aarch64-apple-darwin"
 
 OS="darwin"
+ARCH="arm64"
 DIST_NAME="${APP_NAME}_${VERSION}_${OS}_${ARCH}"
 
 if ! xcrun metal -v >/dev/null 2>&1; then
@@ -63,21 +54,28 @@ fi
 # ---------- 1. 构建 ----------
 echo "==> cargo build --release -p $PACKAGE --target $TARGET"
 cargo build --release -p "$PACKAGE" --target "$TARGET"
+echo "==> cargo build --release -p $HELPER_PACKAGE --bin $HELPER_BIN_NAME --target $TARGET"
+cargo build --release -p "$HELPER_PACKAGE" --bin "$HELPER_BIN_NAME" --target "$TARGET"
 BIN="target/$TARGET/release/$BIN_NAME"
+HELPER_BIN="target/$TARGET/release/$HELPER_BIN_NAME"
 OUT_DIR="target/$TARGET/release"
 
-if [[ ! -f "$BIN" ]]; then
-    echo "构建产物不存在: $BIN" >&2; exit 1
-fi
+for REQUIRED_BIN in "$BIN" "$HELPER_BIN"; do
+    if [[ ! -f "$REQUIRED_BIN" ]]; then
+        echo "构建产物不存在: $REQUIRED_BIN" >&2; exit 1
+    fi
+done
 
 # ---------- 2. 组装 .app ----------
 APP="$OUT_DIR/$APP_NAME.app"
 echo "==> 组装 $APP"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers"
 
 cp "$BIN" "$APP/Contents/MacOS/$BIN_NAME"
+cp "$HELPER_BIN" "$APP/Contents/Helpers/$HELPER_BIN_NAME"
 chmod +x "$APP/Contents/MacOS/$BIN_NAME"
+chmod +x "$APP/Contents/Helpers/$HELPER_BIN_NAME"
 
 # ---------- 3. Info.plist ----------
 cat > "$APP/Contents/Info.plist" <<EOF
@@ -86,46 +84,49 @@ cat > "$APP/Contents/Info.plist" <<EOF
 <plist version="1.0"><dict>
   <key>CFBundleName</key>
   <string>$APP_NAME</string>
-  
+
   <key>CFBundleDisplayName</key>
   <string>$APP_NAME</string>
-  
+
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
-  
+
   <key>CFBundleVersion</key>
   <string>$VERSION</string>
-  
+
   <key>CFBundleShortVersionString</key>
   <string>$VERSION</string>
-  
+
   <key>CFBundlePackageType</key>
   <string>APPL</string>
-  
+
   <key>CFBundleExecutable</key>
   <string>$BIN_NAME</string>
-  
+
   <key>CFBundleSupportedPlatforms</key>
   <array>
     <string>MacOSX</string>
   </array>
-  
+
   <key>LSMinimumSystemVersion</key>
   <string>11.0</string>
-  
+
   <key>NSHighResolutionCapable</key>
   <true/>
-  
+
   <key>NSSupportsAutomaticGraphicsSwitching</key>
   <true/>
 </dict></plist>
 EOF
 
-# ---------- 4. Ad-hoc 代码签名 ----------
-# 没有 Apple Developer 证书也至少签一下，arm64 必须签才能跑；
-# 但 Gatekeeper 仍会拦首次启动，朋友需 Finder 右键→打开。
-echo "==> codesign (ad-hoc)"
-codesign --force --deep --sign - "$APP"
+# ---------- 4. 代码签名（零费用 ad-hoc） ----------
+# 没有 Developer ID 与公证；签名只提供本地完整性校验。
+echo "==> codesign (ad-hoc + hardened runtime)"
+codesign --force --options runtime --sign - "$APP/Contents/Helpers/$HELPER_BIN_NAME"
+codesign --force --options runtime --sign - "$APP/Contents/MacOS/$BIN_NAME"
+codesign --force --options runtime --sign - "$APP"
+
+codesign --verify --strict "$APP"
 
 # ---------- 5. GitHub Release zip ----------
 ZIP="$OUT_DIR/$DIST_NAME.zip"
@@ -150,4 +151,4 @@ echo "  $APP"
 echo "  $ZIP"
 [[ "$MAKE_DMG" == "1" ]] && echo "  $OUT_DIR/$DIST_NAME.dmg"
 echo
-echo "朋友首次打开提示「无法验证开发者」时，请右键→打开。"
+echo "ad-hoc 包：首次安装需在“系统设置 → 隐私与安全性”中点击“仍要打开”。"

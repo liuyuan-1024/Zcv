@@ -1,0 +1,87 @@
+name: 发布更新
+
+# 触发方式：
+# 1. push 以 v 开头的 tag（推荐）：git tag v0.8.19 && git push origin v0.8.19
+# 2. 手动触发（tag 已存在时重跑）：Actions 页面 → 发布更新 → Run workflow
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（如 v0.8.19，需已 push 到仓库）"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 提取版本
+        run: |
+          if [[ -n "${{ github.event.inputs.tag }}" ]]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          VERSION="${TAG#v}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: 核对版本一致性
+        run: |
+          CARGO_VERSION="$(grep '^version' Cargo.toml | head -n1 | cut -d'"' -f2)"
+          if [[ "$CARGO_VERSION" != "$VERSION" ]]; then
+            echo "tag v$VERSION 与 Cargo.toml 版本 $CARGO_VERSION 不一致，发布中止" >&2
+            exit 1
+          fi
+          echo "版本一致：v$VERSION"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 准备 Metal Toolchain
+        run: |
+          if ! xcrun metal -v >/dev/null 2>&1; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+
+      - name: 构建并打包
+        run: scripts/bundle-mac --no-dmg
+
+      - name: 写入签名私钥
+        run: |
+          printf '%s\n' "${{ secrets.ZCV_UPDATE_PRIVATE_KEY }}" > /tmp/zcv-update-key.b64
+          chmod 600 /tmp/zcv-update-key.b64
+
+      - name: 生成清单并签名
+        run: scripts/release-update /tmp/zcv-update-key.b64 --no-build
+
+      - name: 清理私钥
+        if: always()
+        run: rm -f /tmp/zcv-update-key.b64
+
+      - name: 创建 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          OUT_DIR="target/aarch64-apple-darwin/release"
+          gh release create "$TAG" \
+            "$OUT_DIR/latest.json" \
+            "$OUT_DIR/latest.json.sig" \
+            "$OUT_DIR/Zcv_${VERSION}_darwin_arm64.zip" \
+            --title "Zcv $VERSION" \
+            --generate-notes

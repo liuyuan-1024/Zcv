@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+#
+# 生成并签署 Zcv 更新清单，产出 GitHub Release 需要的三个文件。
+#
+# 用法:
+#   scripts/release-update <私钥路径>              # 打包 → 生成清单 → 签名 → 核对公钥
+#   scripts/release-update <私钥路径> --no-build   # 跳过打包，仅生成清单与签名
+#
+# 产物输出到 target/aarch64-apple-darwin/release/：
+#   latest.json  latest.json.sig  Zcv_<version>_darwin_arm64.zip
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+REPO="liuyuan-1024/Zcv"
+TARGET="aarch64-apple-darwin"
+VERSION="$(grep '^version' Cargo.toml | head -n1 | cut -d'"' -f2)"
+OUT_DIR="target/$TARGET/release"
+ZIP="$OUT_DIR/Zcv_${VERSION}_darwin_arm64.zip"
+ZIP_URL="https://github.com/$REPO/releases/download/v$VERSION/Zcv_${VERSION}_darwin_arm64.zip"
+PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+KEY_PATH=""
+BUILD=1
+for arg in "$@"; do
+    case "$arg" in
+        --no-build)
+            BUILD=0 ;;
+        -h|--help)
+            sed -n '2,10p' "$0"; exit 0 ;;
+        *)
+            if [[ -z "$KEY_PATH" ]]; then
+                KEY_PATH="$arg"
+            else
+                echo "未知参数: $arg" >&2
+                exit 1
+            fi ;;
+    esac
+done
+if [[ -z "$KEY_PATH" ]]; then
+    echo "用法: scripts/release-update <私钥路径> [--no-build]" >&2
+    exit 1
+fi
+
+# ---------- 1. 打包 ----------
+if [[ "$BUILD" == "1" ]]; then
+    echo "==> 打包 (v$VERSION)"
+    scripts/bundle-mac --no-dmg
+elif [[ ! -f "$ZIP" ]]; then
+    echo "未找到 $ZIP" >&2
+    echo "请先运行 scripts/bundle-mac --no-dmg，或去掉 --no-build" >&2
+    exit 1
+fi
+
+# ---------- 2. 生成清单 ----------
+echo "==> 生成清单 $OUT_DIR/latest.json (v$VERSION, $PUBLISHED_AT)"
+cargo run -q -p zcv-update --bin zcv-update-manifest -- \
+    "$VERSION" "$PUBLISHED_AT" "$OUT_DIR/latest.json" \
+    macos-aarch64 "$ZIP_URL" "$ZIP"
+
+# ---------- 3. 签名 ----------
+echo "==> 签署清单"
+SIGNED_KEY="$(cargo run -q -p zcv-update --bin zcv-update-sign -- \
+    "$KEY_PATH" "$OUT_DIR/latest.json" "$OUT_DIR/latest.json.sig")"
+
+# ---------- 4. 核对公钥与源码内置公钥一致 ----------
+SOURCE_KEY="$(sed -n 's/^const UPDATE_PUBLIC_KEY: &str = "\([^"]*\)";/\1/p' zcv/src/auto_update.rs)"
+if [[ -z "$SOURCE_KEY" ]]; then
+    echo "无法从 zcv/src/auto_update.rs 提取 UPDATE_PUBLIC_KEY" >&2
+    exit 1
+fi
+if [[ "$SIGNED_KEY" != "$SOURCE_KEY" ]]; then
+    echo "公钥不一致，发布中止：" >&2
+    echo "  签名私钥对应公钥: $SIGNED_KEY" >&2
+    echo "  源码内置公钥:     $SOURCE_KEY" >&2
+    exit 1
+fi
+
+# ---------- 5. 线上版本提示（网络不可用时跳过） ----------
+if REMOTE="$(curl -fsS --max-time 10 "https://github.com/$REPO/releases/latest/download/latest.json" 2>/dev/null)"; then
+    REMOTE_VERSION="$(printf '%s' "$REMOTE" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+    if [[ -n "$REMOTE_VERSION" && "$VERSION" == "$REMOTE_VERSION" ]]; then
+        echo "警告：线上已经是 v${VERSION}，本次发布不会触发已安装应用更新，请先 bump 版本。" >&2
+    else
+        echo "==> 线上版本 $REMOTE_VERSION → 本次 $VERSION"
+    fi
+fi
+
+# ---------- 6. 汇总 ----------
+echo
+echo "== 发布产物（${OUT_DIR}）=="
+ls -l "$OUT_DIR/latest.json" "$OUT_DIR/latest.json.sig" "$ZIP"
+echo
+echo "== 公钥核对 =="
+echo "签名私钥与源码内置公钥一致：$SIGNED_KEY"
+echo
+echo "== 下一步：GitHub Release v$VERSION =="
+echo "1. 确认当前 HEAD 已打 v$VERSION 标签，建立 Release 草稿。"
+echo "2. 上传以下三个文件："
+echo "   $OUT_DIR/latest.json"
+echo "   $OUT_DIR/latest.json.sig"
+echo "   $ZIP"
+echo "3. 核对清单 URL 后发布，使其成为 latest Release。"

@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui::{
-    App, Context, Div, ElementId, Entity, EventEmitter, FocusHandle, MouseButton, ScrollStrategy,
-    UniformListScrollHandle, WeakEntity, Window, div, prelude::*, uniform_list,
+    App, Context, Div, ElementId, Entity, EventEmitter, FocusHandle, KeyContext, MouseButton,
+    ScrollStrategy, UniformListScrollHandle, WeakEntity, Window, div, prelude::*, uniform_list,
 };
 use zcv_actions::{
     Activate, Collapse, Commit, Expand, InitRepository, SelectNext, SelectPrev, ToggleStaged,
@@ -260,6 +260,7 @@ fn collect_dirs(
 
 pub(crate) struct VersionControlPanel {
     focus: FocusHandle,
+    focus_listeners_initialized: bool,
     project: Entity<Project>,
     state: Rc<RefCell<TreeState<(GitSection, PathBuf), GitRow>>>,
     /// 用户显式折叠的目录（(分组, 路径)）；未折叠的目录默认展开，新出现的目录自动展开。
@@ -321,6 +322,7 @@ impl VersionControlPanel {
         let scrollbar = Scrollbar::vertical(scroll_handle.clone());
         let mut panel = Self {
             focus,
+            focus_listeners_initialized: false,
             project,
             state: Rc::new(RefCell::new(TreeState::new(row_entry_key))),
             collapsed_dirs: HashSet::new(),
@@ -338,6 +340,26 @@ impl VersionControlPanel {
 
     pub(crate) fn set_on_open_file(&mut self, callback: OnOpenGitDiff) {
         self.on_open_file = Some(callback);
+    }
+
+    /// 按焦点区分版本控制变更树与提交信息编辑器的快捷键上下文。
+    fn dispatch_context(&self, window: &Window, cx: &Context<Self>) -> KeyContext {
+        let mut context = KeyContext::new_with_defaults();
+        if self
+            .commit_editor
+            .read(cx)
+            .focus_handle()
+            .is_focused(window)
+        {
+            context.add("VersionControlCommitEditor");
+        } else {
+            context.add("VersionControlChangesTree");
+        }
+        context
+    }
+
+    fn changes_tree_is_focused(&self, window: &Window) -> bool {
+        self.focus.is_focused(window)
     }
 
     /// 从 GitStore 快照重建行模型（订阅事件 / 折叠展开后调用）。
@@ -581,6 +603,12 @@ impl VersionControlPanel {
 
 impl Render for VersionControlPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.focus_listeners_initialized {
+            let focus = self.focus.clone();
+            cx.on_focus(&focus, window, |_, _, cx| cx.notify()).detach();
+            cx.on_blur(&focus, window, |_, _, cx| cx.notify()).detach();
+            self.focus_listeners_initialized = true;
+        }
         self.state.borrow_mut().ensure_selected();
         let has_repositories = self
             .project
@@ -594,7 +622,7 @@ impl Render for VersionControlPanel {
             .git_store()
             .read(cx)
             .has_staged_changes();
-        let is_focused = self.focus.contains_focused(window, cx);
+        let changes_tree_focused = self.changes_tree_is_focused(window);
         let content = if has_repositories {
             let rows = self.state.borrow().rows.clone();
             let render_context = GitPanelRenderContext {
@@ -621,7 +649,7 @@ impl Render for VersionControlPanel {
                         &self.scroll_handle,
                         &self.scrollbar,
                         render_context,
-                        is_focused,
+                        changes_tree_focused,
                     )
                     .into_any_element(),
                 )
@@ -662,7 +690,7 @@ impl Render for VersionControlPanel {
         div()
             .size_full()
             .track_focus(&self.focus)
-            .key_context("VersionControl")
+            .key_context(self.dispatch_context(window, cx))
             .tab_index(0)
             .on_action(cx.listener(Self::handle_select_prev))
             .on_action(cx.listener(Self::handle_select_next))
@@ -715,7 +743,7 @@ fn render_list(
     scroll_handle: &UniformListScrollHandle,
     scrollbar: &Scrollbar<UniformListScrollHandle>,
     render_context: GitPanelRenderContext,
-    is_focused: bool,
+    changes_tree_focused: bool,
 ) -> gpui::UniformList {
     let handle = scroll_handle.clone();
     let len = render_context.rows.len();
@@ -727,7 +755,7 @@ fn render_list(
             .filter_map(|i| rows.get(i))
             .map(|row| {
                 let sel = row_entry_key(row) == selected;
-                render_row(row, sel, is_focused, &render_context, cx).into_any_element()
+                render_row(row, sel, changes_tree_focused, &render_context, cx).into_any_element()
             })
             .collect()
     })
@@ -739,7 +767,7 @@ fn render_list(
 fn render_row(
     row: &GitRow,
     sel: bool,
-    focused: bool,
+    changes_tree_focused: bool,
     render_context: &GitPanelRenderContext,
     cx: &mut App,
 ) -> Div {
@@ -897,7 +925,12 @@ fn render_row(
             .child(tail)
             .child(checkbox)
             .hover(|style| style.bg(color::current(cx).element_hover))
-            .when(sel && focused, |el| el.child(tree::selection_border(cx)))
+            .when(sel && changes_tree_focused, |el| {
+                el.child(
+                    tree::selection_border(cx)
+                        .debug_selector(|| "version-control-selection-border".into()),
+                )
+            })
             .on_mouse_down(MouseButton::Left, {
                 let focus = render_context.focus.clone();
                 let weak = render_context.weak.clone();
@@ -1539,8 +1572,8 @@ mod tests {
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
         let (panel, cx) = cx.add_window_view(move |_, cx| {
             cx.bind_keys([
-                KeyBinding::new("down", SelectNext, Some("VersionControl")),
-                KeyBinding::new("enter", Activate, Some("VersionControl")),
+                KeyBinding::new("down", SelectNext, Some("VersionControlChangesTree")),
+                KeyBinding::new("enter", Activate, Some("VersionControlChangesTree")),
             ]);
             let mut panel = VersionControlPanel::new(project, cx);
             panel.set_on_open_file(Rc::new(move |_, _, focus_opened_item, _, _| {
@@ -1774,8 +1807,8 @@ mod tests {
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
         let (panel, cx) = cx.add_window_view(move |_, cx| {
             cx.bind_keys([
-                KeyBinding::new("down", SelectNext, Some("VersionControl")),
-                KeyBinding::new("space", ToggleStaged, Some("VersionControl")),
+                KeyBinding::new("down", SelectNext, Some("VersionControlChangesTree")),
+                KeyBinding::new("space", ToggleStaged, Some("VersionControlChangesTree")),
             ]);
             VersionControlPanel::new(project, cx)
         });
@@ -1800,6 +1833,81 @@ mod tests {
         cx.run_until_parked();
         let sections = cx.read_entity(&panel, |panel, _| section_entries(panel));
         assert_eq!(sections, vec![(GitSection::Unstaged, "tracked.txt".into())]);
+    }
+
+    #[gpui::test]
+    fn space_in_commit_editor_inserts_text_without_toggling_staging(cx: &mut TestAppContext) {
+        let (root, _temp) = test_repo();
+        let project_root = root.clone();
+        let project = cx.new(|cx| Project::new(project_root, cx));
+        let (panel, cx) = cx.add_window_view(move |_, cx| {
+            zcv_keymap::init(cx).expect("应注册内置快捷键");
+            VersionControlPanel::new(project, cx)
+        });
+        cx.run_until_parked();
+        cx.run_until_parked();
+
+        let editor_focus = cx.read_entity(&panel, |panel, cx| {
+            panel.commit_editor.read(cx).focus_handle()
+        });
+        cx.update(|window, _| window.focus(&editor_focus));
+        let _ = cx.refresh();
+        cx.update(|_, _| {});
+
+        cx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                let context = panel.dispatch_context(window, cx);
+                assert!(context.contains("VersionControlCommitEditor"));
+                assert!(!context.contains("VersionControlChangesTree"));
+            });
+        });
+
+        let before = cx.read_entity(&panel, |panel, _| section_entries(panel));
+        cx.simulate_keystrokes("space");
+        cx.run_until_parked();
+
+        cx.update(|_, cx| {
+            assert_eq!(
+                panel.read(cx).commit_editor.read(cx).text(cx),
+                " ",
+                "提交信息编辑器聚焦时，空格应输入文本"
+            );
+        });
+        let after = cx.read_entity(&panel, |panel, _| section_entries(panel));
+        assert_eq!(after, before, "提交信息中的空格不应切换暂存状态");
+    }
+
+    #[gpui::test]
+    fn selection_border_only_shows_when_changes_tree_is_focused(cx: &mut TestAppContext) {
+        let (root, _temp) = test_repo();
+        let project = cx.new(|cx| Project::new(root, cx));
+        let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+        cx.run_until_parked();
+        cx.run_until_parked();
+
+        let changes_tree_focus = cx.read_entity(&panel, |panel, _| panel.focus.clone());
+        cx.update(|window, _| window.focus(&changes_tree_focus));
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("version-control-selection-border")
+                .is_some(),
+            "变更树聚焦时应显示选中框"
+        );
+
+        let commit_editor_focus = cx.read_entity(&panel, |panel, cx| {
+            panel.commit_editor.read(cx).focus_handle()
+        });
+        cx.update(|window, _| window.focus(&commit_editor_focus));
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("version-control-selection-border")
+                .is_none(),
+            "提交信息编辑器聚焦时不应显示变更树选中框"
+        );
+        assert!(
+            cx.read_entity(&panel, |panel, _| panel.state.borrow().selected.is_some()),
+            "切换焦点只隐藏选中框，不应清除变更树选中状态"
+        );
     }
 
     /// 悬停指定行尾的复选框并断言 tooltip 气泡出现。

@@ -1,6 +1,6 @@
 //! TopBar —— 窗口级顶部外壳。
 
-use gpui::{AnyElement, Div, Entity, Window, div, prelude::*};
+use gpui::{AnyElement, AnyView, Div, Entity, Window, div, prelude::*};
 use zcv_actions::{GitFetch, GitPull, GitPush, OpenSettings};
 use zcv_git::Branch;
 use zcv_project::{GitJobPhase, GitOperationKind, RemoteOperationState};
@@ -20,6 +20,8 @@ pub struct TopBar {
     has_repositories: bool,
     /// 活动仓库的远程操作状态（无 remote 时同步/推送/拉取按钮都不显示）。
     remote_operation_state: RemoteOperationState,
+    /// 应用级更新控件由 binary 装配层注入；TopBar 只负责其固定布局位置。
+    update_control: Option<AnyView>,
 }
 
 impl TopBar {
@@ -36,6 +38,7 @@ impl TopBar {
             branch_picker,
             has_repositories: false,
             remote_operation_state: RemoteOperationState::default(),
+            update_control: None,
         }
     }
 
@@ -63,6 +66,11 @@ impl TopBar {
     pub fn set_remote_operation_state(&mut self, state: RemoteOperationState) {
         self.remote_operation_state = state;
     }
+
+    pub fn set_update_control(&mut self, update_control: AnyView, cx: &mut gpui::Context<Self>) {
+        self.update_control = Some(update_control);
+        cx.notify();
+    }
 }
 
 impl gpui::Render for TopBar {
@@ -81,7 +89,7 @@ impl gpui::Render for TopBar {
                 self.remote_operation_state,
             )))
             .child(drag_spacer())
-            .child(cluster(trailing_slots(cx)))
+            .child(cluster(trailing_slots(self.update_control.as_ref(), cx)))
     }
 }
 
@@ -195,8 +203,12 @@ fn remote_operation_label(state: RemoteOperationState) -> Option<&'static str> {
     })
 }
 
-fn trailing_slots(cx: &gpui::App) -> Vec<AnyElement> {
-    vec![
+fn trailing_slots(update_control: Option<&AnyView>, cx: &gpui::App) -> Vec<AnyElement> {
+    let mut out = Vec::new();
+    if let Some(update_control) = update_control {
+        out.push(update_control.clone().into_any_element());
+    }
+    out.push(
         Button::icon("top-bar.settings", "icons/settings.svg")
             .label("设置")
             .shortcut(&OpenSettings, cx)
@@ -204,5 +216,6 @@ fn trailing_slots(cx: &gpui::App) -> Vec<AnyElement> {
                 window.dispatch_action(Box::new(OpenSettings), cx);
             })
             .into_any_element(),
-    ]
+    );
+    out
 }

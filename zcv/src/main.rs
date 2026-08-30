@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod active_buffer_language;
+mod auto_update;
 mod breadcrumbs;
 mod cursor_position;
 mod harness;
@@ -26,38 +27,46 @@ fn initial_project_root(
 }
 
 fn main() {
-    Application::new().with_assets(Assets).run(|cx: &mut App| {
-        Assets.load_fonts(cx).expect("内置字体应能注册");
+    let http_client = auto_update::new_http_client().expect("无法初始化自动更新 HTTP 客户端");
+    Application::new()
+        .with_assets(Assets)
+        .with_http_client(http_client)
+        .run(|cx: &mut App| {
+            Assets.load_fonts(cx).expect("内置字体应能注册");
 
-        zcv_settings::init(cx);
-        // 字号设置落地：SettingsStore 已就绪，按配置覆盖主题默认字号。
-        {
-            let settings = SettingsStore::get(cx);
-            zcv_theme::typography::set_typography(
-                Some(settings.font_size),
-                Some(settings.ui_font_size),
-                Some(settings.line_height),
-            );
-        }
-        zcv_preview_svg::init(cx);
-        zcv_editor::init(cx);
-        zcv_keymap::init(cx).expect("内置快捷键应能注册");
+            zcv_settings::init(cx);
+            // 字号设置落地：SettingsStore 已就绪，按配置覆盖主题默认字号。
+            {
+                let settings = SettingsStore::get(cx);
+                zcv_theme::typography::set_typography(
+                    Some(settings.font_size),
+                    Some(settings.ui_font_size),
+                    Some(settings.line_height),
+                );
+            }
+            zcv_preview_svg::init(cx);
+            zcv_editor::init(cx);
+            zcv_keymap::init(cx).expect("内置快捷键应能注册");
+            auto_update::init(cx);
 
-        match initial_project_root(std::env::args_os(), most_recent_valid_project()) {
-            Some(root) => {
-                // 打开失败（路径已失效等）回退空工作区，不阻塞启动。
-                if let Err(error) = open_project_window(root, cx) {
-                    eprintln!("打开项目失败：{error}");
+            match initial_project_root(std::env::args_os(), most_recent_valid_project()) {
+                Some(root) => {
+                    // 打开失败（路径已失效等）回退空工作区，不阻塞启动。
+                    if let Err(error) = open_project_window(root, cx) {
+                        eprintln!("打开项目失败：{error}");
+                        open_empty_workspace(cx).expect("空工作区窗口应能创建");
+                    }
+                }
+                None => {
                     open_empty_workspace(cx).expect("空工作区窗口应能创建");
                 }
             }
-            None => {
-                open_empty_workspace(cx).expect("空工作区窗口应能创建");
-            }
-        }
 
-        cx.activate(true);
-    });
+            if let Err(error) = auto_update::acknowledge_started_update() {
+                eprintln!("无法确认新版本启动：{error:#}");
+            }
+            cx.activate(true);
+        });
 }
 
 #[cfg(test)]

@@ -457,11 +457,11 @@ fn dragging_thumb_to_marker_position_scrolls_to_that_row(cx: &mut TestAppContext
     // 注入行 50 的 diff hunk（行 50 内容 y = 50 × line_height）。
     editor.update(cx, |editor, cx| {
         editor.set_diff_hunks(
-            vec![DiffHunk {
+            Some(vec![DiffHunk {
                 range: 50..51,
                 old_range: 50..51,
                 kind: DiffHunkKind::Modified,
-            }],
+            }]),
             cx,
         );
     });

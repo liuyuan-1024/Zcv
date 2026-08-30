@@ -19,7 +19,6 @@ use zcv_text::{Line, TextRange};
 use super::DisplaySnapshot;
 use super::fold_map::{FoldRowSegment, FoldRowSegmentKind};
 use super::inlay_map::InlaySnapshot;
-use super::line_stream::StreamLineSource;
 use super::wrap_map::WrapViewportRowKind;
 use zcv_theme::color;
 
@@ -669,27 +668,15 @@ pub(crate) fn render_viewport_row(
         .tab_snapshot()
         .fold_snapshot()
         .inlay_snapshot();
-    let stream_line = match source {
-        StreamLineSource::Buffer(buffer_line) => inlay_snapshot
-            .stream()
-            .buffer_to_stream(Line::new(*buffer_line)),
-        StreamLineSource::Inserted { anchor, index } => {
-            let start = inlay_snapshot
-                .stream()
-                .inserted_block_start(*anchor)
-                .expect("合成行必须属于锚定块的插入表");
-            Line::new(start.get() + index)
-        }
-    };
-    // 合成行是外部文本：无语法高亮、不可编辑/不可选（spans/marked 是锚定行的 buffer 坐标，套用到合成行文本会产生非字符边界切片）。
-    let line_styles = match source {
-        StreamLineSource::Buffer(_) => LineStyles {
-            spans: style_input.visible_highlights,
-            styles: style_input.highlight_styles,
-            backgrounds: style_input.search_backgrounds,
-            marked: style_input.marked_ranges,
-        },
-        StreamLineSource::Inserted { .. } => LineStyles::default(),
+    let buffer_line = source.line();
+    let stream_line = inlay_snapshot
+        .stream()
+        .buffer_to_stream(Line::new(buffer_line));
+    let line_styles = LineStyles {
+        spans: style_input.visible_highlights,
+        styles: style_input.highlight_styles,
+        backgrounds: style_input.search_backgrounds,
+        marked: style_input.marked_ranges,
     };
     let tab_width = display_snapshot.buffer_snapshot().config().tab.tab_width();
     // 超长行预算：chunk 合成在渲染上限处提前停止（clip_chunks_to_len 之前），避免兆字节单行先合成整行 chunk 再被裁剪。
@@ -793,22 +780,14 @@ pub(crate) fn render_viewport_row(
     }
     runs.extend(chunk_runs);
     let utf16_start = rendered.utf16_start;
-    let logical_line = match source {
-        StreamLineSource::Buffer(buffer_line) => Some(Line::new(*buffer_line)),
-        StreamLineSource::Inserted { .. } => None,
-    };
+    let logical_line = Some(Line::new(buffer_line));
     let wrap_info = (*fragment_index > 0).then_some(WrapRowInfo {
-        line: logical_line.unwrap_or(Line::ZERO),
+        line: Line::new(buffer_line),
         indent: *indent,
         column_base: *column_base,
     });
     // 行号只在逻辑行首显示行出现。
-    let gutter_line = match source {
-        StreamLineSource::Buffer(buffer_line) if *fragment_index == 0 => {
-            Some(Line::new(*buffer_line))
-        }
-        _ => None,
-    };
+    let gutter_line = (*fragment_index == 0).then_some(Line::new(buffer_line));
     RenderedViewportRow {
         display_text,
         runs,

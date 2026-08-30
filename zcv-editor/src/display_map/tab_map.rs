@@ -14,7 +14,7 @@ use super::display_width::{DisplayColumn, char_width};
 use super::{
     error::DisplayMapResult,
     fold_map::{FoldEdit, FoldSnapshot, ProjectedLineIndex, StreamProjectedKind},
-    line_stream::{LineStream, StreamLineSource},
+    line_stream::LineStream,
 };
 
 #[derive(Debug, Clone)]
@@ -48,7 +48,7 @@ impl TabSnapshot {
         self.fold_snapshot.line_count()
     }
 
-    /// 投影行 → 内容来源（经流行解析：buffer 行 / 合成行）。
+    /// 投影行 → 对应的 buffer 行来源。
     pub(super) fn projected_kind(&self, line: Line) -> Option<StreamProjectedKind> {
         self.fold_snapshot
             .projected_kind(ProjectedLineIndex::new(line.get()))
@@ -66,17 +66,13 @@ impl TabSnapshot {
         inlay.line_text(stream_line)
     }
 
-    /// 投影行 → 字节范围（合成行与折叠合并行为锚定行行首的伪坐标）。
+    /// 投影行 → 字节范围（折叠合并行为锚定行行首的伪坐标）。
     pub(super) fn line_byte_range(&self, line: Line) -> Option<Range<ByteOffset>> {
         let fold = self.fold_snapshot();
         let projected = ProjectedLineIndex::new(line.get());
         if let Some(anchor_stream) = fold.fold_row_anchor_stream_line(projected) {
-            // 合并行：anchor 行行首的伪坐标（与合成行同语义，roundtrip 不可逆）。
-            let StreamLineSource::Buffer(buffer_line) =
-                fold.inlay_snapshot().source(anchor_stream)?
-            else {
-                return None;
-            };
+            // 合并行：anchor 行行首的伪坐标，roundtrip 不可逆。
+            let buffer_line = fold.inlay_snapshot().source(anchor_stream)?.line();
             let start = fold
                 .buffer_snapshot()
                 .line_start_byte(Line::new(buffer_line))
@@ -92,15 +88,9 @@ impl TabSnapshot {
     pub(super) fn stream_line_for_projected(&self, line: Line) -> Option<Line> {
         let inlay = self.fold_snapshot.inlay_snapshot();
         match self.projected_kind(line)? {
-            StreamProjectedKind::Text(source) => match source {
-                StreamLineSource::Buffer(buffer_line) => {
-                    Some(inlay.stream().buffer_to_stream(Line::new(buffer_line)))
-                }
-                StreamLineSource::Inserted { anchor, index } => {
-                    let start = inlay.stream().inserted_block_start(anchor)?;
-                    Some(Line::new(start.get() + index))
-                }
-            },
+            StreamProjectedKind::Text(source) => {
+                Some(inlay.stream().buffer_to_stream(Line::new(source.line())))
+            }
         }
     }
 
@@ -113,7 +103,7 @@ impl TabSnapshot {
         line: Line,
         column: DisplayColumn,
     ) -> DisplayMapResult<LogicalColumn> {
-        // line 是投影行；合成行无逻辑列语义（命中测试映射到锚定行，正常不会到达这里）。
+        // line 是投影行。
         let Some(text) = self.line_text(line) else {
             return Err(CoordinateError::LineOutOfBounds(line).into());
         };
@@ -167,7 +157,7 @@ impl TabSnapshot {
             return Err(CoordinateError::LineOutOfBounds(line).into());
         };
         Ok(LogicalColumn::new(
-            text.as_str()[..original_byte.min(text.as_str().len())]
+            text.as_ref()[..original_byte.min(text.len())]
                 .chars()
                 .count(),
         ))
@@ -201,7 +191,7 @@ impl TabMap {
         let previous_snapshot = self.snapshot.buffer_snapshot();
         // display 策略随 BufferConfig 移除，缓存失效只以 tab 配置变化为键。
         let same_configuration = previous_snapshot.config().tab == snapshot.config().tab;
-        // fold 拓扑（折叠/合成行/行内提示变化都会使 fold 版本前进）。
+        // fold 拓扑（折叠/行内提示变化都会使 fold 版本前进）。
         let same_fold_version = self.snapshot.fold_snapshot.version() == fold_snapshot.version();
 
         if same_configuration && same_fold_version {
@@ -213,7 +203,7 @@ impl TabMap {
         }
 
         let new_version = self.snapshot.version + 1;
-        // 折叠/合成行/行内提示等结构变化会位移投影行号，宽度缓存键随之错位，必须清空；
+        // 折叠/行内提示等结构变化会位移投影行号，宽度缓存键随之错位，必须清空；
         // 行内编辑按 changed_lines 精确失效。
         let structural = fold_edits.iter().any(FoldEdit::is_structural);
         if !same_configuration || structural {
@@ -237,7 +227,7 @@ impl TabMap {
         if let Some(width) = self.measured_line_widths.get(&line) {
             return Ok(*width);
         }
-        // line 是投影行；合成行同样按文本测量（tab 展开/宽度数学不变）。
+        // line 是投影行，按投影文本测量。
         let Some(text) = self.snapshot.line_text(line) else {
             return Err(CoordinateError::LineOutOfBounds(line).into());
         };

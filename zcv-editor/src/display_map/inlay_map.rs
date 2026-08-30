@@ -9,7 +9,7 @@ use std::ops::Range;
 use zcv_text::{ByteOffset, Line, Snapshot};
 
 use super::chunk::InlayInfo;
-use super::line_stream::{LineStream, StreamLineSource, StreamLineText};
+use super::line_stream::{LineStream, StreamLineSource};
 
 /// 行内提示：锚定 buffer 字节位置（插入在其后）+ 内容文本。
 ///
@@ -87,23 +87,20 @@ impl InlaySnapshot {
         self.stream.source(line)
     }
 
-    /// 行的原始字节范围（委托流；合成行为锚定行行首的伪坐标）。
+    /// 行的原始字节范围（委托流）。
     pub(super) fn line_byte_range(&self, line: Line) -> Option<Range<ByteOffset>> {
         self.stream.line_byte_range(line)
     }
 
     /// 投影行文本（含行内提示注入）：无注入时借用，有则自持。
     pub(super) fn line_text(&self, line: Line) -> Option<Cow<'_, str>> {
-        // 行内提示只作用于 buffer 行；合成行是外部文本，无注入。
-        let StreamLineSource::Buffer(buffer_line) = self.stream.source(line)? else {
-            return Some(stream_text(self.stream.line_text(line)?));
-        };
+        let buffer_line = self.stream.source(line)?.line();
         let range = self.stream.line_byte_range(Line::new(buffer_line))?;
         let inlays = self.inlays_in(&range);
         if inlays.is_empty() {
-            return Some(stream_text(self.stream.line_text(line)?));
+            return self.stream.line_text(line);
         }
-        let text = stream_text(self.stream.line_text(line)?);
+        let text = self.stream.line_text(line)?;
         // 注入信息：投影偏移 = 锚定偏移（行内）+ 此前注入长度和。
         let mut infos = Vec::with_capacity(inlays.len());
         let mut prefix = 0usize;
@@ -127,9 +124,10 @@ impl InlaySnapshot {
 
     /// 行的注入段信息（供渲染合成：anchor 为行内原始偏移，projected 为投影偏移）。
     pub(crate) fn line_inlays(&self, line: Line) -> Vec<InlayInfo<'_>> {
-        let Some(StreamLineSource::Buffer(buffer_line)) = self.stream.source(line) else {
+        let Some(source) = self.stream.source(line) else {
             return Vec::new();
         };
+        let buffer_line = source.line();
         let Some(range) = self.stream.line_byte_range(Line::new(buffer_line)) else {
             return Vec::new();
         };
@@ -187,13 +185,6 @@ impl InlaySnapshot {
 }
 
 /// 流文本 → 投影 Cow（借用透传；Buffer 变体携带流的借用）。
-fn stream_text(text: StreamLineText<'_>) -> Cow<'_, str> {
-    match text {
-        StreamLineText::Buffer(cow) => cow,
-        StreamLineText::Inserted(text) => Cow::Borrowed(text),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

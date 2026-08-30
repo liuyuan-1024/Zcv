@@ -598,6 +598,7 @@ fn initialize_workspace(
             cx.notify();
         });
         // 任务事件只更新任务界面，不能反向触发差异业务；其余状态事件同步当前结果。
+        // 展开状态按工作区文本锚点跨刷新迁移（HEAD 变化不重置，见 diff_projection 模块说明）。
         if matches!(
             event,
             GitStoreEvent::Repositories
@@ -750,13 +751,15 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
     });
     for (editor, path) in &opened {
         let store = project.read(cx).git_store();
-        // 等待态先清空旧标记；结果到达后由 HunksChanged 精确补回。
-        let hunks: Vec<zcv_git::DiffHunk> = store
+        // 显式传递加载态：None（新 diff 尚未算完）由 MultiBuffer 保留旧 hunk 与展开状态；
+        // 终态（含空）按锚点迁移后注入。
+        let hunks = store
             .read(cx)
             .hunks_for_path(DiffBase::Head, path)
-            .map(|hunks| hunks.to_vec())
-            .unwrap_or_default();
-        editor.update(cx, |editor, cx| editor.set_diff_hunks(hunks, cx));
+            .map(|hunks| hunks.to_vec());
+        editor.update(cx, |editor, cx| {
+            editor.set_diff_hunks(hunks, cx);
+        });
     }
     // 预取 HEAD 文本：含 Deleted hunk 的文件展开删除块需要。
     // 每路径每 HEAD 一次，缓存命中后不再重复加载；HEAD 变化时 git_store 自动清缓存。
@@ -861,6 +864,7 @@ mod tests {
     use std::process::Command;
 
     use gpui::{AppContext, TestAppContext};
+    use zcv_editor::Editor;
     use zcv_workspace::Item as _;
 
     use super::{Workspace, build_workspace};
@@ -958,6 +962,82 @@ mod tests {
             let text = String::from_utf8(multi_buffer.read(cx).snapshot(cx).text_bytes())
                 .expect("投影文本应为 UTF-8");
             assert_eq!(text, "line1\nline2\n原内容\n新内容\nline4\nline5\n");
+        });
+    }
+
+    /// 回归：保存触发 hunk 刷新时，GitStore 先把 hunk 切换为加载态（`hunks_for_path` 返回 None）再注入新结果；
+    /// 加载态不能注入空列表，否则会把用户显式展开的 hunk 状态清空。
+    /// 新 diff 到达后按旧侧行范围锚点迁移展开状态。
+    #[gpui::test]
+    fn saving_file_preserves_expanded_hunk_across_hunk_refresh(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时仓库");
+        let root = directory.path().canonicalize().expect("应规范化仓库路径");
+        run_in(&root, &["git", "init", "-q", "-b", "master"]);
+        run_in(&root, &["git", "config", "user.email", "test@example.com"]);
+        run_in(&root, &["git", "config", "user.name", "Test User"]);
+        let path = root.join("tracked.txt");
+        std::fs::write(&path, "line0\nline1\nline2\nline3\n").expect("应创建文件");
+        run_in(&root, &["git", "add", "tracked.txt"]);
+        run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
+        // 工作区修改第一行 → 单个修改 hunk（旧侧 1..2）。
+        std::fs::write(&path, "line0\n改过\nline2\nline3\n").expect("应修改文件");
+
+        cx.update(|cx| {
+            zcv_settings::init(cx);
+            zcv_editor::init(cx);
+        });
+        let project_root = Some(root);
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| build_workspace(&project_root, window, cx));
+        // 打开文件 → 首次扫描完成后 hunks 注入。
+        cx.update(|window, app| {
+            workspace.update(app, |workspace, cx| {
+                workspace.open_path(path.clone(), true, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.run_until_parked();
+        cx.run_until_parked();
+
+        let editor = cx.read_entity(&workspace, |workspace, cx| {
+            workspace
+                .pane()
+                .read(cx)
+                .tabs()
+                .iter()
+                .find_map(|item| item.act_as::<Editor>(cx))
+                .expect("应打开普通编辑器")
+        });
+        editor.update(cx, |editor, cx| editor.toggle_modified_hunk(1..2, cx));
+        assert!(
+            cx.read_entity(&editor, |editor, cx| {
+                editor.expanded_modified_hunks(cx).contains(&(1..2))
+            }),
+            "展开修改块后应记录展开状态"
+        );
+
+        // 保存：落盘新内容并刷新 git 状态（保存路径 = 写盘 + refresh_statuses_for_paths）。
+        // 修改第一、二行 → 相邻改动合并为一个 hunk（旧侧 1..3），刷新经加载态后注入新结果。
+        std::fs::write(&path, "line0\n改过1\n改过2\nline3\n").expect("应写入保存内容");
+        cx.update(|_window, app| {
+            workspace.update(app, |workspace, cx| {
+                workspace.project().update(cx, |project, cx| {
+                    project.git_store().update(cx, |store, cx| {
+                        store.refresh_statuses_for_paths(&[path.clone()], cx);
+                    });
+                });
+            });
+        });
+        cx.run_until_parked();
+        cx.run_until_parked();
+        cx.run_until_parked();
+
+        cx.read_entity(&editor, |editor, cx| {
+            assert!(
+                editor.expanded_modified_hunks(cx).contains(&(1..3)),
+                "保存刷新后展开状态应迁移到合并后的新 hunk（旧侧 1..3），实际：{:?}",
+                editor.expanded_modified_hunks(cx)
+            );
         });
     }
 

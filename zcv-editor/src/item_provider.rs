@@ -6,6 +6,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use gpui::{App, AppContext, Entity, Task};
+use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
 use zcv_workspace::{ItemHandle, ItemProvider};
 
@@ -32,10 +33,13 @@ impl ItemProvider for TextFileProvider {
         if is_binary(&path) {
             return Task::ready(Err(anyhow::anyhow!("二进制文件，无法以文本打开")));
         }
-        let multi_buffer = match project.update(cx, |project, cx| project.open_buffer(&path, cx)) {
+        let singleton = match project.update(cx, |project, cx| project.open_buffer(&path, cx)) {
             Ok(multi_buffer) => multi_buffer,
             Err(error) => return Task::ready(Err(anyhow::anyhow!("{error}"))),
         };
+        // 普通编辑器统一经 `from_working_source` 构建独立组合文档（整文件可编辑 excerpt）：
+        // 项目共享 singleton 只作为工作区源，展开 diff hunk 时的 set_excerpts 只影响本组合文档，不污染项目共享文档（ProjectDiffView 等仍引用同一 singleton）。
+        let multi_buffer = cx.new(|cx| MultiBuffer::from_working_source(singleton, cx));
         let editor = cx.new(|cx| Editor::for_multi_buffer(multi_buffer, cx));
         Task::ready(Ok(Box::new(editor) as Box<dyn ItemHandle>))
     }

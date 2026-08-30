@@ -66,6 +66,7 @@ impl ProjectSearchView {
                         cx.emit(ProjectSearchEvent::OpenExcerptsRequested(locations.clone()));
                     }
                     EditorEvent::PathChanged => {}
+                    EditorEvent::DiffHunksExpandedChanged => {}
                 },
             ),
         ];

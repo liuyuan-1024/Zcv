@@ -18,9 +18,9 @@ use zcv_git::{
     DiffBase, DiffHunk, DiffHunkKind, FileStatus, GitHunkOperation, GitRevision, StatusCode,
 };
 use zcv_language::LanguageBuffer;
-use zcv_multi_buffer::{ExcerptDiffKind, MultiBuffer, MultiBufferExcerpt};
+use zcv_multi_buffer::{ExcerptDiffKind, ExcerptLocation, MultiBuffer, MultiBufferExcerpt};
 use zcv_project::{DiffRequest, GitStoreEvent, Project};
-use zcv_text::{Buffer, BufferConfig};
+use zcv_text::{Buffer, BufferConfig, Line, Snapshot, TextRange};
 use zcv_theme::{color, space};
 use zcv_ui::{Button, ButtonSize};
 use zcv_workspace::{Item, ItemEvent, SearchableItemHandle, ToolbarItemLocation, Workspace};
@@ -233,6 +233,17 @@ impl ProjectDiffKind {
 /// 每个 Git 变更块（hunk）上下各保留多少行未修改的上下文。
 const DIFF_CONTEXT_LINES: usize = 2;
 
+/// 把列（Unicode scalar 计数）钳制到文本中指定行的有效长度（行 0-based）。
+///
+/// Deleted 片段换算出的列来自 Git 修订行，工作区对应行可能因修改而变短，越界列会导致行列导航失败，必须钳制到行尾。
+fn clamp_column_to_line(text: &Snapshot, line: usize, column: usize) -> usize {
+    let line = line.min(text.line_count().saturating_sub(1));
+    let line_chars = text
+        .line_content(Line::new(line), None)
+        .map_or(0, |content| content.len_chars());
+    column.min(line_chars)
+}
+
 pub(crate) struct ProjectDiffView {
     kind: ProjectDiffKind,
     project: Entity<Project>,
@@ -257,6 +268,7 @@ impl ProjectDiffView {
         let editor = cx.new(|cx| {
             let mut editor = Editor::for_multi_buffer(multi_buffer.clone(), cx);
             editor.set_placeholder_text(format!("没有{}", kind.title()), cx);
+            editor.set_diff_hunks_expanded_by_default(true, cx);
             editor.set_diff_hunk_delegate(
                 Some(Arc::new(ProjectDiffHunkDelegate {
                     view: weak_view.clone(),
@@ -271,10 +283,19 @@ impl ProjectDiffView {
             cx.subscribe(&editor, |_, _, event: &EditorEvent, cx| {
                 cx.emit(event.clone());
             }),
+            // 删除/修改块的展开折叠状态变化：按展开状态重建组合文档（与普通编辑器同一机制）。
+            cx.subscribe(&editor, |view, _, event: &EditorEvent, cx| {
+                if matches!(event, EditorEvent::DiffHunksExpandedChanged) {
+                    view.rebuild_excerpts(cx);
+                }
+            }),
             cx.subscribe(&git_store, |view, _, event, cx| match event {
                 GitStoreEvent::Repositories | GitStoreEvent::Statuses | GitStoreEvent::Head => {
                     if matches!(event, GitStoreEvent::Head) {
                         view.loading_revision_text.clear();
+                        // HEAD 变化后旧 hunk 的旧侧坐标空间失效：按默认策略重置展开状态，避免新 diff 按失效的行号误迁移状态。
+                        view.editor
+                            .update(cx, |editor, cx| editor.reset_diff_hunk_expansion_state(cx));
                     }
                     view.refresh_files(cx);
                 }
@@ -357,6 +378,7 @@ impl ProjectDiffView {
         if !self.projection_data_ready(cx) {
             return;
         }
+        // 展开状态决定旧行片段是否进入组合（与普通编辑器同一机制）。
         let root = self.project.read(cx).root().map(Path::to_path_buf);
         let git_store = self.project.read(cx).git_store();
         let mut excerpts = Vec::new();
@@ -447,16 +469,43 @@ impl ProjectDiffView {
                     if current_line < hunk.range.start {
                         starts_new_excerpt = false;
                     }
+                    // 旧行片段按展开状态进入组合：展开显示完整旧行，折叠用空占位行标记删除点（保持片段顺序与刷新映射一致，供展开按钮定位）。
+                    let expanded =
+                        self.editor
+                            .read(cx)
+                            .is_diff_hunk_expanded(hunk.kind, &hunk.old_range, cx);
                     if !hunk.old_range.is_empty() {
-                        push_projected_excerpt(
-                            &mut excerpts,
-                            base_source.clone(),
-                            hunk.old_range.clone(),
-                            &display_path,
-                            starts_new_excerpt,
-                            Some(ExcerptDiffKind::Deleted),
-                            cx,
-                        );
+                        if expanded {
+                            push_projected_excerpt(
+                                &mut excerpts,
+                                base_source.clone(),
+                                hunk.old_range.clone(),
+                                &display_path,
+                                starts_new_excerpt,
+                                Some(ExcerptDiffKind::Deleted),
+                                cx,
+                            );
+                        } else {
+                            // 折叠：删除点锚定处的空占位行。
+                            if let Ok(anchor) = base_source
+                                .read(cx)
+                                .snapshot(cx)
+                                .text()
+                                .line_start_byte(Line::new(hunk.old_range.start))
+                            {
+                                excerpts.push(
+                                    MultiBufferExcerpt::new(
+                                        base_source.clone(),
+                                        TextRange::new(anchor, anchor).expect("占位范围必须正序"),
+                                        Vec::new(),
+                                    )
+                                    .with_display_path(display_path.clone())
+                                    .with_editable(false)
+                                    .with_diff_kind(ExcerptDiffKind::Deleted)
+                                    .with_starts_new_excerpt(starts_new_excerpt),
+                                );
+                            }
+                        }
                         starts_new_excerpt = false;
                     }
                     if !hunk.range.is_empty() {
@@ -611,6 +660,58 @@ impl ProjectDiffView {
         self.hunk_targets
             .iter()
             .find(|target| target.displayed == *displayed)
+    }
+
+    /// 把打开请求中的 Deleted 片段换算为工作区文件中的合法定位行列（0-based）。
+    ///
+    /// Deleted 片段的内容来自 Git 修订文本，其字节坐标在打开的工作区文件中不存在；
+    /// 经 hunk 把修订侧行号映射到工作区（新侧）行号，列沿用修订行内逻辑列，行与列都按工作区文件文本钳制到有效范围，返回值可直接用于行列导航。
+    /// 非 Deleted 片段返回 `None`（坐标直接可用）。
+    fn deleted_navigation_target(
+        &self,
+        location: &ExcerptLocation,
+        working_text: &Snapshot,
+        cx: &App,
+    ) -> Option<(PathBuf, usize, usize)> {
+        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
+        // 仅处理 Deleted 片段：修订文本坐标需换算，其余片段直接可用。
+        let in_deleted_excerpt = snapshot.excerpts().iter().any(|excerpt| {
+            excerpt.path() == location.path
+                && excerpt.diff_kind() == Some(ExcerptDiffKind::Deleted)
+                && excerpt.source_range().start() <= location.source_range.start()
+                && location.source_range.end() <= excerpt.source_range().end()
+        });
+        if !in_deleted_excerpt {
+            return None;
+        }
+        // 修订文本行号与列（列按 Unicode scalar 计数，与导航协议一致）。
+        let revision_source = self
+            .revision_sources
+            .get(&(self.kind.base_revision(), location.path.clone()))?;
+        let revision_text = revision_source.read(cx).snapshot(cx).text().clone();
+        let Ok(position) = revision_text.byte_to_position(location.source_range.start()) else {
+            return None;
+        };
+        let old_line = position.line().get();
+        let column = position.column().get();
+        // 包含该修订行的 hunk（旧侧行范围）。
+        let hunk = self.hunk_targets.iter().find_map(|target| {
+            (target.path == location.path)
+                .then_some(target.source.as_ref())
+                .flatten()
+                .filter(|hunk| hunk.old_range.contains(&old_line))
+        })?;
+        // 修改行在 hunk 内按偏移映射；纯删除锚定变更块起点。
+        let offset = old_line - hunk.old_range.start;
+        let working_line = if hunk.range.is_empty() {
+            hunk.range.start
+        } else {
+            (hunk.range.start + offset).min(hunk.range.end - 1)
+        };
+        // 行与列钳制到工作区文件有效范围（修改可能让行变短）。
+        let line = working_line.min(working_text.line_count().saturating_sub(1));
+        let column = clamp_column_to_line(working_text, line, column);
+        Some((location.path.clone(), line, column))
     }
 
     fn apply_hunk_action(
@@ -938,17 +1039,35 @@ pub(crate) fn deploy_at(
     let project = workspace.project().clone();
     let view = cx.new(|cx| ProjectDiffView::new(kind, project, cx));
     view.update(cx, |view, cx| view.move_to_path(path, cx));
-    cx.subscribe_in(&view, window, |workspace, _, event, window, cx| {
+    cx.subscribe_in(&view, window, |workspace, view, event, window, cx| {
         let EditorEvent::OpenExcerptsRequested { locations, .. } = event else {
             return;
         };
         for location in locations {
-            workspace.open_path_at(
-                location.path.clone(),
-                location.source_range.start().get()..location.source_range.end().get(),
-                window,
-                cx,
-            );
+            // Deleted 片段的内容来自 Git 修订文本，换算为工作区文件的真实行列；
+            // 其余片段坐标直接可用，保持字节导航。
+            let navigation = workspace.project().update(cx, |project, cx| {
+                let Ok(buffer) = project.open_buffer(&location.path, cx) else {
+                    return None;
+                };
+                let text = cx
+                    .read_entity(&buffer, |buffer, _| buffer.snapshot(cx))
+                    .text()
+                    .clone();
+                cx.read_entity(view, |view, cx| {
+                    view.deleted_navigation_target(location, &text, cx)
+                })
+            });
+            if let Some((path, line, column)) = navigation {
+                workspace.open_path_at_line_column(path, line, column, window, cx);
+            } else {
+                workspace.open_path_at(
+                    location.path.clone(),
+                    location.source_range.start().get()..location.source_range.end().get(),
+                    window,
+                    cx,
+                );
+            }
         }
     })
     .detach();
@@ -1040,6 +1159,139 @@ mod tests {
         assert_eq!(
             text,
             "将被删除\nline2\nline3\n修改前\n修改后\nline5\nline6\n新增\n"
+        );
+    }
+
+    /// 回归：从 Deleted 片段打开文件时，必须换算到工作区文件中的真实行列，而不是把 Git 修订文本的坐标直接套到工作区文件上。
+    #[gpui::test]
+    fn deleted_excerpt_maps_to_working_tree_hunk_position(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时仓库");
+        let root = directory.path().canonicalize().expect("应规范化仓库路径");
+        run_in(&root, &["git", "init", "-q", "-b", "master"]);
+        run_in(&root, &["git", "config", "user.email", "test@example.com"]);
+        run_in(&root, &["git", "config", "user.name", "Test User"]);
+        let modified_path = root.join("modified.txt");
+        std::fs::write(
+            &modified_path,
+            "line0\nline1\nline2\nline3\n修改前\nline5\nline6\nline7\n",
+        )
+        .expect("应创建文件");
+        std::fs::write(root.join("removed.txt"), "将被删除\n").expect("应创建文件");
+        run_in(&root, &["git", "add", "."]);
+        run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
+        // 工作区：修改第 5 行（0-based 4），并删除 removed.txt。
+        std::fs::write(
+            &modified_path,
+            "line0\nline1\nline2\nline3\n修改后\nline5\nline6\nline7\n",
+        )
+        .expect("应修改文件");
+        std::fs::remove_file(root.join("removed.txt")).expect("应删除文件");
+
+        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let view = cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project, cx));
+        cx.run_until_parked();
+        cx.run_until_parked();
+
+        // 工作区文件文本（与磁盘内容一致），供换算钳制行列。
+        let working_text = Buffer::scratch(
+            "line0\nline1\nline2\nline3\n修改后\nline5\nline6\nline7\n".to_owned(),
+            BufferConfig::default(),
+        )
+        .expect("测试 Buffer 应能创建")
+        .snapshot();
+
+        cx.read_entity(&view, |view, cx| {
+            let snapshot = view.multi_buffer.read(cx).snapshot(cx);
+            // 修改行的 Deleted 片段：首行（旧侧 "修改前"）→ 工作区第 5 行（0-based 4）。
+            let modified_excerpt = snapshot
+                .excerpts()
+                .iter()
+                .find(|excerpt| {
+                    excerpt.path() == modified_path
+                        && excerpt.diff_kind() == Some(ExcerptDiffKind::Deleted)
+                })
+                .expect("修改行应有 Deleted 片段");
+            let location = ExcerptLocation {
+                path: modified_path.clone(),
+                source_range: modified_excerpt.source_range(),
+            };
+            let target = view
+                .deleted_navigation_target(&location, &working_text, cx)
+                .expect("Deleted 片段应能换算到工作区行列");
+            assert_eq!(target.0, modified_path);
+            assert_eq!(target.1, 4, "修改行映射到工作区第 5 行（0-based 4）");
+            assert_eq!(target.2, 0);
+            // 行内位置：旧行 "修改前" 第 2 个字符（逻辑列 1）→ 工作区同列。
+            let inner_location = ExcerptLocation {
+                path: modified_path.clone(),
+                source_range: zcv_text::TextRange::new(
+                    zcv_text::ByteOffset::new(27),
+                    zcv_text::ByteOffset::new(34),
+                )
+                .expect("旧行内范围"),
+            };
+            let inner_target = view
+                .deleted_navigation_target(&inner_location, &working_text, cx)
+                .expect("Deleted 片段行内位置应能换算");
+            assert_eq!(
+                (inner_target.1, inner_target.2),
+                (4, 1),
+                "修订行内列应映射到工作区同列"
+            );
+            assert_eq!(
+                modified_excerpt.source_range(),
+                zcv_text::TextRange::new(
+                    zcv_text::ByteOffset::new(24),
+                    zcv_text::ByteOffset::new(34),
+                )
+                .expect("旧侧第 5 行范围"),
+                "夹具应让 Deleted 片段正好覆盖被修改的旧行（含行尾换行）"
+            );
+            // 整文件删除：纯删除 hunk 的 range 为空，锚定到变更块起点（0-based 0）。
+            let removed_excerpt = snapshot
+                .excerpts()
+                .iter()
+                .find(|excerpt| {
+                    excerpt.path().file_name().and_then(|name| name.to_str()) == Some("removed.txt")
+                        && excerpt.diff_kind() == Some(ExcerptDiffKind::Deleted)
+                })
+                .expect("删除文件应有 Deleted 片段");
+            let removed_location = ExcerptLocation {
+                path: removed_excerpt.path().to_path_buf(),
+                source_range: removed_excerpt.source_range(),
+            };
+            // 已删除文件的工作区文本为空。
+            let empty_text = Buffer::scratch(String::new(), BufferConfig::default())
+                .expect("空 Buffer 应能创建")
+                .snapshot();
+            let removed_target = view
+                .deleted_navigation_target(&removed_location, &empty_text, cx)
+                .expect("删除片段应锚定到变更块起点");
+            assert_eq!(removed_target.1, 0);
+            assert_eq!(removed_target.2, 0);
+        });
+    }
+
+    #[test]
+    fn clamp_column_to_line_caps_at_line_length() {
+        let snapshot = Buffer::scratch(
+            "abc\n一个很长的中文行\n".to_owned(),
+            BufferConfig::default(),
+        )
+        .expect("测试 Buffer 应能创建")
+        .snapshot();
+        assert_eq!(clamp_column_to_line(&snapshot, 0, 0), 0);
+        assert_eq!(clamp_column_to_line(&snapshot, 0, 99), 3, "列应钳制到行尾");
+        assert_eq!(clamp_column_to_line(&snapshot, 1, 1), 1);
+        assert_eq!(
+            clamp_column_to_line(&snapshot, 1, 99),
+            8,
+            "中文行按字符计数钳制"
+        );
+        assert_eq!(
+            clamp_column_to_line(&snapshot, 99, 5),
+            0,
+            "越界行钳制到最后一行"
         );
     }
 
@@ -1158,6 +1410,211 @@ mod tests {
             assert_eq!(view.hunk_targets.len(), 1);
             assert!(!text.contains("第一个变更块"));
             assert!(text.contains("第二个变更块"));
+        });
+    }
+
+    /// Git hunk 多文件编辑器默认展开；用户折叠后刷新仍保持折叠，且映射保持一致。
+    #[gpui::test]
+    fn expanding_hunk_then_refreshing_hunks_keeps_mapping_consistent(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时仓库");
+        let root = directory.path().canonicalize().expect("应规范化仓库路径");
+        run_in(&root, &["git", "init", "-q", "-b", "master"]);
+        run_in(&root, &["git", "config", "user.email", "test@example.com"]);
+        run_in(&root, &["git", "config", "user.name", "Test User"]);
+        let modified_path = root.join("modified.txt");
+        std::fs::write(&modified_path, "line0\nline1\nline2\nline3\nline4").expect("应创建文件");
+        run_in(&root, &["git", "add", "."]);
+        run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
+        std::fs::write(&modified_path, "line0\n改过\nline2\nline3\nline4").expect("应修改文件");
+
+        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let view =
+            cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project.clone(), cx));
+        cx.run_until_parked();
+        cx.run_until_parked();
+
+        cx.read_entity(&view, |view, cx| {
+            assert_eq!(
+                view.editor.read(cx).expanded_modified_hunks(cx),
+                &[1..2],
+                "Git hunk 多文件编辑器应默认展开修改块"
+            );
+            let text = String::from_utf8(view.multi_buffer.read(cx).snapshot(cx).text_bytes())
+                .expect("投影应为 UTF-8");
+            assert!(text.contains("line1"), "默认展开时应包含旧侧文本");
+            assert!(text.contains("改过"), "默认展开时应包含新侧文本");
+        });
+
+        // 用户折叠修改块。
+        cx.update_entity(&view, |view, cx| {
+            let editor = view.editor.clone();
+            editor.update(cx, |editor, cx| editor.toggle_modified_hunk(1..2, cx));
+        });
+        cx.run_until_parked();
+        cx.read_entity(&view, |view, cx| {
+            assert!(view.editor.read(cx).expanded_modified_hunks(cx).is_empty());
+            let text = String::from_utf8(view.multi_buffer.read(cx).snapshot(cx).text_bytes())
+                .expect("投影应为 UTF-8");
+            assert!(!text.contains("line1"), "折叠后旧侧文本应消失");
+            assert!(text.contains("改过"), "折叠后新侧文本应保留");
+        });
+
+        // 触发 git hunks 刷新（模拟 git 状态变化）→ rebuild_excerpts → refresh_diff_hunks。
+        project.update(cx, |project, cx| {
+            let store = project.git_store();
+            store.update(cx, |store, cx| {
+                store.request_hunks(DiffBase::Index, &[modified_path.clone()], cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.run_until_parked();
+        cx.read_entity(&view, |view, cx| {
+            assert!(!view.hunk_targets.is_empty(), "刷新后仍应保留项目差异映射");
+            assert!(
+                view.editor.read(cx).expanded_modified_hunks(cx).is_empty(),
+                "刷新不能覆盖用户的折叠状态"
+            );
+        });
+    }
+
+    /// 复现：普通编辑器展开 hunk（singleton → excerpts）后触发 git hunks 刷新，
+    /// 与 ProjectDiffView 共享仓库时不应让 refresh_diff_hunks 的片段匹配 panic。
+    #[gpui::test]
+    fn plain_editor_expansion_then_git_refresh_keeps_diff_view_consistent(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时仓库");
+        let root = directory.path().canonicalize().expect("应规范化仓库路径");
+        run_in(&root, &["git", "init", "-q", "-b", "master"]);
+        run_in(&root, &["git", "config", "user.email", "test@example.com"]);
+        run_in(&root, &["git", "config", "user.name", "Test User"]);
+        let modified_path = root.join("modified.txt");
+        std::fs::write(&modified_path, "line0\nline1\nline2\nline3\nline4\n").expect("应创建文件");
+        run_in(&root, &["git", "add", "."]);
+        run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
+        std::fs::write(&modified_path, "line0\n改过\nline2\nline3\nline4\n").expect("应修改文件");
+
+        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        // 普通编辑器：独立 excerpts 组合文档（整文件 excerpt，共享 singleton 只作工作区源），
+        // 与 item_provider 打开路径一致；展开修改块。
+        let working = project
+            .update(cx, |project, cx| project.open_buffer(&modified_path, cx))
+            .expect("工作区文件应能打开");
+        // 统一经 from_working_source 构建独立组合文档（与 item_provider 同一路径）。
+        let combined = cx.new(|cx| MultiBuffer::from_working_source(working.clone(), cx));
+        let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
+        editor.update(cx, |editor, cx| {
+            editor.set_diff_hunks(
+                Some(vec![DiffHunk {
+                    range: 1..2,
+                    old_range: 1..2,
+                    kind: DiffHunkKind::Modified,
+                }]),
+                cx,
+            );
+            editor
+                .set_deleted_hunk_text(Some(Arc::from("line0\nline1\nline2\nline3\nline4\n")), cx);
+            editor.toggle_modified_hunk(1..2, cx);
+        });
+        // ProjectDiffView：同一仓库。
+        let view =
+            cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project.clone(), cx));
+        cx.run_until_parked();
+        cx.run_until_parked();
+
+        // 触发 git hunks 刷新 → HunksChanged → 两个视图各自重建。
+        project.update(cx, |project, cx| {
+            let store = project.git_store();
+            store.update(cx, |store, cx| {
+                store.request_hunks(DiffBase::Index, &[modified_path.clone()], cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.run_until_parked();
+        cx.read_entity(&view, |view, _| {
+            assert!(!view.hunk_targets.is_empty(), "刷新后仍应保留项目差异映射")
+        });
+    }
+
+    /// 复现：普通编辑器展开 hunk 后编辑工作区（行数变化）再触发 git hunks 刷新，
+    /// ProjectDiffView 的片段映射不应 panic。
+    #[gpui::test]
+    fn expansion_edit_then_refresh_keeps_diff_view_consistent(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时仓库");
+        let root = directory.path().canonicalize().expect("应规范化仓库路径");
+        run_in(&root, &["git", "init", "-q", "-b", "master"]);
+        run_in(&root, &["git", "config", "user.email", "test@example.com"]);
+        run_in(&root, &["git", "config", "user.name", "Test User"]);
+        let modified_path = root.join("modified.txt");
+        std::fs::write(
+            &modified_path,
+            "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\n",
+        )
+        .expect("应创建文件");
+        run_in(&root, &["git", "add", "."]);
+        run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
+        std::fs::write(
+            &modified_path,
+            "line0\n改过\nline2\nline3\nline4\nline5\nline6\nline7\n",
+        )
+        .expect("应修改文件");
+
+        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        // 普通编辑器：独立 excerpts（item_provider 路径）+ 展开修改块。
+        let working = project
+            .update(cx, |project, cx| project.open_buffer(&modified_path, cx))
+            .expect("工作区文件应能打开");
+        // 统一经 from_working_source 构建独立组合文档（与 item_provider 同一路径）。
+        let combined = cx.new(|cx| MultiBuffer::from_working_source(working.clone(), cx));
+        let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
+        editor.update(cx, |editor, cx| {
+            editor.set_diff_hunks(
+                Some(vec![DiffHunk {
+                    range: 1..2,
+                    old_range: 1..2,
+                    kind: DiffHunkKind::Modified,
+                }]),
+                cx,
+            );
+            editor.set_deleted_hunk_text(
+                Some(Arc::from(
+                    "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\n",
+                )),
+                cx,
+            );
+            editor.toggle_modified_hunk(1..2, cx);
+        });
+        // ProjectDiffView：同一仓库。
+        let view =
+            cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project.clone(), cx));
+        cx.run_until_parked();
+        cx.run_until_parked();
+
+        // 编辑工作区（删除 "改过" 行 → 行数变化）。
+        working.update(cx, |mb, cx| {
+            mb.edit(
+                vec![zcv_text::Edit::delete(
+                    zcv_text::TextRange::new(
+                        zcv_text::ByteOffset::new(6),
+                        zcv_text::ByteOffset::new(13),
+                    )
+                    .expect("删除范围应有效"),
+                )],
+                zcv_text::TransactionMetadata::default(),
+                cx,
+            )
+            .expect("工作区编辑应成功");
+            cx.notify();
+        });
+        // 触发 git hunks 刷新。
+        project.update(cx, |project, cx| {
+            let store = project.git_store();
+            store.update(cx, |store, cx| {
+                store.request_hunks(DiffBase::Index, &[modified_path.clone()], cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.run_until_parked();
+        cx.read_entity(&view, |view, _| {
+            assert!(!view.hunk_targets.is_empty(), "刷新后仍应保留项目差异映射")
         });
     }
 

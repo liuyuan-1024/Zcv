@@ -1,9 +1,9 @@
-use gpui::{Modifiers, TestAppContext, point, px};
+use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 use std::path::PathBuf;
 use zcv_multi_buffer::MultiBufferExcerpt;
 use zcv_text::{ByteOffset, Edit, TextRange, TransactionMetadata};
 
-use super::common::{engine_buffer, test_buffer};
+use super::common::{buffer_text, engine_buffer, test_buffer};
 use super::*;
 use crate::display_map::{ProjectedLineIndex, ProjectedPoint, WrapViewportRowKind};
 
@@ -39,11 +39,11 @@ fn hunk_controls_remain_visible_when_pointer_enters_controls(cx: &mut TestAppCon
     editor.update(cx, |editor, cx| {
         editor.set_diff_hunk_delegate(Some(Arc::new(OccludingHunkControls)), cx);
         editor.set_diff_hunks(
-            vec![DiffHunk {
+            Some(vec![DiffHunk {
                 range: 1..2,
                 old_range: 1..1,
                 kind: DiffHunkKind::Added,
-            }],
+            }]),
             cx,
         );
     });
@@ -88,11 +88,11 @@ fn hunk_controls_stick_to_viewport_while_hunk_start_is_scrolled_out(cx: &mut Tes
     editor.update(cx, |editor, cx| {
         editor.set_diff_hunk_delegate(Some(Arc::new(OccludingHunkControls)), cx);
         editor.set_diff_hunks(
-            vec![DiffHunk {
+            Some(vec![DiffHunk {
                 range: 1..50,
                 old_range: 1..1,
                 kind: DiffHunkKind::Added,
-            }],
+            }]),
             cx,
         );
     });
@@ -125,9 +125,13 @@ fn hunk_controls_stick_to_viewport_while_hunk_start_is_scrolled_out(cx: &mut Tes
 }
 
 #[gpui::test]
-fn deleted_hunk_expands_and_collapses_inserted_lines(cx: &mut TestAppContext) {
+fn deleted_hunk_expands_and_collapses_readonly_excerpt(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "a\nb\nc");
-    let editor = cx.new(|cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx));
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let (editor, cx) =
+        cx.add_window_view(move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx));
     cx.run_until_parked();
     let base_rows = cx.read_entity(&editor, |editor, _| editor.display_map.line_count());
     assert_eq!(base_rows, 3);
@@ -135,11 +139,11 @@ fn deleted_hunk_expands_and_collapses_inserted_lines(cx: &mut TestAppContext) {
     // 注入 Deleted hunk（新侧行 1 处删除了 HEAD 的 1..3 行）+ HEAD 全文。
     editor.update(cx, |editor, cx| {
         editor.set_diff_hunks(
-            vec![DiffHunk {
+            Some(vec![DiffHunk {
                 range: 1..1,
                 old_range: 1..3,
                 kind: DiffHunkKind::Deleted,
-            }],
+            }]),
             cx,
         );
         editor.set_deleted_hunk_text(Some(Arc::from("a\nold1\nold2\nc")), cx);
@@ -149,8 +153,14 @@ fn deleted_hunk_expands_and_collapses_inserted_lines(cx: &mut TestAppContext) {
         cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
         3
     );
+    assert!(
+        cx.read_entity(&editor, |editor, cx| {
+            editor.expanded_deleted_hunks(cx).is_empty()
+        }),
+        "普通编辑器的 hunk 应默认折叠"
+    );
 
-    // 展开删除块：HEAD 的 1..3 行（old1/old2）作为合成行插入。
+    // 展开删除块：HEAD 的 1..3 行（old1/old2）作为只读 excerpt 插入。
     editor.update(cx, |editor, cx| editor.toggle_deleted_hunk(1..3, cx));
     assert_eq!(
         cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
@@ -158,73 +168,26 @@ fn deleted_hunk_expands_and_collapses_inserted_lines(cx: &mut TestAppContext) {
         "展开后应增加 2 个被删除行"
     );
 
-    // 再折叠：回到 3 行。
-    editor.update(cx, |editor, cx| editor.toggle_deleted_hunk(1..3, cx));
+    // 点击展开块的 gutter 色带折叠：回到 3 行。
+    cx.refresh().expect("展开删除块后应能刷新");
+    let (window_bounds, line_height) =
+        cx.update(|window, _| (window.bounds(), window.line_height()));
+    cx.simulate_mouse_down(
+        point(
+            window_bounds.left() + px(1.),
+            window_bounds.top() + line_height * 1.5,
+        ),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
     assert_eq!(
         cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
         3,
-        "折叠后应回到 3 行"
+        "点击 gutter 折叠后应回到 3 行"
     );
 }
 
-#[gpui::test]
-fn inserted_diff_lines_sync_a_replaced_multibuffer_projection(cx: &mut TestAppContext) {
-    let first = test_buffer(cx, "first\n");
-    first.update(cx, |buffer, cx| {
-        buffer.set_file_path(PathBuf::from("first.txt"), cx)
-    });
-    let first_multi = cx.new(move |cx| MultiBuffer::singleton(first, cx));
-    let combined = cx.new(MultiBuffer::empty);
-    combined.update(cx, |combined, cx| {
-        combined.set_excerpts(
-            vec![MultiBufferExcerpt::line_range(first_multi, 0..2, cx)],
-            cx,
-        );
-    });
-    let editor = cx.new({
-        let combined = combined.clone();
-        move |cx| Editor::for_multi_buffer(combined, cx)
-    });
-    editor.update(cx, |editor, cx| {
-        editor.set_diff_hunks(
-            vec![DiffHunk {
-                range: 0..1,
-                old_range: 0..1,
-                kind: DiffHunkKind::Modified,
-            }],
-            cx,
-        );
-        editor.set_deleted_hunk_text(Some(Arc::from("old first\n")), cx);
-        editor.expand_all_diff_hunks(cx);
-    });
-
-    let second = test_buffer(cx, "second\nline 2\nline 3\n");
-    second.update(cx, |buffer, cx| {
-        buffer.set_file_path(PathBuf::from("second.txt"), cx)
-    });
-    let second_multi = cx.new(move |cx| MultiBuffer::singleton(second, cx));
-    // 模拟 Git hunk、HEAD 文本与新 MultiBuffer 投影在同一个 App 更新周期到达：
-    // TextChanged 订阅尚未运行时，合成行入口必须主动同步最新文本流。
-    cx.update(|cx| {
-        combined.update(cx, |combined, cx| {
-            combined.set_excerpts(
-                vec![MultiBufferExcerpt::line_range(second_multi, 0..4, cx)],
-                cx,
-            );
-        });
-        editor.update(cx, |editor, cx| {
-            editor.set_deleted_hunk_text(Some(Arc::from("old second\n")), cx);
-            editor.expand_all_diff_hunks(cx);
-        });
-    });
-
-    let expected_version =
-        cx.read_entity(&combined, |combined, cx| combined.snapshot(cx).version());
-    cx.read_entity(&editor, |editor, cx| {
-        assert_eq!(editor.display_map.version(), expected_version);
-        assert_eq!(editor.text(cx), "second\nline 2\nline 3\n");
-    });
-}
 #[gpui::test]
 fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
@@ -521,11 +484,11 @@ fn diff_hunks_are_gated_by_buffer_version(cx: &mut TestAppContext) {
 
     editor.update(cx, |editor, cx| {
         editor.set_diff_hunks(
-            vec![DiffHunk {
+            Some(vec![DiffHunk {
                 range: 1..2,
                 old_range: 1..2,
                 kind: DiffHunkKind::Modified,
-            }],
+            }]),
             cx,
         );
         assert_eq!(editor.diff_hunks(cx).len(), 1, "注入后应立即可见");
@@ -539,11 +502,11 @@ fn diff_hunks_are_gated_by_buffer_version(cx: &mut TestAppContext) {
 
         // 重新注入（新版本）后恢复可见。
         editor.set_diff_hunks(
-            vec![DiffHunk {
+            Some(vec![DiffHunk {
                 range: 0..1,
                 old_range: 0..0,
                 kind: DiffHunkKind::Added,
-            }],
+            }]),
             cx,
         );
         assert_eq!(editor.diff_hunks(cx).len(), 1, "重新注入后应恢复");
@@ -864,5 +827,420 @@ fn cursor_text_maps_excerpt_output_to_real_source_line(cx: &mut TestAppContext) 
     single.update(cx, |editor, cx| {
         editor.select_byte_range(2..2, cx);
         assert_eq!(editor.cursor_text(cx), "2:1");
+    });
+}
+
+/// 整文件作为可编辑工作区 excerpt，展开的 Deleted hunk 作为只读 HEAD excerpt 插入删除点（工作区切分拼接）：
+/// 光标可停在 HEAD 行、显示修订行列、工作区可编辑写回。
+#[gpui::test]
+fn materialized_deleted_excerpt_keeps_editing_and_cursor(cx: &mut TestAppContext) {
+    // 工作区（新侧）与 HEAD（旧侧，含被删行 old1/old2）。
+    let work = test_buffer(cx, "a\nb\nc");
+    work.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let head = test_buffer(cx, "a\nold1\nold2\nc");
+    head.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let work_for_multi = work.clone();
+    let head_for_multi = head.clone();
+    let work_multi = cx.new(move |cx| MultiBuffer::singleton(work_for_multi, cx));
+    let head_multi = cx.new(move |cx| MultiBuffer::singleton(head_for_multi, cx));
+    let combined = cx.new(MultiBuffer::empty);
+
+    // Deleted hunk：新侧行 1 处删除 HEAD 的 1..3 行。
+    // 组合 = [工作区 0..1] + [HEAD 1..3（只读红色行）] + [工作区 1..3]。
+    combined.update(cx, |combined, cx| {
+        combined.set_excerpts(
+            vec![
+                MultiBufferExcerpt::line_range(work_multi.clone(), 0..1, cx),
+                MultiBufferExcerpt::line_range(head_multi, 1..3, cx)
+                    .with_diff_kind(ExcerptDiffKind::Deleted)
+                    .with_editable(false),
+                MultiBufferExcerpt::line_range(work_multi, 1..3, cx),
+            ],
+            cx,
+        );
+    });
+    let editor = cx.new(move |cx| Editor::for_multi_buffer(combined, cx));
+
+    // 组合文本：HEAD 旧行插在删除点；普通 excerpt 保留源文本原样（末尾无多余换行）。
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(editor.text(cx), "a\nold1\nold2\nb\nc");
+    });
+    // 光标可移动到 HEAD 行（组合 offset 2 = "old1"），并显示 HEAD 修订行列（第 2 行，1 起始）。
+    editor.update(cx, |editor, cx| {
+        editor.select_byte_range(2..2, cx);
+        assert_eq!(editor.cursor_text(cx), "2:1");
+        // HEAD 第二行（old2）行首：修订第 3 行。
+        editor.select_byte_range(7..7, cx);
+        assert_eq!(editor.cursor_text(cx), "3:1");
+    });
+    // 工作区 excerpt 仍可编辑并写回工作区文件（"b" → "B"）。
+    editor.update(cx, |editor, cx| {
+        editor.select_byte_range(12..13, cx);
+        editor.replace_text(None, "B", cx);
+    });
+    assert_eq!(buffer_text(&work, cx), "a\nB\nc");
+}
+
+/// 回归：普通编辑器展开 Deleted hunk 后与多文件编辑器共用 MultiBuffer excerpts 机制，
+/// 光标可停在 HEAD 旧行上并显示修订行列；折叠恢复整文件。
+#[gpui::test]
+fn plain_editor_expanding_deleted_hunk_uses_excerpts_and_allows_cursor(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "a\nb\nc");
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
+    });
+    // 普通编辑器的 diff 注入路径：hunks + HEAD 全文 + 展开删除块。
+    editor.update(cx, |editor, cx| {
+        editor.set_diff_hunks(
+            Some(vec![DiffHunk {
+                range: 1..1,
+                old_range: 1..3,
+                kind: DiffHunkKind::Deleted,
+            }]),
+            cx,
+        );
+        editor.set_deleted_hunk_text(Some(Arc::from("a\nold1\nold2\nc")), cx);
+        editor.toggle_deleted_hunk(1..3, cx);
+    });
+    cx.run_until_parked();
+
+    // 展开后：HEAD 旧行作为只读 excerpt 插入删除点；光标可停在 HEAD 旧行并显示修订行列。
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(editor.text(cx), "a\nold1\nold2\nb\nc");
+        let snapshot = editor.display_map.snapshot();
+        let rendering = hunk_rendering(
+            &snapshot,
+            editor.diff_hunks(cx),
+            editor.expanded_deleted_hunks(cx),
+            editor.expanded_modified_hunks(cx),
+            editor.diff_hunk_old_ranges(cx),
+        );
+        assert_eq!(
+            rendering.hit_regions,
+            vec![(1..3, 1..3, DiffHunkKind::Deleted)],
+            "展开的纯删除块仍应暴露 gutter 折叠点击区"
+        );
+    });
+    editor.update(cx, |editor, cx| editor.select_byte_range(2..2, cx));
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(editor.cursor_text(cx), "2:1");
+    });
+    // 工作区段仍可编辑（"b" → "B"），写回工作区文件。
+    editor.update(cx, |editor, cx| {
+        editor.select_byte_range(12..13, cx);
+        editor.replace_text(None, "B", cx);
+    });
+    assert_eq!(buffer_text(&buffer, cx), "a\nB\nc");
+
+    // 折叠：恢复整文件（HEAD 旧行消失）。
+    editor.update(cx, |editor, cx| editor.toggle_deleted_hunk(1..3, cx));
+    cx.run_until_parked();
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(editor.text(cx), "a\nB\nc");
+    });
+}
+
+/// 回归：diff 刷新移除已展开 hunk 时，旧侧只读 excerpt 也必须随权威 hunk 数据消失。
+#[gpui::test]
+fn refreshing_diff_hunks_removes_stale_expanded_excerpt(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "a\nb\nc");
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let editor = cx.new(|cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx));
+    editor.update(cx, |editor, cx| {
+        editor.set_diff_hunks(
+            Some(vec![DiffHunk {
+                range: 1..1,
+                old_range: 1..3,
+                kind: DiffHunkKind::Deleted,
+            }]),
+            cx,
+        );
+        editor.set_deleted_hunk_text(Some(Arc::from("a\nold1\nold2\nc")), cx);
+        editor.toggle_deleted_hunk(1..3, cx);
+        assert_eq!(editor.text(cx), "a\nold1\nold2\nb\nc");
+
+        editor.set_diff_hunks(Some(Vec::new()), cx);
+        assert_eq!(editor.text(cx), "a\nb\nc");
+        assert!(editor.diff_hunk_old_ranges(cx).is_empty());
+    });
+}
+
+/// 回归：diff 刷新后 hunk 边界变化（编辑导致 hunk 合并/移位）时，展开状态按旧侧行范围锚点迁移到新 hunk，不再因 old_range 精确匹配失败而丢失用户的显式展开。
+#[gpui::test]
+fn refreshing_diff_hunks_migrates_expansion_across_hunk_boundary_changes(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "a\nb\nc");
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let editor = cx.new(|cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx));
+    editor.update(cx, |editor, cx| {
+        editor.set_diff_hunks(
+            Some(vec![DiffHunk {
+                range: 1..1,
+                old_range: 1..3,
+                kind: DiffHunkKind::Deleted,
+            }]),
+            cx,
+        );
+        editor.set_deleted_hunk_text(Some(Arc::from("a\nold1\nold2\nold3\nc")), cx);
+        editor.toggle_deleted_hunk(1..3, cx);
+        assert_eq!(editor.text(cx), "a\nold1\nold2\nb\nc");
+
+        // 编辑后 hunk 边界变化：旧侧范围 1..3 扩大为 1..4（与旧 hunk 重叠即可识别为同一 hunk）。
+        editor.set_diff_hunks(
+            Some(vec![DiffHunk {
+                range: 1..1,
+                old_range: 1..4,
+                kind: DiffHunkKind::Deleted,
+            }]),
+            cx,
+        );
+        assert!(
+            editor.expanded_deleted_hunks(cx).contains(&(1..4)),
+            "展开状态应按旧侧行范围锚点迁移到新 hunk"
+        );
+        assert_eq!(editor.text(cx), "a\nold1\nold2\nold3\nb\nc");
+    });
+}
+
+/// 回归：diff 刷新只清理真正消失的 hunk 状态，仍存在的 hunk 展开状态按锚点保留。
+#[gpui::test]
+fn refreshing_diff_hunks_drops_state_of_disappeared_hunk_only(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "a\nb\nc\nd\ne");
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let editor = cx.new(|cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx));
+    editor.update(cx, |editor, cx| {
+        editor.set_diff_hunks(
+            Some(vec![
+                DiffHunk {
+                    range: 1..1,
+                    old_range: 1..2,
+                    kind: DiffHunkKind::Deleted,
+                },
+                DiffHunk {
+                    range: 3..3,
+                    old_range: 3..4,
+                    kind: DiffHunkKind::Deleted,
+                },
+            ]),
+            cx,
+        );
+        editor.set_deleted_hunk_text(Some(Arc::from("a\nold1\nb\nold3\ne")), cx);
+        editor.toggle_deleted_hunk(1..2, cx);
+        editor.toggle_deleted_hunk(3..4, cx);
+        assert_eq!(editor.text(cx), "a\nold1\nb\nc\nold3\nd\ne");
+
+        // 第一个删除块对应的改动被还原：该 hunk 消失，仅清理其状态；第二个保留。
+        editor.set_diff_hunks(
+            Some(vec![DiffHunk {
+                range: 3..3,
+                old_range: 3..4,
+                kind: DiffHunkKind::Deleted,
+            }]),
+            cx,
+        );
+        assert_eq!(editor.expanded_deleted_hunks(cx), &[3..4]);
+        assert_eq!(editor.text(cx), "a\nb\nc\nold3\nd\ne");
+    });
+}
+
+/// 回归：默认展开模式（项目差异视图）下，用户显式折叠的 hunk 在刷新后按锚点迁移保留。
+#[gpui::test]
+fn refreshing_diff_hunks_preserves_collapsed_hunk_in_default_expanded_mode(
+    cx: &mut TestAppContext,
+) {
+    let buffer = test_buffer(cx, "a\nb\nc");
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let editor = cx.new(|cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx));
+    editor.update(cx, |editor, cx| {
+        editor.set_diff_hunks_expanded_by_default(true, cx);
+        editor.set_diff_hunks(
+            Some(vec![DiffHunk {
+                range: 1..1,
+                old_range: 1..3,
+                kind: DiffHunkKind::Deleted,
+            }]),
+            cx,
+        );
+        editor.set_deleted_hunk_text(Some(Arc::from("a\nold1\nold2\nc")), cx);
+        editor.toggle_deleted_hunk(1..3, cx);
+        assert!(
+            editor.expanded_deleted_hunks(cx).is_empty(),
+            "默认展开模式下显式折叠后不应再展开"
+        );
+
+        // 边界变化后折叠状态迁移到新 hunk。
+        editor.set_diff_hunks(
+            Some(vec![DiffHunk {
+                range: 1..1,
+                old_range: 1..4,
+                kind: DiffHunkKind::Deleted,
+            }]),
+            cx,
+        );
+        assert!(editor.expanded_deleted_hunks(cx).is_empty());
+        assert!(
+            !editor.is_diff_hunk_expanded(DiffHunkKind::Deleted, &(1..4), cx),
+            "折叠状态应按旧侧行范围锚点迁移到新 hunk"
+        );
+    });
+}
+
+/// 回归：base 版本变化（提交等）后宿主重置展开状态，新 hunk 按默认策略重新注入，
+/// 已物化的旧侧 excerpt 同时撤销。
+#[gpui::test]
+fn reset_diff_hunk_expansion_state_restores_default_strategy(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "a\nb\nc");
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let editor = cx.new(|cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx));
+    editor.update(cx, |editor, cx| {
+        editor.set_diff_hunks(
+            Some(vec![DiffHunk {
+                range: 1..1,
+                old_range: 1..3,
+                kind: DiffHunkKind::Deleted,
+            }]),
+            cx,
+        );
+        editor.set_deleted_hunk_text(Some(Arc::from("a\nold1\nold2\nc")), cx);
+        editor.toggle_deleted_hunk(1..3, cx);
+        assert_eq!(editor.text(cx), "a\nold1\nold2\nb\nc");
+
+        editor.reset_diff_hunk_expansion_state(cx);
+        assert!(editor.expanded_deleted_hunks(cx).is_empty());
+        assert_eq!(
+            editor.text(cx),
+            "a\nb\nc",
+            "重置后应撤销已物化的旧侧 excerpt"
+        );
+    });
+}
+
+/// 回归：普通编辑器把修改块旧侧物化为 MultiBuffer excerpt 后，必须与多文件编辑器
+/// 消费同一份物化 hunk 映射；旧侧行是删除色，新侧行是新增色，gutter 色带覆盖两侧。
+#[gpui::test]
+fn plain_editor_expanded_modified_hunk_keeps_old_rows_and_gutter_strip(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "a\nnew\nc");
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let (editor, cx) =
+        cx.add_window_view(move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx));
+    editor.update(cx, |editor, cx| {
+        editor.set_diff_hunks(
+            Some(vec![DiffHunk {
+                range: 1..2,
+                old_range: 1..2,
+                kind: DiffHunkKind::Modified,
+            }]),
+            cx,
+        );
+        editor.set_deleted_hunk_text(Some(Arc::from("a\nold\nc")), cx);
+        editor.toggle_modified_hunk(1..2, cx);
+    });
+
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(editor.text(cx), "a\nold\nnew\nc");
+        let snapshot = editor.display_map.snapshot();
+        let rendering = hunk_rendering(
+            &snapshot,
+            editor.diff_hunks(cx),
+            editor.expanded_deleted_hunks(cx),
+            editor.expanded_modified_hunks(cx),
+            editor.diff_hunk_old_ranges(cx),
+        );
+        assert_eq!(
+            rendering.diff_rows,
+            vec![(1..2, DiffHunkKind::Deleted), (2..3, DiffHunkKind::Added),],
+            "展开的普通编辑器修改块应保留旧侧红色行和新侧绿色行"
+        );
+        assert_eq!(
+            rendering.strips,
+            vec![(1..3, DiffHunkKind::Modified)],
+            "gutter 色带应覆盖修改块的旧侧与新侧"
+        );
+        assert_eq!(
+            rendering.hit_regions,
+            vec![(1..3, 1..2, DiffHunkKind::Modified)],
+            "展开的修改块仍应暴露 gutter 折叠点击区"
+        );
+    });
+
+    cx.run_until_parked();
+    cx.refresh().expect("展开修改块后应能刷新");
+    let (window_bounds, line_height) =
+        cx.update(|window, _| (window.bounds(), window.line_height()));
+    cx.simulate_mouse_down(
+        point(
+            window_bounds.left() + px(1.),
+            window_bounds.top() + line_height * 1.5,
+        ),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(editor.text(cx), "a\nnew\nc");
+        assert!(
+            editor.expanded_modified_hunks(cx).is_empty(),
+            "点击展开块的 gutter 色带应折叠 hunk"
+        );
+    });
+}
+
+/// 回归：在只读的 Deleted 旧行上尝试编辑（被拒）后，光标移回工作区仍可正常编辑。
+#[gpui::test]
+fn editing_readonly_deleted_row_then_editing_working_text_still_works(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "a\nb\nc");
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
+    });
+    editor.update(cx, |editor, cx| {
+        editor.set_diff_hunks(
+            Some(vec![DiffHunk {
+                range: 1..1,
+                old_range: 1..3,
+                kind: DiffHunkKind::Deleted,
+            }]),
+            cx,
+        );
+        editor.set_deleted_hunk_text(Some(Arc::from("a\nold1\nold2\nc")), cx);
+        editor.toggle_deleted_hunk(1..3, cx);
+    });
+    cx.run_until_parked();
+
+    // 光标在只读的 HEAD 旧行（组合 offset 2 = "old1"）上尝试替换：应被拒绝。
+    editor.update(cx, |editor, cx| {
+        editor.select_byte_range(2..3, cx);
+        editor.replace_text(None, "X", cx);
+    });
+    // 光标移回工作区（"b"）并编辑：必须仍然生效。
+    editor.update(cx, |editor, cx| {
+        editor.select_byte_range(12..13, cx);
+        editor.replace_text(None, "B", cx);
+    });
+    assert_eq!(buffer_text(&buffer, cx), "a\nB\nc");
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(editor.text(cx), "a\nold1\nold2\nB\nc");
     });
 }

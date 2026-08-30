@@ -516,9 +516,7 @@ impl FoldSnapshot {
     /// 折叠对应的可见 anchor 行（未被外层折叠覆盖），供合并行查询。
     fn fold_for_row(&self, row: ProjectedLineIndex) -> Option<&Fold> {
         let text = self.projected_line_kind(row)?;
-        let StreamLineSource::Buffer(buffer_line) = self.input.source(text.logical_line())? else {
-            return None;
-        };
+        let buffer_line = self.input.source(text.logical_line())?.line();
         self.folds.iter().find(|fold| {
             let (start, end) = fold.line_span;
             start == Line::new(buffer_line)
@@ -573,8 +571,7 @@ impl FoldSnapshot {
 
     /// 投影行的内容来源：fold 投影（Text）叠加流行解析。
     ///
-    /// 文本行统一携带流来源（buffer 行 / 合成行），fold/tab/wrap 层不感知"合成行"概念；
-    /// 删除块展开的外部文本就是普通行，渲染端按来源区分行号与可命中性。
+    /// 文本行统一携带对应的 buffer 行来源。
     pub(super) fn projected_kind(
         &self,
         projected: ProjectedLineIndex,
@@ -589,7 +586,7 @@ impl FoldSnapshot {
 /// 投影行（fold 输出）的内容来源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StreamProjectedKind {
-    /// 可见文本行（buffer 行或合成行，经流解析）。
+    /// 可见文本行及其 buffer 行来源。
     Text(StreamLineSource),
 }
 
@@ -631,11 +628,9 @@ impl FoldMap {
     ) -> (FoldSnapshot, Vec<FoldEdit>, ApplyOutcome) {
         let buffer = input.buffer_snapshot();
         let old_buffer = self.snapshot.buffer_snapshot().clone();
-        let inserted_changed =
-            input.stream().inserted_version() != self.snapshot.stream().inserted_version();
         // 注入配置变化（inlay 增删改）不产生 buffer 编辑：整体重建 fold 拓扑。
         let inlay_changed = input.version() != self.snapshot.input.version();
-        if buffer.version() == old_buffer.version() && !inserted_changed && !inlay_changed {
+        if buffer.version() == old_buffer.version() && !inlay_changed {
             if buffer.config() != old_buffer.config() {
                 let old_end = ProjectedLineIndex::new(self.snapshot.line_count());
                 self.snapshot.input = input;
@@ -654,8 +649,8 @@ impl FoldMap {
 
         let old_version = old_buffer.version();
         let new_version = buffer.version();
-        // 合成行/行内提示配置变化（删除块展开/折叠、inlay 注入）不产生 buffer 编辑：整体重建 fold 拓扑。
-        if inserted_changed || inlay_changed {
+        // 行内提示配置变化不产生 buffer 编辑：整体重建 fold 拓扑。
+        if inlay_changed {
             let old_rows = self.snapshot.line_count();
             self.snapshot = FoldSnapshot {
                 transforms: build_transforms(&[], input.line_count()),

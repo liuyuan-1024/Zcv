@@ -141,7 +141,7 @@ pub(super) struct WrapFragment {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WrapFragmentKind {
-    /// 文本行（携带流来源：buffer 行或合成行）。
+    /// 文本行（携带对应的 buffer 行来源）。
     Text(StreamLineSource),
 }
 
@@ -165,8 +165,7 @@ impl<'a> WrapViewportRow<'a> {
 ///
 /// Text 行携带整行投影文本（`text`，含行内提示注入，行尾换行未剥）与本段投影字节范围；
 /// 渲染端在 `indent` > 0 时把假空格拼在段文本前面。
-/// 行的文本来源（buffer 行 / 合成行，渲染端据此区分行号与可命中性；
-/// 合成行无 buffer 坐标，行首字节为锚定行行首）。
+/// 行的文本来源用于行号、高亮与命中映射。
 /// 该段起始的逻辑字符列用于命中测试与选区列换算。
 /// 折叠合并行（anchor 文本 + 占位符 + 闭合尾段）携带段表，渲染端按段合成高亮与命中。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -234,7 +233,7 @@ impl WrapSnapshot {
             .tab_snapshot
             .buffer_snapshot()
             .byte_to_position(offset)?;
-        // fold 拓扑的输入坐标是流行号（合成行插入后与 buffer 行号错位）。
+        // fold 拓扑的输入坐标是流行号。
         let stream_line = self.tab_snapshot.stream().buffer_to_stream(position.line());
         self.logical_point_to_display_point(stream_line, position.column())
     }
@@ -245,19 +244,15 @@ impl WrapSnapshot {
     ) -> DisplayMapResult<ByteOffset> {
         let fragment = self.display_row_to_fragment(point.row())?;
         match fragment.kind {
-            WrapFragmentKind::Text(source) => {
+            WrapFragmentKind::Text(_source) => {
                 let buffer = self.tab_snapshot.buffer_snapshot();
                 let tab_row = Line::new(fragment.tab_row);
-                // 合成行的字节范围是锚定行行首的伪坐标：映射到锚定行行首。
                 let line_start = self
                     .tab_snapshot
                     .line_byte_range(tab_row)
                     .ok_or(CoordinateError::LineOutOfBounds(tab_row))?
                     .start
                     .get();
-                let StreamLineSource::Buffer(_) = source else {
-                    return Ok(ByteOffset::new(line_start));
-                };
                 let text = self
                     .tab_snapshot
                     .line_text(tab_row)
@@ -369,7 +364,7 @@ impl WrapSnapshot {
             let fragment = self.display_row_to_fragment(DisplayRow::new(row))?;
             let kind = match fragment.kind {
                 WrapFragmentKind::Text(source) => {
-                    // 投影文本（含行内提示注入；合成行无注入直接借用）；行首为原始 buffer 字节。
+                    // 投影文本包含行内提示注入；行首为原始 buffer 字节。
                     let tab_row = Line::new(fragment.tab_row);
                     let projected = ProjectedLineIndex::new(fragment.tab_row);
                     let fold = self.tab_snapshot.fold_snapshot();
@@ -476,18 +471,14 @@ impl WrapSnapshot {
         let point = self.offset_to_display_point(offset)?;
         let fragment = self.display_row_to_fragment(point.row())?;
         match fragment.kind {
-            WrapFragmentKind::Text(source) => {
+            WrapFragmentKind::Text(_source) => {
                 let tab_row = Line::new(fragment.tab_row);
-                // 合成行的字节范围是锚定行行首的伪坐标：映射到锚定行行首。
                 let line_start = self
                     .tab_snapshot
                     .line_byte_range(tab_row)
                     .ok_or(CoordinateError::LineOutOfBounds(tab_row))?
                     .start
                     .get();
-                let StreamLineSource::Buffer(_) = source else {
-                    return Ok(ByteOffset::new(line_start));
-                };
                 // 折叠合并行：行尾 = 合并文本末尾（close 行内容末尾）。
                 let fold = self.tab_snapshot.fold_snapshot();
                 if let Some(segments) =
@@ -613,7 +604,7 @@ impl WrapSnapshot {
             .ok_or(CoordinateError::LineOutOfBounds(line))?;
         let inlay = fold.inlay_snapshot();
         let buffer_line = match inlay.source(stream_line) {
-            Some(StreamLineSource::Buffer(buffer_line)) => Line::new(buffer_line),
+            Some(source) => Line::new(source.line()),
             _ => return Err(CoordinateError::LineOutOfBounds(line).into()),
         };
         let target_byte = buffer
@@ -806,7 +797,7 @@ impl WrapMap {
                 .as_ref()
                 .expect("换行开启时必须先通过 set_wrap_width 缓存 text system");
             let mut wrapper = text_system.line_wrapper(font.clone(), *font_size);
-            // 合成行/行内提示变化由 fold 发 structural edit（单一信号）。
+            // 行内提示变化由 fold 发 structural edit（单一信号）。
             if fold_edits.iter().any(FoldEdit::is_structural) {
                 self.rewrap_all(wrap_width, &mut wrapper);
             } else {
@@ -951,7 +942,7 @@ impl WrapMap {
         match self.snapshot.projected_kind(tab_row) {
             Err(_) => push_isomorphic(transforms, 1),
             Ok(WrapFragmentKind::Text(_)) => {
-                // 文本统一走流：buffer 行与合成行（外部文本）共用换行计算，软换行免费。
+                // 文本统一走流，共用换行计算。
                 let text = self
                     .snapshot
                     .tab_snapshot

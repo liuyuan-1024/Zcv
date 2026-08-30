@@ -8,7 +8,7 @@ use zcv_workspace::{Direction, SearchableItem};
 use super::common::test_buffer;
 use super::*;
 use crate::display_map::{
-    DisplayMap, DisplayRow, LineStyles, StreamLineSource, ViewportChunkSource, WrapViewportRowKind,
+    DisplayMap, DisplayRow, LineStyles, ViewportChunkSource, WrapViewportRowKind,
     render_viewport_chunks,
 };
 
@@ -310,12 +310,9 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
                     .tab_snapshot()
                     .fold_snapshot()
                     .inlay_snapshot();
-                let stream_line = match source {
-                    StreamLineSource::Buffer(line) => inlay_snapshot
-                        .stream()
-                        .buffer_to_stream(zcv_text::Line::new(*line)),
-                    _ => continue,
-                };
+                let stream_line = inlay_snapshot
+                    .stream()
+                    .buffer_to_stream(zcv_text::Line::new(source.line()));
                 let tab_width = display.buffer_snapshot().config().tab.tab_width();
                 let rendered = render_viewport_chunks(
                     ViewportChunkSource {
@@ -391,12 +388,9 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
                     .tab_snapshot()
                     .fold_snapshot()
                     .inlay_snapshot();
-                let stream_line = match source {
-                    StreamLineSource::Buffer(line) => inlay_snapshot
-                        .stream()
-                        .buffer_to_stream(zcv_text::Line::new(*line)),
-                    _ => continue,
-                };
+                let stream_line = inlay_snapshot
+                    .stream()
+                    .buffer_to_stream(zcv_text::Line::new(source.line()));
                 let tab_width = display.buffer_snapshot().config().tab.tab_width();
                 let rendered = render_viewport_chunks(
                     ViewportChunkSource {
@@ -508,12 +502,9 @@ zcv final
                     .tab_snapshot()
                     .fold_snapshot()
                     .inlay_snapshot();
-                let stream_line = match source {
-                    StreamLineSource::Buffer(line) => inlay_snapshot
-                        .stream()
-                        .buffer_to_stream(zcv_text::Line::new(*line)),
-                    _ => continue,
-                };
+                let stream_line = inlay_snapshot
+                    .stream()
+                    .buffer_to_stream(zcv_text::Line::new(source.line()));
                 let tab_width = display.buffer_snapshot().config().tab.tab_width();
                 let rendered = render_viewport_chunks(
                     ViewportChunkSource {

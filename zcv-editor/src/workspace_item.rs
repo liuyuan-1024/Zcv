@@ -33,6 +33,7 @@ impl Item for Editor {
             EditorEvent::DirtyChanged => emit(ItemEvent::UpdateTab),
             EditorEvent::Edited => emit(ItemEvent::Edit),
             EditorEvent::OpenExcerptsRequested { .. } => {}
+            EditorEvent::DiffHunksExpandedChanged => {}
         }
     }
 

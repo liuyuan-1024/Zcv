@@ -23,8 +23,8 @@ use zcv_actions::{
 use zcv_git::{DiffHunk, DiffHunkKind};
 use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer};
 use zcv_multi_buffer::{
-    ExcerptLocation, ExcerptSnapshot, MultiBuffer, MultiBufferAnchor, MultiBufferEvent,
-    MultiBufferSubscription,
+    ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot, MultiBuffer, MultiBufferAnchor,
+    MultiBufferEvent, MultiBufferSubscription,
 };
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
@@ -35,10 +35,7 @@ use zcv_text::{
 use zcv_theme::{color, typography};
 
 use super::blink_manager::BlinkManager;
-use super::display_map::{
-    DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot, InsertedLine,
-    InsertedLines,
-};
+use super::display_map::{DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot};
 use super::element::{EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollbarThumbState};
 use super::selection::{
@@ -65,6 +62,8 @@ pub enum EditorEvent {
         locations: Vec<ExcerptLocation>,
         split: bool,
     },
+    /// 删除/修改块的展开折叠状态变化（宿主按展开状态重建组合文档内容）。
+    DiffHunksExpandedChanged,
 }
 
 /// Editor 负责把控件定位到 hunk 右上角，具体按钮与操作由宿主视图提供。
@@ -78,16 +77,6 @@ pub trait DiffHunkDelegate {
         window: &mut Window,
         cx: &mut App,
     ) -> AnyElement;
-}
-
-/// 旧侧文本已经由 MultiBuffer 物化到 Editor 文档中的统一 diff hunk。
-///
-/// `hunk.range` 是新侧逻辑行范围，`old_display_range` 是同一文档中的旧侧逻辑行范围。
-/// 旧侧因此参与 Editor 的普通光标、选择和复制，不再由显示层合成正文。
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MaterializedDiffHunk {
-    pub hunk: DiffHunk,
-    pub old_display_range: Option<Range<usize>>,
 }
 
 /// 绑定到底层文件位置的编辑器视口锚点。
@@ -191,19 +180,9 @@ pub struct Editor {
     /// 换行模式覆盖（`None` 恢复设置值）。
     soft_wrap_override: Option<SoftWrap>,
     preferred_line_length: usize,
-    /// 注入的行级 diff hunks 与注入时的 buffer 版本（渲染门控用）。
-    diff_hunks: Vec<DiffHunk>,
-    materialized_diff_hunks: Option<Vec<Option<Range<usize>>>>,
     diff_hunk_delegate: Option<Arc<dyn DiffHunkDelegate>>,
     /// 文件内搜索状态（搜索条执行过一次搜索后存在，编辑后自动重搜）。
     search: Option<EditorSearch>,
-    diff_hunks_version: Option<BufferVersion>,
-    /// HEAD 全文（删除块/修改块展开显示旧行的来源；由上层预取后注入）。
-    deleted_text: Option<Arc<str>>,
-    /// 已展开的删除 hunk（按 old_range 标识；展开时从 HEAD 文本切片显示）。
-    expanded_deleted_hunks: Vec<Range<usize>>,
-    /// 已展开的修改 hunk（按 old_range 标识；展开时显示修改前的 HEAD 旧行）。
-    expanded_modified_hunks: Vec<Range<usize>>,
     /// 语言层提供的可折叠范围（crease 显示与折叠命令的数据源；
     /// 在 buffer 编辑或语法快照更新时刷新）。
     /// 折叠范围（共享 LanguageBuffer 缓存：Reparsed 后整体替换，多个 Editor 复用同一份）。
@@ -420,41 +399,26 @@ impl Editor {
 
     /// 注入滚动轴 marker 的行级 diff hunks（git 状态刷新后由 bin 层调用）。
     ///
-    /// 记录注入时的 buffer 版本：注入后发生的编辑会让行号失配，渲染侧（`diff_hunks`）按版本比对拒绝使用，等待下次刷新重新注入。
-    pub fn set_diff_hunks(&mut self, hunks: Vec<DiffHunk>, cx: &mut Context<Self>) {
-        self.set_diff_hunks_inner(hunks, None, cx);
+    /// `None` 是加载态（新 diff 尚未算完）：保留现有 hunks 与用户展开状态，不再被中间空列表清空；展开状态按工作区文本锚点跨刷新迁移。
+    /// 状态与投影归属 MultiBuffer，本方法只转发并同步视图层状态。
+    /// 返回 `true` 表示组合文档被重建（光标已落回开头）。
+    pub fn set_diff_hunks(&mut self, hunks: Option<Vec<DiffHunk>>, cx: &mut Context<Self>) -> bool {
+        let rebuilt = self
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.set_diff_hunks(hunks, cx));
+        self.after_diff_projection_rebuild(rebuilt, cx);
+        rebuilt
     }
 
-    /// 注入旧侧已经属于 MultiBuffer 投影文本的 diff hunks。
+    /// 注入旧侧已经属于 MultiBuffer 投影文本的 diff hunks（多文件投影模式）。
     pub fn set_materialized_diff_hunks(
         &mut self,
-        hunks: Vec<MaterializedDiffHunk>,
+        hunks: Vec<zcv_multi_buffer::MaterializedDiffHunk>,
         cx: &mut Context<Self>,
     ) {
-        let (hunks, old_display_ranges): (Vec<_>, Vec<_>) = hunks
-            .into_iter()
-            .map(|hunk| (hunk.hunk, hunk.old_display_range))
-            .unzip();
-        self.set_diff_hunks_inner(hunks, Some(old_display_ranges), cx);
-    }
-
-    fn set_diff_hunks_inner(
-        &mut self,
-        hunks: Vec<DiffHunk>,
-        materialized: Option<Vec<Option<Range<usize>>>>,
-        cx: &mut Context<Self>,
-    ) {
-        let version = self.text_buffer(cx).read(cx).snapshot().version();
-        if self.diff_hunks == hunks
-            && self.materialized_diff_hunks == materialized
-            && self.diff_hunks_version == Some(version)
-        {
-            return;
-        }
-        self.diff_hunks = hunks;
-        self.materialized_diff_hunks = materialized;
-        self.diff_hunks_version = Some(version);
-        self.rebuild_inserted(cx);
+        self.multi_buffer.update(cx, |buffer, cx| {
+            buffer.set_materialized_diff_hunks(hunks, cx)
+        });
         cx.notify();
     }
 
@@ -471,44 +435,62 @@ impl Editor {
         self.diff_hunk_delegate.clone()
     }
 
-    /// 展开当前全部删除与修改 hunk。
-    ///
-    /// 项目差异视图只投影 hunk 上下文，因此旧侧内容必须默认展开；
-    /// 普通单文件 Editor 不调用本入口，继续保留点击色带后按需展开的行为。
-    pub fn expand_all_diff_hunks(&mut self, cx: &mut Context<Self>) {
-        self.expanded_deleted_hunks = self
-            .diff_hunks(cx)
-            .iter()
-            .filter(|hunk| hunk.kind == DiffHunkKind::Deleted)
-            .map(|hunk| hunk.old_range.clone())
-            .collect();
-        self.expanded_modified_hunks = self
-            .diff_hunks(cx)
-            .iter()
-            .filter(|hunk| hunk.kind == DiffHunkKind::Modified)
-            .map(|hunk| hunk.old_range.clone())
-            .collect();
-        self.rebuild_inserted(cx);
-        cx.notify();
+    /// 设置新 hunk 的初始展开策略；用户之后的显式展开/折叠不受投影刷新覆盖。
+    pub fn set_diff_hunks_expanded_by_default(&mut self, expanded: bool, cx: &mut Context<Self>) {
+        let rebuilt = self.multi_buffer.update(cx, |buffer, cx| {
+            buffer.set_diff_hunks_expanded_by_default(expanded, cx)
+        });
+        self.after_diff_projection_rebuild(rebuilt, cx);
     }
 
-    /// 已展开的删除 hunk（按 old_range 标识；渲染背景色用）。
-    pub(crate) fn expanded_deleted_hunks(&self) -> &[Range<usize>] {
-        &self.expanded_deleted_hunks
+    /// hunk 的当前展开状态；尚未进入投影的新 hunk 直接采用默认策略。
+    pub fn is_diff_hunk_expanded(
+        &self,
+        kind: DiffHunkKind,
+        old_range: &Range<usize>,
+        cx: &App,
+    ) -> bool {
+        self.multi_buffer
+            .read(cx)
+            .is_diff_hunk_expanded(kind, old_range)
     }
 
-    /// 已展开的修改 hunk（按 old_range 标识；渲染背景色用）。
-    pub(crate) fn expanded_modified_hunks(&self) -> &[Range<usize>] {
-        &self.expanded_modified_hunks
+    /// base 版本变化后由宿主调用：重置展开状态（materialized 模式旧侧坐标空间失效时）。
+    pub fn reset_diff_hunk_expansion_state(&mut self, cx: &mut Context<Self>) {
+        let rebuilt = self
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.reset_diff_hunk_expansion_state(cx));
+        self.after_diff_projection_rebuild(rebuilt, cx);
+    }
+
+    /// 已展开的删除 hunk（按旧侧行范围标识；渲染背景色用，宿主重建片段按此判断）。
+    pub fn expanded_deleted_hunks<'a>(&self, cx: &'a App) -> &'a [Range<usize>] {
+        self.multi_buffer.read(cx).expanded_deleted_hunks()
+    }
+
+    /// 已展开的修改 hunk（按旧侧行范围标识；渲染背景色用，宿主重建片段按此判断）。
+    pub fn expanded_modified_hunks<'a>(&self, cx: &'a App) -> &'a [Range<usize>] {
+        self.multi_buffer.read(cx).expanded_modified_hunks()
     }
 
     /// 注入 HEAD 全文（删除块展开的数据源）；到达后重建删除块。
     pub fn set_deleted_hunk_text(&mut self, text: Option<Arc<str>>, cx: &mut Context<Self>) {
-        if self.deleted_text == text {
-            return;
+        let rebuilt = self
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.set_diff_head_text(text, cx));
+        self.after_diff_projection_rebuild(rebuilt, cx);
+    }
+
+    /// diff 投影重建后同步视图层状态：组合文档文本版本变化时同步 DisplayMap 并把光标落回开头。
+    fn after_diff_projection_rebuild(&mut self, rebuilt: bool, cx: &mut Context<Self>) {
+        if rebuilt {
+            // 组合文本整体替换（diff 投影重建）：同步 DisplayMap 并把光标落回开头；
+            // 延迟到达的 TextChanged 事件会再次 sync，按版本比对跳过重复映射。
+            self.sync_display_map(cx);
+            let version = self.text_buffer(cx).read(cx).snapshot().version();
+            self.selections =
+                EditorSelections::from_selection_set(version, &SelectionSet::default());
         }
-        self.deleted_text = text;
-        self.rebuild_inserted(cx);
         cx.notify();
     }
 
@@ -519,28 +501,18 @@ impl Editor {
 
     /// 展开/折叠删除块（按 hunk 的 old_range 标识）。
     pub fn toggle_deleted_hunk(&mut self, old_range: Range<usize>, cx: &mut Context<Self>) {
-        let is_expanded = self.expanded_deleted_hunks.contains(&old_range);
-        if is_expanded {
-            self.expanded_deleted_hunks
-                .retain(|range| range != &old_range);
-        } else {
-            self.expanded_deleted_hunks.push(old_range);
-        }
-        self.rebuild_inserted(cx);
-        cx.notify();
+        let rebuilt = self.multi_buffer.update(cx, |buffer, cx| {
+            buffer.toggle_diff_hunk(DiffHunkKind::Deleted, old_range, cx)
+        });
+        self.after_diff_projection_rebuild(rebuilt, cx);
     }
 
     /// 展开/折叠修改块：展开显示修改前的 HEAD 旧行（base 旧行插在修改行上方）。
     pub fn toggle_modified_hunk(&mut self, old_range: Range<usize>, cx: &mut Context<Self>) {
-        let is_expanded = self.expanded_modified_hunks.contains(&old_range);
-        if is_expanded {
-            self.expanded_modified_hunks
-                .retain(|range| range != &old_range);
-        } else {
-            self.expanded_modified_hunks.push(old_range);
-        }
-        self.rebuild_inserted(cx);
-        cx.notify();
+        let rebuilt = self.multi_buffer.update(cx, |buffer, cx| {
+            buffer.toggle_diff_hunk(DiffHunkKind::Modified, old_range, cx)
+        });
+        self.after_diff_projection_rebuild(rebuilt, cx);
     }
 
     /// 折叠/展开指定逻辑行（crease 点击与 ToggleFold 命令的共享实现）。
@@ -641,58 +613,13 @@ impl Editor {
         cx.notify();
     }
 
-    /// 从"已展开的删除 hunk × HEAD 文本"重建合成行配置（锚定新侧行，文本按旧行范围切片）。
-    fn rebuild_inserted(&mut self, cx: &App) {
-        // MultiBuffer 的投影替换、HEAD 文本和 hunk 可能在同一个 App 更新周期到达；
-        // 所有合成行入口必须先推进到当前文本流，不能依赖 TextChanged 订阅稍后补同步。
-        self.sync_display_map(cx);
-        let mut inserted = InsertedLines::new();
-        if self.materialized_diff_hunks.is_none()
-            && let Some(text) = &self.deleted_text
-        {
-            for hunk in self.diff_hunks(cx) {
-                // 删除块展开：HEAD 中被删行作为合成行；修改块展开：HEAD 中被修改行的旧版。
-                let expanded = match hunk.kind {
-                    DiffHunkKind::Deleted => self.expanded_deleted_hunks.contains(&hunk.old_range),
-                    DiffHunkKind::Modified => {
-                        self.expanded_modified_hunks.contains(&hunk.old_range)
-                    }
-                    DiffHunkKind::Added => false,
-                };
-                if !expanded {
-                    continue;
-                }
-                let lines: Vec<InsertedLine> = slice_deleted_lines(text, hunk.old_range.clone())
-                    .into_iter()
-                    .map(|line| InsertedLine::new(Arc::from(line)))
-                    .collect();
-                // 删除块：旧行插在删除点（range.start）之后；修改块：旧行插在修改行上方
-                let anchor = match hunk.kind {
-                    DiffHunkKind::Deleted => hunk.range.start,
-                    DiffHunkKind::Modified => hunk.range.start.saturating_sub(1),
-                    DiffHunkKind::Added => unreachable!("Added 不展开"),
-                };
-                inserted.insert(Line::new(anchor), lines);
-            }
-        }
-        self.display_map.set_inserted(inserted);
-    }
-
     /// 与当前 buffer 版本匹配的 diff hunks；未注入或注入后发生编辑时返回空。
-    pub(crate) fn diff_hunks(&self, cx: &App) -> &[DiffHunk] {
-        if let Some(version) = self.diff_hunks_version
-            && version == self.text_buffer(cx).read(cx).snapshot().version()
-        {
-            &self.diff_hunks
-        } else {
-            &[]
-        }
+    pub(crate) fn diff_hunks<'a>(&self, cx: &'a App) -> &'a [DiffHunk] {
+        self.multi_buffer.read(cx).diff_hunks(cx)
     }
 
-    pub(crate) fn materialized_diff_hunks(&self, cx: &App) -> Option<&[Option<Range<usize>>]> {
-        (self.diff_hunks_version == Some(self.text_buffer(cx).read(cx).snapshot().version()))
-            .then_some(self.materialized_diff_hunks.as_deref())
-            .flatten()
+    pub(crate) fn diff_hunk_old_ranges<'a>(&self, cx: &'a App) -> &'a [Option<Range<usize>>] {
+        self.multi_buffer.read(cx).diff_hunk_old_ranges(cx)
     }
 
     pub fn text(&self, cx: &App) -> String {
@@ -880,8 +807,11 @@ impl Editor {
         // 行号：excerpt 映射回的源行已是 1 起始（source_start_line 约定，与 gutter/悬浮标题一致）；
         // 单文件文档的组合行是 0 起始，需转 1 起始显示。
         let line = match multi_snapshot.excerpt_for_output_line(point.line().get()) {
-            // 片段内输出文本与源文本一致，列号直接沿用；
-            // 删除片段无源行号时隐藏。
+            // Deleted 片段的内容来自 Git 修订文本：光标停留在修订文本上，显示修订文本中的行列（该行在修订版本中的真实行号）。
+            Some(excerpt) if excerpt.diff_kind() == Some(ExcerptDiffKind::Deleted) => {
+                excerpt.source_start_line() + point.line().get() - excerpt.output_start_line()
+            }
+            // 片段内输出文本与源文本一致，列号直接沿用。
             Some(excerpt) => {
                 let Some(source_line) = excerpt.source_line_for_output_line(point.line().get())
                 else {
@@ -1349,6 +1279,9 @@ impl Editor {
                     editor.refresh_fold_ranges(cx);
                 }
                 MultiBufferEvent::MetadataChanged => {}
+                MultiBufferEvent::DiffExpansionChanged => {
+                    cx.emit(EditorEvent::DiffHunksExpandedChanged);
+                }
             }
             editor.input_layout = None;
             cx.notify();
@@ -1376,14 +1309,8 @@ impl Editor {
             fold_ranges: Arc::from([]),
             bracket_pair_cache: None,
             scroll_manager: ScrollManager::default(),
-            diff_hunks: Vec::new(),
-            materialized_diff_hunks: None,
             diff_hunk_delegate: None,
-            diff_hunks_version: None,
             search: None,
-            deleted_text: None,
-            expanded_deleted_hunks: Vec::new(),
-            expanded_modified_hunks: Vec::new(),
             composition: None,
             input_layout: None,
             pixel_position_of_newest_cursor: None,
@@ -1477,25 +1404,37 @@ impl Editor {
                 }
             };
             let changes = subscription.consume();
-            if !changes.is_empty() {
-                let after = planner.snapshot();
-                let edits = changes
-                    .patch()
-                    .edits()
-                    .iter()
-                    .map(|patch| {
-                        let replacement = after.slice_text(patch.new_range())?.as_str().to_owned();
-                        Ok(Edit::replace(patch.old_range(), replacement))
-                    })
-                    .collect::<TextResult<Vec<_>>>()?;
-                self.multi_buffer.update(cx, |buffer, cx| {
-                    buffer.edit(
-                        edits,
-                        TransactionMetadata::new(TransactionSource::Programmatic)
-                            .with_description("MultiBuffer 编辑"),
-                        cx,
-                    )
-                })?;
+            // 编辑映射与提交可能失败（如命中只读 excerpt）：失败必须结束空会话并恢复编辑前选区，否则事务残留会阻塞后续所有编辑。
+            let applied = (|| -> TextResult<()> {
+                if !changes.is_empty() {
+                    let after = planner.snapshot();
+                    let edits = changes
+                        .patch()
+                        .edits()
+                        .iter()
+                        .map(|patch| {
+                            let replacement =
+                                after.slice_text(patch.new_range())?.as_str().to_owned();
+                            Ok(Edit::replace(patch.old_range(), replacement))
+                        })
+                        .collect::<TextResult<Vec<_>>>()?;
+                    self.multi_buffer.update(cx, |buffer, cx| {
+                        buffer.edit(
+                            edits,
+                            TransactionMetadata::new(TransactionSource::Programmatic)
+                                .with_description("MultiBuffer 编辑"),
+                            cx,
+                        )
+                    })?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = applied {
+                self.end_transaction(cx);
+                eprintln!("Editor 编辑事务失败：{error}");
+                let version = self.text_buffer(cx).read(cx).snapshot().version();
+                self.selections = EditorSelections::from_selection_set(version, &before_selections);
+                return Err(error);
             }
             let node_id = self.end_transaction(cx);
             if node_id != Some(session_id) {
@@ -1885,8 +1824,6 @@ impl Editor {
             }
         }
         self.display_map.sync(snapshot, changes);
-        // 编辑后 diff hunks 门控失效（返回空）：删除块随行号失配清空，等待重新注入。
-        self.rebuild_inserted(cx);
         // 折叠范围只在组合快照的语法版本更新后刷新：
         // 编辑时立即全量查询既在主线程跑 O(N) fold 查询，又会因版本不匹配把折叠清空。
     }
@@ -2378,19 +2315,7 @@ mod mouse_selection_tests;
 #[path = "test/cursor_activation_tests.rs"]
 mod cursor_activation_tests;
 
-/// 从 HEAD 全文按行范围切片（删除块展开显示被删除行；结尾换行的空尾段丢弃）。
 /// 编辑事务元数据（供编辑命令与输入共用）。
 pub(super) fn edit_metadata(description: &'static str) -> TransactionMetadata {
     TransactionMetadata::new(TransactionSource::Programmatic).with_description(description)
-}
-
-fn slice_deleted_lines(text: &str, range: Range<usize>) -> Vec<&str> {
-    let mut lines: Vec<&str> = text.split('\n').collect();
-    if text.ends_with('\n') {
-        lines.pop();
-    }
-    lines
-        .get(range)
-        .map(|slice| slice.to_vec())
-        .unwrap_or_default()
 }

@@ -3,12 +3,17 @@
 //! singleton 文档直接投影一个语言 Buffer；
 //! 组合文档按调用方给出的顺序物化多个来源的 excerpts，并保留组合坐标到源文件坐标的映射。
 //! Editor 始终只消费本层，不感知来源数量。
+//! diff 投影（git hunks、展开状态、锚点与显示坐标）也归本层，见 [`diff_projection`]。
+
+mod diff_projection;
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Subscription};
+use zcv_git::DiffHunk;
 use zcv_language::{
     AutoClosePair, FoldRange, HighlightSpan, LanguageBuffer, LanguageBufferEvent, SyntaxSnapshot,
 };
@@ -35,6 +40,16 @@ pub struct MultiBufferExcerpt {
 pub enum ExcerptDiffKind {
     Added,
     Deleted,
+}
+
+/// 旧侧文本已经由 MultiBuffer 物化到组合文档中的统一 diff hunk。
+///
+/// `hunk.range` 是新侧逻辑行范围，`old_display_range` 是同一文档中的旧侧逻辑行范围。
+/// 旧侧因此参与 Editor 的普通光标、选择和复制，不再由显示层合成正文。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MaterializedDiffHunk {
+    pub hunk: DiffHunk,
+    pub old_display_range: Option<Range<usize>>,
 }
 
 impl MultiBufferExcerpt {
@@ -85,8 +100,19 @@ impl MultiBufferExcerpt {
         lines: std::ops::Range<usize>,
         cx: &App,
     ) -> Self {
-        let snapshot = source.read(cx).snapshot(cx);
-        let text = snapshot.text();
+        let text = source.read(cx).snapshot(cx).text().clone();
+        Self::line_range_from_text(source, &text, lines)
+    }
+
+    /// 从已读取的源文本快照取行范围。
+    ///
+    /// `line_range` 内部复用；
+    /// diff 投影在 singleton 形态（不能读取自身实体）时也经此构造 excerpt，避免 double-lease。
+    pub(crate) fn line_range_from_text(
+        source: Entity<MultiBuffer>,
+        text: &Snapshot,
+        lines: std::ops::Range<usize>,
+    ) -> Self {
         assert!(lines.start <= lines.end, "excerpt 行范围必须正序");
         assert!(lines.end <= text.line_count(), "excerpt 行范围不能越界");
         let start = text
@@ -326,6 +352,8 @@ pub enum MultiBufferEvent {
     TextChanged,
     Reparsed,
     MetadataChanged,
+    /// diff 展开/折叠状态变化（宿主按展开状态重建组合片段，如 ProjectDiffView）。
+    DiffExpansionChanged,
 }
 
 impl MultiBufferSnapshot {
@@ -453,6 +481,11 @@ enum MultiBufferKind {
 pub struct MultiBuffer {
     kind: MultiBufferKind,
     read_only: bool,
+    /// singleton → excerpts 转换时的工作区 source（普通编辑器展开 diff 用；
+    /// 转换后 excerpts 里引用自身的片段改写为该 source，避免自引用）。
+    working_source: Option<Entity<MultiBuffer>>,
+    /// git 行级 diff 投影（hunks、展开状态、锚点与显示坐标）；`None` = 无 diff 需求。
+    diff: Option<Box<diff_projection::DiffProjection>>,
 }
 
 impl EventEmitter<MultiBufferEvent> for MultiBuffer {}
@@ -471,6 +504,8 @@ impl MultiBuffer {
         Self {
             kind: MultiBufferKind::Singleton(singleton),
             read_only: false,
+            working_source: None,
+            diff: None,
         }
     }
 
@@ -479,12 +514,36 @@ impl MultiBuffer {
         Self::empty_with_read_only(false, cx)
     }
 
+    /// 从工作区源构建独立的组合文档（整文件可编辑 excerpt）。
+    ///
+    /// 普通编辑器的文档统一经此构造：项目共享 singleton 只作为工作区源（source），展开 diff hunk 时的 set_excerpts 只影响本组合文档，不污染项目共享文档。
+    pub fn from_working_source(source: Entity<MultiBuffer>, cx: &mut Context<Self>) -> Self {
+        let line_count = source.read(cx).snapshot(cx).text().line_count();
+        let mut multi_buffer = Self::empty(cx);
+        multi_buffer.working_source = Some(source.clone());
+        multi_buffer.set_excerpts(
+            vec![MultiBufferExcerpt::line_range(source, 0..line_count, cx)],
+            cx,
+        );
+        multi_buffer
+    }
+
     /// 创建空的只读组合文档；用于 index 等不可直接编辑的数据投影。
     pub fn empty_read_only(cx: &mut Context<Self>) -> Self {
         Self::empty_with_read_only(true, cx)
     }
 
     fn empty_with_read_only(read_only: bool, cx: &mut Context<Self>) -> Self {
+        Self {
+            kind: MultiBufferKind::Excerpts(Box::new(Self::empty_excerpt_state(cx))),
+            read_only,
+            working_source: None,
+            diff: None,
+        }
+    }
+
+    /// 空组合状态骨架：独立投影 buffer + 空 excerpts/sources。
+    fn empty_excerpt_state(cx: &mut Context<Self>) -> ExcerptState {
         let text = Buffer::scratch(String::new(), BufferConfig::default())
             .expect("空组合文档 Buffer 应能创建");
         let text = cx.new(|_| text);
@@ -498,28 +557,43 @@ impl MultiBuffer {
             cx.notify();
         })
         .detach();
-        Self {
-            kind: MultiBufferKind::Excerpts(Box::new(ExcerptState {
-                projection,
-                excerpts: Vec::new(),
-                source_subscriptions: Vec::new(),
-                source_event_subscriptions: Vec::new(),
-                mappings: Vec::new(),
-                sources: Vec::new(),
-                match_ranges: Vec::new(),
-                capture_names: Arc::from([]),
-                next_transaction_id: TransactionId::INITIAL,
-                active_transaction: None,
-                active_source_transactions: Vec::new(),
-                undo_stack: Vec::new(),
-                redo_stack: Vec::new(),
-            })),
-            read_only,
+        ExcerptState {
+            projection,
+            excerpts: Vec::new(),
+            source_subscriptions: Vec::new(),
+            source_event_subscriptions: Vec::new(),
+            mappings: Vec::new(),
+            sources: Vec::new(),
+            match_ranges: Vec::new(),
+            capture_names: Arc::from([]),
+            next_transaction_id: TransactionId::INITIAL,
+            active_transaction: None,
+            active_source_transactions: Vec::new(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 
     /// 以给定顺序重建组合文档。每个片段都保留源文件路径和源坐标映射。
-    pub fn set_excerpts(&mut self, excerpts: Vec<MultiBufferExcerpt>, cx: &mut Context<Self>) {
+    ///
+    /// singleton 组合文档（普通编辑器）可在此切换为 excerpts：
+    /// 工作区 LanguageBuffer 被包装为独立 source，excerpts 中引用自身（原 singleton）的片段改写为该 source。
+    pub fn set_excerpts(&mut self, mut excerpts: Vec<MultiBufferExcerpt>, cx: &mut Context<Self>) {
+        // singleton → excerpts 转换（仅首次）：工作区 LanguageBuffer 包装为独立 source 并持久保存；
+        // 此后每次重建，excerpts 中引用自身的片段都改写为该 source，避免组合文档自引用（source 订阅自身会造成循环）。
+        if let MultiBufferKind::Singleton(language) = &self.kind {
+            let source = cx.new(|cx| MultiBuffer::singleton(language.clone(), cx));
+            self.working_source = Some(source);
+            self.kind = MultiBufferKind::Excerpts(Box::new(Self::empty_excerpt_state(cx)));
+        }
+        let self_id = cx.entity_id();
+        if let Some(source) = &self.working_source {
+            for excerpt in &mut excerpts {
+                if excerpt.source.entity_id() == self_id {
+                    excerpt.source = source.clone();
+                }
+            }
+        }
         let mut unique_sources = Vec::<Entity<MultiBuffer>>::new();
         let mut unique_source_ids = HashSet::new();
         for excerpt in &excerpts {
@@ -545,6 +619,8 @@ impl MultiBuffer {
                         cx.emit(MultiBufferEvent::MetadataChanged);
                         cx.notify();
                     }
+                    // 源的展开状态变化不向上转发（diff 投影状态按组合文档独立维护）。
+                    MultiBufferEvent::DiffExpansionChanged => {}
                 })
             })
             .collect::<Vec<_>>();
@@ -609,9 +685,12 @@ impl MultiBuffer {
             let excerpt_output_start = output.len();
             output.push_str(text.as_str());
             output_line += text.as_str().bytes().filter(|byte| *byte == b'\n').count();
-            // 每个 excerpt 至少占一个组合行。
-            // 空文件和已删除文件仍需拥有独立的文件标题、定位点和 diff 锚点，不能与后一个空 excerpt 共享同一坐标。
-            if output.len() == excerpt_output_start || !output.ends_with('\n') {
+            // 组合行保证：空片段必须占一个组合行（空文件/删除文件的标题与锚点坐标）；
+            // diff 片段（deleted 旧行等）末尾无换行时补一个换行，保证占完整行（diff 内容总是按完整行呈现）；
+            // 普通片段保留源文本原样，避免给文件末尾凭空添加换行。
+            if output.len() == excerpt_output_start
+                || (excerpt.diff_kind.is_some() && !output.ends_with('\n'))
+            {
                 output.push('\n');
                 output_line += 1;
             }
@@ -701,6 +780,10 @@ impl MultiBuffer {
                             .value();
                     }
                 }
+            }
+            // 工作区源被外部编辑：hunk 锚点随文本位置推进（组合编辑已在 edit 内同步映射）。
+            if let Some(new_version) = patch.new_version() {
+                self.map_diff_hunk_anchors(&position_map, new_version);
             }
         }
         self.rebuild_projection(cx);
@@ -925,14 +1008,18 @@ impl MultiBuffer {
                 cx.notify();
                 Ok(outcome)
             })?;
-            source_maps.push((source.entity_id(), outcome.event().position_map().clone()));
+            source_maps.push((
+                source.entity_id(),
+                outcome.event().position_map().clone(),
+                outcome.event().new_version(),
+            ));
         }
 
         if let MultiBufferKind::Excerpts(state) = &mut self.kind {
             for (excerpt_index, excerpt) in state.excerpts.iter_mut().enumerate() {
-                let Some((_, position_map)) = source_maps
+                let Some((_, position_map, _)) = source_maps
                     .iter()
-                    .find(|(id, _)| *id == excerpt.source.entity_id())
+                    .find(|(id, _, _)| *id == excerpt.source.entity_id())
                 else {
                     continue;
                 };
@@ -950,6 +1037,10 @@ impl MultiBuffer {
                         .value();
                 }
             }
+        }
+        // 组合编辑写回工作区源：hunk 锚点随本次编辑同步推进（source_changed 的消费为空，不会重复映射）。
+        for (_, position_map, new_version) in &source_maps {
+            self.map_diff_hunk_anchors(position_map, *new_version);
         }
         self.rebuild_projection(cx);
         Ok(global_map)
@@ -1255,6 +1346,13 @@ impl MultiBuffer {
         }
     }
 
+    /// singleton → excerpts 转换时的工作区源（普通编辑器展开 diff 用）。
+    ///
+    /// 转换后工作区片段应以此为 source，源行号与组合行号不再一致。
+    pub fn working_source(&self) -> Option<Entity<MultiBuffer>> {
+        self.working_source.clone()
+    }
+
     pub fn is_read_only(&self) -> bool {
         self.read_only
     }
@@ -1322,7 +1420,19 @@ impl MultiBuffer {
             MultiBufferKind::Singleton(singleton) => {
                 singleton.read(cx).file_path().map(Path::to_path_buf)
             }
-            MultiBufferKind::Excerpts(_) => None,
+            // 组合文档（普通编辑器独立 excerpts）：从工作区源推导文件路径；
+            // 无工作区源时退回第一个可编辑片段（ProjectDiffView 等组合视图）。
+            MultiBufferKind::Excerpts(state) => self
+                .working_source
+                .as_ref()
+                .and_then(|source| source.read(cx).file_path(cx))
+                .or_else(|| {
+                    state
+                        .excerpts
+                        .iter()
+                        .find(|excerpt| excerpt.editable)
+                        .and_then(|excerpt| excerpt.source.read(cx).file_path(cx))
+                }),
         }
     }
 

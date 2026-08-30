@@ -36,7 +36,8 @@ use zcv_theme::{color, typography};
 
 use super::blink_manager::BlinkManager;
 use super::display_map::{
-    DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot, InsertedLines, StyledLine,
+    DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot, InsertedLine,
+    InsertedLines,
 };
 use super::element::{EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollbarThumbState};
@@ -661,9 +662,9 @@ impl Editor {
                 if !expanded {
                     continue;
                 }
-                let lines: Vec<StyledLine> = slice_deleted_lines(text, hunk.old_range.clone())
+                let lines: Vec<InsertedLine> = slice_deleted_lines(text, hunk.old_range.clone())
                     .into_iter()
-                    .map(|line| StyledLine::plain(Arc::from(line)))
+                    .map(|line| InsertedLine::new(Arc::from(line)))
                     .collect();
                 // 删除块：旧行插在删除点（range.start）之后；修改块：旧行插在修改行上方
                 let anchor = match hunk.kind {

@@ -17,7 +17,6 @@ mod selection;
 mod view;
 mod workspace_item;
 
-pub use display_map::{Chunk, StyledSpan, chunks_to_runs, render_plain_line};
 pub use view::{DiffHunkDelegate, Editor, EditorEvent, EditorScrollAnchor, MaterializedDiffHunk};
 
 pub fn init(cx: &mut App) {

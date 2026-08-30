@@ -324,7 +324,6 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
                         stream_line,
                         segments: None,
                         inlay: inlay_snapshot,
-                        inserted_styles: None,
                     },
                     tab_width,
                     LineStyles {
@@ -406,7 +405,6 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
                         stream_line,
                         segments: None,
                         inlay: inlay_snapshot,
-                        inserted_styles: None,
                     },
                     tab_width,
                     LineStyles {
@@ -524,7 +522,6 @@ zcv final
                         stream_line,
                         segments: None,
                         inlay: inlay_snapshot,
-                        inserted_styles: None,
                     },
                     tab_width,
                     LineStyles {

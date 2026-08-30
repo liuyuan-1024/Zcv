@@ -12,7 +12,6 @@ use gpui::{
     HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, Rgba,
     ShapedLine, Style, TextRun, Window, px, relative, size,
 };
-use zcv_editor::{StyledSpan, chunks_to_runs, render_plain_line};
 use zcv_theme::{color, typography};
 
 use crate::mappings::mouse::{grid_point, grid_point_and_side};
@@ -41,6 +40,12 @@ struct CursorLayout {
     color: Rgba,
     /// Block 光标格内绘制的字符与其颜色。
     text: Option<(String, Rgba)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct TerminalStyleSpan {
+    range: std::ops::Range<usize>,
+    style: HighlightStyle,
 }
 
 pub(super) struct TerminalLayout {
@@ -74,7 +79,7 @@ pub(super) struct TerminalElement {
 /// 一行网格的转换结果：文本、行内样式段（含起始网格列）与非默认背景区间。
 struct StyledRow {
     text: String,
-    spans: Arc<[StyledSpan]>,
+    spans: Arc<[TerminalStyleSpan]>,
     /// 每个样式段起始的网格列，与 spans 一一对应（渲染层按列号定位）。
     span_columns: Arc<[usize]>,
     bg_ranges: Vec<(usize, usize, u32)>,
@@ -83,7 +88,7 @@ struct StyledRow {
 /// 行转换结果：背景区间供绘制层逐帧像素化（选择高亮另行叠加）。
 struct CachedRow {
     text: String,
-    spans: Arc<[StyledSpan]>,
+    spans: Arc<[TerminalStyleSpan]>,
     span_columns: Arc<[usize]>,
     /// 需要绘制背景块的列区间（闭区间，含颜色）。
     bg_ranges: Vec<(usize, usize, u32)>,
@@ -589,38 +594,50 @@ fn layout_grid(
             }
         }
 
-        // 文本：每个样式段独立经 chunk 管线（tab 展开 / 样式分段）产出 runs。
-        // 宽字符占 2 列，段起点按列号 × 格宽定位（force_width
-        // 强制单字符 1 格，2 格间距由列号补足）。
+        // 文本：终端网格已完成 tab 展开，按样式段直接产出 runs。
+        // 宽字符占 2 列，段起点按列号 × 格宽定位（force_width 强制单字符 1 格，2 格间距由列号补足）。
         for (span, &start_column) in spans.iter().zip(span_columns.iter()) {
             let segment = &text[span.range.clone()];
             if segment.is_empty() {
                 continue;
             }
-            let base = TextRun {
-                len: segment.len(),
-                font: font.clone(),
-                color: color::current(cx).text.into(),
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-            let local = StyledSpan {
-                range: 0..segment.len(),
-                style: span.style,
-            };
-            let rendered = render_plain_line(segment, 4, &[local]);
-            let runs = chunks_to_runs(&rendered.chunks, base);
+            let run = styled_text_run(
+                TextRun {
+                    len: segment.len(),
+                    font: font.clone(),
+                    color: color::current(cx).text.into(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                },
+                span.style,
+            );
             text_runs.push(LineRun {
                 start_column,
                 origin: row_origin,
                 text: segment.to_string(),
-                runs,
+                runs: vec![run],
             });
         }
 
         line_start = line_end;
     }
+}
+
+fn styled_text_run(mut run: TextRun, style: HighlightStyle) -> TextRun {
+    if let Some(color) = style.color {
+        run.color = color;
+    }
+    if let Some(weight) = style.font_weight {
+        run.font.weight = weight;
+    }
+    if let Some(font_style) = style.font_style {
+        run.font.style = font_style;
+    }
+    run.background_color = style.background_color;
+    run.underline = style.underline;
+    run.strikethrough = style.strikethrough;
+    run
 }
 
 /// 行的内容指纹：单元格字符、颜色与标志的混合（不查主题，仅用于缓存失效判断）。
@@ -661,7 +678,7 @@ fn color_fingerprint(color: &Color) -> u64 {
 /// 样式段按同样式连续格合并，尾随空格裁剪；背景区间按同色连续列合并。
 fn row_to_styled_line(cells: &[IndexedCell], window: &mut Window, cx: &mut App) -> StyledRow {
     let mut text = String::with_capacity(cells.len());
-    let mut spans: Vec<StyledSpan> = Vec::new();
+    let mut spans: Vec<TerminalStyleSpan> = Vec::new();
     let mut span_columns: Vec<usize> = Vec::new();
     let mut span_start = 0usize;
     let mut span_style: Option<HighlightStyle> = None;
@@ -695,7 +712,7 @@ fn row_to_styled_line(cells: &[IndexedCell], window: &mut Window, cx: &mut App) 
             match span_style {
                 Some(prev) if prev == style && col_contiguous => {}
                 Some(prev) => {
-                    spans.push(StyledSpan {
+                    spans.push(TerminalStyleSpan {
                         range: span_start..start,
                         style: prev,
                     });
@@ -730,7 +747,7 @@ fn row_to_styled_line(cells: &[IndexedCell], window: &mut Window, cx: &mut App) 
         }
     }
     if let Some(style) = span_style {
-        spans.push(StyledSpan {
+        spans.push(TerminalStyleSpan {
             range: span_start..text.len(),
             style,
         });
@@ -740,7 +757,7 @@ fn row_to_styled_line(cells: &[IndexedCell], window: &mut Window, cx: &mut App) 
     }
     // 裁剪尾随空格：终端行常以空格 padding 结尾，不参与 shaping。
     text.truncate(content_end);
-    let mut pairs: Vec<(StyledSpan, usize)> = spans.into_iter().zip(span_columns).collect();
+    let mut pairs: Vec<(TerminalStyleSpan, usize)> = spans.into_iter().zip(span_columns).collect();
     pairs.retain(|(span, _)| span.range.start < content_end);
     for (span, _) in &mut pairs {
         span.range.end = span.range.end.min(content_end);
@@ -1064,8 +1081,49 @@ mod styled_line_tests {
         }
     }
 
-    /// 宽字符渲染：force_width 强制每字形 1 格宽（CJK 字形 advance 恰好 1 格），
-    /// 宽字符占 2 格的间距由段起始列号 × 格宽定位补足（不补空格）。
+    #[test]
+    fn terminal_style_maps_directly_to_text_run() {
+        let foreground: Hsla = gpui::red();
+        let background: Hsla = gpui::blue();
+        let underline = gpui::UnderlineStyle {
+            color: Some(foreground),
+            thickness: px(1.),
+            wavy: false,
+        };
+        let strikethrough = gpui::StrikethroughStyle {
+            color: Some(foreground),
+            thickness: px(1.),
+        };
+        let run = styled_text_run(
+            TextRun {
+                len: 3,
+                font: gpui::font(".SystemUIFont"),
+                color: Default::default(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            },
+            HighlightStyle {
+                color: Some(foreground),
+                background_color: Some(background),
+                font_weight: Some(gpui::FontWeight::BOLD),
+                font_style: Some(gpui::FontStyle::Italic),
+                underline: Some(underline),
+                strikethrough: Some(strikethrough),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(run.len, 3);
+        assert_eq!(run.color, foreground);
+        assert_eq!(run.background_color, Some(background));
+        assert_eq!(run.font.weight, gpui::FontWeight::BOLD);
+        assert_eq!(run.font.style, gpui::FontStyle::Italic);
+        assert_eq!(run.underline, Some(underline));
+        assert_eq!(run.strikethrough, Some(strikethrough));
+    }
+
+    /// 宽字符渲染：force_width 强制每字形 1 格宽（CJK 字形 advance 恰好 1 格），宽字符占 2 格的间距由段起始列号 × 格宽定位补足（不补空格）。
     /// "中"（列 0）"文"（列 2）"a"（列 4）三段渲染总宽应等于 5 格。
     #[gpui::test]
     fn wide_char_force_width_aligns_render_width(cx: &mut gpui::TestAppContext) {

@@ -30,7 +30,6 @@ pub(crate) use block_map::{
     DisplayBlock, DisplayBlockKind, FILE_HEADER_HEIGHT, StickyBufferHeader,
 };
 use chunk::MAX_RENDERED_LINE_LEN;
-pub use chunk::{Chunk, chunks_to_runs, render_plain_line};
 #[cfg(test)]
 pub(crate) use chunk::{LineStyles, ViewportChunkSource, render_viewport_chunks};
 pub(crate) use chunk::{RenderedWhitespace, RowStyleInput, WrapRowInfo, render_viewport_row};
@@ -44,8 +43,7 @@ use gpui::HighlightStyle;
 pub(crate) use inlay_map::Inlay;
 use inlay_map::InlayMap;
 use line_stream::LineStream;
-pub(crate) use line_stream::{InsertedLines, StreamLineSource};
-pub use line_stream::{StyledLine, StyledSpan};
+pub(crate) use line_stream::{InsertedLine, InsertedLines, StreamLineSource};
 use tab_map::TabMap;
 pub(crate) use tab_map::byte_for_display_column;
 pub(crate) use wrap_map::WrapViewportRowKind;
@@ -1297,7 +1295,7 @@ mod tests {
             "a\nb\nc",
             InsertedLines::from([(
                 Line::ZERO,
-                vec![StyledLine::plain(std::sync::Arc::from("DEL"))],
+                vec![InsertedLine::new(std::sync::Arc::from("DEL"))],
             )]),
         );
         assert_eq!(map.line_count(), 4, "3 个 buffer 行 + 1 个合成行");
@@ -1329,7 +1327,7 @@ mod tests {
             "a\nb",
             InsertedLines::from([(
                 Line::ZERO,
-                vec![StyledLine::plain(std::sync::Arc::from("DEL"))],
+                vec![InsertedLine::new(std::sync::Arc::from("DEL"))],
             )]),
         );
         let snapshot = map.snapshot();
@@ -1346,7 +1344,7 @@ mod tests {
             "short",
             InsertedLines::from([(
                 Line::ZERO,
-                vec![StyledLine::plain(std::sync::Arc::from(
+                vec![InsertedLine::new(std::sync::Arc::from(
                     "aaaa bbbb cccc dddd eeee",
                 ))],
             )]),
@@ -1367,8 +1365,8 @@ mod tests {
             InsertedLines::from([(
                 Line::new(2),
                 vec![
-                    StyledLine::plain(std::sync::Arc::from("DEL1")),
-                    StyledLine::plain(std::sync::Arc::from("DEL2")),
+                    InsertedLine::new(std::sync::Arc::from("DEL1")),
+                    InsertedLine::new(std::sync::Arc::from("DEL2")),
                 ],
             )]),
         );

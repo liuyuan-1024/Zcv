@@ -2765,7 +2765,7 @@ fn column_to_byte(text: &str, column: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::display_map::{DisplayMap, InsertedLines, StyledLine};
+    use crate::display_map::{DisplayMap, InsertedLine, InsertedLines};
     use gpui::{AppContext, Empty, TestAppContext};
     use std::path::{Path, PathBuf};
     use zcv_git::DiffHunk;
@@ -2903,7 +2903,7 @@ mod tests {
                 // 展开删除块：锚定行 0 后插入含中文的 HEAD 行；锚定行短，span 端点在锚定行外。
                 map.set_inserted(InsertedLines::from([(
                     Line::ZERO,
-                    vec![StyledLine::plain(std::sync::Arc::from(
+                    vec![InsertedLine::new(std::sync::Arc::from(
                         "// 展开产生的新行在重建时现查 git 状态，无需单独补齐。",
                     ))],
                 )]));
@@ -3794,8 +3794,8 @@ mod tests {
         map.set_inserted(InsertedLines::from([(
             Line::new(1),
             vec![
-                StyledLine::plain(std::sync::Arc::from("old 1")),
-                StyledLine::plain(std::sync::Arc::from("old 2")),
+                InsertedLine::new(std::sync::Arc::from("old 1")),
+                InsertedLine::new(std::sync::Arc::from("old 2")),
             ],
         )]));
         let snapshot = map.snapshot();
@@ -3841,7 +3841,7 @@ mod tests {
         let mut map = DisplayMap::new(buffer.snapshot());
         map.set_inserted(InsertedLines::from([(
             Line::ZERO, // 修改块锚定 range.start - 1（旧行在修改行上方）。
-            vec![StyledLine::plain(std::sync::Arc::from("old 1"))],
+            vec![InsertedLine::new(std::sync::Arc::from("old 1"))],
         )]));
         let snapshot = map.snapshot();
         let hunk = DiffHunk {
@@ -3887,7 +3887,7 @@ mod tests {
         let mut map = DisplayMap::new(buffer.snapshot());
         map.set_inserted(InsertedLines::from([(
             Line::ZERO,
-            vec![StyledLine::plain(std::sync::Arc::from("old 1"))],
+            vec![InsertedLine::new(std::sync::Arc::from("old 1"))],
         )]));
         let snapshot = map.snapshot();
         let hunk = DiffHunk {

@@ -14,8 +14,14 @@ use crate::{
     mappings::{keys, mouse},
 };
 
+use std::cell::Cell;
+use std::time::{Duration, Instant};
+
 use zcv_actions::{Clear, Copy, Interrupt, Paste};
 use zcv_workspace::{Item, ItemEvent};
+
+/// 拖拽选择自动滚动的限频间隔（≈60Hz，与编辑器 drag_autoscroll 同款）。
+const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(16);
 
 pub(crate) struct TerminalView {
     pub(crate) terminal: Entity<Terminal>,
@@ -23,6 +29,8 @@ pub(crate) struct TerminalView {
     pub(crate) focused: bool,
     /// 进行中的拖拽选择：起点与选择类型。
     dragging: Option<(Point, SelectionType)>,
+    /// 拖拽选择自动滚动的限频时间戳（跨帧持久；事件频率可远超帧率，滚动频率需封顶）。
+    last_drag_autoscroll: Cell<Instant>,
     /// 输入法合成中的 marked 文本。
     ime_marked_text: Option<String>,
     /// 光标格的像素 bounds（元素相对坐标），IME 候选窗定位用。
@@ -39,6 +47,7 @@ impl TerminalView {
             focus,
             focused: false,
             dragging: None,
+            last_drag_autoscroll: Cell::new(Instant::now() - AUTOSCROLL_INTERVAL),
             ime_marked_text: None,
             last_cursor_bounds: None,
             initialized: false,
@@ -236,7 +245,10 @@ impl TerminalView {
             return;
         }
         if let Some((start, ty)) = self.dragging {
-            if autoscroll != Pixels::ZERO {
+            if autoscroll != Pixels::ZERO
+                && self.last_drag_autoscroll.get().elapsed() >= AUTOSCROLL_INTERVAL
+            {
+                self.last_drag_autoscroll.set(Instant::now());
                 let line_height = self.line_height(cx);
                 self.terminal.update(cx, |terminal, cx| {
                     terminal.scroll_px(gpui::TouchPhase::Moved, autoscroll, line_height, cx);

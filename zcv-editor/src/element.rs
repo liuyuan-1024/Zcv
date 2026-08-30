@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, Context, DispatchPhase, Element,
@@ -1467,6 +1468,7 @@ impl Element for EditorElement {
         // 拖拽扩展选区：按住左键移动时按点击粒度更新选区；
         // 鼠标拖出文本视口边缘时视口自动滚动、选区随之扩展；
         // 无按键移动时兜底结束拖拽（覆盖"窗口外释放后移回"等漏网场景）。
+        // 自动滚动限频：鼠标移动事件频率可远超帧率，若每个事件都滚动，感知速度会随事件频率放大。
         let drag_editor = self.editor.clone();
         let drag_layout = Arc::clone(&prepaint.layout);
         let drag_text_bounds = prepaint.layout.text_clip_bounds;
@@ -1490,7 +1492,10 @@ impl Element for EditorElement {
                 if !editor.has_pending_selection() {
                     return;
                 }
-                if scroll_delta != point(Pixels::ZERO, Pixels::ZERO) {
+                if scroll_delta != point(Pixels::ZERO, Pixels::ZERO)
+                    && editor.last_drag_autoscroll.get().elapsed() >= AUTOSCROLL_INTERVAL
+                {
+                    editor.last_drag_autoscroll.set(Instant::now());
                     editor.scroll_by(scroll_delta, cx);
                 }
                 if let Ok(offset) =
@@ -3964,8 +3969,10 @@ mod tests {
     }
 }
 
-/// 拖拽选择时的视口自动滚动量：
-/// 鼠标在文本视口边缘外时按超出距离的 1.2 次方缩放，垂直上限 3 像素/事件，保证平滑。
+/// 拖拽选择自动滚动的限频间隔（≈60Hz）。
+pub(crate) const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(16);
+
+/// 拖拽选择时的视口自动滚动量：滚动量 = 超出视口边缘的距离 × 0.3，单事件上限视口高/宽 1/16——鼠标移出越远滚动越快，但快速甩动不会猛跳。
 fn drag_autoscroll_delta(
     position: Point<Pixels>,
     text_bounds: Bounds<Pixels>,
@@ -3975,29 +3982,23 @@ fn drag_autoscroll_delta(
     let vertical_margin = line_height.min(text_bounds.size.height / 3.0);
     let top = text_bounds.origin.y + vertical_margin;
     let bottom = text_bounds.bottom_left().y - vertical_margin;
+    let max_delta = text_bounds.size.height / 16.0;
     if position.y < top {
-        delta.y = scale_drag_autoscroll(top - position.y);
+        delta.y = ((top - position.y) * 0.3).min(max_delta);
     } else if position.y > bottom {
-        delta.y = -scale_drag_autoscroll(position.y - bottom);
+        delta.y = -((position.y - bottom) * 0.3).min(max_delta);
     }
-    // 水平边距近似 4 个 em（行高约 1.618em）。
+    // 水平：列宽按 1.618em 近似（行高约 1.618em），上限同比例取视口宽 1/16。
     let horizontal_margin = 2.5 * line_height;
     let left = text_bounds.origin.x + horizontal_margin;
     let right = text_bounds.top_right().x - horizontal_margin;
+    let max_delta = text_bounds.size.width / 16.0;
     if position.x < left {
-        delta.x = -scale_drag_autoscroll_horizontal(left - position.x);
+        delta.x = -((left - position.x) * 0.3).min(max_delta);
     } else if position.x > right {
-        delta.x = scale_drag_autoscroll_horizontal(position.x - right);
+        delta.x = ((position.x - right) * 0.3).min(max_delta);
     }
     delta
-}
-
-fn scale_drag_autoscroll(distance: Pixels) -> Pixels {
-    px((f32::from(distance).powf(1.2) / 100.0).min(3.0))
-}
-
-fn scale_drag_autoscroll_horizontal(distance: Pixels) -> Pixels {
-    px(f32::from(distance).powf(1.2) / 300.0)
 }
 
 #[cfg(test)]
@@ -4022,14 +4023,18 @@ mod autoscroll_tests {
             point(Pixels::ZERO, Pixels::ZERO)
         );
         // 上边缘外：向上回看（正 y）。
+        // 超出 120 × 0.3 = 36，被单事件上限（视口高 200 / 16 = 12.5）钳制。
         let delta = drag_autoscroll_delta(point(px(100.), px(-100.)), bounds, line_height);
-        assert!(delta.y > Pixels::ZERO);
-        // 下边缘外：向下查看新内容（负 y），滚动量有上限保证平滑。
+        assert_eq!(f32::from(delta.y), 12.5);
+        // 下边缘外：向下查看新内容（负 y），同公式。
         let delta = drag_autoscroll_delta(point(px(100.), px(300.)), bounds, line_height);
-        assert!(delta.y < Pixels::ZERO);
-        assert!(f32::from(delta.y).abs() <= 3.0);
+        assert_eq!(f32::from(delta.y), -12.5);
         // 右边缘外：水平滚动（正 x）。
+        // 超出 150 × 0.3 = 45，低于单事件上限（800 / 16 = 50），不被钳制。
         let delta = drag_autoscroll_delta(point(px(900.), px(100.)), bounds, line_height);
-        assert!(delta.x > Pixels::ZERO);
+        assert_eq!(f32::from(delta.x), 45.0);
+        // 刚超出边缘：小滚动量（近端不受上限影响）。
+        let delta = drag_autoscroll_delta(point(px(100.), px(190.)), bounds, line_height);
+        assert_eq!(f32::from(delta.y), -3.0);
     }
 }

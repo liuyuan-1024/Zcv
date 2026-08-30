@@ -962,7 +962,8 @@ fn last_column(cells: &[IndexedCell]) -> usize {
 }
 
 /// 拖拽选择时的视口自动滚动量（像素，正 = 向上回看历史）：
-/// 鼠标在终端视口边缘外时按超出距离的 1.2 次方缩放，上限 3 像素/事件，保证平滑。
+/// 滚动量 = 超出视口边缘的距离 × 0.3，单事件上限视口高 1/16（与编辑器 `drag_autoscroll_delta` 同款）；
+/// 滚动频率由 view 层限频（≈60Hz）。
 fn drag_autoscroll_delta(
     position: Point<Pixels>,
     origin: Point<Pixels>,
@@ -972,17 +973,14 @@ fn drag_autoscroll_delta(
     let top = origin.y;
     let bottom = origin.y + line_height * screen_lines as f32;
     let margin = line_height.min((bottom - top) / 3.0);
+    let max_delta = (bottom - top) / 16.0;
     if position.y < top + margin {
-        scale_drag_autoscroll(top + margin - position.y)
+        ((top + margin - position.y) * 0.3).min(max_delta)
     } else if position.y > bottom - margin {
-        -scale_drag_autoscroll(position.y - (bottom - margin))
+        -((position.y - (bottom - margin)) * 0.3).min(max_delta)
     } else {
         Pixels::ZERO
     }
-}
-
-fn scale_drag_autoscroll(distance: Pixels) -> Pixels {
-    px((f32::from(distance).powf(1.2) / 100.0).min(3.0))
 }
 
 #[cfg(test)]
@@ -1042,10 +1040,10 @@ mod autoscroll_tests {
             drag_autoscroll_delta(Point::new(px(100.), px(-100.)), origin, line_height, 10)
                 > Pixels::ZERO
         );
-        // 下边缘外：查看新内容（负），滚动量有上限保证平滑。
+        // 下边缘外：查看新内容（负）。
+        // 超出 120 × 0.3 = 36，被单事件上限（视口高 200 / 16 = 12.5）钳制。
         let delta = drag_autoscroll_delta(Point::new(px(100.), px(300.)), origin, line_height, 10);
-        assert!(delta < Pixels::ZERO);
-        assert!(f32::from(delta).abs() <= 3.0);
+        assert_eq!(f32::from(delta), -12.5);
     }
 }
 

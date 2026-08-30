@@ -92,6 +92,8 @@ impl RenderOnce for Checkbox {
                 )
             })
             .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                // 复选框的点击不向父元素冒泡：嵌入可点击容器时，按下事件不得透传触发容器的其他交互。
+                cx.stop_propagation();
                 if event.click_count == 1
                     && let Some(handler) = &on_click
                 {

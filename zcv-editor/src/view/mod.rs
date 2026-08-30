@@ -3,9 +3,11 @@
 /// 导航跳转（打开文件/行列定位）时目标行距视口顶部的固定行数，留出上下文。
 pub(super) const NAVIGATION_TOP_OFFSET: usize = 4;
 
+use std::cell::Cell;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 
 use gpui::{
     AnyElement, App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, IntoElement,
@@ -36,7 +38,7 @@ use zcv_theme::{color, typography};
 
 use super::blink_manager::BlinkManager;
 use super::display_map::{DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot};
-use super::element::{EditorElement, EditorInputLayout};
+use super::element::{AUTOSCROLL_INTERVAL, EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollbarThumbState};
 use super::selection::{
     EditOutcome, EditorSelections, Selection, SelectionHistory, SelectionSet, replace_selections,
@@ -181,6 +183,8 @@ pub struct Editor {
     soft_wrap_override: Option<SoftWrap>,
     preferred_line_length: usize,
     diff_hunk_delegate: Option<Arc<dyn DiffHunkDelegate>>,
+    /// 拖拽选择自动滚动的限频时间戳（跨帧持久；事件频率可远超帧率，滚动频率需封顶）。
+    pub(crate) last_drag_autoscroll: Cell<Instant>,
     /// 文件内搜索状态（搜索条执行过一次搜索后存在，编辑后自动重搜）。
     search: Option<EditorSearch>,
     /// 语言层提供的可折叠范围（crease 显示与折叠命令的数据源；
@@ -1310,6 +1314,7 @@ impl Editor {
             bracket_pair_cache: None,
             scroll_manager: ScrollManager::default(),
             diff_hunk_delegate: None,
+            last_drag_autoscroll: Cell::new(Instant::now() - AUTOSCROLL_INTERVAL),
             search: None,
             composition: None,
             input_layout: None,

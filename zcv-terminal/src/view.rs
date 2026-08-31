@@ -18,6 +18,7 @@ use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use zcv_actions::{Clear, Copy, Interrupt, Paste};
+use zcv_theme::space;
 use zcv_workspace::{Item, ItemEvent};
 
 /// 拖拽选择自动滚动的限频间隔（≈60Hz，与编辑器 drag_autoscroll 同款）。
@@ -486,8 +487,8 @@ impl Render for TerminalView {
             .size_full()
             .overflow_hidden()
             .bg(zcv_theme::color::current(cx).editor_background)
-            .px(px(8.))
-            .py(px(4.))
+            .px(space::S8)
+            .py(space::S4)
             .on_key_down(cx.listener(Self::handle_key_down))
             .on_action(cx.listener(Self::handle_copy))
             .on_action(cx.listener(Self::handle_paste))

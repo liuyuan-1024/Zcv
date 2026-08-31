@@ -122,7 +122,7 @@ fn bar_frame(cx: &App) -> Div {
 
 /// 渲染一侧的 item 序列；无内容时 item 自己渲染空元素，分隔线由 item 自己绘制。
 fn region(items: Vec<&dyn StatusItemViewHandle>, justify_start: bool) -> Div {
-    let wrapper = div().flex_1().flex().items_center().gap(space::S8);
+    let wrapper = div().flex_1().flex().items_center().gap(space::S6);
     let wrapper = if justify_start {
         wrapper.justify_start()
     } else {

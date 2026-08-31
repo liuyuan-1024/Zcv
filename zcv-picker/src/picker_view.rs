@@ -10,13 +10,14 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, Context, FocusHandle, Pixels, Render, SharedString, Window, div, prelude::*,
-    px,
 };
 use zcv_actions::{
     MoveDown, MoveUp, PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev,
 };
 use zcv_theme::{color, space};
 use zcv_ui::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent};
+
+use super::PICKER_MAX_HEIGHT;
 
 // ═══ PickerDelegate ═════════════════════════════════════════════
 
@@ -205,7 +206,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
         let items = div()
             .id("picker-items")
             .flex_grow()
-            .min_h(px(0.0))
+            .min_h_0()
             .overflow_y_scroll()
             // test cfg 下注册 debug bounds，供布局断言使用。
             .debug_selector(|| "picker-list".into())
@@ -233,7 +234,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
             .track_focus(&self.focus_handle)
             .key_context("Picker")
             .w(self.width)
-            .max_h(px(420.0))
+            .max_h(PICKER_MAX_HEIGHT)
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -274,7 +275,7 @@ fn picker_search_box(content: impl IntoElement, cx: &App) -> impl IntoElement {
 pub fn picker_divider(cx: &App) -> impl IntoElement {
     div()
         .w_full()
-        .h(px(1.0))
+        .h(space::S1)
         .bg(color::current(cx).border_variant)
 }
 
@@ -285,7 +286,7 @@ mod tests {
 
     use gpui::{
         AppContext, Entity, FocusHandle, KeyBinding, TestAppContext, actions, anchored, deferred,
-        point, size,
+        point, px, size,
     };
 
     use super::*;
@@ -395,7 +396,10 @@ mod tests {
             footer.origin.y >= list.bottom(),
             "footer 被列表遮挡：列表 {list:?}，footer {footer:?}"
         );
-        assert!(footer.bottom() <= px(420.0), "footer 超出浮层 {footer:?}");
+        assert!(
+            footer.bottom() <= PICKER_MAX_HEIGHT,
+            "footer 超出浮层 {footer:?}"
+        );
     }
 
     actions!(picker_tests, [EditorDelete, PickerDelete]);

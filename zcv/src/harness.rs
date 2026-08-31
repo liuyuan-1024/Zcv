@@ -2,7 +2,7 @@
 //!
 //! 当前仅维护开关状态并高亮显示，具体功能后续接入。
 
-use gpui::{Context, ElementId, Render, Window, div, prelude::*, px};
+use gpui::{Context, ElementId, Render, Window, div, prelude::*};
 use zcv_actions::ToggleHarnessMode;
 use zcv_theme::{color, space};
 use zcv_ui::Button;
@@ -38,11 +38,11 @@ impl Render for HarnessButton {
             color::current(cx).text
         };
         // 与右侧面板按钮组同款的前导分隔线，承担与底栏其他状态项的视觉分隔。
-        let divider = div().w(px(1.0)).h_full().bg(color::current(cx).border);
+        let divider = div().w(space::S1).h_full().bg(color::current(cx).border);
         div()
             .flex()
             .items_center()
-            .gap(space::S8)
+            .gap(space::S6)
             .child(divider)
             .child(
                 Button::icon(ElementId::Name("harness".into()), "icons/zed_assistant.svg")

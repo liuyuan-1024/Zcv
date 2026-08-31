@@ -5,7 +5,7 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, Component, ElementId, Hsla, IntoElement, RenderOnce, SharedString, Window, div,
+    App, Component, ElementId, Hsla, IntoElement, Pixels, RenderOnce, SharedString, Window, div,
     prelude::*, px,
 };
 use zcv_theme::{color, space};
@@ -24,6 +24,9 @@ pub enum ConfirmAnswer {
 }
 
 type AnswerHandler = Rc<dyn Fn(ConfirmAnswer, &mut Window, &mut App)>;
+
+/// 卡片宽度上限：防止长确认文案把浮层拉得过宽。
+const CARD_MAX_WIDTH: Pixels = px(360.);
 
 /// 确认浮层（Builder 模式）。
 ///
@@ -129,7 +132,7 @@ impl RenderOnce for ConfirmOverlay {
             .flex()
             .flex_col()
             .gap(space::S6)
-            .max_w(px(360.))
+            .max_w(CARD_MAX_WIDTH)
             .p(space::S12)
             .rounded_md()
             .border_1()

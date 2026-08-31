@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use gpui::{App, Pixels, div, prelude::*, px};
+use gpui::{App, Pixels, div, prelude::*};
 use zcv_theme::{FileIcons, color, space, typography};
 
 use crate::SvgIcon;
@@ -82,7 +82,7 @@ fn row_skeleton(depth: usize) -> gpui::Div {
 fn guide_lines(depth: usize, cx: &App) -> Vec<gpui::Div> {
     let m = metrics();
     let line_color = color::current(cx).border_variant;
-    let line_w = px(1.0);
+    let line_w = space::S1;
 
     (0..depth)
         .map(|k| {

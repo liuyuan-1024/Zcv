@@ -1,6 +1,6 @@
 //! 窗口控制 —— 自绘 macOS 风格三色圆点。
 
-use gpui::{Pixels, Window, div, prelude::*, px, rgb, svg};
+use gpui::{Window, div, prelude::*, px, rgb, svg};
 pub(crate) use zcv_actions::{MinimizeWindow, QuitWindow, ToggleMaximizeWindow};
 use zcv_theme::space;
 
@@ -65,7 +65,7 @@ fn pip(pip: Pip, active: bool) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .size(px(12.0))
-        .rounded(Pixels::MAX)
+        .rounded_full()
         .bg(fill)
         .border_1()
         .border_color(border)

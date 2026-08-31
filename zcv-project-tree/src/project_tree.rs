@@ -13,13 +13,13 @@ use std::time::Duration;
 
 use gpui::{
     AsyncApp, Context, Entity, EventEmitter, KeyContext, MouseButton, ScrollStrategy, Task,
-    UniformListScrollHandle, WeakEntity, Window, div, prelude::*, px, relative,
+    UniformListScrollHandle, WeakEntity, Window, div, prelude::*, relative,
 };
 use zcv_actions::TreeActivate;
 use zcv_editor::Editor;
 use zcv_git::FileStatus;
 use zcv_project::{Project, WorktreeEntry, translate_path};
-use zcv_theme::color;
+use zcv_theme::{color, space, typography};
 use zcv_ui::ConfirmOverlay;
 use zcv_ui::Scrollbar;
 use zcv_ui::tree::{self, TreeRow, TreeState};
@@ -555,9 +555,9 @@ impl gpui::Render for ProjectTreePanel {
                 .child(
                     div()
                         .absolute()
-                        .bottom(px(4.))
-                        .right(px(6.))
-                        .text_size(px(11.))
+                        .bottom(space::S4)
+                        .right(space::S6)
+                        .text_size(typography::ui() * 0.85)
                         .text_color(color::current(cx).text_muted)
                         .child(format!("复制中 {done}/{total}")),
                 )
@@ -566,7 +566,7 @@ impl gpui::Render for ProjectTreePanel {
                         .absolute()
                         .bottom_0()
                         .left_0()
-                        .h(px(2.))
+                        .h(space::S2)
                         .w(relative(fraction))
                         .bg(color::current(cx).border_focused),
                 )

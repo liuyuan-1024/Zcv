@@ -854,7 +854,7 @@ fn build_block_elements(
                 .flex()
                 .items_center()
                 .px(space::S6)
-                .child(div().w_full().h(px(1.)).bg(colors.border_variant))
+                .child(div().w_full().h(space::S1).bg(colors.border_variant))
                 .into_any_element(),
             DisplayBlockKind::BufferHeader => {
                 buffer_header_element(&block.block, block.row, false, editor, cx)

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use gpui::{
     App, Corner, Entity, FocusHandle, Global, MouseButton, Pixels, Window, anchored, deferred, div,
-    point, prelude::*, px,
+    point, prelude::*,
 };
 use zcv_theme::{color, space};
 
@@ -235,7 +235,7 @@ impl PickerHost {
                                         .border_color(color::current(cx).border_focused)
                                         .border_1()
                                         .border_color(color::current(cx).border_variant)
-                                        .rounded(px(8.0))
+                                        .rounded_lg()
                                         .overflow_hidden()
                                         .child(picker.clone()),
                                 ),

@@ -66,7 +66,10 @@ fn first_theme() -> &'static ThemeData {
 
 pub mod space {
     use gpui::{Pixels, px};
+    /// 1px 发丝线（分隔线、缩进参考线等）。
+    pub const S1: Pixels = px(1.0);
     pub const S2: Pixels = px(2.0);
+    pub const S4: Pixels = px(4.0);
     pub const S6: Pixels = px(6.0);
     pub const S8: Pixels = px(8.0);
     pub const S10: Pixels = px(10.0);

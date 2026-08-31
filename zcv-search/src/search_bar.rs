@@ -6,7 +6,7 @@
 
 use gpui::{
     AnyElement, App, Component, Context, Entity, IntoElement, ParentElement, Render, RenderOnce,
-    SharedString, Styled, Window, div, prelude::*, px,
+    SharedString, Styled, Window, div, prelude::*,
 };
 use zcv_actions::{
     Backtab, ClearSearch, FindNext, FindPrevious, ReplaceAll, ReplaceNext, Tab,
@@ -74,9 +74,9 @@ impl RenderOnce for SearchInput {
             .flex_1()
             .flex()
             .items_center()
-            .h(px(26.))
+            .h_8()
             .px(space::S6)
-            .rounded(px(4.))
+            .rounded_sm()
             .border_1()
             .border_color(colors.border)
             .child(self.input)
@@ -85,7 +85,7 @@ impl RenderOnce for SearchInput {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(4.))
+                    .gap(space::S4)
                     .child(
                         Button::icon(case_id, "icons/case_sensitive.svg")
                             .label("区分大小写")
@@ -537,7 +537,7 @@ impl Render for SearchBar {
                             .flex_none()
                             .flex()
                             .items_center()
-                            .gap(px(4.))
+                            .gap(space::S4)
                             .child(
                                 div()
                                     .text_color(count_color)
@@ -577,12 +577,11 @@ impl Render for SearchBar {
                                 .flex_1()
                                 .flex()
                                 .items_center()
-                                .h(px(26.))
+                                .h_8()
                                 .px(space::S6)
-                                .rounded(px(4.))
+                                .rounded_sm()
                                 .border_1()
                                 .border_color(colors.border)
-                                .bg(colors.background)
                                 .child(
                                     self.replace_input
                                         .as_ref()

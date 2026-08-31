@@ -55,12 +55,16 @@ pub struct DockStructure {
     pub bottom: DockData,
 }
 
+/// 未恢复持久化状态时采用的 Dock 默认尺寸：侧向按宽度、底部按高度。
+const DEFAULT_SIDE_SIZE: Pixels = px(240.0);
+const DEFAULT_BOTTOM_SIZE: Pixels = px(227.0);
+
 impl DockPosition {
     /// 未恢复持久化状态时采用的 Dock 单一默认尺寸。
     pub fn default_size(self) -> Pixels {
         match self {
-            Self::Left | Self::Right => px(240.0),
-            Self::Bottom => px(227.0),
+            Self::Left | Self::Right => DEFAULT_SIDE_SIZE,
+            Self::Bottom => DEFAULT_BOTTOM_SIZE,
         }
     }
 }

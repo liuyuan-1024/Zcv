@@ -2,7 +2,8 @@
 //!
 //! 高亮查询的结果是快照全局 capture 索引（跨主语言与注入语言唯一），渲染侧按索引查样式表，不再解析 capture 名。
 //!
-//! 每层（主层 + 注入层）单独产出按偏移有序的 capture 事件流（tree-sitter 天然按文档序产出），然后 k 路归并 + 全局活动栈扫描直接产出 spans——不再构造全局事件数组、全量排序或维护 BTreeMap。
+//! 每层（主层 + 注入层）单独产出按文档序排列的 capture 区间，然后 k 路归并 capture 起点；
+//! 活动栈用区间终点恢复外层高亮，避免为结束位置额外构造一份全局事件数组。
 
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
@@ -24,40 +25,29 @@ pub struct HighlightSpan {
     pub capture: u32,
 }
 
-/// 单层 capture 事件流中的一个事件（该层内按偏移有序）。
+/// 单层 capture 流中的一个区间。
 #[derive(Clone, Copy, Debug)]
-struct CaptureEvent {
-    offset: usize,
-    is_start: bool,
-    /// 快照全局 capture 名字表的索引。
+struct CaptureRange {
+    start: usize,
+    end: usize,
     capture: u32,
 }
 
-/// 归并队列项：按 (偏移, 事件类型, 深度序, 层序) 排序。
-///
-/// 同偏移下 End 先于 Start；
-/// Start 按深度升序（浅层先入栈，深层最后入栈成为栈顶），End 按深度降序（与入栈顺序对称）。
-/// 层序保证同层同偏移事件的稳定顺序。
+/// 归并队列项：起点相同时，外层区间和浅层语法树先入栈，内层高亮最后覆盖。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct QueueKey {
-    offset: usize,
-    is_start: bool,
-    depth_rank: u32,
+    start: usize,
+    end: Reverse<usize>,
+    depth: u32,
     seq: usize,
 }
 
 impl QueueKey {
-    fn new(event: &CaptureEvent, depth: u32, seq: usize) -> Self {
-        // Start：rank = depth（浅层先）；End：rank = MAX - depth（深层先）。
-        let depth_rank = if event.is_start {
-            depth
-        } else {
-            u32::MAX - depth
-        };
+    fn new(capture: &CaptureRange, depth: u32, seq: usize) -> Self {
         Self {
-            offset: event.offset,
-            is_start: event.is_start,
-            depth_rank,
+            start: capture.start,
+            end: Reverse(capture.end),
+            depth,
             seq,
         }
     }
@@ -76,10 +66,10 @@ impl SyntaxSnapshot {
             return Vec::new();
         };
 
-        // 相关层（主层 + 与范围相交的注入层），每层产出有序事件流。
-        let mut streams: Vec<(u32, Vec<CaptureEvent>)> = Vec::new();
-        if let Some(events) = collect_capture_events(language, tree, &range, text, self) {
-            streams.push((0, events));
+        // 相关层（主层 + 与范围相交的注入层），每层产出有序 capture 流。
+        let mut streams: Vec<(u32, Vec<CaptureRange>)> = Vec::new();
+        if let Some(captures) = collect_capture_ranges(language, tree, &range, text, self) {
+            streams.push((0, captures));
         }
         let mut injections: Vec<_> = self
             .injection_layers()
@@ -89,26 +79,23 @@ impl SyntaxSnapshot {
             .collect();
         injections.sort_unstable_by_key(|(depth, _, _)| *depth);
         for (depth, language, tree) in injections {
-            if let Some(events) = collect_capture_events(language, tree, &range, text, self) {
-                streams.push((depth, events));
+            if let Some(captures) = collect_capture_ranges(language, tree, &range, text, self) {
+                streams.push((depth, captures));
             }
         }
 
-        sweep_events(streams)
+        sweep_captures(streams, range.end)
     }
 }
 
-/// 在单层树上执行高亮查询，把 capture 裁剪到查询范围并产出有序事件流。
-///
-/// capture 的 Start/End 成对出现且按偏移有序（tree-sitter 按文档序产出 capture）；
-/// 裁剪保证范围内每个 capture 都是完整的一对，扫描期无需处理半开区间。
-fn collect_capture_events(
+/// 在单层树上执行高亮查询，把 capture 裁剪到查询范围并保留 Tree-sitter 的文档顺序。
+fn collect_capture_ranges(
     language: &Language,
     tree: &tree_sitter::Tree,
     range: &Range<usize>,
     text: &Snapshot,
     snapshot: &SyntaxSnapshot,
-) -> Option<Vec<CaptureEvent>> {
+) -> Option<Vec<CaptureRange>> {
     if range.start >= range.end {
         return None;
     }
@@ -118,86 +105,120 @@ fn collect_capture_events(
     let highlights = language.highlights()?;
     let mut cursor = QueryCursorHandle::new();
     cursor.set_byte_range(range.clone());
-    let mut events = Vec::new();
+    let mut ranges = Vec::new();
     let mut captures = cursor.captures(highlights, tree.root_node(), SnapshotTextProvider(text));
     while let Some((query_match, capture_index)) = captures.next() {
         let capture = query_match.captures[*capture_index];
         let capture_range = capture.node.byte_range();
         let start = capture_range.start.max(range.start);
         let end = capture_range.end.min(range.end);
+        let Some(name) = language.capture_names().get(capture.index as usize) else {
+            continue;
+        };
+        if name.starts_with('_') {
+            continue;
+        }
         // 注入层的 capture 也经此表映射，渲染侧统一查全局表。
         let Some(&global_capture) = capture_table.get(capture.index as usize) else {
             continue;
         };
         if start < end {
-            events.push(CaptureEvent {
-                offset: start,
-                is_start: true,
-                capture: global_capture,
-            });
-            events.push(CaptureEvent {
-                offset: end,
-                is_start: false,
+            ranges.push(CaptureRange {
+                start,
+                end,
                 capture: global_capture,
             });
         }
     }
-    Some(events)
+    Some(ranges)
 }
 
-/// k 路归并各层事件流，用全局活动栈直接产出非重叠 spans。
-///
-/// 栈的 LIFO 顺序即覆盖顺序：同偏移先出栈（End）后入栈（Start），同一偏移组结束后栈顶就是该区间的最内层 capture。
-fn sweep_events(streams: Vec<(u32, Vec<CaptureEvent>)>) -> Vec<HighlightSpan> {
+/// k 路归并各层 capture 起点，用活动栈直接产出非重叠 spans。
+fn sweep_captures(streams: Vec<(u32, Vec<CaptureRange>)>, range_end: usize) -> Vec<HighlightSpan> {
     let mut heap: BinaryHeap<(Reverse<QueueKey>, usize)> = BinaryHeap::new();
     for (seq, (depth, stream)) in streams.iter().enumerate() {
-        if let Some(event) = stream.first() {
-            heap.push((Reverse(QueueKey::new(event, *depth, seq)), seq));
+        if let Some(capture) = stream.first() {
+            heap.push((Reverse(QueueKey::new(capture, *depth, seq)), seq));
         }
     }
     let mut cursors = vec![0usize; streams.len()];
-    let mut stack: Vec<u32> = Vec::new();
+    let mut stack: Vec<(usize, u32)> = Vec::new();
     let mut spans: Vec<HighlightSpan> = Vec::new();
-    let mut pending_offset: Option<usize> = None;
+    let mut offset = heap
+        .peek()
+        .map(|(Reverse(key), _)| key.start)
+        .unwrap_or(range_end);
+
     while let Some((Reverse(key), seq)) = heap.pop() {
-        let offset = key.offset;
-        // 上一组结束后的活动栈顶，覆盖 [pending_offset, offset) 区间。
-        if let Some(prev) = pending_offset
-            && prev < offset
-            && let Some(&capture) = stack.last()
-        {
-            if let Some(last) = spans.last_mut()
-                && last.range.end == prev
-                && last.capture == capture
-            {
-                last.range.end = offset;
-            } else {
-                spans.push(HighlightSpan {
-                    range: prev..offset,
-                    capture,
-                });
-            }
-        }
-        // 应用本组事件：End 出栈、Start 入栈（同偏移下 End 先于 Start）。
-        let event = streams[seq].1[cursors[seq]];
-        if event.is_start {
-            stack.push(event.capture);
-        } else {
-            stack.pop();
-        }
-        pending_offset = Some(offset);
+        emit_until(key.start, &mut offset, &mut stack, &mut spans);
+
+        let capture = streams[seq].1[cursors[seq]];
+        stack.push((capture.end, capture.capture));
+
         // 推进该层游标。
         cursors[seq] += 1;
         if let Some(next) = streams[seq].1.get(cursors[seq]) {
             heap.push((Reverse(QueueKey::new(next, streams[seq].0, seq)), seq));
         }
     }
+
+    emit_until(range_end, &mut offset, &mut stack, &mut spans);
     spans
+}
+
+fn emit_until(
+    target: usize,
+    offset: &mut usize,
+    stack: &mut Vec<(usize, u32)>,
+    spans: &mut Vec<HighlightSpan>,
+) {
+    while *offset < target {
+        while stack.last().is_some_and(|(end, _)| *end <= *offset) {
+            stack.pop();
+        }
+        let Some(&(end, capture)) = stack.last() else {
+            *offset = target;
+            break;
+        };
+        let span_end = end.min(target);
+        if let Some(last) = spans.last_mut()
+            && last.range.end == *offset
+            && last.capture == capture
+        {
+            last.range.end = span_end;
+        } else {
+            spans.push(HighlightSpan {
+                range: *offset..span_end,
+                capture,
+            });
+        }
+        *offset = span_end;
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use crate::syntax_map::{parsed_syntax, rust_buffer};
+
+    fn capture_names_for(path: &str, source: &str) -> BTreeSet<String> {
+        let (buffer, syntax) = parsed_syntax(path, source);
+        let snapshot = buffer.snapshot();
+        let syntax = syntax.snapshot();
+        let names = syntax.capture_names();
+        let spans = syntax.highlights(0..snapshot.len_bytes().get(), &snapshot);
+        for pair in spans.windows(2) {
+            assert!(
+                pair[0].range.end <= pair[1].range.start,
+                "{path} 的相邻高亮 span 不应重叠"
+            );
+        }
+        spans
+            .iter()
+            .map(|span| names[span.capture as usize].to_string())
+            .collect()
+    }
 
     #[test]
     fn double_capture_on_same_node_resolves_to_the_inner_span() {
@@ -218,7 +239,7 @@ mod tests {
         assert_eq!(covering.len(), 1, "函数名区间只应被一个 span 覆盖");
         assert_eq!(
             names[covering[0].capture as usize].as_ref(),
-            "function",
+            "function.definition",
             "同节点双捕获应解析为函数名 capture"
         );
         // 相邻 spans 无重叠（含同偏移 End/Start 邻接）。
@@ -246,7 +267,7 @@ mod tests {
         assert!(
             spans
                 .iter()
-                .any(|span| names[span.capture as usize].as_ref() == "function")
+                .any(|span| names[span.capture as usize].as_ref() == "function.definition")
         );
         assert!(
             spans
@@ -258,6 +279,66 @@ mod tests {
                 .iter()
                 .all(|span| span.range.end <= snapshot.len_bytes().get())
         );
+    }
+
+    #[test]
+    fn project_queries_highlight_representative_language_constructs() {
+        let cases: &[(&str, &str, &[&str])] = &[
+            (
+                "main.rs",
+                "fn main() { let enabled = true; let count = 3; }\n",
+                &["function.definition", "boolean", "number"],
+            ),
+            (
+                "main.py",
+                "@decorator\ndef greet(name: str) -> str:\n    return f\"Hi {name}\"\n",
+                &["function.decorator", "function.definition", "type.builtin"],
+            ),
+            (
+                "main.js",
+                "const count = 3;\nconsole.log(count);\n",
+                &["keyword.declaration", "number", "function.method"],
+            ),
+            (
+                "view.jsx",
+                "const view = <Button disabled={true}>Hi</Button>;\n",
+                &["tag.component.jsx", "attribute.jsx", "boolean", "text.jsx"],
+            ),
+            (
+                "main.ts",
+                "interface User { name: string }\nconst user: User = { name: \"A\" };\n",
+                &["type", "type.builtin", "property"],
+            ),
+            (
+                "view.tsx",
+                "const view = <Button disabled={true}>Hi</Button>;\n",
+                &["tag.component.jsx", "attribute.jsx", "boolean"],
+            ),
+            (
+                "data.json",
+                "{\"enabled\": true, \"count\": 3}\n",
+                &["property.json_key", "boolean", "number"],
+            ),
+            (
+                "data.yaml",
+                "enabled: true\ncount: 3\n",
+                &["property", "boolean", "number"],
+            ),
+        ];
+
+        for (path, source, expected) in cases {
+            let captures = capture_names_for(path, source);
+            for expected in *expected {
+                assert!(
+                    captures.contains(*expected),
+                    "{path} 应产生 `{expected}`，实际为 {captures:?}"
+                );
+            }
+            assert!(
+                captures.iter().all(|name| !name.starts_with('_')),
+                "{path} 不应把查询辅助 capture 暴露给渲染层"
+            );
+        }
     }
 
     #[test]
@@ -313,7 +394,28 @@ mod tests {
         assert!(
             spans
                 .iter()
-                .any(|span| names[span.capture as usize].as_ref() == "keyword")
+                .any(|span| names[span.capture as usize].as_ref() == "keyword.declaration")
+        );
+    }
+
+    #[test]
+    fn javascript_tagged_template_injects_css_highlights() {
+        let source = "const styles = css`.item { color: red; }`;\n";
+        let (buffer, syntax) = parsed_syntax("styles.js", source);
+        let snapshot = buffer.snapshot();
+        let syntax = syntax.snapshot();
+        assert!(
+            syntax
+                .injection_layers()
+                .iter()
+                .any(|layer| layer.language.name() == "CSS")
+        );
+        let names = syntax.capture_names();
+        let spans = syntax.highlights(0..snapshot.len_bytes().get(), &snapshot);
+        assert!(
+            spans
+                .iter()
+                .any(|span| names[span.capture as usize].as_ref() == "property")
         );
     }
 }

@@ -110,6 +110,32 @@ mod tests {
     }
 
     #[test]
+    fn project_query_capture_names_resolve_to_theme_colors() {
+        for theme_id in ["dark", "light"] {
+            set_theme(theme_by_id(theme_id).expect("内置主题应存在"));
+            for name in [
+                "number",
+                "boolean",
+                "property.json_key",
+                "function.definition",
+                "function.special.definition",
+                "keyword.declaration",
+                "keyword.import",
+                "tag.component.jsx",
+                "attribute.jsx",
+                "lifetime",
+                "text.jsx",
+                "embedded",
+            ] {
+                assert!(
+                    style_for(name).color.is_some(),
+                    "{theme_id} 主题必须为项目查询 capture `{name}` 提供颜色"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn markdown_capture_rules_keep_theme_modifiers() {
         set_theme(theme_by_id("dark").expect("内置深色主题应存在"));
         assert_eq!(

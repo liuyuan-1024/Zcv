@@ -33,7 +33,7 @@ members = [
 ]
 resolver = "3"
 [workspace.package]
-version = "0.8.30"
+version = "0.8.31"
 edition = "2024"
 
 [workspace.lints.clippy]
@@ -88,7 +88,6 @@ tree-sitter-html = "0.23"
 tree-sitter-css = "0.23"
 tree-sitter-typescript = { git = "https://github.com/zed-industries/tree-sitter-typescript", rev = "e2c53597d6a5d9cf7bbe8dccde576fe1e46c5899" }
 tree-sitter-java = { git = "https://github.com/tree-sitter/tree-sitter-java", rev = "94703d5a6bed02b98e438d7cad1136c01a60ba2c" }
-tree-sitter-javascript = "0.25"
 tree-sitter-python = "0.25"
 
 # ---- 序列化 / 配置 ----
@@ -155,7 +154,6 @@ tree-sitter-bash = { opt-level = 3 }
 tree-sitter-css = { opt-level = 3 }
 tree-sitter-html = { opt-level = 3 }
 tree-sitter-java = { opt-level = 3 }
-tree-sitter-javascript = { opt-level = 3 }
 tree-sitter-json = { opt-level = 3 }
 tree-sitter-md = { opt-level = 3 }
 tree-sitter-python = { opt-level = 3 }

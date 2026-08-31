@@ -341,7 +341,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .capture_names()
-                .contains(&"tag")
+                .contains(&"tag.jsx")
         );
         assert!(jsx.injections.is_some());
 
@@ -377,7 +377,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .capture_names()
-                .contains(&"tag")
+                .contains(&"tag.jsx")
         );
         assert!(
             tsx.highlights

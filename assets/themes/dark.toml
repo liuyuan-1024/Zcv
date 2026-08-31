@@ -1,9 +1,11 @@
-# syntax theme loader 消费 fg 与 modifiers；独立 underline / bg 规则保留给后续诊断样式。
+# syntax theme loader 消费 fg 与 modifiers；
+# 独立 underline / bg 规则保留给后续诊断样式。
 appearance = "dark"
 
 "tag" = { fg = "#74ade8ff" }
 "attribute" = { fg = "#74ade8ff" }
 "comment" = { fg = "#5d636fff", modifiers = ["italic"] }
+"boolean" = { fg = "gold" }
 "constant" = { fg = "#dfc184ff" }
 "constant.numeric" = { fg = "gold" }
 "constant.builtin" = { fg = "gold" }
@@ -12,24 +14,33 @@ appearance = "dark"
 "function" = { fg = "blue" }
 "function.builtin" = { fg = "blue" }
 "function.macro" = { fg = "purple" }
+"function.special" = { fg = "purple" }
 "keyword" = { fg = "#b477cfff" }
 "keyword.control" = { fg = "purple" }
 "keyword.control.import" = { fg = "red" }
+"keyword.import" = { fg = "red" }
 "keyword.directive" = { fg = "purple" }
 "keyword.storage" = { fg = "purple" }
 "label" = { fg = "#74ade8ff" }
+"lifetime" = { fg = "#74ade8ff" }
 "namespace" = { fg = "#dce0e5ff" }
+"number" = { fg = "gold" }
 "operator" = { fg = "#6eb4bfff" }
 "keyword.operator" = { fg = "purple" }
 "special" = { fg = "blue" }
 "punctuation.special" = { fg = "#b1574bff" }
+"punctuation.bracket" = { fg = "#b2b9c6ff" }
 "punctuation.delimiter" = { fg = "#b2b9c6ff" }
+"property" = { fg = "red" }
 "string" = { fg = "#a1c181ff" }
+"text" = { fg = "#dce0e5ff" }
 "type" = { fg = "#6eb4bfff" }
-# "variable" = { fg = "blue" }
+"variable" = { fg = "#dce0e5ff" }
 "variable.builtin" = { fg = "blue" }
 "variable.parameter" = { fg = "#d07277ff" }
+"variable.special" = { fg = "blue" }
 "variable.other.member" = { fg = "red" }
+"embedded" = { fg = "#dce0e5ff" }
 
 "markup.heading" = { fg = "red" }
 "markup.raw.inline" = { fg = "green" }

@@ -9,22 +9,19 @@ use tree_sitter::Query;
 use crate::AutoClosePair;
 use crate::registry::{LanguageEntry, LanguageMatcher as M, LanguageQueries};
 
-/// tree-sitter 本身不提供查询继承；语言规格在加载时将基础查询与扩展查询合并编译。
 #[derive(Clone, Copy)]
-pub(crate) enum QuerySource {
-    Single(&'static str),
-    Combined(&'static [&'static str]),
-}
+pub(crate) struct QuerySource(&'static str);
 
 impl QuerySource {
+    pub(crate) const fn new(source: &'static str) -> Self {
+        Self(source)
+    }
+
     pub(crate) fn compile(
         self,
         grammar: &tree_sitter::Language,
     ) -> Result<Query, tree_sitter::QueryError> {
-        match self {
-            Self::Single(source) => Query::new(grammar, source),
-            Self::Combined(sources) => Query::new(grammar, &sources.join("\n")),
-        }
+        Query::new(grammar, self.0)
     }
 }
 
@@ -127,8 +124,12 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 first_line_pattern: None,
             },
             grammar: Some(|| tree_sitter_rust::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_rust::HIGHLIGHTS_QUERY)),
-            injections: Some(QuerySource::Single(tree_sitter_rust::INJECTIONS_QUERY)),
+            highlights: Some(QuerySource::new(include_str!(
+                "../queries/rust/highlights.scm"
+            ))),
+            injections: Some(QuerySource::new(include_str!(
+                "../queries/rust/injections.scm"
+            ))),
             injection_alias: None,
             queries: Some(LanguageQuerySources::from_sources(
                 include_str!("../queries/rust/brackets.scm"),
@@ -146,8 +147,12 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 ),
             },
             grammar: Some(|| tree_sitter_python::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_python::HIGHLIGHTS_QUERY)),
-            injections: None,
+            highlights: Some(QuerySource::new(include_str!(
+                "../queries/python/highlights.scm"
+            ))),
+            injections: Some(QuerySource::new(include_str!(
+                "../queries/python/injections.scm"
+            ))),
             injection_alias: None,
             queries: Some(LanguageQuerySources::from_sources(
                 include_str!("../queries/python/brackets.scm"),
@@ -164,11 +169,13 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                     r"^#!\s*(?:/usr/bin/|/bin/|/usr/local/bin/)?(?:env\s+)?(?:node|bun|deno)",
                 ),
             },
-            grammar: Some(|| tree_sitter_javascript::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_javascript::HIGHLIGHT_QUERY)),
-            injections: Some(QuerySource::Single(
-                tree_sitter_javascript::INJECTIONS_QUERY,
-            )),
+            grammar: Some(|| tree_sitter_typescript::LANGUAGE_TSX.into()),
+            highlights: Some(QuerySource::new(include_str!(
+                "../queries/javascript/highlights.scm"
+            ))),
+            injections: Some(QuerySource::new(include_str!(
+                "../queries/javascript/injections.scm"
+            ))),
             injection_alias: None,
             queries: Some(LanguageQuerySources::from_sources(
                 include_str!("../queries/javascript/brackets.scm"),
@@ -184,13 +191,12 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 first_line_pattern: None,
             },
             grammar: Some(|| tree_sitter_typescript::LANGUAGE_TSX.into()),
-            highlights: Some(QuerySource::Combined(&[
-                tree_sitter_javascript::HIGHLIGHT_QUERY,
-                tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
-            ])),
-            injections: Some(QuerySource::Single(
-                tree_sitter_javascript::INJECTIONS_QUERY,
-            )),
+            highlights: Some(QuerySource::new(include_str!(
+                "../queries/javascript/highlights.scm"
+            ))),
+            injections: Some(QuerySource::new(include_str!(
+                "../queries/javascript/injections.scm"
+            ))),
             injection_alias: None,
             queries: Some(LanguageQuerySources::from_sources(
                 include_str!("../queries/tsx/brackets.scm"),
@@ -206,13 +212,12 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 first_line_pattern: None,
             },
             grammar: Some(|| tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
-            highlights: Some(QuerySource::Combined(&[
-                tree_sitter_javascript::HIGHLIGHT_QUERY,
-                tree_sitter_typescript::HIGHLIGHTS_QUERY,
-            ])),
-            injections: Some(QuerySource::Single(
-                tree_sitter_javascript::INJECTIONS_QUERY,
-            )),
+            highlights: Some(QuerySource::new(include_str!(
+                "../queries/typescript/highlights.scm"
+            ))),
+            injections: Some(QuerySource::new(include_str!(
+                "../queries/typescript/injections.scm"
+            ))),
             injection_alias: None,
             queries: Some(LanguageQuerySources::from_sources(
                 include_str!("../queries/typescript/brackets.scm"),
@@ -228,14 +233,12 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 first_line_pattern: None,
             },
             grammar: Some(|| tree_sitter_typescript::LANGUAGE_TSX.into()),
-            highlights: Some(QuerySource::Combined(&[
-                tree_sitter_javascript::HIGHLIGHT_QUERY,
-                tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
-                tree_sitter_typescript::HIGHLIGHTS_QUERY,
-            ])),
-            injections: Some(QuerySource::Single(
-                tree_sitter_javascript::INJECTIONS_QUERY,
-            )),
+            highlights: Some(QuerySource::new(include_str!(
+                "../queries/tsx/highlights.scm"
+            ))),
+            injections: Some(QuerySource::new(include_str!(
+                "../queries/tsx/injections.scm"
+            ))),
             injection_alias: None,
             queries: Some(LanguageQuerySources::from_sources(
                 include_str!("../queries/tsx/brackets.scm"),
@@ -264,7 +267,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 first_line_pattern: None,
             },
             grammar: Some(|| tree_sitter_java::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_java::HIGHLIGHTS_QUERY)),
+            highlights: Some(QuerySource::new(tree_sitter_java::HIGHLIGHTS_QUERY)),
             injections: None,
             injection_alias: None,
             queries: None,
@@ -333,7 +336,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 ),
             },
             grammar: Some(|| tree_sitter_bash::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_bash::HIGHLIGHT_QUERY)),
+            highlights: Some(QuerySource::new(tree_sitter_bash::HIGHLIGHT_QUERY)),
             injections: None,
             injection_alias: None,
             queries: Some(LanguageQuerySources::from_sources(
@@ -365,7 +368,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 first_line_pattern: None,
             },
             grammar: Some(|| tree_sitter_toml_ng::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_toml_ng::HIGHLIGHTS_QUERY)),
+            highlights: Some(QuerySource::new(tree_sitter_toml_ng::HIGHLIGHTS_QUERY)),
             injections: None,
             injection_alias: None,
             queries: None,
@@ -378,7 +381,9 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 first_line_pattern: None,
             },
             grammar: Some(|| tree_sitter_json::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_json::HIGHLIGHTS_QUERY)),
+            highlights: Some(QuerySource::new(include_str!(
+                "../queries/json/highlights.scm"
+            ))),
             injections: None,
             injection_alias: None,
             queries: Some(LanguageQuerySources::from_sources(
@@ -395,8 +400,12 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 first_line_pattern: None,
             },
             grammar: Some(|| tree_sitter_yaml::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_yaml::HIGHLIGHTS_QUERY)),
-            injections: None,
+            highlights: Some(QuerySource::new(include_str!(
+                "../queries/yaml/highlights.scm"
+            ))),
+            injections: Some(QuerySource::new(include_str!(
+                "../queries/yaml/injections.scm"
+            ))),
             injection_alias: None,
             queries: Some(LanguageQuerySources {
                 brackets: Some(include_str!("../queries/yaml/brackets.scm")),
@@ -412,8 +421,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 first_line_pattern: None,
             },
             grammar: Some(|| tree_sitter_md::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_md::HIGHLIGHT_QUERY_BLOCK)),
-            injections: Some(QuerySource::Single(tree_sitter_md::INJECTION_QUERY_BLOCK)),
+            highlights: Some(QuerySource::new(tree_sitter_md::HIGHLIGHT_QUERY_BLOCK)),
+            injections: Some(QuerySource::new(tree_sitter_md::INJECTION_QUERY_BLOCK)),
             injection_alias: None,
             queries: Some(LanguageQuerySources::from_sources(
                 include_str!("../queries/markdown/brackets.scm"),
@@ -430,8 +439,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 first_line_pattern: None,
             },
             grammar: Some(|| tree_sitter_md::INLINE_LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_md::HIGHLIGHT_QUERY_INLINE)),
-            injections: Some(QuerySource::Single(tree_sitter_md::INJECTION_QUERY_INLINE)),
+            highlights: Some(QuerySource::new(tree_sitter_md::HIGHLIGHT_QUERY_INLINE)),
+            injections: Some(QuerySource::new(tree_sitter_md::INJECTION_QUERY_INLINE)),
             injection_alias: Some("markdown_inline"),
             queries: None,
             auto_close_pairs: Some(COMMON_PAIRS),
@@ -443,8 +452,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 first_line_pattern: None,
             },
             grammar: Some(|| tree_sitter_html::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_html::HIGHLIGHTS_QUERY)),
-            injections: Some(QuerySource::Single(tree_sitter_html::INJECTIONS_QUERY)),
+            highlights: Some(QuerySource::new(tree_sitter_html::HIGHLIGHTS_QUERY)),
+            injections: Some(QuerySource::new(tree_sitter_html::INJECTIONS_QUERY)),
             injection_alias: None,
             queries: Some(LanguageQuerySources::from_sources(
                 include_str!("../queries/html/brackets.scm"),
@@ -460,7 +469,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 first_line_pattern: None,
             },
             grammar: Some(|| tree_sitter_css::LANGUAGE.into()),
-            highlights: Some(QuerySource::Single(tree_sitter_css::HIGHLIGHTS_QUERY)),
+            highlights: Some(QuerySource::new(tree_sitter_css::HIGHLIGHTS_QUERY)),
             injections: None,
             injection_alias: None,
             queries: Some(LanguageQuerySources::from_sources(

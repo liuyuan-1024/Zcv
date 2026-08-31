@@ -41,6 +41,113 @@ fn singleton_snapshot_tracks_text_syntax_and_path(cx: &mut TestAppContext) {
     assert_eq!(updated.text().version(), updated.syntax().version());
 }
 
+/// 普通编辑器把完整文件包装成工作源 excerpt 后，语言层折叠范围必须投影到组合坐标。
+#[gpui::test]
+fn working_source_preserves_rust_fold_ranges(cx: &mut TestAppContext) {
+    let source = singleton(
+        "src/main.rs",
+        "fn main() {\n    let value = 1;\n}\nfn other() {\n    let value = 2;\n}\n",
+        cx,
+    );
+    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    cx.run_until_parked();
+
+    let source_folds = cx.read_entity(&source, |buffer, cx| buffer.fold_ranges(cx));
+    let projected_folds = cx.read_entity(&combined, |buffer, cx| buffer.fold_ranges(cx));
+
+    assert_eq!(source_folds.len(), 2, "Rust 源文档应产生两个折叠范围");
+    assert_eq!(
+        projected_folds.as_ref(),
+        source_folds.as_ref(),
+        "整文件 excerpt 不得丢失或偏移源折叠范围"
+    );
+}
+
+/// 非零源起点的 excerpt 需要把折叠范围换算到组合坐标，不能沿用源字节偏移。
+#[gpui::test]
+fn excerpt_projects_contained_fold_range_to_output_coordinates(cx: &mut TestAppContext) {
+    let source = singleton(
+        "src/main.rs",
+        "// 前置行\nfn main() {\n    let value = 1;\n}\n// 后置行\n",
+        cx,
+    );
+    cx.run_until_parked();
+    let source_fold = cx.read_entity(&source, |buffer, cx| {
+        buffer
+            .fold_ranges(cx)
+            .first()
+            .expect("Rust 函数应产生折叠范围")
+            .clone()
+    });
+    let source_start = cx.read_entity(&source, |buffer, cx| {
+        buffer
+            .snapshot(cx)
+            .text()
+            .line_start_byte(zcv_text::Line::new(1))
+            .expect("函数起始行应存在")
+            .get()
+    });
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(vec![MultiBufferExcerpt::line_range(source, 1..4, cx)], cx);
+    });
+
+    let projected = cx.read_entity(&combined, |buffer, cx| buffer.fold_ranges(cx));
+    assert_eq!(
+        projected.as_ref(),
+        [FoldRange {
+            range: source_fold.range.start - source_start..source_fold.range.end - source_start,
+        }],
+        "折叠范围应相对 excerpt 输出起点投影"
+    );
+}
+
+/// 后续 excerpt 的组合起点非零：折叠范围投影除了扣掉源起点，还必须叠加组合偏移。
+#[gpui::test]
+fn fold_projection_accounts_for_nonzero_output_start(cx: &mut TestAppContext) {
+    let filler = singleton("src/a.rs", "zero\n", cx);
+    let source = singleton(
+        "src/main.rs",
+        "// 前置行\nfn main() {\n    let value = 1;\n}\n",
+        cx,
+    );
+    cx.run_until_parked();
+    let source_folds = cx.read_entity(&source, |buffer, cx| buffer.fold_ranges(cx));
+    let source_start = cx.read_entity(&source, |buffer, cx| {
+        buffer
+            .snapshot(cx)
+            .text()
+            .line_start_byte(zcv_text::Line::new(1))
+            .expect("函数起始行应存在")
+            .get()
+    });
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                MultiBufferExcerpt::line_range(filler, 0..1, cx),
+                MultiBufferExcerpt::line_range(source, 1..4, cx),
+            ],
+            cx,
+        );
+    });
+
+    let (projected, output_start) = cx.read_entity(&combined, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        let output_start = snapshot.excerpts()[1].output_range().start().get();
+        assert!(output_start > 0, "第二个 excerpt 的组合起点必须非零");
+        (buffer.fold_ranges(cx), output_start)
+    });
+    assert_eq!(
+        projected.as_ref(),
+        [FoldRange {
+            range: output_start + source_folds[0].range.start - source_start
+                ..output_start + source_folds[0].range.end - source_start,
+        }],
+        "折叠范围应叠加后续 excerpt 的组合起点偏移"
+    );
+}
+
 #[gpui::test]
 fn excerpts_preserve_order_and_map_output_to_source(cx: &mut TestAppContext) {
     let first = singleton("src/a.rs", "zero\none\ntwo\n", cx);

@@ -1597,14 +1597,39 @@ impl MultiBuffer {
         }
     }
 
-    /// 当前已安装解析对应的折叠范围（Arc 共享，O(1) 克隆）。
+    /// 当前已安装解析对应的折叠范围。
     ///
-    /// singleton 直接返回 LanguageBuffer 的共享缓存（多个 Editor 不重复计算）；
-    /// 组合文档的投影没有语言层，不提供折叠。
+    /// singleton 直接返回 LanguageBuffer 的共享缓存；
+    /// 组合文档只投影完整落在单个 excerpt 内的源折叠范围，避免跨越未展示内容或文件边界生成无效折叠。
     pub fn fold_ranges(&self, cx: &App) -> Arc<[FoldRange]> {
         match &self.kind {
             MultiBufferKind::Singleton(singleton) => singleton.read(cx).fold_ranges(),
-            MultiBufferKind::Excerpts(_) => Arc::from([]),
+            MultiBufferKind::Excerpts(state) => {
+                let mut projected = Vec::new();
+                for mapping in &state.mappings {
+                    let source_start = mapping.source_range.start().get();
+                    let source_end = mapping.source_range.end().get();
+                    let output_start = mapping.output_range.start().get();
+                    let output_end = mapping.output_range.end().get();
+                    let source_folds = state.sources[mapping.source_index]
+                        .entity
+                        .read(cx)
+                        .fold_ranges(cx);
+
+                    projected.extend(source_folds.iter().filter_map(|fold| {
+                        if fold.range.start < source_start || fold.range.end > source_end {
+                            return None;
+                        }
+                        let start = output_start + fold.range.start - source_start;
+                        let end = output_start + fold.range.end - source_start;
+                        (start < end && end <= output_end)
+                            .then_some(FoldRange { range: start..end })
+                    }));
+                }
+                projected.sort_unstable_by_key(|fold| (fold.range.start, fold.range.end));
+                projected.dedup();
+                Arc::from(projected)
+            }
         }
     }
 

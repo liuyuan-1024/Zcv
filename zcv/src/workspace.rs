@@ -21,9 +21,7 @@ use zcv_actions::{
 };
 use zcv_editor::Editor;
 use zcv_git::{DiffBase, GitRevision};
-use zcv_project::{
-    ActiveProjectRoot, DiffRequest, GitOperationKind, GitOperationOutcome, GitStoreEvent, Project,
-};
+use zcv_project::{DiffRequest, GitOperationKind, GitOperationOutcome, GitStoreEvent, Project};
 use zcv_search::ProjectSearchButton;
 use zcv_settings::SettingsStore;
 use zcv_theme::{ThemeChoice, color, typography};
@@ -123,13 +121,19 @@ fn switch_project_callback() -> OnProjectSelected {
         };
         add_to_recent(&root.to_string_lossy());
         // 先保存当前窗口边界（全局默认 + 旧项目记录）；随后窗口不重建，尺寸自然保持。
-        save_window_bounds(window, app);
+        let current_root = window.root::<Workspace>().flatten().and_then(|workspace| {
+            workspace
+                .read(app)
+                .project()
+                .read(app)
+                .root()
+                .map(Path::to_path_buf)
+        });
+        save_window_bounds(current_root.as_deref(), window, app);
         // 旧工作区根即将被替换销毁，节流中的布局保存会随实体释放而丢失，先冲刷落盘。
         if let Some(Some(workspace)) = window.root::<Workspace>() {
             workspace.update(app, |workspace, cx| workspace.flush_layout(cx));
         }
-        // 新项目根先于替换注册为全局显示基准（breadcrumbs 相对化查询按新根）。
-        app.set_global(ActiveProjectRoot(Some(root.clone())));
         window.replace_root(app, |window, cx| build_workspace(&Some(root), window, cx));
     })
 }
@@ -156,8 +160,6 @@ pub(crate) fn open_empty_workspace(cx: &mut App) -> anyhow::Result<()> {
 
 /// 项目与空工作区共用同一条窗口创建路径；差异只在 Project 是否含 worktree。
 fn open_workspace_window(root: Option<PathBuf>, cx: &mut App) -> anyhow::Result<()> {
-    // 项目根作为全局显示基准注册（breadcrumbs 相对化查询；RootChanged 时更新）。
-    cx.set_global(ActiveProjectRoot(root.clone()));
     // 窗口边界恢复：项目记录 → 全局默认 → 初始居中。
     let (window_bounds, display_id) =
         load_window_bounds(root.as_deref(), cx).unwrap_or_else(|| {
@@ -216,7 +218,8 @@ fn initialize_common_workspace(
     cx: &mut Context<Workspace>,
 ) {
     let outline = cx.new(OutlinePanel::new);
-    let terminal = cx.new(TerminalPanel::new);
+    let terminal_project = workspace.project().clone();
+    let terminal = cx.new(|cx| TerminalPanel::new(terminal_project, cx));
 
     let terminal_for_new = terminal.clone();
     register_panel(workspace, outline, DockPosition::Left, window, cx);
@@ -272,7 +275,8 @@ fn initialize_common_workspace(
             );
             return;
         }
-        save_window_bounds(window, cx);
+        let root = workspace.project().read(cx).root().map(Path::to_path_buf);
+        save_window_bounds(root.as_deref(), window, cx);
         workspace.flush_layout(cx);
         cx.quit();
     });
@@ -341,10 +345,15 @@ fn initialize_common_workspace(
     });
 
     let pane = workspace.pane().clone();
+    let breadcrumbs_project = workspace.project().clone();
     pane.update(cx, |pane, cx| {
         let toolbar = pane.toolbar().clone();
         toolbar.update(cx, |toolbar, cx| {
-            toolbar.add_item(cx.new(|_| Breadcrumbs::new()), window, cx);
+            toolbar.add_item(
+                cx.new(|_| Breadcrumbs::new(breadcrumbs_project)),
+                window,
+                cx,
+            );
             toolbar.add_item(cx.new(|_| FileToolbarControls::new()), window, cx);
         });
     });
@@ -641,7 +650,6 @@ fn initialize_workspace(
             &project,
             move |_workspace, _project, event, cx| match event {
                 zcv_project::ProjectEvent::RootChanged(root) => {
-                    cx.set_global(ActiveProjectRoot(Some(root.clone())));
                     project_tree_for_project.update(cx, |tree, cx| {
                         tree.set_root(root.clone(), cx);
                     });

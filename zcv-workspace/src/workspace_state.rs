@@ -29,7 +29,7 @@ use crate::preview::provider_for;
 use crate::status_bar::StatusBar;
 use crate::toast::{ToastAction, ToastKind, ToastLayer};
 use crate::window_bounds;
-use crate::window_controls::{handle_minimize, handle_toggle_maximize};
+use crate::window_controls::{ToggleMaximizeWindow, handle_minimize};
 
 const LAYOUT_SAVE_THROTTLE: Duration = Duration::from_millis(200);
 
@@ -686,9 +686,23 @@ impl Workspace {
     }
 
     fn handle_quit(&mut self, _: &QuitWindow, window: &mut Window, cx: &mut Context<Self>) {
-        window_bounds::save_window_bounds(window, cx);
+        let root = self.project.read(cx).root().map(Path::to_path_buf);
+        window_bounds::save_window_bounds(root.as_deref(), window, cx);
         self.flush_layout(cx);
         cx.quit();
+    }
+
+    fn handle_toggle_maximize(
+        &mut self,
+        _: &ToggleMaximizeWindow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.zoom_window();
+        // macOS 的缩放经执行器异步生效，此处读到的是缩放前的还原尺寸——这恰是要持久化的窗口尺寸；
+        // 缩放后的最终尺寸由退出与切换时的保存补写（那时读取的是真实帧）。
+        let root = self.project.read(cx).root().map(Path::to_path_buf);
+        window_bounds::save_window_bounds(root.as_deref(), window, cx);
     }
 
     fn handle_save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
@@ -779,7 +793,7 @@ impl Render for Workspace {
         ))
         .on_action(cx.listener(Self::handle_quit))
         .on_action(handle_minimize)
-        .on_action(handle_toggle_maximize)
+        .on_action(cx.listener(Self::handle_toggle_maximize))
         .on_action(cx.listener(Self::handle_open_settings))
         .on_action(cx.listener(Self::handle_save))
         .on_action(cx.listener(|this, _: &ToggleLeftDock, window, cx| {

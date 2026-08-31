@@ -4,7 +4,10 @@
 //! 层级过长时保留首尾各六段并折叠中间内容。
 //! 订阅 item 的 `UpdateBreadcrumbs` 事件，路径变化时自动刷新。
 
-use gpui::{AnyElement, Context, EventEmitter, Render, Subscription, Window, div, prelude::*};
+use gpui::{
+    AnyElement, Context, Entity, EventEmitter, Render, Subscription, Window, div, prelude::*,
+};
+use zcv_project::Project;
 use zcv_theme::{color, typography};
 use zcv_workspace::{ItemEvent, ItemHandle};
 use zcv_workspace::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
@@ -12,19 +15,15 @@ use zcv_workspace::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 const MAX_SEGMENTS: usize = 12;
 
 pub(crate) struct Breadcrumbs {
+    project: Entity<Project>,
     active_item: Option<Box<dyn ItemHandle>>,
     subscription: Option<Subscription>,
 }
 
-impl Default for Breadcrumbs {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Breadcrumbs {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(project: Entity<Project>) -> Self {
         Self {
+            project,
             active_item: None,
             subscription: None,
         }
@@ -35,10 +34,11 @@ impl EventEmitter<ToolbarItemEvent> for Breadcrumbs {}
 
 impl Render for Breadcrumbs {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let project = self.project.read(cx);
         let segments = self
             .active_item
             .as_ref()
-            .and_then(|item| item.breadcrumbs(cx));
+            .and_then(|item| item.breadcrumbs(project.root(), cx));
 
         let mut children: Vec<AnyElement> = Vec::new();
 
@@ -156,7 +156,8 @@ mod tests {
     #[gpui::test]
     fn path_change_does_not_read_editor_during_its_update(cx: &mut TestAppContext) {
         let editor = cx.new(Editor::single_line);
-        let breadcrumbs = cx.new(|_| Breadcrumbs::new());
+        let project = cx.new(Project::empty);
+        let breadcrumbs = cx.new(|_| Breadcrumbs::new(project));
 
         cx.add_window_view(|window, cx| {
             breadcrumbs.update(cx, |breadcrumbs, cx| {

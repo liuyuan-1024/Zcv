@@ -53,12 +53,13 @@ impl Item for Editor {
         ToolbarItemLocation::PrimaryLeft
     }
 
-    fn breadcrumbs(&self, cx: &App) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
+    fn breadcrumbs(
+        &self,
+        project_root: Option<&Path>,
+        cx: &App,
+    ) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
         let path = self.file_path(cx)?;
-        // 根相对化查询宿主注册的活动项目根（RootChanged 时由装配层更新）。
-        let relative = cx
-            .try_global::<zcv_project::ActiveProjectRoot>()
-            .and_then(|root| root.0.as_deref())
+        let relative = project_root
             .and_then(|root| path.strip_prefix(root).ok())
             .unwrap_or(&path);
         Some((vec![relative.to_string_lossy().into_owned().into()], None))
@@ -164,6 +165,20 @@ mod tests {
             events,
             vec![ItemEvent::UpdateTab, ItemEvent::UpdateBreadcrumbs]
         );
+    }
+
+    #[gpui::test]
+    fn breadcrumbs_use_the_supplied_project_root(cx: &mut TestAppContext) {
+        let editor = cx.new(Editor::single_line);
+        cx.update_entity(&editor, |editor, cx| {
+            editor.set_file_path(PathBuf::from("/project/src/main.rs"), cx);
+        });
+
+        let breadcrumbs = cx.read_entity(&editor, |editor, cx| {
+            Item::breadcrumbs(editor, Some(Path::new("/project")), cx)
+        });
+        let segments = breadcrumbs.expect("编辑器应提供面包屑").0;
+        assert_eq!(segments.as_slice(), &[SharedString::from("src/main.rs")]);
     }
 
     #[gpui::test]

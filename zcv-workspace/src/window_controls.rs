@@ -4,8 +4,6 @@ use gpui::{Window, div, prelude::*, px, rgb, svg};
 pub(crate) use zcv_actions::{MinimizeWindow, QuitWindow, ToggleMaximizeWindow};
 use zcv_theme::space;
 
-use crate::window_bounds;
-
 const PIP_GROUP: &str = "window-controls.pips";
 
 // ── 窗口 action handler；Quit 由 Workspace 在刷新布局状态后处理 ──
@@ -13,17 +11,6 @@ const PIP_GROUP: &str = "window-controls.pips";
 pub(crate) fn handle_minimize(_: &MinimizeWindow, window: &mut Window, _: &mut gpui::App) {
     window.minimize_window();
 }
-pub(crate) fn handle_toggle_maximize(
-    _: &ToggleMaximizeWindow,
-    window: &mut Window,
-    cx: &mut gpui::App,
-) {
-    window.zoom_window();
-    // macOS 的缩放经执行器异步生效，此处读到的是缩放前的还原尺寸——这恰是要持久化的窗口尺寸；
-    // 缩放后的最终尺寸由退出与切换时的保存补写（那时读取的是真实帧）。
-    window_bounds::save_window_bounds(window, cx);
-}
-
 pub(crate) fn render(window: &Window) -> gpui::Stateful<gpui::Div> {
     let active = window.is_window_active();
 

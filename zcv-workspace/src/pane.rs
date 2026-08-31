@@ -1152,8 +1152,12 @@ mod tests {
             self.source_item.item_path(cx)
         }
 
-        fn breadcrumbs(&self, cx: &App) -> Option<(Vec<gpui::SharedString>, Option<gpui::Font>)> {
-            self.source_item.breadcrumbs(cx)
+        fn breadcrumbs(
+            &self,
+            project_root: Option<&Path>,
+            cx: &App,
+        ) -> Option<(Vec<gpui::SharedString>, Option<gpui::Font>)> {
+            self.source_item.breadcrumbs(project_root, cx)
         }
 
         fn rename_path(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {

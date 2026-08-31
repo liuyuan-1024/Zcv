@@ -203,8 +203,12 @@ impl Item for SvgPreviewView {
         ToolbarItemLocation::PrimaryLeft
     }
 
-    fn breadcrumbs(&self, cx: &App) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
-        let (mut segments, font) = self.source_item.breadcrumbs(cx)?;
+    fn breadcrumbs(
+        &self,
+        project_root: Option<&Path>,
+        cx: &App,
+    ) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
+        let (mut segments, font) = self.source_item.breadcrumbs(project_root, cx)?;
         segments.push("Preview".into());
         Some((segments, font))
     }

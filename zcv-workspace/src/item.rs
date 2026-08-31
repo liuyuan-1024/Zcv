@@ -59,7 +59,11 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
         ToolbarItemLocation::Hidden
     }
 
-    fn breadcrumbs(&self, _cx: &App) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
+    fn breadcrumbs(
+        &self,
+        _project_root: Option<&Path>,
+        _cx: &App,
+    ) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
         None
     }
 
@@ -156,7 +160,11 @@ pub trait ItemHandle: Send + 'static {
     fn act_as_type(&self, type_id: TypeId, cx: &App) -> Option<AnyEntity>;
     fn subscribe_to_item_events(&self, cx: &mut App, handler: ItemEventHandler) -> Subscription;
     fn breadcrumb_location(&self, cx: &App) -> ToolbarItemLocation;
-    fn breadcrumbs(&self, cx: &App) -> Option<(Vec<SharedString>, Option<gpui::Font>)>;
+    fn breadcrumbs(
+        &self,
+        project_root: Option<&Path>,
+        cx: &App,
+    ) -> Option<(Vec<SharedString>, Option<gpui::Font>)>;
 }
 
 impl dyn ItemHandle {
@@ -264,7 +272,11 @@ impl<T: Item> ItemHandle for Entity<T> {
         self.read(cx).breadcrumb_location(cx)
     }
 
-    fn breadcrumbs(&self, cx: &App) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
-        self.read(cx).breadcrumbs(cx)
+    fn breadcrumbs(
+        &self,
+        project_root: Option<&Path>,
+        cx: &App,
+    ) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
+        self.read(cx).breadcrumbs(project_root, cx)
     }
 }

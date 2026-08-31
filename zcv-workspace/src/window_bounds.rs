@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use gpui::{App, Bounds, DisplayId, Pixels, Window, WindowBounds, point, px, size};
 use serde::{Deserialize, Serialize};
-use zcv_project::ActiveProjectRoot;
 use zcv_settings::config_dir;
 
 use crate::persistence;
@@ -190,17 +189,14 @@ fn load_from(path: &Path, root: Option<&Path>) -> Option<(WindowBounds, Option<S
 }
 
 /// 保存当前窗口边界：同时刷新全局默认与当前项目记录。
-/// 项目根读自全局注册的当前项目，失败仅记录日志、不阻塞主流程。
-pub fn save_window_bounds(window: &mut Window, cx: &mut App) {
-    let root = cx
-        .try_global::<ActiveProjectRoot>()
-        .and_then(|root| root.0.clone());
+/// 项目根由持有当前窗口 Project 的调用方显式传入，失败仅记录日志、不阻塞主流程。
+pub fn save_window_bounds(root: Option<&Path>, window: &mut Window, cx: &mut App) {
     let display_uuid = window
         .display(cx)
         .and_then(|display| display.uuid().ok())
         .map(|uuid| uuid.to_string());
     let bounds = window.window_bounds();
-    if let Err(error) = save_to(&window_bounds_path(), root.as_deref(), bounds, display_uuid) {
+    if let Err(error) = save_to(&window_bounds_path(), root, bounds, display_uuid) {
         eprintln!("保存窗口边界失败：{error:#}");
     }
 }

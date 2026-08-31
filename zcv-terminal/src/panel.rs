@@ -8,6 +8,7 @@ use gpui::{
 };
 use serde::{Deserialize, Serialize};
 use zcv_actions::NewTerminal;
+use zcv_project::Project;
 use zcv_ui::Button;
 use zcv_workspace::{Pane, PaneEvent, Panel, PanelEvent};
 
@@ -21,6 +22,7 @@ struct SerializedTerminal {
 use crate::{TerminalBuilder, TerminalView};
 
 pub struct TerminalPanel {
+    project: Entity<Project>,
     pane: Entity<Pane>,
     _subscriptions: Vec<Subscription>,
     /// 首次渲染时注册带 window 的订阅（构造函数中没有 Window）。
@@ -32,7 +34,7 @@ pub struct TerminalPanel {
 impl EventEmitter<PanelEvent> for TerminalPanel {}
 
 impl TerminalPanel {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
         let pane = cx.new(Pane::new);
         let weak = cx.weak_entity();
         let pane_for_button = pane.clone();
@@ -53,6 +55,7 @@ impl TerminalPanel {
             });
         });
         TerminalPanel {
+            project,
             pane: pane_for_button,
             _subscriptions: Vec::new(),
             initialized: false,
@@ -60,12 +63,14 @@ impl TerminalPanel {
         }
     }
 
-    /// 创建终端：工作目录取当前项目根（ActiveProjectRoot），shell 取用户设置。
+    /// 创建终端：工作目录取所属 Project 的当前根，shell 取用户设置。
     /// 面板激活懒创建与外部新建终端命令共用。
     pub fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let cwd = cx
-            .try_global::<zcv_project::ActiveProjectRoot>()
-            .and_then(|root| root.0.clone());
+        let cwd = self
+            .project
+            .read(cx)
+            .root()
+            .map(std::path::Path::to_path_buf);
         self.new_terminal_with_cwd(cwd, window, cx);
     }
 

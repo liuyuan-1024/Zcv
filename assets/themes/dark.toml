@@ -32,6 +32,7 @@ appearance = "dark"
 "punctuation.bracket" = { fg = "#b2b9c6ff" }
 "punctuation.delimiter" = { fg = "#b2b9c6ff" }
 "property" = { fg = "red" }
+"selector" = { fg = "red" }
 "string" = { fg = "#a1c181ff" }
 "text" = { fg = "#dce0e5ff" }
 "type" = { fg = "#6eb4bfff" }

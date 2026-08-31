@@ -123,6 +123,7 @@ mod tests {
                 "keyword.import",
                 "tag.component.jsx",
                 "attribute.jsx",
+                "selector.class",
                 "lifetime",
                 "text.jsx",
                 "embedded",

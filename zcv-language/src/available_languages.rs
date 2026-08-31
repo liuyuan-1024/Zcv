@@ -267,7 +267,9 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 first_line_pattern: None,
             },
             grammar: Some(|| tree_sitter_java::LANGUAGE.into()),
-            highlights: Some(QuerySource::new(tree_sitter_java::HIGHLIGHTS_QUERY)),
+            highlights: Some(QuerySource::new(include_str!(
+                "../queries/java/highlights.scm"
+            ))),
             injections: None,
             injection_alias: None,
             queries: None,
@@ -336,7 +338,9 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 ),
             },
             grammar: Some(|| tree_sitter_bash::LANGUAGE.into()),
-            highlights: Some(QuerySource::new(tree_sitter_bash::HIGHLIGHT_QUERY)),
+            highlights: Some(QuerySource::new(include_str!(
+                "../queries/bash/highlights.scm"
+            ))),
             injections: None,
             injection_alias: None,
             queries: Some(LanguageQuerySources::from_sources(
@@ -368,7 +372,9 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 first_line_pattern: None,
             },
             grammar: Some(|| tree_sitter_toml_ng::LANGUAGE.into()),
-            highlights: Some(QuerySource::new(tree_sitter_toml_ng::HIGHLIGHTS_QUERY)),
+            highlights: Some(QuerySource::new(include_str!(
+                "../queries/toml/highlights.scm"
+            ))),
             injections: None,
             injection_alias: None,
             queries: None,
@@ -421,8 +427,12 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 first_line_pattern: None,
             },
             grammar: Some(|| tree_sitter_md::LANGUAGE.into()),
-            highlights: Some(QuerySource::new(tree_sitter_md::HIGHLIGHT_QUERY_BLOCK)),
-            injections: Some(QuerySource::new(tree_sitter_md::INJECTION_QUERY_BLOCK)),
+            highlights: Some(QuerySource::new(include_str!(
+                "../queries/markdown/highlights.scm"
+            ))),
+            injections: Some(QuerySource::new(include_str!(
+                "../queries/markdown/injections.scm"
+            ))),
             injection_alias: None,
             queries: Some(LanguageQuerySources::from_sources(
                 include_str!("../queries/markdown/brackets.scm"),
@@ -439,8 +449,12 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 first_line_pattern: None,
             },
             grammar: Some(|| tree_sitter_md::INLINE_LANGUAGE.into()),
-            highlights: Some(QuerySource::new(tree_sitter_md::HIGHLIGHT_QUERY_INLINE)),
-            injections: Some(QuerySource::new(tree_sitter_md::INJECTION_QUERY_INLINE)),
+            highlights: Some(QuerySource::new(include_str!(
+                "../queries/markdown_inline/highlights.scm"
+            ))),
+            injections: Some(QuerySource::new(include_str!(
+                "../queries/markdown_inline/injections.scm"
+            ))),
             injection_alias: Some("markdown_inline"),
             queries: None,
             auto_close_pairs: Some(COMMON_PAIRS),
@@ -452,8 +466,12 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 first_line_pattern: None,
             },
             grammar: Some(|| tree_sitter_html::LANGUAGE.into()),
-            highlights: Some(QuerySource::new(tree_sitter_html::HIGHLIGHTS_QUERY)),
-            injections: Some(QuerySource::new(tree_sitter_html::INJECTIONS_QUERY)),
+            highlights: Some(QuerySource::new(include_str!(
+                "../queries/html/highlights.scm"
+            ))),
+            injections: Some(QuerySource::new(include_str!(
+                "../queries/html/injections.scm"
+            ))),
             injection_alias: None,
             queries: Some(LanguageQuerySources::from_sources(
                 include_str!("../queries/html/brackets.scm"),
@@ -469,7 +487,9 @@ pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
                 first_line_pattern: None,
             },
             grammar: Some(|| tree_sitter_css::LANGUAGE.into()),
-            highlights: Some(QuerySource::new(tree_sitter_css::HIGHLIGHTS_QUERY)),
+            highlights: Some(QuerySource::new(include_str!(
+                "../queries/css/highlights.scm"
+            ))),
             injections: None,
             injection_alias: None,
             queries: Some(LanguageQuerySources::from_sources(

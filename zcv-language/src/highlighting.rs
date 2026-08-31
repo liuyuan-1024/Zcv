@@ -324,6 +324,63 @@ mod tests {
                 "enabled: true\ncount: 3\n",
                 &["property", "boolean", "number"],
             ),
+            (
+                "Main.java",
+                "@Deprecated public class Main { static final int MAX = 3; String greet(String name) { return \"Hi \" + name; } }\n",
+                &[
+                    "attribute",
+                    "type",
+                    "type.builtin",
+                    "function.method",
+                    "number",
+                ],
+            ),
+            (
+                "script.sh",
+                "#!/usr/bin/env bash\nfunction greet() { local name=\"$1\"; echo \"Hi $name\"; }\n",
+                &["keyword.directive", "keyword", "function", "variable"],
+            ),
+            (
+                "Cargo.toml",
+                "[package]\nname = \"zcv\"\nenabled = true\ncount = 3\npublished = 2026-08-31\n",
+                &[
+                    "type",
+                    "property",
+                    "string",
+                    "boolean",
+                    "number",
+                    "string.special",
+                ],
+            ),
+            (
+                "README.md",
+                "# 标题\n\n**加粗** 和 *强调*，另见 [链接](https://example.com)。\n",
+                &["text.title", "text.strong", "text.emphasis", "text.uri"],
+            ),
+            (
+                "index.html",
+                "<!doctype html><main class=\"card\">Hello &amp;</main>\n",
+                &[
+                    "tag.doctype",
+                    "tag",
+                    "attribute",
+                    "string",
+                    "string.special",
+                ],
+            ),
+            (
+                "main.css",
+                ".card:hover { color: #fff; margin: 1rem; --gap: 2px; }\n",
+                &[
+                    "selector.class",
+                    "selector.pseudo",
+                    "property",
+                    "string.special",
+                    "number",
+                    "type.unit",
+                    "variable",
+                ],
+            ),
         ];
 
         for (path, source, expected) in cases {

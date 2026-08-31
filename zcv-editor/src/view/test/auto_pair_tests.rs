@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use gpui::{AppContext, TestAppContext, VisualTestContext};
 use zcv_actions::Backspace;
 use zcv_language::LanguageBuffer;
-use zcv_text::{Buffer, BufferConfig, ByteOffset};
+use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
+use zcv_text::{Buffer, BufferConfig, ByteOffset, TextRange};
 
 use super::Editor;
 use crate::selection::{Selection, SelectionSet};
@@ -92,6 +93,59 @@ fn backspace(editor: &gpui::Entity<Editor>, cx: &mut VisualTestContext) {
             editor.handle_backspace(&Backspace, window, cx);
         });
     });
+}
+
+#[gpui::test]
+fn each_composite_selection_uses_its_source_language_pairs(cx: &mut TestAppContext) {
+    let plain_buffer = cx.new(|_| {
+        Buffer::scratch("x ".to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+    });
+    let rust_buffer = cx.new(|_| {
+        Buffer::scratch("y ".to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+    });
+    let plain = cx.new({
+        let plain_buffer = plain_buffer.clone();
+        move |cx| LanguageBuffer::new(plain_buffer, None, cx)
+    });
+    let rust = cx.new({
+        let rust_buffer = rust_buffer.clone();
+        move |cx| LanguageBuffer::new(rust_buffer, Some(PathBuf::from("test.rs")), cx)
+    });
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                MultiBufferExcerpt::new(
+                    plain,
+                    TextRange::new(ByteOffset::ZERO, ByteOffset::new(2)).unwrap(),
+                    Vec::new(),
+                ),
+                MultiBufferExcerpt::new(
+                    rust,
+                    TextRange::new(ByteOffset::ZERO, ByteOffset::new(2)).unwrap(),
+                    Vec::new(),
+                ),
+            ],
+            cx,
+        );
+    });
+    let (editor, cx) = cx.add_window_view({
+        let combined = combined.clone();
+        move |_, cx| {
+            let mut editor = Editor::for_multi_buffer(combined, cx);
+            editor.set_selections(SelectionSet::new(vec![
+                Selection::caret(ByteOffset::new(1)),
+                Selection::caret(ByteOffset::new(4)),
+            ]));
+            editor
+        }
+    });
+    cx.run_until_parked();
+
+    type_text(&editor, cx, "(");
+
+    assert_eq!(buffer_text(&plain_buffer, cx), "x( ");
+    assert_eq!(buffer_text(&rust_buffer, cx), "y() ");
 }
 
 #[gpui::test]

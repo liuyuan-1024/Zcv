@@ -182,7 +182,15 @@ mod tests {
         assert!(events.borrow().contains(&EditorEvent::DirtyChanged));
 
         events.borrow_mut().clear();
-        let buffer = cx.read_entity(&editor, |editor, cx| editor.text_buffer(cx));
+        // dirty 的权威来源是工作区源 Buffer；
+        // 投影 Buffer 只由组合文档重建，不参与保存状态。
+        let buffer = cx.read_entity(&editor, |editor, cx| {
+            editor
+                .multi_buffer()
+                .read(cx)
+                .as_singleton(cx)
+                .expect("单行编辑器的整文件源应可取回")
+        });
         cx.update_entity(&buffer, |buffer, cx| {
             buffer.mark_saved();
             cx.notify();
@@ -201,8 +209,7 @@ mod tests {
         let source = project.update(cx, |project, cx| {
             project.open_buffer(&path, cx).expect("应打开源文件")
         });
-        let source_len =
-            cx.read_entity(&source, |source, cx| source.snapshot(cx).text().len_bytes());
+        let source_len = cx.read_entity(&source, |source, cx| source.text_snapshot(cx).len_bytes());
         let combined = cx.new(MultiBuffer::empty);
         combined.update(cx, |combined, cx| {
             combined.set_excerpts(
@@ -245,10 +252,13 @@ mod tests {
         fs::write(&old_path, "旧内容").expect("应创建测试文件");
 
         let project = cx.new(|cx| Project::new(root, cx));
-        // open_buffer 返回已承载规范路径的 MultiBuffer。
-        let editor = project.update(cx, |project, cx| {
-            let multi_buffer = project.open_buffer(&old_path, cx).expect("应打开测试文件");
-            cx.new(|cx| Editor::for_multi_buffer(multi_buffer, cx))
+        // open_buffer 返回已承载规范路径的 LanguageBuffer（与 item_provider 同路径包装成组合文档）。
+        let language_buffer = project.update(cx, |project, cx| {
+            project.open_buffer(&old_path, cx).expect("应打开测试文件")
+        });
+        let editor = cx.new(|cx| {
+            let multi_buffer = cx.new(|cx| MultiBuffer::from_working_source(language_buffer, cx));
+            Editor::for_multi_buffer(multi_buffer, cx)
         });
 
         // 项目先迁移，再逐个 item 迁移路径（走真实 ItemHandle 实现）。

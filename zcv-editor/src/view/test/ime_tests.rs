@@ -151,12 +151,11 @@ fn ime_candidate_remains_in_the_syntax_highlight_pipeline(cx: &mut TestAppContex
     cx.run_until_parked();
 
     cx.read_entity(&editor, |editor, cx| {
-        let snapshot = editor.text_buffer(cx).read(cx).snapshot();
         let composition = editor.composition.as_ref().unwrap();
         let marked = composition.ranges[composition.primary_index];
-        let syntax_snapshot = editor.display_map.syntax_snapshot();
-        let names = syntax_snapshot.capture_names();
-        let highlights = syntax_snapshot.highlights(0..snapshot.len_bytes().get(), &snapshot);
+        let snapshot = editor.multi_buffer.read(cx).snapshot(cx);
+        let names = snapshot.capture_names();
+        let highlights = snapshot.highlights(0..snapshot.text().len_bytes().get());
         assert!(highlights.iter().any(|highlight| {
             names[highlight.capture as usize].as_ref() == "string"
                 && highlight.range.start <= marked.start().get()

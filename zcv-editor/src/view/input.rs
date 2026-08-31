@@ -130,7 +130,7 @@ impl Editor {
         };
         // 编辑统一入口负责提交与选区落位；失败时恢复组合会话（选区已由入口恢复）。
         if self
-            .change_with_after(before_selections, cx, |buffer| {
+            .change_with_after(before_selections, metadata.clone(), cx, |buffer| {
                 replace_selections(buffer, &targets, &text, metadata)
             })
             .is_err()
@@ -225,12 +225,7 @@ impl Editor {
     }
 
     fn is_current_history_transaction(&self, transaction_id: TransactionId, cx: &App) -> bool {
-        let buffer_entity = self.text_buffer(cx);
-        let buffer = buffer_entity.read(cx);
-        buffer
-            .current_history_node()
-            .and_then(|node| buffer.history_node(node))
-            .is_some_and(|node| node.transaction_id == transaction_id)
+        self.multi_buffer.read(cx).current_history_transaction(cx) == Some(transaction_id)
     }
 
     /// 自动闭合行为枢纽。
@@ -250,12 +245,7 @@ impl Editor {
         if text.len() != typed.len_utf8() {
             return false;
         }
-        let Some(pairs) = self.auto_close_pairs(cx) else {
-            return false;
-        };
-        if pairs.is_empty() {
-            return false;
-        }
+        let before = before.normalized();
         let settings = SettingsStore::try_get(cx).unwrap_or_default();
         let auto_close_enabled = settings.use_autoclose;
         let auto_surround_enabled = settings.use_auto_surround;
@@ -263,7 +253,6 @@ impl Editor {
             return false;
         }
 
-        let before = before.normalized();
         let snapshot = self.text_buffer(cx).read(cx).snapshot();
 
         // 逐选区决策，产出目标编辑、编辑后落点与新区域（以编辑前坐标为基准）。
@@ -274,6 +263,9 @@ impl Editor {
         let mut consumed = false;
         for selection in before.as_slice() {
             if !selection.is_caret() {
+                let pairs = self
+                    .auto_close_pairs(selection.start(), cx)
+                    .unwrap_or_default();
                 if auto_surround_enabled
                     && let Some(pair) = pairs
                         .iter()
@@ -301,6 +293,9 @@ impl Editor {
                 consumed = true;
                 continue;
             }
+            let pairs = self
+                .auto_close_pairs(selection.end(), cx)
+                .unwrap_or_default();
             if auto_close_enabled
                 && let Some(pair) = pairs
                     .iter()
@@ -330,7 +325,7 @@ impl Editor {
         // 新区域在闭包内经 PositionMap 换算到编辑后坐标。
         let mut new_regions_after: Vec<(TextRange, AutoClosePair)> = Vec::new();
         let metadata = input_metadata("输入文本", false);
-        let result = self.change_with_after(before.clone(), cx, |buffer| {
+        let result = self.change_with_after(before.clone(), metadata.clone(), cx, |buffer| {
             let outcome = apply_edits(buffer, &targets, metadata.clone())?;
             let position_map = outcome
                 .as_ref()
@@ -399,9 +394,13 @@ impl Editor {
         true
     }
 
-    /// 当前语言的自动闭合配对表。
-    pub(super) fn auto_close_pairs(&self, cx: &App) -> Option<&'static [AutoClosePair]> {
-        self.multi_buffer.read(cx).auto_close_pairs(cx)
+    /// `offset` 处所在源语言的自动闭合配对表。
+    pub(super) fn auto_close_pairs(
+        &self,
+        offset: ByteOffset,
+        cx: &App,
+    ) -> Option<&'static [AutoClosePair]> {
+        self.multi_buffer.read(cx).auto_close_pairs(offset, cx)
     }
 
     /// 光标处的待跳过自动闭合区域：区域末端锚与光标重合、该处文本确为配对闭合符。
@@ -597,17 +596,16 @@ impl EntityInputHandler for Editor {
         let previous_history_transaction = previous_composition
             .as_ref()
             .and_then(|composition| composition.history_transaction_id);
-        let outcome = self.change_with_after(before_selections.clone(), cx, |buffer| {
-            replace_selections(buffer, &targets, &text, metadata)
-        });
-        // 会话提交后当前历史节点即本次编辑的归属节点（MergeWithPrevious 时指向前节点），用它作为组合会话的事务身份：连续候选更新据此合并进同一撤销步。
+        let outcome =
+            self.change_with_after(before_selections.clone(), metadata.clone(), cx, |buffer| {
+                replace_selections(buffer, &targets, &text, metadata)
+            });
+        // 会话提交后组合历史的当前条目即本次编辑的归属节点（合并进前节点时指向前节点），用它作为组合会话的事务身份：连续候选更新据此合并进同一撤销步。
         // 不能用编辑 outcome 的 history_transaction_id——会话 id 在合并进前节点后不指向任何历史节点，后续合并判断会失败。
-        let buffer_entity = self.text_buffer(cx);
-        let buffer = buffer_entity.read(cx);
-        let history_transaction_id = buffer
-            .current_history_node()
-            .and_then(|node| buffer.history_node(node))
-            .map(|node| node.transaction_id)
+        let history_transaction_id = self
+            .multi_buffer
+            .read(cx)
+            .current_history_transaction(cx)
             .or(previous_history_transaction);
         if outcome.is_err() {
             self.composition = previous_composition;

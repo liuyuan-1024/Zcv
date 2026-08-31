@@ -29,20 +29,26 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
             .transaction_mut(TransactionId::new(1))
             .expect("插入后应存在")
             .set_redo(selections);
-        editor.text_buffer(cx).update(cx, |buffer, cx| {
-            buffer
+        // 编辑经组合文档写回共享工作区源，另一个 Editor 经源订阅链同步。
+        editor.multi_buffer().update(cx, |multi_buffer, cx| {
+            multi_buffer
                 .edit(
-                    [Edit::insert(ByteOffset::new(3), "d").unwrap()],
+                    vec![Edit::insert(ByteOffset::new(3), "d").unwrap()],
                     TransactionMetadata::default(),
+                    cx,
                 )
-                .expect("共享 Buffer 编辑应成功");
-            cx.notify();
+                .expect("共享工作区源编辑应成功");
         });
     });
+    cx.run_until_parked();
 
     cx.read_entity(&second, |editor, cx| {
         assert_eq!(editor.mode, EditorMode::Full);
-        assert_eq!(editor.text_buffer(cx), buffer.read(cx).buffer());
+        // 新架构下两个 Editor 各自持有独立组合文档，共享的是工作区源 LanguageBuffer。
+        assert_eq!(
+            editor.multi_buffer().read(cx).working_source(),
+            Some(buffer.clone())
+        );
         assert_eq!(
             editor.text_buffer(cx).read(cx).len_bytes(),
             ByteOffset::new(4)
@@ -74,15 +80,71 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
+fn editors_sharing_a_working_source_also_share_text_history(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "abc");
+    let first = cx.new({
+        let buffer = buffer.clone();
+        move |cx| Editor::for_language_buffer(buffer, cx)
+    });
+    let second = cx.new({
+        let buffer = buffer.clone();
+        move |cx| Editor::for_language_buffer(buffer, cx)
+    });
+
+    cx.update_entity(&first, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(ByteOffset::new(3)));
+        editor.replace_text(None, "d", cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(buffer_text(&buffer, cx), "abcd");
+
+    cx.update_entity(&second, |editor, cx| editor.undo(cx));
+    cx.run_until_parked();
+    assert_eq!(buffer_text(&buffer, cx), "abc");
+
+    cx.update_entity(&second, |editor, cx| editor.redo(cx));
+    cx.run_until_parked();
+    assert_eq!(buffer_text(&buffer, cx), "abcd");
+}
+
+#[gpui::test]
+fn working_source_buffer_config_controls_editor_indentation(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "value");
+    let editor = cx.new({
+        let buffer = buffer.clone();
+        move |cx| Editor::for_language_buffer(buffer, cx)
+    });
+    let raw_buffer = engine_buffer(&buffer, cx);
+    cx.update_entity(&raw_buffer, |buffer, cx| {
+        let mut config = buffer.config().clone();
+        config.tab.insert_spaces = false;
+        buffer.set_config(config);
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    cx.read_entity(&editor, |editor, cx| {
+        assert!(
+            !editor.text_buffer(cx).read(cx).config().tab.insert_spaces,
+            "工作源配置变化必须同步到普通编辑器的显示投影"
+        );
+    });
+
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(ByteOffset::ZERO));
+        editor.indent(cx);
+    });
+
+    assert_eq!(buffer_text(&buffer, cx), "\tvalue");
+}
+
+#[gpui::test]
 fn multibuffer_editor_edits_the_underlying_file(cx: &mut TestAppContext) {
     let source = test_buffer(cx, "abc\n");
     cx.update_entity(&source, |buffer, cx| {
         buffer.set_file_path(std::path::PathBuf::from("src/a.rs"), cx)
     });
-    let source_multi = cx.new({
-        let source = source.clone();
-        move |cx| MultiBuffer::singleton(source, cx)
-    });
+    let source_multi = source.clone();
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
@@ -969,6 +1031,44 @@ fn newline_uses_tree_sitter_indent_query(cx: &mut TestAppContext) {
 
     cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
     // 光标在 `{` 与自动补全的 `}` 之间：额外补一个基准缩进空行（newline 配对行为）。
+    assert_eq!(buffer_text(&language_buffer, cx), "fn main() {\n    \n}\n");
+}
+
+#[gpui::test]
+fn composite_excerpt_uses_its_source_tree_sitter_indent_query(cx: &mut TestAppContext) {
+    let source_text = "fn main() {}\n";
+    let caret = source_text.find('{').unwrap() + 1;
+    let raw_buffer = cx.new(|_| {
+        Buffer::scratch(source_text.to_owned(), BufferConfig::default())
+            .expect("Rust 测试 Buffer 应能创建")
+    });
+    let language_buffer = cx.new({
+        let raw_buffer = raw_buffer.clone();
+        move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+    });
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![MultiBufferExcerpt::new(
+                language_buffer.clone(),
+                TextRange::new(ByteOffset::ZERO, ByteOffset::new(source_text.len())).unwrap(),
+                Vec::new(),
+            )],
+            cx,
+        );
+    });
+    let editor = cx.new({
+        let combined = combined.clone();
+        move |cx| {
+            let mut editor = Editor::for_multi_buffer(combined, cx);
+            editor.set_selections(SelectionSet::caret(ByteOffset::new(caret)));
+            editor
+        }
+    });
+    cx.run_until_parked();
+
+    cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
+
     assert_eq!(buffer_text(&language_buffer, cx), "fn main() {\n    \n}\n");
 }
 

@@ -296,51 +296,46 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
             })
             .collect();
         assert_eq!(search_backgrounds.len(), 3, "三个匹配都应进入背景层");
-        for row in viewport.rows() {
-            let WrapViewportRowKind::Text {
-                source,
-                text,
-                byte_range,
-                global_byte_start,
-                ..
-            } = row.kind();
-            {
-                let inlay_snapshot = display
-                    .wrap_snapshot()
-                    .tab_snapshot()
-                    .fold_snapshot()
-                    .inlay_snapshot();
-                let stream_line = inlay_snapshot
-                    .stream()
-                    .buffer_to_stream(zcv_text::Line::new(source.line()));
-                let tab_width = display.buffer_snapshot().config().tab.tab_width();
-                let rendered = render_viewport_chunks(
-                    ViewportChunkSource {
-                        text: text.as_ref(),
-                        global_byte_start: *global_byte_start,
-                        stream_line,
-                        segments: None,
-                        inlay: inlay_snapshot,
-                    },
-                    tab_width,
-                    LineStyles {
-                        spans: &[],
-                        styles: &[],
-                        backgrounds: &search_backgrounds,
-                        marked: &[],
-                    },
-                    byte_range.clone(),
-                );
-                let with_bg = rendered
-                    .chunks
-                    .iter()
-                    .filter(|c| c.background.is_some())
-                    .count();
-                assert!(with_bg >= 2, "同一行多个匹配都应带背景，实际 {with_bg}");
-                return;
-            }
-        }
-        panic!("未找到文本行");
+        let row = viewport.rows().first().expect("未找到文本行");
+        let WrapViewportRowKind::Text {
+            source,
+            text,
+            byte_range,
+            global_byte_start,
+            ..
+        } = row.kind();
+        let inlay_snapshot = display
+            .wrap_snapshot()
+            .tab_snapshot()
+            .fold_snapshot()
+            .inlay_snapshot();
+        let stream_line = inlay_snapshot
+            .stream()
+            .buffer_to_stream(zcv_text::Line::new(source.line()));
+        let tab_width = display.buffer_snapshot().config().tab.tab_width();
+        let rendered = render_viewport_chunks(
+            ViewportChunkSource {
+                text: text.as_ref(),
+                global_byte_start: *global_byte_start,
+                stream_line,
+                segments: None,
+                inlay: inlay_snapshot,
+            },
+            tab_width,
+            LineStyles {
+                spans: &[],
+                styles: &[],
+                backgrounds: &search_backgrounds,
+                marked: &[],
+            },
+            byte_range.clone(),
+        );
+        let with_bg = rendered
+            .chunks
+            .iter()
+            .filter(|c| c.background.is_some())
+            .count();
+        assert!(with_bg >= 2, "同一行多个匹配都应带背景，实际 {with_bg}");
     });
 }
 

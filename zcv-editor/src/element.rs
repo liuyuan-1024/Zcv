@@ -2972,7 +2972,6 @@ mod tests {
             let source_text = source_text.clone();
             move |cx| LanguageBuffer::new(source_text, Some(PathBuf::from("文档/引擎.md")), cx)
         });
-        let source = cx.new(move |cx| MultiBuffer::singleton(source, cx));
         let combined = cx.new(MultiBuffer::empty);
         cx.update_entity(&combined, |combined, cx| {
             combined.set_excerpts(
@@ -3055,7 +3054,6 @@ mod tests {
         });
         let first = cx
             .new(move |cx| LanguageBuffer::new(first_buffer, Some(PathBuf::from("src/a.rs")), cx));
-        let first = cx.new(move |cx| MultiBuffer::singleton(first, cx));
 
         let second_text = "b0\nb1\n";
         let second_buffer = cx.new(|_| {
@@ -3064,7 +3062,6 @@ mod tests {
         });
         let second = cx
             .new(move |cx| LanguageBuffer::new(second_buffer, Some(PathBuf::from("src/b.rs")), cx));
-        let second = cx.new(move |cx| MultiBuffer::singleton(second, cx));
 
         let combined = cx.new(MultiBuffer::empty);
         cx.update_entity(&combined, |combined, cx| {
@@ -3581,7 +3578,6 @@ mod tests {
         let source = cx.new(move |cx| {
             LanguageBuffer::new(source_buffer, Some(PathBuf::from("src/example.rs")), cx)
         });
-        let source = cx.new(move |cx| MultiBuffer::singleton(source, cx));
         let combined = cx.new(MultiBuffer::empty);
         cx.update_entity(&combined, |combined, cx| {
             combined.set_excerpts(vec![MultiBufferExcerpt::line_range(source, 0..3, cx)], cx)

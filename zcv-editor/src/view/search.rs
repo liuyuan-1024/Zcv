@@ -10,7 +10,7 @@ use zcv_workspace::{Direction, SearchEvent, SearchableItem};
 
 use crate::selection::EditOutcome;
 
-use super::Editor;
+use super::{Editor, edit_metadata};
 
 impl gpui::EventEmitter<SearchEvent> for Editor {}
 
@@ -145,15 +145,28 @@ impl SearchableItem for Editor {
             return false;
         };
         let (literal, regex) = search.cloned_result();
+        // 搜索结果绑定投影版本：过期校验在权威文档侧完成，编辑 planner 是与投影文本一致的 scratch 副本，重绑后继承坐标。
+        if self.search_result_stale(&literal, &regex, cx) {
+            return false;
+        }
         let before = self.resolved_selections();
-        let outcome = self.change(before, cx, |buffer| {
+        let metadata = edit_metadata(if literal.is_some() {
+            "替换搜索匹配"
+        } else {
+            "替换正则匹配"
+        });
+        let outcome = self.change(before, metadata, cx, |buffer| {
             if let Some(result) = literal {
                 buffer
-                    .replace_search_match(&result, index, replacement)
+                    .replace_search_match(
+                        &result.rebinding_to(buffer.version()),
+                        index,
+                        replacement,
+                    )
                     .map(EditOutcome::from_transaction)
             } else if let Some(result) = regex {
                 buffer
-                    .replace_regex_match(&result, index, replacement)
+                    .replace_regex_match(&result.rebinding_to(buffer.version()), index, replacement)
                     .map(EditOutcome::from_transaction)
             } else {
                 Ok(EditOutcome::unchanged())
@@ -172,15 +185,23 @@ impl SearchableItem for Editor {
         let Some(search) = &self.search else { return 0 };
         let count = search.len();
         let (literal, regex) = search.cloned_result();
+        if self.search_result_stale(&literal, &regex, cx) {
+            return 0;
+        }
         let before = self.resolved_selections();
-        let outcome = self.change(before, cx, |buffer| {
+        let metadata = edit_metadata(if literal.is_some() {
+            "替换全部搜索匹配"
+        } else {
+            "替换全部正则匹配"
+        });
+        let outcome = self.change(before, metadata, cx, |buffer| {
             if let Some(result) = literal {
                 buffer
-                    .replace_all_search_matches(&result, replacement)
+                    .replace_all_search_matches(&result.rebinding_to(buffer.version()), replacement)
                     .map(EditOutcome::from_transaction)
             } else if let Some(result) = regex {
                 buffer
-                    .replace_all_regex_matches(&result, replacement)
+                    .replace_all_regex_matches(&result.rebinding_to(buffer.version()), replacement)
                     .map(EditOutcome::from_transaction)
             } else {
                 Ok(EditOutcome::unchanged())
@@ -192,6 +213,22 @@ impl SearchableItem for Editor {
 }
 
 impl Editor {
+    /// 搜索结果是否已偏离当前投影版本（过期校验在搜索绑定的权威文档侧完成）。
+    fn search_result_stale(
+        &self,
+        literal: &Option<SearchResult>,
+        regex: &Option<RegexSearchResult>,
+        cx: &gpui::Context<Self>,
+    ) -> bool {
+        let projection_version = self.text_buffer(cx).read(cx).version();
+        literal
+            .as_ref()
+            .is_some_and(|result| result.version() != projection_version)
+            || regex
+                .as_ref()
+                .is_some_and(|result| result.version() != projection_version)
+    }
+
     /// 使用调用方提供的精确范围建立只读搜索高亮，供 MultiBuffer excerpts 等组合结果使用。
     pub fn set_search_ranges(
         &mut self,

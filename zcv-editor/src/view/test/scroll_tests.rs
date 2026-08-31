@@ -41,8 +41,6 @@ fn composite_refresh_restores_scroll_from_source_anchor(cx: &mut TestAppContext)
     cx.update_entity(&second, |buffer, cx| {
         buffer.set_file_path("second.rs".into(), cx)
     });
-    let first = cx.new(|cx| MultiBuffer::singleton(first, cx));
-    let second = cx.new(|cx| MultiBuffer::singleton(second, cx));
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
@@ -110,7 +108,6 @@ fn composite_refresh_keeps_the_viewport_on_a_virtual_file_header(cx: &mut TestAp
     cx.update_entity(&source, |buffer, cx| {
         buffer.set_file_path("header.rs".into(), cx)
     });
-    let source = cx.new(|cx| MultiBuffer::singleton(source, cx));
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
@@ -456,7 +453,7 @@ fn dragging_thumb_to_marker_position_scrolls_to_that_row(cx: &mut TestAppContext
     cx.run_until_parked();
 
     // 注入行 50 的 diff hunk（行 50 内容 y = 50 × line_height）。
-    let source = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    let source = buffer.clone();
     inject_editor_diff(
         &editor,
         &source,

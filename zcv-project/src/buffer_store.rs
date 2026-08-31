@@ -1,4 +1,4 @@
-//! 文件路径到共享 MultiBuffer 文档实体的索引。
+//! 文件路径到共享 LanguageBuffer 文档实体的索引。
 //!
 //! Store 只保留弱引用；只要还有 Editor 或 View 持有文档，它就能按路径复用，最后一个使用者释放后，整条文档实体链也随之结束。
 
@@ -9,12 +9,11 @@ use std::path::{Path, PathBuf};
 use crate::translate_path;
 use gpui::{App, AppContext, Entity, WeakEntity};
 use zcv_language::LanguageBuffer;
-use zcv_multi_buffer::MultiBuffer;
 use zcv_text::Snapshot;
 use zcv_text::{Buffer, BufferConfig, BufferLoadError};
 
 pub(crate) struct BufferStore {
-    opened_buffers: HashMap<PathBuf, WeakEntity<MultiBuffer>>,
+    opened_buffers: HashMap<PathBuf, WeakEntity<LanguageBuffer>>,
 }
 
 impl BufferStore {
@@ -24,12 +23,12 @@ impl BufferStore {
         }
     }
 
-    /// 打开文件；同一个规范化路径始终复用仍然存活的 MultiBuffer。
+    /// 打开文件；同一个规范化路径始终复用仍然存活的 LanguageBuffer。
     pub(crate) fn open_buffer(
         &mut self,
         path: &Path,
         cx: &mut App,
-    ) -> Result<Entity<MultiBuffer>, BufferLoadError> {
+    ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
         let file = File::open(path).map_err(BufferLoadError::Io)?;
         let buffer = Buffer::from_reader(file, BufferConfig::default())?;
         self.insert_buffer(path.to_path_buf(), buffer, cx)
@@ -44,7 +43,7 @@ impl BufferStore {
         &mut self,
         path: &Path,
         cx: &mut App,
-    ) -> Result<Entity<MultiBuffer>, BufferLoadError> {
+    ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
         let buffer = Buffer::scratch(String::new(), BufferConfig::default())
             .expect("空的删除文件 Buffer 应能创建");
         self.insert_buffer(path.to_path_buf(), buffer, cx)
@@ -56,7 +55,7 @@ impl BufferStore {
         path: PathBuf,
         buffer: Buffer,
         cx: &mut App,
-    ) -> Result<Entity<MultiBuffer>, BufferLoadError> {
+    ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
         self.insert_buffer(path, buffer, cx)
     }
 
@@ -66,16 +65,16 @@ impl BufferStore {
         path: PathBuf,
         buffer: Buffer,
         cx: &mut App,
-    ) -> Result<Entity<MultiBuffer>, BufferLoadError> {
+    ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
         let path = index_path(&path).map_err(BufferLoadError::Io)?;
         if let Some(buffer) = self.opened_buffers.get(&path).and_then(WeakEntity::upgrade) {
             return Ok(buffer);
         }
         let buffer = cx.new(|_| buffer);
         let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(path.clone()), cx));
-        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));
-        self.opened_buffers.insert(path, multi_buffer.downgrade());
-        Ok(multi_buffer)
+        self.opened_buffers
+            .insert(path, language_buffer.downgrade());
+        Ok(language_buffer)
     }
 
     pub(crate) fn opened_snapshots(&self, cx: &App) -> HashMap<PathBuf, Snapshot> {
@@ -83,7 +82,7 @@ impl BufferStore {
             .iter()
             .filter_map(|(path, buffer)| {
                 let buffer = buffer.upgrade()?;
-                Some((path.clone(), buffer.read(cx).snapshot(cx).text().clone()))
+                Some((path.clone(), buffer.read(cx).text_snapshot(cx)))
             })
             .collect()
     }
@@ -94,7 +93,7 @@ impl BufferStore {
         let Ok(canonical) = path.canonicalize() else {
             return;
         };
-        let Some(multi_buffer) = self
+        let Some(language_buffer) = self
             .opened_buffers
             .get(&canonical)
             .and_then(WeakEntity::upgrade)
@@ -104,10 +103,7 @@ impl BufferStore {
         let Ok(text) = std::fs::read_to_string(&canonical) else {
             return;
         };
-        let buffer = multi_buffer
-            .read(cx)
-            .as_singleton(cx)
-            .expect("当前 BufferStore 只创建 singleton MultiBuffer");
+        let buffer = language_buffer.read(cx).buffer();
         buffer.update(cx, |buffer, cx| {
             // 脏 Buffer 的文本由用户编辑拥有；文件事件不能用磁盘内容覆盖它。
             // 保存产生的延迟事件也可能在用户已经继续编辑或撤销后到达。
@@ -282,11 +278,7 @@ mod tests {
         let second = cx.update(|cx| store.open_buffer(&path, cx).expect("重新打开应成功"));
 
         assert_ne!(first_id, second.entity_id());
-        let buffer = cx.read_entity(&second, |multi_buffer, cx| {
-            multi_buffer
-                .as_singleton(cx)
-                .expect("测试文档应是 singleton")
-        });
+        let buffer = cx.read_entity(&second, |language_buffer, _| language_buffer.buffer());
         cx.read_entity(&buffer, |buffer, _| {
             assert_eq!(
                 buffer

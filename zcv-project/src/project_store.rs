@@ -12,6 +12,7 @@ use anyhow::Context as _;
 use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 use zcv_git::FileStatus;
+use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::MultiBuffer;
 use zcv_text::{Buffer, BufferLoadError, BufferSaveError, SearchQuery};
 
@@ -166,7 +167,7 @@ impl Project {
         &mut self,
         path: &Path,
         cx: &mut Context<Self>,
-    ) -> Result<Entity<MultiBuffer>, BufferLoadError> {
+    ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
         self.buffer_store.open_buffer(path, cx)
     }
 
@@ -178,7 +179,7 @@ impl Project {
         &mut self,
         path: &Path,
         cx: &mut Context<Self>,
-    ) -> Result<Entity<MultiBuffer>, BufferLoadError> {
+    ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
         self.buffer_store.open_deleted_buffer(path, cx)
     }
 
@@ -203,7 +204,7 @@ impl Project {
         path: PathBuf,
         buffer: Buffer,
         cx: &mut Context<Self>,
-    ) -> Result<Entity<MultiBuffer>, BufferLoadError> {
+    ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
         self.buffer_store.register_loaded_buffer(path, buffer, cx)
     }
 
@@ -213,10 +214,9 @@ impl Project {
         path: &Path,
         cx: &mut Context<Self>,
     ) -> Result<(), BufferSaveError> {
-        let buffer = multi_buffer
-            .read(cx)
-            .as_singleton(cx)
-            .expect("当前 Project 只保存 singleton MultiBuffer");
+        let mut buffers = multi_buffer.read(cx).file_buffers(cx);
+        let (buffer, _) = buffers.pop().expect("当前 Project 只保存单文件组合文档");
+        assert!(buffers.is_empty(), "当前 Project 只保存单文件组合文档");
         self.save_file_buffers(vec![(buffer, path.to_path_buf())], cx)
     }
 
@@ -1265,11 +1265,7 @@ mod tests {
         let buffer = project
             .update(cx, |project, cx| project.open_buffer(&file, cx))
             .expect("应打开文件");
-        let engine_buffer = cx.read_entity(&buffer, |multi_buffer, cx| {
-            multi_buffer
-                .as_singleton(cx)
-                .expect("测试文档应是 singleton")
-        });
+        let engine_buffer = cx.read_entity(&buffer, |language_buffer, _| language_buffer.buffer());
         engine_buffer
             .update(cx, |buffer, _| {
                 buffer.edit(
@@ -1286,8 +1282,11 @@ mod tests {
         );
 
         // 保存后 git 状态应变为已修改。
+        let multi_buffer = cx.new(|cx| MultiBuffer::from_working_source(buffer.clone(), cx));
         project
-            .update(cx, |project, cx| project.save_buffer(&buffer, &file, cx))
+            .update(cx, |project, cx| {
+                project.save_buffer(&multi_buffer, &file, cx)
+            })
             .expect("保存应成功");
         cx.run_until_parked();
         let entry = project
@@ -1302,13 +1301,11 @@ mod tests {
         let file = directory.path().join("document.txt");
         fs::write(&file, "原内容").expect("应创建测试文件");
         let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
-        let multi_buffer = project
+        let language_buffer = project
             .update(cx, |project, cx| project.open_buffer(&file, cx))
             .expect("应打开测试文件");
-        let buffer = cx.read_entity(&multi_buffer, |multi_buffer, cx| {
-            multi_buffer
-                .as_singleton(cx)
-                .expect("测试文档应是 singleton")
+        let buffer = cx.read_entity(&language_buffer, |language_buffer, _| {
+            language_buffer.buffer()
         });
         buffer
             .update(cx, |buffer, _| {
@@ -1319,6 +1316,8 @@ mod tests {
             })
             .expect("编辑应成功");
 
+        let multi_buffer =
+            cx.new(|cx| MultiBuffer::from_working_source(language_buffer.clone(), cx));
         project
             .update(cx, |project, cx| {
                 project.save_buffer(&multi_buffer, &file, cx)

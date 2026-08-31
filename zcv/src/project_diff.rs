@@ -17,7 +17,7 @@ use zcv_git::{DiffBase, DiffHunk, FileStatus, GitHunkOperation, GitRevision, Sta
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::{ExcerptLocation, MultiBuffer};
 use zcv_project::{DiffRequest, GitStoreEvent, Project};
-use zcv_text::{Buffer, BufferConfig, Snapshot};
+use zcv_text::{Buffer, BufferConfig, ByteOffset, Snapshot};
 use zcv_theme::{color, space};
 use zcv_ui::{Button, ButtonSize};
 use zcv_workspace::{Item, ItemEvent, SearchableItemHandle, ToolbarItemLocation, Workspace};
@@ -236,7 +236,7 @@ pub(crate) struct ProjectDiffView {
     files: Vec<GitChangeFile>,
     pending_path: Option<PathBuf>,
     refresh_scroll_anchor: Option<EditorScrollAnchor>,
-    revision_sources: HashMap<(GitRevision, PathBuf), Entity<MultiBuffer>>,
+    revision_sources: HashMap<(GitRevision, PathBuf), Entity<LanguageBuffer>>,
     loading_revision_text: HashSet<(GitRevision, PathBuf)>,
     _subscriptions: Vec<Subscription>,
 }
@@ -575,16 +575,17 @@ impl ProjectDiffView {
         path: &Path,
         text: &str,
         cx: &mut Context<Self>,
-    ) -> Entity<MultiBuffer> {
+    ) -> Entity<LanguageBuffer> {
         let key = (revision, path.to_path_buf());
         if let Some(source) = self.revision_sources.get(&key) {
-            let source_text = String::from_utf8(source.read(cx).snapshot(cx).text_bytes())
-                .expect("Git 修订投影必须是 UTF-8");
+            let snapshot = source.read(cx).text_snapshot(cx);
+            let source_text = snapshot
+                .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+                .expect("Git 修订快照范围必须有效")
+                .as_str()
+                .to_owned();
             if source_text != text {
-                let buffer = source
-                    .read(cx)
-                    .as_singleton(cx)
-                    .expect("Git 修订来源必须是 singleton");
+                let buffer = source.read(cx).buffer();
                 buffer.update(cx, |buffer, _| {
                     buffer
                         .reload_from_text(text.to_string())
@@ -597,9 +598,7 @@ impl ProjectDiffView {
         let buffer = Buffer::from_text(text.to_string(), BufferConfig::default())
             .expect("Git 修订文本必须能创建 Buffer");
         let buffer = cx.new(|_| buffer);
-        let language_buffer =
-            cx.new(|cx| LanguageBuffer::new(buffer, Some(path.to_path_buf()), cx));
-        let source = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));
+        let source = cx.new(|cx| LanguageBuffer::new(buffer, Some(path.to_path_buf()), cx));
         self.revision_sources.insert(key, source.clone());
         source
     }
@@ -779,10 +778,7 @@ pub(crate) fn deploy_at(
                 let Ok(buffer) = project.open_buffer(&location.path, cx) else {
                     return None;
                 };
-                let text = cx
-                    .read_entity(&buffer, |buffer, _| buffer.snapshot(cx))
-                    .text()
-                    .clone();
+                let text = cx.read_entity(&buffer, |buffer, cx| buffer.text_snapshot(cx));
                 cx.read_entity(view, |view, cx| {
                     view.deleted_navigation_target(location, &text, cx)
                 })
@@ -1331,7 +1327,7 @@ mod tests {
         std::fs::write(&modified_path, "line0\n改过\nline2\nline3\nline4\n").expect("应修改文件");
 
         let project = cx.new(|cx| Project::new(root.clone(), cx));
-        // 普通编辑器：独立 excerpts 组合文档（整文件 excerpt，共享 singleton 只作工作区源），
+        // 普通编辑器：独立 excerpts 组合文档（整文件 excerpt，共享 LanguageBuffer 只作工作区源），
         // 与 item_provider 打开路径一致；展开修改块。
         let working = project
             .update(cx, |project, cx| project.open_buffer(&modified_path, cx))
@@ -1442,19 +1438,20 @@ mod tests {
         cx.run_until_parked();
 
         // 编辑工作区（删除 "改过" 行 → 行数变化）。
-        working.update(cx, |mb, cx| {
-            mb.edit(
-                vec![zcv_text::Edit::delete(
-                    zcv_text::TextRange::new(
-                        zcv_text::ByteOffset::new(6),
-                        zcv_text::ByteOffset::new(13),
-                    )
-                    .expect("删除范围应有效"),
-                )],
-                zcv_text::TransactionMetadata::default(),
-                cx,
-            )
-            .expect("工作区编辑应成功");
+        let engine_buffer = cx.read_entity(&working, |working, _| working.buffer());
+        engine_buffer.update(cx, |buffer, cx| {
+            buffer
+                .edit(
+                    vec![zcv_text::Edit::delete(
+                        zcv_text::TextRange::new(
+                            zcv_text::ByteOffset::new(6),
+                            zcv_text::ByteOffset::new(13),
+                        )
+                        .expect("删除范围应有效"),
+                    )],
+                    zcv_text::TransactionMetadata::default(),
+                )
+                .expect("工作区编辑应成功");
             cx.notify();
         });
         // 触发 git hunks 刷新。

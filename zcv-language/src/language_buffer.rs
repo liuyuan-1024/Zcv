@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use gpui::{AppContext, Context, Entity, EventEmitter, Task};
+use gpui::{App, AppContext, Context, Entity, EventEmitter, Task};
 use zcv_text::{Buffer, Line, Snapshot, TextChangeBatch, TextSubscription};
 
 use crate::FoldRange;
@@ -116,6 +116,11 @@ impl LanguageBuffer {
 
     pub fn buffer(&self) -> Entity<Buffer> {
         self.buffer.clone()
+    }
+
+    /// 当前文本快照（直接读底层 Buffer，不受语言层自身同步时序影响；组合层源消费用）。
+    pub fn text_snapshot(&self, cx: &App) -> Snapshot {
+        self.buffer.read(cx).snapshot()
     }
 
     pub fn file_path(&self) -> Option<&Path> {

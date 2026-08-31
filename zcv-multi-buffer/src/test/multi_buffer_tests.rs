@@ -10,20 +10,20 @@ use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TextRange, TransactionMet
 
 use super::*;
 
-fn singleton(path: &str, text: &str, cx: &mut TestAppContext) -> gpui::Entity<MultiBuffer> {
+fn singleton(path: &str, text: &str, cx: &mut TestAppContext) -> gpui::Entity<LanguageBuffer> {
     let buffer = cx.new(|_| {
         Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("应创建测试 Buffer")
     });
-    let language = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from(path)), cx));
-    cx.new(|cx| MultiBuffer::singleton(language, cx))
+    cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from(path)), cx))
 }
 
 #[gpui::test]
-fn singleton_snapshot_tracks_text_syntax_and_path(cx: &mut TestAppContext) {
-    let multi_buffer = singleton("src/main.rs", "fn main() {}\n", cx);
+fn working_source_snapshot_tracks_text_syntax_and_path(cx: &mut TestAppContext) {
+    let source = singleton("src/main.rs", "fn main() {}\n", cx);
+    let multi_buffer = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
     let text_buffer = cx.read_entity(&multi_buffer, |buffer, cx| {
         assert_eq!(buffer.file_path(cx), Some(PathBuf::from("src/main.rs")));
-        buffer.as_singleton(cx).expect("应为 singleton")
+        buffer.as_singleton(cx).expect("应为整文件单 excerpt")
     });
 
     cx.update_entity(&text_buffer, |buffer, cx| {
@@ -41,6 +41,43 @@ fn singleton_snapshot_tracks_text_syntax_and_path(cx: &mut TestAppContext) {
     assert_eq!(updated.text().version(), updated.syntax().version());
 }
 
+#[gpui::test]
+fn singleton_role_does_not_depend_on_current_excerpt_shape(cx: &mut TestAppContext) {
+    let source = singleton("src/main.rs", "first\nsecond\n", cx);
+    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
+    let working = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    cx.update_entity(&working, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                MultiBufferExcerpt::line_range(source.clone(), 0..1, cx),
+                MultiBufferExcerpt::line_range(source.clone(), 1..2, cx),
+            ],
+            cx,
+        );
+    });
+    cx.read_entity(&working, |buffer, cx| {
+        assert_eq!(buffer.as_singleton(cx), Some(source_buffer.clone()));
+    });
+
+    let composite = cx.new(MultiBuffer::empty);
+    cx.update_entity(&composite, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![MultiBufferExcerpt::new(
+                source,
+                TextRange::new(ByteOffset::ZERO, ByteOffset::new(13)).unwrap(),
+                Vec::new(),
+            )],
+            cx,
+        );
+    });
+    cx.read_entity(&composite, |buffer, cx| {
+        assert!(
+            buffer.as_singleton(cx).is_none(),
+            "完整文件单 excerpt 也不能把组合文档误判为普通文档"
+        );
+    });
+}
+
 /// 普通编辑器把完整文件包装成工作源 excerpt 后，语言层折叠范围必须投影到组合坐标。
 #[gpui::test]
 fn working_source_preserves_rust_fold_ranges(cx: &mut TestAppContext) {
@@ -52,7 +89,7 @@ fn working_source_preserves_rust_fold_ranges(cx: &mut TestAppContext) {
     let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
     cx.run_until_parked();
 
-    let source_folds = cx.read_entity(&source, |buffer, cx| buffer.fold_ranges(cx));
+    let source_folds = cx.read_entity(&source, |buffer, _| buffer.fold_ranges());
     let projected_folds = cx.read_entity(&combined, |buffer, cx| buffer.fold_ranges(cx));
 
     assert_eq!(source_folds.len(), 2, "Rust 源文档应产生两个折叠范围");
@@ -72,17 +109,16 @@ fn excerpt_projects_contained_fold_range_to_output_coordinates(cx: &mut TestAppC
         cx,
     );
     cx.run_until_parked();
-    let source_fold = cx.read_entity(&source, |buffer, cx| {
+    let source_fold = cx.read_entity(&source, |buffer, _| {
         buffer
-            .fold_ranges(cx)
+            .fold_ranges()
             .first()
             .expect("Rust 函数应产生折叠范围")
             .clone()
     });
     let source_start = cx.read_entity(&source, |buffer, cx| {
         buffer
-            .snapshot(cx)
-            .text()
+            .text_snapshot(cx)
             .line_start_byte(zcv_text::Line::new(1))
             .expect("函数起始行应存在")
             .get()
@@ -112,11 +148,10 @@ fn fold_projection_accounts_for_nonzero_output_start(cx: &mut TestAppContext) {
         cx,
     );
     cx.run_until_parked();
-    let source_folds = cx.read_entity(&source, |buffer, cx| buffer.fold_ranges(cx));
+    let source_folds = cx.read_entity(&source, |buffer, _| buffer.fold_ranges());
     let source_start = cx.read_entity(&source, |buffer, cx| {
         buffer
-            .snapshot(cx)
-            .text()
+            .text_snapshot(cx)
             .line_start_byte(zcv_text::Line::new(1))
             .expect("函数起始行应存在")
             .get()
@@ -298,7 +333,8 @@ fn empty_files_keep_distinct_composite_lines_and_locations(cx: &mut TestAppConte
 
     cx.read_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
-        assert_eq!(String::from_utf8(snapshot.text_bytes()).unwrap(), "\n\n");
+        // 尾换行不变式：非末尾空片段补一个换行占边界行，末尾片段保留原样（文档自身的末尾空行仍为其保留组合行）。
+        assert_eq!(String::from_utf8(snapshot.text_bytes()).unwrap(), "\n");
         assert_eq!(snapshot.excerpts()[0].output_start_line(), 0);
         assert_eq!(snapshot.excerpts()[1].output_start_line(), 1);
         assert_eq!(
@@ -311,7 +347,7 @@ fn empty_files_keep_distinct_composite_lines_and_locations(cx: &mut TestAppConte
 #[gpui::test]
 fn source_reparse_does_not_reload_composite_text(cx: &mut TestAppContext) {
     let source = singleton("src/main.rs", "fn main() {\n    println!(\"ok\");\n}\n", cx);
-    let source_len = cx.read_entity(&source, |source, cx| source.snapshot(cx).text().len_bytes());
+    let source_len = cx.read_entity(&source, |source, cx| source.text_snapshot(cx).len_bytes());
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |combined, cx| {
         combined.set_excerpts(
@@ -416,9 +452,7 @@ fn diff_expansion_migrates_by_tracked_range_across_source_edits(cx: &mut TestApp
     );
 
     // 编辑工作区源：文件头部插入一行（行号整体 +1），显示坐标应随编辑推进。
-    let source_text = cx.read_entity(&source, |buffer, cx| {
-        buffer.as_singleton(cx).expect("应为 singleton")
-    });
+    let source_text = cx.read_entity(&source, |buffer, _| buffer.buffer());
     cx.update_entity(&source_text, |buffer, cx| {
         buffer
             .edit(
@@ -531,9 +565,7 @@ fn diff_expansion_survives_base_change_when_working_text_is_unchanged(cx: &mut T
 #[gpui::test]
 fn composite_edits_are_applied_to_the_underlying_buffer(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "zero\none\ntwo\n", cx);
-    let source_text = cx.read_entity(&source, |buffer, cx| {
-        buffer.as_singleton(cx).expect("应为 singleton")
-    });
+    let source_text = cx.read_entity(&source, |buffer, _| buffer.buffer());
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
@@ -611,7 +643,7 @@ fn composite_file_buffers_are_deduplicated_across_excerpts(cx: &mut TestAppConte
 #[gpui::test]
 fn composite_tracks_edits_made_through_another_editor(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "zero\none\ntwo\n", cx);
-    let source_text = cx.read_entity(&source, |buffer, cx| buffer.as_singleton(cx).unwrap());
+    let source_text = cx.read_entity(&source, |buffer, _| buffer.buffer());
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
@@ -648,8 +680,8 @@ fn composite_tracks_edits_made_through_another_editor(cx: &mut TestAppContext) {
 fn composite_splits_cross_excerpt_edits_across_source_buffers(cx: &mut TestAppContext) {
     let first = singleton("src/a.rs", "one\n", cx);
     let second = singleton("src/b.rs", "two\n", cx);
-    let first_text = cx.read_entity(&first, |buffer, cx| buffer.as_singleton(cx).unwrap());
-    let second_text = cx.read_entity(&second, |buffer, cx| buffer.as_singleton(cx).unwrap());
+    let first_text = cx.read_entity(&first, |buffer, _| buffer.buffer());
+    let second_text = cx.read_entity(&second, |buffer, _| buffer.buffer());
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
@@ -719,7 +751,7 @@ fn read_only_composite_rejects_edits(cx: &mut TestAppContext) {
 fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &mut TestAppContext) {
     let old = singleton("src/a.rs", "旧内容\n", cx);
     let current = singleton("src/a.rs", "上下文\n新内容\n之后\n", cx);
-    let current_buffer = cx.read_entity(&current, |source, cx| source.as_singleton(cx).unwrap());
+    let current_buffer = cx.read_entity(&current, |source, _| source.buffer());
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(

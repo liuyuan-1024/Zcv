@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use gpui::{App, AppContext, Context, Entity};
 use zcv_git::{DiffHunk, DiffHunkKind};
+use zcv_language::LanguageBuffer;
 use zcv_text::{BufferVersion, Line, PositionMap, Stickiness, TextRange, TrackedRange};
 
 use crate::{ExcerptDiffKind, MultiBuffer, MultiBufferEvent, MultiBufferExcerpt};
@@ -21,8 +22,8 @@ use crate::{ExcerptDiffKind, MultiBuffer, MultiBufferEvent, MultiBufferExcerpt};
 /// 宿主（普通编辑器 / 项目差异视图）只提供数据；物化与显示坐标由本层统一完成。
 #[derive(Clone)]
 pub struct DiffFileInput {
-    /// 新侧源（工作区文件或修订文本的组合文档实体）。
-    pub working: Entity<MultiBuffer>,
+    /// 新侧源（工作区文件或修订文本的语言 Buffer 实体）。
+    pub working: Entity<LanguageBuffer>,
     /// 新侧源文件路径（绝对；hunk 操作与导航定位用）。
     pub path: PathBuf,
     /// 新侧坐标 hunks（working 文本行范围）；空表示无行级差异。
@@ -63,15 +64,15 @@ pub(crate) struct DiffProjection {
 
 /// 单个文件的 diff 投影状态（含展开状态与 base 修订源）。
 struct DiffFileProjection {
-    working: Entity<MultiBuffer>,
+    working: Entity<LanguageBuffer>,
     /// 源坐标 hunks（新侧行范围；随编辑推进）。
     hunks: Vec<DiffHunk>,
     /// 与 hunks 并行的工作区源文本跟踪区间（随编辑推进）。
     ranges: Vec<TrackedRange>,
     /// 旧侧全文（物化旧侧行的数据源）。
     base_text: Option<Arc<str>>,
-    /// 旧侧修订源（base_text 对应的 singleton 组合文档）。
-    base_source: Option<Entity<MultiBuffer>>,
+    /// 旧侧修订源（base_text 对应的 LanguageBuffer）。
+    base_source: Option<Entity<LanguageBuffer>>,
     /// 新侧源文件路径（绝对；操作与导航定位用）。
     path: PathBuf,
     display_path: PathBuf,
@@ -294,7 +295,7 @@ impl MultiBuffer {
         let diff = self.diff.as_ref()?;
         let file = diff.files.iter().find(|file| file.path == location.path)?;
         let base = file.base_source.as_ref()?;
-        let base_text = base.read(cx).snapshot(cx).text().clone();
+        let base_text = base.read(cx).text_snapshot(cx);
         let position = base_text
             .byte_to_position(location.source_range.start())
             .ok()?;
@@ -330,11 +331,10 @@ impl MultiBuffer {
     ///
     /// 组合编辑在 MultiBuffer::edit 内同步调用（用本次编辑的 PositionMap）；
     /// 外部编辑由 source_changed 调用（用消费到的文本变化 patch）。
-    /// None 表示自身（singleton 形态组合文档的底层编辑）。
     /// 返回 true 表示该文件的 hunks 被推进（调用方应重建投影）。
     pub(crate) fn map_diff_hunks_through_edit(
         &mut self,
-        source_id: Option<gpui::EntityId>,
+        source_id: gpui::EntityId,
         position_map: &PositionMap,
         new_version: BufferVersion,
         cx: &mut Context<Self>,
@@ -342,11 +342,11 @@ impl MultiBuffer {
         let Some(diff) = &mut self.diff else {
             return false;
         };
-        let self_id = cx.entity_id();
-        let Some(file) = diff.files.iter_mut().find(|file| match source_id {
-            Some(id) => file.working.entity_id() == id,
-            None => file.working.entity_id() == self_id,
-        }) else {
+        let Some(file) = diff
+            .files
+            .iter_mut()
+            .find(|file| file.working.entity_id() == source_id)
+        else {
             return false;
         };
         if file.hunks.is_empty() {
@@ -357,7 +357,7 @@ impl MultiBuffer {
                 .map_through_position_map(new_version, position_map)
                 .value();
         }
-        let working_text = file.working.read(cx).snapshot(cx).text().clone();
+        let working_text = file.working.read(cx).text_snapshot(cx);
         let mapped_ranges = file
             .ranges
             .iter()
@@ -425,7 +425,7 @@ impl DiffProjection {
 
 impl DiffFileProjection {
     fn new(input: DiffFileInput, cx: &Context<MultiBuffer>) -> Self {
-        let working_text = input.working.read(cx).snapshot(cx).text().clone();
+        let working_text = input.working.read(cx).text_snapshot(cx);
         let ranges = tracked_ranges_for_hunks(&input.hunks, &working_text);
         Self {
             working: input.working,
@@ -458,9 +458,7 @@ impl DiffFileProjection {
                     .expect("base 修订文本必须能创建 Buffer");
             let buffer = cx.new(|_| buffer);
             // 旧侧源的文件路径必须与工作区源一致（绝对），excerpt 定位与导航按源路径匹配。
-            let language =
-                cx.new(|cx| zcv_language::LanguageBuffer::new(buffer, Some(self.path.clone()), cx));
-            cx.new(|cx| MultiBuffer::singleton(language, cx))
+            cx.new(|cx| LanguageBuffer::new(buffer, Some(self.path.clone()), cx))
         });
     }
 
@@ -608,7 +606,7 @@ fn materialize_file(
 ) {
     let working = file.working.clone();
     let base_source = file.base_source.clone();
-    let working_text = working.read(cx).snapshot(cx).text().clone();
+    let working_text = working.read(cx).text_snapshot(cx);
     let line_count = working_text.line_count();
     let display_path = file.display_path.clone();
     let context_lines = file.context_lines;
@@ -617,7 +615,7 @@ fn materialize_file(
 
     let mut push = |lines: Range<usize>,
                     text: &zcv_text::Snapshot,
-                    source: &Entity<MultiBuffer>,
+                    source: &Entity<LanguageBuffer>,
                     diff_kind: Option<ExcerptDiffKind>,
                     starts_new_excerpt: bool,
                     allow_empty: bool|
@@ -705,7 +703,7 @@ fn materialize_file(
                 if file.is_expanded(hunk.kind, &hunk.old_range, expanded_by_default)
                     && let Some(base) = base_source.as_ref()
                 {
-                    let base_text = base.read(cx).snapshot(cx).text().clone();
+                    let base_text = base.read(cx).text_snapshot(cx);
                     let old_start = *output_line;
                     *output_line += push(
                         hunk.old_range.clone(),
@@ -720,7 +718,7 @@ fn materialize_file(
                 } else if context_lines.is_some() {
                     // 折叠占位行：空 Deleted 片段（组合文档为它保留一个显示行）。
                     let base = base_source.as_ref().expect("删除点占位需要 base 来源");
-                    let base_text = base.read(cx).snapshot(cx).text().clone();
+                    let base_text = base.read(cx).text_snapshot(cx);
                     let old_start = *output_line;
                     *output_line += push(
                         hunk.old_range.start..hunk.old_range.start,
@@ -778,7 +776,7 @@ fn materialize_file(
 
 /// 构造一个投影片段（空行策略由 allow_empty 控制：占位行允许空源范围）。
 fn projected_excerpt(
-    source: &Entity<MultiBuffer>,
+    source: &Entity<LanguageBuffer>,
     text: &zcv_text::Snapshot,
     lines: Range<usize>,
     display_path: &Path,

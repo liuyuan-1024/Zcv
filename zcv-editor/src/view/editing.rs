@@ -86,9 +86,10 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         let before_selections = self.resolved_selections();
-        let _ = self.change_with_after(before_selections, cx, |buffer| {
+        let metadata = edit_metadata(description);
+        let _ = self.change_with_after(before_selections, metadata.clone(), cx, |buffer| {
             let targets = targets?;
-            replace_selections(buffer, &targets, "", edit_metadata(description))
+            replace_selections(buffer, &targets, "", metadata)
         });
     }
 
@@ -142,7 +143,6 @@ impl Editor {
         }
         let before = self.resolved_selections().normalized();
         let snapshot = self.text_buffer(cx).read(cx).snapshot();
-        let tab = snapshot.config().tab;
         let all_carets = before
             .as_slice()
             .iter()
@@ -152,6 +152,11 @@ impl Editor {
                 .as_slice()
                 .iter()
                 .map(|selection| {
+                    let tab = self
+                        .multi_buffer
+                        .read(cx)
+                        .buffer_config_at(selection.head(), cx)
+                        .tab;
                     let text: Arc<str> = if tab.insert_spaces {
                         let column = self
                             .display_map
@@ -172,29 +177,27 @@ impl Editor {
                 .collect::<TextResult<Vec<_>>>()
         } else {
             touched_lines(&snapshot, &before).map(|lines| {
-                let text: Arc<str> = if tab.insert_spaces {
-                    Arc::from(" ".repeat(tab.indent_width()))
-                } else {
-                    Arc::from("\t")
-                };
                 lines
                     .into_iter()
                     .map(|line| {
-                        (
-                            Selection::caret(
-                                snapshot
-                                    .line_start_byte(line)
-                                    .expect("已验证逻辑行必须有行首"),
-                            ),
-                            Arc::clone(&text),
-                        )
+                        let offset = snapshot
+                            .line_start_byte(line)
+                            .expect("已验证逻辑行必须有行首");
+                        let tab = self.multi_buffer.read(cx).buffer_config_at(offset, cx).tab;
+                        let text: Arc<str> = if tab.insert_spaces {
+                            Arc::from(" ".repeat(tab.indent_width()))
+                        } else {
+                            Arc::from("\t")
+                        };
+                        (Selection::caret(offset), text)
                     })
                     .collect()
             })
         };
-        let _ = self.change_with_after(before.clone(), cx, |buffer| {
+        let metadata = edit_metadata("增加缩进");
+        let _ = self.change_with_after(before.clone(), metadata.clone(), cx, |buffer| {
             let targets = targets?;
-            let outcome = apply_targeted_edits(buffer, targets, edit_metadata("增加缩进"))?;
+            let outcome = apply_targeted_edits(buffer, targets, metadata)?;
             // 行首插入是文本编辑目标，不是新的用户选区。
             // 显式映射原选区的两端，既让端点越过新增缩进，又保持原有选区数量、方向和 primary 归属。
             let after = outcome.transaction().map_or_else(
@@ -214,16 +217,29 @@ impl Editor {
         let targets = touched_lines(&snapshot, &before).and_then(|lines| {
             lines
                 .into_iter()
-                .filter_map(|line| match leading_indent_range(&snapshot, line) {
-                    Ok(Some(selection)) => Some(Ok((selection, Arc::from("")))),
-                    Ok(None) => None,
-                    Err(error) => Some(Err(error)),
+                .filter_map(|line| {
+                    let offset = match snapshot.line_start_byte(line) {
+                        Ok(offset) => offset,
+                        Err(error) => return Some(Err(error)),
+                    };
+                    let indent_width = self
+                        .multi_buffer
+                        .read(cx)
+                        .buffer_config_at(offset, cx)
+                        .tab
+                        .indent_width();
+                    match leading_indent_range(&snapshot, line, indent_width) {
+                        Ok(Some(selection)) => Some(Ok((selection, Arc::from("")))),
+                        Ok(None) => None,
+                        Err(error) => Some(Err(error)),
+                    }
                 })
                 .collect::<TextResult<Vec<_>>>()
         });
-        let _ = self.change_with_after(before.clone(), cx, |buffer| {
+        let metadata = edit_metadata("减少缩进");
+        let _ = self.change_with_after(before.clone(), metadata.clone(), cx, |buffer| {
             let targets = targets?;
-            let outcome = apply_targeted_edits(buffer, targets, edit_metadata("减少缩进"))?;
+            let outcome = apply_targeted_edits(buffer, targets, metadata)?;
             let after = outcome.transaction().map_or_else(
                 || before.clone(),
                 |transaction| before.map_through_position_map(transaction.event().position_map()),
@@ -247,15 +263,11 @@ impl Editor {
             .iter()
             .map(|selection| {
                 let offset = selection.start();
-                let suggestion = self
-                    .display_map
-                    .syntax_snapshot()
-                    .suggested_newline_indent(offset, &snapshot)?;
+                let suggestion = self.display_map.suggested_newline_indent(offset)?;
+                let tab = self.multi_buffer.read(cx).buffer_config_at(offset, cx).tab;
                 let indent = if suggestion.additional_levels > 0 {
-                    if snapshot.config().tab.insert_spaces {
-                        " ".repeat(
-                            snapshot.config().tab.indent_width() * suggestion.additional_levels,
-                        )
+                    if tab.insert_spaces {
+                        " ".repeat(tab.indent_width() * suggestion.additional_levels)
                     } else {
                         "\t".repeat(suggestion.additional_levels)
                     }
@@ -275,9 +287,10 @@ impl Editor {
                 Ok((*selection, Arc::from(text)))
             })
             .collect::<TextResult<Vec<_>>>();
-        let _ = self.change_with_after(before.clone(), cx, |buffer| {
+        let metadata = edit_metadata("插入换行");
+        let _ = self.change_with_after(before.clone(), metadata.clone(), cx, |buffer| {
             let targets = targets?;
-            let outcome = apply_targeted_edits(buffer, targets, edit_metadata("插入换行"))?;
+            let outcome = apply_targeted_edits(buffer, targets, metadata)?;
             let position_map = outcome
                 .transaction()
                 .map(|transaction| transaction.event().position_map().clone())
@@ -303,7 +316,7 @@ impl Editor {
     /// 光标处是否需要括号内额外空行：
     /// 光标前后跳过非换行空白后，分别紧邻声明了 `newline` 的配对起始与闭合字符。
     fn extra_newline_in_pair(&self, offset: ByteOffset, snapshot: &Snapshot, cx: &App) -> bool {
-        let Some(pairs) = self.auto_close_pairs(cx) else {
+        let Some(pairs) = self.auto_close_pairs(offset, cx) else {
             return false;
         };
         let Ok((line, column)) = snapshot.byte_to_point(offset) else {
@@ -348,66 +361,26 @@ impl Editor {
 
     /// 回放文本历史（undo/redo）并恢复对应选区的共享实现。
     ///
-    /// 历史回放不经过编辑事务会话（`change` 会开启新会话并记录选区），这里直接回放 Buffer 历史并以被回放事务的身份只读恢复 SelectionHistory。
+    /// 历史回放不经过编辑事务会话（`change` 会开启新会话并记录选区），这里直接回放 MultiBuffer 历史并以被回放事务的身份只读恢复 SelectionHistory。
     fn replay_history(&mut self, redo: bool, cx: &mut Context<Self>) {
         if self.is_read_only(cx) {
             return;
         }
         let action = if redo { "Redo" } else { "Undo" };
-        if self.multi_buffer.read(cx).is_composite() {
-            let outcome = self.multi_buffer.update(cx, |buffer, cx| {
-                if redo {
-                    buffer.redo(cx)
-                } else {
-                    buffer.undo(cx)
-                }
-            });
-            match outcome {
-                Ok(Some(outcome)) => {
-                    self.update_autoclose_regions_with(
-                        outcome.position_map(),
-                        outcome.old_version(),
-                        outcome.new_version(),
-                    );
-                    if let Some(selections) = self
-                        .selection_history
-                        .transaction(outcome.transaction_id())
-                        .and_then(|history| {
-                            if redo {
-                                history.redo().cloned()
-                            } else {
-                                Some(history.undo().clone())
-                            }
-                        })
-                    {
-                        self.selections = EditorSelections::from_selection_set(
-                            outcome.new_version(),
-                            &selections,
-                        );
-                    }
-                    self.synchronize_after_history_edit(cx);
-                }
-                Ok(None) => {}
-                Err(error) => eprintln!("Editor {action} 失败：{error}"),
+        let outcome = self.multi_buffer.update(cx, |buffer, cx| {
+            if redo {
+                buffer.redo(cx)
+            } else {
+                buffer.undo(cx)
             }
-            return;
-        }
-        let buffer = self.text_buffer(cx);
-        let outcome = buffer.update(cx, |buffer, cx| {
-            let outcome = if redo { buffer.redo() } else { buffer.undo() };
-            cx.notify();
-            outcome
         });
         match outcome {
             Ok(Some(outcome)) => {
-                // 自动闭合区域随回放推进。
-                let delta = outcome.delta();
                 self.update_autoclose_regions_with(
-                    &PositionMap::from_edits(delta.edits()),
-                    delta.old_version(),
-                    delta.new_version(),
+                    outcome.position_map(),
+                    outcome.old_version(),
+                    outcome.new_version(),
                 );
-                // 回放后文本与记录选区时相同，偏移快照可直接重锚定。
                 if let Some(selections) = self
                     .selection_history
                     .transaction(outcome.transaction_id())
@@ -419,8 +392,8 @@ impl Editor {
                         }
                     })
                 {
-                    let version = self.text_buffer(cx).read(cx).snapshot().version();
-                    self.selections = EditorSelections::from_selection_set(version, &selections);
+                    self.selections =
+                        EditorSelections::from_selection_set(outcome.new_version(), &selections);
                 }
                 self.synchronize_after_history_edit(cx);
             }
@@ -536,8 +509,9 @@ impl Editor {
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         self.composition = None;
         let before_selections = self.resolved_selections();
-        let _ = self.change_with_after(before_selections.clone(), cx, |buffer| {
-            replace_selections(buffer, &before_selections, "", edit_metadata("剪切"))
+        let metadata = edit_metadata("剪切");
+        let _ = self.change_with_after(before_selections.clone(), metadata.clone(), cx, |buffer| {
+            replace_selections(buffer, &before_selections, "", metadata)
         });
     }
 
@@ -595,18 +569,16 @@ impl Editor {
             MovementDirection::Next => "移动行到下方",
         };
         let snapshot = self.text_buffer(cx).read(cx).snapshot();
-        let _ = self.change_with_after(before.clone(), cx, |buffer| {
+        let metadata = edit_metadata(description);
+        let _ = self.change_with_after(before.clone(), metadata.clone(), cx, |buffer| {
             let (targets, plans) = line_blocks(&snapshot, &before).and_then(|blocks| {
                 let targets = move_line_targets(&snapshot, &blocks, direction)?;
                 let plans = pending_selection_shift(&snapshot, &before, &blocks, direction)?;
                 Ok((targets, plans))
             })?;
-            apply_edits_with_after_mapping(
-                buffer,
-                targets,
-                edit_metadata(description),
-                |snapshot| resolve_selection_shift(snapshot, &before, &plans),
-            )
+            apply_edits_with_after_mapping(buffer, targets, metadata, |snapshot| {
+                resolve_selection_shift(snapshot, &before, &plans)
+            })
         });
     }
 }
@@ -784,7 +756,11 @@ pub(super) fn touched_lines(
     Ok(lines.into_iter().collect())
 }
 
-fn leading_indent_range(snapshot: &Snapshot, line: Line) -> TextResult<Option<Selection>> {
+fn leading_indent_range(
+    snapshot: &Snapshot,
+    line: Line,
+    indent_width: usize,
+) -> TextResult<Option<Selection>> {
     let start = snapshot.line_start_byte(line)?;
     let text = snapshot.slice_line(line)?;
     let content = text.as_str();
@@ -793,7 +769,7 @@ fn leading_indent_range(snapshot: &Snapshot, line: Line) -> TextResult<Option<Se
     } else {
         let spaces = content
             .bytes()
-            .take(snapshot.config().tab.indent_width())
+            .take(indent_width)
             .take_while(|byte| *byte == b' ')
             .count();
         start.checked_add(spaces)

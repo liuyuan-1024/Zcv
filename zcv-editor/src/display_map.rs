@@ -47,10 +47,11 @@ use tab_map::TabMap;
 pub(crate) use tab_map::byte_for_display_column;
 pub(crate) use wrap_map::WrapViewportRowKind;
 use wrap_map::{WrapMap, WrapSnapshot};
-use zcv_language::{HighlightSpan, SyntaxSnapshot};
+use zcv_language::{BracketPair, HighlightSpan, NewlineIndent, SyntaxSnapshot};
 use zcv_multi_buffer::MultiBufferSnapshot;
 use zcv_text::{
     ByteOffset, Line, LineRange, LogicalColumn, Position, Snapshot, TextChangeBatch, TextRange,
+    TextResult,
 };
 use zcv_theme::syntax;
 
@@ -265,11 +266,7 @@ impl DisplaySnapshot {
 
         let mut spans = Vec::new();
         for range in &ranges {
-            if self.multi_buffer_snapshot.is_composite() {
-                spans.extend(self.multi_buffer_snapshot.highlights(range.clone()));
-            } else {
-                spans.extend(self.syntax_snapshot.highlights(range.clone(), buffer));
-            }
+            spans.extend(self.multi_buffer_snapshot.highlights(range.clone()));
         }
         let spans = Arc::from(spans);
         cache.key = Some(key);
@@ -441,6 +438,18 @@ impl DisplayMap {
 
     pub(crate) fn syntax_snapshot(&self) -> &SyntaxSnapshot {
         &self.syntax_snapshot
+    }
+
+    pub(crate) fn bracket_pairs_at(&self, offset: ByteOffset) -> Vec<BracketPair> {
+        self.multi_buffer_snapshot.bracket_pairs_at(offset)
+    }
+
+    pub(crate) fn suggested_newline_indent(&self, offset: ByteOffset) -> TextResult<NewlineIndent> {
+        self.multi_buffer_snapshot.suggested_newline_indent(offset)
+    }
+
+    pub(crate) fn ancestor_range(&self, range: Range<usize>) -> Option<Range<usize>> {
+        self.multi_buffer_snapshot.ancestor_range(range)
     }
 
     pub(super) fn snapshot(&self) -> DisplaySnapshot {

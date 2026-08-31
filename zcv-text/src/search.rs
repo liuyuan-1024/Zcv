@@ -285,6 +285,15 @@ impl<O: Copy> SearchResultSet<O> {
         self.matches.version()
     }
 
+    /// 把结果重绑到另一个版本。
+    ///
+    /// 只适用于与绑定缓冲区文本完全一致的一次性副本（如编辑 planner 的 scratch 拷贝）：
+    /// 过期校验必须已由权威缓冲区在重绑前完成，副本仅继承坐标参与替换。
+    pub fn rebinding_to(mut self, version: BufferVersion) -> Self {
+        self.matches = VersionedResult::new(version, self.matches.into_value());
+        self
+    }
+
     /// 本次搜索的查询输入（literal query 或 regex pattern）。
     pub fn query(&self) -> &str {
         &self.query

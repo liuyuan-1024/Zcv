@@ -48,13 +48,13 @@ pub(super) fn scrollbar_geometry(
     })
 }
 
-/// 为普通编辑器注入统一 diff 投影（source 模式单文件数据源）。
+/// 为普通编辑器注入统一 diff 投影（工作区源为文件级 LanguageBuffer）。
 ///
 /// 与 item_provider 打开路径一致：工作区源实体由测试创建并跨注入复用
 /// （同一实体重新注入时展开状态按文本跟踪区间迁移）。
 pub(super) fn inject_editor_diff(
     editor: &Entity<Editor>,
-    source: &Entity<MultiBuffer>,
+    source: &Entity<LanguageBuffer>,
     hunks: Vec<DiffHunk>,
     base_text: Option<Arc<str>>,
     cx: &mut TestAppContext,

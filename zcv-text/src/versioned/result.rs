@@ -31,6 +31,11 @@ impl<T> VersionedResult<T> {
         &self.value
     }
 
+    /// 消费载体，取回 payload（版本重绑等场景需要移动 payload）。
+    pub fn into_value(self) -> T {
+        self.value
+    }
+
     /// 当前结果是否相对 `current` 版本已过期。
     pub fn is_stale(&self, current: BufferVersion) -> bool {
         self.version != current

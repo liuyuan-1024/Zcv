@@ -1039,7 +1039,7 @@ mod tests {
             Buffer::scratch(text.into(), BufferConfig::default()).expect("应创建测试 Buffer")
         });
         let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, None, cx));
-        cx.new(|cx| MultiBuffer::singleton(language_buffer, cx))
+        cx.new(|cx| MultiBuffer::from_working_source(language_buffer, cx))
     }
 
     /// 测试专用的源码 Item：编辑时标记脏并发射 Edit 事件（Pane 依赖它提升临时标签）。

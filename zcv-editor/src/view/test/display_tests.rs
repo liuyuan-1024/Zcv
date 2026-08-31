@@ -37,7 +37,7 @@ fn hunk_controls_remain_visible_when_pointer_enters_controls(cx: &mut TestAppCon
         let buffer = buffer.clone();
         move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)
     });
-    let source = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    let source = buffer.clone();
     editor.update(cx, |editor, cx| {
         editor.set_diff_hunk_delegate(Some(Arc::new(OccludingHunkControls)), cx);
     });
@@ -90,7 +90,7 @@ fn hunk_controls_stick_to_viewport_while_hunk_start_is_scrolled_out(cx: &mut Tes
         let buffer = buffer.clone();
         move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)
     });
-    let source = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    let source = buffer.clone();
     editor.update(cx, |editor, cx| {
         editor.set_diff_hunk_delegate(Some(Arc::new(OccludingHunkControls)), cx);
     });
@@ -143,7 +143,7 @@ fn deleted_hunk_expands_and_collapses_readonly_excerpt(cx: &mut TestAppContext) 
         let buffer = buffer.clone();
         move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)
     });
-    let source = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    let source = buffer.clone();
     cx.run_until_parked();
     let base_rows = cx.read_entity(&editor, |editor, _| editor.display_map.line_count());
     assert_eq!(base_rows, 3);
@@ -499,7 +499,7 @@ fn diff_hunks_follow_buffer_edits_without_losing_highlight(cx: &mut TestAppConte
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
     });
     let editor = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
-    let source = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    let source = buffer.clone();
 
     inject_editor_diff(
         &editor,
@@ -600,10 +600,7 @@ fn multibuffer_soft_wrap_uses_the_regular_display_map_pipeline(cx: &mut TestAppC
         let buffer = engine_buffer(&source, cx);
         cx.read_entity(&buffer, |buffer, _| buffer.len_bytes())
     };
-    let source_multi = cx.new({
-        let source = source.clone();
-        move |cx| MultiBuffer::singleton(source, cx)
-    });
+    let source_multi = source.clone();
     let combined = cx.new(MultiBuffer::empty);
     combined.update(cx, |combined, cx| {
         combined.set_excerpts(
@@ -786,7 +783,7 @@ fn horizontal_windowing_clips_wide_rows_to_the_visible_window(cx: &mut TestAppCo
                 weight: gpui::FontWeight::default(),
                 style: gpui::FontStyle::default(),
             },
-            color: gpui::white().into(),
+            color: gpui::white(),
             background_color: None,
             underline: None,
             strikethrough: None,
@@ -841,7 +838,7 @@ fn cursor_text_maps_excerpt_output_to_real_source_line(cx: &mut TestAppContext) 
     source.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
     });
-    let source_multi = cx.new(move |cx| MultiBuffer::singleton(source, cx));
+    let source_multi = source;
     let combined = cx.new(MultiBuffer::empty);
     combined.update(cx, |combined, cx| {
         combined.set_excerpts(
@@ -882,10 +879,8 @@ fn materialized_deleted_excerpt_keeps_editing_and_cursor(cx: &mut TestAppContext
     head.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
     });
-    let work_for_multi = work.clone();
-    let head_for_multi = head.clone();
-    let work_multi = cx.new(move |cx| MultiBuffer::singleton(work_for_multi, cx));
-    let head_multi = cx.new(move |cx| MultiBuffer::singleton(head_for_multi, cx));
+    let work_multi = work.clone();
+    let head_multi = head.clone();
     let combined = cx.new(MultiBuffer::empty);
 
     // Deleted hunk：新侧行 1 处删除 HEAD 的 1..3 行。
@@ -937,7 +932,7 @@ fn plain_editor_expanding_deleted_hunk_uses_excerpts_and_allows_cursor(cx: &mut 
         move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
     // 普通编辑器的 diff 注入路径：hunks + HEAD 全文 + 展开删除块。
-    let source = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    let source = buffer.clone();
     inject_editor_diff(
         &editor,
         &source,
@@ -1004,7 +999,7 @@ fn folded_deleted_hunk_anchor_is_at_the_deletion_row_boundary(cx: &mut TestAppCo
         let buffer = buffer.clone();
         move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)
     });
-    let source = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    let source = buffer.clone();
     inject_editor_diff(
         &editor,
         &source,
@@ -1057,7 +1052,7 @@ fn refreshing_diff_hunks_removes_stale_expanded_excerpt(cx: &mut TestAppContext)
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
     });
     let editor = cx.new(|cx| Editor::from_language_buffer(buffer.clone(), EditorMode::Full, cx));
-    let source = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    let source = buffer.clone();
     inject_editor_diff(
         &editor,
         &source,
@@ -1088,7 +1083,7 @@ fn refreshing_diff_hunks_migrates_expansion_across_hunk_boundary_changes(cx: &mu
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
     });
     let editor = cx.new(|cx| Editor::from_language_buffer(buffer.clone(), EditorMode::Full, cx));
-    let source = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    let source = buffer.clone();
     inject_editor_diff(
         &editor,
         &source,
@@ -1137,7 +1132,7 @@ fn refreshing_diff_hunks_drops_state_of_disappeared_hunk_only(cx: &mut TestAppCo
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
     });
     let editor = cx.new(|cx| Editor::from_language_buffer(buffer.clone(), EditorMode::Full, cx));
-    let source = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    let source = buffer.clone();
     inject_editor_diff(
         &editor,
         &source,
@@ -1198,7 +1193,7 @@ fn refreshing_diff_hunks_preserves_collapsed_hunk_in_default_expanded_mode(
     editor.update(cx, |editor, cx| {
         editor.set_diff_hunks_expanded_by_default(true, cx)
     });
-    let source = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    let source = buffer.clone();
     inject_editor_diff(
         &editor,
         &source,
@@ -1253,7 +1248,7 @@ fn reset_diff_hunk_expansion_state_restores_default_strategy(cx: &mut TestAppCon
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
     });
     let editor = cx.new(|cx| Editor::from_language_buffer(buffer.clone(), EditorMode::Full, cx));
-    let source = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    let source = buffer.clone();
     inject_editor_diff(
         &editor,
         &source,
@@ -1296,7 +1291,7 @@ fn plain_editor_expanded_modified_hunk_keeps_old_rows_and_gutter_strip(cx: &mut 
         let buffer = buffer.clone();
         move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)
     });
-    let source = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    let source = buffer.clone();
     inject_editor_diff(
         &editor,
         &source,
@@ -1372,7 +1367,7 @@ fn editing_readonly_deleted_row_then_editing_working_text_still_works(cx: &mut T
         let buffer = buffer.clone();
         move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
-    let source = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
+    let source = buffer.clone();
     inject_editor_diff(
         &editor,
         &source,

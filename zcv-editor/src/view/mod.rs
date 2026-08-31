@@ -30,9 +30,9 @@ use zcv_multi_buffer::{
 };
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
-    Buffer, BufferConfig, BufferVersion, ByteOffset, DeltaEvent, Edit, Line, LineRange,
-    LogicalColumn, MovementDirection, MovementUnit, Position, PositionMap, Snapshot, TextRange,
-    TextResult, TransactionId, TransactionMergePolicy, TransactionMetadata, TransactionSource,
+    Buffer, BufferConfig, BufferVersion, ByteOffset, Edit, Line, LineRange, LogicalColumn,
+    MovementDirection, MovementUnit, Position, PositionMap, Snapshot, TextRange, TextResult,
+    TransactionId, TransactionMergePolicy, TransactionMetadata, TransactionSource,
 };
 use zcv_theme::{color, typography};
 
@@ -650,8 +650,9 @@ impl Editor {
         } else {
             text.to_owned()
         };
-        let _ = self.change_with_after(before_selections, cx, |buffer| {
-            replace_selections(buffer, &targets, &text, edit_metadata("设置文本"))
+        let metadata = edit_metadata("设置文本");
+        let _ = self.change_with_after(before_selections, metadata.clone(), cx, |buffer| {
+            replace_selections(buffer, &targets, &text, metadata)
         });
     }
 
@@ -728,12 +729,9 @@ impl Editor {
             return cached.clone();
         }
         let caret_offset = caret.get();
-        let start = caret_offset.saturating_sub(1);
-        let end = caret_offset
-            .saturating_add(1)
-            .min(snapshot.len_bytes().get());
-        let result = syntax_snapshot
-            .bracket_pairs(start..end, snapshot)
+        let result = self
+            .display_map
+            .bracket_pairs_at(caret)
             .into_iter()
             .find(|pair| {
                 [
@@ -1226,7 +1224,7 @@ impl Editor {
         mode: EditorMode,
         cx: &mut Context<Self>,
     ) -> Self {
-        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));
+        let multi_buffer = cx.new(|cx| MultiBuffer::from_working_source(language_buffer, cx));
         Self::new(multi_buffer, mode, cx)
     }
 
@@ -1250,10 +1248,11 @@ impl Editor {
             match event {
                 MultiBufferEvent::TextChanged => editor.sync_display_map(cx),
                 MultiBufferEvent::Reparsed => {
+                    editor.bracket_pair_cache = None;
                     editor.sync_display_map(cx);
                     editor.refresh_fold_ranges(cx);
                 }
-                MultiBufferEvent::MetadataChanged => {}
+                MultiBufferEvent::MetadataChanged => editor.sync_display_map(cx),
                 MultiBufferEvent::DiffExpansionChanged => {
                     cx.emit(EditorEvent::DiffHunksExpandedChanged);
                 }
@@ -1323,14 +1322,16 @@ impl Editor {
     /// 提交一次文本编辑事务的唯一入口。
     ///
     /// 会话模型：入口统一负责会话开启/提交（`start_transaction` / `end_transaction`）、Buffer 通知、编辑后选区锚点映射、SelectionHistory 记录、display_map 同步与搜索重搜（`apply_edit_outcome` 全链路）。
+    /// `metadata` 是本次会话的历史元数据（描述与合并策略），由调用方决策并经 `MultiBuffer::edit` 透传到工作区源。
     /// 返回编辑结果供需要事务身份的调用方消费（如 IME 组合会话）；失败时错误已打印、选区已恢复，调用方只需处理自身特判状态。
     pub(super) fn change(
         &mut self,
         before_selections: SelectionSet,
+        metadata: TransactionMetadata,
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut Buffer) -> TextResult<EditOutcome>,
     ) -> TextResult<EditOutcome> {
-        let (node_id, outcome) = self.commit_session(before_selections, cx, f)?;
+        let (node_id, outcome) = self.commit_session(before_selections, metadata, cx, f)?;
         self.apply_edit_outcome(node_id, outcome, cx)
     }
 
@@ -1338,102 +1339,74 @@ impl Editor {
     pub(super) fn change_with_after(
         &mut self,
         before_selections: SelectionSet,
+        metadata: TransactionMetadata,
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut Buffer) -> TextResult<(EditOutcome, SelectionSet)>,
     ) -> TextResult<(EditOutcome, SelectionSet)> {
-        let (node_id, outcome) = self.commit_session(before_selections, cx, f)?;
+        let (node_id, outcome) = self.commit_session(before_selections, metadata, cx, f)?;
         self.apply_edit_outcome_with_after(node_id, outcome, cx)
     }
 
     /// 会话化编辑的共享骨架：开启会话并记录 undo 选区（事务开始时记录）→ 闭包编辑（统一 Buffer 通知）→ 提交会话，返回 (节点身份, 编辑结果)。
     ///
+    /// 会话元数据（描述与合并策略）由调用方决策，随 `MultiBuffer::edit` 透传到工作区源的历史；
     /// 编辑失败时结束空会话（不产生历史节点）、恢复编辑前选区并回传错误；合并进前节点时清理会话自身的孤儿选区记录。
     fn commit_session<T>(
         &mut self,
         before_selections: SelectionSet,
+        metadata: TransactionMetadata,
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut Buffer) -> TextResult<T>,
     ) -> TextResult<(Option<TransactionId>, T)> {
         let session_id = self.start_transaction(before_selections.clone(), cx)?;
-        if self.multi_buffer.read(cx).is_composite() {
-            let projection_snapshot = self.text_buffer(cx).read(cx).snapshot();
-            let projection_text = projection_snapshot
-                .slice_text(TextRange::new(
-                    ByteOffset::ZERO,
-                    projection_snapshot.len_bytes(),
-                )?)?
-                .as_str()
-                .to_owned();
-            let mut planner =
-                Buffer::scratch(projection_text, projection_snapshot.config().clone())?;
-            let subscription = planner.subscribe();
-            let outcome = match f(&mut planner) {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    self.end_transaction(cx);
-                    eprintln!("Editor 编辑事务失败：{error}");
-                    self.selections = EditorSelections::from_selection_set(
-                        projection_snapshot.version(),
-                        &before_selections,
-                    );
-                    return Err(error);
-                }
-            };
-            let changes = subscription.consume();
-            // 编辑映射与提交可能失败（如命中只读 excerpt）：失败必须结束空会话并恢复编辑前选区，否则事务残留会阻塞后续所有编辑。
-            let applied = (|| -> TextResult<()> {
-                if !changes.is_empty() {
-                    let after = planner.snapshot();
-                    let edits = changes
-                        .patch()
-                        .edits()
-                        .iter()
-                        .map(|patch| {
-                            let replacement =
-                                after.slice_text(patch.new_range())?.as_str().to_owned();
-                            Ok(Edit::replace(patch.old_range(), replacement))
-                        })
-                        .collect::<TextResult<Vec<_>>>()?;
-                    self.multi_buffer.update(cx, |buffer, cx| {
-                        buffer.edit(
-                            edits,
-                            TransactionMetadata::new(TransactionSource::Programmatic)
-                                .with_description("MultiBuffer 编辑"),
-                            cx,
-                        )
-                    })?;
-                }
-                Ok(())
-            })();
-            if let Err(error) = applied {
-                self.end_transaction(cx);
-                eprintln!("Editor 编辑事务失败：{error}");
-                let version = self.text_buffer(cx).read(cx).snapshot().version();
-                self.selections = EditorSelections::from_selection_set(version, &before_selections);
-                return Err(error);
-            }
-            let node_id = self.end_transaction(cx);
-            if node_id != Some(session_id) {
-                self.selection_history.remove_transaction(session_id);
-            }
-            return Ok((node_id, outcome));
-        }
-        let buffer = self.text_buffer(cx);
-        let outcome = buffer.update(cx, |buffer, cx| {
-            let outcome = f(buffer)?;
-            cx.notify();
-            Ok(outcome)
-        });
-        let outcome = match outcome {
+        let projection_snapshot = self.text_buffer(cx).read(cx).snapshot();
+        let projection_text = projection_snapshot
+            .slice_text(TextRange::new(
+                ByteOffset::ZERO,
+                projection_snapshot.len_bytes(),
+            )?)?
+            .as_str()
+            .to_owned();
+        let mut planner = Buffer::scratch(projection_text, projection_snapshot.config().clone())?;
+        let subscription = planner.subscribe();
+        let outcome = match f(&mut planner) {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.end_transaction(cx);
                 eprintln!("Editor 编辑事务失败：{error}");
-                let version = self.text_buffer(cx).read(cx).snapshot().version();
-                self.selections = EditorSelections::from_selection_set(version, &before_selections);
+                self.selections = EditorSelections::from_selection_set(
+                    projection_snapshot.version(),
+                    &before_selections,
+                );
                 return Err(error);
             }
         };
+        let changes = subscription.consume();
+        // 编辑映射与提交可能失败（如命中只读 excerpt）：失败必须结束空会话并恢复编辑前选区，否则事务残留会阻塞后续所有编辑。
+        let applied = (|| -> TextResult<()> {
+            if !changes.is_empty() {
+                let after = planner.snapshot();
+                let edits = changes
+                    .patch()
+                    .edits()
+                    .iter()
+                    .map(|patch| {
+                        let replacement = after.slice_text(patch.new_range())?.as_str().to_owned();
+                        Ok(Edit::replace(patch.old_range(), replacement))
+                    })
+                    .collect::<TextResult<Vec<_>>>()?;
+                self.multi_buffer
+                    .update(cx, |buffer, cx| buffer.edit(edits, metadata, cx))?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = applied {
+            self.end_transaction(cx);
+            eprintln!("Editor 编辑事务失败：{error}");
+            let version = self.text_buffer(cx).read(cx).snapshot().version();
+            self.selections = EditorSelections::from_selection_set(version, &before_selections);
+            return Err(error);
+        }
         let node_id = self.end_transaction(cx);
         if node_id != Some(session_id) {
             self.selection_history.remove_transaction(session_id);
@@ -1475,16 +1448,12 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> TextResult<EditOutcome> {
         if let Some(transaction) = outcome.transaction() {
-            if self.multi_buffer.read(cx).is_composite() {
-                let version = self.text_buffer(cx).read(cx).snapshot().version();
-                self.update_autoclose_regions_with(
-                    transaction.event().position_map(),
-                    self.selections.version(),
-                    version,
-                );
-            } else {
-                self.update_autoclose_regions(transaction.event());
-            }
+            let version = self.text_buffer(cx).read(cx).snapshot().version();
+            self.update_autoclose_regions_with(
+                transaction.event().position_map(),
+                self.selections.version(),
+                version,
+            );
             // 用本次事务的坐标映射批量推进选区端点锚点，选区自动跟随文本变化。
             let snapshot = self.text_buffer(cx).read(cx).snapshot();
             let new_version = snapshot.version();
@@ -1518,16 +1487,12 @@ impl Editor {
     ) -> TextResult<(EditOutcome, SelectionSet)> {
         let (outcome, after_selections) = outcome;
         if let Some(transaction) = outcome.transaction() {
-            if self.multi_buffer.read(cx).is_composite() {
-                let version = self.text_buffer(cx).read(cx).snapshot().version();
-                self.update_autoclose_regions_with(
-                    transaction.event().position_map(),
-                    self.selections.version(),
-                    version,
-                );
-            } else {
-                self.update_autoclose_regions(transaction.event());
-            }
+            let version = self.text_buffer(cx).read(cx).snapshot().version();
+            self.update_autoclose_regions_with(
+                transaction.event().position_map(),
+                self.selections.version(),
+                version,
+            );
         }
         if let Some(transaction_id) = transaction_id
             && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
@@ -1557,14 +1522,6 @@ impl Editor {
     /// 将自动闭合区域随一次文本变更推进到新版本。
     ///
     /// 区域版本与变更起点失配时整体清空（说明存在未走编辑入口的文本变更，陈旧区域坐标已不可信，继续保留会误触发跳过/删对）。
-    fn update_autoclose_regions(&mut self, event: &DeltaEvent) {
-        self.update_autoclose_regions_with(
-            event.position_map(),
-            event.old_version(),
-            event.new_version(),
-        );
-    }
-
     fn update_autoclose_regions_with(
         &mut self,
         position_map: &PositionMap,
@@ -2140,7 +2097,6 @@ impl Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let snapshot = self.text_buffer(cx).read(cx).snapshot();
         let expanded = self
             .resolved_selections()
             .as_slice()
@@ -2148,8 +2104,7 @@ impl Editor {
             .map(|selection| {
                 let range = selection.start().get()..selection.end().get();
                 self.display_map
-                    .syntax_snapshot()
-                    .ancestor_range(range, &snapshot)
+                    .ancestor_range(range)
                     .map(|range| {
                         Selection::new(ByteOffset::new(range.start), ByteOffset::new(range.end))
                     })

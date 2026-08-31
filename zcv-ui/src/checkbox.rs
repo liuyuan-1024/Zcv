@@ -74,7 +74,8 @@ impl RenderOnce for Checkbox {
             .size(typography::ui())
             .rounded_xs()
             .border_1()
-            .bg(colors.ghost_element_background)
+            // 背景取编辑器背景色：使复选框在面板背景上显形。
+            .bg(colors.editor_background)
             .border_color(colors.border)
             .hover(|style| style.border_color(hover_border))
             .flex()

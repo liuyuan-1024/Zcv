@@ -25,8 +25,6 @@ pub struct ThemeColors {
     pub surface_background: Rgba,
     /// Tooltip、菜单等浮层背景。
     pub elevated_surface_background: Rgba,
-    /// 幽灵元素（checkbox 等）的背景。
-    pub ghost_element_background: Rgba,
     /// 幽灵元素（图标按钮等）的悬停背景。
     pub ghost_element_hover: Rgba,
     /// 普通元素的悬停背景。

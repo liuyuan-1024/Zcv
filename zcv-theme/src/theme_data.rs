@@ -86,7 +86,6 @@ fn parse_colors(colors: &toml::Table) -> Option<ThemeColors> {
         background: parse("background")?,
         surface_background: parse("surface.background")?,
         elevated_surface_background: parse("elevated_surface.background")?,
-        ghost_element_background: parse("ghost_element.background")?,
         ghost_element_hover: parse("ghost_element.hover")?,
         element_hover: parse("element.hover")?,
         element_selected: parse("element.selected")?,
@@ -330,6 +329,7 @@ mod tests {
             "ghost_element.hover" = "#333333ff"
             "element.hover" = "#333333ff"
             "element.selected" = "#333333ff"
+            border = "#444444ff"
             "border.variant" = "#444444ff"
             "border.focused" = "#555555ff"
             text = "#666666ff"
@@ -342,9 +342,9 @@ mod tests {
             "icon.accent" = "#555555ff"
             success = "#00ff00ff"
             error = "#ff0000ff"
-            created = "#00ff00ff"
-            modified = "#ffff00ff"
-            deleted = "#ff0000ff"
+            "version_control.added" = "#00ff00ff"
+            "version_control.modified" = "#ffff00ff"
+            "version_control.deleted" = "#ff0000ff"
             conflict = "#ff0000ff"
             "title_bar.background" = "#222222ff"
             "status_bar.background" = "#111111ff"
@@ -395,6 +395,12 @@ mod tests {
             "terminal.ansi.dim_white" = "#ffffffff"
         "##
         .to_string()
+    }
+
+    /// 基线可解析：最小主题必须与 `parse_colors` 必填键集保持同步，否则下方“拒绝非法主题”一族测试会空转通过。
+    #[test]
+    fn minimal_theme_parses() {
+        assert!(parse_theme("test", &minimal_theme()).is_some());
     }
 
     #[test]

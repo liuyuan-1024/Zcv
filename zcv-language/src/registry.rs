@@ -7,25 +7,35 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tree_sitter::Query;
 
 use crate::AutoClosePair;
-use crate::available_languages::{LanguageQuerySources, QuerySource, builtin_languages};
+use crate::available_languages::{
+    LanguageQuerySources, LanguageSpec, LanguageSupport as LanguageSupportSpec, builtin_languages,
+};
 
-/// 一门语言：可由 tree-sitter 解析和高亮，或仅作纯文本兜底（无语法树）。
+/// 一门已加载语言。
 #[derive(Debug)]
 pub struct Language {
     name: &'static str,
-    grammar: Option<tree_sitter::Language>,
-    highlights: Option<Arc<Query>>,
-    injections: Option<Arc<Query>>,
-    queries: LanguageQueries,
-    capture_names: Arc<[Arc<str>]>,
+    syntax: LanguageSyntax,
     auto_close_pairs: &'static [AutoClosePair],
 }
 
-#[derive(Clone, Debug, Default)]
-pub(crate) struct LanguageQueries {
-    pub(crate) brackets: Option<Arc<Query>>,
-    pub(crate) indents: Option<Arc<Query>>,
-    pub(crate) folds: Option<Arc<Query>>,
+#[derive(Debug)]
+enum LanguageSyntax {
+    PlainText,
+    TreeSitter {
+        grammar: tree_sitter::Language,
+        queries: CompiledLanguageQueries,
+        capture_names: Arc<[Arc<str>]>,
+    },
+}
+
+#[derive(Debug)]
+struct CompiledLanguageQueries {
+    highlights: Arc<Query>,
+    injections: Option<Arc<Query>>,
+    brackets: Option<Arc<Query>>,
+    indents: Option<Arc<Query>>,
+    folds: Option<Arc<Query>>,
 }
 
 impl Language {
@@ -34,27 +44,45 @@ impl Language {
     }
 
     pub(crate) fn grammar(&self) -> Option<&tree_sitter::Language> {
-        self.grammar.as_ref()
+        match &self.syntax {
+            LanguageSyntax::PlainText => None,
+            LanguageSyntax::TreeSitter { grammar, .. } => Some(grammar),
+        }
     }
 
     pub(crate) fn highlights(&self) -> Option<&Arc<Query>> {
-        self.highlights.as_ref()
+        match &self.syntax {
+            LanguageSyntax::PlainText => None,
+            LanguageSyntax::TreeSitter { queries, .. } => Some(&queries.highlights),
+        }
     }
 
     pub(crate) fn injections(&self) -> Option<&Arc<Query>> {
-        self.injections.as_ref()
+        match &self.syntax {
+            LanguageSyntax::PlainText => None,
+            LanguageSyntax::TreeSitter { queries, .. } => queries.injections.as_ref(),
+        }
     }
 
     pub(crate) fn brackets(&self) -> Option<&Arc<Query>> {
-        self.queries.brackets.as_ref()
+        match &self.syntax {
+            LanguageSyntax::PlainText => None,
+            LanguageSyntax::TreeSitter { queries, .. } => queries.brackets.as_ref(),
+        }
     }
 
     pub(crate) fn indents(&self) -> Option<&Arc<Query>> {
-        self.queries.indents.as_ref()
+        match &self.syntax {
+            LanguageSyntax::PlainText => None,
+            LanguageSyntax::TreeSitter { queries, .. } => queries.indents.as_ref(),
+        }
     }
 
     pub(crate) fn folds(&self) -> Option<&Arc<Query>> {
-        self.queries.folds.as_ref()
+        match &self.syntax {
+            LanguageSyntax::PlainText => None,
+            LanguageSyntax::TreeSitter { queries, .. } => queries.folds.as_ref(),
+        }
     }
 
     /// 输入级自动闭合配对表（编辑器输入行为的数据源）。
@@ -64,105 +92,79 @@ impl Language {
 
     /// capture 名字表（capture index -> 名字），供跨语言全局表构建与渲染查表使用。
     pub(crate) fn capture_names(&self) -> &[Arc<str>] {
-        &self.capture_names
+        match &self.syntax {
+            LanguageSyntax::PlainText => &[],
+            LanguageSyntax::TreeSitter { capture_names, .. } => capture_names,
+        }
     }
 }
 
-/// 文件识别规则：扩展名 + 首行模式。
-///
-/// 首行模式在注册表构建时一次性编译（内置模式静态正确，编译失败直接 panic），
-/// 文件匹配热路径不再每次重新编译正则。
-pub(crate) struct LanguageMatcher {
-    pub(crate) suffixes: &'static [&'static str],
-    pub(crate) first_line_pattern: Option<regex::Regex>,
-}
-
-/// 语言注册条目：声明 + 惰性加载。
-///
-/// 声明（名称/matcher）在注册表构建时登记，文件识别不依赖语言已加载；
-/// `load` 在真正需要语法解析/高亮时才编译 grammar 与查询。
-pub(crate) struct LanguageEntry {
-    pub(crate) name: &'static str,
-    pub(crate) matcher: LanguageMatcher,
-    pub(crate) grammar: Option<fn() -> tree_sitter::Language>,
-    pub(crate) highlights: Option<QuerySource>,
-    pub(crate) injections: Option<QuerySource>,
-    /// 注入查询使用的别名（如 markdown 的 `markdown_inline`）；仅注入查找用，不参与文件识别。
-    pub(crate) injection_alias: Option<&'static str>,
-    /// 结构查询源（括号/缩进/折叠）；缺失时语言加载为空查询集。
-    pub(crate) queries: Option<LanguageQuerySources>,
-    /// 输入级自动闭合配对表；缺失时语言不参与自动闭合行为。
-    pub(crate) auto_close_pairs: Option<&'static [AutoClosePair]>,
-}
-
-impl LanguageEntry {
+impl LanguageSpec {
     fn load(&self) -> Language {
-        let grammar = self.grammar.map(|grammar| grammar());
-        // 无语法树的语言跳过查询编译，结构与查询能力为空。
-        let highlights = match (grammar.as_ref(), self.highlights) {
-            (Some(grammar), Some(source)) => {
-                Some(Arc::new(source.compile(grammar).unwrap_or_else(|error| {
-                    panic!("{} 高亮查询编译失败：{error}", self.name)
-                })))
-            }
-            _ => None,
-        };
-        let injections = match (grammar.as_ref(), self.injections) {
-            (Some(grammar), Some(source)) => {
-                Some(Arc::new(source.compile(grammar).unwrap_or_else(|error| {
-                    panic!("{} 注入查询编译失败：{error}", self.name)
-                })))
-            }
-            _ => None,
-        };
-        let queries = match grammar.as_ref() {
-            Some(grammar) => self
-                .queries
-                .map(|sources| sources.compile_all(grammar))
-                .unwrap_or_default(),
-            None => LanguageQueries::default(),
-        };
-        let capture_names = highlights
-            .as_ref()
-            .map(|highlights| {
-                highlights
+        let syntax = match &self.support {
+            LanguageSupportSpec::PlainText => LanguageSyntax::PlainText,
+            LanguageSupportSpec::TreeSitter { grammar, queries } => {
+                let grammar = grammar();
+                let queries = compile_queries(self.name, &grammar, *queries);
+                let capture_names = queries
+                    .highlights
                     .capture_names()
                     .iter()
                     .map(|name| Arc::<str>::from(*name))
-                    .collect()
-            })
-            .unwrap_or_default();
+                    .collect();
+                LanguageSyntax::TreeSitter {
+                    grammar,
+                    queries,
+                    capture_names,
+                }
+            }
+        };
         Language {
             name: self.name,
-            grammar,
-            highlights,
-            injections,
-            queries,
-            capture_names,
-            auto_close_pairs: self.auto_close_pairs.unwrap_or(&[]),
+            syntax,
+            auto_close_pairs: self.auto_close_pairs,
         }
-    }
-
-    /// 注入名匹配：别名（如 `markdown_inline`）、语言名与后缀均忽略大小写。
-    fn matches_injection_name(&self, name: &str) -> bool {
-        let name = name.trim();
-        self.injection_alias
-            .is_some_and(|alias| alias.eq_ignore_ascii_case(name))
-            || self.name.eq_ignore_ascii_case(name)
-            || self
-                .matcher
-                .suffixes
-                .iter()
-                .any(|suffix| suffix.eq_ignore_ascii_case(name))
     }
 }
 
-/// 语言注册表：语言声明 + 文件识别 + 惰性加载。
-///
-/// 当前尚无扩展系统，注册条目来自内置语言数据（`builtin_languages`）；
-/// 若未来支持用户配置覆盖 matcher，在此注册表上扩展即可。
+fn compile_queries(
+    language_name: &str,
+    grammar: &tree_sitter::Language,
+    sources: LanguageQuerySources,
+) -> CompiledLanguageQueries {
+    CompiledLanguageQueries {
+        highlights: compile_query(language_name, "高亮", grammar, sources.highlights),
+        injections: compile_optional_query(language_name, "注入", grammar, sources.injections),
+        brackets: compile_optional_query(language_name, "括号", grammar, sources.brackets),
+        indents: compile_optional_query(language_name, "缩进", grammar, sources.indents),
+        folds: compile_optional_query(language_name, "折叠", grammar, sources.folds),
+    }
+}
+
+fn compile_optional_query(
+    language_name: &str,
+    query_name: &str,
+    grammar: &tree_sitter::Language,
+    source: Option<&str>,
+) -> Option<Arc<Query>> {
+    source.map(|source| compile_query(language_name, query_name, grammar, source))
+}
+
+fn compile_query(
+    language_name: &str,
+    query_name: &str,
+    grammar: &tree_sitter::Language,
+    source: &str,
+) -> Arc<Query> {
+    Arc::new(
+        Query::new(grammar, source)
+            .unwrap_or_else(|error| panic!("{language_name} {query_name}查询编译失败：{error}")),
+    )
+}
+
+/// 语言注册表：持有内置规格，负责文件识别与惰性加载。
 pub(crate) struct LanguageRegistry {
-    languages: Vec<LanguageEntry>,
+    languages: Vec<LanguageSpec>,
     loaded_languages: Mutex<HashMap<&'static str, Arc<Language>>>,
 }
 
@@ -179,7 +181,7 @@ impl LanguageRegistry {
         }
     }
 
-    fn load(&self, entry: &LanguageEntry) -> Arc<Language> {
+    fn load(&self, entry: &LanguageSpec) -> Arc<Language> {
         let mut loaded = self.loaded_languages.lock().expect("语言缓存锁不应中毒");
         Arc::clone(
             loaded
@@ -196,7 +198,7 @@ impl LanguageRegistry {
             .map(|entry| self.load(entry))
     }
 
-    /// 按文件名和首行内容选择已注册且可高亮的语言。
+    /// 按文件名和首行内容选择语言规格。
     pub(crate) fn language_for_file(
         &self,
         path: &Path,
@@ -206,7 +208,7 @@ impl LanguageRegistry {
             .map(|entry| self.load(entry))
     }
 
-    fn matched_language(&self, path: &Path, first_line: Option<&str>) -> Option<&LanguageEntry> {
+    fn matched_language(&self, path: &Path, first_line: Option<&str>) -> Option<&LanguageSpec> {
         let filename = path.file_name()?.to_str()?;
         let mut matched = self
             .languages
@@ -235,7 +237,11 @@ impl LanguageRegistry {
         }
 
         // 纯文本兜底：任何未识别文件都以纯文本打开，编辑器始终有语言名可显示。
-        matched.or_else(|| self.languages.iter().find(|entry| entry.name == "纯文本"))
+        matched.or_else(|| {
+            self.languages
+                .iter()
+                .find(|entry| matches!(&entry.support, LanguageSupportSpec::PlainText))
+        })
     }
 }
 
@@ -253,13 +259,15 @@ pub(crate) fn language_for_injection(name: &str) -> Option<Arc<Language>> {
     registry().language_for_injection(name)
 }
 
-/// 根据文件名和首行内容选择已注册且可高亮的语言。
+/// 根据文件名和首行内容选择语言规格。
 pub(crate) fn language_for_file(path: &Path, first_line: Option<&str>) -> Option<Arc<Language>> {
     registry().language_for_file(path, first_line)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
 
     #[test]
@@ -284,8 +292,8 @@ mod tests {
         let second = language_for_file(Path::new("lib.rs"), None).unwrap();
         assert!(Arc::ptr_eq(&first, &second));
         assert!(Arc::ptr_eq(
-            first.highlights.as_ref().unwrap(),
-            second.highlights.as_ref().unwrap()
+            first.highlights().unwrap(),
+            second.highlights().unwrap()
         ));
     }
 
@@ -301,7 +309,14 @@ mod tests {
 
     #[test]
     fn unknown_files_fall_back_to_plain_text() {
-        // .gitignore 等无扩展名文件与未知后缀都以 Plain Text 兜底，语言名始终可显示。
+        // 未支持的语言后缀也必须明确回落为纯文本，不能注册成缺少 grammar 的半支持语言。
+        for path in ["main.zig", "main.go", "main.cpp", "query.sql"] {
+            let language = language_for_file(Path::new(path), None).unwrap();
+            assert_eq!(language.name(), "纯文本", "{path} 尚未提供完整语言规格");
+            assert!(language.grammar().is_none());
+        }
+
+        // .gitignore 等无扩展名文件与未知后缀都以纯文本兜底，语言名始终可显示。
         assert_eq!(
             language_for_file(Path::new(".gitignore"), None)
                 .unwrap()
@@ -323,70 +338,113 @@ mod tests {
         // .txt 显式匹配 Plain Text；无语法树语言不产出高亮查询。
         let plain = language_for_file(Path::new("notes.txt"), None).unwrap();
         assert_eq!(plain.name(), "纯文本");
-        assert!(plain.highlights.is_none(), "纯文本语言不应有高亮查询");
+        assert!(plain.highlights().is_none(), "纯文本语言不应有高亮查询");
     }
 
     #[test]
     fn javascript_family_compiles_declared_query_layers() {
         let jsx = language_for_file(Path::new("view.jsx"), None).unwrap();
         assert!(
-            jsx.highlights
-                .as_ref()
+            jsx.highlights()
                 .unwrap()
                 .capture_names()
                 .contains(&"variable")
         );
         assert!(
-            jsx.highlights
-                .as_ref()
+            jsx.highlights()
                 .unwrap()
                 .capture_names()
                 .contains(&"tag.jsx")
         );
-        assert!(jsx.injections.is_some());
+        assert!(jsx.injections().is_some());
 
         let typescript = language_for_file(Path::new("main.ts"), None).unwrap();
         assert!(
             typescript
-                .highlights
-                .as_ref()
+                .highlights()
                 .unwrap()
                 .capture_names()
                 .contains(&"variable")
         );
         assert!(
             typescript
-                .highlights
-                .as_ref()
+                .highlights()
                 .unwrap()
                 .capture_names()
                 .contains(&"type")
         );
-        assert!(typescript.injections.is_some());
+        assert!(typescript.injections().is_some());
 
         let tsx = language_for_file(Path::new("view.tsx"), None).unwrap();
         assert!(
-            tsx.highlights
-                .as_ref()
+            tsx.highlights()
                 .unwrap()
                 .capture_names()
                 .contains(&"variable")
         );
         assert!(
-            tsx.highlights
-                .as_ref()
+            tsx.highlights()
                 .unwrap()
                 .capture_names()
                 .contains(&"tag.jsx")
         );
-        assert!(
-            tsx.highlights
-                .as_ref()
-                .unwrap()
-                .capture_names()
-                .contains(&"type")
-        );
-        assert!(tsx.injections.is_some());
+        assert!(tsx.highlights().unwrap().capture_names().contains(&"type"));
+        assert!(tsx.injections().is_some());
+    }
+
+    #[test]
+    fn builtin_language_specs_are_complete_unique_and_reachable() {
+        let registry = registry();
+        let mut plain_text_count = 0;
+        let mut names = HashSet::new();
+        let mut suffixes = HashSet::new();
+        for spec in &registry.languages {
+            assert!(
+                names.insert(spec.name.to_ascii_lowercase()),
+                "语言名 `{}` 不能重复",
+                spec.name
+            );
+            for suffix in spec.matcher.suffixes {
+                assert!(
+                    suffixes.insert(suffix.to_ascii_lowercase()),
+                    "文件后缀 `{suffix}` 不能由多个语言规格声明"
+                );
+            }
+            assert!(
+                !spec.matcher.suffixes.is_empty()
+                    || spec.matcher.first_line_pattern.is_some()
+                    || spec.injection_alias.is_some(),
+                "{} 必须能通过文件、首行或注入别名到达",
+                spec.name
+            );
+
+            let language = registry.load(spec);
+            match spec.support {
+                LanguageSupportSpec::PlainText => {
+                    plain_text_count += 1;
+                    assert!(language.grammar().is_none());
+                    assert!(language.highlights().is_none());
+                }
+                LanguageSupportSpec::TreeSitter { .. } => {
+                    assert!(
+                        language.grammar().is_some(),
+                        "{} 必须加载 grammar",
+                        spec.name
+                    );
+                    assert!(
+                        language.highlights().is_some(),
+                        "{} 必须加载高亮查询",
+                        spec.name
+                    );
+                    assert!(
+                        !language.capture_names().is_empty(),
+                        "{} 的高亮查询必须声明 capture",
+                        spec.name
+                    );
+                }
+            }
+        }
+        assert_eq!(plain_text_count, 1, "注册表只能有一个纯文本兜底规格");
     }
 
     #[test]

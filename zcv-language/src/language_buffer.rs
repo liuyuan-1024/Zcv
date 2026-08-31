@@ -207,7 +207,12 @@ impl LanguageBuffer {
     ) {
         // `ParseTask::drop` 会先通知 Tree-sitter 中止旧工作，再取消等待结果的前台任务。
         self.parse_task = None;
-        if self.syntax_map.language().is_none() {
+        if self
+            .syntax_map
+            .language()
+            .and_then(Language::grammar)
+            .is_none()
+        {
             return;
         }
 
@@ -384,6 +389,10 @@ mod tests {
             let language = language_buffer.language().expect("兜底语言应存在");
             assert_eq!(language.name(), "纯文本");
             assert!(language.grammar().is_none(), "纯文本兜底不应有语法树");
+            assert!(
+                language_buffer.parse_task.is_none(),
+                "纯文本不应启动无意义的后台解析任务"
+            );
         });
         buffer.update(cx, |buffer, cx| {
             buffer

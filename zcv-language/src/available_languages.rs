@@ -1,81 +1,141 @@
-//! 内置语言数据与查询源。
+//! 内置语言规格。
 //!
-//! 新增语言只需在此数据表加一条 `LanguageEntry`；查询源与编译逻辑在此维护。
-
-use std::sync::Arc;
-
-use tree_sitter::Query;
+//! 每门 Tree-sitter 语言在一个规格中声明识别规则、grammar、全部查询源和输入配置。
+//! `highlights.scm` 是 Tree-sitter 支持的必需组成部分，其余查询按实际能力显式提供。
 
 use crate::AutoClosePair;
-use crate::registry::{LanguageEntry, LanguageMatcher as M, LanguageQueries};
 
-#[derive(Clone, Copy)]
-pub(crate) struct QuerySource(&'static str);
-
-impl QuerySource {
-    pub(crate) const fn new(source: &'static str) -> Self {
-        Self(source)
-    }
-
-    pub(crate) fn compile(
-        self,
-        grammar: &tree_sitter::Language,
-    ) -> Result<Query, tree_sitter::QueryError> {
-        Query::new(grammar, self.0)
-    }
+/// 文件识别规则：扩展名 + 首行模式。
+pub(crate) struct LanguageMatcher {
+    pub(crate) suffixes: &'static [&'static str],
+    pub(crate) first_line_pattern: Option<regex::Regex>,
 }
 
-/// 一门语言的结构查询源（不含高亮/注入，二者在语言规格声明中）。
+/// 一门 Tree-sitter 语言的全部查询源。
 ///
-/// 与语言声明（[`LanguageEntry`]）同表维护：新增语言只改数据表一处；查询源缺失的语言加载为空查询集。
+/// 高亮查询是语法支持的必需能力；注入、括号、缩进和折叠查询按语言能力选择。
 #[derive(Clone, Copy)]
 pub(crate) struct LanguageQuerySources {
-    brackets: Option<&'static str>,
-    indents: Option<&'static str>,
-    fold: Option<&'static str>,
+    pub(crate) highlights: &'static str,
+    pub(crate) injections: Option<&'static str>,
+    pub(crate) brackets: Option<&'static str>,
+    pub(crate) indents: Option<&'static str>,
+    pub(crate) folds: Option<&'static str>,
 }
 
 impl LanguageQuerySources {
-    pub(crate) fn from_sources(
-        brackets: &'static str,
-        indents: &'static str,
-        fold: Option<&'static str>,
+    pub(crate) const fn new(highlights: &'static str) -> Self {
+        Self {
+            highlights,
+            injections: None,
+            brackets: None,
+            indents: None,
+            folds: None,
+        }
+    }
+
+    pub(crate) const fn with_injections(mut self, source: &'static str) -> Self {
+        self.injections = Some(source);
+        self
+    }
+
+    pub(crate) const fn with_brackets(mut self, source: &'static str) -> Self {
+        self.brackets = Some(source);
+        self
+    }
+
+    pub(crate) const fn with_indents(mut self, source: &'static str) -> Self {
+        self.indents = Some(source);
+        self
+    }
+
+    pub(crate) const fn with_folds(mut self, source: &'static str) -> Self {
+        self.folds = Some(source);
+        self
+    }
+}
+
+macro_rules! query_sources {
+    ($language:literal) => {
+        LanguageQuerySources::new(include_str!(concat!(
+            "../queries/",
+            $language,
+            "/highlights.scm"
+        )))
+    };
+}
+
+/// 语言的语法支持类型。
+///
+/// 只有真正的纯文本可以没有 grammar；
+/// Tree-sitter 语言必须携带 grammar 和完整查询规格。
+pub(crate) enum LanguageSupport {
+    PlainText,
+    TreeSitter {
+        grammar: fn() -> tree_sitter::Language,
+        queries: LanguageQuerySources,
+    },
+}
+
+/// 一门内置语言的唯一规格。
+pub(crate) struct LanguageSpec {
+    pub(crate) name: &'static str,
+    pub(crate) matcher: LanguageMatcher,
+    pub(crate) support: LanguageSupport,
+    /// 注入查询使用的别名；只参与注入查找，不参与文件识别。
+    pub(crate) injection_alias: Option<&'static str>,
+    pub(crate) auto_close_pairs: &'static [AutoClosePair],
+}
+
+impl LanguageSpec {
+    fn tree_sitter(
+        name: &'static str,
+        matcher: LanguageMatcher,
+        grammar: fn() -> tree_sitter::Language,
+        queries: LanguageQuerySources,
+        injection_alias: Option<&'static str>,
+        auto_close_pairs: &'static [AutoClosePair],
     ) -> Self {
         Self {
-            brackets: Some(brackets),
-            indents: Some(indents),
-            fold,
+            name,
+            matcher,
+            support: LanguageSupport::TreeSitter { grammar, queries },
+            injection_alias,
+            auto_close_pairs,
         }
     }
 
-    /// 编译为运行时查询集（语言加载时调用）。
-    pub(crate) fn compile_all(self, grammar: &tree_sitter::Language) -> LanguageQueries {
-        LanguageQueries {
-            brackets: compile_query(grammar, self.brackets),
-            indents: compile_query(grammar, self.indents),
-            folds: compile_query(grammar, self.fold),
+    fn plain_text(name: &'static str, matcher: LanguageMatcher) -> Self {
+        Self {
+            name,
+            matcher,
+            support: LanguageSupport::PlainText,
+            injection_alias: None,
+            auto_close_pairs: &[],
         }
+    }
+
+    /// 注入名匹配：别名、语言名与文件后缀均忽略大小写。
+    pub(crate) fn matches_injection_name(&self, name: &str) -> bool {
+        let name = name.trim();
+        self.injection_alias
+            .is_some_and(|alias| alias.eq_ignore_ascii_case(name))
+            || self.name.eq_ignore_ascii_case(name)
+            || self
+                .matcher
+                .suffixes
+                .iter()
+                .any(|suffix| suffix.eq_ignore_ascii_case(name))
     }
 }
 
-/// 编译单个结构查询；源缺失时为空（不参与该结构能力）。
-fn compile_query(grammar: &tree_sitter::Language, source: Option<&str>) -> Option<Arc<Query>> {
-    source.map(|source| {
-        Arc::new(
-            Query::new(grammar, source)
-                .unwrap_or_else(|error| panic!("tree-sitter 查询与 grammar 不匹配：{error}")),
-        )
-    })
-}
-
-/// 首行识别模式（`Option<Regex>` 形态）。
+/// 首行识别模式。
 ///
-/// 内置模式静态正确，编译失败直接 panic（与查询编译的失败处理一致）。
+/// 内置模式静态正确，编译失败直接终止初始化。
 fn first_line(pattern: &'static str) -> Option<regex::Regex> {
     Some(regex::Regex::new(pattern).expect("内置首行模式应有效"))
 }
 
-/// 通用自动闭合配对（`() [] {} "" ''`），各语言数据表复用。
 const COMMON_PAIRS: &[AutoClosePair] = &[
     AutoClosePair {
         start: "(",
@@ -114,443 +174,222 @@ const COMMON_PAIRS: &[AutoClosePair] = &[
     },
 ];
 
-/// 内置语言数据：注册表初始化来源（新增语言在此加一条即可）。
-pub(crate) fn builtin_languages() -> Vec<LanguageEntry> {
+/// 所有内置语言规格。
+///
+/// 新增语言时在此登记一个完整规格，并在 `queries/<language>/` 提供其查询文件。
+pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
     vec![
-        LanguageEntry {
-            name: "Rust",
-            matcher: M {
+        LanguageSpec::tree_sitter(
+            "Rust",
+            LanguageMatcher {
                 suffixes: &["rs", "rlib"],
                 first_line_pattern: None,
             },
-            grammar: Some(|| tree_sitter_rust::LANGUAGE.into()),
-            highlights: Some(QuerySource::new(include_str!(
-                "../queries/rust/highlights.scm"
-            ))),
-            injections: Some(QuerySource::new(include_str!(
-                "../queries/rust/injections.scm"
-            ))),
-            injection_alias: None,
-            queries: Some(LanguageQuerySources::from_sources(
-                include_str!("../queries/rust/brackets.scm"),
-                include_str!("../queries/rust/indents.scm"),
-                Some(include_str!("../queries/rust/fold.scm")),
-            )),
-            auto_close_pairs: Some(COMMON_PAIRS),
-        },
-        LanguageEntry {
-            name: "Python",
-            matcher: M {
+            || tree_sitter_rust::LANGUAGE.into(),
+            query_sources!("rust")
+                .with_injections(include_str!("../queries/rust/injections.scm"))
+                .with_brackets(include_str!("../queries/rust/brackets.scm"))
+                .with_indents(include_str!("../queries/rust/indents.scm"))
+                .with_folds(include_str!("../queries/rust/fold.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "Python",
+            LanguageMatcher {
                 suffixes: &["py", "pyw", "pyx"],
                 first_line_pattern: first_line(
                     r"^#!\s*(?:/usr/bin/|/bin/|/usr/local/bin/)?(?:env\s+)?python[\d.]*",
                 ),
             },
-            grammar: Some(|| tree_sitter_python::LANGUAGE.into()),
-            highlights: Some(QuerySource::new(include_str!(
-                "../queries/python/highlights.scm"
-            ))),
-            injections: Some(QuerySource::new(include_str!(
-                "../queries/python/injections.scm"
-            ))),
-            injection_alias: None,
-            queries: Some(LanguageQuerySources::from_sources(
-                include_str!("../queries/python/brackets.scm"),
-                include_str!("../queries/python/indents.scm"),
-                None,
-            )),
-            auto_close_pairs: Some(COMMON_PAIRS),
-        },
-        LanguageEntry {
-            name: "JavaScript",
-            matcher: M {
+            || tree_sitter_python::LANGUAGE.into(),
+            query_sources!("python")
+                .with_injections(include_str!("../queries/python/injections.scm"))
+                .with_brackets(include_str!("../queries/python/brackets.scm"))
+                .with_indents(include_str!("../queries/python/indents.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "JavaScript",
+            LanguageMatcher {
                 suffixes: &["js", "mjs", "cjs"],
                 first_line_pattern: first_line(
                     r"^#!\s*(?:/usr/bin/|/bin/|/usr/local/bin/)?(?:env\s+)?(?:node|bun|deno)",
                 ),
             },
-            grammar: Some(|| tree_sitter_typescript::LANGUAGE_TSX.into()),
-            highlights: Some(QuerySource::new(include_str!(
-                "../queries/javascript/highlights.scm"
-            ))),
-            injections: Some(QuerySource::new(include_str!(
-                "../queries/javascript/injections.scm"
-            ))),
-            injection_alias: None,
-            queries: Some(LanguageQuerySources::from_sources(
-                include_str!("../queries/javascript/brackets.scm"),
-                include_str!("../queries/javascript/indents.scm"),
-                None,
-            )),
-            auto_close_pairs: Some(COMMON_PAIRS),
-        },
-        LanguageEntry {
-            name: "JSX",
-            matcher: M {
+            || tree_sitter_typescript::LANGUAGE_TSX.into(),
+            query_sources!("javascript")
+                .with_injections(include_str!("../queries/javascript/injections.scm"))
+                .with_brackets(include_str!("../queries/javascript/brackets.scm"))
+                .with_indents(include_str!("../queries/javascript/indents.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "JSX",
+            LanguageMatcher {
                 suffixes: &["jsx"],
                 first_line_pattern: None,
             },
-            grammar: Some(|| tree_sitter_typescript::LANGUAGE_TSX.into()),
-            highlights: Some(QuerySource::new(include_str!(
-                "../queries/javascript/highlights.scm"
-            ))),
-            injections: Some(QuerySource::new(include_str!(
-                "../queries/javascript/injections.scm"
-            ))),
-            injection_alias: None,
-            queries: Some(LanguageQuerySources::from_sources(
-                include_str!("../queries/tsx/brackets.scm"),
-                include_str!("../queries/tsx/indents.scm"),
-                None,
-            )),
-            auto_close_pairs: Some(COMMON_PAIRS),
-        },
-        LanguageEntry {
-            name: "TypeScript",
-            matcher: M {
+            || tree_sitter_typescript::LANGUAGE_TSX.into(),
+            query_sources!("javascript")
+                .with_injections(include_str!("../queries/javascript/injections.scm"))
+                .with_brackets(include_str!("../queries/tsx/brackets.scm"))
+                .with_indents(include_str!("../queries/tsx/indents.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "TypeScript",
+            LanguageMatcher {
                 suffixes: &["ts", "mts", "cts"],
                 first_line_pattern: None,
             },
-            grammar: Some(|| tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
-            highlights: Some(QuerySource::new(include_str!(
-                "../queries/typescript/highlights.scm"
-            ))),
-            injections: Some(QuerySource::new(include_str!(
-                "../queries/typescript/injections.scm"
-            ))),
-            injection_alias: None,
-            queries: Some(LanguageQuerySources::from_sources(
-                include_str!("../queries/typescript/brackets.scm"),
-                include_str!("../queries/typescript/indents.scm"),
-                None,
-            )),
-            auto_close_pairs: Some(COMMON_PAIRS),
-        },
-        LanguageEntry {
-            name: "TSX",
-            matcher: M {
+            || tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            query_sources!("typescript")
+                .with_injections(include_str!("../queries/typescript/injections.scm"))
+                .with_brackets(include_str!("../queries/typescript/brackets.scm"))
+                .with_indents(include_str!("../queries/typescript/indents.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "TSX",
+            LanguageMatcher {
                 suffixes: &["tsx"],
                 first_line_pattern: None,
             },
-            grammar: Some(|| tree_sitter_typescript::LANGUAGE_TSX.into()),
-            highlights: Some(QuerySource::new(include_str!(
-                "../queries/tsx/highlights.scm"
-            ))),
-            injections: Some(QuerySource::new(include_str!(
-                "../queries/tsx/injections.scm"
-            ))),
-            injection_alias: None,
-            queries: Some(LanguageQuerySources::from_sources(
-                include_str!("../queries/tsx/brackets.scm"),
-                include_str!("../queries/tsx/indents.scm"),
-                None,
-            )),
-            auto_close_pairs: Some(COMMON_PAIRS),
-        },
-        LanguageEntry {
-            name: "Go",
-            matcher: M {
-                suffixes: &["go"],
-                first_line_pattern: None,
-            },
-            grammar: None,
-            highlights: None,
-            injections: None,
-            injection_alias: None,
-            queries: None,
-            auto_close_pairs: None,
-        },
-        LanguageEntry {
-            name: "Java",
-            matcher: M {
+            || tree_sitter_typescript::LANGUAGE_TSX.into(),
+            query_sources!("tsx")
+                .with_injections(include_str!("../queries/tsx/injections.scm"))
+                .with_brackets(include_str!("../queries/tsx/brackets.scm"))
+                .with_indents(include_str!("../queries/tsx/indents.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "Java",
+            LanguageMatcher {
                 suffixes: &["java"],
                 first_line_pattern: None,
             },
-            grammar: Some(|| tree_sitter_java::LANGUAGE.into()),
-            highlights: Some(QuerySource::new(include_str!(
-                "../queries/java/highlights.scm"
-            ))),
-            injections: None,
-            injection_alias: None,
-            queries: None,
-            auto_close_pairs: Some(COMMON_PAIRS),
-        },
-        LanguageEntry {
-            name: "Ruby",
-            matcher: M {
-                suffixes: &["rb", "erb"],
-                first_line_pattern: first_line(
-                    r"^#!\s*(?:/usr/bin/|/bin/|/usr/local/bin/)?(?:env\s+)?ruby",
-                ),
-            },
-            grammar: None,
-            highlights: None,
-            injections: None,
-            injection_alias: None,
-            queries: None,
-            auto_close_pairs: None,
-        },
-        LanguageEntry {
-            name: "C",
-            matcher: M {
-                suffixes: &["c", "h"],
-                first_line_pattern: None,
-            },
-            grammar: None,
-            highlights: None,
-            injections: None,
-            injection_alias: None,
-            queries: None,
-            auto_close_pairs: None,
-        },
-        LanguageEntry {
-            name: "C++",
-            matcher: M {
-                suffixes: &["cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx"],
-                first_line_pattern: None,
-            },
-            grammar: None,
-            highlights: None,
-            injections: None,
-            injection_alias: None,
-            queries: None,
-            auto_close_pairs: None,
-        },
-        LanguageEntry {
-            name: "Zig",
-            matcher: M {
-                suffixes: &["zig"],
-                first_line_pattern: None,
-            },
-            grammar: None,
-            highlights: None,
-            injections: None,
-            injection_alias: None,
-            queries: None,
-            auto_close_pairs: None,
-        },
-        LanguageEntry {
-            name: "Shell",
-            matcher: M {
+            || tree_sitter_java::LANGUAGE.into(),
+            query_sources!("java"),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "Shell",
+            LanguageMatcher {
                 suffixes: &["sh", "bash", "zsh", "ksh"],
                 first_line_pattern: first_line(
                     r"^#!\s*(?:/usr/bin/|/bin/|/usr/local/bin/)?(?:env\s+)?(?:bash|sh|zsh|ksh|dash)",
                 ),
             },
-            grammar: Some(|| tree_sitter_bash::LANGUAGE.into()),
-            highlights: Some(QuerySource::new(include_str!(
-                "../queries/bash/highlights.scm"
-            ))),
-            injections: None,
-            injection_alias: None,
-            queries: Some(LanguageQuerySources::from_sources(
-                include_str!("../queries/bash/brackets.scm"),
-                include_str!("../queries/bash/indents.scm"),
-                None,
-            )),
-            auto_close_pairs: Some(COMMON_PAIRS),
-        },
-        LanguageEntry {
-            name: "Lua",
-            matcher: M {
-                suffixes: &["lua"],
-                first_line_pattern: first_line(
-                    r"^#!\s*(?:/usr/bin/|/bin/|/usr/local/bin/)?(?:env\s+)?lua",
-                ),
-            },
-            grammar: None,
-            highlights: None,
-            injections: None,
-            injection_alias: None,
-            queries: None,
-            auto_close_pairs: None,
-        },
-        LanguageEntry {
-            name: "TOML",
-            matcher: M {
+            || tree_sitter_bash::LANGUAGE.into(),
+            query_sources!("bash")
+                .with_brackets(include_str!("../queries/bash/brackets.scm"))
+                .with_indents(include_str!("../queries/bash/indents.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "TOML",
+            LanguageMatcher {
                 suffixes: &["toml"],
                 first_line_pattern: None,
             },
-            grammar: Some(|| tree_sitter_toml_ng::LANGUAGE.into()),
-            highlights: Some(QuerySource::new(include_str!(
-                "../queries/toml/highlights.scm"
-            ))),
-            injections: None,
-            injection_alias: None,
-            queries: None,
-            auto_close_pairs: Some(COMMON_PAIRS),
-        },
-        LanguageEntry {
-            name: "JSON",
-            matcher: M {
+            || tree_sitter_toml_ng::LANGUAGE.into(),
+            query_sources!("toml"),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "JSON",
+            LanguageMatcher {
                 suffixes: &["json"],
                 first_line_pattern: None,
             },
-            grammar: Some(|| tree_sitter_json::LANGUAGE.into()),
-            highlights: Some(QuerySource::new(include_str!(
-                "../queries/json/highlights.scm"
-            ))),
-            injections: None,
-            injection_alias: None,
-            queries: Some(LanguageQuerySources::from_sources(
-                include_str!("../queries/json/brackets.scm"),
-                include_str!("../queries/json/indents.scm"),
-                None,
-            )),
-            auto_close_pairs: Some(COMMON_PAIRS),
-        },
-        LanguageEntry {
-            name: "YAML",
-            matcher: M {
+            || tree_sitter_json::LANGUAGE.into(),
+            query_sources!("json")
+                .with_brackets(include_str!("../queries/json/brackets.scm"))
+                .with_indents(include_str!("../queries/json/indents.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "YAML",
+            LanguageMatcher {
                 suffixes: &["yaml", "yml"],
                 first_line_pattern: None,
             },
-            grammar: Some(|| tree_sitter_yaml::LANGUAGE.into()),
-            highlights: Some(QuerySource::new(include_str!(
-                "../queries/yaml/highlights.scm"
-            ))),
-            injections: Some(QuerySource::new(include_str!(
-                "../queries/yaml/injections.scm"
-            ))),
-            injection_alias: None,
-            queries: Some(LanguageQuerySources {
-                brackets: Some(include_str!("../queries/yaml/brackets.scm")),
-                indents: None,
-                fold: None,
-            }),
-            auto_close_pairs: Some(COMMON_PAIRS),
-        },
-        LanguageEntry {
-            name: "Markdown",
-            matcher: M {
+            || tree_sitter_yaml::LANGUAGE.into(),
+            query_sources!("yaml")
+                .with_injections(include_str!("../queries/yaml/injections.scm"))
+                .with_brackets(include_str!("../queries/yaml/brackets.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "Markdown",
+            LanguageMatcher {
                 suffixes: &["md", "markdown"],
                 first_line_pattern: None,
             },
-            grammar: Some(|| tree_sitter_md::LANGUAGE.into()),
-            highlights: Some(QuerySource::new(include_str!(
-                "../queries/markdown/highlights.scm"
-            ))),
-            injections: Some(QuerySource::new(include_str!(
-                "../queries/markdown/injections.scm"
-            ))),
-            injection_alias: None,
-            queries: Some(LanguageQuerySources::from_sources(
-                include_str!("../queries/markdown/brackets.scm"),
-                include_str!("../queries/markdown/indents.scm"),
-                None,
-            )),
-            auto_close_pairs: Some(COMMON_PAIRS),
-        },
-        // markdown 行内注入：仅注入查询引用（`markdown_inline`），不参与文件识别。
-        LanguageEntry {
-            name: "Markdown Inline",
-            matcher: M {
+            || tree_sitter_md::LANGUAGE.into(),
+            query_sources!("markdown")
+                .with_injections(include_str!("../queries/markdown/injections.scm"))
+                .with_brackets(include_str!("../queries/markdown/brackets.scm"))
+                .with_indents(include_str!("../queries/markdown/indents.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "Markdown Inline",
+            LanguageMatcher {
                 suffixes: &[],
                 first_line_pattern: None,
             },
-            grammar: Some(|| tree_sitter_md::INLINE_LANGUAGE.into()),
-            highlights: Some(QuerySource::new(include_str!(
-                "../queries/markdown_inline/highlights.scm"
-            ))),
-            injections: Some(QuerySource::new(include_str!(
-                "../queries/markdown_inline/injections.scm"
-            ))),
-            injection_alias: Some("markdown_inline"),
-            queries: None,
-            auto_close_pairs: Some(COMMON_PAIRS),
-        },
-        LanguageEntry {
-            name: "HTML",
-            matcher: M {
+            || tree_sitter_md::INLINE_LANGUAGE.into(),
+            query_sources!("markdown_inline")
+                .with_injections(include_str!("../queries/markdown_inline/injections.scm")),
+            Some("markdown_inline"),
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "HTML",
+            LanguageMatcher {
                 suffixes: &["html", "htm", "xhtml"],
                 first_line_pattern: None,
             },
-            grammar: Some(|| tree_sitter_html::LANGUAGE.into()),
-            highlights: Some(QuerySource::new(include_str!(
-                "../queries/html/highlights.scm"
-            ))),
-            injections: Some(QuerySource::new(include_str!(
-                "../queries/html/injections.scm"
-            ))),
-            injection_alias: None,
-            queries: Some(LanguageQuerySources::from_sources(
-                include_str!("../queries/html/brackets.scm"),
-                include_str!("../queries/html/indents.scm"),
-                None,
-            )),
-            auto_close_pairs: Some(COMMON_PAIRS),
-        },
-        LanguageEntry {
-            name: "CSS",
-            matcher: M {
+            || tree_sitter_html::LANGUAGE.into(),
+            query_sources!("html")
+                .with_injections(include_str!("../queries/html/injections.scm"))
+                .with_brackets(include_str!("../queries/html/brackets.scm"))
+                .with_indents(include_str!("../queries/html/indents.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "CSS",
+            LanguageMatcher {
                 suffixes: &["css", "scss", "less", "sass"],
                 first_line_pattern: None,
             },
-            grammar: Some(|| tree_sitter_css::LANGUAGE.into()),
-            highlights: Some(QuerySource::new(include_str!(
-                "../queries/css/highlights.scm"
-            ))),
-            injections: None,
-            injection_alias: None,
-            queries: Some(LanguageQuerySources::from_sources(
-                include_str!("../queries/css/brackets.scm"),
-                include_str!("../queries/css/indents.scm"),
-                None,
-            )),
-            auto_close_pairs: Some(COMMON_PAIRS),
-        },
-        LanguageEntry {
-            name: "SQL",
-            matcher: M {
-                suffixes: &["sql"],
-                first_line_pattern: None,
-            },
-            grammar: None,
-            highlights: None,
-            injections: None,
-            injection_alias: None,
-            queries: None,
-            auto_close_pairs: None,
-        },
-        LanguageEntry {
-            name: "LaTeX",
-            matcher: M {
-                suffixes: &["tex", "latex", "sty", "cls", "bib"],
-                first_line_pattern: None,
-            },
-            grammar: None,
-            highlights: None,
-            injections: None,
-            injection_alias: None,
-            queries: None,
-            auto_close_pairs: None,
-        },
-        LanguageEntry {
-            name: "XML",
-            matcher: M {
-                suffixes: &["xml", "xsd", "xsl", "plist", "svg"],
-                first_line_pattern: None,
-            },
-            grammar: None,
-            highlights: None,
-            injections: None,
-            injection_alias: None,
-            queries: None,
-            auto_close_pairs: None,
-        },
-        // 纯文本兜底：匹配 .txt 并作为未识别文件的最终兜底，无语法树，编辑器始终有语言名可显示。
-        LanguageEntry {
-            name: "纯文本",
-            matcher: M {
+            || tree_sitter_css::LANGUAGE.into(),
+            query_sources!("css")
+                .with_brackets(include_str!("../queries/css/brackets.scm"))
+                .with_indents(include_str!("../queries/css/indents.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::plain_text(
+            "纯文本",
+            LanguageMatcher {
                 suffixes: &["txt", "text"],
                 first_line_pattern: None,
             },
-            grammar: None,
-            highlights: None,
-            injections: None,
-            injection_alias: None,
-            queries: None,
-            auto_close_pairs: None,
-        },
+        ),
     ]
 }

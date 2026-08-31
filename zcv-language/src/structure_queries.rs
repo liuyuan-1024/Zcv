@@ -197,28 +197,34 @@ impl SyntaxSnapshot {
             };
             let start = line_newline_position(text, anchor_line);
             let pair_index = pairs.partition_point(|pair| pair.open.start < byte_range.start);
-            let end = pairs
-                .get(pair_index)
-                .filter(|pair| pair.open.start < byte_range.end && pair.close.end <= byte_range.end)
-                .map_or_else(
-                    || {
-                        // 无括号对（注释组等）：整行兜底，终点 = 末隐藏行内容末尾。
-                        //
-                        // line_comment 等节点含尾随换行（end 落在下一行行首），按"结束恰在行首则回退一行"换算真实末行。
-                        let mut end_line = text
-                            .byte_to_line(ByteOffset::new(byte_range.end))
-                            .unwrap_or(anchor_line);
-                        if end_line > anchor_line
-                            && text
-                                .line_start_byte(end_line)
-                                .is_ok_and(|start| start.get() == byte_range.end)
-                        {
-                            end_line = Line::new(end_line.get() - 1);
-                        }
-                        line_content_end(text, end_line)
-                    },
-                    |pair| ByteOffset::new(pair.close.start),
-                );
+            let enclosing_pair = pairs[pair_index..]
+                .iter()
+                .take_while(|pair| pair.open.start < byte_range.end)
+                .filter(|pair| pair.close.end <= byte_range.end)
+                .filter(|pair| {
+                    text.byte_to_line(ByteOffset::new(pair.close.start))
+                        .is_ok_and(|line| line > anchor_line)
+                })
+                .max_by_key(|pair| pair.close.end - pair.open.start);
+            let end = enclosing_pair.map_or_else(
+                || {
+                    // 无括号对（注释组等）：整行兜底，终点 = 末隐藏行内容末尾。
+                    //
+                    // line_comment 等节点含尾随换行（end 落在下一行行首），按"结束恰在行首则回退一行"换算真实末行。
+                    let mut end_line = text
+                        .byte_to_line(ByteOffset::new(byte_range.end))
+                        .unwrap_or(anchor_line);
+                    if end_line > anchor_line
+                        && text
+                            .line_start_byte(end_line)
+                            .is_ok_and(|start| start.get() == byte_range.end)
+                    {
+                        end_line = Line::new(end_line.get() - 1);
+                    }
+                    line_content_end(text, end_line)
+                },
+                |pair| ByteOffset::new(pair.close.start),
+            );
             // 单行范围没有可隐藏的行，折叠无意义。
             if start >= end || text.byte_to_line(end).is_ok_and(|line| line <= anchor_line) {
                 continue;
@@ -291,7 +297,7 @@ fn line_content_end(text: &Snapshot, line: Line) -> ByteOffset {
 #[cfg(test)]
 mod tests {
     use super::NewlineIndent;
-    use crate::syntax_map::rust_buffer;
+    use crate::syntax_map::{parsed_syntax, rust_buffer};
     use zcv_text::ByteOffset;
 
     #[test]
@@ -308,6 +314,91 @@ mod tests {
         }));
 
         assert!(!syntax.indent_ranges(full, &snapshot).is_empty());
+    }
+
+    #[test]
+    fn baseline_languages_expose_brackets_indents_and_folds() {
+        let cases = [
+            ("main.c", "int main() {\n  return 0;\n}\n"),
+            (
+                "main.cpp",
+                "class Greeter {\npublic:\n  void greet() {}\n};\n",
+            ),
+            (
+                "Program.cs",
+                "class Program {\n  static void Main() {}\n}\n",
+            ),
+            ("main.go", "package main\nfunc main() {\n  println(1)\n}\n"),
+            (
+                "app.rb",
+                "class Greeter\n  def greet(name)\n    name\n  end\nend\n",
+            ),
+            (
+                "index.php",
+                "<?php\nfunction greet($name) {\n  return $name;\n}\n",
+            ),
+            (
+                "main.swift",
+                "struct Greeter {\n  func greet() {\n    print(1)\n  }\n}\n",
+            ),
+            (
+                "Main.kt",
+                "class Greeter {\n  fun greet() {\n    println(1)\n  }\n}\n",
+            ),
+            (
+                "init.lua",
+                "local function greet(name)\n  return name\nend\n",
+            ),
+            ("main.zig", "pub fn main() void {\n  const value = 1;\n}\n"),
+            (
+                "query.sql",
+                "SELECT name\nFROM (\n  SELECT name FROM users\n) nested;\n",
+            ),
+        ];
+
+        for (path, source) in cases {
+            let (buffer, syntax) = parsed_syntax(path, source);
+            let snapshot = buffer.snapshot();
+            let syntax = syntax.snapshot();
+            let full = 0..snapshot.len_bytes().get();
+            assert!(
+                !syntax.bracket_pairs(full.clone(), &snapshot).is_empty(),
+                "{path} 应产生括号配对"
+            );
+            assert!(
+                !syntax.indent_ranges(full.clone(), &snapshot).is_empty(),
+                "{path} 应产生缩进范围"
+            );
+            assert!(
+                !syntax.fold_ranges(full, &snapshot).is_empty(),
+                "{path} 应产生折叠范围"
+            );
+        }
+    }
+
+    #[test]
+    fn existing_languages_with_new_fold_queries_produce_ranges() {
+        let cases = [
+            ("main.py", "def greet():\n    return 1\n"),
+            ("main.js", "function greet() {\n  return 1;\n}\n"),
+            ("Main.java", "class Main {\n  static void main() {}\n}\n"),
+            ("script.sh", "function greet() {\n  echo hi\n}\n"),
+            ("Cargo.toml", "[package]\nname = \"zcv\"\nversion = \"1\"\n"),
+            ("data.json", "{\n  \"name\": \"zcv\"\n}\n"),
+            ("data.yaml", "root:\n  child:\n    value: 1\n"),
+            ("README.md", "# 标题\n\n第一段。\n\n第二段。\n"),
+            ("index.html", "<main>\n  <p>text</p>\n</main>\n"),
+            ("style.css", ".card {\n  color: red;\n}\n"),
+        ];
+
+        for (path, source) in cases {
+            let (buffer, syntax) = parsed_syntax(path, source);
+            let snapshot = buffer.snapshot();
+            let folds = syntax
+                .snapshot()
+                .fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
+            assert!(!folds.is_empty(), "{path} 应产生折叠范围");
+        }
     }
 
     #[test]

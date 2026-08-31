@@ -315,6 +315,61 @@ mod tests {
                 &["tag.component.jsx", "attribute.jsx", "boolean"],
             ),
             (
+                "main.c",
+                "int main(void) { const int count = 3; return count; }\n",
+                &["type", "function", "keyword", "number"],
+            ),
+            (
+                "main.cpp",
+                "class Greeter { public: const char *greet() { return \"hi\"; } };\n",
+                &["keyword", "type", "function.definition", "string"],
+            ),
+            (
+                "Program.cs",
+                "public class Program { static int Main() { return 0; } }\n",
+                &["keyword", "type", "function", "number"],
+            ),
+            (
+                "main.go",
+                "package main\nfunc greet(name string) string { return \"Hi \" + name }\n",
+                &["keyword", "function", "type", "string"],
+            ),
+            (
+                "app.rb",
+                "class Greeter\n  def greet(name)\n    \"Hi #{name}\"\n  end\nend\n",
+                &["keyword", "function.method", "variable.parameter", "string"],
+            ),
+            (
+                "index.php",
+                "<?php function greet(string $name): string { return \"Hi $name\"; }\n",
+                &["keyword", "function", "type.builtin", "string"],
+            ),
+            (
+                "main.swift",
+                "struct Greeter { func greet(name: String) -> String { return \"Hi\" } }\n",
+                &["keyword.type", "keyword.function", "type", "string"],
+            ),
+            (
+                "Main.kt",
+                "class Greeter { fun greet(name: String): String { return \"Hi $name\" } }\n",
+                &["keyword", "function.definition", "type", "string"],
+            ),
+            (
+                "init.lua",
+                "local function greet(name) return \"Hi \" .. name end\n",
+                &["keyword", "function", "parameter", "string"],
+            ),
+            (
+                "main.zig",
+                "const std = @import(\"std\"); pub fn main() void { std.debug.print(\"hi\", .{}); }\n",
+                &["keyword", "function", "type.builtin", "string"],
+            ),
+            (
+                "query.sql",
+                "SELECT name FROM users WHERE active = TRUE AND count > 3;\n",
+                &["keyword", "field", "boolean", "number"],
+            ),
+            (
                 "data.json",
                 "{\"enabled\": true, \"count\": 3}\n",
                 &["property.json_key", "boolean", "number"],
@@ -453,6 +508,38 @@ mod tests {
                 .iter()
                 .any(|span| names[span.capture as usize].as_ref() == "keyword.declaration")
         );
+    }
+
+    #[test]
+    fn baseline_languages_inject_registered_nested_languages() {
+        for (path, source, expected) in [
+            ("main.c", "#define VALUE (1 + 2)\n", "C"),
+            (
+                "main.cpp",
+                "const char *query = R\"sql(SELECT name FROM users)sql\";\n",
+                "SQL",
+            ),
+            (
+                "index.php",
+                "<?php\n$query = <<<SQL\nSELECT name FROM users;\nSQL;\n",
+                "SQL",
+            ),
+            (
+                "init.lua",
+                "ffi.cdef[[int add(int left, int right);]]\n",
+                "C",
+            ),
+        ] {
+            let (_, syntax) = parsed_syntax(path, source);
+            assert!(
+                syntax
+                    .snapshot()
+                    .injection_layers()
+                    .iter()
+                    .any(|layer| layer.language.name() == expected),
+                "{path} 应注入 {expected}"
+            );
+        }
     }
 
     #[test]

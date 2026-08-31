@@ -287,6 +287,50 @@ mod tests {
     }
 
     #[test]
+    fn detects_baseline_languages_by_suffix() {
+        for (path, expected) in [
+            ("main.c", "C"),
+            ("main.cpp", "C++"),
+            ("main.hpp", "C++"),
+            ("Program.cs", "C#"),
+            ("main.go", "Go"),
+            ("app.rb", "Ruby"),
+            ("index.php", "PHP"),
+            ("main.swift", "Swift"),
+            ("Main.kt", "Kotlin"),
+            ("build.gradle.kts", "Kotlin"),
+            ("init.lua", "Lua"),
+            ("main.zig", "Zig"),
+            ("query.sql", "SQL"),
+        ] {
+            assert_eq!(
+                language_for_file(Path::new(path), None).unwrap().name(),
+                expected,
+                "{path} 应识别为 {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn detects_baseline_script_languages_from_first_line() {
+        for (first_line, expected) in [
+            ("#!/usr/bin/env ruby", "Ruby"),
+            ("#!/usr/bin/php", "PHP"),
+            ("#!/usr/bin/env swift", "Swift"),
+            ("#!/usr/bin/env lua5.4", "Lua"),
+            ("//usr/bin/env go run $0 $@; exit", "Go"),
+        ] {
+            assert_eq!(
+                language_for_file(Path::new("script"), Some(first_line))
+                    .unwrap()
+                    .name(),
+                expected,
+                "`{first_line}` 应识别为 {expected}"
+            );
+        }
+    }
+
+    #[test]
     fn reuses_loaded_language_and_compiled_queries() {
         let first = language_for_file(Path::new("main.rs"), None).unwrap();
         let second = language_for_file(Path::new("lib.rs"), None).unwrap();
@@ -310,7 +354,7 @@ mod tests {
     #[test]
     fn unknown_files_fall_back_to_plain_text() {
         // 未支持的语言后缀也必须明确回落为纯文本，不能注册成缺少 grammar 的半支持语言。
-        for path in ["main.zig", "main.go", "main.cpp", "query.sql"] {
+        for path in ["main.dart", "main.ex", "main.hs", "query.graphql"] {
             let language = language_for_file(Path::new(path), None).unwrap();
             assert_eq!(language.name(), "纯文本", "{path} 尚未提供完整语言规格");
             assert!(language.grammar().is_none());
@@ -448,14 +492,28 @@ mod tests {
     }
 
     #[test]
-    fn zed_structure_queries_compile_for_supported_grammars() {
+    fn file_languages_compile_complete_structure_queries() {
         for path in [
             "main.rs",
+            "main.c",
+            "main.cpp",
+            "Program.cs",
+            "main.go",
             "main.py",
             "main.js",
+            "view.jsx",
             "view.ts",
             "view.tsx",
+            "Main.java",
+            "Main.kt",
             "script.sh",
+            "app.rb",
+            "index.php",
+            "main.swift",
+            "init.lua",
+            "main.zig",
+            "query.sql",
+            "Cargo.toml",
             "README.md",
             "index.html",
             "style.css",
@@ -465,14 +523,8 @@ mod tests {
             let language = language_for_file(Path::new(path), None)
                 .unwrap_or_else(|| panic!("{path} 的结构查询应与 grammar 匹配"));
             assert!(language.brackets().is_some(), "{path} 应提供括号查询");
-            assert!(
-                language.indents().is_some() || path.ends_with(".yaml"),
-                "{path} 应提供缩进查询"
-            );
-            assert!(
-                language.folds().is_some() || !path.ends_with(".rs"),
-                "{path} 应提供折叠查询"
-            );
+            assert!(language.indents().is_some(), "{path} 应提供缩进查询");
+            assert!(language.folds().is_some(), "{path} 应提供折叠查询");
         }
     }
 

@@ -1,0 +1,16 @@
+[
+  (function_definition)
+  (class_definition)
+  (if_statement)
+  (for_statement)
+  (while_statement)
+  (try_statement)
+  (with_statement)
+  (match_statement)
+  (list)
+  (dictionary)
+  (set)
+  (tuple)
+] @fold
+
+(comment)+ @fold

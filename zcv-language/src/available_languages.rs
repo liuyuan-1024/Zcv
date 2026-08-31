@@ -174,9 +174,12 @@ const COMMON_PAIRS: &[AutoClosePair] = &[
     },
 ];
 
+const COMMON_BRACKETS_QUERY: &str = include_str!("../queries/common/brackets.scm");
+
 /// 所有内置语言规格。
 ///
-/// 新增语言时在此登记一个完整规格，并在 `queries/<language>/` 提供其查询文件。
+/// 新增语言时在此登记一个完整规格；
+/// 查询可以来自 grammar crate，也可以由 `queries/<language>/` 提供。
 pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
     vec![
         LanguageSpec::tree_sitter(
@@ -195,6 +198,67 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             COMMON_PAIRS,
         ),
         LanguageSpec::tree_sitter(
+            "C",
+            LanguageMatcher {
+                suffixes: &["c"],
+                first_line_pattern: None,
+            },
+            || tree_sitter_c::LANGUAGE.into(),
+            LanguageQuerySources::new(tree_sitter_c::HIGHLIGHT_QUERY)
+                .with_injections(include_str!("../queries/c/injections.scm"))
+                .with_brackets(COMMON_BRACKETS_QUERY)
+                .with_indents(include_str!("../queries/c/indents.scm"))
+                .with_folds(include_str!("../queries/c/folds.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "C++",
+            LanguageMatcher {
+                suffixes: &[
+                    "cc", "ccm", "hh", "cpp", "cppm", "h", "hpp", "cxx", "cxxm", "hxx", "c++",
+                    "c++m", "h++", "hip", "ipp", "inl", "ino", "ixx", "cu", "cuh",
+                ],
+                first_line_pattern: first_line(r"^//.*-\*-\s*C\+\+\s*-\*-"),
+            },
+            || tree_sitter_cpp::LANGUAGE.into(),
+            query_sources!("cpp")
+                .with_injections(include_str!("../queries/cpp/injections.scm"))
+                .with_brackets(COMMON_BRACKETS_QUERY)
+                .with_indents(include_str!("../queries/cpp/indents.scm"))
+                .with_folds(include_str!("../queries/cpp/folds.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "C#",
+            LanguageMatcher {
+                suffixes: &["cs", "csx"],
+                first_line_pattern: None,
+            },
+            || tree_sitter_c_sharp::LANGUAGE.into(),
+            LanguageQuerySources::new(tree_sitter_c_sharp::HIGHLIGHTS_QUERY)
+                .with_brackets(COMMON_BRACKETS_QUERY)
+                .with_indents(include_str!("../queries/c_sharp/indents.scm"))
+                .with_folds(include_str!("../queries/c_sharp/folds.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "Go",
+            LanguageMatcher {
+                suffixes: &["go"],
+                first_line_pattern: first_line(r"^//.*\bgo run\b"),
+            },
+            || tree_sitter_go::LANGUAGE.into(),
+            query_sources!("go")
+                .with_brackets(COMMON_BRACKETS_QUERY)
+                .with_indents(include_str!("../queries/go/indents.scm"))
+                .with_folds(include_str!("../queries/go/folds.scm")),
+            Some("golang"),
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
             "Python",
             LanguageMatcher {
                 suffixes: &["py", "pyw", "pyx"],
@@ -206,7 +270,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             query_sources!("python")
                 .with_injections(include_str!("../queries/python/injections.scm"))
                 .with_brackets(include_str!("../queries/python/brackets.scm"))
-                .with_indents(include_str!("../queries/python/indents.scm")),
+                .with_indents(include_str!("../queries/python/indents.scm"))
+                .with_folds(include_str!("../queries/python/folds.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -222,7 +287,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             query_sources!("javascript")
                 .with_injections(include_str!("../queries/javascript/injections.scm"))
                 .with_brackets(include_str!("../queries/javascript/brackets.scm"))
-                .with_indents(include_str!("../queries/javascript/indents.scm")),
+                .with_indents(include_str!("../queries/javascript/indents.scm"))
+                .with_folds(include_str!("../queries/javascript/folds.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -236,7 +302,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             query_sources!("javascript")
                 .with_injections(include_str!("../queries/javascript/injections.scm"))
                 .with_brackets(include_str!("../queries/tsx/brackets.scm"))
-                .with_indents(include_str!("../queries/tsx/indents.scm")),
+                .with_indents(include_str!("../queries/tsx/indents.scm"))
+                .with_folds(include_str!("../queries/javascript/folds.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -250,7 +317,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             query_sources!("typescript")
                 .with_injections(include_str!("../queries/typescript/injections.scm"))
                 .with_brackets(include_str!("../queries/typescript/brackets.scm"))
-                .with_indents(include_str!("../queries/typescript/indents.scm")),
+                .with_indents(include_str!("../queries/typescript/indents.scm"))
+                .with_folds(include_str!("../queries/javascript/folds.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -264,7 +332,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             query_sources!("tsx")
                 .with_injections(include_str!("../queries/tsx/injections.scm"))
                 .with_brackets(include_str!("../queries/tsx/brackets.scm"))
-                .with_indents(include_str!("../queries/tsx/indents.scm")),
+                .with_indents(include_str!("../queries/tsx/indents.scm"))
+                .with_folds(include_str!("../queries/javascript/folds.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -275,7 +344,24 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 first_line_pattern: None,
             },
             || tree_sitter_java::LANGUAGE.into(),
-            query_sources!("java"),
+            query_sources!("java")
+                .with_brackets(COMMON_BRACKETS_QUERY)
+                .with_indents(include_str!("../queries/java/indents.scm"))
+                .with_folds(include_str!("../queries/java/folds.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "Kotlin",
+            LanguageMatcher {
+                suffixes: &["kt", "kts"],
+                first_line_pattern: None,
+            },
+            || tree_sitter_kotlin_ng::LANGUAGE.into(),
+            query_sources!("kotlin")
+                .with_brackets(COMMON_BRACKETS_QUERY)
+                .with_indents(include_str!("../queries/kotlin/indents.scm"))
+                .with_folds(include_str!("../queries/kotlin/folds.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -290,7 +376,102 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             || tree_sitter_bash::LANGUAGE.into(),
             query_sources!("bash")
                 .with_brackets(include_str!("../queries/bash/brackets.scm"))
-                .with_indents(include_str!("../queries/bash/indents.scm")),
+                .with_indents(include_str!("../queries/bash/indents.scm"))
+                .with_folds(include_str!("../queries/bash/folds.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "Ruby",
+            LanguageMatcher {
+                suffixes: &["rb", "rake", "gemspec"],
+                first_line_pattern: first_line(
+                    r"^#!\s*(?:/usr/bin/|/bin/|/usr/local/bin/)?(?:env\s+)?ruby(?:\s|$)",
+                ),
+            },
+            || tree_sitter_ruby::LANGUAGE.into(),
+            LanguageQuerySources::new(tree_sitter_ruby::HIGHLIGHTS_QUERY)
+                .with_brackets(COMMON_BRACKETS_QUERY)
+                .with_indents(include_str!("../queries/ruby/indents.scm"))
+                .with_folds(include_str!("../queries/ruby/folds.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "PHP",
+            LanguageMatcher {
+                suffixes: &["php", "php3", "php4", "php5", "php7", "php8", "phtml"],
+                first_line_pattern: first_line(
+                    r"^#!\s*(?:/usr/bin/|/bin/|/usr/local/bin/)?(?:env\s+)?php(?:\s|$)",
+                ),
+            },
+            || tree_sitter_php::LANGUAGE_PHP.into(),
+            LanguageQuerySources::new(tree_sitter_php::HIGHLIGHTS_QUERY)
+                .with_injections(tree_sitter_php::INJECTIONS_QUERY)
+                .with_brackets(COMMON_BRACKETS_QUERY)
+                .with_indents(include_str!("../queries/php/indents.scm"))
+                .with_folds(include_str!("../queries/php/folds.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "Swift",
+            LanguageMatcher {
+                suffixes: &["swift"],
+                first_line_pattern: first_line(
+                    r"^#!\s*(?:/usr/bin/|/bin/|/usr/local/bin/)?(?:env\s+)?swift(?:\s|$)",
+                ),
+            },
+            || tree_sitter_swift::LANGUAGE.into(),
+            LanguageQuerySources::new(tree_sitter_swift::HIGHLIGHTS_QUERY)
+                .with_brackets(COMMON_BRACKETS_QUERY)
+                .with_indents(include_str!("../queries/swift/indents.scm"))
+                .with_folds(include_str!("../queries/swift/folds.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "Lua",
+            LanguageMatcher {
+                suffixes: &["lua"],
+                first_line_pattern: first_line(
+                    r"^#!\s*(?:/usr/bin/|/bin/|/usr/local/bin/)?(?:env\s+)?lua[\d.]*",
+                ),
+            },
+            || tree_sitter_lua::LANGUAGE.into(),
+            LanguageQuerySources::new(tree_sitter_lua::HIGHLIGHTS_QUERY)
+                .with_injections(tree_sitter_lua::INJECTIONS_QUERY)
+                .with_brackets(COMMON_BRACKETS_QUERY)
+                .with_indents(include_str!("../queries/lua/indents.scm"))
+                .with_folds(include_str!("../queries/lua/folds.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "Zig",
+            LanguageMatcher {
+                suffixes: &["zig"],
+                first_line_pattern: None,
+            },
+            || tree_sitter_zig::LANGUAGE.into(),
+            LanguageQuerySources::new(tree_sitter_zig::HIGHLIGHTS_QUERY)
+                .with_brackets(COMMON_BRACKETS_QUERY)
+                .with_indents(include_str!("../queries/zig/indents.scm"))
+                .with_folds(include_str!("../queries/zig/folds.scm")),
+            None,
+            COMMON_PAIRS,
+        ),
+        LanguageSpec::tree_sitter(
+            "SQL",
+            LanguageMatcher {
+                suffixes: &["sql"],
+                first_line_pattern: None,
+            },
+            || tree_sitter_sequel::LANGUAGE.into(),
+            query_sources!("sql")
+                .with_brackets(include_str!("../queries/sql/brackets.scm"))
+                .with_indents(include_str!("../queries/sql/indents.scm"))
+                .with_folds(include_str!("../queries/sql/folds.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -301,7 +482,10 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 first_line_pattern: None,
             },
             || tree_sitter_toml_ng::LANGUAGE.into(),
-            query_sources!("toml"),
+            query_sources!("toml")
+                .with_brackets(include_str!("../queries/toml/brackets.scm"))
+                .with_indents(include_str!("../queries/toml/indents.scm"))
+                .with_folds(include_str!("../queries/toml/folds.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -314,7 +498,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             || tree_sitter_json::LANGUAGE.into(),
             query_sources!("json")
                 .with_brackets(include_str!("../queries/json/brackets.scm"))
-                .with_indents(include_str!("../queries/json/indents.scm")),
+                .with_indents(include_str!("../queries/json/indents.scm"))
+                .with_folds(include_str!("../queries/json/folds.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -327,7 +512,9 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             || tree_sitter_yaml::LANGUAGE.into(),
             query_sources!("yaml")
                 .with_injections(include_str!("../queries/yaml/injections.scm"))
-                .with_brackets(include_str!("../queries/yaml/brackets.scm")),
+                .with_brackets(include_str!("../queries/yaml/brackets.scm"))
+                .with_indents(include_str!("../queries/yaml/indents.scm"))
+                .with_folds(include_str!("../queries/yaml/folds.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -341,7 +528,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             query_sources!("markdown")
                 .with_injections(include_str!("../queries/markdown/injections.scm"))
                 .with_brackets(include_str!("../queries/markdown/brackets.scm"))
-                .with_indents(include_str!("../queries/markdown/indents.scm")),
+                .with_indents(include_str!("../queries/markdown/indents.scm"))
+                .with_folds(include_str!("../queries/markdown/folds.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -367,7 +555,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             query_sources!("html")
                 .with_injections(include_str!("../queries/html/injections.scm"))
                 .with_brackets(include_str!("../queries/html/brackets.scm"))
-                .with_indents(include_str!("../queries/html/indents.scm")),
+                .with_indents(include_str!("../queries/html/indents.scm"))
+                .with_folds(include_str!("../queries/html/folds.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -380,7 +569,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             || tree_sitter_css::LANGUAGE.into(),
             query_sources!("css")
                 .with_brackets(include_str!("../queries/css/brackets.scm"))
-                .with_indents(include_str!("../queries/css/indents.scm")),
+                .with_indents(include_str!("../queries/css/indents.scm"))
+                .with_folds(include_str!("../queries/css/folds.scm")),
             None,
             COMMON_PAIRS,
         ),

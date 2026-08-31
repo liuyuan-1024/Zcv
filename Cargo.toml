@@ -33,7 +33,7 @@ members = [
 ]
 resolver = "3"
 [workspace.package]
-version = "0.8.39"
+version = "0.8.40"
 edition = "2024"
 
 [workspace.lints.clippy]
@@ -78,8 +78,19 @@ trash = "5"
 
 # ---- 语法高亮（tree-sitter 系） ----
 tree-sitter = "0.26.9"
+tree-sitter-c = "0.24.2"
+tree-sitter-c-sharp = "0.23.5"
+tree-sitter-cpp = "0.23.4"
 tree-sitter-rust = "0.24.2"
+tree-sitter-go = "0.25"
+tree-sitter-kotlin-ng = "1.1.0"
+tree-sitter-lua = "0.5.0"
+tree-sitter-php = "0.24.2"
+tree-sitter-ruby = "0.23"
+tree-sitter-sequel = "0.3.11"
+tree-sitter-swift = "0.7.3"
 tree-sitter-toml-ng = "0.7.0"
+tree-sitter-zig = "1.1.2"
 tree-sitter-md = { git = "https://github.com/tree-sitter-grammars/tree-sitter-markdown", rev = "9a23c1a96c0513d8fc6520972beedd419a973539" }
 tree-sitter-json = "0.24"
 tree-sitter-yaml = "0.7.2"
@@ -151,15 +162,26 @@ zcv-language = { opt-level = 3 }
 zcv-theme = { opt-level = 3 }
 tree-sitter = { opt-level = 3 }
 tree-sitter-bash = { opt-level = 3 }
+tree-sitter-c = { opt-level = 3 }
+tree-sitter-c-sharp = { opt-level = 3 }
+tree-sitter-cpp = { opt-level = 3 }
 tree-sitter-css = { opt-level = 3 }
+tree-sitter-go = { opt-level = 3 }
 tree-sitter-html = { opt-level = 3 }
 tree-sitter-java = { opt-level = 3 }
 tree-sitter-json = { opt-level = 3 }
+tree-sitter-kotlin-ng = { opt-level = 3 }
+tree-sitter-lua = { opt-level = 3 }
 tree-sitter-md = { opt-level = 3 }
+tree-sitter-php = { opt-level = 3 }
 tree-sitter-python = { opt-level = 3 }
+tree-sitter-ruby = { opt-level = 3 }
 tree-sitter-rust = { opt-level = 3 }
+tree-sitter-sequel = { opt-level = 3 }
+tree-sitter-swift = { opt-level = 3 }
 tree-sitter-toml-ng = { opt-level = 3 }
 tree-sitter-typescript = { opt-level = 3 }
 tree-sitter-yaml = { opt-level = 3 }
+tree-sitter-zig = { opt-level = 3 }
 ropey = { opt-level = 3 }
 serde_json = { opt-level = 3 }

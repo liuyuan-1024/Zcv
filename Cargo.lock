@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "Zcv"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "anyhow",
  "futures",
@@ -861,9 +861,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.3.0"
+version = "1.2.67"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c89588d05638b5b4594a3348a2d6c20277e43a7f5c5202b05cc56888475a47b8"
+checksum = "e17dd265a7d0f31ef544e1b20e03add05d3b45b491b633b10d67145d2acc1a38"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -6013,10 +6013,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-c"
+version = "0.24.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9b2eb57a55fed6b00812912e730b7a275cf4fe98bfd6a5d76263d4438371728"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-c-sharp"
+version = "0.23.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1aac67f1ad71de1d6d39708d34811081c26dfa495658de6c14c34200849357c"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-cpp"
+version = "0.23.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df2196ea9d47b4ab4a31b9297eaa5a5d19a0b121dceb9f118f6790ad0ab94743"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-css"
 version = "0.23.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5ad6489794d41350d12a7fbe520e5199f688618f43aace5443980d1ddcf1b29e"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-go"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8560a4d2f835cc0d4d2c2e03cbd0dde2f6114b43bc491164238d333e28b16ea"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -6052,15 +6092,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-kotlin-ng"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e800ebbda938acfbf224f4d2c34947a31994b1295ee6e819b65226c7b51b4450"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-language"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
 
 [[package]]
+name = "tree-sitter-lua"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8daaf5f4235188a58603c39760d5fa5d4b920d36a299c934adddae757f32a10c"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-md"
 version = "0.3.2"
 source = "git+https://github.com/tree-sitter-grammars/tree-sitter-markdown?rev=9a23c1a96c0513d8fc6520972beedd419a973539#9a23c1a96c0513d8fc6520972beedd419a973539"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-php"
+version = "0.24.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d8c17c3ab69052c5eeaa7ff5cd972dd1bc25d1b97ee779fec391ad3b5df5592"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -6077,10 +6147,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-ruby"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be0484ea4ef6bb9c575b4fdabde7e31340a8d2dbc7d52b321ac83da703249f95"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-rust"
 version = "0.24.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "439e577dbe07423ec2582ac62c7531120dbfccfa6e5f92406f93dd271a120e45"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-sequel"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d198ad3c319c02e43c21efa1ec796b837afcb96ffaef1a40c1978fbdcec7d17"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-swift"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe36052155b9dd69ca82b3b8f1b4ccfb2d867125ac1a4db1dd7331829242668c"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -6110,6 +6210,16 @@ name = "tree-sitter-yaml"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "53c223db85f05e34794f065454843b0668ebc15d240ada63e2b5939f43ce7c97"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-zig"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab11fc124851b0db4dd5e55983bbd9631192e93238389dcd44521715e5d53e28"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -7440,7 +7550,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-actions"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "gpui",
  "schemars",
@@ -7449,7 +7559,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-assets"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "anyhow",
  "gpui",
@@ -7458,7 +7568,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-editor"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "anyhow",
  "gpui",
@@ -7481,7 +7591,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-fs-watch"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "anyhow",
  "async-channel 1.9.0",
@@ -7493,7 +7603,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-git"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "anyhow",
  "libc",
@@ -7502,7 +7612,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-keymap"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "anyhow",
  "gpui",
@@ -7514,28 +7624,39 @@ dependencies = [
 
 [[package]]
 name = "zcv-language"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "gpui",
  "regex",
  "tree-sitter",
  "tree-sitter-bash",
+ "tree-sitter-c",
+ "tree-sitter-c-sharp",
+ "tree-sitter-cpp",
  "tree-sitter-css",
+ "tree-sitter-go",
  "tree-sitter-html",
  "tree-sitter-java",
  "tree-sitter-json",
+ "tree-sitter-kotlin-ng",
+ "tree-sitter-lua",
  "tree-sitter-md",
+ "tree-sitter-php",
  "tree-sitter-python",
+ "tree-sitter-ruby",
  "tree-sitter-rust",
+ "tree-sitter-sequel",
+ "tree-sitter-swift",
  "tree-sitter-toml-ng",
  "tree-sitter-typescript",
  "tree-sitter-yaml",
+ "tree-sitter-zig",
  "zcv-text",
 ]
 
 [[package]]
 name = "zcv-multi-buffer"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "gpui",
  "zcv-git",
@@ -7545,7 +7666,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-picker"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "gpui",
  "zcv-actions",
@@ -7556,7 +7677,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-preview-svg"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "anyhow",
  "gpui",
@@ -7570,7 +7691,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-project"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "anyhow",
  "async-channel 1.9.0",
@@ -7587,7 +7708,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-project-tree"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "anyhow",
  "gpui",
@@ -7604,7 +7725,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-search"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "anyhow",
  "gpui",
@@ -7621,7 +7742,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-settings"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "anyhow",
  "gpui",
@@ -7633,7 +7754,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-terminal"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -7656,7 +7777,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-text"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "regex",
  "regex-automata",
@@ -7668,7 +7789,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-theme"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "gpui",
  "serde",
@@ -7679,7 +7800,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-ui"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "gpui",
  "zcv-keymap",
@@ -7688,7 +7809,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-update"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "anyhow",
  "async_zip",
@@ -7705,7 +7826,7 @@ dependencies = [
 
 [[package]]
 name = "zcv-workspace"
-version = "0.8.39"
+version = "0.8.40"
 dependencies = [
  "anyhow",
  "gpui",

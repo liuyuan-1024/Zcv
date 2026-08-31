@@ -841,6 +841,10 @@ mod tests {
         let focus = cx.read_entity(&view, |view, cx| {
             assert!(view.is_empty(cx));
             assert!(view.focus_handle(cx) == view.empty_focus);
+            assert!(
+                view.editor.read(cx).cursor_text(cx).is_empty(),
+                "无变更文件时底栏不应显示光标行列"
+            );
             view.focus_handle(cx)
         });
         assert!(

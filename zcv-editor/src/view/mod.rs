@@ -774,6 +774,10 @@ impl Editor {
     pub fn cursor_text(&self, cx: &App) -> String {
         let head = self.resolved_selections().primary().head();
         let multi_snapshot = self.multi_buffer.read(cx).snapshot(cx);
+        // 无片段的空组合文档：光标没有归属的源文件，不显示行列。
+        if multi_snapshot.excerpts().is_empty() {
+            return String::new();
+        }
         let Ok(point) = multi_snapshot.text().byte_to_position(head) else {
             return String::new();
         };

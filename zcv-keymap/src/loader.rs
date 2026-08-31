@@ -612,4 +612,23 @@ mod tests {
             );
         }
     }
+
+    /// 编辑区与终端共用 Pane 标签切换键位，不在终端上下文维护第二套规则。
+    #[test]
+    fn macos_pane_keymap_binds_adjacent_tabs_to_cmd_brackets() {
+        let groups = parse_builtin_keymap("default-macos.json");
+        let pane = groups
+            .iter()
+            .find(|group| group.context.as_deref() == Some("Pane"))
+            .expect("macOS 快捷键应包含 Pane 上下文");
+
+        assert_eq!(
+            pane.bindings.get("cmd-[").map(RawAction::name),
+            Some("pane::PrevTab")
+        );
+        assert_eq!(
+            pane.bindings.get("cmd-]").map(RawAction::name),
+            Some("pane::NextTab")
+        );
+    }
 }

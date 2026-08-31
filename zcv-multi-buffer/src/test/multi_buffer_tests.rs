@@ -503,6 +503,77 @@ fn diff_expansion_migrates_by_tracked_range_across_source_edits(cx: &mut TestApp
     );
 }
 
+/// 回归：前一个整文件投影以换行结尾时，其末尾空逻辑行不会物化为组合文档行；
+/// 后续文件的 hunk 坐标必须来自实际 excerpt 映射，不能按源行数累计后发生偏移。
+#[gpui::test]
+fn diff_hunk_coordinates_follow_materialized_excerpts_across_files(cx: &mut TestAppContext) {
+    let created = singleton("created.txt", "created\n", cx);
+    let modified = singleton("modified.txt", "before\nnew\nafter\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_diff_hunks_expanded_by_default(true, cx);
+        buffer.set_diff_projection(
+            Some(vec![
+                DiffFileInput {
+                    working: created,
+                    hunks: Vec::new(),
+                    base_text: Some(Arc::from("")),
+                    path: PathBuf::from("created.txt"),
+                    display_path: PathBuf::from("created.txt"),
+                    context_lines: Some(2),
+                    is_created: true,
+                    show_file_header: true,
+                },
+                DiffFileInput {
+                    working: modified,
+                    hunks: vec![DiffHunk {
+                        range: 1..2,
+                        old_range: 1..2,
+                        kind: DiffHunkKind::Modified,
+                    }],
+                    base_text: Some(Arc::from("before\nold\nafter\n")),
+                    path: PathBuf::from("modified.txt"),
+                    display_path: PathBuf::from("modified.txt"),
+                    context_lines: Some(2),
+                    is_created: false,
+                    show_file_header: true,
+                },
+            ]),
+            cx,
+        );
+    });
+
+    cx.read_entity(&combined, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        assert_eq!(
+            String::from_utf8(snapshot.text_bytes()).expect("投影应为 UTF-8"),
+            "created\nbefore\nold\nnew\nafter\n"
+        );
+        assert_eq!(
+            buffer.diff_hunk_old_ranges(cx),
+            &[None, Some(2..3)],
+            "旧侧范围应落在实际物化的 old 行"
+        );
+        assert_eq!(
+            buffer.diff_hunks(cx),
+            &[
+                DiffHunk {
+                    range: 0..1,
+                    old_range: 0..0,
+                    kind: DiffHunkKind::Added,
+                },
+                DiffHunk {
+                    range: 3..4,
+                    old_range: 1..2,
+                    kind: DiffHunkKind::Modified,
+                },
+            ],
+            "新侧范围应落在实际物化的 new 行，不能受前一文件末尾空逻辑行影响"
+        );
+    });
+}
+
 /// 文本跟踪区间在 base 版本变化（提交等）后依然有效：工作区文本未变时重新注入的 hunk
 /// 按文本位置识别为同一 hunk，展开状态保留（对应 Zed 的
 /// `test_diff_base_change_with_expanded_diff_hunks`）。

@@ -91,6 +91,56 @@ struct DiffFileProjection {
     display_len: usize,
 }
 
+/// 一个 hunk 在本次物化出的 excerpt 序列中的位置。
+///
+/// 最终组合行坐标只能在 `MultiBuffer::set_excerpts` 建立实际映射后派生；
+/// 这里保存 excerpt 身份或 excerpt 边界，不平行累计另一份组合行号。
+struct MaterializedHunk {
+    old_range: Range<usize>,
+    kind: DiffHunkKind,
+    old_excerpt: Option<usize>,
+    new_location: MaterializedHunkLocation,
+}
+
+enum MaterializedHunkLocation {
+    Excerpt(usize),
+    Boundary(usize),
+}
+
+struct ExcerptMaterializer<'a> {
+    excerpts: &'a mut Vec<MultiBufferExcerpt>,
+    display_path: &'a Path,
+}
+
+impl ExcerptMaterializer<'_> {
+    fn push(
+        &mut self,
+        lines: Range<usize>,
+        text: &zcv_text::Snapshot,
+        source: &Entity<LanguageBuffer>,
+        diff_kind: Option<ExcerptDiffKind>,
+        starts_new_excerpt: bool,
+        allow_empty: bool,
+    ) -> Option<usize> {
+        let excerpt = projected_excerpt(
+            source,
+            text,
+            lines,
+            self.display_path,
+            diff_kind,
+            starts_new_excerpt,
+            allow_empty,
+        )?;
+        let index = self.excerpts.len();
+        self.excerpts.push(excerpt);
+        Some(index)
+    }
+
+    fn boundary(&self) -> usize {
+        self.excerpts.len()
+    }
+}
+
 impl MultiBuffer {
     /// 统一注入 git diff 投影（普通编辑器与多文件投影共用）。
     ///
@@ -380,23 +430,47 @@ impl MultiBuffer {
         let diff = self.diff.as_mut().expect("已确认 diff 投影存在");
         let expanded_by_default = diff.expanded_by_default;
         let mut excerpts = Vec::new();
-        let mut display_hunks = Vec::new();
-        let mut display_old_ranges = Vec::new();
-        let mut output_line = 0usize;
+        let mut materialized_hunks = Vec::new();
         for file in &mut diff.files {
-            file.display_start = display_hunks.len();
+            file.display_start = materialized_hunks.len();
             materialize_file(
                 file,
                 cx,
                 expanded_by_default,
                 &mut excerpts,
-                &mut display_hunks,
-                &mut display_old_ranges,
-                &mut output_line,
+                &mut materialized_hunks,
             );
-            file.display_len = display_hunks.len() - file.display_start;
+            file.display_len = materialized_hunks.len() - file.display_start;
         }
+        let expected_excerpt_count = excerpts.len();
         self.set_excerpts(excerpts, cx);
+        assert_eq!(
+            self.state.mappings.len(),
+            expected_excerpt_count,
+            "diff 物化生成的 excerpt 必须全部建立组合映射"
+        );
+        let mut display_hunks = Vec::with_capacity(materialized_hunks.len());
+        let mut display_old_ranges = Vec::with_capacity(materialized_hunks.len());
+        for hunk in materialized_hunks {
+            let old_display = hunk
+                .old_excerpt
+                .map(|excerpt| self.diff_excerpt_output_lines(excerpt));
+            let new_range = match hunk.new_location {
+                MaterializedHunkLocation::Excerpt(excerpt) => {
+                    self.diff_excerpt_output_lines(excerpt)
+                }
+                MaterializedHunkLocation::Boundary(boundary) => {
+                    let line = self.diff_excerpt_boundary_line(boundary);
+                    line..line
+                }
+            };
+            display_hunks.push(DiffHunk {
+                range: new_range,
+                old_range: hunk.old_range,
+                kind: hunk.kind,
+            });
+            display_old_ranges.push(old_display);
+        }
         let new_version = self.text_buffer(cx).read(cx).snapshot().version();
         let diff = self.diff.as_mut().expect("投影重建前 diff 状态必须存在");
         diff.display_hunks = display_hunks;
@@ -404,6 +478,31 @@ impl MultiBuffer {
         diff.display_version = Some(new_version);
         cx.notify();
         new_version != old_version
+    }
+
+    /// diff 片段在最终组合文档中的真实逻辑行范围。
+    /// 空片段仍对应编辑器中的一个空逻辑行。
+    fn diff_excerpt_output_lines(&self, excerpt: usize) -> Range<usize> {
+        let mapping = self
+            .state
+            .mappings
+            .get(excerpt)
+            .expect("diff excerpt 必须存在对应组合映射");
+        mapping.output_start_line..mapping.output_end_line.max(mapping.output_start_line + 1)
+    }
+
+    /// excerpt 序列边界在最终组合文档中的真实逻辑行。
+    fn diff_excerpt_boundary_line(&self, boundary: usize) -> usize {
+        if let Some(next) = self.state.mappings.get(boundary) {
+            next.output_start_line
+        } else if let Some(previous) = boundary
+            .checked_sub(1)
+            .and_then(|index| self.state.mappings.get(index))
+        {
+            previous.output_end_line.max(previous.output_start_line + 1)
+        } else {
+            0
+        }
     }
 
     /// 显示坐标只在组合文档未被后续编辑时有效（版本门控）。
@@ -600,9 +699,7 @@ fn materialize_file(
     cx: &App,
     expanded_by_default: bool,
     excerpts: &mut Vec<MultiBufferExcerpt>,
-    display_hunks: &mut Vec<DiffHunk>,
-    display_old_ranges: &mut Vec<Option<Range<usize>>>,
-    output_line: &mut usize,
+    materialized_hunks: &mut Vec<MaterializedHunk>,
 ) {
     let working = file.working.clone();
     let base_source = file.base_source.clone();
@@ -612,57 +709,35 @@ fn materialize_file(
     let context_lines = file.context_lines;
     let is_created = file.is_created;
     let show_file_header = file.show_file_header;
-
-    let mut push = |lines: Range<usize>,
-                    text: &zcv_text::Snapshot,
-                    source: &Entity<LanguageBuffer>,
-                    diff_kind: Option<ExcerptDiffKind>,
-                    starts_new_excerpt: bool,
-                    allow_empty: bool|
-     -> usize {
-        let Some(excerpt) = projected_excerpt(
-            source,
-            text,
-            lines.clone(),
-            &display_path,
-            diff_kind,
-            starts_new_excerpt,
-            allow_empty,
-        ) else {
-            return 0;
-        };
-        let added = if allow_empty && lines.is_empty() {
-            1
-        } else {
-            lines.len()
-        };
-        excerpts.push(excerpt);
-        added
+    let mut materializer = ExcerptMaterializer {
+        excerpts,
+        display_path: &display_path,
     };
 
     // 整文件新增：整个新侧文件作为 Added 显示（无旧侧）。
     if is_created && file.hunks.is_empty() {
-        let start = *output_line;
-        *output_line += push(
-            0..line_count,
-            &working_text,
-            &working,
-            Some(ExcerptDiffKind::Added),
-            show_file_header,
-            false,
-        );
-        display_hunks.push(DiffHunk {
-            range: start..*output_line,
+        let new_excerpt = materializer
+            .push(
+                0..line_count,
+                &working_text,
+                &working,
+                Some(ExcerptDiffKind::Added),
+                show_file_header,
+                false,
+            )
+            .expect("整文件新增投影必须生成 excerpt");
+        materialized_hunks.push(MaterializedHunk {
             old_range: 0..0,
             kind: DiffHunkKind::Added,
+            old_excerpt: None,
+            new_location: MaterializedHunkLocation::Excerpt(new_excerpt),
         });
-        display_old_ranges.push(None);
         return;
     }
     // 无行级差异：整文件模式显示整个新侧文件（空文件保留占位行），裁剪模式不显示。
     if file.hunks.is_empty() {
         if context_lines.is_none() {
-            *output_line += push(
+            let _ = materializer.push(
                 0..line_count,
                 &working_text,
                 &working,
@@ -688,7 +763,7 @@ fn materialize_file(
             .filter(|hunk| hunk_is_inside_excerpt(hunk, &context_range))
         {
             if current < hunk.range.start {
-                *output_line += push(
+                let _ = materializer.push(
                     current..hunk.range.start,
                     &working_text,
                     &working,
@@ -704,32 +779,34 @@ fn materialize_file(
                     && let Some(base) = base_source.as_ref()
                 {
                     let base_text = base.read(cx).text_snapshot(cx);
-                    let old_start = *output_line;
-                    *output_line += push(
-                        hunk.old_range.clone(),
-                        &base_text,
-                        base,
-                        Some(ExcerptDiffKind::Deleted),
-                        starts_new_excerpt,
-                        false,
-                    );
+                    let old_excerpt = materializer
+                        .push(
+                            hunk.old_range.clone(),
+                            &base_text,
+                            base,
+                            Some(ExcerptDiffKind::Deleted),
+                            starts_new_excerpt,
+                            false,
+                        )
+                        .expect("展开的旧侧投影必须生成 excerpt");
                     starts_new_excerpt = false;
-                    Some(old_start..*output_line)
+                    Some(old_excerpt)
                 } else if context_lines.is_some() {
                     // 折叠占位行：空 Deleted 片段（组合文档为它保留一个显示行）。
                     let base = base_source.as_ref().expect("删除点占位需要 base 来源");
                     let base_text = base.read(cx).text_snapshot(cx);
-                    let old_start = *output_line;
-                    *output_line += push(
-                        hunk.old_range.start..hunk.old_range.start,
-                        &base_text,
-                        base,
-                        Some(ExcerptDiffKind::Deleted),
-                        starts_new_excerpt,
-                        true,
-                    );
+                    let old_excerpt = materializer
+                        .push(
+                            hunk.old_range.start..hunk.old_range.start,
+                            &base_text,
+                            base,
+                            Some(ExcerptDiffKind::Deleted),
+                            starts_new_excerpt,
+                            true,
+                        )
+                        .expect("折叠的旧侧占位必须生成 excerpt");
                     starts_new_excerpt = false;
-                    Some(old_start..*output_line)
+                    Some(old_excerpt)
                 } else {
                     None
                 }
@@ -737,32 +814,32 @@ fn materialize_file(
                 None
             };
             // 新侧：可编辑 excerpt；纯删除 hunk 用空范围锚定到删除点。
-            let new_range = if !hunk.range.is_empty() {
-                let new_start = *output_line;
-                *output_line += push(
-                    hunk.range.clone(),
-                    &working_text,
-                    &working,
-                    Some(ExcerptDiffKind::Added),
-                    starts_new_excerpt,
-                    false,
-                );
+            let new_location = if !hunk.range.is_empty() {
+                let new_excerpt = materializer
+                    .push(
+                        hunk.range.clone(),
+                        &working_text,
+                        &working,
+                        Some(ExcerptDiffKind::Added),
+                        starts_new_excerpt,
+                        false,
+                    )
+                    .expect("非空新侧投影必须生成 excerpt");
                 starts_new_excerpt = false;
-                new_start..*output_line
+                MaterializedHunkLocation::Excerpt(new_excerpt)
             } else {
-                let anchor = old_display.as_ref().map_or(*output_line, |range| range.end);
-                anchor..anchor
+                MaterializedHunkLocation::Boundary(materializer.boundary())
             };
-            display_hunks.push(DiffHunk {
-                range: new_range,
+            materialized_hunks.push(MaterializedHunk {
                 old_range: hunk.old_range.clone(),
                 kind: hunk.kind,
+                old_excerpt: old_display,
+                new_location,
             });
-            display_old_ranges.push(old_display);
             current = hunk.range.end;
         }
         if current < context_range.end {
-            *output_line += push(
+            let _ = materializer.push(
                 current..context_range.end,
                 &working_text,
                 &working,

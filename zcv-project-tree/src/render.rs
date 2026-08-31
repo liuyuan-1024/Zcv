@@ -260,10 +260,9 @@ pub(super) fn render_row(
                 let focus = render_context.focus.clone();
                 let weak = render_context.weak.clone();
                 move |event, window, cx| {
-                    let was_focused = focus.contains_focused(window, cx);
                     window.focus(&focus);
-                    // 已聚焦时的修饰键多选：shift 从锚点扩展区间、secondary 切换单项标记，都只改选中态不触发展开/打开；未聚焦首击保持纯聚焦+选中。
-                    if was_focused && event.modifiers.shift {
+                    // 修饰键多选：shift 从锚点扩展区间、secondary 切换单项标记，都只改选中态不触发展开/打开。
+                    if event.modifiers.shift {
                         if let Some(tree) = weak.upgrade() {
                             tree.update(cx, |tree, cx| {
                                 // 修饰键点击只改选中态、不打开/展开：清掉上次残留的意图。
@@ -275,7 +274,7 @@ pub(super) fn render_row(
                         cx.stop_propagation();
                         return;
                     }
-                    if was_focused && event.modifiers.secondary() {
+                    if event.modifiers.secondary() {
                         if let Some(tree) = weak.upgrade() {
                             tree.update(cx, |tree, cx| {
                                 // 修饰键点击只改选中态、不打开/展开：清掉上次残留的意图。
@@ -303,11 +302,11 @@ pub(super) fn render_row(
                             // 打开/展开动作延迟到 click（mouse_up 未拖拽）派发时执行：
                             // 按下即执行会在拖动时误打开文件预览——打开文件经 reveal_active_path 的 select() 清空多选集合，选区拖拽随之中途退化为单项；
                             // 拖动目录行也会误展开/折叠。
-                            // 未聚焦首击只聚焦不动作，意图记 None；
                             // 拖拽消费了 click 时意图残留，下次按下清掉。
-                            tree.pending_click_intent =
-                                tree::row_mouse_down_action(is_dir, event.click_count, was_focused)
-                                    .map(|action| (path.clone(), action));
+                            tree.pending_click_intent = Some((
+                                path.clone(),
+                                tree::row_click_action(is_dir, event.click_count),
+                            ));
                         });
                     }
                     cx.stop_propagation();

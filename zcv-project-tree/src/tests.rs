@@ -225,7 +225,7 @@ fn space_edits_the_name_instead_of_activating_the_row_while_renaming(cx: &mut Te
 }
 
 #[gpui::test]
-fn first_click_focuses_unfocused_tree_and_second_click_opens(cx: &mut TestAppContext) {
+fn first_click_on_unfocused_tree_focuses_and_opens(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let file = directory.path().join("a.txt");
     std::fs::write(&file, "hello").expect("应创建测试文件");
@@ -262,9 +262,9 @@ fn first_click_focuses_unfocused_tree_and_second_click_opens(cx: &mut TestAppCon
         cx.run_until_parked();
     };
 
-    // 首击：树未聚焦，只聚焦并选中，不打开文件。
+    // 首击同时完成聚焦、选中与单击预览，用户无需先额外点击一次聚焦。
     click(cx);
-    assert_eq!(open_count.get(), 0, "未聚焦首击只聚焦，不应打开文件");
+    assert_eq!(open_count.get(), 1, "未聚焦首击也应打开文件");
     let tree_focused = cx.update(|window, cx| tree.read(cx).focus.contains_focused(window, cx));
     assert!(tree_focused, "首击应聚焦项目树");
     let selected = cx.read_entity(&tree, |tree, _| tree.state.borrow().selected.clone());
@@ -274,9 +274,6 @@ fn first_click_focuses_unfocused_tree_and_second_click_opens(cx: &mut TestAppCon
         "首击应选中被点行"
     );
 
-    // 二击：已聚焦，单击预览打开（焦点留在项目树）。
-    click(cx);
-    assert_eq!(open_count.get(), 1, "已聚焦后单击应打开文件");
     assert!(
         !last_focus_opened.get(),
         "单击文件应打开临时标签但焦点留在项目树（focus_opened_item=false）"
@@ -2071,9 +2068,7 @@ fn drop_trusts_snapshot_frozen_at_drag_start(cx: &mut TestAppContext) {
     );
 }
 
-/// 缺陷回归：未聚焦时首次 cmd 点击会被消费为「聚焦 + 单选」（修饰键被吞），
-/// 旧实现下首项因此落在多选集合之外，后续拖拽只移动单项；
-/// 修复后首次 toggle 应把首项并入集合，拖拽移动全部选中项。
+/// 缺陷回归：未聚焦时首次 cmd 点击也应直接执行多选语义，后续拖拽移动全部选中项。
 #[gpui::test]
 fn drag_after_unfocused_first_cmd_click_moves_all_items(cx: &mut TestAppContext) {
     let (_temp, project, _root, file_a, file_b, _file_c, target) = drag_project(cx);
@@ -2090,7 +2085,7 @@ fn drag_after_unfocused_first_cmd_click_moves_all_items(cx: &mut TestAppContext)
         tree
     });
     cx.run_until_parked();
-    // 不预先聚焦：首击被消费为聚焦，模拟用户从编辑器转向项目树的真实入口。
+    // 不预先聚焦，模拟用户从编辑器转向项目树的真实入口。
     let row_height = zcv_theme::typography::ui_line();
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
     cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::secondary_key());
@@ -2230,8 +2225,8 @@ fn drag_directory_into_its_own_subtree_is_rejected(cx: &mut TestAppContext) {
                 callback_called.set(true);
                 Ok(())
             }));
-            // 展开 src 使 inner.txt 行可见；不聚焦面板，首击只聚焦不切换目录展开，
-            // 保证拖拽全程行序稳定。
+            // 展开 src 使 inner.txt 行可见；
+            // 目录切换延迟到 click，拖拽不会触发，因而拖拽全程行序稳定。
             tree.state.borrow_mut().expanded.insert(src);
             tree.rebuild_rows(cx);
             tree

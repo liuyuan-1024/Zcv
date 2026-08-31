@@ -949,26 +949,20 @@ fn render_row(
                 let focus = render_context.focus.clone();
                 let weak = render_context.weak.clone();
                 move |event, window, cx| {
-                    let was_focused = focus.contains_focused(window, cx);
                     window.focus(&focus);
                     if let Some(panel) = weak.upgrade() {
                         panel.update(cx, |panel, cx| {
                             panel.state.borrow_mut().selected = Some((section, path.clone()));
-                            match tree::row_mouse_down_action(
-                                is_dir,
-                                event.click_count,
-                                was_focused,
-                            ) {
-                                Some(tree::RowClickAction::Toggle) => {
+                            match tree::row_click_action(is_dir, event.click_count) {
+                                tree::RowClickAction::Toggle => {
                                     panel.activate_selected(true, window, cx)
                                 }
-                                Some(tree::RowClickAction::Preview) => {
+                                tree::RowClickAction::Preview => {
                                     panel.activate_selected(false, window, cx)
                                 }
-                                Some(tree::RowClickAction::Activate) => {
+                                tree::RowClickAction::Activate => {
                                     panel.activate_selected(true, window, cx)
                                 }
-                                None => {}
                             }
                         });
                     }
@@ -1570,7 +1564,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn first_click_focuses_unfocused_panel_and_second_click_opens(cx: &mut TestAppContext) {
+    fn first_click_on_unfocused_panel_focuses_and_opens(cx: &mut TestAppContext) {
         let (root, _temp) = test_repo();
         let project_root = root.clone();
         let open_count = Rc::new(Cell::new(0));
@@ -1611,16 +1605,13 @@ mod tests {
             cx.run_until_parked();
         };
 
-        // 首击：面板未聚焦，只聚焦并选中，不打开文件。
+        // 首击同时完成聚焦、选中与单击预览，用户无需先额外点击一次聚焦。
         click(cx);
-        assert_eq!(open_count.get(), 0, "未聚焦首击只聚焦，不应打开文件");
+        assert_eq!(open_count.get(), 1, "未聚焦首击也应打开文件");
         let panel_focused =
             cx.update(|window, cx| panel.read(cx).focus.contains_focused(window, cx));
         assert!(panel_focused, "首击应聚焦变更面板");
 
-        // 二击：已聚焦，单击预览打开（焦点留在面板）。
-        click(cx);
-        assert_eq!(open_count.get(), 1, "已聚焦后单击应打开文件");
         assert!(
             !last_focus_opened.get(),
             "单击应打开临时标签但焦点留在面板（focus_opened_item=false）"

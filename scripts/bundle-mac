@@ -6,6 +6,7 @@
 # 用法:
 #   scripts/bundle-mac                 # 输出 .app、zip 和 .dmg
 #   scripts/bundle-mac --no-dmg        # 输出 .app 和 zip
+#   scripts/bundle-mac --app-only      # 只输出 .app（本地调试用）
 #
 # 仅支持 Apple Silicon（arm64）。
 
@@ -23,13 +24,16 @@ HELPER_BIN_NAME="zcv-update-helper"
 VERSION="$(grep '^version' Cargo.toml | head -n1 | cut -d'"' -f2)"
 
 MAKE_DMG=1
+APP_ONLY=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-dmg)
             MAKE_DMG=0; shift ;;
+        --app-only)
+            APP_ONLY=1; MAKE_DMG=0; shift ;;
         -h|--help)
-            sed -n '2,10p' "$0"; exit 0 ;;
+            sed -n '2,11p' "$0"; exit 0 ;;
         *)
             echo "未知参数: $1" >&2; exit 1 ;;
     esac
@@ -127,6 +131,13 @@ codesign --force --options runtime --sign - "$APP/Contents/MacOS/$BIN_NAME"
 codesign --force --options runtime --sign - "$APP"
 
 codesign --verify --strict "$APP"
+
+if [[ "$APP_ONLY" == "1" ]]; then
+    echo
+    echo "完成:"
+    echo "  $APP"
+    exit 0
+fi
 
 # ---------- 5. GitHub Release zip ----------
 ZIP="$OUT_DIR/$DIST_NAME.zip"

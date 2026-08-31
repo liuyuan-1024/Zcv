@@ -362,7 +362,7 @@ impl Render for ProjectPicker {
         let mut root = div()
             .track_focus(&self.host.focus_handle())
             // 复合 context 让 Picker 分组的快捷键与 Editor 同深度竞争
-            .key_context("ProjectPicker")
+            .key_context("RecentProjects")
             .on_action(cx.listener(Self::handle_toggle))
             .on_action(cx.listener(Self::handle_delete_recent))
             .on_action(cx.listener(Self::handle_open_local_project))

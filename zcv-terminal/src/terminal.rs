@@ -1074,7 +1074,7 @@ mod pty_tests {
         let terminal = build_terminal(cx);
         let terminal_for_view = terminal.clone();
         let (view, cx) = cx.add_window_view(move |_window, cx| {
-            cx.bind_keys([KeyBinding::new("ctrl-c", Interrupt, Some("terminal"))]);
+            cx.bind_keys([KeyBinding::new("ctrl-c", Interrupt, Some("Terminal"))]);
             TerminalView::new(terminal_for_view, cx)
         });
         cx.update(|window, cx| {

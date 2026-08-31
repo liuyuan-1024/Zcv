@@ -6,11 +6,6 @@
       // 编辑
       // =========================
 
-      // 基础输入
-      "enter": "editor::Newline",
-      "tab": "editor::Indent",
-      "shift-tab": "editor::Outdent",
-
       // 删除单个字符
       "backspace": "editor::Backspace",
       "delete": "editor::Delete",
@@ -95,9 +90,6 @@
       "alt-cmd-[": "editor::ToggleFold",
       "alt-cmd-]": "editor::UnfoldAll",
 
-      // 打开摘录
-      "alt-enter": "editor::OpenExcerpts",
-
       // =========================
       // 视图
       // =========================
@@ -105,6 +97,21 @@
       "cmd-=": "editor::IncreaseFontSize",
       "cmd--": "editor::DecreaseFontSize",
       "cmd-0": "editor::ResetFontSize"
+    }
+  },
+
+  {
+    // enter/tab 等仅指派给完整编辑器：
+    // 输入框类编辑器（single_line/auto_height）不占用这些键位，
+    // 留给所在组件（搜索条等）按自身语义指派。
+    "context": "Editor && mode == full",
+    "bindings": {
+      "enter": "editor::Newline",
+      "tab": "editor::Indent",
+      "shift-tab": "editor::Outdent",
+
+      // 打开摘录
+      "alt-enter": "editor::OpenExcerpts"
     }
   },
 
@@ -161,6 +168,16 @@
   },
 
   {
+    // 提交信息编辑器是 auto_height：mode == full 分组的换行/缩进不适用，在此保留。
+    "context": "CommitEditor > Editor",
+    "bindings": {
+      "enter": "editor::Newline",
+      "tab": "editor::Indent",
+      "shift-tab": "editor::Outdent"
+    }
+  },
+
+  {
     "context": "ProjectTreeEdit > Editor",
     "bindings": {
       // 文件名编辑模式
@@ -170,7 +187,7 @@
   },
 
   {
-    "context": "VersionControlChangesTree",
+    "context": "GitPanel && ChangesList",
     "bindings": {
       // =========================
       // 导航
@@ -196,7 +213,7 @@
   },
 
   {
-    "context": "VersionControlChangesTree || VersionControlCommitEditor",
+    "context": "GitPanel",
     "bindings": {
       // Commit 是较重操作，保留 Cmd 修饰
       "cmd-enter": "version_control::Commit"
@@ -204,7 +221,7 @@
   },
 
   {
-    "context": "Picker || (ProjectPicker > Picker > Editor) || (BranchPicker > Picker > Editor)",
+    "context": "Picker || (RecentProjects > Picker > Editor) || (GitBranchSelector > Picker > Editor)",
     "bindings": {
       // =========================
       // Picker 导航
@@ -249,15 +266,8 @@
   },
 
   {
-    "context": "SearchBar",
+    "context": "BufferSearchBar || ProjectSearchBar",
     "bindings": {
-      // =========================
-      // 查找
-      // =========================
-
-      "enter": "search::FindNext",
-      "shift-enter": "search::FindPrevious",
-
       // =========================
       // 搜索选项
       // =========================
@@ -276,8 +286,12 @@
       "cmd-shift-enter": "search::ReplaceAll",
 
       // =========================
-      // 退出 / 焦点切换
+      // 查找 / 退出 / 焦点切换
       // =========================
+
+      // enter/tab 未被输入框类 Editor（mode != full）占用，整条级绑定直达输入框。
+      "enter": "search::FindNext",
+      "shift-enter": "search::FindPrevious",
 
       "escape": "search::ClearSearch",
 
@@ -287,7 +301,23 @@
   },
 
   {
-    "context": "terminal",
+    // 焦点在替换框：Enter 替换当前匹配。
+    "context": "(BufferSearchBar || ProjectSearchBar) && in_replace > Editor",
+    "bindings": {
+      "enter": "search::ReplaceNext"
+    }
+  },
+
+  {
+    // 查询/替换输入框均为多行编辑器：Alt+Enter 插入换行。
+    "context": "(BufferSearchBar || ProjectSearchBar) > Editor",
+    "bindings": {
+      "alt-enter": "editor::Newline"
+    }
+  },
+
+  {
+    "context": "Terminal",
     "bindings": {
       // Shell 中断
       "ctrl-c": "terminal::Interrupt",

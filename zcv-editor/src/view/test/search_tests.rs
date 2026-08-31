@@ -532,3 +532,28 @@ zcv final
         );
     });
 }
+
+#[gpui::test]
+fn query_suggestion_seeds_search_from_selection(cx: &mut TestAppContext) {
+    let (editor, cx) = editor_with_text(cx, "hello world");
+    cx.update(|_window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.set_selections(SelectionSet::new(vec![Selection::new(
+                ByteOffset::new(6),
+                ByteOffset::new(11),
+            )]));
+            assert_eq!(
+                editor.query_suggestion(cx),
+                Some("world".to_string()),
+                "非空主选区应返回选中文本"
+            );
+
+            editor.set_selections(SelectionSet::caret(ByteOffset::new(3)));
+            assert_eq!(
+                editor.query_suggestion(cx),
+                None,
+                "空选区（仅光标）不应产生查询建议"
+            );
+        });
+    });
+}

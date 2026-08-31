@@ -293,6 +293,22 @@ fn constructors_create_expected_modes_and_independent_scratch_buffers(cx: &mut T
     assert_ne!(single_buffer, auto_height_buffer);
 }
 #[gpui::test]
+fn auto_height_keeps_newlines_single_line_strips(cx: &mut TestAppContext) {
+    let single_line = cx.new(Editor::single_line);
+    let auto_height = cx.new(|cx| Editor::auto_height(1, Some(4), cx));
+
+    cx.update_entity(&single_line, |editor, cx| editor.set_text("a\nb", cx));
+    cx.update_entity(&auto_height, |editor, cx| editor.set_text("a\nb", cx));
+
+    let single_text = cx.read_entity(&single_line, |editor, cx| editor.text(cx));
+    let multi_text = cx.read_entity(&auto_height, |editor, cx| editor.text(cx));
+    assert_eq!(single_text, "ab", "单行输入应剥离换行");
+    assert_eq!(
+        multi_text, "a\nb",
+        "多行输入应保留换行（搜索/替换多行依赖此行为）"
+    );
+}
+#[gpui::test]
 fn editor_element_renders_multiline_unicode_text(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "a你\n😀b");
     let (editor, cx) = cx.add_window_view({

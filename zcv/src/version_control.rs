@@ -346,19 +346,22 @@ impl VersionControlPanel {
         self.on_open_file = Some(callback);
     }
 
-    /// 按焦点区分版本控制变更树与提交信息编辑器的快捷键上下文。
+    /// 快捷键上下文：面板标识 + 按焦点区分的子状态标签。
     fn dispatch_context(&self, window: &Window, cx: &Context<Self>) -> KeyContext {
         let mut context = KeyContext::new_with_defaults();
-        if self
-            .commit_editor
-            .read(cx)
-            .focus_handle()
-            .is_focused(window)
-        {
-            context.add("VersionControlCommitEditor");
-        } else {
-            context.add("VersionControlChangesTree");
-        }
+        context.add("GitPanel");
+        context.add(
+            if self
+                .commit_editor
+                .read(cx)
+                .focus_handle()
+                .is_focused(window)
+            {
+                "CommitEditor"
+            } else {
+                "ChangesList"
+            },
+        );
         context
     }
 
@@ -1628,8 +1631,8 @@ mod tests {
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
         let (panel, cx) = cx.add_window_view(move |_, cx| {
             cx.bind_keys([
-                KeyBinding::new("down", SelectNext, Some("VersionControlChangesTree")),
-                KeyBinding::new("enter", Activate, Some("VersionControlChangesTree")),
+                KeyBinding::new("down", SelectNext, Some("GitPanel && ChangesList")),
+                KeyBinding::new("enter", Activate, Some("GitPanel && ChangesList")),
             ]);
             let mut panel = VersionControlPanel::new(project, cx);
             panel.set_on_open_file(Rc::new(move |_, _, focus_opened_item, _, _| {
@@ -1863,8 +1866,8 @@ mod tests {
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
         let (panel, cx) = cx.add_window_view(move |_, cx| {
             cx.bind_keys([
-                KeyBinding::new("down", SelectNext, Some("VersionControlChangesTree")),
-                KeyBinding::new("space", ToggleStaged, Some("VersionControlChangesTree")),
+                KeyBinding::new("down", SelectNext, Some("GitPanel && ChangesList")),
+                KeyBinding::new("space", ToggleStaged, Some("GitPanel && ChangesList")),
             ]);
             VersionControlPanel::new(project, cx)
         });
@@ -1913,8 +1916,8 @@ mod tests {
         cx.update(|window, cx| {
             panel.update(cx, |panel, cx| {
                 let context = panel.dispatch_context(window, cx);
-                assert!(context.contains("VersionControlCommitEditor"));
-                assert!(!context.contains("VersionControlChangesTree"));
+                assert!(context.contains("CommitEditor"));
+                assert!(!context.contains("ChangesList"));
             });
         });
 

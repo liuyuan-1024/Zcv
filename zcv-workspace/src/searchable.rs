@@ -36,6 +36,11 @@ pub trait SearchableItem: Item + EventEmitter<SearchEvent> {
         true
     }
 
+    /// 部署搜索条时的查询建议（Editor 用主选区文本种入）；返回 None 表示无可种入的查询。
+    fn query_suggestion(&self, _cx: &App) -> Option<String> {
+        None
+    }
+
     /// 执行搜索。同步执行：搜索是内存内匹配，单文件代价可控。
     /// 结果由实现方持有（绑定 BufferVersion，编辑后自动重搜），搜索条经 `search_count` 读取计数。
     fn search(&mut self, query: &SearchQuery, window: &mut Window, cx: &mut Context<Self>);
@@ -85,6 +90,7 @@ pub trait SearchableItemHandle: ItemHandle {
     fn clear_search(&self, window: &mut Window, cx: &mut App);
     fn search_count(&self, cx: &App) -> (usize, Option<usize>);
     fn supports_replace(&self, cx: &App) -> bool;
+    fn query_suggestion(&self, cx: &App) -> Option<String>;
     fn activate_match_in_direction(
         &self,
         direction: Direction,
@@ -126,6 +132,10 @@ impl<T: SearchableItem> SearchableItemHandle for Entity<T> {
 
     fn supports_replace(&self, cx: &App) -> bool {
         self.read(cx).supports_replace()
+    }
+
+    fn query_suggestion(&self, cx: &App) -> Option<String> {
+        self.read(cx).query_suggestion(cx)
     }
 
     fn activate_match_in_direction(

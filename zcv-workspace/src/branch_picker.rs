@@ -274,7 +274,7 @@ impl Render for BranchPicker {
         let mut root = div()
             .track_focus(&self.host.focus_handle())
             // 复合 context 让 Picker 分组的快捷键与 Editor 同深度竞争。
-            .key_context("BranchPicker")
+            .key_context("GitBranchSelector")
             .on_action(cx.listener(Self::handle_toggle))
             .relative()
             .child(button);

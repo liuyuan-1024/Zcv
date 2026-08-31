@@ -5,11 +5,11 @@
 //! Pane/Workspace 接线位于 `buffer_search`，跨文件搜索执行位于 `project_search`。
 
 use gpui::{
-    AnyElement, App, Component, Context, Entity, IntoElement, ParentElement, Render, RenderOnce,
-    SharedString, Styled, Window, div, prelude::*,
+    AnyElement, App, Component, Context, Entity, IntoElement, KeyContext, ParentElement, Render,
+    RenderOnce, SharedString, Styled, Window, div, prelude::*,
 };
 use zcv_actions::{
-    Backtab, ClearSearch, FindNext, FindPrevious, ReplaceAll, ReplaceNext, Tab,
+    Backtab, ClearSearch, FindNext, FindPrevious, ReplaceAll, ReplaceNext, SelectAll, Tab,
     ToggleCaseSensitive, ToggleRegex, ToggleReplace, ToggleWholeWord,
 };
 use zcv_editor::{Editor, EditorEvent};
@@ -28,29 +28,26 @@ enum SearchOption {
     Regex,
 }
 
-/// SearchBar 内部唯一的查询输入外观。
-struct SearchInput {
-    id: SharedString,
-    input: AnyElement,
+/// 查询选项按钮的激活状态（仅查询框右侧渲染）。
+struct QueryOptions {
     case_sensitive: bool,
     whole_word: bool,
     regex: bool,
 }
 
+/// SearchBar 输入框共享外观：带边框的多行容器 + 可选选项按钮。
+struct SearchInput {
+    id: SharedString,
+    input: AnyElement,
+    options: Option<QueryOptions>,
+}
+
 impl SearchInput {
-    fn new(
-        id: impl Into<SharedString>,
-        input: AnyElement,
-        case_sensitive: bool,
-        whole_word: bool,
-        regex: bool,
-    ) -> Self {
+    fn new(id: impl Into<SharedString>, input: AnyElement, options: Option<QueryOptions>) -> Self {
         Self {
             id: id.into(),
             input,
-            case_sensitive,
-            whole_word,
-            regex,
+            options,
         }
     }
 }
@@ -74,62 +71,66 @@ impl RenderOnce for SearchInput {
             .flex_1()
             .flex()
             .items_center()
-            .h_8()
+            .min_h_8()
             .px(space::S6)
             .rounded_sm()
             .border_1()
             .border_color(colors.border)
             .child(self.input)
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(space::S4)
-                    .child(
-                        Button::icon(case_id, "icons/case_sensitive.svg")
-                            .label("区分大小写")
-                            .shortcut(&ToggleCaseSensitive, cx)
-                            .color(if self.case_sensitive {
-                                colors.icon_accent
-                            } else {
-                                colors.text_muted
-                            })
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(ToggleCaseSensitive), cx)
-                            }),
-                    )
-                    .child(
-                        Button::icon(word_id, "icons/whole_word.svg")
-                            .label("整词匹配")
-                            .shortcut(&ToggleWholeWord, cx)
-                            .color(if self.whole_word {
-                                colors.icon_accent
-                            } else {
-                                colors.text_muted
-                            })
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(ToggleWholeWord), cx)
-                            }),
-                    )
-                    .child(
-                        Button::icon(regex_id, "icons/regex.svg")
-                            .label("正则表达式")
-                            .shortcut(&ToggleRegex, cx)
-                            .color(if self.regex {
-                                colors.icon_accent
-                            } else {
-                                colors.text_muted
-                            })
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(ToggleRegex), cx)
-                            }),
-                    ),
-            )
+            .when_some(self.options, |this, options| {
+                this.child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(space::S4)
+                        .child(
+                            Button::icon(case_id, "icons/case_sensitive.svg")
+                                .label("区分大小写")
+                                .shortcut(&ToggleCaseSensitive, cx)
+                                .color(if options.case_sensitive {
+                                    colors.icon_accent
+                                } else {
+                                    colors.text_muted
+                                })
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(ToggleCaseSensitive), cx)
+                                }),
+                        )
+                        .child(
+                            Button::icon(word_id, "icons/whole_word.svg")
+                                .label("整词匹配")
+                                .shortcut(&ToggleWholeWord, cx)
+                                .color(if options.whole_word {
+                                    colors.icon_accent
+                                } else {
+                                    colors.text_muted
+                                })
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(ToggleWholeWord), cx)
+                                }),
+                        )
+                        .child(
+                            Button::icon(regex_id, "icons/regex.svg")
+                                .label("正则表达式")
+                                .shortcut(&ToggleRegex, cx)
+                                .color(if options.regex {
+                                    colors.icon_accent
+                                } else {
+                                    colors.text_muted
+                                })
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(ToggleRegex), cx)
+                                }),
+                        ),
+                )
+            })
     }
 }
 
 pub(crate) struct SearchBar {
+    /// 键位上下文名，由消费方注入（文件内搜索为 BufferSearchBar，项目搜索为 ProjectSearchBar）。
+    context: &'static str,
     visible: bool,
     show_replace: bool,
     query: String,
@@ -148,9 +149,10 @@ pub(crate) struct SearchBar {
 impl gpui::EventEmitter<ToolbarItemEvent> for SearchBar {}
 
 impl SearchBar {
-    pub(crate) fn new(_cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(context: &'static str, _cx: &mut Context<Self>) -> Self {
         // 输入框懒创建（首次打开搜索条时）：ErasedEditor 的创建与订阅都需要 window，且避免在无装配（如 Pane 单测）环境下构造。
         Self {
+            context,
             visible: false,
             show_replace: false,
             query: String::new(),
@@ -213,8 +215,8 @@ impl SearchBar {
             return;
         }
         // 输入框懒创建（首次打开搜索条时）：Editor 的创建与订阅都需要 window，且避免在无装配（如 Pane 单测）环境下构造。
-        let query_input = cx.new(Editor::single_line);
-        let replace_input = cx.new(Editor::single_line);
+        let query_input = cx.new(|cx| Editor::auto_height(1, Some(4), cx));
+        let replace_input = cx.new(|cx| Editor::auto_height(1, Some(4), cx));
         query_input.update(cx, |editor, cx| editor.set_placeholder_text("搜索...", cx));
         replace_input.update(cx, |editor, cx| {
             editor.set_placeholder_text("替换为...", cx)
@@ -256,15 +258,38 @@ impl SearchBar {
     }
 
     /// 部署搜索条（cmd-f / 工具栏按钮）：无论当前状态，一律打开并把焦点移到搜索框；
+    /// `query_seed` 为调用方预先提取的建议（项目搜索必须在切换活动 Item 前提取）；
+    /// 无种子时向活动 Item 请求查询建议（选区文本）；
     /// 关闭只由 esc / ✕ 触发（cmd-f 永不关闭搜索条）。
-    pub(super) fn deploy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn deploy(
+        &mut self,
+        query_seed: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let was_visible = self.visible;
         self.visible = true;
         self.ensure_inputs(window, cx);
         let query_input = self.query_input.as_ref().unwrap();
+        let seed = query_seed.or_else(|| {
+            self.active_item
+                .as_ref()
+                .and_then(|item| item.query_suggestion(cx))
+        });
+        let seeded = seed.is_some();
+        if let Some(seed) = seed {
+            // 正则模式下先转义原始文本，避免选区中的元字符改变查询语义。
+            self.query = if self.regex {
+                regex::escape(&seed)
+            } else {
+                seed
+            };
+        }
         query_input.update(cx, |editor, cx| editor.set_text(&self.query, cx));
         window.focus(&query_input.read(cx).focus_handle());
-        if !was_visible {
+        // 全选查询文本：直接击键即可整体替换。
+        window.dispatch_action(Box::new(SelectAll), cx);
+        if !was_visible || seeded {
             self.run_search(window, cx);
         }
         cx.emit(ToolbarItemEvent::ChangeLocation(
@@ -392,7 +417,7 @@ impl SearchBar {
 }
 
 impl Render for SearchBar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.visible {
             return div().into_any_element();
         }
@@ -483,8 +508,19 @@ impl Render for SearchBar {
         } else {
             "0/0".to_string()
         };
+        // 按持有焦点的输入框动态附加 in_replace 标签：
+        // keymap 据此声明式区分查询/替换框的 Enter 语义。
+        let mut key_context = KeyContext::new_with_defaults();
+        key_context.add(self.context);
+        if self
+            .replace_input
+            .as_ref()
+            .is_some_and(|input| input.read(cx).focus_handle().is_focused(window))
+        {
+            key_context.add("in_replace");
+        }
         div()
-            .key_context("SearchBar")
+            .key_context(key_context)
             .flex()
             .flex_col()
             .mt(space::S6)
@@ -514,9 +550,11 @@ impl Render for SearchBar {
                             .unwrap()
                             .clone()
                             .into_any_element(),
-                        self.case_sensitive,
-                        self.whole_word,
-                        self.regex,
+                        Some(QueryOptions {
+                            case_sensitive: self.case_sensitive,
+                            whole_word: self.whole_word,
+                            regex: self.regex,
+                        }),
                     ))
                     // 替换模式 toggle（只读目标保留相同布局并显示禁用态）。
                     .child(
@@ -572,24 +610,15 @@ impl Render for SearchBar {
                         .flex()
                         .items_center()
                         .gap(space::S6)
-                        .child(
-                            div()
-                                .flex_1()
-                                .flex()
-                                .items_center()
-                                .h_8()
-                                .px(space::S6)
-                                .rounded_sm()
-                                .border_1()
-                                .border_color(colors.border)
-                                .child(
-                                    self.replace_input
-                                        .as_ref()
-                                        .unwrap()
-                                        .clone()
-                                        .into_any_element(),
-                                ),
-                        )
+                        .child(SearchInput::new(
+                            "buffer-replace-input",
+                            self.replace_input
+                                .as_ref()
+                                .unwrap()
+                                .clone()
+                                .into_any_element(),
+                            None,
+                        ))
                         .child(
                             Button::icon("search-replace-next", "icons/replace_next.svg")
                                 .label("替换")
@@ -608,7 +637,7 @@ impl Render for SearchBar {
     }
 }
 
-// ═══ SearchBar actions（keymap "SearchBar" 上下文绑定）═══
+// ═══ SearchBar actions（keymap BufferSearchBar / ProjectSearchBar 上下文绑定）═══
 
 impl SearchBar {
     fn handle_find_next(&mut self, _: &FindNext, window: &mut Window, cx: &mut Context<Self>) {

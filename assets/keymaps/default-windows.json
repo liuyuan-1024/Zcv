@@ -5,9 +5,6 @@
       "ctrl-=": "editor::IncreaseFontSize",
       "ctrl--": "editor::DecreaseFontSize",
       "ctrl-0": "editor::ResetFontSize",
-      "enter": "editor::Newline",
-      "tab": "editor::Indent",
-      "shift-tab": "editor::Outdent",
       "delete": "editor::Delete",
       "backspace": "editor::Backspace",
       "alt-delete": "editor::DeleteToNextWordEnd",
@@ -47,7 +44,18 @@
       "alt-up": "editor::MoveLineUp",
       "alt-down": "editor::MoveLineDown",
       "alt-ctrl-[": "editor::ToggleFold",
-      "alt-ctrl-]": "editor::UnfoldAll",
+      "alt-ctrl-]": "editor::UnfoldAll"
+    }
+  },
+  {
+    // enter/tab 等仅指派给完整编辑器：
+    // 输入框类编辑器（single_line/auto_height）不占用这些键位，
+    // 留给所在组件（搜索条等）按自身语义指派。
+    "context": "Editor && mode == full",
+    "bindings": {
+      "enter": "editor::Newline",
+      "tab": "editor::Indent",
+      "shift-tab": "editor::Outdent",
       "alt-enter": "editor::OpenExcerpts"
     }
   },
@@ -78,6 +86,15 @@
     }
   },
   {
+    // 提交信息编辑器是 auto_height：mode == full 分组的换行/缩进不适用，在此保留。
+    "context": "CommitEditor > Editor",
+    "bindings": {
+      "enter": "editor::Newline",
+      "tab": "editor::Indent",
+      "shift-tab": "editor::Outdent"
+    }
+  },
+  {
     "context": "ProjectTreeEdit > Editor",
     "bindings": {
       "enter": "project_tree::TreeConfirmEdit",
@@ -85,7 +102,7 @@
     }
   },
   {
-    "context": "VersionControlChangesTree",
+    "context": "GitPanel && ChangesList",
     "bindings": {
       "up": "version_control::SelectPrev",
       "down": "version_control::SelectNext",
@@ -96,13 +113,13 @@
     }
   },
   {
-    "context": "VersionControlChangesTree || VersionControlCommitEditor",
+    "context": "GitPanel",
     "bindings": {
       "ctrl-enter": "version_control::Commit"
     }
   },
   {
-    "context": "Picker || (ProjectPicker > Picker > Editor) || (BranchPicker > Picker > Editor)",
+    "context": "Picker || (RecentProjects > Picker > Editor) || (GitBranchSelector > Picker > Editor)",
     "bindings": {
       "up": "picker::PickerSelectPrev",
       "down": "picker::PickerSelectNext",
@@ -122,23 +139,37 @@
     }
   },
   {
-    "context": "SearchBar",
+    "context": "BufferSearchBar || ProjectSearchBar",
     "bindings": {
       "alt-c": "search::ToggleCaseSensitive",
       "alt-w": "search::ToggleWholeWord",
       "alt-x": "search::ToggleRegex",
-      "enter": "search::FindNext",
-      "shift-enter": "search::FindPrevious",
       "cmd-r": "search::ToggleReplace",
       "cmd-enter": "search::ReplaceNext",
       "cmd-shift-enter": "search::ReplaceAll",
+      "enter": "search::FindNext",
+      "shift-enter": "search::FindPrevious",
       "escape": "search::ClearSearch",
       "tab": "search::Tab",
       "shift-tab": "search::Backtab"
     }
   },
   {
-    "context": "terminal",
+    // 焦点在替换框：Enter 替换当前匹配。
+    "context": "(BufferSearchBar || ProjectSearchBar) && in_replace > Editor",
+    "bindings": {
+      "enter": "search::ReplaceNext"
+    }
+  },
+  {
+    // 查询/替换输入框均为多行编辑器：Alt+Enter 插入换行。
+    "context": "(BufferSearchBar || ProjectSearchBar) > Editor",
+    "bindings": {
+      "alt-enter": "editor::Newline"
+    }
+  },
+  {
+    "context": "Terminal",
     "bindings": {
       "ctrl-c": "terminal::Interrupt",
       "ctrl-shift-c": "editor::Copy",

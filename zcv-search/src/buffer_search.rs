@@ -23,9 +23,15 @@ impl BufferSearchBar {
         Self { search_bar }
     }
 
-    pub(super) fn deploy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.search_bar
-            .update(cx, |search_bar, cx| search_bar.deploy(window, cx));
+    pub(super) fn deploy(
+        &mut self,
+        query_seed: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.search_bar.update(cx, |search_bar, cx| {
+            search_bar.deploy(query_seed, window, cx)
+        });
     }
 }
 
@@ -62,7 +68,7 @@ pub(super) fn install(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Entity<BufferSearchBar> {
-    let search_bar = cx.new(SearchBar::new);
+    let search_bar = cx.new(|cx| SearchBar::new("BufferSearchBar", cx));
     let buffer_search_bar = cx.new(|cx| BufferSearchBar::new(search_bar, cx));
     let toolbar = workspace.pane().read(cx).toolbar().clone();
     toolbar.update(cx, |toolbar, cx| {

@@ -10,6 +10,7 @@ path = "src/search.rs"
 [dependencies]
 anyhow.workspace = true
 gpui.workspace = true
+regex.workspace = true
 zcv-actions.workspace = true
 zcv-editor.workspace = true
 zcv-multi-buffer.workspace = true

@@ -423,9 +423,13 @@ mod tests {
     #[test]
     fn composite_context_parses() {
         KeyBindingContextPredicate::parse(
-            "Picker || (ProjectPicker > Picker > Editor) || (BranchPicker > Picker > Editor)",
+            "Picker || (RecentProjects > Picker > Editor) || (GitBranchSelector > Picker > Editor)",
         )
         .expect("复合 context 必须可解析");
+        KeyBindingContextPredicate::parse(
+            "(BufferSearchBar || ProjectSearchBar) && in_replace > Editor",
+        )
+        .expect("搜索条复合 context 必须可解析");
     }
 
     /// 读取内置 keymap 并按 JSONC 语义解析（支持 `//` 行注释）。
@@ -513,15 +517,36 @@ mod tests {
             let groups = parse_builtin_keymap(source);
             let version_control = groups
                 .iter()
-                .find(|group| {
-                    group.context.as_deref()
-                        == Some("VersionControlChangesTree || VersionControlCommitEditor")
-                })
+                .find(|group| group.context.as_deref() == Some("GitPanel"))
                 .unwrap_or_else(|| panic!("{source} 缺少版本控制提交上下文"));
             assert_eq!(
                 version_control.bindings.get(keys).map(RawAction::name),
                 Some("version_control::Commit"),
                 "{source} 的 {keys} 应提交当前暂存"
+            );
+        }
+    }
+
+    /// 替换框的 Enter 语义由 in_replace 标签分组声明，不得缺失或退化。
+    #[test]
+    fn search_replace_input_enter_is_declared_by_in_replace_on_every_platform() {
+        for source in [
+            "default-macos.json",
+            "default-linux.json",
+            "default-windows.json",
+        ] {
+            let groups = parse_builtin_keymap(source);
+            let in_replace = groups
+                .iter()
+                .find(|group| {
+                    group.context.as_deref()
+                        == Some("(BufferSearchBar || ProjectSearchBar) && in_replace > Editor")
+                })
+                .unwrap_or_else(|| panic!("{source} 缺少替换框 in_replace 上下文"));
+            assert_eq!(
+                in_replace.bindings.get("enter").map(RawAction::name),
+                Some("search::ReplaceNext"),
+                "{source} 的替换框 Enter 应替换当前匹配"
             );
         }
     }
@@ -537,7 +562,7 @@ mod tests {
             let groups = parse_builtin_keymap(source);
             let changes_tree = groups
                 .iter()
-                .find(|group| group.context.as_deref() == Some("VersionControlChangesTree"))
+                .find(|group| group.context.as_deref() == Some("GitPanel && ChangesList"))
                 .unwrap_or_else(|| panic!("{source} 缺少版本控制变更树上下文"));
             assert_eq!(
                 changes_tree.bindings.get("space").map(RawAction::name),
@@ -603,8 +628,8 @@ mod tests {
             let groups = parse_builtin_keymap(source);
             let terminal = groups
                 .iter()
-                .find(|group| group.context.as_deref() == Some("terminal"))
-                .unwrap_or_else(|| panic!("{source} 缺少 terminal 上下文"));
+                .find(|group| group.context.as_deref() == Some("Terminal"))
+                .unwrap_or_else(|| panic!("{source} 缺少 Terminal 上下文"));
             assert_eq!(
                 terminal.bindings.get("ctrl-c").map(RawAction::name),
                 Some("terminal::Interrupt"),

@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, IntoElement,
-    Pixels, Point, Render, Styled, Window, div, point, prelude::*,
+    KeyContext, Pixels, Point, Render, Styled, Window, div, point, prelude::*,
 };
 use zcv_actions::{
     Backspace, Copy, Cut, Delete, DeleteToBeginningOfLine, DeleteToEndOfLine, DeleteToNextWordEnd,
@@ -2116,6 +2116,22 @@ impl Editor {
             cx,
         );
     }
+
+    /// 键位上下文：Editor 标识 + mode 标签。
+    /// keymap 据此按模式选择绑定（如 `Editor && mode == full`），输入框类编辑器（single_line/auto_height）不占用 enter/tab 等键位。
+    fn key_context(&self) -> KeyContext {
+        let mut context = KeyContext::new_with_defaults();
+        context.add("Editor");
+        context.set(
+            "mode",
+            match self.mode {
+                EditorMode::SingleLine => "single_line",
+                EditorMode::AutoHeight { .. } => "auto_height",
+                EditorMode::Full => "full",
+            },
+        );
+        context
+    }
 }
 
 impl EventEmitter<EditorEvent> for Editor {}
@@ -2178,7 +2194,7 @@ impl Render for Editor {
         EditorElement::register_actions(
             div()
                 .track_focus(&self.focus)
-                .key_context("Editor")
+                .key_context(self.key_context())
                 .tab_index(0)
                 .cursor(CursorStyle::IBeam)
                 .w_full()

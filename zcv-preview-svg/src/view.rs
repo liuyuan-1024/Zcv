@@ -158,7 +158,7 @@ impl Render for SvgPreviewView {
         };
         div()
             .track_focus(&self.focus)
-            .key_context("Preview")
+            .key_context("ImageViewer")
             .tab_index(0)
             .size_full()
             .flex()

@@ -2,7 +2,7 @@
   {
       "label": "1. 检查代码",
       "command": "cargo",
-      "args": ["clippy", "--", "-A", "dead_code", "-A", "unused_imports"],
+      "args": ["clippy"],
       "cwd": "$ZED_WORKTREE_ROOT",
       "save": "all",
       "reveal": "always",

@@ -75,6 +75,22 @@ impl EditorSearch {
 }
 
 impl SearchableItem for Editor {
+    /// 主选区文本作为查询建议；空选区（仅光标）不种入。
+    fn query_suggestion(&self, cx: &gpui::App) -> Option<String> {
+        let range = self.resolved_selections().primary().range();
+        if range.is_empty() {
+            return None;
+        }
+        let snapshot = self.text_buffer(cx).read(cx).snapshot();
+        Some(
+            snapshot
+                .slice_byte_range(range.start(), range.end())
+                .expect("主选区范围在当前投影快照内必须可读取")
+                .as_str()
+                .to_owned(),
+        )
+    }
+
     fn search(
         &mut self,
         query: &SearchQuery,

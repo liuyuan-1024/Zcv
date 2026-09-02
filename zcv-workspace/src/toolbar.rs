@@ -1,16 +1,11 @@
-//! Toolbar —— Pane 内容区顶部的工具条。
-//!
-//! 左侧承载面包屑，右侧承载活动文件相关操作。
+//! Toolbar —— Pane 内容区顶部的工具条协议与布局容器。
 
 use gpui::{
     AnyView, App, Context, Entity, EntityId, EventEmitter, Render, Window, div, prelude::*,
 };
-use zcv_actions::{DeploySearch, TogglePreview};
 use zcv_theme::{color, space};
-use zcv_ui::Button;
 
 use crate::ItemHandle;
-use crate::preview::provider_for;
 
 // ═══ ToolbarItemLocation ═════════════════════════════════════════════
 
@@ -210,106 +205,5 @@ impl Render for Toolbar {
                 )
             })
             .children(secondary_elements)
-    }
-}
-
-// ═══ 活动文件右侧控件 ════════════════════════════════════════════
-
-/// 预览切换按钮的当前语义：决定图标与文案。
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PreviewControl {
-    /// 当前是源码且文件支持预览：点击进入预览。
-    ShowPreview,
-    /// 当前是预览视图：点击回到源码。
-    ShowSource,
-}
-
-/// Toolbar 右侧的活动文件控件：预览/源码切换与文件内搜索入口。
-pub struct FileToolbarControls {
-    visible: bool,
-    preview_control: Option<PreviewControl>,
-}
-
-impl FileToolbarControls {
-    pub fn new() -> Self {
-        Self {
-            visible: false,
-            preview_control: None,
-        }
-    }
-}
-
-impl Default for FileToolbarControls {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl EventEmitter<ToolbarItemEvent> for FileToolbarControls {}
-
-impl ToolbarItemView for FileToolbarControls {
-    fn set_active_pane_item(
-        &mut self,
-        active_item: Option<&dyn ItemHandle>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> ToolbarItemLocation {
-        let path = active_item.and_then(|item| item.active_path(cx));
-        self.visible = path.is_some();
-        // 预览视图显示"回到源码"，源码且文件支持预览时显示"进入预览"。
-        self.preview_control = if active_item.is_some_and(|item| item.as_preview_item(cx).is_some())
-        {
-            Some(PreviewControl::ShowSource)
-        } else if path
-            .as_deref()
-            .is_some_and(|path| provider_for(path, cx).is_some())
-        {
-            Some(PreviewControl::ShowPreview)
-        } else {
-            None
-        };
-        cx.notify();
-        if self.visible {
-            ToolbarItemLocation::PrimaryRight
-        } else {
-            ToolbarItemLocation::Hidden
-        }
-    }
-}
-
-impl Render for FileToolbarControls {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .gap(space::S6)
-            .when_some(self.preview_control, |controls, control| {
-                let (icon, label, icon_color) = match control {
-                    PreviewControl::ShowSource => (
-                        "icons/eye_off.svg",
-                        "源码".to_string(),
-                        color::current(cx).text_muted,
-                    ),
-                    PreviewControl::ShowPreview => (
-                        "icons/eye.svg",
-                        "预览".to_string(),
-                        color::current(cx).text_muted,
-                    ),
-                };
-                controls.child(
-                    Button::icon("toolbar-preview", icon)
-                        .label(label)
-                        .color(icon_color)
-                        .on_click(|_, window, cx| {
-                            window.dispatch_action(Box::new(TogglePreview), cx)
-                        }),
-                )
-            })
-            .child(
-                Button::icon("toolbar-file-search", "icons/magnifying_glass.svg")
-                    .label("搜索")
-                    .shortcut(&DeploySearch, cx)
-                    .on_click(|_, window, cx| window.dispatch_action(Box::new(DeploySearch), cx)),
-            )
     }
 }

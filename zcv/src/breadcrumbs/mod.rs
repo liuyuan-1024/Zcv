@@ -104,7 +104,7 @@ impl ToolbarItemView for Breadcrumbs {
         self.subscription = Some(item.subscribe_to_item_events(
             cx,
             Box::new(move |event, cx| {
-                if matches!(event, ItemEvent::UpdateBreadcrumbs) {
+                if matches!(event, ItemEvent::PathChanged | ItemEvent::UpdateBreadcrumbs) {
                     this.update(cx, |_, cx| {
                         cx.notify();
                         cx.emit(ToolbarItemEvent::ChangeLocation(location));

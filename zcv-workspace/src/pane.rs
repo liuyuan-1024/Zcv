@@ -161,7 +161,9 @@ impl Pane {
                         // 固定标签同样需要立即重绘未保存标记。
                         cx.notify();
                     }
-                    ItemEvent::UpdateTab | ItemEvent::UpdateBreadcrumbs => cx.notify(),
+                    ItemEvent::PathChanged
+                    | ItemEvent::UpdateTab
+                    | ItemEvent::UpdateBreadcrumbs => cx.notify(),
                 });
             }),
         )

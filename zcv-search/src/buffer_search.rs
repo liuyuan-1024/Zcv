@@ -1,14 +1,50 @@
 //! 文件内搜索协调器。
 //!
-//! 职责边界：只保留 Zcv 当前需要的部分：
-//! BufferSearchBar 跟随 Pane 中的普通可搜索 Item。
+//! 搜索入口与 BufferSearchBar 共同跟随 Pane 中的普通可搜索 Item。
 
-use gpui::{AppContext, Context, Entity, EventEmitter, Render, Window, div, prelude::*};
+use gpui::{App, AppContext, Context, Entity, EventEmitter, Render, Window, div, prelude::*};
+use zcv_actions::DeploySearch;
+use zcv_ui::Button;
 use zcv_workspace::{
     ItemHandle, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView, Workspace,
 };
 
 use crate::{project_search, search_bar::SearchBar};
+
+fn accepts_buffer_search_item(item: Option<&dyn ItemHandle>, cx: &App) -> bool {
+    item.is_some_and(|item| {
+        item.as_searchable(cx).is_some() && !project_search::is_project_search_item(item, cx)
+    })
+}
+
+/// 文件内搜索入口；是否显示只由 Item 的搜索能力决定。
+pub(super) struct BufferSearchButton;
+
+impl EventEmitter<ToolbarItemEvent> for BufferSearchButton {}
+
+impl ToolbarItemView for BufferSearchButton {
+    fn set_active_pane_item(
+        &mut self,
+        active_item: Option<&dyn ItemHandle>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ToolbarItemLocation {
+        if accepts_buffer_search_item(active_item, cx) {
+            ToolbarItemLocation::PrimaryRight
+        } else {
+            ToolbarItemLocation::Hidden
+        }
+    }
+}
+
+impl Render for BufferSearchButton {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        Button::icon("toolbar-file-search", "icons/magnifying_glass.svg")
+            .label("搜索")
+            .shortcut(&DeploySearch, cx)
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(DeploySearch), cx))
+    }
+}
 
 pub(super) struct BufferSearchBar {
     search_bar: Entity<SearchBar>,
@@ -44,10 +80,7 @@ impl ToolbarItemView for BufferSearchBar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> ToolbarItemLocation {
-        let accepts_item = active_item.is_some_and(|item| {
-            item.as_searchable(cx).is_some() && !project_search::is_project_search_item(item, cx)
-        });
-        if !accepts_item {
+        if !accepts_buffer_search_item(active_item, cx) {
             return ToolbarItemLocation::Hidden;
         }
         self.search_bar.update(cx, |search_bar, cx| {
@@ -72,6 +105,7 @@ pub(super) fn install(
     let buffer_search_bar = cx.new(|cx| BufferSearchBar::new(search_bar, cx));
     let toolbar = workspace.pane().read(cx).toolbar().clone();
     toolbar.update(cx, |toolbar, cx| {
+        toolbar.add_item(cx.new(|_| BufferSearchButton), window, cx);
         toolbar.add_item(buffer_search_bar.clone(), window, cx);
     });
     buffer_search_bar

@@ -21,6 +21,8 @@ use crate::toolbar::ToolbarItemLocation;
 /// Item 向 Pane/Workspace 上报的通用事件。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ItemEvent {
+    /// Item 的稳定身份路径发生变化。
+    PathChanged,
     /// 标签标题等内容需要刷新。
     UpdateTab,
     /// 面包屑路径需要刷新。

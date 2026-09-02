@@ -20,5 +20,8 @@ zcv-text.workspace = true
 zcv-ui.workspace = true
 zcv-workspace.workspace = true
 
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
 [lints]
 workspace = true

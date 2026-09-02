@@ -25,11 +25,7 @@ impl Item for Editor {
 
     fn to_item_events(event: &Self::Event, emit: &mut dyn FnMut(ItemEvent)) {
         match event {
-            EditorEvent::PathChanged => {
-                // 路径变化同时刷新标签标题与面包屑。
-                emit(ItemEvent::UpdateTab);
-                emit(ItemEvent::UpdateBreadcrumbs);
-            }
+            EditorEvent::PathChanged => emit(ItemEvent::PathChanged),
             EditorEvent::DirtyChanged => emit(ItemEvent::UpdateTab),
             EditorEvent::Edited => emit(ItemEvent::Edit),
             EditorEvent::OpenExcerptsRequested { .. } => {}
@@ -148,9 +144,9 @@ mod tests {
 
     use super::*;
 
-    /// 编辑与路径变化必须映射为对应的 ItemEvent，Pane 依赖它们刷新标签与提升临时标签。
+    /// 编辑、脏状态与路径变化必须映射为各自的 ItemEvent。
     #[test]
-    fn item_events_follow_zed_semantics() {
+    fn item_events_preserve_distinct_semantics() {
         let mut events = Vec::new();
         Editor::to_item_events(&EditorEvent::Edited, &mut |event| events.push(event));
         assert_eq!(events, vec![ItemEvent::Edit]);
@@ -161,10 +157,7 @@ mod tests {
 
         events.clear();
         Editor::to_item_events(&EditorEvent::PathChanged, &mut |event| events.push(event));
-        assert_eq!(
-            events,
-            vec![ItemEvent::UpdateTab, ItemEvent::UpdateBreadcrumbs]
-        );
+        assert_eq!(events, vec![ItemEvent::PathChanged]);
     }
 
     #[gpui::test]

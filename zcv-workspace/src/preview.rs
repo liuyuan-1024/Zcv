@@ -8,11 +8,15 @@ use std::any::TypeId;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use gpui::{App, Entity};
+use gpui::{App, Context, Entity, EventEmitter, Render, Subscription, Window, div, prelude::*};
+use zcv_actions::TogglePreview;
 use zcv_multi_buffer::MultiBuffer;
+use zcv_theme::color;
+use zcv_ui::Button;
 
-use crate::item::{Item, ItemHandle};
+use crate::item::{Item, ItemEvent, ItemHandle};
 use crate::provider_registry::ProviderRegistry;
+use crate::toolbar::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 
 /// 交给 Preview Provider 的文档输入：预览视图的源码 Item 与展示路径。
 #[derive(Clone)]
@@ -56,6 +60,117 @@ pub fn register<P: PreviewProvider>(provider: P, cx: &mut App) {
 /// 返回最后注册且支持该路径的 Preview Provider。
 pub(crate) fn provider_for(path: &Path, cx: &App) -> Option<Arc<dyn PreviewProvider>> {
     ProviderRegistry::<dyn PreviewProvider>::find(cx, |provider| provider.supports(path, cx))
+}
+
+/// 预览切换按钮的当前语义。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PreviewControl {
+    ShowPreview,
+    ShowSource,
+}
+
+/// Toolbar 中的预览能力入口。
+pub struct PreviewToolbarButton {
+    control: Option<PreviewControl>,
+    active_item: Option<Box<dyn ItemHandle>>,
+    _subscription: Option<Subscription>,
+}
+
+impl PreviewToolbarButton {
+    pub fn new() -> Self {
+        Self {
+            control: None,
+            active_item: None,
+            _subscription: None,
+        }
+    }
+
+    fn control_for(item: Option<&dyn ItemHandle>, cx: &App) -> Option<PreviewControl> {
+        if item.is_some_and(|item| item.as_preview_item(cx).is_some()) {
+            Some(PreviewControl::ShowSource)
+        } else if item
+            .and_then(|item| item.item_path(cx))
+            .as_deref()
+            .is_some_and(|path| provider_for(path, cx).is_some())
+        {
+            Some(PreviewControl::ShowPreview)
+        } else {
+            None
+        }
+    }
+
+    fn location(&self) -> ToolbarItemLocation {
+        if self.control.is_some() {
+            ToolbarItemLocation::PrimaryRight
+        } else {
+            ToolbarItemLocation::Hidden
+        }
+    }
+
+    fn refresh_control(&mut self, cx: &mut Context<Self>) {
+        let control = Self::control_for(self.active_item.as_deref(), cx);
+        if control == self.control {
+            return;
+        }
+        self.control = control;
+        cx.emit(ToolbarItemEvent::ChangeLocation(self.location()));
+        cx.notify();
+    }
+}
+
+impl Default for PreviewToolbarButton {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EventEmitter<ToolbarItemEvent> for PreviewToolbarButton {}
+
+impl ToolbarItemView for PreviewToolbarButton {
+    fn set_active_pane_item(
+        &mut self,
+        active_item: Option<&dyn ItemHandle>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ToolbarItemLocation {
+        self._subscription = None;
+        self.active_item = active_item.map(ItemHandle::boxed_clone);
+        self.control = Self::control_for(active_item, cx);
+
+        if let Some(item) = active_item {
+            let this = cx.entity().downgrade();
+            self._subscription = Some(item.subscribe_to_item_events(
+                cx,
+                Box::new(move |event, cx| {
+                    if event == ItemEvent::PathChanged {
+                        let this = this.clone();
+                        cx.defer(move |cx| {
+                            this.update(cx, |this, cx| this.refresh_control(cx)).ok();
+                        });
+                    }
+                }),
+            ));
+        }
+        cx.notify();
+        self.location()
+    }
+}
+
+impl Render for PreviewToolbarButton {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div().when_some(self.control, |controls, control| {
+            let (icon, label) = match control {
+                PreviewControl::ShowSource => ("icons/eye_off.svg", "源码"),
+                PreviewControl::ShowPreview => ("icons/eye.svg", "预览"),
+            };
+            controls.child(
+                Button::icon("toolbar-preview", icon)
+                    .label(label)
+                    .color(color::current(cx).text_muted)
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(TogglePreview), cx)),
+            )
+        })
+    }
 }
 
 #[cfg(test)]

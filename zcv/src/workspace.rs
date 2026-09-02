@@ -26,9 +26,10 @@ use zcv_search::ProjectSearchButton;
 use zcv_settings::SettingsStore;
 use zcv_theme::{ThemeChoice, color, typography};
 use zcv_workspace::{
-    ActivityIndicator, Dock, DockPosition, FileToolbarControls, GitBranchAction, OnBranchSelected,
-    OnProjectSelected, Pane, PaneEvent, Panel, PanelButtons, PanelEvent, PanelHandle, ToastAction,
-    ToastKind, TopBar, Workspace, add_to_recent, load_window_bounds, save_window_bounds,
+    ActivityIndicator, Dock, DockPosition, GitBranchAction, OnBranchSelected, OnProjectSelected,
+    Pane, PaneEvent, Panel, PanelButtons, PanelEvent, PanelHandle, PreviewToolbarButton,
+    ToastAction, ToastKind, TopBar, Workspace, add_to_recent, load_window_bounds,
+    save_window_bounds,
 };
 
 use crate::active_buffer_language::ActiveBufferLanguage;
@@ -242,8 +243,6 @@ fn initialize_common_workspace(
         });
     });
 
-    zcv_search::install(workspace, window, cx);
-
     workspace.register_action(|workspace, _: &RestartToUpdate, window, cx| {
         let has_unsaved_items = workspace
             .pane()
@@ -354,9 +353,10 @@ fn initialize_common_workspace(
                 window,
                 cx,
             );
-            toolbar.add_item(cx.new(|_| FileToolbarControls::new()), window, cx);
+            toolbar.add_item(cx.new(|_| PreviewToolbarButton::new()), window, cx);
         });
     });
+    zcv_search::install(workspace, window, cx);
 
     for dock in [
         workspace.left_dock.clone(),

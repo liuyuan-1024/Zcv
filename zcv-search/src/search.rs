@@ -6,6 +6,9 @@ mod buffer_search;
 mod project_search;
 mod search_bar;
 
+#[cfg(test)]
+mod test;
+
 use gpui::{App, Context, Window};
 use zcv_actions::{Deploy as DeployProjectSearch, DeploySearch};
 use zcv_workspace::Workspace;

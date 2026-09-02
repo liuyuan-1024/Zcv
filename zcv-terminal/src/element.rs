@@ -12,6 +12,7 @@ use gpui::{
     HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, Rgba,
     ShapedLine, Style, TextRun, Window, px, relative, size,
 };
+use unicode_width::UnicodeWidthChar;
 use zcv_theme::{color, typography};
 
 use crate::mappings::mouse::{grid_point, grid_point_and_side};
@@ -61,6 +62,7 @@ pub(super) struct TerminalLayout {
     text_runs: Vec<LineRun>,
     rects: Vec<LayoutRect>,
     cursor: Option<CursorLayout>,
+    ime_marked_text: Option<String>,
     background: Rgba,
     hitbox: gpui::Hitbox,
 }
@@ -211,6 +213,7 @@ impl Element for TerminalElement {
 
         let content = self.view.read(cx).terminal.read(cx).last_content().cloned();
         let focused = self.view.read(cx).is_focused(window);
+        let ime_marked_text = self.view.read(cx).marked_text().map(str::to_owned);
         let (display_offset, screen_lines, columns) =
             content.as_ref().map_or((0, 1, 2), |content| {
                 (
@@ -231,12 +234,21 @@ impl Element for TerminalElement {
             text_runs: Vec::new(),
             rects: Vec::new(),
             cursor: None,
+            ime_marked_text,
             background: color::current(cx).editor_background,
             hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
         };
 
         if let Some(content) = content {
-            layout_grid(&content, &mut layout, &mut self.row_cache, window, cx);
+            let ime_marked_text = layout.ime_marked_text.clone();
+            layout_grid(
+                &content,
+                &mut layout,
+                &mut self.row_cache,
+                ime_marked_text.as_deref(),
+                window,
+                cx,
+            );
             let show_cursor = self.view.read(cx).should_show_cursor(focused, cx);
             layout.cursor = layout_cursor(&content, &layout, window, cx, show_cursor);
             // IME 候选窗位置：光标像素 bounds 独立于闪烁可见性计算。
@@ -269,7 +281,7 @@ impl Element for TerminalElement {
         );
 
         // 输入法组合预览：在光标处绘制 marked 文本（下划线 + 选区背景）。
-        let ime_marked_text = self.view.read(cx).marked_text().map(str::to_string);
+        let ime_marked_text = layout.ime_marked_text.as_deref();
         let ime_cursor_bounds = layout.cursor.as_ref().map(|cursor| cursor.bounds);
 
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
@@ -305,7 +317,7 @@ impl Element for TerminalElement {
             if self.shaped_runs.len() > SHAPED_RUN_CACHE_LIMIT {
                 self.shaped_runs.clear();
             }
-            if let Some(marked) = &ime_marked_text
+            if let Some(marked) = ime_marked_text
                 && let Some(cursor_bounds) = &ime_cursor_bounds
             {
                 let run = TextRun {
@@ -321,7 +333,7 @@ impl Element for TerminalElement {
                     strikethrough: None,
                 };
                 let shaped = window.text_system().shape_line(
-                    marked.clone().into(),
+                    marked.to_owned().into(),
                     layout.font_size,
                     &[run],
                     None,
@@ -493,6 +505,7 @@ fn layout_grid(
     content: &Content,
     layout: &mut TerminalLayout,
     row_cache: &mut HashMap<u64, CachedRow>,
+    ime_marked_text: Option<&str>,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -509,6 +522,7 @@ fn layout_grid(
     let screen_lines = content.screen_lines;
     let selection = content.selection;
     let selection_color = color::current(cx).editor_selection_background;
+    let ime_shift_columns = ime_marked_text.map(ime_text_width).unwrap_or(0);
 
     // 快照按行序排列，按行分组处理。
     let mut line_start = 0;
@@ -523,101 +537,112 @@ fn layout_grid(
         let row_origin = Point::new(origin.x, origin.y + *line_height * row as f32);
         let cells = &content.cells[line_start..line_end];
 
-        // 行转换：内容指纹作缓存键——滚动只移动视口，行内容不变则直接命中，
-        // 跳过每格主题颜色解析（滚动帧的 palette 开销降为 0）。
-        let fingerprint = row_fingerprint(cells);
-        let (text, spans, span_columns, bg_ranges) = {
-            let entry = row_cache.entry(fingerprint).or_insert_with(|| {
-                let row = row_to_styled_line(cells, window, cx);
-                CachedRow {
-                    text: row.text,
-                    spans: row.spans,
-                    span_columns: row.span_columns,
-                    bg_ranges: row.bg_ranges,
-                }
-            });
-            (
-                entry.text.clone(),
-                entry.spans.clone(),
-                entry.span_columns.clone(),
-                entry.bg_ranges.clone(),
-            )
-        };
-        if row_cache.len() > ROW_CACHE_LIMIT {
-            row_cache.clear();
-        }
+        let parts = ime_row_parts(
+            cells,
+            row as i32,
+            content.cursor.point.line,
+            content.cursor.point.column,
+            ime_shift_columns,
+        );
 
-        // 背景块：缓存的非默认背景区间（选择高亮在下方叠加，覆盖在背景之上）。
-        for &(start, end, color) in &bg_ranges {
-            push_rect(
-                rects,
-                start,
-                end,
-                row_origin,
-                *cell_width,
-                *line_height,
-                gpui::rgba(color),
-            );
-        }
-        if let Some(sel) = selection {
-            let mut sel_start: Option<usize> = None;
-            for indexed in cells {
-                let in_sel = sel.contains(indexed.point);
-                match (in_sel, sel_start) {
-                    (true, None) => sel_start = Some(indexed.point.column),
-                    (true, Some(_)) => {}
-                    (false, Some(start)) => {
-                        push_rect(
-                            rects,
-                            start,
-                            indexed.point.column - 1,
-                            row_origin,
-                            *cell_width,
-                            *line_height,
-                            selection_color,
-                        );
-                        sel_start = None;
+        for (part_cells, column_shift) in parts.into_iter().flatten() {
+            // 行转换：内容指纹作缓存键——滚动只移动视口，行内容不变则直接命中，
+            // 跳过每格主题颜色解析（滚动帧的 palette 开销降为 0）。
+            let fingerprint = row_fingerprint(part_cells);
+            let (text, spans, span_columns, bg_ranges) = {
+                let entry = row_cache.entry(fingerprint).or_insert_with(|| {
+                    let row = row_to_styled_line(part_cells, window, cx);
+                    CachedRow {
+                        text: row.text,
+                        spans: row.spans,
+                        span_columns: row.span_columns,
+                        bg_ranges: row.bg_ranges,
                     }
-                    (false, None) => {}
-                }
+                });
+                (
+                    entry.text.clone(),
+                    entry.spans.clone(),
+                    entry.span_columns.clone(),
+                    entry.bg_ranges.clone(),
+                )
+            };
+            if row_cache.len() > ROW_CACHE_LIMIT {
+                row_cache.clear();
             }
-            if let Some(start) = sel_start {
+
+            // 背景块：组合文本插入的空隙不能覆盖原有背景，因此后半行整体平移。
+            for &(start, end, color) in &bg_ranges {
                 push_rect(
                     rects,
-                    start,
-                    last_column(cells),
+                    start + column_shift,
+                    end + column_shift,
                     row_origin,
                     *cell_width,
                     *line_height,
-                    selection_color,
+                    gpui::rgba(color),
                 );
             }
-        }
-
-        // 文本：终端网格已完成 tab 展开，按样式段直接产出 runs。
-        // 宽字符占 2 列，段起点按列号 × 格宽定位（force_width 强制单字符 1 格，2 格间距由列号补足）。
-        for (span, &start_column) in spans.iter().zip(span_columns.iter()) {
-            let segment = &text[span.range.clone()];
-            if segment.is_empty() {
-                continue;
+            if let Some(sel) = selection {
+                let mut sel_start: Option<usize> = None;
+                for indexed in part_cells {
+                    let column = indexed.point.column + column_shift;
+                    let in_sel = sel.contains(indexed.point);
+                    match (in_sel, sel_start) {
+                        (true, None) => sel_start = Some(column),
+                        (true, Some(_)) => {}
+                        (false, Some(start)) => {
+                            push_rect(
+                                rects,
+                                start,
+                                column - 1,
+                                row_origin,
+                                *cell_width,
+                                *line_height,
+                                selection_color,
+                            );
+                            sel_start = None;
+                        }
+                        (false, None) => {}
+                    }
+                }
+                if let Some(start) = sel_start {
+                    push_rect(
+                        rects,
+                        start,
+                        last_column(part_cells) + column_shift,
+                        row_origin,
+                        *cell_width,
+                        *line_height,
+                        selection_color,
+                    );
+                }
             }
-            let run = styled_text_run(
-                TextRun {
-                    len: segment.len(),
-                    font: font.clone(),
-                    color: color::current(cx).text.into(),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                },
-                span.style,
-            );
-            text_runs.push(LineRun {
-                start_column,
-                origin: row_origin,
-                text: segment.to_string(),
-                runs: vec![run],
-            });
+
+            // 文本：终端网格已完成 tab 展开，按样式段直接产出 runs。
+            // 宽字符占 2 列，段起点按列号 × 格宽定位（force_width 强制单字符 1 格，2 格间距由列号补足）。
+            for (span, &start_column) in spans.iter().zip(span_columns.iter()) {
+                let segment = &text[span.range.clone()];
+                if segment.is_empty() {
+                    continue;
+                }
+                let run = styled_text_run(
+                    TextRun {
+                        len: segment.len(),
+                        font: font.clone(),
+                        color: color::current(cx).text.into(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    },
+                    span.style,
+                );
+                text_runs.push(LineRun {
+                    start_column: start_column + column_shift,
+                    origin: row_origin,
+                    text: segment.to_string(),
+                    runs: vec![run],
+                });
+            }
         }
 
         line_start = line_end;
@@ -640,12 +665,13 @@ fn styled_text_run(mut run: TextRun, style: HighlightStyle) -> TextRun {
     run
 }
 
-/// 行的内容指纹：单元格字符、颜色与标志的混合（不查主题，仅用于缓存失效判断）。
+/// 行的内容指纹：单元格列号、字符、颜色与标志的混合（不查主题，仅用于缓存失效判断）。
 fn row_fingerprint(cells: &[IndexedCell]) -> u64 {
     let mut fp = 0u64;
     for indexed in cells {
         let cell = &indexed.cell;
         fp = fp.rotate_left(7)
+            ^ (indexed.point.column as u64).rotate_left(3)
             ^ cell.character() as u64
             ^ color_fingerprint(&cell.foreground()).rotate_left(13)
             ^ color_fingerprint(&cell.background()).rotate_left(29)
@@ -674,6 +700,34 @@ fn color_fingerprint(color: &Color) -> u64 {
     }
 }
 
+fn ime_text_width(text: &str) -> usize {
+    text.chars()
+        .map(|character| UnicodeWidthChar::width(character).unwrap_or(0))
+        .sum()
+}
+
+fn ime_row_parts(
+    cells: &[IndexedCell],
+    row: i32,
+    cursor_row: i32,
+    cursor_column: usize,
+    shift_columns: usize,
+) -> [Option<(&[IndexedCell], usize)>; 2] {
+    if shift_columns == 0 || row != cursor_row {
+        return [Some((cells, 0)), None];
+    }
+
+    let split_at = cells.partition_point(|indexed| indexed.point.column < cursor_column);
+    let mut parts = [None, None];
+    if split_at > 0 {
+        parts[0] = Some((&cells[..split_at], 0));
+    }
+    if split_at < cells.len() {
+        parts[1] = Some((&cells[split_at..], shift_columns));
+    }
+    parts
+}
+
 /// 一行网格单元格 → 行文本 + 行内样式段 + 非默认背景区间。
 /// 样式段按同样式连续格合并，尾随空格裁剪；背景区间按同色连续列合并。
 fn row_to_styled_line(cells: &[IndexedCell], window: &mut Window, cx: &mut App) -> StyledRow {
@@ -688,7 +742,8 @@ fn row_to_styled_line(cells: &[IndexedCell], window: &mut Window, cx: &mut App) 
     let mut bg_ranges: Vec<(usize, usize, u32)> = Vec::new();
     let mut bg_start: Option<(usize, u32)> = None;
 
-    for (column, indexed) in cells.iter().enumerate() {
+    for indexed in cells {
+        let column = indexed.point.column;
         let cell = &indexed.cell;
         // 宽字符占位格不产生文本：宽字符自身占两格宽；
         // 背景仍按格绘制（宽字符第二格背景不丢失）。
@@ -1048,6 +1103,53 @@ mod autoscroll_tests {
 }
 
 #[cfg(test)]
+mod ime_layout_tests {
+    use super::*;
+    use crate::{Point as TerminalPoint, alacritty::AlacrittyCell};
+
+    fn cells(text: &str) -> Vec<IndexedCell> {
+        text.chars()
+            .enumerate()
+            .map(|(column, character)| IndexedCell {
+                point: TerminalPoint { line: 0, column },
+                cell: Cell::new(AlacrittyCell {
+                    c: character,
+                    ..Default::default()
+                }),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ime_preview_inserts_columns_at_cursor() {
+        let cells = cells("abcd");
+        assert_eq!(
+            ime_row_parts(&cells, 0, 0, 0, ime_text_width("kaifazhe"))
+                .into_iter()
+                .flatten()
+                .map(|(cells, shift)| (cells.first().map(|cell| cell.point.column), shift))
+                .collect::<Vec<_>>(),
+            vec![(Some(0), 8)]
+        );
+        assert_eq!(
+            ime_row_parts(&cells, 0, 0, 2, ime_text_width("kaifazhe"))
+                .into_iter()
+                .flatten()
+                .map(|(cells, shift)| (cells.first().map(|cell| cell.point.column), shift))
+                .collect::<Vec<_>>(),
+            vec![(Some(0), 0), (Some(2), 8)]
+        );
+    }
+
+    #[test]
+    fn ime_preview_uses_terminal_width_for_wide_characters() {
+        assert_eq!(ime_text_width("kaifazhe"), 8);
+        assert_eq!(ime_text_width("中"), 2);
+        assert_eq!(ime_text_width("e\u{301}"), 1);
+    }
+}
+
+#[cfg(test)]
 mod styled_line_tests {
     use super::*;
     use crate::{Point as TerminalPoint, alacritty::AlacrittyCell};
@@ -1069,6 +1171,19 @@ mod styled_line_tests {
     fn cell(ch: char, fg: Color, bg: Color) -> IndexedCell {
         IndexedCell {
             point: TerminalPoint { line: 0, column: 0 },
+            cell: Cell::new(AlacrittyCell {
+                c: ch,
+                fg,
+                bg,
+                flags: Flags::empty(),
+                ..Default::default()
+            }),
+        }
+    }
+
+    fn cell_at(ch: char, column: usize, fg: Color, bg: Color) -> IndexedCell {
+        IndexedCell {
+            point: TerminalPoint { line: 0, column },
             cell: Cell::new(AlacrittyCell {
                 c: ch,
                 fg,
@@ -1277,10 +1392,10 @@ mod styled_line_tests {
         let bg = Color::Named(NamedColor::Background);
         let row = cx.update(|window, cx| {
             let cells = vec![
-                cell('a', red, bg),
-                cell('b', red, bg),
-                cell('c', green, bg),
-                cell(' ', red, bg),
+                cell_at('a', 0, red, bg),
+                cell_at('b', 1, red, bg),
+                cell_at('c', 2, green, bg),
+                cell_at(' ', 3, red, bg),
             ];
             row_to_styled_line(&cells, window, cx)
         });

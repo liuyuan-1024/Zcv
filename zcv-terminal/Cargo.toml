@@ -16,6 +16,7 @@ parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sysinfo.workspace = true
+unicode-width.workspace = true
 zcv-actions.workspace = true
 zcv-project.workspace = true
 zcv-settings.workspace = true

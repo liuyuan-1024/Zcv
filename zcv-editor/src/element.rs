@@ -812,7 +812,7 @@ fn buffer_header_element(
                         .child(SvgIcon::new("icons/file.svg").id(file_id))
                         .child(
                             div()
-                                .text_size(typography::editor())
+                                .text_size(typography::content_size())
                                 .text_color(colors.text)
                                 .whitespace_nowrap()
                                 .child(filename),
@@ -822,7 +822,7 @@ fn buffer_header_element(
                                 div()
                                     .min_w_0()
                                     .truncate()
-                                    .text_size(typography::editor())
+                                    .text_size(typography::content_size())
                                     .text_color(colors.text_muted)
                                     .child(parent),
                             )
@@ -3004,7 +3004,7 @@ mod tests {
         window
             .update(cx, |_, window, _cx| {
                 let font = typography::ui_font();
-                let font_size = typography::ui();
+                let font_size = typography::ui_size();
                 let font_id = window.text_system().resolve_font(&font);
                 let em_advance = window
                     .text_system()

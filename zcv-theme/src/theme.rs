@@ -84,20 +84,24 @@ pub mod typography {
 
     // 运行时状态：启动时由 set_typography 注入设置值；0 表示尚未注入，读取时回退内置设置文件的默认值（单一数据源，见 INITIAL_SETTINGS）。
     static UI_FONT_SIZE: AtomicU16 = AtomicU16::new(0);
-    static EDITOR_FONT_SIZE: AtomicU16 = AtomicU16::new(0);
-    /// 编辑器行高倍数；f32 位模式存储，0 表示未注入。
-    static EDITOR_LINE_HEIGHT: AtomicU32 = AtomicU32::new(0);
+    static CONTENT_FONT_SIZE: AtomicU16 = AtomicU16::new(0);
+    /// 内容行高倍数；f32 位模式存储，0 表示未注入。
+    static CONTENT_LINE_HEIGHT: AtomicU32 = AtomicU32::new(0);
 
-    /// 应用排版设置（编辑器/UI 字号与编辑器行高倍数）；启动与设置变更时调用，未配置的维度保持当前值不变。
-    pub fn set_typography(editor: Option<f32>, ui: Option<f32>, line_height: Option<f32>) {
-        if let Some(editor) = editor {
-            EDITOR_FONT_SIZE.store(editor as u16, Ordering::Relaxed);
+    /// 应用排版设置（内容/UI 字号与内容行高倍数）；启动与设置变更时调用，未配置的维度保持当前值不变。
+    pub fn set_typography(
+        content_size: Option<f32>,
+        ui_size: Option<f32>,
+        content_line_height: Option<f32>,
+    ) {
+        if let Some(content_size) = content_size {
+            CONTENT_FONT_SIZE.store(content_size as u16, Ordering::Relaxed);
         }
-        if let Some(ui) = ui {
-            UI_FONT_SIZE.store(ui as u16, Ordering::Relaxed);
+        if let Some(ui_size) = ui_size {
+            UI_FONT_SIZE.store(ui_size as u16, Ordering::Relaxed);
         }
-        if let Some(line_height) = line_height {
-            EDITOR_LINE_HEIGHT.store(line_height.to_bits(), Ordering::Relaxed);
+        if let Some(line_height) = content_line_height {
+            CONTENT_LINE_HEIGHT.store(line_height.to_bits(), Ordering::Relaxed);
         }
     }
 
@@ -112,17 +116,17 @@ pub mod typography {
         })
     }
 
-    fn ui_size() -> f32 {
+    fn ui_size_value() -> f32 {
         let size = UI_FONT_SIZE.load(Ordering::Relaxed);
         if size == 0 { defaults().1 } else { size as f32 }
     }
-    fn editor_size() -> f32 {
-        let size = EDITOR_FONT_SIZE.load(Ordering::Relaxed);
+    fn content_size_value() -> f32 {
+        let size = CONTENT_FONT_SIZE.load(Ordering::Relaxed);
         if size == 0 { defaults().0 } else { size as f32 }
     }
-    /// 编辑器行高倍数；未注入时回退内置默认。
-    fn editor_line_height() -> f32 {
-        let bits = EDITOR_LINE_HEIGHT.load(Ordering::Relaxed);
+    /// 内容行高倍数；未注入时回退内置默认。
+    fn content_line_height() -> f32 {
+        let bits = CONTENT_LINE_HEIGHT.load(Ordering::Relaxed);
         if bits == 0 {
             defaults().2
         } else {
@@ -137,12 +141,12 @@ pub mod typography {
         font
     }
 
-    /// 编辑器字体：等宽（代码缩进/列对齐依赖等宽），含 CJK 回退。
-    pub fn editor_font() -> Font {
+    /// 内容字体：等宽（代码缩进/列对齐依赖等宽），含 CJK 回退。
+    pub fn content_font() -> Font {
         mono_font()
     }
 
-    /// 编辑器等宽字体（含 CJK 回退）。
+    /// 等宽字体（含 CJK 回退）。
     fn mono_font() -> Font {
         let mut font = font("JetBrains Mono");
         font.fallbacks = Some(cjk_fallback());
@@ -156,19 +160,19 @@ pub mod typography {
             .clone()
     }
 
-    pub fn ui() -> Pixels {
-        px(ui_size())
+    pub fn ui_size() -> Pixels {
+        px(ui_size_value())
     }
     /// UI 行高（黄金比例），用于搜索框等单行输入场景
     pub fn ui_line() -> Pixels {
-        px((ui_size() * 1.618_034).round())
+        px((ui_size_value() * 1.618_034).round())
     }
-    pub fn editor() -> Pixels {
-        px(editor_size())
+    pub fn content_size() -> Pixels {
+        px(content_size_value())
     }
-    /// 编辑器行高（相对字号的倍数，缺省内置默认）：`round(font_size * 倍数)`
-    pub fn editor_line() -> Pixels {
-        px((editor_size() * editor_line_height()).round())
+    /// 内容行高（相对字号的倍数，缺省内置默认）：`round(font_size * 倍数)`
+    pub fn content_line() -> Pixels {
+        px((content_size_value() * content_line_height()).round())
     }
 }
 

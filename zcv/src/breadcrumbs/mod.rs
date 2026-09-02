@@ -70,7 +70,7 @@ impl Render for Breadcrumbs {
             .flex_1()
             .gap_1()
             .overflow_x_scroll()
-            .text_size(typography::ui())
+            .text_size(typography::ui_size())
             .children(children)
     }
 }

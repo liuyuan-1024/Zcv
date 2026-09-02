@@ -182,7 +182,7 @@ impl Element for TerminalElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         // 尺寸度量：格宽取 'm' 字形宽度，行高取字体大小 × 行高倍率。
-        let font = typography::editor_font();
+        let font = typography::content_font();
         let font_size = self.view.read(cx).font_size(cx);
         let cell_width = window
             .text_system()
@@ -1248,8 +1248,8 @@ mod styled_line_tests {
             EmptyView
         });
         cx.update(|window, cx| {
-            let font = typography::editor_font();
-            let font_size = typography::editor();
+            let font = typography::content_font();
+            let font_size = typography::content_size();
             let run = |ch: char| TextRun {
                 len: ch.len_utf8(),
                 font: font.clone(),

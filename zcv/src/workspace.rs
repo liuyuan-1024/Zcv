@@ -193,7 +193,7 @@ fn build_workspace(
     apply_theme(&SettingsStore::get(cx).theme, cx, Some(window));
     // 全局字号经 window rem 基准设置：
     // 字体与行高仍在元素上显式设置（见 Workspace 根元素与 tooltip）。
-    window.set_rem_size(typography::ui());
+    window.set_rem_size(typography::ui_size());
     let mut workspace = match root {
         Some(root) => Workspace::new(root.clone(), window, cx),
         None => Workspace::new_empty(window, cx),
@@ -300,16 +300,16 @@ fn initialize_common_workspace(
         });
     });
 
-    // 编辑器字号缩放（会话内生效，不写配置文件）。
+    // 内容字号缩放（会话内生效，不写配置文件）。
     // 字号是 typography 的运行时状态：直接调整并强制重绘，不改 SettingsStore。
     workspace.register_action(move |_workspace, _: &IncreaseFontSize, window, _cx| {
-        let editor = f32::from(typography::editor());
-        typography::set_typography(Some(editor + 1.), None, None);
+        let content = f32::from(typography::content_size());
+        typography::set_typography(Some(content + 1.), None, None);
         window.refresh();
     });
     workspace.register_action(move |_workspace, _: &DecreaseFontSize, window, _cx| {
-        let editor = f32::from(typography::editor());
-        typography::set_typography(Some((editor - 1.).max(8.)), None, None);
+        let content = f32::from(typography::content_size());
+        typography::set_typography(Some((content - 1.).max(8.)), None, None);
         window.refresh();
     });
     workspace.register_action(move |_workspace, _: &ResetFontSize, window, cx| {
@@ -322,21 +322,21 @@ fn initialize_common_workspace(
     // UI 字号缩放（cmd-shift-= 等，全局可用，会话内生效）：只调 UI 字号，编辑器不动。
     // UI 字号是窗口 rem 基准：字号变化必须同步更新rem_size，否则基于 rem 的文本/布局沿用旧基准，与放大后的字形错位导致截断。
     workspace.register_action(move |_workspace, _: &IncreaseUiFontSize, window, _cx| {
-        let ui = f32::from(typography::ui());
+        let ui = f32::from(typography::ui_size());
         typography::set_typography(None, Some(ui + 1.), None);
-        window.set_rem_size(typography::ui());
+        window.set_rem_size(typography::ui_size());
         window.refresh();
     });
     workspace.register_action(move |_workspace, _: &DecreaseUiFontSize, window, _cx| {
-        let ui = f32::from(typography::ui());
+        let ui = f32::from(typography::ui_size());
         typography::set_typography(None, Some((ui - 1.).max(8.)), None);
-        window.set_rem_size(typography::ui());
+        window.set_rem_size(typography::ui_size());
         window.refresh();
     });
     workspace.register_action(move |_workspace, _: &ResetUiFontSize, window, cx| {
         let settings = SettingsStore::get(cx);
         typography::set_typography(None, Some(settings.ui_font_size), None);
-        window.set_rem_size(typography::ui());
+        window.set_rem_size(typography::ui_size());
         window.refresh();
     });
 

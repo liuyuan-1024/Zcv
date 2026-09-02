@@ -357,7 +357,7 @@ impl EventEmitter<Event> for Terminal {}
 /// 终端行为设置快照，从 zcv-settings 的用户配置读取。
 #[derive(Clone, Debug)]
 pub(crate) struct TerminalSettings {
-    /// 终端字号：显式配置优先，缺省跟随编辑器字号。
+    /// 终端字号：显式配置优先，缺省跟随内容字号。
     pub font_size: f32,
     pub line_height: f32,
     pub max_scroll_history_lines: usize,

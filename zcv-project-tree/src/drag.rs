@@ -63,7 +63,10 @@ impl Render for DraggedEntryView {
         if count == 1 {
             // 单项拖影：单行图标 + 名称，无徽标，保持简洁。
             return entry_card(cx)
-                .child(SvgIcon::new(entry_icon(&self.drag.active_selection)).size(typography::ui()))
+                .child(
+                    SvgIcon::new(entry_icon(&self.drag.active_selection))
+                        .size(typography::ui_size()),
+                )
                 .child(self.drag.preview_name.clone());
         }
         // 多选堆叠卡片：后景层绝对定位逐层右下偏移、先挂载（越远越先），顶层卡片常流最后挂载；
@@ -88,7 +91,7 @@ impl Render for DraggedEntryView {
                     .top(px(LAYER_OFFSET_Y * depth))
                     .left(px(LAYER_OFFSET_X * depth))
                     .text_color(theme.text_muted)
-                    .child(SvgIcon::new(entry_icon(path)).size(typography::ui()))
+                    .child(SvgIcon::new(entry_icon(path)).size(typography::ui_size()))
                     .child(entry_name(path)),
             );
         }
@@ -97,7 +100,7 @@ impl Render for DraggedEntryView {
                 .border_1()
                 .border_color(theme.border_variant)
                 .shadow_sm()
-                .child(SvgIcon::new(entry_icon(active)).size(typography::ui()))
+                .child(SvgIcon::new(entry_icon(active)).size(typography::ui_size()))
                 .child(self.drag.preview_name.clone())
                 // 数量徽标：反色实心圆角胶囊（正文色底 + 底色字），任何主题下都高对比醒目。
                 .child(

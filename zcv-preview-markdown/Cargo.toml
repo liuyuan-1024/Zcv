@@ -1,0 +1,25 @@
+[package]
+name = "zcv-preview-markdown"
+version.workspace = true
+edition.workspace = true
+description = "Markdown 文件预览"
+
+[lib]
+path = "src/preview_markdown.rs"
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+pulldown-cmark.workspace = true
+zcv-language.workspace = true
+zcv-multi-buffer.workspace = true
+zcv-project.workspace = true
+zcv-theme.workspace = true
+zcv-workspace.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+zcv-editor.workspace = true
+
+[lints]
+workspace = true

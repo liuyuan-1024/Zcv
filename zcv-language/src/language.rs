@@ -12,7 +12,7 @@ mod tree_sitter_utils;
 
 pub use highlighting::HighlightSpan;
 pub use language_buffer::{LanguageBuffer, LanguageBufferEvent};
-pub use registry::Language;
+pub use registry::{Language, language_for_file};
 pub use structure_queries::{BracketPair, FoldRange, NewlineIndent};
 pub use syntax_map::SyntaxSnapshot;
 

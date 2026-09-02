@@ -38,7 +38,7 @@ impl SvgIcon {
             path: path.into(),
             // 默认色延迟到 render（有 cx）解析
             color: None,
-            size: typography::ui(),
+            size: typography::ui_size(),
             tooltip: TooltipSpec::default(),
         }
     }

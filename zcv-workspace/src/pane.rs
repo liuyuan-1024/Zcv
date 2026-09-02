@@ -63,7 +63,7 @@ impl Render for DraggedTab {
             .get(self.ix)
             .map(|item| (item.tab_content_text(cx), Some(item.boxed_clone())))
             .unwrap_or_default();
-        let is_transient = self.pane.read(cx).transient_item_id == Some(self.item_id);
+        let is_transient = self.pane.read(cx).is_transient_item(self.item_id);
         Tab::new("")
             .selected(self.is_active)
             .italic(is_transient)
@@ -87,8 +87,9 @@ pub struct Pane {
     focus: FocusHandle,
     tabs: Vec<Box<dyn ItemHandle>>,
     active: Option<EntityId>,
-    /// 当前唯一的临时标签；固定打开或发生编辑时提升为固定标签。
-    transient_item_id: Option<EntityId>,
+    /// 当前临时源码及其预览标签；固定打开或发生编辑时一并提升为固定标签。
+    transient_source_item_id: Option<EntityId>,
+    transient_preview_item_id: Option<EntityId>,
     toolbar: Entity<Toolbar>,
     scroll_handle: ScrollHandle,
     /// 面板注入的标签栏右侧插槽构建器；渲染时原样转发给 TabBar（插槽本体在 TabBar 组件内）。
@@ -102,7 +103,8 @@ impl Pane {
             focus: cx.focus_handle(),
             tabs: Vec::new(),
             active: None,
-            transient_item_id: None,
+            transient_source_item_id: None,
+            transient_preview_item_id: None,
             toolbar,
             scroll_handle: ScrollHandle::new(),
             tab_bar_trailing: None,
@@ -117,17 +119,28 @@ impl Pane {
         self.tab_bar_trailing = Some(Rc::new(build));
     }
 
-    /// 序列化当前标签快照：文件型 item 记录路径与激活位置（终端等无路径 item 不持久化）。
+    /// 序列化当前标签快照：只记录源码 Item 的路径与激活位置（预览、终端等不持久化）。
     pub(crate) fn serialized(&self, cx: &App) -> SerializedPane {
+        let source_items: Vec<&Box<dyn ItemHandle>> = self
+            .tabs
+            .iter()
+            .filter(|item| !is_preview_item(item.as_ref(), cx))
+            .collect();
+        let active_source_id = self.active.and_then(|active_id| {
+            let item = self.tabs.iter().find(|item| item.item_id() == active_id)?;
+            if let Some(preview) = item.as_preview_item(cx) {
+                preview.source_item(cx).map(|source| source.item_id())
+            } else {
+                Some(active_id)
+            }
+        });
         SerializedPane {
-            items: self
-                .tabs
+            items: source_items
                 .iter()
                 .filter_map(|item| item.item_path(cx))
                 .collect(),
-            active_item: self
-                .active
-                .and_then(|id| self.tabs.iter().position(|item| item.item_id() == id)),
+            active_item: active_source_id
+                .and_then(|id| source_items.iter().position(|item| item.item_id() == id)),
         }
     }
 
@@ -155,8 +168,9 @@ impl Pane {
                 pane.update(cx, |pane, cx| match event {
                     // 临时标签一旦关联文档发生编辑，就提升为固定标签。
                     ItemEvent::Edit => {
-                        if pane.transient_item_id == Some(item_id) {
-                            pane.transient_item_id = None;
+                        if pane.transient_source_item_id == Some(item_id) {
+                            pane.transient_source_item_id = None;
+                            pane.transient_preview_item_id = None;
                         }
                         // 固定标签同样需要立即重绘未保存标记。
                         cx.notify();
@@ -182,28 +196,8 @@ impl Pane {
         focus
     }
 
-    /// 在原标签位置切换展示 Item，并保持临时/固定生命周期。
-    fn replace_item_at(
-        &mut self,
-        index: usize,
-        item: Box<dyn ItemHandle>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> FocusHandle {
-        let old_id = self.tabs[index].item_id();
-        let was_transient = self.transient_item_id == Some(old_id);
-        self.close_tab(old_id, window, cx);
-        let new_id = item.item_id();
-        let focus = self.add_boxed_item_at(item, Some(index), window, cx);
-        if was_transient {
-            self.transient_item_id = Some(new_id);
-            cx.notify();
-        }
-        focus
-    }
-
     /// 打开一个 Item；`allow_transient` 为 true 时创建可被下一个单击替换的临时标签。
-    /// 单击产生临时标签；支持预览的格式默认显示预览内容，双击文件则固定源码。
+    /// 支持预览的格式单击默认只创建并激活预览标签；切换到源码时再创建源码标签，双击固定源码。
     pub fn open_item(
         &mut self,
         item: Box<dyn ItemHandle>,
@@ -211,35 +205,31 @@ impl Pane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> FocusHandle {
-        if let Some(path) = item.item_path(cx)
-            && let Some(index) = self
-                .tabs
-                .iter()
-                .position(|tab| tab.item_path(cx).as_deref() == Some(path.as_path()))
-        {
-            let existing = self.tabs[index].as_ref();
-            let item_id = existing.item_id();
-            let is_preview = is_preview_item(existing, cx);
-
-            // 双击文件永远打开固定源码；若单击阶段是渲染内容，就在原位换成源码 Item。
-            if !allow_transient && is_preview {
-                let source = existing
-                    .as_preview_item(cx)
-                    .and_then(|preview| preview.source_item(cx))
-                    .unwrap_or_else(|| item.boxed_clone());
-                self.promote_transient_tab(item_id, cx);
-                return self.replace_item_at(index, source, window, cx);
+        if let Some(path) = item.item_path(cx) {
+            if let Some(source_index) = self.source_index_for_path(&path, cx) {
+                let source_id = self.tabs[source_index].item_id();
+                if !allow_transient {
+                    self.promote_transient_tab(source_id, cx);
+                    return self.activate_item_at(source_index, window, cx);
+                }
+                if let Some(preview_index) = self.preview_index_for_source(source_id, cx) {
+                    return self.activate_item_at(preview_index, window, cx);
+                }
+                let focus = self.activate_item_at(source_index, window, cx);
+                return focus;
             }
 
-            let focus = existing.item_focus_handle(cx);
-            if !allow_transient {
-                self.promote_transient_tab(item_id, cx);
+            if let Some(preview_index) = self.preview_index_for_path(&path, cx) {
+                let preview_id = self.tabs[preview_index].item_id();
+                if !allow_transient {
+                    self.promote_transient_tab(preview_id, cx);
+                    if let Some(focus) = self.activate_source_for_preview(preview_index, window, cx)
+                    {
+                        return focus;
+                    }
+                }
+                return self.activate_item_at(preview_index, window, cx);
             }
-            self.active = Some(item_id);
-            self.update_toolbar(window, cx);
-            cx.emit(PaneEvent::ActivateItem { item_id });
-            cx.notify();
-            return focus;
         }
 
         let transient_index = if allow_transient {
@@ -248,35 +238,49 @@ impl Pane {
             None
         };
 
-        // 单击打开支持预览的格式时，用预览视图替换源码 Item 的展示。
-        if allow_transient
-            && let Some(path) = item.item_path(cx)
-            && let Some(provider) = provider_for(&path, cx)
-            && let Some(multi_buffer) = item.multi_buffer(cx)
-        {
-            let document = PreviewDocument {
+        let source_id = item.item_id();
+        let path = item.item_path(cx);
+        let multi_buffer = item.multi_buffer(cx);
+        let Some(path) = path else {
+            let source_focus = self.add_boxed_item_at(item, transient_index, window, cx);
+            if allow_transient {
+                self.transient_source_item_id = Some(source_id);
+                cx.notify();
+            }
+            return source_focus;
+        };
+        if !allow_transient {
+            return self.add_boxed_item_at(item, transient_index, window, cx);
+        }
+        let Some(multi_buffer) = multi_buffer else {
+            let source_focus = self.add_boxed_item_at(item, transient_index, window, cx);
+            self.transient_source_item_id = Some(source_id);
+            cx.notify();
+            return source_focus;
+        };
+        let Some(provider) = provider_for(&path, cx) else {
+            let source_focus = self.add_boxed_item_at(item, transient_index, window, cx);
+            self.transient_source_item_id = Some(source_id);
+            cx.notify();
+            return source_focus;
+        };
+        let preview = provider.create(
+            PreviewDocument {
                 path,
                 source_item: item,
                 multi_buffer,
-            };
-            let preview = provider.create(document, cx);
-            let item_id = preview.item_id();
-            let focus = self.add_boxed_item_at(preview, transient_index, window, cx);
-            self.transient_item_id = Some(item_id);
-            cx.notify();
-            return focus;
-        }
-
-        let item_id = item.item_id();
-        let focus = self.add_boxed_item_at(item, transient_index, window, cx);
-        if allow_transient {
-            self.transient_item_id = Some(item_id);
-            cx.notify();
-        }
-        focus
+            },
+            cx,
+        );
+        let preview_id = preview.item_id();
+        let preview_focus = self.add_boxed_item_at(preview, transient_index, window, cx);
+        self.transient_preview_item_id = Some(preview_id);
+        cx.notify();
+        preview_focus
     }
 
-    /// 在源码与渲染表现之间切换；只替换展示 Item，标签生命周期保持不变。
+    /// 在源码与渲染表现之间切换；
+    /// 两个展示 Item 独立保留各自的滚动与焦点状态。
     pub fn toggle_preview(
         &mut self,
         window: &mut Window,
@@ -287,30 +291,66 @@ impl Pane {
             .tabs
             .iter()
             .position(|item| item.item_id() == item_id)?;
-        let active_item = self.tabs[index].as_ref();
-        let next_item: Box<dyn ItemHandle> = if is_preview_item(active_item, cx) {
-            // 预览 Item 暴露其源码 Item；无法暴露时保持当前展示。
-            active_item
-                .as_preview_item(cx)
-                .and_then(|preview| preview.source_item(cx))
-                .unwrap_or_else(|| active_item.boxed_clone())
-        } else {
-            let path = active_item.item_path(cx)?;
-            let provider = provider_for(&path, cx)?;
-            let multi_buffer = active_item.multi_buffer(cx)?;
-            provider.create(
-                PreviewDocument {
-                    path,
-                    source_item: active_item.boxed_clone(),
-                    multi_buffer,
-                },
-                cx,
-            )
-        };
-        let focus = self.replace_item_at(index, next_item, window, cx);
+        if is_preview_item(self.tabs[index].as_ref(), cx) {
+            let focus = self.activate_source_for_preview(index, window, cx)?;
+            window.focus(&focus);
+            window.refresh();
+            return Some(focus);
+        }
+
+        let source_item = self.tabs[index].boxed_clone();
+        if let Some(preview_index) = self.preview_index_for_source(item_id, cx) {
+            let focus = self.activate_item_at(preview_index, window, cx);
+            window.focus(&focus);
+            window.refresh();
+            return Some(focus);
+        }
+        let path = source_item.item_path(cx)?;
+        let provider = provider_for(&path, cx)?;
+        let multi_buffer = source_item.multi_buffer(cx)?;
+        let preview = provider.create(
+            PreviewDocument {
+                path,
+                source_item,
+                multi_buffer,
+            },
+            cx,
+        );
+        let preview_id = preview.item_id();
+        let preview_focus = self.add_boxed_item_at(preview, Some(index + 1), window, cx);
+        if self.transient_source_item_id == Some(item_id) {
+            self.transient_preview_item_id = Some(preview_id);
+        }
+        let focus = preview_focus;
         window.focus(&focus);
         window.refresh();
         Some(focus)
+    }
+
+    fn activate_source_for_preview(
+        &mut self,
+        preview_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<FocusHandle> {
+        let source = self.tabs[preview_index]
+            .as_preview_item(cx)
+            .and_then(|preview| preview.source_item(cx))?;
+        let source_id = source.item_id();
+        if let Some(source_index) = self
+            .tabs
+            .iter()
+            .position(|item| item.item_id() == source_id)
+        {
+            return Some(self.activate_item_at(source_index, window, cx));
+        }
+        let was_transient =
+            self.transient_preview_item_id == Some(self.tabs[preview_index].item_id());
+        let source_focus = self.add_boxed_item_at(source, Some(preview_index), window, cx);
+        if was_transient {
+            self.transient_source_item_id = Some(source_id);
+        }
+        Some(source_focus)
     }
 
     /// 移除可安全替换的临时标签并返回其位置；脏标签会先提升为固定标签。
@@ -319,24 +359,98 @@ impl Pane {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<usize> {
-        let item_id = self.transient_item_id.take()?;
-        let index = self
-            .tabs
-            .iter()
-            .position(|item| item.item_id() == item_id)?;
-        if self.tabs[index].is_dirty(cx) {
+        let source_id = self.transient_source_item_id.take();
+        let preview_id = self.transient_preview_item_id.take();
+        if source_id.is_none() && preview_id.is_none() {
             return None;
         }
-        self.close_tab(item_id, window, cx);
-        Some(index)
+        let source_index = source_id.and_then(|source_id| {
+            self.tabs
+                .iter()
+                .position(|item| item.item_id() == source_id)
+        });
+        let preview_index = preview_id.and_then(|preview_id| {
+            self.tabs
+                .iter()
+                .position(|item| item.item_id() == preview_id)
+        });
+        let insertion_index = match (source_index, preview_index) {
+            (Some(source_index), Some(preview_index)) => source_index.min(preview_index),
+            (Some(index), None) | (None, Some(index)) => index,
+            (None, None) => {
+                self.transient_source_item_id = source_id;
+                self.transient_preview_item_id = preview_id;
+                return None;
+            }
+        };
+        let dirty_item_id = source_id.or(preview_id).expect("临时标签至少包含一项");
+        if self
+            .tabs
+            .iter()
+            .find(|item| item.item_id() == dirty_item_id)
+            .is_some_and(|item| item.is_dirty(cx))
+        {
+            self.transient_source_item_id = source_id;
+            self.transient_preview_item_id = preview_id;
+            return None;
+        }
+        if let Some(preview_id) = preview_id {
+            self.close_tab(preview_id, window, cx);
+        }
+        if let Some(source_id) = source_id {
+            self.close_tab(source_id, window, cx);
+        }
+        Some(insertion_index)
     }
 
-    /// 将临时标签固定为普通标签；内容视图状态保持不变。
+    /// 将临时源码及其预览标签一并固定；内容视图状态保持不变。
     fn promote_transient_tab(&mut self, item_id: EntityId, cx: &mut Context<Self>) {
-        if self.transient_item_id == Some(item_id) {
-            self.transient_item_id = None;
+        if self.is_transient_item(item_id) {
+            self.transient_source_item_id = None;
+            self.transient_preview_item_id = None;
             cx.notify();
         }
+    }
+
+    fn activate_item_at(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> FocusHandle {
+        let item_id = self.tabs[index].item_id();
+        let focus = self.tabs[index].item_focus_handle(cx);
+        self.active = Some(item_id);
+        self.scroll_to_tab(index);
+        self.update_toolbar(window, cx);
+        cx.emit(PaneEvent::ActivateItem { item_id });
+        cx.notify();
+        focus
+    }
+
+    fn source_index_for_path(&self, path: &Path, cx: &App) -> Option<usize> {
+        self.tabs.iter().position(|item| {
+            !is_preview_item(item.as_ref(), cx) && item.item_path(cx).as_deref() == Some(path)
+        })
+    }
+
+    fn preview_index_for_path(&self, path: &Path, cx: &App) -> Option<usize> {
+        self.tabs.iter().position(|item| {
+            is_preview_item(item.as_ref(), cx) && item.item_path(cx).as_deref() == Some(path)
+        })
+    }
+
+    fn preview_index_for_source(&self, source_id: EntityId, cx: &App) -> Option<usize> {
+        self.tabs.iter().position(|item| {
+            item.as_preview_item(cx)
+                .and_then(|preview| preview.source_item(cx))
+                .is_some_and(|source| source.item_id() == source_id)
+        })
+    }
+
+    fn is_transient_item(&self, item_id: EntityId) -> bool {
+        self.transient_source_item_id == Some(item_id)
+            || self.transient_preview_item_id == Some(item_id)
     }
 
     /// 当前打开的所有标签（供宿主按具体 Item 类型操作）。
@@ -421,36 +535,51 @@ impl Pane {
     /// 关闭的是最后一项时激活新的最后一项；
     /// 所有关闭路径（快捷键、关闭按钮、删除文件）都收敛到本方法，订阅方只需监听 Pane 事件。
     pub fn close_tab(&mut self, item_id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(pos) = self.tabs.iter().position(|item| item.item_id() == item_id) {
-            // 关闭前记录焦点归属：仅当 Pane 或其 item 持有焦点时归还，避免抢占别处焦点（恢复会话、后台清理等非用户路径关闭时不触发）。
-            let had_focus = self.has_focus(window, cx);
-            if self.transient_item_id == Some(item_id) {
-                self.transient_item_id = None;
-            }
-            self.tabs.remove(pos);
-            if self.active == Some(item_id) {
-                self.active = self
-                    .tabs
-                    .get(pos)
-                    .map(|item| item.item_id())
-                    .or_else(|| self.tabs.last().map(|item| item.item_id()));
-                self.update_toolbar(window, cx);
-            }
-            // 焦点归还：聚焦新激活 item；全部关闭后回落到 Pane 自身句柄（tab 栏容器 track_focus 挂载，焦点链与 Pane 快捷键保持有效）。
-            if had_focus {
-                let focus = self
-                    .active_item()
-                    .map(|item| item.item_focus_handle(cx))
-                    .unwrap_or_else(|| self.focus.clone());
-                window.focus(&focus);
-            }
-            cx.emit(PaneEvent::RemovedItem { item_id });
-            // 空 Pane 请求移除自身。
-            if self.tabs.is_empty() {
-                cx.emit(PaneEvent::Remove);
-            }
-            cx.notify();
+        let Some(initial_index) = self.tabs.iter().position(|item| item.item_id() == item_id)
+        else {
+            return;
+        };
+        let linked_preview_id = (!is_preview_item(self.tabs[initial_index].as_ref(), cx))
+            .then(|| self.preview_index_for_source(item_id, cx))
+            .flatten()
+            .map(|index| self.tabs[index].item_id());
+        if let Some(linked_preview_id) = linked_preview_id {
+            self.close_tab(linked_preview_id, window, cx);
         }
+        let Some(pos) = self.tabs.iter().position(|item| item.item_id() == item_id) else {
+            return;
+        };
+        // 关闭前记录焦点归属：仅当 Pane 或其 item 持有焦点时归还，避免抢占别处焦点（恢复会话、后台清理等非用户路径关闭时不触发）。
+        let had_focus = self.has_focus(window, cx);
+        if self.transient_source_item_id == Some(item_id) {
+            self.transient_source_item_id = None;
+        }
+        if self.transient_preview_item_id == Some(item_id) {
+            self.transient_preview_item_id = None;
+        }
+        self.tabs.remove(pos);
+        if self.active == Some(item_id) {
+            self.active = self
+                .tabs
+                .get(pos)
+                .map(|item| item.item_id())
+                .or_else(|| self.tabs.last().map(|item| item.item_id()));
+            self.update_toolbar(window, cx);
+        }
+        // 焦点归还：聚焦新激活 item；全部关闭后回落到 Pane 自身句柄（tab 栏容器 track_focus 挂载，焦点链与 Pane 快捷键保持有效）。
+        if had_focus {
+            let focus = self
+                .active_item()
+                .map(|item| item.item_focus_handle(cx))
+                .unwrap_or_else(|| self.focus.clone());
+            window.focus(&focus);
+        }
+        cx.emit(PaneEvent::RemovedItem { item_id });
+        // 空 Pane 请求移除自身。
+        if self.tabs.is_empty() {
+            cx.emit(PaneEvent::Remove);
+        }
+        cx.notify();
     }
 
     /// Pane 自身或其当前 item 是否持有焦点（决定关闭后是否归还焦点）。
@@ -584,7 +713,8 @@ impl Pane {
 impl Render for Pane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let active_item_id = self.active;
-        let transient_item_id = self.transient_item_id;
+        let transient_source_item_id = self.transient_source_item_id;
+        let transient_preview_item_id = self.transient_preview_item_id;
         let active_item = self.active_item();
         let pane_entity = cx.entity();
         let trailing = self.tab_bar_trailing.clone();
@@ -607,7 +737,8 @@ impl Render for Pane {
                 pane.child(render_tab_bar(
                     &self.tabs,
                     active_item_id,
-                    transient_item_id,
+                    transient_source_item_id,
+                    transient_preview_item_id,
                     pane_entity,
                     &self.scroll_handle,
                     trailing,
@@ -627,7 +758,8 @@ impl Render for Pane {
 fn render_tab_bar(
     tabs: &[Box<dyn ItemHandle>],
     active_item_id: Option<EntityId>,
-    transient_item_id: Option<EntityId>,
+    transient_source_item_id: Option<EntityId>,
+    transient_preview_item_id: Option<EntityId>,
     pane_entity: gpui::Entity<Pane>,
     scroll_handle: &ScrollHandle,
     trailing: Option<TabBarTrailing>,
@@ -641,7 +773,8 @@ fn render_tab_bar(
                 item.as_ref(),
                 ix,
                 Some(item.item_id()) == active_item_id,
-                Some(item.item_id()) == transient_item_id,
+                Some(item.item_id()) == transient_source_item_id
+                    || Some(item.item_id()) == transient_preview_item_id,
                 &pane_entity,
                 cx,
             )
@@ -888,7 +1021,7 @@ fn tab_end_button(
                                 .color(icon_color)
                                 .into_any_element()
                         })
-                        .unwrap_or_else(|| div().size(typography::ui()).into_any_element()),
+                        .unwrap_or_else(|| div().size(typography::ui_size()).into_any_element()),
                 ),
         )
         .child(
@@ -1281,7 +1414,7 @@ mod tests {
                 pane.tabs[1].item_path(cx).as_deref(),
                 Some(Path::new("second.txt"))
             );
-            assert_eq!(pane.transient_item_id, Some(pane.tabs[1].item_id()));
+            assert_eq!(pane.transient_source_item_id, Some(pane.tabs[1].item_id()));
         });
 
         // 模拟双击的第二次打开：同一路径固定打开，临时标签应被提升而非重复创建。
@@ -1289,7 +1422,7 @@ mod tests {
         open_file_in_test(cx, &pane, PathBuf::from("second.txt"), duplicate_buffer);
         cx.read_entity(&pane, |pane, _| {
             assert_eq!(pane.tabs.len(), 2);
-            assert_eq!(pane.transient_item_id, None);
+            assert_eq!(pane.transient_source_item_id, None);
         });
 
         let third_buffer = test_buffer(cx, "第三个临时标签");
@@ -1310,7 +1443,9 @@ mod tests {
         });
         cx.update_entity(&item, |item, cx| item.set_text("已修改", cx));
         cx.run_until_parked();
-        cx.read_entity(&pane, |pane, _| assert_eq!(pane.transient_item_id, None));
+        cx.read_entity(&pane, |pane, _| {
+            assert_eq!(pane.transient_source_item_id, None)
+        });
 
         let next_buffer = test_buffer(cx, "下一项");
         open_transient_file_in_test(cx, &pane, PathBuf::from("next.txt"), next_buffer);
@@ -1325,7 +1460,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn single_click_previews_svg_but_double_click_file_opens_fixed_source(cx: &mut TestAppContext) {
+    fn single_click_opens_only_preview_but_double_click_adds_source(cx: &mut TestAppContext) {
         init_previews(cx);
         let pane = cx.new(Pane::new);
         let svg_buffer = test_buffer(
@@ -1335,19 +1470,21 @@ mod tests {
         open_transient_file_in_test(cx, &pane, PathBuf::from("icon.svg"), svg_buffer);
 
         cx.read_entity(&pane, |pane, cx| {
-            let item_id = pane.active.unwrap();
+            let preview_id = pane.active.unwrap();
             assert_eq!(pane.tabs.len(), 1);
-            assert_eq!(pane.transient_item_id, Some(item_id));
+            assert_eq!(pane.transient_source_item_id, None);
+            assert_eq!(pane.transient_preview_item_id, Some(preview_id));
             assert_active_is_preview(pane, cx, true);
             assert_eq!(pane.active_item().unwrap().tab_content_text(cx), "icon.svg");
         });
 
-        // 双击文件强制换成固定源码，而不是固定当前渲染内容。
+        // 双击文件创建并激活固定源码，预览标签和两者各自的视图状态都保留。
         let duplicate_buffer = test_buffer(cx, "不会替换已有 SVG buffer");
         open_file_in_test(cx, &pane, PathBuf::from("icon.svg"), duplicate_buffer);
         cx.read_entity(&pane, |pane, _| {
-            assert_eq!(pane.transient_item_id, None);
-            assert_eq!(pane.tabs.len(), 1);
+            assert_eq!(pane.transient_source_item_id, None);
+            assert_eq!(pane.transient_preview_item_id, None);
+            assert_eq!(pane.tabs.len(), 2);
         });
         cx.read_entity(&pane, |pane, cx| {
             assert_active_is_preview(pane, cx, false);
@@ -1355,21 +1492,58 @@ mod tests {
     }
 
     #[gpui::test]
-    fn preview_toggle_replaces_content_and_preserves_transient_lifecycle(cx: &mut TestAppContext) {
+    fn opening_another_transient_preview_replaces_the_previous_preview(cx: &mut TestAppContext) {
+        init_previews(cx);
+        let pane = cx.new(Pane::new);
+        let first_buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
+        open_transient_file_in_test(cx, &pane, PathBuf::from("first.svg"), first_buffer);
+        let second_buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
+        open_transient_file_in_test(cx, &pane, PathBuf::from("second.svg"), second_buffer);
+
+        cx.read_entity(&pane, |pane, cx| {
+            assert_eq!(pane.tabs.len(), 1);
+            assert!(
+                pane.tabs
+                    .iter()
+                    .all(|item| { item.item_path(cx).as_deref() == Some(Path::new("second.svg")) })
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn preview_toggle_switches_tabs_and_preserves_transient_lifecycle(cx: &mut TestAppContext) {
         init_previews(cx);
         let pane = cx.new(Pane::new);
         let svg_buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
         open_transient_file_in_test(cx, &pane, PathBuf::from("toggle.svg"), svg_buffer);
 
-        let transient_preview_id = cx.read_entity(&pane, |pane, _| pane.active.unwrap());
+        let preview_id = cx.read_entity(&pane, |pane, _| {
+            let preview_id = pane.active.unwrap();
+            assert_eq!(pane.tabs.len(), 1);
+            assert_eq!(pane.transient_source_item_id, None);
+            assert_eq!(pane.transient_preview_item_id, Some(preview_id));
+            preview_id
+        });
+        let source_id = cx.read_entity(&pane, |pane, cx| {
+            pane.tabs[0]
+                .as_preview_item(cx)
+                .and_then(|preview| preview.source_item(cx))
+                .unwrap()
+                .item_id()
+        });
         toggle_preview_in_test(cx, &pane);
         cx.read_entity(&pane, |pane, cx| {
-            assert_eq!(pane.tabs.len(), 1);
-            assert_ne!(pane.tabs[0].item_id(), transient_preview_id);
-            assert_eq!(pane.tabs[0].tab_content_text(cx), "toggle.svg");
-            assert_eq!(pane.transient_item_id, Some(pane.tabs[0].item_id()));
-            assert_eq!(pane.active, Some(pane.tabs[0].item_id()));
+            assert_eq!(pane.tabs.len(), 2);
+            assert_eq!(pane.transient_source_item_id, Some(source_id));
+            assert_eq!(pane.transient_preview_item_id, Some(preview_id));
+            assert_eq!(pane.active, Some(source_id));
             assert_active_is_preview(pane, cx, false);
+        });
+        toggle_preview_in_test(cx, &pane);
+        cx.read_entity(&pane, |pane, cx| {
+            assert_eq!(pane.tabs.len(), 2);
+            assert_eq!(pane.active, Some(preview_id));
+            assert_active_is_preview(pane, cx, true);
         });
     }
 
@@ -1410,10 +1584,25 @@ mod tests {
         toggle_preview_in_test(cx, &pane);
 
         cx.read_entity(&pane, |pane, cx| {
-            assert_eq!(pane.tabs.len(), 1, "切换只替换当前标签的展示 Item");
-            let active_document = pane.tabs[0].multi_buffer(cx).unwrap();
+            assert_eq!(pane.tabs.len(), 2, "源码和预览应分别保留为两个标签");
+            let active_document = pane.active_item().unwrap().multi_buffer(cx).unwrap();
             assert_eq!(source_document.entity_id(), active_document.entity_id());
             assert_active_is_preview(pane, cx, true);
+        });
+    }
+
+    #[gpui::test]
+    fn serialized_pane_excludes_preview_and_maps_active_source(cx: &mut TestAppContext) {
+        init_previews(cx);
+        let pane = cx.new(Pane::new);
+        let buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
+        open_file_in_test(cx, &pane, PathBuf::from("persisted.svg"), buffer);
+        toggle_preview_in_test(cx, &pane);
+
+        cx.read_entity(&pane, |pane, cx| {
+            let state = pane.serialized(cx);
+            assert_eq!(state.items, vec![PathBuf::from("persisted.svg")]);
+            assert_eq!(state.active_item, Some(0));
         });
     }
 
@@ -1428,7 +1617,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn closing_preview_closes_the_single_document_tab(cx: &mut TestAppContext) {
+    fn closing_preview_keeps_the_source_tab(cx: &mut TestAppContext) {
         init_previews(cx);
         let pane = cx.new(Pane::new);
         let svg_buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
@@ -1438,6 +1627,32 @@ mod tests {
 
         cx.add_window_view(|window, cx| {
             pane.update(cx, |pane, cx| pane.close_tab(preview_id, window, cx));
+            TestView
+        });
+        cx.read_entity(&pane, |pane, cx| {
+            assert_eq!(pane.tabs.len(), 1);
+            assert!(!is_preview_item(pane.active_item().unwrap(), cx));
+            assert!(pane.active.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn closing_source_also_closes_its_preview(cx: &mut TestAppContext) {
+        init_previews(cx);
+        let pane = cx.new(Pane::new);
+        let buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
+        open_file_in_test(cx, &pane, PathBuf::from("close-source.svg"), buffer);
+        toggle_preview_in_test(cx, &pane);
+        let source_id = cx.read_entity(&pane, |pane, cx| {
+            pane.tabs
+                .iter()
+                .find(|item| !is_preview_item(item.as_ref(), cx))
+                .unwrap()
+                .item_id()
+        });
+
+        cx.add_window_view(|window, cx| {
+            pane.update(cx, |pane, cx| pane.close_tab(source_id, window, cx));
             TestView
         });
         cx.read_entity(&pane, |pane, _| {
@@ -1457,7 +1672,7 @@ mod tests {
             pane.promote_transient_tab(item_id, cx);
         });
         cx.read_entity(&pane, |pane, _| {
-            assert_eq!(pane.transient_item_id, None);
+            assert_eq!(pane.transient_source_item_id, None);
             assert_eq!(pane.tabs.len(), 1);
             assert_eq!(pane.active, Some(item_id));
         });
@@ -1475,7 +1690,7 @@ mod tests {
             pane.promote_transient_tab(item_id, cx);
         });
         cx.read_entity(&pane, |pane, cx| {
-            assert_eq!(pane.transient_item_id, None);
+            assert_eq!(pane.transient_source_item_id, None);
             assert_eq!(pane.active, Some(item_id));
             assert_active_is_preview(pane, cx, true);
         });

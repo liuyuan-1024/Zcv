@@ -2173,17 +2173,17 @@ impl Render for Editor {
 
         self.sync_display_map(cx);
 
-        // SingleLine / AutoHeight 用于搜索框等 UI 场景，应使用 UI 字号而非编辑器字号
+        // SingleLine / AutoHeight 用于搜索框等 UI 场景，应使用 UI 字号而非内容字号。
         let (font, text_size, line_height) = match self.mode {
             EditorMode::SingleLine | EditorMode::AutoHeight { .. } => (
                 typography::ui_font(),
-                typography::ui(),
+                typography::ui_size(),
                 typography::ui_line(),
             ),
             EditorMode::Full => (
-                typography::editor_font(),
-                typography::editor(),
-                typography::editor_line(),
+                typography::content_font(),
+                typography::content_size(),
+                typography::content_line(),
             ),
         };
         let visible_lines = match self.mode {

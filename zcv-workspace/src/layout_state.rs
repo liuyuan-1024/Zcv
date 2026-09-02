@@ -14,7 +14,7 @@ use crate::persistence;
 
 pub(crate) const LAYOUT_VERSION: u32 = 2;
 
-/// 中心 Pane 的标签快照：文件路径按 tab 顺序排列，active_item 为活动标签索引。
+/// 中心 Pane 的源码标签快照：预览标签不持久化，active_item 为对应源码标签索引。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct SerializedPane {
     pub(crate) items: Vec<PathBuf>,

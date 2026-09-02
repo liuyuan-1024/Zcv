@@ -175,7 +175,7 @@ impl PickerDelegate for ProjectPickerDelegate {
             item.end_slot(
                 div()
                     .text_color(color::current(cx).text_placeholder)
-                    .text_size(typography::ui())
+                    .text_size(typography::ui_size())
                     .child(s),
             )
         } else {

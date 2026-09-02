@@ -55,7 +55,7 @@ impl ButtonSize {
 
     /// 整体高度 = UI 字号 + 上下内边距。
     fn height(self) -> Pixels {
-        typography::ui() + self.padding() * 2.0
+        typography::ui_size() + self.padding() * 2.0
     }
 
     /// 按档位施加内边距与圆角（紧凑小圆角，宽松大圆角）。
@@ -209,7 +209,7 @@ impl RenderOnce for Button {
                 .items_center()
                 .justify_center()
                 .font(typography::ui_font())
-                .text_size(typography::ui())
+                .text_size(typography::ui_size())
                 .line_height(rems(1.0))
                 .when(self.occlude, |element| element.occlude()),
         );
@@ -248,7 +248,7 @@ impl RenderOnce for Button {
         // 内容形态；图标统一经 SvgIcon 渲染。
         element.child(match self.content {
             ButtonContent::Icon(path) => SvgIcon::new(path)
-                .size(typography::ui())
+                .size(typography::ui_size())
                 .color(color)
                 .into_any_element(),
             ButtonContent::Text(text) => div().text_color(color).child(text).into_any_element(),
@@ -257,7 +257,7 @@ impl RenderOnce for Button {
                 .flex_row()
                 .items_center()
                 .gap(space::S2)
-                .child(SvgIcon::new(path).size(typography::ui()).color(color))
+                .child(SvgIcon::new(path).size(typography::ui_size()).color(color))
                 .child(div().text_color(color).child(text))
                 .into_any_element(),
         })

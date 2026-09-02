@@ -260,7 +260,10 @@ pub(crate) fn language_for_injection(name: &str) -> Option<Arc<Language>> {
 }
 
 /// 根据文件名和首行内容选择语言规格。
-pub(crate) fn language_for_file(path: &Path, first_line: Option<&str>) -> Option<Arc<Language>> {
+/// 根据文件名和首行内容识别语言。
+///
+/// 文件类型消费方应通过此接口共享语言识别结果，不能各自维护后缀匹配表。
+pub fn language_for_file(path: &Path, first_line: Option<&str>) -> Option<Arc<Language>> {
     registry().language_for_file(path, first_line)
 }
 

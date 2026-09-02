@@ -64,7 +64,7 @@ impl TerminalView {
         self.focus.clone()
     }
 
-    /// 终端字体大小（像素）：显式配置优先，缺省跟随编辑器字号。
+    /// 终端字体大小（像素）：显式配置优先，缺省跟随内容字号。
     pub(crate) fn font_size(&self, cx: &App) -> Pixels {
         px(TerminalSettings::load(cx).font_size)
     }

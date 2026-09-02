@@ -414,9 +414,9 @@ struct TreeMetrics {
 fn metrics() -> TreeMetrics {
     TreeMetrics {
         row_height: typography::ui_line(),
-        indent: typography::ui(),
+        indent: typography::ui_size(),
         padding: space::S6,
-        icon_size: typography::ui(),
+        icon_size: typography::ui_size(),
     }
 }
 

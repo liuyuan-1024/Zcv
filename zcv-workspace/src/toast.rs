@@ -281,7 +281,11 @@ impl Render for ToastLayer {
                     .flex_row()
                     .items_center()
                     .justify_between()
-                    .child(SvgIcon::new(icon).color(icon_color).size(typography::ui()))
+                    .child(
+                        SvgIcon::new(icon)
+                            .color(icon_color)
+                            .size(typography::ui_size()),
+                    )
                     .child(
                         div()
                             .flex()

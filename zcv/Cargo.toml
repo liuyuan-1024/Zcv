@@ -22,6 +22,7 @@ zcv-git.workspace = true
 zcv-keymap.workspace = true
 zcv-language.workspace = true
 zcv-multi-buffer.workspace = true
+zcv-preview-markdown.workspace = true
 zcv-preview-svg.workspace = true
 zcv-project.workspace = true
 zcv-project-tree.workspace = true

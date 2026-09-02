@@ -557,7 +557,7 @@ impl gpui::Render for ProjectTreePanel {
                         .absolute()
                         .bottom(space::S4)
                         .right(space::S6)
-                        .text_size(typography::ui() * 0.85)
+                        .text_size(typography::ui_size() * 0.85)
                         .text_color(color::current(cx).text_muted)
                         .child(format!("复制中 {done}/{total}")),
                 )

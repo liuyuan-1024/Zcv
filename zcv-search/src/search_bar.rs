@@ -611,7 +611,7 @@ impl Render for SearchBar {
                             .child(
                                 div()
                                     .text_color(count_color)
-                                    .text_size(typography::ui() * 0.85)
+                                    .text_size(typography::ui_size() * 0.85)
                                     .child(count_text),
                             )
                             .child(

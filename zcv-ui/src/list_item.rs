@@ -105,8 +105,8 @@ impl RenderOnce for ListItem {
                 content = content.child(
                     div()
                         .text_color(color::current(cx).text_placeholder)
-                        .text_size(typography::ui())
-                        .line_height(typography::ui())
+                        .text_size(typography::ui_size())
+                        .line_height(typography::ui_size())
                         .child(subtitle),
                 );
             }

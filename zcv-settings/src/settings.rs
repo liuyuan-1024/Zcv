@@ -112,11 +112,11 @@ struct UserSettingsContent {
 pub struct UserSettings {
     /// 主题配置 id；由主题模块解析为运行时主题。
     pub theme: String,
-    /// 编辑器字号（像素）。
+    /// 内容字号（像素）。
     pub font_size: f32,
     /// UI 字号（像素）。
     pub ui_font_size: f32,
-    /// 编辑器行高（相对字号的倍数）。
+    /// 内容行高（相对字号的倍数）。
     pub line_height: f32,
     pub soft_wrap: SoftWrapMode,
     /// 软换行的目标行宽（列数）；仅在 `soft_wrap = "bounded"` 时生效。
@@ -127,9 +127,9 @@ pub struct UserSettings {
     pub use_autoclose: bool,
     /// 选中文本时键入配对起始字符是否用该对包裹选区。
     pub use_auto_surround: bool,
-    /// 终端字体大小（像素）；缺省时跟随编辑器字号。
+    /// 终端字体大小（像素）；缺省时跟随内容字号。
     pub terminal_font_size: Option<f32>,
-    /// 终端行高（相对字号的倍数）；缺省时跟随编辑器行高。
+    /// 终端行高（相对字号的倍数）；缺省时跟随内容行高。
     pub terminal_line_height: Option<f32>,
     /// 终端滚动回看上限行数。
     pub terminal_max_scroll_history_lines: usize,

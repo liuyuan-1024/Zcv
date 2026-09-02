@@ -71,7 +71,7 @@ impl RenderOnce for Checkbox {
         };
         div()
             .id(self.id)
-            .size(typography::ui())
+            .size(typography::ui_size())
             .rounded_xs()
             .border_1()
             // 背景取编辑器背景色：使复选框在面板背景上显形。
@@ -87,7 +87,7 @@ impl RenderOnce for Checkbox {
             .when(self.checked, |el| {
                 el.child(
                     SvgIcon::new("icons/check.svg")
-                        .size(typography::ui())
+                        .size(typography::ui_size())
                         .color(colors.icon_accent)
                         .into_any_element(),
                 )

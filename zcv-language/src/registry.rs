@@ -236,7 +236,7 @@ impl LanguageRegistry {
             });
         }
 
-        // 纯文本兜底：任何未识别文件都以纯文本打开，编辑器始终有语言名可显示。
+        // 兜底：任何未识别文件都以纯文本打开，编辑器始终有语言名可显示。
         matched.or_else(|| {
             self.languages
                 .iter()
@@ -485,47 +485,25 @@ mod tests {
                         "{} 的高亮查询必须声明 capture",
                         spec.name
                     );
+                    if !spec.matcher.suffixes.is_empty()
+                        || spec.matcher.first_line_pattern.is_some()
+                    {
+                        assert!(
+                            language.brackets().is_some(),
+                            "{} 必须提供括号查询",
+                            spec.name
+                        );
+                        assert!(
+                            language.indents().is_some(),
+                            "{} 必须提供缩进查询",
+                            spec.name
+                        );
+                        assert!(language.folds().is_some(), "{} 必须提供折叠查询", spec.name);
+                    }
                 }
             }
         }
         assert_eq!(plain_text_count, 1, "注册表只能有一个纯文本兜底规格");
-    }
-
-    #[test]
-    fn file_languages_compile_complete_structure_queries() {
-        for path in [
-            "main.rs",
-            "main.c",
-            "main.cpp",
-            "Program.cs",
-            "main.go",
-            "main.py",
-            "main.js",
-            "view.jsx",
-            "view.ts",
-            "view.tsx",
-            "Main.java",
-            "Main.kt",
-            "script.sh",
-            "app.rb",
-            "index.php",
-            "main.swift",
-            "init.lua",
-            "main.zig",
-            "query.sql",
-            "Cargo.toml",
-            "README.md",
-            "index.html",
-            "style.css",
-            "data.json",
-            "data.yaml",
-        ] {
-            let language = language_for_file(Path::new(path), None)
-                .unwrap_or_else(|| panic!("{path} 的结构查询应与 grammar 匹配"));
-            assert!(language.brackets().is_some(), "{path} 应提供括号查询");
-            assert!(language.indents().is_some(), "{path} 应提供缩进查询");
-            assert!(language.folds().is_some(), "{path} 应提供折叠查询");
-        }
     }
 
     #[test]

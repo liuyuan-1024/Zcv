@@ -779,6 +779,16 @@ mod tests {
     }
 
     #[test]
+    fn go_annotated_string_creates_sql_injection_layer() {
+        let source = "package main\nconst query = /* sql */ `SELECT name FROM users`\n";
+        let (_, syntax) = parsed_syntax("main.go", source);
+        let snapshot = syntax.snapshot();
+        let sql = find_layer(snapshot.injection_layers(), 1, "SQL");
+
+        assert_eq!(&source[sql.range.clone()], "SELECT name FROM users");
+    }
+
+    #[test]
     fn unchanged_injection_layers_survive_sibling_edits_without_reparse() {
         // 编辑块 1 内容：块 2/3 的注入层与编辑前逐位相同（原样保留，不重新查询也不重新解析）。
         let source = "\

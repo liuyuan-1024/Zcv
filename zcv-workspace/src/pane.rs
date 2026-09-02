@@ -219,24 +219,12 @@ impl Pane {
                 return focus;
             }
 
-            if let Some(preview_index) = self.preview_index_for_path(&path, cx) {
-                let preview_id = self.tabs[preview_index].item_id();
-                if !allow_transient {
-                    self.promote_transient_tab(preview_id, cx);
-                    if let Some(focus) = self.activate_source_for_preview(preview_index, window, cx)
-                    {
-                        return focus;
-                    }
-                }
+            if allow_transient && let Some(preview_index) = self.preview_index_for_path(&path, cx) {
                 return self.activate_item_at(preview_index, window, cx);
             }
         }
 
-        let transient_index = if allow_transient {
-            self.take_replaceable_transient(window, cx)
-        } else {
-            None
-        };
+        let transient_index = self.take_replaceable_transient(window, cx);
 
         let source_id = item.item_id();
         let path = item.item_path(cx);
@@ -535,17 +523,6 @@ impl Pane {
     /// 关闭的是最后一项时激活新的最后一项；
     /// 所有关闭路径（快捷键、关闭按钮、删除文件）都收敛到本方法，订阅方只需监听 Pane 事件。
     pub fn close_tab(&mut self, item_id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(initial_index) = self.tabs.iter().position(|item| item.item_id() == item_id)
-        else {
-            return;
-        };
-        let linked_preview_id = (!is_preview_item(self.tabs[initial_index].as_ref(), cx))
-            .then(|| self.preview_index_for_source(item_id, cx))
-            .flatten()
-            .map(|index| self.tabs[index].item_id());
-        if let Some(linked_preview_id) = linked_preview_id {
-            self.close_tab(linked_preview_id, window, cx);
-        }
         let Some(pos) = self.tabs.iter().position(|item| item.item_id() == item_id) else {
             return;
         };
@@ -1460,7 +1437,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn single_click_opens_only_preview_but_double_click_adds_source(cx: &mut TestAppContext) {
+    fn single_click_opens_preview_but_double_click_replaces_it_with_source(
+        cx: &mut TestAppContext,
+    ) {
         init_previews(cx);
         let pane = cx.new(Pane::new);
         let svg_buffer = test_buffer(
@@ -1478,15 +1457,13 @@ mod tests {
             assert_eq!(pane.active_item().unwrap().tab_content_text(cx), "icon.svg");
         });
 
-        // 双击文件创建并激活固定源码，预览标签和两者各自的视图状态都保留。
-        let duplicate_buffer = test_buffer(cx, "不会替换已有 SVG buffer");
-        open_file_in_test(cx, &pane, PathBuf::from("icon.svg"), duplicate_buffer);
-        cx.read_entity(&pane, |pane, _| {
+        // 双击文件关闭临时预览，并在其位置打开固定源码。
+        let source_buffer = test_buffer(cx, "固定源码");
+        open_file_in_test(cx, &pane, PathBuf::from("icon.svg"), source_buffer);
+        cx.read_entity(&pane, |pane, cx| {
             assert_eq!(pane.transient_source_item_id, None);
             assert_eq!(pane.transient_preview_item_id, None);
-            assert_eq!(pane.tabs.len(), 2);
-        });
-        cx.read_entity(&pane, |pane, cx| {
+            assert_eq!(pane.tabs.len(), 1);
             assert_active_is_preview(pane, cx, false);
         });
     }
@@ -1637,7 +1614,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn closing_source_also_closes_its_preview(cx: &mut TestAppContext) {
+    fn closing_source_keeps_its_preview(cx: &mut TestAppContext) {
         init_previews(cx);
         let pane = cx.new(Pane::new);
         let buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
@@ -1655,9 +1632,10 @@ mod tests {
             pane.update(cx, |pane, cx| pane.close_tab(source_id, window, cx));
             TestView
         });
-        cx.read_entity(&pane, |pane, _| {
-            assert!(pane.tabs.is_empty());
-            assert_eq!(pane.active, None);
+        cx.read_entity(&pane, |pane, cx| {
+            assert_eq!(pane.tabs.len(), 1);
+            assert!(is_preview_item(pane.active_item().unwrap(), cx));
+            assert!(pane.active.is_some());
         });
     }
 

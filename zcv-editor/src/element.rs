@@ -2189,7 +2189,6 @@ fn layout_visible_lines(
                     text_bounds.top() + line_height * (row - start) - scroll_offset.y,
                 ),
                 shaped_line_number,
-                active,
                 crease,
             });
         }
@@ -3445,8 +3444,8 @@ mod tests {
                 assert_eq!(layout.lines[0].origin.x, px(39.));
                 assert_eq!(gutter.rows[0].shaped_line_number.text.as_ref(), "1");
                 assert_eq!(gutter.rows[1].shaped_line_number.text.as_ref(), "2");
-                assert!(!gutter.rows[0].active);
-                assert!(gutter.rows[1].active);
+                assert!(!layout.lines[0].active);
+                assert!(layout.lines[1].active);
                 assert_eq!(gutter.rows[0].origin.y, layout.lines[0].origin.y);
                 assert!(gutter.rows[0].origin.x > gutter_bounds.left());
                 assert_eq!(layout.text_clip_bounds.left(), gutter_bounds.right());

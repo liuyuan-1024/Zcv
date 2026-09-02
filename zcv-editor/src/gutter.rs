@@ -47,7 +47,6 @@ pub(super) struct GutterRow {
     pub(super) logical_line: Line,
     pub(super) origin: Point<Pixels>,
     pub(super) shaped_line_number: ShapedLine,
-    pub(super) active: bool,
     /// 折叠指示：None 不可折叠；Some(folded) 可折叠（已折叠时显示展开箭头）。
     pub(super) crease: Option<bool>,
 }
@@ -122,14 +121,12 @@ mod tests {
                     logical_line: Line::new(10),
                     origin: point(px(20.), px(-5.)),
                     shaped_line_number: ShapedLine::default(),
-                    active: false,
                     crease: None,
                 },
                 GutterRow {
                     logical_line: Line::new(11),
                     origin: point(px(20.), px(15.)),
                     shaped_line_number: ShapedLine::default(),
-                    active: true,
                     crease: None,
                 },
             ],

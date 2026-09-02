@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use gpui::{
     Context, Entity, IntoElement, Modifiers, MouseButton, Pixels, Render, ScrollDelta,
     ScrollWheelEvent, TestAppContext, Window, point, px,
@@ -135,6 +137,81 @@ fn composite_refresh_keeps_the_viewport_on_a_virtual_file_header(cx: &mut TestAp
         assert!(editor.restore_scroll_anchor(anchor, cx));
         assert_eq!(editor.scroll_anchor().row(), DisplayRow::ZERO);
     });
+}
+
+#[gpui::test]
+fn folding_a_later_file_preserves_the_viewport_anchor(cx: &mut TestAppContext) {
+    let first = test_buffer(
+        cx,
+        (0..120)
+            .map(|row| format!("first {row}\n"))
+            .collect::<String>(),
+    );
+    let second = test_buffer(
+        cx,
+        (0..120)
+            .map(|row| format!("second {row}\n"))
+            .collect::<String>(),
+    );
+    cx.update_entity(&first, |buffer, cx| {
+        buffer.set_file_path("first.rs".into(), cx)
+    });
+    cx.update_entity(&second, |buffer, cx| {
+        buffer.set_file_path("second.rs".into(), cx)
+    });
+
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                MultiBufferExcerpt::line_range(first, 0..120, cx),
+                MultiBufferExcerpt::line_range(second, 0..120, cx),
+            ],
+            cx,
+        );
+    });
+    let (editor, cx) = cx.add_window_view({
+        let combined = combined.clone();
+        move |_, cx| Editor::for_multi_buffer(combined, cx)
+    });
+    cx.run_until_parked();
+    cx.refresh().expect("测试窗口应可刷新");
+
+    let line_height = cx.update(|window, _| window.line_height());
+    let old_output_offset = cx.update_entity(&editor, |editor, cx| {
+        assert!(editor.scroll_to(line_height * 60., cx));
+        assert!(editor.capture_scroll_anchor(cx).is_some());
+        let output_offset = editor
+            .display_map
+            .display_point_to_offset(editor.scroll_anchor())
+            .expect("折叠前视口顶部应能映射到组合偏移");
+        output_offset
+    });
+    let old_location = cx.read_entity(&combined, |buffer, _| {
+        buffer
+            .location_for_offset(old_output_offset)
+            .expect("折叠前视口顶部应映射到底层文件")
+    });
+
+    cx.update_entity(&editor, |editor, cx| {
+        editor.toggle_buffer_fold(PathBuf::from("second.rs"), cx);
+    });
+    cx.run_until_parked();
+    cx.refresh().expect("折叠后测试窗口应可刷新");
+
+    let new_output_offset = cx.read_entity(&editor, |editor, _| {
+        editor
+            .display_map
+            .display_point_to_offset(editor.scroll_anchor())
+            .expect("折叠后视口顶部应能映射到组合偏移")
+    });
+    let new_location = cx.read_entity(&combined, |buffer, _| {
+        buffer
+            .location_for_offset(new_output_offset)
+            .expect("折叠后视口顶部应映射到底层文件")
+    });
+
+    assert_eq!(new_location, old_location);
 }
 
 #[gpui::test]

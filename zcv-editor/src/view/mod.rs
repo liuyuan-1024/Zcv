@@ -313,9 +313,12 @@ impl Editor {
     /// 折叠/展开 MultiBuffer 中一个文件的全部 excerpts。
     /// 这是 BlockMap 变换，不修改组合文本，也不借用语法折叠范围。
     pub(crate) fn toggle_buffer_fold(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        let scroll_anchor = self.capture_scroll_anchor(cx);
         let folded = !self.display_map.is_buffer_folded(&path);
         self.display_map.set_buffer_folded(path, folded);
-        self.request_autoscroll();
+        if let Some(scroll_anchor) = scroll_anchor {
+            self.restore_scroll_anchor(scroll_anchor, cx);
+        }
         self.input_layout = None;
         cx.notify();
     }

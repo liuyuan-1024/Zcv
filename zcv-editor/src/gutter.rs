@@ -2,7 +2,7 @@
 //!
 //! Gutter 与正文共享垂直 DisplayRow 投影，但拥有独立的水平区域，不随正文横向滚动。
 
-use gpui::{Bounds, Pixels, Point, ShapedLine, point};
+use gpui::{Bounds, Pixels, Point, ShapedLine};
 use zcv_text::Line;
 
 /// 至少预留四位行号，避免小文件增行时 gutter 频繁抖动。
@@ -61,19 +61,6 @@ pub(super) struct GutterLayout {
 }
 
 impl GutterLayout {
-    /// 当前行背景贯穿 gutter 与正文，而不是只高亮行号区域。
-    pub(super) fn active_row_bounds(
-        &self,
-        editor_right: Pixels,
-    ) -> impl Iterator<Item = Bounds<Pixels>> + '_ {
-        self.rows.iter().filter(|row| row.active).map(move |row| {
-            Bounds::from_corners(
-                point(self.bounds.left(), row.origin.y),
-                point(editor_right, row.origin.y + self.line_height),
-            )
-        })
-    }
-
     /// 将 gutter 中的像素位置映射到最近的可见逻辑行。
     pub(super) fn logical_line_for_position(&self, position: Point<Pixels>) -> Option<Line> {
         if !self.bounds.contains(&position) {
@@ -160,10 +147,6 @@ mod tests {
         assert_eq!(
             layout.logical_line_for_position(point(px(60.), px(22.))),
             None
-        );
-        assert_eq!(
-            layout.active_row_bounds(px(300.)).collect::<Vec<_>>(),
-            vec![Bounds::new(point(px(0.), px(15.)), size(px(300.), px(20.)))]
         );
     }
 }

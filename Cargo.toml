@@ -33,7 +33,7 @@ members = [
 ]
 resolver = "3"
 [workspace.package]
-version = "0.8.46"
+version = "0.8.47"
 edition = "2024"
 
 [workspace.lints.clippy]
@@ -143,6 +143,7 @@ resvg = { version = "0.45.1", default-features = false }
 
 # ---- 平台特定 ----
 libc = "0.2"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 # ---- 自动更新 ----
 async_zip = "0.0.17"

@@ -103,6 +103,8 @@ impl EditorElement {
 struct LayoutLine {
     row: DisplayRow,
     logical_line: Option<Line>,
+    /// 该显示行所属的逻辑行是否包含光标或选区端点。
+    active: bool,
     origin: Point<Pixels>,
     shaped: ShapedLine,
     /// run 背景源（搜索高亮、语法背景）：shaped 文本内的字节区间 + 颜色，与选区一同进入背景片段合成管线。
@@ -151,6 +153,23 @@ impl EditorLayout {
                 row.origin += delta;
             }
         }
+    }
+
+    /// 返回当前视口内活动显示行的整行背景范围。
+    fn active_line_background_bounds(
+        &self,
+        start_x: Pixels,
+        end_x: Pixels,
+    ) -> impl Iterator<Item = Bounds<Pixels>> + '_ {
+        self.lines
+            .iter()
+            .filter(|line| line.active)
+            .map(move |line| {
+                Bounds::from_corners(
+                    point(start_x, line.origin.y),
+                    point(end_x, line.origin.y + self.line_height),
+                )
+            })
     }
 }
 
@@ -1079,6 +1098,13 @@ impl Element for EditorElement {
             origin: point(text_right, bounds.top()),
             size: size(scrollbar_width, bounds.size.height),
         };
+        let font_id = window.text_system().resolve_font(&font);
+        let em_advance = window
+            .text_system()
+            .em_advance(font_id, font_size)
+            .expect("编辑器字体必须包含拉丁字形");
+        // 安全边界只用于提前换行；绘制裁剪仍覆盖真实文本区。
+        // 否则会把预留的安全空间误当成裁剪线，直接截断行尾字形。
         let geometry = EditorGeometry {
             text_bounds,
             text_clip_bounds: Bounds {
@@ -1090,11 +1116,6 @@ impl Element for EditorElement {
             },
             gutter: gutter_bounds.zip(gutter_dimensions),
         };
-        let font_id = window.text_system().resolve_font(&font);
-        let em_advance = window
-            .text_system()
-            .em_advance(font_id, font_size)
-            .expect("编辑器字体必须包含拉丁字形");
         let wrap_width = calculate_wrap_width(
             soft_wrap,
             text_bounds.size.width,
@@ -1525,7 +1546,10 @@ impl Element for EditorElement {
         }
 
         if let Some(gutter) = &prepaint.layout.gutter {
-            for bounds in gutter.active_row_bounds(prepaint.layout.text_clip_bounds.right()) {
+            for bounds in prepaint.layout.active_line_background_bounds(
+                gutter.bounds.left(),
+                prepaint.layout.text_clip_bounds.right(),
+            ) {
                 window.paint_quad(fill(
                     bounds,
                     color::current(cx).editor_active_line_background,
@@ -1944,13 +1968,20 @@ fn calculate_wrap_width(
     preferred_line_length: usize,
     em_advance: Pixels,
 ) -> Option<Pixels> {
-    // 折行点只需为行尾光标让出实际宽度；按字体 em 预留会浪费可见空间，
-    // 使本可容纳的中文和标点过早进入下一行。
-    let available_width = (text_width - CARET_WIDTH).max(Pixels::ZERO);
+    let available_width = (text_width - wrap_edge_safety(soft_wrap, em_advance)).max(Pixels::ZERO);
     match soft_wrap {
         SoftWrap::None => None,
         SoftWrap::EditorWidth => Some(available_width),
         SoftWrap::Bounded => Some(available_width.min(em_advance * preferred_line_length as f32)),
+    }
+}
+
+/// 返回换行和绘制共同使用的右侧安全边界。
+fn wrap_edge_safety(soft_wrap: SoftWrap, em_advance: Pixels) -> Pixels {
+    if soft_wrap == SoftWrap::None {
+        Pixels::ZERO
+    } else {
+        em_advance.max(CARET_WIDTH)
     }
 }
 
@@ -2097,6 +2128,7 @@ fn layout_visible_lines(
         lines.push(LayoutLine {
             row: DisplayRow::new(row),
             logical_line,
+            active: logical_line.is_some_and(|line| active_lines.contains(&line)),
             origin: point(
                 // 窗口化行：shaped 文本从窗口起点开始，行原点随窗口起点列右移。
                 text_bounds.left() - scroll_offset.x + em_advance * window_start_column as f32,
@@ -2885,14 +2917,93 @@ mod tests {
     }
 
     #[gpui::test]
+    fn active_line_background_covers_all_soft_wrapped_rows(cx: &mut TestAppContext) {
+        let window = cx.add_window(|_, _| Empty);
+        window
+            .update(cx, |_, window, cx| {
+                let text = "aaaa bbbb cccc dddd eeee ".repeat(3) + "\nshort\n";
+                let snapshot = Buffer::scratch(text, BufferConfig::default())
+                    .expect("测试 Buffer 应能创建")
+                    .snapshot();
+                let text_style = window.text_style();
+                let font_size = text_style.font_size.to_pixels(window.rem_size());
+                let mut map = DisplayMap::new(snapshot.clone());
+                map.set_wrap_width(
+                    Some(px(100.)),
+                    text_style.font(),
+                    font_size,
+                    window.text_system(),
+                );
+                let display = map.snapshot();
+                let dimensions = gutter_dimensions(&display, window);
+                let gutter_bounds =
+                    Bounds::new(point(px(0.), px(0.)), size(dimensions.width, px(200.)));
+                let active_lines = BTreeSet::from([Line::ZERO]);
+                let layout = layout_visible_lines(
+                    display,
+                    None,
+                    EditorPresentation::new(&snapshot, None),
+                    None,
+                    VisibleLineLayoutParams {
+                        geometry: EditorGeometry {
+                            text_bounds: Bounds::new(
+                                point(gutter_bounds.right(), px(0.)),
+                                size(px(340.), px(200.)),
+                            ),
+                            text_clip_bounds: Bounds::new(
+                                point(gutter_bounds.right(), px(0.)),
+                                size(px(340.), px(200.)),
+                            ),
+                            gutter: Some((gutter_bounds, dimensions)),
+                        },
+                        active_lines: &active_lines,
+                        foldable_lines: &BTreeSet::new(),
+                        fold_anchor_lines: &BTreeSet::new(),
+                        start_row: DisplayRow::ZERO,
+                        scroll_offset: point(px(0.), px(0.)),
+                        line_height: px(20.),
+                        diff_rows: &[],
+                    },
+                    window,
+                    cx,
+                );
+
+                let wrapped_rows = layout
+                    .lines
+                    .iter()
+                    .filter(|line| line.logical_line == Some(Line::ZERO))
+                    .collect::<Vec<_>>();
+                assert!(wrapped_rows.len() > 1, "测试行应拆成多个软换行显示行");
+                assert!(wrapped_rows.iter().all(|line| line.active));
+                assert!(
+                    layout
+                        .lines
+                        .iter()
+                        .any(|line| line.logical_line == Some(Line::new(1)) && !line.active),
+                    "下一逻辑行不应继承活动状态"
+                );
+
+                let active_bounds = layout
+                    .active_line_background_bounds(
+                        gutter_bounds.left(),
+                        gutter_bounds.right() + px(340.),
+                    )
+                    .collect::<Vec<_>>();
+                assert_eq!(active_bounds.len(), wrapped_rows.len());
+                assert!(
+                    active_bounds
+                        .windows(2)
+                        .all(|bounds| { bounds[1].top() == bounds[0].bottom() })
+                );
+            })
+            .expect("测试窗口应保持可用");
+    }
+
+    #[gpui::test]
     fn editor_width_soft_wrap_keeps_mixed_cjk_inside_text_bounds(cx: &mut TestAppContext) {
         let window = cx.add_window(|_, _| Empty);
         window
             .update(cx, |_, window, _cx| {
-                let text = "新增 Zcv 架构维护技能并整合可见性清理、架构体检与架构减法流程";
-                let snapshot = Buffer::scratch(text.to_owned(), BufferConfig::default())
-                    .expect("测试 Buffer 应能创建")
-                    .snapshot();
                 let font = typography::ui_font();
                 let font_size = typography::ui();
                 let font_id = window.text_system().resolve_font(&font);
@@ -2900,62 +3011,75 @@ mod tests {
                     .text_system()
                     .em_advance(font_id, font_size)
                     .expect("UI 字体必须包含拉丁字形");
-                let mut map = DisplayMap::new(snapshot);
-
-                for quarter_pixels in 720..=2_400 {
-                    let text_width = px(quarter_pixels as f32 / 4.);
-                    let wrap_width =
-                        calculate_wrap_width(SoftWrap::EditorWidth, text_width, 80, em_advance);
-                    map.set_wrap_width(wrap_width, font.clone(), font_size, window.text_system());
-                    let display = map.snapshot();
-                    let viewport = display
-                        .slice_viewport(DisplayRow::ZERO, display.line_count())
-                        .expect("应读取完整软换行视口");
-                    if quarter_pixels == 720 {
-                        let rows: Vec<_> = viewport
-                            .rows()
-                            .iter()
-                            .map(|row| {
-                                let WrapViewportRowKind::Text {
-                                    text, byte_range, ..
-                                } = row.kind();
-                                text.as_ref()[byte_range.clone()].to_owned()
-                            })
-                            .collect();
-                        assert_eq!(
-                            rows,
-                            [
-                                "新增 Zcv 架构维护技能并整合可见性清理、",
-                                "架构体检与架构减法流程",
-                            ]
-                        );
-                    }
-
-                    for row in viewport.rows() {
-                        let WrapViewportRowKind::Text {
-                            text, byte_range, ..
-                        } = row.kind();
-                        let row_text = &text.as_ref()[byte_range.clone()];
-                        let run = TextRun {
-                            len: row_text.len(),
-                            font: font.clone(),
-                            color: gpui::black(),
-                            background_color: None,
-                            underline: None,
-                            strikethrough: None,
-                        };
-                        let shaped = window.text_system().shape_line(
-                            row_text.to_owned().into(),
+                for text in [
+                    "新增 Zcv 架构维护技能并整合可见性清理、架构体检与架构减法流程",
+                    "补全各语言的括号、缩进、折叠与注入查询文件",
+                ] {
+                    let snapshot = Buffer::scratch(text.to_owned(), BufferConfig::default())
+                        .expect("测试 Buffer 应能创建")
+                        .snapshot();
+                    let mut map = DisplayMap::new(snapshot);
+                    for quarter_pixels in 720..=2_400 {
+                        let text_width = px(quarter_pixels as f32 / 4.);
+                        let wrap_width =
+                            calculate_wrap_width(SoftWrap::EditorWidth, text_width, 80, em_advance);
+                        map.set_wrap_width(
+                            wrap_width,
+                            font.clone(),
                             font_size,
-                            &[run],
-                            None,
+                            window.text_system(),
                         );
-                        assert!(
-                            shaped.width + CARET_WIDTH <= text_width,
-                            "软换行行尾应保留光标宽度：width={}, shaped={}，row={row_text:?}",
-                            f32::from(text_width),
-                            f32::from(shaped.width),
-                        );
+                        let display = map.snapshot();
+                        let viewport = display
+                            .slice_viewport(DisplayRow::ZERO, display.line_count())
+                            .expect("应读取完整软换行视口");
+                        if text.starts_with("新增") && quarter_pixels == 720 {
+                            let rows: Vec<_> = viewport
+                                .rows()
+                                .iter()
+                                .map(|row| {
+                                    let WrapViewportRowKind::Text {
+                                        text, byte_range, ..
+                                    } = row.kind();
+                                    text.as_ref()[byte_range.clone()].to_owned()
+                                })
+                                .collect();
+                            assert_eq!(
+                                rows,
+                                [
+                                    "新增 Zcv 架构维护技能并整合可见性清理、",
+                                    "架构体检与架构减法流程",
+                                ]
+                            );
+                        }
+
+                        for row in viewport.rows() {
+                            let WrapViewportRowKind::Text {
+                                text, byte_range, ..
+                            } = row.kind();
+                            let row_text = &text.as_ref()[byte_range.clone()];
+                            let run = TextRun {
+                                len: row_text.len(),
+                                font: font.clone(),
+                                color: gpui::black(),
+                                background_color: None,
+                                underline: None,
+                                strikethrough: None,
+                            };
+                            let shaped = window.text_system().shape_line(
+                                row_text.to_owned().into(),
+                                font_size,
+                                &[run],
+                                None,
+                            );
+                            assert!(
+                                shaped.width + wrap_edge_safety(SoftWrap::EditorWidth, em_advance)
+                                    <= text_width,
+                                "软换行行尾应保留安全边界：width={}, shaped={}，row={row_text:?}",
+                                f32::from(text_width),
+                                f32::from(shaped.width),
+                            );
+                        }
                     }
                 }
             })

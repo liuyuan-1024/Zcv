@@ -40,8 +40,7 @@ pub use pane::{Pane, PaneEvent};
 pub use panel::{Panel, PanelEvent, PanelHandle};
 pub use panel_buttons::PanelButtons;
 pub use preview::{
-    PreviewDocument, PreviewItem, PreviewItemHandle, PreviewProvider, PreviewToolbarButton,
-    register,
+    PreviewButton, PreviewDocument, PreviewItem, PreviewItemHandle, PreviewProvider, register,
 };
 pub use project_picker::OnProjectSelected;
 pub use recent_projects::{add_to_recent, most_recent_valid_project};

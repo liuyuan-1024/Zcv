@@ -49,9 +49,7 @@ impl Render for HarnessButton {
                     .label("Harness 模式")
                     .shortcut(&ToggleHarnessMode, cx)
                     .color(fg)
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(ToggleHarnessMode), cx)
-                    }),
+                    .on_click(cx.listener(|button, _, _window, cx| button.toggle(cx))),
             )
             .into_any_element()
     }

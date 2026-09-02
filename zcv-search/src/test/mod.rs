@@ -10,7 +10,10 @@ use zcv_workspace::{
     ToolbarItemLocation, ToolbarItemView,
 };
 
-use crate::buffer_search::BufferSearchButton;
+use crate::{
+    buffer_search::{BufferSearchBar, BufferSearchButton},
+    search_bar::SearchBar,
+};
 
 struct TestView;
 
@@ -100,14 +103,15 @@ impl SearchableItem for TestItem {
 
 #[gpui::test]
 fn search_button_does_not_require_an_active_path(cx: &mut TestAppContext) {
+    let search_bar = cx.new(|cx| SearchBar::new("BufferSearchBar", cx));
+    let bar = cx.new(|cx| BufferSearchBar::new(search_bar, cx));
+    let button = cx.new(|_| BufferSearchButton::new(bar));
     cx.add_window_view(|window, cx| {
         let item = cx.new(|cx| TestItem {
             focus: cx.focus_handle(),
             path: None,
             exposes_search: true,
         });
-        let button = cx.new(|_| BufferSearchButton);
-
         let location = button.update(cx, |button, cx| {
             button.set_active_pane_item(Some(&item as &dyn ItemHandle), window, cx)
         });
@@ -120,14 +124,15 @@ fn search_button_does_not_require_an_active_path(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn search_button_does_not_use_a_path_as_search_capability(cx: &mut TestAppContext) {
+    let search_bar = cx.new(|cx| SearchBar::new("BufferSearchBar", cx));
+    let bar = cx.new(|cx| BufferSearchBar::new(search_bar, cx));
+    let button = cx.new(|_| BufferSearchButton::new(bar));
     cx.add_window_view(|window, cx| {
         let item = cx.new(|cx| TestItem {
             focus: cx.focus_handle(),
             path: Some(PathBuf::from("notes.txt")),
             exposes_search: false,
         });
-        let button = cx.new(|_| BufferSearchButton);
-
         let location = button.update(cx, |button, cx| {
             button.set_active_pane_item(Some(&item as &dyn ItemHandle), window, cx)
         });

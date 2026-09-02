@@ -6,7 +6,7 @@ use gpui::{
 };
 
 use crate::{
-    Item, ItemEvent, ItemHandle, PreviewDocument, PreviewProvider, PreviewToolbarButton,
+    Item, ItemEvent, ItemHandle, Pane, PreviewButton, PreviewDocument, PreviewProvider,
     ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView, register,
 };
 
@@ -86,7 +86,8 @@ fn renaming_the_active_item_updates_preview_button_immediately(cx: &mut TestAppC
         path: PathBuf::from("diagram.txt"),
         focus: cx.focus_handle(),
     });
-    let button = cx.new(|_| PreviewToolbarButton::new());
+    let pane = cx.new(Pane::new);
+    let button = cx.new(|_| PreviewButton::new(pane.downgrade()));
 
     cx.add_window_view(|window, cx| {
         let location = button.update(cx, |button, cx| {
@@ -96,7 +97,7 @@ fn renaming_the_active_item_updates_preview_button_immediately(cx: &mut TestAppC
         TestView
     });
 
-    let mut events = cx.events::<ToolbarItemEvent, PreviewToolbarButton>(&button);
+    let mut events = cx.events::<ToolbarItemEvent, PreviewButton>(&button);
     cx.update_entity(&item, |item, cx| {
         item.rename_path(Path::new("diagram.txt"), Path::new("diagram.svg"), cx)
     });

@@ -22,14 +22,12 @@ use zcv_actions::{
 use zcv_editor::Editor;
 use zcv_git::{DiffBase, GitRevision};
 use zcv_project::{DiffRequest, GitOperationKind, GitOperationOutcome, GitStoreEvent, Project};
-use zcv_search::ProjectSearchButton;
 use zcv_settings::SettingsStore;
 use zcv_theme::{ThemeChoice, color, typography};
 use zcv_workspace::{
     ActivityIndicator, Dock, DockPosition, GitBranchAction, OnBranchSelected, OnProjectSelected,
-    Pane, PaneEvent, Panel, PanelButtons, PanelEvent, PanelHandle, PreviewToolbarButton,
-    ToastAction, ToastKind, TopBar, Workspace, add_to_recent, load_window_bounds,
-    save_window_bounds,
+    Pane, PaneEvent, Panel, PanelButtons, PanelEvent, PanelHandle, PreviewButton, ToastAction,
+    ToastKind, TopBar, Workspace, add_to_recent, load_window_bounds, save_window_bounds,
 };
 
 use crate::active_buffer_language::ActiveBufferLanguage;
@@ -289,7 +287,6 @@ fn initialize_common_workspace(
             cx.new(|cx| PanelButtons::new(left_dock.clone(), workspace_entity.clone(), cx)),
             cx,
         );
-        bar.add_left_item(cx.new(|_| ProjectSearchButton::new()), cx);
         bar.add_right_item(cx.new(|_| CursorPosition::new()), cx);
         bar.add_right_item(cx.new(|_| ActiveBufferLanguage::new()), cx);
         bar.add_right_item(
@@ -344,6 +341,7 @@ fn initialize_common_workspace(
     });
 
     let pane = workspace.pane().clone();
+    let preview_pane = pane.downgrade();
     let breadcrumbs_project = workspace.project().clone();
     pane.update(cx, |pane, cx| {
         let toolbar = pane.toolbar().clone();
@@ -353,7 +351,11 @@ fn initialize_common_workspace(
                 window,
                 cx,
             );
-            toolbar.add_item(cx.new(|_| PreviewToolbarButton::new()), window, cx);
+            toolbar.add_item(
+                cx.new(|_| PreviewButton::new(preview_pane.clone())),
+                window,
+                cx,
+            );
         });
     });
     zcv_search::install(workspace, window, cx);

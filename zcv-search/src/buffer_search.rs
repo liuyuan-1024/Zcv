@@ -17,8 +17,16 @@ fn accepts_buffer_search_item(item: Option<&dyn ItemHandle>, cx: &App) -> bool {
     })
 }
 
-/// 文件内搜索入口；是否显示只由 Item 的搜索能力决定。
-pub(super) struct BufferSearchButton;
+/// 文件内搜索入口；直接控制同一 Pane 工具栏中的搜索栏。
+pub(super) struct BufferSearchButton {
+    search_bar: Entity<BufferSearchBar>,
+}
+
+impl BufferSearchButton {
+    pub(super) fn new(search_bar: Entity<BufferSearchBar>) -> Self {
+        Self { search_bar }
+    }
+}
 
 impl EventEmitter<ToolbarItemEvent> for BufferSearchButton {}
 
@@ -39,10 +47,15 @@ impl ToolbarItemView for BufferSearchButton {
 
 impl Render for BufferSearchButton {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let search_bar = self.search_bar.clone();
         Button::icon("toolbar-file-search", "icons/magnifying_glass.svg")
             .label("搜索")
             .shortcut(&DeploySearch, cx)
-            .on_click(|_, window, cx| window.dispatch_action(Box::new(DeploySearch), cx))
+            .on_click(move |_, window, cx| {
+                search_bar.update(cx, |search_bar, cx| {
+                    search_bar.deploy(None, window, cx);
+                });
+            })
     }
 }
 
@@ -51,7 +64,7 @@ pub(super) struct BufferSearchBar {
 }
 
 impl BufferSearchBar {
-    fn new(search_bar: Entity<SearchBar>, cx: &mut Context<Self>) -> Self {
+    pub(super) fn new(search_bar: Entity<SearchBar>, cx: &mut Context<Self>) -> Self {
         cx.subscribe(&search_bar, |_, _, event: &ToolbarItemEvent, cx| {
             cx.emit(*event)
         })
@@ -105,7 +118,11 @@ pub(super) fn install(
     let buffer_search_bar = cx.new(|cx| BufferSearchBar::new(search_bar, cx));
     let toolbar = workspace.pane().read(cx).toolbar().clone();
     toolbar.update(cx, |toolbar, cx| {
-        toolbar.add_item(cx.new(|_| BufferSearchButton), window, cx);
+        toolbar.add_item(
+            cx.new(|_| BufferSearchButton::new(buffer_search_bar.clone())),
+            window,
+            cx,
+        );
         toolbar.add_item(buffer_search_bar.clone(), window, cx);
     });
     buffer_search_bar

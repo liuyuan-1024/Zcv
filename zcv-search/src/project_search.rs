@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use gpui::{
     App, Context, Entity, EventEmitter, FocusHandle, Focusable, Render, SharedString, Subscription,
-    Task, Window, div, prelude::*,
+    Task, WeakEntity, Window, div, prelude::*,
 };
 use zcv_actions::Deploy;
 use zcv_editor::{Editor, EditorEvent};
@@ -466,17 +466,20 @@ pub(crate) fn deploy(workspace: &mut Workspace, window: &mut Window, cx: &mut Co
 }
 
 /// 状态栏中的项目搜索入口。
-pub struct ProjectSearchButton;
-
-impl ProjectSearchButton {
-    pub fn new() -> Self {
-        Self
-    }
+pub(crate) struct ProjectSearchButton {
+    workspace: WeakEntity<Workspace>,
+    search_bar: Entity<ProjectSearchBar>,
 }
 
-impl Default for ProjectSearchButton {
-    fn default() -> Self {
-        Self::new()
+impl ProjectSearchButton {
+    pub(crate) fn new(
+        workspace: WeakEntity<Workspace>,
+        search_bar: Entity<ProjectSearchBar>,
+    ) -> Self {
+        Self {
+            workspace,
+            search_bar,
+        }
     }
 }
 
@@ -486,10 +489,18 @@ impl StatusItemView for ProjectSearchButton {
 
 impl Render for ProjectSearchButton {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        let workspace = self.workspace.clone();
+        let search_bar = self.search_bar.clone();
         Button::icon("search-button", "icons/magnifying_glass.svg")
             .label("项目搜索")
             .shortcut(&Deploy, cx)
-            .on_click(|_, window, cx| window.dispatch_action(Box::new(Deploy), cx))
+            .on_click(move |_, window, cx| {
+                workspace
+                    .update(cx, |workspace, cx| {
+                        crate::deploy_project_search(workspace, &search_bar, window, cx);
+                    })
+                    .ok();
+            })
             .into_any_element()
     }
 }

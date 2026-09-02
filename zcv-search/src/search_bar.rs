@@ -6,7 +6,7 @@
 
 use gpui::{
     AnyElement, App, Component, Context, Entity, IntoElement, KeyContext, ParentElement, Render,
-    RenderOnce, SharedString, Styled, Window, div, prelude::*,
+    RenderOnce, SharedString, Styled, WeakEntity, Window, div, prelude::*,
 };
 use zcv_actions::{
     Backtab, ClearSearch, FindNext, FindPrevious, ReplaceAll, ReplaceNext, SelectAll, Tab,
@@ -37,14 +37,21 @@ struct QueryOptions {
 
 /// SearchBar 输入框共享外观：带边框的多行容器 + 可选选项按钮。
 struct SearchInput {
+    search_bar: WeakEntity<SearchBar>,
     id: SharedString,
     input: AnyElement,
     options: Option<QueryOptions>,
 }
 
 impl SearchInput {
-    fn new(id: impl Into<SharedString>, input: AnyElement, options: Option<QueryOptions>) -> Self {
+    fn new(
+        search_bar: WeakEntity<SearchBar>,
+        id: impl Into<SharedString>,
+        input: AnyElement,
+        options: Option<QueryOptions>,
+    ) -> Self {
         Self {
+            search_bar,
             id: id.into(),
             input,
             options,
@@ -66,6 +73,36 @@ impl RenderOnce for SearchInput {
         let case_id = (self.id.clone(), 0);
         let word_id = (self.id.clone(), 1);
         let regex_id = (self.id, 2);
+        let toggle_case_sensitive = {
+            let search_bar = self.search_bar.clone();
+            move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
+                search_bar
+                    .update(cx, |search_bar, cx| {
+                        search_bar.toggle_option(SearchOption::CaseSensitive, window, cx);
+                    })
+                    .ok();
+            }
+        };
+        let toggle_whole_word = {
+            let search_bar = self.search_bar.clone();
+            move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
+                search_bar
+                    .update(cx, |search_bar, cx| {
+                        search_bar.toggle_option(SearchOption::WholeWord, window, cx);
+                    })
+                    .ok();
+            }
+        };
+        let toggle_regex = {
+            let search_bar = self.search_bar.clone();
+            move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
+                search_bar
+                    .update(cx, |search_bar, cx| {
+                        search_bar.toggle_option(SearchOption::Regex, window, cx);
+                    })
+                    .ok();
+            }
+        };
 
         div()
             .flex_1()
@@ -93,9 +130,7 @@ impl RenderOnce for SearchInput {
                                 } else {
                                     colors.text_muted
                                 })
-                                .on_click(|_, window, cx| {
-                                    window.dispatch_action(Box::new(ToggleCaseSensitive), cx)
-                                }),
+                                .on_click(toggle_case_sensitive),
                         )
                         .child(
                             Button::icon(word_id, "icons/whole_word.svg")
@@ -106,9 +141,7 @@ impl RenderOnce for SearchInput {
                                 } else {
                                     colors.text_muted
                                 })
-                                .on_click(|_, window, cx| {
-                                    window.dispatch_action(Box::new(ToggleWholeWord), cx)
-                                }),
+                                .on_click(toggle_whole_word),
                         )
                         .child(
                             Button::icon(regex_id, "icons/regex.svg")
@@ -119,9 +152,7 @@ impl RenderOnce for SearchInput {
                                 } else {
                                     colors.text_muted
                                 })
-                                .on_click(|_, window, cx| {
-                                    window.dispatch_action(Box::new(ToggleRegex), cx)
-                                }),
+                                .on_click(toggle_regex),
                         ),
                 )
             })
@@ -544,6 +575,7 @@ impl Render for SearchBar {
                     .gap(space::S6)
                     // 输入框容器：边框包裹，选项按钮内嵌右侧。
                     .child(SearchInput::new(
+                        weak.clone(),
                         "buffer-search-input",
                         self.query_input
                             .as_ref()
@@ -611,6 +643,7 @@ impl Render for SearchBar {
                         .items_center()
                         .gap(space::S6)
                         .child(SearchInput::new(
+                            weak.clone(),
                             "buffer-replace-input",
                             self.replace_input
                                 .as_ref()

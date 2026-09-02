@@ -539,6 +539,10 @@ impl VersionControlPanel {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.init_repository(cx);
+    }
+
+    fn init_repository(&mut self, cx: &mut Context<Self>) {
         self.project.update(cx, |project, cx| {
             project
                 .git_store()
@@ -662,7 +666,7 @@ impl Render for VersionControlPanel {
                 )
                 .into_any_element()
         } else {
-            render_empty_state(self.focus.clone(), cx).into_any_element()
+            render_empty_state(cx.weak_entity(), cx).into_any_element()
         };
 
         // 字段先提出局部变量（闭包借用与 listener 的 cx 互不冲突）。
@@ -976,11 +980,6 @@ fn render_row(
     }
 }
 
-/// 无仓库空态：居中文案 + 初始化仓库按钮。
-///
-/// 按钮是命令载体，走 dispatch_action 合流；
-/// 先收焦点保证 action 沿焦点链命中面板自身的 `InitRepository` handler。
-/// 底部提交区：上次提交信息（含撤销按钮）→ 提交信息编辑器 → 提交按钮（仅在有仓库时渲染）。
 fn render_commit_footer(
     editor: &Entity<Editor>,
     last_commit_message: Option<&str>,
@@ -1088,7 +1087,7 @@ fn render_commit_footer(
         )
 }
 
-fn render_empty_state(focus: FocusHandle, cx: &App) -> Div {
+fn render_empty_state(panel: WeakEntity<VersionControlPanel>, cx: &App) -> Div {
     let colors = color::current(cx);
     div()
         .size_full()
@@ -1102,6 +1101,7 @@ fn render_empty_state(focus: FocusHandle, cx: &App) -> Div {
         .child(
             div()
                 .id("version-control-init")
+                .debug_selector(|| "version-control-init".into())
                 .p(space::S6)
                 .rounded_md()
                 .border_1()
@@ -1111,9 +1111,8 @@ fn render_empty_state(focus: FocusHandle, cx: &App) -> Div {
                 .cursor_pointer()
                 .hover(|style| style.bg(colors.element_hover))
                 .child("初始化仓库")
-                .on_click(move |_, window, cx| {
-                    window.focus(&focus);
-                    window.dispatch_action(Box::new(InitRepository), cx);
+                .on_click(move |_, _, cx| {
+                    panel.update(cx, |panel, cx| panel.init_repository(cx)).ok();
                 }),
         )
 }
@@ -1542,16 +1541,29 @@ mod tests {
             cx.add_window_view(move |_, cx| VersionControlPanel::new(project_for_panel, cx));
         cx.run_until_parked(); // 首次扫描完成：无仓库，行模型为空。
 
-        // 初始化仓库（等价于空态按钮 dispatch 后的 handler 行为）。
-        project.update(cx, |project, cx| {
-            project
-                .git_store()
-                .update(cx, |store, cx| store.git_init(cx));
-        });
+        let panel_focused =
+            cx.update(|window, cx| panel.read(cx).focus.contains_focused(window, cx));
+        assert!(!panel_focused, "前置条件：面板不应持有焦点");
+
+        let _ = cx.refresh();
+        cx.update(|_, _| {});
+        let bounds = cx
+            .debug_bounds("version-control-init")
+            .expect("初始化仓库按钮应可定位");
+        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
         cx.run_until_parked(); // init job 完成
         cx.run_until_parked(); // 其触发的重扫落地 → Repositories 事件 → 重建行模型
 
-        cx.read_entity(&panel, |panel, _| {
+        cx.read_entity(&panel, |panel, cx| {
+            assert!(
+                panel
+                    .project
+                    .read(cx)
+                    .git_store()
+                    .read(cx)
+                    .has_repositories(),
+                "焦点不在面板时点击初始化仓库按钮仍应创建仓库"
+            );
             let rows = panel.state.borrow().rows.clone();
             let headers: Vec<_> = rows
                 .iter()

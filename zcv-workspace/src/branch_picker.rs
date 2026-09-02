@@ -239,10 +239,6 @@ impl BranchPicker {
         }
         self.host.toggle(&self.picker, window, cx);
     }
-
-    fn handle_toggle(&mut self, _: &SelectGitBranch, window: &mut Window, cx: &mut Context<Self>) {
-        self.toggle(window, cx);
-    }
 }
 
 impl Render for BranchPicker {
@@ -267,15 +263,12 @@ impl Render for BranchPicker {
         .label("分支")
         .shortcut(&SelectGitBranch, cx)
         .color(color_value)
-        .on_click(|_, window, cx| {
-            window.dispatch_action(Box::new(SelectGitBranch), cx);
-        });
+        .on_click(cx.listener(|picker, _, window, cx| picker.toggle(window, cx)));
 
         let mut root = div()
             .track_focus(&self.host.focus_handle())
             // 复合 context 让 Picker 分组的快捷键与 Editor 同深度竞争。
             .key_context("GitBranchSelector")
-            .on_action(cx.listener(Self::handle_toggle))
             .relative()
             .child(button);
 

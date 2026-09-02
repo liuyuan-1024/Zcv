@@ -25,6 +25,8 @@ use crate::recent_projects::{self, ProjectEntry};
 /// 项目选中回调 —— 参数为项目路径。
 pub type OnProjectSelected = Rc<dyn Fn(String, &mut Window, &mut App)>;
 
+type OnOpenLocalProject = Rc<dyn Fn(&mut Window, &mut App)>;
+
 // ═══ 数据源 ═══════════════════════════════════════════════════════
 
 /// 项目选择器数据源。
@@ -34,10 +36,15 @@ struct ProjectPickerDelegate {
     filtered: Vec<usize>,
     selected_index: usize,
     on_selected: OnProjectSelected,
+    on_open_local_project: OnOpenLocalProject,
 }
 
 impl ProjectPickerDelegate {
-    fn new(projects: Vec<ProjectEntry>, on_selected: OnProjectSelected) -> Self {
+    fn new(
+        projects: Vec<ProjectEntry>,
+        on_selected: OnProjectSelected,
+        on_open_local_project: OnOpenLocalProject,
+    ) -> Self {
         let filtered: Vec<usize> = (0..projects.len()).collect();
         // 列表第一位即最近打开的项目，作为默认选中项
         let selected_index = 0;
@@ -47,6 +54,7 @@ impl ProjectPickerDelegate {
             filtered,
             selected_index,
             on_selected,
+            on_open_local_project,
         }
     }
 
@@ -173,14 +181,14 @@ impl PickerDelegate for ProjectPickerDelegate {
         } else {
             item
         };
-        // 整个 footer 区域可点击，派发 OpenLocalProject action
+        let on_open_local_project = self.on_open_local_project.clone();
         Some(
             div()
                 .id("open-local-footer")
                 .child(picker_divider(cx))
                 .child(item)
-                .on_click(|_, window, cx| {
-                    window.dispatch_action(Box::new(OpenLocalProject), cx);
+                .on_click(move |_, window, cx| {
+                    on_open_local_project(window, cx);
                 })
                 .into_any_element(),
         )
@@ -212,8 +220,13 @@ impl ProjectPicker {
         let projects = recent_projects::load_recent_projects();
         // 列表第一位即最近打开的项目，作为顶栏显示名
         let current_label = projects.first().map(|p| p.label()).unwrap_or_default();
-        let delegate = ProjectPickerDelegate::new(projects, on_selected.clone());
         let pending_path = Rc::new(RefCell::new(None));
+        let on_open_local_project: OnOpenLocalProject = {
+            let pending_path = pending_path.clone();
+            Rc::new(move |_, cx| Self::open_local_project(pending_path.clone(), cx))
+        };
+        let delegate =
+            ProjectPickerDelegate::new(projects, on_selected.clone(), on_open_local_project);
 
         let picker = cx.new(|cx| Picker::new(delegate, PICKER_WIDTH, window, cx));
         let host = PickerHost::new(cx.focus_handle());
@@ -256,15 +269,6 @@ impl ProjectPicker {
         self.host.toggle(&self.picker, window, cx);
     }
 
-    fn handle_toggle(
-        &mut self,
-        _: &ToggleProjectPicker,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.toggle(window, cx);
-    }
-
     /// 删除当前选中的最近项目（快捷键 cmd-backspace，仅 picker 打开时绑定生效）。
     fn handle_delete_recent(
         &mut self,
@@ -289,8 +293,10 @@ impl ProjectPicker {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let pending = self.pending_path.clone();
+        Self::open_local_project(self.pending_path.clone(), cx);
+    }
 
+    fn open_local_project(pending: Rc<RefCell<Option<String>>>, cx: &mut App) {
         // 同步触发系统文件选择器，返回一个异步 channel
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -355,15 +361,12 @@ impl Render for ProjectPicker {
             .label("项目选择器")
             .shortcut(&ToggleProjectPicker, cx)
             .color(color_value)
-            .on_click(|_, window, cx| {
-                window.dispatch_action(Box::new(ToggleProjectPicker), cx);
-            });
+            .on_click(cx.listener(|picker, _, window, cx| picker.toggle(window, cx)));
 
         let mut root = div()
             .track_focus(&self.host.focus_handle())
             // 复合 context 让 Picker 分组的快捷键与 Editor 同深度竞争
             .key_context("RecentProjects")
-            .on_action(cx.listener(Self::handle_toggle))
             .on_action(cx.listener(Self::handle_delete_recent))
             .on_action(cx.listener(Self::handle_open_local_project))
             .relative()
@@ -407,6 +410,7 @@ mod tests {
                 path: "/tmp/test-project".into(),
             }],
             on_selected,
+            Rc::new(|_, _| {}),
         );
         let window = cx.add_window(|_window, _cx| TestView);
         let _ = window.update(cx, |_, window, cx| {
@@ -431,6 +435,7 @@ mod tests {
                 },
             ],
             on_selected,
+            Rc::new(|_, _| {}),
         )
     }
 

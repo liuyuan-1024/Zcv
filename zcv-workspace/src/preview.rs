@@ -8,13 +8,16 @@ use std::any::TypeId;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use gpui::{App, Context, Entity, EventEmitter, Render, Subscription, Window, div, prelude::*};
+use gpui::{
+    App, Context, Entity, EventEmitter, Render, Subscription, WeakEntity, Window, div, prelude::*,
+};
 use zcv_actions::TogglePreview;
 use zcv_multi_buffer::MultiBuffer;
 use zcv_theme::color;
 use zcv_ui::Button;
 
 use crate::item::{Item, ItemEvent, ItemHandle};
+use crate::pane::Pane;
 use crate::provider_registry::ProviderRegistry;
 use crate::toolbar::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 
@@ -69,16 +72,18 @@ enum PreviewControl {
     ShowSource,
 }
 
-/// Toolbar 中的预览能力入口。
-pub struct PreviewToolbarButton {
+/// 预览能力入口。
+pub struct PreviewButton {
+    pane: WeakEntity<Pane>,
     control: Option<PreviewControl>,
     active_item: Option<Box<dyn ItemHandle>>,
     _subscription: Option<Subscription>,
 }
 
-impl PreviewToolbarButton {
-    pub fn new() -> Self {
+impl PreviewButton {
+    pub fn new(pane: WeakEntity<Pane>) -> Self {
         Self {
+            pane,
             control: None,
             active_item: None,
             _subscription: None,
@@ -118,15 +123,9 @@ impl PreviewToolbarButton {
     }
 }
 
-impl Default for PreviewToolbarButton {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+impl EventEmitter<ToolbarItemEvent> for PreviewButton {}
 
-impl EventEmitter<ToolbarItemEvent> for PreviewToolbarButton {}
-
-impl ToolbarItemView for PreviewToolbarButton {
+impl ToolbarItemView for PreviewButton {
     fn set_active_pane_item(
         &mut self,
         active_item: Option<&dyn ItemHandle>,
@@ -156,8 +155,9 @@ impl ToolbarItemView for PreviewToolbarButton {
     }
 }
 
-impl Render for PreviewToolbarButton {
+impl Render for PreviewButton {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let pane = self.pane.clone();
         div().when_some(self.control, |controls, control| {
             let (icon, label) = match control {
                 PreviewControl::ShowSource => ("icons/eye_off.svg", "源码"),
@@ -167,7 +167,13 @@ impl Render for PreviewToolbarButton {
                 Button::icon("toolbar-preview", icon)
                     .label(label)
                     .color(color::current(cx).text_muted)
-                    .on_click(|_, window, cx| window.dispatch_action(Box::new(TogglePreview), cx)),
+                    .shortcut(&TogglePreview, cx)
+                    .on_click(move |_, window, cx| {
+                        pane.update(cx, |pane, cx| {
+                            pane.toggle_preview(window, cx);
+                        })
+                        .ok();
+                    }),
             )
         })
     }

@@ -48,6 +48,18 @@ pub enum GitOperationKind {
     Push,
 }
 
+impl GitOperationKind {
+    /// 用户可见的远程操作名；
+    /// 任务进度与完成提示共用，避免同一操作在不同界面产生歧义。
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Fetch => "同步",
+            Self::Pull => "合并拉取",
+            Self::Push => "推送",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(super) enum GitJobKey {
     ReloadGitState,
@@ -165,18 +177,7 @@ impl GitJob {
             GitJob::ReloadGitState => "扫描仓库状态".into(),
             GitJob::RefreshStatuses => "刷新仓库状态".into(),
             GitJob::RefreshHunks => "查询文件差异".into(),
-            GitJob::GitOperation {
-                operation: GitOperationKind::Fetch,
-                ..
-            } => "拉取".into(),
-            GitJob::GitOperation {
-                operation: GitOperationKind::Pull,
-                ..
-            } => "合并拉取".into(),
-            GitJob::GitOperation {
-                operation: GitOperationKind::Push,
-                ..
-            } => "推送".into(),
+            GitJob::GitOperation { operation, .. } => operation.display_name().into(),
             GitJob::GitInit => "初始化仓库".into(),
             GitJob::StageFiles { stage: true, .. } => "暂存".into(),
             GitJob::StageFiles { stage: false, .. } => "取消暂存".into(),
@@ -197,6 +198,18 @@ impl GitJob {
             GitJob::CheckoutBranch { .. } => "切换分支".into(),
             GitJob::CreateBranch { .. } => "创建分支".into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GitOperationKind;
+
+    #[test]
+    fn remote_operation_names_distinguish_sync_pull_and_push() {
+        assert_eq!(GitOperationKind::Fetch.display_name(), "同步");
+        assert_eq!(GitOperationKind::Pull.display_name(), "合并拉取");
+        assert_eq!(GitOperationKind::Push.display_name(), "推送");
     }
 }
 

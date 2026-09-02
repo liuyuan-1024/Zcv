@@ -395,11 +395,7 @@ fn run_git_operation(
         return;
     };
     let task = git_store.update(cx, |store, cx| store.run_operation(operation, cx));
-    let name = match operation {
-        GitOperationKind::Fetch => "拉取",
-        GitOperationKind::Pull => "合并拉取",
-        GitOperationKind::Push => "推送",
-    };
+    let name = operation.display_name();
     cx.spawn(move |this: WeakEntity<Workspace>, asynccx: &mut AsyncApp| {
         let mut cx = asynccx.clone();
         async move {

@@ -96,10 +96,15 @@ impl SvgPreviewView {
         let generation = self.render_generation;
         self.state = SvgPreviewState::Loading;
 
-        let rasterize_task =
-            cx.background_spawn(async move { rasterize_svg(&bytes, resources_dir) });
+        let renderer = cx.svg_renderer();
+        let render_task = cx.background_spawn(async move {
+            let rasterized = rasterize_svg(&bytes, resources_dir)?;
+            Image::from_bytes(ImageFormat::Png, rasterized.png)
+                .to_image_data(renderer)
+                .map_err(|error| error.to_string())
+        });
         self.render_task = Some(cx.spawn(async move |this, cx| {
-            let rasterized = rasterize_task.await;
+            let rendered = render_task.await;
             let _ = this.update(cx, |view, cx| {
                 if view.render_generation != generation
                     || view.multi_buffer.read(cx).snapshot(cx).version() != version
@@ -107,11 +112,8 @@ impl SvgPreviewView {
                     return;
                 }
                 view.render_task = None;
-                view.state = match rasterized {
-                    Ok(rasterized) => Image::from_bytes(ImageFormat::Png, rasterized.png)
-                        .to_image_data(cx.svg_renderer())
-                        .map(SvgPreviewState::Ready)
-                        .unwrap_or_else(|error| SvgPreviewState::Error(error.to_string())),
+                view.state = match rendered {
+                    Ok(image) => SvgPreviewState::Ready(image),
                     Err(error) => SvgPreviewState::Error(error),
                 };
                 cx.notify();
@@ -141,7 +143,8 @@ impl Render for SvgPreviewView {
                 .child("正在渲染 SVG…")
                 .into_any_element(),
             SvgPreviewState::Ready(image) => img(image.clone())
-                .size_full()
+                .max_w_full()
+                .max_h_full()
                 .object_fit(ObjectFit::Contain)
                 .into_any_element(),
             SvgPreviewState::Error(error) => div()

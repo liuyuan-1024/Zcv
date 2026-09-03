@@ -19,7 +19,7 @@ pub(crate) fn rasterize_svg(
     let tree = resvg::usvg::Tree::from_data(bytes, &options).map_err(|error| error.to_string())?;
     let svg_size = tree.size();
     let longest_edge = svg_size.width().max(svg_size.height());
-    let scale = SVG_PREVIEW_MAX_RASTER_EDGE / longest_edge;
+    let scale = (SVG_PREVIEW_MAX_RASTER_EDGE / longest_edge).min(1.0);
     let width = (svg_size.width() * scale).ceil().max(1.0) as u32;
     let height = (svg_size.height() * scale).ceil().max(1.0) as u32;
     let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)
@@ -46,9 +46,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn small_svg_is_rasterized_at_preview_resolution() {
+    fn small_svg_preserves_its_intrinsic_resolution() {
         let image = rasterize_svg(
             br#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="8"><rect width="16" height="8"/></svg>"#,
+            None,
+        )
+        .expect("有效 SVG 应能渲染");
+        assert_eq!(
+            u32::from_be_bytes(image.png[16..20].try_into().unwrap()),
+            16
+        );
+        assert_eq!(u32::from_be_bytes(image.png[20..24].try_into().unwrap()), 8);
+    }
+
+    #[test]
+    fn oversized_svg_is_limited_to_the_maximum_preview_edge() {
+        let image = rasterize_svg(
+            br#"<svg xmlns="http://www.w3.org/2000/svg" width="4096" height="1024"><rect width="4096" height="1024"/></svg>"#,
             None,
         )
         .expect("有效 SVG 应能渲染");
@@ -58,7 +72,7 @@ mod tests {
         );
         assert_eq!(
             u32::from_be_bytes(image.png[20..24].try_into().unwrap()),
-            1024
+            512
         );
     }
 }

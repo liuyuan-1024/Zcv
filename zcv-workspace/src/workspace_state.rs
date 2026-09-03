@@ -25,16 +25,12 @@ use crate::item_provider::{item_provider_for_path, serialized_item_provider_for_
 use crate::layout_state::{self, PanelState, SerializedPane, SerializedPaneItem, WorkspaceLayout};
 use crate::pane::{Pane, PaneEvent};
 use crate::panel::PanelHandle;
-use crate::preview::provider_for;
 use crate::status_bar::StatusBar;
 use crate::toast::{ToastAction, ToastKind, ToastLayer};
 use crate::window_bounds;
 use crate::window_controls::{ToggleMaximizeWindow, handle_minimize};
 
 const LAYOUT_SAVE_THROTTLE: Duration = Duration::from_millis(200);
-
-/// 支持预览的文件需要等待双击判定，避免双击源码前短暂显示预览。
-const FILE_SINGLE_CLICK_DELAY: Duration = Duration::from_millis(300);
 
 /// 打开设置文件的路径提供者：宿主注入，返回设置文件路径。
 pub(crate) type OpenSettingsPathProvider = Box<dyn Fn(&mut App) -> Option<PathBuf> + Send + Sync>;
@@ -56,8 +52,6 @@ pub struct Workspace {
     pub left_dock: Entity<Dock>,
     pub right_dock: Entity<Dock>,
     pub bottom_dock: Entity<Dock>,
-    /// 统一取消来自项目树、变更树等入口的待处理单击打开。
-    file_click_generation: u64,
     /// 顶栏视图，由宿主注入。
     titlebar: Option<AnyView>,
     /// 打开设置文件的路径提供者（设置文件属于宿主配置，需注入）。
@@ -173,7 +167,6 @@ impl Workspace {
             left_dock,
             right_dock,
             bottom_dock,
-            file_click_generation: 0,
             titlebar: None,
             open_settings_path_provider: None,
             _subscriptions: std::iter::once(layout_subscription)
@@ -456,7 +449,7 @@ impl Workspace {
         }
     }
 
-    /// 所有文件树入口共享的单击/双击协调逻辑。
+    /// 从文件树打开文件：单击立即创建临时标签，双击由调用方以固定标签再次打开。
     pub fn open_path(
         &mut self,
         path: PathBuf,
@@ -464,27 +457,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.file_click_generation = self.file_click_generation.wrapping_add(1);
-        let generation = self.file_click_generation;
-
-        if focus_opened_item || provider_for(&path, cx).is_none() {
-            self.open_path_now(path, focus_opened_item, None, window, cx);
-            return;
-        }
-
-        cx.spawn_in(window, async move |workspace, cx| {
-            cx.background_executor()
-                .timer(FILE_SINGLE_CLICK_DELAY)
-                .await;
-            workspace
-                .update_in(cx, |workspace, window, cx| {
-                    if workspace.file_click_generation == generation {
-                        workspace.open_path_now(path, false, None, window, cx);
-                    }
-                })
-                .ok();
-        })
-        .detach();
+        self.open_path_now(path, focus_opened_item, None, window, cx);
     }
 
     /// 打开文件并把文本 Item 定位到指定 UTF-8 字节范围。
@@ -495,7 +468,6 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.file_click_generation = self.file_click_generation.wrapping_add(1);
         self.open_path_now(
             path,
             true,
@@ -514,7 +486,6 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.file_click_generation = self.file_click_generation.wrapping_add(1);
         self.open_path_now(
             path,
             true,

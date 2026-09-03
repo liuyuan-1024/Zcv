@@ -3,6 +3,7 @@
 use std::any::TypeId;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use gpui::{
     AnyElement, AnyEntity, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontStyle,
@@ -22,6 +23,8 @@ use zcv_workspace::{
 
 use crate::document::{Block, Inline, parse};
 
+const MARKDOWN_REPARSE_DEBOUNCE: Duration = Duration::from_millis(200);
+
 pub(crate) struct MarkdownPreviewView {
     source_item: Box<dyn ItemHandle>,
     multi_buffer: Entity<MultiBuffer>,
@@ -30,6 +33,8 @@ pub(crate) struct MarkdownPreviewView {
     blocks: Vec<Block>,
     code_highlight_generation: u64,
     code_highlight_task: Option<Task<()>>,
+    refresh_generation: u64,
+    refresh_task: Option<Task<()>>,
     _document_subscription: Subscription,
     _item_subscription: Subscription,
 }
@@ -44,7 +49,7 @@ impl MarkdownPreviewView {
         let source_item = document.source_item;
         let multi_buffer = document.multi_buffer;
         let document_subscription = cx.observe(&multi_buffer, |view, _, cx| {
-            view.refresh(cx);
+            view.schedule_refresh(cx);
         });
         let this = cx.entity().downgrade();
         let item_subscription = source_item.subscribe_to_item_events(
@@ -70,11 +75,30 @@ impl MarkdownPreviewView {
             blocks: Vec::new(),
             code_highlight_generation: 0,
             code_highlight_task: None,
+            refresh_generation: 0,
+            refresh_task: None,
             _document_subscription: document_subscription,
             _item_subscription: item_subscription,
         };
         view.refresh(cx);
         view
+    }
+
+    fn schedule_refresh(&mut self, cx: &mut Context<Self>) {
+        // 连续输入时仅保留最新一次更新，避免每个按键都重建整个预览。
+        self.refresh_generation = self.refresh_generation.wrapping_add(1);
+        let generation = self.refresh_generation;
+        let timer = cx.background_executor().timer(MARKDOWN_REPARSE_DEBOUNCE);
+        self.refresh_task = Some(cx.spawn(async move |this, cx| {
+            timer.await;
+            let _ = this.update(cx, |view, cx| {
+                if view.refresh_generation != generation {
+                    return;
+                }
+                view.refresh_task = None;
+                view.refresh(cx);
+            });
+        }));
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -595,7 +619,9 @@ mod tests {
 
     use crate::document::{Inline, InlineStyle, parse};
 
-    use super::{Block, MarkdownPreviewView, code_lines, highlight_code_blocks};
+    use super::{
+        Block, MARKDOWN_REPARSE_DEBOUNCE, MarkdownPreviewView, code_lines, highlight_code_blocks,
+    };
 
     fn plain(text: &str) -> Inline {
         Inline {
@@ -647,6 +673,7 @@ mod tests {
                 cx,
             )
         });
+        cx.run_until_parked();
         cx.read_entity(&view, |view, _| {
             assert_eq!(
                 view.blocks,
@@ -658,12 +685,46 @@ mod tests {
         });
 
         editor.update(cx, |editor, cx| editor.set_text("更新后的正文", cx));
+        cx.executor().advance_clock(MARKDOWN_REPARSE_DEBOUNCE);
         cx.run_until_parked();
         cx.read_entity(&view, |view, _| {
             assert_eq!(
                 view.blocks,
                 vec![Block::Paragraph(vec![plain("更新后的正文")])]
             );
+        });
+    }
+
+    #[gpui::test]
+    fn preview_coalesces_rapid_document_changes(cx: &mut TestAppContext) {
+        let editor = cx.new(Editor::single_line);
+        editor.update(cx, |editor, cx| {
+            editor.set_text("初始正文", cx);
+            editor.set_file_path(PathBuf::from("README.md"), cx);
+        });
+        let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
+        let view = cx.new(|cx| {
+            MarkdownPreviewView::new(
+                PreviewDocument {
+                    path: PathBuf::from("README.md"),
+                    source_item: Box::new(editor.clone()),
+                    multi_buffer,
+                },
+                cx,
+            )
+        });
+        cx.run_until_parked();
+
+        editor.update(cx, |editor, cx| editor.set_text("第一次修改", cx));
+        editor.update(cx, |editor, cx| editor.set_text("最终内容", cx));
+        cx.read_entity(&view, |view, _| {
+            assert_eq!(view.blocks, vec![Block::Paragraph(vec![plain("初始正文")])]);
+        });
+
+        cx.executor().advance_clock(MARKDOWN_REPARSE_DEBOUNCE);
+        cx.run_until_parked();
+        cx.read_entity(&view, |view, _| {
+            assert_eq!(view.blocks, vec![Block::Paragraph(vec![plain("最终内容")])]);
         });
     }
 }

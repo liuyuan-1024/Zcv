@@ -244,6 +244,7 @@ fn render_block(
                 .into_any_element()
         }
         Block::List { start, items } => {
+            let marker_width = list_marker_width(*start, items.len());
             let children = items
                 .iter()
                 .enumerate()
@@ -260,10 +261,12 @@ fn render_block(
                         .collect::<Vec<_>>();
                     div()
                         .flex()
-                        .gap_2()
+                        .gap_1()
                         .child(
                             div()
-                                .w_5()
+                                .w(marker_width)
+                                .flex_none()
+                                .text_left()
                                 .text_color(color::current(cx).text_muted)
                                 .child(marker),
                         )
@@ -315,6 +318,19 @@ fn render_block(
             .bg(color::current(cx).border_variant)
             .into_any_element(),
     }
+}
+
+fn list_marker_width(start: Option<u64>, item_count: usize) -> gpui::Pixels {
+    let marker_char_count = list_marker_char_count(start, item_count);
+    // 标记列按字符数预留，正文与编号之间只保留布局间距。
+    typography::content_size() * (marker_char_count as f32 * 0.6)
+}
+
+fn list_marker_char_count(start: Option<u64>, item_count: usize) -> usize {
+    start.map_or(1, |start| {
+        let last_marker = start.saturating_add(item_count.saturating_sub(1) as u64);
+        last_marker.to_string().len() + 1
+    })
 }
 
 fn render_image(source: &str, alt: &str, source_directory: Option<&Path>, cx: &App) -> AnyElement {
@@ -621,6 +637,7 @@ mod tests {
 
     use super::{
         Block, MARKDOWN_REPARSE_DEBOUNCE, MarkdownPreviewView, code_lines, highlight_code_blocks,
+        list_marker_char_count,
     };
 
     fn plain(text: &str) -> Inline {
@@ -640,6 +657,14 @@ mod tests {
             code_lines("let x = 1;\n\n").collect::<Vec<_>>(),
             ["let x = 1;", ""]
         );
+    }
+
+    #[test]
+    fn ordered_list_marker_width_accounts_for_multi_digit_numbers() {
+        assert_eq!(list_marker_char_count(None, 3), 1);
+        assert_eq!(list_marker_char_count(Some(1), 9), 2);
+        assert_eq!(list_marker_char_count(Some(10), 11), 3);
+        assert_eq!(list_marker_char_count(Some(98), 3), 4);
     }
 
     #[test]

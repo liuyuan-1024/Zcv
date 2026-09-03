@@ -12,12 +12,34 @@ use zcv_settings::config_dir;
 use crate::dock::DockStructure;
 use crate::persistence;
 
-pub(crate) const LAYOUT_VERSION: u32 = 2;
+pub(crate) const LAYOUT_VERSION: u32 = 3;
 
-/// 中心 Pane 的源码标签快照：预览标签不持久化，active_item 为对应源码标签索引。
+/// 可持久化的 Pane 标签类型。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SerializedPaneItem {
+    Source(PathBuf),
+    Preview(PathBuf),
+    /// 由具体 Item 重新构建的非文件标签。
+    Custom {
+        kind: String,
+        state: serde_json::Value,
+    },
+}
+
+impl SerializedPaneItem {
+    /// 文件标签的路径；非文件标签没有可替代的单一路径。
+    pub(crate) fn path(&self) -> Option<&Path> {
+        match self {
+            Self::Source(path) | Self::Preview(path) => Some(path),
+            Self::Custom { .. } => None,
+        }
+    }
+}
+
+/// 中心 Pane 的固定标签快照；临时标签不写入布局。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct SerializedPane {
-    pub(crate) items: Vec<PathBuf>,
+    pub(crate) items: Vec<SerializedPaneItem>,
     pub(crate) active_item: Option<usize>,
 }
 
@@ -77,8 +99,15 @@ mod tests {
                 ..DockStructure::default()
             },
             pane: SerializedPane {
-                items: vec![PathBuf::from("a.txt"), PathBuf::from("b.txt")],
-                active_item: Some(1),
+                items: vec![
+                    SerializedPaneItem::Source(PathBuf::from("a.txt")),
+                    SerializedPaneItem::Preview(PathBuf::from("b.txt")),
+                    SerializedPaneItem::Custom {
+                        kind: "project-diff".into(),
+                        state: serde_json::json!({ "kind": "staged" }),
+                    },
+                ],
+                active_item: Some(2),
             },
             panels: Vec::new(),
         };

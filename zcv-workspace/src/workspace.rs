@@ -35,7 +35,10 @@ pub use activity_indicator::ActivityIndicator;
 pub use branch_picker::{GitBranchAction, OnBranchSelected};
 pub use dock::{Dock, DockPosition};
 pub use item::{Item, ItemEvent, ItemHandle};
-pub use item_provider::{ItemProvider, register_item_provider};
+pub use item_provider::{
+    ItemProvider, SerializedItemProvider, register_item_provider, register_serialized_item_provider,
+};
+pub use layout_state::SerializedPaneItem;
 pub use pane::{Pane, PaneEvent};
 pub use panel::{Panel, PanelEvent, PanelHandle};
 pub use panel_buttons::PanelButtons;

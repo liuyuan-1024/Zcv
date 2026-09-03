@@ -20,7 +20,12 @@ use zcv_project::{DiffRequest, GitStoreEvent, Project};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Snapshot};
 use zcv_theme::{color, space};
 use zcv_ui::{Button, ButtonSize};
-use zcv_workspace::{Item, ItemEvent, SearchableItemHandle, ToolbarItemLocation, Workspace};
+use zcv_workspace::{
+    Item, ItemEvent, SearchableItemHandle, SerializedItemProvider, SerializedPaneItem,
+    ToolbarItemLocation, Workspace,
+};
+
+const PROJECT_DIFF_SERIALIZED_KIND: &str = "project-diff";
 
 #[derive(Clone)]
 struct GitChangeFile {
@@ -220,6 +225,21 @@ impl ProjectDiffKind {
         match self {
             Self::Staged => "icons/lock.svg",
             Self::Unstaged => "icons/diff.svg",
+        }
+    }
+
+    fn serialized_name(self) -> &'static str {
+        match self {
+            Self::Staged => "staged",
+            Self::Unstaged => "unstaged",
+        }
+    }
+
+    fn from_serialized_name(name: &str) -> Option<Self> {
+        match name {
+            "staged" => Some(Self::Staged),
+            "unstaged" => Some(Self::Unstaged),
+            _ => None,
         }
     }
 }
@@ -689,6 +709,16 @@ impl Item for ProjectDiffView {
             .map(|location| location.path)
     }
 
+    fn serialized_pane_item(&self, cx: &App) -> Option<SerializedPaneItem> {
+        Some(SerializedPaneItem::Custom {
+            kind: PROJECT_DIFF_SERIALIZED_KIND.into(),
+            state: serde_json::json!({
+                "kind": self.kind.serialized_name(),
+                "active_path": self.active_path(cx),
+            }),
+        })
+    }
+
     fn multi_buffer(&self, _cx: &App) -> Option<Entity<MultiBuffer>> {
         Some(self.multi_buffer.clone())
     }
@@ -741,33 +771,55 @@ impl Item for ProjectDiffView {
     }
 }
 
-/// 打开或复用未提交变更 Item，并定位到版本管理面板选择的文件。
-pub(crate) fn deploy_at(
-    workspace: &mut Workspace,
-    kind: ProjectDiffKind,
-    path: PathBuf,
-    focus_opened_item: bool,
+/// 从布局恢复 Git 组合文档；
+/// 内容和文件集合始终由当前 GitStore 状态重新生成。
+pub(crate) struct ProjectDiffSerializedItemProvider;
+
+impl SerializedItemProvider for ProjectDiffSerializedItemProvider {
+    fn kind(&self) -> &'static str {
+        PROJECT_DIFF_SERIALIZED_KIND
+    }
+
+    fn restore(
+        &self,
+        state: serde_json::Value,
+        project: Entity<Project>,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> Task<anyhow::Result<Box<dyn zcv_workspace::ItemHandle>>> {
+        let result = project_diff_state(&state).map(|(kind, active_path)| {
+            let view = cx.new(|cx| ProjectDiffView::new(kind, project, cx));
+            if let Some(path) = active_path {
+                view.update(cx, |view, cx| view.move_to_path(path, cx));
+            }
+            subscribe_to_open_excerpts(&view, window, cx);
+            Box::new(view) as Box<dyn zcv_workspace::ItemHandle>
+        });
+        Task::ready(result)
+    }
+}
+
+fn project_diff_state(
+    state: &serde_json::Value,
+) -> anyhow::Result<(ProjectDiffKind, Option<PathBuf>)> {
+    let kind = state
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .and_then(ProjectDiffKind::from_serialized_name)
+        .ok_or_else(|| anyhow::anyhow!("项目差异标签缺少有效分组"))?;
+    let active_path = state
+        .get("active_path")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from);
+    Ok((kind, active_path))
+}
+
+fn subscribe_to_open_excerpts(
+    view: &Entity<ProjectDiffView>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    let pane = workspace.pane().clone();
-    if let Some(existing) = pane.read(cx).tabs().iter().find_map(|item| {
-        item.act_as::<ProjectDiffView>(cx)
-            .filter(|view| view.read(cx).kind == kind)
-    }) {
-        let item_id = existing.entity_id();
-        existing.update(cx, |view, cx| view.move_to_path(path, cx));
-        pane.update(cx, |pane, cx| pane.activate_tab(item_id, window, cx));
-        if focus_opened_item {
-            window.focus(&existing.read(cx).focus_handle(cx));
-        }
-        return;
-    }
-
-    let project = workspace.project().clone();
-    let view = cx.new(|cx| ProjectDiffView::new(kind, project, cx));
-    view.update(cx, |view, cx| view.move_to_path(path, cx));
-    cx.subscribe_in(&view, window, |workspace, view, event, window, cx| {
+    cx.subscribe_in(view, window, |workspace, view, event, window, cx| {
         let EditorEvent::OpenExcerptsRequested { locations, .. } = event else {
             return;
         };
@@ -796,6 +848,35 @@ pub(crate) fn deploy_at(
         }
     })
     .detach();
+}
+
+/// 打开或复用未提交变更 Item，并定位到版本管理面板选择的文件。
+pub(crate) fn deploy_at(
+    workspace: &mut Workspace,
+    kind: ProjectDiffKind,
+    path: PathBuf,
+    focus_opened_item: bool,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let pane = workspace.pane().clone();
+    if let Some(existing) = pane.read(cx).tabs().iter().find_map(|item| {
+        item.act_as::<ProjectDiffView>(cx)
+            .filter(|view| view.read(cx).kind == kind)
+    }) {
+        let item_id = existing.entity_id();
+        existing.update(cx, |view, cx| view.move_to_path(path, cx));
+        pane.update(cx, |pane, cx| pane.activate_tab(item_id, window, cx));
+        if focus_opened_item {
+            window.focus(&existing.read(cx).focus_handle(cx));
+        }
+        return;
+    }
+
+    let project = workspace.project().clone();
+    let view = cx.new(|cx| ProjectDiffView::new(kind, project, cx));
+    view.update(cx, |view, cx| view.move_to_path(path, cx));
+    subscribe_to_open_excerpts(&view, window, cx);
     let focus = pane.update(cx, |pane, cx| {
         pane.open_item(Box::new(view), false, window, cx)
     });
@@ -812,6 +893,19 @@ mod tests {
     use zcv_git::DiffHunkKind;
     use zcv_multi_buffer::ExcerptDiffKind;
     use zcv_text::Line;
+
+    #[test]
+    fn project_diff_persistence_state_keeps_group_and_active_path() {
+        let (kind, active_path) = project_diff_state(&serde_json::json!({
+            "kind": "unstaged",
+            "active_path": "src/main.rs",
+        }))
+        .expect("有效的项目差异状态应能恢复");
+        assert_eq!(kind, ProjectDiffKind::Unstaged);
+        assert_eq!(active_path, Some(PathBuf::from("src/main.rs")));
+
+        assert!(project_diff_state(&serde_json::json!({ "kind": "unknown" })).is_err());
+    }
 
     /// 把列（Unicode scalar 计数）钳制到文本中指定行的有效长度（行 0-based）。
     ///

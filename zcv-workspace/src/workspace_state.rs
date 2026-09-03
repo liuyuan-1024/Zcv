@@ -21,8 +21,8 @@ use zcv_theme::{color, typography};
 
 use crate::ItemHandle;
 use crate::dock::{Dock, DockEvent, DockPosition, DockStructure, DraggedDock, render_body};
-use crate::item_provider::item_provider_for_path;
-use crate::layout_state::{self, PanelState, SerializedPane, WorkspaceLayout};
+use crate::item_provider::{item_provider_for_path, serialized_item_provider_for_kind};
+use crate::layout_state::{self, PanelState, SerializedPane, SerializedPaneItem, WorkspaceLayout};
 use crate::pane::{Pane, PaneEvent};
 use crate::panel::PanelHandle;
 use crate::preview::provider_for;
@@ -317,8 +317,7 @@ impl Workspace {
 
     // ═══ 文件打开 ═════════════════════════════════════════════════
 
-    /// 恢复持久化的标签：按保存顺序固定打开，无路径/失效路径跳过，最后激活保存的位置。
-    /// 与 open_path 的单击语义无关：固定打开不走临时标签流程。
+    /// 恢复固定标签：保留源码/预览类型、保存顺序与激活位置；临时标签从不进入布局。
     fn restore_pane(
         &mut self,
         state: &SerializedPane,
@@ -327,34 +326,104 @@ impl Workspace {
     ) {
         let project = self.project.clone();
         let pane = self.pane.clone();
-        let tasks: Vec<gpui::Task<anyhow::Result<Box<dyn ItemHandle>>>> = state
-            .items
-            .iter()
-            .filter_map(|path| {
-                let path = path.canonicalize().ok()?;
-                let provider = item_provider_for_path(&path, cx)?;
-                Some(provider.open_item(path, project.clone(), cx))
-            })
-            .collect();
+        let items = state.items.clone();
+        let mut source_tasks = Vec::new();
+        let mut custom_tasks = Vec::new();
+        for (index, item) in items.iter().enumerate() {
+            let Some(serialized_path) = item.path().map(Path::to_path_buf) else {
+                let SerializedPaneItem::Custom { kind, state } = item else {
+                    continue;
+                };
+                let Some(provider) = serialized_item_provider_for_kind(kind, cx) else {
+                    continue;
+                };
+                custom_tasks.push((
+                    index,
+                    provider.restore(state.clone(), project.clone(), window, cx),
+                ));
+                continue;
+            };
+            if source_tasks.iter().any(
+                |(path, _): &(PathBuf, gpui::Task<anyhow::Result<Box<dyn ItemHandle>>>)| {
+                    path == &serialized_path
+                },
+            ) {
+                continue;
+            }
+            let path = serialized_path.canonicalize().ok();
+            let Some(path) = path else {
+                continue;
+            };
+            let Some(provider) = item_provider_for_path(&path, cx) else {
+                continue;
+            };
+            source_tasks.push((
+                serialized_path,
+                provider.open_item(path, project.clone(), cx),
+            ));
+        }
         let active_index = state.active_item;
         cx.spawn_in(window, async move |_workspace, cx| {
-            for task in tasks {
+            let mut sources = Vec::new();
+            for (path, task) in source_tasks {
                 if let Ok(item) = task.await {
-                    _workspace
-                        .update_in(cx, |_workspace, window, cx| {
-                            pane.update(cx, |pane, cx| pane.open_item(item, false, window, cx));
-                        })
-                        .ok();
+                    sources.push((path, item));
                 }
             }
-            // 恢复活动标签（打开顺序与保存顺序一致，索引可直接映射）。
-            if let Some(index) = active_index {
+
+            let mut restored_items = std::iter::repeat_with(|| None)
+                .take(items.len())
+                .collect::<Vec<Option<Box<dyn ItemHandle>>>>();
+            for (index, task) in custom_tasks {
+                if let Ok(item) = task.await {
+                    restored_items[index] = Some(item);
+                }
+            }
+
+            let mut restored = vec![None; items.len()];
+            for (index, serialized_item) in items.iter().enumerate() {
+                let item = match serialized_item {
+                    SerializedPaneItem::Source(_) | SerializedPaneItem::Preview(_) => sources
+                        .iter()
+                        .find(|(path, _)| {
+                            serialized_item
+                                .path()
+                                .is_some_and(|item_path| path == item_path)
+                        })
+                        .map(|(_, item)| item.boxed_clone()),
+                    SerializedPaneItem::Custom { .. } => restored_items[index]
+                        .as_ref()
+                        .map(|item| item.boxed_clone()),
+                };
+                let Some(item) = item else {
+                    continue;
+                };
+                restored[index] = _workspace
+                    .update_in(cx, |_workspace, window, cx| {
+                        pane.update(cx, |pane, cx| match serialized_item {
+                            SerializedPaneItem::Source(_) => {
+                                pane.open_item(item, false, window, cx);
+                                pane.active_item().map(ItemHandle::item_id)
+                            }
+                            SerializedPaneItem::Preview(_) => pane
+                                .open_persistent_preview(item, window, cx)
+                                .and_then(|_| pane.active_item().map(ItemHandle::item_id)),
+                            SerializedPaneItem::Custom { .. } => {
+                                pane.open_item(item, false, window, cx);
+                                pane.active_item().map(ItemHandle::item_id)
+                            }
+                        })
+                    })
+                    .ok()
+                    .flatten();
+            }
+
+            if let Some(item_id) = active_index
+                .and_then(|index| restored.get(index))
+                .and_then(|item_id| *item_id)
+            {
                 _workspace
                     .update_in(cx, |_workspace, window, cx| {
-                        let Some(item) = pane.read(cx).tabs().get(index) else {
-                            return;
-                        };
-                        let item_id = item.item_id();
                         pane.update(cx, |pane, cx| {
                             pane.activate_tab(item_id, window, cx);
                         });

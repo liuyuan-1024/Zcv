@@ -27,7 +27,8 @@ use zcv_theme::{ThemeChoice, color, typography};
 use zcv_workspace::{
     ActivityIndicator, Dock, DockPosition, GitBranchAction, OnBranchSelected, OnProjectSelected,
     Pane, PaneEvent, Panel, PanelButtons, PanelEvent, PanelHandle, PreviewButton, ToastAction,
-    ToastKind, TopBar, Workspace, add_to_recent, load_window_bounds, save_window_bounds,
+    ToastKind, TopBar, Workspace, add_to_recent, load_window_bounds,
+    register_serialized_item_provider, save_window_bounds,
 };
 
 use crate::active_buffer_language::ActiveBufferLanguage;
@@ -35,7 +36,7 @@ use crate::auto_update::{UpdateButton, UpdateManager};
 use crate::breadcrumbs::Breadcrumbs;
 use crate::cursor_position::CursorPosition;
 use crate::harness::HarnessButton;
-use crate::project_diff;
+use crate::project_diff::{self, ProjectDiffSerializedItemProvider, ProjectDiffView};
 use crate::version_control::{OnOpenGitDiff, VersionControlPanel};
 use zcv_project_tree::{OnCreate, OnMove, OnOpenFile, OnRename, OnTrash, ProjectTreePanel};
 use zcv_terminal::TerminalPanel;
@@ -457,6 +458,7 @@ fn initialize_workspace(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
+    register_serialized_item_provider(ProjectDiffSerializedItemProvider, cx);
     // ═══ 顶栏注入 ═══════════════════════════════════════════════════
 
     let weak_self: gpui::WeakEntity<Workspace> = cx.weak_entity();
@@ -718,7 +720,7 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
         .read(cx)
         .tabs()
         .iter()
-        .filter(|item| item.act_as::<project_diff::ProjectDiffView>(cx).is_none())
+        .filter(|item| item.act_as::<ProjectDiffView>(cx).is_none())
         .filter_map(|item| item.multi_buffer(cx))
         .flat_map(|multi_buffer| {
             multi_buffer
@@ -734,7 +736,7 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
         pane.read(cx)
             .tabs()
             .iter()
-            .filter_map(|item| item.act_as::<project_diff::ProjectDiffView>(cx))
+            .filter_map(|item| item.act_as::<ProjectDiffView>(cx))
             .flat_map(|view| view.read(cx).diff_requests().collect::<Vec<_>>()),
     );
     let opened: Vec<(Entity<Editor>, PathBuf)> = pane
@@ -742,7 +744,7 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
         .tabs()
         .iter()
         .filter_map(|item| {
-            if item.act_as::<project_diff::ProjectDiffView>(cx).is_some() {
+            if item.act_as::<ProjectDiffView>(cx).is_some() {
                 return None;
             }
             let editor = item.act_as::<Editor>(cx)?;

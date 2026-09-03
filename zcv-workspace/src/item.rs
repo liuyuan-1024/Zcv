@@ -14,6 +14,7 @@ use gpui::{
 use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
 
+use crate::SerializedPaneItem;
 use crate::preview::PreviewItemHandle;
 use crate::searchable::SearchableItemHandle;
 use crate::toolbar::ToolbarItemLocation;
@@ -50,6 +51,14 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
     /// 标签去重、持久化与文件操作使用的稳定身份路径。
     fn item_path(&self, _cx: &App) -> Option<PathBuf> {
         None
+    }
+
+    /// 固定标签写入布局时的身份描述。
+    ///
+    /// 默认以单文件路径恢复；
+    /// 组合文档等没有单一路径身份的 Item 必须覆盖此方法，返回由宿主注册表重建的 `Custom` 描述。
+    fn serialized_pane_item(&self, cx: &App) -> Option<SerializedPaneItem> {
+        self.item_path(cx).map(SerializedPaneItem::Source)
     }
 
     /// 当前光标/视图对应的活动路径。组合文档可与标签身份路径不同。
@@ -145,6 +154,7 @@ pub trait ItemHandle: Send + 'static {
     fn tab_icon(&self, cx: &App) -> Option<SharedString>;
     fn is_dirty(&self, cx: &App) -> bool;
     fn item_path(&self, cx: &App) -> Option<PathBuf>;
+    fn serialized_pane_item(&self, cx: &App) -> Option<SerializedPaneItem>;
     fn active_path(&self, cx: &App) -> Option<PathBuf>;
     fn rename_path(&self, from: &Path, to: &Path, cx: &mut App);
     fn multi_buffer(&self, cx: &App) -> Option<Entity<MultiBuffer>>;
@@ -212,6 +222,10 @@ impl<T: Item> ItemHandle for Entity<T> {
 
     fn item_path(&self, cx: &App) -> Option<PathBuf> {
         self.read(cx).item_path(cx)
+    }
+
+    fn serialized_pane_item(&self, cx: &App) -> Option<SerializedPaneItem> {
+        self.read(cx).serialized_pane_item(cx)
     }
 
     fn active_path(&self, cx: &App) -> Option<PathBuf> {

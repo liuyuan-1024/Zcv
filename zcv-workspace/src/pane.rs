@@ -15,7 +15,7 @@ use zcv_actions::{CloseTab, NextTab, PrevTab, TogglePreview};
 use zcv_theme::{FileIcons, color, typography};
 use zcv_ui::{Button, SvgIcon, Tab};
 
-use crate::layout_state::SerializedPane;
+use crate::layout_state::{SerializedPane, SerializedPaneItem};
 use crate::preview::{PreviewDocument, provider_for};
 use crate::tab_bar::{TabBar, TabBarTrailing};
 use crate::toolbar::Toolbar;
@@ -119,29 +119,29 @@ impl Pane {
         self.tab_bar_trailing = Some(Rc::new(build));
     }
 
-    /// 序列化当前标签快照：只记录源码 Item 的路径与激活位置（预览、终端等不持久化）。
+    /// 序列化固定标签；临时源码与临时预览不持久化。
     pub(crate) fn serialized(&self, cx: &App) -> SerializedPane {
-        let source_items: Vec<&Box<dyn ItemHandle>> = self
-            .tabs
-            .iter()
-            .filter(|item| !is_preview_item(item.as_ref(), cx))
-            .collect();
-        let active_source_id = self.active.and_then(|active_id| {
-            let item = self.tabs.iter().find(|item| item.item_id() == active_id)?;
-            if let Some(preview) = item.as_preview_item(cx) {
-                preview.source_item(cx).map(|source| source.item_id())
-            } else {
-                Some(active_id)
+        let mut items = Vec::new();
+        let mut active_item = None;
+        for item in &self.tabs {
+            if self.is_transient_item(item.item_id()) {
+                continue;
             }
-        });
-        SerializedPane {
-            items: source_items
-                .iter()
-                .filter_map(|item| item.item_path(cx))
-                .collect(),
-            active_item: active_source_id
-                .and_then(|id| source_items.iter().position(|item| item.item_id() == id)),
+            let serialized_item = if let Some(preview) = item.as_preview_item(cx) {
+                preview
+                    .source_item(cx)
+                    .and_then(|source| source.item_path(cx).map(SerializedPaneItem::Preview))
+            } else {
+                item.serialized_pane_item(cx)
+            };
+            if let Some(serialized_item) = serialized_item {
+                if self.active == Some(item.item_id()) {
+                    active_item = Some(items.len());
+                }
+                items.push(serialized_item);
+            }
         }
+        SerializedPane { items, active_item }
     }
 
     /// 滚动到指定索引的标签到可视区域。
@@ -313,6 +313,27 @@ impl Pane {
         window.focus(&focus);
         window.refresh();
         Some(focus)
+    }
+
+    /// 将指定源码恢复为固定预览标签；仅供工作区布局恢复使用。
+    pub(crate) fn open_persistent_preview(
+        &mut self,
+        source_item: Box<dyn ItemHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<FocusHandle> {
+        let path = source_item.item_path(cx)?;
+        let provider = provider_for(&path, cx)?;
+        let multi_buffer = source_item.multi_buffer(cx)?;
+        let preview = provider.create(
+            PreviewDocument {
+                path,
+                source_item,
+                multi_buffer,
+            },
+            cx,
+        );
+        Some(self.add_boxed_item_at(preview, None, window, cx))
     }
 
     fn activate_source_for_preview(
@@ -712,13 +733,15 @@ impl Render for Pane {
             .on_action(cx.listener(Self::handle_toggle_preview))
             .when(active_item_id.is_some(), |pane| {
                 pane.child(render_tab_bar(
-                    &self.tabs,
-                    active_item_id,
-                    transient_source_item_id,
-                    transient_preview_item_id,
-                    pane_entity,
-                    &self.scroll_handle,
-                    trailing,
+                    TabBarRenderParams {
+                        tabs: &self.tabs,
+                        active_item_id,
+                        transient_source_item_id,
+                        transient_preview_item_id,
+                        pane_entity,
+                        scroll_handle: &self.scroll_handle,
+                        trailing,
+                    },
                     cx,
                 ))
             })
@@ -732,39 +755,42 @@ impl Render for Pane {
 // ── Tab Bar ──────────────────────────────────────────────────────────
 
 /// 标签栏：一组标签的容器 + 末尾放置目标 + 右侧功能插槽。
-fn render_tab_bar(
-    tabs: &[Box<dyn ItemHandle>],
+struct TabBarRenderParams<'a> {
+    tabs: &'a [Box<dyn ItemHandle>],
     active_item_id: Option<EntityId>,
     transient_source_item_id: Option<EntityId>,
     transient_preview_item_id: Option<EntityId>,
-    pane_entity: gpui::Entity<Pane>,
-    scroll_handle: &ScrollHandle,
+    pane_entity: Entity<Pane>,
+    scroll_handle: &'a ScrollHandle,
     trailing: Option<TabBarTrailing>,
-    cx: &App,
-) -> impl gpui::IntoElement {
-    let children: Vec<AnyElement> = tabs
+}
+
+fn render_tab_bar(params: TabBarRenderParams<'_>, cx: &App) -> impl gpui::IntoElement {
+    let children: Vec<AnyElement> = params
+        .tabs
         .iter()
         .enumerate()
         .map(|(ix, item)| {
             render_tab(
                 item.as_ref(),
                 ix,
-                Some(item.item_id()) == active_item_id,
-                Some(item.item_id()) == transient_source_item_id
-                    || Some(item.item_id()) == transient_preview_item_id,
-                &pane_entity,
+                Some(item.item_id()) == params.active_item_id,
+                Some(item.item_id()) == params.transient_source_item_id
+                    || Some(item.item_id()) == params.transient_preview_item_id,
+                &params.pane_entity,
                 cx,
             )
             .into_any_element()
         })
         .chain(std::iter::once(
-            render_tab_bar_drop_target(&pane_entity, tabs.len(), cx).into_any_element(),
+            render_tab_bar_drop_target(&params.pane_entity, params.tabs.len(), cx)
+                .into_any_element(),
         ))
         .collect();
 
-    let handle = scroll_handle.clone();
-    let mut tab_bar = TabBar::new().track_scroll(scroll_handle);
-    if let Some(trailing) = trailing {
+    let handle = params.scroll_handle.clone();
+    let mut tab_bar = TabBar::new().track_scroll(params.scroll_handle);
+    if let Some(trailing) = params.trailing {
         tab_bar = tab_bar.with_trailing(trailing);
     }
 
@@ -1229,6 +1255,39 @@ mod tests {
         }
     }
 
+    struct TestCompositeItem {
+        focus: FocusHandle,
+    }
+
+    impl EventEmitter<TestEvent> for TestCompositeItem {}
+
+    impl gpui::Focusable for TestCompositeItem {
+        fn focus_handle(&self, _cx: &App) -> FocusHandle {
+            self.focus.clone()
+        }
+    }
+
+    impl Render for TestCompositeItem {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    impl Item for TestCompositeItem {
+        type Event = TestEvent;
+
+        fn tab_content_text(&self, _cx: &App) -> gpui::SharedString {
+            "组合文档".into()
+        }
+
+        fn serialized_pane_item(&self, _cx: &App) -> Option<SerializedPaneItem> {
+            Some(SerializedPaneItem::Custom {
+                kind: "test-composite".into(),
+                state: serde_json::json!({ "group": "staged" }),
+            })
+        }
+    }
+
     /// 测试专用的假预览 Item：转发源码 Item 元数据，展示键为 Preview("fake")。
     struct FakePreviewItem {
         source_item: Box<dyn ItemHandle>,
@@ -1569,7 +1628,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn serialized_pane_excludes_preview_and_maps_active_source(cx: &mut TestAppContext) {
+    fn serialized_pane_keeps_fixed_preview_and_its_active_position(cx: &mut TestAppContext) {
         init_previews(cx);
         let pane = cx.new(Pane::new);
         let buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
@@ -1578,8 +1637,77 @@ mod tests {
 
         cx.read_entity(&pane, |pane, cx| {
             let state = pane.serialized(cx);
-            assert_eq!(state.items, vec![PathBuf::from("persisted.svg")]);
-            assert_eq!(state.active_item, Some(0));
+            assert_eq!(
+                state.items,
+                vec![
+                    SerializedPaneItem::Source(PathBuf::from("persisted.svg")),
+                    SerializedPaneItem::Preview(PathBuf::from("persisted.svg")),
+                ]
+            );
+            assert_eq!(state.active_item, Some(1));
+        });
+    }
+
+    #[gpui::test]
+    fn serialized_pane_omits_transient_preview(cx: &mut TestAppContext) {
+        init_previews(cx);
+        let pane = cx.new(Pane::new);
+        let buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
+        open_transient_file_in_test(cx, &pane, PathBuf::from("transient.svg"), buffer);
+
+        cx.read_entity(&pane, |pane, cx| {
+            assert_eq!(pane.serialized(cx), SerializedPane::default());
+        });
+    }
+
+    #[gpui::test]
+    fn serialized_pane_keeps_fixed_custom_item(cx: &mut TestAppContext) {
+        let pane = cx.new(Pane::new);
+        cx.add_window_view(|window, cx| {
+            pane.update(cx, |pane, cx| {
+                let item = cx.new(|cx| TestCompositeItem {
+                    focus: cx.focus_handle(),
+                });
+                pane.open_item(Box::new(item), false, window, cx);
+            });
+            TestView
+        });
+
+        cx.read_entity(&pane, |pane, cx| {
+            assert_eq!(
+                pane.serialized(cx),
+                SerializedPane {
+                    items: vec![SerializedPaneItem::Custom {
+                        kind: "test-composite".into(),
+                        state: serde_json::json!({ "group": "staged" }),
+                    }],
+                    active_item: Some(0),
+                }
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn restored_preview_is_fixed(cx: &mut TestAppContext) {
+        init_previews(cx);
+        let pane = cx.new(Pane::new);
+        let buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
+
+        cx.add_window_view(|window, cx| {
+            pane.update(cx, |pane, cx| {
+                let source = cx.new(|cx| {
+                    TestSourceItem::new(buffer.clone(), PathBuf::from("restored.svg"), cx)
+                });
+                pane.open_persistent_preview(Box::new(source), window, cx)
+                    .expect("已注册的预览应能恢复");
+            });
+            TestView
+        });
+
+        cx.read_entity(&pane, |pane, cx| {
+            let preview = pane.active_item().expect("预览应被加入标签栏");
+            assert!(is_preview_item(preview, cx));
+            assert!(!pane.is_transient_item(preview.item_id()));
         });
     }
 

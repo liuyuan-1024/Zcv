@@ -976,8 +976,8 @@ mod pty_tests {
     use std::time::{Duration, Instant};
 
     use gpui::{
-        Context, Entity, EntityInputHandler, IntoElement, KeyBinding, Render, TestAppContext,
-        VisualTestContext, Window, div, prelude::*, px,
+        Context, Entity, EntityInputHandler, IntoElement, KeyBinding, MouseButton, Render,
+        TestAppContext, VisualTestContext, Window, div, point, prelude::*, px,
     };
     use zcv_actions::Interrupt;
 
@@ -1219,5 +1219,60 @@ mod pty_tests {
                 .is_some_and(|content| content.selection.is_none())
         });
         assert!(cleared, "清除选择后内容快照不应再有选择");
+    }
+
+    /// 拖拽选择可在视口外释放；释放后移回终端不能继续改写已完成的选择。
+    #[gpui::test]
+    async fn releasing_selection_outside_the_terminal_ends_the_pointer_gesture(
+        cx: &mut TestAppContext,
+    ) {
+        let terminal = build_terminal(cx);
+        let terminal_for_view = terminal.clone();
+        let (view, cx) =
+            cx.add_window_view(move |_window, cx| TerminalView::new(terminal_for_view, cx));
+        cx.run_until_parked();
+        cx.refresh().expect("测试窗口应可刷新");
+
+        let (start, outside, return_to_terminal) = cx.update(|window, _| {
+            let bounds = window.bounds();
+            (
+                point(bounds.left() + px(16.), bounds.top() + px(16.)),
+                point(bounds.right() + px(160.), bounds.bottom() + px(160.)),
+                point(bounds.left() + px(48.), bounds.top() + px(16.)),
+            )
+        });
+
+        cx.simulate_mouse_down(start, MouseButton::Left, gpui::Modifiers::default());
+        cx.refresh().expect("按下后应能刷新选择锚点");
+        cx.simulate_mouse_move(outside, Some(MouseButton::Left), gpui::Modifiers::default());
+        cx.refresh().expect("拖出视口后应能刷新选择");
+        let selection_before_release = cx
+            .read_entity(&terminal, |terminal, _| {
+                terminal
+                    .last_content()
+                    .and_then(|content| content.selection)
+            })
+            .expect("拖拽后应存在选择范围");
+
+        cx.simulate_mouse_up(outside, MouseButton::Left, gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert!(
+            !cx.read_entity(&view, |view, _| view.owns_pointer_gesture()),
+            "视口外释放也应结束终端指针手势"
+        );
+
+        cx.simulate_mouse_move(return_to_terminal, None, gpui::Modifiers::default());
+        cx.refresh().expect("无按键移动后应能刷新");
+        let selection_after_return = cx
+            .read_entity(&terminal, |terminal, _| {
+                terminal
+                    .last_content()
+                    .and_then(|content| content.selection)
+            })
+            .expect("释放后选择范围应保留以供复制");
+        assert_eq!(
+            selection_after_return, selection_before_release,
+            "释放后无按键移动不得继续扩展选择"
+        );
     }
 }

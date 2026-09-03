@@ -9,7 +9,7 @@ use gpui::{
 };
 
 use crate::{
-    Event, Modes, Point, SelectionType, Terminal, TerminalSettings,
+    Event, Modes, SelectionType, Terminal, TerminalSettings,
     element::TerminalElement,
     mappings::{keys, mouse},
 };
@@ -24,12 +24,30 @@ use zcv_workspace::{Item, ItemEvent};
 /// 拖拽选择自动滚动的限频间隔（≈60Hz，与编辑器 drag_autoscroll 同款）。
 const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(16);
 
+/// 终端在窗口级鼠标事件中的唯一手势所有者。
+///
+/// 终端文本的选择范围由 `Terminal` 持有；
+/// 这里仅记录哪次指针按下仍由视图负责收尾，因此鼠标移出视口后释放也不会让后续移动继续修改已有选择。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PointerGesture {
+    Selecting(gpui::MouseButton),
+    Reporting(gpui::MouseButton),
+}
+
+impl PointerGesture {
+    fn button(self) -> gpui::MouseButton {
+        match self {
+            Self::Selecting(button) | Self::Reporting(button) => button,
+        }
+    }
+}
+
 pub(crate) struct TerminalView {
     pub(crate) terminal: Entity<Terminal>,
     focus: FocusHandle,
     pub(crate) focused: bool,
-    /// 进行中的拖拽选择：起点与选择类型。
-    dragging: Option<(Point, SelectionType)>,
+    /// 终端当前拥有的指针手势；选择范围本身由 `Terminal` 持有。
+    pointer_gesture: Option<PointerGesture>,
     /// 拖拽选择自动滚动的限频时间戳（跨帧持久；事件频率可远超帧率，滚动频率需封顶）。
     last_drag_autoscroll: Cell<Instant>,
     /// 输入法合成中的 marked 文本。
@@ -47,7 +65,7 @@ impl TerminalView {
             terminal,
             focus,
             focused: false,
-            dragging: None,
+            pointer_gesture: None,
             last_drag_autoscroll: Cell::new(Instant::now() - AUTOSCROLL_INTERVAL),
             ime_marked_text: None,
             last_cursor_bounds: None,
@@ -118,6 +136,21 @@ impl TerminalView {
 
     pub(crate) fn should_show_cursor(&self, focused: bool, _cx: &App) -> bool {
         focused
+    }
+
+    /// 视图是否仍需接收视口外的窗口级鼠标事件。
+    pub(crate) fn owns_pointer_gesture(&self) -> bool {
+        self.pointer_gesture.is_some()
+    }
+
+    fn release_pointer_gesture(&mut self, button: gpui::MouseButton) -> Option<PointerGesture> {
+        let gesture = self.pointer_gesture?;
+        if gesture.button() == button {
+            self.pointer_gesture = None;
+            Some(gesture)
+        } else {
+            None
+        }
     }
 
     fn handle_key_down(
@@ -194,6 +227,7 @@ impl TerminalView {
             ) {
                 self.terminal
                     .update(cx, |terminal, _| terminal.write_to_pty(bytes));
+                self.pointer_gesture = Some(PointerGesture::Reporting(event.button));
             }
             return;
         }
@@ -205,7 +239,7 @@ impl TerminalView {
             3 => SelectionType::Lines,
             _ => SelectionType::Simple,
         };
-        self.dragging = Some((point, ty));
+        self.pointer_gesture = Some(PointerGesture::Selecting(event.button));
         self.terminal.update(cx, |terminal, cx| {
             terminal.select_range(ty, crate::SelectionPoint { point, side }, None, cx);
         });
@@ -231,6 +265,11 @@ impl TerminalView {
         let display_offset = content.display_offset;
         let screen_lines = content.screen_lines;
 
+        // 窗口外释放在部分平台不会到达视图；下一次无按键移动必须能恢复。
+        if !event.dragging() {
+            self.pointer_gesture = None;
+        }
+
         if mode.intersects(Modes::MOUSE_MODE) {
             if let Some(bytes) = mouse::mouse_moved_report(
                 event.pressed_button,
@@ -245,7 +284,7 @@ impl TerminalView {
             }
             return;
         }
-        if let Some((start, ty)) = self.dragging {
+        if matches!(self.pointer_gesture, Some(PointerGesture::Selecting(_))) && event.dragging() {
             if autoscroll != Pixels::ZERO
                 && self.last_drag_autoscroll.get().elapsed() >= AUTOSCROLL_INTERVAL
             {
@@ -255,29 +294,28 @@ impl TerminalView {
                     terminal.scroll_px(gpui::TouchPhase::Moved, autoscroll, line_height, cx);
                 });
             }
-            let _ = start;
-            let _ = ty;
             self.terminal.update(cx, |terminal, cx| {
                 terminal.update_selection(crate::SelectionPoint { point, side }, cx);
             });
         }
     }
 
-    /// 鼠标释放：结束拖拽；报告模式转发释放字节。
+    /// 鼠标释放：仅结束由本视图发起的手势；报告模式转发对应的释放字节。
     pub(crate) fn handle_mouse_up(
         &mut self,
         event: &gpui::MouseUpEvent,
         point: crate::Point,
         cx: &mut Context<Self>,
     ) {
-        self.dragging = None;
+        let gesture = self.release_pointer_gesture(event.button);
         let Some(content) = self.terminal.read(cx).last_content().cloned() else {
             return;
         };
         let mode = content.mode;
         let display_offset = content.display_offset;
         let screen_lines = content.screen_lines;
-        if mode.intersects(Modes::MOUSE_MODE)
+        if matches!(gesture, Some(PointerGesture::Reporting(_)))
+            && mode.intersects(Modes::MOUSE_MODE)
             && let Some(bytes) = mouse::mouse_button_report(
                 event.button,
                 &event.modifiers,

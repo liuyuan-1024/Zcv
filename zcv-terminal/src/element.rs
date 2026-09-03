@@ -453,9 +453,9 @@ fn register_mouse_listeners(
     let move_hitbox = hitbox.clone();
     let move_view = view.clone();
     window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, cx| {
-        // 拖拽选择期间鼠标移出终端视口仍要处理：选区持续扩展并带动视口自动滚动。
+        // 指针手势由视图拥有时，鼠标移出终端视口仍须由原视图完成。
         if phase != gpui::DispatchPhase::Bubble
-            || (!move_hitbox.is_hovered(window) && !event.dragging())
+            || (!move_hitbox.is_hovered(window) && !move_view.read(cx).owns_pointer_gesture())
         {
             return;
         }
@@ -479,10 +479,10 @@ fn register_mouse_listeners(
         });
     });
 
-    let up_hitbox = hitbox.clone();
     let up_view = view;
-    window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, window, cx| {
-        if phase != gpui::DispatchPhase::Bubble || !up_hitbox.is_hovered(window) {
+    window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, _window, cx| {
+        // 释放事件必须交给拥有按下手势的视图，即使指针已在视口外。
+        if phase != gpui::DispatchPhase::Bubble {
             return;
         }
         let point = grid_point(

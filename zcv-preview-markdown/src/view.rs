@@ -4,9 +4,12 @@ use std::any::TypeId;
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    AnyElement, AnyEntity, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight,
-    Render, ScrollHandle, SharedString, Subscription, Window, div, prelude::*, px,
+    AnyElement, AnyEntity, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontStyle,
+    FontWeight, HighlightStyle, InteractiveText, ObjectFit, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement, StrikethroughStyle, StyledImage, StyledText, Subscription,
+    UnderlineStyle, Window, div, img, prelude::*, px,
 };
+use pulldown_cmark::Alignment;
 use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
 use zcv_theme::{color, space, typography};
@@ -15,7 +18,7 @@ use zcv_workspace::{
     ToolbarItemLocation,
 };
 
-use crate::document::{Block, parse};
+use crate::document::{Block, Inline, parse};
 
 pub(crate) struct MarkdownPreviewView {
     source_item: Box<dyn ItemHandle>,
@@ -86,10 +89,13 @@ impl Focusable for MarkdownPreviewView {
 
 impl Render for MarkdownPreviewView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let source_path = self.source_item.item_path(cx);
+        let source_directory = source_path.as_deref().and_then(Path::parent);
+        let mut next_key = 0;
         let content = self
             .blocks
             .iter()
-            .map(|block| render_block(block, cx))
+            .map(|block| render_block(block, &mut next_key, source_directory, 0, cx))
             .collect::<Vec<_>>();
         div()
             .id("markdown-preview")
@@ -116,60 +122,269 @@ impl Render for MarkdownPreviewView {
     }
 }
 
-fn render_block(block: &Block, cx: &App) -> AnyElement {
+fn render_block(
+    block: &Block,
+    next_key: &mut usize,
+    source_directory: Option<&Path>,
+    list_depth: usize,
+    cx: &App,
+) -> AnyElement {
+    let key = *next_key;
+    *next_key += 1;
     match block {
-        Block::Heading { level, text } => div()
+        Block::Heading { level, content } => div()
             .text_size(heading_size(*level))
             .font_weight(FontWeight::BOLD)
-            .child(text.clone())
+            .child(render_inline(content, key, cx))
             .into_any_element(),
-        Block::Paragraph(text) => div()
+        Block::Paragraph(content) => div()
             .whitespace_normal()
-            .child(text.clone())
+            .child(render_inline(content, key, cx))
             .into_any_element(),
-        Block::Code(text) => div()
-            .rounded_md()
-            .bg(color::current(cx).panel_background)
-            .p_3()
-            .font(typography::content_font())
-            .text_size(typography::content_size())
-            .flex()
-            .flex_col()
-            .children(code_lines(text).map(|line| div().child(line.to_owned())))
-            .into_any_element(),
-        Block::Quote(text) => div()
-            .border_l_2()
-            .border_color(color::current(cx).border_variant)
-            .pl_3()
-            .text_color(color::current(cx).text_muted)
-            .child(text.clone())
-            .into_any_element(),
-        Block::List { start, items } => div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .children(items.iter().enumerate().map(|(index, item)| {
-                let marker = start.map_or_else(
-                    || "•".to_owned(),
-                    |start| format!("{}.", start + index as u64),
+        Block::Code { language, text } => {
+            let mut code = div()
+                .rounded_md()
+                .bg(color::current(cx).panel_background)
+                .p_3()
+                .font(typography::content_font())
+                .text_size(typography::content_size())
+                .flex()
+                .flex_col();
+            if let Some(language) = language {
+                code = code.child(
+                    div()
+                        .mb_2()
+                        .text_size(typography::content_size() * 0.85)
+                        .text_color(color::current(cx).text_muted)
+                        .child(language.clone()),
                 );
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(
-                        div()
-                            .w_5()
-                            .text_color(color::current(cx).text_muted)
-                            .child(marker),
-                    )
-                    .child(div().flex_1().child(item.clone()))
-            }))
-            .into_any_element(),
+            }
+            code.children(code_lines(text).map(|line| div().child(line.to_owned())))
+                .into_any_element()
+        }
+        Block::Quote(blocks) => {
+            let children = blocks
+                .iter()
+                .map(|block| render_block(block, next_key, source_directory, list_depth, cx))
+                .collect::<Vec<_>>();
+            div()
+                .border_l_2()
+                .border_color(color::current(cx).border_variant)
+                .pl_3()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .text_color(color::current(cx).text_muted)
+                .children(children)
+                .into_any_element()
+        }
+        Block::List { start, items } => {
+            let children = items
+                .iter()
+                .enumerate()
+                .map(|(item_index, item)| {
+                    let marker = start.map_or_else(
+                        || "•".to_owned(),
+                        |start| format!("{}.", start + item_index as u64),
+                    );
+                    let item_children = item
+                        .iter()
+                        .map(|block| {
+                            render_block(block, next_key, source_directory, list_depth + 1, cx)
+                        })
+                        .collect::<Vec<_>>();
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .w_5()
+                                .text_color(color::current(cx).text_muted)
+                                .child(marker),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .children(item_children),
+                        )
+                })
+                .collect::<Vec<_>>();
+            div()
+                .when(list_depth > 0, |list| list.pl_4())
+                .flex()
+                .flex_col()
+                .gap_1()
+                .children(children)
+                .into_any_element()
+        }
+        Block::Table {
+            alignments,
+            header,
+            rows,
+        } => {
+            let mut table = div()
+                .id(("markdown-table", key))
+                .w_full()
+                .overflow_x_scroll()
+                .rounded_md()
+                .border_1()
+                .border_color(color::current(cx).border_variant)
+                .flex()
+                .flex_col();
+            if !header.is_empty() {
+                table = table.child(render_table_row(header, alignments, true, next_key, cx));
+            }
+            for row in rows {
+                table = table.child(render_table_row(row, alignments, false, next_key, cx));
+            }
+            table.into_any_element()
+        }
+        Block::Image { source, alt } => render_image(source, alt, source_directory, cx),
         Block::Rule => div()
             .h(px(1.))
             .w_full()
             .bg(color::current(cx).border_variant)
             .into_any_element(),
+    }
+}
+
+fn render_image(source: &str, alt: &str, source_directory: Option<&Path>, cx: &App) -> AnyElement {
+    let fallback_alt = alt.to_owned();
+    let muted = color::current(cx).text_muted;
+    let loading_muted = muted;
+    let image = if source.starts_with("http://") || source.starts_with("https://") {
+        img(source.to_owned())
+    } else {
+        let path = Path::new(source);
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            source_directory.map_or_else(|| path.to_path_buf(), |directory| directory.join(path))
+        };
+        img(path)
+    }
+    .w_full()
+    .object_fit(ObjectFit::Contain)
+    .with_loading(move || {
+        div()
+            .text_color(loading_muted)
+            .child("正在加载图片…")
+            .into_any_element()
+    })
+    .with_fallback(move || {
+        div()
+            .text_color(muted)
+            .child(format!("无法加载图片：{fallback_alt}"))
+            .into_any_element()
+    });
+    div().w_full().child(image).into_any_element()
+}
+
+fn render_table_row(
+    cells: &[Vec<Inline>],
+    alignments: &[Alignment],
+    is_header: bool,
+    next_key: &mut usize,
+    cx: &App,
+) -> AnyElement {
+    div()
+        .flex()
+        .w_full()
+        .when(!is_header, |row| {
+            row.border_t_1()
+                .border_color(color::current(cx).border_variant)
+        })
+        .children(cells.iter().enumerate().map(|(cell_index, cell_content)| {
+            let cell = div()
+                .flex_1()
+                .min_w_32()
+                .px_3()
+                .py_2()
+                .when(cell_index > 0, |cell| {
+                    cell.border_l_1()
+                        .border_color(color::current(cx).border_variant)
+                })
+                .when(is_header, |cell| cell.font_weight(FontWeight::SEMIBOLD));
+            let cell = match alignments
+                .get(cell_index)
+                .copied()
+                .unwrap_or(Alignment::None)
+            {
+                Alignment::Left | Alignment::None => cell,
+                Alignment::Center => cell.text_center(),
+                Alignment::Right => cell.text_right(),
+            };
+            let key = *next_key;
+            *next_key += 1;
+            cell.child(render_inline(cell_content, key, cx))
+        }))
+        .into_any_element()
+}
+
+fn render_inline(content: &[Inline], key: usize, cx: &App) -> AnyElement {
+    let mut text = String::new();
+    let mut highlights = Vec::new();
+    let mut links = Vec::new();
+    let mut link_ranges = Vec::new();
+
+    for inline in content {
+        let start = text.len();
+        text.push_str(&inline.text);
+        let end = text.len();
+        if start == end {
+            continue;
+        }
+        let style = &inline.style;
+        if style.emphasis
+            || style.strong
+            || style.strikethrough
+            || style.code
+            || style.link.is_some()
+        {
+            highlights.push((
+                start..end,
+                HighlightStyle {
+                    font_style: style.emphasis.then_some(FontStyle::Italic),
+                    font_weight: style.strong.then_some(FontWeight::BOLD),
+                    strikethrough: style.strikethrough.then_some(StrikethroughStyle {
+                        thickness: px(2.),
+                        color: Some(color::current(cx).text.into()),
+                    }),
+                    background_color: style
+                        .code
+                        .then_some(color::current(cx).surface_background.into()),
+                    color: style
+                        .link
+                        .as_ref()
+                        .map(|_| color::current(cx).icon_accent.into()),
+                    underline: style.link.as_ref().map(|_| UnderlineStyle {
+                        thickness: px(2.),
+                        color: Some(color::current(cx).icon_accent.into()),
+                        wavy: false,
+                    }),
+                    ..Default::default()
+                },
+            ));
+        }
+        if let Some(url) = &style.link {
+            link_ranges.push(start..end);
+            links.push(url.clone());
+        }
+    }
+
+    let text = StyledText::new(text).with_highlights(highlights);
+    if links.is_empty() {
+        text.into_any_element()
+    } else {
+        InteractiveText::new(("markdown-link", key), text)
+            .on_click(link_ranges, move |index, _window, cx| {
+                cx.open_url(&links[index])
+            })
+            .into_any_element()
     }
 }
 
@@ -289,7 +504,16 @@ mod tests {
     use zcv_editor::Editor;
     use zcv_workspace::PreviewDocument;
 
+    use crate::document::{Inline, InlineStyle};
+
     use super::{Block, MarkdownPreviewView, code_lines};
+
+    fn plain(text: &str) -> Inline {
+        Inline {
+            text: text.into(),
+            style: InlineStyle::default(),
+        }
+    }
 
     #[test]
     fn code_lines_omits_parser_terminator_without_dropping_blank_lines() {
@@ -326,7 +550,7 @@ mod tests {
                 view.blocks,
                 vec![Block::Heading {
                     level: 1,
-                    text: "初始标题".into(),
+                    content: vec![plain("初始标题")],
                 }]
             );
         });
@@ -334,7 +558,10 @@ mod tests {
         editor.update(cx, |editor, cx| editor.set_text("更新后的正文", cx));
         cx.run_until_parked();
         cx.read_entity(&view, |view, _| {
-            assert_eq!(view.blocks, vec![Block::Paragraph("更新后的正文".into())]);
+            assert_eq!(
+                view.blocks,
+                vec![Block::Paragraph(vec![plain("更新后的正文")])]
+            );
         });
     }
 }

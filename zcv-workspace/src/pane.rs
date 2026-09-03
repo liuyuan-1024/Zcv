@@ -355,7 +355,7 @@ impl Pane {
         }
         let was_transient =
             self.transient_preview_item_id == Some(self.tabs[preview_index].item_id());
-        let source_focus = self.add_boxed_item_at(source, Some(preview_index), window, cx);
+        let source_focus = self.add_boxed_item_at(source, None, window, cx);
         if was_transient {
             self.transient_source_item_id = Some(source_id);
         }
@@ -1573,6 +1573,8 @@ mod tests {
             assert_eq!(pane.transient_source_item_id, Some(source_id));
             assert_eq!(pane.transient_preview_item_id, Some(preview_id));
             assert_eq!(pane.active, Some(source_id));
+            assert!(is_preview_item(pane.tabs[0].as_ref(), cx));
+            assert!(!is_preview_item(pane.tabs[1].as_ref(), cx));
             assert_active_is_preview(pane, cx, false);
         });
         toggle_preview_in_test(cx, &pane);
@@ -1764,6 +1766,50 @@ mod tests {
             assert_eq!(pane.tabs.len(), 1);
             assert!(is_preview_item(pane.active_item().unwrap(), cx));
             assert!(pane.active.is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn showing_source_from_an_orphaned_preview_appends_a_tab(cx: &mut TestAppContext) {
+        init_previews(cx);
+        let pane = cx.new(Pane::new);
+        let svg_buffer = test_buffer(cx, r#"<svg xmlns="http://www.w3.org/2000/svg"/>"#);
+        open_file_in_test(cx, &pane, PathBuf::from("orphaned.svg"), svg_buffer);
+        toggle_preview_in_test(cx, &pane);
+        let source_id = cx.read_entity(&pane, |pane, cx| {
+            pane.tabs
+                .iter()
+                .find(|item| !is_preview_item(item.as_ref(), cx))
+                .unwrap()
+                .item_id()
+        });
+
+        cx.add_window_view(|window, cx| {
+            pane.update(cx, |pane, cx| pane.close_tab(source_id, window, cx));
+            TestView
+        });
+        let text_buffer = test_buffer(cx, "另一个标签");
+        open_file_in_test(cx, &pane, PathBuf::from("other.txt"), text_buffer);
+        cx.add_window_view(|window, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.activate_item_at(0, window, cx);
+                pane.toggle_preview(window, cx);
+            });
+            TestView
+        });
+
+        cx.read_entity(&pane, |pane, cx| {
+            assert_eq!(pane.tabs.len(), 3);
+            assert!(is_preview_item(pane.tabs[0].as_ref(), cx));
+            assert_eq!(
+                pane.tabs[1].item_path(cx).as_deref(),
+                Some(Path::new("other.txt"))
+            );
+            assert_eq!(
+                pane.tabs[2].item_path(cx).as_deref(),
+                Some(Path::new("orphaned.svg"))
+            );
+            assert_eq!(pane.active, Some(pane.tabs[2].item_id()));
         });
     }
 

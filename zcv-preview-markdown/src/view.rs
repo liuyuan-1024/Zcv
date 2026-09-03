@@ -1,15 +1,17 @@
 //! Markdown 预览 Item：观察源码 MultiBuffer，解析后渲染为原生块元素。
 
 use std::any::TypeId;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use gpui::{
     AnyElement, AnyEntity, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontStyle,
     FontWeight, HighlightStyle, InteractiveText, ObjectFit, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement, StrikethroughStyle, StyledImage, StyledText, Subscription,
+    StatefulInteractiveElement, StrikethroughStyle, StyledImage, StyledText, Subscription, Task,
     UnderlineStyle, Window, div, img, prelude::*, px,
 };
 use pulldown_cmark::Alignment;
+use zcv_language::highlight_snippet;
 use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
 use zcv_theme::{color, space, typography};
@@ -26,6 +28,8 @@ pub(crate) struct MarkdownPreviewView {
     focus: FocusHandle,
     scroll_handle: ScrollHandle,
     blocks: Vec<Block>,
+    code_highlight_generation: u64,
+    code_highlight_task: Option<Task<()>>,
     _document_subscription: Subscription,
     _item_subscription: Subscription,
 }
@@ -64,6 +68,8 @@ impl MarkdownPreviewView {
             focus: cx.focus_handle(),
             scroll_handle: ScrollHandle::new(),
             blocks: Vec::new(),
+            code_highlight_generation: 0,
+            code_highlight_task: None,
             _document_subscription: document_subscription,
             _item_subscription: item_subscription,
         };
@@ -75,6 +81,24 @@ impl MarkdownPreviewView {
         let text = String::from_utf8(self.multi_buffer.read(cx).snapshot(cx).text_bytes())
             .expect("编辑器文档应为 UTF-8");
         self.blocks = parse(&text);
+        self.code_highlight_generation = self.code_highlight_generation.wrapping_add(1);
+        let generation = self.code_highlight_generation;
+        let mut blocks = self.blocks.clone();
+        let highlights = cx.background_spawn(async move {
+            highlight_code_blocks(&mut blocks);
+            blocks
+        });
+        self.code_highlight_task = Some(cx.spawn(async move |this, cx| {
+            let blocks = highlights.await;
+            let _ = this.update(cx, |view, cx| {
+                if view.code_highlight_generation != generation {
+                    return;
+                }
+                view.blocks = blocks;
+                view.code_highlight_task = None;
+                cx.notify();
+            });
+        }));
         cx.notify();
     }
 }
@@ -141,7 +165,11 @@ fn render_block(
             .whitespace_normal()
             .child(render_inline(content, key, cx))
             .into_any_element(),
-        Block::Code { language, text } => {
+        Block::Code {
+            language,
+            text,
+            highlights,
+        } => {
             let mut code = div()
                 .rounded_md()
                 .bg(color::current(cx).panel_background)
@@ -159,8 +187,21 @@ fn render_block(
                         .child(language.clone()),
                 );
             }
-            code.children(code_lines(text).map(|line| div().child(line.to_owned())))
-                .into_any_element()
+            let styles = highlights
+                .as_ref()
+                .map(|highlights| zcv_theme::syntax::style_table(&highlights.capture_names));
+            let mut line_start = 0;
+            for line in code_lines(text) {
+                let line_end = line_start + line.len();
+                code = code.child(div().child(render_code_line(
+                    line,
+                    line_start..line_end,
+                    highlights.as_ref(),
+                    styles.as_deref(),
+                )));
+                line_start = line_end + 1;
+            }
+            code.into_any_element()
         }
         Block::Quote(blocks) => {
             let children = blocks
@@ -388,6 +429,54 @@ fn render_inline(content: &[Inline], key: usize, cx: &App) -> AnyElement {
     }
 }
 
+fn highlight_code_blocks(blocks: &mut [Block]) {
+    for block in blocks {
+        match block {
+            Block::Code {
+                language: Some(language),
+                text,
+                highlights,
+            } => *highlights = highlight_snippet(language, text),
+            Block::Quote(blocks) => highlight_code_blocks(blocks),
+            Block::List { items, .. } => {
+                for item in items {
+                    highlight_code_blocks(item);
+                }
+            }
+            Block::Heading { .. }
+            | Block::Paragraph(_)
+            | Block::Code { language: None, .. }
+            | Block::Table { .. }
+            | Block::Image { .. }
+            | Block::Rule => {}
+        }
+    }
+}
+
+fn render_code_line(
+    line: &str,
+    line_range: Range<usize>,
+    highlights: Option<&zcv_language::SnippetHighlights>,
+    styles: Option<&[HighlightStyle]>,
+) -> AnyElement {
+    let line_highlights: Vec<(Range<usize>, HighlightStyle)> = highlights
+        .into_iter()
+        .flat_map(|highlights| highlights.spans.iter())
+        .filter_map(|span| {
+            let start = span.range.start.max(line_range.start);
+            let end = span.range.end.min(line_range.end);
+            if start >= end {
+                return None;
+            }
+            let style = *styles?.get(span.capture as usize)?;
+            Some((start - line_range.start..end - line_range.start, style))
+        })
+        .collect();
+    StyledText::new(line.to_owned())
+        .with_highlights(line_highlights)
+        .into_any_element()
+}
+
 fn code_lines(text: &str) -> impl Iterator<Item = &str> {
     text.strip_suffix('\n').unwrap_or(text).split('\n')
 }
@@ -504,9 +593,9 @@ mod tests {
     use zcv_editor::Editor;
     use zcv_workspace::PreviewDocument;
 
-    use crate::document::{Inline, InlineStyle};
+    use crate::document::{Inline, InlineStyle, parse};
 
-    use super::{Block, MarkdownPreviewView, code_lines};
+    use super::{Block, MarkdownPreviewView, code_lines, highlight_code_blocks};
 
     fn plain(text: &str) -> Inline {
         Inline {
@@ -525,6 +614,19 @@ mod tests {
             code_lines("let x = 1;\n\n").collect::<Vec<_>>(),
             ["let x = 1;", ""]
         );
+    }
+
+    #[test]
+    fn applies_language_highlights_to_fenced_code_blocks() {
+        let mut blocks = parse("```rust\nfn main() {}\n```");
+        highlight_code_blocks(&mut blocks);
+        assert!(matches!(
+            blocks.as_slice(),
+            [Block::Code {
+                highlights: Some(highlights),
+                ..
+            }] if !highlights.spans.is_empty()
+        ));
     }
 
     #[gpui::test]

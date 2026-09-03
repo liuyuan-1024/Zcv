@@ -1,4 +1,5 @@
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use zcv_language::SnippetHighlights;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct InlineStyle {
@@ -26,6 +27,7 @@ pub(crate) enum Block {
     Code {
         language: Option<String>,
         text: String,
+        highlights: Option<SnippetHighlights>,
     },
     Quote(Vec<Block>),
     List {
@@ -339,6 +341,7 @@ fn finish_active(
         ActiveBlock::Code(language) => Block::Code {
             language,
             text: content.into_iter().map(|inline| inline.text).collect(),
+            highlights: None,
         },
     };
     state.push_block(block);
@@ -408,7 +411,8 @@ mod tests {
                 Block::Quote(vec![paragraph("引用")]),
                 Block::Code {
                     language: Some("rust".into()),
-                    text: "let x = 1;\n".into()
+                    text: "let x = 1;\n".into(),
+                    highlights: None,
                 },
                 Block::Rule,
             ]

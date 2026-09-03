@@ -208,6 +208,31 @@ impl LanguageRegistry {
             .map(|entry| self.load(entry))
     }
 
+    /// 按语言展示名、文件扩展名或注入别名选择语言。
+    ///
+    /// 围栏代码块使用语言名而非文件路径；
+    /// 该入口让预览、文档等消费者与文件识别共享同一份语言注册表，而不是各自维护别名映射。
+    pub(crate) fn language_for_name_or_extension(&self, name: &str) -> Option<Arc<Language>> {
+        let name = name.trim().trim_start_matches('.');
+        if name.is_empty() {
+            return None;
+        }
+        self.languages
+            .iter()
+            .find(|entry| {
+                entry.name.eq_ignore_ascii_case(name)
+                    || entry
+                        .matcher
+                        .suffixes
+                        .iter()
+                        .any(|suffix| suffix.eq_ignore_ascii_case(name))
+                    || entry
+                        .injection_alias
+                        .is_some_and(|alias| alias.eq_ignore_ascii_case(name))
+            })
+            .map(|entry| self.load(entry))
+    }
+
     fn matched_language(&self, path: &Path, first_line: Option<&str>) -> Option<&LanguageSpec> {
         let filename = path.file_name()?.to_str()?;
         let mut matched = self
@@ -265,6 +290,13 @@ pub(crate) fn language_for_injection(name: &str) -> Option<Arc<Language>> {
 /// 文件类型消费方应通过此接口共享语言识别结果，不能各自维护后缀匹配表。
 pub fn language_for_file(path: &Path, first_line: Option<&str>) -> Option<Arc<Language>> {
     registry().language_for_file(path, first_line)
+}
+
+/// 根据语言展示名、文件扩展名或注入别名识别语言。
+///
+/// 适用于 Markdown 围栏代码块等只有语言标识、没有实际文件路径的场景。
+pub fn language_for_name_or_extension(name: &str) -> Option<Arc<Language>> {
+    registry().language_for_name_or_extension(name)
 }
 
 #[cfg(test)]

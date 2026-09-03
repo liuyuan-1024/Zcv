@@ -4,6 +4,7 @@
 mod available_languages;
 mod highlighting;
 mod registry;
+mod snippet;
 
 mod language_buffer;
 mod structure_queries;
@@ -12,7 +13,8 @@ mod tree_sitter_utils;
 
 pub use highlighting::HighlightSpan;
 pub use language_buffer::{LanguageBuffer, LanguageBufferEvent};
-pub use registry::{Language, language_for_file};
+pub use registry::{Language, language_for_file, language_for_name_or_extension};
+pub use snippet::{SnippetHighlights, highlight_snippet};
 pub use structure_queries::{BracketPair, FoldRange, NewlineIndent};
 pub use syntax_map::SyntaxSnapshot;
 

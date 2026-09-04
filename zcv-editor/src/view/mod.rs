@@ -245,14 +245,6 @@ impl Editor {
         )
     }
 
-    #[cfg(test)]
-    fn for_language_buffer(
-        language_buffer: Entity<LanguageBuffer>,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Self::from_language_buffer(language_buffer, EditorMode::Full, cx)
-    }
-
     pub fn for_multi_buffer(multi_buffer: Entity<MultiBuffer>, cx: &mut Context<Self>) -> Self {
         Self::new(multi_buffer, EditorMode::Full, cx)
     }

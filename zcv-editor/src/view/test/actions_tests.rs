@@ -273,7 +273,7 @@ fn constructors_create_expected_modes_and_independent_scratch_buffers(cx: &mut T
         assert_eq!(editor.mode, EditorMode::SingleLine);
         assert_eq!(editor.selections(), SelectionSet::default());
         assert_eq!(
-            editor.display_map.version(),
+            editor.display_map.buffer_snapshot().version(),
             editor.text_buffer(cx).read(cx).version()
         );
         let _focus = editor.focus_handle();

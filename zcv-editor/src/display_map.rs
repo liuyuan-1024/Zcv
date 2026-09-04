@@ -464,11 +464,6 @@ impl DisplayMap {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn version(&self) -> zcv_text::BufferVersion {
-        self.fold_map.snapshot().buffer_snapshot().version()
-    }
-
     pub(crate) fn line_count(&self) -> usize {
         self.current_block_snapshot().line_count()
     }
@@ -562,27 +557,6 @@ impl DisplayMap {
         outcome
     }
 
-    /// 用给定输入流推进 inlay → fold → tab → wrap 整条管线。
-    #[cfg(test)]
-    fn rebuild_from_stream(&mut self, stream: LineStream) {
-        let inlay_snapshot = self.inlay_map.read(stream, self.inlays.clone());
-        let (fold_snapshot, fold_edits, _) = self
-            .fold_map
-            .read(inlay_snapshot, &TextChangeBatch::default());
-        let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
-        self.wrap_map.sync(tab_snapshot, &fold_edits);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_inlays(&mut self, inlays: Vec<Inlay>) {
-        if self.inlays == inlays {
-            return;
-        }
-        self.inlays = inlays;
-        let stream = self.fold_map.snapshot().stream().clone();
-        self.rebuild_from_stream(stream);
-    }
-
     /// 折叠字节范围（入口行行尾换行符 → 闭合括号前；闭合括号保留可见）。
     pub(crate) fn fold_range(&mut self, range: TextRange) -> DisplayMapResult<()> {
         let (fold_snapshot, fold_edits) = self.fold_map.write().fold(range)?;
@@ -629,27 +603,6 @@ impl DisplayMap {
             &self.folded_buffers,
         )
     }
-
-    #[cfg(test)]
-    pub(crate) fn buffer_point_to_display_point(
-        &self,
-        point: BufferPoint,
-    ) -> DisplayMapResult<DisplayPoint> {
-        let offset = self.buffer_snapshot().position_to_byte(point.position())?;
-        self.offset_to_display_point(offset)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn display_point_to_buffer_point(
-        &self,
-        point: DisplayPoint,
-    ) -> DisplayMapResult<BufferPoint> {
-        let offset = self.display_point_to_offset(point)?;
-        Ok(self
-            .buffer_snapshot()
-            .byte_to_position(offset)
-            .map(BufferPoint::from)?)
-    }
 }
 
 #[cfg(test)]
@@ -661,6 +614,43 @@ mod tests {
 
     use super::fold_map::ProjectedPoint;
     use super::*;
+
+    fn rebuild_from_stream(map: &mut DisplayMap, stream: LineStream) {
+        let inlay_snapshot = map.inlay_map.read(stream, map.inlays.clone());
+        let (fold_snapshot, fold_edits, _) = map
+            .fold_map
+            .read(inlay_snapshot, &TextChangeBatch::default());
+        let tab_snapshot = map.tab_map.sync(fold_snapshot, &fold_edits);
+        map.wrap_map.sync(tab_snapshot, &fold_edits);
+    }
+
+    fn set_inlays(map: &mut DisplayMap, inlays: Vec<Inlay>) {
+        if map.inlays == inlays {
+            return;
+        }
+        map.inlays = inlays;
+        let stream = map.fold_map.snapshot().stream().clone();
+        rebuild_from_stream(map, stream);
+    }
+
+    fn buffer_point_to_display_point(
+        map: &DisplayMap,
+        point: BufferPoint,
+    ) -> DisplayMapResult<DisplayPoint> {
+        let offset = map.buffer_snapshot().position_to_byte(point.position())?;
+        map.offset_to_display_point(offset)
+    }
+
+    fn display_point_to_buffer_point(
+        map: &DisplayMap,
+        point: DisplayPoint,
+    ) -> DisplayMapResult<BufferPoint> {
+        let offset = map.display_point_to_offset(point)?;
+        Ok(map
+            .buffer_snapshot()
+            .byte_to_position(offset)
+            .map(BufferPoint::from)?)
+    }
 
     #[test]
     fn projection_map_roundtrips_unicode_buffer_points_and_byte_offsets() {
@@ -692,11 +682,10 @@ mod tests {
         ];
 
         for (offset, buffer_point) in cases {
-            let display_point = map
-                .buffer_point_to_display_point(buffer_point)
+            let display_point = buffer_point_to_display_point(&map, buffer_point)
                 .expect("合法 BufferPoint 应能映射");
             assert_eq!(
-                map.display_point_to_buffer_point(display_point)
+                display_point_to_buffer_point(&map, display_point)
                     .expect("合法 DisplayPoint 应能还原"),
                 buffer_point
             );
@@ -737,14 +726,17 @@ mod tests {
         let map = DisplayMap::new(buffer.snapshot());
 
         assert!(
-            map.buffer_point_to_display_point(BufferPoint::new(Line::ZERO, LogicalColumn::new(2),))
-                .is_err()
+            buffer_point_to_display_point(
+                &map,
+                BufferPoint::new(Line::ZERO, LogicalColumn::new(2),),
+            )
+            .is_err()
         );
         assert!(
-            map.display_point_to_buffer_point(DisplayPoint::new(
-                DisplayRow::new(1),
-                DisplayColumn::ZERO,
-            ))
+            display_point_to_buffer_point(
+                &map,
+                DisplayPoint::new(DisplayRow::new(1), DisplayColumn::ZERO,)
+            )
             .is_err()
         );
         assert!(map.offset_to_display_point(ByteOffset::new(1)).is_err());
@@ -755,7 +747,7 @@ mod tests {
         let mut buffer = Buffer::scratch("a".to_string(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let map = DisplayMap::new(buffer.snapshot());
-        let mapped_version = map.version();
+        let mapped_version = map.buffer_snapshot().version();
 
         buffer
             .edit(
@@ -765,7 +757,7 @@ mod tests {
             .expect("测试编辑应成功");
 
         assert_ne!(mapped_version, buffer.version());
-        assert_eq!(map.version(), mapped_version);
+        assert_eq!(map.buffer_snapshot().version(), mapped_version);
         assert_eq!(map.buffer_snapshot().len_bytes(), ByteOffset::new(1));
         assert!(map.offset_to_display_point(ByteOffset::new(2)).is_err());
     }
@@ -1275,10 +1267,13 @@ mod tests {
                 .expect("测试 Buffer 应能创建")
                 .snapshot(),
         );
-        map.set_inlays(vec![Inlay {
-            position: ByteOffset::new(1),
-            text: ": hint".to_owned(),
-        }]);
+        set_inlays(
+            &mut map,
+            vec![Inlay {
+                position: ByteOffset::new(1),
+                text: ": hint".to_owned(),
+            }],
+        );
         assert_eq!(map.line_count(), 2, "行内提示不占行数");
         let snapshot = map.snapshot();
         let viewport = snapshot
@@ -1295,10 +1290,13 @@ mod tests {
                 .expect("测试 Buffer 应能创建")
                 .snapshot(),
         );
-        map.set_inlays(vec![Inlay {
-            position: ByteOffset::new(1),
-            text: "XY".to_owned(),
-        }]);
+        set_inlays(
+            &mut map,
+            vec![Inlay {
+                position: ByteOffset::new(1),
+                text: "XY".to_owned(),
+            }],
+        );
         let snapshot = map.snapshot();
         // 投影文本 "aXYbc"：'b' 的显示列 3 → 原始偏移 1（锚定后）。
         let offset = snapshot
@@ -1318,10 +1316,13 @@ mod tests {
             .expect("测试 Buffer 应能创建");
         let mut map = DisplayMap::new(buffer.snapshot());
         let subscription = buffer.subscribe();
-        map.set_inlays(vec![Inlay {
-            position: ByteOffset::new(1),
-            text: "x".to_owned(),
-        }]);
+        set_inlays(
+            &mut map,
+            vec![Inlay {
+                position: ByteOffset::new(1),
+                text: "x".to_owned(),
+            }],
+        );
         // 注入配置变化后，行内编辑仍走增量路径（Compatible）。
         buffer
             .edit(

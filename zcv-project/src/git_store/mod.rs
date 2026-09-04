@@ -514,12 +514,6 @@ impl GitStore {
         Arc::clone(&self.status_index)
     }
 
-    #[cfg(test)]
-    pub(super) fn status_for_directory(&self, path: &Path) -> Option<FileStatus> {
-        self.status_index
-            .status_for_directory(&canonicalize_path(path))
-    }
-
     pub(super) fn rebuild_status_index(&mut self) {
         self.status_index = Arc::new(GitStatusSnapshot {
             repositories: self
@@ -1052,6 +1046,13 @@ mod tests {
 
     use gpui::AppContext;
     use zcv_git::StatusCode;
+
+    impl GitStore {
+        fn status_for_directory(&self, path: &Path) -> Option<FileStatus> {
+            self.status_index
+                .status_for_directory(&canonicalize_path(path))
+        }
+    }
 
     #[gpui::test]
     fn scan_discovers_repository_and_reports_status(cx: &mut gpui::TestAppContext) {

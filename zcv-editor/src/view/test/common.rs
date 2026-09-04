@@ -4,6 +4,15 @@ use zcv_text::{Buffer, BufferConfig, ByteOffset};
 
 use crate::scrollbar::{SCROLLBAR_WIDTH, thumb_geometry};
 
+impl Editor {
+    pub(super) fn for_language_buffer(
+        language_buffer: Entity<LanguageBuffer>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::from_language_buffer(language_buffer, EditorMode::Full, cx)
+    }
+}
+
 pub(super) fn test_buffer(
     cx: &mut TestAppContext,
     text: impl Into<String>,

@@ -62,7 +62,8 @@ use render::{ProjectTreeRenderContext, render_empty_state, render_list};
 use transfer::{ConflictSession, TreeClipboard};
 
 #[cfg(test)]
-mod tests;
+#[path = "test/project_tree_tests.rs"]
+mod project_tree_tests;
 
 // ── Entity ──────────────────────────────────────────────────────────
 

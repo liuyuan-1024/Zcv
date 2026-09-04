@@ -111,9 +111,8 @@ impl BlinkManager {
     pub(crate) fn visible(&self) -> bool {
         self.visible
     }
-
-    #[cfg(test)]
-    pub(crate) fn enabled(&self) -> bool {
-        self.enabled
-    }
 }
+
+#[cfg(test)]
+#[path = "blink_manager/test.rs"]
+mod test;

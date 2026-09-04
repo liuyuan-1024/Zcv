@@ -17,8 +17,6 @@ use zcv_multi_buffer::MultiBuffer;
 use zcv_text::{Buffer, BufferLoadError, BufferSaveError, SearchQuery};
 
 use super::buffer_store::BufferStore;
-#[cfg(test)]
-use super::git_store::StatusEntry;
 use super::git_store::{GitStatusSnapshot, GitStore};
 use super::search::{self, SearchResults};
 use super::worktree::{Worktree, WorktreeEntry, collect_visible_entries};
@@ -498,12 +496,6 @@ impl Project {
 
         cx.emit(ProjectEvent::EntriesChanged);
     }
-
-    /// 查询文件的 git 状态（不在任何仓库或未跟踪时对应状态）。
-    #[cfg(test)]
-    fn git_status_for_path(&self, path: &Path, cx: &App) -> Option<StatusEntry> {
-        self.git_store.read(cx).status_for_path(path).cloned()
-    }
 }
 
 impl EventEmitter<ProjectEvent> for Project {}
@@ -656,7 +648,12 @@ mod tests {
     use zcv_text::{BufferConfig, ByteOffset, Edit, TransactionMetadata};
 
     use super::*;
+    use crate::git_store::StatusEntry;
     use crate::test_support::test_git_repo;
+
+    fn git_status_for_path(project: &Project, path: &Path, cx: &App) -> Option<StatusEntry> {
+        project.git_store.read(cx).status_for_path(path).cloned()
+    }
 
     #[gpui::test]
     fn empty_project_has_no_worktree_or_project_services(cx: &mut TestAppContext) {
@@ -1135,7 +1132,7 @@ mod tests {
         let file = root.join("tracked.txt");
         assert!(
             project
-                .update(cx, |project, cx| project.git_status_for_path(&file, cx))
+                .update(cx, |project, cx| git_status_for_path(project, &file, cx))
                 .is_none()
         );
 
@@ -1153,7 +1150,7 @@ mod tests {
         cx.run_until_parked();
 
         let entry = project
-            .update(cx, |project, cx| project.git_status_for_path(&file, cx))
+            .update(cx, |project, cx| git_status_for_path(project, &file, cx))
             .expect("应有 git 状态");
         assert!(entry.status.is_modified());
     }
@@ -1180,7 +1177,7 @@ mod tests {
         cx.run_until_parked();
         assert!(
             project
-                .update(cx, |project, cx| project.git_status_for_path(&file, cx))
+                .update(cx, |project, cx| git_status_for_path(project, &file, cx))
                 .is_some()
         );
 
@@ -1197,7 +1194,7 @@ mod tests {
         cx.run_until_parked();
         assert!(
             project
-                .update(cx, |project, cx| project.git_status_for_path(&file, cx))
+                .update(cx, |project, cx| git_status_for_path(project, &file, cx))
                 .is_none()
         );
     }
@@ -1225,7 +1222,7 @@ mod tests {
         loop {
             cx.run_until_parked();
             if project
-                .update(cx, |project, cx| project.git_status_for_path(&file, cx))
+                .update(cx, |project, cx| git_status_for_path(project, &file, cx))
                 .is_some()
             {
                 break;
@@ -1261,7 +1258,7 @@ mod tests {
         cx.run_until_parked();
         assert!(
             project
-                .update(cx, |project, cx| project.git_status_for_path(&file, cx))
+                .update(cx, |project, cx| git_status_for_path(project, &file, cx))
                 .is_none()
         );
 
@@ -1274,7 +1271,7 @@ mod tests {
             .expect("保存应成功");
         cx.run_until_parked();
         let entry = project
-            .update(cx, |project, cx| project.git_status_for_path(&file, cx))
+            .update(cx, |project, cx| git_status_for_path(project, &file, cx))
             .expect("保存后应有 git 状态");
         assert!(entry.status.is_modified());
     }

@@ -275,6 +275,49 @@ impl Editor {
         cx.emit(SearchEvent::MatchesInvalidated);
     }
 
+    /// 将外部搜索结果追加到当前投影，保留已有匹配与活动匹配。
+    ///
+    /// 结果追加只接受同一查询和同一投影版本；
+    /// 若调用方尚未建立外部结果，则复用 `set_search_ranges` 建立首批结果。
+    pub fn append_search_ranges(
+        &mut self,
+        query: SearchQuery,
+        ranges: Vec<TextRange>,
+        cx: &mut gpui::Context<Self>,
+    ) {
+        let version = self.text_buffer(cx).read(cx).snapshot().version();
+        let can_append = self.search.as_ref().is_some_and(|search| {
+            search.query == query
+                && matches!(
+                    search.result,
+                    Some(SearchResultKind::External {
+                        version: result_version,
+                        ..
+                    }) if result_version == version
+                )
+        });
+        if !can_append {
+            self.set_search_ranges(query, ranges, cx);
+            return;
+        }
+
+        let search = self
+            .search
+            .as_mut()
+            .expect("可追加搜索结果时必须存在搜索状态");
+        if let Some(SearchResultKind::External { matches, .. }) = &mut search.result {
+            let first_ordinal = matches.len();
+            matches.extend(
+                ranges
+                    .into_iter()
+                    .enumerate()
+                    .map(|(offset, range)| SearchMatch::new(first_ordinal + offset, range)),
+            );
+        }
+        cx.notify();
+        cx.emit(SearchEvent::MatchesInvalidated);
+    }
+
     /// 执行搜索并返回新的搜索状态；`None` 表示无结果（query 为空或搜索报错）。
     fn execute_search(
         &self,

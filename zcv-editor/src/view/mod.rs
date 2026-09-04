@@ -1,8 +1,5 @@
 //! Editor View 的跨帧状态与交互。
 
-/// 导航跳转（打开文件/行列定位）时目标行距视口顶部的固定行数，留出上下文。
-pub(super) const NAVIGATION_TOP_OFFSET: usize = 4;
-
 use std::cell::Cell;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -11,7 +8,7 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, IntoElement,
-    KeyContext, Pixels, Point, Render, Styled, Window, div, point, prelude::*,
+    KeyContext, Pixels, Point, Render, Styled, TextRun, Window, div, point, prelude::*,
 };
 use zcv_actions::{
     Backspace, Copy, Cut, Delete, DeleteToBeginningOfLine, DeleteToEndOfLine, DeleteToNextWordEnd,
@@ -37,7 +34,9 @@ use zcv_text::{
 use zcv_theme::{color, typography};
 
 use super::blink_manager::BlinkManager;
-use super::display_map::{DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot};
+use super::display_map::{
+    DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot, WrapViewportRowKind,
+};
 use super::element::{AUTOSCROLL_INTERVAL, EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollbarThumbState};
 use super::selection::{
@@ -49,6 +48,9 @@ mod search;
 
 pub(crate) use diff::{HunkRendering, diff_kind_for_row, hunk_rendering};
 pub(crate) use search::EditorSearch;
+
+/// 导航跳转（打开文件/行列定位）时目标行距视口顶部的固定行数，留出上下文。
+pub(super) const NAVIGATION_TOP_OFFSET: usize = 4;
 
 /// Editor 自身的领域事件。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -123,6 +125,14 @@ struct PendingSelection {
     anchor: ByteOffset,
     /// 点击时的粒度与锚定范围。
     mode: MouseSelectMode,
+}
+
+struct LineWidthCache {
+    version: BufferVersion,
+    row: DisplayRow,
+    font_id: gpui::FontId,
+    font_size: Pixels,
+    width: Pixels,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,6 +217,8 @@ pub struct Editor {
     /// 自动补全的闭合符标记（输入闭合符时跳过、退格删除整对的数据源）。
     /// 随每次编辑经 PositionMap 推进；区域版本与当前快照失配（未跟踪的外部编辑）时整体失效。
     autoclose_regions: Vec<AutocloseRegion>,
+    /// 未换行模式下最长行的像素宽度；按文本版本、显示行和字体失效。
+    line_width_cache: Option<LineWidthCache>,
 }
 
 impl Editor {
@@ -706,6 +718,34 @@ impl Editor {
 
     pub(super) fn display_snapshot(&self) -> DisplaySnapshot {
         self.display_map.snapshot()
+    }
+
+    pub(super) fn longest_line_width(
+        &mut self,
+        row: DisplayRow,
+        font: gpui::Font,
+        font_size: Pixels,
+        window: &mut Window,
+    ) -> Pixels {
+        let snapshot = self.display_map.snapshot();
+        let font_id = window.text_system().resolve_font(&font);
+        if let Some(cache) = &self.line_width_cache
+            && cache.version == snapshot.buffer_snapshot().version()
+            && cache.row == row
+            && cache.font_id == font_id
+            && cache.font_size == font_size
+        {
+            return cache.width;
+        }
+        let width = layout_line_width(&snapshot, row, &font, font_size, window);
+        self.line_width_cache = Some(LineWidthCache {
+            version: snapshot.buffer_snapshot().version(),
+            row,
+            font_id,
+            font_size,
+            width,
+        });
+        width
     }
 
     pub(super) fn matching_bracket_pair(&mut self) -> Option<BracketPair> {
@@ -1309,6 +1349,7 @@ impl Editor {
             mouse_select_mode: MouseSelectMode::Character,
             pending_selection: None,
             autoclose_regions: Vec::new(),
+            line_width_cache: None,
         };
         // 设置变化时自动跟随（覆盖场景除外）；编辑器在测试环境无 SettingsStore 时保持默认。
         cx.observe_global::<SettingsStore>(|editor, cx| {
@@ -2139,6 +2180,41 @@ impl Editor {
         );
         context
     }
+}
+
+fn layout_line_width(
+    display_snapshot: &DisplaySnapshot,
+    row: DisplayRow,
+    font: &gpui::Font,
+    font_size: Pixels,
+    window: &mut Window,
+) -> Pixels {
+    let Ok(viewport) = display_snapshot.slice_viewport(row, 1) else {
+        return Pixels::ZERO;
+    };
+    let Some(row) = viewport.rows().first() else {
+        return Pixels::ZERO;
+    };
+    if row.block().is_some() {
+        return Pixels::ZERO;
+    }
+    let WrapViewportRowKind::Text {
+        text, byte_range, ..
+    } = row.kind();
+    let text = &text.as_ref()[byte_range.clone()];
+    let text_style = window.text_style();
+    let run = TextRun {
+        len: text.len(),
+        font: font.clone(),
+        color: text_style.color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window
+        .text_system()
+        .shape_line(text.to_owned().into(), font_size, &[run], None)
+        .width
 }
 
 impl EventEmitter<EditorEvent> for Editor {}

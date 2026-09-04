@@ -106,6 +106,103 @@ pub struct RepositorySnapshot {
     pub statuses_by_path: BTreeMap<PathBuf, StatusEntry>,
 }
 
+/// 可脱离 GPUI 的 Git 状态只读快照，供项目树后台计算可见行状态。
+///
+/// GitStore 仍是唯一状态所有者；该类型只是一次不可变的派生视图，不参与写回。
+#[derive(Clone, Default)]
+pub struct GitStatusSnapshot {
+    repositories: Vec<GitRepositoryStatusSnapshot>,
+}
+
+#[derive(Clone)]
+struct GitRepositoryStatusSnapshot {
+    working_directory: PathBuf,
+    statuses_by_path: BTreeMap<PathBuf, StatusEntry>,
+    directory_statuses: BTreeMap<PathBuf, FileStatus>,
+}
+
+fn directory_statuses(statuses: &BTreeMap<PathBuf, StatusEntry>) -> BTreeMap<PathBuf, FileStatus> {
+    let mut directories = BTreeMap::new();
+    for (path, entry) in statuses {
+        if entry.status.is_ignored() {
+            continue;
+        }
+        let mut parent = path.parent().map(Path::to_path_buf);
+        while let Some(directory) = parent
+            .as_deref()
+            .filter(|directory| !directory.as_os_str().is_empty())
+        {
+            let directory = directory.to_path_buf();
+            directories
+                .entry(directory.clone())
+                .and_modify(|current: &mut FileStatus| {
+                    if entry.status.priority() > current.priority() {
+                        *current = entry.status;
+                    }
+                })
+                .or_insert(entry.status);
+            parent = directory.parent().map(Path::to_path_buf);
+        }
+    }
+    directories
+}
+
+impl GitStatusSnapshot {
+    pub(crate) fn statuses_for_rows(
+        &self,
+        rows: &[(PathBuf, bool)],
+    ) -> HashMap<PathBuf, FileStatus> {
+        rows.iter()
+            .filter_map(|(path, is_dir)| {
+                // Worktree 与 Git 实现可能返回不同形式的绝对路径（例如 macOS 的 /var 与 /private/var 别名）；
+                // 归一化只发生在后台索引查询。
+                let canonical_path = canonicalize_path(path);
+                let status = if *is_dir {
+                    self.status_for_directory(&canonical_path)
+                } else {
+                    self.status_for_path(&canonical_path)
+                        .map(|entry| entry.status)
+                };
+                status.map(|status| (path.clone(), status))
+            })
+            .collect()
+    }
+
+    fn repository_for_path(&self, path: &Path) -> Option<&GitRepositoryStatusSnapshot> {
+        self.repositories
+            .iter()
+            .filter(|repository| path.starts_with(&repository.working_directory))
+            .max_by_key(|repository| repository.working_directory.components().count())
+    }
+
+    fn status_for_path(&self, path: &Path) -> Option<&StatusEntry> {
+        let repository = self.repository_for_path(path)?;
+        let relative = path.strip_prefix(&repository.working_directory).ok()?;
+        repository
+            .statuses_by_path
+            .get(relative)
+            .or_else(|| GitStore::ignored_ancestor_entry(&repository.statuses_by_path, relative))
+    }
+
+    fn status_for_directory(&self, path: &Path) -> Option<FileStatus> {
+        let repository = self.repository_for_path(path)?;
+        let relative = path.strip_prefix(&repository.working_directory).ok()?;
+        let statuses = &repository.statuses_by_path;
+        if let Some(entry) = statuses.get(relative)
+            && entry.status.is_ignored()
+        {
+            return Some(FileStatus::Ignored);
+        }
+        repository
+            .directory_statuses
+            .get(relative)
+            .copied()
+            .or_else(|| {
+                GitStore::ignored_ancestor_entry(statuses, relative).map(|entry| entry.status)
+            })
+    }
+}
+
 pub(super) struct Repository {
     repository: Arc<dyn GitRepository>,
     snapshot: RepositorySnapshot,
@@ -115,6 +212,9 @@ pub struct GitStore {
     /// 项目根目录；无 worktree 的空项目为 None，此时所有 job 与仓库查询为空操作。
     root: Option<PathBuf>,
     repositories: Vec<Repository>,
+    /// 当前仓库状态的不可变派生索引；
+    /// 项目树只克隆 Arc，不在 UI 线程复制状态表。
+    status_index: Arc<GitStatusSnapshot>,
     /// 活动仓库（按 working_directory 标识）：分支显示与 fetch/pull/push 等 git 操作的目标。
     /// 用 working_directory 而非索引：全量扫描重建 Vec，索引不稳定。
     active_repo_workdir: Option<PathBuf>,
@@ -250,6 +350,7 @@ impl GitStore {
         Self {
             root,
             repositories: Vec::new(),
+            status_index: Arc::new(GitStatusSnapshot::default()),
             active_repo_workdir: None,
             revision_text_cache: HashMap::new(),
             revision_text_generations: HashMap::from([
@@ -408,6 +509,34 @@ impl GitStore {
         })
     }
 
+    /// 捕获当前 Git 状态快照，供后台消费者按自己的可见行集合派生状态。
+    pub fn status_snapshot(&self) -> Arc<GitStatusSnapshot> {
+        Arc::clone(&self.status_index)
+    }
+
+    #[cfg(test)]
+    pub(super) fn status_for_directory(&self, path: &Path) -> Option<FileStatus> {
+        self.status_index
+            .status_for_directory(&canonicalize_path(path))
+    }
+
+    pub(super) fn rebuild_status_index(&mut self) {
+        self.status_index = Arc::new(GitStatusSnapshot {
+            repositories: self
+                .repositories
+                .iter()
+                .map(|repository| {
+                    let statuses_by_path = repository.snapshot.statuses_by_path.clone();
+                    GitRepositoryStatusSnapshot {
+                        working_directory: repository.repository.working_directory().to_path_buf(),
+                        directory_statuses: directory_statuses(&statuses_by_path),
+                        statuses_by_path,
+                    }
+                })
+                .collect(),
+        });
+    }
+
     /// 增量刷新：对变更路径重查状态（fs 事件、保存操作后调用）。
     pub fn refresh_statuses_for_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         // 调用方传入的路径可能未 canonicalize，与归一化后的 root 比较前先归一化。
@@ -465,39 +594,6 @@ impl GitStore {
             None if self.request_needs_hunks(&request) => None,
             None => Some(Arc::from([])),
         }
-    }
-
-    /// 查询目录的聚合状态。
-    ///
-    /// 目录自身被忽略时直接返回；
-    /// 否则取子项中优先级最高的状态（conflict > deleted > modified > added/untracked）。
-    /// 被忽略的子项不参与聚合——目录不应因内部忽略文件而淡显。
-    pub(super) fn status_for_directory(&self, path: &Path) -> Option<FileStatus> {
-        let path = canonicalize_path(path);
-        let repository = self.repo_for_path(&path)?;
-        let relative = repo_relative_path(repository.repository.working_directory(), &path)?;
-        let statuses = &repository.snapshot.statuses_by_path;
-        // 目录自身条目（--ignored=matching 下仅忽略目录会有目录级条目）。
-        if let Some(entry) = statuses.get(&relative)
-            && entry.status.is_ignored()
-        {
-            return Some(FileStatus::Ignored);
-        }
-        // 聚合子项：BTreeMap 有序，以目录为前缀的键连续排列在 range(..) 中。
-        let mut best: Option<FileStatus> = None;
-        for (key, entry) in statuses.range(relative.clone()..) {
-            if !key.starts_with(&relative) {
-                break;
-            }
-            if key == &relative || entry.status.is_ignored() {
-                continue;
-            }
-            if best.is_none_or(|current| entry.status.priority() > current.priority()) {
-                best = Some(entry.status);
-            }
-        }
-        // 子项无条目时继承祖先目录的忽略状态（与 `status_for_path` 同一传播语义）。
-        best.or_else(|| Self::ignored_ancestor_entry(statuses, &relative).map(|entry| entry.status))
     }
 
     /// 查找最近一个被忽略的祖先目录条目；自身无条目时用于继承忽略状态。

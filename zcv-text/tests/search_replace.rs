@@ -19,14 +19,14 @@ fn unified_search_query_dispatches_literal_and_regex_with_the_same_options() {
         vec![range(0, 3), range(12, 15)]
     );
 
-    let regex = SearchQuery {
+    let regex_query = SearchQuery {
         query: r"c\d+".to_string(),
         case_sensitive: false,
         whole_word: false,
         regex: true,
-    }
-    .search(&buffer.snapshot())
-    .unwrap();
+    };
+    let prepared = regex_query.prepare().unwrap();
+    let regex = prepared.search(&buffer.snapshot()).unwrap();
     assert!(matches!(regex, SearchQueryResult::Regex(_)));
     assert_eq!(regex.ranges().collect::<Vec<_>>(), vec![range(16, 19)]);
 }

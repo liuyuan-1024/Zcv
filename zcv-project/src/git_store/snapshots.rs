@@ -65,6 +65,7 @@ impl GitStore {
                         snapshot: scan.snapshot,
                     })
                     .collect();
+                self.rebuild_status_index();
                 // 活动仓库维护：仍在集合中则保持；否则回退新集合第一个（Vec 序 = 祖先在前，与默认候选一致）；
                 // 集合为空 → None。注意用 repositories 而非 new_work_dirs：BTreeSet 按字典序迭代，取不到发现顺序。
                 // emit 是 deferred（pending_effects），订阅方永远读到赋值后的完整状态，首次扫描 None → Some(第一个) 恰好触发一次。
@@ -112,6 +113,8 @@ impl GitStore {
                     self.invalidate_revision_text(zcv_git::GitRevision::Head);
                     cx.emit(GitStoreEvent::Head);
                 }
+                // 先发布不可变索引，再发状态事件；订阅方收到事件时必须读取同一批刷新后的状态。
+                self.rebuild_status_index();
                 if statuses_changed {
                     cx.emit(GitStoreEvent::Statuses);
                 }

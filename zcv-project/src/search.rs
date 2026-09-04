@@ -4,16 +4,18 @@
 //! 命中文件随扫描进度逐文件通过通道流出，UI 线程按批装配进 MultiBuffer ordered excerpts。
 //! 接收方放弃通道（新搜索取代或视图关闭）时，后台在下次发送时感知并提前结束扫描。
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
 
 use async_channel::{Receiver, Sender};
-use gpui::Task;
+use futures::future::{join, join_all};
+use gpui::{BackgroundExecutor, Task};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Line, SearchQuery, Snapshot, TextRange};
 
 use crate::worktree::WorktreeSearchPlan;
@@ -59,68 +61,156 @@ pub(crate) async fn search_worktree(
     opened_snapshots: HashMap<PathBuf, Snapshot>,
     query: SearchQuery,
     tx: Sender<FileSearchResult>,
+    background_executor: BackgroundExecutor,
 ) -> anyhow::Result<()> {
     if query.query.is_empty() {
         return Ok(());
     }
-    validate_query(&query)?;
+    // 查询只解析一次；尤其是正则查询，编译出的自动机会复用于每个文件快照。
+    let prepared_query = query.prepare()?;
 
-    let mut paths = git_search_paths(&plan).unwrap_or_else(|| {
+    // `git ls-files` 已按路径排序；只有递归文件系统回退路径需要额外排序。
+    let paths = if let Some(paths) = git_search_paths(&plan) {
+        paths
+    } else {
         let mut paths = Vec::new();
         collect_files(&plan.root, &plan, &mut paths);
+        paths.sort();
         paths
-    });
-    paths.sort();
+    };
+    if paths.is_empty() {
+        return Ok(());
+    }
 
-    let mut total_matches = 0;
-    for path in paths {
-        // 已打开文件用内存快照搜索；其余文件在后台读盘并保留 Buffer，
-        // 避免结果装配阶段在主线程重新读文件。
-        let (snapshot, loaded_buffer) = if let Some(snapshot) = opened_snapshots.get(&path) {
-            (snapshot.clone(), None)
-        } else {
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let Ok(buffer) = Buffer::scratch(text, BufferConfig::default()) else {
-                continue;
-            };
-            (buffer.snapshot(), Some(buffer))
-        };
-        let mut matches = search_snapshot(&snapshot, &query)?;
-        if matches.is_empty() {
-            continue;
+    let worker_count = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(paths.len())
+        .min(8);
+    let (job_tx, job_rx) = async_channel::unbounded();
+    let (result_tx, result_rx) = async_channel::bounded(worker_count * 2);
+    let opened_snapshots = Arc::new(opened_snapshots);
+    let prepared_query = Arc::new(prepared_query);
+    let root = Arc::new(plan.root);
+
+    let workers = (0..worker_count).map(|_| {
+        let job_rx = job_rx.clone();
+        let result_tx = result_tx.clone();
+        let opened_snapshots = Arc::clone(&opened_snapshots);
+        let prepared_query = Arc::clone(&prepared_query);
+        let root = Arc::clone(&root);
+        let background_executor = background_executor.clone();
+        async move {
+            while let Ok((index, path)) = job_rx.recv().await {
+                let opened_snapshots = Arc::clone(&opened_snapshots);
+                let prepared_query = Arc::clone(&prepared_query);
+                let root = Arc::clone(&root);
+                let result = background_executor
+                    .spawn(
+                        async move { search_file(path, &root, &opened_snapshots, &prepared_query) },
+                    )
+                    .await;
+                if result_tx.send((index, result)).await.is_err() {
+                    break;
+                }
+            }
         }
-        let remaining = MAX_MATCHES.saturating_sub(total_matches);
-        if matches.len() > remaining {
-            matches.truncate(remaining);
-        }
-        total_matches += matches.len();
-        let display_path = path.strip_prefix(&plan.root).unwrap_or(&path).to_path_buf();
-        let result = FileSearchResult {
-            path,
-            display_path,
-            excerpts: excerpt_matches(&snapshot, &matches),
-            loaded_buffer,
-        };
-        // 接收方已放弃（新搜索取代或视图关闭）时提前结束扫描。
-        if tx.send(result).await.is_err() {
-            break;
-        }
-        if total_matches == MAX_MATCHES {
+    });
+    let workers = join_all(workers);
+    drop(job_rx);
+    drop(result_tx);
+    for (index, path) in paths.into_iter().enumerate() {
+        if job_tx.send((index, path)).await.is_err() {
             break;
         }
     }
+    drop(job_tx);
+
+    let consumer = async {
+        let mut pending = BTreeMap::new();
+        let mut next_index = 0;
+        let mut total_matches = 0;
+        while let Ok((index, result)) = result_rx.recv().await {
+            pending.insert(index, result);
+            while let Some((_, result)) = pending.remove_entry(&next_index) {
+                next_index += 1;
+                let Some(mut result) = result else {
+                    continue;
+                };
+                let remaining = MAX_MATCHES.saturating_sub(total_matches);
+                if remaining == 0 {
+                    return;
+                }
+                if result
+                    .excerpts
+                    .iter()
+                    .map(|excerpt| excerpt.matches.len())
+                    .sum::<usize>()
+                    > remaining
+                {
+                    truncate_excerpts(&mut result.excerpts, remaining);
+                }
+                total_matches += result
+                    .excerpts
+                    .iter()
+                    .map(|excerpt| excerpt.matches.len())
+                    .sum::<usize>();
+                if tx.send(result).await.is_err() || total_matches == MAX_MATCHES {
+                    return;
+                }
+            }
+        }
+    };
+    let (_, _) = join(consumer, workers).await;
     Ok(())
 }
 
-fn validate_query(query: &SearchQuery) -> anyhow::Result<()> {
-    let buffer = Buffer::scratch(String::new(), BufferConfig::default())?;
-    let _ = search_snapshot(&buffer.snapshot(), query)?;
-    Ok(())
+fn search_file(
+    path: PathBuf,
+    root: &Path,
+    opened_snapshots: &HashMap<PathBuf, Snapshot>,
+    query: &zcv_text::PreparedSearchQuery,
+) -> Option<FileSearchResult> {
+    // 已打开文件用内存快照搜索；
+    // 其余文件在后台读盘并保留 Buffer，避免结果装配阶段在主线程重新读文件。
+    let (snapshot, loaded_buffer) = if let Some(snapshot) = opened_snapshots.get(&path) {
+        (snapshot.clone(), None)
+    } else {
+        let text = std::fs::read_to_string(&path).ok()?;
+        let buffer = Buffer::scratch(text, BufferConfig::default()).ok()?;
+        (buffer.snapshot(), Some(buffer))
+    };
+    let matches = search_snapshot(&snapshot, query).ok()?;
+    if matches.is_empty() {
+        return None;
+    }
+    Some(FileSearchResult {
+        display_path: path.strip_prefix(root).unwrap_or(&path).to_path_buf(),
+        path,
+        excerpts: excerpt_matches(&snapshot, &matches),
+        loaded_buffer,
+    })
 }
 
-fn search_snapshot(snapshot: &Snapshot, query: &SearchQuery) -> anyhow::Result<Vec<TextRange>> {
+fn truncate_excerpts(excerpts: &mut Vec<ExcerptMatches>, limit: usize) {
+    let mut remaining = limit;
+    let mut keep = 0;
+    for excerpt in excerpts.iter_mut() {
+        if excerpt.matches.len() > remaining {
+            excerpt.matches.truncate(remaining);
+        }
+        remaining = remaining.saturating_sub(excerpt.matches.len());
+        keep += 1;
+        if remaining == 0 {
+            break;
+        }
+    }
+    excerpts.truncate(keep);
+}
+
+fn search_snapshot(
+    snapshot: &Snapshot,
+    query: &zcv_text::PreparedSearchQuery,
+) -> anyhow::Result<Vec<TextRange>> {
     Ok(query.search(snapshot)?.ranges().collect())
 }
 
@@ -174,7 +264,8 @@ fn git_search_paths(plan: &WorktreeSearchPlan) -> Option<Vec<PathBuf>> {
             .filter(|path| !path.is_empty())
             .map(git_path_from_bytes)
             .map(|relative| plan.root.join(relative))
-            .filter(|path| !plan.is_excluded(path) && path.is_file())
+            // Git 输出的是文件条目；去掉逐文件 metadata 查询，实际读取失败时仍由下方 read_to_string 路径自然跳过。
+            .filter(|path| !plan.is_excluded(path))
             .collect(),
     )
 }

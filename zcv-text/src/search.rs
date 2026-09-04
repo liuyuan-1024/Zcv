@@ -25,22 +25,55 @@ pub struct SearchQuery {
 }
 
 impl SearchQuery {
-    /// 在一个不可变文本快照上执行查询。
-    pub fn search(&self, snapshot: &Snapshot) -> TextResult<SearchQueryResult> {
-        if self.regex {
-            snapshot
-                .search_regex(
+    /// 预编译一次查询，供跨多个快照的后台搜索复用正则机。
+    pub fn prepare(&self) -> TextResult<PreparedSearchQuery> {
+        if self.query.is_empty() {
+            return Err(SearchError::EmptyQuery.into());
+        }
+        let regex = self
+            .regex
+            .then(|| {
+                build_regex_automata(
                     &self.query,
                     RegexSearchOptions::new().with_case_sensitive(self.case_sensitive),
+                )
+            })
+            .transpose()?;
+        Ok(PreparedSearchQuery {
+            query: self.clone(),
+            regex,
+        })
+    }
+
+    /// 在一个不可变文本快照上执行查询。
+    pub fn search(&self, snapshot: &Snapshot) -> TextResult<SearchQueryResult> {
+        self.prepare()?.search(snapshot)
+    }
+}
+
+/// 已完成语法解析的查询；跨文件搜索时只需复用其中的正则自动机。
+pub struct PreparedSearchQuery {
+    query: SearchQuery,
+    regex: Option<meta::Regex>,
+}
+
+impl PreparedSearchQuery {
+    pub fn search(&self, snapshot: &Snapshot) -> TextResult<SearchQueryResult> {
+        if let Some(regex) = &self.regex {
+            snapshot
+                .search_regex_with_automata(
+                    &self.query.query,
+                    regex,
+                    RegexSearchOptions::new().with_case_sensitive(self.query.case_sensitive),
                 )
                 .map(SearchQueryResult::Regex)
         } else {
             snapshot
                 .search(
-                    &self.query,
+                    &self.query.query,
                     SearchOptions::new()
-                        .with_case_sensitive(self.case_sensitive)
-                        .with_whole_word(self.whole_word),
+                        .with_case_sensitive(self.query.case_sensitive)
+                        .with_whole_word(self.query.whole_word),
                 )
                 .map(SearchQueryResult::Literal)
         }
@@ -410,6 +443,16 @@ fn search_regex_streaming<T: TextRead>(
     options: RegexSearchOptions,
 ) -> TextResult<RegexSearchResult> {
     let regex = build_regex_automata(pattern, options)?;
+    search_regex_streaming_with_regex(storage, version, pattern, &regex, options)
+}
+
+fn search_regex_streaming_with_regex<T: TextRead>(
+    storage: &T,
+    version: BufferVersion,
+    pattern: &str,
+    regex: &meta::Regex,
+    options: RegexSearchOptions,
+) -> TextResult<RegexSearchResult> {
     let search_range = resolve_search_range(storage, options.range())?;
     validate_search_range(storage, search_range)?;
 
@@ -526,6 +569,16 @@ pub(crate) fn search_regex_in_text<T: TextRead>(
     options: RegexSearchOptions,
 ) -> TextResult<RegexSearchResult> {
     search_regex_streaming(storage, version, pattern, options)
+}
+
+pub(crate) fn search_regex_in_text_with_automata<T: TextRead>(
+    storage: &T,
+    version: BufferVersion,
+    pattern: &str,
+    regex: &meta::Regex,
+    options: RegexSearchOptions,
+) -> TextResult<RegexSearchResult> {
+    search_regex_streaming_with_regex(storage, version, pattern, regex, options)
 }
 
 pub(crate) fn regex_replacements_in_text<'a, T: TextRead>(

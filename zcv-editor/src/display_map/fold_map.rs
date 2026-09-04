@@ -266,9 +266,98 @@ pub(crate) struct FoldSnapshot {
     /// 输入投影快照（行内提示注入后的流）：fold 拓扑工作在其上，外部文本可被折叠。
     input: InlaySnapshot,
     folds: SumTree<Fold>,
+    lookup: FoldLookup,
     transforms: SumTree<Transform>,
     fold_metadata_by_id: BTreeMap<FoldId, TextRange>,
     version: u64,
+}
+
+/// 折叠查询索引。
+/// `by_start` 按起点排序，前缀最大终点允许覆盖查询二分定位；
+/// `anchor_by_line` 只保存未被外层折叠遮蔽的可见入口行。
+#[derive(Debug, Clone, Default)]
+struct FoldLookup {
+    by_start: Vec<Fold>,
+    prefix_max_end: Vec<usize>,
+    prefix_fold_index: Vec<usize>,
+    prefix_max_line_end: Vec<usize>,
+    prefix_line_fold_index: Vec<usize>,
+    anchor_by_line: BTreeMap<Line, Fold>,
+}
+
+impl FoldLookup {
+    fn from_folds(folds: &[Fold]) -> Self {
+        let mut by_start = folds.to_vec();
+        by_start.sort_by_key(|fold| FoldOrder::for_fold(*fold));
+        let mut prefix_max_end = Vec::with_capacity(by_start.len());
+        let mut prefix_fold_index = Vec::with_capacity(by_start.len());
+        let mut prefix_max_line_end = Vec::with_capacity(by_start.len());
+        let mut prefix_line_fold_index = Vec::with_capacity(by_start.len());
+        let mut max_end = 0;
+        let mut max_index = 0;
+        let mut max_line_end = 0;
+        let mut max_line_index = 0;
+        let mut active_ends = Vec::new();
+        let mut anchor_by_line = BTreeMap::new();
+        for (index, fold) in by_start.iter().enumerate() {
+            let range = fold.text_range();
+            let start = range.start().get();
+            let end = range.end().get();
+            if end > max_end {
+                max_end = end;
+                max_index = index;
+            }
+            prefix_max_end.push(max_end);
+            prefix_fold_index.push(max_index);
+            let line_end = fold.line_span.1.get();
+            if line_end > max_line_end {
+                max_line_end = line_end;
+                max_line_index = index;
+            }
+            prefix_max_line_end.push(max_line_end);
+            prefix_line_fold_index.push(max_line_index);
+
+            active_ends.retain(|active_end| *active_end >= start);
+            if fold.line_span.0 < fold.line_span.1 && active_ends.is_empty() {
+                anchor_by_line.entry(fold.line_span.0).or_insert(*fold);
+            }
+            active_ends.push(end);
+        }
+        Self {
+            by_start,
+            prefix_max_end,
+            prefix_fold_index,
+            prefix_max_line_end,
+            prefix_line_fold_index,
+            anchor_by_line,
+        }
+    }
+
+    fn covering_offset(&self, offset: ByteOffset) -> Option<&Fold> {
+        let upper = self
+            .by_start
+            .partition_point(|fold| fold.text_range().start() <= offset);
+        if upper == 0 {
+            return None;
+        }
+        let index = self.prefix_max_end[..upper].partition_point(|end| *end <= offset.get());
+        self.prefix_fold_index
+            .get(index)
+            .and_then(|fold_index| self.by_start.get(*fold_index))
+    }
+
+    fn covering_line(&self, line: Line) -> Option<&Fold> {
+        let upper = self
+            .by_start
+            .partition_point(|fold| fold.line_span.0 < line);
+        if upper == 0 {
+            return None;
+        }
+        let index = self.prefix_max_line_end[..upper].partition_point(|end| *end < line.get());
+        self.prefix_line_fold_index
+            .get(index)
+            .and_then(|fold_index| self.by_start.get(*fold_index))
+    }
 }
 
 impl FoldSnapshot {
@@ -299,17 +388,10 @@ impl FoldSnapshot {
         &self,
         offset: ByteOffset,
     ) -> Option<(ByteOffset, ByteOffset)> {
-        self.folds
-            .iter()
-            .filter(|fold| {
-                let range = fold.text_range();
-                range.start() <= offset && offset < range.end()
-            })
-            .min_by_key(|fold| fold.text_range().start())
-            .map(|fold| {
-                let range = fold.text_range();
-                (range.start(), range.end())
-            })
+        self.lookup.covering_offset(offset).map(|fold| {
+            let range = fold.text_range();
+            (range.start(), range.end())
+        })
     }
 
     /// 折叠入口行（合并行占位符的挂靠行；无隐藏行的 fold 不计）。
@@ -394,13 +476,7 @@ impl FoldSnapshot {
 
     /// 覆盖该逻辑行的最外层折叠（anchor 与 close 之间的隐藏行，含 close 行）。
     fn fold_covering(&self, line: Line) -> Option<&Fold> {
-        self.folds
-            .iter()
-            .filter(|fold| {
-                let (start, end) = fold.line_span;
-                start < end && start < line && line <= end
-            })
-            .min_by_key(|fold| fold.line_span.0)
+        self.lookup.covering_line(line)
     }
 
     /// 折叠合并行的投影几何（anchor 行文本 + 占位符 + 闭合行尾段）。
@@ -517,15 +593,7 @@ impl FoldSnapshot {
     fn fold_for_row(&self, row: ProjectedLineIndex) -> Option<&Fold> {
         let text = self.projected_line_kind(row)?;
         let buffer_line = self.input.source(text.logical_line())?.line();
-        self.folds.iter().find(|fold| {
-            let (start, end) = fold.line_span;
-            start == Line::new(buffer_line)
-                && start < end
-                && !self.folds.iter().any(|other| {
-                    let (other_start, other_end) = other.line_span;
-                    other_start < start && start <= other_end
-                })
-        })
+        self.lookup.anchor_by_line.get(&Line::new(buffer_line))
     }
 
     /// 折叠合并行文本：anchor 内容 + 占位符 + 闭合行尾段（以闭合行换行符结尾）。
@@ -603,6 +671,7 @@ impl FoldMap {
         let snapshot = FoldSnapshot {
             input,
             folds: SumTree::new(()),
+            lookup: FoldLookup::default(),
             transforms,
             fold_metadata_by_id: BTreeMap::new(),
             version: 0,
@@ -656,6 +725,7 @@ impl FoldMap {
                 transforms: build_transforms(&[], input.line_count()),
                 input,
                 folds: self.snapshot.folds.clone(),
+                lookup: self.snapshot.lookup.clone(),
                 fold_metadata_by_id: self.snapshot.fold_metadata_by_id.clone(),
                 version: self.snapshot.version + 1,
             };
@@ -671,6 +741,7 @@ impl FoldMap {
                 transforms: build_transforms(&[], input.line_count()),
                 input,
                 folds: SumTree::new(()),
+                lookup: FoldLookup::default(),
                 fold_metadata_by_id: BTreeMap::new(),
                 version: self.snapshot.version + 1,
             };
@@ -700,6 +771,7 @@ impl FoldMap {
             }
         }
         sort_folds(&mut retained);
+        self.snapshot.lookup = FoldLookup::from_folds(&retained);
         self.snapshot.folds = SumTree::from_iter(retained, ());
         let new_spans = hidden_spans(&self.snapshot.folds);
         // 行数不变且折叠拓扑不变时，编辑只改变与 new_range 相交行的内容，`inline_fold_edits` 的 changed_lines 恰好覆盖；
@@ -806,6 +878,8 @@ impl FoldMapWriter<'_> {
         sort_folds(&mut folds);
         let old_rows = self.0.snapshot.line_count();
         self.0.snapshot.folds = SumTree::from_iter(folds, ());
+        let indexed_folds = self.0.snapshot.folds.iter().copied().collect::<Vec<_>>();
+        self.0.snapshot.lookup = FoldLookup::from_folds(&indexed_folds);
         self.0.snapshot.fold_metadata_by_id.insert(id, range);
         let spans = hidden_spans_in_stream(self.0.snapshot.stream(), &self.0.snapshot.folds);
         self.0.snapshot.transforms =
@@ -829,6 +903,8 @@ impl FoldMapWriter<'_> {
             .filter(|fold| fold.id != id)
             .collect();
         self.0.snapshot.folds = SumTree::from_iter(retained, ());
+        let indexed_folds = self.0.snapshot.folds.iter().copied().collect::<Vec<_>>();
+        self.0.snapshot.lookup = FoldLookup::from_folds(&indexed_folds);
         self.0.snapshot.fold_metadata_by_id.remove(&id);
         let spans = hidden_spans_in_stream(self.0.snapshot.stream(), &self.0.snapshot.folds);
         self.0.snapshot.transforms =

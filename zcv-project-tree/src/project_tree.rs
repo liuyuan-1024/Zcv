@@ -107,6 +107,10 @@ pub struct ProjectTreePanel {
     rebuild_generation: u64,
     /// 进行中的行重建任务：新派发覆盖旧任务（Task drop 即取消）。
     pending_rebuild: Option<Task<()>>,
+    /// Git 状态重算代次：状态事件连续到达时只接受最新快照结果。
+    status_refresh_generation: u64,
+    /// 后台计算当前行模型 Git 状态的任务。
+    pending_status_refresh: Option<Task<()>>,
     /// 待定 reveal：异步行重建期间记录目标路径，行进入行模型后滚动到可见（过期代次由重建代次校验丢弃）。
     pending_reveal: Option<PathBuf>,
     /// 行快照缓存：replace_rows / 行内容变更时重建，渲染每帧只做 Rc 克隆（不深拷贝）。
@@ -163,6 +167,8 @@ impl ProjectTreePanel {
             refresh_generation: 0,
             rebuild_generation: 0,
             pending_rebuild: None,
+            status_refresh_generation: 0,
+            pending_status_refresh: None,
             pending_reveal: None,
             row_snapshot: Vec::new().into(),
             hover_expand_task: None,
@@ -210,7 +216,7 @@ impl ProjectTreePanel {
             return;
         };
         let expanded = self.state.borrow().expanded.clone();
-        let mut rows: Vec<ProjectTreeRow> = entries
+        let rows: Vec<ProjectTreeRow> = entries
             .into_iter()
             .map(|entry| {
                 // 深度 = 相对根的路径组件数（与递归收集的逐层 +1 等价）。
@@ -229,20 +235,13 @@ impl ProjectTreePanel {
                 }
             })
             .collect();
-        // git 状态批量回填（UI 线程一次查询）：目录行聚合、文件行精确；根行保持无状态（既有配色行为）。
-        let queries: Vec<(PathBuf, bool)> = rows
-            .iter()
-            .filter(|row| row.path != root)
-            .map(|row| (row.path.clone(), row.is_dir))
-            .collect();
-        let statuses = self.project.read(cx).git_statuses_for_rows(&queries, cx);
-        for row in &mut rows {
-            row.git_status = statuses.get(&row.path).cloned();
-        }
         self.state.borrow_mut().replace_rows(rows);
         // 行集已全量替换：同步重建行快照，此后每帧渲染只做 Rc 克隆。
         self.row_snapshot = self.state.borrow().rows.clone().into();
         self.try_scroll_pending_reveal();
+        // 行集变化后只按当前行集合查询一次 Git 派生状态；
+        // 这样不会使用目录扫描开始前捕获的旧 Git 快照，展开期间也能稳定补齐新出现的行。
+        self.refresh_git_statuses(cx);
         cx.notify();
     }
 
@@ -266,6 +265,8 @@ impl ProjectTreePanel {
 
     /// 从 git 状态刷新行的忽略/颜色信息（git 事件驱动，不重扫目录）。
     fn refresh_git_statuses(&mut self, cx: &mut Context<Self>) {
+        self.status_refresh_generation = self.status_refresh_generation.wrapping_add(1);
+        let generation = self.status_refresh_generation;
         let entries: Vec<(PathBuf, bool)> = self
             .state
             .borrow()
@@ -273,16 +274,27 @@ impl ProjectTreePanel {
             .iter()
             .map(|row| (row.path.clone(), row.is_dir))
             .collect();
-        let statuses = self.project.read(cx).git_statuses_for_rows(&entries, cx);
-        {
-            let mut state = self.state.borrow_mut();
-            for row in &mut state.rows {
-                row.git_status = statuses.get(&row.path).cloned();
-            }
-        }
-        // 行内容已变更：行快照必须同步重建，否则颜色更新不进渲染。
-        self.row_snapshot = self.state.borrow().rows.clone().into();
-        cx.notify();
+        let task = self
+            .project
+            .update(cx, |project, cx| project.git_statuses_for_rows(entries, cx));
+        self.pending_status_refresh = Some(cx.spawn(async move |this, cx| {
+            let statuses = task.await;
+            let _ = this.update(cx, |tree, cx| {
+                if generation != tree.status_refresh_generation {
+                    return;
+                }
+                {
+                    let mut state = tree.state.borrow_mut();
+                    for row in &mut state.rows {
+                        row.git_status = statuses.get(&row.path).copied();
+                    }
+                }
+                tree.pending_status_refresh = None;
+                // 行内容已变更：行快照必须同步重建，否则颜色更新不进渲染。
+                tree.row_snapshot = tree.state.borrow().rows.clone().into();
+                cx.notify();
+            });
+        }));
     }
 
     /// 重命名后迁移树状态（根/展开/选中/活动路径）。行模型重建由调用方负责：

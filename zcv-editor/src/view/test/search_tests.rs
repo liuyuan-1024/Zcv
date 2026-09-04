@@ -1,8 +1,8 @@
 //! 文件内搜索：SearchableItem 实现（搜索/跳转/替换/编辑后自动重搜）。
 
 use gpui::{TestAppContext, VisualTestContext};
-use zcv_text::ByteOffset;
 use zcv_text::SearchQuery;
+use zcv_text::{ByteOffset, TextRange};
 use zcv_workspace::{Direction, SearchableItem};
 
 use super::common::test_buffer;
@@ -54,6 +54,30 @@ fn search_finds_all_matches_and_reports_count(cx: &mut TestAppContext) {
                 zcv_text::TextRange::new(ByteOffset::new(0), ByteOffset::new(3),).unwrap()
             );
             assert!(editor.search_highlights().is_some());
+        });
+    });
+}
+
+#[gpui::test]
+fn external_search_ranges_append_without_resetting_active_match(cx: &mut TestAppContext) {
+    let (editor, cx) = editor_with_text(cx, "abc xyz abc");
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.append_search_ranges(
+                query("abc"),
+                vec![TextRange::new(ByteOffset::ZERO, ByteOffset::new(3)).unwrap()],
+                cx,
+            );
+            assert_eq!(editor.search_count(cx), (1, Some(0)));
+            editor.append_search_ranges(
+                query("abc"),
+                vec![TextRange::new(ByteOffset::new(8), ByteOffset::new(11)).unwrap()],
+                cx,
+            );
+            assert_eq!(editor.search_count(cx), (2, Some(0)));
+            editor.activate_match_in_direction(Direction::Next, 1, window, cx);
+            editor.append_search_ranges(query("abc"), Vec::new(), cx);
+            assert_eq!(editor.search_count(cx), (2, Some(1)));
         });
     });
 }

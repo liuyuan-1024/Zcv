@@ -246,6 +246,57 @@ fn excerpts_preserve_order_and_map_output_to_source(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn append_excerpts_extends_projection_without_rebuilding_existing_ranges(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "zero\none\n", cx);
+    let second = singleton("src/b.rs", "alpha\nbeta\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![MultiBufferExcerpt::new(
+                first,
+                TextRange::new(ByteOffset::new(5), ByteOffset::new(8)).unwrap(),
+                vec![TextRange::new(ByteOffset::new(5), ByteOffset::new(8)).unwrap()],
+            )],
+            cx,
+        );
+        buffer.append_excerpts(
+            vec![MultiBufferExcerpt::new(
+                second,
+                TextRange::new(ByteOffset::new(6), ByteOffset::new(10)).unwrap(),
+                vec![TextRange::new(ByteOffset::new(6), ByteOffset::new(10)).unwrap()],
+            )],
+            cx,
+        );
+    });
+
+    cx.read_entity(&combined, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        assert_eq!(
+            String::from_utf8(snapshot.text_bytes()).unwrap(),
+            "one\nbeta"
+        );
+        assert_eq!(snapshot.excerpts().len(), 2);
+        assert_eq!(
+            snapshot.excerpts()[0].output_range().start(),
+            ByteOffset::ZERO
+        );
+        assert_eq!(
+            snapshot.excerpts()[1].output_range().start(),
+            ByteOffset::new(4)
+        );
+        assert_eq!(
+            buffer
+                .match_ranges()
+                .iter()
+                .map(|range| range.start().get())
+                .collect::<Vec<_>>(),
+            vec![0, 4]
+        );
+    });
+}
+
+#[gpui::test]
 fn composite_anchor_resolves_in_the_same_file_after_excerpt_refresh(cx: &mut TestAppContext) {
     let first = singleton("src/a.rs", "zero\none\ntwo\nthree\nfour\n", cx);
     let second = singleton("src/b.rs", "alpha\nbeta\n", cx);

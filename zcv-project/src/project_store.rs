@@ -17,7 +17,9 @@ use zcv_multi_buffer::MultiBuffer;
 use zcv_text::{Buffer, BufferLoadError, BufferSaveError, SearchQuery};
 
 use super::buffer_store::BufferStore;
-use super::git_store::{GitStore, StatusEntry};
+#[cfg(test)]
+use super::git_store::StatusEntry;
+use super::git_store::{GitStatusSnapshot, GitStore};
 use super::search::{self, SearchResults};
 use super::worktree::{Worktree, WorktreeEntry, collect_visible_entries};
 
@@ -105,10 +107,9 @@ impl Project {
         }
     }
 
-    /// 后台收集当前展开状态下的可见行（不含 git 状态），返回后台任务。
+    /// 后台收集当前展开状态下的可见行，返回后台任务。
     ///
-    /// 遍历在后台线程执行（排序与排除规则与 `Worktree::children` 一致）；
-    /// 完成后由调用方在 UI 线程用 `git_statuses_for_rows` 批量回填 git 状态。
+    /// Git 状态由项目树在行模型应用后单独批量查询，避免目录扫描与状态快照之间形成竞态，也让两类派生数据拥有各自明确的失效边界。
     pub fn collect_visible_rows(
         &self,
         expanded: HashSet<PathBuf>,
@@ -126,24 +127,17 @@ impl Project {
             .spawn(async move { collect_visible_entries(&root, &expanded, &filter) })
     }
 
-    /// 批量查询可见行的 git 状态（git 事件驱动，不重扫目录）。
+    /// 后台批量查询可见行的 Git 状态（Git 事件驱动，不重扫目录）。
     ///
     /// `rows` 为 (路径, 是否目录) 对：目录行取聚合状态，文件行取精确状态。
     pub fn git_statuses_for_rows(
         &self,
-        rows: &[(PathBuf, bool)],
+        rows: Vec<(PathBuf, bool)>,
         cx: &App,
-    ) -> HashMap<PathBuf, FileStatus> {
-        rows.iter()
-            .filter_map(|(path, is_dir)| {
-                let status = if *is_dir {
-                    self.git_status_for_directory(path, cx)
-                } else {
-                    self.git_status_for_path(path, cx).map(|entry| entry.status)
-                };
-                status.map(|status| (path.clone(), status))
-            })
-            .collect()
+    ) -> Task<HashMap<PathBuf, FileStatus>> {
+        let snapshot: Arc<GitStatusSnapshot> = self.git_store.read(cx).status_snapshot();
+        cx.background_executor()
+            .spawn(async move { snapshot.statuses_for_rows(&rows) })
     }
 
     pub fn git_store(&self) -> Entity<GitStore> {
@@ -183,9 +177,11 @@ impl Project {
         };
         let plan = worktree.snapshot.search_plan();
         let opened_snapshots = self.buffer_store.opened_snapshots(cx);
+        let background_executor = cx.background_executor().clone();
         let (tx, rx) = async_channel::bounded(8);
         let task = cx.background_executor().spawn(async move {
-            let _ = search::search_worktree(plan, opened_snapshots, query, tx).await;
+            let _ = search::search_worktree(plan, opened_snapshots, query, tx, background_executor)
+                .await;
         });
         SearchResults { task, rx }
     }
@@ -504,13 +500,9 @@ impl Project {
     }
 
     /// 查询文件的 git 状态（不在任何仓库或未跟踪时对应状态）。
+    #[cfg(test)]
     fn git_status_for_path(&self, path: &Path, cx: &App) -> Option<StatusEntry> {
         self.git_store.read(cx).status_for_path(path).cloned()
-    }
-
-    /// 查询目录的聚合 git 状态（子项中优先级最高的状态）。
-    fn git_status_for_directory(&self, path: &Path, cx: &App) -> Option<FileStatus> {
-        self.git_store.read(cx).status_for_directory(path)
     }
 }
 

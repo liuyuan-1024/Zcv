@@ -3,13 +3,14 @@
 use std::any::TypeId;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, AnyEntity, App, Context, Entity, EventEmitter, FocusHandle, Focusable, FontStyle,
-    FontWeight, HighlightStyle, InteractiveText, ObjectFit, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement, StrikethroughStyle, StyledImage, StyledText, Subscription, Task,
-    UnderlineStyle, Window, div, img, prelude::*, px,
+    AnyElement, AnyEntity, App, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable,
+    FontStyle, FontWeight, HighlightStyle, InteractiveText, ListAlignment, ListState, ObjectFit,
+    Render, SharedString, StatefulInteractiveElement, StrikethroughStyle, StyledImage, StyledText,
+    Subscription, Task, UnderlineStyle, Window, div, img, list, prelude::*, px,
 };
 use pulldown_cmark::Alignment;
 use zcv_language::highlight_snippet;
@@ -29,8 +30,8 @@ pub(crate) struct MarkdownPreviewView {
     source_item: Box<dyn ItemHandle>,
     multi_buffer: Entity<MultiBuffer>,
     focus: FocusHandle,
-    scroll_handle: ScrollHandle,
-    blocks: Vec<Block>,
+    block_list: ListState,
+    blocks: Arc<Vec<Block>>,
     code_highlight_generation: u64,
     code_highlight_task: Option<Task<()>>,
     refresh_generation: u64,
@@ -71,8 +72,8 @@ impl MarkdownPreviewView {
             source_item,
             multi_buffer,
             focus: cx.focus_handle(),
-            scroll_handle: ScrollHandle::new(),
-            blocks: Vec::new(),
+            block_list: ListState::new(0, ListAlignment::Top, px(200.)),
+            blocks: Arc::new(Vec::new()),
             code_highlight_generation: 0,
             code_highlight_task: None,
             refresh_generation: 0,
@@ -104,10 +105,11 @@ impl MarkdownPreviewView {
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let text = String::from_utf8(self.multi_buffer.read(cx).snapshot(cx).text_bytes())
             .expect("编辑器文档应为 UTF-8");
-        self.blocks = parse(&text);
+        self.blocks = Arc::new(parse(&text));
+        self.block_list.reset(self.blocks.len());
         self.code_highlight_generation = self.code_highlight_generation.wrapping_add(1);
         let generation = self.code_highlight_generation;
-        let mut blocks = self.blocks.clone();
+        let mut blocks = (*self.blocks).clone();
         let highlights = cx.background_spawn(async move {
             highlight_code_blocks(&mut blocks);
             blocks
@@ -118,7 +120,8 @@ impl MarkdownPreviewView {
                 if view.code_highlight_generation != generation {
                     return;
                 }
-                view.blocks = blocks;
+                view.blocks = Arc::new(blocks);
+                view.block_list.reset(view.blocks.len());
                 view.code_highlight_task = None;
                 cx.notify();
             });
@@ -138,13 +141,28 @@ impl Focusable for MarkdownPreviewView {
 impl Render for MarkdownPreviewView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let source_path = self.source_item.item_path(cx);
-        let source_directory = source_path.as_deref().and_then(Path::parent);
-        let mut next_key = 0;
-        let content = self
-            .blocks
-            .iter()
-            .map(|block| render_block(block, &mut next_key, source_directory, 0, cx))
-            .collect::<Vec<_>>();
+        let source_directory = source_path
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf);
+        let blocks = self.blocks.clone();
+        let block_list = self.block_list.clone();
+        let content = list(block_list, move |index, _, cx| {
+            let Some(block) = blocks.get(index) else {
+                return div().into_any_element();
+            };
+            let mut next_key = 0;
+            render_block(
+                block,
+                &mut next_key,
+                source_directory.as_deref(),
+                0,
+                index,
+                cx,
+            )
+        })
+        .size_full()
+        .gap(space::S8);
         div()
             .id("markdown-preview")
             .track_focus(&self.focus)
@@ -152,7 +170,6 @@ impl Render for MarkdownPreviewView {
             .tab_index(0)
             .size_full()
             .overflow_y_scroll()
-            .track_scroll(&self.scroll_handle)
             .bg(color::current(cx).editor_background)
             .child(
                 div()
@@ -165,7 +182,7 @@ impl Render for MarkdownPreviewView {
                     .text_color(color::current(cx).text)
                     .text_size(typography::content_size())
                     .line_height(typography::content_line())
-                    .children(content),
+                    .child(content),
             )
     }
 }
@@ -175,6 +192,7 @@ fn render_block(
     next_key: &mut usize,
     source_directory: Option<&Path>,
     list_depth: usize,
+    namespace: usize,
     cx: &App,
 ) -> AnyElement {
     let key = *next_key;
@@ -234,7 +252,9 @@ fn render_block(
         Block::Quote(blocks) => {
             let children = blocks
                 .iter()
-                .map(|block| render_block(block, next_key, source_directory, list_depth, cx))
+                .map(|block| {
+                    render_block(block, next_key, source_directory, list_depth, namespace, cx)
+                })
                 .collect::<Vec<_>>();
             div()
                 .border_l_2()
@@ -260,7 +280,14 @@ fn render_block(
                     let item_children = item
                         .iter()
                         .map(|block| {
-                            render_block(block, next_key, source_directory, list_depth + 1, cx)
+                            render_block(
+                                block,
+                                next_key,
+                                source_directory,
+                                list_depth + 1,
+                                namespace,
+                                cx,
+                            )
                         })
                         .collect::<Vec<_>>();
                     div()
@@ -299,7 +326,10 @@ fn render_block(
             rows,
         } => {
             let mut table = div()
-                .id(("markdown-table", key))
+                .id(ElementId::named_usize(
+                    format!("markdown-table-{namespace}"),
+                    key,
+                ))
                 .w_full()
                 .overflow_x_scroll()
                 .rounded_md()
@@ -722,8 +752,8 @@ mod tests {
         cx.run_until_parked();
         cx.read_entity(&view, |view, _| {
             assert_eq!(
-                view.blocks,
-                vec![Block::Heading {
+                view.blocks.as_ref(),
+                &vec![Block::Heading {
                     level: 1,
                     content: vec![plain("初始标题")],
                 }]
@@ -735,8 +765,8 @@ mod tests {
         cx.run_until_parked();
         cx.read_entity(&view, |view, _| {
             assert_eq!(
-                view.blocks,
-                vec![Block::Paragraph(vec![plain("更新后的正文")])]
+                view.blocks.as_ref(),
+                &vec![Block::Paragraph(vec![plain("更新后的正文")])]
             );
         });
     }
@@ -764,13 +794,19 @@ mod tests {
         editor.update(cx, |editor, cx| editor.set_text("第一次修改", cx));
         editor.update(cx, |editor, cx| editor.set_text("最终内容", cx));
         cx.read_entity(&view, |view, _| {
-            assert_eq!(view.blocks, vec![Block::Paragraph(vec![plain("初始正文")])]);
+            assert_eq!(
+                view.blocks.as_ref(),
+                &vec![Block::Paragraph(vec![plain("初始正文")])]
+            );
         });
 
         cx.executor().advance_clock(MARKDOWN_REPARSE_DEBOUNCE);
         cx.run_until_parked();
         cx.read_entity(&view, |view, _| {
-            assert_eq!(view.blocks, vec![Block::Paragraph(vec![plain("最终内容")])]);
+            assert_eq!(
+                view.blocks.as_ref(),
+                &vec![Block::Paragraph(vec![plain("最终内容")])]
+            );
         });
     }
 }

@@ -211,6 +211,36 @@ fn rebuild_capture_table(sources: &mut [ExcerptSource]) -> Arc<[Arc<str>]> {
     Arc::from(capture_names)
 }
 
+/// 仅为新增源扩展组合 capture 表，保留已有源的 capture 索引。
+fn extend_capture_table(
+    sources: &mut [ExcerptSource],
+    first_new_source: usize,
+    capture_names: &mut Vec<Arc<str>>,
+) {
+    let mut capture_indices = capture_names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (Arc::clone(name), index as u32))
+        .collect::<HashMap<_, _>>();
+    for source in &mut sources[first_new_source..] {
+        source.capture_map = source
+            .syntax
+            .capture_names()
+            .iter()
+            .map(|name| {
+                if let Some(index) = capture_indices.get(name) {
+                    *index
+                } else {
+                    let index = capture_names.len() as u32;
+                    capture_names.push(Arc::clone(name));
+                    capture_indices.insert(Arc::clone(name), index);
+                    index
+                }
+            })
+            .collect();
+    }
+}
+
 /// 多文件文档中一个可见片段的一帧元数据。
 ///
 /// 文本仍通过组合投影供编辑器的折叠、换行和命中测试使用；
@@ -385,8 +415,16 @@ impl MultiBufferSnapshot {
             return self.syntax.highlights(range, &self.text);
         }
         let mut spans = Vec::new();
-        for excerpt in self.excerpt_mappings.iter() {
+        // mappings 按组合输出顺序建立，且每个 mapping 的内容结束位置单调递增；
+        // 先定位第一个可能重叠的片段，避免每个视口范围都扫描整份多文件结果。
+        let first = self.excerpt_mappings.partition_point(|excerpt| {
+            excerpt.output_range.start().get() + excerpt.source_range.len() <= range.start
+        });
+        for excerpt in self.excerpt_mappings[first..].iter() {
             let output_start = excerpt.output_range.start().get();
+            if output_start >= range.end {
+                break;
+            }
             // 非末尾 excerpt 可能为显示边界补一个换行；该字节不属于 source，
             // 不能越过 source_range 去查询下一段源文本的语法。
             let output_end = output_start + excerpt.source_range.len();
@@ -551,6 +589,8 @@ struct ExcerptState {
     mappings: Vec<ExcerptMapping>,
     /// 按源去重的 (text, syntax, capture_map) 表。
     sources: Vec<ExcerptSource>,
+    /// 源实体到 `sources` 索引的派生索引，供增量追加按身份查找源状态。
+    source_indices: HashMap<gpui::EntityId, usize>,
     match_ranges: Vec<TextRange>,
     capture_names: Arc<[Arc<str>]>,
     next_transaction_id: TransactionId,
@@ -640,6 +680,7 @@ impl MultiBuffer {
             source_event_subscriptions: Vec::new(),
             mappings: Vec::new(),
             sources: Vec::new(),
+            source_indices: HashMap::new(),
             match_ranges: Vec::new(),
             capture_names: Arc::from([]),
             next_transaction_id: TransactionId::INITIAL,
@@ -692,6 +733,7 @@ impl MultiBuffer {
             source_event_subscriptions,
             mappings,
             sources,
+            source_indices,
             match_ranges,
             capture_names: composite_capture_names,
             ..
@@ -825,9 +867,229 @@ impl MultiBuffer {
         *stored_excerpts = valid_excerpts;
         *mappings = next_mappings;
         *sources = next_sources;
+        *source_indices = sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| (source.entity.entity_id(), index))
+            .collect();
         *match_ranges = next_match_ranges;
         *composite_capture_names = rebuild_capture_table(sources);
         cx.notify();
+    }
+
+    /// 在现有组合文档末尾追加有序片段。
+    ///
+    /// 追加是组合文档的增量写入边界：只物化新增片段，并通过投影 Buffer 的尾部编辑提交文本，不重建已有映射、源订阅或整份投影。
+    /// 需要替换顺序或删除片段时仍应使用 [`Self::set_excerpts`]。
+    pub fn append_excerpts(
+        &mut self,
+        excerpts: Vec<MultiBufferExcerpt>,
+        cx: &mut Context<Self>,
+    ) -> Vec<TextRange> {
+        if excerpts.is_empty() {
+            return Vec::new();
+        }
+
+        let mut new_sources = Vec::new();
+        let mut seen_source_ids = HashSet::new();
+        for excerpt in &excerpts {
+            let source_id = excerpt.source.entity_id();
+            if !self.state.source_indices.contains_key(&source_id)
+                && seen_source_ids.insert(source_id)
+            {
+                new_sources.push(excerpt.source.clone());
+            }
+        }
+
+        let new_source_subscriptions = new_sources
+            .iter()
+            .map(|source| SourceSubscription {
+                source: source.clone(),
+                text: source.update(cx, |source, cx| {
+                    source.buffer().update(cx, |buffer, _| buffer.subscribe())
+                }),
+            })
+            .collect::<Vec<_>>();
+        let new_source_event_subscriptions = new_sources
+            .iter()
+            .map(|source| {
+                let observed = source.clone();
+                cx.subscribe(source, move |this, _, event, cx| match event {
+                    LanguageBufferEvent::TextChanged => {
+                        this.source_changed(observed.entity_id(), cx)
+                    }
+                    LanguageBufferEvent::Reparsed => this.source_reparsed(observed.entity_id(), cx),
+                    LanguageBufferEvent::MetadataChanged => {
+                        this.sync_working_source_config(observed.entity_id(), cx);
+                        cx.emit(MultiBufferEvent::MetadataChanged);
+                        cx.notify();
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let first_new_source = self.state.sources.len();
+        self.state
+            .sources
+            .extend(new_sources.iter().map(|source| ExcerptSource {
+                entity: source.clone(),
+                text: source.read(cx).text_snapshot(cx),
+                syntax: source.read(cx).syntax_snapshot(),
+                capture_map: Arc::from([]),
+            }));
+        self.state
+            .source_subscriptions
+            .extend(new_source_subscriptions);
+        self.state
+            .source_event_subscriptions
+            .extend(new_source_event_subscriptions);
+
+        for (index, source) in self.state.sources.iter().enumerate().skip(first_new_source) {
+            self.state
+                .source_indices
+                .insert(source.entity.entity_id(), index);
+        }
+        let mut capture_names = self.state.capture_names.iter().cloned().collect::<Vec<_>>();
+        extend_capture_table(
+            &mut self.state.sources,
+            first_new_source,
+            &mut capture_names,
+        );
+        self.state.capture_names = Arc::from(capture_names);
+
+        struct PreparedExcerpt {
+            excerpt: MultiBufferExcerpt,
+            path: PathBuf,
+            source_index: usize,
+            source_id: gpui::EntityId,
+            text: String,
+            start_line: usize,
+        }
+
+        let mut prepared = Vec::with_capacity(excerpts.len());
+        for excerpt in excerpts {
+            let source_id = excerpt.source.entity_id();
+            let Some(&source_index) = self.state.source_indices.get(&source_id) else {
+                unreachable!("追加片段的源必须已注册");
+            };
+            let source = &self.state.sources[source_index];
+            let path = source
+                .entity
+                .read(cx)
+                .file_path()
+                .map_or_else(PathBuf::new, Path::to_path_buf);
+            let Ok(text) = source.text.slice_text(excerpt.source_range) else {
+                continue;
+            };
+            let start_line = source
+                .text
+                .byte_to_line(excerpt.source_range.start())
+                .map_or(1, |line| line.get() + 1);
+            prepared.push(PreparedExcerpt {
+                excerpt,
+                path,
+                source_index,
+                source_id,
+                text: text.as_str().to_owned(),
+                start_line,
+            });
+        }
+        if prepared.is_empty() {
+            return Vec::new();
+        }
+
+        let projection_snapshot = self.state.projection.read(cx).text_snapshot(cx);
+        let mut output = String::new();
+        let existing_output_len = projection_snapshot.len_bytes().get();
+        let output_ends_with_newline = existing_output_len > 0
+            && projection_snapshot
+                .slice_byte_range(
+                    ByteOffset::new(existing_output_len - 1),
+                    ByteOffset::new(existing_output_len),
+                )
+                .is_ok_and(|text| text.as_str().ends_with('\n'));
+        let mut output_line = projection_snapshot.line_count().saturating_sub(1);
+        if existing_output_len > 0 && !output_ends_with_newline {
+            output.push('\n');
+            output_line += 1;
+        }
+
+        let prepared_count = prepared.len();
+        let existing_excerpt_count = self.state.excerpts.len();
+        let mut next_mappings = Vec::with_capacity(prepared_count);
+        let mut next_match_ranges = Vec::new();
+        let mut valid_excerpts = Vec::with_capacity(prepared_count);
+        for (position, item) in prepared.into_iter().enumerate() {
+            let display_path = item
+                .excerpt
+                .display_path
+                .clone()
+                .unwrap_or_else(|| item.path.clone());
+            let output_start = ByteOffset::new(existing_output_len + output.len());
+            let output_start_line = output_line;
+            output.push_str(&item.text);
+            output_line += item.text.bytes().filter(|byte| *byte == b'\n').count();
+            if position + 1 < prepared_count && !item.text.ends_with('\n') {
+                output.push('\n');
+                output_line += 1;
+            }
+            let output_end = ByteOffset::new(existing_output_len + output.len());
+            let output_end_line = output_line;
+            let output_range =
+                TextRange::new(output_start, output_end).expect("组合片段输出范围必须正序");
+            next_match_ranges.extend(item.excerpt.match_ranges.iter().filter_map(|matched| {
+                if matched.start() < item.excerpt.source_range.start()
+                    || matched.end() > item.excerpt.source_range.end()
+                {
+                    return None;
+                }
+                let start = output_start.get()
+                    + matched
+                        .start()
+                        .get()
+                        .saturating_sub(item.excerpt.source_range.start().get());
+                let end = output_start.get()
+                    + matched
+                        .end()
+                        .get()
+                        .saturating_sub(item.excerpt.source_range.start().get());
+                TextRange::new(ByteOffset::new(start), ByteOffset::new(end)).ok()
+            }));
+            let excerpt_index = existing_excerpt_count + valid_excerpts.len();
+            next_mappings.push(ExcerptMapping {
+                excerpt_index,
+                path: item.path,
+                display_path,
+                output_range,
+                source_range: item.excerpt.source_range,
+                output_start_line,
+                output_end_line,
+                source_start_line: item.start_line,
+                source_index: item.source_index,
+                source_id: item.source_id,
+                editable: item.excerpt.editable,
+                starts_new_excerpt: item.excerpt.starts_new_excerpt,
+                diff_kind: item.excerpt.diff_kind,
+            });
+            valid_excerpts.push(item.excerpt);
+        }
+
+        let text_buffer = self.state.projection.read(cx).buffer();
+        text_buffer.update(cx, |buffer, cx| {
+            let edit = Edit::insert(ByteOffset::new(existing_output_len), output)
+                .expect("组合文档增量追加编辑必须有效");
+            buffer
+                .edit([edit], TransactionMetadata::default())
+                .expect("组合文档增量追加必须是合法 UTF-8 编辑");
+            cx.notify();
+        });
+        self.state.excerpts.extend(valid_excerpts);
+        self.state.mappings.extend(next_mappings);
+        self.state
+            .match_ranges
+            .extend(next_match_ranges.iter().copied());
+        cx.notify();
+        next_match_ranges
     }
 
     /// 普通整文件文档的投影沿用源 Buffer 配置。

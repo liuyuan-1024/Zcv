@@ -64,19 +64,57 @@ pub(super) async fn execute_job(
         GitJob::ReloadGitState => {
             // 仓库发现（同步文件系统遍历，放后台）：总是递归发现嵌套仓库，再合并 root 所在的外层仓库。
             let discovered = discover_repositories(&root).unwrap_or_default();
-            let scans = discovered
+            let work = discovered
                 .into_iter()
-                .map(|repository| {
-                    let working_directory = repository.working_directory().to_path_buf();
-                    let repository: Arc<dyn GitRepository> = Arc::new(repository);
-                    let snapshot = scan_repository_sync(&repository);
-                    ReloadScan {
-                        working_directory,
-                        repository,
-                        snapshot,
-                    }
+                .enumerate()
+                .map(|(index, repository)| {
+                    (
+                        index,
+                        repository.working_directory().to_path_buf(),
+                        Arc::new(repository) as Arc<dyn GitRepository>,
+                    )
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            if work.is_empty() {
+                return JobResult::Reload(Vec::new());
+            }
+
+            // 每个仓库的 git 命令彼此独立。
+            // 用有界线程数并行扫描，避免嵌套仓库数量增加时把所有 head/status/diff/branch 查询串成长尾；
+            // 索引顺序仍按发现顺序保持。
+            let worker_count = std::thread::available_parallelism()
+                .map_or(1, std::num::NonZeroUsize::get)
+                .min(work.len());
+            let scans = std::thread::scope(|scope| {
+                let handles = (0..worker_count)
+                    .map(|worker_index| {
+                        let work = &work;
+                        scope.spawn(move || {
+                            work.iter()
+                                .skip(worker_index)
+                                .step_by(worker_count)
+                                .map(|(index, working_directory, repository)| {
+                                    let snapshot = scan_repository_sync(repository);
+                                    (
+                                        *index,
+                                        ReloadScan {
+                                            working_directory: working_directory.clone(),
+                                            repository: repository.clone(),
+                                            snapshot,
+                                        },
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let mut scans = handles
+                    .into_iter()
+                    .flat_map(|handle| handle.join().expect("git 仓库扫描线程不应 panic"))
+                    .collect::<Vec<_>>();
+                scans.sort_unstable_by_key(|(index, _)| *index);
+                scans.into_iter().map(|(_, scan)| scan).collect::<Vec<_>>()
+            });
             JobResult::Reload(scans)
         }
         GitJob::RefreshStatuses => {

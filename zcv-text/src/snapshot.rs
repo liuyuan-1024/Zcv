@@ -5,7 +5,10 @@
 use crate::{
     BufferConfig, BufferVersion, ByteOffset, Line, LineRange, RegexSearchResult, SearchResult,
     TextRange, TextResult,
-    search::{RegexSearchOptions, SearchOptions, search_in_text, search_regex_in_text},
+    search::{
+        RegexSearchOptions, SearchOptions, search_in_text, search_regex_in_text,
+        search_regex_in_text_with_automata,
+    },
     slicing::{LineContent, LineSlice, TextSlice},
     slicing::{
         line_content_for_text, text_range_for_byte_range, text_range_for_line,
@@ -122,5 +125,14 @@ impl Snapshot {
         options: RegexSearchOptions,
     ) -> TextResult<RegexSearchResult> {
         search_regex_in_text(&self.storage, self.version, pattern, options)
+    }
+
+    pub(crate) fn search_regex_with_automata(
+        &self,
+        pattern: &str,
+        regex: &regex_automata::meta::Regex,
+        options: RegexSearchOptions,
+    ) -> TextResult<RegexSearchResult> {
+        search_regex_in_text_with_automata(&self.storage, self.version, pattern, regex, options)
     }
 }

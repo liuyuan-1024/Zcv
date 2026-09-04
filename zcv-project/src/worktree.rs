@@ -1,14 +1,14 @@
 //! Worktree —— 项目目录快照层。
 //!
 //! 职责边界：目录遍历、扫描排除规则、git 仓库发现与路径命名语义住在这一层；
-//! git 状态由 `Project` 从 `GitStore` 查询后填充到条目。
+//! git 状态由项目树从 `GitStore` 的不可变快照按需派生。
 //! 本层只提供静态目录查询（`children`），展开、深度与可见行是项目树视图状态，由 UI 层自行构建。
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
-use zcv_git::{FileStatus, GitRepository, RealGitRepository};
+use zcv_git::{GitRepository, RealGitRepository};
 
 /// `.git` 目录名（仓库发现用）。
 const DOT_GIT: &str = ".git";
@@ -19,8 +19,6 @@ pub struct WorktreeEntry {
     pub path: PathBuf,
     pub name: String,
     pub is_dir: bool,
-    /// git 状态（目录聚合/文件精确由 Project 查询填充；Worktree 产出时恒 None）。
-    pub git_status: Option<FileStatus>,
 }
 
 /// 项目目录快照层：持有根路径与扫描排除规则，提供静态目录查询。
@@ -109,34 +107,32 @@ impl TreeFilter {
 /// `collect_visible_entries` 逐层递归复用本函数，排序与排除规则天然一致。
 fn children_sorted(dir: &Path, root: &Path, filter: &TreeFilter) -> Vec<WorktreeEntry> {
     let mut entries: Vec<_> = match std::fs::read_dir(dir) {
-        Ok(rd) => rd.filter_map(|e| e.ok()).map(|e| e.path()).collect(),
+        Ok(rd) => rd
+            .filter_map(|entry| {
+                let path = entry.ok()?.path();
+                let is_dir = path.is_dir();
+                Some((path, is_dir))
+            })
+            .collect(),
         Err(_) => return Vec::new(),
     };
     entries.sort_by(|a, b| {
-        let a_dir = a.is_dir();
-        let b_dir = b.is_dir();
-        if a_dir != b_dir {
-            b_dir.cmp(&a_dir)
+        if a.1 != b.1 {
+            b.1.cmp(&a.1)
         } else {
-            a.file_name().cmp(&b.file_name())
+            a.0.file_name().cmp(&b.0.file_name())
         }
     });
     entries
         .into_iter()
-        .filter_map(|entry| {
-            let name = entry.file_name()?.to_string_lossy().to_string();
+        .filter_map(|(path, is_dir)| {
+            let name = path.file_name()?.to_string_lossy().to_string();
             // 扫描排除名单命中的条目根本不加载。
-            let rel = entry.strip_prefix(root).ok()?;
+            let rel = path.strip_prefix(root).ok()?;
             if filter.is_excluded(rel) {
                 return None;
             }
-            let is_dir = entry.is_dir();
-            Some(WorktreeEntry {
-                path: entry,
-                name,
-                is_dir,
-                git_status: None,
-            })
+            Some(WorktreeEntry { path, name, is_dir })
         })
         .collect()
 }
@@ -144,7 +140,7 @@ fn children_sorted(dir: &Path, root: &Path, filter: &TreeFilter) -> Vec<Worktree
 /// 收集可见行（纯函数，可在后台线程执行）：根行 + 按 `expanded` 递归展开。
 ///
 /// 排序与排除规则与 `Worktree::children` 一致；
-/// 不含 git 状态，由调用方在 UI 线程批量查询回填。
+/// 不含 git 状态；GitStore 快照由项目树在行模型应用后单独查询。
 /// 展开、深度与选中是视图状态，由 UI 层决定。
 pub(crate) fn collect_visible_entries(
     root: &Path,
@@ -159,7 +155,6 @@ pub(crate) fn collect_visible_entries(
         path: root.to_path_buf(),
         name: root_name,
         is_dir: true,
-        git_status: None,
     }];
     if expanded.contains(root) {
         collect_expanded_children(root, root, expanded, filter, &mut rows);
@@ -326,7 +321,7 @@ mod tests {
     use crate::test_support::{run_git, test_git_repo};
 
     #[test]
-    fn children_return_sorted_static_entries_without_git_status() {
+    fn children_return_sorted_static_entries() {
         let directory = tempfile::tempdir().expect("应创建临时项目目录");
         std::fs::create_dir_all(directory.path().join("zebra_dir")).expect("应创建目录");
         std::fs::write(directory.path().join("apple.rs"), "fn main() {}").expect("应创建文件");
@@ -335,7 +330,7 @@ mod tests {
         let worktree = Worktree::new(directory.path().to_path_buf());
         let entries = children_sorted(directory.path(), directory.path(), &worktree.filter());
 
-        // 目录优先、名称升序；git 状态由 Project 注入，本层恒 None。
+        // 目录优先、名称升序；Git 状态不属于目录快照层。
         assert_eq!(
             entries
                 .iter()
@@ -343,7 +338,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["zebra_dir", "apple.rs", "banana.rs"]
         );
-        assert!(entries.iter().all(|entry| entry.git_status.is_none()));
         // 不存在或不可读目录返回空。
         assert!(
             children_sorted(
@@ -419,7 +413,6 @@ mod tests {
                 src.join("feature").join("mod.rs"),
             ]
         );
-        assert!(rows.iter().all(|row| row.git_status.is_none()));
     }
 
     #[test]

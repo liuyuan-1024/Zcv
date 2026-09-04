@@ -34,7 +34,7 @@ pub(crate) enum ProjectSearchEvent {
 
 /// 输入防抖窗口：快速连续击键合并为一次全项目扫描。
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(100);
-/// 流式装配的批大小：收满该数量片段才重建一次 MultiBuffer。
+/// 流式装配的批大小：收满该数量片段才追加一次 MultiBuffer。
 const SEARCH_BATCH_SIZE: usize = 16;
 /// 批次间的让出间隔：每批装配后给主循环一次重绘机会。
 const SEARCH_BATCH_YIELD: Duration = Duration::from_millis(1);
@@ -141,9 +141,10 @@ impl ProjectSearchView {
                 if batched.len() < SEARCH_BATCH_SIZE {
                     continue;
                 }
+                let batch = std::mem::take(&mut batched);
                 this.update_in(cx, |this, _window, cx| {
-                    this.flush_search_batch(
-                        batched.clone(),
+                    this.append_search_batch(
+                        batch,
                         match_count,
                         &results_editor,
                         query.clone(),
@@ -155,7 +156,9 @@ impl ProjectSearchView {
                 cx.background_executor().timer(SEARCH_BATCH_YIELD).await;
             }
             this.update_in(cx, |this, _window, cx| {
-                this.flush_search_batch(batched, match_count, &results_editor, query, cx);
+                if !batched.is_empty() {
+                    this.append_search_batch(batched, match_count, &results_editor, query, cx);
+                }
                 this.pending_search = None;
                 cx.emit(SearchEvent::MatchesInvalidated);
                 cx.emit(ProjectSearchEvent::Updated);
@@ -165,8 +168,8 @@ impl ProjectSearchView {
         }));
     }
 
-    /// 把已累积的片段整体写入 MultiBuffer，并更新匹配高亮与命中计数。
-    fn flush_search_batch(
+    /// 将新增片段追加到组合文档，并更新匹配高亮与命中计数。
+    fn append_search_batch(
         &mut self,
         excerpts: Vec<MultiBufferExcerpt>,
         match_count: usize,
@@ -174,11 +177,11 @@ impl ProjectSearchView {
         query: SearchQuery,
         cx: &mut Context<Self>,
     ) {
-        self.excerpts
-            .update(cx, |buffer, cx| buffer.set_excerpts(excerpts, cx));
-        let match_ranges = self.excerpts.read(cx).match_ranges().to_vec();
+        let match_ranges = self
+            .excerpts
+            .update(cx, |buffer, cx| buffer.append_excerpts(excerpts, cx));
         results_editor.update(cx, |editor, cx| {
-            editor.set_search_ranges(query, match_ranges, cx)
+            editor.append_search_ranges(query, match_ranges, cx)
         });
         self.match_count = Some(match_count);
         cx.emit(SearchEvent::MatchesInvalidated);

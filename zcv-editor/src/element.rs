@@ -1046,7 +1046,6 @@ impl Element for EditorElement {
             display_snapshot,
             presentation,
             selections,
-            longest_row,
             shows_gutter,
             active_lines,
             soft_wrap,
@@ -1058,7 +1057,6 @@ impl Element for EditorElement {
                 editor.display_snapshot(),
                 editor.presentation(),
                 editor.selections(),
-                editor.longest_display_row(),
                 editor.shows_gutter(),
                 editor.active_lines().into_iter().collect::<BTreeSet<_>>(),
                 editor.soft_wrap(),
@@ -1124,7 +1122,7 @@ impl Element for EditorElement {
         );
         // 设置换行宽度（变化才重排），随后读取最新 snapshot 供本帧布局使用。
         let display_snapshot = self.editor.update(cx, |editor, cx| {
-            editor.set_wrap_width(wrap_width, font, font_size, cx);
+            editor.set_wrap_width(wrap_width, font.clone(), font_size, cx);
             editor.display_snapshot()
         });
         // 软换行模式下显示行不再由 TabMap 测量（水平滚动收敛到视口宽度）。
@@ -1136,7 +1134,10 @@ impl Element for EditorElement {
         let content_width = if display_snapshot.is_wrapped() {
             text_bounds.size.width
         } else {
-            layout_line_width(&display_snapshot, longest_row, window) + CARET_WIDTH
+            self.editor.update(cx, |editor, _| {
+                let longest_row = editor.longest_display_row();
+                editor.longest_line_width(longest_row, font.clone(), font_size, window)
+            }) + CARET_WIDTH
         };
         let sticky_header_height = display_snapshot
             .sticky_buffer_header(DisplayRow::ZERO)
@@ -1926,40 +1927,6 @@ fn deleted_hunk_triangle_points(bounds: Bounds<Pixels>, strip_width: Pixels) -> 
         point(bounds.left(), bounds.top() + half),
         point(bounds.right(), bounds.top()),
     ]
-}
-
-fn layout_line_width(
-    display_snapshot: &DisplaySnapshot,
-    row: DisplayRow,
-    window: &mut Window,
-) -> Pixels {
-    let Ok(viewport) = display_snapshot.slice_viewport(row, 1) else {
-        return Pixels::ZERO;
-    };
-    let Some(row) = viewport.rows().first() else {
-        return Pixels::ZERO;
-    };
-    if row.block().is_some() {
-        return Pixels::ZERO;
-    }
-    let WrapViewportRowKind::Text {
-        text, byte_range, ..
-    } = row.kind();
-    let text = &text.as_ref()[byte_range.clone()];
-    let text_style = window.text_style();
-    let font_size = text_style.font_size.to_pixels(window.rem_size());
-    let run = TextRun {
-        len: text.len(),
-        font: text_style.font(),
-        color: text_style.color,
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
-    window
-        .text_system()
-        .shape_line(text.to_owned().into(), font_size, &[run], None)
-        .width
 }
 
 fn calculate_wrap_width(

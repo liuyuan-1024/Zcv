@@ -119,6 +119,18 @@ impl<T: ScrollableHandle> Scrollbar<T> {
     }
 }
 
+impl<T: ScrollableHandle> IntoElement for Scrollbar<T> {
+    type Element = ScrollbarElement<T>;
+
+    fn into_element(self) -> Self::Element {
+        ScrollbarElement {
+            handle: self.handle,
+            interaction: self.interaction,
+            origin: point(Pixels::ZERO, Pixels::ZERO),
+        }
+    }
+}
+
 impl<T: ScrollableHandle> UniformListDecoration for Scrollbar<T> {
     fn compute(
         &self,
@@ -143,9 +155,13 @@ impl<T: ScrollableHandle> UniformListDecoration for Scrollbar<T> {
 struct ScrollbarInteraction {
     dragging: Cell<bool>,
     last_mouse_y: Cell<Pixels>,
+    /// 拖拽期间的乐观位置。
+    /// 滚动容器异步更新时，不能每次都回读可能滞后的 offset。
+    drag_scroll_top: Cell<Pixels>,
 }
 
-struct ScrollbarElement<T: ScrollableHandle> {
+/// 滚动条的可渲染元素；通常通过 [`Scrollbar`] 构造。
+pub struct ScrollbarElement<T: ScrollableHandle> {
     handle: T,
     interaction: Rc<ScrollbarInteraction>,
     origin: Point<Pixels>,
@@ -160,7 +176,8 @@ impl<T: ScrollableHandle> IntoElement for ScrollbarElement<T> {
 }
 
 #[derive(Clone)]
-struct ScrollbarLayout {
+/// 滚动条在布局阶段计算出的交互区域与滑块位置。
+pub struct ScrollbarLayout {
     hitbox: Hitbox,
     thumb_bounds: Bounds<Pixels>,
     scroll_per_pixel: f32,
@@ -220,9 +237,18 @@ impl<T: ScrollableHandle> Element for ScrollbarElement<T> {
             point(viewport_bounds.right() - WIDTH - PADDING, thumb_top),
             size(WIDTH, thumb_height),
         );
+        // 可见滑块保持紧凑；交互区域扩展到右侧边缘，避免细滑块难以命中。
+        let interaction_bounds = Bounds::new(
+            point(thumb_bounds.left() - PADDING, thumb_bounds.top()),
+            size(
+                thumb_bounds.size.width + PADDING * 2.,
+                thumb_bounds.size.height,
+            ),
+        );
 
         Some(ScrollbarLayout {
-            hitbox: window.insert_hitbox(thumb_bounds, HitboxBehavior::BlockMouseExceptScroll),
+            hitbox: window
+                .insert_hitbox(interaction_bounds, HitboxBehavior::BlockMouseExceptScroll),
             thumb_bounds,
             scroll_per_pixel,
         })
@@ -272,10 +298,12 @@ impl<T: ScrollableHandle> Element for ScrollbarElement<T> {
             if interaction.dragging.get() && event.dragging() {
                 let delta = event.position.y - interaction.last_mouse_y.get();
                 interaction.last_mouse_y.set(event.position.y);
-                let mut offset = handle.offset();
                 let max_scroll = handle.max_offset().y;
-                let scroll_top = (-offset.y + delta * move_layout.scroll_per_pixel)
+                let scroll_top = (interaction.drag_scroll_top.get()
+                    + delta * move_layout.scroll_per_pixel)
                     .clamp(Pixels::ZERO, max_scroll);
+                interaction.drag_scroll_top.set(scroll_top);
+                let mut offset = handle.offset();
                 offset.y = -scroll_top;
                 handle.set_offset(offset);
                 window.refresh();
@@ -286,36 +314,121 @@ impl<T: ScrollableHandle> Element for ScrollbarElement<T> {
             }
         });
 
-        if !dragging {
-            let interaction = Rc::clone(&self.interaction);
-            let handle = self.handle.clone();
-            let down_layout = layout.clone();
-            window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-                if phase != DispatchPhase::Bubble
-                    || event.button != MouseButton::Left
-                    || !down_layout.hitbox.is_hovered(window)
-                {
-                    return;
-                }
-                interaction.dragging.set(true);
-                interaction.last_mouse_y.set(event.position.y);
-                handle.drag_started();
+        let interaction = Rc::clone(&self.interaction);
+        let handle = self.handle.clone();
+        let down_layout = layout.clone();
+        window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+            // 不能依赖 is_hovered：终端刚接收键盘输入时，框架会暂时关闭悬停状态。
+            if phase != DispatchPhase::Bubble
+                || event.button != MouseButton::Left
+                || !down_layout.hitbox.bounds.contains(&event.position)
+            {
+                return;
+            }
+            interaction.dragging.set(true);
+            interaction.last_mouse_y.set(event.position.y);
+            interaction
+                .drag_scroll_top
+                .set((-handle.offset().y).clamp(Pixels::ZERO, handle.max_offset().y));
+            handle.drag_started();
+            window.refresh();
+            cx.stop_propagation();
+        });
+
+        let interaction = Rc::clone(&self.interaction);
+        let handle = self.handle.clone();
+        window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
+                return;
+            }
+            if interaction.dragging.replace(false) {
+                handle.drag_ended();
                 window.refresh();
                 cx.stop_propagation();
-            });
-        } else {
-            let interaction = Rc::clone(&self.interaction);
-            let handle = self.handle.clone();
-            window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
-                if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
-                    return;
-                }
-                if interaction.dragging.replace(false) {
-                    handle.drag_ended();
-                    window.refresh();
-                    cx.stop_propagation();
-                }
-            });
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{cell::Cell, rc::Rc};
+
+    use gpui::{Context, Render, TestAppContext, Window, div, prelude::*};
+
+    #[derive(Clone)]
+    struct TestScrollHandle {
+        requested_offset: Rc<Cell<Pixels>>,
+        drag_started: Rc<Cell<bool>>,
+    }
+
+    impl ScrollableHandle for TestScrollHandle {
+        fn max_offset(&self) -> Point<Pixels> {
+            point(Pixels::ZERO, px(1000.))
         }
+
+        fn set_offset(&self, point: Point<Pixels>) {
+            self.requested_offset.set(point.y);
+        }
+
+        fn offset(&self) -> Point<Pixels> {
+            // 模拟异步容器：拖拽事件之间，已呈现的偏移还没有更新。
+            point(Pixels::ZERO, Pixels::ZERO)
+        }
+
+        fn viewport(&self) -> Bounds<Pixels> {
+            Bounds::default()
+        }
+
+        fn drag_started(&self) {
+            self.drag_started.set(true);
+        }
+    }
+
+    struct ScrollbarTestView {
+        scrollbar: Scrollbar<TestScrollHandle>,
+    }
+
+    impl Render for ScrollbarTestView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .relative()
+                .child(div().absolute().inset_0().child(self.scrollbar.clone()))
+        }
+    }
+
+    #[gpui::test]
+    fn dragging_the_scrollbar_thumb_updates_its_handle(cx: &mut TestAppContext) {
+        let handle = TestScrollHandle {
+            requested_offset: Rc::new(Cell::new(Pixels::ZERO)),
+            drag_started: Rc::new(Cell::new(false)),
+        };
+        let scrollbar = Scrollbar::vertical(handle.clone());
+        let (_, cx) = cx.add_window_view(move |_window, _cx| ScrollbarTestView { scrollbar });
+        cx.refresh().expect("测试窗口应完成首次绘制");
+
+        let (right, top) = cx.update(|window, _| (window.bounds().right(), window.bounds().top()));
+        let thumb = point(right - px(4.), top + px(10.));
+        cx.simulate_mouse_down(thumb, MouseButton::Left, gpui::Modifiers::default());
+        assert!(handle.drag_started.get(), "按下滑块应开始拖拽");
+        cx.refresh().expect("按下滑块后应刷新");
+        cx.simulate_mouse_move(
+            point(thumb.x, thumb.y + px(120.)),
+            Some(MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+        let first_offset = handle.requested_offset.get();
+        cx.simulate_mouse_move(
+            point(thumb.x, thumb.y + px(240.)),
+            Some(MouseButton::Left),
+            gpui::Modifiers::default(),
+        );
+
+        assert!(
+            handle.requested_offset.get() < first_offset,
+            "异步偏移尚未刷新时，连续拖动仍应累积"
+        );
     }
 }

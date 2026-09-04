@@ -9,6 +9,7 @@ mod mappings;
 mod palette;
 mod panel;
 mod pty_info;
+mod terminal_scrollbar;
 mod view;
 
 #[cfg(test)]

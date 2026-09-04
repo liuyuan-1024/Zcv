@@ -13,6 +13,7 @@ use crate::{
     element::TerminalElement,
     mappings::{keys, mouse},
     set_terminal_font_size,
+    terminal_scrollbar::TerminalScrollHandle,
 };
 
 use std::cell::Cell;
@@ -57,6 +58,10 @@ pub(crate) struct TerminalView {
     ime_marked_text: Option<String>,
     /// 光标格的像素 bounds（元素相对坐标），IME 候选窗定位用。
     last_cursor_bounds: Option<Bounds<Pixels>>,
+    /// 终端回看状态在滚动条组件中的投影。
+    scroll_handle: TerminalScrollHandle,
+    /// 与终端视图同生命周期的滚动条，保留跨帧的拖拽状态。
+    scrollbar: zcv_ui::Scrollbar<TerminalScrollHandle>,
     initialized: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -64,6 +69,7 @@ pub(crate) struct TerminalView {
 impl TerminalView {
     pub fn new(terminal: Entity<Terminal>, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
+        let scroll_handle = TerminalScrollHandle::new();
         let mut view = TerminalView {
             terminal,
             focus,
@@ -72,6 +78,8 @@ impl TerminalView {
             last_drag_autoscroll: Cell::new(Instant::now() - AUTOSCROLL_INTERVAL),
             ime_marked_text: None,
             last_cursor_bounds: None,
+            scrollbar: zcv_ui::Scrollbar::vertical(scroll_handle.clone()),
+            scroll_handle,
             initialized: false,
             _subscriptions: Vec::new(),
         };
@@ -554,6 +562,19 @@ impl Render for TerminalView {
             self.initialized = true;
         }
 
+        let content = self.terminal.read(cx).last_content().cloned();
+        self.scroll_handle.update(content.as_ref());
+        if let Some(display_offset) = self.scroll_handle.take_requested_display_offset()
+            && let Some(current_offset) = content.as_ref().map(|content| content.display_offset)
+        {
+            let delta = display_offset as i32 - current_offset as i32;
+            if delta != 0 {
+                self.terminal.update(cx, |terminal, cx| {
+                    terminal.scroll_lines(delta, cx);
+                });
+            }
+        }
+
         div()
             .track_focus(&self.focus)
             .key_context("Terminal")
@@ -571,6 +592,8 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::handle_increase_font_size))
             .on_action(cx.listener(Self::handle_decrease_font_size))
             .on_action(cx.listener(Self::handle_reset_font_size))
+            .relative()
             .child(TerminalElement::new(cx.entity()))
+            .child(div().absolute().inset_0().child(self.scrollbar.clone()))
     }
 }

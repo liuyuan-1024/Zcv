@@ -180,11 +180,15 @@ fn render_block(
     let key = *next_key;
     *next_key += 1;
     match block {
-        Block::Heading { level, content } => div()
-            .text_size(heading_size(*level))
-            .font_weight(FontWeight::BOLD)
-            .child(render_inline(content, key, cx))
-            .into_any_element(),
+        Block::Heading { level, content } => {
+            let size = heading_size(*level);
+            div()
+                .text_size(size)
+                .line_height(heading_line_height(*level, size))
+                .font_weight(FontWeight::BOLD)
+                .child(render_inline(content, key, cx))
+                .into_any_element()
+        }
         Block::Paragraph(content) => div()
             .whitespace_normal()
             .child(render_inline(content, key, cx))
@@ -522,11 +526,20 @@ fn code_lines(text: &str) -> impl Iterator<Item = &str> {
 }
 
 fn heading_size(level: u8) -> gpui::Pixels {
+    typography::content_size() * heading_scale(level)
+}
+
+fn heading_line_height(level: u8, size: gpui::Pixels) -> gpui::Pixels {
+    // 标题继承用户的正文行高比例，但至少为自身字号保留可读的自然行距。
+    (typography::content_line() * heading_scale(level)).max(size * 1.2)
+}
+
+fn heading_scale(level: u8) -> f32 {
     match level {
-        1 => typography::content_size() * 1.8,
-        2 => typography::content_size() * 1.5,
-        3 => typography::content_size() * 1.3,
-        _ => typography::content_size() * 1.1,
+        1 => 1.8,
+        2 => 1.5,
+        3 => 1.3,
+        _ => 1.1,
     }
 }
 
@@ -636,8 +649,8 @@ mod tests {
     use crate::document::{Inline, InlineStyle, parse};
 
     use super::{
-        Block, MARKDOWN_REPARSE_DEBOUNCE, MarkdownPreviewView, code_lines, highlight_code_blocks,
-        list_marker_char_count,
+        Block, MARKDOWN_REPARSE_DEBOUNCE, MarkdownPreviewView, code_lines, heading_line_height,
+        heading_size, highlight_code_blocks, list_marker_char_count,
     };
 
     fn plain(text: &str) -> Inline {
@@ -665,6 +678,14 @@ mod tests {
         assert_eq!(list_marker_char_count(Some(1), 9), 2);
         assert_eq!(list_marker_char_count(Some(10), 11), 3);
         assert_eq!(list_marker_char_count(Some(98), 3), 4);
+    }
+
+    #[test]
+    fn headings_preserve_a_minimum_line_height_at_their_own_font_size() {
+        for level in 1..=6 {
+            let size = heading_size(level);
+            assert!(heading_line_height(level, size) >= size * 1.2);
+        }
     }
 
     #[test]

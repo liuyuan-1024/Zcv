@@ -117,9 +117,15 @@ pub(crate) fn parse(source: &str) -> Vec<Block> {
     let mut active = None;
     let mut active_content = Vec::new();
     let mut style = InlineStyle::default();
+    let mut in_metadata_block = false;
 
     for event in Parser::new_ext(source, Options::all()) {
         match event {
+            // 元数据只描述文档，不属于 Markdown 正文。
+            // 必须在解析阶段丢弃，避免其文本被后续块（尤其是第一个标题）意外收集。
+            Event::Start(Tag::MetadataBlock(_)) => in_metadata_block = true,
+            Event::End(TagEnd::MetadataBlock(_)) => in_metadata_block = false,
+            _ if in_metadata_block => {}
             Event::Start(Tag::Heading { level, .. }) => {
                 finish_active(&mut active, &mut active_content, &mut state);
                 active = Some(ActiveBlock::Heading(heading_level(level)));
@@ -416,6 +422,21 @@ mod tests {
                 },
                 Block::Rule,
             ]
+        );
+    }
+
+    #[test]
+    fn ignores_yaml_front_matter_before_parsing_document_blocks() {
+        let blocks = parse(
+            "---\nname: zcv-performance-optimization\ndescription: 性能优化\n---\n\n# Zcv 性能优化\n",
+        );
+
+        assert_eq!(
+            blocks,
+            vec![Block::Heading {
+                level: 1,
+                content: vec![plain("Zcv 性能优化")],
+            }]
         );
     }
 

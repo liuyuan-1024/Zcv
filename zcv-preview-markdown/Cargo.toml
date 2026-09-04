@@ -15,6 +15,7 @@ zcv-language.workspace = true
 zcv-multi-buffer.workspace = true
 zcv-project.workspace = true
 zcv-theme.workspace = true
+zcv-ui.workspace = true
 zcv-workspace.workspace = true
 
 [dev-dependencies]

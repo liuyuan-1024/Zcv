@@ -8,15 +8,16 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, AnyEntity, App, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable,
-    FontStyle, FontWeight, HighlightStyle, InteractiveText, ListAlignment, ListState, ObjectFit,
-    Render, SharedString, StatefulInteractiveElement, StrikethroughStyle, StyledImage, StyledText,
-    Subscription, Task, UnderlineStyle, Window, div, img, list, prelude::*, px,
+    FontStyle, FontWeight, HighlightStyle, InteractiveText, ObjectFit, Render, ScrollHandle,
+    SharedString, StatefulInteractiveElement, StrikethroughStyle, StyledImage, StyledText,
+    Subscription, Task, UnderlineStyle, Window, div, img, prelude::*, px,
 };
 use pulldown_cmark::Alignment;
 use zcv_language::highlight_snippet;
 use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
 use zcv_theme::{color, space, typography};
+use zcv_ui::Scrollbar;
 use zcv_workspace::{
     Item, ItemEvent, ItemHandle, PreviewDocument, PreviewItem, PreviewItemHandle,
     ToolbarItemLocation,
@@ -30,7 +31,8 @@ pub(crate) struct MarkdownPreviewView {
     source_item: Box<dyn ItemHandle>,
     multi_buffer: Entity<MultiBuffer>,
     focus: FocusHandle,
-    block_list: ListState,
+    scroll_handle: ScrollHandle,
+    scrollbar: Scrollbar<ScrollHandle>,
     blocks: Arc<Vec<Block>>,
     code_highlight_generation: u64,
     code_highlight_task: Option<Task<()>>,
@@ -68,11 +70,13 @@ impl MarkdownPreviewView {
                 }
             }),
         );
+        let scroll_handle = ScrollHandle::new();
         let mut view = Self {
             source_item,
             multi_buffer,
             focus: cx.focus_handle(),
-            block_list: ListState::new(0, ListAlignment::Top, px(200.)),
+            scrollbar: Scrollbar::vertical(scroll_handle.clone()),
+            scroll_handle,
             blocks: Arc::new(Vec::new()),
             code_highlight_generation: 0,
             code_highlight_task: None,
@@ -106,7 +110,6 @@ impl MarkdownPreviewView {
         let text = String::from_utf8(self.multi_buffer.read(cx).snapshot(cx).text_bytes())
             .expect("编辑器文档应为 UTF-8");
         self.blocks = Arc::new(parse(&text));
-        self.block_list.reset(self.blocks.len());
         self.code_highlight_generation = self.code_highlight_generation.wrapping_add(1);
         let generation = self.code_highlight_generation;
         let mut blocks = (*self.blocks).clone();
@@ -121,7 +124,6 @@ impl MarkdownPreviewView {
                     return;
                 }
                 view.blocks = Arc::new(blocks);
-                view.block_list.reset(view.blocks.len());
                 view.code_highlight_task = None;
                 cx.notify();
             });
@@ -145,48 +147,48 @@ impl Render for MarkdownPreviewView {
             .as_deref()
             .and_then(Path::parent)
             .map(Path::to_path_buf);
-        let blocks = self.blocks.clone();
-        let block_list = self.block_list.clone();
-        let content = list(block_list, move |index, _, cx| {
-            let Some(block) = blocks.get(index) else {
-                return div().into_any_element();
-            };
-            let mut next_key = 0;
-            div()
-                .pb(space::S8)
-                .child(render_block(
-                    block,
-                    &mut next_key,
-                    source_directory.as_deref(),
-                    0,
-                    index,
-                    cx,
-                ))
-                .into_any_element()
-        })
-        .flex_1()
-        .min_h_0();
+        let content = self
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(index, block)| {
+                let mut next_key = 0;
+                div()
+                    .pb(space::S8)
+                    .child(render_block(
+                        block,
+                        &mut next_key,
+                        source_directory.as_deref(),
+                        0,
+                        index,
+                        cx,
+                    ))
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
         div()
             .id("markdown-preview")
             .track_focus(&self.focus)
             .key_context("MarkdownPreview")
             .tab_index(0)
             .size_full()
+            .relative()
             .overflow_hidden()
             .bg(color::current(cx).editor_background)
             .child(
                 div()
+                    .id("markdown-preview-scroll-container")
                     .size_full()
-                    .flex()
-                    .flex_col()
-                    .overflow_hidden()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll_handle)
                     .px_8()
                     .py_6()
                     .text_color(color::current(cx).text)
                     .text_size(typography::content_size())
                     .line_height(typography::content_line())
-                    .child(content),
+                    .child(div().w_full().flex().flex_col().children(content)),
             )
+            .child(div().absolute().inset_0().child(self.scrollbar.clone()))
     }
 }
 

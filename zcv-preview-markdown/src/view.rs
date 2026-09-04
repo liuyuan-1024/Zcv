@@ -152,31 +152,34 @@ impl Render for MarkdownPreviewView {
                 return div().into_any_element();
             };
             let mut next_key = 0;
-            render_block(
-                block,
-                &mut next_key,
-                source_directory.as_deref(),
-                0,
-                index,
-                cx,
-            )
+            div()
+                .pb(space::S8)
+                .child(render_block(
+                    block,
+                    &mut next_key,
+                    source_directory.as_deref(),
+                    0,
+                    index,
+                    cx,
+                ))
+                .into_any_element()
         })
-        .size_full()
-        .gap(space::S8);
+        .flex_1()
+        .min_h_0();
         div()
             .id("markdown-preview")
             .track_focus(&self.focus)
             .key_context("MarkdownPreview")
             .tab_index(0)
             .size_full()
-            .overflow_y_scroll()
+            .overflow_hidden()
             .bg(color::current(cx).editor_background)
             .child(
                 div()
-                    .w_full()
+                    .size_full()
                     .flex()
                     .flex_col()
-                    .gap(space::S8)
+                    .overflow_hidden()
                     .px_8()
                     .py_6()
                     .text_color(color::current(cx).text)

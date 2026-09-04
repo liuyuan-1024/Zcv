@@ -950,6 +950,7 @@ fn close_button(
 ) -> impl gpui::IntoElement {
     let entity = pane_entity.clone();
     Button::icon(("tab-close", item_id), "icons/close.svg")
+        .no_occlude()
         .label("关闭")
         .shortcut(&CloseTab, cx)
         .on_click(

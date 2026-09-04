@@ -181,13 +181,12 @@ pub(crate) fn load_json(source: &str, json: &str, cx: &App) -> Result<KeyBinding
     let mut shortcuts: Vec<(Box<dyn Action>, String)> = Vec::new();
 
     for group in groups {
-        let context = group
-            .context
-            .as_deref()
-            .map(KeyBindingContextPredicate::parse)
-            .transpose()
-            .map_err(|error| anyhow!("{source} 包含非法快捷键上下文 {:?}：{error}", group.context))?
-            .map(Rc::new);
+        // 无上下文的默认组挂在 Workspace 根上下文：它在焦点链中最浅，因而任何面板或内容的专属上下文都会优先于默认快捷键。
+        let context_source = group.context.as_deref().unwrap_or("Workspace");
+        let context = KeyBindingContextPredicate::parse(context_source).map_err(|error| {
+            anyhow!("{source} 包含非法快捷键上下文 {:?}：{error}", group.context)
+        })?;
+        let context = Rc::new(context);
 
         for (keys, raw_action) in &group.bindings {
             let action_name = raw_action.name();
@@ -200,7 +199,7 @@ pub(crate) fn load_json(source: &str, json: &str, cx: &App) -> Result<KeyBinding
             let binding = KeyBinding::load(
                 keys,
                 action,
-                context.clone(),
+                Some(context.clone()),
                 false,
                 None,
                 cx.keyboard_mapper().as_ref(),
@@ -344,7 +343,7 @@ fn detect_conflicts(groups: &[RawBindingGroup]) {
 
 #[cfg(test)]
 mod tests {
-    use gpui::TestAppContext;
+    use gpui::{KeyContext, Keymap, Keystroke, TestAppContext};
     use zcv_actions::FocusOrHidePanel;
 
     use super::*;
@@ -636,6 +635,74 @@ mod tests {
                 "{source} 的 Ctrl-C 必须发送终端中断"
             );
         }
+    }
+
+    /// 内容与 UI 缩放均为全局快捷键；终端在自身上下文覆盖内容缩放键位。
+    #[test]
+    fn font_size_keymaps_keep_content_ui_and_terminal_scopes_distinct() {
+        for (source, content_keys, ui_keys, terminal_keys) in [
+            ("default-macos.json", "cmd-=", "cmd-shift-=", "cmd-="),
+            ("default-linux.json", "ctrl-=", "ctrl-shift-=", "ctrl-="),
+            ("default-windows.json", "ctrl-=", "ctrl-shift-=", "ctrl-="),
+        ] {
+            let groups = parse_builtin_keymap(source);
+            let global = groups
+                .iter()
+                .find(|group| group.context.is_none() && group.bindings.contains_key(ui_keys))
+                .unwrap_or_else(|| panic!("{source} 缺少工作区 UI 字号绑定"));
+
+            assert_eq!(
+                global.bindings.get(content_keys).map(RawAction::name),
+                Some("workspace::IncreaseContentFontSize"),
+                "{source} 的 {content_keys} 应全局缩放工作区内容"
+            );
+            assert_eq!(
+                global.bindings.get(ui_keys).map(RawAction::name),
+                Some("workspace::IncreaseUiFontSize"),
+                "{source} 的 {ui_keys} 应缩放工作区 UI"
+            );
+
+            let terminal = groups
+                .iter()
+                .find(|group| group.context.as_deref() == Some("Terminal"))
+                .unwrap_or_else(|| panic!("{source} 缺少终端上下文"));
+            assert_eq!(
+                terminal.bindings.get(terminal_keys).map(RawAction::name),
+                Some("terminal::IncreaseFontSize"),
+                "{source} 的 {terminal_keys} 在终端中应只缩放终端字号"
+            );
+        }
+    }
+
+    /// 同一按键同时存在全局与终端绑定时，终端焦点必须优先调度终端动作。
+    #[gpui::test]
+    fn terminal_font_size_binding_overrides_global_binding(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            for (source, keys) in [
+                ("default-macos.json", "cmd-="),
+                ("default-linux.json", "ctrl-="),
+                ("default-windows.json", "ctrl-="),
+            ] {
+                let json = zcv_assets::text(&format!("keymaps/{source}"))
+                    .unwrap_or_else(|_| panic!("缺少内置快捷键 {source}"));
+                let keybindings = load_json(source, &json, cx)
+                    .unwrap_or_else(|error| panic!("{source} 应能加载：{error}"));
+                let keymap = Keymap::new(keybindings.bindings);
+                let (bindings, _) = keymap.bindings_for_input(
+                    &[Keystroke::parse(keys).expect("字号快捷键应合法")],
+                    &[
+                        KeyContext::parse("Workspace").expect("工作区上下文应合法"),
+                        KeyContext::parse("Terminal").expect("终端上下文应合法"),
+                    ],
+                );
+
+                assert_eq!(
+                    bindings.first().map(|binding| binding.action().name()),
+                    Some("terminal::IncreaseFontSize"),
+                    "{source} 的 {keys} 在终端聚焦时应优先调整终端字号"
+                );
+            }
+        });
     }
 
     /// 编辑区与终端共用 Pane 标签切换键位，不在终端上下文维护第二套规则。

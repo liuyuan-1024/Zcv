@@ -18,7 +18,10 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     process::ExitStatus,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
     time::Duration,
 };
 
@@ -47,6 +50,14 @@ const DEBUG_CELL_WIDTH: f32 = 5.;
 const DEBUG_LINE_HEIGHT: f32 = 5.;
 /// 创建时未确定窗口 id 时的占位值（unix 上无实际用途）。
 const DUMMY_WINDOW_ID: u64 = 0;
+
+/// 终端会话字号。0 表示尚未被快捷键或设置变更显式覆盖。
+static TERMINAL_FONT_SIZE: AtomicU32 = AtomicU32::new(0);
+
+/// 设置终端会话字号。
+pub fn set_terminal_font_size(font_size: f32) {
+    TERMINAL_FONT_SIZE.store(font_size.to_bits(), Ordering::Relaxed);
+}
 
 // ─── 尺寸与坐标 ───────────────────────────────────────────────────
 
@@ -357,7 +368,7 @@ impl EventEmitter<Event> for Terminal {}
 /// 终端行为设置快照，从 zcv-settings 的用户配置读取。
 #[derive(Clone, Debug)]
 pub(crate) struct TerminalSettings {
-    /// 终端字号：显式配置优先，缺省跟随内容字号。
+    /// 终端字号：设置值或会话缩放值。
     pub font_size: f32,
     pub line_height: f32,
     pub max_scroll_history_lines: usize,
@@ -369,11 +380,14 @@ pub(crate) struct TerminalSettings {
 
 impl TerminalSettings {
     pub fn from_user_settings(settings: &zcv_settings::UserSettings) -> Self {
+        let runtime_font_size = TERMINAL_FONT_SIZE.load(Ordering::Relaxed);
         TerminalSettings {
-            font_size: settings.terminal_font_size.unwrap_or(settings.font_size),
-            line_height: settings
-                .terminal_line_height
-                .unwrap_or(settings.line_height),
+            font_size: if runtime_font_size == 0 {
+                settings.terminal_font_size
+            } else {
+                f32::from_bits(runtime_font_size)
+            },
+            line_height: settings.terminal_line_height,
             max_scroll_history_lines: settings.terminal_max_scroll_history_lines,
             cursor_shape: match settings.terminal_cursor_shape.as_str() {
                 "underline" => CursorShape::Underline,
@@ -388,9 +402,8 @@ impl TerminalSettings {
     }
 
     pub fn load(cx: &App) -> Self {
-        zcv_settings::SettingsStore::try_get(cx)
-            .map(|settings| Self::from_user_settings(&settings))
-            .unwrap_or_else(|| Self::from_user_settings(&zcv_settings::UserSettings::default()))
+        let settings = zcv_settings::SettingsStore::try_get(cx).unwrap_or_default();
+        Self::from_user_settings(&settings)
     }
 }
 
@@ -954,6 +967,21 @@ mod tests {
         );
         assert_eq!(bounds.num_columns(), 12);
         assert_eq!(bounds.num_lines(), 3);
+    }
+
+    #[test]
+    fn terminal_typography_uses_its_own_configured_size() {
+        TERMINAL_FONT_SIZE.store(0, Ordering::Relaxed);
+        let mut user_settings = zcv_settings::UserSettings::default();
+        let default = TerminalSettings::from_user_settings(&user_settings);
+        assert_eq!(default.font_size, 16.);
+        assert_eq!(default.line_height, 1.618);
+
+        user_settings.terminal_font_size = 14.;
+        user_settings.terminal_line_height = 1.2;
+        let configured = TerminalSettings::from_user_settings(&user_settings);
+        assert_eq!(configured.font_size, 14.);
+        assert_eq!(configured.line_height, 1.2);
     }
 
     /// 选择范围包含判断。

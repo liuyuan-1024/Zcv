@@ -88,22 +88,13 @@
       // =========================
 
       "alt-cmd-[": "editor::ToggleFold",
-      "alt-cmd-]": "editor::UnfoldAll",
-
-      // =========================
-      // 视图
-      // =========================
-
-      "cmd-=": "editor::IncreaseFontSize",
-      "cmd--": "editor::DecreaseFontSize",
-      "cmd-0": "editor::ResetFontSize"
+      "alt-cmd-]": "editor::UnfoldAll"
     }
   },
 
   {
     // enter/tab 等仅指派给完整编辑器：
-    // 输入框类编辑器（single_line/auto_height）不占用这些键位，
-    // 留给所在组件（搜索条等）按自身语义指派。
+    // 输入框类编辑器（single_line/auto_height）不占用这些键位，留给所在组件（搜索条等）按自身语义指派。
     "context": "Editor && mode == full",
     "bindings": {
       "enter": "editor::Newline",
@@ -330,7 +321,12 @@
       "cmd-k": "terminal::Clear",
 
       // 新终端
-      "cmd-t": "terminal::NewTerminal"
+      "cmd-t": "terminal::NewTerminal",
+
+      // 终端字号
+      "cmd-=": "terminal::IncreaseFontSize",
+      "cmd--": "terminal::DecreaseFontSize",
+      "cmd-0": "terminal::ResetFontSize"
     }
   },
 
@@ -389,6 +385,12 @@
       ],
 
       // =========================
+      // Harness
+      // =========================
+
+      "ctrl-shift-h": "harness::ToggleHarnessMode",
+
+      // =========================
       // 搜索
       // =========================
 
@@ -414,16 +416,15 @@
       // 视图
       // =========================
 
-      // UI 字号
-      "cmd-+": "workspace::IncreaseUiFontSize",
-      "cmd-_": "workspace::DecreaseUiFontSize",
-      "cmd-)": "workspace::ResetUiFontSize",
+      // 工作区内容字号
+      "cmd-=": "workspace::IncreaseContentFontSize",
+      "cmd--": "workspace::DecreaseContentFontSize",
+      "cmd-0": "workspace::ResetContentFontSize",
 
-      // =========================
-      // Harness
-      // =========================
-
-      "ctrl-shift-h": "harness::ToggleHarnessMode"
+      // 工作区 UI 字号
+      "cmd-shift-=": "workspace::IncreaseUiFontSize",
+      "cmd-shift--": "workspace::DecreaseUiFontSize",
+      "cmd-shift-0": "workspace::ResetUiFontSize"
     }
   }
 ]

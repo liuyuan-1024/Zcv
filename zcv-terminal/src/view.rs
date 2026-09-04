@@ -12,12 +12,15 @@ use crate::{
     Event, Modes, SelectionType, Terminal, TerminalSettings,
     element::TerminalElement,
     mappings::{keys, mouse},
+    set_terminal_font_size,
 };
 
 use std::cell::Cell;
 use std::time::{Duration, Instant};
 
-use zcv_actions::{Clear, Copy, Interrupt, Paste};
+use zcv_actions::{
+    Clear, Copy, DecreaseFontSize, IncreaseFontSize, Interrupt, Paste, ResetFontSize,
+};
 use zcv_theme::space;
 use zcv_workspace::{Item, ItemEvent};
 
@@ -82,7 +85,7 @@ impl TerminalView {
         self.focus.clone()
     }
 
-    /// 终端字体大小（像素）：显式配置优先，缺省跟随内容字号。
+    /// 终端字体大小（像素）。
     pub(crate) fn font_size(&self, cx: &App) -> Pixels {
         px(TerminalSettings::load(cx).font_size)
     }
@@ -197,6 +200,39 @@ impl TerminalView {
         self.terminal
             .update(cx, |terminal, cx| terminal.write_input(vec![0x03], cx));
         cx.stop_propagation();
+    }
+
+    fn handle_increase_font_size(
+        &mut self,
+        _: &IncreaseFontSize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let font_size = TerminalSettings::load(cx).font_size;
+        set_terminal_font_size(font_size + 1.);
+        window.refresh();
+    }
+
+    fn handle_decrease_font_size(
+        &mut self,
+        _: &DecreaseFontSize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let font_size = TerminalSettings::load(cx).font_size;
+        set_terminal_font_size((font_size - 1.).max(8.));
+        window.refresh();
+    }
+
+    fn handle_reset_font_size(
+        &mut self,
+        _: &ResetFontSize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let settings = zcv_settings::SettingsStore::get(cx);
+        set_terminal_font_size(settings.terminal_font_size);
+        window.refresh();
     }
 
     /// 鼠标按下：报告模式转发字节；否则开始选择（双击语义选择、三击整行）。
@@ -532,6 +568,9 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::handle_paste))
             .on_action(cx.listener(Self::handle_clear))
             .on_action(cx.listener(Self::handle_interrupt))
+            .on_action(cx.listener(Self::handle_increase_font_size))
+            .on_action(cx.listener(Self::handle_decrease_font_size))
+            .on_action(cx.listener(Self::handle_reset_font_size))
             .child(TerminalElement::new(cx.entity()))
     }
 }

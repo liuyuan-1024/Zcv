@@ -1,8 +1,8 @@
 {
   "theme": "system",
-  "font_size": 16,
+  "content_font_size": 16,
   "ui_font_size": 13,
-  "line_height": 1.618,
+  "content_line_height": 1.618,
   "soft_wrap": "editor-width",
   "preferred_line_length": 80,
   "use_autoclose": true,
@@ -20,8 +20,8 @@
     "**/.classpath",
     "**/.settings"
   ],
-  "terminal_font_size": null,
-  "terminal_line_height": null,
+  "terminal_font_size": 16,
+  "terminal_line_height": 1.618,
   "terminal_max_scroll_history_lines": 10000,
   "terminal_cursor_shape": "block",
   "terminal_alternate_scroll": true,

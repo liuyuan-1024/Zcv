@@ -15,9 +15,9 @@ use gpui::{
     WeakEntity, Window, WindowBounds, WindowOptions, div, point, prelude::*, px, size,
 };
 use zcv_actions::{
-    DecreaseFontSize, DecreaseUiFontSize, GitFetch, GitPull, GitPush, IncreaseFontSize,
-    IncreaseUiFontSize, NewTerminal, ResetFontSize, ResetUiFontSize, RestartToUpdate,
-    SelectGitBranch, ToggleHarnessMode, ToggleProjectPicker,
+    DecreaseContentFontSize, DecreaseUiFontSize, GitFetch, GitPull, GitPush,
+    IncreaseContentFontSize, IncreaseUiFontSize, NewTerminal, ResetContentFontSize,
+    ResetUiFontSize, RestartToUpdate, SelectGitBranch, ToggleHarnessMode, ToggleProjectPicker,
 };
 use zcv_editor::Editor;
 use zcv_git::{DiffBase, GitRevision};
@@ -39,7 +39,7 @@ use crate::harness::HarnessButton;
 use crate::project_diff::{self, ProjectDiffSerializedItemProvider, ProjectDiffView};
 use crate::version_control::{OnOpenGitDiff, VersionControlPanel};
 use zcv_project_tree::{OnCreate, OnMove, OnOpenFile, OnRename, OnTrash, ProjectTreePanel};
-use zcv_terminal::TerminalPanel;
+use zcv_terminal::{TerminalPanel, set_terminal_font_size};
 
 /// 构造打开文件回调（两个面板共用同一契约）。
 fn on_open_file_callback(weak: &WeakEntity<Workspace>) -> OnOpenFile {
@@ -303,24 +303,27 @@ fn initialize_common_workspace(
 
     // 内容字号缩放（会话内生效，不写配置文件）。
     // 字号是 typography 的运行时状态：直接调整并强制重绘，不改 SettingsStore。
-    workspace.register_action(move |_workspace, _: &IncreaseFontSize, window, _cx| {
-        let content = f32::from(typography::content_size());
-        typography::set_typography(Some(content + 1.), None, None);
-        window.refresh();
-    });
-    workspace.register_action(move |_workspace, _: &DecreaseFontSize, window, _cx| {
-        let content = f32::from(typography::content_size());
-        typography::set_typography(Some((content - 1.).max(8.)), None, None);
-        window.refresh();
-    });
-    workspace.register_action(move |_workspace, _: &ResetFontSize, window, cx| {
+    workspace.register_action(
+        move |_workspace, _: &IncreaseContentFontSize, window, _cx| {
+            let content = f32::from(typography::content_size());
+            typography::set_typography(Some(content + 1.), None, None);
+            window.refresh();
+        },
+    );
+    workspace.register_action(
+        move |_workspace, _: &DecreaseContentFontSize, window, _cx| {
+            let content = f32::from(typography::content_size());
+            typography::set_typography(Some((content - 1.).max(8.)), None, None);
+            window.refresh();
+        },
+    );
+    workspace.register_action(move |_workspace, _: &ResetContentFontSize, window, cx| {
         let settings = SettingsStore::get(cx);
-        typography::set_typography(Some(settings.font_size), None, None);
+        typography::set_typography(Some(settings.content_font_size), None, None);
         window.refresh();
     });
 
-    // UI 字号缩放（全局可用，会话内生效）。
-    // UI 字号缩放（cmd-shift-= 等，全局可用，会话内生效）：只调 UI 字号，编辑器不动。
+    // 工作区 UI 字号缩放（全局可用，会话内生效）：只调 UI 字号，编辑器不动。
     // UI 字号是窗口 rem 基准：字号变化必须同步更新rem_size，否则基于 rem 的文本/布局沿用旧基准，与放大后的字形错位导致截断。
     workspace.register_action(move |_workspace, _: &IncreaseUiFontSize, window, _cx| {
         let ui = f32::from(typography::ui_size());
@@ -665,10 +668,12 @@ fn initialize_workspace(
         cx.observe_global_in::<SettingsStore>(window, move |_workspace, window, cx| {
             let settings = SettingsStore::get(cx);
             zcv_theme::typography::set_typography(
-                Some(settings.font_size),
+                Some(settings.content_font_size),
                 Some(settings.ui_font_size),
-                Some(settings.line_height),
+                Some(settings.content_line_height),
             );
+            set_terminal_font_size(settings.terminal_font_size);
+            window.set_rem_size(typography::ui_size());
             apply_theme(&settings.theme, cx, Some(window));
             project_tree_for_settings.update(cx, |tree, cx| tree.refresh(cx));
             cx.notify();

@@ -105,14 +105,18 @@ pub mod typography {
         }
     }
 
-    /// 内置设置文件的排版默认值（font_size / ui_font_size / line_height）。
+    /// 内置设置文件的排版默认值（content_font_size / ui_font_size / content_line_height）。
     fn defaults() -> (f32, f32, f32) {
         static DEFAULTS: std::sync::OnceLock<(f32, f32, f32)> = std::sync::OnceLock::new();
         *DEFAULTS.get_or_init(|| {
             let value: serde_json::Value =
                 serde_json::from_str(INITIAL_SETTINGS).expect("内置设置文件应合法");
             let get = |key: &str| value[key].as_f64().expect("内置默认应存在") as f32;
-            (get("font_size"), get("ui_font_size"), get("line_height"))
+            (
+                get("content_font_size"),
+                get("ui_font_size"),
+                get("content_line_height"),
+            )
         })
     }
 
@@ -125,7 +129,7 @@ pub mod typography {
         if size == 0 { defaults().0 } else { size as f32 }
     }
     /// 内容行高倍数；未注入时回退内置默认。
-    fn content_line_height() -> f32 {
+    pub fn content_line_height_multiplier() -> f32 {
         let bits = CONTENT_LINE_HEIGHT.load(Ordering::Relaxed);
         if bits == 0 {
             defaults().2
@@ -172,7 +176,7 @@ pub mod typography {
     }
     /// 内容行高（相对字号的倍数，缺省内置默认）：`round(font_size * 倍数)`
     pub fn content_line() -> Pixels {
-        px((content_size_value() * content_line_height()).round())
+        px((content_size_value() * content_line_height_multiplier()).round())
     }
 }
 

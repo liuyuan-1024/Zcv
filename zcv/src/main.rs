@@ -35,14 +35,15 @@ fn main() {
             Assets.load_fonts(cx).expect("内置字体应能注册");
 
             zcv_settings::init(cx);
-            // 字号设置落地：SettingsStore 已就绪，按配置覆盖主题默认字号。
+            // 排版设置落地：SettingsStore 已就绪，按配置覆盖主题默认字号。
             {
                 let settings = SettingsStore::get(cx);
                 zcv_theme::typography::set_typography(
-                    Some(settings.font_size),
+                    Some(settings.content_font_size),
                     Some(settings.ui_font_size),
-                    Some(settings.line_height),
+                    Some(settings.content_line_height),
                 );
+                zcv_terminal::set_terminal_font_size(settings.terminal_font_size);
             }
             zcv_preview_markdown::init(cx);
             zcv_preview_svg::init(cx);

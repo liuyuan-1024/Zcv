@@ -77,11 +77,11 @@ struct UserSettingsContent {
     #[serde(deserialize_with = "fallible")]
     theme: Option<String>,
     #[serde(deserialize_with = "fallible")]
-    font_size: Option<f32>,
+    content_font_size: Option<f32>,
     #[serde(deserialize_with = "fallible")]
     ui_font_size: Option<f32>,
     #[serde(deserialize_with = "fallible")]
-    line_height: Option<f32>,
+    content_line_height: Option<f32>,
     #[serde(deserialize_with = "fallible")]
     soft_wrap: Option<SoftWrapMode>,
     #[serde(deserialize_with = "fallible")]
@@ -112,12 +112,12 @@ struct UserSettingsContent {
 pub struct UserSettings {
     /// 主题配置 id；由主题模块解析为运行时主题。
     pub theme: String,
-    /// 内容字号（像素）。
-    pub font_size: f32,
+    /// 文档内容字号（像素）。编辑器与预览共用。
+    pub content_font_size: f32,
     /// UI 字号（像素）。
     pub ui_font_size: f32,
-    /// 内容行高（相对字号的倍数）。
-    pub line_height: f32,
+    /// 文档内容行高（相对字号的倍数）。
+    pub content_line_height: f32,
     pub soft_wrap: SoftWrapMode,
     /// 软换行的目标行宽（列数）；仅在 `soft_wrap = "bounded"` 时生效。
     pub preferred_line_length: usize,
@@ -127,10 +127,10 @@ pub struct UserSettings {
     pub use_autoclose: bool,
     /// 选中文本时键入配对起始字符是否用该对包裹选区。
     pub use_auto_surround: bool,
-    /// 终端字体大小（像素）；缺省时跟随内容字号。
-    pub terminal_font_size: Option<f32>,
-    /// 终端行高（相对字号的倍数）；缺省时跟随内容行高。
-    pub terminal_line_height: Option<f32>,
+    /// 终端字体大小（像素）。
+    pub terminal_font_size: f32,
+    /// 终端行高（相对字号的倍数）。
+    pub terminal_line_height: f32,
     /// 终端滚动回看上限行数。
     pub terminal_max_scroll_history_lines: usize,
     /// 终端光标形状："block" | "underline" | "bar"。
@@ -161,17 +161,17 @@ impl UserSettings {
         // 默认值唯一数据源是内置 initial_user_settings.json。
         Self {
             theme: content.theme.or(defaults.theme).expect("内置默认应存在"),
-            font_size: content
-                .font_size
-                .or(defaults.font_size)
+            content_font_size: content
+                .content_font_size
+                .or(defaults.content_font_size)
                 .expect("内置默认应存在"),
             ui_font_size: content
                 .ui_font_size
                 .or(defaults.ui_font_size)
                 .expect("内置默认应存在"),
-            line_height: content
-                .line_height
-                .or(defaults.line_height)
+            content_line_height: content
+                .content_line_height
+                .or(defaults.content_line_height)
                 .expect("内置默认应存在"),
             soft_wrap: content
                 .soft_wrap
@@ -193,10 +193,14 @@ impl UserSettings {
                 .use_auto_surround
                 .or(defaults.use_auto_surround)
                 .expect("内置默认应存在"),
-            terminal_font_size: content.terminal_font_size.or(defaults.terminal_font_size),
+            terminal_font_size: content
+                .terminal_font_size
+                .or(defaults.terminal_font_size)
+                .expect("内置默认应存在"),
             terminal_line_height: content
                 .terminal_line_height
-                .or(defaults.terminal_line_height),
+                .or(defaults.terminal_line_height)
+                .expect("内置默认应存在"),
             terminal_max_scroll_history_lines: content
                 .terminal_max_scroll_history_lines
                 .or(defaults.terminal_max_scroll_history_lines)
@@ -396,6 +400,23 @@ mod tests {
                 .any(|glob| glob == "**/.git"),
             "默认排除名单应包含 VCS 目录"
         );
+    }
+
+    #[test]
+    fn content_and_ui_typography_are_independently_configurable() {
+        let content = parse_user_settings(
+            r#"{
+                "content_font_size": 18,
+                "content_line_height": 1.4,
+                "ui_font_size": 15
+            }"#,
+        )
+        .unwrap();
+        let settings = UserSettings::merge(content);
+
+        assert_eq!(settings.content_font_size, 18.);
+        assert_eq!(settings.content_line_height, 1.4);
+        assert_eq!(settings.ui_font_size, 15.);
     }
 
     #[test]

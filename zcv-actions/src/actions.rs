@@ -72,9 +72,6 @@ actions!(
         ToggleFold,
         UnfoldAll,
         OpenExcerpts,
-        IncreaseFontSize,
-        DecreaseFontSize,
-        ResetFontSize,
     ]
 );
 
@@ -96,6 +93,9 @@ actions!(
         GitFetch,
         GitPull,
         GitPush,
+        IncreaseContentFontSize,
+        DecreaseContentFontSize,
+        ResetContentFontSize,
         IncreaseUiFontSize,
         DecreaseUiFontSize,
         ResetUiFontSize,
@@ -103,7 +103,17 @@ actions!(
     ]
 );
 
-actions!(terminal, [NewTerminal, Clear, Interrupt]);
+actions!(
+    terminal,
+    [
+        NewTerminal,
+        Clear,
+        Interrupt,
+        IncreaseFontSize,
+        DecreaseFontSize,
+        ResetFontSize
+    ]
+);
 
 actions!(dock, [ToggleLeftDock, ToggleBottomDock, ToggleRightDock,]);
 

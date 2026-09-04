@@ -622,6 +622,30 @@ fn diff_hunk_coordinates_follow_materialized_excerpts_across_files(cx: &mut Test
             ],
             "新侧范围应落在实际物化的 new 行，不能受前一文件末尾空逻辑行影响"
         );
+        assert_eq!(
+            buffer.diff_hunk_expanded(cx),
+            &[true, true],
+            "展开状态必须与物化后的显示 hunk 同序，不能遗漏整文件新增块"
+        );
+        assert!(
+            buffer
+                .diff_hunk_source_at(0, cx)
+                .expect("整文件新增块应有显示来源")
+                .source
+                .is_none(),
+            "整文件新增块不应伪造源 hunk"
+        );
+        assert_eq!(
+            buffer
+                .diff_hunk_source_at(1, cx)
+                .expect("修改 hunk 应有显示来源")
+                .source,
+            Some(DiffHunk {
+                range: 1..2,
+                old_range: 1..2,
+                kind: DiffHunkKind::Modified,
+            })
+        );
     });
 }
 

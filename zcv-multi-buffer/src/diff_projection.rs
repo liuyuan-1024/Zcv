@@ -58,6 +58,10 @@ pub(crate) struct DiffProjection {
     display_hunks: Vec<DiffHunk>,
     /// 每个 hunk 在组合文档中的旧侧显示行范围；折叠态或 Added hunk 为 None。
     display_old_ranges: Vec<Option<Range<usize>>>,
+    /// 显示 hunk 对应的源文件与源 hunk；整文件新增块没有源 hunk。
+    display_sources: Vec<DisplayHunkSource>,
+    /// 与显示 hunk 同序的展开状态。
+    display_expanded: Vec<bool>,
     /// 显示坐标对应的组合文档版本（注入/重建后发生编辑会使坐标失效）。
     display_version: Option<BufferVersion>,
 }
@@ -85,10 +89,12 @@ struct DiffFileProjection {
     /// 默认展开模式下被用户显式折叠的 hunk。
     collapsed_deleted: Vec<Range<usize>>,
     collapsed_modified: Vec<Range<usize>>,
-    /// 本文件在 display_hunks 中的起始索引。
-    display_start: usize,
-    /// 本文件在 display_hunks 中的数量。
-    display_len: usize,
+}
+
+#[derive(Clone, Copy)]
+struct DisplayHunkSource {
+    file_index: usize,
+    hunk_index: Option<usize>,
 }
 
 /// 一个 hunk 在本次物化出的 excerpt 序列中的位置。
@@ -100,6 +106,8 @@ struct MaterializedHunk {
     kind: DiffHunkKind,
     old_excerpt: Option<usize>,
     new_location: MaterializedHunkLocation,
+    source: DisplayHunkSource,
+    expanded: bool,
 }
 
 enum MaterializedHunkLocation {
@@ -221,11 +229,10 @@ impl MultiBuffer {
             .is_some_and(|diff| diff.expanded_by_default);
         let mut toggled = false;
         if let Some(diff) = &mut self.diff
-            && let Some(file) = diff.files.iter_mut().find(|file| {
-                display_index >= file.display_start
-                    && display_index < file.display_start + file.display_len
-            })
-            && let Some(hunk) = file.hunks.get(display_index - file.display_start).cloned()
+            && let Some(source) = diff.display_sources.get(display_index).copied()
+            && let Some(hunk_index) = source.hunk_index
+            && let Some(file) = diff.files.get_mut(source.file_index)
+            && let Some(hunk) = file.hunks.get(hunk_index).cloned()
             && hunk.kind != DiffHunkKind::Added
         {
             file.toggle_expansion(hunk.kind, &hunk.old_range, expanded_by_default);
@@ -278,14 +285,7 @@ impl MultiBuffer {
         let Some(diff) = self.display_state(cx) else {
             return Vec::new();
         };
-        diff.files
-            .iter()
-            .flat_map(|file| {
-                file.hunks.iter().map(|hunk| {
-                    file.is_expanded(hunk.kind, &hunk.old_range, diff.expanded_by_default)
-                })
-            })
-            .collect()
+        diff.display_expanded.clone()
     }
 
     /// 显示 hunk 到源定位（hunk 操作与导航用）。
@@ -295,15 +295,16 @@ impl MultiBuffer {
         cx: &App,
     ) -> Option<DiffHunkSourceInfo> {
         let diff = self.display_state(cx)?;
-        let file = diff.file_for_display_index(display_index)?;
-        if file.hunks.is_empty() && file.is_created {
+        let source = diff.display_sources.get(display_index).copied()?;
+        let file = diff.files.get(source.file_index)?;
+        if source.hunk_index.is_none() && file.hunks.is_empty() && file.is_created {
             // 整文件新增块没有源 hunk。
             return Some(DiffHunkSourceInfo {
                 path: file.path.clone(),
                 source: None,
             });
         }
-        let hunk = file.hunks.get(display_index - file.display_start)?.clone();
+        let hunk = file.hunks.get(source.hunk_index?)?.clone();
         Some(DiffHunkSourceInfo {
             path: file.path.clone(),
             source: Some(hunk),
@@ -431,16 +432,15 @@ impl MultiBuffer {
         let expanded_by_default = diff.expanded_by_default;
         let mut excerpts = Vec::new();
         let mut materialized_hunks = Vec::new();
-        for file in &mut diff.files {
-            file.display_start = materialized_hunks.len();
+        for (file_index, file) in diff.files.iter_mut().enumerate() {
             materialize_file(
+                file_index,
                 file,
                 cx,
                 expanded_by_default,
                 &mut excerpts,
                 &mut materialized_hunks,
             );
-            file.display_len = materialized_hunks.len() - file.display_start;
         }
         let expected_excerpt_count = excerpts.len();
         self.set_excerpts(excerpts, cx);
@@ -451,6 +451,8 @@ impl MultiBuffer {
         );
         let mut display_hunks = Vec::with_capacity(materialized_hunks.len());
         let mut display_old_ranges = Vec::with_capacity(materialized_hunks.len());
+        let mut display_sources = Vec::with_capacity(materialized_hunks.len());
+        let mut display_expanded = Vec::with_capacity(materialized_hunks.len());
         for hunk in materialized_hunks {
             let old_display = hunk
                 .old_excerpt
@@ -470,11 +472,15 @@ impl MultiBuffer {
                 kind: hunk.kind,
             });
             display_old_ranges.push(old_display);
+            display_sources.push(hunk.source);
+            display_expanded.push(hunk.expanded);
         }
         let new_version = self.text_buffer(cx).read(cx).snapshot().version();
         let diff = self.diff.as_mut().expect("投影重建前 diff 状态必须存在");
         diff.display_hunks = display_hunks;
         diff.display_old_ranges = display_old_ranges;
+        diff.display_sources = display_sources;
+        diff.display_expanded = display_expanded;
         diff.display_version = Some(new_version);
         cx.notify();
         new_version != old_version
@@ -513,15 +519,6 @@ impl MultiBuffer {
     }
 }
 
-impl DiffProjection {
-    fn file_for_display_index(&self, display_index: usize) -> Option<&DiffFileProjection> {
-        self.files.iter().find(|file| {
-            display_index >= file.display_start
-                && display_index < file.display_start + file.display_len
-        })
-    }
-}
-
 impl DiffFileProjection {
     fn new(input: DiffFileInput, cx: &Context<MultiBuffer>) -> Self {
         let working_text = input.working.read(cx).text_snapshot(cx);
@@ -541,8 +538,6 @@ impl DiffFileProjection {
             expanded_modified: Vec::new(),
             collapsed_deleted: Vec::new(),
             collapsed_modified: Vec::new(),
-            display_start: 0,
-            display_len: 0,
         }
     }
 
@@ -695,6 +690,7 @@ impl DiffFileProjection {
 
 /// 把单个文件的可见行物化为 excerpts，并派生显示坐标 hunks。
 fn materialize_file(
+    file_index: usize,
     file: &mut DiffFileProjection,
     cx: &App,
     expanded_by_default: bool,
@@ -731,6 +727,11 @@ fn materialize_file(
             kind: DiffHunkKind::Added,
             old_excerpt: None,
             new_location: MaterializedHunkLocation::Excerpt(new_excerpt),
+            source: DisplayHunkSource {
+                file_index,
+                hunk_index: None,
+            },
+            expanded: true,
         });
         return;
     }
@@ -757,10 +758,11 @@ fn materialize_file(
         let mut current = context_range.start;
         // 文件标题块只在宿主声明时创建（ProjectDiffView 多文件投影；普通编辑器整文件不创建）。
         let mut starts_new_excerpt = show_file_header;
-        for hunk in file
+        for (hunk_index, hunk) in file
             .hunks
             .iter()
-            .filter(|hunk| hunk_is_inside_excerpt(hunk, &context_range))
+            .enumerate()
+            .filter(|(_, hunk)| hunk_is_inside_excerpt(hunk, &context_range))
         {
             if current < hunk.range.start {
                 let _ = materializer.push(
@@ -835,6 +837,11 @@ fn materialize_file(
                 kind: hunk.kind,
                 old_excerpt: old_display,
                 new_location,
+                source: DisplayHunkSource {
+                    file_index,
+                    hunk_index: Some(hunk_index),
+                },
+                expanded: file.is_expanded(hunk.kind, &hunk.old_range, expanded_by_default),
             });
             current = hunk.range.end;
         }

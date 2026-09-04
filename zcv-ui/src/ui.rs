@@ -2,6 +2,7 @@
 //! 此文件是 `zcv-ui` crate 的公共入口。
 
 mod button;
+mod button_like;
 mod checkbox;
 mod confirm;
 mod icon;
@@ -13,6 +14,7 @@ mod tooltip;
 pub mod tree;
 
 pub use button::{Button, ButtonSize, ButtonStyle};
+pub use button_like::ButtonLike;
 pub use checkbox::Checkbox;
 pub use confirm::{ConfirmAnswer, ConfirmOverlay};
 pub use icon::SvgIcon;

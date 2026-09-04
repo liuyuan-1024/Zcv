@@ -24,7 +24,9 @@ use zcv_git::{DiffStat, FileStatus, StatusCode};
 use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, space, typography};
 use zcv_ui::tree::{self, TreeRow, TreeState};
-use zcv_ui::{Button, ButtonSize, ButtonStyle, Checkbox, Scrollbar, SvgIcon};
+use zcv_ui::{
+    Button, ButtonLike, ButtonSize, ButtonStyle, Checkbox, Scrollbar, SvgIcon, TooltipSpec,
+};
 use zcv_workspace::{Panel, PanelEvent};
 
 use zcv_project_tree::git_status_color;
@@ -1051,16 +1053,24 @@ fn render_commit_footer(
                 .items_center()
                 .gap(space::S6)
                 .child(
-                    div()
-                        .flex_1()
-                        .overflow_hidden()
-                        .truncate()
-                        .text_color(if has_last_commit {
-                            colors.text
+                    ButtonLike::new("version-control-last-commit")
+                        .flex_grow()
+                        .tooltip(if has_last_commit {
+                            TooltipSpec::new(format!("最近提交：{last_commit_text}"))
                         } else {
-                            colors.text_muted
+                            TooltipSpec::default()
                         })
-                        .child(last_commit_text),
+                        .child(
+                            div()
+                                .overflow_hidden()
+                                .truncate()
+                                .text_color(if has_last_commit {
+                                    colors.text
+                                } else {
+                                    colors.text_muted
+                                })
+                                .child(last_commit_text),
+                        ),
                 )
                 // 撤销按钮：仅在有提交时显示（无提交时 uncommit 无意义）。
                 // hover 提示"撤销提交"。

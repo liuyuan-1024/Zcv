@@ -4,11 +4,15 @@
 //! 层级过长时保留首尾各六段并折叠中间内容。
 //! 订阅 item 的 `UpdateBreadcrumbs` 事件，路径变化时自动刷新。
 
+use std::path::{Path, PathBuf};
+
 use gpui::{
-    AnyElement, Context, Entity, EventEmitter, Render, Subscription, Window, div, prelude::*,
+    AnyElement, ClipboardItem, Context, Entity, EventEmitter, Render, Subscription, Window, div,
+    prelude::*,
 };
 use zcv_project::Project;
 use zcv_theme::{color, typography};
+use zcv_ui::{ButtonLike, TooltipSpec};
 use zcv_workspace::{ItemEvent, ItemHandle};
 use zcv_workspace::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 
@@ -35,10 +39,16 @@ impl EventEmitter<ToolbarItemEvent> for Breadcrumbs {}
 impl Render for Breadcrumbs {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let project = self.project.read(cx);
+        let project_root = project.root().map(Path::to_path_buf);
         let segments = self
             .active_item
             .as_ref()
-            .and_then(|item| item.breadcrumbs(project.root(), cx));
+            .and_then(|item| item.breadcrumbs(project_root.as_deref(), cx));
+        let copy_path = self
+            .active_item
+            .as_ref()
+            .and_then(|item| item.active_path(cx))
+            .and_then(|path| absolute_path(path, project_root.as_deref()));
 
         let mut children: Vec<AnyElement> = Vec::new();
 
@@ -63,16 +73,48 @@ impl Render for Breadcrumbs {
             }
         }
 
+        let breadcrumbs = ButtonLike::new("breadcrumbs").child(
+            div()
+                .id("breadcrumbs-content")
+                .flex()
+                .items_center()
+                .gap_1()
+                .text_size(typography::ui_size())
+                .children(children),
+        );
+
+        let breadcrumbs = if let Some(copy_path) = copy_path {
+            breadcrumbs
+                .tooltip(TooltipSpec::new("右键复制绝对路径"))
+                .on_right_click(move |_event, _window, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(
+                        copy_path.to_string_lossy().into_owned(),
+                    ));
+                })
+        } else {
+            breadcrumbs
+        };
+        let breadcrumbs = div()
+            .debug_selector(|| "breadcrumbs-button".into())
+            .flex_none()
+            .child(breadcrumbs);
+
+        // Toolbar 剩余空间只限制面包屑的最大宽度；交互背景仍按内容宽度绘制。
         div()
-            .id("breadcrumbs")
+            .id("breadcrumbs-viewport")
+            .flex_1()
+            .min_w_0()
             .flex()
             .items_center()
-            .flex_1()
-            .gap_1()
             .overflow_x_scroll()
-            .text_size(typography::ui_size())
-            .children(children)
+            .child(breadcrumbs)
     }
+}
+
+fn absolute_path(path: PathBuf, project_root: Option<&Path>) -> Option<PathBuf> {
+    path.is_absolute()
+        .then_some(path.clone())
+        .or_else(|| project_root.map(|root| root.join(path)))
 }
 
 fn collapse_middle_segments(mut segments: Vec<gpui::SharedString>) -> Vec<gpui::SharedString> {
@@ -122,7 +164,7 @@ impl ToolbarItemView for Breadcrumbs {
 mod tests {
     use std::path::PathBuf;
 
-    use gpui::{AppContext, TestAppContext};
+    use gpui::{AppContext, Modifiers, MouseButton, TestAppContext};
     use zcv_editor::Editor;
 
     use super::*;
@@ -132,6 +174,18 @@ mod tests {
     impl Render for TestView {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div()
+        }
+    }
+
+    struct BreadcrumbTestView {
+        breadcrumbs: Entity<Breadcrumbs>,
+    }
+
+    impl Render for BreadcrumbTestView {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .debug_selector(|| "breadcrumbs".into())
+                .child(self.breadcrumbs.clone())
         }
     }
 
@@ -150,6 +204,51 @@ mod tests {
             [
                 "0", "1", "2", "3", "4", "5", "⋯", "9", "10", "11", "12", "13", "14"
             ]
+        );
+    }
+
+    #[test]
+    fn relative_active_path_uses_the_project_root_for_copying() {
+        assert_eq!(
+            absolute_path(PathBuf::from("src/main.rs"), Some(Path::new("/project"))),
+            Some(PathBuf::from("/project/src/main.rs"))
+        );
+    }
+
+    #[test]
+    fn absolute_active_path_is_not_rebased_for_copying() {
+        assert_eq!(
+            absolute_path(PathBuf::from("/other/main.rs"), Some(Path::new("/project"))),
+            Some(PathBuf::from("/other/main.rs"))
+        );
+    }
+
+    #[gpui::test]
+    fn right_clicking_breadcrumbs_copies_the_absolute_active_path(cx: &mut TestAppContext) {
+        let editor = cx.new(Editor::single_line);
+        editor.update(cx, |editor, cx| {
+            editor.set_file_path(PathBuf::from("/project/src/main.rs"), cx);
+        });
+        let project = cx.new(Project::empty);
+        let breadcrumbs = cx.new(|_| Breadcrumbs::new(project));
+
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            breadcrumbs.update(cx, |breadcrumbs, cx| {
+                let item: &dyn ItemHandle = &editor;
+                breadcrumbs.set_active_pane_item(Some(item), window, cx);
+            });
+            BreadcrumbTestView { breadcrumbs }
+        });
+        let bounds = cx
+            .debug_bounds("breadcrumbs-button")
+            .expect("面包屑应参与布局");
+        let position = bounds.center();
+        cx.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(position, MouseButton::Right, Modifiers::default());
+
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|item| item.text()),
+            Some("/project/src/main.rs".to_string())
         );
     }
 

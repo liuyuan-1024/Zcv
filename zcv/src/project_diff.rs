@@ -967,13 +967,13 @@ mod tests {
         let original = (1..=20)
             .map(|line| format!("line {line}"))
             .collect::<Vec<_>>();
-        std::fs::write(&path, format!("{}", original.join("\n"))).expect("应创建文件");
+        std::fs::write(&path, original.join("\n")).expect("应创建文件");
         run_in(&root, &["git", "add", "."]);
         run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
         // 删除第 17 行（1-based）。
         let mut changed = original.clone();
         changed.remove(16);
-        std::fs::write(&path, format!("{}", changed.join("\n"))).expect("应写入删除后的文件");
+        std::fs::write(&path, changed.join("\n")).expect("应写入删除后的文件");
 
         let project = cx.new(|cx| Project::new(root.clone(), cx));
         let view = cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project, cx));
@@ -1387,7 +1387,7 @@ mod tests {
         project.update(cx, |project, cx| {
             let store = project.git_store();
             store.update(cx, |store, cx| {
-                store.request_hunks(DiffBase::Index, &[modified_path.clone()], cx);
+                store.request_hunks(DiffBase::Index, std::slice::from_ref(&modified_path), cx);
             });
         });
         cx.run_until_parked();
@@ -1463,7 +1463,7 @@ mod tests {
         project.update(cx, |project, cx| {
             let store = project.git_store();
             store.update(cx, |store, cx| {
-                store.request_hunks(DiffBase::Index, &[modified_path.clone()], cx);
+                store.request_hunks(DiffBase::Index, std::slice::from_ref(&modified_path), cx);
             });
         });
         cx.run_until_parked();
@@ -1556,7 +1556,7 @@ mod tests {
         project.update(cx, |project, cx| {
             let store = project.git_store();
             store.update(cx, |store, cx| {
-                store.request_hunks(DiffBase::Index, &[modified_path.clone()], cx);
+                store.request_hunks(DiffBase::Index, std::slice::from_ref(&modified_path), cx);
             });
         });
         cx.run_until_parked();

@@ -1,4 +1,5 @@
 use gpui::{AppContext as _, Entity, TestAppContext};
+use std::path::PathBuf;
 use std::process::Command;
 use zcv_text::SearchQuery;
 
@@ -49,6 +50,14 @@ async fn searches_file_contents_and_builds_ordered_excerpts(cx: &mut TestAppCont
 
     assert_eq!(results.len(), 2);
     assert_eq!(match_count(&results), 2);
+    assert_eq!(
+        results
+            .iter()
+            .map(|file| file.display_path.clone())
+            .collect::<Vec<_>>(),
+        vec![PathBuf::from("src/a.rs"), PathBuf::from("src/b.rs")],
+        "并行扫描必须仍按工作区路径顺序交付结果"
+    );
     assert!(
         results.iter().all(|file| file
             .excerpts

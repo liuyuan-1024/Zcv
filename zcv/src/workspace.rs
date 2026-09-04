@@ -1055,7 +1055,7 @@ mod tests {
             workspace.update(app, |workspace, cx| {
                 workspace.project().update(cx, |project, cx| {
                     project.git_store().update(cx, |store, cx| {
-                        store.refresh_statuses_for_paths(&[path.clone()], cx);
+                        store.refresh_statuses_for_paths(std::slice::from_ref(&path), cx);
                     });
                 });
             });

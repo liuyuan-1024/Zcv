@@ -4,7 +4,7 @@
 //! 命中文件随扫描进度逐文件通过通道流出，UI 线程按批装配进 MultiBuffer ordered excerpts。
 //! 接收方放弃通道（新搜索取代或视图关闭）时，后台在下次发送时感知并提前结束扫描。
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::os::unix::ffi::OsStringExt;
 
 use async_channel::{Receiver, Sender};
-use futures::future::{join, join_all};
+use futures::{StreamExt, stream};
 use gpui::{BackgroundExecutor, Task};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Line, SearchQuery, Snapshot, TextRange};
 
@@ -86,81 +86,55 @@ pub(crate) async fn search_worktree(
         .map_or(1, std::num::NonZeroUsize::get)
         .min(paths.len())
         .min(8);
-    let (job_tx, job_rx) = async_channel::unbounded();
-    let (result_tx, result_rx) = async_channel::bounded(worker_count * 2);
     let opened_snapshots = Arc::new(opened_snapshots);
     let prepared_query = Arc::new(prepared_query);
     let root = Arc::new(plan.root);
 
-    let workers = (0..worker_count).map(|_| {
-        let job_rx = job_rx.clone();
-        let result_tx = result_tx.clone();
-        let opened_snapshots = Arc::clone(&opened_snapshots);
-        let prepared_query = Arc::clone(&prepared_query);
-        let root = Arc::clone(&root);
-        let background_executor = background_executor.clone();
-        async move {
-            while let Ok((index, path)) = job_rx.recv().await {
-                let opened_snapshots = Arc::clone(&opened_snapshots);
-                let prepared_query = Arc::clone(&prepared_query);
-                let root = Arc::clone(&root);
-                let result = background_executor
+    // `buffered` 同时限制在途读取数与乱序完成结果的保留量。
+    // 不能先让 worker 把所有完成项塞进按序重排表：当前序号较慢时，后续命中的整文件 Buffer 会持续累积。
+    let mut results = stream::iter(paths)
+        .map(|path| {
+            let opened_snapshots = Arc::clone(&opened_snapshots);
+            let prepared_query = Arc::clone(&prepared_query);
+            let root = Arc::clone(&root);
+            let background_executor = background_executor.clone();
+            async move {
+                background_executor
                     .spawn(
                         async move { search_file(path, &root, &opened_snapshots, &prepared_query) },
                     )
-                    .await;
-                if result_tx.send((index, result)).await.is_err() {
-                    break;
-                }
+                    .await
             }
+        })
+        .buffered(worker_count);
+
+    let mut total_matches = 0;
+    while let Some(result) = results.next().await {
+        let Some(mut result) = result else {
+            continue;
+        };
+        let remaining = MAX_MATCHES.saturating_sub(total_matches);
+        if remaining == 0 {
+            return Ok(());
         }
-    });
-    let workers = join_all(workers);
-    drop(job_rx);
-    drop(result_tx);
-    for (index, path) in paths.into_iter().enumerate() {
-        if job_tx.send((index, path)).await.is_err() {
-            break;
+        if result
+            .excerpts
+            .iter()
+            .map(|excerpt| excerpt.matches.len())
+            .sum::<usize>()
+            > remaining
+        {
+            truncate_excerpts(&mut result.excerpts, remaining);
+        }
+        total_matches += result
+            .excerpts
+            .iter()
+            .map(|excerpt| excerpt.matches.len())
+            .sum::<usize>();
+        if tx.send(result).await.is_err() || total_matches == MAX_MATCHES {
+            return Ok(());
         }
     }
-    drop(job_tx);
-
-    let consumer = async {
-        let mut pending = BTreeMap::new();
-        let mut next_index = 0;
-        let mut total_matches = 0;
-        while let Ok((index, result)) = result_rx.recv().await {
-            pending.insert(index, result);
-            while let Some((_, result)) = pending.remove_entry(&next_index) {
-                next_index += 1;
-                let Some(mut result) = result else {
-                    continue;
-                };
-                let remaining = MAX_MATCHES.saturating_sub(total_matches);
-                if remaining == 0 {
-                    return;
-                }
-                if result
-                    .excerpts
-                    .iter()
-                    .map(|excerpt| excerpt.matches.len())
-                    .sum::<usize>()
-                    > remaining
-                {
-                    truncate_excerpts(&mut result.excerpts, remaining);
-                }
-                total_matches += result
-                    .excerpts
-                    .iter()
-                    .map(|excerpt| excerpt.matches.len())
-                    .sum::<usize>();
-                if tx.send(result).await.is_err() || total_matches == MAX_MATCHES {
-                    return;
-                }
-            }
-        }
-    };
-    let (_, _) = join(consumer, workers).await;
     Ok(())
 }
 

@@ -181,11 +181,10 @@ fn folding_a_later_file_preserves_the_viewport_anchor(cx: &mut TestAppContext) {
     let old_output_offset = cx.update_entity(&editor, |editor, cx| {
         assert!(editor.scroll_to(line_height * 60., cx));
         assert!(editor.capture_scroll_anchor(cx).is_some());
-        let output_offset = editor
+        editor
             .display_map
             .display_point_to_offset(editor.scroll_anchor())
-            .expect("折叠前视口顶部应能映射到组合偏移");
-        output_offset
+            .expect("折叠前视口顶部应能映射到组合偏移")
     });
     let old_location = cx.read_entity(&combined, |buffer, _| {
         buffer

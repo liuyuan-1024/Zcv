@@ -177,6 +177,14 @@ pub(crate) struct SearchBar {
     active_item_subscription: Option<gpui::Subscription>,
 }
 
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub(crate) struct SearchBarState {
+    pub(crate) query: String,
+    pub(crate) case_sensitive: bool,
+    pub(crate) whole_word: bool,
+    pub(crate) regex: bool,
+}
+
 impl gpui::EventEmitter<ToolbarItemEvent> for SearchBar {}
 
 impl SearchBar {
@@ -197,6 +205,19 @@ impl SearchBar {
             input_subscriptions: Vec::new(),
             active_item_subscription: None,
         }
+    }
+
+    pub(crate) fn restore_state(
+        &mut self,
+        state: SearchBarState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.query = state.query;
+        self.case_sensitive = state.case_sensitive;
+        self.whole_word = state.whole_word;
+        self.regex = state.regex;
+        self.deploy(None, window, cx);
     }
 
     /// pane 的活动 item 变化时同步搜索目标；搜索条可见时在新 item 上重跑当前 query。

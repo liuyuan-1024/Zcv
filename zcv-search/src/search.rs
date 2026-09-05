@@ -14,8 +14,8 @@ use zcv_actions::{Deploy as DeployProjectSearch, DeploySearch};
 use zcv_workspace::Workspace;
 
 use project_search::{
-    ProjectSearchBar, ProjectSearchButton, deploy as deploy_project_search_view,
-    install_search_bar, is_project_search_item,
+    ProjectSearchBar, ProjectSearchButton, ProjectSearchSerializedItemProvider,
+    deploy as deploy_project_search_view, install_search_bar, is_project_search_item,
 };
 
 /// 部署项目搜索时从活动 Item 取查询建议；
@@ -44,6 +44,12 @@ pub(crate) fn deploy_project_search(
 pub fn install(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let buffer_search_bar = buffer_search::install(workspace, window, cx);
     let project_search_bar = install_search_bar(workspace, window, cx);
+    zcv_workspace::register_serialized_item_provider(
+        ProjectSearchSerializedItemProvider {
+            search_bar: project_search_bar.clone(),
+        },
+        cx,
+    );
     let workspace_handle = cx.weak_entity();
     let status_bar = workspace.status_bar().clone();
     status_bar.update(cx, |status_bar, cx| {

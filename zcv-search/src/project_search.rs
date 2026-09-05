@@ -19,10 +19,13 @@ use zcv_theme::color;
 use zcv_ui::Button;
 use zcv_workspace::{
     Direction, Item, ItemEvent, ItemHandle, SearchEvent, SearchableItem, SearchableItemHandle,
-    StatusItemView, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView, Workspace,
+    SerializedItemProvider, StatusItemView, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
+    Workspace,
 };
 
-use crate::search_bar::SearchBar;
+use crate::search_bar::{SearchBar, SearchBarState};
+
+const PROJECT_SEARCH_SERIALIZED_KIND: &str = "project-search";
 
 #[derive(Clone, Debug)]
 pub(crate) enum ProjectSearchEvent {
@@ -48,7 +51,39 @@ pub(crate) struct ProjectSearchView {
     search_generation: u64,
     debounce_task: Option<Task<()>>,
     pending_search: Option<Task<()>>,
+    search_state: SearchBarState,
     _subscriptions: Vec<Subscription>,
+}
+
+pub(crate) struct ProjectSearchSerializedItemProvider {
+    pub(crate) search_bar: Entity<ProjectSearchBar>,
+}
+
+impl SerializedItemProvider for ProjectSearchSerializedItemProvider {
+    fn kind(&self) -> &'static str {
+        PROJECT_SEARCH_SERIALIZED_KIND
+    }
+
+    fn restore(
+        &self,
+        state: serde_json::Value,
+        project: Entity<Project>,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> Task<anyhow::Result<Box<dyn ItemHandle>>> {
+        let state: SearchBarState = match serde_json::from_value(state) {
+            Ok(state) => state,
+            Err(error) => {
+                return Task::ready(Err(anyhow::anyhow!("项目搜索标签状态无效：{error}")));
+            }
+        };
+        let view = cx.new(|cx| ProjectSearchView::new(project, cx));
+        view.update(cx, |view, _| view.search_state = state.clone());
+        self.search_bar.update(cx, |search_bar, cx| {
+            search_bar.restore_state(state, window, cx)
+        });
+        Task::ready(Ok(Box::new(view) as Box<dyn ItemHandle>))
+    }
 }
 
 impl ProjectSearchView {
@@ -78,6 +113,12 @@ impl ProjectSearchView {
             search_generation: 0,
             debounce_task: None,
             pending_search: None,
+            search_state: SearchBarState {
+                query: String::new(),
+                case_sensitive: false,
+                whole_word: false,
+                regex: false,
+            },
             _subscriptions: subscriptions,
         }
     }
@@ -255,6 +296,13 @@ impl Item for ProjectSearchView {
         Some("icons/magnifying_glass.svg".into())
     }
 
+    fn serialized_pane_item(&self, _cx: &App) -> Option<zcv_workspace::SerializedPaneItem> {
+        Some(zcv_workspace::SerializedPaneItem::Custom {
+            kind: PROJECT_SEARCH_SERIALIZED_KIND.into(),
+            state: serde_json::to_value(self.search_state.clone()).ok()?,
+        })
+    }
+
     fn to_item_events(event: &Self::Event, emit: &mut dyn FnMut(ItemEvent)) {
         match event {
             ProjectSearchEvent::Updated => emit(ItemEvent::UpdateTab),
@@ -313,6 +361,12 @@ impl SearchableItem for ProjectSearchView {
     }
 
     fn search(&mut self, query: &SearchQuery, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_state = SearchBarState {
+            query: query.query.clone(),
+            case_sensitive: query.case_sensitive,
+            whole_word: query.whole_word,
+            regex: query.regex,
+        };
         // 防抖合并击键；等窗内出现更新的查询（或搜索被清空）时放弃本次搜索。
         self.search_generation = self.search_generation.wrapping_add(1);
         let generation = self.search_generation;
@@ -392,6 +446,17 @@ impl ProjectSearchBar {
     ) {
         self.search_bar.update(cx, |search_bar, cx| {
             search_bar.deploy(query_seed, window, cx)
+        });
+    }
+
+    fn restore_state(
+        &mut self,
+        state: SearchBarState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.search_bar.update(cx, |search_bar, cx| {
+            search_bar.restore_state(state, window, cx);
         });
     }
 }

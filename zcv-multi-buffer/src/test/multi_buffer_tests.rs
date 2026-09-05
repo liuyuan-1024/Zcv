@@ -554,6 +554,82 @@ fn diff_expansion_migrates_by_tracked_range_across_source_edits(cx: &mut TestApp
     );
 }
 
+/// 加载态刷新后，合并后的新 hunk 仍保留用户对旧 hunk 的展开状态。
+#[gpui::test]
+fn diff_expansion_survives_hunk_refresh_and_merge(cx: &mut TestAppContext) {
+    let source = singleton("tracked.txt", "line0\n改过\nline2\nline3\n", cx);
+    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    let base_text: Arc<str> = Arc::from("line0\nline1\nline2\nline3\n");
+
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_diff_projection(
+            Some(vec![DiffFileInput {
+                working: source.clone(),
+                hunks: vec![DiffHunk {
+                    range: 1..2,
+                    old_range: 1..2,
+                    kind: DiffHunkKind::Modified,
+                }],
+                base_text: Some(base_text.clone()),
+                path: PathBuf::from("tracked.txt"),
+                display_path: PathBuf::from("tracked.txt"),
+                context_lines: None,
+                is_created: false,
+                show_file_header: false,
+            }]),
+            cx,
+        );
+        buffer.toggle_diff_hunk_at(0, cx);
+    });
+
+    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
+    cx.update_entity(&source_buffer, |buffer, cx| {
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::new(13), "改过2\n").unwrap()],
+                TransactionMetadata::default(),
+            )
+            .unwrap();
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    // 模拟 GitStore 刷新期间的加载态，再注入合并后的新结果。
+    cx.update_entity(&combined, |buffer, cx| {
+        assert!(!buffer.set_diff_projection(None, cx));
+        buffer.set_diff_projection(
+            Some(vec![DiffFileInput {
+                working: source.clone(),
+                hunks: vec![DiffHunk {
+                    range: 1..3,
+                    old_range: 1..3,
+                    kind: DiffHunkKind::Modified,
+                }],
+                base_text: Some(base_text),
+                path: PathBuf::from("tracked.txt"),
+                display_path: PathBuf::from("tracked.txt"),
+                context_lines: None,
+                is_created: false,
+                show_file_header: false,
+            }]),
+            cx,
+        );
+    });
+
+    let (hunks, expanded) = cx.read_entity(&combined, |buffer, cx| {
+        (
+            buffer.diff_hunks(cx).to_vec(),
+            buffer.diff_hunk_expanded(cx),
+        )
+    });
+    assert_eq!(hunks.len(), 1, "刷新后相邻改动应合并为一个 hunk");
+    assert_eq!(hunks[0].old_range, 1..3, "合并后的 hunk 旧侧应为 1..3");
+    assert!(
+        expanded.first().copied().unwrap_or(false),
+        "hunk 刷新后展开状态应迁移到合并后的新 hunk"
+    );
+}
+
 #[gpui::test]
 fn undo_then_save_keeps_rust_highlighting_in_diff_projection(cx: &mut TestAppContext) {
     let source = singleton(

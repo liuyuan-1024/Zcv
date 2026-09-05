@@ -955,6 +955,36 @@ mod tests {
         });
     }
 
+    #[gpui::test]
+    fn project_diff_keeps_hunk_interest_while_its_multibuffer_is_empty(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时仓库");
+        let root = directory.path().canonicalize().expect("应规范化仓库路径");
+        run_in(&root, &["git", "init", "-q", "-b", "master"]);
+        run_in(&root, &["git", "config", "user.email", "test@example.com"]);
+        run_in(&root, &["git", "config", "user.name", "Test User"]);
+        let path = root.join("tracked.txt");
+        std::fs::write(&path, "line0\nline1\nline2\n原内容\nline4\nline5\nline6\n")
+            .expect("应创建文件");
+        run_in(&root, &["git", "add", "tracked.txt"]);
+        run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
+        std::fs::write(&path, "line0\nline1\nline2\n新内容\nline4\nline5\nline6\n")
+            .expect("应修改文件");
+
+        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let view = cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project, cx));
+
+        // ProjectDiffView 创建时 MultiBuffer 仍为空，但应立即向 GitStore 声明文件 hunk 需求。
+        cx.run_until_parked();
+        cx.run_until_parked();
+
+        cx.read_entity(&view, |view, cx| {
+            let multi_buffer = view.multi_buffer(cx).expect("项目差异应提供组合文档");
+            let text = String::from_utf8(multi_buffer.read(cx).snapshot(cx).text_bytes())
+                .expect("投影文本应为 UTF-8");
+            assert_eq!(text, "line1\nline2\n原内容\n新内容\nline4\nline5\n");
+        });
+    }
+
     /// 端到端：git 删除文件中间一行（第 17 行，1-based）后，展开的被删行必须投影到其原始位置（组合第 17 行），上下文行顺序不重排。
     #[gpui::test]
     fn deleted_middle_row_projects_to_its_original_position(cx: &mut TestAppContext) {

@@ -23,11 +23,16 @@ pub fn style_table(names: &[Arc<str>]) -> Vec<HighlightStyle> {
 
 /// 按 capture name 解析完整样式，走点分前缀回退（一次 BTreeMap range 查询）。
 pub(crate) fn style_for(name: &str) -> HighlightStyle {
-    // range 覆盖「首段 … 全名」：命中候选都是 name 的前缀，rfind 取最长（最深）的一条。
-    let first_segment = name.split('.').next().unwrap_or(name);
     let Ok(theme) = ACTIVE_THEME.read() else {
         return HighlightStyle::default();
     };
+    style_for_table(theme.as_ref(), name)
+}
+
+/// 在指定语法表中解析 capture name。
+fn style_for_table(theme: &BTreeMap<&'static str, HighlightStyle>, name: &str) -> HighlightStyle {
+    // range 覆盖「首段 … 全名」：命中候选都是 name 的前缀，rfind 取最长（最深）的一条。
+    let first_segment = name.split('.').next().unwrap_or(name);
     theme
         .range::<str, _>((Bound::Included(first_segment), Bound::Included(name)))
         .rfind(|(prefix, _)| {
@@ -54,65 +59,80 @@ static ACTIVE_THEME: LazyLock<RwLock<Arc<BTreeMap<&'static str, HighlightStyle>>
 mod tests {
     use super::*;
 
+    fn style_for_theme(theme_id: &str, name: &str) -> HighlightStyle {
+        let theme = theme_by_id(theme_id).expect("内置主题应存在");
+        style_for_table(theme.syntax_table.as_ref(), name)
+    }
+
     #[test]
     fn fallback_chain_terminates_at_default_style() {
-        assert_eq!(style_for("totally.unknown"), HighlightStyle::default());
-        assert_eq!(style_for("nope"), HighlightStyle::default());
+        assert_eq!(
+            style_for_theme("dark", "totally.unknown"),
+            HighlightStyle::default()
+        );
+        assert_eq!(style_for_theme("dark", "nope"), HighlightStyle::default());
     }
 
     #[test]
     fn dark_provides_color_for_common_rust_names() {
-        set_theme(theme_by_id("dark").expect("内置深色主题应存在"));
         for name in &["keyword", "string", "comment", "function", "type"] {
-            assert!(style_for(name).color.is_some(), "dark 必须给 `{name}` 上色");
+            assert!(
+                style_for_theme("dark", name).color.is_some(),
+                "dark 必须给 `{name}` 上色"
+            );
         }
     }
 
     #[test]
     fn dot_prefix_fallback_uses_parent_rule() {
-        set_theme(theme_by_id("dark").expect("内置深色主题应存在"));
         assert_eq!(
-            style_for("function.method").color,
-            style_for("function").color
+            style_for_theme("dark", "function.method").color,
+            style_for_theme("dark", "function").color
         );
-        assert_eq!(style_for("type.builtin").color, style_for("type").color);
         assert_eq!(
-            style_for("comment.documentation").color,
-            style_for("comment").color
+            style_for_theme("dark", "type.builtin").color,
+            style_for_theme("dark", "type").color
+        );
+        assert_eq!(
+            style_for_theme("dark", "comment.documentation").color,
+            style_for_theme("dark", "comment").color
         );
     }
 
     #[test]
     fn lsp_parameter_resolves_to_color_via_variable_parameter() {
-        set_theme(theme_by_id("dark").expect("内置深色主题应存在"));
-        assert!(style_for("variable.parameter").color.is_some());
+        assert!(
+            style_for_theme("dark", "variable.parameter")
+                .color
+                .is_some()
+        );
     }
 
     #[test]
     fn lsp_method_falls_back_to_function() {
-        set_theme(theme_by_id("dark").expect("内置深色主题应存在"));
         assert_eq!(
-            style_for("function.method").color,
-            style_for("function").color
+            style_for_theme("dark", "function.method").color,
+            style_for_theme("dark", "function").color
         );
     }
 
     #[test]
     fn lsp_enum_member_resolves_via_variable_other_member() {
-        set_theme(theme_by_id("dark").expect("内置深色主题应存在"));
-        assert!(style_for("variable.other.member").color.is_some());
+        assert!(
+            style_for_theme("dark", "variable.other.member")
+                .color
+                .is_some()
+        );
     }
 
     #[test]
     fn lsp_macro_resolves_via_function_dot_macro() {
-        set_theme(theme_by_id("dark").expect("内置深色主题应存在"));
-        assert!(style_for("function.macro").color.is_some());
+        assert!(style_for_theme("dark", "function.macro").color.is_some());
     }
 
     #[test]
     fn project_query_capture_names_resolve_to_theme_colors() {
         for theme_id in ["dark", "light"] {
-            set_theme(theme_by_id(theme_id).expect("内置主题应存在"));
             for name in [
                 "number",
                 "boolean",
@@ -129,7 +149,7 @@ mod tests {
                 "embedded",
             ] {
                 assert!(
-                    style_for(name).color.is_some(),
+                    style_for_theme(theme_id, name).color.is_some(),
                     "{theme_id} 主题必须为项目查询 capture `{name}` 提供颜色"
                 );
             }
@@ -138,15 +158,14 @@ mod tests {
 
     #[test]
     fn markdown_capture_rules_keep_theme_modifiers() {
-        set_theme(theme_by_id("dark").expect("内置深色主题应存在"));
         assert_eq!(
-            style_for("text.strong").font_weight,
+            style_for_theme("dark", "text.strong").font_weight,
             Some(gpui::FontWeight::BOLD)
         );
         assert_eq!(
-            style_for("text.emphasis").font_style,
+            style_for_theme("dark", "text.emphasis").font_style,
             Some(gpui::FontStyle::Italic)
         );
-        assert!(style_for("text.title").color.is_some());
+        assert!(style_for_theme("dark", "text.title").color.is_some());
     }
 }

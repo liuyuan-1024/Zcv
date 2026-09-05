@@ -3,8 +3,8 @@
 use std::ops::Range;
 
 use zcv_text::{
-    BufferVersion, RegexSearchResult, SearchMatch, SearchQuery, SearchQueryResult, SearchResult,
-    TextRange,
+    Affinity, Anchor, BufferVersion, PositionMap, RegexSearchResult, SearchQuery,
+    SearchQueryResult, SearchResult, TextRange,
 };
 use zcv_workspace::{Direction, SearchEvent, SearchableItem};
 
@@ -17,26 +17,41 @@ impl gpui::EventEmitter<SearchEvent> for Editor {}
 /// 搜索结果，literal 与 regex 二选一（均绑定搜索时的 BufferVersion）。
 pub(crate) enum SearchResultKind {
     Query(SearchQueryResult),
-    External {
-        version: BufferVersion,
-        matches: Vec<SearchMatch>,
-    },
+    External { version: BufferVersion },
+}
+
+/// 搜索高亮保存稳定锚点；字节范围只在执行搜索时用于生成锚点。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SearchMatchAnchor {
+    range: Range<Anchor>,
+}
+
+impl SearchMatchAnchor {
+    pub(crate) fn from_range(version: BufferVersion, range: TextRange) -> Self {
+        Self {
+            // 匹配边界不吸收恰好发生在边界上的插入。
+            range: Anchor::new(version, range.start()).with_affinity(Affinity::After)
+                ..Anchor::new(version, range.end()).with_affinity(Affinity::Before),
+        }
+    }
+
+    pub(crate) fn range(&self) -> TextRange {
+        TextRange::new(self.range.start.offset(), self.range.end.offset())
+            .expect("搜索匹配锚点范围必须有序")
+    }
 }
 
 /// Editor 的搜索状态（搜索条执行过一次搜索后存在）。
 pub(crate) struct EditorSearch {
     query: SearchQuery,
     result: Option<SearchResultKind>,
+    matches: Vec<SearchMatchAnchor>,
     active_index: Option<usize>,
 }
 
 impl EditorSearch {
-    fn matches(&self) -> &[SearchMatch] {
-        match &self.result {
-            Some(SearchResultKind::Query(result)) => result.matches(),
-            Some(SearchResultKind::External { matches, .. }) => matches,
-            None => &[],
-        }
+    fn matches(&self) -> &[SearchMatchAnchor] {
+        &self.matches
     }
 
     fn len(&self) -> usize {
@@ -48,13 +63,10 @@ impl EditorSearch {
         range.start().get()..range.end().get()
     }
 
-    fn is_stale(&self, version: zcv_text::BufferVersion) -> bool {
+    fn is_stale(&self, current_version: BufferVersion) -> bool {
         match &self.result {
-            Some(SearchResultKind::Query(result)) => result.is_stale(version),
-            Some(SearchResultKind::External {
-                version: result_version,
-                ..
-            }) => *result_version != version,
+            Some(SearchResultKind::Query(result)) => result.is_stale(current_version),
+            Some(SearchResultKind::External { version }) => *version != current_version,
             None => false,
         }
     }
@@ -229,6 +241,37 @@ impl SearchableItem for Editor {
 }
 
 impl Editor {
+    /// 在搜索协调器完成重算前，先让已有高亮随同一批文本变化移动。
+    ///
+    /// 这只维护已有范围的位置；匹配是否仍然存在，仍由随后基于当前快照的重算决定。
+    pub(crate) fn map_search_anchors(
+        &mut self,
+        old_version: BufferVersion,
+        new_version: BufferVersion,
+        position_map: &PositionMap,
+    ) {
+        let Some(search) = &mut self.search else {
+            return;
+        };
+        for search_match in &mut search.matches {
+            if search_match.range.start.version() != old_version
+                || search_match.range.end.version() != old_version
+            {
+                continue;
+            }
+            search_match.range = search_match
+                .range
+                .start
+                .map_through_position_map(new_version, position_map)
+                .value()
+                ..search_match
+                    .range
+                    .end
+                    .map_through_position_map(new_version, position_map)
+                    .value();
+        }
+    }
+
     /// 搜索结果是否已偏离当前投影版本（过期校验在搜索绑定的权威文档侧完成）。
     fn search_result_stale(
         &self,
@@ -255,13 +298,13 @@ impl Editor {
         let version = self.text_buffer(cx).read(cx).snapshot().version();
         let matches = ranges
             .into_iter()
-            .enumerate()
-            .map(|(ordinal, range)| SearchMatch::new(ordinal, range))
+            .map(|range| SearchMatchAnchor::from_range(version, range))
             .collect::<Vec<_>>();
         let active_index = (!matches.is_empty()).then_some(0);
         self.search = Some(EditorSearch {
             query,
-            result: Some(SearchResultKind::External { version, matches }),
+            result: Some(SearchResultKind::External { version }),
+            matches,
             active_index,
         });
         if let Some(range) = self
@@ -290,10 +333,8 @@ impl Editor {
             search.query == query
                 && matches!(
                     search.result,
-                    Some(SearchResultKind::External {
-                        version: result_version,
-                        ..
-                    }) if result_version == version
+                    Some(SearchResultKind::External { version: result_version })
+                        if result_version == version
                 )
         });
         if !can_append {
@@ -305,15 +346,11 @@ impl Editor {
             .search
             .as_mut()
             .expect("可追加搜索结果时必须存在搜索状态");
-        if let Some(SearchResultKind::External { matches, .. }) = &mut search.result {
-            let first_ordinal = matches.len();
-            matches.extend(
-                ranges
-                    .into_iter()
-                    .enumerate()
-                    .map(|(offset, range)| SearchMatch::new(first_ordinal + offset, range)),
-            );
-        }
+        search.matches.extend(
+            ranges
+                .into_iter()
+                .map(|range| SearchMatchAnchor::from_range(version, range)),
+        );
         cx.notify();
         cx.emit(SearchEvent::MatchesInvalidated);
     }
@@ -328,10 +365,18 @@ impl Editor {
             return None;
         }
         let snapshot = self.text_buffer(cx).read(cx).snapshot();
-        let result = query.search(&snapshot).ok().map(SearchResultKind::Query)?;
+        let result = query.search(&snapshot).ok()?;
+        let matches = result
+            .matches()
+            .iter()
+            .map(|search_match| {
+                SearchMatchAnchor::from_range(snapshot.version(), search_match.range())
+            })
+            .collect();
         let search = EditorSearch {
             query: query.clone(),
-            result: Some(result),
+            result: Some(SearchResultKind::Query(result)),
+            matches,
             active_index: None,
         };
         let search = if search.matches().is_empty() {
@@ -360,14 +405,16 @@ impl Editor {
         self.search = self.execute_search(&query, cx);
         if let Some(search) = &mut self.search {
             let len = search.len();
-            search.active_index = active.filter(|index| *index < len);
+            search.active_index = active
+                .filter(|index| *index < len)
+                .or_else(|| (len > 0).then_some(0));
         }
         cx.notify();
         cx.emit(SearchEvent::MatchesInvalidated);
     }
 
     /// 搜索状态存在且非空时的匹配高亮（供 element 渲染层读取）。
-    pub(crate) fn search_highlights(&self) -> Option<(&[SearchMatch], usize)> {
+    pub(crate) fn search_highlights(&self) -> Option<(&[SearchMatchAnchor], usize)> {
         let search = self.search.as_ref()?;
         if search.len() == 0 {
             return None;

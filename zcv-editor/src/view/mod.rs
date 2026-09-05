@@ -47,7 +47,7 @@ mod diff;
 mod search;
 
 pub(crate) use diff::{HunkRendering, diff_kind_for_row, hunk_rendering};
-pub(crate) use search::EditorSearch;
+pub(crate) use search::{EditorSearch, SearchMatchAnchor};
 
 /// 导航跳转（打开文件/行列定位）时目标行距视口顶部的固定行数，留出上下文。
 pub(super) const NAVIGATION_TOP_OFFSET: usize = 4;
@@ -1285,7 +1285,10 @@ impl Editor {
         .detach();
         cx.subscribe(&multi_buffer, |editor, _, event, cx| {
             match event {
-                MultiBufferEvent::TextChanged => editor.sync_display_map(cx),
+                MultiBufferEvent::TextChanged => {
+                    editor.sync_display_map(cx);
+                    editor.research_after_edit(cx);
+                }
                 MultiBufferEvent::Reparsed => {
                     editor.bracket_pair_cache = None;
                     editor.sync_display_map(cx);
@@ -1476,7 +1479,7 @@ impl Editor {
             .update(cx, |buffer, cx| buffer.end_transaction(cx))
     }
 
-    /// 编辑事务结果落位：选区锚点映射、redo 选区记录、display_map 同步与搜索重搜。
+    /// 编辑事务结果落位：选区锚点映射、redo 选区记录与 display_map 同步。
     ///
     /// 会话提交后的历史节点身份（与本次编辑的事件身份分离，合并进前节点时指向被合并的既有节点）；
     /// `None` 表示空会话或历史被预算清空，此时不记录选区历史。
@@ -1513,7 +1516,6 @@ impl Editor {
             }
         }
         self.finish_edit(cx);
-        self.research_after_edit(cx);
         cx.emit(EditorEvent::Edited);
         Ok(outcome)
     }
@@ -1543,7 +1545,6 @@ impl Editor {
         let version = self.text_buffer(cx).read(cx).snapshot().version();
         self.selections = EditorSelections::from_selection_set(version, &after_selections);
         self.finish_edit(cx);
-        self.research_after_edit(cx);
         cx.emit(EditorEvent::Edited);
         Ok((outcome, after_selections))
     }
@@ -1796,10 +1797,11 @@ impl Editor {
             self.selections =
                 EditorSelections::from_selection_set(text_version, &SelectionSet::default());
         } else if let Some(old_version) = changes.old_version() {
+            let position_map = PositionMap::from_text_patch(changes.patch());
+            self.map_search_anchors(old_version, text_version, &position_map);
             // 共享 Buffer 的其他 Editor 或 zcv-text 直接编辑：批量映射端点锚点。
             // 本 Editor 自己发起的编辑已在 apply_edit_outcome 映射过，版本已推进，跳过。
             if old_version == self.selections.version() {
-                let position_map = PositionMap::from_text_patch(changes.patch());
                 self.selections
                     .map_through_position_map(old_version, text_version, &position_map);
             }

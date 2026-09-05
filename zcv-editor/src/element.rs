@@ -15,7 +15,7 @@ use gpui::{
 use zcv_actions::{OpenExcerpts, ToggleFold};
 use zcv_git::DiffHunkKind;
 use zcv_language::BracketPair;
-use zcv_text::{ByteOffset, Line, LogicalColumn, SearchMatch, TextRange};
+use zcv_text::{ByteOffset, Line, LogicalColumn, TextRange};
 use zcv_theme::{color, space, typography};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon};
 
@@ -2009,7 +2009,7 @@ fn layout_visible_lines(
     display_snapshot: DisplaySnapshot,
     placeholder: Option<DisplaySnapshot>,
     presentation: EditorPresentation,
-    search_highlights: Option<(&[SearchMatch], usize)>,
+    search_highlights: Option<(&[crate::view::SearchMatchAnchor], usize)>,
     params: VisibleLineLayoutParams<'_>,
     window: &mut Window,
     cx: &App,
@@ -2870,12 +2870,12 @@ mod tests {
         let syntax = cx.read_entity(&language_buffer, |buffer, _| buffer.syntax_snapshot());
 
         let matches = vec![
-            SearchMatch::new(
-                0,
+            crate::view::SearchMatchAnchor::from_range(
+                snapshot.version(),
                 TextRange::new(ByteOffset::new(0), ByteOffset::new(6)).unwrap(),
             ),
-            SearchMatch::new(
-                1,
+            crate::view::SearchMatchAnchor::from_range(
+                snapshot.version(),
                 TextRange::new(ByteOffset::new(11), ByteOffset::new(17)).unwrap(),
             ),
         ];

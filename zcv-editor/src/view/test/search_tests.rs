@@ -205,6 +205,31 @@ fn editing_researches_and_keeps_active_match(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn undo_and_redo_recompute_matches_from_current_snapshot(cx: &mut TestAppContext) {
+    let (editor, cx) = editor_with_text(cx, "foo");
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.search(&query("foo"), window, cx);
+            assert_eq!(editor.search_count(cx), (1, Some(0)));
+            editor.set_text("bar", cx);
+        });
+    });
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(editor.search_count(cx), (0, None));
+    });
+
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(editor.search_count(cx), (1, Some(0)));
+    });
+
+    cx.update_entity(&editor, |editor, cx| editor.redo(cx));
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(editor.search_count(cx), (0, None));
+    });
+}
+
+#[gpui::test]
 fn clear_search_removes_state_and_highlights(cx: &mut TestAppContext) {
     let (editor, cx) = editor_with_text(cx, "abc");
     cx.update(|window, cx| {

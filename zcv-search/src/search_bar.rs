@@ -5,8 +5,8 @@
 //! Pane/Workspace 接线位于 `buffer_search`，跨文件搜索执行位于 `project_search`。
 
 use gpui::{
-    AnyElement, App, Component, Context, Entity, IntoElement, KeyContext, ParentElement, Render,
-    RenderOnce, SharedString, Styled, WeakEntity, Window, div, prelude::*,
+    AnyElement, App, Context, Entity, IntoElement, KeyContext, ParentElement, Render, RenderOnce,
+    SharedString, Styled, ViewElement, WeakEntity, Window, div, prelude::*,
 };
 use zcv_actions::{
     Backtab, ClearSearch, FindNext, FindPrevious, ReplaceAll, ReplaceNext, SelectAll, Tab,
@@ -60,10 +60,10 @@ impl SearchInput {
 }
 
 impl IntoElement for SearchInput {
-    type Element = Component<Self>;
+    type Element = ViewElement<Self>;
 
     fn into_element(self) -> Self::Element {
-        Component::new(self)
+        ViewElement::new(self)
     }
 }
 
@@ -317,7 +317,7 @@ impl SearchBar {
             };
         }
         query_input.update(cx, |editor, cx| editor.set_text(&self.query, cx));
-        window.focus(&query_input.read(cx).focus_handle());
+        window.focus(&query_input.read(cx).focus_handle(), cx);
         // 全选查询文本：直接击键即可整体替换。
         window.dispatch_action(Box::new(SelectAll), cx);
         if !was_visible || seeded {
@@ -342,7 +342,7 @@ impl SearchBar {
         self.visible = false;
         if let Some(item) = &self.active_item {
             item.clear_search(window, cx);
-            window.focus(&item.item_focus_handle(cx));
+            window.focus(&item.item_focus_handle(cx), cx);
         }
         cx.emit(ToolbarItemEvent::ChangeLocation(
             ToolbarItemLocation::Hidden,
@@ -442,7 +442,7 @@ impl SearchBar {
             Direction::Next => (current + 1) % handles.len(),
             Direction::Prev => (current + handles.len() - 1) % handles.len(),
         };
-        window.focus(&handles[next]);
+        window.focus(&handles[next], cx);
         cx.stop_propagation();
     }
 }

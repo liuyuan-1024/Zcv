@@ -281,7 +281,7 @@ impl Pane {
             .position(|item| item.item_id() == item_id)?;
         if is_preview_item(self.tabs[index].as_ref(), cx) {
             let focus = self.activate_source_for_preview(index, window, cx)?;
-            window.focus(&focus);
+            window.focus(&focus, cx);
             window.refresh();
             return Some(focus);
         }
@@ -289,7 +289,7 @@ impl Pane {
         let source_item = self.tabs[index].boxed_clone();
         if let Some(preview_index) = self.preview_index_for_source(item_id, cx) {
             let focus = self.activate_item_at(preview_index, window, cx);
-            window.focus(&focus);
+            window.focus(&focus, cx);
             window.refresh();
             return Some(focus);
         }
@@ -310,7 +310,7 @@ impl Pane {
             self.transient_preview_item_id = Some(preview_id);
         }
         let focus = preview_focus;
-        window.focus(&focus);
+        window.focus(&focus, cx);
         window.refresh();
         Some(focus)
     }
@@ -570,7 +570,7 @@ impl Pane {
                 .active_item()
                 .map(|item| item.item_focus_handle(cx))
                 .unwrap_or_else(|| self.focus.clone());
-            window.focus(&focus);
+            window.focus(&focus, cx);
         }
         cx.emit(PaneEvent::RemovedItem { item_id });
         // 空 Pane 请求移除自身。
@@ -604,7 +604,7 @@ impl Pane {
 
     fn focus_active_item(&self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(item) = self.active_item() {
-            window.focus(&item.item_focus_handle(cx));
+            window.focus(&item.item_focus_handle(cx), cx);
         }
     }
 
@@ -824,7 +824,7 @@ fn render_tab_bar(params: TabBarRenderParams<'_>, cx: &App) -> impl gpui::IntoEl
                 handle.set_offset(offset);
                 window.refresh();
             } else if mouse_x > right - margin {
-                let max_x = handle.max_offset().width;
+                let max_x = handle.max_offset().x;
                 offset.x = (offset.x - px(8.0)).max(-max_x);
                 handle.set_offset(offset);
                 window.refresh();
@@ -869,7 +869,7 @@ fn render_tab(
                 pane.active_item().map(|item| item.item_focus_handle(cx))
             });
             if let Some(focus) = focus {
-                window.focus(&focus);
+                window.focus(&focus, cx);
             }
             window.refresh();
             cx.stop_propagation();
@@ -910,7 +910,7 @@ fn render_tab_bar_drop_target(
     let pane = pane_entity.clone();
     div()
         .id("tab-bar-drop-target")
-        .flex_grow()
+        .flex_grow(1.0)
         .drag_over::<DraggedTab>(
             |mut tab: gpui::StyleRefinement, _dragged: &DraggedTab, _, cx| {
                 tab.background = Some(gpui::Fill::from(color::current(cx).element_hover));
@@ -1996,7 +1996,7 @@ mod tests {
         cx.refresh().expect("测试窗口应可刷新");
 
         let toolbar_focus = cx.read_entity(&toolbar_item, |item, _| item.focus.clone());
-        cx.update(|window, _| window.focus(&toolbar_focus));
+        cx.update(|window, cx| window.focus(&toolbar_focus, cx));
         cx.run_until_parked();
 
         cx.update(|window, cx| {
@@ -2057,7 +2057,7 @@ mod tests {
 
         // 用一个独立的焦点句柄模拟"外部组件（如终端）持有焦点"。
         let external_focus = cx.update(|_, app| app.focus_handle());
-        cx.update(|window, _| window.focus(&external_focus));
+        cx.update(|window, cx| window.focus(&external_focus, cx));
         cx.run_until_parked();
         cx.update(|window, _| {
             assert!(external_focus.is_focused(window), "前置：外部句柄应已聚焦");

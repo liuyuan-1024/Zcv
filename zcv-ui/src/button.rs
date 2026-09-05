@@ -6,8 +6,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    Action, App, ClickEvent, Component, CursorStyle, ElementId, IntoElement, MouseButton, Pixels,
-    RenderOnce, Window, div, prelude::*, rems,
+    Action, App, ClickEvent, CursorStyle, ElementId, IntoElement, MouseButton, Pixels, RenderOnce,
+    ViewElement, Window, div, prelude::*, rems,
 };
 use zcv_theme::{color, space, typography};
 
@@ -178,10 +178,10 @@ impl Button {
 }
 
 impl IntoElement for Button {
-    type Element = Component<Self>;
+    type Element = ViewElement<Self>;
 
     fn into_element(self) -> Self::Element {
-        Component::new(self)
+        ViewElement::new(self)
     }
 }
 

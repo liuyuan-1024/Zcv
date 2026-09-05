@@ -114,7 +114,7 @@ impl ToastLayer {
             async move {
                 timer.await;
                 if let Some(this) = this.upgrade() {
-                    this.update(&mut cx, |layer, cx| layer.hide(cx)).ok();
+                    this.update(&mut cx, |layer, cx| layer.hide(cx));
                 }
             }
         }));
@@ -170,8 +170,7 @@ impl ToastLayer {
                             toast.copied = false;
                         }
                         cx.notify();
-                    })
-                    .ok();
+                    });
                 }
             }
         })
@@ -252,24 +251,28 @@ impl Render for ToastLayer {
                     offset: point(px(0.), px(2.)),
                     blur_radius: px(3.),
                     spread_radius: px(0.),
+                    inset: false,
                 },
                 BoxShadow {
                     color: hsla(0., 0., 0., 0.08),
                     offset: point(px(0.), px(3.)),
                     blur_radius: px(6.),
                     spread_radius: px(0.),
+                    inset: false,
                 },
                 BoxShadow {
                     color: hsla(0., 0., 0., 0.04),
                     offset: point(px(0.), px(6.)),
                     blur_radius: px(12.),
                     spread_radius: px(0.),
+                    inset: false,
                 },
                 BoxShadow {
                     color: hsla(0., 0., 0., 0.12),
                     offset: point(px(0.), px(1.)),
                     blur_radius: px(0.),
                     spread_radius: px(0.),
+                    inset: false,
                 },
             ])
             .text_color(color::current(cx).text)

@@ -66,11 +66,7 @@ impl TerminalPanel {
     /// 创建终端：工作目录取所属 Project 的当前根，shell 取用户设置。
     /// 面板激活懒创建与外部新建终端命令共用。
     pub fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let cwd = self
-            .project
-            .read(cx)
-            .root()
-            .map(std::path::Path::to_path_buf);
+        let cwd = project_terminal_cwd(self.project.read(cx));
         self.new_terminal_with_cwd(cwd, window, cx);
     }
 
@@ -93,9 +89,17 @@ impl TerminalPanel {
         let focus = self.pane.update(cx, |pane, cx| {
             pane.open_item(Box::new(view), false, window, cx)
         });
-        window.focus(&focus);
+        window.focus(&focus, cx);
     }
 }
+
+fn project_terminal_cwd(project: &Project) -> Option<std::path::PathBuf> {
+    project.root().map(std::path::Path::to_path_buf)
+}
+
+#[cfg(all(test, unix))]
+#[path = "test/panel.rs"]
+mod tests;
 
 impl Panel for TerminalPanel {
     fn icon() -> &'static str {
@@ -124,7 +128,7 @@ impl Panel for TerminalPanel {
             if self.pane.read(cx).active_item().is_some() {
                 // Dock 只聚焦面板句柄，这里补聚焦到当前终端。
                 let focus = self.focus_handle(cx);
-                window.focus(&focus);
+                window.focus(&focus, cx);
             } else {
                 self.new_terminal(window, cx);
             }

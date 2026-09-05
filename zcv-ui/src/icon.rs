@@ -4,8 +4,8 @@
 //! 需要悬停提示时设置 id 与 label，其余场景无需 id。
 
 use gpui::{
-    Action, App, Component, ElementId, IntoElement, Pixels, RenderOnce, Rgba, SharedString, Window,
-    div, prelude::*, svg,
+    Action, App, ElementId, IntoElement, Pixels, RenderOnce, Rgba, SharedString, ViewElement,
+    Window, div, prelude::*, svg,
 };
 use zcv_theme::{color, typography};
 
@@ -73,10 +73,10 @@ impl SvgIcon {
 }
 
 impl IntoElement for SvgIcon {
-    type Element = Component<Self>;
+    type Element = ViewElement<Self>;
 
     fn into_element(self) -> Self::Element {
-        Component::new(self)
+        ViewElement::new(self)
     }
 }
 

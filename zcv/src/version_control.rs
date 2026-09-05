@@ -600,7 +600,7 @@ impl VersionControlPanel {
         let message = self.commit_editor.read(cx).text(cx);
         if message.trim().is_empty() {
             let focus = self.commit_editor.read(cx).focus_handle();
-            window.focus(&focus);
+            window.focus(&focus, cx);
             return;
         }
         self.pending_commit = true;
@@ -774,7 +774,7 @@ fn render_list(
             .collect()
     })
     .size_full()
-    .track_scroll(handle)
+    .track_scroll(&handle)
     .with_decoration(scrollbar.clone())
 }
 
@@ -958,7 +958,7 @@ fn render_row(
                 let focus = render_context.focus.clone();
                 let weak = render_context.weak.clone();
                 move |event, window, cx| {
-                    window.focus(&focus);
+                    window.focus(&focus, cx);
                     if let Some(panel) = weak.upgrade() {
                         panel.update(cx, |panel, cx| {
                             panel.state.borrow_mut().selected = Some((section, path.clone()));
@@ -1663,7 +1663,10 @@ mod tests {
             }));
             panel
         });
-        cx.update(|window, cx| window.focus(&panel.read(cx).focus));
+        cx.update(|window, cx| {
+            let focus = panel.read(cx).focus.clone();
+            window.focus(&focus, cx);
+        });
         cx.run_until_parked();
 
         // down 选中第一个条目行（跳过分组头），enter 激活打开。
@@ -1893,7 +1896,10 @@ mod tests {
             ]);
             VersionControlPanel::new(project, cx)
         });
-        cx.update(|window, cx| window.focus(&panel.read(cx).focus));
+        cx.update(|window, cx| {
+            let focus = panel.read(cx).focus.clone();
+            window.focus(&focus, cx);
+        });
         cx.run_until_parked();
 
         // down 选中未暂存组的 tracked.txt → space 暂存 → 行移到已暂存组。
@@ -1931,7 +1937,7 @@ mod tests {
         let editor_focus = cx.read_entity(&panel, |panel, cx| {
             panel.commit_editor.read(cx).focus_handle()
         });
-        cx.update(|window, _| window.focus(&editor_focus));
+        cx.update(|window, cx| window.focus(&editor_focus, cx));
         let _ = cx.refresh();
         cx.update(|_, _| {});
 
@@ -1967,7 +1973,7 @@ mod tests {
         cx.run_until_parked();
 
         let changes_tree_focus = cx.read_entity(&panel, |panel, _| panel.focus.clone());
-        cx.update(|window, _| window.focus(&changes_tree_focus));
+        cx.update(|window, cx| window.focus(&changes_tree_focus, cx));
         cx.run_until_parked();
         assert!(
             cx.debug_bounds("version-control-selection-border")
@@ -1978,7 +1984,7 @@ mod tests {
         let commit_editor_focus = cx.read_entity(&panel, |panel, cx| {
             panel.commit_editor.read(cx).focus_handle()
         });
-        cx.update(|window, _| window.focus(&commit_editor_focus));
+        cx.update(|window, cx| window.focus(&commit_editor_focus, cx));
         cx.run_until_parked();
         assert!(
             cx.debug_bounds("version-control-selection-border")
@@ -2104,7 +2110,10 @@ mod tests {
         );
 
         // 触发行重建：暂存第二个文件（空格选中并暂存），行集合变化。
-        cx.update(|window, cx| window.focus(&panel.read(cx).focus));
+        cx.update(|window, cx| {
+            let focus = panel.read(cx).focus.clone();
+            window.focus(&focus, cx);
+        });
         cx.simulate_keystrokes("down");
         cx.simulate_keystrokes("space");
         cx.run_until_parked();
@@ -2187,7 +2196,10 @@ mod tests {
         cx.run_until_parked();
 
         // 先暂存文件（空格），行移到已暂存组（带对勾）。
-        cx.update(|window, cx| window.focus(&panel.read(cx).focus));
+        cx.update(|window, cx| {
+            let focus = panel.read(cx).focus.clone();
+            window.focus(&focus, cx);
+        });
         cx.simulate_keystrokes("down");
         cx.simulate_keystrokes("space");
         cx.run_until_parked();
@@ -2360,7 +2372,7 @@ mod tests {
                 panel.commit_editor.read(cx).focus_handle()
             })
         });
-        cx.update(|window, _| window.focus(&editor_focus));
+        cx.update(|window, cx| window.focus(&editor_focus, cx));
 
         #[cfg(target_os = "macos")]
         cx.simulate_keystrokes("cmd-enter");

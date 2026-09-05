@@ -22,6 +22,13 @@ pub(super) fn test_buffer(
     let buffer = cx.new(|_| buffer);
     cx.new(|cx| LanguageBuffer::new(buffer, None, cx))
 }
+
+pub(super) fn focus_editor(editor: &Entity<Editor>, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        let focus = editor.read(cx).focus_handle();
+        window.focus(&focus, cx);
+    });
+}
 pub(super) fn engine_buffer(
     buffer: &Entity<LanguageBuffer>,
     cx: &TestAppContext,

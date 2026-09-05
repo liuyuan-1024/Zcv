@@ -17,6 +17,8 @@ use zcv_git::DiffHunkKind;
 use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
 use zcv_text::ByteOffset;
 
+use super::common::focus_editor;
+
 use super::common::{inject_editor_diff, scrollbar_geometry, scrolling_text, test_buffer};
 use super::*;
 use crate::scroll::ScrollbarThumbState;
@@ -224,7 +226,7 @@ fn moving_caret_beyond_viewport_scrolls_it_back_into_view(cx: &mut TestAppContex
         move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
-    cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+    focus_editor(&editor, cx);
     for _ in 0..80 {
         cx.dispatch_action(MoveDown);
     }
@@ -251,7 +253,7 @@ fn vertical_movement_preserves_goal_column_across_short_rows(cx: &mut TestAppCon
         let buffer = buffer.clone();
         move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
-    cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+    focus_editor(&editor, cx);
 
     // 水平移动到列 10（水平移动清除 goal）。
     for _ in 0..10 {

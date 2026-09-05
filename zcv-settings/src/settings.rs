@@ -322,7 +322,7 @@ pub fn init(cx: &mut App) {
 
             let mut result =
                 cx.update_global::<SettingsStore, _>(|store, _| store.set_user_settings(&content));
-            if matches!(result, Ok(Err(_))) {
+            if matches!(result, Ok(false)) {
                 // 防抖后仍可能撞上非原子写入的极短窗口，再读取一次；真正的配置
                 // 错误只在第二次解析仍失败时报告。
                 cx.background_executor()
@@ -342,13 +342,10 @@ pub fn init(cx: &mut App) {
             }
 
             match result {
-                Ok(Ok(true)) => {
-                    let _ = cx.update(|cx| cx.refresh_windows());
+                Ok(true) => {
+                    cx.update(|cx| cx.refresh_windows());
                 }
-                Ok(Ok(false)) => {}
-                Ok(Err(error)) => {
-                    eprintln!("无法加载设置文件 {}：{error:#}", settings_file().display());
-                }
+                Ok(false) => {}
                 Err(error) => {
                     eprintln!("更新设置失败：{error}");
                 }

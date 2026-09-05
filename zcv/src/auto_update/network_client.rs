@@ -1,4 +1,3 @@
-use std::any::type_name;
 use std::mem;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -50,10 +49,6 @@ struct UpdateHttpClient {
 }
 
 impl HttpClient for UpdateHttpClient {
-    fn type_name(&self) -> &'static str {
-        type_name::<Self>()
-    }
-
     fn user_agent(&self) -> Option<&HeaderValue> {
         Some(&self.user_agent)
     }

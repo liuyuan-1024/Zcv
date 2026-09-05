@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use gpui::{
-    App, Corner, Entity, FocusHandle, Global, MouseButton, Pixels, Window, anchored, deferred, div,
+    Anchor, App, Entity, FocusHandle, Global, MouseButton, Pixels, Window, anchored, deferred, div,
     point, prelude::*,
 };
 use zcv_theme::{color, space};
@@ -33,12 +33,14 @@ struct ModalLayer {
     active: Option<ActiveOverlay>,
 }
 
+type FocusRestore = Rc<dyn Fn(&mut Window, &mut App)>;
+
 struct ActiveOverlay {
     id: OverlayId,
     /// 垫层点击或互斥关闭时置位；浮层渲染时消费并关闭自己。
     dismiss: Rc<Cell<bool>>,
     /// 同浮层重复打开（toggle 关闭）时的副作用：焦点归还按钮。
-    on_close: Rc<dyn Fn(&mut Window)>,
+    on_close: FocusRestore,
 }
 
 impl Global for ModalLayer {}
@@ -46,18 +48,10 @@ impl Global for ModalLayer {}
 impl ModalLayer {
     /// 切换开合：同身份重复打开 = 关闭（焦点归还按钮）；
     /// 其他浮层打开时先置其关闭标志（互斥，焦点由新浮层接管）。
-    /// 返回是否处于打开状态。
-    fn toggle(
-        &mut self,
-        id: OverlayId,
-        on_close: Rc<dyn Fn(&mut Window)>,
-        window: &mut Window,
-    ) -> bool {
+    /// 返回打开状态与需要在全局状态写入后执行的焦点归还操作。
+    fn toggle(&mut self, id: OverlayId, on_close: FocusRestore) -> (bool, Option<FocusRestore>) {
         match self.active.take() {
-            Some(active) if active.id == id => {
-                (active.on_close)(window);
-                false
-            }
+            Some(active) if active.id == id => (false, Some(active.on_close)),
             Some(active) => {
                 active.dismiss.set(true);
                 self.active = Some(ActiveOverlay {
@@ -65,7 +59,7 @@ impl ModalLayer {
                     dismiss: Rc::new(Cell::new(false)),
                     on_close,
                 });
-                true
+                (true, None)
             }
             None => {
                 self.active = Some(ActiveOverlay {
@@ -73,7 +67,7 @@ impl ModalLayer {
                     dismiss: Rc::new(Cell::new(false)),
                     on_close,
                 });
-                true
+                (true, None)
             }
         }
     }
@@ -150,12 +144,12 @@ impl PickerHost {
     /// 关闭浮层并把焦点还给按钮。
     ///
     /// 被其他浮层顶掉（互斥关闭）时不让出焦点——焦点已由新浮层接管。
-    pub fn close_and_refocus(&mut self, window: &mut Window, cx: &App) {
+    pub fn close_and_refocus(&mut self, window: &mut Window, cx: &mut App) {
         let superseded = cx
             .try_global::<ModalLayer>()
             .is_some_and(|layer| layer.active_id().is_some_and(|active| active != self.id));
         if !superseded {
-            window.focus(&self.focus);
+            window.focus(&self.focus, cx);
         }
     }
 
@@ -168,17 +162,19 @@ impl PickerHost {
         cx: &mut App,
     ) {
         let focus = self.focus.clone();
-        let opened = with_modal_layer(cx, |layer| {
+        let (opened, on_close) = with_modal_layer(cx, |layer| {
             layer.toggle(
                 self.id,
-                Rc::new(move |window| {
-                    window.focus(&focus);
+                Rc::new(move |window, cx| {
+                    window.focus(&focus, cx);
                 }),
-                window,
             )
         });
+        if let Some(on_close) = on_close {
+            on_close(window, cx);
+        }
         if opened && let Some(input) = picker.read(cx).search_input().cloned() {
-            window.focus(&input.focus_handle(cx));
+            window.focus(&input.focus_handle(cx), cx);
         }
         window.refresh();
     }
@@ -218,7 +214,7 @@ impl PickerHost {
             .child(
                 deferred(
                     anchored()
-                        .anchor(Corner::TopLeft)
+                        .anchor(Anchor::TopLeft)
                         .position(point(Pixels::ZERO, Pixels::ZERO))
                         .position_mode(gpui::AnchoredPositionMode::Local)
                         .snap_to_window_with_margin(space::S6)

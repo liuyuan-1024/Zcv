@@ -30,28 +30,6 @@ pub enum DiffHunkKind {
     Deleted,
 }
 
-/// 解析单个文件的 `git diff --unified=0` 输出（忽略全部路径头，按 hunk header 建块）。
-///
-/// 容错风格（`parse_numstat` 式）：格式异常的行跳过而非报错。
-/// 只依赖 header 中的起止与计数，body 行（含 `\ No newline at end of file`）不参与统计；
-/// `Binary files ... differ` 与空输出均返回空。
-///
-/// 生产路径使用多段解析的 [`parse_diff_hunks_per_path`]（带路径核对），本函数仅测试用。
-#[cfg(test)]
-pub(crate) fn parse_diff_hunks(output: &[u8]) -> Vec<DiffHunk> {
-    let mut hunks = Vec::new();
-    for line in output.split(|byte| *byte == b'\n') {
-        if line.starts_with(b"@@ -") {
-            if let Some(hunk) = parse_hunk_header(line) {
-                hunks.push(hunk);
-            }
-        } else if line.starts_with(b"Binary files ") {
-            return Vec::new();
-        }
-    }
-    hunks
-}
-
 /// 解析 `@@ -oldStart[,oldCount] +newStart[,newCount] @@` 头；畸形返回 None（跳过）。
 fn parse_hunk_header(line: &[u8]) -> Option<DiffHunk> {
     let mut tokens = line
@@ -250,7 +228,17 @@ mod tests {
     use DiffHunkKind::*;
 
     fn parse(output: &str) -> Vec<DiffHunk> {
-        parse_diff_hunks(output.as_bytes())
+        let mut hunks = Vec::new();
+        for line in output.as_bytes().split(|byte| *byte == b'\n') {
+            if line.starts_with(b"@@ -") {
+                if let Some(hunk) = parse_hunk_header(line) {
+                    hunks.push(hunk);
+                }
+            } else if line.starts_with(b"Binary files ") {
+                return Vec::new();
+            }
+        }
+        hunks
     }
 
     #[test]

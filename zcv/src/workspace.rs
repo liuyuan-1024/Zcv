@@ -191,20 +191,29 @@ fn build_workspace(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Workspace {
+    let workspace = match root {
+        Some(root) => Workspace::new(root.clone(), window, cx),
+        None => Workspace::new_empty(window, cx),
+    };
+    finish_build_workspace(workspace, window, cx)
+}
+
+/// 将工作区状态装配为应用界面。
+fn finish_build_workspace(
+    mut workspace: Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Workspace {
     apply_theme(&SettingsStore::get(cx).theme, cx, Some(window));
     // 全局字号经 window rem 基准设置：
     // 字体与行高仍在元素上显式设置（见 Workspace 根元素与 tooltip）。
     window.set_rem_size(typography::ui_size());
-    let mut workspace = match root {
-        Some(root) => Workspace::new(root.clone(), window, cx),
-        None => Workspace::new_empty(window, cx),
-    };
     // 装配不区分空/项目工作区：面板无条件注册，空态由各面板自行渲染。
     initialize_workspace(&mut workspace, window, cx);
     // 焦点延后到首帧渲染完成后：track_focus 元素未挂载前 focus 会静默丢失，导致启动后 keymap dispatch 无焦点链，快捷键不生效，直到用户点击界面（焦点链建立）才恢复。
     let focus = workspace.focus.clone();
-    window.defer(cx, move |window, _cx| {
-        window.focus(&focus);
+    window.defer(cx, move |window, cx| {
+        window.focus(&focus, cx);
     });
     workspace
 }
@@ -376,7 +385,7 @@ fn initialize_common_workspace(
                 window,
                 |dock: &mut Dock, window: &mut Window, cx: &mut Context<Dock>| {
                     if let Some(panel) = dock.visible_panel() {
-                        window.focus(&panel.focus_handle(cx));
+                        window.focus(&panel.focus_handle(cx), cx);
                     }
                 },
             );
@@ -448,8 +457,7 @@ fn run_git_operation(
             if let Some(this) = this.upgrade() {
                 this.update(&mut cx, |workspace, cx| {
                     workspace.show_toast(kind, message, action, Some(Duration::from_secs(5)), cx);
-                })
-                .ok();
+                });
             }
         }
     })
@@ -829,8 +837,7 @@ fn inject_editor_diff(
         let path = path.to_path_buf();
         cx.spawn(async move |cx| {
             if task.await.is_some() {
-                cx.update(|app| inject_editor_diff(&editor, &path, &project, app))
-                    .ok();
+                cx.update(|app| inject_editor_diff(&editor, &path, &project, app));
             }
         })
         .detach();

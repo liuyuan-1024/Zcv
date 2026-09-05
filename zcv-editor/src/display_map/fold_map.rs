@@ -7,7 +7,7 @@
 
 use std::{borrow::Cow, cmp::Reverse, collections::BTreeMap, ops::Range};
 
-use gpui_sum_tree::{Bias as TreeBias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
+use sum_tree::{Bias as TreeBias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use zcv_text::{
     BufferVersion, ByteOffset, CoordinateError, Line, LineRange, LogicalColumn, Position,
     PositionMap, Snapshot, Stickiness, TextChangeBatch, TextRange, TrackedRange,

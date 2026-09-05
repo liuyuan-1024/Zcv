@@ -102,7 +102,7 @@ pub(super) fn render_list(
             .collect()
     })
     .size_full()
-    .track_scroll(handle)
+    .track_scroll(&handle)
     .with_decoration(scrollbar.clone())
 }
 pub(super) fn render_row(
@@ -260,7 +260,7 @@ pub(super) fn render_row(
                 let focus = render_context.focus.clone();
                 let weak = render_context.weak.clone();
                 move |event, window, cx| {
-                    window.focus(&focus);
+                    window.focus(&focus, cx);
                     // 修饰键多选：shift 从锚点扩展区间、secondary 切换单项标记，都只改选中态不触发展开/打开。
                     if event.modifiers.shift {
                         if let Some(tree) = weak.upgrade() {

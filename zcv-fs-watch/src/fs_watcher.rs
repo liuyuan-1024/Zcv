@@ -39,10 +39,11 @@ pub struct PathEvent {
     pub kind: Option<PathEventKind>,
 }
 
-/// Watcher trait，对应 Zed 的 `Watcher` trait。
+/// 文件监听器：路径注册与事件订阅属于同一个来源，避免注册和消费落在不同实例。
 pub trait Watcher: Send + Sync {
     fn add(&self, path: &Path) -> anyhow::Result<()>;
     fn remove(&self, path: &Path) -> anyhow::Result<()>;
+    fn events(&self) -> FsEventStream;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -730,6 +731,10 @@ impl Watcher for FsWatcher {
             global_watcher().remove(reg.id);
         }
         Ok(())
+    }
+
+    fn events(&self) -> FsEventStream {
+        FsWatcher::events(self)
     }
 }
 

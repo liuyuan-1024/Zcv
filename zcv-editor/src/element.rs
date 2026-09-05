@@ -565,7 +565,14 @@ struct SelectedWhitespaceMarkers {
 impl SelectedWhitespaceMarkers {
     fn paint(&self, window: &mut Window, cx: &mut App) {
         for origin in &self.origins {
-            if let Err(error) = self.symbol.paint(*origin, self.line_height, window, cx) {
+            if let Err(error) = self.symbol.paint(
+                *origin,
+                self.line_height,
+                gpui::TextAlign::Left,
+                None,
+                window,
+                cx,
+            ) {
                 eprintln!("Editor 空白标记绘制失败：{error}");
             }
         }
@@ -604,7 +611,7 @@ fn build_crease_toggles(
             .label(if folded { "展开" } else { "折叠" })
             .shortcut(&ToggleFold, cx)
             .on_click(move |_event, window, cx| {
-                window.focus(&focus);
+                window.focus(&focus, cx);
                 editor.update(cx, |editor, cx| editor.toggle_fold_at_line(line, cx));
             })
             .into_any_element();
@@ -1430,7 +1437,7 @@ impl Element for EditorElement {
                     editor.toggle_diff_hunk_at(*index, cx);
                     cx.notify();
                 });
-                window.focus(&mouse_focus);
+                window.focus(&mouse_focus, cx);
                 cx.stop_propagation();
                 return;
             }
@@ -1441,7 +1448,7 @@ impl Element for EditorElement {
                 .find(|(hitbox, _)| hitbox.is_hovered(window))
             {
                 editor.update(cx, |editor, cx| editor.toggle_fold_at_line(*line, cx));
-                window.focus(&mouse_focus);
+                window.focus(&mouse_focus, cx);
                 cx.stop_propagation();
                 return;
             }
@@ -1451,7 +1458,7 @@ impl Element for EditorElement {
                         editor.select_line(line, event.modifiers.shift);
                         cx.notify();
                     });
-                    window.focus(&mouse_focus);
+                    window.focus(&mouse_focus, cx);
                     cx.stop_propagation();
                     return;
                 }
@@ -1470,7 +1477,7 @@ impl Element for EditorElement {
                     editor.begin_selection(offset, event.click_count, event.modifiers.shift, cx);
                 }
             });
-            window.focus(&mouse_focus);
+            window.focus(&mouse_focus, cx);
             cx.stop_propagation();
         });
 
@@ -1649,10 +1656,14 @@ impl Element for EditorElement {
                 }
             });
             for row in &gutter.rows {
-                if let Err(error) =
-                    row.shaped_line_number
-                        .paint(row.origin, gutter.line_height, window, cx)
-                {
+                if let Err(error) = row.shaped_line_number.paint(
+                    row.origin,
+                    gutter.line_height,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                ) {
                     // 单个字形绘制失败只跳过该行，不能让整个窗口崩溃。
                     eprintln!("Editor gutter 行号绘制失败：{error}");
                     continue;
@@ -1730,10 +1741,14 @@ impl Element for EditorElement {
                     }
                 }
                 for line in &prepaint.layout.lines {
-                    if let Err(error) =
-                        line.shaped
-                            .paint(line.origin, prepaint.layout.line_height, window, cx)
-                    {
+                    if let Err(error) = line.shaped.paint(
+                        line.origin,
+                        prepaint.layout.line_height,
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    ) {
                         // 单个字形绘制失败只跳过该行，不能让整个窗口崩溃。
                         eprintln!("Editor 文本行绘制失败：{error}");
                         continue;

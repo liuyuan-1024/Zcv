@@ -297,7 +297,7 @@ fn line_content_end(text: &Snapshot, line: Line) -> ByteOffset {
 #[cfg(test)]
 mod tests {
     use super::NewlineIndent;
-    use crate::syntax_map::{parsed_syntax, rust_buffer};
+    use crate::test::{parsed_syntax, rust_buffer};
     use zcv_text::ByteOffset;
 
     #[test]

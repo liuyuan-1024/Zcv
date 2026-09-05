@@ -5,7 +5,7 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, Component, ElementId, Hsla, IntoElement, Pixels, RenderOnce, SharedString, Window, div,
+    App, ElementId, Hsla, IntoElement, Pixels, RenderOnce, SharedString, ViewElement, Window, div,
     prelude::*, px,
 };
 use zcv_theme::{color, space};
@@ -89,10 +89,10 @@ impl ConfirmOverlay {
 }
 
 impl IntoElement for ConfirmOverlay {
-    type Element = Component<Self>;
+    type Element = ViewElement<Self>;
 
     fn into_element(self) -> Self::Element {
-        Component::new(self)
+        ViewElement::new(self)
     }
 }
 

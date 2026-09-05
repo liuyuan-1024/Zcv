@@ -8,6 +8,7 @@ description = "Zcv —— 新一代 GPUI 桌面编辑器（Zed的忠实粉丝）
 anyhow.workspace = true
 futures.workspace = true
 gpui.workspace = true
+gpui-platform.workspace = true
 reqwest.workspace = true
 semver.workspace = true
 serde_json.workspace = true

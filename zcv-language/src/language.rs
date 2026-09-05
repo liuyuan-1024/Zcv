@@ -11,6 +11,9 @@ mod structure_queries;
 mod syntax_map;
 mod tree_sitter_utils;
 
+#[cfg(test)]
+mod test;
+
 pub use highlighting::HighlightSpan;
 pub use language_buffer::{LanguageBuffer, LanguageBufferEvent};
 pub use registry::{Language, language_for_file, language_for_name_or_extension};

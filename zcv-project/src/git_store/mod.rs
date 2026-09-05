@@ -262,21 +262,16 @@ impl GitStore {
                         {
                             let _ = tx.send(GitOperationOutcome::Cancelled).await;
                         }
-                        let _ =
-                            this.update(&mut cx, |store, cx| store.finish_job(scheduled.id, cx));
+                        this.update(&mut cx, |store, cx| store.finish_job(scheduled.id, cx));
                         continue;
                     }
-                    let Some(prepared) = this
-                        .update(&mut cx, |store, _| store.prepare_job(&job))
-                        .ok()
-                        .flatten()
+                    let Some(prepared) = this.update(&mut cx, |store, _| store.prepare_job(&job))
                     else {
-                        let _ =
-                            this.update(&mut cx, |store, cx| store.finish_job(scheduled.id, cx));
+                        this.update(&mut cx, |store, cx| store.finish_job(scheduled.id, cx));
                         continue;
                     };
                     // 标记在途任务（状态栏开始显示）。
-                    let _ = this.update(&mut cx, |store, cx| store.set_in_flight(scheduled.id, cx));
+                    this.update(&mut cx, |store, cx| store.set_in_flight(scheduled.id, cx));
                     let repositories_for_reconciliation = prepared.repositories.clone();
                     let result = cx
                         .background_executor()
@@ -296,7 +291,7 @@ impl GitStore {
                         .is_some_and(GitCancellation::is_cancelled);
                     let mut cancelled_outcome = None;
                     if cancelled && let GitJob::GitOperation { operation, .. } = &job {
-                        let _ = this.update(&mut cx, |store, cx| {
+                        this.update(&mut cx, |store, cx| {
                             store.set_job_phase(scheduled.id, GitJobPhase::Reconciling, cx)
                         });
                         let repository = repositories_for_reconciliation.first().cloned();
@@ -309,8 +304,7 @@ impl GitStore {
                                 .await,
                         );
                     }
-                    let _ =
-                        this.update(&mut cx, |store, cx| store.clear_in_flight(scheduled.id, cx));
+                    this.update(&mut cx, |store, cx| store.clear_in_flight(scheduled.id, cx));
                     // 操作结果回传发起方（Workspace await 后直接弹提示）。
                     if let GitJob::GitOperation {
                         on_done: Some(tx), ..
@@ -329,7 +323,7 @@ impl GitStore {
                         };
                         let _ = tx.send(outcome).await;
                     }
-                    let _ = this.update(&mut cx, |store, cx| {
+                    this.update(&mut cx, |store, cx| {
                         // 不合并已取消命令的部分结果，后续确认与全量扫描才是状态真值来源。
                         if cancelled {
                             store.schedule_scan(cx);

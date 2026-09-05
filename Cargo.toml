@@ -34,7 +34,7 @@ members = [
 ]
 resolver = "3"
 [workspace.package]
-version = "0.8.73"
+version = "0.8.74"
 edition = "2024"
 
 [workspace.lints.clippy]
@@ -65,7 +65,7 @@ zcv-update = { path = "zcv-update" }
 zcv-workspace = { path = "zcv-workspace" }
 
 # ---- 文本内核（zcv-text） ----
-gpui-sum-tree = { package = "gpui_sum_tree", version = "0.2.2" }
+sum-tree = { package = "sum_tree", git = "https://github.com/zed-industries/zed", rev = "2551721adb5b5187bc27cfae0fbe47f0ed4c5397" }
 regex = "1.12.3"
 regex-automata = "0.4.14"
 ropey = "1.6.1"
@@ -116,7 +116,8 @@ ring = "0.17.14"
 
 # ---- 桌面 UI ----
 futures = "0.3"
-gpui = "0.2.2"
+gpui = { git = "https://github.com/zed-industries/zed", rev = "2551721adb5b5187bc27cfae0fbe47f0ed4c5397" }
+gpui-platform = { package = "gpui_platform", git = "https://github.com/zed-industries/zed", rev = "2551721adb5b5187bc27cfae0fbe47f0ed4c5397", features = ["font-kit"] }
 reqwest = { package = "zed-reqwest", version = "=0.12.15-zed", default-features = false, features = ["http2", "macos-system-configuration", "rustls-tls-native-roots", "stream"] }
 rust-embed = { version = "8.11", features = ["include-exclude"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
@@ -141,7 +142,7 @@ ratex-svg = { version = "0.1.12", features = ["standalone", "embed-fonts"] }
 ratex-types = "0.1.12"
 
 # ---- SVG 预览 ----
-resvg = { version = "0.45.1", default-features = false }
+resvg = { version = "0.45.1", default-features = false, features = ["text", "system-fonts"] }
 
 # ---- 平台特定 ----
 libc = "0.2"

@@ -4,7 +4,7 @@ use zcv_git::{DiffHunk, DiffHunkKind};
 use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
 use zcv_text::{ByteOffset, Edit, TextRange, TransactionMetadata};
 
-use super::common::{buffer_text, engine_buffer, inject_editor_diff, test_buffer};
+use super::common::{buffer_text, engine_buffer, focus_editor, inject_editor_diff, test_buffer};
 use super::*;
 use crate::display_map::{ProjectedLineIndex, ProjectedPoint, WrapViewportRowKind};
 
@@ -439,7 +439,7 @@ fn horizontal_movement_jumps_over_folded_content(cx: &mut TestAppContext) {
     editor.update(cx, |editor, _| {
         editor.set_selections(SelectionSet::caret(ByteOffset::new(11)));
     });
-    cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+    focus_editor(&editor, cx);
     cx.dispatch_action(MoveRight);
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(

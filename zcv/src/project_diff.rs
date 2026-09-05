@@ -868,7 +868,7 @@ pub(crate) fn deploy_at(
         existing.update(cx, |view, cx| view.move_to_path(path, cx));
         pane.update(cx, |pane, cx| pane.activate_tab(item_id, window, cx));
         if focus_opened_item {
-            window.focus(&existing.read(cx).focus_handle(cx));
+            window.focus(&existing.read(cx).focus_handle(cx), cx);
         }
         return;
     }
@@ -881,7 +881,7 @@ pub(crate) fn deploy_at(
         pane.open_item(Box::new(view), false, window, cx)
     });
     if focus_opened_item {
-        window.focus(&focus);
+        window.focus(&focus, cx);
     }
 }
 #[cfg(test)]
@@ -949,7 +949,7 @@ mod tests {
             cx.debug_bounds("project-diff-view").is_none(),
             "空项目差异不应渲染 Editor"
         );
-        cx.update(|window, _| window.focus(&focus));
+        cx.update(|window, cx| window.focus(&focus, cx));
         cx.update(|window, _| {
             assert!(focus.is_focused(window), "空白区域仍应能持有 Item 焦点");
         });

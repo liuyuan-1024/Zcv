@@ -4,7 +4,7 @@
 //! 可用于 picker 列表、菜单列表等。
 
 use gpui::{
-    AnyElement, App, Component, ElementId, IntoElement, RenderOnce, Window, div, prelude::*,
+    AnyElement, App, ElementId, IntoElement, RenderOnce, ViewElement, Window, div, prelude::*,
 };
 use zcv_theme::{color, space, typography};
 
@@ -62,10 +62,10 @@ impl ListItem {
 }
 
 impl IntoElement for ListItem {
-    type Element = Component<Self>;
+    type Element = ViewElement<Self>;
 
     fn into_element(self) -> Self::Element {
-        Component::new(self)
+        ViewElement::new(self)
     }
 }
 
@@ -131,7 +131,9 @@ mod tests {
     struct ShortRow;
     impl Render for ShortRow {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-            ListItem::new("short").child("标题").subtitle("短路径")
+            div()
+                .w_full()
+                .child(ListItem::new("short").child("标题").subtitle("短路径"))
         }
     }
 
@@ -139,9 +141,11 @@ mod tests {
     impl Render for LongRow {
         fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
             // 文本远超任何测试窗口宽度，必然换行
-            ListItem::new("long")
-                .child("标题")
-                .subtitle("这是一个非常长的路径，用来验证次行文本自动换行不会被截断：".repeat(500))
+            div().w_full().child(
+                ListItem::new("long").child("标题").subtitle(
+                    "这是一个非常长的路径，用来验证次行文本自动换行不会被截断：".repeat(500),
+                ),
+            )
         }
     }
 

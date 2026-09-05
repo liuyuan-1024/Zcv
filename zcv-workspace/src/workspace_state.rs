@@ -504,7 +504,7 @@ impl Workspace {
         let focus = self
             .pane
             .update(cx, |pane, cx| pane.open_item(item, false, window, cx));
-        window.focus(&focus);
+        window.focus(&focus, cx);
     }
 
     /// 已完成点击判定后的实际文件打开流程：经 ItemProvider 注册表创建 Item。
@@ -562,7 +562,7 @@ impl Workspace {
                         focus
                     });
                     if focus_opened_item {
-                        window.focus(&focus);
+                        window.focus(&focus, cx);
                     }
                     window.refresh();
                 })
@@ -631,9 +631,9 @@ impl Workspace {
     fn focus_center_pane(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let pane = self.pane.read(cx);
         if let Some(item) = pane.active_item() {
-            window.focus(&item.item_focus_handle(cx));
+            window.focus(&item.item_focus_handle(cx), cx);
         } else {
-            window.focus(&pane.focus_handle());
+            window.focus(&pane.focus_handle(), cx);
         }
     }
 
@@ -663,7 +663,7 @@ impl Workspace {
             if !dock.read(cx).is_panel_active(panel_idx) {
                 dock.update(cx, |d, cx| d.toggle_panel_visibility(panel_idx, window, cx));
             }
-            window.focus(&focus);
+            window.focus(&focus, cx);
         }
         window.refresh();
     }
@@ -693,7 +693,7 @@ impl Workspace {
         if was_visible {
             self.focus_center_pane(window, cx);
         } else if let Some(panel_focus) = panel_focus {
-            window.focus(&panel_focus);
+            window.focus(&panel_focus, cx);
         }
         window.refresh();
     }
@@ -719,7 +719,7 @@ impl Workspace {
         if focus_center {
             self.focus_center_pane(window, cx);
         } else if !was_open && let Some(focus) = panel_focus {
-            window.focus(&focus);
+            window.focus(&focus, cx);
         }
         window.refresh();
     }
@@ -768,8 +768,7 @@ impl Workspace {
                                 Some(Duration::from_secs(5)),
                                 cx,
                             );
-                        })
-                        .ok();
+                        });
                     }
                 }
             }
@@ -1074,7 +1073,7 @@ mod tests {
             workspace.layout_path = layout_path.clone();
         });
         let focus = cx.read_entity(&workspace, |workspace, _| workspace.focus.clone());
-        cx.update(|window, _| window.focus(&focus));
+        cx.update(|window, cx| window.focus(&focus, cx));
 
         cx.dispatch_action(FocusOrHidePanel::new("test-panel"));
         assert!(cx.read_entity(&workspace, |workspace, cx| {
@@ -1095,7 +1094,7 @@ mod tests {
         let center_focus = cx.read_entity(&workspace, |workspace, cx| {
             workspace.pane.read(cx).focus_handle()
         });
-        cx.update(|window, _| window.focus(&center_focus));
+        cx.update(|window, cx| window.focus(&center_focus, cx));
         cx.dispatch_action(FocusOrHidePanel::new("test-panel"));
         assert!(cx.read_entity(&workspace, |workspace, cx| {
             workspace.left_dock.read(cx).is_open()

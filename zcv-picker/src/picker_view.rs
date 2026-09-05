@@ -205,7 +205,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
         let entity = cx.entity();
         let items = div()
             .id("picker-items")
-            .flex_grow()
+            .flex_grow(1.0)
             .min_h_0()
             .overflow_y_scroll()
             // test cfg 下注册 debug bounds，供布局断言使用。
@@ -360,7 +360,7 @@ mod tests {
             );
             deferred(
                 anchored()
-                    .anchor(gpui::Corner::TopLeft)
+                    .anchor(gpui::Anchor::TopLeft)
                     .position(point(Pixels::ZERO, Pixels::ZERO))
                     .position_mode(gpui::AnchoredPositionMode::Local)
                     .child(popover),
@@ -563,7 +563,10 @@ mod tests {
             }
         });
         let input = cx.read_entity(&picker, |picker, _| picker.search_input().unwrap().clone());
-        cx.update(|window, cx| window.focus(&input.focus_handle(cx)));
+        cx.update(|window, cx| {
+            let focus = input.focus_handle(cx);
+            window.focus(&focus, cx);
+        });
 
         cx.simulate_keystrokes("down");
         assert_eq!(selected_index.get(), 1);
@@ -617,7 +620,10 @@ mod tests {
         let input = cx.read_entity(&view, |view, cx| {
             view.picker.read(cx).search_input().unwrap().clone()
         });
-        cx.update(|window, cx| window.focus(&input.focus_handle(cx)));
+        cx.update(|window, cx| {
+            let focus = input.focus_handle(cx);
+            window.focus(&focus, cx);
+        });
 
         cx.simulate_keystrokes("cmd-backspace");
 
@@ -650,7 +656,10 @@ mod tests {
         let input = cx.read_entity(&view, |view, cx| {
             view.picker.read(cx).search_input().unwrap().clone()
         });
-        cx.update(|window, cx| window.focus(&input.focus_handle(cx)));
+        cx.update(|window, cx| {
+            let focus = input.focus_handle(cx);
+            window.focus(&focus, cx);
+        });
 
         cx.simulate_keystrokes("cmd-backspace");
 

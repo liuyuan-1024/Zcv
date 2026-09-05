@@ -5,8 +5,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, ClickEvent, Component, ElementId, IntoElement, MouseButton, MouseUpEvent, ParentElement,
-    RenderOnce, Window, div, prelude::*,
+    App, ClickEvent, ElementId, IntoElement, MouseButton, MouseUpEvent, ParentElement, RenderOnce,
+    ViewElement, Window, div, prelude::*,
 };
 use zcv_theme::{color, space};
 
@@ -75,10 +75,10 @@ impl ParentElement for ButtonLike {
 }
 
 impl IntoElement for ButtonLike {
-    type Element = Component<Self>;
+    type Element = ViewElement<Self>;
 
     fn into_element(self) -> Self::Element {
-        Component::new(self)
+        ViewElement::new(self)
     }
 }
 

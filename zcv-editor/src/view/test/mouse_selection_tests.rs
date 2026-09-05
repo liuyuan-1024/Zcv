@@ -6,7 +6,7 @@
 use gpui::{Modifiers, MouseButton, MouseDownEvent, TestAppContext, point, px};
 use zcv_text::{ByteOffset, TextRange};
 
-use super::common::{buffer_text, scrolling_text, test_buffer};
+use super::common::{buffer_text, focus_editor, scrolling_text, test_buffer};
 use super::*;
 use crate::selection::{Selection, SelectionSet};
 
@@ -133,7 +133,7 @@ fn editing_cancels_a_pending_mouse_selection(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+    focus_editor(&editor, cx);
     editor.update(cx, |editor, cx| editor.begin_selection(b(1), 1, false, cx));
     editor.update(cx, |editor, cx| editor.update_selection(b(4), cx));
     cx.dispatch_action(Backspace);

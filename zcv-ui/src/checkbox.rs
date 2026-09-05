@@ -5,7 +5,7 @@
 use std::rc::Rc;
 
 use gpui::{
-    Action, App, Component, ElementId, IntoElement, MouseButton, RenderOnce, Window, div,
+    Action, App, ElementId, IntoElement, MouseButton, RenderOnce, ViewElement, Window, div,
     prelude::*,
 };
 use zcv_theme::{color, typography};
@@ -52,10 +52,10 @@ impl Checkbox {
 }
 
 impl IntoElement for Checkbox {
-    type Element = Component<Self>;
+    type Element = ViewElement<Self>;
 
     fn into_element(self) -> Self::Element {
-        Component::new(self)
+        ViewElement::new(self)
     }
 }
 

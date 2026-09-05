@@ -23,7 +23,8 @@ fn focused_editor_stops_blinking_when_window_deactivates(cx: &mut TestAppContext
     let buffer = test_buffer(cx, "光标测试");
     let (editor, cx) = cx.add_window_view(move |window, cx| {
         let editor = Editor::for_language_buffer(buffer, cx);
-        window.focus(&editor.focus_handle());
+        let focus = editor.focus_handle();
+        window.focus(&focus, cx);
         editor
     });
     cx.update(|window, _| window.activate_window());
@@ -66,7 +67,8 @@ fn focused_read_only_editor_keeps_editor_selection_and_shows_a_steady_caret(
     });
     let (editor, cx) = cx.add_window_view(move |window, cx| {
         let editor = Editor::for_multi_buffer(combined, cx);
-        window.focus(&editor.focus_handle());
+        let focus = editor.focus_handle();
+        window.focus(&focus, cx);
         editor
     });
     cx.update(|window, _| window.activate_window());
@@ -88,7 +90,8 @@ fn window_reactivation_only_resumes_the_focused_editor(cx: &mut TestAppContext) 
     let (view, cx) = cx.add_window_view(move |window, cx| {
         let focused = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
         let unfocused = cx.new(|cx| Editor::for_language_buffer(buffer, cx));
-        window.focus(&focused.read(cx).focus_handle());
+        let focus = focused.read(cx).focus_handle();
+        window.focus(&focus, cx);
         TwoEditors { focused, unfocused }
     });
     cx.update(|window, _| window.activate_window());

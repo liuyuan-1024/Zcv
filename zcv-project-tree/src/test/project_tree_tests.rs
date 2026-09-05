@@ -31,6 +31,13 @@ impl Render for TestView {
     }
 }
 
+fn focus_tree(tree: &gpui::Entity<ProjectTreePanel>, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        let focus = tree.read(cx).focus.clone();
+        window.focus(&focus, cx);
+    });
+}
+
 #[test]
 fn rows_are_cached_until_rebuild_reinjects_them() {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
@@ -205,7 +212,7 @@ fn space_edits_the_name_instead_of_activating_the_row_while_renaming(cx: &mut Te
         tree.state.borrow_mut().select(selected_file.clone());
         tree
     });
-    cx.update(|window, cx| window.focus(&tree.read(cx).focus));
+    focus_tree(&tree, cx);
 
     cx.simulate_keystrokes("enter");
     let entry_name_editor = cx.read_entity(&tree, |tree, _| {
@@ -798,7 +805,7 @@ fn shift_click_extends_selection_range(cx: &mut TestAppContext) {
         }
     });
     cx.run_until_parked();
-    cx.update(|window, cx| window.focus(&tree.read(cx).focus));
+    focus_tree(&tree, cx);
 
     // 行序 [根, a.txt, b.txt, c.txt]；行高为 ui_line()。
     let row_height = zcv_theme::typography::ui_line();
@@ -844,7 +851,7 @@ fn secondary_click_toggles_selection_membership(cx: &mut TestAppContext) {
         }
     });
     cx.run_until_parked();
-    cx.update(|window, cx| window.focus(&tree.read(cx).focus));
+    focus_tree(&tree, cx);
 
     let row_height = zcv_theme::typography::ui_line();
     // 普通点击 a.txt（行 1）建立单选。
@@ -916,7 +923,7 @@ fn shift_down_keystroke_extends_selection_to_next_row(cx: &mut TestAppContext) {
         }
     });
     cx.run_until_parked();
-    cx.update(|window, cx| window.focus(&tree.read(cx).focus));
+    focus_tree(&tree, cx);
 
     cx.simulate_keystrokes("shift-down");
 
@@ -1543,7 +1550,7 @@ fn escape_keystroke_cancels_conflict_session(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(cx.read_entity(&tree, |tree, _| tree.conflict.is_some()));
 
-    cx.update(|window, cx| window.focus(&tree.read(cx).focus));
+    focus_tree(&tree, cx);
     cx.simulate_keystrokes("escape");
 
     cx.read_entity(&tree, |tree, _| {
@@ -1624,7 +1631,7 @@ fn escape_clears_cut_clipboard_and_dimming(cx: &mut TestAppContext) {
         assert!(matches!(tree.clipboard, Some(TreeClipboard::Cut(_))));
     });
 
-    cx.update(|window, cx| window.focus(&tree.read(cx).focus));
+    focus_tree(&tree, cx);
     cx.simulate_keystrokes("escape");
 
     // 剪贴板置空：淡显数据源（渲染时从 clipboard 派生的 Cut 路径集）随之为空，行不再淡显。
@@ -1655,7 +1662,7 @@ fn escape_clears_copied_clipboard(cx: &mut TestAppContext) {
         assert!(matches!(tree.clipboard, Some(TreeClipboard::Copied(_))));
     });
 
-    cx.update(|window, cx| window.focus(&tree.read(cx).focus));
+    focus_tree(&tree, cx);
     cx.simulate_keystrokes("escape");
 
     cx.read_entity(&tree, |tree, _| {
@@ -1678,7 +1685,7 @@ fn escape_without_clipboard_is_noop(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    cx.update(|window, cx| window.focus(&tree.read(cx).focus));
+    focus_tree(&tree, cx);
     cx.simulate_keystrokes("escape");
 
     // 无剪贴板时按 escape：无副作用（无冲突会话、选中不变）。
@@ -1729,7 +1736,7 @@ fn escape_during_conflict_cancels_conflict_and_keeps_clipboard(cx: &mut TestAppC
     cx.run_until_parked();
     assert!(cx.read_entity(&tree, |tree, _| tree.conflict.is_some()));
 
-    cx.update(|window, cx| window.focus(&tree.read(cx).focus));
+    focus_tree(&tree, cx);
     cx.simulate_keystrokes("escape");
 
     cx.read_entity(&tree, |tree, _| {
@@ -1876,7 +1883,7 @@ fn drag_does_not_open_file_preview_and_keeps_selection(cx: &mut TestAppContext) 
         tree
     });
     cx.run_until_parked();
-    cx.update(|window, cx| window.focus(&tree.read(cx).focus));
+    focus_tree(&tree, cx);
 
     // 多选 {a, b} 并完成渲染（普通点击 a 预览打开一次属正常点击行为），
     // 记录打开次数后从 a 行拖起放到 dst。
@@ -1919,7 +1926,7 @@ fn drag_directory_row_does_not_toggle_expansion(cx: &mut TestAppContext) {
         tree
     });
     cx.run_until_parked();
-    cx.update(|window, cx| window.focus(&tree.read(cx).focus));
+    focus_tree(&tree, cx);
 
     // 行序 [根, src]（src 折叠，子项不可见）：拖 src（行 1）放到根行（行 0）。
     simulate_drag(cx, 1, 0);
@@ -1956,7 +1963,7 @@ fn drag_after_cmd_click_multi_selection_moves_all_items(cx: &mut TestAppContext)
         tree
     });
     cx.run_until_parked();
-    cx.update(|window, cx| window.focus(&tree.read(cx).focus));
+    focus_tree(&tree, cx);
 
     // 行序 [根, dst, a, b, c]：真实点击序列——普通点击 a 后逐个 cmd 点击 b、c。
     let row_height = zcv_theme::typography::ui_line();
@@ -2009,7 +2016,7 @@ fn drop_trusts_snapshot_frozen_at_drag_start(cx: &mut TestAppContext) {
         tree
     });
     cx.run_until_parked();
-    cx.update(|window, cx| window.focus(&tree.read(cx).focus));
+    focus_tree(&tree, cx);
 
     let row_height = zcv_theme::typography::ui_line();
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
@@ -2122,7 +2129,7 @@ fn drag_after_shift_range_selection_moves_all_items(cx: &mut TestAppContext) {
         tree
     });
     cx.run_until_parked();
-    cx.update(|window, cx| window.focus(&tree.read(cx).focus));
+    focus_tree(&tree, cx);
 
     // 普通点击 a（行 2）建立锚点，shift 点击 c（行 4）扩展区间 {a, b, c}。
     let row_height = zcv_theme::typography::ui_line();
@@ -2170,7 +2177,7 @@ fn second_drag_after_successful_move_still_moves_multi_selection(cx: &mut TestAp
         tree
     });
     cx.run_until_parked();
-    cx.update(|window, cx| window.focus(&tree.read(cx).focus));
+    focus_tree(&tree, cx);
 
     let row_height = zcv_theme::typography::ui_line();
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
@@ -2350,7 +2357,7 @@ fn clicking_blank_area_below_rows_keeps_selection_and_focuses_panel(cx: &mut Tes
     });
 
     // 移走焦点，使「空白点击聚焦面板」的断言有判别力。
-    cx.update(|window, _| window.blur());
+    cx.update(|window, cx| window.blur(cx));
     let focused_before = cx.update(|window, cx| tree.read(cx).focus.contains_focused(window, cx));
     assert!(!focused_before, "预置：失焦后面板不应处于聚焦态");
     // 记录点击空白前的选中快照（含多选集合）。
@@ -2399,7 +2406,7 @@ fn blank_click_between_multi_selection_and_drag_keeps_set(cx: &mut TestAppContex
         tree
     });
     cx.run_until_parked();
-    cx.update(|window, cx| window.focus(&tree.read(cx).focus));
+    focus_tree(&tree, cx);
 
     // 行序 [根, dst, a, b, c]：普通点击 a（行 2）+ cmd 点击 b（行 3）建立多选。
     let row_height = zcv_theme::typography::ui_line();

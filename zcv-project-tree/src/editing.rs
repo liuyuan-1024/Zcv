@@ -124,7 +124,7 @@ impl ProjectTreePanel {
             validation_error: None,
         });
         let focus = self.entry_name_editor.read(cx).focus_handle();
-        window.focus(&focus);
+        window.focus(&focus, cx);
         cx.notify();
     }
 
@@ -210,7 +210,7 @@ impl ProjectTreePanel {
 
     pub(super) fn finish_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.edit_state = None;
-        window.focus(&self.focus);
+        window.focus(&self.focus, cx);
         cx.notify();
     }
 }

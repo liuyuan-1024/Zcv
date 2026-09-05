@@ -121,7 +121,7 @@ impl ProjectSearchView {
                     Err(_) => break,
                 };
                 // Project 已释放或文档注册失败时跳过该文件。
-                let Ok(Ok(source)) = project.update(cx, |project, cx| {
+                let Ok(source) = project.update(cx, |project, cx| {
                     if let Some(buffer) = item.loaded_buffer {
                         project.register_loaded_buffer(item.path, buffer, cx)
                     } else {

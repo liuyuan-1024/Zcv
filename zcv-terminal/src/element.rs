@@ -310,7 +310,14 @@ impl Element for TerminalElement {
                         + Pixels::from(run.start_column as f32 * f32::from(layout.cell_width)),
                     run.origin.y,
                 );
-                if let Err(error) = shaped.paint(origin + offset, layout.line_height, window, cx) {
+                if let Err(error) = shaped.paint(
+                    origin + offset,
+                    layout.line_height,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                ) {
                     eprintln!("终端文本绘制失败：{error}");
                 }
             }
@@ -341,6 +348,8 @@ impl Element for TerminalElement {
                 if let Err(error) = shaped.paint(
                     shifted(*cursor_bounds, offset).origin,
                     layout.line_height,
+                    gpui::TextAlign::Left,
+                    None,
                     window,
                     cx,
                 ) {
@@ -367,9 +376,14 @@ impl Element for TerminalElement {
                         &[run],
                         None,
                     );
-                    if let Err(error) =
-                        shaped.paint(cursor.bounds.origin, layout.line_height, window, cx)
-                    {
+                    if let Err(error) = shaped.paint(
+                        cursor.bounds.origin,
+                        layout.line_height,
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    ) {
                         eprintln!("终端光标字符绘制失败：{error}");
                     }
                 }
@@ -435,7 +449,7 @@ fn register_mouse_listeners(
         }
         // 点击聚焦终端：光标显隐与键盘输入都绑定焦点。
         let focus = down_view.read(cx).focus_handle();
-        window.focus(&focus);
+        window.focus(&focus, cx);
         let (point, side) = grid_point_and_side(
             event.position,
             origin,

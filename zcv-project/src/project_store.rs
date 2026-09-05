@@ -44,9 +44,15 @@ struct ProjectWorktree {
 
 impl Project {
     pub fn new(root: PathBuf, cx: &mut Context<Self>) -> Self {
-        let fs_watcher = Arc::new(FsWatcher::new());
+        Self::new_with_watcher(root, Arc::new(FsWatcher::new()), cx)
+    }
+
+    fn new_with_watcher(
+        root: PathBuf,
+        fs_watcher: Arc<dyn Watcher>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let fs_events = fs_watcher.events();
-        let fs_watcher: Arc<dyn Watcher> = fs_watcher;
 
         if let Err(error) = fs_watcher.add(&root) {
             eprintln!("无法监听项目目录 {:?}：{error}", root);

@@ -28,7 +28,7 @@ fn initial_project_root(
 
 fn main() {
     let http_client = auto_update::new_http_client().expect("无法初始化自动更新 HTTP 客户端");
-    Application::new()
+    Application::with_platform(gpui_platform::current_platform(false))
         .with_assets(Assets)
         .with_http_client(http_client)
         .run(|cx: &mut App| {

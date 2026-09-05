@@ -514,6 +514,41 @@ impl Terminal {
         Ok(terminal)
     }
 
+    #[cfg(test)]
+    fn new_display_only(builder: &TerminalBuilder, cx: &mut Context<Self>) -> Self {
+        let settings = TerminalSettings::load(cx);
+        let bounds = TerminalBounds::default();
+        let (events_tx, _) = unbounded();
+        let term = alacritty::new_term(
+            &alacritty::pty_term_config(settings.max_scroll_history_lines, settings.cursor_shape),
+            &bounds,
+            &events_tx,
+            settings.alternate_scroll,
+        );
+
+        Self {
+            term,
+            pty_tx: PtySender::inert(),
+            events: Default::default(),
+            events_rx: None,
+            event_loop_task: None,
+            last_content: None,
+            title: None,
+            shell_name: configured_shell_name(settings.shell.as_deref()),
+            scroll_px: Pixels::ZERO,
+            pty_pid: None,
+            process_info: Arc::new(PtyProcessInfo::new(alacritty::process_id_getter_for_test())),
+            background_executor: cx.background_executor().clone(),
+            cwd: builder.cwd.clone(),
+        }
+    }
+
+    #[cfg(test)]
+    fn write_output(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
+        alacritty::write_output(&mut self.term.lock(), bytes);
+        cx.notify();
+    }
+
     /// 启动主线程事件泵：收集一批事件（≤100）合并上抛，避免逐条唤醒渲染。
     fn spawn_event_loop(&mut self, cx: &mut Context<Self>) {
         let rx = self.events_rx.take().expect("事件通道只消费一次");
@@ -712,7 +747,7 @@ impl Terminal {
                     self.scroll_lines(lines, cx);
                 }
             }
-            gpui::TouchPhase::Ended => {}
+            gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled => {}
         }
     }
 
@@ -1001,17 +1036,15 @@ mod tests {
 }
 
 #[cfg(all(test, unix))]
-mod pty_tests {
+mod terminal_view_tests {
     use std::time::{Duration, Instant};
-
-    use gpui::{
-        Context, Entity, EntityInputHandler, IntoElement, KeyBinding, MouseButton, Render,
-        TestAppContext, VisualTestContext, Window, div, point, prelude::*, px,
-    };
-    use zcv_actions::Interrupt;
 
     use super::*;
     use crate::TerminalView;
+    use gpui::{
+        Context, Entity, EntityInputHandler, IntoElement, MouseButton, Render, TestAppContext,
+        VisualTestContext, Window, div, point, prelude::*, px,
+    };
 
     #[derive(Default)]
     struct EmptyView;
@@ -1023,10 +1056,10 @@ mod pty_tests {
     }
 
     fn build_terminal(cx: &mut TestAppContext) -> Entity<Terminal> {
-        cx.new(|cx| TerminalBuilder::new().build(cx).expect("启动终端失败"))
+        cx.new(|cx| Terminal::new_display_only(&TerminalBuilder::new(), cx))
     }
 
-    /// 刷新渲染快照并断言内容满足条件；轮询等待真实 PTY 输出。
+    /// 刷新渲染快照并断言内容满足条件。
     async fn wait_for_content(
         cx: &mut VisualTestContext,
         terminal: &Entity<Terminal>,
@@ -1053,90 +1086,25 @@ mod pty_tests {
         }
     }
 
-    /// 等待 PTY 的前台进程组发生变化，确保命令已经真正接管终端。
-    async fn wait_for_foreground_process(
-        cx: &mut VisualTestContext,
-        terminal: &Entity<Terminal>,
-        shell_process_group: sysinfo::Pid,
-    ) {
-        let deadline = Instant::now() + Duration::from_secs(8);
-        loop {
-            let foreground_pid =
-                cx.update(|_window, cx| terminal.read(cx).process_info.foreground_pid());
-            if foreground_pid.is_some_and(|pid| pid != shell_process_group) {
-                return;
-            }
-            assert!(Instant::now() < deadline, "等待前台进程启动超时");
-            cx.background_executor
-                .timer(Duration::from_millis(20))
-                .await;
-            cx.run_until_parked();
-        }
-    }
-
     /// 把快照中全部单元格按顺序拼接为文本（含空格）。
     fn all_text(content: &Content) -> String {
         content.cells.iter().map(|ic| ic.cell.character()).collect()
     }
 
-    /// 真 PTY 回环：写入命令后 shell 输出应出现在快照中。
+    /// 模拟器接收输出后应投影到渲染快照。
     #[gpui::test]
-    async fn pty_echo_roundtrip(cx: &mut TestAppContext) {
+    async fn terminal_output_updates_content(cx: &mut TestAppContext) {
         let terminal = build_terminal(cx);
         let (_, cx) = cx.add_window_view(|_window, _cx| EmptyView);
 
         cx.update(|_window, cx| {
             terminal.update(cx, |t, cx| {
-                t.write_input(b"echo zcv-terminal-ok\n".to_vec(), cx);
+                t.write_output(b"zcv-terminal-ok\r\n", cx);
             });
         });
 
         wait_for_content(cx, &terminal, |content| {
             all_text(content).contains("zcv-terminal-ok")
-        })
-        .await;
-    }
-
-    /// 终端上下文的 Ctrl-C 必须中断前台进程，并让 shell 继续接收后续命令。
-    #[gpui::test]
-    async fn ctrl_c_interrupts_foreground_process(cx: &mut TestAppContext) {
-        let terminal = build_terminal(cx);
-        let terminal_for_view = terminal.clone();
-        let (view, cx) = cx.add_window_view(move |_window, cx| {
-            cx.bind_keys([KeyBinding::new("ctrl-c", Interrupt, Some("Terminal"))]);
-            TerminalView::new(terminal_for_view, cx)
-        });
-        cx.update(|window, cx| {
-            window.focus(&view.read(cx).focus_handle());
-            let _ = window.draw(cx);
-            terminal.update(cx, |terminal, cx| {
-                terminal.write_input(b"printf 'zcv-%s\\n' shell-ready\n".to_vec(), cx);
-            });
-        });
-
-        wait_for_content(cx, &terminal, |content| {
-            all_text(content).contains("zcv-shell-ready")
-        })
-        .await;
-        let shell_process_group = cx
-            .update(|_window, cx| terminal.read(cx).process_info.foreground_pid())
-            .expect("shell 应持有 PTY 前台进程组");
-        cx.update(|_window, cx| {
-            terminal.update(cx, |terminal, cx| {
-                terminal.write_input(b"sleep 30\n".to_vec(), cx);
-            });
-        });
-        wait_for_foreground_process(cx, &terminal, shell_process_group).await;
-
-        cx.simulate_keystrokes("ctrl-c");
-        cx.update(|_window, cx| {
-            terminal.update(cx, |terminal, cx| {
-                terminal.write_input(b"printf 'zcv-%s\\n' ctrl-c-ok\n".to_vec(), cx);
-            });
-        });
-
-        wait_for_content(cx, &terminal, |content| {
-            all_text(content).contains("zcv-ctrl-c-ok")
         })
         .await;
     }

@@ -68,7 +68,7 @@ impl TabBar {
                         .id("tab-bar-scroll")
                         .flex()
                         .flex_row()
-                        .flex_grow()
+                        .flex_grow(1.0)
                         .overflow_x_scroll();
                     if let Some(ref handle) = self.scroll_handle {
                         scroll_area = scroll_area.track_scroll(handle);

@@ -3,7 +3,7 @@ use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
 use zcv_text::TextRange;
 use zcv_text::{ByteOffset, Edit, TransactionId, TransactionMetadata};
 
-use super::common::{buffer_text, engine_buffer, test_buffer};
+use super::common::{buffer_text, engine_buffer, focus_editor, test_buffer};
 use super::*;
 use crate::display_map::{DisplayPoint, DisplayRow};
 use crate::selection::{Selection, SelectionSet};
@@ -389,7 +389,7 @@ fn editor_actions_move_extend_delete_and_restore_unicode_selection(cx: &mut Test
         move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
-    cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+    focus_editor(&editor, cx);
     cx.dispatch_action(MoveRight);
     cx.dispatch_action(SelectRight);
     cx.read_entity(&editor, |editor, _| {
@@ -435,7 +435,7 @@ fn deleting_a_reversed_selection_always_leaves_a_caret_at_its_start(cx: &mut Tes
             ByteOffset::new(2),
         )]));
     });
-    cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+    focus_editor(&editor, cx);
     cx.dispatch_action(Backspace);
 
     assert_eq!(buffer_text(&buffer, cx), "abf");
@@ -483,7 +483,7 @@ fn expand_selection_uses_tree_sitter_ancestors(cx: &mut TestAppContext) {
     cx.update_entity(&editor, |editor, _| {
         editor.set_selections(SelectionSet::caret(ByteOffset::new(value)));
     });
-    cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+    focus_editor(&editor, cx);
 
     cx.dispatch_action(ExpandSelection);
     cx.read_entity(&editor, |editor, _| {
@@ -545,7 +545,7 @@ fn word_and_line_delete_actions_follow_editor_boundaries(cx: &mut TestAppContext
         let buffer = buffer.clone();
         move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
-    cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+    focus_editor(&editor, cx);
 
     cx.update_entity(&editor, |editor, _| {
         editor.set_selections(SelectionSet::caret(ByteOffset::new(10)));
@@ -597,7 +597,7 @@ fn document_boundary_actions_move_and_extend_selection(cx: &mut TestAppContext) 
     });
     let end = ByteOffset::new(text.len());
 
-    cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+    focus_editor(&editor, cx);
     cx.dispatch_action(MoveToEnd);
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.selections(), SelectionSet::caret(end));
@@ -642,7 +642,7 @@ fn page_actions_move_selection_and_viewport_together(cx: &mut TestAppContext) {
 
     cx.simulate_resize(size(px(100.), px(100.)));
     cx.run_until_parked();
-    cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+    focus_editor(&editor, cx);
 
     let page_rows = cx.read_entity(&editor, |editor, _| {
         editor
@@ -726,7 +726,7 @@ fn clipboard_actions_edit_selected_text_through_transactions(cx: &mut TestAppCon
         move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
-    cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+    focus_editor(&editor, cx);
     cx.update_entity(&editor, |editor, _| {
         editor.set_selections(SelectionSet::new(vec![Selection::new(
             ByteOffset::new(1),
@@ -762,7 +762,7 @@ fn move_line_up_and_down_reorders_lines_and_follows_selection(cx: &mut TestAppCo
         move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
-    cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+    focus_editor(&editor, cx);
 
     // 光标在第二行上移：整行移动，光标保持行内相对位置
     cx.update_entity(&editor, |editor, _| {
@@ -799,7 +799,7 @@ fn move_line_skips_document_edges_and_moves_multi_line_selection(cx: &mut TestAp
         move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
-    cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+    focus_editor(&editor, cx);
 
     // 首行不能上移：文本不变
     cx.update_entity(&editor, |editor, _| {
@@ -832,7 +832,7 @@ fn move_line_keeps_newline_separation_at_document_edge(cx: &mut TestAppContext) 
         let buffer = buffer.clone();
         move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
-    cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+    focus_editor(&editor, cx);
 
     // 倒数第二行下移到末行：行块与无换行的末行交换，换行必须保持
     cx.update_entity(&editor, |editor, _| {
@@ -870,7 +870,7 @@ fn move_line_moves_rows_of_partial_selection_and_keeps_shape(cx: &mut TestAppCon
         let buffer = buffer.clone();
         move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
-    cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+    focus_editor(&editor, cx);
 
     // 选中 bravo 行内部分文本（非整行选区）上移：所在行块移动，选区形状保持
     cx.update_entity(&editor, |editor, _| {
@@ -909,7 +909,7 @@ fn directional_moves_collapse_selection_to_its_edges(cx: &mut TestAppContext) {
         let buffer = buffer.clone();
         move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
-    cx.update(|window, cx| window.focus(&editor.read(cx).focus_handle()));
+    focus_editor(&editor, cx);
 
     // 选区按 ←：光标折叠到选区左端（不移动）
     cx.update_entity(&editor, |editor, _| {

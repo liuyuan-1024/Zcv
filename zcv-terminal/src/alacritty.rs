@@ -63,20 +63,37 @@ impl EventListener for TerminalListener {
 }
 
 /// 向 alacritty 事件循环线程发送消息的唯一句柄（写输入、调整尺寸、关闭）。
-pub(super) struct PtySender {
-    notifier: Notifier,
+pub(super) enum PtySender {
+    Live {
+        notifier: Notifier,
+    },
+    #[cfg(test)]
+    Inert,
 }
 
 impl PtySender {
     /// 把输入字节写入 PTY。
     pub(super) fn notify(&self, input: impl Into<Cow<'static, [u8]>>) {
-        self.notifier.notify(input);
+        match self {
+            Self::Live { notifier } => notifier.notify(input),
+            #[cfg(test)]
+            Self::Inert => {}
+        }
     }
 
     /// 通知 PTY 调整窗口尺寸（触发 SIGWINCH 与 shell 的 resize 感知）。
     pub(super) fn resize(&self, bounds: &TerminalBounds) {
-        if let Err(error) = self
-            .notifier
+        #[cfg(not(test))]
+        let Self::Live { notifier } = self;
+        #[cfg(test)]
+        let Some(notifier) = (match self {
+            Self::Live { notifier } => Some(notifier),
+            Self::Inert => None,
+        }) else {
+            return;
+        };
+
+        if let Err(error) = notifier
             .0
             .send(Msg::Resize(window_size_from_bounds(bounds)))
         {
@@ -86,9 +103,24 @@ impl PtySender {
 
     /// 优雅关闭事件循环线程。
     pub(super) fn shutdown(&self) {
-        if let Err(error) = self.notifier.0.send(Msg::Shutdown) {
+        #[cfg(not(test))]
+        let Self::Live { notifier } = self;
+        #[cfg(test)]
+        let Some(notifier) = (match self {
+            Self::Live { notifier } => Some(notifier),
+            Self::Inert => None,
+        }) else {
+            return;
+        };
+
+        if let Err(error) = notifier.0.send(Msg::Shutdown) {
             eprintln!("终端 PTY 关闭失败：{error}");
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn inert() -> Self {
+        Self::Inert
     }
 }
 
@@ -148,10 +180,20 @@ pub(super) fn process_id_getter(pty: &tty::Pty) -> ProcessIdGetter {
     ProcessIdGetter::new(pty.file().as_raw_fd(), pty.child().id())
 }
 
+#[cfg(all(test, unix))]
+pub(super) fn process_id_getter_for_test() -> ProcessIdGetter {
+    ProcessIdGetter::new(-1, 0)
+}
+
 #[cfg(windows)]
 pub(super) fn process_id_getter(pty: &tty::Pty) -> ProcessIdGetter {
     let fallback_pid = pty.child_watcher().pid().map(u32::from).unwrap_or_default();
     ProcessIdGetter::new(fallback_pid)
+}
+
+#[cfg(all(test, windows))]
+pub(super) fn process_id_getter_for_test() -> ProcessIdGetter {
+    ProcessIdGetter::new(0)
 }
 
 /// 创建终端模拟器实例（网格状态机），包裹在公平锁中以供 IO 线程与 UI 线程共享。
@@ -194,13 +236,21 @@ pub(super) fn spawn_event_loop(
     let pty_tx = event_loop.channel();
     // 线程随 Msg::Shutdown 优雅退出，句柄无需保留。
     let _io_thread = event_loop.spawn();
-    Ok(PtySender {
+    Ok(PtySender::Live {
         notifier: Notifier(pty_tx),
     })
 }
 
 pub(super) fn resize(term: &mut AlacrittyTerm, bounds: &TerminalBounds) {
     term.resize(*bounds);
+}
+
+#[cfg(test)]
+pub(super) fn write_output(term: &mut AlacrittyTerm, bytes: &[u8]) {
+    let mut processor = alacritty_terminal::vte::ansi::Processor::<
+        alacritty_terminal::vte::ansi::StdSyncHandler,
+    >::new();
+    processor.advance(term, bytes);
 }
 
 /// 更新既有选择到新位置；没有进行中的选择时返回 false。

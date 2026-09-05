@@ -200,7 +200,7 @@ fn emit_until(
 mod tests {
     use std::collections::BTreeSet;
 
-    use crate::syntax_map::{parsed_syntax, rust_buffer};
+    use crate::test::{parsed_syntax, rust_buffer};
 
     fn capture_names_for(path: &str, source: &str) -> BTreeSet<String> {
         let (buffer, syntax) = parsed_syntax(path, source);

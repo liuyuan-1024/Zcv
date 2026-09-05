@@ -5,7 +5,7 @@
 
 use gpui::{
     AnyElement, App, Div, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    Stateful, StatefulInteractiveElement, Window, div, prelude::*,
+    Stateful, StatefulInteractiveElement, ViewElement, Window, div, prelude::*,
 };
 use zcv_theme::{color, space};
 
@@ -57,9 +57,9 @@ impl Tab {
 }
 
 impl IntoElement for Tab {
-    type Element = gpui::Component<Self>;
+    type Element = ViewElement<Self>;
     fn into_element(self) -> Self::Element {
-        gpui::Component::new(self)
+        ViewElement::new(self)
     }
 }
 

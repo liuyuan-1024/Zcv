@@ -554,6 +554,135 @@ fn diff_expansion_migrates_by_tracked_range_across_source_edits(cx: &mut TestApp
     );
 }
 
+#[gpui::test]
+fn undo_then_save_keeps_rust_highlighting_in_diff_projection(cx: &mut TestAppContext) {
+    let source = singleton(
+        "src/window_controls.rs",
+        "fn main() { let value = 1; }\n",
+        cx,
+    );
+    let combined = cx.new(|cx| MultiBuffer::empty(cx));
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_diff_projection(
+            Some(vec![DiffFileInput {
+                working: source.clone(),
+                hunks: vec![DiffHunk {
+                    range: 0..1,
+                    old_range: 0..1,
+                    kind: DiffHunkKind::Modified,
+                }],
+                base_text: Some(Arc::from("fn main() { let value = 0; }\n")),
+                path: PathBuf::from("src/window_controls.rs"),
+                display_path: PathBuf::from("src/window_controls.rs"),
+                context_lines: Some(2),
+                is_created: false,
+                show_file_header: false,
+            }]),
+            cx,
+        );
+        buffer.start_transaction(cx).expect("应开始 hunk 编辑事务");
+        buffer
+            .edit(
+                vec![zcv_text::Edit::insert(ByteOffset::new(3), "async ").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("hunk 编辑应成功");
+        buffer.end_transaction(cx);
+    });
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.undo(cx).expect("撤销应成功");
+    });
+    cx.update_entity(&source, |source, cx| {
+        source.buffer().update(cx, |buffer, cx| {
+            buffer.mark_saved();
+            cx.notify();
+        });
+    });
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_diff_projection(
+            Some(vec![DiffFileInput {
+                working: source.clone(),
+                hunks: vec![DiffHunk {
+                    range: 0..1,
+                    old_range: 0..1,
+                    kind: DiffHunkKind::Modified,
+                }],
+                base_text: Some(Arc::from("fn main() { let value = 0; }\n")),
+                path: PathBuf::from("src/window_controls.rs"),
+                display_path: PathBuf::from("src/window_controls.rs"),
+                context_lines: Some(2),
+                is_created: false,
+                show_file_header: false,
+            }]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    cx.read_entity(&combined, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        assert!(
+            !snapshot
+                .highlights(0..snapshot.text().len_bytes().get())
+                .is_empty(),
+            "撤销并保存后 Git hunk 投影仍应保留 Rust 高亮"
+        );
+    });
+}
+
+#[gpui::test]
+fn save_after_diff_hunk_edit_keeps_rust_highlighting(cx: &mut TestAppContext) {
+    let source = singleton(
+        "src/window_controls.rs",
+        "fn main() { let value = 1; }\n",
+        cx,
+    );
+    let combined = cx.new(|cx| MultiBuffer::empty(cx));
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_diff_projection(
+            Some(vec![DiffFileInput {
+                working: source.clone(),
+                hunks: vec![DiffHunk {
+                    range: 0..1,
+                    old_range: 0..1,
+                    kind: DiffHunkKind::Modified,
+                }],
+                base_text: Some(Arc::from("fn main() { let value = 0; }\n")),
+                path: PathBuf::from("src/window_controls.rs"),
+                display_path: PathBuf::from("src/window_controls.rs"),
+                context_lines: Some(2),
+                is_created: false,
+                show_file_header: false,
+            }]),
+            cx,
+        );
+        buffer
+            .edit(
+                vec![zcv_text::Edit::insert(ByteOffset::new(3), "async ").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("hunk 编辑应成功");
+    });
+    cx.update_entity(&source, |source, cx| {
+        source.buffer().update(cx, |buffer, cx| {
+            buffer.mark_saved();
+            cx.notify();
+        });
+    });
+    cx.run_until_parked();
+
+    cx.read_entity(&combined, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        assert!(
+            !snapshot
+                .highlights(0..snapshot.text().len_bytes().get())
+                .is_empty()
+        );
+    });
+}
+
 /// 回归：前一个整文件投影以换行结尾时，其末尾空逻辑行不会物化为组合文档行；
 /// 后续文件的 hunk 坐标必须来自实际 excerpt 映射，不能按源行数累计后发生偏移。
 #[gpui::test]

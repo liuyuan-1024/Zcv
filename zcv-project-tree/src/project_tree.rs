@@ -82,6 +82,7 @@ pub struct ProjectTreePanel {
     scroll_handle: UniformListScrollHandle,
     scrollbar: Scrollbar<UniformListScrollHandle>,
     entry_name_editor: Entity<Editor>,
+    name_edit_focus_subscription: Option<gpui::Subscription>,
     edit_state: Option<EditState>,
     on_open_file: Option<OnOpenFile>,
     on_rename: Option<OnRename>,
@@ -153,6 +154,7 @@ impl ProjectTreePanel {
             scroll_handle,
             scrollbar,
             entry_name_editor,
+            name_edit_focus_subscription: None,
             edit_state: None,
             on_open_file: None,
             on_rename: None,
@@ -517,6 +519,16 @@ impl ProjectTreePanel {
 
 impl gpui::Render for ProjectTreePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        if self.name_edit_focus_subscription.is_none() {
+            let entry_name_editor_focus = self.entry_name_editor.read(cx).focus_handle();
+            self.name_edit_focus_subscription =
+                Some(
+                    cx.on_blur(&entry_name_editor_focus, window, |tree, window, cx| {
+                        tree.finish_edit(window, cx);
+                    }),
+                );
+        }
+
         self.state.borrow_mut().ensure_selected();
         let content = if self.root.is_none() {
             render_empty_state(cx).into_any_element()

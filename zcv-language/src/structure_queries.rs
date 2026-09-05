@@ -144,7 +144,10 @@ impl SyntaxSnapshot {
         if !self.can_query(&range, text) {
             return Vec::new();
         }
-        // 折叠节点：@fold 捕获（块体等），行相邻合并（`(line_comment)+` 组）。
+        // 折叠查询的约定：@fold 指定语法区域；需要保留闭合符号的区域以 @fold.end 声明其边界。
+        //
+        // 区域本身以定界符开头时，直接使用同起点的括号对；否则折叠到区域末尾。
+        // 不能从区域内部猜测闭合符号：Markdown section、跨行函数签名等结构性区域都可能包含独立的配对节点。
         let mut nodes = Vec::new();
         for layer in self.layers_for_range(&range) {
             let Some(query) = layer.language.folds() else {
@@ -156,6 +159,16 @@ impl SyntaxSnapshot {
             let mut matches =
                 cursor.matches(query, layer.tree.root_node(), SnapshotTextProvider(text));
             while let Some(query_match) = matches.next() {
+                let explicit_end = query_match
+                    .captures
+                    .iter()
+                    .find(|capture| {
+                        names
+                            .get(capture.index as usize)
+                            .is_some_and(|name| &**name == "fold.end")
+                    })
+                    .map(|capture| capture.node.byte_range().start);
+
                 // 同一个 match 命中多个节点时（如 `+` 组捕获的连续注释），行相邻则合并成一个折叠范围。
                 let mut captured: Vec<_> = query_match
                     .captures
@@ -165,14 +178,16 @@ impl SyntaxSnapshot {
                             .get(capture.index as usize)
                             .is_some_and(|name| &**name == "fold")
                     })
-                    .map(|capture| capture.node)
+                    .map(|capture| (capture.node, explicit_end))
                     .collect();
-                captured.sort_unstable_by_key(|node| node.byte_range().start);
-                let mut merged: Vec<(Range<usize>, usize, usize)> = Vec::new();
-                for node in captured {
+                captured.sort_unstable_by_key(|(node, _)| node.byte_range().start);
+                let mut merged: Vec<(Range<usize>, usize, usize, Option<usize>)> = Vec::new();
+                for (node, explicit_end) in captured {
                     let byte_range = node.byte_range();
                     match merged.last_mut() {
-                        Some((range, _, end_row)) if node.start_position().row <= *end_row + 1 => {
+                        Some((range, _, end_row, _))
+                            if node.start_position().row <= *end_row + 1 =>
+                        {
                             range.end = range.end.max(byte_range.end);
                             *end_row = node.end_position().row;
                         }
@@ -181,6 +196,7 @@ impl SyntaxSnapshot {
                                 byte_range,
                                 node.start_position().row,
                                 node.end_position().row,
+                                explicit_end,
                             ));
                         }
                     }
@@ -188,27 +204,29 @@ impl SyntaxSnapshot {
                 nodes.extend(merged);
             }
         }
-        // 括号对：把折叠范围重塑为 [入口行行尾换行符, 闭合括号前)，闭合括号保留可见。
+        // 定界符：把折叠范围重塑为 [入口行行尾换行符, 闭合符号前)，闭合符号保留可见。
         let pairs = self.bracket_pairs(range.clone(), text);
         let mut ranges = Vec::new();
-        for (byte_range, _, _) in nodes {
+        for (byte_range, _, _, explicit_end) in nodes {
             let Ok(anchor_line) = text.byte_to_line(ByteOffset::new(byte_range.start)) else {
                 continue;
             };
             let start = line_newline_position(text, anchor_line);
-            let pair_index = pairs.partition_point(|pair| pair.open.start < byte_range.start);
-            let enclosing_pair = pairs[pair_index..]
+            let delimiter_end = pairs
                 .iter()
-                .take_while(|pair| pair.open.start < byte_range.end)
+                .filter(|pair| pair.open.start == byte_range.start)
                 .filter(|pair| pair.close.end <= byte_range.end)
                 .filter(|pair| {
                     text.byte_to_line(ByteOffset::new(pair.close.start))
                         .is_ok_and(|line| line > anchor_line)
                 })
-                .max_by_key(|pair| pair.close.end - pair.open.start);
-            let end = enclosing_pair.map_or_else(
-                || {
-                    // 无括号对（注释组等）：整行兜底，终点 = 末隐藏行内容末尾。
+                .map(|pair| pair.close.start)
+                .max();
+            let end = explicit_end
+                .or(delimiter_end)
+                .map(ByteOffset::new)
+                .unwrap_or_else(|| {
+                    // 结构性区域（section、函数定义、注释组等）没有自身闭合符号，终点 = 末隐藏行内容末尾。
                     //
                     // line_comment 等节点含尾随换行（end 落在下一行行首），按"结束恰在行首则回退一行"换算真实末行。
                     let mut end_line = text
@@ -222,9 +240,7 @@ impl SyntaxSnapshot {
                         end_line = Line::new(end_line.get() - 1);
                     }
                     line_content_end(text, end_line)
-                },
-                |pair| ByteOffset::new(pair.close.start),
-            );
+                });
             // 单行范围没有可隐藏的行，折叠无意义。
             if start >= end || text.byte_to_line(end).is_ok_and(|line| line <= anchor_line) {
                 continue;
@@ -399,6 +415,92 @@ mod tests {
                 .fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
             assert!(!folds.is_empty(), "{path} 应产生折叠范围");
         }
+    }
+
+    #[test]
+    fn markdown_section_folds_through_nested_fenced_code() {
+        let source = "\
+# 第一节
+
+正文。
+
+```rust
+let value = 1;
+```
+
+标题后的正文。
+
+# 第二节
+
+不应属于第一节。
+";
+        let (buffer, syntax) = parsed_syntax("README.md", source);
+        let snapshot = buffer.snapshot();
+        let folds = syntax
+            .snapshot()
+            .fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
+        let first_section = folds
+            .iter()
+            .find(|fold| fold.range.start == source.find('\n').unwrap())
+            .expect("第一节应产生折叠范围");
+
+        assert!(
+            source[first_section.range.clone()].contains("标题后的正文。"),
+            "标题折叠必须覆盖 section 的全部正文，而不是在内部代码围栏前截断"
+        );
+        assert!(
+            !source[first_section.range.clone()].contains("# 第二节"),
+            "标题折叠不得吞入同级标题"
+        );
+    }
+
+    #[test]
+    fn structural_fold_ignores_nested_multiline_delimiters() {
+        let source = "\
+def build(
+    first,
+    second,
+):
+    return first + second
+";
+        let (buffer, syntax) = parsed_syntax("build.py", source);
+        let snapshot = buffer.snapshot();
+        let folds = syntax
+            .snapshot()
+            .fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
+
+        assert!(
+            folds
+                .iter()
+                .any(|fold| source[fold.range.clone()].contains("return first + second")),
+            "函数折叠必须覆盖函数体，不能在跨行参数列表的右括号前截断"
+        );
+    }
+
+    #[test]
+    fn macro_definition_declares_its_closing_boundary() {
+        let source = "\
+macro_rules! pair {
+    ($value:expr) => {
+        ($value, $value)
+    };
+}
+";
+        let (buffer, syntax) = parsed_syntax("macros.rs", source);
+        let snapshot = buffer.snapshot();
+        let folds = syntax
+            .snapshot()
+            .fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
+        let outer = folds
+            .iter()
+            .find(|fold| fold.range.start == source.find('\n').unwrap())
+            .expect("宏定义应产生折叠范围");
+
+        assert_eq!(
+            outer.range.end,
+            source.rfind('}').unwrap(),
+            "宏定义的外层闭合花括号必须保留可见"
+        );
     }
 
     #[test]

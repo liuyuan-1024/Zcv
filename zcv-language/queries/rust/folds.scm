@@ -51,14 +51,33 @@
 ;
 ; use 按单个声明独立折叠：连续 use 不合并，避免单行 use 被卷进折叠组；
 ; 单行 use 与单行宏调用由语言层按单行过滤丢弃。
-(macro_definition) @fold
+[
+  (macro_definition
+    "}" @fold.end)
+  (macro_definition
+    "]" @fold.end)
+  (macro_definition
+    ")" @fold.end)
+] @fold
 
-(macro_invocation) @fold
+[
+  (macro_invocation
+    (token_tree "}" @fold.end))
+  (macro_invocation
+    (token_tree "]" @fold.end))
+  (macro_invocation
+    (token_tree ")" @fold.end))
+] @fold
 
-(use_declaration) @fold
+[
+  (use_declaration
+    argument: (use_list "}" @fold.end))
+  (use_declaration
+    argument: (scoped_use_list
+      list: (use_list "}" @fold.end)))
+] @fold
 
 ; 注释块：连续单行注释折叠为一个组
 (block_comment) @fold
 
 (line_comment)+ @fold
-

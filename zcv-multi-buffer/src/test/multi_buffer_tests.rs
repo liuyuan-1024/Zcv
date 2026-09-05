@@ -631,7 +631,7 @@ fn diff_expansion_survives_hunk_refresh_and_merge(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn undo_then_save_keeps_rust_highlighting_in_diff_projection(cx: &mut TestAppContext) {
+fn undo_keeps_rust_highlighting_in_diff_projection(cx: &mut TestAppContext) {
     let source = singleton(
         "src/window_controls.rs",
         "fn main() { let value = 1; }\n",
@@ -669,31 +669,6 @@ fn undo_then_save_keeps_rust_highlighting_in_diff_projection(cx: &mut TestAppCon
     cx.update_entity(&combined, |buffer, cx| {
         buffer.undo(cx).expect("撤销应成功");
     });
-    cx.update_entity(&source, |source, cx| {
-        source.buffer().update(cx, |buffer, cx| {
-            buffer.mark_saved();
-            cx.notify();
-        });
-    });
-    cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_diff_projection(
-            Some(vec![DiffFileInput {
-                working: source.clone(),
-                hunks: vec![DiffHunk {
-                    range: 0..1,
-                    old_range: 0..1,
-                    kind: DiffHunkKind::Modified,
-                }],
-                base_text: Some(Arc::from("fn main() { let value = 0; }\n")),
-                path: PathBuf::from("src/window_controls.rs"),
-                display_path: PathBuf::from("src/window_controls.rs"),
-                context_lines: Some(2),
-                is_created: false,
-                show_file_header: false,
-            }]),
-            cx,
-        );
-    });
     cx.run_until_parked();
 
     cx.read_entity(&combined, |buffer, cx| {
@@ -702,7 +677,7 @@ fn undo_then_save_keeps_rust_highlighting_in_diff_projection(cx: &mut TestAppCon
             !snapshot
                 .highlights(0..snapshot.text().len_bytes().get())
                 .is_empty(),
-            "撤销并保存后 Git hunk 投影仍应保留 Rust 高亮"
+            "撤销后 Git hunk 投影仍应保留 Rust 高亮"
         );
     });
 }

@@ -1351,11 +1351,11 @@ impl MultiBuffer {
         let mut source_maps = Vec::with_capacity(grouped.len());
         for (source, source_edits) in grouped {
             let source_buffer = source.read(cx).buffer();
-            let outcome = source_buffer.update(cx, |buffer, cx| -> TextResult<_> {
-                let outcome = buffer.edit(source_edits, metadata.clone())?;
-                cx.notify();
-                Ok(outcome)
-            })?;
+            let outcome = Self::update_source_text(
+                &source_buffer,
+                |buffer| buffer.edit(source_edits, metadata.clone()),
+                cx,
+            )?;
             source_maps.push((
                 source.entity_id(),
                 outcome.event().position_map().clone(),
@@ -1395,6 +1395,25 @@ impl MultiBuffer {
             self.rebuild_diff_projection(cx);
         }
         Ok(global_map)
+    }
+
+    /// MultiBuffer 写入源 Buffer 的唯一入口。
+    ///
+    /// 文本内核只发布版本化变更；LanguageBuffer 负责消费变更并维护语法派生状态。
+    /// 因此 MultiBuffer 成功改变源文本后必须在这里唤醒其观察者，普通编辑与历史回放不能各自承担这项跨层协议。
+    fn update_source_text<T>(
+        source: &Entity<Buffer>,
+        update: impl FnOnce(&mut Buffer) -> TextResult<T>,
+        cx: &mut Context<Self>,
+    ) -> TextResult<T> {
+        source.update(cx, |buffer, cx| {
+            let version = buffer.version();
+            let result = update(buffer)?;
+            if buffer.version() != version {
+                cx.notify();
+            }
+            Ok(result)
+        })
     }
 
     fn rebuild_projection(&mut self, cx: &mut Context<Self>) {
@@ -1544,13 +1563,11 @@ impl MultiBuffer {
             let projection_buffer = self.state.projection.read(cx).buffer();
             let (projection_subscription, old_version) =
                 projection_buffer.update(cx, |buffer, _| (buffer.subscribe(), buffer.version()));
-            let outcome =
-                source_buffer.update(
-                    cx,
-                    |buffer, _| {
-                        if redo { buffer.redo() } else { buffer.undo() }
-                    },
-                )?;
+            let outcome = Self::update_source_text(
+                &source_buffer,
+                |buffer| if redo { buffer.redo() } else { buffer.undo() },
+                cx,
+            )?;
             let Some(outcome) = outcome else {
                 return Ok(None);
             };
@@ -1622,11 +1639,10 @@ impl MultiBuffer {
                     detail: "底层 Buffer 历史已在 MultiBuffer 外部分叉".to_string(),
                 });
             }
-            let outcome = buffer.update(
+            let outcome = Self::update_source_text(
+                buffer,
+                |buffer| if redo { buffer.redo() } else { buffer.undo() },
                 cx,
-                |buffer, _| {
-                    if redo { buffer.redo() } else { buffer.undo() }
-                },
             )?;
             let Some(outcome) = outcome else {
                 return Err(TextError::InvariantViolation {

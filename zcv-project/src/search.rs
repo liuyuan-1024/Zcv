@@ -46,7 +46,7 @@ pub struct SearchResults {
 
 impl SearchResults {
     /// 构造立即关闭的空结果流（无 worktree 时使用）。
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         let (tx, rx) = async_channel::bounded(1);
         drop(tx);
         Self {

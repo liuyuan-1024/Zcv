@@ -1,17 +1,12 @@
 //! 窗口控制 —— 自绘 macOS 风格三色圆点。
 
 use gpui::{Window, div, prelude::*, px, rgb, svg};
-pub(crate) use zcv_actions::{MinimizeWindow, QuitWindow, ToggleMaximizeWindow};
+use zcv_actions::{MinimizeWindow, QuitWindow, ToggleMaximizeWindow};
 use zcv_theme::space;
 
 const PIP_GROUP: &str = "window-controls.pips";
 
-// ── 窗口 action handler；Quit 由 Workspace 在刷新布局状态后处理 ──
-
-pub(crate) fn handle_minimize(_: &MinimizeWindow, window: &mut Window, _: &mut gpui::App) {
-    window.minimize_window();
-}
-pub(crate) fn render(window: &Window) -> gpui::Stateful<gpui::Div> {
+pub(super) fn render(window: &Window) -> gpui::Stateful<gpui::Div> {
     let active = window.is_window_active();
 
     div()

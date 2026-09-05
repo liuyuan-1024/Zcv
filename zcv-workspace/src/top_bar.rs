@@ -10,7 +10,10 @@ use zcv_ui::Button;
 use crate::OnProjectSelected;
 use crate::branch_picker::{BranchPicker, OnBranchSelected};
 use crate::project_picker::ProjectPicker;
-use crate::window_controls::render as render_window_controls;
+
+mod window_controls;
+
+use window_controls::render as render_window_controls;
 
 pub struct TopBar {
     pub project_picker: Entity<ProjectPicker>,

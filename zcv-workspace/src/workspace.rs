@@ -25,7 +25,6 @@ mod toast;
 mod toolbar;
 mod top_bar;
 mod window_bounds;
-mod window_controls;
 mod workspace_state;
 
 #[cfg(test)]

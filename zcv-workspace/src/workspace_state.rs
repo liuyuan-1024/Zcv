@@ -13,8 +13,8 @@ use gpui::{
     Render, SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*, rems,
 };
 use zcv_actions::{
-    FocusOrHidePanel, OpenSettings, QuitWindow, Save, ToggleBottomDock, ToggleLeftDock,
-    ToggleRightDock,
+    FocusOrHidePanel, MinimizeWindow, OpenSettings, QuitWindow, Save, ToggleBottomDock,
+    ToggleLeftDock, ToggleMaximizeWindow, ToggleRightDock,
 };
 use zcv_project::Project;
 use zcv_theme::{color, typography};
@@ -28,7 +28,6 @@ use crate::panel::PanelHandle;
 use crate::status_bar::StatusBar;
 use crate::toast::{ToastAction, ToastKind, ToastLayer};
 use crate::window_bounds;
-use crate::window_controls::{ToggleMaximizeWindow, handle_minimize};
 
 const LAYOUT_SAVE_THROTTLE: Duration = Duration::from_millis(200);
 
@@ -832,7 +831,7 @@ impl Render for Workspace {
             cx,
         ))
         .on_action(cx.listener(Self::handle_quit))
-        .on_action(handle_minimize)
+        .on_action(|_: &MinimizeWindow, window, _| window.minimize_window())
         .on_action(cx.listener(Self::handle_toggle_maximize))
         .on_action(cx.listener(Self::handle_open_settings))
         .on_action(cx.listener(Self::handle_save))

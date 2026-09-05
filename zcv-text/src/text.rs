@@ -38,7 +38,7 @@ pub use search::{
 };
 pub use snapshot::Snapshot;
 pub use text_changes::{TextChangeBatch, TextSubscription};
-pub use tracking::{Anchor, TrackedRange, TrackedRangeUpdatePolicy};
+pub use tracking::Anchor;
 pub use transaction::{
     DeltaEvent, Edit, TransactionMergePolicy, TransactionMetadata, TransactionOutcome,
     TransactionSource,

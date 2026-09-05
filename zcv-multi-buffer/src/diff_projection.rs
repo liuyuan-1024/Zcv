@@ -1,4 +1,4 @@
-//! MultiBuffer 的 git diff 投影：文件集 hunks、展开状态、跟踪区间迁移、统一物化与显示坐标派生。
+//! MultiBuffer 的 git diff 投影：文件集 hunks、展开状态、锚点范围迁移、统一物化与显示坐标派生。
 //!
 //! 普通编辑器与多文件投影（Git 差异视图）共用同一套物化：
 //! 宿主只注入「新侧源 + 源坐标 hunks + 旧侧全文」，本层按展开状态把旧侧行物化为只读 excerpt、按显示策略裁剪可见行，并派生组合坐标显示 hunks。
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use gpui::{App, AppContext, Context, Entity};
 use zcv_git::{DiffHunk, DiffHunkKind};
 use zcv_language::LanguageBuffer;
-use zcv_text::{BufferVersion, Line, PositionMap, Stickiness, TextRange, TrackedRange};
+use zcv_text::{Anchor, BufferVersion, Line, PositionMap, Stickiness, TextRange};
 
 use crate::{ExcerptDiffKind, MultiBuffer, MultiBufferEvent, MultiBufferExcerpt};
 
@@ -71,8 +71,8 @@ struct DiffFileProjection {
     working: Entity<LanguageBuffer>,
     /// 源坐标 hunks（新侧行范围；随编辑推进）。
     hunks: Vec<DiffHunk>,
-    /// 与 hunks 并行的工作区源文本跟踪区间（随编辑推进）。
-    ranges: Vec<TrackedRange>,
+    /// 与 hunks 并行的工作区源文本锚点范围（随编辑推进）。
+    ranges: Vec<Range<Anchor>>,
     /// 旧侧全文（物化旧侧行的数据源）。
     base_text: Option<Arc<str>>,
     /// 旧侧修订源（base_text 对应的 LanguageBuffer）。
@@ -404,15 +404,18 @@ impl MultiBuffer {
             return false;
         }
         for range in &mut file.ranges {
-            *range = range
-                .map_through_position_map(new_version, position_map)
+            let bytes = TextRange::new(range.start.offset(), range.end.offset())
+                .expect("diff hunk 锚点范围必须有序");
+            let mapped = position_map
+                .map_old_range_with_stickiness(bytes, Stickiness::Never)
                 .value();
+            *range = Anchor::range_inside(new_version, mapped);
         }
         let working_text = file.working.read(cx).text_snapshot(cx);
         let mapped_ranges = file
             .ranges
             .iter()
-            .map(|range| line_range_for_tracked_range(*range, &working_text))
+            .map(|range| line_range_for_anchor_range(range.clone(), &working_text))
             .collect::<Vec<_>>();
         for (hunk, range) in file.hunks.iter_mut().zip(mapped_ranges) {
             hunk.range = range;
@@ -522,7 +525,7 @@ impl MultiBuffer {
 impl DiffFileProjection {
     fn new(input: DiffFileInput, cx: &Context<MultiBuffer>) -> Self {
         let working_text = input.working.read(cx).text_snapshot(cx);
-        let ranges = tracked_ranges_for_hunks(&input.hunks, &working_text);
+        let ranges = anchor_ranges_for_hunks(&input.hunks, &working_text);
         Self {
             working: input.working,
             hunks: input.hunks,
@@ -629,10 +632,10 @@ impl DiffFileProjection {
         let use_ranges = !old.ranges.is_empty() && !self.ranges.is_empty();
         let matches = |old_index: usize, new_index: usize| {
             if use_ranges {
-                let old_range = old.ranges[old_index];
-                let new_range = self.ranges[new_index];
-                old_range.version() == new_range.version()
-                    && old_range.range().start() == new_range.range().start()
+                let old_range = &old.ranges[old_index];
+                let new_range = &self.ranges[new_index];
+                old_range.start.version() == new_range.start.version()
+                    && old_range.start.offset() == new_range.start.offset()
             } else {
                 let old_hunk = &old.hunks[old_index];
                 let new_hunk = &self.hunks[new_index];
@@ -931,8 +934,8 @@ fn hunk_is_inside_excerpt(hunk: &DiffHunk, excerpt: &Range<usize>) -> bool {
     }
 }
 
-/// 把 hunk 新侧行范围转为工作区源文本跟踪区间（注入时使用）。
-fn tracked_ranges_for_hunks(hunks: &[DiffHunk], text: &zcv_text::Snapshot) -> Vec<TrackedRange> {
+/// 把 hunk 新侧行范围转为工作区源文本锚点范围（注入时使用）。
+fn anchor_ranges_for_hunks(hunks: &[DiffHunk], text: &zcv_text::Snapshot) -> Vec<Range<Anchor>> {
     let version = text.version();
     hunks
         .iter()
@@ -944,26 +947,27 @@ fn tracked_ranges_for_hunks(hunks: &[DiffHunk], text: &zcv_text::Snapshot) -> Ve
                 .line_start_byte(Line::new(hunk.range.end))
                 .unwrap_or(text.len_bytes());
             let range = TextRange::new(start, end).expect("hunk 新侧行范围必须正序");
-            TrackedRange::from_range(version, range, Stickiness::Never)
+            Anchor::range_inside(version, range)
         })
         .collect()
 }
 
-fn line_range_for_tracked_range(range: TrackedRange, text: &zcv_text::Snapshot) -> Range<usize> {
-    let bytes = range.range();
+fn line_range_for_anchor_range(range: Range<Anchor>, text: &zcv_text::Snapshot) -> Range<usize> {
+    let bytes = TextRange::new(range.start.offset(), range.end.offset())
+        .expect("diff hunk 锚点范围必须有序");
     let start = text
         .byte_to_line(bytes.start())
-        .expect("跟踪区间起点必须属于当前文本")
+        .expect("锚点范围起点必须属于当前文本")
         .get();
     if bytes.is_empty() {
         return start..start;
     }
     let end_line = text
         .byte_to_line(bytes.end())
-        .expect("跟踪区间终点必须属于当前文本");
+        .expect("锚点范围终点必须属于当前文本");
     let end_line_start = text
         .line_start_byte(end_line)
-        .expect("跟踪区间终点行必须有效");
+        .expect("锚点范围终点行必须有效");
     let end = end_line.get() + usize::from(bytes.end() > end_line_start);
     start..end.max(start + 1)
 }

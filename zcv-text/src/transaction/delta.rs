@@ -48,7 +48,7 @@ impl Delta {
 /// 文本变更事件。
 ///
 /// `DeltaEvent` 是一次成功文本提交后的可消费事实，供后续 Anchor、
-/// TrackedRange、metadata layer、外部分析结果等统一感知版本推进和位置映射。
+/// metadata layer、外部分析结果等统一感知版本推进和位置映射。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeltaEvent {
     /// 本次成功提交分配到的事务身份。
@@ -63,7 +63,7 @@ pub struct DeltaEvent {
     delta: Delta,
     /// 可查询 changed ranges 的已验证变更集合。
     changeset: ChangeSet,
-    /// old -> new / new -> old 坐标映射器，供 Anchor、TrackedRange 和宿主复用。
+    /// old -> new / new -> old 坐标映射器，供 Anchor 和宿主复用。
     position_map: PositionMap,
 }
 

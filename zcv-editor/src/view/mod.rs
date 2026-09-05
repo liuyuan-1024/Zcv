@@ -1570,15 +1570,23 @@ impl Editor {
     ) {
         let mut kept = Vec::with_capacity(self.autoclose_regions.len());
         for region in std::mem::take(&mut self.autoclose_regions) {
-            if region.range.version() != old_version {
+            if region.range.start.version() != old_version
+                || region.range.end.version() != old_version
+            {
                 continue;
             }
             // 映射结果一律保留（Anchor 语义：删除内容不使锚失效）：
             // 区域锚在闭合符起点，闭合符是否存活由使用处的文本校验兜底。
             let range = region
                 .range
+                .start
                 .map_through_position_map(new_version, position_map)
-                .value();
+                .value()
+                ..region
+                    .range
+                    .end
+                    .map_through_position_map(new_version, position_map)
+                    .value();
             kept.push(AutocloseRegion { range, ..region });
         }
         self.autoclose_regions = kept;

@@ -9,9 +9,8 @@ use std::{borrow::Cow, cmp::Reverse, collections::BTreeMap, ops::Range};
 
 use sum_tree::{Bias as TreeBias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use zcv_text::{
-    BufferVersion, ByteOffset, CoordinateError, Line, LineRange, LogicalColumn, Position,
-    PositionMap, Snapshot, Stickiness, TextChangeBatch, TextRange, TrackedRange,
-    TrackedRangeUpdatePolicy,
+    Anchor, BufferVersion, ByteOffset, CoordinateError, Line, LineRange, LogicalColumn,
+    MappingResult, Position, PositionMap, Snapshot, Stickiness, TextChangeBatch, TextRange,
 };
 
 use super::error::{DisplayMapResult, FoldError};
@@ -19,7 +18,7 @@ use super::inlay_map::InlaySnapshot;
 use super::line_stream::{LineStream, StreamLineSource};
 use super::tab_map::line_content;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ApplyOutcome {
     Compatible,
     Spliced,
@@ -33,32 +32,25 @@ impl FoldId {
     const INITIAL: Self = Self(1);
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Fold {
     id: FoldId,
-    range: TrackedRange,
-    update_policy: TrackedRangeUpdatePolicy,
+    range: Range<Anchor>,
     line_span: (Line, Line),
 }
 
 impl Fold {
-    fn new(
-        id: FoldId,
-        version: BufferVersion,
-        range: TextRange,
-        update_policy: TrackedRangeUpdatePolicy,
-        line_span: (Line, Line),
-    ) -> Self {
+    fn new(id: FoldId, version: BufferVersion, range: TextRange, line_span: (Line, Line)) -> Self {
         Self {
             id,
-            range: TrackedRange::from_range(version, range, Stickiness::Never),
-            update_policy,
+            range: Anchor::range_inside(version, range),
             line_span,
         }
     }
 
-    fn text_range(self) -> TextRange {
-        self.range.range()
+    fn text_range(&self) -> TextRange {
+        TextRange::new(self.range.start.offset(), self.range.end.offset())
+            .expect("折叠锚点范围必须有序")
     }
 }
 
@@ -68,7 +60,7 @@ impl Item for Fold {
     fn summary(&self, (): ()) -> Self::Summary {
         FoldSummary {
             count: 1,
-            last_order: FoldOrder::for_fold(*self),
+            last_order: FoldOrder::for_fold(self),
         }
     }
 }
@@ -107,7 +99,7 @@ struct FoldOrder {
 }
 
 impl FoldOrder {
-    fn for_fold(fold: Fold) -> Self {
+    fn for_fold(fold: &Fold) -> Self {
         Self {
             start: fold.text_range().start().get(),
             end_descending: Reverse(fold.text_range().end().get()),
@@ -288,7 +280,7 @@ struct FoldLookup {
 impl FoldLookup {
     fn from_folds(folds: &[Fold]) -> Self {
         let mut by_start = folds.to_vec();
-        by_start.sort_by_key(|fold| FoldOrder::for_fold(*fold));
+        by_start.sort_by_key(FoldOrder::for_fold);
         let mut prefix_max_end = Vec::with_capacity(by_start.len());
         let mut prefix_fold_index = Vec::with_capacity(by_start.len());
         let mut prefix_max_line_end = Vec::with_capacity(by_start.len());
@@ -319,7 +311,9 @@ impl FoldLookup {
 
             active_ends.retain(|active_end| *active_end >= start);
             if fold.line_span.0 < fold.line_span.1 && active_ends.is_empty() {
-                anchor_by_line.entry(fold.line_span.0).or_insert(*fold);
+                anchor_by_line
+                    .entry(fold.line_span.0)
+                    .or_insert_with(|| fold.clone());
             }
             active_ends.push(end);
         }
@@ -662,7 +656,6 @@ pub(crate) enum StreamProjectedKind {
 pub(super) struct FoldMap {
     snapshot: FoldSnapshot,
     next_fold_id: FoldId,
-    default_update_policy: TrackedRangeUpdatePolicy,
 }
 
 impl FoldMap {
@@ -680,7 +673,6 @@ impl FoldMap {
             Self {
                 snapshot: snapshot.clone(),
                 next_fold_id: FoldId::INITIAL,
-                default_update_policy: TrackedRangeUpdatePolicy::invalidate_when_fully_deleted(),
             },
             snapshot,
         )
@@ -754,19 +746,15 @@ impl FoldMap {
         let position_map = PositionMap::from_text_patch(batch.patch());
         let mut retained = Vec::new();
         self.snapshot.fold_metadata_by_id.clear();
-        for mut fold in self.snapshot.folds.iter().copied() {
-            let update = fold.range.map_through_position_map_with_policy(
-                new_version,
-                &position_map,
-                fold.update_policy,
-            );
-            if let Some(range) = update.tracked_range() {
-                fold.range = range;
-                fold.line_span = fold_line_span(buffer, range.range())
-                    .expect("映射后的 tracked fold 必须位于当前 Snapshot 内");
-                self.snapshot
-                    .fold_metadata_by_id
-                    .insert(fold.id, range.range());
+        for mut fold in self.snapshot.folds.iter().cloned() {
+            let mapped =
+                position_map.map_old_range_with_stickiness(fold.text_range(), Stickiness::Never);
+            if !matches!(mapped, MappingResult::Collapsed(_)) {
+                let range = mapped.value();
+                fold.range = Anchor::range_inside(new_version, range);
+                fold.line_span = fold_line_span(buffer, range)
+                    .expect("映射后的折叠锚点范围必须位于当前 Snapshot 内");
+                self.snapshot.fold_metadata_by_id.insert(fold.id, range);
                 retained.push(fold);
             }
         }
@@ -866,19 +854,18 @@ impl FoldMapWriter<'_> {
                 .checked_add(1)
                 .ok_or(FoldError::IdOverflow)?,
         );
-        let mut folds: Vec<_> = self.0.snapshot.folds.iter().copied().collect();
+        let mut folds: Vec<_> = self.0.snapshot.folds.iter().cloned().collect();
         let fold = Fold::new(
             id,
             self.0.snapshot.buffer_snapshot().version(),
             range,
-            self.0.default_update_policy,
             fold_line_span(self.0.snapshot.buffer_snapshot(), range)?,
         );
         folds.push(fold);
         sort_folds(&mut folds);
         let old_rows = self.0.snapshot.line_count();
         self.0.snapshot.folds = SumTree::from_iter(folds, ());
-        let indexed_folds = self.0.snapshot.folds.iter().copied().collect::<Vec<_>>();
+        let indexed_folds = self.0.snapshot.folds.iter().cloned().collect::<Vec<_>>();
         self.0.snapshot.lookup = FoldLookup::from_folds(&indexed_folds);
         self.0.snapshot.fold_metadata_by_id.insert(id, range);
         let spans = hidden_spans_in_stream(self.0.snapshot.stream(), &self.0.snapshot.folds);
@@ -899,11 +886,11 @@ impl FoldMapWriter<'_> {
             .snapshot
             .folds
             .iter()
-            .copied()
+            .cloned()
             .filter(|fold| fold.id != id)
             .collect();
         self.0.snapshot.folds = SumTree::from_iter(retained, ());
-        let indexed_folds = self.0.snapshot.folds.iter().copied().collect::<Vec<_>>();
+        let indexed_folds = self.0.snapshot.folds.iter().cloned().collect::<Vec<_>>();
         self.0.snapshot.lookup = FoldLookup::from_folds(&indexed_folds);
         self.0.snapshot.fold_metadata_by_id.remove(&id);
         let spans = hidden_spans_in_stream(self.0.snapshot.stream(), &self.0.snapshot.folds);
@@ -916,7 +903,7 @@ impl FoldMapWriter<'_> {
 }
 
 fn sort_folds(folds: &mut [Fold]) {
-    folds.sort_by_key(|fold| FoldOrder::for_fold(*fold));
+    folds.sort_by_key(FoldOrder::for_fold);
 }
 
 fn hidden_spans(folds: &SumTree<Fold>) -> Vec<Range<usize>> {
@@ -1164,7 +1151,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_folded_text_invalidates_tracked_fold() {
+    fn deleting_folded_text_invalidates_anchor_range() {
         let mut buffer =
             Buffer::scratch("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);

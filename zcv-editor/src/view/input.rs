@@ -9,9 +9,7 @@ use std::sync::Arc;
 use gpui::{
     App, Bounds, Context, EntityInputHandler, Pixels, Point, UTF16Selection, Window, px, size,
 };
-use zcv_text::{
-    ByteOffset, Snapshot, Stickiness, TextRange, TrackedRange, TransactionId, Utf16Offset,
-};
+use zcv_text::{Anchor, ByteOffset, Snapshot, TextRange, TransactionId, Utf16Offset};
 
 use super::*;
 use crate::selection::{
@@ -27,11 +25,11 @@ pub(crate) struct EditorComposition {
 
 /// 自动补全的闭合符标记。
 ///
-/// 零宽 `TrackedRange` 锚在自动插入的闭合符起点（`Stickiness::Expand`）：
+/// 零宽 `Range<Anchor>` 锚在自动插入的闭合符起点：
 /// 向配对内输入文本时末端锚跟随闭合符右移，输入闭合符且光标紧贴末端时跳过，退格时光标贴着起点时删除整对。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct AutocloseRegion {
-    pub(crate) range: TrackedRange,
+    pub(crate) range: Range<Anchor>,
     pub(crate) pair: AutoClosePair,
 }
 
@@ -287,7 +285,7 @@ impl Editor {
                 && let Some(region) = self.autoclose_region_at(selection.end(), typed, &snapshot)
             {
                 after_actions.push(AfterAction::SkipPast {
-                    end: region.range.range().end(),
+                    end: region.range.end.offset(),
                     close_len: region.pair.end.len(),
                 });
                 consumed = true;
@@ -386,7 +384,7 @@ impl Editor {
                     new_regions_after
                         .into_iter()
                         .map(|(range, pair)| AutocloseRegion {
-                            range: TrackedRange::from_range(version, range, Stickiness::Expand),
+                            range: Anchor::range_outside(version, range),
                             pair,
                         }),
                 );
@@ -414,13 +412,13 @@ impl Editor {
         self.autoclose_regions
             .iter()
             .filter(|region| {
-                region.range.version() == snapshot.version()
-                    && region.range.range().end() == end
+                region.range.start.version() == snapshot.version()
+                    && region.range.end.offset() == end
                     && region.pair.end == typed.to_string()
                     && text_at(snapshot, end, region.pair.end)
             })
-            .max_by_key(|region| region.range.range().start())
-            .copied()
+            .max_by_key(|region| region.range.start.offset())
+            .cloned()
     }
 
     /// 光标贴着自动补全闭合符起点时扩展选区覆盖整对，使退格一次删除整对；非空选区或未命中区域时选区不变。
@@ -439,25 +437,37 @@ impl Editor {
                     .autoclose_regions
                     .iter()
                     .filter(|region| {
-                        region.range.version() == snapshot.version()
-                            && region.range.range().start() == selection.end()
+                        region.range.start.version() == snapshot.version()
+                            && region.range.start.offset() == selection.end()
                     })
-                    .max_by_key(|region| region.range.range().start())
-                    .copied()
+                    .max_by_key(|region| region.range.start.offset())
+                    .cloned()
                 else {
                     return *selection;
                 };
-                let range = region.range.range();
-                let Some(start) = range.start().get().checked_sub(region.pair.start.len()) else {
+                let Some(start) = region
+                    .range
+                    .start
+                    .offset()
+                    .get()
+                    .checked_sub(region.pair.start.len())
+                else {
                     return *selection;
                 };
                 let start = ByteOffset::new(start);
-                let Some(end) = range.end().checked_add(region.pair.end.len()) else {
+                let Some(end) = region
+                    .range
+                    .end
+                    .offset()
+                    .get()
+                    .checked_add(region.pair.end.len())
+                else {
                     return *selection;
                 };
+                let end = ByteOffset::new(end);
                 // 校验开合文本确实位于区域两端，再扩展选区覆盖整对。
                 if text_at(&snapshot, start, region.pair.start)
-                    && text_at(&snapshot, range.end(), region.pair.end)
+                    && text_at(&snapshot, end, region.pair.end)
                 {
                     changed = true;
                     Selection::new(start, end)

@@ -467,9 +467,9 @@ fn composite_edit_maps_excerpt_source_ranges_exactly_once(cx: &mut TestAppContex
     });
 }
 
-/// 文本区间迁移：展开 hunk 后编辑工作区源（行号变化），已有高亮立即跟随，重新注入的新 hunk 仍按文本位置识别为同一 hunk。
+/// 锚点范围迁移：展开 hunk 后编辑工作区源（行号变化），已有高亮立即跟随，重新注入的新 hunk 仍按文本位置识别为同一 hunk。
 #[gpui::test]
-fn diff_expansion_migrates_by_tracked_range_across_source_edits(cx: &mut TestAppContext) {
+fn diff_expansion_migrates_by_anchor_range_across_source_edits(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "zero\none\ntwo\nthree\n", cx);
     let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {

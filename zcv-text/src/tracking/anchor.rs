@@ -1,11 +1,13 @@
 //! Anchor：绑定 `BufferVersion` 的稳定位置标记。
 //! 通过 `PositionMap` 更新，不持有 Buffer，也不参与事务提交。
 
+use std::ops::Range;
+
 use crate::{
     errors::AnchorError,
     position_map::{Affinity, MappingResult, PositionMap},
     transaction::DeltaEvent,
-    types::{BufferVersion, ByteOffset},
+    types::{BufferVersion, ByteOffset, TextRange},
 };
 
 /// 绑定 BufferVersion 的稳定位置。
@@ -40,6 +42,24 @@ impl Anchor {
 
     pub fn affinity(self) -> Affinity {
         self.affinity
+    }
+
+    /// 创建一个不吸收边界插入的锚点范围。
+    ///
+    /// 起点贴在插入内容之后，终点贴在插入内容之前；
+    /// 适合折叠、diff hunk 等只跟随原有文本而不扩张的范围。
+    pub fn range_inside(version: BufferVersion, range: TextRange) -> Range<Self> {
+        Self::new(version, range.start()).with_affinity(Affinity::After)
+            ..Self::new(version, range.end()).with_affinity(Affinity::Before)
+    }
+
+    /// 创建一个吸收边界插入的锚点范围。
+    ///
+    /// 起点贴在插入内容之前，终点贴在插入内容之后。
+    /// 适合自动闭合对这类需要把内部新输入继续纳入范围的标记。
+    pub fn range_outside(version: BufferVersion, range: TextRange) -> Range<Self> {
+        Self::new(version, range.start()).with_affinity(Affinity::Before)
+            ..Self::new(version, range.end()).with_affinity(Affinity::After)
     }
 
     pub fn map_through_position_map(
@@ -146,5 +166,17 @@ mod tests {
                 .offset(),
             b(2)
         );
+    }
+
+    #[test]
+    fn anchor_ranges_should_express_boundary_insertion_policy() {
+        let range = TextRange::new(b(2), b(5)).unwrap();
+        let inside = Anchor::range_inside(BufferVersion::INITIAL, range);
+        let outside = Anchor::range_outside(BufferVersion::INITIAL, range);
+
+        assert_eq!(inside.start.affinity(), Affinity::After);
+        assert_eq!(inside.end.affinity(), Affinity::Before);
+        assert_eq!(outside.start.affinity(), Affinity::Before);
+        assert_eq!(outside.end.affinity(), Affinity::After);
     }
 }

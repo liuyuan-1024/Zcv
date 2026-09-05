@@ -136,13 +136,6 @@ pub enum AnchorError {
         expected: BufferVersion,
         actual: BufferVersion,
     },
-
-    /// TrackedRange 的两个端点必须来自同一旧版本，否则无法定义一次一致的范围映射。
-    #[error("TrackedRange 两端的 Anchor 版本不一致：start {start:?}，end {end:?}")]
-    RangeVersionMismatch {
-        start: BufferVersion,
-        end: BufferVersion,
-    },
 }
 
 /// VersionedResult 版本绑定与 remap 相关错误。
@@ -213,7 +206,7 @@ pub enum TextError {
     #[error(transparent)]
     Transaction(#[from] TransactionError),
 
-    /// Anchor 或 TrackedRange 的版本推进失败。
+    /// Anchor 的版本推进失败。
     #[error(transparent)]
     Anchor(#[from] AnchorError),
 

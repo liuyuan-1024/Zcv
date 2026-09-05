@@ -12,6 +12,9 @@
 /target/
 **/target/
 
+# 本机 Criterion 性能基准样本与报告
+/.performance/
+
 # Cargo.lock：
 # - Binary / CLI / Workspace：建议提交（删除下面这一行注释）
 # - Library：建议忽略（保留下面这一行）

@@ -44,4 +44,38 @@
     "reveal": "always",
     "hide": "never",
   },
+  {
+    "label": "6. 全部性能基准",
+    "command": "cargo",
+    "args": [
+      "bench",
+      "-p",
+      "zcv-benchmarks",
+      "--bench",
+      "text_buffer",
+      "--bench",
+      "language_highlighting",
+      "--bench",
+      "multi_buffer",
+    ],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "env": {
+      "CRITERION_HOME": "$ZED_WORKTREE_ROOT/.performance/criterion",
+    },
+    "save": "all",
+    "reveal": "always",
+    "hide": "never",
+  },
+  {
+    "label": "7. 记录当前版本性能基准",
+    "command": "cargo bench -p zcv-benchmarks --bench text_buffer --bench language_highlighting --bench multi_buffer -- --save-baseline \"$(git rev-parse --short HEAD)\"",
+    "args": [],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "env": {
+      "CRITERION_HOME": "$ZED_WORKTREE_ROOT/.performance/criterion",
+    },
+    "save": "all",
+    "reveal": "always",
+    "hide": "never",
+  },
 ]

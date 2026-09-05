@@ -886,8 +886,8 @@ impl FoldMapWriter<'_> {
             .snapshot
             .folds
             .iter()
+            .filter(|&fold| fold.id != id)
             .cloned()
-            .filter(|fold| fold.id != id)
             .collect();
         self.0.snapshot.folds = SumTree::from_iter(retained, ());
         let indexed_folds = self.0.snapshot.folds.iter().cloned().collect::<Vec<_>>();

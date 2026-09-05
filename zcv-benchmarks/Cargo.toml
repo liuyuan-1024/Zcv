@@ -1,0 +1,31 @@
+[package]
+name = "zcv-benchmarks"
+version.workspace = true
+edition.workspace = true
+description = "编辑体验核心路径的性能基准"
+
+[lib]
+path = "src/lib.rs"
+doctest = false
+
+[dev-dependencies]
+criterion.workspace = true
+gpui = { workspace = true, features = ["test-support"] }
+zcv-language.workspace = true
+zcv-multi-buffer.workspace = true
+zcv-text.workspace = true
+
+[[bench]]
+name = "text_buffer"
+harness = false
+
+[[bench]]
+name = "language_highlighting"
+harness = false
+
+[[bench]]
+name = "multi_buffer"
+harness = false
+
+[lints]
+workspace = true

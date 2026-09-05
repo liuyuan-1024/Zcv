@@ -11,7 +11,7 @@ mod list_item;
 mod scrollbar;
 mod tab;
 mod tooltip;
-pub mod tree;
+mod tree;
 
 pub use button::{Button, ButtonSize, ButtonStyle};
 pub use button_like::ButtonLike;
@@ -23,3 +23,6 @@ pub use list_item::ListItem;
 pub use scrollbar::{MIN_THUMB_SIZE, ScrollableHandle, Scrollbar};
 pub use tab::Tab;
 pub use tooltip::TooltipSpec;
+pub use tree::{
+    RowClickAction, TreeRow, TreeState, render_row_base, row_click_action, selection_border,
+};

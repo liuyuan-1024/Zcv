@@ -23,9 +23,11 @@ use zcv_editor::Editor;
 use zcv_git::{DiffStat, FileStatus, StatusCode};
 use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, space, typography};
-use zcv_ui::tree::{self, TreeRow, TreeState};
 use zcv_ui::{
     Button, ButtonLike, ButtonSize, ButtonStyle, Checkbox, Scrollbar, SvgIcon, TooltipSpec,
+};
+use zcv_ui::{
+    RowClickAction, TreeRow, TreeState, render_row_base, row_click_action, selection_border,
 };
 use zcv_workspace::{Panel, PanelEvent};
 
@@ -936,7 +938,7 @@ fn render_row(
                     .into_any_element(),
                 )
                 .into_any_element();
-            tree::render_row_base(
+            render_row_base(
                 entry.depth,
                 &entry.path,
                 is_dir,
@@ -950,7 +952,7 @@ fn render_row(
             .hover(|style| style.bg(color::current(cx).element_hover))
             .when(sel && changes_tree_focused, |el| {
                 el.child(
-                    tree::selection_border(cx)
+                    selection_border(cx)
                         .debug_selector(|| "version-control-selection-border".into()),
                 )
             })
@@ -962,14 +964,12 @@ fn render_row(
                     if let Some(panel) = weak.upgrade() {
                         panel.update(cx, |panel, cx| {
                             panel.state.borrow_mut().selected = Some((section, path.clone()));
-                            match tree::row_click_action(is_dir, event.click_count) {
-                                tree::RowClickAction::Toggle => {
-                                    panel.activate_selected(true, window, cx)
-                                }
-                                tree::RowClickAction::Preview => {
+                            match row_click_action(is_dir, event.click_count) {
+                                RowClickAction::Toggle => panel.activate_selected(true, window, cx),
+                                RowClickAction::Preview => {
                                     panel.activate_selected(false, window, cx)
                                 }
-                                tree::RowClickAction::Activate => {
+                                RowClickAction::Activate => {
                                     panel.activate_selected(true, window, cx)
                                 }
                             }

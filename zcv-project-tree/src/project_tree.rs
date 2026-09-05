@@ -22,7 +22,7 @@ use zcv_project::{Project, WorktreeEntry, translate_path};
 use zcv_theme::{color, space, typography};
 use zcv_ui::ConfirmOverlay;
 use zcv_ui::Scrollbar;
-use zcv_ui::tree::{self, TreeRow, TreeState};
+use zcv_ui::{RowClickAction, TreeRow, TreeState};
 use zcv_workspace::{Panel, PanelEvent};
 
 use zcv_settings::SettingsStore;
@@ -96,7 +96,7 @@ pub struct ProjectTreePanel {
     conflict: Option<ConflictSession>,
     /// 按下时暂存的点击动作意图（行路径, 动作）：click（mouse_up 未拖拽）派发时消费执行打开/展开；
     /// 拖拽消费了 click 时意图残留，由下次按下清除。
-    pending_click_intent: Option<(PathBuf, tree::RowClickAction)>,
+    pending_click_intent: Option<(PathBuf, RowClickAction)>,
     /// 冲突会话期间暂存的非冲突项：决策完成后与冲突项合成完整执行清单。
     pending_clean_items: Vec<(PathBuf, PathBuf)>,
     /// 复制进度（已完成数, 总数)：进度条数据源，None 时不渲染。

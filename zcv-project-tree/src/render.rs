@@ -12,7 +12,7 @@ use gpui::{
 use zcv_editor::Editor;
 use zcv_theme::color;
 use zcv_ui::Scrollbar;
-use zcv_ui::tree::{self, TreeState};
+use zcv_ui::{TreeState, render_row_base, row_click_action, selection_border};
 
 use super::drag::{DraggedEntryView, TreeDrag, drop_target_dir, filter_movable_sources};
 use super::editing::{EditOperation, EditState};
@@ -189,14 +189,14 @@ pub(super) fn render_row(
         .into(),
     );
 
-    tree::render_row_base(depth, &row.path, is_dir, row.expanded, content, cx)
+    render_row_base(depth, &row.path, is_dir, row.expanded, content, cx)
         .id(row_id)
         .cursor_pointer()
         // 多选标记用选中背景；活动文件标记用更弱的悬停背景，两者不同色——用户据此区分「选区成员」与「编辑器当前打开的文件」，避免把后者误当作选区参与拖拽。
         .when(marked, |el| el.bg(color::current(cx).element_hover))
         .when(in_set, |el| el.bg(color::current(cx).element_selected))
         .hover(|style| style.bg(color::current(cx).element_hover))
-        .when(sel && focused, |el| el.child(tree::selection_border(cx)))
+        .when(sel && focused, |el| el.child(selection_border(cx)))
         .when_some(drag_payload, |element, drag| {
             let weak = render_context.weak.clone();
             element.on_drag(drag, move |drag, _, _, cx| {
@@ -303,10 +303,8 @@ pub(super) fn render_row(
                             // 按下即执行会在拖动时误打开文件预览——打开文件经 reveal_active_path 的 select() 清空多选集合，选区拖拽随之中途退化为单项；
                             // 拖动目录行也会误展开/折叠。
                             // 拖拽消费了 click 时意图残留，下次按下清掉。
-                            tree.pending_click_intent = Some((
-                                path.clone(),
-                                tree::row_click_action(is_dir, event.click_count),
-                            ));
+                            tree.pending_click_intent =
+                                Some((path.clone(), row_click_action(is_dir, event.click_count)));
                         });
                     }
                     cx.stop_propagation();
@@ -329,13 +327,13 @@ pub(super) fn render_row(
                                 && intent_path == path
                             {
                                 match action {
-                                    tree::RowClickAction::Toggle => {
+                                    zcv_ui::RowClickAction::Toggle => {
                                         tree.activate_selected(true, window, cx)
                                     }
-                                    tree::RowClickAction::Preview => {
+                                    zcv_ui::RowClickAction::Preview => {
                                         tree.activate_selected(false, window, cx)
                                     }
-                                    tree::RowClickAction::Activate => {
+                                    zcv_ui::RowClickAction::Activate => {
                                         tree.activate_selected(true, window, cx)
                                     }
                                 }

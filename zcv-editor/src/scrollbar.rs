@@ -43,7 +43,13 @@ pub(super) struct ScrollbarLayout {
 #[derive(Clone, Debug)]
 pub(super) struct ScrollbarMarker {
     pub(super) y_range: Range<Pixels>,
-    pub(super) kind: DiffHunkKind,
+    pub(super) kind: ScrollbarMarkerKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ScrollbarMarkerKind {
+    Diff(DiffHunkKind),
+    Search,
 }
 
 impl ScrollbarLayout {
@@ -117,7 +123,7 @@ pub(super) fn thumb_geometry(
 /// - 高度夹到 [MIN_MARKER_HEIGHT, ∞)；相邻同色区间间隙 ≤ 1px 时合并
 /// - 与轨道 y 区间不相交的 marker 丢弃（只画可见段）
 pub(super) fn marker_geometry(
-    row_ranges: impl IntoIterator<Item = (Range<usize>, DiffHunkKind)>,
+    row_ranges: impl IntoIterator<Item = (Range<usize>, ScrollbarMarkerKind)>,
     track_bounds: Bounds<Pixels>,
     scroll_per_pixel: f32,
     line_height: Pixels,
@@ -162,10 +168,13 @@ pub(super) fn marker_geometry(
     merged
 }
 
-/// 第 0 列（git diff）的横向区间：轨道左边 + 1px 边框起，宽一列。
-pub(super) fn marker_column_x_range(track_bounds: Bounds<Pixels>) -> Range<Pixels> {
+/// 返回 marker 列的横向区间：轨道左边 + 1px 边框起，按列等分轨道宽度。
+pub(super) fn marker_column_x_range_at(
+    track_bounds: Bounds<Pixels>,
+    column: usize,
+) -> Range<Pixels> {
     let width = (track_bounds.size.width - SCROLLBAR_BORDER) * (1.0 / MARKER_COLUMN_COUNT);
-    let start = track_bounds.left() + SCROLLBAR_BORDER;
+    let start = track_bounds.left() + SCROLLBAR_BORDER + width * column as f32;
     start..(start + width.floor())
 }
 
@@ -186,7 +195,12 @@ mod tests {
         // per_pixel=2（内容 200px ↔ 轨道 100px）：行 5（content 125）→ 轨道 125/2=62.5。
         // 绝对定位：marker 表示行在文档中的位置，不随滚动变化（与 thumb 同一坐标系）。
         let track = track_bounds(100.);
-        let markers = marker_geometry([(5..6, Modified)], track, 2.0, px(25.));
+        let markers = marker_geometry(
+            [(5..6, ScrollbarMarkerKind::Diff(Modified))],
+            track,
+            2.0,
+            px(25.),
+        );
         assert_eq!(markers.len(), 1);
         assert_eq!(markers[0].y_range.start, px(62.5));
         assert_eq!(markers[0].y_range.end, px(62.5 + 12.5));
@@ -199,7 +213,12 @@ mod tests {
     fn marker_geometry_enforces_minimum_height() {
         // 内容高度 == 视口高度（per_pixel=0）：行 0 的 5px 高 marker 直接映射。
         let track = track_bounds(200.);
-        let markers = marker_geometry([(0..1, Added)], track, 0.0, px(25.));
+        let markers = marker_geometry(
+            [(0..1, ScrollbarMarkerKind::Diff(Added))],
+            track,
+            0.0,
+            px(25.),
+        );
         assert_eq!(markers.len(), 1);
         assert_eq!(markers[0].y_range.start, px(0.));
         // 行 0 的 content 区间 [0, 25)，不足 5px？不——25px > 5px，无需夹取。
@@ -207,7 +226,12 @@ mod tests {
 
         // 极端缩放（内容远大于视口）下单行被压到 < 5px → 夹取到 5px。
         let track = track_bounds(200.);
-        let markers = marker_geometry([(0..1, Added)], track, 40.0, px(25.));
+        let markers = marker_geometry(
+            [(0..1, ScrollbarMarkerKind::Diff(Added))],
+            track,
+            40.0,
+            px(25.),
+        );
         assert_eq!(markers.len(), 1);
         assert_eq!(markers[0].y_range.end - markers[0].y_range.start, px(5.));
     }
@@ -216,12 +240,28 @@ mod tests {
     fn marker_geometry_merges_adjacent_same_kind_and_keeps_different_kinds() {
         let track = track_bounds(200.);
         // 同色相邻（间隙 0）合并。
-        let markers = marker_geometry([(0..1, Added), (1..2, Added)], track, 0.0, px(25.));
+        let markers = marker_geometry(
+            [
+                (0..1, ScrollbarMarkerKind::Diff(Added)),
+                (1..2, ScrollbarMarkerKind::Diff(Added)),
+            ],
+            track,
+            0.0,
+            px(25.),
+        );
         assert_eq!(markers.len(), 1);
         assert_eq!(markers[0].y_range, px(0.)..px(50.));
 
         // 异色不合并。
-        let markers = marker_geometry([(0..1, Added), (1..2, Deleted)], track, 0.0, px(25.));
+        let markers = marker_geometry(
+            [
+                (0..1, ScrollbarMarkerKind::Diff(Added)),
+                (1..2, ScrollbarMarkerKind::Diff(Deleted)),
+            ],
+            track,
+            0.0,
+            px(25.),
+        );
         assert_eq!(markers.len(), 2);
     }
 
@@ -229,14 +269,19 @@ mod tests {
     fn marker_geometry_discards_markers_outside_track() {
         let track = track_bounds(100.);
         // per_pixel=2：行 10（content 250..275 → track 125..137.5）超出视口 → 丢弃。
-        let markers = marker_geometry([(10..11, Modified)], track, 2.0, px(25.));
+        let markers = marker_geometry(
+            [(10..11, ScrollbarMarkerKind::Diff(Modified))],
+            track,
+            2.0,
+            px(25.),
+        );
         assert!(markers.is_empty());
     }
 
     #[test]
     fn marker_column_x_range_divides_track_into_three_columns() {
         let track = track_bounds(200.);
-        let x_range = marker_column_x_range(track);
+        let x_range = marker_column_x_range_at(track, 0);
         // (15 − 1) / 3 = 4.67 → floor 4；从 1px 边框起。
         assert_eq!(x_range, px(1.)..px(5.));
     }

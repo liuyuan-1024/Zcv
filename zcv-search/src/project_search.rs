@@ -90,9 +90,11 @@ impl ProjectSearchView {
             return;
         }
 
-        let stream = self
+        let results = self
             .project
             .update(cx, |project, cx| project.search(query.clone(), cx));
+        let search_task = results.task;
+        let results_rx = results.rx;
         self.match_count = None;
         self.excerpts.update(cx, |buffer, cx| buffer.clear(cx));
         self.results_editor.update(cx, |editor, cx| {
@@ -104,6 +106,7 @@ impl ProjectSearchView {
         let project = self.project.clone();
         let results_editor = self.results_editor.clone();
         self.pending_search = Some(cx.spawn_in(window, async move |this, cx| {
+            let _search_task = search_task;
             let mut batched = Vec::<MultiBufferExcerpt>::new();
             let mut match_count = 0usize;
             loop {
@@ -115,7 +118,7 @@ impl ProjectSearchView {
                 {
                     break;
                 }
-                let item = match stream.rx.recv().await {
+                let item = match results_rx.recv().await {
                     Ok(item) => item,
                     // 通道关闭：后台扫描结束，装配剩余批次。
                     Err(_) => break,

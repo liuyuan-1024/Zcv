@@ -29,7 +29,10 @@ use super::display_map::{
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
-use super::scrollbar::{SCROLLBAR_WIDTH, ScrollbarLayout, marker_column_x_range, marker_geometry};
+use super::scrollbar::{
+    SCROLLBAR_WIDTH, ScrollbarLayout, ScrollbarMarkerKind, marker_column_x_range_at,
+    marker_geometry,
+};
 use super::view::{
     Editor, EditorMode, EditorPresentation, HunkRendering, SoftWrap, diff_kind_for_row,
     hunk_rendering,
@@ -986,12 +989,36 @@ fn layout_scrollbar(
             })
             .map(|(rows, _, _)| (rows.clone(), DiffHunkKind::Deleted))
             .collect();
+        let diff_markers = hunk_render
+            .diff_rows
+            .iter()
+            .cloned()
+            .chain(folded_deleted_markers)
+            .map(|(rows, kind)| (rows, ScrollbarMarkerKind::Diff(kind)));
+        let search_markers = editor
+            .search_highlights()
+            .into_iter()
+            .flat_map(|(matches, _)| matches.iter())
+            .filter_map(|search_match| {
+                let range = search_match.range();
+                let start = editor
+                    .display_snapshot()
+                    .offset_to_display_point(range.start())
+                    .ok()?
+                    .row()
+                    .get();
+                let end_offset = range.end().checked_sub(1)?;
+                let end = editor
+                    .display_snapshot()
+                    .offset_to_display_point(end_offset)
+                    .ok()?
+                    .row()
+                    .get()
+                    .saturating_add(1);
+                Some((start..end, ScrollbarMarkerKind::Search))
+            });
         scrollbar_layout.markers = marker_geometry(
-            hunk_render
-                .diff_rows
-                .iter()
-                .cloned()
-                .chain(folded_deleted_markers),
+            diff_markers.chain(search_markers),
             scrollbar_layout.hitbox.bounds,
             scrollbar_layout.scroll_per_pixel,
             line_height,
@@ -1788,13 +1815,24 @@ impl Element for EditorElement {
                 scrollbar.hitbox.bounds,
                 colors.scrollbar_track_background,
             ));
-            // git diff marker 列（track 之上、thumb 之下绘制；颜色同 git 状态色）。
-            let column_x = marker_column_x_range(scrollbar.hitbox.bounds);
+            // marker 图层位于 track 之上、thumb 之下；Git diff 与搜索结果分别占用独立列。
             for marker in &scrollbar.markers {
+                let column_x = marker_column_x_range_at(
+                    scrollbar.hitbox.bounds,
+                    match marker.kind {
+                        ScrollbarMarkerKind::Diff(_) => 0,
+                        ScrollbarMarkerKind::Search => 1,
+                    },
+                );
                 let marker_color = match marker.kind {
-                    DiffHunkKind::Added => colors.version_control_added,
-                    DiffHunkKind::Modified => colors.version_control_modified,
-                    DiffHunkKind::Deleted => colors.version_control_deleted,
+                    ScrollbarMarkerKind::Diff(DiffHunkKind::Added) => colors.version_control_added,
+                    ScrollbarMarkerKind::Diff(DiffHunkKind::Modified) => {
+                        colors.version_control_modified
+                    }
+                    ScrollbarMarkerKind::Diff(DiffHunkKind::Deleted) => {
+                        colors.version_control_deleted
+                    }
+                    ScrollbarMarkerKind::Search => colors.search_match_background,
                 };
                 window.paint_quad(fill(
                     Bounds::from_corners(

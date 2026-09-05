@@ -15,7 +15,7 @@ use gpui::{
 use zcv_actions::{OpenExcerpts, ToggleFold};
 use zcv_git::DiffHunkKind;
 use zcv_language::BracketPair;
-use zcv_text::{ByteOffset, Line, LogicalColumn, TextRange};
+use zcv_text::{ByteOffset, Line, LogicalColumn, Position, TextRange};
 use zcv_theme::{color, space, typography};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon};
 
@@ -247,16 +247,10 @@ impl EditorLayout {
                 .map(BufferPoint::from);
         }
         if let Some(info) = line.wrap_info {
-            return Some(BufferPoint::new(
-                info.line,
-                zcv_text::LogicalColumn::new(column),
-            ));
+            return Some(BufferPoint::new(info.line, LogicalColumn::new(column)));
         }
         if let Some(logical_line) = line.logical_line {
-            return Some(BufferPoint::new(
-                logical_line,
-                zcv_text::LogicalColumn::new(column),
-            ));
+            return Some(BufferPoint::new(logical_line, LogicalColumn::new(column)));
         }
         let offset = self
             .display_snapshot
@@ -1499,7 +1493,7 @@ impl Element for EditorElement {
             editor.update(cx, |editor, cx| {
                 if let Ok(offset) = editor
                     .render_snapshot()
-                    .position_to_byte(zcv_text::Position::new(point.line(), point.column()))
+                    .position_to_byte(Position::new(point.line(), point.column()))
                 {
                     editor.begin_selection(offset, event.click_count, event.modifiers.shift, cx);
                 }
@@ -2658,8 +2652,7 @@ fn layout_projected_range_quad(
         if row < start.line() || row > end.line() {
             continue;
         }
-        if row == end.line() && row != start.line() && end.column() == zcv_text::LogicalColumn::ZERO
-        {
+        if row == end.line() && row != start.line() && end.column() == LogicalColumn::ZERO {
             continue;
         }
 
@@ -2775,7 +2768,7 @@ fn local_byte_for_display_point(
                 .display_to_logical_column(logical_line, point.column())
                 .ok()
         })
-        .map_or(0, zcv_text::LogicalColumn::get);
+        .map_or(0, LogicalColumn::get);
     column_to_byte(&line.shaped.text, logical_column)
 }
 

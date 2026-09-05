@@ -13,10 +13,10 @@ use gpui::{
     Subscription, Task, UnderlineStyle, Window, div, img, prelude::*, px,
 };
 use pulldown_cmark::Alignment;
-use zcv_language::highlight_snippet;
+use zcv_language::{SnippetHighlights, highlight_snippet};
 use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
-use zcv_theme::{color, space, typography};
+use zcv_theme::{color, space, syntax, typography};
 use zcv_ui::Scrollbar;
 use zcv_workspace::{
     Item, ItemEvent, ItemHandle, PreviewDocument, PreviewItem, PreviewItemHandle,
@@ -240,7 +240,7 @@ fn render_block(
             }
             let styles = highlights
                 .as_ref()
-                .map(|highlights| zcv_theme::syntax::style_table(&highlights.capture_names));
+                .map(|highlights| syntax::style_table(&highlights.capture_names));
             let mut line_start = 0;
             for line in code_lines(text) {
                 let line_end = line_start + line.len();
@@ -535,7 +535,7 @@ fn highlight_code_blocks(blocks: &mut [Block]) {
 fn render_code_line(
     line: &str,
     line_range: Range<usize>,
-    highlights: Option<&zcv_language::SnippetHighlights>,
+    highlights: Option<&SnippetHighlights>,
     styles: Option<&[HighlightStyle]>,
 ) -> AnyElement {
     let line_highlights: Vec<(Range<usize>, HighlightStyle)> = highlights

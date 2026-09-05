@@ -719,13 +719,13 @@ pub(crate) fn edit_ranges(changes: &TextChangeBatch) -> Option<Vec<Range<usize>>
 mod tests {
     use std::time::Duration;
 
-    use zcv_text::{ByteOffset, Edit, TextRange, TransactionMetadata};
+    use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TextRange, TransactionMetadata};
 
     use super::*;
     use crate::test::{parsed_syntax, rust_buffer};
 
     /// 测试共用：按给定编辑把语法映射推进到新版本（插值 + 后台解析 + 安装）。
-    fn edit_and_reparse(buffer: &mut zcv_text::Buffer, syntax: &mut SyntaxMap, edits: Vec<Edit>) {
+    fn edit_and_reparse(buffer: &mut Buffer, syntax: &mut SyntaxMap, edits: Vec<Edit>) {
         let subscription = buffer.subscribe();
         let old_snapshot = buffer.snapshot();
         buffer.edit(edits, TransactionMetadata::default()).unwrap();
@@ -1291,9 +1291,7 @@ let b = 2;
                 "fn function_{index}(value: i32) -> i32 {{\n    let result = value * {index};\n    result\n}}\n\n"
             ));
         }
-        let buffer =
-            zcv_text::Buffer::from_text(source.to_owned(), zcv_text::BufferConfig::default())
-                .unwrap();
+        let buffer = Buffer::from_text(source.to_owned(), BufferConfig::default()).unwrap();
         let snapshot = buffer.snapshot();
         let language = crate::registry::language_for_file(Path::new("main.rs"), None)
             .expect("Rust 语言应可加载");
@@ -1335,9 +1333,7 @@ let b = 2;
     #[test]
     fn time_sliced_parse_aborts_on_cancellation() {
         let source = "fn main() { let value = 1; }\n";
-        let buffer =
-            zcv_text::Buffer::from_text(source.to_owned(), zcv_text::BufferConfig::default())
-                .unwrap();
+        let buffer = Buffer::from_text(source.to_owned(), BufferConfig::default()).unwrap();
         let snapshot = buffer.snapshot();
         let language = crate::registry::language_for_file(Path::new("main.rs"), None)
             .expect("Rust 语言应可加载");
@@ -1369,8 +1365,7 @@ let b = 2;
 
     #[test]
     fn cancelled_parse_produces_no_installable_snapshot() {
-        let buffer =
-            zcv_text::Buffer::from_text("fn main() {}\n".to_owned(), Default::default()).unwrap();
+        let buffer = Buffer::from_text("fn main() {}\n".to_owned(), Default::default()).unwrap();
         let snapshot = buffer.snapshot();
         let mut syntax = SyntaxMap::new(&snapshot);
         let first_line = "fn main() {}";

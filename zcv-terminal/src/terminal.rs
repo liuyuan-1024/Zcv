@@ -35,6 +35,7 @@ use async_channel::{Receiver, unbounded};
 use gpui::{App, BackgroundExecutor, Context, EventEmitter, Pixels, Size, Task, Window};
 pub use panel::TerminalPanel;
 pub(crate) use view::TerminalView;
+use zcv_settings::{SettingsStore, UserSettings};
 
 use crate::{
     alacritty::{AlacrittyTermLock, PtySender},
@@ -380,7 +381,7 @@ pub(crate) struct TerminalSettings {
 }
 
 impl TerminalSettings {
-    pub fn from_user_settings(settings: &zcv_settings::UserSettings) -> Self {
+    pub fn from_user_settings(settings: &UserSettings) -> Self {
         let runtime_font_size = TERMINAL_FONT_SIZE.load(Ordering::Relaxed);
         TerminalSettings {
             font_size: if runtime_font_size == 0 {
@@ -403,7 +404,7 @@ impl TerminalSettings {
     }
 
     pub fn load(cx: &App) -> Self {
-        let settings = zcv_settings::SettingsStore::try_get(cx).unwrap_or_default();
+        let settings = SettingsStore::try_get(cx).unwrap_or_default();
         Self::from_user_settings(&settings)
     }
 }
@@ -1008,7 +1009,7 @@ mod tests {
     #[test]
     fn terminal_typography_uses_its_own_configured_size() {
         TERMINAL_FONT_SIZE.store(0, Ordering::Relaxed);
-        let mut user_settings = zcv_settings::UserSettings::default();
+        let mut user_settings = UserSettings::default();
         let default = TerminalSettings::from_user_settings(&user_settings);
         assert_eq!(default.font_size, 16.);
         assert_eq!(default.line_height, 1.618);

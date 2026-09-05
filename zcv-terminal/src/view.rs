@@ -22,7 +22,8 @@ use std::time::{Duration, Instant};
 use zcv_actions::{
     Clear, Copy, DecreaseFontSize, IncreaseFontSize, Interrupt, Paste, ResetFontSize,
 };
-use zcv_theme::space;
+use zcv_settings::SettingsStore;
+use zcv_theme::{color, space};
 use zcv_workspace::{Item, ItemEvent};
 
 /// 拖拽选择自动滚动的限频间隔（≈60Hz，与编辑器 drag_autoscroll 同款）。
@@ -238,7 +239,7 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let settings = zcv_settings::SettingsStore::get(cx);
+        let settings = SettingsStore::get(cx);
         set_terminal_font_size(settings.terminal_font_size);
         window.refresh();
     }
@@ -581,7 +582,7 @@ impl Render for TerminalView {
             .tab_index(0)
             .size_full()
             .overflow_hidden()
-            .bg(zcv_theme::color::current(cx).editor_background)
+            .bg(color::current(cx).editor_background)
             .px(space::S8)
             .py(space::S4)
             .on_key_down(cx.listener(Self::handle_key_down))

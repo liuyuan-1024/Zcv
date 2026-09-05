@@ -19,9 +19,9 @@ use zcv_language::{
     NewlineIndent, SyntaxSnapshot,
 };
 use zcv_text::{
-    Buffer, BufferConfig, BufferVersion, ByteOffset, Edit, PositionMap, Snapshot, Stickiness,
-    TextChangeBatch, TextError, TextRange, TextResult, TextSubscription, TransactionId,
-    TransactionMetadata,
+    Buffer, BufferConfig, BufferVersion, ByteOffset, Edit, Line, PositionMap, Snapshot, Stickiness,
+    StorageError, TextChangeBatch, TextError, TextRange, TextResult, TextSubscription,
+    TransactionId, TransactionMetadata,
 };
 
 /// 组合文档中的一个源片段。
@@ -106,12 +106,12 @@ impl MultiBufferExcerpt {
         assert!(lines.start <= lines.end, "excerpt 行范围必须正序");
         assert!(lines.end <= text.line_count(), "excerpt 行范围不能越界");
         let start = text
-            .line_start_byte(zcv_text::Line::new(lines.start))
+            .line_start_byte(Line::new(lines.start))
             .expect("excerpt 起始行必须有效");
         let end = if lines.end == text.line_count() {
             text.len_bytes()
         } else {
-            text.line_start_byte(zcv_text::Line::new(lines.end))
+            text.line_start_byte(Line::new(lines.end))
                 .expect("excerpt 终止行必须有效")
         };
         Self::new(
@@ -1199,7 +1199,7 @@ impl MultiBuffer {
         cx: &mut Context<Self>,
     ) -> TextResult<PositionMap> {
         if self.read_only {
-            return Err(zcv_text::StorageError::ReadOnly.into());
+            return Err(StorageError::ReadOnly.into());
         }
 
         let global_map = PositionMap::from_edits(&edits);
@@ -1291,7 +1291,7 @@ impl MultiBuffer {
                 .iter()
                 .any(|mapping| !mapping.editable)
             {
-                return Err(zcv_text::StorageError::ReadOnly.into());
+                return Err(StorageError::ReadOnly.into());
             }
             let start_mapping = &mappings[start_index];
             let end_mapping = &mappings[end_index];

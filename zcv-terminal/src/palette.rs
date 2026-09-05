@@ -4,6 +4,7 @@
 //! xterm 256 色算法与主题无关，在此内联实现。
 
 use gpui::{App, Rgba, Window};
+use zcv_theme::color;
 
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
 
@@ -19,8 +20,8 @@ const fn rgb_u8(r: u8, g: u8, b: u8) -> Rgba {
 /// 把 alacritty 颜色枚举解析为 RGBA。
 pub(crate) fn color_to_rgba(color: &Color, _window: &Window, cx: &App) -> Rgba {
     match color {
-        Color::Named(NamedColor::Foreground) => zcv_theme::color::current(cx).text,
-        Color::Named(NamedColor::Background) => zcv_theme::color::current(cx).editor_background,
+        Color::Named(NamedColor::Foreground) => color::current(cx).text,
+        Color::Named(NamedColor::Background) => color::current(cx).editor_background,
         Color::Named(named) => {
             let index = named_index(*named);
             if index >= 16 {
@@ -40,13 +41,13 @@ pub(crate) fn get_color_at_index(index: usize, _window: &Window, cx: &App) -> Rg
         0..=15 => theme_ansi_colors(cx)[index],
         16..=255 => indexed_color(index as u8),
         // 256 前景 / 257 背景 / 258 光标：回退主题语义色。
-        256 => zcv_theme::color::current(cx).text,
-        257 => zcv_theme::color::current(cx).editor_background,
-        258 => zcv_theme::color::current(cx).editor_cursor,
+        256 => color::current(cx).text,
+        257 => color::current(cx).editor_background,
+        258 => color::current(cx).editor_cursor,
         // 259..267 为 dim 变体。
         259..=266 => theme_ansi_dim_colors(cx)[index - 259],
-        267 => zcv_theme::color::current(cx).text,
-        268 => zcv_theme::color::current(cx).editor_background,
+        267 => color::current(cx).text,
+        268 => color::current(cx).editor_background,
         _ => rgb_u8(128, 128, 128),
     }
 }
@@ -89,7 +90,7 @@ pub(crate) fn named_index(named: NamedColor) -> usize {
 
 /// 主题的 ANSI 16 色表（`terminal.ansi.*`，跟随应用主题）。
 fn theme_ansi_colors(cx: &App) -> [Rgba; 16] {
-    let c = zcv_theme::color::current(cx);
+    let c = color::current(cx);
     [
         c.terminal_ansi_black,
         c.terminal_ansi_red,
@@ -112,7 +113,7 @@ fn theme_ansi_colors(cx: &App) -> [Rgba; 16] {
 
 /// 主题的 dim 变体表（DimBlack..DimWhite，索引 16..23）。
 fn theme_ansi_dim_colors(cx: &App) -> [Rgba; 8] {
-    let c = zcv_theme::color::current(cx);
+    let c = color::current(cx);
     [
         c.terminal_ansi_dim_black,
         c.terminal_ansi_dim_red,

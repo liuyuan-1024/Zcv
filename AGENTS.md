@@ -716,6 +716,35 @@ shell/components/primitives/
 
 不要把某个完整消费方的业务逻辑抽到共享目录，再让其他模块间接依赖它。
 
+### 导入与路径限定
+
+已经通过 `use` 导入的模块、类型、函数或常量，后续使用时默认采用导入后的短名称，避免无意义地重复书写 crate 或模块前缀。
+
+推荐：
+
+```rust
+use zcv_theme::typography;
+
+let size = typography::content_size();
+```
+
+不推荐：
+
+```rust
+use zcv_theme::typography;
+
+let size = zcv_theme::typography::content_size();
+```
+
+具体规则：
+
+1. 同一文件中重复使用某个模块或类型时，通常应先导入，再使用短路径。
+2. 只使用一次的符号，可以保留完整路径，避免产生仅为一次调用服务的导入。
+3. 表达跨 crate 职责边界、且名称较为通用的 API，可以保留 crate 限定路径。例如 `zcv_assets::text(...)` 和 `zcv_workspace::register(...)`。
+4. 同名冲突或语义容易混淆时，使用明确的别名或保留模块限定路径，不强行缩短。
+5. 属性宏、字符串协议值和文档链接不适用本规则，例如 `#[gpui::test]` 和 `"dock::FocusOrHidePanel"`。
+6. 本规则不禁止所有 `::`；路径限定用于表达归属或消除歧义，短路径用于减少无意义重复。两者冲突时优先保证可读性。
+
 ## 错误处理
 
 错误处理应服务于真实的失败场景。

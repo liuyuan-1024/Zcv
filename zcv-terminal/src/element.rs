@@ -1172,6 +1172,7 @@ mod styled_line_tests {
         vte::ansi::{Color, NamedColor, Rgb},
     };
     use gpui::{Context, div};
+    use zcv_theme::ThemeChoice;
 
     #[derive(Default)]
     struct EmptyView;
@@ -1258,7 +1259,7 @@ mod styled_line_tests {
             zcv_assets::Assets.load_fonts(cx).expect("内置字体应能加载");
         });
         let (_, cx) = cx.add_window_view(|window, cx| {
-            zcv_theme::ThemeChoice::System.apply(cx, Some(window));
+            ThemeChoice::System.apply(cx, Some(window));
             EmptyView
         });
         cx.update(|window, cx| {
@@ -1352,7 +1353,7 @@ mod styled_line_tests {
     #[gpui::test]
     fn wide_char_spacer_skips_text_not_background(cx: &mut gpui::TestAppContext) {
         let (_, cx) = cx.add_window_view(|window, cx| {
-            zcv_theme::ThemeChoice::System.apply(cx, Some(window));
+            ThemeChoice::System.apply(cx, Some(window));
             EmptyView
         });
         let red = Color::Spec(Rgb { r: 255, g: 0, b: 0 });
@@ -1398,7 +1399,7 @@ mod styled_line_tests {
         cx: &mut gpui::TestAppContext,
     ) {
         let (_, cx) = cx.add_window_view(|window, cx| {
-            zcv_theme::ThemeChoice::System.apply(cx, Some(window));
+            ThemeChoice::System.apply(cx, Some(window));
             EmptyView
         });
         let red = Color::Spec(Rgb { r: 255, g: 0, b: 0 });

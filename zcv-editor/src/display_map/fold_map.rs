@@ -10,7 +10,7 @@ use std::{borrow::Cow, cmp::Reverse, collections::BTreeMap, ops::Range};
 use sum_tree::{Bias as TreeBias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use zcv_text::{
     Anchor, BufferVersion, ByteOffset, CoordinateError, Line, LineRange, LogicalColumn,
-    MappingResult, Position, PositionMap, Snapshot, Stickiness, TextChangeBatch, TextRange,
+    MappingResult, Position, Snapshot, Stickiness, TextChangeBatch, TextRange,
 };
 
 use super::error::{DisplayMapResult, FoldError};
@@ -743,7 +743,7 @@ impl FoldMap {
 
         let old_rows = self.snapshot.line_count();
         let old_spans = hidden_spans(&self.snapshot.folds);
-        let position_map = PositionMap::from_text_patch(batch.patch());
+        let position_map = batch.position_map();
         let mut retained = Vec::new();
         self.snapshot.fold_metadata_by_id.clear();
         for mut fold in self.snapshot.folds.iter().cloned() {

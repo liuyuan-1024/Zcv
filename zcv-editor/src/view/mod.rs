@@ -1797,7 +1797,7 @@ impl Editor {
             self.selections =
                 EditorSelections::from_selection_set(text_version, &SelectionSet::default());
         } else if let Some(old_version) = changes.old_version() {
-            let position_map = PositionMap::from_text_patch(changes.patch());
+            let position_map = changes.position_map();
             self.map_search_anchors(old_version, text_version, &position_map);
             // 共享 Buffer 的其他 Editor 或 zcv-text 直接编辑：批量映射端点锚点。
             // 本 Editor 自己发起的编辑已在 apply_edit_outcome 映射过，版本已推进，跳过。

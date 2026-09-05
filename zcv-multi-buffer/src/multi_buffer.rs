@@ -1125,7 +1125,7 @@ impl MultiBuffer {
         if let Some(patch) = patch
             && !patch.is_empty()
         {
-            let position_map = PositionMap::from_text_patch(patch.patch());
+            let position_map = patch.position_map();
             for excerpt in self
                 .state
                 .excerpts
@@ -1579,7 +1579,7 @@ impl MultiBuffer {
                 self.rebuild_diff_projection(cx);
             }
             let change = projection_subscription.consume();
-            let position_map = PositionMap::from_text_patch(change.patch());
+            let position_map = change.position_map();
             return Ok(Some(MultiBufferHistoryOutcome {
                 transaction_id: outcome.transaction_id(),
                 position_map,
@@ -1657,7 +1657,7 @@ impl MultiBuffer {
         }
         self.rebuild_projection(cx);
         let change = projection_subscription.consume();
-        let position_map = PositionMap::from_text_patch(change.patch());
+        let position_map = change.position_map();
         let new_version = self.text_buffer(cx).read(cx).version();
         let transaction_id = entry.id;
         if redo {

@@ -8,6 +8,7 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex, Weak};
 
 use crate::{
+    position_map::PositionMap,
     transaction::Delta,
     types::{BufferVersion, ByteOffset, TextRange},
 };
@@ -122,6 +123,14 @@ impl TextChangeBatch {
 
     pub fn requires_reset(&self) -> bool {
         self.reset
+    }
+
+    /// 返回本批次从旧版本到新版本的坐标映射。
+    ///
+    /// 位置型派生状态必须从订阅批次取得映射，不能各自重新解释文本变更。
+    /// 调用方仍需先处理 `requires_reset`，因为整体替换不保留位置跟随语义。
+    pub fn position_map(&self) -> PositionMap {
+        PositionMap::from_text_patch(&self.patch)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -431,6 +440,10 @@ mod tests {
         assert_eq!(first_batch.old_version(), Some(initial_version));
         assert_eq!(first_batch.new_version(), Some(buffer.version()));
         assert!(!first_batch.patch().is_empty());
+        assert_eq!(
+            first_batch.position_map(),
+            PositionMap::from_text_patch(first_batch.patch())
+        );
         assert!(first.consume().is_empty());
 
         let second_batch = second.consume();

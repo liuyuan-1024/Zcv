@@ -1113,10 +1113,20 @@ impl Element for EditorElement {
             Pixels::ZERO
         };
         let text_right = bounds.right() - scrollbar_width;
+        let font_id = window.text_system().resolve_font(&font);
+        let em_advance = window
+            .text_system()
+            .em_advance(font_id, font_size)
+            .expect("编辑器字体必须包含拉丁字形");
+        let wrap_edge_safety = wrap_edge_safety(soft_wrap, em_advance);
+        // 右侧余量属于编辑器的布局几何，而非换行器的临时扣减。
+        // 绘制仍可覆盖完整文本区，避免边缘字形被裁剪；
+        // 换行、滚动和行背景则共同以缩减后的文本布局区为准。
+        let text_layout_right = (text_right - wrap_edge_safety).max(text_left);
         let text_bounds = Bounds {
             origin: point(text_left, bounds.top()),
             size: size(
-                (text_right - text_left).max(Pixels::ZERO),
+                (text_layout_right - text_left).max(Pixels::ZERO),
                 bounds.size.height,
             ),
         };
@@ -1124,13 +1134,6 @@ impl Element for EditorElement {
             origin: point(text_right, bounds.top()),
             size: size(scrollbar_width, bounds.size.height),
         };
-        let font_id = window.text_system().resolve_font(&font);
-        let em_advance = window
-            .text_system()
-            .em_advance(font_id, font_size)
-            .expect("编辑器字体必须包含拉丁字形");
-        // 安全边界只用于提前换行；绘制裁剪仍覆盖真实文本区。
-        // 否则会把预留的安全空间误当成裁剪线，直接截断行尾字形。
         let geometry = EditorGeometry {
             text_bounds,
             text_clip_bounds: Bounds {
@@ -1978,15 +1981,14 @@ fn deleted_hunk_triangle_points(bounds: Bounds<Pixels>, strip_width: Pixels) -> 
 
 fn calculate_wrap_width(
     soft_wrap: SoftWrap,
-    text_width: Pixels,
+    text_layout_width: Pixels,
     preferred_line_length: usize,
     em_advance: Pixels,
 ) -> Option<Pixels> {
-    let available_width = (text_width - wrap_edge_safety(soft_wrap, em_advance)).max(Pixels::ZERO);
     match soft_wrap {
         SoftWrap::None => None,
-        SoftWrap::EditorWidth => Some(available_width),
-        SoftWrap::Bounded => Some(available_width.min(em_advance * preferred_line_length as f32)),
+        SoftWrap::EditorWidth => Some(text_layout_width),
+        SoftWrap::Bounded => Some(text_layout_width.min(em_advance * preferred_line_length as f32)),
     }
 }
 
@@ -3033,8 +3035,15 @@ mod tests {
                     let mut map = DisplayMap::new(snapshot);
                     for quarter_pixels in 720..=2_400 {
                         let text_width = px(quarter_pixels as f32 / 4.);
-                        let wrap_width =
-                            calculate_wrap_width(SoftWrap::EditorWidth, text_width, 80, em_advance);
+                        let text_layout_width = (text_width
+                            - wrap_edge_safety(SoftWrap::EditorWidth, em_advance))
+                        .max(Pixels::ZERO);
+                        let wrap_width = calculate_wrap_width(
+                            SoftWrap::EditorWidth,
+                            text_layout_width,
+                            80,
+                            em_advance,
+                        );
                         map.set_wrap_width(
                             wrap_width,
                             font.clone(),
@@ -3085,10 +3094,9 @@ mod tests {
                                 None,
                             );
                             assert!(
-                                shaped.width + wrap_edge_safety(SoftWrap::EditorWidth, em_advance)
-                                    <= text_width,
-                                "软换行行尾应保留安全边界：width={}, shaped={}，row={row_text:?}",
-                                f32::from(text_width),
+                                shaped.width <= text_layout_width,
+                                "软换行行尾不应超出文本布局区：layout_width={}, shaped={}，row={row_text:?}",
+                                f32::from(text_layout_width),
                                 f32::from(shaped.width),
                             );
                         }

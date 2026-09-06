@@ -11,6 +11,9 @@ doctest = false
 [dev-dependencies]
 criterion.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
+serde.workspace = true
+serde_json.workspace = true
+sysinfo.workspace = true
 zcv-language.workspace = true
 zcv-multi-buffer.workspace = true
 zcv-text.workspace = true
@@ -25,6 +28,10 @@ harness = false
 
 [[bench]]
 name = "multi_buffer"
+harness = false
+
+[[bench]]
+name = "memory"
 harness = false
 
 [lints]

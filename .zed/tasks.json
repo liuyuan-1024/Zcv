@@ -46,21 +46,12 @@
   },
   {
     "label": "6. 全部性能基准",
-    "command": "cargo",
-    "args": [
-      "bench",
-      "-p",
-      "zcv-benchmarks",
-      "--bench",
-      "text_buffer",
-      "--bench",
-      "language_highlighting",
-      "--bench",
-      "multi_buffer",
-    ],
+    "command": "cargo bench -p zcv-benchmarks --bench text_buffer --bench language_highlighting --bench multi_buffer && cargo bench -p zcv-benchmarks --bench memory",
+    "args": [],
     "cwd": "$ZED_WORKTREE_ROOT",
     "env": {
       "CRITERION_HOME": "$ZED_WORKTREE_ROOT/.performance/criterion",
+      "ZCV_MEMORY_BENCHMARK_HOME": "$ZED_WORKTREE_ROOT/.performance/memory",
     },
     "save": "all",
     "reveal": "always",
@@ -68,11 +59,12 @@
   },
   {
     "label": "7. 记录当前版本性能基准",
-    "command": "cargo bench -p zcv-benchmarks --bench text_buffer --bench language_highlighting --bench multi_buffer -- --save-baseline \"$(git rev-parse --short HEAD)\"",
+    "command": "cargo bench -p zcv-benchmarks --bench text_buffer --bench language_highlighting --bench multi_buffer -- --save-baseline \"$(git rev-parse --short HEAD)\" && ZCV_MEMORY_BENCHMARK_LABEL=\"$(git rev-parse --short HEAD)\" cargo bench -p zcv-benchmarks --bench memory",
     "args": [],
     "cwd": "$ZED_WORKTREE_ROOT",
     "env": {
       "CRITERION_HOME": "$ZED_WORKTREE_ROOT/.performance/criterion",
+      "ZCV_MEMORY_BENCHMARK_HOME": "$ZED_WORKTREE_ROOT/.performance/memory",
     },
     "save": "all",
     "reveal": "always",

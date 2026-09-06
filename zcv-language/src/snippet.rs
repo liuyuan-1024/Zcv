@@ -21,11 +21,39 @@ pub struct SnippetHighlights {
     pub capture_names: Arc<[Arc<str>]>,
 }
 
+/// 可取消的一次代码片段高亮。
+///
+/// Markdown 预览在源文档更新后取消过期任务，避免后台继续完成已无消费方的大代码块解析与查询。
+#[derive(Clone, Debug, Default)]
+pub struct SnippetHighlightCancellation(ParseCancellation);
+
+impl SnippetHighlightCancellation {
+    pub fn cancel(&self) {
+        self.0.cancel();
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.is_cancelled()
+    }
+}
+
 /// 使用已注册的 Tree-sitter 语言高亮一段代码。
 ///
 /// `language` 可使用语言名、文件扩展名或注入别名，例如 `Rust`、`rs`、`typescript`、`ts`、`golang`。
 /// 未知语言或不含语法树的语言返回 `None`。
 pub fn highlight_snippet(language: &str, source: &str) -> Option<SnippetHighlights> {
+    highlight_snippet_with_cancellation(language, source, &SnippetHighlightCancellation::default())
+}
+
+/// 使用已注册的 Tree-sitter 语言高亮一段代码，并允许调用方取消过期计算。
+pub fn highlight_snippet_with_cancellation(
+    language: &str,
+    source: &str,
+    cancellation: &SnippetHighlightCancellation,
+) -> Option<SnippetHighlights> {
+    if cancellation.is_cancelled() {
+        return None;
+    }
     let language = language.split_whitespace().next()?;
     let language = language_for_name_or_extension(language)?;
     language.grammar()?;
@@ -34,18 +62,22 @@ pub fn highlight_snippet(language: &str, source: &str) -> Option<SnippetHighligh
     let text = buffer.snapshot();
     let mut syntax = SyntaxMap::new(&text);
     syntax.set_language(Some(language), &text);
-    let syntax = syntax
-        .snapshot()
-        .reparse(&text, None, &ParseCancellation::default())?;
+    let syntax = syntax.snapshot().reparse(&text, None, &cancellation.0)?;
     Some(SnippetHighlights {
-        spans: syntax.highlights(0..text.len_bytes().get(), &text),
+        spans: syntax.highlights_with_cancellation(
+            0..text.len_bytes().get(),
+            &text,
+            &cancellation.0,
+        )?,
         capture_names: syntax.capture_names(),
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::highlight_snippet;
+    use super::{
+        SnippetHighlightCancellation, highlight_snippet, highlight_snippet_with_cancellation,
+    };
 
     #[test]
     fn highlights_rust_with_the_registered_language() {
@@ -99,5 +131,14 @@ mod tests {
     #[test]
     fn leaves_unknown_languages_unhighlighted() {
         assert!(highlight_snippet("not-a-language", "plain text").is_none());
+    }
+
+    #[test]
+    fn cancelled_highlight_returns_without_parsing() {
+        let cancellation = SnippetHighlightCancellation::default();
+        cancellation.cancel();
+        assert!(
+            highlight_snippet_with_cancellation("rust", "fn main() {}", &cancellation).is_none()
+        );
     }
 }

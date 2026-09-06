@@ -14,7 +14,9 @@ use zcv_text::Snapshot;
 
 use crate::Language;
 use crate::syntax_map::SyntaxSnapshot;
-use crate::tree_sitter_utils::{QueryCursorHandle, SnapshotTextProvider, ranges_overlap};
+use crate::tree_sitter_utils::{
+    ParseCancellation, QueryCursorHandle, SnapshotTextProvider, ranges_overlap,
+};
 
 /// 一个非重叠的 tree-sitter capture 区间。
 ///
@@ -59,16 +61,40 @@ impl SyntaxSnapshot {
     /// 每层一个 capture 流（文档序），k 路归并后以全局活动栈直接产出 spans：
     /// 树中节点要么嵌套要么不相交，注入层 capture 又受其内容节点约束，因此全局栈的 LIFO 顺序就是覆盖顺序，栈顶即当前最内层。
     pub fn highlights(&self, range: Range<usize>, text: &Snapshot) -> Vec<HighlightSpan> {
+        self.highlights_impl(range, text, None).unwrap_or_default()
+    }
+
+    /// 查询指定字节范围，并允许后台消费者放弃过期高亮任务。
+    pub(crate) fn highlights_with_cancellation(
+        &self,
+        range: Range<usize>,
+        text: &Snapshot,
+        cancellation: &ParseCancellation,
+    ) -> Option<Vec<HighlightSpan>> {
+        self.highlights_impl(range, text, Some(cancellation))
+    }
+
+    fn highlights_impl(
+        &self,
+        range: Range<usize>,
+        text: &Snapshot,
+        cancellation: Option<&ParseCancellation>,
+    ) -> Option<Vec<HighlightSpan>> {
+        if cancellation.is_some_and(ParseCancellation::is_cancelled) {
+            return None;
+        }
         if text.version() != self.version || range.start >= range.end {
-            return Vec::new();
+            return Some(Vec::new());
         }
         let (Some(language), Some(tree)) = (&self.language, self.root_tree()) else {
-            return Vec::new();
+            return Some(Vec::new());
         };
 
         // 相关层（主层 + 与范围相交的注入层），每层产出有序 capture 流。
         let mut streams: Vec<(u32, Vec<CaptureRange>)> = Vec::new();
-        if let Some(captures) = collect_capture_ranges(language, tree, &range, text, self) {
+        if let Some(captures) =
+            collect_capture_ranges(language, tree, &range, text, self, cancellation)?
+        {
             streams.push((0, captures));
         }
         let mut injections: Vec<_> = self
@@ -79,12 +105,14 @@ impl SyntaxSnapshot {
             .collect();
         injections.sort_unstable_by_key(|(depth, _, _)| *depth);
         for (depth, language, tree) in injections {
-            if let Some(captures) = collect_capture_ranges(language, tree, &range, text, self) {
+            if let Some(captures) =
+                collect_capture_ranges(language, tree, &range, text, self, cancellation)?
+            {
                 streams.push((depth, captures));
             }
         }
 
-        sweep_captures(streams, range.end)
+        sweep_captures(streams, range.end, cancellation)
     }
 }
 
@@ -95,19 +123,30 @@ fn collect_capture_ranges(
     range: &Range<usize>,
     text: &Snapshot,
     snapshot: &SyntaxSnapshot,
-) -> Option<Vec<CaptureRange>> {
-    if range.start >= range.end {
+    cancellation: Option<&ParseCancellation>,
+) -> Option<Option<Vec<CaptureRange>>> {
+    if cancellation.is_some_and(ParseCancellation::is_cancelled) {
         return None;
     }
+    if range.start >= range.end {
+        return Some(None);
+    }
     // 局部 capture index → 快照全局 index 的映射在解析时构建，这里循环外取一次。
-    let capture_table = snapshot.capture_index_table(language)?;
+    let Some(capture_table) = snapshot.capture_index_table(language) else {
+        return Some(None);
+    };
     // 无高亮查询的语言不产出 capture。
-    let highlights = language.highlights()?;
+    let Some(highlights) = language.highlights() else {
+        return Some(None);
+    };
     let mut cursor = QueryCursorHandle::new();
     cursor.set_byte_range(range.clone());
     let mut ranges = Vec::new();
     let mut captures = cursor.captures(highlights, tree.root_node(), SnapshotTextProvider(text));
     while let Some((query_match, capture_index)) = captures.next() {
+        if cancellation.is_some_and(ParseCancellation::is_cancelled) {
+            return None;
+        }
         let capture = query_match.captures[*capture_index];
         let capture_range = capture.node.byte_range();
         let start = capture_range.start.max(range.start);
@@ -130,11 +169,15 @@ fn collect_capture_ranges(
             });
         }
     }
-    Some(ranges)
+    Some(Some(ranges))
 }
 
 /// k 路归并各层 capture 起点，用活动栈直接产出非重叠 spans。
-fn sweep_captures(streams: Vec<(u32, Vec<CaptureRange>)>, range_end: usize) -> Vec<HighlightSpan> {
+fn sweep_captures(
+    streams: Vec<(u32, Vec<CaptureRange>)>,
+    range_end: usize,
+    cancellation: Option<&ParseCancellation>,
+) -> Option<Vec<HighlightSpan>> {
     let mut heap: BinaryHeap<(Reverse<QueueKey>, usize)> = BinaryHeap::new();
     for (seq, (depth, stream)) in streams.iter().enumerate() {
         if let Some(capture) = stream.first() {
@@ -150,6 +193,9 @@ fn sweep_captures(streams: Vec<(u32, Vec<CaptureRange>)>, range_end: usize) -> V
         .unwrap_or(range_end);
 
     while let Some((Reverse(key), seq)) = heap.pop() {
+        if cancellation.is_some_and(ParseCancellation::is_cancelled) {
+            return None;
+        }
         emit_until(key.start, &mut offset, &mut stack, &mut spans);
 
         let capture = streams[seq].1[cursors[seq]];
@@ -163,7 +209,7 @@ fn sweep_captures(streams: Vec<(u32, Vec<CaptureRange>)>, range_end: usize) -> V
     }
 
     emit_until(range_end, &mut offset, &mut stack, &mut spans);
-    spans
+    Some(spans)
 }
 
 fn emit_until(

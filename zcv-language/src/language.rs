@@ -17,7 +17,10 @@ mod test;
 pub use highlighting::HighlightSpan;
 pub use language_buffer::{LanguageBuffer, LanguageBufferEvent};
 pub use registry::{Language, language_for_file, language_for_name_or_extension};
-pub use snippet::{SnippetHighlights, highlight_snippet};
+pub use snippet::{
+    SnippetHighlightCancellation, SnippetHighlights, highlight_snippet,
+    highlight_snippet_with_cancellation,
+};
 pub use structure_queries::{BracketPair, FoldRange, NewlineIndent};
 pub use syntax_map::SyntaxSnapshot;
 

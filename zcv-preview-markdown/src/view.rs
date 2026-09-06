@@ -13,7 +13,10 @@ use gpui::{
     Subscription, Task, UnderlineStyle, Window, div, img, prelude::*, px,
 };
 use pulldown_cmark::Alignment;
-use zcv_language::{SnippetHighlights, highlight_snippet};
+use zcv_language::{
+    HighlightSpan, SnippetHighlightCancellation, SnippetHighlights,
+    highlight_snippet_with_cancellation,
+};
 use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
 use zcv_theme::{color, space, syntax, typography};
@@ -35,6 +38,7 @@ pub(crate) struct MarkdownPreviewView {
     scrollbar: Scrollbar<ScrollHandle>,
     blocks: Arc<Vec<Block>>,
     code_highlight_generation: u64,
+    code_highlight_cancellation: Option<SnippetHighlightCancellation>,
     code_highlight_task: Option<Task<()>>,
     refresh_generation: u64,
     refresh_task: Option<Task<()>>,
@@ -79,6 +83,7 @@ impl MarkdownPreviewView {
             scroll_handle,
             blocks: Arc::new(Vec::new()),
             code_highlight_generation: 0,
+            code_highlight_cancellation: None,
             code_highlight_task: None,
             refresh_generation: 0,
             refresh_task: None,
@@ -107,23 +112,30 @@ impl MarkdownPreviewView {
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancellation) = self.code_highlight_cancellation.take() {
+            cancellation.cancel();
+        }
         let text = String::from_utf8(self.multi_buffer.read(cx).snapshot(cx).text_bytes())
             .expect("编辑器文档应为 UTF-8");
         self.blocks = Arc::new(parse(&text));
         self.code_highlight_generation = self.code_highlight_generation.wrapping_add(1);
         let generation = self.code_highlight_generation;
+        let cancellation = SnippetHighlightCancellation::default();
+        self.code_highlight_cancellation = Some(cancellation.clone());
         let mut blocks = (*self.blocks).clone();
         let highlights = cx.background_spawn(async move {
-            highlight_code_blocks(&mut blocks);
-            blocks
+            highlight_code_blocks(&mut blocks, &cancellation).then_some(blocks)
         });
         self.code_highlight_task = Some(cx.spawn(async move |this, cx| {
-            let blocks = highlights.await;
+            let Some(blocks) = highlights.await else {
+                return;
+            };
             let _ = this.update(cx, |view, cx| {
                 if view.code_highlight_generation != generation {
                     return;
                 }
                 view.blocks = Arc::new(blocks);
+                view.code_highlight_cancellation = None;
                 view.code_highlight_task = None;
                 cx.notify();
             });
@@ -242,6 +254,7 @@ fn render_block(
                 .as_ref()
                 .map(|highlights| syntax::style_table(&highlights.capture_names));
             let mut line_start = 0;
+            let mut highlight_index = 0;
             for line in code_lines(text) {
                 let line_end = line_start + line.len();
                 code = code.child(div().child(render_code_line(
@@ -249,6 +262,7 @@ fn render_block(
                     line_start..line_end,
                     highlights.as_ref(),
                     styles.as_deref(),
+                    &mut highlight_index,
                 )));
                 line_start = line_end + 1;
             }
@@ -508,18 +522,30 @@ fn render_inline(content: &[Inline], key: usize, cx: &App) -> AnyElement {
     }
 }
 
-fn highlight_code_blocks(blocks: &mut [Block]) {
+fn highlight_code_blocks(
+    blocks: &mut [Block],
+    cancellation: &SnippetHighlightCancellation,
+) -> bool {
     for block in blocks {
+        if cancellation.is_cancelled() {
+            return false;
+        }
         match block {
             Block::Code {
                 language: Some(language),
                 text,
                 highlights,
-            } => *highlights = highlight_snippet(language, text),
-            Block::Quote(blocks) => highlight_code_blocks(blocks),
+            } => *highlights = highlight_snippet_with_cancellation(language, text, cancellation),
+            Block::Quote(blocks) => {
+                if !highlight_code_blocks(blocks, cancellation) {
+                    return false;
+                }
+            }
             Block::List { items, .. } => {
                 for item in items {
-                    highlight_code_blocks(item);
+                    if !highlight_code_blocks(item, cancellation) {
+                        return false;
+                    }
                 }
             }
             Block::Heading { .. }
@@ -530,6 +556,7 @@ fn highlight_code_blocks(blocks: &mut [Block]) {
             | Block::Rule => {}
         }
     }
+    !cancellation.is_cancelled()
 }
 
 fn render_code_line(
@@ -537,23 +564,64 @@ fn render_code_line(
     line_range: Range<usize>,
     highlights: Option<&SnippetHighlights>,
     styles: Option<&[HighlightStyle]>,
+    highlight_index: &mut usize,
 ) -> AnyElement {
     let line_highlights: Vec<(Range<usize>, HighlightStyle)> = highlights
-        .into_iter()
-        .flat_map(|highlights| highlights.spans.iter())
-        .filter_map(|span| {
-            let start = span.range.start.max(line_range.start);
-            let end = span.range.end.min(line_range.end);
-            if start >= end {
-                return None;
-            }
-            let style = *styles?.get(span.capture as usize)?;
-            Some((start - line_range.start..end - line_range.start, style))
+        .zip(styles)
+        .map(|(highlights, styles)| {
+            visible_highlights_for_line(&highlights.spans, line_range, highlight_index)
+                .into_iter()
+                .filter_map(|(range, capture)| {
+                    styles
+                        .get(capture as usize)
+                        .copied()
+                        .map(|style| (range, style))
+                })
+                .collect()
         })
-        .collect();
+        .unwrap_or_default();
     StyledText::new(line.to_owned())
         .with_highlights(line_highlights)
         .into_any_element()
+}
+
+/// 返回与当前行相交的高亮，并将游标推进到后续行无需再次检查的位置。
+///
+/// 高亮跨度按文档顺序且互不重叠。
+/// 跨行跨度会保留在游标位置，直到其末行处理完毕。
+fn visible_highlights_for_line(
+    spans: &[HighlightSpan],
+    line_range: Range<usize>,
+    index: &mut usize,
+) -> Vec<(Range<usize>, u32)> {
+    while spans
+        .get(*index)
+        .is_some_and(|span| span.range.end <= line_range.start)
+    {
+        *index += 1;
+    }
+
+    let mut line_highlights = Vec::new();
+    let mut current = *index;
+    while let Some(span) = spans.get(current) {
+        if span.range.start >= line_range.end {
+            break;
+        }
+        let start = span.range.start.max(line_range.start);
+        let end = span.range.end.min(line_range.end);
+        if start < end {
+            line_highlights.push((
+                start - line_range.start..end - line_range.start,
+                span.capture,
+            ));
+        }
+        if span.range.end > line_range.end {
+            break;
+        }
+        current += 1;
+    }
+    *index = current;
+    line_highlights
 }
 
 fn code_lines(text: &str) -> impl Iterator<Item = &str> {
@@ -685,8 +753,9 @@ mod tests {
 
     use super::{
         Block, MARKDOWN_REPARSE_DEBOUNCE, MarkdownPreviewView, code_lines, heading_line_height,
-        heading_size, highlight_code_blocks, list_marker_char_count,
+        heading_size, highlight_code_blocks, list_marker_char_count, visible_highlights_for_line,
     };
+    use zcv_language::{HighlightSpan, SnippetHighlightCancellation};
 
     fn plain(text: &str) -> Inline {
         Inline {
@@ -708,6 +777,43 @@ mod tests {
     }
 
     #[test]
+    fn code_line_highlights_scan_each_span_once_except_for_its_covered_lines() {
+        let spans = [
+            HighlightSpan {
+                range: 2..5,
+                capture: 1,
+            },
+            HighlightSpan {
+                range: 8..14,
+                capture: 2,
+            },
+            HighlightSpan {
+                range: 15..17,
+                capture: 3,
+            },
+        ];
+        let mut index = 0;
+
+        assert_eq!(
+            visible_highlights_for_line(&spans, 0..4, &mut index),
+            vec![(2..4, 1)]
+        );
+        assert_eq!(
+            visible_highlights_for_line(&spans, 5..9, &mut index),
+            vec![(3..4, 2)]
+        );
+        assert_eq!(
+            visible_highlights_for_line(&spans, 10..14, &mut index),
+            vec![(0..4, 2)]
+        );
+        assert_eq!(
+            visible_highlights_for_line(&spans, 15..18, &mut index),
+            vec![(0..2, 3)]
+        );
+        assert_eq!(index, spans.len());
+    }
+
+    #[test]
     fn ordered_list_marker_width_accounts_for_multi_digit_numbers() {
         assert_eq!(list_marker_char_count(None, 3), 1);
         assert_eq!(list_marker_char_count(Some(1), 9), 2);
@@ -726,7 +832,10 @@ mod tests {
     #[test]
     fn applies_language_highlights_to_fenced_code_blocks() {
         let mut blocks = parse("```rust\nfn main() {}\n```");
-        highlight_code_blocks(&mut blocks);
+        assert!(highlight_code_blocks(
+            &mut blocks,
+            &SnippetHighlightCancellation::default()
+        ));
         assert!(matches!(
             blocks.as_slice(),
             [Block::Code {

@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use serde::Serialize;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System as ProcessSystem, get_current_pid};
-use zcv_benchmarks::rust_document;
+use zcv_benchmarks::cached_rust_document;
 use zcv_language::highlight_snippet;
 use zcv_text::{Buffer, BufferConfig};
 
@@ -137,16 +137,16 @@ fn main() {
     let mut samples = Vec::new();
 
     for size in [64 * 1024, 1024 * 1024, 16 * 1024 * 1024] {
-        let text = rust_document(size);
+        let text = cached_rust_document(size);
         let input_bytes = text.len();
         samples.push(measure(
             &mut rss,
             format!("text_buffer/create/{input_bytes}"),
             input_bytes,
-            || Buffer::from_text(text.clone(), BufferConfig::default()).expect("应创建 Buffer"),
+            || Buffer::from_text(text.to_string(), BufferConfig::default()).expect("应创建 Buffer"),
         ));
 
-        let snapshot = Buffer::from_text(text.clone(), BufferConfig::default())
+        let snapshot = Buffer::from_text(text.to_string(), BufferConfig::default())
             .expect("应创建搜索快照")
             .snapshot();
         samples.push(measure(
@@ -164,7 +164,7 @@ fn main() {
             &mut rss,
             format!("language/highlight_rust_document/{input_bytes}"),
             input_bytes,
-            || highlight_snippet("rust", &text).expect("Rust 高亮应成功"),
+            || highlight_snippet("rust", text.as_ref()).expect("Rust 高亮应成功"),
         ));
     }
 

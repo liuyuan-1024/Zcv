@@ -2,7 +2,7 @@ use criterion::{
     BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
 };
 use gpui::{AppContext as _, TestAppContext, TestDispatcher};
-use zcv_benchmarks::rust_document;
+use zcv_benchmarks::cached_rust_document;
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
 use zcv_text::{Buffer, BufferConfig};
@@ -21,7 +21,11 @@ fn projection_setup(
     let sources = (0..source_count)
         .map(|_| {
             let buffer = cx.new(|_| {
-                Buffer::scratch(rust_document(SOURCE_BYTES), BufferConfig::default()).unwrap()
+                Buffer::scratch(
+                    cached_rust_document(SOURCE_BYTES).to_string(),
+                    BufferConfig::default(),
+                )
+                .unwrap()
             });
             cx.new(|cx| LanguageBuffer::new(buffer, None, cx))
         })

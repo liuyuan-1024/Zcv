@@ -1,7 +1,7 @@
 use criterion::{
     BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
 };
-use zcv_benchmarks::rust_document;
+use zcv_benchmarks::cached_rust_document;
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, SearchQuery, TransactionMetadata};
 
 const DOCUMENT_SIZES: [usize; 3] = [64 * 1024, 1024 * 1024, 16 * 1024 * 1024];
@@ -10,10 +10,12 @@ fn buffers(c: &mut Criterion) {
     let mut group = c.benchmark_group("text_buffer/create");
 
     for size in DOCUMENT_SIZES {
-        let text = rust_document(size);
+        let text = cached_rust_document(size);
         group.throughput(Throughput::Bytes(text.len() as u64));
         group.bench_with_input(BenchmarkId::from_parameter(text.len()), &text, |b, text| {
-            b.iter(|| Buffer::from_text(black_box(text.clone()), BufferConfig::default()).unwrap());
+            b.iter(|| {
+                Buffer::from_text(black_box(text.to_string()), BufferConfig::default()).unwrap()
+            });
         });
     }
 
@@ -24,12 +26,12 @@ fn editing(c: &mut Criterion) {
     let mut group = c.benchmark_group("text_buffer/edit_at_middle");
 
     for size in DOCUMENT_SIZES {
-        let text = rust_document(size);
+        let text = cached_rust_document(size);
         let offset = ByteOffset::new(text.len() / 2);
         group.throughput(Throughput::Bytes("let inserted = true;\n".len() as u64));
         group.bench_with_input(BenchmarkId::from_parameter(text.len()), &text, |b, text| {
             b.iter_batched(
-                || Buffer::from_text(text.clone(), BufferConfig::default()).unwrap(),
+                || Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap(),
                 |mut buffer| {
                     buffer
                         .edit(
@@ -51,9 +53,9 @@ fn searches(c: &mut Criterion) {
     let mut group = c.benchmark_group("text_buffer/search");
 
     for size in DOCUMENT_SIZES {
-        let text = rust_document(size);
+        let text = cached_rust_document(size);
         let byte_len = text.len();
-        let snapshot = Buffer::from_text(text, BufferConfig::default())
+        let snapshot = Buffer::from_text(text.to_string(), BufferConfig::default())
             .unwrap()
             .snapshot();
         group.bench_with_input(
@@ -87,9 +89,9 @@ fn coordinates(c: &mut Criterion) {
     let mut group = c.benchmark_group("text_buffer/coordinate_conversion");
 
     for size in DOCUMENT_SIZES {
-        let text = rust_document(size);
+        let text = cached_rust_document(size);
         let byte_len = text.len();
-        let snapshot = Buffer::from_text(text, BufferConfig::default())
+        let snapshot = Buffer::from_text(text.to_string(), BufferConfig::default())
             .unwrap()
             .snapshot();
         let positions = [0, snapshot.line_count() / 2, snapshot.line_count() - 2].map(|line| {

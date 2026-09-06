@@ -253,6 +253,7 @@ impl Editor {
             return;
         }
         self.composition = None;
+        self.sync_display_map(cx);
         let before = self.resolved_selections().normalized();
         let snapshot = self.text_buffer(cx).read(cx).snapshot();
         // 逐选区计算插入文本与光标落点：

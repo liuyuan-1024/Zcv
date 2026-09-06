@@ -455,19 +455,14 @@ impl Editor {
                     return *selection;
                 };
                 let start = ByteOffset::new(start);
-                let Some(end) = region
-                    .range
-                    .end
-                    .offset()
-                    .get()
-                    .checked_add(region.pair.end.len())
-                else {
+                let close_start = region.range.end.offset();
+                let Some(end) = close_start.get().checked_add(region.pair.end.len()) else {
                     return *selection;
                 };
                 let end = ByteOffset::new(end);
                 // 校验开合文本确实位于区域两端，再扩展选区覆盖整对。
                 if text_at(&snapshot, start, region.pair.start)
-                    && text_at(&snapshot, end, region.pair.end)
+                    && text_at(&snapshot, close_start, region.pair.end)
                 {
                     changed = true;
                     Selection::new(start, end)

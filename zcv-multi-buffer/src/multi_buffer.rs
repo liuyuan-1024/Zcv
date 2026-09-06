@@ -91,7 +91,7 @@ impl MultiBufferExcerpt {
         lines: std::ops::Range<usize>,
         cx: &App,
     ) -> Self {
-        let text = source.read(cx).text_snapshot(cx);
+        let text = source.read(cx).buffer().read(cx).snapshot();
         Self::line_range_from_text(source, &text, lines)
     }
 
@@ -1126,34 +1126,207 @@ impl MultiBuffer {
             && !patch.is_empty()
         {
             let position_map = patch.position_map();
-            for excerpt in self
-                .state
-                .excerpts
-                .iter_mut()
-                .filter(|excerpt| excerpt.source.entity_id() == source_id)
-            {
-                excerpt.source_range = position_map
-                    .map_old_range_with_stickiness(excerpt.source_range, Stickiness::Expand)
-                    .value();
-                for matched in &mut excerpt.match_ranges {
-                    *matched = position_map
-                        .map_old_range_with_stickiness(*matched, Stickiness::Never)
-                        .value();
-                }
-            }
+            self.apply_source_change(source_id, &position_map, Some(&patch), None, cx);
             // 工作区源被外部编辑：hunk 显示坐标随文本位置推进（组合编辑已在 edit 内同步映射）。
             let mut diff_changed = false;
             if let Some(new_version) = patch.new_version() {
                 diff_changed =
                     self.map_diff_hunks_through_edit(source_id, &position_map, new_version, cx);
             }
-            self.rebuild_projection(cx);
             if diff_changed {
                 self.rebuild_diff_projection(cx);
             }
+        } else {
+            // 组合编辑已同步消费文本补丁后，LanguageBuffer 仍可能在本轮安装更新的语法快照。
+            // 仅刷新源派生状态，不能退化为一次整体重载。
+            self.refresh_source_snapshot(source_id, cx);
+        }
+    }
+
+    fn refresh_source_snapshot(&mut self, source_id: gpui::EntityId, cx: &App) {
+        let Some(source) = self
+            .state
+            .sources
+            .iter()
+            .find(|source| source.entity.entity_id() == source_id)
+            .map(|source| source.entity.clone())
+        else {
+            return;
+        };
+        if let Some(excerpt_source) = self
+            .state
+            .sources
+            .iter_mut()
+            .find(|source| source.entity.entity_id() == source_id)
+        {
+            excerpt_source.text = source.read(cx).text_snapshot(cx);
+            excerpt_source.syntax = source.read(cx).syntax_snapshot();
+        }
+        self.state.capture_names = rebuild_capture_table(&mut self.state.sources);
+    }
+
+    /// 将一个源 Buffer 的版本化编辑投影为受影响 excerpts 的局部编辑。
+    ///
+    /// `set_excerpts` 只负责 excerpts 结构变更；
+    /// 普通文本编辑不能整体重载组合投影，否则所有下游位置状态都会退化为 reset。
+    fn apply_source_change(
+        &mut self,
+        source_id: gpui::EntityId,
+        source_position_map: &PositionMap,
+        source_patch: Option<&TextChangeBatch>,
+        expanded_excerpts: Option<&HashSet<usize>>,
+        cx: &mut Context<Self>,
+    ) {
+        for (excerpt_index, excerpt) in self
+            .state
+            .excerpts
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, excerpt)| excerpt.source.entity_id() == source_id)
+        {
+            let stickiness = expanded_excerpts.map_or(Stickiness::Expand, |expanded| {
+                if expanded.contains(&excerpt_index) {
+                    Stickiness::Expand
+                } else {
+                    Stickiness::Never
+                }
+            });
+            excerpt.source_range = source_position_map
+                .map_old_range_with_stickiness(excerpt.source_range, stickiness)
+                .value();
+            for matched in &mut excerpt.match_ranges {
+                *matched = source_position_map
+                    .map_old_range_with_stickiness(*matched, Stickiness::Never)
+                    .value();
+            }
+        }
+
+        let Some(source) = self
+            .state
+            .sources
+            .iter()
+            .find(|source| source.entity.entity_id() == source_id)
+            .map(|source| source.entity.clone())
+        else {
+            return;
+        };
+        let text = source.read(cx).text_snapshot(cx);
+        let syntax = source.read(cx).syntax_snapshot();
+        let mappings = self.state.mappings.clone();
+        let replacements = if let Some(source_patch) = source_patch
+            && self
+                .working_source
+                .as_ref()
+                .is_some_and(|working_source| working_source.entity_id() == source_id)
+            && mappings.len() == 1
+        {
+            source_patch
+                .patch()
+                .edits()
+                .iter()
+                .map(|edit| {
+                    let replacement = text
+                        .slice_text(edit.new_range())
+                        .expect("工作区源补丁的新范围必须有效")
+                        .as_str()
+                        .to_owned();
+                    Edit::replace(edit.old_range(), replacement)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            mappings
+                .iter()
+                .filter(|mapping| mapping.source_id == source_id)
+                .map(|mapping| {
+                    let excerpt = &self.state.excerpts[mapping.excerpt_index];
+                    let mut replacement = text
+                        .slice_text(excerpt.source_range)
+                        .expect("已映射的 excerpt 源范围必须有效")
+                        .as_str()
+                        .to_owned();
+                    if mapping.excerpt_index + 1 < mappings.len() && !replacement.ends_with('\n') {
+                        replacement.push('\n');
+                    }
+                    Edit::replace(mapping.output_range, replacement)
+                })
+                .collect::<Vec<_>>()
+        };
+        if replacements.is_empty() {
             return;
         }
-        self.rebuild_projection(cx);
+
+        let projection = self.state.projection.read(cx).buffer();
+        let outcome = projection.update(cx, |buffer, cx| {
+            let outcome = buffer
+                .edit(replacements, TransactionMetadata::default())
+                .expect("源 Buffer 的合法编辑必须能投影到组合文档");
+            cx.notify();
+            outcome
+        });
+        let output_position_map = outcome.event().position_map();
+        let output = projection.read(cx).snapshot();
+        if let Some(excerpt_source) = self
+            .state
+            .sources
+            .iter_mut()
+            .find(|source| source.entity.entity_id() == source_id)
+        {
+            excerpt_source.text = text;
+            excerpt_source.syntax = syntax;
+        }
+        for mapping in &mut self.state.mappings {
+            mapping.output_range = output_position_map
+                .map_old_range_with_stickiness(mapping.output_range, Stickiness::Expand)
+                .value();
+            mapping.source_range = self.state.excerpts[mapping.excerpt_index].source_range;
+            mapping.output_start_line = output
+                .byte_to_line(mapping.output_range.start())
+                .expect("组合 excerpt 起点必须在投影文本内")
+                .get();
+            mapping.output_end_line = output
+                .byte_to_line(mapping.output_range.end())
+                .expect("组合 excerpt 终点必须在投影文本内")
+                .get();
+            let excerpt_source = &self.state.sources[mapping.source_index];
+            mapping.source_start_line = excerpt_source
+                .text
+                .byte_to_line(mapping.source_range.start())
+                .expect("excerpt 源起点必须在源文本内")
+                .get()
+                + 1;
+        }
+        self.state.capture_names = rebuild_capture_table(&mut self.state.sources);
+        self.rebuild_match_ranges();
+    }
+
+    fn rebuild_match_ranges(&mut self) {
+        self.state.match_ranges = self
+            .state
+            .mappings
+            .iter()
+            .flat_map(|mapping| {
+                self.state.excerpts[mapping.excerpt_index]
+                    .match_ranges
+                    .iter()
+                    .filter(move |matched| {
+                        matched.start() >= mapping.source_range.start()
+                            && matched.end() <= mapping.source_range.end()
+                    })
+                    .map(move |matched| {
+                        TextRange::new(
+                            ByteOffset::new(
+                                mapping.output_range.start().get() + matched.start().get()
+                                    - mapping.source_range.start().get(),
+                            ),
+                            ByteOffset::new(
+                                mapping.output_range.start().get() + matched.end().get()
+                                    - mapping.source_range.start().get(),
+                            ),
+                        )
+                        .expect("excerpt 内匹配投影范围必须有效")
+                    })
+            })
+            .collect();
     }
 
     fn source_reparsed(&mut self, source_id: gpui::EntityId, cx: &mut Context<Self>) {
@@ -1363,34 +1536,26 @@ impl MultiBuffer {
             ));
         }
 
-        for (excerpt_index, excerpt) in self.state.excerpts.iter_mut().enumerate() {
-            let Some((_, position_map, _)) = source_maps
-                .iter()
-                .find(|(id, _, _)| *id == excerpt.source.entity_id())
-            else {
-                continue;
-            };
-            let stickiness = if edited_excerpts.contains(&excerpt_index) {
-                Stickiness::Expand
-            } else {
-                Stickiness::Never
-            };
-            excerpt.source_range = position_map
-                .map_old_range_with_stickiness(excerpt.source_range, stickiness)
-                .value();
-            for matched in &mut excerpt.match_ranges {
-                *matched = position_map
-                    .map_old_range_with_stickiness(*matched, Stickiness::Never)
-                    .value();
-            }
-        }
-        // 组合编辑写回工作区源：hunk 显示坐标随本次编辑同步推进（source_changed 的消费为空，不会重复映射）。
+        // 组合编辑写回工作区源后，直接将同一份源位置映射投影到受影响 excerpts。
+        // 消费对应订阅可避免随后到达的源事件重复投影。
         let mut diff_changed = false;
         for (source_id, position_map, new_version) in &source_maps {
+            let source_patch = self
+                .state
+                .source_subscriptions
+                .iter()
+                .find(|state| state.source.entity_id() == *source_id)
+                .map(|subscription| subscription.text.consume());
+            self.apply_source_change(
+                *source_id,
+                position_map,
+                source_patch.as_ref(),
+                Some(&edited_excerpts),
+                cx,
+            );
             diff_changed |=
                 self.map_diff_hunks_through_edit(*source_id, position_map, *new_version, cx);
         }
-        self.rebuild_projection(cx);
         if diff_changed {
             self.rebuild_diff_projection(cx);
         }

@@ -42,6 +42,45 @@ fn working_source_snapshot_tracks_text_syntax_and_path(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
+fn source_edit_updates_only_its_composite_excerpt_without_reset(cx: &mut TestAppContext) {
+    let first = singleton("src/first.rs", "first\n", cx);
+    let second = singleton("src/second.rs", "second\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                MultiBufferExcerpt::line_range(first, 0..1, cx),
+                MultiBufferExcerpt::line_range(second.clone(), 0..1, cx),
+            ],
+            cx,
+        );
+    });
+    let subscription =
+        cx.update_entity(&combined, |buffer, cx| buffer.subscribe_and_snapshot(cx).0);
+
+    let source_buffer = cx.read_entity(&second, |source, _| source.buffer());
+    cx.update_entity(&source_buffer, |buffer, cx| {
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::new(0), "changed ").unwrap()],
+                TransactionMetadata::default(),
+            )
+            .expect("源编辑应成功");
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    let changes = subscription.consume();
+    assert!(!changes.requires_reset(), "源编辑不得整体重载组合投影");
+    assert_eq!(
+        cx.read_entity(&combined, |buffer, cx| {
+            String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("组合文本必须是 UTF-8")
+        }),
+        "first\nchanged second\n"
+    );
+}
+
+#[gpui::test]
 fn singleton_role_does_not_depend_on_current_excerpt_shape(cx: &mut TestAppContext) {
     let source = singleton("src/main.rs", "first\nsecond\n", cx);
     let source_buffer = cx.read_entity(&source, |source, _| source.buffer());

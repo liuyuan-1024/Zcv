@@ -2,6 +2,8 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System as ProcessSystem, get_current_pid};
@@ -16,6 +18,10 @@ static ALLOCATION_COUNT: AtomicUsize = AtomicUsize::new(0);
 static ALLOCATED_BYTES: AtomicUsize = AtomicUsize::new(0);
 static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
 static PEAK_LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+const RELEASE_STABILITY_WINDOW: Duration = Duration::from_millis(100);
+const RELEASE_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
+const RELEASE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[global_allocator]
 static ALLOCATOR: CountingAllocator = CountingAllocator;
@@ -72,10 +78,13 @@ struct MemorySample {
     input_bytes: usize,
     rss_before_bytes: u64,
     rss_with_result_bytes: u64,
-    rss_after_drop_bytes: u64,
+    rss_after_settle_bytes: u64,
     allocation_count: usize,
     allocated_bytes: usize,
     peak_live_allocation_bytes: usize,
+    live_allocation_with_result_bytes: usize,
+    live_allocation_after_settle_bytes: usize,
+    release_settled: bool,
 }
 
 struct RssMeter {
@@ -103,6 +112,31 @@ impl RssMeter {
     }
 }
 
+/// 等待释放路径中的活跃分配稳定，覆盖语法树等异步释放的结果。
+///
+/// RSS 是否下降取决于系统分配器是否向操作系统归还页；活跃分配才用于判断结果本身是否仍被保留。
+fn wait_for_release_settle() -> bool {
+    let deadline = Instant::now() + RELEASE_SETTLE_TIMEOUT;
+    let mut previous_live = LIVE_BYTES.load(Ordering::SeqCst);
+    let mut stable_since = Instant::now();
+
+    loop {
+        if stable_since.elapsed() >= RELEASE_STABILITY_WINDOW {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+
+        thread::sleep(RELEASE_POLL_INTERVAL);
+        let live = LIVE_BYTES.load(Ordering::SeqCst);
+        if live != previous_live {
+            previous_live = live;
+            stable_since = Instant::now();
+        }
+    }
+}
+
 fn measure<T>(
     rss: &mut RssMeter,
     name: impl Into<String>,
@@ -116,19 +150,30 @@ fn measure<T>(
     PEAK_LIVE_BYTES.store(0, Ordering::Relaxed);
     MEASURING.store(true, Ordering::SeqCst);
     let result = operation();
+    let live_allocation_with_result_bytes = LIVE_BYTES.load(Ordering::SeqCst);
     MEASURING.store(false, Ordering::SeqCst);
     let rss_with_result_bytes = rss.current();
+
+    // `SyntaxSnapshot` 等值会把大对象移交后台线程释放；必须在丢弃后继续观测，
+    // 否则紧随其后的 RSS 采样只能反映队列尚未消费或分配器保留的页。
+    MEASURING.store(true, Ordering::SeqCst);
     drop(result);
+    let release_settled = wait_for_release_settle();
+    let live_allocation_after_settle_bytes = LIVE_BYTES.load(Ordering::SeqCst);
+    MEASURING.store(false, Ordering::SeqCst);
 
     MemorySample {
         name: name.into(),
         input_bytes,
         rss_before_bytes,
         rss_with_result_bytes,
-        rss_after_drop_bytes: rss.current(),
+        rss_after_settle_bytes: rss.current(),
         allocation_count: ALLOCATION_COUNT.load(Ordering::Relaxed),
         allocated_bytes: ALLOCATED_BYTES.load(Ordering::Relaxed),
         peak_live_allocation_bytes: PEAK_LIVE_BYTES.load(Ordering::Relaxed),
+        live_allocation_with_result_bytes,
+        live_allocation_after_settle_bytes,
+        release_settled,
     }
 }
 
@@ -189,11 +234,14 @@ fn main() {
 
     for sample in &samples {
         println!(
-            "{}: RSS {} -> {} -> {} MiB, 分配 {} 次 / {} MiB, 峰值活跃分配 {} MiB",
+            "{}: RSS {} -> {} -> {} MiB, 活跃分配 {} -> {} MiB（稳定：{}）, 分配 {} 次 / {} MiB, 峰值活跃分配 {} MiB",
             sample.name,
             sample.rss_before_bytes / 1024 / 1024,
             sample.rss_with_result_bytes / 1024 / 1024,
-            sample.rss_after_drop_bytes / 1024 / 1024,
+            sample.rss_after_settle_bytes / 1024 / 1024,
+            sample.live_allocation_with_result_bytes / 1024 / 1024,
+            sample.live_allocation_after_settle_bytes / 1024 / 1024,
+            if sample.release_settled { "是" } else { "否" },
             sample.allocation_count,
             sample.allocated_bytes / 1024 / 1024,
             sample.peak_live_allocation_bytes / 1024 / 1024,

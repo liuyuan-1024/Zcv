@@ -27,6 +27,7 @@ use background::{JobResult, execute_job, repo_relative_path};
 use gpui::{App, AsyncApp, BackgroundExecutor, Context, EventEmitter, Task, WeakEntity};
 use zcv_git::{
     Branch, DiffBase, DiffStat, FileStatus, GitCancellation, GitRepository, GitRevision,
+    GraphCommit,
 };
 use zcv_git::{DiffHunk, GitHunkOperation};
 
@@ -781,6 +782,24 @@ impl GitStore {
             .ok();
             text
         })
+    }
+
+    /// 后台加载活动仓库的提交图数据（一次性读，不进 job 队列、不维护快照状态）。
+    ///
+    /// `after` 为分批游标：`None` 从 HEAD 开始，`Some(oid)` 从该提交的父继续；
+    /// `limit` 为单批提交数上限。lane 布局由视图侧用 `zcv_git::GraphLayoutState` 计算。
+    /// 无活动仓库时返回空列表。仿 `load_revision_text` 的 `background.spawn` 一次性后台读模式。
+    pub fn load_commit_graph(
+        &self,
+        after: Option<String>,
+        limit: usize,
+    ) -> Task<anyhow::Result<Vec<GraphCommit>>> {
+        let background = self.background.clone();
+        let Some(repository) = self.active_repository() else {
+            return background.spawn(async { Ok(Vec::new()) });
+        };
+        let repository = repository.repository.clone();
+        background.spawn(async move { repository.commit_graph(after.as_deref(), limit) })
     }
 
     /// 读取缓存的修订文本；`None` 表示尚未完成加载。

@@ -39,6 +39,9 @@ use crate::project_diff::ProjectDiffKind;
 pub(crate) type OnOpenGitDiff =
     Rc<dyn Fn(ProjectDiffKind, PathBuf, bool, &mut Window, &mut gpui::App)>;
 
+/// 打开版本控制图 Item 的回调（弱 Workspace 引用由装配层捕获）。
+pub(crate) type OnOpenGitGraph = Rc<dyn Fn(&mut Window, &mut gpui::App)>;
+
 // 版本控制快捷键归属于 `VersionControl` 上下文，由统一快捷键注册表加载；组件内不重复注册。
 
 // ═══ 分组与建树纯函数 ═══════════════════════════════════════════
@@ -284,6 +287,7 @@ pub(crate) struct VersionControlPanel {
     /// 自己发起的提交在途：Head 事件时清空编辑器并复位（外部 checkout/commit 不清草稿）。
     pending_commit: bool,
     on_open_file: Option<OnOpenGitDiff>,
+    on_open_graph: Option<OnOpenGitGraph>,
 }
 
 impl VersionControlPanel {
@@ -341,6 +345,7 @@ impl VersionControlPanel {
             last_commit_message: None,
             pending_commit: false,
             on_open_file: None,
+            on_open_graph: None,
         };
         panel.rebuild_rows(cx);
         panel
@@ -348,6 +353,17 @@ impl VersionControlPanel {
 
     pub(crate) fn set_on_open_file(&mut self, callback: OnOpenGitDiff) {
         self.on_open_file = Some(callback);
+    }
+
+    pub(crate) fn set_on_open_graph(&mut self, callback: OnOpenGitGraph) {
+        self.on_open_graph = Some(callback);
+    }
+
+    /// 打开版本控制图（回调由装配层注入；未注入时静默忽略）。
+    fn open_git_graph(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(callback) = self.on_open_graph.clone() {
+            callback(window, cx);
+        }
     }
 
     /// 快捷键上下文：面板标识 + 按焦点区分的子状态标签。
@@ -1075,7 +1091,7 @@ fn render_commit_footer(
                 // 撤销按钮：仅在有提交时显示（无提交时 uncommit 无意义）。
                 // hover 提示"撤销提交"。
                 .when(has_last_commit, |element| {
-                    element.child(
+                    let element = element.child(
                         div()
                             .debug_selector(|| "version-control-uncommit-button".into())
                             .child(
@@ -1087,6 +1103,25 @@ fn render_commit_footer(
                                             if let Some(panel) = weak.upgrade() {
                                                 panel.update(cx, |panel, cx| {
                                                     panel.handle_uncommit(&Uncommit, window, cx);
+                                                });
+                                            }
+                                        }
+                                    }),
+                            ),
+                    );
+                    // 版本控制图入口：撤销按钮右侧，打开只读图形化提交历史 Item。
+                    element.child(
+                        div()
+                            .debug_selector(|| "version-control-git-graph-button".into())
+                            .child(
+                                Button::icon("version-control-git-graph", "icons/git_graph.svg")
+                                    .label("版本控制图")
+                                    .on_click({
+                                        let weak = weak.clone();
+                                        move |_, window, cx| {
+                                            if let Some(panel) = weak.upgrade() {
+                                                panel.update(cx, |panel, cx| {
+                                                    panel.open_git_graph(window, cx);
                                                 });
                                             }
                                         }

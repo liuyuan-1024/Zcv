@@ -35,9 +35,10 @@ use crate::active_buffer_language::ActiveBufferLanguage;
 use crate::auto_update::{UpdateButton, UpdateManager};
 use crate::breadcrumbs::Breadcrumbs;
 use crate::cursor_position::CursorPosition;
+use crate::git_graph;
 use crate::harness::HarnessButton;
 use crate::project_diff::{self, ProjectDiffSerializedItemProvider, ProjectDiffView};
-use crate::version_control::{OnOpenGitDiff, VersionControlPanel};
+use crate::version_control::{OnOpenGitDiff, OnOpenGitGraph, VersionControlPanel};
 use zcv_project_tree::{OnCreate, OnMove, OnOpenFile, OnRename, OnTrash, ProjectTreePanel};
 use zcv_terminal::{TerminalPanel, set_terminal_font_size};
 
@@ -71,6 +72,18 @@ fn on_open_git_diff_callback(weak: &WeakEntity<Workspace>) -> OnOpenGitDiff {
             }
         },
     )
+}
+
+/// 构造版本管理面板打开版本控制图的回调。
+fn on_open_git_graph_callback(weak: &WeakEntity<Workspace>) -> OnOpenGitGraph {
+    let weak = weak.clone();
+    Rc::new(move |window: &mut Window, cx: &mut gpui::App| {
+        if let Some(workspace) = weak.upgrade() {
+            workspace.update(cx, |workspace, cx| {
+                git_graph::deploy_at(workspace, window, cx);
+            });
+        }
+    })
 }
 
 /// 以类型擦除句柄注册面板；同时让所属 dock 订阅面板事件（Dock 统一处理面板请求）。
@@ -312,43 +325,39 @@ fn initialize_common_workspace(
 
     // 内容字号缩放（会话内生效，不写配置文件）。
     // 字号是 typography 的运行时状态：直接调整并强制重绘，不改 SettingsStore。
-    workspace.register_action(
-        move |_workspace, _: &IncreaseContentFontSize, window, _cx| {
-            let content = f32::from(typography::content_size());
-            typography::set_typography(Some(content + 1.), None, None);
-            window.refresh();
-        },
-    );
-    workspace.register_action(
-        move |_workspace, _: &DecreaseContentFontSize, window, _cx| {
-            let content = f32::from(typography::content_size());
-            typography::set_typography(Some((content - 1.).max(8.)), None, None);
-            window.refresh();
-        },
-    );
+    workspace.register_action(move |_workspace, _: &IncreaseContentFontSize, window, cx| {
+        let content = f32::from(typography::content_size());
+        typography::set_typography(cx, Some(content + 1.), None, None);
+        window.refresh();
+    });
+    workspace.register_action(move |_workspace, _: &DecreaseContentFontSize, window, cx| {
+        let content = f32::from(typography::content_size());
+        typography::set_typography(cx, Some((content - 1.).max(8.)), None, None);
+        window.refresh();
+    });
     workspace.register_action(move |_workspace, _: &ResetContentFontSize, window, cx| {
         let settings = SettingsStore::get(cx);
-        typography::set_typography(Some(settings.content_font_size), None, None);
+        typography::set_typography(cx, Some(settings.content_font_size), None, None);
         window.refresh();
     });
 
     // 工作区 UI 字号缩放（全局可用，会话内生效）：只调 UI 字号，编辑器不动。
     // UI 字号是窗口 rem 基准：字号变化必须同步更新rem_size，否则基于 rem 的文本/布局沿用旧基准，与放大后的字形错位导致截断。
-    workspace.register_action(move |_workspace, _: &IncreaseUiFontSize, window, _cx| {
+    workspace.register_action(move |_workspace, _: &IncreaseUiFontSize, window, cx| {
         let ui = f32::from(typography::ui_size());
-        typography::set_typography(None, Some(ui + 1.), None);
+        typography::set_typography(cx, None, Some(ui + 1.), None);
         window.set_rem_size(typography::ui_size());
         window.refresh();
     });
-    workspace.register_action(move |_workspace, _: &DecreaseUiFontSize, window, _cx| {
+    workspace.register_action(move |_workspace, _: &DecreaseUiFontSize, window, cx| {
         let ui = f32::from(typography::ui_size());
-        typography::set_typography(None, Some((ui - 1.).max(8.)), None);
+        typography::set_typography(cx, None, Some((ui - 1.).max(8.)), None);
         window.set_rem_size(typography::ui_size());
         window.refresh();
     });
     workspace.register_action(move |_workspace, _: &ResetUiFontSize, window, cx| {
         let settings = SettingsStore::get(cx);
-        typography::set_typography(None, Some(settings.ui_font_size), None);
+        typography::set_typography(cx, None, Some(settings.ui_font_size), None);
         window.set_rem_size(typography::ui_size());
         window.refresh();
     });
@@ -570,6 +579,7 @@ fn initialize_workspace(
     let version_control: Entity<VersionControlPanel> = cx.new(|cx| {
         let mut panel = VersionControlPanel::new(project.clone(), cx);
         panel.set_on_open_file(on_open_git_diff_callback(&weak_self));
+        panel.set_on_open_graph(on_open_git_graph_callback(&weak_self));
         panel
     });
 
@@ -676,6 +686,7 @@ fn initialize_workspace(
         cx.observe_global_in::<SettingsStore>(window, move |_workspace, window, cx| {
             let settings = SettingsStore::get(cx);
             zcv_theme::typography::set_typography(
+                cx,
                 Some(settings.content_font_size),
                 Some(settings.ui_font_size),
                 Some(settings.content_line_height),

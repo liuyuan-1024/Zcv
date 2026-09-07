@@ -285,6 +285,13 @@ pub trait GitRepository: Send + Sync {
     ///
     /// base 省略时从当前 HEAD 创建；空仓库（unborn HEAD）与 detached HEAD 均可用。
     fn create_branch(&self, name: &str, base: Option<&str>) -> Result<()>;
+
+    /// 读取提交历史用于图形化展示（`git log -n {limit} [--skip=1 {after}] --pretty=...`）。
+    ///
+    /// `after` 为分批游标：`None` 从 HEAD 开始；
+    /// `Some(oid)` 以该提交为起点并跳过自身、从其父继续（cursor 分批，避免 `--skip=N` 计数在加载期间出现新提交时错位）。
+    /// 空仓库（无提交）返回空列表。
+    fn commit_graph(&self, after: Option<&str>, limit: usize) -> Result<Vec<GraphCommit>>;
 }
 
 /// 单个本地分支（`git for-each-ref refs/heads` 的一行）。
@@ -292,6 +299,25 @@ pub trait GitRepository: Send + Sync {
 pub struct Branch {
     pub name: String,
     pub is_head: bool,
+}
+
+/// git graph 一行所需的 commit 数据（由 `commit_graph` 从 `git log` 输出解析）。
+///
+/// `refs` 保留 `%D` 分段原样（如 `HEAD -> main`、`origin/main`、`tag: v1.0`），由视图侧解析类型并高亮当前分支，避免在此丢失 branch/tag/HEAD 语义。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GraphCommit {
+    /// 完整 oid（`%H`）。
+    pub oid: String,
+    /// 父提交 oid（`%P`，空格分隔）；根提交为空。
+    pub parents: Vec<String>,
+    /// 作者名（`%an`）。
+    pub author_name: String,
+    /// committer unix 时间戳（`%ct`）；解析失败为 0。
+    pub timestamp: i64,
+    /// 提交标题（`%s`，首行）。
+    pub subject: String,
+    /// 引用分段（`%D`，逗号分割并 trim）；空表示无分支/tag 指向此提交。
+    pub refs: Vec<String>,
 }
 
 pub struct RealGitRepository {
@@ -894,6 +920,24 @@ impl GitRepository for RealGitRepository {
         Ok(())
     }
 
+    fn commit_graph(&self, after: Option<&str>, limit: usize) -> Result<Vec<GraphCommit>> {
+        // 字段以 NUL（%x00）分隔、记录以 RS（%x1e）分隔，规避 subject/refs 中的空格与逗号歧义。
+        const PRETTY: &str = "--pretty=format:%H%x00%P%x00%an%x00%ct%x00%s%x00%D%x1e";
+        let limit_arg = format!("-n{limit}");
+        let mut args: Vec<&str> = vec!["log", &limit_arg];
+        if let Some(after) = after {
+            // 以游标提交为起点并跳过它自身（上一批已含），从其父继续。
+            args.push("--skip=1");
+            args.push(after);
+        }
+        args.push(PRETTY);
+        // 空仓库（无提交）时 git log 非零退出，run_optional 置 None。
+        let Some(output) = self.run_optional(&args)? else {
+            return Ok(Vec::new());
+        };
+        Ok(parse_commit_graph(&output.stdout))
+    }
+
     fn load_revisions(&self, revs: &[&str]) -> Result<Vec<Option<Vec<u8>>>> {
         // 单进程批量读取（`cat-file --batch`）：
         // stdin 逐行写 revision，按 header（`<oid> <type> <size>` 或 `<oid> missing`）读取对应大小的 blob。
@@ -957,6 +1001,55 @@ impl GitRepository for RealGitRepository {
         let _ = child.wait();
         Ok(result)
     }
+}
+
+/// 解析 `git log --pretty=format:%H%x00%P%x00%an%x00%ct%x00%s%x00%D%x1e` 输出。
+///
+/// 记录以 RS（`\u{1e}`）分隔、字段以 NUL 分隔；oid 为空的记录跳过，时间戳解析失败记为 0，refs 按逗号分割并丢弃空项。
+fn parse_commit_graph(stdout: &[u8]) -> Vec<GraphCommit> {
+    let text = String::from_utf8_lossy(stdout);
+    let mut commits = Vec::new();
+    for record in text.split('\u{1e}') {
+        let record = record.trim_matches('\n');
+        if record.is_empty() {
+            continue;
+        }
+        let mut fields = record.split('\0');
+        let oid = fields.next().unwrap_or_default().trim();
+        if oid.is_empty() {
+            continue;
+        }
+        let parents = fields
+            .next()
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        let author_name = fields.next().unwrap_or_default().to_string();
+        let timestamp = fields
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .parse()
+            .unwrap_or(0);
+        let subject = fields.next().unwrap_or_default().to_string();
+        let refs = fields
+            .next()
+            .unwrap_or_default()
+            .split(',')
+            .map(|reference| reference.trim().to_string())
+            .filter(|reference| !reference.is_empty())
+            .collect();
+        commits.push(GraphCommit {
+            oid: oid.to_string(),
+            parents,
+            author_name,
+            timestamp,
+            subject,
+            refs,
+        });
+    }
+    commits
 }
 
 /// 在 `working_directory` 初始化 git 仓库（`git init -b <branch>`）。

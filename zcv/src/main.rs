@@ -4,6 +4,7 @@ mod active_buffer_language;
 mod auto_update;
 mod breadcrumbs;
 mod cursor_position;
+mod git_graph;
 mod harness;
 mod project_diff;
 mod version_control;
@@ -40,6 +41,7 @@ fn main() {
             {
                 let settings = SettingsStore::get(cx);
                 typography::set_typography(
+                    cx,
                     Some(settings.content_font_size),
                     Some(settings.ui_font_size),
                     Some(settings.content_line_height),

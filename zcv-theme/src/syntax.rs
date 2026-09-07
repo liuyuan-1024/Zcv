@@ -21,8 +21,8 @@ pub fn style_table(names: &[Arc<str>]) -> Vec<HighlightStyle> {
     names.iter().map(|name| style_for(name)).collect()
 }
 
-/// 按 capture name 解析完整样式，走点分前缀回退（一次 BTreeMap range 查询）。
-pub(crate) fn style_for(name: &str) -> HighlightStyle {
+/// 按 capture name 在当前主题解析完整样式，走点分前缀回退（一次 BTreeMap range 查询）。
+fn style_for(name: &str) -> HighlightStyle {
     let Ok(theme) = ACTIVE_THEME.read() else {
         return HighlightStyle::default();
     };

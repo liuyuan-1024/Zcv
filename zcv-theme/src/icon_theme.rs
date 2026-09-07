@@ -119,7 +119,8 @@ static DEFAULT_ICON_THEME: LazyLock<IconTheme> = LazyLock::new(|| {
     serde_json::from_str(&source).expect("内置默认图标主题应合法")
 });
 
-pub(crate) fn default_icon_theme() -> &'static IconTheme {
+/// 当前（唯一内置）图标主题；模块内直接取用，不对外暴露。
+fn default_icon_theme() -> &'static IconTheme {
     &DEFAULT_ICON_THEME
 }
 

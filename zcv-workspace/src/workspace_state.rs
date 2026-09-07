@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use gpui::{
     Action, AnyView, App, AsyncApp, Context, Div, DragMoveEvent, Entity, FocusHandle, Focusable,
-    Render, SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*, rems,
+    Render, SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*,
 };
 use zcv_actions::{
     FocusOrHidePanel, MinimizeWindow, OpenSettings, QuitWindow, Save, ToggleBottomDock,
@@ -811,10 +811,12 @@ impl Render for Workspace {
         let mut root = div()
             .id("app-view")
             // 全局字号经 window rem 基准设置（open_window 时 set_rem_size）；
-            // 字体在此设置，行高 = 1rem（与字号同源，文字块上下 padding 与左右完全对称）；
-            // 全树（含挂载在根下的 toast）继承，子元素不再重复设置（需要其他字号时显式覆盖）。
+            // 字体在此设置，行高 = ui_line()（墨迹高度，完全容纳字形墨迹的最小行盒）：
+            // 行盒 ⊇ 墨迹恒成立，overflow_hidden 容器不裁剪墨迹；
+            // padding 自墨迹盒边缘起算，同值全局视觉一致；
+            // 全树（含挂载在根下的 toast）继承，子元素不再重复设置（需要其他行高时显式覆盖）。
             .font(typography::ui_font())
-            .line_height(rems(1.0))
+            .line_height(typography::ui_line())
             .track_focus(&self.focus)
             .key_context("Workspace")
             .size_full()

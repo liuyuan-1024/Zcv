@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use gpui::{
     Action, App, ClickEvent, CursorStyle, ElementId, IntoElement, MouseButton, Pixels, RenderOnce,
-    ViewElement, Window, div, prelude::*, rems,
+    ViewElement, Window, div, prelude::*,
 };
 use zcv_theme::{color, space, typography};
 
@@ -53,9 +53,9 @@ impl ButtonSize {
         }
     }
 
-    /// 整体高度 = UI 字号 + 上下内边距。
+    /// 整体高度 = 行高（墨迹高度）+ 上下内边距。
     fn height(self) -> Pixels {
-        typography::ui_size() + self.padding() * 2.0
+        typography::ui_line() + self.padding() * 2.0
     }
 
     /// 按档位施加内边距与圆角（紧凑小圆角，宽松大圆角）。
@@ -210,7 +210,7 @@ impl RenderOnce for Button {
                 .justify_center()
                 .font(typography::ui_font())
                 .text_size(typography::ui_size())
-                .line_height(rems(1.0))
+                .line_height(typography::ui_line())
                 .when(self.occlude, |element| element.occlude()),
         );
         if self.style == ButtonStyle::Solid {

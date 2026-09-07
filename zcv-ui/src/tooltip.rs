@@ -4,7 +4,7 @@
 //! 快捷键的查询与显示也是 Tooltip 的职责：消费方只需提供 action 名称。
 //! 悬停延迟与触发由 gpui 的 `div.tooltip()` 机制承担，这里只负责气泡视觉与快捷键查询。
 
-use gpui::{AnyView, App, Context, Render, Window, div, prelude::*, rems};
+use gpui::{AnyView, App, Context, Render, Window, div, prelude::*};
 use zcv_keymap::KeyBindings;
 use zcv_theme::{color, space, typography};
 
@@ -78,9 +78,9 @@ impl Render for TooltipView {
             .gap(space::S6)
             .p(space::S6)
             // 浮动层挂在 window 层，不在根元素树内：
-            // 字号经 window rem 基准自动正确；字体需显式设置；行高 = 1rem。
+            // 字号经 window rem 基准自动正确；字体需显式设置；行高 = ui_line()（墨迹高度，与根元素同源 token）。
             .font(typography::ui_font())
-            .line_height(rems(1.0))
+            .line_height(typography::ui_line())
             .bg(color::current(cx).elevated_surface_background)
             .border_1()
             .border_color(color::current(cx).border_variant)

@@ -35,12 +35,13 @@ use crate::active_buffer_language::ActiveBufferLanguage;
 use crate::auto_update::{UpdateButton, UpdateManager};
 use crate::breadcrumbs::Breadcrumbs;
 use crate::cursor_position::CursorPosition;
-use crate::git_graph;
 use crate::harness::HarnessButton;
-use crate::project_diff::{self, ProjectDiffSerializedItemProvider, ProjectDiffView};
-use crate::version_control::{OnOpenGitDiff, OnOpenGitGraph, VersionControlPanel};
 use zcv_project_tree::{OnCreate, OnMove, OnOpenFile, OnRename, OnTrash, ProjectTreePanel};
 use zcv_terminal::{TerminalPanel, set_terminal_font_size};
+use zcv_version_control::{
+    OnOpenGitDiff, OnOpenGitGraph, ProjectDiffSerializedItemProvider, ProjectDiffView,
+    VersionControlPanel, deploy_git_graph, deploy_project_diff,
+};
 
 /// 构造打开文件回调（两个面板共用同一契约）。
 fn on_open_file_callback(weak: &WeakEntity<Workspace>) -> OnOpenFile {
@@ -67,7 +68,7 @@ fn on_open_git_diff_callback(weak: &WeakEntity<Workspace>) -> OnOpenGitDiff {
               cx: &mut gpui::App| {
             if let Some(workspace) = weak.upgrade() {
                 workspace.update(cx, |workspace, cx| {
-                    project_diff::deploy_at(workspace, kind, path, focus_opened_item, window, cx);
+                    deploy_project_diff(workspace, kind, path, focus_opened_item, window, cx);
                 });
             }
         },
@@ -80,7 +81,7 @@ fn on_open_git_graph_callback(weak: &WeakEntity<Workspace>) -> OnOpenGitGraph {
     Rc::new(move |window: &mut Window, cx: &mut gpui::App| {
         if let Some(workspace) = weak.upgrade() {
             workspace.update(cx, |workspace, cx| {
-                git_graph::deploy_at(workspace, window, cx);
+                deploy_git_graph(workspace, window, cx);
             });
         }
     })

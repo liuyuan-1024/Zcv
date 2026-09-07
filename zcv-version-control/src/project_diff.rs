@@ -147,7 +147,7 @@ impl DiffHunkDelegate for ProjectDiffHunkDelegate {
 
 /// 版本管理面板分组对应的比较范围。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ProjectDiffKind {
+pub enum ProjectDiffKind {
     Staged,
     Unstaged,
 }
@@ -247,7 +247,7 @@ impl ProjectDiffKind {
 /// 每个 Git 变更块（hunk）上下各保留多少行未修改的上下文。
 const DIFF_CONTEXT_LINES: usize = 2;
 
-pub(crate) struct ProjectDiffView {
+pub struct ProjectDiffView {
     kind: ProjectDiffKind,
     project: Entity<Project>,
     empty_focus: FocusHandle,
@@ -629,7 +629,7 @@ impl ProjectDiffView {
         self.apply_pending_path(cx);
     }
 
-    pub(crate) fn diff_requests(&self) -> impl Iterator<Item = DiffRequest> + '_ {
+    pub fn diff_requests(&self) -> impl Iterator<Item = DiffRequest> + '_ {
         self.files
             .iter()
             .map(|file| DiffRequest::new(self.kind.diff_base(), file.path.clone()))
@@ -773,7 +773,7 @@ impl Item for ProjectDiffView {
 
 /// 从布局恢复 Git 组合文档；
 /// 内容和文件集合始终由当前 GitStore 状态重新生成。
-pub(crate) struct ProjectDiffSerializedItemProvider;
+pub struct ProjectDiffSerializedItemProvider;
 
 impl SerializedItemProvider for ProjectDiffSerializedItemProvider {
     fn kind(&self) -> &'static str {
@@ -851,7 +851,7 @@ fn subscribe_to_open_excerpts(
 }
 
 /// 打开或复用未提交变更 Item，并定位到版本管理面板选择的文件。
-pub(crate) fn deploy_at(
+pub fn deploy_at(
     workspace: &mut Workspace,
     kind: ProjectDiffKind,
     path: PathBuf,

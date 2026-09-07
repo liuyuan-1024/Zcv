@@ -31,11 +31,12 @@ members = [
     "zcv-theme",
     "zcv-ui",
     "zcv-update",
+    "zcv-version-control",
     "zcv-workspace",
 ]
 resolver = "3"
 [workspace.package]
-version = "0.8.95"
+version = "0.8.96"
 edition = "2024"
 
 [workspace.lints.clippy]
@@ -63,6 +64,7 @@ zcv-text = { path = "zcv-text" }
 zcv-theme = { path = "zcv-theme" }
 zcv-ui = { path = "zcv-ui" }
 zcv-update = { path = "zcv-update" }
+zcv-version-control = { path = "zcv-version-control" }
 zcv-workspace = { path = "zcv-workspace" }
 
 # ---- 文本内核（zcv-text） ----

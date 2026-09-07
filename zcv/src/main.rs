@@ -4,10 +4,7 @@ mod active_buffer_language;
 mod auto_update;
 mod breadcrumbs;
 mod cursor_position;
-mod git_graph;
 mod harness;
-mod project_diff;
-mod version_control;
 mod workspace;
 
 use std::ffi::OsString;

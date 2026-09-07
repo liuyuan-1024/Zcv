@@ -223,11 +223,7 @@ impl Item for GitGraphView {
 }
 
 /// 打开或复用版本控制图 Item（参考 `project_diff::deploy_at`）。
-pub(crate) fn deploy_at(
-    workspace: &mut Workspace,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) {
+pub fn deploy_at(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let pane = workspace.pane().clone();
     if let Some(existing) = pane
         .read(cx)

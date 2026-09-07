@@ -472,10 +472,11 @@ impl Editor {
             })
             .collect();
         if changed {
-            self.selections = EditorSelections::from_selection_set(
-                snapshot.version(),
+            let anchored = EditorSelections::from_selection_set(
+                &self.multi_snapshot,
                 &SelectionSet::new_with_primary(selections, before.primary_index()),
             );
+            self.selections = anchored;
         }
     }
 }
@@ -640,9 +641,8 @@ impl EntityInputHandler for Editor {
         let selected_end =
             byte_for_utf16_offset(&text, selected_range_utf16.end.min(text_utf16_len))
                 .unwrap_or(text.len());
-        let version = self.display_map.buffer_snapshot().version();
-        self.selections = EditorSelections::from_selection_set(
-            version,
+        let anchored = EditorSelections::from_selection_set(
+            &self.multi_snapshot,
             &SelectionSet::new_with_primary(
                 marked_ranges
                     .iter()
@@ -656,6 +656,7 @@ impl EntityInputHandler for Editor {
                 inserted_selections.primary_index(),
             ),
         );
+        self.selections = anchored;
         let selections = self.resolved_selections();
         if let Some(transaction_id) = history_transaction_id
             && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)

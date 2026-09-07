@@ -15,7 +15,7 @@ use zcv_git::{DiffHunk, DiffHunkKind};
 use zcv_language::LanguageBuffer;
 use zcv_text::{Anchor, BufferVersion, Line, PositionMap, Stickiness, TextRange};
 
-use crate::{ExcerptDiffKind, MultiBuffer, MultiBufferEvent, MultiBufferExcerpt};
+use crate::{ExcerptDiffKind, MultiBuffer, MultiBufferEvent, MultiBufferExcerpt, ProjectionRemap};
 
 /// 一个文件的 diff 投影输入。
 ///
@@ -189,22 +189,18 @@ impl MultiBuffer {
                 state
             })
             .collect();
-        self.rebuild_diff_projection(cx)
+        !self.rebuild_diff_projection(cx).is_identity()
     }
 
     /// 设置新 hunk 的初始展开策略；用户之后的显式展开/折叠不受投影刷新覆盖。
     ///
-    /// 返回 true 表示组合文档被重建。
-    pub fn set_diff_hunks_expanded_by_default(
-        &mut self,
-        expanded: bool,
-        cx: &mut Context<Self>,
-    ) -> bool {
+    /// 折叠/展开不改变源，编辑器源锚点选区自然存活，无需返回投影重映射。
+    pub fn set_diff_hunks_expanded_by_default(&mut self, expanded: bool, cx: &mut Context<Self>) {
         let diff = self
             .diff
             .get_or_insert_with(|| Box::new(DiffProjection::default()));
         if diff.expanded_by_default == expanded {
-            return false;
+            return;
         }
         diff.expanded_by_default = expanded;
         // 策略切换不迁移旧状态：按新默认值重新应用（清空全部显式集合）。
@@ -214,15 +210,14 @@ impl MultiBuffer {
             file.collapsed_deleted.clear();
             file.collapsed_modified.clear();
         }
-        let rebuilt = self.rebuild_diff_projection(cx);
+        self.rebuild_diff_projection(cx);
         cx.emit(MultiBufferEvent::DiffExpansionChanged);
-        rebuilt
     }
 
     /// 按显示 hunk 索引切换展开/折叠（渲染层点击入口）。
     ///
-    /// 返回 true 表示组合文档被重建。
-    pub fn toggle_diff_hunk_at(&mut self, display_index: usize, cx: &mut Context<Self>) -> bool {
+    /// 折叠/展开不改变源，编辑器源锚点选区自然存活，无需返回投影重映射。
+    pub fn toggle_diff_hunk_at(&mut self, display_index: usize, cx: &mut Context<Self>) {
         let expanded_by_default = self
             .diff
             .as_ref()
@@ -239,19 +234,18 @@ impl MultiBuffer {
             toggled = true;
         }
         if !toggled {
-            return false;
+            return;
         }
-        let rebuilt = self.rebuild_diff_projection(cx);
+        self.rebuild_diff_projection(cx);
         cx.emit(MultiBufferEvent::DiffExpansionChanged);
-        rebuilt
     }
 
     /// base 版本变化（HEAD 变化等）后由宿主调用：旧侧坐标空间已失效，按默认策略重置展开状态。
     ///
-    /// 返回 true 表示组合文档被重建。
-    pub fn reset_diff_hunk_expansion_state(&mut self, cx: &mut Context<Self>) -> bool {
+    /// 折叠/展开不改变源，编辑器源锚点选区自然存活，无需返回投影重映射。
+    pub fn reset_diff_hunk_expansion_state(&mut self, cx: &mut Context<Self>) {
         let Some(diff) = &mut self.diff else {
-            return false;
+            return;
         };
         for file in &mut diff.files {
             file.expanded_deleted.clear();
@@ -259,9 +253,8 @@ impl MultiBuffer {
             file.collapsed_deleted.clear();
             file.collapsed_modified.clear();
         }
-        let rebuilt = self.rebuild_diff_projection(cx);
+        self.rebuild_diff_projection(cx);
         cx.emit(MultiBufferEvent::DiffExpansionChanged);
-        rebuilt
     }
 
     /// 与当前组合文档版本匹配的显示坐标 hunks；未注入、加载态或注入后发生编辑时返回空。
@@ -425,11 +418,14 @@ impl MultiBuffer {
 
     /// 统一物化：按展开状态与显示策略把每个文件的可见行物化为 excerpts，并派生显示坐标 hunks。
     ///
-    /// 返回 true 表示组合文档文本版本发生变化。
-    pub(crate) fn rebuild_diff_projection(&mut self, cx: &mut Context<Self>) -> bool {
+    /// 返回本次重建的投影坐标重映射：
+    /// 投影版本未变时恒等，变化时携带重建前的投影→源映射，供调用方把重建前的光标经源忠实落到重建后投影（reload 会重裁剪并重置版本，裸偏移不再有效）。
+    pub(crate) fn rebuild_diff_projection(&mut self, cx: &mut Context<Self>) -> ProjectionRemap {
         if self.diff.is_none() {
-            return false;
+            return ProjectionRemap::identity();
         }
+        // 重建前捕获投影→源映射：set_excerpts 会 reload 重裁剪并替换 mappings，重建前坐标须经源才能忠实落到重建后投影。
+        let before = self.state.mappings.clone();
         let old_version = self.text_buffer(cx).read(cx).snapshot().version();
         let diff = self.diff.as_mut().expect("已确认 diff 投影存在");
         let expanded_by_default = diff.expanded_by_default;
@@ -486,7 +482,11 @@ impl MultiBuffer {
         diff.display_expanded = display_expanded;
         diff.display_version = Some(new_version);
         cx.notify();
-        new_version != old_version
+        if new_version != old_version {
+            ProjectionRemap::rebuilt(before)
+        } else {
+            ProjectionRemap::identity()
+        }
     }
 
     /// diff 片段在最终组合文档中的真实逻辑行范围。

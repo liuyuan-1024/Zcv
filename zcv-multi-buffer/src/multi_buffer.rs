@@ -19,8 +19,8 @@ use zcv_language::{
     NewlineIndent, SyntaxSnapshot,
 };
 use zcv_text::{
-    Buffer, BufferConfig, BufferVersion, ByteOffset, Edit, Line, PositionMap, Snapshot, Stickiness,
-    StorageError, TextChangeBatch, TextError, TextRange, TextResult, TextSubscription,
+    Affinity, Buffer, BufferConfig, BufferVersion, ByteOffset, Edit, Line, PositionMap, Snapshot,
+    Stickiness, StorageError, TextChangeBatch, TextError, TextRange, TextResult, TextSubscription,
     TransactionId, TransactionMetadata,
 };
 
@@ -148,6 +148,56 @@ pub struct MultiBufferAnchor {
     source_offset: ByteOffset,
     following_paths: Vec<PathBuf>,
     preceding_paths: Vec<PathBuf>,
+}
+
+impl MultiBufferAnchor {
+    /// 源自身变更（外部编辑、共享 Buffer 的其他 Editor 编辑）后推进源偏移。
+    ///
+    /// 仅当锚点绑定该源时生效；按 `affinity` 决定同点插入的吸附方向。
+    /// 投影重建不经过这里——重建不改变源，源锚点直接按重建后快照解析即可。
+    pub fn map_through_source_change(
+        &mut self,
+        source_id: gpui::EntityId,
+        position_map: &PositionMap,
+        affinity: Affinity,
+    ) {
+        if self.source_id == source_id {
+            self.source_offset = position_map
+                .map_old_position_with_affinity(self.source_offset, affinity)
+                .value();
+        }
+    }
+}
+
+/// 一次组合投影重建造成的坐标重映射。
+///
+/// 把「重建前」的投影坐标经源忠实映射到重建后的当前投影坐标：
+/// 未触发重建时投影坐标连续，映射为恒等；
+/// 重建（reload 重裁剪）后同一源位置的投影偏移可能改变，必须经源解析——重建前的光标不能把裸偏移直接当作重建后投影坐标。
+/// 编辑落位与 diff 展开/折叠共用同一映射：结构刷新不改变源，光标同样经源保持逻辑位置。
+#[derive(Clone, Debug)]
+pub struct ProjectionRemap {
+    /// 重建前的投影→源映射快照；`None` 表示恒等（本次未重建投影）。
+    before: Option<Vec<ExcerptMapping>>,
+}
+
+impl ProjectionRemap {
+    /// 恒等重映射：投影坐标连续，无需经源解析。
+    pub fn identity() -> Self {
+        Self { before: None }
+    }
+
+    /// 一次真实重建：`before` 是重建前的投影→源映射快照。
+    pub(crate) fn rebuilt(before: Vec<ExcerptMapping>) -> Self {
+        Self {
+            before: Some(before),
+        }
+    }
+
+    /// 是否为恒等映射（本次未触发投影重建）。
+    pub fn is_identity(&self) -> bool {
+        self.before.is_none()
+    }
 }
 
 /// 一个源文档的去重共享状态：文本、语法与 capture 映射各保存一份，
@@ -403,6 +453,18 @@ impl MultiBufferSnapshot {
         &self.excerpts
     }
 
+    /// 把快照内的组合偏移锚定到底层源坐标（Editor 源锚点选区：投影→源）。
+    pub fn anchor_for_offset(&self, offset: ByteOffset) -> Option<MultiBufferAnchor> {
+        anchor_in_mappings(&self.excerpt_mappings, offset)
+    }
+
+    /// 把源锚点解析回快照内的组合偏移（Editor 源锚点选区：源→投影）。
+    ///
+    /// 源锚点选区按需解析：投影重建不改变源，选区无需重映射，用重建后快照直接解析即得当前投影偏移。
+    pub fn resolve_anchor(&self, anchor: &MultiBufferAnchor) -> Option<ByteOffset> {
+        resolve_anchor_in_mappings(&self.excerpt_mappings, anchor)
+    }
+
     pub fn capture_names(&self) -> Arc<[Arc<str>]> {
         Arc::clone(&self.capture_names)
     }
@@ -614,6 +676,11 @@ pub struct MultiBuffer {
     working_source: Option<Entity<LanguageBuffer>>,
     /// git 行级 diff 投影（hunks、展开状态、跟踪区间与显示坐标）；`None` = 无 diff 需求。
     diff: Option<Box<diff_projection::DiffProjection>>,
+    /// 外部源变更（共享 Buffer 的其他 Editor、直接编辑源）留下的源 PositionMap。
+    ///
+    /// 源锚点选区是单一数据源：只有源自身变更才需要推进源锚点，投影重建不经过这里。
+    /// 本编辑器自己发起的编辑在 [`MultiBuffer::edit`] 内已消费源补丁，不进此队列，故消费方无需再区分编辑来源。
+    pending_source_remaps: Vec<(gpui::EntityId, PositionMap)>,
 }
 
 impl EventEmitter<MultiBufferEvent> for MultiBuffer {}
@@ -655,6 +722,7 @@ impl MultiBuffer {
             read_only,
             working_source: None,
             diff: None,
+            pending_source_remaps: Vec::new(),
         }
     }
 
@@ -1126,15 +1194,23 @@ impl MultiBuffer {
             && !patch.is_empty()
         {
             let position_map = patch.position_map();
-            self.apply_source_change(source_id, &position_map, Some(&patch), None, cx);
-            // 工作区源被外部编辑：hunk 显示坐标随文本位置推进（组合编辑已在 edit 内同步映射）。
+            // 外部源变更：暂存源 PositionMap，供编辑器把源锚点选区经源忠实推进（投影重建后解析即落位）。
+            // 组合编辑已在 `edit` 内消费源补丁，patch 为空不会进到这里，故此处一律是外部编辑。
+            self.pending_source_remaps
+                .push((source_id, position_map.clone()));
+            // 先判定 hunk 结构是否随源编辑推进（组合编辑已在 edit 内同步映射，此处只处理外部编辑）。
             let mut diff_changed = false;
             if let Some(new_version) = patch.new_version() {
                 diff_changed =
                     self.map_diff_hunks_through_edit(source_id, &position_map, new_version, cx);
             }
             if diff_changed {
+                // hunk 结构变化：整体重建投影（reload 会重裁剪并生成 old→new 投影 patch，光标随之精确跟进）。
+                // 重建会替换全部 excerpts/mappings/sources，此前的增量投影编辑既被覆盖，其按 output_range 整体替换又会污染 position_map 使光标塌缩到删除起点，故不再增量编辑。
                 self.rebuild_diff_projection(cx);
+            } else {
+                // 无 hunk 结构变化：增量更新对应 excerpt，投影随源 position_map 精确推进，不整体重载。
+                self.apply_source_change(source_id, &position_map, Some(&patch), None, cx);
             }
         } else {
             // 组合编辑已同步消费文本补丁后，LanguageBuffer 仍可能在本轮安装更新的语法快照。
@@ -1365,17 +1441,18 @@ impl MultiBuffer {
     /// 投影文本只是快照，不是可变的第二份文档。
     /// 同一 excerpt 直接映射；跨 excerpt 替换只在起始 excerpt 插入新文本，
     /// 并删除起始尾段、中间 excerpt 和结束首段。
+    ///
+    /// 返回本次编辑的投影重映射：调用方据此把「编辑后、重建前」的投影坐标（如光标）经源忠实落到重建后的当前投影，而不是把裸偏移直接当作重建后坐标。
     pub fn edit(
         &mut self,
         edits: Vec<Edit>,
         metadata: TransactionMetadata,
         cx: &mut Context<Self>,
-    ) -> TextResult<PositionMap> {
+    ) -> TextResult<ProjectionRemap> {
         if self.read_only {
             return Err(StorageError::ReadOnly.into());
         }
 
-        let global_map = PositionMap::from_edits(&edits);
         let mappings = self.state.mappings.clone();
         let stored_excerpts = self.state.excerpts.clone();
 
@@ -1556,10 +1633,13 @@ impl MultiBuffer {
             diff_changed |=
                 self.map_diff_hunks_through_edit(*source_id, position_map, *new_version, cx);
         }
+        // diff 重建（reload 重裁剪）会移动同一源位置的投影坐标：
+        // rebuild_diff_projection 在重建前捕获投影→源映射，调用方据此把编辑后光标经源解析到重建后投影。
+        // 未重建时坐标连续，恒等即可。
         if diff_changed {
-            self.rebuild_diff_projection(cx);
+            return Ok(self.rebuild_diff_projection(cx));
         }
-        Ok(global_map)
+        Ok(ProjectionRemap::identity())
     }
 
     /// MultiBuffer 写入源 Buffer 的唯一入口。
@@ -1728,6 +1808,9 @@ impl MultiBuffer {
             let projection_buffer = self.state.projection.read(cx).buffer();
             let (projection_subscription, old_version) =
                 projection_buffer.update(cx, |buffer, _| (buffer.subscribe(), buffer.version()));
+            // 订阅源 Buffer：undo/redo 可能回放合并事务的多个批次，订阅批次经 compose 给出跨批次的复合 old→new 映射，
+            // 不能用 HistoryEditOutcome 的 delta（多批次时只含最后一批，坐标残缺）。
+            let source_subscription = source_buffer.update(cx, |buffer, _| buffer.subscribe());
             let outcome = Self::update_source_text(
                 &source_buffer,
                 |buffer| if redo { buffer.redo() } else { buffer.undo() },
@@ -1736,30 +1819,12 @@ impl MultiBuffer {
             let Some(outcome) = outcome else {
                 return Ok(None);
             };
-            let source_map = PositionMap::from_edits(outcome.delta().edits());
-            let source_id = source.entity_id();
-            for excerpt in self
-                .state
-                .excerpts
-                .iter_mut()
-                .filter(|excerpt| excerpt.source.entity_id() == source_id)
-            {
-                excerpt.source_range = source_map
-                    .map_old_range_with_stickiness(excerpt.source_range, Stickiness::Expand)
-                    .value();
-                for matched in &mut excerpt.match_ranges {
-                    *matched = source_map
-                        .map_old_range_with_stickiness(*matched, Stickiness::Never)
-                        .value();
-                }
-            }
+            let source_map = source_subscription.consume().position_map();
             let source_version = source_buffer.read(cx).version();
-            let diff_changed =
-                self.map_diff_hunks_through_edit(source_id, &source_map, source_version, cx);
-            self.rebuild_projection(cx);
-            if diff_changed {
-                self.rebuild_diff_projection(cx);
-            }
+            self.reproject_after_source_change(
+                &[(source.entity_id(), source_map, source_version)],
+                cx,
+            );
             let change = projection_subscription.consume();
             let position_map = change.position_map();
             return Ok(Some(MultiBufferHistoryOutcome {
@@ -1804,39 +1869,33 @@ impl MultiBuffer {
                     detail: "底层 Buffer 历史已在 MultiBuffer 外部分叉".to_string(),
                 });
             }
+            // 订阅源 Buffer：合并事务的 undo/redo 会回放多个批次，订阅批次经 compose 给出跨批次复合 old→new 映射。
+            let source_subscription = buffer.update(cx, |buffer, _| buffer.subscribe());
             let outcome = Self::update_source_text(
                 buffer,
                 |buffer| if redo { buffer.redo() } else { buffer.undo() },
                 cx,
             )?;
-            let Some(outcome) = outcome else {
+            if outcome.is_none() {
                 return Err(TextError::InvariantViolation {
                     location: "MultiBuffer::replay_history",
                     detail: "底层 Buffer 缺少对应的历史节点".to_string(),
                 });
-            };
-            source_maps.push((
-                buffer.entity_id(),
-                PositionMap::from_edits(outcome.delta().edits()),
-            ));
-        }
-        for excerpt in self.state.excerpts.iter_mut() {
-            let buffer = excerpt.source.read(cx).buffer();
-            let Some((_, position_map)) =
-                source_maps.iter().find(|(id, _)| *id == buffer.entity_id())
-            else {
+            }
+            // 历史条目记录的是 excerpt 源的内层 Buffer；解析其所属 LanguageBuffer 源 id，与 diff 文件（按 working LanguageBuffer 索引）和 excerpt 源统一身份口径。
+            let Some(source_id) = self.state.excerpts.iter().find_map(|excerpt| {
+                (excerpt.source.read(cx).buffer().entity_id() == buffer.entity_id())
+                    .then_some(excerpt.source.entity_id())
+            }) else {
                 continue;
             };
-            excerpt.source_range = position_map
-                .map_old_range_with_stickiness(excerpt.source_range, Stickiness::Expand)
-                .value();
-            for matched in &mut excerpt.match_ranges {
-                *matched = position_map
-                    .map_old_range_with_stickiness(*matched, Stickiness::Never)
-                    .value();
-            }
+            source_maps.push((
+                source_id,
+                source_subscription.consume().position_map(),
+                buffer.read(cx).version(),
+            ));
         }
-        self.rebuild_projection(cx);
+        self.reproject_after_source_change(&source_maps, cx);
         let change = projection_subscription.consume();
         let position_map = change.position_map();
         let new_version = self.text_buffer(cx).read(cx).version();
@@ -1852,6 +1911,43 @@ impl MultiBuffer {
             old_version,
             new_version,
         }))
+    }
+
+    /// 历史回放改变源文本后，把投影状态一次性重映射到新的源坐标。
+    ///
+    /// `source_maps` 按 LanguageBuffer 源 id 给出每个被回放源的坐标映射与新版本：
+    /// 先按映射推进受影响 excerpt 的源范围与匹配范围，再把 diff hunks 经同一映射回滚/重放，最后重建投影；diff 变更时按新的裁剪窗口重裁剪，使 undo/redo 后的可见上下文与普通编辑一致。
+    /// 单源（working_source）与组合（undo_stack）两条回放路径共用本方法，避免二者重投影逻辑分叉。
+    fn reproject_after_source_change(
+        &mut self,
+        source_maps: &[(gpui::EntityId, PositionMap, BufferVersion)],
+        cx: &mut Context<Self>,
+    ) {
+        for excerpt in self.state.excerpts.iter_mut() {
+            let Some((_, position_map, _)) = source_maps
+                .iter()
+                .find(|(source_id, _, _)| *source_id == excerpt.source.entity_id())
+            else {
+                continue;
+            };
+            excerpt.source_range = position_map
+                .map_old_range_with_stickiness(excerpt.source_range, Stickiness::Expand)
+                .value();
+            for matched in &mut excerpt.match_ranges {
+                *matched = position_map
+                    .map_old_range_with_stickiness(*matched, Stickiness::Never)
+                    .value();
+            }
+        }
+        let mut diff_changed = false;
+        for (source_id, position_map, new_version) in source_maps {
+            diff_changed |=
+                self.map_diff_hunks_through_edit(*source_id, position_map, *new_version, cx);
+        }
+        self.rebuild_projection(cx);
+        if diff_changed {
+            self.rebuild_diff_projection(cx);
+        }
     }
 
     pub fn snapshot(&self, cx: &App) -> MultiBufferSnapshot {
@@ -1986,67 +2082,32 @@ impl MultiBuffer {
 
     /// 把当前组合偏移锚定到底层文件坐标，并记录文件消失时的邻接解析顺序。
     pub fn anchor_for_offset(&self, offset: ByteOffset) -> Option<MultiBufferAnchor> {
-        let state = &self.state;
-        let (index, mapping) = state.mappings.iter().enumerate().find(|(index, mapping)| {
-            offset >= mapping.output_range.start()
-                && (offset < mapping.output_range.end()
-                    || (*index + 1 == state.mappings.len() && offset == mapping.output_range.end()))
-        })?;
-        let source_offset = ByteOffset::new(
-            (mapping.source_range.start().get()
-                + offset
-                    .get()
-                    .saturating_sub(mapping.output_range.start().get()))
-            .min(mapping.source_range.end().get()),
-        );
-        let following_paths =
-            distinct_neighbor_paths(state.mappings[index + 1..].iter(), &mapping.path);
-        let preceding_paths =
-            distinct_neighbor_paths(state.mappings[..index].iter().rev(), &mapping.path);
-        Some(MultiBufferAnchor {
-            path: mapping.path.clone(),
-            source_id: mapping.source_id,
-            source_offset,
-            following_paths,
-            preceding_paths,
-        })
+        anchor_in_mappings(&self.state.mappings, offset)
+    }
+
+    /// 把「编辑后、重建前」投影坐标锚定为源锚点（编辑器源锚点选区的编辑落位）。
+    ///
+    /// 组合文档编辑经 scratch 投影副本进行，闭包给出的编辑后选区落在重建前投影坐标；
+    /// 重建（reclip）时用重建前映射锚定，未重建时当前映射即编辑后映射。锚定到源后，重建不改变源，选区按重建后快照解析即忠实落位。
+    pub fn anchor_after_edit(
+        &self,
+        remap: &ProjectionRemap,
+        offset: ByteOffset,
+    ) -> Option<MultiBufferAnchor> {
+        match &remap.before {
+            Some(before) => anchor_in_mappings(before, offset),
+            None => self.anchor_for_offset(offset),
+        }
+    }
+
+    /// 取走并清空外部源变更留下的源 PositionMap（编辑器据此推进源锚点选区）。
+    pub fn take_pending_source_remaps(&mut self) -> Vec<(gpui::EntityId, PositionMap)> {
+        std::mem::take(&mut self.pending_source_remaps)
     }
 
     /// 在当前 excerpts 中解析稳定位置；同一文件仍存在时优先落到最接近的源片段。
     pub fn resolve_anchor(&self, anchor: &MultiBufferAnchor) -> Option<ByteOffset> {
-        let state = &self.state;
-        if let Some(offset) = nearest_output_offset_for_source(
-            &state.mappings,
-            &anchor.path,
-            Some(anchor.source_id),
-            anchor.source_offset,
-        ) {
-            return Some(offset);
-        }
-        if let Some(offset) = nearest_output_offset_for_source(
-            &state.mappings,
-            &anchor.path,
-            None,
-            anchor.source_offset,
-        ) {
-            return Some(offset);
-        }
-        for path in &anchor.following_paths {
-            if let Some(mapping) = state.mappings.iter().find(|mapping| &mapping.path == path) {
-                return Some(mapping.output_range.start());
-            }
-        }
-        for path in &anchor.preceding_paths {
-            if let Some(mapping) = state
-                .mappings
-                .iter()
-                .rev()
-                .find(|mapping| &mapping.path == path)
-            {
-                return Some(mapping.output_range.end());
-            }
-        }
-        None
+        resolve_anchor_in_mappings(&self.state.mappings, anchor)
     }
 
     /// 把组合文档中的选区映射回同一个源片段；跨片段选区没有单一源位置。
@@ -2193,6 +2254,36 @@ fn mapping_index_at(mappings: &[ExcerptMapping], offset: ByteOffset) -> Option<u
         })
 }
 
+/// 在给定投影→源映射中把投影偏移锚定到源坐标，并记录文件消失时的邻接解析顺序。
+///
+/// [`MultiBuffer::anchor_for_offset`]（当前映射）与 [`MultiBuffer::remap_offset`]（重建前映射）共用此锚定逻辑。
+fn anchor_in_mappings(
+    mappings: &[ExcerptMapping],
+    offset: ByteOffset,
+) -> Option<MultiBufferAnchor> {
+    let (index, mapping) = mappings.iter().enumerate().find(|(index, mapping)| {
+        offset >= mapping.output_range.start()
+            && (offset < mapping.output_range.end()
+                || (*index + 1 == mappings.len() && offset == mapping.output_range.end()))
+    })?;
+    let source_offset = ByteOffset::new(
+        (mapping.source_range.start().get()
+            + offset
+                .get()
+                .saturating_sub(mapping.output_range.start().get()))
+        .min(mapping.source_range.end().get()),
+    );
+    let following_paths = distinct_neighbor_paths(mappings[index + 1..].iter(), &mapping.path);
+    let preceding_paths = distinct_neighbor_paths(mappings[..index].iter().rev(), &mapping.path);
+    Some(MultiBufferAnchor {
+        path: mapping.path.clone(),
+        source_id: mapping.source_id,
+        source_offset,
+        following_paths,
+        preceding_paths,
+    })
+}
+
 fn nearest_output_offset_for_source(
     mappings: &[ExcerptMapping],
     path: &Path,
@@ -2212,16 +2303,54 @@ fn nearest_output_offset_for_source(
                     .min(mapping.source_range.end().get()),
             );
             let distance = source_offset.get().abs_diff(clamped.get());
+            // 边界并列时优先「以该源偏移为起点」的片段，与 anchor_in_mappings 的左偏保持一致：
+            // 边界偏移归属于从此处开始的片段，回解析必须落回同一侧，
+            // 否则折叠/展开重建后光标会跳到相邻片段一侧（源偏移恰为前一片段末尾、后一片段起点时）。
+            let at_end_only = source_offset.get() == mapping.source_range.end().get()
+                && source_offset.get() != mapping.source_range.start().get();
             let output = ByteOffset::new(
                 mapping.output_range.start().get()
                     + clamped
                         .get()
                         .saturating_sub(mapping.source_range.start().get()),
             );
-            (distance, output)
+            (distance, at_end_only, output)
         })
-        .min_by_key(|(distance, _)| *distance)
-        .map(|(_, output)| output)
+        .min_by_key(|(distance, at_end_only, _)| (*distance, *at_end_only))
+        .map(|(_, _, output)| output)
+}
+
+/// 在给定投影→源映射中把源锚点解析回投影偏移；同一文件仍存在时优先落到最接近的源片段。
+///
+/// [`MultiBuffer::resolve_anchor`]（当前映射）与 [`MultiBufferSnapshot::resolve_anchor`]（快照映射）共用此解析逻辑。
+fn resolve_anchor_in_mappings(
+    mappings: &[ExcerptMapping],
+    anchor: &MultiBufferAnchor,
+) -> Option<ByteOffset> {
+    if let Some(offset) = nearest_output_offset_for_source(
+        mappings,
+        &anchor.path,
+        Some(anchor.source_id),
+        anchor.source_offset,
+    ) {
+        return Some(offset);
+    }
+    if let Some(offset) =
+        nearest_output_offset_for_source(mappings, &anchor.path, None, anchor.source_offset)
+    {
+        return Some(offset);
+    }
+    for path in &anchor.following_paths {
+        if let Some(mapping) = mappings.iter().find(|mapping| &mapping.path == path) {
+            return Some(mapping.output_range.start());
+        }
+    }
+    for path in &anchor.preceding_paths {
+        if let Some(mapping) = mappings.iter().rev().find(|mapping| &mapping.path == path) {
+            return Some(mapping.output_range.end());
+        }
+    }
+    None
 }
 
 fn distinct_neighbor_paths<'a>(

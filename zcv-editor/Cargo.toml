@@ -6,6 +6,9 @@ description = "可嵌入文本编辑组件"
 
 [lib]
 path = "src/editor.rs"
+# 本 crate 无文档示例（doctest）；
+# 关闭后可跳过 rustdoc --test 对整条 gpui 依赖图的重新解析，避免 build/test 之间 gpui test-support 特性切换导致的 stale rlib 误报 E0463。
+doctest = false
 
 [dependencies]
 anyhow.workspace = true

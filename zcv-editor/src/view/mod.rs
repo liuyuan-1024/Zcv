@@ -23,7 +23,7 @@ use zcv_git::DiffHunk;
 use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer};
 use zcv_multi_buffer::{
     ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot, MultiBuffer, MultiBufferAnchor,
-    MultiBufferEvent, MultiBufferSubscription,
+    MultiBufferEvent, MultiBufferSnapshot, MultiBufferSubscription, ProjectionRemap,
 };
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
@@ -40,7 +40,8 @@ use super::display_map::{
 use super::element::{AUTOSCROLL_INTERVAL, EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollbarThumbState};
 use super::selection::{
-    EditOutcome, EditorSelections, Selection, SelectionHistory, SelectionSet, replace_selections,
+    EditOutcome, EditorSelections, Selection, SelectionHistory, SelectionSet, map_selection_set,
+    replace_selections,
 };
 
 mod diff;
@@ -172,6 +173,11 @@ pub struct Editor {
     multi_buffer_subscription: MultiBufferSubscription,
     last_dirty: bool,
     display_map: DisplayMap,
+    /// 与 `display_map` 当前渲染状态一致的组合快照缓存。
+    ///
+    /// 源锚点选区按需解析到投影偏移：`DisplayMap` 只携带 zcv-text 快照（不含 excerpt 映射），故在此缓存一份 `MultiBufferSnapshot`，让 `resolved_selections` 无需 `cx` 即可对「已渲染状态」解析。
+    /// 在 `sync_display_map` 中与 `display_map.sync` 同时更新。
+    multi_snapshot: MultiBufferSnapshot,
     mode: EditorMode,
     /// 空 buffer 时显示的提示文本（如提交信息编辑器的"输入提交信息…"）。
     /// 独立 DisplayMap 承载（placeholder 走真实渲染管线，折行/行高一致）。
@@ -426,7 +432,7 @@ impl Editor {
         let rebuilt = self
             .multi_buffer
             .update(cx, |buffer, cx| buffer.set_diff_projection(files, cx));
-        self.after_diff_projection_rebuild(rebuilt, cx);
+        self.reset_after_diff_injection(rebuilt, cx);
         rebuilt
     }
 
@@ -445,18 +451,17 @@ impl Editor {
 
     /// 设置新 hunk 的初始展开策略；用户之后的显式展开/折叠不受投影刷新覆盖。
     pub fn set_diff_hunks_expanded_by_default(&mut self, expanded: bool, cx: &mut Context<Self>) {
-        let rebuilt = self.multi_buffer.update(cx, |buffer, cx| {
+        self.multi_buffer.update(cx, |buffer, cx| {
             buffer.set_diff_hunks_expanded_by_default(expanded, cx)
         });
-        self.after_diff_projection_rebuild(rebuilt, cx);
+        self.after_diff_expansion(cx);
     }
 
     /// base 版本变化后由宿主调用：重置展开状态（旧侧坐标空间失效时）。
     pub fn reset_diff_hunk_expansion_state(&mut self, cx: &mut Context<Self>) {
-        let rebuilt = self
-            .multi_buffer
+        self.multi_buffer
             .update(cx, |buffer, cx| buffer.reset_diff_hunk_expansion_state(cx));
-        self.after_diff_projection_rebuild(rebuilt, cx);
+        self.after_diff_expansion(cx);
     }
 
     /// 与当前组合文档版本匹配的显示坐标 hunks。
@@ -476,10 +481,10 @@ impl Editor {
 
     /// 按显示 hunk 索引切换展开/折叠（渲染层点击入口）。
     pub fn toggle_diff_hunk_at(&mut self, display_index: usize, cx: &mut Context<Self>) {
-        let rebuilt = self.multi_buffer.update(cx, |buffer, cx| {
+        self.multi_buffer.update(cx, |buffer, cx| {
             buffer.toggle_diff_hunk_at(display_index, cx)
         });
-        self.after_diff_projection_rebuild(rebuilt, cx);
+        self.after_diff_expansion(cx);
     }
 
     /// 显示 hunk 到源定位（hunk 操作与导航用）。
@@ -493,16 +498,25 @@ impl Editor {
             .diff_hunk_source_at(display_index, cx)
     }
 
-    /// diff 投影重建后同步视图层状态：组合文档文本版本变化时同步 DisplayMap 并把光标落回开头。
-    fn after_diff_projection_rebuild(&mut self, rebuilt: bool, cx: &mut Context<Self>) {
+    /// 宿主注入/刷新整份 diff 投影后同步视图层状态：组合文本整体替换，光标落回开头，由宿主随后恢复视口/光标。
+    fn reset_after_diff_injection(&mut self, rebuilt: bool, cx: &mut Context<Self>) {
         if rebuilt {
-            // 组合文本整体替换（diff 投影重建）：同步 DisplayMap 并把光标落回开头；
-            // 延迟到达的 TextChanged 事件会再次 sync，按版本比对跳过重复映射。
+            // 组合文本整体替换（diff 投影注入）：同步 DisplayMap 后把光标落回开头；
+            // sync 已把 multi_snapshot 推进到注入后快照，据此把默认选区锚定为源锚点。
             self.sync_display_map(cx);
-            let version = self.text_buffer(cx).read(cx).snapshot().version();
-            self.selections =
-                EditorSelections::from_selection_set(version, &SelectionSet::default());
+            let reset = EditorSelections::from_selection_set(
+                &self.multi_snapshot,
+                &SelectionSet::default(),
+            );
+            self.selections = reset;
         }
+        cx.notify();
+    }
+
+    /// diff 展开/折叠重建后同步视图层状态：
+    /// 结构刷新不改变源，源锚点选区自然存活——同步 DisplayMap 后按重建后快照解析即落到同一逻辑源位置，光标不会被重置到开头（与普通编辑器折叠不移动光标一致）。
+    fn after_diff_expansion(&mut self, cx: &mut Context<Self>) {
+        self.sync_display_map(cx);
         cx.notify();
     }
 
@@ -800,13 +814,13 @@ impl Editor {
     /// 更新 pending selection 显示出的当前选区。
     /// 只有 begin/update selection 可以调用这个入口。
     fn set_pending_selection(&mut self, selections: SelectionSet) {
-        let version = self.display_map.buffer_snapshot().version();
-        self.selections = EditorSelections::from_selection_set(version, &selections);
+        let anchored = EditorSelections::from_selection_set(&self.multi_snapshot, &selections);
+        self.selections = anchored;
     }
 
-    /// 按当前显示快照把端点锚点解析为 offset 版选区集合。
+    /// 按当前渲染快照把源锚点选区解析为投影 offset 版选区集合。
     fn resolved_selections(&self) -> SelectionSet {
-        self.selections.resolve(self.display_map.buffer_snapshot())
+        self.selections.resolve(&self.multi_snapshot)
     }
 
     /// 光标位置的 "行:列" 文本，行和列均从 1 开始计数。
@@ -951,7 +965,7 @@ impl Editor {
             .line_start_byte(Line::new(line.get() + 1))
             .unwrap_or_else(|_| snapshot.len_bytes());
         let selection = if extend {
-            let current = *self.selections.resolve(&snapshot).primary();
+            let current = *self.selections.resolve(&self.multi_snapshot).primary();
             if end <= current.start() {
                 Selection::new(current.end(), start)
             } else if start >= current.end() {
@@ -1277,8 +1291,7 @@ impl Editor {
         let (multi_buffer_subscription, snapshot) =
             multi_buffer.update(cx, |buffer, cx| buffer.subscribe_and_snapshot(cx));
         let last_dirty = multi_buffer.read(cx).is_dirty(cx);
-        let initial_version = snapshot.text().version();
-        let display_map = DisplayMap::new(snapshot);
+        let display_map = DisplayMap::new(snapshot.clone());
         cx.observe(&multi_buffer, |editor, multi_buffer, cx| {
             let dirty = multi_buffer.read(cx).is_dirty(cx);
             if editor.last_dirty != dirty {
@@ -1291,6 +1304,7 @@ impl Editor {
         cx.subscribe(&multi_buffer, |editor, _, event, cx| {
             match event {
                 MultiBufferEvent::TextChanged => {
+                    editor.consume_source_remaps(cx);
                     editor.sync_display_map(cx);
                     editor.research_after_edit(cx);
                 }
@@ -1320,12 +1334,10 @@ impl Editor {
             multi_buffer_subscription,
             last_dirty,
             display_map,
+            multi_snapshot: snapshot.clone(),
             mode,
             placeholder_display_map: None,
-            selections: EditorSelections::from_selection_set(
-                initial_version,
-                &SelectionSet::default(),
-            ),
+            selections: EditorSelections::from_selection_set(&snapshot, &SelectionSet::default()),
             selection_history: SelectionHistory::default(),
             fold_ranges: Arc::from([]),
             bracket_pair_cache: None,
@@ -1379,8 +1391,8 @@ impl Editor {
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut Buffer) -> TextResult<EditOutcome>,
     ) -> TextResult<EditOutcome> {
-        let (node_id, outcome) = self.commit_session(before_selections, metadata, cx, f)?;
-        self.apply_edit_outcome(node_id, outcome, cx)
+        let (node_id, outcome, remap) = self.commit_session(before_selections, metadata, cx, f)?;
+        self.apply_edit_outcome(node_id, outcome, remap, cx)
     }
 
     /// 编辑后选区由闭包按编辑语义重算的变体（删除、剪切、行移动、输入等特判场景）。
@@ -1391,8 +1403,8 @@ impl Editor {
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut Buffer) -> TextResult<(EditOutcome, SelectionSet)>,
     ) -> TextResult<(EditOutcome, SelectionSet)> {
-        let (node_id, outcome) = self.commit_session(before_selections, metadata, cx, f)?;
-        self.apply_edit_outcome_with_after(node_id, outcome, cx)
+        let (node_id, outcome, remap) = self.commit_session(before_selections, metadata, cx, f)?;
+        self.apply_edit_outcome_with_after(node_id, outcome, remap, cx)
     }
 
     /// 会话化编辑的共享骨架：开启会话并记录 undo 选区（事务开始时记录）→ 闭包编辑（统一 Buffer 通知）→ 提交会话，返回 (节点身份, 编辑结果)。
@@ -1405,7 +1417,7 @@ impl Editor {
         metadata: TransactionMetadata,
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut Buffer) -> TextResult<T>,
-    ) -> TextResult<(Option<TransactionId>, T)> {
+    ) -> TextResult<(Option<TransactionId>, T, ProjectionRemap)> {
         let session_id = self.start_transaction(before_selections.clone(), cx)?;
         let projection_snapshot = self.text_buffer(cx).read(cx).snapshot();
         let projection_text = projection_snapshot
@@ -1422,44 +1434,48 @@ impl Editor {
             Err(error) => {
                 self.end_transaction(cx);
                 eprintln!("Editor 编辑事务失败：{error}");
-                self.selections = EditorSelections::from_selection_set(
-                    projection_snapshot.version(),
-                    &before_selections,
-                );
+                let restored =
+                    EditorSelections::from_selection_set(&self.multi_snapshot, &before_selections);
+                self.selections = restored;
                 return Err(error);
             }
         };
         let changes = subscription.consume();
         // 编辑映射与提交可能失败（如命中只读 excerpt）：失败必须结束空会话并恢复编辑前选区，否则事务残留会阻塞后续所有编辑。
-        let applied = (|| -> TextResult<()> {
-            if !changes.is_empty() {
-                let after = planner.snapshot();
-                let edits = changes
-                    .patch()
-                    .edits()
-                    .iter()
-                    .map(|patch| {
-                        let replacement = after.slice_text(patch.new_range())?.as_str().to_owned();
-                        Ok(Edit::replace(patch.old_range(), replacement))
-                    })
-                    .collect::<TextResult<Vec<_>>>()?;
-                self.multi_buffer
-                    .update(cx, |buffer, cx| buffer.edit(edits, metadata, cx))?;
+        // 成功时返回本次编辑的投影重映射（组合文档重建后坐标经源解析；单文件恒等）。
+        let applied = (|| -> TextResult<ProjectionRemap> {
+            if changes.is_empty() {
+                return Ok(ProjectionRemap::identity());
             }
-            Ok(())
+            let after = planner.snapshot();
+            let edits = changes
+                .patch()
+                .edits()
+                .iter()
+                .map(|patch| {
+                    let replacement = after.slice_text(patch.new_range())?.as_str().to_owned();
+                    Ok(Edit::replace(patch.old_range(), replacement))
+                })
+                .collect::<TextResult<Vec<_>>>()?;
+            self.multi_buffer
+                .update(cx, |buffer, cx| buffer.edit(edits, metadata, cx))
         })();
-        if let Err(error) = applied {
-            self.end_transaction(cx);
-            eprintln!("Editor 编辑事务失败：{error}");
-            let version = self.text_buffer(cx).read(cx).snapshot().version();
-            self.selections = EditorSelections::from_selection_set(version, &before_selections);
-            return Err(error);
-        }
+        let remap = match applied {
+            Ok(remap) => remap,
+            Err(error) => {
+                self.end_transaction(cx);
+                eprintln!("Editor 编辑事务失败：{error}");
+                let restored =
+                    EditorSelections::from_selection_set(&self.multi_snapshot, &before_selections);
+                self.selections = restored;
+                return Err(error);
+            }
+        };
         let node_id = self.end_transaction(cx);
         if node_id != Some(session_id) {
             self.selection_history.remove_transaction(session_id);
         }
-        Ok((node_id, outcome))
+        Ok((node_id, outcome, remap))
     }
 
     /// 开启编辑会话并记录 undo 选区。
@@ -1484,7 +1500,7 @@ impl Editor {
             .update(cx, |buffer, cx| buffer.end_transaction(cx))
     }
 
-    /// 编辑事务结果落位：选区锚点映射、redo 选区记录与 display_map 同步。
+    /// 编辑事务结果落位：选区锚定、redo 选区记录与 display_map 同步。
     ///
     /// 会话提交后的历史节点身份（与本次编辑的事件身份分离，合并进前节点时指向被合并的既有节点）；
     /// `None` 表示空会话或历史被预算清空，此时不记录选区历史。
@@ -1493,65 +1509,79 @@ impl Editor {
         &mut self,
         transaction_id: Option<TransactionId>,
         outcome: EditOutcome,
+        remap: ProjectionRemap,
         cx: &mut Context<Self>,
     ) -> TextResult<EditOutcome> {
         if let Some(transaction) = outcome.transaction() {
-            let version = self.text_buffer(cx).read(cx).snapshot().version();
-            self.update_autoclose_regions_with(
-                transaction.event().position_map(),
-                self.selections.version(),
-                version,
-            );
-            // 用本次事务的坐标映射批量推进选区端点锚点，选区自动跟随文本变化。
-            let snapshot = self.text_buffer(cx).read(cx).snapshot();
-            let new_version = snapshot.version();
             let position_map = transaction.event().position_map();
-            self.selections.map_through_position_map(
-                self.selections.version(),
-                new_version,
-                position_map,
-            );
-            if let Some(transaction_id) = transaction_id
-                && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
-            {
-                // display_map 尚未同步到新版本，历史快照按 Buffer 快照解析。
-                // 事务结束时记录 redo 选区。
-                let after_selections = self.selections.resolve(&snapshot);
-                transaction.set_redo(after_selections);
-            }
+            let new_version = self.text_buffer(cx).read(cx).snapshot().version();
+            let old_version = self.multi_snapshot.text().version();
+            self.update_autoclose_regions_with(position_map, old_version, new_version);
+            // 编辑前选区按编辑前投影快照解析，经事务坐标映射推进到「编辑后、重建前」投影坐标；
+            // 再由 land_after_edit 锚定为源锚点（组合文档重建后按源忠实落位）。
+            let before = self.selections.resolve(&self.multi_snapshot);
+            let after = map_selection_set(&before, position_map);
+            self.land_after_edit(after, &remap, transaction_id, cx);
+        } else {
+            self.finish_edit(cx);
+            cx.emit(EditorEvent::Edited);
         }
-        self.finish_edit(cx);
-        cx.emit(EditorEvent::Edited);
         Ok(outcome)
     }
 
-    /// 行移动等特判场景：编辑后选区按行语义重算，直接重锚定结果，不走通用锚点映射。
+    /// 行移动等特判场景：编辑后选区由闭包按行语义重算（「编辑后、重建前」投影坐标），直接锚定落位。
     fn apply_edit_outcome_with_after(
         &mut self,
         transaction_id: Option<TransactionId>,
         outcome: (EditOutcome, SelectionSet),
+        remap: ProjectionRemap,
         cx: &mut Context<Self>,
     ) -> TextResult<(EditOutcome, SelectionSet)> {
         let (outcome, after_selections) = outcome;
         if let Some(transaction) = outcome.transaction() {
-            let version = self.text_buffer(cx).read(cx).snapshot().version();
+            let new_version = self.text_buffer(cx).read(cx).snapshot().version();
+            let old_version = self.multi_snapshot.text().version();
             self.update_autoclose_regions_with(
                 transaction.event().position_map(),
-                self.selections.version(),
-                version,
+                old_version,
+                new_version,
             );
         }
+        self.land_after_edit(after_selections, &remap, transaction_id, cx);
+        Ok((outcome, self.resolved_selections()))
+    }
+
+    /// 编辑落位共享骨架：把「编辑后、重建前」投影坐标的选区锚定为源锚点，落到重建后的当前投影。
+    ///
+    /// 选区以源锚点为单一数据源，投影重建（diff 裁剪窗口移动）不改变源，故不触碰选区：
+    /// `anchor_after_edit` 用重建前映射（`remap.before`）把编辑后投影偏移锚定到源，未重建时用当前映射；
+    /// 随后按重建后快照解析即忠实落到同一源位置，组合文档编辑器光标落位与普通单文件编辑器完全一致。
+    fn land_after_edit(
+        &mut self,
+        after: SelectionSet,
+        remap: &ProjectionRemap,
+        transaction_id: Option<TransactionId>,
+        cx: &mut Context<Self>,
+    ) {
+        let (anchored, snapshot) = {
+            let multi = self.multi_buffer.read(cx);
+            let snapshot = multi.snapshot(cx);
+            let anchored = EditorSelections::anchored(&after, &|offset| {
+                multi.anchor_after_edit(remap, offset)
+            });
+            (anchored, snapshot)
+        };
+        self.selections = anchored;
+        self.multi_snapshot = snapshot.clone();
         if let Some(transaction_id) = transaction_id
             && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
         {
-            transaction.set_redo(after_selections.clone());
+            // 事务结束时记录 redo 选区：按重建后快照把源锚点解析到当前投影坐标。
+            let redo = self.selections.resolve(&snapshot);
+            transaction.set_redo(redo);
         }
-        // 编辑后 display_map 尚未同步，重锚定用 Buffer 快照的当前版本。
-        let version = self.text_buffer(cx).read(cx).snapshot().version();
-        self.selections = EditorSelections::from_selection_set(version, &after_selections);
         self.finish_edit(cx);
         cx.emit(EditorEvent::Edited);
-        Ok((outcome, after_selections))
     }
 
     fn finish_edit(&mut self, cx: &mut Context<Self>) {
@@ -1761,8 +1791,9 @@ impl Editor {
         match outcome {
             Ok(selections) => {
                 self.composition = None;
-                let version = self.display_map.buffer_snapshot().version();
-                self.selections = EditorSelections::from_selection_set(version, &selections);
+                let anchored =
+                    EditorSelections::from_selection_set(&self.multi_snapshot, &selections);
+                self.selections = anchored;
                 if matches!(motion, Motion::PageStep(_)) {
                     self.scroll_manager
                         .scroll_page(direction == MovementDirection::Next);
@@ -1794,26 +1825,39 @@ impl Editor {
         let text_version = snapshot.text().version();
         let changes = self.multi_buffer_subscription.consume();
         if changes.is_empty() {
+            self.multi_snapshot = snapshot.clone();
             self.display_map.sync(snapshot, changes);
             return;
         }
         if changes.requires_reset() {
-            // 整体替换（外部加载）：锚点无法映射，选区回落到文档开头，由宿主随后重设。
-            self.selections =
-                EditorSelections::from_selection_set(text_version, &SelectionSet::default());
+            // 整体替换（外部加载）或订阅出现版本缺口：源被整体替换、旧源锚点失效，选区回落文档开头，由宿主随后重设。
+            // 投影重建（折叠/展开、编辑落位、undo/redo）不产生版本缺口，源锚点自然存活，不进此分支。
+            let reset = EditorSelections::from_selection_set(&snapshot, &SelectionSet::default());
+            self.selections = reset;
         } else if let Some(old_version) = changes.old_version() {
+            // 源锚点选区不随投影重建重映射；外部源变更已由 consume_source_remaps 经源 PositionMap 推进。
+            // 这里只推进搜索锚点（搜索匹配是投影坐标的派生态，随投影变更跟随）。
             let position_map = changes.position_map();
             self.map_search_anchors(old_version, text_version, &position_map);
-            // 共享 Buffer 的其他 Editor 或 zcv-text 直接编辑：批量映射端点锚点。
-            // 本 Editor 自己发起的编辑已在 apply_edit_outcome 映射过，版本已推进，跳过。
-            if old_version == self.selections.version() {
-                self.selections
-                    .map_through_position_map(old_version, text_version, &position_map);
-            }
         }
+        self.multi_snapshot = snapshot.clone();
         self.display_map.sync(snapshot, changes);
         // 折叠范围只在组合快照的语法版本更新后刷新：
         // 编辑时立即全量查询既在主线程跑 O(N) fold 查询，又会因版本不匹配把折叠清空。
+    }
+
+    /// 消费 MultiBuffer 暂存的外部源变更，把绑定该源的源锚点选区经源 PositionMap 推进。
+    ///
+    /// 只有外部源变更（共享 Buffer 的其他 Editor、直接编辑源）会暂存；本编辑器自己的编辑已在 `MultiBuffer::edit` 内消费源补丁，不进此路径。
+    /// 投影重建（折叠/展开、编辑落位、undo/redo）不改变源，也不经过这里——源锚点直接按重建后快照解析即落位。
+    fn consume_source_remaps(&mut self, cx: &mut Context<Self>) {
+        let remaps = self
+            .multi_buffer
+            .update(cx, |buffer, _| buffer.take_pending_source_remaps());
+        for (source_id, position_map) in remaps {
+            self.selections
+                .map_through_source_change(source_id, &position_map);
+        }
     }
 
     /// 读取共享 LanguageBuffer 的折叠缓存（后台解析时已计算，主线程零查询）。

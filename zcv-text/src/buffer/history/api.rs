@@ -9,7 +9,7 @@ use crate::{
     TextError, TextRange, TextResult, TransactionId, TransactionSource,
     buffer::Buffer,
     position_map::{Affinity, PositionMap},
-    transaction::{ChangeSet, Delta, Edit, EditList, TransactionMergePolicy, TransactionMetadata},
+    transaction::{Edit, EditList, TransactionMergePolicy, TransactionMetadata},
 };
 
 /// 当前历史节点的只读视图，用于宿主感知节点身份和分支结构。
@@ -31,33 +31,23 @@ pub struct HistoryNodeView {
 }
 
 /// 一次 Undo / Redo 文本回放的结果。
+///
+/// 只携带被回放历史节点的规范事务身份：
+/// 一次回放可能由合并事务的多个批次组成，跨批次的复合文本变化由源 Buffer 的订阅（`subscribe`/`consume`）权威给出；
+/// 回放结果不再单独暴露只含最后一批、坐标残缺的 delta/changeset。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryEditOutcome {
     transaction_id: TransactionId,
-    delta: Delta,
-    changeset: ChangeSet,
 }
 
 impl HistoryEditOutcome {
-    fn new(transaction_id: TransactionId, delta: Delta, changeset: ChangeSet) -> Self {
-        Self {
-            transaction_id,
-            delta,
-            changeset,
-        }
+    fn new(transaction_id: TransactionId) -> Self {
+        Self { transaction_id }
     }
 
     /// 被回放历史节点的规范事务身份。
     pub fn transaction_id(&self) -> TransactionId {
         self.transaction_id
-    }
-
-    pub fn delta(&self) -> &Delta {
-        &self.delta
-    }
-
-    pub fn changeset(&self) -> &ChangeSet {
-        &self.changeset
     }
 }
 
@@ -178,27 +168,19 @@ impl Buffer {
         })
     }
 
-    /// 按批次回放 undo / redo 编辑，返回规范事务身份与增量事实。
+    /// 按批次回放 undo / redo 编辑，返回被回放节点的规范事务身份。
+    ///
+    /// 合并事务的多个批次各自 `apply_edit_list` 并向订阅发布，跨批次的复合变化由订阅权威给出；
+    /// 这里只负责依次回放并回传节点身份。`history_target` 已保证批次非空。
     fn replay_history_batches(&mut self, target: ReplayTarget) -> TextResult<HistoryEditOutcome> {
-        let mut result = None;
         for tx_edits in target.batches.iter() {
-            let (_, delta, changeset, _) = self.apply_edit_list(
+            self.apply_edit_list(
                 self.version,
                 tx_edits.clone(), // EditList::clone 是 O(1) Arc 递增
                 target.kind.source(),
             )?;
-            result = Some((delta, changeset));
         }
-
-        let result = result.ok_or_else(|| TextError::InvariantViolation {
-            location: "Buffer::replay_history_batches",
-            detail: "已验证的回放批次没有产生结果".to_string(),
-        })?;
-        Ok(HistoryEditOutcome::new(
-            target.transaction_id,
-            result.0,
-            result.1,
-        ))
+        Ok(HistoryEditOutcome::new(target.transaction_id))
     }
 
     pub(in crate::buffer) fn push_history(

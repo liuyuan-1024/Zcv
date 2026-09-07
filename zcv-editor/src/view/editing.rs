@@ -393,8 +393,10 @@ impl Editor {
                         }
                     })
                 {
-                    self.selections =
-                        EditorSelections::from_selection_set(outcome.new_version(), &selections);
+                    // undo/redo 后投影可能重建：用回放后的 live 快照把历史选区（投影坐标）重锚为源锚点。
+                    let snapshot = self.multi_buffer.read(cx).snapshot(cx);
+                    let restored = EditorSelections::from_selection_set(&snapshot, &selections);
+                    self.selections = restored;
                 }
                 self.synchronize_after_history_edit(cx);
             }

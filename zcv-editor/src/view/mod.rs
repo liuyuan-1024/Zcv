@@ -357,6 +357,7 @@ impl Editor {
 
     /// 覆盖换行模式（UI 场景强制使用，不随全局设置变化）；`None` 清除覆盖恢复设置值。
     ///
+    /// SingleLine 模式恒不换行（见 [`Editor::soft_wrap`]），覆盖对其不生效。
     /// 实际换行在下一帧 prepaint 计算 wrap 宽度时生效。
     pub fn set_soft_wrap_mode(&mut self, soft_wrap: Option<SoftWrap>, cx: &mut Context<Self>) {
         if self.soft_wrap_override == soft_wrap {
@@ -366,8 +367,12 @@ impl Editor {
         cx.notify();
     }
 
-    /// 生效的换行模式：覆盖优先，否则跟随全局设置。
+    /// 生效的换行模式：SingleLine 恒为不换行——单行输入只有一行视口，换行会把文本切到可见范围外（光标跟随的是换行后的显示行，前段文字整体不可见）；
+    /// 其余模式覆盖优先，否则跟随全局设置。
     pub(crate) fn soft_wrap(&self) -> SoftWrap {
+        if self.mode == EditorMode::SingleLine {
+            return SoftWrap::None;
+        }
         self.soft_wrap_override.unwrap_or(self.soft_wrap)
     }
 

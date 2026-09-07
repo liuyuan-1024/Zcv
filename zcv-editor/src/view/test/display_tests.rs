@@ -587,6 +587,45 @@ fn soft_wrap_renders_continuation_rows_and_click_hits_fragment(cx: &mut TestAppC
     assert!(line_count > 0);
 }
 
+/// 单行输入宿主：把编辑器约束到窄于文本的固定宽度，模拟项目树行内名称输入框。
+struct NarrowSingleLineHost {
+    editor: Entity<Editor>,
+}
+
+impl Render for NarrowSingleLineHost {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        // 80px：NoopTextSystem 等宽度量下也足以让测试文本溢出，触发水平跟随。
+        div().w(px(80.)).h(px(24.)).child(self.editor.clone())
+    }
+}
+
+#[gpui::test]
+fn single_line_editor_never_wraps_and_follows_caret_horizontally(cx: &mut TestAppContext) {
+    let editor = cx.new(Editor::single_line);
+    let (_host, cx) = cx.add_window_view({
+        let editor = editor.clone();
+        |_, _| NarrowSingleLineHost { editor }
+    });
+    // 真实环境全局默认为 editor-width；单行输入必须免疫，否则长名称被切到可见范围外。
+    editor.update(cx, |editor, cx| {
+        editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx);
+        editor.set_text("抗突发错误光子太赫兹通信.md", cx);
+    });
+    cx.run_until_parked();
+
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(
+            editor.display_map.line_count(),
+            1,
+            "单行输入不应拆成多个显示行"
+        );
+        assert!(
+            editor.scroll_offset().x > Pixels::ZERO,
+            "超宽文本应水平滚动让光标可见，而不是换行隐藏前段"
+        );
+    });
+}
+
 #[gpui::test]
 fn multibuffer_soft_wrap_uses_the_regular_display_map_pipeline(cx: &mut TestAppContext) {
     let source = test_buffer(

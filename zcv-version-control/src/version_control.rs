@@ -294,7 +294,7 @@ impl VersionControlPanel {
         let focus = cx.focus_handle();
         let git_store = project.read(cx).git_store();
         let commit_editor = cx.new(|cx| {
-            let mut editor = Editor::auto_height(6, Some(6), cx);
+            let mut editor = Editor::auto_height(7, Some(7), cx);
             editor.set_placeholder_text("输入提交信息…", cx);
             editor
         });

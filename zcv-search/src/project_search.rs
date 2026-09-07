@@ -79,6 +79,7 @@ impl SerializedItemProvider for ProjectSearchSerializedItemProvider {
         };
         let view = cx.new(|cx| ProjectSearchView::new(project, cx));
         view.update(cx, |view, _| view.search_state = state.clone());
+        subscribe_to_open_excerpts(&view, window, cx);
         self.search_bar.update(cx, |search_bar, cx| {
             search_bar.restore_state(state, window, cx)
         });
@@ -504,6 +505,31 @@ pub(super) fn install_search_bar(
     project_search_bar
 }
 
+/// 把项目搜索的「打开片段」请求接到工作区打开文件。
+///
+/// 新建（deploy）与布局恢复（restore）两条创建路径都必须接线：
+/// 订阅属于 Workspace，视图自身只发事件，恢复出的标签漏接就再没有人处理打开请求。
+fn subscribe_to_open_excerpts(
+    view: &Entity<ProjectSearchView>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    cx.subscribe_in(view, window, |workspace, _, event, window, cx| {
+        let ProjectSearchEvent::OpenExcerptsRequested(locations) = event else {
+            return;
+        };
+        for location in locations {
+            workspace.open_path_at(
+                location.path.clone(),
+                location.source_range.start().get()..location.source_range.end().get(),
+                window,
+                cx,
+            );
+        }
+    })
+    .detach();
+}
+
 pub(crate) fn deploy(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let pane = workspace.pane().clone();
     if let Some(existing) = pane
@@ -519,20 +545,7 @@ pub(crate) fn deploy(workspace: &mut Workspace, window: &mut Window, cx: &mut Co
 
     let project = workspace.project().clone();
     let view = cx.new(|cx| ProjectSearchView::new(project, cx));
-    cx.subscribe_in(&view, window, |workspace, _, event, window, cx| {
-        let ProjectSearchEvent::OpenExcerptsRequested(locations) = event else {
-            return;
-        };
-        for location in locations {
-            workspace.open_path_at(
-                location.path.clone(),
-                location.source_range.start().get()..location.source_range.end().get(),
-                window,
-                cx,
-            );
-        }
-    })
-    .detach();
+    subscribe_to_open_excerpts(&view, window, cx);
     workspace.open_item(Box::new(view), window, cx);
 }
 
@@ -573,5 +586,89 @@ impl Render for ProjectSearchButton {
                     .ok();
             })
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::TestAppContext;
+    use zcv_text::{ByteOffset, TextRange};
+
+    use super::*;
+
+    /// 回归：布局恢复出的项目搜索标签必须与 deploy 新建的一样接上工作区的打开订阅。
+    ///
+    /// 漏接时点击「打开文件」与 alt-enter 都只发出事件而无人处理，表现为搜索结果无法打开文件。
+    #[gpui::test]
+    async fn restored_project_search_tab_opens_excerpt_files(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let root = directory.path().canonicalize().expect("项目根应可规范化");
+        let file = root.join("needle.txt");
+        std::fs::write(&file, "needle").expect("应创建测试文件");
+        // 打开文件经 ItemProvider 注册表分发，测试同样需要文本 Provider。
+        cx.update(zcv_editor::init);
+
+        let provider = {
+            let search_bar = cx.new(|cx| SearchBar::new("ProjectSearchBar", cx));
+            ProjectSearchSerializedItemProvider {
+                search_bar: cx.new(|cx| ProjectSearchBar::new(search_bar, cx)),
+            }
+        };
+        let (workspace, cx) = cx.add_window_view({
+            let root = root.clone();
+            move |window, cx| Workspace::new(root, window, cx)
+        });
+
+        // 按布局恢复路径重建项目搜索标签，再像 restore_pane 一样放进 Pane。
+        let state = serde_json::to_value(SearchBarState {
+            query: "needle".into(),
+            case_sensitive: false,
+            whole_word: false,
+            regex: false,
+        })
+        .expect("搜索栏状态应可序列化");
+        let restored = workspace.update_in(cx, |workspace, window, cx| {
+            provider.restore(state, workspace.project().clone(), window, cx)
+        });
+        let item = restored.await.expect("项目搜索标签应可恢复");
+        workspace.update_in(cx, |workspace, window, cx| {
+            workspace.open_item(item, window, cx)
+        });
+
+        let view = cx.read_entity(&workspace, |workspace, cx| {
+            workspace
+                .pane()
+                .read(cx)
+                .tabs()
+                .iter()
+                .find_map(|item| item.act_as::<ProjectSearchView>(cx))
+                .expect("恢复出的标签应是项目搜索视图")
+        });
+
+        // 命中片段请求打开源文件：与点击「打开文件」和 alt-enter 发出的事件同一条路径。
+        view.update(cx, |_, cx| {
+            cx.emit(ProjectSearchEvent::OpenExcerptsRequested(vec![
+                ExcerptLocation {
+                    path: file.clone(),
+                    source_range: TextRange::new(ByteOffset::ZERO, ByteOffset::ZERO)
+                        .expect("同点源范围必须有效"),
+                },
+            ]));
+        });
+        cx.run_until_parked();
+
+        cx.read_entity(&workspace, |workspace, cx| {
+            let opened: Vec<_> = workspace
+                .pane()
+                .read(cx)
+                .tabs()
+                .iter()
+                .filter_map(|item| item.item_path(cx))
+                .collect();
+            assert!(
+                opened.contains(&file),
+                "恢复的项目搜索标签应能打开命中文件，实际标签：{opened:?}"
+            );
+        });
     }
 }

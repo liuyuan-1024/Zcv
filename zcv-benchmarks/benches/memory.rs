@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System as ProcessSystem, get_current_pid};
-use zcv_benchmarks::cached_rust_document;
+use zcv_benchmarks::{cached_injection_stress_document, cached_rust_document};
 use zcv_language::highlight_snippet;
 use zcv_text::{Buffer, BufferConfig};
 
@@ -210,6 +210,16 @@ fn main() {
             format!("language/highlight_rust_document/{input_bytes}"),
             input_bytes,
             || highlight_snippet("rust", text.as_ref()).expect("Rust 高亮应成功"),
+        ));
+
+        // 注入压力测试：病态宏密集语料放大「宏 → 注入 rust 子解析」级联，RSS 峰值主要是 tree-sitter 的 C 侧嵌套子树，非代表性负载，须与代表档对照解读。
+        let stress_text = cached_injection_stress_document(size);
+        let stress_bytes = stress_text.len();
+        samples.push(measure(
+            &mut rss,
+            format!("language/highlight_injection_stress/{stress_bytes}"),
+            stress_bytes,
+            || highlight_snippet("rust", stress_text.as_ref()).expect("注入压力高亮应成功"),
         ));
     }
 

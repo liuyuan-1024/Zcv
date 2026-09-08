@@ -19,7 +19,7 @@ use zcv_multi_buffer::{ExcerptLocation, MultiBuffer};
 use zcv_project::{DiffRequest, GitStoreEvent, Project};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Snapshot};
 use zcv_theme::{color, space};
-use zcv_ui::{Button, ButtonSize};
+use zcv_ui::{Button, ButtonSize, Checkbox};
 use zcv_workspace::{
     Item, ItemEvent, SearchableItemHandle, SerializedItemProvider, SerializedPaneItem,
     ToolbarItemLocation, Workspace,
@@ -38,6 +38,49 @@ struct ProjectDiffHunkDelegate {
 }
 
 impl DiffHunkDelegate for ProjectDiffHunkDelegate {
+    fn render_buffer_header_controls(
+        &self,
+        path: &Path,
+        sticky: bool,
+        row: usize,
+        _editor: &Entity<Editor>,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
+        let view = self.view.upgrade()?;
+        let kind = {
+            let view = view.read(cx);
+            view.files.iter().find(|file| file.path == path)?;
+            view.kind
+        };
+        let checked = kind == ProjectDiffKind::Staged;
+        let view_for_click = self.view.clone();
+        let path = path.to_path_buf();
+        Some(
+            Checkbox::new(
+                format!(
+                    "project-diff-header-staged-{sticky}-{row}-{}",
+                    path.display()
+                ),
+                checked,
+            )
+            .tooltip(if checked { "取消暂存" } else { "暂存" })
+            .on_click(move |_window, cx| {
+                if let Some(view) = view_for_click.upgrade() {
+                    view.update(cx, |view, cx| {
+                        let operation = if checked {
+                            GitHunkOperation::Unstage
+                        } else {
+                            GitHunkOperation::Stage
+                        };
+                        view.toggle_file_staged(&path, operation, cx);
+                    });
+                }
+            })
+            .into_any_element(),
+        )
+    }
+
     fn render_hunk_controls(
         &self,
         row: usize,
@@ -82,7 +125,7 @@ impl DiffHunkDelegate for ProjectDiffHunkDelegate {
                 controls
                     .child(
                         Button::text(("stage-hunk", row), "暂存")
-                            .size(ButtonSize::Loose)
+                            .size(ButtonSize::Medium)
                             .label("暂存此变更块")
                             .on_click(move |_event, _window, cx| {
                                 stage_view
@@ -98,7 +141,7 @@ impl DiffHunkDelegate for ProjectDiffHunkDelegate {
                     )
                     .child(
                         Button::text(("restore-hunk", row), "重做")
-                            .size(ButtonSize::Loose)
+                            .size(ButtonSize::Medium)
                             .label(if is_created_file {
                                 "新建文件不能重做单个变更块"
                             } else {
@@ -125,7 +168,7 @@ impl DiffHunkDelegate for ProjectDiffHunkDelegate {
                 controls
                     .child(
                         Button::text(("unstage-hunk", row), "取消暂存")
-                            .size(ButtonSize::Loose)
+                            .size(ButtonSize::Medium)
                             .label("取消暂存此变更块")
                             .on_click(move |_event, _window, cx| {
                                 unstage_view
@@ -518,6 +561,20 @@ impl ProjectDiffView {
             .read(cx)
             .deleted_navigation_target(location, working_text, cx)
             .map(|(line, column)| (location.path.clone(), line, column))
+    }
+
+    fn toggle_file_staged(
+        &mut self,
+        path: &Path,
+        operation: GitHunkOperation,
+        cx: &mut Context<Self>,
+    ) {
+        let git_store = self.project.read(cx).git_store();
+        git_store.update(cx, |store, cx| match operation {
+            GitHunkOperation::Stage => store.stage_paths(vec![path.to_path_buf()], cx),
+            GitHunkOperation::Unstage => store.unstage_paths(vec![path.to_path_buf()], cx),
+            GitHunkOperation::Restore => unreachable!("文件复选框不执行工作区还原"),
+        });
     }
 
     fn apply_hunk_action(

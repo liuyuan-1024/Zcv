@@ -75,6 +75,18 @@ pub enum EditorEvent {
 
 /// Editor 负责把控件定位到 hunk 右上角，具体按钮与操作由宿主视图提供。
 pub trait DiffHunkDelegate {
+    fn render_buffer_header_controls(
+        &self,
+        _path: &std::path::Path,
+        _sticky: bool,
+        _row: usize,
+        _editor: &Entity<Editor>,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<AnyElement> {
+        None
+    }
+
     fn render_hunk_controls(
         &self,
         row: usize,

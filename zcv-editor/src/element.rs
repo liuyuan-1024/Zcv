@@ -679,7 +679,7 @@ fn build_diff_hunk_controls(
                 sticky_top.min(hunk_end_y - layout.line_height)
             };
             let origin = point(
-                (layout.text_clip_bounds.right() - element_size.width - px(4.))
+                (layout.text_clip_bounds.right() - element_size.width)
                     .max(layout.text_clip_bounds.left()),
                 origin_y,
             );
@@ -702,6 +702,7 @@ fn buffer_header_element(
     row: DisplayRow,
     sticky: bool,
     editor: &Entity<Editor>,
+    window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     let colors = *color::current(cx);
@@ -721,6 +722,16 @@ fn buffer_header_element(
     let editor_for_button = editor.clone();
     let editor_for_path = editor.clone();
     let editor_for_fold = editor.clone();
+    let header_controls = editor.read(cx).diff_hunk_delegate().and_then(|delegate| {
+        delegate.render_buffer_header_controls(
+            block.excerpt.path(),
+            sticky,
+            row.get(),
+            editor,
+            window,
+            cx,
+        )
+    });
     let block_id: ElementId = if sticky {
         ("sticky-buffer-header-block", row.get()).into()
     } else {
@@ -798,6 +809,7 @@ fn buffer_header_element(
                         });
                     }),
                 )
+                .when_some(header_controls, |element, controls| element.child(controls))
                 .child(
                     // 悬停反馈只在路径区（点击区）生效；
                     // 悬浮在“打开文件”等子按钮上时 header 背景保持不变。
@@ -882,7 +894,7 @@ fn build_block_elements(
                 .child(div().w_full().h(space::S1).bg(colors.border_variant))
                 .into_any_element(),
             DisplayBlockKind::BufferHeader => {
-                buffer_header_element(&block.block, block.row, false, editor, cx)
+                buffer_header_element(&block.block, block.row, false, editor, window, cx)
             }
         };
 
@@ -924,7 +936,7 @@ fn build_sticky_buffer_header(
         kind: DisplayBlockKind::BufferHeader,
         excerpt: sticky.excerpt,
     };
-    let mut element = buffer_header_element(&block, sticky.source_row, true, editor, cx);
+    let mut element = buffer_header_element(&block, sticky.source_row, true, editor, window, cx);
     let available_space = size(
         AvailableSpace::Definite(width),
         AvailableSpace::Definite(height),

@@ -40,15 +40,18 @@ pub enum ButtonSize {
     /// 紧凑：小内边距、小圆角，用于工具栏/状态栏等高频轻量操作（默认）。
     #[default]
     Compact,
+    /// 中等：中等内边距，用于编辑器内容上的悬浮操作。
+    Medium,
     /// 宽松：大内边距、大圆角，用于主操作按钮。
     Loose,
 }
 
 impl ButtonSize {
-    /// 内边距：紧凑 S2，宽松 S6。
+    /// 内边距：紧凑 S2，中等 S4，宽松 S6。
     fn padding(self) -> Pixels {
         match self {
             ButtonSize::Compact => space::S2,
+            ButtonSize::Medium => space::S4,
             ButtonSize::Loose => space::S6,
         }
     }
@@ -62,6 +65,7 @@ impl ButtonSize {
     fn shell<D: Styled>(self, element: D) -> D {
         match self {
             ButtonSize::Compact => element.rounded_sm().p(self.padding()),
+            ButtonSize::Medium => element.rounded_sm().p(self.padding()),
             ButtonSize::Loose => element.rounded_md().p(self.padding()),
         }
     }

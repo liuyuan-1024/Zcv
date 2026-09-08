@@ -20,7 +20,7 @@ use crate::searchable::SearchableItemHandle;
 use crate::toolbar::ToolbarItemLocation;
 
 /// Item 向 Pane/Workspace 上报的通用事件。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ItemEvent {
     /// Item 的稳定身份路径发生变化。
     PathChanged,
@@ -30,6 +30,8 @@ pub enum ItemEvent {
     UpdateBreadcrumbs,
     /// 文档内容被编辑。
     Edit,
+    /// 用户主动操作失败，需要由工作区向用户展示。
+    Error(String),
 }
 
 pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static {

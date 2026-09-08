@@ -24,14 +24,23 @@ use crate::{ItemEvent, ItemHandle};
 // ═══ Pane 事件 ════════════════════════════════════════════════════════
 
 /// Pane 对外发出的标签页事件。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaneEvent {
     /// 新标签页添加。
-    AddItem { item_id: EntityId },
+    AddItem {
+        item_id: EntityId,
+    },
     /// 活动标签页切换。
-    ActivateItem { item_id: EntityId },
+    ActivateItem {
+        item_id: EntityId,
+    },
     /// 标签页被关闭。
-    RemovedItem { item_id: EntityId },
+    RemovedItem {
+        item_id: EntityId,
+    },
+    ItemError {
+        message: String,
+    },
     /// 标签全部关闭后请求移除 Pane 自身；宿主据此关闭面板。
     Remove,
 }
@@ -175,6 +184,7 @@ impl Pane {
                         // 固定标签同样需要立即重绘未保存标记。
                         cx.notify();
                     }
+                    ItemEvent::Error(message) => cx.emit(PaneEvent::ItemError { message }),
                     ItemEvent::PathChanged
                     | ItemEvent::UpdateTab
                     | ItemEvent::UpdateBreadcrumbs => cx.notify(),
@@ -1918,8 +1928,7 @@ mod tests {
 
     #[gpui::test]
     fn every_close_path_emits_removed(cx: &mut TestAppContext) {
-        // 回归：三条关闭路径（close_tab 直接关闭、删除文件触发）都必须发射 Removed，
-        // 订阅方（项目树高亮）才能刷新。
+        // 回归：三条关闭路径（close_tab 直接关闭、删除文件触发）都必须发射 Removed，订阅方（项目树高亮）才能刷新。
         let buffer = test_buffer(cx, "内容");
         let pane = cx.new(Pane::new);
         open_file_in_test(cx, &pane, PathBuf::from("a.txt"), buffer);
@@ -1930,7 +1939,7 @@ mod tests {
         let _subscription = cx.update(|cx| {
             cx.subscribe(&pane, move |_, event, _| {
                 if matches!(event, PaneEvent::RemovedItem { .. }) {
-                    observed.borrow_mut().push(*event);
+                    observed.borrow_mut().push(event.clone());
                 }
             })
         });

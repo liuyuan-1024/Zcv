@@ -401,7 +401,9 @@ impl Editor {
                 self.synchronize_after_history_edit(cx);
             }
             Ok(None) => {}
-            Err(error) => eprintln!("Editor {action} 失败：{error}"),
+            Err(error) => cx.emit(EditorEvent::Error(format!(
+                "编辑动作 {action} 失败：{error:#}"
+            ))),
         }
     }
 

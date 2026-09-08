@@ -22,7 +22,7 @@ use zcv_actions::{
 use zcv_editor::Editor;
 use zcv_git::{DiffBase, GitRevision};
 use zcv_project::{DiffRequest, GitOperationKind, GitOperationOutcome, GitStoreEvent, Project};
-use zcv_settings::SettingsStore;
+use zcv_settings::{GlobalSettingsErrorReporter, SettingsStore};
 use zcv_theme::{ThemeChoice, color, typography};
 use zcv_workspace::{
     ActivityIndicator, Dock, DockPosition, GitBranchAction, OnBranchSelected, OnProjectSelected,
@@ -130,7 +130,17 @@ fn register_panel<P: Panel>(
 fn switch_project_callback() -> OnProjectSelected {
     Rc::new(move |path, window, app| {
         let Ok(root) = canonical_project_root(PathBuf::from(&path)) else {
-            eprintln!("打开项目失败（{path}）：路径无效");
+            if let Some(workspace) = window.root::<Workspace>().flatten() {
+                workspace.update(app, |workspace, cx| {
+                    workspace.show_toast(
+                        ToastKind::Error,
+                        format!("打开项目失败（{path}）：路径无效"),
+                        None,
+                        Some(Duration::from_secs(5)),
+                        cx,
+                    );
+                });
+            }
             return; // 窗口保持原样。
         };
         add_to_recent(&root.to_string_lossy());
@@ -164,16 +174,24 @@ fn canonical_project_root(root: PathBuf) -> anyhow::Result<PathBuf> {
 pub(crate) fn open_project_window(root: PathBuf, cx: &mut App) -> anyhow::Result<()> {
     let root = canonical_project_root(root)?;
     add_to_recent(&root.to_string_lossy());
-    open_workspace_window(Some(root), cx)
+    open_workspace_window(Some(root), None, cx)
 }
 
 /// 打开不绑定任何目录的空工作区。
 pub(crate) fn open_empty_workspace(cx: &mut App) -> anyhow::Result<()> {
-    open_workspace_window(None, cx)
+    open_workspace_window(None, None, cx)
+}
+
+pub(crate) fn open_empty_workspace_with_error(message: String, cx: &mut App) -> anyhow::Result<()> {
+    open_workspace_window(None, Some(message), cx)
 }
 
 /// 项目与空工作区共用同一条窗口创建路径；差异只在 Project 是否含 worktree。
-fn open_workspace_window(root: Option<PathBuf>, cx: &mut App) -> anyhow::Result<()> {
+fn open_workspace_window(
+    root: Option<PathBuf>,
+    startup_error: Option<String>,
+    cx: &mut App,
+) -> anyhow::Result<()> {
     // 窗口边界恢复：项目记录 → 全局默认 → 初始居中。
     let (window_bounds, display_id) =
         load_window_bounds(root.as_deref(), cx).unwrap_or_else(|| {
@@ -194,7 +212,21 @@ fn open_workspace_window(root: Option<PathBuf>, cx: &mut App) -> anyhow::Result<
             }),
             ..Default::default()
         },
-        |window, cx| cx.new(|cx| build_workspace(&root, window, cx)),
+        |window, cx| {
+            cx.new(|cx| {
+                let workspace = build_workspace(&root, window, cx);
+                if let Some(message) = startup_error {
+                    workspace.show_toast(
+                        ToastKind::Error,
+                        message,
+                        None,
+                        Some(Duration::from_secs(8)),
+                        cx,
+                    );
+                }
+                workspace
+            })
+        },
     )?;
     Ok(())
 }
@@ -500,7 +532,15 @@ fn initialize_workspace(
         }
     });
 
-    let top_bar = cx.new(|cx| TopBar::new(switch_project_callback(), on_branch, window, cx));
+    let top_bar = cx.new(|cx| {
+        TopBar::new(
+            switch_project_callback(),
+            weak_self.clone(),
+            on_branch,
+            window,
+            cx,
+        )
+    });
     let update_workspace = weak_self.clone();
     let update_button = cx.new(|cx| UpdateButton::new(update_workspace, cx));
     top_bar.update(cx, |bar, cx| {
@@ -540,6 +580,7 @@ fn initialize_workspace(
     let project_tree: Entity<ProjectTreePanel> = cx.new(|cx| {
         let mut tree = ProjectTreePanel::new(project.clone(), cx);
         tree.set_on_open_file(on_open_file_callback(&weak_self));
+        tree.set_workspace(weak_self.clone());
         let weak_rename = weak_self.clone();
         let on_rename: OnRename = Rc::new(move |from, to, cx| {
             let Some(workspace) = weak_rename.upgrade() else {
@@ -643,6 +684,16 @@ fn initialize_workspace(
 
     let project_tree_for_pane = project_tree.clone();
     let pane_subscription = cx.subscribe(&pane, move |workspace, pane, event, cx| {
+        if let PaneEvent::ItemError { message } = event {
+            workspace.show_toast(
+                ToastKind::Error,
+                message.clone(),
+                None,
+                Some(Duration::from_secs(5)),
+                cx,
+            );
+            return;
+        }
         if matches!(
             event,
             PaneEvent::ActivateItem { .. } | PaneEvent::RemovedItem { .. }
@@ -699,6 +750,26 @@ fn initialize_workspace(
             cx.notify();
         });
 
+    let error_reporter = cx.global::<GlobalSettingsErrorReporter>().0.clone();
+    let error_subscription = cx.subscribe(&error_reporter, |workspace, _, event, cx| {
+        workspace.show_toast(
+            ToastKind::Error,
+            event.0.clone(),
+            None,
+            Some(Duration::from_secs(8)),
+            cx,
+        );
+    });
+    if let Some(error) = error_reporter.update(cx, |reporter, _| reporter.take_pending()) {
+        workspace.show_toast(
+            ToastKind::Error,
+            error,
+            None,
+            Some(Duration::from_secs(8)),
+            cx,
+        );
+    }
+
     let appearance_subscription = window.observe_window_appearance(|window, cx| {
         let settings = SettingsStore::get(cx);
         apply_theme(&settings.theme, cx, Some(window));
@@ -721,6 +792,7 @@ fn initialize_workspace(
         pane_subscription,
         project_subscription,
         settings_subscription,
+        error_subscription,
         appearance_subscription,
     ] {
         workspace.add_subscription(subscription);

@@ -275,7 +275,7 @@ impl ProjectTreePanel {
         cx: &mut Context<Self>,
     ) {
         let Some(on_move) = self.on_move.clone() else {
-            eprintln!("项目树移动失败：未配置项目移动服务");
+            self.report_error("项目树移动失败：未配置项目移动服务".into(), cx);
             return;
         };
         let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
@@ -287,7 +287,7 @@ impl ProjectTreePanel {
             let overwrite = overwrite_set.contains(&source);
             match on_move(source.clone(), dest.clone(), overwrite, cx) {
                 Ok(()) => moved.push((source, dest)),
-                Err(error) => eprintln!("项目树移动失败：{error}"),
+                Err(error) => self.report_error(format!("项目树移动失败：{error:#}"), cx),
             }
         }
         // 批量迁移树状态：translate_path 按路径前缀替换，逐对调用叠加；
@@ -343,15 +343,26 @@ impl ProjectTreePanel {
                 match created {
                     Ok(Ok(task)) => {
                         // 复制本体失败已在数据层记录：这里只收集成功项。
-                        if task.await.is_ok() {
-                            succeeded.push(dest);
+                        match task.await {
+                            Ok(()) => succeeded.push(dest),
+                            Err(error) => {
+                                let _ = this.update(cx, |tree, cx| {
+                                    tree.report_error(format!("项目树复制失败：{error:#}"), cx);
+                                });
+                            }
                         }
                     }
                     // 同步校验失败（如源已消失）：数据层未记录，面板侧补日志。
-                    Ok(Err(error)) => eprintln!("项目树复制失败：{error}"),
+                    Ok(Err(error)) => {
+                        let _ = this.update(cx, |tree, cx| {
+                            tree.report_error(format!("项目树复制失败：{error:#}"), cx);
+                        });
+                    }
                     Err(error) => {
                         // 面板实体已释放：进度无处更新，直接终止。
-                        eprintln!("项目树复制失败：{error}");
+                        let _ = this.update(cx, |tree, cx| {
+                            tree.report_error(format!("项目树复制失败：{error:#}"), cx);
+                        });
                         return;
                     }
                 }

@@ -381,10 +381,6 @@ impl GitStore {
         cx: &mut Context<Self>,
     ) -> Task<anyhow::Result<GitOperationOutcome>> {
         if self.repositories.is_empty() {
-            eprintln!(
-                "git 仓库尚未就绪，跳过 {:?}（等待首次扫描完成后重试）",
-                operation
-            );
             self.schedule_scan(cx);
             return Task::ready(Err(anyhow::anyhow!("git 仓库尚未就绪")));
         }
@@ -452,7 +448,6 @@ impl GitStore {
     /// 成功后重扫，Head/Statuses 事件驱动面板清空编辑器并刷新上次提交信息。
     pub fn commit(&mut self, message: String, cx: &mut Context<Self>) {
         if self.repositories.is_empty() {
-            eprintln!("git 仓库尚未就绪，跳过 commit（等待首次扫描完成后重试）");
             self.schedule_scan(cx);
             return;
         }
@@ -465,7 +460,6 @@ impl GitStore {
     /// 撤销最近一次提交（`git reset --soft HEAD^`），被撤销消息填回提交信息编辑器。
     pub fn uncommit(&mut self, cx: &mut Context<Self>) {
         if self.repositories.is_empty() {
-            eprintln!("git 仓库尚未就绪，跳过 uncommit（等待首次扫描完成后重试）");
             self.schedule_scan(cx);
             return;
         }
@@ -475,7 +469,6 @@ impl GitStore {
     /// 切换活动仓库到指定本地分支（分支选择器确认触发），完成后自动重扫。
     pub fn checkout_branch(&mut self, name: String, cx: &mut Context<Self>) {
         if self.repositories.is_empty() {
-            eprintln!("git 仓库尚未就绪，跳过 checkout（等待首次扫描完成后重试）");
             self.schedule_scan(cx);
             return;
         }
@@ -485,7 +478,6 @@ impl GitStore {
     /// 以当前 HEAD 为基创建并切换分支（选择器"创建分支"行触发），完成后自动重扫。
     pub fn create_branch(&mut self, name: String, cx: &mut Context<Self>) {
         if self.repositories.is_empty() {
-            eprintln!("git 仓库尚未就绪，跳过 create_branch（等待首次扫描完成后重试）");
             self.schedule_scan(cx);
             return;
         }

@@ -201,7 +201,7 @@ impl ProjectTreePanel {
     }
 
     pub(super) fn set_edit_error(&mut self, error: anyhow::Error, cx: &mut Context<Self>) {
-        eprintln!("项目树名称编辑失败：{error}");
+        self.report_error(format!("项目树名称编辑失败：{error:#}"), cx);
         if let Some(edit_state) = &mut self.edit_state {
             edit_state.validation_error = Some(error.to_string());
         }

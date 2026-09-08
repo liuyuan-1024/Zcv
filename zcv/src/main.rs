@@ -11,7 +11,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use gpui::{App, Application};
-use workspace::{open_empty_workspace, open_project_window};
+use workspace::{open_empty_workspace, open_empty_workspace_with_error, open_project_window};
 use zcv_assets::Assets;
 use zcv_settings::SettingsStore;
 use zcv_theme::typography;
@@ -55,8 +55,8 @@ fn main() {
                 Some(root) => {
                     // 打开失败（路径已失效等）回退空工作区，不阻塞启动。
                     if let Err(error) = open_project_window(root, cx) {
-                        eprintln!("打开项目失败：{error}");
-                        open_empty_workspace(cx).expect("空工作区窗口应能创建");
+                        open_empty_workspace_with_error(format!("打开项目失败：{error:#}"), cx)
+                            .expect("空工作区窗口应能创建");
                     }
                 }
                 None => {

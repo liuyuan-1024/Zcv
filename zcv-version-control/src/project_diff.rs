@@ -292,7 +292,8 @@ impl ProjectDiffView {
                 EditorEvent::Edited
                 | EditorEvent::PathChanged
                 | EditorEvent::DirtyChanged
-                | EditorEvent::OpenExcerptsRequested { .. } => {}
+                | EditorEvent::OpenExcerptsRequested { .. }
+                | EditorEvent::Error(_) => {}
             }),
             cx.subscribe(&git_store, |view, _, event, cx| match event {
                 GitStoreEvent::Repositories | GitStoreEvent::Statuses | GitStoreEvent::Head => {
@@ -442,10 +443,10 @@ impl ProjectDiffView {
                     }
                 });
                 let Ok(source) = opened else {
-                    eprintln!(
+                    cx.emit(EditorEvent::Error(format!(
                         "无法把 Git 变更文件加入多文件编辑器：{}",
                         file.path.display()
-                    );
+                    )));
                     return None;
                 };
                 source

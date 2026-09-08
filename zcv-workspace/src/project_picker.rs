@@ -7,9 +7,11 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui::{
-    Action, App, ClickEvent, Context, Entity, PathPromptOptions, Render, Window, div, prelude::*,
+    Action, App, ClickEvent, Context, Entity, PathPromptOptions, Render, WeakEntity, Window, div,
+    prelude::*,
 };
 use zcv_actions::{DeleteRecentProject, OpenLocalProject, ToggleProjectPicker};
 use zcv_keymap::KeyBindings;
@@ -19,6 +21,7 @@ use zcv_ui::Button;
 use zcv_ui::ListItem;
 
 use crate::recent_projects::{self, ProjectEntry};
+use crate::{ToastKind, Workspace};
 
 // ═══ 回调 ════════════════════════════════════════════════════════
 
@@ -209,11 +212,13 @@ pub struct ProjectPicker {
     on_selected: OnProjectSelected,
     /// 当前项目名称
     current_label: String,
+    workspace: WeakEntity<Workspace>,
 }
 
 impl ProjectPicker {
     pub fn new(
         on_selected: OnProjectSelected,
+        workspace: WeakEntity<Workspace>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -223,7 +228,10 @@ impl ProjectPicker {
         let pending_path = Rc::new(RefCell::new(None));
         let on_open_local_project: OnOpenLocalProject = {
             let pending_path = pending_path.clone();
-            Rc::new(move |_, cx| Self::open_local_project(pending_path.clone(), cx))
+            let workspace = workspace.clone();
+            Rc::new(move |_, cx| {
+                Self::open_local_project(pending_path.clone(), workspace.clone(), cx)
+            })
         };
         let delegate =
             ProjectPickerDelegate::new(projects, on_selected.clone(), on_open_local_project);
@@ -240,6 +248,7 @@ impl ProjectPicker {
             pending_path,
             on_selected,
             current_label,
+            workspace,
         }
     }
 
@@ -293,10 +302,14 @@ impl ProjectPicker {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        Self::open_local_project(self.pending_path.clone(), cx);
+        Self::open_local_project(self.pending_path.clone(), self.workspace.clone(), cx);
     }
 
-    fn open_local_project(pending: Rc<RefCell<Option<String>>>, cx: &mut App) {
+    fn open_local_project(
+        pending: Rc<RefCell<Option<String>>>,
+        workspace: WeakEntity<Workspace>,
+        cx: &mut App,
+    ) {
         // 同步触发系统文件选择器，返回一个异步 channel
         let rx = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -306,23 +319,30 @@ impl ProjectPicker {
         });
 
         // 通过 foreground executor 处理异步结果
-        cx.foreground_executor()
-            .spawn(async move {
-                if let Ok(inner) = rx.await {
-                    match inner {
-                        Ok(Some(paths)) => {
-                            if let Some(path) = paths.first() {
-                                *pending.borrow_mut() = Some(path.to_string_lossy().to_string());
-                            }
-                        }
-                        Ok(None) => {}
-                        Err(e) => {
-                            eprintln!("文件选择器出错: {e}");
+        cx.spawn(async move |cx| {
+            if let Ok(inner) = rx.await {
+                match inner {
+                    Ok(Some(paths)) => {
+                        if let Some(path) = paths.first() {
+                            *pending.borrow_mut() = Some(path.to_string_lossy().to_string());
                         }
                     }
-                } // Err(_) → channel 被关闭（取消），静默忽略
-            })
-            .detach();
+                    Ok(None) => {}
+                    Err(error) => {
+                        let _ = workspace.update(cx, |workspace, cx| {
+                            workspace.show_toast(
+                                ToastKind::Error,
+                                format!("选择项目目录失败：{error:#}"),
+                                None,
+                                Some(Duration::from_secs(5)),
+                                cx,
+                            );
+                        });
+                    }
+                }
+            } // Err(_) → channel 被关闭（取消），静默忽略
+        })
+        .detach();
     }
 }
 

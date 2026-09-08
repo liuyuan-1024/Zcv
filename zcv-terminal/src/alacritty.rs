@@ -55,7 +55,7 @@ impl EventListener for TerminalListener {
             AlacTermEvent::Wakeup => PtyEvent::Wakeup,
             AlacTermEvent::Bell => PtyEvent::Bell,
             AlacTermEvent::Exit => PtyEvent::Exit,
-            AlacTermEvent::ChildExit(status) => PtyEvent::ChildExit(status),
+            AlacTermEvent::ChildExit(_) => PtyEvent::ChildExit,
         };
         // 事件通道在 IO 线程发送；终端销毁后忽略发送失败。
         let _ = self.events_tx.try_send(event);
@@ -93,12 +93,9 @@ impl PtySender {
             return;
         };
 
-        if let Err(error) = notifier
+        let _ = notifier
             .0
-            .send(Msg::Resize(window_size_from_bounds(bounds)))
-        {
-            eprintln!("终端 PTY 调整尺寸失败：{error}");
-        }
+            .send(Msg::Resize(window_size_from_bounds(bounds)));
     }
 
     /// 优雅关闭事件循环线程。
@@ -113,9 +110,7 @@ impl PtySender {
             return;
         };
 
-        if let Err(error) = notifier.0.send(Msg::Shutdown) {
-            eprintln!("终端 PTY 关闭失败：{error}");
-        }
+        let _ = notifier.0.send(Msg::Shutdown);
     }
 
     #[cfg(test)]

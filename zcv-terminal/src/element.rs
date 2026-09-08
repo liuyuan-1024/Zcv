@@ -310,16 +310,17 @@ impl Element for TerminalElement {
                         + Pixels::from(run.start_column as f32 * f32::from(layout.cell_width)),
                     run.origin.y,
                 );
-                if let Err(error) = shaped.paint(
-                    origin + offset,
-                    layout.line_height,
-                    gpui::TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                ) {
-                    eprintln!("终端文本绘制失败：{error}");
-                }
+                if shaped
+                    .paint(
+                        origin + offset,
+                        layout.line_height,
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    )
+                    .is_err()
+                {}
             }
             if self.shaped_runs.len() > SHAPED_RUN_CACHE_LIMIT {
                 self.shaped_runs.clear();
@@ -345,16 +346,17 @@ impl Element for TerminalElement {
                     &[run],
                     None,
                 );
-                if let Err(error) = shaped.paint(
-                    shifted(*cursor_bounds, offset).origin,
-                    layout.line_height,
-                    gpui::TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                ) {
-                    eprintln!("终端组合文本绘制失败：{error}");
-                }
+                if shaped
+                    .paint(
+                        shifted(*cursor_bounds, offset).origin,
+                        layout.line_height,
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    )
+                    .is_err()
+                {}
             }
             // 组合输入（marked 文本非空）时隐藏光标：Block 光标会盖住 marked 首字符。
             if ime_marked_text.is_none()
@@ -376,16 +378,17 @@ impl Element for TerminalElement {
                         &[run],
                         None,
                     );
-                    if let Err(error) = shaped.paint(
-                        cursor.bounds.origin,
-                        layout.line_height,
-                        gpui::TextAlign::Left,
-                        None,
-                        window,
-                        cx,
-                    ) {
-                        eprintln!("终端光标字符绘制失败：{error}");
-                    }
+                    if shaped
+                        .paint(
+                            cursor.bounds.origin,
+                            layout.line_height,
+                            gpui::TextAlign::Left,
+                            None,
+                            window,
+                            cx,
+                        )
+                        .is_err()
+                    {}
                 }
             }
         });

@@ -18,7 +18,6 @@ mod test;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    process::ExitStatus,
     sync::{
         Arc,
         atomic::{AtomicU32, Ordering},
@@ -334,7 +333,7 @@ pub(crate) enum PtyEvent {
     Wakeup,
     Bell,
     Exit,
-    ChildExit(ExitStatus),
+    ChildExit,
 }
 
 /// 主线程待处理事件队列。
@@ -350,7 +349,7 @@ pub(crate) enum InternalEvent {
     Resize(TerminalBounds),
     Scroll(Scroll),
     SetSelection(Option<Selection>),
-    ChildExit(ExitStatus),
+    ChildExit,
     Exit,
 }
 
@@ -602,9 +601,7 @@ impl Terminal {
                 PtyEvent::Wakeup => self.events.push_back(InternalEvent::Wakeup),
                 PtyEvent::Bell => self.events.push_back(InternalEvent::Bell),
                 PtyEvent::Exit => self.events.push_back(InternalEvent::Exit),
-                PtyEvent::ChildExit(status) => {
-                    self.events.push_back(InternalEvent::ChildExit(status))
-                }
+                PtyEvent::ChildExit => self.events.push_back(InternalEvent::ChildExit),
             }
         }
         cx.notify();
@@ -692,12 +689,8 @@ impl Terminal {
                     cx.emit(Event::Wakeup);
                     self.process_info.clone().refresh(cx);
                 }
-                InternalEvent::ChildExit(status) => {
-                    eprintln!("终端子进程退出：{status}");
-                }
-                InternalEvent::Exit => {
-                    eprintln!("终端退出");
-                }
+                InternalEvent::ChildExit => {}
+                InternalEvent::Exit => {}
             }
         }
     }

@@ -302,7 +302,6 @@ fn fetch_hunks_sync(
                 }));
             }
             Err(error) => {
-                eprintln!("读取 {base:?} diff hunks 失败：{error}");
                 let error = format!("{error:#}");
                 results.extend(
                     base_requests
@@ -320,17 +319,10 @@ fn fetch_hunks_sync(
 /// branch 名取自 status 头行（零附加进程）；head oid 与最近提交 subject 由 head_commit 一次查询；
 /// 分支列表单独 for-each-ref（分支选择器数据源）。
 fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapshot {
-    let (head, last_commit_message) = match repository.head_commit() {
-        Ok(commit) => commit,
-        Err(error) => {
-            eprintln!("读取 git head 失败：{error}");
-            (None, None)
-        }
-    };
+    let (head, last_commit_message) = repository.head_commit().unwrap_or_default();
     let statuses = match repository.status(&[]) {
         Ok(statuses) => statuses,
-        Err(error) => {
-            eprintln!("读取 git status 失败：{error}");
+        Err(_) => {
             // status 失败时分支名不可得（来自头行），置 None（瞬态，下次刷新自愈）。
             return RepositorySnapshot {
                 branch: None,
@@ -351,13 +343,7 @@ fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapsh
         HashMap::new()
     };
     let unstaged = repository.diff_stat(false, &[]).unwrap_or_default();
-    let branch_list = match repository.branches() {
-        Ok(branches) => branches,
-        Err(error) => {
-            eprintln!("读取 git 分支列表失败：{error}");
-            Vec::new()
-        }
-    };
+    let branch_list = repository.branches().unwrap_or_default();
     let statuses_by_path = statuses
         .statuses
         .into_iter()
@@ -400,13 +386,7 @@ fn refresh_repository_data_sync(
     let statuses = repository.status(paths).unwrap_or_default();
     // 分支名来自 status 头行（零附加进程）；head oid 与最近提交 subject 由 head_commit 一次查询。
     let (head, last_commit_message) = if touches_git {
-        match repository.head_commit() {
-            Ok(commit) => commit,
-            Err(error) => {
-                eprintln!("读取 git head 失败：{error}");
-                (None, None)
-            }
-        }
+        repository.head_commit().unwrap_or_default()
     } else {
         (None, None)
     };
@@ -420,13 +400,7 @@ fn refresh_repository_data_sync(
         .flatten();
     // 分支列表与 head 同批次重读：checkout/新建分支都落在 .git 路径上（fs 事件已过滤），外部操作经增量路径即可刷新选择器列表。
     let branches = if touches_git {
-        match repository.branches() {
-            Ok(branches) => branches,
-            Err(error) => {
-                eprintln!("读取 git 分支列表失败：{error}");
-                Vec::new()
-            }
-        }
+        repository.branches().unwrap_or_default()
     } else {
         Vec::new()
     };

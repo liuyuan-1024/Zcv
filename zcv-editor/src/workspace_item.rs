@@ -30,6 +30,7 @@ impl Item for Editor {
             EditorEvent::Edited => emit(ItemEvent::Edit),
             EditorEvent::OpenExcerptsRequested { .. } => {}
             EditorEvent::DiffHunksExpandedChanged => {}
+            EditorEvent::Error(message) => emit(ItemEvent::Error(message.clone())),
         }
     }
 

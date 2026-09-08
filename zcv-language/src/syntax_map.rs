@@ -857,16 +857,6 @@ const x = 2;
         let new_snapshot = buffer.snapshot();
         let changes = subscription.consume();
         syntax.interpolate(&old_snapshot, &new_snapshot, &changes);
-        for l in syntax.snapshot().injection_layers() {
-            eprintln!(
-                "interpolated: depth={} lang={} range={:?}",
-                l.depth,
-                l.language.name(),
-                l.range
-            );
-        }
-        let snap_before = syntax.snapshot();
-        let old_main = snap_before.root_tree().unwrap().clone();
         let parsed = syntax
             .snapshot()
             .reparse(
@@ -875,25 +865,7 @@ const x = 2;
                 &ParseCancellation::default(),
             )
             .expect("解析不应取消");
-        eprintln!(
-            "tree changed: {:?}",
-            old_main
-                .changed_ranges(parsed.root_tree().unwrap())
-                .map(|r| r.start_byte..r.end_byte)
-                .collect::<Vec<_>>()
-        );
-        // 新主树中 code_fence_content 节点的实际范围
-        let root = parsed.root_tree().unwrap().root_node();
-        eprintln!("sexp: {}", root.to_sexp());
         assert!(syntax.did_parse(parsed));
-        for l in syntax.snapshot().injection_layers() {
-            eprintln!(
-                "final: depth={} lang={} range={:?}",
-                l.depth,
-                l.language.name(),
-                l.range
-            );
-        }
     }
 
     #[test]
@@ -914,29 +886,7 @@ const x = 2;
             .unwrap();
         let new_snapshot = buffer.snapshot();
         let changes = subscription.consume();
-        eprintln!(
-            "changes edits: {:?}",
-            changes
-                .patch()
-                .edits()
-                .iter()
-                .map(|e| (
-                    e.old_range().start().get()..e.old_range().end().get(),
-                    e.new_range().start().get()..e.new_range().end().get()
-                ))
-                .collect::<Vec<_>>()
-        );
         syntax.interpolate(&old_snapshot, &new_snapshot, &changes);
-        for l in syntax.snapshot().injection_layers() {
-            eprintln!(
-                "interpolated: depth={} lang={} range={:?}",
-                l.depth,
-                l.language.name(),
-                l.range
-            );
-        }
-        let snap_before = syntax.snapshot();
-        let old_main = snap_before.root_tree().unwrap().clone();
         let parsed = syntax
             .snapshot()
             .reparse(
@@ -945,28 +895,7 @@ const x = 2;
                 &ParseCancellation::default(),
             )
             .expect("解析不应取消");
-        eprintln!(
-            "tree changed: {:?}",
-            old_main
-                .changed_ranges(parsed.root_tree().unwrap())
-                .map(|r| r.start_byte..r.end_byte)
-                .collect::<Vec<_>>()
-        );
-        // 新主树的 fenced 区域实际文本
-        let root = parsed.root_tree().unwrap().root_node();
-        eprintln!(
-            "main sexp head: {}",
-            root.to_sexp().chars().take(200).collect::<String>()
-        );
         assert!(syntax.did_parse(parsed));
-        for l in syntax.snapshot().injection_layers() {
-            eprintln!(
-                "final: depth={} lang={} range={:?}",
-                l.depth,
-                l.language.name(),
-                l.range
-            );
-        }
     }
 
     #[test]

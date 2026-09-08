@@ -213,14 +213,12 @@ impl UpdateManager {
                         };
                         manager.prepared = Some(prepared);
                     }
-                    Err(CheckFailure::Transient(error)) => {
-                        eprintln!("自动检查更新暂时失败：{error:#}");
+                    Err(CheckFailure::Transient) => {
                         manager.status = UpdateStatus::Idle;
                     }
                     Err(CheckFailure::Permanent(error)) => {
-                        eprintln!("自动更新产物无效：{error:#}");
                         manager.status = UpdateStatus::Failed {
-                            message: Arc::from(error.to_string()),
+                            message: Arc::from(format!("自动更新产物无效：{error:#}")),
                         };
                     }
                 }
@@ -302,7 +300,7 @@ enum CheckOutcome {
 }
 
 enum CheckFailure {
-    Transient(anyhow::Error),
+    Transient,
     Permanent(anyhow::Error),
 }
 
@@ -361,12 +359,9 @@ async fn fetch_limited(
     let mut response = client
         .get(url, AsyncBody::empty(), true)
         .await
-        .map_err(CheckFailure::Transient)?;
+        .map_err(|_| CheckFailure::Transient)?;
     if !response.status().is_success() {
-        return Err(CheckFailure::Transient(anyhow::anyhow!(
-            "获取{label}失败：HTTP {}",
-            response.status()
-        )));
+        return Err(CheckFailure::Transient);
     }
     let mut body = Vec::new();
     let mut buffer = [0_u8; 8192];
@@ -375,7 +370,7 @@ async fn fetch_limited(
             .body_mut()
             .read(&mut buffer)
             .await
-            .map_err(|error| CheckFailure::Transient(error.into()))?;
+            .map_err(|_| CheckFailure::Transient)?;
         if read == 0 {
             break;
         }
@@ -413,12 +408,9 @@ async fn download_release(
     let mut response = client
         .get(&release.asset.url, AsyncBody::empty(), true)
         .await
-        .map_err(CheckFailure::Transient)?;
+        .map_err(|_| CheckFailure::Transient)?;
     if !response.status().is_success() {
-        return Err(CheckFailure::Transient(anyhow::anyhow!(
-            "下载更新失败：HTTP {}",
-            response.status()
-        )));
+        return Err(CheckFailure::Transient);
     }
 
     let mut digest = Sha256::new();
@@ -430,7 +422,7 @@ async fn download_release(
             .body_mut()
             .read(&mut buffer)
             .await
-            .map_err(|error| CheckFailure::Transient(error.into()))?;
+            .map_err(|_| CheckFailure::Transient)?;
         if read == 0 {
             break;
         }
@@ -523,7 +515,7 @@ fn show_failure_toast(workspace: &WeakEntity<Workspace>, message: Arc<str>, cx: 
             .update(cx, |workspace, cx| {
                 workspace.show_toast(
                     ToastKind::Error,
-                    format!("自动更新失败：{message}"),
+                    message.to_string(),
                     None,
                     Some(Duration::from_secs(8)),
                     cx,

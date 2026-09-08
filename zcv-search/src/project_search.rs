@@ -103,6 +103,7 @@ impl ProjectSearchView {
                     }
                     EditorEvent::PathChanged => {}
                     EditorEvent::DiffHunksExpandedChanged => {}
+                    EditorEvent::Error(_) => {}
                 },
             ),
         ];

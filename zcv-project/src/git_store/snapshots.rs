@@ -86,7 +86,6 @@ impl GitStore {
                 if head_changed || statuses_changed || old_work_dirs != new_work_dirs {
                     self.invalidate_all_hunks(cx);
                 }
-                eprintln!("git 状态已刷新：{} 个仓库", self.repositories.len());
             }
             (GitJob::RefreshStatuses, JobResult::Refresh(refreshed)) => {
                 let mut statuses_changed = false;
@@ -146,54 +145,36 @@ impl GitStore {
                     cx.emit(GitStoreEvent::HunksChanged);
                 }
             }
-            (GitJob::GitOperation { operation, .. }, JobResult::GitOperation(result)) => {
-                match &result {
-                    Ok(()) => {
-                        eprintln!("git {operation:?} 成功");
-                    }
-                    Err(error) => {
-                        eprintln!("git {operation:?} 失败：{error:#}");
-                    }
-                }
+            (GitJob::GitOperation { .. }, JobResult::GitOperation(result)) => {
                 // 操作改变了引用/工作树：重新全量扫描，比对后发出 Repositories/Head/Statuses 事件。
                 if result.is_ok() {
                     self.schedule_scan(cx);
                 }
             }
             (
-                job @ (GitJob::GitInit
+                GitJob::GitInit
                 | GitJob::StageFiles { .. }
                 | GitJob::HunkOperation { .. }
                 | GitJob::Commit { .. }
                 | GitJob::CheckoutBranch { .. }
-                | GitJob::CreateBranch { .. }),
+                | GitJob::CreateBranch { .. },
                 JobResult::GitOperation(result),
             ) => {
-                match result {
-                    Ok(()) => {
-                        // 操作改变了引用/工作树：重新全量扫描，比对后发出 Repositories/Head/Statuses 事件。
-                        eprintln!("git {job:?} 成功");
-                        self.schedule_scan(cx);
-                    }
-                    Err(error) => {
-                        eprintln!("git {job:?} 失败：{error:#}");
-                    }
+                if let Ok(()) = result {
+                    // 操作改变了引用/工作树：重新全量扫描，比对后发出 Repositories/Head/Statuses 事件。
+                    self.schedule_scan(cx);
                 }
             }
             (GitJob::Uncommit, JobResult::Uncommit(result)) => match result {
                 Ok(Some(message)) => {
                     // 事件直接携带被撤销消息，面板订阅后填回提交信息编辑器，无需跨事件暂存。
                     cx.emit(GitStoreEvent::Uncommitted(message));
-                    eprintln!("git uncommit 成功");
                     self.schedule_scan(cx);
                 }
                 Ok(None) => {
-                    eprintln!("git uncommit 成功（无可撤销消息）");
                     self.schedule_scan(cx);
                 }
-                Err(error) => {
-                    eprintln!("git uncommit 失败：{error:#}");
-                }
+                Err(_) => {}
             },
             _ => {}
         }

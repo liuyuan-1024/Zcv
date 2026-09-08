@@ -562,16 +562,18 @@ struct SelectedWhitespaceMarkers {
 impl SelectedWhitespaceMarkers {
     fn paint(&self, window: &mut Window, cx: &mut App) {
         for origin in &self.origins {
-            if let Err(error) = self.symbol.paint(
-                *origin,
-                self.line_height,
-                gpui::TextAlign::Left,
-                None,
-                window,
-                cx,
-            ) {
-                eprintln!("Editor 空白标记绘制失败：{error}");
-            }
+            if self
+                .symbol
+                .paint(
+                    *origin,
+                    self.line_height,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                )
+                .is_err()
+            {}
         }
     }
 }
@@ -1680,16 +1682,19 @@ impl Element for EditorElement {
                 }
             });
             for row in &gutter.rows {
-                if let Err(error) = row.shaped_line_number.paint(
-                    row.origin,
-                    gutter.line_height,
-                    gpui::TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                ) {
+                if row
+                    .shaped_line_number
+                    .paint(
+                        row.origin,
+                        gutter.line_height,
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    )
+                    .is_err()
+                {
                     // 单个字形绘制失败只跳过该行，不能让整个窗口崩溃。
-                    eprintln!("Editor gutter 行号绘制失败：{error}");
                     continue;
                 }
             }
@@ -1765,16 +1770,19 @@ impl Element for EditorElement {
                     }
                 }
                 for line in &prepaint.layout.lines {
-                    if let Err(error) = line.shaped.paint(
-                        line.origin,
-                        prepaint.layout.line_height,
-                        gpui::TextAlign::Left,
-                        None,
-                        window,
-                        cx,
-                    ) {
+                    if line
+                        .shaped
+                        .paint(
+                            line.origin,
+                            prepaint.layout.line_height,
+                            gpui::TextAlign::Left,
+                            None,
+                            window,
+                            cx,
+                        )
+                        .is_err()
+                    {
                         // 单个字形绘制失败只跳过该行，不能让整个窗口崩溃。
-                        eprintln!("Editor 文本行绘制失败：{error}");
                         continue;
                     }
                 }

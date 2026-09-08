@@ -69,6 +69,8 @@ pub enum EditorEvent {
     },
     /// 删除/修改块的展开折叠状态变化（宿主按展开状态重建组合文档内容）。
     DiffHunksExpandedChanged,
+    /// 用户主动操作失败，由宿主工作区负责展示。
+    Error(String),
 }
 
 /// Editor 负责把控件定位到 hunk 右上角，具体按钮与操作由宿主视图提供。
@@ -534,7 +536,7 @@ impl Editor {
             let line_range =
                 LineRange::new(line, Line::new(line.get() + 1)).expect("光标行 +1 应合法");
             if let Err(error) = self.display_map.unfold_lines(line_range) {
-                eprintln!("展开折叠失败：{error}");
+                cx.emit(EditorEvent::Error(format!("展开折叠失败：{error:#}")));
             }
         } else {
             let snapshot = self.render_snapshot();
@@ -555,7 +557,7 @@ impl Editor {
                     )
                     .expect("折叠范围应合法"),
                 ) {
-                    eprintln!("折叠失败：{error}");
+                    cx.emit(EditorEvent::Error(format!("折叠失败：{error:#}")));
                 }
             }
         }
@@ -586,7 +588,7 @@ impl Editor {
                 let line_range =
                     LineRange::new(line, Line::new(line.get() + 1)).expect("折叠入口行 +1 应合法");
                 if let Err(error) = self.display_map.unfold_lines(line_range) {
-                    eprintln!("展开折叠失败：{error}");
+                    cx.emit(EditorEvent::Error(format!("展开折叠失败：{error:#}")));
                 }
             }
             cx.notify();
@@ -618,7 +620,7 @@ impl Editor {
                     .expect("折叠范围应合法"),
             )
         {
-            eprintln!("折叠失败：{error}");
+            cx.emit(EditorEvent::Error(format!("折叠失败：{error:#}")));
         }
         cx.notify();
     }
@@ -1433,7 +1435,7 @@ impl Editor {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.end_transaction(cx);
-                eprintln!("Editor 编辑事务失败：{error}");
+                cx.emit(EditorEvent::Error(format!("编辑事务失败：{error:#}")));
                 let restored =
                     EditorSelections::from_selection_set(&self.multi_snapshot, &before_selections);
                 self.selections = restored;
@@ -1464,7 +1466,7 @@ impl Editor {
             Ok(remap) => remap,
             Err(error) => {
                 self.end_transaction(cx);
-                eprintln!("Editor 编辑事务失败：{error}");
+                cx.emit(EditorEvent::Error(format!("编辑事务失败：{error:#}")));
                 let restored =
                     EditorSelections::from_selection_set(&self.multi_snapshot, &before_selections);
                 self.selections = restored;
@@ -1805,7 +1807,7 @@ impl Editor {
                 });
                 cx.notify();
             }
-            Err(error) => eprintln!("Editor 选区移动失败：{error}"),
+            Err(error) => cx.emit(EditorEvent::Error(format!("选区移动失败：{error:#}"))),
         }
     }
 
@@ -1891,7 +1893,7 @@ impl Editor {
         if let Ok(line_range) = LineRange::new(Line::ZERO, Line::new(line_count))
             && let Err(error) = self.display_map.unfold_lines(line_range)
         {
-            eprintln!("展开折叠失败：{error}");
+            cx.emit(EditorEvent::Error(format!("展开折叠失败：{error:#}")));
         }
         cx.notify();
     }

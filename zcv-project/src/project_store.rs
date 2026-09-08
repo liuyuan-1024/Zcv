@@ -441,10 +441,7 @@ impl Project {
                             });
                             Ok(())
                         }
-                        Err(error) => {
-                            eprintln!("项目复制失败：{error}");
-                            Err(error)
-                        }
+                        Err(error) => Err(error),
                     }
                 }
             }),

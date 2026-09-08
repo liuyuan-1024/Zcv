@@ -1,15 +1,15 @@
 //! TopBar —— 窗口级顶部外壳。
 
-use gpui::{AnyElement, AnyView, Div, Entity, Window, div, prelude::*};
+use gpui::{AnyElement, AnyView, Div, Entity, WeakEntity, Window, div, prelude::*};
 use zcv_actions::{GitFetch, GitPull, GitPush, OpenSettings};
 use zcv_git::Branch;
 use zcv_project::{GitJobPhase, GitOperationKind, RemoteOperationState};
 use zcv_theme::{color, space};
 use zcv_ui::Button;
 
-use crate::OnProjectSelected;
 use crate::branch_picker::{BranchPicker, OnBranchSelected};
 use crate::project_picker::ProjectPicker;
+use crate::{OnProjectSelected, Workspace};
 
 mod window_controls;
 
@@ -30,11 +30,12 @@ pub struct TopBar {
 impl TopBar {
     pub fn new(
         on_selected: OnProjectSelected,
+        workspace: WeakEntity<Workspace>,
         on_branch: OnBranchSelected,
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) -> Self {
-        let project_picker = cx.new(|cx| ProjectPicker::new(on_selected, window, cx));
+        let project_picker = cx.new(|cx| ProjectPicker::new(on_selected, workspace, window, cx));
         let branch_picker = cx.new(|cx| BranchPicker::new(on_branch, window, cx));
         Self {
             project_picker,

@@ -123,12 +123,12 @@ impl ProjectTreePanel {
             (targets, neighbor_path)
         };
         let Some(on_trash) = self.on_trash.clone() else {
-            eprintln!("项目树删除失败：未配置项目删除服务");
+            self.report_error("项目树删除失败：未配置项目删除服务".into(), cx);
             return;
         };
         for path in &targets {
             if let Err(error) = on_trash(path.clone(), window, cx) {
-                eprintln!("项目树删除失败：{error}");
+                self.report_error(format!("项目树删除失败：{error:#}"), cx);
             }
         }
         // 游标收拢到预计算的邻居路径；重建后路径仍在，replace_rows 保留选中。

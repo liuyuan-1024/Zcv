@@ -11,7 +11,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use gpui::{App, Global, Task};
+use gpui::{App, AppContext, Context, Entity, EventEmitter, Global, Task};
 use serde::Deserialize;
 use zcv_fs_watch::{FsWatcher, Watcher};
 
@@ -222,6 +222,34 @@ impl UserSettings {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SettingsError(pub String);
+
+pub struct SettingsErrorReporter {
+    pending: Option<String>,
+}
+
+impl EventEmitter<SettingsError> for SettingsErrorReporter {}
+
+pub struct GlobalSettingsErrorReporter(pub Entity<SettingsErrorReporter>);
+
+impl Global for GlobalSettingsErrorReporter {}
+
+impl SettingsErrorReporter {
+    fn new() -> Self {
+        Self { pending: None }
+    }
+
+    pub fn take_pending(&mut self) -> Option<String> {
+        self.pending.take()
+    }
+
+    fn report(&mut self, message: String, cx: &mut Context<Self>) {
+        self.pending = Some(message.clone());
+        cx.emit(SettingsError(message));
+    }
+}
+
 pub struct SettingsStore {
     settings: UserSettings,
     last_user_settings_content: Option<String>,
@@ -265,6 +293,8 @@ impl SettingsStore {
 }
 
 pub fn init(cx: &mut App) {
+    let error_reporter = cx.new(|_| SettingsErrorReporter::new());
+    cx.set_global(GlobalSettingsErrorReporter(error_reporter.clone()));
     let settings_path = settings_file();
     let content = fs::read_to_string(settings_path).unwrap_or_default();
     let mut settings = UserSettings::default();
@@ -276,7 +306,12 @@ pub fn init(cx: &mut App) {
                 settings = UserSettings::merge(parsed);
             }
             Err(error) => {
-                eprintln!("无法加载设置文件 {}：{error:#}", settings_path.display());
+                error_reporter.update(cx, |reporter, cx| {
+                    reporter.report(
+                        format!("加载设置文件失败（{}）：{error:#}", settings_path.display()),
+                        cx,
+                    )
+                });
             }
         }
     }
@@ -284,13 +319,18 @@ pub fn init(cx: &mut App) {
     let fs_events = watcher.events();
     let watcher: Arc<dyn Watcher> = watcher;
     if let Err(error) = watcher.add(config_dir()) {
-        eprintln!("无法监听设置目录 {}：{error}", config_dir().display());
+        error_reporter.update(cx, |reporter, cx| {
+            reporter.report(
+                format!("监听设置目录失败（{}）：{error:#}", config_dir().display()),
+                cx,
+            )
+        });
     }
 
     let watch_task = cx.spawn(async move |cx| {
         while fs_events.next_batch().await.is_some() {
-            // 编辑器保存文件时通常会产生一组连续事件。等待事件安静下来再读取，
-            // 避免在 truncate/write 或临时文件替换的中间状态解析设置。
+            // 编辑器保存文件时通常会产生一组连续事件。
+            // 等待事件安静下来再读取，避免在 truncate/write 或临时文件替换的中间状态解析设置。
             loop {
                 cx.background_executor()
                     .timer(SETTINGS_RELOAD_DEBOUNCE)
@@ -310,10 +350,11 @@ pub fn init(cx: &mut App) {
                     match fs::read_to_string(settings_path) {
                         Ok(content) => content,
                         Err(error) => {
-                            eprintln!(
-                                "无法读取设置文件 {}：{error}（首次读取错误：{first_error}）",
+                            let message = format!(
+                                "读取设置文件失败（{}）：{error:#}（首次读取错误：{first_error:#}）",
                                 settings_path.display()
                             );
+                            error_reporter.update(cx, |reporter, cx| reporter.report(message, cx));
                             continue;
                         }
                     }
@@ -335,7 +376,11 @@ pub fn init(cx: &mut App) {
                         });
                     }
                     Err(error) => {
-                        eprintln!("无法读取设置文件 {}：{error}", settings_path.display());
+                        let message = format!(
+                            "读取设置文件失败（{}）：{error:#}",
+                            settings_path.display()
+                        );
+                        error_reporter.update(cx, |reporter, cx| reporter.report(message, cx));
                         continue;
                     }
                 }
@@ -347,7 +392,8 @@ pub fn init(cx: &mut App) {
                 }
                 Ok(false) => {}
                 Err(error) => {
-                    eprintln!("更新设置失败：{error}");
+                    let message = format!("更新设置失败：{error:#}");
+                    error_reporter.update(cx, |reporter, cx| reporter.report(message, cx));
                 }
             }
         }

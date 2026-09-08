@@ -519,14 +519,23 @@ impl Workspace {
         let path = match path.canonicalize() {
             Ok(p) => p,
             Err(error) => {
-                eprintln!("打开文件失败：{}：{error}", path.display());
+                self.show_toast(
+                    ToastKind::Error,
+                    format!("打开文件失败：{}：{error:#}", path.display()),
+                    None,
+                    Some(Duration::from_secs(5)),
+                    cx,
+                );
                 return;
             }
         };
         let Some(provider) = item_provider_for_path(&path, cx) else {
-            eprintln!(
-                "打开文件失败：{}：没有支持该类型的 Item Provider",
-                path.display()
+            self.show_toast(
+                ToastKind::Error,
+                format!("打开文件失败：{}：没有支持该类型", path.display()),
+                None,
+                Some(Duration::from_secs(5)),
+                cx,
             );
             return;
         };
@@ -537,7 +546,17 @@ impl Workspace {
             let item = match task.await {
                 Ok(item) => item,
                 Err(error) => {
-                    eprintln!("打开文件失败：{}：{error}", path.display());
+                    workspace
+                        .update_in(cx, |workspace, _window, cx| {
+                            workspace.show_toast(
+                                ToastKind::Error,
+                                format!("打开文件失败：{}：{error:#}", path.display()),
+                                None,
+                                Some(Duration::from_secs(5)),
+                                cx,
+                            );
+                        })
+                        .ok();
                     return;
                 }
             };
@@ -757,19 +776,18 @@ impl Workspace {
         cx.spawn(|this: WeakEntity<Self>, asynccx: &mut AsyncApp| {
             let mut cx = asynccx.clone();
             async move {
-                if let Err(error) = task.await {
-                    eprintln!("保存文件失败：{error}");
-                    if let Some(this) = this.upgrade() {
-                        this.update(&mut cx, |workspace, cx| {
-                            workspace.show_toast(
-                                ToastKind::Error,
-                                format!("保存文件失败：{error}"),
-                                None,
-                                Some(Duration::from_secs(5)),
-                                cx,
-                            );
-                        });
-                    }
+                if let Err(error) = task.await
+                    && let Some(this) = this.upgrade()
+                {
+                    this.update(&mut cx, |workspace, cx| {
+                        workspace.show_toast(
+                            ToastKind::Error,
+                            format!("保存文件失败：{error:#}"),
+                            None,
+                            Some(Duration::from_secs(5)),
+                            cx,
+                        );
+                    });
                 }
             }
         })

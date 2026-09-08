@@ -23,7 +23,7 @@ use zcv_theme::{color, space, typography};
 use zcv_ui::ConfirmOverlay;
 use zcv_ui::Scrollbar;
 use zcv_ui::{RowClickAction, TreeRow, TreeState};
-use zcv_workspace::{Panel, PanelEvent};
+use zcv_workspace::{Panel, PanelEvent, ToastKind, Workspace};
 
 use zcv_settings::SettingsStore;
 
@@ -90,6 +90,7 @@ pub struct ProjectTreePanel {
     on_trash: Option<OnTrash>,
     /// 在项目内移动文件或目录回调（剪切粘贴/拖拽共用）。
     on_move: Option<OnMove>,
+    workspace: Option<WeakEntity<Workspace>>,
     /// 项目树剪贴板：copy/cut 写入，paste 消费。
     clipboard: Option<TreeClipboard>,
     /// 进行中的冲突确认会话（浮层数据源；存在时阻塞其他命令）。
@@ -161,6 +162,7 @@ impl ProjectTreePanel {
             on_create: None,
             on_trash: None,
             on_move: None,
+            workspace: None,
             clipboard: None,
             conflict: None,
             pending_click_intent: None,
@@ -362,6 +364,27 @@ impl ProjectTreePanel {
     /// 设置移动回调（由 Workspace 在创建后调用）。
     pub fn set_on_move(&mut self, callback: OnMove) {
         self.on_move = Some(callback);
+    }
+
+    /// 设置宿主 Workspace，用于展示用户操作失败 toast。
+    pub fn set_workspace(&mut self, workspace: WeakEntity<Workspace>) {
+        self.workspace = Some(workspace);
+    }
+
+    pub(crate) fn report_error(&self, message: String, cx: &mut gpui::App) {
+        if let Some(workspace) = &self.workspace {
+            workspace
+                .update(cx, |workspace, cx| {
+                    workspace.show_toast(
+                        ToastKind::Error,
+                        message,
+                        None,
+                        Some(Duration::from_secs(5)),
+                        cx,
+                    );
+                })
+                .ok();
+        }
     }
 
     /// 更换项目根目录（项目根被外部重命名时由 Workspace 调用）。

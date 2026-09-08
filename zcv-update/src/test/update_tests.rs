@@ -93,3 +93,12 @@ fn translocated_paths_are_detected_by_component() {
     assert!(!is_translocated_path(Path::new("/Applications/Zcv.app")));
     assert!(!is_translocated_path(Path::new("/tmp/Zcv.app")));
 }
+
+/// 发布 zip 由 ditto 生成，大文件条目使用 deflate 压缩。
+/// async_zip 0.0.17 没有默认 feature，若构建时缺少 `deflate`，解析会在运行时以 `CompressionNotSupported` 失败而编译照常通过，因此用真实 deflate 样本做回归测试，防止特性再次被静默丢弃。
+#[test]
+fn deflated_release_archive_is_valid() {
+    let bytes = include_bytes!("fixtures/deflated.zip");
+    let result = smol::block_on(async { validate_archive(bytes).await });
+    assert!(result.is_ok(), "deflate 条目解析失败：{result:?}");
+}

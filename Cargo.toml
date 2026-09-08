@@ -36,7 +36,7 @@ members = [
 ]
 resolver = "3"
 [workspace.package]
-version = "0.8.98"
+version = "0.8.99"
 edition = "2024"
 
 [workspace.lints.clippy]
@@ -152,7 +152,7 @@ libc = "0.2"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 # ---- 自动更新 ----
-async_zip = "0.0.17"
+async_zip = { version = "0.0.17", features = ["deflate"] }
 smol = "2.0.2"
 
 # ---- 开发工具（dev-dependencies 引用） ----

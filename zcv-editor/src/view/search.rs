@@ -320,7 +320,8 @@ impl Editor {
 
     /// 将外部搜索结果追加到当前投影，保留已有匹配与活动匹配。
     ///
-    /// 结果追加只接受同一查询和同一投影版本；
+    /// 结果追加只接受同一查询；
+    /// 组合文档增量追加时允许投影版本变化，并在追加前重绑已有范围；
     /// 若调用方尚未建立外部结果，则复用 `set_search_ranges` 建立首批结果。
     pub fn append_search_ranges(
         &mut self,
@@ -331,11 +332,7 @@ impl Editor {
         let version = self.text_buffer(cx).read(cx).snapshot().version();
         let can_append = self.search.as_ref().is_some_and(|search| {
             search.query == query
-                && matches!(
-                    search.result,
-                    Some(SearchResultKind::External { version: result_version })
-                        if result_version == version
-                )
+                && matches!(search.result, Some(SearchResultKind::External { .. }))
         });
         if !can_append {
             self.set_search_ranges(query, ranges, cx);
@@ -346,6 +343,13 @@ impl Editor {
             .search
             .as_mut()
             .expect("可追加搜索结果时必须存在搜索状态");
+        // 组合文档按批次追加片段时，投影版本会随每次追加递增；
+        // 已有匹配的字节偏移不变，但必须重绑到最新版本，否则下一批会被误判为新搜索。
+        for search_match in &mut search.matches {
+            let range = search_match.range();
+            *search_match = SearchMatchAnchor::from_range(version, range);
+        }
+        search.result = Some(SearchResultKind::External { version });
         search.matches.extend(
             ranges
                 .into_iter()

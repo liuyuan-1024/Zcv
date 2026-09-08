@@ -111,7 +111,12 @@ fn icon(path: &Path, is_dir: bool, expanded: bool) -> impl IntoElement {
 
 /// 条目名称内容，尾部溢出截断。
 fn label(content: impl IntoElement) -> gpui::Div {
-    div().flex_1().overflow_hidden().truncate().child(content)
+    div()
+        .flex_1()
+        .min_w_0()
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .child(content)
 }
 
 // ── 树导航状态原语 ──────────────────────────────────────────────────

@@ -227,19 +227,35 @@ fn flatten_nodes(
     expanded: &HashSet<(GitSection, PathBuf)>,
 ) {
     for node in nodes {
-        let is_expanded = node.is_dir && expanded.contains(&(section, node.path.clone()));
+        let mut folded_name = node.name.clone();
+        let mut visible_node = node;
+        // 变更树只包含有变更的路径，因此连续的单子目录可以在行模型中压缩。
+        // 只有子目录本身处于展开状态时才继续压缩，避免吞掉用户明确折叠的边界。
+        while visible_node.is_dir
+            && expanded.contains(&(section, visible_node.path.clone()))
+            && visible_node.children.len() == 1
+            && visible_node.children[0].is_dir
+        {
+            let child = &visible_node.children[0];
+            folded_name.push('/');
+            folded_name.push_str(&child.name);
+            visible_node = child;
+        }
+
+        let is_expanded =
+            visible_node.is_dir && expanded.contains(&(section, visible_node.path.clone()));
         rows.push(GitRow::Entry(GitTreeRow {
             section,
-            path: node.path.clone(),
-            name: node.name.clone(),
+            path: visible_node.path.clone(),
+            name: folded_name,
             depth,
             is_dir: node.is_dir,
             expanded: is_expanded,
-            status: node.status,
-            diff_stat: node.diff_stat,
+            status: visible_node.status,
+            diff_stat: visible_node.diff_stat,
         }));
         if is_expanded {
-            flatten_nodes(rows, &node.children, section, depth + 1, expanded);
+            flatten_nodes(rows, &visible_node.children, section, depth + 1, expanded);
         }
     }
 }
@@ -910,7 +926,6 @@ fn render_row(
                 let colors = color::current(cx);
                 div()
                     .flex_shrink_0()
-                    .pl(space::S6)
                     .flex()
                     .items_center()
                     .gap(space::S2)
@@ -929,6 +944,7 @@ fn render_row(
             };
             // 行尾暂存复选框（在改动计数之后）；行尾 6px 边距是面板布局职责，由消费方包一层。
             let checkbox = div()
+                .flex_shrink_0()
                 .mr(space::S6)
                 .child(
                     Checkbox::new(
@@ -1527,6 +1543,34 @@ mod tests {
                 (GitSection::Unstaged, "a.rs".into())
             ]
         );
+    }
+
+    #[test]
+    fn consecutive_single_change_directories_are_display_compressed() {
+        let root = PathBuf::from("/project");
+        let snapshot = snapshot(&[("src/components/editor/mod.rs", FileStatus::Untracked)]);
+        let trees = build_section_trees(&root, [(root.as_path(), &snapshot)].into_iter());
+        let expanded = HashSet::from([
+            (GitSection::Unstaged, root.join("src")),
+            (GitSection::Unstaged, root.join("src/components")),
+            (GitSection::Unstaged, root.join("src/components/editor")),
+        ]);
+
+        let rows = flatten_rows(&trees, &expanded, &HashSet::new());
+        let entries: Vec<_> = rows
+            .iter()
+            .filter_map(|row| match row {
+                GitRow::Entry(entry) => {
+                    Some((entry.name.as_str(), entry.path.as_path(), entry.depth))
+                }
+                GitRow::Header(_) | GitRow::Empty(_) => None,
+            })
+            .collect();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, "src/components/editor");
+        assert_eq!(entries[0].1, root.join("src/components/editor"));
+        assert_eq!(entries[1].0, "mod.rs");
+        assert_eq!(entries[1].2, 1);
     }
 
     #[test]

@@ -1193,6 +1193,11 @@ impl MultiBuffer {
         if let Some(patch) = patch
             && !patch.is_empty()
         {
+            if patch.requires_reset() {
+                self.invalidate_diff_hunks_for_source(source_id, cx);
+                self.refresh_source_snapshot(source_id, cx);
+                return;
+            }
             let position_map = patch.position_map();
             // 外部源变更：暂存源 PositionMap，供编辑器把源锚点选区经源忠实推进（投影重建后解析即落位）。
             // 组合编辑已在 `edit` 内消费源补丁，patch 为空不会进到这里，故此处一律是外部编辑。

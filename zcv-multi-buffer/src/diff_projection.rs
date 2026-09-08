@@ -416,6 +416,38 @@ impl MultiBuffer {
         true
     }
 
+    /// 外部文本已被整体替换时，旧 hunk 坐标不再具有迁移语义。
+    ///
+    /// 差异 hunk 的权威来源是 Git 刷新结果，而不是旧文本到新文本的猜测映射；
+    /// 因此先丢弃旧坐标，等待宿主注入新结果，避免用失效锚点重建投影。
+    pub(crate) fn invalidate_diff_hunks_for_source(
+        &mut self,
+        source_id: gpui::EntityId,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(diff) = &mut self.diff else {
+            return false;
+        };
+        let Some(file) = diff
+            .files
+            .iter_mut()
+            .find(|file| file.working.entity_id() == source_id)
+        else {
+            return false;
+        };
+        if file.hunks.is_empty() && file.ranges.is_empty() {
+            return false;
+        }
+        file.hunks.clear();
+        file.ranges.clear();
+        file.expanded_deleted.clear();
+        file.expanded_modified.clear();
+        file.collapsed_deleted.clear();
+        file.collapsed_modified.clear();
+        self.rebuild_diff_projection(cx);
+        true
+    }
+
     /// 统一物化：按展开状态与显示策略把每个文件的可见行物化为 excerpts，并派生显示坐标 hunks。
     ///
     /// 返回本次重建的投影坐标重映射：

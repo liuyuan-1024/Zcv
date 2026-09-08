@@ -484,6 +484,15 @@ impl GitStore {
         self.schedule_job(GitJob::CreateBranch { name }, cx);
     }
 
+    /// 删除指定本地分支，完成后自动重扫。
+    pub fn delete_branch(&mut self, name: String, cx: &mut Context<Self>) {
+        if self.repositories.is_empty() {
+            self.schedule_scan(cx);
+            return;
+        }
+        self.schedule_job(GitJob::DeleteBranch { name }, cx);
+    }
+
     /// 枚举所有仓库（working_directory → 快照），顺序 = 发现顺序（祖先前置）。
     ///
     /// 返回借用，调用方按需读取字段；面板行模型构建的直接数据源。
@@ -907,7 +916,8 @@ impl GitStore {
             }
             GitJob::GitOperation { .. }
             | GitJob::CheckoutBranch { .. }
-            | GitJob::CreateBranch { .. } => {
+            | GitJob::CreateBranch { .. }
+            | GitJob::DeleteBranch { .. } => {
                 // 作用于活动仓库（fetch/pull/push 以 active 仓库为目标，空仓库也执行；
                 // 分支操作与 top_bar 显示的分支同仓库）。
                 let repository = self.active_repository()?.repository.clone();

@@ -1037,3 +1037,24 @@ fn create_branch_creates_and_switches() {
         .expect("应有当前分支");
     assert_eq!(current.name, "from_master");
 }
+
+#[test]
+fn delete_branch_removes_local_branch() {
+    let (root, _temp) = test_repo();
+    let repository = open_repo(&root);
+    repository
+        .create_branch("feature", None)
+        .expect("create_branch 应成功");
+    repository.checkout("master").expect("checkout 应成功");
+
+    repository
+        .delete_branch("feature")
+        .expect("delete_branch 应成功");
+    assert!(
+        repository
+            .branches()
+            .expect("branches 应成功")
+            .iter()
+            .all(|branch| branch.name != "feature")
+    );
+}

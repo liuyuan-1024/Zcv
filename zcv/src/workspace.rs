@@ -527,6 +527,23 @@ fn initialize_workspace(
                     GitBranchAction::Create(name) => {
                         store.update(cx, |store, cx| store.create_branch(name, cx));
                     }
+                    GitBranchAction::Delete(name) => {
+                        let is_current = store
+                            .read(cx)
+                            .current_branch()
+                            .is_some_and(|current| current == name);
+                        if is_current {
+                            workspace.show_toast(
+                                ToastKind::Error,
+                                "无法删除当前分支",
+                                None,
+                                Some(Duration::from_secs(5)),
+                                cx,
+                            );
+                        } else {
+                            store.update(cx, |store, cx| store.delete_branch(name, cx));
+                        }
+                    }
                 }
             });
         }

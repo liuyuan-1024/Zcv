@@ -166,6 +166,13 @@ pub(super) async fn execute_job(
                 .unwrap_or(Ok(()));
             JobResult::GitOperation(result)
         }
+        GitJob::DeleteBranch { name } => {
+            let result = repositories
+                .first()
+                .map(|repository| repository.delete_branch(&name))
+                .unwrap_or(Ok(()));
+            JobResult::GitOperation(result)
+        }
         // 项目根无仓库时初始化；fallback 分支名 "main"。
         GitJob::GitInit => JobResult::GitOperation(zcv_git::init(&root, "main")),
         // 暂存/取消暂存：按仓库分组执行；任一仓库失败即中断并上报。

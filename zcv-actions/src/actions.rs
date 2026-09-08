@@ -148,7 +148,7 @@ actions!(
 
 actions!(harness, [ToggleHarnessMode]);
 
-actions!(branch_picker, [SelectGitBranch]);
+actions!(branch_picker, [SelectGitBranch, DeleteGitBranch]);
 
 actions!(project_search, [Deploy]);
 

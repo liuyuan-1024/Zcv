@@ -286,6 +286,9 @@ pub trait GitRepository: Send + Sync {
     /// base 省略时从当前 HEAD 创建；空仓库（unborn HEAD）与 detached HEAD 均可用。
     fn create_branch(&self, name: &str, base: Option<&str>) -> Result<()>;
 
+    /// 删除本地分支（`git branch -d <name>`）。
+    fn delete_branch(&self, name: &str) -> Result<()>;
+
     /// 读取提交历史用于图形化展示（`git log -n {limit} [--skip=1 {after}] --pretty=...`）。
     ///
     /// `after` 为分批游标：`None` 从 HEAD 开始；
@@ -897,6 +900,14 @@ impl GitRepository for RealGitRepository {
             }
         }
         Ok(branches)
+    }
+
+    fn delete_branch(&self, name: &str) -> Result<()> {
+        self.run_command(
+            &mut self.build_command(&["branch", "-d", name]),
+            "git branch -d",
+        )?;
+        Ok(())
     }
 
     fn checkout(&self, name: &str) -> Result<()> {

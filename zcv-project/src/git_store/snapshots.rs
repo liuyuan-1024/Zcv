@@ -157,7 +157,8 @@ impl GitStore {
                 | GitJob::HunkOperation { .. }
                 | GitJob::Commit { .. }
                 | GitJob::CheckoutBranch { .. }
-                | GitJob::CreateBranch { .. },
+                | GitJob::CreateBranch { .. }
+                | GitJob::DeleteBranch { .. },
                 JobResult::GitOperation(result),
             ) => {
                 if let Ok(()) = result {

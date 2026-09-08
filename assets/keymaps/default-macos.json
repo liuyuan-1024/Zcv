@@ -212,7 +212,24 @@
   },
 
   {
-    "context": "Picker || (RecentProjects > Picker > Editor) || (GitBranchSelector > Picker > Editor)",
+    "context": "RecentProjects > Picker > Editor",
+    "bindings": {
+      "cmd-o": "project_picker::OpenLocalProject",
+      "cmd-backspace": "project_picker::DeleteRecentProject",
+      "cmd-delete": "project_picker::DeleteRecentProject"
+    }
+  },
+
+  {
+    "context": "GitBranchSelector > Picker > Editor",
+    "bindings": {
+      "cmd-backspace": "branch_picker::DeleteGitBranch",
+      "cmd-delete": "branch_picker::DeleteGitBranch"
+    }
+  },
+
+  {
+    "context": "Picker > Editor",
     "bindings": {
       // =========================
       // Picker 导航
@@ -226,18 +243,7 @@
       // =========================
 
       "enter": "picker::PickerConfirm",
-      "escape": "picker::PickerCancel",
-
-      // =========================
-      // Project Picker 特有操作
-      // =========================
-
-      // 打开本地项目
-      "cmd-o": "project_picker::OpenLocalProject",
-
-      // 删除最近项目
-      "cmd-backspace": "project_picker::DeleteRecentProject",
-      "cmd-delete": "project_picker::DeleteRecentProject"
+      "escape": "picker::PickerCancel"
     }
   },
 

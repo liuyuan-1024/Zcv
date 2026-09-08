@@ -116,14 +116,27 @@
     }
   },
   {
-    "context": "Picker || (RecentProjects > Picker > Editor) || (GitBranchSelector > Picker > Editor)",
+    "context": "RecentProjects > Picker > Editor",
+    "bindings": {
+      "ctrl-l": "project_picker::OpenLocalProject",
+      "ctrl-backspace": "project_picker::DeleteRecentProject",
+      "ctrl-delete": "project_picker::DeleteRecentProject"
+    }
+  },
+  {
+    "context": "GitBranchSelector > Picker > Editor",
+    "bindings": {
+      "ctrl-backspace": "branch_picker::DeleteGitBranch",
+      "ctrl-delete": "branch_picker::DeleteGitBranch"
+    }
+  },
+  {
+    "context": "Picker > Editor",
     "bindings": {
       "up": "picker::PickerSelectPrev",
       "down": "picker::PickerSelectNext",
       "enter": "picker::PickerConfirm",
-      "escape": "picker::PickerCancel",
-      "ctrl-l": "project_picker::OpenLocalProject",
-      "ctrl-backspace": "project_picker::DeleteRecentProject"
+      "escape": "picker::PickerCancel"
     }
   },
   {

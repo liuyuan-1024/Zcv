@@ -60,7 +60,7 @@ impl TopBar {
 
     pub fn set_branches(&mut self, branches: Vec<Branch>, cx: &mut gpui::Context<Self>) {
         self.branch_picker
-            .update(cx, |picker, _| picker.set_branches(branches));
+            .update(cx, |picker, cx| picker.set_branches(branches, cx));
     }
 
     pub fn set_has_repositories(&mut self, has_repositories: bool) {

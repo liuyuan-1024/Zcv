@@ -9,7 +9,7 @@
 use std::rc::Rc;
 
 use gpui::{App, Context, Entity, Render, Window, div, prelude::*};
-use zcv_actions::SelectGitBranch;
+use zcv_actions::{DeleteGitBranch, SelectGitBranch};
 use zcv_git::Branch;
 use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, PickerHost};
 use zcv_theme::color;
@@ -22,6 +22,7 @@ use zcv_ui::{Button, SvgIcon};
 pub enum GitBranchAction {
     Checkout(String),
     Create(String),
+    Delete(String),
 }
 
 /// 分支操作回调 —— 参数为操作请求。
@@ -56,6 +57,11 @@ impl BranchPickerDelegate {
 
     /// 替换分支列表并重过滤（toggle 打开时调用；空 query 自动回到当前分支）。
     fn reload(&mut self, branches: Vec<Branch>) {
+        self.branches = branches;
+        self.do_filter();
+    }
+
+    fn update_branches(&mut self, branches: Vec<Branch>) {
         self.branches = branches;
         self.do_filter();
     }
@@ -141,7 +147,7 @@ impl PickerDelegate for BranchPickerDelegate {
         let row = ListItem::new(index)
             .toggle_state(is_selected)
             .child(branch.name.clone());
-        // 当前分支行首标 ✓。
+        // 当前分支显示对勾，其余分支显示分支图标。
         let row = if branch.is_head {
             row.start_slot(
                 SvgIcon::new("icons/check.svg")
@@ -150,9 +156,24 @@ impl PickerDelegate for BranchPickerDelegate {
                     .color(color::current(cx).icon_accent),
             )
         } else {
-            row
+            row.start_slot(
+                SvgIcon::new("icons/git_branch.svg")
+                    .id(("branch", index))
+                    .label("分支"),
+            )
         };
-        row.into_any_element()
+        let branch_name = branch.name.clone();
+        let on_delete = self.on_select.clone();
+        row.end_slot(
+            Button::icon(("delete-branch", index), "icons/trash.svg")
+                .color(color::current(cx).icon_muted)
+                .label("删除分支")
+                .shortcut(&DeleteGitBranch, cx)
+                .on_click(move |_, window, cx| {
+                    on_delete(GitBranchAction::Delete(branch_name.clone()), window, cx);
+                }),
+        )
+        .into_any_element()
     }
 
     fn placeholder_text(&self) -> &str {
@@ -220,8 +241,13 @@ impl BranchPicker {
     }
 
     /// 设置分支列表快照（打开时同步渲染，无加载态）。
-    pub fn set_branches(&mut self, branches: Vec<Branch>) {
-        self.branches = branches;
+    pub fn set_branches(&mut self, branches: Vec<Branch>, cx: &mut Context<Self>) {
+        self.branches = branches.clone();
+        if self.host.is_open(cx) {
+            self.picker.update(cx, |picker, _| {
+                picker.delegate_mut().update_branches(branches);
+            });
+        }
     }
 
     /// 外部切换（快捷键/点击等）。
@@ -238,6 +264,26 @@ impl BranchPicker {
             });
         }
         self.host.toggle(&self.picker, window, cx);
+    }
+
+    fn handle_delete_branch(
+        &mut self,
+        _: &DeleteGitBranch,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.picker.update(cx, |picker, cx| {
+            let delegate = picker.delegate();
+            if delegate.create_row_visible() || delegate.filtered.is_empty() {
+                return;
+            }
+            let branch = &delegate.branches[delegate.filtered[delegate.selected_index]];
+            if branch.is_head {
+                return;
+            }
+            let cb = delegate.on_select.clone();
+            cb(GitBranchAction::Delete(branch.name.clone()), window, cx);
+        });
     }
 }
 
@@ -269,6 +315,7 @@ impl Render for BranchPicker {
             .track_focus(&self.host.focus_handle())
             // 复合 context 让 Picker 分组的快捷键与 Editor 同深度竞争。
             .key_context("GitBranchSelector")
+            .on_action(cx.listener(Self::handle_delete_branch))
             .relative()
             .child(button);
 

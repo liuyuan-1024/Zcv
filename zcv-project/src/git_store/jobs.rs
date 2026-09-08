@@ -91,6 +91,9 @@ pub(super) enum GitJobKey {
     CreateBranch {
         name: String,
     },
+    DeleteBranch {
+        name: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -121,6 +124,9 @@ pub(super) enum GitJob {
         name: String,
     },
     CreateBranch {
+        name: String,
+    },
+    DeleteBranch {
         name: String,
     },
 }
@@ -168,6 +174,7 @@ impl GitJob {
             GitJob::Uncommit => GitJobKey::Uncommit,
             GitJob::CheckoutBranch { name } => GitJobKey::CheckoutBranch { name: name.clone() },
             GitJob::CreateBranch { name } => GitJobKey::CreateBranch { name: name.clone() },
+            GitJob::DeleteBranch { name } => GitJobKey::DeleteBranch { name: name.clone() },
         }
     }
 
@@ -197,6 +204,7 @@ impl GitJob {
             GitJob::Uncommit => "撤销提交".into(),
             GitJob::CheckoutBranch { .. } => "切换分支".into(),
             GitJob::CreateBranch { .. } => "创建分支".into(),
+            GitJob::DeleteBranch { .. } => "删除分支".into(),
         }
     }
 }

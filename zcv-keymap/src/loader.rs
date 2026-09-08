@@ -418,13 +418,11 @@ mod tests {
         );
     }
 
-    /// 项目/分支选择器分组使用的复合 context 必须可解析。
+    /// Picker 搜索框使用的嵌套 context 必须可解析。
     #[test]
     fn composite_context_parses() {
-        KeyBindingContextPredicate::parse(
-            "Picker || (RecentProjects > Picker > Editor) || (GitBranchSelector > Picker > Editor)",
-        )
-        .expect("复合 context 必须可解析");
+        KeyBindingContextPredicate::parse("Picker > Editor")
+            .expect("Picker 嵌套 context 必须可解析");
         KeyBindingContextPredicate::parse(
             "(BufferSearchBar || ProjectSearchBar) && in_replace > Editor",
         )

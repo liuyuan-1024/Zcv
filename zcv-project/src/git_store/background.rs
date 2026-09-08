@@ -152,21 +152,21 @@ pub(super) async fn execute_job(
             JobResult::GitOperation(result)
         }
         // 分支操作：切换分支 / 以当前 HEAD 为基创建并切换（作用于活动仓库）。
-        GitJob::CheckoutBranch { name } => {
+        GitJob::CheckoutBranch { name, .. } => {
             let result = repositories
                 .first()
                 .map(|repository| repository.checkout(&name))
                 .unwrap_or(Ok(()));
             JobResult::GitOperation(result)
         }
-        GitJob::CreateBranch { name } => {
+        GitJob::CreateBranch { name, .. } => {
             let result = repositories
                 .first()
                 .map(|repository| repository.create_branch(&name, None))
                 .unwrap_or(Ok(()));
             JobResult::GitOperation(result)
         }
-        GitJob::DeleteBranch { name } => {
+        GitJob::DeleteBranch { name, .. } => {
             let result = repositories
                 .first()
                 .map(|repository| repository.delete_branch(&name))

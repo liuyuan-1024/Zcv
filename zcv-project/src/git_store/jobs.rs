@@ -122,12 +122,15 @@ pub(super) enum GitJob {
     Uncommit,
     CheckoutBranch {
         name: String,
+        on_done: Option<async_channel::Sender<GitOperationOutcome>>,
     },
     CreateBranch {
         name: String,
+        on_done: Option<async_channel::Sender<GitOperationOutcome>>,
     },
     DeleteBranch {
         name: String,
+        on_done: Option<async_channel::Sender<GitOperationOutcome>>,
     },
 }
 
@@ -172,9 +175,9 @@ impl GitJob {
                 message: message.clone(),
             },
             GitJob::Uncommit => GitJobKey::Uncommit,
-            GitJob::CheckoutBranch { name } => GitJobKey::CheckoutBranch { name: name.clone() },
-            GitJob::CreateBranch { name } => GitJobKey::CreateBranch { name: name.clone() },
-            GitJob::DeleteBranch { name } => GitJobKey::DeleteBranch { name: name.clone() },
+            GitJob::CheckoutBranch { name, .. } => GitJobKey::CheckoutBranch { name: name.clone() },
+            GitJob::CreateBranch { name, .. } => GitJobKey::CreateBranch { name: name.clone() },
+            GitJob::DeleteBranch { name, .. } => GitJobKey::DeleteBranch { name: name.clone() },
         }
     }
 

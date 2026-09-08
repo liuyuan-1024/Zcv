@@ -64,6 +64,16 @@ pub enum GitOperationOutcome {
     Failed(String),
 }
 
+fn operation_result_sender(job: &GitJob) -> Option<async_channel::Sender<GitOperationOutcome>> {
+    match job {
+        GitJob::GitOperation { on_done, .. }
+        | GitJob::CheckoutBranch { on_done, .. }
+        | GitJob::CreateBranch { on_done, .. }
+        | GitJob::DeleteBranch { on_done, .. } => on_done.clone(),
+        _ => None,
+    }
+}
+
 /// 单个文件在某个仓库中的状态快照。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatusEntry {
@@ -257,10 +267,7 @@ impl GitStore {
                         .as_ref()
                         .is_some_and(GitCancellation::is_cancelled)
                     {
-                        if let GitJob::GitOperation {
-                            on_done: Some(tx), ..
-                        } = &job
-                        {
+                        if let Some(tx) = operation_result_sender(&job) {
                             let _ = tx.send(GitOperationOutcome::Cancelled).await;
                         }
                         this.update(&mut cx, |store, cx| store.finish_job(scheduled.id, cx));
@@ -307,10 +314,7 @@ impl GitStore {
                     }
                     this.update(&mut cx, |store, cx| store.clear_in_flight(scheduled.id, cx));
                     // 操作结果回传发起方（Workspace await 后直接弹提示）。
-                    if let GitJob::GitOperation {
-                        on_done: Some(tx), ..
-                    } = &job
-                    {
+                    if let Some(tx) = operation_result_sender(&job) {
                         let outcome = if let Some(outcome) = cancelled_outcome {
                             outcome
                         } else {
@@ -472,7 +476,38 @@ impl GitStore {
             self.schedule_scan(cx);
             return;
         }
-        self.schedule_job(GitJob::CheckoutBranch { name }, cx);
+        self.schedule_job(
+            GitJob::CheckoutBranch {
+                name,
+                on_done: None,
+            },
+            cx,
+        );
+    }
+
+    pub fn checkout_branch_with_result(
+        &mut self,
+        name: String,
+        cx: &mut Context<Self>,
+    ) -> Task<anyhow::Result<GitOperationOutcome>> {
+        if self.repositories.is_empty() {
+            self.schedule_scan(cx);
+            return Task::ready(Err(anyhow::anyhow!("git 仓库尚未就绪")));
+        }
+        let (result_tx, result_rx) = async_channel::unbounded();
+        self.schedule_job(
+            GitJob::CheckoutBranch {
+                name,
+                on_done: Some(result_tx),
+            },
+            cx,
+        );
+        cx.spawn(|_this: WeakEntity<Self>, _cx: &mut AsyncApp| async move {
+            result_rx
+                .recv()
+                .await
+                .map_err(|_| anyhow::anyhow!("分支切换结果通道已关闭"))
+        })
     }
 
     /// 以当前 HEAD 为基创建并切换分支（选择器"创建分支"行触发），完成后自动重扫。
@@ -481,7 +516,13 @@ impl GitStore {
             self.schedule_scan(cx);
             return;
         }
-        self.schedule_job(GitJob::CreateBranch { name }, cx);
+        self.schedule_job(
+            GitJob::CreateBranch {
+                name,
+                on_done: None,
+            },
+            cx,
+        );
     }
 
     /// 删除指定本地分支，完成后自动重扫。
@@ -490,7 +531,13 @@ impl GitStore {
             self.schedule_scan(cx);
             return;
         }
-        self.schedule_job(GitJob::DeleteBranch { name }, cx);
+        self.schedule_job(
+            GitJob::DeleteBranch {
+                name,
+                on_done: None,
+            },
+            cx,
+        );
     }
 
     /// 枚举所有仓库（working_directory → 快照），顺序 = 发现顺序（祖先前置）。

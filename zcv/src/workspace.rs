@@ -522,7 +522,35 @@ fn initialize_workspace(
                 let store = workspace.project().read(cx).git_store();
                 match action {
                     GitBranchAction::Checkout(name) => {
-                        store.update(cx, |store, cx| store.checkout_branch(name, cx));
+                        let task = store
+                            .update(cx, |store, cx| store.checkout_branch_with_result(name, cx));
+                        let weak = ws.downgrade();
+                        cx.spawn(
+                            move |_this: WeakEntity<Workspace>, asynccx: &mut AsyncApp| {
+                                let mut cx = asynccx.clone();
+                                async move {
+                                    let result = task.await;
+                                    if let Err(error) = result.and_then(|outcome| match outcome {
+                                        GitOperationOutcome::Failed(error) => {
+                                            Err(anyhow::anyhow!(error))
+                                        }
+                                        _ => Ok(()),
+                                    }) && let Some(this) = weak.upgrade()
+                                    {
+                                        this.update(&mut cx, |workspace, cx| {
+                                            workspace.show_toast(
+                                                ToastKind::Error,
+                                                format!("切换分支失败：{error:#}"),
+                                                None,
+                                                Some(Duration::from_secs(5)),
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                }
+                            },
+                        )
+                        .detach();
                     }
                     GitBranchAction::Create(name) => {
                         store.update(cx, |store, cx| store.create_branch(name, cx));

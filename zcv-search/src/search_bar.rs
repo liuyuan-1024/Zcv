@@ -108,7 +108,7 @@ impl RenderOnce for SearchInput {
             .flex_1()
             .flex()
             .items_center()
-            .min_h_8()
+            .min_h(space::S8)
             .px(space::S6)
             .rounded_sm()
             .border_1()

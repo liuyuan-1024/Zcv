@@ -193,8 +193,7 @@ impl Render for MarkdownPreviewView {
                     .size_full()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll_handle)
-                    .px_8()
-                    .py_6()
+                    .p(space::S6)
                     .text_color(color::current(cx).text)
                     .text_size(typography::content_size())
                     .line_height(typography::content_line())
@@ -236,7 +235,7 @@ fn render_block(
             let mut code = div()
                 .rounded_md()
                 .bg(color::current(cx).panel_background)
-                .p_3()
+                .p(space::S12)
                 .font(typography::content_font())
                 .text_size(typography::content_size())
                 .flex()
@@ -244,7 +243,7 @@ fn render_block(
             if let Some(language) = language {
                 code = code.child(
                     div()
-                        .mb_2()
+                        .mb(space::S8)
                         .text_size(typography::content_size() * 0.85)
                         .text_color(color::current(cx).text_muted)
                         .child(language.clone()),
@@ -278,7 +277,7 @@ fn render_block(
             div()
                 .border_l_2()
                 .border_color(color::current(cx).border_variant)
-                .pl_3()
+                .pl(space::S12)
                 .flex()
                 .flex_col()
                 .gap_2()
@@ -332,7 +331,7 @@ fn render_block(
                 })
                 .collect::<Vec<_>>();
             div()
-                .when(list_depth > 0, |list| list.pl_4())
+                .when(list_depth > 0, |list| list.pl(space::S16))
                 .flex()
                 .flex_col()
                 .gap_1()
@@ -435,9 +434,8 @@ fn render_table_row(
         .children(cells.iter().enumerate().map(|(cell_index, cell_content)| {
             let cell = div()
                 .flex_1()
-                .min_w_32()
-                .px_3()
-                .py_2()
+                .min_w(space::S32)
+                .p(space::S2)
                 .when(cell_index > 0, |cell| {
                     cell.border_l_1()
                         .border_color(color::current(cx).border_variant)

@@ -14,7 +14,7 @@ use gpui::{
 };
 use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
-use zcv_theme::color;
+use zcv_theme::{color, space};
 use zcv_workspace::{
     Item, ItemEvent, ItemHandle, PreviewDocument, PreviewItem, PreviewItemHandle,
     ToolbarItemLocation,
@@ -168,7 +168,7 @@ impl Render for SvgPreviewView {
             .items_center()
             .justify_center()
             .overflow_hidden()
-            .p_4()
+            .p(space::S4)
             .bg(color::current(cx).editor_background)
             .child(preview)
     }

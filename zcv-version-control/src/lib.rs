@@ -4,7 +4,7 @@ mod git_graph;
 mod project_diff;
 mod version_control;
 
-pub use git_graph::deploy_at as deploy_git_graph;
+pub use git_graph::{GitGraphSerializedItemProvider, deploy_at as deploy_git_graph};
 pub use project_diff::{
     ProjectDiffKind, ProjectDiffSerializedItemProvider, ProjectDiffView,
     deploy_at as deploy_project_diff,

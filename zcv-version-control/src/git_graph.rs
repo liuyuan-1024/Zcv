@@ -8,15 +8,24 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
     App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, PathBuilder, Pixels,
-    Render, Rgba, SharedString, UniformListScrollHandle, WeakEntity, Window, canvas, div, point,
-    prelude::*, px, uniform_list,
+    Render, Rgba, ScrollStrategy, SharedString, Subscription, UniformListScrollHandle, WeakEntity,
+    Window, canvas, div, point, prelude::*, px, uniform_list,
 };
+use regex::RegexBuilder;
+use zcv_actions::{
+    Backtab, FindNext, FindPrevious, Tab, ToggleCaseSensitive, ToggleRegex, ToggleWholeWord,
+};
+use zcv_editor::{Editor, EditorEvent};
 use zcv_git::{GraphCommit, GraphLayoutState, GraphLine, GraphRowLayout};
-use zcv_project::Project;
+use zcv_project::{GitStoreEvent, Project};
+use zcv_text::SearchQuery;
 use zcv_theme::color::{self, ThemeColors};
 use zcv_theme::{space, typography};
-use zcv_ui::Scrollbar;
-use zcv_workspace::{Item, SerializedPaneItem, Workspace};
+use zcv_ui::{Button, Scrollbar};
+use zcv_workspace::{
+    Direction, Item, SearchEvent, SearchableItem, SerializedItemProvider, SerializedPaneItem,
+    Workspace,
+};
 
 // ── 布局常量（参考 Zed git_graph.rs） ────────────────────────────────
 
@@ -30,6 +39,7 @@ const LINE_WIDTH: Pixels = px(1.5);
 const BATCH_SIZE: usize = 100;
 /// 距列表末尾多少行时预加载下一批。
 const PRELOAD_ROWS: usize = 10;
+const GIT_GRAPH_SERIALIZED_KIND: &str = "git-graph";
 
 /// 一行 = 一条提交数据 + 其逐行布局指令。
 #[derive(Clone)]
@@ -52,15 +62,70 @@ pub(crate) struct GitGraphView {
     reached_end: bool,
     /// 当前选中行下标。
     selected: Option<usize>,
+    search_matches: Vec<usize>,
+    active_search_match: Option<usize>,
     scroll_handle: UniformListScrollHandle,
     scrollbar: Scrollbar<UniformListScrollHandle>,
+    _git_subscription: Subscription,
+    search_input: Entity<Editor>,
+    _search_subscription: Subscription,
+    case_sensitive: bool,
+    whole_word: bool,
+    regex: bool,
 }
 
 impl GitGraphView {
+    fn toggle_search_option(&mut self, option: u8, cx: &mut Context<Self>) {
+        match option {
+            0 => self.case_sensitive = !self.case_sensitive,
+            1 => self.whole_word = !self.whole_word,
+            2 => self.regex = !self.regex,
+            _ => return,
+        }
+        let query = self.search_input.read(cx).text(cx);
+        self.run_search(
+            &SearchQuery {
+                query,
+                case_sensitive: self.case_sensitive,
+                whole_word: self.whole_word,
+                regex: self.regex,
+            },
+            cx,
+        );
+    }
+
     fn new(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         let scroll_handle = UniformListScrollHandle::default();
         let scrollbar = Scrollbar::vertical(scroll_handle.clone());
+        let git_store = project.read(cx).git_store();
+        let search_input = cx.new(Editor::single_line);
+        search_input.update(cx, |editor, cx| {
+            editor.set_placeholder_text("搜索提交…", cx);
+        });
+        let search_subscription =
+            cx.subscribe(&search_input, |view, _input, event: &EditorEvent, cx| {
+                if *event == EditorEvent::Edited {
+                    let query = view.search_input.read(cx).text(cx);
+                    let search_query = SearchQuery {
+                        query,
+                        case_sensitive: view.case_sensitive,
+                        whole_word: view.whole_word,
+                        regex: view.regex,
+                    };
+                    view.run_search(&search_query, cx);
+                }
+            });
+        let git_subscription = cx.subscribe(&git_store, |view, _, event, cx| {
+            if matches!(
+                event,
+                GitStoreEvent::Repositories | GitStoreEvent::ActiveRepositoryChanged
+            ) && view.rows.is_empty()
+            {
+                view.reached_end = false;
+                view.load_more(cx);
+            }
+        });
         let mut view = Self {
             focus,
             project,
@@ -70,16 +135,34 @@ impl GitGraphView {
             loading: false,
             reached_end: false,
             selected: None,
+            search_matches: Vec::new(),
+            active_search_match: None,
             scroll_handle,
             scrollbar,
+            _git_subscription: git_subscription,
+            search_input,
+            _search_subscription: search_subscription,
+            case_sensitive: false,
+            whole_word: false,
+            regex: false,
         };
-        view.load_more(cx);
+        if git_store.read(cx).is_repository_scan_ready() {
+            view.load_more(cx);
+        }
         view
     }
 
     /// 加载下一批提交；`loading`/`reached_end` 时跳过。后台读完成后回到实体逐条布局追加。
     fn load_more(&mut self, cx: &mut Context<Self>) {
-        if self.loading || self.reached_end {
+        if self.loading
+            || self.reached_end
+            || !self
+                .project
+                .read(cx)
+                .git_store()
+                .read(cx)
+                .is_repository_scan_ready()
+        {
             return;
         }
         self.loading = true;
@@ -124,11 +207,11 @@ impl GitGraphView {
     }
 }
 
-impl EventEmitter<()> for GitGraphView {}
+impl EventEmitter<SearchEvent> for GitGraphView {}
 
 impl Focusable for GitGraphView {
-    fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.focus.clone()
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.search_input.read(cx).focus_handle()
     }
 }
 
@@ -141,12 +224,124 @@ impl Render for GitGraphView {
             .debug_selector(|| "git-graph-view".into())
             .size_full()
             .track_focus(&self.focus)
-            .key_context("GitGraphView")
+            .key_context("GitGraphSearchBar")
+            .on_action(cx.listener(|view, _: &FindNext, _, cx| {
+                view.move_active_match(Direction::Next, 1, cx);
+            }))
+            .on_action(cx.listener(|view, _: &FindPrevious, _, cx| {
+                view.move_active_match(Direction::Prev, 1, cx);
+            }))
+            .on_action(cx.listener(|view, _: &ToggleCaseSensitive, _, cx| {
+                view.toggle_search_option(0, cx);
+            }))
+            .on_action(cx.listener(|view, _: &ToggleWholeWord, _, cx| {
+                view.toggle_search_option(1, cx);
+            }))
+            .on_action(cx.listener(|view, _: &ToggleRegex, _, cx| {
+                view.toggle_search_option(2, cx);
+            }))
+            .on_action(cx.listener(|view, _: &Tab, window, cx| {
+                window.focus(&view.search_input.read(cx).focus_handle(), cx);
+            }))
+            .on_action(cx.listener(|view, _: &Backtab, window, cx| {
+                window.focus(&view.search_input.read(cx).focus_handle(), cx);
+            }))
             .bg(colors.editor_background)
             // 提交文本属于内容：字号走内容通道，字体族沿用 UI 比例字体，只有短 SHA 用等宽。
             .font(typography::ui_font())
             .text_size(typography::content_size())
             .text_color(colors.text);
+        let search_bar = div()
+            .w_full()
+            .p(space::S6)
+            .flex()
+            .items_center()
+            .gap(space::S6)
+            .border_b_1()
+            .border_color(colors.border)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h(space::S8)
+                    .px(space::S6)
+                    .flex()
+                    .items_center()
+                    .gap(space::S4)
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(colors.border)
+                    .child(self.search_input.clone())
+                    .child(
+                        Button::icon("git-graph-case", "icons/case_sensitive.svg")
+                            .label("区分大小写")
+                            .shortcut(&ToggleCaseSensitive, cx)
+                            .color(if self.case_sensitive {
+                                colors.icon_accent
+                            } else {
+                                colors.text_muted
+                            })
+                            .on_click(
+                                cx.listener(|view, _, _, cx| view.toggle_search_option(0, cx)),
+                            ),
+                    )
+                    .child(
+                        Button::icon("git-graph-word", "icons/whole_word.svg")
+                            .label("整词匹配")
+                            .shortcut(&ToggleWholeWord, cx)
+                            .color(if self.whole_word {
+                                colors.icon_accent
+                            } else {
+                                colors.text_muted
+                            })
+                            .on_click(
+                                cx.listener(|view, _, _, cx| view.toggle_search_option(1, cx)),
+                            ),
+                    )
+                    .child(
+                        Button::icon("git-graph-regex", "icons/regex.svg")
+                            .label("正则表达式")
+                            .shortcut(&ToggleRegex, cx)
+                            .color(if self.regex {
+                                colors.icon_accent
+                            } else {
+                                colors.text_muted
+                            })
+                            .on_click(
+                                cx.listener(|view, _, _, cx| view.toggle_search_option(2, cx)),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(space::S4)
+                    .text_size(typography::ui_size() * 0.85)
+                    .text_color(colors.text_muted)
+                    .child(format!(
+                        "{}/{}",
+                        self.active_search_match.map_or(0, |index| index + 1),
+                        self.search_matches.len()
+                    )),
+            )
+            .child(
+                Button::icon("git-graph-prev", "icons/chevron_left.svg")
+                    .label("上一个匹配")
+                    .shortcut(&FindPrevious, cx)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.move_active_match(Direction::Prev, 1, cx);
+                    })),
+            )
+            .child(
+                Button::icon("git-graph-next", "icons/chevron_right.svg")
+                    .label("下一个匹配")
+                    .shortcut(&FindNext, cx)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.move_active_match(Direction::Next, 1, cx);
+                    })),
+            );
 
         if self.rows.is_empty() {
             let message = if self.loading {
@@ -154,7 +349,7 @@ impl Render for GitGraphView {
             } else {
                 "暂无提交历史"
             };
-            return root.child(
+            return root.child(search_bar).child(
                 div()
                     .size_full()
                     .flex()
@@ -166,7 +361,12 @@ impl Render for GitGraphView {
             );
         }
 
-        let len = self.rows.len();
+        let has_query = !self.search_input.read(cx).text(cx).is_empty();
+        let len = if !has_query {
+            self.rows.len()
+        } else {
+            self.search_matches.len()
+        };
         let weak = cx.weak_entity();
         let list = uniform_list("git-graph-list", len, move |range, _window, cx| {
             let Some(view) = weak.upgrade() else {
@@ -178,7 +378,12 @@ impl Render for GitGraphView {
                 let read = view.read(cx);
                 range
                     .clone()
-                    .filter_map(|index| {
+                    .filter_map(|display_index| {
+                        let index = if !has_query {
+                            display_index
+                        } else {
+                            *read.search_matches.get(display_index)?
+                        };
                         read.rows
                             .get(index)
                             .map(|row| (index, row.clone(), read.selected == Some(index)))
@@ -201,24 +406,240 @@ impl Render for GitGraphView {
         .track_scroll(&self.scroll_handle)
         .with_decoration(self.scrollbar.clone());
 
-        root.child(list)
+        root.child(search_bar).child(list)
     }
 }
 
 impl Item for GitGraphView {
-    type Event = ();
+    type Event = SearchEvent;
 
     fn tab_content_text(&self, _cx: &App) -> SharedString {
-        "版本控制图".into()
+        self.project
+            .read(_cx)
+            .root()
+            .and_then(|root| root.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "版本控制图".to_owned())
+            .into()
     }
 
     fn tab_icon(&self, _cx: &App) -> Option<SharedString> {
         Some("icons/git_graph.svg".into())
     }
 
-    fn serialized_pane_item(&self, _cx: &App) -> Option<SerializedPaneItem> {
-        // 本期不持久化：重开工作区不恢复此标签页。
-        None
+    fn serialized_pane_item(&self, cx: &App) -> Option<SerializedPaneItem> {
+        Some(SerializedPaneItem::Custom {
+            kind: GIT_GRAPH_SERIALIZED_KIND.into(),
+            state: serde_json::json!({
+                "query": self.search_input.read(cx).text(cx),
+                "case_sensitive": self.case_sensitive,
+                "whole_word": self.whole_word,
+                "regex": self.regex,
+            }),
+        })
+    }
+}
+
+/// 从布局恢复 Git 提交图；提交数据始终根据当前项目仓库重新加载。
+pub struct GitGraphSerializedItemProvider;
+
+impl SerializedItemProvider for GitGraphSerializedItemProvider {
+    fn kind(&self) -> &'static str {
+        GIT_GRAPH_SERIALIZED_KIND
+    }
+
+    fn restore(
+        &self,
+        state: serde_json::Value,
+        project: Entity<Project>,
+        _window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> gpui::Task<anyhow::Result<Box<dyn zcv_workspace::ItemHandle>>> {
+        let view = cx.new(|cx| GitGraphView::new(project, cx));
+        let query = state
+            .get("query")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let case_sensitive = state
+            .get("case_sensitive")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let whole_word = state
+            .get("whole_word")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let regex = state
+            .get("regex")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        view.update(cx, |view, cx| {
+            view.case_sensitive = case_sensitive;
+            view.whole_word = whole_word;
+            view.regex = regex;
+            view.search_input
+                .update(cx, |editor, cx| editor.set_text(query, cx));
+        });
+        gpui::Task::ready(Ok(Box::new(view) as Box<dyn zcv_workspace::ItemHandle>))
+    }
+}
+
+impl GitGraphView {
+    fn scroll_to_active_match(&self) {
+        if let Some(match_index) = self.active_search_match
+            && let Some(row_index) = self.search_matches.get(match_index)
+        {
+            self.scroll_handle
+                .scroll_to_item(*row_index, ScrollStrategy::Center);
+        }
+    }
+}
+
+impl SearchableItem for GitGraphView {
+    fn supports_replace(&self) -> bool {
+        false
+    }
+
+    fn search(&mut self, query: &SearchQuery, _window: &mut Window, cx: &mut Context<Self>) {
+        self.run_search(query, cx);
+    }
+
+    fn clear_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        GitGraphView::clear_search(self, window, cx);
+    }
+
+    fn search_count(&self, cx: &App) -> (usize, Option<usize>) {
+        GitGraphView::search_count(self, cx)
+    }
+
+    fn activate_match_in_direction(
+        &mut self,
+        direction: Direction,
+        count: usize,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_active_match(direction, count, cx);
+    }
+
+    fn replace_current(
+        &mut self,
+        replacement: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        GitGraphView::replace_current(self, replacement, window, cx)
+    }
+
+    fn replace_all(
+        &mut self,
+        replacement: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> usize {
+        GitGraphView::replace_all(self, replacement, window, cx)
+    }
+}
+
+impl GitGraphView {
+    fn run_search(&mut self, query: &SearchQuery, cx: &mut Context<Self>) {
+        self.search_matches.clear();
+        self.active_search_match = None;
+
+        if query.query.is_empty() {
+            cx.emit(SearchEvent::MatchesInvalidated);
+            cx.notify();
+            return;
+        }
+
+        let pattern = if query.regex {
+            query.query.clone()
+        } else if query.whole_word {
+            format!(r"\b(?:{})\b", regex::escape(&query.query))
+        } else {
+            regex::escape(&query.query)
+        };
+        let Ok(regex) = RegexBuilder::new(&pattern)
+            .case_insensitive(!query.case_sensitive)
+            .build()
+        else {
+            cx.emit(SearchEvent::MatchesInvalidated);
+            cx.notify();
+            return;
+        };
+
+        for (index, row) in self.rows.iter().enumerate() {
+            let commit = &row.commit;
+            let haystack = format!(
+                "{}\n{}\n{}\n{}",
+                commit.subject,
+                commit.author_name,
+                commit.oid,
+                commit.refs.join(" ")
+            );
+            if regex.is_match(&haystack) {
+                self.search_matches.push(index);
+            }
+        }
+        self.active_search_match = (!self.search_matches.is_empty()).then_some(0);
+        self.selected = self
+            .active_search_match
+            .and_then(|match_index| self.search_matches.get(match_index).copied());
+        self.scroll_to_active_match();
+        cx.emit(SearchEvent::MatchesInvalidated);
+        if self.active_search_match.is_some() {
+            cx.emit(SearchEvent::ActiveMatchChanged);
+        }
+        cx.notify();
+    }
+
+    fn clear_search(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.search_matches.clear();
+        self.active_search_match = None;
+        cx.emit(SearchEvent::MatchesInvalidated);
+        cx.notify();
+    }
+
+    fn search_count(&self, _cx: &App) -> (usize, Option<usize>) {
+        (
+            self.search_matches.len(),
+            self.active_search_match.map(|index| index + 1),
+        )
+    }
+
+    fn move_active_match(&mut self, direction: Direction, count: usize, cx: &mut Context<Self>) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        let current = self.active_search_match.unwrap_or(0);
+        let len = self.search_matches.len();
+        let offset = count % len;
+        let next = match direction {
+            Direction::Next => (current + offset) % len,
+            Direction::Prev => (current + len - offset) % len,
+        };
+        self.active_search_match = Some(next);
+        self.selected = self.search_matches.get(next).copied();
+        self.scroll_to_active_match();
+        cx.emit(SearchEvent::ActiveMatchChanged);
+        cx.notify();
+    }
+
+    fn replace_current(
+        &mut self,
+        _replacement: &str,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> bool {
+        false
+    }
+
+    fn replace_all(
+        &mut self,
+        _replacement: &str,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> usize {
+        0
     }
 }
 

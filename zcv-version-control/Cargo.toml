@@ -7,6 +7,7 @@ description = "版本控制 UI —— 变更树面板、项目差异视图与提
 [dependencies]
 anyhow.workspace = true
 gpui.workspace = true
+regex.workspace = true
 serde_json.workspace = true
 zcv-actions.workspace = true
 zcv-editor.workspace = true

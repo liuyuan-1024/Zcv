@@ -18,6 +18,7 @@ impl GitStore {
     pub(super) fn commit_job(&mut self, job: &GitJob, result: JobResult, cx: &mut Context<Self>) {
         match (job, result) {
             (GitJob::ReloadGitState, JobResult::Reload(scans)) => {
+                let was_repository_scan_ready = self.repository_scan_ready;
                 let old_work_dirs: BTreeSet<PathBuf> = self
                     .repositories
                     .iter()
@@ -65,6 +66,10 @@ impl GitStore {
                         snapshot: scan.snapshot,
                     })
                     .collect();
+                self.repository_scan_ready = true;
+                if !was_repository_scan_ready {
+                    cx.emit(GitStoreEvent::Repositories);
+                }
                 self.rebuild_status_index();
                 // 活动仓库维护：仍在集合中则保持；否则回退新集合第一个（Vec 序 = 祖先在前，与默认候选一致）；
                 // 集合为空 → None。注意用 repositories 而非 new_work_dirs：BTreeSet 按字典序迭代，取不到发现顺序。

@@ -249,10 +249,10 @@ impl SearchBar {
                 .is_none_or(|old| old.item_id() != new.item_id())
         });
         self.active_item = new_item;
-        if self
+        if !self
             .active_item
             .as_ref()
-            .is_some_and(|item| !item.supports_replace(cx))
+            .is_some_and(|item| item.supports_replace(cx))
         {
             self.show_replace = false;
         }
@@ -407,10 +407,10 @@ impl SearchBar {
     }
 
     fn toggle_replace_mode(&mut self, cx: &mut Context<Self>) {
-        if self
+        if !self
             .active_item
             .as_ref()
-            .is_some_and(|item| !item.supports_replace(cx))
+            .is_some_and(|item| item.supports_replace(cx))
         {
             return;
         }

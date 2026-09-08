@@ -223,6 +223,8 @@ pub struct GitStore {
     /// 项目根目录；无 worktree 的空项目为 None，此时所有 job 与仓库查询为空操作。
     root: Option<PathBuf>,
     repositories: Vec<Repository>,
+    /// 是否已完成至少一次仓库发现；空集合也表示扫描已完成。
+    repository_scan_ready: bool,
     /// 当前仓库状态的不可变派生索引；
     /// 项目树只克隆 Arc，不在 UI 线程复制状态表。
     status_index: Arc<GitStatusSnapshot>,
@@ -349,6 +351,7 @@ impl GitStore {
         Self {
             root,
             repositories: Vec::new(),
+            repository_scan_ready: false,
             status_index: Arc::new(GitStatusSnapshot::default()),
             active_repo_workdir: None,
             revision_text_cache: HashMap::new(),
@@ -782,6 +785,10 @@ impl GitStore {
     /// 是否已发现至少一个 git 仓库（决定 git 相关 UI 是否可见）。
     pub fn has_repositories(&self) -> bool {
         !self.repositories.is_empty()
+    }
+
+    pub fn is_repository_scan_ready(&self) -> bool {
+        self.repository_scan_ready
     }
 
     /// 读取 HEAD 或 index 中 `path` 的文本并回填缓存。

@@ -165,6 +165,18 @@
     }
   },
   {
+    "context": "GitGraphSearchBar",
+    "bindings": {
+      "alt-c": "search::ToggleCaseSensitive",
+      "alt-w": "search::ToggleWholeWord",
+      "alt-x": "search::ToggleRegex",
+      "enter": "search::FindNext",
+      "shift-enter": "search::FindPrevious",
+      "tab": "search::Tab",
+      "shift-tab": "search::Backtab"
+    }
+  },
+  {
     // 焦点在替换框：Enter 替换当前匹配。
     "context": "(BufferSearchBar || ProjectSearchBar) && in_replace > Editor",
     "bindings": {

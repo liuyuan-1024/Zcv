@@ -39,8 +39,9 @@ use crate::harness::HarnessButton;
 use zcv_project_tree::{OnCreate, OnMove, OnOpenFile, OnRename, OnTrash, ProjectTreePanel};
 use zcv_terminal::{TerminalPanel, set_terminal_font_size};
 use zcv_version_control::{
-    OnOpenGitDiff, OnOpenGitGraph, ProjectDiffSerializedItemProvider, ProjectDiffView,
-    VersionControlPanel, deploy_git_graph, deploy_project_diff,
+    GitGraphSerializedItemProvider, OnOpenGitDiff, OnOpenGitGraph,
+    ProjectDiffSerializedItemProvider, ProjectDiffView, VersionControlPanel, deploy_git_graph,
+    deploy_project_diff,
 };
 
 /// 构造打开文件回调（两个面板共用同一契约）。
@@ -512,6 +513,7 @@ fn initialize_workspace(
     cx: &mut Context<Workspace>,
 ) {
     register_serialized_item_provider(ProjectDiffSerializedItemProvider, cx);
+    register_serialized_item_provider(GitGraphSerializedItemProvider, cx);
     // ═══ 顶栏注入 ═══════════════════════════════════════════════════
 
     let weak_self: gpui::WeakEntity<Workspace> = cx.weak_entity();

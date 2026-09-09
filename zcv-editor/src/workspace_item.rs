@@ -2,16 +2,20 @@
 
 use std::path::{Path, PathBuf};
 
-use gpui::{App, Context, Entity, SharedString, Task, Window};
+use gpui::{AnyView, App, Context, Entity, SharedString, Task, Window};
 use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
-use zcv_workspace::{Item, ItemEvent, ToolbarItemLocation};
+use zcv_workspace::{Item, ItemEvent};
 
 use crate::view::NAVIGATION_TOP_OFFSET;
 use crate::{Editor, EditorEvent};
 
 impl Item for Editor {
     type Event = EditorEvent;
+
+    fn toolbar_view(&self, _self_handle: &Entity<Self>, _cx: &App) -> Option<AnyView> {
+        self.content_toolbar.clone()
+    }
 
     fn tab_content_text(&self, cx: &App) -> SharedString {
         self.file_path(cx)
@@ -44,10 +48,6 @@ impl Item for Editor {
 
     fn item_path(&self, cx: &App) -> Option<PathBuf> {
         self.file_path(cx)
-    }
-
-    fn breadcrumb_location(&self, _cx: &App) -> ToolbarItemLocation {
-        ToolbarItemLocation::PrimaryLeft
     }
 
     fn breadcrumbs(

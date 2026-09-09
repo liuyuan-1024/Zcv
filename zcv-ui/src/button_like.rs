@@ -5,8 +5,8 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, ClickEvent, ElementId, IntoElement, MouseButton, MouseUpEvent, ParentElement, RenderOnce,
-    ViewElement, Window, div, prelude::*,
+    App, ClickEvent, ElementId, IntoElement, MouseButton, MouseUpEvent, ParentElement, Pixels,
+    RenderOnce, ViewElement, Window, div, prelude::*,
 };
 use zcv_theme::{color, space};
 
@@ -19,6 +19,7 @@ type RightClickHandler = Rc<dyn Fn(&MouseUpEvent, &mut Window, &mut App)>;
 pub struct ButtonLike {
     id: ElementId,
     flex_grow: bool,
+    padding: Pixels,
     tooltip: TooltipSpec,
     on_click: Option<ClickHandler>,
     on_right_click: Option<RightClickHandler>,
@@ -30,6 +31,7 @@ impl ButtonLike {
         Self {
             id: id.into(),
             flex_grow: false,
+            padding: space::S4,
             tooltip: TooltipSpec::default(),
             on_click: None,
             on_right_click: None,
@@ -40,6 +42,11 @@ impl ButtonLike {
     /// 使容器占用弹性布局的剩余空间。
     pub fn flex_grow(mut self) -> Self {
         self.flex_grow = true;
+        self
+    }
+
+    pub fn padding(mut self, padding: Pixels) -> Self {
+        self.padding = padding;
         self
     }
 
@@ -90,13 +97,13 @@ impl RenderOnce for ButtonLike {
             .id(self.id)
             .flex_none()
             .rounded_sm()
-            .p(space::S2)
+            .p(self.padding)
+            .hover(move |style| style.bg(colors.ghost_element_hover))
             .when(self.flex_grow, |element| element.flex_1().min_w_0());
 
         if interactive {
             element = element
                 .cursor_pointer()
-                .hover(move |style| style.bg(colors.ghost_element_hover))
                 .active(move |style| style.bg(colors.ghost_element_hover));
         }
         if let Some(on_click) = self.on_click {

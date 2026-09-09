@@ -258,12 +258,12 @@
       "cmd-w": "pane::CloseTab",
 
       // 当前 Pane 搜索
-      "cmd-f": "pane::DeploySearch"
+      "cmd-f": "pane::DeployBufferSearch"
     }
   },
 
   {
-    "context": "BufferSearchBar || ProjectSearchBar",
+    "context": "BufferSearchBar || ProjectSearchBar || ProjectDiffSearchBar || GitGraphSearchBar",
     "bindings": {
       // =========================
       // 搜索选项
@@ -278,9 +278,6 @@
       // =========================
 
       "cmd-r": "search::ToggleReplace",
-
-      "cmd-enter": "search::ReplaceNext",
-      "cmd-shift-enter": "search::ReplaceAll",
 
       // =========================
       // 查找 / 退出 / 焦点切换
@@ -297,29 +294,20 @@
     }
   },
 
-  {
-    "context": "GitGraphSearchBar",
-    "bindings": {
-      "alt-c": "search::ToggleCaseSensitive",
-      "alt-w": "search::ToggleWholeWord",
-      "alt-x": "search::ToggleRegex",
-      "enter": "search::FindNext",
-      "shift-enter": "search::FindPrevious",
-      "tab": "search::Tab",
-      "shift-tab": "search::Backtab"
-    }
-  },
+
   {
     // 焦点在替换框：Enter 替换当前匹配。
-    "context": "(BufferSearchBar || ProjectSearchBar) && in_replace > Editor",
+    "context": "(BufferSearchBar || ProjectSearchBar || ProjectDiffSearchBar || GitGraphSearchBar) && in_replace > Editor",
     "bindings": {
-      "enter": "search::ReplaceNext"
+      "enter": "search::ReplaceNext",
+      "cmd-enter": "search::ReplaceNext",
+      "cmd-shift-enter": "search::ReplaceAll"
     }
   },
 
   {
     // 查询/替换输入框均为多行编辑器：Alt+Enter 插入换行。
-    "context": "(BufferSearchBar || ProjectSearchBar) > Editor",
+    "context": "(BufferSearchBar || ProjectSearchBar || ProjectDiffSearchBar || GitGraphSearchBar) > Editor",
     "bindings": {
       "alt-enter": "editor::Newline"
     }
@@ -414,7 +402,7 @@
 
       // 当前文件：Cmd-F
       // 整个项目：Cmd-Shift-F
-      "cmd-shift-f": "project_search::Deploy",
+      "cmd-shift-f": "project_search::DeployProjectSearch",
 
       // =========================
       // 设置

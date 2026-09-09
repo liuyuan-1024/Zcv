@@ -26,14 +26,13 @@ use zcv_settings::{GlobalSettingsErrorReporter, SettingsStore};
 use zcv_theme::{ThemeChoice, color, typography};
 use zcv_workspace::{
     ActivityIndicator, Dock, DockPosition, GitBranchAction, OnBranchSelected, OnProjectSelected,
-    Pane, PaneEvent, Panel, PanelButtons, PanelEvent, PanelHandle, PreviewButton, ToastAction,
-    ToastKind, TopBar, Workspace, add_to_recent, load_window_bounds,
-    register_serialized_item_provider, save_window_bounds,
+    Pane, PaneEvent, Panel, PanelButtons, PanelEvent, PanelHandle, ToastAction, ToastKind, TopBar,
+    Workspace, add_to_recent, load_window_bounds, register_serialized_item_provider,
+    save_window_bounds,
 };
 
 use crate::active_buffer_language::ActiveBufferLanguage;
 use crate::auto_update::{UpdateButton, UpdateManager};
-use crate::breadcrumbs::Breadcrumbs;
 use crate::cursor_position::CursorPosition;
 use crate::harness::HarnessButton;
 use zcv_project_tree::{OnCreate, OnMove, OnOpenFile, OnRename, OnTrash, ProjectTreePanel};
@@ -265,7 +264,7 @@ fn finish_build_workspace(
     workspace
 }
 
-/// 所有工作区共享的面板、状态栏和编辑器工具栏。
+/// 所有工作区共享的面板、状态栏和编辑器内容装配。
 ///
 /// 这些 UI 不以 worktree 是否存在为条件；各状态项在没有活动编辑器时自行显示空态。
 fn initialize_common_workspace(
@@ -396,24 +395,6 @@ fn initialize_common_workspace(
         window.refresh();
     });
 
-    let pane = workspace.pane().clone();
-    let preview_pane = pane.downgrade();
-    let breadcrumbs_project = workspace.project().clone();
-    pane.update(cx, |pane, cx| {
-        let toolbar = pane.toolbar().clone();
-        toolbar.update(cx, |toolbar, cx| {
-            toolbar.add_item(
-                cx.new(|_| Breadcrumbs::new(breadcrumbs_project)),
-                window,
-                cx,
-            );
-            toolbar.add_item(
-                cx.new(|_| PreviewButton::new(preview_pane.clone())),
-                window,
-                cx,
-            );
-        });
-    });
     zcv_search::install(workspace, window, cx);
 
     for dock in [

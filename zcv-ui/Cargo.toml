@@ -8,6 +8,8 @@ path = "src/ui.rs"
 
 [dependencies]
 gpui.workspace = true
+serde.workspace = true
+zcv-actions.workspace = true
 zcv-keymap.workspace = true
 zcv-theme.workspace = true
 

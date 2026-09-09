@@ -7,25 +7,35 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, Render, SharedString, Subscription,
-    Task, WeakEntity, Window, div, prelude::*,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyContext, ParentElement, Render,
+    SharedString, Styled, Subscription, Task, WeakEntity, Window, div, prelude::*,
 };
-use zcv_actions::Deploy;
+use zcv_actions::{
+    Backtab, ClearSearch, DeployProjectSearch, FindNext, FindPrevious, SelectAll, Tab,
+    ToggleCaseSensitive, ToggleRegex, ToggleWholeWord,
+};
 use zcv_editor::{Editor, EditorEvent};
 use zcv_multi_buffer::{ExcerptLocation, MultiBuffer, MultiBufferExcerpt};
 use zcv_project::Project;
 use zcv_text::SearchQuery;
 use zcv_theme::color;
-use zcv_ui::Button;
+use zcv_ui::{Button, MatchOption, MatchOptions, SearchInput};
 use zcv_workspace::{
     Direction, Item, ItemEvent, ItemHandle, SearchEvent, SearchableItem, SearchableItemHandle,
-    SerializedItemProvider, StatusItemView, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
-    Workspace,
+    SerializedItemProvider, StatusItemView, Workspace,
 };
 
-use crate::search_bar::{SearchBar, SearchBarState};
-
 const PROJECT_SEARCH_SERIALIZED_KIND: &str = "project-search";
+
+/// 项目搜索标签自身持久化的查询状态。
+///
+/// 选项以 [`MatchOptions`] 表达并扁平序列化,旧布局中的 `case_sensitive` 等 JSON 键保持不变。
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+struct ProjectSearchState {
+    query: String,
+    #[serde(flatten)]
+    options: MatchOptions,
+}
 
 #[derive(Clone, Debug)]
 pub(crate) enum ProjectSearchEvent {
@@ -51,13 +61,41 @@ pub(crate) struct ProjectSearchView {
     search_generation: u64,
     debounce_task: Option<Task<()>>,
     pending_search: Option<Task<()>>,
-    search_state: SearchBarState,
+    search_state: ProjectSearchState,
+    search_bar_visible: bool,
+    query_input: Option<Entity<Editor>>,
+    input_subscriptions: Vec<Subscription>,
+    toolbar: Entity<ProjectSearchToolbar>,
     _subscriptions: Vec<Subscription>,
 }
 
-pub(crate) struct ProjectSearchSerializedItemProvider {
-    pub(crate) search_bar: Entity<ProjectSearchBar>,
+/// 项目搜索的工具栏视图代理。
+///
+/// Pane 的工具栏条要求独立的 Render 实体(`Item::toolbar_view` 返回 `AnyView`),同一视图实体不能既作内容区又作工具栏条;
+/// 本代理把工具栏区渲染委托给持有全部搜索会话状态的 [`ProjectSearchView`],自身零状态。
+pub(crate) struct ProjectSearchToolbar {
+    view: WeakEntity<ProjectSearchView>,
 }
+
+impl ProjectSearchToolbar {
+    pub(crate) fn new(view: WeakEntity<ProjectSearchView>) -> Self {
+        Self { view }
+    }
+}
+
+impl Render for ProjectSearchToolbar {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.view.upgrade().map_or_else(
+            || div().into_any_element(),
+            |view| {
+                view.read(cx)
+                    .render_search_bar(window, cx, self.view.clone())
+            },
+        )
+    }
+}
+
+pub(crate) struct ProjectSearchSerializedItemProvider;
 
 impl SerializedItemProvider for ProjectSearchSerializedItemProvider {
     fn kind(&self) -> &'static str {
@@ -71,18 +109,18 @@ impl SerializedItemProvider for ProjectSearchSerializedItemProvider {
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) -> Task<anyhow::Result<Box<dyn ItemHandle>>> {
-        let state: SearchBarState = match serde_json::from_value(state) {
+        let state: ProjectSearchState = match serde_json::from_value(state) {
             Ok(state) => state,
             Err(error) => {
                 return Task::ready(Err(anyhow::anyhow!("项目搜索标签状态无效：{error}")));
             }
         };
         let view = cx.new(|cx| ProjectSearchView::new(project, cx));
-        view.update(cx, |view, _| view.search_state = state.clone());
-        subscribe_to_open_excerpts(&view, window, cx);
-        self.search_bar.update(cx, |search_bar, cx| {
-            search_bar.restore_state(state, window, cx)
+        view.update(cx, |view, cx| {
+            view.search_state = state;
+            view.deploy_search_bar(None, window, cx);
         });
+        subscribe_to_open_excerpts(&view, window, cx);
         Task::ready(Ok(Box::new(view) as Box<dyn ItemHandle>))
     }
 }
@@ -107,6 +145,8 @@ impl ProjectSearchView {
                 },
             ),
         ];
+        let view = cx.weak_entity();
+        let toolbar = cx.new(|_| ProjectSearchToolbar::new(view));
         Self {
             project,
             results_editor,
@@ -115,14 +155,278 @@ impl ProjectSearchView {
             search_generation: 0,
             debounce_task: None,
             pending_search: None,
-            search_state: SearchBarState {
+            search_state: ProjectSearchState {
                 query: String::new(),
-                case_sensitive: false,
-                whole_word: false,
-                regex: false,
+                options: MatchOptions::default(),
             },
+            search_bar_visible: false,
+            query_input: None,
+            input_subscriptions: Vec::new(),
+            toolbar,
             _subscriptions: subscriptions,
         }
+    }
+
+    fn ensure_search_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.query_input.is_some() {
+            return;
+        }
+
+        let query_input = cx.new(|cx| Editor::auto_height(1, Some(4), cx));
+        query_input.update(cx, |editor, cx| editor.set_placeholder_text("搜索...", cx));
+        let weak = cx.weak_entity();
+        self.input_subscriptions.push(window.subscribe(
+            &query_input,
+            cx,
+            move |_, event: &EditorEvent, window, cx| {
+                if *event != EditorEvent::Edited {
+                    return;
+                }
+                if let Some(view) = weak.upgrade() {
+                    view.update(cx, |view, cx| view.search_from_input(window, cx));
+                }
+            },
+        ));
+        self.query_input = Some(query_input);
+    }
+
+    fn deploy_search_bar(
+        &mut self,
+        query_seed: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let was_visible = self.search_bar_visible;
+        self.search_bar_visible = true;
+        self.ensure_search_input(window, cx);
+        let seeded = query_seed.is_some();
+        if let Some(seed) = query_seed {
+            self.search_state.query = if self.search_state.options.regex {
+                regex::escape(&seed)
+            } else {
+                seed
+            };
+        }
+        let query_input = self.query_input.as_ref().expect("搜索输入框应已创建");
+        query_input.update(cx, |editor, cx| {
+            editor.set_text(&self.search_state.query, cx)
+        });
+        window.focus(&query_input.read(cx).focus_handle(), cx);
+        window.dispatch_action(Box::new(SelectAll), cx);
+        if !was_visible || seeded {
+            self.search_from_input(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn close_search_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_bar_visible = false;
+        SearchableItem::clear_search(self, window, cx);
+        window.focus(&self.focus_handle(cx), cx);
+        cx.notify();
+    }
+
+    fn search_from_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_state.query = self
+            .query_input
+            .as_ref()
+            .map_or(String::new(), |input| input.read(cx).text(cx));
+        let query = SearchQuery {
+            query: self.search_state.query.clone(),
+            case_sensitive: self.search_state.options.case_sensitive,
+            whole_word: self.search_state.options.whole_word,
+            regex: self.search_state.options.regex,
+        };
+        SearchableItem::search(self, &query, window, cx);
+        cx.notify();
+    }
+
+    fn toggle_search_option(
+        &mut self,
+        option: MatchOption,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.search_state.options = self.search_state.options.toggled(option);
+        self.search_from_input(window, cx);
+    }
+
+    fn move_active_match(
+        &mut self,
+        direction: Direction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        SearchableItem::activate_match_in_direction(self, direction, 1, window, cx);
+    }
+
+    fn cycle_search_focus(
+        &mut self,
+        direction: Direction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let query_input = self.query_input.as_ref().expect("搜索输入框应已创建");
+        let handles = [query_input.read(cx).focus_handle(), self.focus_handle(cx)];
+        let Some(current) = handles.iter().position(|focus| focus.is_focused(window)) else {
+            return;
+        };
+        let next = match direction {
+            Direction::Next => (current + 1) % handles.len(),
+            Direction::Prev => (current + handles.len() - 1) % handles.len(),
+        };
+        window.focus(&handles[next], cx);
+        cx.stop_propagation();
+    }
+
+    pub(crate) fn render_search_bar(
+        &self,
+        _window: &mut Window,
+        cx: &App,
+        weak: WeakEntity<Self>,
+    ) -> gpui::AnyElement {
+        if !self.search_bar_visible {
+            return div().into_any_element();
+        }
+
+        let query_input = self.query_input.as_ref().expect("搜索输入框应已创建");
+        let (match_count, active_match_index) = SearchableItem::search_count(self, cx);
+        let mut key_context = KeyContext::new_with_defaults();
+        key_context.add("ProjectSearchBar");
+
+        let update =
+            |f: fn(&mut ProjectSearchView, &mut Window, &mut Context<ProjectSearchView>)| {
+                let weak = weak.clone();
+                move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| f(view, window, cx));
+                    }
+                }
+            };
+
+        div()
+            .key_context(key_context)
+            .on_action({
+                let weak = weak.clone();
+                move |_: &FindNext, window, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| {
+                            view.move_active_match(Direction::Next, window, cx)
+                        });
+                    }
+                }
+            })
+            .on_action({
+                let weak = weak.clone();
+                move |_: &FindPrevious, window, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| {
+                            view.move_active_match(Direction::Prev, window, cx)
+                        });
+                    }
+                }
+            })
+            .on_action({
+                let weak = weak.clone();
+                move |_: &ClearSearch, window, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| view.close_search_bar(window, cx));
+                    }
+                }
+            })
+            .on_action({
+                let weak = weak.clone();
+                move |_: &ToggleCaseSensitive, window, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| {
+                            view.toggle_search_option(MatchOption::CaseSensitive, window, cx)
+                        });
+                    }
+                }
+            })
+            .on_action({
+                let weak = weak.clone();
+                move |_: &ToggleWholeWord, window, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| {
+                            view.toggle_search_option(MatchOption::WholeWord, window, cx)
+                        });
+                    }
+                }
+            })
+            .on_action({
+                let weak = weak.clone();
+                move |_: &ToggleRegex, window, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| {
+                            view.toggle_search_option(MatchOption::Regex, window, cx)
+                        });
+                    }
+                }
+            })
+            .on_action({
+                let weak = weak.clone();
+                move |_: &Tab, window, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| {
+                            view.cycle_search_focus(Direction::Next, window, cx)
+                        });
+                    }
+                }
+            })
+            .on_action({
+                let weak = weak.clone();
+                move |_: &Backtab, window, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| {
+                            view.cycle_search_focus(Direction::Prev, window, cx)
+                        });
+                    }
+                }
+            })
+            .child(
+                SearchInput::new("project-search", query_input.clone().into_any_element())
+                    .options(self.search_state.options)
+                    .on_toggle({
+                        let weak = weak.clone();
+                        move |option, window, cx| {
+                            if let Some(view) = weak.upgrade() {
+                                view.update(cx, |view, cx| {
+                                    view.toggle_search_option(option, window, cx)
+                                });
+                            }
+                        }
+                    })
+                    .count(active_match_index, match_count)
+                    .on_previous({
+                        let weak = weak.clone();
+                        move |window, cx| {
+                            if let Some(view) = weak.upgrade() {
+                                view.update(cx, |view, cx| {
+                                    view.move_active_match(Direction::Prev, window, cx)
+                                });
+                            }
+                        }
+                    })
+                    .on_next({
+                        let weak = weak.clone();
+                        move |window, cx| {
+                            if let Some(view) = weak.upgrade() {
+                                view.update(cx, |view, cx| {
+                                    view.move_active_match(Direction::Next, window, cx)
+                                });
+                            }
+                        }
+                    })
+                    // 追加外部插槽:关闭按钮(由调用方选择插入)。
+                    .external(
+                        Button::icon("project-search-close", "icons/close.svg")
+                            .label("关闭")
+                            .shortcut(&ClearSearch, cx)
+                            .on_click(update(|view, window, cx| view.close_search_bar(window, cx))),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn run_search(&mut self, query: SearchQuery, window: &mut Window, cx: &mut Context<Self>) {
@@ -298,6 +602,10 @@ impl Item for ProjectSearchView {
         Some("icons/magnifying_glass.svg".into())
     }
 
+    fn toolbar_view(&self, _self_handle: &Entity<Self>, _cx: &App) -> Option<gpui::AnyView> {
+        Some(self.toolbar.clone().into())
+    }
+
     fn serialized_pane_item(&self, _cx: &App) -> Option<zcv_workspace::SerializedPaneItem> {
         Some(zcv_workspace::SerializedPaneItem::Custom {
             kind: PROJECT_SEARCH_SERIALIZED_KIND.into(),
@@ -344,10 +652,6 @@ impl Item for ProjectSearchView {
         })
     }
 
-    fn breadcrumb_location(&self, _cx: &App) -> ToolbarItemLocation {
-        ToolbarItemLocation::Hidden
-    }
-
     fn as_searchable(
         &self,
         self_handle: &Entity<Self>,
@@ -363,11 +667,13 @@ impl SearchableItem for ProjectSearchView {
     }
 
     fn search(&mut self, query: &SearchQuery, window: &mut Window, cx: &mut Context<Self>) {
-        self.search_state = SearchBarState {
+        self.search_state = ProjectSearchState {
             query: query.query.clone(),
-            case_sensitive: query.case_sensitive,
-            whole_word: query.whole_word,
-            regex: query.regex,
+            options: MatchOptions {
+                case_sensitive: query.case_sensitive,
+                whole_word: query.whole_word,
+                regex: query.regex,
+            },
         };
         // 防抖合并击键；等窗内出现更新的查询（或搜索被清空）时放弃本次搜索。
         self.search_generation = self.search_generation.wrapping_add(1);
@@ -426,86 +732,6 @@ impl SearchableItem for ProjectSearchView {
     }
 }
 
-/// 项目搜索自己的搜索栏状态机；与 BufferSearchBar 只共享内部 SearchBar 实现。
-pub(super) struct ProjectSearchBar {
-    search_bar: Entity<SearchBar>,
-}
-
-impl ProjectSearchBar {
-    fn new(search_bar: Entity<SearchBar>, cx: &mut Context<Self>) -> Self {
-        cx.subscribe(&search_bar, |_, _, event: &ToolbarItemEvent, cx| {
-            cx.emit(*event)
-        })
-        .detach();
-        Self { search_bar }
-    }
-
-    pub(super) fn deploy(
-        &mut self,
-        query_seed: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.search_bar.update(cx, |search_bar, cx| {
-            search_bar.deploy(query_seed, window, cx)
-        });
-    }
-
-    fn restore_state(
-        &mut self,
-        state: SearchBarState,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.search_bar.update(cx, |search_bar, cx| {
-            search_bar.restore_state(state, window, cx);
-        });
-    }
-}
-
-impl EventEmitter<ToolbarItemEvent> for ProjectSearchBar {}
-
-impl ToolbarItemView for ProjectSearchBar {
-    fn set_active_pane_item(
-        &mut self,
-        active_item: Option<&dyn ItemHandle>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> ToolbarItemLocation {
-        let Some(active_item) = active_item.filter(|item| is_project_search_item(*item, cx)) else {
-            return ToolbarItemLocation::Hidden;
-        };
-        self.search_bar.update(cx, |search_bar, cx| {
-            search_bar.set_active_item(Some(active_item), window, cx);
-            search_bar.location()
-        })
-    }
-}
-
-impl Render for ProjectSearchBar {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().child(self.search_bar.clone())
-    }
-}
-
-pub(super) fn is_project_search_item(item: &dyn ItemHandle, cx: &App) -> bool {
-    item.act_as::<ProjectSearchView>(cx).is_some()
-}
-
-pub(super) fn install_search_bar(
-    workspace: &mut Workspace,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) -> Entity<ProjectSearchBar> {
-    let search_bar = cx.new(|cx| SearchBar::new("ProjectSearchBar", cx));
-    let project_search_bar = cx.new(|cx| ProjectSearchBar::new(search_bar.clone(), cx));
-    let toolbar = workspace.pane().read(cx).toolbar().clone();
-    toolbar.update(cx, |toolbar, cx| {
-        toolbar.add_item(project_search_bar.clone(), window, cx);
-    });
-    project_search_bar
-}
-
 /// 把项目搜索的「打开片段」请求接到工作区打开文件。
 ///
 /// 新建（deploy）与布局恢复（restore）两条创建路径都必须接线：
@@ -531,7 +757,12 @@ fn subscribe_to_open_excerpts(
     .detach();
 }
 
-pub(crate) fn deploy(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+pub(crate) fn deploy(
+    workspace: &mut Workspace,
+    seed: Option<String>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
     let pane = workspace.pane().clone();
     if let Some(existing) = pane
         .read(cx)
@@ -546,6 +777,9 @@ pub(crate) fn deploy(workspace: &mut Workspace, window: &mut Window, cx: &mut Co
 
     let project = workspace.project().clone();
     let view = cx.new(|cx| ProjectSearchView::new(project, cx));
+    view.update(cx, |view, cx| {
+        view.deploy_search_bar(seed, window, cx);
+    });
     subscribe_to_open_excerpts(&view, window, cx);
     workspace.open_item(Box::new(view), window, cx);
 }
@@ -553,18 +787,11 @@ pub(crate) fn deploy(workspace: &mut Workspace, window: &mut Window, cx: &mut Co
 /// 状态栏中的项目搜索入口。
 pub(crate) struct ProjectSearchButton {
     workspace: WeakEntity<Workspace>,
-    search_bar: Entity<ProjectSearchBar>,
 }
 
 impl ProjectSearchButton {
-    pub(crate) fn new(
-        workspace: WeakEntity<Workspace>,
-        search_bar: Entity<ProjectSearchBar>,
-    ) -> Self {
-        Self {
-            workspace,
-            search_bar,
-        }
+    pub(crate) fn new(workspace: WeakEntity<Workspace>) -> Self {
+        Self { workspace }
     }
 }
 
@@ -575,14 +802,13 @@ impl StatusItemView for ProjectSearchButton {
 impl Render for ProjectSearchButton {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         let workspace = self.workspace.clone();
-        let search_bar = self.search_bar.clone();
         Button::icon("search-button", "icons/magnifying_glass.svg")
             .label("项目搜索")
-            .shortcut(&Deploy, cx)
+            .shortcut(&DeployProjectSearch, cx)
             .on_click(move |_, window, cx| {
                 workspace
                     .update(cx, |workspace, cx| {
-                        crate::deploy_project_search(workspace, &search_bar, window, cx);
+                        crate::deploy_project_search(workspace, window, cx);
                     })
                     .ok();
             })
@@ -609,23 +835,16 @@ mod tests {
         // 打开文件经 ItemProvider 注册表分发，测试同样需要文本 Provider。
         cx.update(zcv_editor::init);
 
-        let provider = {
-            let search_bar = cx.new(|cx| SearchBar::new("ProjectSearchBar", cx));
-            ProjectSearchSerializedItemProvider {
-                search_bar: cx.new(|cx| ProjectSearchBar::new(search_bar, cx)),
-            }
-        };
+        let provider = ProjectSearchSerializedItemProvider;
         let (workspace, cx) = cx.add_window_view({
             let root = root.clone();
             move |window, cx| Workspace::new(root, window, cx)
         });
 
         // 按布局恢复路径重建项目搜索标签，再像 restore_pane 一样放进 Pane。
-        let state = serde_json::to_value(SearchBarState {
+        let state = serde_json::to_value(ProjectSearchState {
             query: "needle".into(),
-            case_sensitive: false,
-            whole_word: false,
-            regex: false,
+            options: MatchOptions::default(),
         })
         .expect("搜索栏状态应可序列化");
         let restored = workspace.update_in(cx, |workspace, window, cx| {
@@ -644,6 +863,11 @@ mod tests {
                 .iter()
                 .find_map(|item| item.act_as::<ProjectSearchView>(cx))
                 .expect("恢复出的标签应是项目搜索视图")
+        });
+
+        cx.read_entity(&view, |view, _| {
+            assert!(view.search_bar_visible, "恢复的标签应重新打开搜索栏");
+            assert_eq!(view.search_state.query, "needle", "查询状态应由视图恢复");
         });
 
         // 命中片段请求打开源文件：与点击「打开文件」和 alt-enter 发出的事件同一条路径。

@@ -119,7 +119,13 @@ actions!(dock, [ToggleLeftDock, ToggleBottomDock, ToggleRightDock,]);
 
 actions!(
     pane,
-    [CloseTab, NextTab, PrevTab, TogglePreview, DeploySearch]
+    [
+        CloseTab,
+        NextTab,
+        PrevTab,
+        TogglePreview,
+        DeployBufferSearch
+    ]
 );
 
 // ── 文件内搜索（搜索条的全部动作；handler 由 SearchBar 统一持有）──
@@ -150,7 +156,7 @@ actions!(harness, [ToggleHarnessMode]);
 
 actions!(branch_picker, [SelectGitBranch, DeleteGitBranch]);
 
-actions!(project_search, [Deploy]);
+actions!(project_search, [DeployProjectSearch]);
 
 actions!(
     project_picker,

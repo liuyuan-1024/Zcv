@@ -1,21 +1,20 @@
-//! 搜索能力域：统一搜索栏与具体搜索目标的产品级装配。
+//! 搜索能力域：具体搜索视图与产品级装配。
 //!
-//! `zcv-workspace` 只提供 `SearchableItem` 和 Toolbar 扩展协议；本 crate 持有搜索状态、交互与项目搜索视图，避免工作区框架依赖具体功能。
+//! `zcv-workspace` 只提供 `SearchableItem` 与 Item 工具区接口；
+//! 本 crate 持有搜索状态、交互与项目搜索视图，避免工作区框架依赖具体功能。
 
 mod buffer_search;
 mod project_search;
-mod search_bar;
 
 #[cfg(test)]
 mod test;
 
-use gpui::{App, AppContext, Context, Entity, Window};
-use zcv_actions::{Deploy as DeployProjectSearch, DeploySearch};
+use gpui::{App, AppContext, Context, Window};
+use zcv_actions::{DeployBufferSearch, DeployProjectSearch};
 use zcv_workspace::Workspace;
 
 use project_search::{
-    ProjectSearchBar, ProjectSearchButton, ProjectSearchSerializedItemProvider,
-    deploy as deploy_project_search_view, install_search_bar, is_project_search_item,
+    ProjectSearchButton, ProjectSearchSerializedItemProvider, deploy as deploy_project_search_view,
 };
 
 /// 部署项目搜索时从活动 Item 取查询建议；
@@ -31,55 +30,31 @@ fn query_suggestion(workspace: &Workspace, cx: &App) -> Option<String> {
 
 pub(crate) fn deploy_project_search(
     workspace: &mut Workspace,
-    search_bar: &Entity<ProjectSearchBar>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
     let seed = query_suggestion(workspace, cx);
-    deploy_project_search_view(workspace, window, cx);
-    search_bar.update(cx, |search_bar, cx| search_bar.deploy(seed, window, cx));
+    deploy_project_search_view(workspace, seed, window, cx);
 }
 
 /// 把独立的 Buffer/Project 搜索栏及其 action 路由注入一个 Workspace。
 pub fn install(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    let buffer_search_bar = buffer_search::install(workspace, window, cx);
-    let project_search_bar = install_search_bar(workspace, window, cx);
-    zcv_workspace::register_serialized_item_provider(
-        ProjectSearchSerializedItemProvider {
-            search_bar: project_search_bar.clone(),
-        },
-        cx,
-    );
+    let document_toolbar = buffer_search::install(workspace, window, cx);
+    zcv_workspace::register_serialized_item_provider(ProjectSearchSerializedItemProvider, cx);
     let workspace_handle = cx.weak_entity();
     let status_bar = workspace.status_bar().clone();
     status_bar.update(cx, |status_bar, cx| {
-        status_bar.add_left_item(
-            cx.new(|_| ProjectSearchButton::new(workspace_handle, project_search_bar.clone())),
-            cx,
-        );
+        status_bar.add_left_item(cx.new(|_| ProjectSearchButton::new(workspace_handle)), cx);
     });
 
-    let buffer_bar_for_action = buffer_search_bar.clone();
-    let project_bar_for_action = project_search_bar.clone();
-    workspace.register_action(move |workspace, _: &DeploySearch, window, cx| {
-        let is_project_search = workspace
-            .pane()
-            .read(cx)
-            .active_item()
-            .is_some_and(|item| is_project_search_item(item, cx));
-        // 无种子：搜索条自行向活动 Item 请求查询建议。
-        if is_project_search {
-            project_bar_for_action.update(cx, |search_bar, cx| {
-                search_bar.deploy(None, window, cx);
-            });
-        } else {
-            buffer_bar_for_action.update(cx, |search_bar, cx| {
-                search_bar.deploy(None, window, cx);
-            });
-        }
+    let document_toolbar_for_action = document_toolbar.clone();
+    workspace.register_action(move |_workspace, _: &DeployBufferSearch, window, cx| {
+        document_toolbar_for_action.update(cx, |toolbar, cx| {
+            toolbar.deploy(None, window, cx);
+        });
     });
 
     workspace.register_action(move |workspace, _: &DeployProjectSearch, window, cx| {
-        deploy_project_search(workspace, &project_search_bar, window, cx);
+        deploy_project_search(workspace, window, cx);
     });
 }

@@ -6,14 +6,11 @@ use gpui::{
 };
 use zcv_text::SearchQuery;
 use zcv_workspace::{
-    Direction, Item, ItemHandle, SearchEvent, SearchableItem, SearchableItemHandle,
-    ToolbarItemLocation, ToolbarItemView,
+    Breadcrumbs, Direction, Item, ItemHandle, Pane, PreviewButton, SearchEvent, SearchableItem,
+    SearchableItemHandle,
 };
 
-use crate::{
-    buffer_search::{BufferSearchBar, BufferSearchButton},
-    search_bar::SearchBar,
-};
+use crate::buffer_search::DocumentToolbar;
 
 struct TestView;
 
@@ -102,42 +99,43 @@ impl SearchableItem for TestItem {
 }
 
 #[gpui::test]
-fn search_button_does_not_require_an_active_path(cx: &mut TestAppContext) {
-    let search_bar = cx.new(|cx| SearchBar::new("BufferSearchBar", cx));
-    let bar = cx.new(|cx| BufferSearchBar::new(search_bar, cx));
-    let button = cx.new(|_| BufferSearchButton::new(bar));
+fn buffer_search_does_not_require_an_active_path(cx: &mut TestAppContext) {
+    let pane = cx.new(Pane::new);
+    let preview_button = cx.new(|_| PreviewButton::new(pane.downgrade()));
+    let project = cx.new(|cx| zcv_project::Project::new(PathBuf::from("."), cx));
+    let breadcrumbs = cx.new(|_| Breadcrumbs::new(project));
+    let bar = cx.new(|cx| DocumentToolbar::new(preview_button, breadcrumbs, cx));
     cx.add_window_view(|window, cx| {
         let item = cx.new(|cx| TestItem {
             focus: cx.focus_handle(),
             path: None,
             exposes_search: true,
         });
-        let location = button.update(cx, |button, cx| {
-            button.set_active_pane_item(Some(&item as &dyn ItemHandle), window, cx)
+        bar.update(cx, |bar, cx| {
+            bar.set_active_item(Some(&item as &dyn ItemHandle), window, cx)
         });
 
         assert_eq!(item.read(cx).active_path(cx), None);
-        assert_eq!(location, ToolbarItemLocation::PrimaryRight);
         TestView
     });
 }
 
 #[gpui::test]
-fn search_button_does_not_use_a_path_as_search_capability(cx: &mut TestAppContext) {
-    let search_bar = cx.new(|cx| SearchBar::new("BufferSearchBar", cx));
-    let bar = cx.new(|cx| BufferSearchBar::new(search_bar, cx));
-    let button = cx.new(|_| BufferSearchButton::new(bar));
+fn buffer_search_does_not_use_a_path_as_search_capability(cx: &mut TestAppContext) {
+    let pane = cx.new(Pane::new);
+    let preview_button = cx.new(|_| PreviewButton::new(pane.downgrade()));
+    let project = cx.new(|cx| zcv_project::Project::new(PathBuf::from("."), cx));
+    let breadcrumbs = cx.new(|_| Breadcrumbs::new(project));
+    let bar = cx.new(|cx| DocumentToolbar::new(preview_button, breadcrumbs, cx));
     cx.add_window_view(|window, cx| {
         let item = cx.new(|cx| TestItem {
             focus: cx.focus_handle(),
             path: Some(PathBuf::from("notes.txt")),
             exposes_search: false,
         });
-        let location = button.update(cx, |button, cx| {
-            button.set_active_pane_item(Some(&item as &dyn ItemHandle), window, cx)
+        bar.update(cx, |bar, cx| {
+            bar.set_active_item(Some(&item as &dyn ItemHandle), window, cx)
         });
-
-        assert_eq!(location, ToolbarItemLocation::Hidden);
         TestView
     });
 }

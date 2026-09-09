@@ -11,6 +11,7 @@ path = "src/preview_markdown.rs"
 anyhow.workspace = true
 gpui.workspace = true
 pulldown-cmark.workspace = true
+zcv-actions.workspace = true
 zcv-language.workspace = true
 zcv-multi-buffer.workspace = true
 zcv-project.workspace = true

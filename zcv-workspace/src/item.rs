@@ -17,7 +17,6 @@ use zcv_project::Project;
 use crate::SerializedPaneItem;
 use crate::preview::PreviewItemHandle;
 use crate::searchable::SearchableItemHandle;
-use crate::toolbar::ToolbarItemLocation;
 
 /// Item 向 Pane/Workspace 上报的通用事件。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -44,6 +43,11 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
         None
     }
 
+    /// 当前 Item 自己提供的顶部工具区内容；Pane 只负责渲染统一壳子。
+    fn toolbar_view(&self, _self_handle: &Entity<Self>, _cx: &App) -> Option<AnyView> {
+        None
+    }
+
     fn to_item_events(_event: &Self::Event, _emit: &mut dyn FnMut(ItemEvent)) {}
 
     fn is_dirty(&self, _cx: &App) -> bool {
@@ -66,10 +70,6 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
     /// 当前光标/视图对应的活动路径。组合文档可与标签身份路径不同。
     fn active_path(&self, cx: &App) -> Option<PathBuf> {
         self.item_path(cx)
-    }
-
-    fn breadcrumb_location(&self, _cx: &App) -> ToolbarItemLocation {
-        ToolbarItemLocation::Hidden
     }
 
     fn breadcrumbs(
@@ -154,6 +154,7 @@ pub trait ItemHandle: Send + 'static {
     fn boxed_clone(&self) -> Box<dyn ItemHandle>;
     fn tab_content_text(&self, cx: &App) -> SharedString;
     fn tab_icon(&self, cx: &App) -> Option<SharedString>;
+    fn toolbar_view(&self, cx: &App) -> Option<AnyView>;
     fn is_dirty(&self, cx: &App) -> bool;
     fn item_path(&self, cx: &App) -> Option<PathBuf>;
     fn serialized_pane_item(&self, cx: &App) -> Option<SerializedPaneItem>;
@@ -173,7 +174,6 @@ pub trait ItemHandle: Send + 'static {
     ) -> Task<anyhow::Result<()>>;
     fn act_as_type(&self, type_id: TypeId, cx: &App) -> Option<AnyEntity>;
     fn subscribe_to_item_events(&self, cx: &mut App, handler: ItemEventHandler) -> Subscription;
-    fn breadcrumb_location(&self, cx: &App) -> ToolbarItemLocation;
     fn breadcrumbs(
         &self,
         project_root: Option<&Path>,
@@ -216,6 +216,10 @@ impl<T: Item> ItemHandle for Entity<T> {
 
     fn tab_icon(&self, cx: &App) -> Option<SharedString> {
         self.read(cx).tab_icon(cx)
+    }
+
+    fn toolbar_view(&self, cx: &App) -> Option<AnyView> {
+        self.read(cx).toolbar_view(self, cx)
     }
 
     fn is_dirty(&self, cx: &App) -> bool {
@@ -284,10 +288,6 @@ impl<T: Item> ItemHandle for Entity<T> {
                 T::to_item_events(event, &mut |event| handler(event, cx));
             })
         })
-    }
-
-    fn breadcrumb_location(&self, cx: &App) -> ToolbarItemLocation {
-        self.read(cx).breadcrumb_location(cx)
     }
 
     fn breadcrumbs(

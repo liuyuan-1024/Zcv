@@ -8,16 +8,17 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
-    AnyEntity, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Image, ImageFormat,
-    IntoElement, ObjectFit, Render, RenderImage, SharedString, Styled, StyledImage, Subscription,
-    Task, Window, div, img, prelude::*,
+    AnyEntity, AnyView, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Image,
+    ImageFormat, IntoElement, ObjectFit, Render, RenderImage, SharedString, Styled, StyledImage,
+    Subscription, Task, Window, div, img, prelude::*,
 };
+use zcv_actions::TogglePreview;
 use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
 use zcv_theme::{color, space};
+use zcv_ui::Button;
 use zcv_workspace::{
-    Item, ItemEvent, ItemHandle, PreviewDocument, PreviewItem, PreviewItemHandle,
-    ToolbarItemLocation,
+    Breadcrumbs, Item, ItemEvent, ItemHandle, PreviewDocument, PreviewItem, PreviewItemHandle,
 };
 
 use crate::renderer::rasterize_svg;
@@ -39,6 +40,28 @@ pub(crate) struct SvgPreviewView {
     render_task: Option<Task<()>>,
     _document_subscription: Subscription,
     _item_subscription: Subscription,
+    breadcrumbs: Entity<Breadcrumbs>,
+    toolbar: Entity<SvgPreviewToolbar>,
+}
+
+struct SvgPreviewToolbar {
+    breadcrumbs: Entity<Breadcrumbs>,
+}
+
+impl Render for SvgPreviewToolbar {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(space::S6)
+            .child(div().flex_1().min_w_0().child(self.breadcrumbs.clone()))
+            .child(
+                Button::icon("svg-preview-source", "icons/eye_off.svg")
+                    .label("返回源码")
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(TogglePreview), cx)),
+            )
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,6 +72,11 @@ pub(crate) enum SvgPreviewEvent {
 impl SvgPreviewView {
     pub(crate) fn new(document: PreviewDocument, cx: &mut Context<Self>) -> Self {
         let source_item = document.source_item;
+        let breadcrumbs = cx.new(|_| Breadcrumbs::without_project());
+        breadcrumbs.update(cx, |view, cx| view.set_item(Some(source_item.as_ref()), cx));
+        let toolbar = cx.new(|_| SvgPreviewToolbar {
+            breadcrumbs: breadcrumbs.clone(),
+        });
         let multi_buffer = document.multi_buffer;
         let resources_dir = document.path.parent().map(PathBuf::from);
         let document_subscription = cx.observe(&multi_buffer, |view, _, cx| {
@@ -65,6 +93,7 @@ impl SvgPreviewView {
                 {
                     this.update(cx, |view, cx| {
                         view.resources_dir = path.parent().map(PathBuf::from);
+                        view.breadcrumbs.update(cx, |_, cx| cx.notify());
                         view.start_render(cx);
                         cx.emit(SvgPreviewEvent::SourcePathChanged);
                     })
@@ -82,6 +111,8 @@ impl SvgPreviewView {
             render_task: None,
             _document_subscription: document_subscription,
             _item_subscription: item_subscription,
+            breadcrumbs,
+            toolbar,
         };
         view.start_render(cx);
         view
@@ -177,6 +208,10 @@ impl Render for SvgPreviewView {
 impl Item for SvgPreviewView {
     type Event = SvgPreviewEvent;
 
+    fn toolbar_view(&self, _self_handle: &Entity<Self>, _cx: &App) -> Option<AnyView> {
+        Some(self.toolbar.clone().into())
+    }
+
     fn tab_content_text(&self, cx: &App) -> SharedString {
         self.source_item
             .item_path(cx)
@@ -200,10 +235,6 @@ impl Item for SvgPreviewView {
 
     fn item_path(&self, cx: &App) -> Option<PathBuf> {
         self.source_item.item_path(cx)
-    }
-
-    fn breadcrumb_location(&self, _cx: &App) -> ToolbarItemLocation {
-        ToolbarItemLocation::PrimaryLeft
     }
 
     fn breadcrumbs(

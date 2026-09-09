@@ -9,20 +9,27 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, AnyEntity, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Pixels,
-    Render, SharedString, Subscription, Task, WeakEntity, Window, div, prelude::*,
+    AnyElement, AnyEntity, AnyView, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    KeyContext, ParentElement, Pixels, Render, SharedString, Styled, Subscription, Task,
+    WeakEntity, Window, div, prelude::*,
+};
+use zcv_actions::{
+    Backtab, FindNext, FindPrevious, ReplaceAll, ReplaceNext, Tab, ToggleCaseSensitive,
+    ToggleRegex, ToggleReplace, ToggleWholeWord,
 };
 use zcv_editor::{DiffHunkDelegate, Editor, EditorEvent, EditorScrollAnchor};
 use zcv_git::{DiffBase, DiffHunk, FileStatus, GitHunkOperation, GitRevision, StatusCode};
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::{ExcerptLocation, MultiBuffer};
 use zcv_project::{DiffRequest, GitStoreEvent, Project};
-use zcv_text::{Buffer, BufferConfig, ByteOffset, Snapshot};
+use zcv_text::{Buffer, BufferConfig, ByteOffset, SearchQuery, Snapshot};
 use zcv_theme::{color, space};
-use zcv_ui::{Button, ButtonSize, Checkbox};
+use zcv_ui::{
+    Button, ButtonSize, ButtonStyle, Checkbox, MatchOption, MatchOptions, ReplaceInput, SearchInput,
+};
 use zcv_workspace::{
-    Item, ItemEvent, SearchableItemHandle, SerializedItemProvider, SerializedPaneItem,
-    ToolbarItemLocation, Workspace,
+    Direction, Item, ItemEvent, SearchableItem, SearchableItemHandle, SerializedItemProvider,
+    SerializedPaneItem, Workspace,
 };
 
 const PROJECT_DIFF_SERIALIZED_KIND: &str = "project-diff";
@@ -301,10 +308,463 @@ pub struct ProjectDiffView {
     refresh_scroll_anchor: Option<EditorScrollAnchor>,
     revision_sources: HashMap<(GitRevision, PathBuf), Entity<LanguageBuffer>>,
     loading_revision_text: HashSet<(GitRevision, PathBuf)>,
+    search_options: MatchOptions,
+    search_input: Option<Entity<Editor>>,
+    replace_input: Option<Entity<Editor>>,
+    show_replace: bool,
+    search_subscriptions: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
+    toolbar: Entity<ProjectDiffToolbar>,
+}
+
+struct ProjectDiffToolbar {
+    view: WeakEntity<ProjectDiffView>,
+}
+
+impl Render for ProjectDiffToolbar {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.view.upgrade().map_or_else(
+            || div().into_any_element(),
+            |view| {
+                view.update(cx, |view, cx| view.ensure_search_input(window, cx));
+                view.read(cx)
+                    .render_search_bar(window, cx, self.view.clone())
+            },
+        )
+    }
 }
 
 impl ProjectDiffView {
+    fn ensure_search_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.search_input.is_some() {
+            return;
+        }
+        let search_input = cx.new(|cx| Editor::auto_height(1, Some(4), cx));
+        let replace_input = cx.new(|cx| Editor::auto_height(1, Some(4), cx));
+        search_input.update(cx, |editor, cx| editor.set_placeholder_text("搜索...", cx));
+        replace_input.update(cx, |editor, cx| {
+            editor.set_placeholder_text("替换为...", cx)
+        });
+        let weak = cx.weak_entity();
+        self.search_subscriptions
+            .push(window.subscribe(&search_input, cx, {
+                let weak = weak.clone();
+                move |_, event: &EditorEvent, window, cx| {
+                    if *event == EditorEvent::Edited
+                        && let Some(view) = weak.upgrade()
+                    {
+                        view.update(cx, |view, cx| view.run_search_from_input(window, cx));
+                    }
+                }
+            }));
+        self.search_input = Some(search_input);
+        self.replace_input = Some(replace_input);
+    }
+
+    fn run_search_from_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // 查询文本直接读输入框 Editor,不另存镜像。
+        let query = SearchQuery {
+            query: self
+                .search_input
+                .as_ref()
+                .expect("搜索输入框应已创建")
+                .read(cx)
+                .text(cx),
+            case_sensitive: self.search_options.case_sensitive,
+            whole_word: self.search_options.whole_word,
+            regex: self.search_options.regex,
+        };
+        self.editor.update(cx, |editor, cx| {
+            SearchableItem::search(editor, &query, window, cx)
+        });
+        cx.notify();
+    }
+
+    fn toggle_search_option(
+        &mut self,
+        option: MatchOption,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.search_options = self.search_options.toggled(option);
+        self.run_search_from_input(window, cx);
+    }
+
+    fn move_active_match(
+        &mut self,
+        direction: Direction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editor.update(cx, |editor, cx| {
+            SearchableItem::activate_match_in_direction(editor, direction, 1, window, cx)
+        });
+        cx.notify();
+    }
+
+    fn toggle_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.kind != ProjectDiffKind::Unstaged {
+            return;
+        }
+        let closing = self.show_replace;
+        self.show_replace = !self.show_replace;
+        // 打开替换行时默认聚焦替换输入框。
+        if self.show_replace
+            && let Some(replace_input) = &self.replace_input
+        {
+            window.focus(&replace_input.read(cx).focus_handle(), cx);
+        }
+        // 收起替换行时把焦点还给搜索输入框。
+        if closing && let Some(search_input) = &self.search_input {
+            window.focus(&search_input.read(cx).focus_handle(), cx);
+        }
+        cx.notify();
+    }
+
+    /// 替换文本直接读替换输入框 Editor(实体常驻,展开/收起不销毁,无需镜像)。
+    fn replacement_text(&self, cx: &Context<Self>) -> Option<String> {
+        self.replace_input
+            .as_ref()
+            .map(|input| input.read(cx).text(cx))
+    }
+
+    fn replace_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(replacement) = self.replacement_text(cx) else {
+            return;
+        };
+        let replaced = self.editor.update(cx, |editor, cx| {
+            SearchableItem::replace_current(editor, &replacement, window, cx)
+        });
+        if replaced {
+            self.move_active_match(Direction::Next, window, cx);
+        }
+    }
+
+    fn replace_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(replacement) = self.replacement_text(cx) else {
+            return;
+        };
+        self.editor.update(cx, |editor, cx| {
+            SearchableItem::replace_all(editor, &replacement, window, cx)
+        });
+    }
+
+    fn cycle_search_focus(
+        &mut self,
+        direction: Direction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut handles = vec![
+            self.search_input
+                .as_ref()
+                .expect("搜索输入框应已创建")
+                .read(cx)
+                .focus_handle(),
+        ];
+        if self.show_replace {
+            handles.push(
+                self.replace_input
+                    .as_ref()
+                    .expect("替换输入框应已创建")
+                    .read(cx)
+                    .focus_handle(),
+            );
+        }
+        handles.push(self.focus_handle(cx));
+        let Some(current) = handles.iter().position(|focus| focus.is_focused(window)) else {
+            return;
+        };
+        let next = match direction {
+            Direction::Next => (current + 1) % handles.len(),
+            Direction::Prev => (current + handles.len() - 1) % handles.len(),
+        };
+        window.focus(&handles[next], cx);
+        cx.stop_propagation();
+    }
+
+    fn render_search_bar(
+        &self,
+        _window: &mut Window,
+        cx: &App,
+        weak: WeakEntity<Self>,
+    ) -> AnyElement {
+        let colors = color::current(cx);
+        let (match_count, active_match) = SearchableItem::search_count(self.editor.read(cx), cx);
+        let expansion = {
+            let editor = self.editor.read(cx);
+            let expanded = self
+                .files
+                .iter()
+                .any(|file| !editor.is_buffer_folded(&file.path));
+            let weak = weak.clone();
+            Button::icon(
+                "project-diff-expansion",
+                if expanded {
+                    "icons/chevron_down_up.svg"
+                } else {
+                    "icons/chevron_up_down.svg"
+                },
+            )
+            .label(if expanded {
+                "折叠全部文件"
+            } else {
+                "展开全部文件"
+            })
+            .on_click(move |_, _, cx| {
+                if let Some(view) = weak.upgrade() {
+                    view.update(cx, |view, cx| view.set_all_files_folded(expanded, cx));
+                }
+            })
+            .into_any_element()
+        };
+        let restore = (self.kind == ProjectDiffKind::Unstaged).then(|| {
+            let weak = weak.clone();
+            Button::text("project-diff-operation", "重做全部")
+                .size(ButtonSize::Loose)
+                .style(ButtonStyle::Solid)
+                .label("重做全部")
+                .on_click(move |_, _, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| view.restore_all(cx));
+                    }
+                })
+                .into_any_element()
+        });
+        let replace_toggle = (self.kind == ProjectDiffKind::Unstaged).then(|| {
+            let weak = weak.clone();
+            Button::icon("project-diff-toggle-replace", "icons/replace.svg")
+                .label("替换")
+                .shortcut(&ToggleReplace, cx)
+                .color(if self.show_replace {
+                    colors.icon_accent
+                } else {
+                    colors.text_muted
+                })
+                .on_click(move |_, window, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| view.toggle_replace(window, cx));
+                    }
+                })
+                .into_any_element()
+        });
+        // 替换行:替换开关打开时显示,通用替换输入框(外部插槽:替换 / 全部替换)。
+        let replacement_line =
+            (self.kind == ProjectDiffKind::Unstaged && self.show_replace).then(|| {
+                let replace_action = {
+                    let weak = weak.clone();
+                    move |window: &mut Window, cx: &mut App| {
+                        if let Some(view) = weak.upgrade() {
+                            view.update(cx, |view, cx| view.replace_next(window, cx));
+                        }
+                    }
+                };
+                let replace_all_action = {
+                    let weak = weak.clone();
+                    move |window: &mut Window, cx: &mut App| {
+                        if let Some(view) = weak.upgrade() {
+                            view.update(cx, |view, cx| view.replace_all(window, cx));
+                        }
+                    }
+                };
+                ReplaceInput::new(
+                    "project-diff-replace",
+                    self.replace_input
+                        .as_ref()
+                        .expect("替换输入框应已创建")
+                        .clone()
+                        .into_any_element(),
+                )
+                .on_replace(replace_action)
+                .on_replace_all(replace_all_action)
+                .into_any_element()
+            });
+        let mut key_context = KeyContext::new_with_defaults();
+        key_context.add("ProjectDiffSearchBar");
+        // 替换行容器专属 in_replace 上下文:替换类快捷键只在替换输入框内生效(搜索输入框的焦点路径不携带该标签,行收起后自然失效)。
+        let mut in_replace_context = KeyContext::new_with_defaults();
+        in_replace_context.add("in_replace");
+        div()
+            .key_context(key_context)
+            .flex()
+            .flex_col()
+            .gap(space::S6)
+            .on_action({
+                let weak = weak.clone();
+                move |_: &FindNext, window, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| {
+                            view.move_active_match(Direction::Next, window, cx)
+                        });
+                    }
+                }
+            })
+            .on_action({
+                let weak = weak.clone();
+                move |_: &FindPrevious, window, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| {
+                            view.move_active_match(Direction::Prev, window, cx)
+                        });
+                    }
+                }
+            })
+            .on_action({
+                let weak = weak.clone();
+                move |_: &ToggleCaseSensitive, window, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| {
+                            view.toggle_search_option(MatchOption::CaseSensitive, window, cx)
+                        });
+                    }
+                }
+            })
+            .on_action({
+                let weak = weak.clone();
+                move |_: &ToggleWholeWord, window, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| {
+                            view.toggle_search_option(MatchOption::WholeWord, window, cx)
+                        });
+                    }
+                }
+            })
+            .on_action({
+                let weak = weak.clone();
+                move |_: &ToggleRegex, window, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| {
+                            view.toggle_search_option(MatchOption::Regex, window, cx)
+                        });
+                    }
+                }
+            })
+            .on_action({
+                let weak = weak.clone();
+                move |_: &ToggleReplace, window, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| view.toggle_replace(window, cx));
+                    }
+                }
+            })
+            .on_action({
+                let weak = weak.clone();
+                move |_: &ReplaceNext, window, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| view.replace_next(window, cx));
+                    }
+                }
+            })
+            .on_action({
+                let weak = weak.clone();
+                move |_: &ReplaceAll, window, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| view.replace_all(window, cx));
+                    }
+                }
+            })
+            .on_action({
+                let weak = weak.clone();
+                move |_: &Tab, window, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| {
+                            view.cycle_search_focus(Direction::Next, window, cx)
+                        });
+                    }
+                }
+            })
+            .on_action({
+                let weak = weak.clone();
+                move |_: &Backtab, window, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |view, cx| {
+                            view.cycle_search_focus(Direction::Prev, window, cx)
+                        });
+                    }
+                }
+            })
+            .child(
+                // 行1:左侧展开控制 + 通用搜索输入框(内槽:匹配选项;外槽:计数与上/下导航;追加替换开关与重做全部)。
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(space::S6)
+                    .child(expansion)
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            SearchInput::new(
+                                "project-diff",
+                                self.search_input
+                                    .as_ref()
+                                    .expect("搜索输入框应已创建")
+                                    .clone()
+                                    .into_any_element(),
+                            )
+                            .options(self.search_options)
+                            .on_toggle({
+                                let weak = weak.clone();
+                                move |option, window, cx| {
+                                    if let Some(view) = weak.upgrade() {
+                                        view.update(cx, |view, cx| {
+                                            view.toggle_search_option(option, window, cx)
+                                        });
+                                    }
+                                }
+                            })
+                            .count(active_match, match_count)
+                            .on_previous({
+                                let weak = weak.clone();
+                                move |window, cx| {
+                                    if let Some(view) = weak.upgrade() {
+                                        view.update(cx, |view, cx| {
+                                            view.move_active_match(Direction::Prev, window, cx)
+                                        });
+                                    }
+                                }
+                            })
+                            .on_next({
+                                let weak = weak.clone();
+                                move |window, cx| {
+                                    if let Some(view) = weak.upgrade() {
+                                        view.update(cx, |view, cx| {
+                                            view.move_active_match(Direction::Next, window, cx)
+                                        });
+                                    }
+                                }
+                            })
+                            // 追加外部插槽:替换开关与重做全部(调用方按分组自选)。
+                            .when_some(replace_toggle, |input, toggle| input.external(toggle))
+                            .when_some(restore, |input, restore| input.external(restore)),
+                        ),
+                    ),
+            )
+            // 行2:替换开关展开后的替换行(通用替换输入框)。
+            .when_some(replacement_line, |this, line| this.child(line))
+            .into_any_element()
+    }
+
+    fn set_all_files_folded(&mut self, folded: bool, cx: &mut Context<Self>) {
+        let paths = self
+            .files
+            .iter()
+            .map(|file| file.path.clone())
+            .collect::<Vec<_>>();
+        self.editor.update(cx, |editor, cx| {
+            for path in paths {
+                if editor.is_buffer_folded(&path) != folded {
+                    editor.toggle_buffer_fold(path, cx);
+                }
+            }
+        });
+    }
+
+    fn restore_all(&mut self, cx: &mut Context<Self>) {
+        for hunk in self.editor.read(cx).diff_hunks(cx).to_vec() {
+            self.apply_hunk_action(&hunk, GitHunkOperation::Restore, cx);
+        }
+    }
+
     fn new(kind: ProjectDiffKind, project: Entity<Project>, cx: &mut Context<Self>) -> Self {
         let weak_view = cx.weak_entity();
         let empty_focus = cx.focus_handle();
@@ -357,6 +817,8 @@ impl ProjectDiffView {
                 | GitStoreEvent::Uncommitted(_) => {}
             }),
         ];
+        let toolbar_view = cx.entity().downgrade();
+        let toolbar = cx.new(|_| ProjectDiffToolbar { view: toolbar_view });
         let mut view = Self {
             kind,
             project,
@@ -368,7 +830,13 @@ impl ProjectDiffView {
             refresh_scroll_anchor: None,
             revision_sources: Default::default(),
             loading_revision_text: Default::default(),
+            search_options: MatchOptions::default(),
+            search_input: None,
+            replace_input: None,
+            show_replace: false,
+            search_subscriptions: Vec::new(),
             _subscriptions: subscriptions,
+            toolbar,
         };
         view.refresh_files(cx);
         view
@@ -748,6 +1216,10 @@ impl Render for ProjectDiffView {
 impl Item for ProjectDiffView {
     type Event = EditorEvent;
 
+    fn toolbar_view(&self, _self_handle: &Entity<Self>, _cx: &App) -> Option<AnyView> {
+        Some(self.toolbar.clone().into())
+    }
+
     fn tab_content_text(&self, _cx: &App) -> SharedString {
         self.kind.title().into()
     }
@@ -799,10 +1271,6 @@ impl Item for ProjectDiffView {
         self.editor.update(cx, |editor, cx| {
             <Editor as Item>::save(editor, project, window, cx)
         })
-    }
-
-    fn breadcrumb_location(&self, _cx: &App) -> ToolbarItemLocation {
-        ToolbarItemLocation::Hidden
     }
 
     fn as_searchable(
@@ -1448,6 +1916,21 @@ mod tests {
                 .expect("投影应为 UTF-8");
             assert!(text.contains("line1"), "默认展开时应包含旧侧文本");
             assert!(text.contains("改过"), "默认展开时应包含新侧文本");
+        });
+
+        cx.update_entity(&view, |view, cx| view.set_all_files_folded(true, cx));
+        cx.read_entity(&view, |view, cx| {
+            assert!(
+                view.editor.read(cx).is_buffer_folded(&modified_path),
+                "折叠全部文件后应折叠文件块"
+            );
+        });
+        cx.update_entity(&view, |view, cx| view.set_all_files_folded(false, cx));
+        cx.read_entity(&view, |view, cx| {
+            assert!(
+                !view.editor.read(cx).is_buffer_folded(&modified_path),
+                "展开全部文件后应展开文件块"
+            );
         });
 
         // 用户折叠修改块。

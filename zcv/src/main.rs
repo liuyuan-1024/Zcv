@@ -2,7 +2,6 @@
 
 mod active_buffer_language;
 mod auto_update;
-mod breadcrumbs;
 mod cursor_position;
 mod harness;
 mod workspace;

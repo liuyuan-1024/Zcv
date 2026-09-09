@@ -7,9 +7,9 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, PathBuilder, Pixels,
-    Render, Rgba, ScrollStrategy, SharedString, Subscription, UniformListScrollHandle, WeakEntity,
-    Window, canvas, div, point, prelude::*, px, uniform_list,
+    AnyView, App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
+    KeyContext, PathBuilder, Pixels, Render, Rgba, ScrollStrategy, SharedString, Subscription,
+    UniformListScrollHandle, WeakEntity, Window, canvas, div, point, prelude::*, px, uniform_list,
 };
 use regex::RegexBuilder;
 use zcv_actions::{
@@ -21,7 +21,7 @@ use zcv_project::{GitStoreEvent, Project};
 use zcv_text::SearchQuery;
 use zcv_theme::color::{self, ThemeColors};
 use zcv_theme::{space, typography};
-use zcv_ui::{Button, Scrollbar};
+use zcv_ui::{MatchOption, MatchOptions, Scrollbar, SearchInput};
 use zcv_workspace::{
     Direction, Item, SearchEvent, SearchableItem, SerializedItemProvider, SerializedPaneItem,
     Workspace,
@@ -69,26 +69,154 @@ pub(crate) struct GitGraphView {
     _git_subscription: Subscription,
     search_input: Entity<Editor>,
     _search_subscription: Subscription,
-    case_sensitive: bool,
-    whole_word: bool,
-    regex: bool,
+    search_options: MatchOptions,
+    toolbar: Entity<GitGraphToolbar>,
+}
+
+struct GitGraphToolbar {
+    view: WeakEntity<GitGraphView>,
+}
+
+impl Render for GitGraphToolbar {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(view) = self.view.upgrade() else {
+            return div();
+        };
+        let read = view.read(cx);
+
+        let mut key_context = KeyContext::new_with_defaults();
+        key_context.add("GitGraphSearchBar");
+        let on_find_next = {
+            let view = self.view.clone();
+            move |_: &FindNext, _: &mut Window, cx: &mut App| {
+                if let Some(view) = view.upgrade() {
+                    view.update(cx, |view, cx| {
+                        view.move_active_match(Direction::Next, 1, cx);
+                    });
+                }
+            }
+        };
+        let on_find_previous = {
+            let view = self.view.clone();
+            move |_: &FindPrevious, _: &mut Window, cx: &mut App| {
+                if let Some(view) = view.upgrade() {
+                    view.update(cx, |view, cx| {
+                        view.move_active_match(Direction::Prev, 1, cx);
+                    });
+                }
+            }
+        };
+        let on_toggle_case = {
+            let view = self.view.clone();
+            move |_: &ToggleCaseSensitive, _: &mut Window, cx: &mut App| {
+                if let Some(view) = view.upgrade() {
+                    view.update(cx, |view, cx| {
+                        view.toggle_search_option(MatchOption::CaseSensitive, cx);
+                    });
+                }
+            }
+        };
+        let on_toggle_word = {
+            let view = self.view.clone();
+            move |_: &ToggleWholeWord, _: &mut Window, cx: &mut App| {
+                if let Some(view) = view.upgrade() {
+                    view.update(cx, |view, cx| {
+                        view.toggle_search_option(MatchOption::WholeWord, cx);
+                    });
+                }
+            }
+        };
+        let on_toggle_regex = {
+            let view = self.view.clone();
+            move |_: &ToggleRegex, _: &mut Window, cx: &mut App| {
+                if let Some(view) = view.upgrade() {
+                    view.update(cx, |view, cx| {
+                        view.toggle_search_option(MatchOption::Regex, cx);
+                    });
+                }
+            }
+        };
+        let on_tab = {
+            let view = self.view.clone();
+            move |_: &Tab, window: &mut Window, cx: &mut App| {
+                if let Some(view) = view.upgrade() {
+                    view.update(cx, |view, cx| {
+                        window.focus(&view.search_input.read(cx).focus_handle(), cx);
+                    });
+                }
+            }
+        };
+        let on_backtab = {
+            let view = self.view.clone();
+            move |_: &Backtab, window: &mut Window, cx: &mut App| {
+                if let Some(view) = view.upgrade() {
+                    view.update(cx, |view, cx| {
+                        window.focus(&view.search_input.read(cx).focus_handle(), cx);
+                    });
+                }
+            }
+        };
+        div()
+            .key_context(key_context)
+            .on_action(on_find_next)
+            .on_action(on_find_previous)
+            .on_action(on_toggle_case)
+            .on_action(on_toggle_word)
+            .on_action(on_toggle_regex)
+            .on_action(on_tab)
+            .on_action(on_backtab)
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(space::S6)
+            .child(
+                SearchInput::new("git-graph", read.search_input.clone().into_any_element())
+                    .options(read.search_options)
+                    .on_toggle({
+                        let view = self.view.clone();
+                        move |option, _window, cx| {
+                            if let Some(view) = view.upgrade() {
+                                view.update(cx, |view, cx| {
+                                    view.toggle_search_option(option, cx);
+                                });
+                            }
+                        }
+                    })
+                    .count(read.active_search_match, read.search_matches.len())
+                    .on_previous({
+                        let view = self.view.clone();
+                        move |_window, cx| {
+                            if let Some(view) = view.upgrade() {
+                                view.update(cx, |view, cx| {
+                                    view.move_active_match(Direction::Prev, 1, cx);
+                                });
+                            }
+                        }
+                    })
+                    .on_next({
+                        let view = self.view.clone();
+                        move |_window, cx| {
+                            if let Some(view) = view.upgrade() {
+                                view.update(cx, |view, cx| {
+                                    view.move_active_match(Direction::Next, 1, cx);
+                                });
+                            }
+                        }
+                    }),
+            )
+    }
 }
 
 impl GitGraphView {
-    fn toggle_search_option(&mut self, option: u8, cx: &mut Context<Self>) {
-        match option {
-            0 => self.case_sensitive = !self.case_sensitive,
-            1 => self.whole_word = !self.whole_word,
-            2 => self.regex = !self.regex,
-            _ => return,
-        }
+    fn toggle_search_option(&mut self, option: MatchOption, cx: &mut Context<Self>) {
+        self.search_options = self.search_options.toggled(option);
         let query = self.search_input.read(cx).text(cx);
         self.run_search(
             &SearchQuery {
                 query,
-                case_sensitive: self.case_sensitive,
-                whole_word: self.whole_word,
-                regex: self.regex,
+                case_sensitive: self.search_options.case_sensitive,
+                whole_word: self.search_options.whole_word,
+                regex: self.search_options.regex,
             },
             cx,
         );
@@ -101,7 +229,7 @@ impl GitGraphView {
         let git_store = project.read(cx).git_store();
         let search_input = cx.new(Editor::single_line);
         search_input.update(cx, |editor, cx| {
-            editor.set_placeholder_text("搜索提交…", cx);
+            editor.set_placeholder_text("搜索…", cx);
         });
         let search_subscription =
             cx.subscribe(&search_input, |view, _input, event: &EditorEvent, cx| {
@@ -109,9 +237,9 @@ impl GitGraphView {
                     let query = view.search_input.read(cx).text(cx);
                     let search_query = SearchQuery {
                         query,
-                        case_sensitive: view.case_sensitive,
-                        whole_word: view.whole_word,
-                        regex: view.regex,
+                        case_sensitive: view.search_options.case_sensitive,
+                        whole_word: view.search_options.whole_word,
+                        regex: view.search_options.regex,
                     };
                     view.run_search(&search_query, cx);
                 }
@@ -126,6 +254,8 @@ impl GitGraphView {
                 view.load_more(cx);
             }
         });
+        let view_weak = cx.entity().downgrade();
+        let toolbar = cx.new(|_| GitGraphToolbar { view: view_weak });
         let mut view = Self {
             focus,
             project,
@@ -142,9 +272,8 @@ impl GitGraphView {
             _git_subscription: git_subscription,
             search_input,
             _search_subscription: search_subscription,
-            case_sensitive: false,
-            whole_word: false,
-            regex: false,
+            search_options: MatchOptions::default(),
+            toolbar,
         };
         if git_store.read(cx).is_repository_scan_ready() {
             view.load_more(cx);
@@ -232,13 +361,13 @@ impl Render for GitGraphView {
                 view.move_active_match(Direction::Prev, 1, cx);
             }))
             .on_action(cx.listener(|view, _: &ToggleCaseSensitive, _, cx| {
-                view.toggle_search_option(0, cx);
+                view.toggle_search_option(MatchOption::CaseSensitive, cx);
             }))
             .on_action(cx.listener(|view, _: &ToggleWholeWord, _, cx| {
-                view.toggle_search_option(1, cx);
+                view.toggle_search_option(MatchOption::WholeWord, cx);
             }))
             .on_action(cx.listener(|view, _: &ToggleRegex, _, cx| {
-                view.toggle_search_option(2, cx);
+                view.toggle_search_option(MatchOption::Regex, cx);
             }))
             .on_action(cx.listener(|view, _: &Tab, window, cx| {
                 window.focus(&view.search_input.read(cx).focus_handle(), cx);
@@ -251,105 +380,13 @@ impl Render for GitGraphView {
             .font(typography::ui_font())
             .text_size(typography::content_size())
             .text_color(colors.text);
-        let search_bar = div()
-            .w_full()
-            .p(space::S6)
-            .flex()
-            .items_center()
-            .gap(space::S6)
-            .border_b_1()
-            .border_color(colors.border)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .min_h(space::S8)
-                    .px(space::S6)
-                    .flex()
-                    .items_center()
-                    .gap(space::S4)
-                    .rounded_sm()
-                    .border_1()
-                    .border_color(colors.border)
-                    .child(self.search_input.clone())
-                    .child(
-                        Button::icon("git-graph-case", "icons/case_sensitive.svg")
-                            .label("区分大小写")
-                            .shortcut(&ToggleCaseSensitive, cx)
-                            .color(if self.case_sensitive {
-                                colors.icon_accent
-                            } else {
-                                colors.text_muted
-                            })
-                            .on_click(
-                                cx.listener(|view, _, _, cx| view.toggle_search_option(0, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::icon("git-graph-word", "icons/whole_word.svg")
-                            .label("整词匹配")
-                            .shortcut(&ToggleWholeWord, cx)
-                            .color(if self.whole_word {
-                                colors.icon_accent
-                            } else {
-                                colors.text_muted
-                            })
-                            .on_click(
-                                cx.listener(|view, _, _, cx| view.toggle_search_option(1, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::icon("git-graph-regex", "icons/regex.svg")
-                            .label("正则表达式")
-                            .shortcut(&ToggleRegex, cx)
-                            .color(if self.regex {
-                                colors.icon_accent
-                            } else {
-                                colors.text_muted
-                            })
-                            .on_click(
-                                cx.listener(|view, _, _, cx| view.toggle_search_option(2, cx)),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(space::S4)
-                    .text_size(typography::ui_size() * 0.85)
-                    .text_color(colors.text_muted)
-                    .child(format!(
-                        "{}/{}",
-                        self.active_search_match.map_or(0, |index| index + 1),
-                        self.search_matches.len()
-                    )),
-            )
-            .child(
-                Button::icon("git-graph-prev", "icons/chevron_left.svg")
-                    .label("上一个匹配")
-                    .shortcut(&FindPrevious, cx)
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.move_active_match(Direction::Prev, 1, cx);
-                    })),
-            )
-            .child(
-                Button::icon("git-graph-next", "icons/chevron_right.svg")
-                    .label("下一个匹配")
-                    .shortcut(&FindNext, cx)
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.move_active_match(Direction::Next, 1, cx);
-                    })),
-            );
-
         if self.rows.is_empty() {
             let message = if self.loading {
                 "加载中…"
             } else {
                 "暂无提交历史"
             };
-            return root.child(search_bar).child(
+            return root.child(
                 div()
                     .size_full()
                     .flex()
@@ -406,12 +443,16 @@ impl Render for GitGraphView {
         .track_scroll(&self.scroll_handle)
         .with_decoration(self.scrollbar.clone());
 
-        root.child(search_bar).child(list)
+        root.child(list)
     }
 }
 
 impl Item for GitGraphView {
     type Event = SearchEvent;
+
+    fn toolbar_view(&self, _self_handle: &Entity<Self>, _cx: &App) -> Option<AnyView> {
+        Some(self.toolbar.clone().into())
+    }
 
     fn tab_content_text(&self, _cx: &App) -> SharedString {
         self.project
@@ -432,9 +473,7 @@ impl Item for GitGraphView {
             kind: GIT_GRAPH_SERIALIZED_KIND.into(),
             state: serde_json::json!({
                 "query": self.search_input.read(cx).text(cx),
-                "case_sensitive": self.case_sensitive,
-                "whole_word": self.whole_word,
-                "regex": self.regex,
+                "options": self.search_options,
             }),
         })
     }
@@ -460,22 +499,16 @@ impl SerializedItemProvider for GitGraphSerializedItemProvider {
             .get("query")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
-        let case_sensitive = state
-            .get("case_sensitive")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-        let whole_word = state
-            .get("whole_word")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-        let regex = state
-            .get("regex")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
+        let options = state
+            .get("options")
+            .and_then(serde_json::Value::as_object)
+            .map(|object| {
+                serde_json::from_value(serde_json::Value::Object(object.clone()))
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
         view.update(cx, |view, cx| {
-            view.case_sensitive = case_sensitive;
-            view.whole_word = whole_word;
-            view.regex = regex;
+            view.search_options = options;
             view.search_input
                 .update(cx, |editor, cx| editor.set_text(query, cx));
         });

@@ -7,12 +7,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, AnyEntity, App, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable,
-    FontStyle, FontWeight, HighlightStyle, InteractiveText, ObjectFit, Render, ScrollHandle,
-    SharedString, StatefulInteractiveElement, StrikethroughStyle, StyledImage, StyledText,
-    Subscription, Task, UnderlineStyle, Window, div, img, prelude::*, px,
+    AnyElement, AnyEntity, AnyView, App, Context, ElementId, Entity, EventEmitter, FocusHandle,
+    Focusable, FontStyle, FontWeight, HighlightStyle, InteractiveText, ObjectFit, Render,
+    ScrollHandle, SharedString, StatefulInteractiveElement, StrikethroughStyle, StyledImage,
+    StyledText, Subscription, Task, UnderlineStyle, Window, div, img, prelude::*, px,
 };
 use pulldown_cmark::Alignment;
+use zcv_actions::TogglePreview;
 use zcv_language::{
     HighlightSpan, SnippetHighlightCancellation, SnippetHighlights,
     highlight_snippet_with_cancellation,
@@ -20,10 +21,9 @@ use zcv_language::{
 use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
 use zcv_theme::{color, space, syntax, typography};
-use zcv_ui::Scrollbar;
+use zcv_ui::{Button, Scrollbar};
 use zcv_workspace::{
-    Item, ItemEvent, ItemHandle, PreviewDocument, PreviewItem, PreviewItemHandle,
-    ToolbarItemLocation,
+    Breadcrumbs, Item, ItemEvent, ItemHandle, PreviewDocument, PreviewItem, PreviewItemHandle,
 };
 
 use crate::document::{Block, Inline, parse};
@@ -44,6 +44,28 @@ pub(crate) struct MarkdownPreviewView {
     refresh_task: Option<Task<()>>,
     _document_subscription: Subscription,
     _item_subscription: Subscription,
+    breadcrumbs: Entity<Breadcrumbs>,
+    toolbar: Entity<MarkdownPreviewToolbar>,
+}
+
+struct MarkdownPreviewToolbar {
+    breadcrumbs: Entity<Breadcrumbs>,
+}
+
+impl Render for MarkdownPreviewToolbar {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(space::S6)
+            .child(div().flex_1().min_w_0().child(self.breadcrumbs.clone()))
+            .child(
+                Button::icon("markdown-preview-source", "icons/eye_off.svg")
+                    .label("返回源码")
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(TogglePreview), cx)),
+            )
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +76,11 @@ pub(crate) enum MarkdownPreviewEvent {
 impl MarkdownPreviewView {
     pub(crate) fn new(document: PreviewDocument, cx: &mut Context<Self>) -> Self {
         let source_item = document.source_item;
+        let breadcrumbs = cx.new(|_| Breadcrumbs::without_project());
+        breadcrumbs.update(cx, |view, cx| view.set_item(Some(source_item.as_ref()), cx));
+        let toolbar = cx.new(|_| MarkdownPreviewToolbar {
+            breadcrumbs: breadcrumbs.clone(),
+        });
         let multi_buffer = document.multi_buffer;
         let document_subscription = cx.observe(&multi_buffer, |view, _, cx| {
             view.schedule_refresh(cx);
@@ -66,7 +93,8 @@ impl MarkdownPreviewView {
                     event,
                     ItemEvent::PathChanged | ItemEvent::UpdateTab | ItemEvent::UpdateBreadcrumbs
                 ) {
-                    this.update(cx, |_view, cx| {
+                    this.update(cx, |view, cx| {
+                        view.breadcrumbs.update(cx, |_, cx| cx.notify());
                         cx.emit(MarkdownPreviewEvent::SourceMetadataChanged);
                         cx.notify();
                     })
@@ -89,6 +117,8 @@ impl MarkdownPreviewView {
             refresh_task: None,
             _document_subscription: document_subscription,
             _item_subscription: item_subscription,
+            breadcrumbs,
+            toolbar,
         };
         view.refresh(cx);
         view
@@ -647,6 +677,10 @@ fn heading_scale(level: u8) -> f32 {
 impl Item for MarkdownPreviewView {
     type Event = MarkdownPreviewEvent;
 
+    fn toolbar_view(&self, _self_handle: &Entity<Self>, _cx: &App) -> Option<AnyView> {
+        Some(self.toolbar.clone().into())
+    }
+
     fn tab_content_text(&self, cx: &App) -> SharedString {
         self.source_item
             .item_path(cx)
@@ -674,10 +708,6 @@ impl Item for MarkdownPreviewView {
 
     fn item_path(&self, cx: &App) -> Option<PathBuf> {
         self.source_item.item_path(cx)
-    }
-
-    fn breadcrumb_location(&self, _cx: &App) -> ToolbarItemLocation {
-        ToolbarItemLocation::PrimaryLeft
     }
 
     fn breadcrumbs(

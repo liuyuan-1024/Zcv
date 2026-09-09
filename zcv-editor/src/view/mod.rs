@@ -7,8 +7,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, IntoElement,
-    KeyContext, Pixels, Point, Render, Styled, TextRun, Window, div, point, prelude::*,
+    AnyElement, AnyView, App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle,
+    IntoElement, KeyContext, Pixels, Point, Render, Styled, TextRun, Window, div, point,
+    prelude::*,
 };
 use zcv_actions::{
     Backspace, Copy, Cut, Delete, DeleteToBeginningOfLine, DeleteToEndOfLine, DeleteToNextWordEnd,
@@ -239,9 +240,33 @@ pub struct Editor {
     autoclose_regions: Vec<AutocloseRegion>,
     /// 未换行模式下最长行的像素宽度；按文本版本、显示行和字体失效。
     line_width_cache: Option<LineWidthCache>,
+    /// 普通文档视图自己的顶部内容区域；具体内容由装配方注入，Editor 不拥有其业务状态。
+    pub(crate) content_toolbar: Option<AnyView>,
 }
 
 impl Editor {
+    /// 设置普通文档内容顶部的视图。视图状态由调用方持有，Editor 只负责布局。
+    pub fn set_content_toolbar<T: Render + 'static>(
+        &mut self,
+        toolbar: Entity<T>,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_content_toolbar_view(toolbar.into(), cx);
+    }
+
+    /// 设置普通文档顶部的已类型擦除视图。
+    pub fn set_content_toolbar_view(&mut self, toolbar: AnyView, cx: &mut Context<Self>) {
+        self.content_toolbar = Some(toolbar);
+        cx.notify();
+    }
+
+    /// 清除普通文档视图的顶部内容区域。
+    pub fn clear_content_toolbar(&mut self, cx: &mut Context<Self>) {
+        if self.content_toolbar.take().is_some() {
+            cx.notify();
+        }
+    }
+
     pub fn single_line(cx: &mut Context<Self>) -> Self {
         let buffer = Buffer::scratch(String::new(), BufferConfig::default())
             .expect("新建空白 Buffer 不应失败");
@@ -330,13 +355,13 @@ impl Editor {
         });
     }
 
-    pub(crate) fn is_buffer_folded(&self, path: &std::path::Path) -> bool {
+    pub fn is_buffer_folded(&self, path: &std::path::Path) -> bool {
         self.display_map.is_buffer_folded(path)
     }
 
     /// 折叠/展开 MultiBuffer 中一个文件的全部 excerpts。
     /// 这是 BlockMap 变换，不修改组合文本，也不借用语法折叠范围。
-    pub(crate) fn toggle_buffer_fold(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+    pub fn toggle_buffer_fold(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
         let scroll_anchor = self.capture_scroll_anchor(cx);
         let folded = !self.display_map.is_buffer_folded(&path);
         self.display_map.set_buffer_folded(path, folded);
@@ -1376,6 +1401,7 @@ impl Editor {
             pending_selection: None,
             autoclose_regions: Vec::new(),
             line_width_cache: None,
+            content_toolbar: None,
         };
         // 设置变化时自动跟随（覆盖场景除外）；编辑器在测试环境无 SettingsStore 时保持默认。
         cx.observe_global::<SettingsStore>(|editor, cx| {

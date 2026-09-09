@@ -145,18 +145,16 @@
       "ctrl-pageup": "pane::PrevTab",
       "ctrl-pagedown": "pane::NextTab",
       "ctrl-w": "pane::CloseTab",
-      "ctrl-f": "pane::DeploySearch"
+      "ctrl-f": "pane::DeployBufferSearch"
     }
   },
   {
-    "context": "BufferSearchBar || ProjectSearchBar",
+    "context": "BufferSearchBar || ProjectSearchBar || ProjectDiffSearchBar || GitGraphSearchBar",
     "bindings": {
       "alt-c": "search::ToggleCaseSensitive",
       "alt-w": "search::ToggleWholeWord",
       "alt-x": "search::ToggleRegex",
       "cmd-r": "search::ToggleReplace",
-      "cmd-enter": "search::ReplaceNext",
-      "cmd-shift-enter": "search::ReplaceAll",
       "enter": "search::FindNext",
       "shift-enter": "search::FindPrevious",
       "escape": "search::ClearSearch",
@@ -164,28 +162,19 @@
       "shift-tab": "search::Backtab"
     }
   },
-  {
-    "context": "GitGraphSearchBar",
-    "bindings": {
-      "alt-c": "search::ToggleCaseSensitive",
-      "alt-w": "search::ToggleWholeWord",
-      "alt-x": "search::ToggleRegex",
-      "enter": "search::FindNext",
-      "shift-enter": "search::FindPrevious",
-      "tab": "search::Tab",
-      "shift-tab": "search::Backtab"
-    }
-  },
+
   {
     // 焦点在替换框：Enter 替换当前匹配。
-    "context": "(BufferSearchBar || ProjectSearchBar) && in_replace > Editor",
+    "context": "(BufferSearchBar || ProjectSearchBar || ProjectDiffSearchBar || GitGraphSearchBar) && in_replace > Editor",
     "bindings": {
-      "enter": "search::ReplaceNext"
+      "enter": "search::ReplaceNext",
+      "cmd-enter": "search::ReplaceNext",
+      "cmd-shift-enter": "search::ReplaceAll"
     }
   },
   {
     // 查询/替换输入框均为多行编辑器：Alt+Enter 插入换行。
-    "context": "(BufferSearchBar || ProjectSearchBar) > Editor",
+    "context": "(BufferSearchBar || ProjectSearchBar || ProjectDiffSearchBar || GitGraphSearchBar) > Editor",
     "bindings": {
       "alt-enter": "editor::Newline"
     }
@@ -220,7 +209,7 @@
       "ctrl-shift-e": ["dock::FocusOrHidePanel", { "panel": "project-tree" }],
       "ctrl-shift-g": ["dock::FocusOrHidePanel", { "panel": "version-control" }],
       "ctrl-shift-o": ["dock::FocusOrHidePanel", { "panel": "outline" }],
-      "ctrl-shift-f": "project_search::Deploy",
+      "ctrl-shift-f": "project_search::DeployProjectSearch",
       "ctrl-`": ["dock::FocusOrHidePanel", { "panel": "terminal" }],
       "ctrl-shift-h": "harness::ToggleHarnessMode",
       "ctrl-s": "workspace::Save"

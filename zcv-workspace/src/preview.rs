@@ -8,9 +8,7 @@ use std::any::TypeId;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use gpui::{
-    App, Context, Entity, EventEmitter, Render, Subscription, WeakEntity, Window, div, prelude::*,
-};
+use gpui::{App, Context, Entity, Render, Subscription, WeakEntity, Window, div, prelude::*};
 use zcv_actions::TogglePreview;
 use zcv_multi_buffer::MultiBuffer;
 use zcv_theme::color;
@@ -19,7 +17,6 @@ use zcv_ui::Button;
 use crate::item::{Item, ItemEvent, ItemHandle};
 use crate::pane::Pane;
 use crate::provider_registry::ProviderRegistry;
-use crate::toolbar::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 
 /// 交给 Preview Provider 的文档输入：预览视图的源码 Item 与展示路径。
 #[derive(Clone)]
@@ -104,34 +101,23 @@ impl PreviewButton {
         }
     }
 
-    fn location(&self) -> ToolbarItemLocation {
-        if self.control.is_some() {
-            ToolbarItemLocation::PrimaryRight
-        } else {
-            ToolbarItemLocation::Hidden
-        }
-    }
-
     fn refresh_control(&mut self, cx: &mut Context<Self>) {
         let control = Self::control_for(self.active_item.as_deref(), cx);
         if control == self.control {
             return;
         }
         self.control = control;
-        cx.emit(ToolbarItemEvent::ChangeLocation(self.location()));
         cx.notify();
     }
 }
 
-impl EventEmitter<ToolbarItemEvent> for PreviewButton {}
-
-impl ToolbarItemView for PreviewButton {
-    fn set_active_pane_item(
+impl PreviewButton {
+    pub fn set_active_item(
         &mut self,
         active_item: Option<&dyn ItemHandle>,
         _window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> ToolbarItemLocation {
+    ) {
         self._subscription = None;
         self.active_item = active_item.map(ItemHandle::boxed_clone);
         self.control = Self::control_for(active_item, cx);
@@ -151,7 +137,6 @@ impl ToolbarItemView for PreviewButton {
             ));
         }
         cx.notify();
-        self.location()
     }
 }
 

@@ -1311,7 +1311,6 @@ fn folded_deleted_hunk_anchor_is_at_the_deletion_row_boundary(cx: &mut TestAppCo
             &editor.diff_hunk_expanded(cx),
             editor.diff_hunk_old_ranges(cx),
         );
-        eprintln!("DEBUG hit_regions={:?}", rendering.hit_regions);
         assert_eq!(
             rendering.hit_regions,
             vec![(16..17, 0, DiffHunkKind::Deleted)],

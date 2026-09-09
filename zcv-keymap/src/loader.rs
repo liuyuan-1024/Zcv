@@ -537,7 +537,9 @@ mod tests {
                 .iter()
                 .find(|group| {
                     group.context.as_deref()
-                        == Some("(BufferSearchBar || ProjectSearchBar) && in_replace > Editor")
+                        == Some(
+                            "(BufferSearchBar || ProjectSearchBar || ProjectDiffSearchBar || GitGraphSearchBar) && in_replace > Editor",
+                        )
                 })
                 .unwrap_or_else(|| panic!("{source} 缺少替换框 in_replace 上下文"));
             assert_eq!(

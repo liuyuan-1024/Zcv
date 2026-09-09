@@ -4,7 +4,6 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use crate::git_status_color;
 use gpui::{
     App, Div, ElementId, Entity, MouseButton, UniformListScrollHandle, WeakEntity, div, prelude::*,
     uniform_list,
@@ -13,6 +12,7 @@ use zcv_editor::Editor;
 use zcv_theme::color;
 use zcv_ui::Scrollbar;
 use zcv_ui::{TreeState, render_row_base, row_click_action, selection_border};
+use zcv_workspace::git_status_color;
 
 use super::drag::{DraggedEntryView, TreeDrag, drop_target_dir, filter_movable_sources};
 use super::editing::{EditOperation, EditState};

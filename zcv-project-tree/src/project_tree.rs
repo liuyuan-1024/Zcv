@@ -27,11 +27,6 @@ use zcv_workspace::{Panel, PanelEvent, ToastKind, Workspace};
 
 use zcv_settings::SettingsStore;
 
-mod git_status;
-
-/// git 状态 → 展示颜色。
-pub use git_status::git_status_color;
-
 /// 打开文件回调：面板请求 Workspace 打开路径（弱引用防循环持有）。
 pub type OnOpenFile = Rc<dyn Fn(PathBuf, bool, &mut Window, &mut gpui::App)>;
 

@@ -167,20 +167,3 @@ fn reopening_live_buffer_does_not_load_changed_disk_contents(cx: &mut TestAppCon
     });
     assert_eq!(first, third);
 }
-
-#[gpui::test]
-#[ignore = "手动测量重复打开 32 MiB 已加载文档的耗时和进程峰值内存"]
-fn repeated_open_buffer_measurement(cx: &mut TestAppContext) {
-    let directory = tempfile::tempdir().expect("应创建临时目录");
-    let path = directory.path().join("large.txt");
-    fs::write(&path, "abcdefghijklmno\n".repeat(2_097_152)).expect("应写入大文件");
-    let mut store = BufferStore::new();
-    let first = cx.update(|cx| store.open_buffer(&path, cx).expect("首次打开应成功"));
-    cx.run_until_parked();
-    let start = std::time::Instant::now();
-    for _ in 0..10 {
-        let next = cx.update(|cx| store.open_buffer(&path, cx).expect("重复打开应成功"));
-        assert_eq!(first, next);
-    }
-    eprintln!("重复打开 10 次耗时：{:?}", start.elapsed());
-}

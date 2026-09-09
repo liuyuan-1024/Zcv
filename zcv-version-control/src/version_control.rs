@@ -30,9 +30,7 @@ use zcv_ui::{
     RowClickAction, TreeRow, TreeState, render_row_base, render_text_row, row_click_action,
     selection_border,
 };
-use zcv_workspace::{Panel, PanelEvent};
-
-use zcv_project_tree::git_status_color;
+use zcv_workspace::{Panel, PanelEvent, git_status_color};
 
 use crate::project_diff::ProjectDiffKind;
 

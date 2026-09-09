@@ -22,12 +22,13 @@ use zcv_actions::{
 use zcv_editor::Editor;
 use zcv_git::{DiffStat, FileStatus, StatusCode};
 use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
-use zcv_theme::{color, space, typography};
+use zcv_theme::{color, space};
 use zcv_ui::{
     Button, ButtonLike, ButtonSize, ButtonStyle, Checkbox, Scrollbar, SvgIcon, TooltipSpec,
 };
 use zcv_ui::{
-    RowClickAction, TreeRow, TreeState, render_row_base, row_click_action, selection_border,
+    RowClickAction, TreeRow, TreeState, render_row_base, render_text_row, row_click_action,
+    selection_border,
 };
 use zcv_workspace::{Panel, PanelEvent};
 
@@ -757,13 +758,9 @@ impl Render for VersionControlPanel {
 /// 面板顶部统计行：加减号图标 + 总新增/删除行数（全零时只留图标）。
 fn render_total_diff_stat(total: DiffStat, cx: &App) -> Div {
     let colors = color::current(cx);
-    div()
+    render_text_row()
         .flex_none()
-        .h(typography::ui_line())
-        .pl(space::S6)
         .pr(space::S6)
-        .flex()
-        .items_center()
         .gap(space::S2)
         .text_color(colors.text_muted)
         .child(
@@ -827,17 +824,12 @@ fn render_row(
             let section = *section;
             let checkbox_weak = weak.clone();
             let section_has_entries = render_context.non_empty_sections.contains(&section);
-            div()
-                // 行 id 是 hover/交互状态的前提：GPUI 仅在元素带 id（可派生 element_state）时应用 hover_style。
+            // 高度与左侧留白由文本树行基座保证，这里只叠分组头的专属布局与交互。
+            render_text_row()
                 .id(ElementId::Name(
                     format!("version-control-header-row-{section:?}").into(),
                 ))
-                .w_full()
-                .h(typography::ui_line())
-                .pl(space::S6)
                 .pr(space::S6)
-                .flex()
-                .items_center()
                 .justify_between()
                 .text_color(color::current(cx).text_muted)
                 .cursor_pointer()
@@ -895,12 +887,9 @@ fn render_row(
                 .into_any_element()
         }
         // 空分组提示只是树内容的一部分，不参与选择、焦点或鼠标交互。
-        GitRow::Empty(section) => div()
-            .w_full()
-            .h(typography::ui_line())
-            .pl(space::S12)
-            .flex()
-            .items_center()
+        GitRow::Empty(section) => render_text_row()
+            // 缩进让提示对齐在标题行文字之下。
+            .pl(space::S6)
             .text_color(color::current(cx).text_placeholder)
             .child(section.empty_message())
             .into_any_element(),
@@ -1315,6 +1304,7 @@ mod tests {
     use tempfile::TempDir;
 
     use zcv_project::{Project, StatusEntry};
+    use zcv_ui::tree_row_height;
 
     /// 构造快照：路径 → 状态；diff 统计取固定样例值（staged/unstaged 可区分）。
     fn snapshot(entries: &[(&str, FileStatus)]) -> RepositorySnapshot {
@@ -1708,7 +1698,7 @@ mod tests {
 
         // 单击 tracked.txt 行内容区（x=100 避开行首复选框）：
         // 行高为 ui_line()，以临时标签打开（focus_opened_item=false）。
-        let row_height = typography::ui_line();
+        let row_height = tree_row_height();
         let click = |cx: &mut VisualTestContext| {
             // y 加 1 行偏移：顶部统计行占一行高度。
             cx.simulate_click(
@@ -2092,7 +2082,7 @@ mod tests {
     /// 测试时钟不会自动推进：手动拨过 500ms tooltip 显示延迟后再渲染一帧。
     /// 顶部统计行占一行高度，行坐标加 1 行偏移。
     fn assert_hover_tooltip(cx: &mut gpui::VisualTestContext, row_index: usize) {
-        let row_height = typography::ui_line();
+        let row_height = tree_row_height();
         cx.simulate_mouse_move(
             point(
                 px(1907.),
@@ -2148,7 +2138,7 @@ mod tests {
         cx.run_until_parked();
 
         // 悬停可视区第 5 行（未暂存组的一个文件）行尾复选框；顶部统计行占一行，坐标加偏移。
-        let row_height = typography::ui_line();
+        let row_height = tree_row_height();
         let hover_y = f32::from(row_height) * 5.5;
         cx.simulate_mouse_move(
             point(px(1907.), px(hover_y)),
@@ -2182,7 +2172,7 @@ mod tests {
         cx.run_until_parked();
 
         // 先悬停未暂存组的一个文件复选框，确认 tooltip 正常；顶部统计行占一行，坐标加偏移。
-        let row_height = typography::ui_line();
+        let row_height = tree_row_height();
         cx.simulate_mouse_move(
             point(px(1907.), px(f32::from(row_height) * 4.5)),
             None,
@@ -2255,7 +2245,7 @@ mod tests {
 
         // 行布局：两个分组标题 + 已暂存组 tracked.txt + 未暂存组 tracked.txt；
         // 顶部统计行占一行，坐标加偏移。
-        let row_height = typography::ui_line();
+        let row_height = tree_row_height();
         // 先悬停未暂存组的复选框（第 5 行）。
         cx.simulate_mouse_move(
             point(px(1907.), px(f32::from(row_height) * 4.5)),
@@ -2323,7 +2313,7 @@ mod tests {
 
         // tracked.txt（未暂存组）行尾复选框：窗口 1920 宽，右边缘 6px + 复选框半宽 7px；
         // 顶部统计行占一行，坐标加偏移。
-        let row_height = typography::ui_line();
+        let row_height = tree_row_height();
         cx.simulate_click(
             point(px(1907.), px(f32::from(row_height) * 4.5)),
             gpui::Modifiers::default(),

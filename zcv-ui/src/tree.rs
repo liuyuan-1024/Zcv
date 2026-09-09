@@ -1,4 +1,4 @@
-//! 树行渲染辅助函数 —— 缩进、图标、名称、选中框。
+//! 树行渲染辅助函数 —— 空白行基座、文件条目/文本两类行、选中框与树导航状态原语。
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -21,6 +21,19 @@ pub fn render_row_base(
         .children(guide_lines(depth, cx))
         .child(icon(path, is_dir, expanded))
         .child(label(content))
+}
+
+/// 普通文本树行——空白行基座 + 左侧基础留白，供非文件行（分组头、空提示等）叠加内容与交互。
+///
+/// 文字颜色、hover、`justify_between`、尾随控件等由调用方在返回值上链式追加；
+/// 高度与基础留白由本组件保证，不要覆写、不要叠加垂直 padding。
+pub fn render_text_row() -> gpui::Div {
+    blank_row().pl(metrics().padding)
+}
+
+/// 树行行高（= 空白行基座高度）：滚动计算、命中测试坐标等需要行高数值的场景读取。
+pub fn tree_row_height() -> gpui::Pixels {
+    metrics().row_height
 }
 
 /// 选中框——absolute 覆盖整行，不参与行布局。
@@ -63,17 +76,23 @@ pub fn row_click_action(is_dir: bool, click_count: usize) -> RowClickAction {
 
 // ── 私有辅助函数 ─────────────────────────────────────────────────────
 
-/// 树行骨架：relative + flex-row + items_center + 缩进 + 字型。
+/// 空白树行基座——树行几何（高度/主轴对齐）的唯一出处。
+///
+/// 行高只定义在 [`metrics`] 并经本函数落地：
+/// 文件条目行与文本行都构建在它之上，uniform_list 按对第 0 行的实测决定槽高、要求列表内所有行等高，因此同一棵树内的行必须全部出自本基座。
+/// 派生行不得覆写高度，也不得叠加垂直 padding（会撑出行盒，超出等宽槽）。
+fn blank_row() -> gpui::Div {
+    div().w_full().flex().items_center().h(metrics().row_height)
+}
+
+/// 树行骨架：空白行基座 + 缩进 + 图标与名称间距 + 圆角。
+/// relative 为缩进竖线与选中框提供定位基准。
 fn row_skeleton(depth: usize) -> gpui::Div {
     let m = metrics();
-    div()
+    blank_row()
         .relative()
-        .flex()
         .flex_row()
-        .items_center()
         .gap(space::S6)
-        .w_full()
-        .h(m.row_height)
         .pl(m.indent_left(depth))
         .rounded_xs()
 }
@@ -418,7 +437,7 @@ struct TreeMetrics {
 
 fn metrics() -> TreeMetrics {
     TreeMetrics {
-        row_height: typography::ui_line(),
+        row_height: typography::ui_line() + space::S6,
         indent: typography::ui_size(),
         padding: space::S6,
         icon_size: typography::ui_size(),

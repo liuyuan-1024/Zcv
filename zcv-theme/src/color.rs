@@ -103,10 +103,14 @@ pub struct ThemeColors {
     pub search_active_match_background: Rgba,
     /// 编辑器光标颜色。
     pub editor_cursor: Rgba,
-    /// 编辑器 diff 新增行背景（version_control_added 的低透明版本）。
+    /// 编辑器 diff 新增行背景（与 version_control_added 同色相的半透明背景）。
     pub editor_diff_added_background: Rgba,
-    /// 编辑器 diff 删除行背景（version_control_deleted 的低透明版本）。
+    /// 编辑器 diff 删除行背景（与 version_control_deleted 同色相的半透明背景）。
     pub editor_diff_deleted_background: Rgba,
+    /// 已暂存新增块的边框色（比行背景更实，勾出空心块轮廓）。
+    pub editor_diff_added_hollow_border: Rgba,
+    /// 已暂存删除块的边框色。
+    pub editor_diff_deleted_hollow_border: Rgba,
     /// 滚动轴轨道背景（默认透明，marker 与 thumb 绘制在其上方）。
     pub scrollbar_track_background: Rgba,
     /// 滚动轴 thumb 静止色。

@@ -3,12 +3,238 @@ use std::path::{Path, PathBuf};
 use gpui::{AppContext as _, TestAppContext};
 use std::sync::Arc;
 
-use crate::{BufferDiffInput, DisplayHunk};
+use crate::{BufferDiff, BufferDiffInput, DiffFile, DiffHunkStaging, DiffOperations, DisplayHunk};
 use zcv_git::DiffHunkKind;
 use zcv_language::LanguageBuffer;
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TextRange, TransactionMetadata};
 
 use super::*;
+
+/// 测试用的 diff 注入描述；由 `inject_diffs` 转成预创建的 `DiffFile`。
+struct TestDiff {
+    working: gpui::Entity<LanguageBuffer>,
+    path: PathBuf,
+    base_text: Option<Arc<str>>,
+    index_text: Option<Arc<str>>,
+    operations: Option<Arc<dyn DiffOperations>>,
+    display_path: PathBuf,
+    context_lines: Option<usize>,
+    show_file_header: bool,
+}
+
+impl MultiBuffer {
+    /// 测试辅助：按描述预创建 `BufferDiff`，再以 `DiffFile` 注入。
+    fn inject_diffs(&mut self, files: Option<Vec<TestDiff>>, cx: &mut gpui::Context<Self>) -> bool {
+        let files = files.map(|files| {
+            files
+                .into_iter()
+                .map(|file| DiffFile {
+                    diff: cx.new(|cx| {
+                        BufferDiff::new(
+                            BufferDiffInput {
+                                working: file.working,
+                                path: file.path,
+                                base_text: file.base_text,
+                                index_text: file.index_text,
+                                operations: file.operations,
+                            },
+                            cx,
+                        )
+                    }),
+                    display_path: file.display_path,
+                    context_lines: file.context_lines,
+                    show_file_header: file.show_file_header,
+                })
+                .collect()
+        });
+        self.set_buffer_diffs(files, cx)
+    }
+}
+
+/// 未提交 diff 以 HEAD 为 base、工作区为 working，由 index → working 参照逐 hunk 标注暂存语义。
+#[gpui::test]
+fn unified_diff_marks_staged_and_unstaged_hunks(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "one\nworking\nthree\n", cx);
+    let diff = cx.update(|cx| {
+        cx.new(|cx| {
+            BufferDiff::new(
+                BufferDiffInput {
+                    working: source.clone(),
+                    base_text: Some(Arc::from("one\nhead\nthree\n")),
+                    index_text: Some(Arc::from("one\nindex\nthree\n")),
+                    path: PathBuf::from("src/a.rs"),
+                    operations: None,
+                },
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_entity(&diff, |diff, _| {
+            diff.snapshot()
+                .visible_hunks()
+                .into_iter()
+                .map(|hunk| hunk.staging)
+                .collect::<Vec<_>>()
+        }),
+        vec![DiffHunkStaging::Unstaged]
+    );
+
+    let staged_source = singleton("src/staged.rs", "one\nstaged\nthree\n", cx);
+    let staged_diff = cx.update(|cx| {
+        cx.new(|cx| {
+            BufferDiff::new(
+                BufferDiffInput {
+                    working: staged_source,
+                    base_text: Some(Arc::from("one\nhead\nthree\n")),
+                    index_text: Some(Arc::from("one\nstaged\nthree\n")),
+                    path: PathBuf::from("src/staged.rs"),
+                    operations: None,
+                },
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_entity(&staged_diff, |diff, _| {
+            diff.snapshot()
+                .visible_hunks()
+                .into_iter()
+                .map(|hunk| hunk.staging)
+                .collect::<Vec<_>>()
+        }),
+        vec![DiffHunkStaging::Staged]
+    );
+}
+
+/// 同一文件同时存在已暂存与未暂存 hunk 时逐 hunk 判定，而不是整文件一刀切。
+#[gpui::test]
+fn unified_diff_marks_mixed_staged_and_unstaged_hunks(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "a\nB\nc\nd\nE\n", cx);
+    let diff = cx.update(|cx| {
+        cx.new(|cx| {
+            BufferDiff::new(
+                BufferDiffInput {
+                    working: source.clone(),
+                    base_text: Some(Arc::from("a\nb\nc\nd\ne\n")),
+                    index_text: Some(Arc::from("a\nB\nc\nd\ne\n")),
+                    path: PathBuf::from("src/a.rs"),
+                    operations: None,
+                },
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_entity(&diff, |diff, _| {
+            diff.snapshot()
+                .visible_hunks()
+                .into_iter()
+                .map(|hunk| hunk.staging)
+                .collect::<Vec<_>>()
+        }),
+        vec![DiffHunkStaging::Staged, DiffHunkStaging::Unstaged],
+        "b→B 在 index 中已是该内容（已暂存），e→E 仅在 worktree（未暂存）"
+    );
+}
+
+/// 已暂存视图：working 本身就是 index，分类自然得到全部 Staged。
+#[gpui::test]
+fn standalone_staged_view_classifies_all_hunks_as_staged(cx: &mut TestAppContext) {
+    let index_source = singleton("src/a.rs", "one\nstaged\nthree\n", cx);
+    let combined = cx.new(|cx| MultiBuffer::from_working_source(index_source.clone(), cx));
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
+                operations: None,
+                working: index_source.clone(),
+                base_text: Some(Arc::from("one\nhead\nthree\n")),
+                index_text: Some(Arc::from("one\nstaged\nthree\n")),
+                path: PathBuf::from("src/a.rs"),
+                display_path: PathBuf::from("src/a.rs"),
+                context_lines: None,
+                show_file_header: false,
+            }]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_entity(&combined, |buffer, _| {
+            buffer
+                .diff_hunks()
+                .iter()
+                .map(|hunk| hunk.staging)
+                .collect::<Vec<_>>()
+        }),
+        vec![DiffHunkStaging::Staged],
+        "已暂存视图的 hunk 应带 Staged 语义（空心）"
+    );
+}
+
+/// 已暂存 hunk 又被部分编辑（同段内追加未暂存内容）时，HEAD→工作区主 hunk 与
+/// index→工作区 hunk 部分重叠，应标记为 PartiallyStaged（实心渲染）。
+#[gpui::test]
+fn staged_hunk_with_partial_unstaged_edit_is_partially_staged(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "line1\nSTAGED\nNEW\nline3\n", cx);
+    let diff = cx.update(|cx| {
+        cx.new(|cx| {
+            BufferDiff::new(
+                BufferDiffInput {
+                    working: source.clone(),
+                    base_text: Some(Arc::from("line1\nline2\nline3\n")),
+                    index_text: Some(Arc::from("line1\nSTAGED\nline3\n")),
+                    path: PathBuf::from("src/a.rs"),
+                    operations: None,
+                },
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
+    let stagings = cx.read_entity(&diff, |diff, _| {
+        diff.snapshot()
+            .visible_hunks()
+            .into_iter()
+            .map(|hunk| hunk.staging)
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(stagings, vec![DiffHunkStaging::PartiallyStaged]);
+}
+
+/// 主 hunk 与未暂存 hunk 仅部分重叠时标记为部分暂存。
+#[gpui::test]
+fn unified_diff_marks_partially_staged_hunk(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "one\nX\nY\nthree\n", cx);
+    let diff = cx.update(|cx| {
+        cx.new(|cx| {
+            BufferDiff::new(
+                BufferDiffInput {
+                    working: source.clone(),
+                    base_text: Some(Arc::from("one\nhead\nthree\n")),
+                    index_text: Some(Arc::from("one\nX\nthree\n")),
+                    path: PathBuf::from("src/a.rs"),
+                    operations: None,
+                },
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_entity(&diff, |diff, _| {
+            diff.snapshot()
+                .visible_hunks()
+                .into_iter()
+                .map(|hunk| hunk.staging)
+                .collect::<Vec<_>>()
+        }),
+        vec![DiffHunkStaging::PartiallyStaged]
+    );
+}
 
 fn singleton(path: &str, text: &str, cx: &mut TestAppContext) -> gpui::Entity<LanguageBuffer> {
     let buffer = cx.new(|_| {
@@ -537,15 +763,15 @@ fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "zero\none\ntwo\nthree\n", cx);
     let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_buffer_diffs(
-            Some(vec![BufferDiffInput {
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
                 operations: None,
                 working: source.clone(),
                 base_text: Some(Arc::from("zero\nold\ntwo\nthree\n")),
+                index_text: None,
                 path: PathBuf::from("src/a.rs"),
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                is_created: false,
                 show_file_header: false,
             }]),
             cx,
@@ -554,11 +780,8 @@ fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update_entity(&combined, |buffer, cx| buffer.toggle_diff_hunk_at(0, cx));
     assert!(
-        cx.read_entity(&combined, |buffer, cx| {
-            buffer
-                .diff_hunk_expanded(cx)
-                .iter()
-                .all(|&expanded| expanded)
+        cx.read_entity(&combined, |buffer, _cx| {
+            buffer.diff_hunk_expanded().iter().all(|&expanded| expanded)
         }),
         "展开后应记录展开状态"
     );
@@ -576,7 +799,7 @@ fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    let hunks_after_edit = cx.read_entity(&combined, |buffer, cx| buffer.diff_hunks(cx).to_vec());
+    let hunks_after_edit = cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunks().to_vec());
     assert_eq!(
         hunks_after_edit.len(),
         2,
@@ -591,26 +814,23 @@ fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
 
     // 重新注入：hunk 新侧坐标移到行 2（文件内容已变），展开状态按文本跟踪区间迁移到新 hunk。
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_buffer_diffs(
-            Some(vec![BufferDiffInput {
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
                 operations: None,
                 working: source.clone(),
                 base_text: Some(Arc::from("pre\nzero\nold\ntwo\nthree\n")),
+                index_text: None,
                 path: PathBuf::from("src/a.rs"),
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                is_created: false,
                 show_file_header: false,
             }]),
             cx,
         );
     });
     cx.run_until_parked();
-    let (hunks, expanded) = cx.read_entity(&combined, |buffer, cx| {
-        (
-            buffer.diff_hunks(cx).to_vec(),
-            buffer.diff_hunk_expanded(cx),
-        )
+    let (hunks, expanded) = cx.read_entity(&combined, |buffer, _cx| {
+        (buffer.diff_hunks().to_vec(), buffer.diff_hunk_expanded())
     });
     assert_eq!(hunks.len(), 1, "重新注入后应显示新坐标 hunk");
     // 新 hunk 采用默认折叠状态，并由新 Git 快照提供坐标。
@@ -629,15 +849,15 @@ fn diff_expansion_survives_hunk_refresh_and_merge(cx: &mut TestAppContext) {
     let base_text: Arc<str> = Arc::from("line0\nline1\nline2\nline3\n");
 
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_buffer_diffs(
-            Some(vec![BufferDiffInput {
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
                 operations: None,
                 working: source.clone(),
                 base_text: Some(base_text.clone()),
+                index_text: None,
                 path: PathBuf::from("tracked.txt"),
                 display_path: PathBuf::from("tracked.txt"),
                 context_lines: None,
-                is_created: false,
                 show_file_header: false,
             }]),
             cx,
@@ -660,16 +880,16 @@ fn diff_expansion_survives_hunk_refresh_and_merge(cx: &mut TestAppContext) {
 
     // 模拟 GitStore 刷新期间的加载态，再注入合并后的新结果。
     cx.update_entity(&combined, |buffer, cx| {
-        assert!(!buffer.set_buffer_diffs(None, cx));
-        buffer.set_buffer_diffs(
-            Some(vec![BufferDiffInput {
+        assert!(!buffer.inject_diffs(None, cx));
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
                 operations: None,
                 working: source.clone(),
                 base_text: Some(base_text),
+                index_text: None,
                 path: PathBuf::from("tracked.txt"),
                 display_path: PathBuf::from("tracked.txt"),
                 context_lines: None,
-                is_created: false,
                 show_file_header: false,
             }]),
             cx,
@@ -677,11 +897,8 @@ fn diff_expansion_survives_hunk_refresh_and_merge(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    let (hunks, expanded) = cx.read_entity(&combined, |buffer, cx| {
-        (
-            buffer.diff_hunks(cx).to_vec(),
-            buffer.diff_hunk_expanded(cx),
-        )
+    let (hunks, expanded) = cx.read_entity(&combined, |buffer, _cx| {
+        (buffer.diff_hunks().to_vec(), buffer.diff_hunk_expanded())
     });
     assert_eq!(hunks.len(), 1, "刷新后相邻改动应合并为一个 hunk");
     assert_eq!(hunks[0].old_range, 1..2, "合并后的 hunk 旧侧应为实际替换行");
@@ -700,15 +917,15 @@ fn undo_keeps_rust_highlighting_in_diff_projection(cx: &mut TestAppContext) {
     );
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_buffer_diffs(
-            Some(vec![BufferDiffInput {
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
                 operations: None,
                 working: source.clone(),
                 base_text: Some(Arc::from("fn main() { let value = 0; }\n")),
+                index_text: None,
                 path: PathBuf::from("src/window_controls.rs"),
                 display_path: PathBuf::from("src/window_controls.rs"),
                 context_lines: Some(2),
-                is_created: false,
                 show_file_header: false,
             }]),
             cx,
@@ -751,15 +968,15 @@ fn save_after_diff_hunk_edit_keeps_rust_highlighting(cx: &mut TestAppContext) {
     );
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_buffer_diffs(
-            Some(vec![BufferDiffInput {
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
                 operations: None,
                 working: source.clone(),
                 base_text: Some(Arc::from("fn main() { let value = 0; }\n")),
+                index_text: None,
                 path: PathBuf::from("src/window_controls.rs"),
                 display_path: PathBuf::from("src/window_controls.rs"),
                 context_lines: Some(2),
-                is_created: false,
                 show_file_header: false,
             }]),
             cx,
@@ -803,26 +1020,26 @@ fn diff_hunk_coordinates_follow_materialized_excerpts_across_files(cx: &mut Test
 
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_diff_hunks_expanded_by_default(true, cx);
-        buffer.set_buffer_diffs(
+        buffer.inject_diffs(
             Some(vec![
-                BufferDiffInput {
+                TestDiff {
                     operations: None,
                     working: created,
-                    base_text: Some(Arc::from("")),
+                    base_text: None,
+                    index_text: None,
                     path: PathBuf::from("created.txt"),
                     display_path: PathBuf::from("created.txt"),
                     context_lines: Some(2),
-                    is_created: true,
                     show_file_header: true,
                 },
-                BufferDiffInput {
+                TestDiff {
                     operations: None,
                     working: modified,
                     base_text: Some(Arc::from("before\nold\nafter\n")),
+                    index_text: None,
                     path: PathBuf::from("modified.txt"),
                     display_path: PathBuf::from("modified.txt"),
                     context_lines: Some(2),
-                    is_created: false,
                     show_file_header: true,
                 },
             ]),
@@ -838,28 +1055,30 @@ fn diff_hunk_coordinates_follow_materialized_excerpts_across_files(cx: &mut Test
             "created\nbefore\nold\nnew\nafter\n"
         );
         assert_eq!(
-            buffer.diff_hunk_old_ranges(cx),
+            buffer.diff_hunk_old_ranges(),
             &[None, Some(2..3)],
             "旧侧范围应落在实际物化的 old 行"
         );
         assert_eq!(
-            buffer.diff_hunks(cx),
+            buffer.diff_hunks(),
             &[
                 DisplayHunk {
                     range: 0..1,
                     old_range: 0..0,
                     kind: DiffHunkKind::Added,
+                    staging: DiffHunkStaging::NoStaging,
                 },
                 DisplayHunk {
                     range: 3..4,
                     old_range: 1..2,
                     kind: DiffHunkKind::Modified,
+                    staging: DiffHunkStaging::NoStaging,
                 },
             ],
             "新侧范围应落在实际物化的 new 行，不能受前一文件末尾空逻辑行影响"
         );
         assert_eq!(
-            buffer.diff_hunk_expanded(cx),
+            buffer.diff_hunk_expanded(),
             &[true, true],
             "展开状态必须与物化后的显示 hunk 同序，不能遗漏整文件新增块"
         );
@@ -888,15 +1107,15 @@ fn diff_expansion_survives_base_change_when_working_text_is_unchanged(cx: &mut T
     let source = singleton("src/a.rs", "zero\none\ntwo\nthree\n", cx);
     let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_buffer_diffs(
-            Some(vec![BufferDiffInput {
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
                 operations: None,
                 working: source.clone(),
                 base_text: Some(Arc::from("zero\nold\ntwo\nthree\n")),
+                index_text: None,
                 path: PathBuf::from("src/a.rs"),
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                is_created: false,
                 show_file_header: false,
             }]),
             cx,
@@ -905,24 +1124,24 @@ fn diff_expansion_survives_base_change_when_working_text_is_unchanged(cx: &mut T
     });
     // base 完全变化（模拟提交后新 HEAD）：旧侧文本改变后，当前文本对派生出另一个 hunk。
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_buffer_diffs(
-            Some(vec![BufferDiffInput {
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
                 operations: None,
                 working: source.clone(),
                 base_text: Some(Arc::from("zero\none\nold\nthree\n")),
+                index_text: None,
                 path: PathBuf::from("src/a.rs"),
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                is_created: false,
                 show_file_header: false,
             }]),
             cx,
         );
     });
     assert!(
-        cx.read_entity(&combined, |buffer, cx| {
+        cx.read_entity(&combined, |buffer, _cx| {
             buffer
-                .diff_hunk_expanded(cx)
+                .diff_hunk_expanded()
                 .iter()
                 .all(|&expanded| !expanded)
         }),
@@ -936,15 +1155,15 @@ fn external_full_replacement_invalidates_stale_diff_hunks(cx: &mut TestAppContex
     let source = singleton("src/a.rs", "first\nchanged\nthird\n", cx);
     let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_buffer_diffs(
-            Some(vec![BufferDiffInput {
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
                 operations: None,
                 working: source.clone(),
                 base_text: Some(Arc::from("first\noriginal\nthird\n")),
+                index_text: None,
                 path: PathBuf::from("src/a.rs"),
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                is_created: false,
                 show_file_header: false,
             }]),
             cx,
@@ -965,7 +1184,7 @@ fn external_full_replacement_invalidates_stale_diff_hunks(cx: &mut TestAppContex
             String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("投影应为 UTF-8"),
             "replacement\n"
         );
-        assert_eq!(buffer.diff_hunks(cx).len(), 1, "新快照应生成新的显示 hunk");
+        assert_eq!(buffer.diff_hunks().len(), 1, "新快照应生成新的显示 hunk");
         assert!(buffer.buffer_diff_hunk_at(0, cx).is_some());
         assert!(
             buffer
@@ -976,35 +1195,34 @@ fn external_full_replacement_invalidates_stale_diff_hunks(cx: &mut TestAppContex
     });
 }
 
-/// BufferDiff 自行观察 working buffer：直接编辑源文本后，无需显示层驱动即会重算并发出事件。
+/// BufferDiff 不自行订阅源：working 文本变化由宿主（组合文档投影）驱动重算。
 #[gpui::test]
-fn buffer_diff_recomputes_from_its_own_buffer_subscription(cx: &mut TestAppContext) {
+fn host_drives_buffer_diff_recompute_from_source_edits(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "a\nb\n", cx);
-    let diff = cx.update(|cx| {
-        cx.new(|cx| {
-            BufferDiff::new(
-                BufferDiffInput {
-                    working: source.clone(),
-                    base_text: Some(Arc::from("a\n")),
-                    path: PathBuf::from("src/a.rs"),
-                    is_created: false,
-                    operations: None,
-                    display_path: PathBuf::from("src/a.rs"),
-                    context_lines: None,
-                    show_file_header: false,
-                },
-                cx,
-            )
-        })
+    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
+                working: source.clone(),
+                base_text: Some(Arc::from("a\n")),
+                index_text: None,
+                path: PathBuf::from("src/a.rs"),
+                operations: None,
+                display_path: PathBuf::from("src/a.rs"),
+                context_lines: None,
+                show_file_header: false,
+            }]),
+            cx,
+        );
     });
     cx.run_until_parked();
     assert_eq!(
-        cx.read_entity(&diff, |diff, _| diff.snapshot().hunks().len()),
+        cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunks().len()),
         1,
         "初始应有一个新增 hunk"
     );
 
-    // 直接编辑 working buffer，不经过任何显示层调用。
+    // 直接编辑 working buffer，不经过任何显示层调用；宿主订阅到变化后驱动重算。
     let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
     cx.update_entity(&source_buffer, |buffer, cx| {
         buffer
@@ -1021,28 +1239,27 @@ fn buffer_diff_recomputes_from_its_own_buffer_subscription(cx: &mut TestAppConte
     cx.run_until_parked();
 
     assert_eq!(
-        cx.read_entity(&diff, |diff, _| diff.snapshot().hunks().len()),
+        cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunks().len()),
         0,
-        "源变化后 BufferDiff 应自行重算到无差异"
+        "源变化后宿主应驱动 BufferDiff 重算到无差异"
     );
 }
-/// 新增块没有旧侧内容，不参与展开/折叠：整行背景只由展开策略默认值决定。
-/// 普通文档默认折叠（只保留 gutter 竖条），差异审阅视图默认展开展示背景色。
+
+/// 回归：编辑内容但 hunk 几何不变时，diff 高亮不能因显示坐标门控而整体消失。
 #[gpui::test]
-fn added_hunk_background_follows_view_expansion_policy(cx: &mut TestAppContext) {
+fn diff_hunks_survive_geometry_preserving_edits(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "a\nb\nc\n", cx);
     let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_buffer_diffs(
-            Some(vec![BufferDiffInput {
-                operations: None,
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
                 working: source.clone(),
-                // base 缺少 b：派生一个纯新增 hunk。
-                base_text: Some(Arc::from("a\nc\n")),
+                base_text: Some(Arc::from("a\nB\nc\n")),
+                index_text: None,
                 path: PathBuf::from("src/a.rs"),
+                operations: None,
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                is_created: false,
                 show_file_header: false,
             }]),
             cx,
@@ -1050,12 +1267,213 @@ fn added_hunk_background_follows_view_expansion_policy(cx: &mut TestAppContext) 
     });
     cx.run_until_parked();
     assert_eq!(
-        cx.read_entity(&combined, |buffer, cx| buffer.diff_hunks(cx).len()),
+        cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunks().len()),
+        1
+    );
+
+    // 同一行内改内容：行数不变、hunk 行范围与词级范围都不变，diff 不会发出 DiffChanged。
+    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
+    cx.update_entity(&source_buffer, |buffer, cx| {
+        buffer
+            .edit(
+                vec![Edit::replace(
+                    TextRange::new(ByteOffset::new(2), ByteOffset::new(3)).unwrap(),
+                    "z",
+                )],
+                TransactionMetadata::default(),
+            )
+            .unwrap();
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    assert_eq!(
+        cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunks().len()),
+        1,
+        "hunk 几何不变的编辑后 diff 高亮必须保留"
+    );
+    assert_eq!(
+        cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunk_expanded()),
+        vec![false],
+        "展开状态同样受该门控影响，必须保持可用"
+    );
+}
+
+/// 回归：某个文件尚未算完时，不能清空其他文件已经就绪的 diff 高亮。
+#[gpui::test]
+fn pending_new_file_does_not_hide_ready_diff_hunks(cx: &mut TestAppContext) {
+    let source_a = singleton("src/a.rs", "a\nb\nc\n", cx);
+    let combined = cx.new(|cx| MultiBuffer::from_working_source(source_a.clone(), cx));
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
+                working: source_a.clone(),
+                base_text: Some(Arc::from("a\nB\nc\n")),
+                index_text: None,
+                path: PathBuf::from("src/a.rs"),
+                operations: None,
+                display_path: PathBuf::from("src/a.rs"),
+                context_lines: None,
+                show_file_header: false,
+            }]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_entity(&combined, |buffer, _| buffer.diff_hunks().len()),
+        1
+    );
+
+    // 加入第二个文件；不 park，使它的 diff 仍在计算中（set_buffer_diffs 因而提前返回）。
+    let source_c = singleton("src/c.rs", "x\ny\nz\n", cx);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![
+                TestDiff {
+                    working: source_a.clone(),
+                    base_text: Some(Arc::from("a\nB\nc\n")),
+                    index_text: None,
+                    path: PathBuf::from("src/a.rs"),
+                    operations: None,
+                    display_path: PathBuf::from("src/a.rs"),
+                    context_lines: None,
+                    show_file_header: false,
+                },
+                TestDiff {
+                    working: source_c.clone(),
+                    base_text: Some(Arc::from("x\nY\nz\n")),
+                    index_text: None,
+                    path: PathBuf::from("src/c.rs"),
+                    operations: None,
+                    display_path: PathBuf::from("src/c.rs"),
+                    context_lines: None,
+                    show_file_header: false,
+                },
+            ]),
+            cx,
+        );
+    });
+    assert!(
+        !cx.read_entity(&combined, |buffer, _| buffer.diff_hunks().is_empty()),
+        "新文件未就绪不能清空已有文件的 diff 高亮"
+    );
+}
+
+/// 回归：初始后台结果对应旧版本被拒后，diff 必须补算到当前版本，不能永久停在未计算状态。
+#[gpui::test]
+fn diff_recovers_when_initial_result_is_stale(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "a\nb\nc\n", cx);
+    let diff = cx.update(|cx| {
+        cx.new(|cx| {
+            BufferDiff::new(
+                BufferDiffInput {
+                    working: source.clone(),
+                    base_text: Some(Arc::from("a\nB\nc\n")),
+                    index_text: None,
+                    path: PathBuf::from("src/a.rs"),
+                    operations: None,
+                },
+                cx,
+            )
+        })
+    });
+    // 不 park，立即编辑源：初始后台结果会对应旧版本并被版本门控拒绝。
+    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
+    cx.update_entity(&source_buffer, |buffer, cx| {
+        buffer
+            .edit(
+                vec![Edit::replace(
+                    TextRange::new(ByteOffset::new(2), ByteOffset::new(3)).unwrap(),
+                    "z",
+                )],
+                TransactionMetadata::default(),
+            )
+            .unwrap();
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.read_entity(&diff, |diff, cx| diff.is_current_version_calculated(cx)),
+        "过期结果被拒后必须补算到当前版本"
+    );
+}
+
+/// 回归：连续多次编辑后，diff 高亮仍必须可用（不依赖异步 DiffChanged 恰好重建）。
+#[gpui::test]
+fn diff_hunks_survive_rapid_edits(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "a\nb\nc\n", cx);
+    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
+                working: source.clone(),
+                base_text: Some(Arc::from("a\nB\nc\n")),
+                index_text: None,
+                path: PathBuf::from("src/a.rs"),
+                operations: None,
+                display_path: PathBuf::from("src/a.rs"),
+                context_lines: None,
+                show_file_header: false,
+            }]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
+    // 快速连续编辑同一行（每次都改变 working 版本，但 hunk 几何不变）。
+    for i in 0..6u8 {
+        let replacement = char::from(b'a' + i).to_string();
+        cx.update_entity(&source_buffer, |buffer, cx| {
+            buffer
+                .edit(
+                    vec![Edit::replace(
+                        TextRange::new(ByteOffset::new(2), ByteOffset::new(3)).unwrap(),
+                        replacement.clone(),
+                    )],
+                    TransactionMetadata::default(),
+                )
+                .unwrap();
+            cx.notify();
+        });
+    }
+    cx.run_until_parked();
+    assert!(
+        !cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunks().is_empty()),
+        "连续编辑后 diff 高亮不能消失"
+    );
+}
+
+/// 新增块没有旧侧内容，不参与展开/折叠：整行背景只由展开策略默认值决定。
+/// 普通文档默认折叠（只保留 gutter 竖条），差异审阅视图默认展开展示背景色。
+#[gpui::test]
+fn added_hunk_background_follows_view_expansion_policy(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "a\nb\nc\n", cx);
+    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
+                operations: None,
+                working: source.clone(),
+                // base 缺少 b：派生一个纯新增 hunk。
+                base_text: Some(Arc::from("a\nc\n")),
+                index_text: None,
+                path: PathBuf::from("src/a.rs"),
+                display_path: PathBuf::from("src/a.rs"),
+                context_lines: None,
+                show_file_header: false,
+            }]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunks().len()),
         1
     );
     // 普通文档默认折叠：不整行着色。
     assert_eq!(
-        cx.read_entity(&combined, |buffer, cx| buffer.diff_hunk_expanded(cx)),
+        cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunk_expanded()),
         vec![false]
     );
     // 差异审阅视图默认展开：显示整行背景。
@@ -1063,7 +1481,7 @@ fn added_hunk_background_follows_view_expansion_policy(cx: &mut TestAppContext) 
         buffer.set_diff_hunks_expanded_by_default(true, cx)
     });
     assert_eq!(
-        cx.read_entity(&combined, |buffer, cx| buffer.diff_hunk_expanded(cx)),
+        cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunk_expanded()),
         vec![true]
     );
 }
@@ -1092,15 +1510,15 @@ fn expanded_modified_hunk_exposes_word_diffs_in_composite_coordinates(cx: &mut T
     let source = singleton("src/a.rs", "let x = 2;\n", cx);
     let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_buffer_diffs(
-            Some(vec![BufferDiffInput {
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
                 operations: None,
                 working: source.clone(),
                 base_text: Some(Arc::from("let x = 1;\n")),
+                index_text: None,
                 path: PathBuf::from("src/a.rs"),
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                is_created: false,
                 show_file_header: false,
             }]),
             cx,
@@ -1112,7 +1530,7 @@ fn expanded_modified_hunk_exposes_word_diffs_in_composite_coordinates(cx: &mut T
     let (text, word_diffs) = cx.read_entity(&combined, |buffer, cx| {
         let text =
             String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("组合文本必须是 UTF-8");
-        (text, buffer.diff_hunk_word_diffs(cx).to_vec())
+        (text, buffer.diff_hunk_word_diffs().to_vec())
     });
     assert_eq!(word_diffs.len(), 1, "应有一个显示 hunk");
     let diffs = &word_diffs[0];

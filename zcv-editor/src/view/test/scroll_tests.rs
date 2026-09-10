@@ -14,7 +14,7 @@ impl Render for EditorInWindow {
     }
 }
 use zcv_git::DiffHunkKind;
-use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
+use zcv_multi_buffer::{DiffHunkStaging, MultiBuffer, MultiBufferExcerpt};
 use zcv_text::ByteOffset;
 
 use super::common::focus_editor;
@@ -539,6 +539,7 @@ fn dragging_thumb_to_marker_position_scrolls_to_that_row(cx: &mut TestAppContext
             range: 50..51,
             old_range: 50..51,
             kind: DiffHunkKind::Modified,
+            staging: DiffHunkStaging::NoStaging,
         }],
         None,
         cx,

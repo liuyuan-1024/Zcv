@@ -1,18 +1,17 @@
 //! 单个文件的版本化 diff 状态实体。
 //!
-//! `BufferDiff` 是 diff 状态与操作能力的唯一拥有者：
-//! base/working buffer、当前版本、版本绑定的 `BufferDiffSnapshot`、pending 操作与 `DiffOperations` 都由它持有。
-//! 它自行观察 working buffer，源文本变化时重算并发出事件；显示层只订阅结果并物化。
-//! 展开/折叠、显示路径与上下文裁剪等显示状态不属于本层，由 `MultiBuffer` 的 diff 投影持有。
+//! `BufferDiff` 是单个文件 diff 结果的权威状态：base/index/working 来源、版本绑定的 `BufferDiffSnapshot`、pending 操作与 `DiffOperations` 都由它持有。
+//! 它不订阅 working buffer，也不决定何时重算：宿主（`MultiBuffer` 的 diff 投影）在源文本变化时调用 [`BufferDiff::recompute`]，本层只负责后台计算、版本门控与结果发布。
+//! hunk 的暂存语义统一相对 index 参照判定，所有视图共用同一套；展开/折叠、显示路径与上下文裁剪由 `MultiBuffer` 的 diff 投影持有。
 
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Subscription};
+use gpui::{App, AppContext as _, Context, Entity, EventEmitter};
 use imara_diff::{Algorithm, Diff, InternedInput};
 use zcv_git::DiffHunkKind;
-use zcv_language::{LanguageBuffer, LanguageBufferEvent};
+use zcv_language::LanguageBuffer;
 use zcv_text::{Anchor, BufferConfig, BufferVersion, ByteOffset, Line, Snapshot, TextRange};
 
 use crate::word_diff::{MAX_WORD_DIFF_BYTES, MAX_WORD_DIFF_LINES, word_diff_ranges};
@@ -24,9 +23,10 @@ pub enum BufferDiffEvent {
     DiffChanged,
 }
 
-/// 一个文件的 diff 注入输入。
+/// 单个文件的 diff 创建输入。
 ///
-/// diff 状态（working、base、版本与操作）与显示配置（display_path、context_lines、show_file_header）一起由宿主提供，但只有前者进入 `BufferDiff`。
+/// 只包含 diff 状态（working、base 与操作）；显示配置由注入项 `DiffFile` 提供。
+#[derive(Clone)]
 pub struct BufferDiffInput {
     /// 新侧源（工作区文件或修订文本的语言 Buffer 实体）。
     pub working: Entity<LanguageBuffer>,
@@ -34,17 +34,15 @@ pub struct BufferDiffInput {
     pub path: PathBuf,
     /// 旧侧（base 修订）全文；None 表示没有旧侧（如整体新增文件）。
     pub base_text: Option<Arc<str>>,
-    /// 该文件整体为新增（无派生 hunk 时整个文件作为 Added 显示）。
-    pub is_created: bool,
+    /// index 参照全文；hunk 的暂存语义统一相对它判定。
+    ///
+    /// - 未提交视图（如普通编辑器 gutter）：HEAD 为 base、工作区为 working，真实 index 用于逐 hunk 判定；
+    /// - 已暂存视图：working 本身就是 index，分类自然得到全部 Staged；
+    /// - 未暂存视图：base 本身就是 index，分类自然得到全部 Unstaged；
+    /// - None：index 尚未加载或无暂存语境，暂按 NoStaging（实心）渲染。
+    pub index_text: Option<Arc<str>>,
     /// 由宿主注入的 diff 操作实现；无操作能力（普通编辑器 gutter）时为 None。
     pub operations: Option<Arc<dyn DiffOperations>>,
-    /// 组合文档中的显示路径（文件标题与导航定位）。
-    pub display_path: PathBuf,
-    /// 显示策略：None 显示整个新侧文件（普通编辑器）；
-    /// Some(n) 只显示 hunk 周围 n 行上下文（多文件投影）。
-    pub context_lines: Option<usize>,
-    /// 该文件的第一个可见片段是否创建文件标题块。
-    pub show_file_header: bool,
 }
 
 /// 把当前 diff hunk 转换为具体 Git 编辑操作的端口。
@@ -77,6 +75,9 @@ pub struct DiffHunk {
     /// base 文本中的字节范围。
     pub diff_base_byte_range: Range<usize>,
     pub kind: DiffHunkKind,
+    /// 相对 index 参照的暂存语义；
+    /// 由 snapshot 统一算好，显示层不再二次判定。
+    pub staging: DiffHunkStaging,
     /// 新侧词级变化片段（working 锚点）；无词级结果时为空。
     pub buffer_word_diffs: Vec<Range<Anchor>>,
     /// 旧侧词级变化片段（相对 `diff_base_byte_range.start` 的字节偏移）。
@@ -84,7 +85,7 @@ pub struct DiffHunk {
 }
 
 /// pending 操作希望在 diff 结果中表达的效果。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PendingSense {
     /// 抑制该 hunk（apply/reject 后立即从当前 diff 中消失）。
     Suppress,
@@ -100,6 +101,72 @@ pub struct PendingHunk {
     /// 旧版本 pending 不得抑制新版本 hunk。
     pub buffer_version: BufferVersion,
     pub sense: PendingSense,
+}
+
+/// hunk 相对 index 参照的暂存语义；所有视图共用同一套（包括普通编辑器 gutter）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DiffHunkStaging {
+    /// 主 hunk 与 index→working 完全一致：内容尚未进入 index。
+    Unstaged,
+    /// 与 index→working 部分重叠：只有一部分进入了 index。
+    PartiallyStaged,
+    /// index→working 无重叠：内容已在 index 中。
+    Staged,
+    /// 没有 index 参照（index 尚未加载或无暂存语境），不参与暂存渲染。
+    NoStaging,
+}
+
+/// 给主 hunks 标上相对 index 参照的暂存语义。
+///
+/// index 参照为 None 时全部 NoStaging；否则逐个与 index→working hunks 比对。
+fn classify_staging(hunks: &mut [DiffHunk], index_hunks: Option<&[DiffHunk]>) {
+    match index_hunks {
+        None => {
+            for hunk in hunks {
+                hunk.staging = DiffHunkStaging::NoStaging;
+            }
+        }
+        Some(index_hunks) => {
+            for hunk in hunks {
+                hunk.staging = staging_against(hunk, index_hunks);
+            }
+        }
+    }
+}
+
+/// 单个主 hunk 相对 index→working hunks 的暂存语义。
+///
+/// 范围完全一致即完全未暂存；有交集但不等即部分暂存；完全不相交即已暂存。
+/// 先找完全一致的匹配，避免被更早出现的部分重叠 hunk 短路。
+fn staging_against(hunk: &DiffHunk, index_hunks: &[DiffHunk]) -> DiffHunkStaging {
+    let range = hunk.buffer_range.start.offset().get()..hunk.buffer_range.end.offset().get();
+    let mut partial = false;
+    for index_hunk in index_hunks {
+        // 空 working 且空 base 的 index hunk 不表达任何改动，忽略。
+        let index_buffer_empty =
+            index_hunk.buffer_range.start.offset() == index_hunk.buffer_range.end.offset();
+        if index_buffer_empty && index_hunk.diff_base_byte_range.is_empty() {
+            continue;
+        }
+        let index_range = index_hunk.buffer_range.start.offset().get()
+            ..index_hunk.buffer_range.end.offset().get();
+        if index_range == range {
+            return DiffHunkStaging::Unstaged;
+        }
+        let overlaps = if range.is_empty() || index_range.is_empty() {
+            range.start == index_range.start
+        } else {
+            range.start < index_range.end && index_range.start < range.end
+        };
+        if overlaps {
+            partial = true;
+        }
+    }
+    if partial {
+        DiffHunkStaging::PartiallyStaged
+    } else {
+        DiffHunkStaging::Staged
+    }
 }
 
 impl PendingHunk {
@@ -136,7 +203,7 @@ impl BufferDiffSnapshot {
         &self.hunks
     }
 
-    /// pending 抑制后应当显示的 hunks。
+    /// pending 抑制后应当显示的 hunks（已带暂存语义）。
     pub fn visible_hunks(&self) -> Vec<DiffHunk> {
         self.hunks
             .iter()
@@ -164,16 +231,14 @@ pub struct BufferDiff {
     working: Entity<LanguageBuffer>,
     base_source: Option<Entity<LanguageBuffer>>,
     base_text: Option<Arc<str>>,
+    index_text: Option<Arc<str>>,
     path: PathBuf,
-    is_created: bool,
     snapshot: BufferDiffSnapshot,
     operations: Option<Arc<dyn DiffOperations>>,
     /// diff 结果或 pending 的单调版本；显示层据此判断是否需要重新物化。
     revision: u64,
     /// 最近一次已完成计算对应的 working 版本；None 表示初始计算尚未返回。
     calculated_working_version: Option<BufferVersion>,
-    /// 观察 working buffer：源文本变化时由本实体自行在后台重算并发出事件。
-    _working_subscription: Subscription,
 }
 
 impl EventEmitter<BufferDiffEvent> for BufferDiff {}
@@ -194,42 +259,44 @@ impl BufferDiff {
             // 旧侧源的文件路径必须与工作区源一致（绝对），excerpt 定位与导航按源路径匹配。
             cx.new(|cx| LanguageBuffer::new(buffer, Some(input.path.clone()), cx))
         });
-        // diff 状态的所有者自行响应 working buffer 版本变化，显示层只订阅结果。
-        let working_subscription = cx.subscribe(&input.working, |this, _, event, cx| {
-            if matches!(event, LanguageBufferEvent::TextChanged) {
-                this.schedule_recompute(cx);
-            }
-        });
         let mut this = Self {
             working: input.working,
             base_source,
             base_text: input.base_text,
+            index_text: input.index_text,
             path: input.path,
-            is_created: input.is_created,
             snapshot,
             operations: input.operations,
             revision: 0,
             calculated_working_version: None,
-            _working_subscription: working_subscription,
         };
-        this.schedule_recompute(cx);
+        this.recompute(cx);
         this
     }
 
     /// 捕获当前 working 快照，在后台计算 diff。
     ///
+    /// 由宿主在创建后与 working 文本变化时调用；本实体不订阅 working buffer。
     /// 结果回到前台后必须再次比对版本，避免较早任务覆盖后续编辑的 hunk。
-    fn schedule_recompute(&mut self, cx: &mut Context<Self>) {
-        let working_text = self.working.read(cx).text_snapshot(cx);
-        let working_version = working_text.version();
+    pub fn recompute(&mut self, cx: &mut Context<Self>) {
+        let working = self.working.read(cx).text_snapshot(cx);
+        let working_version = working.version();
         let base_text = self.base_text.clone();
-        let is_created = self.is_created;
+        let index_text = self.index_text.clone();
         let background = cx.background_executor().clone();
         cx.spawn(async move |this, cx| {
             let hunks = background
-                .spawn(
-                    async move { compute_hunks(base_text.as_deref(), &working_text, is_created) },
-                )
+                .spawn(async move {
+                    let mut hunks = compute_hunks(base_text.as_deref(), &working);
+                    let index_hunks = index_reference_hunks(
+                        base_text.as_deref(),
+                        index_text.as_deref(),
+                        &working,
+                        &hunks,
+                    );
+                    classify_staging(&mut hunks, index_hunks.as_deref());
+                    hunks
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.apply_recomputed_hunks(working_version, hunks, cx);
@@ -249,6 +316,9 @@ impl BufferDiff {
         cx: &mut Context<Self>,
     ) -> bool {
         if self.working.read(cx).text_snapshot(cx).version() != working_version {
+            // 结果对应的 working 版本已过期：立即按当前版本补算。
+            // 否则若期间没有新的源事件（例如订阅尚未建立），diff 会永久停留在未计算状态，而显示层要求所有 diff 已计算，整份文档的 git 高亮就会消失。
+            self.recompute(cx);
             return false;
         }
         let calculation_was_pending = self.calculated_working_version != Some(working_version);
@@ -296,8 +366,9 @@ impl BufferDiff {
         &self.path
     }
 
+    /// 文件整体是否为新增：旧侧（base）缺失。
     pub fn is_created(&self) -> bool {
-        self.is_created
+        self.base_text.is_none()
     }
 
     pub fn operations(&self) -> Option<Arc<dyn DiffOperations>> {
@@ -323,34 +394,58 @@ impl BufferDiff {
         self.revision = self.revision.wrapping_add(1).max(1);
         cx.emit(BufferDiffEvent::DiffChanged);
     }
-
-    /// 更新操作实现；宿主重新注入同一实体时同步。
-    pub fn set_operations(&mut self, operations: Option<Arc<dyn DiffOperations>>) {
-        self.operations = operations;
-    }
 }
 
-/// 从明确的一对文本快照导出 anchor hunk。
+/// 计算 index 参照（index→working）的 hunks。
+///
+/// - 无 index 参照 → None；
+/// - index 与 working 相同（已暂存视图）→ 空，主 hunk 全部 Staged；
+/// - index 与 base 相同（未暂存视图）→ 复用主 hunks，避免重复计算；
+/// - 其余（未提交视图）→ 按 (index, working) 计算。
+fn index_reference_hunks(
+    base_text: Option<&str>,
+    index_text: Option<&str>,
+    working: &Snapshot,
+    main_hunks: &[DiffHunk],
+) -> Option<Vec<DiffHunk>> {
+    let index = index_text?;
+    if index == full_text(working).as_str() {
+        return Some(Vec::new());
+    }
+    if base_text == Some(index) {
+        return Some(main_hunks.to_vec());
+    }
+    Some(compute_hunks(Some(index), working))
+}
+
+/// working 快照全文。
+fn full_text(working: &Snapshot) -> String {
+    working
+        .slice_text(
+            TextRange::new(ByteOffset::ZERO, working.len_bytes()).expect("全文范围必须有序"),
+        )
+        .expect("全文范围必须有效")
+        .as_str()
+        .to_owned()
+}
+
+/// 从明确的一对文本快照导出 anchor hunk；暂存语义由调用方随后标注。
+///
 ///
 /// 返回的 `buffer_range` 归属于 working，`diff_base_byte_range` 归属于 base_text；
-/// 二者共同构成后台执行所需的确定编辑依据。
-pub(crate) fn compute_hunks(
-    base_text: Option<&str>,
-    working: &Snapshot,
-    is_created: bool,
-) -> Vec<DiffHunk> {
+/// 二者共同构成后台执行所需的确定编辑依据。暂存语义初值为 NoStaging，由调用方随后标注。
+pub(crate) fn compute_hunks(base_text: Option<&str>, working: &Snapshot) -> Vec<DiffHunk> {
     let version = working.version();
-    if is_created {
+    // base 不存在即整份工作区文本为新增（新建文件）。
+    let Some(base_text) = base_text else {
         return vec![DiffHunk {
             buffer_range: full_buffer_range(working, version),
             diff_base_byte_range: 0..0,
             kind: DiffHunkKind::Added,
+            staging: DiffHunkStaging::NoStaging,
             buffer_word_diffs: Vec::new(),
             base_word_diffs: Vec::new(),
         }];
-    }
-    let Some(base_text) = base_text else {
-        return Vec::new();
     };
     let working_text = working
         .slice_text(
@@ -403,6 +498,7 @@ pub(crate) fn compute_hunks(
                 buffer_range,
                 diff_base_byte_range,
                 kind,
+                staging: DiffHunkStaging::NoStaging,
                 buffer_word_diffs,
                 base_word_diffs,
             }
@@ -458,6 +554,7 @@ fn hunks_equivalent(a: &[DiffHunk], b: &[DiffHunk]) -> bool {
                 && a.buffer_range.end.offset() == b.buffer_range.end.offset()
                 && a.diff_base_byte_range == b.diff_base_byte_range
                 && a.kind == b.kind
+                && a.staging == b.staging
                 && a.base_word_diffs == b.base_word_diffs
                 && a.buffer_word_diffs.len() == b.buffer_word_diffs.len()
                 && a.buffer_word_diffs

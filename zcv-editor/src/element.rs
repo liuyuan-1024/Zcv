@@ -15,7 +15,7 @@ use gpui::{
 use zcv_actions::{OpenExcerpts, ToggleFold};
 use zcv_git::DiffHunkKind;
 use zcv_language::BracketPair;
-use zcv_multi_buffer::DisplayHunk;
+use zcv_multi_buffer::{DiffHunkStaging, DisplayHunk};
 use zcv_text::{ByteOffset, Line, LogicalColumn, Position, TextRange};
 use zcv_theme::{color, space, typography};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon};
@@ -35,8 +35,8 @@ use super::scrollbar::{
     marker_geometry,
 };
 use super::view::{
-    Editor, EditorMode, EditorPresentation, HunkRendering, SoftWrap, diff_kind_for_row,
-    hunk_rendering,
+    Editor, EditorMode, EditorPresentation, HunkRendering, SoftWrap, diff_row_for_row,
+    hunk_rendering, is_hollow_hunk,
 };
 
 const CARET_WIDTH: Pixels = px(2.);
@@ -118,8 +118,8 @@ struct LayoutLine {
     wrap_info: Option<WrapRowInfo>,
     /// 折叠合并行的段表（anchor 文本 + 占位符 + 闭合尾段；命中测试与占位符点击用）。
     fold_segments: Option<Vec<FoldRowSegment>>,
-    /// 该显示行所属的 git diff 类型（内容背景用；wrap 续行同样标注）。
-    git_diff: Option<DiffHunkKind>,
+    /// 该显示行所属的 git diff 类型与暂存语义（内容背景用；wrap 续行同样标注）。
+    git_diff: Option<(DiffHunkKind, DiffHunkStaging)>,
     /// placeholder 提示行：命中测试不映射到 placeholder buffer（空 buffer 唯一合法坐标是 0）。
     is_placeholder: bool,
 }
@@ -195,7 +195,7 @@ pub(super) struct VisibleLineLayoutParams<'a> {
     pub(super) scroll_offset: Point<Pixels>,
     pub(super) line_height: Pixels,
     /// git diff 显示行区间（prepaint 从 `diff_hunk_rows` 计算，gutter/内容共用）。
-    pub(super) diff_rows: &'a [(Range<usize>, DiffHunkKind)],
+    pub(super) diff_rows: &'a [(Range<usize>, DiffHunkKind, DiffHunkStaging)],
 }
 
 impl EditorLayout {
@@ -316,10 +316,12 @@ pub(super) struct PrepaintState {
     crease_toggles: Vec<Option<AnyElement>>,
     /// 折叠占位符点击 hitbox（合并行占位符段；点击展开）。
     placeholder_hitboxes: Arc<Vec<(gpui::Hitbox, Line)>>,
-    /// hunk 竖条范围与状态色（竖条色不随展开变化；行背景按行状态另行绘制）。
-    hunk_strips: Arc<Vec<(Range<usize>, DiffHunkKind)>>,
+    /// hunk 竖条范围与状态色（竖条色不随展开变化；已暂存仅描边，行背景按行状态另行绘制）。
+    hunk_strips: Arc<Vec<(Range<usize>, DiffHunkKind, DiffHunkStaging)>>,
     /// 整行差异背景范围（新增行始终包含，修改/删除只在展开时包含）。
     expanded_rows: Arc<Vec<Range<usize>>>,
+    /// 展开的未暂存（hollow）连续块：边框按块边界合并绘制，颜色取块首 / 末行的行背景色。
+    hollow_blocks: Arc<Vec<Range<usize>>>,
     /// 展开 hunk 的词级背景片段：每显示行一组（窗口绝对 x 范围 + 颜色）。
     word_diff_fragments: Vec<Vec<(Pixels, Pixels, gpui::Rgba)>>,
     scrollbar: Option<ScrollbarLayout>,
@@ -1003,7 +1005,7 @@ fn layout_scrollbar(
         let diff_markers = hunk_render
             .diff_rows
             .iter()
-            .cloned()
+            .map(|(rows, kind, _)| (rows.clone(), *kind))
             .chain(folded_deleted_markers)
             .map(|(rows, kind)| (rows, ScrollbarMarkerKind::Diff(kind)));
         let search_markers = editor
@@ -1333,11 +1335,10 @@ impl Element for EditorElement {
             if let Some(gutter) = &layout.gutter {
                 let strip_width = gutter_strip_width(line_height);
                 for (rows, index, kind) in &hunk_render.hit_regions {
-                    // 色带起点行可见才可点击（滚动后起点进入视口自然恢复）。
-                    let Some(start_line) = layout
-                        .lines
-                        .iter()
-                        .find(|line| line.row.get() == rows.start)
+                    // 与绘制侧一致：按当前视口内的可见行建 hitbox，
+                    // 起点滚出视口时可见部分仍可点击（不再要求起点行可见）。
+                    let Some((top, bottom, _, _)) =
+                        visible_block_extent(&layout.lines, rows, line_height)
                     else {
                         continue;
                     };
@@ -1347,12 +1348,8 @@ impl Element for EditorElement {
                     hitboxes.push((
                         window.insert_hitbox(
                             Bounds::from_corners(
-                                point(gutter.bounds.left(), start_line.origin.y),
-                                point(
-                                    gutter.bounds.left() + width,
-                                    start_line.origin.y
-                                        + line_height * (rows.end - rows.start) as f32,
-                                ),
+                                point(gutter.bounds.left(), top),
+                                point(gutter.bounds.left() + width, bottom),
                             ),
                             HitboxBehavior::BlockMouse,
                         ),
@@ -1419,6 +1416,7 @@ impl Element for EditorElement {
 
         // 整行差异背景范围（内容区与 gutter 共用；未展开的修改/删除 hunk 只由竖条/三角提示）。
         let expanded_rows = Arc::new(hunk_render.expanded_rows.clone());
+        let hollow_blocks = Arc::new(hunk_render.hollow_blocks.clone());
         PrepaintState {
             layout,
             background_fragments,
@@ -1434,6 +1432,7 @@ impl Element for EditorElement {
             placeholder_hitboxes,
             hunk_strips,
             expanded_rows,
+            hollow_blocks,
             word_diff_fragments,
             scrollbar,
             block_elements,
@@ -1646,7 +1645,7 @@ impl Element for EditorElement {
             // diff 行 gutter 背景：只画展开态行（展开的修改块旧行红、修改行绿），未展开的 hunk 不整行着色，只保留左侧竖条提示。
             let strip_width = gutter_strip_width(gutter.line_height);
             for line in &prepaint.layout.lines {
-                let Some(kind) = line.git_diff else {
+                let Some((kind, staging)) = line.git_diff else {
                     continue;
                 };
                 if !prepaint
@@ -1662,38 +1661,66 @@ impl Element for EditorElement {
                     DiffHunkKind::Deleted => colors.editor_diff_deleted_background,
                     DiffHunkKind::Modified => continue,
                 };
-                window.paint_quad(fill(
-                    Bounds::from_corners(
-                        point(gutter.bounds.left(), line.origin.y),
-                        point(gutter.bounds.right(), line.origin.y + gutter.line_height),
-                    ),
-                    background,
-                ));
+                // 已暂存（hollow）用半透明背景，未暂存实心；边框由下方按连续块合并绘制。
+                let background = if is_hollow_hunk(staging) {
+                    background.opacity(HOLLOW_BACKGROUND_OPACITY)
+                } else {
+                    background
+                };
+                let bounds = Bounds::from_corners(
+                    point(gutter.bounds.left(), line.origin.y),
+                    point(gutter.bounds.right(), line.origin.y + gutter.line_height),
+                );
+                window.paint_quad(fill(bounds, background));
+            }
+            // hollow 块的水平边框按连续行区间合并绘制，避免相邻行边框叠加成逐行网格。
+            for block in prepaint.hollow_blocks.iter() {
+                paint_hollow_block_edges(
+                    window,
+                    &prepaint.layout.lines,
+                    block,
+                    gutter.line_height,
+                    gutter.bounds.left(),
+                    gutter.bounds.right(),
+                    colors,
+                );
             }
             // git diff 竖条：hunk 状态色（不随展开变化）；
             // 展开的修改块竖条保持黄色并覆盖整个 hunk（旧行 + 修改行）。
-            for (rows, kind) in prepaint.hunk_strips.iter() {
-                let strip_color = match kind {
-                    DiffHunkKind::Added => colors.version_control_added,
-                    DiffHunkKind::Modified => colors.version_control_modified,
-                    DiffHunkKind::Deleted => colors.version_control_deleted,
-                };
+            for (rows, kind, staging) in prepaint.hunk_strips.iter() {
+                let strip_color = version_control_hunk_color(colors, *kind);
+                let hollow = is_hollow_hunk(*staging);
                 for line in prepaint
                     .layout
                     .lines
                     .iter()
                     .filter(|line| rows.contains(&line.row.get()))
                 {
-                    window.paint_quad(fill(
-                        Bounds::from_corners(
-                            point(gutter.bounds.left(), line.origin.y),
-                            point(
-                                gutter.bounds.left() + strip_width,
-                                line.origin.y + gutter.line_height,
-                            ),
+                    let bounds = Bounds::from_corners(
+                        point(gutter.bounds.left(), line.origin.y),
+                        point(
+                            gutter.bounds.left() + strip_width,
+                            line.origin.y + gutter.line_height,
                         ),
+                    );
+                    let background = if hollow {
+                        strip_color.opacity(HOLLOW_BACKGROUND_OPACITY)
+                    } else {
+                        strip_color
+                    };
+                    window.paint_quad(fill(bounds, background));
+                }
+                // 竖条的 hollow 边框按整块绘制，水平边不逐行叠加。
+                if hollow {
+                    paint_hollow_block_outline(
+                        window,
+                        &prepaint.layout.lines,
+                        rows,
+                        gutter.line_height,
+                        gutter.bounds.left(),
+                        gutter.bounds.left() + strip_width,
                         strip_color,
-                    ));
+                    );
                 }
             }
             // 折叠的纯删除块：三角形只负责视觉，点击由同一几何范围的 hunk hitbox 处理。
@@ -1755,7 +1782,7 @@ impl Element for EditorElement {
                 // git diff 整行背景只画展开态行（未展开的 hunk 只由 gutter 竖条提示）。
                 let diff_colors = color::current(cx);
                 for line in &prepaint.layout.lines {
-                    let Some(kind) = line.git_diff else {
+                    let Some((kind, staging)) = line.git_diff else {
                         continue;
                     };
                     if !prepaint
@@ -1771,16 +1798,32 @@ impl Element for EditorElement {
                         DiffHunkKind::Deleted => diff_colors.editor_diff_deleted_background,
                         DiffHunkKind::Modified => continue,
                     };
-                    window.paint_quad(fill(
-                        Bounds::from_corners(
-                            point(prepaint.layout.text_clip_bounds.left(), line.origin.y),
-                            point(
-                                prepaint.layout.text_clip_bounds.right(),
-                                line.origin.y + prepaint.layout.line_height,
-                            ),
+                    // 已暂存（hollow）用半透明背景，未暂存实心；边框由下方按连续块合并绘制。
+                    let background = if is_hollow_hunk(staging) {
+                        background.opacity(HOLLOW_BACKGROUND_OPACITY)
+                    } else {
+                        background
+                    };
+                    let bounds = Bounds::from_corners(
+                        point(prepaint.layout.text_clip_bounds.left(), line.origin.y),
+                        point(
+                            prepaint.layout.text_clip_bounds.right(),
+                            line.origin.y + prepaint.layout.line_height,
                         ),
-                        background,
-                    ));
+                    );
+                    window.paint_quad(fill(bounds, background));
+                }
+                // hollow 块的水平边框按连续行区间合并绘制，避免相邻行边框叠加成逐行网格。
+                for block in prepaint.hollow_blocks.iter() {
+                    paint_hollow_block_edges(
+                        window,
+                        &prepaint.layout.lines,
+                        block,
+                        prepaint.layout.line_height,
+                        prepaint.layout.text_clip_bounds.left(),
+                        prepaint.layout.text_clip_bounds.right(),
+                        diff_colors,
+                    );
                 }
                 // 词级差异背景叠在行背景之上、选区之下：只覆盖真正变化的词/片段。
                 for (ix, fragments) in prepaint.word_diff_fragments.iter().enumerate() {
@@ -2036,6 +2079,164 @@ fn deleted_hunk_triangle_points(bounds: Bounds<Pixels>, strip_width: Pixels) -> 
     ]
 }
 
+/// hollow 背景相对实心背景的透明度系数：取实心的一半。
+const HOLLOW_BACKGROUND_OPACITY: f32 = 0.5;
+
+/// 已暂存（hollow）块的水平边框色：比行背景更实，勾出空心块轮廓。
+fn diff_hollow_border_color(colors: &color::ThemeColors, kind: DiffHunkKind) -> Option<gpui::Rgba> {
+    match kind {
+        DiffHunkKind::Added => Some(colors.editor_diff_added_hollow_border),
+        DiffHunkKind::Deleted => Some(colors.editor_diff_deleted_hollow_border),
+        DiffHunkKind::Modified => None,
+    }
+}
+
+/// hunk 类型对应的 version control 色（gutter 竖条用）。
+fn version_control_hunk_color(colors: &color::ThemeColors, kind: DiffHunkKind) -> gpui::Rgba {
+    match kind {
+        DiffHunkKind::Added => colors.version_control_added,
+        DiffHunkKind::Modified => colors.version_control_modified,
+        DiffHunkKind::Deleted => colors.version_control_deleted,
+    }
+}
+
+/// 一个连续显示行区间在当前窗口内的纵向范围，以及首 / 末行是否可见。
+///
+/// 块的端点滚出窗口时不画对应水平边框，避免在视口边缘出现一条假线。
+fn visible_block_extent(
+    lines: &[LayoutLine],
+    block: &Range<usize>,
+    line_height: Pixels,
+) -> Option<(Pixels, Pixels, bool, bool)> {
+    let mut first: Option<&LayoutLine> = None;
+    let mut last: Option<&LayoutLine> = None;
+    for line in lines.iter().filter(|line| block.contains(&line.row.get())) {
+        if first.is_none() {
+            first = Some(line);
+        }
+        last = Some(line);
+    }
+    let first = first?;
+    let last = last?;
+    // lines 按显示行升序排列，首尾行即块在窗口内的上下边界。
+    let top = first.origin.y;
+    let bottom = last.origin.y + line_height;
+    let start_visible = first.row.get() == block.start;
+    let end_visible = last.row.get() + 1 == block.end;
+    Some((top, bottom, start_visible, end_visible))
+}
+
+/// 画 hollow 块的上 / 下 1px 边框；相邻行之间不画线。
+///
+/// 边框色取块首 / 末行的空心边框色（比行背景更实，保证空心轮廓清楚）。
+fn paint_hollow_block_edges(
+    window: &mut Window,
+    lines: &[LayoutLine],
+    block: &Range<usize>,
+    line_height: Pixels,
+    left: Pixels,
+    right: Pixels,
+    colors: &color::ThemeColors,
+) {
+    let mut first: Option<&LayoutLine> = None;
+    let mut last: Option<&LayoutLine> = None;
+    for line in lines.iter().filter(|line| block.contains(&line.row.get())) {
+        if first.is_none() {
+            first = Some(line);
+        }
+        last = Some(line);
+    }
+    let (Some(first), Some(last)) = (first, last) else {
+        return;
+    };
+    let thickness = px(1.);
+    if first.row.get() == block.start
+        && let Some(color) = first
+            .git_diff
+            .and_then(|(kind, _)| diff_hollow_border_color(colors, kind))
+    {
+        let top = first.origin.y;
+        window.paint_quad(fill(
+            Bounds::from_corners(point(left, top), point(right, top + thickness)),
+            color,
+        ));
+    }
+    if last.row.get() + 1 == block.end
+        && let Some(color) = last
+            .git_diff
+            .and_then(|(kind, _)| diff_hollow_border_color(colors, kind))
+    {
+        let bottom = last.origin.y + line_height;
+        window.paint_quad(fill(
+            Bounds::from_corners(point(left, bottom - thickness), point(right, bottom)),
+            color,
+        ));
+    }
+}
+
+/// 画 hollow 块的完整边框（上 / 下 / 左 / 右），用于 gutter 竖条。
+fn paint_hollow_block_outline(
+    window: &mut Window,
+    lines: &[LayoutLine],
+    block: &Range<usize>,
+    line_height: Pixels,
+    left: Pixels,
+    right: Pixels,
+    color: gpui::Rgba,
+) {
+    let Some((top, bottom, start_visible, end_visible)) =
+        visible_block_extent(lines, block, line_height)
+    else {
+        return;
+    };
+    paint_horizontal_block_edges(
+        window,
+        Bounds::from_corners(point(left, top), point(right, bottom)),
+        start_visible,
+        end_visible,
+        color,
+    );
+    // 左右竖边跨越整个可见范围；竖条很窄，读起来是一条 hollow 色带而不是实心块。
+    let thickness = px(1.);
+    window.paint_quad(fill(
+        Bounds::from_corners(point(left, top), point(left + thickness, bottom)),
+        color,
+    ));
+    window.paint_quad(fill(
+        Bounds::from_corners(point(right - thickness, top), point(right, bottom)),
+        color,
+    ));
+}
+
+/// 画块的上 / 下水平边框，端点不可见时跳过。
+fn paint_horizontal_block_edges(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    start_visible: bool,
+    end_visible: bool,
+    color: gpui::Rgba,
+) {
+    let thickness = px(1.);
+    if start_visible {
+        window.paint_quad(fill(
+            Bounds::from_corners(
+                point(bounds.left(), bounds.top()),
+                point(bounds.right(), bounds.top() + thickness),
+            ),
+            color,
+        ));
+    }
+    if end_visible {
+        window.paint_quad(fill(
+            Bounds::from_corners(
+                point(bounds.left(), bounds.bottom() - thickness),
+                point(bounds.right(), bounds.bottom()),
+            ),
+            color,
+        ));
+    }
+}
+
 fn calculate_wrap_width(
     soft_wrap: SoftWrap,
     text_layout_width: Pixels,
@@ -2197,7 +2398,7 @@ fn layout_visible_lines(
             }
             byte_offset += run.len;
         }
-        let git_diff = diff_kind_for_row(diff_rows, row);
+        let git_diff = diff_row_for_row(diff_rows, row);
         lines.push(LayoutLine {
             row: DisplayRow::new(row),
             logical_line,
@@ -2224,8 +2425,8 @@ fn layout_visible_lines(
                 .to_string();
             let active = active_lines.contains(&logical_line);
             let colors = color::current(cx);
-            // 行号按 diff 状态着色。
-            let number_color = match (active, git_diff) {
+            // 行号按 diff 状态着色（只取行级类型，暂存状态不改变行号色）。
+            let number_color = match (active, git_diff.map(|(kind, _)| kind)) {
                 (_, Some(DiffHunkKind::Added)) => colors.version_control_added,
                 (_, Some(DiffHunkKind::Deleted)) => colors.version_control_deleted,
                 (_, Some(DiffHunkKind::Modified)) => colors.version_control_modified,
@@ -2904,7 +3105,7 @@ mod tests {
     use gpui::{AppContext, Empty, TestAppContext};
     use std::path::{Path, PathBuf};
     use zcv_language::LanguageBuffer;
-    use zcv_multi_buffer::DisplayHunk;
+    use zcv_multi_buffer::{DiffHunkStaging, DisplayHunk};
     use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
     use zcv_text::{Buffer, BufferConfig, ByteOffset, Line, TextRange};
 
@@ -2988,7 +3189,11 @@ mod tests {
         expanded: &[bool],
         old_display_ranges: &[Option<Range<usize>>],
     ) -> Vec<(Range<usize>, DiffHunkKind)> {
-        hunk_rendering(snapshot, hunks, expanded, old_display_ranges, &[]).diff_rows
+        hunk_rendering(snapshot, hunks, expanded, old_display_ranges, &[])
+            .diff_rows
+            .into_iter()
+            .map(|(rows, kind, _)| (rows, kind))
+            .collect()
     }
 
     /// hunk 竖条范围与状态色（`hunk_rendering` 的薄包装，测试专用）。
@@ -2999,11 +3204,14 @@ mod tests {
         expanded: &[bool],
         old_display_ranges: &[Option<Range<usize>>],
     ) -> Vec<(Range<usize>, DiffHunkKind)> {
-        hunk_rendering(snapshot, hunks, expanded, old_display_ranges, &[]).strips
+        hunk_rendering(snapshot, hunks, expanded, old_display_ranges, &[])
+            .strips
+            .into_iter()
+            .map(|(rows, kind, _)| (rows, kind))
+            .collect()
     }
 
     /// 可点击的 hunk 色带区域（`hunk_rendering` 的薄包装，测试专用）。
-    /// 可点击的 hunk 色带区域（hunk_rendering 的薄包装，测试专用）。
     fn hunk_hit_regions(
         snapshot: &DisplaySnapshot,
         hunks: &[DisplayHunk],
@@ -4033,16 +4241,19 @@ mod tests {
                                 range: 1..2,
                                 old_range: 1..2,
                                 kind: DiffHunkKind::Modified,
+                                staging: DiffHunkStaging::NoStaging,
                             },
                             DisplayHunk {
                                 range: 3..3,
                                 old_range: 2..3,
                                 kind: DiffHunkKind::Deleted,
+                                staging: DiffHunkStaging::NoStaging,
                             },
                             DisplayHunk {
                                 range: 4..5,
                                 old_range: 4..4,
                                 kind: DiffHunkKind::Added,
+                                staging: DiffHunkStaging::NoStaging,
                             },
                         ],
                         &[false, false, false],
@@ -4082,6 +4293,7 @@ mod tests {
                             range: 0..1,
                             old_range: 0..1,
                             kind: DiffHunkKind::Modified,
+                            staging: DiffHunkStaging::NoStaging,
                         }],
                         &[false, false, false],
                         &[],
@@ -4097,6 +4309,7 @@ mod tests {
                             range: 1..10,
                             old_range: 1..10,
                             kind: DiffHunkKind::Modified,
+                            staging: DiffHunkStaging::NoStaging,
                         }],
                         &[false, false, false],
                         &[],
@@ -4122,6 +4335,7 @@ mod tests {
             range: 1..1,
             old_range: 1..3,
             kind: DiffHunkKind::Deleted,
+            staging: DiffHunkStaging::NoStaging,
         };
         // 未展开：行内无标记（删除点由 gutter 红色三角提示）。
         assert_eq!(
@@ -4156,6 +4370,7 @@ mod tests {
             range: 4..4,
             old_range: 1..3,
             kind: DiffHunkKind::Deleted,
+            staging: DiffHunkStaging::NoStaging,
         };
         assert_eq!(
             diff_hunk_rows(
@@ -4187,6 +4402,7 @@ mod tests {
             range: 2..3,
             old_range: 1..2,
             kind: DiffHunkKind::Modified,
+            staging: DiffHunkStaging::NoStaging,
         };
         assert_eq!(
             diff_hunk_rows(
@@ -4219,6 +4435,7 @@ mod tests {
             range: 2..3,
             old_range: 1..2,
             kind: DiffHunkKind::Modified,
+            staging: DiffHunkStaging::NoStaging,
         };
         // 展开：竖条仍黄，覆盖旧行 + 修改行（显示行 1..3）。
         assert_eq!(

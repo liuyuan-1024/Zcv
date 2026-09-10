@@ -22,12 +22,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use background::{JobResult, execute_job, repo_relative_path};
-use gpui::{App, AsyncApp, BackgroundExecutor, Context, Entity, EventEmitter, Task, WeakEntity};
+use gpui::{
+    App, AppContext as _, AsyncApp, BackgroundExecutor, Context, Entity, EventEmitter, Task,
+    WeakEntity,
+};
 use zcv_git::{
     Branch, DiffStat, FileStatus, GitCancellation, GitHunkOperation, GitRepository, GitRevision,
     GraphCommit, HunkEdit, WorkingCopySnapshot, apply_hunk_edits_to_text,
 };
-use zcv_multi_buffer::{BufferDiff, DiffOperations, PendingHunk};
+use zcv_multi_buffer::{BufferDiff, BufferDiffInput, DiffOperations, PendingHunk};
 use zcv_text::Anchor;
 
 /// 一次增量刷新最多累积的路径数，超过则升级为全量扫描。
@@ -220,6 +223,9 @@ pub(super) struct Repository {
     snapshot: RepositorySnapshot,
 }
 
+/// 共享 diff 缓存的键：路径、working 实体、base 文本、index 文本。
+type SharedDiffKey = (PathBuf, gpui::EntityId, Option<Arc<str>>, Option<Arc<str>>);
+
 pub struct GitStore {
     /// 项目根目录；无 worktree 的空项目为 None，此时所有 job 与仓库查询为空操作。
     root: Option<PathBuf>,
@@ -233,11 +239,15 @@ pub struct GitStore {
     /// 用 working_directory 而非索引：全量扫描重建 Vec，索引不稳定。
     active_repo_workdir: Option<PathBuf>,
     /// HEAD/index 文本缓存；状态或 HEAD 变化时失效。
-    revision_text_cache: HashMap<(GitRevision, PathBuf), Arc<str>>,
+    /// 值 `None` 表示该修订中文件不存在（已加载但缺失），键存在即表示已加载完成。
+    revision_text_cache: HashMap<(GitRevision, PathBuf), Option<Arc<str>>>,
     /// 分修订递增的缓存版本；失效前启动的后台读取不得回填新缓存。
     revision_text_generations: HashMap<GitRevision, u64>,
     /// 已写入内存、尚待后台落盘确认的 index 文本的原始值；同一路径同时只允许一个写入，失败时据此回滚。
     optimistic_index_bases: HashMap<PathBuf, Arc<str>>,
+    /// 按 (路径, working 实体, base 文本, index 文本) 共享的 diff 实体；
+    /// 同一份 diff 跨编辑器 / 面板视图复用，head/index 变化时按路径失效。
+    shared_diffs: HashMap<SharedDiffKey, Entity<BufferDiff>>,
     background: BackgroundExecutor,
     /// 自身弱句柄：后台任务完成后回填缓存等状态用（构造时注入）。
     self_handle: WeakEntity<Self>,
@@ -358,6 +368,7 @@ impl GitStore {
                 (GitRevision::Index, 1),
             ]),
             optimistic_index_bases: HashMap::new(),
+            shared_diffs: HashMap::new(),
             background,
             self_handle,
             job_sender,
@@ -438,6 +449,45 @@ impl GitStore {
             store: self.self_handle.clone(),
             base,
         })
+    }
+
+    /// 按 (路径, working 实体, base 文本, index 文本) 共享单个文件的 diff 实体。
+    ///
+    /// 同一份 diff 跨编辑器与面板视图复用；
+    /// head/index 文本变化时由失效逻辑丢弃缓存，下一次请求会用新文本重建实体。
+    pub fn file_diff(
+        &mut self,
+        input: &BufferDiffInput,
+        cx: &mut Context<Self>,
+    ) -> Entity<BufferDiff> {
+        let path = canonicalize_path(&input.path);
+        let key = (
+            path,
+            input.working.entity_id(),
+            input.base_text.clone(),
+            input.index_text.clone(),
+        );
+        if let Some(entity) = self.shared_diffs.get(&key) {
+            return entity.clone();
+        }
+        let entity = cx.new(|cx| BufferDiff::new(input.clone(), cx));
+        self.shared_diffs.insert(key, entity.clone());
+        entity
+    }
+
+    /// 丢弃共享 diff 缓存：None 清空全部，Some 只清指定路径。
+    fn invalidate_shared_diffs(&mut self, paths: Option<&[PathBuf]>) {
+        match paths {
+            None => self.shared_diffs.clear(),
+            Some(paths) => {
+                let changed = paths
+                    .iter()
+                    .map(|path| canonicalize_path(path))
+                    .collect::<Vec<_>>();
+                self.shared_diffs
+                    .retain(|key, _| !changed.iter().any(|path| &key.0 == path));
+            }
+        }
     }
 
     /// 基于当前 diff 快照生成确定的编辑，先写入 optimistic pending，再交后台执行。
@@ -559,13 +609,17 @@ impl GitStore {
         if let (Some(index_text), Some(next_index_text)) = (&index_text, &next_index_text) {
             self.optimistic_index_bases
                 .insert(path.clone(), index_text.clone());
-            self.revision_text_cache
-                .insert((GitRevision::Index, path.clone()), next_index_text.clone());
+            self.revision_text_cache.insert(
+                (GitRevision::Index, path.clone()),
+                Some(next_index_text.clone()),
+            );
             let generation = self
                 .revision_text_generations
                 .entry(GitRevision::Index)
                 .or_insert(0);
             *generation = generation.wrapping_add(1).max(1);
+            // 乐观 index 更新：本路径的共享 diff 立即失效，视图按 IndexText 事件重新请求。
+            self.invalidate_shared_diffs(Some(std::slice::from_ref(&path)));
             cx.emit(GitStoreEvent::IndexText);
         }
         diff.update(cx, |diff, cx| diff.set_pending_hunks(pending, cx));
@@ -932,10 +986,10 @@ impl GitStore {
             let text = loaded.await;
             this.update(cx, |store, _| {
                 if store.revision_text_generations.get(&revision).copied() == Some(generation) {
-                    store.revision_text_cache.insert(
-                        (revision, path.clone()),
-                        Arc::from(text.clone().unwrap_or_default()),
-                    );
+                    // 缺失（None）也要写入缓存：键存在表示“已加载”，避免调用方反复重试。
+                    store
+                        .revision_text_cache
+                        .insert((revision, path.clone()), text.clone().map(Arc::from));
                 }
             })
             .ok();
@@ -961,11 +1015,19 @@ impl GitStore {
         background.spawn(async move { repository.commit_graph(after.as_deref(), limit) })
     }
 
-    /// 读取缓存的修订文本；`None` 表示尚未完成加载。
+    /// 读取缓存的修订文本；`None` 表示文件在该修订中缺失。
+    ///
+    /// 与 [`GitStore::revision_text_loaded`] 搭配区分“未加载”和“确实不存在”。
     pub fn revision_text(&self, revision: GitRevision, path: &Path) -> Option<Arc<str>> {
         self.revision_text_cache
             .get(&(revision, canonicalize_path(path)))
-            .cloned()
+            .and_then(|text| text.clone())
+    }
+
+    /// 该修订文本是否已经完成一次加载（缺失也算已加载）。
+    pub fn revision_text_loaded(&self, revision: GitRevision, path: &Path) -> bool {
+        self.revision_text_cache
+            .contains_key(&(revision, canonicalize_path(path)))
     }
 
     fn invalidate_revision_text(&mut self, revision: GitRevision) {
@@ -977,6 +1039,8 @@ impl GitStore {
             });
         let generation = self.revision_text_generations.entry(revision).or_insert(0);
         *generation = generation.wrapping_add(1).max(1);
+        // head/index 文本变了：基于旧文本的共享 diff 全部失效。
+        self.invalidate_shared_diffs(None);
     }
 
     fn invalidate_revision_text_for_paths(&mut self, revision: GitRevision, paths: &[PathBuf]) {
@@ -995,6 +1059,7 @@ impl GitStore {
             });
         let generation = self.revision_text_generations.entry(revision).or_insert(0);
         *generation = generation.wrapping_add(1).max(1);
+        self.invalidate_shared_diffs(Some(paths));
     }
 
     /// UI 线程：取出 job 需要的共享数据（后台线程不能访问 Entity 状态）。
@@ -1955,6 +2020,66 @@ mod tests {
         assert!(unstaged, "目录取消暂存后其下所有文件都应回到未暂存");
     }
 
+    /// 同一 (working, base, index) 的 diff 实体在 GitStore 中按路径共享，缓存失效后才重建。
+    #[gpui::test]
+    fn file_diff_is_shared_by_working_base_and_index(cx: &mut gpui::TestAppContext) {
+        let (root, _temp) = test_git_repo();
+        fs::write(root.join("tracked.txt"), "第一行\n已修改\n").expect("应修改工作区文件");
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+        let path = canonicalize_path(&root.join("tracked.txt"));
+        for revision in [GitRevision::Head, GitRevision::Index] {
+            cx.read_entity(&git_store, |store, cx| {
+                store.load_revision_text(revision, &path, cx)
+            })
+            .detach();
+        }
+        cx.run_until_parked();
+        let working = cx.update(|cx| {
+            let buffer = zcv_text::Buffer::from_text(
+                "第一行\n已修改\n".to_owned(),
+                zcv_text::BufferConfig::default(),
+            )
+            .expect("应创建 Buffer");
+            let buffer = cx.new(|_| buffer);
+            cx.new(|cx| zcv_language::LanguageBuffer::new(buffer, Some(path.clone()), cx))
+        });
+        let spec = |store: &GitStore| BufferDiffInput {
+            working: working.clone(),
+            path: path.clone(),
+            base_text: store.revision_text(GitRevision::Head, &path),
+            index_text: store.revision_text(GitRevision::Index, &path),
+            operations: None,
+        };
+        let first = git_store.update(cx, |store, cx| {
+            let input = spec(store);
+            store.file_diff(&input, cx)
+        });
+        let second = git_store.update(cx, |store, cx| {
+            let input = spec(store);
+            store.file_diff(&input, cx)
+        });
+        assert_eq!(
+            first.entity_id(),
+            second.entity_id(),
+            "同一 (working, base, index) 应复用同一 diff 实体"
+        );
+        // 模拟 head/index 变化后的失效：下一次请求应重建。
+        git_store.update(cx, |store, _| {
+            store.invalidate_shared_diffs(Some(std::slice::from_ref(&path)));
+        });
+        let third = git_store.update(cx, |store, cx| {
+            let input = spec(store);
+            store.file_diff(&input, cx)
+        });
+        assert_ne!(
+            first.entity_id(),
+            third.entity_id(),
+            "缓存失效后应重建 diff 实体"
+        );
+    }
+
     /// 变更块操作：界面线程从 diff 快照生成确定编辑并立即写入 optimistic pending，后台只应用该编辑写入 index。
     #[gpui::test]
     fn diff_operations_stage_hunk_writes_index_and_keeps_pending(cx: &mut gpui::TestAppContext) {
@@ -1989,11 +2114,8 @@ mod tests {
                         working: working.clone(),
                         path: path.clone(),
                         base_text: Some(Arc::from("第一行\n第二行\n")),
-                        is_created: false,
+                        index_text: None,
                         operations: Some(operations),
-                        display_path: path.clone(),
-                        context_lines: None,
-                        show_file_header: false,
                     },
                     cx,
                 )
@@ -2082,11 +2204,8 @@ mod tests {
                         path: path.clone(),
                         // base 文本与真实 index 不一致，后台校验必然失败。
                         base_text: Some(Arc::from("第一行\n不存在的原始行\n")),
-                        is_created: false,
+                        index_text: None,
                         operations: Some(operations),
-                        display_path: path.clone(),
-                        context_lines: None,
-                        show_file_header: false,
                     },
                     cx,
                 )

@@ -1,12 +1,38 @@
 use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 use std::path::PathBuf;
 use zcv_git::DiffHunkKind;
-use zcv_multi_buffer::{DisplayHunk, MultiBuffer, MultiBufferExcerpt};
+use zcv_multi_buffer::{DiffHunkStaging, DisplayHunk, MultiBuffer, MultiBufferExcerpt};
 use zcv_text::{ByteOffset, Edit, TextRange, TransactionMetadata};
 
 use super::common::{buffer_text, engine_buffer, focus_editor, inject_editor_diff, test_buffer};
 use super::*;
 use crate::display_map::{ProjectedLineIndex, ProjectedPoint, WrapViewportRowKind};
+
+/// 构造 context_lines=2 的裁剪投影项，供组合文档裁剪测试复用。
+fn clipped_diff_file(
+    working: Entity<LanguageBuffer>,
+    base_text: &str,
+    cx: &mut gpui::Context<MultiBuffer>,
+) -> zcv_multi_buffer::DiffFile {
+    let diff = cx.new(|cx| {
+        zcv_multi_buffer::BufferDiff::new(
+            zcv_multi_buffer::BufferDiffInput {
+                operations: None,
+                working,
+                base_text: Some(Arc::from(base_text)),
+                index_text: None,
+                path: PathBuf::from("src/a.rs"),
+            },
+            cx,
+        )
+    });
+    zcv_multi_buffer::DiffFile {
+        diff,
+        display_path: PathBuf::from("src/a.rs"),
+        context_lines: Some(2),
+        show_file_header: false,
+    }
+}
 
 struct OccludingHunkControls;
 
@@ -48,6 +74,7 @@ fn hunk_controls_remain_visible_when_pointer_enters_controls(cx: &mut TestAppCon
             range: 1..2,
             old_range: 1..1,
             kind: DiffHunkKind::Added,
+            staging: DiffHunkStaging::NoStaging,
         }],
         Some(Arc::from("line 0\nold\nline 2\n")),
         cx,
@@ -101,6 +128,7 @@ fn hunk_controls_stick_to_viewport_while_hunk_start_is_scrolled_out(cx: &mut Tes
             range: 1..50,
             old_range: 1..1,
             kind: DiffHunkKind::Added,
+            staging: DiffHunkStaging::NoStaging,
         }],
         None,
         cx,
@@ -156,6 +184,7 @@ fn deleted_hunk_expands_and_collapses_readonly_excerpt(cx: &mut TestAppContext) 
             range: 1..1,
             old_range: 1..3,
             kind: DiffHunkKind::Deleted,
+            staging: DiffHunkStaging::NoStaging,
         }],
         Some(Arc::from("a\nold1\nold2\nb\nc")),
         cx,
@@ -200,6 +229,105 @@ fn deleted_hunk_expands_and_collapses_readonly_excerpt(cx: &mut TestAppContext) 
         cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
         3,
         "点击 gutter 折叠后应回到 3 行"
+    );
+}
+
+#[gpui::test]
+fn added_hunk_strip_expands_from_any_row(cx: &mut TestAppContext) {
+    // 普通文档中的纯新增块：多行色条的每一行都应可点击展开 / 折叠。
+    let buffer = test_buffer(cx, "a\nx1\nx2\nx3\nb");
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)
+    });
+    let source = buffer.clone();
+    cx.run_until_parked();
+    inject_editor_diff(&editor, &source, Vec::new(), Some(Arc::from("a\nb")), cx);
+    cx.run_until_parked();
+
+    let (window_bounds, line_height) =
+        cx.update(|window, _| (window.bounds(), window.line_height()));
+    let strip_x = window_bounds.left() + px(1.);
+    let row_y = |row: f32| window_bounds.top() + line_height * (row + 0.5);
+    let expanded = |cx: &mut TestAppContext| {
+        cx.read_entity(&editor, |editor, cx| {
+            editor
+                .diff_hunk_expanded(cx)
+                .first()
+                .copied()
+                .unwrap_or(false)
+        })
+    };
+
+    // 首行展开，再点击首行折叠。
+    cx.simulate_mouse_down(
+        point(strip_x, row_y(1.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    assert!(expanded(cx), "点击新增块首行应展开");
+    cx.simulate_mouse_down(
+        point(strip_x, row_y(1.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    assert!(!expanded(cx), "再次点击首行应折叠");
+
+    // 点击末行同样应展开。
+    cx.simulate_mouse_down(
+        point(strip_x, row_y(3.)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    assert!(expanded(cx), "点击新增块末行也应展开");
+}
+
+#[gpui::test]
+fn added_hunk_strip_clickable_when_start_scrolled_out(cx: &mut TestAppContext) {
+    // 起点滚出视口后，可见部分仍应有 hitbox（与绘制侧 visible_block_extent 一致）。
+    let text = (0..80)
+        .map(|line| format!("line{line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let buffer = test_buffer(cx, text);
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)
+    });
+    let source = buffer.clone();
+    inject_editor_diff(&editor, &source, Vec::new(), None, cx);
+    cx.run_until_parked();
+    cx.refresh().expect("测试窗口应可刷新");
+
+    let (window_bounds, line_height) =
+        cx.update(|window, _| (window.bounds(), window.line_height()));
+    cx.update_entity(&editor, |editor, cx| {
+        assert!(editor.scroll_to(line_height * 10., cx));
+    });
+    cx.run_until_parked();
+    cx.refresh().expect("滚动后测试窗口应可刷新");
+
+    cx.simulate_mouse_down(
+        point(
+            window_bounds.left() + px(1.),
+            window_bounds.top() + line_height * 2.5,
+        ),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    assert!(
+        cx.read_entity(&editor, |editor, cx| editor
+            .diff_hunk_expanded(cx)
+            .iter()
+            .any(|&expanded| expanded)),
+        "起点滚出视口后，可见色带仍应可点击展开"
     );
 }
 
@@ -515,6 +643,7 @@ fn diff_hunks_follow_buffer_edits_without_losing_highlight(cx: &mut TestAppConte
                 range: 1..2,
                 old_range: 1..2,
                 kind: DiffHunkKind::Modified,
+                staging: DiffHunkStaging::NoStaging,
             }],
             "注入后应立即可见"
         );
@@ -539,6 +668,7 @@ fn diff_hunks_follow_buffer_edits_without_losing_highlight(cx: &mut TestAppConte
                     range: 2..3,
                     old_range: 1..2,
                     kind: DiffHunkKind::Modified,
+                    staging: DiffHunkStaging::NoStaging,
                 }
         )),
         "编辑后 Git 高亮应跟随文本位置"
@@ -974,19 +1104,12 @@ fn combined_diff_delete_line_keeps_cursor_parity_with_plain_editor(cx: &mut Test
     let combined = cx.new(MultiBuffer::empty);
     combined.update(cx, |combined, cx| {
         combined.set_buffer_diffs(
-            Some(vec![zcv_multi_buffer::BufferDiffInput {
-                operations: None,
-                working: combined_source,
-                base_text: Some(Arc::from(head_text)),
-                path: PathBuf::from("src/a.rs"),
-                display_path: PathBuf::from("src/a.rs"),
-                context_lines: Some(2),
-                is_created: false,
-                show_file_header: false,
-            }]),
+            Some(vec![clipped_diff_file(combined_source, head_text, cx)]),
             cx,
         );
     });
+    // diff 后台计算完成后投影才可用；组合文档断言前等待落定。
+    cx.run_until_parked();
     let editor = cx.new(move |cx| Editor::for_multi_buffer(combined, cx));
 
     // 初始投影：源行 [2..7) = "L2 L3 ADDED L5 L6"。
@@ -999,6 +1122,8 @@ fn combined_diff_delete_line_keeps_cursor_parity_with_plain_editor(cx: &mut Test
         editor.select_byte_range(0..3, cx);
         editor.replace_text(None, "", cx);
     });
+    // 编辑后 diff 在后台重算并重新裁剪上下文窗口；断言前等待落定。
+    cx.run_until_parked();
 
     // 源被正确编辑；L2 删除后 hunk 派生为 Modified（旧侧 L2/L3 替换为新侧 L3/ADDED），
     // 裁剪窗口变为 [0..6)，折叠旧侧占位一行。
@@ -1049,6 +1174,7 @@ fn combined_diff_toggle_hunk_keeps_cursor_at_same_source_position(cx: &mut TestA
             range: 1..1,
             old_range: 1..3,
             kind: DiffHunkKind::Deleted,
+            staging: DiffHunkStaging::NoStaging,
         }],
         Some(Arc::from("a\nold1\nold2\nc")),
         cx,
@@ -1093,6 +1219,7 @@ fn external_source_edit_moves_combined_diff_cursor_like_plain_editor(cx: &mut Te
             range: 2..2,
             old_range: 2..3,
             kind: DiffHunkKind::Deleted,
+            staging: DiffHunkStaging::NoStaging,
         }],
         Some(Arc::from("alpha\nbravo\nold\ncharlie")),
         cx,
@@ -1138,19 +1265,12 @@ fn combined_diff_undo_redo_restores_cursor_parity_with_plain_editor(cx: &mut Tes
     let combined = cx.new(MultiBuffer::empty);
     combined.update(cx, |combined, cx| {
         combined.set_buffer_diffs(
-            Some(vec![zcv_multi_buffer::BufferDiffInput {
-                operations: None,
-                working: combined_source,
-                base_text: Some(Arc::from(head_text)),
-                path: PathBuf::from("src/a.rs"),
-                display_path: PathBuf::from("src/a.rs"),
-                context_lines: Some(2),
-                is_created: false,
-                show_file_header: false,
-            }]),
+            Some(vec![clipped_diff_file(combined_source, head_text, cx)]),
             cx,
         );
     });
+    // diff 后台计算完成后投影才可用；组合文档断言前等待落定。
+    cx.run_until_parked();
     let editor = cx.new(move |cx| Editor::for_multi_buffer(combined, cx));
 
     // 删除首个可见行 "L2\n"（投影 0..3）：裁剪窗口上移、投影整体重建，光标落在新投影 offset 3。
@@ -1158,6 +1278,8 @@ fn combined_diff_undo_redo_restores_cursor_parity_with_plain_editor(cx: &mut Tes
         editor.select_byte_range(0..3, cx);
         editor.replace_text(None, "", cx);
     });
+    // 编辑后 diff 在后台重算并重新裁剪上下文窗口；断言前等待落定。
+    cx.run_until_parked();
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(editor.text(cx), "L0\nL1\n\nL3\nADDED\nL5\nL6\n");
         assert_eq!(editor.selections().primary().head(), ByteOffset::new(7));
@@ -1420,6 +1542,7 @@ fn refreshing_diff_hunks_preserves_collapsed_hunk_in_default_expanded_mode(
             range: 1..1,
             old_range: 1..3,
             kind: DiffHunkKind::Deleted,
+            staging: DiffHunkStaging::NoStaging,
         }],
         Some(Arc::from("a\nold1\nold2\nc")),
         cx,
@@ -1443,6 +1566,7 @@ fn refreshing_diff_hunks_preserves_collapsed_hunk_in_default_expanded_mode(
             range: 1..1,
             old_range: 1..4,
             kind: DiffHunkKind::Deleted,
+            staging: DiffHunkStaging::NoStaging,
         }],
         Some(Arc::from("a\nold1\nold2\nc")),
         cx,
@@ -1475,6 +1599,7 @@ fn reset_diff_hunk_expansion_state_restores_default_strategy(cx: &mut TestAppCon
             range: 1..1,
             old_range: 1..3,
             kind: DiffHunkKind::Deleted,
+            staging: DiffHunkStaging::NoStaging,
         }],
         Some(Arc::from("a\nold1\nold2\nc")),
         cx,
@@ -1518,6 +1643,7 @@ fn plain_editor_expanded_modified_hunk_keeps_old_rows_and_gutter_strip(cx: &mut 
             range: 1..2,
             old_range: 1..2,
             kind: DiffHunkKind::Modified,
+            staging: DiffHunkStaging::NoStaging,
         }],
         Some(Arc::from("a\nold\nc")),
         cx,
@@ -1536,12 +1662,15 @@ fn plain_editor_expanded_modified_hunk_keeps_old_rows_and_gutter_strip(cx: &mut 
         );
         assert_eq!(
             rendering.diff_rows,
-            vec![(1..2, DiffHunkKind::Deleted), (2..3, DiffHunkKind::Added),],
+            vec![
+                (1..2, DiffHunkKind::Deleted, DiffHunkStaging::NoStaging),
+                (2..3, DiffHunkKind::Added, DiffHunkStaging::NoStaging),
+            ],
             "展开的普通编辑器修改块应保留旧侧红色行和新侧绿色行"
         );
         assert_eq!(
             rendering.strips,
-            vec![(1..3, DiffHunkKind::Modified)],
+            vec![(1..3, DiffHunkKind::Modified, DiffHunkStaging::NoStaging)],
             "gutter 色带应覆盖修改块的旧侧与新侧"
         );
         assert_eq!(
@@ -1595,6 +1724,7 @@ fn editing_readonly_deleted_row_then_editing_working_text_still_works(cx: &mut T
             range: 1..1,
             old_range: 1..3,
             kind: DiffHunkKind::Deleted,
+            staging: DiffHunkStaging::NoStaging,
         }],
         Some(Arc::from("a\nold1\nold2\nc")),
         cx,

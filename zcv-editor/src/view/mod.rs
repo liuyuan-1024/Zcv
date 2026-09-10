@@ -48,7 +48,7 @@ use super::selection::{
 mod diff;
 mod search;
 
-pub(crate) use diff::{HunkRendering, diff_kind_for_row, hunk_rendering};
+pub(crate) use diff::{HunkRendering, diff_row_for_row, hunk_rendering, is_hollow_hunk};
 pub(crate) use search::{EditorSearch, SearchMatchAnchor};
 
 /// 导航跳转（打开文件/行列定位）时目标行距视口顶部的固定行数，留出上下文。
@@ -465,7 +465,7 @@ impl Editor {
     /// 返回 `true` 表示组合文档被重建（光标已落回开头）。
     pub fn set_buffer_diffs(
         &mut self,
-        files: Option<Vec<zcv_multi_buffer::BufferDiffInput>>,
+        files: Option<Vec<zcv_multi_buffer::DiffFile>>,
         cx: &mut Context<Self>,
     ) -> bool {
         let rebuilt = self
@@ -505,17 +505,17 @@ impl Editor {
 
     /// 与当前组合文档版本匹配的显示坐标 hunks。
     pub fn diff_hunks<'a>(&'a self, cx: &'a App) -> &'a [DisplayHunk] {
-        self.multi_buffer.read(cx).diff_hunks(cx)
+        self.multi_buffer.read(cx).diff_hunks()
     }
 
     /// 每个 hunk 在组合文档中的旧侧显示行范围（与 diff_hunks 同门控）。
     pub fn diff_hunk_old_ranges<'a>(&'a self, cx: &'a App) -> &'a [Option<Range<usize>>] {
-        self.multi_buffer.read(cx).diff_hunk_old_ranges(cx)
+        self.multi_buffer.read(cx).diff_hunk_old_ranges()
     }
 
     /// 与 diff_hunks 平行的展开标志（渲染层按显示 hunk 索引查询）。
     pub fn diff_hunk_expanded(&self, cx: &App) -> Vec<bool> {
-        self.multi_buffer.read(cx).diff_hunk_expanded(cx)
+        self.multi_buffer.read(cx).diff_hunk_expanded()
     }
 
     /// 与 diff_hunks 平行的词级变化片段（组合文档字节范围 + 新增/删除色）。
@@ -523,7 +523,7 @@ impl Editor {
         &'a self,
         cx: &'a App,
     ) -> &'a [Vec<(zcv_git::DiffHunkKind, Range<usize>)>] {
-        self.multi_buffer.read(cx).diff_hunk_word_diffs(cx)
+        self.multi_buffer.read(cx).diff_hunk_word_diffs()
     }
 
     /// 按显示 hunk 索引切换展开/折叠（渲染层点击入口）。

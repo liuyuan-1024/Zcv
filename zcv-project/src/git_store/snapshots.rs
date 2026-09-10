@@ -135,8 +135,10 @@ impl GitStore {
                     }
                     Err(error) => {
                         if let Some(previous) = self.optimistic_index_bases.remove(path) {
-                            self.revision_text_cache
-                                .insert((zcv_git::GitRevision::Index, path.clone()), previous);
+                            self.revision_text_cache.insert(
+                                (zcv_git::GitRevision::Index, path.clone()),
+                                Some(previous),
+                            );
                             let generation = self
                                 .revision_text_generations
                                 .entry(zcv_git::GitRevision::Index)

@@ -701,7 +701,10 @@ fn initialize_workspace(
         // 展开状态按工作区文本跟踪区间跨刷新迁移（HEAD 变化不重置，见 diff_projection 模块说明）。
         if matches!(
             event,
-            GitStoreEvent::Repositories | GitStoreEvent::Statuses | GitStoreEvent::Head
+            GitStoreEvent::Repositories
+                | GitStoreEvent::Statuses
+                | GitStoreEvent::Head
+                | GitStoreEvent::IndexText
         ) {
             push_diff_hunks(workspace.pane(), workspace.project(), cx);
         }
@@ -861,9 +864,10 @@ fn editor_diff_applies(status: Option<zcv_git::FileStatus>) -> bool {
     status.is_some_and(|status| matches!(status, zcv_git::FileStatus::Tracked { .. }))
 }
 
-/// 把单个普通编辑器的工作区源与 HEAD 全文统一注入。
+/// 把单个普通编辑器的工作区源与 HEAD/index 全文统一注入。
 ///
-/// GitStore 提供 HEAD 全文，显示 hunk 由 base/working 快照派生。
+/// GitStore 提供 HEAD 与 index 全文；显示 hunk 由 base/working 快照派生，
+/// 并以 index 参照逐 hunk 标注已暂存 / 未暂存。
 fn inject_editor_diff(
     editor: &Entity<Editor>,
     path: &Path,
@@ -878,46 +882,50 @@ fn inject_editor_diff(
     if !editor_diff_applies(status) {
         return;
     }
-    let base_text = store.read(cx).revision_text(GitRevision::Head, path);
-    let Some(working) = editor.read(cx).multi_buffer().read(cx).working_source() else {
-        return;
-    };
-    let input = base_text.map(|base_text| {
-        vec![zcv_multi_buffer::BufferDiffInput {
-            working,
-            base_text: Some(base_text),
-            path: path.to_path_buf(),
-            // 普通编辑器只显示 gutter 差异，不提供变更块操作。
-            operations: None,
-            display_path: path.to_path_buf(),
-            context_lines: None,
-            is_created: false,
-            show_file_header: false,
-        }]
-    });
-    editor.update(cx, |editor, cx| {
-        editor.set_buffer_diffs(input, cx);
-    });
-    // 显示 hunk 由 base/working 快照本地派生；HEAD 全文是唯一的异步输入。
-    let store = project.read(cx).git_store();
-    if store
-        .read(cx)
-        .revision_text(GitRevision::Head, path)
-        .is_none()
-    {
-        let task = store
-            .read(cx)
-            .load_revision_text(GitRevision::Head, path, cx);
+    // HEAD/index 全文由 GitStore 异步提供；加载完成后重新注入。
+    for revision in [GitRevision::Head, GitRevision::Index] {
+        if store.read(cx).revision_text_loaded(revision, path) {
+            continue;
+        }
+        let task = store.read(cx).load_revision_text(revision, path, cx);
         let project = project.clone();
         let editor = editor.clone();
         let path = path.to_path_buf();
         cx.spawn(async move |cx| {
-            if task.await.is_some() {
-                cx.update(|app| inject_editor_diff(&editor, &path, &project, app));
-            }
+            let _ = task.await;
+            cx.update(|app| inject_editor_diff(&editor, &path, &project, app));
         })
         .detach();
     }
+    // 主旧侧尚未加载完成时注入会把未知当成新建，等待加载回调重试。
+    if !store.read(cx).revision_text_loaded(GitRevision::Head, path) {
+        return;
+    }
+    let base_text = store.read(cx).revision_text(GitRevision::Head, path);
+    // index 参照：未提交视图（HEAD↔工作区）用它逐 hunk 判定已暂存 / 未暂存。
+    let index_text = store.read(cx).revision_text(GitRevision::Index, path);
+    let Some(working) = editor.read(cx).multi_buffer().read(cx).working_source() else {
+        return;
+    };
+    let input = zcv_multi_buffer::BufferDiffInput {
+        working,
+        base_text,
+        index_text,
+        path: path.to_path_buf(),
+        // 普通编辑器只显示 gutter 差异，不提供变更块操作。
+        operations: None,
+    };
+    // GitStore 预创建并按 (working, base, index) 共享同一 diff 实体。
+    let diff = store.update(cx, |store, cx| store.file_diff(&input, cx));
+    let file = zcv_multi_buffer::DiffFile {
+        diff,
+        display_path: path.to_path_buf(),
+        context_lines: None,
+        show_file_header: false,
+    };
+    editor.update(cx, |editor, cx| {
+        editor.set_buffer_diffs(Some(vec![file]), cx)
+    });
 }
 
 // ── 内部类型 ────────────────────────────────────────────────────────

@@ -11,12 +11,12 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use gpui::{App, AppContext as _, Context, Entity, Subscription};
+use gpui::{App, Context, Entity, Subscription};
 use zcv_git::DiffHunkKind;
-use zcv_language::LanguageBuffer;
-use zcv_text::{Anchor, BufferVersion, ByteOffset, Line, Snapshot};
+use zcv_language::{LanguageBuffer, LanguageBufferEvent};
+use zcv_text::{Anchor, ByteOffset, Line, Snapshot};
 
-use crate::buffer_diff::{BufferDiff, BufferDiffEvent, BufferDiffInput, DiffHunk};
+use crate::buffer_diff::{BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkStaging};
 use crate::{
     ExcerptDiffKind, ExcerptMapping, MultiBuffer, MultiBufferEvent, MultiBufferExcerpt,
     ProjectionRemap,
@@ -30,6 +30,23 @@ pub struct DisplayHunk {
     pub range: Range<usize>,
     pub old_range: Range<usize>,
     pub kind: DiffHunkKind,
+    /// 相对 index 参照的暂存语义；无 index 参照时为 NoStaging（实心）。
+    pub staging: DiffHunkStaging,
+}
+
+/// 一个文件的 diff 注入项：预创建的 diff 实体 + 显示配置。
+///
+/// diff 实体由 GitStore 按 (working, base) 共享；显示配置由注入方（视图）持有。
+pub struct DiffFile {
+    /// 权威 diff 实体（GitStore 预创建并共享）。
+    pub diff: Entity<BufferDiff>,
+    /// 组合文档中的显示路径（文件标题与导航定位）。
+    pub display_path: PathBuf,
+    /// 显示策略：None 显示整个新侧文件（普通编辑器）；
+    /// Some(n) 只显示 hunk 周围 n 行上下文（多文件投影）。
+    pub context_lines: Option<usize>,
+    /// 该文件的第一个可见片段是否创建文件标题块。
+    pub show_file_header: bool,
 }
 
 /// 显示 hunk 对应的源定位（hunk 操作与导航用）。
@@ -73,12 +90,15 @@ pub(crate) struct MultiBufferDiffProjection {
     display_expanded: Vec<bool>,
     /// 与显示 hunk 同序的词级变化片段（组合文档字节范围 + 新增/删除色）。
     display_word_diffs: Vec<Vec<(DiffHunkKind, Range<usize>)>>,
-    /// 显示坐标对应的组合文档版本（注入/重建后发生编辑会使坐标失效）。
-    display_version: Option<BufferVersion>,
+    /// 本次物化的 hunk 身份（excerpt / boundary 索引、词级 anchor 等）。
+    /// 编辑只增量更新组合映射，因此可据此只重算显示坐标而不重新物化 excerpt。
+    materialized: Vec<MaterializedHunk>,
     /// 对每个 BufferDiff 的订阅：diff 结果或 pending 变化时重新物化显示。
     subscriptions: Vec<Subscription>,
-    /// 上次物化时各 BufferDiff 的版本；用于抑制已同步重建后的重复事件。
-    display_revisions: Vec<u64>,
+    /// 对每个 diff 的 working 源的订阅：注入阶段即建立，保证编辑必然触发重算，不依赖 excerpt 物化（pending 窗口内也不会漏触发）。
+    working_subscriptions: Vec<Subscription>,
+    /// 上次物化时各文件的 BufferDiff 身份与版本；实体替换或版本推进都视为投影过期。
+    display_revisions: Vec<(gpui::EntityId, u64)>,
     /// 替换 base 后，新 `BufferDiff` 的首次后台结果返回前暂存的展开状态迁移来源。
     pending_expansion_migrations: Vec<Option<PendingExpansionMigration>>,
 }
@@ -119,6 +139,7 @@ struct ResolvedHunk {
     /// base 文本行范围（展开状态身份与旧侧物化）。
     base_lines: Range<usize>,
     kind: DiffHunkKind,
+    staging: DiffHunkStaging,
     /// 旧侧字节范围起点（base_word_diffs 的相对基准）。
     base_byte_start: usize,
     /// 新侧词级变化片段（working 锚点）。
@@ -134,6 +155,7 @@ struct ResolvedHunk {
 struct MaterializedHunk {
     old_range: Range<usize>,
     kind: DiffHunkKind,
+    staging: DiffHunkStaging,
     old_excerpt: Option<usize>,
     new_location: MaterializedHunkLocation,
     source: DisplayHunkSource,
@@ -143,9 +165,19 @@ struct MaterializedHunk {
     base_word_diffs: Vec<Range<usize>>,
 }
 
+#[derive(Clone, Copy)]
 enum MaterializedHunkLocation {
     Excerpt(usize),
     Boundary(usize),
+}
+
+/// 一次物化派生出的显示坐标；只依赖 hunk 身份与当前组合映射，可在编辑后重算。
+struct DiffDisplay {
+    hunks: Vec<DisplayHunk>,
+    old_ranges: Vec<Option<Range<usize>>>,
+    sources: Vec<DisplayHunkSource>,
+    expanded: Vec<bool>,
+    word_diffs: Vec<Vec<(DiffHunkKind, Range<usize>)>>,
 }
 
 struct ExcerptMaterializer<'a> {
@@ -190,7 +222,7 @@ impl MultiBuffer {
     /// 返回 true 表示组合文档被重建（调用方应重置光标）。
     pub fn set_buffer_diffs(
         &mut self,
-        files: Option<Vec<BufferDiffInput>>,
+        files: Option<Vec<DiffFile>>,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some(inputs) = files else {
@@ -208,37 +240,15 @@ impl MultiBuffer {
             .diff
             .get_or_insert_with(|| Box::new(MultiBufferDiffProjection::default()));
 
-        // 同一 working + base 的既有实体直接复用：pending 与展开状态跨刷新存活。
-        let mut next_files = Vec::with_capacity(inputs.len());
-        for input in inputs {
-            let reused = old_files.as_deref().and_then(|old_files| {
-                old_files
-                    .iter()
-                    .find(|old| {
-                        let old = old.diff.read(cx);
-                        old.working().entity_id() == input.working.entity_id()
-                            && old.base_text() == input.base_text
-                    })
-                    .map(|old| old.diff.clone())
-            });
-            let display_path = input.display_path.clone();
-            let context_lines = input.context_lines;
-            let show_file_header = input.show_file_header;
-            let operations = input.operations.clone();
-            let entity = match reused {
-                Some(entity) => {
-                    entity.update(cx, |diff, _| diff.set_operations(operations));
-                    entity
-                }
-                None => cx.new(|cx| BufferDiff::new(input, cx)),
-            };
-            next_files.push(DiffFileProjection {
-                diff: entity,
-                display_path,
-                context_lines,
-                show_file_header,
-            });
-        }
+        let next_files: Vec<DiffFileProjection> = inputs
+            .into_iter()
+            .map(|file| DiffFileProjection {
+                diff: file.diff,
+                display_path: file.display_path,
+                context_lines: file.context_lines,
+                show_file_header: file.show_file_header,
+            })
+            .collect();
 
         let mut next_expansion = Vec::with_capacity(next_files.len());
         let mut pending_expansion_migrations = Vec::with_capacity(next_files.len());
@@ -282,11 +292,23 @@ impl MultiBuffer {
                 })
             })
             .collect();
+        diff.working_subscriptions = next_files
+            .iter()
+            .map(|file| {
+                let diff_entity = file.diff.clone();
+                let working = file.diff.read(cx).working().clone();
+                cx.subscribe(&working, move |_this, _working, event, cx| {
+                    if matches!(event, LanguageBufferEvent::TextChanged) {
+                        diff_entity.update(cx, |diff, cx| diff.recompute(cx));
+                    }
+                })
+            })
+            .collect();
         diff.files = next_files;
         diff.expansion = next_expansion;
         diff.pending_expansion_migrations = pending_expansion_migrations;
         // 新文件的 hunk 尚未算完时，保留已物化投影，避免先清空再展示结果导致一次
-        // Git 刷新产生两次可见重建。显示查询会在此期间拒绝旧 hunk 坐标。
+        // Git 刷新产生两次可见重建；各文件的就绪状态互不影响。
         if diff
             .files
             .iter()
@@ -350,44 +372,48 @@ impl MultiBuffer {
         cx.emit(MultiBufferEvent::DiffExpansionChanged);
     }
 
-    /// 与当前组合文档版本匹配的显示坐标 hunks；未注入、加载态或注入后发生编辑时返回空。
-    pub fn diff_hunks<'a>(&'a self, cx: &'a App) -> &'a [DisplayHunk] {
-        match self.display_state(cx) {
-            Some(diff) => &diff.display_hunks,
-            None => &[],
-        }
+    /// 显示坐标 hunks（组合坐标，跨文件展平）。
+    ///
+    /// 坐标是当前组合映射下的派生缓存，在所有会改动组合文档的路径上同步刷新；
+    /// 单个文件未就绪不会让其他文件的高亮消失。
+    pub fn diff_hunks(&self) -> &[DisplayHunk] {
+        self.diff.as_ref().map_or(&[], |diff| &diff.display_hunks)
     }
 
-    /// 每个 hunk 在组合文档中的旧侧显示行范围（与 MultiBuffer::diff_hunks 同门控）。
-    pub fn diff_hunk_old_ranges<'a>(&'a self, cx: &'a App) -> &'a [Option<Range<usize>>] {
-        match self.display_state(cx) {
-            Some(diff) => &diff.display_old_ranges,
-            None => &[],
-        }
+    /// 每个 hunk 在组合文档中的旧侧显示行范围。
+    pub fn diff_hunk_old_ranges(&self) -> &[Option<Range<usize>>] {
+        self.diff
+            .as_ref()
+            .map_or(&[], |diff| &diff.display_old_ranges)
     }
 
     /// 与 MultiBuffer::diff_hunks 平行的词级变化片段（组合文档字节范围 + 新增/删除色）。
-    pub fn diff_hunk_word_diffs<'a>(
-        &'a self,
-        cx: &'a App,
-    ) -> &'a [Vec<(DiffHunkKind, Range<usize>)>] {
-        match self.display_state(cx) {
-            Some(diff) => &diff.display_word_diffs,
-            None => &[],
-        }
+    pub fn diff_hunk_word_diffs(&self) -> &[Vec<(DiffHunkKind, Range<usize>)>] {
+        self.diff
+            .as_ref()
+            .map_or(&[], |diff| &diff.display_word_diffs)
     }
 
     /// 与 MultiBuffer::diff_hunks 平行的展开标志（渲染层按显示 hunk 索引查询）。
-    pub fn diff_hunk_expanded(&self, cx: &App) -> Vec<bool> {
-        let Some(diff) = self.display_state(cx) else {
-            return Vec::new();
-        };
-        diff.display_expanded.clone()
+    pub fn diff_hunk_expanded(&self) -> Vec<bool> {
+        self.diff
+            .as_ref()
+            .map_or(Vec::new(), |diff| diff.display_expanded.clone())
     }
 
     /// 显示 hunk 到源定位（hunk 操作与导航用）。
     pub fn buffer_diff_hunk_at(&self, display_index: usize, cx: &App) -> Option<DiffHunkSource> {
-        let diff = self.display_state(cx)?;
+        let diff = self.diff.as_ref()?;
+        // 缓存必须对应当前文件集合，否则 display_sources 的 file_index 可能指向别的文件。
+        if diff.files.len() != diff.display_revisions.len()
+            || !diff
+                .files
+                .iter()
+                .zip(&diff.display_revisions)
+                .all(|(file, previous)| file.diff.entity_id() == previous.0)
+        {
+            return None;
+        }
         let source = diff.display_sources.get(display_index)?.clone();
         let file = diff.files.get(source.file_index)?;
         let entity = file.diff.clone();
@@ -517,7 +543,10 @@ impl MultiBuffer {
                 .files
                 .iter()
                 .zip(diff.display_revisions.iter())
-                .any(|(file, revision)| file.diff.read(cx).revision() != *revision);
+                .any(|(file, previous)| {
+                    file.diff.entity_id() != previous.0
+                        || file.diff.read(cx).revision() != previous.1
+                });
         if !stale {
             return;
         }
@@ -580,46 +609,19 @@ impl MultiBuffer {
             expected_excerpt_count,
             "diff 物化生成的 excerpt 必须全部建立组合映射"
         );
-        let mut display_hunks = Vec::with_capacity(materialized_hunks.len());
-        let mut display_old_ranges = Vec::with_capacity(materialized_hunks.len());
-        let mut display_sources = Vec::with_capacity(materialized_hunks.len());
-        let mut display_expanded = Vec::with_capacity(materialized_hunks.len());
-        let mut display_word_diffs = Vec::with_capacity(materialized_hunks.len());
-        for hunk in materialized_hunks {
-            let old_display = hunk
-                .old_excerpt
-                .map(|excerpt| self.diff_excerpt_output_lines(excerpt));
-            display_word_diffs.push(self.combined_word_diffs(&hunk));
-            let new_range = match hunk.new_location {
-                MaterializedHunkLocation::Excerpt(excerpt) => {
-                    self.diff_excerpt_output_lines(excerpt)
-                }
-                MaterializedHunkLocation::Boundary(boundary) => {
-                    let line = self.diff_excerpt_boundary_line(boundary);
-                    line..line
-                }
-            };
-            display_hunks.push(DisplayHunk {
-                range: new_range,
-                old_range: hunk.old_range,
-                kind: hunk.kind,
-            });
-            display_old_ranges.push(old_display);
-            display_sources.push(hunk.source);
-            display_expanded.push(hunk.expanded);
-        }
+        let display = self.derive_diff_display(&materialized_hunks);
         let new_version = self.text_buffer(cx).read(cx).snapshot().version();
         let diff = self.diff.as_mut().expect("投影重建前 diff 状态必须存在");
-        diff.display_hunks = display_hunks;
-        diff.display_old_ranges = display_old_ranges;
-        diff.display_sources = display_sources;
-        diff.display_expanded = display_expanded;
-        diff.display_word_diffs = display_word_diffs;
-        diff.display_version = Some(new_version);
+        diff.materialized = materialized_hunks;
+        diff.display_hunks = display.hunks;
+        diff.display_old_ranges = display.old_ranges;
+        diff.display_sources = display.sources;
+        diff.display_expanded = display.expanded;
+        diff.display_word_diffs = display.word_diffs;
         diff.display_revisions = diff
             .files
             .iter()
-            .map(|file| file.diff.read(cx).revision())
+            .map(|file| (file.diff.entity_id(), file.diff.read(cx).revision()))
             .collect();
         cx.notify();
         if new_version != old_version {
@@ -638,6 +640,69 @@ impl MultiBuffer {
             .get(excerpt)
             .expect("diff excerpt 必须存在对应组合映射");
         mapping.output_start_line..mapping.output_end_line.max(mapping.output_start_line + 1)
+    }
+
+    /// 从已物化的 hunk 身份与当前组合映射派生显示坐标。
+    ///
+    /// 与 `set_excerpts` 解耦：编辑只增量更新组合映射，因此可只重算坐标而不重新物化 excerpt。
+    fn derive_diff_display(&self, materialized: &[MaterializedHunk]) -> DiffDisplay {
+        let mut hunks = Vec::with_capacity(materialized.len());
+        let mut old_ranges = Vec::with_capacity(materialized.len());
+        let mut sources = Vec::with_capacity(materialized.len());
+        let mut expanded = Vec::with_capacity(materialized.len());
+        let mut word_diffs = Vec::with_capacity(materialized.len());
+        for hunk in materialized {
+            let old_display = hunk
+                .old_excerpt
+                .map(|excerpt| self.diff_excerpt_output_lines(excerpt));
+            word_diffs.push(self.combined_word_diffs(hunk));
+            let new_range = match hunk.new_location {
+                MaterializedHunkLocation::Excerpt(excerpt) => {
+                    self.diff_excerpt_output_lines(excerpt)
+                }
+                MaterializedHunkLocation::Boundary(boundary) => {
+                    let line = self.diff_excerpt_boundary_line(boundary);
+                    line..line
+                }
+            };
+            hunks.push(DisplayHunk {
+                range: new_range,
+                old_range: hunk.old_range.clone(),
+                kind: hunk.kind,
+                staging: hunk.staging,
+            });
+            old_ranges.push(old_display);
+            sources.push(hunk.source.clone());
+            expanded.push(hunk.expanded);
+        }
+        DiffDisplay {
+            hunks,
+            old_ranges,
+            sources,
+            expanded,
+            word_diffs,
+        }
+    }
+
+    /// 编辑后按当前组合映射重算显示坐标，不重新物化 excerpt。
+    ///
+    /// `apply_source_change` 增量更新了 excerpt 映射；
+    /// 显示坐标必须同步刷新，否则版本门控会让全部 diff 高亮消失，直到下一次整体重建。
+    pub(crate) fn refresh_diff_display(&mut self, cx: &mut Context<Self>) {
+        let Some(diff) = self.diff.as_ref() else {
+            return;
+        };
+        if diff.materialized.is_empty() {
+            return;
+        }
+        let display = self.derive_diff_display(&diff.materialized);
+        let diff = self.diff.as_mut().expect("已确认 diff 投影存在");
+        diff.display_hunks = display.hunks;
+        diff.display_old_ranges = display.old_ranges;
+        diff.display_sources = display.sources;
+        diff.display_expanded = display.expanded;
+        diff.display_word_diffs = display.word_diffs;
+        cx.notify();
     }
 
     /// 一个物化 hunk 的词级片段在组合文档中的字节范围。
@@ -685,17 +750,6 @@ impl MultiBuffer {
             0
         }
     }
-
-    /// 显示坐标只在组合文档未被后续编辑时有效（版本门控）。
-    fn display_state<'a>(&'a self, cx: &'a App) -> Option<&'a MultiBufferDiffProjection> {
-        let diff = self.diff.as_ref()?;
-        (diff.display_version == Some(self.text_buffer(cx).read(cx).snapshot().version())
-            && diff
-                .files
-                .iter()
-                .all(|file| file.diff.read(cx).is_current_version_calculated(cx)))
-        .then_some(diff)
-    }
 }
 
 /// 解析一个文件当前的可见 hunk（pending 抑制后）为显示行坐标。
@@ -728,6 +782,7 @@ fn resolve_hunk(hunk: &DiffHunk, working: &Snapshot, base: Option<&Snapshot>) ->
         buffer_lines,
         base_lines,
         kind: hunk.kind,
+        staging: hunk.staging,
         base_byte_start: hunk.diff_base_byte_range.start,
         buffer_word_diffs: hunk.buffer_word_diffs.clone(),
         base_word_diffs: hunk.base_word_diffs.clone(),
@@ -875,6 +930,7 @@ fn materialize_file(
         materialized_hunks.push(MaterializedHunk {
             old_range: 0..0,
             kind: DiffHunkKind::Added,
+            staging: DiffHunkStaging::NoStaging,
             old_excerpt: None,
             new_location: MaterializedHunkLocation::Excerpt(new_excerpt),
             source: DisplayHunkSource {
@@ -987,6 +1043,7 @@ fn materialize_file(
             materialized_hunks.push(MaterializedHunk {
                 old_range: hunk.base_lines.clone(),
                 kind: hunk.kind,
+                staging: hunk.staging,
                 old_excerpt: old_display,
                 new_location,
                 source: DisplayHunkSource {

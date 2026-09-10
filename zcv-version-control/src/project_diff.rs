@@ -893,16 +893,17 @@ impl ProjectDiffView {
             return;
         }
         let root = self.project.read(cx).root().map(Path::to_path_buf);
-        let mut inputs = Vec::new();
+        let mut diff_files = Vec::new();
         let files = self.files.clone();
         for file in &files {
-            let Some(input) = self.build_file_input(file, root.as_deref(), cx) else {
+            let Some(diff_file) = self.build_file_input(file, root.as_deref(), cx) else {
                 continue;
             };
-            inputs.push(input);
+            diff_files.push(diff_file);
         }
-        self.editor
-            .update(cx, |editor, cx| editor.set_buffer_diffs(Some(inputs), cx));
+        self.editor.update(cx, |editor, cx| {
+            editor.set_buffer_diffs(Some(diff_files), cx)
+        });
         if let Some(scroll_anchor) = self.refresh_scroll_anchor.take() {
             self.editor.update(cx, |editor, cx| {
                 editor.restore_scroll_anchor(scroll_anchor, cx);
@@ -912,13 +913,13 @@ impl ProjectDiffView {
         cx.notify();
     }
 
-    /// 构造单个变更文件的统一投影输入（工作区源 + 源 hunks + base 全文 + 显示策略）。
+    /// 构造单个变更文件的统一投影项（预创建 diff 实体 + 显示策略）。
     fn build_file_input(
         &mut self,
         file: &GitChangeFile,
         root: Option<&Path>,
         cx: &mut Context<Self>,
-    ) -> Option<zcv_multi_buffer::BufferDiffInput> {
+    ) -> Option<zcv_multi_buffer::DiffFile> {
         let git_store = self.project.read(cx).git_store();
         let working = match self.kind {
             ProjectDiffKind::Staged => {
@@ -949,20 +950,30 @@ impl ProjectDiffView {
         let base_text = git_store
             .read(cx)
             .revision_text(self.kind.base_revision(), &file.path);
+        // index 参照：已暂存视图 working 就是 index，未暂存视图 base 就是 index；
+        // 统一分类自然得到全部 Staged / 全部 Unstaged。
+        let index_text = git_store
+            .read(cx)
+            .revision_text(GitRevision::Index, &file.path);
         let display_path = root
             .and_then(|root| file.path.strip_prefix(root).ok())
             .unwrap_or(&file.path)
             .to_path_buf();
-        Some(zcv_multi_buffer::BufferDiffInput {
+        let input = zcv_multi_buffer::BufferDiffInput {
             working,
             base_text,
+            index_text,
             path: file.path.clone(),
-            is_created: self.kind.is_created(file.status),
             operations: Some(
                 git_store
                     .read(cx)
                     .diff_operations(self.kind.base_revision()),
             ),
+        };
+        // GitStore 预创建并按 (working, base, index) 共享；同一文件跨视图复用 diff 实体。
+        let diff = git_store.update(cx, |store, cx| store.file_diff(&input, cx));
+        Some(zcv_multi_buffer::DiffFile {
+            diff,
             display_path,
             context_lines: Some(DIFF_CONTEXT_LINES),
             show_file_header: true,
@@ -974,13 +985,10 @@ impl ProjectDiffView {
         let git_store = self.project.read(cx).git_store();
         let store = git_store.read(cx);
         self.files.iter().all(|file| {
-            store
-                .revision_text(self.kind.base_revision(), &file.path)
-                .is_some()
+            // 已加载即视为就绪：新建文件在 base 修订中缺失（值为 None）也是终态。
+            store.revision_text_loaded(self.kind.base_revision(), &file.path)
                 && (self.kind != ProjectDiffKind::Staged
-                    || store
-                        .revision_text(GitRevision::Index, &file.path)
-                        .is_some())
+                    || store.revision_text_loaded(GitRevision::Index, &file.path))
         })
     }
 
@@ -993,7 +1001,7 @@ impl ProjectDiffView {
         let index = self
             .multi_buffer
             .read(cx)
-            .diff_hunks(cx)
+            .diff_hunks()
             .iter()
             .position(|hunk| hunk == displayed)?;
         self.multi_buffer.read(cx).buffer_diff_hunk_at(index, cx)
@@ -1094,8 +1102,7 @@ impl ProjectDiffView {
             for revision in revisions {
                 if git_store
                     .read(cx)
-                    .revision_text(revision, &file.path)
-                    .is_some()
+                    .revision_text_loaded(revision, &file.path)
                     || !self
                         .loading_revision_text
                         .insert((revision, file.path.clone()))
@@ -1443,6 +1450,33 @@ mod tests {
 
     use super::*;
 
+    /// 测试辅助：按工作区源与 base 全文预创建普通编辑器 diff 注入项。
+    fn plain_diff_file(
+        working: Entity<LanguageBuffer>,
+        base_text: &str,
+        path: PathBuf,
+        cx: &mut Context<Editor>,
+    ) -> zcv_multi_buffer::DiffFile {
+        let diff = cx.new(|cx| {
+            zcv_multi_buffer::BufferDiff::new(
+                zcv_multi_buffer::BufferDiffInput {
+                    working,
+                    base_text: Some(Arc::from(base_text)),
+                    index_text: None,
+                    path: path.clone(),
+                    operations: None,
+                },
+                cx,
+            )
+        });
+        zcv_multi_buffer::DiffFile {
+            diff,
+            display_path: path,
+            context_lines: None,
+            show_file_header: false,
+        }
+    }
+
     #[gpui::test]
     fn empty_project_diff_renders_blank_focusable_view(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().expect("应创建临时项目目录");
@@ -1571,7 +1605,7 @@ mod tests {
             assert_eq!(text_lines[2], "", "折叠后删除点占位行（原 line 17 位置）");
             assert_eq!(text_lines[3], "line 18", "折叠后原第 18 行紧跟删除点占位行");
             // 折叠删除块保留一个 hunk（显示坐标为组合坐标，不在此断言源行号）。
-            let hunks = view.multi_buffer.read(cx).diff_hunks(cx).to_vec();
+            let hunks = view.multi_buffer.read(cx).diff_hunks().to_vec();
             assert_eq!(hunks.len(), 1, "应保留一个删除 hunk");
         });
     }
@@ -1852,7 +1886,7 @@ mod tests {
         cx.run_until_parked();
 
         let (hunk, initial_version) = cx.read_entity(&view, |view, cx| {
-            let hunks = view.multi_buffer.read(cx).diff_hunks(cx).to_vec();
+            let hunks = view.multi_buffer.read(cx).diff_hunks().to_vec();
             assert_eq!(hunks.len(), 2);
             let version = view
                 .multi_buffer
@@ -1874,7 +1908,7 @@ mod tests {
             let snapshot = view.multi_buffer.read(cx).snapshot(cx);
             let text = String::from_utf8(snapshot.text_bytes()).expect("投影应为 UTF-8");
             assert_eq!(snapshot.text().version().get(), initial_version + 1);
-            assert_eq!(view.multi_buffer.read(cx).diff_hunks(cx).len(), 1);
+            assert_eq!(view.multi_buffer.read(cx).diff_hunks().len(), 1);
             assert!(!text.contains("第一个变更块"));
             assert!(text.contains("第二个变更块"));
         });
@@ -1904,7 +1938,7 @@ mod tests {
             assert!(
                 view.multi_buffer
                     .read(cx)
-                    .diff_hunk_expanded(cx)
+                    .diff_hunk_expanded()
                     .iter()
                     .all(|&expanded| expanded),
                 "Git hunk 多文件编辑器应默认展开修改块"
@@ -1941,7 +1975,7 @@ mod tests {
                 !view
                     .multi_buffer
                     .read(cx)
-                    .diff_hunk_expanded(cx)
+                    .diff_hunk_expanded()
                     .iter()
                     .any(|&expanded| expanded)
             );
@@ -1962,14 +1996,14 @@ mod tests {
         cx.run_until_parked();
         cx.read_entity(&view, |view, cx| {
             assert!(
-                !view.multi_buffer.read(cx).diff_hunks(cx).is_empty(),
+                !view.multi_buffer.read(cx).diff_hunks().is_empty(),
                 "刷新后仍应保留项目差异映射"
             );
             assert!(
                 !view
                     .multi_buffer
                     .read(cx)
-                    .diff_hunk_expanded(cx)
+                    .diff_hunk_expanded()
                     .iter()
                     .any(|&expanded| expanded),
                 "刷新不能覆盖用户的折叠状态"
@@ -1977,8 +2011,7 @@ mod tests {
         });
     }
 
-    /// 复现：普通编辑器展开 hunk（singleton → excerpts）后触发 git hunks 刷新，
-    /// 与 ProjectDiffView 共享仓库时不应让统一投影重建 panic。
+    /// 复现：普通编辑器展开 hunk（singleton → excerpts）后触发 git hunks 刷新，与 ProjectDiffView 共享仓库时不应让统一投影重建 panic。
     #[gpui::test]
     fn plain_editor_expansion_then_git_refresh_keeps_diff_view_consistent(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().expect("应创建临时仓库");
@@ -1993,8 +2026,7 @@ mod tests {
         std::fs::write(&modified_path, "line0\n改过\nline2\nline3\nline4\n").expect("应修改文件");
 
         let project = cx.new(|cx| Project::new(root.clone(), cx));
-        // 普通编辑器：独立 excerpts 组合文档（整文件 excerpt，共享 LanguageBuffer 只作工作区源），
-        // 与 item_provider 打开路径一致；展开修改块。
+        // 普通编辑器：独立 excerpts 组合文档（整文件 excerpt，共享 LanguageBuffer 只作工作区源），与 item_provider 打开路径一致；展开修改块。
         let working = project
             .update(cx, |project, cx| project.open_buffer(&modified_path, cx))
             .expect("工作区文件应能打开");
@@ -2003,16 +2035,12 @@ mod tests {
         let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
         editor.update(cx, |editor, cx| {
             editor.set_buffer_diffs(
-                Some(vec![zcv_multi_buffer::BufferDiffInput {
-                    working: working.clone(),
-                    base_text: Some(Arc::from("line0\nline1\nline2\nline3\nline4\n")),
-                    path: modified_path.clone(),
-                    is_created: false,
-                    operations: None,
-                    display_path: modified_path.clone(),
-                    context_lines: None,
-                    show_file_header: false,
-                }]),
+                Some(vec![plain_diff_file(
+                    working.clone(),
+                    "line0\nline1\nline2\nline3\nline4\n",
+                    modified_path.clone(),
+                    cx,
+                )]),
                 cx,
             );
             editor.toggle_diff_hunk_at(0, cx);
@@ -2034,7 +2062,7 @@ mod tests {
         cx.run_until_parked();
         cx.read_entity(&view, |view, cx| {
             assert!(
-                !view.multi_buffer.read(cx).diff_hunks(cx).is_empty(),
+                !view.multi_buffer.read(cx).diff_hunks().is_empty(),
                 "刷新后仍应保留项目差异映射"
             )
         });
@@ -2073,18 +2101,12 @@ mod tests {
         let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
         editor.update(cx, |editor, cx| {
             editor.set_buffer_diffs(
-                Some(vec![zcv_multi_buffer::BufferDiffInput {
-                    working: working.clone(),
-                    base_text: Some(Arc::from(
-                        "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\n",
-                    )),
-                    path: modified_path.clone(),
-                    is_created: false,
-                    operations: None,
-                    display_path: modified_path.clone(),
-                    context_lines: None,
-                    show_file_header: false,
-                }]),
+                Some(vec![plain_diff_file(
+                    working.clone(),
+                    "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\n",
+                    modified_path.clone(),
+                    cx,
+                )]),
                 cx,
             );
             editor.toggle_diff_hunk_at(0, cx);
@@ -2123,7 +2145,7 @@ mod tests {
         cx.run_until_parked();
         cx.read_entity(&view, |view, cx| {
             assert!(
-                !view.multi_buffer.read(cx).diff_hunks(cx).is_empty(),
+                !view.multi_buffer.read(cx).diff_hunks().is_empty(),
                 "刷新后仍应保留项目差异映射"
             )
         });

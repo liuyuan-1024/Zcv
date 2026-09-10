@@ -10,10 +10,10 @@ mod diff_projection;
 mod word_diff;
 
 pub use buffer_diff::{
-    BufferDiff, BufferDiffInput, BufferDiffSnapshot, DiffHunk, DiffOperations, PendingHunk,
-    PendingSense,
+    BufferDiff, BufferDiffInput, BufferDiffSnapshot, DiffHunk, DiffHunkStaging, DiffOperations,
+    PendingHunk, PendingSense,
 };
-pub use diff_projection::{DiffHunkSource, DisplayHunk};
+pub use diff_projection::{DiffFile, DiffHunkSource, DisplayHunk};
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -1194,6 +1194,7 @@ impl MultiBuffer {
     }
 
     fn source_changed(&mut self, source_id: gpui::EntityId, cx: &mut Context<Self>) {
+        // diff 的重算由 diff 投影对 working 源的订阅驱动（注入阶段建立），这里只处理文本投影。
         let patch = self
             .state
             .source_subscriptions
@@ -1389,6 +1390,8 @@ impl MultiBuffer {
         }
         self.state.capture_names = rebuild_capture_table(&mut self.state.sources);
         self.rebuild_match_ranges();
+        // 组合映射已增量更新：同步重算 diff 显示坐标，避免版本门控让高亮整体消失。
+        self.refresh_diff_display(cx);
     }
 
     fn rebuild_match_ranges(&mut self) {

@@ -129,6 +129,8 @@ fn parse_colors(colors: &toml::Table) -> Option<ThemeColors> {
         editor_cursor: parse("editor.cursor")?,
         editor_diff_added_background: parse("editor.diff_hunk.added_background")?,
         editor_diff_deleted_background: parse("editor.diff_hunk.deleted_background")?,
+        editor_diff_added_hollow_border: parse("editor.diff_hunk.added_hollow_border")?,
+        editor_diff_deleted_hollow_border: parse("editor.diff_hunk.deleted_hollow_border")?,
         scrollbar_track_background: parse("scrollbar.track.background")?,
         scrollbar_thumb_background: parse("scrollbar.thumb.background")?,
         scrollbar_thumb_hover_background: parse("scrollbar.thumb.hover_background")?,
@@ -286,8 +288,8 @@ mod tests {
             colors.scrollbar_thumb_active_background,
             gpui::rgba(0x363c46ff)
         );
-        // 词级背景必须比整行背景更饱和，形成可辨识的差异高亮。
-        assert_eq!(colors.version_control_word_added, gpui::rgba(0x27a65773));
+        assert_eq!(colors.version_control_word_added, gpui::rgba(0x2EA04859));
+        assert_eq!(colors.version_control_word_deleted, gpui::rgba(0xe06c76cc));
         assert_ne!(
             colors.version_control_word_added,
             colors.editor_diff_added_background
@@ -318,7 +320,8 @@ mod tests {
             colors.editor_selection_background
         );
         assert_eq!(colors.ghost_element_hover, gpui::rgba(0xc9c9caff));
-        assert_eq!(colors.version_control_word_added, gpui::rgba(0xa7dcb7ff));
+        assert_eq!(colors.version_control_word_added, gpui::rgba(0x2EA04859));
+        assert_eq!(colors.version_control_word_deleted, gpui::rgba(0xe06c76cc));
         assert_ne!(
             colors.version_control_word_added,
             colors.editor_diff_added_background
@@ -380,6 +383,8 @@ mod tests {
             "editor.cursor" = "#555555ff"
             "editor.diff_hunk.added_background" = "#00ff004d"
             "editor.diff_hunk.deleted_background" = "#ff00004d"
+            "editor.diff_hunk.added_hollow_border" = "#00ff0080"
+            "editor.diff_hunk.deleted_hollow_border" = "#ff000080"
             "scrollbar.track.background" = "#00000000"
             "scrollbar.thumb.background" = "#88888873"
             "scrollbar.thumb.hover_background" = "#8888888c"

@@ -6,20 +6,24 @@
 use std::ops::Range;
 
 use zcv_git::DiffHunkKind;
-use zcv_multi_buffer::DisplayHunk;
+use zcv_multi_buffer::{DiffHunkStaging, DisplayHunk};
 use zcv_text::Line;
 
 use crate::display_map::DisplaySnapshot;
 
 /// hunks 的单遍渲染数据：行标记 / 竖条 / 点击区域共用同一份行区间计算。
 pub(crate) struct HunkRendering {
-    pub(crate) diff_rows: Vec<(Range<usize>, DiffHunkKind)>,
-    pub(crate) strips: Vec<(Range<usize>, DiffHunkKind)>,
+    /// 行标记：显示行区间、行级色、以及 hunk 相对 index 的暂存语义。
+    pub(crate) diff_rows: Vec<(Range<usize>, DiffHunkKind, DiffHunkStaging)>,
+    /// gutter 竖条：与 diff_rows 同源，按暂存语义区分空心 / 实心。
+    pub(crate) strips: Vec<(Range<usize>, DiffHunkKind, DiffHunkStaging)>,
     pub(crate) hit_regions: Vec<(Range<usize>, usize, DiffHunkKind)>,
     /// hunk 操作栏的锚定显示范围；控件取范围起点作为右上角所在行。
     pub(crate) controls: Vec<(Range<usize>, DisplayHunk)>,
     /// 需要整行差异背景的显示行区间；只有展开态包含（新增块的展开态由注入方决定）。
     pub(crate) expanded_rows: Vec<Range<usize>>,
+    /// 展开的 hollow（已暂存）连续块；边框只在块首 / 末行按该行背景色绘制，相邻行之间不画线。
+    pub(crate) hollow_blocks: Vec<Range<usize>>,
     /// 展开 hunk 的词级变化片段（组合文档字节范围 + 新增/删除色）。
     pub(crate) word_diff_highlights: Vec<(DiffHunkKind, Range<usize>)>,
 }
@@ -30,6 +34,7 @@ pub(crate) struct HunkRendering {
 /// - `strips`：竖条范围与状态色（竖条颜色不随展开变化）
 /// - `hit_regions`：可点击色带区域（显示行范围 + 点击目标 old_range + 类型）
 /// - `expanded_rows`：整行差异背景数据源（只有展开态着色；折叠 hunk 仅保留 gutter 竖条）
+/// - `hollow_blocks`：展开的已暂存（hollow）连续块（边框按块边界合并绘制，不做逐行描边）
 /// - `word_diff_highlights`：展开态 hunk 的词级变化片段（组合文档字节范围；折叠态无）
 ///
 /// 覆盖终点取 hunk 之后第一行的行首显示行（end 行首显示行 − 1 即 hunk 最后一个显示行，左闭右开区间 [start, end) 恰好盖住全部 wrap 片段）；
@@ -49,9 +54,12 @@ pub(crate) fn hunk_rendering(
     let mut hit_regions = Vec::new();
     let mut controls = Vec::new();
     let mut expanded_rows = Vec::new();
+    let mut hollow_blocks = Vec::new();
     let mut word_diff_highlights = Vec::new();
     for (index, hunk) in hunks.iter().enumerate() {
         let is_expanded = expanded.get(index).copied().unwrap_or(false);
+        let staging = hunk.staging;
+        let hollow = is_hollow_hunk(staging);
         // 词级背景只出现在展开态：折叠 hunk 不物化旧侧，也没有可着色的行内文本。
         if is_expanded && let Some(diffs) = word_diffs.get(index) {
             word_diff_highlights.extend(diffs.iter().cloned());
@@ -64,19 +72,26 @@ pub(crate) fn hunk_rendering(
         match hunk.kind {
             DiffHunkKind::Added => {
                 if let Some(rows) = new_rows {
-                    diff_rows.push((rows.clone(), DiffHunkKind::Added));
-                    strips.push((rows.clone(), DiffHunkKind::Added));
+                    diff_rows.push((rows.clone(), DiffHunkKind::Added, staging));
+                    strips.push((rows.clone(), DiffHunkKind::Added, staging));
+                    hit_regions.push((rows.clone(), index, DiffHunkKind::Added));
                     if is_expanded {
                         expanded_rows.push(rows.clone());
+                        if hollow {
+                            hollow_blocks.push(rows.clone());
+                        }
                     }
                     controls.push((rows, hunk.clone()));
                 }
             }
             DiffHunkKind::Deleted => {
                 if is_expanded && let Some(rows) = old_rows {
-                    diff_rows.push((rows.clone(), DiffHunkKind::Deleted));
-                    strips.push((rows.clone(), DiffHunkKind::Deleted));
+                    diff_rows.push((rows.clone(), DiffHunkKind::Deleted, staging));
+                    strips.push((rows.clone(), DiffHunkKind::Deleted, staging));
                     expanded_rows.push(rows.clone());
+                    if hollow {
+                        hollow_blocks.push(rows.clone());
+                    }
                     hit_regions.push((rows.clone(), index, DiffHunkKind::Deleted));
                     controls.push((rows, hunk.clone()));
                 } else if let Some(rows) =
@@ -88,17 +103,20 @@ pub(crate) fn hunk_rendering(
             }
             DiffHunkKind::Modified => {
                 if is_expanded && let (Some(old_rows), Some(new_rows)) = (&old_rows, &new_rows) {
-                    diff_rows.push((old_rows.clone(), DiffHunkKind::Deleted));
-                    diff_rows.push((new_rows.clone(), DiffHunkKind::Added));
+                    diff_rows.push((old_rows.clone(), DiffHunkKind::Deleted, staging));
+                    diff_rows.push((new_rows.clone(), DiffHunkKind::Added, staging));
                     expanded_rows.push(old_rows.clone());
                     expanded_rows.push(new_rows.clone());
                     let rows = old_rows.start.min(new_rows.start)..old_rows.end.max(new_rows.end);
-                    strips.push((rows.clone(), DiffHunkKind::Modified));
+                    strips.push((rows.clone(), DiffHunkKind::Modified, staging));
+                    if hollow {
+                        hollow_blocks.push(rows.clone());
+                    }
                     hit_regions.push((rows.clone(), index, DiffHunkKind::Modified));
                     controls.push((rows, hunk.clone()));
                 } else if let Some(rows) = new_rows {
-                    diff_rows.push((rows.clone(), DiffHunkKind::Modified));
-                    strips.push((rows.clone(), DiffHunkKind::Modified));
+                    diff_rows.push((rows.clone(), DiffHunkKind::Modified, staging));
+                    strips.push((rows.clone(), DiffHunkKind::Modified, staging));
                     hit_regions.push((rows.clone(), index, DiffHunkKind::Modified));
                     controls.push((rows, hunk.clone()));
                 }
@@ -111,6 +129,7 @@ pub(crate) fn hunk_rendering(
         hit_regions,
         controls,
         expanded_rows,
+        hollow_blocks,
         word_diff_highlights,
     }
 }
@@ -136,15 +155,22 @@ fn logical_anchor_rows(snapshot: &DisplaySnapshot, line: usize) -> Option<Range<
     Some(start..end.max(start + 1))
 }
 
-/// 查询显示行所属的 diff 类型（gutter 与内容背景共用；线性扫描，hunks 数量级小）。
-pub(crate) fn diff_kind_for_row(
-    diff_rows: &[(Range<usize>, DiffHunkKind)],
+/// 查询显示行所属的 diff 类型与暂存语义（gutter 与内容背景共用；线性扫描，hunks 数量级小）。
+pub(crate) fn diff_row_for_row(
+    diff_rows: &[(Range<usize>, DiffHunkKind, DiffHunkStaging)],
     row: usize,
-) -> Option<DiffHunkKind> {
+) -> Option<(DiffHunkKind, DiffHunkStaging)> {
     diff_rows
         .iter()
-        .find(|(range, _)| range.contains(&row))
-        .map(|(_, kind)| *kind)
+        .find(|(range, _, _)| range.contains(&row))
+        .map(|(_, kind, staging)| (*kind, *staging))
+}
+
+/// 该 hunk 是否用空心色条 + 透明行背景（已暂存）。
+///
+/// 只有完全进入 index 的 hunk 是空心；未暂存 / 部分暂存 / 无 index 参照一律实心。
+pub(crate) fn is_hollow_hunk(staging: DiffHunkStaging) -> bool {
+    matches!(staging, DiffHunkStaging::Staged)
 }
 
 #[cfg(test)]
@@ -198,6 +224,7 @@ mod tests {
                     range: 20..20,
                     old_range: 20..21,
                     kind: DiffHunkKind::Deleted,
+                    staging: DiffHunkStaging::NoStaging,
                 };
                 let rendered = hunk_rendering(
                     &snapshot,
@@ -264,6 +291,7 @@ mod tests {
                     range: 15..15,
                     old_range: 15..16,
                     kind: DiffHunkKind::Deleted,
+                    staging: DiffHunkStaging::NoStaging,
                 };
                 let rendered = hunk_rendering(
                     &snapshot,
@@ -286,26 +314,26 @@ mod tests {
     fn diff_kind_for_row_matches_display_row_ranges() {
         // 输入是 diff_hunk_rows 的输出：Deleted 已从空区间展开为锚定行的单行区间。
         let diff_rows = vec![
-            (2..5, DiffHunkKind::Modified),
-            (7..8, DiffHunkKind::Deleted),
+            (2..5, DiffHunkKind::Modified, DiffHunkStaging::NoStaging),
+            (7..8, DiffHunkKind::Deleted, DiffHunkStaging::NoStaging),
         ];
 
-        assert_eq!(diff_kind_for_row(&diff_rows, 1), None);
+        assert_eq!(diff_row_for_row(&diff_rows, 1), None);
         assert_eq!(
-            diff_kind_for_row(&diff_rows, 2),
-            Some(DiffHunkKind::Modified)
+            diff_row_for_row(&diff_rows, 2),
+            Some((DiffHunkKind::Modified, DiffHunkStaging::NoStaging))
         );
         assert_eq!(
-            diff_kind_for_row(&diff_rows, 4),
-            Some(DiffHunkKind::Modified)
+            diff_row_for_row(&diff_rows, 4),
+            Some((DiffHunkKind::Modified, DiffHunkStaging::NoStaging))
         );
-        assert_eq!(diff_kind_for_row(&diff_rows, 5), None);
+        assert_eq!(diff_row_for_row(&diff_rows, 5), None);
         assert_eq!(
-            diff_kind_for_row(&diff_rows, 7),
-            Some(DiffHunkKind::Deleted)
+            diff_row_for_row(&diff_rows, 7),
+            Some((DiffHunkKind::Deleted, DiffHunkStaging::NoStaging))
         );
-        assert_eq!(diff_kind_for_row(&diff_rows, 8), None);
-        assert_eq!(diff_kind_for_row(&[], 0), None);
+        assert_eq!(diff_row_for_row(&diff_rows, 8), None);
+        assert_eq!(diff_row_for_row(&[], 0), None);
     }
 
     #[test]
@@ -321,16 +349,19 @@ mod tests {
                 range: 0..1,
                 old_range: 0..0,
                 kind: DiffHunkKind::Added,
+                staging: DiffHunkStaging::NoStaging,
             },
             DisplayHunk {
                 range: 2..3,
                 old_range: 2..3,
                 kind: DiffHunkKind::Modified,
+                staging: DiffHunkStaging::NoStaging,
             },
             DisplayHunk {
                 range: 4..4,
                 old_range: 4..5,
                 kind: DiffHunkKind::Deleted,
+                staging: DiffHunkStaging::NoStaging,
             },
         ];
 
@@ -355,6 +386,14 @@ mod tests {
         );
         // 新增块默认折叠：只保留 gutter 竖条，不整行着色。
         assert_eq!(rendered.expanded_rows, Vec::<Range<usize>>::new());
+        // 纯新增块也要登记点击区域，否则普通文档既不能展开也无法着色。
+        assert!(
+            rendered
+                .hit_regions
+                .iter()
+                .any(|(_, index, kind)| *index == 0 && *kind == DiffHunkKind::Added),
+            "纯新增块应可点击展开"
+        );
 
         // 差异审阅视图（默认展开）下新增块才整行着色。
         let expanded_added = hunk_rendering(&snapshot, &hunks[..1], &[true], &[None], &[]);
@@ -370,6 +409,7 @@ mod tests {
             range: 2..3,
             old_range: 10..11,
             kind: DiffHunkKind::Modified,
+            staging: DiffHunkStaging::NoStaging,
         };
         let old_ranges = vec![Some(1..2)];
 
@@ -383,9 +423,15 @@ mod tests {
 
         assert_eq!(
             rendered.diff_rows,
-            vec![(1..2, DiffHunkKind::Deleted), (2..3, DiffHunkKind::Added)]
+            vec![
+                (1..2, DiffHunkKind::Deleted, DiffHunkStaging::NoStaging),
+                (2..3, DiffHunkKind::Added, DiffHunkStaging::NoStaging)
+            ]
         );
-        assert_eq!(rendered.strips, vec![(1..3, DiffHunkKind::Modified)]);
+        assert_eq!(
+            rendered.strips,
+            vec![(1..3, DiffHunkKind::Modified, DiffHunkStaging::NoStaging)]
+        );
         assert_eq!(rendered.controls, vec![(1..3, hunk)]);
         assert_eq!(
             rendered.hit_regions,
@@ -404,6 +450,7 @@ mod tests {
             range: 1..2,
             old_range: 0..1,
             kind: DiffHunkKind::Modified,
+            staging: DiffHunkStaging::NoStaging,
         }];
         let word_diffs = vec![vec![
             (DiffHunkKind::Deleted, 0..3),
@@ -418,5 +465,69 @@ mod tests {
 
         let expanded = hunk_rendering(&snapshot, &hunks, &[true], &[Some(0..1)], &word_diffs);
         assert_eq!(expanded.word_diff_highlights, word_diffs[0]);
+    }
+
+    #[test]
+    fn staging_drives_hollow_blocks() {
+        // hunk_rendering 把暂存语义透传到行标记与 gutter 竖条，渲染端据此选空心 / 实心。
+        let buffer = Buffer::scratch("a\nb\nc\n".into(), BufferConfig::default())
+            .expect("应创建测试 Buffer");
+        let snapshot = DisplayMap::new(buffer.snapshot()).snapshot();
+        let staged = DisplayHunk {
+            range: 1..3,
+            old_range: 1..3,
+            kind: DiffHunkKind::Added,
+            staging: DiffHunkStaging::Staged,
+        };
+        let rendered = hunk_rendering(&snapshot, &[staged], &[true], &[None], &[]);
+        assert_eq!(
+            rendered.diff_rows,
+            vec![(1..3, DiffHunkKind::Added, DiffHunkStaging::Staged)]
+        );
+        assert_eq!(
+            rendered.strips,
+            vec![(1..3, DiffHunkKind::Added, DiffHunkStaging::Staged)]
+        );
+        // 多行 hollow 只产出一个连续块，边框按块边界合并，不会逐行描边叠加。
+        assert_eq!(
+            rendered.hollow_blocks,
+            vec![1..3],
+            "多行已暂存 hunk 应合并为单个 hollow 块"
+        );
+        // 实心（未暂存）不产生任何 hollow 块。
+        let unstaged = DisplayHunk {
+            range: 1..3,
+            old_range: 1..3,
+            kind: DiffHunkKind::Added,
+            staging: DiffHunkStaging::NoStaging,
+        };
+        let rendered = hunk_rendering(&snapshot, &[unstaged], &[true], &[None], &[]);
+        assert!(rendered.hollow_blocks.is_empty());
+    }
+
+    #[test]
+    fn hunk_click_regions_do_not_depend_on_staging() {
+        // 点击展开只由 hunk 类型决定；已暂存 / 未暂存只影响配色，避免形成双轨。
+        let buffer = Buffer::scratch("a\nb\nc\n".into(), BufferConfig::default())
+            .expect("应创建测试 Buffer");
+        let snapshot = DisplayMap::new(buffer.snapshot()).snapshot();
+        for staging in [
+            DiffHunkStaging::Staged,
+            DiffHunkStaging::Unstaged,
+            DiffHunkStaging::NoStaging,
+        ] {
+            let hunk = DisplayHunk {
+                range: 0..1,
+                old_range: 0..0,
+                kind: DiffHunkKind::Added,
+                staging,
+            };
+            let rendered = hunk_rendering(&snapshot, &[hunk], &[true], &[None], &[]);
+            assert_eq!(
+                rendered.hit_regions,
+                vec![(0..1, 0, DiffHunkKind::Added)],
+                "点击区域不应随暂存语义变化：{staging:?}"
+            );
+        }
     }
 }

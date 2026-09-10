@@ -77,22 +77,32 @@ pub(super) fn inject_editor_diff(
     cx: &mut TestAppContext,
 ) {
     editor.update(cx, |editor, cx| {
+        let diff = cx.new(|cx| {
+            zcv_multi_buffer::BufferDiff::new(
+                zcv_multi_buffer::BufferDiffInput {
+                    operations: None,
+                    working: source.clone(),
+                    // 旧测试会用 None 表示“整份文本均为新增”。现在仍由一对真实文本快照
+                    // 派生该 Added hunk，而不是注入 hunk。
+                    base_text: Some(base_text.unwrap_or_else(|| Arc::from(""))),
+                    index_text: None,
+                    path: PathBuf::from("src/a.rs"),
+                },
+                cx,
+            )
+        });
         editor.set_buffer_diffs(
-            Some(vec![zcv_multi_buffer::BufferDiffInput {
-                operations: None,
-                working: source.clone(),
-                // 旧测试会用 None 表示“整份文本均为新增”。现在仍由一对真实文本快照
-                // 派生该 Added hunk，而不是注入 hunk。
-                base_text: Some(base_text.unwrap_or_else(|| Arc::from(""))),
-                path: PathBuf::from("src/a.rs"),
+            Some(vec![zcv_multi_buffer::DiffFile {
+                diff,
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                is_created: false,
                 show_file_header: false,
             }]),
             cx,
         );
     });
+    // diff 在后台异步计算；注入后等待落定，测试才能看到派生 hunk。
+    cx.run_until_parked();
 }
 
 pub(super) fn scrolling_text() -> String {

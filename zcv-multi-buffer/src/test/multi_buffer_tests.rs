@@ -550,8 +550,9 @@ fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
             }]),
             cx,
         );
-        buffer.toggle_diff_hunk_at(0, cx);
     });
+    cx.run_until_parked();
+    cx.update_entity(&combined, |buffer, cx| buffer.toggle_diff_hunk_at(0, cx));
     assert!(
         cx.read_entity(&combined, |buffer, cx| {
             buffer
@@ -604,6 +605,7 @@ fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
             cx,
         );
     });
+    cx.run_until_parked();
     let (hunks, expanded) = cx.read_entity(&combined, |buffer, cx| {
         (
             buffer.diff_hunks(cx).to_vec(),
@@ -640,8 +642,9 @@ fn diff_expansion_survives_hunk_refresh_and_merge(cx: &mut TestAppContext) {
             }]),
             cx,
         );
-        buffer.toggle_diff_hunk_at(0, cx);
     });
+    cx.run_until_parked();
+    cx.update_entity(&combined, |buffer, cx| buffer.toggle_diff_hunk_at(0, cx));
 
     let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
     cx.update_entity(&source_buffer, |buffer, cx| {
@@ -672,6 +675,7 @@ fn diff_expansion_survives_hunk_refresh_and_merge(cx: &mut TestAppContext) {
             cx,
         );
     });
+    cx.run_until_parked();
 
     let (hunks, expanded) = cx.read_entity(&combined, |buffer, cx| {
         (
@@ -709,6 +713,9 @@ fn undo_keeps_rust_highlighting_in_diff_projection(cx: &mut TestAppContext) {
             }]),
             cx,
         );
+    });
+    cx.run_until_parked();
+    cx.update_entity(&combined, |buffer, cx| {
         buffer.start_transaction(cx).expect("应开始 hunk 编辑事务");
         buffer
             .edit(
@@ -757,6 +764,9 @@ fn save_after_diff_hunk_edit_keeps_rust_highlighting(cx: &mut TestAppContext) {
             }]),
             cx,
         );
+    });
+    cx.run_until_parked();
+    cx.update_entity(&combined, |buffer, cx| {
         buffer
             .edit(
                 vec![zcv_text::Edit::insert(ByteOffset::new(3), "async ").unwrap()],
@@ -819,6 +829,7 @@ fn diff_hunk_coordinates_follow_materialized_excerpts_across_files(cx: &mut Test
             cx,
         );
     });
+    cx.run_until_parked();
 
     cx.read_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
@@ -986,6 +997,7 @@ fn buffer_diff_recomputes_from_its_own_buffer_subscription(cx: &mut TestAppConte
             )
         })
     });
+    cx.run_until_parked();
     assert_eq!(
         cx.read_entity(&diff, |diff, _| diff.snapshot().hunks().len()),
         1,
@@ -1036,6 +1048,7 @@ fn added_hunk_background_follows_view_expansion_policy(cx: &mut TestAppContext) 
             cx,
         );
     });
+    cx.run_until_parked();
     assert_eq!(
         cx.read_entity(&combined, |buffer, cx| buffer.diff_hunks(cx).len()),
         1
@@ -1094,6 +1107,7 @@ fn expanded_modified_hunk_exposes_word_diffs_in_composite_coordinates(cx: &mut T
         );
         buffer.set_diff_hunks_expanded_by_default(true, cx);
     });
+    cx.run_until_parked();
 
     let (text, word_diffs) = cx.read_entity(&combined, |buffer, cx| {
         let text =

@@ -79,6 +79,8 @@ pub(crate) struct MultiBufferDiffProjection {
     subscriptions: Vec<Subscription>,
     /// 上次物化时各 BufferDiff 的版本；用于抑制已同步重建后的重复事件。
     display_revisions: Vec<u64>,
+    /// 替换 base 后，新 `BufferDiff` 的首次后台结果返回前暂存的展开状态迁移来源。
+    pending_expansion_migrations: Vec<Option<PendingExpansionMigration>>,
 }
 
 /// 一个文件内用户显式切换过展开状态的 hunk。
@@ -95,6 +97,11 @@ struct HunkExpansionOverride {
     kind: DiffHunkKind,
     old_range: Range<usize>,
     expanded: bool,
+}
+
+struct PendingExpansionMigration {
+    old_hunks: Vec<ResolvedHunk>,
+    old_state: DiffExpansionState,
 }
 
 #[derive(Clone)]
@@ -234,8 +241,10 @@ impl MultiBuffer {
         }
 
         let mut next_expansion = Vec::with_capacity(next_files.len());
+        let mut pending_expansion_migrations = Vec::with_capacity(next_files.len());
         for file in &next_files {
             let mut expansion = DiffExpansionState::default();
+            let mut pending_migration = None;
             if let (Some(old_files), Some(old_expansion)) =
                 (old_files.as_deref(), old_expansion.as_deref())
                 && let Some((old_file, old_state)) =
@@ -245,10 +254,23 @@ impl MultiBuffer {
                     })
             {
                 let old_resolved = resolve_file_hunks(old_file, cx);
-                let new_resolved = resolve_file_hunks(file, cx);
-                migrate_expansion_state(&old_resolved, old_state, &new_resolved, &mut expansion);
+                if file.diff.read(cx).is_current_version_calculated(cx) {
+                    let new_resolved = resolve_file_hunks(file, cx);
+                    migrate_expansion_state(
+                        &old_resolved,
+                        old_state,
+                        &new_resolved,
+                        &mut expansion,
+                    );
+                } else {
+                    pending_migration = Some(PendingExpansionMigration {
+                        old_hunks: old_resolved,
+                        old_state: old_state.clone(),
+                    });
+                }
             }
             next_expansion.push(expansion);
+            pending_expansion_migrations.push(pending_migration);
         }
         diff.subscriptions = next_files
             .iter()
@@ -262,6 +284,16 @@ impl MultiBuffer {
             .collect();
         diff.files = next_files;
         diff.expansion = next_expansion;
+        diff.pending_expansion_migrations = pending_expansion_migrations;
+        // 新文件的 hunk 尚未算完时，保留已物化投影，避免先清空再展示结果导致一次
+        // Git 刷新产生两次可见重建。显示查询会在此期间拒绝旧 hunk 坐标。
+        if diff
+            .files
+            .iter()
+            .any(|file| !file.diff.read(cx).is_current_version_calculated(cx))
+        {
+            return false;
+        }
         !self.rebuild_diff_projection(cx).is_identity()
     }
 
@@ -457,9 +489,29 @@ impl MultiBuffer {
 
     /// BufferDiff 事件入口：只有当前物化结果落后于 diff 版本时才重建。
     fn diff_changed(&mut self, cx: &mut Context<Self>) {
-        let Some(diff) = &self.diff else {
+        let Some(diff) = &mut self.diff else {
             return;
         };
+        for index in 0..diff.files.len() {
+            if diff.pending_expansion_migrations[index].is_none()
+                || !diff.files[index]
+                    .diff
+                    .read(cx)
+                    .is_current_version_calculated(cx)
+            {
+                continue;
+            }
+            let pending = diff.pending_expansion_migrations[index]
+                .take()
+                .expect("已检查 pending expansion migration 存在");
+            let new_hunks = resolve_file_hunks(&diff.files[index], cx);
+            migrate_expansion_state(
+                &pending.old_hunks,
+                &pending.old_state,
+                &new_hunks,
+                &mut diff.expansion[index],
+            );
+        }
         let stale = diff.files.len() != diff.display_revisions.len()
             || diff
                 .files
@@ -637,8 +689,12 @@ impl MultiBuffer {
     /// 显示坐标只在组合文档未被后续编辑时有效（版本门控）。
     fn display_state<'a>(&'a self, cx: &'a App) -> Option<&'a MultiBufferDiffProjection> {
         let diff = self.diff.as_ref()?;
-        (diff.display_version == Some(self.text_buffer(cx).read(cx).snapshot().version()))
-            .then_some(diff)
+        (diff.display_version == Some(self.text_buffer(cx).read(cx).snapshot().version())
+            && diff
+                .files
+                .iter()
+                .all(|file| file.diff.read(cx).is_current_version_calculated(cx)))
+        .then_some(diff)
     }
 }
 

@@ -170,7 +170,9 @@ pub struct BufferDiff {
     operations: Option<Arc<dyn DiffOperations>>,
     /// diff 结果或 pending 的单调版本；显示层据此判断是否需要重新物化。
     revision: u64,
-    /// 观察 working buffer：源文本变化时由本实体自行重算并发出事件。
+    /// 最近一次已完成计算对应的 working 版本；None 表示初始计算尚未返回。
+    calculated_working_version: Option<BufferVersion>,
+    /// 观察 working buffer：源文本变化时由本实体自行在后台重算并发出事件。
     _working_subscription: Subscription,
 }
 
@@ -180,10 +182,9 @@ impl BufferDiff {
     /// 依据 base/working 快照建立 diff 状态。
     pub fn new(input: BufferDiffInput, cx: &mut Context<Self>) -> Self {
         let working_text = input.working.read(cx).text_snapshot(cx);
-        let hunks = compute_hunks(input.base_text.as_deref(), &working_text, input.is_created);
         let snapshot = BufferDiffSnapshot {
             working_version: working_text.version(),
-            hunks,
+            hunks: Vec::new(),
             pending_hunks: Vec::new(),
         };
         let base_source = input.base_text.as_ref().map(|text| {
@@ -196,10 +197,10 @@ impl BufferDiff {
         // diff 状态的所有者自行响应 working buffer 版本变化，显示层只订阅结果。
         let working_subscription = cx.subscribe(&input.working, |this, _, event, cx| {
             if matches!(event, LanguageBufferEvent::TextChanged) {
-                this.recompute(cx);
+                this.schedule_recompute(cx);
             }
         });
-        Self {
+        let mut this = Self {
             working: input.working,
             base_source,
             base_text: input.base_text,
@@ -208,23 +209,55 @@ impl BufferDiff {
             snapshot,
             operations: input.operations,
             revision: 0,
+            calculated_working_version: None,
             _working_subscription: working_subscription,
-        }
+        };
+        this.schedule_recompute(cx);
+        this
     }
 
-    /// 用当前 working 快照重算 diff 结果；
-    /// 只由本实体对 working buffer 的订阅调用。
+    /// 捕获当前 working 快照，在后台计算 diff。
+    ///
+    /// 结果回到前台后必须再次比对版本，避免较早任务覆盖后续编辑的 hunk。
+    fn schedule_recompute(&mut self, cx: &mut Context<Self>) {
+        let working_text = self.working.read(cx).text_snapshot(cx);
+        let working_version = working_text.version();
+        let base_text = self.base_text.clone();
+        let is_created = self.is_created;
+        let background = cx.background_executor().clone();
+        cx.spawn(async move |this, cx| {
+            let hunks = background
+                .spawn(
+                    async move { compute_hunks(base_text.as_deref(), &working_text, is_created) },
+                )
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.apply_recomputed_hunks(working_version, hunks, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// 接受仍对应当前 working 版本的后台结果。
     ///
     /// 只有 hunk 几何真正变化时才替换快照、清除 pending 并发出 BufferDiffEvent::DiffChanged；
     /// 行内文本修改等不改变 hunk 定位的编辑不做整体重建。
-    fn recompute(&mut self, cx: &mut Context<Self>) -> bool {
-        let working_text = self.working.read(cx).text_snapshot(cx);
-        let hunks = compute_hunks(self.base_text.as_deref(), &working_text, self.is_created);
-        if hunks_equivalent(&self.snapshot.hunks, &hunks) {
+    fn apply_recomputed_hunks(
+        &mut self,
+        working_version: BufferVersion,
+        hunks: Vec<DiffHunk>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.working.read(cx).text_snapshot(cx).version() != working_version {
+            return false;
+        }
+        let calculation_was_pending = self.calculated_working_version != Some(working_version);
+        self.calculated_working_version = Some(working_version);
+        if !calculation_was_pending && hunks_equivalent(&self.snapshot.hunks, &hunks) {
             return false;
         }
         self.snapshot = BufferDiffSnapshot {
-            working_version: working_text.version(),
+            working_version,
             hunks,
             pending_hunks: Vec::new(),
         };
@@ -236,6 +269,11 @@ impl BufferDiff {
     /// diff 结果与 pending 的当前版本；变化即表示显示层需要重新物化。
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// 当前 working 版本的后台计算是否已经完成。
+    pub fn is_current_version_calculated(&self, cx: &App) -> bool {
+        self.calculated_working_version == Some(self.working.read(cx).text_snapshot(cx).version())
     }
 
     pub fn snapshot(&self) -> &BufferDiffSnapshot {

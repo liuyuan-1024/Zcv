@@ -807,6 +807,7 @@ impl ProjectDiffView {
                     view.rebuild_projection(cx);
                     cx.emit(EditorEvent::Error(format!("变更块操作失败：{message}")));
                 }
+                GitStoreEvent::IndexText => view.rebuild_projection(cx),
                 GitStoreEvent::ActiveRepositoryChanged
                 | GitStoreEvent::JobsUpdated
                 | GitStoreEvent::Uncommitted(_) => {}

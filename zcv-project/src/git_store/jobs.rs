@@ -116,6 +116,9 @@ pub(super) enum GitJob {
         operation: GitHunkOperation,
         path: PathBuf,
         edits: Vec<HunkEdit>,
+        /// GitStore 已乐观应用后的完整 index 文本；
+        /// Stage/Unstage 后台只写此文本。
+        next_index_text: Option<Arc<str>>,
         working_snapshot: WorkingCopySnapshot,
         /// 发起操作的权威 diff 实体；完成后清除其 pending 状态。
         diff: Entity<BufferDiff>,

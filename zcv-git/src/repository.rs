@@ -257,6 +257,9 @@ pub trait GitRepository: Send + Sync {
         working_snapshot: &WorkingCopySnapshot,
     ) -> Result<()>;
 
+    /// 写入调用方已确定的完整 index 文本。
+    fn set_index_text(&self, path: &Path, content: &str) -> Result<()>;
+
     /// 批量读取 revision（如 `HEAD:path`、`:path`）的 blob 内容，缺失的 revision 为 `None`。
     fn load_revisions(&self, revs: &[&str]) -> Result<Vec<Option<Vec<u8>>>>;
 
@@ -569,7 +572,7 @@ fn parse_entry_mode(output: &[u8]) -> Option<String> {
 ///
 /// 编辑按范围起点排序且不得重叠；每个范围在应用前的文本必须仍等于 `original`，
 /// 否则返回错误而不是在已经变化的文本上写入。
-pub(crate) fn apply_hunk_edits_to_text(target: &str, edits: &[HunkEdit]) -> Result<String> {
+pub fn apply_hunk_edits_to_text(target: &str, edits: &[HunkEdit]) -> Result<String> {
     let mut ordered = edits.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|edit| edit.range.start);
     for pair in ordered.windows(2) {
@@ -684,6 +687,10 @@ impl GitRepository for RealGitRepository {
                 )
             }
         }
+    }
+
+    fn set_index_text(&self, path: &Path, content: &str) -> Result<()> {
+        self.write_index_text(path, Some(content.as_bytes()))
     }
 
     fn fetch_cancellable(&self, cancellation: &GitCancellation) -> Result<()> {

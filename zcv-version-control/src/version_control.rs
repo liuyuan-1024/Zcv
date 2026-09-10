@@ -342,7 +342,9 @@ impl VersionControlPanel {
                 }
                 GitStoreEvent::ActiveRepositoryChanged => cx.notify(),
                 // 变更块操作失败由项目差异视图负责提示与恢复。
-                GitStoreEvent::JobsUpdated | GitStoreEvent::HunkOperationFailed(_) => {}
+                GitStoreEvent::IndexText
+                | GitStoreEvent::JobsUpdated
+                | GitStoreEvent::HunkOperationFailed(_) => {}
             }
         })
         .detach();

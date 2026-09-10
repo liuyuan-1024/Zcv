@@ -126,13 +126,24 @@ impl GitStore {
                     self.schedule_scan(cx);
                 }
             }
-            (GitJob::ApplyHunkEdits { diff, .. }, JobResult::GitOperation(result)) => {
+            (GitJob::ApplyHunkEdits { diff, path, .. }, JobResult::GitOperation(result)) => {
                 match result {
                     Ok(()) => {
+                        self.optimistic_index_bases.remove(path);
                         // 成功：保留 optimistic 状态直到后续权威扫描替换该 diff，避免中途回闪。
                         self.schedule_scan(cx);
                     }
                     Err(error) => {
+                        if let Some(previous) = self.optimistic_index_bases.remove(path) {
+                            self.revision_text_cache
+                                .insert((zcv_git::GitRevision::Index, path.clone()), previous);
+                            let generation = self
+                                .revision_text_generations
+                                .entry(zcv_git::GitRevision::Index)
+                                .or_insert(0);
+                            *generation = generation.wrapping_add(1).max(1);
+                            cx.emit(GitStoreEvent::IndexText);
+                        }
                         // 失败：清除 optimistic 状态并通知显示层恢复真实 diff。
                         diff.update(cx, |diff, cx| diff.clear_pending_hunks(cx));
                         cx.emit(GitStoreEvent::HunkOperationFailed(format!("{error:#}")));

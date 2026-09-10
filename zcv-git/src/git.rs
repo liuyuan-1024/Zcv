@@ -10,6 +10,6 @@ pub use diff::DiffHunkKind;
 pub use graph::{GraphLayoutState, GraphLine, GraphRowLayout};
 pub use repository::{
     Branch, GitCancellation, GitHunkOperation, GitRepository, GitRevision, GraphCommit, HunkEdit,
-    RealGitRepository, WorkingCopySnapshot, init,
+    RealGitRepository, WorkingCopySnapshot, apply_hunk_edits_to_text, init,
 };
 pub use status::{BranchStatus, DiffStat, FileStatus, GitStatus, StatusCode};

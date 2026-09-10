@@ -180,6 +180,7 @@ pub(super) async fn execute_job(
         GitJob::ApplyHunkEdits {
             operation,
             edits,
+            next_index_text,
             working_snapshot,
             ..
         } => {
@@ -188,7 +189,11 @@ pub(super) async fn execute_job(
                 .enumerate()
                 .find_map(|(index, repository)| {
                     grouped_paths[index].first().map(|path| {
-                        repository.apply_hunk_edits(operation, path, &edits, &working_snapshot)
+                        if let Some(index_text) = &next_index_text {
+                            repository.set_index_text(path, index_text)
+                        } else {
+                            repository.apply_hunk_edits(operation, path, &edits, &working_snapshot)
+                        }
                     })
                 })
                 .unwrap_or_else(|| Err(anyhow::anyhow!("hunk 所属仓库已不可用")));

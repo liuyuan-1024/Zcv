@@ -25,7 +25,7 @@ use background::{JobResult, execute_job, repo_relative_path};
 use gpui::{App, AsyncApp, BackgroundExecutor, Context, Entity, EventEmitter, Task, WeakEntity};
 use zcv_git::{
     Branch, DiffStat, FileStatus, GitCancellation, GitHunkOperation, GitRepository, GitRevision,
-    GraphCommit, HunkEdit, WorkingCopySnapshot,
+    GraphCommit, HunkEdit, WorkingCopySnapshot, apply_hunk_edits_to_text,
 };
 use zcv_multi_buffer::{BufferDiff, DiffOperations, PendingHunk};
 use zcv_text::Anchor;
@@ -42,6 +42,8 @@ pub enum GitStoreEvent {
     Repositories,
     /// 文件状态或 diff 统计发生变化。
     Statuses,
+    /// index 文本已在内存中乐观更新或回滚；订阅方重读 `GitRevision::Index`。
+    IndexText,
     /// 当前分支、HEAD 或分支列表发生变化。
     Head,
     /// 活动仓库变化（跟随焦点文件切换；订阅方重读 `current_branch()`，无需 payload）。
@@ -234,6 +236,8 @@ pub struct GitStore {
     revision_text_cache: HashMap<(GitRevision, PathBuf), Arc<str>>,
     /// 分修订递增的缓存版本；失效前启动的后台读取不得回填新缓存。
     revision_text_generations: HashMap<GitRevision, u64>,
+    /// 已写入内存、尚待后台落盘确认的 index 文本的原始值；同一路径同时只允许一个写入，失败时据此回滚。
+    optimistic_index_bases: HashMap<PathBuf, Arc<str>>,
     background: BackgroundExecutor,
     /// 自身弱句柄：后台任务完成后回填缓存等状态用（构造时注入）。
     self_handle: WeakEntity<Self>,
@@ -353,6 +357,7 @@ impl GitStore {
                 (GitRevision::Head, 1),
                 (GitRevision::Index, 1),
             ]),
+            optimistic_index_bases: HashMap::new(),
             background,
             self_handle,
             job_sender,
@@ -445,7 +450,7 @@ impl GitStore {
         ranges: Vec<Range<Anchor>>,
         cx: &mut Context<Self>,
     ) {
-        let (path, edits, pending, working_snapshot) = {
+        let (path, edits, pending, working_snapshot, index_text) = {
             let diff_ref = diff.read(cx);
             let working = diff_ref.working().clone();
             let working_text = working.read(cx).text_snapshot(cx);
@@ -504,12 +509,64 @@ impl GitStore {
                 )
                 .expect("工作区全文范围必须有效")
                 .as_str()
-                .as_bytes()
-                .to_vec();
-            (diff_ref.path().clone(), edits, pending, working_snapshot)
+                .to_owned();
+            let index_text = match operation {
+                GitHunkOperation::Stage => base_text,
+                GitHunkOperation::Unstage => Some(Arc::from(working_snapshot.as_str())),
+                GitHunkOperation::Restore => None,
+            };
+            (
+                diff_ref.path().clone(),
+                edits,
+                pending,
+                working_snapshot.into_bytes(),
+                index_text,
+            )
         };
         if edits.is_empty() {
             return;
+        }
+        let path = canonicalize_path(&path);
+        if let Some(index_text) = &index_text
+            && self.revision_text(GitRevision::Index, &path).as_deref() != Some(index_text)
+        {
+            return;
+        }
+        // index 编辑以当前缓存文本为基准；
+        // 同一路径的上一笔写入未确认前不再接受新 hunk，否则失败回滚会让后续编辑失去确定的基准文本。
+        if self.optimistic_index_bases.contains_key(&path) {
+            return;
+        }
+        let next_index_text = match index_text
+            .as_deref()
+            .map(|index_text| apply_hunk_edits_to_text(index_text, &edits))
+            .transpose()
+        {
+            Ok(text) => text,
+            // `edits` 来源于同一 BufferDiff 快照；
+            // 若此处不再匹配，说明 index 缓存与快照已经分叉。
+            // 不向后台提交不确定写入，后续状态刷新会重新建立权威 diff。
+            Err(_) => return,
+        };
+        if matches!(
+            operation,
+            GitHunkOperation::Stage | GitHunkOperation::Unstage
+        ) && next_index_text.is_none()
+        {
+            return;
+        }
+        let next_index_text = next_index_text.map(Arc::<str>::from);
+        if let (Some(index_text), Some(next_index_text)) = (&index_text, &next_index_text) {
+            self.optimistic_index_bases
+                .insert(path.clone(), index_text.clone());
+            self.revision_text_cache
+                .insert((GitRevision::Index, path.clone()), next_index_text.clone());
+            let generation = self
+                .revision_text_generations
+                .entry(GitRevision::Index)
+                .or_insert(0);
+            *generation = generation.wrapping_add(1).max(1);
+            cx.emit(GitStoreEvent::IndexText);
         }
         diff.update(cx, |diff, cx| diff.set_pending_hunks(pending, cx));
         self.schedule_job(
@@ -517,6 +574,7 @@ impl GitStore {
                 operation,
                 path,
                 edits,
+                next_index_text,
                 working_snapshot: WorkingCopySnapshot::from_editor_text(working_snapshot),
                 diff,
             },
@@ -912,7 +970,11 @@ impl GitStore {
 
     fn invalidate_revision_text(&mut self, revision: GitRevision) {
         self.revision_text_cache
-            .retain(|(cached_revision, _), _| *cached_revision != revision);
+            .retain(|(cached_revision, path), _| {
+                *cached_revision != revision
+                    || (revision == GitRevision::Index
+                        && self.optimistic_index_bases.contains_key(path))
+            });
         let generation = self.revision_text_generations.entry(revision).or_insert(0);
         *generation = generation.wrapping_add(1).max(1);
     }
@@ -925,6 +987,8 @@ impl GitStore {
         self.revision_text_cache
             .retain(|(cached_revision, path), _| {
                 *cached_revision != revision
+                    || (revision == GitRevision::Index
+                        && self.optimistic_index_bases.contains_key(path))
                     || !changed_paths
                         .iter()
                         .any(|changed_path| path.starts_with(changed_path))
@@ -1902,6 +1966,11 @@ mod tests {
         cx.run_until_parked();
 
         let path = canonicalize_path(&root.join("tracked.txt"));
+        cx.read_entity(&git_store, |store, cx| {
+            store.load_revision_text(GitRevision::Index, &path, cx)
+        })
+        .detach();
+        cx.run_until_parked();
         let working = cx.update(|cx| {
             let buffer = zcv_text::Buffer::from_text(
                 "第一行\n已修改\n".to_owned(),
@@ -1930,6 +1999,7 @@ mod tests {
                 )
             })
         });
+        cx.run_until_parked();
 
         let range = diff.read_with(cx, |diff, _| {
             assert_eq!(diff.snapshot().hunks().len(), 1);
@@ -1948,6 +2018,14 @@ mod tests {
             );
             assert_eq!(diff.snapshot().pending_hunks().len(), 1);
         });
+        assert_eq!(
+            cx.read_entity(&git_store, |store, _| {
+                store.revision_text(GitRevision::Index, &path)
+            })
+            .as_deref(),
+            Some("第一行\n已修改\n"),
+            "后台写入前 index 缓存必须已反映暂存结果"
+        );
 
         cx.run_until_parked();
         // 成功不立即清除：由随后权威扫描替换该 diff，避免中途回闪。
@@ -1969,7 +2047,7 @@ mod tests {
         );
     }
 
-    /// 后台编辑失败时清除 optimistic pending，显示层恢复真实 diff。
+    /// hunk 快照与 GitStore 持有的 index 文本不一致时，拒绝不确定的 optimistic 写入。
     #[gpui::test]
     fn diff_operations_failure_clears_pending(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
@@ -1980,6 +2058,11 @@ mod tests {
         cx.run_until_parked();
 
         let path = canonicalize_path(&root.join("tracked.txt"));
+        cx.read_entity(&git_store, |store, cx| {
+            store.load_revision_text(GitRevision::Index, &path, cx)
+        })
+        .detach();
+        cx.run_until_parked();
         let working = cx.update(|cx| {
             let buffer = zcv_text::Buffer::from_text(
                 "第一行\n已修改\n".to_owned(),
@@ -2009,6 +2092,7 @@ mod tests {
                 )
             })
         });
+        cx.run_until_parked();
         let range = diff.read_with(cx, |diff, _| {
             diff.snapshot().hunks()[0].buffer_range.clone()
         });
@@ -2016,13 +2100,10 @@ mod tests {
             let operations = diff.read(cx).operations().expect("应有操作实现");
             operations.stage(diff.clone(), vec![range], cx);
         });
-        assert!(diff.read_with(cx, |diff, _| !diff.snapshot().pending_hunks().is_empty()));
-
-        cx.run_until_parked();
         diff.read_with(cx, |diff, _| {
             assert!(
                 diff.snapshot().pending_hunks().is_empty(),
-                "失败后应清除 pending 以恢复显示"
+                "index 基准已分叉时不得写入 pending"
             );
         });
     }

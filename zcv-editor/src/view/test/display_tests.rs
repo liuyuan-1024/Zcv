@@ -1219,6 +1219,7 @@ fn plain_editor_expanding_deleted_hunk_uses_excerpts_and_allows_cursor(cx: &mut 
             editor.diff_hunks(cx),
             &editor.diff_hunk_expanded(cx),
             editor.diff_hunk_old_ranges(cx),
+            editor.diff_hunk_word_diffs(cx),
         );
         assert_eq!(
             rendering.hit_regions,
@@ -1278,6 +1279,7 @@ fn folded_deleted_hunk_anchor_is_at_the_deletion_row_boundary(cx: &mut TestAppCo
             editor.diff_hunks(cx),
             &editor.diff_hunk_expanded(cx),
             editor.diff_hunk_old_ranges(cx),
+            editor.diff_hunk_word_diffs(cx),
         );
         assert_eq!(
             rendering.hit_regions,
@@ -1530,6 +1532,7 @@ fn plain_editor_expanded_modified_hunk_keeps_old_rows_and_gutter_strip(cx: &mut 
             editor.diff_hunks(cx),
             &editor.diff_hunk_expanded(cx),
             editor.diff_hunk_old_ranges(cx),
+            editor.diff_hunk_word_diffs(cx),
         );
         assert_eq!(
             rendering.diff_rows,

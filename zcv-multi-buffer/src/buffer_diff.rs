@@ -15,6 +15,8 @@ use zcv_git::DiffHunkKind;
 use zcv_language::{LanguageBuffer, LanguageBufferEvent};
 use zcv_text::{Anchor, BufferConfig, BufferVersion, ByteOffset, Line, Snapshot, TextRange};
 
+use crate::word_diff::{MAX_WORD_DIFF_BYTES, MAX_WORD_DIFF_LINES, word_diff_ranges};
+
 /// BufferDiff 变更事件。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BufferDiffEvent {
@@ -75,6 +77,10 @@ pub struct DiffHunk {
     /// base 文本中的字节范围。
     pub diff_base_byte_range: Range<usize>,
     pub kind: DiffHunkKind,
+    /// 新侧词级变化片段（working 锚点）；无词级结果时为空。
+    pub buffer_word_diffs: Vec<Range<Anchor>>,
+    /// 旧侧词级变化片段（相对 `diff_base_byte_range.start` 的字节偏移）。
+    pub base_word_diffs: Vec<Range<usize>>,
 }
 
 /// pending 操作希望在 diff 结果中表达的效果。
@@ -301,6 +307,8 @@ pub(crate) fn compute_hunks(
             buffer_range: full_buffer_range(working, version),
             diff_base_byte_range: 0..0,
             kind: DiffHunkKind::Added,
+            buffer_word_diffs: Vec::new(),
+            base_word_diffs: Vec::new(),
         }];
     }
     let Some(base_text) = base_text else {
@@ -311,7 +319,8 @@ pub(crate) fn compute_hunks(
             TextRange::new(ByteOffset::ZERO, working.len_bytes()).expect("工作区全文范围必须有序"),
         )
         .expect("工作区全文范围必须有效");
-    let input = InternedInput::new(base_text, working_text.as_str());
+    let working_str = working_text.as_str();
+    let input = InternedInput::new(base_text, working_str);
     let mut diff = Diff::compute(Algorithm::Histogram, &input);
     diff.postprocess_lines(&input);
     let old_offsets = line_offsets(base_text);
@@ -331,13 +340,76 @@ pub(crate) fn compute_hunks(
             } else {
                 DiffHunkKind::Modified
             };
+            let base_line_count = hunk.before.end - hunk.before.start;
+            let new_line_count = hunk.after.end - hunk.after.start;
+            let working_byte_range = line_start_or_end(working, hunk.after.start as usize).get()
+                ..line_start_or_end(working, hunk.after.end as usize).get();
+            let (base_word_diffs, buffer_word_diffs) = if word_diff_comparable(
+                kind,
+                base_line_count,
+                new_line_count,
+                diff_base_byte_range.len(),
+            ) && working_byte_range.len()
+                <= MAX_WORD_DIFF_BYTES
+            {
+                word_diff_anchors(
+                    &base_text[diff_base_byte_range.clone()],
+                    &working_str[working_byte_range.clone()],
+                    working_byte_range.start,
+                    version,
+                )
+            } else {
+                (Vec::new(), Vec::new())
+            };
             DiffHunk {
                 buffer_range,
                 diff_base_byte_range,
                 kind,
+                buffer_word_diffs,
+                base_word_diffs,
             }
         })
         .collect()
+}
+
+/// 词级 diff 只对规模受限、行数相同的修改块有意义；其余退回整行级别。
+fn word_diff_comparable(
+    kind: DiffHunkKind,
+    base_line_count: u32,
+    new_line_count: u32,
+    base_bytes: usize,
+) -> bool {
+    kind == DiffHunkKind::Modified
+        && base_line_count == new_line_count
+        && base_line_count > 0
+        && base_line_count as usize <= MAX_WORD_DIFF_LINES
+        && base_bytes <= MAX_WORD_DIFF_BYTES
+}
+
+/// 对一对可比文本片段做词级 diff，并把新侧范围换算为 working 锚点。
+///
+/// `working_offset` 是 working 片段在工作区全文中的起始字节，锚点由此定位。
+fn word_diff_anchors(
+    base_snippet: &str,
+    working_snippet: &str,
+    working_offset: usize,
+    version: BufferVersion,
+) -> (Vec<Range<usize>>, Vec<Range<Anchor>>) {
+    let (base_word_diffs, buffer_word_diffs) = word_diff_ranges(base_snippet, working_snippet);
+    let buffer_word_diffs = buffer_word_diffs
+        .into_iter()
+        .map(|range| {
+            Anchor::range_inside(
+                version,
+                TextRange::new(
+                    ByteOffset::new(working_offset + range.start),
+                    ByteOffset::new(working_offset + range.end),
+                )
+                .expect("词级范围必须正序"),
+            )
+        })
+        .collect();
+    (base_word_diffs, buffer_word_diffs)
 }
 
 /// 比较两组 hunk 的定位与类型是否等价（忽略锚点携带的版本）。
@@ -348,6 +420,14 @@ fn hunks_equivalent(a: &[DiffHunk], b: &[DiffHunk]) -> bool {
                 && a.buffer_range.end.offset() == b.buffer_range.end.offset()
                 && a.diff_base_byte_range == b.diff_base_byte_range
                 && a.kind == b.kind
+                && a.base_word_diffs == b.base_word_diffs
+                && a.buffer_word_diffs.len() == b.buffer_word_diffs.len()
+                && a.buffer_word_diffs
+                    .iter()
+                    .zip(&b.buffer_word_diffs)
+                    .all(|(a, b)| {
+                        a.start.offset() == b.start.offset() && a.end.offset() == b.end.offset()
+                    })
         })
 }
 

@@ -518,6 +518,14 @@ impl Editor {
         self.multi_buffer.read(cx).diff_hunk_expanded(cx)
     }
 
+    /// 与 diff_hunks 平行的词级变化片段（组合文档字节范围 + 新增/删除色）。
+    pub fn diff_hunk_word_diffs<'a>(
+        &'a self,
+        cx: &'a App,
+    ) -> &'a [Vec<(zcv_git::DiffHunkKind, Range<usize>)>] {
+        self.multi_buffer.read(cx).diff_hunk_word_diffs(cx)
+    }
+
     /// 按显示 hunk 索引切换展开/折叠（渲染层点击入口）。
     pub fn toggle_diff_hunk_at(&mut self, display_index: usize, cx: &mut Context<Self>) {
         self.multi_buffer.update(cx, |buffer, cx| {

@@ -105,6 +105,8 @@ fn parse_colors(colors: &toml::Table) -> Option<ThemeColors> {
         version_control_added: parse("version_control.added")?,
         version_control_modified: parse("version_control.modified")?,
         version_control_deleted: parse("version_control.deleted")?,
+        version_control_word_added: parse("version_control.word_added")?,
+        version_control_word_deleted: parse("version_control.word_deleted")?,
         status_conflict: parse("conflict")?,
         title_bar_background: parse("title_bar.background")?,
         status_bar_background: parse("status_bar.background")?,
@@ -284,6 +286,12 @@ mod tests {
             colors.scrollbar_thumb_active_background,
             gpui::rgba(0x363c46ff)
         );
+        // 词级背景必须比整行背景更饱和，形成可辨识的差异高亮。
+        assert_eq!(colors.version_control_word_added, gpui::rgba(0x27a65773));
+        assert_ne!(
+            colors.version_control_word_added,
+            colors.editor_diff_added_background
+        );
         // 终端 ANSI 色与 Zed 官方一致。
         assert_eq!(colors.terminal_ansi_red, gpui::rgba(0xe06c75ff));
         assert_eq!(colors.terminal_ansi_yellow, gpui::rgba(0xe5c07bff));
@@ -310,6 +318,11 @@ mod tests {
             colors.editor_selection_background
         );
         assert_eq!(colors.ghost_element_hover, gpui::rgba(0xc9c9caff));
+        assert_eq!(colors.version_control_word_added, gpui::rgba(0xa7dcb7ff));
+        assert_ne!(
+            colors.version_control_word_added,
+            colors.editor_diff_added_background
+        );
         // 终端 ANSI 色与 Zed 官方一致。
         assert_eq!(colors.terminal_ansi_yellow, gpui::rgba(0xd2b67cff));
         assert_eq!(colors.terminal_ansi_blue, gpui::rgba(0x2f5af3ff));
@@ -345,6 +358,8 @@ mod tests {
             "version_control.added" = "#00ff00ff"
             "version_control.modified" = "#ffff00ff"
             "version_control.deleted" = "#ff0000ff"
+            "version_control.word_added" = "#00ff00ff"
+            "version_control.word_deleted" = "#ff0000ff"
             conflict = "#ff0000ff"
             "title_bar.background" = "#222222ff"
             "status_bar.background" = "#111111ff"

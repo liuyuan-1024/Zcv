@@ -71,6 +71,8 @@ pub(crate) struct MultiBufferDiffProjection {
     display_sources: Vec<DisplayHunkSource>,
     /// 与显示 hunk 同序的展开状态。
     display_expanded: Vec<bool>,
+    /// 与显示 hunk 同序的词级变化片段（组合文档字节范围 + 新增/删除色）。
+    display_word_diffs: Vec<Vec<(DiffHunkKind, Range<usize>)>>,
     /// 显示坐标对应的组合文档版本（注入/重建后发生编辑会使坐标失效）。
     display_version: Option<BufferVersion>,
     /// 对每个 BufferDiff 的订阅：diff 结果或 pending 变化时重新物化显示。
@@ -110,6 +112,12 @@ struct ResolvedHunk {
     /// base 文本行范围（展开状态身份与旧侧物化）。
     base_lines: Range<usize>,
     kind: DiffHunkKind,
+    /// 旧侧字节范围起点（base_word_diffs 的相对基准）。
+    base_byte_start: usize,
+    /// 新侧词级变化片段（working 锚点）。
+    buffer_word_diffs: Vec<Range<Anchor>>,
+    /// 旧侧词级变化片段（相对 `diff_base_byte_range.start`）。
+    base_word_diffs: Vec<Range<usize>>,
 }
 
 /// 一个 hunk 在本次物化出的 excerpt 序列中的位置。
@@ -123,6 +131,9 @@ struct MaterializedHunk {
     new_location: MaterializedHunkLocation,
     source: DisplayHunkSource,
     expanded: bool,
+    base_byte_start: usize,
+    buffer_word_diffs: Vec<Range<Anchor>>,
+    base_word_diffs: Vec<Range<usize>>,
 }
 
 enum MaterializedHunkLocation {
@@ -323,6 +334,17 @@ impl MultiBuffer {
         }
     }
 
+    /// 与 MultiBuffer::diff_hunks 平行的词级变化片段（组合文档字节范围 + 新增/删除色）。
+    pub fn diff_hunk_word_diffs<'a>(
+        &'a self,
+        cx: &'a App,
+    ) -> &'a [Vec<(DiffHunkKind, Range<usize>)>] {
+        match self.display_state(cx) {
+            Some(diff) => &diff.display_word_diffs,
+            None => &[],
+        }
+    }
+
     /// 与 MultiBuffer::diff_hunks 平行的展开标志（渲染层按显示 hunk 索引查询）。
     pub fn diff_hunk_expanded(&self, cx: &App) -> Vec<bool> {
         let Some(diff) = self.display_state(cx) else {
@@ -487,11 +509,9 @@ impl MultiBuffer {
         let mut excerpts = Vec::new();
         let mut materialized_hunks = Vec::new();
         for (file_index, file) in diff.files.iter().enumerate() {
-            let resolved = resolve_file_hunks(file, cx);
             materialize_file(
                 file_index,
                 file,
-                &resolved,
                 diff.expansion
                     .get(file_index)
                     .expect("展开状态必须与文件一一对应"),
@@ -512,10 +532,12 @@ impl MultiBuffer {
         let mut display_old_ranges = Vec::with_capacity(materialized_hunks.len());
         let mut display_sources = Vec::with_capacity(materialized_hunks.len());
         let mut display_expanded = Vec::with_capacity(materialized_hunks.len());
+        let mut display_word_diffs = Vec::with_capacity(materialized_hunks.len());
         for hunk in materialized_hunks {
             let old_display = hunk
                 .old_excerpt
                 .map(|excerpt| self.diff_excerpt_output_lines(excerpt));
+            display_word_diffs.push(self.combined_word_diffs(&hunk));
             let new_range = match hunk.new_location {
                 MaterializedHunkLocation::Excerpt(excerpt) => {
                     self.diff_excerpt_output_lines(excerpt)
@@ -540,6 +562,7 @@ impl MultiBuffer {
         diff.display_old_ranges = display_old_ranges;
         diff.display_sources = display_sources;
         diff.display_expanded = display_expanded;
+        diff.display_word_diffs = display_word_diffs;
         diff.display_version = Some(new_version);
         diff.display_revisions = diff
             .files
@@ -563,6 +586,38 @@ impl MultiBuffer {
             .get(excerpt)
             .expect("diff excerpt 必须存在对应组合映射");
         mapping.output_start_line..mapping.output_end_line.max(mapping.output_start_line + 1)
+    }
+
+    /// 一个物化 hunk 的词级片段在组合文档中的字节范围。
+    ///
+    /// 旧侧 word diff 相对 base 字节范围起点，新侧 anchor 归于 working 源；
+    /// 两者都经各自 excerpt 的源码→组合偏移映射换算到组合文档坐标。
+    fn combined_word_diffs(&self, hunk: &MaterializedHunk) -> Vec<(DiffHunkKind, Range<usize>)> {
+        let mut word_diffs = Vec::new();
+        // 只有展开的旧侧才真正物化 base 行；折叠态是 working 坐标的占位片段，不能套用 base 偏移。
+        if hunk.expanded
+            && let Some(excerpt) = hunk.old_excerpt
+        {
+            let mapping = &self.state.mappings[excerpt];
+            let output_start = mapping.output_range.start().get();
+            let source_start = mapping.source_range.start().get();
+            word_diffs.extend(hunk.base_word_diffs.iter().map(|diff| {
+                let start = output_start + hunk.base_byte_start + diff.start - source_start;
+                let end = output_start + hunk.base_byte_start + diff.end - source_start;
+                (DiffHunkKind::Deleted, start..end)
+            }));
+        }
+        if let MaterializedHunkLocation::Excerpt(excerpt) = &hunk.new_location {
+            let mapping = &self.state.mappings[*excerpt];
+            let output_start = mapping.output_range.start().get();
+            let source_start = mapping.source_range.start().get();
+            word_diffs.extend(hunk.buffer_word_diffs.iter().map(|diff| {
+                let start = output_start + diff.start.offset().get() - source_start;
+                let end = output_start + diff.end.offset().get() - source_start;
+                (DiffHunkKind::Added, start..end)
+            }));
+        }
+        word_diffs
     }
 
     /// excerpt 序列边界在最终组合文档中的真实逻辑行。
@@ -617,6 +672,9 @@ fn resolve_hunk(hunk: &DiffHunk, working: &Snapshot, base: Option<&Snapshot>) ->
         buffer_lines,
         base_lines,
         kind: hunk.kind,
+        base_byte_start: hunk.diff_base_byte_range.start,
+        buffer_word_diffs: hunk.buffer_word_diffs.clone(),
+        base_word_diffs: hunk.base_word_diffs.clone(),
     }
 }
 
@@ -726,13 +784,13 @@ fn migrate_expansion_state(
 fn materialize_file(
     file_index: usize,
     file: &DiffFileProjection,
-    resolved: &[ResolvedHunk],
     expansion: &DiffExpansionState,
     cx: &App,
     expanded_by_default: bool,
     excerpts: &mut Vec<MultiBufferExcerpt>,
     materialized_hunks: &mut Vec<MaterializedHunk>,
 ) {
+    let resolved = resolve_file_hunks(file, cx);
     let working = file.diff.read(cx).working().clone();
     let base_source = file.diff.read(cx).base_source().cloned();
     let is_created = file.diff.read(cx).is_created();
@@ -768,6 +826,9 @@ fn materialize_file(
                 hunk_index: None,
             },
             expanded: true,
+            base_byte_start: 0,
+            buffer_word_diffs: Vec::new(),
+            base_word_diffs: Vec::new(),
         });
         return;
     }
@@ -788,7 +849,7 @@ fn materialize_file(
 
     let visible = match context_lines {
         None => std::iter::once(0..line_count).collect::<Vec<_>>(),
-        Some(context) => excerpt_line_ranges(resolved, line_count, context),
+        Some(context) => excerpt_line_ranges(&resolved, line_count, context),
     };
     for context_range in visible {
         let mut current = context_range.start;
@@ -877,6 +938,9 @@ fn materialize_file(
                     hunk_index: Some(hunk_index),
                 },
                 expanded: expansion.is_expanded(hunk.kind, &hunk.base_lines, expanded_by_default),
+                base_byte_start: hunk.base_byte_start,
+                buffer_word_diffs: hunk.buffer_word_diffs.clone(),
+                base_word_diffs: hunk.base_word_diffs.clone(),
             });
             current = hunk.buffer_lines.end;
         }

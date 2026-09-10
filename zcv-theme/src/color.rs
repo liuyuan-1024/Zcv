@@ -63,6 +63,10 @@ pub struct ThemeColors {
     pub version_control_modified: Rgba,
     /// 版本控制已删除条目颜色。
     pub version_control_deleted: Rgba,
+    /// 词级新增背景（编辑器 diff 中变化词的高亮）。
+    pub version_control_word_added: Rgba,
+    /// 词级删除背景（编辑器 diff 中变化词的高亮）。
+    pub version_control_word_deleted: Rgba,
     /// 冲突条目颜色。
     pub status_conflict: Rgba,
     /// 顶栏背景。

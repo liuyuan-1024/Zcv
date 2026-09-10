@@ -694,7 +694,7 @@ fn undo_keeps_rust_highlighting_in_diff_projection(cx: &mut TestAppContext) {
         "fn main() { let value = 1; }\n",
         cx,
     );
-    let combined = cx.new(|cx| MultiBuffer::empty(cx));
+    let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_buffer_diffs(
             Some(vec![BufferDiffInput {
@@ -742,7 +742,7 @@ fn save_after_diff_hunk_edit_keeps_rust_highlighting(cx: &mut TestAppContext) {
         "fn main() { let value = 1; }\n",
         cx,
     );
-    let combined = cx.new(|cx| MultiBuffer::empty(cx));
+    let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_buffer_diffs(
             Some(vec![BufferDiffInput {
@@ -860,13 +860,13 @@ fn diff_hunk_coordinates_follow_materialized_excerpts_across_files(cx: &mut Test
                 .is_none(),
             "整文件新增块不应伪造源 hunk"
         );
-        assert_eq!(
+        assert!(
             buffer
                 .buffer_diff_hunk_at(1, cx)
                 .expect("修改 hunk 应有显示来源")
                 .range
                 .is_some(),
-            true
+            "修改 hunk 应有可重解析的源范围"
         );
     });
 }
@@ -1052,6 +1052,68 @@ fn added_hunk_background_follows_view_expansion_policy(cx: &mut TestAppContext) 
     assert_eq!(
         cx.read_entity(&combined, |buffer, cx| buffer.diff_hunk_expanded(cx)),
         vec![true]
+    );
+}
+
+/// 词级 diff 按空白 / 单词 / 标点切分：只有真正变化的词进入范围，相同文本无范围。
+#[test]
+fn word_diff_ranges_split_words_and_punctuation() {
+    let (old, new) = crate::word_diff::word_diff_ranges("let x = 1;\n", "let x = 2;\n");
+    assert_eq!(old, vec![8..9], "旧侧只应包含变化的数字");
+    assert_eq!(new, vec![8..9], "新侧只应包含变化的数字");
+
+    let (old, new) = crate::word_diff::word_diff_ranges("a b c", "a X c");
+    assert_eq!(old, vec![2..3]);
+    assert_eq!(new, vec![2..3]);
+
+    assert_eq!(
+        crate::word_diff::word_diff_ranges("same\n", "same\n"),
+        (Vec::new(), Vec::new()),
+        "相同文本不应产生词级范围"
+    );
+}
+
+/// 展开的修改块词级范围必须落在组合文档坐标：旧侧指针指向 base 文本，新侧指针指向 working 文本。
+#[gpui::test]
+fn expanded_modified_hunk_exposes_word_diffs_in_composite_coordinates(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "let x = 2;\n", cx);
+    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_buffer_diffs(
+            Some(vec![BufferDiffInput {
+                operations: None,
+                working: source.clone(),
+                base_text: Some(Arc::from("let x = 1;\n")),
+                path: PathBuf::from("src/a.rs"),
+                display_path: PathBuf::from("src/a.rs"),
+                context_lines: None,
+                is_created: false,
+                show_file_header: false,
+            }]),
+            cx,
+        );
+        buffer.set_diff_hunks_expanded_by_default(true, cx);
+    });
+
+    let (text, word_diffs) = cx.read_entity(&combined, |buffer, cx| {
+        let text =
+            String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("组合文本必须是 UTF-8");
+        (text, buffer.diff_hunk_word_diffs(cx).to_vec())
+    });
+    assert_eq!(word_diffs.len(), 1, "应有一个显示 hunk");
+    let diffs = &word_diffs[0];
+    assert_eq!(diffs.len(), 2, "修改块应同时给出旧侧与新侧词级范围");
+    assert_eq!(diffs[0].0, DiffHunkKind::Deleted);
+    assert_eq!(
+        &text[diffs[0].1.clone()],
+        "1",
+        "旧侧词级范围应指向 base 中的变化词"
+    );
+    assert_eq!(diffs[1].0, DiffHunkKind::Added);
+    assert_eq!(
+        &text[diffs[1].1.clone()],
+        "2",
+        "新侧词级范围应指向 working 中的变化词"
     );
 }
 

@@ -20,14 +20,17 @@ pub(crate) struct HunkRendering {
     pub(crate) controls: Vec<(Range<usize>, DisplayHunk)>,
     /// 需要整行差异背景的显示行区间；只有展开态包含（新增块的展开态由注入方决定）。
     pub(crate) expanded_rows: Vec<Range<usize>>,
+    /// 展开 hunk 的词级变化片段（组合文档字节范围 + 新增/删除色）。
+    pub(crate) word_diff_highlights: Vec<(DiffHunkKind, Range<usize>)>,
 }
 
-/// hunks（逻辑行）→ 行级渲染数据，单遍遍历产出四份视图：
+/// hunks（逻辑行）→ 行级渲染数据，单遍遍历产出五份视图：
 ///
 /// - `diff_rows`：行标记（gutter 指示，wrap 下行映射出的全部显示行都覆盖）
 /// - `strips`：竖条范围与状态色（竖条颜色不随展开变化）
 /// - `hit_regions`：可点击色带区域（显示行范围 + 点击目标 old_range + 类型）
 /// - `expanded_rows`：整行差异背景数据源（只有展开态着色；折叠 hunk 仅保留 gutter 竖条）
+/// - `word_diff_highlights`：展开态 hunk 的词级变化片段（组合文档字节范围；折叠态无）
 ///
 /// 覆盖终点取 hunk 之后第一行的行首显示行（end 行首显示行 − 1 即 hunk 最后一个显示行，左闭右开区间 [start, end) 恰好盖住全部 wrap 片段）；
 /// hunk 到达文件末尾时以显示快照行数为终点。
@@ -39,14 +42,20 @@ pub(crate) fn hunk_rendering(
     hunks: &[DisplayHunk],
     expanded: &[bool],
     old_display_ranges: &[Option<Range<usize>>],
+    word_diffs: &[Vec<(DiffHunkKind, Range<usize>)>],
 ) -> HunkRendering {
     let mut diff_rows = Vec::new();
     let mut strips = Vec::new();
     let mut hit_regions = Vec::new();
     let mut controls = Vec::new();
     let mut expanded_rows = Vec::new();
+    let mut word_diff_highlights = Vec::new();
     for (index, hunk) in hunks.iter().enumerate() {
         let is_expanded = expanded.get(index).copied().unwrap_or(false);
+        // 词级背景只出现在展开态：折叠 hunk 不物化旧侧，也没有可着色的行内文本。
+        if is_expanded && let Some(diffs) = word_diffs.get(index) {
+            word_diff_highlights.extend(diffs.iter().cloned());
+        }
         let old_rows = old_display_ranges
             .get(index)
             .and_then(|range| range.as_ref())
@@ -102,6 +111,7 @@ pub(crate) fn hunk_rendering(
         hit_regions,
         controls,
         expanded_rows,
+        word_diff_highlights,
     }
 }
 
@@ -189,8 +199,13 @@ mod tests {
                     old_range: 20..21,
                     kind: DiffHunkKind::Deleted,
                 };
-                let rendered =
-                    hunk_rendering(&snapshot, std::slice::from_ref(&hunk), &[false], &[None]);
+                let rendered = hunk_rendering(
+                    &snapshot,
+                    std::slice::from_ref(&hunk),
+                    &[false],
+                    &[None],
+                    &[],
+                );
                 assert_eq!(
                     rendered.hit_regions,
                     vec![(start_row.get()..end_row.get(), 0, DiffHunkKind::Deleted)],
@@ -250,8 +265,13 @@ mod tests {
                     old_range: 15..16,
                     kind: DiffHunkKind::Deleted,
                 };
-                let rendered =
-                    hunk_rendering(&snapshot, std::slice::from_ref(&hunk), &[false], &[None]);
+                let rendered = hunk_rendering(
+                    &snapshot,
+                    std::slice::from_ref(&hunk),
+                    &[false],
+                    &[None],
+                    &[],
+                );
                 // 删除点行是单行 [del_start, del_start+1)，三角在该行行尾 = 软换行第一子行行首。
                 assert_eq!(
                     rendered.hit_regions,
@@ -319,6 +339,7 @@ mod tests {
             &hunks,
             &[false, false, false],
             &[None, None, None],
+            &[],
         );
         assert_eq!(
             rendered
@@ -336,7 +357,7 @@ mod tests {
         assert_eq!(rendered.expanded_rows, Vec::<Range<usize>>::new());
 
         // 差异审阅视图（默认展开）下新增块才整行着色。
-        let expanded_added = hunk_rendering(&snapshot, &hunks[..1], &[true], &[None]);
+        let expanded_added = hunk_rendering(&snapshot, &hunks[..1], &[true], &[None], &[]);
         assert_eq!(expanded_added.expanded_rows, vec![0..1]);
     }
 
@@ -352,7 +373,13 @@ mod tests {
         };
         let old_ranges = vec![Some(1..2)];
 
-        let rendered = hunk_rendering(&snapshot, std::slice::from_ref(&hunk), &[true], &old_ranges);
+        let rendered = hunk_rendering(
+            &snapshot,
+            std::slice::from_ref(&hunk),
+            &[true],
+            &old_ranges,
+            &[],
+        );
 
         assert_eq!(
             rendered.diff_rows,
@@ -365,5 +392,31 @@ mod tests {
             vec![(1..3, 0, DiffHunkKind::Modified)],
             "物化旧侧与普通编辑器共用 gutter 折叠入口"
         );
+    }
+
+    #[test]
+    fn word_diff_highlights_only_render_for_expanded_hunks() {
+        // 词级背景只在展开态出现：折叠的修改块没有物化旧侧，也就没有行内变化文本可着色。
+        let buffer = Buffer::scratch("old\nnew\n".into(), BufferConfig::default())
+            .expect("应创建测试 Buffer");
+        let snapshot = DisplayMap::new(buffer.snapshot()).snapshot();
+        let hunks = vec![DisplayHunk {
+            range: 1..2,
+            old_range: 0..1,
+            kind: DiffHunkKind::Modified,
+        }];
+        let word_diffs = vec![vec![
+            (DiffHunkKind::Deleted, 0..3),
+            (DiffHunkKind::Added, 4..7),
+        ]];
+
+        let collapsed = hunk_rendering(&snapshot, &hunks, &[false], &[Some(0..1)], &word_diffs);
+        assert_eq!(
+            collapsed.word_diff_highlights,
+            Vec::<(DiffHunkKind, Range<usize>)>::new()
+        );
+
+        let expanded = hunk_rendering(&snapshot, &hunks, &[true], &[Some(0..1)], &word_diffs);
+        assert_eq!(expanded.word_diff_highlights, word_diffs[0]);
     }
 }

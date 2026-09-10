@@ -320,6 +320,8 @@ pub(super) struct PrepaintState {
     hunk_strips: Arc<Vec<(Range<usize>, DiffHunkKind)>>,
     /// 整行差异背景范围（新增行始终包含，修改/删除只在展开时包含）。
     expanded_rows: Arc<Vec<Range<usize>>>,
+    /// 展开 hunk 的词级背景片段：每显示行一组（窗口绝对 x 范围 + 颜色）。
+    word_diff_fragments: Vec<Vec<(Pixels, Pixels, gpui::Rgba)>>,
     scrollbar: Option<ScrollbarLayout>,
     block_elements: Vec<AnyElement>,
     sticky_buffer_header: Option<AnyElement>,
@@ -1227,6 +1229,7 @@ impl Element for EditorElement {
                 editor.diff_hunks(cx),
                 &editor.diff_hunk_expanded(cx),
                 editor.diff_hunk_old_ranges(cx),
+                editor.diff_hunk_word_diffs(cx),
             )
         };
         let diff_rows = &hunk_render.diff_rows;
@@ -1293,6 +1296,8 @@ impl Element for EditorElement {
         // 背景片段合成：选区与 run 背景逐行合成为互不重叠的片段。
         let (selection_segments, carets) = layout_selections(&selections, &layout, line_height, cx);
         let background_fragments = layout_background_fragments(&layout, &selection_segments, cx);
+        let word_diff_fragments =
+            layout_word_diff_fragments(&hunk_render.word_diff_highlights, &layout, cx);
         let mut bracket_matches = Vec::new();
         if let Some(pair) = matching_bracket_pair {
             layout_bracket_pair(pair, &layout, line_height, &mut bracket_matches, cx);
@@ -1412,6 +1417,7 @@ impl Element for EditorElement {
             placeholder_hitboxes,
             hunk_strips,
             expanded_rows,
+            word_diff_fragments,
             scrollbar,
             block_elements,
             sticky_buffer_header,
@@ -1758,6 +1764,19 @@ impl Element for EditorElement {
                         ),
                         background,
                     ));
+                }
+                // 词级差异背景叠在行背景之上、选区之下：只覆盖真正变化的词/片段。
+                for (ix, fragments) in prepaint.word_diff_fragments.iter().enumerate() {
+                    let line = &prepaint.layout.lines[ix];
+                    for (start_x, end_x, color) in fragments {
+                        window.paint_quad(fill(
+                            Bounds::from_corners(
+                                point(*start_x, line.origin.y),
+                                point(*end_x, line.origin.y + prepaint.layout.line_height),
+                            ),
+                            *color,
+                        ));
+                    }
                 }
                 // 背景片段合成管线：选区与 run 背景逐行合成为互不重叠的片段，一次绘制。
                 // 选区片段在前、run 片段在后（与既有层级一致：run 背景覆盖选区之上、文本之下）。
@@ -2525,6 +2544,66 @@ fn layout_selection_segments(
     finish_selection_contour(&contour, corner_radius, per_line);
 }
 
+/// 展开 hunk 的词级变化片段 → 每显示行的窗口绝对 x 范围与颜色。
+///
+/// 输入是组合文档字节范围；经显示投影换算到显示行与行内字符列，
+/// 再复用与选区一致的 `x_for_index` 映射（含 wrap 续行片段起点列）。
+fn layout_word_diff_fragments(
+    highlights: &[(DiffHunkKind, Range<usize>)],
+    layout: &EditorLayout,
+    cx: &App,
+) -> Vec<Vec<(Pixels, Pixels, gpui::Rgba)>> {
+    let colors = color::current(cx);
+    let mut per_line = vec![Vec::new(); layout.lines.len()];
+    for (kind, range) in highlights {
+        let color = match kind {
+            DiffHunkKind::Added => colors.version_control_word_added,
+            DiffHunkKind::Deleted => colors.version_control_word_deleted,
+            DiffHunkKind::Modified => continue,
+        };
+        let Ok(text_range) =
+            TextRange::new(ByteOffset::new(range.start), ByteOffset::new(range.end))
+        else {
+            continue;
+        };
+        let Ok(projected) = layout.display_snapshot.project_text_range(text_range) else {
+            continue;
+        };
+        for projected_range in projected {
+            for (ix, line) in layout.lines.iter().enumerate() {
+                let row = ProjectedLineIndex::new(line.row.get());
+                if row < projected_range.start().line() || row > projected_range.end().line() {
+                    continue;
+                }
+                let line_columns = line.shaped.text.chars().count();
+                let start_column = if row == projected_range.start().line() {
+                    projected_range.start().column().get().min(line_columns)
+                } else {
+                    0
+                };
+                let end_column = if row == projected_range.end().line() {
+                    projected_range.end().column().get().min(line_columns)
+                } else {
+                    line_columns
+                };
+                let start_x = line.origin.x
+                    + line
+                        .shaped
+                        .x_for_index(column_to_byte(&line.shaped.text, start_column));
+                let end_x = line.origin.x
+                    + line
+                        .shaped
+                        .x_for_index(column_to_byte(&line.shaped.text, end_column));
+                if end_x <= start_x {
+                    continue;
+                }
+                per_line[ix].push((start_x, end_x, color));
+            }
+        }
+    }
+    per_line
+}
+
 /// 背景片段合成：逐行把选区与 run 背景（搜索高亮、语法背景）合成为互不重叠的片段。
 /// 混合顺序 base → 选区 → run，与既有视觉层级一致（run 背景覆盖选区之上、文本之下）。
 fn layout_background_fragments(
@@ -2834,7 +2913,7 @@ mod tests {
         expanded: &[bool],
         old_display_ranges: &[Option<Range<usize>>],
     ) -> Vec<(Range<usize>, DiffHunkKind)> {
-        hunk_rendering(snapshot, hunks, expanded, old_display_ranges).diff_rows
+        hunk_rendering(snapshot, hunks, expanded, old_display_ranges, &[]).diff_rows
     }
 
     /// hunk 竖条范围与状态色（`hunk_rendering` 的薄包装，测试专用）。
@@ -2845,7 +2924,7 @@ mod tests {
         expanded: &[bool],
         old_display_ranges: &[Option<Range<usize>>],
     ) -> Vec<(Range<usize>, DiffHunkKind)> {
-        hunk_rendering(snapshot, hunks, expanded, old_display_ranges).strips
+        hunk_rendering(snapshot, hunks, expanded, old_display_ranges, &[]).strips
     }
 
     /// 可点击的 hunk 色带区域（`hunk_rendering` 的薄包装，测试专用）。
@@ -2856,7 +2935,7 @@ mod tests {
         expanded: &[bool],
         old_display_ranges: &[Option<Range<usize>>],
     ) -> Vec<(Range<usize>, usize, DiffHunkKind)> {
-        hunk_rendering(snapshot, hunks, expanded, old_display_ranges).hit_regions
+        hunk_rendering(snapshot, hunks, expanded, old_display_ranges, &[]).hit_regions
     }
 
     #[test]

@@ -7,6 +7,7 @@
 
 mod buffer_diff;
 mod diff_projection;
+mod word_diff;
 
 pub use buffer_diff::{
     BufferDiff, BufferDiffInput, BufferDiffSnapshot, DiffHunk, DiffOperations, PendingHunk,

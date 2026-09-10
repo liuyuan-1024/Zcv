@@ -20,10 +20,10 @@ use zcv_actions::{
 use zcv_editor::{DiffHunkDelegate, Editor, EditorEvent, EditorScrollAnchor};
 use zcv_git::{FileStatus, GitHunkOperation, GitRevision, StatusCode};
 use zcv_language::LanguageBuffer;
-use zcv_multi_buffer::DisplayHunk;
+use zcv_multi_buffer::{BufferDiff, DisplayHunk};
 use zcv_multi_buffer::{ExcerptLocation, MultiBuffer};
 use zcv_project::{GitStoreEvent, Project};
-use zcv_text::{Buffer, BufferConfig, ByteOffset, SearchQuery, Snapshot};
+use zcv_text::{Anchor, Buffer, BufferConfig, ByteOffset, SearchQuery, Snapshot};
 use zcv_theme::{color, space};
 use zcv_ui::{
     Button, ButtonSize, ButtonStyle, Checkbox, MatchOption, MatchOptions, ReplaceInput, SearchInput,
@@ -517,8 +517,13 @@ impl ProjectDiffView {
             Button::text("project-diff-operation", "重做全部")
                 .size(ButtonSize::Loose)
                 .style(ButtonStyle::Solid)
-                .label("重做全部")
-                .on_click(move |_, _, cx| {
+                .label("双击还原所有未暂存修改")
+                .on_click(move |event, _, cx| {
+                    // 危险操作：仅鼠标双击确认，单击不生效。
+                    if !matches!(event, gpui::ClickEvent::Mouse(event) if event.down.click_count >= 2)
+                    {
+                        return;
+                    }
                     if let Some(view) = weak.upgrade() {
                         view.update(cx, |view, cx| view.restore_all(cx));
                     }
@@ -753,9 +758,37 @@ impl ProjectDiffView {
         });
     }
 
+    /// 重做全部文件：先按文件聚合、解析出全部源 hunk，再逐个文件一次性提交。
+    ///
+    /// 逐个 hunk 应用会因投影重建让后续 hunk 的显示坐标失配，且同一文件的 pending 会互相覆盖，结果只重做了第一个文件的一部分。
     fn restore_all(&mut self, cx: &mut Context<Self>) {
+        let mut grouped: Vec<(Entity<BufferDiff>, Vec<std::ops::Range<Anchor>>)> = Vec::new();
         for hunk in self.editor.read(cx).diff_hunks(cx).to_vec() {
-            self.apply_hunk_action(&hunk, GitHunkOperation::Restore, cx);
+            let Some(info) = self.diff_hunk_source_info(&hunk, cx) else {
+                continue;
+            };
+            // 新增文件没有可还原的旧侧内容，重做会清空文件。
+            if info.diff.read(cx).is_created() {
+                continue;
+            }
+            let Some(range) = info.range else {
+                continue;
+            };
+            match grouped
+                .iter_mut()
+                .find(|(diff, _)| diff.entity_id() == info.diff.entity_id())
+            {
+                Some((_, ranges)) => ranges.push(range),
+                None => grouped.push((info.diff, vec![range])),
+            }
+        }
+        for (diff, ranges) in grouped {
+            let Some(operations) = diff.read(cx).operations() else {
+                continue;
+            };
+            if operations.supports_restore() {
+                operations.restore(diff, ranges, cx);
+            }
         }
     }
 
@@ -1046,11 +1079,7 @@ impl ProjectDiffView {
         let Some(info) = self.diff_hunk_source_info(displayed, cx) else {
             return;
         };
-        let is_created_file = self
-            .files
-            .iter()
-            .find(|file| file.path == info.path)
-            .is_some_and(|file| self.kind.is_created(file.status));
+        let is_created_file = info.diff.read(cx).is_created();
         let allowed = matches!(
             (self.kind, operation),
             (ProjectDiffKind::Unstaged, GitHunkOperation::Stage)

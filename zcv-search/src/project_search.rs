@@ -18,7 +18,7 @@ use zcv_editor::{Editor, EditorEvent};
 use zcv_multi_buffer::{ExcerptLocation, MultiBuffer, MultiBufferExcerpt};
 use zcv_project::Project;
 use zcv_text::SearchQuery;
-use zcv_theme::color;
+use zcv_theme::{color, space};
 use zcv_ui::{Button, MatchOption, MatchOptions, SearchInput};
 use zcv_workspace::{
     Direction, Item, ItemEvent, ItemHandle, SearchEvent, SearchableItem, SearchableItemHandle,
@@ -226,6 +226,15 @@ impl ProjectSearchView {
         cx.notify();
     }
 
+    /// 把键盘焦点交给查询输入框。
+    ///
+    /// Item 的主焦点是结果编辑器，打开/激活项目搜索后需要显式让查询框可输入。
+    fn focus_search_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(input) = self.query_input.as_ref() {
+            window.focus(&input.read(cx).focus_handle(), cx);
+        }
+    }
+
     fn search_from_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search_state.query = self
             .query_input
@@ -293,16 +302,37 @@ impl ProjectSearchView {
         let (match_count, active_match_index) = SearchableItem::search_count(self, cx);
         let mut key_context = KeyContext::new_with_defaults();
         key_context.add("ProjectSearchBar");
-
-        let update =
-            |f: fn(&mut ProjectSearchView, &mut Window, &mut Context<ProjectSearchView>)| {
-                let weak = weak.clone();
-                move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
-                    if let Some(view) = weak.upgrade() {
-                        view.update(cx, |view, cx| f(view, window, cx));
-                    }
+        let expansion = {
+            let snapshot = self.excerpts.read(cx).snapshot(cx);
+            let paths = snapshot
+                .excerpts()
+                .iter()
+                .map(|excerpt| excerpt.path())
+                .collect::<Vec<_>>();
+            let expanded = paths
+                .iter()
+                .any(|path| !self.results_editor.read(cx).is_buffer_folded(path));
+            let weak = weak.clone();
+            Button::icon(
+                "project-search-expansion",
+                if expanded {
+                    "icons/chevron_down_up.svg"
+                } else {
+                    "icons/chevron_up_down.svg"
+                },
+            )
+            .label(if expanded {
+                "折叠全部文件"
+            } else {
+                "展开全部文件"
+            })
+            .on_click(move |_, _, cx| {
+                if let Some(view) = weak.upgrade() {
+                    view.update(cx, |view, cx| view.set_all_files_folded(expanded, cx));
                 }
-            };
+            })
+            .into_any_element()
+        };
 
         div()
             .key_context(key_context)
@@ -385,48 +415,70 @@ impl ProjectSearchView {
                 }
             })
             .child(
-                SearchInput::new("project-search", query_input.clone().into_any_element())
-                    .options(self.search_state.options)
-                    .on_toggle({
-                        let weak = weak.clone();
-                        move |option, window, cx| {
-                            if let Some(view) = weak.upgrade() {
-                                view.update(cx, |view, cx| {
-                                    view.toggle_search_option(option, window, cx)
-                                });
-                            }
-                        }
-                    })
-                    .count(active_match_index, match_count)
-                    .on_previous({
-                        let weak = weak.clone();
-                        move |window, cx| {
-                            if let Some(view) = weak.upgrade() {
-                                view.update(cx, |view, cx| {
-                                    view.move_active_match(Direction::Prev, window, cx)
-                                });
-                            }
-                        }
-                    })
-                    .on_next({
-                        let weak = weak.clone();
-                        move |window, cx| {
-                            if let Some(view) = weak.upgrade() {
-                                view.update(cx, |view, cx| {
-                                    view.move_active_match(Direction::Next, window, cx)
-                                });
-                            }
-                        }
-                    })
-                    // 追加外部插槽:关闭按钮(由调用方选择插入)。
-                    .external(
-                        Button::icon("project-search-close", "icons/close.svg")
-                            .label("关闭")
-                            .shortcut(&ClearSearch, cx)
-                            .on_click(update(|view, window, cx| view.close_search_bar(window, cx))),
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .gap(space::S6)
+                    .child(expansion)
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            SearchInput::new(
+                                "project-search",
+                                query_input.clone().into_any_element(),
+                            )
+                            .options(self.search_state.options)
+                            .on_toggle({
+                                let weak = weak.clone();
+                                move |option, window, cx| {
+                                    if let Some(view) = weak.upgrade() {
+                                        view.update(cx, |view, cx| {
+                                            view.toggle_search_option(option, window, cx)
+                                        });
+                                    }
+                                }
+                            })
+                            .count(active_match_index, match_count)
+                            .on_previous({
+                                let weak = weak.clone();
+                                move |window, cx| {
+                                    if let Some(view) = weak.upgrade() {
+                                        view.update(cx, |view, cx| {
+                                            view.move_active_match(Direction::Prev, window, cx)
+                                        });
+                                    }
+                                }
+                            })
+                            .on_next({
+                                let weak = weak.clone();
+                                move |window, cx| {
+                                    if let Some(view) = weak.upgrade() {
+                                        view.update(cx, |view, cx| {
+                                            view.move_active_match(Direction::Next, window, cx)
+                                        });
+                                    }
+                                }
+                            }),
+                        ),
                     ),
             )
             .into_any_element()
+    }
+
+    fn set_all_files_folded(&mut self, folded: bool, cx: &mut Context<Self>) {
+        let mut paths = Vec::new();
+        for excerpt in self.excerpts.read(cx).snapshot(cx).excerpts() {
+            if !paths.iter().any(|path| path == excerpt.path()) {
+                paths.push(excerpt.path().to_path_buf());
+            }
+        }
+        self.results_editor.update(cx, |editor, cx| {
+            for path in paths {
+                if editor.is_buffer_folded(&path) != folded {
+                    editor.toggle_buffer_fold(path, cx);
+                }
+            }
+        });
     }
 
     fn run_search(&mut self, query: SearchQuery, window: &mut Window, cx: &mut Context<Self>) {
@@ -772,6 +824,8 @@ pub(crate) fn deploy(
     {
         let item_id = existing.entity_id();
         pane.update(cx, |pane, cx| pane.activate_tab(item_id, window, cx));
+        // 已有标签重新打开搜索栏并聚焦查询框；activate_tab 自身不改变焦点。
+        existing.update(cx, |view, cx| view.deploy_search_bar(None, window, cx));
         return;
     }
 
@@ -781,7 +835,10 @@ pub(crate) fn deploy(
         view.deploy_search_bar(seed, window, cx);
     });
     subscribe_to_open_excerpts(&view, window, cx);
+    let view_handle = view.clone();
     workspace.open_item(Box::new(view), window, cx);
+    // open_item 会把焦点交给 Item 主内容（结果编辑器）；项目搜索打开后应直接可输入。
+    view_handle.update(cx, |view, cx| view.focus_search_input(window, cx));
 }
 
 /// 状态栏中的项目搜索入口。
@@ -818,7 +875,7 @@ impl Render for ProjectSearchButton {
 
 #[cfg(test)]
 mod tests {
-    use gpui::TestAppContext;
+    use gpui::{TestAppContext, VisualTestContext};
     use zcv_text::{ByteOffset, TextRange};
 
     use super::*;
@@ -894,6 +951,73 @@ mod tests {
                 opened.contains(&file),
                 "恢复的项目搜索标签应能打开命中文件，实际标签：{opened:?}"
             );
+        });
+    }
+
+    /// 打开项目搜索后应直接聚焦查询输入框；Item 主焦点默认落在结果编辑器上。
+    #[gpui::test]
+    async fn deploying_project_search_focuses_query_input(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let root = directory.path().canonicalize().expect("项目根应可规范化");
+        cx.update(zcv_editor::init);
+
+        let (workspace, cx) = cx.add_window_view({
+            let root = root.clone();
+            move |window, cx| Workspace::new(root, window, cx)
+        });
+
+        // 首次打开：新建项目搜索标签。
+        workspace.update_in(cx, |workspace, window, cx| {
+            deploy(workspace, None, window, cx);
+        });
+        cx.run_until_parked();
+        assert_query_input_focused(&workspace, cx, "新建标签后");
+
+        // 已有标签：先把焦点移回结果编辑器，再重新打开项目搜索。
+        let results_focus = cx.read_entity(&workspace, |workspace, cx| {
+            project_search_view(workspace, cx)
+                .read(cx)
+                .results_editor
+                .read(cx)
+                .focus_handle()
+        });
+        cx.update(|window, cx| window.focus(&results_focus, cx));
+        workspace.update_in(cx, |workspace, window, cx| {
+            deploy(workspace, None, window, cx);
+        });
+        cx.run_until_parked();
+        assert_query_input_focused(&workspace, cx, "已有标签重新打开后");
+    }
+
+    fn project_search_view(
+        workspace: &Workspace,
+        cx: &gpui::App,
+    ) -> gpui::Entity<ProjectSearchView> {
+        workspace
+            .pane()
+            .read(cx)
+            .tabs()
+            .iter()
+            .find_map(|item| item.act_as::<ProjectSearchView>(cx))
+            .expect("应存在项目搜索标签")
+    }
+
+    fn assert_query_input_focused(
+        workspace: &gpui::Entity<Workspace>,
+        cx: &mut VisualTestContext,
+        context: &str,
+    ) {
+        let input_focus = cx.read_entity(workspace, |workspace, cx| {
+            project_search_view(workspace, cx)
+                .read(cx)
+                .query_input
+                .as_ref()
+                .expect("搜索输入框应已创建")
+                .read(cx)
+                .focus_handle()
+        });
+        cx.update(|window, _| {
+            assert!(input_focus.is_focused(window), "{context}应聚焦查询输入框");
         });
     }
 }

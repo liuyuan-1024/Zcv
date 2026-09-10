@@ -565,9 +565,12 @@ impl EntityInputHandler for Editor {
     }
 
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.composition = None;
+        let was_composing = self.composition.take().is_some();
         self.input_layout = None;
         cx.notify();
+        if was_composing {
+            cx.emit(EditorEvent::Edited);
+        }
     }
 
     fn replace_text_in_range(
@@ -602,10 +605,12 @@ impl EntityInputHandler for Editor {
         let previous_history_transaction = previous_composition
             .as_ref()
             .and_then(|composition| composition.history_transaction_id);
-        let outcome =
-            self.change_with_after(before_selections.clone(), metadata.clone(), cx, |buffer| {
-                replace_selections(buffer, &targets, &text, metadata)
-            });
+        let outcome = self.change_with_after_without_edited(
+            before_selections.clone(),
+            metadata.clone(),
+            cx,
+            |buffer| replace_selections(buffer, &targets, &text, metadata),
+        );
         // 会话提交后组合历史的当前条目即本次编辑的归属节点（合并进前节点时指向前节点），用它作为组合会话的事务身份：连续候选更新据此合并进同一撤销步。
         // 不能用编辑 outcome 的 history_transaction_id——会话 id 在合并进前节点后不指向任何历史节点，后续合并判断会失败。
         let history_transaction_id = self

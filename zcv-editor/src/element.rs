@@ -1009,25 +1009,13 @@ fn layout_scrollbar(
         let search_markers = editor
             .search_highlights()
             .into_iter()
-            .flat_map(|(matches, _)| matches.iter())
-            .filter_map(|search_match| {
-                let range = search_match.range();
-                let start = editor
-                    .display_snapshot()
-                    .offset_to_display_point(range.start())
-                    .ok()?
-                    .row()
-                    .get();
-                let end_offset = range.end().checked_sub(1)?;
-                let end = editor
-                    .display_snapshot()
-                    .offset_to_display_point(end_offset)
-                    .ok()?
-                    .row()
-                    .get()
-                    .saturating_add(1);
-                Some((start..end, ScrollbarMarkerKind::Search))
-            });
+            .flat_map(|(matches, _)| {
+                search_marker_rows(
+                    &editor.display_snapshot(),
+                    matches.iter().map(crate::view::SearchMatchAnchor::range),
+                )
+            })
+            .map(|rows| (rows, ScrollbarMarkerKind::Search));
         scrollbar_layout.markers = marker_geometry(
             diff_markers.chain(search_markers),
             scrollbar_layout.hitbox.bounds,
@@ -1036,6 +1024,35 @@ fn layout_scrollbar(
         );
         scrollbar_layout
     })
+}
+
+/// 将当前组合投影中的搜索字节范围转换为显示行范围。
+///
+/// 搜索范围本身由 `Editor` 依其搜索来源提供：文件内搜索来自编辑器的锚点，项目搜索来自 `MultiBuffer` 的当前组合投影。
+/// 滚动栏只消费统一后的范围，不保存或重建另一份搜索结果。
+/// 字节范围到显示范围的投影完全交由 `DisplaySnapshot`，以统一处理 UTF-8、软换行、折叠与组合文档文件头。
+fn search_marker_rows(
+    display_snapshot: &DisplaySnapshot,
+    ranges: impl IntoIterator<Item = TextRange>,
+) -> Vec<Range<usize>> {
+    ranges
+        .into_iter()
+        .flat_map(|range| {
+            display_snapshot
+                .project_text_range(range)
+                .unwrap_or_default()
+        })
+        .map(|range| {
+            let start = range.start();
+            let end = range.end();
+            let end_line = if end.line() == start.line() || end.column() != LogicalColumn::ZERO {
+                end.line().get().saturating_add(1)
+            } else {
+                end.line().get()
+            };
+            start.line().get()..end_line
+        })
+        .collect()
 }
 
 impl IntoElement for EditorElement {
@@ -2902,6 +2919,64 @@ mod tests {
                 point(px(0.), px(24.)),
                 point(px(5.), px(20.)),
             ]
+        );
+    }
+
+    #[test]
+    fn search_marker_rows_cover_every_current_search_range() {
+        let buffer = Buffer::scratch("first\nmiddle\n项目".to_owned(), BufferConfig::default())
+            .expect("应创建搜索 marker 测试 Buffer");
+        let display = DisplayMap::new(buffer.snapshot()).snapshot();
+        let ranges = [
+            TextRange::new(ByteOffset::ZERO, ByteOffset::new(5)).unwrap(),
+            TextRange::new(ByteOffset::new(13), ByteOffset::new(19)).unwrap(),
+        ];
+
+        assert_eq!(
+            search_marker_rows(&display, ranges),
+            vec![0..1, 2..3],
+            "每个当前搜索范围都应转换为滚动栏 marker 的显示行范围"
+        );
+    }
+
+    #[gpui::test]
+    fn search_marker_rows_use_combined_document_coordinates(cx: &mut TestAppContext) {
+        let source_buffer = cx.new(|_| {
+            Buffer::scratch("first\n项目\nlast".to_owned(), BufferConfig::default())
+                .expect("应创建组合搜索 marker 测试 Buffer")
+        });
+        let source = cx.new(|cx| LanguageBuffer::new(source_buffer, None, cx));
+        let combined = cx.new(MultiBuffer::empty);
+        let first_match = TextRange::new(ByteOffset::ZERO, ByteOffset::new(5)).unwrap();
+        let second_match = TextRange::new(ByteOffset::new(6), ByteOffset::new(12)).unwrap();
+        combined.update(cx, |combined, cx| {
+            combined.set_excerpts(
+                vec![
+                    MultiBufferExcerpt::new(
+                        source.clone(),
+                        TextRange::new(ByteOffset::ZERO, ByteOffset::new(5)).unwrap(),
+                        vec![first_match],
+                    ),
+                    MultiBufferExcerpt::new(
+                        source,
+                        TextRange::new(ByteOffset::new(6), ByteOffset::new(12)).unwrap(),
+                        vec![second_match],
+                    ),
+                ],
+                cx,
+            );
+        });
+        let (display, ranges) = cx.read_entity(&combined, |combined, cx| {
+            (
+                DisplayMap::new(combined.snapshot(cx)).snapshot(),
+                combined.match_ranges().to_vec(),
+            )
+        });
+
+        assert_eq!(
+            search_marker_rows(&display, ranges),
+            vec![2..3, 4..5],
+            "组合文档的文件头与中文命中都必须按组合投影定位"
         );
     }
 

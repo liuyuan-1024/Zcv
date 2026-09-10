@@ -1451,8 +1451,30 @@ impl Editor {
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut Buffer) -> TextResult<(EditOutcome, SelectionSet)>,
     ) -> TextResult<(EditOutcome, SelectionSet)> {
+        self.change_with_after_impl(before_selections, metadata, cx, f, true)
+    }
+
+    /// 应用输入法组合更新；组合尚未结束时不向外发出普通编辑事件。
+    pub(super) fn change_with_after_without_edited(
+        &mut self,
+        before_selections: SelectionSet,
+        metadata: TransactionMetadata,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut Buffer) -> TextResult<(EditOutcome, SelectionSet)>,
+    ) -> TextResult<(EditOutcome, SelectionSet)> {
+        self.change_with_after_impl(before_selections, metadata, cx, f, false)
+    }
+
+    fn change_with_after_impl(
+        &mut self,
+        before_selections: SelectionSet,
+        metadata: TransactionMetadata,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut Buffer) -> TextResult<(EditOutcome, SelectionSet)>,
+        emit_edited: bool,
+    ) -> TextResult<(EditOutcome, SelectionSet)> {
         let (node_id, outcome, remap) = self.commit_session(before_selections, metadata, cx, f)?;
-        self.apply_edit_outcome_with_after(node_id, outcome, remap, cx)
+        self.apply_edit_outcome_with_after(node_id, outcome, remap, emit_edited, cx)
     }
 
     /// 会话化编辑的共享骨架：开启会话并记录 undo 选区（事务开始时记录）→ 闭包编辑（统一 Buffer 通知）→ 提交会话，返回 (节点身份, 编辑结果)。
@@ -1566,7 +1588,7 @@ impl Editor {
             // 再由 land_after_edit 锚定为源锚点（组合文档重建后按源忠实落位）。
             let before = self.selections.resolve(&self.multi_snapshot);
             let after = map_selection_set(&before, position_map);
-            self.land_after_edit(after, &remap, transaction_id, cx);
+            self.land_after_edit(after, &remap, transaction_id, true, cx);
         } else {
             self.finish_edit(cx);
             cx.emit(EditorEvent::Edited);
@@ -1580,6 +1602,7 @@ impl Editor {
         transaction_id: Option<TransactionId>,
         outcome: (EditOutcome, SelectionSet),
         remap: ProjectionRemap,
+        emit_edited: bool,
         cx: &mut Context<Self>,
     ) -> TextResult<(EditOutcome, SelectionSet)> {
         let (outcome, after_selections) = outcome;
@@ -1592,7 +1615,7 @@ impl Editor {
                 new_version,
             );
         }
-        self.land_after_edit(after_selections, &remap, transaction_id, cx);
+        self.land_after_edit(after_selections, &remap, transaction_id, emit_edited, cx);
         Ok((outcome, self.resolved_selections()))
     }
 
@@ -1606,6 +1629,7 @@ impl Editor {
         after: SelectionSet,
         remap: &ProjectionRemap,
         transaction_id: Option<TransactionId>,
+        emit_edited: bool,
         cx: &mut Context<Self>,
     ) {
         let (anchored, snapshot) = {
@@ -1625,7 +1649,9 @@ impl Editor {
             transaction.set_redo(self.selections.clone());
         }
         self.finish_edit(cx);
-        cx.emit(EditorEvent::Edited);
+        if emit_edited {
+            cx.emit(EditorEvent::Edited);
+        }
     }
 
     fn finish_edit(&mut self, cx: &mut Context<Self>) {

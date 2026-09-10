@@ -292,6 +292,8 @@ pub struct VersionControlPanel {
     collapsed_dirs: HashSet<(GitSection, PathBuf)>,
     /// 折叠的分区（点击分区标题行首 chevron 切换；折叠时该分区条目不渲染）。
     collapsed_sections: Rc<RefCell<HashSet<GitSection>>>,
+    /// 各分组的顶层变更路径；标题行复选框可见性与全选以此为准，不随折叠变化。
+    section_paths: [Vec<PathBuf>; 2],
     scroll_handle: UniformListScrollHandle,
     scrollbar: Scrollbar<UniformListScrollHandle>,
     /// 底部提交信息编辑器。
@@ -353,6 +355,7 @@ impl VersionControlPanel {
             state: Rc::new(RefCell::new(TreeState::new(row_entry_key))),
             collapsed_dirs: HashSet::new(),
             collapsed_sections: Rc::new(RefCell::new(HashSet::new())),
+            section_paths: [Vec::new(), Vec::new()],
             scroll_handle,
             scrollbar,
             commit_editor,
@@ -421,6 +424,10 @@ impl VersionControlPanel {
             let store = git_store.read(cx);
             build_section_trees(&root, store.repositories())
         };
+        // 各分组顶层路径：暂存/取消暂存按目录前缀覆盖其下全部变更文件，与展开折叠无关。
+        let section_paths = std::array::from_fn(|index| {
+            trees[index].iter().map(|node| node.path.clone()).collect()
+        });
         let mut state = self.state.borrow_mut();
         // 目录默认展开：未显式折叠的目录（含新出现的目录）都展开，用户折叠状态保持。
         let directories = collect_directory_keys(&trees);
@@ -431,6 +438,7 @@ impl VersionControlPanel {
         );
         let rows = flatten_rows(&trees, &state.expanded, &self.collapsed_sections.borrow());
         state.replace_rows(rows);
+        self.section_paths = section_paths;
     }
 
     /// 切换分区标题的折叠状态（点击标题行首 chevron）：折叠时该分区条目不渲染。
@@ -447,17 +455,10 @@ impl VersionControlPanel {
     }
 
     /// 全选/取消全选分区（点击标题行右侧复选框）：未暂存组全部暂存，已暂存组全部取消暂存。
+    ///
+    /// 以分组树的全部条目为准，折叠时不可见的分区同样能整组操作。
     fn toggle_section_all(&mut self, section: GitSection, cx: &mut Context<Self>) {
-        let paths: Vec<PathBuf> = self
-            .state
-            .borrow()
-            .rows
-            .iter()
-            .filter_map(|row| match row {
-                GitRow::Entry(entry) if entry.section == section => Some(entry.path.clone()),
-                _ => None,
-            })
-            .collect();
+        let paths = self.section_paths[section.index()].clone();
         if paths.is_empty() {
             return;
         }
@@ -672,12 +673,10 @@ impl Render for VersionControlPanel {
             let rows = self.state.borrow().rows.clone();
             let render_context = GitPanelRenderContext {
                 state: Rc::clone(&self.state),
-                non_empty_sections: rows
+                non_empty_sections: GitSection::ALL
                     .iter()
-                    .filter_map(|row| match row {
-                        GitRow::Entry(entry) => Some(entry.section),
-                        _ => None,
-                    })
+                    .copied()
+                    .filter(|section| !self.section_paths[section.index()].is_empty())
                     .collect(),
                 rows: rows.into(),
                 focus: self.focus.clone(),
@@ -1205,6 +1204,14 @@ enum GitSection {
 impl GitSection {
     const ALL: [Self; 2] = [Self::Staged, Self::Unstaged];
 
+    /// 分组在 ALL 与分组树中的下标。
+    fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|section| *section == self)
+            .expect("分组必须登记在 GitSection::ALL 中")
+    }
+
     fn label(self) -> &'static str {
         match self {
             Self::Staged => "已暂存",
@@ -1287,7 +1294,7 @@ struct GitPanelRenderContext {
     focus: FocusHandle,
     /// 折叠的分区（标题行 chevron 渲染与点击共享）。
     collapsed: Rc<RefCell<HashSet<GitSection>>>,
-    /// 有条目的分区（空分区标题行不显示全选复选框）。
+    /// 有条目的分区（由分组树派生，与折叠无关；空分区标题行不显示全选复选框）。
     non_empty_sections: HashSet<GitSection>,
     /// 条目点击直接调用 Entity 方法。
     weak: WeakEntity<VersionControlPanel>,
@@ -1902,6 +1909,39 @@ mod tests {
         });
         let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
         assert!(entries.contains(&(GitSection::Unstaged, "tracked.txt".into())));
+    }
+
+    #[gpui::test]
+    fn collapsed_section_keeps_header_checkbox_and_select_all(cx: &mut TestAppContext) {
+        // 分组折叠只隐藏条目行；只要该组仍有文件，标题行全选复选框就必须常驻且可整组暂存。
+        let (root, _temp) = test_repo();
+        std::fs::write(root.join("tracked.txt"), "改动\n").expect("应写入文件");
+
+        let project_root = root.clone();
+        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
+        cx.run_until_parked();
+
+        cx.update_entity(&panel, |panel, cx| {
+            panel.toggle_section_collapsed(GitSection::Unstaged, cx);
+        });
+        cx.run_until_parked();
+
+        // 折叠后标题行仍是第 2 个列表行：行尾复选框必须仍渲染（悬停出现 tooltip）。
+        assert_hover_tooltip(cx, 2);
+
+        // 折叠态下整组操作也必须生效（不能因条目不可见而找不到路径）。
+        cx.update_entity(&panel, |panel, cx| {
+            panel.toggle_section_all(GitSection::Unstaged, cx);
+        });
+        cx.run_until_parked();
+        cx.run_until_parked();
+        let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
+        assert_eq!(
+            entries,
+            vec![(GitSection::Staged, "tracked.txt".into())],
+            "折叠态标题行全选应把该组文件全部暂存"
+        );
     }
 
     #[gpui::test]

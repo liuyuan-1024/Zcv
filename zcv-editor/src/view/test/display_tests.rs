@@ -454,6 +454,80 @@ fn clicking_the_crease_toggles_fold_without_selecting_the_line(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn expanding_diff_hunk_preserves_code_fold(cx: &mut TestAppContext) {
+    // 展开 diff hunk 只是重排组合文本，不得把已折叠的代码展开。
+    let working = "fn main() {\n    let a = 1;\n    let b = 2;\n}\nfn other() {\n    let x = 1;\n    let y = 2;\n}\n";
+    let base = "fn main() {\n    let a = 1;\n    let b = 99;\n}\nfn other() {\n    let x = 1;\n    let y = 2;\n}\n";
+    let buffer = test_buffer(cx, working);
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/main.rs"), cx)
+    });
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)
+    });
+    let source = buffer.clone();
+    inject_editor_diff(&editor, &source, Vec::new(), Some(Arc::from(base)), cx);
+    cx.run_until_parked();
+
+    editor.update(cx, |editor, cx| {
+        editor.toggle_fold_at_line(zcv_text::Line::new(4), cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_entity(&editor, |editor, _| editor
+            .display_map
+            .snapshot()
+            .fold_anchor_lines()),
+        vec![zcv_text::Line::new(4)]
+    );
+
+    editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_entity(&editor, |editor, _| editor
+            .display_map
+            .snapshot()
+            .fold_anchor_lines()),
+        vec![zcv_text::Line::new(5)],
+        "展开 hunk 后已折叠代码应保持折叠，锚点随插入的旧侧行下移"
+    );
+}
+
+#[gpui::test]
+fn expanding_diff_hunk_keeps_crease_of_enclosing_fold(cx: &mut TestAppContext) {
+    // 折叠范围包含 diff hunk 时，展开 hunk 会把工作区 excerpt 切开，
+    // crease 用的 fold_ranges 仍必须跨连续的同类 excerpt 投影出来。
+    let working = "fn main() {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n}\n";
+    let base = "fn main() {\n    let a = 1;\n    let b = 99;\n    let c = 3;\n}\n";
+    let buffer = test_buffer(cx, working);
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/main.rs"), cx)
+    });
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)
+    });
+    let source = buffer.clone();
+    inject_editor_diff(&editor, &source, Vec::new(), Some(Arc::from(base)), cx);
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_entity(&editor, |editor, _| editor.fold_ranges().len()),
+        1,
+        "fn main 展开前应有折叠范围"
+    );
+
+    editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
+    cx.run_until_parked();
+    let after = cx.read_entity(&editor, |editor, _| editor.fold_ranges().to_vec());
+    assert_eq!(
+        after.len(),
+        1,
+        "展开 hunk 后，包含 hunk 的折叠按钮必须保留：{after:?}"
+    );
+}
+
+#[gpui::test]
 fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
     // 回归：编辑后折叠范围与折叠状态必须保持（crease 箭头显示依赖 fold_ranges / fold_anchor_lines）。
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";

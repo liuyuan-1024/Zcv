@@ -564,6 +564,8 @@ impl Editor {
     /// 结构刷新不改变源，源锚点选区自然存活——同步 DisplayMap 后按重建后快照解析即落到同一逻辑源位置，光标不会被重置到开头（与普通编辑器折叠不移动光标一致）。
     fn after_diff_expansion(&mut self, cx: &mut Context<Self>) {
         self.sync_display_map(cx);
+        // 展开/折叠 hunk 重排了组合文本，crease 依赖的折叠范围必须随之换算。
+        self.refresh_fold_ranges(cx);
         cx.notify();
     }
 
@@ -1362,6 +1364,8 @@ impl Editor {
                 }
                 MultiBufferEvent::MetadataChanged => editor.sync_display_map(cx),
                 MultiBufferEvent::DiffExpansionChanged => {
+                    editor.sync_display_map(cx);
+                    editor.refresh_fold_ranges(cx);
                     cx.emit(EditorEvent::DiffHunksExpandedChanged);
                 }
             }

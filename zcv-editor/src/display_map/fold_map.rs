@@ -724,10 +724,10 @@ impl FoldMap {
             let edit = full_fold_edit(old_rows, self.snapshot.line_count());
             return (self.snapshot.clone(), vec![edit], ApplyOutcome::Rebuilt);
         }
-        if batch.requires_reset()
-            || batch.old_version() != Some(old_version)
-            || batch.new_version() != Some(new_version)
-        {
+        // reset 批次（如 diff 投影重建）也按 patch 映射折叠：
+        // 组合文本只是重排，底层工作区源未变，折叠端点应随 patch 跟随，不能整体清空。
+        // 仅当批次版本与当前快照对不上（订阅者漏版本）时才整体重建。
+        if batch.old_version() != Some(old_version) || batch.new_version() != Some(new_version) {
             let old_rows = self.snapshot.line_count();
             self.snapshot = FoldSnapshot {
                 transforms: build_transforms(&[], input.line_count()),

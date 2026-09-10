@@ -2219,27 +2219,61 @@ impl MultiBuffer {
 
     /// 当前已安装解析对应的折叠范围。
     ///
-    /// 只投影完整落在单个 excerpt 内的源折叠范围，避免跨越未展示内容或文件边界生成无效折叠。
+    /// 一个源可能被展开的 diff hunk 切成多个 excerpt：
+    /// 只要这些 excerpt 在源内连续覆盖，折叠范围就跨它们投影到组合坐标（中间夹入的旧侧 excerpt 也落在折叠范围内）；
+    /// 跨过未展示内容或文件边界的折叠仍被丢弃。
     pub fn fold_ranges(&self, cx: &App) -> Arc<[FoldRange]> {
         let mut projected = Vec::new();
-        for mapping in &self.state.mappings {
-            let source_start = mapping.source_range.start().get();
-            let source_end = mapping.source_range.end().get();
-            let output_start = mapping.output_range.start().get();
-            let output_end = mapping.output_range.end().get();
-            let source_folds = self.state.sources[mapping.source_index]
-                .entity
-                .read(cx)
-                .fold_ranges();
-
-            projected.extend(source_folds.iter().filter_map(|fold| {
-                if fold.range.start < source_start || fold.range.end > source_end {
-                    return None;
+        for (source_index, source) in self.state.sources.iter().enumerate() {
+            let source_folds = source.entity.read(cx).fold_ranges();
+            if source_folds.is_empty() {
+                continue;
+            }
+            let mappings: Vec<&ExcerptMapping> = self
+                .state
+                .mappings
+                .iter()
+                .filter(|mapping| mapping.source_index == source_index)
+                .collect();
+            for fold in source_folds.iter() {
+                let (start, end) = (fold.range.start, fold.range.end);
+                if start >= end {
+                    continue;
                 }
-                let start = output_start + fold.range.start - source_start;
-                let end = output_start + fold.range.end - source_start;
-                (start < end && end <= output_end).then_some(FoldRange { range: start..end })
-            }));
+                let Some(start_index) = mappings.iter().position(|mapping| {
+                    mapping.source_range.start().get() <= start
+                        && start < mapping.source_range.end().get()
+                }) else {
+                    continue;
+                };
+                let Some(end_index) = mappings.iter().position(|mapping| {
+                    mapping.source_range.start().get() < end
+                        && end <= mapping.source_range.end().get()
+                }) else {
+                    continue;
+                };
+                if start_index > end_index {
+                    continue;
+                }
+                // 起止 excerpt 之间必须在源内连续覆盖，否则折叠跨过未展示内容。
+                if !mappings[start_index..end_index]
+                    .windows(2)
+                    .all(|pair| pair[0].source_range.end() == pair[1].source_range.start())
+                {
+                    continue;
+                }
+                let start_mapping = mappings[start_index];
+                let end_mapping = mappings[end_index];
+                let output_start = start_mapping.output_range.start().get() + start
+                    - start_mapping.source_range.start().get();
+                let output_end = end_mapping.output_range.start().get() + end
+                    - end_mapping.source_range.start().get();
+                if output_start < output_end {
+                    projected.push(FoldRange {
+                        range: output_start..output_end,
+                    });
+                }
+            }
         }
         projected.sort_unstable_by_key(|fold| (fold.range.start, fold.range.end));
         projected.dedup();

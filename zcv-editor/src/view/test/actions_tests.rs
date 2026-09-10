@@ -6,7 +6,7 @@ use zcv_text::{ByteOffset, Edit, TransactionId, TransactionMetadata};
 use super::common::{buffer_text, engine_buffer, focus_editor, test_buffer};
 use super::*;
 use crate::display_map::{DisplayPoint, DisplayRow};
-use crate::selection::{Selection, SelectionSet};
+use crate::selection::{EditorSelections, Selection, SelectionSet};
 
 #[gpui::test]
 fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext) {
@@ -20,15 +20,22 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
             .scroll_manager
             .update_viewport(1, px(100.0), px(40.0), px(200.0), px(20.0), px(0.0));
         editor.scroll_manager.scroll_by(point(px(-4.0), px(0.0)));
-        editor
-            .selection_history
-            .insert_transaction(TransactionId::new(1), SelectionSet::caret(ByteOffset::ZERO));
-        let selections = editor.selections().clone();
+        editor.selection_history.insert_transaction(
+            TransactionId::new(1),
+            EditorSelections::from_selection_set(
+                &editor.multi_snapshot,
+                &SelectionSet::caret(ByteOffset::ZERO),
+            ),
+        );
+        let redo = EditorSelections::from_selection_set(
+            &editor.multi_snapshot,
+            &SelectionSet::caret(ByteOffset::new(1)),
+        );
         editor
             .selection_history
             .transaction_mut(TransactionId::new(1))
             .expect("插入后应存在")
-            .set_redo(selections);
+            .set_redo(redo);
         // 编辑经组合文档写回共享工作区源，另一个 Editor 经源订阅链同步。
         editor.multi_buffer().update(cx, |multi_buffer, cx| {
             multi_buffer
@@ -65,16 +72,20 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
         );
     });
 
-    cx.read_entity(&first, |editor, _| {
+    cx.read_entity(&first, |editor, cx| {
         assert_eq!(editor.scroll_manager.offset().x, px(4.0));
+        let snapshot = editor.multi_buffer.read(cx).snapshot(cx);
         let history = editor
             .selection_history
             .transaction(TransactionId::new(1))
             .expect("第一个 Editor 应保存自己的选区历史");
-        assert_eq!(history.undo(), &SelectionSet::caret(ByteOffset::ZERO));
         assert_eq!(
-            history.redo(),
-            Some(&SelectionSet::caret(ByteOffset::new(1)))
+            history.undo().resolve(&snapshot),
+            SelectionSet::caret(ByteOffset::ZERO)
+        );
+        assert_eq!(
+            history.redo().map(|redo| redo.resolve(&snapshot)),
+            Some(SelectionSet::caret(ByteOffset::new(1)))
         );
     });
 }

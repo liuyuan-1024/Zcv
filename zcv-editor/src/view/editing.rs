@@ -10,8 +10,8 @@ use zcv_text::{ByteOffset, Line, MovementDirection, MovementUnit, Snapshot, Text
 
 use super::*;
 use crate::selection::{
-    EditorSelections, Selection, SelectionSet, apply_edits_with_after_mapping,
-    apply_targeted_edits, replace_selections,
+    Selection, SelectionSet, apply_edits_with_after_mapping, apply_targeted_edits,
+    replace_selections,
 };
 
 impl Editor {
@@ -393,10 +393,8 @@ impl Editor {
                         }
                     })
                 {
-                    // undo/redo 后投影可能重建：用回放后的 live 快照把历史选区（投影坐标）重锚为源锚点。
-                    let snapshot = self.multi_buffer.read(cx).snapshot(cx);
-                    let restored = EditorSelections::from_selection_set(&snapshot, &selections);
-                    self.selections = restored;
+                    // 历史选区是源锚点：投影是否重建都不影响解析。
+                    self.selections = selections;
                 }
                 self.synchronize_after_history_edit(cx);
             }

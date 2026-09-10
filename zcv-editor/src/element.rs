@@ -15,6 +15,7 @@ use gpui::{
 use zcv_actions::{OpenExcerpts, ToggleFold};
 use zcv_git::DiffHunkKind;
 use zcv_language::BracketPair;
+use zcv_multi_buffer::DisplayHunk;
 use zcv_text::{ByteOffset, Line, LogicalColumn, Position, TextRange};
 use zcv_theme::{color, space, typography};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon};
@@ -628,7 +629,7 @@ fn build_crease_toggles(
 
 fn build_diff_hunk_controls(
     layout: &EditorLayout,
-    hunks: &[(Range<usize>, zcv_git::DiffHunk)],
+    hunks: &[(Range<usize>, DisplayHunk)],
     sticky_header_height: Pixels,
     editor: &Entity<Editor>,
     window: &mut Window,
@@ -2806,8 +2807,8 @@ mod tests {
     use crate::display_map::DisplayMap;
     use gpui::{AppContext, Empty, TestAppContext};
     use std::path::{Path, PathBuf};
-    use zcv_git::DiffHunk;
     use zcv_language::LanguageBuffer;
+    use zcv_multi_buffer::DisplayHunk;
     use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
     use zcv_text::{Buffer, BufferConfig, ByteOffset, Line, TextRange};
 
@@ -2829,7 +2830,7 @@ mod tests {
     /// 行级标记的显示行区间（hunk_rendering 的薄包装，测试专用）。
     fn diff_hunk_rows(
         snapshot: &DisplaySnapshot,
-        hunks: &[DiffHunk],
+        hunks: &[DisplayHunk],
         expanded: &[bool],
         old_display_ranges: &[Option<Range<usize>>],
     ) -> Vec<(Range<usize>, DiffHunkKind)> {
@@ -2840,7 +2841,7 @@ mod tests {
     /// hunk 竖条范围与状态色（hunk_rendering 的薄包装，测试专用）。
     fn hunk_strip_rows(
         snapshot: &DisplaySnapshot,
-        hunks: &[DiffHunk],
+        hunks: &[DisplayHunk],
         expanded: &[bool],
         old_display_ranges: &[Option<Range<usize>>],
     ) -> Vec<(Range<usize>, DiffHunkKind)> {
@@ -2851,7 +2852,7 @@ mod tests {
     /// 可点击的 hunk 色带区域（hunk_rendering 的薄包装，测试专用）。
     fn hunk_hit_regions(
         snapshot: &DisplaySnapshot,
-        hunks: &[DiffHunk],
+        hunks: &[DisplayHunk],
         expanded: &[bool],
         old_display_ranges: &[Option<Range<usize>>],
     ) -> Vec<(Range<usize>, usize, DiffHunkKind)> {
@@ -3874,17 +3875,17 @@ mod tests {
                     diff_hunk_rows(
                         &snapshot,
                         &[
-                            DiffHunk {
+                            DisplayHunk {
                                 range: 1..2,
                                 old_range: 1..2,
                                 kind: DiffHunkKind::Modified,
                             },
-                            DiffHunk {
+                            DisplayHunk {
                                 range: 3..3,
                                 old_range: 2..3,
                                 kind: DiffHunkKind::Deleted,
                             },
-                            DiffHunk {
+                            DisplayHunk {
                                 range: 4..5,
                                 old_range: 4..4,
                                 kind: DiffHunkKind::Added,
@@ -3923,7 +3924,7 @@ mod tests {
                 assert_eq!(
                     diff_hunk_rows(
                         &snapshot,
-                        &[DiffHunk {
+                        &[DisplayHunk {
                             range: 0..1,
                             old_range: 0..1,
                             kind: DiffHunkKind::Modified,
@@ -3938,7 +3939,7 @@ mod tests {
                 assert_eq!(
                     diff_hunk_rows(
                         &snapshot,
-                        &[DiffHunk {
+                        &[DisplayHunk {
                             range: 1..10,
                             old_range: 1..10,
                             kind: DiffHunkKind::Modified,
@@ -3963,7 +3964,7 @@ mod tests {
             .snapshot(),
         )
         .snapshot();
-        let collapsed_hunk = DiffHunk {
+        let collapsed_hunk = DisplayHunk {
             range: 1..1,
             old_range: 1..3,
             kind: DiffHunkKind::Deleted,
@@ -3997,7 +3998,7 @@ mod tests {
             .snapshot(),
         )
         .snapshot();
-        let expanded_hunk = DiffHunk {
+        let expanded_hunk = DisplayHunk {
             range: 4..4,
             old_range: 1..3,
             kind: DiffHunkKind::Deleted,
@@ -4028,7 +4029,7 @@ mod tests {
             .snapshot(),
         )
         .snapshot();
-        let hunk = DiffHunk {
+        let hunk = DisplayHunk {
             range: 2..3,
             old_range: 1..2,
             kind: DiffHunkKind::Modified,
@@ -4060,7 +4061,7 @@ mod tests {
             .snapshot(),
         )
         .snapshot();
-        let hunk = DiffHunk {
+        let hunk = DisplayHunk {
             range: 2..3,
             old_range: 1..2,
             kind: DiffHunkKind::Modified,

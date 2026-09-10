@@ -30,7 +30,12 @@ impl Buffer {
     ) {
         self.next_transaction_id = next_transaction_id;
         let patch = TextPatch::from_delta(event.delta());
-        self.text_changes
-            .publish(event.old_version(), event.new_version(), patch, false);
+        self.text_changes.publish(
+            event.old_version(),
+            event.new_version(),
+            patch,
+            false,
+            Some(event.transaction_id()),
+        );
     }
 }

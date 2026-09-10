@@ -535,7 +535,7 @@ fn dragging_thumb_to_marker_position_scrolls_to_that_row(cx: &mut TestAppContext
     inject_editor_diff(
         &editor,
         &source,
-        vec![DiffHunk {
+        vec![DisplayHunk {
             range: 50..51,
             old_range: 50..51,
             kind: DiffHunkKind::Modified,

@@ -5,19 +5,15 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use zcv_git::DiffHunk;
-use zcv_git::{Branch, DiffBase, DiffStat, GitCancellation, GitRepository};
+use zcv_git::{Branch, DiffStat, GitCancellation, GitRepository};
 
-use super::{
-    DiffRequest, GitJob, GitOperationKind, GitOperationOutcome, RepositorySnapshot, StatusEntry,
-};
+use super::{GitJob, GitOperationKind, GitOperationOutcome, RepositorySnapshot, StatusEntry};
 use crate::worktree::discover_repositories;
 
 /// 后台 job 的执行结果。
 pub(super) enum JobResult {
     Reload(Vec<ReloadScan>),
     Refresh(Vec<(usize, RefreshData)>),
-    RefreshHunks(HunksByRepo),
     GitOperation(anyhow::Result<()>),
     /// uncommit 的结果（被撤销提交的完整消息，供填回提交信息编辑器）。
     Uncommit(anyhow::Result<Option<String>>),
@@ -48,16 +44,13 @@ pub(super) struct RefreshData {
     pub(super) unstaged: HashMap<PathBuf, DiffStat>,
 }
 
-/// 按需 hunk 查询结果：仓库索引 → 路径 → hunks。
-pub(super) type HunksByRepo = Vec<(usize, Vec<(DiffRequest, Result<Vec<DiffHunk>, String>)>)>;
-
 /// 后台线程：执行一个 job（所有 git 命令在这里同步阻塞运行）。
 pub(super) async fn execute_job(
     root: PathBuf,
     job: GitJob,
     repositories: Vec<Arc<dyn GitRepository>>,
     grouped_paths: Vec<Vec<PathBuf>>,
-    grouped_diff_requests: Vec<Vec<DiffRequest>>,
+    _grouped_diff_requests: Vec<Vec<()>>,
     cancellation: Option<GitCancellation>,
 ) -> JobResult {
     match job {
@@ -128,17 +121,6 @@ pub(super) async fn execute_job(
             }
             JobResult::Refresh(refreshed)
         }
-        GitJob::RefreshHunks => {
-            let mut refreshed = Vec::new();
-            for (index, repository) in repositories.into_iter().enumerate() {
-                let requests = &grouped_diff_requests[index];
-                if requests.is_empty() {
-                    continue;
-                }
-                refreshed.push((index, fetch_hunks_sync(&repository, requests)));
-            }
-            JobResult::RefreshHunks(refreshed)
-        }
         GitJob::GitOperation { operation, .. } => {
             let cancellation = cancellation.unwrap_or_default();
             let result = repositories
@@ -195,16 +177,19 @@ pub(super) async fn execute_job(
             }
             JobResult::GitOperation(result)
         }
-        GitJob::HunkOperation {
-            operation, hunk, ..
+        GitJob::ApplyHunkEdits {
+            operation,
+            edits,
+            working_snapshot,
+            ..
         } => {
             let result = repositories
                 .into_iter()
                 .enumerate()
                 .find_map(|(index, repository)| {
-                    grouped_paths[index]
-                        .first()
-                        .map(|path| repository.apply_hunk(operation, path, &hunk))
+                    grouped_paths[index].first().map(|path| {
+                        repository.apply_hunk_edits(operation, path, &edits, &working_snapshot)
+                    })
                 })
                 .unwrap_or_else(|| Err(anyhow::anyhow!("hunk 所属仓库已不可用")));
             JobResult::GitOperation(result)
@@ -277,48 +262,6 @@ pub(super) fn reconcile_cancelled_operation(
             "远端刷新后无法读取分支状态：{error:#}"
         )),
     }
-}
-
-/// 后台线程：批量查询路径的行级 diff hunks（单进程）。
-///
-/// 无差异路径也返回空集合；整批失败时为每个请求路径返回失败，保证状态机中的每个 Loading 都能进入终态。
-fn fetch_hunks_sync(
-    repository: &Arc<dyn GitRepository>,
-    requests: &[DiffRequest],
-) -> Vec<(DiffRequest, Result<Vec<DiffHunk>, String>)> {
-    let mut results = Vec::with_capacity(requests.len());
-    for base in [DiffBase::Head, DiffBase::Index, DiffBase::Staged] {
-        let base_requests = requests
-            .iter()
-            .filter(|request| request.base == base)
-            .cloned()
-            .collect::<Vec<_>>();
-        if base_requests.is_empty() {
-            continue;
-        }
-        let paths = base_requests
-            .iter()
-            .map(|request| request.path.clone())
-            .collect::<Vec<_>>();
-        match repository.diff_hunks_for_paths(base, &paths) {
-            Ok(hunks) => {
-                let mut hunks: HashMap<PathBuf, Vec<DiffHunk>> = hunks.into_iter().collect();
-                results.extend(base_requests.into_iter().map(|request| {
-                    let path_hunks = hunks.remove(&request.path).unwrap_or_default();
-                    (request, Ok(path_hunks))
-                }));
-            }
-            Err(error) => {
-                let error = format!("{error:#}");
-                results.extend(
-                    base_requests
-                        .into_iter()
-                        .map(|request| (request, Err(error.clone()))),
-                );
-            }
-        }
-    }
-    results
 }
 
 /// 后台线程：全量扫描一个仓库（head_commit + status + 双 diff_stat + 分支列表）。
@@ -525,7 +468,6 @@ pub(super) fn repo_relative_path(working_directory: &Path, path: &Path) -> Optio
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
-    use std::fs;
     use std::path::{Path, PathBuf};
 
     use zcv_git::{DiffStat, FileStatus, RealGitRepository};
@@ -533,29 +475,6 @@ mod tests {
     use super::*;
     use crate::git_store::{RepositorySnapshot, StatusEntry};
     use crate::test_support::{run_git, test_git_repo};
-
-    #[test]
-    fn hunk_batch_returns_terminal_result_for_every_requested_path() {
-        let (root, _temp) = test_git_repo();
-        fs::write(root.join("clean.txt"), "干净文件\n").expect("应写入文件");
-        run_git(&root, &["add", "clean.txt"]);
-        run_git(&root, &["commit", "-q", "-m", "增加干净文件"]);
-        fs::write(root.join("tracked.txt"), "第一行\n已修改\n").expect("应修改文件");
-        let repository: Arc<dyn GitRepository> =
-            Arc::new(RealGitRepository::open(&root.join(".git")).expect("应打开仓库"));
-
-        let results = fetch_hunks_sync(
-            &repository,
-            &[
-                DiffRequest::new(DiffBase::Head, PathBuf::from("tracked.txt")),
-                DiffRequest::new(DiffBase::Head, PathBuf::from("clean.txt")),
-            ],
-        );
-
-        assert_eq!(results.len(), 2);
-        assert!(results[0].1.as_ref().is_ok_and(|hunks| !hunks.is_empty()));
-        assert!(results[1].1.as_ref().is_ok_and(Vec::is_empty));
-    }
 
     #[test]
     fn merge_refresh_replaces_changed_paths_and_keeps_rest() {

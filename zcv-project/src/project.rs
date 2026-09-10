@@ -13,8 +13,8 @@ mod test_support;
 mod worktree;
 
 pub use git_store::{
-    DiffRequest, GitJobPhase, GitJobStatus, GitOperationKind, GitOperationOutcome, GitStore,
-    GitStoreEvent, RemoteOperationState, RepositorySnapshot, StatusEntry,
+    GitJobPhase, GitJobStatus, GitOperationKind, GitOperationOutcome, GitStore, GitStoreEvent,
+    RemoteOperationState, RepositorySnapshot, StatusEntry,
 };
 pub use project_store::{Project, ProjectEvent};
 pub use search::{ExcerptMatches, FileSearchResult, SearchResults};

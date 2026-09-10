@@ -20,8 +20,8 @@ use zcv_actions::{
     ResetUiFontSize, RestartToUpdate, SelectGitBranch, ToggleHarnessMode, ToggleProjectPicker,
 };
 use zcv_editor::Editor;
-use zcv_git::{DiffBase, GitRevision};
-use zcv_project::{DiffRequest, GitOperationKind, GitOperationOutcome, GitStoreEvent, Project};
+use zcv_git::GitRevision;
+use zcv_project::{GitOperationKind, GitOperationOutcome, GitStoreEvent, Project};
 use zcv_settings::{GlobalSettingsErrorReporter, SettingsStore};
 use zcv_theme::{ThemeChoice, color, typography};
 use zcv_workspace::{
@@ -701,10 +701,7 @@ fn initialize_workspace(
         // 展开状态按工作区文本跟踪区间跨刷新迁移（HEAD 变化不重置，见 diff_projection 模块说明）。
         if matches!(
             event,
-            GitStoreEvent::Repositories
-                | GitStoreEvent::Statuses
-                | GitStoreEvent::HunksChanged
-                | GitStoreEvent::Head
+            GitStoreEvent::Repositories | GitStoreEvent::Statuses | GitStoreEvent::Head
         ) {
             push_diff_hunks(workspace.pane(), workspace.project(), cx);
         }
@@ -832,38 +829,11 @@ fn apply_theme(theme: &str, cx: &mut App, window: Option<&Window>) {
     ThemeChoice::from_config(theme).apply(cx, window);
 }
 
-/// 把 GitStore 快照中的行级 diff hunks 推送给打开的 Editor。
-///
-/// 打开文件集合是差异协调器的唯一需求来源；本函数同时把当前终态结果推送给编辑器。
+/// 把 GitStore 的 base 文本快照推送给打开的 Editor。
 ///
 /// 不接收 Workspace 实体：订阅注册时的初始回调发生在 Workspace 更新期间，
 /// 读取自身实体会触发 double-lease panic。
 fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App) {
-    // 所有打开 Item 的真实源文件共同构成差异需求；
-    // 组合文档不能再被单个 item_path 隐式代表，否则项目差异 Item 只会请求当前文件而丢失其余来源。
-    let mut interested_requests: Vec<DiffRequest> = pane
-        .read(cx)
-        .tabs()
-        .iter()
-        .filter(|item| item.act_as::<ProjectDiffView>(cx).is_none())
-        .filter_map(|item| item.multi_buffer(cx))
-        .flat_map(|multi_buffer| {
-            multi_buffer
-                .read(cx)
-                .file_buffers(cx)
-                .into_iter()
-                .map(|(_, path)| DiffRequest::new(DiffBase::Head, path))
-        })
-        .collect();
-    // 项目差异在 hunk 首次加载完成前还没有 excerpts，不能从空 MultiBuffer 反推需求；
-    // 直接读取该 Item 由 Git 状态派生的路径集合，确保等待态不会被精确需求刷新清掉。
-    interested_requests.extend(
-        pane.read(cx)
-            .tabs()
-            .iter()
-            .filter_map(|item| item.act_as::<ProjectDiffView>(cx))
-            .flat_map(|view| view.read(cx).diff_requests().collect::<Vec<_>>()),
-    );
     let opened: Vec<(Entity<Editor>, PathBuf)> = pane
         .read(cx)
         .tabs()
@@ -877,20 +847,23 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
             Some((editor, path))
         })
         .collect();
-    let store = project.read(cx).git_store();
-    store.update(cx, |store, cx| {
-        store.set_hunk_interests(&interested_requests, cx)
-    });
-    // 普通编辑器统一注入：工作区 hunks + HEAD 全文作为单文件投影输入。
+    // 普通编辑器统一注入：working + HEAD 全文，显示 hunk 仅由这对快照派生。
     for (editor, path) in &opened {
         inject_editor_diff(editor, path, project, cx);
     }
 }
 
-/// 把单个普通编辑器的工作区 hunks 与 HEAD 全文统一注入（source 模式数据源）。
+/// 普通编辑器是否应注入 HEAD 差异。
 ///
-/// 加载态（hunks 尚未算完）传 `None` 保留旧投影与展开状态；
-/// HEAD 全文未到时旧侧展开先降级不物化，文本加载完成后由本函数重新注入补全（GitStore 缓存命中即复用实体）。
+/// 只有 index/HEAD 中的已跟踪文件可能有 HEAD 差异；未跟踪、被忽略或干净文件没有 HEAD 文本，
+/// 把“缺失”当成空 base 注入会把整份工作区文本投影成新增（绿色背景）。
+fn editor_diff_applies(status: Option<zcv_git::FileStatus>) -> bool {
+    status.is_some_and(|status| matches!(status, zcv_git::FileStatus::Tracked { .. }))
+}
+
+/// 把单个普通编辑器的工作区源与 HEAD 全文统一注入。
+///
+/// GitStore 提供 HEAD 全文，显示 hunk 由 base/working 快照派生。
 fn inject_editor_diff(
     editor: &Entity<Editor>,
     path: &Path,
@@ -898,20 +871,24 @@ fn inject_editor_diff(
     cx: &mut App,
 ) {
     let store = project.read(cx).git_store();
-    let hunks = store
+    let status = store
         .read(cx)
-        .hunks_for_path(DiffBase::Head, path)
-        .map(|hunks| hunks.to_vec());
+        .status_for_path(path)
+        .map(|entry| entry.status);
+    if !editor_diff_applies(status) {
+        return;
+    }
     let base_text = store.read(cx).revision_text(GitRevision::Head, path);
     let Some(working) = editor.read(cx).multi_buffer().read(cx).working_source() else {
         return;
     };
-    let input = hunks.map(|hunks| {
-        vec![zcv_multi_buffer::DiffFileInput {
+    let input = base_text.map(|base_text| {
+        vec![zcv_multi_buffer::BufferDiffInput {
             working,
-            hunks,
-            base_text,
+            base_text: Some(base_text),
             path: path.to_path_buf(),
+            // 普通编辑器只显示 gutter 差异，不提供变更块操作。
+            operations: None,
             display_path: path.to_path_buf(),
             context_lines: None,
             is_created: false,
@@ -919,27 +896,14 @@ fn inject_editor_diff(
         }]
     });
     editor.update(cx, |editor, cx| {
-        editor.set_diff_projection(input, cx);
+        editor.set_buffer_diffs(input, cx);
     });
-    // 含 Deleted/Modified hunk 且 HEAD 全文尚未加载时触发加载；到达后重新注入补全旧侧数据。
-    // 每路径每 HEAD 一次，缓存命中后不再重复加载；HEAD 变化时 git_store 自动清缓存。
+    // 显示 hunk 由 base/working 快照本地派生；HEAD 全文是唯一的异步输入。
     let store = project.read(cx).git_store();
-    let needs_head_text = store
+    if store
         .read(cx)
-        .hunks_for_path(DiffBase::Head, path)
-        .is_some_and(|hunks| {
-            hunks.iter().any(|hunk| {
-                matches!(
-                    hunk.kind,
-                    zcv_git::DiffHunkKind::Deleted | zcv_git::DiffHunkKind::Modified
-                )
-            })
-        });
-    if needs_head_text
-        && store
-            .read(cx)
-            .revision_text(GitRevision::Head, path)
-            .is_none()
+        .revision_text(GitRevision::Head, path)
+        .is_none()
     {
         let task = store
             .read(cx)
@@ -1052,5 +1016,23 @@ mod tests {
             let new_root = window.root::<Workspace>().flatten().expect("新根应已就位");
             assert_ne!(new_root.entity_id(), old_id);
         });
+    }
+
+    /// 回归：被忽略/未跟踪文件没有 HEAD 差异，普通编辑器不得注入 HEAD 差异投影，
+    /// 否则缺失的 HEAD 文本会被当成空 base，把整份工作区文本投影成新增（绿色背景）。
+    #[test]
+    fn editor_diff_only_applies_to_tracked_files() {
+        use zcv_git::{FileStatus, StatusCode};
+
+        use super::editor_diff_applies;
+
+        assert!(!editor_diff_applies(None), "状态未知/干净文件不注入");
+        assert!(!editor_diff_applies(Some(FileStatus::Untracked)));
+        assert!(!editor_diff_applies(Some(FileStatus::Ignored)));
+        assert!(!editor_diff_applies(Some(FileStatus::Unmerged)));
+        assert!(editor_diff_applies(Some(FileStatus::Tracked {
+            index_status: StatusCode::Modified,
+            worktree_status: StatusCode::Unmodified,
+        })));
     }
 }

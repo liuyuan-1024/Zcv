@@ -88,9 +88,6 @@ impl GitStore {
                     self.active_repo_workdir = new_active;
                     cx.emit(GitStoreEvent::ActiveRepositoryChanged);
                 }
-                if head_changed || statuses_changed || old_work_dirs != new_work_dirs {
-                    self.invalidate_all_hunks(cx);
-                }
             }
             (GitJob::RefreshStatuses, JobResult::Refresh(refreshed)) => {
                 let mut statuses_changed = false;
@@ -122,33 +119,6 @@ impl GitStore {
                 if statuses_changed {
                     cx.emit(GitStoreEvent::Statuses);
                 }
-                if head_changed {
-                    self.invalidate_all_hunks(cx);
-                } else {
-                    // 即使状态枚举与行数统计没有变化，文件内容也可能已经改变，因此刷新路径总会产生新差异版本。
-                    self.invalidate_hunks_for_paths(&changed_paths, cx);
-                }
-            }
-            (GitJob::RefreshHunks, JobResult::RefreshHunks(refreshed)) => {
-                let mut completed = Vec::new();
-                for (index, results) in refreshed {
-                    let Some(workdir) = self
-                        .repositories
-                        .get(index)
-                        .map(|repository| repository.repository.working_directory().to_path_buf())
-                    else {
-                        continue;
-                    };
-                    completed.extend(results.into_iter().map(|(request, result)| {
-                        (
-                            super::DiffRequest::new(request.base, workdir.join(request.path)),
-                            result,
-                        )
-                    }));
-                }
-                if self.diff_coordinator.complete_batch(completed) {
-                    cx.emit(GitStoreEvent::HunksChanged);
-                }
             }
             (GitJob::GitOperation { .. }, JobResult::GitOperation(result)) => {
                 // 操作改变了引用/工作树：重新全量扫描，比对后发出 Repositories/Head/Statuses 事件。
@@ -156,10 +126,22 @@ impl GitStore {
                     self.schedule_scan(cx);
                 }
             }
+            (GitJob::ApplyHunkEdits { diff, .. }, JobResult::GitOperation(result)) => {
+                match result {
+                    Ok(()) => {
+                        // 成功：保留 optimistic 状态直到后续权威扫描替换该 diff，避免中途回闪。
+                        self.schedule_scan(cx);
+                    }
+                    Err(error) => {
+                        // 失败：清除 optimistic 状态并通知显示层恢复真实 diff。
+                        diff.update(cx, |diff, cx| diff.clear_pending_hunks(cx));
+                        cx.emit(GitStoreEvent::HunkOperationFailed(format!("{error:#}")));
+                    }
+                }
+            }
             (
                 GitJob::GitInit
                 | GitJob::StageFiles { .. }
-                | GitJob::HunkOperation { .. }
                 | GitJob::Commit { .. }
                 | GitJob::CheckoutBranch { .. }
                 | GitJob::CreateBranch { .. }

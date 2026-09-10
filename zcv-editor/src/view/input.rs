@@ -657,12 +657,11 @@ impl EntityInputHandler for Editor {
             ),
         );
         self.selections = anchored;
-        let selections = self.resolved_selections();
         if let Some(transaction_id) = history_transaction_id
             && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
         {
-            // IME 组合期间同一事务的 redo 选区随候选更新推进。
-            transaction.set_redo(selections);
+            // IME 组合期间同一事务的 redo 选区随候选更新推进（源锚点）。
+            transaction.set_redo(self.selections.clone());
         }
         self.composition = Some(EditorComposition {
             ranges: marked_ranges.into(),

@@ -18,10 +18,11 @@ use zcv_actions::{
     ToggleRegex, ToggleReplace, ToggleWholeWord,
 };
 use zcv_editor::{DiffHunkDelegate, Editor, EditorEvent, EditorScrollAnchor};
-use zcv_git::{DiffBase, DiffHunk, FileStatus, GitHunkOperation, GitRevision, StatusCode};
+use zcv_git::{FileStatus, GitHunkOperation, GitRevision, StatusCode};
 use zcv_language::LanguageBuffer;
+use zcv_multi_buffer::DisplayHunk;
 use zcv_multi_buffer::{ExcerptLocation, MultiBuffer};
-use zcv_project::{DiffRequest, GitStoreEvent, Project};
+use zcv_project::{GitStoreEvent, Project};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, SearchQuery, Snapshot};
 use zcv_theme::{color, space};
 use zcv_ui::{
@@ -91,7 +92,7 @@ impl DiffHunkDelegate for ProjectDiffHunkDelegate {
     fn render_hunk_controls(
         &self,
         row: usize,
-        hunk: &DiffHunk,
+        hunk: &DisplayHunk,
         _line_height: Pixels,
         _editor: &Entity<Editor>,
         _window: &mut Window,
@@ -203,13 +204,6 @@ pub enum ProjectDiffKind {
 }
 
 impl ProjectDiffKind {
-    fn diff_base(self) -> DiffBase {
-        match self {
-            Self::Staged => DiffBase::Staged,
-            Self::Unstaged => DiffBase::Index,
-        }
-    }
-
     fn base_revision(self) -> GitRevision {
         match self {
             Self::Staged => GitRevision::Head,
@@ -808,9 +802,10 @@ impl ProjectDiffView {
                     }
                     view.refresh_files(cx);
                 }
-                GitStoreEvent::HunksChanged => {
+                GitStoreEvent::HunkOperationFailed(message) => {
+                    // 失败：GitStore 已清除 optimistic 状态，这里重建以恢复 hunk 并把错误交给宿主提示。
                     view.rebuild_projection(cx);
-                    view.load_missing_revision_text(cx);
+                    cx.emit(EditorEvent::Error(format!("变更块操作失败：{message}")));
                 }
                 GitStoreEvent::ActiveRepositoryChanged
                 | GitStoreEvent::JobsUpdated
@@ -881,14 +876,6 @@ impl ProjectDiffView {
         self.revision_sources
             .retain(|(_, path), _| visible_paths.contains(path));
 
-        let paths = self
-            .files
-            .iter()
-            .map(|file| file.path.clone())
-            .collect::<Vec<_>>();
-        git_store.update(cx, |store, cx| {
-            store.request_hunks(self.kind.diff_base(), &paths, cx)
-        });
         self.rebuild_projection(cx);
         self.load_missing_revision_text(cx);
     }
@@ -913,9 +900,8 @@ impl ProjectDiffView {
             };
             inputs.push(input);
         }
-        self.editor.update(cx, |editor, cx| {
-            editor.set_diff_projection(Some(inputs), cx)
-        });
+        self.editor
+            .update(cx, |editor, cx| editor.set_buffer_diffs(Some(inputs), cx));
         if let Some(scroll_anchor) = self.refresh_scroll_anchor.take() {
             self.editor.update(cx, |editor, cx| {
                 editor.restore_scroll_anchor(scroll_anchor, cx);
@@ -931,12 +917,8 @@ impl ProjectDiffView {
         file: &GitChangeFile,
         root: Option<&Path>,
         cx: &mut Context<Self>,
-    ) -> Option<zcv_multi_buffer::DiffFileInput> {
+    ) -> Option<zcv_multi_buffer::BufferDiffInput> {
         let git_store = self.project.read(cx).git_store();
-        let hunks = git_store
-            .read(cx)
-            .hunks_for_path(self.kind.diff_base(), &file.path)
-            .map(|hunks| hunks.to_vec())?;
         let working = match self.kind {
             ProjectDiffKind::Staged => {
                 let index_text = git_store
@@ -970,14 +952,18 @@ impl ProjectDiffView {
             .and_then(|root| file.path.strip_prefix(root).ok())
             .unwrap_or(&file.path)
             .to_path_buf();
-        Some(zcv_multi_buffer::DiffFileInput {
+        Some(zcv_multi_buffer::BufferDiffInput {
             working,
-            hunks,
             base_text,
             path: file.path.clone(),
+            is_created: self.kind.is_created(file.status),
+            operations: Some(
+                git_store
+                    .read(cx)
+                    .diff_operations(self.kind.base_revision()),
+            ),
             display_path,
             context_lines: Some(DIFF_CONTEXT_LINES),
-            is_created: self.kind.is_created(file.status),
             show_file_header: true,
         })
     }
@@ -988,11 +974,8 @@ impl ProjectDiffView {
         let store = git_store.read(cx);
         self.files.iter().all(|file| {
             store
-                .hunks_for_path(self.kind.diff_base(), &file.path)
+                .revision_text(self.kind.base_revision(), &file.path)
                 .is_some()
-                && store
-                    .revision_text(self.kind.base_revision(), &file.path)
-                    .is_some()
                 && (self.kind != ProjectDiffKind::Staged
                     || store
                         .revision_text(GitRevision::Index, &file.path)
@@ -1003,16 +986,16 @@ impl ProjectDiffView {
     /// 显示 hunk 的源定位（hunk 操作与导航用）：按显示坐标反查源文件与源 hunk。
     fn diff_hunk_source_info(
         &self,
-        displayed: &DiffHunk,
+        displayed: &DisplayHunk,
         cx: &App,
-    ) -> Option<zcv_multi_buffer::DiffHunkSourceInfo> {
+    ) -> Option<zcv_multi_buffer::DiffHunkSource> {
         let index = self
             .multi_buffer
             .read(cx)
             .diff_hunks(cx)
             .iter()
             .position(|hunk| hunk == displayed)?;
-        self.multi_buffer.read(cx).diff_hunk_source_at(index, cx)
+        self.multi_buffer.read(cx).buffer_diff_hunk_at(index, cx)
     }
 
     /// 把打开请求中的 Deleted 片段换算为工作区文件中的合法定位行列（0-based）。
@@ -1047,7 +1030,7 @@ impl ProjectDiffView {
 
     fn apply_hunk_action(
         &mut self,
-        displayed: &DiffHunk,
+        displayed: &DisplayHunk,
         operation: GitHunkOperation,
         cx: &mut Context<Self>,
     ) {
@@ -1069,15 +1052,35 @@ impl ProjectDiffView {
             return;
         }
 
-        let git_store = self.project.read(cx).git_store();
-        git_store.update(cx, |store, cx| {
-            if let Some(source) = info.source {
-                store.apply_hunk(operation, info.path, source, cx);
-            } else if operation == GitHunkOperation::Stage {
-                // 未跟踪文件没有 `git diff` hunk；它在视图中只有一个整文件新增块。
-                store.stage_paths(vec![info.path], cx);
+        if let Some(range) = info.range {
+            let diff = info.diff.clone();
+            let Some(operations) = diff.read(cx).operations() else {
+                return;
+            };
+            match operation {
+                GitHunkOperation::Stage if operations.supports_staging() => {
+                    operations.stage(diff, vec![range], cx)
+                }
+                GitHunkOperation::Unstage if operations.supports_unstaging() => {
+                    operations.unstage(diff, vec![range], cx)
+                }
+                GitHunkOperation::Restore if operations.supports_restore() => {
+                    operations.restore(diff, vec![range], cx)
+                }
+                GitHunkOperation::Stage | GitHunkOperation::Unstage | GitHunkOperation::Restore => {
+                }
             }
-        });
+        } else {
+            // 整文件新增块没有行级 hunk：按路径整体暂存/取消暂存。
+            let git_store = self.project.read(cx).git_store();
+            git_store.update(cx, |store, cx| match operation {
+                GitHunkOperation::Stage => store.stage_paths(vec![info.path.clone()], cx),
+                GitHunkOperation::Unstage => store.unstage_paths(vec![info.path.clone()], cx),
+                GitHunkOperation::Restore => {}
+            });
+        }
+        // 行级操作写入 optimistic pending 后由 BufferDiffEvent::DiffChanged 驱动物化；
+        // 整文件路径操作由 GitStore 状态事件刷新。
     }
 
     fn load_missing_revision_text(&mut self, cx: &mut Context<Self>) {
@@ -1153,12 +1156,6 @@ impl ProjectDiffView {
         self.refresh_scroll_anchor = None;
         self.pending_path = Some(path);
         self.apply_pending_path(cx);
-    }
-
-    pub fn diff_requests(&self) -> impl Iterator<Item = DiffRequest> + '_ {
-        self.files
-            .iter()
-            .map(|file| DiffRequest::new(self.kind.diff_base(), file.path.clone()))
     }
 
     fn apply_pending_path(&mut self, cx: &mut Context<Self>) {
@@ -1416,7 +1413,6 @@ mod tests {
 
     use gpui::{AppContext as _, TestAppContext};
 
-    use zcv_git::DiffHunkKind;
     use zcv_multi_buffer::ExcerptDiffKind;
     use zcv_text::Line;
 
@@ -1954,11 +1950,11 @@ mod tests {
             assert!(text.contains("改过"), "折叠后新侧文本应保留");
         });
 
-        // 触发 git hunks 刷新（模拟 git 状态变化）→ MultiBuffer 统一重建投影。
+        // 触发 Git 状态刷新 → MultiBuffer 由 base/working 快照统一重建投影。
         project.update(cx, |project, cx| {
             let store = project.git_store();
             store.update(cx, |store, cx| {
-                store.request_hunks(DiffBase::Index, std::slice::from_ref(&modified_path), cx);
+                store.refresh_statuses_for_paths(std::slice::from_ref(&modified_path), cx);
             });
         });
         cx.run_until_parked();
@@ -2005,19 +2001,15 @@ mod tests {
         let combined = cx.new(|cx| MultiBuffer::from_working_source(working.clone(), cx));
         let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
         editor.update(cx, |editor, cx| {
-            editor.set_diff_projection(
-                Some(vec![zcv_multi_buffer::DiffFileInput {
+            editor.set_buffer_diffs(
+                Some(vec![zcv_multi_buffer::BufferDiffInput {
                     working: working.clone(),
-                    hunks: vec![DiffHunk {
-                        range: 1..2,
-                        old_range: 1..2,
-                        kind: DiffHunkKind::Modified,
-                    }],
                     base_text: Some(Arc::from("line0\nline1\nline2\nline3\nline4\n")),
                     path: modified_path.clone(),
+                    is_created: false,
+                    operations: None,
                     display_path: modified_path.clone(),
                     context_lines: None,
-                    is_created: false,
                     show_file_header: false,
                 }]),
                 cx,
@@ -2030,11 +2022,11 @@ mod tests {
         cx.run_until_parked();
         cx.run_until_parked();
 
-        // 触发 git hunks 刷新 → HunksChanged → 两个视图各自重建。
+        // 触发 Git 状态刷新，两个视图各自重建。
         project.update(cx, |project, cx| {
             let store = project.git_store();
             store.update(cx, |store, cx| {
-                store.request_hunks(DiffBase::Index, std::slice::from_ref(&modified_path), cx);
+                store.refresh_statuses_for_paths(std::slice::from_ref(&modified_path), cx);
             });
         });
         cx.run_until_parked();
@@ -2079,21 +2071,17 @@ mod tests {
         let combined = cx.new(|cx| MultiBuffer::from_working_source(working.clone(), cx));
         let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
         editor.update(cx, |editor, cx| {
-            editor.set_diff_projection(
-                Some(vec![zcv_multi_buffer::DiffFileInput {
+            editor.set_buffer_diffs(
+                Some(vec![zcv_multi_buffer::BufferDiffInput {
                     working: working.clone(),
-                    hunks: vec![DiffHunk {
-                        range: 1..2,
-                        old_range: 1..2,
-                        kind: DiffHunkKind::Modified,
-                    }],
                     base_text: Some(Arc::from(
                         "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\n",
                     )),
                     path: modified_path.clone(),
+                    is_created: false,
+                    operations: None,
                     display_path: modified_path.clone(),
                     context_lines: None,
-                    is_created: false,
                     show_file_header: false,
                 }]),
                 cx,
@@ -2123,11 +2111,11 @@ mod tests {
                 .expect("工作区编辑应成功");
             cx.notify();
         });
-        // 触发 git hunks 刷新。
+        // 触发 Git 状态刷新。
         project.update(cx, |project, cx| {
             let store = project.git_store();
             store.update(cx, |store, cx| {
-                store.request_hunks(DiffBase::Index, std::slice::from_ref(&modified_path), cx);
+                store.refresh_statuses_for_paths(std::slice::from_ref(&modified_path), cx);
             });
         });
         cx.run_until_parked();

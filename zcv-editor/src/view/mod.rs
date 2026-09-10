@@ -20,8 +20,8 @@ use zcv_actions::{
     SelectRight, SelectToBeginning, SelectToBeginningOfLine, SelectToEnd, SelectToEndOfLine,
     SelectToNextWord, SelectToPreviousWord, SelectUp, ToggleFold, Undo, UnfoldAll,
 };
-use zcv_git::DiffHunk;
 use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer};
+use zcv_multi_buffer::DisplayHunk;
 use zcv_multi_buffer::{
     ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot, MultiBuffer, MultiBufferAnchor,
     MultiBufferEvent, MultiBufferSnapshot, MultiBufferSubscription, ProjectionRemap,
@@ -91,7 +91,7 @@ pub trait DiffHunkDelegate {
     fn render_hunk_controls(
         &self,
         row: usize,
-        hunk: &DiffHunk,
+        hunk: &DisplayHunk,
         line_height: Pixels,
         editor: &Entity<Editor>,
         window: &mut Window,
@@ -463,14 +463,14 @@ impl Editor {
     /// `None` 是加载态（新 diff 尚未算完）：保留现有 hunks 与用户展开状态，不再被中间空列表清空；展开状态按工作区文本跟踪区间跨刷新迁移。
     /// 状态与投影归属 MultiBuffer，本方法只转发并同步视图层状态。
     /// 返回 `true` 表示组合文档被重建（光标已落回开头）。
-    pub fn set_diff_projection(
+    pub fn set_buffer_diffs(
         &mut self,
-        files: Option<Vec<zcv_multi_buffer::DiffFileInput>>,
+        files: Option<Vec<zcv_multi_buffer::BufferDiffInput>>,
         cx: &mut Context<Self>,
     ) -> bool {
         let rebuilt = self
             .multi_buffer
-            .update(cx, |buffer, cx| buffer.set_diff_projection(files, cx));
+            .update(cx, |buffer, cx| buffer.set_buffer_diffs(files, cx));
         self.reset_after_diff_injection(rebuilt, cx);
         rebuilt
     }
@@ -504,7 +504,7 @@ impl Editor {
     }
 
     /// 与当前组合文档版本匹配的显示坐标 hunks。
-    pub fn diff_hunks<'a>(&'a self, cx: &'a App) -> &'a [DiffHunk] {
+    pub fn diff_hunks<'a>(&'a self, cx: &'a App) -> &'a [DisplayHunk] {
         self.multi_buffer.read(cx).diff_hunks(cx)
     }
 
@@ -527,14 +527,14 @@ impl Editor {
     }
 
     /// 显示 hunk 到源定位（hunk 操作与导航用）。
-    pub fn diff_hunk_source_at(
+    pub fn buffer_diff_hunk_at(
         &self,
         display_index: usize,
         cx: &App,
-    ) -> Option<zcv_multi_buffer::DiffHunkSourceInfo> {
+    ) -> Option<zcv_multi_buffer::DiffHunkSource> {
         self.multi_buffer
             .read(cx)
-            .diff_hunk_source_at(display_index, cx)
+            .buffer_diff_hunk_at(display_index, cx)
     }
 
     /// 宿主注入/刷新整份 diff 投影后同步视图层状态：组合文本整体替换，光标落回开头，由宿主随后恢复视口/光标。
@@ -1458,7 +1458,7 @@ impl Editor {
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut Buffer) -> TextResult<T>,
     ) -> TextResult<(Option<TransactionId>, T, ProjectionRemap)> {
-        let session_id = self.start_transaction(before_selections.clone(), cx)?;
+        let session_id = self.start_transaction(cx)?;
         let projection_snapshot = self.text_buffer(cx).read(cx).snapshot();
         let projection_text = projection_snapshot
             .slice_text(TextRange::new(
@@ -1521,16 +1521,13 @@ impl Editor {
     /// 开启编辑会话并记录 undo 选区。
     ///
     /// Editor 不嵌套会话：zcv-text 会话已开启时视为内部错误。
-    fn start_transaction(
-        &mut self,
-        undo_selections: SelectionSet,
-        cx: &mut Context<Self>,
-    ) -> TextResult<TransactionId> {
+    fn start_transaction(&mut self, cx: &mut Context<Self>) -> TextResult<TransactionId> {
         let transaction_id = self
             .multi_buffer
             .update(cx, |buffer, cx| buffer.start_transaction(cx))?;
+        // 历史记录存源锚点：撤销/重做后 diff 投影可异步重建，选区不依赖重建时机。
         self.selection_history
-            .insert_transaction(transaction_id, undo_selections);
+            .insert_transaction(transaction_id, self.selections.clone());
         Ok(transaction_id)
     }
 
@@ -1616,9 +1613,8 @@ impl Editor {
         if let Some(transaction_id) = transaction_id
             && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
         {
-            // 事务结束时记录 redo 选区：按重建后快照把源锚点解析到当前投影坐标。
-            let redo = self.selections.resolve(&snapshot);
-            transaction.set_redo(redo);
+            // 事务结束时记录 redo 选区（源锚点）。
+            transaction.set_redo(self.selections.clone());
         }
         self.finish_edit(cx);
         cx.emit(EditorEvent::Edited);
@@ -1869,14 +1865,10 @@ impl Editor {
             self.display_map.sync(snapshot, changes);
             return;
         }
-        if changes.requires_reset() {
-            // 整体替换（外部加载）或订阅出现版本缺口：源被整体替换、旧源锚点失效，选区回落文档开头，由宿主随后重设。
-            // 投影重建（折叠/展开、编辑落位、undo/redo）不产生版本缺口，源锚点自然存活，不进此分支。
-            let reset = EditorSelections::from_selection_set(&snapshot, &SelectionSet::default());
-            self.selections = reset;
-        } else if let Some(old_version) = changes.old_version() {
-            // 源锚点选区不随投影重建重映射；外部源变更已由 consume_source_remaps 经源 PositionMap 推进。
-            // 这里只推进搜索锚点（搜索匹配是投影坐标的派生态，随投影变更跟随）。
+        if let Some(old_version) = changes.old_version() {
+            // `requires_reset` 只说明投影文本需整体重建，不能决定选区归零。
+            // 选区的权威位置是源锚点：外部 reload 已由 consume_source_remaps 用源事务 PositionMap 推进；
+            // 这里仅推进投影坐标派生的搜索锚点。
             let position_map = changes.position_map();
             self.map_search_anchors(old_version, text_version, &position_map);
         }

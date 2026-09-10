@@ -5,7 +5,8 @@
 
 use std::ops::Range;
 
-use zcv_git::{DiffHunk, DiffHunkKind};
+use zcv_git::DiffHunkKind;
+use zcv_multi_buffer::DisplayHunk;
 use zcv_text::Line;
 
 use crate::display_map::DisplaySnapshot;
@@ -16,8 +17,8 @@ pub(crate) struct HunkRendering {
     pub(crate) strips: Vec<(Range<usize>, DiffHunkKind)>,
     pub(crate) hit_regions: Vec<(Range<usize>, usize, DiffHunkKind)>,
     /// hunk 操作栏的锚定显示范围；控件取范围起点作为右上角所在行。
-    pub(crate) controls: Vec<(Range<usize>, DiffHunk)>,
-    /// 需要整行差异背景的显示行区间；新增行始终包含，修改/删除只在展开时包含。
+    pub(crate) controls: Vec<(Range<usize>, DisplayHunk)>,
+    /// 需要整行差异背景的显示行区间；只有展开态包含（新增块的展开态由注入方决定）。
     pub(crate) expanded_rows: Vec<Range<usize>>,
 }
 
@@ -26,7 +27,7 @@ pub(crate) struct HunkRendering {
 /// - `diff_rows`：行标记（gutter 指示，wrap 下行映射出的全部显示行都覆盖）
 /// - `strips`：竖条范围与状态色（竖条颜色不随展开变化）
 /// - `hit_regions`：可点击色带区域（显示行范围 + 点击目标 old_range + 类型）
-/// - `expanded_rows`：整行差异背景数据源（新增行始终着色，修改/删除按展开态着色）
+/// - `expanded_rows`：整行差异背景数据源（只有展开态着色；折叠 hunk 仅保留 gutter 竖条）
 ///
 /// 覆盖终点取 hunk 之后第一行的行首显示行（end 行首显示行 − 1 即 hunk 最后一个显示行，左闭右开区间 [start, end) 恰好盖住全部 wrap 片段）；
 /// hunk 到达文件末尾时以显示快照行数为终点。
@@ -35,7 +36,7 @@ pub(crate) struct HunkRendering {
 /// 映射失败（越界等）跳过该 hunk。
 pub(crate) fn hunk_rendering(
     snapshot: &DisplaySnapshot,
-    hunks: &[DiffHunk],
+    hunks: &[DisplayHunk],
     expanded: &[bool],
     old_display_ranges: &[Option<Range<usize>>],
 ) -> HunkRendering {
@@ -56,7 +57,9 @@ pub(crate) fn hunk_rendering(
                 if let Some(rows) = new_rows {
                     diff_rows.push((rows.clone(), DiffHunkKind::Added));
                     strips.push((rows.clone(), DiffHunkKind::Added));
-                    expanded_rows.push(rows.clone());
+                    if is_expanded {
+                        expanded_rows.push(rows.clone());
+                    }
                     controls.push((rows, hunk.clone()));
                 }
             }
@@ -181,7 +184,7 @@ mod tests {
                     "软换行行应拆成多个子行"
                 );
 
-                let hunk = DiffHunk {
+                let hunk = DisplayHunk {
                     range: 20..20,
                     old_range: 20..21,
                     kind: DiffHunkKind::Deleted,
@@ -242,7 +245,7 @@ mod tests {
                 assert!(wrapped_next > wrapped_first + 1, "第 16 行应拆成多个子行");
                 assert_eq!(wrapped_first, del_start + 1, "删除点行应为单显示行");
 
-                let hunk = DiffHunk {
+                let hunk = DisplayHunk {
                     range: 15..15,
                     old_range: 15..16,
                     kind: DiffHunkKind::Deleted,
@@ -294,17 +297,17 @@ mod tests {
         .expect("应创建测试 Buffer");
         let snapshot = DisplayMap::new(buffer.snapshot()).snapshot();
         let hunks = vec![
-            DiffHunk {
+            DisplayHunk {
                 range: 0..1,
                 old_range: 0..0,
                 kind: DiffHunkKind::Added,
             },
-            DiffHunk {
+            DisplayHunk {
                 range: 2..3,
                 old_range: 2..3,
                 kind: DiffHunkKind::Modified,
             },
-            DiffHunk {
+            DisplayHunk {
                 range: 4..4,
                 old_range: 4..5,
                 kind: DiffHunkKind::Deleted,
@@ -329,7 +332,12 @@ mod tests {
                 (4, DiffHunkKind::Deleted),
             ]
         );
-        assert_eq!(rendered.expanded_rows, vec![0..1]);
+        // 新增块默认折叠：只保留 gutter 竖条，不整行着色。
+        assert_eq!(rendered.expanded_rows, Vec::<Range<usize>>::new());
+
+        // 差异审阅视图（默认展开）下新增块才整行着色。
+        let expanded_added = hunk_rendering(&snapshot, &hunks[..1], &[true], &[None]);
+        assert_eq!(expanded_added.expanded_rows, vec![0..1]);
     }
 
     #[test]
@@ -337,7 +345,7 @@ mod tests {
         let buffer = Buffer::scratch("context\nold\nnew\nafter\n".into(), BufferConfig::default())
             .expect("应创建测试 Buffer");
         let snapshot = DisplayMap::new(buffer.snapshot()).snapshot();
-        let hunk = DiffHunk {
+        let hunk = DisplayHunk {
             range: 2..3,
             old_range: 10..11,
             kind: DiffHunkKind::Modified,

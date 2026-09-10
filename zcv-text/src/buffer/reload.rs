@@ -40,8 +40,10 @@ impl Buffer {
         self.history.clear();
         self.mark_clean_internal();
         self.apply_large_file_auto_read_only();
+        // reload 替换了整份存储并清空历史。
+        // 位置型消费者仍可使用 patch 跟随选区，但依赖旧文本语义的派生状态（如 diff hunk）必须重建，不能把它视为普通增量编辑。
         self.text_changes
-            .publish(old_version, self.version, patch, false);
+            .publish(old_version, self.version, patch, true, None);
         Ok(())
     }
 
@@ -160,6 +162,16 @@ fn native_line_ending() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reload_marks_text_changes_as_a_reset() {
+        let mut buffer = Buffer::from_text("before\n".to_owned(), Default::default()).unwrap();
+        let subscription = buffer.subscribe();
+
+        buffer.reload_from_text("after\n".to_owned()).unwrap();
+
+        assert!(subscription.consume().requires_reset());
+    }
 
     #[test]
     fn normalize_line_endings_should_handle_crlf_split_across_chunks() {

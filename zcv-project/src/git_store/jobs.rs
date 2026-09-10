@@ -3,11 +3,13 @@
 //! GitJob 按 key 去重（同 key 排队中/执行中时丢弃新 job），经 channel 交后台执行；
 //! 阶段状态（Queued/Running/Cancelling/Reconciling）与在途标记在此维护。
 
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui::Context;
-use zcv_git::{DiffHunk, GitCancellation, GitHunkOperation};
+use gpui::{Context, Entity};
+use zcv_git::{GitCancellation, GitHunkOperation, HunkEdit, WorkingCopySnapshot};
+use zcv_multi_buffer::BufferDiff;
 
 use super::{GitOperationOutcome, GitStore, GitStoreEvent};
 
@@ -64,7 +66,6 @@ impl GitOperationKind {
 pub(super) enum GitJobKey {
     ReloadGitState,
     RefreshStatuses,
-    RefreshHunks,
     GitOperation(GitOperationKind),
     GitInit,
     /// 暂存/取消暂存（路径集合参与 key：不同路径集互不合并，同路径重复点击在队列中自动去重，避免一次操作被意外丢弃）。
@@ -72,10 +73,11 @@ pub(super) enum GitJobKey {
         stage: bool,
         paths: Vec<PathBuf>,
     },
-    HunkOperation {
+    /// 应用 DiffOperations 已经确定的 hunk 编辑（编辑范围参与 key：不同变更块互不合并）。
+    ApplyHunkEdits {
         operation: GitHunkOperation,
         path: PathBuf,
-        hunk: DiffHunk,
+        ranges: Vec<Range<usize>>,
     },
     /// 提交（消息参与 key：同消息双击去重，改消息重试不被去重跳过）。
     Commit {
@@ -100,7 +102,6 @@ pub(super) enum GitJobKey {
 pub(super) enum GitJob {
     ReloadGitState,
     RefreshStatuses,
-    RefreshHunks,
     GitOperation {
         operation: GitOperationKind,
         /// 操作结果回传通道（发起方 await 后弹提示）；内部调度时为 None。
@@ -111,10 +112,13 @@ pub(super) enum GitJob {
         stage: bool,
         paths: Vec<PathBuf>,
     },
-    HunkOperation {
+    ApplyHunkEdits {
         operation: GitHunkOperation,
         path: PathBuf,
-        hunk: DiffHunk,
+        edits: Vec<HunkEdit>,
+        working_snapshot: WorkingCopySnapshot,
+        /// 发起操作的权威 diff 实体；完成后清除其 pending 状态。
+        diff: Entity<BufferDiff>,
     },
     Commit {
         message: String,
@@ -155,21 +159,21 @@ impl GitJob {
         match self {
             GitJob::ReloadGitState => GitJobKey::ReloadGitState,
             GitJob::RefreshStatuses => GitJobKey::RefreshStatuses,
-            GitJob::RefreshHunks => GitJobKey::RefreshHunks,
             GitJob::GitOperation { operation, .. } => GitJobKey::GitOperation(*operation),
             GitJob::GitInit => GitJobKey::GitInit,
             GitJob::StageFiles { stage, paths } => GitJobKey::StageFiles {
                 stage: *stage,
                 paths: paths.clone(),
             },
-            GitJob::HunkOperation {
+            GitJob::ApplyHunkEdits {
                 operation,
                 path,
-                hunk,
-            } => GitJobKey::HunkOperation {
+                edits,
+                ..
+            } => GitJobKey::ApplyHunkEdits {
                 operation: *operation,
                 path: path.clone(),
-                hunk: hunk.clone(),
+                ranges: edits.iter().map(|edit| edit.range.clone()).collect(),
             },
             GitJob::Commit { message } => GitJobKey::Commit {
                 message: message.clone(),
@@ -186,20 +190,19 @@ impl GitJob {
         match self {
             GitJob::ReloadGitState => "扫描仓库状态".into(),
             GitJob::RefreshStatuses => "刷新仓库状态".into(),
-            GitJob::RefreshHunks => "查询文件差异".into(),
             GitJob::GitOperation { operation, .. } => operation.display_name().into(),
             GitJob::GitInit => "初始化仓库".into(),
             GitJob::StageFiles { stage: true, .. } => "暂存".into(),
             GitJob::StageFiles { stage: false, .. } => "取消暂存".into(),
-            GitJob::HunkOperation {
+            GitJob::ApplyHunkEdits {
                 operation: GitHunkOperation::Stage,
                 ..
             } => "暂存变更块".into(),
-            GitJob::HunkOperation {
+            GitJob::ApplyHunkEdits {
                 operation: GitHunkOperation::Unstage,
                 ..
             } => "取消暂存变更块".into(),
-            GitJob::HunkOperation {
+            GitJob::ApplyHunkEdits {
                 operation: GitHunkOperation::Restore,
                 ..
             } => "重做变更块".into(),
@@ -269,9 +272,7 @@ impl GitStore {
                     .filter(|job| {
                         !matches!(
                             job.key,
-                            GitJobKey::ReloadGitState
-                                | GitJobKey::RefreshStatuses
-                                | GitJobKey::RefreshHunks
+                            GitJobKey::ReloadGitState | GitJobKey::RefreshStatuses
                         )
                     })
             })?;

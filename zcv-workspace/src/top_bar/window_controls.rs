@@ -11,8 +11,8 @@ pub(super) fn render(window: &Window) -> gpui::Stateful<gpui::Div> {
 
     div()
         .id("window-controls")
-        // 左侧补 S2：与右侧设置按钮（Compact 内边距 S2）视觉对齐，两侧内容到窗口边界等距。
-        .pl(space::S2)
+        // 与右侧设置按钮视觉对齐，两侧内容到窗口边界等距。
+        .pl(space::S4)
         .group(PIP_GROUP)
         .flex()
         .flex_row()

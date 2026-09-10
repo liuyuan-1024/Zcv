@@ -36,7 +36,7 @@ members = [
 ]
 resolver = "3"
 [workspace.package]
-version = "0.8.111"
+version = "0.8.112"
 edition = "2024"
 
 [workspace.lints.clippy]
@@ -75,6 +75,7 @@ ropey = "1.6.1"
 thiserror = "2.0.18"
 unicode-segmentation = "1.13.2"
 unicode-width = "0.2"
+imara-diff = "0.2.0"
 
 # ---- 工作区层（zcv-workspace） ----
 anyhow = "1.0"

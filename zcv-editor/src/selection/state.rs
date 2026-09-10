@@ -342,23 +342,25 @@ impl EditorSelections {
 }
 
 /// 一个事务的选区快照；`redo` 在事务提交时才填入。
+///
+/// 存源锚点而非投影坐标：撤销/重做后 diff 投影可能异步重建，源锚点不依赖重建时机即可解析。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TransactionSelections {
-    undo: SelectionSet,
-    redo: Option<SelectionSet>,
+    undo: EditorSelections,
+    redo: Option<EditorSelections>,
 }
 
 impl TransactionSelections {
-    pub(crate) fn undo(&self) -> &SelectionSet {
+    pub(crate) fn undo(&self) -> &EditorSelections {
         &self.undo
     }
 
-    pub(crate) fn redo(&self) -> Option<&SelectionSet> {
+    pub(crate) fn redo(&self) -> Option<&EditorSelections> {
         self.redo.as_ref()
     }
 
     /// 事务提交后填入 redo 选区（`end_transaction` 时更新）。
-    pub(crate) fn set_redo(&mut self, redo: SelectionSet) {
+    pub(crate) fn set_redo(&mut self, redo: EditorSelections) {
         self.redo = Some(redo);
     }
 }
@@ -369,8 +371,12 @@ pub(crate) struct SelectionHistory {
 }
 
 impl SelectionHistory {
-    /// 事务开始时记录 undo 选区。
-    pub(crate) fn insert_transaction(&mut self, transaction_id: TransactionId, undo: SelectionSet) {
+    /// 事务开始时记录 undo 选区（源锚点）。
+    pub(crate) fn insert_transaction(
+        &mut self,
+        transaction_id: TransactionId,
+        undo: EditorSelections,
+    ) {
         self.selections_by_transaction
             .entry(transaction_id)
             .or_insert_with(|| TransactionSelections { undo, redo: None });

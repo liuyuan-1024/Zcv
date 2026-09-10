@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, Weak};
 use crate::{
     position_map::PositionMap,
     transaction::Delta,
-    types::{BufferVersion, ByteOffset, TextRange},
+    types::{BufferVersion, ByteOffset, TextRange, TransactionId},
 };
 
 /// 一段文本变化在旧、新坐标空间中的覆盖范围。
@@ -105,6 +105,7 @@ pub struct TextChangeBatch {
     patch: TextPatch,
     old_version: Option<BufferVersion>,
     new_version: Option<BufferVersion>,
+    transaction_id: Option<TransactionId>,
     reset: bool,
 }
 
@@ -119,6 +120,11 @@ impl TextChangeBatch {
 
     pub fn new_version(&self) -> Option<BufferVersion> {
         self.new_version
+    }
+
+    /// 产生本批变更的底层事务身份；组合多个事务时为 None。
+    pub fn transaction_id(&self) -> Option<TransactionId> {
+        self.transaction_id
     }
 
     pub fn requires_reset(&self) -> bool {
@@ -184,6 +190,7 @@ impl TextChangeTopic {
         new_version: BufferVersion,
         patch: TextPatch,
         reset: bool,
+        transaction_id: Option<TransactionId>,
     ) {
         let mut subscriptions = self.0.lock().expect("文本变化主题锁不应在持锁期间 panic");
         subscriptions.retain(|subscription| {
@@ -202,6 +209,11 @@ impl TextChangeTopic {
             }
             state.pending.patch = state.pending.patch.compose(&patch);
             state.pending.new_version = Some(new_version);
+            state.pending.transaction_id = match state.pending.transaction_id {
+                None if state.pending.old_version == Some(old_version) => transaction_id,
+                Some(existing) if Some(existing) == transaction_id => Some(existing),
+                _ => None,
+            };
             state.pending.reset |= reset;
             state.current_version = new_version;
             true

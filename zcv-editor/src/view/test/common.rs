@@ -1,5 +1,6 @@
 use super::*;
 use gpui::{Bounds, Pixels, TestAppContext, VisualTestContext, point, size};
+use zcv_multi_buffer::DisplayHunk;
 use zcv_text::{Buffer, BufferConfig, ByteOffset};
 
 use crate::scrollbar::{SCROLLBAR_WIDTH, thumb_geometry};
@@ -71,16 +72,18 @@ pub(super) fn scrollbar_geometry(
 pub(super) fn inject_editor_diff(
     editor: &Entity<Editor>,
     source: &Entity<LanguageBuffer>,
-    hunks: Vec<DiffHunk>,
+    _hunks: Vec<DisplayHunk>,
     base_text: Option<Arc<str>>,
     cx: &mut TestAppContext,
 ) {
     editor.update(cx, |editor, cx| {
-        editor.set_diff_projection(
-            Some(vec![zcv_multi_buffer::DiffFileInput {
+        editor.set_buffer_diffs(
+            Some(vec![zcv_multi_buffer::BufferDiffInput {
+                operations: None,
                 working: source.clone(),
-                hunks,
-                base_text,
+                // 旧测试会用 None 表示“整份文本均为新增”。现在仍由一对真实文本快照
+                // 派生该 Added hunk，而不是注入 hunk。
+                base_text: Some(base_text.unwrap_or_else(|| Arc::from(""))),
                 path: PathBuf::from("src/a.rs"),
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,

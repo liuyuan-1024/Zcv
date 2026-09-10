@@ -339,8 +339,8 @@ impl VersionControlPanel {
                         .update(cx, |editor, cx| editor.set_text(message, cx));
                 }
                 GitStoreEvent::ActiveRepositoryChanged => cx.notify(),
-                GitStoreEvent::HunksChanged => {}
-                GitStoreEvent::JobsUpdated => {}
+                // 变更块操作失败由项目差异视图负责提示与恢复。
+                GitStoreEvent::JobsUpdated | GitStoreEvent::HunkOperationFailed(_) => {}
             }
         })
         .detach();

@@ -10,26 +10,25 @@
 //! 同 key 的排队 job 直接丢弃。
 
 mod background;
-mod diff_coordinator;
 mod jobs;
 mod snapshots;
 
-pub use diff_coordinator::DiffRequest;
-use diff_coordinator::{DiffCoordinator, HunkState};
 use jobs::{GitJob, GitJobId, GitJobKey, GitJobRecord, ScheduledGitJob};
 pub use jobs::{GitJobPhase, GitJobStatus, GitOperationKind};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use background::{JobResult, execute_job, repo_relative_path};
-use gpui::{App, AsyncApp, BackgroundExecutor, Context, EventEmitter, Task, WeakEntity};
+use gpui::{App, AsyncApp, BackgroundExecutor, Context, Entity, EventEmitter, Task, WeakEntity};
 use zcv_git::{
-    Branch, DiffBase, DiffStat, FileStatus, GitCancellation, GitRepository, GitRevision,
-    GraphCommit,
+    Branch, DiffStat, FileStatus, GitCancellation, GitHunkOperation, GitRepository, GitRevision,
+    GraphCommit, HunkEdit, WorkingCopySnapshot,
 };
-use zcv_git::{DiffHunk, GitHunkOperation};
+use zcv_multi_buffer::{BufferDiff, DiffOperations, PendingHunk};
+use zcv_text::Anchor;
 
 /// 一次增量刷新最多累积的路径数，超过则升级为全量扫描。
 const MAX_INCREMENTAL_PATHS: usize = 500;
@@ -43,8 +42,6 @@ pub enum GitStoreEvent {
     Repositories,
     /// 文件状态或 diff 统计发生变化。
     Statuses,
-    /// 打开文件的行级差异状态发生变化。
-    HunksChanged,
     /// 当前分支、HEAD 或分支列表发生变化。
     Head,
     /// 活动仓库变化（跟随焦点文件切换；订阅方重读 `current_branch()`，无需 payload）。
@@ -53,6 +50,8 @@ pub enum GitStoreEvent {
     JobsUpdated,
     /// 撤销提交成功：携带被撤销的提交消息（面板填回提交信息编辑器）。
     Uncommitted(String),
+    /// 变更块操作失败：携带错误信息（面板提示错误并恢复被 optimistic 抑制的 hunk）。
+    HunkOperationFailed(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -244,7 +243,6 @@ pub struct GitStore {
     jobs: HashMap<GitJobId, GitJobRecord>,
     in_flight: Option<GitJobId>,
     paths_needing_status_update: BTreeSet<PathBuf>,
-    diff_coordinator: DiffCoordinator,
     _job_task: Task<()>,
 }
 
@@ -338,10 +336,6 @@ impl GitStore {
                             store.commit_job(&job, result, cx);
                         }
                         store.finish_job(scheduled.id, cx);
-                        if matches!(job, GitJob::RefreshHunks) {
-                            // 当前批次运行期间到达的新版本留在等待集合，旧任务移除后立即续开下一批。
-                            store.schedule_pending_hunks(cx);
-                        }
                     });
                 }
             }
@@ -367,7 +361,6 @@ impl GitStore {
             jobs: HashMap::new(),
             in_flight: None,
             paths_needing_status_update: BTreeSet::new(),
-            diff_coordinator: DiffCoordinator::new(),
             _job_task: job_task,
         }
     }
@@ -432,19 +425,100 @@ impl GitStore {
         );
     }
 
-    /// 对单个 hunk 执行暂存、取消暂存或工作区还原，完成后重扫 Git 状态。
-    pub fn apply_hunk(
+    /// 构造变更块操作实现（宿主注入 `BufferDiff` 时使用）。
+    ///
+    /// `base` 决定该 diff 支持的操作方向：index 为基（未暂存差异）可暂存/还原，HEAD 为基（已暂存差异）可取消暂存。
+    pub fn diff_operations(&self, base: GitRevision) -> Arc<dyn DiffOperations> {
+        Arc::new(GitDiffOperations {
+            store: self.self_handle.clone(),
+            base,
+        })
+    }
+
+    /// 基于当前 diff 快照生成确定的编辑，先写入 optimistic pending，再交后台执行。
+    ///
+    /// 后台只把已经确定的字节编辑应用到 index 或工作区文本，不再重新执行磁盘 diff 定位变更块。
+    fn apply_hunk_edits(
         &mut self,
         operation: GitHunkOperation,
-        path: PathBuf,
-        hunk: DiffHunk,
+        diff: Entity<BufferDiff>,
+        ranges: Vec<Range<Anchor>>,
         cx: &mut Context<Self>,
     ) {
+        let (path, edits, pending, working_snapshot) = {
+            let diff_ref = diff.read(cx);
+            let working = diff_ref.working().clone();
+            let working_text = working.read(cx).text_snapshot(cx);
+            let base_text = diff_ref.base_text();
+            let mut edits = Vec::new();
+            let mut pending = Vec::new();
+            for range in &ranges {
+                // 操作范围必须绑定当前工作区版本，旧版本锚点不得修改新版本 buffer。
+                if range.start.version() != working_text.version()
+                    || range.end.version() != working_text.version()
+                {
+                    continue;
+                }
+                for hunk in diff_ref.snapshot().hunks().iter().filter(|hunk| {
+                    hunk.buffer_range.start.offset() <= range.end.offset()
+                        && range.start.offset() <= hunk.buffer_range.end.offset()
+                }) {
+                    let working_range = hunk.buffer_range.start.offset().get()
+                        ..hunk.buffer_range.end.offset().get();
+                    let working_slice = working_text
+                        .slice_text(
+                            zcv_text::TextRange::new(
+                                hunk.buffer_range.start.offset(),
+                                hunk.buffer_range.end.offset(),
+                            )
+                            .expect("hunk 新侧范围必须有序"),
+                        )
+                        .expect("hunk 新侧范围必须有效")
+                        .as_str()
+                        .to_owned();
+                    let base_slice = base_text
+                        .as_deref()
+                        .and_then(|base| base.get(hunk.diff_base_byte_range.clone()))
+                        .unwrap_or_default()
+                        .to_owned();
+                    let (range, original, replacement) = match operation {
+                        GitHunkOperation::Stage => {
+                            (hunk.diff_base_byte_range.clone(), base_slice, working_slice)
+                        }
+                        GitHunkOperation::Unstage | GitHunkOperation::Restore => {
+                            (working_range, working_slice, base_slice)
+                        }
+                    };
+                    edits.push(HunkEdit::new(
+                        range,
+                        Arc::from(original),
+                        Arc::from(replacement),
+                    ));
+                    pending.push(PendingHunk::suppress(hunk, working_text.version()));
+                }
+            }
+            let working_snapshot = working_text
+                .slice_text(
+                    zcv_text::TextRange::new(zcv_text::ByteOffset::ZERO, working_text.len_bytes())
+                        .expect("工作区全文范围必须有序"),
+                )
+                .expect("工作区全文范围必须有效")
+                .as_str()
+                .as_bytes()
+                .to_vec();
+            (diff_ref.path().clone(), edits, pending, working_snapshot)
+        };
+        if edits.is_empty() {
+            return;
+        }
+        diff.update(cx, |diff, cx| diff.set_pending_hunks(pending, cx));
         self.schedule_job(
-            GitJob::HunkOperation {
+            GitJob::ApplyHunkEdits {
                 operation,
                 path,
-                hunk,
+                edits,
+                working_snapshot: WorkingCopySnapshot::from_editor_text(working_snapshot),
+                diff,
             },
             cx,
         );
@@ -601,39 +675,11 @@ impl GitStore {
         }
     }
 
-    /// 查询文件状态（最长前缀匹配仓库；不在任何仓库中时为 None）。
+    /// 查询路径的当前 Git 状态；状态表是 GitStore 的不可变权威快照。
     ///
-    /// 自身无条目时继承最近祖先目录的忽略状态：`--ignored=matching` 对整棵被忽略子树只报告目录级条目，子树内的路径没有条目；
-    /// 不传播的话被忽略目录展开后，其子项会显示为"无状态"，与 Zed 快照的子树忽略传播不一致。
-    pub(super) fn status_for_path(&self, path: &Path) -> Option<&StatusEntry> {
-        let path = canonicalize_path(path);
-        let repository = self.repo_for_path(&path)?;
-        let relative = repo_relative_path(repository.repository.working_directory(), &path)?;
-        let statuses = &repository.snapshot.statuses_by_path;
-        statuses
-            .get(&relative)
-            .or_else(|| Self::ignored_ancestor_entry(statuses, &relative))
-    }
-
-    /// 文件的行级差异。`None` 只表示当前版本正在等待结果；无需查询与失败都返回空集合。
-    pub fn hunks_for_path(&self, base: DiffBase, path: &Path) -> Option<Arc<[DiffHunk]>> {
-        let request = DiffRequest::new(base, canonicalize_path(path));
-        match self
-            .diff_coordinator
-            .records
-            .get(&request)
-            .map(|record| &record.state)
-        {
-            Some(HunkState::Ready(hunks)) => Some(hunks.clone()),
-            Some(HunkState::NotNeeded) => Some(Arc::from([])),
-            Some(HunkState::Failed(error)) => {
-                let _ = error;
-                Some(Arc::from([]))
-            }
-            Some(HunkState::Unloaded | HunkState::Queued | HunkState::Loading) => None,
-            None if self.request_needs_hunks(&request) => None,
-            None => Some(Arc::from([])),
-        }
+    /// 状态索引内部按仓库工作目录（canonicalize 后）比较，调用方传入的路径可能未归一化。
+    pub fn status_for_path(&self, path: &Path) -> Option<&StatusEntry> {
+        self.status_index.status_for_path(&canonicalize_path(path))
     }
 
     /// 查找最近一个被忽略的祖先目录条目；自身无条目时用于继承忽略状态。
@@ -911,63 +957,6 @@ impl GitStore {
                     grouped_diff_requests: Vec::new(),
                 })
             }
-            GitJob::RefreshHunks => {
-                let requests = std::mem::take(&mut self.diff_coordinator.pending);
-                let mut repositories = Vec::with_capacity(self.repositories.len());
-                let mut grouped_diff_requests = vec![Vec::new(); self.repositories.len()];
-                for repository in &self.repositories {
-                    repositories.push(repository.repository.clone());
-                }
-                for (request, generation) in requests {
-                    let is_current =
-                        self.diff_coordinator
-                            .records
-                            .get(&request)
-                            .is_some_and(|record| {
-                                record.generation == generation
-                                    && matches!(record.state, HunkState::Queued)
-                            });
-                    if !is_current {
-                        continue;
-                    }
-                    if !self.request_needs_hunks(&request) {
-                        if let Some(record) = self.diff_coordinator.records.get_mut(&request) {
-                            record.state = HunkState::NotNeeded;
-                        }
-                        continue;
-                    }
-                    let Some((index, relative)) = self
-                        .repositories
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, repository)| {
-                            let workdir = repository.repository.working_directory();
-                            repo_relative_path(workdir, &request.path)
-                                .map(|relative| (index, workdir.components().count(), relative))
-                        })
-                        .max_by_key(|(_, depth, _)| *depth)
-                        .map(|(index, _, relative)| (index, relative))
-                    else {
-                        if let Some(record) = self.diff_coordinator.records.get_mut(&request) {
-                            record.state = HunkState::Failed("文件所属仓库已不可用".into());
-                        }
-                        continue;
-                    };
-                    if let Some(record) = self.diff_coordinator.records.get_mut(&request) {
-                        record.state = HunkState::Loading;
-                    }
-                    self.diff_coordinator
-                        .in_flight
-                        .insert(request.clone(), generation);
-                    grouped_diff_requests[index].push(DiffRequest::new(request.base, relative));
-                }
-                Some(JobPreparation {
-                    root,
-                    repositories,
-                    grouped_paths: Vec::new(),
-                    grouped_diff_requests,
-                })
-            }
             GitJob::GitOperation { .. }
             | GitJob::CheckoutBranch { .. }
             | GitJob::CreateBranch { .. }
@@ -1031,7 +1020,7 @@ impl GitStore {
                     grouped_diff_requests: Vec::new(),
                 })
             }
-            GitJob::HunkOperation { path, .. } => {
+            GitJob::ApplyHunkEdits { path, .. } => {
                 let (repositories, grouped_paths) =
                     self.group_paths_by_repo(std::slice::from_ref(path));
                 Some(JobPreparation {
@@ -1087,6 +1076,53 @@ impl GitStore {
     }
 }
 
+/// GitStore 提供的变更块操作实现：把界面线程确定的编辑交给后台执行。
+struct GitDiffOperations {
+    store: WeakEntity<GitStore>,
+    base: GitRevision,
+}
+
+impl DiffOperations for GitDiffOperations {
+    fn supports_staging(&self) -> bool {
+        self.base == GitRevision::Index
+    }
+
+    fn supports_unstaging(&self) -> bool {
+        self.base == GitRevision::Head
+    }
+
+    fn supports_restore(&self) -> bool {
+        self.base == GitRevision::Index
+    }
+
+    fn stage(&self, diff: Entity<BufferDiff>, ranges: Vec<Range<Anchor>>, cx: &mut App) {
+        let Some(store) = self.store.upgrade() else {
+            return;
+        };
+        store.update(cx, |store, cx| {
+            store.apply_hunk_edits(GitHunkOperation::Stage, diff, ranges, cx)
+        });
+    }
+
+    fn unstage(&self, diff: Entity<BufferDiff>, ranges: Vec<Range<Anchor>>, cx: &mut App) {
+        let Some(store) = self.store.upgrade() else {
+            return;
+        };
+        store.update(cx, |store, cx| {
+            store.apply_hunk_edits(GitHunkOperation::Unstage, diff, ranges, cx)
+        });
+    }
+
+    fn restore(&self, diff: Entity<BufferDiff>, ranges: Vec<Range<Anchor>>, cx: &mut App) {
+        let Some(store) = self.store.upgrade() else {
+            return;
+        };
+        store.update(cx, |store, cx| {
+            store.apply_hunk_edits(GitHunkOperation::Restore, diff, ranges, cx)
+        });
+    }
+}
+
 /// 路径归一化（canonicalize 失败时保留原样，如路径已删除）。
 pub(super) fn canonicalize_path(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
@@ -1098,7 +1134,7 @@ struct JobPreparation {
     root: PathBuf,
     repositories: Vec<Arc<dyn GitRepository>>,
     grouped_paths: Vec<Vec<PathBuf>>,
-    grouped_diff_requests: Vec<Vec<DiffRequest>>,
+    grouped_diff_requests: Vec<Vec<()>>,
 }
 
 #[cfg(test)]
@@ -1110,11 +1146,11 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::git_store::diff_coordinator::HunkRecord;
     use crate::test_support::{rev_parse, run_git, test_git_repo};
 
     use gpui::AppContext;
     use zcv_git::StatusCode;
+    use zcv_multi_buffer::BufferDiffInput;
 
     impl GitStore {
         fn status_for_directory(&self, path: &Path) -> Option<FileStatus> {
@@ -1855,133 +1891,139 @@ mod tests {
         assert!(unstaged, "目录取消暂存后其下所有文件都应回到未暂存");
     }
 
+    /// 变更块操作：界面线程从 diff 快照生成确定编辑并立即写入 optimistic pending，后台只应用该编辑写入 index。
     #[gpui::test]
-    fn request_hunks_fills_hunks_on_demand(cx: &mut gpui::TestAppContext) {
+    fn diff_operations_stage_hunk_writes_index_and_keeps_pending(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
+        fs::write(root.join("tracked.txt"), "第一行\n已修改\n").expect("应修改工作区文件");
+
         let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
-        let tracked = canonicalize_path(&root.join("tracked.txt"));
-        let request = DiffRequest::new(DiffBase::Head, tracked.clone());
-        // 干净文件无需查询，直接得到空终态，也不会创建后台任务。
-        cx.update_entity(&git_store, |store, cx| {
-            store.set_hunk_interests(std::slice::from_ref(&request), cx)
+        let path = canonicalize_path(&root.join("tracked.txt"));
+        let working = cx.update(|cx| {
+            let buffer = zcv_text::Buffer::from_text(
+                "第一行\n已修改\n".to_owned(),
+                zcv_text::BufferConfig::default(),
+            )
+            .expect("应创建 Buffer");
+            let buffer = cx.new(|_| buffer);
+            cx.new(|cx| zcv_language::LanguageBuffer::new(buffer, Some(path.clone()), cx))
         });
-        cx.run_until_parked();
-        cx.read_entity(&git_store, |store, _| {
-            assert_eq!(
-                store
-                    .hunks_for_path(DiffBase::Head, &tracked)
-                    .map(|hunks| hunks.len()),
-                Some(0)
-            );
-            assert!(!store.pending_jobs.contains_key(&GitJobKey::RefreshHunks));
-            assert!(matches!(
-                store
-                    .diff_coordinator
-                    .records
-                    .get(&request)
-                    .map(|record| &record.state),
-                Some(HunkState::NotNeeded)
-            ));
-        });
-
-        // 外部修改第 2 行 → 按需请求 hunks。
-        fs::write(&tracked, "第一行\n改了第二行\n").expect("应修改文件");
-        cx.update_entity(&git_store, |store, cx| {
-            store.refresh_statuses_for_paths(std::slice::from_ref(&tracked), cx)
-        });
-        cx.run_until_parked();
-        cx.update_entity(&git_store, |store, cx| {
-            store.request_hunks(DiffBase::Head, std::slice::from_ref(&tracked), cx)
-        });
-        cx.run_until_parked();
-
-        let hunks = cx
-            .read_entity(&git_store, |store, _| {
-                store.hunks_for_path(DiffBase::Head, &tracked)
+        let operations =
+            git_store.read_with(cx, |store, _| store.diff_operations(GitRevision::Index));
+        let diff = cx.update(|cx| {
+            cx.new(|cx| {
+                BufferDiff::new(
+                    BufferDiffInput {
+                        working: working.clone(),
+                        path: path.clone(),
+                        base_text: Some(Arc::from("第一行\n第二行\n")),
+                        is_created: false,
+                        operations: Some(operations),
+                        display_path: path.clone(),
+                        context_lines: None,
+                        show_file_header: false,
+                    },
+                    cx,
+                )
             })
-            .expect("请求后应有 hunks");
-        assert_eq!(hunks.len(), 1);
-        assert_eq!(hunks[0].range, 1..2);
-        assert_eq!(hunks[0].kind, zcv_git::DiffHunkKind::Modified);
+        });
+
+        let range = diff.read_with(cx, |diff, _| {
+            assert_eq!(diff.snapshot().hunks().len(), 1);
+            diff.snapshot().hunks()[0].buffer_range.clone()
+        });
+
+        // 操作发起后立即写入 pending，显示层不再看到该 hunk。
+        cx.update(|cx| {
+            let operations = diff.read(cx).operations().expect("应有操作实现");
+            operations.stage(diff.clone(), vec![range], cx);
+        });
+        diff.read_with(cx, |diff, _| {
+            assert!(
+                diff.snapshot().visible_hunks().is_empty(),
+                "pending 应立即抑制 hunk"
+            );
+            assert_eq!(diff.snapshot().pending_hunks().len(), 1);
+        });
+
+        cx.run_until_parked();
+        // 成功不立即清除：由随后权威扫描替换该 diff，避免中途回闪。
+        diff.read_with(cx, |diff, _| {
+            assert_eq!(diff.snapshot().pending_hunks().len(), 1);
+        });
+        let repository =
+            zcv_git::RealGitRepository::open(&root.join(".git")).expect("应打开工作仓库");
+        let index = repository
+            .load_revisions(&[":tracked.txt"])
+            .expect("应读取 index")
+            .pop()
+            .flatten()
+            .expect("index 应包含文件");
+        assert_eq!(
+            String::from_utf8(index).expect("index 应为 UTF-8"),
+            "第一行\n已修改\n",
+            "后台必须应用确定的编辑结果"
+        );
     }
 
+    /// 后台编辑失败时清除 optimistic pending，显示层恢复真实 diff。
     #[gpui::test]
-    fn refreshed_path_creates_new_hunk_generation_even_when_status_kind_is_unchanged(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn diff_operations_failure_clears_pending(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
-        let tracked = root.join("tracked.txt");
-        fs::write(&tracked, "第一行\n第一次修改\n").expect("应修改文件");
-        let tracked = canonicalize_path(&tracked);
-        let request = DiffRequest::new(DiffBase::Head, tracked.clone());
+        fs::write(root.join("tracked.txt"), "第一行\n已修改\n").expect("应修改工作区文件");
+
         let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
-        cx.update_entity(&git_store, |store, cx| {
-            store.set_hunk_interests(std::slice::from_ref(&request), cx)
+
+        let path = canonicalize_path(&root.join("tracked.txt"));
+        let working = cx.update(|cx| {
+            let buffer = zcv_text::Buffer::from_text(
+                "第一行\n已修改\n".to_owned(),
+                zcv_text::BufferConfig::default(),
+            )
+            .expect("应创建 Buffer");
+            let buffer = cx.new(|_| buffer);
+            cx.new(|cx| zcv_language::LanguageBuffer::new(buffer, Some(path.clone()), cx))
         });
+        let operations =
+            git_store.read_with(cx, |store, _| store.diff_operations(GitRevision::Index));
+        let diff = cx.update(|cx| {
+            cx.new(|cx| {
+                BufferDiff::new(
+                    BufferDiffInput {
+                        working: working.clone(),
+                        path: path.clone(),
+                        // base 文本与真实 index 不一致，后台校验必然失败。
+                        base_text: Some(Arc::from("第一行\n不存在的原始行\n")),
+                        is_created: false,
+                        operations: Some(operations),
+                        display_path: path.clone(),
+                        context_lines: None,
+                        show_file_header: false,
+                    },
+                    cx,
+                )
+            })
+        });
+        let range = diff.read_with(cx, |diff, _| {
+            diff.snapshot().hunks()[0].buffer_range.clone()
+        });
+        cx.update(|cx| {
+            let operations = diff.read(cx).operations().expect("应有操作实现");
+            operations.stage(diff.clone(), vec![range], cx);
+        });
+        assert!(diff.read_with(cx, |diff, _| !diff.snapshot().pending_hunks().is_empty()));
+
         cx.run_until_parked();
-        let first_generation = cx.read_entity(&git_store, |store, _| {
-            store.diff_coordinator.records[&request].generation
-        });
-
-        // 文件仍然是同一种已跟踪修改，行数统计也不变，但内容版本必须失效并重新查询。
-        fs::write(&tracked, "第一行\n第二次修改\n").expect("应再次修改文件");
-        cx.update_entity(&git_store, |store, cx| {
-            store.refresh_statuses_for_paths(std::slice::from_ref(&tracked), cx)
-        });
-        cx.run_until_parked();
-
-        cx.read_entity(&git_store, |store, _| {
-            let record = &store.diff_coordinator.records[&request];
-            assert!(record.generation > first_generation);
-            assert!(matches!(record.state, HunkState::Ready(_)));
-        });
-    }
-
-    #[gpui::test]
-    fn stale_hunk_result_cannot_overwrite_newer_generation(cx: &mut gpui::TestAppContext) {
-        let (root, _temp) = test_git_repo();
-        let tracked = root.join("tracked.txt");
-        fs::write(&tracked, "第一行\n已修改\n").expect("应修改文件");
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
-        cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
-        cx.run_until_parked();
-
-        let request = DiffRequest::new(DiffBase::Head, tracked.clone());
-        cx.update_entity(&git_store, |store, cx| {
-            store.diff_coordinator.records.insert(
-                request.clone(),
-                HunkRecord {
-                    generation: 2,
-                    state: HunkState::Queued,
-                },
+        diff.read_with(cx, |diff, _| {
+            assert!(
+                diff.snapshot().pending_hunks().is_empty(),
+                "失败后应清除 pending 以恢复显示"
             );
-            store.diff_coordinator.in_flight.insert(request.clone(), 1);
-            store.commit_job(
-                &GitJob::RefreshHunks,
-                JobResult::RefreshHunks(vec![(
-                    0,
-                    vec![(
-                        DiffRequest::new(DiffBase::Head, PathBuf::from("tracked.txt")),
-                        Ok(vec![zcv_git::DiffHunk {
-                            range: 0..1,
-                            old_range: 0..1,
-                            kind: zcv_git::DiffHunkKind::Modified,
-                        }]),
-                    )],
-                )]),
-                cx,
-            );
-        });
-
-        cx.read_entity(&git_store, |store, _| {
-            let record = &store.diff_coordinator.records[&request];
-            assert_eq!(record.generation, 2);
-            assert!(matches!(record.state, HunkState::Queued));
         });
     }
 
@@ -2182,46 +2224,6 @@ mod tests {
 
         let state = cx.read_entity(&git_store, |store, _| store.remote_operation_state());
         assert_eq!(state, RemoteOperationState::default());
-    }
-
-    #[gpui::test]
-    fn request_hunks_skips_untracked_files(cx: &mut gpui::TestAppContext) {
-        let (root, _temp) = test_git_repo();
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
-        cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
-        cx.run_until_parked();
-
-        // 未跟踪文件进入 NotNeeded 终态，不创建查询任务。
-        let untracked = root.join("untracked.txt");
-        fs::write(&untracked, "新的\n").expect("应写入文件");
-        let untracked = canonicalize_path(&untracked);
-        let request = DiffRequest::new(DiffBase::Head, untracked.clone());
-        cx.update_entity(&git_store, |store, cx| {
-            store.refresh_statuses_for_paths(std::slice::from_ref(&untracked), cx)
-        });
-        cx.run_until_parked();
-        cx.update_entity(&git_store, |store, cx| {
-            store.request_hunks(DiffBase::Head, std::slice::from_ref(&untracked), cx)
-        });
-        cx.run_until_parked();
-
-        cx.read_entity(&git_store, |store, _| {
-            assert_eq!(
-                store
-                    .hunks_for_path(DiffBase::Head, &untracked)
-                    .map(|hunks| hunks.len()),
-                Some(0)
-            );
-            assert!(!store.pending_jobs.contains_key(&GitJobKey::RefreshHunks));
-            assert!(matches!(
-                store
-                    .diff_coordinator
-                    .records
-                    .get(&request)
-                    .map(|record| &record.state),
-                Some(HunkState::NotNeeded)
-            ));
-        });
     }
 
     #[gpui::test]

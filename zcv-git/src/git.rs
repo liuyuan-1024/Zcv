@@ -6,10 +6,10 @@ mod graph;
 mod repository;
 mod status;
 
-pub use diff::{DiffHunk, DiffHunkKind};
+pub use diff::DiffHunkKind;
 pub use graph::{GraphLayoutState, GraphLine, GraphRowLayout};
 pub use repository::{
-    Branch, DiffBase, GitCancellation, GitHunkOperation, GitRepository, GitRevision, GraphCommit,
-    RealGitRepository, init,
+    Branch, GitCancellation, GitHunkOperation, GitRepository, GitRevision, GraphCommit, HunkEdit,
+    RealGitRepository, WorkingCopySnapshot, init,
 };
 pub use status::{BranchStatus, DiffStat, FileStatus, GitStatus, StatusCode};

@@ -26,7 +26,8 @@ use zcv_project::{GitStoreEvent, Project};
 use zcv_text::{Anchor, Buffer, BufferConfig, ByteOffset, SearchQuery, Snapshot};
 use zcv_theme::{color, space};
 use zcv_ui::{
-    Button, ButtonSize, ButtonStyle, Checkbox, MatchOption, MatchOptions, ReplaceInput, SearchInput,
+    Button, ButtonSize, ButtonStyle, Checkbox, MatchOption, MatchOptions, ReplaceInput,
+    SearchInput, SvgIcon,
 };
 use zcv_workspace::{
     Direction, Item, ItemEvent, SearchableItem, SearchableItemHandle, SerializedItemProvider,
@@ -56,11 +57,22 @@ impl DiffHunkDelegate for ProjectDiffHunkDelegate {
         cx: &mut App,
     ) -> Option<AnyElement> {
         let view = self.view.upgrade()?;
-        let kind = {
+        let (kind, is_dirty) = {
             let view = view.read(cx);
             view.files.iter().find(|file| file.path == path)?;
-            view.kind
+            (
+                view.kind,
+                view.multi_buffer.read(cx).is_diff_file_dirty(path, cx),
+            )
         };
+        if is_dirty {
+            return Some(
+                SvgIcon::new("icons/circle.svg")
+                    .color(color::current(cx).icon_accent)
+                    .label("未保存修改")
+                    .into_any_element(),
+            );
+        }
         let checked = kind == ProjectDiffKind::Staged;
         let view_for_click = self.view.clone();
         let path = path.to_path_buf();
@@ -813,6 +825,9 @@ impl ProjectDiffView {
         let git_store = project.read(cx).git_store();
         let subscriptions = vec![
             cx.observe(&editor, |_, _, cx| cx.notify()),
+            // diff hunk 在后台完成后由 MultiBuffer 重新物化 excerpts；
+            // 此时重试待定位路径，避免首次点击只能停在默认的第一个文件，第二次点击才生效。
+            cx.observe(&multi_buffer, |view, _, cx| view.apply_pending_path(cx)),
             cx.subscribe(&editor, |_, _, event: &EditorEvent, cx| {
                 cx.emit(event.clone());
             }),
@@ -1425,8 +1440,8 @@ pub fn deploy_at(
             .filter(|view| view.read(cx).kind == kind)
     }) {
         let item_id = existing.entity_id();
-        existing.update(cx, |view, cx| view.move_to_path(path, cx));
         pane.update(cx, |pane, cx| pane.activate_tab(item_id, window, cx));
+        existing.update(cx, |view, cx| view.move_to_path(path, cx));
         if focus_opened_item {
             window.focus(&existing.read(cx).focus_handle(cx), cx);
         }

@@ -219,7 +219,7 @@ impl MultiBuffer {
     ///
     /// None 是加载态（新 diff 尚未算完），保留现有 hunks 与用户展开状态；
     /// Some 注入后按文本跟踪区间迁移展开状态并重建投影。
-    /// 返回 true 表示组合文档被重建（调用方应重置光标）。
+    /// 返回 true 表示组合文档被重建；调用方应同步显示快照，但不能重置源锚点选区。
     pub fn set_buffer_diffs(
         &mut self,
         files: Option<Vec<DiffFile>>,
@@ -451,6 +451,25 @@ impl MultiBuffer {
             .and_then(|file| file.diff.read(cx).base_text())
     }
 
+    /// 查询指定 diff 文件的 working source 是否有未保存修改。
+    ///
+    /// dirty 状态由源 Buffer 唯一拥有；组合文档只读取该状态，用于文件级提示。
+    pub fn is_diff_file_dirty(&self, path: &Path, cx: &App) -> bool {
+        self.diff.as_ref().is_some_and(|diff| {
+            diff.files.iter().any(|file| {
+                file.diff.read(cx).path() == path
+                    && file
+                        .diff
+                        .read(cx)
+                        .working()
+                        .read(cx)
+                        .buffer()
+                        .read(cx)
+                        .is_dirty()
+            })
+        })
+    }
+
     /// 把打开请求中的 Deleted 片段换算为工作区文件中的合法定位行列（0-based）。
     ///
     /// Deleted 片段的内容来自 Git 修订文本，其字节坐标在打开的工作区文件中不存在；
@@ -518,6 +537,21 @@ impl MultiBuffer {
         let Some(diff) = &mut self.diff else {
             return;
         };
+        // 未保存编辑期间，working buffer 仍由用户确认中的文本拥有。
+        // diff hunk 可以后台更新，但不能据此重建组合 excerpts；
+        // 否则用户把文本暂时改回 base 时，当前文件会从组合文档中消失。
+        // 保存完成后由宿主重新注入 diff，统一提交新的文件集合与 hunk 投影。
+        if diff.files.iter().any(|file| {
+            file.diff
+                .read(cx)
+                .working()
+                .read(cx)
+                .buffer()
+                .read(cx)
+                .is_dirty()
+        }) {
+            return;
+        }
         for index in 0..diff.files.len() {
             if diff.pending_expansion_migrations[index].is_none()
                 || !diff.files[index]

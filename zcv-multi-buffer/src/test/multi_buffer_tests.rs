@@ -1240,9 +1240,97 @@ fn host_drives_buffer_diff_recompute_from_source_edits(cx: &mut TestAppContext) 
 
     assert_eq!(
         cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunks().len()),
-        0,
-        "源变化后宿主应驱动 BufferDiff 重算到无差异"
+        1,
+        "未保存期间应保留原有组合 hunk"
     );
+
+    // 保存后由宿主重新注入 diff，才提交新的 hunk 投影。
+    cx.update_entity(&source_buffer, |buffer, cx| {
+        buffer.mark_saved();
+        cx.notify();
+    });
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
+                working: source.clone(),
+                base_text: Some(Arc::from("a\n")),
+                index_text: None,
+                path: PathBuf::from("src/a.rs"),
+                operations: None,
+                display_path: PathBuf::from("src/a.rs"),
+                context_lines: None,
+                show_file_header: false,
+            }]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunks().len()),
+        0,
+        "保存后重新注入才应移除已无差异的 hunk"
+    );
+}
+
+/// dirty working source 的 hunk 变化不能提前删除组合文档中的既有 excerpt。
+#[gpui::test]
+fn dirty_source_keeps_existing_diff_projection_until_saved(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "a\nb\n", cx);
+    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
+                working: source.clone(),
+                base_text: Some(Arc::from("a\n")),
+                index_text: None,
+                path: PathBuf::from("src/a.rs"),
+                operations: None,
+                display_path: PathBuf::from("src/a.rs"),
+                context_lines: Some(2),
+                show_file_header: true,
+            }]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let initial_excerpt_count =
+        cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx).excerpts().len());
+    assert!(initial_excerpt_count > 0, "初始 hunk 应生成 excerpt");
+
+    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
+    cx.update_entity(&source_buffer, |buffer, cx| {
+        buffer
+            .edit(
+                vec![Edit::replace(
+                    TextRange::new(ByteOffset::new(2), ByteOffset::new(4)).unwrap(),
+                    "",
+                )],
+                TransactionMetadata::default(),
+            )
+            .unwrap();
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    cx.read_entity(&combined, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        assert!(
+            buffer.is_diff_file_dirty(Path::new("src/a.rs"), cx),
+            "组合文档应能读取文件 working source 的 dirty 状态"
+        );
+        assert_eq!(
+            snapshot.excerpts().len(),
+            initial_excerpt_count,
+            "未保存期间不能因 hunk 为空而移除既有 excerpt"
+        );
+        assert!(
+            snapshot
+                .excerpts()
+                .iter()
+                .all(|excerpt| excerpt.path() == Path::new("src/a.rs"))
+        );
+        assert_eq!(String::from_utf8(snapshot.text_bytes()).unwrap(), "a\n");
+    });
 }
 
 /// 回归：编辑内容但 hunk 几何不变时，diff 高亮不能因显示坐标门控而整体消失。

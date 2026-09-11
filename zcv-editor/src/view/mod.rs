@@ -462,7 +462,7 @@ impl Editor {
     ///
     /// `None` 是加载态（新 diff 尚未算完）：保留现有 hunks 与用户展开状态，不再被中间空列表清空；展开状态按工作区文本跟踪区间跨刷新迁移。
     /// 状态与投影归属 MultiBuffer，本方法只转发并同步视图层状态。
-    /// 返回 `true` 表示组合文档被重建（光标已落回开头）。
+    /// 返回 `true` 表示组合文档被重建；选区仍由源锚点解析，不随投影替换移动。
     pub fn set_buffer_diffs(
         &mut self,
         files: Option<Vec<zcv_multi_buffer::DiffFile>>,
@@ -545,17 +545,13 @@ impl Editor {
             .buffer_diff_hunk_at(display_index, cx)
     }
 
-    /// 宿主注入/刷新整份 diff 投影后同步视图层状态：组合文本整体替换，光标落回开头，由宿主随后恢复视口/光标。
+    /// 宿主注入/刷新整份 diff 投影后同步视图层状态。
+    ///
+    /// 选区由源锚点拥有，组合 excerpts 重建不会改变其源位置；
+    /// 这里只同步显示快照，不得把选区重置到组合文档起点。
     fn reset_after_diff_injection(&mut self, rebuilt: bool, cx: &mut Context<Self>) {
         if rebuilt {
-            // 组合文本整体替换（diff 投影注入）：同步 DisplayMap 后把光标落回开头；
-            // sync 已把 multi_snapshot 推进到注入后快照，据此把默认选区锚定为源锚点。
             self.sync_display_map(cx);
-            let reset = EditorSelections::from_selection_set(
-                &self.multi_snapshot,
-                &SelectionSet::default(),
-            );
-            self.selections = reset;
         }
         cx.notify();
     }

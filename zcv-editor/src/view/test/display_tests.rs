@@ -1160,12 +1160,12 @@ fn materialized_deleted_excerpt_keeps_editing_and_cursor(cx: &mut TestAppContext
     assert_eq!(buffer_text(&work, cx), "a\nB\nc");
 }
 
-/// 回归：组合文档（git hunk 上下文裁剪）删除整行后，光标必须与普通单文件编辑器落在同一逻辑位置。
+/// 回归：组合文档（git hunk 上下文裁剪）未保存删除整行后，保留既有 excerpt 与源光标。
 ///
 /// 删除顶部上下文行会移动裁剪窗口（新行从顶部进入），投影被整体重建（reload）；
 /// 编辑器若把 planner 裸偏移直接重锚到重建后的投影版本，光标会跳到错误行。
 #[gpui::test]
-fn combined_diff_delete_line_keeps_cursor_parity_with_plain_editor(cx: &mut TestAppContext) {
+fn combined_diff_dirty_edit_keeps_existing_excerpt_and_cursor(cx: &mut TestAppContext) {
     let working_text = "L0\nL1\nL2\nL3\nADDED\nL5\nL6\nL7\nL8\n";
     let head_text = "L0\nL1\nL2\nL3\nL5\nL6\nL7\nL8\n";
 
@@ -1196,39 +1196,21 @@ fn combined_diff_delete_line_keeps_cursor_parity_with_plain_editor(cx: &mut Test
         editor.select_byte_range(0..3, cx);
         editor.replace_text(None, "", cx);
     });
-    // 编辑后 diff 在后台重算并重新裁剪上下文窗口；断言前等待落定。
+    // dirty source 只更新既有 excerpt 的文本，不重新计算上下文窗口；断言前等待落定。
     cx.run_until_parked();
 
-    // 源被正确编辑；L2 删除后 hunk 派生为 Modified（旧侧 L2/L3 替换为新侧 L3/ADDED），
-    // 裁剪窗口变为 [0..6)，折叠旧侧占位一行。
+    // 源被正确编辑；既有源范围 [2..7) 现在显示为 L3/ADDED/L5/L6。
     assert_eq!(
         buffer_text(&source, cx),
         "L0\nL1\nL3\nADDED\nL5\nL6\nL7\nL8\n"
     );
     cx.read_entity(&editor, |editor, cx| {
-        assert_eq!(editor.text(cx), "L0\nL1\n\nL3\nADDED\nL5\nL6\n");
-        // 光标应停在删除点（"L3" 行首，新投影 offset 7），
-        // 而不是被裸偏移重锚到重建投影开头（"L0" 行首，offset 0）。
+        assert_eq!(editor.text(cx), "L3\nADDED\nL5\nL6\n");
+        // 光标仍绑定删除后的源位置；既有 excerpt 的显示起点现在是 offset 0。
         let selections = editor.selections();
         let caret = selections.primary();
         assert!(caret.is_caret(), "删除后应为单光标");
-        assert_eq!(caret.head(), ByteOffset::new(7));
-    });
-
-    // parity 基线：普通单文件编辑器删除同一逻辑行 "L2\n"（源 offset 6..9），
-    // 光标停在 "L3" 行首（offset 6）——与组合文档应落在同一逻辑位置。
-    let plain_source = test_buffer(cx, working_text);
-    let plain = cx.new(move |cx| Editor::for_language_buffer(plain_source, cx));
-    plain.update(cx, |editor, cx| {
-        editor.select_byte_range(6..9, cx);
-        editor.replace_text(None, "", cx);
-    });
-    cx.read_entity(&plain, |editor, cx| {
-        assert_eq!(editor.text(cx), "L0\nL1\nL3\nADDED\nL5\nL6\nL7\nL8\n");
-        let selections = editor.selections();
-        let caret = selections.primary();
-        assert!(caret.is_caret(), "删除后应为单光标");
-        assert_eq!(caret.head(), ByteOffset::new(6));
+        assert_eq!(caret.head(), ByteOffset::ZERO);
     });
 }
 

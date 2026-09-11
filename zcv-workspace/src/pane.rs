@@ -1017,8 +1017,13 @@ fn tab_end_button(
         .items_center()
         .justify_center()
         .child(
-            // 图标位：Close 态用透明占位保持槽高；脏/预览态 hover 时让位给关闭按钮。
+            // 指示器覆盖层：脏/预览态显示，hover 时让位给关闭按钮。
             div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
                 .opacity(if is_close { 0.0 } else { 1.0 })
                 .group_hover(TAB_HOVER_GROUP, move |style| {
                     if is_close { style } else { style.opacity(0.0) }
@@ -1035,10 +1040,9 @@ fn tab_end_button(
                 ),
         )
         .child(
-            // 关闭按钮位：Close 态常显；脏/预览态 hover 时浮现。
+            // 关闭按钮保持在正常布局流中，作为尾部槽位的尺寸来源。
+            // Close 态常显；脏/预览态 hover 时浮现，但隐藏时仍保留占位。
             div()
-                .absolute()
-                .inset_0()
                 .flex()
                 .items_center()
                 .justify_center()

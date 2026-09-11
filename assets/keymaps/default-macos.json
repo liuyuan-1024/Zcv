@@ -269,9 +269,9 @@
       // 搜索选项
       // =========================
 
-      "alt-c": "search::ToggleCaseSensitive",
-      "alt-w": "search::ToggleWholeWord",
-      "alt-x": "search::ToggleRegex",
+      "cmd-alt-c": "search::ToggleCaseSensitive",
+      "cmd-alt-w": "search::ToggleWholeWord",
+      "cmd-alt-x": "search::ToggleRegex",
 
       // =========================
       // 替换

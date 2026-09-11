@@ -524,6 +524,38 @@ mod tests {
         }
     }
 
+    /// macOS 上会产生字符的 Alt 字母快捷键必须包含 Cmd，避免被输入法优先消费。
+    #[test]
+    fn macos_search_shortcuts_keep_cmd_with_alt_letters() {
+        let groups = parse_builtin_keymap("default-macos.json");
+        let search = groups
+            .iter()
+            .find(|group| {
+                group.context.as_deref()
+                    == Some("BufferSearchBar || ProjectSearchBar || ProjectDiffSearchBar || GitGraphSearchBar")
+            })
+            .expect("macOS 搜索上下文应存在");
+
+        for (keys, action) in [
+            ("cmd-alt-c", "search::ToggleCaseSensitive"),
+            ("cmd-alt-w", "search::ToggleWholeWord"),
+            ("cmd-alt-x", "search::ToggleRegex"),
+        ] {
+            assert_eq!(
+                search.bindings.get(keys).map(RawAction::name),
+                Some(action),
+                "macOS 的 {keys} 应保留 Cmd 以绕过输入法字符处理"
+            );
+        }
+
+        for keys in ["alt-c", "alt-w", "alt-x"] {
+            assert!(
+                !search.bindings.contains_key(keys),
+                "macOS 不应继续注册会被输入法抢占的 {keys}"
+            );
+        }
+    }
+
     /// 替换框的 Enter 语义由 in_replace 标签分组声明，不得缺失或退化。
     #[test]
     fn search_replace_input_enter_is_declared_by_in_replace_on_every_platform() {

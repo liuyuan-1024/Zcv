@@ -1,7 +1,9 @@
 //! TopBar —— 窗口级顶部外壳。
 
-use gpui::{AnyElement, AnyView, Div, Entity, WeakEntity, Window, div, prelude::*};
-use zcv_actions::{GitFetch, GitPull, GitPush, OpenSettings};
+use std::rc::Rc;
+
+use gpui::{AnyElement, AnyView, App, Div, Entity, WeakEntity, Window, div, prelude::*};
+use zcv_actions::OpenSettings;
 use zcv_git::Branch;
 use zcv_project::{GitJobPhase, GitOperationKind, RemoteOperationState};
 use zcv_theme::{color, space};
@@ -15,6 +17,15 @@ mod window_controls;
 
 use window_controls::render as render_window_controls;
 
+pub type TopBarCallback = Rc<dyn Fn(&mut Window, &mut App)>;
+
+#[derive(Clone)]
+pub struct TopBarCallbacks {
+    pub on_git_fetch: TopBarCallback,
+    pub on_git_pull: TopBarCallback,
+    pub on_git_push: TopBarCallback,
+}
+
 pub struct TopBar {
     pub project_picker: Entity<ProjectPicker>,
     /// 分支选择器（显示当前分支名；由 Workspace 订阅 GitStore 事件刷新）。
@@ -25,6 +36,8 @@ pub struct TopBar {
     remote_operation_state: RemoteOperationState,
     /// 应用级更新控件由 binary 装配层注入；TopBar 只负责其固定布局位置。
     update_control: Option<AnyView>,
+    workspace: WeakEntity<Workspace>,
+    callbacks: TopBarCallbacks,
 }
 
 impl TopBar {
@@ -32,10 +45,12 @@ impl TopBar {
         on_selected: OnProjectSelected,
         workspace: WeakEntity<Workspace>,
         on_branch: OnBranchSelected,
+        callbacks: TopBarCallbacks,
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) -> Self {
-        let project_picker = cx.new(|cx| ProjectPicker::new(on_selected, workspace, window, cx));
+        let project_picker =
+            cx.new(|cx| ProjectPicker::new(on_selected, workspace.clone(), window, cx));
         let branch_picker = cx.new(|cx| BranchPicker::new(on_branch, window, cx));
         Self {
             project_picker,
@@ -43,6 +58,8 @@ impl TopBar {
             has_repositories: false,
             remote_operation_state: RemoteOperationState::default(),
             update_control: None,
+            workspace,
+            callbacks,
         }
     }
 
@@ -91,9 +108,15 @@ impl gpui::Render for TopBar {
                 &self.branch_picker,
                 self.has_repositories,
                 self.remote_operation_state,
+                self.callbacks.clone(),
+                self.workspace.clone(),
             )))
             .child(drag_spacer())
-            .child(cluster(trailing_slots(self.update_control.as_ref(), cx)))
+            .child(cluster(trailing_slots(
+                self.update_control.as_ref(),
+                self.workspace.clone(),
+                cx,
+            )))
     }
 }
 
@@ -125,11 +148,13 @@ fn leading_slots(
     branch_picker: &gpui::Entity<BranchPicker>,
     has_repositories: bool,
     state: RemoteOperationState,
+    callbacks: TopBarCallbacks,
+    workspace: WeakEntity<Workspace>,
 ) -> Vec<AnyElement> {
     let mut out: Vec<AnyElement> = Vec::new();
 
     // 无标题栏窗口，因此在应用顶栏提供三色控制。
-    out.push(render_window_controls(window).into_any_element());
+    out.push(render_window_controls(window, workspace.clone()).into_any_element());
 
     // 项目选择器
     out.push(project_picker.clone().into_any_element());
@@ -147,8 +172,9 @@ fn leading_slots(
                 Button::icon("top-bar.git-fetch", "icons/arrow_circle.svg")
                     .label(operation_label.unwrap_or("同步"))
                     .disabled(busy)
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(GitFetch), cx);
+                    .on_click({
+                        let callback = callbacks.on_git_fetch.clone();
+                        move |_, window, cx| callback(window, cx)
                     })
                     .into_any_element(),
             );
@@ -161,8 +187,9 @@ fn leading_slots(
                     )
                     .label(operation_label.unwrap_or("拉取"))
                     .disabled(busy)
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(GitPull), cx);
+                    .on_click({
+                        let callback = callbacks.on_git_pull.clone();
+                        move |_, window, cx| callback(window, cx)
                     })
                     .into_any_element(),
                 );
@@ -176,8 +203,9 @@ fn leading_slots(
                     )
                     .label(operation_label.unwrap_or("推送"))
                     .disabled(busy)
-                    .on_click(|_, window, cx| {
-                        window.dispatch_action(Box::new(GitPush), cx);
+                    .on_click({
+                        let callback = callbacks.on_git_push.clone();
+                        move |_, window, cx| callback(window, cx)
                     })
                     .into_any_element(),
                 );
@@ -206,7 +234,11 @@ fn remote_operation_label(state: RemoteOperationState) -> Option<&'static str> {
     })
 }
 
-fn trailing_slots(update_control: Option<&AnyView>, cx: &gpui::App) -> Vec<AnyElement> {
+fn trailing_slots(
+    update_control: Option<&AnyView>,
+    workspace: WeakEntity<Workspace>,
+    cx: &gpui::App,
+) -> Vec<AnyElement> {
     let mut out = Vec::new();
     if let Some(update_control) = update_control {
         out.push(update_control.clone().into_any_element());
@@ -215,8 +247,10 @@ fn trailing_slots(update_control: Option<&AnyView>, cx: &gpui::App) -> Vec<AnyEl
         Button::icon("top-bar.settings", "icons/settings.svg")
             .label("设置")
             .shortcut(&OpenSettings, cx)
-            .on_click(|_, window, cx| {
-                window.dispatch_action(Box::new(OpenSettings), cx);
+            .on_click(move |_, window, cx| {
+                workspace
+                    .update(cx, |workspace, cx| workspace.open_settings(window, cx))
+                    .ok();
             })
             .into_any_element(),
     );

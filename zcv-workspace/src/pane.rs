@@ -16,7 +16,7 @@ use zcv_theme::{FileIcons, color, space, typography};
 use zcv_ui::{Button, SvgIcon, Tab};
 
 use crate::layout_state::{SerializedPane, SerializedPaneItem};
-use crate::preview::{PreviewDocument, provider_for};
+use crate::preview::{PreviewDocument, PreviewToggleCallback, provider_for};
 use crate::tab_bar::{TabBar, TabBarTrailing};
 use crate::{ItemEvent, ItemHandle};
 
@@ -104,6 +104,16 @@ pub struct Pane {
 }
 
 impl Pane {
+    fn preview_toggle_handler(&self, cx: &Context<Self>) -> PreviewToggleCallback {
+        let pane = cx.entity().downgrade();
+        Rc::new(move |window, cx| {
+            pane.update(cx, |pane, cx| {
+                pane.toggle_preview(window, cx);
+            })
+            .ok();
+        })
+    }
+
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             focus: cx.focus_handle(),
@@ -262,6 +272,7 @@ impl Pane {
                 path,
                 source_item: item,
                 multi_buffer,
+                toggle_preview: self.preview_toggle_handler(cx),
             },
             cx,
         );
@@ -306,6 +317,7 @@ impl Pane {
                 path,
                 source_item,
                 multi_buffer,
+                toggle_preview: self.preview_toggle_handler(cx),
             },
             cx,
         );
@@ -335,6 +347,7 @@ impl Pane {
                 path,
                 source_item,
                 multi_buffer,
+                toggle_preview: self.preview_toggle_handler(cx),
             },
             cx,
         );

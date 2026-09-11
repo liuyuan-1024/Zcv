@@ -6,6 +6,7 @@
 
 use std::any::TypeId;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{App, Context, Entity, Render, Subscription, WeakEntity, Window, div, prelude::*};
@@ -18,12 +19,16 @@ use crate::item::{Item, ItemEvent, ItemHandle};
 use crate::pane::Pane;
 use crate::provider_registry::ProviderRegistry;
 
+pub type PreviewToggleCallback = Rc<dyn Fn(&mut Window, &mut App)>;
+
 /// 交给 Preview Provider 的文档输入：预览视图的源码 Item 与展示路径。
 #[derive(Clone)]
 pub struct PreviewDocument {
     pub path: PathBuf,
     pub source_item: Box<dyn ItemHandle>,
     pub multi_buffer: Entity<MultiBuffer>,
+    /// 预览工具栏的鼠标点击回调；快捷键仍通过 action 处理。
+    pub toggle_preview: PreviewToggleCallback,
 }
 
 /// 预览视图 Item 的 object-safe 句柄，经 `Item::as_preview_item` 获取。

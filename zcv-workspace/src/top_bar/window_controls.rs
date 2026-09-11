@@ -1,12 +1,16 @@
 //! 窗口控制 —— 自绘 macOS 风格三色圆点。
 
 use gpui::{Window, div, prelude::*, px, rgb, svg};
-use zcv_actions::{MinimizeWindow, QuitWindow, ToggleMaximizeWindow};
 use zcv_theme::space;
+
+use crate::Workspace;
 
 const PIP_GROUP: &str = "window-controls.pips";
 
-pub(super) fn render(window: &Window) -> gpui::Stateful<gpui::Div> {
+pub(super) fn render(
+    window: &Window,
+    workspace: gpui::WeakEntity<Workspace>,
+) -> gpui::Stateful<gpui::Div> {
     let active = window.is_window_active();
 
     div()
@@ -18,19 +22,23 @@ pub(super) fn render(window: &Window) -> gpui::Stateful<gpui::Div> {
         .flex_row()
         .items_center()
         .gap(space::S8)
-        .child(
-            pip(Pip::Close, active)
-                .on_click(|_, window, cx| window.dispatch_action(Box::new(QuitWindow), cx)),
-        )
-        .child(
-            pip(Pip::Minimize, active)
-                .on_click(|_, window, cx| window.dispatch_action(Box::new(MinimizeWindow), cx)),
-        )
-        .child(
-            pip(Pip::Maximize, active).on_click(|_, window, cx| {
-                window.dispatch_action(Box::new(ToggleMaximizeWindow), cx)
-            }),
-        )
+        .child(pip(Pip::Close, active).on_click({
+            let workspace = workspace.clone();
+            move |_, window, cx| {
+                workspace
+                    .update(cx, |workspace, cx| workspace.quit(window, cx))
+                    .ok();
+            }
+        }))
+        .child(pip(Pip::Minimize, active).on_click(|_, window, _cx| window.minimize_window()))
+        .child(pip(Pip::Maximize, active).on_click({
+            let workspace = workspace.clone();
+            move |_, window, cx| {
+                workspace
+                    .update(cx, |workspace, cx| workspace.toggle_maximize(window, cx))
+                    .ok();
+            }
+        }))
 }
 
 // ── 私有渲染辅助函数 ─────────────────────────────────────────────────

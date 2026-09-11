@@ -14,7 +14,6 @@ use gpui::{
     StyledImage, StyledText, Subscription, Task, UnderlineStyle, Window, div, img, prelude::*, px,
 };
 use pulldown_cmark::Alignment;
-use zcv_actions::TogglePreview;
 use zcv_language::{
     HighlightSpan, SnippetHighlightCancellation, SnippetHighlights,
     highlight_snippet_with_cancellation,
@@ -25,6 +24,7 @@ use zcv_theme::{color, space, syntax, typography};
 use zcv_ui::{Button, Scrollbar};
 use zcv_workspace::{
     Breadcrumbs, Item, ItemEvent, ItemHandle, PreviewDocument, PreviewItem, PreviewItemHandle,
+    PreviewToggleCallback,
 };
 
 use crate::document::{Block, Inline, parse};
@@ -54,6 +54,7 @@ pub(crate) struct MarkdownPreviewView {
 
 struct MarkdownPreviewToolbar {
     breadcrumbs: Entity<Breadcrumbs>,
+    toggle_preview: PreviewToggleCallback,
 }
 
 impl Render for MarkdownPreviewToolbar {
@@ -67,7 +68,10 @@ impl Render for MarkdownPreviewToolbar {
             .child(
                 Button::icon("markdown-preview-source", "icons/eye_off.svg")
                     .label("返回源码")
-                    .on_click(|_, window, cx| window.dispatch_action(Box::new(TogglePreview), cx)),
+                    .on_click({
+                        let toggle_preview = self.toggle_preview.clone();
+                        move |_, window, cx| toggle_preview(window, cx)
+                    }),
             )
     }
 }
@@ -84,6 +88,7 @@ impl MarkdownPreviewView {
         breadcrumbs.update(cx, |view, cx| view.set_item(Some(source_item.as_ref()), cx));
         let toolbar = cx.new(|_| MarkdownPreviewToolbar {
             breadcrumbs: breadcrumbs.clone(),
+            toggle_preview: document.toggle_preview.clone(),
         });
         let multi_buffer = document.multi_buffer;
         let document_subscription = cx.observe(&multi_buffer, |view, _, cx| {
@@ -990,6 +995,7 @@ impl PreviewItem for MarkdownPreviewView {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::rc::Rc;
 
     use gpui::{AppContext, TestAppContext};
     use zcv_editor::Editor;
@@ -1105,6 +1111,7 @@ mod tests {
                     path: PathBuf::from("README.md"),
                     source_item: Box::new(editor.clone()),
                     multi_buffer,
+                    toggle_preview: Rc::new(|_, _| {}),
                 },
                 cx,
             )
@@ -1145,6 +1152,7 @@ mod tests {
                     path: PathBuf::from("README.md"),
                     source_item: Box::new(editor.clone()),
                     multi_buffer,
+                    toggle_preview: Rc::new(|_, _| {}),
                 },
                 cx,
             )

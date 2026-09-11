@@ -12,13 +12,13 @@ use gpui::{
     ImageFormat, IntoElement, ObjectFit, Render, RenderImage, SharedString, Styled, StyledImage,
     Subscription, Task, Window, div, img, prelude::*,
 };
-use zcv_actions::TogglePreview;
 use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
 use zcv_theme::{color, space};
 use zcv_ui::Button;
 use zcv_workspace::{
     Breadcrumbs, Item, ItemEvent, ItemHandle, PreviewDocument, PreviewItem, PreviewItemHandle,
+    PreviewToggleCallback,
 };
 
 use crate::renderer::rasterize_svg;
@@ -46,6 +46,7 @@ pub(crate) struct SvgPreviewView {
 
 struct SvgPreviewToolbar {
     breadcrumbs: Entity<Breadcrumbs>,
+    toggle_preview: PreviewToggleCallback,
 }
 
 impl Render for SvgPreviewToolbar {
@@ -59,7 +60,10 @@ impl Render for SvgPreviewToolbar {
             .child(
                 Button::icon("svg-preview-source", "icons/eye_off.svg")
                     .label("返回源码")
-                    .on_click(|_, window, cx| window.dispatch_action(Box::new(TogglePreview), cx)),
+                    .on_click({
+                        let toggle_preview = self.toggle_preview.clone();
+                        move |_, window, cx| toggle_preview(window, cx)
+                    }),
             )
     }
 }
@@ -76,6 +80,7 @@ impl SvgPreviewView {
         breadcrumbs.update(cx, |view, cx| view.set_item(Some(source_item.as_ref()), cx));
         let toolbar = cx.new(|_| SvgPreviewToolbar {
             breadcrumbs: breadcrumbs.clone(),
+            toggle_preview: document.toggle_preview.clone(),
         });
         let multi_buffer = document.multi_buffer;
         let resources_dir = document.path.parent().map(PathBuf::from);
@@ -298,6 +303,8 @@ impl PreviewItem for SvgPreviewView {
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
+
     use std::path::PathBuf;
 
     use gpui::TestAppContext;
@@ -322,6 +329,7 @@ mod tests {
                     path: PathBuf::from("icon.svg"),
                     source_item: Box::new(editor),
                     multi_buffer,
+                    toggle_preview: Rc::new(|_, _| {}),
                 },
                 cx,
             )

@@ -44,7 +44,8 @@ pub use pane::{Pane, PaneEvent};
 pub use panel::{Panel, PanelEvent, PanelHandle};
 pub use panel_buttons::PanelButtons;
 pub use preview::{
-    PreviewButton, PreviewDocument, PreviewItem, PreviewItemHandle, PreviewProvider, register,
+    PreviewButton, PreviewDocument, PreviewItem, PreviewItemHandle, PreviewProvider,
+    PreviewToggleCallback, register,
 };
 pub use project_picker::OnProjectSelected;
 pub use recent_projects::{add_to_recent, most_recent_valid_project};
@@ -52,6 +53,6 @@ pub use searchable::{Direction, SearchEvent, SearchableItem, SearchableItemHandl
 pub use status_bar::StatusItemView;
 pub use status_color::git_status_color;
 pub use toast::{ToastAction, ToastKind};
-pub use top_bar::TopBar;
+pub use top_bar::{TopBar, TopBarCallbacks};
 pub use window_bounds::{load_window_bounds, save_window_bounds};
 pub use workspace_state::Workspace;

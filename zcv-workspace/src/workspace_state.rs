@@ -771,11 +771,19 @@ impl Workspace {
         window.refresh();
     }
 
-    fn handle_quit(&mut self, _: &QuitWindow, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let root = self.project.read(cx).root().map(Path::to_path_buf);
         window_bounds::save_window_bounds(root.as_deref(), window, cx);
         self.flush_layout(cx);
         cx.quit();
+    }
+
+    fn handle_quit(&mut self, _: &QuitWindow, window: &mut Window, cx: &mut Context<Self>) {
+        self.quit(window, cx);
+    }
+
+    pub(crate) fn toggle_maximize(&mut self, window: &mut Window, _cx: &mut Context<Self>) {
+        window.zoom_window();
     }
 
     fn handle_toggle_maximize(
@@ -818,12 +826,7 @@ impl Workspace {
         .detach();
     }
 
-    fn handle_open_settings(
-        &mut self,
-        _: &OpenSettings,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(provider) = &self.open_settings_path_provider else {
             return;
         };
@@ -831,6 +834,15 @@ impl Workspace {
             return;
         };
         self.open_path(path, true, window, cx);
+    }
+
+    fn handle_open_settings(
+        &mut self,
+        _: &OpenSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_settings(window, cx);
     }
 }
 

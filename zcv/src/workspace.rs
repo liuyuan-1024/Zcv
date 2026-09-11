@@ -29,8 +29,8 @@ use zcv_theme::{ThemeChoice, color, typography};
 use zcv_workspace::{
     ActivityIndicator, Dock, DockPosition, GitBranchAction, OnBranchSelected, OnProjectSelected,
     Pane, PaneEvent, Panel, PanelButtons, PanelEvent, PanelHandle, ToastAction, ToastKind, TopBar,
-    Workspace, add_to_recent, load_window_bounds, register_serialized_item_provider,
-    save_window_bounds,
+    TopBarCallbacks, Workspace, add_to_recent, load_window_bounds,
+    register_serialized_item_provider, save_window_bounds,
 };
 
 use crate::active_buffer_language::ActiveBufferLanguage;
@@ -563,10 +563,45 @@ fn initialize_workspace(
     });
 
     let top_bar = cx.new(|cx| {
+        let on_git_fetch = {
+            let workspace = weak_self.clone();
+            Rc::new(move |_window: &mut Window, cx: &mut App| {
+                workspace
+                    .update(cx, |workspace, cx| {
+                        run_git_operation(workspace, GitOperationKind::Fetch, cx);
+                    })
+                    .ok();
+            })
+        };
+        let on_git_pull = {
+            let workspace = weak_self.clone();
+            Rc::new(move |_window: &mut Window, cx: &mut App| {
+                workspace
+                    .update(cx, |workspace, cx| {
+                        run_git_operation(workspace, GitOperationKind::Pull, cx);
+                    })
+                    .ok();
+            })
+        };
+        let on_git_push = {
+            let workspace = weak_self.clone();
+            Rc::new(move |_window: &mut Window, cx: &mut App| {
+                workspace
+                    .update(cx, |workspace, cx| {
+                        run_git_operation(workspace, GitOperationKind::Push, cx);
+                    })
+                    .ok();
+            })
+        };
         TopBar::new(
             switch_project_callback(),
             weak_self.clone(),
             on_branch,
+            TopBarCallbacks {
+                on_git_fetch,
+                on_git_pull,
+                on_git_push,
+            },
             window,
             cx,
         )

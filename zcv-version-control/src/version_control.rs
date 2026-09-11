@@ -955,6 +955,9 @@ fn render_row(
                         move |_window, cx| {
                             if let Some(panel) = weak.upgrade() {
                                 panel.update(cx, |panel, cx| {
+                                    // 复选框会阻止行点击事件，必须显式把被操作的行设为选中项；
+                                    // 目录暂存后整棵子树会重排，否则选中迁移会基于旧行。
+                                    panel.state.borrow_mut().select((section, path.clone()));
                                     panel.toggle_staged_for(section, &path, cx);
                                 });
                             }
@@ -1679,15 +1682,18 @@ mod tests {
         let project_root = root.clone();
         let open_count = Rc::new(Cell::new(0));
         let last_focus_opened = Rc::new(Cell::new(true));
+        let opened_path = Rc::new(RefCell::new(None));
         let callback_count = Rc::clone(&open_count);
         let callback_focus = Rc::clone(&last_focus_opened);
+        let callback_path = Rc::clone(&opened_path);
 
         let project = cx.new(|cx| Project::new(project_root.clone(), cx));
         let (panel, cx) = cx.add_window_view(move |_, cx| {
             let mut panel = VersionControlPanel::new(project, cx);
-            panel.set_on_open_file(Rc::new(move |_, _, focus_opened_item, _, _| {
+            panel.set_on_open_file(Rc::new(move |_, path, focus_opened_item, _, _| {
                 callback_count.set(callback_count.get() + 1);
                 callback_focus.set(focus_opened_item);
+                *callback_path.borrow_mut() = Some(path);
             }));
             panel
         });
@@ -1718,6 +1724,11 @@ mod tests {
         // 首击同时完成聚焦、选中与单击预览，用户无需先额外点击一次聚焦。
         click(cx);
         assert_eq!(open_count.get(), 1, "未聚焦首击也应打开文件");
+        assert_eq!(
+            opened_path.borrow().as_deref(),
+            Some(root.join("tracked.txt").canonicalize().unwrap().as_path()),
+            "首击应把实际点击的文件路径传给打开回调"
+        );
         let panel_focused =
             cx.update(|window, cx| panel.read(cx).focus.contains_focused(window, cx));
         assert!(panel_focused, "首击应聚焦变更面板");
@@ -2031,7 +2042,7 @@ mod tests {
         assert_eq!(sections, vec![(GitSection::Staged, "tracked.txt".into())]);
 
         // 再 space：取消暂存 → 回到未暂存组。
-        // 重扫后选中被清空，先触发一次重绘让 ensure_selected 落到新行上。
+        // 只有一行时没有相邻行，重绘后由 ensure_selected 选择唯一的文件行。
         let _ = cx.refresh();
         cx.update(|_, _| {});
         cx.run_until_parked();

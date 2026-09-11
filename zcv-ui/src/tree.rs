@@ -180,8 +180,28 @@ impl<K: Eq + std::hash::Hash + Clone, Row: TreeRow> TreeState<K, Row> {
         &self.rows
     }
 
-    /// 替换可见行；选中行消失时清空选中，多选集与锚点同步剪枝（幸存键保留）。
+    /// 替换可见行；选中行消失时迁移到相邻可选行，多选集与锚点同步剪枝。
     pub fn replace_rows(&mut self, rows: Vec<Row>) {
+        let previous_selected_idx = self.selected.as_ref().and_then(|selected| {
+            self.rows
+                .iter()
+                .position(|row| (self.key_of)(row).as_ref() == Some(selected))
+        });
+        let next_selected = previous_selected_idx.map(|index| {
+            self.rows
+                .iter()
+                .skip(index + 1)
+                .filter_map(|row| (self.key_of)(row))
+                .collect::<Vec<_>>()
+        });
+        let previous_selected = previous_selected_idx.map(|index| {
+            self.rows
+                .iter()
+                .take(index)
+                .rev()
+                .filter_map(|row| (self.key_of)(row))
+                .collect::<Vec<_>>()
+        });
         self.rows = rows;
         let key_of = self.key_of;
         // 先把当前行键收集为集合：三处剪枝从 O(行数 × 选中集) 降为集合查找。
@@ -191,7 +211,16 @@ impl<K: Eq + std::hash::Hash + Clone, Row: TreeRow> TreeState<K, Row> {
             .as_ref()
             .is_some_and(|selected| !alive_keys.contains(selected))
         {
-            self.selected = None;
+            self.selected = next_selected
+                .into_iter()
+                .flatten()
+                .find(|key| alive_keys.contains(key))
+                .or_else(|| {
+                    previous_selected
+                        .into_iter()
+                        .flatten()
+                        .find(|key| alive_keys.contains(key))
+                });
         }
         self.selected_set.retain(|key| alive_keys.contains(key));
         if self
@@ -546,13 +575,36 @@ mod tests {
     }
 
     #[test]
-    fn replace_rows_clears_selection_when_row_disappears() {
+    fn replace_rows_moves_selection_to_adjacent_row_when_row_disappears() {
         let mut state = test_state(sample_rows());
         state.select(3);
         state.replace_rows(vec![row(0, false), row(1, true)]);
-        assert_eq!(state.selected, None);
+        assert_eq!(state.selected, Some(1));
         state.replace_rows(sample_rows());
-        assert_eq!(state.selected, None);
+        assert_eq!(state.selected, Some(1));
+    }
+
+    #[test]
+    fn replace_rows_prefers_surviving_row_below_when_rows_reorder() {
+        let mut state = test_state(vec![row(1, true), row(2, true), row(3, true)]);
+        state.select(2);
+        // 模拟选中目录移动到上方分组后，原选中项下面的行仍然存在。
+        state.replace_rows(vec![row(4, true), row(3, true), row(1, true)]);
+        assert_eq!(state.selected, Some(3));
+    }
+
+    #[test]
+    fn replace_rows_skips_disappeared_directory_children() {
+        let mut state = test_state(vec![
+            row(1, true),
+            row(2, true),
+            row(20, true),
+            row(3, true),
+        ]);
+        state.select(2);
+        // 目录及其子文件移动到上方分组后，应继续选择原目录子树之后的兄弟行。
+        state.replace_rows(vec![row(10, true), row(200, true), row(3, true)]);
+        assert_eq!(state.selected, Some(3));
     }
 
     #[test]

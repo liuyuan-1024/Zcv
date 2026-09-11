@@ -30,6 +30,7 @@ use crate::toast::{ToastAction, ToastKind, ToastLayer};
 use crate::window_bounds;
 
 const LAYOUT_SAVE_THROTTLE: Duration = Duration::from_millis(200);
+const WINDOW_BOUNDS_SAVE_THROTTLE: Duration = Duration::from_millis(100);
 
 /// 打开设置文件的路径提供者：宿主注入，返回设置文件路径。
 pub(crate) type OpenSettingsPathProvider = Box<dyn Fn(&mut App) -> Option<PathBuf> + Send + Sync>;
@@ -62,6 +63,7 @@ pub struct Workspace {
     workspace_actions: Vec<WorkspaceAction>,
     layout_path: PathBuf,
     _layout_save_task: Option<Task<()>>,
+    _window_bounds_save_task: Option<Task<()>>,
 }
 
 impl Workspace {
@@ -70,18 +72,18 @@ impl Workspace {
         self._subscriptions.push(sub);
     }
 
-    pub fn new(root: PathBuf, window: &Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(root: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let project = cx.new(|cx| Project::new(root, cx));
         Self::build(project, window, cx)
     }
 
     /// 创建不绑定项目目录的工作区。
-    pub fn new_empty(window: &Window, cx: &mut Context<Self>) -> Self {
+    pub fn new_empty(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let project = cx.new(Project::empty);
         Self::build(project, window, cx)
     }
 
-    fn build(project: Entity<Project>, window: &Window, cx: &mut Context<Self>) -> Self {
+    fn build(project: Entity<Project>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
 
         let pane = cx.new(Pane::new);
@@ -154,6 +156,12 @@ impl Workspace {
             })
             .collect();
 
+        // 窗口管理器异步应用最大化、还原和拖动结果；
+        // 只在实际边界变化后保存。
+        let window_bounds_subscription = cx.observe_window_bounds(window, |this, window, cx| {
+            this.schedule_window_bounds_save(window, cx);
+        });
+
         let status_bar = cx.new(|cx| StatusBar::new(pane.clone(), cx));
         let toast_layer = cx.new(|_| ToastLayer::new());
 
@@ -170,10 +178,12 @@ impl Workspace {
             open_settings_path_provider: None,
             _subscriptions: std::iter::once(layout_subscription)
                 .chain(dock_layout_subscriptions)
+                .chain(std::iter::once(window_bounds_subscription))
                 .collect(),
             workspace_actions: Vec::new(),
             layout_path,
             _layout_save_task: None,
+            _window_bounds_save_task: None,
         }
     }
 
@@ -228,6 +238,24 @@ impl Workspace {
                 if let Err(error) = layout_state::save(&this.layout_path, &layout) {
                     eprintln!("保存工作区布局失败：{error:#}");
                 }
+            })
+            .ok();
+        }));
+    }
+
+    fn schedule_window_bounds_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self._window_bounds_save_task.is_some() {
+            return;
+        }
+
+        self._window_bounds_save_task = Some(cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(WINDOW_BOUNDS_SAVE_THROTTLE)
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                this._window_bounds_save_task.take();
+                let root = this.project.read(cx).root().map(Path::to_path_buf);
+                window_bounds::save_window_bounds(root.as_deref(), window, cx);
             })
             .ok();
         }));
@@ -756,11 +784,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        window.zoom_window();
-        // macOS 的缩放经执行器异步生效，此处读到的是缩放前的还原尺寸——这恰是要持久化的窗口尺寸；
-        // 缩放后的最终尺寸由退出与切换时的保存补写（那时读取的是真实帧）。
-        let root = self.project.read(cx).root().map(Path::to_path_buf);
-        window_bounds::save_window_bounds(root.as_deref(), window, cx);
+        self.toggle_maximize(window, cx);
     }
 
     fn handle_save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {

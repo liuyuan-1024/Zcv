@@ -24,7 +24,7 @@ pub(crate) enum DisplayBlockKind {
     ExcerptBoundary,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct DisplayBlock {
     pub(crate) kind: DisplayBlockKind,
     pub(crate) excerpt: ExcerptSnapshot,
@@ -188,6 +188,8 @@ impl BlockSnapshot {
             }
             group_start = group_end;
         }
+
+        specs.sort_by_key(|spec| spec.wrap_row);
 
         let wrap_line_count = wrap_snapshot.line_count();
         let mut placements = Vec::new();

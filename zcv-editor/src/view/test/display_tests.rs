@@ -39,20 +39,19 @@ struct OccludingHunkControls;
 impl DiffHunkDelegate for OccludingHunkControls {
     fn render_hunk_controls(
         &self,
+        _target: &HunkControlTarget,
         _row: usize,
-        _hunk: &DisplayHunk,
-        line_height: Pixels,
         _editor: &Entity<Editor>,
         _window: &mut Window,
         _cx: &mut App,
-    ) -> AnyElement {
-        div()
-            .id("test-hunk-controls")
-            .debug_selector(|| "test-hunk-controls".into())
-            .w(px(80.))
-            .h(line_height)
-            .occlude()
-            .into_any_element()
+    ) -> Option<AnyElement> {
+        Some(
+            div()
+                .id("test-hunk-controls")
+                .debug_selector(|| "test-hunk-controls".into())
+                .occlude()
+                .into_any_element(),
+        )
     }
 }
 

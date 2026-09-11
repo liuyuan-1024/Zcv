@@ -29,6 +29,6 @@ pub use search_input::{MatchOption, MatchOptions, SearchInput};
 pub use tab::Tab;
 pub use tooltip::TooltipSpec;
 pub use tree::{
-    RowClickAction, TreeRow, TreeState, render_row_base, render_text_row, row_click_action,
+    RowClickAction, TreeNodeRow, TreeRow, TreeRowFrame, TreeState, row_click_action,
     selection_border, tree_row_height,
 };

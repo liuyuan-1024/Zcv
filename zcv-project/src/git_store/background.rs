@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use zcv_git::{Branch, DiffStat, GitCancellation, GitRepository};
+use zcv_git::{Branch, DiffStat, FileStatus, GitCancellation, GitRepository};
 
 use super::{GitJob, GitOperationKind, GitOperationOutcome, RepositorySnapshot, StatusEntry};
 use crate::worktree::discover_repositories;
@@ -24,6 +24,7 @@ pub(super) struct ReloadScan {
     pub(super) working_directory: PathBuf,
     pub(super) repository: Arc<dyn GitRepository>,
     pub(super) snapshot: RepositorySnapshot,
+    pub(super) clean_conflicts: Vec<PathBuf>,
 }
 
 /// 增量刷新的原始数据（后台查询结果）。
@@ -42,6 +43,7 @@ pub(super) struct RefreshData {
     pub(super) statuses: zcv_git::GitStatus,
     pub(super) staged: HashMap<PathBuf, DiffStat>,
     pub(super) unstaged: HashMap<PathBuf, DiffStat>,
+    pub(super) clean_conflicts: Vec<PathBuf>,
 }
 
 /// 后台线程：执行一个 job（所有 git 命令在这里同步阻塞运行）。
@@ -93,6 +95,9 @@ pub(super) async fn execute_job(
                                         ReloadScan {
                                             working_directory: working_directory.clone(),
                                             repository: repository.clone(),
+                                            clean_conflicts: clean_conflicts_for_snapshot(
+                                                repository, &snapshot,
+                                            ),
                                             snapshot,
                                         },
                                     )
@@ -172,6 +177,21 @@ pub(super) async fn execute_job(
                 };
                 if let Err(error) = outcome {
                     result = Err(error);
+                    break;
+                }
+            }
+            JobResult::GitOperation(result)
+        }
+        GitJob::ResolveConflicts { .. } => {
+            let mut result = Ok(());
+            for (index, repository) in repositories.into_iter().enumerate() {
+                for path in &grouped_paths[index] {
+                    if let Err(error) = repository.clear_conflict(path) {
+                        result = Err(error);
+                        break;
+                    }
+                }
+                if result.is_err() {
                     break;
                 }
             }
@@ -341,6 +361,7 @@ fn refresh_repository_data_sync(
         .iter()
         .any(|path| path.as_os_str().is_empty() || is_git_state_path(path));
     let statuses = repository.status(paths).unwrap_or_default();
+    let clean_conflicts = clean_conflict_paths(repository, &statuses.statuses);
     // 分支名来自 status 头行（零附加进程）；head oid 与最近提交 subject 由 head_commit 一次查询。
     let (head, last_commit_message) = if touches_git {
         repository.head_commit().unwrap_or_default()
@@ -378,7 +399,44 @@ fn refresh_repository_data_sync(
         statuses,
         staged,
         unstaged,
+        clean_conflicts,
     }
+}
+
+/// 找出工作区文本已经没有冲突标记、但 Git 仍报告未合并的路径。
+///
+/// Git 的未合并 stage 是状态真值，工作区文本是编辑器内容真值。
+/// 两者同时满足时，可以在状态扫描路径自动完成 Git 的冲突确认；
+/// 含有二进制或无效 UTF-8 的冲突文件不自动处理。
+fn clean_conflict_paths(
+    repository: &Arc<dyn GitRepository>,
+    statuses: &[(PathBuf, FileStatus)],
+) -> Vec<PathBuf> {
+    statuses
+        .iter()
+        .filter_map(|(path, status)| {
+            if *status != FileStatus::Unmerged {
+                return None;
+            }
+            let bytes = std::fs::read(repository.working_directory().join(path)).ok()?;
+            let text = std::str::from_utf8(&bytes).ok()?;
+            zcv_git::parse_conflict_regions(text)
+                .is_empty()
+                .then(|| path.clone())
+        })
+        .collect()
+}
+
+fn clean_conflicts_for_snapshot(
+    repository: &Arc<dyn GitRepository>,
+    snapshot: &RepositorySnapshot,
+) -> Vec<PathBuf> {
+    let statuses = snapshot
+        .statuses_by_path
+        .iter()
+        .map(|(path, entry)| (path.clone(), entry.status))
+        .collect::<Vec<_>>();
+    clean_conflict_paths(repository, &statuses)
 }
 
 /// 仓库相对路径是否为 `.git` 状态相关（快路径判定：`.git` 下一切路径都算）。

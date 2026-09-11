@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use gpui::{App, AppContext, Entity, Task};
 use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
+use zcv_text::{ByteOffset, TextRange};
 use zcv_workspace::{ItemHandle, ItemProvider};
 
-use crate::Editor;
+use crate::{Editor, EditorHunk, EditorHunkMarkerKind, EditorHunkPart};
 
 /// 二进制检测窗口：读取文件头 8KB 检查 null 字节，命中视为二进制拒绝文本打开。
 const BINARY_SNIFF_SIZE: usize = 8192;
@@ -38,10 +39,58 @@ impl ItemProvider for TextFileProvider {
             Ok(language_buffer) => language_buffer,
             Err(error) => return Task::ready(Err(anyhow::anyhow!("{error}"))),
         };
+        let conflict_hunks = {
+            let snapshot = language_buffer.read(cx).text_snapshot(cx);
+            let text_range = TextRange::new(ByteOffset::ZERO, snapshot.len_bytes())
+                .expect("工作区文本范围必须有效");
+            let text = snapshot
+                .slice_text(text_range)
+                .expect("工作区文本快照必须可切片")
+                .to_string();
+            zcv_git::parse_conflict_regions(&text)
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, region)| {
+                    let outer = TextRange::new(
+                        ByteOffset::new(region.outer.start),
+                        ByteOffset::new(region.outer.end),
+                    )
+                    .ok()?;
+                    let ours = TextRange::new(
+                        ByteOffset::new(region.outer.start),
+                        ByteOffset::new(region.theirs.start),
+                    )
+                    .ok()?;
+                    let theirs = TextRange::new(
+                        ByteOffset::new(region.theirs.start),
+                        ByteOffset::new(region.outer.end),
+                    )
+                    .ok()?;
+                    Some(EditorHunk {
+                        id: format!("{}\n{index}", path.display()).into(),
+                        range: outer,
+                        parts: vec![
+                            EditorHunkPart {
+                                range: ours,
+                                content_kind: zcv_git::DiffHunkKind::Deleted,
+                                marker_kind: EditorHunkMarkerKind::Conflict,
+                            },
+                            EditorHunkPart {
+                                range: theirs,
+                                content_kind: zcv_git::DiffHunkKind::Added,
+                                marker_kind: EditorHunkMarkerKind::Conflict,
+                            },
+                        ]
+                        .into(),
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
         // 普通编辑器统一经 `from_working_source` 构建独立组合文档（整文件可编辑 excerpt）：
         // 项目共享 LanguageBuffer 只作为工作区源，展开 diff hunk 时的 set_excerpts 只影响本组合文档，不污染项目共享文档（ProjectDiffView 等仍引用同一 LanguageBuffer）。
         let multi_buffer = cx.new(|cx| MultiBuffer::from_working_source(language_buffer, cx));
         let editor = cx.new(|cx| Editor::for_multi_buffer(multi_buffer, cx));
+        editor.update(cx, |editor, cx| editor.set_editor_hunks(conflict_hunks, cx));
         Task::ready(Ok(Box::new(editor) as Box<dyn ItemHandle>))
     }
 }

@@ -5,10 +5,9 @@
 
 use std::ops::Range;
 
-use gpui::{Bounds, Hitbox, HitboxBehavior, Pixels, Point, Window, point, px, size};
-use zcv_git::DiffHunkKind;
-
 use super::scroll::ScrollbarThumbState;
+use super::view::EditorHunkMarkerKind;
+use gpui::{Bounds, Hitbox, HitboxBehavior, Pixels, Point, Window, point, px, size};
 use zcv_ui::MIN_THUMB_SIZE;
 
 /// 滚动轴宽度。
@@ -46,9 +45,9 @@ pub(super) struct ScrollbarMarker {
     pub(super) kind: ScrollbarMarkerKind,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ScrollbarMarkerKind {
-    Diff(DiffHunkKind),
+    Git(EditorHunkMarkerKind),
     Search,
 }
 
@@ -182,6 +181,7 @@ pub(super) fn marker_column_x_range_at(
 mod tests {
     use super::*;
     use DiffHunkKind::*;
+    use zcv_git::DiffHunkKind;
 
     fn track_bounds(height: f32) -> Bounds<Pixels> {
         Bounds {
@@ -196,7 +196,10 @@ mod tests {
         // 绝对定位：marker 表示行在文档中的位置，不随滚动变化（与 thumb 同一坐标系）。
         let track = track_bounds(100.);
         let markers = marker_geometry(
-            [(5..6, ScrollbarMarkerKind::Diff(Modified))],
+            [(
+                5..6,
+                ScrollbarMarkerKind::Git(EditorHunkMarkerKind::Diff(Modified)),
+            )],
             track,
             2.0,
             px(25.),
@@ -214,7 +217,10 @@ mod tests {
         // 内容高度 == 视口高度（per_pixel=0）：行 0 的 5px 高 marker 直接映射。
         let track = track_bounds(200.);
         let markers = marker_geometry(
-            [(0..1, ScrollbarMarkerKind::Diff(Added))],
+            [(
+                0..1,
+                ScrollbarMarkerKind::Git(EditorHunkMarkerKind::Diff(Added)),
+            )],
             track,
             0.0,
             px(25.),
@@ -227,7 +233,10 @@ mod tests {
         // 极端缩放（内容远大于视口）下单行被压到 < 5px → 夹取到 5px。
         let track = track_bounds(200.);
         let markers = marker_geometry(
-            [(0..1, ScrollbarMarkerKind::Diff(Added))],
+            [(
+                0..1,
+                ScrollbarMarkerKind::Git(EditorHunkMarkerKind::Diff(Added)),
+            )],
             track,
             40.0,
             px(25.),
@@ -242,8 +251,14 @@ mod tests {
         // 同色相邻（间隙 0）合并。
         let markers = marker_geometry(
             [
-                (0..1, ScrollbarMarkerKind::Diff(Added)),
-                (1..2, ScrollbarMarkerKind::Diff(Added)),
+                (
+                    0..1,
+                    ScrollbarMarkerKind::Git(EditorHunkMarkerKind::Diff(Added)),
+                ),
+                (
+                    1..2,
+                    ScrollbarMarkerKind::Git(EditorHunkMarkerKind::Diff(Added)),
+                ),
             ],
             track,
             0.0,
@@ -255,8 +270,14 @@ mod tests {
         // 异色不合并。
         let markers = marker_geometry(
             [
-                (0..1, ScrollbarMarkerKind::Diff(Added)),
-                (1..2, ScrollbarMarkerKind::Diff(Deleted)),
+                (
+                    0..1,
+                    ScrollbarMarkerKind::Git(EditorHunkMarkerKind::Diff(Added)),
+                ),
+                (
+                    1..2,
+                    ScrollbarMarkerKind::Git(EditorHunkMarkerKind::Diff(Deleted)),
+                ),
             ],
             track,
             0.0,
@@ -270,7 +291,10 @@ mod tests {
         let track = track_bounds(100.);
         // per_pixel=2：行 10（content 250..275 → track 125..137.5）超出视口 → 丢弃。
         let markers = marker_geometry(
-            [(10..11, ScrollbarMarkerKind::Diff(Modified))],
+            [(
+                10..11,
+                ScrollbarMarkerKind::Git(EditorHunkMarkerKind::Diff(Modified)),
+            )],
             track,
             2.0,
             px(25.),

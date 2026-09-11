@@ -10,18 +10,21 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, AnyEntity, AnyView, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    KeyContext, ParentElement, Pixels, Render, SharedString, Styled, Subscription, Task,
-    WeakEntity, Window, div, prelude::*,
+    KeyContext, ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity,
+    Window, div, prelude::*,
 };
 use zcv_actions::{
     Backtab, FindNext, FindPrevious, ReplaceAll, ReplaceNext, Tab, ToggleCaseSensitive,
     ToggleRegex, ToggleReplace, ToggleWholeWord,
 };
-use zcv_editor::{DiffHunkDelegate, Editor, EditorEvent, EditorScrollAnchor};
+use zcv_editor::{
+    DiffHunkDelegate, Editor, EditorEvent, EditorHunk, EditorHunkMarkerKind, EditorHunkPart,
+    EditorScrollAnchor, HunkControlTarget,
+};
 use zcv_git::{FileStatus, GitHunkOperation, GitRevision, StatusCode};
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::{BufferDiff, DisplayHunk};
-use zcv_multi_buffer::{ExcerptLocation, MultiBuffer};
+use zcv_multi_buffer::{ExcerptLocation, MultiBuffer, MultiBufferExcerpt};
 use zcv_project::{GitStoreEvent, Project};
 use zcv_text::{Anchor, Buffer, BufferConfig, ByteOffset, SearchQuery, Snapshot};
 use zcv_theme::{color, space};
@@ -33,6 +36,8 @@ use zcv_workspace::{
     Direction, Item, ItemEvent, SearchableItem, SearchableItemHandle, SerializedItemProvider,
     SerializedPaneItem, Workspace,
 };
+
+use zcv_git::ConflictChoice;
 
 const PROJECT_DIFF_SERIALIZED_KIND: &str = "project-diff";
 
@@ -46,7 +51,80 @@ struct ProjectDiffHunkDelegate {
     view: WeakEntity<ProjectDiffView>,
 }
 
+impl ProjectDiffHunkDelegate {
+    fn render_conflict_controls(
+        &self,
+        block: &EditorHunk,
+        row: usize,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
+        let (path, conflict_index) = block.id.rsplit_once('\n')?;
+        let conflict_index = conflict_index.parse::<usize>().ok()?;
+        let path = PathBuf::from(path);
+        let colors = *color::current(cx);
+        let controls = div()
+            .flex()
+            .items_center()
+            .gap(space::S2)
+            .rounded_md()
+            .overflow_hidden()
+            .border_1()
+            .border_color(colors.border_variant)
+            .bg(colors.editor_background);
+        let make_button = |id: String, label: &'static str, choice: ConflictChoice| {
+            let view_for_click = self.view.clone();
+            let path = path.clone();
+            Button::text(id, label)
+                .size(ButtonSize::Medium)
+                .on_click(move |_, _, cx| {
+                    if let Some(view) = view_for_click.upgrade() {
+                        view.update(cx, |view, cx| {
+                            view.resolve_conflict_for_path(&path, conflict_index, choice, cx)
+                        });
+                    }
+                })
+                .into_any_element()
+        };
+        Some(
+            controls
+                .child(make_button(
+                    format!("project-conflict-ours-{row}"),
+                    "保留当前内容",
+                    ConflictChoice::Ours,
+                ))
+                .child(make_button(
+                    format!("project-conflict-theirs-{row}"),
+                    "保留传入内容",
+                    ConflictChoice::Theirs,
+                ))
+                .child(make_button(
+                    format!("project-conflict-both-{row}"),
+                    "保留双方内容",
+                    ConflictChoice::Both,
+                ))
+                .into_any_element(),
+        )
+    }
+}
+
 impl DiffHunkDelegate for ProjectDiffHunkDelegate {
+    fn render_hunk_controls(
+        &self,
+        target: &HunkControlTarget,
+        row: usize,
+        _editor: &Entity<Editor>,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
+        let HunkControlTarget::Editor(hunk) = target else {
+            let HunkControlTarget::Diff(diff) = target else {
+                return None;
+            };
+            return Some(self.render_diff_hunk_controls(row, diff, cx));
+        };
+        self.render_conflict_controls(hunk, row, cx)
+    }
+
     fn render_buffer_header_controls(
         &self,
         path: &Path,
@@ -72,6 +150,9 @@ impl DiffHunkDelegate for ProjectDiffHunkDelegate {
                     .label("未保存修改")
                     .into_any_element(),
             );
+        }
+        if kind == ProjectDiffKind::Conflict {
+            return None;
         }
         let checked = kind == ProjectDiffKind::Staged;
         let view_for_click = self.view.clone();
@@ -100,14 +181,13 @@ impl DiffHunkDelegate for ProjectDiffHunkDelegate {
             .into_any_element(),
         )
     }
+}
 
-    fn render_hunk_controls(
+impl ProjectDiffHunkDelegate {
+    fn render_diff_hunk_controls(
         &self,
         row: usize,
         hunk: &DisplayHunk,
-        _line_height: Pixels,
-        _editor: &Entity<Editor>,
-        _window: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
         let Some(view) = self.view.upgrade() else {
@@ -137,6 +217,7 @@ impl DiffHunkDelegate for ProjectDiffHunkDelegate {
             .bg(colors.editor_background);
 
         match kind {
+            ProjectDiffKind::Conflict => div().into_any_element(),
             ProjectDiffKind::Unstaged => {
                 let stage_view = self.view.clone();
                 let stage_hunk = hunk.clone();
@@ -213,6 +294,7 @@ impl DiffHunkDelegate for ProjectDiffHunkDelegate {
 pub enum ProjectDiffKind {
     Staged,
     Unstaged,
+    Conflict,
 }
 
 impl ProjectDiffKind {
@@ -220,6 +302,7 @@ impl ProjectDiffKind {
         match self {
             Self::Staged => GitRevision::Head,
             Self::Unstaged => GitRevision::Index,
+            Self::Conflict => GitRevision::Index,
         }
     }
 
@@ -227,6 +310,7 @@ impl ProjectDiffKind {
         match self {
             Self::Staged => status.has_staged(),
             Self::Unstaged => status.has_unstaged(),
+            Self::Conflict => matches!(status, FileStatus::Unmerged),
         }
     }
 
@@ -274,6 +358,7 @@ impl ProjectDiffKind {
         match self {
             Self::Staged => "已暂存更改",
             Self::Unstaged => "未暂存更改",
+            Self::Conflict => "冲突解决",
         }
     }
 
@@ -281,6 +366,7 @@ impl ProjectDiffKind {
         match self {
             Self::Staged => "icons/lock.svg",
             Self::Unstaged => "icons/diff.svg",
+            Self::Conflict => "icons/warning.svg",
         }
     }
 
@@ -288,6 +374,7 @@ impl ProjectDiffKind {
         match self {
             Self::Staged => "staged",
             Self::Unstaged => "unstaged",
+            Self::Conflict => "conflict",
         }
     }
 
@@ -295,6 +382,7 @@ impl ProjectDiffKind {
         match name {
             "staged" => Some(Self::Staged),
             "unstaged" => Some(Self::Unstaged),
+            "conflict" => Some(Self::Conflict),
             _ => None,
         }
     }
@@ -341,6 +429,24 @@ impl Render for ProjectDiffToolbar {
 }
 
 impl ProjectDiffView {
+    fn resolve_conflict_for_path(
+        &mut self,
+        path: &Path,
+        conflict_index: usize,
+        choice: ConflictChoice,
+        cx: &mut Context<Self>,
+    ) {
+        let result = self.project.update(cx, |project, cx| {
+            project.resolve_conflict(path, conflict_index, choice, cx)
+        });
+        if let Err(error) = result {
+            cx.emit(EditorEvent::Error(format!("保存冲突解决结果失败：{error}")));
+            return;
+        }
+        self.rebuild_conflict_projection(cx);
+        cx.notify();
+    }
+
     fn ensure_search_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.search_input.is_some() {
             return;
@@ -810,6 +916,7 @@ impl ProjectDiffView {
         let multi_buffer = match kind {
             ProjectDiffKind::Staged => cx.new(MultiBuffer::empty_read_only),
             ProjectDiffKind::Unstaged => cx.new(MultiBuffer::empty),
+            ProjectDiffKind::Conflict => cx.new(MultiBuffer::empty),
         };
         let editor = cx.new(|cx| {
             let mut editor = Editor::for_multi_buffer(multi_buffer.clone(), cx);
@@ -940,6 +1047,17 @@ impl ProjectDiffView {
         if !self.projection_data_ready(cx) {
             return;
         }
+        if self.kind == ProjectDiffKind::Conflict {
+            self.rebuild_conflict_projection(cx);
+            if let Some(scroll_anchor) = self.refresh_scroll_anchor.take() {
+                self.editor.update(cx, |editor, cx| {
+                    editor.restore_scroll_anchor(scroll_anchor, cx);
+                });
+            }
+            self.apply_pending_path(cx);
+            cx.notify();
+            return;
+        }
         let root = self.project.read(cx).root().map(Path::to_path_buf);
         let mut diff_files = Vec::new();
         let files = self.files.clone();
@@ -950,6 +1068,7 @@ impl ProjectDiffView {
             diff_files.push(diff_file);
         }
         self.editor.update(cx, |editor, cx| {
+            editor.set_editor_hunks(Vec::new(), cx);
             editor.set_buffer_diffs(Some(diff_files), cx)
         });
         if let Some(scroll_anchor) = self.refresh_scroll_anchor.take() {
@@ -959,6 +1078,100 @@ impl ProjectDiffView {
         }
         self.apply_pending_path(cx);
         cx.notify();
+    }
+
+    /// 冲突视图使用完整工作区文本，不创建 BufferDiff；
+    /// 冲突块和区域装饰由同一份解析结果注入 Editor。
+    fn rebuild_conflict_projection(&mut self, cx: &mut Context<Self>) {
+        let mut excerpts = Vec::new();
+        for file in &self.files {
+            let Ok(source) = self
+                .project
+                .update(cx, |project, cx| project.open_buffer(&file.path, cx))
+            else {
+                continue;
+            };
+            let source_len = source.read(cx).text_snapshot(cx).len_bytes();
+            let Ok(source_range) = zcv_text::TextRange::new(ByteOffset::ZERO, source_len) else {
+                continue;
+            };
+            excerpts.push(
+                MultiBufferExcerpt::new(source, source_range, Vec::new())
+                    .with_display_path(file.path.clone()),
+            );
+        }
+        self.multi_buffer.update(cx, |buffer, cx| {
+            buffer.set_buffer_diffs(Some(Vec::new()), cx);
+            buffer.set_excerpts(excerpts, cx);
+        });
+        let hunks = self.conflict_editor_hunks(cx);
+        self.editor.update(cx, |editor, cx| {
+            editor.set_editor_hunks(hunks, cx);
+        });
+    }
+
+    fn conflict_editor_hunks(&self, cx: &App) -> Vec<EditorHunk> {
+        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
+        let mut hunks = Vec::new();
+        for (buffer, path) in self.multi_buffer.read(cx).file_buffers(cx) {
+            let source = buffer.read(cx).snapshot();
+            let Ok(text_range) = zcv_text::TextRange::new(ByteOffset::ZERO, source.len_bytes())
+            else {
+                continue;
+            };
+            let Ok(text) = source.slice_text(text_range) else {
+                continue;
+            };
+            let text = text.to_string();
+            for (index, region) in zcv_git::parse_conflict_regions(&text).iter().enumerate() {
+                let Some(excerpt) = snapshot.excerpts().iter().find(|excerpt| {
+                    excerpt.path() == path
+                        && excerpt
+                            .source_range()
+                            .contains(ByteOffset::new(region.outer.start))
+                }) else {
+                    continue;
+                };
+                let output_offset = |offset: usize| {
+                    ByteOffset::new(
+                        excerpt.output_range().start().get()
+                            + offset.saturating_sub(excerpt.source_range().start().get()),
+                    )
+                };
+                let Ok(range) = zcv_text::TextRange::new(
+                    output_offset(region.outer.start),
+                    output_offset(region.outer.end),
+                ) else {
+                    continue;
+                };
+                hunks.push(EditorHunk {
+                    id: format!("{}\n{index}", path.display()).into(),
+                    range,
+                    parts: vec![
+                        EditorHunkPart {
+                            range: zcv_text::TextRange::new(
+                                output_offset(region.outer.start),
+                                output_offset(region.theirs.start),
+                            )
+                            .expect("冲突当前侧范围必须有效"),
+                            content_kind: zcv_git::DiffHunkKind::Deleted,
+                            marker_kind: EditorHunkMarkerKind::Conflict,
+                        },
+                        EditorHunkPart {
+                            range: zcv_text::TextRange::new(
+                                output_offset(region.theirs.start),
+                                output_offset(region.outer.end),
+                            )
+                            .expect("冲突传入侧范围必须有效"),
+                            content_kind: zcv_git::DiffHunkKind::Added,
+                            marker_kind: EditorHunkMarkerKind::Conflict,
+                        },
+                    ]
+                    .into(),
+                });
+            }
+        }
+        hunks
     }
 
     /// 构造单个变更文件的统一投影项（预创建 diff 实体 + 显示策略）。
@@ -994,15 +1207,36 @@ impl ProjectDiffView {
                 };
                 source
             }
+            ProjectDiffKind::Conflict => {
+                let opened = self
+                    .project
+                    .update(cx, |project, cx| project.open_buffer(&file.path, cx));
+                let Ok(source) = opened else {
+                    cx.emit(EditorEvent::Error(format!(
+                        "无法打开冲突文件：{}",
+                        file.path.display()
+                    )));
+                    return None;
+                };
+                source
+            }
         };
-        let base_text = git_store
-            .read(cx)
-            .revision_text(self.kind.base_revision(), &file.path);
+        let base_text = if self.kind == ProjectDiffKind::Conflict {
+            None
+        } else {
+            git_store
+                .read(cx)
+                .revision_text(self.kind.base_revision(), &file.path)
+        };
         // index 参照：已暂存视图 working 就是 index，未暂存视图 base 就是 index；
         // 统一分类自然得到全部 Staged / 全部 Unstaged。
-        let index_text = git_store
-            .read(cx)
-            .revision_text(GitRevision::Index, &file.path);
+        let index_text = (self.kind != ProjectDiffKind::Conflict)
+            .then(|| {
+                git_store
+                    .read(cx)
+                    .revision_text(GitRevision::Index, &file.path)
+            })
+            .flatten();
         let display_path = root
             .and_then(|root| file.path.strip_prefix(root).ok())
             .unwrap_or(&file.path)
@@ -1012,11 +1246,11 @@ impl ProjectDiffView {
             base_text,
             index_text,
             path: file.path.clone(),
-            operations: Some(
+            operations: (self.kind != ProjectDiffKind::Conflict).then(|| {
                 git_store
                     .read(cx)
-                    .diff_operations(self.kind.base_revision()),
-            ),
+                    .diff_operations(self.kind.base_revision())
+            }),
         };
         // GitStore 预创建并按 (working, base, index) 共享；同一文件跨视图复用 diff 实体。
         let diff = git_store.update(cx, |store, cx| store.file_diff(&input, cx));
@@ -1034,7 +1268,8 @@ impl ProjectDiffView {
         let store = git_store.read(cx);
         self.files.iter().all(|file| {
             // 已加载即视为就绪：新建文件在 base 修订中缺失（值为 None）也是终态。
-            store.revision_text_loaded(self.kind.base_revision(), &file.path)
+            (self.kind == ProjectDiffKind::Conflict
+                || store.revision_text_loaded(self.kind.base_revision(), &file.path))
                 && (self.kind != ProjectDiffKind::Staged
                     || store.revision_text_loaded(GitRevision::Index, &file.path))
         })
@@ -1139,7 +1374,11 @@ impl ProjectDiffView {
     fn load_missing_revision_text(&mut self, cx: &mut Context<Self>) {
         let git_store = self.project.read(cx).git_store();
         for file in &self.files {
-            let mut revisions = vec![self.kind.base_revision()];
+            let mut revisions = if self.kind != ProjectDiffKind::Conflict {
+                vec![self.kind.base_revision()]
+            } else {
+                Vec::new()
+            };
             if self.kind == ProjectDiffKind::Staged && !revisions.contains(&GitRevision::Index) {
                 revisions.push(GitRevision::Index);
             }
@@ -1303,12 +1542,11 @@ impl Item for ProjectDiffView {
     }
 
     fn can_save(&self, cx: &App) -> bool {
-        self.kind == ProjectDiffKind::Unstaged
-            && <Editor as Item>::can_save(self.editor.read(cx), cx)
+        self.kind != ProjectDiffKind::Staged && <Editor as Item>::can_save(self.editor.read(cx), cx)
     }
 
     fn is_dirty(&self, cx: &App) -> bool {
-        self.kind == ProjectDiffKind::Unstaged && self.editor.read(cx).is_dirty(cx)
+        self.kind != ProjectDiffKind::Staged && self.editor.read(cx).is_dirty(cx)
     }
 
     fn save(

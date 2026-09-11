@@ -10,6 +10,7 @@ use zcv_multi_buffer::{DiffHunkStaging, DisplayHunk};
 use zcv_text::Line;
 
 use crate::display_map::DisplaySnapshot;
+use crate::view::{EditorHunk, EditorHunkMarkerKind, HunkControlTarget};
 
 /// hunks 的单遍渲染数据：行标记 / 竖条 / 点击区域共用同一份行区间计算。
 pub(crate) struct HunkRendering {
@@ -19,7 +20,10 @@ pub(crate) struct HunkRendering {
     pub(crate) strips: Vec<(Range<usize>, DiffHunkKind, DiffHunkStaging)>,
     pub(crate) hit_regions: Vec<(Range<usize>, usize, DiffHunkKind)>,
     /// hunk 操作栏的锚定显示范围；控件取范围起点作为右上角所在行。
-    pub(crate) controls: Vec<(Range<usize>, DisplayHunk)>,
+    pub(crate) controls: Vec<(Range<usize>, HunkControlTarget)>,
+    /// 宿主注入的 hunk 行范围与视觉语义。
+    pub(crate) editor_hunks: Vec<(Range<usize>, EditorHunk)>,
+    pub(crate) editor_hunk_parts: Vec<(Range<usize>, DiffHunkKind, EditorHunkMarkerKind)>,
     /// 需要整行差异背景的显示行区间；只有展开态包含（新增块的展开态由注入方决定）。
     pub(crate) expanded_rows: Vec<Range<usize>>,
     /// 展开的 hollow（已暂存）连续块；边框只在块首 / 末行按该行背景色绘制，相邻行之间不画线。
@@ -81,7 +85,7 @@ pub(crate) fn hunk_rendering(
                             hollow_blocks.push(rows.clone());
                         }
                     }
-                    controls.push((rows, hunk.clone()));
+                    controls.push((rows, HunkControlTarget::Diff(hunk.clone())));
                 }
             }
             DiffHunkKind::Deleted => {
@@ -93,12 +97,12 @@ pub(crate) fn hunk_rendering(
                         hollow_blocks.push(rows.clone());
                     }
                     hit_regions.push((rows.clone(), index, DiffHunkKind::Deleted));
-                    controls.push((rows, hunk.clone()));
+                    controls.push((rows, HunkControlTarget::Diff(hunk.clone())));
                 } else if let Some(rows) =
                     old_rows.or_else(|| logical_anchor_rows(snapshot, hunk.range.start))
                 {
                     hit_regions.push((rows.clone(), index, DiffHunkKind::Deleted));
-                    controls.push((rows, hunk.clone()));
+                    controls.push((rows, HunkControlTarget::Diff(hunk.clone())));
                 }
             }
             DiffHunkKind::Modified => {
@@ -113,12 +117,12 @@ pub(crate) fn hunk_rendering(
                         hollow_blocks.push(rows.clone());
                     }
                     hit_regions.push((rows.clone(), index, DiffHunkKind::Modified));
-                    controls.push((rows, hunk.clone()));
+                    controls.push((rows, HunkControlTarget::Diff(hunk.clone())));
                 } else if let Some(rows) = new_rows {
                     diff_rows.push((rows.clone(), DiffHunkKind::Modified, staging));
                     strips.push((rows.clone(), DiffHunkKind::Modified, staging));
                     hit_regions.push((rows.clone(), index, DiffHunkKind::Modified));
-                    controls.push((rows, hunk.clone()));
+                    controls.push((rows, HunkControlTarget::Diff(hunk.clone())));
                 }
             }
         }
@@ -131,7 +135,49 @@ pub(crate) fn hunk_rendering(
         expanded_rows,
         hollow_blocks,
         word_diff_highlights,
+        editor_hunks: Vec::new(),
+        editor_hunk_parts: Vec::new(),
     }
+}
+
+pub(crate) fn editor_hunk_rendering(
+    snapshot: &DisplaySnapshot,
+    hunks: &[crate::view::EditorHunk],
+) -> Vec<(Range<usize>, crate::view::EditorHunk)> {
+    hunks
+        .iter()
+        .filter_map(|hunk| {
+            let projected = snapshot
+                .project_text_range(hunk.range)
+                .ok()?
+                .into_iter()
+                .next()?;
+            let start = projected.start().line().get();
+            let end = projected.end().line().get();
+            let end = end.max(start + 1);
+            Some((start..end, hunk.clone()))
+        })
+        .collect()
+}
+
+pub(crate) fn editor_hunk_part_rendering(
+    snapshot: &DisplaySnapshot,
+    hunks: &[crate::view::EditorHunk],
+) -> Vec<(Range<usize>, DiffHunkKind, EditorHunkMarkerKind)> {
+    hunks
+        .iter()
+        .flat_map(|hunk| hunk.parts.iter())
+        .filter_map(|part| {
+            let projected = snapshot
+                .project_text_range(part.range)
+                .ok()?
+                .into_iter()
+                .next()?;
+            let start = projected.start().line().get();
+            let end = projected.end().line().get().max(start + 1);
+            Some((start..end, part.content_kind, part.marker_kind))
+        })
+        .collect()
 }
 
 fn logical_rows(snapshot: &DisplaySnapshot, range: &Range<usize>) -> Option<Range<usize>> {
@@ -376,7 +422,12 @@ mod tests {
             rendered
                 .controls
                 .iter()
-                .map(|(rows, hunk)| (rows.start, hunk.kind))
+                .map(|(rows, hunk)| {
+                    let HunkControlTarget::Diff(hunk) = hunk else {
+                        unreachable!("普通 diff 渲染不应产生自定义 hunk")
+                    };
+                    (rows.start, hunk.kind)
+                })
                 .collect::<Vec<_>>(),
             vec![
                 (0, DiffHunkKind::Added),
@@ -432,7 +483,10 @@ mod tests {
             rendered.strips,
             vec![(1..3, DiffHunkKind::Modified, DiffHunkStaging::NoStaging)]
         );
-        assert_eq!(rendered.controls, vec![(1..3, hunk)]);
+        assert_eq!(
+            rendered.controls,
+            vec![(1..3, HunkControlTarget::Diff(hunk))]
+        );
         assert_eq!(
             rendered.hit_regions,
             vec![(1..3, 0, DiffHunkKind::Modified)],

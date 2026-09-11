@@ -11,7 +11,7 @@ use gpui::{
 use zcv_editor::Editor;
 use zcv_theme::color;
 use zcv_ui::Scrollbar;
-use zcv_ui::{TreeState, render_row_base, row_click_action, selection_border};
+use zcv_ui::{TreeNodeRow, TreeState, row_click_action, selection_border};
 use zcv_workspace::git_status_color;
 
 use super::drag::{DraggedEntryView, TreeDrag, drop_target_dir, filter_movable_sources};
@@ -131,7 +131,6 @@ pub(super) fn render_row(
     let content = if is_editing {
         div()
             .key_context("ProjectTreeEdit")
-            .flex_1()
             .overflow_hidden()
             .when(has_error, |element| {
                 element
@@ -154,7 +153,6 @@ pub(super) fn render_row(
                 .and_then(|status| git_status_color(status, cx))
         };
         div()
-            .flex_1()
             .overflow_hidden()
             .truncate()
             .when(is_cut, |element| {
@@ -189,7 +187,8 @@ pub(super) fn render_row(
         .into(),
     );
 
-    render_row_base(depth, &row.path, is_dir, row.expanded, content, cx)
+    TreeNodeRow::new(depth, &row.path, is_dir, row.expanded, content)
+        .render(cx)
         .id(row_id)
         .cursor_pointer()
         // 多选标记用选中背景；活动文件标记用更弱的悬停背景，两者不同色——用户据此区分「选区成员」与「编辑器当前打开的文件」，避免把后者误当作选区参与拖拽。

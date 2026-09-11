@@ -456,6 +456,11 @@ impl GitStore {
         );
     }
 
+    /// 清除已解决文件的冲突 stage，并以当前分支内容作为未暂存基线。
+    pub fn resolve_conflicts(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        self.schedule_job(GitJob::ResolveConflicts { paths }, cx);
+    }
+
     /// 构造变更块操作实现（宿主注入 `BufferDiff` 时使用）。
     ///
     /// `base` 决定该 diff 支持的操作方向：index 为基（未暂存差异）可暂存/还原，HEAD 为基（已暂存差异）可取消暂存。
@@ -1177,6 +1182,15 @@ impl GitStore {
                         expanded
                     })
                     .collect();
+                Some(JobPreparation {
+                    root,
+                    repositories,
+                    grouped_paths,
+                    grouped_diff_requests: Vec::new(),
+                })
+            }
+            GitJob::ResolveConflicts { paths } => {
+                let (repositories, grouped_paths) = self.group_paths_by_repo(paths);
                 Some(JobPreparation {
                     root,
                     repositories,

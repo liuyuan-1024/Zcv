@@ -1,9 +1,9 @@
 //! VersionControlPanel —— 版本管理面板 Entity 组件。
 //!
 //! 无 git 仓库时居中显示"初始化仓库"按钮（点击对项目根执行 `git init`）；
-//! 有仓库时按 已暂存/未暂存 两组展示变更目录树，部分暂存文件同时出现在已暂存与未暂存两组。
-//! 冲突文件暂不展示（待后续版本处理）。
-//! 行尾复选框（或空格键）切换条目的暂存/取消暂存：已暂存组勾选、未暂存组未勾选。
+//! 有仓库时按 冲突/已暂存/未暂存 三组展示变更目录树；无冲突时保留普通变更的原有顺序。
+//! 部分暂存文件同时出现在已暂存与未暂存两组；未解决的合并冲突展示在最上方的独立组中，不能直接暂存。
+//! 行尾复选框（或空格键）切换条目的暂存/取消暂存：冲突组不提供暂存操作。
 //! 行模型由 GitStore 快照构建，订阅 Repositories/Statuses 事件重建。
 
 use std::cell::RefCell;
@@ -27,7 +27,7 @@ use zcv_ui::{
     Button, ButtonLike, ButtonSize, ButtonStyle, Checkbox, Scrollbar, SvgIcon, TooltipSpec,
 };
 use zcv_ui::{
-    RowClickAction, TreeRow, TreeState, render_row_base, render_text_row, row_click_action,
+    RowClickAction, TreeNodeRow, TreeRow, TreeRowFrame, TreeState, row_click_action,
     selection_border,
 };
 use zcv_workspace::{Panel, PanelEvent, git_status_color};
@@ -44,9 +44,47 @@ pub type OnOpenGitGraph = Rc<dyn Fn(&mut Window, &mut gpui::App)>;
 
 // ═══ 分组与建树纯函数 ═══════════════════════════════════════════
 
-/// 条目出现在哪些组：(已暂存, 未暂存)。
+/// 按用户界面顺序持有三类 Git 变更数据，字段顺序就是展示顺序。
 ///
-/// Ignored 由调用方过滤；冲突文件暂不展示（待后续版本处理）。
+/// 使用显式字段而不是数组下标，避免存储顺序与界面顺序分离后发生分组错位。
+#[derive(Clone, Debug, Default)]
+struct GitSections<T> {
+    conflict: T,
+    staged: T,
+    unstaged: T,
+}
+
+impl<T> GitSections<T> {
+    fn iter(&self) -> impl Iterator<Item = (GitSection, &T)> {
+        [
+            (GitSection::Conflict, &self.conflict),
+            (GitSection::Staged, &self.staged),
+            (GitSection::Unstaged, &self.unstaged),
+        ]
+        .into_iter()
+    }
+
+    fn iter_mut(&mut self) -> impl Iterator<Item = (GitSection, &mut T)> {
+        [
+            (GitSection::Conflict, &mut self.conflict),
+            (GitSection::Staged, &mut self.staged),
+            (GitSection::Unstaged, &mut self.unstaged),
+        ]
+        .into_iter()
+    }
+
+    fn get(&self, section: GitSection) -> &T {
+        match section {
+            GitSection::Conflict => &self.conflict,
+            GitSection::Staged => &self.staged,
+            GitSection::Unstaged => &self.unstaged,
+        }
+    }
+}
+
+/// 条目出现在哪些组：(已暂存, 未暂存)；冲突条目由建树逻辑单独放入冲突组。
+///
+/// Ignored 由调用方过滤；冲突条目由建树逻辑单独放入冲突组。
 fn entry_sections(status: FileStatus) -> (bool, bool) {
     match status {
         FileStatus::Unmerged => (false, false),
@@ -68,8 +106,8 @@ fn entry_sections(status: FileStatus) -> (bool, bool) {
 fn build_section_trees<'a>(
     root: &Path,
     repositories: impl Iterator<Item = (&'a Path, &'a RepositorySnapshot)>,
-) -> [Vec<GitTreeNode>; 2] {
-    let mut roots = [Vec::new(), Vec::new()];
+) -> GitSections<Vec<GitTreeNode>> {
+    let mut roots = GitSections::default();
     for (workdir, snapshot) in repositories {
         for (relative, entry) in &snapshot.statuses_by_path {
             if entry.status.is_ignored() {
@@ -78,7 +116,7 @@ fn build_section_trees<'a>(
             let (in_staged, in_unstaged) = entry_sections(entry.status);
             if in_staged {
                 insert_entry(
-                    &mut roots[0],
+                    &mut roots.staged,
                     root,
                     workdir,
                     relative,
@@ -88,7 +126,17 @@ fn build_section_trees<'a>(
             }
             if in_unstaged {
                 insert_entry(
-                    &mut roots[1],
+                    &mut roots.unstaged,
+                    root,
+                    workdir,
+                    relative,
+                    entry.status,
+                    entry.unstaged_diff_stat,
+                );
+            }
+            if matches!(entry.status, FileStatus::Unmerged) {
+                insert_entry(
+                    &mut roots.conflict,
                     root,
                     workdir,
                     relative,
@@ -98,7 +146,7 @@ fn build_section_trees<'a>(
             }
         }
     }
-    for section_tree in &mut roots {
+    for (_, section_tree) in roots.iter_mut() {
         for node in section_tree.iter_mut() {
             finalize_node(node);
         }
@@ -200,18 +248,18 @@ fn finalize_node(node: &mut GitTreeNode) {
 
 /// 树 → 有序行列表：分组头前置，展开的空组显示一行提示，非空组按 DFS 先序展开；折叠的分区只留标题行。
 fn flatten_rows(
-    trees: &[Vec<GitTreeNode>; 2],
+    trees: &GitSections<Vec<GitTreeNode>>,
     expanded: &HashSet<(GitSection, PathBuf)>,
     collapsed: &HashSet<GitSection>,
 ) -> Vec<GitRow> {
     let mut rows = Vec::new();
-    for (index, section) in GitSection::ALL.iter().enumerate() {
-        rows.push(GitRow::Header(*section));
-        if !collapsed.contains(section) {
-            if trees[index].is_empty() {
-                rows.push(GitRow::Empty(*section));
+    for (section, tree) in trees.iter() {
+        rows.push(GitRow::Header(section));
+        if !collapsed.contains(&section) {
+            if tree.is_empty() {
+                rows.push(GitRow::Empty(section));
             } else {
-                flatten_nodes(&mut rows, &trees[index], *section, 0, expanded);
+                flatten_nodes(&mut rows, tree, section, 0, expanded);
             }
         }
     }
@@ -260,10 +308,10 @@ fn flatten_nodes(
 }
 
 /// 收集所有分组树中的目录节点键（(分组, 绝对路径)），供默认全展开使用。
-fn collect_directory_keys(trees: &[Vec<GitTreeNode>; 2]) -> HashSet<(GitSection, PathBuf)> {
+fn collect_directory_keys(trees: &GitSections<Vec<GitTreeNode>>) -> HashSet<(GitSection, PathBuf)> {
     let mut keys = HashSet::new();
-    for (index, section) in GitSection::ALL.iter().enumerate() {
-        collect_dirs(&trees[index], *section, &mut keys);
+    for (section, tree) in trees.iter() {
+        collect_dirs(tree, section, &mut keys);
     }
     keys
 }
@@ -293,7 +341,7 @@ pub struct VersionControlPanel {
     /// 折叠的分区（点击分区标题行首 chevron 切换；折叠时该分区条目不渲染）。
     collapsed_sections: Rc<RefCell<HashSet<GitSection>>>,
     /// 各分组的顶层变更路径；标题行复选框可见性与全选以此为准，不随折叠变化。
-    section_paths: [Vec<PathBuf>; 2],
+    section_paths: GitSections<Vec<PathBuf>>,
     scroll_handle: UniformListScrollHandle,
     scrollbar: Scrollbar<UniformListScrollHandle>,
     /// 底部提交信息编辑器。
@@ -357,7 +405,7 @@ impl VersionControlPanel {
             state: Rc::new(RefCell::new(TreeState::new(row_entry_key))),
             collapsed_dirs: HashSet::new(),
             collapsed_sections: Rc::new(RefCell::new(HashSet::new())),
-            section_paths: [Vec::new(), Vec::new()],
+            section_paths: GitSections::default(),
             scroll_handle,
             scrollbar,
             commit_editor,
@@ -427,9 +475,19 @@ impl VersionControlPanel {
             build_section_trees(&root, store.repositories())
         };
         // 各分组顶层路径：暂存/取消暂存按目录前缀覆盖其下全部变更文件，与展开折叠无关。
-        let section_paths = std::array::from_fn(|index| {
-            trees[index].iter().map(|node| node.path.clone()).collect()
-        });
+        let section_paths = GitSections {
+            conflict: trees
+                .conflict
+                .iter()
+                .map(|node| node.path.clone())
+                .collect(),
+            staged: trees.staged.iter().map(|node| node.path.clone()).collect(),
+            unstaged: trees
+                .unstaged
+                .iter()
+                .map(|node| node.path.clone())
+                .collect(),
+        };
         let mut state = self.state.borrow_mut();
         // 目录默认展开：未显式折叠的目录（含新出现的目录）都展开，用户折叠状态保持。
         let directories = collect_directory_keys(&trees);
@@ -460,7 +518,7 @@ impl VersionControlPanel {
     ///
     /// 以分组树的全部条目为准，折叠时不可见的分区同样能整组操作。
     fn toggle_section_all(&mut self, section: GitSection, cx: &mut Context<Self>) {
-        let paths = self.section_paths[section.index()].clone();
+        let paths = self.section_paths.get(section).clone();
         if paths.is_empty() {
             return;
         }
@@ -468,6 +526,7 @@ impl VersionControlPanel {
         match section {
             GitSection::Staged => store.update(cx, |store, cx| store.unstage_paths(paths, cx)),
             GitSection::Unstaged => store.update(cx, |store, cx| store.stage_paths(paths, cx)),
+            GitSection::Conflict => {}
         }
     }
 
@@ -502,6 +561,7 @@ impl VersionControlPanel {
             let kind = match entry.section {
                 GitSection::Staged => ProjectDiffKind::Staged,
                 GitSection::Unstaged => ProjectDiffKind::Unstaged,
+                GitSection::Conflict => ProjectDiffKind::Conflict,
             };
             callback(kind, entry.path, focus_opened_item, window, cx);
         }
@@ -600,6 +660,7 @@ impl VersionControlPanel {
             GitSection::Staged => store.update(cx, |store, cx| {
                 store.unstage_paths(vec![path.to_path_buf()], cx);
             }),
+            GitSection::Conflict => {}
         }
     }
 
@@ -675,10 +736,11 @@ impl Render for VersionControlPanel {
             let rows = self.state.borrow().rows.clone();
             let render_context = GitPanelRenderContext {
                 state: Rc::clone(&self.state),
-                non_empty_sections: GitSection::ALL
+                non_empty_sections: self
+                    .section_paths
                     .iter()
-                    .copied()
-                    .filter(|section| !self.section_paths[section.index()].is_empty())
+                    .filter(|(_, paths)| !paths.is_empty())
+                    .map(|(section, _)| section)
                     .collect(),
                 rows: rows.into(),
                 focus: self.focus.clone(),
@@ -757,29 +819,26 @@ impl Render for VersionControlPanel {
 /// 面板顶部统计行：加减号图标 + 总新增/删除行数（全零时只留图标）。
 fn render_total_diff_stat(total: DiffStat, cx: &App) -> Div {
     let colors = color::current(cx);
-    render_text_row()
-        .flex_none()
-        .pr(space::S6)
-        .gap(space::S2)
-        .text_color(colors.text_muted)
-        .child(
-            SvgIcon::new("icons/diff.svg")
-                .id(ElementId::Name("version-control-total-diff".into()))
-                .label("变更行数统计")
-                .color(colors.icon_muted),
-        )
-        .when(total.added > 0 || total.deleted > 0, |el| {
-            el.child(
+    let mut frame = TreeRowFrame::default().leading(
+        SvgIcon::new("icons/diff.svg")
+            .id(ElementId::Name("version-control-total-diff".into()))
+            .label("变更行数统计")
+            .color(colors.icon_muted),
+    );
+    if total.added > 0 || total.deleted > 0 {
+        frame = frame
+            .content(
                 div()
                     .text_color(colors.version_control_added)
                     .child(format!("+{}", total.added)),
             )
-            .child(
+            .content(
                 div()
                     .text_color(colors.version_control_deleted)
                     .child(format!("−{}", total.deleted)),
-            )
-        })
+            );
+    }
+    frame.render().text_color(colors.text_muted)
 }
 
 fn render_list(
@@ -822,59 +881,53 @@ fn render_row(
             let weak = render_context.weak.clone();
             let section = *section;
             let checkbox_weak = weak.clone();
-            let section_has_entries = render_context.non_empty_sections.contains(&section);
-            // 高度与左侧留白由文本树行基座保证，这里只叠分组头的专属布局与交互。
-            render_text_row()
+            let section_has_entries = section != GitSection::Conflict
+                && render_context.non_empty_sections.contains(&section);
+            let mut frame = TreeRowFrame::default()
+                .leading(
+                    SvgIcon::new(if is_collapsed {
+                        "icons/chevron_right.svg"
+                    } else {
+                        "icons/chevron_down.svg"
+                    })
+                    .id(ElementId::Name(
+                        format!("version-control-section-{section:?}").into(),
+                    ))
+                    .label("折叠或展开分区")
+                    .color(color::current(cx).icon_muted),
+                )
+                .content(section.label());
+            if section_has_entries {
+                // 已暂存组显示勾选（点击 = 全部取消暂存）、未暂存组显示未勾选（点击 = 全部暂存）。
+                frame = frame.trailing(
+                    Checkbox::new(
+                        ElementId::Name(
+                            format!("version-control-header-checkbox-{section:?}").into(),
+                        ),
+                        section == GitSection::Staged,
+                    )
+                    .tooltip(if section == GitSection::Staged {
+                        "全部取消暂存"
+                    } else {
+                        "全部暂存"
+                    })
+                    .on_click(move |_window, cx| {
+                        if let Some(panel) = checkbox_weak.upgrade() {
+                            panel.update(cx, |panel, cx| {
+                                panel.toggle_section_all(section, cx);
+                            });
+                        }
+                    }),
+                );
+            }
+            frame
+                .render()
                 .id(ElementId::Name(
                     format!("version-control-header-row-{section:?}").into(),
                 ))
-                .pr(space::S6)
-                .justify_between()
                 .text_color(color::current(cx).text_muted)
                 .cursor_pointer()
                 .hover(|style| style.bg(color::current(cx).element_hover))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(space::S6)
-                        .child(
-                            SvgIcon::new(if is_collapsed {
-                                "icons/chevron_right.svg"
-                            } else {
-                                "icons/chevron_down.svg"
-                            })
-                            .id(ElementId::Name(
-                                format!("version-control-section-{section:?}").into(),
-                            ))
-                            .label("折叠或展开分区")
-                            .color(color::current(cx).icon_muted),
-                        )
-                        .child(section.label()),
-                )
-                .when(section_has_entries, |el| {
-                    // 已暂存组显示勾选（点击 = 全部取消暂存）、未暂存组显示未勾选（点击 = 全部暂存）。
-                    el.child(
-                        Checkbox::new(
-                            ElementId::Name(
-                                format!("version-control-header-checkbox-{section:?}").into(),
-                            ),
-                            section == GitSection::Staged,
-                        )
-                        .tooltip(if section == GitSection::Staged {
-                            "全部取消暂存"
-                        } else {
-                            "全部暂存"
-                        })
-                        .on_click(move |_window, cx| {
-                            if let Some(panel) = checkbox_weak.upgrade() {
-                                panel.update(cx, |panel, cx| {
-                                    panel.toggle_section_all(section, cx);
-                                });
-                            }
-                        }),
-                    )
-                })
                 // 整行点击折叠/展开。
                 .on_mouse_down(MouseButton::Left, move |_event, _window, cx| {
                     if let Some(panel) = weak.upgrade() {
@@ -886,11 +939,10 @@ fn render_row(
                 .into_any_element()
         }
         // 空分组提示只是树内容的一部分，不参与选择、焦点或鼠标交互。
-        GitRow::Empty(section) => render_text_row()
-            // 缩进让提示对齐在标题行文字之下。
-            .pl(space::S6)
+        GitRow::Empty(section) => TreeRowFrame::default()
+            .content(section.empty_message())
+            .render()
             .text_color(color::current(cx).text_placeholder)
-            .child(section.empty_message())
             .into_any_element(),
         GitRow::Entry(entry) => {
             let section = entry.section;
@@ -910,31 +962,12 @@ fn render_row(
             let diff_stat = entry.diff_stat;
             // 行尾改动计数（目录行为子项求和；全零不显示，如 untracked 文件）。
             // 加减分别用 git 状态色：+ 新增色、− 删除色。
-            let tail = if diff_stat.added > 0 || diff_stat.deleted > 0 {
-                let colors = color::current(cx);
-                div()
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .gap(space::S2)
-                    .child(
-                        div()
-                            .text_color(colors.version_control_added)
-                            .child(format!("+{}", diff_stat.added)),
-                    )
-                    .child(
-                        div()
-                            .text_color(colors.version_control_deleted)
-                            .child(format!("−{}", diff_stat.deleted)),
-                    )
+            let colors = color::current(cx);
+            // 行尾暂存复选框（在改动计数之后）。
+            let checkbox = if entry.status == Some(FileStatus::Unmerged) {
+                None
             } else {
-                div().flex_shrink_0()
-            };
-            // 行尾暂存复选框（在改动计数之后）；行尾 6px 边距是面板布局职责，由消费方包一层。
-            let checkbox = div()
-                .flex_shrink_0()
-                .mr(space::S6)
-                .child(
+                Some(
                     Checkbox::new(
                         ElementId::Name(
                             // id 带分组：部分暂存文件同时在两组出现时，两个复选框共享元素 state 会互相干扰。
@@ -965,53 +998,64 @@ fn render_row(
                     })
                     .into_any_element(),
                 )
-                .into_any_element();
-            render_row_base(
-                entry.depth,
-                &entry.path,
-                is_dir,
-                entry.expanded,
-                content,
-                cx,
-            )
-            // 行 id 是 hover/交互状态的前提：GPUI 仅在元素带 id（可派生 element_state）时应用 hover_style。
-            // 带 section：部分暂存文件同时在两组出现，两组行 id 必须互异。
-            .id(ElementId::Name(
-                format!("version-control-row-{:?}-{}", section, entry.path.display()).into(),
-            ))
-            .cursor_pointer()
-            .child(tail)
-            .child(checkbox)
-            .hover(|style| style.bg(color::current(cx).element_hover))
-            .when(sel && changes_tree_focused, |el| {
-                el.child(
-                    selection_border(cx)
-                        .debug_selector(|| "version-control-selection-border".into()),
-                )
-            })
-            .on_mouse_down(MouseButton::Left, {
-                let focus = render_context.focus.clone();
-                let weak = render_context.weak.clone();
-                move |event, window, cx| {
-                    window.focus(&focus, cx);
-                    if let Some(panel) = weak.upgrade() {
-                        panel.update(cx, |panel, cx| {
-                            panel.state.borrow_mut().selected = Some((section, path.clone()));
-                            match row_click_action(is_dir, event.click_count) {
-                                RowClickAction::Toggle => panel.activate_selected(true, window, cx),
-                                RowClickAction::Preview => {
-                                    panel.activate_selected(false, window, cx)
+            };
+            let mut node =
+                TreeNodeRow::new(entry.depth, &entry.path, is_dir, entry.expanded, content);
+            if diff_stat.added > 0 || diff_stat.deleted > 0 {
+                node = node
+                    .trailing(
+                        div()
+                            .text_color(colors.version_control_added)
+                            .child(format!("+{}", diff_stat.added)),
+                    )
+                    .trailing(
+                        div()
+                            .text_color(colors.version_control_deleted)
+                            .child(format!("−{}", diff_stat.deleted)),
+                    );
+            }
+            if let Some(checkbox) = checkbox {
+                node = node.trailing(checkbox);
+            }
+            node.render(cx)
+                // 行 id 是 hover/交互状态的前提：GPUI 仅在元素带 id（可派生 element_state）时应用 hover_style。
+                // 带 section：部分暂存文件同时在两组出现，两组行 id 必须互异。
+                .id(ElementId::Name(
+                    format!("version-control-row-{:?}-{}", section, entry.path.display()).into(),
+                ))
+                .cursor_pointer()
+                .hover(|style| style.bg(color::current(cx).element_hover))
+                .when(sel && changes_tree_focused, |el| {
+                    el.child(
+                        selection_border(cx)
+                            .debug_selector(|| "version-control-selection-border".into()),
+                    )
+                })
+                .on_mouse_down(MouseButton::Left, {
+                    let focus = render_context.focus.clone();
+                    let weak = render_context.weak.clone();
+                    move |event, window, cx| {
+                        window.focus(&focus, cx);
+                        if let Some(panel) = weak.upgrade() {
+                            panel.update(cx, |panel, cx| {
+                                panel.state.borrow_mut().selected = Some((section, path.clone()));
+                                match row_click_action(is_dir, event.click_count) {
+                                    RowClickAction::Toggle => {
+                                        panel.activate_selected(true, window, cx)
+                                    }
+                                    RowClickAction::Preview => {
+                                        panel.activate_selected(false, window, cx)
+                                    }
+                                    RowClickAction::Activate => {
+                                        panel.activate_selected(true, window, cx)
+                                    }
                                 }
-                                RowClickAction::Activate => {
-                                    panel.activate_selected(true, window, cx)
-                                }
-                            }
-                        });
+                            });
+                        }
+                        cx.stop_propagation();
                     }
-                    cx.stop_propagation();
-                }
-            })
-            .into_any_element()
+                })
+                .into_any_element()
         }
     }
 }
@@ -1199,28 +1243,20 @@ impl Panel for VersionControlPanel {
 
 // ═══ 内部类型 ════════════════════════════════════════════════════
 
-/// 分组（冲突暂不展示）。
+/// 变更分组。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum GitSection {
     Staged,
     Unstaged,
+    Conflict,
 }
 
 impl GitSection {
-    const ALL: [Self; 2] = [Self::Staged, Self::Unstaged];
-
-    /// 分组在 ALL 与分组树中的下标。
-    fn index(self) -> usize {
-        Self::ALL
-            .iter()
-            .position(|section| *section == self)
-            .expect("分组必须登记在 GitSection::ALL 中")
-    }
-
     fn label(self) -> &'static str {
         match self {
             Self::Staged => "已暂存",
             Self::Unstaged => "未暂存",
+            Self::Conflict => "冲突",
         }
     }
 
@@ -1228,6 +1264,7 @@ impl GitSection {
         match self {
             Self::Staged => "没有已暂存的更改",
             Self::Unstaged => "没有未暂存的更改",
+            Self::Conflict => "没有未解决的冲突",
         }
     }
 }
@@ -1369,7 +1406,7 @@ mod tests {
 
     #[test]
     fn entry_sections_assigns_each_status_to_sections() {
-        // 冲突文件暂不展示，不进任何组。
+        // 冲突文件由建树逻辑放入独立冲突组，不进入暂存/未暂存组。
         assert_eq!(entry_sections(FileStatus::Unmerged), (false, false));
         assert_eq!(entry_sections(FileStatus::Untracked), (false, true));
         assert_eq!(entry_sections(FileStatus::Ignored), (false, false));
@@ -1408,7 +1445,7 @@ mod tests {
                 GitRow::Empty(_) | GitRow::Entry(_) => None,
             })
             .collect();
-        assert_eq!(headers, vec!["已暂存", "未暂存"]);
+        assert_eq!(headers, vec!["冲突", "已暂存", "未暂存"]);
 
         // 条目位于 src/ 下，折叠时两组各出现一个 src 目录行。
         let entries = entry_keys(&rows);
@@ -1446,24 +1483,28 @@ mod tests {
 
     #[test]
     fn expanded_empty_sections_show_unselectable_prompt_rows() {
-        let trees = [Vec::<GitTreeNode>::new(), Vec::new()];
+        let trees = GitSections::<Vec<GitTreeNode>>::default();
         let rows = flatten_rows(&trees, &HashSet::new(), &HashSet::new());
 
         assert_eq!(GitSection::Staged.empty_message(), "没有已暂存的更改");
         assert_eq!(GitSection::Unstaged.empty_message(), "没有未暂存的更改");
-        assert_eq!(rows.len(), 4);
-        assert!(matches!(rows[0], GitRow::Header(GitSection::Staged)));
-        assert!(matches!(rows[1], GitRow::Empty(GitSection::Staged)));
-        assert!(matches!(rows[2], GitRow::Header(GitSection::Unstaged)));
-        assert!(matches!(rows[3], GitRow::Empty(GitSection::Unstaged)));
+        assert_eq!(rows.len(), 6);
+        assert!(matches!(rows[0], GitRow::Header(GitSection::Conflict)));
+        assert!(matches!(rows[1], GitRow::Empty(GitSection::Conflict)));
+        assert!(matches!(rows[2], GitRow::Header(GitSection::Staged)));
+        assert!(matches!(rows[3], GitRow::Empty(GitSection::Staged)));
+        assert!(matches!(rows[4], GitRow::Header(GitSection::Unstaged)));
+        assert!(matches!(rows[5], GitRow::Empty(GitSection::Unstaged)));
         assert!(rows.iter().all(|row| row_entry_key(row).is_none()));
 
         let collapsed = HashSet::from([GitSection::Staged]);
         let rows = flatten_rows(&trees, &HashSet::new(), &collapsed);
-        assert_eq!(rows.len(), 3);
-        assert!(matches!(rows[0], GitRow::Header(GitSection::Staged)));
-        assert!(matches!(rows[1], GitRow::Header(GitSection::Unstaged)));
-        assert!(matches!(rows[2], GitRow::Empty(GitSection::Unstaged)));
+        assert_eq!(rows.len(), 5);
+        assert!(matches!(rows[0], GitRow::Header(GitSection::Conflict)));
+        assert!(matches!(rows[1], GitRow::Empty(GitSection::Conflict)));
+        assert!(matches!(rows[2], GitRow::Header(GitSection::Staged)));
+        assert!(matches!(rows[3], GitRow::Header(GitSection::Unstaged)));
+        assert!(matches!(rows[4], GitRow::Empty(GitSection::Unstaged)));
     }
 
     #[test]
@@ -1476,9 +1517,15 @@ mod tests {
         ]);
         let rows = build_rows(&root, &[(root.as_path(), &snapshot)]);
 
-        // Ignored 与冲突文件（暂不展示）完全过滤；untracked 归未暂存组。
+        // Ignored 过滤；冲突进入独立分组并排在普通变更之前，untracked 归未暂存组。
         let entries = entry_keys(&rows);
-        assert_eq!(entries, vec![(GitSection::Unstaged, "new.txt".into())]);
+        assert_eq!(
+            entries,
+            vec![
+                (GitSection::Conflict, "conflict.txt".into()),
+                (GitSection::Unstaged, "new.txt".into())
+            ]
+        );
     }
 
     #[test]
@@ -1672,7 +1719,7 @@ mod tests {
                     GitRow::Empty(_) | GitRow::Entry(_) => None,
                 })
                 .collect();
-            assert_eq!(headers, vec!["已暂存", "未暂存"]);
+            assert_eq!(headers, vec!["冲突", "已暂存", "未暂存"]);
         });
     }
 
@@ -1699,9 +1746,9 @@ mod tests {
         });
         cx.run_until_parked(); // 扫描完成，行模型就绪。
 
-        // 行布局：已暂存标题 + 空提示 + 未暂存标题 + 一个文件行。
+        // 行布局：三组标题/空提示，加上未暂存组中的一个文件行。
         let row_count = cx.read_entity(&panel, |panel, _| panel.state.borrow().rows.len());
-        assert_eq!(row_count, 4);
+        assert_eq!(row_count, 6);
 
         // 扫描完成后强制重绘：首帧是空态，点击命中测试需要最新帧的行布局。
         // refresh 只入队 effect，需要一次 update 周期 flush 后窗口才真正重绘。
@@ -1713,9 +1760,10 @@ mod tests {
         // 行高为 ui_line()，以临时标签打开（focus_opened_item=false）。
         let row_height = tree_row_height();
         let click = |cx: &mut VisualTestContext| {
-            // y 加 1 行偏移：顶部统计行占一行高度。
+            // y 加 1 行偏移：顶部统计行占一行高度；
+            // 冲突组固定在顶部后再经过两个冲突行。
             cx.simulate_click(
-                point(px(100.), px(f32::from(row_height) * 4.5)),
+                point(px(100.), px(f32::from(row_height) * 6.5)),
                 gpui::Modifiers::default(),
             );
             cx.run_until_parked();
@@ -1940,8 +1988,8 @@ mod tests {
         });
         cx.run_until_parked();
 
-        // 折叠后标题行仍是第 2 个列表行：行尾复选框必须仍渲染（悬停出现 tooltip）。
-        assert_hover_tooltip(cx, 2);
+        // 冲突组固定在顶部，折叠后的未暂存标题行是第 6 个列表行。
+        assert_hover_tooltip(cx, 4);
 
         // 折叠态下整组操作也必须生效（不能因条目不可见而找不到路径）。
         cx.update_entity(&panel, |panel, cx| {
@@ -2166,7 +2214,7 @@ mod tests {
         cx.run_until_parked();
 
         // 未暂存组 tracked.txt 行尾复选框；空的已暂存组占一行提示。
-        assert_hover_tooltip(cx, 3);
+        assert_hover_tooltip(cx, 5);
     }
 
     #[gpui::test]
@@ -2190,7 +2238,7 @@ mod tests {
 
         // 悬停可视区第 5 行（未暂存组的一个文件）行尾复选框；顶部统计行占一行，坐标加偏移。
         let row_height = tree_row_height();
-        let hover_y = f32::from(row_height) * 5.5;
+        let hover_y = f32::from(row_height) * 7.5;
         cx.simulate_mouse_move(
             point(px(1907.), px(hover_y)),
             None,
@@ -2225,7 +2273,7 @@ mod tests {
         // 先悬停未暂存组的一个文件复选框，确认 tooltip 正常；顶部统计行占一行，坐标加偏移。
         let row_height = tree_row_height();
         cx.simulate_mouse_move(
-            point(px(1907.), px(f32::from(row_height) * 4.5)),
+            point(px(1907.), px(f32::from(row_height) * 6.5)),
             None,
             gpui::Modifiers::default(),
         );
@@ -2255,13 +2303,13 @@ mod tests {
 
         // 移开鼠标再移回剩余未暂存文件的复选框；顶部统计行占一行。
         cx.simulate_mouse_move(
-            point(px(100.), px(f32::from(row_height) * 4.5)),
+            point(px(100.), px(f32::from(row_height) * 6.5)),
             None,
             gpui::Modifiers::default(),
         );
         cx.run_until_parked();
         cx.simulate_mouse_move(
-            point(px(1907.), px(f32::from(row_height) * 4.5)),
+            point(px(1907.), px(f32::from(row_height) * 6.5)),
             None,
             gpui::Modifiers::default(),
         );
@@ -2299,7 +2347,7 @@ mod tests {
         let row_height = tree_row_height();
         // 先悬停未暂存组的复选框（第 5 行）。
         cx.simulate_mouse_move(
-            point(px(1907.), px(f32::from(row_height) * 4.5)),
+            point(px(1907.), px(f32::from(row_height) * 6.5)),
             None,
             gpui::Modifiers::default(),
         );
@@ -2340,7 +2388,7 @@ mod tests {
         cx.run_until_parked();
 
         // 已暂存组复选框（带对勾）。
-        assert_hover_tooltip(cx, 2);
+        assert_hover_tooltip(cx, 4);
     }
 
     #[gpui::test]
@@ -2366,7 +2414,7 @@ mod tests {
         // 顶部统计行占一行，坐标加偏移。
         let row_height = tree_row_height();
         cx.simulate_click(
-            point(px(1907.), px(f32::from(row_height) * 4.5)),
+            point(px(1907.), px(f32::from(row_height) * 6.5)),
             gpui::Modifiers::default(),
         );
         cx.run_until_parked();

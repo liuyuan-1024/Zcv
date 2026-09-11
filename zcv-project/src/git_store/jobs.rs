@@ -73,6 +73,10 @@ pub(super) enum GitJobKey {
         stage: bool,
         paths: Vec<PathBuf>,
     },
+    /// 清除已解决文件的冲突 stage，以当前分支内容作为未暂存基线。
+    ResolveConflicts {
+        paths: Vec<PathBuf>,
+    },
     /// 应用 DiffOperations 已经确定的 hunk 编辑（编辑范围参与 key：不同变更块互不合并）。
     ApplyHunkEdits {
         operation: GitHunkOperation,
@@ -110,6 +114,9 @@ pub(super) enum GitJob {
     GitInit,
     StageFiles {
         stage: bool,
+        paths: Vec<PathBuf>,
+    },
+    ResolveConflicts {
         paths: Vec<PathBuf>,
     },
     ApplyHunkEdits {
@@ -168,6 +175,9 @@ impl GitJob {
                 stage: *stage,
                 paths: paths.clone(),
             },
+            GitJob::ResolveConflicts { paths } => GitJobKey::ResolveConflicts {
+                paths: paths.clone(),
+            },
             GitJob::ApplyHunkEdits {
                 operation,
                 path,
@@ -197,6 +207,7 @@ impl GitJob {
             GitJob::GitInit => "初始化仓库".into(),
             GitJob::StageFiles { stage: true, .. } => "暂存".into(),
             GitJob::StageFiles { stage: false, .. } => "取消暂存".into(),
+            GitJob::ResolveConflicts { .. } => "完成冲突解决".into(),
             GitJob::ApplyHunkEdits {
                 operation: GitHunkOperation::Stage,
                 ..

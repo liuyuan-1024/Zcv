@@ -260,6 +260,12 @@ pub trait GitRepository: Send + Sync {
     /// 写入调用方已确定的完整 index 文本。
     fn set_index_text(&self, path: &Path, content: &str) -> Result<()>;
 
+    /// 清除路径上的冲突 stage，并以当前分支（stage 2）作为未暂存基线。
+    ///
+    /// 工作区内容由调用方另行写入；
+    /// 这里只负责让 Git 不再把路径报告为未合并。
+    fn clear_conflict(&self, path: &Path) -> Result<()>;
+
     /// 批量读取 revision（如 `HEAD:path`、`:path`）的 blob 内容，缺失的 revision 为 `None`。
     fn load_revisions(&self, revs: &[&str]) -> Result<Vec<Option<Vec<u8>>>>;
 
@@ -696,6 +702,19 @@ impl GitRepository for RealGitRepository {
 
     fn set_index_text(&self, path: &Path, content: &str) -> Result<()> {
         self.write_index_text(path, Some(content.as_bytes()))
+    }
+
+    fn clear_conflict(&self, path: &Path) -> Result<()> {
+        let revision = format!(":2:{}", path.to_string_lossy());
+        let ours = self
+            .load_revisions(&[&revision])?
+            .into_iter()
+            .next()
+            .flatten();
+        match ours {
+            Some(content) => self.write_index_text(path, Some(&content)),
+            None => self.write_index_text(path, None),
+        }
     }
 
     fn fetch_cancellable(&self, cancellation: &GitCancellation) -> Result<()> {

@@ -15,7 +15,7 @@ use gpui::{
 use zcv_actions::{OpenExcerpts, ToggleFold};
 use zcv_git::DiffHunkKind;
 use zcv_language::BracketPair;
-use zcv_multi_buffer::{DiffHunkStaging, DisplayHunk};
+use zcv_multi_buffer::DiffHunkStaging;
 use zcv_text::{ByteOffset, Line, LogicalColumn, Position, TextRange};
 use zcv_theme::{color, space, typography};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon};
@@ -35,8 +35,9 @@ use super::scrollbar::{
     marker_geometry,
 };
 use super::view::{
-    Editor, EditorMode, EditorPresentation, HunkRendering, SoftWrap, diff_row_for_row,
-    hunk_rendering, is_hollow_hunk,
+    Editor, EditorHunkMarkerKind, EditorMode, EditorPresentation, HunkControlTarget, HunkRendering,
+    SoftWrap, diff_row_for_row, editor_hunk_part_rendering, editor_hunk_rendering, hunk_rendering,
+    is_hollow_hunk,
 };
 
 const CARET_WIDTH: Pixels = px(2.);
@@ -322,6 +323,7 @@ pub(super) struct PrepaintState {
     expanded_rows: Arc<Vec<Range<usize>>>,
     /// 展开的未暂存（hollow）连续块：边框按块边界合并绘制，颜色取块首 / 末行的行背景色。
     hollow_blocks: Arc<Vec<Range<usize>>>,
+    editor_hunk_parts: Arc<Vec<(Range<usize>, DiffHunkKind, EditorHunkMarkerKind)>>,
     /// 展开 hunk 的词级背景片段：每显示行一组（窗口绝对 x 范围 + 颜色）。
     word_diff_fragments: Vec<Vec<(Pixels, Pixels, gpui::Rgba)>>,
     scrollbar: Option<ScrollbarLayout>,
@@ -633,7 +635,7 @@ fn build_crease_toggles(
 
 fn build_diff_hunk_controls(
     layout: &EditorLayout,
-    hunks: &[(Range<usize>, DisplayHunk)],
+    hunks: &[(Range<usize>, HunkControlTarget)],
     sticky_header_height: Pixels,
     editor: &Entity<Editor>,
     window: &mut Window,
@@ -668,14 +670,11 @@ fn build_diff_hunk_controls(
             ),
         };
         let element = if hover_bounds.contains(&window.mouse_position()) {
-            let mut element = delegate.render_hunk_controls(
-                rows.start,
-                hunk,
-                layout.line_height,
-                editor,
-                window,
-                cx,
-            );
+            let Some(mut element) =
+                delegate.render_hunk_controls(hunk, rows.start, editor, window, cx)
+            else {
+                continue;
+            };
             let available_space = size(AvailableSpace::MinContent, AvailableSpace::MinContent);
             let element_size = element.layout_as_root(available_space, window, cx);
             let origin_y = if hunk_start_y >= sticky_top {
@@ -698,6 +697,7 @@ fn build_diff_hunk_controls(
             element,
         });
     }
+
     controls
 }
 
@@ -1007,7 +1007,16 @@ fn layout_scrollbar(
             .iter()
             .map(|(rows, kind, _)| (rows.clone(), *kind))
             .chain(folded_deleted_markers)
-            .map(|(rows, kind)| (rows, ScrollbarMarkerKind::Diff(kind)));
+            .map(|(rows, kind)| {
+                (
+                    rows,
+                    ScrollbarMarkerKind::Git(EditorHunkMarkerKind::Diff(kind)),
+                )
+            });
+        let editor_hunk_markers = hunk_render
+            .editor_hunk_parts
+            .iter()
+            .map(|(rows, _, marker)| (rows.clone(), ScrollbarMarkerKind::Git(*marker)));
         let search_markers = editor
             .search_highlights()
             .into_iter()
@@ -1019,7 +1028,9 @@ fn layout_scrollbar(
             })
             .map(|rows| (rows, ScrollbarMarkerKind::Search));
         scrollbar_layout.markers = marker_geometry(
-            diff_markers.chain(search_markers),
+            diff_markers
+                .chain(editor_hunk_markers)
+                .chain(search_markers),
             scrollbar_layout.hitbox.bounds,
             scrollbar_layout.scroll_per_pixel,
             line_height,
@@ -1241,7 +1252,7 @@ impl Element for EditorElement {
                 .collect()
         };
         // git diff 渲染数据：行标记、竖条与点击区域单遍计算共用（只依赖 snapshot 与注入 hunks，与滚动位置无关，autoscroll 重排可复用）。
-        let hunk_render = {
+        let mut hunk_render = {
             let editor = self.editor.read(cx);
             hunk_rendering(
                 &display_snapshot,
@@ -1250,6 +1261,20 @@ impl Element for EditorElement {
                 editor.diff_hunk_old_ranges(cx),
                 editor.diff_hunk_word_diffs(cx),
             )
+        };
+        let editor_hunks = {
+            let editor = self.editor.read(cx);
+            editor_hunk_rendering(&display_snapshot, editor.editor_hunks())
+        };
+        hunk_render.controls.extend(
+            editor_hunks
+                .iter()
+                .map(|(rows, hunk)| (rows.clone(), HunkControlTarget::Editor(hunk.clone()))),
+        );
+        hunk_render.editor_hunks = editor_hunks;
+        hunk_render.editor_hunk_parts = {
+            let editor = self.editor.read(cx);
+            editor_hunk_part_rendering(&display_snapshot, editor.editor_hunks())
         };
         let diff_rows = &hunk_render.diff_rows;
         // placeholder 模式：空 buffer 时行数据源替换为 placeholder 快照（折行/行高一致）。
@@ -1433,6 +1458,7 @@ impl Element for EditorElement {
             hunk_strips,
             expanded_rows,
             hollow_blocks,
+            editor_hunk_parts: Arc::new(hunk_render.editor_hunk_parts.clone()),
             word_diff_fragments,
             scrollbar,
             block_elements,
@@ -1644,6 +1670,33 @@ impl Element for EditorElement {
             let colors = color::current(cx);
             // diff 行 gutter 背景：只画展开态行（展开的修改块旧行红、修改行绿），未展开的 hunk 不整行着色，只保留左侧竖条提示。
             let strip_width = gutter_strip_width(gutter.line_height);
+            for (rows, content_kind, marker_kind) in prepaint.editor_hunk_parts.iter() {
+                for line in &prepaint.layout.lines {
+                    if !rows.contains(&line.row.get()) {
+                        continue;
+                    }
+                    window.paint_quad(fill(
+                        Bounds::from_corners(
+                            point(gutter.bounds.left(), line.origin.y),
+                            point(
+                                prepaint.layout.text_clip_bounds.left(),
+                                line.origin.y + gutter.line_height,
+                            ),
+                        ),
+                        editor_hunk_background_color(colors, *content_kind),
+                    ));
+                    window.paint_quad(fill(
+                        Bounds::from_corners(
+                            point(gutter.bounds.left(), line.origin.y),
+                            point(
+                                gutter.bounds.left() + strip_width,
+                                line.origin.y + gutter.line_height,
+                            ),
+                        ),
+                        editor_hunk_marker_color(colors, *marker_kind),
+                    ));
+                }
+            }
             for line in &prepaint.layout.lines {
                 let Some((kind, staging)) = line.git_diff else {
                     continue;
@@ -1782,6 +1835,21 @@ impl Element for EditorElement {
                 // git diff 整行背景只画展开态行（未展开的 hunk 只由 gutter 竖条提示）。
                 let diff_colors = color::current(cx);
                 for line in &prepaint.layout.lines {
+                    for (rows, content_kind, _marker_kind) in prepaint.editor_hunk_parts.iter() {
+                        if rows.contains(&line.row.get()) {
+                            let bounds = Bounds::from_corners(
+                                point(prepaint.layout.text_clip_bounds.left(), line.origin.y),
+                                point(
+                                    prepaint.layout.text_clip_bounds.right(),
+                                    line.origin.y + prepaint.layout.line_height,
+                                ),
+                            );
+                            window.paint_quad(fill(
+                                bounds,
+                                editor_hunk_background_color(diff_colors, *content_kind),
+                            ));
+                        }
+                    }
                     let Some((kind, staging)) = line.git_diff else {
                         continue;
                     };
@@ -1917,17 +1985,13 @@ impl Element for EditorElement {
                 let column_x = marker_column_x_range_at(
                     scrollbar.hitbox.bounds,
                     match marker.kind {
-                        ScrollbarMarkerKind::Diff(_) => 0,
+                        ScrollbarMarkerKind::Git(_) => 0,
                         ScrollbarMarkerKind::Search => 1,
                     },
                 );
                 let marker_color = match marker.kind {
-                    ScrollbarMarkerKind::Diff(DiffHunkKind::Added) => colors.version_control_added,
-                    ScrollbarMarkerKind::Diff(DiffHunkKind::Modified) => {
-                        colors.version_control_modified
-                    }
-                    ScrollbarMarkerKind::Diff(DiffHunkKind::Deleted) => {
-                        colors.version_control_deleted
+                    ScrollbarMarkerKind::Git(marker_kind) => {
+                        editor_hunk_marker_color(colors, marker_kind)
                     }
                     ScrollbarMarkerKind::Search => colors.search_match_background,
                 };
@@ -2097,6 +2161,23 @@ fn version_control_hunk_color(colors: &color::ThemeColors, kind: DiffHunkKind) -
         DiffHunkKind::Added => colors.version_control_added,
         DiffHunkKind::Modified => colors.version_control_modified,
         DiffHunkKind::Deleted => colors.version_control_deleted,
+    }
+}
+
+/// 注入 hunk 的正文背景色：内容差异语义与普通 diff 共用主题颜色。
+fn editor_hunk_background_color(colors: &color::ThemeColors, kind: DiffHunkKind) -> gpui::Rgba {
+    match kind {
+        DiffHunkKind::Added => colors.editor_diff_added_background,
+        DiffHunkKind::Deleted => colors.editor_diff_deleted_background,
+        DiffHunkKind::Modified => colors.editor_diff_added_background,
+    }
+}
+
+/// 注入 hunk 的 gutter 与滚动条颜色：状态标记语义独立于正文背景语义。
+fn editor_hunk_marker_color(colors: &color::ThemeColors, kind: EditorHunkMarkerKind) -> gpui::Rgba {
+    match kind {
+        EditorHunkMarkerKind::Diff(kind) => version_control_hunk_color(colors, kind),
+        EditorHunkMarkerKind::Conflict => colors.status_conflict,
     }
 }
 

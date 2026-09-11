@@ -550,7 +550,10 @@ fn dragging_thumb_to_marker_position_scrolls_to_that_row(cx: &mut TestAppContext
     let thumb_bounds = thumb_bounds.expect("内容超视口时应有 thumb");
     // marker 的轨道位置（绝对定位：行 50 在文档中的位置）。
     let markers = marker_geometry(
-        [(50..51, ScrollbarMarkerKind::Diff(DiffHunkKind::Modified))],
+        [(
+            50..51,
+            ScrollbarMarkerKind::Git(EditorHunkMarkerKind::Diff(DiffHunkKind::Modified)),
+        )],
         track_bounds,
         per_pixel,
         cx.update(|window, _| window.line_height()),

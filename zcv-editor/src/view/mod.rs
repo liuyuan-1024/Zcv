@@ -8,8 +8,8 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, AnyView, App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle,
-    IntoElement, KeyContext, Pixels, Point, Render, Styled, TextRun, Window, div, point,
-    prelude::*,
+    IntoElement, KeyContext, Pixels, Point, Render, SharedString, Styled, TextRun, Window, div,
+    point, prelude::*,
 };
 use zcv_actions::{
     Backspace, Copy, Cut, Delete, DeleteToBeginningOfLine, DeleteToEndOfLine, DeleteToNextWordEnd,
@@ -20,6 +20,7 @@ use zcv_actions::{
     SelectRight, SelectToBeginning, SelectToBeginningOfLine, SelectToEnd, SelectToEndOfLine,
     SelectToNextWord, SelectToPreviousWord, SelectUp, ToggleFold, Undo, UnfoldAll,
 };
+use zcv_git::DiffHunkKind;
 use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer};
 use zcv_multi_buffer::DisplayHunk;
 use zcv_multi_buffer::{
@@ -48,8 +49,45 @@ use super::selection::{
 mod diff;
 mod search;
 
-pub(crate) use diff::{HunkRendering, diff_row_for_row, hunk_rendering, is_hollow_hunk};
+pub(crate) use diff::{
+    HunkRendering, diff_row_for_row, editor_hunk_part_rendering, editor_hunk_rendering,
+    hunk_rendering, is_hollow_hunk,
+};
 pub(crate) use search::{EditorSearch, SearchMatchAnchor};
+
+/// 宿主注入的 hunk 展示数据。
+/// 文本内容仍由 MultiBuffer 持有，Editor 只消费范围和视觉语义。
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditorHunk {
+    pub id: SharedString,
+    pub range: TextRange,
+    pub parts: Arc<[EditorHunkPart]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EditorHunkPart {
+    pub range: TextRange,
+    pub content_kind: DiffHunkKind,
+    pub marker_kind: EditorHunkMarkerKind,
+}
+
+/// Git hunk 的外围状态标记。
+///
+/// 内容背景由 `content_kind` 决定；
+/// gutter 和滚动条则由这里的状态决定，因此冲突可以复用新增/删除的内容背景，同时保留冲突专有的标记颜色。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorHunkMarkerKind {
+    /// 普通 Git diff hunk，颜色由具体差异类型决定。
+    Diff(DiffHunkKind),
+    /// 未解决的 Git 冲突，使用主题中的冲突颜色。
+    Conflict,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum HunkControlTarget {
+    Diff(DisplayHunk),
+    Editor(EditorHunk),
+}
 
 /// 导航跳转（打开文件/行列定位）时目标行距视口顶部的固定行数，留出上下文。
 pub(super) const NAVIGATION_TOP_OFFSET: usize = 4;
@@ -76,6 +114,17 @@ pub enum EditorEvent {
 
 /// Editor 负责把控件定位到 hunk 右上角，具体按钮与操作由宿主视图提供。
 pub trait DiffHunkDelegate {
+    fn render_hunk_controls(
+        &self,
+        _target: &HunkControlTarget,
+        _row: usize,
+        _editor: &Entity<Editor>,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Option<AnyElement> {
+        None
+    }
+
     fn render_buffer_header_controls(
         &self,
         _path: &std::path::Path,
@@ -87,16 +136,6 @@ pub trait DiffHunkDelegate {
     ) -> Option<AnyElement> {
         None
     }
-
-    fn render_hunk_controls(
-        &self,
-        row: usize,
-        hunk: &DisplayHunk,
-        line_height: Pixels,
-        editor: &Entity<Editor>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> AnyElement;
 }
 
 /// 绑定到底层文件位置的编辑器视口锚点。
@@ -214,6 +253,7 @@ pub struct Editor {
     soft_wrap_override: Option<SoftWrap>,
     preferred_line_length: usize,
     diff_hunk_delegate: Option<Arc<dyn DiffHunkDelegate>>,
+    editor_hunks: Arc<[EditorHunk]>,
     /// 拖拽选择自动滚动的限频时间戳（跨帧持久；事件频率可远超帧率，滚动频率需封顶）。
     pub(crate) last_drag_autoscroll: Cell<Instant>,
     /// 文件内搜索状态（搜索条执行过一次搜索后存在，编辑后自动重搜）。
@@ -484,11 +524,22 @@ impl Editor {
         cx.notify();
     }
 
+    /// 注入宿主拥有的文档内虚拟块；Editor 只负责布局和绘制。
+    pub fn set_editor_hunks(&mut self, hunks: Vec<EditorHunk>, cx: &mut Context<Self>) {
+        self.editor_hunks = Arc::from(hunks);
+        cx.notify();
+    }
+
     pub(crate) fn diff_hunk_delegate(&self) -> Option<Arc<dyn DiffHunkDelegate>> {
         self.diff_hunk_delegate.clone()
     }
 
-    /// 设置新 hunk 的初始展开策略；用户之后的显式展开/折叠不受投影刷新覆盖。
+    pub(crate) fn editor_hunks(&self) -> &[EditorHunk] {
+        &self.editor_hunks
+    }
+
+    /// 设置新 hunk 的初始展开策略；
+    /// 用户之后的显式展开/折叠不受投影刷新覆盖。
     pub fn set_diff_hunks_expanded_by_default(&mut self, expanded: bool, cx: &mut Context<Self>) {
         self.multi_buffer.update(cx, |buffer, cx| {
             buffer.set_diff_hunks_expanded_by_default(expanded, cx)
@@ -1390,6 +1441,7 @@ impl Editor {
             bracket_pair_cache: None,
             scroll_manager: ScrollManager::default(),
             diff_hunk_delegate: None,
+            editor_hunks: Arc::from([]),
             last_drag_autoscroll: Cell::new(Instant::now() - AUTOSCROLL_INTERVAL),
             search: None,
             composition: None,

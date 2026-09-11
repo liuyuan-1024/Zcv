@@ -1,34 +1,160 @@
-//! 树行渲染辅助函数 —— 空白行基座、文件条目/文本两类行、选中框与树导航状态原语。
+//! 树行渲染辅助函数 —— 通用行框架、树节点行、选中框与树导航状态原语。
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use gpui::{App, Pixels, div, prelude::*};
+use gpui::{AnyElement, App, Pixels, div, prelude::*};
 use zcv_theme::{FileIcons, color, space, typography};
 
 use crate::SvgIcon;
 
-/// 树行完整渲染：行骨架 + 缩进竖线 + 图标 + 行内容。
-pub fn render_row_base(
-    depth: usize,
-    path: &Path,
-    is_dir: bool,
-    expanded: bool,
-    content: impl IntoElement,
-    cx: &App,
-) -> gpui::Div {
-    row_skeleton(depth)
-        .children(guide_lines(depth, cx))
-        .child(icon(path, is_dir, expanded))
-        .child(label(content))
+/// 通用树列表行框架。
+///
+/// 只负责所有行共有的几何：行高、内容槽、行尾槽位和两侧内边距。
+/// 它不假设当前行是文件、目录、分组标题还是提示文本。
+pub struct TreeRowFrame {
+    left_padding: Pixels,
+    content: Vec<AnyElement>,
+    leading: Vec<AnyElement>,
+    decorations: Vec<AnyElement>,
+    trailing: Vec<AnyElement>,
 }
 
-/// 普通文本树行——空白行基座 + 左侧基础留白，供非文件行（分组头、空提示等）叠加内容与交互。
-///
-/// 文字颜色、hover、`justify_between`、尾随控件等由调用方在返回值上链式追加；
-/// 高度与基础留白由本组件保证，不要覆写、不要叠加垂直 padding。
-pub fn render_text_row() -> gpui::Div {
-    blank_row().pl(metrics().padding)
+impl TreeRowFrame {
+    /// 添加内容槽；多个内容槽由框架统一排列。
+    pub fn content(mut self, element: impl IntoElement) -> Self {
+        self.content.push(element.into_any_element());
+        self
+    }
+
+    fn with_left_padding(mut self, left_padding: Pixels) -> Self {
+        self.left_padding = left_padding;
+        self
+    }
+
+    /// 添加行首插槽；树节点、分组标题等行可在这里放置各自的前缀控件。
+    pub fn leading(mut self, element: impl IntoElement) -> Self {
+        self.leading.push(element.into_any_element());
+        self
+    }
+
+    fn decoration(mut self, element: impl IntoElement) -> Self {
+        self.decorations.push(element.into_any_element());
+        self
+    }
+
+    /// 添加一个行尾插槽；多个插槽由框架统一按间距排列。
+    pub fn trailing(mut self, element: impl IntoElement) -> Self {
+        self.trailing.push(element.into_any_element());
+        self
+    }
+
+    pub fn render(self) -> gpui::Div {
+        let mut row = blank_row()
+            .relative()
+            .pl(self.left_padding)
+            .pr(metrics().padding)
+            .flex_row()
+            .gap(space::S6)
+            .children(self.decorations);
+
+        if !self.leading.is_empty() {
+            row = row.child(
+                div()
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap(space::S6)
+                    .children(self.leading),
+            );
+        }
+
+        row = row.child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .flex()
+                .items_center()
+                .gap(space::S6)
+                .children(self.content),
+        );
+
+        if !self.trailing.is_empty() {
+            row = row.child(
+                div()
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap(space::S6)
+                    .children(self.trailing),
+            );
+        }
+
+        row
+    }
+}
+
+impl Default for TreeRowFrame {
+    fn default() -> Self {
+        Self {
+            left_padding: metrics().padding,
+            content: Vec::new(),
+            leading: Vec::new(),
+            decorations: Vec::new(),
+            trailing: Vec::new(),
+        }
+    }
+}
+
+/// 树节点行：在通用行框架中组合层级引导线、文件图标和节点内容。
+pub struct TreeNodeRow {
+    depth: usize,
+    path: PathBuf,
+    is_dir: bool,
+    expanded: bool,
+    content: AnyElement,
+    trailing: Vec<AnyElement>,
+}
+
+impl TreeNodeRow {
+    pub fn new(
+        depth: usize,
+        path: &Path,
+        is_dir: bool,
+        expanded: bool,
+        content: impl IntoElement,
+    ) -> Self {
+        Self {
+            depth,
+            path: path.to_path_buf(),
+            is_dir,
+            expanded,
+            content: content.into_any_element(),
+            trailing: Vec::new(),
+        }
+    }
+
+    /// 添加一个行尾插槽；多个插槽由通用行框架统一按间距排列。
+    pub fn trailing(mut self, element: impl IntoElement) -> Self {
+        self.trailing.push(element.into_any_element());
+        self
+    }
+
+    pub fn render(self, cx: &App) -> gpui::Div {
+        let mut frame = TreeRowFrame::default()
+            .with_left_padding(metrics().indent_left(self.depth))
+            .content(self.content);
+        for guide in guide_lines(self.depth, cx) {
+            frame = frame.decoration(guide);
+        }
+        frame = frame.leading(icon(&self.path, self.is_dir, self.expanded));
+        for trailing in self.trailing {
+            frame = frame.trailing(trailing);
+        }
+        frame.render()
+    }
 }
 
 /// 树行行高（= 空白行基座高度）：滚动计算、命中测试坐标等需要行高数值的场景读取。
@@ -85,18 +211,6 @@ fn blank_row() -> gpui::Div {
     div().w_full().flex().items_center().h(metrics().row_height)
 }
 
-/// 树行骨架：空白行基座 + 缩进 + 图标与名称间距 + 圆角。
-/// relative 为缩进竖线与选中框提供定位基准。
-fn row_skeleton(depth: usize) -> gpui::Div {
-    let m = metrics();
-    blank_row()
-        .relative()
-        .flex_row()
-        .gap(space::S6)
-        .pl(m.indent_left(depth))
-        .rounded_xs()
-}
-
 /// 渲染缩进竖线——每条线直接 absolute 定位在行上。
 fn guide_lines(depth: usize, cx: &App) -> Vec<gpui::Div> {
     let m = metrics();
@@ -126,16 +240,6 @@ fn icon(path: &Path, is_dir: bool, expanded: bool) -> impl IntoElement {
         FileIcons::get_icon(path)
     };
     div().child(SvgIcon::new(path).size(m.icon_size))
-}
-
-/// 条目名称内容，尾部溢出截断。
-fn label(content: impl IntoElement) -> gpui::Div {
-    div()
-        .flex_1()
-        .min_w_0()
-        .overflow_hidden()
-        .whitespace_nowrap()
-        .child(content)
 }
 
 // ── 树导航状态原语 ──────────────────────────────────────────────────

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
-use zcv_git::FileStatus;
+use zcv_git::{ConflictChoice, FileStatus};
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::MultiBuffer;
 use zcv_text::{Buffer, BufferLoadError, BufferSaveError, SearchQuery};
@@ -161,6 +161,42 @@ impl Project {
         self.buffer_store.open_buffer(path, cx)
     }
 
+    /// 解决工作区文件中的一个 Git 冲突，并把结果保存回文件。
+    ///
+    /// 冲突解析属于项目工作区事务：
+    /// 调用方只提交路径、冲突序号和选择，Buffer 编辑、落盘及 Git 状态刷新由 Project 统一完成。
+    pub fn resolve_conflict(
+        &mut self,
+        path: &Path,
+        conflict_index: usize,
+        choice: ConflictChoice,
+        cx: &mut Context<Self>,
+    ) -> anyhow::Result<()> {
+        let language_buffer = self.open_buffer(path, cx)?;
+        let buffer = language_buffer.read(cx).buffer();
+        let snapshot = language_buffer.read(cx).text_snapshot(cx);
+        let text_range =
+            zcv_text::TextRange::new(zcv_text::ByteOffset::ZERO, snapshot.len_bytes())?;
+        let text = snapshot.slice_text(text_range)?.to_string();
+        let regions = zcv_git::parse_conflict_regions(&text);
+        let region = regions
+            .get(conflict_index)
+            .ok_or_else(|| anyhow::anyhow!("冲突序号无效：{conflict_index}"))?;
+        let resolved = zcv_git::resolve_conflict(&text, region, choice);
+        let full_range = zcv_text::TextRange::new(
+            zcv_text::ByteOffset::ZERO,
+            zcv_text::ByteOffset::new(text.len()),
+        )?;
+        buffer.update(cx, |buffer, _| {
+            buffer.edit(
+                [zcv_text::Edit::replace(full_range, resolved)],
+                zcv_text::TransactionMetadata::default(),
+            )
+        })?;
+        self.save_file_buffers(vec![(buffer, path.to_path_buf())], cx)?;
+        Ok(())
+    }
+
     /// 为 Git 删除状态打开空的工作区侧文档。
     ///
     /// 该入口只负责文件 Buffer 生命周期；
@@ -220,7 +256,26 @@ impl Project {
         cx: &mut Context<Self>,
     ) -> Result<(), BufferSaveError> {
         let mut saved_paths = Vec::with_capacity(buffers.len());
+        let mut resolved_conflict_paths = Vec::new();
         for (buffer, path) in buffers {
+            let is_unmerged = self
+                .git_store
+                .read(cx)
+                .status_for_path(&path)
+                .is_some_and(|entry| entry.status == zcv_git::FileStatus::Unmerged);
+            if is_unmerged {
+                let snapshot = buffer.read(cx).snapshot();
+                let range =
+                    zcv_text::TextRange::new(zcv_text::ByteOffset::ZERO, snapshot.len_bytes())
+                        .expect("Buffer 快照的全文范围必须有效");
+                let text = snapshot
+                    .slice_text(range)
+                    .expect("Buffer 快照必须可切片")
+                    .to_string();
+                if zcv_git::parse_conflict_regions(&text).is_empty() {
+                    resolved_conflict_paths.push(path.clone());
+                }
+            }
             buffer.update(cx, |buffer, cx| {
                 write_buffer_to_path(buffer, &path)?;
                 cx.notify();
@@ -233,6 +288,9 @@ impl Project {
         if !saved_paths.is_empty() {
             self.git_store.update(cx, |store, cx| {
                 store.refresh_statuses_for_paths(&saved_paths, cx);
+                if !resolved_conflict_paths.is_empty() {
+                    store.resolve_conflicts(resolved_conflict_paths, cx);
+                }
             });
         }
         Ok(())

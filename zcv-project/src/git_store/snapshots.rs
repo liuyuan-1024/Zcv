@@ -18,6 +18,14 @@ impl GitStore {
     pub(super) fn commit_job(&mut self, job: &GitJob, result: JobResult, cx: &mut Context<Self>) {
         match (job, result) {
             (GitJob::ReloadGitState, JobResult::Reload(scans)) => {
+                let auto_resolve_paths = scans
+                    .iter()
+                    .flat_map(|scan| {
+                        scan.clean_conflicts
+                            .iter()
+                            .map(|path| scan.working_directory.join(path))
+                    })
+                    .collect::<Vec<_>>();
                 let was_repository_scan_ready = self.repository_scan_ready;
                 let old_work_dirs: BTreeSet<PathBuf> = self
                     .repositories
@@ -71,6 +79,9 @@ impl GitStore {
                     cx.emit(GitStoreEvent::Repositories);
                 }
                 self.rebuild_status_index();
+                if !auto_resolve_paths.is_empty() {
+                    self.resolve_conflicts(auto_resolve_paths, cx);
+                }
                 // 活动仓库维护：仍在集合中则保持；否则回退新集合第一个（Vec 序 = 祖先在前，与默认候选一致）；
                 // 集合为空 → None。注意用 repositories 而非 new_work_dirs：BTreeSet 按字典序迭代，取不到发现顺序。
                 // emit 是 deferred（pending_effects），订阅方永远读到赋值后的完整状态，首次扫描 None → Some(第一个) 恰好触发一次。
@@ -90,6 +101,18 @@ impl GitStore {
                 }
             }
             (GitJob::RefreshStatuses, JobResult::Refresh(refreshed)) => {
+                let auto_resolve_paths = refreshed
+                    .iter()
+                    .flat_map(|(index, data)| {
+                        let workdir = self
+                            .repositories
+                            .get(*index)
+                            .map(|repository| repository.repository.working_directory());
+                        data.clean_conflicts
+                            .iter()
+                            .filter_map(move |path| workdir.map(|workdir| workdir.join(path)))
+                    })
+                    .collect::<Vec<_>>();
                 let mut statuses_changed = false;
                 let mut head_changed = false;
                 let mut changed_paths = Vec::new();
@@ -116,6 +139,9 @@ impl GitStore {
                 }
                 // 先发布不可变索引，再发状态事件；订阅方收到事件时必须读取同一批刷新后的状态。
                 self.rebuild_status_index();
+                if !auto_resolve_paths.is_empty() {
+                    self.resolve_conflicts(auto_resolve_paths, cx);
+                }
                 if statuses_changed {
                     cx.emit(GitStoreEvent::Statuses);
                 }
@@ -155,6 +181,7 @@ impl GitStore {
             (
                 GitJob::GitInit
                 | GitJob::StageFiles { .. }
+                | GitJob::ResolveConflicts { .. }
                 | GitJob::Commit { .. }
                 | GitJob::CheckoutBranch { .. }
                 | GitJob::CreateBranch { .. }

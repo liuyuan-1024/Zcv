@@ -131,6 +131,7 @@ pub(super) fn render_row(
     let content = if is_editing {
         div()
             .key_context("ProjectTreeEdit")
+            .flex_1()
             .overflow_hidden()
             .when(has_error, |element| {
                 element
@@ -153,6 +154,7 @@ pub(super) fn render_row(
                 .and_then(|status| git_status_color(status, cx))
         };
         div()
+            .flex_1()
             .overflow_hidden()
             .truncate()
             .when(is_cut, |element| {

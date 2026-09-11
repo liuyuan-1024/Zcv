@@ -14,6 +14,7 @@ use gpui::{
 };
 use unicode_width::UnicodeWidthChar;
 use zcv_theme::{color, typography};
+use zcv_ui::drag_autoscroll_delta;
 
 use crate::mappings::mouse::{grid_point, grid_point_and_side};
 use crate::{Cell, Content, IndexedCell, TerminalBounds, TerminalView, palette};
@@ -487,7 +488,7 @@ fn register_mouse_listeners(
         );
         // 拖拽选择时鼠标在视口边缘外：按距离缩放的量滚动视口（正 = 回看历史）。
         let autoscroll = if event.dragging() {
-            drag_autoscroll_delta(event.position, origin, line_height, screen_lines)
+            selection_autoscroll_delta(event.position, origin, line_height, screen_lines)
         } else {
             Pixels::ZERO
         };
@@ -1036,23 +1037,22 @@ fn last_column(cells: &[IndexedCell]) -> usize {
 /// 拖拽选择时的视口自动滚动量（像素，正 = 向上回看历史）：
 /// 滚动量 = 超出视口边缘的距离 × 0.3，单事件上限视口高 1/16（与编辑器 `drag_autoscroll_delta` 同款）；
 /// 滚动频率由 view 层限频（≈60Hz）。
-fn drag_autoscroll_delta(
+fn selection_autoscroll_delta(
     position: Point<Pixels>,
     origin: Point<Pixels>,
     line_height: Pixels,
     screen_lines: usize,
 ) -> Pixels {
-    let top = origin.y;
-    let bottom = origin.y + line_height * screen_lines as f32;
-    let margin = line_height.min((bottom - top) / 3.0);
-    let max_delta = (bottom - top) / 16.0;
-    if position.y < top + margin {
-        ((top + margin - position.y) * 0.3).min(max_delta)
-    } else if position.y > bottom - margin {
-        -((position.y - (bottom - margin)) * 0.3).min(max_delta)
-    } else {
-        Pixels::ZERO
-    }
+    let height = line_height * screen_lines as f32;
+    let bounds = Bounds::new(origin, size(px(1.), height));
+    let margin = line_height.min(height / 3.0);
+    drag_autoscroll_delta(
+        position,
+        bounds,
+        Point::new(Pixels::ZERO, margin),
+        Point::new(Pixels::ZERO, height / 16.0),
+    )
+    .y
 }
 
 #[cfg(test)]
@@ -1090,32 +1090,6 @@ mod cursor_tests {
         // 光标滚出视口（行号越界）时隐藏而非钳制悬浮。
         assert_eq!(cursor_row(&content(0, 50)), None);
         assert_eq!(cursor_row(&content(0, -3)), None);
-    }
-}
-
-#[cfg(test)]
-mod autoscroll_tests {
-    use super::*;
-
-    #[test]
-    fn drag_autoscroll_only_scrolls_when_cursor_passes_viewport_edge() {
-        let origin = Point::new(px(0.), px(0.));
-        let line_height = px(20.);
-
-        // 视口内：不滚动。
-        assert_eq!(
-            drag_autoscroll_delta(Point::new(px(100.), px(100.)), origin, line_height, 10),
-            Pixels::ZERO
-        );
-        // 上边缘外：回看历史（正）。
-        assert!(
-            drag_autoscroll_delta(Point::new(px(100.), px(-100.)), origin, line_height, 10)
-                > Pixels::ZERO
-        );
-        // 下边缘外：查看新内容（负）。
-        // 超出 120 × 0.3 = 36，被单事件上限（视口高 200 / 16 = 12.5）钳制。
-        let delta = drag_autoscroll_delta(Point::new(px(100.), px(300.)), origin, line_height, 10);
-        assert_eq!(f32::from(delta), -12.5);
     }
 }
 

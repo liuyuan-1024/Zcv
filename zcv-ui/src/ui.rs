@@ -1,6 +1,7 @@
 //! 设计系统与基础展示组件。
 //! 此文件是 `zcv-ui` crate 的公共入口。
 
+mod autoscroll;
 mod button;
 mod button_like;
 mod checkbox;
@@ -16,6 +17,7 @@ mod tab;
 mod tooltip;
 mod tree;
 
+pub use autoscroll::drag_autoscroll_delta;
 pub use button::{Button, ButtonSize, ButtonStyle};
 pub use button_like::ButtonLike;
 pub use checkbox::Checkbox;

@@ -12,8 +12,8 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    AsyncApp, Context, Entity, EventEmitter, KeyContext, MouseButton, ScrollStrategy, Task,
-    UniformListScrollHandle, WeakEntity, Window, div, prelude::*, relative,
+    AsyncApp, Context, Entity, EventEmitter, KeyContext, MouseButton, Pixels, ScrollStrategy, Task,
+    UniformListScrollHandle, WeakEntity, Window, div, point, prelude::*, px, relative,
 };
 use zcv_actions::TreeActivate;
 use zcv_editor::Editor;
@@ -22,7 +22,7 @@ use zcv_project::{Project, WorktreeEntry, translate_path};
 use zcv_theme::{color, space, typography};
 use zcv_ui::ConfirmOverlay;
 use zcv_ui::Scrollbar;
-use zcv_ui::{RowClickAction, TreeRow, TreeState};
+use zcv_ui::{RowClickAction, TreeRow, TreeState, drag_autoscroll_delta};
 use zcv_workspace::{Panel, PanelEvent, ToastKind, Workspace};
 
 use zcv_settings::SettingsStore;
@@ -668,19 +668,40 @@ impl gpui::Render for ProjectTreePanel {
             .on_action(cx.listener(Self::handle_tree_cancel_conflict))
             .on_action(cx.listener(Self::handle_tree_confirm_edit))
             .on_action(cx.listener(Self::handle_tree_cancel_edit))
-            // 拖拽悬停离开行区域（列表空白处）：清掉待定的悬停展开计时。
-            // on_drag_move 在捕获阶段对全部注册元素派发且不做命中检测，需自行校验光标位于本容器内；容器先于各行注册、先于各行执行，行级处理器随后按命中结果覆盖（悬停行重新调度计时）。
+            // 拖拽靠近上下边缘时滚动列表，保证目标行可以通过持续拖拽进入可视范围。
             .on_drag_move::<TreeDrag>({
                 let weak = cx.weak_entity();
-                move |drag_event, _window, cx| {
+                let scroll_handle = self.scroll_handle.clone();
+                move |drag_event, window, cx| {
                     if !drag_event.bounds.contains(&drag_event.event.position) {
                         return;
                     }
+                    let delta = drag_autoscroll_delta(
+                        drag_event.event.position,
+                        drag_event.bounds,
+                        point(px(0.), px(30.)),
+                        point(px(0.), px(12.)),
+                    );
+                    if delta.y != Pixels::ZERO {
+                        let base_handle = scroll_handle.0.borrow().base_handle.clone();
+                        let offset = base_handle.offset();
+                        let max_offset = base_handle.max_offset();
+                        // GPUI 的 max_offset 是正数，列表实际偏移范围是 [-max_offset, 0]。
+                        let next_y = (offset.y + delta.y).min(px(0.)).max(-max_offset.y);
+                        if next_y != offset.y {
+                            base_handle.set_offset(point(offset.x, next_y));
+                            window.refresh();
+                        }
+                    }
+                    // 拖拽悬停离开行区域（列表空白处）：清掉待定的悬停展开计时。
                     if let Some(tree) = weak.upgrade() {
                         tree.update(cx, |tree, _| tree.reset_drag_hover());
                     }
                 }
             })
+            // 行级处理器会在命中具体行后重新调度悬停展开计时。
+            // on_drag_move 在捕获阶段对全部注册元素派发且不做命中检测，需自行校验光标位于本容器内；
+            // 容器先于各行注册、先于各行执行，行级处理器随后按命中结果覆盖（悬停行重新调度计时）。
             // 拖拽取消（在全部落点行之外释放鼠标）：drop 监听未命中时事件冒泡到根节点，此刻 active_drag 尚未被框架清除，据此识别取消并清理悬停状态。
             .on_mouse_up(MouseButton::Left, {
                 let weak = cx.weak_entity();
@@ -695,6 +716,25 @@ impl gpui::Render for ProjectTreePanel {
             .child(content)
             .children(progress)
             .children(conflict_overlay)
+    }
+}
+
+#[cfg(test)]
+mod drag_scroll_tests {
+    use gpui::px;
+
+    #[test]
+    fn project_tree_drag_scroll_offset_uses_negative_list_range() {
+        let max_offset = px(100.);
+        let current = px(-40.);
+        let next = (current + px(12.)).min(px(0.)).max(-max_offset);
+        assert_eq!(next, px(-28.));
+
+        let at_top = (px(-4.) + px(12.)).min(px(0.)).max(-max_offset);
+        assert_eq!(at_top, px(0.));
+
+        let at_bottom = (px(-96.) - px(12.)).min(px(0.)).max(-max_offset);
+        assert_eq!(at_bottom, px(-100.));
     }
 }
 

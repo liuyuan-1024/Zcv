@@ -18,7 +18,7 @@ use zcv_language::BracketPair;
 use zcv_multi_buffer::DiffHunkStaging;
 use zcv_text::{ByteOffset, Line, LogicalColumn, Position, TextRange};
 use zcv_theme::{color, space, typography};
-use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon};
+use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon, drag_autoscroll_delta};
 
 use crate::selection::SelectionSet;
 
@@ -1611,7 +1611,7 @@ impl Element for EditorElement {
                 return;
             }
             let scroll_delta =
-                drag_autoscroll_delta(event.position, drag_text_bounds, drag_line_height);
+                selection_autoscroll_delta(event.position, drag_text_bounds, drag_line_height);
             let Some(buffer_point) = drag_layout.buffer_point_for_position(event.position) else {
                 return;
             };
@@ -4552,68 +4552,20 @@ mod tests {
 pub(crate) const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(16);
 
 /// 拖拽选择时的视口自动滚动量：滚动量 = 超出视口边缘的距离 × 0.3，单事件上限视口高/宽 1/16——鼠标移出越远滚动越快，但快速甩动不会猛跳。
-fn drag_autoscroll_delta(
+fn selection_autoscroll_delta(
     position: Point<Pixels>,
     text_bounds: Bounds<Pixels>,
     line_height: Pixels,
 ) -> Point<Pixels> {
-    let mut delta = point(Pixels::ZERO, Pixels::ZERO);
     let vertical_margin = line_height.min(text_bounds.size.height / 3.0);
-    let top = text_bounds.origin.y + vertical_margin;
-    let bottom = text_bounds.bottom_left().y - vertical_margin;
-    let max_delta = text_bounds.size.height / 16.0;
-    if position.y < top {
-        delta.y = ((top - position.y) * 0.3).min(max_delta);
-    } else if position.y > bottom {
-        delta.y = -((position.y - bottom) * 0.3).min(max_delta);
-    }
-    // 水平：列宽按 1.618em 近似（行高约 1.618em），上限同比例取视口宽 1/16。
     let horizontal_margin = 2.5 * line_height;
-    let left = text_bounds.origin.x + horizontal_margin;
-    let right = text_bounds.top_right().x - horizontal_margin;
-    let max_delta = text_bounds.size.width / 16.0;
-    if position.x < left {
-        delta.x = -((left - position.x) * 0.3).min(max_delta);
-    } else if position.x > right {
-        delta.x = ((position.x - right) * 0.3).min(max_delta);
-    }
-    delta
-}
-
-#[cfg(test)]
-mod autoscroll_tests {
-    use super::*;
-
-    fn text_bounds(origin_y: f32, height: f32) -> Bounds<Pixels> {
-        Bounds {
-            origin: point(px(0.), px(origin_y)),
-            size: size(px(800.), px(height)),
-        }
-    }
-
-    #[test]
-    fn drag_autoscroll_only_scrolls_when_cursor_passes_viewport_edge() {
-        let line_height = px(20.);
-        let bounds = text_bounds(0., 200.);
-
-        // 视口内：不滚动。
-        assert_eq!(
-            drag_autoscroll_delta(point(px(100.), px(100.)), bounds, line_height),
-            point(Pixels::ZERO, Pixels::ZERO)
-        );
-        // 上边缘外：向上回看（正 y）。
-        // 超出 120 × 0.3 = 36，被单事件上限（视口高 200 / 16 = 12.5）钳制。
-        let delta = drag_autoscroll_delta(point(px(100.), px(-100.)), bounds, line_height);
-        assert_eq!(f32::from(delta.y), 12.5);
-        // 下边缘外：向下查看新内容（负 y），同公式。
-        let delta = drag_autoscroll_delta(point(px(100.), px(300.)), bounds, line_height);
-        assert_eq!(f32::from(delta.y), -12.5);
-        // 右边缘外：水平滚动（正 x）。
-        // 超出 150 × 0.3 = 45，低于单事件上限（800 / 16 = 50），不被钳制。
-        let delta = drag_autoscroll_delta(point(px(900.), px(100.)), bounds, line_height);
-        assert_eq!(f32::from(delta.x), 45.0);
-        // 刚超出边缘：小滚动量（近端不受上限影响）。
-        let delta = drag_autoscroll_delta(point(px(100.), px(190.)), bounds, line_height);
-        assert_eq!(f32::from(delta.y), -3.0);
-    }
+    drag_autoscroll_delta(
+        position,
+        text_bounds,
+        point(horizontal_margin, vertical_margin),
+        point(
+            text_bounds.size.width / 16.0,
+            text_bounds.size.height / 16.0,
+        ),
+    )
 }

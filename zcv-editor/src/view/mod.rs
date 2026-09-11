@@ -526,7 +526,11 @@ impl Editor {
 
     /// 注入宿主拥有的文档内虚拟块；Editor 只负责布局和绘制。
     pub fn set_editor_hunks(&mut self, hunks: Vec<EditorHunk>, cx: &mut Context<Self>) {
-        self.editor_hunks = Arc::from(hunks);
+        let hunks = Arc::from(hunks);
+        if self.editor_hunks == hunks {
+            return;
+        }
+        self.editor_hunks = hunks;
         cx.notify();
     }
 

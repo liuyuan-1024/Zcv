@@ -19,10 +19,11 @@ use zcv_actions::{
     IncreaseContentFontSize, IncreaseUiFontSize, NewTerminal, ResetContentFontSize,
     ResetUiFontSize, RestartToUpdate, SelectGitBranch, ToggleHarnessMode, ToggleProjectPicker,
 };
-use zcv_editor::Editor;
+use zcv_editor::{Editor, EditorEvent, EditorHunk, EditorHunkMarkerKind, EditorHunkPart};
 use zcv_git::GitRevision;
 use zcv_project::{GitOperationKind, GitOperationOutcome, GitStoreEvent, Project};
 use zcv_settings::{GlobalSettingsErrorReporter, SettingsStore};
+use zcv_text::{ByteOffset, TextRange};
 use zcv_theme::{ThemeChoice, color, typography};
 use zcv_workspace::{
     ActivityIndicator, Dock, DockPosition, GitBranchAction, OnBranchSelected, OnProjectSelected,
@@ -740,6 +741,16 @@ fn initialize_workspace(
                 tree.reveal_active_path(active_path, cx);
             });
         }
+        if let PaneEvent::AddItem { item_id } = event
+            && let Some(editor) = pane
+                .read(cx)
+                .tabs()
+                .iter()
+                .find(|item| item.item_id() == *item_id)
+                .and_then(|item| item.act_as::<Editor>(cx))
+        {
+            subscribe_to_editor_events(workspace, &pane, editor, cx);
+        }
         // 打开/激活编辑器时推送 git diff hunks（打开即有快照里的现成数据）。
         push_diff_hunks(workspace.pane(), workspace.project(), cx);
     });
@@ -825,6 +836,17 @@ fn initialize_workspace(
     ] {
         workspace.add_subscription(subscription);
     }
+    let pane = workspace.pane().clone();
+    let editors = pane
+        .read(cx)
+        .tabs()
+        .iter()
+        .filter_map(|item| item.act_as::<Editor>(cx))
+        .collect::<Vec<_>>();
+    for editor in editors {
+        subscribe_to_editor_events(&mut *workspace, &pane, editor, cx);
+    }
+    push_diff_hunks(&pane, workspace.project(), cx);
 }
 
 /// 将设置层的文本主题 id 解析并应用为主题运行时状态。
@@ -852,8 +874,100 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
         .collect();
     // 普通编辑器统一注入：working + HEAD 全文，显示 hunk 仅由这对快照派生。
     for (editor, path) in &opened {
+        sync_editor_conflict_hunks(editor, path, project, cx);
         inject_editor_diff(editor, path, project, cx);
     }
+}
+
+/// 让每个普通编辑器的文本变化都回到工作区的唯一 Git 状态同步入口。
+fn subscribe_to_editor_events(
+    workspace: &mut Workspace,
+    pane: &Entity<Pane>,
+    editor: Entity<Editor>,
+    cx: &mut Context<Workspace>,
+) {
+    let pane = pane.clone();
+    let project = workspace.project().clone();
+    workspace.add_subscription(cx.subscribe(
+        &editor,
+        move |_workspace, _editor, event: &EditorEvent, cx| {
+            if matches!(event, EditorEvent::Edited | EditorEvent::DirtyChanged) {
+                push_diff_hunks(&pane, &project, cx);
+            }
+        },
+    ));
+}
+
+/// 从当前工作区源派生冲突 hunk；
+/// GitStore 的状态只决定该文件是否仍处于未合并事务中。
+///
+/// 冲突标记属于工作区文本，不在打开文件时缓存。
+/// 这样编辑、保存、提交和重启都经过同一条同步路径，解决最后一处冲突后，编辑器中的冲突标记会与变更树一起消失。
+fn sync_editor_conflict_hunks(
+    editor: &Entity<Editor>,
+    path: &Path,
+    project: &Entity<Project>,
+    cx: &mut App,
+) {
+    let is_unmerged = project
+        .read(cx)
+        .git_store()
+        .read(cx)
+        .status_for_path(path)
+        .is_some_and(|entry| entry.status == zcv_git::FileStatus::Unmerged);
+    if !is_unmerged {
+        editor.update(cx, |editor, cx| editor.set_editor_hunks(Vec::new(), cx));
+        return;
+    }
+    let Some(working) = editor.read(cx).multi_buffer().read(cx).working_source() else {
+        return;
+    };
+    let snapshot = working.read(cx).text_snapshot(cx);
+    let text_range =
+        TextRange::new(ByteOffset::ZERO, snapshot.len_bytes()).expect("工作区文本范围必须有效");
+    let text = snapshot
+        .slice_text(text_range)
+        .expect("工作区文本快照必须可切片")
+        .to_string();
+    let hunks = zcv_git::parse_conflict_regions(&text)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, region)| {
+            let outer = TextRange::new(
+                ByteOffset::new(region.outer.start),
+                ByteOffset::new(region.outer.end),
+            )
+            .ok()?;
+            let ours = TextRange::new(
+                ByteOffset::new(region.outer.start),
+                ByteOffset::new(region.theirs.start),
+            )
+            .ok()?;
+            let theirs = TextRange::new(
+                ByteOffset::new(region.theirs.start),
+                ByteOffset::new(region.outer.end),
+            )
+            .ok()?;
+            Some(EditorHunk {
+                id: format!("{}\n{index}", path.display()).into(),
+                range: outer,
+                parts: vec![
+                    EditorHunkPart {
+                        range: ours,
+                        content_kind: zcv_git::DiffHunkKind::Deleted,
+                        marker_kind: EditorHunkMarkerKind::Conflict,
+                    },
+                    EditorHunkPart {
+                        range: theirs,
+                        content_kind: zcv_git::DiffHunkKind::Added,
+                        marker_kind: EditorHunkMarkerKind::Conflict,
+                    },
+                ]
+                .into(),
+            })
+        })
+        .collect();
+    editor.update(cx, |editor, cx| editor.set_editor_hunks(hunks, cx));
 }
 
 /// 普通编辑器是否应注入 HEAD 差异。
@@ -880,6 +994,9 @@ fn inject_editor_diff(
         .status_for_path(path)
         .map(|entry| entry.status);
     if !editor_diff_applies(status) {
+        editor.update(cx, |editor, cx| {
+            editor.set_buffer_diffs(Some(Vec::new()), cx);
+        });
         return;
     }
     // HEAD/index 全文由 GitStore 异步提供；加载完成后重新注入。

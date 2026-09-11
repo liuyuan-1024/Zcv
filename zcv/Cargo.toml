@@ -30,6 +30,7 @@ zcv-search.workspace = true
 zcv-settings.workspace = true
 zcv-terminal.workspace = true
 zcv-theme.workspace = true
+zcv-text.workspace = true
 zcv-ui.workspace = true
 zcv-update.workspace = true
 zcv-version-control.workspace = true

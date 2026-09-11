@@ -51,6 +51,38 @@ impl MultiBuffer {
     }
 }
 
+/// 清空 Git 状态后，组合文档必须移除旧的 diff 投影，而不是保留过期 hunk。
+#[gpui::test]
+fn clearing_buffer_diffs_removes_previous_hunks(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "one\nworking\nthree\n", cx);
+    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
+                working: source,
+                path: PathBuf::from("src/a.rs"),
+                base_text: Some(Arc::from("one\nhead\nthree\n")),
+                index_text: None,
+                operations: None,
+                display_path: PathBuf::from("src/a.rs"),
+                context_lines: None,
+                show_file_header: false,
+            }]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read_entity(&combined, |buffer, _| buffer.diff_hunks().len()),
+        1
+    );
+
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_buffer_diffs(Some(Vec::new()), cx);
+    });
+    assert!(cx.read_entity(&combined, |buffer, _| buffer.diff_hunks().is_empty()));
+}
+
 /// 未提交 diff 以 HEAD 为 base、工作区为 working，由 index → working 参照逐 hunk 标注暂存语义。
 #[gpui::test]
 fn unified_diff_marks_staged_and_unstaged_hunks(cx: &mut TestAppContext) {

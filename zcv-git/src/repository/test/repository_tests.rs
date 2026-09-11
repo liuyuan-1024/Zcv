@@ -123,6 +123,18 @@ fn diff_stat_reports_staged_and_unstaged() {
 }
 
 #[test]
+fn diff_stat_with_empty_path_reports_the_whole_worktree() {
+    let (root, _temp) = test_repo();
+    let repo = open_repo(&root);
+    fs::write(root.join("tracked.txt"), "第一行\n改动\n").expect("应修改文件");
+
+    let stats = repo
+        .diff_stat(false, &[PathBuf::new()])
+        .expect("空路径应查询整棵工作树");
+    assert!(stats.contains_key(&PathBuf::from("tracked.txt")));
+}
+
+#[test]
 fn diff_stat_with_path_prefix() {
     let (root, _temp) = test_repo();
     let repo = open_repo(&root);

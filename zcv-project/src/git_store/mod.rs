@@ -350,6 +350,7 @@ impl GitStore {
                             store.commit_job(&job, result, cx);
                         }
                         store.finish_job(scheduled.id, cx);
+                        store.schedule_pending_status_refresh(cx);
                     });
                 }
             }
@@ -385,6 +386,20 @@ impl GitStore {
     pub(super) fn schedule_scan(&mut self, cx: &mut Context<Self>) {
         self.paths_needing_status_update.clear();
         self.schedule_job(GitJob::ReloadGitState, cx);
+    }
+
+    /// 当前任务结束后补发执行期间累积的增量路径。
+    ///
+    /// 文件监听事件可能在刷新任务执行期间到达；
+    /// 任务去重会跳过重复排队，因此必须在原任务完成后显式消费这批路径。
+    fn schedule_pending_status_refresh(&mut self, cx: &mut Context<Self>) {
+        if self.paths_needing_status_update.is_empty()
+            || self.pending_jobs.contains_key(&GitJobKey::ReloadGitState)
+            || self.pending_jobs.contains_key(&GitJobKey::RefreshStatuses)
+        {
+            return;
+        }
+        self.schedule_job(GitJob::RefreshStatuses, cx);
     }
 
     /// 后台执行用户触发的 git 操作（fetch/pull/push），完成后重新扫描。
@@ -766,13 +781,33 @@ impl GitStore {
     /// 增量刷新：对变更路径重查状态（fs 事件、保存操作后调用）。
     pub fn refresh_statuses_for_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         // 调用方传入的路径可能未 canonicalize，与归一化后的 root 比较前先归一化。
-        let paths: Vec<PathBuf> = paths
+        let paths: BTreeSet<PathBuf> = paths
             .iter()
             .map(|path| canonicalize_path(path))
             .filter(|path| {
                 self.root
                     .as_deref()
                     .is_some_and(|root| path.starts_with(root))
+            })
+            .map(|path| {
+                // `.git` 元数据的变化会影响整个仓库的状态；
+                // 将其归一化为仓库根，让后台以空 pathspec 查询完整工作树，而不是查询 `.git/index` 本身。
+                let Some(repository) = self.repo_for_path(&path) else {
+                    return path;
+                };
+                let relative = path
+                    .strip_prefix(repository.repository.working_directory())
+                    .ok();
+                if relative.is_some_and(|relative| {
+                    relative
+                        .components()
+                        .next()
+                        .is_some_and(|component| component.as_os_str() == ".git")
+                }) {
+                    repository.repository.working_directory().to_path_buf()
+                } else {
+                    path
+                }
             })
             .collect();
         if paths.is_empty() {
@@ -1390,6 +1425,29 @@ mod tests {
     }
 
     #[gpui::test]
+    fn index_metadata_event_refreshes_the_repository(cx: &mut gpui::TestAppContext) {
+        let (root, _temp) = test_git_repo();
+        let path = root.join("tracked.txt");
+        fs::write(&path, "暂存内容\n").expect("应修改文件");
+
+        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+        cx.run_until_parked();
+
+        run_git(&root, &["add", "tracked.txt"]);
+        cx.update_entity(&git_store, |store, cx| {
+            store.refresh_statuses_for_paths(&[root.join(".git/index")], cx)
+        });
+        cx.run_until_parked();
+
+        let status = cx.read_entity(&git_store, |store, _| {
+            store.status_for_path(&path).map(|entry| entry.status)
+        });
+        assert!(status.is_some_and(|status| status.has_staged()));
+        assert!(!status.is_some_and(|status| status.has_unstaged()));
+    }
+
+    #[gpui::test]
     fn external_checkout_updates_head(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
         // 第二个分支。
@@ -1943,6 +2001,19 @@ mod tests {
             )
         });
         assert!(staged, "暂存后 index 应为 Modified、worktree 干净");
+        let staged_diff_stat = cx.read_entity(&git_store, |store, _| {
+            store
+                .status_for_path(&root.join("tracked.txt"))
+                .map(|entry| entry.staged_diff_stat)
+        });
+        assert_eq!(
+            staged_diff_stat,
+            Some(DiffStat {
+                added: 1,
+                deleted: 2,
+            }),
+            "整文件暂存后应保留已暂存的增减行数"
+        );
         assert!(
             cx.read_entity(&git_store, |store, _| store.has_staged_changes()),
             "存在已暂存改动时应具备提交资格"

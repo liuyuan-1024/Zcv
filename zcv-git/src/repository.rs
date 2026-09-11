@@ -646,7 +646,12 @@ impl GitRepository for RealGitRepository {
         if !paths.is_empty() {
             command.arg("--");
             for path in paths {
-                command.arg(path);
+                // 空路径表示整棵工作树，与 status 的路径参数语义保持一致。
+                command.arg(if path.as_os_str().is_empty() {
+                    Path::new(".")
+                } else {
+                    path
+                });
             }
         }
         let output = self.run_command(&mut command, "git diff --numstat")?;

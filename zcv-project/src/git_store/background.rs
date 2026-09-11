@@ -337,7 +337,9 @@ fn refresh_repository_data_sync(
     repository: &Arc<dyn GitRepository>,
     paths: &[PathBuf],
 ) -> RefreshData {
-    let touches_git = paths.iter().any(|path| is_git_state_path(path));
+    let touches_git = paths
+        .iter()
+        .any(|path| path.as_os_str().is_empty() || is_git_state_path(path));
     let statuses = repository.status(paths).unwrap_or_default();
     // 分支名来自 status 头行（零附加进程）；head oid 与最近提交 subject 由 head_commit 一次查询。
     let (head, last_commit_message) = if touches_git {

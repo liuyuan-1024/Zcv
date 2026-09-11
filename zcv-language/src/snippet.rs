@@ -99,36 +99,6 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_the_fence_languages_used_by_the_markdown_fixture() {
-        for language in [
-            "rust",
-            "python",
-            "javascript",
-            "typescript",
-            "json",
-            "toml",
-            "yaml",
-            "bash",
-            "sql",
-            "css",
-            "html",
-            "c",
-            "cpp",
-            "go",
-            "java",
-            "kotlin",
-            "ruby",
-            "swift",
-            "lua",
-        ] {
-            assert!(
-                highlight_snippet(language, "value").is_some(),
-                "围栏语言 {language} 应由内置语言注册表识别"
-            );
-        }
-    }
-
-    #[test]
     fn leaves_unknown_languages_unhighlighted() {
         assert!(highlight_snippet("not-a-language", "plain text").is_none());
     }

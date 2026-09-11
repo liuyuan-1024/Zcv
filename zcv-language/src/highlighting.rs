@@ -557,6 +557,28 @@ mod tests {
     }
 
     #[test]
+    fn html_custom_components_have_component_highlights() {
+        let (buffer, syntax) = parsed_syntax(
+            "index.html",
+            "<main><UserCard data-id=\"1\">你好</UserCard></main>\n",
+        );
+        let snapshot = buffer.snapshot();
+        let syntax = syntax.snapshot();
+        let names = syntax.capture_names();
+        let spans = syntax.highlights(0..snapshot.len_bytes().get(), &snapshot);
+
+        let component_start = "<main><".len();
+        assert!(
+            spans.iter().any(|span| {
+                names[span.capture as usize].as_ref() == "tag.component"
+                    && span.range.start <= component_start
+                    && component_start < span.range.end
+            }),
+            "大写开头的 HTML 标签应识别为组件"
+        );
+    }
+
+    #[test]
     fn baseline_languages_inject_registered_nested_languages() {
         for (path, source, expected) in [
             ("main.c", "#define VALUE (1 + 2)\n", "C"),

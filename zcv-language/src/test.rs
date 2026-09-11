@@ -2,20 +2,20 @@ use std::path::Path;
 
 use crate::syntax_map::SyntaxMap;
 use crate::tree_sitter_utils::ParseCancellation;
+use zcv_text::{Buffer, BufferConfig, Line};
 
 /// 按 Rust 文件解析文本，返回 Buffer 与已安装解析结果的语法映射。
-pub(crate) fn rust_buffer(text: &str) -> (zcv_text::Buffer, SyntaxMap) {
+pub(crate) fn rust_buffer(text: &str) -> (Buffer, SyntaxMap) {
     parsed_syntax("main.rs", text)
 }
 
 /// 按给定路径解析文本，返回 Buffer 与已安装解析结果的语法映射。
-pub(crate) fn parsed_syntax(path: &str, text: &str) -> (zcv_text::Buffer, SyntaxMap) {
-    let buffer =
-        zcv_text::Buffer::from_text(text.to_owned(), zcv_text::BufferConfig::default()).unwrap();
+pub(crate) fn parsed_syntax(path: &str, text: &str) -> (Buffer, SyntaxMap) {
+    let buffer = Buffer::from_text(text.to_owned(), BufferConfig::default()).unwrap();
     let snapshot = buffer.snapshot();
     let mut syntax = SyntaxMap::new(&snapshot);
     let first_line = snapshot
-        .slice_line(zcv_text::Line::ZERO)
+        .slice_line(Line::ZERO)
         .unwrap()
         .as_str()
         .trim_end_matches(['\r', '\n'])

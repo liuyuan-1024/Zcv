@@ -11,10 +11,13 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
-use zcv_git::{ConflictChoice, FileStatus};
+use zcv_git::{ConflictChoice, FileStatus, parse_conflict_regions, resolve_conflict};
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::MultiBuffer;
-use zcv_text::{Buffer, BufferLoadError, BufferSaveError, SearchQuery};
+use zcv_text::{
+    Buffer, BufferLoadError, BufferSaveError, ByteOffset, Edit, SearchQuery, TextRange,
+    TransactionMetadata,
+};
 
 use super::buffer_store::BufferStore;
 use super::git_store::{GitStatusSnapshot, GitStore};
@@ -175,22 +178,18 @@ impl Project {
         let language_buffer = self.open_buffer(path, cx)?;
         let buffer = language_buffer.read(cx).buffer();
         let snapshot = language_buffer.read(cx).text_snapshot(cx);
-        let text_range =
-            zcv_text::TextRange::new(zcv_text::ByteOffset::ZERO, snapshot.len_bytes())?;
+        let text_range = TextRange::new(ByteOffset::ZERO, snapshot.len_bytes())?;
         let text = snapshot.slice_text(text_range)?.to_string();
-        let regions = zcv_git::parse_conflict_regions(&text);
+        let regions = parse_conflict_regions(&text);
         let region = regions
             .get(conflict_index)
             .ok_or_else(|| anyhow::anyhow!("冲突序号无效：{conflict_index}"))?;
-        let resolved = zcv_git::resolve_conflict(&text, region, choice);
-        let full_range = zcv_text::TextRange::new(
-            zcv_text::ByteOffset::ZERO,
-            zcv_text::ByteOffset::new(text.len()),
-        )?;
+        let resolved = resolve_conflict(&text, region, choice);
+        let full_range = TextRange::new(ByteOffset::ZERO, ByteOffset::new(text.len()))?;
         buffer.update(cx, |buffer, _| {
             buffer.edit(
-                [zcv_text::Edit::replace(full_range, resolved)],
-                zcv_text::TransactionMetadata::default(),
+                [Edit::replace(full_range, resolved)],
+                TransactionMetadata::default(),
             )
         })?;
         self.save_file_buffers(vec![(buffer, path.to_path_buf())], cx)?;
@@ -262,17 +261,16 @@ impl Project {
                 .git_store
                 .read(cx)
                 .status_for_path(&path)
-                .is_some_and(|entry| entry.status == zcv_git::FileStatus::Unmerged);
+                .is_some_and(|entry| entry.status == FileStatus::Unmerged);
             if is_unmerged {
                 let snapshot = buffer.read(cx).snapshot();
-                let range =
-                    zcv_text::TextRange::new(zcv_text::ByteOffset::ZERO, snapshot.len_bytes())
-                        .expect("Buffer 快照的全文范围必须有效");
+                let range = TextRange::new(ByteOffset::ZERO, snapshot.len_bytes())
+                    .expect("Buffer 快照的全文范围必须有效");
                 let text = snapshot
                     .slice_text(range)
                     .expect("Buffer 快照必须可切片")
                     .to_string();
-                if zcv_git::parse_conflict_regions(&text).is_empty() {
+                if parse_conflict_regions(&text).is_empty() {
                     resolved_conflict_paths.push(path.clone());
                 }
             }

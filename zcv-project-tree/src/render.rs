@@ -11,7 +11,7 @@ use gpui::{
 use zcv_editor::Editor;
 use zcv_theme::color;
 use zcv_ui::Scrollbar;
-use zcv_ui::{TreeNodeRow, TreeState, row_click_action, selection_border};
+use zcv_ui::{RowClickAction, TreeNodeRow, TreeState, row_click_action, selection_border};
 use zcv_workspace::git_status_color;
 
 use super::drag::{DraggedEntryView, TreeDrag, drop_target_dir, filter_movable_sources};
@@ -326,13 +326,13 @@ pub(super) fn render_row(
                                 && intent_path == path
                             {
                                 match action {
-                                    zcv_ui::RowClickAction::Toggle => {
+                                    RowClickAction::Toggle => {
                                         tree.activate_selected(true, window, cx)
                                     }
-                                    zcv_ui::RowClickAction::Preview => {
+                                    RowClickAction::Preview => {
                                         tree.activate_selected(false, window, cx)
                                     }
-                                    zcv_ui::RowClickAction::Activate => {
+                                    RowClickAction::Activate => {
                                         tree.activate_selected(true, window, cx)
                                     }
                                 }

@@ -1627,13 +1627,9 @@ impl Element for EditorElement {
                     editor.last_drag_autoscroll.set(Instant::now());
                     editor.scroll_by(scroll_delta, cx);
                 }
-                if let Ok(offset) =
-                    editor
-                        .render_snapshot()
-                        .position_to_byte(zcv_text::Position::new(
-                            buffer_point.line(),
-                            buffer_point.column(),
-                        ))
+                if let Ok(offset) = editor
+                    .render_snapshot()
+                    .position_to_byte(Position::new(buffer_point.line(), buffer_point.column()))
                 {
                     editor.update_selection(offset, cx);
                 }

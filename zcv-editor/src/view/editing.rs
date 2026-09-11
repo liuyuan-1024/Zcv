@@ -6,7 +6,9 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use gpui::{App, ClipboardItem, Context, Window};
-use zcv_text::{ByteOffset, Line, MovementDirection, MovementUnit, Snapshot, TextResult};
+use zcv_text::{
+    ByteOffset, Line, MovementDirection, MovementUnit, Snapshot, TextError, TextResult,
+};
 
 use super::*;
 use crate::selection::{
@@ -161,7 +163,7 @@ impl Editor {
                         let column = self
                             .display_map
                             .offset_to_display_point(selection.head())
-                            .map_err(|error| zcv_text::TextError::InvariantViolation {
+                            .map_err(|error| TextError::InvariantViolation {
                                 location: "Editor::indent",
                                 detail: error.to_string(),
                             })?

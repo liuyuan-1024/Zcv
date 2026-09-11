@@ -20,7 +20,7 @@ use zcv_actions::{
     ResetUiFontSize, RestartToUpdate, SelectGitBranch, ToggleHarnessMode, ToggleProjectPicker,
 };
 use zcv_editor::{Editor, EditorEvent, EditorHunk, EditorHunkMarkerKind, EditorHunkPart};
-use zcv_git::GitRevision;
+use zcv_git::{DiffHunkKind, FileStatus, GitRevision, parse_conflict_regions};
 use zcv_multi_buffer::{BufferDiffInput, DiffFile, DiffProjection};
 use zcv_project::{GitOperationKind, GitOperationOutcome, GitStoreEvent, Project};
 use zcv_settings::{GlobalSettingsErrorReporter, SettingsStore};
@@ -777,7 +777,7 @@ fn initialize_workspace(
     let settings_subscription =
         cx.observe_global_in::<SettingsStore>(window, move |_workspace, window, cx| {
             let settings = SettingsStore::get(cx);
-            zcv_theme::typography::set_typography(
+            typography::set_typography(
                 cx,
                 Some(settings.content_font_size),
                 Some(settings.ui_font_size),
@@ -919,7 +919,7 @@ fn sync_editor_conflict_hunks(
         .git_store()
         .read(cx)
         .status_for_path(path)
-        .is_some_and(|entry| entry.status == zcv_git::FileStatus::Unmerged);
+        .is_some_and(|entry| entry.status == FileStatus::Unmerged);
     if !is_unmerged {
         editor.update(cx, |editor, cx| editor.set_editor_hunks(Vec::new(), cx));
         return;
@@ -934,7 +934,7 @@ fn sync_editor_conflict_hunks(
         .slice_text(text_range)
         .expect("工作区文本快照必须可切片")
         .to_string();
-    let hunks = zcv_git::parse_conflict_regions(&text)
+    let hunks = parse_conflict_regions(&text)
         .into_iter()
         .enumerate()
         .filter_map(|(index, region)| {
@@ -959,12 +959,12 @@ fn sync_editor_conflict_hunks(
                 parts: vec![
                     EditorHunkPart {
                         range: ours,
-                        content_kind: zcv_git::DiffHunkKind::Deleted,
+                        content_kind: DiffHunkKind::Deleted,
                         marker_kind: EditorHunkMarkerKind::Conflict,
                     },
                     EditorHunkPart {
                         range: theirs,
-                        content_kind: zcv_git::DiffHunkKind::Added,
+                        content_kind: DiffHunkKind::Added,
                         marker_kind: EditorHunkMarkerKind::Conflict,
                     },
                 ]
@@ -979,8 +979,8 @@ fn sync_editor_conflict_hunks(
 ///
 /// 只有 index/HEAD 中的已跟踪文件可能有 HEAD 差异；未跟踪、被忽略或干净文件没有 HEAD 文本，
 /// 把“缺失”当成空 base 注入会把整份工作区文本投影成新增（绿色背景）。
-fn editor_diff_applies(status: Option<zcv_git::FileStatus>) -> bool {
-    status.is_some_and(|status| matches!(status, zcv_git::FileStatus::Tracked { .. }))
+fn editor_diff_applies(status: Option<FileStatus>) -> bool {
+    status.is_some_and(|status| matches!(status, FileStatus::Tracked { .. }))
 }
 
 /// 把单个普通编辑器的工作区源与 HEAD/index 全文统一注入。

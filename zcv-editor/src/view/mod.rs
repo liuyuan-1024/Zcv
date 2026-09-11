@@ -22,17 +22,16 @@ use zcv_actions::{
 };
 use zcv_git::DiffHunkKind;
 use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer};
-use zcv_multi_buffer::DisplayHunk;
 use zcv_multi_buffer::{
-    DiffProjection, ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot, MultiBuffer,
-    MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot, MultiBufferSubscription,
+    DiffHunkSource, DiffProjection, DisplayHunk, ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot,
+    MultiBuffer, MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot, MultiBufferSubscription,
     ProjectionRemap,
 };
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
     Buffer, BufferConfig, BufferVersion, ByteOffset, Edit, Line, LineRange, LogicalColumn,
-    MovementDirection, MovementUnit, Position, PositionMap, Snapshot, TextRange, TextResult,
-    TransactionId, TransactionMergePolicy, TransactionMetadata, TransactionSource,
+    MovementDirection, MovementUnit, Position, PositionMap, Snapshot, TextError, TextRange,
+    TextResult, TransactionId, TransactionMergePolicy, TransactionMetadata, TransactionSource,
 };
 use zcv_theme::{color, typography};
 
@@ -594,7 +593,7 @@ impl Editor {
     pub fn diff_hunk_word_diffs<'a>(
         &'a self,
         cx: &'a App,
-    ) -> &'a [Vec<(zcv_git::DiffHunkKind, Range<usize>)>] {
+    ) -> &'a [Vec<(DiffHunkKind, Range<usize>)>] {
         self.multi_buffer.read(cx).diff_hunk_word_diffs()
     }
 
@@ -607,11 +606,7 @@ impl Editor {
     }
 
     /// 显示 hunk 到源定位（hunk 操作与导航用）。
-    pub fn buffer_diff_hunk_at(
-        &self,
-        display_index: usize,
-        cx: &App,
-    ) -> Option<zcv_multi_buffer::DiffHunkSource> {
+    pub fn buffer_diff_hunk_at(&self, display_index: usize, cx: &App) -> Option<DiffHunkSource> {
         self.multi_buffer
             .read(cx)
             .buffer_diff_hunk_at(display_index, cx)
@@ -1820,14 +1815,14 @@ impl Editor {
                                 MovementDirection::Previous => self
                                     .display_map
                                     .beginning_of_row(head)
-                                    .map_err(|error| zcv_text::TextError::InvariantViolation {
+                                    .map_err(|error| TextError::InvariantViolation {
                                         location: "Editor::move_selections",
                                         detail: error.to_string(),
                                     }),
                                 MovementDirection::Next => self
                                     .display_map
                                     .end_of_row(head)
-                                    .map_err(|error| zcv_text::TextError::InvariantViolation {
+                                    .map_err(|error| TextError::InvariantViolation {
                                         location: "Editor::move_selections",
                                         detail: error.to_string(),
                                     }),
@@ -1869,7 +1864,7 @@ impl Editor {
                         let point =
                             self.display_map
                                 .offset_to_display_point(base)
-                                .map_err(|error| zcv_text::TextError::InvariantViolation {
+                                .map_err(|error| TextError::InvariantViolation {
                                     location: "Editor::move_selections",
                                     detail: error.to_string(),
                                 })?;
@@ -1912,7 +1907,7 @@ impl Editor {
                                 DisplayRow::new(target_row),
                                 goal,
                             ))
-                            .map_err(|error| zcv_text::TextError::InvariantViolation {
+                            .map_err(|error| TextError::InvariantViolation {
                                 location: "Editor::move_selections",
                                 detail: error.to_string(),
                             })?

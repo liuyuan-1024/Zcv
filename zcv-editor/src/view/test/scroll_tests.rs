@@ -15,7 +15,7 @@ impl Render for EditorInWindow {
 }
 use zcv_git::DiffHunkKind;
 use zcv_multi_buffer::{DiffHunkStaging, MultiBuffer, MultiBufferExcerpt};
-use zcv_text::ByteOffset;
+use zcv_text::{ByteOffset, Line, LogicalColumn, Position};
 
 use super::common::focus_editor;
 
@@ -308,10 +308,7 @@ fn navigation_before_wrap_layout_lands_on_target_row(cx: &mut TestAppContext) {
     let target_offset = cx.read_entity(&editor, |editor, _| {
         editor
             .render_snapshot()
-            .position_to_byte(zcv_text::Position::new(
-                zcv_text::Line::new(target_line),
-                zcv_text::LogicalColumn::ZERO,
-            ))
+            .position_to_byte(Position::new(Line::new(target_line), LogicalColumn::ZERO))
             .expect("目标行应有效")
     });
     let before_nav = cx.read_entity(&editor, |editor, _| editor.display_map.line_count());

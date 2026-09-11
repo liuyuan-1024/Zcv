@@ -21,12 +21,17 @@ use zcv_editor::{
     DiffHunkDelegate, Editor, EditorEvent, EditorHunk, EditorHunkMarkerKind, EditorHunkPart,
     EditorScrollAnchor, HunkControlTarget,
 };
-use zcv_git::{FileStatus, GitHunkOperation, GitRevision, StatusCode};
+use zcv_git::{
+    ConflictChoice, DiffHunkKind, FileStatus, GitHunkOperation, GitRevision, StatusCode,
+    parse_conflict_regions,
+};
 use zcv_language::LanguageBuffer;
-use zcv_multi_buffer::{BufferDiff, BufferDiffInput, DiffFile, DiffProjection, DisplayHunk};
+use zcv_multi_buffer::{
+    BufferDiff, BufferDiffInput, DiffFile, DiffHunkSource, DiffProjection, DisplayHunk,
+};
 use zcv_multi_buffer::{ExcerptLocation, MultiBuffer, MultiBufferExcerpt};
 use zcv_project::{GitStoreEvent, Project};
-use zcv_text::{Anchor, Buffer, BufferConfig, ByteOffset, SearchQuery, Snapshot};
+use zcv_text::{Anchor, Buffer, BufferConfig, ByteOffset, SearchQuery, Snapshot, TextRange};
 use zcv_theme::{color, space};
 use zcv_ui::{
     Button, ButtonSize, ButtonStyle, Checkbox, MatchOption, MatchOptions, ReplaceInput,
@@ -36,8 +41,6 @@ use zcv_workspace::{
     Direction, Item, ItemEvent, SearchableItem, SearchableItemHandle, SerializedItemProvider,
     SerializedPaneItem, Workspace,
 };
-
-use zcv_git::ConflictChoice;
 
 const PROJECT_DIFF_SERIALIZED_KIND: &str = "project-diff";
 
@@ -1092,7 +1095,7 @@ impl ProjectDiffView {
                 continue;
             };
             let source_len = source.read(cx).text_snapshot(cx).len_bytes();
-            let Ok(source_range) = zcv_text::TextRange::new(ByteOffset::ZERO, source_len) else {
+            let Ok(source_range) = TextRange::new(ByteOffset::ZERO, source_len) else {
                 continue;
             };
             excerpts.push(
@@ -1115,15 +1118,14 @@ impl ProjectDiffView {
         let mut hunks = Vec::new();
         for (buffer, path) in self.multi_buffer.read(cx).file_buffers(cx) {
             let source = buffer.read(cx).snapshot();
-            let Ok(text_range) = zcv_text::TextRange::new(ByteOffset::ZERO, source.len_bytes())
-            else {
+            let Ok(text_range) = TextRange::new(ByteOffset::ZERO, source.len_bytes()) else {
                 continue;
             };
             let Ok(text) = source.slice_text(text_range) else {
                 continue;
             };
             let text = text.to_string();
-            for (index, region) in zcv_git::parse_conflict_regions(&text).iter().enumerate() {
+            for (index, region) in parse_conflict_regions(&text).iter().enumerate() {
                 let Some(excerpt) = snapshot.excerpts().iter().find(|excerpt| {
                     excerpt.path() == path
                         && excerpt
@@ -1138,7 +1140,7 @@ impl ProjectDiffView {
                             + offset.saturating_sub(excerpt.source_range().start().get()),
                     )
                 };
-                let Ok(range) = zcv_text::TextRange::new(
+                let Ok(range) = TextRange::new(
                     output_offset(region.outer.start),
                     output_offset(region.outer.end),
                 ) else {
@@ -1149,21 +1151,21 @@ impl ProjectDiffView {
                     range,
                     parts: vec![
                         EditorHunkPart {
-                            range: zcv_text::TextRange::new(
+                            range: TextRange::new(
                                 output_offset(region.outer.start),
                                 output_offset(region.theirs.start),
                             )
                             .expect("冲突当前侧范围必须有效"),
-                            content_kind: zcv_git::DiffHunkKind::Deleted,
+                            content_kind: DiffHunkKind::Deleted,
                             marker_kind: EditorHunkMarkerKind::Conflict,
                         },
                         EditorHunkPart {
-                            range: zcv_text::TextRange::new(
+                            range: TextRange::new(
                                 output_offset(region.theirs.start),
                                 output_offset(region.outer.end),
                             )
                             .expect("冲突传入侧范围必须有效"),
-                            content_kind: zcv_git::DiffHunkKind::Added,
+                            content_kind: DiffHunkKind::Added,
                             marker_kind: EditorHunkMarkerKind::Conflict,
                         },
                     ]
@@ -1276,11 +1278,7 @@ impl ProjectDiffView {
     }
 
     /// 显示 hunk 的源定位（hunk 操作与导航用）：按显示坐标反查源文件与源 hunk。
-    fn diff_hunk_source_info(
-        &self,
-        displayed: &DisplayHunk,
-        cx: &App,
-    ) -> Option<zcv_multi_buffer::DiffHunkSource> {
+    fn diff_hunk_source_info(&self, displayed: &DisplayHunk, cx: &App) -> Option<DiffHunkSource> {
         let index = self
             .multi_buffer
             .read(cx)
@@ -1704,7 +1702,7 @@ mod tests {
     use gpui::{AppContext as _, TestAppContext};
 
     use zcv_multi_buffer::ExcerptDiffKind;
-    use zcv_text::Line;
+    use zcv_text::{Edit, Line, TransactionMetadata};
 
     #[test]
     fn project_diff_persistence_state_keeps_group_and_active_path() {
@@ -2006,11 +2004,8 @@ mod tests {
             // 行内位置：旧行 "修改前" 第 2 个字符（逻辑列 1）→ 工作区同列。
             let inner_location = ExcerptLocation {
                 path: modified_path.clone(),
-                source_range: zcv_text::TextRange::new(
-                    zcv_text::ByteOffset::new(27),
-                    zcv_text::ByteOffset::new(34),
-                )
-                .expect("旧行内范围"),
+                source_range: TextRange::new(ByteOffset::new(27), ByteOffset::new(34))
+                    .expect("旧行内范围"),
             };
             let inner_target = view
                 .deleted_navigation_target(&inner_location, &working_text, cx)
@@ -2022,11 +2017,7 @@ mod tests {
             );
             assert_eq!(
                 modified_excerpt.source_range(),
-                zcv_text::TextRange::new(
-                    zcv_text::ByteOffset::new(24),
-                    zcv_text::ByteOffset::new(34),
-                )
-                .expect("旧侧第 5 行范围"),
+                TextRange::new(ByteOffset::new(24), ByteOffset::new(34),).expect("旧侧第 5 行范围"),
                 "夹具应让 Deleted 片段正好覆盖被修改的旧行（含行尾换行）"
             );
             // 整文件删除：纯删除 hunk 的 range 为空，锚定到变更块起点（0-based 0）。
@@ -2404,14 +2395,11 @@ mod tests {
         engine_buffer.update(cx, |buffer, cx| {
             buffer
                 .edit(
-                    vec![zcv_text::Edit::delete(
-                        zcv_text::TextRange::new(
-                            zcv_text::ByteOffset::new(6),
-                            zcv_text::ByteOffset::new(13),
-                        )
-                        .expect("删除范围应有效"),
+                    vec![Edit::delete(
+                        TextRange::new(ByteOffset::new(6), ByteOffset::new(13))
+                            .expect("删除范围应有效"),
                     )],
-                    zcv_text::TransactionMetadata::default(),
+                    TransactionMetadata::default(),
                 )
                 .expect("工作区编辑应成功");
             cx.notify();

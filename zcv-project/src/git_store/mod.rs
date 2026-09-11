@@ -31,7 +31,7 @@ use zcv_git::{
     GraphCommit, HunkEdit, WorkingCopySnapshot, apply_hunk_edits_to_text,
 };
 use zcv_multi_buffer::{BufferDiff, BufferDiffInput, DiffOperations, PendingHunk};
-use zcv_text::Anchor;
+use zcv_text::{Anchor, ByteOffset, TextRange};
 
 /// 一次增量刷新最多累积的路径数，超过则升级为全量扫描。
 const MAX_INCREMENTAL_PATHS: usize = 500;
@@ -542,7 +542,7 @@ impl GitStore {
                         ..hunk.buffer_range.end.offset().get();
                     let working_slice = working_text
                         .slice_text(
-                            zcv_text::TextRange::new(
+                            TextRange::new(
                                 hunk.buffer_range.start.offset(),
                                 hunk.buffer_range.end.offset(),
                             )
@@ -574,7 +574,7 @@ impl GitStore {
             }
             let working_snapshot = working_text
                 .slice_text(
-                    zcv_text::TextRange::new(zcv_text::ByteOffset::ZERO, working_text.len_bytes())
+                    TextRange::new(ByteOffset::ZERO, working_text.len_bytes())
                         .expect("工作区全文范围必须有序"),
                 )
                 .expect("工作区全文范围必须有效")

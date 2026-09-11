@@ -16,7 +16,9 @@ use std::os::unix::ffi::OsStringExt;
 use async_channel::{Receiver, Sender};
 use futures::{StreamExt, stream};
 use gpui::{BackgroundExecutor, Task};
-use zcv_text::{Buffer, BufferConfig, ByteOffset, Line, SearchQuery, Snapshot, TextRange};
+use zcv_text::{
+    Buffer, BufferConfig, ByteOffset, Line, PreparedSearchQuery, SearchQuery, Snapshot, TextRange,
+};
 
 use crate::worktree::WorktreeSearchPlan;
 
@@ -142,7 +144,7 @@ fn search_file(
     path: PathBuf,
     root: &Path,
     opened_snapshots: &HashMap<PathBuf, Snapshot>,
-    query: &zcv_text::PreparedSearchQuery,
+    query: &PreparedSearchQuery,
 ) -> Option<FileSearchResult> {
     // 已打开文件用内存快照搜索；
     // 其余文件在后台读盘并保留 Buffer，避免结果装配阶段在主线程重新读文件。
@@ -183,7 +185,7 @@ fn truncate_excerpts(excerpts: &mut Vec<ExcerptMatches>, limit: usize) {
 
 fn search_snapshot(
     snapshot: &Snapshot,
-    query: &zcv_text::PreparedSearchQuery,
+    query: &PreparedSearchQuery,
 ) -> anyhow::Result<Vec<TextRange>> {
     Ok(query.search(snapshot)?.ranges().collect())
 }

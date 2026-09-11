@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use gpui::Context;
+use zcv_git::GitRevision;
 
 use super::{
     GitStore, GitStoreEvent, Repository,
@@ -60,11 +61,11 @@ impl GitStore {
                 }
                 if head_changed {
                     // HEAD 变化 → 旧 HEAD 文本失效。
-                    self.invalidate_revision_text(zcv_git::GitRevision::Head);
+                    self.invalidate_revision_text(GitRevision::Head);
                     cx.emit(GitStoreEvent::Head);
                 }
                 if statuses_changed {
-                    self.invalidate_revision_text(zcv_git::GitRevision::Index);
+                    self.invalidate_revision_text(GitRevision::Index);
                     cx.emit(GitStoreEvent::Statuses);
                 }
                 self.repositories = scans
@@ -127,14 +128,11 @@ impl GitStore {
                     head_changed |= head;
                 }
                 if !changed_paths.is_empty() {
-                    self.invalidate_revision_text_for_paths(
-                        zcv_git::GitRevision::Index,
-                        &changed_paths,
-                    );
+                    self.invalidate_revision_text_for_paths(GitRevision::Index, &changed_paths);
                 }
                 if head_changed {
                     // HEAD 变化 → 旧 HEAD 文本失效。
-                    self.invalidate_revision_text(zcv_git::GitRevision::Head);
+                    self.invalidate_revision_text(GitRevision::Head);
                     cx.emit(GitStoreEvent::Head);
                 }
                 // 先发布不可变索引，再发状态事件；订阅方收到事件时必须读取同一批刷新后的状态。
@@ -161,13 +159,11 @@ impl GitStore {
                     }
                     Err(error) => {
                         if let Some(previous) = self.optimistic_index_bases.remove(path) {
-                            self.revision_text_cache.insert(
-                                (zcv_git::GitRevision::Index, path.clone()),
-                                Some(previous),
-                            );
+                            self.revision_text_cache
+                                .insert((GitRevision::Index, path.clone()), Some(previous));
                             let generation = self
                                 .revision_text_generations
-                                .entry(zcv_git::GitRevision::Index)
+                                .entry(GitRevision::Index)
                                 .or_insert(0);
                             *generation = generation.wrapping_add(1).max(1);
                             cx.emit(GitStoreEvent::IndexText);

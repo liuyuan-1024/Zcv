@@ -1,8 +1,8 @@
 //! 文件内搜索：SearchableItem 实现（搜索/跳转/替换/编辑后自动重搜）。
 
 use gpui::{TestAppContext, VisualTestContext};
-use zcv_text::SearchQuery;
-use zcv_text::{ByteOffset, TextRange};
+use zcv_text::{Buffer, ByteOffset, Line, SearchQuery, TextRange};
+use zcv_theme::color;
 use zcv_workspace::{Direction, SearchableItem};
 
 use super::common::test_buffer;
@@ -51,7 +51,7 @@ fn search_finds_all_matches_and_reports_count(cx: &mut TestAppContext) {
             let matches = editor.search_highlights().unwrap().0;
             assert_eq!(
                 matches[0].range(),
-                zcv_text::TextRange::new(ByteOffset::new(0), ByteOffset::new(3),).unwrap()
+                TextRange::new(ByteOffset::new(0), ByteOffset::new(3),).unwrap()
             );
             assert!(editor.search_highlights().is_some());
         });
@@ -116,7 +116,7 @@ fn search_regex_matches_pattern(cx: &mut TestAppContext) {
             let matches = editor.search_highlights().unwrap().0;
             assert_eq!(
                 matches[2].range(),
-                zcv_text::TextRange::new(ByteOffset::new(8), ByteOffset::new(11),).unwrap()
+                TextRange::new(ByteOffset::new(8), ByteOffset::new(11),).unwrap()
             );
         });
     });
@@ -327,7 +327,7 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
         let viewport = display.slice_viewport(DisplayRow::new(0), 1).unwrap();
         // 与 element.rs 相同的背景层构建。
         let search_highlights = editor.read(cx).search_highlights().unwrap();
-        let colors = zcv_theme::color::current(cx);
+        let colors = color::current(cx);
         let search_backgrounds: Vec<(Range<usize>, gpui::Rgba)> = search_highlights
             .0
             .iter()
@@ -360,7 +360,7 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
             .inlay_snapshot();
         let stream_line = inlay_snapshot
             .stream()
-            .buffer_to_stream(zcv_text::Line::new(source.line()));
+            .buffer_to_stream(Line::new(source.line()));
         let tab_width = display.buffer_snapshot().config().tab.tab_width();
         let rendered = render_viewport_chunks(
             ViewportChunkSource {
@@ -399,7 +399,7 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
         let display = DisplayMap::new(engine_snapshot.clone()).snapshot();
         // 渲染全部 4 行，统计带背景的 chunk。
         let search_highlights = editor.read(cx).search_highlights().unwrap();
-        let colors = zcv_theme::color::current(cx);
+        let colors = color::current(cx);
         let search_backgrounds: Vec<(Range<usize>, gpui::Rgba)> = search_highlights
             .0
             .iter()
@@ -434,7 +434,7 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
                     .inlay_snapshot();
                 let stream_line = inlay_snapshot
                     .stream()
-                    .buffer_to_stream(zcv_text::Line::new(source.line()));
+                    .buffer_to_stream(Line::new(source.line()));
                 let tab_width = display.buffer_snapshot().config().tab.tab_width();
                 let rendered = render_viewport_chunks(
                     ViewportChunkSource {
@@ -484,10 +484,10 @@ zcv final
 ```
 "#;
     let expected = text.matches("zcv").count();
-    let buffer = zcv_text::Buffer::scratch(text.to_owned(), Default::default()).unwrap();
+    let buffer = Buffer::scratch(text.to_owned(), Default::default()).unwrap();
     let buffer = cx.new(|_| buffer);
     let language_buffer = cx.new(|cx| {
-        zcv_language::LanguageBuffer::new(
+        LanguageBuffer::new(
             buffer,
             Some(std::path::PathBuf::from("search_fixture.md")),
             cx,
@@ -510,7 +510,7 @@ zcv final
             expected,
             "Markdown 夹具中的 zcv 应全部匹配"
         );
-        let colors = zcv_theme::color::current(cx);
+        let colors = color::current(cx);
         let search_backgrounds: Vec<(Range<usize>, gpui::Rgba)> = search_highlights
             .0
             .iter()
@@ -548,7 +548,7 @@ zcv final
                     .inlay_snapshot();
                 let stream_line = inlay_snapshot
                     .stream()
-                    .buffer_to_stream(zcv_text::Line::new(source.line()));
+                    .buffer_to_stream(Line::new(source.line()));
                 let tab_width = display.buffer_snapshot().config().tab.tab_width();
                 let rendered = render_viewport_chunks(
                     ViewportChunkSource {

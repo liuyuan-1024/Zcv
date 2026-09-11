@@ -206,7 +206,7 @@ impl ExcerptMaterializer<'_> {
     fn push(
         &mut self,
         lines: Range<usize>,
-        text: &zcv_text::Snapshot,
+        text: &Snapshot,
         source: &Entity<LanguageBuffer>,
         diff_kind: Option<ExcerptDiffKind>,
         starts_new_excerpt: bool,
@@ -497,7 +497,7 @@ impl MultiBuffer {
     pub fn deleted_navigation_target(
         &self,
         location: &crate::ExcerptLocation,
-        working_text: &zcv_text::Snapshot,
+        working_text: &Snapshot,
         cx: &App,
     ) -> Option<(usize, usize)> {
         let snapshot = self.snapshot(cx);
@@ -1146,7 +1146,7 @@ fn materialize_file(
 /// 构造一个投影片段（空行策略由 allow_empty 控制：占位行允许空源范围）。
 fn projected_excerpt(
     source: &Entity<LanguageBuffer>,
-    text: &zcv_text::Snapshot,
+    text: &Snapshot,
     lines: Range<usize>,
     display_path: &Path,
     diff_kind: Option<ExcerptDiffKind>,
@@ -1221,7 +1221,7 @@ fn hunk_is_inside_excerpt(hunk: &ResolvedHunk, excerpt: &Range<usize>) -> bool {
 }
 
 /// 把列（Unicode scalar 计数）钳制到文本中指定行的有效长度（行 0-based）。
-fn clamp_column_to_line(text: &zcv_text::Snapshot, line: usize, column: usize) -> usize {
+fn clamp_column_to_line(text: &Snapshot, line: usize, column: usize) -> usize {
     let line = line.min(text.line_count().saturating_sub(1));
     let line_chars = text
         .line_content(Line::new(line), None)

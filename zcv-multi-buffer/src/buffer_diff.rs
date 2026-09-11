@@ -12,7 +12,9 @@ use gpui::{App, AppContext as _, Context, Entity, EventEmitter};
 use imara_diff::{Algorithm, Diff, InternedInput};
 use zcv_git::DiffHunkKind;
 use zcv_language::LanguageBuffer;
-use zcv_text::{Anchor, BufferConfig, BufferVersion, ByteOffset, Line, Snapshot, TextRange};
+use zcv_text::{
+    Anchor, Buffer, BufferConfig, BufferVersion, ByteOffset, Line, Snapshot, TextRange,
+};
 
 use crate::word_diff::{MAX_WORD_DIFF_BYTES, MAX_WORD_DIFF_LINES, word_diff_ranges};
 
@@ -261,7 +263,7 @@ impl BufferDiff {
             pending_hunks: Vec::new(),
         };
         let base_source = input.base_text.as_ref().map(|text| {
-            let buffer = zcv_text::Buffer::from_text(text.to_string(), BufferConfig::default())
+            let buffer = Buffer::from_text(text.to_string(), BufferConfig::default())
                 .expect("base 修订文本必须能创建 Buffer");
             let buffer = cx.new(|_| buffer);
             // 旧侧源的文件路径必须与工作区源一致（绝对），excerpt 定位与导航按源路径匹配。

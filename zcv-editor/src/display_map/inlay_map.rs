@@ -188,10 +188,10 @@ impl InlaySnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zcv_text::BufferConfig;
+    use zcv_text::{Buffer, BufferConfig};
 
     fn snapshot_with(text: &str, inlays: Vec<Inlay>) -> InlaySnapshot {
-        let buffer = zcv_text::Buffer::scratch(text.to_owned(), BufferConfig::default())
+        let buffer = Buffer::scratch(text.to_owned(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let (mut map, _) = InlayMap::new(LineStream::new(buffer.snapshot()));
         map.read(LineStream::new(buffer.snapshot()), inlays)
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn version_changes_only_on_inlay_config_change() {
-        let buffer = zcv_text::Buffer::scratch("ab\n".to_owned(), BufferConfig::default())
+        let buffer = Buffer::scratch("ab\n".to_owned(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let mut map = InlayMap::new(LineStream::new(buffer.snapshot())).0;
         let stream = LineStream::new(buffer.snapshot());

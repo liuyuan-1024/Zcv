@@ -48,10 +48,10 @@ pub(crate) use tab_map::byte_for_display_column;
 pub(crate) use wrap_map::WrapViewportRowKind;
 use wrap_map::{WrapMap, WrapSnapshot};
 use zcv_language::{BracketPair, HighlightSpan, NewlineIndent, SyntaxSnapshot};
-use zcv_multi_buffer::MultiBufferSnapshot;
+use zcv_multi_buffer::{ExcerptSnapshot, MultiBufferSnapshot};
 use zcv_text::{
-    ByteOffset, Line, LineRange, LogicalColumn, Position, Snapshot, TextChangeBatch, TextRange,
-    TextResult,
+    BufferVersion, ByteOffset, Line, LineRange, LogicalColumn, Position, Snapshot, TextChangeBatch,
+    TextRange, TextResult,
 };
 use zcv_theme::syntax;
 
@@ -141,12 +141,7 @@ impl DisplayPoint {
 /// 视口高亮缓存键：文本版本、语法版本、capture 表身份（Arc 指针）与查询区间。
 ///
 /// capture 表身份用 Arc 指针：组合文档的源重解析会重建 capture 表（新 Arc），即使投影文本版本未变也能正确失效。
-type HighlightCacheKey = (
-    zcv_text::BufferVersion,
-    zcv_text::BufferVersion,
-    usize,
-    Arc<[Range<usize>]>,
-);
+type HighlightCacheKey = (BufferVersion, BufferVersion, usize, Arc<[Range<usize>]>);
 
 /// 视口高亮缓存：光标闪烁、焦点切换等重复渲染帧直接命中，不重复执行树查询。
 #[derive(Clone, Debug, Default)]
@@ -353,10 +348,7 @@ impl DisplaySnapshot {
         self.block_snapshot.display_to_logical_column(line, column)
     }
 
-    pub(super) fn excerpt_for_output_line(
-        &self,
-        line: usize,
-    ) -> Option<&zcv_multi_buffer::ExcerptSnapshot> {
+    pub(super) fn excerpt_for_output_line(&self, line: usize) -> Option<&ExcerptSnapshot> {
         self.multi_buffer_snapshot.excerpt_for_output_line(line)
     }
 
@@ -982,7 +974,7 @@ mod tests {
             offset += snapshot
                 .buffer_snapshot()
                 .slice_text(
-                    zcv_text::TextRange::new(ByteOffset::new(offset), ByteOffset::new(len))
+                    TextRange::new(ByteOffset::new(offset), ByteOffset::new(len))
                         .expect("测试范围应合法"),
                 )
                 .expect("文本应可读取")

@@ -5,7 +5,9 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use zcv_git::{Branch, DiffStat, FileStatus, GitCancellation, GitRepository};
+use zcv_git::{
+    Branch, DiffStat, FileStatus, GitCancellation, GitRepository, GitStatus, parse_conflict_regions,
+};
 
 use super::{GitJob, GitOperationKind, GitOperationOutcome, RepositorySnapshot, StatusEntry};
 use crate::worktree::discover_repositories;
@@ -40,7 +42,7 @@ pub(super) struct RefreshData {
     pub(super) behind: usize,
     /// 本地分支列表（head_queried 为 false 时为空 vec，merge 不得误判变化）。
     pub(super) branches: Vec<Branch>,
-    pub(super) statuses: zcv_git::GitStatus,
+    pub(super) statuses: GitStatus,
     pub(super) staged: HashMap<PathBuf, DiffStat>,
     pub(super) unstaged: HashMap<PathBuf, DiffStat>,
     pub(super) clean_conflicts: Vec<PathBuf>,
@@ -420,7 +422,7 @@ fn clean_conflict_paths(
             }
             let bytes = std::fs::read(repository.working_directory().join(path)).ok()?;
             let text = std::str::from_utf8(&bytes).ok()?;
-            zcv_git::parse_conflict_regions(text)
+            parse_conflict_regions(text)
                 .is_empty()
                 .then(|| path.clone())
         })
@@ -584,7 +586,7 @@ mod tests {
             behind: 0,
             branches: Vec::new(),
             // a.txt 变干净（无输出 → 移除）；sub/c.txt 新增。
-            statuses: zcv_git::GitStatus {
+            statuses: GitStatus {
                 statuses: vec![(PathBuf::from("sub/c.txt"), FileStatus::Untracked)],
                 branch: None,
             },
@@ -624,7 +626,7 @@ mod tests {
             ahead: 0,
             behind: 0,
             branches: Vec::new(),
-            statuses: zcv_git::GitStatus::default(),
+            statuses: GitStatus::default(),
             staged: HashMap::new(),
             unstaged: HashMap::new(),
             clean_conflicts: Vec::new(),
@@ -664,7 +666,7 @@ mod tests {
             behind: 0,
             // 快路径 branches 恒为空：不得覆盖既有列表，也不得误判"清空"变化。
             branches: Vec::new(),
-            statuses: zcv_git::GitStatus::default(),
+            statuses: GitStatus::default(),
             staged: HashMap::new(),
             unstaged: HashMap::new(),
             clean_conflicts: Vec::new(),
@@ -717,7 +719,7 @@ mod tests {
                     is_head: true,
                 },
             ],
-            statuses: zcv_git::GitStatus::default(),
+            statuses: GitStatus::default(),
             staged: HashMap::new(),
             unstaged: HashMap::new(),
             clean_conflicts: Vec::new(),

@@ -397,7 +397,7 @@ impl BlockSnapshot {
 
     pub(super) fn display_to_logical_column(
         &self,
-        line: zcv_text::Line,
+        line: Line,
         column: super::DisplayColumn,
     ) -> DisplayMapResult<LogicalColumn> {
         self.wrap_snapshot

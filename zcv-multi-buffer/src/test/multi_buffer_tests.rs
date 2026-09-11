@@ -9,7 +9,10 @@ use crate::{
 };
 use zcv_git::DiffHunkKind;
 use zcv_language::LanguageBuffer;
-use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TextRange, TransactionMetadata};
+use zcv_text::{
+    Buffer, BufferConfig, ByteOffset, Edit, Line, StorageError, TextError, TextRange,
+    TransactionMetadata,
+};
 
 use super::*;
 
@@ -419,7 +422,7 @@ fn excerpt_projects_contained_fold_range_to_output_coordinates(cx: &mut TestAppC
     let source_start = cx.read_entity(&source, |buffer, cx| {
         buffer
             .text_snapshot(cx)
-            .line_start_byte(zcv_text::Line::new(1))
+            .line_start_byte(Line::new(1))
             .expect("函数起始行应存在")
             .get()
     });
@@ -452,7 +455,7 @@ fn fold_projection_accounts_for_nonzero_output_start(cx: &mut TestAppContext) {
     let source_start = cx.read_entity(&source, |buffer, cx| {
         buffer
             .text_snapshot(cx)
-            .line_start_byte(zcv_text::Line::new(1))
+            .line_start_byte(Line::new(1))
             .expect("函数起始行应存在")
             .get()
     });
@@ -971,7 +974,7 @@ fn undo_keeps_rust_highlighting_in_diff_projection(cx: &mut TestAppContext) {
         buffer.start_transaction(cx).expect("应开始 hunk 编辑事务");
         buffer
             .edit(
-                vec![zcv_text::Edit::insert(ByteOffset::new(3), "async ").unwrap()],
+                vec![Edit::insert(ByteOffset::new(3), "async ").unwrap()],
                 TransactionMetadata::default(),
                 cx,
             )
@@ -1021,7 +1024,7 @@ fn save_after_diff_hunk_edit_keeps_rust_highlighting(cx: &mut TestAppContext) {
     cx.update_entity(&combined, |buffer, cx| {
         buffer
             .edit(
-                vec![zcv_text::Edit::insert(ByteOffset::new(3), "async ").unwrap()],
+                vec![Edit::insert(ByteOffset::new(3), "async ").unwrap()],
                 TransactionMetadata::default(),
                 cx,
             )
@@ -1850,10 +1853,7 @@ fn read_only_composite_rejects_edits(cx: &mut TestAppContext) {
                 cx,
             )
             .expect_err("只读组合文档必须拒绝编辑");
-        assert_eq!(
-            error,
-            zcv_text::TextError::Storage(zcv_text::StorageError::ReadOnly)
-        );
+        assert_eq!(error, TextError::Storage(StorageError::ReadOnly));
     });
 }
 
@@ -1910,10 +1910,7 @@ fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &m
                 cx,
             )
             .expect_err("旧侧只允许选择和导航");
-        assert_eq!(
-            old_error,
-            zcv_text::TextError::Storage(zcv_text::StorageError::ReadOnly)
-        );
+        assert_eq!(old_error, TextError::Storage(StorageError::ReadOnly));
 
         buffer
             .edit(

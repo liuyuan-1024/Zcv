@@ -5,7 +5,7 @@ use zcv_multi_buffer::{
     BufferDiff, BufferDiffInput, DiffFile, DiffHunkStaging, DiffProjection, DisplayHunk,
     MultiBuffer, MultiBufferExcerpt,
 };
-use zcv_text::{ByteOffset, Edit, TextRange, TransactionMetadata};
+use zcv_text::{ByteOffset, Edit, Line, LogicalColumn, TextRange, TransactionMetadata};
 
 use super::common::{
     buffer_text, engine_buffer, focus_editor, inject_editor_diff, inject_file_diff, test_buffer,
@@ -488,7 +488,7 @@ fn expanding_diff_hunk_preserves_code_fold(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     editor.update(cx, |editor, cx| {
-        editor.toggle_fold_at_line(zcv_text::Line::new(4), cx)
+        editor.toggle_fold_at_line(Line::new(4), cx)
     });
     cx.run_until_parked();
     assert_eq!(
@@ -496,7 +496,7 @@ fn expanding_diff_hunk_preserves_code_fold(cx: &mut TestAppContext) {
             .display_map
             .snapshot()
             .fold_anchor_lines()),
-        vec![zcv_text::Line::new(4)]
+        vec![Line::new(4)]
     );
 
     editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
@@ -506,7 +506,7 @@ fn expanding_diff_hunk_preserves_code_fold(cx: &mut TestAppContext) {
             .display_map
             .snapshot()
             .fold_anchor_lines()),
-        vec![zcv_text::Line::new(5)],
+        vec![Line::new(5)],
         "展开 hunk 后已折叠代码应保持折叠，锚点随插入的旧侧行下移"
     );
 }
@@ -620,7 +620,7 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
     // 真实 `}` 范围投影到合并行占位符之后的列（anchor 11 字符 + 占位符 1 列 = 12）。
     let projected = snapshot
         .project_text_range(
-            zcv_text::TextRange::new(
+            TextRange::new(
                 ByteOffset::new(close_range.start),
                 ByteOffset::new(close_range.end),
             )
@@ -630,11 +630,11 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
     assert_eq!(projected.len(), 1);
     assert_eq!(
         projected[0].start(),
-        ProjectedPoint::new(ProjectedLineIndex::new(0), zcv_text::LogicalColumn::new(12))
+        ProjectedPoint::new(ProjectedLineIndex::new(0), LogicalColumn::new(12))
     );
     assert_eq!(
         projected[0].end(),
-        ProjectedPoint::new(ProjectedLineIndex::new(0), zcv_text::LogicalColumn::new(13))
+        ProjectedPoint::new(ProjectedLineIndex::new(0), LogicalColumn::new(13))
     );
 }
 

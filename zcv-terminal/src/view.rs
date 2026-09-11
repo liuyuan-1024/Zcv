@@ -24,6 +24,7 @@ use zcv_actions::{
 };
 use zcv_settings::SettingsStore;
 use zcv_theme::{color, space};
+use zcv_ui::Scrollbar;
 use zcv_workspace::{Item, ItemEvent};
 
 /// 拖拽选择自动滚动的限频间隔（≈60Hz，与编辑器 drag_autoscroll 同款）。
@@ -62,7 +63,7 @@ pub(crate) struct TerminalView {
     /// 终端回看状态在滚动条组件中的投影。
     scroll_handle: TerminalScrollHandle,
     /// 与终端视图同生命周期的滚动条，保留跨帧的拖拽状态。
-    scrollbar: zcv_ui::Scrollbar<TerminalScrollHandle>,
+    scrollbar: Scrollbar<TerminalScrollHandle>,
     initialized: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -79,7 +80,7 @@ impl TerminalView {
             last_drag_autoscroll: Cell::new(Instant::now() - AUTOSCROLL_INTERVAL),
             ime_marked_text: None,
             last_cursor_bounds: None,
-            scrollbar: zcv_ui::Scrollbar::vertical(scroll_handle.clone()),
+            scrollbar: Scrollbar::vertical(scroll_handle.clone()),
             scroll_handle,
             initialized: false,
             _subscriptions: Vec::new(),

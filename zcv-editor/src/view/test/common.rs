@@ -1,6 +1,6 @@
 use super::*;
 use gpui::{Bounds, Pixels, TestAppContext, VisualTestContext, point, size};
-use zcv_multi_buffer::DisplayHunk;
+use zcv_multi_buffer::{BufferDiff, BufferDiffInput, DiffFile, DiffProjection, DisplayHunk};
 use zcv_text::{Buffer, BufferConfig, ByteOffset};
 
 use crate::scrollbar::{SCROLLBAR_WIDTH, thumb_geometry};
@@ -78,8 +78,8 @@ pub(super) fn inject_editor_diff(
 ) {
     editor.update(cx, |editor, cx| {
         let diff = cx.new(|cx| {
-            zcv_multi_buffer::BufferDiff::new(
-                zcv_multi_buffer::BufferDiffInput {
+            BufferDiff::new(
+                BufferDiffInput {
                     operations: None,
                     working: source.clone(),
                     // 旧测试会用 None 表示“整份文本均为新增”。现在仍由一对真实文本快照
@@ -91,17 +91,50 @@ pub(super) fn inject_editor_diff(
                 cx,
             )
         });
-        editor.set_buffer_diffs(
-            Some(vec![zcv_multi_buffer::DiffFile {
+        editor.set_diff_projection(
+            Some(DiffProjection::new(vec![DiffFile {
                 diff,
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
                 show_file_header: false,
-            }]),
+            }])),
             cx,
         );
     });
     // diff 在后台异步计算；注入后等待落定，测试才能看到派生 hunk。
+    cx.run_until_parked();
+}
+
+/// 为单文件组合文档注入 Git diff 投影。
+pub(super) fn inject_file_diff(
+    editor: &Entity<Editor>,
+    source: &Entity<LanguageBuffer>,
+    base_text: Arc<str>,
+    cx: &mut TestAppContext,
+) {
+    editor.update(cx, |editor, cx| {
+        let diff = cx.new(|cx| {
+            BufferDiff::new(
+                BufferDiffInput {
+                    operations: None,
+                    working: source.clone(),
+                    base_text: Some(base_text),
+                    index_text: None,
+                    path: PathBuf::from("src/a.rs"),
+                },
+                cx,
+            )
+        });
+        editor.set_diff_projection(
+            Some(DiffProjection::new(vec![DiffFile {
+                diff,
+                display_path: PathBuf::from("src/a.rs"),
+                context_lines: None,
+                show_file_header: false,
+            }])),
+            cx,
+        );
+    });
     cx.run_until_parked();
 }
 

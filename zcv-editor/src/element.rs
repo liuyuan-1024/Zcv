@@ -335,8 +335,17 @@ pub(super) struct PrepaintState {
 type HunkHitbox = (gpui::Hitbox, usize, DiffHunkKind, bool);
 
 struct DiffHunkControls {
+    hunk_index: usize,
     hover_bounds: Bounds<Pixels>,
+    control_bounds: Option<Bounds<Pixels>>,
     element: Option<AnyElement>,
+}
+
+fn contains_hunk_region(bounds: Bounds<Pixels>, point: Point<Pixels>) -> bool {
+    point.x >= bounds.left()
+        && point.x <= bounds.right()
+        && point.y >= bounds.top()
+        && point.y <= bounds.bottom()
 }
 
 /// 背景片段合成管线：把选区与 run 背景（搜索高亮、语法背景）合成为每行互不重叠的着色片段，一次绘制。
@@ -644,9 +653,10 @@ fn build_diff_hunk_controls(
     let Some(delegate) = editor.read(cx).diff_hunk_delegate() else {
         return Vec::new();
     };
+    let hovered_hunk = editor.read(cx).hovered_diff_hunk();
     let mut controls = Vec::new();
     let sticky_top = layout.text_clip_bounds.top() + sticky_header_height;
-    for (rows, hunk) in hunks {
+    for (hunk_index, (rows, hunk)) in hunks.iter().enumerate() {
         let Some(visible_line) = layout
             .lines
             .iter()
@@ -669,7 +679,9 @@ fn build_diff_hunk_controls(
                 visible_bottom - visible_top,
             ),
         };
-        let element = if hover_bounds.contains(&window.mouse_position()) {
+        let element = if hovered_hunk == Some(hunk_index)
+            || hover_bounds.contains(&window.mouse_position())
+        {
             let Some(mut element) =
                 delegate.render_hunk_controls(hunk, rows.start, editor, window, cx)
             else {
@@ -688,12 +700,17 @@ fn build_diff_hunk_controls(
                 origin_y,
             );
             element.prepaint_as_root(origin, available_space, window, cx);
-            Some(element)
+            Some((element, Bounds::new(origin, element_size)))
         } else {
             None
         };
+        let (element, control_bounds) = element.map_or((None, None), |(element, bounds)| {
+            (Some(element), Some(bounds))
+        });
         controls.push(DiffHunkControls {
+            hunk_index,
             hover_bounds,
+            control_bounds,
             element,
         });
     }
@@ -1488,24 +1505,33 @@ impl Element for EditorElement {
         let deleted_hunk_hitboxes = prepaint.deleted_hunk_hitboxes.clone();
         let placeholder_hitboxes = prepaint.placeholder_hitboxes.clone();
         let mouse_focus = focus.clone();
-        let hunk_hover_bounds = Arc::new(
+        let hunk_hover_editor = self.editor.clone();
+        let hunk_hover_regions = Arc::new(
             prepaint
                 .diff_hunk_controls
                 .iter()
-                .map(|controls| controls.hover_bounds)
+                .map(|controls| {
+                    (
+                        controls.hunk_index,
+                        controls.hover_bounds,
+                        controls.control_bounds,
+                    )
+                })
                 .collect::<Vec<_>>(),
         );
-        let hovered_hunk = hunk_hover_bounds
-            .iter()
-            .position(|bounds| bounds.contains(&window.mouse_position()));
-        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, _cx| {
-            if phase == DispatchPhase::Capture
-                && hunk_hover_bounds
-                    .iter()
-                    .position(|bounds| bounds.contains(&event.position))
-                    != hovered_hunk
-            {
-                window.refresh();
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
+            if phase == DispatchPhase::Capture {
+                let hovered_hunk = hunk_hover_regions.iter().find_map(
+                    |(hunk_index, hover_bounds, control_bounds)| {
+                        (contains_hunk_region(*hover_bounds, event.position)
+                            || control_bounds
+                                .is_some_and(|bounds| contains_hunk_region(bounds, event.position)))
+                        .then_some(*hunk_index)
+                    },
+                );
+                hunk_hover_editor.update(cx, |editor, cx| {
+                    editor.set_hovered_diff_hunk(hovered_hunk, cx);
+                });
             }
         });
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {

@@ -24,8 +24,9 @@ use zcv_git::DiffHunkKind;
 use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer};
 use zcv_multi_buffer::DisplayHunk;
 use zcv_multi_buffer::{
-    ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot, MultiBuffer, MultiBufferAnchor,
-    MultiBufferEvent, MultiBufferSnapshot, MultiBufferSubscription, ProjectionRemap,
+    DiffProjection, ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot, MultiBuffer,
+    MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot, MultiBufferSubscription,
+    ProjectionRemap,
 };
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
@@ -253,6 +254,7 @@ pub struct Editor {
     soft_wrap_override: Option<SoftWrap>,
     preferred_line_length: usize,
     diff_hunk_delegate: Option<Arc<dyn DiffHunkDelegate>>,
+    hovered_diff_hunk: Option<usize>,
     editor_hunks: Arc<[EditorHunk]>,
     /// 拖拽选择自动滚动的限频时间戳（跨帧持久；事件频率可远超帧率，滚动频率需封顶）。
     pub(crate) last_drag_autoscroll: Cell<Instant>,
@@ -498,19 +500,20 @@ impl Editor {
         cx.emit(EditorEvent::PathChanged);
     }
 
-    /// 统一注入 git diff 投影（普通编辑器与多文件投影共用）。
+    /// 为当前编辑器文档安装 Git diff projection。
     ///
     /// `None` 是加载态（新 diff 尚未算完）：保留现有 hunks 与用户展开状态，不再被中间空列表清空；展开状态按工作区文本跟踪区间跨刷新迁移。
-    /// 状态与投影归属 MultiBuffer，本方法只转发并同步视图层状态。
+    /// diff 状态与 excerpts projection 归属当前编辑器的 MultiBuffer 文档模型；
+    /// 本方法只负责把外部 Git 基准更新提交给该模型并同步视图层状态。
     /// 返回 `true` 表示组合文档被重建；选区仍由源锚点解析，不随投影替换移动。
-    pub fn set_buffer_diffs(
+    pub fn set_diff_projection(
         &mut self,
-        files: Option<Vec<zcv_multi_buffer::DiffFile>>,
+        projection: Option<DiffProjection>,
         cx: &mut Context<Self>,
     ) -> bool {
         let rebuilt = self
             .multi_buffer
-            .update(cx, |buffer, cx| buffer.set_buffer_diffs(files, cx));
+            .update(cx, |buffer, cx| buffer.set_diff_projection(projection, cx));
         self.reset_after_diff_injection(rebuilt, cx);
         rebuilt
     }
@@ -521,7 +524,17 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         self.diff_hunk_delegate = delegate;
+        if self.diff_hunk_delegate.is_none() {
+            self.hovered_diff_hunk = None;
+        }
         cx.notify();
+    }
+
+    pub(crate) fn set_hovered_diff_hunk(&mut self, hunk: Option<usize>, cx: &mut Context<Self>) {
+        if self.hovered_diff_hunk != hunk {
+            self.hovered_diff_hunk = hunk;
+            cx.notify();
+        }
     }
 
     /// 注入宿主拥有的文档内虚拟块；Editor 只负责布局和绘制。
@@ -536,6 +549,10 @@ impl Editor {
 
     pub(crate) fn diff_hunk_delegate(&self) -> Option<Arc<dyn DiffHunkDelegate>> {
         self.diff_hunk_delegate.clone()
+    }
+
+    pub(crate) fn hovered_diff_hunk(&self) -> Option<usize> {
+        self.hovered_diff_hunk
     }
 
     pub(crate) fn editor_hunks(&self) -> &[EditorHunk] {
@@ -1461,6 +1478,7 @@ impl Editor {
                 .map_or(SoftWrap::default(), |settings| settings.soft_wrap.into()),
             soft_wrap_override: None,
             preferred_line_length: settings.map_or(80, |settings| settings.preferred_line_length),
+            hovered_diff_hunk: None,
             mouse_select_mode: MouseSelectMode::Character,
             pending_selection: None,
             autoclose_regions: Vec::new(),

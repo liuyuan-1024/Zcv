@@ -1,19 +1,19 @@
 //! Editor 与具体文本 Buffer 之间的组合文档边界。
 //!
 //! 组合文档按调用方给出的顺序物化多个来源的 excerpts，并保留组合坐标到源文件坐标的映射。
-//! 普通编辑器是「整文件单 excerpt」的组合文档，与多文件文档走同一条链路。
+//! 普通编辑器是「整文件单 excerpt」的组合文档；多文件差异视图在此使用 diff projection 重排 excerpts。
 //! Editor 始终只消费本层，不感知来源数量。
-//! diff 投影（git hunks、展开状态、跟踪区间与显示坐标）也归本层，见 [`diff_projection`]。
+//! diff projection（git hunks、展开状态、跟踪区间与显示坐标）只服务需要重排 excerpts 的组合文档，见 [`diff_projection`]。
 
 mod buffer_diff;
 mod diff_projection;
 mod word_diff;
 
 pub use buffer_diff::{
-    BufferDiff, BufferDiffInput, BufferDiffSnapshot, DiffHunk, DiffHunkStaging, DiffOperations,
-    PendingHunk, PendingSense,
+    BufferDiff, BufferDiffEvent, BufferDiffInput, BufferDiffSnapshot, DiffHunk, DiffHunkStaging,
+    DiffOperations, DiffRefresh, PendingHunk, PendingSense,
 };
-pub use diff_projection::{DiffFile, DiffHunkSource, DisplayHunk};
+pub use diff_projection::{DiffFile, DiffHunkSource, DiffProjection, DisplayHunk};
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -692,9 +692,29 @@ pub struct MultiBuffer {
     committed_source_transactions: HashSet<(gpui::EntityId, TransactionId)>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HistoryOwner {
+    /// 单文件编辑器的多个视图共享同一个工作区源，因此历史归源 Buffer 所有。
+    SourceBuffer,
+    /// 组合文档同时编辑多个源，由 MultiBuffer 记录一次复合事务。
+    MultiBuffer,
+}
+
 impl EventEmitter<MultiBufferEvent> for MultiBuffer {}
 
 impl MultiBuffer {
+    /// 统一选择文本历史的所有者。
+    ///
+    /// 同一个文档模型根据源数量选择历史协调者：
+    /// 单源文档复用共享源历史，多源文档由自身协调多个源的历史。
+    fn history_owner(&self) -> HistoryOwner {
+        if self.working_source.is_some() {
+            HistoryOwner::SourceBuffer
+        } else {
+            HistoryOwner::MultiBuffer
+        }
+    }
+
     /// 创建空的可编辑组合文档；调用方可重复设置 ordered excerpts。
     pub fn empty(cx: &mut Context<Self>) -> Self {
         Self::empty_with_read_only(false, cx)
@@ -1194,7 +1214,7 @@ impl MultiBuffer {
     }
 
     fn source_changed(&mut self, source_id: gpui::EntityId, cx: &mut Context<Self>) {
-        // diff 的重算由 diff 投影对 working 源的订阅驱动（注入阶段建立），这里只处理文本投影。
+        // 源变更在这里统一驱动 diff 重算，并同时维护组合文本投影。
         let patch = self
             .state
             .source_subscriptions
@@ -1209,6 +1229,7 @@ impl MultiBuffer {
                     .committed_source_transactions
                     .remove(&(source_id, transaction_id))
             {
+                self.recompute_diff_for_source(source_id, DiffRefresh::PreserveProjection, cx);
                 self.refresh_source_snapshot(source_id, cx);
                 return;
             }
@@ -1219,6 +1240,7 @@ impl MultiBuffer {
                 position_map.clone(),
                 patch.transaction_id(),
             ));
+            self.recompute_diff_for_source(source_id, DiffRefresh::RebuildProjection, cx);
             // 外部整体刷新：投影必须整体重建。diff 重算由 BufferDiff 自行完成；
             // 即使 hunk 几何不变（事件不触发），也用当前快照重物化，避免投影停留在旧文本。
             if patch.requires_reset() && self.is_diff_source(source_id, cx) {
@@ -1307,11 +1329,11 @@ impl MultiBuffer {
         let syntax = source.read(cx).syntax_snapshot();
         let mappings = self.state.mappings.clone();
         let replacements = if let Some(source_patch) = source_patch
-            && self
-                .working_source
-                .as_ref()
-                .is_some_and(|working_source| working_source.entity_id() == source_id)
             && mappings.len() == 1
+            && mappings[0].source_id == source_id
+            && mappings[0].editable
+            && mappings[0].source_range.start() == ByteOffset::ZERO
+            && mappings[0].source_range.end() == text.len_bytes()
         {
             source_patch
                 .patch()
@@ -1695,7 +1717,11 @@ impl MultiBuffer {
     }
 
     pub fn start_transaction(&mut self, cx: &mut Context<Self>) -> TextResult<TransactionId> {
-        if let Some(source) = &self.working_source {
+        if self.history_owner() == HistoryOwner::SourceBuffer {
+            let source = self
+                .working_source
+                .as_ref()
+                .expect("共享源历史必须有工作区源");
             return source
                 .read(cx)
                 .buffer()
@@ -1747,7 +1773,11 @@ impl MultiBuffer {
     }
 
     pub fn end_transaction(&mut self, cx: &mut Context<Self>) -> Option<TransactionId> {
-        if let Some(source) = &self.working_source {
+        if self.history_owner() == HistoryOwner::SourceBuffer {
+            let source = self
+                .working_source
+                .as_ref()
+                .expect("共享源历史必须有工作区源");
             return source
                 .read(cx)
                 .buffer()
@@ -1801,7 +1831,11 @@ impl MultiBuffer {
     ///
     /// 撤销后回退到前一条目，编辑合并进前节点时保持不变，与源 Buffer 的当前节点语义一致。
     pub fn current_history_transaction(&self, cx: &App) -> Option<TransactionId> {
-        if let Some(source) = &self.working_source {
+        if self.history_owner() == HistoryOwner::SourceBuffer {
+            let source = self
+                .working_source
+                .as_ref()
+                .expect("共享源历史必须有工作区源");
             let buffer = source.read(cx).buffer();
             let buffer = buffer.read(cx);
             return buffer
@@ -1831,13 +1865,15 @@ impl MultiBuffer {
         redo: bool,
         cx: &mut Context<Self>,
     ) -> TextResult<Option<MultiBufferHistoryOutcome>> {
-        if let Some(source) = self.working_source.clone() {
+        if self.history_owner() == HistoryOwner::SourceBuffer {
+            let source = self
+                .working_source
+                .clone()
+                .expect("共享源历史必须有工作区源");
             let source_buffer = source.read(cx).buffer();
             let projection_buffer = self.state.projection.read(cx).buffer();
             let (projection_subscription, old_version) =
                 projection_buffer.update(cx, |buffer, _| (buffer.subscribe(), buffer.version()));
-            // 订阅源 Buffer：undo/redo 可能回放合并事务的多个批次，订阅批次经 compose 给出跨批次的复合 old→new 映射，
-            // 不能用 HistoryEditOutcome 的 delta（多批次时只含最后一批，坐标残缺）。
             let source_subscription = source_buffer.update(cx, |buffer, _| buffer.subscribe());
             let outcome = Self::update_source_text(
                 &source_buffer,
@@ -1854,10 +1890,9 @@ impl MultiBuffer {
                 cx,
             );
             let change = projection_subscription.consume();
-            let position_map = change.position_map();
             return Ok(Some(MultiBufferHistoryOutcome {
                 transaction_id: outcome.transaction_id(),
-                position_map,
+                position_map: change.position_map(),
                 old_version,
                 new_version: projection_buffer.read(cx).version(),
             }));

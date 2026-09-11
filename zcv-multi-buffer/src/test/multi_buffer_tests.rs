@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 use gpui::{AppContext as _, TestAppContext};
 use std::sync::Arc;
 
-use crate::{BufferDiff, BufferDiffInput, DiffFile, DiffHunkStaging, DiffOperations, DisplayHunk};
+use crate::{
+    BufferDiff, BufferDiffInput, DiffFile, DiffHunkStaging, DiffOperations, DiffProjection,
+    DisplayHunk,
+};
 use zcv_git::DiffHunkKind;
 use zcv_language::LanguageBuffer;
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TextRange, TransactionMetadata};
@@ -47,7 +50,7 @@ impl MultiBuffer {
                 })
                 .collect()
         });
-        self.set_buffer_diffs(files, cx)
+        self.set_diff_projection(files.map(DiffProjection::new), cx)
     }
 }
 
@@ -78,7 +81,7 @@ fn clearing_buffer_diffs_removes_previous_hunks(cx: &mut TestAppContext) {
     );
 
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_buffer_diffs(Some(Vec::new()), cx);
+        buffer.set_diff_projection(Some(DiffProjection::empty()), cx);
     });
     assert!(cx.read_entity(&combined, |buffer, _| buffer.diff_hunks().is_empty()));
 }
@@ -1445,7 +1448,7 @@ fn pending_new_file_does_not_hide_ready_diff_hunks(cx: &mut TestAppContext) {
         1
     );
 
-    // 加入第二个文件；不 park，使它的 diff 仍在计算中（set_buffer_diffs 因而提前返回）。
+    // 加入第二个文件；不 park，使它的 diff 仍在计算中（set_diff_projection 因而提前返回）。
     let source_c = singleton("src/c.rs", "x\ny\nz\n", cx);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.inject_diffs(

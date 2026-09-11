@@ -13,10 +13,10 @@ use std::sync::Arc;
 
 use gpui::{App, Context, Entity, Subscription};
 use zcv_git::DiffHunkKind;
-use zcv_language::{LanguageBuffer, LanguageBufferEvent};
+use zcv_language::LanguageBuffer;
 use zcv_text::{Anchor, ByteOffset, Line, Snapshot};
 
-use crate::buffer_diff::{BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkStaging};
+use crate::buffer_diff::{BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkStaging, DiffRefresh};
 use crate::{
     ExcerptDiffKind, ExcerptMapping, MultiBuffer, MultiBufferEvent, MultiBufferExcerpt,
     ProjectionRemap,
@@ -47,6 +47,25 @@ pub struct DiffFile {
     pub context_lines: Option<usize>,
     /// 该文件的第一个可见片段是否创建文件标题块。
     pub show_file_header: bool,
+}
+
+/// 外部版本控制状态提交给文档模型的不可变 diff 投影输入。
+///
+/// `None` 表示外部数据仍在加载，保持当前投影；
+/// `Some(DiffProjection::empty())` 表示外部状态明确确认当前文档没有 diff。
+/// 投影的订阅、重算、展开状态和 excerpts 生命周期均由接收它的 `MultiBuffer` 所有。
+pub struct DiffProjection {
+    files: Vec<DiffFile>,
+}
+
+impl DiffProjection {
+    pub fn new(files: Vec<DiffFile>) -> Self {
+        Self { files }
+    }
+
+    pub fn empty() -> Self {
+        Self { files: Vec::new() }
+    }
 }
 
 /// 显示 hunk 对应的源定位（hunk 操作与导航用）。
@@ -95,8 +114,6 @@ pub(crate) struct MultiBufferDiffProjection {
     materialized: Vec<MaterializedHunk>,
     /// 对每个 BufferDiff 的订阅：diff 结果或 pending 变化时重新物化显示。
     subscriptions: Vec<Subscription>,
-    /// 对每个 diff 的 working 源的订阅：注入阶段即建立，保证编辑必然触发重算，不依赖 excerpt 物化（pending 窗口内也不会漏触发）。
-    working_subscriptions: Vec<Subscription>,
     /// 上次物化时各文件的 BufferDiff 身份与版本；实体替换或版本推进都视为投影过期。
     display_revisions: Vec<(gpui::EntityId, u64)>,
     /// 替换 base 后，新 `BufferDiff` 的首次后台结果返回前暂存的展开状态迁移来源。
@@ -220,14 +237,29 @@ impl MultiBuffer {
     /// None 是加载态（新 diff 尚未算完），保留现有 hunks 与用户展开状态；
     /// Some 注入后按文本跟踪区间迁移展开状态并重建投影。
     /// 返回 true 表示组合文档被重建；调用方应同步显示快照，但不能重置源锚点选区。
-    pub fn set_buffer_diffs(
+    pub fn set_diff_projection(
         &mut self,
-        files: Option<Vec<DiffFile>>,
+        projection: Option<DiffProjection>,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(inputs) = files else {
+        let Some(projection) = projection else {
             return false;
         };
+        let inputs = projection.files;
+        if inputs.is_empty()
+            && let Some(source) = self.working_source.clone()
+        {
+            self.diff = None;
+            let line_count = source.read(cx).text_snapshot(cx).line_count();
+            self.set_excerpts(
+                vec![
+                    MultiBufferExcerpt::line_range(source, 0..line_count, cx)
+                        .with_starts_new_excerpt(false),
+                ],
+                cx,
+            );
+            return true;
+        }
         let old_files = self
             .diff
             .as_mut()
@@ -286,21 +318,8 @@ impl MultiBuffer {
             .iter()
             .map(|file| {
                 cx.subscribe(&file.diff, |this, _, event, cx| {
-                    if matches!(event, BufferDiffEvent::DiffChanged) {
-                        this.diff_changed(cx);
-                    }
-                })
-            })
-            .collect();
-        diff.working_subscriptions = next_files
-            .iter()
-            .map(|file| {
-                let diff_entity = file.diff.clone();
-                let working = file.diff.read(cx).working().clone();
-                cx.subscribe(&working, move |_this, _working, event, cx| {
-                    if matches!(event, LanguageBufferEvent::TextChanged) {
-                        diff_entity.update(cx, |diff, cx| diff.recompute(cx));
-                    }
+                    let BufferDiffEvent::DiffChanged { refresh } = event;
+                    this.diff_changed(*refresh, cx);
                 })
             })
             .collect();
@@ -532,16 +551,32 @@ impl MultiBuffer {
         })
     }
 
+    pub(crate) fn recompute_diff_for_source(
+        &mut self,
+        source_id: gpui::EntityId,
+        refresh: DiffRefresh,
+        cx: &mut Context<Self>,
+    ) {
+        let diff = self.diff.as_ref().and_then(|diff| {
+            diff.files
+                .iter()
+                .find(|file| file.diff.read(cx).working().entity_id() == source_id)
+                .map(|file| file.diff.clone())
+        });
+        if let Some(diff) = diff {
+            diff.update(cx, |diff, cx| diff.recompute_with_refresh(refresh, cx));
+        }
+    }
+
     /// BufferDiff 事件入口：只有当前物化结果落后于 diff 版本时才重建。
-    fn diff_changed(&mut self, cx: &mut Context<Self>) {
+    fn diff_changed(&mut self, refresh: DiffRefresh, cx: &mut Context<Self>) {
         let Some(diff) = &mut self.diff else {
             return;
         };
-        // 未保存编辑期间，working buffer 仍由用户确认中的文本拥有。
-        // diff hunk 可以后台更新，但不能据此重建组合 excerpts；
-        // 否则用户把文本暂时改回 base 时，当前文件会从组合文档中消失。
-        // 保存完成后由宿主重新注入 diff，统一提交新的文件集合与 hunk 投影。
-        if diff.files.iter().any(|file| {
+        if refresh == DiffRefresh::PreserveProjection {
+            return;
+        }
+        let working_is_dirty = diff.files.iter().any(|file| {
             file.diff
                 .read(cx)
                 .working()
@@ -549,7 +584,11 @@ impl MultiBuffer {
                 .buffer()
                 .read(cx)
                 .is_dirty()
-        }) {
+        });
+        if working_is_dirty && !diff.display_expanded.iter().any(|&expanded| expanded) {
+            // 折叠态组合文档的 excerpt 是用户当前正在编辑的稳定窗口。
+            // 没有展开 hunk 时只更新 BufferDiff 快照，等保存/重新注入后再提交新的窗口；
+            // 展开态则必须跟随新的 working 快照重物化，保证可见 hunk 与正文一致。
             return;
         }
         for index in 0..diff.files.len() {

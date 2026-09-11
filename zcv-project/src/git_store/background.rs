@@ -590,6 +590,7 @@ mod tests {
             },
             staged: HashMap::new(),
             unstaged: HashMap::new(),
+            clean_conflicts: Vec::new(),
         };
 
         let mut prev = prev;
@@ -626,6 +627,7 @@ mod tests {
             statuses: zcv_git::GitStatus::default(),
             staged: HashMap::new(),
             unstaged: HashMap::new(),
+            clean_conflicts: Vec::new(),
         };
 
         let mut prev = prev;
@@ -665,6 +667,7 @@ mod tests {
             statuses: zcv_git::GitStatus::default(),
             staged: HashMap::new(),
             unstaged: HashMap::new(),
+            clean_conflicts: Vec::new(),
         };
 
         let (statuses_changed, head_changed) = merge_refresh(&mut prev, data);
@@ -717,6 +720,7 @@ mod tests {
             statuses: zcv_git::GitStatus::default(),
             staged: HashMap::new(),
             unstaged: HashMap::new(),
+            clean_conflicts: Vec::new(),
         };
 
         let (statuses_changed, head_changed) = merge_refresh(&mut prev, data);

@@ -1,7 +1,7 @@
 //! 单个文件的版本化 diff 状态实体。
 //!
 //! `BufferDiff` 是单个文件 diff 结果的权威状态：base/index/working 来源、版本绑定的 `BufferDiffSnapshot`、pending 操作与 `DiffOperations` 都由它持有。
-//! 它不订阅 working buffer，也不决定何时重算：宿主（`MultiBuffer` 的 diff 投影）在源文本变化时调用 [`BufferDiff::recompute`]，本层只负责后台计算、版本门控与结果发布。
+//! 它不订阅 working buffer，也不决定何时重算：宿主在源文本变化时调用 [`BufferDiff::recompute`]，本层只负责后台计算、版本门控与结果发布。
 //! hunk 的暂存语义统一相对 index 参照判定，所有视图共用同一套；展开/折叠、显示路径与上下文裁剪由 `MultiBuffer` 的 diff 投影持有。
 
 use std::ops::Range;
@@ -17,10 +17,18 @@ use zcv_text::{Anchor, BufferConfig, BufferVersion, ByteOffset, Line, Snapshot, 
 use crate::word_diff::{MAX_WORD_DIFF_BYTES, MAX_WORD_DIFF_LINES, word_diff_ranges};
 
 /// BufferDiff 变更事件。
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiffRefresh {
+    /// 只更新 hunk 状态，保留当前组合文档投影。
+    PreserveProjection,
+    /// hunk 结果变化后重建组合文档投影。
+    RebuildProjection,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BufferDiffEvent {
-    /// diff 结果或 pending 状态变化；订阅方应重新物化显示。
-    DiffChanged,
+    /// diff 结果或 pending 状态变化；`refresh` 决定订阅方是否重建组合投影。
+    DiffChanged { refresh: DiffRefresh },
 }
 
 /// 单个文件的 diff 创建输入。
@@ -279,6 +287,11 @@ impl BufferDiff {
     /// 由宿主在创建后与 working 文本变化时调用；本实体不订阅 working buffer。
     /// 结果回到前台后必须再次比对版本，避免较早任务覆盖后续编辑的 hunk。
     pub fn recompute(&mut self, cx: &mut Context<Self>) {
+        self.recompute_with_refresh(DiffRefresh::RebuildProjection, cx);
+    }
+
+    /// 按指定投影策略异步重算当前 working 快照。
+    pub fn recompute_with_refresh(&mut self, refresh: DiffRefresh, cx: &mut Context<Self>) {
         let working = self.working.read(cx).text_snapshot(cx);
         let working_version = working.version();
         let base_text = self.base_text.clone();
@@ -299,7 +312,7 @@ impl BufferDiff {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.apply_recomputed_hunks(working_version, hunks, cx);
+                this.apply_recomputed_hunks(working_version, hunks, refresh, cx);
             });
         })
         .detach();
@@ -313,12 +326,13 @@ impl BufferDiff {
         &mut self,
         working_version: BufferVersion,
         hunks: Vec<DiffHunk>,
+        refresh: DiffRefresh,
         cx: &mut Context<Self>,
     ) -> bool {
         if self.working.read(cx).text_snapshot(cx).version() != working_version {
             // 结果对应的 working 版本已过期：立即按当前版本补算。
             // 否则若期间没有新的源事件（例如订阅尚未建立），diff 会永久停留在未计算状态，而显示层要求所有 diff 已计算，整份文档的 git 高亮就会消失。
-            self.recompute(cx);
+            self.recompute_with_refresh(refresh, cx);
             return false;
         }
         let calculation_was_pending = self.calculated_working_version != Some(working_version);
@@ -332,7 +346,7 @@ impl BufferDiff {
             pending_hunks: Vec::new(),
         };
         self.revision = self.revision.wrapping_add(1).max(1);
-        cx.emit(BufferDiffEvent::DiffChanged);
+        cx.emit(BufferDiffEvent::DiffChanged { refresh });
         true
     }
 
@@ -382,7 +396,9 @@ impl BufferDiff {
         }
         self.snapshot.pending_hunks = hunks;
         self.revision = self.revision.wrapping_add(1).max(1);
-        cx.emit(BufferDiffEvent::DiffChanged);
+        cx.emit(BufferDiffEvent::DiffChanged {
+            refresh: DiffRefresh::RebuildProjection,
+        });
     }
 
     /// 清除全部 pending hunks（后台操作完成或失败后由宿主调用）。
@@ -392,7 +408,9 @@ impl BufferDiff {
         }
         self.snapshot.pending_hunks.clear();
         self.revision = self.revision.wrapping_add(1).max(1);
-        cx.emit(BufferDiffEvent::DiffChanged);
+        cx.emit(BufferDiffEvent::DiffChanged {
+            refresh: DiffRefresh::RebuildProjection,
+        });
     }
 }
 

@@ -21,6 +21,7 @@ use zcv_actions::{
 };
 use zcv_editor::{Editor, EditorEvent, EditorHunk, EditorHunkMarkerKind, EditorHunkPart};
 use zcv_git::GitRevision;
+use zcv_multi_buffer::{BufferDiffInput, DiffFile, DiffProjection};
 use zcv_project::{GitOperationKind, GitOperationOutcome, GitStoreEvent, Project};
 use zcv_settings::{GlobalSettingsErrorReporter, SettingsStore};
 use zcv_text::{ByteOffset, TextRange};
@@ -749,7 +750,7 @@ fn initialize_workspace(
                 .find(|item| item.item_id() == *item_id)
                 .and_then(|item| item.act_as::<Editor>(cx))
         {
-            subscribe_to_editor_events(workspace, &pane, editor, cx);
+            subscribe_to_editor_events(workspace, editor, cx);
         }
         // 打开/激活编辑器时推送 git diff hunks（打开即有快照里的现成数据）。
         push_diff_hunks(workspace.pane(), workspace.project(), cx);
@@ -844,7 +845,7 @@ fn initialize_workspace(
         .filter_map(|item| item.act_as::<Editor>(cx))
         .collect::<Vec<_>>();
     for editor in editors {
-        subscribe_to_editor_events(&mut *workspace, &pane, editor, cx);
+        subscribe_to_editor_events(&mut *workspace, editor, cx);
     }
     push_diff_hunks(&pane, workspace.project(), cx);
 }
@@ -879,20 +880,24 @@ fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App)
     }
 }
 
-/// 让每个普通编辑器的文本变化都回到工作区的唯一 Git 状态同步入口。
+/// 让普通编辑器的文本变化只同步工作区文本上的冲突标记。
+///
+/// Git diff 属于 Editor 内部 MultiBuffer 的投影状态。
+/// 文本编辑已经由 MultiBuffer 的源变更链路驱动 diff 重算，不能在这里重新注入，否则会把编辑器持有的 hunk 展开状态重新迁移并可能折叠。
 fn subscribe_to_editor_events(
     workspace: &mut Workspace,
-    pane: &Entity<Pane>,
     editor: Entity<Editor>,
     cx: &mut Context<Workspace>,
 ) {
-    let pane = pane.clone();
     let project = workspace.project().clone();
     workspace.add_subscription(cx.subscribe(
         &editor,
-        move |_workspace, _editor, event: &EditorEvent, cx| {
-            if matches!(event, EditorEvent::Edited | EditorEvent::DirtyChanged) {
-                push_diff_hunks(&pane, &project, cx);
+        move |_workspace, editor, event: &EditorEvent, cx| {
+            if matches!(event, EditorEvent::Edited) {
+                let path = editor.read(cx).file_path(cx);
+                if let Some(path) = path {
+                    sync_editor_conflict_hunks(&editor, &path, &project, cx);
+                }
             }
         },
     ));
@@ -995,7 +1000,7 @@ fn inject_editor_diff(
         .map(|entry| entry.status);
     if !editor_diff_applies(status) {
         editor.update(cx, |editor, cx| {
-            editor.set_buffer_diffs(Some(Vec::new()), cx);
+            editor.set_diff_projection(Some(DiffProjection::empty()), cx);
         });
         return;
     }
@@ -1024,7 +1029,7 @@ fn inject_editor_diff(
     let Some(working) = editor.read(cx).multi_buffer().read(cx).working_source() else {
         return;
     };
-    let input = zcv_multi_buffer::BufferDiffInput {
+    let input = BufferDiffInput {
         working,
         base_text,
         index_text,
@@ -1034,14 +1039,14 @@ fn inject_editor_diff(
     };
     // GitStore 预创建并按 (working, base, index) 共享同一 diff 实体。
     let diff = store.update(cx, |store, cx| store.file_diff(&input, cx));
-    let file = zcv_multi_buffer::DiffFile {
+    let file = DiffFile {
         diff,
         display_path: path.to_path_buf(),
         context_lines: None,
         show_file_header: false,
     };
     editor.update(cx, |editor, cx| {
-        editor.set_buffer_diffs(Some(vec![file]), cx)
+        editor.set_diff_projection(Some(DiffProjection::new(vec![file])), cx);
     });
 }
 

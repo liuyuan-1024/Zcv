@@ -23,7 +23,7 @@ use zcv_editor::{
 };
 use zcv_git::{FileStatus, GitHunkOperation, GitRevision, StatusCode};
 use zcv_language::LanguageBuffer;
-use zcv_multi_buffer::{BufferDiff, DisplayHunk};
+use zcv_multi_buffer::{BufferDiff, BufferDiffInput, DiffFile, DiffProjection, DisplayHunk};
 use zcv_multi_buffer::{ExcerptLocation, MultiBuffer, MultiBufferExcerpt};
 use zcv_project::{GitStoreEvent, Project};
 use zcv_text::{Anchor, Buffer, BufferConfig, ByteOffset, SearchQuery, Snapshot};
@@ -1069,7 +1069,7 @@ impl ProjectDiffView {
         }
         self.editor.update(cx, |editor, cx| {
             editor.set_editor_hunks(Vec::new(), cx);
-            editor.set_buffer_diffs(Some(diff_files), cx)
+            editor.set_diff_projection(Some(DiffProjection::new(diff_files)), cx)
         });
         if let Some(scroll_anchor) = self.refresh_scroll_anchor.take() {
             self.editor.update(cx, |editor, cx| {
@@ -1101,7 +1101,7 @@ impl ProjectDiffView {
             );
         }
         self.multi_buffer.update(cx, |buffer, cx| {
-            buffer.set_buffer_diffs(Some(Vec::new()), cx);
+            buffer.set_diff_projection(Some(DiffProjection::empty()), cx);
             buffer.set_excerpts(excerpts, cx);
         });
         let hunks = self.conflict_editor_hunks(cx);
@@ -1180,7 +1180,7 @@ impl ProjectDiffView {
         file: &GitChangeFile,
         root: Option<&Path>,
         cx: &mut Context<Self>,
-    ) -> Option<zcv_multi_buffer::DiffFile> {
+    ) -> Option<DiffFile> {
         let git_store = self.project.read(cx).git_store();
         let working = match self.kind {
             ProjectDiffKind::Staged => {
@@ -1241,7 +1241,7 @@ impl ProjectDiffView {
             .and_then(|root| file.path.strip_prefix(root).ok())
             .unwrap_or(&file.path)
             .to_path_buf();
-        let input = zcv_multi_buffer::BufferDiffInput {
+        let input = BufferDiffInput {
             working,
             base_text,
             index_text,
@@ -1254,7 +1254,7 @@ impl ProjectDiffView {
         };
         // GitStore 预创建并按 (working, base, index) 共享；同一文件跨视图复用 diff 实体。
         let diff = git_store.update(cx, |store, cx| store.file_diff(&input, cx));
-        Some(zcv_multi_buffer::DiffFile {
+        Some(DiffFile {
             diff,
             display_path,
             context_lines: Some(DIFF_CONTEXT_LINES),
@@ -1738,10 +1738,10 @@ mod tests {
         base_text: &str,
         path: PathBuf,
         cx: &mut Context<Editor>,
-    ) -> zcv_multi_buffer::DiffFile {
+    ) -> DiffFile {
         let diff = cx.new(|cx| {
-            zcv_multi_buffer::BufferDiff::new(
-                zcv_multi_buffer::BufferDiffInput {
+            BufferDiff::new(
+                BufferDiffInput {
                     working,
                     base_text: Some(Arc::from(base_text)),
                     index_text: None,
@@ -1751,7 +1751,7 @@ mod tests {
                 cx,
             )
         });
-        zcv_multi_buffer::DiffFile {
+        DiffFile {
             diff,
             display_path: path,
             context_lines: None,
@@ -2316,13 +2316,13 @@ mod tests {
         let combined = cx.new(|cx| MultiBuffer::from_working_source(working.clone(), cx));
         let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
         editor.update(cx, |editor, cx| {
-            editor.set_buffer_diffs(
-                Some(vec![plain_diff_file(
+            editor.set_diff_projection(
+                Some(DiffProjection::new(vec![plain_diff_file(
                     working.clone(),
                     "line0\nline1\nline2\nline3\nline4\n",
                     modified_path.clone(),
                     cx,
-                )]),
+                )])),
                 cx,
             );
             editor.toggle_diff_hunk_at(0, cx);
@@ -2382,13 +2382,13 @@ mod tests {
         let combined = cx.new(|cx| MultiBuffer::from_working_source(working.clone(), cx));
         let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
         editor.update(cx, |editor, cx| {
-            editor.set_buffer_diffs(
-                Some(vec![plain_diff_file(
+            editor.set_diff_projection(
+                Some(DiffProjection::new(vec![plain_diff_file(
                     working.clone(),
                     "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\n",
                     modified_path.clone(),
                     cx,
-                )]),
+                )])),
                 cx,
             );
             editor.toggle_diff_hunk_at(0, cx);

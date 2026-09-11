@@ -1,6 +1,7 @@
 //! Markdown 预览 Item：观察源码 MultiBuffer，解析后渲染为原生块元素。
 
 use std::any::TypeId;
+use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,9 +9,9 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, AnyEntity, AnyView, App, Context, ElementId, Entity, EventEmitter, FocusHandle,
-    Focusable, FontStyle, FontWeight, HighlightStyle, InteractiveText, ObjectFit, Render,
-    ScrollHandle, SharedString, StatefulInteractiveElement, StrikethroughStyle, StyledImage,
-    StyledText, Subscription, Task, UnderlineStyle, Window, div, img, prelude::*, px,
+    Focusable, FontStyle, FontWeight, HighlightStyle, Image, ImageFormat, InteractiveText,
+    ObjectFit, Render, ScrollHandle, SharedString, StatefulInteractiveElement, StrikethroughStyle,
+    StyledImage, StyledText, Subscription, Task, UnderlineStyle, Window, div, img, prelude::*, px,
 };
 use pulldown_cmark::Alignment;
 use zcv_actions::TogglePreview;
@@ -46,6 +47,9 @@ pub(crate) struct MarkdownPreviewView {
     _item_subscription: Subscription,
     breadcrumbs: Entity<Breadcrumbs>,
     toolbar: Entity<MarkdownPreviewToolbar>,
+    math_images: Arc<HashMap<String, Result<Arc<gpui::RenderImage>, String>>>,
+    math_render_task: Option<Task<()>>,
+    math_render_generation: u64,
 }
 
 struct MarkdownPreviewToolbar {
@@ -119,6 +123,9 @@ impl MarkdownPreviewView {
             _item_subscription: item_subscription,
             breadcrumbs,
             toolbar,
+            math_images: Arc::new(HashMap::new()),
+            math_render_task: None,
+            math_render_generation: 0,
         };
         view.refresh(cx);
         view
@@ -148,6 +155,31 @@ impl MarkdownPreviewView {
         let text = String::from_utf8(self.multi_buffer.read(cx).snapshot(cx).text_bytes())
             .expect("编辑器文档应为 UTF-8");
         self.blocks = Arc::new(parse(&text));
+        self.math_render_generation = self.math_render_generation.wrapping_add(1);
+        let math_generation = self.math_render_generation;
+        let math_sources = collect_math_sources(&self.blocks);
+        let math_font_size = f64::from(typography::content_size().as_f32());
+        let renderer = cx.svg_renderer();
+        let math_task = cx.background_spawn(async move {
+            math_sources
+                .into_iter()
+                .map(|(source, display)| {
+                    let result = render_math(&source, display, math_font_size, renderer.clone());
+                    (source, result)
+                })
+                .collect::<HashMap<_, _>>()
+        });
+        self.math_render_task = Some(cx.spawn(async move |this, cx| {
+            let images = math_task.await;
+            let _ = this.update(cx, |view, cx| {
+                if view.math_render_generation != math_generation {
+                    return;
+                }
+                view.math_images = Arc::new(images);
+                view.math_render_task = None;
+                cx.notify();
+            });
+        }));
         self.code_highlight_generation = self.code_highlight_generation.wrapping_add(1);
         let generation = self.code_highlight_generation;
         let cancellation = SnippetHighlightCancellation::default();
@@ -196,13 +228,13 @@ impl Render for MarkdownPreviewView {
             .map(|(index, block)| {
                 let mut next_key = 0;
                 div()
-                    .pb(space::S8)
                     .child(render_block(
                         block,
                         &mut next_key,
                         source_directory.as_deref(),
                         0,
                         index,
+                        &self.math_images,
                         cx,
                     ))
                     .into_any_element()
@@ -227,7 +259,14 @@ impl Render for MarkdownPreviewView {
                     .text_color(color::current(cx).text)
                     .text_size(typography::content_size())
                     .line_height(typography::content_line())
-                    .child(div().w_full().flex().flex_col().children(content)),
+                    .child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .gap(space::S16)
+                            .children(content),
+                    ),
             )
             .child(div().absolute().inset_0().child(self.scrollbar.clone()))
     }
@@ -239,6 +278,7 @@ fn render_block(
     source_directory: Option<&Path>,
     list_depth: usize,
     namespace: usize,
+    math_images: &HashMap<String, Result<Arc<gpui::RenderImage>, String>>,
     cx: &App,
 ) -> AnyElement {
     let key = *next_key;
@@ -250,12 +290,12 @@ fn render_block(
                 .text_size(size)
                 .line_height(heading_line_height(*level, size))
                 .font_weight(FontWeight::BOLD)
-                .child(render_inline(content, key, cx))
+                .child(render_inline(content, key, math_images, cx))
                 .into_any_element()
         }
         Block::Paragraph(content) => div()
             .whitespace_normal()
-            .child(render_inline(content, key, cx))
+            .child(render_inline(content, key, math_images, cx))
             .into_any_element(),
         Block::Code {
             language,
@@ -301,7 +341,15 @@ fn render_block(
             let children = blocks
                 .iter()
                 .map(|block| {
-                    render_block(block, next_key, source_directory, list_depth, namespace, cx)
+                    render_block(
+                        block,
+                        next_key,
+                        source_directory,
+                        list_depth,
+                        namespace,
+                        math_images,
+                        cx,
+                    )
                 })
                 .collect::<Vec<_>>();
             div()
@@ -310,7 +358,7 @@ fn render_block(
                 .pl(space::S12)
                 .flex()
                 .flex_col()
-                .gap_2()
+                .gap(space::S16)
                 .text_color(color::current(cx).text_muted)
                 .children(children)
                 .into_any_element()
@@ -334,13 +382,14 @@ fn render_block(
                                 source_directory,
                                 list_depth + 1,
                                 namespace,
+                                math_images,
                                 cx,
                             )
                         })
                         .collect::<Vec<_>>();
                     div()
                         .flex()
-                        .gap_1()
+                        .gap(space::S2)
                         .child(
                             div()
                                 .w(marker_width)
@@ -355,7 +404,7 @@ fn render_block(
                                 .min_w_0()
                                 .flex()
                                 .flex_col()
-                                .gap_1()
+                                .gap(space::S4)
                                 .children(item_children),
                         )
                 })
@@ -364,7 +413,7 @@ fn render_block(
                 .when(list_depth > 0, |list| list.pl(space::S16))
                 .flex()
                 .flex_col()
-                .gap_1()
+                .gap(space::S4)
                 .children(children)
                 .into_any_element()
         }
@@ -386,14 +435,29 @@ fn render_block(
                 .flex()
                 .flex_col();
             if !header.is_empty() {
-                table = table.child(render_table_row(header, alignments, true, next_key, cx));
+                table = table.child(render_table_row(
+                    header,
+                    alignments,
+                    true,
+                    next_key,
+                    math_images,
+                    cx,
+                ));
             }
             for row in rows {
-                table = table.child(render_table_row(row, alignments, false, next_key, cx));
+                table = table.child(render_table_row(
+                    row,
+                    alignments,
+                    false,
+                    next_key,
+                    math_images,
+                    cx,
+                ));
             }
             table.into_any_element()
         }
         Block::Image { source, alt } => render_image(source, alt, source_directory, cx),
+        Block::Math { source, display } => render_math_block(source, *display, math_images, cx),
         Block::Rule => div()
             .h(px(1.))
             .w_full()
@@ -430,7 +494,7 @@ fn render_image(source: &str, alt: &str, source_directory: Option<&Path>, cx: &A
         };
         img(path)
     }
-    .w_full()
+    .max_w_full()
     .object_fit(ObjectFit::Contain)
     .with_loading(move || {
         div()
@@ -444,7 +508,13 @@ fn render_image(source: &str, alt: &str, source_directory: Option<&Path>, cx: &A
             .child(format!("无法加载图片：{fallback_alt}"))
             .into_any_element()
     });
-    div().w_full().child(image).into_any_element()
+    div()
+        .w_full()
+        .flex()
+        .justify_center()
+        .flex_none()
+        .child(image)
+        .into_any_element()
 }
 
 fn render_table_row(
@@ -452,6 +522,7 @@ fn render_table_row(
     alignments: &[Alignment],
     is_header: bool,
     next_key: &mut usize,
+    math_images: &HashMap<String, Result<Arc<gpui::RenderImage>, String>>,
     cx: &App,
 ) -> AnyElement {
     div()
@@ -482,12 +553,59 @@ fn render_table_row(
             };
             let key = *next_key;
             *next_key += 1;
-            cell.child(render_inline(cell_content, key, cx))
+            cell.child(render_inline(cell_content, key, math_images, cx))
         }))
         .into_any_element()
 }
 
-fn render_inline(content: &[Inline], key: usize, cx: &App) -> AnyElement {
+fn render_inline(
+    content: &[Inline],
+    key: usize,
+    math_images: &HashMap<String, Result<Arc<gpui::RenderImage>, String>>,
+    cx: &App,
+) -> AnyElement {
+    if content.iter().any(|inline| inline.style.math) {
+        let mut lines = vec![Vec::new()];
+        for inline in content {
+            let parts = inline.text.split('\n').collect::<Vec<_>>();
+            for (index, part) in parts.iter().enumerate() {
+                if !part.is_empty() {
+                    lines.last_mut().unwrap().push(Inline {
+                        text: (*part).to_owned(),
+                        style: inline.style.clone(),
+                    });
+                }
+                if index + 1 < parts.len() {
+                    lines.push(Vec::new());
+                }
+            }
+        }
+        return div()
+            .flex()
+            .flex_col()
+            .children(lines.into_iter().enumerate().map(|(line_index, line)| {
+                div()
+                    .min_h(typography::content_line())
+                    .flex()
+                    .items_center()
+                    .children(line.iter().enumerate().map(|(index, inline)| {
+                        if inline.style.math {
+                            render_math_inline(&inline.text, math_images, cx)
+                        } else {
+                            render_text_inline(
+                                std::slice::from_ref(inline),
+                                key + line_index + index,
+                                cx,
+                            )
+                        }
+                    }))
+            }))
+            .into_any_element();
+    }
+    render_text_inline(content, key, cx)
+}
+
+fn render_text_inline(content: &[Inline], key: usize, cx: &App) -> AnyElement {
     let mut text = String::new();
     let mut highlights = Vec::new();
     let mut links = Vec::new();
@@ -550,6 +668,105 @@ fn render_inline(content: &[Inline], key: usize, cx: &App) -> AnyElement {
     }
 }
 
+fn render_math_inline(
+    source: &str,
+    math_images: &HashMap<String, Result<Arc<gpui::RenderImage>, String>>,
+    cx: &App,
+) -> AnyElement {
+    match math_images.get(source) {
+        Some(Ok(image)) => img(image.clone())
+            .object_fit(ObjectFit::Contain)
+            .into_any_element(),
+        Some(Err(error)) => div()
+            .text_color(color::current(cx).status_error)
+            .child(format!("公式渲染失败：{error}"))
+            .into_any_element(),
+        None => div()
+            .text_color(color::current(cx).text_muted)
+            .child("正在渲染公式…")
+            .into_any_element(),
+    }
+}
+
+fn render_math_block(
+    source: &str,
+    display: bool,
+    math_images: &HashMap<String, Result<Arc<gpui::RenderImage>, String>>,
+    cx: &App,
+) -> AnyElement {
+    div()
+        .w_full()
+        .flex()
+        .when(display, |element| element.justify_center())
+        .child(render_math_inline(source, math_images, cx))
+        .into_any_element()
+}
+
+fn collect_math_sources(blocks: &[Block]) -> HashMap<String, bool> {
+    let mut sources = HashMap::new();
+    fn collect_inline(inlines: &[Inline], sources: &mut HashMap<String, bool>) {
+        for inline in inlines {
+            if inline.style.math {
+                sources.entry(inline.text.clone()).or_insert(false);
+            }
+        }
+    }
+    fn visit(blocks: &[Block], sources: &mut HashMap<String, bool>) {
+        for block in blocks {
+            match block {
+                Block::Math { source, display } => {
+                    sources.entry(source.clone()).or_insert(*display);
+                }
+                Block::Heading { content, .. } | Block::Paragraph(content) => {
+                    collect_inline(content, sources);
+                }
+                Block::Table { header, rows, .. } => {
+                    for cell in header {
+                        collect_inline(cell, sources);
+                    }
+                    for row in rows {
+                        for cell in row {
+                            collect_inline(cell, sources);
+                        }
+                    }
+                }
+                Block::Quote(children) => visit(children, sources),
+                Block::List { items, .. } => {
+                    for item in items {
+                        visit(item, sources);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    visit(blocks, &mut sources);
+    sources
+}
+
+fn render_math(
+    source: &str,
+    _display: bool,
+    font_size: f64,
+    renderer: gpui::SvgRenderer,
+) -> Result<Arc<gpui::RenderImage>, String> {
+    let nodes = ratex_parser::parse(source).map_err(|error| error.to_string())?;
+    let layout = ratex_layout::layout(&nodes, &ratex_layout::LayoutOptions::default());
+    let list = ratex_layout::to_display_list(&layout);
+    let svg = ratex_svg::render_to_svg(
+        &list,
+        &ratex_svg::SvgOptions {
+            font_size,
+            padding: 0.0,
+            embed_glyphs: true,
+            ..Default::default()
+        },
+    );
+    Image::from_bytes(ImageFormat::Svg, svg.into_bytes())
+        .to_image_data(renderer)
+        .map_err(|error| error.to_string())
+}
+
 fn highlight_code_blocks(
     blocks: &mut [Block],
     cancellation: &SnippetHighlightCancellation,
@@ -581,6 +798,7 @@ fn highlight_code_blocks(
             | Block::Code { language: None, .. }
             | Block::Table { .. }
             | Block::Image { .. }
+            | Block::Math { .. }
             | Block::Rule => {}
         }
     }

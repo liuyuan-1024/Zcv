@@ -9,6 +9,7 @@ pub(crate) struct InlineStyle {
     pub(crate) code: bool,
     pub(crate) link: Option<String>,
     pub(crate) image: bool,
+    pub(crate) math: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,6 +43,10 @@ pub(crate) enum Block {
     Image {
         source: String,
         alt: String,
+    },
+    Math {
+        source: String,
+        display: bool,
     },
     Rule,
 }
@@ -118,8 +123,10 @@ pub(crate) fn parse(source: &str) -> Vec<Block> {
     let mut active_content = Vec::new();
     let mut style = InlineStyle::default();
     let mut in_metadata_block = false;
+    let mut options = Options::all();
+    options.insert(Options::ENABLE_MATH);
 
-    for event in Parser::new_ext(source, Options::all()) {
+    for event in Parser::new_ext(source, options) {
         match event {
             // 元数据只描述文档，不属于 Markdown 正文。
             // 必须在解析阶段丢弃，避免其文本被后续块（尤其是第一个标题）意外收集。
@@ -138,6 +145,22 @@ pub(crate) fn parse(source: &str) -> Vec<Block> {
             Event::Start(Tag::CodeBlock(kind)) => {
                 finish_active(&mut active, &mut active_content, &mut state);
                 active = Some(ActiveBlock::Code(code_language(kind)));
+            }
+            Event::InlineMath(source) => append_inline(
+                &mut active_content,
+                &mut state.table,
+                &source,
+                &InlineStyle {
+                    math: true,
+                    ..style.clone()
+                },
+            ),
+            Event::DisplayMath(source) => {
+                finish_active(&mut active, &mut active_content, &mut state);
+                state.push_block(Block::Math {
+                    source: source.into_string(),
+                    display: true,
+                });
             }
             Event::Start(Tag::BlockQuote(_)) => {
                 finish_active(&mut active, &mut active_content, &mut state);
@@ -258,8 +281,11 @@ pub(crate) fn parse(source: &str) -> Vec<Block> {
                 code_style.code = true;
                 append_inline(&mut active_content, &mut state.table, &text, &code_style);
             }
-            Event::SoftBreak | Event::HardBreak => {
+            Event::SoftBreak => {
                 append_inline(&mut active_content, &mut state.table, "\n", &style);
+            }
+            Event::HardBreak => {
+                append_inline(&mut active_content, &mut state.table, " ", &style);
             }
             Event::TaskListMarker(done) => append_inline(
                 &mut active_content,
@@ -572,6 +598,11 @@ mod tests {
     }
 
     #[test]
+    fn does_not_treat_markdown_forced_break_syntax_as_another_line_break() {
+        assert_eq!(parse("第一行  \n第二行"), vec![paragraph("第一行 第二行")]);
+    }
+
+    #[test]
     fn uses_a_checkmark_for_completed_task_list_items() {
         assert_eq!(
             parse("- [ ] 未完成\n- [x] 已完成"),
@@ -579,6 +610,30 @@ mod tests {
                 start: None,
                 items: vec![vec![paragraph("[ ] 未完成")], vec![paragraph("[✓] 已完成")]],
             }]
+        );
+    }
+
+    #[test]
+    fn parses_inline_and_display_math() {
+        assert_eq!(
+            parse("内联 $x^2$。\n\n$$\\frac{1}{2}$$"),
+            vec![
+                Block::Paragraph(vec![
+                    plain("内联 "),
+                    Inline {
+                        text: "x^2".into(),
+                        style: InlineStyle {
+                            math: true,
+                            ..Default::default()
+                        }
+                    },
+                    plain("。")
+                ]),
+                Block::Math {
+                    source: "\\frac{1}{2}".into(),
+                    display: true,
+                }
+            ]
         );
     }
 

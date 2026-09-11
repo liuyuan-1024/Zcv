@@ -15,7 +15,6 @@ zcv-git.workspace = true
 zcv-language.workspace = true
 zcv-multi-buffer.workspace = true
 zcv-project.workspace = true
-zcv-project-tree.workspace = true
 zcv-text.workspace = true
 zcv-theme.workspace = true
 zcv-ui.workspace = true

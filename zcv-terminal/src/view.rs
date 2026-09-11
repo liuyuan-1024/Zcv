@@ -68,7 +68,7 @@ pub(crate) struct TerminalView {
 }
 
 impl TerminalView {
-    pub fn new(terminal: Entity<Terminal>, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(terminal: Entity<Terminal>, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         let scroll_handle = TerminalScrollHandle::new();
         let mut view = TerminalView {
@@ -90,7 +90,7 @@ impl TerminalView {
         view
     }
 
-    pub fn focus_handle(&self) -> FocusHandle {
+    pub(crate) fn focus_handle(&self) -> FocusHandle {
         self.focus.clone()
     }
 

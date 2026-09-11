@@ -519,7 +519,7 @@ impl GitStore {
         diff: Entity<BufferDiff>,
         ranges: Vec<Range<Anchor>>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Result<(), String> {
         let (path, edits, pending, working_snapshot, index_text) = {
             let diff_ref = diff.read(cx);
             let working = diff_ref.working().clone();
@@ -594,18 +594,18 @@ impl GitStore {
             )
         };
         if edits.is_empty() {
-            return;
+            return Err("变更块已过期，请刷新后重试".into());
         }
         let path = canonicalize_path(&path);
         if let Some(index_text) = &index_text
             && self.revision_text(GitRevision::Index, &path).as_deref() != Some(index_text)
         {
-            return;
+            return Err("暂存区内容已变化，请刷新后重试".into());
         }
         // index 编辑以当前缓存文本为基准；
         // 同一路径的上一笔写入未确认前不再接受新 hunk，否则失败回滚会让后续编辑失去确定的基准文本。
         if self.optimistic_index_bases.contains_key(&path) {
-            return;
+            return Err("该文件的上一项变更块操作尚未完成".into());
         }
         let next_index_text = match index_text
             .as_deref()
@@ -616,14 +616,14 @@ impl GitStore {
             // `edits` 来源于同一 BufferDiff 快照；
             // 若此处不再匹配，说明 index 缓存与快照已经分叉。
             // 不向后台提交不确定写入，后续状态刷新会重新建立权威 diff。
-            Err(_) => return,
+            Err(_) => return Err("变更块已被其他编辑改动，请刷新后重试".into()),
         };
         if matches!(
             operation,
             GitHunkOperation::Stage | GitHunkOperation::Unstage
         ) && next_index_text.is_none()
         {
-            return;
+            return Err("当前操作无法生成有效的暂存区内容".into());
         }
         let next_index_text = next_index_text.map(Arc::<str>::from);
         if let (Some(index_text), Some(next_index_text)) = (&index_text, &next_index_text) {
@@ -654,6 +654,7 @@ impl GitStore {
             },
             cx,
         );
+        Ok(())
     }
 
     /// 提交暂存内容（消息来自面板提交信息编辑器）。
@@ -1278,7 +1279,9 @@ impl DiffOperations for GitDiffOperations {
             return;
         };
         store.update(cx, |store, cx| {
-            store.apply_hunk_edits(GitHunkOperation::Stage, diff, ranges, cx)
+            if let Err(error) = store.apply_hunk_edits(GitHunkOperation::Stage, diff, ranges, cx) {
+                cx.emit(GitStoreEvent::HunkOperationFailed(error));
+            }
         });
     }
 
@@ -1287,7 +1290,10 @@ impl DiffOperations for GitDiffOperations {
             return;
         };
         store.update(cx, |store, cx| {
-            store.apply_hunk_edits(GitHunkOperation::Unstage, diff, ranges, cx)
+            if let Err(error) = store.apply_hunk_edits(GitHunkOperation::Unstage, diff, ranges, cx)
+            {
+                cx.emit(GitStoreEvent::HunkOperationFailed(error));
+            }
         });
     }
 
@@ -1296,7 +1302,10 @@ impl DiffOperations for GitDiffOperations {
             return;
         };
         store.update(cx, |store, cx| {
-            store.apply_hunk_edits(GitHunkOperation::Restore, diff, ranges, cx)
+            if let Err(error) = store.apply_hunk_edits(GitHunkOperation::Restore, diff, ranges, cx)
+            {
+                cx.emit(GitStoreEvent::HunkOperationFailed(error));
+            }
         });
     }
 }

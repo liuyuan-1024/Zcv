@@ -196,7 +196,7 @@ impl ProjectDiffHunkDelegate {
         let Some(view) = self.view.upgrade() else {
             return div().into_any_element();
         };
-        let (kind, is_created_file) = {
+        let (kind, hunk_source, is_created_file) = {
             let view = view.read(cx);
             let Some(info) = view.diff_hunk_source_info(hunk, cx) else {
                 return div().into_any_element();
@@ -206,7 +206,7 @@ impl ProjectDiffHunkDelegate {
                 .iter()
                 .find(|file| file.path == info.path)
                 .is_some_and(|file| view.kind.is_created(file.status));
-            (view.kind, is_created)
+            (view.kind, info, is_created)
         };
         let colors = *color::current(cx);
         let controls = div()
@@ -223,24 +223,24 @@ impl ProjectDiffHunkDelegate {
             ProjectDiffKind::Conflict => div().into_any_element(),
             ProjectDiffKind::Unstaged => {
                 let stage_view = self.view.clone();
-                let stage_hunk = hunk.clone();
+                let stage_hunk = hunk_source.clone();
                 let restore_view = self.view.clone();
-                let restore_hunk = hunk.clone();
+                let restore_hunk = hunk_source;
                 controls
                     .child(
                         Button::text(("stage-hunk", row), "暂存")
                             .size(ButtonSize::Medium)
                             .label("暂存此变更块")
                             .on_click(move |_event, _window, cx| {
-                                stage_view
-                                    .update(cx, |view, cx| {
-                                        view.apply_hunk_action(
-                                            &stage_hunk,
-                                            GitHunkOperation::Stage,
-                                            cx,
-                                        )
-                                    })
-                                    .ok();
+                                let _ = stage_view.update(cx, |view, cx| {
+                                    if let Err(error) = view.apply_hunk_action(
+                                        stage_hunk.clone(),
+                                        GitHunkOperation::Stage,
+                                        cx,
+                                    ) {
+                                        cx.emit(EditorEvent::Error(error));
+                                    }
+                                });
                             }),
                     )
                     .child(
@@ -253,37 +253,37 @@ impl ProjectDiffHunkDelegate {
                             })
                             .disabled(is_created_file)
                             .on_click(move |_event, _window, cx| {
-                                restore_view
-                                    .update(cx, |view, cx| {
-                                        view.apply_hunk_action(
-                                            &restore_hunk,
-                                            GitHunkOperation::Restore,
-                                            cx,
-                                        )
-                                    })
-                                    .ok();
+                                let _ = restore_view.update(cx, |view, cx| {
+                                    if let Err(error) = view.apply_hunk_action(
+                                        restore_hunk.clone(),
+                                        GitHunkOperation::Restore,
+                                        cx,
+                                    ) {
+                                        cx.emit(EditorEvent::Error(error));
+                                    }
+                                });
                             }),
                     )
                     .into_any_element()
             }
             ProjectDiffKind::Staged => {
                 let unstage_view = self.view.clone();
-                let unstage_hunk = hunk.clone();
+                let unstage_hunk = hunk_source;
                 controls
                     .child(
                         Button::text(("unstage-hunk", row), "取消暂存")
                             .size(ButtonSize::Medium)
                             .label("取消暂存此变更块")
                             .on_click(move |_event, _window, cx| {
-                                unstage_view
-                                    .update(cx, |view, cx| {
-                                        view.apply_hunk_action(
-                                            &unstage_hunk,
-                                            GitHunkOperation::Unstage,
-                                            cx,
-                                        )
-                                    })
-                                    .ok();
+                                let _ = unstage_view.update(cx, |view, cx| {
+                                    if let Err(error) = view.apply_hunk_action(
+                                        unstage_hunk.clone(),
+                                        GitHunkOperation::Unstage,
+                                        cx,
+                                    ) {
+                                        cx.emit(EditorEvent::Error(error));
+                                    }
+                                });
                             }),
                     )
                     .into_any_element()
@@ -1320,13 +1320,10 @@ impl ProjectDiffView {
 
     fn apply_hunk_action(
         &mut self,
-        displayed: &DisplayHunk,
+        info: DiffHunkSource,
         operation: GitHunkOperation,
         cx: &mut Context<Self>,
-    ) {
-        let Some(info) = self.diff_hunk_source_info(displayed, cx) else {
-            return;
-        };
+    ) -> Result<(), String> {
         let is_created_file = info.diff.read(cx).is_created();
         let allowed = matches!(
             (self.kind, operation),
@@ -1335,13 +1332,13 @@ impl ProjectDiffView {
                 | (ProjectDiffKind::Staged, GitHunkOperation::Unstage)
         );
         if !allowed || (operation == GitHunkOperation::Restore && is_created_file) {
-            return;
+            return Err("当前变更块不支持此操作".into());
         }
 
         if let Some(range) = info.range {
             let diff = info.diff.clone();
             let Some(operations) = diff.read(cx).operations() else {
-                return;
+                return Err("变更块操作已失效，请刷新后重试".into());
             };
             match operation {
                 GitHunkOperation::Stage if operations.supports_staging() => {
@@ -1354,6 +1351,7 @@ impl ProjectDiffView {
                     operations.restore(diff, vec![range], cx)
                 }
                 GitHunkOperation::Stage | GitHunkOperation::Unstage | GitHunkOperation::Restore => {
+                    return Err("当前 diff 不支持此变更块操作".into());
                 }
             }
         } else {
@@ -1367,6 +1365,7 @@ impl ProjectDiffView {
         }
         // 行级操作写入 optimistic pending 后由 BufferDiffEvent::DiffChanged 驱动物化；
         // 整文件路径操作由 GitStore 状态事件刷新。
+        Ok(())
     }
 
     fn load_missing_revision_text(&mut self, cx: &mut Context<Self>) {
@@ -2158,9 +2157,12 @@ mod tests {
         cx.run_until_parked();
         cx.run_until_parked();
 
-        let (hunk, initial_version) = cx.read_entity(&view, |view, cx| {
+        let (hunk_source, initial_version) = cx.read_entity(&view, |view, cx| {
             let hunks = view.multi_buffer.read(cx).diff_hunks().to_vec();
             assert_eq!(hunks.len(), 2);
+            let hunk_source = view
+                .diff_hunk_source_info(&hunks[0], cx)
+                .expect("第一个 hunk 应有稳定源定位");
             let version = view
                 .multi_buffer
                 .read(cx)
@@ -2168,10 +2170,11 @@ mod tests {
                 .text()
                 .version()
                 .get();
-            (hunks[0].clone(), version)
+            (hunk_source, version)
         });
         view.update(cx, |view, cx| {
-            view.apply_hunk_action(&hunk, GitHunkOperation::Stage, cx)
+            view.apply_hunk_action(hunk_source, GitHunkOperation::Stage, cx)
+                .expect("第一个变更块应能暂存");
         });
         cx.run_until_parked();
         cx.run_until_parked();

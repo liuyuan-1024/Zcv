@@ -445,6 +445,51 @@ fn outline_projects_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
     );
 }
 
+#[gpui::test]
+fn syntax_nodes_project_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
+    let source = singleton("src/main.rs", "// 前置\nfn 数据() {}\n// 后置\n", cx);
+    cx.run_until_parked();
+    let source_name_start = "// 前置\nfn ".len();
+    let function_range = cx.read_entity(&source, |source, cx| {
+        let text = source.text_snapshot(cx);
+        let syntax = source.syntax_snapshot();
+        let node = syntax
+            .node_at(source_name_start, &text)
+            .expect("Rust 函数名应有语法节点");
+        let function = syntax
+            .node_ancestors(node.range.clone(), &text)
+            .into_iter()
+            .find(|node| node.kind == "function_item")
+            .expect("Rust 函数应出现在语法祖先链");
+        function.range
+    });
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![MultiBufferExcerpt::new(
+                source,
+                TextRange::new(
+                    ByteOffset::new(function_range.start),
+                    ByteOffset::new(function_range.end),
+                )
+                .unwrap(),
+                Vec::new(),
+            )],
+            cx,
+        );
+    });
+
+    let node = cx
+        .read_entity(&combined, |buffer, cx| {
+            buffer
+                .snapshot(cx)
+                .node_at(ByteOffset::new(source_name_start - function_range.start))
+        })
+        .expect("excerpt 内函数名应保留在组合语法节点中");
+    assert_eq!(node.kind, "identifier");
+    assert_eq!(node.range.start, source_name_start - function_range.start);
+}
+
 /// 非零源起点的 excerpt 需要把折叠范围换算到组合坐标，不能沿用源字节偏移。
 #[gpui::test]
 fn excerpt_projects_contained_fold_range_to_output_coordinates(cx: &mut TestAppContext) {

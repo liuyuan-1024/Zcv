@@ -4,6 +4,10 @@
 
 文件级符号使用各语言自己的 `queries/<language>/outline.scm`。查询结果由 `SyntaxSnapshot::outline` 产生，携带文本版本、源文件字节范围、名称范围、语法层和父子层级；没有该查询的语言明确返回空结果。`MultiBuffer` 只负责把完整落在 excerpt 内的结果映射到组合文档，`Editor` 提供当前大纲、名称过滤和名称定位入口。
 
+节点导航使用 `SyntaxSnapshot::node_at` 和 `SyntaxSnapshot::node_ancestors`，返回带版本、UTF-8 字节范围、节点种类和语法层的不可变节点摘要。
+注入层优先于宿主层，祖先链不跨层；空白没有独立 Tree-sitter 节点时归属于语法根，文件末尾光标按前一个字节查询。
+结构化选择通过 `SyntaxSnapshot::expand_selection_range` 逐级取同一语法层的严格祖先，`Editor` 只持有最终选区。
+
 ## 语言规格
 
 每门内置语言在 `src/available_languages.rs` 中只有一个 `LanguageSpec`。支持类型只能是：

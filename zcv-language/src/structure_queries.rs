@@ -70,12 +70,139 @@ pub struct OutlineItem {
     pub annotation_range: Option<Range<usize>>,
 }
 
+/// 光标或选区对应的语法节点摘要。
+///
+/// 节点范围使用源文本 UTF-8 字节坐标。
+/// 摘要不持有 tree-sitter 的节点引用，因而可以安全地跨越查询调用边界；下一次编辑后必须重新查询。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SyntaxNode {
+    /// 产生结果的文本版本。
+    pub version: BufferVersion,
+    /// 节点在源文本中的右开范围。
+    pub range: Range<usize>,
+    /// Tree-sitter 节点种类。
+    pub kind: String,
+    /// 产生该节点的语法层名称。
+    pub language: &'static str,
+    /// 产生该节点的注入层深度，主语言层为 0。
+    pub language_depth: u32,
+    /// 是否为命名节点；匿名标点和操作符节点为 false。
+    pub is_named: bool,
+    /// 是否为语法错误节点。
+    pub is_error: bool,
+    /// 是否为缺失节点。
+    pub is_missing: bool,
+}
+
+impl SyntaxNode {
+    fn from_tree_node(
+        node: tree_sitter::Node<'_>,
+        version: BufferVersion,
+        language: &'static str,
+        language_depth: u32,
+    ) -> Self {
+        Self {
+            version,
+            range: node.byte_range(),
+            kind: node.kind().to_owned(),
+            language,
+            language_depth,
+            is_named: node.is_named(),
+            is_error: node.is_error(),
+            is_missing: node.is_missing(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct OutlineCandidate {
     item: OutlineItem,
 }
 
 impl SyntaxSnapshot {
+    /// 返回光标所在语法层的最深节点。
+    ///
+    /// 注入层优先于宿主层；
+    /// 空白属于 Tree-sitter 的 extras，通常没有独立节点，因此会落到包含它的语法根节点。
+    /// 文件末尾光标按前一个 UTF-8 字节处理，保证闭合节点后的末尾光标仍能进行结构扩展。
+    pub fn node_at(&self, offset: usize, text: &Snapshot) -> Option<SyntaxNode> {
+        let ancestors = self.node_ancestors(offset..offset, text);
+        ancestors.into_iter().next()
+    }
+
+    /// 返回选区所在语法层的节点链，顺序为最小节点到语法根节点。
+    ///
+    /// 只选择一个最深语法层，结构化选择不会从注入代码跨回宿主文档。
+    pub fn node_ancestors(&self, range: Range<usize>, text: &Snapshot) -> Vec<SyntaxNode> {
+        if !self.can_query(&range, text) {
+            return Vec::new();
+        }
+
+        let query_range = if range.start == range.end && range.start == text.len_bytes().get() {
+            range.start.saturating_sub(1)..range.end
+        } else {
+            range.clone()
+        };
+        let mut best: Option<(u32, Vec<SyntaxNode>)> = None;
+        for layer in self.layers_for_range(&query_range) {
+            let Some(mut node) = layer
+                .tree
+                .root_node()
+                .descendant_for_byte_range(query_range.start, query_range.end)
+            else {
+                continue;
+            };
+
+            while !encloses(&node.byte_range(), &range) {
+                let Some(parent) = node.parent() else {
+                    break;
+                };
+                node = parent;
+            }
+            if !encloses(&node.byte_range(), &range) {
+                continue;
+            }
+
+            let mut nodes = Vec::new();
+            let mut current = Some(node);
+            while let Some(node) = current {
+                nodes.push(SyntaxNode::from_tree_node(
+                    node,
+                    self.version,
+                    layer.language.name(),
+                    layer.depth,
+                ));
+                current = node.parent();
+            }
+
+            let replace = best.as_ref().is_none_or(|(depth, current)| {
+                layer.depth > *depth
+                    || (layer.depth == *depth
+                        && nodes.first().is_some_and(|node| {
+                            current
+                                .first()
+                                .is_none_or(|current| node.range.len() < current.range.len())
+                        }))
+            });
+            if replace {
+                best = Some((layer.depth, nodes));
+            }
+        }
+        best.map(|(_, nodes)| nodes).unwrap_or_default()
+    }
+
+    /// 将选区扩展到当前语法层中严格包围它的下一个节点。
+    pub fn expand_selection_range(
+        &self,
+        range: Range<usize>,
+        text: &Snapshot,
+    ) -> Option<Range<usize>> {
+        self.node_ancestors(range.clone(), text)
+            .into_iter()
+            .map(|node| node.range)
+            .find(|candidate| candidate.len() > range.len())
+    }
+
     /// 查询指定范围内的文件级符号，并根据定义范围的包含关系建立父子层级。
     ///
     /// 查询缺失时返回空，不通过文本扫描或隐式默认规则伪造符号。
@@ -630,6 +757,101 @@ mod tests {
                 .outline(0..snapshot.len_bytes().get(), &snapshot)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn syntax_nodes_use_utf8_ranges_and_expand_within_one_layer() {
+        let source = "fn 数据() {\n    let 值 = (1 + 2);\n}\n";
+        let (buffer, syntax) = parsed_syntax("nodes.rs", source);
+        let snapshot = buffer.snapshot();
+        let syntax = syntax.snapshot();
+        let name_start = source.find("值").unwrap();
+        let node = syntax
+            .node_at(name_start, &snapshot)
+            .expect("Unicode 标识符应有语法节点");
+
+        assert_eq!(&source[node.range.clone()], "值");
+        assert_eq!(node.kind, "identifier");
+        assert_eq!(node.language, "Rust");
+        assert!(node.is_named);
+        assert_eq!(node.version, snapshot.version());
+
+        let ancestors = syntax.node_ancestors(name_start..name_start, &snapshot);
+        assert_eq!(ancestors.first().map(|node| &node.range), Some(&node.range));
+        assert!(ancestors.iter().any(|node| node.kind == "function_item"));
+
+        let expanded = syntax
+            .expand_selection_range(name_start..name_start, &snapshot)
+            .expect("光标应能先扩展到标识符");
+        assert_eq!(&source[expanded], "值");
+
+        let anonymous = syntax
+            .node_at(source.find('(').unwrap(), &snapshot)
+            .expect("匿名括号节点应可导航");
+        assert_eq!(anonymous.kind, "(");
+        assert!(!anonymous.is_named);
+        let whitespace_offset = source.find('\n').unwrap();
+        let whitespace = syntax
+            .node_at(whitespace_offset, &snapshot)
+            .expect("空白位置应稳定落到包含它的语法根节点");
+        assert!(whitespace.range.start <= whitespace_offset);
+        assert!(whitespace_offset <= whitespace.range.end);
+        assert!(syntax.node_at(source.len(), &snapshot).is_some());
+    }
+
+    #[test]
+    fn syntax_nodes_prefer_injection_layer_and_do_not_cross_back_to_host() {
+        let source = "# 文档\n\n```rust\nfn 初始化() {}\n```\n";
+        let (buffer, syntax) = parsed_syntax("README.md", source);
+        let snapshot = buffer.snapshot();
+        let syntax = syntax.snapshot();
+        let name_start = source.find("初始化").unwrap();
+        let node = syntax
+            .node_at(name_start, &snapshot)
+            .expect("围栏内函数名应有语法节点");
+
+        assert_eq!(node.language, "Rust");
+        assert_eq!(&source[node.range.clone()], "初始化");
+        assert!(
+            syntax
+                .node_ancestors(name_start..name_start, &snapshot)
+                .iter()
+                .all(|node| node.language == "Rust")
+        );
+    }
+
+    #[test]
+    fn syntax_nodes_keep_error_nodes_visible_for_incomplete_input() {
+        let source = "fn main( {\n";
+        let (buffer, syntax) = parsed_syntax("broken.rs", source);
+        let snapshot = buffer.snapshot();
+        let syntax = syntax.snapshot();
+        let brace = source.find('{').unwrap();
+        let ancestors = syntax.node_ancestors(brace..brace, &snapshot);
+
+        assert!(
+            ancestors.iter().any(|node| node.is_error),
+            "不完整 Rust 输入的祖先链必须保留 ERROR 节点"
+        );
+    }
+
+    #[test]
+    fn syntax_selection_reaches_file_root_for_import_and_structures() {
+        let source = "use gpui::{\n    AnyElement,\n    AnyView,\n    App,\n};\n\nstruct EditorState {\n    value: usize,\n}\n";
+        let (buffer, syntax) = parsed_syntax("selection.rs", source);
+        let snapshot = buffer.snapshot();
+        let syntax = syntax.snapshot();
+
+        for needle in ["AnyElement", "EditorState"] {
+            let mut range = source.find(needle).unwrap()..source.find(needle).unwrap();
+            for _ in 0..16 {
+                let Some(next) = syntax.expand_selection_range(range.clone(), &snapshot) else {
+                    break;
+                };
+                range = next;
+            }
+            assert_eq!(range, 0..source.len(), "{needle} 应能扩展到文件根节点");
+        }
     }
 
     #[test]

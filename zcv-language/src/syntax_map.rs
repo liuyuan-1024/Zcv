@@ -11,8 +11,8 @@ use crate::Language;
 use crate::registry::{language_for_file, language_for_injection};
 use crate::tree_sitter_utils::{
     IncrementalParser, PARSE_TIME_SLICE, ParseCancellation, QueryCursorHandle,
-    SnapshotTextProvider, drop_offloaded, edit_tree, encloses, map_range_through_changes,
-    node_text, parse_tree, ranges_overlap,
+    SnapshotTextProvider, drop_offloaded, edit_tree, map_range_through_changes, node_text,
+    parse_tree, ranges_overlap,
 };
 
 /// 可增量更新的语法状态。
@@ -245,35 +245,7 @@ impl SyntaxSnapshot {
 
     /// 返回严格包围当前范围的最小语法节点，用于选择扩展。
     pub fn ancestor_range(&self, range: Range<usize>, text: &Snapshot) -> Option<Range<usize>> {
-        self.can_query(&range, text).then_some(())?;
-        let mut best: Option<(Range<usize>, u32)> = None;
-        for layer in self.layers_for_range(&range) {
-            let Some(mut node) = layer
-                .tree
-                .root_node()
-                .descendant_for_byte_range(range.start, range.end)
-            else {
-                continue;
-            };
-            loop {
-                let candidate = node.byte_range();
-                if encloses(&candidate, &range) && candidate.len() > range.len() {
-                    let replace = best.as_ref().is_none_or(|(current, depth)| {
-                        candidate.len() < current.len()
-                            || (candidate.len() == current.len() && layer.depth > *depth)
-                    });
-                    if replace {
-                        best = Some((candidate, layer.depth));
-                    }
-                    break;
-                }
-                let Some(parent) = node.parent() else {
-                    break;
-                };
-                node = parent;
-            }
-        }
-        best.map(|(range, _)| range)
+        self.expand_selection_range(range, text)
     }
 
     pub(crate) fn can_query(&self, range: &Range<usize>, text: &Snapshot) -> bool {

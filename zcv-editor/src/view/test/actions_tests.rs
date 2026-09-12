@@ -521,7 +521,7 @@ fn replacing_a_reversed_selection_places_the_caret_after_inserted_text(cx: &mut 
     });
 }
 #[gpui::test]
-fn expand_selection_uses_tree_sitter_ancestors(cx: &mut TestAppContext) {
+fn select_larger_smaller_syntax_node_uses_tree_sitter_ancestors(cx: &mut TestAppContext) {
     let source = "fn main() { let value = 1; }\n";
     let raw_buffer = cx.new(|_| {
         Buffer::scratch(source.to_owned(), BufferConfig::default())
@@ -543,7 +543,7 @@ fn expand_selection_uses_tree_sitter_ancestors(cx: &mut TestAppContext) {
     });
     focus_editor(&editor, cx);
 
-    cx.dispatch_action(ExpandSelection);
+    cx.dispatch_action(SelectLargerSyntaxNode);
     cx.read_entity(&editor, |editor, _| {
         let selection = editor.selections().primary().range();
         assert_eq!(
@@ -551,11 +551,97 @@ fn expand_selection_uses_tree_sitter_ancestors(cx: &mut TestAppContext) {
             "value"
         );
     });
-    cx.dispatch_action(ExpandSelection);
+    cx.dispatch_action(SelectLargerSyntaxNode);
     cx.read_entity(&editor, |editor, _| {
-        assert!(editor.selections().primary().range().len() > "value".len());
+        let selection = editor.selections().primary().range();
+        assert_eq!(
+            &source[selection.start().get()..selection.end().get()],
+            "let value = 1;"
+        );
+    });
+    for _ in 0..4 {
+        cx.dispatch_action(SelectLargerSyntaxNode);
+    }
+    cx.read_entity(&editor, |editor, _| {
+        let selection = editor.selections().primary().range();
+        assert_eq!(selection.start(), ByteOffset::ZERO);
+        assert_eq!(selection.end(), ByteOffset::new(source.len()));
+    });
+    cx.dispatch_action(SelectSmallerSyntaxNode);
+    cx.read_entity(&editor, |editor, _| {
+        let selection = editor.selections().primary().range();
+        assert_eq!(
+            &source[selection.start().get()..selection.end().get()],
+            "fn main() { let value = 1; }"
+        );
+    });
+    cx.dispatch_action(SelectSmallerSyntaxNode);
+    cx.read_entity(&editor, |editor, _| {
+        let selection = editor.selections().primary().range();
+        assert_eq!(
+            &source[selection.start().get()..selection.end().get()],
+            "{ let value = 1; }"
+        );
+    });
+    cx.dispatch_action(SelectSmallerSyntaxNode);
+    cx.read_entity(&editor, |editor, _| {
+        let selection = editor.selections().primary().range();
+        assert_eq!(
+            &source[selection.start().get()..selection.end().get()],
+            "let value = 1;"
+        );
+    });
+    cx.dispatch_action(SelectSmallerSyntaxNode);
+    cx.read_entity(&editor, |editor, _| {
+        let selection = editor.selections().primary().range();
+        assert_eq!(
+            &source[selection.start().get()..selection.end().get()],
+            "value"
+        );
+    });
+    cx.dispatch_action(SelectSmallerSyntaxNode);
+    cx.read_entity(&editor, |editor, _| {
+        assert!(editor.selections().primary().is_caret());
+        assert_eq!(editor.selections().primary().head(), ByteOffset::new(value));
     });
 }
+
+#[gpui::test]
+fn select_larger_syntax_node_reaches_file_root_from_rust_imports_and_structures(
+    cx: &mut TestAppContext,
+) {
+    let source = "use gpui::{\n    AnyElement,\n    AnyView,\n    App,\n};\n\nstruct EditorState {\n    value: usize,\n}\n";
+    let raw_buffer = cx.new(|_| {
+        Buffer::scratch(source.to_owned(), BufferConfig::default())
+            .expect("Rust 测试 Buffer 应能创建")
+    });
+    let language_buffer = cx.new({
+        let raw_buffer = raw_buffer.clone();
+        move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+    });
+    cx.run_until_parked();
+    let (editor, cx) = cx.add_window_view({
+        let language_buffer = language_buffer.clone();
+        move |_, cx| Editor::for_language_buffer(language_buffer, cx)
+    });
+    cx.run_until_parked();
+    let any_element = source.find("AnyElement").unwrap();
+    cx.update_entity(&editor, |editor, _| {
+        editor.set_selections(SelectionSet::caret(ByteOffset::new(any_element)));
+    });
+    focus_editor(&editor, cx);
+
+    for _ in 0..16 {
+        cx.dispatch_action(SelectLargerSyntaxNode);
+    }
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(
+            editor.selections().primary().range(),
+            TextRange::new(ByteOffset::ZERO, ByteOffset::new(source.len())).unwrap()
+        );
+    });
+}
+
 #[gpui::test]
 fn matching_brackets_come_from_tree_sitter_query(cx: &mut TestAppContext) {
     let source = "fn main() { call(); }\n";

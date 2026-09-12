@@ -556,6 +556,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn macos_editor_keymap_binds_structured_selection_pair() {
+        let groups = parse_builtin_keymap("default-macos.json");
+        let editor = groups
+            .iter()
+            .find(|group| group.context.as_deref() == Some("Editor"))
+            .expect("macOS Editor 上下文应存在");
+
+        assert_eq!(
+            editor.bindings.get("alt-cmd-right").map(RawAction::name),
+            Some("editor::SelectLargerSyntaxNode")
+        );
+        assert_eq!(
+            editor.bindings.get("alt-cmd-left").map(RawAction::name),
+            Some("editor::SelectSmallerSyntaxNode")
+        );
+    }
+
     /// 替换框的 Enter 语义由 in_replace 标签分组声明，不得缺失或退化。
     #[test]
     fn search_replace_input_enter_is_declared_by_in_replace_on_every_platform() {

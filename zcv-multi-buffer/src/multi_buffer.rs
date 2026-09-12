@@ -22,7 +22,7 @@ use std::sync::Arc;
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Subscription};
 use zcv_language::{
     AutoClosePair, BracketPair, FoldRange, HighlightSpan, LanguageBuffer, LanguageBufferEvent,
-    NewlineIndent, OutlineItem, SyntaxSnapshot,
+    NewlineIndent, OutlineItem, SyntaxNode, SyntaxSnapshot,
 };
 use zcv_text::{
     Affinity, Buffer, BufferConfig, BufferVersion, ByteOffset, Edit, Line, PositionMap, Snapshot,
@@ -572,20 +572,45 @@ impl MultiBufferSnapshot {
 
     /// 查询严格包围组合范围的最小 source 语法节点，并映射回组合坐标。
     pub fn ancestor_range(&self, range: std::ops::Range<usize>) -> Option<std::ops::Range<usize>> {
-        let Some((mapping, source, source_range)) = self.source_range(range.clone()) else {
-            return self.syntax.ancestor_range(range, &self.text);
+        self.expand_selection_range(range)
+    }
+
+    /// 返回组合坐标中光标所在的最深语法节点。
+    pub fn node_at(&self, offset: ByteOffset) -> Option<SyntaxNode> {
+        let Some((mapping, source, source_offset)) = self.source_point(offset) else {
+            return self.syntax.node_at(offset.get(), &self.text);
         };
-        let ancestor = source.syntax.ancestor_range(source_range, &source.text)?;
-        let excerpt_start = mapping.source_range.start().get();
-        let excerpt_end = mapping.source_range.end().get();
-        if ancestor.start < excerpt_start || ancestor.end > excerpt_end {
-            return None;
-        }
-        let output_start = mapping.output_range.start().get();
-        Some(
-            (output_start + ancestor.start - excerpt_start)
-                ..(output_start + ancestor.end - excerpt_start),
-        )
+        let node = source.syntax.node_at(source_offset.get(), &source.text)?;
+        project_syntax_node(&node, mapping.source_range, mapping.output_range)
+    }
+
+    /// 返回组合坐标中选区所在语法层的节点链，顺序为最小节点到语法根节点。
+    pub fn node_ancestors(&self, range: std::ops::Range<usize>) -> Vec<SyntaxNode> {
+        let Some((mapping, source, source_range)) = self.source_range(range.clone()) else {
+            return self.syntax.node_ancestors(range, &self.text);
+        };
+        source
+            .syntax
+            .node_ancestors(source_range, &source.text)
+            .into_iter()
+            .filter_map(|node| {
+                project_syntax_node(&node, mapping.source_range, mapping.output_range)
+            })
+            .collect()
+    }
+
+    /// 将选区扩展到当前语法层中严格包围它的下一个节点。
+    pub fn expand_selection_range(
+        &self,
+        range: std::ops::Range<usize>,
+    ) -> Option<std::ops::Range<usize>> {
+        let Some((mapping, source, source_range)) = self.source_range(range.clone()) else {
+            return self.syntax.expand_selection_range(range, &self.text);
+        };
+        let ancestor = source
+            .syntax
+            .expand_selection_range(source_range, &source.text)?;
+        project_range(ancestor, mapping.source_range, mapping.output_range)
     }
 
     /// 返回当前组合文档中可见源范围内的文件大纲项。
@@ -699,6 +724,35 @@ fn project_outline_item(
         language_depth: item.language_depth,
         body_range: item.body_range.as_ref().and_then(project),
         annotation_range: item.annotation_range.as_ref().and_then(project),
+    })
+}
+
+fn project_syntax_node(
+    node: &SyntaxNode,
+    source_range: TextRange,
+    output_range: TextRange,
+) -> Option<SyntaxNode> {
+    Some(SyntaxNode {
+        version: node.version,
+        range: project_range(node.range.clone(), source_range, output_range)?,
+        kind: node.kind.clone(),
+        language: node.language,
+        language_depth: node.language_depth,
+        is_named: node.is_named,
+        is_error: node.is_error,
+        is_missing: node.is_missing,
+    })
+}
+
+fn project_range(
+    range: std::ops::Range<usize>,
+    source_range: TextRange,
+    output_range: TextRange,
+) -> Option<std::ops::Range<usize>> {
+    let source_start = source_range.start().get();
+    (source_start <= range.start && range.end <= source_range.end().get()).then(|| {
+        let output_start = output_range.start().get();
+        (output_start + range.start - source_start)..(output_start + range.end - source_start)
     })
 }
 

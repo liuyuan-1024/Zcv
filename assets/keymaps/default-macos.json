@@ -83,6 +83,10 @@
       "cmd-shift-up": "editor::SelectToBeginning",
       "cmd-shift-down": "editor::SelectToEnd",
 
+      // 结构化选择：选择更大的或更小的语法节点。
+      "alt-cmd-right": "editor::SelectLargerSyntaxNode",
+      "alt-cmd-left": "editor::SelectSmallerSyntaxNode",
+
       // =========================
       // 折叠与摘录
       // =========================

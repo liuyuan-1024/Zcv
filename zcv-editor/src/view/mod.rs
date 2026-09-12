@@ -13,15 +13,18 @@ use gpui::{
 };
 use zcv_actions::{
     Backspace, Copy, Cut, Delete, DeleteToBeginningOfLine, DeleteToEndOfLine, DeleteToNextWordEnd,
-    DeleteToPreviousWordStart, ExpandSelection, Indent, MoveDown, MoveLeft, MoveLineDown,
-    MoveLineUp, MovePageDown, MovePageUp, MoveRight, MoveToBeginning, MoveToBeginningOfLine,
-    MoveToEnd, MoveToEndOfLine, MoveToNextWord, MoveToPreviousWord, MoveUp, Newline, OpenExcerpts,
-    Outdent, Paste, Redo, SelectAll, SelectDown, SelectLeft, SelectPageDown, SelectPageUp,
-    SelectRight, SelectToBeginning, SelectToBeginningOfLine, SelectToEnd, SelectToEndOfLine,
-    SelectToNextWord, SelectToPreviousWord, SelectUp, ToggleFold, Undo, UnfoldAll,
+    DeleteToPreviousWordStart, Indent, MoveDown, MoveLeft, MoveLineDown, MoveLineUp, MovePageDown,
+    MovePageUp, MoveRight, MoveToBeginning, MoveToBeginningOfLine, MoveToEnd, MoveToEndOfLine,
+    MoveToNextWord, MoveToPreviousWord, MoveUp, Newline, OpenExcerpts, Outdent, Paste, Redo,
+    SelectAll, SelectDown, SelectLargerSyntaxNode, SelectLeft, SelectPageDown, SelectPageUp,
+    SelectRight, SelectSmallerSyntaxNode, SelectToBeginning, SelectToBeginningOfLine, SelectToEnd,
+    SelectToEndOfLine, SelectToNextWord, SelectToPreviousWord, SelectUp, ToggleFold, Undo,
+    UnfoldAll,
 };
 use zcv_git::DiffHunkKind;
-use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer, OutlineItem};
+use zcv_language::{
+    AutoClosePair, BracketPair, FoldRange, LanguageBuffer, OutlineItem, SyntaxNode,
+};
 use zcv_multi_buffer::{
     DiffHunkSource, DiffProjection, DisplayHunk, ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot,
     MultiBuffer, MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot, MultiBufferSubscription,
@@ -238,6 +241,8 @@ pub struct Editor {
     placeholder_display_map: Option<DisplayMap>,
     selections: EditorSelections,
     selection_history: SelectionHistory,
+    /// 结构化选择扩展链；普通选区变更或文本编辑后失效。
+    structured_selection_history: Vec<SelectionSet>,
     scroll_manager: ScrollManager,
     composition: Option<EditorComposition>,
     input_layout: Option<EditorInputLayout>,
@@ -849,6 +854,17 @@ impl Editor {
             .collect()
     }
 
+    /// 返回组合文档中指定光标的语法节点；
+    /// 结果与当前 Editor 快照版本绑定。
+    pub fn syntax_node_at(&self, offset: ByteOffset) -> Option<SyntaxNode> {
+        self.display_map.syntax_node_at(offset)
+    }
+
+    /// 返回指定选区的语法祖先链，顺序为最小节点到语法根节点。
+    pub fn syntax_node_ancestors(&self, range: Range<usize>) -> Vec<SyntaxNode> {
+        self.display_map.syntax_node_ancestors(range)
+    }
+
     /// 将大纲项定位到其名称范围，并拒绝异步刷新后已经失效的结果。
     pub fn navigate_to_outline_item(&mut self, item: &OutlineItem, cx: &mut Context<Self>) -> bool {
         let current = self.outline_items().into_iter().any(|current| {
@@ -867,8 +883,13 @@ impl Editor {
 
     /// 选区变更样板：结束组合会话、重锚定选区、请求自动滚动并清空 IME 布局缓存。
     pub(super) fn change_selections(&mut self, selections: SelectionSet, cx: &mut Context<Self>) {
+        self.structured_selection_history.clear();
+        self.apply_selection_change(selections, cx);
+    }
+
+    fn apply_selection_change(&mut self, selections: SelectionSet, cx: &mut Context<Self>) {
         self.composition = None;
-        self.set_selections(selections);
+        self.set_selections_without_clearing_structured_history(selections);
         self.request_autoscroll();
         self.input_layout = None;
         cx.notify();
@@ -957,6 +978,11 @@ impl Editor {
 
     /// 把 offset 版选区集合重锚定到当前显示快照版本。
     pub(crate) fn set_selections(&mut self, selections: SelectionSet) {
+        self.structured_selection_history.clear();
+        self.set_selections_without_clearing_structured_history(selections);
+    }
+
+    fn set_selections_without_clearing_structured_history(&mut self, selections: SelectionSet) {
         // 任何普通选区替换都会终止 pending selection，避免旧鼠标锚点在之后复活。
         self.pending_selection = None;
         self.set_pending_selection(selections);
@@ -1147,6 +1173,7 @@ impl Editor {
         extend: bool,
         cx: &mut Context<Self>,
     ) {
+        self.structured_selection_history.clear();
         let buffer_entity = self.text_buffer(cx);
         let buffer = buffer_entity.read(cx);
         let Ok(char_offset) = buffer.byte_to_char(offset) else {
@@ -1453,6 +1480,7 @@ impl Editor {
         })
         .detach();
         cx.subscribe(&multi_buffer, |editor, _, event, cx| {
+            editor.structured_selection_history.clear();
             match event {
                 MultiBufferEvent::TextChanged => {
                     editor.consume_source_remaps(cx);
@@ -1492,6 +1520,7 @@ impl Editor {
             placeholder_display_map: None,
             selections: EditorSelections::from_selection_set(&snapshot, &SelectionSet::default()),
             selection_history: SelectionHistory::default(),
+            structured_selection_history: Vec::new(),
             fold_ranges: Arc::from([]),
             bracket_pair_cache: None,
             scroll_manager: ScrollManager::default(),
@@ -1763,6 +1792,7 @@ impl Editor {
     }
 
     fn finish_edit(&mut self, cx: &mut Context<Self>) {
+        self.structured_selection_history.clear();
         self.pending_selection = None;
         self.sync_display_map(cx);
         self.request_autoscroll();
@@ -2364,14 +2394,14 @@ impl Editor {
         );
     }
 
-    pub(super) fn handle_expand_selection(
+    pub(super) fn handle_select_larger_syntax_node(
         &mut self,
-        _: &ExpandSelection,
+        _: &SelectLargerSyntaxNode,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let expanded = self
-            .resolved_selections()
+        let current = self.resolved_selections();
+        let expanded = current
             .as_slice()
             .iter()
             .map(|selection| {
@@ -2384,10 +2414,24 @@ impl Editor {
                     .unwrap_or(*selection)
             })
             .collect();
-        self.change_selections(
-            SelectionSet::new_with_primary(expanded, self.resolved_selections().primary_index()),
-            cx,
-        );
+        let expanded = SelectionSet::new_with_primary(expanded, current.primary_index());
+        if expanded == current {
+            return;
+        }
+        self.structured_selection_history.push(current);
+        self.apply_selection_change(expanded, cx);
+    }
+
+    pub(super) fn handle_select_smaller_syntax_node(
+        &mut self,
+        _: &SelectSmallerSyntaxNode,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(previous) = self.structured_selection_history.pop() else {
+            return;
+        };
+        self.apply_selection_change(previous, cx);
     }
 
     /// 键位上下文：Editor 标识 + mode 标签。

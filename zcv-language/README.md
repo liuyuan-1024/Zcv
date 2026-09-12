@@ -7,6 +7,8 @@
 节点导航使用 `SyntaxSnapshot::node_at` 和 `SyntaxSnapshot::node_ancestors`，返回带版本、UTF-8 字节范围、节点种类和语法层的不可变节点摘要。
 注入层优先于宿主层，祖先链不跨层；空白没有独立 Tree-sitter 节点时归属于语法根，文件末尾光标按前一个字节查询。
 结构化选择通过 `SyntaxSnapshot::expand_selection_range` 逐级取同一语法层的严格祖先，`Editor` 只持有最终选区。
+局部绑定使用 `queries/<language>/locals.scm` 的 `@local.scope`、`@local.definition` 和 `@local.reference` capture；
+`SyntaxSnapshot::local_bindings` 只返回按作用域确定归属的定义与引用，并携带当前 `BufferVersion`。
 
 ## 语言规格
 
@@ -26,7 +28,7 @@ brackets.scm            文件语言必需，括号感知
 indents.scm             文件语言必需，换行缩进
 folds.scm               文件语言必需，代码折叠
 outline.scm             可选，文件级符号与代码大纲
-locals.scm              可选，局部绑定与引用（后续阶段）
+locals.scm              可选，局部绑定与引用
 ```
 
 结构查询不能跨语言目录共享。即使两门语言当前规则相同，也应分别保存查询文件，让后续语法差异在各自语言边界内演进。语言注入只在存在明确嵌套语义时接入；仅供 Markdown 内部使用的 `Markdown Inline` 不受文件语言的结构查询基线约束。

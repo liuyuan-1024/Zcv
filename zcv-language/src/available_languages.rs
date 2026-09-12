@@ -66,6 +66,11 @@ impl LanguageQuerySources {
         self.outline = Some(source);
         self
     }
+
+    pub(crate) const fn with_locals(mut self, source: &'static str) -> Self {
+        self.locals = Some(source);
+        self
+    }
 }
 
 macro_rules! file_language_queries {
@@ -209,7 +214,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             || tree_sitter_rust::LANGUAGE.into(),
             file_language_queries!("rust")
                 .with_injections(include_str!("../queries/rust/injections.scm"))
-                .with_outline(include_str!("../queries/rust/outline.scm")),
+                .with_outline(include_str!("../queries/rust/outline.scm"))
+                .with_locals(include_str!("../queries/rust/locals.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -274,7 +280,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             || tree_sitter_python::LANGUAGE.into(),
             file_language_queries!("python")
                 .with_injections(include_str!("../queries/python/injections.scm"))
-                .with_outline(include_str!("../queries/python/outline.scm")),
+                .with_outline(include_str!("../queries/python/outline.scm"))
+                .with_locals(include_str!("../queries/python/locals.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -289,7 +296,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             || tree_sitter_typescript::LANGUAGE_TSX.into(),
             file_language_queries!("javascript")
                 .with_injections(include_str!("../queries/javascript/injections.scm"))
-                .with_outline(include_str!("../queries/javascript/outline.scm")),
+                .with_outline(include_str!("../queries/javascript/outline.scm"))
+                .with_locals(include_str!("../queries/javascript/locals.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -302,7 +310,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             || tree_sitter_typescript::LANGUAGE_TSX.into(),
             file_language_queries!("jsx", include_str!("../queries/javascript/highlights.scm"))
                 .with_injections(include_str!("../queries/jsx/injections.scm"))
-                .with_outline(include_str!("../queries/jsx/outline.scm")),
+                .with_outline(include_str!("../queries/jsx/outline.scm"))
+                .with_locals(include_str!("../queries/jsx/locals.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -315,7 +324,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             || tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             file_language_queries!("typescript")
                 .with_injections(include_str!("../queries/typescript/injections.scm"))
-                .with_outline(include_str!("../queries/typescript/outline.scm")),
+                .with_outline(include_str!("../queries/typescript/outline.scm"))
+                .with_locals(include_str!("../queries/typescript/locals.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -328,7 +338,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             || tree_sitter_typescript::LANGUAGE_TSX.into(),
             file_language_queries!("tsx")
                 .with_injections(include_str!("../queries/tsx/injections.scm"))
-                .with_outline(include_str!("../queries/tsx/outline.scm")),
+                .with_outline(include_str!("../queries/tsx/outline.scm"))
+                .with_locals(include_str!("../queries/tsx/locals.scm")),
             None,
             COMMON_PAIRS,
         ),

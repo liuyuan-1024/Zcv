@@ -2,6 +2,7 @@
 //!
 //! 各查询在同一模式的路径上执行：取与范围相交的语法层 → 在每层跑 tree-sitter 查询 → 收集结果并排序。
 
+use std::collections::HashSet;
 use std::ops::Range;
 
 use tree_sitter::StreamingIterator;
@@ -68,6 +69,31 @@ pub struct OutlineItem {
     pub body_range: Option<Range<usize>>,
     /// 紧邻定义之前的属性、装饰器或文档注释范围。
     pub annotation_range: Option<Range<usize>>,
+}
+
+/// 当前语法快照内一个可确定绑定的局部名称。
+///
+/// 定义和引用都使用源文件 UTF-8 字节坐标。
+/// 只有能按作用域包含关系确定归属的引用才会放入 `references`；
+/// 未解析或有歧义的同名引用不会被猜测归并。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalBinding {
+    /// 产生结果的文本版本。
+    pub version: BufferVersion,
+    /// 绑定定义的名称。
+    pub name: String,
+    /// 定义名称范围。
+    pub definition_range: Range<usize>,
+    /// 解析到此定义的引用范围。
+    pub references: Vec<Range<usize>>,
+    /// 定义所属的最小作用域范围。
+    pub scope_range: Range<usize>,
+    /// 定义节点的语法种类。
+    pub kind: String,
+    /// 产生结果的语法层名称。
+    pub language: &'static str,
+    /// 产生结果的注入层深度，主语言层为 0。
+    pub language_depth: u32,
 }
 
 /// 光标或选区对应的语法节点摘要。
@@ -323,6 +349,123 @@ impl SyntaxSnapshot {
         self.outline(range, text)
     }
 
+    /// 查询指定范围内可以确定归属的局部绑定及其引用。
+    ///
+    /// 查询在完整语法层上执行，以便范围内的引用可以解析到范围外的参数或外层定义；
+    /// 最终结果才按调用方范围裁剪。不同注入层分别解析，引用不会跨语言层绑定。
+    pub fn local_bindings(&self, range: Range<usize>, text: &Snapshot) -> Vec<LocalBinding> {
+        if !self.can_query(&range, text) {
+            return Vec::new();
+        }
+
+        let mut bindings = Vec::new();
+        for layer in self.layers_for_range(&range) {
+            let Some(query) = layer.language.locals() else {
+                continue;
+            };
+            let names = query.capture_names();
+            let tree_range = layer.tree.root_node().byte_range();
+            let mut cursor = QueryCursorHandle::new();
+            cursor.set_byte_range(tree_range.clone());
+            let mut matches =
+                cursor.matches(query, layer.tree.root_node(), SnapshotTextProvider(text));
+            let mut scopes = vec![tree_range];
+            let mut definitions = Vec::new();
+            let mut references = Vec::new();
+            let mut seen_scopes = HashSet::new();
+            let mut seen_definitions = HashSet::new();
+            let mut seen_references = HashSet::new();
+
+            while let Some(query_match) = matches.next() {
+                for capture in query_match.captures {
+                    let node = capture.node;
+                    let node_range = node.byte_range();
+                    match names.get(capture.index as usize).copied() {
+                        Some("local.scope") => {
+                            if seen_scopes.insert(node_range.clone()) {
+                                scopes.push(node_range);
+                            }
+                        }
+                        Some("local.definition") => {
+                            let Some(name) = node_text(text, node_range.clone()) else {
+                                continue;
+                            };
+                            if !name.is_empty()
+                                && seen_definitions.insert((node_range.clone(), name.clone()))
+                            {
+                                definitions.push(LocalDefinition {
+                                    range: node_range,
+                                    name,
+                                    kind: node.kind().to_owned(),
+                                });
+                            }
+                        }
+                        Some("local.reference") => {
+                            let Some(name) = node_text(text, node_range.clone()) else {
+                                continue;
+                            };
+                            if !name.is_empty()
+                                && seen_references.insert((node_range, name.clone()))
+                            {
+                                references.push(LocalReference {
+                                    range: node.byte_range(),
+                                    name,
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            scopes.sort_unstable_by_key(|scope| (scope.start, scope.end));
+            definitions
+                .sort_unstable_by_key(|definition| (definition.range.start, definition.range.end));
+            references
+                .sort_unstable_by_key(|reference| (reference.range.start, reference.range.end));
+
+            for definition in &definitions {
+                let scope_range = smallest_scope(&scopes, &definition.range);
+                let definition_references = references
+                    .iter()
+                    .filter(|reference| {
+                        reference.range != definition.range
+                            && reference.name == definition.name
+                            && range_intersects(&reference.range, &range)
+                    })
+                    .filter_map(|reference| {
+                        resolve_definition(&reference.name, &reference.range, &definitions, &scopes)
+                            .filter(|resolved| resolved.range == definition.range)
+                            .map(|_| reference.range.clone())
+                    })
+                    .collect::<Vec<_>>();
+
+                if range_intersects(&definition.range, &range) || !definition_references.is_empty()
+                {
+                    bindings.push(LocalBinding {
+                        version: self.version,
+                        name: definition.name.clone(),
+                        definition_range: definition.range.clone(),
+                        references: definition_references,
+                        scope_range,
+                        kind: definition.kind.clone(),
+                        language: layer.language.name(),
+                        language_depth: layer.depth,
+                    });
+                }
+            }
+        }
+
+        bindings.sort_unstable_by_key(|binding| {
+            (
+                binding.definition_range.start,
+                binding.definition_range.end,
+                binding.language_depth,
+            )
+        });
+        bindings
+    }
+
     pub fn bracket_pairs(&self, range: Range<usize>, text: &Snapshot) -> Vec<BracketPair> {
         if !self.can_query(&range, text) {
             return Vec::new();
@@ -536,6 +679,58 @@ impl SyntaxSnapshot {
     }
 }
 
+#[derive(Clone, Debug)]
+struct LocalDefinition {
+    range: Range<usize>,
+    name: String,
+    kind: String,
+}
+
+#[derive(Clone, Debug)]
+struct LocalReference {
+    range: Range<usize>,
+    name: String,
+}
+
+fn smallest_scope(scopes: &[Range<usize>], range: &Range<usize>) -> Range<usize> {
+    scopes
+        .iter()
+        .filter(|scope| encloses(scope, range))
+        .min_by_key(|scope| scope.len())
+        .cloned()
+        .unwrap_or_else(|| range.clone())
+}
+
+fn resolve_definition<'a>(
+    name: &str,
+    reference: &Range<usize>,
+    definitions: &'a [LocalDefinition],
+    scopes: &[Range<usize>],
+) -> Option<&'a LocalDefinition> {
+    let reference_scope = smallest_scope(scopes, reference);
+    definitions
+        .iter()
+        .filter(|definition| {
+            definition.name == name
+                && definition.range.start <= reference.start
+                && encloses(&smallest_scope(scopes, &definition.range), &reference_scope)
+        })
+        .min_by_key(|definition| {
+            let scope = smallest_scope(scopes, &definition.range);
+            (scope.len(), std::cmp::Reverse(definition.range.start))
+        })
+}
+
+fn range_intersects(left: &Range<usize>, right: &Range<usize>) -> bool {
+    if left.start == left.end {
+        return left.start >= right.start && left.start <= right.end;
+    }
+    if right.start == right.end {
+        return right.start >= left.start && right.start <= left.end;
+    }
+    left.start < right.end && right.start < left.end
+}
+
 fn context_text(
     text: &Snapshot,
     nodes: &[tree_sitter::Node<'_>],
@@ -668,7 +863,7 @@ fn line_content_end(text: &Snapshot, line: Line) -> ByteOffset {
 mod tests {
     use super::NewlineIndent;
     use crate::test::{parsed_syntax, rust_buffer};
-    use zcv_text::ByteOffset;
+    use zcv_text::{ByteOffset, Edit, TransactionMetadata};
 
     #[test]
     fn rust_syntax_snapshot_exposes_zed_structure_queries() {
@@ -756,6 +951,108 @@ mod tests {
                 .snapshot()
                 .outline(0..snapshot.len_bytes().get(), &snapshot)
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn rust_locals_resolve_unicode_references_and_shadowing() {
+        let source = "fn 构建(值: i32) {\n    let 结果 = 值;\n    {\n        let 值 = 2;\n        let 内层 = 值;\n    }\n    let 最终 = 结果 + 值;\n}\n";
+        let (buffer, syntax) = parsed_syntax("locals.rs", source);
+        let snapshot = buffer.snapshot();
+        let items = syntax
+            .snapshot()
+            .local_bindings(0..snapshot.len_bytes().get(), &snapshot);
+
+        let value_definitions: Vec<_> = items.iter().filter(|item| item.name == "值").collect();
+        assert_eq!(value_definitions.len(), 2);
+        let parameter = value_definitions
+            .iter()
+            .find(|item| item.definition_range.start == source.find("值: i32").unwrap())
+            .expect("参数绑定应存在");
+        let shadowed = value_definitions
+            .iter()
+            .find(|item| item.definition_range.start > parameter.definition_range.start)
+            .expect("嵌套作用域绑定应存在");
+        assert!(parameter.references.iter().any(|range| {
+            &source[range.clone()] == "值" && range.start > source.find("最终").unwrap()
+        }));
+        assert!(shadowed.references.iter().all(|range| {
+            range.start > shadowed.definition_range.start
+                && range.start < source.find("最终").unwrap()
+        }));
+        assert!(items.iter().all(|item| item.version == snapshot.version()));
+    }
+
+    #[test]
+    fn python_locals_resolve_parameters_and_nested_same_named_bindings() {
+        let source = "def 构建(值):\n    结果 = 值\n    def 内层():\n        值 = 1\n        return 值\n    return 结果 + 值\n";
+        let (buffer, syntax) = parsed_syntax("locals.py", source);
+        let snapshot = buffer.snapshot();
+        let items = syntax
+            .snapshot()
+            .local_bindings(0..snapshot.len_bytes().get(), &snapshot);
+
+        let values: Vec<_> = items.iter().filter(|item| item.name == "值").collect();
+        assert_eq!(values.len(), 2);
+        let outer = values
+            .iter()
+            .find(|item| item.definition_range.start == source.find("值):").unwrap())
+            .expect("Python 参数绑定应存在");
+        let inner = values
+            .iter()
+            .find(|item| item.definition_range.start > outer.definition_range.start)
+            .expect("嵌套函数绑定应存在");
+        assert!(
+            outer
+                .references
+                .iter()
+                .any(|range| { range.start > source.find("return 结果").unwrap() })
+        );
+        assert!(inner.references.iter().any(|range| {
+            range.start > inner.definition_range.start
+                && range.start < source.find("return 结果").unwrap()
+        }));
+    }
+
+    #[test]
+    fn javascript_locals_can_query_a_subrange_using_an_outer_parameter() {
+        let source = "function 构建(值) {\n  const 结果 = 值;\n  return 结果;\n}\n";
+        let (buffer, syntax) = parsed_syntax("locals.js", source);
+        let snapshot = buffer.snapshot();
+        let body_start = source.find("const").unwrap();
+        let items = syntax
+            .snapshot()
+            .local_bindings(body_start..snapshot.len_bytes().get(), &snapshot);
+
+        let parameter = items
+            .iter()
+            .find(|item| item.name == "值")
+            .expect("子范围查询仍应返回外层参数");
+        assert_eq!(&source[parameter.definition_range.clone()], "值");
+        assert_eq!(parameter.references.len(), 1);
+        assert_eq!(&source[parameter.references[0].clone()], "值");
+        assert!(items.iter().any(|item| item.name == "结果"));
+    }
+
+    #[test]
+    fn local_bindings_reject_a_snapshot_from_another_buffer_version() {
+        let (mut buffer, syntax) = rust_buffer("fn main(value: i32) { let result = value; }\n");
+        let old_syntax = syntax.snapshot();
+        let old_snapshot = buffer.snapshot();
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::ZERO, "// 注释\n").unwrap()],
+                TransactionMetadata::default(),
+            )
+            .unwrap();
+        let new_snapshot = buffer.snapshot();
+
+        assert_ne!(old_snapshot.version(), new_snapshot.version());
+        assert!(
+            old_syntax
+                .local_bindings(0..new_snapshot.len_bytes().get(), &new_snapshot)
+                .is_empty(),
+            "旧语法快照不能消费新版本文本"
         );
     }
 

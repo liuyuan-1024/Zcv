@@ -94,6 +94,13 @@ impl Language {
         }
     }
 
+    pub(crate) fn locals(&self) -> Option<&Arc<Query>> {
+        match &self.syntax {
+            LanguageSyntax::PlainText => None,
+            LanguageSyntax::TreeSitter { queries, .. } => queries.locals.as_ref(),
+        }
+    }
+
     pub fn has_locals_query(&self) -> bool {
         match &self.syntax {
             LanguageSyntax::PlainText => false,
@@ -495,7 +502,9 @@ mod tests {
             ("main.rs", true),
             ("main.py", true),
             ("main.js", true),
+            ("main.jsx", true),
             ("main.ts", true),
+            ("main.tsx", true),
             ("README.md", true),
             ("index.html", true),
             ("notes.txt", false),
@@ -520,10 +529,23 @@ mod tests {
                     )
                 }));
             }
-            assert!(
-                !language.has_locals_query(),
-                "当前阶段不应隐式提供局部语义查询"
+            let locals_expected = matches!(
+                path,
+                "main.rs" | "main.py" | "main.js" | "main.jsx" | "main.ts" | "main.tsx"
             );
+            assert_eq!(
+                language.has_locals_query(),
+                locals_expected,
+                "{path} 局部语义查询能力错误"
+            );
+            if let Some(query) = language.locals() {
+                assert!(query.capture_names().iter().all(|name| {
+                    matches!(
+                        name.as_ref(),
+                        "local.scope" | "local.definition" | "local.reference"
+                    )
+                }));
+            }
         }
     }
 

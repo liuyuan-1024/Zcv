@@ -19,6 +19,7 @@ members = [
     "zcv-keymap",
     "zcv-language",
     "zcv-multi-buffer",
+    "zcv-outline",
     "zcv-picker",
     "zcv-project-tree",
     "zcv-preview-markdown",
@@ -36,7 +37,7 @@ members = [
 ]
 resolver = "3"
 [workspace.package]
-version = "0.8.137"
+version = "0.8.138"
 edition = "2024"
 
 [workspace.lints.clippy]
@@ -52,6 +53,7 @@ zcv-git = { path = "zcv-git" }
 zcv-keymap = { path = "zcv-keymap" }
 zcv-language = { path = "zcv-language" }
 zcv-multi-buffer = { path = "zcv-multi-buffer" }
+zcv-outline = { path = "zcv-outline" }
 zcv-picker = { path = "zcv-picker" }
 zcv-preview-markdown = { path = "zcv-preview-markdown" }
 zcv-preview-svg = { path = "zcv-preview-svg" }

@@ -24,11 +24,9 @@ use zcv_git::{DiffStat, FileStatus, StatusCode};
 use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, space};
 use zcv_ui::{
-    Button, ButtonLike, ButtonSize, ButtonStyle, Checkbox, Scrollbar, SvgIcon, TooltipSpec,
-};
-use zcv_ui::{
-    RowClickAction, TreeNodeRow, TreeRow, TreeRowFrame, TreeState, row_click_action,
-    selection_border,
+    Button, ButtonLike, ButtonSize, ButtonStyle, Checkbox, RowClickAction, Scrollbar, SvgIcon,
+    TooltipSpec, TreeNodeRow, TreeRow, TreeRowFrame, TreeState, row_click_action, selection_border,
+    tree_row_label,
 };
 use zcv_workspace::{Panel, PanelEvent, git_status_color};
 
@@ -953,12 +951,11 @@ fn render_row(
             // 删除线只作用于文件行。
             let is_deleted = !is_dir && entry.status.is_some_and(|status| status.is_deleted());
             // 文件名按 git 状态着色（删除文件加删除线）。
-            let content = div()
+            let content = tree_row_label(name)
                 .when_some(status_color, |label, label_color| {
                     label.text_color(label_color)
                 })
-                .when(is_deleted, |label| label.line_through())
-                .child(name);
+                .when(is_deleted, |label| label.line_through());
             let diff_stat = entry.diff_stat;
             // 行尾改动计数（目录行为子项求和；全零不显示，如 untracked 文件）。
             // 加减分别用 git 状态色：+ 新增色、− 删除色。
@@ -1017,14 +1014,14 @@ fn render_row(
             if let Some(checkbox) = checkbox {
                 node = node.trailing(checkbox);
             }
-            node.render(cx)
-                // 行 id 是 hover/交互状态的前提：GPUI 仅在元素带 id（可派生 element_state）时应用 hover_style。
-                // 带 section：部分暂存文件同时在两组出现，两组行 id 必须互异。
-                .id(ElementId::Name(
-                    format!("version-control-row-{:?}-{}", section, entry.path.display()).into(),
-                ))
-                .cursor_pointer()
-                .hover(|style| style.bg(color::current(cx).element_hover))
+            node.frame(cx)
+                .interactive(
+                    ElementId::Name(
+                        format!("version-control-row-{:?}-{}", section, entry.path.display())
+                            .into(),
+                    ),
+                    cx,
+                )
                 .when(sel && changes_tree_focused, |el| {
                     el.child(
                         selection_border(cx)

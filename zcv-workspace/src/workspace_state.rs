@@ -996,7 +996,7 @@ mod tests {
 
     #[gpui::test]
     fn empty_workspace_has_a_project_without_a_worktree(cx: &mut TestAppContext) {
-        let (workspace, cx) = cx.add_window_view(|window, cx| Workspace::new_empty(window, cx));
+        let (workspace, cx) = cx.add_window_view(Workspace::new_empty);
         let project = cx.read_entity(&workspace, |workspace, _| workspace.project().clone());
         assert!(!cx.read_entity(&project, |project, _| project.has_worktree()));
     }

@@ -48,7 +48,7 @@ pub(crate) use tab_map::byte_for_display_column;
 pub(crate) use wrap_map::WrapViewportRowKind;
 use wrap_map::{WrapMap, WrapSnapshot};
 use zcv_language::{
-    BracketPair, HighlightSpan, NewlineIndent, OutlineItem, SyntaxNode, SyntaxSnapshot,
+    BracketPair, HighlightSpan, LocalBinding, NewlineIndent, OutlineItem, SyntaxNode,
 };
 use zcv_multi_buffer::{ExcerptSnapshot, MultiBufferSnapshot};
 use zcv_text::{
@@ -163,8 +163,6 @@ pub(super) struct DisplaySnapshot {
     multi_buffer_snapshot: MultiBufferSnapshot,
     /// 折叠拓扑快照（渲染侧查询折叠状态与合并行段）。
     fold_snapshot: FoldSnapshot,
-    /// 语法快照（插值树与 buffer 版本同步；渲染按可见范围懒查询高亮）。
-    syntax_snapshot: SyntaxSnapshot,
     /// capture 索引 → 样式的预展开表（capture 名表变化时重建）。
     highlight_styles: std::sync::Arc<[HighlightStyle]>,
     /// 视口高亮缓存（与 DisplayMap 共享，跨帧复用查询结果）。
@@ -247,7 +245,7 @@ impl DisplaySnapshot {
         // 相同 (文本版本, 语法版本, capture 表身份, 查询区间) 的重复帧直接复用结果。
         let key = (
             buffer.version(),
-            self.syntax_snapshot.version(),
+            self.multi_buffer_snapshot.syntax().version(),
             Arc::as_ptr(&self.multi_buffer_snapshot.capture_names()) as *const u8 as usize,
             Arc::from(ranges.clone()),
         );
@@ -371,8 +369,6 @@ pub(crate) struct DisplayMap {
     multi_buffer_snapshot: MultiBufferSnapshot,
     /// 行内提示配置（inlay 注入；变化时整链重建）。
     inlays: Vec<Inlay>,
-    /// 语法快照（Editor 在语法更新时注入；渲染按可见范围懒查询高亮，不再缓存全量 spans）。
-    syntax_snapshot: SyntaxSnapshot,
     /// capture 名字表（与 `highlight_styles` 的构建输入，变化时重建样式表）。
     capture_names: std::sync::Arc<[std::sync::Arc<str>]>,
     /// capture 索引 → 样式的预展开表（渲染每 run 一次数组索引）。
@@ -399,24 +395,13 @@ impl DisplayMap {
             wrap_map,
             multi_buffer_snapshot: snapshot.clone(),
             inlays: Vec::new(),
-            syntax_snapshot: SyntaxSnapshot::empty(snapshot.text().version()),
             capture_names: std::sync::Arc::from([]),
             highlight_styles: std::sync::Arc::from([]),
             folded_buffers: HashSet::new(),
             viewport_highlight_cache: Arc::new(Mutex::new(ViewportHighlightCache::default())),
         };
-        this.set_syntax_snapshot(snapshot.syntax().clone());
         this.set_capture_names(snapshot.capture_names());
         this
-    }
-
-    /// 注入语法快照与 capture 样式表（语法更新时由 Editor 调用）。
-    ///
-    /// 渲染按可见范围懒查询高亮；capture 名字表未变化时复用已展开的样式表。
-    pub(crate) fn set_syntax_snapshot(&mut self, syntax_snapshot: SyntaxSnapshot) {
-        self.syntax_snapshot = syntax_snapshot;
-        let capture_names = self.syntax_snapshot.capture_names();
-        self.set_capture_names(capture_names);
     }
 
     fn set_capture_names(&mut self, capture_names: std::sync::Arc<[std::sync::Arc<str>]>) {
@@ -430,8 +415,27 @@ impl DisplayMap {
         self.fold_map.snapshot().buffer_snapshot()
     }
 
-    pub(crate) fn syntax_snapshot(&self) -> &SyntaxSnapshot {
-        &self.syntax_snapshot
+    pub(crate) fn syntax_version(&self) -> BufferVersion {
+        self.multi_buffer_snapshot.syntax().version()
+    }
+
+    /// 查询指定组合文档范围的语法高亮，并解析为当前编辑器主题样式。
+    ///
+    /// capture 查询和样式表都由 DisplayMap 统一维护；大纲等非正文消费者只能取得解析后的结果。
+    pub(crate) fn highlights_for_range(
+        &self,
+        range: Range<usize>,
+    ) -> Vec<(Range<usize>, HighlightStyle)> {
+        self.multi_buffer_snapshot
+            .highlights(range)
+            .into_iter()
+            .filter_map(|span| {
+                self.highlight_styles
+                    .get(span.capture as usize)
+                    .cloned()
+                    .map(|style| (span.range, style))
+            })
+            .collect()
     }
 
     pub(crate) fn bracket_pairs_at(&self, offset: ByteOffset) -> Vec<BracketPair> {
@@ -458,13 +462,16 @@ impl DisplayMap {
         self.multi_buffer_snapshot.outline_items()
     }
 
+    pub(crate) fn local_bindings(&self) -> Vec<LocalBinding> {
+        self.multi_buffer_snapshot.local_bindings()
+    }
+
     pub(super) fn snapshot(&self) -> DisplaySnapshot {
         DisplaySnapshot {
             wrap_snapshot: self.wrap_map.snapshot().clone(),
             block_snapshot: self.current_block_snapshot(),
             multi_buffer_snapshot: self.multi_buffer_snapshot.clone(),
             fold_snapshot: self.fold_map.snapshot().clone(),
-            syntax_snapshot: self.syntax_snapshot.clone(),
             highlight_styles: std::sync::Arc::clone(&self.highlight_styles),
             highlight_cache: Arc::clone(&self.viewport_highlight_cache),
         }
@@ -552,7 +559,6 @@ impl DisplayMap {
         batch: TextChangeBatch,
     ) -> ApplyOutcome {
         let current_snapshot = current_snapshot.into();
-        self.set_syntax_snapshot(current_snapshot.syntax().clone());
         self.set_capture_names(current_snapshot.capture_names());
         self.multi_buffer_snapshot = current_snapshot.clone();
         let stream = LineStream::new(current_snapshot.text().clone());

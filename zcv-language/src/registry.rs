@@ -505,6 +505,9 @@ mod tests {
             ("main.jsx", true),
             ("main.ts", true),
             ("main.tsx", true),
+            ("main.go", false),
+            ("main.c", false),
+            ("main.cpp", false),
             ("README.md", true),
             ("index.html", true),
             ("notes.txt", false),
@@ -518,7 +521,7 @@ mod tests {
             if let Some(query) = language.outline() {
                 assert!(query.capture_names().iter().all(|name| {
                     matches!(
-                        name.as_ref(),
+                        *name,
                         "item"
                             | "name"
                             | "context"
@@ -531,7 +534,15 @@ mod tests {
             }
             let locals_expected = matches!(
                 path,
-                "main.rs" | "main.py" | "main.js" | "main.jsx" | "main.ts" | "main.tsx"
+                "main.rs"
+                    | "main.py"
+                    | "main.js"
+                    | "main.jsx"
+                    | "main.ts"
+                    | "main.tsx"
+                    | "main.go"
+                    | "main.c"
+                    | "main.cpp"
             );
             assert_eq!(
                 language.has_locals_query(),
@@ -541,7 +552,7 @@ mod tests {
             if let Some(query) = language.locals() {
                 assert!(query.capture_names().iter().all(|name| {
                     matches!(
-                        name.as_ref(),
+                        *name,
                         "local.scope" | "local.definition" | "local.reference"
                     )
                 }));

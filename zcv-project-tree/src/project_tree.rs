@@ -17,12 +17,11 @@ use gpui::{
 };
 use zcv_actions::TreeActivate;
 use zcv_editor::Editor;
-use zcv_git::FileStatus;
 use zcv_project::{Project, WorktreeEntry, translate_path};
 use zcv_theme::{color, space, typography};
 use zcv_ui::ConfirmOverlay;
 use zcv_ui::Scrollbar;
-use zcv_ui::{RowClickAction, TreeRow, TreeState, drag_autoscroll_delta};
+use zcv_ui::{RowClickAction, TreeState, drag_autoscroll_delta};
 use zcv_workspace::{Panel, PanelEvent, ToastKind, Workspace};
 
 use zcv_settings::SettingsStore;
@@ -48,11 +47,13 @@ mod actions;
 mod drag;
 mod editing;
 mod execute;
+mod item;
 mod render;
 mod transfer;
 
 use drag::TreeDrag;
 use editing::EditState;
+use item::ProjectTreeRow;
 use render::{ProjectTreeRenderContext, render_empty_state, render_list};
 use transfer::{ConflictSession, TreeClipboard};
 
@@ -719,25 +720,6 @@ impl gpui::Render for ProjectTreePanel {
     }
 }
 
-#[cfg(test)]
-mod drag_scroll_tests {
-    use gpui::px;
-
-    #[test]
-    fn project_tree_drag_scroll_offset_uses_negative_list_range() {
-        let max_offset = px(100.);
-        let current = px(-40.);
-        let next = (current + px(12.)).min(px(0.)).max(-max_offset);
-        assert_eq!(next, px(-28.));
-
-        let at_top = (px(-4.) + px(12.)).min(px(0.)).max(-max_offset);
-        assert_eq!(at_top, px(0.));
-
-        let at_bottom = (px(-96.) - px(12.)).min(px(0.)).max(-max_offset);
-        assert_eq!(at_bottom, px(-100.));
-    }
-}
-
 /// 无 worktree 的空态提示。
 impl EventEmitter<PanelEvent> for ProjectTreePanel {}
 
@@ -756,28 +738,21 @@ impl Panel for ProjectTreePanel {
     }
 }
 
-// ── 内部类型 ────────────────────────────────────────────────────────
+#[cfg(test)]
+mod drag_scroll_tests {
+    use gpui::px;
 
-#[derive(Clone)]
-struct ProjectTreeRow {
-    path: PathBuf,
-    name: String,
-    depth: usize,
-    is_dir: bool,
-    expanded: bool,
-    is_new: bool,
-    /// git 状态（决定文件名颜色与忽略淡显；None 表示无状态）。
-    git_status: Option<FileStatus>,
-}
+    #[test]
+    fn project_tree_drag_scroll_offset_uses_negative_list_range() {
+        let max_offset = px(100.);
+        let current = px(-40.);
+        let next = (current + px(12.)).min(px(0.)).max(-max_offset);
+        assert_eq!(next, px(-28.));
 
-impl TreeRow for ProjectTreeRow {
-    fn is_dir(&self) -> bool {
-        self.is_dir
-    }
-    fn depth(&self) -> usize {
-        self.depth
-    }
-    fn expanded(&self) -> bool {
-        self.expanded
+        let at_top = (px(-4.) + px(12.)).min(px(0.)).max(-max_offset);
+        assert_eq!(at_top, px(0.));
+
+        let at_bottom = (px(-96.) - px(12.)).min(px(0.)).max(-max_offset);
+        assert_eq!(at_bottom, px(-100.));
     }
 }

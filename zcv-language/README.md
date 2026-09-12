@@ -9,6 +9,7 @@
 结构化选择通过 `SyntaxSnapshot::expand_selection_range` 逐级取同一语法层的严格祖先，`Editor` 只持有最终选区。
 局部绑定使用 `queries/<language>/locals.scm` 的 `@local.scope`、`@local.definition` 和 `@local.reference` capture；
 `SyntaxSnapshot::local_bindings` 只返回按作用域确定归属的定义与引用，并携带当前 `BufferVersion`。
+当前已为 Rust、Python、JavaScript/JSX、TypeScript/TSX、Go、C 和 C++ 提供首批局部查询；未声明 `locals.scm` 的语言明确不产生局部绑定结果。
 
 ## 语言规格
 

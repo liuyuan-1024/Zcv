@@ -1,0 +1,19 @@
+[package]
+name = "zcv-outline"
+version.workspace = true
+edition.workspace = true
+description = "语法大纲面板与树形大纲项"
+
+[lib]
+path = "src/outline.rs"
+
+[dependencies]
+gpui.workspace = true
+zcv-editor.workspace = true
+zcv-language.workspace = true
+zcv-theme.workspace = true
+zcv-ui.workspace = true
+zcv-workspace.workspace = true
+
+[lints]
+workspace = true

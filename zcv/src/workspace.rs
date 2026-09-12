@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use gpui::{
-    App, AsyncApp, Context, Entity, FocusHandle, Focusable, PromptLevel, Render, TitlebarOptions,
-    WeakEntity, Window, WindowBounds, WindowOptions, div, point, prelude::*, px, size,
+    App, AsyncApp, Context, Entity, Focusable, PromptLevel, TitlebarOptions, WeakEntity, Window,
+    WindowBounds, WindowOptions, point, prelude::*, px, size,
 };
 use zcv_actions::{
     DecreaseContentFontSize, DecreaseUiFontSize, GitFetch, GitPull, GitPush,
@@ -25,7 +25,7 @@ use zcv_multi_buffer::{BufferDiffInput, DiffFile, DiffProjection};
 use zcv_project::{GitOperationKind, GitOperationOutcome, GitStoreEvent, Project};
 use zcv_settings::{GlobalSettingsErrorReporter, SettingsStore};
 use zcv_text::{ByteOffset, TextRange};
-use zcv_theme::{ThemeChoice, color, typography};
+use zcv_theme::{ThemeChoice, typography};
 use zcv_workspace::{
     ActivityIndicator, Dock, DockPosition, GitBranchAction, OnBranchSelected, OnProjectSelected,
     Pane, PaneEvent, Panel, PanelButtons, PanelEvent, PanelHandle, ToastAction, ToastKind, TopBar,
@@ -37,6 +37,7 @@ use crate::active_buffer_language::ActiveBufferLanguage;
 use crate::auto_update::{UpdateButton, UpdateManager};
 use crate::cursor_position::CursorPosition;
 use crate::harness::HarnessButton;
+use zcv_outline::OutlinePanel;
 use zcv_project_tree::{OnCreate, OnMove, OnOpenFile, OnRename, OnTrash, ProjectTreePanel};
 use zcv_terminal::{TerminalPanel, set_terminal_font_size};
 use zcv_version_control::{
@@ -274,12 +275,12 @@ fn initialize_common_workspace(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    let outline = cx.new(OutlinePanel::new);
+    let outline = cx.new(|cx| OutlinePanel::new(workspace.pane().clone(), cx));
     let terminal_project = workspace.project().clone();
     let terminal = cx.new(|cx| TerminalPanel::new(terminal_project, cx));
 
     let terminal_for_new = terminal.clone();
-    register_panel(workspace, outline, DockPosition::Left, window, cx);
+    register_panel(workspace, outline.clone(), DockPosition::Left, window, cx);
     register_panel(workspace, terminal, DockPosition::Bottom, window, cx);
 
     // 新建终端：先创建再确保面板可见，避免面板激活时的懒创建重复生成终端。
@@ -1086,57 +1087,6 @@ fn inject_editor_diff(
 }
 
 // ── 内部类型 ────────────────────────────────────────────────────────
-
-/// 占位面板：大纲/调试（后续接入真实功能）。
-macro_rules! make_placeholder_panel {
-    ($name:ident, $persistent:expr, $icon:expr, $label:expr) => {
-        struct $name {
-            focus: FocusHandle,
-        }
-
-        impl $name {
-            fn new(cx: &mut Context<Self>) -> Self {
-                Self {
-                    focus: cx.focus_handle(),
-                }
-            }
-        }
-
-        impl gpui::EventEmitter<zcv_workspace::PanelEvent> for $name {}
-
-        impl Panel for $name {
-            fn icon() -> &'static str {
-                $icon
-            }
-            fn label() -> &'static str {
-                $label
-            }
-            fn persistent_name() -> &'static str {
-                $persistent
-            }
-            fn focus_handle(&self, _cx: &App) -> FocusHandle {
-                self.focus.clone()
-            }
-        }
-
-        impl Render for $name {
-            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-                div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .track_focus(&self.focus)
-                    .key_context($persistent)
-                    .tab_index(0)
-                    .text_color(color::current(cx).text_placeholder)
-                    .child($label)
-            }
-        }
-    };
-}
-
-make_placeholder_panel!(OutlinePanel, "outline", "icons/list_tree.svg", "大纲");
 
 #[cfg(test)]
 mod tests {

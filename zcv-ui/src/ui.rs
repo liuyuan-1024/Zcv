@@ -32,5 +32,5 @@ pub use tab::Tab;
 pub use tooltip::TooltipSpec;
 pub use tree::{
     RowClickAction, TreeNodeRow, TreeRow, TreeRowFrame, TreeState, row_click_action,
-    selection_border, tree_row_height,
+    selection_border, tree_row_height, tree_row_label,
 };

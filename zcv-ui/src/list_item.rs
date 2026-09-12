@@ -96,8 +96,7 @@ impl RenderOnce for ListItem {
             row = row.child(slot);
         }
 
-        // 主内容（含次行时两行排列）。
-        // 文本允许自动换行，行高由内容决定；配合变高列表（picker 的 list 容器）可完整展示长文本。
+        // 主内容（含次行时两行排列）。文本允许自动换行，行高由内容决定。
         if let Some(child) = self.child {
             let mut content = div().flex_1().min_w_0().child(child);
             // 次行主题色依赖 cx，只能在 render 中解析

@@ -3202,6 +3202,28 @@ fn column_to_byte(text: &str, column: usize) -> usize {
         .map_or(text.len(), |(byte, _)| byte)
 }
 
+/// 拖拽选择自动滚动的限频间隔（≈60Hz）。
+pub(crate) const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(16);
+
+/// 拖拽选择时的视口自动滚动量：滚动量 = 超出视口边缘的距离 × 0.3，单事件上限视口高/宽 1/16——鼠标移出越远滚动越快，但快速甩动不会猛跳。
+fn selection_autoscroll_delta(
+    position: Point<Pixels>,
+    text_bounds: Bounds<Pixels>,
+    line_height: Pixels,
+) -> Point<Pixels> {
+    let vertical_margin = line_height.min(text_bounds.size.height / 3.0);
+    let horizontal_margin = 2.5 * line_height;
+    drag_autoscroll_delta(
+        position,
+        text_bounds,
+        point(horizontal_margin, vertical_margin),
+        point(
+            text_bounds.size.width / 16.0,
+            text_bounds.size.height / 16.0,
+        ),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3349,7 +3371,10 @@ mod tests {
             cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("README.md")), cx));
         cx.run_until_parked();
         let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.snapshot());
-        let syntax = cx.read_entity(&language_buffer, |buffer, _| buffer.syntax_snapshot());
+        let multi_buffer = cx.new(|cx| MultiBuffer::from_working_source(language_buffer, cx));
+        cx.run_until_parked();
+        let multi_snapshot =
+            cx.read_entity(&multi_buffer, |multi_buffer, cx| multi_buffer.snapshot(cx));
 
         let matches = vec![
             crate::view::SearchMatchAnchor::from_range(
@@ -3364,8 +3389,7 @@ mod tests {
         let window = cx.add_window(|_, _| Empty);
         window
             .update(cx, |_, window, cx| {
-                let mut map = DisplayMap::new(snapshot.clone());
-                map.set_syntax_snapshot(syntax);
+                let map = DisplayMap::new(multi_snapshot.clone());
                 let display = map.snapshot();
                 // 文本区起点 = 60px（真实编辑器带 gutter 时的典型偏移）。
                 let text_origin_x = px(60.);
@@ -3776,8 +3800,11 @@ mod tests {
             cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("README.md")), cx));
         cx.run_until_parked();
         let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.snapshot());
-        let syntax = cx.read_entity(&language_buffer, |buffer, _| buffer.syntax_snapshot());
-        assert!(syntax.has_language());
+        let multi_buffer = cx.new(|cx| MultiBuffer::from_working_source(language_buffer, cx));
+        cx.run_until_parked();
+        let multi_snapshot =
+            cx.read_entity(&multi_buffer, |multi_buffer, cx| multi_buffer.snapshot(cx));
+        assert!(multi_snapshot.syntax().has_language());
 
         let window = cx.add_window(|_, _| Empty);
         window
@@ -3785,8 +3812,7 @@ mod tests {
                 let text_system = window.text_system().clone();
                 let font = window.text_style().font();
                 let font_size = window.text_style().font_size.to_pixels(window.rem_size());
-                let mut map = DisplayMap::new(snapshot.clone());
-                map.set_syntax_snapshot(syntax);
+                let mut map = DisplayMap::new(multi_snapshot.clone());
 
                 // 选择一个“片段长度不是行首 UTF-8 边界”的续行。旧实现把这个长度
                 // 拼到行首上查询高亮，正好会制造落在中文编码内部的 capture 端点。
@@ -4547,26 +4573,4 @@ mod tests {
             vec![(1..3, DiffHunkKind::Modified)]
         );
     }
-}
-
-/// 拖拽选择自动滚动的限频间隔（≈60Hz）。
-pub(crate) const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(16);
-
-/// 拖拽选择时的视口自动滚动量：滚动量 = 超出视口边缘的距离 × 0.3，单事件上限视口高/宽 1/16——鼠标移出越远滚动越快，但快速甩动不会猛跳。
-fn selection_autoscroll_delta(
-    position: Point<Pixels>,
-    text_bounds: Bounds<Pixels>,
-    line_height: Pixels,
-) -> Point<Pixels> {
-    let vertical_margin = line_height.min(text_bounds.size.height / 3.0);
-    let horizontal_margin = 2.5 * line_height;
-    drag_autoscroll_delta(
-        position,
-        text_bounds,
-        point(horizontal_margin, vertical_margin),
-        point(
-            text_bounds.size.width / 16.0,
-            text_bounds.size.height / 16.0,
-        ),
-    )
 }

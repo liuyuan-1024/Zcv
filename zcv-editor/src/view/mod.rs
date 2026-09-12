@@ -22,9 +22,7 @@ use zcv_actions::{
     UnfoldAll,
 };
 use zcv_git::DiffHunkKind;
-use zcv_language::{
-    AutoClosePair, BracketPair, FoldRange, LanguageBuffer, OutlineItem, SyntaxNode,
-};
+use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer};
 use zcv_multi_buffer::{
     DiffHunkSource, DiffProjection, DisplayHunk, ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot,
     MultiBuffer, MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot, MultiBufferSubscription,
@@ -51,6 +49,9 @@ use super::selection::{
 
 mod diff;
 mod search;
+mod syntax;
+
+pub use syntax::LocalRenameError;
 
 pub(crate) use diff::{
     HunkRendering, diff_row_for_row, editor_hunk_part_rendering, editor_hunk_rendering,
@@ -831,56 +832,6 @@ impl Editor {
         true
     }
 
-    /// 返回当前组合文档的文件级语法大纲。
-    pub fn outline_items(&self) -> Vec<OutlineItem> {
-        self.display_map.outline_items()
-    }
-
-    /// 按名称或语法上下文过滤当前文件大纲；匹配不改变语法层结果的顺序和层级。
-    pub fn outline_items_matching(&self, query: &str) -> Vec<OutlineItem> {
-        let query = query.trim().to_lowercase();
-        if query.is_empty() {
-            return self.outline_items();
-        }
-        self.outline_items()
-            .into_iter()
-            .filter(|item| {
-                item.name.to_lowercase().contains(&query)
-                    || item
-                        .context
-                        .as_deref()
-                        .is_some_and(|context| context.to_lowercase().contains(&query))
-            })
-            .collect()
-    }
-
-    /// 返回组合文档中指定光标的语法节点；
-    /// 结果与当前 Editor 快照版本绑定。
-    pub fn syntax_node_at(&self, offset: ByteOffset) -> Option<SyntaxNode> {
-        self.display_map.syntax_node_at(offset)
-    }
-
-    /// 返回指定选区的语法祖先链，顺序为最小节点到语法根节点。
-    pub fn syntax_node_ancestors(&self, range: Range<usize>) -> Vec<SyntaxNode> {
-        self.display_map.syntax_node_ancestors(range)
-    }
-
-    /// 将大纲项定位到其名称范围，并拒绝异步刷新后已经失效的结果。
-    pub fn navigate_to_outline_item(&mut self, item: &OutlineItem, cx: &mut Context<Self>) -> bool {
-        let current = self.outline_items().into_iter().any(|current| {
-            current.version == item.version
-                && current.range == item.range
-                && current.name_range == item.name_range
-                && current.name == item.name
-        });
-        if !current {
-            return false;
-        }
-        self.select_byte_range(item.name_range.clone(), cx);
-        self.request_scroll_to_top(NAVIGATION_TOP_OFFSET);
-        true
-    }
-
     /// 选区变更样板：结束组合会话、重锚定选区、请求自动滚动并清空 IME 布局缓存。
     pub(super) fn change_selections(&mut self, selections: SelectionSet, cx: &mut Context<Self>) {
         self.structured_selection_history.clear();
@@ -945,8 +896,7 @@ impl Editor {
         let snapshot = self.display_map.buffer_snapshot();
         let caret = selections.primary().head();
         let buffer_version = snapshot.version();
-        let syntax_snapshot = self.display_map.syntax_snapshot();
-        let syntax_version = syntax_snapshot.version();
+        let syntax_version = self.display_map.syntax_version();
         if let Some((cached_caret, cached_buffer, cached_syntax, cached)) = &self.bracket_pair_cache
             && *cached_caret == caret
             && *cached_buffer == buffer_version

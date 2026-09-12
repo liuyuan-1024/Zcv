@@ -22,7 +22,7 @@ use std::sync::Arc;
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Subscription};
 use zcv_language::{
     AutoClosePair, BracketPair, FoldRange, HighlightSpan, LanguageBuffer, LanguageBufferEvent,
-    NewlineIndent, OutlineItem, SyntaxNode, SyntaxSnapshot,
+    LocalBinding, NewlineIndent, OutlineItem, OutlineTextRange, SyntaxNode, SyntaxSnapshot,
 };
 use zcv_text::{
     Affinity, Buffer, BufferConfig, BufferVersion, ByteOffset, Edit, Line, PositionMap, Snapshot,
@@ -651,6 +651,29 @@ impl MultiBufferSnapshot {
         projected
     }
 
+    /// 返回普通单文件组合文档中的局部绑定。
+    ///
+    /// 局部绑定仍以源文件字节范围为语义；
+    /// 多文件 excerpt 可能只展示作用域的一部分，因而这里不返回不完整的绑定，避免编辑器把组合坐标误当成源坐标执行重命名。
+    pub fn local_bindings(&self) -> Vec<LocalBinding> {
+        let Some(mapping) = (self.excerpt_mappings.len() == 1).then(|| &self.excerpt_mappings[0])
+        else {
+            return Vec::new();
+        };
+        let Some(source) = self.excerpt_sources.get(mapping.source_index) else {
+            return Vec::new();
+        };
+        let source_len = source.text.len_bytes().get();
+        let is_full_file = mapping.source_range.start().get() == 0
+            && mapping.source_range.end().get() == source_len
+            && mapping.output_range.start().get() == 0
+            && mapping.output_range.end().get() == source_len;
+        if !is_full_file {
+            return Vec::new();
+        }
+        source.syntax.local_bindings(0..source_len, &source.text)
+    }
+
     fn source_point(
         &self,
         offset: ByteOffset,
@@ -717,8 +740,18 @@ fn project_outline_item(
         range: project(&item.range)?,
         name_range: project(&item.name_range)?,
         name: item.name.clone(),
+        text: item.text.clone(),
+        text_ranges: item
+            .text_ranges
+            .iter()
+            .map(|part| {
+                Some(OutlineTextRange {
+                    text_range: part.text_range.clone(),
+                    source_range: project(&part.source_range)?,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?,
         kind: item.kind.clone(),
-        context: item.context.clone(),
         depth: item.depth,
         language: item.language,
         language_depth: item.language_depth,

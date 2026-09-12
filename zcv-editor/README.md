@@ -24,6 +24,7 @@ EditorElement
 - `LanguageBuffer` 持有 Tree-sitter 语言与语法状态。
 - `MultiBuffer` 负责把一个或多个缓冲区组织成编辑器消费的文档视图。
 - `Editor` 持有选择、选择历史、滚动、输入法组合、焦点、搜索、折叠和编辑模式等交互状态。
+- `Editor` 消费当前语法快照提供的大纲和局部绑定；`rename_local_at` 只对确定归属的单文件绑定通过正常编辑事务执行重命名。
 - `DisplayMap` 从文档与编辑器配置派生可见行、折叠、软换行和装饰投影；它不是第二份文本模型。
 - `EditorElement` 连接每帧布局、绘制和输入命中，不长期持有文档事实。
 

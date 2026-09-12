@@ -227,7 +227,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             },
             || tree_sitter_c::LANGUAGE.into(),
             file_language_queries!("c", tree_sitter_c::HIGHLIGHT_QUERY)
-                .with_injections(include_str!("../queries/c/injections.scm")),
+                .with_injections(include_str!("../queries/c/injections.scm"))
+                .with_locals(include_str!("../queries/c/locals.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -242,7 +243,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             },
             || tree_sitter_cpp::LANGUAGE.into(),
             file_language_queries!("cpp")
-                .with_injections(include_str!("../queries/cpp/injections.scm")),
+                .with_injections(include_str!("../queries/cpp/injections.scm"))
+                .with_locals(include_str!("../queries/cpp/locals.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -265,7 +267,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             },
             || tree_sitter_go::LANGUAGE.into(),
             file_language_queries!("go")
-                .with_injections(include_str!("../queries/go/injections.scm")),
+                .with_injections(include_str!("../queries/go/injections.scm"))
+                .with_locals(include_str!("../queries/go/locals.scm")),
             Some("golang"),
             COMMON_PAIRS,
         ),

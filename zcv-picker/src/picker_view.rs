@@ -9,7 +9,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, Context, FocusHandle, Pixels, Render, SharedString, Window, div, prelude::*,
+    AnyElement, App, Context, FocusHandle, ListAlignment, ListState, Pixels, Render, SharedString,
+    Window, div, list, prelude::*, px,
 };
 use zcv_actions::{
     MoveDown, MoveUp, PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev,
@@ -69,12 +70,14 @@ pub struct Picker<D: PickerDelegate> {
     width: Pixels,
     query: String,
     on_dismiss: Option<OnDismiss>,
+    list_state: ListState,
 }
 
 impl<D: PickerDelegate> Picker<D> {
     pub fn new(delegate: D, width: Pixels, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         let placeholder = delegate.placeholder_text().to_owned();
+        let match_count = delegate.match_count();
         // 工厂未初始化（无装配环境）时输入框缺席，Picker 保持可创建（纯列表降级）。
         let search_input = EDITOR_FACTORY.get().map(|factory| {
             let input = factory(cx);
@@ -89,6 +92,7 @@ impl<D: PickerDelegate> Picker<D> {
             width,
             query: String::new(),
             on_dismiss: None,
+            list_state: ListState::new(match_count, ListAlignment::Top, px(100.0)),
         };
         if let Some(search_input) = &picker.search_input {
             let weak = cx.weak_entity();
@@ -104,6 +108,7 @@ impl<D: PickerDelegate> Picker<D> {
                             if picker.query != query {
                                 picker.query = query.clone();
                                 picker.delegate.update_matches(query);
+                                picker.list_state.reset(picker.delegate.match_count());
                                 cx.notify();
                             }
                         })
@@ -143,6 +148,7 @@ impl<D: PickerDelegate> Picker<D> {
         }
         let next = (self.delegate.selected_index() + 1) % count;
         self.delegate.set_selected_index(next);
+        self.list_state.scroll_to_reveal_item(next);
         cx.notify();
     }
 
@@ -153,6 +159,7 @@ impl<D: PickerDelegate> Picker<D> {
         }
         let prev = (self.delegate.selected_index() + count - 1) % count;
         self.delegate.set_selected_index(prev);
+        self.list_state.scroll_to_reveal_item(prev);
         cx.notify();
     }
 
@@ -187,6 +194,9 @@ impl<D: PickerDelegate> Picker<D> {
 impl<D: PickerDelegate> Render for Picker<D> {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.delegate.match_count();
+        if self.list_state.item_count() != count {
+            self.list_state.reset(count);
+        }
 
         // 无匹配提示
         let no_match = (count == 0)
@@ -199,18 +209,12 @@ impl<D: PickerDelegate> Render for Picker<D> {
                     .child(text)
             });
 
-        // 列表项：全量渲染（picker 列表短，无需虚拟化）。
-        // 行高由内容决定（路径自动换行），内容超出可视区时列表滚动。
-        // flex_grow 吸收剩余空间；min_h(0) 允许收缩——否则 flex item 的min-height:auto 会把 footer 挤出可视区。
+        // 列表项允许多行，使用可变行高虚拟列表；ListState 按需测量并缓存每行高度。
+        // flex_grow 吸收剩余空间；min_h(0) 允许收缩——否则 flex item 的 min-height:auto 会把 footer 挤出可视区。
         let entity = cx.entity();
-        let items = div()
-            .id("picker-items")
-            .flex_grow(1.0)
-            .min_h_0()
-            .overflow_y_scroll()
-            // test cfg 下注册 debug bounds，供布局断言使用。
-            .debug_selector(|| "picker-list".into())
-            .children((0..count).map(|index| {
+        let list = list(
+            self.list_state.clone(),
+            cx.processor(move |picker, index, _window, cx| {
                 let entity = entity.clone();
                 div()
                     .id(("picker-match", index))
@@ -221,13 +225,24 @@ impl<D: PickerDelegate> Render for Picker<D> {
                         });
                         cx.stop_propagation();
                     })
-                    .child(self.delegate.render_match(
+                    .child(picker.delegate.render_match(
                         index,
-                        index == self.delegate.selected_index(),
+                        index == picker.delegate.selected_index(),
                         cx,
                     ))
                     .into_any_element()
-            }));
+            }),
+        )
+        .flex_grow(1.0)
+        .min_h_0()
+        .size_full();
+        let items = div()
+            .id("picker-items")
+            .flex_grow(1.0)
+            .min_h_0()
+            // test cfg 下注册 debug bounds，供布局断言使用。
+            .debug_selector(|| "picker-list".into())
+            .child(list);
 
         // 基础容器（视觉外壳由父组件提供）
         let root = div()

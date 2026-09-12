@@ -1,5 +1,7 @@
 //! Editor 选区编辑行为测试。
 
+use std::path::PathBuf;
+
 use gpui::{AppContext, TestAppContext};
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
@@ -39,6 +41,35 @@ fn buffer_text(buffer: &gpui::Entity<Buffer>, cx: &TestAppContext) -> String {
             .as_str()
             .to_string()
     })
+}
+
+#[gpui::test]
+fn rename_local_at_replaces_only_the_resolved_binding(cx: &mut TestAppContext) {
+    let source = "fn main(value: i32) { let result = value; return result; }\n";
+    let buffer = cx.new(|_| {
+        Buffer::scratch(source.to_string(), BufferConfig::default()).expect("测试 Buffer 应创建")
+    });
+    let language_buffer = cx.new({
+        let buffer = buffer.clone();
+        move |cx| LanguageBuffer::new(buffer, Some(PathBuf::from("rename.rs")), cx)
+    });
+    let editor = cx.new({
+        let language_buffer = language_buffer.clone();
+        move |cx| Editor::for_language_buffer(language_buffer, cx)
+    });
+    cx.run_until_parked();
+
+    let result_offset = source.find("result").expect("测试文本应包含局部变量");
+    cx.update_entity(&editor, |editor, cx| {
+        editor
+            .rename_local_at(ByteOffset::new(result_offset), "answer", cx)
+            .expect("已解析的局部绑定应可重命名");
+    });
+
+    assert_eq!(
+        buffer_text(&buffer, cx),
+        "fn main(value: i32) { let answer = value; return answer; }\n"
+    );
 }
 
 #[gpui::test]

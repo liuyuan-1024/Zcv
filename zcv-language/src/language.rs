@@ -7,7 +7,7 @@ mod registry;
 mod snippet;
 
 mod language_buffer;
-mod structure_queries;
+mod structure;
 mod syntax_map;
 mod tree_sitter_utils;
 
@@ -21,8 +21,8 @@ pub use snippet::{
     SnippetHighlightCancellation, SnippetHighlights, highlight_snippet,
     highlight_snippet_with_cancellation,
 };
-pub use structure_queries::{
-    BracketPair, FoldRange, LocalBinding, NewlineIndent, OutlineItem, SyntaxNode,
+pub use structure::{
+    BracketPair, FoldRange, LocalBinding, NewlineIndent, OutlineItem, OutlineTextRange, SyntaxNode,
 };
 pub use syntax_map::SyntaxSnapshot;
 

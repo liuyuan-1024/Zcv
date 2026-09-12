@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use gpui::{AnyElement, App, Pixels, div, prelude::*};
+use gpui::{AnyElement, App, ElementId, Pixels, div, prelude::*};
 use zcv_theme::{FileIcons, color, space, typography};
 
 use crate::SvgIcon;
@@ -21,14 +21,22 @@ pub struct TreeRowFrame {
 }
 
 impl TreeRowFrame {
-    /// 添加内容槽；多个内容槽由框架统一排列。
-    pub fn content(mut self, element: impl IntoElement) -> Self {
-        self.content.push(element.into_any_element());
+    /// 按树深度设置缩进，并添加与项目树一致的层级引导线。
+    ///
+    /// 深度只描述几何，不决定行首图标或点击行为，因此文件树、大纲等不同树形视图可以共享。
+    pub fn tree_depth(mut self, depth: usize, cx: &App) -> Self {
+        self.left_padding = metrics().indent_left(depth);
+        self.decorations.extend(
+            guide_lines(depth, cx)
+                .into_iter()
+                .map(IntoElement::into_any_element),
+        );
         self
     }
 
-    fn with_left_padding(mut self, left_padding: Pixels) -> Self {
-        self.left_padding = left_padding;
+    /// 添加内容槽；多个内容槽由框架统一排列。
+    pub fn content(mut self, element: impl IntoElement) -> Self {
+        self.content.push(element.into_any_element());
         self
     }
 
@@ -38,15 +46,21 @@ impl TreeRowFrame {
         self
     }
 
-    fn decoration(mut self, element: impl IntoElement) -> Self {
-        self.decorations.push(element.into_any_element());
-        self
-    }
-
     /// 添加一个行尾插槽；多个插槽由框架统一按间距排列。
     pub fn trailing(mut self, element: impl IntoElement) -> Self {
         self.trailing.push(element.into_any_element());
         self
+    }
+
+    /// 渲染可交互树行的公共外壳。
+    ///
+    /// 选择框、拖拽和具体点击动作仍由树形消费方叠加；
+    /// 这里仅统一行身份、指针和悬停背景。
+    pub fn interactive(self, id: impl Into<ElementId>, cx: &App) -> gpui::Stateful<gpui::Div> {
+        self.render()
+            .id(id)
+            .cursor_pointer()
+            .hover(|style| style.bg(color::current(cx).element_hover))
     }
 
     pub fn render(self) -> gpui::Div {
@@ -96,6 +110,14 @@ impl TreeRowFrame {
     }
 }
 
+/// 树行主文本：占用剩余宽度，并在空间不足时以省略号截断。
+///
+/// 截断必须设置在直接承载文本的元素上；
+/// 仅限制外层树行的溢出不会为内部文本生成省略号。
+pub fn tree_row_label(element: impl IntoElement) -> gpui::Div {
+    div().flex_1().min_w_0().truncate().child(element)
+}
+
 impl Default for TreeRowFrame {
     fn default() -> Self {
         Self {
@@ -142,18 +164,16 @@ impl TreeNodeRow {
         self
     }
 
-    pub fn render(self, cx: &App) -> gpui::Div {
+    /// 将文件树节点组装为通用树行框架。
+    pub fn frame(self, cx: &App) -> TreeRowFrame {
         let mut frame = TreeRowFrame::default()
-            .with_left_padding(metrics().indent_left(self.depth))
-            .content(self.content);
-        for guide in guide_lines(self.depth, cx) {
-            frame = frame.decoration(guide);
-        }
-        frame = frame.leading(icon(&self.path, self.is_dir, self.expanded));
+            .tree_depth(self.depth, cx)
+            .content(self.content)
+            .leading(icon(&self.path, self.is_dir, self.expanded));
         for trailing in self.trailing {
             frame = frame.trailing(trailing);
         }
-        frame.render()
+        frame
     }
 }
 

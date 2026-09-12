@@ -11,7 +11,9 @@ use gpui::{
 use zcv_editor::Editor;
 use zcv_theme::color;
 use zcv_ui::Scrollbar;
-use zcv_ui::{RowClickAction, TreeNodeRow, TreeState, row_click_action, selection_border};
+use zcv_ui::{
+    RowClickAction, TreeNodeRow, TreeState, row_click_action, selection_border, tree_row_label,
+};
 use zcv_workspace::git_status_color;
 
 use super::drag::{DraggedEntryView, TreeDrag, drop_target_dir, filter_movable_sources};
@@ -153,17 +155,13 @@ pub(super) fn render_row(
             row.git_status
                 .and_then(|status| git_status_color(status, cx))
         };
-        div()
-            .flex_1()
-            .overflow_hidden()
-            .truncate()
+        tree_row_label(name)
             .when(is_cut, |element| {
                 element.text_color(color::current(cx).text_muted)
             })
             .when_some(status_color, |element, status_color| {
                 element.text_color(status_color)
             })
-            .child(name)
     };
 
     // 拖拽载荷 = 被拖行 + 渲染期冻结的多选标记快照。
@@ -190,13 +188,11 @@ pub(super) fn render_row(
     );
 
     TreeNodeRow::new(depth, &row.path, is_dir, row.expanded, content)
-        .render(cx)
-        .id(row_id)
-        .cursor_pointer()
+        .frame(cx)
+        .interactive(row_id, cx)
         // 多选标记用选中背景；活动文件标记用更弱的悬停背景，两者不同色——用户据此区分「选区成员」与「编辑器当前打开的文件」，避免把后者误当作选区参与拖拽。
         .when(marked, |el| el.bg(color::current(cx).element_hover))
         .when(in_set, |el| el.bg(color::current(cx).element_selected))
-        .hover(|style| style.bg(color::current(cx).element_hover))
         .when(sel && focused, |el| el.child(selection_border(cx)))
         .when_some(drag_payload, |element, drag| {
             let weak = render_context.weak.clone();

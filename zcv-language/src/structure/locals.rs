@@ -127,6 +127,9 @@ impl SyntaxSnapshot {
 
             for definition in &definitions {
                 let scope_range = smallest_scope(&scopes, &definition.range);
+                if is_ambiguous_definition(definition, &definitions, &scopes) {
+                    continue;
+                }
                 let definition_references = references
                     .iter()
                     .filter(|reference| {
@@ -177,6 +180,22 @@ fn smallest_scope(scopes: &[Range<usize>], range: &Range<usize>) -> Range<usize>
         .unwrap_or_else(|| range.clone())
 }
 
+/// 判断定义是否与同一作用域内的同名定义产生归属歧义。
+///
+/// 歧义定义不会进入局部绑定结果，避免后续重命名误改文本。
+fn is_ambiguous_definition(
+    definition: &LocalDefinition,
+    definitions: &[LocalDefinition],
+    scopes: &[Range<usize>],
+) -> bool {
+    let definition_scope = smallest_scope(scopes, &definition.range);
+    definitions.iter().any(|candidate| {
+        candidate.range != definition.range
+            && candidate.name == definition.name
+            && smallest_scope(scopes, &candidate.range) == definition_scope
+    })
+}
+
 fn resolve_definition<'a>(
     name: &str,
     reference: &Range<usize>,
@@ -184,17 +203,23 @@ fn resolve_definition<'a>(
     scopes: &[Range<usize>],
 ) -> Option<&'a LocalDefinition> {
     let reference_scope = smallest_scope(scopes, reference);
-    definitions
+    let candidates: Vec<_> = definitions
         .iter()
         .filter(|definition| {
             definition.name == name
                 && definition.range.start <= reference.start
                 && encloses(&smallest_scope(scopes, &definition.range), &reference_scope)
         })
-        .min_by_key(|definition| {
-            let scope = smallest_scope(scopes, &definition.range);
-            (scope.len(), std::cmp::Reverse(definition.range.start))
-        })
+        .collect();
+    let minimum_scope_length = candidates
+        .iter()
+        .map(|definition| smallest_scope(scopes, &definition.range).len())
+        .min()?;
+    let mut candidates = candidates.into_iter().filter(|definition| {
+        smallest_scope(scopes, &definition.range).len() == minimum_scope_length
+    });
+    let candidate = candidates.next()?;
+    candidates.next().is_none().then_some(candidate)
 }
 
 fn range_intersects(left: &Range<usize>, right: &Range<usize>) -> bool {

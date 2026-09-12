@@ -73,6 +73,56 @@ fn rename_local_at_replaces_only_the_resolved_binding(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn rename_local_at_rejects_ambiguous_binding(cx: &mut TestAppContext) {
+    let source = "fn main() { let value = 1; let value = 2; value; }\n";
+    let buffer = cx.new(|_| {
+        Buffer::scratch(source.to_string(), BufferConfig::default()).expect("测试 Buffer 应创建")
+    });
+    let language_buffer = cx.new({
+        let buffer = buffer.clone();
+        move |cx| LanguageBuffer::new(buffer, Some(PathBuf::from("ambiguous.rs")), cx)
+    });
+    let editor = cx.new({
+        let language_buffer = language_buffer.clone();
+        move |cx| Editor::for_language_buffer(language_buffer, cx)
+    });
+    cx.run_until_parked();
+
+    let value_offset = source.find("value").expect("测试文本应包含重复绑定");
+    let result = cx.update_entity(&editor, |editor, cx| {
+        editor.rename_local_at(ByteOffset::new(value_offset), "answer", cx)
+    });
+
+    assert!(result.is_err(), "歧义绑定不能执行批量重命名");
+    assert_eq!(buffer_text(&buffer, cx), source);
+}
+
+#[gpui::test]
+fn rename_local_at_rejects_unresolved_reference(cx: &mut TestAppContext) {
+    let source = "fn main() { let value = missing; value; }\n";
+    let buffer = cx.new(|_| {
+        Buffer::scratch(source.to_string(), BufferConfig::default()).expect("测试 Buffer 应创建")
+    });
+    let language_buffer = cx.new({
+        let buffer = buffer.clone();
+        move |cx| LanguageBuffer::new(buffer, Some(PathBuf::from("unresolved.rs")), cx)
+    });
+    let editor = cx.new({
+        let language_buffer = language_buffer.clone();
+        move |cx| Editor::for_language_buffer(language_buffer, cx)
+    });
+    cx.run_until_parked();
+
+    let missing_offset = source.find("missing").expect("测试文本应包含未解析引用");
+    let result = cx.update_entity(&editor, |editor, cx| {
+        editor.rename_local_at(ByteOffset::new(missing_offset), "answer", cx)
+    });
+
+    assert!(result.is_err(), "未解析引用不能执行批量重命名");
+    assert_eq!(buffer_text(&buffer, cx), source);
+}
+
+#[gpui::test]
 fn indent_and_outdent_are_editor_owned_selection_edits(cx: &mut TestAppContext) {
     let selections =
         SelectionSet::new(vec![Selection::new(ByteOffset::new(0), ByteOffset::new(3))]);

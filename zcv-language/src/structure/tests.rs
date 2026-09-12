@@ -201,6 +201,68 @@ fn javascript_locals_can_query_a_subrange_using_an_outer_parameter() {
 }
 
 #[test]
+fn ambiguous_same_scope_bindings_are_not_returned() {
+    let source = "fn main() { let value = 1; let value = 2; value; }\n";
+    let (buffer, syntax) = parsed_syntax("ambiguous.rs", source);
+    let snapshot = buffer.snapshot();
+    let items = syntax
+        .snapshot()
+        .local_bindings(0..snapshot.len_bytes().get(), &snapshot);
+
+    assert!(
+        items.iter().all(|item| item.name != "value"),
+        "同一作用域内无法确定归属的重复绑定不能进入可重命名结果"
+    );
+}
+
+#[test]
+fn unresolved_references_are_not_attached_to_a_local_binding() {
+    let source = "fn main() { let value = missing; value; }\n";
+    let (buffer, syntax) = parsed_syntax("unresolved.rs", source);
+    let snapshot = buffer.snapshot();
+    let items = syntax
+        .snapshot()
+        .local_bindings(0..snapshot.len_bytes().get(), &snapshot);
+
+    let value = items
+        .iter()
+        .find(|item| item.name == "value")
+        .expect("已定义的局部变量仍应返回");
+    assert!(
+        value
+            .references
+            .iter()
+            .all(|range| { &source[range.clone()] != "missing" })
+    );
+    assert!(items.iter().all(|item| item.name != "missing"));
+}
+
+#[test]
+fn javascript_locals_in_html_injection_keep_their_language_layer() {
+    let source = "<script>function build(value) { let result = value; return result; }</script>";
+    let (buffer, syntax) = parsed_syntax("index.html", source);
+    let snapshot = buffer.snapshot();
+    let items = syntax
+        .snapshot()
+        .local_bindings(0..snapshot.len_bytes().get(), &snapshot);
+
+    let result = items
+        .iter()
+        .find(|item| item.name == "result")
+        .expect("script 注入层中的局部变量应返回");
+    assert_eq!(result.language, "JavaScript");
+    assert!(result.language_depth > 0);
+    assert_eq!(&source[result.definition_range.clone()], "result");
+    assert!(
+        result
+            .references
+            .iter()
+            .any(|range| { &source[range.clone()] == "result" })
+    );
+    assert!(items.iter().all(|item| item.language == "JavaScript"));
+}
+
+#[test]
 fn go_and_c_family_locals_resolve_parameters_and_local_variables() {
     for (path, source, parameter, local) in [
         (

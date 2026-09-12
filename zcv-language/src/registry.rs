@@ -36,6 +36,8 @@ struct CompiledLanguageQueries {
     brackets: Option<Arc<Query>>,
     indents: Option<Arc<Query>>,
     folds: Option<Arc<Query>>,
+    outline: Option<Arc<Query>>,
+    locals: Option<Arc<Query>>,
 }
 
 impl Language {
@@ -82,6 +84,20 @@ impl Language {
         match &self.syntax {
             LanguageSyntax::PlainText => None,
             LanguageSyntax::TreeSitter { queries, .. } => queries.folds.as_ref(),
+        }
+    }
+
+    pub(crate) fn outline(&self) -> Option<&Arc<Query>> {
+        match &self.syntax {
+            LanguageSyntax::PlainText => None,
+            LanguageSyntax::TreeSitter { queries, .. } => queries.outline.as_ref(),
+        }
+    }
+
+    pub fn has_locals_query(&self) -> bool {
+        match &self.syntax {
+            LanguageSyntax::PlainText => false,
+            LanguageSyntax::TreeSitter { queries, .. } => queries.locals.is_some(),
         }
     }
 
@@ -138,6 +154,8 @@ fn compile_queries(
         brackets: compile_optional_query(language_name, "括号", grammar, sources.brackets),
         indents: compile_optional_query(language_name, "缩进", grammar, sources.indents),
         folds: compile_optional_query(language_name, "折叠", grammar, sources.folds),
+        outline: compile_optional_query(language_name, "大纲", grammar, sources.outline),
+        locals: compile_optional_query(language_name, "局部语义", grammar, sources.locals),
     }
 }
 
@@ -469,6 +487,44 @@ mod tests {
         );
         assert!(tsx.highlights().unwrap().capture_names().contains(&"type"));
         assert!(tsx.injections().is_some());
+    }
+
+    #[test]
+    fn outline_queries_are_optional_and_use_the_declared_capture_contract() {
+        for (path, expected) in [
+            ("main.rs", true),
+            ("main.py", true),
+            ("main.js", true),
+            ("main.ts", true),
+            ("README.md", true),
+            ("index.html", true),
+            ("notes.txt", false),
+        ] {
+            let language = language_for_file(Path::new(path), None).unwrap();
+            assert_eq!(
+                language.outline().is_some(),
+                expected,
+                "{path} 大纲查询能力错误"
+            );
+            if let Some(query) = language.outline() {
+                assert!(query.capture_names().iter().all(|name| {
+                    matches!(
+                        name.as_ref(),
+                        "item"
+                            | "name"
+                            | "context"
+                            | "context.extra"
+                            | "annotation"
+                            | "open"
+                            | "close"
+                    )
+                }));
+            }
+            assert!(
+                !language.has_locals_query(),
+                "当前阶段不应隐式提供局部语义查询"
+            );
+        }
     }
 
     #[test]

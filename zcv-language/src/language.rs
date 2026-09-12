@@ -21,7 +21,7 @@ pub use snippet::{
     SnippetHighlightCancellation, SnippetHighlights, highlight_snippet,
     highlight_snippet_with_cancellation,
 };
-pub use structure_queries::{BracketPair, FoldRange, NewlineIndent};
+pub use structure_queries::{BracketPair, FoldRange, NewlineIndent, OutlineItem};
 pub use syntax_map::SyntaxSnapshot;
 
 /// 输入级自动闭合配对。

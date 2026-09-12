@@ -21,7 +21,7 @@ use zcv_actions::{
     SelectToNextWord, SelectToPreviousWord, SelectUp, ToggleFold, Undo, UnfoldAll,
 };
 use zcv_git::DiffHunkKind;
-use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer};
+use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer, OutlineItem};
 use zcv_multi_buffer::{
     DiffHunkSource, DiffProjection, DisplayHunk, ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot,
     MultiBuffer, MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot, MultiBufferSubscription,
@@ -822,6 +822,45 @@ impl Editor {
             return false;
         };
         self.change_selections(SelectionSet::caret(offset), cx);
+        self.request_scroll_to_top(NAVIGATION_TOP_OFFSET);
+        true
+    }
+
+    /// 返回当前组合文档的文件级语法大纲。
+    pub fn outline_items(&self) -> Vec<OutlineItem> {
+        self.display_map.outline_items()
+    }
+
+    /// 按名称或语法上下文过滤当前文件大纲；匹配不改变语法层结果的顺序和层级。
+    pub fn outline_items_matching(&self, query: &str) -> Vec<OutlineItem> {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return self.outline_items();
+        }
+        self.outline_items()
+            .into_iter()
+            .filter(|item| {
+                item.name.to_lowercase().contains(&query)
+                    || item
+                        .context
+                        .as_deref()
+                        .is_some_and(|context| context.to_lowercase().contains(&query))
+            })
+            .collect()
+    }
+
+    /// 将大纲项定位到其名称范围，并拒绝异步刷新后已经失效的结果。
+    pub fn navigate_to_outline_item(&mut self, item: &OutlineItem, cx: &mut Context<Self>) -> bool {
+        let current = self.outline_items().into_iter().any(|current| {
+            current.version == item.version
+                && current.range == item.range
+                && current.name_range == item.name_range
+                && current.name == item.name
+        });
+        if !current {
+            return false;
+        }
+        self.select_byte_range(item.name_range.clone(), cx);
         self.request_scroll_to_top(NAVIGATION_TOP_OFFSET);
         true
     }

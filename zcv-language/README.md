@@ -2,6 +2,8 @@
 
 `zcv-language` 负责文件语言识别、Tree-sitter 解析、高亮、语言注入和结构查询。编辑器只消费 `LanguageBuffer` 与 `SyntaxSnapshot`，不单独维护语言状态。
 
+文件级符号使用各语言自己的 `queries/<language>/outline.scm`。查询结果由 `SyntaxSnapshot::outline` 产生，携带文本版本、源文件字节范围、名称范围、语法层和父子层级；没有该查询的语言明确返回空结果。`MultiBuffer` 只负责把完整落在 excerpt 内的结果映射到组合文档，`Editor` 提供当前大纲、名称过滤和名称定位入口。
+
 ## 语言规格
 
 每门内置语言在 `src/available_languages.rs` 中只有一个 `LanguageSpec`。支持类型只能是：
@@ -19,6 +21,8 @@ injections.scm          存在真实嵌套语义时提供
 brackets.scm            文件语言必需，括号感知
 indents.scm             文件语言必需，换行缩进
 folds.scm               文件语言必需，代码折叠
+outline.scm             可选，文件级符号与代码大纲
+locals.scm              可选，局部绑定与引用（后续阶段）
 ```
 
 结构查询不能跨语言目录共享。即使两门语言当前规则相同，也应分别保存查询文件，让后续语法差异在各自语言边界内演进。语言注入只在存在明确嵌套语义时接入；仅供 Markdown 内部使用的 `Markdown Inline` 不受文件语言的结构查询基线约束。

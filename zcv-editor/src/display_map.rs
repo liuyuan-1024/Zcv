@@ -47,7 +47,7 @@ use tab_map::TabMap;
 pub(crate) use tab_map::byte_for_display_column;
 pub(crate) use wrap_map::WrapViewportRowKind;
 use wrap_map::{WrapMap, WrapSnapshot};
-use zcv_language::{BracketPair, HighlightSpan, NewlineIndent, SyntaxSnapshot};
+use zcv_language::{BracketPair, HighlightSpan, NewlineIndent, OutlineItem, SyntaxSnapshot};
 use zcv_multi_buffer::{ExcerptSnapshot, MultiBufferSnapshot};
 use zcv_text::{
     BufferVersion, ByteOffset, Line, LineRange, LogicalColumn, Position, Snapshot, TextChangeBatch,
@@ -442,6 +442,10 @@ impl DisplayMap {
 
     pub(crate) fn ancestor_range(&self, range: Range<usize>) -> Option<Range<usize>> {
         self.multi_buffer_snapshot.ancestor_range(range)
+    }
+
+    pub(crate) fn outline_items(&self) -> Vec<OutlineItem> {
+        self.multi_buffer_snapshot.outline_items()
     }
 
     pub(super) fn snapshot(&self) -> DisplaySnapshot {

@@ -23,6 +23,8 @@ pub(crate) struct LanguageQuerySources {
     pub(crate) brackets: Option<&'static str>,
     pub(crate) indents: Option<&'static str>,
     pub(crate) folds: Option<&'static str>,
+    pub(crate) outline: Option<&'static str>,
+    pub(crate) locals: Option<&'static str>,
 }
 
 impl LanguageQuerySources {
@@ -38,6 +40,8 @@ impl LanguageQuerySources {
             brackets: Some(brackets),
             indents: Some(indents),
             folds: Some(folds),
+            outline: None,
+            locals: None,
         }
     }
 
@@ -48,11 +52,18 @@ impl LanguageQuerySources {
             brackets: None,
             indents: None,
             folds: None,
+            outline: None,
+            locals: None,
         }
     }
 
     pub(crate) const fn with_injections(mut self, source: &'static str) -> Self {
         self.injections = Some(source);
+        self
+    }
+
+    pub(crate) const fn with_outline(mut self, source: &'static str) -> Self {
+        self.outline = Some(source);
         self
     }
 }
@@ -197,7 +208,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             },
             || tree_sitter_rust::LANGUAGE.into(),
             file_language_queries!("rust")
-                .with_injections(include_str!("../queries/rust/injections.scm")),
+                .with_injections(include_str!("../queries/rust/injections.scm"))
+                .with_outline(include_str!("../queries/rust/outline.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -261,7 +273,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             },
             || tree_sitter_python::LANGUAGE.into(),
             file_language_queries!("python")
-                .with_injections(include_str!("../queries/python/injections.scm")),
+                .with_injections(include_str!("../queries/python/injections.scm"))
+                .with_outline(include_str!("../queries/python/outline.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -275,7 +288,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             },
             || tree_sitter_typescript::LANGUAGE_TSX.into(),
             file_language_queries!("javascript")
-                .with_injections(include_str!("../queries/javascript/injections.scm")),
+                .with_injections(include_str!("../queries/javascript/injections.scm"))
+                .with_outline(include_str!("../queries/javascript/outline.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -287,7 +301,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             },
             || tree_sitter_typescript::LANGUAGE_TSX.into(),
             file_language_queries!("jsx", include_str!("../queries/javascript/highlights.scm"))
-                .with_injections(include_str!("../queries/jsx/injections.scm")),
+                .with_injections(include_str!("../queries/jsx/injections.scm"))
+                .with_outline(include_str!("../queries/jsx/outline.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -299,7 +314,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             },
             || tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             file_language_queries!("typescript")
-                .with_injections(include_str!("../queries/typescript/injections.scm")),
+                .with_injections(include_str!("../queries/typescript/injections.scm"))
+                .with_outline(include_str!("../queries/typescript/outline.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -311,7 +327,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             },
             || tree_sitter_typescript::LANGUAGE_TSX.into(),
             file_language_queries!("tsx")
-                .with_injections(include_str!("../queries/tsx/injections.scm")),
+                .with_injections(include_str!("../queries/tsx/injections.scm"))
+                .with_outline(include_str!("../queries/tsx/outline.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -468,7 +485,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             },
             || tree_sitter_md::LANGUAGE.into(),
             file_language_queries!("markdown")
-                .with_injections(include_str!("../queries/markdown/injections.scm")),
+                .with_injections(include_str!("../queries/markdown/injections.scm"))
+                .with_outline(include_str!("../queries/markdown/outline.scm")),
             None,
             COMMON_PAIRS,
         ),
@@ -494,7 +512,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             },
             || tree_sitter_html::LANGUAGE.into(),
             file_language_queries!("html")
-                .with_injections(include_str!("../queries/html/injections.scm")),
+                .with_injections(include_str!("../queries/html/injections.scm"))
+                .with_outline(include_str!("../queries/html/outline.scm")),
             None,
             COMMON_PAIRS,
         ),

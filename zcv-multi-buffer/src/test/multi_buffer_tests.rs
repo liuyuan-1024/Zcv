@@ -403,6 +403,48 @@ fn working_source_preserves_rust_fold_ranges(cx: &mut TestAppContext) {
     );
 }
 
+#[gpui::test]
+fn outline_projects_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
+    let source = singleton("src/main.rs", "// 前置\nfn 数据() {}\n// 后置\n", cx);
+    cx.run_until_parked();
+    let (function_range, source_name_start) = cx.read_entity(&source, |source, cx| {
+        let text = source.text_snapshot(cx);
+        let syntax = source.syntax_snapshot();
+        let item = syntax
+            .outline(0..text.len_bytes().get(), &text)
+            .into_iter()
+            .find(|item| item.name == "数据")
+            .expect("Rust 函数应出现在源大纲中");
+        (item.range, item.name_range.start)
+    });
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![MultiBufferExcerpt::new(
+                source,
+                TextRange::new(
+                    ByteOffset::new(function_range.start),
+                    ByteOffset::new(function_range.end),
+                )
+                .unwrap(),
+                Vec::new(),
+            )],
+            cx,
+        );
+    });
+
+    let items = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx).outline_items());
+    let function = items
+        .iter()
+        .find(|item| item.name == "数据")
+        .expect("excerpt 内函数应保留在组合大纲中");
+    assert_eq!(function.range.start, 0);
+    assert_eq!(
+        function.name_range.start,
+        source_name_start - function_range.start
+    );
+}
+
 /// 非零源起点的 excerpt 需要把折叠范围换算到组合坐标，不能沿用源字节偏移。
 #[gpui::test]
 fn excerpt_projects_contained_fold_range_to_output_coordinates(cx: &mut TestAppContext) {

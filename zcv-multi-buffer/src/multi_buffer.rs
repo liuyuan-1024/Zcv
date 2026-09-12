@@ -22,7 +22,7 @@ use std::sync::Arc;
 use gpui::{App, AppContext, Context, Entity, EventEmitter, Subscription};
 use zcv_language::{
     AutoClosePair, BracketPair, FoldRange, HighlightSpan, LanguageBuffer, LanguageBufferEvent,
-    NewlineIndent, SyntaxSnapshot,
+    NewlineIndent, OutlineItem, SyntaxSnapshot,
 };
 use zcv_text::{
     Affinity, Buffer, BufferConfig, BufferVersion, ByteOffset, Edit, Line, PositionMap, Snapshot,
@@ -588,6 +588,44 @@ impl MultiBufferSnapshot {
         )
     }
 
+    /// 返回当前组合文档中可见源范围内的文件大纲项。
+    ///
+    /// 大纲先从每个源的 `SyntaxSnapshot` 计算，再只投影完整落在 excerpt 内的定义；
+    /// 这样不会把跨未展示内容的语法节点误投影到差异或搜索组合文档中。
+    pub fn outline_items(&self) -> Vec<OutlineItem> {
+        if self.excerpt_mappings.is_empty() {
+            return self
+                .syntax
+                .outline(0..self.text.len_bytes().get(), &self.text);
+        }
+
+        let mut projected = Vec::new();
+        for (source_index, source) in self.excerpt_sources.iter().enumerate() {
+            let outlines = source
+                .syntax
+                .outline(0..source.text.len_bytes().get(), &source.text);
+            for mapping in self
+                .excerpt_mappings
+                .iter()
+                .filter(|mapping| mapping.source_index == source_index)
+            {
+                for item in outlines.iter().filter_map(|item| {
+                    project_outline_item(item, mapping.source_range, mapping.output_range)
+                }) {
+                    projected.push(item);
+                }
+            }
+        }
+        projected.sort_unstable_by_key(|item| (item.range.start, item.range.end));
+        projected.dedup_by(|left, right| {
+            left.range == right.range
+                && left.name_range == right.name_range
+                && left.name == right.name
+                && left.language == right.language
+        });
+        projected
+    }
+
     fn source_point(
         &self,
         offset: ByteOffset,
@@ -632,6 +670,36 @@ impl MultiBufferSnapshot {
             .iter()
             .find(|excerpt| line >= excerpt.output_start_line && line < excerpt.output_end_line)
     }
+}
+
+fn project_outline_item(
+    item: &OutlineItem,
+    source_range: TextRange,
+    output_range: TextRange,
+) -> Option<OutlineItem> {
+    let project = |range: &std::ops::Range<usize>| {
+        (source_range.start().get() <= range.start && range.end <= source_range.end().get()).then(
+            || {
+                let source_start = source_range.start().get();
+                let output_start = output_range.start().get();
+                (output_start + range.start - source_start)
+                    ..(output_start + range.end - source_start)
+            },
+        )
+    };
+    Some(OutlineItem {
+        version: item.version,
+        range: project(&item.range)?,
+        name_range: project(&item.name_range)?,
+        name: item.name.clone(),
+        kind: item.kind.clone(),
+        context: item.context.clone(),
+        depth: item.depth,
+        language: item.language,
+        language_depth: item.language_depth,
+        body_range: item.body_range.as_ref().and_then(project),
+        annotation_range: item.annotation_range.as_ref().and_then(project),
+    })
 }
 
 /// 纯文本帧：无 excerpt 的独立文本（placeholder 等），语法为空表。

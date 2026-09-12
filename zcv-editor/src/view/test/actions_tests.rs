@@ -201,6 +201,53 @@ fn navigate_to_line_column_uses_unicode_logical_columns(cx: &mut TestAppContext)
         assert!(!editor.navigate_to_line_column(99, 0, cx));
     });
 }
+
+#[gpui::test]
+fn outline_items_filter_and_navigate_using_current_snapshot(cx: &mut TestAppContext) {
+    let source = "struct 数据 {\n    value: i32,\n}\nfn build() {}\n";
+    let raw_buffer = cx.new(|_| {
+        Buffer::scratch(source.to_owned(), BufferConfig::default())
+            .expect("Rust 测试 Buffer 应能创建")
+    });
+    let language_buffer = cx.new({
+        let raw_buffer = raw_buffer.clone();
+        move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+    });
+    let editor = cx.new({
+        let language_buffer = language_buffer.clone();
+        move |cx| Editor::for_language_buffer(language_buffer, cx)
+    });
+    cx.run_until_parked();
+
+    let build = cx.read_entity(&editor, |editor, _| {
+        let items = editor.outline_items();
+        assert!(items.iter().any(|item| item.name == "数据"));
+        assert_eq!(
+            editor
+                .outline_items_matching("BUILD")
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["build"]
+        );
+        items
+            .into_iter()
+            .find(|item| item.name == "build")
+            .expect("函数应出现在当前文件大纲中")
+    });
+    cx.update_entity(&editor, |editor, cx| {
+        assert!(editor.navigate_to_outline_item(&build, cx));
+        assert_eq!(
+            editor.selections().primary().range(),
+            TextRange::new(
+                ByteOffset::new(build.name_range.start),
+                ByteOffset::new(build.name_range.end)
+            )
+            .unwrap()
+        );
+    });
+}
+
 #[gpui::test]
 fn other_editor_editing_shared_buffer_moves_this_editors_selection(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "abc");

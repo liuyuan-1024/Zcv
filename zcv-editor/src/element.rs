@@ -3804,7 +3804,10 @@ mod tests {
         cx.run_until_parked();
         let multi_snapshot =
             cx.read_entity(&multi_buffer, |multi_buffer, cx| multi_buffer.snapshot(cx));
-        assert!(multi_snapshot.syntax().has_language());
+        assert!(
+            !multi_snapshot.highlights(0..text.len()).is_empty(),
+            "组合文档应从源片段查询 Markdown 高亮"
+        );
 
         let window = cx.add_window(|_, _| Empty);
         window

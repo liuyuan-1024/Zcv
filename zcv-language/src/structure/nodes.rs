@@ -6,7 +6,7 @@
 
 use std::ops::Range;
 
-use zcv_text::Snapshot;
+use zcv_text::{BufferVersion, Snapshot};
 
 use crate::syntax_map::SyntaxSnapshot;
 use crate::tree_sitter_utils::encloses;
@@ -18,7 +18,7 @@ use crate::tree_sitter_utils::encloses;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SyntaxNode {
     /// 产生结果的文本版本。
-    pub version: zcv_text::BufferVersion,
+    pub version: BufferVersion,
     /// 节点在源文本中的右开范围。
     pub range: Range<usize>,
     /// Tree-sitter 节点种类。
@@ -38,7 +38,7 @@ pub struct SyntaxNode {
 impl SyntaxNode {
     fn from_tree_node(
         node: tree_sitter::Node<'_>,
-        version: zcv_text::BufferVersion,
+        version: BufferVersion,
         language: &'static str,
         language_depth: u32,
     ) -> Self {

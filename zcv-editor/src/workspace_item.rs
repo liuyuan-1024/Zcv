@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use gpui::{AnyView, App, Context, Entity, SharedString, Task, Window};
 use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
-use zcv_workspace::{Item, ItemEvent};
+use zcv_workspace::{Item, ItemEvent, SearchableItemHandle};
 
 use crate::view::NAVIGATION_TOP_OFFSET;
 use crate::{Editor, EditorEvent};
@@ -127,7 +127,7 @@ impl Item for Editor {
         &self,
         self_handle: &Entity<Self>,
         _cx: &App,
-    ) -> Option<Box<dyn zcv_workspace::SearchableItemHandle>> {
+    ) -> Option<Box<dyn SearchableItemHandle>> {
         Some(Box::new(self_handle.clone()))
     }
 }
@@ -233,7 +233,7 @@ mod tests {
         let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
         editor.update(cx, |editor, cx| editor.set_text("新内容\n", cx));
 
-        let item: Box<dyn zcv_workspace::ItemHandle> = Box::new(editor.clone());
+        let item: Box<dyn ItemHandle> = Box::new(editor.clone());
         cx.update(|cx| {
             assert!(item.can_save(cx));
             assert!(item.is_dirty(cx));

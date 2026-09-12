@@ -22,7 +22,7 @@ use zcv_actions::{
 use zcv_editor::{Editor, EditorEvent, EditorHunk, EditorHunkMarkerKind, EditorHunkPart};
 use zcv_git::{DiffHunkKind, FileStatus, GitRevision, parse_conflict_regions};
 use zcv_multi_buffer::{BufferDiffInput, DiffFile, DiffProjection};
-use zcv_project::{GitOperationKind, GitOperationOutcome, GitStoreEvent, Project};
+use zcv_project::{GitOperationKind, GitOperationOutcome, GitStoreEvent, Project, ProjectEvent};
 use zcv_settings::{GlobalSettingsErrorReporter, SettingsStore};
 use zcv_text::{ByteOffset, TextRange};
 use zcv_theme::{ThemeChoice, typography};
@@ -798,12 +798,12 @@ fn initialize_workspace(
         cx.subscribe(
             &project,
             move |_workspace, _project, event, cx| match event {
-                zcv_project::ProjectEvent::RootChanged(root) => {
+                ProjectEvent::RootChanged(root) => {
                     project_tree_for_project.update(cx, |tree, cx| {
                         tree.set_root(root.clone(), cx);
                     });
                 }
-                zcv_project::ProjectEvent::EntriesChanged => {
+                ProjectEvent::EntriesChanged => {
                     project_tree_for_project.update(cx, |tree, cx| tree.schedule_refresh(cx));
                 }
             },

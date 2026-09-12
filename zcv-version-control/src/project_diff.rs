@@ -38,8 +38,8 @@ use zcv_ui::{
     SearchInput, SvgIcon,
 };
 use zcv_workspace::{
-    Direction, Item, ItemEvent, SearchableItem, SearchableItemHandle, SerializedItemProvider,
-    SerializedPaneItem, Workspace,
+    Direction, Item, ItemEvent, ItemHandle, SearchableItem, SearchableItemHandle,
+    SerializedItemProvider, SerializedPaneItem, Workspace,
 };
 
 const PROJECT_DIFF_SERIALIZED_KIND: &str = "project-diff";
@@ -1596,14 +1596,14 @@ impl SerializedItemProvider for ProjectDiffSerializedItemProvider {
         project: Entity<Project>,
         window: &mut Window,
         cx: &mut Context<Workspace>,
-    ) -> Task<anyhow::Result<Box<dyn zcv_workspace::ItemHandle>>> {
+    ) -> Task<anyhow::Result<Box<dyn ItemHandle>>> {
         let result = project_diff_state(&state).map(|(kind, active_path)| {
             let view = cx.new(|cx| ProjectDiffView::new(kind, project, cx));
             if let Some(path) = active_path {
                 view.update(cx, |view, cx| view.move_to_path(path, cx));
             }
             subscribe_to_open_excerpts(&view, window, cx);
-            Box::new(view) as Box<dyn zcv_workspace::ItemHandle>
+            Box::new(view) as Box<dyn ItemHandle>
         });
         Task::ready(result)
     }

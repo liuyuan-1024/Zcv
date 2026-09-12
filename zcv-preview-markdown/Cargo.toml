@@ -14,7 +14,6 @@ pulldown-cmark.workspace = true
 ratex-layout.workspace = true
 ratex-parser.workspace = true
 ratex-svg.workspace = true
-zcv-actions.workspace = true
 zcv-language.workspace = true
 zcv-multi-buffer.workspace = true
 zcv-project.workspace = true

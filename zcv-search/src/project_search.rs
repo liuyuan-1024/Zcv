@@ -22,7 +22,7 @@ use zcv_theme::{color, space};
 use zcv_ui::{Button, MatchOption, MatchOptions, SearchInput};
 use zcv_workspace::{
     Direction, Item, ItemEvent, ItemHandle, SearchEvent, SearchableItem, SearchableItemHandle,
-    SerializedItemProvider, StatusItemView, Workspace,
+    SerializedItemProvider, SerializedPaneItem, StatusItemView, Workspace,
 };
 
 const PROJECT_SEARCH_SERIALIZED_KIND: &str = "project-search";
@@ -658,8 +658,8 @@ impl Item for ProjectSearchView {
         Some(self.toolbar.clone().into())
     }
 
-    fn serialized_pane_item(&self, _cx: &App) -> Option<zcv_workspace::SerializedPaneItem> {
-        Some(zcv_workspace::SerializedPaneItem::Custom {
+    fn serialized_pane_item(&self, _cx: &App) -> Option<SerializedPaneItem> {
+        Some(SerializedPaneItem::Custom {
             kind: PROJECT_SEARCH_SERIALIZED_KIND.into(),
             state: serde_json::to_value(self.search_state.clone()).ok()?,
         })

@@ -23,8 +23,8 @@ use zcv_theme::color::{self, ThemeColors};
 use zcv_theme::{space, typography};
 use zcv_ui::{MatchOption, MatchOptions, Scrollbar, SearchInput};
 use zcv_workspace::{
-    Direction, Item, SearchEvent, SearchableItem, SerializedItemProvider, SerializedPaneItem,
-    Workspace,
+    Direction, Item, ItemHandle, SearchEvent, SearchableItem, SerializedItemProvider,
+    SerializedPaneItem, Workspace,
 };
 
 // ── 布局常量（参考 Zed git_graph.rs） ────────────────────────────────
@@ -493,7 +493,7 @@ impl SerializedItemProvider for GitGraphSerializedItemProvider {
         project: Entity<Project>,
         _window: &mut Window,
         cx: &mut Context<Workspace>,
-    ) -> gpui::Task<anyhow::Result<Box<dyn zcv_workspace::ItemHandle>>> {
+    ) -> gpui::Task<anyhow::Result<Box<dyn ItemHandle>>> {
         let view = cx.new(|cx| GitGraphView::new(project, cx));
         let query = state
             .get("query")
@@ -512,7 +512,7 @@ impl SerializedItemProvider for GitGraphSerializedItemProvider {
             view.search_input
                 .update(cx, |editor, cx| editor.set_text(query, cx));
         });
-        gpui::Task::ready(Ok(Box::new(view) as Box<dyn zcv_workspace::ItemHandle>))
+        gpui::Task::ready(Ok(Box::new(view) as Box<dyn ItemHandle>))
     }
 }
 

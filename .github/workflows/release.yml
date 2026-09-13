@@ -30,7 +30,7 @@ jobs:
           VERSION="${TAG#v}"
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          CARGO_VERSION="$(grep '^version' Cargo.toml | head -n1 | cut -d'\"' -f2)"
+          CARGO_VERSION="$(grep '^version' Cargo.toml | head -n1 | cut -d'"' -f2)"
           [[ "$CARGO_VERSION" == "$VERSION" ]] || { echo "tag v$VERSION 与 Cargo.toml 版本 $CARGO_VERSION 不一致" >&2; exit 1; }
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -67,7 +67,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: 构建 Windows 更新包
         shell: pwsh
-        run: ./scripts/bundle-windows.ps1
+        run: .\scripts\bundle-windows.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: zcv-update-windows

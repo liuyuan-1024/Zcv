@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -515,6 +515,9 @@ pub struct FsWatcher {
     registrations: Arc<Mutex<HashMap<WatchKey, FsWatcherRegistration>>>,
     /// 等待创建的路径（路径尚不存在时由共享轮询线程等待）。
     pending_registrations: Arc<Mutex<HashMap<Arc<Path>, ()>>>,
+    /// 通知 pending 轮询线程停止，并在析构时等待它退出。
+    pending_poller_stop: Option<mpsc::Sender<()>>,
+    pending_poller: Option<thread::JoinHandle<()>>,
 }
 
 #[derive(Clone, Copy)]
@@ -551,14 +554,17 @@ impl Default for FsWatcher {
 impl FsWatcher {
     pub fn new() -> Self {
         let (signal_tx, signal_rx) = async_channel::unbounded();
-        let watcher = Self {
+        let (pending_poller_stop, pending_poller_stop_rx) = mpsc::channel();
+        let mut watcher = Self {
             signal_tx,
             signal_rx,
             pending_path_events: Arc::new(Mutex::new(Vec::new())),
             registrations: Arc::new(Mutex::new(HashMap::new())),
             pending_registrations: Arc::new(Mutex::new(HashMap::new())),
+            pending_poller_stop: Some(pending_poller_stop),
+            pending_poller: None,
         };
-        watcher.spawn_pending_poller();
+        watcher.pending_poller = Some(watcher.spawn_pending_poller(pending_poller_stop_rx));
         watcher
     }
 
@@ -573,7 +579,7 @@ impl FsWatcher {
     /// 共享轮询线程：统一等待所有 pending 路径出现后注册。
     ///
     /// 每路径一个独立线程会随打开路径数线性增长（这里保持纯 std 架构，用单个线程轮询全部 pending 路径）。
-    fn spawn_pending_poller(&self) {
+    fn spawn_pending_poller(&self, stop_rx: mpsc::Receiver<()>) -> thread::JoinHandle<()> {
         let registrations = self.registrations.clone();
         let pending_regs = self.pending_registrations.clone();
         let signal_tx = self.signal_tx.clone();
@@ -584,7 +590,10 @@ impl FsWatcher {
             .spawn(move || {
                 let interval = Duration::from_millis(2000);
                 loop {
-                    thread::sleep(interval);
+                    match stop_rx.recv_timeout(interval) {
+                        Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    }
 
                     let paths: Vec<Arc<Path>> =
                         pending_regs.lock().unwrap().keys().cloned().collect();
@@ -645,7 +654,7 @@ impl FsWatcher {
                     }
                 }
             })
-            .expect("无法创建 pending 路径轮询线程");
+            .expect("无法创建 pending 路径轮询线程")
     }
 
     /// 注册一个尚不存在的路径——由共享轮询线程等待其出现。
@@ -722,6 +731,14 @@ impl Watcher for FsWatcher {
 
 impl Drop for FsWatcher {
     fn drop(&mut self) {
+        // 先停止并等待轮询线程，避免它在注销监听后又注册新的路径。
+        if let Some(stop) = self.pending_poller_stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(poller) = self.pending_poller.take() {
+            let _ = poller.join();
+        }
+
         // 取消所有 pending 注册
         self.pending_registrations.lock().unwrap().clear();
         // 从 GlobalWatcher 注销所有注册
@@ -1029,5 +1046,15 @@ mod tests {
 
         // 立刻移除——应取消 pending
         assert!(watcher.remove(&nonexistent).is_ok());
+    }
+
+    #[test]
+    fn test_fs_watcher_closes_event_stream_on_drop() {
+        let watcher = FsWatcher::new();
+        let events = watcher.events();
+
+        drop(watcher);
+
+        assert!(events.rx.is_closed());
     }
 }

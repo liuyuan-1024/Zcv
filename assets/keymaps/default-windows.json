@@ -36,6 +36,7 @@
       "ctrl-c": "editor::Copy",
       "ctrl-v": "editor::Paste",
       "ctrl-x": "editor::Cut",
+      "f2": "editor::RenameLocal",
       "ctrl-z": "editor::Undo",
       "ctrl-y": "editor::Redo",
       "alt-up": "editor::MoveLineUp",
@@ -44,6 +45,14 @@
       "alt-ctrl-]": "editor::UnfoldAll"
     }
   },
+  {
+    "context": "Editor && mode == single_line",
+    "bindings": {
+      "enter": "editor::ConfirmLocalRename",
+      "escape": "editor::CancelLocalRename"
+    }
+  },
+
   {
     // enter/tab 等仅指派给完整编辑器：
     // 输入框类编辑器（single_line/auto_height）不占用这些键位，

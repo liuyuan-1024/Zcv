@@ -376,6 +376,7 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
                 styles: &[],
                 backgrounds: &search_backgrounds,
                 marked: &[],
+                dimmed: &[],
             },
             byte_range.clone(),
         );
@@ -450,6 +451,7 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
                         styles: &[],
                         backgrounds: &search_backgrounds,
                         marked: &[],
+                        dimmed: &[],
                     },
                     byte_range.clone(),
                 );
@@ -566,6 +568,7 @@ zcv final
                         styles: &highlight_styles,
                         backgrounds: &search_backgrounds,
                         marked: &[],
+                        dimmed: &[],
                     },
                     byte_range.clone(),
                 );

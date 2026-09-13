@@ -453,6 +453,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn editor_keymap_binds_f2_to_local_rename_on_every_platform() {
+        for source in [
+            "default-macos.json",
+            "default-linux.json",
+            "default-windows.json",
+        ] {
+            let groups = parse_builtin_keymap(source);
+            let editor = groups
+                .iter()
+                .find(|group| group.context.as_deref() == Some("Editor"))
+                .unwrap_or_else(|| panic!("{source} 缺少 Editor 上下文"));
+            assert_eq!(
+                editor.bindings.get("f2").map(RawAction::name),
+                Some("editor::RenameLocal"),
+                "{source} 的 F2 应打开局部重命名"
+            );
+        }
+    }
+
+    #[test]
+    fn single_line_editor_keymap_binds_local_rename_confirmation() {
+        for source in [
+            "default-macos.json",
+            "default-linux.json",
+            "default-windows.json",
+        ] {
+            let groups = parse_builtin_keymap(source);
+            let input = groups
+                .iter()
+                .find(|group| group.context.as_deref() == Some("Editor && mode == single_line"))
+                .unwrap_or_else(|| panic!("{source} 缺少单行重命名输入上下文"));
+            assert_eq!(
+                input.bindings.get("enter").map(RawAction::name),
+                Some("editor::ConfirmLocalRename"),
+                "{source} 的单行输入 Enter 应提交局部重命名"
+            );
+            assert_eq!(
+                input.bindings.get("escape").map(RawAction::name),
+                Some("editor::CancelLocalRename"),
+                "{source} 的单行输入 Escape 应取消局部重命名"
+            );
+        }
+    }
+
     /// 替换框的 Enter 语义由 in_replace 标签分组声明，不得缺失或退化。
     #[test]
     fn search_replace_input_enter_is_declared_by_in_replace_on_every_platform() {

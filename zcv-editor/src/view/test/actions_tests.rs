@@ -1,4 +1,5 @@
 use gpui::{TestAppContext, point, px, size};
+use zcv_actions::{ConfirmLocalRename, RenameLocal};
 use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
 use zcv_text::TextRange;
 use zcv_text::{ByteOffset, Edit, TransactionId, TransactionMetadata};
@@ -603,6 +604,70 @@ fn select_larger_smaller_syntax_node_uses_tree_sitter_ancestors(cx: &mut TestApp
     cx.read_entity(&editor, |editor, _| {
         assert!(editor.selections().primary().is_caret());
         assert_eq!(editor.selections().primary().head(), ByteOffset::new(value));
+    });
+}
+
+#[gpui::test]
+fn f2_opens_inline_local_rename_and_enter_commits_it(cx: &mut TestAppContext) {
+    let source = "fn main() {\n    let value = 1; let padding = \"0123456789012345678901234567890123456789\";\n    return value;\n}\n";
+    let raw_buffer = cx.new(|_| {
+        Buffer::scratch(source.to_owned(), BufferConfig::default())
+            .expect("Rust 测试 Buffer 应能创建")
+    });
+    let language_buffer = cx.new({
+        let raw_buffer = raw_buffer.clone();
+        move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+    });
+    let (editor, cx) = cx.add_window_view({
+        let language_buffer = language_buffer.clone();
+        move |_, cx| Editor::for_language_buffer(language_buffer, cx)
+    });
+    cx.run_until_parked();
+
+    let value = source.rfind("value").expect("测试文本应包含局部变量");
+    cx.update_entity(&editor, |editor, _| {
+        editor.set_selections(SelectionSet::caret(ByteOffset::new(value)));
+    });
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx);
+    });
+    cx.simulate_resize(size(px(320.), px(200.)));
+    focus_editor(&editor, cx);
+    cx.dispatch_action(RenameLocal);
+    cx.run_until_parked();
+
+    let (input, rename_y, cursor_y) = cx.read_entity(&editor, |editor, _| {
+        let state = editor
+            .local_rename
+            .as_ref()
+            .expect("F2 后应显示局部重命名输入框");
+        (
+            state.input.clone(),
+            state.position.y,
+            editor
+                .pixel_position_of_newest_cursor
+                .expect("重命名期间应保留原编辑器光标位置")
+                .y,
+        )
+    });
+    assert!(
+        rename_y < cursor_y,
+        "重命名输入框应位于定义逻辑行下方、后续引用上方：rename_y={rename_y:?}, cursor_y={cursor_y:?}"
+    );
+    cx.read_entity(&input, |input, _| {
+        assert!(input.content_typography, "重命名输入框应使用代码内容排版");
+    });
+    cx.update_entity(&input, |input, cx| input.set_text("answer", cx));
+    cx.run_until_parked();
+    cx.dispatch_action(ConfirmLocalRename);
+    cx.run_until_parked();
+
+    assert_eq!(
+        buffer_text(&language_buffer, cx),
+        "fn main() {\n    let answer = 1; let padding = \"0123456789012345678901234567890123456789\";\n    return answer;\n}\n"
+    );
+    cx.read_entity(&editor, |editor, _| {
+        assert!(editor.local_rename.is_none(), "提交后应关闭行内输入框");
     });
 }
 

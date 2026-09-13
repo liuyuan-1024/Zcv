@@ -12,6 +12,7 @@ use gpui::{
 use zcv_text::{Anchor, ByteOffset, Snapshot, TextRange, TransactionId, Utf16Offset};
 
 use super::*;
+use crate::element::EditorInputLayout;
 use crate::selection::{
     EditOutcome, EditorSelections, Selection, SelectionSet, apply_edits, replace_selections,
 };
@@ -46,52 +47,12 @@ enum AfterAction {
     Mapped { close_len: usize },
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct EditorPresentation {
-    snapshot: Snapshot,
-    composition: Option<EditorComposition>,
-}
-
-impl EditorPresentation {
-    pub(crate) fn new(snapshot: &Snapshot, composition: Option<&EditorComposition>) -> Self {
-        Self {
-            snapshot: snapshot.clone(),
-            composition: composition.cloned(),
-        }
-    }
-
-    pub(crate) fn marked_ranges(&self) -> &[TextRange] {
-        self.composition
-            .as_ref()
-            .map_or(&[], |composition| composition.ranges.as_ref())
-    }
-
-    pub(super) fn marked_utf16_range(&self) -> Option<Range<usize>> {
-        let composition = self.composition.as_ref()?;
-        let range = composition.ranges.get(composition.primary_index)?;
-        Some(
-            self.snapshot.byte_to_utf16_cu(range.start()).ok()?.get()
-                ..self.snapshot.byte_to_utf16_cu(range.end()).ok()?.get(),
-        )
-    }
-
-    fn text_for_utf16_range(&self, range: Range<usize>) -> Option<String> {
-        let start = self
-            .snapshot
-            .utf16_cu_to_byte(Utf16Offset::new(range.start))
-            .ok()?;
-        let end = self
-            .snapshot
-            .utf16_cu_to_byte(Utf16Offset::new(range.end))
-            .ok()?;
-        self.snapshot
-            .slice_byte_range(start, end)
-            .ok()
-            .map(|text| text.as_str().to_owned())
-    }
-}
-
 impl Editor {
+    /// 保存本帧输入布局，供输入法命中测试和编辑器内嵌输入使用。
+    pub(crate) fn set_input_layout(&mut self, layout: EditorInputLayout) {
+        self.input_layout = Some(layout);
+    }
+
     fn selection_for_utf16_range(&self, range: Range<usize>, cx: &App) -> Option<SelectionSet> {
         let snapshot = self.text_buffer(cx).read(cx).snapshot();
         let start = snapshot

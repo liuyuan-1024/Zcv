@@ -16,7 +16,7 @@ use zcv_actions::{OpenExcerpts, ToggleFold};
 use zcv_git::DiffHunkKind;
 use zcv_language::BracketPair;
 use zcv_multi_buffer::DiffHunkStaging;
-use zcv_text::{ByteOffset, Line, LogicalColumn, Position, TextRange};
+use zcv_text::{ByteOffset, Line, LogicalColumn, Position, Snapshot, TextRange};
 use zcv_theme::{color, space, typography};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon, drag_autoscroll_delta};
 
@@ -83,6 +83,9 @@ impl EditorElement {
             .on_action(cx.listener(Editor::handle_select_all))
             .on_action(cx.listener(Editor::handle_select_larger_syntax_node))
             .on_action(cx.listener(Editor::handle_select_smaller_syntax_node))
+            .on_action(cx.listener(Editor::handle_rename_local))
+            .on_action(cx.listener(Editor::handle_confirm_local_rename))
+            .on_action(cx.listener(Editor::handle_cancel_local_rename))
             .on_action(cx.listener(Editor::handle_backspace))
             .on_action(cx.listener(Editor::handle_delete))
             .on_action(cx.listener(Editor::handle_delete_to_previous_word_start))
@@ -135,6 +138,8 @@ struct LayoutBlock {
 }
 
 struct EditorLayout {
+    /// 编辑器元素在窗口中的原点；布局行使用窗口坐标，绝对定位的子元素使用元素内坐标。
+    element_origin: Point<Pixels>,
     lines: Vec<LayoutLine>,
     blocks: Vec<LayoutBlock>,
     gutter: Option<GutterLayout>,
@@ -157,6 +162,40 @@ impl EditorLayout {
         if let Some(gutter) = &mut self.gutter {
             for row in &mut gutter.rows {
                 row.origin += delta;
+            }
+        }
+    }
+
+    /// 为行内重命名插入一行临时显示空间，并把后续内容整体下移。
+    /// 输入框本身仍由 Editor 状态拥有，这里只调整本帧显示坐标。
+    fn insert_local_rename_row(&mut self, range: &Range<usize>) {
+        let Some(line_end) = line_end_offset(
+            self.display_snapshot.buffer_snapshot(),
+            ByteOffset::new(range.start),
+        ) else {
+            return;
+        };
+        let Ok(end_point) = self.display_snapshot.offset_to_display_point(line_end) else {
+            return;
+        };
+        let insertion_row = end_point.row().get();
+        for line in &mut self.lines {
+            if line.row.get() > insertion_row {
+                line.origin.y += self.line_height;
+            }
+        }
+        for block in &mut self.blocks {
+            if block.row.get() > insertion_row {
+                block.origin.y += self.line_height;
+            }
+        }
+        if let Some(gutter) = &mut self.gutter {
+            for row in &mut gutter.rows {
+                if self.lines.iter().any(|line| {
+                    line.logical_line == Some(row.logical_line) && line.row.get() > insertion_row
+                }) {
+                    row.origin.y += self.line_height;
+                }
             }
         }
     }
@@ -278,6 +317,34 @@ impl EditorInputLayout {
         Self {
             layout: Arc::clone(layout),
         }
+    }
+
+    pub(super) fn caret_position_for_offset(&self, offset: ByteOffset) -> Option<Point<Pixels>> {
+        let display_point = self
+            .layout
+            .display_snapshot
+            .offset_to_display_point(offset)
+            .ok()?;
+        let line = self
+            .layout
+            .lines
+            .iter()
+            .find(|line| line.row == display_point.row())?;
+        let local_byte =
+            local_byte_for_display_point(line, display_point, &self.layout.display_snapshot);
+        Some(point(
+            line.origin.x + line.shaped.x_for_index(local_byte) - self.layout.element_origin.x,
+            line.origin.y - self.layout.element_origin.y,
+        ))
+    }
+
+    pub(super) fn line_height(&self) -> Pixels {
+        self.layout.line_height
+    }
+
+    pub(super) fn line_end_position_for_offset(&self, offset: ByteOffset) -> Option<Point<Pixels>> {
+        let line_end = line_end_offset(self.layout.display_snapshot.buffer_snapshot(), offset)?;
+        self.caret_position_for_offset(line_end)
     }
 
     pub(super) fn utf16_index_for_point(&self, point: Point<Pixels>) -> Option<usize> {
@@ -1315,6 +1382,9 @@ impl Element for EditorElement {
             window,
             cx,
         );
+        if let Some(range) = self.editor.read(cx).local_rename_range() {
+            layout.insert_local_rename_row(&range);
+        }
         let mut ime_caret_bounds = layout_primary_caret(&selections, &layout, line_height);
         // 水平自动滚动：光标 x 进出视口时只平移本帧布局（水平滚动是均匀平移），不再整帧重排。
         let scrolled_horizontal = self.editor.update(cx, |editor, _| {
@@ -2042,8 +2112,9 @@ impl Element for EditorElement {
             }
         }
         let input_layout = EditorInputLayout::from_layout(&prepaint.layout);
-        self.editor.update(cx, |editor, _| {
+        self.editor.update(cx, |editor, cx| {
             editor.set_input_layout(input_layout);
+            editor.update_local_rename_geometry(cx);
             editor.set_ime_caret_geometry(bounds, prepaint.ime_caret_bounds);
         });
     }
@@ -2610,6 +2681,7 @@ fn layout_visible_lines(
                             highlight_styles: &highlight_styles,
                             search_backgrounds: &search_backgrounds,
                             marked_ranges: presentation.marked_ranges(),
+                            dimmed_ranges: presentation.dimmed_ranges(),
                         },
                         base.clone(),
                         window_for_row,
@@ -2646,6 +2718,12 @@ fn layout_visible_lines(
     }
 
     EditorLayout {
+        element_origin: point(
+            gutter_geometry
+                .as_ref()
+                .map_or(text_bounds.left(), |(bounds, _)| bounds.left()),
+            text_bounds.top(),
+        ),
         lines,
         blocks,
         gutter: gutter_geometry.map(|(bounds, dimensions)| GutterLayout {
@@ -3194,6 +3272,18 @@ fn local_byte_for_display_point(
         })
         .map_or(0, LogicalColumn::get);
     column_to_byte(&line.shaped.text, logical_column)
+}
+
+fn line_end_offset(snapshot: &Snapshot, offset: ByteOffset) -> Option<ByteOffset> {
+    let line = snapshot.byte_to_position(offset).ok()?.line();
+    if line.get() + 1 < snapshot.line_count() {
+        snapshot
+            .line_start_byte(Line::new(line.get() + 1))
+            .ok()
+            .map(|start| ByteOffset::new(start.get().saturating_sub(1)))
+    } else {
+        Some(ByteOffset::new(snapshot.len_bytes().get()))
+    }
 }
 
 fn column_to_byte(text: &str, column: usize) -> usize {

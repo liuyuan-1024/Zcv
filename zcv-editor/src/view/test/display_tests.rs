@@ -1051,6 +1051,7 @@ fn horizontal_windowing_clips_wide_rows_to_the_visible_window(cx: &mut TestAppCo
             highlight_styles: &[],
             search_backgrounds: &[],
             marked_ranges: &[],
+            dimmed_ranges: &[],
         };
         let window = Some((200usize, 500usize));
         let row0 = crate::display_map::render_viewport_row(

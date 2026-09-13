@@ -56,6 +56,8 @@ pub(crate) struct Chunk<'a> {
     pub(crate) background: Option<gpui::Rgba>,
     /// 选区标记（下划线渲染）。
     pub(crate) marked: bool,
+    /// 局部重命名期间淡化原名称及其引用。
+    pub(crate) dimmed: bool,
 }
 
 impl<'a> Chunk<'a> {
@@ -266,6 +268,8 @@ pub(crate) struct LineStyles<'a> {
     /// 背景覆盖层：命中区间优先于语法 style 的背景色。
     pub(crate) backgrounds: &'a [(Range<usize>, gpui::Rgba)],
     pub(crate) marked: &'a [TextRange],
+    /// 局部重命名期间需要淡化的文本范围。
+    pub(crate) dimmed: &'a [Range<usize>],
 }
 
 pub(crate) struct ViewportChunkSource<'a> {
@@ -283,6 +287,7 @@ struct ChunkStyle {
     /// 背景覆盖层命中色（搜索高亮等；优先于 style 的背景）。
     background: Option<gpui::Rgba>,
     marked: bool,
+    dimmed: bool,
 }
 
 /// 样式变换：输入只能是 `TextChunks` 产生的安全 chunk，输出也只能在输入 chunk 的字符位图边界处分段。
@@ -375,6 +380,18 @@ impl<'a, 'b> StyledChunks<'a, 'b> {
                     .min(self.original_len);
                 range_start < original_range.end && range_end > original_range.start
             });
+        let dimmed = !is_inlay
+            && self.styles.dimmed.iter().any(|range| {
+                let range_start = range
+                    .start
+                    .saturating_sub(self.global_byte_start)
+                    .min(self.original_len);
+                let range_end = range
+                    .end
+                    .saturating_sub(self.global_byte_start)
+                    .min(self.original_len);
+                range_start < original_range.end && range_end > original_range.start
+            });
         // 背景覆盖层（搜索高亮）：仅当段完全位于命中区间内才着色。
         // 段与区间部分相交时返回 None，使 StyledChunks 的样式切分扫描在区间边界处切分出精确的子段，避免整段着色吞掉区间外的相邻字符（如紧邻的引号）。
         let background = (!is_inlay)
@@ -397,6 +414,7 @@ impl<'a, 'b> StyledChunks<'a, 'b> {
             style,
             background,
             marked,
+            dimmed,
         })
     }
 }
@@ -435,6 +453,7 @@ impl<'a> Iterator for StyledChunks<'a, '_> {
             head.style = chunk_style.style;
             head.background = chunk_style.background;
             head.marked = chunk_style.marked;
+            head.dimmed = chunk_style.dimmed;
             return Some(head);
         }
     }
@@ -639,6 +658,7 @@ pub(crate) struct RowStyleInput<'a> {
     pub(crate) highlight_styles: &'a [HighlightStyle],
     pub(crate) search_backgrounds: &'a [(Range<usize>, gpui::Rgba)],
     pub(crate) marked_ranges: &'a [TextRange],
+    pub(crate) dimmed_ranges: &'a [Range<usize>],
 }
 
 /// 渲染一行视口行。
@@ -677,6 +697,7 @@ pub(crate) fn render_viewport_row(
         styles: style_input.highlight_styles,
         backgrounds: style_input.search_backgrounds,
         marked: style_input.marked_ranges,
+        dimmed: style_input.dimmed_ranges,
     };
     let tab_width = display_snapshot.buffer_snapshot().config().tab.tab_width();
     // 超长行预算：chunk 合成在渲染上限处提前停止（clip_chunks_to_len 之前），避免兆字节单行先合成整行 chunk 再被裁剪。
@@ -862,6 +883,9 @@ fn chunks_to_runs(chunks: &[Chunk<'_>], base: gpui::TextRun) -> Vec<gpui::TextRu
                     wavy: false,
                 });
             }
+            if chunk.dimmed {
+                run.color.a *= 0.4;
+            }
             run
         })
         .collect()
@@ -972,6 +996,7 @@ mod tests {
                 }],
                 styles: &[style],
                 marked: &[],
+                dimmed: &[],
             },
             0..text.len(),
         );
@@ -1042,6 +1067,7 @@ mod tests {
                 }],
                 styles: &[style],
                 marked: &[],
+                dimmed: &[],
             },
             0..5,
         );
@@ -1068,6 +1094,7 @@ mod tests {
                 spans: &[],
                 styles: &[],
                 marked: &[TextRange::new(ByteOffset::new(2), ByteOffset::new(4)).unwrap()],
+                dimmed: &[],
             },
             0..6,
         );
@@ -1092,6 +1119,7 @@ mod tests {
                 spans: &[],
                 styles: &[],
                 marked: &[TextRange::new(ByteOffset::new(1), ByteOffset::new(7)).unwrap()],
+                dimmed: &[],
             },
             0..text.len(),
         );
@@ -1112,6 +1140,40 @@ mod tests {
         assert!(runs[0].underline.is_none());
         assert!(runs[1].underline.is_some());
         assert!(runs[2].underline.is_none());
+    }
+
+    #[test]
+    fn chunks_to_runs_fades_dimmed_ranges() {
+        let text = "abc";
+        let line = render_line_chunks(
+            text,
+            4,
+            0,
+            &[],
+            LineStyles {
+                spans: &[],
+                styles: &[],
+                backgrounds: &[],
+                marked: &[],
+                dimmed: &[1..2],
+            },
+            0..text.len(),
+        );
+        let runs = chunks_to_runs(
+            &line.chunks,
+            gpui::TextRun {
+                len: 0,
+                font: gpui::font("Helvetica"),
+                color: gpui::white(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            },
+        );
+
+        assert_eq!(runs.len(), 3);
+        assert!(runs[1].color.a < runs[0].color.a);
+        assert_eq!(runs[2].color.a, runs[0].color.a);
     }
 
     #[test]
@@ -1186,6 +1248,7 @@ mod tests {
                 }],
                 styles: &[style],
                 marked: &[],
+                dimmed: &[],
             },
             0..8,
         );
@@ -1217,6 +1280,7 @@ mod tests {
                 }],
                 styles: &[style],
                 marked: &[],
+                dimmed: &[],
             },
             0..3,
         );
@@ -1245,6 +1309,7 @@ mod backgrounds_layer_tests {
                 styles: &[],
                 backgrounds: &[(0..3, rgba(0x74ade83d)), (4..7, rgba(0x74ade8b3))],
                 marked: &[],
+                dimmed: &[],
             },
             0..text.len(),
         );
@@ -1271,6 +1336,7 @@ mod backgrounds_layer_tests {
                 styles: &[],
                 backgrounds: &[(1..4, rgba(0x74ade83d))],
                 marked: &[],
+                dimmed: &[],
             },
             0..text.len(),
         );

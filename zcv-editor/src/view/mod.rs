@@ -48,10 +48,13 @@ use super::selection::{
 };
 
 mod diff;
+mod presentation;
+mod rename;
 mod search;
 mod syntax;
 
-pub use syntax::LocalRenameError;
+pub use rename::LocalRenameError;
+use rename::LocalRenameState;
 
 pub(crate) use diff::{
     HunkRendering, diff_row_for_row, editor_hunk_part_rendering, editor_hunk_rendering,
@@ -237,6 +240,8 @@ pub struct Editor {
     /// 在 `sync_display_map` 中与 `display_map.sync` 同时更新。
     multi_snapshot: MultiBufferSnapshot,
     mode: EditorMode,
+    /// 单行嵌入编辑器是否跟随代码编辑器的内容排版。
+    content_typography: bool,
     /// 空 buffer 时显示的提示文本（如提交信息编辑器的"输入提交信息…"）。
     /// 独立 DisplayMap 承载（placeholder 走真实渲染管线，折行/行高一致）。
     placeholder_display_map: Option<DisplayMap>,
@@ -282,6 +287,8 @@ pub struct Editor {
     mouse_select_mode: MouseSelectMode,
     /// 正在进行的鼠标选区手势；普通选区变更会终止它。
     pending_selection: Option<PendingSelection>,
+    /// 当前文件内局部绑定的行内重命名输入会话。
+    local_rename: Option<LocalRenameState>,
     /// 自动补全的闭合符标记（输入闭合符时跳过、退格删除整对的数据源）。
     /// 随每次编辑经 PositionMap 推进；区域版本与当前快照失配（未跟踪的外部编辑）时整体失效。
     autoclose_regions: Vec<AutocloseRegion>,
@@ -320,6 +327,13 @@ impl Editor {
         let buffer = cx.new(|_| buffer);
         let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, None, cx));
         Self::from_language_buffer(language_buffer, EditorMode::SingleLine, cx)
+    }
+
+    /// 创建使用内容排版的单行编辑器；用于嵌入代码编辑器的单行编辑场景。
+    pub(crate) fn single_line_with_content_typography(cx: &mut Context<Self>) -> Self {
+        let mut editor = Self::single_line(cx);
+        editor.content_typography = true;
+        editor
     }
 
     pub fn auto_height(min_lines: usize, max_lines: Option<usize>, cx: &mut Context<Self>) -> Self {
@@ -989,6 +1003,7 @@ impl Editor {
             self.display_map.buffer_snapshot(),
             self.composition.as_ref(),
         )
+        .with_dimmed_ranges(self.local_rename_ranges())
     }
 
     pub(super) fn shows_gutter(&self) -> bool {
@@ -1106,10 +1121,6 @@ impl Editor {
         self.composition = None;
         self.set_selections(SelectionSet::new(vec![selection]));
         self.request_autoscroll();
-    }
-
-    pub(super) fn set_input_layout(&mut self, layout: EditorInputLayout) {
-        self.input_layout = Some(layout);
     }
 
     /// 鼠标左键按下：按点击次数开始选区手势，并记录拖拽起点。
@@ -1467,6 +1478,7 @@ impl Editor {
             display_map,
             multi_snapshot: snapshot.clone(),
             mode,
+            content_typography: false,
             placeholder_display_map: None,
             selections: EditorSelections::from_selection_set(&snapshot, &SelectionSet::default()),
             selection_history: SelectionHistory::default(),
@@ -1494,6 +1506,7 @@ impl Editor {
             hovered_diff_hunk: None,
             mouse_select_mode: MouseSelectMode::Character,
             pending_selection: None,
+            local_rename: None,
             autoclose_regions: Vec::new(),
             line_width_cache: None,
             content_toolbar: None,
@@ -1575,6 +1588,7 @@ impl Editor {
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut Buffer) -> TextResult<T>,
     ) -> TextResult<(Option<TransactionId>, T, ProjectionRemap)> {
+        let operation = metadata.description().unwrap_or("编辑").to_owned();
         let session_id = self.start_transaction(cx)?;
         let projection_snapshot = self.text_buffer(cx).read(cx).snapshot();
         let projection_text = projection_snapshot
@@ -1590,7 +1604,7 @@ impl Editor {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.end_transaction(cx);
-                cx.emit(EditorEvent::Error(format!("编辑事务失败：{error:#}")));
+                cx.emit(EditorEvent::Error(format!("{operation}失败：{error:#}")));
                 let restored =
                     EditorSelections::from_selection_set(&self.multi_snapshot, &before_selections);
                 self.selections = restored;
@@ -1621,7 +1635,7 @@ impl Editor {
             Ok(remap) => remap,
             Err(error) => {
                 self.end_transaction(cx);
-                cx.emit(EditorEvent::Error(format!("编辑事务失败：{error:#}")));
+                cx.emit(EditorEvent::Error(format!("{operation}失败：{error:#}")));
                 let restored =
                     EditorSelections::from_selection_set(&self.multi_snapshot, &before_selections);
                 self.selections = restored;
@@ -2468,19 +2482,22 @@ impl Render for Editor {
 
         self.sync_display_map(cx);
 
-        // SingleLine / AutoHeight 用于搜索框等 UI 场景，应使用 UI 字号而非内容字号。
-        let (font, text_size, line_height) = match self.mode {
-            EditorMode::SingleLine | EditorMode::AutoHeight { .. } => (
-                typography::ui_font(),
-                typography::ui_size(),
-                typography::ui_line(),
-            ),
-            EditorMode::Full => (
-                typography::content_font(),
-                typography::content_size(),
-                typography::content_line(),
-            ),
-        };
+        // 普通 SingleLine / AutoHeight 用于搜索框等 UI 场景，应使用 UI 排版；
+        // 嵌入代码编辑器的单行输入（如重命名）显式跟随内容排版。
+        let (font, text_size, line_height) =
+            if self.mode == EditorMode::Full || self.content_typography {
+                (
+                    typography::content_font(),
+                    typography::content_size(),
+                    typography::content_line(),
+                )
+            } else {
+                (
+                    typography::ui_font(),
+                    typography::ui_size(),
+                    typography::ui_line(),
+                )
+            };
         let visible_lines = match self.mode {
             EditorMode::SingleLine => Some(1),
             EditorMode::AutoHeight {
@@ -2493,6 +2510,8 @@ impl Render for Editor {
             EditorMode::Full => None,
         };
 
+        let local_rename = self.local_rename_overlay();
+        let colors = *color::current(cx);
         EditorElement::register_actions(
             div()
                 .track_focus(&self.focus)
@@ -2508,10 +2527,27 @@ impl Render for Editor {
                 .font(font)
                 .text_size(text_size)
                 .line_height(line_height)
-                .text_color(color::current(cx).text),
+                .text_color(colors.text)
+                .relative(),
             cx,
         )
         .child(EditorElement::new(cx.entity()))
+        .when_some(
+            local_rename,
+            |element, (input, position, width, line_height)| {
+                element.child(
+                    div()
+                        .absolute()
+                        .left(position.x)
+                        .top(position.y)
+                        .w(width)
+                        .h(line_height)
+                        .p(gpui::px(0.))
+                        .rounded_sm()
+                        .child(input),
+                )
+            },
+        )
         .into_any_element()
     }
 }
@@ -2534,7 +2570,8 @@ mod input;
 use editing::touched_lines;
 use input::AutocloseRegion;
 /// 输入法组合会话与展示快照（element 渲染 marked ranges 用）。
-pub(super) use input::{EditorComposition, EditorPresentation};
+pub(super) use input::EditorComposition;
+pub(super) use presentation::EditorPresentation;
 
 #[cfg(test)]
 #[path = "test/common.rs"]

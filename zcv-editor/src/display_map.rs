@@ -1054,6 +1054,46 @@ mod tests {
     }
 
     #[gpui::test]
+    fn soft_wrap_mixed_commit_message_rows_fit_the_shaped_width(cx: &mut TestAppContext) {
+        let message = "修复 SVG 与 Markdown 公式预览的缩放、居中、清晰度、颜色及边界裁剪问题";
+        let width = px(420.);
+        let map = wrap_map(message, 420., cx);
+        let snapshot = map.snapshot();
+        let viewport = snapshot
+            .slice_viewport(DisplayRow::ZERO, snapshot.line_count())
+            .expect("应读取提交信息的完整软换行视口");
+        let text_system = gpui::WindowTextSystem::new(cx.text_system().clone());
+        let font = font("Helvetica");
+        let run = gpui::TextRun {
+            len: message.len(),
+            font,
+            ..Default::default()
+        };
+
+        for row in viewport.rows() {
+            let WrapViewportRowKind::Text {
+                text,
+                byte_range,
+                indent,
+                ..
+            } = row.kind();
+            let mut rendered = " ".repeat(*indent);
+            rendered.push_str(&text.as_ref()[byte_range.clone()]);
+            let run = gpui::TextRun {
+                len: rendered.len(),
+                font: run.font.clone(),
+                ..run.clone()
+            };
+            let shaped = text_system.shape_line(rendered.into(), px(16.), &[run], None);
+            assert!(
+                shaped.width() <= width,
+                "提交信息软换行行宽不能超过统一布局宽度：width={width:?}, shaped={:?}",
+                shaped.width()
+            );
+        }
+    }
+
+    #[gpui::test]
     fn soft_wrap_without_leading_whitespace_has_zero_indent(cx: &mut TestAppContext) {
         let map = wrap_map("aa bbb cccc ddddd eeee\nshort", 72., cx);
         let snapshot = map.snapshot();

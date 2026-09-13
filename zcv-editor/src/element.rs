@@ -2431,7 +2431,8 @@ fn wrap_edge_safety(soft_wrap: SoftWrap, em_advance: Pixels) -> Pixels {
     if soft_wrap == SoftWrap::None {
         Pixels::ZERO
     } else {
-        em_advance.max(CARET_WIDTH)
+        // 软换行行尾保留一个字符宽度，并额外容纳光标，避免字形贴住裁剪边界。
+        em_advance.max(CARET_WIDTH) + CARET_WIDTH
     }
 }
 
@@ -3631,6 +3632,7 @@ mod tests {
                 for text in [
                     "新增 Zcv 架构维护技能并整合可见性清理、架构体检与架构减法流程",
                     "补全各语言的括号、缩进、折叠与注入查询文件",
+                    "修复 SVG 与 Markdown 公式预览的缩放、居中、清晰度、颜色及边界裁剪问题",
                 ] {
                     let snapshot = Buffer::scratch(text.to_owned(), BufferConfig::default())
                         .expect("测试 Buffer 应能创建")
@@ -3671,8 +3673,8 @@ mod tests {
                             assert_eq!(
                                 rows,
                                 [
-                                    "新增 Zcv 架构维护技能并整合可见性清理、",
-                                    "架构体检与架构减法流程",
+                                    "新增 Zcv 架构维护技能并整合可见性清理",
+                                    "、架构体检与架构减法流程",
                                 ]
                             );
                         }

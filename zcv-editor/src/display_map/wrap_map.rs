@@ -1,7 +1,7 @@
 //! DisplayMap 的软换行（soft wrap）层。
 //!
 //! WrapMap 在 TabMap 之上，把超过指定像素宽度的逻辑行拆成多个显示行。
-//! 换行点由 gpui 的 LineWrapper 计算（算法：词边界优先、长词硬断、首行缩进继承）。
+//! 换行点由文本系统对展开后的整行文本进行 shaping，再按词边界优先、长词硬断和首行缩进继承规则计算。
 //! 续行的视觉缩进是一段"假空格"，作为显示文本的前缀参与布局、命中测试与坐标换算，因此渲染端无需为续行做任何特殊定位。
 //!
 //! 与 FoldMap 一样，WrapMap 用 `SumTree<Transform>` 维护"输入 tab 行 → 输出显示行"的拓扑：Isomorphic 段把连续不换行行合并，Wrap 段把单个宽行拆成 `wrap_points.len() + 1` 个显示行。
@@ -10,7 +10,7 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use gpui::{Font, LineFragment, LineWrapper, Pixels, TextSystem};
+use gpui::{Font, Pixels, TextRun, TextSystem, WindowTextSystem};
 use sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use unicode_segmentation::UnicodeSegmentation;
 use zcv_text::{ByteOffset, CoordinateError, Line, LogicalColumn, Position, Snapshot, TextRange};
@@ -28,7 +28,7 @@ use super::{DisplayPoint, DisplayRow};
 /// 换行点：行内容（已剥 `\r\n`）内的半开字节分界与下一续行的假空格数。
 ///
 /// 显示行 i 的文本是 `content[prev_ix..ix]`，其中 `prev_ix` 是前一个换行点（首段为 0）；
-/// 显示行 i + 1 以 `indent` 个假空格开头（与 gpui `Boundary` 一一对应）。
+/// 显示行 i + 1 以 `indent` 个假空格开头。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct WrapPointInfo {
     byte_ix: usize,
@@ -742,9 +742,10 @@ pub(super) struct WrapMap {
     snapshot: WrapSnapshot,
     wrap_width: Option<Pixels>,
     font_with_size: Option<(Font, Pixels)>,
-    /// 由 `set_wrap_width` 缓存；重排时创建 LineWrapper 用（LineWrapper 只能从
-    /// text system 的池里获取，而 sync 发生在 buffer 编辑时拿不到 window）。
+    /// 由 `set_wrap_width` 缓存；重排时使用同一个 text system 做整行 shaping。
     text_system: Option<Arc<TextSystem>>,
+    /// 换行阶段的整行 shaping 缓存；与文本系统共享字体资源，但独立于窗口布局生命周期。
+    window_text_system: Option<Arc<WindowTextSystem>>,
 }
 
 impl std::fmt::Debug for WrapMap {
@@ -773,6 +774,7 @@ impl WrapMap {
                 wrap_width: None,
                 font_with_size: None,
                 text_system: None,
+                window_text_system: None,
             },
             snapshot,
         )
@@ -789,23 +791,16 @@ impl WrapMap {
             return;
         }
         self.snapshot.tab_snapshot = tab_snapshot;
-        if let (Some(wrap_width), Some((font, font_size))) =
-            (self.wrap_width, self.font_with_size.as_ref())
-        {
-            let text_system = self
-                .text_system
-                .as_ref()
-                .expect("换行开启时必须先通过 set_wrap_width 缓存 text system");
-            let mut wrapper = text_system.line_wrapper(font.clone(), *font_size);
+        if let Some(wrap_width) = self.wrap_width {
             // 行内提示变化由 fold 发 structural edit（单一信号）。
             if fold_edits.iter().any(FoldEdit::is_structural) {
-                self.rewrap_all(wrap_width, &mut wrapper);
+                self.rewrap_all(wrap_width);
             } else {
                 let changed_lines: Vec<Line> = fold_edits
                     .iter()
                     .flat_map(|edit| edit.changed_lines().iter().copied())
                     .collect();
-                self.update_inline(&changed_lines, wrap_width, &mut wrapper);
+                self.update_inline(&changed_lines, wrap_width);
             }
         } else {
             self.set_isomorphic_all();
@@ -831,23 +826,29 @@ impl WrapMap {
                     *cached_font != font || *cached_size != font_size
                 });
         let needs_rewrap = width_changed || (font_changed && wrap_width.is_some());
+        let text_system_changed = self
+            .text_system
+            .as_ref()
+            .is_none_or(|cached| !Arc::ptr_eq(cached, &text_system));
+        if text_system_changed {
+            self.window_text_system = Some(Arc::new(WindowTextSystem::new(text_system.clone())));
+        }
         self.text_system = Some(text_system);
         if !needs_rewrap {
             return false;
         }
+        self.wrap_width = wrap_width;
+        self.font_with_size = Some((font, font_size));
         match wrap_width {
             None => self.set_isomorphic_all(),
             Some(width) => {
-                let text_system = self
+                let _ = self
                     .text_system
                     .as_ref()
                     .expect("设置换行宽度时必须提供 text system");
-                let mut wrapper = text_system.line_wrapper(font.clone(), font_size);
-                self.rewrap_all(width, &mut wrapper);
+                self.rewrap_all(width);
             }
         }
-        self.wrap_width = wrap_width;
-        self.font_with_size = Some((font, font_size));
         self.snapshot.version += 1;
         true
     }
@@ -859,10 +860,10 @@ impl WrapMap {
     }
 
     /// 全量重建：对每个 tab 行重新计算换行点。
-    fn rewrap_all(&mut self, wrap_width: Pixels, wrapper: &mut LineWrapper) {
+    fn rewrap_all(&mut self, wrap_width: Pixels) {
         let mut transforms = Vec::new();
         for tab_row in 0..self.snapshot.tab_snapshot.line_count() {
-            self.push_wrap_transform(&mut transforms, tab_row, wrap_width, wrapper);
+            self.push_wrap_transform(&mut transforms, tab_row, wrap_width);
         }
         self.snapshot.transforms = SumTree::from_iter(transforms, ());
         self.snapshot.wrapped = true;
@@ -870,12 +871,7 @@ impl WrapMap {
     }
 
     /// 行级增量：只重排 changed_lines 对应的 tab 行，其余段落原样保留。
-    fn update_inline(
-        &mut self,
-        changed_lines: &[Line],
-        wrap_width: Pixels,
-        wrapper: &mut LineWrapper,
-    ) {
+    fn update_inline(&mut self, changed_lines: &[Line], wrap_width: Pixels) {
         let fold = self.snapshot.tab_snapshot.fold_snapshot();
         let mut rows: Vec<usize> = changed_lines
             .iter()
@@ -914,7 +910,7 @@ impl WrapMap {
                 let changed_start = edit.start.max(position);
                 let changed_end = edit.end.min(input_end);
                 for tab_row in changed_start..changed_end {
-                    self.push_wrap_transform(&mut new_transforms, tab_row, wrap_width, wrapper);
+                    self.push_wrap_transform(&mut new_transforms, tab_row, wrap_width);
                 }
                 position = changed_end;
                 if edit.end <= input_end {
@@ -937,7 +933,6 @@ impl WrapMap {
         transforms: &mut Vec<Transform>,
         tab_row: usize,
         wrap_width: Pixels,
-        wrapper: &mut LineWrapper,
     ) {
         match self.snapshot.projected_kind(tab_row) {
             Err(_) => push_isomorphic(transforms, 1),
@@ -949,26 +944,107 @@ impl WrapMap {
                     .line_text(Line::new(tab_row))
                     .expect("可见行必须可解析");
                 let content = line_content(text.as_ref());
-                let boundaries: Vec<_> = wrapper
-                    .wrap_line(&[LineFragment::text(content)], wrap_width)
-                    .collect();
+                let boundaries = self.wrap_points(content, wrap_width);
                 if boundaries.is_empty() {
                     push_isomorphic(transforms, 1);
                 } else {
                     transforms.push(Transform {
                         kind: TransformKind::Wrap,
                         input_lines: 1,
-                        wrap_points: boundaries
-                            .iter()
-                            .map(|boundary| WrapPointInfo {
-                                byte_ix: boundary.ix,
-                                indent: boundary.next_indent,
-                            })
-                            .collect(),
+                        wrap_points: boundaries.to_vec(),
                     });
                 }
             }
         }
+    }
+
+    /// 使用最终字形位置计算换行点，避免字符宽度估算与渲染 shaping 使用两套标准。
+    fn wrap_points(&self, content: &str, wrap_width: Pixels) -> Vec<WrapPointInfo> {
+        let window_text_system = self
+            .window_text_system
+            .as_ref()
+            .expect("换行开启时必须先通过 set_wrap_width 缓存 shaping 系统");
+        let (font, font_size) = self
+            .font_with_size
+            .as_ref()
+            .expect("换行开启时必须先通过 set_wrap_width 缓存字体");
+        let prepared = PreparedWrapText::new(
+            content,
+            self.snapshot
+                .tab_snapshot
+                .buffer_snapshot()
+                .config()
+                .tab
+                .tab_width(),
+        );
+        if prepared.chars.is_empty() {
+            return Vec::new();
+        }
+        let run = TextRun {
+            len: prepared.text.len(),
+            font: font.clone(),
+            ..Default::default()
+        };
+        let shaped =
+            window_text_system.shape_line(prepared.text.clone().into(), *font_size, &[run], None);
+
+        let mut points = Vec::new();
+        let mut first_non_whitespace = None;
+        let mut indent = None;
+        let mut indent_width = Pixels::ZERO;
+        let mut last_candidate = None;
+        let mut last_wrap = 0usize;
+        let mut line_start = 0usize;
+        let mut previous = '\0';
+
+        for character in &prepared.chars {
+            if is_word_char(character.ch) {
+                if previous == ' ' && character.ch != ' ' && first_non_whitespace.is_some() {
+                    last_candidate = Some(character.raw_start);
+                }
+            } else if character.ch != ' ' && first_non_whitespace.is_some() {
+                last_candidate = Some(character.raw_start);
+            }
+
+            if character.ch != ' ' && first_non_whitespace.is_none() {
+                first_non_whitespace = Some(character.raw_start);
+            }
+
+            let line_width = shaped.x_for_index(character.expanded_end)
+                - shaped.x_for_index(line_start)
+                + if last_wrap > 0 {
+                    indent_width
+                } else {
+                    Pixels::ZERO
+                };
+            if line_width > wrap_width && character.raw_start > last_wrap {
+                if indent.is_none()
+                    && let Some(first_non_whitespace) = first_non_whitespace
+                {
+                    let indent_columns = content[..first_non_whitespace]
+                        .chars()
+                        .count()
+                        .min(gpui::LineWrapper::MAX_INDENT as usize);
+                    indent = Some(indent_columns);
+                    indent_width =
+                        shaped_space_width(window_text_system, font, *font_size, indent_columns);
+                }
+
+                let boundary = last_candidate
+                    .filter(|candidate| *candidate > last_wrap)
+                    .unwrap_or(character.raw_start);
+                points.push(WrapPointInfo {
+                    byte_ix: boundary,
+                    indent: indent.unwrap_or(0) as u32,
+                });
+                last_wrap = boundary;
+                line_start = prepared.expanded_start(boundary);
+                last_candidate = None;
+            }
+            previous = character.ch;
+        }
+
+        points
     }
 
     fn check_invariants(&self) {
@@ -987,6 +1063,107 @@ impl WrapMap {
             }
         }
     }
+}
+
+#[derive(Debug)]
+struct PreparedWrapChar {
+    ch: char,
+    raw_start: usize,
+    expanded_start: usize,
+    expanded_end: usize,
+}
+
+/// 把 tab 按渲染端的列规则展开，并保留投影文本到塑形文本的边界映射。
+#[derive(Debug)]
+struct PreparedWrapText {
+    text: String,
+    chars: Vec<PreparedWrapChar>,
+}
+
+impl PreparedWrapText {
+    fn new(content: &str, tab_width: usize) -> Self {
+        let mut text = String::with_capacity(content.len());
+        let mut chars = Vec::with_capacity(content.chars().count());
+        let mut column = 0usize;
+        for (raw_start, ch) in content.char_indices() {
+            let expanded_start = text.len();
+            if ch == '\t' {
+                let width = tab_width - column % tab_width;
+                text.extend(std::iter::repeat_n(' ', width));
+                column += width;
+            } else {
+                text.push(ch);
+                column += 1;
+            }
+            chars.push(PreparedWrapChar {
+                ch,
+                raw_start,
+                expanded_start,
+                expanded_end: text.len(),
+            });
+        }
+        Self { text, chars }
+    }
+
+    fn expanded_start(&self, raw_start: usize) -> usize {
+        self.chars
+            .iter()
+            .find(|character| character.raw_start == raw_start)
+            .map_or(self.text.len(), |character| character.expanded_start)
+    }
+}
+
+fn shaped_space_width(
+    text_system: &WindowTextSystem,
+    font: &Font,
+    font_size: Pixels,
+    count: usize,
+) -> Pixels {
+    if count == 0 {
+        return Pixels::ZERO;
+    }
+    let text = " ".repeat(count);
+    let run = TextRun {
+        len: text.len(),
+        font: font.clone(),
+        ..Default::default()
+    };
+    text_system
+        .shape_line(text.into(), font_size, &[run], None)
+        .width()
+}
+
+/// 与 GPUI LineWrapper 保持一致的断词分类；宽度判断由本模块的整行 shaping 提供。
+fn is_word_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric()
+        || matches!(ch, '\u{00C0}'..='\u{00FF}')
+        || matches!(ch, '\u{0100}'..='\u{017F}')
+        || matches!(ch, '\u{0180}'..='\u{024F}')
+        || matches!(ch, '\u{0400}'..='\u{04FF}')
+        || matches!(ch, '\u{1E00}'..='\u{1EFF}')
+        || matches!(ch, '\u{0300}'..='\u{036F}')
+        || matches!(ch, '\u{0980}'..='\u{09FF}')
+        || matches!(
+            ch,
+            '-' | '_'
+                | '.'
+                | '\''
+                | '’'
+                | '‘'
+                | '$'
+                | '%'
+                | '@'
+                | '#'
+                | '^'
+                | '~'
+                | ','
+                | '='
+                | ':'
+                | ';'
+        )
+        || matches!(ch, '!' | ')' | ']' | '}' | '"' | '”' | '»' | '…')
+        || matches!(ch, '⋯')
+        || matches!(ch, '\u{202F}' | '\u{00A0}' | '\u{2011}')
 }
 
 /// 片段 k 的行内容字节区间；行内容总长剥掉 `\r\n`。

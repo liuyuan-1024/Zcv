@@ -9,7 +9,7 @@ Zcv 是一个以本地编辑体验为核心的代码编辑器，使用 Rust 与 
 - 本地项目、文本编辑、文件搜索、Git 变更、终端与预览。
 - 语法能力基于 Tree-sitter 与 `.scm` 查询文件。
 - 当前不引入实时协作、远程开发或 LSP 基础设施。
-- macOS 自动更新当前只支持 Apple Silicon。
+- 自动更新支持 macOS Apple Silicon 与 Windows x86_64（更新包由签名清单校验）。
 
 ## 架构入口
 

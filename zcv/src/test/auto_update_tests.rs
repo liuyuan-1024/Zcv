@@ -4,8 +4,22 @@ use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::TcpListener;
 
 #[test]
-fn platform_key_is_apple_silicon_only() {
-    assert!(matches!(platform_key(), Ok("macos-aarch64")));
+fn platform_key_supports_macos_and_windows() {
+    if let Ok(actual) = platform_key() {
+        assert_eq!(
+            actual,
+            platform_key_for(std::env::consts::OS, std::env::consts::ARCH).unwrap()
+        );
+    }
+    assert_eq!(
+        platform_key_for("windows", "x86_64").unwrap(),
+        "windows-x86_64"
+    );
+    assert_eq!(
+        platform_key_for("windows", "aarch64").unwrap(),
+        "windows-aarch64"
+    );
+    assert!(platform_key_for("windows", "x86").is_err());
 }
 
 #[test]

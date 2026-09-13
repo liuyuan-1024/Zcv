@@ -8,14 +8,26 @@ fn manifest(version: &str) -> ReleaseManifest {
         channel: STABLE_CHANNEL.to_owned(),
         version: version.parse().unwrap(),
         published_at: "2026-08-29T00:00:00Z".to_owned(),
-        assets: BTreeMap::from([(
-            "macos-aarch64".to_owned(),
-            ReleaseAsset {
-                url: "https://github.com/liuyuan-1024/Zcv/releases/download/v1/Zcv.zip".to_owned(),
-                size: 10,
-                sha256: "00".repeat(32),
-            },
-        )]),
+        assets: BTreeMap::from([
+            (
+                "macos-aarch64".to_owned(),
+                ReleaseAsset {
+                    url: "https://github.com/liuyuan-1024/Zcv/releases/download/v1/Zcv.zip"
+                        .to_owned(),
+                    size: 10,
+                    sha256: "00".repeat(32),
+                },
+            ),
+            (
+                "windows-x86_64".to_owned(),
+                ReleaseAsset {
+                    url: "https://github.com/liuyuan-1024/Zcv/releases/download/v1/Zcv.exe.zip"
+                        .to_owned(),
+                    size: 10,
+                    sha256: "00".repeat(32),
+                },
+            ),
+        ]),
     }
 }
 
@@ -57,28 +69,56 @@ fn only_newer_matching_platform_release_is_selected() {
             .select_newer_release(&"1.0.0".parse().unwrap(), "macos-x86_64")
             .is_err()
     );
+    assert!(
+        manifest("1.1.0")
+            .select_newer_release(&"1.0.0".parse().unwrap(), "windows-x86_64")
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[test]
 fn archive_paths_must_stay_inside_expected_bundle() {
-    assert!(validate_archive_entry_path("Zcv.app/Contents/MacOS/Zcv").is_ok());
-    assert!(validate_archive_entry_path("__MACOSX/._Zcv.app").is_ok());
-    assert!(validate_archive_entry_path("__MACOSX/Zcv.app/._Zcv").is_ok());
-    assert!(validate_archive_entry_path("../Zcv.app").is_err());
-    assert!(validate_archive_entry_path("/Applications/Zcv.app").is_err());
-    assert!(validate_archive_entry_path("other/Zcv.app").is_err());
-    assert!(validate_archive_entry_path("Zcv.app\\..\\evil").is_err());
+    #[cfg(target_os = "macos")]
+    {
+        assert!(validate_archive_entry_path("Zcv.app/Contents/MacOS/Zcv").is_ok());
+        assert!(validate_archive_entry_path("__MACOSX/._Zcv.app").is_ok());
+        assert!(validate_archive_entry_path("__MACOSX/Zcv.app/._Zcv").is_ok());
+        assert!(validate_archive_entry_path("../Zcv.app").is_err());
+        assert!(validate_archive_entry_path("/Applications/Zcv.app").is_err());
+        assert!(validate_archive_entry_path("other/Zcv.app").is_err());
+        assert!(validate_archive_entry_path("Zcv.app\\..\\evil").is_err());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        assert!(validate_archive_entry_path("Zcv/Zcv.exe").is_ok());
+        assert!(validate_archive_entry_path("../Zcv").is_err());
+        assert!(validate_archive_entry_path("/Program Files/Zcv").is_err());
+        assert!(validate_archive_entry_path("other/Zcv").is_err());
+        assert!(validate_archive_entry_path("Zcv\\..\\evil").is_err());
+        assert!(validate_archive_entry_path("__MACOSX/._Zcv.app").is_err());
+    }
 }
 
 #[test]
 fn transaction_requires_an_upgrade_and_exact_bundle_path() {
     let result = tempfile::tempdir().unwrap();
+    let install_path = if cfg!(target_os = "macos") {
+        PathBuf::from("/Applications/Zcv.app")
+    } else {
+        PathBuf::from("/Program Files/Zcv")
+    };
+    let staged_path = if cfg!(target_os = "macos") {
+        PathBuf::from("/tmp/Zcv.app")
+    } else {
+        PathBuf::from("/tmp/Zcv")
+    };
     assert!(
         UpdateTransaction::new(
             "1.0.0".parse().unwrap(),
             "1.0.0".parse().unwrap(),
-            PathBuf::from("/Applications/Zcv.app"),
-            PathBuf::from("/tmp/Zcv.app"),
+            install_path,
+            staged_path,
             result.path().join("result.json"),
         )
         .is_err()
@@ -94,9 +134,10 @@ fn translocated_paths_are_detected_by_component() {
     assert!(!is_translocated_path(Path::new("/tmp/Zcv.app")));
 }
 
-/// 发布 zip 由 ditto 生成，大文件条目使用 deflate 压缩。
+/// macOS 发布 zip 由 ditto 生成，大文件条目使用 deflate 压缩。
 /// async_zip 0.0.17 没有默认 feature，若构建时缺少 `deflate`，解析会在运行时以 `CompressionNotSupported` 失败而编译照常通过，因此用真实 deflate 样本做回归测试，防止特性再次被静默丢弃。
 #[test]
+#[cfg(target_os = "macos")]
 fn deflated_release_archive_is_valid() {
     let bytes = include_bytes!("fixtures/deflated.zip");
     let result = smol::block_on(async { validate_archive(bytes).await });

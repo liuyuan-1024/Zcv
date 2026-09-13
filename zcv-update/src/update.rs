@@ -5,12 +5,11 @@
 //! 该 crate 不持有 GPUI 状态，也不决定检查策略。
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(target_os = "macos")]
-use std::ffi::OsStr;
 #[cfg(target_os = "macos")]
 use std::process::Stdio;
 
@@ -27,9 +26,24 @@ use smol::process::Command;
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub const TRANSACTION_SCHEMA_VERSION: u32 = 2;
 pub const STABLE_CHANNEL: &str = "stable";
+#[cfg(target_os = "macos")]
 pub const APP_BUNDLE_NAME: &str = "Zcv.app";
+#[cfg(target_os = "windows")]
+pub const APP_BUNDLE_NAME: &str = "Zcv";
+#[cfg(target_os = "macos")]
 pub const APP_EXECUTABLE_RELATIVE_PATH: &str = "Contents/MacOS/Zcv";
+#[cfg(target_os = "windows")]
+pub const APP_EXECUTABLE_RELATIVE_PATH: &str = "Zcv.exe";
+#[cfg(target_os = "macos")]
 pub const HELPER_RELATIVE_PATH: &str = "Contents/Helpers/zcv-update-helper";
+#[cfg(target_os = "windows")]
+pub const HELPER_RELATIVE_PATH: &str = "zcv-update-helper.exe";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub const APP_BUNDLE_NAME: &str = "Zcv";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub const APP_EXECUTABLE_RELATIVE_PATH: &str = "Zcv";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+pub const HELPER_RELATIVE_PATH: &str = "zcv-update-helper";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ReleaseManifest {
@@ -145,11 +159,10 @@ pub fn verify_downloaded_asset(path: &Path, asset: &ReleaseAsset) -> Result<()> 
     Ok(())
 }
 
-/// 验证更新包中的 app bundle。
+/// 验证更新包中的平台安装目录。
 ///
-/// 零费用方案下 bundle 使用 ad-hoc 签名，没有 Developer ID 身份，也无法通过公证，
-/// 因此这里只验证代码签名有效性和版本一致性，不检查 Team ID 与 Gatekeeper 评估。
-pub fn verify_macos_app(app: &Path, expected_version: &Version) -> Result<()> {
+/// macOS 额外验证 ad-hoc bundle seal；Windows 使用版本标记文件，发布者身份由签名清单保证。
+pub fn verify_app(app: &Path, expected_version: &Version) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         ensure!(
@@ -180,7 +193,25 @@ pub fn verify_macos_app(app: &Path, expected_version: &Version) -> Result<()> {
         );
         Ok(())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        ensure!(
+            app.join(APP_EXECUTABLE_RELATIVE_PATH).is_file(),
+            "更新应用缺少 Zcv.exe"
+        );
+        ensure!(
+            app.join(HELPER_RELATIVE_PATH).is_file(),
+            "更新应用缺少 zcv-update-helper.exe"
+        );
+        let version =
+            fs::read_to_string(app.join("version.txt")).context("无法读取更新应用版本")?;
+        ensure!(
+            version.trim() == expected_version.to_string(),
+            "更新应用版本与清单目标版本不一致"
+        );
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (app, expected_version);
         anyhow::bail!("当前平台尚不支持应用自动更新")
@@ -218,21 +249,51 @@ pub async fn extract_verified_archive(archive: &Path, destination: &Path) -> Res
             String::from_utf8_lossy(&output.stderr).trim()
         );
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        use futures::io::AsyncWriteExt as _;
+
+        let reader = ZipFileReader::new(bytes).await?;
+        for index in 0..reader.file().entries().len() {
+            let entry = &reader.file().entries()[index];
+            let name = entry
+                .filename()
+                .as_str()
+                .context("更新压缩包包含非 UTF-8 路径")?;
+            let path = destination.join(name);
+            if entry.dir().context("无法读取更新压缩包目录项")? {
+                smol::fs::create_dir_all(&path).await?;
+                continue;
+            }
+            let parent = path.parent().context("更新压缩包文件没有父目录")?;
+            smol::fs::create_dir_all(parent).await?;
+            let mut entry_reader = reader.reader_without_entry(index).await?;
+            let mut output = smol::fs::File::create(&path).await?;
+            futures::io::copy(&mut entry_reader, &mut output).await?;
+            output.flush().await?;
+        }
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     anyhow::bail!("当前平台尚不支持应用自动更新");
 
     let app_path = destination.join(APP_BUNDLE_NAME);
     ensure!(
         app_path.join(APP_EXECUTABLE_RELATIVE_PATH).is_file(),
-        "更新包缺少 Zcv 可执行文件"
+        "更新包缺少应用可执行文件"
     );
     ensure!(
         app_path.join(HELPER_RELATIVE_PATH).is_file(),
-        "更新包缺少 zcv-update-helper"
+        "更新包缺少更新辅助程序"
     );
+    #[cfg(target_os = "macos")]
     ensure!(
         app_path.join("Contents/Info.plist").is_file(),
         "更新包缺少 Info.plist"
+    );
+    #[cfg(target_os = "windows")]
+    ensure!(
+        app_path.join("version.txt").is_file(),
+        "更新包缺少 version.txt"
     );
     Ok(app_path)
 }
@@ -251,7 +312,7 @@ async fn validate_archive(bytes: &[u8]) -> Result<()> {
             .as_str()
             .context("更新压缩包包含非 UTF-8 路径")?;
         validate_archive_entry_path(name)?;
-        has_app |= name == APP_BUNDLE_NAME || name.starts_with("Zcv.app/");
+        has_app |= name == APP_BUNDLE_NAME || name.starts_with(&format!("{APP_BUNDLE_NAME}/"));
         total_uncompressed = total_uncompressed
             .checked_add(entry.uncompressed_size())
             .context("更新压缩包展开大小溢出")?;
@@ -263,7 +324,7 @@ async fn validate_archive(bytes: &[u8]) -> Result<()> {
             ensure!(mode & 0o170000 != 0o120000, "更新压缩包不允许符号链接");
         }
     }
-    ensure!(has_app, "更新压缩包缺少 Zcv.app");
+    ensure!(has_app, "更新压缩包缺少应用目录");
     Ok(())
 }
 
@@ -278,11 +339,12 @@ fn validate_archive_entry_path(name: &str) -> Result<()> {
         "更新压缩包包含不安全路径 {name}"
     );
     let allowed = name == APP_BUNDLE_NAME
-        || name.starts_with("Zcv.app/")
-        || name == "__MACOSX"
-        || name == "__MACOSX/"
-        || name == "__MACOSX/._Zcv.app"
-        || name.starts_with("__MACOSX/Zcv.app/");
+        || name.starts_with(&format!("{APP_BUNDLE_NAME}/"))
+        || (cfg!(target_os = "macos")
+            && (name == "__MACOSX"
+                || name == "__MACOSX/"
+                || name == "__MACOSX/._Zcv.app"
+                || name.starts_with("__MACOSX/Zcv.app/")));
     ensure!(allowed, "更新压缩包包含意外顶层路径 {name}");
     Ok(())
 }

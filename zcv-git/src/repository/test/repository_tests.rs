@@ -6,7 +6,6 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::sync::Arc;
 #[cfg(unix)]
 use std::sync::atomic::{AtomicU32, Ordering};
-#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
@@ -445,6 +444,35 @@ fn cancelling_push_terminates_git_and_hook_process_tree() {
         std::thread::sleep(Duration::from_millis(10));
     }
     panic!("取消 push 后钩子子进程仍然存活");
+}
+
+#[cfg(windows)]
+#[test]
+fn cancelling_push_terminates_git_and_hook_process() {
+    let (root, _remote, _temp) = test_repo_with_remote();
+    fs::write(root.join("cancel.txt"), "等待取消\n").expect("应写入待推送文件");
+    run_in(&root, &["git", "add", "cancel.txt"]);
+    run_in(&root, &["git", "commit", "-q", "-m", "测试取消推送"]);
+
+    let hook_path = root.join(".git/hooks/pre-push.cmd");
+    fs::write(&hook_path, "@echo off\r\nping 127.0.0.1 -n 31 > nul\r\n")
+        .expect("应写入 Windows pre-push 钩子");
+
+    let cancellation = GitCancellation::new();
+    let cancel_from_thread = cancellation.clone();
+    let cancel_thread = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        cancel_from_thread.cancel();
+    });
+
+    let started = Instant::now();
+    let result = open_repo(&root).push_cancellable(&cancellation);
+    cancel_thread.join().expect("取消线程不应异常");
+    assert!(result.is_err(), "取消后的 push 应返回错误");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "取消不应等待 Windows hook 自然结束"
+    );
 }
 
 #[test]

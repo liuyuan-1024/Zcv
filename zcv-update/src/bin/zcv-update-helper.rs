@@ -1,4 +1,4 @@
-//! Zcv 退出后执行的 macOS 更新辅助程序。
+//! Zcv 退出后执行的跨平台更新辅助程序。
 
 use std::path::PathBuf;
 
@@ -17,7 +17,12 @@ fn run() -> Result<()> {
         let args = parse_args(std::env::args_os().skip(1))?;
         macos::apply_update(&args.transaction_path, args.parent_pid)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        let args = parse_args(std::env::args_os().skip(1))?;
+        windows::apply_update(&args.transaction_path, args.parent_pid)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     bail!("当前平台尚不支持 Zcv 自动更新")
 }
 
@@ -66,7 +71,7 @@ mod macos {
     use anyhow::{Context as _, Result, ensure};
     use zcv_update::{
         APP_EXECUTABLE_RELATIVE_PATH, UpdateResult, UpdateResultStatus, UpdateTransaction,
-        atomic_write_json, read_transaction, verify_macos_app,
+        atomic_write_json, read_transaction, verify_app,
     };
 
     const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -127,7 +132,7 @@ mod macos {
         transaction: &UpdateTransaction,
         fallback_path: &mut PathBuf,
     ) -> Result<()> {
-        verify_app(transaction)?;
+        verify_transaction_app(transaction)?;
         let candidate_path = candidate_path(transaction)?;
         if candidate_path.exists() {
             fs::remove_dir_all(&candidate_path)
@@ -149,7 +154,7 @@ mod macos {
             staged_app_path: candidate_path.clone(),
             ..transaction.clone()
         };
-        if let Err(error) = verify_app(&candidate_transaction) {
+        if let Err(error) = verify_transaction_app(&candidate_transaction) {
             let _ = fs::remove_dir_all(&candidate_path);
             return Err(error).context("安装目录中的更新副本验证失败");
         }
@@ -201,8 +206,8 @@ mod macos {
         Ok(parent.join(format!(".Zcv.update-{}.app", transaction.id)))
     }
 
-    fn verify_app(transaction: &UpdateTransaction) -> Result<()> {
-        verify_macos_app(&transaction.staged_app_path, &transaction.to_version)
+    fn verify_transaction_app(transaction: &UpdateTransaction) -> Result<()> {
+        verify_app(&transaction.staged_app_path, &transaction.to_version)
     }
 
     /// 移除下载元数据（quarantine / provenance）。
@@ -297,6 +302,267 @@ mod macos {
             }
             thread::sleep(POLL_INTERVAL);
         }
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::{Child, Command, Stdio};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use anyhow::{Context as _, Result, ensure};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_INVALID_PARAMETER, GetLastError, WAIT_OBJECT_0,
+    };
+    use windows_sys::Win32::System::Threading::{
+        INFINITE, OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+    use zcv_update::{
+        APP_EXECUTABLE_RELATIVE_PATH, UpdateResult, UpdateResultStatus, UpdateTransaction,
+        atomic_write_json, read_transaction, verify_app,
+    };
+
+    const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+    const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+    pub(super) fn apply_update(transaction_path: &Path, parent_pid: u32) -> Result<()> {
+        let transaction = read_transaction(transaction_path)?;
+        wait_for_process_exit(parent_pid)?;
+        match apply_transaction(&transaction) {
+            Ok(()) => {
+                let _ = fs::remove_file(transaction_path);
+                let update_result = UpdateResult {
+                    transaction_id: transaction.id.clone(),
+                    from_version: transaction.from_version.clone(),
+                    to_version: transaction.to_version.clone(),
+                    status: UpdateResultStatus::Applied,
+                    error: None,
+                };
+                if let Err(error) = atomic_write_json(&transaction.result_path, &update_result) {
+                    eprintln!("新版本已启动，但无法记录更新结果：{error:#}");
+                }
+                Ok(())
+            }
+            Err(error) => {
+                let update_result = UpdateResult {
+                    transaction_id: transaction.id.clone(),
+                    from_version: transaction.from_version.clone(),
+                    to_version: transaction.to_version.clone(),
+                    status: UpdateResultStatus::RolledBack,
+                    error: Some(format!("{error:#}")),
+                };
+                if let Err(result_error) =
+                    atomic_write_json(&transaction.result_path, &update_result)
+                {
+                    eprintln!("无法记录更新失败结果：{result_error:#}");
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn apply_transaction(transaction: &UpdateTransaction) -> Result<()> {
+        let backup_path = backup_path(transaction)?;
+        match try_apply_transaction(transaction, &backup_path) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                launch(&transaction.install_path, None).with_context(|| {
+                    format!(
+                        "更新失败，且无法从 {} 重新启动旧版本",
+                        transaction.install_path.display()
+                    )
+                })?;
+                Err(error)
+            }
+        }
+    }
+
+    fn try_apply_transaction(transaction: &UpdateTransaction, backup_path: &Path) -> Result<()> {
+        verify_app(&transaction.staged_app_path, &transaction.to_version)?;
+        let candidate_path = candidate_path(transaction)?;
+        if candidate_path.exists() {
+            fs::remove_dir_all(&candidate_path)
+                .with_context(|| format!("无法清理旧更新候选目录 {}", candidate_path.display()))?;
+        }
+        copy_dir(&transaction.staged_app_path, &candidate_path)?;
+        let candidate_transaction = UpdateTransaction {
+            staged_app_path: candidate_path.clone(),
+            ..transaction.clone()
+        };
+        if let Err(error) = verify_app(
+            &candidate_transaction.staged_app_path,
+            &candidate_transaction.to_version,
+        ) {
+            let _ = fs::remove_dir_all(&candidate_path);
+            return Err(error).context("安装目录中的更新副本验证失败");
+        }
+
+        if backup_path.exists() {
+            fs::remove_dir_all(backup_path)
+                .with_context(|| format!("无法清理旧版本备份 {}", backup_path.display()))?;
+        }
+        fs::rename(&transaction.install_path, backup_path).with_context(|| {
+            format!(
+                "无法移动当前安装目录 {} → {}",
+                transaction.install_path.display(),
+                backup_path.display()
+            )
+        })?;
+        if let Err(error) = fs::rename(&candidate_path, &transaction.install_path) {
+            let _ = fs::rename(backup_path, &transaction.install_path);
+            return Err(error).context("无法把更新目录移动到安装位置");
+        }
+
+        let ack_path = transaction
+            .result_path
+            .with_file_name(format!("ack-{}.json", transaction.id));
+        if let Err(error) = ack_path
+            .exists()
+            .then(|| fs::remove_file(&ack_path))
+            .transpose()
+        {
+            rollback_after_switch(transaction, backup_path, &ack_path, None)?;
+            return Err(error)
+                .with_context(|| format!("无法清理旧启动确认 {}", ack_path.display()));
+        }
+        let mut child = match launch(
+            &transaction.install_path,
+            Some((&transaction.id, &ack_path)),
+        ) {
+            Ok(child) => child,
+            Err(error) => {
+                rollback_after_switch(transaction, backup_path, &ack_path, None)
+                    .context("新版本启动失败，且旧版本回滚失败")?;
+                return Err(error).context("新版本启动失败，已恢复旧版本");
+            }
+        };
+        match wait_for_startup_ack(&mut child, &ack_path) {
+            Ok(()) => {
+                if let Err(error) = fs::remove_dir_all(backup_path) {
+                    eprintln!(
+                        "新版本已启动，但无法删除旧版本备份 {}：{error}",
+                        backup_path.display()
+                    );
+                }
+                let _ = fs::remove_file(&ack_path);
+                Ok(())
+            }
+            Err(error) => {
+                rollback_after_switch(transaction, backup_path, &ack_path, Some(&mut child))
+                    .context("新版本启动失败，且旧版本回滚失败")?;
+                Err(error).context("新版本未通过启动确认，已恢复旧版本")
+            }
+        }
+    }
+
+    fn rollback_after_switch(
+        transaction: &UpdateTransaction,
+        backup_path: &Path,
+        ack_path: &Path,
+        mut child: Option<&mut Child>,
+    ) -> Result<()> {
+        if let Some(child) = child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        fs::remove_dir_all(&transaction.install_path)
+            .context("新版本启动失败，且无法移除新版本")?;
+        fs::rename(backup_path, &transaction.install_path)
+            .context("新版本启动失败，且旧版本回滚失败")?;
+        let _ = fs::remove_file(ack_path);
+        Ok(())
+    }
+
+    fn copy_dir(source: &Path, destination: &Path) -> Result<()> {
+        fs::create_dir_all(destination)
+            .with_context(|| format!("无法创建更新目录 {}", destination.display()))?;
+        for entry in fs::read_dir(source)
+            .with_context(|| format!("无法读取更新目录 {}", source.display()))?
+        {
+            let entry = entry.with_context(|| format!("无法读取目录项 {}", source.display()))?;
+            let source_path = entry.path();
+            let destination_path = destination.join(entry.file_name());
+            if entry
+                .file_type()
+                .with_context(|| format!("无法读取文件类型 {}", source_path.display()))?
+                .is_dir()
+            {
+                copy_dir(&source_path, &destination_path)?;
+            } else {
+                fs::copy(&source_path, &destination_path).with_context(|| {
+                    format!(
+                        "无法复制更新文件 {} → {}",
+                        source_path.display(),
+                        destination_path.display()
+                    )
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    fn candidate_path(transaction: &UpdateTransaction) -> Result<PathBuf> {
+        let parent = transaction
+            .install_path
+            .parent()
+            .context("安装路径没有父目录")?;
+        Ok(parent.join(format!(".Zcv.update-{}", transaction.id)))
+    }
+
+    fn backup_path(transaction: &UpdateTransaction) -> Result<PathBuf> {
+        let parent = transaction
+            .install_path
+            .parent()
+            .context("安装路径没有父目录")?;
+        Ok(parent.join(format!(".Zcv.backup-{}", transaction.id)))
+    }
+
+    fn launch(app: &Path, update: Option<(&str, &Path)>) -> Result<Child> {
+        let executable = app.join(APP_EXECUTABLE_RELATIVE_PATH);
+        let mut command = Command::new(&executable);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if let Some((transaction_id, ack_path)) = update {
+            command.env("ZCV_UPDATE_TRANSACTION_ID", transaction_id);
+            command.env("ZCV_UPDATE_ACK_PATH", ack_path);
+        }
+        command
+            .spawn()
+            .with_context(|| format!("无法启动 {}", executable.display()))
+    }
+
+    fn wait_for_startup_ack(child: &mut Child, ack_path: &Path) -> Result<()> {
+        let start = Instant::now();
+        while start.elapsed() < STARTUP_TIMEOUT {
+            if ack_path.is_file() {
+                return Ok(());
+            }
+            if let Some(status) = child.try_wait().context("无法查询新版本进程状态")? {
+                anyhow::bail!("新版本在启动确认前退出：{status}");
+            }
+            thread::sleep(POLL_INTERVAL);
+        }
+        anyhow::bail!("等待新版本启动确认超时")
+    }
+
+    fn wait_for_process_exit(pid: u32) -> Result<()> {
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+        if handle == 0 {
+            ensure!(
+                unsafe { GetLastError() } == ERROR_INVALID_PARAMETER,
+                "无法打开 Zcv 进程以等待退出"
+            );
+            return Ok(());
+        }
+        let result = unsafe { WaitForSingleObject(handle, INFINITE) };
+        unsafe { CloseHandle(handle) };
+        ensure!(result == WAIT_OBJECT_0, "等待 Zcv 退出失败");
+        Ok(())
     }
 }
 

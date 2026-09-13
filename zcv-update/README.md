@@ -8,11 +8,11 @@
 
 ```text
 GitHub Release
-  latest.json + latest.json.sig + Zcv_<version>_darwin_arm64.zip
+  latest.json + latest.json.sig + macOS / Windows 平台更新包
                          ↓
 zcv::UpdateManager：检查、下载、进度与重启时机
                          ↓
-zcv-update：签名、哈希、归档、bundle 与事务校验
+zcv-update：签名、哈希、归档、平台安装目录与事务校验
                          ↓
 zcv-update-helper：应用退出后替换、启动确认与回滚
 ```
@@ -29,9 +29,9 @@ zcv-update-helper：应用退出后替换、启动确认与回滚
 1. 使用应用内置 Ed25519 公钥验证 `latest.json.sig`。
 2. 签名通过后才解析清单并选择更高版本与目标平台产物。
 3. 下载后核对文件大小和 SHA-256。
-4. 检查 ZIP 路径与展开大小，解压完整 `Zcv.app`。
-5. 验证 bundle 代码签名 seal 与版本一致性。
-6. 写入版本化更新事务，交给独立 helper 完成原子替换。
+4. 检查 ZIP 路径与展开大小，解压完整 `Zcv.app` 或 Windows `Zcv` 安装目录。
+5. 验证平台可执行文件、helper 和版本标记一致性（macOS 另验证 bundle seal）。
+6. 写入版本化更新事务，交给独立 helper 完成平台替换。
 7. 新版本启动后写入确认；未确认或替换失败时按事务协议回滚。
 
 当前 macOS 包使用零费用 ad-hoc 签名。它提供 bundle 本地完整性校验，但不提供 Developer ID 身份或 Apple 公证。更新来源的身份与防篡改保证来自 Ed25519 清单签名；不要用 Team ID、Gatekeeper 或隐式网络信任替代这条链路。
@@ -45,18 +45,21 @@ GitHub Release 必须同时包含：
 - `latest.json`
 - `latest.json.sig`
 - `Zcv_<version>_darwin_arm64.zip`
+- `Zcv_<version>_windows_x86_64.zip`
 
-`.github/workflows/release.yml` 在 `macos-14` 标准 runner 上构建 Apple Silicon 包，调用：
+`.github/workflows/release.yml` 分别在 macOS 和 Windows runner 上构建平台包，调用：
 
 - `scripts/bundle-mac --no-dmg`：构建应用和 helper，组装并 ad-hoc 签名完整 app bundle。
-- `scripts/release-update <私钥路径> --no-build`：生成清单、签名并核对私钥对应公钥与源码内置公钥一致。
+- `scripts/bundle-windows.ps1`：构建 `Zcv.exe` 和 helper，组装 Windows 安装目录 ZIP。
+- `scripts/release-update <私钥路径> [--no-build]`：在 GitHub Actions 发布工作区中自动发现两个平台的构建产物，合并生成清单、签名并核对私钥对应公钥与源码内置公钥一致。`--no-build` 表示跳过发布工作区中的打包步骤，只使用已准备好的更新包。
 
 发布 tag 必须是 `v<版本>`，并与根 `Cargo.toml` 的工作区版本一致。不要手工编辑清单中的大小或 SHA-256。
 
 ## 修改约束
 
 - 清单与事务格式变更必须升级对应 schema 版本，并同步应用、helper、生成工具和测试。
-- 更新必须替换并验证完整 app bundle，不只覆盖主可执行文件。
+- 更新必须替换并验证完整平台安装目录，不只覆盖主可执行文件。
+- Windows 更新在应用退出后由 helper 备份旧目录、切换新目录；启动确认失败时恢复旧目录。
 - 安装目标、暂存目录、确认文件和事务 ID 必须相互校验，不能接受事务外路径。
 - 不增加静默回退、未签名清单或跳过哈希的兼容路径。
 - 私钥轮换需要先更新应用内置公钥，再使用对应私钥发布后续版本。

@@ -664,12 +664,41 @@ fn copy_single_entry(
     if file_type.is_symlink() {
         let target = std::fs::read_link(source)
             .with_context(|| format!("读取符号链接失败：{}", source.display()))?;
-        std::os::unix::fs::symlink(&target, destination)
-            .with_context(|| format!("重建符号链接失败：{}", destination.display()))?;
+        create_symlink(source, &target, destination, file_type)?;
     } else {
         std::fs::copy(source, destination)
             .with_context(|| format!("复制文件失败：{}", source.display()))?;
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn create_symlink(
+    source: &Path,
+    target: &Path,
+    destination: &Path,
+    _file_type: std::fs::FileType,
+) -> anyhow::Result<()> {
+    std::os::unix::fs::symlink(target, destination)
+        .with_context(|| format!("重建符号链接失败：{}", source.display()))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn create_symlink(
+    source: &Path,
+    target: &Path,
+    destination: &Path,
+    file_type: std::fs::FileType,
+) -> anyhow::Result<()> {
+    use std::os::windows::fs::FileTypeExt as _;
+
+    if file_type.is_symlink_dir() {
+        std::os::windows::fs::symlink_dir(target, destination)
+    } else {
+        std::os::windows::fs::symlink_file(target, destination)
+    }
+    .with_context(|| format!("重建符号链接失败：{}", source.display()))?;
     Ok(())
 }
 
@@ -1466,6 +1495,7 @@ mod tests {
         assert!(source_dir.join("new.txt").is_file(), "源目录不应被删除");
     }
 
+    #[cfg(unix)]
     #[test]
     fn copying_directory_with_ancestor_symlink_does_not_hang() {
         // 链接指向自身祖先目录（链接环）：按链接本身复制，不跟随目标、不挂死。

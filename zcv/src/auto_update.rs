@@ -22,7 +22,7 @@ use zcv_ui::Button;
 use zcv_update::{
     APP_BUNDLE_NAME, HELPER_RELATIVE_PATH, ReleaseAsset, SelectedRelease, UpdateTransaction,
     atomic_write_json, extract_verified_archive, is_translocated_path, verify_and_parse_manifest,
-    verify_downloaded_asset, verify_macos_app,
+    verify_app, verify_downloaded_asset,
 };
 use zcv_workspace::{ToastKind, Workspace};
 
@@ -121,15 +121,40 @@ pub(crate) fn acknowledge_started_update() -> Result<()> {
 
 impl UpdateConfig {
     fn from_app(cx: &App) -> Result<Self> {
-        ensure!(cfg!(target_os = "macos"), "当前仅支持 macOS 自动更新");
-        let app_path = cx.app_path().context("当前进程不是 macOS app bundle")?;
+        let process_path = cx.app_path().context("无法确定当前应用路径")?;
+        #[cfg(target_os = "macos")]
+        let app_path = {
+            ensure!(
+                process_path.file_name().and_then(|name| name.to_str()) == Some(APP_BUNDLE_NAME),
+                "当前 app bundle 不是 Zcv.app"
+            );
+            ensure!(
+                !is_translocated_path(&process_path),
+                "应用运行在 App Translocation 临时路径中，请把 Zcv.app 移到 /Applications 后重启"
+            );
+            process_path
+        };
+        #[cfg(target_os = "windows")]
+        let app_path = {
+            ensure!(
+                process_path.file_name().and_then(|name| name.to_str()) == Some("Zcv.exe"),
+                "当前进程不是 Zcv.exe"
+            );
+            let app_path = process_path
+                .parent()
+                .context("Zcv.exe 没有安装目录")?
+                .to_path_buf();
+            ensure!(
+                app_path.file_name().and_then(|name| name.to_str()) == Some(APP_BUNDLE_NAME),
+                "当前安装目录不是 Zcv"
+            );
+            app_path
+        };
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        anyhow::bail!("当前平台尚不支持应用自动更新");
         ensure!(
-            app_path.file_name().and_then(|name| name.to_str()) == Some(APP_BUNDLE_NAME),
-            "当前 app bundle 不是 Zcv.app"
-        );
-        ensure!(
-            !is_translocated_path(&app_path),
-            "应用运行在 App Translocation 临时路径中，请把 Zcv.app 移到 /Applications 后重启"
+            app_path.join(HELPER_RELATIVE_PATH).is_file(),
+            "当前安装缺少更新辅助程序"
         );
         let current_version = env!("CARGO_PKG_VERSION")
             .parse()
@@ -146,9 +171,15 @@ impl UpdateConfig {
 }
 
 fn platform_key() -> Result<&'static str> {
-    match std::env::consts::ARCH {
-        "aarch64" => Ok("macos-aarch64"),
-        architecture => anyhow::bail!("仅支持 Apple Silicon 自动更新架构 {architecture}"),
+    platform_key_for(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+fn platform_key_for(os: &str, architecture: &str) -> Result<&'static str> {
+    match (os, architecture) {
+        ("macos", "aarch64") => Ok("macos-aarch64"),
+        ("windows", "x86_64") => Ok("windows-x86_64"),
+        ("windows", "aarch64") => Ok("windows-aarch64"),
+        (os, architecture) => anyhow::bail!("不支持 {os} 平台的自动更新架构 {architecture}"),
     }
 }
 
@@ -260,7 +291,10 @@ impl UpdateManager {
         atomic_write_json(&pending_path, &transaction)?;
 
         let helper_source = config.app_path.join(HELPER_RELATIVE_PATH);
-        let helper_path = transaction_dir.join("zcv-update-helper");
+        let helper_name = Path::new(HELPER_RELATIVE_PATH)
+            .file_name()
+            .context("更新辅助程序路径无文件名")?;
+        let helper_path = transaction_dir.join(helper_name);
         fs::copy(&helper_source, &helper_path).with_context(|| {
             format!(
                 "无法复制更新辅助程序 {} → {}",
@@ -340,7 +374,7 @@ async fn check_and_stage(
     let app = staged_app_path.clone();
     let version = release.version.clone();
     executor
-        .spawn(async move { verify_macos_app(&app, &version) })
+        .spawn(async move { verify_app(&app, &version) })
         .await
         .map_err(CheckFailure::Permanent)?;
 

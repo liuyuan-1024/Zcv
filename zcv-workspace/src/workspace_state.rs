@@ -1,7 +1,7 @@
 //! Workspace —— 工作区实体：Pane/Dock/StatusBar 的装配与命令分发。
 //!
-//! Workspace 只管理工作区框架与通用命令，
-//! 面板、顶栏、状态项与项目相关订阅由宿主（binary 装配层）注入。
+//! Workspace 管理工作区的根状态、布局和工作区级命令；
+//! 面板、顶栏、状态项与项目相关订阅由应用装配层注入。
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -44,14 +44,14 @@ enum ItemNavigation {
 }
 
 pub struct Workspace {
-    pub focus: FocusHandle,
-    pub pane: Entity<Pane>,
+    focus: FocusHandle,
+    pane: Entity<Pane>,
     status_bar: Entity<StatusBar>,
     toast_layer: Entity<ToastLayer>,
     project: Entity<Project>,
-    pub left_dock: Entity<Dock>,
-    pub right_dock: Entity<Dock>,
-    pub bottom_dock: Entity<Dock>,
+    left_dock: Entity<Dock>,
+    right_dock: Entity<Dock>,
+    bottom_dock: Entity<Dock>,
     /// 顶栏视图，由宿主注入。
     titlebar: Option<AnyView>,
     /// 打开设置文件的路径提供者（设置文件属于宿主配置，需注入）。
@@ -188,7 +188,7 @@ impl Workspace {
     }
 
     /// 展示一条全局提示（成功/错误）；`action` 提供可点击的操作按钮（如"重试"）。
-    /// 宿主（装配层）经它呈现 git 操作等产品级反馈。
+    /// 宿主（装配层）经它呈现 Git 操作等工作区反馈。
     pub fn show_toast(
         &self,
         kind: ToastKind,
@@ -206,6 +206,18 @@ impl Workspace {
 
     pub fn pane(&self) -> &Entity<Pane> {
         &self.pane
+    }
+
+    pub fn focus_handle(&self) -> &FocusHandle {
+        &self.focus
+    }
+
+    pub fn dock(&self, position: DockPosition) -> &Entity<Dock> {
+        match position {
+            DockPosition::Left => &self.left_dock,
+            DockPosition::Right => &self.right_dock,
+            DockPosition::Bottom => &self.bottom_dock,
+        }
     }
 
     pub fn project(&self) -> &Entity<Project> {

@@ -1,6 +1,6 @@
 //! 装配层 —— 创建 Workspace，注入顶栏/面板/状态项，接线项目与设置订阅。
 //!
-//! Workspace 框架（Pane/Dock/命令分发）在 zcv-workspace；
+//! 工作区（Pane/Dock/命令分发）在 zcv-workspace；
 //! 本模块只做 binary 侧的具体装配：面板（项目树/版本控制）、状态栏按钮、git/settings 订阅与 diff hunks 推送。
 
 use std::path::{Path, PathBuf};
@@ -98,11 +98,7 @@ fn register_panel<P: Panel>(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    let dock = match position {
-        DockPosition::Left => workspace.left_dock.clone(),
-        DockPosition::Right => workspace.right_dock.clone(),
-        DockPosition::Bottom => workspace.bottom_dock.clone(),
-    };
+    let dock = workspace.dock(position).clone();
     let workspace_for_events = cx.weak_entity();
     dock.update(cx, |dock, cx| {
         let subscription = cx.subscribe_in(
@@ -260,7 +256,7 @@ fn finish_build_workspace(
     // 装配不区分空/项目工作区：面板无条件注册，空态由各面板自行渲染。
     initialize_workspace(&mut workspace, window, cx);
     // 焦点延后到首帧渲染完成后：track_focus 元素未挂载前 focus 会静默丢失，导致启动后 keymap dispatch 无焦点链，快捷键不生效，直到用户点击界面（焦点链建立）才恢复。
-    let focus = workspace.focus.clone();
+    let focus = workspace.focus_handle().clone();
     window.defer(cx, move |window, cx| {
         window.focus(&focus, cx);
     });
@@ -288,7 +284,7 @@ fn initialize_common_workspace(
         terminal_for_new.update(cx, |panel, cx| {
             panel.new_terminal(window, cx);
         });
-        let bottom_dock = workspace.bottom_dock.clone();
+        let bottom_dock = workspace.dock(DockPosition::Bottom).clone();
         bottom_dock.update(cx, |dock, cx| {
             let Some(index) = dock.panel_index_for_persistent_name("terminal") else {
                 return;
@@ -338,8 +334,8 @@ fn initialize_common_workspace(
     });
 
     let status_bar = workspace.status_bar().clone();
-    let left_dock = workspace.left_dock.clone();
-    let bottom_dock = workspace.bottom_dock.clone();
+    let left_dock = workspace.dock(DockPosition::Left).clone();
+    let bottom_dock = workspace.dock(DockPosition::Bottom).clone();
     let workspace_entity = cx.weak_entity();
     status_bar.update(cx, |bar, cx| {
         bar.add_left_item(
@@ -401,9 +397,9 @@ fn initialize_common_workspace(
     zcv_search::install(workspace, window, cx);
 
     for dock in [
-        workspace.left_dock.clone(),
-        workspace.right_dock.clone(),
-        workspace.bottom_dock.clone(),
+        workspace.dock(DockPosition::Left).clone(),
+        workspace.dock(DockPosition::Right).clone(),
+        workspace.dock(DockPosition::Bottom).clone(),
     ] {
         dock.update(cx, |dock: &mut Dock, cx: &mut Context<Dock>| {
             let focus = dock.focus_handle(cx);
@@ -1092,7 +1088,7 @@ fn inject_editor_diff(
 mod tests {
     use gpui::{AppContext, TestAppContext};
 
-    use super::{Workspace, build_workspace};
+    use super::{DockPosition, Workspace, build_workspace};
 
     /// 空工作区与项目工作区走同一条装配路径：全部面板无条件注册，空态由面板自行渲染。
     #[gpui::test]
@@ -1104,10 +1100,16 @@ mod tests {
         let (workspace, cx) = cx.add_window_view(|window, cx| build_workspace(&None, window, cx));
 
         cx.read_entity(&workspace, |workspace, cx| {
-            assert_eq!(workspace.left_dock.read(cx).panel_count(), 3);
-            assert_eq!(workspace.bottom_dock.read(cx).panel_count(), 1);
+            assert_eq!(workspace.dock(DockPosition::Left).read(cx).panel_count(), 3);
+            assert_eq!(
+                workspace.dock(DockPosition::Bottom).read(cx).panel_count(),
+                1
+            );
             // 右 dock 当前无面板：原快捷键面板已由 harness 状态标记按钮取代。
-            assert_eq!(workspace.right_dock.read(cx).panel_count(), 0);
+            assert_eq!(
+                workspace.dock(DockPosition::Right).read(cx).panel_count(),
+                0
+            );
         });
     }
 

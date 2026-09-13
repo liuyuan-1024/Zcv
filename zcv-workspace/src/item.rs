@@ -1,6 +1,6 @@
-//! Item 协议：Workspace 标签页中文档视图的通用能力。
+//! Item 协议：工作区标签页中文档视图的集成能力。
 //!
-//! 只定义 Item 的通用能力，不依赖 Editor、具体预览格式或 Pane 实现。
+//! 定义标签页与 Pane/Workspace 的稳定交互，不依赖具体 Editor、具体预览格式或 Pane 内部实现。
 //! 预览视图等可选能力通过 [`Item::as_preview_item`] 桥接获取，不占用 Item 主接口。
 
 use std::any::TypeId;
@@ -18,7 +18,7 @@ use crate::SerializedPaneItem;
 use crate::preview::PreviewItemHandle;
 use crate::searchable::SearchableItemHandle;
 
-/// Item 向 Pane/Workspace 上报的通用事件。
+/// Item 向 Pane/Workspace 上报的工作区事件。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ItemEvent {
     /// Item 的稳定身份路径发生变化。

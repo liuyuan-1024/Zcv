@@ -1,8 +1,8 @@
-//! 工作区框架：Item 协议、Pane/Dock/StatusBar 与 Workspace 装配。
+//! 工作区：Item 协议、Pane/Dock/StatusBar 与 Workspace 装配。
 //! 此文件是 `zcv-workspace` crate 的公共入口。
 //!
-//! 标签页 Item 的通用能力、文件打开/预览的注册机制，以及编辑区布局（Pane/Dock）与状态栏框架。
-//! 不依赖 Editor、具体预览格式（它们经 ItemProvider/PreviewProvider 注册接入）。
+//! 负责 标签页 Item 的集成能力、文件打开/预览的注册机制，以及编辑区布局（Pane/Dock）与状态栏。
+//! 具体 Editor 和预览格式通过 ItemProvider/PreviewProvider 注册接入。
 
 mod activity_indicator;
 mod branch_picker;

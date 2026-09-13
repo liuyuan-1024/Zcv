@@ -12,7 +12,7 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use zcv_actions::{CloseTab, NextTab, PrevTab, TogglePreview};
-use zcv_theme::{FileIcons, color, space, typography};
+use zcv_theme::{FileIcons, color, space};
 use zcv_ui::{Button, SvgIcon, Tab};
 
 use crate::layout_state::{SerializedPane, SerializedPaneItem};
@@ -63,7 +63,7 @@ struct DraggedTab {
 }
 
 impl Render for DraggedTab {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (title, item) = self
             .pane
             .read(cx)
@@ -82,6 +82,7 @@ impl Render for DraggedTab {
                 item.as_deref().is_some_and(|item| item.is_dirty(cx)),
                 item.as_deref()
                     .is_some_and(|item| is_preview_item(item, cx)),
+                window.rem_size(),
                 cx,
             ))
             .child(title)
@@ -718,7 +719,7 @@ impl Pane {
 // ═══ Render ═════════════════════════════════════════════════════
 
 impl Render for Pane {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let active_item_id = self.active;
         let transient_source_item_id = self.transient_source_item_id;
         let transient_preview_item_id = self.transient_preview_item_id;
@@ -751,6 +752,7 @@ impl Render for Pane {
                         scroll_handle: &self.scroll_handle,
                         trailing,
                     },
+                    window,
                     cx,
                 ))
             })
@@ -786,7 +788,11 @@ struct TabBarRenderParams<'a> {
     trailing: Option<TabBarTrailing>,
 }
 
-fn render_tab_bar(params: TabBarRenderParams<'_>, cx: &App) -> impl gpui::IntoElement {
+fn render_tab_bar(
+    params: TabBarRenderParams<'_>,
+    window: &Window,
+    cx: &App,
+) -> impl gpui::IntoElement {
     let children: Vec<AnyElement> = params
         .tabs
         .iter()
@@ -799,6 +805,7 @@ fn render_tab_bar(params: TabBarRenderParams<'_>, cx: &App) -> impl gpui::IntoEl
                 Some(item.item_id()) == params.transient_source_item_id
                     || Some(item.item_id()) == params.transient_preview_item_id,
                 &params.pane_entity,
+                window.rem_size(),
                 cx,
             )
             .into_any_element()
@@ -860,6 +867,7 @@ fn render_tab(
     is_active: bool,
     is_transient: bool,
     pane_entity: &gpui::Entity<Pane>,
+    ui_size: gpui::Pixels,
     cx: &App,
 ) -> impl gpui::IntoElement {
     let item_id = item.item_id();
@@ -875,6 +883,7 @@ fn render_tab(
             item_id,
             item.is_dirty(cx),
             is_preview_item(item, cx),
+            ui_size,
             cx,
         ))
         .child(item.tab_content_text(cx))
@@ -1007,6 +1016,7 @@ fn tab_end_button(
     item_id: EntityId,
     is_dirty: bool,
     is_preview: bool,
+    ui_size: gpui::Pixels,
     cx: &App,
 ) -> AnyElement {
     let state = tab_end_state(is_dirty, is_preview);
@@ -1049,7 +1059,7 @@ fn tab_end_button(
                                 .color(icon_color)
                                 .into_any_element()
                         })
-                        .unwrap_or_else(|| div().size(typography::ui_size()).into_any_element()),
+                        .unwrap_or_else(|| div().size(ui_size).into_any_element()),
                 ),
         )
         .child(

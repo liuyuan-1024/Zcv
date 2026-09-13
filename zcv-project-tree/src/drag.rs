@@ -8,6 +8,7 @@ use std::rc::Rc;
 use gpui::{App, Context, Div, FontWeight, Window, div, prelude::*, px};
 use zcv_theme::{FileIcons, color, space, typography};
 use zcv_ui::SvgIcon;
+use zcv_workspace::typography_for_window;
 
 use super::transfer::paste_target_dir;
 
@@ -56,7 +57,8 @@ impl DraggedEntryView {
 }
 
 impl Render for DraggedEntryView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let typography = typography_for_window(window, cx);
         let theme = *color::current(cx);
         let items = self.drag.items();
         let count = items.len();
@@ -65,7 +67,7 @@ impl Render for DraggedEntryView {
             return entry_card(cx)
                 .child(
                     SvgIcon::new(entry_icon(&self.drag.active_selection))
-                        .size(typography::ui_size()),
+                        .size(typography.ui_size()),
                 )
                 .child(self.drag.preview_name.clone());
         }
@@ -91,7 +93,7 @@ impl Render for DraggedEntryView {
                     .top(px(LAYER_OFFSET_Y * depth))
                     .left(px(LAYER_OFFSET_X * depth))
                     .text_color(theme.text_muted)
-                    .child(SvgIcon::new(entry_icon(path)).size(typography::ui_size()))
+                    .child(SvgIcon::new(entry_icon(path)).size(typography.ui_size()))
                     .child(entry_name(path)),
             );
         }
@@ -100,7 +102,7 @@ impl Render for DraggedEntryView {
                 .border_1()
                 .border_color(theme.border_variant)
                 .shadow_sm()
-                .child(SvgIcon::new(entry_icon(active)).size(typography::ui_size()))
+                .child(SvgIcon::new(entry_icon(active)).size(typography.ui_size()))
                 .child(self.drag.preview_name.clone())
                 // 数量徽标：反色实心圆角胶囊（正文色底 + 底色字），任何主题下都高对比醒目。
                 .child(

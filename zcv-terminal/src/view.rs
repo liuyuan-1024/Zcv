@@ -9,10 +9,9 @@ use gpui::{
 };
 
 use crate::{
-    Event, Modes, SelectionType, Terminal, TerminalSettings,
+    Event, Modes, SelectionType, Terminal,
     element::TerminalElement,
     mappings::{keys, mouse},
-    set_terminal_font_size,
     terminal_scrollbar::TerminalScrollHandle,
 };
 
@@ -22,7 +21,6 @@ use std::time::{Duration, Instant};
 use zcv_actions::{
     Clear, Copy, DecreaseFontSize, IncreaseFontSize, Interrupt, Paste, ResetFontSize,
 };
-use zcv_settings::SettingsStore;
 use zcv_theme::{color, space};
 use zcv_ui::Scrollbar;
 use zcv_workspace::{Item, ItemEvent};
@@ -97,12 +95,12 @@ impl TerminalView {
 
     /// 终端字体大小（像素）。
     pub(crate) fn font_size(&self, cx: &App) -> Pixels {
-        px(TerminalSettings::load(cx).font_size)
+        px(self.terminal.read(cx).settings(cx).font_size)
     }
 
     /// 终端行高（像素），字体大小 × 行高倍率。
     pub(crate) fn line_height(&self, cx: &App) -> Pixels {
-        let settings = TerminalSettings::load(cx);
+        let settings = self.terminal.read(cx).settings(cx);
         px(settings.font_size * settings.line_height)
     }
 
@@ -178,7 +176,7 @@ impl TerminalView {
             .last_content()
             .map(|content| content.mode)
             .unwrap_or(Modes::NONE);
-        let option_as_meta = TerminalSettings::load(cx).option_as_meta;
+        let option_as_meta = self.terminal.read(cx).settings(cx).option_as_meta;
         if let Some(input) = keys::to_esc_str(&event.keystroke, &mode, option_as_meta) {
             self.terminal.update(cx, |terminal, cx| {
                 terminal.write_input(input.into_bytes(), cx)
@@ -218,8 +216,10 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let font_size = TerminalSettings::load(cx).font_size;
-        set_terminal_font_size(font_size + 1.);
+        self.terminal.update(cx, |terminal, cx| {
+            let font_size = terminal.settings(cx).font_size;
+            terminal.set_font_size_override(Some(font_size + 1.), cx);
+        });
         window.refresh();
     }
 
@@ -229,8 +229,10 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let font_size = TerminalSettings::load(cx).font_size;
-        set_terminal_font_size((font_size - 1.).max(8.));
+        self.terminal.update(cx, |terminal, cx| {
+            let font_size = terminal.settings(cx).font_size;
+            terminal.set_font_size_override(Some((font_size - 1.).max(8.)), cx);
+        });
         window.refresh();
     }
 
@@ -240,8 +242,8 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let settings = SettingsStore::get(cx);
-        set_terminal_font_size(settings.terminal_font_size);
+        self.terminal
+            .update(cx, |terminal, cx| terminal.set_font_size_override(None, cx));
         window.refresh();
     }
 

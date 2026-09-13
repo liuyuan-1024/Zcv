@@ -4,6 +4,9 @@
 //! 负责 标签页 Item 的集成能力、文件打开/预览的注册机制，以及编辑区布局（Pane/Dock）与状态栏。
 //! 具体 Editor 和预览格式通过 ItemProvider/PreviewProvider 注册接入。
 
+use gpui::{App, Window};
+use zcv_theme::typography::Typography;
+
 mod activity_indicator;
 mod branch_picker;
 mod breadcrumbs;
@@ -56,3 +59,15 @@ pub use toast::{ToastAction, ToastKind};
 pub use top_bar::{TopBar, TopBarCallbacks};
 pub use window_bounds::{load_window_bounds, save_window_bounds};
 pub use workspace_state::Workspace;
+
+/// 读取窗口根工作区的排版快照。
+///
+/// 工作区内的视图通过窗口根实体取得会话级状态；
+/// 独立挂载的组件（例如单元测试中的Editor）没有工作区时使用 zcv-theme 的基础快照。
+pub fn typography_for_window(window: &Window, cx: &App) -> Typography {
+    window
+        .root::<Workspace>()
+        .flatten()
+        .map(|workspace| workspace.read(cx).typography())
+        .unwrap_or_else(zcv_theme::typography::current)
+}

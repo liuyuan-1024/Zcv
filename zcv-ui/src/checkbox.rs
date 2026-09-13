@@ -8,7 +8,7 @@ use gpui::{
     Action, App, ElementId, IntoElement, MouseButton, RenderOnce, ViewElement, Window, div,
     prelude::*,
 };
-use zcv_theme::{color, typography};
+use zcv_theme::color;
 
 use crate::{SvgIcon, TooltipSpec};
 
@@ -60,7 +60,8 @@ impl IntoElement for Checkbox {
 }
 
 impl RenderOnce for Checkbox {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let ui_size = window.rem_size();
         let colors = color::current(cx);
         let tooltip = self.tooltip;
         let on_click = self.on_click;
@@ -71,7 +72,7 @@ impl RenderOnce for Checkbox {
         };
         div()
             .id(self.id)
-            .size(typography::ui_size())
+            .size(ui_size)
             .rounded_xs()
             .border_1()
             // 背景取编辑器背景色：使复选框在面板背景上显形。
@@ -87,7 +88,7 @@ impl RenderOnce for Checkbox {
             .when(self.checked, |el| {
                 el.child(
                     SvgIcon::new("icons/check.svg")
-                        .size(typography::ui_size())
+                        .size(ui_size)
                         .color(colors.icon_accent)
                         .into_any_element(),
                 )

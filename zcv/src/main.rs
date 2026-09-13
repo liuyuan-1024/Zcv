@@ -36,13 +36,12 @@ fn main() {
             // 排版设置落地：SettingsStore 已就绪，按配置覆盖主题默认字号。
             {
                 let settings = SettingsStore::get(cx);
-                typography::set_typography(
+                typography::set_base_typography(
                     cx,
                     Some(settings.content_font_size),
                     Some(settings.ui_font_size),
                     Some(settings.content_line_height),
                 );
-                zcv_terminal::set_terminal_font_size(settings.terminal_font_size);
             }
             zcv_preview_markdown::init(cx);
             zcv_preview_svg::init(cx);

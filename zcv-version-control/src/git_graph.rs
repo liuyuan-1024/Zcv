@@ -1017,10 +1017,10 @@ mod tests {
             let original = f32::from(typography::content_size());
             let baseline = row_height();
 
-            typography::set_typography(cx, Some(original + 4.), None, None);
+            typography::set_base_typography(cx, Some(original + 4.), None, None);
             let enlarged = row_height();
-            // 字号是进程级运行时状态：立即还原，避免影响并行执行的其他可视测试。
-            typography::set_typography(cx, Some(original), None, None);
+            // 临时调整基础字号，验证行高随字号变化；测试结束后立即还原。
+            typography::set_base_typography(cx, Some(original), None, None);
 
             assert!(
                 enlarged > baseline,

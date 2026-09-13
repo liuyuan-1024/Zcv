@@ -56,9 +56,9 @@ impl ButtonSize {
         }
     }
 
-    /// 整体高度 = 行高（墨迹高度）+ 上下内边距。
-    fn height(self) -> Pixels {
-        typography::ui_line() + self.padding() * 2.0
+    /// 按当前窗口的 UI 行高计算整体按钮高度。
+    fn height_at(self, ui_line: Pixels) -> Pixels {
+        ui_line + self.padding() * 2.0
     }
 
     /// 按档位施加内边距与圆角（紧凑小圆角，宽松大圆角）。
@@ -190,7 +190,9 @@ impl IntoElement for Button {
 }
 
 impl RenderOnce for Button {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let ui_size = window.rem_size();
+        let ui_line = typography::ui_line_at(ui_size);
         let colors = *color::current(cx);
         let disabled = self.disabled;
         let has_click = self.on_click.is_some();
@@ -202,7 +204,7 @@ impl RenderOnce for Button {
         let icon_only = matches!(&self.content, ButtonContent::Icon(_));
 
         // 基础容器：尺寸档位决定高度、内边距与圆角。
-        let height = self.size.height();
+        let height = self.size.height_at(ui_line);
         let mut element = self.size.shell(
             div()
                 .id(self.id)
@@ -213,8 +215,8 @@ impl RenderOnce for Button {
                 .items_center()
                 .justify_center()
                 .font(typography::ui_font())
-                .text_size(typography::ui_size())
-                .line_height(typography::ui_line())
+                .text_size(ui_size)
+                .line_height(ui_line)
                 .when(self.occlude, |element| element.occlude()),
         );
         if self.style == ButtonStyle::Solid {
@@ -252,7 +254,7 @@ impl RenderOnce for Button {
         // 内容形态；图标统一经 SvgIcon 渲染。
         element.child(match self.content {
             ButtonContent::Icon(path) => SvgIcon::new(path)
-                .size(typography::ui_size())
+                .size(ui_size)
                 .color(color)
                 .into_any_element(),
             ButtonContent::Text(text) => div().text_color(color).child(text).into_any_element(),
@@ -261,7 +263,7 @@ impl RenderOnce for Button {
                 .flex_row()
                 .items_center()
                 .gap(space::S2)
-                .child(SvgIcon::new(path).size(typography::ui_size()).color(color))
+                .child(SvgIcon::new(path).size(ui_size).color(color))
                 .child(div().text_color(color).child(text))
                 .into_any_element(),
         })
@@ -295,7 +297,13 @@ mod tests {
         assert_eq!(cursor_for_state(false, false), None);
     }
 
-    struct ButtonHeightHost;
+    fn expected_height(ui_line: Pixels, size: ButtonSize) -> Pixels {
+        ui_line + size.padding() * 2.0
+    }
+
+    struct ButtonHeightHost {
+        compact_height: Pixels,
+    }
 
     impl Render for ButtonHeightHost {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -322,19 +330,28 @@ mod tests {
 
     #[gpui::test]
     fn content_and_visual_style_share_the_default_height(cx: &mut TestAppContext) {
-        let (_, cx) = cx.add_window_view(|_, _| ButtonHeightHost);
+        let (host, cx) = cx.add_window_view(|window, _| ButtonHeightHost {
+            compact_height: expected_height(
+                typography::ui_line_at(window.rem_size()),
+                ButtonSize::Compact,
+            ),
+        });
         let icon = cx.debug_bounds("icon-button").expect("图标按钮应参与布局");
         let text = cx.debug_bounds("text-button").expect("文字按钮应参与布局");
         let icon_text = cx
             .debug_bounds("icon-text-button")
             .expect("图文按钮应参与布局");
+        let compact_height = cx.read_entity(&host, |host, _| host.compact_height);
 
         assert_eq!(icon.size.height, text.size.height);
         assert_eq!(text.size.height, icon_text.size.height);
-        assert_eq!(icon.size.height, ButtonSize::Compact.height());
+        assert_eq!(icon.size.height, compact_height);
     }
 
-    struct LooseButtonHost;
+    struct LooseButtonHost {
+        compact_height: Pixels,
+        loose_height: Pixels,
+    }
 
     impl Render for LooseButtonHost {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -356,7 +373,16 @@ mod tests {
 
     #[gpui::test]
     fn loose_size_scales_height_and_padding(cx: &mut TestAppContext) {
-        let (_, cx) = cx.add_window_view(|_, _| LooseButtonHost);
+        let (host, cx) = cx.add_window_view(|window, _| LooseButtonHost {
+            compact_height: expected_height(
+                typography::ui_line_at(window.rem_size()),
+                ButtonSize::Compact,
+            ),
+            loose_height: expected_height(
+                typography::ui_line_at(window.rem_size()),
+                ButtonSize::Loose,
+            ),
+        });
         let icon = cx
             .debug_bounds("loose-icon")
             .expect("宽松图标按钮应参与布局");
@@ -365,12 +391,13 @@ mod tests {
             .expect("宽松文字按钮应参与布局");
 
         // 宽松高度 = 字号 + S6×2，与紧凑档位差 2×(S6−S2)。
-        let expected = ButtonSize::Loose.height();
+        let (compact_height, expected) =
+            cx.read_entity(&host, |host, _| (host.compact_height, host.loose_height));
         assert_eq!(icon.size.height, expected);
         assert_eq!(text.size.height, expected);
         assert_eq!(
             icon.size.height,
-            ButtonSize::Compact.height() + space::S6 * 2.0 - space::S2 * 2.0
+            compact_height + space::S6 * 2.0 - space::S2 * 2.0
         );
     }
 }

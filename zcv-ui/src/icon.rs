@@ -7,7 +7,7 @@ use gpui::{
     Action, App, ElementId, IntoElement, Pixels, RenderOnce, Rgba, SharedString, ViewElement,
     Window, div, prelude::*, svg,
 };
-use zcv_theme::{color, typography};
+use zcv_theme::color;
 
 use crate::TooltipSpec;
 
@@ -27,7 +27,7 @@ pub struct SvgIcon {
     id: Option<ElementId>,
     path: SharedString,
     color: Option<Rgba>,
-    size: Pixels,
+    size: Option<Pixels>,
     tooltip: TooltipSpec,
 }
 
@@ -38,7 +38,7 @@ impl SvgIcon {
             path: path.into(),
             // 默认色延迟到 render（有 cx）解析
             color: None,
-            size: typography::ui_size(),
+            size: None,
             tooltip: TooltipSpec::default(),
         }
     }
@@ -55,7 +55,7 @@ impl SvgIcon {
     }
 
     pub fn size(mut self, size: Pixels) -> Self {
-        self.size = size;
+        self.size = Some(size);
         self
     }
 
@@ -81,12 +81,13 @@ impl IntoElement for SvgIcon {
 }
 
 impl RenderOnce for SvgIcon {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         // 默认色依赖主题，只能在有 cx 的 render 中解析
         let color = self.color.unwrap_or_else(|| color::current(cx).icon);
+        let size = self.size.unwrap_or_else(|| window.rem_size());
         let icon = svg()
             .path(self.path)
-            .size(self.size)
+            .size(size)
             .text_color(color)
             .flex_none();
 

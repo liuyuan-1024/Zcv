@@ -42,7 +42,7 @@ use crate::cursor_position::CursorPosition;
 use crate::harness::HarnessButton;
 use zcv_outline::OutlinePanel;
 use zcv_project_tree::{OnCreate, OnMove, OnOpenFile, OnRename, OnTrash, ProjectTreePanel};
-use zcv_terminal::{TerminalPanel, set_terminal_font_size};
+use zcv_terminal::TerminalPanel;
 use zcv_version_control::{
     GitGraphSerializedItemProvider, OnOpenGitDiff, OnOpenGitGraph,
     ProjectDiffSerializedItemProvider, ProjectDiffView, VersionControlPanel, deploy_git_graph,
@@ -253,9 +253,8 @@ fn finish_build_workspace(
     cx: &mut Context<Workspace>,
 ) -> Workspace {
     apply_theme(&SettingsStore::get(cx).theme, cx, Some(window));
-    // 全局字号经 window rem 基准设置：
-    // 字体与行高仍在元素上显式设置（见 Workspace 根元素与 tooltip）。
-    window.set_rem_size(typography::ui_size());
+    // UI 字号是当前工作区的窗口基准；临时缩放不会影响其他窗口。
+    window.set_rem_size(workspace.typography().ui_size());
     // 装配不区分空/项目工作区：面板无条件注册，空态由各面板自行渲染。
     initialize_workspace(&mut workspace, window, cx);
     // 焦点延后到首帧渲染完成后：track_focus 元素未挂载前 focus 会静默丢失，导致启动后 keymap dispatch 无焦点链，快捷键不生效，直到用户点击界面（焦点链建立）才恢复。
@@ -358,42 +357,34 @@ fn initialize_common_workspace(
         });
     });
 
-    // 内容字号缩放（会话内生效，不写配置文件）。
-    // 字号是 typography 的运行时状态：直接调整并强制重绘，不改 SettingsStore。
-    workspace.register_action(move |_workspace, _: &IncreaseContentFontSize, window, cx| {
-        let content = f32::from(typography::content_size());
-        typography::set_typography(cx, Some(content + 1.), None, None);
+    // 内容字号缩放（当前工作区内生效，不写配置文件）。
+    workspace.register_action(|workspace, _: &IncreaseContentFontSize, window, cx| {
+        workspace.increase_content_font_size(1., cx);
         window.refresh();
     });
-    workspace.register_action(move |_workspace, _: &DecreaseContentFontSize, window, cx| {
-        let content = f32::from(typography::content_size());
-        typography::set_typography(cx, Some((content - 1.).max(8.)), None, None);
+    workspace.register_action(|workspace, _: &DecreaseContentFontSize, window, cx| {
+        workspace.increase_content_font_size(-1., cx);
         window.refresh();
     });
-    workspace.register_action(move |_workspace, _: &ResetContentFontSize, window, cx| {
-        let settings = SettingsStore::get(cx);
-        typography::set_typography(cx, Some(settings.content_font_size), None, None);
+    workspace.register_action(|workspace, _: &ResetContentFontSize, window, cx| {
+        workspace.reset_content_font_size(cx);
         window.refresh();
     });
 
-    // 工作区 UI 字号缩放（全局可用，会话内生效）：只调 UI 字号，编辑器不动。
-    // UI 字号是窗口 rem 基准：字号变化必须同步更新rem_size，否则基于 rem 的文本/布局沿用旧基准，与放大后的字形错位导致截断。
-    workspace.register_action(move |_workspace, _: &IncreaseUiFontSize, window, cx| {
-        let ui = f32::from(typography::ui_size());
-        typography::set_typography(cx, None, Some(ui + 1.), None);
-        window.set_rem_size(typography::ui_size());
+    // 工作区 UI 字号缩放（当前窗口内生效）：同步更新窗口 rem 基准。
+    workspace.register_action(|workspace, _: &IncreaseUiFontSize, window, cx| {
+        workspace.increase_ui_font_size(1., cx);
+        window.set_rem_size(workspace.typography().ui_size());
         window.refresh();
     });
-    workspace.register_action(move |_workspace, _: &DecreaseUiFontSize, window, cx| {
-        let ui = f32::from(typography::ui_size());
-        typography::set_typography(cx, None, Some((ui - 1.).max(8.)), None);
-        window.set_rem_size(typography::ui_size());
+    workspace.register_action(|workspace, _: &DecreaseUiFontSize, window, cx| {
+        workspace.increase_ui_font_size(-1., cx);
+        window.set_rem_size(workspace.typography().ui_size());
         window.refresh();
     });
-    workspace.register_action(move |_workspace, _: &ResetUiFontSize, window, cx| {
-        let settings = SettingsStore::get(cx);
-        typography::set_typography(cx, None, Some(settings.ui_font_size), None);
-        window.set_rem_size(typography::ui_size());
+    workspace.register_action(|workspace, _: &ResetUiFontSize, window, cx| {
+        workspace.reset_ui_font_size(cx);
+        window.set_rem_size(workspace.typography().ui_size());
         window.refresh();
     });
 
@@ -841,16 +832,16 @@ fn initialize_workspace(
 
     let project_tree_for_settings = project_tree.clone();
     let settings_subscription =
-        cx.observe_global_in::<SettingsStore>(window, move |_workspace, window, cx| {
+        cx.observe_global_in::<SettingsStore>(window, move |workspace, window, cx| {
             let settings = SettingsStore::get(cx);
-            typography::set_typography(
+            typography::set_base_typography(
                 cx,
                 Some(settings.content_font_size),
                 Some(settings.ui_font_size),
                 Some(settings.content_line_height),
             );
-            set_terminal_font_size(settings.terminal_font_size);
-            window.set_rem_size(typography::ui_size());
+            workspace.apply_typography_settings(&settings, cx);
+            window.set_rem_size(workspace.typography().ui_size());
             apply_theme(&settings.theme, cx, Some(window));
             project_tree_for_settings.update(cx, |tree, cx| tree.refresh(cx));
             cx.notify();

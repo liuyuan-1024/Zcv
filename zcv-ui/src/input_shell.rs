@@ -43,7 +43,7 @@ impl IntoElement for InputShell {
 }
 
 impl RenderOnce for InputShell {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let colors = color::current(cx);
         div()
             .w_full()
@@ -70,7 +70,7 @@ impl RenderOnce for InputShell {
                                 .flex_none()
                                 .flex()
                                 .items_center()
-                                .h(typography::ui_line())
+                                .h(typography::ui_line_at(window.rem_size()))
                                 .gap(space::S6)
                                 .children(self.internal),
                         )

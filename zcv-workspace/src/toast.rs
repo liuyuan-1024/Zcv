@@ -11,8 +11,10 @@ use gpui::{
     App, AsyncApp, BoxShadow, ClipboardItem, Context, Render, SharedString, Task, WeakEntity,
     Window, div, hsla, point, prelude::*, px, relative,
 };
-use zcv_theme::{color, space, typography};
+use zcv_theme::{color, space};
 use zcv_ui::{Button, ButtonStyle, SvgIcon};
+
+use crate::typography_for_window;
 
 /// 复制反馈的展示时长。
 const COPIED_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
@@ -180,7 +182,8 @@ impl ToastLayer {
 }
 
 impl Render for ToastLayer {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        let typography = typography_for_window(window, cx);
         let Some(toast) = &self.toast else {
             return div().into_any_element();
         };
@@ -287,7 +290,7 @@ impl Render for ToastLayer {
                     .child(
                         SvgIcon::new(icon)
                             .color(icon_color)
-                            .size(typography::ui_size()),
+                            .size(typography.ui_size()),
                     )
                     .child(
                         div()

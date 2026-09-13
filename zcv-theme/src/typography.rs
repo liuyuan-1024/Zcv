@@ -7,7 +7,8 @@
 //!
 //! 字形尺度的标准是 em 字号（用户设置，跨工具通用）；墨迹是测量结果，只作行高基准，不反向定义字号。
 //!
-//! 运行时状态是进程级单一快照 [`STATE`]：`set_typography` 写入设置并重测墨迹，读取零散落在各 token 函数。
+//! 基础排版快照由设置初始化；临时缩放由工作区或具体会话持有。
+//! 本模块只提供无状态的排版值计算，以及供尚未挂载工作区的视图使用的基础快照。
 
 use std::sync::{OnceLock, RwLock};
 
@@ -43,9 +44,12 @@ fn defaults() -> Defaults {
     })
 }
 
-/// 排版运行时快照：设置值与由设置派生的墨迹测量值同属一份事实，整体读写。
-#[derive(Clone, Copy)]
-struct TypographyState {
+/// 排版快照：字号、行高策略与对应字体栈的墨迹测量值。
+///
+/// `Workspace` 持有实际窗口的快照；
+/// 这里的全局快照仅作为启动前或独立测试视图的基础值，不承载快捷键产生的临时覆盖。
+#[derive(Clone, Copy, Debug)]
+pub struct Typography {
     ui_size: f32,
     content_size: f32,
     /// 内容行高倍数（相对字号）。
@@ -56,7 +60,7 @@ struct TypographyState {
     content_ink: f32,
 }
 
-static STATE: RwLock<TypographyState> = RwLock::new(TypographyState {
+static STATE: RwLock<Typography> = RwLock::new(Typography {
     ui_size: 0.,
     content_size: 0.,
     content_line_multiplier: 0.,
@@ -65,55 +69,95 @@ static STATE: RwLock<TypographyState> = RwLock::new(TypographyState {
 });
 
 /// 读取当前快照。
-fn state() -> TypographyState {
+fn state() -> Typography {
     *STATE.read().expect("排版状态锁不应中毒")
+}
+
+impl Typography {
+    /// 按生效字号和内容行高倍数创建排版快照，并测量两套字体栈的墨迹高度。
+    pub fn new(cx: &App, content_size: f32, ui_size: f32, content_line_height: f32) -> Self {
+        Self {
+            ui_size,
+            content_size,
+            content_line_multiplier: content_line_height,
+            ui_ink: measure_ink_line(cx, ui_font(), px(ui_size)),
+            content_ink: measure_ink_line(cx, content_font(), px(content_size)),
+        }
+    }
+
+    pub fn ui_size(self) -> Pixels {
+        px(self.ui_size)
+    }
+
+    pub fn content_size(self) -> Pixels {
+        px(self.content_size)
+    }
+
+    pub fn ui_line(self) -> Pixels {
+        ink_or_golden(self.ui_ink, self.ui_size)
+    }
+
+    pub fn content_line(self) -> Pixels {
+        px((self.content_size * self.content_line_multiplier).round())
+            .max(ink_or_golden(self.content_ink, self.content_size))
+    }
+}
+
+/// 读取当前基础排版快照。
+pub fn current() -> Typography {
+    let state = state();
+    Typography {
+        ui_size: if state.ui_size == 0. {
+            defaults().ui_size
+        } else {
+            state.ui_size
+        },
+        content_size: if state.content_size == 0. {
+            defaults().content_size
+        } else {
+            state.content_size
+        },
+        content_line_multiplier: if state.content_line_multiplier == 0. {
+            defaults().content_line_height
+        } else {
+            state.content_line_multiplier
+        },
+        ui_ink: state.ui_ink,
+        content_ink: state.content_ink,
+    }
 }
 
 // ── 字号与行高 ─────────────────────────────────────────────────────
 
 /// UI 字号（em）；未注入设置时回退内置默认。
 pub fn ui_size() -> Pixels {
-    let size = state().ui_size;
-    px(if size == 0. { defaults().ui_size } else { size })
+    current().ui_size()
 }
 
 /// 内容字号（em）；未注入设置时回退内置默认。
 pub fn content_size() -> Pixels {
-    let size = state().content_size;
-    px(if size == 0. {
-        defaults().content_size
-    } else {
-        size
-    })
+    current().content_size()
 }
 
-/// UI 行高 = UI 墨迹高度：完全容纳 UI 字体（含 CJK 回退）墨迹的最小行盒，`set_typography` 时实测。
+/// UI 行高 = UI 墨迹高度：完全容纳 UI 字体（含 CJK 回退）墨迹的最小行盒，设置基础快照时实测。
 /// 全项目默认行高以此为准；测量前（无文本系统上下文）保守回退黄金比例：1.618 倍恒大于常见字体的墨迹比。
 pub fn ui_line() -> Pixels {
-    let state = state();
-    let size = if state.ui_size == 0. {
-        defaults().ui_size
-    } else {
-        state.ui_size
-    };
-    ink_or_golden(state.ui_ink, size)
+    current().ui_line()
+}
+
+/// 按当前基础字体的墨迹比例计算指定 UI 字号的行高。
+///
+/// 工作区临时调整 UI 字号时，字体栈不变，因此墨迹高度可按比例派生；
+/// 实际快照仍由 Workspace 保存，避免把临时值写回本模块的基础状态。
+pub fn ui_line_at(size: Pixels) -> Pixels {
+    let base = current();
+    px((f32::from(size) * f32::from(base.ui_line()) / f32::from(base.ui_size())).round())
 }
 
 /// 内容行高：在内容墨迹高度（唯一垂直基准）之上按用户倍数衍生 `round(字号 × 倍数)`；
 /// 不低于墨迹：倍数调小也不会让行盒小于墨迹（行盒 ⊇ 墨迹不变式）。
 pub fn content_line() -> Pixels {
-    let state = state();
-    let size = if state.content_size == 0. {
-        defaults().content_size
-    } else {
-        state.content_size
-    };
-    let multiplier = if state.content_line_multiplier == 0. {
-        defaults().content_line_height
-    } else {
-        state.content_line_multiplier
-    };
-    px((size * multiplier).round()).max(ink_or_golden(state.content_ink, size))
+    current().content_line()
 }
 
 /// 墨迹实测值；0（尚未测量）时回退黄金比例行高。
@@ -170,38 +214,20 @@ fn measure_ink_line(cx: &App, font: Font, font_size: Pixels) -> f32 {
 
 // ── 设置入口 ───────────────────────────────────────────────────────
 
-/// 应用排版设置（内容/UI 字号与内容行高倍数）；
+/// 更新基础排版快照（内容/UI 字号与内容行高倍数）；
 /// 启动与设置变更时调用，未配置的维度保持当前值不变。
 /// 行高派生自墨迹测量（依赖字号与字体栈），在此对两个字体栈统一重测，调用方无需各自维护。
-pub fn set_typography(
+pub fn set_base_typography(
     cx: &App,
     content_size: Option<f32>,
     ui_size: Option<f32>,
     content_line_height: Option<f32>,
 ) {
-    let mut next = state();
-    if let Some(content_size) = content_size {
-        next.content_size = content_size;
-    }
-    if let Some(ui_size) = ui_size {
-        next.ui_size = ui_size;
-    }
-    if let Some(line_height) = content_line_height {
-        next.content_line_multiplier = line_height;
-    }
-    // 墨迹重测基于生效字号：未注入的维度回退内置默认（与 token 读取同一回退规则）。
-    let ui_size = if next.ui_size == 0. {
-        defaults().ui_size
-    } else {
-        next.ui_size
-    };
-    let content_size = if next.content_size == 0. {
-        defaults().content_size
-    } else {
-        next.content_size
-    };
-    next.ui_ink = measure_ink_line(cx, ui_font(), px(ui_size));
-    next.content_ink = measure_ink_line(cx, content_font(), px(content_size));
+    let current = current();
+    let content_size = content_size.unwrap_or(current.content_size);
+    let ui_size = ui_size.unwrap_or(current.ui_size);
+    let content_line_height = content_line_height.unwrap_or(current.content_line_multiplier);
+    let next = Typography::new(cx, content_size, ui_size, content_line_height);
     *STATE.write().expect("排版状态锁不应中毒") = next;
 }
 
@@ -214,7 +240,7 @@ mod tests {
     #[gpui::test]
     fn ui_line_covers_shaped_ink(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            set_typography(cx, None, Some(13.), None);
+            set_base_typography(cx, None, Some(13.), None);
             let line = ui_line();
             assert!(
                 line > ui_size(),
@@ -236,7 +262,7 @@ mod tests {
     fn content_line_covers_shaped_ink(cx: &mut TestAppContext) {
         cx.update(|cx| {
             // 故意把行高倍数调到小于墨迹比：content_line 的墨迹下限应兜底。
-            set_typography(cx, Some(16.), None, Some(1.1));
+            set_base_typography(cx, Some(16.), None, Some(1.1));
             let line = content_line();
             assert!(
                 line > content_size(),

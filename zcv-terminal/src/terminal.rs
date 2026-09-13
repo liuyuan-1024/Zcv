@@ -18,10 +18,7 @@ mod test;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicU32, Ordering},
-    },
+    sync::Arc,
 };
 
 use alacritty_terminal::{
@@ -47,14 +44,6 @@ const DEBUG_CELL_WIDTH: f32 = 5.;
 const DEBUG_LINE_HEIGHT: f32 = 5.;
 /// 创建时未确定窗口 id 时的占位值（unix 上无实际用途）。
 const DUMMY_WINDOW_ID: u64 = 0;
-
-/// 终端会话字号。0 表示尚未被快捷键或设置变更显式覆盖。
-static TERMINAL_FONT_SIZE: AtomicU32 = AtomicU32::new(0);
-
-/// 设置终端会话字号。
-pub fn set_terminal_font_size(font_size: f32) {
-    TERMINAL_FONT_SIZE.store(font_size.to_bits(), Ordering::Relaxed);
-}
 
 // ─── 尺寸与坐标 ───────────────────────────────────────────────────
 
@@ -376,14 +365,9 @@ pub(crate) struct TerminalSettings {
 }
 
 impl TerminalSettings {
-    pub fn from_user_settings(settings: &UserSettings) -> Self {
-        let runtime_font_size = TERMINAL_FONT_SIZE.load(Ordering::Relaxed);
+    pub fn from_user_settings(settings: &UserSettings, font_size_override: Option<f32>) -> Self {
         TerminalSettings {
-            font_size: if runtime_font_size == 0 {
-                settings.terminal_font_size
-            } else {
-                f32::from_bits(runtime_font_size)
-            },
+            font_size: font_size_override.unwrap_or(settings.terminal_font_size),
             line_height: settings.terminal_line_height,
             max_scroll_history_lines: settings.terminal_max_scroll_history_lines,
             cursor_shape: match settings.terminal_cursor_shape.as_str() {
@@ -398,9 +382,9 @@ impl TerminalSettings {
         }
     }
 
-    pub fn load(cx: &App) -> Self {
+    pub fn load(cx: &App, font_size_override: Option<f32>) -> Self {
         let settings = SettingsStore::try_get(cx).unwrap_or_default();
-        Self::from_user_settings(&settings)
+        Self::from_user_settings(&settings, font_size_override)
     }
 }
 
@@ -449,11 +433,13 @@ pub(crate) struct Terminal {
     background_executor: BackgroundExecutor,
     /// 当前工作目录（持久化恢复终端会话用）。
     cwd: Option<PathBuf>,
+    /// 当前终端会话的临时字号覆盖；None 时跟随 SettingsStore。
+    font_size_override: Option<f32>,
 }
 
 impl Terminal {
     pub fn new(builder: &TerminalBuilder, cx: &mut Context<Self>) -> Result<Terminal> {
-        let settings = TerminalSettings::load(cx);
+        let settings = TerminalSettings::load(cx, None);
         let bounds = TerminalBounds::default();
         let shell_name = configured_shell_name(settings.shell.as_deref());
 
@@ -498,18 +484,18 @@ impl Terminal {
             process_info,
             background_executor,
             cwd: builder.cwd.clone(),
+            font_size_override: None,
         };
+        cx.observe_global::<SettingsStore>(|_, cx| cx.notify())
+            .detach();
         terminal.spawn_event_loop(cx);
-
-        // 设置变更不热更新到已运行终端，重启终端后生效（gpui 0.2.2 的全局订阅需要窗口句柄，
-        // 终端创建时未必有窗口；MVP 从简）。
 
         Ok(terminal)
     }
 
     #[cfg(all(test, unix))]
     fn new_display_only(builder: &TerminalBuilder, cx: &mut Context<Self>) -> Self {
-        let settings = TerminalSettings::load(cx);
+        let settings = TerminalSettings::load(cx, None);
         let bounds = TerminalBounds::default();
         let (events_tx, _) = unbounded();
         let term = alacritty::new_term(
@@ -532,7 +518,21 @@ impl Terminal {
             process_info: Arc::new(PtyProcessInfo::new(alacritty::process_id_getter_for_test())),
             background_executor: cx.background_executor().clone(),
             cwd: builder.cwd.clone(),
+            font_size_override: None,
         }
+    }
+
+    pub(crate) fn settings(&self, cx: &App) -> TerminalSettings {
+        TerminalSettings::load(cx, self.font_size_override)
+    }
+
+    pub(crate) fn set_font_size_override(
+        &mut self,
+        font_size: Option<f32>,
+        cx: &mut Context<Self>,
+    ) {
+        self.font_size_override = font_size;
+        cx.notify();
     }
 
     #[cfg(all(test, unix))]
@@ -974,17 +974,26 @@ mod tests {
 
     #[test]
     fn terminal_typography_uses_its_own_configured_size() {
-        TERMINAL_FONT_SIZE.store(0, Ordering::Relaxed);
         let mut user_settings = UserSettings::default();
-        let default = TerminalSettings::from_user_settings(&user_settings);
+        let default = TerminalSettings::from_user_settings(&user_settings, None);
         assert_eq!(default.font_size, 16.);
         assert_eq!(default.line_height, 1.618);
 
         user_settings.terminal_font_size = 14.;
         user_settings.terminal_line_height = 1.2;
-        let configured = TerminalSettings::from_user_settings(&user_settings);
+        let configured = TerminalSettings::from_user_settings(&user_settings, None);
         assert_eq!(configured.font_size, 14.);
         assert_eq!(configured.line_height, 1.2);
+    }
+
+    #[test]
+    fn terminal_typography_override_is_isolated_per_session() {
+        let settings = UserSettings::default();
+        let first = TerminalSettings::from_user_settings(&settings, Some(20.));
+        let second = TerminalSettings::from_user_settings(&settings, None);
+
+        assert_eq!(first.font_size, 20.);
+        assert_eq!(second.font_size, settings.terminal_font_size);
     }
 
     /// 选择范围包含判断。

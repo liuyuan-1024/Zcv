@@ -10,7 +10,7 @@ use gpui::{
     Action, AnyElement, App, IntoElement, ParentElement, SharedString, Window, div, prelude::*,
 };
 use zcv_actions::{FindNext, FindPrevious, ToggleCaseSensitive, ToggleRegex, ToggleWholeWord};
-use zcv_theme::{color, typography};
+use zcv_theme::color;
 
 use crate::button::Button;
 use crate::input_shell::InputShell;
@@ -182,7 +182,8 @@ impl IntoElement for SearchInput {
 }
 
 impl RenderOnce for SearchInput {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let ui_size = window.rem_size();
         let colors = color::current(cx);
         let prefix = self.id_prefix.as_ref();
         let mut shell = InputShell::new(self.input);
@@ -226,7 +227,7 @@ impl RenderOnce for SearchInput {
                     } else {
                         colors.text_placeholder
                     })
-                    .text_size(typography::ui_size())
+                    .text_size(ui_size)
                     .child(format!("{current}/{total}")),
             );
         }

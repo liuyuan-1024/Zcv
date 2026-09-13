@@ -35,6 +35,7 @@ use zcv_text::{
     TextResult, TransactionId, TransactionMergePolicy, TransactionMetadata, TransactionSource,
 };
 use zcv_theme::{color, typography};
+use zcv_workspace::typography_for_window;
 
 use super::blink_manager::BlinkManager;
 use super::display_map::{
@@ -2484,18 +2485,19 @@ impl Render for Editor {
 
         // 普通 SingleLine / AutoHeight 用于搜索框等 UI 场景，应使用 UI 排版；
         // 嵌入代码编辑器的单行输入（如重命名）显式跟随内容排版。
+        let type_scale = typography_for_window(window, cx);
         let (font, text_size, line_height) =
             if self.mode == EditorMode::Full || self.content_typography {
                 (
                     typography::content_font(),
-                    typography::content_size(),
-                    typography::content_line(),
+                    type_scale.content_size(),
+                    type_scale.content_line(),
                 )
             } else {
                 (
                     typography::ui_font(),
-                    typography::ui_size(),
-                    typography::ui_line(),
+                    type_scale.ui_size(),
+                    type_scale.ui_line(),
                 )
             };
         let visible_lines = match self.mode {

@@ -2,10 +2,11 @@ use std::path::{Path, PathBuf};
 
 use gpui::{AnyElement, ClipboardItem, Context, Entity, Render, Window, div, prelude::*};
 use zcv_project::Project;
-use zcv_theme::{color, typography};
+use zcv_theme::color;
 use zcv_ui::{ButtonLike, TooltipSpec};
 
 use crate::ItemHandle;
+use crate::typography_for_window;
 
 const MAX_SEGMENTS: usize = 12;
 
@@ -37,7 +38,8 @@ impl Breadcrumbs {
 }
 
 impl Render for Breadcrumbs {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let typography = typography_for_window(window, cx);
         let project_root = self
             .project
             .as_ref()
@@ -78,7 +80,7 @@ impl Render for Breadcrumbs {
                 .flex()
                 .items_center()
                 .gap_1()
-                .text_size(typography::ui_size())
+                .text_size(typography.ui_size())
                 .children(children),
         );
         let button = if let Some(path) = copy_path {

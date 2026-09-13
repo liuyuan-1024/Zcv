@@ -71,7 +71,7 @@ struct TooltipView {
 }
 
 impl Render for TooltipView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let popup = div()
             .flex()
             .items_center()
@@ -80,7 +80,7 @@ impl Render for TooltipView {
             // 浮动层挂在 window 层，不在根元素树内：
             // 字号经 window rem 基准自动正确；字体需显式设置；行高 = ui_line()（墨迹高度，与根元素同源 token）。
             .font(typography::ui_font())
-            .line_height(typography::ui_line())
+            .line_height(typography::ui_line_at(window.rem_size()))
             .bg(color::current(cx).elevated_surface_background)
             .border_1()
             .border_color(color::current(cx).border_variant)

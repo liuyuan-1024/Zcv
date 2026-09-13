@@ -18,11 +18,11 @@ use gpui::{
 use zcv_actions::TreeActivate;
 use zcv_editor::Editor;
 use zcv_project::{Project, WorktreeEntry, translate_path};
-use zcv_theme::{color, space, typography};
+use zcv_theme::{color, space};
 use zcv_ui::ConfirmOverlay;
 use zcv_ui::Scrollbar;
 use zcv_ui::{RowClickAction, TreeState, drag_autoscroll_delta};
-use zcv_workspace::{Panel, PanelEvent, ToastKind, Workspace};
+use zcv_workspace::{Panel, PanelEvent, ToastKind, Workspace, typography_for_window};
 
 use zcv_settings::SettingsStore;
 
@@ -538,6 +538,7 @@ impl ProjectTreePanel {
 
 impl gpui::Render for ProjectTreePanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        let typography = typography_for_window(window, cx);
         if self.name_edit_focus_subscription.is_none() {
             let entry_name_editor_focus = self.entry_name_editor.read(cx).focus_handle();
             self.name_edit_focus_subscription =
@@ -601,7 +602,7 @@ impl gpui::Render for ProjectTreePanel {
                         .absolute()
                         .bottom(space::S4)
                         .right(space::S6)
-                        .text_size(typography::ui_size() * 0.85)
+                        .text_size(typography.ui_size() * 0.85)
                         .text_color(color::current(cx).text_muted)
                         .child(format!("复制中 {done}/{total}")),
                 )

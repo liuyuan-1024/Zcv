@@ -17,7 +17,8 @@ use zcv_actions::{
     ToggleLeftDock, ToggleMaximizeWindow, ToggleRightDock,
 };
 use zcv_project::Project;
-use zcv_theme::{color, typography};
+use zcv_settings::SettingsStore;
+use zcv_theme::{color, typography, typography::Typography};
 
 use crate::ItemHandle;
 use crate::dock::{Dock, DockEvent, DockPosition, DockStructure, DraggedDock, render_body};
@@ -64,6 +65,10 @@ pub struct Workspace {
     layout_path: PathBuf,
     _layout_save_task: Option<Task<()>>,
     _window_bounds_save_task: Option<Task<()>>,
+    /// 当前工作区的临时排版覆盖；设置基准仍由 SettingsStore 提供。
+    typography: Typography,
+    content_font_size_override: Option<f32>,
+    ui_font_size_override: Option<f32>,
 }
 
 impl Workspace {
@@ -85,6 +90,14 @@ impl Workspace {
 
     fn build(project: Entity<Project>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
+
+        let settings = SettingsStore::try_get(cx).unwrap_or_default();
+        let typography = Typography::new(
+            cx,
+            settings.content_font_size,
+            settings.ui_font_size,
+            settings.content_line_height,
+        );
 
         let pane = cx.new(Pane::new);
         let layout_path = layout_state::path_for_workspace(project.read(cx).root());
@@ -184,6 +197,9 @@ impl Workspace {
             layout_path,
             _layout_save_task: None,
             _window_bounds_save_task: None,
+            typography,
+            content_font_size_override: None,
+            ui_font_size_override: None,
         }
     }
 
@@ -222,6 +238,58 @@ impl Workspace {
 
     pub fn project(&self) -> &Entity<Project> {
         &self.project
+    }
+
+    /// 当前工作区实际使用的排版快照。
+    pub fn typography(&self) -> Typography {
+        self.typography
+    }
+
+    /// 调整当前工作区的内容字号，不修改用户设置，也不影响其他工作区。
+    pub fn increase_content_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
+        let size = (f32::from(self.typography.content_size()) + delta).max(8.);
+        self.content_font_size_override = Some(size);
+        self.rebuild_typography(cx);
+    }
+
+    /// 将当前工作区的内容字号恢复到设置基准。
+    pub fn reset_content_font_size(&mut self, cx: &mut Context<Self>) {
+        self.content_font_size_override = None;
+        self.rebuild_typography(cx);
+    }
+
+    /// 调整当前工作区的 UI 字号，不修改用户设置，也不影响其他工作区。
+    pub fn increase_ui_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
+        let size = (f32::from(self.typography.ui_size()) + delta).max(8.);
+        self.ui_font_size_override = Some(size);
+        self.rebuild_typography(cx);
+    }
+
+    /// 将当前工作区的 UI 字号恢复到设置基准。
+    pub fn reset_ui_font_size(&mut self, cx: &mut Context<Self>) {
+        self.ui_font_size_override = None;
+        self.rebuild_typography(cx);
+    }
+
+    /// 应用设置变更：已有的工作区临时覆盖继续有效，未覆盖的维度跟随新基准。
+    pub fn apply_typography_settings(
+        &mut self,
+        settings: &zcv_settings::UserSettings,
+        cx: &mut Context<Self>,
+    ) {
+        self.typography = Typography::new(
+            cx,
+            self.content_font_size_override
+                .unwrap_or(settings.content_font_size),
+            self.ui_font_size_override.unwrap_or(settings.ui_font_size),
+            settings.content_line_height,
+        );
+    }
+
+    fn rebuild_typography(&mut self, cx: &mut Context<Self>) {
+        let settings = SettingsStore::try_get(cx).unwrap_or_default();
+        self.apply_typography_settings(&settings, cx);
+        cx.notify();
     }
 
     pub fn status_bar(&self) -> &Entity<StatusBar> {
@@ -873,16 +941,17 @@ impl Render for Workspace {
         let bottom_dock_entity = self.bottom_dock.clone();
 
         let titlebar = self.titlebar.as_ref();
+        let typography = self.typography;
 
         let mut root = div()
             .id("app-view")
-            // 全局字号经 window rem 基准设置（open_window 时 set_rem_size）；
-            // 字体在此设置，行高 = ui_line()（墨迹高度，完全容纳字形墨迹的最小行盒）：
+            // UI 字号经当前工作区的 window rem 基准设置；
+            // 字体在此设置，行高为当前工作区的 UI 墨迹高度：
             // 行盒 ⊇ 墨迹恒成立，overflow_hidden 容器不裁剪墨迹；
             // padding 自墨迹盒边缘起算，同值全局视觉一致；
             // 全树（含挂载在根下的 toast）继承，子元素不再重复设置（需要其他行高时显式覆盖）。
             .font(typography::ui_font())
-            .line_height(typography::ui_line())
+            .line_height(typography.ui_line())
             .track_focus(&self.focus)
             .key_context("Workspace")
             .size_full()
@@ -1011,6 +1080,28 @@ mod tests {
         let (workspace, cx) = cx.add_window_view(Workspace::new_empty);
         let project = cx.read_entity(&workspace, |workspace, _| workspace.project().clone());
         assert!(!cx.read_entity(&project, |project, _| project.has_worktree()));
+    }
+
+    #[gpui::test]
+    fn typography_override_belongs_to_one_workspace(cx: &mut TestAppContext) {
+        let (first, cx) = cx.add_window_view(Workspace::new_empty);
+        let (second, cx) = cx.add_window_view(Workspace::new_empty);
+        let original = cx.read_entity(&second, |workspace, _| {
+            f32::from(workspace.typography().content_size())
+        });
+
+        first.update(cx, |workspace, cx| {
+            workspace.increase_content_font_size(1., cx);
+        });
+
+        let first_size = cx.read_entity(&first, |workspace, _| {
+            f32::from(workspace.typography().content_size())
+        });
+        let second_size = cx.read_entity(&second, |workspace, _| {
+            f32::from(workspace.typography().content_size())
+        });
+        assert_eq!(second_size, original);
+        assert_eq!(first_size, original + 1.);
     }
 
     /// 回归：序列化 visible=true 的 dock 随面板注册恢复打开（重启不展开问题）。

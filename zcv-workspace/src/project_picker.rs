@@ -16,12 +16,12 @@ use gpui::{
 use zcv_actions::{DeleteRecentProject, OpenLocalProject, ToggleProjectPicker};
 use zcv_keymap::KeyBindings;
 use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, PickerHost, picker_divider};
-use zcv_theme::{color, typography};
+use zcv_theme::color;
 use zcv_ui::Button;
 use zcv_ui::ListItem;
 
 use crate::recent_projects::{self, ProjectEntry};
-use crate::{ToastKind, Workspace};
+use crate::{ToastKind, Workspace, typography_for_window};
 
 // ═══ 回调 ════════════════════════════════════════════════════════
 
@@ -169,7 +169,8 @@ impl PickerDelegate for ProjectPickerDelegate {
     fn placeholder_text(&self) -> &str {
         "搜索项目..."
     }
-    fn render_footer(&self, _window: &mut Window, cx: &mut App) -> Option<gpui::AnyElement> {
+    fn render_footer(&self, window: &mut Window, cx: &mut App) -> Option<gpui::AnyElement> {
+        let typography = typography_for_window(window, cx);
         let shortcut = cx
             .try_global::<KeyBindings>()
             .and_then(|kb| kb.display_shortcut_named(OpenLocalProject.name()));
@@ -178,7 +179,7 @@ impl PickerDelegate for ProjectPickerDelegate {
             item.end_slot(
                 div()
                     .text_color(color::current(cx).text_placeholder)
-                    .text_size(typography::ui_size())
+                    .text_size(typography.ui_size())
                     .child(s),
             )
         } else {

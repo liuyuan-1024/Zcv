@@ -17,7 +17,7 @@ use zcv_git::DiffHunkKind;
 use zcv_language::BracketPair;
 use zcv_multi_buffer::DiffHunkStaging;
 use zcv_text::{ByteOffset, Line, LogicalColumn, Position, Snapshot, TextRange};
-use zcv_theme::{color, space, typography};
+use zcv_theme::{color, space};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon, drag_autoscroll_delta};
 
 use crate::selection::SelectionSet;
@@ -822,6 +822,7 @@ fn buffer_header_element(
             cx,
         )
     });
+    let typography = zcv_workspace::typography_for_window(window, cx);
     let block_id: ElementId = if sticky {
         ("sticky-buffer-header-block", row.get()).into()
     } else {
@@ -920,7 +921,7 @@ fn buffer_header_element(
                         .child(SvgIcon::new("icons/file.svg").id(file_id))
                         .child(
                             div()
-                                .text_size(typography::content_size())
+                                .text_size(typography.content_size())
                                 .text_color(colors.text)
                                 .whitespace_nowrap()
                                 .child(filename),
@@ -930,7 +931,7 @@ fn buffer_header_element(
                                 div()
                                     .min_w_0()
                                     .truncate()
-                                    .text_size(typography::content_size())
+                                    .text_size(typography.content_size())
                                     .text_color(colors.text_muted)
                                     .child(parent),
                             )
@@ -3324,6 +3325,7 @@ mod tests {
     use zcv_multi_buffer::{DiffHunkStaging, DisplayHunk};
     use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
     use zcv_text::{Buffer, BufferConfig, ByteOffset, Line, TextRange};
+    use zcv_theme::typography;
 
     #[test]
     fn collapsed_deleted_hunk_triangle_is_centered_on_the_deletion_boundary() {

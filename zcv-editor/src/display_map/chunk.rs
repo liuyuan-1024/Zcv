@@ -1155,7 +1155,7 @@ mod tests {
                 styles: &[],
                 backgrounds: &[],
                 marked: &[],
-                dimmed: &[1..2],
+                dimmed: std::slice::from_ref(&(1..2)),
             },
             0..text.len(),
         );

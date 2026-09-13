@@ -12,6 +12,8 @@ use gpui::{Action, App, KeyBinding, KeyBindingContextPredicate};
 use serde::Deserialize;
 use serde_json::Value;
 
+mod platform;
+
 // ── 公开类型 ─────────────────────────────────────────────────────────
 
 /// 快捷键绑定集合：正向（注册） + 反向（查询）。
@@ -29,7 +31,7 @@ impl KeyBindings {
         self.shortcuts
             .iter()
             .find(|(candidate, _)| candidate.partial_eq(action))
-            .map(|(_, keys)| display_format(keys))
+            .map(|(_, keys)| platform::display_format(keys))
     }
 
     /// 仅在调用方没有 Action 实例时按名称查询。
@@ -37,117 +39,8 @@ impl KeyBindings {
         self.shortcuts
             .iter()
             .find(|(action, _)| action.name() == action_name)
-            .map(|(_, keys)| display_format(keys))
+            .map(|(_, keys)| platform::display_format(keys))
     }
-}
-
-/// 将原始快捷键字符串转为当前平台适合显示的格式。
-#[cfg(target_os = "macos")]
-fn display_format(raw: &str) -> String {
-    macos_display(raw)
-}
-
-/// 将原始快捷键字符串转为当前平台适合显示的格式。
-#[cfg(not(target_os = "macos"))]
-fn display_format(raw: &str) -> String {
-    text_display(raw)
-}
-
-/// macOS：`cmd-shift-e` → `⌘⇧E`
-#[cfg(target_os = "macos")]
-fn macos_display(raw: &str) -> String {
-    fn modifier(key: &str) -> Option<&'static str> {
-        match key {
-            "ctrl" | "control" => Some("⌃"),
-            "shift" => Some("⇧"),
-            "option" | "alt" => Some("⌥"),
-            "cmd" | "command" => Some("⌘"),
-            _ => None,
-        }
-    }
-
-    /// 功能键的 macOS 键帽符号（键帽符号数据来源：Apple 官方键盘符号表）。
-    fn key_symbol(key: &str) -> Option<&'static str> {
-        match key {
-            "backspace" => Some("⌫"),
-            "delete" => Some("⌦"),
-            "enter" | "return" => Some("↩"),
-            "escape" => Some("⎋"),
-            "tab" => Some("⇥"),
-            "capslock" => Some("⇪"),
-            "up" => Some("↑"),
-            "down" => Some("↓"),
-            "left" => Some("←"),
-            "right" => Some("→"),
-            "home" => Some("↖"),
-            "end" => Some("↘"),
-            "pageup" => Some("⇞"),
-            "pagedown" => Some("⇟"),
-            "space" => Some("␣"),
-            _ => None,
-        }
-    }
-
-    // chord 段（如 `ctrl-k ctrl-s`）用空格分隔，段内按键直接拼接。
-    raw.split_whitespace()
-        .map(|chord| {
-            chord
-                .split('-')
-                .map(|part| {
-                    modifier(part)
-                        .map(|s| s.to_string())
-                        .or_else(|| key_symbol(part).map(|s| s.to_string()))
-                        .unwrap_or_else(|| {
-                            if part.len() == 1 {
-                                part.to_uppercase()
-                            } else {
-                                part.to_string()
-                            }
-                        })
-                })
-                .collect::<Vec<_>>()
-                .join("")
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Linux / Windows：`ctrl-shift-e` → `Ctrl+Shift+E`
-#[cfg(not(target_os = "macos"))]
-fn text_display(raw: &str) -> String {
-    fn modifier(key: &str) -> Option<&'static str> {
-        match key {
-            "cmd" | "ctrl" => Some("Ctrl"),
-            "shift" => Some("Shift"),
-            "alt" | "option" => Some("Alt"),
-            "super" => Some("Super"),
-            "win" => Some("Win"),
-            _ => None,
-        }
-    }
-
-    // chord 段（如 `ctrl-k ctrl-s`）用空格分隔，段内按键用 `+` 连接。
-    raw.split_whitespace()
-        .map(|chord| {
-            chord
-                .split('-')
-                .map(|part| {
-                    if part == "," {
-                        return ",".to_string();
-                    }
-                    modifier(part).map(|s| s.to_string()).unwrap_or_else(|| {
-                        if part.len() == 1 {
-                            part.to_uppercase()
-                        } else {
-                            part.to_string()
-                        }
-                    })
-                })
-                .collect::<Vec<_>>()
-                .join("+")
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 impl gpui::Global for KeyBindings {}
@@ -167,7 +60,7 @@ pub fn init(cx: &mut App) -> Result<()> {
 
 /// 加载当前平台的内置 keymap。
 fn load(cx: &App) -> Result<KeyBindings> {
-    let (source, json) = platform_keymap()?;
+    let (source, json) = platform::keymap()?;
     load_json(source, &json, cx)
 }
 
@@ -308,20 +201,6 @@ impl RawAction {
     }
 }
 
-/// 解析当前平台的唯一内置快捷键资源。
-fn platform_keymap() -> Result<(&'static str, Cow<'static, str>)> {
-    #[cfg(target_os = "macos")]
-    let source = "default-macos.json";
-    #[cfg(target_os = "windows")]
-    let source = "default-windows.json";
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    let source = "default-linux.json";
-
-    let json = zcv_assets::text(&format!("keymaps/{source}"))
-        .with_context(|| format!("缺少内置快捷键 {source}"))?;
-    Ok((source, json))
-}
-
 /// 检测同一 (键位, 上下文) 被映射到不同 action 的冲突并告警。
 fn detect_conflicts(groups: &[RawBindingGroup]) {
     let mut seen: HashMap<(&str, Option<&str>), &RawAction> = HashMap::new();
@@ -410,11 +289,11 @@ mod tests {
 
         assert_eq!(
             keybindings.display_shortcut(&FocusOrHidePanel::new("project-tree")),
-            Some(display_format("cmd-shift-e"))
+            Some(platform::display_format("cmd-shift-e"))
         );
         assert_eq!(
             keybindings.display_shortcut(&FocusOrHidePanel::new("version-control")),
-            Some(display_format("cmd-shift-g"))
+            Some(platform::display_format("cmd-shift-g"))
         );
     }
 
@@ -476,7 +355,7 @@ mod tests {
 
     #[test]
     fn default_keymap_resolves_to_platform_asset() {
-        let (default_source, _) = platform_keymap().unwrap();
+        let (default_source, _) = platform::keymap().unwrap();
         #[cfg(target_os = "macos")]
         assert_eq!(default_source, "default-macos.json");
         #[cfg(target_os = "windows")]
@@ -625,17 +504,17 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_display_uses_key_cap_symbols() {
-        assert_eq!(macos_display("cmd-backspace"), "⌘⌫");
-        assert_eq!(macos_display("cmd-shift-e"), "⌘⇧E");
-        assert_eq!(macos_display("ctrl-alt-delete"), "⌃⌥⌦");
-        assert_eq!(macos_display("shift-pageup"), "⇧⇞");
-        assert_eq!(macos_display("cmd-enter"), "⌘↩");
-        assert_eq!(macos_display("alt-left"), "⌥←");
-        assert_eq!(macos_display("shift-tab"), "⇧⇥");
-        assert_eq!(macos_display("cmd-space"), "⌘␣");
-        assert_eq!(macos_display("cmd-a"), "⌘A");
+        assert_eq!(platform::macos_display("cmd-backspace"), "⌘⌫");
+        assert_eq!(platform::macos_display("cmd-shift-e"), "⌘⇧E");
+        assert_eq!(platform::macos_display("ctrl-alt-delete"), "⌃⌥⌦");
+        assert_eq!(platform::macos_display("shift-pageup"), "⇧⇞");
+        assert_eq!(platform::macos_display("cmd-enter"), "⌘↩");
+        assert_eq!(platform::macos_display("alt-left"), "⌥←");
+        assert_eq!(platform::macos_display("shift-tab"), "⇧⇥");
+        assert_eq!(platform::macos_display("cmd-space"), "⌘␣");
+        assert_eq!(platform::macos_display("cmd-a"), "⌘A");
         // chord 段用空格分隔，不粘连
-        assert_eq!(macos_display("ctrl-k ctrl-s"), "⌃K ⌃S");
+        assert_eq!(platform::macos_display("ctrl-k ctrl-s"), "⌃K ⌃S");
     }
 
     /// Editor 上下文必须始终覆盖行首尾选择绑定，防止 keymap 编辑时被意外删除。

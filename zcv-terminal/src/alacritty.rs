@@ -67,7 +67,7 @@ pub(super) enum PtySender {
     Live {
         notifier: Notifier,
     },
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     Inert,
 }
 
@@ -76,18 +76,19 @@ impl PtySender {
     pub(super) fn notify(&self, input: impl Into<Cow<'static, [u8]>>) {
         match self {
             Self::Live { notifier } => notifier.notify(input),
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             Self::Inert => {}
         }
     }
 
     /// 通知 PTY 调整窗口尺寸（触发 SIGWINCH 与 shell 的 resize 感知）。
     pub(super) fn resize(&self, bounds: &TerminalBounds) {
-        #[cfg(not(test))]
+        #[cfg(not(all(test, unix)))]
         let Self::Live { notifier } = self;
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         let Some(notifier) = (match self {
             Self::Live { notifier } => Some(notifier),
+            #[cfg(all(test, unix))]
             Self::Inert => None,
         }) else {
             return;
@@ -100,11 +101,12 @@ impl PtySender {
 
     /// 优雅关闭事件循环线程。
     pub(super) fn shutdown(&self) {
-        #[cfg(not(test))]
+        #[cfg(not(all(test, unix)))]
         let Self::Live { notifier } = self;
-        #[cfg(test)]
+        #[cfg(all(test, unix))]
         let Some(notifier) = (match self {
             Self::Live { notifier } => Some(notifier),
+            #[cfg(all(test, unix))]
             Self::Inert => None,
         }) else {
             return;
@@ -113,7 +115,7 @@ impl PtySender {
         let _ = notifier.0.send(Msg::Shutdown);
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn inert() -> Self {
         Self::Inert
     }
@@ -186,11 +188,6 @@ pub(super) fn process_id_getter(pty: &tty::Pty) -> ProcessIdGetter {
     ProcessIdGetter::new(fallback_pid)
 }
 
-#[cfg(all(test, windows))]
-pub(super) fn process_id_getter_for_test() -> ProcessIdGetter {
-    ProcessIdGetter::new(0)
-}
-
 /// 创建终端模拟器实例（网格状态机），包裹在公平锁中以供 IO 线程与 UI 线程共享。
 pub(super) fn new_term(
     config: &Config,
@@ -240,7 +237,7 @@ pub(super) fn resize(term: &mut AlacrittyTerm, bounds: &TerminalBounds) {
     term.resize(*bounds);
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) fn write_output(term: &mut AlacrittyTerm, bytes: &[u8]) {
     let mut processor = alacritty_terminal::vte::ansi::Processor::<
         alacritty_terminal::vte::ansi::StdSyncHandler,

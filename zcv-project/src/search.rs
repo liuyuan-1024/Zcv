@@ -5,17 +5,14 @@
 //! 接收方放弃通道（新搜索取代或视图关闭）时，后台在下次发送时感知并提前结束扫描。
 
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-#[cfg(unix)]
-use std::os::unix::ffi::OsStringExt;
-
 use async_channel::{Receiver, Sender};
 use futures::{StreamExt, stream};
 use gpui::{BackgroundExecutor, Task};
+use zcv_git::path_from_git_bytes;
 use zcv_text::{
     Buffer, BufferConfig, ByteOffset, Line, PreparedSearchQuery, SearchQuery, Snapshot, TextRange,
 };
@@ -238,22 +235,12 @@ fn git_search_paths(plan: &WorktreeSearchPlan) -> Option<Vec<PathBuf>> {
             .stdout
             .split(|byte| *byte == 0)
             .filter(|path| !path.is_empty())
-            .map(git_path_from_bytes)
+            .map(path_from_git_bytes)
             .map(|relative| plan.root.join(relative))
             // Git 输出的是文件条目；去掉逐文件 metadata 查询，实际读取失败时仍由下方 read_to_string 路径自然跳过。
             .filter(|path| !plan.is_excluded(path))
             .collect(),
     )
-}
-
-#[cfg(unix)]
-fn git_path_from_bytes(path: &[u8]) -> PathBuf {
-    PathBuf::from(OsString::from_vec(path.to_vec()))
-}
-
-#[cfg(not(unix))]
-fn git_path_from_bytes(path: &[u8]) -> PathBuf {
-    PathBuf::from(OsString::from(String::from_utf8_lossy(path).into_owned()))
 }
 
 fn excerpt_matches(snapshot: &Snapshot, matches: &[TextRange]) -> Vec<ExcerptMatches> {

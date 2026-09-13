@@ -5,7 +5,8 @@
 //! 默认值与各领域设置由本模块统一提供；具体的运行时类型转换由消费方完成。
 
 use std::borrow::Cow;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write as _;
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -15,10 +16,11 @@ use gpui::{App, AppContext, Context, Entity, EventEmitter, Global, Task};
 use serde::Deserialize;
 use zcv_fs_watch::{FsWatcher, Watcher};
 
+mod paths;
+
 /// 配置目录与设置文件路径解析（用户目录 → 配置目录 → 设置文件）。
 pub fn config_dir() -> &'static Path {
-    static CONFIG_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-    CONFIG_DIR.get_or_init(|| home_dir().join(".zcv")).as_path()
+    paths::config_dir()
 }
 
 fn settings_file() -> &'static Path {
@@ -26,16 +28,6 @@ fn settings_file() -> &'static Path {
     SETTINGS_FILE
         .get_or_init(|| config_dir().join("settings.json"))
         .as_path()
-}
-
-fn home_dir() -> std::path::PathBuf {
-    #[cfg(windows)]
-    let home = std::env::var_os("USERPROFILE");
-    #[cfg(not(windows))]
-    let home = std::env::var_os("HOME");
-
-    home.map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()))
 }
 
 static INITIAL_USER_SETTINGS: LazyLock<Cow<'static, str>> = LazyLock::new(|| {
@@ -296,7 +288,29 @@ pub fn init(cx: &mut App) {
     let error_reporter = cx.new(|_| SettingsErrorReporter::new());
     cx.set_global(GlobalSettingsErrorReporter(error_reporter.clone()));
     let settings_path = settings_file();
-    let content = fs::read_to_string(settings_path).unwrap_or_default();
+    if let Err(error) = ensure_user_settings_file() {
+        error_reporter.update(cx, |reporter, cx| {
+            reporter.report(
+                format!(
+                    "初始化用户设置文件失败（{}）：{error:#}",
+                    settings_path.display()
+                ),
+                cx,
+            )
+        });
+    }
+    let content = match fs::read_to_string(settings_path) {
+        Ok(content) => content,
+        Err(error) => {
+            error_reporter.update(cx, |reporter, cx| {
+                reporter.report(
+                    format!("读取设置文件失败（{}）：{error:#}", settings_path.display()),
+                    cx,
+                )
+            });
+            String::new()
+        }
+    };
     let mut settings = UserSettings::default();
     let mut last_user_settings_content = None;
     if !content.is_empty() {
@@ -409,13 +423,23 @@ pub fn init(cx: &mut App) {
 
 pub fn ensure_user_settings_file() -> Result<&'static Path> {
     let path = settings_file();
+    ensure_settings_file(path, &INITIAL_USER_SETTINGS)?;
+    Ok(path)
+}
+
+fn ensure_settings_file(path: &Path, content: &str) -> Result<()> {
     let parent = path.parent().context("设置文件缺少父目录")?;
     fs::create_dir_all(parent).with_context(|| format!("无法创建设置目录 {}", parent.display()))?;
-    if !path.exists() {
-        fs::write(path, INITIAL_USER_SETTINGS.as_bytes())
-            .with_context(|| format!("无法创建设置文件 {}", path.display()))?;
+    match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(mut file) => file
+            .write_all(content.as_bytes())
+            .with_context(|| format!("无法写入设置文件 {}", path.display()))?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("无法创建设置文件 {}", path.display()));
+        }
     }
-    Ok(path)
+    Ok(())
 }
 
 fn parse_user_settings(content: &str) -> Result<UserSettingsContent> {
@@ -428,6 +452,33 @@ fn parse_user_settings(content: &str) -> Result<UserSettingsContent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_user_settings_file_is_created_from_builtin_content() {
+        let directory = tempfile::tempdir().expect("应创建临时设置目录");
+        let path = directory.path().join("settings.json");
+
+        ensure_settings_file(&path, &INITIAL_USER_SETTINGS).expect("应创建用户设置文件");
+
+        assert_eq!(
+            fs::read_to_string(path).expect("应读取新建的用户设置文件"),
+            INITIAL_USER_SETTINGS.as_ref()
+        );
+    }
+
+    #[test]
+    fn existing_user_settings_file_is_not_overwritten() {
+        let directory = tempfile::tempdir().expect("应创建临时设置目录");
+        let path = directory.path().join("settings.json");
+        fs::write(&path, r#"{"theme":"one-dark"}"#).expect("应创建用户设置文件");
+
+        ensure_settings_file(&path, &INITIAL_USER_SETTINGS).expect("已有设置文件应可重复初始化");
+
+        assert_eq!(
+            fs::read_to_string(path).expect("应读取用户设置文件"),
+            r#"{"theme":"one-dark"}"#
+        );
+    }
 
     #[test]
     fn missing_fields_use_defaults() {

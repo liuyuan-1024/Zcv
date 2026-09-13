@@ -7,6 +7,8 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result};
 
+mod platform;
+
 /// 项目根的工作区身份：固定 FNV-1a 64 位哈希的十六进制形式。
 /// 空工作区使用固定标识；同一项目在所有持久化文件中共用同一身份。
 pub(crate) fn workspace_identity(root: Option<&Path>) -> String {
@@ -29,10 +31,5 @@ pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     let temporary = path.with_extension("json.tmp");
     fs::write(&temporary, content)
         .with_context(|| format!("无法写入临时文件 {}", temporary.display()))?;
-    #[cfg(windows)]
-    if path.exists() {
-        fs::remove_file(path).with_context(|| format!("无法替换旧文件 {}", path.display()))?;
-    }
-    fs::rename(&temporary, path).with_context(|| format!("无法提交文件 {}", path.display()))?;
-    Ok(())
+    platform::replace_file(&temporary, path)
 }

@@ -1,9 +1,5 @@
 name: 发布更新
 
-# 触发方式：
-# 1. push 以 v 开头的 tag（推荐）：git tag v0.8.19 && git push origin v0.8.19
-# 2. 手动触发（tag 已存在时重跑）：Actions 页面 → 发布更新 → Run workflow
-
 on:
   push:
     tags:
@@ -22,66 +18,106 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  build-macos:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v5
-
-      - name: 提取版本
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: 准备版本环境
         run: |
-          if [[ -n "${{ github.event.inputs.tag }}" ]]; then
-            TAG="${{ github.event.inputs.tag }}"
-          else
-            TAG="${GITHUB_REF#refs/tags/}"
-          fi
+          if [[ -n "${{ github.event.inputs.tag }}" ]]; then TAG="${{ github.event.inputs.tag }}"; else TAG="${GITHUB_REF#refs/tags/}"; fi
           VERSION="${TAG#v}"
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-
-      - name: 核对版本一致性
-        run: |
-          CARGO_VERSION="$(grep '^version' Cargo.toml | head -n1 | cut -d'"' -f2)"
-          if [[ "$CARGO_VERSION" != "$VERSION" ]]; then
-            echo "tag v$VERSION 与 Cargo.toml 版本 $CARGO_VERSION 不一致，发布中止" >&2
-            exit 1
-          fi
-          echo "版本一致：v$VERSION"
-
+          CARGO_VERSION="$(grep '^version' Cargo.toml | head -n1 | cut -d'\"' -f2)"
+          [[ "$CARGO_VERSION" == "$VERSION" ]] || { echo "tag v$VERSION 与 Cargo.toml 版本 $CARGO_VERSION 不一致" >&2; exit 1; }
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
-
       - uses: Swatinem/rust-cache@v2
-
       - name: 准备 Metal Toolchain
         run: |
-          if ! xcrun metal -v >/dev/null 2>&1; then
-            xcodebuild -downloadComponent MetalToolchain
-          fi
-
-      - name: 构建并打包
+          if ! xcrun metal -v >/dev/null 2>&1; then xcodebuild -downloadComponent MetalToolchain; fi
+      - name: 构建 macOS 更新包
         run: scripts/bundle-mac --no-dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zcv-update-macos
+          path: target/aarch64-apple-darwin/release/Zcv_*_darwin_arm64.zip
 
+  build-windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: 准备版本环境
+        shell: pwsh
+        run: |
+          if ("${{ github.event.inputs.tag }}") { $tag = "${{ github.event.inputs.tag }}" } else { $tag = $env:GITHUB_REF.Substring(10) }
+          $version = $tag.Substring(1)
+          "TAG=$tag" >> $env:GITHUB_ENV
+          "VERSION=$version" >> $env:GITHUB_ENV
+          $cargoVersion = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          if ($cargoVersion -ne $version) { throw "tag v$version 与 Cargo.toml 版本 $cargoVersion 不一致" }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - name: 构建 Windows 更新包
+        shell: pwsh
+        run: ./scripts/bundle-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zcv-update-windows
+          path: target/x86_64-pc-windows-msvc/release/Zcv_*_windows_x86_64.zip
+
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: 准备版本环境
+        run: |
+          if [[ -n "${{ github.event.inputs.tag }}" ]]; then TAG="${{ github.event.inputs.tag }}"; else TAG="${GITHUB_REF#refs/tags/}"; fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: zcv-update-macos
+          path: target/release-assets/macos
+      - uses: actions/download-artifact@v4
+        with:
+          name: zcv-update-windows
+          path: target/release-assets/windows
+      - uses: dtolnay/rust-toolchain@stable
+      - name: 准备清单输入
+        run: |
+          mkdir -p target/aarch64-apple-darwin/release
+          cp "target/release-assets/macos/Zcv_${VERSION}_darwin_arm64.zip" target/aarch64-apple-darwin/release/
       - name: 写入签名私钥
         run: |
           printf '%s\n' "${{ secrets.ZCV_UPDATE_PRIVATE_KEY }}" > /tmp/zcv-update-key.b64
           chmod 600 /tmp/zcv-update-key.b64
-
       - name: 生成清单并签名
         run: scripts/release-update /tmp/zcv-update-key.b64 --no-build
-
       - name: 清理私钥
         if: always()
         run: rm -f /tmp/zcv-update-key.b64
-
       - name: 创建 GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           OUT_DIR="target/aarch64-apple-darwin/release"
+          WINDOWS_ZIP="$(find target/release-assets/windows -name "Zcv_${VERSION}_windows_x86_64.zip" -type f -print -quit)"
+          test -n "$WINDOWS_ZIP"
           gh release create "$TAG" \
             "$OUT_DIR/latest.json" \
             "$OUT_DIR/latest.json.sig" \
             "$OUT_DIR/Zcv_${VERSION}_darwin_arm64.zip" \
+            "$WINDOWS_ZIP" \
             --title "Zcv $VERSION" \
             --generate-notes

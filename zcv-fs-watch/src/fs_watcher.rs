@@ -18,6 +18,8 @@ use std::time::Duration;
 use crossbeam_channel::Sender as CbSender;
 use notify::{Event, EventKind, RecursiveMode, Watcher as NotifyWatcher};
 
+mod platform;
+
 // ═══════════════════════════════════════════════════════════════════
 // 公共类型
 // ═══════════════════════════════════════════════════════════════════
@@ -152,7 +154,7 @@ impl WatchPaths {
     ///
     /// 轮询（PollWatcher）总是递归的；macOS 原生 watcher 同样按递归注册处理。
     fn covered_by_recursive_ancestor(&self, path: &Path, mode: WatcherMode) -> bool {
-        if mode != WatcherMode::Poll && !cfg!(target_os = "macos") {
+        if !platform::recursive_registration_covers(mode == WatcherMode::Poll) {
             return false;
         }
         for ancestor in path.ancestors().skip(1) {
@@ -391,14 +393,7 @@ impl GlobalWatcher {
                     .unwrap()
                     .as_mut()
                     .expect("native watcher 已初始化")
-                    .watch(
-                        path,
-                        if cfg!(target_os = "macos") {
-                            RecursiveMode::Recursive
-                        } else {
-                            RecursiveMode::NonRecursive
-                        },
-                    )?;
+                    .watch(path, platform::native_recursive_mode())?;
             }
             WatcherMode::Poll => {
                 ensure_poll_watcher(&self.poll_watcher)?;
@@ -604,8 +599,7 @@ impl FsWatcher {
                             continue;
                         }
 
-                        // macOS 文件系统不区分大小写（编译期判定，与 covered_by_recursive_ancestor 一致）。
-                        let case_insensitive = cfg!(target_os = "macos");
+                        let case_insensitive = platform::case_insensitive_paths();
                         let key = WatchKey::for_path(&poll_path, case_insensitive);
 
                         if registrations.lock().unwrap().contains_key(&key) {
@@ -676,7 +670,7 @@ impl Watcher for FsWatcher {
             }
         }
 
-        let case_insensitive = cfg!(target_os = "macos");
+        let case_insensitive = platform::case_insensitive_paths();
         let key = WatchKey::for_path(&path, case_insensitive);
 
         {
@@ -713,7 +707,7 @@ impl Watcher for FsWatcher {
     fn remove(&self, path: &Path) -> anyhow::Result<()> {
         self.pending_registrations.lock().unwrap().remove(path);
 
-        let case_insensitive = cfg!(target_os = "macos");
+        let case_insensitive = platform::case_insensitive_paths();
         let key = WatchKey::for_path(path, case_insensitive);
         if let Some(reg) = self.registrations.lock().unwrap().remove(&key) {
             global_watcher().remove(reg.id);
@@ -749,7 +743,7 @@ fn register_existing_path(
     signal_tx: async_channel::Sender<()>,
     pending_events: Arc<Mutex<Vec<PathEvent>>>,
 ) -> anyhow::Result<Option<FsWatcherRegistration>> {
-    let mode = if requires_poll_watcher(&path) {
+    let mode = if platform::requires_poll_watcher(&path) {
         WatcherMode::Poll
     } else {
         WatcherMode::Native
@@ -779,63 +773,17 @@ fn path_covered_by_recursive_registration(
 ) -> bool {
     for ancestor in path.ancestors().skip(1) {
         if let Some(reg) = registrations.get(&WatchKey::for_path(ancestor, false))
-            && (reg.mode == WatcherMode::Poll || cfg!(target_os = "macos"))
+            && platform::recursive_registration_covers(reg.mode == WatcherMode::Poll)
         {
             return true;
         }
         if let Some(reg) = registrations.get(&WatchKey::for_path(ancestor, true))
-            && (reg.mode == WatcherMode::Poll || cfg!(target_os = "macos"))
+            && platform::recursive_registration_covers(reg.mode == WatcherMode::Poll)
         {
             return true;
         }
     }
     false
-}
-
-/// 检测路径是否需要轮询监听而非原生监听。
-///
-/// Linux 上检测网络/虚拟文件系统（9P、NFS、CIFS、FUSE 等）。
-fn requires_poll_watcher(path: &Path) -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        return detect_requires_poll_linux(path);
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = path;
-        false
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn detect_requires_poll_linux(path: &Path) -> bool {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-
-    let c_path = match CString::new(path.as_os_str().as_bytes()) {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-
-    let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::statfs(c_path.as_ptr(), &mut stat) } != 0 {
-        return false;
-    }
-
-    const V9FS_MAGIC: u64 = 0x0102_1997;
-    const NFS_SUPER_MAGIC: u64 = 0x0000_6969;
-    const CIFS_MAGIC: u64 = 0xFF53_4D42;
-    const SMB_SUPER_MAGIC: u64 = 0x0000_517B;
-    const SMB2_MAGIC: u64 = 0xFE53_4D42;
-    const FUSE_SUPER_MAGIC: u64 = 0x6573_5546;
-
-    let fs_type = stat.f_type as u64;
-
-    matches!(
-        fs_type,
-        V9FS_MAGIC | NFS_SUPER_MAGIC | CIFS_MAGIC | SMB_SUPER_MAGIC | SMB2_MAGIC | FUSE_SUPER_MAGIC
-    )
 }
 
 /// 将 notify 事件转换为 PathEvent 并入队。

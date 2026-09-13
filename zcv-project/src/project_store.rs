@@ -19,6 +19,8 @@ use zcv_text::{
     TransactionMetadata,
 };
 
+mod platform;
+
 use super::buffer_store::BufferStore;
 use super::git_store::{GitStatusSnapshot, GitStore};
 use super::search::{self, SearchResults};
@@ -664,8 +666,7 @@ fn copy_single_entry(
     if file_type.is_symlink() {
         let target = std::fs::read_link(source)
             .with_context(|| format!("读取符号链接失败：{}", source.display()))?;
-        std::os::unix::fs::symlink(&target, destination)
-            .with_context(|| format!("重建符号链接失败：{}", destination.display()))?;
+        platform::create_symlink(source, &target, destination, file_type)?;
     } else {
         std::fs::copy(source, destination)
             .with_context(|| format!("复制文件失败：{}", source.display()))?;
@@ -1466,6 +1467,7 @@ mod tests {
         assert!(source_dir.join("new.txt").is_file(), "源目录不应被删除");
     }
 
+    #[cfg(unix)]
     #[test]
     fn copying_directory_with_ancestor_symlink_does_not_hang() {
         // 链接指向自身祖先目录（链接环）：按链接本身复制，不跟随目标、不挂死。

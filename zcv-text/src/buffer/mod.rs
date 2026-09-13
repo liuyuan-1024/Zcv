@@ -21,6 +21,7 @@ mod events;
 mod history;
 mod lifecycle;
 mod movement;
+mod platform;
 mod reload;
 mod replace;
 mod slicing;

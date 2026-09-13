@@ -6,8 +6,6 @@
 use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Read, Write as _};
 use std::ops::Range;
-#[cfg(unix)]
-use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -15,6 +13,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
+
+mod platform;
 
 use crate::status::{DiffStat, GitStatus, parse_numstat};
 
@@ -141,12 +141,12 @@ impl GitCancellation {
     }
 
     fn begin_termination(&self, process_id: u32) {
-        interrupt_process_tree(process_id);
+        platform::interrupt(process_id);
         let inner = Arc::clone(&self.inner);
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(1500));
             if inner.process_id.load(Ordering::Acquire) == process_id {
-                kill_process_tree(process_id);
+                platform::kill(process_id);
             }
         });
     }
@@ -186,46 +186,6 @@ fn publish_progress(cancellation: &GitCancellation, line: &[u8]) {
         cancellation.set_progress(line.to_string());
     }
 }
-
-#[cfg(unix)]
-fn interrupt_process_tree(process_id: u32) {
-    // 远程命令运行在独立进程组中，负进程号可以同时覆盖 git、ssh、凭据助手与钩子。
-    unsafe {
-        libc::kill(-(process_id as i32), libc::SIGINT);
-    }
-}
-
-#[cfg(unix)]
-fn kill_process_tree(process_id: u32) {
-    unsafe {
-        libc::kill(-(process_id as i32), libc::SIGKILL);
-    }
-}
-
-#[cfg(windows)]
-fn interrupt_process_tree(process_id: u32) {
-    // Windows 后端接入作业对象前，以 taskkill /T 作为兼容方案；/F 仅留给强制终止阶段。
-    let _ = Command::new("taskkill")
-        .args(["/PID", &process_id.to_string(), "/T"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-}
-
-#[cfg(windows)]
-fn kill_process_tree(process_id: u32) {
-    let _ = Command::new("taskkill")
-        .args(["/PID", &process_id.to_string(), "/T", "/F"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-}
-
-#[cfg(not(any(unix, windows)))]
-fn interrupt_process_tree(_process_id: u32) {}
-
-#[cfg(not(any(unix, windows)))]
-fn kill_process_tree(_process_id: u32) {}
 
 /// 对单个 git 仓库的命令行封装。
 ///
@@ -419,10 +379,7 @@ impl RealGitRepository {
         description: &str,
         cancellation: &GitCancellation,
     ) -> Result<Output> {
-        #[cfg(unix)]
-        {
-            command.process_group(0);
-        }
+        platform::configure_for_tree(command);
 
         let mut child = command
             .stdin(Stdio::null())

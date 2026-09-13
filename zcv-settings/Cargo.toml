@@ -15,5 +15,8 @@ serde_json_lenient.workspace = true
 zcv-assets.workspace = true
 zcv-fs-watch.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

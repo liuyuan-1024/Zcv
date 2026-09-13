@@ -1,4 +1,4 @@
-//! 从已经签名、公证的发布包生成 Zcv 更新清单。
+//! 从发布包生成 Zcv 更新清单。
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -40,8 +40,11 @@ fn run() -> Result<()> {
     while let Some(platform) = args.next() {
         let platform = platform.to_str().context("平台名称不是 UTF-8")?.to_owned();
         ensure!(
-            platform == "macos-aarch64",
-            "仅支持 Apple Silicon 清单平台 {platform}"
+            matches!(
+                platform.as_str(),
+                "macos-aarch64" | "windows-x86_64" | "windows-aarch64"
+            ),
+            "不支持清单平台 {platform}"
         );
         let url = args
             .next()

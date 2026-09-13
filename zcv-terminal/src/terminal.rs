@@ -22,7 +22,6 @@ use std::{
         Arc,
         atomic::{AtomicU32, Ordering},
     },
-    time::Duration,
 };
 
 use alacritty_terminal::{
@@ -41,9 +40,6 @@ use crate::{
     pty_info::PtyProcessInfo,
 };
 
-/// 关闭终端后给 shell 与前台任务的优雅退出宽限期，超时后升级为 SIGKILL。
-/// 必须低于 gpui 的退出超时，保证应用退出时升级也能完成。
-const PROCESS_KILL_GRACE_PERIOD: Duration = Duration::from_millis(100);
 /// 调试用的默认终端尺寸（创建后由视图第一帧真实尺寸覆盖）。
 const DEBUG_TERMINAL_WIDTH: f32 = 500.;
 const DEBUG_TERMINAL_HEIGHT: f32 = 30.;
@@ -449,7 +445,6 @@ pub(crate) struct Terminal {
     title: Option<String>,
     shell_name: String,
     scroll_px: Pixels,
-    pty_pid: Option<u32>,
     process_info: Arc<PtyProcessInfo>,
     background_executor: BackgroundExecutor,
     /// 当前工作目录（持久化恢复终端会话用）。
@@ -486,7 +481,6 @@ impl Terminal {
         )
         .context("启动终端失败：无法创建 PTY")?;
         let process_id_getter = alacritty::process_id_getter(&pty);
-        let pty_pid = process_id_getter.fallback_pid().as_u32();
         let process_info = Arc::new(PtyProcessInfo::new(process_id_getter));
         let pty_tx = alacritty::spawn_event_loop(term.clone(), &events_tx, pty, true)?;
         let background_executor = cx.background_executor().clone();
@@ -501,7 +495,6 @@ impl Terminal {
             title: None,
             shell_name,
             scroll_px: Pixels::ZERO,
-            pty_pid: Some(pty_pid),
             process_info,
             background_executor,
             cwd: builder.cwd.clone(),
@@ -514,7 +507,7 @@ impl Terminal {
         Ok(terminal)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn new_display_only(builder: &TerminalBuilder, cx: &mut Context<Self>) -> Self {
         let settings = TerminalSettings::load(cx);
         let bounds = TerminalBounds::default();
@@ -536,14 +529,13 @@ impl Terminal {
             title: None,
             shell_name: configured_shell_name(settings.shell.as_deref()),
             scroll_px: Pixels::ZERO,
-            pty_pid: None,
             process_info: Arc::new(PtyProcessInfo::new(alacritty::process_id_getter_for_test())),
             background_executor: cx.background_executor().clone(),
             cwd: builder.cwd.clone(),
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn write_output(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
         alacritty::write_output(&mut self.term.lock(), bytes);
         cx.notify();
@@ -850,29 +842,10 @@ impl Terminal {
         cx.notify();
     }
 
-    /// 优雅终止 shell 进程组并关闭 PTY。
+    /// 终止 shell 进程树并关闭 PTY。
     fn kill_current_process(&mut self) {
-        let Some(pid) = self.pty_pid.take() else {
-            return;
-        };
-        #[cfg(unix)]
-        {
-            let pid = pid as i32;
-            let executor = self.background_executor.clone();
-            // 先发 SIGTERM 到进程组，宽限期后升级 SIGKILL。
-            unsafe {
-                libc::killpg(pid, libc::SIGTERM);
-            }
-            let timer = executor.clone();
-            executor
-                .spawn(async move {
-                    timer.timer(PROCESS_KILL_GRACE_PERIOD).await;
-                    unsafe {
-                        libc::killpg(pid, libc::SIGKILL);
-                    }
-                })
-                .detach();
-        }
+        self.process_info
+            .kill_current_process(&self.background_executor);
     }
 }
 

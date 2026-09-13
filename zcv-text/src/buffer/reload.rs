@@ -4,7 +4,7 @@
 
 use std::io::{self, Write};
 
-use super::Buffer;
+use super::{Buffer, platform};
 use crate::{
     BufferSaveError, BufferVersion, ByteOffset, TextError, TextRange, TextResult,
     config::LineEndingConfig,
@@ -71,7 +71,7 @@ impl Buffer {
             LineEndingConfig::Lf => write_normalized_line_endings(&mut writer, chunks, "\n")?,
             LineEndingConfig::Crlf => write_normalized_line_endings(&mut writer, chunks, "\r\n")?,
             LineEndingConfig::Native => {
-                write_normalized_line_endings(&mut writer, chunks, native_line_ending())?
+                write_normalized_line_endings(&mut writer, chunks, platform::native_line_ending())?
             }
         }
         writer.flush()?;
@@ -153,10 +153,6 @@ where
         writer.write_all(target)?;
     }
     Ok(())
-}
-
-fn native_line_ending() -> &'static str {
-    if cfg!(windows) { "\r\n" } else { "\n" }
 }
 
 #[cfg(test)]

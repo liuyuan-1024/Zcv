@@ -295,7 +295,7 @@ impl GitStatus {
                 path = &path[..path.len() - 1];
             }
             let status = FileStatus::from_bytes([entry[0], entry[1]])?;
-            statuses.push((path_from_bytes(path), status));
+            statuses.push((crate::path_from_git_bytes(path), status));
         }
         statuses.sort_by(|(a, _), (b, _)| a.cmp(b));
         Ok(Self { statuses, branch })
@@ -333,7 +333,10 @@ pub(crate) fn parse_numstat(output: &[u8]) -> HashMap<PathBuf, DiffStat> {
         let Ok(deleted) = parse_count(deleted) else {
             continue;
         };
-        entries.insert(path_from_bytes(path), DiffStat { added, deleted });
+        entries.insert(
+            crate::path_from_git_bytes(path),
+            DiffStat { added, deleted },
+        );
     }
     entries
 }
@@ -346,19 +349,6 @@ fn parse_count(bytes: &[u8]) -> Result<u64> {
     } else {
         text.parse::<u64>().context("numstat 计数非法")
     }
-}
-
-/// 由原始字节构造路径（git 输出为 unix 风格相对路径）。
-#[cfg(unix)]
-pub(crate) fn path_from_bytes(bytes: &[u8]) -> PathBuf {
-    use std::ffi::OsStr;
-    use std::os::unix::ffi::OsStrExt;
-    PathBuf::from(OsStr::from_bytes(bytes))
-}
-
-#[cfg(not(unix))]
-pub(crate) fn path_from_bytes(bytes: &[u8]) -> PathBuf {
-    PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
 }
 
 #[cfg(test)]

@@ -4,8 +4,26 @@ use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::TcpListener;
 
 #[test]
-fn platform_key_is_apple_silicon_only() {
-    assert!(matches!(platform_key(), Ok("macos-aarch64")));
+fn installation_selects_current_platform_asset() {
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        UpdateInstallation::from_process_path(Path::new("/Applications/Zcv.app"))
+            .unwrap()
+            .platform_key(),
+        "macos-aarch64"
+    );
+
+    #[cfg(target_os = "windows")]
+    assert_eq!(
+        UpdateInstallation::from_process_path(Path::new(r"C:\Program Files\Zcv\Zcv.exe"))
+            .unwrap()
+            .platform_key(),
+        match std::env::consts::ARCH {
+            "x86_64" => "windows-x86_64",
+            "aarch64" => "windows-aarch64",
+            architecture => panic!("unexpected Windows architecture {architecture}"),
+        }
+    );
 }
 
 #[test]

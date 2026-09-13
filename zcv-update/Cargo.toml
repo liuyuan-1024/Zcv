@@ -26,6 +26,7 @@ path = "src/bin/zcv-update-manifest.rs"
 anyhow.workspace = true
 async_zip.workspace = true
 base64.workspace = true
+futures.workspace = true
 libc.workspace = true
 ring.workspace = true
 semver.workspace = true
@@ -36,6 +37,9 @@ smol.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys.workspace = true
 
 [lints]
 workspace = true

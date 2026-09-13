@@ -20,9 +20,9 @@ use smol::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use zcv_actions::RestartToUpdate;
 use zcv_ui::Button;
 use zcv_update::{
-    APP_BUNDLE_NAME, HELPER_RELATIVE_PATH, ReleaseAsset, SelectedRelease, UpdateTransaction,
-    atomic_write_json, extract_verified_archive, is_translocated_path, verify_and_parse_manifest,
-    verify_downloaded_asset, verify_macos_app,
+    ReleaseAsset, SelectedRelease, UpdateInstallation, UpdateTransaction, atomic_write_json,
+    extract_verified_archive, prepare_helper, verify_and_parse_manifest, verify_app,
+    verify_downloaded_asset,
 };
 use zcv_workspace::{ToastKind, Workspace};
 
@@ -58,9 +58,8 @@ struct UpdateConfig {
     current_version: Version,
     manifest_url: String,
     public_key: &'static str,
-    app_path: PathBuf,
+    installation: UpdateInstallation,
     updates_dir: PathBuf,
-    platform: &'static str,
 }
 
 #[derive(Clone)]
@@ -121,15 +120,11 @@ pub(crate) fn acknowledge_started_update() -> Result<()> {
 
 impl UpdateConfig {
     fn from_app(cx: &App) -> Result<Self> {
-        ensure!(cfg!(target_os = "macos"), "当前仅支持 macOS 自动更新");
-        let app_path = cx.app_path().context("当前进程不是 macOS app bundle")?;
+        let process_path = cx.app_path().context("无法确定当前应用路径")?;
+        let installation = UpdateInstallation::from_process_path(&process_path)?;
         ensure!(
-            app_path.file_name().and_then(|name| name.to_str()) == Some(APP_BUNDLE_NAME),
-            "当前 app bundle 不是 Zcv.app"
-        );
-        ensure!(
-            !is_translocated_path(&app_path),
-            "应用运行在 App Translocation 临时路径中，请把 Zcv.app 移到 /Applications 后重启"
+            installation.helper_path().is_file(),
+            "当前安装缺少更新辅助程序"
         );
         let current_version = env!("CARGO_PKG_VERSION")
             .parse()
@@ -138,17 +133,9 @@ impl UpdateConfig {
             current_version,
             manifest_url: MANIFEST_URL.to_owned(),
             public_key: UPDATE_PUBLIC_KEY,
-            app_path,
+            installation,
             updates_dir: zcv_settings::config_dir().join("updates"),
-            platform: platform_key()?,
         })
-    }
-}
-
-fn platform_key() -> Result<&'static str> {
-    match std::env::consts::ARCH {
-        "aarch64" => Ok("macos-aarch64"),
-        architecture => anyhow::bail!("仅支持 Apple Silicon 自动更新架构 {architecture}"),
     }
 }
 
@@ -244,7 +231,7 @@ impl UpdateManager {
         let transaction = UpdateTransaction::new(
             config.current_version.clone(),
             prepared.version.clone(),
-            config.app_path.clone(),
+            config.installation.app_path().to_path_buf(),
             prepared.staged_app_path.clone(),
             result_path,
         )?;
@@ -259,8 +246,12 @@ impl UpdateManager {
             .join(format!("pending-{}.json", transaction.id));
         atomic_write_json(&pending_path, &transaction)?;
 
-        let helper_source = config.app_path.join(HELPER_RELATIVE_PATH);
-        let helper_path = transaction_dir.join("zcv-update-helper");
+        let helper_source = config.installation.helper_path();
+        let helper_name = helper_source
+            .as_path()
+            .file_name()
+            .context("更新辅助程序路径无文件名")?;
+        let helper_path = transaction_dir.join(helper_name);
         fs::copy(&helper_source, &helper_path).with_context(|| {
             format!(
                 "无法复制更新辅助程序 {} → {}",
@@ -268,14 +259,7 @@ impl UpdateManager {
                 helper_path.display()
             )
         })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-
-            let mut permissions = fs::metadata(&helper_path)?.permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&helper_path, permissions)?;
-        }
+        prepare_helper(&helper_path)?;
 
         let log_path = transaction_dir.join("helper.log");
         let log = fs::File::create(&log_path)
@@ -323,7 +307,7 @@ async fn check_and_stage(
     let manifest = verify_and_parse_manifest(&manifest, &signature, config.public_key)
         .map_err(CheckFailure::Permanent)?;
     let Some(release) = manifest
-        .select_newer_release(&config.current_version, config.platform)
+        .select_newer_release(&config.current_version, config.installation.platform_key())
         .map_err(CheckFailure::Permanent)?
     else {
         return Ok(CheckOutcome::Current);
@@ -340,7 +324,7 @@ async fn check_and_stage(
     let app = staged_app_path.clone();
     let version = release.version.clone();
     executor
-        .spawn(async move { verify_macos_app(&app, &version) })
+        .spawn(async move { verify_app(&app, &version) })
         .await
         .map_err(CheckFailure::Permanent)?;
 

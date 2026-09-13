@@ -1,58 +1,20 @@
 use std::{path::PathBuf, sync::Arc};
 
-use gpui::{Context, Task};
+use gpui::{BackgroundExecutor, Context, Task};
 use parking_lot::{Mutex, RwLock};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 use crate::{Event, Terminal};
 
-#[derive(Clone, Copy)]
-pub(crate) struct ProcessIdGetter {
-    #[cfg(unix)]
-    handle: i32,
-    fallback_pid: u32,
-}
+mod platform;
 
-impl ProcessIdGetter {
-    #[cfg(unix)]
-    pub(crate) fn new(handle: i32, fallback_pid: u32) -> Self {
-        Self {
-            handle,
-            fallback_pid,
-        }
-    }
-
-    #[cfg(windows)]
-    pub(crate) fn new(fallback_pid: u32) -> Self {
-        Self { fallback_pid }
-    }
-
-    pub(crate) fn fallback_pid(&self) -> Pid {
-        Pid::from_u32(self.fallback_pid)
-    }
-
-    #[cfg(unix)]
-    fn foreground_pid(&self) -> Option<Pid> {
-        let pid = unsafe { libc::tcgetpgrp(self.handle) };
-        if pid > 0 {
-            Some(Pid::from_u32(pid as u32))
-        } else if self.fallback_pid > 0 {
-            Some(self.fallback_pid())
-        } else {
-            None
-        }
-    }
-
-    #[cfg(windows)]
-    fn foreground_pid(&self) -> Option<Pid> {
-        (self.fallback_pid > 0).then(|| self.fallback_pid())
-    }
-}
+pub(crate) use platform::ProcessIdGetter;
 
 pub(crate) struct PtyProcessInfo {
     system: Mutex<System>,
     refresh_kind: ProcessRefreshKind,
     pid_getter: ProcessIdGetter,
+    process_pid: Mutex<Option<u32>>,
     last_foreground_pid: Mutex<Option<Pid>>,
     current: RwLock<Option<PathBuf>>,
     task: Mutex<Option<Task<()>>>,
@@ -67,6 +29,10 @@ impl PtyProcessInfo {
             system: Mutex::new(System::new()),
             refresh_kind,
             pid_getter,
+            process_pid: Mutex::new(
+                (pid_getter.fallback_pid().as_u32() > 0)
+                    .then_some(pid_getter.fallback_pid().as_u32()),
+            ),
             last_foreground_pid: Mutex::new(None),
             current: RwLock::new(None),
             task: Mutex::new(None),
@@ -115,5 +81,12 @@ impl PtyProcessInfo {
                 process_info.task.lock().take();
             }
         }));
+    }
+
+    pub(crate) fn kill_current_process(&self, executor: &BackgroundExecutor) {
+        let Some(pid) = self.process_pid.lock().take() else {
+            return;
+        };
+        platform::terminate_process_tree(pid, executor);
     }
 }

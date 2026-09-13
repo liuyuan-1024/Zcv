@@ -9,11 +9,6 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(target_os = "macos")]
-use std::ffi::OsStr;
-#[cfg(target_os = "macos")]
-use std::process::Stdio;
-
 use anyhow::{Context as _, Result, ensure};
 use async_zip::base::read::mem::ZipFileReader;
 use base64::Engine as _;
@@ -21,15 +16,13 @@ use ring::signature;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-#[cfg(target_os = "macos")]
-use smol::process::Command;
+mod platform;
+
+pub use platform::{UpdateInstallation, application_executable_path, prepare_helper, verify_app};
 
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub const TRANSACTION_SCHEMA_VERSION: u32 = 2;
 pub const STABLE_CHANNEL: &str = "stable";
-pub const APP_BUNDLE_NAME: &str = "Zcv.app";
-pub const APP_EXECUTABLE_RELATIVE_PATH: &str = "Contents/MacOS/Zcv";
-pub const HELPER_RELATIVE_PATH: &str = "Contents/Helpers/zcv-update-helper";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ReleaseManifest {
@@ -145,48 +138,6 @@ pub fn verify_downloaded_asset(path: &Path, asset: &ReleaseAsset) -> Result<()> 
     Ok(())
 }
 
-/// 验证更新包中的 app bundle。
-///
-/// 零费用方案下 bundle 使用 ad-hoc 签名，没有 Developer ID 身份，也无法通过公证，
-/// 因此这里只验证代码签名有效性和版本一致性，不检查 Team ID 与 Gatekeeper 评估。
-pub fn verify_macos_app(app: &Path, expected_version: &Version) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        ensure!(
-            app.join(APP_EXECUTABLE_RELATIVE_PATH).is_file(),
-            "更新应用缺少可执行文件"
-        );
-        // 不传 --deep：seal 本身覆盖 bundle 内全部文件，嵌套签名由主签名完整性保证。
-        let verify = std::process::Command::new("/usr/bin/codesign")
-            .args(["--verify", "--strict"])
-            .arg(app)
-            .output()
-            .context("无法启动 codesign 验证更新")?;
-        ensure!(
-            verify.status.success(),
-            "更新应用代码签名无效：{}",
-            String::from_utf8_lossy(&verify.stderr).trim()
-        );
-
-        let version = std::process::Command::new("/usr/libexec/PlistBuddy")
-            .args(["-c", "Print:CFBundleShortVersionString"])
-            .arg(app.join("Contents/Info.plist"))
-            .output()
-            .context("无法读取更新应用版本")?;
-        ensure!(version.status.success(), "无法读取更新应用版本");
-        ensure!(
-            String::from_utf8_lossy(&version.stdout).trim() == expected_version.to_string(),
-            "更新应用版本与清单目标版本不一致"
-        );
-        Ok(())
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (app, expected_version);
-        anyhow::bail!("当前平台尚不支持应用自动更新")
-    }
-}
-
 pub async fn extract_verified_archive(archive: &Path, destination: &Path) -> Result<PathBuf> {
     let bytes = smol::fs::read(archive)
         .await
@@ -202,38 +153,10 @@ pub async fn extract_verified_archive(archive: &Path, destination: &Path) -> Res
         .await
         .with_context(|| format!("无法创建暂存目录 {}", destination.display()))?;
 
-    #[cfg(target_os = "macos")]
-    {
-        let output = Command::new("/usr/bin/ditto")
-            .args([OsStr::new("-x"), OsStr::new("-k")])
-            .arg(archive)
-            .arg(destination)
-            .stdout(Stdio::null())
-            .output()
-            .await
-            .context("无法启动 ditto 解压更新")?;
-        ensure!(
-            output.status.success(),
-            "ditto 解压更新失败：{}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    #[cfg(not(target_os = "macos"))]
-    anyhow::bail!("当前平台尚不支持应用自动更新");
+    platform::extract_archive(archive, destination, bytes).await?;
 
-    let app_path = destination.join(APP_BUNDLE_NAME);
-    ensure!(
-        app_path.join(APP_EXECUTABLE_RELATIVE_PATH).is_file(),
-        "更新包缺少 Zcv 可执行文件"
-    );
-    ensure!(
-        app_path.join(HELPER_RELATIVE_PATH).is_file(),
-        "更新包缺少 zcv-update-helper"
-    );
-    ensure!(
-        app_path.join("Contents/Info.plist").is_file(),
-        "更新包缺少 Info.plist"
-    );
+    let app_path = destination.join(platform::APP_DIRECTORY_NAME);
+    platform::validate_extracted_app(&app_path)?;
     Ok(app_path)
 }
 
@@ -251,7 +174,8 @@ async fn validate_archive(bytes: &[u8]) -> Result<()> {
             .as_str()
             .context("更新压缩包包含非 UTF-8 路径")?;
         validate_archive_entry_path(name)?;
-        has_app |= name == APP_BUNDLE_NAME || name.starts_with("Zcv.app/");
+        let app_name = platform::APP_DIRECTORY_NAME;
+        has_app |= name == app_name || name.starts_with(&format!("{app_name}/"));
         total_uncompressed = total_uncompressed
             .checked_add(entry.uncompressed_size())
             .context("更新压缩包展开大小溢出")?;
@@ -263,7 +187,7 @@ async fn validate_archive(bytes: &[u8]) -> Result<()> {
             ensure!(mode & 0o170000 != 0o120000, "更新压缩包不允许符号链接");
         }
     }
-    ensure!(has_app, "更新压缩包缺少 Zcv.app");
+    ensure!(has_app, "更新压缩包缺少应用目录");
     Ok(())
 }
 
@@ -277,12 +201,7 @@ fn validate_archive_entry_path(name: &str) -> Result<()> {
             .all(|component| matches!(component, Component::Normal(_))),
         "更新压缩包包含不安全路径 {name}"
     );
-    let allowed = name == APP_BUNDLE_NAME
-        || name.starts_with("Zcv.app/")
-        || name == "__MACOSX"
-        || name == "__MACOSX/"
-        || name == "__MACOSX/._Zcv.app"
-        || name.starts_with("__MACOSX/Zcv.app/");
+    let allowed = platform::archive_entry_is_allowed(name);
     ensure!(allowed, "更新压缩包包含意外顶层路径 {name}");
     Ok(())
 }
@@ -308,8 +227,8 @@ impl UpdateTransaction {
     ) -> Result<Self> {
         ensure!(to_version > from_version, "更新目标版本必须高于当前版本");
         ensure!(
-            install_path.file_name() == Some(OsStr::new(APP_BUNDLE_NAME)),
-            "安装路径必须指向 Zcv.app"
+            platform::is_application_directory(&install_path),
+            "安装路径必须指向 Zcv 应用目录"
         );
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -334,25 +253,15 @@ impl UpdateTransaction {
         );
         ensure!(self.to_version > self.from_version, "更新事务版本顺序无效");
         ensure!(
-            self.install_path.file_name() == Some(OsStr::new(APP_BUNDLE_NAME)),
+            platform::is_application_directory(&self.install_path),
             "更新事务安装路径无效"
         );
         ensure!(
-            self.staged_app_path.file_name() == Some(OsStr::new(APP_BUNDLE_NAME)),
+            platform::is_application_directory(&self.staged_app_path),
             "更新事务暂存路径无效"
         );
         Ok(())
     }
-}
-
-/// 判断路径是否位于 App Translocation 转译目录。
-///
-/// 从浏览器下载的 ad-hoc 应用直接双击运行时会被 macOS 转译到只读随机路径；
-/// 此时安装路径不是用户看到的位置，自更新会写入转译路径并在重启后丢失，
-/// 因此转译状态下必须禁用自动更新。
-pub fn is_translocated_path(path: &Path) -> bool {
-    path.components()
-        .any(|component| component.as_os_str() == "AppTranslocation")
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -384,12 +293,7 @@ pub fn atomic_write_json(path: &Path, value: &impl Serialize) -> Result<()> {
         file.sync_all()
             .with_context(|| format!("无法同步临时文件 {}", temporary.display()))?;
     }
-    #[cfg(windows)]
-    if path.exists() {
-        fs::remove_file(path).with_context(|| format!("无法替换旧文件 {}", path.display()))?;
-    }
-    fs::rename(&temporary, path).with_context(|| format!("无法提交文件 {}", path.display()))?;
-    Ok(())
+    platform::replace_file(&temporary, path)
 }
 
 pub fn read_transaction(path: &Path) -> Result<UpdateTransaction> {

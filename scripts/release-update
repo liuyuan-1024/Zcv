@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 #
-# 生成并签署 Zcv 更新清单，产出 GitHub Release 需要的三个文件。
+# 生成并签署 Zcv 更新清单，产出 GitHub Release 需要的清单与平台包。
 #
 # 用法:
-#   scripts/release-update <私钥路径>              # 打包 → 生成清单 → 签名 → 核对公钥
-#   scripts/release-update <私钥路径> --no-build   # 跳过打包，仅生成清单与签名
+#   scripts/release-update <私钥路径>              # 按当前平台打包并生成签名清单
+#   scripts/release-update <私钥路径> --no-build   # 跳过打包，仅使用发布工作区中的已有产物生成签名清单
 #
-# 产物输出到 target/aarch64-apple-darwin/release/：
-#   latest.json  latest.json.sig  Zcv_<version>_darwin_arm64.zip
+# 在 GitHub Actions 的发布工作区中自动发现 macOS Apple Silicon 与 Windows x86_64 构建产物，并将它们合并到同一份清单。
 
 set -euo pipefail
 
@@ -15,16 +14,28 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 REPO="liuyuan-1024/Zcv"
-TARGET="aarch64-apple-darwin"
 VERSION="$(grep '^version' Cargo.toml | head -n1 | cut -d'"' -f2)"
-OUT_DIR="target/$TARGET/release"
-ZIP="$OUT_DIR/Zcv_${VERSION}_darwin_arm64.zip"
-ZIP_URL="https://github.com/$REPO/releases/download/v$VERSION/Zcv_${VERSION}_darwin_arm64.zip"
+HOST_OS="$(uname -s)"
+case "$HOST_OS" in
+    Darwin)
+        OUT_DIR="target/aarch64-apple-darwin/release"
+        CURRENT_PLATFORM="macos-aarch64" ;;
+    MINGW*|MSYS*|CYGWIN*)
+        OUT_DIR="target/x86_64-pc-windows-msvc/release"
+        CURRENT_PLATFORM="windows-x86_64" ;;
+    *)
+        OUT_DIR="target/aarch64-apple-darwin/release"
+        CURRENT_PLATFORM="" ;;
+esac
+MAC_ZIP_URL="https://github.com/$REPO/releases/download/v$VERSION/Zcv_${VERSION}_darwin_arm64.zip"
+WINDOWS_ZIP_URL="https://github.com/$REPO/releases/download/v$VERSION/Zcv_${VERSION}_windows_x86_64.zip"
 PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 KEY_PATH=""
 BUILD=1
-for arg in "$@"; do
+while [[ $# -gt 0 ]]; do
+    arg="$1"
+    shift
     case "$arg" in
         --no-build)
             BUILD=0 ;;
@@ -47,18 +58,68 @@ fi
 # ---------- 1. 打包 ----------
 if [[ "$BUILD" == "1" ]]; then
     echo "==> 打包 (v$VERSION)"
-    scripts/bundle-mac --no-dmg
-elif [[ ! -f "$ZIP" ]]; then
-    echo "未找到 $ZIP" >&2
-    echo "请先运行 scripts/bundle-mac --no-dmg，或去掉 --no-build" >&2
+    case "$HOST_OS" in
+        Darwin)
+            scripts/bundle-mac --no-dmg ;;
+        MINGW*|MSYS*|CYGWIN*)
+            command -v pwsh >/dev/null 2>&1 || {
+                echo "Windows 打包需要 pwsh，请先安装 PowerShell 7" >&2
+                exit 1
+            }
+            pwsh -File scripts/bundle-windows.ps1 ;;
+        *)
+            echo "当前平台无法自动打包，请在 macOS 或 Windows 上构建，或使用 --no-build" >&2
+            exit 1 ;;
+    esac
+fi
+
+find_asset() {
+    local preferred="$1"
+    local directory="$2"
+    local pattern="$3"
+    if [[ -f "$preferred" ]]; then
+        printf '%s\n' "$preferred"
+        return
+    fi
+    find "$directory" -type f -name "$pattern" -print -quit 2>/dev/null || true
+}
+
+MAC_ZIP="$(find_asset \
+    "target/aarch64-apple-darwin/release/Zcv_${VERSION}_darwin_arm64.zip" \
+    "target/release-assets/macos" "Zcv_${VERSION}_darwin_arm64.zip")"
+WINDOWS_ZIP="$(find_asset \
+    "target/x86_64-pc-windows-msvc/release/Zcv_${VERSION}_windows_x86_64.zip" \
+    "target/release-assets/windows" "Zcv_${VERSION}_windows_x86_64.zip")"
+
+if [[ "$CURRENT_PLATFORM" == "macos-aarch64" && -z "$MAC_ZIP" ]]; then
+    echo "未找到 macOS 更新包，请先构建平台包，或使用 --no-build 并准备已有产物" >&2
     exit 1
 fi
+if [[ "$CURRENT_PLATFORM" == "windows-x86_64" && -z "$WINDOWS_ZIP" ]]; then
+    echo "未找到 Windows 更新包，请先构建平台包，或使用 --no-build 并准备已有产物" >&2
+    exit 1
+fi
+if [[ -z "$MAC_ZIP" && -z "$WINDOWS_ZIP" ]]; then
+    echo "未找到任何平台更新包，请先构建平台包，或使用 --no-build 并准备已有产物" >&2
+    exit 1
+fi
+echo "==> 已发现更新包"
+[[ -n "$MAC_ZIP" ]] && echo "    macOS:   $MAC_ZIP"
+[[ -n "$WINDOWS_ZIP" ]] && echo "    Windows: $WINDOWS_ZIP"
+[[ -z "$MAC_ZIP" ]] && echo "提示：未发现 macOS 更新包，本次清单不包含 macOS 资产" >&2
+[[ -z "$WINDOWS_ZIP" ]] && echo "提示：未发现 Windows 更新包，本次清单不包含 Windows 资产" >&2
 
 # ---------- 2. 生成清单 ----------
 echo "==> 生成清单 $OUT_DIR/latest.json (v$VERSION, $PUBLISHED_AT)"
-cargo run -q -p zcv-update --bin zcv-update-manifest -- \
-    "$VERSION" "$PUBLISHED_AT" "$OUT_DIR/latest.json" \
-    macos-aarch64 "$ZIP_URL" "$ZIP"
+mkdir -p "$OUT_DIR"
+MANIFEST_ARGS=("$VERSION" "$PUBLISHED_AT" "$OUT_DIR/latest.json")
+if [[ -n "$MAC_ZIP" ]]; then
+    MANIFEST_ARGS+=(macos-aarch64 "$MAC_ZIP_URL" "$MAC_ZIP")
+fi
+if [[ -n "$WINDOWS_ZIP" ]]; then
+    MANIFEST_ARGS+=(windows-x86_64 "$WINDOWS_ZIP_URL" "$WINDOWS_ZIP")
+fi
+cargo run -q -p zcv-update --bin zcv-update-manifest -- "${MANIFEST_ARGS[@]}"
 
 # ---------- 3. 签名 ----------
 echo "==> 签署清单"
@@ -91,15 +152,16 @@ fi
 # ---------- 6. 汇总 ----------
 echo
 echo "== 发布产物（${OUT_DIR}）=="
-ls -l "$OUT_DIR/latest.json" "$OUT_DIR/latest.json.sig" "$ZIP"
+ASSETS=("$OUT_DIR/latest.json" "$OUT_DIR/latest.json.sig")
+[[ -n "$MAC_ZIP" ]] && ASSETS+=("$MAC_ZIP")
+[[ -n "$WINDOWS_ZIP" ]] && ASSETS+=("$WINDOWS_ZIP")
+ls -l "${ASSETS[@]}"
 echo
 echo "== 公钥核对 =="
 echo "签名私钥与源码内置公钥一致：$SIGNED_KEY"
 echo
 echo "== 下一步：GitHub Release v$VERSION =="
 echo "1. 确认当前 HEAD 已打 v$VERSION 标签，建立 Release 草稿。"
-echo "2. 上传以下三个文件："
-echo "   $OUT_DIR/latest.json"
-echo "   $OUT_DIR/latest.json.sig"
-echo "   $ZIP"
+echo "2. 上传 latest.json、latest.json.sig 和平台更新包："
+printf '   %s\n' "${ASSETS[@]}"
 echo "3. 核对清单 URL 后发布，使其成为 latest Release。"

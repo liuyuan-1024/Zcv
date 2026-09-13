@@ -22,7 +22,10 @@ use zcv_actions::{
 use zcv_editor::{Editor, EditorEvent, EditorHunk, EditorHunkMarkerKind, EditorHunkPart};
 use zcv_git::{DiffHunkKind, FileStatus, GitRevision, parse_conflict_regions};
 use zcv_multi_buffer::{BufferDiffInput, DiffFile, DiffProjection};
-use zcv_project::{GitOperationKind, GitOperationOutcome, GitStoreEvent, Project, ProjectEvent};
+use zcv_project::{
+    FileWatcherError, FileWatcherOperation, GitOperationKind, GitOperationOutcome, GitStoreEvent,
+    Project, ProjectEvent,
+};
 use zcv_settings::{GlobalSettingsErrorReporter, SettingsStore};
 use zcv_text::{ByteOffset, TextRange};
 use zcv_theme::{ThemeChoice, typography};
@@ -487,6 +490,28 @@ fn run_git_operation(
     .detach();
 }
 
+fn show_file_watcher_error(
+    workspace: &mut Workspace,
+    error: &FileWatcherError,
+    cx: &mut Context<Workspace>,
+) {
+    let operation = match error.operation {
+        FileWatcherOperation::Add => "监听项目路径",
+        FileWatcherOperation::Remove => "停止监听项目路径",
+    };
+    workspace.show_toast(
+        ToastKind::Error,
+        format!(
+            "{operation}失败（{}）：{}",
+            error.path.display(),
+            error.error
+        ),
+        None,
+        Some(Duration::from_secs(8)),
+        cx,
+    );
+}
+
 fn initialize_workspace(
     workspace: &mut Workspace,
     window: &mut Window,
@@ -802,8 +827,17 @@ fn initialize_workspace(
                 ProjectEvent::EntriesChanged => {
                     project_tree_for_project.update(cx, |tree, cx| tree.schedule_refresh(cx));
                 }
+                ProjectEvent::FileWatcherError(error) => {
+                    show_file_watcher_error(_workspace, error, cx);
+                }
             },
         );
+
+    let pending_file_watcher_errors =
+        project.update(cx, |project, _| project.take_pending_file_watcher_errors());
+    for error in &pending_file_watcher_errors {
+        show_file_watcher_error(workspace, error, cx);
+    }
 
     let project_tree_for_settings = project_tree.clone();
     let settings_subscription =

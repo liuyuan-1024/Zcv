@@ -27,9 +27,23 @@ use super::search::{self, SearchResults};
 use super::worktree::{Worktree, WorktreeEntry, collect_visible_entries};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileWatcherOperation {
+    Add,
+    Remove,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileWatcherError {
+    pub operation: FileWatcherOperation,
+    pub path: PathBuf,
+    pub error: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectEvent {
     RootChanged(PathBuf),
     EntriesChanged,
+    FileWatcherError(FileWatcherError),
 }
 
 pub struct Project {
@@ -38,6 +52,8 @@ pub struct Project {
     /// git store 属于 Project 而非 worktree，无 worktree 时以无根状态存在（仓库查询与 git job 为空操作）。
     git_store: Entity<GitStore>,
     buffer_store: BufferStore,
+    /// 项目创建阶段尚未建立工作区订阅时产生的监听错误。
+    pending_file_watcher_errors: Vec<FileWatcherError>,
 }
 
 struct ProjectWorktree {
@@ -59,9 +75,14 @@ impl Project {
     ) -> Self {
         let fs_events = fs_watcher.events();
 
-        if let Err(error) = fs_watcher.add(&root) {
-            eprintln!("无法监听项目目录 {:?}：{error}", root);
-        }
+        let pending_file_watcher_errors = match fs_watcher.add(&root) {
+            Ok(()) => Vec::new(),
+            Err(error) => vec![FileWatcherError {
+                operation: FileWatcherOperation::Add,
+                path: root.clone(),
+                error: format!("{error:#}"),
+            }],
+        };
 
         let fs_task = cx.spawn(|project: WeakEntity<Project>, asynccx: &mut AsyncApp| {
             let mut cx = asynccx.clone();
@@ -86,6 +107,7 @@ impl Project {
             }),
             git_store,
             buffer_store: BufferStore::new(),
+            pending_file_watcher_errors,
         }
     }
 
@@ -96,7 +118,13 @@ impl Project {
             worktree: None,
             git_store,
             buffer_store: BufferStore::new(),
+            pending_file_watcher_errors: Vec::new(),
         }
+    }
+
+    /// 取出项目创建期间尚未通过 ProjectEvent 投递的文件监听错误。
+    pub fn take_pending_file_watcher_errors(&mut self) -> Vec<FileWatcherError> {
+        std::mem::take(&mut self.pending_file_watcher_errors)
     }
 
     pub fn root(&self) -> Option<&Path> {
@@ -330,10 +358,18 @@ impl Project {
 
         if from == worktree.root {
             if let Err(error) = worktree.fs_watcher.add(to) {
-                eprintln!("无法监听重命名后的项目目录 {:?}：{error}", to);
+                cx.emit(ProjectEvent::FileWatcherError(FileWatcherError {
+                    operation: FileWatcherOperation::Add,
+                    path: to.to_path_buf(),
+                    error: format!("{error:#}"),
+                }));
             }
             if let Err(error) = worktree.fs_watcher.remove(from) {
-                eprintln!("无法停止监听旧项目目录 {:?}：{error}", from);
+                cx.emit(ProjectEvent::FileWatcherError(FileWatcherError {
+                    operation: FileWatcherOperation::Remove,
+                    path: from.to_path_buf(),
+                    error: format!("{error:#}"),
+                }));
             }
             worktree.root = to.to_path_buf();
             worktree.snapshot.set_root(to.to_path_buf());
@@ -702,9 +738,11 @@ fn copy_entry_recursive(source: &Path, destination: &Path) -> anyhow::Result<()>
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use gpui::{AppContext, TestAppContext};
+    use zcv_fs_watch::FsEventStream;
     use zcv_text::{BufferConfig, ByteOffset, Edit, TransactionMetadata};
 
     use super::*;
@@ -723,6 +761,56 @@ mod tests {
             assert!(project.root().is_none());
             assert!(project.try_git_store().is_none());
         });
+    }
+
+    struct FailingWatcher {
+        watcher: FsWatcher,
+    }
+
+    impl FailingWatcher {
+        fn new() -> Self {
+            Self {
+                watcher: FsWatcher::new(),
+            }
+        }
+    }
+
+    impl Watcher for FailingWatcher {
+        fn add(&self, _path: &Path) -> anyhow::Result<()> {
+            Err(anyhow::anyhow!("测试监听失败"))
+        }
+
+        fn remove(&self, _path: &Path) -> anyhow::Result<()> {
+            Err(anyhow::anyhow!("测试停止监听失败"))
+        }
+
+        fn events(&self) -> FsEventStream {
+            self.watcher.events()
+        }
+    }
+
+    #[gpui::test]
+    fn initial_file_watcher_error_is_buffered_until_workspace_subscribes(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().expect("应创建临时目录");
+        let root = directory.path().to_path_buf();
+        let project = cx
+            .new(|cx| Project::new_with_watcher(root.clone(), Arc::new(FailingWatcher::new()), cx));
+
+        let errors = project.update(cx, |project, _| project.take_pending_file_watcher_errors());
+
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].operation, FileWatcherOperation::Add);
+        assert_eq!(errors[0].path, root);
+        assert_eq!(errors[0].error, "测试监听失败");
+        assert!(
+            project
+                .update(cx, |project, _| {
+                    project.take_pending_file_watcher_errors()
+                })
+                .is_empty()
+        );
     }
 
     #[test]

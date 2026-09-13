@@ -16,7 +16,7 @@ pub use git_store::{
     GitJobPhase, GitJobStatus, GitOperationKind, GitOperationOutcome, GitStore, GitStoreEvent,
     RemoteOperationState, RepositorySnapshot, StatusEntry,
 };
-pub use project_store::{Project, ProjectEvent};
+pub use project_store::{FileWatcherError, FileWatcherOperation, Project, ProjectEvent};
 pub use search::{ExcerptMatches, FileSearchResult, SearchResults};
 pub use worktree::{
     NewEntryDestination, WorktreeEntry, new_entry_destination, rename_destination, translate_path,

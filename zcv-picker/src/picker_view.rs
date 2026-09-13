@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, Context, FocusHandle, ListAlignment, ListState, Pixels, Render, SharedString,
-    Window, div, list, prelude::*, px,
+    AnyElement, App, Context, FocusHandle, ListAlignment, ListSizingBehavior, ListState, Pixels,
+    Render, SharedString, Window, div, list, prelude::*, px,
 };
 use zcv_actions::{
     MoveDown, MoveUp, PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev,
@@ -218,6 +218,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
                 let entity = entity.clone();
                 div()
                     .id(("picker-match", index))
+                    .debug_selector(move || format!("picker-match-{index}"))
                     .on_click(move |_, window, cx| {
                         entity.update(cx, |picker, cx| {
                             picker.delegate.set_selected_index(index);
@@ -233,9 +234,9 @@ impl<D: PickerDelegate> Render for Picker<D> {
                     .into_any_element()
             }),
         )
+        .with_sizing_behavior(ListSizingBehavior::Infer)
         .flex_grow(1.0)
-        .min_h_0()
-        .size_full();
+        .min_h_0();
         let items = div()
             .id("picker-items")
             .flex_grow(1.0)
@@ -406,6 +407,12 @@ mod tests {
         cx.simulate_window_resize(cx.windows()[0], size(px(500.0), px(500.0)));
 
         let list = cx.debug_bounds("picker-list").expect("列表容器应参与布局");
+        assert!(
+            list.size.height > px(0.0),
+            "自适应浮层中的列表高度应大于 0，实际 {list:?}"
+        );
+        cx.debug_bounds("picker-match-0")
+            .expect("自适应浮层中的第一条列表项应被渲染");
         let footer = cx.debug_bounds("picker-footer").expect("footer 应参与布局");
         assert!(
             footer.origin.y >= list.bottom(),

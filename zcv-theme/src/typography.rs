@@ -93,6 +93,11 @@ impl Typography {
         px(self.content_size)
     }
 
+    /// 内容字号相对于当前基础字号的缩放比例，供非文本内容跟随内容字号缩放。
+    pub fn content_scale(self) -> f32 {
+        self.content_size / f32::from(current().content_size())
+    }
+
     pub fn ui_line(self) -> Pixels {
         ink_or_golden(self.ui_ink, self.ui_size)
     }

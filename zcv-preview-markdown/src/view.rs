@@ -24,12 +24,19 @@ use zcv_theme::{color, space, syntax, typography};
 use zcv_ui::{Button, Scrollbar};
 use zcv_workspace::{
     Breadcrumbs, Item, ItemEvent, ItemHandle, PreviewDocument, PreviewItem, PreviewItemHandle,
-    PreviewToggleCallback,
+    PreviewToggleCallback, typography_for_window,
 };
 
 use crate::document::{Block, Inline, parse};
 
 const MARKDOWN_REPARSE_DEBOUNCE: Duration = Duration::from_millis(200);
+
+struct MarkdownRenderContext<'a> {
+    source_directory: Option<&'a Path>,
+    type_scale: typography::Typography,
+    math_images: &'a HashMap<String, Result<Arc<gpui::RenderImage>, String>>,
+    cx: &'a App,
+}
 
 pub(crate) struct MarkdownPreviewView {
     source_item: Box<dyn ItemHandle>,
@@ -48,6 +55,8 @@ pub(crate) struct MarkdownPreviewView {
     breadcrumbs: Entity<Breadcrumbs>,
     toolbar: Entity<MarkdownPreviewToolbar>,
     math_images: Arc<HashMap<String, Result<Arc<gpui::RenderImage>, String>>>,
+    math_content_size: Option<gpui::Pixels>,
+    math_color: Option<gpui::Rgba>,
     math_render_task: Option<Task<()>>,
     math_render_generation: u64,
 }
@@ -129,6 +138,8 @@ impl MarkdownPreviewView {
             breadcrumbs,
             toolbar,
             math_images: Arc::new(HashMap::new()),
+            math_content_size: None,
+            math_color: None,
             math_render_task: None,
             math_render_generation: 0,
         };
@@ -161,30 +172,10 @@ impl MarkdownPreviewView {
             .expect("编辑器文档应为 UTF-8");
         self.blocks = Arc::new(parse(&text));
         self.math_render_generation = self.math_render_generation.wrapping_add(1);
-        let math_generation = self.math_render_generation;
-        let math_sources = collect_math_sources(&self.blocks);
-        let math_font_size = f64::from(typography::content_size().as_f32());
-        let renderer = cx.svg_renderer();
-        let math_task = cx.background_spawn(async move {
-            math_sources
-                .into_iter()
-                .map(|(source, display)| {
-                    let result = render_math(&source, display, math_font_size, renderer.clone());
-                    (source, result)
-                })
-                .collect::<HashMap<_, _>>()
-        });
-        self.math_render_task = Some(cx.spawn(async move |this, cx| {
-            let images = math_task.await;
-            let _ = this.update(cx, |view, cx| {
-                if view.math_render_generation != math_generation {
-                    return;
-                }
-                view.math_images = Arc::new(images);
-                view.math_render_task = None;
-                cx.notify();
-            });
-        }));
+        self.math_content_size = None;
+        self.math_color = None;
+        self.math_images = Arc::new(HashMap::new());
+        self.math_render_task.take();
         self.code_highlight_generation = self.code_highlight_generation.wrapping_add(1);
         let generation = self.code_highlight_generation;
         let cancellation = SnippetHighlightCancellation::default();
@@ -209,6 +200,60 @@ impl MarkdownPreviewView {
         }));
         cx.notify();
     }
+
+    fn ensure_math_render(
+        &mut self,
+        content_size: gpui::Pixels,
+        math_color: gpui::Rgba,
+        cx: &mut Context<Self>,
+    ) {
+        if self.math_content_size == Some(content_size) && self.math_color == Some(math_color) {
+            return;
+        }
+
+        self.math_content_size = Some(content_size);
+        self.math_color = Some(math_color);
+        self.math_render_generation = self.math_render_generation.wrapping_add(1);
+        let generation = self.math_render_generation;
+        let math_sources = collect_math_sources(&self.blocks);
+        if math_sources.is_empty() {
+            self.math_images = Arc::new(HashMap::new());
+            self.math_render_task = None;
+            return;
+        }
+
+        self.math_render_task.take();
+        let math_font_size = f64::from(content_size.as_f32());
+        let math_color =
+            ratex_types::color::Color::new(math_color.r, math_color.g, math_color.b, math_color.a);
+        let renderer = cx.svg_renderer();
+        let math_task = cx.background_spawn(async move {
+            math_sources
+                .into_iter()
+                .map(|(source, display)| {
+                    let result = render_math(
+                        &source,
+                        display,
+                        math_font_size,
+                        math_color,
+                        renderer.clone(),
+                    );
+                    (source, result)
+                })
+                .collect::<HashMap<_, _>>()
+        });
+        self.math_render_task = Some(cx.spawn(async move |this, cx| {
+            let images = math_task.await;
+            let _ = this.update(cx, |view, cx| {
+                if view.math_render_generation != generation {
+                    return;
+                }
+                view.math_images = Arc::new(images);
+                view.math_render_task = None;
+                cx.notify();
+            });
+        }));
+    }
 }
 
 impl EventEmitter<MarkdownPreviewEvent> for MarkdownPreviewView {}
@@ -220,12 +265,20 @@ impl Focusable for MarkdownPreviewView {
 }
 
 impl Render for MarkdownPreviewView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let type_scale = typography_for_window(window, cx);
+        self.ensure_math_render(type_scale.content_size(), color::current(cx).text, cx);
         let source_path = self.source_item.item_path(cx);
         let source_directory = source_path
             .as_deref()
             .and_then(Path::parent)
             .map(Path::to_path_buf);
+        let render_context = MarkdownRenderContext {
+            source_directory: source_directory.as_deref(),
+            type_scale,
+            math_images: &self.math_images,
+            cx,
+        };
         let content = self
             .blocks
             .iter()
@@ -236,11 +289,9 @@ impl Render for MarkdownPreviewView {
                     .child(render_block(
                         block,
                         &mut next_key,
-                        source_directory.as_deref(),
                         0,
                         index,
-                        &self.math_images,
-                        cx,
+                        &render_context,
                     ))
                     .into_any_element()
             })
@@ -262,8 +313,8 @@ impl Render for MarkdownPreviewView {
                     .track_scroll(&self.scroll_handle)
                     .p(space::S6)
                     .text_color(color::current(cx).text)
-                    .text_size(typography::content_size())
-                    .line_height(typography::content_line())
+                    .text_size(type_scale.content_size())
+                    .line_height(type_scale.content_line())
                     .child(
                         div()
                             .w_full()
@@ -280,27 +331,29 @@ impl Render for MarkdownPreviewView {
 fn render_block(
     block: &Block,
     next_key: &mut usize,
-    source_directory: Option<&Path>,
     list_depth: usize,
     namespace: usize,
-    math_images: &HashMap<String, Result<Arc<gpui::RenderImage>, String>>,
-    cx: &App,
+    render_context: &MarkdownRenderContext<'_>,
 ) -> AnyElement {
+    let source_directory = render_context.source_directory;
+    let type_scale = render_context.type_scale;
+    let math_images = render_context.math_images;
+    let cx = render_context.cx;
     let key = *next_key;
     *next_key += 1;
     match block {
         Block::Heading { level, content } => {
-            let size = heading_size(*level);
+            let size = heading_size(*level, type_scale);
             div()
                 .text_size(size)
-                .line_height(heading_line_height(*level, size))
+                .line_height(heading_line_height(*level, size, type_scale))
                 .font_weight(FontWeight::BOLD)
-                .child(render_inline(content, key, math_images, cx))
+                .child(render_inline(content, key, render_context))
                 .into_any_element()
         }
         Block::Paragraph(content) => div()
             .whitespace_normal()
-            .child(render_inline(content, key, math_images, cx))
+            .child(render_inline(content, key, render_context))
             .into_any_element(),
         Block::Code {
             language,
@@ -312,14 +365,14 @@ fn render_block(
                 .bg(color::current(cx).panel_background)
                 .p(space::S12)
                 .font(typography::content_font())
-                .text_size(typography::content_size())
+                .text_size(type_scale.content_size())
                 .flex()
                 .flex_col();
             if let Some(language) = language {
                 code = code.child(
                     div()
                         .mb(space::S8)
-                        .text_size(typography::content_size() * 0.85)
+                        .text_size(type_scale.content_size() * 0.85)
                         .text_color(color::current(cx).text_muted)
                         .child(language.clone()),
                 );
@@ -345,17 +398,7 @@ fn render_block(
         Block::Quote(blocks) => {
             let children = blocks
                 .iter()
-                .map(|block| {
-                    render_block(
-                        block,
-                        next_key,
-                        source_directory,
-                        list_depth,
-                        namespace,
-                        math_images,
-                        cx,
-                    )
-                })
+                .map(|block| render_block(block, next_key, list_depth, namespace, render_context))
                 .collect::<Vec<_>>();
             div()
                 .border_l_2()
@@ -369,7 +412,7 @@ fn render_block(
                 .into_any_element()
         }
         Block::List { start, items } => {
-            let marker_width = list_marker_width(*start, items.len());
+            let marker_width = list_marker_width(*start, items.len(), type_scale);
             let children = items
                 .iter()
                 .enumerate()
@@ -381,15 +424,7 @@ fn render_block(
                     let item_children = item
                         .iter()
                         .map(|block| {
-                            render_block(
-                                block,
-                                next_key,
-                                source_directory,
-                                list_depth + 1,
-                                namespace,
-                                math_images,
-                                cx,
-                            )
+                            render_block(block, next_key, list_depth + 1, namespace, render_context)
                         })
                         .collect::<Vec<_>>();
                     div()
@@ -445,8 +480,7 @@ fn render_block(
                     alignments,
                     true,
                     next_key,
-                    math_images,
-                    cx,
+                    render_context,
                 ));
             }
             for row in rows {
@@ -455,14 +489,15 @@ fn render_block(
                     alignments,
                     false,
                     next_key,
-                    math_images,
-                    cx,
+                    render_context,
                 ));
             }
             table.into_any_element()
         }
         Block::Image { source, alt } => render_image(source, alt, source_directory, cx),
-        Block::Math { source, display } => render_math_block(source, *display, math_images, cx),
+        Block::Math { source, display } => {
+            render_math_block(source, *display, key, math_images, cx)
+        }
         Block::Rule => div()
             .h(px(1.))
             .w_full()
@@ -471,10 +506,14 @@ fn render_block(
     }
 }
 
-fn list_marker_width(start: Option<u64>, item_count: usize) -> gpui::Pixels {
+fn list_marker_width(
+    start: Option<u64>,
+    item_count: usize,
+    type_scale: typography::Typography,
+) -> gpui::Pixels {
     let marker_char_count = list_marker_char_count(start, item_count);
     // 标记列按字符数预留，正文与编号之间只保留布局间距。
-    typography::content_size() * (marker_char_count as f32 * 0.6)
+    type_scale.content_size() * (marker_char_count as f32 * 0.6)
 }
 
 fn list_marker_char_count(start: Option<u64>, item_count: usize) -> usize {
@@ -527,9 +566,9 @@ fn render_table_row(
     alignments: &[Alignment],
     is_header: bool,
     next_key: &mut usize,
-    math_images: &HashMap<String, Result<Arc<gpui::RenderImage>, String>>,
-    cx: &App,
+    render_context: &MarkdownRenderContext<'_>,
 ) -> AnyElement {
+    let cx = render_context.cx;
     div()
         .flex()
         .w_full()
@@ -558,7 +597,7 @@ fn render_table_row(
             };
             let key = *next_key;
             *next_key += 1;
-            cell.child(render_inline(cell_content, key, math_images, cx))
+            cell.child(render_inline(cell_content, key, render_context))
         }))
         .into_any_element()
 }
@@ -566,9 +605,11 @@ fn render_table_row(
 fn render_inline(
     content: &[Inline],
     key: usize,
-    math_images: &HashMap<String, Result<Arc<gpui::RenderImage>, String>>,
-    cx: &App,
+    render_context: &MarkdownRenderContext<'_>,
 ) -> AnyElement {
+    let type_scale = render_context.type_scale;
+    let math_images = render_context.math_images;
+    let cx = render_context.cx;
     if content.iter().any(|inline| inline.style.math) {
         let mut lines = vec![Vec::new()];
         for inline in content {
@@ -590,7 +631,9 @@ fn render_inline(
             .flex_col()
             .children(lines.into_iter().enumerate().map(|(line_index, line)| {
                 div()
-                    .min_h(typography::content_line())
+                    .w_full()
+                    .flex_wrap()
+                    .min_h(type_scale.content_line())
                     .flex()
                     .items_center()
                     .children(line.iter().enumerate().map(|(index, inline)| {
@@ -681,6 +724,8 @@ fn render_math_inline(
     match math_images.get(source) {
         Some(Ok(image)) => img(image.clone())
             .object_fit(ObjectFit::Contain)
+            .max_w_full()
+            .flex_none()
             .into_any_element(),
         Some(Err(error)) => div()
             .text_color(color::current(cx).status_error)
@@ -696,12 +741,15 @@ fn render_math_inline(
 fn render_math_block(
     source: &str,
     display: bool,
+    key: usize,
     math_images: &HashMap<String, Result<Arc<gpui::RenderImage>, String>>,
     cx: &App,
 ) -> AnyElement {
     div()
+        .id(("markdown-math-block", key))
         .w_full()
         .flex()
+        .overflow_x_scroll()
         .when(display, |element| element.justify_center())
         .child(render_math_inline(source, math_images, cx))
         .into_any_element()
@@ -753,10 +801,15 @@ fn render_math(
     source: &str,
     _display: bool,
     font_size: f64,
+    color: ratex_types::color::Color,
     renderer: gpui::SvgRenderer,
 ) -> Result<Arc<gpui::RenderImage>, String> {
     let nodes = ratex_parser::parse(source).map_err(|error| error.to_string())?;
-    let layout = ratex_layout::layout(&nodes, &ratex_layout::LayoutOptions::default());
+    let layout_options = ratex_layout::LayoutOptions {
+        color,
+        ..Default::default()
+    };
+    let layout = ratex_layout::layout(&nodes, &layout_options);
     let list = ratex_layout::to_display_list(&layout);
     let svg = ratex_svg::render_to_svg(
         &list,
@@ -879,13 +932,17 @@ fn code_lines(text: &str) -> impl Iterator<Item = &str> {
     text.strip_suffix('\n').unwrap_or(text).split('\n')
 }
 
-fn heading_size(level: u8) -> gpui::Pixels {
-    typography::content_size() * heading_scale(level)
+fn heading_size(level: u8, type_scale: typography::Typography) -> gpui::Pixels {
+    type_scale.content_size() * heading_scale(level)
 }
 
-fn heading_line_height(level: u8, size: gpui::Pixels) -> gpui::Pixels {
+fn heading_line_height(
+    level: u8,
+    size: gpui::Pixels,
+    type_scale: typography::Typography,
+) -> gpui::Pixels {
     // 标题继承用户的正文行高比例，但至少为自身字号保留可读的自然行距。
-    (typography::content_line() * heading_scale(level)).max(size * 1.2)
+    (type_scale.content_line() * heading_scale(level)).max(size * 1.2)
 }
 
 fn heading_scale(level: u8) -> f32 {
@@ -999,13 +1056,15 @@ mod tests {
 
     use gpui::{AppContext, TestAppContext};
     use zcv_editor::Editor;
+    use zcv_theme::typography;
     use zcv_workspace::PreviewDocument;
 
     use crate::document::{Inline, InlineStyle, parse};
 
     use super::{
         Block, MARKDOWN_REPARSE_DEBOUNCE, MarkdownPreviewView, code_lines, heading_line_height,
-        heading_size, highlight_code_blocks, list_marker_char_count, visible_highlights_for_line,
+        heading_size, highlight_code_blocks, list_marker_char_count, render_math,
+        visible_highlights_for_line,
     };
     use zcv_language::{HighlightSpan, SnippetHighlightCancellation};
 
@@ -1075,10 +1134,42 @@ mod tests {
 
     #[test]
     fn headings_preserve_a_minimum_line_height_at_their_own_font_size() {
+        let type_scale = typography::current();
         for level in 1..=6 {
-            let size = heading_size(level);
-            assert!(heading_line_height(level, size) >= size * 1.2);
+            let size = heading_size(level, type_scale);
+            assert!(heading_line_height(level, size, type_scale) >= size * 1.2);
         }
+    }
+
+    #[gpui::test]
+    fn math_preview_size_follows_content_font_size(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            let renderer = cx.svg_renderer();
+            let small = render_math(
+                "x^2",
+                false,
+                16.,
+                ratex_types::color::Color::WHITE,
+                renderer.clone(),
+            )
+            .expect("有效公式应能渲染");
+            let large = render_math(
+                "x^2",
+                false,
+                32.,
+                ratex_types::color::Color::WHITE,
+                renderer,
+            )
+            .expect("有效公式应能渲染");
+            assert!(
+                large.size(0).width > small.size(0).width,
+                "公式图像应随内容字号放大"
+            );
+            assert!(
+                large.size(0).height > small.size(0).height,
+                "公式图像高度应随内容字号放大"
+            );
+        });
     }
 
     #[test]

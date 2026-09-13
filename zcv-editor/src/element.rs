@@ -2607,7 +2607,7 @@ fn layout_visible_lines(
                         display_snapshot,
                         &RowStyleInput {
                             visible_highlights: &visible_highlights,
-                            highlight_styles,
+                            highlight_styles: &highlight_styles,
                             search_backgrounds: &search_backgrounds,
                             marked_ranges: presentation.marked_ranges(),
                         },

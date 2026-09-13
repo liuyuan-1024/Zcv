@@ -550,6 +550,7 @@ zcv final
                     .stream()
                     .buffer_to_stream(Line::new(source.line()));
                 let tab_width = display.buffer_snapshot().config().tab.tab_width();
+                let highlight_styles = display.highlight_styles();
                 let rendered = render_viewport_chunks(
                     ViewportChunkSource {
                         text: text.as_ref(),
@@ -562,7 +563,7 @@ zcv final
                     LineStyles {
                         // 与 element 相同：语法高亮 spans + 搜索背景层共存。
                         spans: &display.highlighted_spans_for_viewport(&viewport),
-                        styles: display.highlight_styles(),
+                        styles: &highlight_styles,
                         backgrounds: &search_backgrounds,
                         marked: &[],
                     },

@@ -155,7 +155,7 @@ struct ViewportHighlightCache {
 /// 一帧渲染使用的只读显示快照。
 ///
 /// FoldSnapshot、TabSnapshot 与 WrapSnapshot 都是低成本克隆；渲染持有此值时
-/// 不会阻塞 Editor 接收后续 Buffer 更新。语法高亮缓存同样以 Arc 携带。
+/// 不会阻塞 Editor 接收后续 Buffer 更新。主题样式不属于显示快照，渲染需要时按当前主题派生。
 #[derive(Debug, Clone)]
 pub(super) struct DisplaySnapshot {
     wrap_snapshot: WrapSnapshot,
@@ -163,8 +163,8 @@ pub(super) struct DisplaySnapshot {
     multi_buffer_snapshot: MultiBufferSnapshot,
     /// 折叠拓扑快照（渲染侧查询折叠状态与合并行段）。
     fold_snapshot: FoldSnapshot,
-    /// capture 索引 → 样式的预展开表（capture 名表变化时重建）。
-    highlight_styles: std::sync::Arc<[HighlightStyle]>,
+    /// 语法快照提供的 capture 名字表；主题样式由调用方按需解析。
+    capture_names: std::sync::Arc<[std::sync::Arc<str>]>,
     /// 视口高亮缓存（与 DisplayMap 共享，跨帧复用查询结果）。
     highlight_cache: Arc<Mutex<ViewportHighlightCache>>,
 }
@@ -269,9 +269,9 @@ impl DisplaySnapshot {
         spans
     }
 
-    /// capture 索引 → 样式的预展开表（渲染每 run 一次数组索引）。
-    pub(super) fn highlight_styles(&self) -> &[HighlightStyle] {
-        &self.highlight_styles
+    /// 按当前主题生成 capture 索引 → 样式的预展开表。
+    pub(super) fn highlight_styles(&self) -> Vec<HighlightStyle> {
+        syntax::style_table(&self.capture_names)
     }
 
     #[cfg(test)]
@@ -369,10 +369,8 @@ pub(crate) struct DisplayMap {
     multi_buffer_snapshot: MultiBufferSnapshot,
     /// 行内提示配置（inlay 注入；变化时整链重建）。
     inlays: Vec<Inlay>,
-    /// capture 名字表（与 `highlight_styles` 的构建输入，变化时重建样式表）。
+    /// 语法快照提供的 capture 名字表；主题样式不在 DisplayMap 中持有。
     capture_names: std::sync::Arc<[std::sync::Arc<str>]>,
-    /// capture 索引 → 样式的预展开表（渲染每 run 一次数组索引）。
-    highlight_styles: std::sync::Arc<[HighlightStyle]>,
     /// 由 BufferHeader 控制的整文件折叠；BlockMap 在 WrapMap 之上隐藏对应文本行。
     folded_buffers: HashSet<PathBuf>,
     /// 视口高亮缓存（每次 snapshot 共享同一份，跨帧复用查询结果）。
@@ -396,7 +394,6 @@ impl DisplayMap {
             multi_buffer_snapshot: snapshot.clone(),
             inlays: Vec::new(),
             capture_names: std::sync::Arc::from([]),
-            highlight_styles: std::sync::Arc::from([]),
             folded_buffers: HashSet::new(),
             viewport_highlight_cache: Arc::new(Mutex::new(ViewportHighlightCache::default())),
         };
@@ -407,7 +404,6 @@ impl DisplayMap {
     fn set_capture_names(&mut self, capture_names: std::sync::Arc<[std::sync::Arc<str>]>) {
         if self.capture_names != capture_names {
             self.capture_names = capture_names;
-            self.highlight_styles = std::sync::Arc::from(syntax::style_table(&self.capture_names));
         }
     }
 
@@ -421,16 +417,18 @@ impl DisplayMap {
 
     /// 查询指定组合文档范围的语法高亮，并解析为当前编辑器主题样式。
     ///
-    /// capture 查询和样式表都由 DisplayMap 统一维护；大纲等非正文消费者只能取得解析后的结果。
+    /// capture 查询由 DisplayMap 统一维护，颜色由主题系统按当前主题解析；大纲等非正文消费者
+    /// 只能取得解析后的结果。
     pub(crate) fn highlights_for_range(
         &self,
         range: Range<usize>,
     ) -> Vec<(Range<usize>, HighlightStyle)> {
+        let highlight_styles = syntax::style_table(&self.capture_names);
         self.multi_buffer_snapshot
             .highlights(range)
             .into_iter()
             .filter_map(|span| {
-                self.highlight_styles
+                highlight_styles
                     .get(span.capture as usize)
                     .cloned()
                     .map(|style| (span.range, style))
@@ -472,7 +470,7 @@ impl DisplayMap {
             block_snapshot: self.current_block_snapshot(),
             multi_buffer_snapshot: self.multi_buffer_snapshot.clone(),
             fold_snapshot: self.fold_map.snapshot().clone(),
-            highlight_styles: std::sync::Arc::clone(&self.highlight_styles),
+            capture_names: std::sync::Arc::clone(&self.capture_names),
             highlight_cache: Arc::clone(&self.viewport_highlight_cache),
         }
     }
@@ -623,6 +621,7 @@ mod tests {
 
     use gpui::{TestAppContext, font, px};
     use zcv_text::{Buffer, BufferConfig, Edit, Line, TextRange, TransactionMetadata};
+    use zcv_theme::ThemeChoice;
 
     use super::fold_map::ProjectedPoint;
     use super::*;
@@ -643,6 +642,25 @@ mod tests {
         map.inlays = inlays;
         let stream = map.fold_map.snapshot().stream().clone();
         rebuild_from_stream(map, stream);
+    }
+
+    fn apply_test_theme(cx: &mut TestAppContext, id: &'static str) {
+        cx.update(|cx| ThemeChoice::Named(id).apply(cx, None));
+    }
+
+    #[gpui::test]
+    fn display_snapshot_resolves_syntax_styles_from_current_theme(cx: &mut TestAppContext) {
+        apply_test_theme(cx, "light");
+        let buffer = Buffer::scratch("paragraph".to_string(), BufferConfig::default())
+            .expect("测试 Buffer 应能创建");
+        let mut map = DisplayMap::new(buffer.snapshot());
+        map.set_capture_names(std::sync::Arc::from([std::sync::Arc::from("text")]));
+
+        let light = map.snapshot().highlight_styles()[0].color;
+        apply_test_theme(cx, "dark");
+        let dark = map.snapshot().highlight_styles()[0].color;
+
+        assert_ne!(light, dark, "同一 DisplayMap 应按当前主题重新派生语法颜色");
     }
 
     fn buffer_point_to_display_point(

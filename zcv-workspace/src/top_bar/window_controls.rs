@@ -22,6 +22,7 @@ pub(super) fn render(
         .flex_row()
         .items_center()
         .gap(space::S8)
+        .occlude()
         .child(pip(Pip::Close, active).on_click({
             let workspace = workspace.clone();
             move |_, window, cx| {

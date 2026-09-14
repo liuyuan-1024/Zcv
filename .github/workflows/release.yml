@@ -41,7 +41,7 @@ jobs:
           if ! xcrun metal -v >/dev/null 2>&1; then xcodebuild -downloadComponent MetalToolchain; fi
       - name: 构建 macOS 更新包
         run: scripts/bundle-mac --no-dmg
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: zcv-update-macos
           path: target/aarch64-apple-darwin/release/Zcv_*_darwin_arm64.zip
@@ -68,7 +68,7 @@ jobs:
       - name: 构建 Windows 更新包
         shell: pwsh
         run: .\scripts\bundle-windows.ps1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: zcv-update-windows
           path: target/x86_64-pc-windows-msvc/release/Zcv_*_windows_x86_64.zip
@@ -85,11 +85,11 @@ jobs:
           if [[ -n "${{ github.event.inputs.tag }}" ]]; then TAG="${{ github.event.inputs.tag }}"; else TAG="${GITHUB_REF#refs/tags/}"; fi
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           name: zcv-update-macos
           path: target/release-assets/macos
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           name: zcv-update-windows
           path: target/release-assets/windows

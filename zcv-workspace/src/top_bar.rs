@@ -2,7 +2,9 @@
 
 use std::rc::Rc;
 
-use gpui::{AnyElement, AnyView, App, Div, Entity, WeakEntity, Window, div, prelude::*};
+use gpui::{
+    AnyElement, AnyView, App, Div, Entity, WeakEntity, Window, WindowControlArea, div, prelude::*,
+};
 use zcv_actions::OpenSettings;
 use zcv_git::Branch;
 use zcv_project::{GitJobPhase, GitOperationKind, RemoteOperationState};
@@ -122,6 +124,7 @@ impl gpui::Render for TopBar {
 
 fn bar_frame(cx: &gpui::App) -> Div {
     div()
+        .window_control_area(WindowControlArea::Drag)
         .flex()
         .flex_row()
         .items_center()

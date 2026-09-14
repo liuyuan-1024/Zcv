@@ -1,0 +1,54 @@
+name: 跨平台架构门禁
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  boundary:
+    name: 边界与平台无关检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: 检查跨平台能力边界
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ -n "$BASE_SHA" ]] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            scripts/check-platform-boundaries --base "$BASE_SHA"
+          else
+            scripts/check-platform-boundaries
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+      - name: 检查格式
+        run: cargo fmt --all -- --check
+      - name: 检查平台无关契约
+        run: |
+          cargo test -p zcv-fs-watch --all-targets
+          cargo test -p zcv-update --all-targets
+          cargo test -p zcv-terminal --all-targets
+
+  native:
+    name: 原生后端（${{ matrix.os }}）
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 检查原生后端可编译
+        run: cargo check -p zcv-fs-watch -p zcv-git -p zcv-terminal -p zcv-update -p Zcv --all-targets
+      - name: 运行文件监听与更新后端测试
+        run: |
+          cargo test -p zcv-fs-watch --all-targets
+          cargo test -p zcv-update --all-targets

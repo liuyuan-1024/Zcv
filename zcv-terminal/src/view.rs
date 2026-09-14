@@ -125,7 +125,11 @@ impl TerminalView {
             cx.subscribe(&self.terminal, |_view, _, event: &Event, cx| match event {
                 // 标题变化时通知 Pane 刷新标签栏标题。
                 Event::TitleChanged(_) => cx.emit(ItemEvent::UpdateTab),
-                Event::Wakeup | Event::Bell | Event::SelectionsChanged => {
+                Event::Error(message) => cx.emit(ItemEvent::Error(message.clone())),
+                Event::Wakeup
+                | Event::Bell
+                | Event::SelectionsChanged
+                | Event::ProcessExited(_) => {
                     cx.notify();
                 }
             });
@@ -542,6 +546,12 @@ impl Item for TerminalView {
 
     fn tab_icon(&self, _cx: &App) -> Option<SharedString> {
         Some(SharedString::from("icons/terminal.svg"))
+    }
+
+    fn close(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(error) = self.terminal.update(cx, |terminal, _| terminal.close()) {
+            cx.emit(ItemEvent::Error(format!("关闭终端失败：{error:#}")));
+        }
     }
 }
 

@@ -318,7 +318,7 @@ pub(crate) enum PtyEvent {
     Wakeup,
     Bell,
     Exit,
-    ChildExit,
+    ChildExit(std::process::ExitStatus),
 }
 
 /// 主线程待处理事件队列。
@@ -334,8 +334,31 @@ pub(crate) enum InternalEvent {
     Resize(TerminalBounds),
     Scroll(Scroll),
     SetSelection(Option<Selection>),
-    ChildExit,
+    ChildExit(std::process::ExitStatus),
     Exit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TerminalLifecycle {
+    Running,
+    Closing,
+    Exited,
+}
+
+impl TerminalLifecycle {
+    fn begin_close(&mut self) -> bool {
+        if *self == Self::Exited {
+            return false;
+        }
+        *self = Self::Closing;
+        true
+    }
+
+    fn mark_exited(&mut self) -> bool {
+        let changed = *self != Self::Exited;
+        *self = Self::Exited;
+        changed
+    }
 }
 
 /// 终端向视图层上抛的事件。
@@ -345,6 +368,8 @@ pub(crate) enum Event {
     Bell,
     Wakeup,
     SelectionsChanged,
+    ProcessExited(Option<i32>),
+    Error(String),
 }
 
 impl EventEmitter<Event> for Terminal {}
@@ -431,6 +456,8 @@ pub(crate) struct Terminal {
     scroll_px: Pixels,
     process_info: Arc<PtyProcessInfo>,
     background_executor: BackgroundExecutor,
+    lifecycle: TerminalLifecycle,
+    pty_resources_closed: bool,
     /// 当前工作目录（持久化恢复终端会话用）。
     cwd: Option<PathBuf>,
     /// 当前终端会话的临时字号覆盖；None 时跟随 SettingsStore。
@@ -483,6 +510,8 @@ impl Terminal {
             scroll_px: Pixels::ZERO,
             process_info,
             background_executor,
+            lifecycle: TerminalLifecycle::Running,
+            pty_resources_closed: false,
             cwd: builder.cwd.clone(),
             font_size_override: None,
         };
@@ -517,6 +546,8 @@ impl Terminal {
             scroll_px: Pixels::ZERO,
             process_info: Arc::new(PtyProcessInfo::new(alacritty::process_id_getter_for_test())),
             background_executor: cx.background_executor().clone(),
+            lifecycle: TerminalLifecycle::Running,
+            pty_resources_closed: false,
             cwd: builder.cwd.clone(),
             font_size_override: None,
         }
@@ -593,7 +624,9 @@ impl Terminal {
                 PtyEvent::Wakeup => self.events.push_back(InternalEvent::Wakeup),
                 PtyEvent::Bell => self.events.push_back(InternalEvent::Bell),
                 PtyEvent::Exit => self.events.push_back(InternalEvent::Exit),
-                PtyEvent::ChildExit => self.events.push_back(InternalEvent::ChildExit),
+                PtyEvent::ChildExit(status) => {
+                    self.events.push_back(InternalEvent::ChildExit(status))
+                }
             }
         }
         cx.notify();
@@ -634,7 +667,9 @@ impl Terminal {
             match event {
                 InternalEvent::Resize(bounds) => {
                     // 先通知 PTY（触发 SIGWINCH），再调整网格。
-                    self.pty_tx.resize(&bounds);
+                    if let Err(error) = self.pty_tx.resize(&bounds) {
+                        cx.emit(Event::Error(format!("终端调整大小失败：{error:#}")));
+                    }
                     alacritty::resize(&mut self.term.lock(), &bounds);
                 }
                 InternalEvent::PtyWrite(bytes) => self.pty_tx.notify(bytes),
@@ -681,8 +716,18 @@ impl Terminal {
                     cx.emit(Event::Wakeup);
                     self.process_info.clone().refresh(cx);
                 }
-                InternalEvent::ChildExit => {}
-                InternalEvent::Exit => {}
+                InternalEvent::ChildExit(status) => {
+                    self.process_info.mark_exited();
+                    if self.lifecycle.mark_exited() {
+                        cx.emit(Event::ProcessExited(status.code()));
+                    }
+                }
+                InternalEvent::Exit => {
+                    self.process_info.mark_exited();
+                    if self.lifecycle.mark_exited() {
+                        cx.emit(Event::ProcessExited(None));
+                    }
+                }
             }
         }
     }
@@ -842,10 +887,33 @@ impl Terminal {
         cx.notify();
     }
 
-    /// 终止 shell 进程树并关闭 PTY。
-    fn kill_current_process(&mut self) {
-        self.process_info
-            .kill_current_process(&self.background_executor);
+    /// 请求终止 shell 进程树并关闭 PTY；调用方负责把失败呈现给用户。
+    pub(crate) fn close(&mut self) -> Result<()> {
+        if !self.lifecycle.begin_close() {
+            return Ok(());
+        }
+
+        let terminate_result = self
+            .process_info
+            .terminate_process_tree(&self.background_executor)
+            .context("终止终端进程树失败");
+        let shutdown_result = if self.pty_resources_closed {
+            Ok(())
+        } else {
+            let result = self.pty_tx.shutdown().context("关闭终端事件循环失败");
+            if result.is_ok() {
+                self.pty_resources_closed = true;
+            }
+            result
+        };
+
+        terminate_result.and(shutdown_result)
+    }
+
+    fn close_during_drop(&mut self) {
+        if let Err(error) = self.close() {
+            eprintln!("关闭终端资源失败：{error:#}");
+        }
     }
 }
 
@@ -878,8 +946,7 @@ fn to_vte_rgb(rgba: gpui::Rgba) -> Rgb {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        self.kill_current_process();
-        self.pty_tx.shutdown();
+        self.close_during_drop();
     }
 }
 
@@ -892,6 +959,18 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn terminal_lifecycle_has_explicit_close_and_exit_transitions() {
+        let mut lifecycle = TerminalLifecycle::Running;
+        assert!(lifecycle.begin_close());
+        assert_eq!(lifecycle, TerminalLifecycle::Closing);
+        assert!(lifecycle.begin_close());
+        assert!(lifecycle.mark_exited());
+        assert_eq!(lifecycle, TerminalLifecycle::Exited);
+        assert!(!lifecycle.begin_close());
+        assert!(!lifecycle.mark_exited());
+    }
 
     fn content_of(term: &Term<VoidListener>) -> Content {
         alacritty::make_content(term, None)

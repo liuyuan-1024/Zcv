@@ -1,3 +1,4 @@
+use anyhow::{Context as _, Result};
 use gpui::BackgroundExecutor;
 use sysinfo::Pid;
 
@@ -44,23 +45,33 @@ impl ProcessIdGetter {
     }
 }
 
-pub(super) fn terminate_process_tree(pid: u32, executor: &BackgroundExecutor) {
+pub(super) fn terminate_process_tree(pid: u32, executor: &BackgroundExecutor) -> Result<()> {
     #[cfg(unix)]
     {
+        use std::io;
         use std::time::Duration;
 
         const PROCESS_KILL_GRACE_PERIOD: Duration = Duration::from_millis(100);
         let pid = pid as i32;
         // 先终止进程组，宽限期后再强制终止。
-        unsafe {
-            libc::killpg(pid, libc::SIGTERM);
+        let result = unsafe { libc::killpg(pid, libc::SIGTERM) };
+        if result != 0 {
+            let error = io::Error::last_os_error();
+            // 进程在请求关闭前自然退出时，目标已经达到。
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                return Err(error).context("发送终端进程组终止信号失败");
+            }
         }
         let timer = executor.clone();
         executor
             .spawn(async move {
                 timer.timer(PROCESS_KILL_GRACE_PERIOD).await;
-                unsafe {
-                    libc::killpg(pid, libc::SIGKILL);
+                let result = unsafe { libc::killpg(pid, libc::SIGKILL) };
+                if result != 0 {
+                    let error = io::Error::last_os_error();
+                    if error.raw_os_error() != Some(libc::ESRCH) {
+                        eprintln!("终端进程组强制终止失败：{error}");
+                    }
                 }
             })
             .detach();
@@ -70,8 +81,14 @@ pub(super) fn terminate_process_tree(pid: u32, executor: &BackgroundExecutor) {
     {
         let _ = executor;
         // ConPTY 不会因关闭事件循环而可靠终止 shell 的子进程树。
-        let _ = std::process::Command::new("taskkill")
+        let status = std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .status();
+            .status()
+            .context("执行 taskkill 终止终端进程树失败")?;
+        if !status.success() {
+            anyhow::bail!("taskkill 终止终端进程树返回状态 {status}");
+        }
     }
+
+    Ok(())
 }

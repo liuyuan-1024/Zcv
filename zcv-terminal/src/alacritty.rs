@@ -55,7 +55,7 @@ impl EventListener for TerminalListener {
             AlacTermEvent::Wakeup => PtyEvent::Wakeup,
             AlacTermEvent::Bell => PtyEvent::Bell,
             AlacTermEvent::Exit => PtyEvent::Exit,
-            AlacTermEvent::ChildExit(_) => PtyEvent::ChildExit,
+            AlacTermEvent::ChildExit(status) => PtyEvent::ChildExit(status),
         };
         // 事件通道在 IO 线程发送；终端销毁后忽略发送失败。
         let _ = self.events_tx.try_send(event);
@@ -82,7 +82,7 @@ impl PtySender {
     }
 
     /// 通知 PTY 调整窗口尺寸（触发 SIGWINCH 与 shell 的 resize 感知）。
-    pub(super) fn resize(&self, bounds: &TerminalBounds) {
+    pub(super) fn resize(&self, bounds: &TerminalBounds) -> anyhow::Result<()> {
         #[cfg(not(all(test, unix)))]
         let Self::Live { notifier } = self;
         #[cfg(all(test, unix))]
@@ -91,16 +91,18 @@ impl PtySender {
             #[cfg(all(test, unix))]
             Self::Inert => None,
         }) else {
-            return;
+            return Ok(());
         };
 
-        let _ = notifier
+        notifier
             .0
-            .send(Msg::Resize(window_size_from_bounds(bounds)));
+            .send(Msg::Resize(window_size_from_bounds(bounds)))
+            .map_err(|_| anyhow::anyhow!("终端事件循环已退出"))?;
+        Ok(())
     }
 
     /// 优雅关闭事件循环线程。
-    pub(super) fn shutdown(&self) {
+    pub(super) fn shutdown(&self) -> anyhow::Result<()> {
         #[cfg(not(all(test, unix)))]
         let Self::Live { notifier } = self;
         #[cfg(all(test, unix))]
@@ -109,10 +111,14 @@ impl PtySender {
             #[cfg(all(test, unix))]
             Self::Inert => None,
         }) else {
-            return;
+            return Ok(());
         };
 
-        let _ = notifier.0.send(Msg::Shutdown);
+        notifier
+            .0
+            .send(Msg::Shutdown)
+            .map_err(|_| anyhow::anyhow!("终端事件循环已退出"))?;
+        Ok(())
     }
 
     #[cfg(all(test, unix))]

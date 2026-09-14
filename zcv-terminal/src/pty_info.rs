@@ -1,5 +1,6 @@
 use std::{path::PathBuf, sync::Arc};
 
+use anyhow::Result;
 use gpui::{BackgroundExecutor, Context, Task};
 use parking_lot::{Mutex, RwLock};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -14,7 +15,7 @@ pub(crate) struct PtyProcessInfo {
     system: Mutex<System>,
     refresh_kind: ProcessRefreshKind,
     pid_getter: ProcessIdGetter,
-    process_pid: Mutex<Option<u32>>,
+    shell_pid: Mutex<Option<u32>>,
     last_foreground_pid: Mutex<Option<Pid>>,
     current: RwLock<Option<PathBuf>>,
     task: Mutex<Option<Task<()>>>,
@@ -29,7 +30,7 @@ impl PtyProcessInfo {
             system: Mutex::new(System::new()),
             refresh_kind,
             pid_getter,
-            process_pid: Mutex::new(
+            shell_pid: Mutex::new(
                 (pid_getter.fallback_pid().as_u32() > 0)
                     .then_some(pid_getter.fallback_pid().as_u32()),
             ),
@@ -83,10 +84,16 @@ impl PtyProcessInfo {
         }));
     }
 
-    pub(crate) fn kill_current_process(&self, executor: &BackgroundExecutor) {
-        let Some(pid) = self.process_pid.lock().take() else {
-            return;
+    pub(crate) fn terminate_process_tree(&self, executor: &BackgroundExecutor) -> Result<()> {
+        let Some(pid) = self.shell_pid.lock().as_ref().copied() else {
+            return Ok(());
         };
-        platform::terminate_process_tree(pid, executor);
+        platform::terminate_process_tree(pid, executor)?;
+        self.shell_pid.lock().take();
+        Ok(())
+    }
+
+    pub(crate) fn mark_exited(&self) {
+        self.shell_pid.lock().take();
     }
 }

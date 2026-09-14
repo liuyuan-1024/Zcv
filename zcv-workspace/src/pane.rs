@@ -582,6 +582,7 @@ impl Pane {
         if self.transient_preview_item_id == Some(item_id) {
             self.transient_preview_item_id = None;
         }
+        self.tabs[pos].close(window, cx);
         self.tabs.remove(pos);
         if self.active == Some(item_id) {
             self.active = self

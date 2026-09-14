@@ -2,8 +2,7 @@
 //!
 //! 布局控制分两类区域：
 //!
-//! - **Dock**（左/右/底）：可折叠，同一时间一个 panel 可见，用 PanelStack 切换。
-//!   每个 Dock 是独立 Entity，参考 Zed `crates/workspace/src/dock.rs`。
+//! - **Dock**（左/右/底）：可折叠，同一时间一个 panel 可见，用 PanelStack 切换。每个 Dock 是独立 Entity。
 //! - **中心编辑区**：单一 Pane。
 
 use std::sync::Arc;
@@ -57,7 +56,7 @@ pub struct DockStructure {
 
 /// 未恢复持久化状态时采用的 Dock 默认尺寸：侧向按宽度、底部按高度。
 const DEFAULT_SIDE_SIZE: Pixels = px(240.0);
-const DEFAULT_BOTTOM_SIZE: Pixels = px(256.0);
+const DEFAULT_BOTTOM_SIZE: Pixels = px(270.0);
 
 impl DockPosition {
     /// 未恢复持久化状态时采用的 Dock 单一默认尺寸。
@@ -85,8 +84,6 @@ impl Render for DraggedDock {
 // ═══ Dock Entity ═════════════════════════════════════════════════
 
 /// Dock 容器：相邻窗口边缘，可折叠，同一时间只显示一个 panel。
-///
-/// 参考 Zed `crates/workspace/src/dock.rs` 中的 Dock 设计。
 pub struct Dock {
     position: DockPosition,
     is_open: bool,

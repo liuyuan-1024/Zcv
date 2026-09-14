@@ -2,6 +2,7 @@
 name = "zcv-update"
 version.workspace = true
 edition.workspace = true
+build = "build.rs"
 
 [lib]
 path = "src/update.rs"

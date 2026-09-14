@@ -16,8 +16,8 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $root
 
 $target = "x86_64-pc-windows-msvc"
-$version = (Select-String -Path (Join-Path $root "Cargo.toml") -Pattern '^version = "([^"]+)"' |
-    Select-Object -First 1).Matches.Groups[1].Value
+$versionMatch = Select-String -Path (Join-Path $root "Cargo.toml") -Pattern '^version = "([^"]+)"' | Select-Object -First 1
+$version = $versionMatch.Matches.Groups[1].Value
 if ([string]::IsNullOrWhiteSpace($version)) {
     throw "无法从 Cargo.toml 读取版本号"
 }
@@ -50,7 +50,8 @@ if (Test-Path -LiteralPath $appDirectory) {
 New-Item -ItemType Directory -Path $appDirectory | Out-Null
 Copy-Item -LiteralPath $binaryPath -Destination (Join-Path $appDirectory "Zcv.exe")
 Copy-Item -LiteralPath $helperPath -Destination (Join-Path $appDirectory "zcv-update-helper.exe")
-Set-Content -LiteralPath (Join-Path $appDirectory "version.txt") -Value $version -NoNewline -Encoding utf8NoBOM
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText((Join-Path $appDirectory "version.txt"), $version, $utf8NoBom)
 
 Write-Host "==> $zipPath"
 if (Test-Path -LiteralPath $zipPath) {

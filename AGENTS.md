@@ -31,7 +31,8 @@ Zed 是 Zcv 编辑器架构和功能实现的重要参考。
 当修改涉及编辑器已有成熟实现时，可以查阅本机：
 
 ```text
-/Users/liuyuan/project/zed
+macOS：/Users/liuyuan/project/zed
+Windows：D:\project\zed
 ```
 
 重点理解：

@@ -172,6 +172,9 @@ impl Workspace {
         // 窗口管理器异步应用最大化、还原和拖动结果；
         // 只在实际边界变化后保存。
         let window_bounds_subscription = cx.observe_window_bounds(window, |this, window, cx| {
+            if !window.is_window_active() {
+                return;
+            }
             this.schedule_window_bounds_save(window, cx);
         });
 

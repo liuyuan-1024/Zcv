@@ -13,9 +13,19 @@ use zcv_settings::config_dir;
 
 use crate::persistence;
 
-const WINDOW_BOUNDS_VERSION: u32 = 1;
+const WINDOW_BOUNDS_VERSION: u32 = 2;
 
-/// 窗口边界的可持久化形式：整数坐标，i32 足以覆盖屏幕尺寸。
+/// 窗口边界持久化使用的坐标空间。
+///
+/// GPUI 的 `Pixels` 是 Zcv 窗口恢复协议的唯一坐标输入；
+/// 设备像素和标题栏偏移只由 GPUI 的原生窗口后端处理，不进入工作区文件。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum WindowCoordinateSpace {
+    #[serde(rename = "gpui-logical-pixels")]
+    GpuiLogicalPixels,
+}
+
+/// 窗口边界的可持久化形式：GPUI 逻辑像素的整数坐标。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub(crate) enum WindowBoundsJson {
     Windowed {
@@ -113,6 +123,7 @@ impl From<WindowBoundsJson> for WindowBounds {
 /// 单条窗口记录：边界 + 保存时的显示器标识（显示器断开后回退主显示器）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct StoredBounds {
+    coordinate_space: WindowCoordinateSpace,
     #[serde(default)]
     display_uuid: Option<String>,
     bounds: WindowBoundsJson,
@@ -162,6 +173,7 @@ fn save_to(
 ) -> Result<()> {
     let mut file = read_file(path);
     let stored = StoredBounds {
+        coordinate_space: WindowCoordinateSpace::GpuiLogicalPixels,
         display_uuid,
         bounds: bounds.into(),
     };
@@ -185,6 +197,9 @@ fn load_from(path: &Path, root: Option<&Path>) -> Option<(WindowBounds, Option<S
                 .get(&persistence::workspace_identity(Some(root)))
         })
         .or(file.default.as_ref())?;
+    if stored.coordinate_space != WindowCoordinateSpace::GpuiLogicalPixels {
+        return None;
+    }
     Some((stored.bounds.into(), stored.display_uuid.clone()))
 }
 
@@ -195,26 +210,87 @@ pub fn save_window_bounds(root: Option<&Path>, window: &mut Window, cx: &mut App
         .display(cx)
         .and_then(|display| display.uuid().ok())
         .map(|uuid| uuid.to_string());
-    let bounds = window.window_bounds();
+    let bounds = window.inner_window_bounds();
     if let Err(error) = save_to(&window_bounds_path(), root, bounds, display_uuid) {
         eprintln!("保存窗口边界失败：{error:#}");
     }
 }
 
 /// 解析窗口打开参数：项目记录 → 全局默认。
-/// 保存时的显示器已断开时回退主显示器（返回的 display 为 None）。
+/// 保存时的显示器已断开时使用当前主显示器，并将窗口矩形限制在其显示范围内。
 pub fn load_window_bounds(
     root: Option<&Path>,
     cx: &App,
 ) -> Option<(WindowBounds, Option<DisplayId>)> {
     let (bounds, display_uuid) = load_from(&window_bounds_path(), root)?;
-    let display_id = display_uuid.as_deref().and_then(|saved| {
-        cx.displays()
-            .iter()
-            .find(|display| display.uuid().ok().map(|uuid| uuid.to_string()) == Some(saved.into()))
-            .map(|display| display.id())
-    });
-    Some((bounds, display_id))
+    let display = display_uuid
+        .as_deref()
+        .and_then(|saved| {
+            cx.displays()
+                .iter()
+                .find(|display| {
+                    display
+                        .uuid()
+                        .ok()
+                        .is_some_and(|uuid| uuid.to_string() == saved)
+                })
+                .cloned()
+        })
+        .or_else(|| cx.primary_display());
+    let Some(display) = display else {
+        return Some((normalize_window_bounds(bounds), None));
+    };
+
+    Some((
+        clamp_window_bounds(normalize_window_bounds(bounds), display.bounds()),
+        Some(display.id()),
+    ))
+}
+
+/// 先校正持久化输入的基本尺寸，再根据当前显示器做可见区域校正。
+fn normalize_window_bounds(window_bounds: WindowBounds) -> WindowBounds {
+    let normalize = |bounds: Bounds<Pixels>| Bounds {
+        origin: bounds.origin,
+        size: size(
+            px(f32::from(bounds.size.width).max(1.0)),
+            px(f32::from(bounds.size.height).max(1.0)),
+        ),
+    };
+
+    match window_bounds {
+        WindowBounds::Windowed(bounds) => WindowBounds::Windowed(normalize(bounds)),
+        WindowBounds::Maximized(bounds) => WindowBounds::Maximized(normalize(bounds)),
+        WindowBounds::Fullscreen(bounds) => WindowBounds::Fullscreen(normalize(bounds)),
+    }
+}
+
+/// 将恢复矩形限制在 GPUI 当前显示器的可见边界内。
+///
+/// `WindowBounds` 中最大化和全屏分支保存的是恢复矩形，校正矩形不会改变窗口状态。
+fn clamp_window_bounds(window_bounds: WindowBounds, display: Bounds<Pixels>) -> WindowBounds {
+    let clamp = |bounds: Bounds<Pixels>| {
+        let display_x = f32::from(display.origin.x);
+        let display_y = f32::from(display.origin.y);
+        let display_width = f32::from(display.size.width).max(1.0);
+        let display_height = f32::from(display.size.height).max(1.0);
+        let width = f32::from(bounds.size.width).clamp(1.0, display_width);
+        let height = f32::from(bounds.size.height).clamp(1.0, display_height);
+        let max_x = display_x + display_width - width;
+        let max_y = display_y + display_height - height;
+        let x = f32::from(bounds.origin.x).clamp(display_x, max_x);
+        let y = f32::from(bounds.origin.y).clamp(display_y, max_y);
+
+        Bounds {
+            origin: point(px(x), px(y)),
+            size: size(px(width), px(height)),
+        }
+    };
+
+    match window_bounds {
+        WindowBounds::Windowed(bounds) => WindowBounds::Windowed(clamp(bounds)),
+        WindowBounds::Maximized(bounds) => WindowBounds::Maximized(clamp(bounds)),
+        WindowBounds::Fullscreen(bounds) => WindowBounds::Fullscreen(clamp(bounds)),
+    }
 }
 
 #[cfg(test)]
@@ -318,7 +394,12 @@ mod tests {
 
         let file: WindowBoundsFile =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(file.version, WINDOW_BOUNDS_VERSION);
         assert!(file.default.is_some());
+        assert_eq!(
+            file.default.as_ref().unwrap().coordinate_space,
+            WindowCoordinateSpace::GpuiLogicalPixels
+        );
         // 项目键与布局文件的文件名哈希一致，保证两个文件域身份统一。
         assert_eq!(
             file.projects.keys().next().map(String::as_str),
@@ -346,6 +427,42 @@ mod tests {
         assert_eq!(
             load_from(&path, None),
             Some((windowed(1.0, 2.0, 300.0, 400.0), Some("uuid-123".into())))
+        );
+    }
+
+    #[test]
+    fn restore_bounds_are_clamped_without_changing_window_state() {
+        let display = Bounds {
+            origin: point(px(-1920.0), px(0.0)),
+            size: size(px(1920.0), px(1080.0)),
+        };
+        let bounds = WindowBounds::Maximized(Bounds {
+            origin: point(px(-4000.0), px(-2000.0)),
+            size: size(px(2400.0), px(1200.0)),
+        });
+
+        assert_eq!(
+            clamp_window_bounds(normalize_window_bounds(bounds), display),
+            WindowBounds::Maximized(Bounds {
+                origin: point(px(-1920.0), px(0.0)),
+                size: size(px(1920.0), px(1080.0)),
+            })
+        );
+    }
+
+    #[test]
+    fn invalid_persisted_size_is_normalized_before_display_lookup() {
+        let bounds = normalize_window_bounds(WindowBounds::Fullscreen(Bounds {
+            origin: point(px(-20.0), px(-30.0)),
+            size: size(px(-1.0), px(0.0)),
+        }));
+
+        assert_eq!(
+            bounds,
+            WindowBounds::Fullscreen(Bounds {
+                origin: point(px(-20.0), px(-30.0)),
+                size: size(px(1.0), px(1.0)),
+            })
         );
     }
 }

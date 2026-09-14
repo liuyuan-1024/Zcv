@@ -1,0 +1,11 @@
+{
+  "name": "Zcv",
+  "version": 1,
+  "enabled": true,
+  "features": ["syntax", "folding"],
+  "owner": {
+    "id": 42,
+    "displayName": "Editor Team"
+  },
+  "limits": null
+}

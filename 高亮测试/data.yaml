@@ -1,0 +1,10 @@
+name: zcv
+version: 1
+enabled: true
+features:
+  - syntax
+  - folding
+owner:
+  team: editor
+  active: true
+limits: null

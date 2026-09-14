@@ -825,11 +825,13 @@ impl WrapMap {
                 .is_some_and(|(cached_font, cached_size)| {
                     *cached_font != font || *cached_size != font_size
                 });
-        let needs_rewrap = width_changed || (font_changed && wrap_width.is_some());
         let text_system_changed = self
             .text_system
             .as_ref()
             .is_none_or(|cached| !Arc::ptr_eq(cached, &text_system));
+        let needs_rewrap = width_changed
+            || (font_changed && wrap_width.is_some())
+            || (text_system_changed && wrap_width.is_some());
         if text_system_changed {
             self.window_text_system = Some(Arc::new(WindowTextSystem::new(text_system.clone())));
         }

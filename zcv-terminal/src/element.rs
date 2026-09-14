@@ -71,7 +71,7 @@ pub(super) struct TerminalLayout {
 pub(super) struct TerminalElement {
     view: gpui::Entity<TerminalView>,
     /// 文本段 shape 缓存：滚动等重绘帧直接命中，避免每帧全量字体 shaping。
-    /// 键为文本与样式投影（TextRun 本身无 Hash）；
+    /// 键包含文本、样式、字体和当前窗口的布局度量；
     /// 容量超限时整体清空（视口内行数有限，重建成本低，滚动场景命中率不受影响）。
     shaped_runs: HashMap<ShapedRunKey, ShapedLine>,
     /// 行转换缓存：内容指纹 → 转换结果（文本/样式段/背景区间）。
@@ -100,13 +100,24 @@ struct CachedRow {
 /// 行缓存容量上限；超出即清空（终端历史行数有限，滚动窗口内命中率不受影响）。
 const ROW_CACHE_LIMIT: usize = 4096;
 
-/// shape 缓存键：行文本 + 样式段投影（font 省略——同一布局内恒同）。
-type ShapedRunKey = (String, Vec<RunStyle>);
+/// shape 缓存键：文本、字体样式与当前布局度量。
+///
+/// 字体、字号和格宽都会影响 shaping 结果；
+/// 尤其是 Windows 高 DPI 或终端字号变化时，不能继续复用旧布局。
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ShapedRunKey {
+    text: String,
+    styles: Vec<RunStyle>,
+    font_size: Pixels,
+    cell_width: Pixels,
+    scale_factor_bits: u32,
+}
 
 /// TextRun 的可哈希样式投影。
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct RunStyle {
     len: usize,
+    font: Font,
     color: u32,
     background_color: Option<u32>,
     underline: Option<gpui::UnderlineStyle>,
@@ -117,6 +128,7 @@ impl From<&TextRun> for RunStyle {
     fn from(run: &TextRun) -> Self {
         Self {
             len: run.len,
+            font: run.font.clone(),
             color: u32::from(Rgba::from(run.color)),
             background_color: run
                 .background_color
@@ -129,6 +141,41 @@ impl From<&TextRun> for RunStyle {
 
 /// shape 缓存容量上限；超出即清空，避免终端输出流无限增长。
 const SHAPED_RUN_CACHE_LIMIT: usize = 4096;
+
+#[cfg(test)]
+mod shaped_run_key_tests {
+    use super::*;
+
+    fn key(font_size: Pixels, cell_width: Pixels, scale_factor: f32) -> ShapedRunKey {
+        let font = typography::content_font();
+        ShapedRunKey {
+            text: "a".to_owned(),
+            styles: vec![RunStyle {
+                len: 1,
+                font,
+                color: 0,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+            font_size,
+            cell_width,
+            scale_factor_bits: scale_factor.to_bits(),
+        }
+    }
+
+    #[test]
+    fn layout_changes_invalidate_shaped_run_keys() {
+        let base = key(px(14.), px(8.), 1.);
+        assert_ne!(base, key(px(15.), px(8.), 1.));
+        assert_ne!(base, key(px(14.), px(9.), 1.));
+        assert_ne!(base, key(px(14.), px(8.), 1.25));
+
+        let mut changed_font = base.clone();
+        changed_font.styles[0].font = gpui::font(".SystemUIFont");
+        assert_ne!(base, changed_font);
+    }
+}
 
 impl TerminalElement {
     pub(super) fn new(view: gpui::Entity<TerminalView>) -> Self {
@@ -292,10 +339,13 @@ impl Element for TerminalElement {
             }
             for run in &layout.text_runs {
                 // 滚动等重绘帧行内容不变，shape 结果直接命中缓存。
-                let key = (
-                    run.text.clone(),
-                    run.runs.iter().map(RunStyle::from).collect(),
-                );
+                let key = ShapedRunKey {
+                    text: run.text.clone(),
+                    styles: run.runs.iter().map(RunStyle::from).collect(),
+                    font_size: layout.font_size,
+                    cell_width: layout.cell_width,
+                    scale_factor_bits: window.scale_factor().to_bits(),
+                };
                 let shaped = self.shaped_runs.entry(key).or_insert_with(|| {
                     // 强制每字形 1 格宽：CJK 字形 advance 与格宽一致，
                     // 宽字符占 2 格的间距由 run 的起始列号定位补足。

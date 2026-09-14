@@ -10,7 +10,7 @@
 //! 参考：Zed crates/fs/src/fs_watcher.rs
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -62,12 +62,59 @@ enum WatcherMode {
 
 /// 路径查找键。
 ///
-/// 区分大小写的卷使用 `Exact`，不区分大小写的卷使用 `Folded`（小写）。
+/// 区分大小写的卷使用 `Exact`，不区分大小写的卷使用按组件折叠的 `Folded`。
 /// 两个变体是不同的键空间，Exact 查询不会误中 Folded 条目，反之亦然。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum WatchKey {
     Exact(Arc<Path>),
-    Folded(Arc<str>),
+    Folded(FoldedPath),
+}
+
+/// 不区分大小写文件系统上的路径身份。
+///
+/// 路径分隔符和组件类型保留在结构中，避免把路径当作一个字符串折叠后丢失组件边界。
+/// 大小写折叠只发生在 Prefix 和 Normal 组件上。
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct FoldedPath(Arc<[FoldedPathComponent]>);
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum FoldedPathComponent {
+    Prefix(Arc<str>),
+    RootDir,
+    CurDir,
+    ParentDir,
+    Normal(Arc<str>),
+}
+
+impl FoldedPath {
+    fn from_path(path: &Path) -> Self {
+        let components = path
+            .components()
+            .map(|component| match component {
+                Component::Prefix(prefix) => {
+                    FoldedPathComponent::Prefix(folded_component(prefix.as_os_str()))
+                }
+                Component::RootDir => FoldedPathComponent::RootDir,
+                Component::CurDir => FoldedPathComponent::CurDir,
+                Component::ParentDir => FoldedPathComponent::ParentDir,
+                Component::Normal(name) => FoldedPathComponent::Normal(folded_component(name)),
+            })
+            .collect::<Vec<_>>();
+        Self(Arc::from(components.into_boxed_slice()))
+    }
+
+    fn starts_with(&self, prefix: &Self) -> bool {
+        self.0.starts_with(&prefix.0)
+    }
+}
+
+fn folded_component(component: &std::ffi::OsStr) -> Arc<str> {
+    let folded = component
+        .to_string_lossy()
+        .chars()
+        .flat_map(|character| character.to_lowercase())
+        .collect::<String>();
+    Arc::from(folded)
 }
 
 impl WatchKey {
@@ -84,7 +131,7 @@ impl WatchKey {
     }
 
     fn folded(path: &Path) -> Self {
-        Self::Folded(path.to_string_lossy().to_lowercase().into())
+        Self::Folded(FoldedPath::from_path(path))
     }
 }
 
@@ -513,8 +560,8 @@ pub struct FsWatcher {
     pending_path_events: Arc<Mutex<Vec<PathEvent>>>,
     /// 已向 GlobalWatcher 注册的路径。
     registrations: Arc<Mutex<HashMap<WatchKey, FsWatcherRegistration>>>,
-    /// 等待创建的路径（路径尚不存在时由共享轮询线程等待）。
-    pending_registrations: Arc<Mutex<HashMap<Arc<Path>, ()>>>,
+    /// 等待创建的路径及其查询失败通知状态。
+    pending_registrations: Arc<Mutex<HashMap<Arc<Path>, PendingRegistrationState>>>,
     /// 通知 pending 轮询线程停止，并在析构时等待它退出。
     pending_poller_stop: Option<mpsc::Sender<()>>,
     pending_poller: Option<thread::JoinHandle<()>>,
@@ -524,6 +571,11 @@ pub struct FsWatcher {
 struct FsWatcherRegistration {
     id: WatcherRegistrationId,
     mode: WatcherMode,
+}
+
+#[derive(Default)]
+struct PendingRegistrationState {
+    query_error_notified: bool,
 }
 
 /// 事件批次订阅：`next_batch` 等待信号并取走全部缓冲（信号合并），`has_more` 非阻塞检查是否仍有未处理的信号（防抖循环用）。
@@ -608,8 +660,35 @@ impl FsWatcher {
                             continue;
                         }
 
-                        let case_insensitive = platform::case_insensitive_paths();
-                        let key = WatchKey::for_path(&poll_path, case_insensitive);
+                        let semantics = match platform::path_semantics(&poll_path) {
+                            Ok(semantics) => semantics,
+                            Err(_) => {
+                                let should_notify = {
+                                    let mut pending = pending_regs.lock().unwrap();
+                                    let Some(notified) = pending.get_mut(&poll_path) else {
+                                        continue;
+                                    };
+                                    if notified.query_error_notified {
+                                        false
+                                    } else {
+                                        notified.query_error_notified = true;
+                                        true
+                                    }
+                                };
+                                if should_notify {
+                                    enqueue_path_events(
+                                        &signal_tx,
+                                        &pending_events,
+                                        vec![PathEvent {
+                                            path: poll_path.to_path_buf(),
+                                            kind: Some(PathEventKind::Rescan),
+                                        }],
+                                    );
+                                }
+                                continue;
+                            }
+                        };
+                        let key = WatchKey::for_path(&poll_path, !semantics.case_sensitive);
 
                         if registrations.lock().unwrap().contains_key(&key) {
                             pending_regs.lock().unwrap().remove(&poll_path);
@@ -619,7 +698,7 @@ impl FsWatcher {
                         // 路径已创建，尝试注册到 GlobalWatcher
                         match register_existing_path(
                             poll_path.clone(),
-                            case_insensitive,
+                            semantics,
                             signal_tx.clone(),
                             pending_events.clone(),
                         ) {
@@ -663,7 +742,7 @@ impl FsWatcher {
         if pending.contains_key(&path) {
             return;
         }
-        pending.insert(path, ());
+        pending.insert(path, PendingRegistrationState::default());
     }
 }
 
@@ -679,8 +758,14 @@ impl Watcher for FsWatcher {
             }
         }
 
-        let case_insensitive = platform::case_insensitive_paths();
-        let key = WatchKey::for_path(&path, case_insensitive);
+        // 路径尚不存在——交给后台轮询
+        if !path.exists() {
+            self.add_pending_path(path);
+            return Ok(());
+        }
+
+        let semantics = platform::path_semantics(&path)?;
+        let key = WatchKey::for_path(&path, !semantics.case_sensitive);
 
         {
             let regs = self.registrations.lock().unwrap();
@@ -689,15 +774,9 @@ impl Watcher for FsWatcher {
             }
         }
 
-        // 路径尚不存在——交给后台轮询
-        if !path.exists() {
-            self.add_pending_path(path);
-            return Ok(());
-        }
-
         match register_existing_path(
             path.clone(),
-            case_insensitive,
+            semantics,
             self.signal_tx.clone(),
             self.pending_path_events.clone(),
         )? {
@@ -716,9 +795,13 @@ impl Watcher for FsWatcher {
     fn remove(&self, path: &Path) -> anyhow::Result<()> {
         self.pending_registrations.lock().unwrap().remove(path);
 
-        let case_insensitive = platform::case_insensitive_paths();
-        let key = WatchKey::for_path(path, case_insensitive);
-        if let Some(reg) = self.registrations.lock().unwrap().remove(&key) {
+        let registration = {
+            let mut registrations = self.registrations.lock().unwrap();
+            [WatchKey::exact(path), WatchKey::folded(path)]
+                .into_iter()
+                .find_map(|key| registrations.remove(&key))
+        };
+        if let Some(reg) = registration {
             global_watcher().remove(reg.id);
         }
         Ok(())
@@ -756,11 +839,11 @@ impl Drop for FsWatcher {
 /// 向 GlobalWatcher 注册一条已存在的路径。
 fn register_existing_path(
     path: Arc<Path>,
-    case_insensitive: bool,
+    semantics: platform::FileSystemSemantics,
     signal_tx: async_channel::Sender<()>,
     pending_events: Arc<Mutex<Vec<PathEvent>>>,
 ) -> anyhow::Result<Option<FsWatcherRegistration>> {
-    let mode = if platform::requires_poll_watcher(&path) {
+    let mode = if semantics.requires_poll_watcher {
         WatcherMode::Poll
     } else {
         WatcherMode::Native
@@ -771,9 +854,15 @@ fn register_existing_path(
     let Some(id) = global_watcher().add(
         path,
         mode,
-        case_insensitive,
+        !semantics.case_sensitive,
         move |event: &notify::Event| {
-            push_notify_event(&signal_tx, &pending_events, &path_for_cb, event);
+            push_notify_event(
+                &signal_tx,
+                &pending_events,
+                &path_for_cb,
+                !semantics.case_sensitive,
+                event,
+            );
         },
     )?
     else {
@@ -808,6 +897,7 @@ fn push_notify_event(
     signal_tx: &async_channel::Sender<()>,
     pending_path_events: &Arc<Mutex<Vec<PathEvent>>>,
     watched_root: &Path,
+    case_insensitive: bool,
     event: &notify::Event,
 ) {
     let kind = match event.kind {
@@ -821,14 +911,11 @@ fn push_notify_event(
         .paths
         .iter()
         .filter_map(|event_path| {
-            // 只保留在 watched_root 下的事件
-            event_path
-                .strip_prefix(watched_root)
-                .ok()
-                .map(|_| PathEvent {
-                    path: event_path.to_path_buf(),
-                    kind,
-                })
+            // 只保留在 watched_root 下的事件；不区分大小写的文件系统还要
+            // 按注册根目录的拼写重建路径，避免消费方再次用区分大小写的
+            // 前缀判断丢弃合法事件。
+            path_relative_to_root(event_path, watched_root, case_insensitive)
+                .map(|path| PathEvent { path, kind })
         })
         .collect();
 
@@ -844,6 +931,35 @@ fn push_notify_event(
     if !path_events.is_empty() {
         enqueue_path_events(signal_tx, pending_path_events, path_events);
     }
+}
+
+/// 判断事件路径是否位于监听根目录下，并返回供消费方使用的稳定路径。
+fn path_relative_to_root(
+    event_path: &Path,
+    watched_root: &Path,
+    case_insensitive: bool,
+) -> Option<PathBuf> {
+    if !case_insensitive {
+        return event_path
+            .strip_prefix(watched_root)
+            .ok()
+            .map(|_| event_path.to_path_buf());
+    }
+
+    let event_components = event_path.components().collect::<Vec<_>>();
+    let root_components = watched_root.components().collect::<Vec<_>>();
+    let event_identity = FoldedPath::from_path(event_path);
+    let root_identity = FoldedPath::from_path(watched_root);
+    if event_components.len() < root_components.len() || !event_identity.starts_with(&root_identity)
+    {
+        return None;
+    }
+
+    let mut normalized_path = watched_root.to_path_buf();
+    for component in event_components.iter().skip(root_components.len()) {
+        normalized_path.push(component.as_os_str());
+    }
+    Some(normalized_path)
 }
 
 /// 将路径事件排序去重后入队到 pending 缓冲区，并发送信号通知消费方。
@@ -983,6 +1099,34 @@ mod tests {
     }
 
     #[test]
+    fn test_folded_path_preserves_component_boundaries() {
+        assert_eq!(
+            WatchKey::folded(Path::new("/Repo/Proj")),
+            WatchKey::folded(Path::new("/repo/proj"))
+        );
+        assert_ne!(
+            WatchKey::folded(Path::new("/repo/proj")),
+            WatchKey::folded(Path::new("/repo/project"))
+        );
+        assert_ne!(
+            WatchKey::folded(Path::new("/repo/proj")),
+            WatchKey::folded(Path::new("/repo/proj-child"))
+        );
+    }
+
+    #[test]
+    fn test_case_insensitive_event_path_uses_watched_root_spelling() {
+        let root = Path::new("/Repo/Proj");
+        let event_path = Path::new("/repo/proj/src/Main.rs");
+
+        assert_eq!(
+            path_relative_to_root(event_path, root, true),
+            Some(PathBuf::from("/Repo/Proj/src/Main.rs"))
+        );
+        assert_eq!(path_relative_to_root(event_path, root, false), None);
+    }
+
+    #[test]
     fn test_coalesce_rescans() {
         // 子路径 Rescan 被 pending 中的祖先覆盖
         let mut pending = vec![rescan("/root")];
@@ -1023,6 +1167,34 @@ mod tests {
         let new = vec![changed("/b"), changed("/c")];
         extend_sorted(&mut dst, new);
         assert_eq!(dst, vec![changed("/a"), changed("/b"), changed("/c")]);
+    }
+
+    #[test]
+    fn test_extend_sorted_keeps_entries_after_replaced_path() {
+        let mut dst = vec![changed("/a"), changed("/b"), changed("/c")];
+        let new = vec![changed("/b")];
+        extend_sorted(&mut dst, new);
+        assert_eq!(dst, vec![changed("/a"), changed("/b"), changed("/c")]);
+    }
+
+    #[test]
+    fn test_path_semantics_can_be_queried_for_existing_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("ZcvCaseProbe");
+        std::fs::create_dir(&first).unwrap();
+        let second = temp.path().join("zcvcaseprobe");
+        let expected_case_sensitive = match std::fs::create_dir(&second) {
+            Ok(()) => {
+                std::fs::remove_dir(&second).unwrap();
+                true
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+            Err(error) => panic!("创建大小写探测目录失败：{error}"),
+        };
+        std::fs::remove_dir(&first).unwrap();
+
+        let semantics = platform::path_semantics(temp.path()).unwrap();
+        assert_eq!(semantics.case_sensitive, expected_case_sensitive);
     }
 
     #[test]

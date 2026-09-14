@@ -1347,6 +1347,40 @@ mod tests {
         );
     }
 
+    #[gpui::test]
+    fn fs_rescan_events_discover_unreported_file(cx: &mut gpui::TestAppContext) {
+        let (root, _temp) = test_git_repo();
+        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        cx.run_until_parked();
+
+        // 文件在监听器失步期间出现，没有 Created 事件；Rescan 必须让项目重新发现它。
+        let file = root.join("discovered-after-rescan.txt");
+        fs::write(&file, "重新扫描发现\n").expect("应创建测试文件");
+        assert!(
+            project
+                .update(cx, |project, cx| git_status_for_path(project, &file, cx))
+                .is_none()
+        );
+
+        project.update(cx, |project, cx| {
+            project.process_fs_events(
+                vec![PathEvent {
+                    path: root.clone(),
+                    kind: Some(PathEventKind::Rescan),
+                }],
+                cx,
+            );
+        });
+        cx.run_until_parked();
+
+        assert!(
+            project
+                .update(cx, |project, cx| git_status_for_path(project, &file, cx))
+                .is_some(),
+            "Rescan 后应发现监听器未报告的新文件"
+        );
+    }
+
     // 依赖真实 FSEvents 事件：并行测试下系统会合并/延迟事件导致偶发超时，
     // 串行（--test-threads=1）或单独运行时稳定。用 `cargo test -- --ignored` 显式验证。
     #[gpui::test]

@@ -49,6 +49,12 @@ fn main() {
             zcv_keymap::init(cx).expect("内置快捷键应能注册");
             auto_update::init(cx);
 
+            // 更新 helper 需要在有限时间内确认新版本已经启动；
+            // 项目恢复和窗口创建可能较慢，不能把它们放在启动确认之前。
+            if let Err(error) = auto_update::acknowledge_started_update() {
+                eprintln!("无法确认新版本启动：{error:#}");
+            }
+
             match initial_project_root(std::env::args_os(), most_recent_valid_project()) {
                 Some(root) => {
                     // 打开失败（路径已失效等）回退空工作区，不阻塞启动。
@@ -62,9 +68,6 @@ fn main() {
                 }
             }
 
-            if let Err(error) = auto_update::acknowledge_started_update() {
-                eprintln!("无法确认新版本启动：{error:#}");
-            }
             cx.activate(true);
         });
 }

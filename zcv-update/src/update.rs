@@ -20,6 +20,9 @@ mod platform;
 
 pub use platform::{UpdateInstallation, application_executable_path, prepare_helper, verify_app};
 
+#[cfg(target_os = "windows")]
+pub use platform::release_file_handles;
+
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub const TRANSACTION_SCHEMA_VERSION: u32 = 2;
 pub const STABLE_CHANNEL: &str = "stable";

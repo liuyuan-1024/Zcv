@@ -269,6 +269,7 @@ impl UpdateManager {
             .arg(&pending_path)
             .arg("--parent-pid")
             .arg(std::process::id().to_string())
+            .current_dir(&config.updates_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log.try_clone()?))
             .stderr(Stdio::from(log))

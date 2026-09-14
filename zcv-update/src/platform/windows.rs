@@ -1,9 +1,13 @@
-use std::path::Path;
+use std::{os::windows::ffi::OsStrExt as _, path::Path};
 
 use anyhow::{Context as _, Result, ensure};
 use async_zip::base::read::mem::ZipFileReader;
 use futures::io::AsyncWriteExt as _;
 use semver::Version;
+use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS};
+use windows_sys::Win32::System::RestartManager::{
+    CCH_RM_SESSION_KEY, RmEndSession, RmGetList, RmRegisterResources, RmShutdown, RmStartSession,
+};
 
 use super::UpdateInstallation;
 
@@ -49,6 +53,87 @@ pub fn validate_extracted_app(app: &Path) -> Result<()> {
 
 pub fn prepare_helper(_: &Path) -> Result<()> {
     Ok(())
+}
+
+/// 请求 Windows 释放 Explorer、索引器等进程对安装文件的占用。
+///
+/// Windows 允许外部进程短暂持有应用目录中的文件；
+/// 这些句柄会使后续目录重命名失败。
+/// Restart Manager 只负责尽力释放句柄，真正的替换仍由 helper 的事务回滚流程负责。
+pub(super) fn release_file_handles(app: &Path) -> Result<()> {
+    let paths = [
+        app.join(APP_EXECUTABLE_RELATIVE_PATH),
+        app.join(HELPER_RELATIVE_PATH),
+        app.join("version.txt"),
+    ];
+    let wide_paths = paths
+        .iter()
+        .map(|path| {
+            path.as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let resource_paths = wide_paths
+        .iter()
+        .map(|path| path.as_ptr())
+        .collect::<Vec<_>>();
+
+    let mut session = 0_u32;
+    let mut session_key = [0_u16; CCH_RM_SESSION_KEY as usize + 1];
+    let start_result = unsafe { RmStartSession(&mut session, 0, session_key.as_mut_ptr()) };
+    ensure!(
+        start_result == ERROR_SUCCESS,
+        "无法启动 Windows Restart Manager 会话：错误码 {start_result}"
+    );
+
+    let result = (|| {
+        let register_result = unsafe {
+            RmRegisterResources(
+                session,
+                resource_paths.len() as u32,
+                resource_paths.as_ptr(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+            )
+        };
+        ensure!(
+            register_result == ERROR_SUCCESS,
+            "无法注册 Windows 更新文件：错误码 {register_result}"
+        );
+
+        let mut needed = 0_u32;
+        let mut listed = 0_u32;
+        let mut reboot_reasons = 0_u32;
+        let list_result = unsafe {
+            RmGetList(
+                session,
+                &mut needed,
+                &mut listed,
+                std::ptr::null_mut(),
+                &mut reboot_reasons,
+            )
+        };
+        ensure!(
+            list_result == ERROR_SUCCESS || list_result == ERROR_MORE_DATA,
+            "无法查询占用 Windows 更新文件的进程：错误码 {list_result}"
+        );
+        if needed == 0 {
+            return Ok(());
+        }
+
+        let shutdown_result = unsafe { RmShutdown(session, 0, None) };
+        ensure!(
+            shutdown_result == ERROR_SUCCESS,
+            "无法请求 Windows 释放更新文件：错误码 {shutdown_result}"
+        );
+        Ok(())
+    })();
+    unsafe { RmEndSession(session) };
+    result
 }
 
 pub fn replace_file(temporary: &Path, destination: &Path) -> Result<()> {

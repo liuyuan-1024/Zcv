@@ -332,7 +332,9 @@ mod windows {
     use windows_sys::Win32::System::Threading::{
         INFINITE, OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
     };
-    use zcv_update::{UpdateTransaction, application_executable_path, verify_app};
+    use zcv_update::{
+        UpdateTransaction, application_executable_path, release_file_handles, verify_app,
+    };
 
     const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
     const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -355,6 +357,9 @@ mod windows {
 
     fn try_apply_transaction(transaction: &UpdateTransaction, backup_path: &Path) -> Result<()> {
         verify_app(&transaction.staged_app_path, &transaction.to_version)?;
+        if let Err(error) = release_file_handles(&transaction.install_path) {
+            eprintln!("无法释放 Windows 更新文件占用，将继续尝试替换：{error:#}");
+        }
         let candidate_path = candidate_path(transaction)?;
         if candidate_path.exists() {
             fs::remove_dir_all(&candidate_path)
@@ -377,15 +382,31 @@ mod windows {
             fs::remove_dir_all(backup_path)
                 .with_context(|| format!("无法清理旧版本备份 {}", backup_path.display()))?;
         }
-        fs::rename(&transaction.install_path, backup_path).with_context(|| {
+        retry_rename(
+            &transaction.install_path,
+            backup_path,
             format!(
                 "无法移动当前安装目录 {} → {}",
                 transaction.install_path.display(),
                 backup_path.display()
-            )
-        })?;
-        if let Err(error) = fs::rename(&candidate_path, &transaction.install_path) {
-            let _ = fs::rename(backup_path, &transaction.install_path);
+            ),
+        )?;
+        if let Err(error) = retry_rename(
+            &candidate_path,
+            &transaction.install_path,
+            format!(
+                "无法把更新目录移动到安装位置 {}",
+                transaction.install_path.display()
+            ),
+        ) {
+            let _ = retry_rename(
+                backup_path,
+                &transaction.install_path,
+                format!(
+                    "无法恢复当前安装目录 {}",
+                    transaction.install_path.display()
+                ),
+            );
             return Err(error).context("无法把更新目录移动到安装位置");
         }
 
@@ -443,10 +464,27 @@ mod windows {
         }
         fs::remove_dir_all(&transaction.install_path)
             .context("新版本启动失败，且无法移除新版本")?;
-        fs::rename(backup_path, &transaction.install_path)
-            .context("新版本启动失败，且旧版本回滚失败")?;
+        retry_rename(
+            backup_path,
+            &transaction.install_path,
+            "新版本启动失败，且旧版本回滚失败".to_owned(),
+        )?;
         let _ = fs::remove_file(ack_path);
         Ok(())
+    }
+
+    fn retry_rename(from: &Path, to: &Path, context: String) -> Result<()> {
+        const RETRY_TIMEOUT: Duration = Duration::from_secs(5);
+        let start = Instant::now();
+        loop {
+            match fs::rename(from, to) {
+                Ok(()) => return Ok(()),
+                Err(_error) if start.elapsed() < RETRY_TIMEOUT => {
+                    thread::sleep(POLL_INTERVAL);
+                }
+                Err(error) => return Err(error).context(context),
+            }
+        }
     }
 
     fn copy_dir(source: &Path, destination: &Path) -> Result<()> {
@@ -497,6 +535,7 @@ mod windows {
         let executable = application_executable_path(app);
         let mut command = Command::new(&executable);
         command
+            .current_dir(app)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());

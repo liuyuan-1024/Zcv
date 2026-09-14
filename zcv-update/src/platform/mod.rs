@@ -54,6 +54,11 @@ pub(crate) use platform::{
 };
 pub use platform::{prepare_helper, verify_app};
 
+#[cfg(target_os = "windows")]
+pub fn release_file_handles(app: &Path) -> Result<()> {
+    platform::release_file_handles(app)
+}
+
 #[cfg(target_os = "macos")]
 use macos as platform;
 #[cfg(target_os = "windows")]

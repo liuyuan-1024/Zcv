@@ -37,7 +37,7 @@ members = [
 ]
 resolver = "3"
 [workspace.package]
-version = "0.8.152"
+version = "0.8.153"
 edition = "2024"
 
 [workspace.lints.clippy]
@@ -152,7 +152,11 @@ resvg = { version = "0.45.1", default-features = false, features = ["text", "sys
 
 # ---- 平台特定 ----
 libc = "0.2"
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_RestartManager",
+    "Win32_System_Threading",
+] }
 
 # ---- 自动更新 ----
 async_zip = { version = "0.0.17", features = ["deflate"] }

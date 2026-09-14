@@ -52,6 +52,35 @@ fn signed_manifest_is_verified_before_parsing() {
 }
 
 #[test]
+fn atomic_json_write_replaces_existing_content() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("state.json");
+    std::fs::write(&path, br#"{"status":"old"}"#).unwrap();
+
+    atomic_write_json(&path, &serde_json::json!({"status": "new"})).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "{\n  \"status\": \"new\"\n}"
+    );
+    assert!(!path.with_extension("json.tmp").exists());
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_replace_failure_preserves_existing_destination() {
+    let directory = tempfile::tempdir().unwrap();
+    let temporary = directory.path().join("state.json.tmp");
+    let destination = directory.path().join("state.json");
+    std::fs::write(&temporary, b"new").unwrap();
+    std::fs::create_dir(&destination).unwrap();
+
+    assert!(platform::replace_file(&temporary, &destination).is_err());
+    assert!(destination.is_dir());
+    assert!(temporary.is_file());
+}
+
+#[test]
 fn only_newer_matching_platform_release_is_selected() {
     let release = manifest("1.1.0")
         .select_newer_release(&"1.0.0".parse().unwrap(), "macos-aarch64")

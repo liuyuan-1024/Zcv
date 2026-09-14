@@ -4,7 +4,10 @@ use anyhow::{Context as _, Result, ensure};
 use async_zip::base::read::mem::ZipFileReader;
 use futures::io::AsyncWriteExt as _;
 use semver::Version;
-use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS};
+use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS, GetLastError};
+use windows_sys::Win32::Storage::FileSystem::{
+    MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+};
 use windows_sys::Win32::System::RestartManager::{
     CCH_RM_SESSION_KEY, RmEndSession, RmGetList, RmRegisterResources, RmShutdown, RmStartSession,
 };
@@ -137,12 +140,30 @@ pub(super) fn release_file_handles(app: &Path) -> Result<()> {
 }
 
 pub fn replace_file(temporary: &Path, destination: &Path) -> Result<()> {
-    if destination.exists() {
-        std::fs::remove_file(destination)
-            .with_context(|| format!("无法替换旧文件 {}", destination.display()))?;
-    }
-    std::fs::rename(temporary, destination)
-        .with_context(|| format!("无法提交文件 {}", destination.display()))?;
+    let temporary = temporary
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination_path = destination.to_path_buf();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let replaced = unsafe {
+        MoveFileExW(
+            temporary.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    ensure!(
+        replaced != 0,
+        "无法原子提交文件 {}：Windows 错误码 {}",
+        destination_path.display(),
+        unsafe { GetLastError() }
+    );
     Ok(())
 }
 

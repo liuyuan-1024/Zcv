@@ -105,16 +105,11 @@ pub(crate) fn acknowledge_started_update() -> Result<()> {
                 == Some(expected_ack_name.as_str()),
         "更新确认路径与事务不匹配"
     );
-    fs::create_dir_all(&updates_dir)
-        .with_context(|| format!("无法创建更新确认目录 {}", updates_dir.display()))?;
-    let temporary = ack_path.with_extension("json.tmp");
-    fs::write(
-        &temporary,
-        serde_json::to_vec(&serde_json::json!({ "transaction_id": transaction_id }))?,
+    atomic_write_json(
+        &ack_path,
+        &serde_json::json!({ "transaction_id": transaction_id }),
     )
-    .with_context(|| format!("无法写入更新启动确认 {}", temporary.display()))?;
-    fs::rename(&temporary, &ack_path)
-        .with_context(|| format!("无法提交更新启动确认 {}", ack_path.display()))?;
+    .with_context(|| format!("无法提交更新启动确认 {}", ack_path.display()))?;
     Ok(())
 }
 

@@ -31,6 +31,7 @@ use zcv_git::{
     GraphCommit, HunkEdit, WorkingCopySnapshot, apply_hunk_edits_to_text,
 };
 use zcv_multi_buffer::{BufferDiff, BufferDiffInput, DiffOperations, PendingHunk};
+use zcv_path::{AbsolutePathBuf, RelativePathBuf, normalize_for_comparison};
 use zcv_text::{Anchor, ByteOffset, TextRange};
 
 /// 一次增量刷新最多累积的路径数，超过则升级为全量扫描。
@@ -118,7 +119,7 @@ pub struct RepositorySnapshot {
     /// 本地分支列表（分支选择器数据源；空仓库为空列表）。
     pub branch_list: Vec<Branch>,
     /// 相对仓库根的路径 → 状态。
-    pub statuses_by_path: BTreeMap<PathBuf, StatusEntry>,
+    pub statuses_by_path: BTreeMap<RelativePathBuf, StatusEntry>,
 }
 
 /// 可脱离 GPUI 的 Git 状态只读快照，供项目树后台计算可见行状态。
@@ -131,23 +132,25 @@ pub struct GitStatusSnapshot {
 
 #[derive(Clone)]
 struct GitRepositoryStatusSnapshot {
-    working_directory: PathBuf,
-    statuses_by_path: BTreeMap<PathBuf, StatusEntry>,
-    directory_statuses: BTreeMap<PathBuf, FileStatus>,
+    working_directory: AbsolutePathBuf,
+    statuses_by_path: BTreeMap<RelativePathBuf, StatusEntry>,
+    directory_statuses: BTreeMap<RelativePathBuf, FileStatus>,
 }
 
-fn directory_statuses(statuses: &BTreeMap<PathBuf, StatusEntry>) -> BTreeMap<PathBuf, FileStatus> {
+fn directory_statuses(
+    statuses: &BTreeMap<RelativePathBuf, StatusEntry>,
+) -> BTreeMap<RelativePathBuf, FileStatus> {
     let mut directories = BTreeMap::new();
     for (path, entry) in statuses {
         if entry.status.is_ignored() {
             continue;
         }
-        let mut parent = path.parent().map(Path::to_path_buf);
-        while let Some(directory) = parent
-            .as_deref()
-            .filter(|directory| !directory.as_os_str().is_empty())
-        {
-            let directory = directory.to_path_buf();
+        let mut parent = path
+            .as_path()
+            .parent()
+            .map(|parent| RelativePathBuf::from_path(parent).expect("Git 相对路径必须有效"));
+        while let Some(directory) = parent.as_ref().filter(|directory| !directory.is_empty()) {
+            let directory = directory.clone();
             directories
                 .entry(directory.clone())
                 .and_modify(|current: &mut FileStatus| {
@@ -156,7 +159,10 @@ fn directory_statuses(statuses: &BTreeMap<PathBuf, StatusEntry>) -> BTreeMap<Pat
                     }
                 })
                 .or_insert(entry.status);
-            parent = directory.parent().map(Path::to_path_buf);
+            parent = directory
+                .as_path()
+                .parent()
+                .map(|parent| RelativePathBuf::from_path(parent).expect("Git 相对路径必须有效"));
         }
     }
     directories
@@ -165,17 +171,16 @@ fn directory_statuses(statuses: &BTreeMap<PathBuf, StatusEntry>) -> BTreeMap<Pat
 impl GitStatusSnapshot {
     pub(crate) fn statuses_for_rows(
         &self,
-        rows: &[(PathBuf, bool)],
-    ) -> HashMap<PathBuf, FileStatus> {
+        rows: &[(AbsolutePathBuf, bool)],
+    ) -> HashMap<AbsolutePathBuf, FileStatus> {
         rows.iter()
             .filter_map(|(path, is_dir)| {
-                // Worktree 与 Git 实现可能返回不同形式的绝对路径（例如 macOS 的 /var 与 /private/var 别名）；
-                // 归一化只发生在后台索引查询。
-                let canonical_path = canonicalize_path(path);
+                // 项目树传入的路径已经由 Worktree 统一规范化；这里直接以语义路径查询快照。
+                let canonical_path = path;
                 let status = if *is_dir {
-                    self.status_for_directory(&canonical_path)
+                    self.status_for_directory(canonical_path.as_path())
                 } else {
-                    self.status_for_path(&canonical_path)
+                    self.status_for_path(canonical_path.as_path())
                         .map(|entry| entry.status)
                 };
                 status.map(|status| (path.clone(), status))
@@ -192,28 +197,32 @@ impl GitStatusSnapshot {
 
     fn status_for_path(&self, path: &Path) -> Option<&StatusEntry> {
         let repository = self.repository_for_path(path)?;
-        let relative = path.strip_prefix(&repository.working_directory).ok()?;
+        let relative =
+            RelativePathBuf::from_path(path.strip_prefix(&repository.working_directory).ok()?)
+                .ok()?;
         repository
             .statuses_by_path
-            .get(relative)
-            .or_else(|| GitStore::ignored_ancestor_entry(&repository.statuses_by_path, relative))
+            .get(&relative)
+            .or_else(|| GitStore::ignored_ancestor_entry(&repository.statuses_by_path, &relative))
     }
 
     fn status_for_directory(&self, path: &Path) -> Option<FileStatus> {
         let repository = self.repository_for_path(path)?;
-        let relative = path.strip_prefix(&repository.working_directory).ok()?;
+        let relative =
+            RelativePathBuf::from_path(path.strip_prefix(&repository.working_directory).ok()?)
+                .ok()?;
         let statuses = &repository.statuses_by_path;
-        if let Some(entry) = statuses.get(relative)
+        if let Some(entry) = statuses.get(&relative)
             && entry.status.is_ignored()
         {
             return Some(FileStatus::Ignored);
         }
         repository
             .directory_statuses
-            .get(relative)
+            .get(&relative)
             .copied()
             .or_else(|| {
-                GitStore::ignored_ancestor_entry(statuses, relative).map(|entry| entry.status)
+                GitStore::ignored_ancestor_entry(statuses, &relative).map(|entry| entry.status)
             })
     }
 }
@@ -223,12 +232,26 @@ pub(super) struct Repository {
     snapshot: RepositorySnapshot,
 }
 
+/// 读取已由仓库发现阶段确认的工作目录路径。
+///
+/// 仓库身份不应在快照合并或状态索引重建时重新访问文件系统；
+/// 仓库目录可能正在被删除，但此前已经确认的绝对路径仍然是这条仓库记录的有效身份。
+fn repository_working_directory(repository: &dyn GitRepository) -> AbsolutePathBuf {
+    AbsolutePathBuf::new(repository.working_directory().to_path_buf())
+        .expect("Git 仓库工作目录必须是绝对路径")
+}
+
 /// 共享 diff 缓存的键：路径、working 实体、base 文本、index 文本。
-type SharedDiffKey = (PathBuf, gpui::EntityId, Option<Arc<str>>, Option<Arc<str>>);
+type SharedDiffKey = (
+    AbsolutePathBuf,
+    gpui::EntityId,
+    Option<Arc<str>>,
+    Option<Arc<str>>,
+);
 
 pub struct GitStore {
     /// 项目根目录；无 worktree 的空项目为 None，此时所有 job 与仓库查询为空操作。
-    root: Option<PathBuf>,
+    root: Option<AbsolutePathBuf>,
     repositories: Vec<Repository>,
     /// 是否已完成至少一次仓库发现；空集合也表示扫描已完成。
     repository_scan_ready: bool,
@@ -237,14 +260,14 @@ pub struct GitStore {
     status_index: Arc<GitStatusSnapshot>,
     /// 活动仓库（按 working_directory 标识）：分支显示与 fetch/pull/push 等 git 操作的目标。
     /// 用 working_directory 而非索引：全量扫描重建 Vec，索引不稳定。
-    active_repo_workdir: Option<PathBuf>,
+    active_repo_workdir: Option<AbsolutePathBuf>,
     /// HEAD/index 文本缓存；状态或 HEAD 变化时失效。
     /// 值 `None` 表示该修订中文件不存在（已加载但缺失），键存在即表示已加载完成。
-    revision_text_cache: HashMap<(GitRevision, PathBuf), Option<Arc<str>>>,
+    revision_text_cache: HashMap<(GitRevision, AbsolutePathBuf), Option<Arc<str>>>,
     /// 分修订递增的缓存版本；失效前启动的后台读取不得回填新缓存。
     revision_text_generations: HashMap<GitRevision, u64>,
     /// 已写入内存、尚待后台落盘确认的 index 文本的原始值；同一路径同时只允许一个写入，失败时据此回滚。
-    optimistic_index_bases: HashMap<PathBuf, Arc<str>>,
+    optimistic_index_bases: HashMap<AbsolutePathBuf, Arc<str>>,
     /// 按 (路径, working 实体, base 文本, index 文本) 共享的 diff 实体；
     /// 同一份 diff 跨编辑器 / 面板视图复用，head/index 变化时按路径失效。
     shared_diffs: HashMap<SharedDiffKey, Entity<BufferDiff>>,
@@ -256,7 +279,7 @@ pub struct GitStore {
     pending_jobs: HashMap<GitJobKey, GitJobId>,
     jobs: HashMap<GitJobId, GitJobRecord>,
     in_flight: Option<GitJobId>,
-    paths_needing_status_update: BTreeSet<PathBuf>,
+    paths_needing_status_update: BTreeSet<AbsolutePathBuf>,
     _job_task: Task<()>,
 }
 
@@ -441,12 +464,12 @@ impl GitStore {
     }
 
     /// 暂存路径（面板复选框勾选触发；`git update-index`），完成后自动重新扫描。
-    pub fn stage_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+    pub fn stage_paths(&mut self, paths: Vec<AbsolutePathBuf>, cx: &mut Context<Self>) {
         self.schedule_job(GitJob::StageFiles { stage: true, paths }, cx);
     }
 
     /// 取消暂存路径（面板复选框取消勾选触发；`git reset`），完成后自动重新扫描。
-    pub fn unstage_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+    pub fn unstage_paths(&mut self, paths: Vec<AbsolutePathBuf>, cx: &mut Context<Self>) {
         self.schedule_job(
             GitJob::StageFiles {
                 stage: false,
@@ -457,7 +480,7 @@ impl GitStore {
     }
 
     /// 清除已解决文件的冲突 stage，并以当前分支内容作为未暂存基线。
-    pub fn resolve_conflicts(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+    pub fn resolve_conflicts(&mut self, paths: Vec<AbsolutePathBuf>, cx: &mut Context<Self>) {
         self.schedule_job(GitJob::ResolveConflicts { paths }, cx);
     }
 
@@ -496,16 +519,12 @@ impl GitStore {
     }
 
     /// 丢弃共享 diff 缓存：None 清空全部，Some 只清指定路径。
-    fn invalidate_shared_diffs(&mut self, paths: Option<&[PathBuf]>) {
+    fn invalidate_shared_diffs(&mut self, paths: Option<&[AbsolutePathBuf]>) {
         match paths {
             None => self.shared_diffs.clear(),
             Some(paths) => {
-                let changed = paths
-                    .iter()
-                    .map(|path| canonicalize_path(path))
-                    .collect::<Vec<_>>();
                 self.shared_diffs
-                    .retain(|key, _| !changed.iter().any(|path| &key.0 == path));
+                    .retain(|key, _| !paths.iter().any(|path| &key.0 == path));
             }
         }
     }
@@ -775,7 +794,9 @@ impl GitStore {
                 .map(|repository| {
                     let statuses_by_path = repository.snapshot.statuses_by_path.clone();
                     GitRepositoryStatusSnapshot {
-                        working_directory: repository.repository.working_directory().to_path_buf(),
+                        working_directory: repository_working_directory(
+                            repository.repository.as_ref(),
+                        ),
                         directory_statuses: directory_statuses(&statuses_by_path),
                         statuses_by_path,
                     }
@@ -787,18 +808,18 @@ impl GitStore {
     /// 增量刷新：对变更路径重查状态（fs 事件、保存操作后调用）。
     pub fn refresh_statuses_for_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         // 调用方传入的路径可能未 canonicalize，与归一化后的 root 比较前先归一化。
-        let paths: BTreeSet<PathBuf> = paths
+        let paths: BTreeSet<AbsolutePathBuf> = paths
             .iter()
             .map(|path| canonicalize_path(path))
             .filter(|path| {
                 self.root
-                    .as_deref()
-                    .is_some_and(|root| path.starts_with(root))
+                    .as_ref()
+                    .is_some_and(|root| path.starts_with(root.as_path()))
             })
             .map(|path| {
                 // `.git` 元数据的变化会影响整个仓库的状态；
                 // 将其归一化为仓库根，让后台以空 pathspec 查询完整工作树，而不是查询 `.git/index` 本身。
-                let Some(repository) = self.repo_for_path(&path) else {
+                let Some(repository) = self.repo_for_path(path.as_path()) else {
                     return path;
                 };
                 let relative = path
@@ -810,7 +831,7 @@ impl GitStore {
                         .next()
                         .is_some_and(|component| component.as_os_str() == ".git")
                 }) {
-                    repository.repository.working_directory().to_path_buf()
+                    repository_working_directory(repository.repository.as_ref())
                 } else {
                     path
                 }
@@ -832,24 +853,31 @@ impl GitStore {
     ///
     /// 状态索引内部按仓库工作目录（canonicalize 后）比较，调用方传入的路径可能未归一化。
     pub fn status_for_path(&self, path: &Path) -> Option<&StatusEntry> {
-        self.status_index.status_for_path(&canonicalize_path(path))
+        let path = canonicalize_path(path);
+        self.status_index.status_for_path(path.as_path())
     }
 
     /// 查找最近一个被忽略的祖先目录条目；自身无条目时用于继承忽略状态。
     ///
     /// 只认 Ignored 条目：祖先链上命中的首个目录条目若不是忽略（例如子树内被负向规则放行的路径，git 会为相关路径生成条目），不向下继承。
     fn ignored_ancestor_entry<'a>(
-        statuses: &'a BTreeMap<PathBuf, StatusEntry>,
-        relative: &Path,
+        statuses: &'a BTreeMap<RelativePathBuf, StatusEntry>,
+        relative: &RelativePathBuf,
     ) -> Option<&'a StatusEntry> {
-        let mut ancestor = relative.parent();
+        let mut ancestor = relative
+            .as_path()
+            .parent()
+            .map(|parent| RelativePathBuf::from_path(parent).expect("Git 相对路径必须有效"));
         while let Some(dir) = ancestor {
-            if let Some(entry) = statuses.get(dir)
+            if let Some(entry) = statuses.get(&dir)
                 && entry.status.is_ignored()
             {
                 return Some(entry);
             }
-            ancestor = dir.parent();
+            ancestor = dir
+                .as_path()
+                .parent()
+                .map(|parent| RelativePathBuf::from_path(parent).expect("Git 相对路径必须有效"));
         }
         None
     }
@@ -974,8 +1002,8 @@ impl GitStore {
         let Some(repository) = self.repo_for_path(&path) else {
             return;
         };
-        let workdir = repository.repository.working_directory().to_path_buf();
-        if self.active_repo_workdir.as_deref() != Some(workdir.as_path()) {
+        let workdir = repository_working_directory(repository.repository.as_ref());
+        if self.active_repo_workdir.as_ref() != Some(&workdir) {
             self.active_repo_workdir = Some(workdir);
             cx.emit(GitStoreEvent::ActiveRepositoryChanged);
         }
@@ -1001,7 +1029,7 @@ impl GitStore {
     ) -> Task<Option<String>> {
         let background = self.background.clone();
         let path = canonicalize_path(path);
-        let Some(repository) = self.repo_for_path(&path) else {
+        let Some(repository) = self.repo_for_path(path.as_path()) else {
             return background.spawn(async { None });
         };
         let repository = repository.repository.clone();
@@ -1010,12 +1038,13 @@ impl GitStore {
             .get(&revision)
             .copied()
             .unwrap_or_default();
-        let Some(relative) = repo_relative_path(repository.working_directory(), &path) else {
+        let Some(relative) = repo_relative_path(repository.working_directory(), path.as_path())
+        else {
             return background.spawn(async { None });
         };
         let revision_spec = match revision {
-            GitRevision::Head => format!("HEAD:{}", relative.to_string_lossy()),
-            GitRevision::Index => format!(":{}", relative.to_string_lossy()),
+            GitRevision::Head => format!("HEAD:{relative}"),
+            GitRevision::Index => format!(":{relative}"),
         };
         let loaded = background.spawn(async move {
             let contents = repository.load_revisions(&[&revision_spec]).ok()?;
@@ -1084,11 +1113,12 @@ impl GitStore {
         self.invalidate_shared_diffs(None);
     }
 
-    fn invalidate_revision_text_for_paths(&mut self, revision: GitRevision, paths: &[PathBuf]) {
-        let changed_paths = paths
-            .iter()
-            .map(|path| canonicalize_path(path))
-            .collect::<Vec<_>>();
+    fn invalidate_revision_text_for_paths(
+        &mut self,
+        revision: GitRevision,
+        paths: &[AbsolutePathBuf],
+    ) {
+        let changed_paths = paths.to_vec();
         self.revision_text_cache
             .retain(|(cached_revision, path), _| {
                 *cached_revision != revision
@@ -1116,9 +1146,10 @@ impl GitStore {
                 grouped_diff_requests: Vec::new(),
             }),
             GitJob::RefreshStatuses => {
-                let paths: Vec<PathBuf> = std::mem::take(&mut self.paths_needing_status_update)
-                    .into_iter()
-                    .collect();
+                let paths: Vec<AbsolutePathBuf> =
+                    std::mem::take(&mut self.paths_needing_status_update)
+                        .into_iter()
+                        .collect();
                 let (repositories, grouped_paths) = self.group_paths_by_repo(&paths);
                 Some(JobPreparation {
                     root,
@@ -1174,7 +1205,8 @@ impl GitStore {
                                     statuses
                                         .iter()
                                         .filter(|(path, entry)| {
-                                            path.starts_with(&rel) && matches(entry)
+                                            path.as_path().starts_with(rel.as_path())
+                                                && matches(entry)
                                         })
                                         .map(|(path, _)| path.clone()),
                                 ),
@@ -1236,8 +1268,8 @@ impl GitStore {
     /// 路径与仓库根都先归一化，保证前缀比较一致；不在任何仓库内的路径丢弃。
     fn group_paths_by_repo(
         &self,
-        paths: &[PathBuf],
-    ) -> (Vec<Arc<dyn GitRepository>>, Vec<Vec<PathBuf>>) {
+        paths: &[AbsolutePathBuf],
+    ) -> (Vec<Arc<dyn GitRepository>>, Vec<Vec<RelativePathBuf>>) {
         let mut repositories = Vec::with_capacity(self.repositories.len());
         let mut grouped_paths = vec![Vec::new(); self.repositories.len()];
         for (index, repository) in self.repositories.iter().enumerate() {
@@ -1245,9 +1277,8 @@ impl GitStore {
             let workdir = repository.repository.working_directory();
             grouped_paths[index].extend(paths.iter().filter_map(|path| {
                 // fs 事件路径可能未 canonicalize（如 macOS 的 /var → /private/var）。
-                let path = canonicalize_path(path);
                 path.starts_with(workdir)
-                    .then(|| repo_relative_path(workdir, &path))
+                    .then(|| repo_relative_path(workdir, path.as_path()))
                     .flatten()
             }));
         }
@@ -1311,16 +1342,17 @@ impl DiffOperations for GitDiffOperations {
 }
 
 /// 路径归一化（canonicalize 失败时保留原样，如路径已删除）。
-pub(super) fn canonicalize_path(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+pub(super) fn canonicalize_path(path: &Path) -> AbsolutePathBuf {
+    AbsolutePathBuf::new(normalize_for_comparison(path).unwrap_or_else(|_| path.to_path_buf()))
+        .expect("路径归一化后必须保持为绝对路径")
 }
 
 impl EventEmitter<GitStoreEvent> for GitStore {}
 
 struct JobPreparation {
-    root: PathBuf,
+    root: AbsolutePathBuf,
     repositories: Vec<Arc<dyn GitRepository>>,
-    grouped_paths: Vec<Vec<PathBuf>>,
+    grouped_paths: Vec<Vec<RelativePathBuf>>,
     grouped_diff_requests: Vec<Vec<()>>,
 }
 
@@ -1338,6 +1370,12 @@ mod tests {
     use gpui::AppContext;
     use zcv_git::StatusCode;
     use zcv_multi_buffer::BufferDiffInput;
+
+    fn absolute(path: PathBuf) -> AbsolutePathBuf {
+        AbsolutePathBuf::canonicalize(&path)
+            .or_else(|_| AbsolutePathBuf::new(path))
+            .expect("测试路径必须是绝对路径")
+    }
 
     impl GitStore {
         fn status_for_directory(&self, path: &Path) -> Option<FileStatus> {
@@ -2008,7 +2046,7 @@ mod tests {
 
         // 暂存 → 后台 job + 重扫 → index 变为 Modified。
         git_store.update(cx, |store, cx| {
-            store.stage_paths(vec![root.join("tracked.txt")], cx);
+            store.stage_paths(vec![absolute(root.join("tracked.txt"))], cx);
         });
         cx.run_until_parked(); // stage job 完成
         cx.run_until_parked(); // 其触发的重扫落地
@@ -2044,7 +2082,7 @@ mod tests {
 
         // 取消暂存 → 回到未暂存。
         git_store.update(cx, |store, cx| {
-            store.unstage_paths(vec![root.join("tracked.txt")], cx);
+            store.unstage_paths(vec![absolute(root.join("tracked.txt"))], cx);
         });
         cx.run_until_parked();
         cx.run_until_parked();
@@ -2081,7 +2119,7 @@ mod tests {
 
         // 暂存整个 src 目录：修改 + 未跟踪 + 子目录文件一并进入 index。
         git_store.update(cx, |store, cx| {
-            store.stage_paths(vec![root.join("src")], cx);
+            store.stage_paths(vec![absolute(root.join("src"))], cx);
         });
         cx.run_until_parked();
         cx.run_until_parked();
@@ -2098,7 +2136,7 @@ mod tests {
 
         // 取消暂存整个目录：全部回到未暂存（新文件回到未跟踪）。
         git_store.update(cx, |store, cx| {
-            store.unstage_paths(vec![root.join("src")], cx);
+            store.unstage_paths(vec![absolute(root.join("src"))], cx);
         });
         cx.run_until_parked();
         cx.run_until_parked();
@@ -2123,6 +2161,7 @@ mod tests {
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
         let path = canonicalize_path(&root.join("tracked.txt"));
+        let native_path = path.clone().into_path_buf();
         for revision in [GitRevision::Head, GitRevision::Index] {
             cx.read_entity(&git_store, |store, cx| {
                 store.load_revision_text(revision, &path, cx)
@@ -2137,11 +2176,11 @@ mod tests {
             )
             .expect("应创建 Buffer");
             let buffer = cx.new(|_| buffer);
-            cx.new(|cx| zcv_language::LanguageBuffer::new(buffer, Some(path.clone()), cx))
+            cx.new(|cx| zcv_language::LanguageBuffer::new(buffer, Some(native_path.clone()), cx))
         });
         let spec = |store: &GitStore| BufferDiffInput {
             working: working.clone(),
-            path: path.clone(),
+            path: native_path.clone(),
             base_text: store.revision_text(GitRevision::Head, &path),
             index_text: store.revision_text(GitRevision::Index, &path),
             operations: None,
@@ -2185,6 +2224,7 @@ mod tests {
         cx.run_until_parked();
 
         let path = canonicalize_path(&root.join("tracked.txt"));
+        let native_path = path.clone().into_path_buf();
         cx.read_entity(&git_store, |store, cx| {
             store.load_revision_text(GitRevision::Index, &path, cx)
         })
@@ -2197,7 +2237,7 @@ mod tests {
             )
             .expect("应创建 Buffer");
             let buffer = cx.new(|_| buffer);
-            cx.new(|cx| zcv_language::LanguageBuffer::new(buffer, Some(path.clone()), cx))
+            cx.new(|cx| zcv_language::LanguageBuffer::new(buffer, Some(native_path.clone()), cx))
         });
         let operations =
             git_store.read_with(cx, |store, _| store.diff_operations(GitRevision::Index));
@@ -2206,7 +2246,7 @@ mod tests {
                 BufferDiff::new(
                     BufferDiffInput {
                         working: working.clone(),
-                        path: path.clone(),
+                        path: native_path.clone(),
                         base_text: Some(Arc::from("第一行\n第二行\n")),
                         index_text: None,
                         operations: Some(operations),
@@ -2274,6 +2314,7 @@ mod tests {
         cx.run_until_parked();
 
         let path = canonicalize_path(&root.join("tracked.txt"));
+        let native_path = path.clone().into_path_buf();
         cx.read_entity(&git_store, |store, cx| {
             store.load_revision_text(GitRevision::Index, &path, cx)
         })
@@ -2286,7 +2327,7 @@ mod tests {
             )
             .expect("应创建 Buffer");
             let buffer = cx.new(|_| buffer);
-            cx.new(|cx| zcv_language::LanguageBuffer::new(buffer, Some(path.clone()), cx))
+            cx.new(|cx| zcv_language::LanguageBuffer::new(buffer, Some(native_path.clone()), cx))
         });
         let operations =
             git_store.read_with(cx, |store, _| store.diff_operations(GitRevision::Index));
@@ -2295,7 +2336,7 @@ mod tests {
                 BufferDiff::new(
                     BufferDiffInput {
                         working: working.clone(),
-                        path: path.clone(),
+                        path: native_path.clone(),
                         // base 文本与真实 index 不一致，后台校验必然失败。
                         base_text: Some(Arc::from("第一行\n不存在的原始行\n")),
                         index_text: None,

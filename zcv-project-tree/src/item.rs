@@ -2,15 +2,14 @@
 //!
 //! 项目树实体负责状态和文件操作，本模块只描述一行文件系统条目在树中的投影，供目录遍历、渲染、键盘导航和测试共同消费。
 
-use std::path::PathBuf;
-
 use zcv_git::FileStatus;
+use zcv_path::AbsolutePathBuf;
 use zcv_ui::TreeRow;
 
 /// 项目树中的一个文件或目录条目。
 #[derive(Clone)]
 pub(super) struct ProjectTreeRow {
-    pub(super) path: PathBuf,
+    pub(super) path: AbsolutePathBuf,
     pub(super) name: String,
     pub(super) depth: usize,
     pub(super) is_dir: bool,

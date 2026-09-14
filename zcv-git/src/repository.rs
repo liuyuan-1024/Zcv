@@ -13,9 +13,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
+use zcv_path::AbsolutePathBuf;
 
 mod platform;
 
+use crate::paths::revision_path;
 use crate::status::{DiffStat, GitStatus, parse_numstat};
 
 /// 可作为差异文本来源的 Git 修订。
@@ -330,8 +332,8 @@ impl RealGitRepository {
     /// `dot_git` 由调用方保证是目录（调用前已 `is_dir()` 检查）。
     /// v1 只支持普通仓库布局：worktree/子模块的 `.git` 文件指针、分仓库（separate git dir，commondir 文件）均不支持。
     pub fn open(dot_git: &Path) -> Result<Self> {
-        let git_dir = dot_git
-            .canonicalize()
+        let git_dir = AbsolutePathBuf::canonicalize(dot_git)
+            .map(AbsolutePathBuf::into_path_buf)
             .with_context(|| format!("无法解析 .git 路径 {}", dot_git.display()))?;
         let working_directory = git_dir
             .parent()
@@ -629,10 +631,11 @@ impl GitRepository for RealGitRepository {
         edits: &[HunkEdit],
         working_snapshot: &WorkingCopySnapshot,
     ) -> Result<()> {
-        let relative_path = path.strip_prefix(&self.working_directory).unwrap_or(path);
+        let relative_path = revision_path(&self.working_directory, path)?;
+        let relative_path_buf = relative_path.as_path();
         match operation {
             GitHunkOperation::Stage | GitHunkOperation::Unstage => {
-                let index_spec = format!(":{}", relative_path.to_string_lossy());
+                let index_spec = format!(":{relative_path}");
                 let index_text = self
                     .load_revisions(&[&index_spec])?
                     .into_iter()
@@ -641,19 +644,18 @@ impl GitRepository for RealGitRepository {
                     .unwrap_or_default();
                 let index_text = String::from_utf8_lossy(&index_text);
                 let next_index = apply_hunk_edits_to_text(&index_text, edits)?;
-                self.write_index_text(relative_path, Some(next_index.as_bytes()))
+                self.write_index_text(relative_path_buf, Some(next_index.as_bytes()))
             }
             GitHunkOperation::Restore => {
                 let current = working_snapshot
                     .bytes()
                     .map(ToOwned::to_owned)
-                    .or_else(|| std::fs::read(self.working_directory.join(relative_path)).ok())
+                    .or_else(|| std::fs::read(self.working_directory.join(relative_path_buf)).ok())
                     .context("工作区文件不存在，无法还原变更块")?;
                 let current = String::from_utf8_lossy(&current);
                 let restored = apply_hunk_edits_to_text(&current, edits)?;
-                std::fs::write(self.working_directory.join(relative_path), restored).with_context(
-                    || format!("写入还原后的工作区文件失败：{}", relative_path.display()),
-                )
+                std::fs::write(self.working_directory.join(relative_path_buf), restored)
+                    .with_context(|| format!("写入还原后的工作区文件失败：{relative_path}"))
             }
         }
     }
@@ -663,7 +665,8 @@ impl GitRepository for RealGitRepository {
     }
 
     fn clear_conflict(&self, path: &Path) -> Result<()> {
-        let revision = format!(":2:{}", path.to_string_lossy());
+        let relative_path = revision_path(&self.working_directory, path)?;
+        let revision = format!(":2:{relative_path}");
         let ours = self
             .load_revisions(&[&revision])?
             .into_iter()

@@ -16,6 +16,7 @@ use zcv_actions::{
     FocusOrHidePanel, MinimizeWindow, OpenSettings, QuitWindow, Save, ToggleBottomDock,
     ToggleLeftDock, ToggleMaximizeWindow, ToggleRightDock,
 };
+use zcv_path::AbsolutePathBuf;
 use zcv_project::Project;
 use zcv_settings::SettingsStore;
 use zcv_theme::{color, typography, typography::Typography};
@@ -453,7 +454,9 @@ impl Workspace {
             ) {
                 continue;
             }
-            let path = serialized_path.canonicalize().ok();
+            let path = AbsolutePathBuf::canonicalize(&serialized_path)
+                .ok()
+                .map(AbsolutePathBuf::into_path_buf);
             let Some(path) = path else {
                 continue;
             };
@@ -627,8 +630,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let path = match path.canonicalize() {
-            Ok(p) => p,
+        let path = match AbsolutePathBuf::canonicalize(&path) {
+            Ok(p) => p.into_path_buf(),
             Err(error) => {
                 self.show_toast(
                     ToastKind::Error,

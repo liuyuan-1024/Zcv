@@ -1,10 +1,11 @@
 //! 行名称编辑态：重命名与新建条目（名称编辑器、确认/取消、错误提示）。
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use gpui::{Context, Window};
 
 use zcv_actions::{TreeCancelEdit, TreeConfirmEdit, TreeNewEntry, TreeRename};
+use zcv_path::AbsolutePathBuf;
 use zcv_project::{new_entry_destination, rename_destination};
 
 use super::ProjectTreePanel;
@@ -28,8 +29,13 @@ impl EditState {
 
 #[derive(Clone, Debug)]
 pub(super) enum EditOperation {
-    Rename { source: PathBuf, is_dir: bool },
-    Create { parent: PathBuf },
+    Rename {
+        source: AbsolutePathBuf,
+        is_dir: bool,
+    },
+    Create {
+        parent: AbsolutePathBuf,
+    },
 }
 
 impl ProjectTreePanel {
@@ -102,7 +108,7 @@ impl ProjectTreePanel {
             let Some(parent) = row.path.parent() else {
                 return;
             };
-            parent.to_path_buf()
+            AbsolutePathBuf::new(parent.to_path_buf()).expect("新建条目父目录必须是绝对路径")
         };
         self.begin_edit(EditOperation::Create { parent }, "", 0..0, window, cx);
     }
@@ -144,14 +150,16 @@ impl ProjectTreePanel {
                     Ok(destination) => destination,
                     Err(error) => return self.set_edit_error(error, cx),
                 };
-                if destination == source {
+                if destination.as_path() == source.as_path() {
                     self.finish_edit(window, cx);
                     return;
                 }
                 let Some(on_rename) = self.on_rename.clone() else {
                     return self.set_edit_error(anyhow::anyhow!("未配置项目重命名服务"), cx);
                 };
-                if let Err(error) = on_rename(source.clone(), destination.clone(), cx) {
+                if let Err(error) =
+                    on_rename(source.clone().into_path_buf(), destination.clone(), cx)
+                {
                     return self.set_edit_error(error, cx);
                 }
                 self.apply_rename(&source, &destination, cx);
@@ -170,15 +178,21 @@ impl ProjectTreePanel {
                 let mut state = self.state.borrow_mut();
                 let mut ancestor = new_entry.path.parent();
                 while let Some(directory) = ancestor.filter(|path| path.starts_with(&parent)) {
-                    state.expanded.insert(directory.to_path_buf());
-                    if directory == parent {
+                    state.expanded.insert(
+                        AbsolutePathBuf::new(directory.to_path_buf())
+                            .expect("新建条目祖先目录必须是绝对路径"),
+                    );
+                    if directory == parent.as_path() {
                         break;
                     }
                     ancestor = directory.parent();
                 }
                 drop(state);
                 self.rebuild_rows(cx);
-                self.state.borrow_mut().selected = Some(new_entry.path.clone());
+                self.state.borrow_mut().selected = Some(
+                    AbsolutePathBuf::new(new_entry.path.clone())
+                        .expect("新建条目路径必须是绝对路径"),
+                );
                 if !new_entry.is_dir
                     && let Some(on_open_file) = &self.on_open_file
                 {

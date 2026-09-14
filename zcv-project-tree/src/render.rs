@@ -1,7 +1,6 @@
 //! 行模型渲染：可见行列表、行元素（背景/拖拽/点击交互）与渲染上下文。
 
 use std::cell::RefCell;
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{
@@ -9,6 +8,7 @@ use gpui::{
     uniform_list,
 };
 use zcv_editor::Editor;
+use zcv_path::AbsolutePathBuf;
 use zcv_theme::color;
 use zcv_ui::Scrollbar;
 use zcv_ui::{
@@ -345,7 +345,7 @@ pub(super) fn render_row(
 /// 行渲染上下文：渲染期冻结的面板状态快照，行闭包借引用读取。
 #[derive(Clone)]
 pub(super) struct ProjectTreeRenderContext {
-    pub(super) state: Rc<RefCell<TreeState<PathBuf, ProjectTreeRow>>>,
+    pub(super) state: Rc<RefCell<TreeState<AbsolutePathBuf, ProjectTreeRow>>>,
     pub(super) rows: Rc<[ProjectTreeRow]>,
     pub(super) focus: gpui::FocusHandle,
     /// 条目点击直接调用 Entity 方法，
@@ -354,11 +354,11 @@ pub(super) struct ProjectTreeRenderContext {
     pub(super) edit_state: Option<EditState>,
     pub(super) entry_name_editor: Entity<Editor>,
     /// 活动文件标记（渲染时快照，与选中行独立）。
-    pub(super) active_path: Option<PathBuf>,
+    pub(super) active_path: Option<AbsolutePathBuf>,
     /// 剪切剪贴板路径快照：命中行淡显（Copy 无淡显）。
-    pub(super) clipboard_cut: Rc<[PathBuf]>,
+    pub(super) clipboard_cut: Rc<[AbsolutePathBuf]>,
     /// 拖拽载荷的多选标记快照（渲染期按可见行序展开一次，所有行共享）。
-    pub(super) drag_marked: Rc<[PathBuf]>,
+    pub(super) drag_marked: Rc<[AbsolutePathBuf]>,
     /// 禁止发起拖拽（编辑态或冲突浮层活跃时为真）。
     pub(super) drag_blocked: bool,
 }

@@ -146,7 +146,7 @@ fn capture_names(highlights: &[HighlightSpan], names: &[Arc<str>]) -> Vec<String
 
 #[test]
 fn local_language_files_are_recognized_and_highlighted() {
-    let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../本地高亮测试.local");
+    let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../高亮测试");
     for fixture in FIXTURES {
         let path = Path::new(fixture.file);
         let source = std::fs::read_to_string(fixture_dir.join(fixture.file))

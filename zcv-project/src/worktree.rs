@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use zcv_git::{GitRepository, RealGitRepository};
+use zcv_path::AbsolutePathBuf;
 
 /// `.git` 目录名（仓库发现用）。
 const DOT_GIT: &str = ".git";
@@ -16,25 +17,25 @@ const DOT_GIT: &str = ".git";
 /// 目录快照层的静态条目：由 Worktree 遍历产出，不含展开/深度等视图状态。
 #[derive(Debug, Clone)]
 pub struct WorktreeEntry {
-    pub path: PathBuf,
+    pub path: AbsolutePathBuf,
     pub name: String,
     pub is_dir: bool,
 }
 
 /// 项目目录快照层：持有根路径与扫描排除规则，提供静态目录查询。
 pub(crate) struct Worktree {
-    root: PathBuf,
+    root: AbsolutePathBuf,
     filter: TreeFilter,
 }
 
 #[derive(Clone)]
 pub(crate) struct WorktreeSearchPlan {
-    pub(crate) root: PathBuf,
+    pub(crate) root: AbsolutePathBuf,
     filter: TreeFilter,
 }
 
 impl Worktree {
-    pub(crate) fn new(root: PathBuf) -> Self {
+    pub(crate) fn new(root: AbsolutePathBuf) -> Self {
         Self {
             root,
             filter: TreeFilter::new(&[]),
@@ -42,7 +43,7 @@ impl Worktree {
     }
 
     /// 更换项目根目录（展开与选中状态由 UI 层重置，本层只换根）。
-    pub(crate) fn set_root(&mut self, root: PathBuf) {
+    pub(crate) fn set_root(&mut self, root: AbsolutePathBuf) {
         self.root = root;
     }
 
@@ -132,7 +133,11 @@ fn children_sorted(dir: &Path, root: &Path, filter: &TreeFilter) -> Vec<Worktree
             if filter.is_excluded(rel) {
                 return None;
             }
-            Some(WorktreeEntry { path, name, is_dir })
+            Some(WorktreeEntry {
+                path: AbsolutePathBuf::new(path).ok()?,
+                name,
+                is_dir,
+            })
         })
         .collect()
 }
@@ -143,8 +148,8 @@ fn children_sorted(dir: &Path, root: &Path, filter: &TreeFilter) -> Vec<Worktree
 /// 不含 git 状态；GitStore 快照由项目树在行模型应用后单独查询。
 /// 展开、深度与选中是视图状态，由 UI 层决定。
 pub(crate) fn collect_visible_entries(
-    root: &Path,
-    expanded: &HashSet<PathBuf>,
+    root: &AbsolutePathBuf,
+    expanded: &HashSet<AbsolutePathBuf>,
     filter: &TreeFilter,
 ) -> Vec<WorktreeEntry> {
     let root_name = root
@@ -152,12 +157,12 @@ pub(crate) fn collect_visible_entries(
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| root.to_string_lossy().to_string());
     let mut rows = vec![WorktreeEntry {
-        path: root.to_path_buf(),
+        path: root.clone(),
         name: root_name,
         is_dir: true,
     }];
     if expanded.contains(root) {
-        collect_expanded_children(root, root, expanded, filter, &mut rows);
+        collect_expanded_children(root.as_path(), root.as_path(), expanded, filter, &mut rows);
     }
     rows
 }
@@ -166,7 +171,7 @@ pub(crate) fn collect_visible_entries(
 fn collect_expanded_children(
     dir: &Path,
     root: &Path,
-    expanded: &HashSet<PathBuf>,
+    expanded: &HashSet<AbsolutePathBuf>,
     filter: &TreeFilter,
     rows: &mut Vec<WorktreeEntry>,
 ) {
@@ -174,7 +179,7 @@ fn collect_expanded_children(
         if entry.is_dir && expanded.contains(&entry.path) {
             let path = entry.path.clone();
             rows.push(entry);
-            collect_expanded_children(&path, root, expanded, filter, rows);
+            collect_expanded_children(path.as_path(), root, expanded, filter, rows);
         } else {
             rows.push(entry);
         }
@@ -316,9 +321,14 @@ pub fn translate_path(path: &Path, from: &Path, to: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use zcv_git::GitRepository;
+    use zcv_path::AbsolutePathBuf;
 
     use super::*;
     use crate::test_support::{run_git, test_git_repo};
+
+    fn absolute(path: &Path) -> AbsolutePathBuf {
+        AbsolutePathBuf::new(path.to_path_buf()).expect("测试工作区路径应为绝对路径")
+    }
 
     #[test]
     fn children_return_sorted_static_entries() {
@@ -327,7 +337,7 @@ mod tests {
         std::fs::write(directory.path().join("apple.rs"), "fn main() {}").expect("应创建文件");
         std::fs::write(directory.path().join("banana.rs"), "fn main() {}").expect("应创建文件");
 
-        let worktree = Worktree::new(directory.path().to_path_buf());
+        let worktree = Worktree::new(absolute(directory.path()));
         let entries = children_sorted(directory.path(), directory.path(), &worktree.filter());
 
         // 目录优先、名称升序；Git 状态不属于目录快照层。
@@ -358,13 +368,13 @@ mod tests {
         let visible = directory.path().join("main.rs");
         std::fs::write(&visible, "fn main() {}").expect("应创建可见文件");
 
-        let mut worktree = Worktree::new(directory.path().to_path_buf());
+        let mut worktree = Worktree::new(absolute(directory.path()));
         worktree.set_exclusions(&["**/target".to_string()]);
 
         assert!(
             !children_sorted(directory.path(), directory.path(), &worktree.filter())
                 .iter()
-                .any(|entry| entry.path == target),
+                .any(|entry| entry.path.as_path() == target),
             "排除名单命中的目录不应出现"
         );
         assert!(
@@ -374,7 +384,7 @@ mod tests {
         assert!(
             children_sorted(directory.path(), directory.path(), &worktree.filter())
                 .iter()
-                .any(|entry| entry.path == visible)
+                .any(|entry| entry.path.as_path() == visible)
         );
     }
 
@@ -385,32 +395,30 @@ mod tests {
         std::fs::create_dir_all(src.join("feature")).expect("应创建嵌套目录");
         std::fs::write(src.join("feature").join("mod.rs"), "x").expect("应创建文件");
         std::fs::write(directory.path().join("root.rs"), "x").expect("应创建文件");
-        let mut worktree = Worktree::new(directory.path().to_path_buf());
+        let mut worktree = Worktree::new(absolute(directory.path()));
         worktree.set_exclusions(&["**/root.rs".to_string()]);
 
         // 只展开根：行集 = [根, src]（root.rs 被排除，src 折叠不深入）。
-        let expanded = HashSet::from([directory.path().to_path_buf()]);
-        let rows = collect_visible_entries(directory.path(), &expanded, &worktree.filter());
+        let root = absolute(directory.path());
+        let expanded = HashSet::from([root.clone()]);
+        let rows = collect_visible_entries(&root, &expanded, &worktree.filter());
         assert_eq!(rows.len(), 2);
         assert!(rows[0].is_dir);
-        assert_eq!(rows[0].path, directory.path());
-        assert_eq!(rows[1].path, src);
+        assert_eq!(rows[0].path.as_path(), directory.path());
+        assert_eq!(rows[1].path.as_path(), src);
 
         // 根、src、feature 都展开：行集 = [根, src, feature, mod.rs]，排序与 children 一致。
-        let expanded = HashSet::from([
-            directory.path().to_path_buf(),
-            src.clone(),
-            src.join("feature"),
-        ]);
-        let rows = collect_visible_entries(directory.path(), &expanded, &worktree.filter());
+        let expanded =
+            HashSet::from([root.clone(), absolute(&src), absolute(&src.join("feature"))]);
+        let rows = collect_visible_entries(&root, &expanded, &worktree.filter());
         let paths: Vec<_> = rows.iter().map(|row| row.path.clone()).collect();
         assert_eq!(
             paths,
             vec![
-                directory.path().to_path_buf(),
-                src.clone(),
-                src.join("feature"),
-                src.join("feature").join("mod.rs"),
+                absolute(directory.path()),
+                absolute(&src),
+                absolute(&src.join("feature")),
+                absolute(&src.join("feature").join("mod.rs")),
             ]
         );
     }

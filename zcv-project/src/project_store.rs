@@ -14,6 +14,7 @@ use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 use zcv_git::{ConflictChoice, FileStatus, parse_conflict_regions, resolve_conflict};
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::MultiBuffer;
+use zcv_path::{AbsolutePathBuf, normalize_for_comparison, simplify_native};
 use zcv_text::{
     Buffer, BufferLoadError, BufferSaveError, ByteOffset, Edit, SearchQuery, TextRange,
     TransactionMetadata,
@@ -57,7 +58,7 @@ pub struct Project {
 }
 
 struct ProjectWorktree {
-    root: PathBuf,
+    root: AbsolutePathBuf,
     snapshot: Worktree,
     fs_watcher: Arc<dyn Watcher>,
     _fs_task: Task<()>,
@@ -68,18 +69,25 @@ impl Project {
         Self::new_with_watcher(root, Arc::new(FsWatcher::new()), cx)
     }
 
-    fn new_with_watcher(
+    /// 使用指定的文件监听后端创建项目。
+    ///
+    /// 项目负责监听器的生命周期和事件消费；调用方负责选择符合当前运行环境的后端。
+    pub fn new_with_watcher(
         root: PathBuf,
         fs_watcher: Arc<dyn Watcher>,
         cx: &mut Context<Self>,
     ) -> Self {
+        // ProjectWorktree、文件监听器和 GitStore 共用同一个已规范化根路径。
+        // Project 只能由已确认存在的目录构造，失败应在装配阶段暴露，而不是在各消费者中分别回退。
+        let root =
+            AbsolutePathBuf::canonicalize(&root).expect("Project 根目录必须是可规范化的已存在目录");
         let fs_events = fs_watcher.events();
 
-        let pending_file_watcher_errors = match fs_watcher.add(&root) {
+        let pending_file_watcher_errors = match fs_watcher.add(root.as_path()) {
             Ok(()) => Vec::new(),
             Err(error) => vec![FileWatcherError {
                 operation: FileWatcherOperation::Add,
-                path: root.clone(),
+                path: root.as_path().to_path_buf(),
                 error: format!("{error:#}"),
             }],
         };
@@ -95,13 +103,13 @@ impl Project {
             }
         });
 
-        let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), cx));
+        let git_store = cx.new(|cx| GitStore::new(Some(root.as_path().to_path_buf()), cx));
         git_store.update(cx, |store, cx| store.schedule_scan(cx));
 
         Self {
             worktree: Some(ProjectWorktree {
                 root: root.clone(),
-                snapshot: Worktree::new(root),
+                snapshot: Worktree::new(root.clone()),
                 fs_watcher,
                 _fs_task: fs_task,
             }),
@@ -149,7 +157,7 @@ impl Project {
     /// Git 状态由项目树在行模型应用后单独批量查询，避免目录扫描与状态快照之间形成竞态，也让两类派生数据拥有各自明确的失效边界。
     pub fn collect_visible_rows(
         &self,
-        expanded: HashSet<PathBuf>,
+        expanded: HashSet<AbsolutePathBuf>,
         cx: &App,
     ) -> Task<Vec<WorktreeEntry>> {
         let Some(worktree) = &self.worktree else {
@@ -169,9 +177,9 @@ impl Project {
     /// `rows` 为 (路径, 是否目录) 对：目录行取聚合状态，文件行取精确状态。
     pub fn git_statuses_for_rows(
         &self,
-        rows: Vec<(PathBuf, bool)>,
+        rows: Vec<(AbsolutePathBuf, bool)>,
         cx: &App,
-    ) -> Task<HashMap<PathBuf, FileStatus>> {
+    ) -> Task<HashMap<AbsolutePathBuf, FileStatus>> {
         let snapshot: Arc<GitStatusSnapshot> = self.git_store.read(cx).status_snapshot();
         cx.background_executor()
             .spawn(async move { snapshot.statuses_for_rows(&rows) })
@@ -285,7 +293,7 @@ impl Project {
         cx: &mut Context<Self>,
     ) -> Result<(), BufferSaveError> {
         let mut saved_paths = Vec::with_capacity(buffers.len());
-        let mut resolved_conflict_paths = Vec::new();
+        let mut resolved_conflict_paths: Vec<AbsolutePathBuf> = Vec::new();
         for (buffer, path) in buffers {
             let is_unmerged = self
                 .git_store
@@ -301,7 +309,10 @@ impl Project {
                     .expect("Buffer 快照必须可切片")
                     .to_string();
                 if parse_conflict_regions(&text).is_empty() {
-                    resolved_conflict_paths.push(path.clone());
+                    resolved_conflict_paths.push(
+                        AbsolutePathBuf::canonicalize(&path)
+                            .expect("已保存的冲突路径必须是绝对路径"),
+                    );
                 }
             }
             buffer.update(cx, |buffer, cx| {
@@ -331,6 +342,8 @@ impl Project {
         to: &Path,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
+        let from = normalize_for_comparison(from)?;
+        let to = normalize_for_comparison(to)?;
         anyhow::ensure!(from != to, "新旧路径不能相同");
         anyhow::ensure!(from.parent() == to.parent(), "重命名不能移动条目");
         let worktree = self
@@ -338,13 +351,13 @@ impl Project {
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?;
         anyhow::ensure!(
-            from == worktree.root || from.starts_with(&worktree.root),
+            from == worktree.root.as_path() || from.starts_with(worktree.root.as_path()),
             "条目不在当前项目中"
         );
-        let indexed_from = from.canonicalize()?;
+        let indexed_from = AbsolutePathBuf::canonicalize(&from)?;
         if to.exists() {
             anyhow::ensure!(
-                to.canonicalize()? == indexed_from,
+                AbsolutePathBuf::canonicalize(&to)?.as_path() == indexed_from.as_path(),
                 "目标已存在：{}",
                 to.display()
             );
@@ -353,27 +366,29 @@ impl Project {
             .parent()
             .and_then(|parent| to.file_name().map(|name| parent.join(name)))
             .ok_or_else(|| anyhow::anyhow!("无法确定重命名目标路径"))?;
-        std::fs::rename(from, to)?;
-        self.buffer_store.rename_path(&indexed_from, &indexed_to);
+        std::fs::rename(&from, &to)?;
+        self.buffer_store
+            .rename_path(indexed_from.as_path(), &indexed_to);
 
-        if from == worktree.root {
-            if let Err(error) = worktree.fs_watcher.add(to) {
+        if from == worktree.root.as_path() {
+            let new_root = AbsolutePathBuf::canonicalize(&to)?;
+            if let Err(error) = worktree.fs_watcher.add(&to) {
                 cx.emit(ProjectEvent::FileWatcherError(FileWatcherError {
                     operation: FileWatcherOperation::Add,
                     path: to.to_path_buf(),
                     error: format!("{error:#}"),
                 }));
             }
-            if let Err(error) = worktree.fs_watcher.remove(from) {
+            if let Err(error) = worktree.fs_watcher.remove(&from) {
                 cx.emit(ProjectEvent::FileWatcherError(FileWatcherError {
                     operation: FileWatcherOperation::Remove,
                     path: from.to_path_buf(),
                     error: format!("{error:#}"),
                 }));
             }
-            worktree.root = to.to_path_buf();
-            worktree.snapshot.set_root(to.to_path_buf());
-            cx.emit(ProjectEvent::RootChanged(to.to_path_buf()));
+            worktree.root = new_root.clone();
+            worktree.snapshot.set_root(new_root.clone());
+            cx.emit(ProjectEvent::RootChanged(new_root.as_path().to_path_buf()));
         } else {
             cx.emit(ProjectEvent::EntriesChanged);
         }
@@ -387,6 +402,7 @@ impl Project {
         is_dir: bool,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
+        let path = normalize_for_comparison(path)?;
         let root = self
             .root()
             .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?;
@@ -417,13 +433,14 @@ impl Project {
 
     /// 将文件或目录移到系统废纸篓（可恢复），并清掉项目持有的路径状态。
     pub fn trash_path(&mut self, path: &Path, cx: &mut Context<Self>) -> anyhow::Result<()> {
+        let path = normalize_for_comparison(path)?;
         let root = self
             .root()
             .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?;
         anyhow::ensure!(path != root, "不能删除项目根目录");
         anyhow::ensure!(path.starts_with(root), "条目不在当前项目中");
-        trash::delete(path)?;
-        self.buffer_store.remove_path(path);
+        trash::delete(&path)?;
+        self.buffer_store.remove_path(&path);
         cx.emit(ProjectEvent::EntriesChanged);
         Ok(())
     }
@@ -438,6 +455,8 @@ impl Project {
         overwrite: bool,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
+        let from = normalize_for_comparison(from)?;
+        let to = normalize_for_comparison(to)?;
         anyhow::ensure!(from != to, "新旧路径不能相同");
         let root = self
             .root()
@@ -446,17 +465,17 @@ impl Project {
         anyhow::ensure!(from != root, "不能移动项目根目录");
         anyhow::ensure!(from.starts_with(&root), "条目不在当前项目中");
         anyhow::ensure!(to.starts_with(&root), "目标不在当前项目中");
-        anyhow::ensure!(!to.starts_with(from), "不能把条目移动到自身内部");
+        anyhow::ensure!(!to.starts_with(&from), "不能把条目移动到自身内部");
         // 对称守卫：目标是源的祖先目录时，覆盖路径的「先删目标」会把源一起递归删掉。
         anyhow::ensure!(
-            !from.starts_with(to),
+            !from.starts_with(&to),
             "不能把条目移动到自身的祖先目录：{}",
             to.display()
         );
         if to.exists() {
             anyhow::ensure!(overwrite, "目标已存在：{}", to.display());
         }
-        let indexed_from = from.canonicalize()?;
+        let indexed_from = AbsolutePathBuf::canonicalize(&from)?.into_path_buf();
         let parent = to
             .parent()
             .ok_or_else(|| anyhow::anyhow!("无法确定移动目标路径"))?;
@@ -464,18 +483,18 @@ impl Project {
             .file_name()
             .ok_or_else(|| anyhow::anyhow!("无法确定移动目标路径"))?;
         // 目标父目录必须已存在：目录移动场景下由调用方保证，缺失时在 canonicalize 处报错。
-        let indexed_to = parent.canonicalize()?.join(name);
+        let indexed_to = AbsolutePathBuf::canonicalize(parent)?.as_path().join(name);
         // 优先直接 rename：同文件系统上 POSIX rename 原子替换文件/空目录目标，没有「先删后写」的危险中间态；
         // 仅当失败且目标是非空目录（rename 无法原地替换的唯一情形）才退化为「删目标再 rename」，最终失败经 Result 向上传播。
-        if let Err(error) = std::fs::rename(from, to) {
+        if let Err(error) = std::fs::rename(&from, &to) {
             let is_nonempty_dir = to.is_dir()
-                && std::fs::read_dir(to).is_ok_and(|mut entries| entries.next().is_some());
+                && std::fs::read_dir(&to).is_ok_and(|mut entries| entries.next().is_some());
             if !(overwrite && is_nonempty_dir) {
                 return Err(error)
                     .with_context(|| format!("移动失败：{} → {}", from.display(), to.display()));
             }
-            remove_entry(to)?;
-            std::fs::rename(from, to)
+            remove_entry(&to)?;
+            std::fs::rename(&from, &to)
                 .with_context(|| format!("移动失败：{} → {}", from.display(), to.display()))?;
         }
         self.buffer_store.rename_path(&indexed_from, &indexed_to);
@@ -496,6 +515,8 @@ impl Project {
         overwrite: bool,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<Task<anyhow::Result<()>>> {
+        let source = normalize_for_comparison(source)?;
+        let destination = normalize_for_comparison(destination)?;
         let root = self
             .root()
             .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?
@@ -503,10 +524,13 @@ impl Project {
         anyhow::ensure!(source != root, "不能复制项目根目录");
         anyhow::ensure!(source.starts_with(&root), "条目不在当前项目中");
         anyhow::ensure!(destination.starts_with(&root), "目标不在当前项目中");
-        anyhow::ensure!(!destination.starts_with(source), "不能把条目复制到自身内部");
+        anyhow::ensure!(
+            !destination.starts_with(&source),
+            "不能把条目复制到自身内部"
+        );
         // 对称守卫：目标是源的祖先目录时，覆盖路径的「先删目标」会把源一起递归删掉。
         anyhow::ensure!(
-            !source.starts_with(destination),
+            !source.starts_with(&destination),
             "不能把条目复制到自身的祖先目录：{}",
             destination.display()
         );
@@ -548,6 +572,13 @@ impl Project {
         };
         let events: Vec<_> = events
             .into_iter()
+            .map(|mut event| {
+                let path = normalize_for_comparison(&event.path)
+                    .unwrap_or_else(|_| simplify_native(&event.path));
+                event.path =
+                    AbsolutePathBuf::new(path).expect("文件监听事件路径必须保持为绝对路径");
+                event
+            })
             .filter(|event| event.path.starts_with(&worktree.root))
             .collect();
         if events.is_empty() {
@@ -580,7 +611,7 @@ impl Project {
                     Some(PathEventKind::Changed | PathEventKind::Created)
                 )
             })
-            .map(|event| event.path.clone())
+            .map(|event| event.path.clone().into_path_buf())
             .filter(|path| keep_git_state_event(path))
             .collect();
         self.git_store.update(cx, |store, cx| {
@@ -802,7 +833,7 @@ mod tests {
 
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].operation, FileWatcherOperation::Add);
-        assert_eq!(errors[0].path, root);
+        assert_eq!(errors[0].path, normalize_for_comparison(&root).unwrap());
         assert_eq!(errors[0].error, "测试监听失败");
         assert!(
             project
@@ -1288,10 +1319,10 @@ mod tests {
         fs::write(&file, "已修改\n").expect("应修改文件");
         project.update(cx, |project, cx| {
             project.process_fs_events(
-                vec![PathEvent {
-                    path: file.clone(),
-                    kind: Some(PathEventKind::Changed),
-                }],
+                vec![
+                    PathEvent::new(file.clone(), Some(PathEventKind::Changed))
+                        .expect("测试事件路径应为绝对路径"),
+                ],
                 cx,
             );
         });
@@ -1315,10 +1346,10 @@ mod tests {
         fs::write(&file, "临时\n").expect("应创建文件");
         project.update(cx, |project, cx| {
             project.process_fs_events(
-                vec![PathEvent {
-                    path: file.clone(),
-                    kind: Some(PathEventKind::Created),
-                }],
+                vec![
+                    PathEvent::new(file.clone(), Some(PathEventKind::Created))
+                        .expect("测试事件路径应为绝对路径"),
+                ],
                 cx,
             );
         });
@@ -1332,10 +1363,10 @@ mod tests {
         fs::remove_file(&file).expect("应删除文件");
         project.update(cx, |project, cx| {
             project.process_fs_events(
-                vec![PathEvent {
-                    path: file.clone(),
-                    kind: Some(PathEventKind::Removed),
-                }],
+                vec![
+                    PathEvent::new(file.clone(), Some(PathEventKind::Removed))
+                        .expect("测试事件路径应为绝对路径"),
+                ],
                 cx,
             );
         });
@@ -1364,10 +1395,10 @@ mod tests {
 
         project.update(cx, |project, cx| {
             project.process_fs_events(
-                vec![PathEvent {
-                    path: root.clone(),
-                    kind: Some(PathEventKind::Rescan),
-                }],
+                vec![
+                    PathEvent::new(root.clone(), Some(PathEventKind::Rescan))
+                        .expect("测试事件路径应为绝对路径"),
+                ],
                 cx,
             );
         });
@@ -1488,10 +1519,10 @@ mod tests {
             .expect("保存应成功");
         project.update(cx, |project, cx| {
             project.process_fs_events(
-                vec![PathEvent {
-                    path: file.clone(),
-                    kind: Some(PathEventKind::Changed),
-                }],
+                vec![
+                    PathEvent::new(file.clone(), Some(PathEventKind::Changed))
+                        .expect("测试事件路径应为绝对路径"),
+                ],
                 cx,
             );
         });
@@ -1516,10 +1547,10 @@ mod tests {
         // 同一次保存可能产生重复或延迟事件；用户撤销后文档已变脏，事件不能反向覆盖。
         project.update(cx, |project, cx| {
             project.process_fs_events(
-                vec![PathEvent {
-                    path: file.clone(),
-                    kind: Some(PathEventKind::Changed),
-                }],
+                vec![
+                    PathEvent::new(file.clone(), Some(PathEventKind::Changed))
+                        .expect("测试事件路径应为绝对路径"),
+                ],
                 cx,
             );
         });

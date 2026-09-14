@@ -41,6 +41,7 @@ use crate::auto_update::{UpdateButton, UpdateManager};
 use crate::cursor_position::CursorPosition;
 use crate::harness::HarnessButton;
 use zcv_outline::OutlinePanel;
+use zcv_path::AbsolutePathBuf;
 use zcv_project_tree::{OnCreate, OnMove, OnOpenFile, OnRename, OnTrash, ProjectTreePanel};
 use zcv_terminal::TerminalPanel;
 use zcv_version_control::{
@@ -166,10 +167,14 @@ fn switch_project_callback() -> OnProjectSelected {
 
 /// 规范化项目路径：相对路径（如 `zcv .`）归一为绝对路径，无效路径返回错误。
 fn canonical_project_root(root: PathBuf) -> anyhow::Result<PathBuf> {
-    root.canonicalize()
-        .ok()
-        .filter(|path| path.is_dir() && path.file_name().is_some())
-        .ok_or_else(|| anyhow::anyhow!("项目路径不是有效目录：{}", root.display()))
+    let root = AbsolutePathBuf::canonicalize(&root)
+        .with_context(|| format!("无法规范化项目路径：{}", root.display()))?
+        .into_path_buf();
+    if root.is_dir() && root.file_name().is_some() {
+        Ok(root)
+    } else {
+        Err(anyhow::anyhow!("项目路径不是有效目录：{}", root.display()))
+    }
 }
 
 /// 打开一个项目窗口（CLI 启动入口）。

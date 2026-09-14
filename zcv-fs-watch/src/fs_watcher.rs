@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use crossbeam_channel::Sender as CbSender;
 use notify::{Event, EventKind, RecursiveMode, Watcher as NotifyWatcher};
+use zcv_path::AbsolutePathBuf;
 
 mod platform;
 
@@ -37,8 +38,21 @@ pub enum PathEventKind {
 /// 文件系统路径事件。
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct PathEvent {
-    pub path: PathBuf,
+    pub path: AbsolutePathBuf,
     pub kind: Option<PathEventKind>,
+}
+
+impl PathEvent {
+    pub fn new(path: PathBuf, kind: Option<PathEventKind>) -> std::io::Result<Self> {
+        Ok(Self {
+            path: AbsolutePathBuf::new(path)?,
+            kind,
+        })
+    }
+}
+
+fn absolute_event_path(path: PathBuf) -> AbsolutePathBuf {
+    AbsolutePathBuf::new(path).expect("文件监听事件路径必须是绝对路径")
 }
 
 /// 文件监听器：路径注册与事件订阅属于同一个来源，避免注册和消费落在不同实例。
@@ -680,7 +694,7 @@ impl FsWatcher {
                                         &signal_tx,
                                         &pending_events,
                                         vec![PathEvent {
-                                            path: poll_path.to_path_buf(),
+                                            path: absolute_event_path(poll_path.to_path_buf()),
                                             kind: Some(PathEventKind::Rescan),
                                         }],
                                     );
@@ -715,11 +729,11 @@ impl FsWatcher {
                                     &pending_events,
                                     vec![
                                         PathEvent {
-                                            path: poll_path.to_path_buf(),
+                                            path: absolute_event_path(poll_path.to_path_buf()),
                                             kind: Some(PathEventKind::Created),
                                         },
                                         PathEvent {
-                                            path: poll_path.to_path_buf(),
+                                            path: absolute_event_path(poll_path.to_path_buf()),
                                             kind: Some(PathEventKind::Rescan),
                                         },
                                     ],
@@ -914,16 +928,20 @@ fn push_notify_event(
             // 只保留在 watched_root 下的事件；不区分大小写的文件系统还要
             // 按注册根目录的拼写重建路径，避免消费方再次用区分大小写的
             // 前缀判断丢弃合法事件。
-            path_relative_to_root(event_path, watched_root, case_insensitive)
-                .map(|path| PathEvent { path, kind })
+            path_relative_to_root(event_path, watched_root, case_insensitive).map(|path| {
+                PathEvent {
+                    path: absolute_event_path(path),
+                    kind,
+                }
+            })
         })
         .collect();
 
     // Rescan 标记：监听丢失同步，消费方应全量刷新
     if event.need_rescan() {
-        path_events.retain(|pe| pe.path != watched_root);
+        path_events.retain(|pe| pe.path.as_path() != watched_root);
         path_events.push(PathEvent {
-            path: watched_root.to_path_buf(),
+            path: absolute_event_path(watched_root.to_path_buf()),
             kind: Some(PathEventKind::Rescan),
         });
     }
@@ -993,7 +1011,7 @@ fn coalesce_pending_rescans(pending: &mut Vec<PathEvent>, events: &mut Vec<PathE
     }
 
     // 提取新事件中的 Rescan 路径，排序
-    let mut new_rescan: Vec<PathBuf> = events
+    let mut new_rescan: Vec<AbsolutePathBuf> = events
         .iter()
         .filter(|e| e.kind == Some(PathEventKind::Rescan))
         .map(|e| e.path.clone())
@@ -1009,7 +1027,7 @@ fn coalesce_pending_rescans(pending: &mut Vec<PathEvent>, events: &mut Vec<PathE
     // 移除 pending 中被新 Rescan 覆盖的条目
     new_rescan.retain(|p| {
         !pending.iter().any(|pe| {
-            pe.kind == Some(PathEventKind::Rescan) && *p != pe.path && p.starts_with(&pe.path)
+            pe.kind == Some(PathEventKind::Rescan) && p != &pe.path && p.starts_with(&pe.path)
         })
     });
 
@@ -1020,7 +1038,7 @@ fn coalesce_pending_rescans(pending: &mut Vec<PathEvent>, events: &mut Vec<PathE
             }
             !new_rescan
                 .iter()
-                .any(|rp| *pe.path == **rp || (pe.path != *rp && pe.path.starts_with(rp)))
+                .any(|rp| pe.path == *rp || (pe.path != *rp && pe.path.starts_with(rp)))
         });
     }
 
@@ -1073,14 +1091,14 @@ mod tests {
 
     fn rescan(path: &str) -> PathEvent {
         PathEvent {
-            path: PathBuf::from(path),
+            path: absolute_event_path(PathBuf::from(path)),
             kind: Some(PathEventKind::Rescan),
         }
     }
 
     fn changed(path: &str) -> PathEvent {
         PathEvent {
-            path: PathBuf::from(path),
+            path: absolute_event_path(PathBuf::from(path)),
             kind: Some(PathEventKind::Changed),
         }
     }
@@ -1096,6 +1114,11 @@ mod tests {
         assert_ne!(WatchKey::exact(mixed), WatchKey::exact(lower));
         // Exact 和 Folded 是不同的键空间
         assert_ne!(WatchKey::exact(mixed), WatchKey::folded(mixed));
+    }
+
+    #[test]
+    fn path_event_rejects_relative_paths() {
+        assert!(PathEvent::new(PathBuf::from("relative/file.txt"), None).is_err());
     }
 
     #[test]

@@ -21,6 +21,7 @@ use zcv_actions::{
 };
 use zcv_editor::Editor;
 use zcv_git::{DiffStat, FileStatus, StatusCode};
+use zcv_path::{AbsolutePathBuf, RelativePathBuf};
 use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, space};
 use zcv_ui::{
@@ -162,14 +163,18 @@ fn insert_entry(
     nodes: &mut Vec<GitTreeNode>,
     root: &Path,
     workdir: &Path,
-    relative: &Path,
+    relative: &RelativePathBuf,
     status: FileStatus,
     diff_stat: DiffStat,
 ) {
-    let absolute = workdir.join(relative);
+    let absolute = AbsolutePathBuf::new(workdir.join(relative.as_path()))
+        .expect("Git 状态路径必须解析为绝对路径");
     // 树内路径键优先取项目根相对路径；仓库在项目根外时 strip_prefix 失败，退化为绝对路径。
-    let key_is_relative = absolute.strip_prefix(root).is_ok();
-    let key = absolute.strip_prefix(root).unwrap_or(&absolute);
+    let key_is_relative = absolute.as_path().strip_prefix(root).is_ok();
+    let key = absolute
+        .as_path()
+        .strip_prefix(root)
+        .unwrap_or(absolute.as_path());
     let mut current = nodes;
     let mut components = key.components().peekable();
     let mut prefix = PathBuf::new();
@@ -180,9 +185,9 @@ fn insert_entry(
         let node_absolute = if is_last {
             absolute.clone()
         } else if key_is_relative {
-            root.join(&prefix)
+            AbsolutePathBuf::new(root.join(&prefix)).expect("Git 目录路径必须解析为绝对路径")
         } else {
-            prefix.clone()
+            AbsolutePathBuf::new(prefix.clone()).expect("Git 目录路径必须解析为绝对路径")
         };
         if is_last {
             // 叶子：同名节点已存在（路径冲突的理论分支）时更新状态，不覆盖目录结构。
@@ -247,7 +252,7 @@ fn finalize_node(node: &mut GitTreeNode) {
 /// 树 → 有序行列表：分组头前置，展开的空组显示一行提示，非空组按 DFS 先序展开；折叠的分区只留标题行。
 fn flatten_rows(
     trees: &GitSections<Vec<GitTreeNode>>,
-    expanded: &HashSet<(GitSection, PathBuf)>,
+    expanded: &HashSet<(GitSection, AbsolutePathBuf)>,
     collapsed: &HashSet<GitSection>,
 ) -> Vec<GitRow> {
     let mut rows = Vec::new();
@@ -269,7 +274,7 @@ fn flatten_nodes(
     nodes: &[GitTreeNode],
     section: GitSection,
     depth: usize,
-    expanded: &HashSet<(GitSection, PathBuf)>,
+    expanded: &HashSet<(GitSection, AbsolutePathBuf)>,
 ) {
     for node in nodes {
         let mut folded_name = node.name.clone();
@@ -306,7 +311,9 @@ fn flatten_nodes(
 }
 
 /// 收集所有分组树中的目录节点键（(分组, 绝对路径)），供默认全展开使用。
-fn collect_directory_keys(trees: &GitSections<Vec<GitTreeNode>>) -> HashSet<(GitSection, PathBuf)> {
+fn collect_directory_keys(
+    trees: &GitSections<Vec<GitTreeNode>>,
+) -> HashSet<(GitSection, AbsolutePathBuf)> {
     let mut keys = HashSet::new();
     for (section, tree) in trees.iter() {
         collect_dirs(tree, section, &mut keys);
@@ -317,7 +324,7 @@ fn collect_directory_keys(trees: &GitSections<Vec<GitTreeNode>>) -> HashSet<(Git
 fn collect_dirs(
     nodes: &[GitTreeNode],
     section: GitSection,
-    keys: &mut HashSet<(GitSection, PathBuf)>,
+    keys: &mut HashSet<(GitSection, AbsolutePathBuf)>,
 ) {
     for node in nodes {
         if node.is_dir {
@@ -333,13 +340,13 @@ pub struct VersionControlPanel {
     focus: FocusHandle,
     focus_listeners_initialized: bool,
     project: Entity<Project>,
-    state: Rc<RefCell<TreeState<(GitSection, PathBuf), GitRow>>>,
+    state: Rc<RefCell<TreeState<(GitSection, AbsolutePathBuf), GitRow>>>,
     /// 用户显式折叠的目录（(分组, 路径)）；未折叠的目录默认展开，新出现的目录自动展开。
-    collapsed_dirs: HashSet<(GitSection, PathBuf)>,
+    collapsed_dirs: HashSet<(GitSection, AbsolutePathBuf)>,
     /// 折叠的分区（点击分区标题行首 chevron 切换；折叠时该分区条目不渲染）。
     collapsed_sections: Rc<RefCell<HashSet<GitSection>>>,
     /// 各分组的顶层变更路径；标题行复选框可见性与全选以此为准，不随折叠变化。
-    section_paths: GitSections<Vec<PathBuf>>,
+    section_paths: GitSections<Vec<AbsolutePathBuf>>,
     scroll_handle: UniformListScrollHandle,
     scrollbar: Scrollbar<UniformListScrollHandle>,
     /// 底部提交信息编辑器。
@@ -457,14 +464,13 @@ impl VersionControlPanel {
     /// 从 GitStore 快照重建行模型（订阅事件 / 折叠展开后调用）。
     ///
     /// 项目根实时读取（不缓存）：RootChanged 后树键基准跟随项目，避免与事件流不同步。
-    /// GitStore 路径均 canonicalize，这里同样归一化保证前缀比较一致。
+    /// Project 已在创建阶段保存绝对路径，这里只读取路径身份，不重新访问文件系统。
     fn rebuild_rows(&mut self, cx: &mut Context<Self>) {
-        let Some(root) = self
-            .project
-            .read(cx)
-            .root()
-            .map(|root| root.canonicalize().unwrap_or_else(|_| root.to_path_buf()))
-        else {
+        let Some(root) = self.project.read(cx).root().map(|root| {
+            AbsolutePathBuf::new(root.to_path_buf())
+                .expect("项目根目录必须是绝对路径")
+                .into_path_buf()
+        }) else {
             return;
         };
         let git_store = self.project.read(cx).git_store();
@@ -516,7 +522,7 @@ impl VersionControlPanel {
     ///
     /// 以分组树的全部条目为准，折叠时不可见的分区同样能整组操作。
     fn toggle_section_all(&mut self, section: GitSection, cx: &mut Context<Self>) {
-        let paths = self.section_paths.get(section).clone();
+        let paths: Vec<AbsolutePathBuf> = self.section_paths.get(section).to_vec();
         if paths.is_empty() {
             return;
         }
@@ -561,7 +567,13 @@ impl VersionControlPanel {
                 GitSection::Unstaged => ProjectDiffKind::Unstaged,
                 GitSection::Conflict => ProjectDiffKind::Conflict,
             };
-            callback(kind, entry.path, focus_opened_item, window, cx);
+            callback(
+                kind,
+                entry.path.into_path_buf(),
+                focus_opened_item,
+                window,
+                cx,
+            );
         }
         window.refresh();
     }
@@ -613,7 +625,7 @@ impl VersionControlPanel {
     }
 
     /// 选中行的目录键；`expanded` 为 true 时只取展开中的目录（折叠操作），否则只取折叠的目录（展开操作）。
-    fn selected_directory_key(&self, expanded: bool) -> Option<(GitSection, PathBuf)> {
+    fn selected_directory_key(&self, expanded: bool) -> Option<(GitSection, AbsolutePathBuf)> {
         let state = self.state.borrow();
         let idx = state.selected_idx()?;
         match state.rows.get(idx)? {
@@ -649,14 +661,19 @@ impl VersionControlPanel {
     ///
     /// 复选框点击与空格键共用（交互规范：方法复用，不走 dispatch 合流）。
     /// 完成后 GitStore 自动重扫，Statuses 事件驱动行模型重建。
-    fn toggle_staged_for(&mut self, section: GitSection, path: &Path, cx: &mut Context<Self>) {
+    fn toggle_staged_for(
+        &mut self,
+        section: GitSection,
+        path: &AbsolutePathBuf,
+        cx: &mut Context<Self>,
+    ) {
         let store = self.project.read(cx).git_store();
         match section {
             GitSection::Unstaged => store.update(cx, |store, cx| {
-                store.stage_paths(vec![path.to_path_buf()], cx);
+                store.stage_paths(vec![path.clone()], cx);
             }),
             GitSection::Staged => store.update(cx, |store, cx| {
-                store.unstage_paths(vec![path.to_path_buf()], cx);
+                store.unstage_paths(vec![path.clone()], cx);
             }),
             GitSection::Conflict => {}
         }
@@ -1280,7 +1297,7 @@ struct GitTreeRow {
     /// 所在分组（选中/展开键的一部分；(section, path) 在可见行内唯一）。
     section: GitSection,
     /// 绝对路径（打开回调用）。
-    path: PathBuf,
+    path: AbsolutePathBuf,
     /// 显示名（仅末段，缩进由 depth 承担）。
     name: String,
     depth: usize,
@@ -1295,7 +1312,7 @@ struct GitTreeRow {
 /// 分组树的节点（含合成目录）。
 #[derive(Debug)]
 struct GitTreeNode {
-    path: PathBuf,
+    path: AbsolutePathBuf,
     name: String,
     is_dir: bool,
     status: Option<FileStatus>,
@@ -1319,7 +1336,7 @@ impl TreeRow for GitRow {
 }
 
 /// 行 → 选中/展开键（分组头和空分组提示为 None）。
-fn row_entry_key(row: &GitRow) -> Option<(GitSection, PathBuf)> {
+fn row_entry_key(row: &GitRow) -> Option<(GitSection, AbsolutePathBuf)> {
     match row {
         GitRow::Entry(entry) => Some((entry.section, entry.path.clone())),
         GitRow::Header(_) | GitRow::Empty(_) => None,
@@ -1328,7 +1345,7 @@ fn row_entry_key(row: &GitRow) -> Option<(GitSection, PathBuf)> {
 
 #[derive(Clone)]
 struct GitPanelRenderContext {
-    state: Rc<RefCell<TreeState<(GitSection, PathBuf), GitRow>>>,
+    state: Rc<RefCell<TreeState<(GitSection, AbsolutePathBuf), GitRow>>>,
     rows: Rc<[GitRow]>,
     focus: FocusHandle,
     /// 折叠的分区（标题行 chevron 渲染与点击共享）。
@@ -1343,10 +1360,12 @@ struct GitPanelRenderContext {
 mod tests {
     use super::*;
     use std::cell::Cell;
+    use std::sync::Arc;
 
     use gpui::{KeyBinding, TestAppContext, VisualTestContext, point, px};
     use tempfile::TempDir;
 
+    use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
     use zcv_project::{Project, StatusEntry};
     use zcv_ui::tree_row_height;
 
@@ -1364,7 +1383,8 @@ mod tests {
                 .iter()
                 .map(|(path, status)| {
                     (
-                        PathBuf::from(path),
+                        RelativePathBuf::from_unix_str(path)
+                            .expect("测试路径应为有效的仓库相对路径"),
                         StatusEntry {
                             status: *status,
                             diff_stat: DiffStat {
@@ -1384,6 +1404,14 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    fn absolute(path: PathBuf) -> AbsolutePathBuf {
+        AbsolutePathBuf::new(path).expect("测试树路径应为绝对路径")
+    }
+
+    fn relative(path: &str) -> RelativePathBuf {
+        RelativePathBuf::from_unix_str(path).expect("测试路径应为有效的仓库相对路径")
     }
 
     fn build_rows(root: &Path, repos: &[(&Path, &RepositorySnapshot)]) -> Vec<GitRow> {
@@ -1564,7 +1592,7 @@ mod tests {
 
         // 展开 src：sub（目录优先）与 a.rs 都出现，sub 未展开时其子项不可见。
         let mut expanded = HashSet::new();
-        expanded.insert((GitSection::Unstaged, root.join("src")));
+        expanded.insert((GitSection::Unstaged, absolute(root.join("src"))));
         let rows = flatten_rows(&trees, &expanded, &HashSet::new());
         assert_eq!(
             entry_keys(&rows),
@@ -1576,7 +1604,7 @@ mod tests {
         );
 
         // 再展开 sub：叶子出现，目录优先排序（sub 子树在 a.rs 之前）。
-        expanded.insert((GitSection::Unstaged, root.join("src").join("sub")));
+        expanded.insert((GitSection::Unstaged, absolute(root.join("src").join("sub"))));
         let rows = flatten_rows(&trees, &expanded, &HashSet::new());
         assert_eq!(
             entry_keys(&rows),
@@ -1595,9 +1623,12 @@ mod tests {
         let snapshot = snapshot(&[("src/components/editor/mod.rs", FileStatus::Untracked)]);
         let trees = build_section_trees(&root, [(root.as_path(), &snapshot)].into_iter());
         let expanded = HashSet::from([
-            (GitSection::Unstaged, root.join("src")),
-            (GitSection::Unstaged, root.join("src/components")),
-            (GitSection::Unstaged, root.join("src/components/editor")),
+            (GitSection::Unstaged, absolute(root.join("src"))),
+            (GitSection::Unstaged, absolute(root.join("src/components"))),
+            (
+                GitSection::Unstaged,
+                absolute(root.join("src/components/editor")),
+            ),
         ]);
 
         let rows = flatten_rows(&trees, &expanded, &HashSet::new());
@@ -1628,7 +1659,7 @@ mod tests {
 
         // vendor 为目录行，优先于根文件 README.md；展开后 lib.rs 归入其下。
         let mut expanded = HashSet::new();
-        expanded.insert((GitSection::Unstaged, root.join("vendor")));
+        expanded.insert((GitSection::Unstaged, absolute(root.join("vendor"))));
         let rows = flatten_rows(&trees, &expanded, &HashSet::new());
         let paths: Vec<_> = rows
             .iter()
@@ -1640,9 +1671,9 @@ mod tests {
         assert_eq!(
             paths,
             vec![
-                (root.join("vendor"), 0),
-                (root.join("vendor/lib.rs"), 1),
-                (root.join("README.md"), 0)
+                (absolute(root.join("vendor")), 0),
+                (absolute(root.join("vendor/lib.rs")), 1),
+                (absolute(root.join("README.md")), 0)
             ]
         );
     }
@@ -1675,11 +1706,43 @@ mod tests {
         );
     }
 
+    /// UI 行为测试不需要验证 OS 文件监听；使用被动后端避免外部线程向测试调度器注入事件。
+    struct PassiveWatcher {
+        watcher: FsWatcher,
+    }
+
+    impl PassiveWatcher {
+        fn new() -> Self {
+            Self {
+                watcher: FsWatcher::new(),
+            }
+        }
+    }
+
+    impl Watcher for PassiveWatcher {
+        fn add(&self, _path: &Path) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn remove(&self, _path: &Path) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn events(&self) -> FsEventStream {
+            self.watcher.events()
+        }
+    }
+
+    fn test_project(root: PathBuf, cx: &mut TestAppContext) -> Entity<Project> {
+        let watcher: Arc<dyn Watcher> = Arc::new(PassiveWatcher::new());
+        cx.new(|cx| Project::new_with_watcher(root, watcher, cx))
+    }
+
     #[gpui::test]
     fn empty_state_initializes_repository_and_builds_section_tree(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().expect("应创建临时项目目录");
         let project_root = directory.path().to_path_buf();
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let project_for_panel = project.clone();
         let (panel, cx) =
             cx.add_window_view(move |_, cx| VersionControlPanel::new(project_for_panel, cx));
@@ -1731,7 +1794,7 @@ mod tests {
         let callback_focus = Rc::clone(&last_focus_opened);
         let callback_path = Rc::clone(&opened_path);
 
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| {
             let mut panel = VersionControlPanel::new(project, cx);
             panel.set_on_open_file(Rc::new(move |_, path, focus_opened_item, _, _| {
@@ -1793,7 +1856,7 @@ mod tests {
         let callback_count = Rc::clone(&open_count);
         let callback_focus = Rc::clone(&last_focus_opened);
 
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| {
             cx.bind_keys([
                 KeyBinding::new("down", SelectNext, Some("GitPanel && ChangesList")),
@@ -1830,7 +1893,7 @@ mod tests {
         let opened_kind = Rc::new(Cell::new(None));
         let callback_kind = Rc::clone(&opened_kind);
         let project_root = root.clone();
-        let project = cx.new(|cx| Project::new(project_root, cx));
+        let project = test_project(project_root, cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| {
             let mut panel = VersionControlPanel::new(project, cx);
             panel.set_on_open_file(Rc::new(move |kind, _, _, _, _| {
@@ -1872,7 +1935,7 @@ mod tests {
         std::fs::write(root.join("src/a.txt"), "改动\n").expect("应写入文件");
 
         let project_root = root.clone();
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked(); // 扫描 + 重建 + 首次全展开
 
@@ -1895,7 +1958,7 @@ mod tests {
         std::fs::write(root.join("src/a.txt"), "改动\n").expect("应写入文件");
 
         let project_root = root.clone();
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked(); // 扫描 + 重建
 
@@ -1906,7 +1969,7 @@ mod tests {
         // 用户折叠 src（模拟点击目录行折叠）；树键用 canonicalize 后的根（macOS /var → /private/var）。
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         cx.update_entity(&panel, |panel, cx| {
-            let key = (GitSection::Unstaged, canonical_root.join("src"));
+            let key = (GitSection::Unstaged, absolute(canonical_root.join("src")));
             panel.collapsed_dirs.insert(key.clone());
             panel.state.borrow_mut().expanded.remove(&key);
             panel.rebuild_rows(cx);
@@ -1946,7 +2009,7 @@ mod tests {
         std::fs::write(root.join("tracked.txt"), "改动\n").expect("应写入文件");
 
         let project_root = root.clone();
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked(); // 扫描 + 重建
 
@@ -1976,7 +2039,7 @@ mod tests {
         std::fs::write(root.join("tracked.txt"), "改动\n").expect("应写入文件");
 
         let project_root = root.clone();
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked();
 
@@ -2010,7 +2073,7 @@ mod tests {
         std::fs::write(root.join("second.txt"), "第二个文件\n").expect("应写入文件");
 
         let project_root = root.clone();
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked();
 
@@ -2064,7 +2127,7 @@ mod tests {
     fn space_toggles_staging_and_moves_row_between_sections(cx: &mut TestAppContext) {
         let (root, _temp) = test_repo();
         let project_root = root.clone();
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| {
             cx.bind_keys([
                 KeyBinding::new("down", SelectNext, Some("GitPanel && ChangesList")),
@@ -2102,7 +2165,7 @@ mod tests {
     fn space_in_commit_editor_inserts_text_without_toggling_staging(cx: &mut TestAppContext) {
         let (root, _temp) = test_repo();
         let project_root = root.clone();
-        let project = cx.new(|cx| Project::new(project_root, cx));
+        let project = test_project(project_root, cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| {
             zcv_keymap::init(cx).expect("应注册内置快捷键");
             VersionControlPanel::new(project, cx)
@@ -2143,7 +2206,7 @@ mod tests {
     #[gpui::test]
     fn selection_border_only_shows_when_changes_tree_is_focused(cx: &mut TestAppContext) {
         let (root, _temp) = test_repo();
-        let project = cx.new(|cx| Project::new(root, cx));
+        let project = test_project(root, cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked();
         cx.run_until_parked();
@@ -2203,7 +2266,7 @@ mod tests {
     fn hovering_unchecked_checkbox_shows_tooltip(cx: &mut TestAppContext) {
         let (root, _temp) = test_repo();
         let project_root = root.clone();
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (_panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked();
         let _ = cx.refresh();
@@ -2226,7 +2289,7 @@ mod tests {
             .expect("应写入文件");
         }
         let project_root = root.clone();
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (_panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked();
         let _ = cx.refresh();
@@ -2260,7 +2323,7 @@ mod tests {
         let (root, _temp) = test_repo();
         std::fs::write(root.join("second.txt"), "第二个文件\n").expect("应写入文件");
         let project_root = root.clone();
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked();
         let _ = cx.refresh();
@@ -2332,7 +2395,7 @@ mod tests {
         std::fs::write(root.join("tracked.txt"), "第二次修改\n").expect("应再次修改文件");
 
         let project_root = root.clone();
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (_panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked();
         let _ = cx.refresh();
@@ -2364,7 +2427,7 @@ mod tests {
     fn hovering_checked_checkbox_shows_tooltip(cx: &mut TestAppContext) {
         let (root, _temp) = test_repo();
         let project_root = root.clone();
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked();
         let _ = cx.refresh();
@@ -2394,7 +2457,7 @@ mod tests {
         let project_root = root.clone();
         let open_count = Rc::new(Cell::new(0));
         let callback_count = Rc::clone(&open_count);
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| {
             let mut panel = VersionControlPanel::new(project, cx);
             panel.set_on_open_file(Rc::new(move |_, _, _, _, _| {
@@ -2437,7 +2500,7 @@ mod tests {
         let (root, _temp) = test_repo();
         run_in(&root, &["git", "add", "tracked.txt"]);
         let project_root = root.clone();
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked(); // 首次扫描完成（tracked.txt 已暂存）。
         cx.run_until_parked();
@@ -2480,7 +2543,7 @@ mod tests {
         let (root, _temp) = test_repo();
         run_in(&root, &["git", "add", "tracked.txt"]);
         let project_root = root.clone();
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked(); // 首次扫描完成（tracked.txt 已暂存）。
         cx.run_until_parked();
@@ -2532,7 +2595,7 @@ mod tests {
         let (root, _temp) = test_repo();
         run_in(&root, &["git", "add", "tracked.txt"]);
         let project_root = root.clone();
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| {
             zcv_keymap::init(cx).expect("应注册内置快捷键");
             VersionControlPanel::new(project, cx)
@@ -2572,7 +2635,7 @@ mod tests {
         std::fs::write(root.join("untracked.txt"), "新文件\n").expect("应创建未跟踪文件");
 
         let project_root = root.clone();
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked();
         cx.run_until_parked();
@@ -2611,14 +2674,14 @@ mod tests {
             assert!(
                 snapshot
                     .statuses_by_path
-                    .get(Path::new("tracked.txt"))
+                    .get(&relative("tracked.txt"))
                     .is_some_and(|entry| entry.status.has_unstaged()),
                 "已跟踪改动应保持未暂存"
             );
             assert!(
                 snapshot
                     .statuses_by_path
-                    .get(Path::new("untracked.txt"))
+                    .get(&relative("untracked.txt"))
                     .is_some_and(|entry| entry.status.is_untracked()),
                 "未跟踪文件应保持未暂存"
             );
@@ -2638,7 +2701,7 @@ mod tests {
         std::fs::write(root.join("tracked.txt"), "第三次内容\n").expect("应再次修改文件");
 
         let project_root = root.clone();
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked();
         cx.run_until_parked();
@@ -2678,7 +2741,7 @@ mod tests {
         std::fs::write(root.join("tracked.txt"), "第三次内容\n").expect("应再次修改文件");
 
         let project_root = root.clone();
-        let project = cx.new(|cx| Project::new(project_root.clone(), cx));
+        let project = test_project(project_root.clone(), cx);
         let (panel, cx) = cx.add_window_view(move |_, cx| VersionControlPanel::new(project, cx));
         cx.run_until_parked();
         cx.run_until_parked();

@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use zcv_path::AbsolutePathBuf;
 use zcv_settings::config_dir;
 
 // ═══ 数据 ════════════════════════════════════════════════════════
@@ -73,7 +74,7 @@ fn canonical_project_path(path: &Path) -> Option<PathBuf> {
     if !path.is_absolute() {
         return None;
     }
-    let path = path.canonicalize().ok()?;
+    let path = AbsolutePathBuf::canonicalize(path).ok()?.into_path_buf();
     (path.is_dir() && path.file_name().is_some()).then_some(path)
 }
 

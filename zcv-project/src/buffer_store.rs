@@ -9,11 +9,12 @@ use std::path::{Path, PathBuf};
 use crate::translate_path;
 use gpui::{App, AppContext, Entity, WeakEntity};
 use zcv_language::LanguageBuffer;
+use zcv_path::{AbsolutePathBuf, normalize_for_comparison};
 use zcv_text::Snapshot;
 use zcv_text::{Buffer, BufferConfig, BufferLoadError};
 
 pub(crate) struct BufferStore {
-    opened_buffers: HashMap<PathBuf, WeakEntity<LanguageBuffer>>,
+    opened_buffers: HashMap<AbsolutePathBuf, WeakEntity<LanguageBuffer>>,
 }
 
 impl BufferStore {
@@ -82,13 +83,14 @@ impl BufferStore {
         }
         let buffer = load()?;
         let buffer = cx.new(|_| buffer);
-        let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(path.clone()), cx));
+        let language_buffer =
+            cx.new(|cx| LanguageBuffer::new(buffer, Some(path.as_path().to_path_buf()), cx));
         self.opened_buffers
             .insert(path, language_buffer.downgrade());
         Ok(language_buffer)
     }
 
-    pub(crate) fn opened_snapshots(&self, cx: &App) -> HashMap<PathBuf, Snapshot> {
+    pub(crate) fn opened_snapshots(&self, cx: &App) -> HashMap<AbsolutePathBuf, Snapshot> {
         self.opened_buffers
             .iter()
             .filter_map(|(path, buffer)| {
@@ -101,7 +103,7 @@ impl BufferStore {
     /// 如果路径对应某个干净的已打开 Buffer，从磁盘重新加载其内容。
     /// 脏 Buffer 由用户编辑拥有，文件事件不能覆盖它。
     pub(crate) fn reload_buffer_for_path(&mut self, path: &Path, cx: &mut App) {
-        let Ok(canonical) = path.canonicalize() else {
+        let Ok(canonical) = index_path(path) else {
             return;
         };
         let Some(language_buffer) = self
@@ -111,7 +113,7 @@ impl BufferStore {
         else {
             return;
         };
-        let Ok(text) = std::fs::read_to_string(&canonical) else {
+        let Ok(text) = std::fs::read_to_string(canonical.as_path()) else {
             return;
         };
         let buffer = language_buffer.read(cx).buffer();
@@ -132,7 +134,10 @@ impl BufferStore {
         self.opened_buffers = self
             .opened_buffers
             .drain()
-            .map(|(path, buffer)| (translate_path(&path, from, to), buffer))
+            .filter_map(|(path, buffer)| {
+                let path = AbsolutePathBuf::new(translate_path(path.as_path(), from, to)).ok()?;
+                Some((path, buffer))
+            })
             .collect();
     }
 
@@ -144,19 +149,8 @@ impl BufferStore {
 }
 
 /// 为已存在与刚删除的文件生成同一种规范化索引路径。
-fn index_path(path: &Path) -> std::io::Result<PathBuf> {
-    match path.canonicalize() {
-        Ok(path) => Ok(path),
-        Err(error) => {
-            let Some(parent) = path.parent() else {
-                return Err(error);
-            };
-            let Some(file_name) = path.file_name() else {
-                return Err(error);
-            };
-            parent.canonicalize().map(|parent| parent.join(file_name))
-        }
-    }
+fn index_path(path: &Path) -> std::io::Result<AbsolutePathBuf> {
+    AbsolutePathBuf::new(normalize_for_comparison(path)?)
 }
 
 #[cfg(test)]

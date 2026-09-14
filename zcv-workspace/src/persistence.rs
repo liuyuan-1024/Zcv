@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
+use zcv_path::stable_identity;
 
 mod platform;
 
@@ -13,7 +14,7 @@ mod platform;
 /// 空工作区使用固定标识；同一项目在所有持久化文件中共用同一身份。
 pub(crate) fn workspace_identity(root: Option<&Path>) -> String {
     let identity = root
-        .map(|path| path.to_string_lossy().into_owned())
+        .map(stable_identity)
         .unwrap_or_else(|| "__empty__".to_owned());
     // 固定 FNV-1a，避免依赖 DefaultHasher 的跨版本实现细节。
     let hash = identity.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {

@@ -1,13 +1,14 @@
 //! 后台执行层：所有 git 命令在这里同步阻塞运行，扫描/合并为纯函数（可脱离 gpui 单测）。
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use zcv_git::{
     Branch, DiffStat, FileStatus, GitCancellation, GitRepository, GitStatus, parse_conflict_regions,
 };
+use zcv_path::{AbsolutePathBuf, RelativePathBuf};
 
 use super::{GitJob, GitOperationKind, GitOperationOutcome, RepositorySnapshot, StatusEntry};
 use crate::worktree::discover_repositories;
@@ -23,15 +24,15 @@ pub(super) enum JobResult {
 
 /// 全量扫描的产出（一个仓库）。
 pub(super) struct ReloadScan {
-    pub(super) working_directory: PathBuf,
+    pub(super) working_directory: AbsolutePathBuf,
     pub(super) repository: Arc<dyn GitRepository>,
     pub(super) snapshot: RepositorySnapshot,
-    pub(super) clean_conflicts: Vec<PathBuf>,
+    pub(super) clean_conflicts: Vec<RelativePathBuf>,
 }
 
 /// 增量刷新的原始数据（后台查询结果）。
 pub(super) struct RefreshData {
-    pub(super) paths: Vec<PathBuf>,
+    pub(super) paths: Vec<RelativePathBuf>,
     /// 本轮是否重查过 head/branch/remote（快路径：纯文件变化不重读）。
     pub(super) head_queried: bool,
     pub(super) branch: Option<String>,
@@ -45,15 +46,15 @@ pub(super) struct RefreshData {
     pub(super) statuses: GitStatus,
     pub(super) staged: HashMap<PathBuf, DiffStat>,
     pub(super) unstaged: HashMap<PathBuf, DiffStat>,
-    pub(super) clean_conflicts: Vec<PathBuf>,
+    pub(super) clean_conflicts: Vec<RelativePathBuf>,
 }
 
 /// 后台线程：执行一个 job（所有 git 命令在这里同步阻塞运行）。
 pub(super) async fn execute_job(
-    root: PathBuf,
+    root: AbsolutePathBuf,
     job: GitJob,
     repositories: Vec<Arc<dyn GitRepository>>,
-    grouped_paths: Vec<Vec<PathBuf>>,
+    grouped_paths: Vec<Vec<RelativePathBuf>>,
     _grouped_diff_requests: Vec<Vec<()>>,
     cancellation: Option<GitCancellation>,
 ) -> JobResult {
@@ -67,7 +68,8 @@ pub(super) async fn execute_job(
                 .map(|(index, repository)| {
                     (
                         index,
-                        repository.working_directory().to_path_buf(),
+                        AbsolutePathBuf::new(repository.working_directory().to_path_buf())
+                            .expect("Git 仓库工作目录必须是绝对路径"),
                         Arc::new(repository) as Arc<dyn GitRepository>,
                     )
                 })
@@ -172,10 +174,11 @@ pub(super) async fn execute_job(
                 if paths.is_empty() {
                     continue;
                 }
+                let paths = native_paths(paths);
                 let outcome = if stage {
-                    repository.stage_paths(paths)
+                    repository.stage_paths(&paths)
                 } else {
-                    repository.unstage_paths(paths)
+                    repository.unstage_paths(&paths)
                 };
                 if let Err(error) = outcome {
                     result = Err(error);
@@ -188,7 +191,7 @@ pub(super) async fn execute_job(
             let mut result = Ok(());
             for (index, repository) in repositories.into_iter().enumerate() {
                 for path in &grouped_paths[index] {
-                    if let Err(error) = repository.clear_conflict(path) {
+                    if let Err(error) = repository.clear_conflict(path.as_path()) {
                         result = Err(error);
                         break;
                     }
@@ -212,9 +215,14 @@ pub(super) async fn execute_job(
                 .find_map(|(index, repository)| {
                     grouped_paths[index].first().map(|path| {
                         if let Some(index_text) = &next_index_text {
-                            repository.set_index_text(path, index_text)
+                            repository.set_index_text(path.as_path(), index_text)
                         } else {
-                            repository.apply_hunk_edits(operation, path, &edits, &working_snapshot)
+                            repository.apply_hunk_edits(
+                                operation,
+                                path.as_path(),
+                                &edits,
+                                &working_snapshot,
+                            )
                         }
                     })
                 })
@@ -325,6 +333,8 @@ fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapsh
         .statuses
         .into_iter()
         .map(|(path, status)| {
+            let relative =
+                RelativePathBuf::from_path(&path).expect("Git status 必须返回仓库相对路径");
             let staged_diff_stat = staged.get(&path).copied().unwrap_or_default();
             let unstaged_diff_stat = unstaged.get(&path).copied().unwrap_or_default();
             let entry = StatusEntry {
@@ -333,7 +343,7 @@ fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapsh
                 staged_diff_stat,
                 unstaged_diff_stat,
             };
-            (path, entry)
+            (relative, entry)
         })
         .collect();
     RepositorySnapshot {
@@ -357,13 +367,17 @@ fn scan_repository_sync(repository: &Arc<dyn GitRepository>) -> RepositorySnapsh
 /// （纯文件变化不涉及引用；`.git` 相关变化仍全查，兜底外部 checkout）。
 fn refresh_repository_data_sync(
     repository: &Arc<dyn GitRepository>,
-    paths: &[PathBuf],
+    paths: &[RelativePathBuf],
 ) -> RefreshData {
+    let native_paths = native_paths(paths);
     let touches_git = paths
         .iter()
-        .any(|path| path.as_os_str().is_empty() || is_git_state_path(path));
-    let statuses = repository.status(paths).unwrap_or_default();
-    let clean_conflicts = clean_conflict_paths(repository, &statuses.statuses);
+        .any(|path| path.as_path().as_os_str().is_empty() || is_git_state_path(path.as_path()));
+    let statuses = repository.status(&native_paths).unwrap_or_default();
+    let clean_conflicts = clean_conflict_paths(repository, &statuses.statuses)
+        .into_iter()
+        .map(|path| RelativePathBuf::from_path(&path).expect("Git 冲突路径必须是仓库相对路径"))
+        .collect();
     // 分支名来自 status 头行（零附加进程）；head oid 与最近提交 subject 由 head_commit 一次查询。
     let (head, last_commit_message) = if touches_git {
         repository.head_commit().unwrap_or_default()
@@ -385,8 +399,12 @@ fn refresh_repository_data_sync(
         Vec::new()
     };
     // diff_stat 不依赖 head 变量：无 HEAD 仓库 `--cached HEAD` 报错时按空处理（与 scan 语义一致）。
-    let staged = repository.diff_stat(true, paths).unwrap_or_default();
-    let unstaged = repository.diff_stat(false, paths).unwrap_or_default();
+    let staged = repository
+        .diff_stat(true, &native_paths)
+        .unwrap_or_default();
+    let unstaged = repository
+        .diff_stat(false, &native_paths)
+        .unwrap_or_default();
     RefreshData {
         paths: paths.to_vec(),
         head_queried: touches_git,
@@ -432,13 +450,24 @@ fn clean_conflict_paths(
 fn clean_conflicts_for_snapshot(
     repository: &Arc<dyn GitRepository>,
     snapshot: &RepositorySnapshot,
-) -> Vec<PathBuf> {
+) -> Vec<RelativePathBuf> {
     let statuses = snapshot
         .statuses_by_path
         .iter()
-        .map(|(path, entry)| (path.clone(), entry.status))
+        .map(|(path, entry)| (path.clone().into_path_buf(), entry.status))
         .collect::<Vec<_>>();
     clean_conflict_paths(repository, &statuses)
+        .into_iter()
+        .map(|path| RelativePathBuf::from_path(&path).expect("Git 冲突路径必须是仓库相对路径"))
+        .collect()
+}
+
+fn native_paths(paths: &[RelativePathBuf]) -> Vec<PathBuf> {
+    paths
+        .iter()
+        .cloned()
+        .map(RelativePathBuf::into_path_buf)
+        .collect()
 }
 
 /// 仓库相对路径是否为 `.git` 状态相关（快路径判定：`.git` 下一切路径都算）。
@@ -461,7 +490,7 @@ pub(super) fn merge_refresh(prev: &mut RepositorySnapshot, data: RefreshData) ->
     for path in &data.paths {
         let mut to_remove = Vec::new();
         for (key, _) in prev.statuses_by_path.range(path.clone()..) {
-            if key.starts_with(path) {
+            if key.as_path().starts_with(path.as_path()) {
                 to_remove.push(key.clone());
             } else {
                 break;
@@ -474,6 +503,7 @@ pub(super) fn merge_refresh(prev: &mut RepositorySnapshot, data: RefreshData) ->
     }
 
     for (path, status) in data.statuses.statuses {
+        let relative = RelativePathBuf::from_path(&path).expect("Git status 必须返回仓库相对路径");
         let staged_diff_stat = data.staged.get(&path).copied().unwrap_or_default();
         let unstaged_diff_stat = data.unstaged.get(&path).copied().unwrap_or_default();
         let entry = StatusEntry {
@@ -482,7 +512,7 @@ pub(super) fn merge_refresh(prev: &mut RepositorySnapshot, data: RefreshData) ->
             staged_diff_stat,
             unstaged_diff_stat,
         };
-        let replaced = prev.statuses_by_path.insert(path.clone(), entry.clone());
+        let replaced = prev.statuses_by_path.insert(relative, entry.clone());
         statuses_changed |= replaced != Some(entry);
     }
 
@@ -520,16 +550,9 @@ fn add_diff_stats(a: DiffStat, b: DiffStat) -> DiffStat {
 }
 
 /// 绝对路径 → 仓库相对路径（unix 分隔符，git 参数格式）。
-pub(super) fn repo_relative_path(working_directory: &Path, path: &Path) -> Option<PathBuf> {
+pub(super) fn repo_relative_path(working_directory: &Path, path: &Path) -> Option<RelativePathBuf> {
     let relative = path.strip_prefix(working_directory).ok()?;
-    let mut unix = PathBuf::new();
-    for component in relative.components() {
-        match component {
-            Component::Normal(name) => unix.push(name),
-            _ => return None,
-        }
-    }
-    Some(unix)
+    RelativePathBuf::from_path(relative).ok()
 }
 
 #[cfg(test)]
@@ -543,6 +566,10 @@ mod tests {
     use crate::git_store::{RepositorySnapshot, StatusEntry};
     use crate::test_support::{run_git, test_git_repo};
 
+    fn relative(path: &str) -> RelativePathBuf {
+        RelativePathBuf::from_unix_str(path).expect("测试路径应为有效的仓库相对路径")
+    }
+
     #[test]
     fn merge_refresh_replaces_changed_paths_and_keeps_rest() {
         let prev = RepositorySnapshot {
@@ -555,7 +582,7 @@ mod tests {
             branch_list: Vec::new(),
             statuses_by_path: BTreeMap::from([
                 (
-                    PathBuf::from("a.txt"),
+                    relative("a.txt"),
                     StatusEntry {
                         status: FileStatus::Untracked,
                         diff_stat: DiffStat::default(),
@@ -564,7 +591,7 @@ mod tests {
                     },
                 ),
                 (
-                    PathBuf::from("sub/b.txt"),
+                    relative("sub/b.txt"),
                     StatusEntry {
                         status: FileStatus::Untracked,
                         diff_stat: DiffStat::default(),
@@ -576,7 +603,7 @@ mod tests {
         };
 
         let data = RefreshData {
-            paths: vec![PathBuf::from("a.txt"), PathBuf::from("sub")],
+            paths: vec![relative("a.txt"), relative("sub")],
             head_queried: true,
             branch: Some("master".into()),
             head: Some("old".into()),
@@ -599,9 +626,9 @@ mod tests {
         let (statuses_changed, head_changed) = merge_refresh(&mut prev, data);
         assert!(statuses_changed);
         assert!(!head_changed);
-        assert!(!prev.statuses_by_path.contains_key(Path::new("a.txt")));
-        assert!(!prev.statuses_by_path.contains_key(Path::new("sub/b.txt")));
-        assert!(prev.statuses_by_path.contains_key(Path::new("sub/c.txt")));
+        assert!(!prev.statuses_by_path.contains_key(&relative("a.txt")));
+        assert!(!prev.statuses_by_path.contains_key(&relative("sub/b.txt")));
+        assert!(prev.statuses_by_path.contains_key(&relative("sub/c.txt")));
     }
 
     #[test]
@@ -617,7 +644,7 @@ mod tests {
             statuses_by_path: BTreeMap::new(),
         };
         let data = RefreshData {
-            paths: vec![PathBuf::from("a.txt")],
+            paths: vec![relative("a.txt")],
             head_queried: true,
             branch: Some("master".into()),
             head: Some("new".into()),
@@ -655,7 +682,7 @@ mod tests {
             statuses_by_path: BTreeMap::new(),
         };
         let data = RefreshData {
-            paths: vec![PathBuf::from("a.txt")],
+            paths: vec![relative("a.txt")],
             // 快路径：未重查 head，合并时必须保留旧值且不触发 Head 事件。
             head_queried: false,
             branch: None,
@@ -700,7 +727,7 @@ mod tests {
             statuses_by_path: BTreeMap::new(),
         };
         let data = RefreshData {
-            paths: vec![PathBuf::from(".git/HEAD")],
+            paths: vec![relative(".git/HEAD")],
             head_queried: true,
             branch: Some("feature".into()),
             head: Some("new".into()),
@@ -736,7 +763,7 @@ mod tests {
     fn relative_path_converts_to_unix_style() {
         assert_eq!(
             repo_relative_path(Path::new("/repo"), Path::new("/repo/src/main.rs")),
-            Some(PathBuf::from("src/main.rs"))
+            Some(RelativePathBuf::from_unix_str("src/main.rs").unwrap())
         );
         assert_eq!(
             repo_relative_path(Path::new("/repo"), Path::new("/other/file.rs")),

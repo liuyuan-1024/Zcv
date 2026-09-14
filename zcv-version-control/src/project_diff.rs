@@ -30,6 +30,7 @@ use zcv_multi_buffer::{
     BufferDiff, BufferDiffInput, DiffFile, DiffHunkSource, DiffProjection, DisplayHunk,
 };
 use zcv_multi_buffer::{ExcerptLocation, MultiBuffer, MultiBufferExcerpt};
+use zcv_path::AbsolutePathBuf;
 use zcv_project::{GitStoreEvent, Project};
 use zcv_text::{Anchor, Buffer, BufferConfig, ByteOffset, SearchQuery, Snapshot, TextRange};
 use zcv_theme::{color, space};
@@ -1017,7 +1018,7 @@ impl ProjectDiffView {
                         .iter()
                         .filter(|(_, entry)| self.kind.includes(entry.status))
                         .map(move |(relative, entry)| GitChangeFile {
-                            path: workdir.join(relative),
+                            path: workdir.join(relative.as_path()),
                             status: entry.status,
                         })
                 })
@@ -1311,9 +1312,10 @@ impl ProjectDiffView {
         cx: &mut Context<Self>,
     ) {
         let git_store = self.project.read(cx).git_store();
+        let path = AbsolutePathBuf::new(path.to_path_buf()).expect("Git 变更路径必须是绝对路径");
         git_store.update(cx, |store, cx| match operation {
-            GitHunkOperation::Stage => store.stage_paths(vec![path.to_path_buf()], cx),
-            GitHunkOperation::Unstage => store.unstage_paths(vec![path.to_path_buf()], cx),
+            GitHunkOperation::Stage => store.stage_paths(vec![path.clone()], cx),
+            GitHunkOperation::Unstage => store.unstage_paths(vec![path], cx),
             GitHunkOperation::Restore => unreachable!("文件复选框不执行工作区还原"),
         });
     }
@@ -1357,9 +1359,10 @@ impl ProjectDiffView {
         } else {
             // 整文件新增块没有行级 hunk：按路径整体暂存/取消暂存。
             let git_store = self.project.read(cx).git_store();
+            let path = AbsolutePathBuf::new(info.path.clone()).expect("Git 变更路径必须是绝对路径");
             git_store.update(cx, |store, cx| match operation {
-                GitHunkOperation::Stage => store.stage_paths(vec![info.path.clone()], cx),
-                GitHunkOperation::Unstage => store.unstage_paths(vec![info.path.clone()], cx),
+                GitHunkOperation::Stage => store.stage_paths(vec![path.clone()], cx),
+                GitHunkOperation::Unstage => store.unstage_paths(vec![path], cx),
                 GitHunkOperation::Restore => {}
             });
         }

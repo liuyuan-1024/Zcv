@@ -14,6 +14,7 @@ zcv-editor.workspace = true
 zcv-git.workspace = true
 zcv-language.workspace = true
 zcv-multi-buffer.workspace = true
+zcv-path.workspace = true
 zcv-project.workspace = true
 zcv-text.workspace = true
 zcv-theme.workspace = true
@@ -23,6 +24,7 @@ zcv-workspace.workspace = true
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
+zcv-fs-watch.workspace = true
 zcv-keymap.workspace = true
 
 [lints]

@@ -1,9 +1,7 @@
 //! 项目树键盘导航与行操作动作：选中移动、展开/折叠、删除。行级鼠标交互见 render.rs。
 
-use std::collections::HashSet;
-use std::path::PathBuf;
-
 use gpui::{Context, Window};
+use std::collections::HashSet;
 
 use zcv_actions::{
     TreeCollapse, TreeExpand, TreeSelectNext, TreeSelectNextExtend, TreeSelectPrev,
@@ -104,7 +102,7 @@ impl ProjectTreePanel {
             if targets.is_empty() {
                 return;
             }
-            let target_set: HashSet<&PathBuf> = targets.iter().collect();
+            let target_set: HashSet<_> = targets.iter().collect();
             let first_index = state
                 .rows
                 .iter()
@@ -127,7 +125,7 @@ impl ProjectTreePanel {
             return;
         };
         for path in &targets {
-            if let Err(error) = on_trash(path.clone(), window, cx) {
+            if let Err(error) = on_trash(path.clone().into_path_buf(), window, cx) {
                 self.report_error(format!("项目树删除失败：{error:#}"), cx);
             }
         }

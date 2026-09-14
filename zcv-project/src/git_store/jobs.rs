@@ -4,12 +4,12 @@
 //! 阶段状态（Queued/Running/Cancelling/Reconciling）与在途标记在此维护。
 
 use std::ops::Range;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{Context, Entity};
 use zcv_git::{GitCancellation, GitHunkOperation, HunkEdit, WorkingCopySnapshot};
 use zcv_multi_buffer::BufferDiff;
+use zcv_path::AbsolutePathBuf;
 
 use super::{GitOperationOutcome, GitStore, GitStoreEvent};
 
@@ -71,16 +71,16 @@ pub(super) enum GitJobKey {
     /// 暂存/取消暂存（路径集合参与 key：不同路径集互不合并，同路径重复点击在队列中自动去重，避免一次操作被意外丢弃）。
     StageFiles {
         stage: bool,
-        paths: Vec<PathBuf>,
+        paths: Vec<AbsolutePathBuf>,
     },
     /// 清除已解决文件的冲突 stage，以当前分支内容作为未暂存基线。
     ResolveConflicts {
-        paths: Vec<PathBuf>,
+        paths: Vec<AbsolutePathBuf>,
     },
     /// 应用 DiffOperations 已经确定的 hunk 编辑（编辑范围参与 key：不同变更块互不合并）。
     ApplyHunkEdits {
         operation: GitHunkOperation,
-        path: PathBuf,
+        path: AbsolutePathBuf,
         ranges: Vec<Range<usize>>,
     },
     /// 提交（消息参与 key：同消息双击去重，改消息重试不被去重跳过）。
@@ -114,14 +114,14 @@ pub(super) enum GitJob {
     GitInit,
     StageFiles {
         stage: bool,
-        paths: Vec<PathBuf>,
+        paths: Vec<AbsolutePathBuf>,
     },
     ResolveConflicts {
-        paths: Vec<PathBuf>,
+        paths: Vec<AbsolutePathBuf>,
     },
     ApplyHunkEdits {
         operation: GitHunkOperation,
-        path: PathBuf,
+        path: AbsolutePathBuf,
         edits: Vec<HunkEdit>,
         /// GitStore 已乐观应用后的完整 index 文本；
         /// Stage/Unstage 后台只写此文本。

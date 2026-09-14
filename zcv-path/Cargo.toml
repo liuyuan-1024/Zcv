@@ -1,0 +1,17 @@
+[package]
+name = "zcv-path"
+version.workspace = true
+edition.workspace = true
+description = "跨平台路径语义和值类型"
+
+[lib]
+path = "src/path.rs"
+
+[dependencies]
+dunce.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -107,6 +107,7 @@ fn only_newer_matching_platform_release_is_selected() {
 }
 
 #[test]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn archive_paths_must_stay_inside_expected_bundle() {
     #[cfg(target_os = "macos")]
     {
@@ -118,7 +119,7 @@ fn archive_paths_must_stay_inside_expected_bundle() {
         assert!(validate_archive_entry_path("other/Zcv.app").is_err());
         assert!(validate_archive_entry_path("Zcv.app\\..\\evil").is_err());
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
         assert!(validate_archive_entry_path("Zcv/Zcv.exe").is_ok());
         assert!(validate_archive_entry_path("../Zcv").is_err());
@@ -127,6 +128,12 @@ fn archive_paths_must_stay_inside_expected_bundle() {
         assert!(validate_archive_entry_path("Zcv\\..\\evil").is_err());
         assert!(validate_archive_entry_path("__MACOSX/._Zcv.app").is_err());
     }
+}
+
+#[test]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn unsupported_platform_does_not_accept_update_archive_paths() {
+    assert!(validate_archive_entry_path("Zcv/Zcv").is_err());
 }
 
 #[test]

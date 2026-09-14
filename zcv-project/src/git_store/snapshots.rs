@@ -4,10 +4,10 @@
 //! 增量刷新经 merge_refresh 合并进旧快照，不整体重建。
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
 
 use gpui::Context;
 use zcv_git::GitRevision;
+use zcv_path::AbsolutePathBuf;
 
 use super::{
     GitStore, GitStoreEvent, Repository,
@@ -24,16 +24,18 @@ impl GitStore {
                     .flat_map(|scan| {
                         scan.clean_conflicts
                             .iter()
-                            .map(|path| scan.working_directory.join(path))
+                            .map(|path| scan.working_directory.join_relative(path))
                     })
                     .collect::<Vec<_>>();
                 let was_repository_scan_ready = self.repository_scan_ready;
-                let old_work_dirs: BTreeSet<PathBuf> = self
+                let old_work_dirs: BTreeSet<AbsolutePathBuf> = self
                     .repositories
                     .iter()
-                    .map(|repository| repository.repository.working_directory().to_path_buf())
+                    .map(|repository| {
+                        super::repository_working_directory(repository.repository.as_ref())
+                    })
                     .collect();
-                let new_work_dirs: BTreeSet<PathBuf> = scans
+                let new_work_dirs: BTreeSet<AbsolutePathBuf> = scans
                     .iter()
                     .map(|scan| scan.working_directory.clone())
                     .collect();
@@ -42,7 +44,8 @@ impl GitStore {
                 let mut statuses_changed = false;
                 for scan in &scans {
                     let prev = self.repositories.iter().find(|repository| {
-                        repository.repository.working_directory() == scan.working_directory
+                        super::repository_working_directory(repository.repository.as_ref())
+                            == scan.working_directory
                     });
                     head_changed |= prev.is_none_or(|prev| {
                         prev.snapshot.head != scan.snapshot.head
@@ -93,7 +96,8 @@ impl GitStore {
                     .cloned()
                     .or_else(|| {
                         self.repositories.first().map(|repository| {
-                            repository.repository.working_directory().to_path_buf()
+                            AbsolutePathBuf::canonicalize(repository.repository.working_directory())
+                                .expect("Git 仓库工作目录必须是绝对路径")
                         })
                     });
                 if self.active_repo_workdir != new_active {
@@ -105,13 +109,12 @@ impl GitStore {
                 let auto_resolve_paths = refreshed
                     .iter()
                     .flat_map(|(index, data)| {
-                        let workdir = self
-                            .repositories
-                            .get(*index)
-                            .map(|repository| repository.repository.working_directory());
-                        data.clean_conflicts
-                            .iter()
-                            .filter_map(move |path| workdir.map(|workdir| workdir.join(path)))
+                        let workdir = self.repositories.get(*index).map(|repository| {
+                            super::repository_working_directory(repository.repository.as_ref())
+                        });
+                        data.clean_conflicts.iter().filter_map(move |path| {
+                            workdir.as_ref().map(|workdir| workdir.join_relative(path))
+                        })
                     })
                     .collect::<Vec<_>>();
                 let mut statuses_changed = false;
@@ -121,8 +124,9 @@ impl GitStore {
                     let Some(repository) = self.repositories.get_mut(index) else {
                         continue;
                     };
-                    let workdir = repository.repository.working_directory().to_path_buf();
-                    changed_paths.extend(data.paths.iter().map(|path| workdir.join(path)));
+                    let workdir =
+                        super::repository_working_directory(repository.repository.as_ref());
+                    changed_paths.extend(data.paths.iter().map(|path| workdir.join_relative(path)));
                     let (statuses, head) = merge_refresh(&mut repository.snapshot, data);
                     statuses_changed |= statuses;
                     head_changed |= head;

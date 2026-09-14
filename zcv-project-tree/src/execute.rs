@@ -1,12 +1,12 @@
 //! 剪贴板与传输执行：复制/剪切/粘贴、拖拽放置、冲突确认会话与批量移动/复制。
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui::{Context, Window};
 
 use zcv_actions::{TreeCancelConflict, TreeClearClipboard, TreeCopy, TreeCut, TreePaste};
+use zcv_path::AbsolutePathBuf;
 use zcv_ui::ConfirmAnswer;
 
 use super::ProjectTreePanel;
@@ -35,7 +35,7 @@ impl ProjectTreePanel {
 
     pub(super) fn set_clipboard(
         &mut self,
-        kind: fn(Vec<PathBuf>) -> TreeClipboard,
+        kind: fn(Vec<AbsolutePathBuf>) -> TreeClipboard,
         cx: &mut Context<Self>,
     ) {
         if self.edit_state.is_some() || self.conflict.is_some() {
@@ -92,7 +92,7 @@ impl ProjectTreePanel {
                 .unwrap_or(false);
             (state.selected.clone(), is_dir)
         };
-        let Some(target_dir) = paste_target_dir(selected.as_deref(), selected_is_dir) else {
+        let Some(target_dir) = paste_target_dir(selected.as_ref(), selected_is_dir) else {
             return;
         };
         self.begin_transfer(mode, target_dir, clipboard.paths().to_vec(), cx);
@@ -101,8 +101,8 @@ impl ProjectTreePanel {
     pub(super) fn begin_transfer(
         &mut self,
         mode: TransferMode,
-        target_dir: PathBuf,
-        sources: Vec<PathBuf>,
+        target_dir: AbsolutePathBuf,
+        sources: Vec<AbsolutePathBuf>,
         cx: &mut Context<Self>,
     ) {
         // 双保险：拖拽放下与冲突决策完成后也经此入口，传输进行中一律拒绝，避免双任务并发写同一目标与进度竞态。
@@ -112,11 +112,11 @@ impl ProjectTreePanel {
         // 展开目标目录：传输产生的新条目在刷新后立即可见。
         self.state.borrow_mut().expanded.insert(target_dir.clone());
         // 目标与源相同（落回原目录）的项为无操作，静默剔除。
-        let items: Vec<(PathBuf, PathBuf)> = sources
+        let items: Vec<(AbsolutePathBuf, AbsolutePathBuf)> = sources
             .iter()
             .filter_map(|source| {
                 let name = source.file_name()?;
-                let dest = target_dir.join(name);
+                let dest = AbsolutePathBuf::new(target_dir.join(name)).ok()?;
                 (dest != *source).then(|| (source.clone(), dest))
             })
             .collect();
@@ -138,7 +138,7 @@ impl ProjectTreePanel {
     pub(super) fn handle_row_drop(
         &mut self,
         dragged: &TreeDrag,
-        row_path: &Path,
+        row_path: &AbsolutePathBuf,
         row_is_dir: bool,
         cx: &mut Context<Self>,
     ) {
@@ -164,7 +164,7 @@ impl ProjectTreePanel {
 
     pub(super) fn handle_drag_hover(
         &mut self,
-        path: PathBuf,
+        path: AbsolutePathBuf,
         is_dir: bool,
         expanded: bool,
         cx: &mut Context<Self>,
@@ -208,7 +208,7 @@ impl ProjectTreePanel {
         }
     }
 
-    pub(super) fn sanitized_selection(&self) -> Vec<PathBuf> {
+    pub(super) fn sanitized_selection(&self) -> Vec<AbsolutePathBuf> {
         let Some(root) = self.root.clone() else {
             return Vec::new();
         };
@@ -238,7 +238,7 @@ impl ProjectTreePanel {
                 .insert(session.target_dir.clone());
             let mut items = std::mem::take(&mut self.pending_clean_items);
             let decisions = session.decisions().to_vec();
-            let mut overwrite_set: HashSet<PathBuf> = HashSet::new();
+            let mut overwrite_set: HashSet<AbsolutePathBuf> = HashSet::new();
             for ((source, dest), decision) in session.items.into_iter().zip(decisions) {
                 if decision == ConflictDecision::Overwrite {
                     overwrite_set.insert(source.clone());
@@ -255,8 +255,8 @@ impl ProjectTreePanel {
     pub(super) fn execute_transfer(
         &mut self,
         mode: TransferMode,
-        items: Vec<(PathBuf, PathBuf)>,
-        overwrite_set: &HashSet<PathBuf>,
+        items: Vec<(AbsolutePathBuf, AbsolutePathBuf)>,
+        overwrite_set: &HashSet<AbsolutePathBuf>,
         cx: &mut Context<Self>,
     ) {
         if items.is_empty() {
@@ -270,22 +270,27 @@ impl ProjectTreePanel {
 
     pub(super) fn execute_move(
         &mut self,
-        items: Vec<(PathBuf, PathBuf)>,
-        overwrite_set: &HashSet<PathBuf>,
+        items: Vec<(AbsolutePathBuf, AbsolutePathBuf)>,
+        overwrite_set: &HashSet<AbsolutePathBuf>,
         cx: &mut Context<Self>,
     ) {
         let Some(on_move) = self.on_move.clone() else {
             self.report_error("项目树移动失败：未配置项目移动服务".into(), cx);
             return;
         };
-        let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+        let mut moved: Vec<(AbsolutePathBuf, AbsolutePathBuf)> = Vec::new();
         for (source, dest) in items {
             // 剪贴板过期（源已被移动/删除）或无操作项：静默跳过。
             if !source.exists() || source == dest {
                 continue;
             }
             let overwrite = overwrite_set.contains(&source);
-            match on_move(source.clone(), dest.clone(), overwrite, cx) {
+            match on_move(
+                source.clone().into_path_buf(),
+                dest.clone().into_path_buf(),
+                overwrite,
+                cx,
+            ) {
                 Ok(()) => moved.push((source, dest)),
                 Err(error) => self.report_error(format!("项目树移动失败：{error:#}"), cx),
             }
@@ -322,8 +327,8 @@ impl ProjectTreePanel {
 
     pub(super) fn execute_copy(
         &mut self,
-        items: Vec<(PathBuf, PathBuf)>,
-        overwrite_set: &HashSet<PathBuf>,
+        items: Vec<(AbsolutePathBuf, AbsolutePathBuf)>,
+        overwrite_set: &HashSet<AbsolutePathBuf>,
         cx: &mut Context<Self>,
     ) {
         let total = items.len();
@@ -331,7 +336,7 @@ impl ProjectTreePanel {
         cx.notify();
         let overwrite_set = overwrite_set.clone();
         cx.spawn(async move |this, cx| {
-            let mut succeeded: Vec<PathBuf> = Vec::new();
+            let mut succeeded: Vec<AbsolutePathBuf> = Vec::new();
             for (done, (source, dest)) in items.into_iter().enumerate() {
                 let overwrite = overwrite_set.contains(&source);
                 // UI 线程创建复制任务（同步校验 + 后台复制），await 驱动完成。

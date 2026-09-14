@@ -17,6 +17,7 @@ zcv-git.workspace = true
 zcv-keymap.workspace = true
 zcv-multi-buffer.workspace = true
 zcv-picker.workspace = true
+zcv-path.workspace = true
 zcv-project.workspace = true
 zcv-settings.workspace = true
 zcv-theme.workspace = true

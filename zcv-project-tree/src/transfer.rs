@@ -4,24 +4,24 @@
 //! `sanitize_selection` 由面板 mod.rs 迁入，原实现与单测一并迁移。
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use zcv_path::AbsolutePathBuf;
 
 /// 净化选中集：排除根行与项目外路径、按路径排序、剔除互为祖先的后代项（目录与其子项同选时只留目录）。
 ///
 /// 路径排序后祖先必先于后代出现，逐项对照已保留前缀即可完成剪枝；
 /// `Path::starts_with` 按组件比较，同名前缀（如 `a` 与 `ab`）不会被误判为祖先。
 pub(crate) fn sanitize_selection(
-    paths: impl IntoIterator<Item = PathBuf>,
-    root: &Path,
-) -> Vec<PathBuf> {
-    let mut sorted: Vec<PathBuf> = paths
+    paths: impl IntoIterator<Item = AbsolutePathBuf>,
+    root: &AbsolutePathBuf,
+) -> Vec<AbsolutePathBuf> {
+    let mut sorted: Vec<AbsolutePathBuf> = paths
         .into_iter()
         .collect::<HashSet<_>>()
         .into_iter()
         .filter(|path| path != root && path.starts_with(root))
         .collect();
     sorted.sort();
-    let mut kept: Vec<PathBuf> = Vec::new();
+    let mut kept: Vec<AbsolutePathBuf> = Vec::new();
     for path in sorted {
         if kept.iter().any(|ancestor| path.starts_with(ancestor)) {
             continue;
@@ -35,14 +35,14 @@ pub(crate) fn sanitize_selection(
 #[derive(Clone, Debug)]
 pub(crate) enum TreeClipboard {
     /// 复制：粘贴为递归复制，源不受影响。
-    Copied(Vec<PathBuf>),
+    Copied(Vec<AbsolutePathBuf>),
     /// 剪切：粘贴为移动；首次粘贴后降级为复制。
-    Cut(Vec<PathBuf>),
+    Cut(Vec<AbsolutePathBuf>),
 }
 
 impl TreeClipboard {
     /// 剪贴板持有路径（复制与剪切共用）。
-    pub(crate) fn paths(&self) -> &[PathBuf] {
+    pub(crate) fn paths(&self) -> &[AbsolutePathBuf] {
         match self {
             Self::Copied(paths) | Self::Cut(paths) => paths,
         }
@@ -83,9 +83,9 @@ pub(crate) struct ConflictSession {
     /// 传输方式（Copy/Move），决策完成后据此分派执行。
     pub(crate) mode: TransferMode,
     /// 粘贴目标目录（浮层文案与执行期参考）。
-    pub(crate) target_dir: PathBuf,
+    pub(crate) target_dir: AbsolutePathBuf,
     /// 冲突项 (源, 目标) 队列。
-    pub(crate) items: Vec<(PathBuf, PathBuf)>,
+    pub(crate) items: Vec<(AbsolutePathBuf, AbsolutePathBuf)>,
     /// 已记录的决策（与 items 按序对应）。
     decisions: Vec<ConflictDecision>,
     /// 当前待决策项下标。
@@ -95,8 +95,8 @@ pub(crate) struct ConflictSession {
 impl ConflictSession {
     pub(crate) fn new(
         mode: TransferMode,
-        target_dir: PathBuf,
-        items: Vec<(PathBuf, PathBuf)>,
+        target_dir: AbsolutePathBuf,
+        items: Vec<(AbsolutePathBuf, AbsolutePathBuf)>,
     ) -> Self {
         Self {
             mode,
@@ -108,7 +108,7 @@ impl ConflictSession {
     }
 
     /// 当前待决策的冲突项；全部决策完成后为 None。
-    pub(crate) fn current_conflict(&self) -> Option<&(PathBuf, PathBuf)> {
+    pub(crate) fn current_conflict(&self) -> Option<&(AbsolutePathBuf, AbsolutePathBuf)> {
         self.items.get(self.index)
     }
 
@@ -142,35 +142,40 @@ impl ConflictSession {
 /// 粘贴目标目录推断：选中目录→自身；选中文件→父目录；无选中→None。
 ///
 /// 面板从行模型解析游标行的 `is_dir` 后以布尔传入（最简签名，不引入回调）。
-pub(crate) fn paste_target_dir(selected: Option<&Path>, selected_is_dir: bool) -> Option<PathBuf> {
+pub(crate) fn paste_target_dir(
+    selected: Option<&AbsolutePathBuf>,
+    selected_is_dir: bool,
+) -> Option<AbsolutePathBuf> {
     let path = selected?;
     if selected_is_dir {
-        Some(path.to_path_buf())
+        Some(path.clone())
     } else {
-        path.parent().map(Path::to_path_buf)
+        path.parent()
+            .and_then(|parent| AbsolutePathBuf::new(parent.to_path_buf()).ok())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
+
+    fn abs(path: impl Into<PathBuf>) -> AbsolutePathBuf {
+        AbsolutePathBuf::new(path.into()).expect("测试树路径必须是绝对路径")
+    }
 
     #[test]
     fn sanitize_selection_drops_descendants_sorts_and_excludes_root() {
-        let root = Path::new("/proj");
-        let dir = root.join("src");
-        let file = dir.join("main.rs");
-        let sibling = root.join("a.txt");
+        let root = abs("/proj");
+        let dir = abs(root.join("src"));
+        let file = abs(dir.join("main.rs"));
+        let sibling = abs(root.join("a.txt"));
         // 乱序输入：目录与其子文件同选只留目录，根被剔除，输出按路径排序。
         assert_eq!(
             sanitize_selection(
-                [
-                    file.clone(),
-                    sibling.clone(),
-                    dir.clone(),
-                    root.to_path_buf()
-                ],
-                root
+                [file.clone(), sibling.clone(), dir.clone(), root.clone()],
+                &root
             ),
             vec![sibling, dir]
         );
@@ -178,30 +183,30 @@ mod tests {
 
     #[test]
     fn sanitize_selection_excludes_paths_outside_project() {
-        let root = Path::new("/proj");
-        let outside = PathBuf::from("/other/file.txt");
-        let inside = root.join("b.txt");
+        let root = abs("/proj");
+        let outside = abs("/other/file.txt");
+        let inside = abs(root.join("b.txt"));
         assert_eq!(
-            sanitize_selection([root.to_path_buf(), outside, inside.clone()], root),
+            sanitize_selection([root.clone(), outside, inside.clone()], &root),
             vec![inside]
         );
     }
 
     #[test]
     fn sanitize_selection_treats_sibling_prefix_as_non_ancestor() {
-        let root = Path::new("/proj");
-        let a = root.join("a");
-        let ab = root.join("ab");
+        let root = abs("/proj");
+        let a = abs(root.join("a"));
+        let ab = abs(root.join("ab"));
         // 组件级比较：a 与 ab 互不为祖先，两条都保留。
         assert_eq!(
-            sanitize_selection([ab.clone(), a.clone()], root),
+            sanitize_selection([ab.clone(), a.clone()], &root),
             vec![a, ab]
         );
     }
 
     #[test]
     fn cut_clipboard_degrades_to_copied_after_paste() {
-        let paths = vec![PathBuf::from("/proj/a.txt")];
+        let paths = vec![abs("/proj/a.txt")];
         let clipboard = TreeClipboard::Cut(paths.clone()).into_copied();
         assert!(matches!(clipboard, TreeClipboard::Copied(ref degraded) if degraded == &paths));
         // 已是复制：原样返回，不改动。
@@ -211,7 +216,7 @@ mod tests {
 
     #[test]
     fn clipboard_paths_accessor_covers_both_variants() {
-        let paths = vec![PathBuf::from("/proj/a.txt")];
+        let paths = vec![abs("/proj/a.txt")];
         assert_eq!(
             TreeClipboard::Copied(paths.clone()).paths(),
             paths.as_slice()
@@ -223,20 +228,11 @@ mod tests {
     fn session(mode: TransferMode) -> ConflictSession {
         ConflictSession::new(
             mode,
-            PathBuf::from("/proj/dst"),
+            abs("/proj/dst"),
             vec![
-                (
-                    PathBuf::from("/proj/a.txt"),
-                    PathBuf::from("/proj/dst/a.txt"),
-                ),
-                (
-                    PathBuf::from("/proj/b.txt"),
-                    PathBuf::from("/proj/dst/b.txt"),
-                ),
-                (
-                    PathBuf::from("/proj/c.txt"),
-                    PathBuf::from("/proj/dst/c.txt"),
-                ),
+                (abs("/proj/a.txt"), abs("/proj/dst/a.txt")),
+                (abs("/proj/b.txt"), abs("/proj/dst/b.txt")),
+                (abs("/proj/c.txt"), abs("/proj/dst/c.txt")),
             ],
         )
     }
@@ -248,13 +244,13 @@ mod tests {
         assert!(!session.is_empty());
         assert_eq!(
             session.current_conflict().map(|(source, _)| source),
-            Some(&PathBuf::from("/proj/a.txt"))
+            Some(&abs("/proj/a.txt"))
         );
 
         session.record_decision(ConflictDecision::Overwrite);
         assert_eq!(
             session.current_conflict().map(|(source, _)| source),
-            Some(&PathBuf::from("/proj/b.txt"))
+            Some(&abs("/proj/b.txt"))
         );
         assert!(!session.is_resolved());
 
@@ -298,8 +294,7 @@ mod tests {
 
     #[test]
     fn empty_session_is_immediately_resolved() {
-        let session =
-            ConflictSession::new(TransferMode::Copy, PathBuf::from("/proj/dst"), Vec::new());
+        let session = ConflictSession::new(TransferMode::Copy, abs("/proj/dst"), Vec::new());
         assert!(session.is_empty());
         assert_eq!(session.len(), 0);
         assert!(session.is_resolved(), "空会话无待决策项，视为已解决");
@@ -308,21 +303,21 @@ mod tests {
 
     #[test]
     fn paste_target_dir_follows_selection_kind() {
-        let root = Path::new("/proj");
+        let root = abs("/proj");
         // 目录 → 自身。
         assert_eq!(
-            paste_target_dir(Some(&root.join("src")), true),
-            Some(root.join("src"))
+            paste_target_dir(Some(&abs(root.join("src"))), true),
+            Some(abs(root.join("src")))
         );
         // 文件 → 父目录。
         assert_eq!(
-            paste_target_dir(Some(&root.join("src").join("main.rs")), false),
-            Some(root.join("src"))
+            paste_target_dir(Some(&abs(root.join("src").join("main.rs"))), false),
+            Some(abs(root.join("src")))
         );
         // 根级文件的父目录即项目根。
         assert_eq!(
-            paste_target_dir(Some(&root.join("a.txt")), false),
-            Some(root.to_path_buf())
+            paste_target_dir(Some(&abs(root.join("a.txt"))), false),
+            Some(root.clone())
         );
         // 无选中 → None。
         assert_eq!(paste_target_dir(None, true), None);

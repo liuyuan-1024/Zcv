@@ -5,7 +5,7 @@
 //! 接收方放弃通道（新搜索取代或视图关闭）时，后台在下次发送时感知并提前结束扫描。
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 
@@ -13,6 +13,7 @@ use async_channel::{Receiver, Sender};
 use futures::{StreamExt, stream};
 use gpui::{BackgroundExecutor, Task};
 use zcv_git::path_from_git_bytes;
+use zcv_path::AbsolutePathBuf;
 use zcv_text::{
     Buffer, BufferConfig, ByteOffset, Line, PreparedSearchQuery, SearchQuery, Snapshot, TextRange,
 };
@@ -57,7 +58,7 @@ impl SearchResults {
 
 pub(crate) async fn search_worktree(
     plan: WorktreeSearchPlan,
-    opened_snapshots: HashMap<PathBuf, Snapshot>,
+    opened_snapshots: HashMap<AbsolutePathBuf, Snapshot>,
     query: SearchQuery,
     tx: Sender<FileSearchResult>,
     background_executor: BackgroundExecutor,
@@ -72,7 +73,7 @@ pub(crate) async fn search_worktree(
     let paths = if let Some(paths) = git_search_paths(&plan) {
         paths
     } else {
-        let mut paths = Vec::new();
+        let mut paths: Vec<AbsolutePathBuf> = Vec::new();
         collect_files(&plan.root, &plan, &mut paths);
         paths.sort();
         paths
@@ -138,9 +139,9 @@ pub(crate) async fn search_worktree(
 }
 
 fn search_file(
-    path: PathBuf,
-    root: &Path,
-    opened_snapshots: &HashMap<PathBuf, Snapshot>,
+    path: AbsolutePathBuf,
+    root: &AbsolutePathBuf,
+    opened_snapshots: &HashMap<AbsolutePathBuf, Snapshot>,
     query: &PreparedSearchQuery,
 ) -> Option<FileSearchResult> {
     // 已打开文件用内存快照搜索；
@@ -148,7 +149,7 @@ fn search_file(
     let (snapshot, loaded_buffer) = if let Some(snapshot) = opened_snapshots.get(&path) {
         (snapshot.clone(), None)
     } else {
-        let text = std::fs::read_to_string(&path).ok()?;
+        let text = std::fs::read_to_string(path.as_path()).ok()?;
         let buffer = Buffer::scratch(text, BufferConfig::default()).ok()?;
         (buffer.snapshot(), Some(buffer))
     };
@@ -157,8 +158,12 @@ fn search_file(
         return None;
     }
     Some(FileSearchResult {
-        display_path: path.strip_prefix(root).unwrap_or(&path).to_path_buf(),
-        path,
+        display_path: path
+            .as_path()
+            .strip_prefix(root.as_path())
+            .unwrap_or_else(|_| path.as_path())
+            .to_path_buf(),
+        path: path.into_path_buf(),
         excerpts: excerpt_matches(&snapshot, &matches),
         loaded_buffer,
     })
@@ -187,8 +192,12 @@ fn search_snapshot(
     Ok(query.search(snapshot)?.ranges().collect())
 }
 
-fn collect_files(dir: &Path, plan: &WorktreeSearchPlan, output: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+fn collect_files(
+    dir: &AbsolutePathBuf,
+    plan: &WorktreeSearchPlan,
+    output: &mut Vec<AbsolutePathBuf>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir.as_path()) else {
         return;
     };
     for entry in entries.flatten() {
@@ -203,8 +212,13 @@ fn collect_files(dir: &Path, plan: &WorktreeSearchPlan, output: &mut Vec<PathBuf
             continue;
         }
         if file_type.is_dir() {
+            let Ok(path) = AbsolutePathBuf::new(path) else {
+                continue;
+            };
             collect_files(&path, plan, output);
-        } else if file_type.is_file() {
+        } else if file_type.is_file()
+            && let Ok(path) = AbsolutePathBuf::new(path)
+        {
             output.push(path);
         }
     }
@@ -213,10 +227,10 @@ fn collect_files(dir: &Path, plan: &WorktreeSearchPlan, output: &mut Vec<PathBuf
 /// Git worktree 优先使用 Git 自己的候选文件集：已跟踪 + 未跟踪但未忽略。
 /// 避免进入 target/node_modules 等 `.gitignore` 已排除的巨大目录。
 /// 非 Git 目录或 Git 不可用时回退到递归扫描。
-fn git_search_paths(plan: &WorktreeSearchPlan) -> Option<Vec<PathBuf>> {
+fn git_search_paths(plan: &WorktreeSearchPlan) -> Option<Vec<AbsolutePathBuf>> {
     let output = Command::new("git")
         .arg("-C")
-        .arg(&plan.root)
+        .arg(plan.root.as_path())
         .args([
             "ls-files",
             "--cached",
@@ -236,9 +250,9 @@ fn git_search_paths(plan: &WorktreeSearchPlan) -> Option<Vec<PathBuf>> {
             .split(|byte| *byte == 0)
             .filter(|path| !path.is_empty())
             .map(path_from_git_bytes)
-            .map(|relative| plan.root.join(relative))
+            .filter_map(|relative| AbsolutePathBuf::new(plan.root.as_path().join(relative)).ok())
             // Git 输出的是文件条目；去掉逐文件 metadata 查询，实际读取失败时仍由下方 read_to_string 路径自然跳过。
-            .filter(|path| !plan.is_excluded(path))
+            .filter(|path| !plan.is_excluded(path.as_path()))
             .collect(),
     )
 }

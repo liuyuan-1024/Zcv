@@ -17,6 +17,7 @@ use gpui::{
 };
 use zcv_actions::TreeActivate;
 use zcv_editor::Editor;
+use zcv_path::{AbsolutePathBuf, normalize_for_comparison};
 use zcv_project::{Project, WorktreeEntry, translate_path};
 use zcv_theme::{color, space};
 use zcv_ui::ConfirmOverlay;
@@ -69,12 +70,12 @@ const REFRESH_DEBOUNCE: Duration = Duration::from_millis(120);
 pub struct ProjectTreePanel {
     pub focus: gpui::FocusHandle,
     /// 当前项目根目录路径；无 worktree 的空工作区为 None（面板显示空态）。
-    root: Option<PathBuf>,
+    root: Option<AbsolutePathBuf>,
     /// 行模型与 git 状态查询（worktree 快照层由 Project 持有）。
     project: Entity<Project>,
-    state: Rc<RefCell<TreeState<PathBuf, ProjectTreeRow>>>,
+    state: Rc<RefCell<TreeState<AbsolutePathBuf, ProjectTreeRow>>>,
     /// 当前活动文件（编辑器焦点所在文件），与选中行相互独立。
-    active_path: Option<PathBuf>,
+    active_path: Option<AbsolutePathBuf>,
     scroll_handle: UniformListScrollHandle,
     scrollbar: Scrollbar<UniformListScrollHandle>,
     entry_name_editor: Entity<Editor>,
@@ -93,9 +94,9 @@ pub struct ProjectTreePanel {
     conflict: Option<ConflictSession>,
     /// 按下时暂存的点击动作意图（行路径, 动作）：click（mouse_up 未拖拽）派发时消费执行打开/展开；
     /// 拖拽消费了 click 时意图残留，由下次按下清除。
-    pending_click_intent: Option<(PathBuf, RowClickAction)>,
+    pending_click_intent: Option<(AbsolutePathBuf, RowClickAction)>,
     /// 冲突会话期间暂存的非冲突项：决策完成后与冲突项合成完整执行清单。
-    pending_clean_items: Vec<(PathBuf, PathBuf)>,
+    pending_clean_items: Vec<(AbsolutePathBuf, AbsolutePathBuf)>,
     /// 复制进度（已完成数, 总数)：进度条数据源，None 时不渲染。
     active_transfer: Option<(usize, usize)>,
     /// 防抖刷新任务：新调度直接覆盖旧任务。
@@ -111,14 +112,14 @@ pub struct ProjectTreePanel {
     /// 后台计算当前行模型 Git 状态的任务。
     pending_status_refresh: Option<Task<()>>,
     /// 待定 reveal：异步行重建期间记录目标路径，行进入行模型后滚动到可见（过期代次由重建代次校验丢弃）。
-    pending_reveal: Option<PathBuf>,
+    pending_reveal: Option<AbsolutePathBuf>,
     /// 行快照缓存：replace_rows / 行内容变更时重建，渲染每帧只做 Rc 克隆（不深拷贝）。
     row_snapshot: Rc<[ProjectTreeRow]>,
     /// 拖拽悬停展开计时：悬停折叠目录行约 500ms 自动展开；
     /// 悬停目标变化/放下/取消时 take 置空（Task drop 即取消）。
     hover_expand_task: Option<Task<()>>,
     /// 当前拖拽悬停的目录行路径：到期任务校验悬停未移开的依据。
-    drag_hover_path: Option<PathBuf>,
+    drag_hover_path: Option<AbsolutePathBuf>,
 }
 
 impl ProjectTreePanel {
@@ -132,7 +133,8 @@ impl ProjectTreePanel {
         // 项目根从 Project 派生：无 worktree 时为空态，面板同样注册。
         let mut state = TreeState::new(|row: &ProjectTreeRow| Some(row.path.clone()));
         if let Some(root) = project.read(cx).root() {
-            state.expanded.insert(root.to_path_buf());
+            let root = AbsolutePathBuf::new(root.to_path_buf()).expect("项目根必须是绝对路径");
+            state.expanded.insert(root);
         }
         // git 状态变化（含忽略集变化）时刷新行颜色，不重扫目录。
         let git_store = project.read(cx).git_store();
@@ -144,7 +146,9 @@ impl ProjectTreePanel {
         let scrollbar = Scrollbar::vertical(scroll_handle.clone());
         let mut this = Self {
             focus,
-            root: project.read(cx).root().map(PathBuf::from),
+            root: project.read(cx).root().map(|root| {
+                AbsolutePathBuf::new(root.to_path_buf()).expect("项目根必须是绝对路径")
+            }),
             project,
             state: Rc::new(RefCell::new(state)),
             active_path: None,
@@ -221,13 +225,13 @@ impl ProjectTreePanel {
             .into_iter()
             .map(|entry| {
                 // 深度 = 相对根的路径组件数（与递归收集的逐层 +1 等价）。
-                let depth = entry
-                    .path
-                    .strip_prefix(&root)
+                let path = entry.path;
+                let depth = path
+                    .strip_prefix(root.as_path())
                     .map_or(0, |relative| relative.components().count());
                 ProjectTreeRow {
-                    expanded: entry.is_dir && expanded.contains(&entry.path),
-                    path: entry.path,
+                    expanded: entry.is_dir && expanded.contains(&path),
+                    path,
                     name: entry.name,
                     depth,
                     is_dir: entry.is_dir,
@@ -268,7 +272,7 @@ impl ProjectTreePanel {
     fn refresh_git_statuses(&mut self, cx: &mut Context<Self>) {
         self.status_refresh_generation = self.status_refresh_generation.wrapping_add(1);
         let generation = self.status_refresh_generation;
-        let entries: Vec<(PathBuf, bool)> = self
+        let entries: Vec<(AbsolutePathBuf, bool)> = self
             .state
             .borrow()
             .rows
@@ -304,36 +308,51 @@ impl ProjectTreePanel {
         let Some(root) = self.root.take() else {
             return;
         };
-        self.root = Some(translate_path(&root, from, to));
+        self.root = Some(
+            absolute_for_comparison(&translate_path(&root, from, to))
+                .expect("重命名后的项目根必须是绝对路径"),
+        );
         let mut state = self.state.borrow_mut();
         state.expanded = state
             .expanded
             .drain()
-            .map(|path| translate_path(&path, from, to))
+            .map(|path| {
+                absolute_for_comparison(&translate_path(&path, from, to))
+                    .expect("重命名后的展开路径必须是绝对路径")
+            })
             .collect();
-        state.selected = state
-            .selected
-            .take()
-            .map(|path| translate_path(&path, from, to));
+        state.selected = state.selected.take().map(|path| {
+            absolute_for_comparison(&translate_path(&path, from, to))
+                .expect("重命名后的选中路径必须是绝对路径")
+        });
         state.selected_set = state
             .selected_set
             .drain()
-            .map(|path| translate_path(&path, from, to))
+            .map(|path| {
+                absolute_for_comparison(&translate_path(&path, from, to))
+                    .expect("重命名后的选区路径必须是绝对路径")
+            })
             .collect();
-        state.anchor = state
-            .anchor
-            .take()
-            .map(|path| translate_path(&path, from, to));
-        self.active_path = self
-            .active_path
-            .take()
-            .map(|path| translate_path(&path, from, to));
+        state.anchor = state.anchor.take().map(|path| {
+            absolute_for_comparison(&translate_path(&path, from, to))
+                .expect("重命名后的锚点路径必须是绝对路径")
+        });
+        self.active_path = self.active_path.take().map(|path| {
+            absolute_for_comparison(&translate_path(&path, from, to))
+                .expect("重命名后的活动路径必须是绝对路径")
+        });
         drop(state);
     }
 
     /// 重命名后迁移树状态并重建行模型。
     fn apply_rename(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
-        self.migrate_rename(from, to);
+        let Some(from) = absolute_for_comparison(from) else {
+            return;
+        };
+        let Some(to) = absolute_for_comparison(to) else {
+            return;
+        };
+        self.migrate_rename(from.as_path(), to.as_path());
         self.rebuild_rows(cx);
     }
 
@@ -385,6 +404,7 @@ impl ProjectTreePanel {
 
     /// 更换项目根目录（项目根被外部重命名时由 Workspace 调用）。
     pub fn set_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        let root = absolute_for_comparison(&root).expect("项目树根必须是绝对路径");
         if self.root.as_ref() == Some(&root) {
             return;
         }
@@ -437,6 +457,7 @@ impl ProjectTreePanel {
     ///
     /// 展开祖先与选中同步完成；行重建异步进行，目标行进入行模型后完成滚动（快速连续 reveal 以最后一次为准，行已可见时立即滚动不等重建）。
     pub fn reveal_active_path(&mut self, path: Option<PathBuf>, cx: &mut Context<Self>) {
+        let path = path.and_then(|path| absolute_for_comparison(&path));
         let Some(root) = self.root.clone() else {
             self.active_path = None;
             self.pending_reveal = None;
@@ -451,14 +472,16 @@ impl ProjectTreePanel {
             let mut state = self.state.borrow_mut();
             let mut ancestor = path.parent();
             while let Some(directory) = ancestor.filter(|directory| directory.starts_with(&root)) {
-                state.expanded.insert(directory.to_path_buf());
-                if directory == root {
+                state.expanded.insert(
+                    absolute_for_comparison(directory).expect("展开祖先路径必须是绝对路径"),
+                );
+                if directory == root.as_path() {
                     break;
                 }
                 ancestor = directory.parent();
             }
-            self.active_path = Some(path.to_path_buf());
-            state.select(path.to_path_buf());
+            self.active_path = Some(path.clone());
+            state.select(path.clone());
         }
         self.pending_reveal = Some(path);
         self.rebuild_rows(cx);
@@ -520,7 +543,7 @@ impl ProjectTreePanel {
             self.state.borrow_mut().toggle_expand(&path);
             self.rebuild_rows(cx);
         } else if let Some(callback) = self.on_open_file.clone() {
-            callback(path, focus_opened_item, window, cx);
+            callback(path.into_path_buf(), focus_opened_item, window, cx);
         }
         window.refresh();
     }
@@ -557,7 +580,7 @@ impl gpui::Render for ProjectTreePanel {
             let len = display_rows.len();
             let is_focused = self.focus.contains_focused(window, cx);
             // 剪切剪贴板路径快照：命中行淡显（Copy 无淡显）。
-            let clipboard_cut: Rc<[PathBuf]> = match &self.clipboard {
+            let clipboard_cut: Rc<[AbsolutePathBuf]> = match &self.clipboard {
                 Some(TreeClipboard::Cut(paths)) => paths.clone().into(),
                 _ => Vec::new().into(),
             };
@@ -737,6 +760,11 @@ impl Panel for ProjectTreePanel {
     fn focus_handle(&self, _cx: &gpui::App) -> gpui::FocusHandle {
         self.focus.clone()
     }
+}
+
+/// 将进入项目树状态的本地路径统一为可比较的绝对路径。
+fn absolute_for_comparison(path: &Path) -> Option<AbsolutePathBuf> {
+    AbsolutePathBuf::new(normalize_for_comparison(path).ok()?).ok()
 }
 
 #[cfg(test)]

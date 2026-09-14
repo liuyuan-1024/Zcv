@@ -50,14 +50,14 @@ impl Render for ActivityIndicator {
             .gap(space::S6)
             .text_color(color::current(cx).text_muted)
             .child(animated_task(task.clone()));
-        if let Some(build) = TooltipSpec::new(match task.phase {
+        if let Some(build) = TooltipSpec::from_lines([match task.phase {
             GitJobPhase::Queued if task.cancellable => "远程操作已排队，右键取消",
             GitJobPhase::Queued => "后台任务已排队",
             GitJobPhase::Running if task.cancellable => "右键取消并终止 Git 进程",
             GitJobPhase::Running => "后台任务正在执行",
             GitJobPhase::Cancelling => "正在终止 Git 及其子进程",
             GitJobPhase::Reconciling => "正在检查操作中断前远端是否已更新",
-        })
+        }])
         .build()
         {
             item = item.tooltip(build);

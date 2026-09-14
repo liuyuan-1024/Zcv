@@ -61,7 +61,7 @@ impl SvgIcon {
 
     /// 设置 tooltip 标签文字。
     pub fn label(mut self, label: impl Into<String>) -> Self {
-        self.tooltip = TooltipSpec::new(label);
+        self.tooltip = TooltipSpec::from_lines([label]);
         self
     }
 

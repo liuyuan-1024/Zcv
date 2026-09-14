@@ -85,7 +85,7 @@ impl Render for Breadcrumbs {
         );
         let button = if let Some(path) = copy_path {
             button
-                .tooltip(TooltipSpec::new("右键复制绝对路径"))
+                .tooltip(TooltipSpec::from_lines(["右键复制绝对路径"]))
                 .on_right_click(move |_event, _window, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(
                         path.to_string_lossy().into_owned(),

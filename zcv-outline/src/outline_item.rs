@@ -51,11 +51,11 @@ pub(crate) fn render(
         let arrow_key = key.clone();
         ButtonLike::new(key.element_id("toggle"))
             .padding(px(0.))
-            .tooltip(TooltipSpec::new(if collapsed {
+            .tooltip(TooltipSpec::from_lines([if collapsed {
                 "展开"
             } else {
                 "折叠"
-            }))
+            }]))
             .on_click(move |_, _, cx| on_toggle(arrow_key.clone(), cx))
             .child(
                 SvgIcon::new(if collapsed {

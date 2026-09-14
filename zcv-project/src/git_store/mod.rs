@@ -1040,12 +1040,12 @@ impl GitStore {
 
     /// 后台加载活动仓库的提交图数据（一次性读，不进 job 队列、不维护快照状态）。
     ///
-    /// `after` 为分批游标：`None` 从 HEAD 开始，`Some(oid)` 从该提交的父继续；
+    /// `offset` 为已跳过的提交数量：`None` 从历史开头开始，`Some(offset)` 从该位置继续；
     /// `limit` 为单批提交数上限。lane 布局由视图侧用 `zcv_git::GraphLayoutState` 计算。
     /// 无活动仓库时返回空列表。仿 `load_revision_text` 的 `background.spawn` 一次性后台读模式。
     pub fn load_commit_graph(
         &self,
-        after: Option<String>,
+        offset: Option<usize>,
         limit: usize,
     ) -> Task<anyhow::Result<Vec<GraphCommit>>> {
         let background = self.background.clone();
@@ -1053,7 +1053,7 @@ impl GitStore {
             return background.spawn(async { Ok(Vec::new()) });
         };
         let repository = repository.repository.clone();
-        background.spawn(async move { repository.commit_graph(after.as_deref(), limit) })
+        background.spawn(async move { repository.commit_graph(offset, limit) })
     }
 
     /// 读取缓存的修订文本；`None` 表示文件在该修订中缺失。

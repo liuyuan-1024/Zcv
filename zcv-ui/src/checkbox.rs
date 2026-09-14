@@ -34,7 +34,7 @@ impl Checkbox {
 
     /// 设置悬停提示文字。
     pub fn tooltip(mut self, text: impl Into<String>) -> Self {
-        self.tooltip = TooltipSpec::new(text);
+        self.tooltip = TooltipSpec::from_lines([text]);
         self
     }
 

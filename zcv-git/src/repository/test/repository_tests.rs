@@ -918,6 +918,61 @@ fn checkout_fails_for_unknown_branch() {
 }
 
 #[test]
+fn commit_graph_includes_all_branch_refs() {
+    let (root, _temp) = test_repo();
+    let repository = open_repo(&root);
+
+    repository
+        .create_branch("feature", None)
+        .expect("应创建并切换 feature 分支");
+    fs::write(root.join("tracked.txt"), "feature\n").expect("应修改 feature 文件");
+    run_in(&root, &["git", "add", "tracked.txt"]);
+    run_in(&root, &["git", "commit", "-q", "-m", "feature commit"]);
+    let feature_oid = String::from_utf8_lossy(&run_in(&root, &["git", "rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+
+    repository.checkout("master").expect("应切回 master 分支");
+    fs::write(root.join("tracked.txt"), "master\n").expect("应修改 master 文件");
+    run_in(&root, &["git", "add", "tracked.txt"]);
+    run_in(&root, &["git", "commit", "-q", "-m", "master commit"]);
+    let master_oid = String::from_utf8_lossy(&run_in(&root, &["git", "rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+
+    let commits = repository
+        .commit_graph(None, 100)
+        .expect("提交图查询应成功");
+    let by_oid: HashMap<_, _> = commits.iter().map(|commit| (&commit.oid, commit)).collect();
+    assert_eq!(by_oid[&feature_oid].subject, "feature commit");
+    assert_eq!(by_oid[&master_oid].subject, "master commit");
+    assert!(
+        by_oid[&feature_oid]
+            .refs
+            .iter()
+            .any(|reference| reference == "feature")
+    );
+    assert!(
+        by_oid[&master_oid]
+            .refs
+            .iter()
+            .any(|reference| reference == "HEAD -> master")
+    );
+
+    let first_batch = repository
+        .commit_graph(None, 1)
+        .expect("首批提交图查询应成功");
+    let second_batch = repository
+        .commit_graph(Some(first_batch.len()), 100)
+        .expect("后续提交图查询应成功");
+    assert!(
+        second_batch
+            .iter()
+            .all(|commit| commit.oid != first_batch[0].oid)
+    );
+}
+
+#[test]
 fn create_branch_creates_and_switches() {
     let (root, _temp) = test_repo();
     let repository = open_repo(&root);

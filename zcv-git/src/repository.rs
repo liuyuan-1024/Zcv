@@ -285,12 +285,13 @@ pub trait GitRepository: Send + Sync {
     /// 删除本地分支（`git branch -d <name>`）。
     fn delete_branch(&self, name: &str) -> Result<()>;
 
-    /// 读取提交历史用于图形化展示（`git log -n {limit} [--skip=1 {after}] --pretty=...`）。
+    /// 读取全部本地与远程分支的提交历史用于图形化展示
+    /// （`git log --branches --remotes --tags HEAD -n {limit} [--skip={after}]`）。
     ///
-    /// `after` 为分批游标：`None` 从 HEAD 开始；
-    /// `Some(oid)` 以该提交为起点并跳过自身、从其父继续（cursor 分批，避免 `--skip=N` 计数在加载期间出现新提交时错位）。
+    /// `offset` 为已跳过的提交数量：`None` 从历史开头开始，`Some(offset)` 从该位置继续。
+    /// 调用方在 HEAD 或 refs 变化后应重新从 `None` 开始加载。
     /// 空仓库（无提交）返回空列表。
-    fn commit_graph(&self, after: Option<&str>, limit: usize) -> Result<Vec<GraphCommit>>;
+    fn commit_graph(&self, offset: Option<usize>, limit: usize) -> Result<Vec<GraphCommit>>;
 }
 
 /// 单个本地分支（`git for-each-ref refs/heads` 的一行）。
@@ -829,17 +830,19 @@ impl GitRepository for RealGitRepository {
         Ok(())
     }
 
-    fn commit_graph(&self, after: Option<&str>, limit: usize) -> Result<Vec<GraphCommit>> {
+    fn commit_graph(&self, offset: Option<usize>, limit: usize) -> Result<Vec<GraphCommit>> {
         // 字段以 NUL（%x00）分隔、记录以 RS（%x1e）分隔，规避 subject/refs 中的空格与逗号歧义。
         const PRETTY: &str = "--pretty=format:%H%x00%P%x00%an%x00%ct%x00%s%x00%D%x1e";
         let limit_arg = format!("-n{limit}");
         let mut args: Vec<&str> = vec!["log", &limit_arg];
-        if let Some(after) = after {
-            // 以游标提交为起点并跳过它自身（上一批已含），从其父继续。
-            args.push("--skip=1");
-            args.push(after);
+        let skip_arg = offset.map(|offset| format!("--skip={offset}"));
+        if let Some(skip_arg) = skip_arg.as_deref() {
+            args.push(skip_arg);
         }
+        // 显式列出 refs，避免 `--all` 把 stash 等非分支引用也混入提交图。
+        args.extend(["--branches", "--remotes", "--tags", "HEAD", "--date-order"]);
         args.push(PRETTY);
+        args.push("--");
         // 空仓库（无提交）时 git log 非零退出，run_optional 置 None。
         let Some(output) = self.run_optional(&args)? else {
             return Ok(Vec::new());

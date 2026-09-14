@@ -38,6 +38,35 @@ pub trait ScrollableHandle: 'static + Any + Sized + Clone {
     }
 }
 
+#[derive(Clone, Copy)]
+enum ScrollbarAxis {
+    Vertical,
+    Horizontal,
+}
+
+impl ScrollbarAxis {
+    fn max_offset(self, offset: Point<Pixels>) -> Pixels {
+        match self {
+            Self::Vertical => offset.y,
+            Self::Horizontal => offset.x,
+        }
+    }
+
+    fn coordinate(self, point: Point<Pixels>) -> Pixels {
+        match self {
+            Self::Vertical => point.y,
+            Self::Horizontal => point.x,
+        }
+    }
+
+    fn set_offset(self, point: &mut Point<Pixels>, value: Pixels) {
+        match self {
+            Self::Vertical => point.y = value,
+            Self::Horizontal => point.x = value,
+        }
+    }
+}
+
 impl ScrollableHandle for UniformListScrollHandle {
     fn max_offset(&self) -> Point<Pixels> {
         self.0.borrow().base_handle.max_offset()
@@ -104,6 +133,7 @@ impl ScrollableHandle for ScrollHandle {
 #[derive(Clone)]
 pub struct Scrollbar<T: ScrollableHandle> {
     handle: T,
+    axis: ScrollbarAxis,
     interaction: Rc<ScrollbarInteraction>,
 }
 
@@ -111,6 +141,15 @@ impl<T: ScrollableHandle> Scrollbar<T> {
     pub fn vertical(handle: T) -> Self {
         Self {
             handle,
+            axis: ScrollbarAxis::Vertical,
+            interaction: Rc::new(ScrollbarInteraction::default()),
+        }
+    }
+
+    pub fn horizontal(handle: T) -> Self {
+        Self {
+            handle,
+            axis: ScrollbarAxis::Horizontal,
             interaction: Rc::new(ScrollbarInteraction::default()),
         }
     }
@@ -122,6 +161,7 @@ impl<T: ScrollableHandle> IntoElement for Scrollbar<T> {
     fn into_element(self) -> Self::Element {
         ScrollbarElement {
             handle: self.handle,
+            axis: self.axis,
             interaction: self.interaction,
             origin: point(Pixels::ZERO, Pixels::ZERO),
         }
@@ -141,6 +181,7 @@ impl<T: ScrollableHandle> UniformListDecoration for Scrollbar<T> {
     ) -> AnyElement {
         ScrollbarElement {
             handle: self.handle.clone(),
+            axis: self.axis,
             interaction: Rc::clone(&self.interaction),
             origin: point(-scroll_offset.x, -scroll_offset.y),
         }
@@ -151,15 +192,16 @@ impl<T: ScrollableHandle> UniformListDecoration for Scrollbar<T> {
 #[derive(Default)]
 struct ScrollbarInteraction {
     dragging: Cell<bool>,
-    last_mouse_y: Cell<Pixels>,
+    last_mouse_position: Cell<Pixels>,
     /// 拖拽期间的乐观位置。
     /// 滚动容器异步更新时，不能每次都回读可能滞后的 offset。
-    drag_scroll_top: Cell<Pixels>,
+    drag_scroll_position: Cell<Pixels>,
 }
 
 /// 滚动条的可渲染元素；通常通过 [`Scrollbar`] 构造。
 pub struct ScrollbarElement<T: ScrollableHandle> {
     handle: T,
+    axis: ScrollbarAxis,
     interaction: Rc<ScrollbarInteraction>,
     origin: Point<Pixels>,
 }
@@ -215,33 +257,60 @@ impl<T: ScrollableHandle> Element for ScrollbarElement<T> {
         _cx: &mut App,
     ) -> Self::PrepaintState {
         let viewport_bounds = Bounds::new(bounds.origin + self.origin, bounds.size);
-        let max_scroll = self.handle.max_offset().y;
-        let track_height = (viewport_bounds.size.height - PADDING * 2.).max(Pixels::ZERO);
-        if max_scroll <= Pixels::ZERO || track_height <= Pixels::ZERO {
+        let max_scroll = self.axis.max_offset(self.handle.max_offset());
+        let track_length = match self.axis {
+            ScrollbarAxis::Vertical => {
+                (viewport_bounds.size.height - PADDING * 2.).max(Pixels::ZERO)
+            }
+            ScrollbarAxis::Horizontal => {
+                (viewport_bounds.size.width - PADDING * 2.).max(Pixels::ZERO)
+            }
+        };
+        if max_scroll <= Pixels::ZERO || track_length <= Pixels::ZERO {
             return None;
         }
 
-        let thumb_track_top = viewport_bounds.top() + PADDING;
-        let content_height = track_height + max_scroll;
-        let thumb_height = (track_height * (track_height / content_height))
+        let thumb_length = (track_length * (track_length / (track_length + max_scroll)))
             .max(MIN_THUMB_SIZE)
-            .min(track_height);
-        let travel = (track_height - thumb_height).max(px(1.));
+            .min(track_length);
+        let travel = (track_length - thumb_length).max(px(1.));
         let scroll_per_pixel = max_scroll / travel;
-        let scroll_top = (-self.handle.offset().y).clamp(Pixels::ZERO, max_scroll);
-        let thumb_top = thumb_track_top + scroll_top / scroll_per_pixel;
-        let thumb_bounds = Bounds::new(
-            point(viewport_bounds.right() - WIDTH - PADDING, thumb_top),
-            size(WIDTH, thumb_height),
-        );
-        // 可见滑块保持紧凑；交互区域扩展到右侧边缘，避免细滑块难以命中。
-        let interaction_bounds = Bounds::new(
-            point(thumb_bounds.left() - PADDING, thumb_bounds.top()),
-            size(
-                thumb_bounds.size.width + PADDING * 2.,
-                thumb_bounds.size.height,
+        let scroll_position =
+            (-self.axis.max_offset(self.handle.offset())).clamp(Pixels::ZERO, max_scroll);
+        let thumb_position = PADDING + scroll_position / scroll_per_pixel;
+        let thumb_bounds = match self.axis {
+            ScrollbarAxis::Vertical => Bounds::new(
+                point(
+                    viewport_bounds.right() - WIDTH - PADDING,
+                    viewport_bounds.top() + thumb_position,
+                ),
+                size(WIDTH, thumb_length),
             ),
-        );
+            ScrollbarAxis::Horizontal => Bounds::new(
+                point(
+                    viewport_bounds.left() + thumb_position,
+                    viewport_bounds.bottom() - WIDTH - PADDING,
+                ),
+                size(thumb_length, WIDTH),
+            ),
+        };
+        // 可见滑块保持紧凑；交互区域扩展到右侧边缘，避免细滑块难以命中。
+        let interaction_bounds = match self.axis {
+            ScrollbarAxis::Vertical => Bounds::new(
+                point(thumb_bounds.left() - PADDING, thumb_bounds.top()),
+                size(
+                    thumb_bounds.size.width + PADDING * 2.,
+                    thumb_bounds.size.height,
+                ),
+            ),
+            ScrollbarAxis::Horizontal => Bounds::new(
+                point(thumb_bounds.left(), thumb_bounds.top() - PADDING),
+                size(
+                    thumb_bounds.size.width,
+                    thumb_bounds.size.height + PADDING * 2.,
+                ),
+            ),
+        };
 
         Some(ScrollbarLayout {
             hitbox: window
@@ -275,8 +344,14 @@ impl<T: ScrollableHandle> Element for ScrollbarElement<T> {
             colors.scrollbar_thumb_background
         };
         window.paint_quad(
-            fill(layout.thumb_bounds, thumb_color)
-                .corner_radii(Corners::all(layout.thumb_bounds.size.width / 2.)),
+            fill(layout.thumb_bounds, thumb_color).corner_radii(Corners::all(
+                layout
+                    .thumb_bounds
+                    .size
+                    .width
+                    .min(layout.thumb_bounds.size.height)
+                    / 2.,
+            )),
         );
 
         if dragging {
@@ -288,20 +363,22 @@ impl<T: ScrollableHandle> Element for ScrollbarElement<T> {
         let interaction = Rc::clone(&self.interaction);
         let handle = self.handle.clone();
         let move_layout = layout.clone();
+        let axis = self.axis;
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble {
                 return;
             }
             if interaction.dragging.get() && event.dragging() {
-                let delta = event.position.y - interaction.last_mouse_y.get();
-                interaction.last_mouse_y.set(event.position.y);
-                let max_scroll = handle.max_offset().y;
-                let scroll_top = (interaction.drag_scroll_top.get()
+                let position = axis.coordinate(event.position);
+                let delta = position - interaction.last_mouse_position.get();
+                interaction.last_mouse_position.set(position);
+                let max_scroll = axis.max_offset(handle.max_offset());
+                let scroll_position = (interaction.drag_scroll_position.get()
                     + delta * move_layout.scroll_per_pixel)
                     .clamp(Pixels::ZERO, max_scroll);
-                interaction.drag_scroll_top.set(scroll_top);
+                interaction.drag_scroll_position.set(scroll_position);
                 let mut offset = handle.offset();
-                offset.y = -scroll_top;
+                axis.set_offset(&mut offset, -scroll_position);
                 handle.set_offset(offset);
                 window.refresh();
                 cx.stop_propagation();
@@ -323,10 +400,13 @@ impl<T: ScrollableHandle> Element for ScrollbarElement<T> {
                 return;
             }
             interaction.dragging.set(true);
-            interaction.last_mouse_y.set(event.position.y);
             interaction
-                .drag_scroll_top
-                .set((-handle.offset().y).clamp(Pixels::ZERO, handle.max_offset().y));
+                .last_mouse_position
+                .set(axis.coordinate(event.position));
+            interaction.drag_scroll_position.set(
+                (-axis.max_offset(handle.offset()))
+                    .clamp(Pixels::ZERO, axis.max_offset(handle.max_offset())),
+            );
             handle.drag_started();
             window.refresh();
             cx.stop_propagation();

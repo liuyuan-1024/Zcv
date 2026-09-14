@@ -1131,7 +1131,7 @@ fn render_commit_footer(
                     ButtonLike::new("version-control-last-commit")
                         .flex_grow()
                         .tooltip(if has_last_commit {
-                            TooltipSpec::new(format!("最近提交：{last_commit_text}"))
+                            TooltipSpec::from_lines([format!("最近提交：{last_commit_text}")])
                         } else {
                             TooltipSpec::default()
                         })

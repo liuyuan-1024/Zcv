@@ -7,9 +7,11 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    AnyView, App, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    KeyContext, PathBuilder, Pixels, Render, Rgba, ScrollStrategy, SharedString, Subscription,
-    UniformListScrollHandle, WeakEntity, Window, canvas, div, point, prelude::*, px, uniform_list,
+    AnyView, App, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    Font, InteractiveElement, IntoElement, IsZero, KeyContext, MouseButton, PathBuilder, Pixels,
+    Render, Rgba, ScrollHandle, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, TextRun, UniformListScrollHandle, WeakEntity, Window, canvas, div, point,
+    prelude::*, px, uniform_list,
 };
 use regex::RegexBuilder;
 use zcv_actions::{
@@ -21,7 +23,7 @@ use zcv_project::{GitStoreEvent, Project};
 use zcv_text::SearchQuery;
 use zcv_theme::color::{self, ThemeColors};
 use zcv_theme::{space, typography};
-use zcv_ui::{MatchOption, MatchOptions, Scrollbar, SearchInput};
+use zcv_ui::{ButtonLike, MatchOption, MatchOptions, Scrollbar, SearchInput, TooltipSpec};
 use zcv_workspace::{
     Direction, Item, ItemHandle, SearchEvent, SearchableItem, SerializedItemProvider,
     SerializedPaneItem, Workspace,
@@ -35,6 +37,13 @@ const LANE_WIDTH: Pixels = px(16.0);
 const CIRCLE_RADIUS: Pixels = px(3.5);
 /// 连线线宽。
 const LINE_WIDTH: Pixels = px(1.5);
+const COLUMN_COUNT: usize = 5;
+const COLUMN_RESIZE_HANDLE_WIDTH: Pixels = space::S6;
+const COLUMN_MIN_WIDTH: Pixels = space::S16;
+const COLUMN_RESIZE_MAX_WIDTHS: [Pixels; COLUMN_COUNT] =
+    [px(320.0), px(800.0), px(256.0), px(224.0), px(160.0)];
+const COLUMN_CONTENT_MAX_WIDTHS: [Pixels; COLUMN_COUNT] =
+    [px(256.0), px(640.0), px(192.0), px(160.0), px(112.0)];
 /// 单批加载的提交数上限。
 const BATCH_SIZE: usize = 100;
 /// 距列表末尾多少行时预加载下一批。
@@ -48,6 +57,31 @@ struct GraphRow {
     layout: GraphRowLayout,
 }
 
+/// 列边界的拖拽载荷；
+/// 实际宽度由 GitGraphView 持有，避免建立第二份列状态。
+struct DraggedGitGraphColumn(usize);
+
+impl Render for DraggedGitGraphColumn {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        gpui::Empty
+    }
+}
+
+struct ColumnResizeState {
+    boundary: usize,
+    last_x: Pixels,
+}
+
+#[derive(Clone)]
+struct GitGraphRowRenderContext {
+    colors: ThemeColors,
+    palette: [Rgba; 6],
+    row_height: Pixels,
+    column_widths: [Pixels; COLUMN_COUNT],
+    graph_content_width: Pixels,
+    weak: WeakEntity<GitGraphView>,
+}
+
 pub(crate) struct GitGraphView {
     focus: FocusHandle,
     project: Entity<Project>,
@@ -55,8 +89,10 @@ pub(crate) struct GitGraphView {
     rows: Vec<GraphRow>,
     /// 跨批次承载 lane 占用状态，分批追加时复用同一实例。
     layout: GraphLayoutState,
-    /// 下一批加载的游标：已加载的最后一条提交 oid（`None` 表示从 HEAD 开始）。
-    cursor: Option<String>,
+    /// 下一批加载的偏移量：已加载的提交数量（`None` 表示从历史开头开始）。
+    offset: Option<usize>,
+    /// 使分支或仓库切换时已经在途的旧加载结果失效。
+    load_generation: u64,
     loading: bool,
     /// 无更多提交（加载到空批或不足一批）。
     reached_end: bool,
@@ -66,6 +102,15 @@ pub(crate) struct GitGraphView {
     active_search_match: Option<usize>,
     scroll_handle: UniformListScrollHandle,
     scrollbar: Scrollbar<UniformListScrollHandle>,
+    horizontal_scroll_handle: ScrollHandle,
+    horizontal_scrollbar: Scrollbar<ScrollHandle>,
+    column_widths: [Pixels; COLUMN_COUNT],
+    content_fit_widths: [Pixels; COLUMN_COUNT],
+    content_fit_row_count: usize,
+    content_fit_font_size: Pixels,
+    column_widths_customized: [bool; COLUMN_COUNT],
+    pending_column_reset: Option<usize>,
+    column_resize: Option<ColumnResizeState>,
     _git_subscription: Subscription,
     search_input: Entity<Editor>,
     _search_subscription: Subscription,
@@ -247,21 +292,23 @@ impl GitGraphView {
         let git_subscription = cx.subscribe(&git_store, |view, _, event, cx| {
             if matches!(
                 event,
-                GitStoreEvent::Repositories | GitStoreEvent::ActiveRepositoryChanged
-            ) && view.rows.is_empty()
-            {
-                view.reached_end = false;
-                view.load_more(cx);
+                GitStoreEvent::Repositories
+                    | GitStoreEvent::Head
+                    | GitStoreEvent::ActiveRepositoryChanged
+            ) {
+                view.reload(cx);
             }
         });
         let view_weak = cx.entity().downgrade();
         let toolbar = cx.new(|_| GitGraphToolbar { view: view_weak });
+        let horizontal_scroll_handle = ScrollHandle::new();
         let mut view = Self {
             focus,
             project,
             rows: Vec::new(),
             layout: GraphLayoutState::new(),
-            cursor: None,
+            offset: None,
+            load_generation: 0,
             loading: false,
             reached_end: false,
             selected: None,
@@ -269,6 +316,15 @@ impl GitGraphView {
             active_search_match: None,
             scroll_handle,
             scrollbar,
+            horizontal_scroll_handle: horizontal_scroll_handle.clone(),
+            horizontal_scrollbar: Scrollbar::horizontal(horizontal_scroll_handle),
+            column_widths: [COLUMN_MIN_WIDTH; COLUMN_COUNT],
+            content_fit_widths: [COLUMN_MIN_WIDTH; COLUMN_COUNT],
+            content_fit_row_count: 0,
+            content_fit_font_size: px(0.0),
+            column_widths_customized: [false; COLUMN_COUNT],
+            pending_column_reset: None,
+            column_resize: None,
             _git_subscription: git_subscription,
             search_input,
             _search_subscription: search_subscription,
@@ -279,6 +335,57 @@ impl GitGraphView {
             view.load_more(cx);
         }
         view
+    }
+
+    fn begin_column_resize(&mut self, boundary: usize, x: Pixels, cx: &mut Context<Self>) {
+        if boundary + 1 >= COLUMN_COUNT {
+            return;
+        }
+        self.column_resize = Some(ColumnResizeState {
+            boundary,
+            last_x: x,
+        });
+        cx.notify();
+    }
+
+    fn resize_column(&mut self, boundary: usize, delta: Pixels, cx: &mut Context<Self>) {
+        let allowed_delta = resize_column_widths(&mut self.column_widths, boundary, delta);
+        if allowed_delta.is_zero() {
+            return;
+        }
+        self.column_widths_customized[boundary] = true;
+        self.column_widths_customized[boundary + 1] = true;
+        cx.notify();
+    }
+
+    fn reset_column(&mut self, boundary: usize, cx: &mut Context<Self>) {
+        if boundary >= COLUMN_COUNT - 1 {
+            return;
+        }
+        self.column_widths_customized[boundary] = false;
+        self.pending_column_reset = Some(boundary);
+        cx.notify();
+    }
+
+    fn finish_column_resize(&mut self, cx: &mut Context<Self>) {
+        if self.column_resize.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// 清空旧仓库或旧分支的投影，并从全部 refs 重新加载。
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        self.load_generation = self.load_generation.wrapping_add(1);
+        self.rows.clear();
+        self.layout = GraphLayoutState::new();
+        self.content_fit_row_count = 0;
+        self.offset = None;
+        self.loading = false;
+        self.reached_end = false;
+        self.selected = None;
+        self.search_matches.clear();
+        self.active_search_match = None;
+        self.load_more(cx);
     }
 
     /// 加载下一批提交；`loading`/`reached_end` 时跳过。后台读完成后回到实体逐条布局追加。
@@ -296,11 +403,15 @@ impl GitGraphView {
         }
         self.loading = true;
         let git_store = self.project.read(cx).git_store();
-        let cursor = self.cursor.clone();
-        let load = git_store.read(cx).load_commit_graph(cursor, BATCH_SIZE);
+        let offset = self.offset;
+        let generation = self.load_generation;
+        let load = git_store.read(cx).load_commit_graph(offset, BATCH_SIZE);
         cx.spawn(async move |this, cx| {
             let commits = load.await;
             this.update(cx, |view, cx| {
+                if view.load_generation != generation {
+                    return;
+                }
                 view.loading = false;
                 match commits {
                     Ok(commits) => view.append_commits(commits, cx),
@@ -316,7 +427,7 @@ impl GitGraphView {
         .detach();
     }
 
-    /// 把一批提交逐条布局后追加到 `rows`，并推进游标/到底标记。
+    /// 把一批提交逐条布局后追加到 `rows`，并推进偏移量/到底标记。
     fn append_commits(&mut self, commits: Vec<GraphCommit>, cx: &mut Context<Self>) {
         if commits.is_empty() {
             self.reached_end = true;
@@ -324,15 +435,28 @@ impl GitGraphView {
             return;
         }
         let batch_len = commits.len();
-        self.cursor = commits.last().map(|commit| commit.oid.clone());
         for commit in commits {
             let layout = self.layout.push(&commit);
             self.rows.push(GraphRow { commit, layout });
         }
+        self.offset = Some(self.rows.len());
         if batch_len < BATCH_SIZE {
             self.reached_end = true;
         }
-        cx.notify();
+        let query = self.search_input.read(cx).text(cx);
+        if query.is_empty() {
+            cx.notify();
+        } else {
+            self.run_search(
+                &SearchQuery {
+                    query,
+                    case_sensitive: self.search_options.case_sensitive,
+                    whole_word: self.search_options.whole_word,
+                    regex: self.search_options.regex,
+                },
+                cx,
+            );
+        }
     }
 }
 
@@ -345,7 +469,7 @@ impl Focusable for GitGraphView {
 }
 
 impl Render for GitGraphView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = *color::current(cx);
         let palette = lane_palette(&colors);
         let row_height = row_height();
@@ -404,9 +528,54 @@ impl Render for GitGraphView {
         } else {
             self.search_matches.len()
         };
+        self.update_content_fit_widths(window);
         let weak = cx.weak_entity();
+        let column_widths = self.column_widths;
+        let graph_content_width = graph_column_width(&self.rows);
+        let content_width = column_widths
+            .iter()
+            .copied()
+            .fold(px(0.0), |total, width| total + width);
+        let resize_weak = weak.clone();
+        let mouse_up_weak = weak.clone();
+        let root = root
+            .on_drag_move::<DraggedGitGraphColumn>(move |event, window, cx| {
+                let boundary = event.drag(cx).0;
+                let x = event.event.position.x;
+                if let Some(view) = resize_weak.upgrade() {
+                    view.update(cx, |view, cx| {
+                        let Some(resize) = view.column_resize.as_ref() else {
+                            return;
+                        };
+                        if resize.boundary != boundary {
+                            return;
+                        }
+                        let delta = x - resize.last_x;
+                        view.resize_column(boundary, delta, cx);
+                        if let Some(resize) = view.column_resize.as_mut() {
+                            resize.last_x = x;
+                        }
+                    });
+                    window.refresh();
+                    cx.stop_propagation();
+                }
+            })
+            .on_mouse_up(MouseButton::Left, move |_, _window, cx| {
+                if let Some(view) = mouse_up_weak.upgrade() {
+                    view.update(cx, |view, cx| view.finish_column_resize(cx));
+                }
+            });
+        let list_weak = weak.clone();
+        let row_context = GitGraphRowRenderContext {
+            colors,
+            palette,
+            row_height,
+            column_widths,
+            graph_content_width,
+            weak: list_weak.clone(),
+        };
         let list = uniform_list("git-graph-list", len, move |range, _window, cx| {
-            let Some(view) = weak.upgrade() else {
+            let Some(view) = list_weak.upgrade() else {
                 return Vec::new();
             };
             // 仅克隆可见行，避免整表逐帧复制；
@@ -434,16 +603,73 @@ impl Render for GitGraphView {
             visible
                 .into_iter()
                 .map(|(index, row, selected)| {
-                    render_graph_row(&row, index, selected, colors, palette, row_height, &weak)
-                        .into_any_element()
+                    render_graph_row(&row, index, selected, row_context.clone()).into_any_element()
                 })
                 .collect()
         })
-        .size_full()
-        .track_scroll(&self.scroll_handle)
-        .with_decoration(self.scrollbar.clone());
+        .w(content_width)
+        .flex_1()
+        .min_h_0()
+        .track_scroll(&self.scroll_handle);
 
-        root.child(list)
+        let content = div()
+            .w(content_width)
+            .flex_none()
+            .h_full()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(render_graph_header(column_widths, colors, &weak))
+            .child(list);
+
+        let horizontal_scroll = div()
+            .id("git-graph-horizontal-scroll")
+            .size_full()
+            .overflow_x_scroll()
+            .restrict_scroll_to_axis()
+            .track_scroll(&self.horizontal_scroll_handle)
+            .child(content);
+        root.child(
+            div()
+                .relative()
+                .size_full()
+                .child(horizontal_scroll)
+                .child(div().absolute().inset_0().child(self.scrollbar.clone()))
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .child(self.horizontal_scrollbar.clone()),
+                ),
+        )
+    }
+}
+
+impl GitGraphView {
+    /// 根据已加载提交的实际字宽更新尚未手动调整的列。
+    fn update_content_fit_widths(&mut self, window: &Window) {
+        let font_size = typography::content_size();
+        if self.content_fit_row_count != self.rows.len() || self.content_fit_font_size != font_size
+        {
+            self.content_fit_widths = content_fit_column_widths(&self.rows, window);
+            self.content_fit_row_count = self.rows.len();
+            self.content_fit_font_size = font_size;
+        }
+
+        let pending_reset = self.pending_column_reset.take();
+        if let Some(boundary) = pending_reset {
+            reset_column_width(
+                &mut self.column_widths,
+                boundary,
+                self.content_fit_widths[boundary],
+            );
+        }
+
+        for index in 0..COLUMN_COUNT {
+            if !self.column_widths_customized[index] && Some(index) != pending_reset {
+                self.column_widths[index] = self.content_fit_widths[index];
+            }
+        }
     }
 }
 
@@ -719,22 +945,6 @@ fn lane_palette(colors: &ThemeColors) -> [Rgba; 6] {
     ]
 }
 
-/// 单行图形区宽度：本行用到的 lane 跨度（逐行独立，形成经典阶梯状）。
-fn graph_area_width(layout: &GraphRowLayout) -> Pixels {
-    let mut max_lane = layout.dot_lane;
-    for line in &layout.lines {
-        let lane = match line {
-            GraphLine::Pass { lane, .. } => *lane,
-            GraphLine::MergeIn { from_lane, .. } => *from_lane,
-            GraphLine::ForkOut { to_lane, .. } => *to_lane,
-        };
-        if lane > max_lane {
-            max_lane = lane;
-        }
-    }
-    (max_lane as f32 + 1.0) * LANE_WIDTH
-}
-
 /// 在画布上绘制一行的连线与圆点（坐标以画布 bounds 为原点）。
 fn paint_graph(
     bounds: Bounds<Pixels>,
@@ -822,16 +1032,28 @@ fn draw_commit_circle(center_x: Pixels, center_y: Pixels, color: Rgba, window: &
 }
 
 /// 渲染单行：左侧图形画布 + 右侧文本区；点击选中高亮。
+fn graph_column(width: Pixels, colors: &ThemeColors, with_right_border: bool) -> gpui::Div {
+    let mut column = div().w(width).h_full().flex_none();
+    if with_right_border {
+        column = column.border_r_1().border_color(colors.border_variant);
+    }
+    column
+}
+
 fn render_graph_row(
     row: &GraphRow,
     index: usize,
     selected: bool,
-    colors: ThemeColors,
-    palette: [Rgba; 6],
-    row_height: Pixels,
-    weak: &WeakEntity<GitGraphView>,
+    context: GitGraphRowRenderContext,
 ) -> impl IntoElement {
-    let graph_width = graph_area_width(&row.layout);
+    let GitGraphRowRenderContext {
+        colors,
+        palette,
+        row_height,
+        column_widths,
+        graph_content_width,
+        weak,
+    } = context;
     // 标签配色跟随该 commit 的 lane 颜色，与圆点/连线呼应。
     let accent = palette[row.layout.dot_color % palette.len()];
     let layout = row.layout.clone();
@@ -854,64 +1076,358 @@ fn render_graph_row(
             }
         })
         .child(
-            canvas(
-                |_bounds, _window, _cx| {},
-                move |bounds, _state, window, _cx| {
-                    paint_graph(bounds, &layout, &palette, window);
-                },
-            )
-            .w(graph_width)
-            .h(row_height)
-            .flex_none(),
+            graph_column(column_widths[0], &colors, true)
+                .flex()
+                .justify_center()
+                .overflow_hidden()
+                .child(
+                    canvas(
+                        |_bounds, _window, _cx| {},
+                        move |bounds, _state, window, _cx| {
+                            paint_graph(bounds, &layout, &palette, window);
+                        },
+                    )
+                    .w(graph_content_width)
+                    .h(row_height),
+                ),
         )
-        .child(render_text_area(&row.commit, &colors, accent))
+        .child(render_commit_column(
+            &row.commit,
+            &colors,
+            accent,
+            column_widths[1],
+        ))
+        .child(render_author_column(
+            &row.commit.author_name,
+            &row.commit.oid,
+            &colors,
+            column_widths[2],
+        ))
+        .child(render_time_column(
+            row.commit.timestamp,
+            &row.commit.oid,
+            &colors,
+            column_widths[3],
+        ))
+        .child(render_sha_column(
+            &row.commit.oid,
+            &colors,
+            column_widths[4],
+        ))
 }
 
-/// 文本区：分支/tag 标签 + subject（占满并截断）+ 作者 + 相对时间 + 短 SHA。
-fn render_text_area(commit: &GraphCommit, colors: &ThemeColors, accent: Rgba) -> gpui::Div {
-    let mut text = div()
-        .flex_1()
+/// 计算所有行共用的 lane 列宽，避免不同提交的 lane 数量改变其他列的起始位置。
+fn graph_column_width(rows: &[GraphRow]) -> Pixels {
+    let max_lanes = rows
+        .iter()
+        .map(|row| row.layout.max_lanes)
+        .max()
+        .unwrap_or_default();
+    max_lanes as f32 * LANE_WIDTH
+}
+
+/// 根据已加载内容计算默认列宽；默认值只受内容最大宽度限制。
+fn content_fit_column_widths(rows: &[GraphRow], window: &Window) -> [Pixels; COLUMN_COUNT] {
+    let ui_font = typography::ui_font();
+    let content_font = typography::content_font();
+    let font_size = typography::content_size();
+    let cell_padding = space::S2 * 2.0 + space::S1;
+    let header_padding = space::S6 * 2.0 + space::S1;
+    let labels = ["图形", "提交信息", "作者", "时间", "哈希"];
+    let mut widths = labels.map(|label| {
+        measure_text_width(window, label, ui_font.clone(), font_size) + header_padding
+    });
+
+    widths[0] = widths[0].max(graph_column_width(rows));
+    for row in rows {
+        let refs = parse_refs(&row.commit.refs);
+        let refs_width: Pixels = refs
+            .iter()
+            .map(|reference| {
+                measure_text_width(window, &reference.label, ui_font.clone(), font_size)
+                    + space::S2 * 2.0
+                    + space::S2
+            })
+            .sum();
+        let ref_gaps = space::S8 * refs.len() as f32;
+        let commit_width = space::S6
+            + refs_width
+            + ref_gaps
+            + measure_text_width(window, &row.commit.subject, ui_font.clone(), font_size)
+            + cell_padding;
+        widths[1] = widths[1].max(commit_width);
+
+        widths[2] = widths[2].max(
+            measure_text_width(window, &row.commit.author_name, ui_font.clone(), font_size)
+                + cell_padding,
+        );
+        let time = relative_time(row.commit.timestamp);
+        widths[3] = widths[3]
+            .max(measure_text_width(window, &time, ui_font.clone(), font_size) + cell_padding);
+        let short_sha = row.commit.oid.get(..7).unwrap_or(&row.commit.oid);
+        widths[4] = widths[4].max(
+            measure_text_width(window, short_sha, content_font.clone(), font_size) + cell_padding,
+        );
+    }
+
+    std::array::from_fn(|index| widths[index].min(COLUMN_CONTENT_MAX_WIDTHS[index]))
+}
+
+/// 使用与提交列表相同的字体和字号测量单行文本，显式换行时取最长一行。
+fn measure_text_width(window: &Window, text: &str, font: Font, font_size: Pixels) -> Pixels {
+    text.split('\n')
+        .map(|line| {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            if line.is_empty() {
+                return px(0.0);
+            }
+            let run = TextRun {
+                len: line.len(),
+                font: font.clone(),
+                color: window.text_style().color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            window
+                .text_system()
+                .shape_line(line.to_owned().into(), font_size, &[run], None)
+                .width
+        })
+        .max()
+        .unwrap_or(px(0.0))
+}
+
+/// 调整相邻列的宽度：拖动边界只在两侧列之间重新分配空间，并保留两侧边界。
+fn resize_column_widths(
+    widths: &mut [Pixels; COLUMN_COUNT],
+    boundary: usize,
+    delta: Pixels,
+) -> Pixels {
+    if boundary + 1 >= COLUMN_COUNT {
+        return px(0.0);
+    }
+    let left = widths[boundary];
+    let right = widths[boundary + 1];
+    let min_delta = (COLUMN_MIN_WIDTH - left).max(right - COLUMN_RESIZE_MAX_WIDTHS[boundary + 1]);
+    let max_delta = (COLUMN_RESIZE_MAX_WIDTHS[boundary] - left).min(right - COLUMN_MIN_WIDTH);
+    if min_delta > max_delta {
+        return px(0.0);
+    }
+    let allowed_delta = delta.clamp(min_delta, max_delta);
+    widths[boundary] = left + allowed_delta;
+    widths[boundary + 1] = right - allowed_delta;
+    allowed_delta
+}
+
+/// 将边界左侧的列恢复到内容适应宽度，并把宽度差交给右侧列。
+fn reset_column_width(
+    widths: &mut [Pixels; COLUMN_COUNT],
+    boundary: usize,
+    target_width: Pixels,
+) -> Pixels {
+    if boundary >= COLUMN_COUNT - 1 {
+        return px(0.0);
+    }
+    resize_column_widths(widths, boundary, target_width - widths[boundary])
+}
+
+/// 表头：每个可见列都有边界线，边界处的热区负责启动拖拽调整。
+fn render_graph_header(
+    column_widths: [Pixels; COLUMN_COUNT],
+    colors: ThemeColors,
+    weak: &WeakEntity<GitGraphView>,
+) -> impl IntoElement {
+    let labels = ["图形", "提交信息", "作者", "时间", "哈希"];
+    let mut header = div()
+        .id("git-graph-header")
+        .w_full()
+        .h(row_height())
+        .flex()
+        .items_center()
+        .flex_none()
+        .bg(colors.editor_background)
+        .text_color(colors.text_placeholder)
+        .border_b_1()
+        .border_color(colors.border_variant);
+
+    for (index, label) in labels.into_iter().enumerate() {
+        let mut cell = graph_column(column_widths[index], &colors, index + 1 < COLUMN_COUNT)
+            .relative()
+            .flex()
+            .items_center()
+            .px(space::S6)
+            .child(label);
+
+        if index + 1 < COLUMN_COUNT {
+            let resize_weak = weak.clone();
+            let resize_handle = div()
+                .id(("git-graph-column-resize", index))
+                .absolute()
+                .top_0()
+                .right_neg_0p5()
+                .w(COLUMN_RESIZE_HANDLE_WIDTH)
+                .h_full()
+                .cursor_col_resize()
+                .on_mouse_down(MouseButton::Left, move |event, _window, cx| {
+                    if let Some(view) = resize_weak.upgrade() {
+                        view.update(cx, |view, cx| {
+                            view.begin_column_resize(index, event.position.x, cx);
+                        });
+                    }
+                    cx.stop_propagation();
+                })
+                .on_click({
+                    let reset_weak = weak.clone();
+                    move |event, _window, cx| {
+                        if event.click_count() >= 2
+                            && let Some(view) = reset_weak.upgrade()
+                        {
+                            view.update(cx, |view, cx| view.reset_column(index, cx));
+                        }
+                        cx.stop_propagation();
+                    }
+                })
+                .on_drag(DraggedGitGraphColumn(index), move |_, _, _, cx| {
+                    cx.new(|_| DraggedGitGraphColumn(index))
+                });
+            cell = cell.child(resize_handle);
+        }
+        header = header.child(cell);
+    }
+    header
+}
+
+/// 提交信息列：分支/tag 标签与 subject 共用提交描述列，subject 在该列内截断。
+fn render_commit_column(
+    commit: &GraphCommit,
+    colors: &ThemeColors,
+    accent: Rgba,
+    width: Pixels,
+) -> gpui::Div {
+    let subject = commit.subject.clone();
+    let mut column = graph_column(width, colors, true)
         .min_w_0()
         .flex()
         .items_center()
         .gap(space::S8)
         .pl(space::S6)
-        .pr(space::S12)
-        .overflow_hidden();
+        .overflow_hidden()
+        .border_r_1()
+        .border_color(colors.border_variant);
 
     for reference in parse_refs(&commit.refs) {
-        text = text.child(render_ref_chip(&reference, accent));
+        column = column.child(render_ref_chip(&reference, accent));
     }
 
-    let short_sha = commit.oid.get(..7).unwrap_or(&commit.oid).to_string();
-    text.child(
-        div()
-            .flex_1()
-            .min_w_0()
-            .overflow_hidden()
-            .truncate()
-            .text_color(colors.text)
-            .child(commit.subject.clone()),
+    column.child(
+        ButtonLike::new(format!("git-graph-subject-{}", commit.oid))
+            .flex_grow()
+            .padding(space::S2)
+            .tooltip(column_tooltip(&subject))
+            .on_right_click(move |_, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(subject.clone()));
+            })
+            .child(
+                div()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .truncate()
+                    .text_color(colors.text)
+                    .child(commit.subject.clone()),
+            ),
     )
-    .child(
-        div()
-            .flex_none()
-            .text_color(colors.text_muted)
-            .child(commit.author_name.clone()),
-    )
-    .child(
-        div()
-            .flex_none()
-            .text_color(colors.text_muted)
-            .child(relative_time(commit.timestamp)),
-    )
-    .child(
-        div()
-            .flex_none()
-            .text_color(colors.text_disabled)
-            .font(typography::content_font())
-            .child(short_sha),
-    )
+}
+
+/// 作者列：独立列宽，内容不足时通过 tooltip 查看完整值。
+fn render_author_column(author: &str, oid: &str, colors: &ThemeColors, width: Pixels) -> gpui::Div {
+    let author = author.to_string();
+    graph_column(width, colors, true)
+        .min_w_0()
+        .overflow_hidden()
+        .border_r_1()
+        .border_color(colors.border_variant)
+        .child(
+            ButtonLike::new(format!("git-graph-author-{oid}"))
+                .padding(space::S2)
+                .tooltip(column_tooltip(&author))
+                .on_right_click({
+                    let author = author.clone();
+                    move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(author.clone()));
+                    }
+                })
+                .child(
+                    div()
+                        .overflow_hidden()
+                        .truncate()
+                        .text_color(colors.text_muted)
+                        .child(author.clone()),
+                ),
+        )
+}
+
+/// 相对时间列：独立列宽，并为完整显示值提供 tooltip。
+fn render_time_column(timestamp: i64, oid: &str, colors: &ThemeColors, width: Pixels) -> gpui::Div {
+    let time = relative_time(timestamp);
+    graph_column(width, colors, true)
+        .min_w_0()
+        .overflow_hidden()
+        .border_r_1()
+        .border_color(colors.border_variant)
+        .child(
+            ButtonLike::new(format!("git-graph-time-{oid}"))
+                .padding(space::S2)
+                .tooltip(column_tooltip(&time))
+                .on_right_click({
+                    let time = time.clone();
+                    move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(time.clone()));
+                    }
+                })
+                .child(
+                    div()
+                        .overflow_hidden()
+                        .truncate()
+                        .text_color(colors.text_muted)
+                        .child(time),
+                ),
+        )
+}
+
+/// 短哈希列：展示短值，tooltip 保留完整 OID。
+fn render_sha_column(oid: &str, colors: &ThemeColors, width: Pixels) -> gpui::Div {
+    let oid = oid.to_string();
+    let short_sha = oid.get(..7).unwrap_or(&oid).to_string();
+    graph_column(width, colors, false)
+        .min_w_0()
+        .overflow_hidden()
+        .border_r_1()
+        .border_color(colors.border_variant)
+        .child(
+            ButtonLike::new(format!("git-graph-sha-{oid}"))
+                .padding(space::S2)
+                .tooltip(column_tooltip(&oid))
+                .on_right_click({
+                    let oid = oid.clone();
+                    move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(oid.clone()));
+                    }
+                })
+                .child(
+                    div()
+                        .overflow_hidden()
+                        .truncate()
+                        .text_color(colors.text_disabled)
+                        .font(typography::content_font())
+                        .child(short_sha),
+                ),
+        )
+}
+
+/// Git Graph 列单元格的通用提示：第一行是完整值，第二行说明右键复制行为。
+fn column_tooltip(value: &str) -> TooltipSpec {
+    TooltipSpec::from_lines([value.to_string(), "右键复制该列信息".to_string()])
 }
 
 /// 标签类型：决定 chip 的配色（当前分支高亮，tag 弱化，普通分支常规）。
@@ -1033,5 +1549,76 @@ mod tests {
                 "还原内容字号后行高应回到原值（字号以 f32 存储，往返无损）"
             );
         });
+    }
+
+    #[test]
+    fn column_resize_preserves_total_width_and_minimums() {
+        let mut widths = [px(140.0), px(400.0), px(100.0), px(120.0), px(100.0)];
+        let total_before: f32 = widths.iter().map(|width| f32::from(*width)).sum();
+
+        resize_column_widths(&mut widths, 0, px(-500.0));
+
+        let total_after: f32 = widths.iter().map(|width| f32::from(*width)).sum();
+        assert!((total_before - total_after).abs() < f32::EPSILON);
+        assert_eq!(widths[0], COLUMN_MIN_WIDTH);
+        assert_eq!(widths[1], px(524.0));
+    }
+
+    #[test]
+    fn graph_column_width_uses_only_actual_lane_count() {
+        let row = |max_lanes| GraphRow {
+            commit: GraphCommit {
+                oid: String::new(),
+                parents: Vec::new(),
+                author_name: String::new(),
+                timestamp: 0,
+                subject: String::new(),
+                refs: Vec::new(),
+            },
+            layout: GraphRowLayout {
+                dot_lane: 0,
+                dot_color: 0,
+                lines: Vec::new(),
+                max_lanes,
+            },
+        };
+
+        assert_eq!(graph_column_width(&[row(1)]), px(16.0));
+        assert_eq!(graph_column_width(&[row(1), row(3)]), px(48.0));
+        assert_eq!(graph_column_width(&[]), px(0.0));
+    }
+
+    #[test]
+    fn column_resize_respects_maximums_on_both_sides() {
+        let mut widths = [px(100.0), px(500.0), px(100.0), px(120.0), px(100.0)];
+        resize_column_widths(&mut widths, 0, px(500.0));
+        assert_eq!(widths[0], COLUMN_RESIZE_MAX_WIDTHS[0]);
+        assert_eq!(widths[1], px(280.0));
+
+        let mut widths = [px(200.0), px(700.0), px(100.0), px(120.0), px(100.0)];
+        resize_column_widths(&mut widths, 0, px(-500.0));
+        assert_eq!(widths[0], px(100.0));
+        assert_eq!(widths[1], COLUMN_RESIZE_MAX_WIDTHS[1]);
+    }
+
+    #[test]
+    fn column_resize_ignores_an_invalid_existing_pair() {
+        let mut widths = [px(8.0), px(8.0), px(100.0), px(120.0), px(100.0)];
+        assert_eq!(resize_column_widths(&mut widths, 0, px(10.0)), px(0.0));
+        assert_eq!(widths[0], px(8.0));
+        assert_eq!(widths[1], px(8.0));
+    }
+
+    #[test]
+    fn double_click_reset_restores_left_column_and_preserves_total_width() {
+        let mut widths = [px(220.0), px(420.0), px(120.0), px(112.0), px(96.0)];
+        let total_before: f32 = widths.iter().map(|width| f32::from(*width)).sum();
+
+        reset_column_width(&mut widths, 0, px(160.0));
+
+        let total_after: f32 = widths.iter().map(|width| f32::from(*width)).sum();
+        assert_eq!(widths[0], px(160.0));
+        assert_eq!(widths[1], px(480.0));
+        assert!((total_before - total_after).abs() < f32::EPSILON);
     }
 }

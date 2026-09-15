@@ -24,9 +24,9 @@ use crate::selection::SelectionSet;
 
 use super::display_map::{
     BufferPoint, DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint, DisplayRow,
-    DisplaySnapshot, FILE_HEADER_HEIGHT, FoldRowSegment, ProjectedLineIndex, ProjectedRange,
-    RenderedWhitespace, RowStyleInput, StickyBufferHeader, WrapRowInfo, WrapViewportRowKind,
-    byte_for_display_column, render_viewport_row,
+    DisplaySnapshot, FILE_HEADER_HEIGHT, FoldBias, FoldRowSegment, ProjectedLineIndex,
+    ProjectedRange, RenderedWhitespace, RowStyleInput, StickyBufferHeader, WrapRowInfo,
+    WrapViewportRowKind, byte_for_display_column, render_viewport_row,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
@@ -269,7 +269,11 @@ impl EditorLayout {
         Some((line, column))
     }
 
-    fn buffer_point_for_position(&self, position: Point<Pixels>) -> Option<BufferPoint> {
+    fn buffer_point_for_position(
+        &self,
+        position: Point<Pixels>,
+        fold_bias: FoldBias,
+    ) -> Option<BufferPoint> {
         let (line, column) = self.line_column_at(position)?;
         // placeholder 提示行：不映射到 placeholder buffer（空 buffer 唯一合法坐标是 0）。
         if line.is_placeholder {
@@ -279,7 +283,10 @@ impl EditorLayout {
         if line.fold_segments.is_some() {
             let offset = self
                 .display_snapshot
-                .display_point_to_offset(DisplayPoint::new(line.row, DisplayColumn::new(column)))
+                .display_point_to_offset_with_bias(
+                    DisplayPoint::new(line.row, DisplayColumn::new(column)),
+                    fold_bias,
+                )
                 .ok()?;
             return self
                 .display_snapshot
@@ -1651,7 +1658,9 @@ impl Element for EditorElement {
                     return;
                 }
             }
-            let Some(point) = event_layout.buffer_point_for_position(event.position) else {
+            let Some(point) =
+                event_layout.buffer_point_for_position(event.position, FoldBias::Left)
+            else {
                 return;
             };
             editor.update(cx, |editor, cx| {
@@ -1684,23 +1693,43 @@ impl Element for EditorElement {
             }
             let scroll_delta =
                 selection_autoscroll_delta(event.position, drag_text_bounds, drag_line_height);
-            let Some(buffer_point) = drag_layout.buffer_point_for_position(event.position) else {
-                return;
-            };
             drag_editor.update(cx, |editor, cx| {
                 // 拖拽事件是窗口级的（`dragging` 为任意面板的按下状态）：
                 // 只有编辑器自身正在拖拽选区时才滚动/扩展选区，避免终端等面板拖拽时编辑器联动滚动。
                 if !editor.has_pending_selection() {
                     return;
                 }
+                let Some(anchor) = editor.pending_selection_anchor() else {
+                    return;
+                };
+                let snapshot = editor.render_snapshot();
+                let Some(left_point) =
+                    drag_layout.buffer_point_for_position(event.position, FoldBias::Left)
+                else {
+                    return;
+                };
+                let Ok(left_offset) = snapshot
+                    .position_to_byte(Position::new(left_point.line(), left_point.column()))
+                else {
+                    return;
+                };
+                let fold_bias = if left_offset >= anchor {
+                    FoldBias::Right
+                } else {
+                    FoldBias::Left
+                };
+                let Some(buffer_point) =
+                    drag_layout.buffer_point_for_position(event.position, fold_bias)
+                else {
+                    return;
+                };
                 if scroll_delta != point(Pixels::ZERO, Pixels::ZERO)
                     && editor.last_drag_autoscroll.get().elapsed() >= AUTOSCROLL_INTERVAL
                 {
                     editor.last_drag_autoscroll.set(Instant::now());
                     editor.scroll_by(scroll_delta, cx);
                 }
-                if let Ok(offset) = editor
-                    .render_snapshot()
+                if let Ok(offset) = snapshot
                     .position_to_byte(Position::new(buffer_point.line(), buffer_point.column()))
                 {
                     editor.update_selection(offset, cx);

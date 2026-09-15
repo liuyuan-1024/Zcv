@@ -11,7 +11,7 @@ use zcv_multi_buffer::ExcerptSnapshot;
 use zcv_text::{ByteOffset, CoordinateError, Line, LogicalColumn, TextRange};
 
 use super::error::DisplayMapResult;
-use super::fold_map::{ProjectedLineIndex, ProjectedPoint, ProjectedRange};
+use super::fold_map::{FoldBias, ProjectedLineIndex, ProjectedPoint, ProjectedRange};
 use super::wrap_map::{WrapSnapshot, WrapViewportRowKind};
 use super::{DisplayPoint, DisplayRow};
 
@@ -313,13 +313,21 @@ impl BlockSnapshot {
         &self,
         point: DisplayPoint,
     ) -> DisplayMapResult<ByteOffset> {
+        self.display_point_to_offset_with_bias(point, FoldBias::Left)
+    }
+
+    pub(super) fn display_point_to_offset_with_bias(
+        &self,
+        point: DisplayPoint,
+        bias: FoldBias,
+    ) -> DisplayMapResult<ByteOffset> {
         if point.row().get() >= self.rows.len() {
             return Err(CoordinateError::LineOutOfBounds(Line::new(point.row().get())).into());
         }
         match self.display_row_mapping(point.row().get()) {
             RowMapping::Text(row) => self
                 .wrap_snapshot
-                .display_point_to_offset(DisplayPoint::new(row, point.column())),
+                .display_point_to_offset_with_bias(DisplayPoint::new(row, point.column()), bias),
             RowMapping::Block(placement) => Ok(placement.block.excerpt.output_range().start()),
         }
     }

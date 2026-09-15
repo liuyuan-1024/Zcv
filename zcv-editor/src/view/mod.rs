@@ -1307,6 +1307,12 @@ impl Editor {
         self.pending_selection.is_some()
     }
 
+    pub(super) fn pending_selection_anchor(&self) -> Option<ByteOffset> {
+        self.pending_selection
+            .as_ref()
+            .map(|selection| selection.anchor)
+    }
+
     pub(super) fn set_ime_caret_geometry(
         &mut self,
         element_bounds: Bounds<Pixels>,

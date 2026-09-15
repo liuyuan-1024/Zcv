@@ -38,7 +38,7 @@ use error::DisplayMapResult;
 #[cfg(test)]
 pub(crate) use fold_map::ProjectedPoint;
 use fold_map::{ApplyOutcome, FoldMap, FoldSnapshot, LogicalProjection};
-pub(crate) use fold_map::{FoldRowSegment, ProjectedLineIndex, ProjectedRange};
+pub(crate) use fold_map::{FoldBias, FoldRowSegment, ProjectedLineIndex, ProjectedRange};
 use gpui::HighlightStyle;
 pub(crate) use inlay_map::Inlay;
 use inlay_map::InlayMap;
@@ -337,7 +337,16 @@ impl DisplaySnapshot {
         &self,
         point: DisplayPoint,
     ) -> DisplayMapResult<ByteOffset> {
-        self.block_snapshot.display_point_to_offset(point)
+        self.display_point_to_offset_with_bias(point, FoldBias::Left)
+    }
+
+    pub(super) fn display_point_to_offset_with_bias(
+        &self,
+        point: DisplayPoint,
+        bias: FoldBias,
+    ) -> DisplayMapResult<ByteOffset> {
+        self.block_snapshot
+            .display_point_to_offset_with_bias(point, bias)
     }
 
     pub(super) fn display_to_logical_column(
@@ -879,6 +888,24 @@ mod tests {
                     DisplayColumn::new(12)
                 ))
                 .expect("尾段列应可映射"),
+            ByteOffset::new(27)
+        );
+        assert_eq!(
+            snapshot
+                .display_point_to_offset_with_bias(
+                    DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(11)),
+                    FoldBias::Left,
+                )
+                .expect("占位符左偏置应可映射"),
+            ByteOffset::new(11)
+        );
+        assert_eq!(
+            snapshot
+                .display_point_to_offset_with_bias(
+                    DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(11)),
+                    FoldBias::Right,
+                )
+                .expect("占位符右偏置应可映射到折叠终点"),
             ByteOffset::new(27)
         );
         // 合并行行尾 = close 行内容末尾。

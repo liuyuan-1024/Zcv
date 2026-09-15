@@ -242,6 +242,14 @@ impl WrapSnapshot {
         &self,
         point: DisplayPoint,
     ) -> DisplayMapResult<ByteOffset> {
+        self.display_point_to_offset_with_bias(point, FoldBias::Left)
+    }
+
+    pub(super) fn display_point_to_offset_with_bias(
+        &self,
+        point: DisplayPoint,
+        bias: FoldBias,
+    ) -> DisplayMapResult<ByteOffset> {
         let fragment = self.display_row_to_fragment(point.row())?;
         match fragment.kind {
             WrapFragmentKind::Text(_source) => {
@@ -269,8 +277,11 @@ impl WrapSnapshot {
                         point.column().get(),
                         buffer,
                     );
-                    return self
-                        .merged_byte_to_offset(&segments, fragment.byte_range.start + local);
+                    return self.merged_byte_to_offset(
+                        &segments,
+                        fragment.byte_range.start + local,
+                        bias,
+                    );
                 }
                 let content = line_content(text.as_ref());
                 let byte_range = fragment.byte_range;
@@ -301,6 +312,7 @@ impl WrapSnapshot {
         &self,
         segments: &[FoldRowSegment],
         merged_byte: usize,
+        bias: FoldBias,
     ) -> DisplayMapResult<ByteOffset> {
         let inlay = self.tab_snapshot.fold_snapshot().inlay_snapshot();
         let anchor = &segments[0];
@@ -319,7 +331,13 @@ impl WrapSnapshot {
             return Ok(ByteOffset::new(global_start + original));
         }
         if merged_byte < placeholder.merged_range.end {
-            // 占位符列吸附折叠起点：右箭头一步跨过折叠，左箭头从尾段可回到 anchor 行尾。
+            // 占位符列按选区方向吸附到折叠起点或终点；这样拖拽经过折叠时，隐藏内容会整体纳入选区。
+            if bias == FoldBias::Right {
+                let FoldRowSegmentKind::Text { global_start, .. } = &tail.kind else {
+                    unreachable!("折叠合并行尾段必须是 close 文本段");
+                };
+                return Ok(ByteOffset::new(*global_start));
+            }
             let FoldRowSegmentKind::Text {
                 stream_line,
                 global_start,
@@ -484,7 +502,11 @@ impl WrapSnapshot {
                 if let Some(segments) =
                     fold.fold_row_segments(ProjectedLineIndex::new(fragment.tab_row))
                 {
-                    return self.merged_byte_to_offset(&segments, fragment.byte_range.end);
+                    return self.merged_byte_to_offset(
+                        &segments,
+                        fragment.byte_range.end,
+                        FoldBias::Left,
+                    );
                 }
                 // 片段终点（投影偏移）逆投影回原始行内偏移。
                 let stream_line = self

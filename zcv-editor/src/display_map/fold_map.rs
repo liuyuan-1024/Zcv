@@ -124,7 +124,7 @@ impl<'a> Dimension<'a, FoldSummary> for FoldOrder {
 
 /// 隐藏点投影的 bias 约定：Left 吸附折叠起点列，Right 吸附折叠终点列。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum FoldBias {
+pub(crate) enum FoldBias {
     Left,
     Right,
 }

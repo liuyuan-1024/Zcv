@@ -5,19 +5,18 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::{cell::RefCell, rc::Rc};
 
 use alacritty_terminal::vte::ansi::Color;
 use gpui::{
-    App, Bounds, ContentMask, Element, ElementId, Font, GlobalElementId, HighlightStyle,
-    HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, Pixels, Point, Rgba,
-    ShapedLine, Style, TextRun, Window, px, relative, size,
+    App, Bounds, ContentMask, Element, ElementId, Font, GlobalElementId, HighlightStyle, Hsla,
+    InspectorElementId, InteractiveElement, Interactivity, IntoElement, LayoutId, Pixels, Point,
+    Rgba, ShapedLine, StatefulInteractiveElement, TextRun, Window, px, relative, size,
 };
 use unicode_width::UnicodeWidthChar;
 use zcv_theme::{color, typography};
-use zcv_ui::drag_autoscroll_delta;
 
-use crate::mappings::mouse::{grid_point, grid_point_and_side};
-use crate::{Cell, Content, IndexedCell, TerminalBounds, TerminalView, palette};
+use crate::{Cell, Content, IndexedCell, SelectionGeometry, TerminalBounds, TerminalView, palette};
 use alacritty_terminal::vte::ansi::CursorShape;
 
 /// 同一行的渲染数据：文本段、起点与起始网格列。
@@ -56,10 +55,7 @@ pub(super) struct TerminalLayout {
     cell_width: Pixels,
     font: Font,
     font_size: Pixels,
-    /// 渲染快照的显示偏移与行列数（鼠标坐标换算用）。
-    display_offset: usize,
     screen_lines: usize,
-    columns: usize,
     text_runs: Vec<LineRun>,
     rects: Vec<LayoutRect>,
     cursor: Option<CursorLayout>,
@@ -68,8 +64,16 @@ pub(super) struct TerminalLayout {
     hitbox: gpui::Hitbox,
 }
 
+#[derive(Default)]
+struct InteractionState {
+    geometry: Option<SelectionGeometry>,
+    hitbox: Option<gpui::HitboxId>,
+}
+
 pub(super) struct TerminalElement {
     view: gpui::Entity<TerminalView>,
+    interactivity: Interactivity,
+    interaction_state: Rc<RefCell<InteractionState>>,
     /// 文本段 shape 缓存：滚动等重绘帧直接命中，避免每帧全量字体 shaping。
     /// 键包含文本、样式、字体和当前窗口的布局度量；
     /// 容量超限时整体清空（视口内行数有限，重建成本低，滚动场景命中率不受影响）。
@@ -179,13 +183,73 @@ mod shaped_run_key_tests {
 
 impl TerminalElement {
     pub(super) fn new(view: gpui::Entity<TerminalView>) -> Self {
-        TerminalElement {
+        let mut element = TerminalElement {
             view,
+            interactivity: Default::default(),
+            interaction_state: Rc::new(RefCell::new(InteractionState::default())),
             shaped_runs: HashMap::new(),
             row_cache: HashMap::new(),
-        }
+        };
+        element.register_interactivity_listeners();
+        element
+    }
+
+    fn register_interactivity_listeners(&mut self) {
+        let state = self.interaction_state.clone();
+        let view = self.view.clone();
+        self.interactivity
+            .on_scroll_wheel(move |event, window, cx| {
+                let Some(geometry) = state.borrow().geometry else {
+                    return;
+                };
+                let delta = event.delta.pixel_delta(geometry.line_height);
+                let scroll_lines =
+                    (f32::from(delta.y) / f32::from(geometry.line_height)).trunc() as i32;
+                let content = view.read(cx).terminal.read(cx).last_content().clone();
+                let point = crate::mappings::mouse::grid_point(
+                    event.position,
+                    geometry.origin,
+                    geometry.cell_width,
+                    geometry.line_height,
+                    content.display_offset,
+                    content.screen_lines,
+                    content.columns,
+                );
+                view.update(cx, |view, cx| {
+                    view.handle_scroll_wheel(event, Some(point), scroll_lines, window, cx);
+                });
+            });
+
+        let state_for_down = self.interaction_state.clone();
+        let view_for_down = self.view.clone();
+        self.interactivity
+            .on_any_mouse_down(move |event, window, cx| {
+                let Some(geometry) = state_for_down.borrow().geometry else {
+                    return;
+                };
+                let focus = view_for_down.read(cx).focus_handle();
+                window.focus(&focus, cx);
+                let started = view_for_down.update(cx, |view, cx| {
+                    view.terminal
+                        .update(cx, |terminal, cx| terminal.mouse_down(event, geometry, cx))
+                });
+                if started {
+                    if let Some(hitbox) = state_for_down.borrow().hitbox {
+                        window.capture_pointer(hitbox);
+                    }
+                    window.prevent_default();
+                }
+            });
     }
 }
+
+impl InteractiveElement for TerminalElement {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        &mut self.interactivity
+    }
+}
+
+impl StatefulInteractiveElement for TerminalElement {}
 
 impl IntoElement for TerminalElement {
     type Element = Self;
@@ -200,7 +264,7 @@ impl Element for TerminalElement {
     type PrepaintState = TerminalLayout;
 
     fn id(&self) -> Option<ElementId> {
-        None
+        self.interactivity.element_id.clone()
     }
 
     fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
@@ -209,104 +273,121 @@ impl Element for TerminalElement {
 
     fn request_layout(
         &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut style = Style::default();
-        style.size.width = relative(1.).into();
-        style.size.height = relative(1.).into();
-        (window.request_layout(style, [], cx), ())
+        let layout_id = self.interactivity.request_layout(
+            id,
+            inspector_id,
+            window,
+            cx,
+            |mut style, window, cx| {
+                style.size.width = relative(1.).into();
+                style.size.height = relative(1.).into();
+                window.request_layout(style, [], cx)
+            },
+        );
+        (layout_id, ())
     }
 
     fn prepaint(
         &mut self,
-        _id: Option<&GlobalElementId>,
-        _inspector_id: Option<&InspectorElementId>,
+        id: Option<&GlobalElementId>,
+        inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        // 尺寸度量：格宽取 'm' 字形宽度，行高取字体大小 × 行高倍率。
-        let font = typography::content_font();
-        let font_size = self.view.read(cx).font_size(cx);
-        let cell_width = window
-            .text_system()
-            .shape_line(
-                "m".into(),
-                font_size,
-                &[TextRun {
-                    len: 1,
-                    font: font.clone(),
-                    color: Hsla::white(),
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                }],
-                None,
-            )
-            .width
-            .max(Pixels::from(1.));
-        let line_height = self.view.read(cx).line_height(cx);
+        self.interactivity.prepaint(
+            id,
+            inspector_id,
+            bounds,
+            bounds.size,
+            window,
+            cx,
+            |_, _, hitbox, window, cx| {
+                let hitbox = hitbox.expect("终端交互元素必须有命中区域");
+                // 尺寸度量：格宽取 'm' 字形宽度，行高取字体大小 × 行高倍率。
+                let font = typography::content_font();
+                let font_size = self.view.read(cx).font_size(cx);
+                let cell_width = window
+                    .text_system()
+                    .shape_line(
+                        "m".into(),
+                        font_size,
+                        &[TextRun {
+                            len: 1,
+                            font: font.clone(),
+                            color: Hsla::white(),
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        }],
+                        None,
+                    )
+                    .width
+                    .max(Pixels::from(1.));
+                let line_height = self.view.read(cx).line_height(cx);
 
-        // 通知终端新尺寸并排空事件队列，刷新渲染快照。
-        let terminal_bounds = TerminalBounds::new(cell_width, line_height, bounds.size);
-        self.view.update(cx, |view, cx| {
-            view.terminal
-                .update(cx, |terminal, cx| terminal.set_size(terminal_bounds, cx));
-            view.sync(window, cx);
-        });
-
-        let content = self.view.read(cx).terminal.read(cx).last_content().cloned();
-        let focused = self.view.read(cx).is_focused(window);
-        let ime_marked_text = self.view.read(cx).marked_text().map(str::to_owned);
-        let (display_offset, screen_lines, columns) =
-            content.as_ref().map_or((0, 1, 2), |content| {
-                (
-                    content.display_offset,
-                    content.screen_lines,
-                    content.columns,
-                )
-            });
-        let mut layout = TerminalLayout {
-            origin: bounds.origin,
-            line_height,
-            cell_width,
-            font,
-            font_size,
-            display_offset,
-            screen_lines,
-            columns,
-            text_runs: Vec::new(),
-            rects: Vec::new(),
-            cursor: None,
-            ime_marked_text,
-            background: color::current(cx).editor_background,
-            hitbox: window.insert_hitbox(bounds, HitboxBehavior::Normal),
-        };
-
-        if let Some(content) = content {
-            let ime_marked_text = layout.ime_marked_text.clone();
-            layout_grid(
-                &content,
-                &mut layout,
-                &mut self.row_cache,
-                ime_marked_text.as_deref(),
-                window,
-                cx,
-            );
-            let show_cursor = self.view.read(cx).should_show_cursor(focused, cx);
-            layout.cursor = layout_cursor(&content, &layout, window, cx, show_cursor);
-            // IME 候选窗位置：光标像素 bounds 独立于闪烁可见性计算。
-            if let Some(bounds) = cursor_pixel_bounds(&content, &layout) {
-                self.view.update(cx, |view, _| {
-                    view.set_ime_cursor_bounds(bounds);
+                // 通知终端新尺寸并排空事件队列，刷新渲染快照。
+                let terminal_bounds = TerminalBounds::new(cell_width, line_height, bounds.size);
+                self.view.update(cx, |view, cx| {
+                    view.terminal
+                        .update(cx, |terminal, cx| terminal.set_size(terminal_bounds, cx));
+                    view.sync(window, cx);
                 });
-            }
-        }
-        layout
+
+                let content = self.view.read(cx).terminal.read(cx).last_content().clone();
+                let focused = self.view.read(cx).is_focused(window);
+                let ime_marked_text = self.view.read(cx).marked_text().map(str::to_owned);
+                let layout = TerminalLayout {
+                    origin: bounds.origin,
+                    line_height,
+                    cell_width,
+                    font,
+                    font_size,
+                    screen_lines: content.screen_lines,
+                    text_runs: Vec::new(),
+                    rects: Vec::new(),
+                    cursor: None,
+                    ime_marked_text,
+                    background: color::current(cx).editor_background,
+                    hitbox,
+                };
+                let mut layout = layout;
+                *self.interaction_state.borrow_mut() = InteractionState {
+                    geometry: Some(SelectionGeometry {
+                        origin: layout.origin,
+                        cell_width: layout.cell_width,
+                        line_height: layout.line_height,
+                        screen_lines: layout.screen_lines,
+                    }),
+                    hitbox: Some(layout.hitbox.id),
+                };
+
+                let ime_marked_text = layout.ime_marked_text.clone();
+                layout_grid(
+                    &content,
+                    &mut layout,
+                    &mut self.row_cache,
+                    ime_marked_text.as_deref(),
+                    window,
+                    cx,
+                );
+                let show_cursor = self.view.read(cx).should_show_cursor(focused, cx);
+                layout.cursor = layout_cursor(&content, &layout, window, cx, show_cursor);
+                // IME 候选窗位置：光标像素 bounds 独立于闪烁可见性计算。
+                if let Some(bounds) = cursor_pixel_bounds(&content, &layout) {
+                    self.view.update(cx, |view, _| {
+                        view.set_ime_cursor_bounds(bounds);
+                    });
+                }
+                layout
+            },
+        )
     }
 
     fn paint(
@@ -443,7 +524,19 @@ impl Element for TerminalElement {
                 }
             }
         });
-        register_mouse_listeners(layout, self.view.clone(), window, cx);
+        self.register_mouse_move_listener(window);
+
+        // Interactivity 负责把本元素的命中区域与 GPUI 事件分发绑定起来；
+        // 终端绘制仍由上面的专用批处理完成。
+        self.interactivity.paint(
+            _id,
+            _inspector_id,
+            bounds,
+            Some(&layout.hitbox),
+            window,
+            cx,
+            |_style, _window, _cx| {},
+        );
 
         // 注册 IME 输入处理器（中文输入法等组合输入）。
         let focus = self.view.read(cx).focus_handle();
@@ -457,115 +550,44 @@ impl Element for TerminalElement {
     }
 }
 
-/// 注册滚轮与鼠标监听（每帧重新注册，闭包捕获当帧的坐标度量与快照状态）。
-fn register_mouse_listeners(
-    layout: &TerminalLayout,
-    view: gpui::Entity<TerminalView>,
-    window: &mut Window,
-    _cx: &mut App,
-) {
-    let hitbox = layout.hitbox.clone();
-    let origin = layout.origin;
-    let cell_width = layout.cell_width;
-    let line_height = layout.line_height;
-    let display_offset = layout.display_offset;
-    let screen_lines = layout.screen_lines;
-    let columns = layout.columns;
-
-    let wheel_hitbox = hitbox.clone();
-    let wheel_view = view.clone();
-    window.on_mouse_event(move |event: &gpui::ScrollWheelEvent, phase, window, cx| {
-        if phase != gpui::DispatchPhase::Bubble || !wheel_hitbox.is_hovered(window) {
-            return;
-        }
-        let delta = event.delta.pixel_delta(line_height);
-        let scroll_lines = (f32::from(delta.y) / f32::from(line_height)).trunc() as i32;
-        // 慢滚（单事件增量小于行高）不提前丢弃：像素累积在滚动状态机内跨事件进行。
-        let point = grid_point(
-            event.position,
-            origin,
-            cell_width,
-            line_height,
-            display_offset,
-            screen_lines,
-            columns,
-        );
-        wheel_view.update(cx, |view, cx| {
-            view.handle_scroll_wheel(event, Some(point), scroll_lines, window, cx);
+impl TerminalElement {
+    /// 拖拽移动是窗口级事件：GPUI 指针捕获后，视口外的事件仍可回到终端模型。
+    fn register_mouse_move_listener(&self, window: &mut Window) {
+        let state = self.interaction_state.clone();
+        let view = self.view.clone();
+        window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, cx| {
+            if phase != gpui::DispatchPhase::Bubble || event.pressed_button.is_none() {
+                return;
+            }
+            let (geometry, hitbox) = {
+                let state = state.borrow();
+                (state.geometry, state.hitbox)
+            };
+            let Some(geometry) = geometry else { return };
+            let terminal = view.read(cx).terminal.clone();
+            if hitbox.is_some_and(|hitbox| hitbox.is_hovered(window))
+                || terminal.read(cx).selection_started()
+            {
+                terminal.update(cx, |terminal, cx| terminal.mouse_move(event, geometry, cx));
+            }
         });
-    });
 
-    let down_hitbox = hitbox.clone();
-    let down_view = view.clone();
-    window.on_mouse_event(move |event: &gpui::MouseDownEvent, phase, window, cx| {
-        if phase != gpui::DispatchPhase::Bubble || !down_hitbox.is_hovered(window) {
-            return;
-        }
-        // 点击聚焦终端：光标显隐与键盘输入都绑定焦点。
-        let focus = down_view.read(cx).focus_handle();
-        window.focus(&focus, cx);
-        let (point, side) = grid_point_and_side(
-            event.position,
-            origin,
-            cell_width,
-            line_height,
-            display_offset,
-            screen_lines,
-            columns,
-        );
-        down_view.update(cx, |view, cx| {
-            view.handle_mouse_down(event, point, side, window, cx);
+        // 释放事件必须绕过元素命中测试：拖拽选择可能已经离开终端视口。
+        let state = self.interaction_state.clone();
+        let view = self.view.clone();
+        window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, _window, cx| {
+            if phase != gpui::DispatchPhase::Bubble {
+                return;
+            }
+            let Some(geometry) = state.borrow().geometry else {
+                return;
+            };
+            view.update(cx, |view, cx| {
+                view.terminal
+                    .update(cx, |terminal, cx| terminal.mouse_up(event, geometry, cx));
+            });
         });
-    });
-
-    let move_hitbox = hitbox.clone();
-    let move_view = view.clone();
-    window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, cx| {
-        // 指针手势由视图拥有时，鼠标移出终端视口仍须由原视图完成。
-        if phase != gpui::DispatchPhase::Bubble
-            || (!move_hitbox.is_hovered(window) && !move_view.read(cx).owns_pointer_gesture())
-        {
-            return;
-        }
-        let (point, side) = grid_point_and_side(
-            event.position,
-            origin,
-            cell_width,
-            line_height,
-            display_offset,
-            screen_lines,
-            columns,
-        );
-        // 拖拽选择时鼠标在视口边缘外：按距离缩放的量滚动视口（正 = 回看历史）。
-        let autoscroll = if event.dragging() {
-            selection_autoscroll_delta(event.position, origin, line_height, screen_lines)
-        } else {
-            Pixels::ZERO
-        };
-        move_view.update(cx, |view, cx| {
-            view.handle_mouse_move(event, point, side, autoscroll, cx);
-        });
-    });
-
-    let up_view = view;
-    window.on_mouse_event(move |event: &gpui::MouseUpEvent, phase, _window, cx| {
-        // 释放事件必须交给拥有按下手势的视图，即使指针已在视口外。
-        if phase != gpui::DispatchPhase::Bubble {
-            return;
-        }
-        let point = grid_point(
-            event.position,
-            origin,
-            cell_width,
-            line_height,
-            display_offset,
-            screen_lines,
-            columns,
-        );
-        up_view.update(cx, |view, cx| {
-            view.handle_mouse_up(event, point, cx);
-        });
-    });
+    }
 }
 
 /// 逐行批处理：合并相邻同风格单元格为文本段，收集背景色块与选择高亮。
@@ -1082,27 +1104,6 @@ fn background_for(cell: &Cell, window: &mut Window, cx: &mut App) -> Rgba {
 /// 行内最后一列（背景块收束用）。
 fn last_column(cells: &[IndexedCell]) -> usize {
     cells.last().map(|cell| cell.point.column).unwrap_or(0)
-}
-
-/// 拖拽选择时的视口自动滚动量（像素，正 = 向上回看历史）：
-/// 滚动量 = 超出视口边缘的距离 × 0.3，单事件上限视口高 1/16（与编辑器 `drag_autoscroll_delta` 同款）；
-/// 滚动频率由 view 层限频（≈60Hz）。
-fn selection_autoscroll_delta(
-    position: Point<Pixels>,
-    origin: Point<Pixels>,
-    line_height: Pixels,
-    screen_lines: usize,
-) -> Pixels {
-    let height = line_height * screen_lines as f32;
-    let bounds = Bounds::new(origin, size(px(1.), height));
-    let margin = line_height.min(height / 3.0);
-    drag_autoscroll_delta(
-        position,
-        bounds,
-        Point::new(Pixels::ZERO, margin),
-        Point::new(Pixels::ZERO, height / 16.0),
-    )
-    .y
 }
 
 #[cfg(test)]

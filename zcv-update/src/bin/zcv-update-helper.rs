@@ -1,8 +1,12 @@
 //! Zcv 退出后执行的跨平台更新辅助程序。
 
-use std::{fs, path::PathBuf};
+use std::path::PathBuf;
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use std::fs;
 
 use anyhow::{Context as _, Result, bail};
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use zcv_update::{
     UpdateResult, UpdateResultStatus, UpdateTransaction, atomic_write_json, read_transaction,
 };
@@ -15,29 +19,30 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let args = parse_args(std::env::args_os().skip(1))?;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
+        let args = parse_args(std::env::args_os().skip(1))?;
+        #[cfg(target_os = "macos")]
         apply_update(
             &args,
             macos::wait_for_process_exit,
             macos::apply_transaction,
         )?;
-    }
-    #[cfg(target_os = "windows")]
-    {
+        #[cfg(target_os = "windows")]
         apply_update(
             &args,
             windows::wait_for_process_exit,
             windows::apply_transaction,
         )?;
+        Ok(())
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    bail!("当前平台尚不支持 Zcv 自动更新");
-
-    Ok(())
+    {
+        bail!("当前平台尚不支持 Zcv 自动更新")
+    }
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn apply_update(
     args: &Args,
     wait_for_process_exit: impl FnOnce(u32) -> Result<()>,

@@ -19,6 +19,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 use alacritty_terminal::{
@@ -27,15 +28,19 @@ use alacritty_terminal::{
 };
 use anyhow::{Context as _, Result};
 use async_channel::{Receiver, unbounded};
-use gpui::{App, BackgroundExecutor, Context, EventEmitter, Pixels, Size, Task, Window};
+use gpui::{
+    App, BackgroundExecutor, Context, EventEmitter, MouseButton, Pixels, Size, Task, Window,
+};
 pub use panel::TerminalPanel;
 pub(crate) use view::TerminalView;
 use zcv_settings::{SettingsStore, UserSettings};
 
 use crate::{
     alacritty::{AlacrittyTermLock, PtySender},
+    mappings::mouse::{grid_point_and_side, mouse_button_report, mouse_moved_report},
     pty_info::PtyProcessInfo,
 };
+use zcv_ui::drag_autoscroll_delta;
 
 /// 调试用的默认终端尺寸（创建后由视图第一帧真实尺寸覆盖）。
 const DEBUG_TERMINAL_WIDTH: f32 = 500.;
@@ -276,6 +281,44 @@ pub(crate) struct SelectionPoint {
     pub side: SelectionSide,
 }
 
+/// 终端元素提供的像素布局，用于把窗口级鼠标事件转换为终端网格坐标。
+///
+/// 坐标转换属于交互边界：元素拥有当前帧的布局，终端拥有转换后的手势状态。
+#[derive(Clone, Copy)]
+pub(crate) struct SelectionGeometry {
+    pub origin: gpui::Point<Pixels>,
+    pub cell_width: Pixels,
+    pub line_height: Pixels,
+    pub screen_lines: usize,
+}
+
+impl SelectionGeometry {
+    fn point_for(&self, position: gpui::Point<Pixels>, content: &Content) -> SelectionPoint {
+        let (point, side) = grid_point_and_side(
+            position,
+            self.origin,
+            self.cell_width,
+            self.line_height,
+            content.display_offset,
+            content.screen_lines,
+            content.columns,
+        );
+        SelectionPoint { point, side }
+    }
+
+    fn autoscroll_delta(&self, position: gpui::Point<Pixels>) -> Pixels {
+        let height = self.line_height * self.screen_lines as f32;
+        let edge_margin = self.line_height.min(height / 3.0);
+        drag_autoscroll_delta(
+            position,
+            gpui::Bounds::new(self.origin, gpui::size(Pixels::from(1.), height)),
+            gpui::Point::new(Pixels::ZERO, edge_margin),
+            gpui::Point::new(Pixels::ZERO, height / 16.0),
+        )
+        .y
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Selection {
     pub ty: SelectionType,
@@ -334,8 +377,21 @@ pub(crate) enum InternalEvent {
     Resize(TerminalBounds),
     Scroll(Scroll),
     SetSelection(Option<Selection>),
+    UpdateSelection(SelectionPoint),
     ChildExit(std::process::ExitStatus),
     Exit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MouseGesture {
+    Selecting,
+    Reporting(MouseButton),
+}
+
+struct SelectionDrag {
+    position: gpui::Point<Pixels>,
+    geometry: SelectionGeometry,
+    autoscroll: Pixels,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -450,7 +506,7 @@ pub(crate) struct Terminal {
     events: std::collections::VecDeque<InternalEvent>,
     events_rx: Option<Receiver<PtyEvent>>,
     event_loop_task: Option<Task<()>>,
-    last_content: Option<Content>,
+    last_content: Content,
     title: Option<String>,
     shell_name: String,
     scroll_px: Pixels,
@@ -462,6 +518,10 @@ pub(crate) struct Terminal {
     cwd: Option<PathBuf>,
     /// 当前终端会话的临时字号覆盖；None 时跟随 SettingsStore。
     font_size_override: Option<f32>,
+    /// 终端交互手势的唯一状态所有者。
+    mouse_gesture: Option<MouseGesture>,
+    selection_drag: Option<SelectionDrag>,
+    selection_autoscroll_scheduled: bool,
 }
 
 impl Terminal {
@@ -497,6 +557,7 @@ impl Terminal {
         let process_info = Arc::new(PtyProcessInfo::new(process_id_getter));
         let pty_tx = alacritty::spawn_event_loop(term.clone(), &events_tx, pty, true)?;
         let background_executor = cx.background_executor().clone();
+        let initial_content = alacritty::make_content(&term.lock(), None);
 
         let mut terminal = Terminal {
             term,
@@ -504,7 +565,7 @@ impl Terminal {
             events: Default::default(),
             events_rx: Some(events_rx),
             event_loop_task: None,
-            last_content: None,
+            last_content: initial_content,
             title: None,
             shell_name,
             scroll_px: Pixels::ZERO,
@@ -514,6 +575,9 @@ impl Terminal {
             pty_resources_closed: false,
             cwd: builder.cwd.clone(),
             font_size_override: None,
+            mouse_gesture: None,
+            selection_drag: None,
+            selection_autoscroll_scheduled: false,
         };
         cx.observe_global::<SettingsStore>(|_, cx| cx.notify())
             .detach();
@@ -533,6 +597,7 @@ impl Terminal {
             &events_tx,
             settings.alternate_scroll,
         );
+        let initial_content = alacritty::make_content(&term.lock(), None);
 
         Self {
             term,
@@ -540,7 +605,7 @@ impl Terminal {
             events: Default::default(),
             events_rx: None,
             event_loop_task: None,
-            last_content: None,
+            last_content: initial_content,
             title: None,
             shell_name: configured_shell_name(settings.shell.as_deref()),
             scroll_px: Pixels::ZERO,
@@ -550,6 +615,9 @@ impl Terminal {
             pty_resources_closed: false,
             cwd: builder.cwd.clone(),
             font_size_override: None,
+            mouse_gesture: None,
+            selection_drag: None,
+            selection_autoscroll_scheduled: false,
         }
     }
 
@@ -634,11 +702,7 @@ impl Terminal {
 
     /// 视图每帧调用：通知尺寸变化（行列或格宽变化才入队，合并连续 resize）。
     pub fn set_size(&mut self, bounds: TerminalBounds, cx: &mut Context<Self>) {
-        let changed = self
-            .last_content
-            .as_ref()
-            .map(|content| content.terminal_bounds != bounds)
-            .unwrap_or(true);
+        let changed = self.last_content.terminal_bounds != bounds;
         if changed {
             if let Some(event) = self
                 .events
@@ -656,10 +720,7 @@ impl Terminal {
     /// 视图每帧调用：排空事件队列并刷新渲染快照。
     pub fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.process_terminal_events(window, cx);
-        self.last_content = Some(alacritty::make_content(
-            &self.term.lock(),
-            self.last_content.as_ref(),
-        ));
+        self.last_content = alacritty::make_content(&self.term.lock(), Some(&self.last_content));
     }
 
     fn process_terminal_events(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -680,6 +741,11 @@ impl Terminal {
                     self.term.lock().selection = selection.map(|s| s.to_alacritty());
                     cx.emit(Event::SelectionsChanged);
                 }
+                InternalEvent::UpdateSelection(point) => {
+                    if alacritty::update_selection(&mut self.term.lock(), point.point, point.side) {
+                        cx.emit(Event::SelectionsChanged);
+                    }
+                }
                 InternalEvent::Title(title) => {
                     self.title = title.clone();
                     cx.emit(Event::TitleChanged(title));
@@ -699,14 +765,8 @@ impl Terminal {
                     self.pty_tx.notify(formatter(color).into_bytes());
                 }
                 InternalEvent::TextAreaSizeRequest(formatter) => {
-                    let size = alacritty::window_size_from_bounds(
-                        &self
-                            .last_content
-                            .as_ref()
-                            .map_or_else(TerminalBounds::default, |content| {
-                                content.terminal_bounds
-                            }),
-                    );
+                    let size =
+                        alacritty::window_size_from_bounds(&self.last_content.terminal_bounds);
                     self.pty_tx.notify(formatter(size).into_bytes());
                 }
                 InternalEvent::Bell => {
@@ -801,18 +861,163 @@ impl Terminal {
         cx.notify();
     }
 
-    pub fn update_selection(&mut self, point: SelectionPoint, cx: &mut Context<Self>) -> bool {
-        let updated = alacritty::update_selection(&mut self.term.lock(), point.point, point.side);
-        if updated {
-            cx.emit(Event::SelectionsChanged);
+    pub fn update_selection(&mut self, point: SelectionPoint, cx: &mut Context<Self>) {
+        self.events.push_back(InternalEvent::UpdateSelection(point));
+        cx.notify();
+    }
+
+    /// 处理终端区域内的鼠标按下，并返回是否需要捕获指针。
+    pub(crate) fn mouse_down(
+        &mut self,
+        event: &gpui::MouseDownEvent,
+        geometry: SelectionGeometry,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let point = geometry.point_for(event.position, &self.last_content);
+        if self.last_content.mode.intersects(Modes::MOUSE_MODE) {
+            if let Some(bytes) = mouse_button_report(
+                event.button,
+                &event.modifiers,
+                point.point,
+                self.last_content.display_offset,
+                self.last_content.screen_lines,
+                &self.last_content.mode,
+                true,
+            ) {
+                self.write_to_pty(bytes);
+                self.mouse_gesture = Some(MouseGesture::Reporting(event.button));
+                return true;
+            }
+            return false;
+        }
+
+        if event.button != MouseButton::Left {
+            return false;
+        }
+
+        let ty = match event.click_count {
+            2 => SelectionType::Semantic,
+            3 => SelectionType::Lines,
+            _ => SelectionType::Simple,
+        };
+        self.mouse_gesture = Some(MouseGesture::Selecting);
+        self.selection_drag = Some(SelectionDrag {
+            position: event.position,
+            geometry,
+            autoscroll: Pixels::ZERO,
+        });
+        self.select_range(ty, point, None, cx);
+        true
+    }
+
+    /// 处理拖拽与报告模式的移动；选区滚动和选区更新保持在同一个模型操作内。
+    pub(crate) fn mouse_move(
+        &mut self,
+        event: &gpui::MouseMoveEvent,
+        geometry: SelectionGeometry,
+        cx: &mut Context<Self>,
+    ) {
+        match self.mouse_gesture {
+            Some(MouseGesture::Reporting(button)) => {
+                if event.pressed_button == Some(button)
+                    && let Some(bytes) = mouse_moved_report(
+                        event.pressed_button,
+                        &event.modifiers,
+                        geometry.point_for(event.position, &self.last_content).point,
+                        self.last_content.display_offset,
+                        self.last_content.screen_lines,
+                        &self.last_content.mode,
+                    )
+                {
+                    self.write_to_pty(bytes);
+                }
+            }
+            Some(MouseGesture::Selecting) if event.pressed_button == Some(MouseButton::Left) => {
+                let autoscroll = geometry.autoscroll_delta(event.position);
+                self.selection_drag = Some(SelectionDrag {
+                    position: event.position,
+                    geometry,
+                    autoscroll,
+                });
+                self.update_selection(geometry.point_for(event.position, &self.last_content), cx);
+                if autoscroll != Pixels::ZERO {
+                    self.schedule_selection_autoscroll(cx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 结束当前鼠标手势。选区本身不清除，供复制动作继续读取。
+    pub(crate) fn mouse_up(
+        &mut self,
+        event: &gpui::MouseUpEvent,
+        geometry: SelectionGeometry,
+        cx: &mut Context<Self>,
+    ) {
+        let gesture = self.mouse_gesture.take();
+        self.selection_drag = None;
+        self.selection_autoscroll_scheduled = false;
+
+        let Some(MouseGesture::Reporting(button)) = gesture else {
+            return;
+        };
+        if button == event.button
+            && let Some(bytes) = mouse_button_report(
+                event.button,
+                &event.modifiers,
+                geometry.point_for(event.position, &self.last_content).point,
+                self.last_content.display_offset,
+                self.last_content.screen_lines,
+                &self.last_content.mode,
+                false,
+            )
+        {
+            self.write_to_pty(bytes);
             cx.notify();
         }
-        updated
+    }
+
+    pub(crate) fn selection_started(&self) -> bool {
+        matches!(self.mouse_gesture, Some(MouseGesture::Selecting))
+    }
+
+    fn schedule_selection_autoscroll(&mut self, cx: &mut Context<Self>) {
+        if self.selection_autoscroll_scheduled {
+            return;
+        }
+        self.selection_autoscroll_scheduled = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(16))
+                .await;
+            let _ = this.update(cx, |terminal, cx| {
+                terminal.selection_autoscroll_scheduled = false;
+                terminal.selection_autoscroll_tick(cx);
+            });
+        })
+        .detach();
+    }
+
+    fn selection_autoscroll_tick(&mut self, cx: &mut Context<Self>) {
+        let Some(drag) = self.selection_drag.as_ref() else {
+            return;
+        };
+        let delta = drag.autoscroll;
+        if delta == Pixels::ZERO {
+            return;
+        }
+        let line_height = drag.geometry.line_height;
+        let position = drag.position;
+        let geometry = drag.geometry;
+        self.scroll_px(gpui::TouchPhase::Moved, delta, line_height, cx);
+        self.update_selection(geometry.point_for(position, &self.last_content), cx);
+        self.schedule_selection_autoscroll(cx);
     }
 
     /// 当前选择文本（来自最新渲染快照）。
     pub fn selection_text(&self) -> Option<String> {
-        self.last_content.as_ref()?.selection_text.clone()
+        self.last_content.selection_text.clone()
     }
 
     // ── 动作 ──
@@ -827,12 +1032,7 @@ impl Terminal {
     /// 把剪贴板内容粘贴进终端（bracketed paste 时加包裹）。
     pub fn paste(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            let bytes = if self
-                .last_content
-                .as_ref()
-                .map(|content| content.mode.contains(Modes::BRACKETED_PASTE))
-                .unwrap_or(false)
-            {
+            let bytes = if self.last_content.mode.contains(Modes::BRACKETED_PASTE) {
                 format!("\x1b[200~{text}\x1b[201~").into_bytes()
             } else {
                 text.into_bytes()
@@ -861,8 +1061,8 @@ impl Terminal {
         self.cwd.as_deref()
     }
 
-    pub fn last_content(&self) -> Option<&Content> {
-        self.last_content.as_ref()
+    pub fn last_content(&self) -> &Content {
+        &self.last_content
     }
 
     /// 更新聚焦状态，向终端报告 focus in/out（focus reporting 模式）。
@@ -872,12 +1072,7 @@ impl Terminal {
             return;
         }
         term.is_focused = focused;
-        if self
-            .last_content
-            .as_ref()
-            .map(|content| content.mode.contains(Modes::FOCUS_IN_OUT))
-            .unwrap_or(false)
-        {
+        if self.last_content.mode.contains(Modes::FOCUS_IN_OUT) {
             self.pty_tx.notify(if focused {
                 b"\x1b[I".as_slice()
             } else {
@@ -1124,11 +1319,7 @@ mod terminal_view_tests {
         loop {
             let matched = cx.update(|window, cx| {
                 terminal.update(cx, |t, cx| t.sync(window, cx));
-                terminal
-                    .read(cx)
-                    .last_content()
-                    .map(&mut predicate)
-                    .unwrap_or(false)
+                predicate(terminal.read(cx).last_content())
             });
             if matched {
                 return;
@@ -1253,10 +1444,7 @@ mod terminal_view_tests {
                 );
                 t.sync(window, cx);
             });
-            terminal
-                .read(cx)
-                .last_content()
-                .is_some_and(|content| content.selection.is_some())
+            terminal.read(cx).last_content().selection.is_some()
         });
         assert!(has_selection, "设置选择后内容快照应携带选择");
 
@@ -1265,12 +1453,38 @@ mod terminal_view_tests {
                 t.write_input(Vec::new(), cx);
                 t.sync(window, cx);
             });
-            terminal
-                .read(cx)
-                .last_content()
-                .is_some_and(|content| content.selection.is_none())
+            terminal.read(cx).last_content().selection.is_none()
         });
         assert!(cleared, "清除选择后内容快照不应再有选择");
+    }
+
+    /// 终端刚创建且尚无 PTY 输出时，鼠标按下也必须能建立选区手势。
+    #[gpui::test]
+    async fn selection_starts_before_terminal_output(cx: &mut TestAppContext) {
+        let terminal = build_terminal(cx);
+        let (_, cx) = cx.add_window_view(|_window, _cx| EmptyView);
+
+        let started = cx.update(|window, cx| {
+            terminal.update(cx, |terminal, cx| {
+                let event = gpui::MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: point(px(16.), px(16.)),
+                    modifiers: gpui::Modifiers::default(),
+                    click_count: 1,
+                    first_mouse: true,
+                };
+                let geometry = SelectionGeometry {
+                    origin: point(px(0.), px(0.)),
+                    cell_width: px(8.),
+                    line_height: px(16.),
+                    screen_lines: 30,
+                };
+                let started = terminal.mouse_down(&event, geometry, cx);
+                terminal.sync(window, cx);
+                started && terminal.selection_started()
+            })
+        });
+        assert!(started, "空终端首次渲染前也应能开始选区");
     }
 
     /// 拖拽选择可在视口外释放；释放后移回终端不能继续改写已完成的选择。
@@ -1280,7 +1494,7 @@ mod terminal_view_tests {
     ) {
         let terminal = build_terminal(cx);
         let terminal_for_view = terminal.clone();
-        let (view, cx) =
+        let (_view, cx) =
             cx.add_window_view(move |_window, cx| TerminalView::new(terminal_for_view, cx));
         cx.run_until_parked();
         cx.refresh().expect("测试窗口应可刷新");
@@ -1299,28 +1513,20 @@ mod terminal_view_tests {
         cx.simulate_mouse_move(outside, Some(MouseButton::Left), gpui::Modifiers::default());
         cx.refresh().expect("拖出视口后应能刷新选择");
         let selection_before_release = cx
-            .read_entity(&terminal, |terminal, _| {
-                terminal
-                    .last_content()
-                    .and_then(|content| content.selection)
-            })
+            .read_entity(&terminal, |terminal, _| terminal.last_content().selection)
             .expect("拖拽后应存在选择范围");
 
         cx.simulate_mouse_up(outside, MouseButton::Left, gpui::Modifiers::default());
         cx.run_until_parked();
         assert!(
-            !cx.read_entity(&view, |view, _| view.owns_pointer_gesture()),
+            !cx.read_entity(&terminal, |terminal, _| terminal.selection_started()),
             "视口外释放也应结束终端指针手势"
         );
 
         cx.simulate_mouse_move(return_to_terminal, None, gpui::Modifiers::default());
         cx.refresh().expect("无按键移动后应能刷新");
         let selection_after_return = cx
-            .read_entity(&terminal, |terminal, _| {
-                terminal
-                    .last_content()
-                    .and_then(|content| content.selection)
-            })
+            .read_entity(&terminal, |terminal, _| terminal.last_content().selection)
             .expect("释放后选择范围应保留以供复制");
         assert_eq!(
             selection_after_return, selection_before_release,

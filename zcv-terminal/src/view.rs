@@ -9,14 +9,11 @@ use gpui::{
 };
 
 use crate::{
-    Event, Modes, SelectionType, Terminal,
+    Event, Modes, Terminal,
     element::TerminalElement,
     mappings::{keys, mouse},
     terminal_scrollbar::TerminalScrollHandle,
 };
-
-use std::cell::Cell;
-use std::time::{Duration, Instant};
 
 use zcv_actions::{
     Clear, Copy, DecreaseFontSize, IncreaseFontSize, Interrupt, Paste, ResetFontSize,
@@ -25,35 +22,10 @@ use zcv_theme::{color, space};
 use zcv_ui::Scrollbar;
 use zcv_workspace::{Item, ItemEvent};
 
-/// 拖拽选择自动滚动的限频间隔（≈60Hz，与编辑器 drag_autoscroll 同款）。
-const AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(16);
-
-/// 终端在窗口级鼠标事件中的唯一手势所有者。
-///
-/// 终端文本的选择范围由 `Terminal` 持有；
-/// 这里仅记录哪次指针按下仍由视图负责收尾，因此鼠标移出视口后释放也不会让后续移动继续修改已有选择。
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PointerGesture {
-    Selecting(gpui::MouseButton),
-    Reporting(gpui::MouseButton),
-}
-
-impl PointerGesture {
-    fn button(self) -> gpui::MouseButton {
-        match self {
-            Self::Selecting(button) | Self::Reporting(button) => button,
-        }
-    }
-}
-
 pub(crate) struct TerminalView {
     pub(crate) terminal: Entity<Terminal>,
     focus: FocusHandle,
     pub(crate) focused: bool,
-    /// 终端当前拥有的指针手势；选择范围本身由 `Terminal` 持有。
-    pointer_gesture: Option<PointerGesture>,
-    /// 拖拽选择自动滚动的限频时间戳（跨帧持久；事件频率可远超帧率，滚动频率需封顶）。
-    last_drag_autoscroll: Cell<Instant>,
     /// 输入法合成中的 marked 文本。
     ime_marked_text: Option<String>,
     /// 光标格的像素 bounds（元素相对坐标），IME 候选窗定位用。
@@ -74,8 +46,6 @@ impl TerminalView {
             terminal,
             focus,
             focused: false,
-            pointer_gesture: None,
-            last_drag_autoscroll: Cell::new(Instant::now() - AUTOSCROLL_INTERVAL),
             ime_marked_text: None,
             last_cursor_bounds: None,
             scrollbar: Scrollbar::vertical(scroll_handle.clone()),
@@ -153,33 +123,13 @@ impl TerminalView {
         focused
     }
 
-    /// 视图是否仍需接收视口外的窗口级鼠标事件。
-    pub(crate) fn owns_pointer_gesture(&self) -> bool {
-        self.pointer_gesture.is_some()
-    }
-
-    fn release_pointer_gesture(&mut self, button: gpui::MouseButton) -> Option<PointerGesture> {
-        let gesture = self.pointer_gesture?;
-        if gesture.button() == button {
-            self.pointer_gesture = None;
-            Some(gesture)
-        } else {
-            None
-        }
-    }
-
     fn handle_key_down(
         &mut self,
         event: &KeyDownEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let mode = self
-            .terminal
-            .read(cx)
-            .last_content()
-            .map(|content| content.mode)
-            .unwrap_or(Modes::NONE);
+        let mode = self.terminal.read(cx).last_content().mode;
         let option_as_meta = self.terminal.read(cx).settings(cx).option_as_meta;
         if let Some(input) = keys::to_esc_str(&event.keystroke, &mode, option_as_meta) {
             self.terminal.update(cx, |terminal, cx| {
@@ -251,138 +201,6 @@ impl TerminalView {
         window.refresh();
     }
 
-    /// 鼠标按下：报告模式转发字节；否则开始选择（双击语义选择、三击整行）。
-    pub(crate) fn handle_mouse_down(
-        &mut self,
-        event: &gpui::MouseDownEvent,
-        point: crate::Point,
-        side: crate::SelectionSide,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(content) = self.terminal.read(cx).last_content().cloned() else {
-            return;
-        };
-        let mode = content.mode;
-        let display_offset = content.display_offset;
-        let screen_lines = content.screen_lines;
-
-        if mode.intersects(Modes::MOUSE_MODE) {
-            if let Some(bytes) = mouse::mouse_button_report(
-                event.button,
-                &event.modifiers,
-                point,
-                display_offset,
-                screen_lines,
-                &mode,
-                true,
-            ) {
-                self.terminal
-                    .update(cx, |terminal, _| terminal.write_to_pty(bytes));
-                self.pointer_gesture = Some(PointerGesture::Reporting(event.button));
-            }
-            return;
-        }
-        if event.button != gpui::MouseButton::Left {
-            return;
-        }
-        let ty = match event.click_count {
-            2 => SelectionType::Semantic,
-            3 => SelectionType::Lines,
-            _ => SelectionType::Simple,
-        };
-        self.pointer_gesture = Some(PointerGesture::Selecting(event.button));
-        self.terminal.update(cx, |terminal, cx| {
-            terminal.select_range(ty, crate::SelectionPoint { point, side }, None, cx);
-        });
-        window.prevent_default();
-    }
-
-    /// 鼠标移动：拖拽中更新选择；报告模式转发移动字节。
-    ///
-    /// `autoscroll` 为拖拽选择期间鼠标在视口边缘外时的事件滚动量（像素，正 = 回看历史）；
-    /// 先滚动视口再用钳制后的网格坐标更新选区，选区随视口持续扩展。
-    pub(crate) fn handle_mouse_move(
-        &mut self,
-        event: &gpui::MouseMoveEvent,
-        point: crate::Point,
-        side: crate::SelectionSide,
-        autoscroll: Pixels,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(content) = self.terminal.read(cx).last_content().cloned() else {
-            return;
-        };
-        let mode = content.mode;
-        let display_offset = content.display_offset;
-        let screen_lines = content.screen_lines;
-
-        // 窗口外释放在部分平台不会到达视图；下一次无按键移动必须能恢复。
-        if !event.dragging() {
-            self.pointer_gesture = None;
-        }
-
-        if mode.intersects(Modes::MOUSE_MODE) {
-            if let Some(bytes) = mouse::mouse_moved_report(
-                event.pressed_button,
-                &event.modifiers,
-                point,
-                display_offset,
-                screen_lines,
-                &mode,
-            ) {
-                self.terminal
-                    .update(cx, |terminal, _| terminal.write_to_pty(bytes));
-            }
-            return;
-        }
-        if matches!(self.pointer_gesture, Some(PointerGesture::Selecting(_))) && event.dragging() {
-            if autoscroll != Pixels::ZERO
-                && self.last_drag_autoscroll.get().elapsed() >= AUTOSCROLL_INTERVAL
-            {
-                self.last_drag_autoscroll.set(Instant::now());
-                let line_height = self.line_height(cx);
-                self.terminal.update(cx, |terminal, cx| {
-                    terminal.scroll_px(gpui::TouchPhase::Moved, autoscroll, line_height, cx);
-                });
-            }
-            self.terminal.update(cx, |terminal, cx| {
-                terminal.update_selection(crate::SelectionPoint { point, side }, cx);
-            });
-        }
-    }
-
-    /// 鼠标释放：仅结束由本视图发起的手势；报告模式转发对应的释放字节。
-    pub(crate) fn handle_mouse_up(
-        &mut self,
-        event: &gpui::MouseUpEvent,
-        point: crate::Point,
-        cx: &mut Context<Self>,
-    ) {
-        let gesture = self.release_pointer_gesture(event.button);
-        let Some(content) = self.terminal.read(cx).last_content().cloned() else {
-            return;
-        };
-        let mode = content.mode;
-        let display_offset = content.display_offset;
-        let screen_lines = content.screen_lines;
-        if matches!(gesture, Some(PointerGesture::Reporting(_)))
-            && mode.intersects(Modes::MOUSE_MODE)
-            && let Some(bytes) = mouse::mouse_button_report(
-                event.button,
-                &event.modifiers,
-                point,
-                display_offset,
-                screen_lines,
-                &mode,
-                false,
-            )
-        {
-            self.terminal
-                .update(cx, |terminal, _| terminal.write_to_pty(bytes));
-        }
-    }
-
     /// 滚轮：鼠标报告模式转报告字节；备用屏幕回退方向键；否则像素滚动。
     pub(crate) fn handle_scroll_wheel(
         &mut self,
@@ -392,9 +210,7 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(content) = self.terminal.read(cx).last_content().cloned() else {
-            return;
-        };
+        let content = self.terminal.read(cx).last_content().clone();
         let mode = content.mode;
         let line_height = self.line_height(cx);
         let display_offset = content.display_offset;
@@ -576,7 +392,7 @@ impl Render for TerminalView {
             self.initialized = true;
         }
 
-        let content = self.terminal.read(cx).last_content().cloned();
+        let content = Some(self.terminal.read(cx).last_content().clone());
         self.scroll_handle.update(content.as_ref());
         if let Some(display_offset) = self.scroll_handle.take_requested_display_offset()
             && let Some(current_offset) = content.as_ref().map(|content| content.display_offset)

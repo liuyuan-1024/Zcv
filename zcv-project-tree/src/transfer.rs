@@ -162,7 +162,19 @@ mod tests {
     use super::*;
 
     fn abs(path: impl Into<PathBuf>) -> AbsolutePathBuf {
-        AbsolutePathBuf::new(path.into()).expect("测试树路径必须是绝对路径")
+        let path = path.into();
+        let path = if path.is_absolute() {
+            path
+        } else {
+            let relative = path
+                .to_string_lossy()
+                .trim_start_matches(&['/', '\\'][..])
+                .to_owned();
+            std::env::current_dir()
+                .expect("测试应能取得当前目录")
+                .join(relative)
+        };
+        AbsolutePathBuf::new(path).expect("测试树路径必须是绝对路径")
     }
 
     #[test]

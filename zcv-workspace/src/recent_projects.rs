@@ -123,6 +123,8 @@ pub fn add_to_recent(path: &str) {
 mod tests {
     use std::path::Path;
 
+    use zcv_path::AbsolutePathBuf;
+
     use super::{ProjectEntry, canonical_project_path, first_valid_project};
 
     #[test]
@@ -134,10 +136,10 @@ mod tests {
 
     #[test]
     fn recent_project_canonicalizes_parent_components() {
-        let current = std::env::current_dir()
-            .expect("应有当前目录")
-            .canonicalize()
-            .expect("当前目录应可规范化");
+        let current =
+            AbsolutePathBuf::canonicalize(&std::env::current_dir().expect("应有当前目录"))
+                .expect("当前目录应可规范化")
+                .into_path_buf();
         let with_parent = current
             .join("..")
             .join(current.file_name().expect("当前目录应有名称"));

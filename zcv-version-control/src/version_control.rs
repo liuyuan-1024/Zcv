@@ -1408,6 +1408,17 @@ mod tests {
     }
 
     fn absolute(path: PathBuf) -> AbsolutePathBuf {
+        let path = if path.is_absolute() {
+            path
+        } else {
+            let relative = path
+                .to_string_lossy()
+                .trim_start_matches(&['/', '\\'][..])
+                .to_owned();
+            std::env::current_dir()
+                .expect("测试应能取得当前目录")
+                .join(relative)
+        };
         AbsolutePathBuf::new(path).expect("测试树路径应为绝对路径")
     }
 
@@ -1456,7 +1467,7 @@ mod tests {
 
     #[test]
     fn headers_always_appear_and_partially_staged_entries_duplicate_across_sections() {
-        let root = PathBuf::from("/project");
+        let root = absolute(PathBuf::from("/project")).into_path_buf();
         let partial = FileStatus::Tracked {
             index_status: StatusCode::Modified,
             worktree_status: StatusCode::Modified,
@@ -1535,7 +1546,7 @@ mod tests {
 
     #[test]
     fn statuses_are_filtered_into_their_sections() {
-        let root = PathBuf::from("/project");
+        let root = absolute(PathBuf::from("/project")).into_path_buf();
         let snapshot = snapshot(&[
             ("conflict.txt", FileStatus::Unmerged),
             ("new.txt", FileStatus::Untracked),
@@ -1556,7 +1567,7 @@ mod tests {
 
     #[test]
     fn directories_aggregate_status_and_diff_and_respect_expansion() {
-        let root = PathBuf::from("/project");
+        let root = absolute(PathBuf::from("/project")).into_path_buf();
         let modified = FileStatus::Tracked {
             index_status: StatusCode::Unmodified,
             worktree_status: StatusCode::Modified,
@@ -1620,7 +1631,7 @@ mod tests {
 
     #[test]
     fn consecutive_single_change_directories_are_display_compressed() {
-        let root = PathBuf::from("/project");
+        let root = absolute(PathBuf::from("/project")).into_path_buf();
         let snapshot = snapshot(&[("src/components/editor/mod.rs", FileStatus::Untracked)]);
         let trees = build_section_trees(&root, [(root.as_path(), &snapshot)].into_iter());
         let expanded = HashSet::from([
@@ -1651,7 +1662,7 @@ mod tests {
 
     #[test]
     fn nested_repositories_merge_into_one_tree() {
-        let root = PathBuf::from("/project");
+        let root = absolute(PathBuf::from("/project")).into_path_buf();
         let vendor = root.join("vendor");
         let outer = snapshot(&[("README.md", FileStatus::Untracked)]);
         let inner = snapshot(&[("lib.rs", FileStatus::Untracked)]);
@@ -1835,7 +1846,11 @@ mod tests {
         assert_eq!(open_count.get(), 1, "未聚焦首击也应打开文件");
         assert_eq!(
             opened_path.borrow().as_deref(),
-            Some(root.join("tracked.txt").canonicalize().unwrap().as_path()),
+            Some(
+                AbsolutePathBuf::canonicalize(&root.join("tracked.txt"))
+                    .unwrap()
+                    .as_path(),
+            ),
             "首击应把实际点击的文件路径传给打开回调"
         );
         let panel_focused =
@@ -1968,7 +1983,9 @@ mod tests {
         assert!(entries.contains(&(GitSection::Unstaged, "a.txt".into())));
 
         // 用户折叠 src（模拟点击目录行折叠）；树键用 canonicalize 后的根（macOS /var → /private/var）。
-        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let canonical_root = AbsolutePathBuf::canonicalize(&root)
+            .expect("仓库根应可规范化")
+            .into_path_buf();
         cx.update_entity(&panel, |panel, cx| {
             let key = (GitSection::Unstaged, absolute(canonical_root.join("src")));
             panel.collapsed_dirs.insert(key.clone());

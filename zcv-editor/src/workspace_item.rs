@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use gpui::{AnyView, App, Context, Entity, SharedString, Task, Window};
 use zcv_multi_buffer::MultiBuffer;
+use zcv_path::simplify_native;
 use zcv_project::Project;
 use zcv_workspace::{Item, ItemEvent, SearchableItemHandle};
 
@@ -66,13 +67,17 @@ impl Item for Editor {
         let Some(path) = self.file_path(cx) else {
             return;
         };
-        let Ok(suffix) = path.strip_prefix(from) else {
+        // 文件系统事件可能携带 Windows 平台扩展路径，而编辑器文档身份使用普通路径。
+        // 在匹配路径前统一表示形式，避免同一文件因 `\\?\` 前缀无法迁移。
+        let from = simplify_native(from);
+        let to = simplify_native(to);
+        let Ok(suffix) = path.strip_prefix(&from) else {
             return;
         };
         // 条目自身重命名时后缀为空：直接取 to。
         // `to.join(空路径)` 会追加尾随斜杠，保存这类路径会触发 Not a directory。
         let renamed_path = if suffix.as_os_str().is_empty() {
-            to.to_path_buf()
+            to
         } else {
             to.join(suffix)
         };
@@ -281,7 +286,11 @@ mod tests {
         let path = cx.read_entity(&editor, |editor, cx| {
             editor.file_path(cx).expect("重命名后应有路径")
         });
-        assert_eq!(path, new_path, "编辑器路径应迁移到新路径");
+        assert_eq!(
+            path,
+            simplify_native(&new_path),
+            "编辑器路径应迁移到稳定的新路径"
+        );
         // 保存路径不得带尾随斜杠：join 空后缀生成的 `new_path/` 会导致 Not a directory。
         assert_eq!(path.file_name(), Some(std::ffi::OsStr::new("bar.rs")));
 

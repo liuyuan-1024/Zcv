@@ -330,6 +330,12 @@ mod tests {
         AbsolutePathBuf::new(path.to_path_buf()).expect("测试工作区路径应为绝对路径")
     }
 
+    fn canonical_path(path: &Path) -> PathBuf {
+        AbsolutePathBuf::canonicalize(path)
+            .expect("测试路径应可规范化")
+            .into_path_buf()
+    }
+
     #[test]
     fn children_return_sorted_static_entries() {
         let directory = tempfile::tempdir().expect("应创建临时项目目录");
@@ -506,10 +512,7 @@ mod tests {
             .expect("discover 应成功")
             .expect("应发现外层仓库");
         // open() 会 canonicalize，macOS 上 /var 是 /private/var 的符号链接。
-        assert_eq!(
-            repo.working_directory(),
-            root.canonicalize().expect("应可 canonicalize")
-        );
+        assert_eq!(repo.working_directory(), canonical_path(&root));
     }
 
     #[test]
@@ -536,10 +539,7 @@ mod tests {
         let repo = discover_git_repository(&submodule)
             .expect("discover 应成功")
             .expect("应向上找到外层仓库");
-        assert_eq!(
-            repo.working_directory(),
-            root.canonicalize().expect("应可 canonicalize")
-        );
+        assert_eq!(repo.working_directory(), canonical_path(&root));
     }
 
     #[test]
@@ -555,16 +555,10 @@ mod tests {
         assert_eq!(repos.len(), 2);
         let work_dirs: Vec<_> = repos.iter().map(|repo| repo.working_directory()).collect();
         // open() 会 canonicalize（macOS 上 /var 是 /private/var 的符号链接）。
-        assert!(work_dirs.contains(&root.canonicalize().expect("应可 canonicalize").as_path()));
-        assert!(
-            work_dirs.contains(
-                &root
-                    .join("nested")
-                    .canonicalize()
-                    .expect("应可 canonicalize")
-                    .as_path()
-            )
-        );
+        let expected_root = canonical_path(&root);
+        assert!(work_dirs.contains(&expected_root.as_path()));
+        let expected_nested = canonical_path(&root.join("nested"));
+        assert!(work_dirs.contains(&expected_nested.as_path()));
     }
 
     #[test]
@@ -580,7 +574,7 @@ mod tests {
         assert_eq!(repos.len(), 2);
         assert_eq!(
             repos[0].working_directory(),
-            root.canonicalize().expect("应可 canonicalize").as_path()
+            canonical_path(&root).as_path()
         );
     }
 
@@ -598,7 +592,7 @@ mod tests {
         assert_eq!(repos.len(), 2);
         assert_eq!(
             repos[0].working_directory(),
-            outer.canonicalize().expect("应可 canonicalize").as_path()
+            canonical_path(&outer).as_path()
         );
     }
 
@@ -610,7 +604,7 @@ mod tests {
         assert_eq!(repos.len(), 1);
         assert_eq!(
             repos[0].working_directory(),
-            root.canonicalize().expect("应可 canonicalize").as_path()
+            canonical_path(&root).as_path()
         );
     }
 

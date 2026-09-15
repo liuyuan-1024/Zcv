@@ -258,7 +258,7 @@ pub fn stable_identity(path: &Path) -> String {
             .map(|unc| format!(r"\\{unc}"))
             .or_else(|| text.strip_prefix(r"\\?\").map(str::to_owned))
             .unwrap_or_else(|| text.into_owned());
-        return text.replace('\\', "/");
+        text.replace('\\', "/")
     }
     #[cfg(not(target_os = "windows"))]
     text.into_owned()

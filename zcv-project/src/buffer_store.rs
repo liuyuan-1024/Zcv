@@ -143,8 +143,11 @@ impl BufferStore {
 
     /// 移除被删除文件或目录对应的路径索引；目录删除时连同其中已打开的 Buffer 一起移除。
     pub(crate) fn remove_path(&mut self, path: &Path) {
+        let Ok(path) = normalize_for_comparison(path) else {
+            return;
+        };
         self.opened_buffers
-            .retain(|indexed, _| indexed.strip_prefix(path).is_err());
+            .retain(|indexed, _| indexed.strip_prefix(&path).is_err());
     }
 }
 

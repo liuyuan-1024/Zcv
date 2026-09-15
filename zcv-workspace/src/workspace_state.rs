@@ -80,6 +80,17 @@ impl Workspace {
 
     pub fn new(root: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let project = cx.new(|cx| Project::new(root, cx));
+        Self::new_with_project(project, window, cx)
+    }
+
+    /// 使用已有项目创建工作区。
+    ///
+    /// 项目由调用方装配，工作区只负责承载其布局与界面状态。
+    pub fn new_with_project(
+        project: Entity<Project>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self::build(project, window, cx)
     }
 

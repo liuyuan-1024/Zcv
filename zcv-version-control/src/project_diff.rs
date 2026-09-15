@@ -1700,10 +1700,13 @@ pub fn deploy_at(
 }
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::process::Command;
+    use std::sync::Arc;
 
     use gpui::{AppContext as _, TestAppContext};
 
+    use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
     use zcv_multi_buffer::ExcerptDiffKind;
     use zcv_text::{Edit, Line, TransactionMetadata};
 
@@ -1732,6 +1735,44 @@ mod tests {
     }
 
     use super::*;
+
+    /// 项目差异测试使用的无事件监听器，避免真实 OS 事件唤醒 GPUI 测试调度器。
+    struct PassiveWatcher {
+        watcher: FsWatcher,
+    }
+
+    impl PassiveWatcher {
+        fn new() -> Self {
+            Self {
+                watcher: FsWatcher::new(),
+            }
+        }
+    }
+
+    impl Watcher for PassiveWatcher {
+        fn add(&self, _path: &Path) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn remove(&self, _path: &Path) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn events(&self) -> FsEventStream {
+            self.watcher.events()
+        }
+    }
+
+    fn test_project(root: PathBuf, cx: &mut TestAppContext) -> Entity<Project> {
+        let watcher: Arc<dyn Watcher> = Arc::new(PassiveWatcher::new());
+        cx.new(|cx| Project::new_with_watcher(root, watcher, cx))
+    }
+
+    fn canonical_root(path: &Path) -> PathBuf {
+        AbsolutePathBuf::canonicalize(path)
+            .expect("应规范化仓库路径")
+            .into_path_buf()
+    }
 
     /// 测试辅助：按工作区源与 base 全文预创建普通编辑器 diff 注入项。
     fn plain_diff_file(
@@ -1763,7 +1804,7 @@ mod tests {
     #[gpui::test]
     fn empty_project_diff_renders_blank_focusable_view(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().expect("应创建临时项目目录");
-        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let project = test_project(directory.path().to_path_buf(), cx);
         let (view, cx) = cx.add_window_view(move |_, cx| {
             ProjectDiffView::new(ProjectDiffKind::Staged, project, cx)
         });
@@ -1798,7 +1839,7 @@ mod tests {
     #[gpui::test]
     fn project_diff_keeps_hunk_interest_while_its_multibuffer_is_empty(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().expect("应创建临时仓库");
-        let root = directory.path().canonicalize().expect("应规范化仓库路径");
+        let root = canonical_root(directory.path());
         run_in(&root, &["git", "init", "-q", "-b", "master"]);
         run_in(&root, &["git", "config", "user.email", "test@example.com"]);
         run_in(&root, &["git", "config", "user.name", "Test User"]);
@@ -1810,7 +1851,7 @@ mod tests {
         std::fs::write(&path, "line0\nline1\nline2\n新内容\nline4\nline5\nline6\n")
             .expect("应修改文件");
 
-        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let project = test_project(root.clone(), cx);
         let view = cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project, cx));
 
         // ProjectDiffView 创建时 MultiBuffer 仍为空，但应立即向 GitStore 声明文件 hunk 需求。
@@ -1829,7 +1870,7 @@ mod tests {
     #[gpui::test]
     fn deleted_middle_row_projects_to_its_original_position(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().expect("应创建临时仓库");
-        let root = directory.path().canonicalize().expect("应规范化仓库路径");
+        let root = canonical_root(directory.path());
         run_in(&root, &["git", "init", "-q", "-b", "master"]);
         run_in(&root, &["git", "config", "user.email", "test@example.com"]);
         run_in(&root, &["git", "config", "user.name", "Test User"]);
@@ -1845,7 +1886,7 @@ mod tests {
         changed.remove(16);
         std::fs::write(&path, changed.join("\n")).expect("应写入删除后的文件");
 
-        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let project = test_project(root.clone(), cx);
         let view = cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project, cx));
         cx.run_until_parked();
         cx.run_until_parked();
@@ -1896,7 +1937,7 @@ mod tests {
     #[gpui::test]
     fn git_status_drives_one_ordered_excerpt_per_changed_file(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().expect("应创建临时仓库");
-        let root = directory.path().canonicalize().expect("应规范化仓库路径");
+        let root = canonical_root(directory.path());
         run_in(&root, &["git", "init", "-q", "-b", "master"]);
         run_in(&root, &["git", "config", "user.email", "test@example.com"]);
         run_in(&root, &["git", "config", "user.name", "Test User"]);
@@ -1916,7 +1957,7 @@ mod tests {
         .expect("应修改文件");
         std::fs::write(root.join("untracked.txt"), "新增\n").expect("应创建未跟踪文件");
 
-        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let project = test_project(root.clone(), cx);
         let view = cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project, cx));
         cx.run_until_parked();
         cx.run_until_parked();
@@ -1949,7 +1990,7 @@ mod tests {
     #[gpui::test]
     fn deleted_excerpt_maps_to_working_tree_hunk_position(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().expect("应创建临时仓库");
-        let root = directory.path().canonicalize().expect("应规范化仓库路径");
+        let root = canonical_root(directory.path());
         run_in(&root, &["git", "init", "-q", "-b", "master"]);
         run_in(&root, &["git", "config", "user.email", "test@example.com"]);
         run_in(&root, &["git", "config", "user.name", "Test User"]);
@@ -1970,7 +2011,7 @@ mod tests {
         .expect("应修改文件");
         std::fs::remove_file(root.join("removed.txt")).expect("应删除文件");
 
-        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let project = test_project(root.clone(), cx);
         let view = cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project, cx));
         cx.run_until_parked();
         cx.run_until_parked();
@@ -2074,7 +2115,7 @@ mod tests {
     #[gpui::test]
     fn partially_staged_file_has_distinct_staged_and_unstaged_views(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().expect("应创建临时仓库");
-        let root = directory.path().canonicalize().expect("应规范化仓库路径");
+        let root = canonical_root(directory.path());
         run_in(&root, &["git", "init", "-q", "-b", "master"]);
         run_in(&root, &["git", "config", "user.email", "test@example.com"]);
         run_in(&root, &["git", "config", "user.name", "Test User"]);
@@ -2095,7 +2136,7 @@ mod tests {
         worktree[9] = "未暂存内容".into();
         std::fs::write(&path, format!("{}\n", worktree.join("\n"))).expect("应写入工作区版本");
 
-        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let project = test_project(root.clone(), cx);
         let staged_view =
             cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Staged, project.clone(), cx));
         let unstaged_view =
@@ -2138,7 +2179,7 @@ mod tests {
     #[gpui::test]
     fn staging_one_hunk_rebuilds_the_projection_once_after_refresh(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().expect("应创建临时仓库");
-        let root = directory.path().canonicalize().expect("应规范化仓库路径");
+        let root = canonical_root(directory.path());
         run_in(&root, &["git", "init", "-q", "-b", "master"]);
         run_in(&root, &["git", "config", "user.email", "test@example.com"]);
         run_in(&root, &["git", "config", "user.name", "Test User"]);
@@ -2155,7 +2196,7 @@ mod tests {
         changed[25] = "第二个变更块".into();
         std::fs::write(&path, format!("{}\n", changed.join("\n"))).expect("应修改文件");
 
-        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let project = test_project(root.clone(), cx);
         let view = cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project, cx));
         cx.run_until_parked();
         cx.run_until_parked();
@@ -2198,7 +2239,7 @@ mod tests {
     #[gpui::test]
     fn expanding_hunk_then_refreshing_hunks_keeps_mapping_consistent(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().expect("应创建临时仓库");
-        let root = directory.path().canonicalize().expect("应规范化仓库路径");
+        let root = canonical_root(directory.path());
         run_in(&root, &["git", "init", "-q", "-b", "master"]);
         run_in(&root, &["git", "config", "user.email", "test@example.com"]);
         run_in(&root, &["git", "config", "user.name", "Test User"]);
@@ -2208,7 +2249,7 @@ mod tests {
         run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
         std::fs::write(&modified_path, "line0\n改过\nline2\nline3\nline4").expect("应修改文件");
 
-        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let project = test_project(root.clone(), cx);
         let view =
             cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project.clone(), cx));
         cx.run_until_parked();
@@ -2295,7 +2336,7 @@ mod tests {
     #[gpui::test]
     fn plain_editor_expansion_then_git_refresh_keeps_diff_view_consistent(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().expect("应创建临时仓库");
-        let root = directory.path().canonicalize().expect("应规范化仓库路径");
+        let root = canonical_root(directory.path());
         run_in(&root, &["git", "init", "-q", "-b", "master"]);
         run_in(&root, &["git", "config", "user.email", "test@example.com"]);
         run_in(&root, &["git", "config", "user.name", "Test User"]);
@@ -2305,7 +2346,7 @@ mod tests {
         run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
         std::fs::write(&modified_path, "line0\n改过\nline2\nline3\nline4\n").expect("应修改文件");
 
-        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let project = test_project(root.clone(), cx);
         // 普通编辑器：独立 excerpts 组合文档（整文件 excerpt，共享 LanguageBuffer 只作工作区源），与 item_provider 打开路径一致；展开修改块。
         let working = project
             .update(cx, |project, cx| project.open_buffer(&modified_path, cx))
@@ -2353,7 +2394,7 @@ mod tests {
     #[gpui::test]
     fn expansion_edit_then_refresh_keeps_diff_view_consistent(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().expect("应创建临时仓库");
-        let root = directory.path().canonicalize().expect("应规范化仓库路径");
+        let root = canonical_root(directory.path());
         run_in(&root, &["git", "init", "-q", "-b", "master"]);
         run_in(&root, &["git", "config", "user.email", "test@example.com"]);
         run_in(&root, &["git", "config", "user.name", "Test User"]);
@@ -2371,7 +2412,7 @@ mod tests {
         )
         .expect("应修改文件");
 
-        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let project = test_project(root.clone(), cx);
         // 普通编辑器：独立 excerpts（item_provider 路径）+ 展开修改块。
         let working = project
             .update(cx, |project, cx| project.open_buffer(&modified_path, cx))

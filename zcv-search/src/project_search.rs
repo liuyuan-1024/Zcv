@@ -875,10 +875,52 @@ impl Render for ProjectSearchButton {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{TestAppContext, VisualTestContext};
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use gpui::{AppContext as _, Context, TestAppContext, VisualTestContext, Window};
+    use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
+    use zcv_path::AbsolutePathBuf;
+    use zcv_project::Project;
     use zcv_text::{ByteOffset, TextRange};
 
     use super::*;
+
+    struct PassiveWatcher {
+        watcher: FsWatcher,
+    }
+
+    impl PassiveWatcher {
+        fn new() -> Self {
+            Self {
+                watcher: FsWatcher::new(),
+            }
+        }
+    }
+
+    impl Watcher for PassiveWatcher {
+        fn add(&self, _path: &Path) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn remove(&self, _path: &Path) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn events(&self) -> FsEventStream {
+            self.watcher.events()
+        }
+    }
+
+    fn test_workspace(
+        root: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> Workspace {
+        let project =
+            cx.new(|cx| Project::new_with_watcher(root, Arc::new(PassiveWatcher::new()), cx));
+        Workspace::new_with_project(project, window, cx)
+    }
 
     /// 回归：布局恢复出的项目搜索标签必须与 deploy 新建的一样接上工作区的打开订阅。
     ///
@@ -886,7 +928,9 @@ mod tests {
     #[gpui::test]
     async fn restored_project_search_tab_opens_excerpt_files(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().expect("应创建临时项目目录");
-        let root = directory.path().canonicalize().expect("项目根应可规范化");
+        let root = AbsolutePathBuf::canonicalize(directory.path())
+            .expect("项目根应可规范化")
+            .into_path_buf();
         let file = root.join("needle.txt");
         std::fs::write(&file, "needle").expect("应创建测试文件");
         // 打开文件经 ItemProvider 注册表分发，测试同样需要文本 Provider。
@@ -895,7 +939,7 @@ mod tests {
         let provider = ProjectSearchSerializedItemProvider;
         let (workspace, cx) = cx.add_window_view({
             let root = root.clone();
-            move |window, cx| Workspace::new(root, window, cx)
+            move |window, cx| test_workspace(root, window, cx)
         });
 
         // 按布局恢复路径重建项目搜索标签，再像 restore_pane 一样放进 Pane。
@@ -963,7 +1007,7 @@ mod tests {
 
         let (workspace, cx) = cx.add_window_view({
             let root = root.clone();
-            move |window, cx| Workspace::new(root, window, cx)
+            move |window, cx| test_workspace(root, window, cx)
         });
 
         // 首次打开：新建项目搜索标签。

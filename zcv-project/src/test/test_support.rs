@@ -3,6 +3,43 @@
 //! project / worktree / git_store 的测试各自持有同构实现，收敛于此避免三份克隆。
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use gpui::{AppContext as _, Entity, TestAppContext};
+use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
+
+use crate::Project;
+
+/// 项目测试使用的无事件监听器，避免真实 OS 事件从后台线程唤醒 GPUI 测试调度器。
+pub(crate) struct TestWatcher {
+    watcher: FsWatcher,
+}
+
+impl TestWatcher {
+    pub(crate) fn new() -> Self {
+        Self {
+            watcher: FsWatcher::new(),
+        }
+    }
+}
+
+impl Watcher for TestWatcher {
+    fn add(&self, _path: &Path) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn remove(&self, _path: &Path) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn events(&self) -> FsEventStream {
+        self.watcher.events()
+    }
+}
+
+pub(crate) fn test_project(root: PathBuf, cx: &mut TestAppContext) -> Entity<Project> {
+    cx.new(|cx| Project::new_with_watcher(root, Arc::new(TestWatcher::new()), cx))
+}
 
 /// 创建带一个初始提交的临时 git 仓库，返回 (仓库根, 目录句柄)。
 pub(crate) fn test_git_repo() -> (PathBuf, tempfile::TempDir) {

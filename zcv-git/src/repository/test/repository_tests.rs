@@ -50,6 +50,21 @@ fn open_repo(root: &Path) -> RealGitRepository {
 }
 
 #[test]
+fn cancelled_command_is_not_reported_as_success() {
+    let (root, _temp) = test_repo();
+    let repo = open_repo(&root);
+    let cancellation = GitCancellation::new();
+    cancellation.cancel();
+
+    let result = repo.run_cancellable_command(
+        &mut repo.build_command(&["--version"]),
+        "git version",
+        &cancellation,
+    );
+    assert!(result.is_err(), "已取消的命令不能报告为成功");
+}
+
+#[test]
 fn status_reports_all_states() {
     let (root, _temp) = test_repo();
     let repo = open_repo(&root);
@@ -454,15 +469,26 @@ fn cancelling_push_terminates_git_and_hook_process() {
     run_in(&root, &["git", "add", "cancel.txt"]);
     run_in(&root, &["git", "commit", "-q", "-m", "测试取消推送"]);
 
-    let hook_path = root.join(".git/hooks/pre-push.cmd");
-    fs::write(&hook_path, "@echo off\r\nping 127.0.0.1 -n 31 > nul\r\n")
-        .expect("应写入 Windows pre-push 钩子");
+    let hook_path = root.join(".git/hooks/pre-push");
+    let hook_started_path = root.join("hook-started");
+    fs::write(
+        &hook_path,
+        "#!/bin/sh\necho started > hook-started\nping 127.0.0.1 -n 31 > /dev/null\n",
+    )
+    .expect("应写入 Windows pre-push 钩子");
 
     let cancellation = GitCancellation::new();
     let cancel_from_thread = cancellation.clone();
+    let hook_started_from_thread = hook_started_path.clone();
     let cancel_thread = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(200));
-        cancel_from_thread.cancel();
+        for _ in 0..500 {
+            if hook_started_from_thread.exists() {
+                cancel_from_thread.cancel();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("Windows pre-push 钩子未在时限内启动");
     });
 
     let started = Instant::now();

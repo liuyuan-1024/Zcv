@@ -1,10 +1,11 @@
-use gpui::{AppContext as _, Entity, TestAppContext};
+use gpui::{Entity, TestAppContext};
 use std::path::PathBuf;
 use std::process::Command;
 use zcv_text::SearchQuery;
 
 use crate::Project;
 use crate::search::FileSearchResult;
+use crate::test_support::test_project;
 
 /// 收集一次流式搜索的全部命中（直到后台关闭通道）。
 async fn collect_search(
@@ -37,7 +38,7 @@ async fn searches_file_contents_and_builds_ordered_excerpts(cx: &mut TestAppCont
     std::fs::write(root.join("src/b.rs"), "needle two\n").expect("应创建文件");
     std::fs::write(root.join("src/c.rs"), "nothing\n").expect("应创建文件");
 
-    let project = cx.new(|cx| Project::new(root, cx));
+    let project = test_project(root, cx);
     let results = collect_search(
         &project,
         SearchQuery {
@@ -75,7 +76,7 @@ async fn honors_exclusions_and_reports_invalid_regex(cx: &mut TestAppContext) {
     std::fs::write(root.join("target/hidden.txt"), "needle").expect("应创建文件");
     std::fs::write(root.join("visible.txt"), "needle").expect("应创建文件");
 
-    let project = cx.new(|cx| Project::new(root, cx));
+    let project = test_project(root, cx);
     project.update(cx, |project, _| {
         project.set_exclusions(&["**/target".to_string()]);
     });
@@ -122,7 +123,7 @@ async fn git_search_skips_ignored_build_outputs(cx: &mut TestAppContext) {
     std::fs::create_dir_all(root.join("target/deep")).expect("应创建忽略目录");
     std::fs::write(root.join("target/deep/generated.txt"), "生成引擎\n").expect("应创建被忽略文件");
 
-    let project = cx.new(|cx| Project::new(root, cx));
+    let project = test_project(root, cx);
     let results = collect_search(
         &project,
         SearchQuery {

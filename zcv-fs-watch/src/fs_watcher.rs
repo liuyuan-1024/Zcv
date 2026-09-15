@@ -1089,16 +1089,33 @@ fn extend_sorted(dst: &mut Vec<PathEvent>, mut new: Vec<PathEvent>) {
 mod tests {
     use super::*;
 
+    /// 测试语义只关心路径层级；
+    /// 将简写路径锚定到当前目录，避免把 Unix 根路径误当作 Windows 上的绝对路径。
+    fn test_absolute_path(path: &str) -> PathBuf {
+        let path = PathBuf::from(path);
+        if path.is_absolute() {
+            path
+        } else {
+            let relative = path
+                .to_string_lossy()
+                .trim_start_matches(&['/', '\\'][..])
+                .to_owned();
+            std::env::current_dir()
+                .expect("测试应能取得当前目录")
+                .join(relative)
+        }
+    }
+
     fn rescan(path: &str) -> PathEvent {
         PathEvent {
-            path: absolute_event_path(PathBuf::from(path)),
+            path: absolute_event_path(test_absolute_path(path)),
             kind: Some(PathEventKind::Rescan),
         }
     }
 
     fn changed(path: &str) -> PathEvent {
         PathEvent {
-            path: absolute_event_path(PathBuf::from(path)),
+            path: absolute_event_path(test_absolute_path(path)),
             kind: Some(PathEventKind::Changed),
         }
     }

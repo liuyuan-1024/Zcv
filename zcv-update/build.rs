@@ -9,9 +9,6 @@ fn main() {
 
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("缺少 Cargo 清单目录"))
         .join("windows.manifest");
-    println!(
-        "cargo:rustc-link-arg-bin=zcv-update-helper=/MANIFESTINPUT:{}",
-        manifest.display()
-    );
-    println!("cargo:rustc-link-arg-bin=zcv-update-helper=/MANIFEST:EMBED");
+    println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
+    println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
 }

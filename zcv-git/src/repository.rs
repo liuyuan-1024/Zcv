@@ -416,10 +416,10 @@ impl RealGitRepository {
             stdout,
             stderr,
         };
+        if cancellation.is_cancelled() {
+            bail!("{description} 已取消");
+        }
         if !output.status.success() {
-            if cancellation.is_cancelled() {
-                bail!("{description} 已取消");
-            }
             bail!(
                 "{description} 失败：{}",
                 String::from_utf8_lossy(&output.stderr).trim()

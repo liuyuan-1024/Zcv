@@ -778,7 +778,7 @@ mod tests {
 
     use super::*;
     use crate::git_store::StatusEntry;
-    use crate::test_support::test_git_repo;
+    use crate::test_support::{test_git_repo, test_project};
 
     fn git_status_for_path(project: &Project, path: &Path, cx: &App) -> Option<StatusEntry> {
         project.git_store.read(cx).status_for_path(path).cloned()
@@ -890,7 +890,7 @@ mod tests {
         let new_path = directory.path().join("new.txt");
         fs::write(&old_path, "content").expect("应创建测试文件");
 
-        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let project = test_project(directory.path().to_path_buf(), cx);
         let original = project.update(cx, |project, cx| {
             project.open_buffer(&old_path, cx).expect("应打开测试文件")
         });
@@ -915,7 +915,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("应创建临时项目目录");
         let file = directory.path().join("src/components/new.txt");
         let folder = directory.path().join("assets/icons/new-folder");
-        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let project = test_project(directory.path().to_path_buf(), cx);
 
         project
             .update(cx, |project, cx| project.create_path(&file, false, cx))
@@ -960,7 +960,7 @@ mod tests {
     #[gpui::test]
     fn trashing_path_rejects_project_root_and_outside_entries(cx: &mut gpui::TestAppContext) {
         let directory = tempfile::tempdir().expect("应创建临时项目目录");
-        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let project = test_project(directory.path().to_path_buf(), cx);
 
         for path in [
             directory.path().to_path_buf(),
@@ -981,7 +981,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("应创建临时项目目录");
         let file = directory.path().join("to-trash.txt");
         fs::write(&file, "content").expect("应创建测试文件");
-        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let project = test_project(directory.path().to_path_buf(), cx);
 
         project.update(cx, |project, cx| {
             project.trash_path(&file, cx).expect("应移到系统废纸篓")
@@ -1000,7 +1000,7 @@ mod tests {
         fs::create_dir(directory.path().join("sub")).expect("应创建子目录");
         fs::write(&old_path, "content").expect("应创建测试文件");
 
-        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let project = test_project(directory.path().to_path_buf(), cx);
         let original = project.update(cx, |project, cx| {
             project.open_buffer(&old_path, cx).expect("应打开测试文件")
         });
@@ -1026,7 +1026,7 @@ mod tests {
         let dir = directory.path().join("dir");
         fs::create_dir_all(dir.join("sub")).expect("应创建嵌套目录");
         fs::write(dir.join("file.txt"), "内容").expect("应创建测试文件");
-        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let project = test_project(directory.path().to_path_buf(), cx);
 
         let destination = dir.join("sub").join("x");
         assert!(
@@ -1049,7 +1049,7 @@ mod tests {
         let target = directory.path().join("target.txt");
         fs::write(&source, "源内容").expect("应创建源文件");
         fs::write(&target, "目标内容").expect("应创建目标文件");
-        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let project = test_project(directory.path().to_path_buf(), cx);
 
         assert!(
             project
@@ -1085,7 +1085,7 @@ mod tests {
         let target_dir = directory.path().join("dest");
         fs::create_dir_all(source_dir.join("nested")).expect("应创建嵌套目录");
         fs::write(source_dir.join("nested").join("file.txt"), "内容").expect("应创建测试文件");
-        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let project = test_project(directory.path().to_path_buf(), cx);
 
         project
             .update(cx, |project, cx| {
@@ -1110,7 +1110,7 @@ mod tests {
         fs::write(source_dir.join("nested").join("file.txt"), "新内容").expect("应创建测试文件");
         fs::create_dir_all(target_dir.join("old")).expect("应创建目标目录");
         fs::write(target_dir.join("old").join("legacy.txt"), "旧内容").expect("应创建测试文件");
-        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let project = test_project(directory.path().to_path_buf(), cx);
 
         project
             .update(cx, |project, cx| {
@@ -1139,7 +1139,7 @@ mod tests {
         fs::write(source_dir.join("嵌套").join("中文文件.txt"), "嵌套内容")
             .expect("应创建测试文件");
         let destination_dir = directory.path().join("copy");
-        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let project = test_project(directory.path().to_path_buf(), cx);
 
         let task = project
             .update(cx, |project, cx| {
@@ -1168,7 +1168,7 @@ mod tests {
         let source_dir = directory.path().join("src");
         fs::create_dir_all(&source_dir).expect("应创建源目录");
         fs::write(source_dir.join("file.txt"), "内容").expect("应创建测试文件");
-        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let project = test_project(directory.path().to_path_buf(), cx);
 
         let destination = source_dir.join("copy");
         assert!(
@@ -1189,7 +1189,7 @@ mod tests {
         let destination = directory.path().join("destination.txt");
         fs::write(&source, "源内容").expect("应创建源文件");
         fs::write(&destination, "目标内容").expect("应创建目标文件");
-        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let project = test_project(directory.path().to_path_buf(), cx);
 
         assert!(
             project
@@ -1213,7 +1213,7 @@ mod tests {
         let source = directory.path().join("source.txt");
         let destination = directory.path().join("destination.txt");
         fs::write(&source, "内容").expect("应创建测试文件");
-        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let project = test_project(directory.path().to_path_buf(), cx);
 
         let task = project
             .update(cx, |project, cx| {
@@ -1237,7 +1237,7 @@ mod tests {
         let destination = directory.path().join("destination.txt");
         fs::write(&source, "新内容").expect("应创建源文件");
         fs::write(&destination, "旧内容").expect("应创建目标文件");
-        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let project = test_project(directory.path().to_path_buf(), cx);
 
         let task = project
             .update(cx, |project, cx| {
@@ -1264,7 +1264,7 @@ mod tests {
         fs::create_dir_all(&source).expect("应创建源目录");
         fs::write(source.join("file.txt"), "源内容").expect("应创建测试文件");
         fs::write(ancestor.join("keep.txt"), "原有内容").expect("应创建测试文件");
-        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let project = test_project(directory.path().to_path_buf(), cx);
 
         // 目标是源的祖先目录；若不拦截，覆盖路径的「先删目标」会把源一起递归删掉。
         let result = project.update(cx, |project, cx| {
@@ -1290,7 +1290,7 @@ mod tests {
         let source = directory.path().join("src");
         fs::create_dir_all(&source).expect("应创建源目录");
         fs::write(source.join("file.txt"), "内容").expect("应创建测试文件");
-        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let project = test_project(directory.path().to_path_buf(), cx);
 
         // 目标是项目根（源的祖先）：即便允许覆盖也必须拒绝。
         let destination = directory.path().to_path_buf();
@@ -1304,7 +1304,7 @@ mod tests {
     #[gpui::test]
     fn fs_events_trigger_incremental_git_status_refresh(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
-        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let project = test_project(root.clone(), cx);
         cx.run_until_parked();
 
         // 初始扫描后文件干净，无 git 状态。
@@ -1337,7 +1337,7 @@ mod tests {
     #[gpui::test]
     fn fs_removal_events_trigger_full_rescan(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
-        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let project = test_project(root.clone(), cx);
         cx.run_until_parked();
 
         // 未跟踪文件出现，随后被删除：Removed 事件应触发全量扫描，
@@ -1381,7 +1381,7 @@ mod tests {
     #[gpui::test]
     fn fs_rescan_events_discover_unreported_file(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
-        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let project = test_project(root.clone(), cx);
         cx.run_until_parked();
 
         // 文件在监听器失步期间出现，没有 Created 事件；Rescan 必须让项目重新发现它。
@@ -1451,7 +1451,7 @@ mod tests {
     #[gpui::test]
     fn saving_buffer_refreshes_git_status(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
-        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let project = test_project(root.clone(), cx);
         cx.run_until_parked();
 
         // 打开并修改 buffer（未保存），git 状态应仍为干净（status 反映磁盘）。
@@ -1494,7 +1494,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("应创建临时项目目录");
         let file = directory.path().join("document.txt");
         fs::write(&file, "原内容").expect("应创建测试文件");
-        let project = cx.new(|cx| Project::new(directory.path().to_path_buf(), cx));
+        let project = test_project(directory.path().to_path_buf(), cx);
         let language_buffer = project
             .update(cx, |project, cx| project.open_buffer(&file, cx))
             .expect("应打开测试文件");

@@ -1,5 +1,7 @@
 use anyhow::{Context as _, Result};
 use gpui::BackgroundExecutor;
+#[cfg(windows)]
+use gpui_util::new_std_command;
 use sysinfo::Pid;
 
 #[derive(Clone, Copy)]
@@ -81,7 +83,7 @@ pub(super) fn terminate_process_tree(pid: u32, executor: &BackgroundExecutor) ->
     {
         let _ = executor;
         // ConPTY 不会因关闭事件循环而可靠终止 shell 的子进程树。
-        let status = std::process::Command::new("taskkill")
+        let status = new_std_command("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .status()
             .context("执行 taskkill 终止终端进程树失败")?;

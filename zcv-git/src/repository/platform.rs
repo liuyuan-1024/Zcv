@@ -1,3 +1,5 @@
+#[cfg(windows)]
+use gpui_util::new_std_command;
 use std::process::Command;
 
 #[cfg(windows)]
@@ -22,7 +24,7 @@ pub(super) fn interrupt(process_id: u32) {
 
     #[cfg(windows)]
     {
-        let _ = Command::new("taskkill")
+        let _ = new_std_command("taskkill")
             .args(["/PID", &process_id.to_string(), "/T"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -38,7 +40,7 @@ pub(super) fn kill(process_id: u32) {
 
     #[cfg(windows)]
     {
-        let _ = Command::new("taskkill")
+        let _ = new_std_command("taskkill")
             .args(["/PID", &process_id.to_string(), "/T", "/F"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())

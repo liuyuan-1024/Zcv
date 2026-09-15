@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
+use gpui_util::new_std_command;
 use zcv_path::AbsolutePathBuf;
 
 mod platform;
@@ -347,7 +348,7 @@ impl RealGitRepository {
     /// 固定参数：
     /// `--no-optional-locks` 防止 `git status` 回写 index（racy-git），避免"扫描 → fs 事件 → 再扫描"的自触发循环；`--no-pager` 防止交互式分页。
     fn build_command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new("git");
+        let mut command = new_std_command("git");
         command
             .current_dir(&self.working_directory)
             .arg("-c")
@@ -976,7 +977,7 @@ fn parse_commit_graph(stdout: &[u8]) -> Vec<GraphCommit> {
 pub fn init(working_directory: &Path, fallback_branch: &str) -> Result<()> {
     std::fs::create_dir_all(working_directory)?;
     let branch = resolve_branch(configured_default_branch()?.as_deref(), fallback_branch);
-    let output = std::process::Command::new("git")
+    let output = new_std_command("git")
         .current_dir(working_directory)
         .args(["init", "-b", &branch])
         .stdin(Stdio::null())
@@ -993,7 +994,7 @@ pub fn init(working_directory: &Path, fallback_branch: &str) -> Result<()> {
 
 /// 读取全局 `init.defaultBranch`；未配置（非零退出）或输出空白视为无配置。
 fn configured_default_branch() -> Result<Option<String>> {
-    let output = std::process::Command::new("git")
+    let output = new_std_command("git")
         .args(["config", "--global", "--get", "init.defaultBranch"])
         .stdin(Stdio::null())
         .output()

@@ -15,8 +15,6 @@ pub(super) fn render(
 
     div()
         .id("window-controls")
-        // 与右侧设置按钮视觉对齐，两侧内容到窗口边界等距。
-        .pl(space::S4)
         .group(PIP_GROUP)
         .flex()
         .flex_row()

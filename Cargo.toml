@@ -38,7 +38,7 @@ members = [
 ]
 resolver = "3"
 [workspace.package]
-version = "0.9.7"
+version = "0.9.8"
 edition = "2024"
 
 [workspace.lints.clippy]
@@ -126,6 +126,7 @@ ring = "0.17.14"
 # ---- 桌面 UI ----
 futures = "0.3.34"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "7cda6f0523f008aa4b3b4be700a6660923f9283c" }
+gpui_util = { git = "https://github.com/zed-industries/zed", rev = "7cda6f0523f008aa4b3b4be700a6660923f9283c" }
 gpui-platform = { package = "gpui_platform", git = "https://github.com/zed-industries/zed", rev = "7cda6f0523f008aa4b3b4be700a6660923f9283c", features = ["font-kit"] }
 reqwest = { package = "zed-reqwest", version = "=0.12.15-zed", default-features = false, features = ["http2", "macos-system-configuration", "rustls-tls-native-roots", "stream"] }
 rust-embed = { version = "8.11", features = ["include-exclude"] }

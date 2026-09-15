@@ -4,7 +4,7 @@ mod network_client;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,6 +14,7 @@ use gpui::{
     App, AppContext as _, BackgroundExecutor, Context, Entity, Global, Render, Subscription, Task,
     WeakEntity, Window, div, prelude::*,
 };
+use gpui_util::new_std_command;
 use semver::Version;
 use sha2::{Digest as _, Sha256};
 use smol::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -259,7 +260,7 @@ impl UpdateManager {
         let log_path = transaction_dir.join("helper.log");
         let log = fs::File::create(&log_path)
             .with_context(|| format!("无法创建更新日志 {}", log_path.display()))?;
-        Command::new(&helper_path)
+        new_std_command(&helper_path)
             .arg("--transaction")
             .arg(&pending_path)
             .arg("--parent-pid")

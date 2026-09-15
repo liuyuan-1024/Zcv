@@ -12,6 +12,7 @@ async-channel.workspace = true
 globset.workspace = true
 gpui.workspace = true
 futures.workspace = true
+gpui_util.workspace = true
 trash.workspace = true
 zcv-text.workspace = true
 zcv-fs-watch.workspace = true

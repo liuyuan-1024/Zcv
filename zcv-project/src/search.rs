@@ -6,12 +6,12 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Arc;
 
 use async_channel::{Receiver, Sender};
 use futures::{StreamExt, stream};
 use gpui::{BackgroundExecutor, Task};
+use gpui_util::new_std_command;
 use zcv_git::path_from_git_bytes;
 use zcv_path::AbsolutePathBuf;
 use zcv_text::{
@@ -228,7 +228,7 @@ fn collect_files(
 /// 避免进入 target/node_modules 等 `.gitignore` 已排除的巨大目录。
 /// 非 Git 目录或 Git 不可用时回退到递归扫描。
 fn git_search_paths(plan: &WorktreeSearchPlan) -> Option<Vec<AbsolutePathBuf>> {
-    let output = Command::new("git")
+    let output = new_std_command("git")
         .arg("-C")
         .arg(plan.root.as_path())
         .args([

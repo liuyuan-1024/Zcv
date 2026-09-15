@@ -6,6 +6,11 @@
 
 (strikethrough) @text.strike
 
+(latex_block) @text.literal
+
+(latex_block
+  (latex_span_delimiter) @punctuation.delimiter)
+
 [
   (link_text)
   (link_label)

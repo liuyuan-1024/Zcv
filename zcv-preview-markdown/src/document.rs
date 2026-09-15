@@ -126,7 +126,8 @@ pub(crate) fn parse(source: &str) -> Vec<Block> {
     let mut options = Options::all();
     options.insert(Options::ENABLE_MATH);
 
-    for event in Parser::new_ext(source, options) {
+    let (source, display_math_blocks) = extract_display_math_blocks(source);
+    for event in Parser::new_ext(&source, options) {
         match event {
             // 元数据只描述文档，不属于 Markdown 正文。
             // 必须在解析阶段丢弃，避免其文本被后续块（尤其是第一个标题）意外收集。
@@ -308,7 +309,144 @@ pub(crate) fn parse(source: &str) -> Vec<Block> {
     }
 
     finish_active(&mut active, &mut active_content, &mut state);
+    restore_display_math_blocks(&mut state.blocks, &display_math_blocks);
     state.blocks
+}
+
+struct DisplayMathBlock {
+    token: String,
+    source: String,
+}
+
+fn extract_display_math_blocks(source: &str) -> (String, Vec<DisplayMathBlock>) {
+    let lines = source.split_inclusive('\n').collect::<Vec<_>>();
+    let mut normalized = String::with_capacity(source.len());
+    let mut display_math_blocks = Vec::new();
+    let mut fenced_code = None;
+    let mut line_index = 0;
+
+    while let Some(line) = lines.get(line_index).copied() {
+        if let Some(fence) = fenced_code {
+            normalized.push_str(line);
+            if closes_fenced_code(line, fence) {
+                fenced_code = None;
+            }
+            line_index += 1;
+            continue;
+        }
+
+        if let Some(fence) = starts_fenced_code(line) {
+            normalized.push_str(line);
+            fenced_code = Some(fence);
+            line_index += 1;
+            continue;
+        }
+
+        if let Some((next_line_index, prefix, line_ending, math_source)) =
+            extract_display_math_block(&lines, line_index)
+        {
+            let token = format!(
+                "\u{e000}zcv-display-math-{}\u{e001}",
+                display_math_blocks.len()
+            );
+            normalized.push_str(prefix);
+            normalized.push_str(&token);
+            normalized.push_str(line_ending);
+            display_math_blocks.push(DisplayMathBlock {
+                token,
+                source: math_source,
+            });
+            line_index = next_line_index;
+            continue;
+        }
+
+        normalized.push_str(line);
+        line_index += 1;
+    }
+
+    (normalized, display_math_blocks)
+}
+
+fn extract_display_math_block<'a>(
+    lines: &[&'a str],
+    opening_line_index: usize,
+) -> Option<(usize, &'a str, &'a str, String)> {
+    let opening_line = *lines.get(opening_line_index)?;
+    let (prefix, line_ending) = standalone_display_delimiter(opening_line)?;
+    if line_ending.is_empty() {
+        return None;
+    }
+
+    let mut source = line_ending.to_owned();
+    for (offset, line) in lines[opening_line_index + 1..].iter().enumerate() {
+        if standalone_display_delimiter(line).is_some() {
+            return Some((opening_line_index + offset + 2, prefix, line_ending, source));
+        }
+        source.push_str(strip_container_prefix(line, prefix));
+    }
+    None
+}
+
+fn standalone_display_delimiter(line: &str) -> Option<(&str, &str)> {
+    let content_end = line.trim_end_matches(['\r', '\n']).len();
+    let content = &line[..content_end];
+    if content.trim() != "$$" {
+        return None;
+    }
+    let delimiter_start = content.find("$$")?;
+    Some((&content[..delimiter_start], &line[content_end..]))
+}
+
+fn strip_container_prefix<'a>(line: &'a str, prefix: &str) -> &'a str {
+    line.strip_prefix(prefix).unwrap_or(line)
+}
+
+fn starts_fenced_code(line: &str) -> Option<(u8, usize)> {
+    let content = line.trim_start().as_bytes();
+    let marker = *content.first()?;
+    if marker != b'`' && marker != b'~' {
+        return None;
+    }
+    let length = content.iter().take_while(|byte| **byte == marker).count();
+    (length >= 3).then_some((marker, length))
+}
+
+fn closes_fenced_code(line: &str, (marker, minimum_length): (u8, usize)) -> bool {
+    let content = line.trim_start().as_bytes();
+    let length = content.iter().take_while(|byte| **byte == marker).count();
+    length >= minimum_length && content[length..].iter().all(u8::is_ascii_whitespace)
+}
+
+fn restore_display_math_blocks(blocks: &mut [Block], display_math_blocks: &[DisplayMathBlock]) {
+    for block in blocks {
+        match block {
+            Block::Paragraph(content) => {
+                let Some([inline]) = content.get(..) else {
+                    continue;
+                };
+                if inline.style != InlineStyle::default() {
+                    continue;
+                }
+                let Some(math) = display_math_blocks
+                    .iter()
+                    .find(|math| math.token == inline.text)
+                else {
+                    continue;
+                };
+                *block = Block::Math {
+                    source: math.source.clone(),
+                    display: true,
+                };
+            }
+            Block::Quote(children) => restore_display_math_blocks(children, display_math_blocks),
+            Block::List { items, .. } => {
+                for item in items {
+                    restore_display_math_blocks(item, display_math_blocks);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn code_language(kind: CodeBlockKind<'_>) -> Option<String> {
@@ -634,6 +772,17 @@ mod tests {
                     display: true,
                 }
             ]
+        );
+    }
+
+    #[test]
+    fn keeps_standalone_equals_inside_display_math() {
+        assert_eq!(
+            parse("$$\na\n=\nb\n=\nc\n$$"),
+            vec![Block::Math {
+                source: "\na\n=\nb\n=\nc\n".into(),
+                display: true,
+            }]
         );
     }
 

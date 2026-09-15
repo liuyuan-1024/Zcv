@@ -417,36 +417,41 @@ fn render_block(
                 .iter()
                 .enumerate()
                 .map(|(item_index, item)| {
-                    let marker = start.map_or_else(
+                    let marker_text = start.map_or_else(
                         || "•".to_owned(),
                         |start| format!("{}.", start + item_index as u64),
                     );
-                    let item_children = item
+                    let mut item_children = item
                         .iter()
                         .map(|block| {
                             render_block(block, next_key, list_depth + 1, namespace, render_context)
                         })
-                        .collect::<Vec<_>>();
-                    div()
-                        .flex()
-                        .gap(space::S2)
-                        .child(
+                        .collect::<Vec<_>>()
+                        .into_iter();
+                    let marker = || {
+                        div()
+                            .w(marker_width)
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .text_left()
+                            .text_color(color::current(cx).text_muted)
+                            .child(marker_text.clone())
+                    };
+                    let mut content = div().flex().flex_col().gap(space::S4);
+                    if let Some(first_child) = item_children.next() {
+                        content = content.child(
                             div()
-                                .w(marker_width)
-                                .flex_none()
-                                .text_left()
-                                .text_color(color::current(cx).text_muted)
-                                .child(marker),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
                                 .flex()
-                                .flex_col()
-                                .gap(space::S4)
-                                .children(item_children),
-                        )
+                                .gap(space::S2)
+                                .line_height(type_scale.content_line())
+                                .child(marker())
+                                .child(div().flex_1().min_w_0().child(first_child)),
+                        );
+                    } else {
+                        content = content.child(marker());
+                    }
+                    content.children(item_children)
                 })
                 .collect::<Vec<_>>();
             div()

@@ -36,16 +36,7 @@
     "hide": "never",
   },
   {
-    "label": "5. macOS 打包",
-    "command": "scripts/bundle-mac",
-    "args": [],
-    "cwd": "$ZED_WORKTREE_ROOT",
-    "save": "all",
-    "reveal": "always",
-    "hide": "never",
-  },
-  {
-    "label": "6. 全部性能基准",
+    "label": "5. 全部性能基准",
     "command": "cargo bench -p zcv-benchmarks --bench text_buffer --bench language_highlighting --bench multi_buffer && cargo bench -p zcv-benchmarks --bench memory",
     "args": [],
     "cwd": "$ZED_WORKTREE_ROOT",
@@ -58,7 +49,7 @@
     "hide": "never",
   },
   {
-    "label": "7. 记录当前版本性能基准",
+    "label": "6. 记录当前版本性能基准",
     "command": "cargo bench -p zcv-benchmarks --bench text_buffer --bench language_highlighting --bench multi_buffer -- --save-baseline \"$(git rev-parse --short HEAD)\" && ZCV_MEMORY_BENCHMARK_LABEL=\"$(git rev-parse --short HEAD)\" cargo bench -p zcv-benchmarks --bench memory",
     "args": [],
     "cwd": "$ZED_WORKTREE_ROOT",

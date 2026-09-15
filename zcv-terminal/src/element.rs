@@ -16,7 +16,9 @@ use gpui::{
 use unicode_width::UnicodeWidthChar;
 use zcv_theme::{color, typography};
 
-use crate::{Cell, Content, IndexedCell, SelectionGeometry, TerminalBounds, TerminalView, palette};
+use crate::{
+    Cell, Content, IndexedCell, Modes, SelectionGeometry, TerminalBounds, TerminalView, palette,
+};
 use alacritty_terminal::vte::ansi::CursorShape;
 
 /// 同一行的渲染数据：文本段、起点与起始网格列。
@@ -68,6 +70,51 @@ pub(super) struct TerminalLayout {
 struct InteractionState {
     geometry: Option<SelectionGeometry>,
     hitbox: Option<gpui::HitboxId>,
+}
+
+struct GridLayout {
+    origin: Point<Pixels>,
+    bounds: TerminalBounds,
+}
+
+/// 将可用像素高度规整为完整终端网格，并保留不能组成一行的剩余像素作为边距。
+///
+/// 终端模拟器和渲染器必须共享同一组网格行数。剩余像素不能被解释成额外的
+/// 空白终端行，否则 prompt、滚动范围和鼠标坐标会产生一行偏差。
+fn grid_layout(
+    bounds: Bounds<Pixels>,
+    cell_width: Pixels,
+    line_height: Pixels,
+    scale_factor: f32,
+    anchor_to_bottom: bool,
+) -> GridLayout {
+    let line_height_device_px = (f32::from(line_height) * scale_factor).round().max(1.0) as i32;
+    let available_height_device_px = (f32::from(bounds.size.height) * scale_factor)
+        .floor()
+        .max(0.0) as i32;
+    let rows = (available_height_device_px / line_height_device_px).max(1);
+    let snapped_height_device_px = rows * line_height_device_px;
+    let padding_device_px = (available_height_device_px - snapped_height_device_px).max(0);
+    let scale_factor = scale_factor.max(1.0);
+    let snapped_height = px(snapped_height_device_px as f32 / scale_factor);
+    let padding = px(padding_device_px as f32 / scale_factor);
+
+    GridLayout {
+        origin: Point::new(
+            bounds.origin.x,
+            bounds.origin.y
+                + if anchor_to_bottom {
+                    padding
+                } else {
+                    Pixels::ZERO
+                },
+        ),
+        bounds: TerminalBounds::new(
+            cell_width,
+            line_height,
+            size(bounds.size.width, snapped_height),
+        ),
+    }
 }
 
 pub(super) struct TerminalElement {
@@ -178,6 +225,38 @@ mod shaped_run_key_tests {
         let mut changed_font = base.clone();
         changed_font.styles[0].font = gpui::font(".SystemUIFont");
         assert_ne!(base, changed_font);
+    }
+}
+
+#[cfg(test)]
+mod grid_layout_tests {
+    use super::*;
+
+    #[test]
+    fn snaps_height_to_complete_device_rows() {
+        let layout = grid_layout(
+            Bounds::new(Point::new(px(2.), px(3.)), size(px(100.), px(101.))),
+            px(8.),
+            px(20.),
+            1.,
+            false,
+        );
+
+        assert_eq!(layout.bounds.num_lines(), 5);
+        assert_eq!(layout.origin, Point::new(px(2.), px(3.)));
+    }
+
+    #[test]
+    fn anchors_complete_rows_to_the_bottom_when_requested() {
+        let layout = grid_layout(
+            Bounds::new(Point::new(px(2.), px(3.)), size(px(100.), px(101.))),
+            px(8.),
+            px(20.),
+            1.,
+            true,
+        );
+
+        assert_eq!(layout.origin, Point::new(px(2.), px(4.)));
     }
 }
 
@@ -332,11 +411,21 @@ impl Element for TerminalElement {
                     .max(Pixels::from(1.));
                 let line_height = self.view.read(cx).line_height(cx);
 
+                let current_content = self.view.read(cx).terminal.read(cx).last_content().clone();
+                let anchor_to_bottom = current_content.mode.contains(Modes::ALT_SCREEN)
+                    || (current_content.scrolled_to_bottom && current_content.bottom_row_occupied);
+                let grid_layout = grid_layout(
+                    bounds,
+                    cell_width,
+                    line_height,
+                    window.scale_factor(),
+                    anchor_to_bottom,
+                );
+
                 // 通知终端新尺寸并排空事件队列，刷新渲染快照。
-                let terminal_bounds = TerminalBounds::new(cell_width, line_height, bounds.size);
                 self.view.update(cx, |view, cx| {
                     view.terminal
-                        .update(cx, |terminal, cx| terminal.set_size(terminal_bounds, cx));
+                        .update(cx, |terminal, cx| terminal.set_size(grid_layout.bounds, cx));
                     view.sync(window, cx);
                 });
 
@@ -344,7 +433,7 @@ impl Element for TerminalElement {
                 let focused = self.view.read(cx).is_focused(window);
                 let ime_marked_text = self.view.read(cx).marked_text().map(str::to_owned);
                 let layout = TerminalLayout {
-                    origin: bounds.origin,
+                    origin: grid_layout.origin,
                     line_height,
                     cell_width,
                     font,

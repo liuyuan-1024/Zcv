@@ -10,7 +10,7 @@ use std::{borrow::Cow, io, path::PathBuf, sync::Arc};
 use alacritty_terminal::{
     event::{Event as AlacTermEvent, EventListener, Notify, WindowSize},
     event_loop::{EventLoop, Msg, Notifier},
-    grid::{Dimensions, GridCell, Scroll as AlacScroll},
+    grid::{Dimensions, Scroll as AlacScroll},
     index::{Column, Direction, Line, Point as AlacPoint},
     selection::{Selection as AlacSelection, SelectionType as AlacSelectionType},
     sync::FairMutex,
@@ -292,7 +292,7 @@ pub(super) fn make_content<T: EventListener>(
 ) -> Content {
     let content = term.renderable_content();
     let display_offset = content.display_offset;
-    let cells = content
+    let cells: Vec<IndexedCell> = content
         .display_iter
         .map(|indexed| {
             let point = Point {
@@ -317,11 +317,13 @@ pub(super) fn make_content<T: EventListener>(
         },
     };
     let cursor_cell = Cell::new(grid[content.cursor.point].clone());
-    let bottom_row_occupied = grid
-        .display_iter()
-        .last()
-        .map(|indexed| !indexed.cell.is_empty())
-        .unwrap_or(false);
+    let bottom_line = term.screen_lines() as i32 - 1 - display_offset as i32;
+    let bottom_row_occupied = content.cursor.point.line.0 >= bottom_line
+        || cells
+            .iter()
+            .rev()
+            .take_while(|cell| cell.point.line >= bottom_line)
+            .any(|cell| cell.cell.character() != ' ');
 
     Content {
         cells,

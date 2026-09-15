@@ -702,19 +702,28 @@ impl Terminal {
 
     /// 视图每帧调用：通知尺寸变化（行列或格宽变化才入队，合并连续 resize）。
     pub fn set_size(&mut self, bounds: TerminalBounds, cx: &mut Context<Self>) {
-        let changed = self.last_content.terminal_bounds != bounds;
-        if changed {
-            if let Some(event) = self
-                .events
-                .iter_mut()
-                .find(|event| matches!(event, InternalEvent::Resize(_)))
-            {
-                *event = InternalEvent::Resize(bounds);
-            } else {
-                self.events.push_back(InternalEvent::Resize(bounds));
-            }
-            cx.notify();
+        let old_bounds = self.last_content.terminal_bounds;
+        self.last_content.terminal_bounds = bounds;
+
+        let requires_resize = old_bounds.num_lines() != bounds.num_lines()
+            || old_bounds.num_columns() != bounds.num_columns()
+            || old_bounds.cell_width() != bounds.cell_width()
+            || old_bounds.line_height() != bounds.line_height();
+
+        if !requires_resize {
+            return;
         }
+
+        if let Some(event) = self
+            .events
+            .iter_mut()
+            .find(|event| matches!(event, InternalEvent::Resize(_)))
+        {
+            *event = InternalEvent::Resize(bounds);
+        } else {
+            self.events.push_back(InternalEvent::Resize(bounds));
+        }
+        cx.notify();
     }
 
     /// 视图每帧调用：排空事件队列并刷新渲染快照。
@@ -1186,6 +1195,7 @@ mod tests {
         assert_eq!(content.screen_lines, 1);
         assert!(content.scrolled_to_bottom);
         assert!(content.scrolled_to_top);
+        assert!(content.bottom_row_occupied);
     }
 
     /// 光标与内容的绝对坐标换算：mock_term 直接写网格，光标保持初始位置 (0, 0)。
@@ -1293,7 +1303,7 @@ mod terminal_view_tests {
     use crate::TerminalView;
     use gpui::{
         Context, Entity, EntityInputHandler, IntoElement, MouseButton, Render, TestAppContext,
-        VisualTestContext, Window, div, point, prelude::*, px,
+        VisualTestContext, Window, div, point, prelude::*, px, size,
     };
 
     #[derive(Default)]
@@ -1353,6 +1363,29 @@ mod terminal_view_tests {
             all_text(content).contains("zcv-terminal-ok")
         })
         .await;
+    }
+
+    /// 像素高度变化时，模型仍需立即持有最新边界，不能等待下一次 PTY resize。
+    #[gpui::test]
+    async fn terminal_size_snapshot_is_authoritative_before_resize(cx: &mut TestAppContext) {
+        let terminal = build_terminal(cx);
+        let (_, cx) = cx.add_window_view(|_window, _cx| EmptyView);
+
+        let first_bounds = TerminalBounds::new(px(8.), px(16.), size(px(100.), px(100.)));
+        let pixel_changed_bounds = TerminalBounds::new(px(8.), px(16.), size(px(101.), px(101.)));
+
+        cx.update(|window, cx| {
+            terminal.update(cx, |terminal, cx| {
+                terminal.set_size(first_bounds, cx);
+                terminal.sync(window, cx);
+                terminal.set_size(pixel_changed_bounds, cx);
+                terminal.sync(window, cx);
+            });
+        });
+
+        let actual_bounds =
+            cx.update(|_window, cx| terminal.read(cx).last_content().terminal_bounds);
+        assert_eq!(actual_bounds, pixel_changed_bounds);
     }
 
     /// IME 候选窗定位：渲染一帧后 bounds_for_range 应返回光标像素位置。

@@ -969,7 +969,8 @@ impl ProjectDiffView {
                 GitStoreEvent::IndexText => view.rebuild_projection(cx),
                 GitStoreEvent::ActiveRepositoryChanged
                 | GitStoreEvent::JobsUpdated
-                | GitStoreEvent::Uncommitted(_) => {}
+                | GitStoreEvent::Uncommitted(_)
+                | GitStoreEvent::UncommitFailed(_) => {}
             }),
         ];
         let toolbar_view = cx.entity().downgrade();

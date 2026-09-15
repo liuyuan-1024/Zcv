@@ -185,9 +185,8 @@ impl PickerDelegate for BranchPickerDelegate {
 
 /// 分支选择器 —— 自含按钮 + 浮层。
 ///
-/// 按钮显示当前分支名；项目不是 git 仓库时选择器整体不显示。
-/// 仅在存在仓库时渲染，此时按显示策略回退：有分支显示分支名，
-/// detached HEAD 显示 8 位短 SHA，空仓库（无提交）显示 `(没有分支)`。
+/// 按钮显示当前分支名；项目不是 git 仓库或空仓库时选择器整体不显示。
+/// detached HEAD 显示 8 位短 SHA。
 pub struct BranchPicker {
     host: PickerHost,
     picker: Entity<Picker<BranchPickerDelegate>>,
@@ -228,16 +227,18 @@ impl BranchPicker {
         self.head_commit = head_commit;
     }
 
-    /// 按钮显示名：分支名 → 8 位短 SHA（detached HEAD）→ 没有分支（空仓库）。
-    fn display_name(&self) -> String {
-        self.current_branch
-            .clone()
-            .or_else(|| {
-                self.head_commit
-                    .as_ref()
-                    .map(|oid| oid.chars().take(8).collect())
-            })
-            .unwrap_or_else(|| "没有分支".to_string())
+    /// 当前状态是否足以显示分支选择器。
+    pub(crate) fn has_branch_context(&self) -> bool {
+        self.current_branch.is_some() || self.head_commit.is_some()
+    }
+
+    /// 按钮显示名：分支名 → 8 位短 SHA（detached HEAD）。
+    fn display_name(&self) -> Option<String> {
+        self.current_branch.clone().or_else(|| {
+            self.head_commit
+                .as_ref()
+                .map(|oid| oid.chars().take(8).collect())
+        })
     }
 
     /// 设置分支列表快照（打开时同步渲染，无加载态）。
@@ -300,16 +301,16 @@ impl Render for BranchPicker {
             color::current(cx).text
         };
 
-        // 按钮上显示分支名 → 短 SHA → 没有分支的三层回退。
-        let button = Button::icon_text(
-            "top-bar.branch",
-            "icons/git_branch.svg",
-            self.display_name(),
-        )
-        .label("分支")
-        .shortcut(&SelectGitBranch, cx)
-        .color(color_value)
-        .on_click(cx.listener(|picker, _, window, cx| picker.toggle(window, cx)));
+        let Some(display_name) = self.display_name() else {
+            return div();
+        };
+
+        // 空仓库没有当前分支或 HEAD，直接不渲染选择器。
+        let button = Button::icon_text("top-bar.branch", "icons/git_branch.svg", display_name)
+            .label("分支")
+            .shortcut(&SelectGitBranch, cx)
+            .color(color_value)
+            .on_click(cx.listener(|picker, _, window, cx| picker.toggle(window, cx)));
 
         let mut root = div()
             .track_focus(&self.host.focus_handle())
@@ -368,14 +369,15 @@ mod tests {
     }
 
     #[gpui::test]
-    fn display_name_falls_back_through_branch_sha_and_no_branch(cx: &mut gpui::TestAppContext) {
+    fn display_name_and_visibility_follow_branch_state(cx: &mut gpui::TestAppContext) {
         let on_select: OnBranchSelected = Rc::new(|_, _, _| {});
         let window = cx.add_window(|window, cx| BranchPicker::new(on_select, window, cx));
 
         // 有分支：显示分支名。
         let _ = window.update(cx, |picker, _, _| picker.set_branch(Some("feature".into())));
         let _ = window.update(cx, |picker, _, _| {
-            assert_eq!(picker.display_name(), "feature");
+            assert_eq!(picker.display_name().as_deref(), Some("feature"));
+            assert!(picker.has_branch_context());
         });
 
         // detached HEAD（无分支但有提交）：显示 8 位短 SHA。
@@ -384,13 +386,15 @@ mod tests {
             picker.set_head_commit(Some("0123456789abcdef".into()));
         });
         let _ = window.update(cx, |picker, _, _| {
-            assert_eq!(picker.display_name(), "01234567");
+            assert_eq!(picker.display_name().as_deref(), Some("01234567"));
+            assert!(picker.has_branch_context());
         });
 
-        // 空仓库（无分支无提交）：显示「没有分支」。
+        // 空仓库（无分支无提交）：不显示分支选择器。
         let _ = window.update(cx, |picker, _, _| picker.set_head_commit(None));
         let _ = window.update(cx, |picker, _, _| {
-            assert_eq!(picker.display_name(), "没有分支");
+            assert_eq!(picker.display_name(), None);
+            assert!(!picker.has_branch_context());
         });
     }
 

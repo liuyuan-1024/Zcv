@@ -752,6 +752,15 @@ fn initialize_workspace(
             bar.set_remote_operation_state(remote_operation_state);
             cx.notify();
         });
+        if let GitStoreEvent::UncommitFailed(error) = event {
+            workspace.show_toast(
+                ToastKind::Error,
+                format!("撤销提交失败：{error}"),
+                None,
+                Some(Duration::from_secs(5)),
+                cx,
+            );
+        }
         // 任务事件只更新任务界面，不能反向触发差异业务；其余状态事件同步当前结果。
         // 展开状态按工作区文本跟踪区间跨刷新迁移（HEAD 变化不重置，见 diff_projection 模块说明）。
         if matches!(

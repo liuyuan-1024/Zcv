@@ -844,6 +844,49 @@ fn uncommit_returns_full_message_and_rewinds_head() {
 }
 
 #[test]
+fn uncommit_root_commit_preserves_staged_work_and_unborn_branch() {
+    let temp_dir = tempfile::tempdir().expect("应创建临时目录");
+    let root = temp_dir.path();
+    run_in(root, &["git", "init", "-q", "-b", "main"]);
+    run_in(root, &["git", "config", "user.email", "test@example.com"]);
+    run_in(root, &["git", "config", "user.name", "Test User"]);
+    fs::write(root.join("tracked.txt"), "第一次提交的内容\n").expect("应写入文件");
+    run_in(root, &["git", "add", "tracked.txt"]);
+    run_in(
+        root,
+        &["git", "commit", "-q", "-m", "第一次提交", "-m", "详细说明"],
+    );
+
+    let repository = open_repo(root);
+    let message = repository
+        .uncommit()
+        .expect("根提交应可撤销")
+        .expect("应返回被撤销提交的消息");
+    assert_eq!(message, "第一次提交\n\n详细说明");
+
+    assert!(
+        repository
+            .head_commit()
+            .expect("head_commit 应成功")
+            .0
+            .is_none()
+    );
+    assert!(repository.branches().expect("branches 应成功").is_empty());
+    let status = repository.status(&[]).expect("status 应成功");
+    let entry = status
+        .statuses
+        .iter()
+        .find(|(path, _)| path == Path::new("tracked.txt"))
+        .map(|(_, status)| *status)
+        .expect("撤销后应保留文件状态");
+    assert!(entry.is_created(), "撤销根提交后文件应继续处于新增状态");
+    assert!(!entry.is_untracked(), "撤销根提交后文件应继续保留在暂存区");
+
+    let head = run_in(root, &["git", "symbolic-ref", "--short", "HEAD"]);
+    assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "main");
+}
+
+#[test]
 fn branches_lists_local_branches_with_head_marker() {
     let (root, _temp) = test_repo();
     let repository = open_repo(&root);

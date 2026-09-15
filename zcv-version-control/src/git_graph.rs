@@ -1033,7 +1033,7 @@ fn draw_commit_circle(center_x: Pixels, center_y: Pixels, color: Rgba, window: &
 
 /// 渲染单行：左侧图形画布 + 右侧文本区；点击选中高亮。
 fn graph_column(width: Pixels, colors: &ThemeColors, with_right_border: bool) -> gpui::Div {
-    let mut column = div().w(width).h_full().flex_none();
+    let mut column = div().w(width).h_full().flex().items_center().flex_none();
     if with_right_border {
         column = column.border_r_1().border_color(colors.border_variant);
     }
@@ -1254,8 +1254,6 @@ fn render_graph_header(
     for (index, label) in labels.into_iter().enumerate() {
         let mut cell = graph_column(column_widths[index], &colors, index + 1 < COLUMN_COUNT)
             .relative()
-            .flex()
-            .items_center()
             .px(space::S6)
             .child(label);
 
@@ -1308,8 +1306,6 @@ fn render_commit_column(
     let subject = commit.subject.clone();
     let mut column = graph_column(width, colors, true)
         .min_w_0()
-        .flex()
-        .items_center()
         .gap(space::S8)
         .pl(space::S6)
         .overflow_hidden()
@@ -1402,8 +1398,6 @@ fn render_sha_column(oid: &str, colors: &ThemeColors, width: Pixels) -> gpui::Di
     graph_column(width, colors, false)
         .min_w_0()
         .overflow_hidden()
-        .border_r_1()
-        .border_color(colors.border_variant)
         .child(
             ButtonLike::new(format!("git-graph-sha-{oid}"))
                 .padding(space::S2)

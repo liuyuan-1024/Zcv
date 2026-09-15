@@ -32,7 +32,7 @@ pub struct TopBar {
     pub project_picker: Entity<ProjectPicker>,
     /// 分支选择器（显示当前分支名；由 Workspace 订阅 GitStore 事件刷新）。
     pub branch_picker: Entity<BranchPicker>,
-    /// 项目是否已发现 git 仓库（非 git 项目不显示分支与同步/推送/拉取按钮）。
+    /// 项目是否已发现 git 仓库（控制同步/推送/拉取按钮）。
     has_repositories: bool,
     /// 活动仓库的远程操作状态（无 remote 时同步/推送/拉取按钮都不显示）。
     remote_operation_state: RemoteOperationState,
@@ -104,15 +104,7 @@ impl gpui::Render for TopBar {
     ) -> impl gpui::IntoElement {
         bar_frame(cx)
             .id("top-bar")
-            .child(cluster(leading_slots(
-                window,
-                &self.project_picker,
-                &self.branch_picker,
-                self.has_repositories,
-                self.remote_operation_state,
-                self.callbacks.clone(),
-                self.workspace.clone(),
-            )))
+            .child(cluster(leading_slots(window, self, cx)))
             .child(drag_spacer())
             .child(cluster(trailing_slots(
                 self.update_control.as_ref(),
@@ -145,69 +137,63 @@ fn drag_spacer() -> Div {
     div().flex_1().h_full()
 }
 
-fn leading_slots(
-    window: &Window,
-    project_picker: &gpui::Entity<ProjectPicker>,
-    branch_picker: &gpui::Entity<BranchPicker>,
-    has_repositories: bool,
-    state: RemoteOperationState,
-    callbacks: TopBarCallbacks,
-    workspace: WeakEntity<Workspace>,
-) -> Vec<AnyElement> {
+fn leading_slots(window: &Window, top_bar: &TopBar, cx: &App) -> Vec<AnyElement> {
     let mut out: Vec<AnyElement> = Vec::new();
 
     // 无标题栏窗口，因此在应用顶栏提供三色控制。
-    out.push(render_window_controls(window, workspace.clone()).into_any_element());
+    out.push(render_window_controls(window, top_bar.workspace.clone()).into_any_element());
 
     // 项目选择器
-    out.push(project_picker.clone().into_any_element());
+    out.push(top_bar.project_picker.clone().into_any_element());
 
     // Git 分支与同步/推送/拉取操作：项目不是 git 仓库时不显示。
-    if has_repositories {
-        // Git 分支：按钮由分支选择器自含（点击弹出分支列表）。
-        out.push(branch_picker.clone().into_any_element());
+    if top_bar.has_repositories {
+        // 空仓库没有分支或 HEAD，不显示分支选择器；其余仓库由选择器显示分支名或短 SHA。
+        if top_bar.branch_picker.read(cx).has_branch_context() {
+            out.push(top_bar.branch_picker.clone().into_any_element());
+        }
         // 无 remote 时 fetch/pull/push 都会报错，不给出入口；
         // 有 remote 时同步常显（主动检查更新的兜底），推送/拉取仅在可推/可拉时出现。
-        if state.has_remote {
-            let busy = state.operation.is_some();
-            let operation_label = remote_operation_label(state);
+        if top_bar.remote_operation_state.has_remote {
+            let busy = top_bar.remote_operation_state.operation.is_some();
+            let operation_label = remote_operation_label(top_bar.remote_operation_state);
             out.push(
                 Button::icon("top-bar.git-fetch", "icons/arrow_circle.svg")
                     .label(operation_label.unwrap_or("同步"))
                     .disabled(busy)
                     .on_click({
-                        let callback = callbacks.on_git_fetch.clone();
+                        let callback = top_bar.callbacks.on_git_fetch.clone();
                         move |_, window, cx| callback(window, cx)
                     })
                     .into_any_element(),
             );
-            if state.behind > 0 {
+            if top_bar.remote_operation_state.behind > 0 {
                 out.push(
                     Button::icon_text(
                         "top-bar.git-pull",
                         "icons/arrow_down.svg",
-                        state.behind.to_string(),
+                        top_bar.remote_operation_state.behind.to_string(),
                     )
                     .label(operation_label.unwrap_or("拉取"))
                     .disabled(busy)
                     .on_click({
-                        let callback = callbacks.on_git_pull.clone();
+                        let callback = top_bar.callbacks.on_git_pull.clone();
                         move |_, window, cx| callback(window, cx)
                     })
                     .into_any_element(),
                 );
             }
-            if state.ahead > 0 {
+            if top_bar.remote_operation_state.ahead > 0 {
                 out.push(
                     Button::icon_text(
                         "top-bar.git-push",
                         "icons/arrow_up.svg",
-                        state.ahead.to_string(),
+                        top_bar.remote_operation_state.ahead.to_string(),
                     )
                     .label(operation_label.unwrap_or("推送"))
                     .disabled(busy)
                     .on_click({
-                        let callback = callbacks.on_git_push.clone();
+                        let callback = top_bar.callbacks.on_git_push.clone();
                         move |_, window, cx| callback(window, cx)
                     })
                     .into_any_element(),

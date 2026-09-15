@@ -202,7 +202,9 @@ impl GitStore {
                 Ok(None) => {
                     self.schedule_scan(cx);
                 }
-                Err(_) => {}
+                Err(error) => {
+                    cx.emit(GitStoreEvent::UncommitFailed(format!("{error:#}")));
+                }
             },
             _ => {}
         }

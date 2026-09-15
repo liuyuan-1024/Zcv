@@ -263,10 +263,11 @@ pub trait GitRepository: Send + Sync {
     /// 无提交（空仓库）时两项均为 `None`；oid 异常缺失时 subject 一并置 None（空仓库语义）。
     fn head_commit(&self) -> Result<(Option<String>, Option<String>)>;
 
-    /// 撤销最近一次提交（先取完整消息，再 `git reset --soft HEAD^`）。
+    /// 撤销最近一次提交。
     ///
     /// 返回被撤销提交的完整消息（含 body，`%B`），供调用方填回提交信息编辑器；
-    /// 无提交或撤销失败（如单提交仓库 `HEAD^` 不存在）时返回错误。
+    /// 普通提交回退到第一个父提交，根提交则删除当前本地分支引用并保留 index 与工作区。
+    /// 无提交或当前 HEAD 没有可删除的本地分支引用时返回错误。
     fn uncommit(&self) -> Result<Option<String>>;
 
     /// 列出全部本地分支（`git for-each-ref --format=%(HEAD)%00%(refname:short) refs/heads`）。
@@ -762,17 +763,51 @@ impl GitRepository for RealGitRepository {
     }
 
     fn uncommit(&self) -> Result<Option<String>> {
-        // 先取完整消息再 reset：reset 后旧提交对象不再可达，消息须先落袋。
-        let message = self
-            .run_optional(&["log", "-1", "--pretty=format:%B"])?
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-            .filter(|message| !message.is_empty());
-        // `--soft` 只回退 HEAD 指针，index 与工作树保留（`git reset HEAD^ --soft`）。
-        self.run_command(
-            &mut self.build_command(&["reset", "--soft", "HEAD^"]),
-            "git reset --soft HEAD^",
+        // 先取完整消息和当前 HEAD；引用移动后旧提交可能只剩下不可见的对象，消息须先落袋。
+        let Some(output) = self.run_optional(&["log", "-1", "--pretty=format:%H%x00%B"])? else {
+            bail!("当前仓库没有提交，无法撤销");
+        };
+        let mut parts = output.stdout.splitn(2, |byte| *byte == 0);
+        let head_oid = String::from_utf8_lossy(parts.next().unwrap_or_default())
+            .trim()
+            .to_string();
+        anyhow::ensure!(!head_oid.is_empty(), "无法读取当前提交的 oid");
+        let message = parts
+            .next()
+            .map(|message| String::from_utf8_lossy(message).trim().to_string())
+            .unwrap_or_default();
+
+        let parents = self.run_command(
+            &mut self.build_command(&["rev-list", "--parents", "-n", "1", "HEAD"]),
+            "git rev-list",
         )?;
-        Ok(message)
+        let parents = String::from_utf8_lossy(&parents.stdout);
+        let mut commits = parents.split_whitespace();
+        let reported_head = commits.next().unwrap_or_default();
+        anyhow::ensure!(reported_head == head_oid, "当前提交状态在撤销期间发生变化");
+        if let Some(parent) = commits.next() {
+            // `--soft` 只回退 HEAD 指针，index 与工作树保留；多父提交沿用 HEAD^ 的第一个父提交语义。
+            self.run_command(
+                &mut self.build_command(&["reset", "--soft", parent]),
+                "git reset --soft",
+            )?;
+        } else {
+            let head_ref = self.run_command(
+                &mut self.build_command(&["symbolic-ref", "--quiet", "HEAD"]),
+                "git symbolic-ref HEAD",
+            )?;
+            let head_ref = String::from_utf8_lossy(&head_ref.stdout).trim().to_string();
+            anyhow::ensure!(
+                head_ref.starts_with("refs/heads/"),
+                "当前 HEAD 没有可删除的本地分支引用，无法撤销根提交"
+            );
+            // 删除分支引用不会改写 index 或工作树，仓库回到当前分支尚无提交的状态。
+            self.run_command(
+                &mut self.build_command(&["update-ref", "-d", &head_ref, &head_oid]),
+                "git update-ref",
+            )?;
+        }
+        Ok(Some(message))
     }
 
     fn branches(&self) -> Result<Vec<Branch>> {

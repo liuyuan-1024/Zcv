@@ -39,7 +39,7 @@ const MAX_INCREMENTAL_PATHS: usize = 500;
 
 /// GitStore 通知事件。
 ///
-/// 单窗口简化：事件均无 payload（除 `Uncommitted`），订阅方收到后按需重读 GitStore 状态。
+/// 单窗口简化：事件均无 payload（除提交撤销结果），订阅方收到后按需重读 GitStore 状态。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GitStoreEvent {
     /// 仓库集合发生变化（发现/消失）。
@@ -56,6 +56,8 @@ pub enum GitStoreEvent {
     JobsUpdated,
     /// 撤销提交成功：携带被撤销的提交消息（面板填回提交信息编辑器）。
     Uncommitted(String),
+    /// 撤销提交失败：携带完整错误信息，由工作区向用户提示。
+    UncommitFailed(String),
     /// 变更块操作失败：携带错误信息（面板提示错误并恢复被 optimistic 抑制的 hunk）。
     HunkOperationFailed(String),
 }
@@ -690,7 +692,9 @@ impl GitStore {
         self.schedule_job(GitJob::Commit { message }, cx);
     }
 
-    /// 撤销最近一次提交（`git reset --soft HEAD^`），被撤销消息填回提交信息编辑器。
+    /// 撤销最近一次提交；
+    /// 根提交删除当前本地分支引用，普通提交回退到第一个父提交。
+    /// 被撤销消息填回提交信息编辑器，失败由订阅方提示用户。
     pub fn uncommit(&mut self, cx: &mut Context<Self>) {
         if self.repositories.is_empty() {
             self.schedule_scan(cx);

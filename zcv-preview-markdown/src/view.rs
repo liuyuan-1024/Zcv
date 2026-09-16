@@ -20,7 +20,7 @@ use zcv_language::{
     HighlightSpan, SnippetHighlightCancellation, SnippetHighlights,
     highlight_snippet_with_cancellation,
 };
-use zcv_multi_buffer::MultiBuffer;
+use zcv_multi_buffer::{MultiBuffer, MultiBufferEvent};
 use zcv_project::Project;
 use zcv_theme::{color, space, syntax, typography};
 use zcv_ui::{Button, Scrollbar};
@@ -108,8 +108,10 @@ impl MarkdownPreviewView {
             toggle_preview: document.toggle_preview.clone(),
         });
         let multi_buffer = document.multi_buffer;
-        let document_subscription = cx.observe(&multi_buffer, |view, _, cx| {
-            view.schedule_refresh(cx);
+        let document_subscription = cx.subscribe(&multi_buffer, |view, _, event, cx| {
+            if matches!(event, MultiBufferEvent::TextChanged) {
+                view.schedule_refresh(cx);
+            }
         });
         let this = cx.entity().downgrade();
         let item_subscription = source_item.subscribe_to_item_events(

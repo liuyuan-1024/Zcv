@@ -444,9 +444,9 @@
       "cmd-0": "workspace::ResetContentFontSize",
 
       // 工作区 UI 字号
-      "cmd-shift-=": "workspace::IncreaseUiFontSize",
-      "cmd-shift--": "workspace::DecreaseUiFontSize",
-      "cmd-shift-0": "workspace::ResetUiFontSize"
+      "cmd-+": "workspace::IncreaseUiFontSize",
+      "cmd-_": "workspace::DecreaseUiFontSize",
+      "cmd-)": "workspace::ResetUiFontSize"
     }
   }
 ]

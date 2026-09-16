@@ -615,9 +615,9 @@ mod tests {
     #[test]
     fn font_size_keymaps_keep_content_ui_and_terminal_scopes_distinct() {
         for (source, content_keys, ui_keys, terminal_keys) in [
-            ("default-macos.json", "cmd-=", "cmd-shift-=", "cmd-="),
-            ("default-linux.json", "ctrl-=", "ctrl-shift-=", "ctrl-="),
-            ("default-windows.json", "ctrl-=", "ctrl-shift-=", "ctrl-="),
+            ("default-macos.json", "cmd-=", "cmd-+", "cmd-="),
+            ("default-linux.json", "ctrl-=", "ctrl-+", "ctrl-="),
+            ("default-windows.json", "ctrl-=", "ctrl-+", "ctrl-="),
         ] {
             let groups = parse_builtin_keymap(source);
             let global = groups

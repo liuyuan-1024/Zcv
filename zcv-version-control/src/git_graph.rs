@@ -29,7 +29,7 @@ use zcv_workspace::{
     SerializedPaneItem, Workspace,
 };
 
-// ── 布局常量（参考 Zed git_graph.rs） ────────────────────────────────
+// ── 布局常量 ────────────────────────────────
 
 /// 单条 lane 的水平宽度。
 const LANE_WIDTH: Pixels = px(16.0);
@@ -1006,7 +1006,7 @@ fn paint_graph(
     );
 }
 
-/// 用两段半圆弧填充一个提交圆点（移植 Zed `draw_commit_circle`）。
+/// 用两段半圆弧填充一个提交圆点。
 fn draw_commit_circle(center_x: Pixels, center_y: Pixels, color: Rgba, window: &mut Window) {
     let radius = CIRCLE_RADIUS;
     let mut builder = PathBuilder::fill();

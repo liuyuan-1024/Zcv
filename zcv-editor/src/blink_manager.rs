@@ -1,6 +1,5 @@
 //! 光标闪烁管理器。
 //!
-//! 参考 zed `crates/editor/src/blink_manager.rs`。
 //! 通过递归异步定时器实现光标可见性的交替切换。
 //! 闪烁循环仅在 `enable()` 后启动，`disable()` 后停止。
 

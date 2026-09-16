@@ -72,21 +72,18 @@ impl SyntaxSnapshot {
         let line_start = text.line_start_byte(current_line)?;
         let prefix = text.slice_byte_range(line_start, offset)?;
         let (basis_line, base_indent) = newline_indent_basis(text, current_line, prefix.as_str())?;
-        let query_start = offset.get().saturating_sub(1);
+        let query_start = text.line_start_byte(basis_line)?.get();
         let query_end = offset.get().saturating_add(1).min(text.len_bytes().get());
-        let additional_levels = usize::from(
-            self.indent_ranges(query_start..query_end, text)
-                .into_iter()
-                .any(|range| {
-                    text.byte_to_line(ByteOffset::new(range.range.start)) == Ok(basis_line)
-                        && range.range.start < offset.get()
-                        && offset.get() < range.range.end
-                        && range
-                            .end
-                            .as_ref()
-                            .is_none_or(|end| offset.get() <= end.start)
-                }),
-        );
+        let ranges = self.indent_ranges(query_start..query_end, text);
+        let additional_levels = usize::from(ranges.into_iter().any(|range| {
+            text.byte_to_line(ByteOffset::new(range.range.start)) == Ok(basis_line)
+                && range.range.start < offset.get()
+                && offset.get() < range.range.end
+                && range
+                    .end
+                    .as_ref()
+                    .is_none_or(|end| offset.get() <= end.start)
+        }));
         Ok(NewlineIndent {
             base_indent,
             additional_levels,

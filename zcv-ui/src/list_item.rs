@@ -1,7 +1,6 @@
 //! `ListItem` —— 通用列表项组件。
 //!
-//! 对标 zed `ui/src/components/list_item.rs`，统一 hover、选中、间距样式。
-//! 可用于 picker 列表、菜单列表等。
+//! hover、选中、间距样式。可用于 picker 列表、菜单列表等。
 
 use gpui::{
     AnyElement, App, ElementId, IntoElement, RenderOnce, ViewElement, Window, div, prelude::*,

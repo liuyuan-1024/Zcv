@@ -166,7 +166,6 @@ impl<'a> WrapViewportRow<'a> {
 /// Text 行携带整行投影文本（`text`，含行内提示注入，行尾换行未剥）与本段投影字节范围；
 /// 渲染端在 `indent` > 0 时把假空格拼在段文本前面。
 /// 行的文本来源用于行号、高亮与命中映射。
-/// 该段起始的逻辑字符列用于命中测试与选区列换算。
 /// 折叠合并行（anchor 文本 + 占位符 + 闭合尾段）携带段表，渲染端按段合成高亮与命中。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WrapViewportRowKind<'a> {
@@ -177,7 +176,6 @@ pub(crate) enum WrapViewportRowKind<'a> {
         global_byte_start: usize,
         fragment_index: usize,
         indent: usize,
-        column_base: usize,
         segments: Option<Vec<FoldRowSegment>>,
     },
 }
@@ -219,6 +217,13 @@ impl WrapSnapshot {
 
     pub(super) fn line_count(&self) -> usize {
         self.transforms.summary().output_rows
+    }
+
+    /// 返回 Wrap 投影行对应的 Tab 投影行。
+    ///
+    /// 一个 Tab 投影行可能被软换行拆成多个 Wrap 行，因此调用方不能把 Wrap 行号直接当作 Tab 行号使用。
+    pub(super) fn tab_row_for_wrap_row(&self, row: DisplayRow) -> DisplayMapResult<Line> {
+        Ok(Line::new(self.display_row_to_fragment(row)?.tab_row))
     }
 
     pub(super) fn is_wrapped(&self) -> bool {
@@ -376,7 +381,6 @@ impl WrapSnapshot {
             return Err(CoordinateError::LineOutOfBounds(Line::new(start)).into());
         }
         let end = start.saturating_add(line_count).min(total);
-        let buffer = self.tab_snapshot.buffer_snapshot();
         let mut rows = Vec::with_capacity(end - start);
         for row in start..end {
             let fragment = self.display_row_to_fragment(DisplayRow::new(row))?;
@@ -395,27 +399,6 @@ impl WrapSnapshot {
                         .tab_snapshot
                         .line_text(tab_row)
                         .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
-                    // 片段起点列：合并行按合并文本字符数；普通行按原始字节逆投影后的逻辑列。
-                    let column_base = if segments.is_some() {
-                        // 合并行：片段起始列 = 合并文本字符数。
-                        let content = line_content(text.as_ref());
-                        content[..fragment.byte_range.start.min(content.len())]
-                            .chars()
-                            .count()
-                    } else {
-                        let stream_line = self
-                            .tab_snapshot
-                            .stream_line_for_projected(tab_row)
-                            .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
-                        let inlay = fold.inlay_snapshot();
-                        let original_start =
-                            inlay.to_original_offset(stream_line, fragment.byte_range.start);
-                        buffer
-                            .byte_to_position(ByteOffset::new(
-                                line_range.start.get() + original_start,
-                            ))
-                            .map_or(0, |position| position.column().get())
-                    };
                     WrapViewportRowKind::Text {
                         source,
                         text,
@@ -423,7 +406,6 @@ impl WrapSnapshot {
                         global_byte_start: line_range.start.get(),
                         fragment_index: fragment.fragment_index,
                         indent: fragment.indent,
-                        column_base,
                         segments,
                     }
                 }
@@ -865,13 +847,7 @@ impl WrapMap {
         self.font_with_size = Some((font, font_size));
         match wrap_width {
             None => self.set_isomorphic_all(),
-            Some(width) => {
-                let _ = self
-                    .text_system
-                    .as_ref()
-                    .expect("设置换行宽度时必须提供 text system");
-                self.rewrap_all(width);
-            }
+            Some(width) => self.rewrap_all(width),
         }
         self.snapshot.version += 1;
         true

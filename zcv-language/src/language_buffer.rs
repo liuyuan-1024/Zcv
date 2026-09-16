@@ -165,6 +165,14 @@ impl LanguageBuffer {
         Arc::clone(&self.fold_ranges)
     }
 
+    /// 立即消费底层 Buffer 的待处理变更，使文本快照与语法快照在同一编辑边界内保持一致。
+    ///
+    /// 直接编辑底层 Buffer 时，GPUI 的观察回调可能要到当前更新结束后才运行；
+    /// 组合文档在同一更新内需要构建快照，因此由拥有组合投影的调用方显式推进语言状态。
+    pub fn synchronize_pending_changes(&mut self, cx: &mut Context<Self>) {
+        self.sync(cx);
+    }
+
     fn sync(&mut self, cx: &mut Context<Self>) {
         let changes = self.subscription.consume();
         if changes.is_empty() {

@@ -30,7 +30,7 @@ impl EventEmitter<DockEvent> for Dock {}
 
 // ═══ 类型定义 ═══════════════════════════════════════════════════
 
-/// Dock 位置，对应 Zed `DockPosition`。
+/// Dock 位置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DockPosition {
     Left,

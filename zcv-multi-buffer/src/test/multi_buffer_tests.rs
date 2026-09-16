@@ -282,15 +282,18 @@ fn singleton(path: &str, text: &str, cx: &mut TestAppContext) -> gpui::Entity<La
 }
 
 #[gpui::test]
-fn working_source_snapshot_tracks_text_syntax_and_path(cx: &mut TestAppContext) {
+fn working_source_updates_the_display_stream_without_reset(cx: &mut TestAppContext) {
     let source = singleton("src/main.rs", "fn main() {}\n", cx);
     let multi_buffer = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
-    let text_buffer = cx.read_entity(&multi_buffer, |buffer, cx| {
+    let source_buffer = cx.read_entity(&multi_buffer, |buffer, cx| {
         assert_eq!(buffer.file_path(cx), Some(PathBuf::from("src/main.rs")));
         buffer.as_singleton(cx).expect("应为整文件单 excerpt")
     });
+    let subscription = cx.update_entity(&multi_buffer, |buffer, cx| {
+        buffer.subscribe_and_snapshot(cx).0
+    });
 
-    cx.update_entity(&text_buffer, |buffer, cx| {
+    cx.update_entity(&source_buffer, |buffer, cx| {
         buffer
             .edit(
                 [Edit::insert(ByteOffset::new(3), "async ").unwrap()],
@@ -302,7 +305,29 @@ fn working_source_snapshot_tracks_text_syntax_and_path(cx: &mut TestAppContext) 
     cx.run_until_parked();
 
     let updated = cx.read_entity(&multi_buffer, |buffer, cx| buffer.snapshot(cx));
+    assert_eq!(
+        String::from_utf8(updated.text_bytes()).expect("编辑器快照必须是 UTF-8"),
+        "fn async main() {}\n"
+    );
     assert_eq!(updated.text().version(), updated.syntax().version());
+    assert!(
+        !subscription.consume().requires_reset(),
+        "单文件源编辑不应通过投影整体重载"
+    );
+
+    cx.update_entity(&multi_buffer, |buffer, cx| {
+        buffer.undo(cx).expect("单文件源撤销应成功");
+    });
+    assert_eq!(
+        cx.read_entity(&multi_buffer, |buffer, cx| {
+            String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("编辑器快照必须是 UTF-8")
+        }),
+        "fn main() {}\n"
+    );
+    assert!(
+        !subscription.consume().requires_reset(),
+        "单文件源撤销不应通过投影整体重载"
+    );
 }
 
 #[gpui::test]

@@ -1,6 +1,5 @@
 //! Picker —— 通用搜索-选择器 Entity。
 //!
-//! 参考 zed `crates/picker/src/picker.rs` 架构：
 //! - `Picker<D: PickerDelegate>` 是 gpui Entity，自管生命周期
 //! - 内嵌统一 `Editor::single_line` 作为搜索框
 //! - 搜索过滤、键盘导航、确认/取消均由 Picker 内部处理

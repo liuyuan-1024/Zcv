@@ -3,8 +3,8 @@
 //! 本文件保证后台读取可脱离可变 Buffer；它不提交编辑、不维护历史，也不暴露 Ropey 内部类型。
 
 use crate::{
-    BufferConfig, BufferVersion, ByteOffset, Line, LineRange, RegexSearchResult, SearchResult,
-    TextRange, TextResult,
+    BufferConfig, BufferVersion, ByteOffset, CharOffset, Line, LineRange, MovementDirection,
+    MovementUnit, RegexSearchResult, SearchResult, TextRange, TextResult,
     search::{
         RegexSearchOptions, SearchOptions, search_in_text, search_regex_in_text,
         search_regex_in_text_with_automata,
@@ -44,6 +44,24 @@ impl Snapshot {
 
     pub fn config(&self) -> &BufferConfig {
         &self.config
+    }
+
+    /// 按纯文本粒度查找相邻边界。
+    ///
+    /// 快照与可编辑 Buffer 共享同一套移动语义，使显示层可以在不可变文本视图上完成显示坐标到逻辑坐标的完整移动，不必重新取得可变 Buffer。
+    pub fn movement_boundary(
+        &self,
+        offset: CharOffset,
+        direction: MovementDirection,
+        unit: MovementUnit,
+    ) -> TextResult<CharOffset> {
+        crate::buffer::movement_boundary_in_text(
+            &self.storage,
+            self.config.word_boundary,
+            offset,
+            direction,
+            unit,
+        )
     }
 
     // 坐标查询门面（len / byte / char / UTF-16 / grapheme 系列）与 Buffer 共用一份实现。

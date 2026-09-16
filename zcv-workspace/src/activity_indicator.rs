@@ -72,7 +72,7 @@ impl Render for ActivityIndicator {
 
 // ═══ 私有渲染辅助 ═════════════════════════════════════════════════
 
-/// spinner 帧：Braille 点阵字符（等宽，帧间无布局抖动；与 zed SpinnerLabel 同款）。
+/// spinner 帧：Braille 点阵字符（等宽，帧间无布局抖动）。
 const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 fn animated_task(task: GitJobStatus) -> impl gpui::IntoElement {

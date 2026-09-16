@@ -16,17 +16,17 @@ use zcv_actions::{OpenExcerpts, ToggleFold};
 use zcv_git::DiffHunkKind;
 use zcv_language::BracketPair;
 use zcv_multi_buffer::DiffHunkStaging;
-use zcv_text::{ByteOffset, Line, LogicalColumn, Position, Snapshot, TextRange};
+use zcv_text::{ByteOffset, Line, LogicalColumn, Snapshot, TextRange};
 use zcv_theme::{color, space};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon, drag_autoscroll_delta};
 
 use crate::selection::SelectionSet;
 
 use super::display_map::{
-    BufferPoint, DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint, DisplayRow,
-    DisplaySnapshot, FILE_HEADER_HEIGHT, FoldBias, FoldRowSegment, ProjectedLineIndex,
-    ProjectedRange, RenderedWhitespace, RowStyleInput, StickyBufferHeader, WrapRowInfo,
-    WrapViewportRowKind, byte_for_display_column, render_viewport_row,
+    DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot,
+    FILE_HEADER_HEIGHT, FoldRowSegment, ProjectedLineIndex, ProjectedRange, RenderedWhitespace,
+    RowStyleInput, StickyBufferHeader, WrapRowInfo, WrapViewportRowKind, byte_for_display_column,
+    display_column_for_byte, render_viewport_row,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
@@ -121,6 +121,8 @@ struct LayoutLine {
     whitespaces: Vec<RenderedWhitespace>,
     global_utf16_start: usize,
     wrap_info: Option<WrapRowInfo>,
+    /// shaped 文本起点在完整显示行中的显示列；水平窗口化时用于逆算命中位置。
+    window_start_column: usize,
     /// 折叠合并行的段表（anchor 文本 + 占位符 + 闭合尾段；命中测试与占位符点击用）。
     fold_segments: Option<Vec<FoldRowSegment>>,
     /// 该显示行所属的 git diff 类型与暂存语义（内容背景用；wrap 续行同样标注）。
@@ -240,8 +242,12 @@ pub(super) struct VisibleLineLayoutParams<'a> {
 }
 
 impl EditorLayout {
-    /// 像素位置 → (布局行, 显示列)；显示列 = 行文本内字符数（含 wrap 假空格与折叠占位符）。
-    fn line_column_at(&self, position: Point<Pixels>) -> Option<(&LayoutLine, usize)> {
+    /// 将像素位置转换成最终的显示坐标。
+    ///
+    /// `LayoutLine` 的文本可能只是完整显示行的一个窗口，也可能包含换行假缩进、Tab 展开或折叠占位符。
+    /// 因此这里不能把 shaped 文本的字节位置当作源文本列；
+    /// 显示层负责把 shaped 文本中的命中位置还原成完整 display-column。
+    fn display_point_at(&self, position: Point<Pixels>) -> Option<(&LayoutLine, DisplayPoint)> {
         let first = self.lines.first()?;
         let last = self.lines.last()?;
         let line = if position.y <= first.origin.y {
@@ -255,61 +261,21 @@ impl EditorLayout {
                 .unwrap_or(last)
         };
         let byte_index = line.shaped.closest_index_for_x(position.x - line.origin.x);
-        let local_chars = line.shaped.text[..byte_index].chars().count();
-        // 软换行续行：命中假空格区落在片段起点，其余按"片段起始列 + 段内字符数"换算。
-        let column = if let Some(info) = line.wrap_info {
-            if local_chars <= info.indent {
-                info.column_base
-            } else {
-                info.column_base + local_chars - info.indent
-            }
-        } else {
-            local_chars
-        };
-        Some((line, column))
+        let column = display_column_for_byte(
+            &line.shaped.text,
+            line.window_start_column,
+            byte_index,
+            self.display_snapshot.buffer_snapshot(),
+        );
+        Some((
+            line,
+            DisplayPoint::new(line.row, DisplayColumn::new(column)),
+        ))
     }
 
-    fn buffer_point_for_position(
-        &self,
-        position: Point<Pixels>,
-        fold_bias: FoldBias,
-    ) -> Option<BufferPoint> {
-        let (line, column) = self.line_column_at(position)?;
-        // placeholder 提示行：不映射到 placeholder buffer（空 buffer 唯一合法坐标是 0）。
-        if line.is_placeholder {
-            return Some(BufferPoint::new(Line::ZERO, LogicalColumn::ZERO));
-        }
-        // 折叠合并行：显示列 → buffer 字节走权威映射（占位符段吸附折叠终点，尾段映射到 close 行）。
-        if line.fold_segments.is_some() {
-            let offset = self
-                .display_snapshot
-                .display_point_to_offset_with_bias(
-                    DisplayPoint::new(line.row, DisplayColumn::new(column)),
-                    fold_bias,
-                )
-                .ok()?;
-            return self
-                .display_snapshot
-                .buffer_snapshot()
-                .byte_to_position(offset)
-                .ok()
-                .map(BufferPoint::from);
-        }
-        if let Some(info) = line.wrap_info {
-            return Some(BufferPoint::new(info.line, LogicalColumn::new(column)));
-        }
-        if let Some(logical_line) = line.logical_line {
-            return Some(BufferPoint::new(logical_line, LogicalColumn::new(column)));
-        }
-        let offset = self
-            .display_snapshot
-            .display_point_to_offset(DisplayPoint::new(line.row, DisplayColumn::ZERO))
-            .ok()?;
-        self.display_snapshot
-            .buffer_snapshot()
-            .byte_to_position(offset)
-            .ok()
-            .map(BufferPoint::from)
+    fn display_point_for_position(&self, position: Point<Pixels>) -> Option<DisplayPoint> {
+        let (line, display_point) = self.display_point_at(position)?;
+        (!line.is_placeholder).then_some(display_point)
     }
 }
 
@@ -1658,18 +1624,12 @@ impl Element for EditorElement {
                     return;
                 }
             }
-            let Some(point) =
-                event_layout.buffer_point_for_position(event.position, FoldBias::Left)
+            let Some(display_point) = event_layout.display_point_for_position(event.position)
             else {
                 return;
             };
             editor.update(cx, |editor, cx| {
-                if let Ok(offset) = editor
-                    .render_snapshot()
-                    .position_to_byte(Position::new(point.line(), point.column()))
-                {
-                    editor.begin_selection(offset, event.click_count, event.modifiers.shift, cx);
-                }
+                editor.begin_selection(display_point, event.click_count, event.modifiers.shift, cx);
             });
             window.focus(&mouse_focus, cx);
             cx.stop_propagation();
@@ -1699,27 +1659,7 @@ impl Element for EditorElement {
                 if !editor.has_pending_selection() {
                     return;
                 }
-                let Some(anchor) = editor.pending_selection_anchor() else {
-                    return;
-                };
-                let snapshot = editor.render_snapshot();
-                let Some(left_point) =
-                    drag_layout.buffer_point_for_position(event.position, FoldBias::Left)
-                else {
-                    return;
-                };
-                let Ok(left_offset) = snapshot
-                    .position_to_byte(Position::new(left_point.line(), left_point.column()))
-                else {
-                    return;
-                };
-                let fold_bias = if left_offset >= anchor {
-                    FoldBias::Right
-                } else {
-                    FoldBias::Left
-                };
-                let Some(buffer_point) =
-                    drag_layout.buffer_point_for_position(event.position, fold_bias)
+                let Some(display_point) = drag_layout.display_point_for_position(event.position)
                 else {
                     return;
                 };
@@ -1729,11 +1669,7 @@ impl Element for EditorElement {
                     editor.last_drag_autoscroll.set(Instant::now());
                     editor.scroll_by(scroll_delta, cx);
                 }
-                if let Ok(offset) = snapshot
-                    .position_to_byte(Position::new(buffer_point.line(), buffer_point.column()))
-                {
-                    editor.update_selection(offset, cx);
-                }
+                editor.update_selection(display_point, cx);
             });
         });
 
@@ -2619,6 +2555,7 @@ fn layout_visible_lines(
             whitespaces,
             global_utf16_start: utf16_start,
             wrap_info,
+            window_start_column,
             fold_segments,
             git_diff,
             is_placeholder: placeholder_mode,
@@ -3279,30 +3216,14 @@ fn local_byte_for_display_point(
     point: DisplayPoint,
     display_snapshot: &DisplaySnapshot,
 ) -> usize {
-    if let Some(info) = line.wrap_info {
-        // 显示行文本 = 假空格 + 片段；目标列落在缩进区内时返回片段起点。
-        let fragment = &line.shaped.text[info.indent..];
-        let local = byte_for_display_column(
-            fragment,
-            info.indent,
-            point.column().get(),
-            display_snapshot.buffer_snapshot(),
-        );
-        return info.indent + local;
-    }
-    if line.fold_segments.is_some() {
-        // 折叠合并行：显示列即合并文本字符列（占位符与尾段都在行文本内）。
-        return column_to_byte(&line.shaped.text, point.column().get());
-    }
-    let logical_column = line
-        .logical_line
-        .and_then(|logical_line| {
-            display_snapshot
-                .display_to_logical_column(logical_line, point.column())
-                .ok()
-        })
-        .map_or(0, LogicalColumn::get);
-    column_to_byte(&line.shaped.text, logical_column)
+    // 最终塑形文本可能包含假缩进、Tab 展开、行内提示、CJK 宽字符和折叠占位符。
+    // 因此不能用字符序号反推字节位置，必须沿显示列规则逆算 shaped 文本中的字节边界。
+    byte_for_display_column(
+        &line.shaped.text,
+        line.window_start_column,
+        point.column().get(),
+        display_snapshot.buffer_snapshot(),
+    )
 }
 
 fn line_end_offset(snapshot: &Snapshot, offset: ByteOffset) -> Option<ByteOffset> {

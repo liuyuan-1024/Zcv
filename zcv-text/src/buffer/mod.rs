@@ -29,6 +29,8 @@ mod transaction_pipeline;
 mod validation;
 mod versioning;
 
+pub(crate) use movement::movement_boundary_in_text;
+
 pub use history::{HistoryEditOutcome, HistoryNodeId, HistoryNodeView, HistoryStatus};
 
 /// 最小可编辑 Buffer。

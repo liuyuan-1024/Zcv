@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
-use zcv_text::{ByteOffset, CoordinateError, Line, LogicalColumn, Snapshot};
+use zcv_text::{ByteOffset, CoordinateError, Line, Snapshot};
 
 use super::display_width::{DisplayColumn, char_width};
 use super::{
@@ -96,71 +96,6 @@ impl TabSnapshot {
 
     pub(super) const fn version(&self) -> u64 {
         self.version
-    }
-
-    pub(super) fn display_to_logical_column(
-        &self,
-        line: Line,
-        column: DisplayColumn,
-    ) -> DisplayMapResult<LogicalColumn> {
-        // line 是投影行。
-        let Some(text) = self.line_text(line) else {
-            return Err(CoordinateError::LineOutOfBounds(line).into());
-        };
-        let snapshot = self.stream().buffer_snapshot();
-        let text = line_content(text.as_ref());
-        let target = column.get();
-        // 吸附固定为最近边界（目标列落在多列字符中间时取更近的一端；距离相等取前）。
-        let mut display = 0usize;
-        let mut projected_byte = 0usize;
-
-        for grapheme in text.graphemes(true) {
-            let next_display = advance_display_column(display, grapheme, snapshot);
-            let next_byte = projected_byte + grapheme.len();
-
-            if target == display {
-                return self.logical_column_at(line, projected_byte);
-            }
-            if target == next_display {
-                return self.logical_column_at(line, next_byte);
-            }
-            if target > display && target < next_display {
-                return self.logical_column_at(
-                    line,
-                    if target - display <= next_display - target {
-                        projected_byte
-                    } else {
-                        next_byte
-                    },
-                );
-            }
-
-            display = next_display;
-            projected_byte = next_byte;
-        }
-
-        self.logical_column_at(line, projected_byte)
-    }
-
-    /// 投影行内字节 → 逻辑列（原始文本前缀字符数；注入段内吸附到锚定后）。
-    fn logical_column_at(
-        &self,
-        line: Line,
-        projected_byte: usize,
-    ) -> DisplayMapResult<LogicalColumn> {
-        let inlay = self.fold_snapshot.inlay_snapshot();
-        let Some(stream_line) = self.stream_line_for_projected(line) else {
-            return Err(CoordinateError::LineOutOfBounds(line).into());
-        };
-        let original_byte = inlay.to_original_offset(stream_line, projected_byte);
-        let Some(text) = inlay.stream().line_text(stream_line) else {
-            return Err(CoordinateError::LineOutOfBounds(line).into());
-        };
-        Ok(LogicalColumn::new(
-            text.as_ref()[..original_byte.min(text.len())]
-                .chars()
-                .count(),
-        ))
     }
 }
 
@@ -256,7 +191,7 @@ pub(super) fn display_width(text: &str, snapshot: &Snapshot) -> usize {
     })
 }
 
-pub(super) fn advance_display_column(column: usize, grapheme: &str, snapshot: &Snapshot) -> usize {
+pub(crate) fn advance_display_column(column: usize, grapheme: &str, snapshot: &Snapshot) -> usize {
     if grapheme == "\t" {
         let tab_width = snapshot.config().tab.tab_width();
         return column + tab_width - column % tab_width;
@@ -265,6 +200,29 @@ pub(super) fn advance_display_column(column: usize, grapheme: &str, snapshot: &S
         return column;
     };
     column + char_width(first)
+}
+
+/// 在给定文本内把字节边界映射到 display-column。
+pub(crate) fn display_column_for_byte(
+    text: &str,
+    start_column: usize,
+    target_byte: usize,
+    snapshot: &Snapshot,
+) -> usize {
+    let mut display = start_column;
+    let mut byte = 0;
+    for grapheme in text.graphemes(true) {
+        if target_byte <= byte {
+            break;
+        }
+        let next_byte = byte + grapheme.len();
+        if target_byte < next_byte {
+            break;
+        }
+        display = advance_display_column(display, grapheme, snapshot);
+        byte = next_byte;
+    }
+    display
 }
 
 /// 在给定文本内把 display-column 映射回字节位置。

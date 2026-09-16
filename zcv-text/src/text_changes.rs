@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use crate::{
     position_map::PositionMap,
-    transaction::Delta,
+    transaction::{Delta, DeltaEvent},
     types::{BufferVersion, ByteOffset, TextRange, TransactionId},
 };
 
@@ -110,6 +110,20 @@ pub struct TextChangeBatch {
 }
 
 impl TextChangeBatch {
+    /// 从一次已提交的文本事件创建显示消费者使用的单事件批次。
+    ///
+    /// Buffer 事件是唯一的文本变更事实；订阅只是把多个事件组合成消费者自己的批次。
+    /// 需要同步显示层的直接调用方可以复用同一事件，不必再创建第二个源订阅来猜测变更范围。
+    pub fn from_event(event: &DeltaEvent) -> Self {
+        Self {
+            patch: TextPatch::from_delta(event.delta()),
+            old_version: Some(event.old_version()),
+            new_version: Some(event.new_version()),
+            transaction_id: Some(event.transaction_id()),
+            reset: false,
+        }
+    }
+
     pub fn patch(&self) -> &TextPatch {
         &self.patch
     }

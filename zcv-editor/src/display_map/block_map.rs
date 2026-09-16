@@ -8,7 +8,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 use zcv_multi_buffer::ExcerptSnapshot;
-use zcv_text::{ByteOffset, CoordinateError, Line, LogicalColumn, TextRange};
+use zcv_text::{ByteOffset, CoordinateError, Line, TextRange};
 
 use super::error::DisplayMapResult;
 use super::fold_map::{FoldBias, ProjectedLineIndex, ProjectedPoint, ProjectedRange};
@@ -309,13 +309,6 @@ impl BlockSnapshot {
         ))
     }
 
-    pub(super) fn display_point_to_offset(
-        &self,
-        point: DisplayPoint,
-    ) -> DisplayMapResult<ByteOffset> {
-        self.display_point_to_offset_with_bias(point, FoldBias::Left)
-    }
-
     pub(super) fn display_point_to_offset_with_bias(
         &self,
         point: DisplayPoint,
@@ -330,6 +323,13 @@ impl BlockSnapshot {
                 .display_point_to_offset_with_bias(DisplayPoint::new(row, point.column()), bias),
             RowMapping::Block(placement) => Ok(placement.block.excerpt.output_range().start()),
         }
+    }
+
+    pub(super) fn display_point_to_offset(
+        &self,
+        point: DisplayPoint,
+    ) -> DisplayMapResult<ByteOffset> {
+        self.display_point_to_offset_with_bias(point, FoldBias::Left)
     }
 
     pub(super) fn project_text_range(
@@ -401,15 +401,5 @@ impl BlockSnapshot {
         self.offset_to_display_point(offset)
             .ok()
             .map(DisplayPoint::row)
-    }
-
-    pub(super) fn display_to_logical_column(
-        &self,
-        line: Line,
-        column: super::DisplayColumn,
-    ) -> DisplayMapResult<LogicalColumn> {
-        self.wrap_snapshot
-            .tab_snapshot()
-            .display_to_logical_column(line, column)
     }
 }

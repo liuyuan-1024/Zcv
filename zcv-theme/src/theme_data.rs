@@ -263,7 +263,7 @@ mod tests {
         assert!(theme_by_id("unknown").is_none());
     }
 
-    /// 语义色由主题文件直接定义：抽样断言关键表面色与 Zed 官方 One Dark 一致。
+    /// 语义色由主题文件直接定义：抽样断言关键表面色。
     #[test]
     fn dark_theme_colors_match_migrated_values() {
         let theme = theme_by_id("dark").expect("内置深色主题应存在");
@@ -294,7 +294,6 @@ mod tests {
             colors.version_control_word_added,
             colors.editor_diff_added_background
         );
-        // 终端 ANSI 色与 Zed 官方一致。
         assert_eq!(colors.terminal_ansi_red, gpui::rgba(0xe06c75ff));
         assert_eq!(colors.terminal_ansi_yellow, gpui::rgba(0xe5c07bff));
         assert_eq!(colors.terminal_ansi_dim_blue, gpui::rgba(0x457cadff));
@@ -326,7 +325,6 @@ mod tests {
             colors.version_control_word_added,
             colors.editor_diff_added_background
         );
-        // 终端 ANSI 色与 Zed 官方一致。
         assert_eq!(colors.terminal_ansi_yellow, gpui::rgba(0xd2b67cff));
         assert_eq!(colors.terminal_ansi_blue, gpui::rgba(0x2f5af3ff));
     }

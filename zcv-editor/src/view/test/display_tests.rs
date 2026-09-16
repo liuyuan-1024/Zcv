@@ -5,7 +5,7 @@ use zcv_multi_buffer::{
     BufferDiff, BufferDiffInput, DiffFile, DiffHunkStaging, DiffProjection, DisplayHunk,
     MultiBuffer, MultiBufferExcerpt,
 };
-use zcv_text::{ByteOffset, Edit, Line, LogicalColumn, TextRange, TransactionMetadata};
+use zcv_text::{Buffer, ByteOffset, Edit, Line, LogicalColumn, TextRange, TransactionMetadata};
 
 use super::common::{
     buffer_text, engine_buffer, focus_editor, inject_editor_diff, inject_file_diff, test_buffer,
@@ -82,6 +82,89 @@ fn single_file_diff_uses_the_composite_projection_path(cx: &mut TestAppContext) 
     });
     assert_eq!(buffer_text(&source, cx), "a\nworking\nc\n");
     assert!(cx.read_entity(&editor, |editor, cx| editor.diff_hunks(cx).is_empty()));
+}
+
+#[gpui::test]
+fn switching_single_file_diff_after_source_edit_keeps_text_consumer_aligned(
+    cx: &mut TestAppContext,
+) {
+    let source = test_buffer(cx, "a\nworking\nc\n");
+    let editor = cx.new(|cx| Editor::from_language_buffer(source.clone(), EditorMode::Full, cx));
+    inject_file_diff(&editor, &source, Arc::from("a\nold\nc\n"), cx);
+
+    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
+    cx.update_entity(&source_buffer, |buffer, cx| {
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::ZERO, "prefix\n").unwrap()],
+                TransactionMetadata::default(),
+            )
+            .expect("源编辑应成功");
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    editor.update(cx, |editor, cx| {
+        editor.set_diff_projection(Some(DiffProjection::empty()), cx)
+    });
+    cx.run_until_parked();
+
+    cx.read_entity(&editor, |editor, cx| {
+        let snapshot = editor.multi_buffer().read(cx).snapshot(cx);
+        assert_eq!(
+            String::from_utf8(snapshot.text_bytes()).expect("编辑器快照必须是 UTF-8"),
+            "prefix\na\nworking\nc\n"
+        );
+        assert_eq!(editor.display_map.line_count(), 5);
+    });
+}
+
+#[gpui::test]
+fn clicking_deep_after_fold_preserves_the_visual_column(cx: &mut TestAppContext) {
+    let text = include_str!("../../../../assets/keymaps/default-macos.json");
+    let raw_buffer = cx.new(|_| {
+        Buffer::scratch(text.to_owned(), zcv_text::BufferConfig::default())
+            .expect("keymap 测试 Buffer 应能创建")
+    });
+    let language_buffer =
+        cx.new(|cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("default-macos.json")), cx));
+    let (editor, cx) = cx.add_window_view({
+        let language_buffer = language_buffer.clone();
+        move |_, cx| Editor::from_language_buffer(language_buffer, EditorMode::Full, cx)
+    });
+    cx.run_until_parked();
+
+    editor.update(cx, |editor, cx| {
+        editor.toggle_fold_at_line(Line::new(1), cx)
+    });
+    cx.refresh().expect("折叠后的编辑器应能刷新");
+
+    let target_offset = ByteOffset::new(text.find("行内").expect("测试文本应包含 行内"));
+    let target_end = ByteOffset::new(target_offset.get() + "行内".len());
+    let (click, line_height) = cx.read_entity(&editor, |editor, _| {
+        let layout = editor
+            .input_layout
+            .as_ref()
+            .expect("刷新后应有输入命中布局");
+        (
+            layout
+                .caret_position_for_offset(target_end)
+                .expect("折叠块后的目标文本应有可见位置"),
+            layout.line_height(),
+        )
+    });
+    cx.simulate_click(
+        point(click.x + px(1.), click.y + line_height * 0.5),
+        gpui::Modifiers::default(),
+    );
+
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(
+            editor.selections().primary().head(),
+            target_end,
+            "折叠块后的点击必须保持视觉列，不能把 行内 命中到 局部 后面"
+        );
+    });
 }
 
 #[gpui::test]
@@ -673,6 +756,98 @@ fn horizontal_movement_jumps_over_folded_content(cx: &mut TestAppContext) {
             editor.selections().primary().head(),
             ByteOffset::new(11),
             "左箭头应回到折叠起点"
+        );
+    });
+
+    // 选区扩展也把折叠视为一个显示单元；跨过占位符后，下一次扩展必须继续进入可见尾段。
+    editor.update(cx, |editor, _| {
+        editor.set_selections(SelectionSet::caret(ByteOffset::new(11)));
+    });
+    cx.dispatch_action(SelectRight);
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(
+            editor.selections().primary(),
+            &Selection::new(ByteOffset::new(11), ByteOffset::new(27)),
+            "第一次向右扩展应一次选中折叠源范围"
+        );
+    });
+    cx.dispatch_action(SelectRight);
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(
+            editor.selections().primary(),
+            &Selection::new(ByteOffset::new(11), ByteOffset::new(28)),
+            "选中折叠后仍应能继续向右扩展"
+        );
+    });
+}
+
+#[gpui::test]
+fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppContext) {
+    let text = "before\nfn folded() {\n  let value = 1;\n}\nafter\n";
+    let raw_buffer = cx.new(|_| {
+        Buffer::scratch(text.to_owned(), zcv_text::BufferConfig::default())
+            .expect("Rust 测试 Buffer 应能创建")
+    });
+    let buffer =
+        cx.new(|cx| LanguageBuffer::new(raw_buffer.clone(), Some(PathBuf::from("main.rs")), cx));
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)
+    });
+    cx.run_until_parked();
+
+    // 折叠第 1 行的对象，显示上应只保留合并行、前后可见行和末尾行。
+    editor.update(cx, |editor, cx| {
+        editor.toggle_fold_at_line(Line::new(1), cx)
+    });
+    let after_offset = ByteOffset::new(text.find("after").expect("测试文本应包含 after"));
+
+    focus_editor(&editor, cx);
+    editor.update(cx, |editor, _| {
+        editor.set_selections(SelectionSet::caret(ByteOffset::new(7)));
+    });
+    cx.dispatch_action(MoveDown);
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(
+            editor.selections().primary().head(),
+            after_offset,
+            "折叠后的下一行应能通过向下移动到达；显示行数={}，光标位置={:?}",
+            editor.display_map.line_count(),
+            editor
+                .render_snapshot()
+                .byte_to_position(editor.selections().primary().head())
+        );
+    });
+
+    cx.refresh().expect("折叠后的编辑器应能刷新");
+    let line_height = cx.read_entity(&editor, |editor, _| {
+        editor.last_line_height.expect("渲染后应有行高")
+    });
+    cx.simulate_click(
+        point(px(100.), px(2.) + line_height * 2.),
+        gpui::Modifiers::default(),
+    );
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(
+            editor
+                .render_snapshot()
+                .byte_to_position(editor.selections().primary().head())
+                .expect("点击后的光标应有效")
+                .line(),
+            Line::new(4),
+            "折叠后的下一行应能通过点击获得光标"
+        );
+    });
+
+    cx.simulate_input("!");
+    assert_eq!(buffer_text(&buffer, cx), text.replace("after", "aft!er"));
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(
+            editor.display_map.line_count(),
+            4,
+            "编辑后折叠应保持；折叠入口={:?}，折叠范围数={}",
+            editor.display_map.snapshot().fold_anchor_lines(),
+            editor.fold_ranges().len()
         );
     });
 }

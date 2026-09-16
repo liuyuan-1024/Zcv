@@ -1,6 +1,5 @@
 //! Panel trait 系统 —— 每个面板是独立 Entity，拥有自己的生命周期、渲染和焦点。
 //!
-//! 参考 Zed `crates/panel/src/panel.rs` 架构：
 //! - `Panel` trait 定义面板接口
 //! - `PanelHandle` trait object 抹消具体类型，使 Dock 能统一管理异构面板
 

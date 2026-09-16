@@ -1,7 +1,6 @@
 //! PanelButtons —— 底栏按钮组。
 //!
 //! 每个 DockPosition 一个按钮组，持有对应的 Dock Entity 来查询面板激活状态，激活时高亮显示。
-//! 参考 Zed `crates/workspace/src/dock.rs`。
 
 use gpui::{
     App, ClickEvent, Context, ElementId, Entity, Render, Subscription, WeakEntity, Window, div,

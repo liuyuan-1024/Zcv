@@ -119,8 +119,7 @@ pub struct ThemeColors {
     pub scrollbar_thumb_hover_background: Rgba,
     /// 滚动轴 thumb 拖动色。
     pub scrollbar_thumb_active_background: Rgba,
-    // ── 终端 ANSI 色（跟随主题，与 Zed terminal.ansi.* 同源）──
-    // 主色 8 个。
+    // ── 终端 ANSI 色（跟随主题）── 主色 8 个。
     pub terminal_ansi_black: Rgba,
     pub terminal_ansi_red: Rgba,
     pub terminal_ansi_green: Rgba,

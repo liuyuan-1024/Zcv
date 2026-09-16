@@ -621,9 +621,7 @@ pub(crate) fn render_viewport_chunks<'a>(
 /// 软换行片段信息：后续 wrap 片段显示为缩进续行。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct WrapRowInfo {
-    pub(crate) line: Line,
     pub(crate) indent: usize,
-    pub(crate) column_base: usize,
 }
 
 /// 视口行的完整渲染数据：
@@ -679,7 +677,6 @@ pub(crate) fn render_viewport_row(
         global_byte_start,
         fragment_index,
         indent,
-        column_base,
         segments,
     } = row;
     // 行内提示（inlay）：经消费链查询行的注入段（投影偏移已含此前注入前缀）。
@@ -802,11 +799,7 @@ pub(crate) fn render_viewport_row(
     runs.extend(chunk_runs);
     let utf16_start = rendered.utf16_start;
     let logical_line = Some(Line::new(buffer_line));
-    let wrap_info = (*fragment_index > 0).then_some(WrapRowInfo {
-        line: Line::new(buffer_line),
-        indent: *indent,
-        column_base: *column_base,
-    });
+    let wrap_info = (*fragment_index > 0).then_some(WrapRowInfo { indent: *indent });
     // 行号只在逻辑行首显示行出现。
     let gutter_line = (*fragment_index == 0).then_some(Line::new(buffer_line));
     RenderedViewportRow {

@@ -1186,7 +1186,7 @@ fn excerpt_line_ranges(
                 .start
                 .min(max_line)
                 .saturating_sub(context_lines);
-            // Zcv 的行范围右开；Zed 的 Point 终点位于最后一条变更行内。
+            // Zcv 的行范围右开；
             // 非空 hunk 先换算为最后一条变更行，才能得到真正的后两行上下文。
             let changed_end_line = if hunk.buffer_lines.is_empty() {
                 hunk.buffer_lines.start

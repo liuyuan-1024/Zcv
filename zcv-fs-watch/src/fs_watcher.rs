@@ -1,4 +1,4 @@
-//! 文件系统监听：按照 Zed 编辑器的架构实现。
+//! 文件系统监听。
 //!
 //! 架构分层（自底向上）：
 //!
@@ -6,8 +6,6 @@
 //! 2. `GlobalWatcher` 单例 —— 管理原生和轮询两个后端，专用线程批量调度事件
 //! 3. `FsWatcher` 实例 —— 每项目根一个实例，包装 GlobalWatcher，提供 `Watcher` trait
 //! 4. 调用方通过 async-channel 接收事件并触发界面刷新
-//!
-//! 参考：Zed crates/fs/src/fs_watcher.rs
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -358,7 +356,7 @@ impl GlobalWatcher {
 
     /// 从 notify 回调调用：将事件入队到调度线程。
     fn enqueue(&self, mode: WatcherMode, event: notify::Result<notify::Event>) {
-        // 过滤 Access 事件：避免 inotify 队列溢出（Zed 的 EventKindMask::CORE 同理）
+        // 过滤 Access 事件：避免 inotify 队列溢出
         if matches!(
             &event,
             Ok(Event {

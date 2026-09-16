@@ -39,7 +39,8 @@ use zcv_workspace::typography_for_window;
 
 use super::blink_manager::BlinkManager;
 use super::display_map::{
-    DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot, WrapViewportRowKind,
+    DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot, FoldBias,
+    WrapViewportRowKind,
 };
 use super::element::{AUTOSCROLL_INTERVAL, EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollbarThumbState};
@@ -1130,12 +1131,41 @@ impl Editor {
     /// `extend`（Shift 按下）时按上次手势粒度扩展选区。
     pub(super) fn begin_selection(
         &mut self,
-        offset: ByteOffset,
+        display_point: DisplayPoint,
         click_count: usize,
         extend: bool,
         cx: &mut Context<Self>,
     ) {
         self.structured_selection_history.clear();
+        let offset = if extend {
+            let anchor = self.resolved_selections().primary().anchor();
+            let Ok(left_offset) = self
+                .display_map
+                .display_point_to_offset_with_bias(display_point, FoldBias::Left)
+            else {
+                return;
+            };
+            let bias = if left_offset >= anchor {
+                FoldBias::Right
+            } else {
+                FoldBias::Left
+            };
+            let Ok(offset) = self
+                .display_map
+                .display_point_to_offset_with_bias(display_point, bias)
+            else {
+                return;
+            };
+            offset
+        } else {
+            let Ok(offset) = self
+                .display_map
+                .display_point_to_offset_with_bias(display_point, FoldBias::Left)
+            else {
+                return;
+            };
+            offset
+        };
         let buffer_entity = self.text_buffer(cx);
         let buffer = buffer_entity.read(cx);
         let Ok(char_offset) = buffer.byte_to_char(offset) else {
@@ -1227,8 +1257,25 @@ impl Editor {
     /// 鼠标拖动：按按下时的粒度把选区活动端更新到当前位置。
     ///
     /// 词/行粒度下按整词/整行边界吸附，避免半词截断。
-    pub(super) fn update_selection(&mut self, offset: ByteOffset, cx: &mut Context<Self>) {
+    pub(super) fn update_selection(&mut self, display_point: DisplayPoint, cx: &mut Context<Self>) {
         let Some(pending) = self.pending_selection.clone() else {
+            return;
+        };
+        let Ok(left_offset) = self
+            .display_map
+            .display_point_to_offset_with_bias(display_point, FoldBias::Left)
+        else {
+            return;
+        };
+        let fold_bias = if left_offset >= pending.anchor {
+            FoldBias::Right
+        } else {
+            FoldBias::Left
+        };
+        let Ok(offset) = self
+            .display_map
+            .display_point_to_offset_with_bias(display_point, fold_bias)
+        else {
             return;
         };
         let buffer_entity = self.text_buffer(cx);
@@ -1305,12 +1352,6 @@ impl Editor {
     /// 编辑器自身是否正在拖拽选区手势（拖拽滚动的生效守卫：`dragging` 事件是窗口级的，其他面板（如终端）拖拽时编辑器不应滚动）。
     pub(super) fn has_pending_selection(&self) -> bool {
         self.pending_selection.is_some()
-    }
-
-    pub(super) fn pending_selection_anchor(&self) -> Option<ByteOffset> {
-        self.pending_selection
-            .as_ref()
-            .map(|selection| selection.anchor)
     }
 
     pub(super) fn set_ime_caret_geometry(
@@ -1877,24 +1918,7 @@ impl Editor {
                                 .with_goal(None)
                             });
                         }
-                        let buffer_entity = self.text_buffer(cx);
-                        let buffer = buffer_entity.read(cx);
-                        let head = buffer.byte_to_char(base)?;
-                        let target = buffer.movement_boundary(head, direction, unit)?;
-                        let mut target = buffer.char_to_byte(target)?;
-                        // 折叠感知：目标落在折叠内时按方向吸附到折叠终点/起点。
-                        // 折叠在显示上占一个字符（合并行占位符），水平移动一步跨过。
-                        if let Some((start, end)) = self
-                            .display_map
-                            .snapshot()
-                            .fold_range_covering_offset(target)
-                        {
-                            target = match direction {
-                                MovementDirection::Next => end,
-                                MovementDirection::Previous => start,
-                            };
-                        }
-                        target
+                        self.display_map.move_offset(base, direction, unit)?
                     }
                     Motion::LineStep | Motion::PageStep(_) => {
                         let row_step = match motion {
@@ -1942,11 +1966,15 @@ impl Editor {
                                 point.row().get().saturating_add(row_step).min(last_row)
                             }
                         };
+                        let fold_bias = match direction {
+                            MovementDirection::Previous => FoldBias::Left,
+                            MovementDirection::Next => FoldBias::Right,
+                        };
                         self.display_map
-                            .display_point_to_offset(DisplayPoint::new(
-                                DisplayRow::new(target_row),
-                                goal,
-                            ))
+                            .display_point_to_offset_with_bias(
+                                DisplayPoint::new(DisplayRow::new(target_row), goal),
+                                fold_bias,
+                            )
                             .map_err(|error| TextError::InvariantViolation {
                                 location: "Editor::move_selections",
                                 detail: error.to_string(),
@@ -2023,7 +2051,7 @@ impl Editor {
 
     /// 消费 MultiBuffer 暂存的外部源变更，把绑定该源的源锚点选区经源 PositionMap 推进。
     ///
-    /// 只有外部源变更（共享 Buffer 的其他 Editor、直接编辑源）会暂存；本编辑器自己的编辑已在 `MultiBuffer::edit` 内消费源补丁，不进此路径。
+    /// 只有外部源变更（共享 Buffer 的其他 Editor、直接编辑源）会暂存；本编辑器自己的编辑已在 `MultiBuffer::edit` 内物化到显示流，不进此路径。
     /// 投影重建（折叠/展开、编辑落位、undo/redo）不改变源，也不经过这里——源锚点直接按重建后快照解析即落位。
     fn consume_source_remaps(&mut self, cx: &mut Context<Self>) {
         let remaps = self

@@ -44,7 +44,7 @@ pub(crate) use inlay_map::Inlay;
 use inlay_map::InlayMap;
 use line_stream::LineStream;
 use tab_map::TabMap;
-pub(crate) use tab_map::byte_for_display_column;
+pub(crate) use tab_map::{byte_for_display_column, display_column_for_byte};
 pub(crate) use wrap_map::WrapViewportRowKind;
 use wrap_map::{WrapMap, WrapSnapshot};
 use zcv_language::{
@@ -52,47 +52,10 @@ use zcv_language::{
 };
 use zcv_multi_buffer::{ExcerptSnapshot, MultiBufferSnapshot};
 use zcv_text::{
-    BufferVersion, ByteOffset, Line, LineRange, LogicalColumn, Position, Snapshot, TextChangeBatch,
-    TextRange, TextResult,
+    BufferVersion, ByteOffset, Line, LineRange, LogicalColumn, MovementDirection, MovementUnit,
+    Position, Snapshot, TextChangeBatch, TextRange, TextResult,
 };
 use zcv_theme::syntax;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub(crate) struct BufferPoint {
-    line: Line,
-    column: LogicalColumn,
-}
-
-impl BufferPoint {
-    #[cfg(test)]
-    pub(crate) const ZERO: Self = Self {
-        line: Line::ZERO,
-        column: LogicalColumn::ZERO,
-    };
-
-    pub(crate) const fn new(line: Line, column: LogicalColumn) -> Self {
-        Self { line, column }
-    }
-
-    pub(crate) const fn line(self) -> Line {
-        self.line
-    }
-
-    pub(crate) const fn column(self) -> LogicalColumn {
-        self.column
-    }
-
-    #[cfg(test)]
-    const fn position(self) -> Position {
-        Position::new(self.line, self.column)
-    }
-}
-
-impl From<Position> for BufferPoint {
-    fn from(position: Position) -> Self {
-        Self::new(position.line(), position.column())
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub(crate) struct DisplayRow(usize);
@@ -337,7 +300,7 @@ impl DisplaySnapshot {
         &self,
         point: DisplayPoint,
     ) -> DisplayMapResult<ByteOffset> {
-        self.display_point_to_offset_with_bias(point, FoldBias::Left)
+        self.block_snapshot.display_point_to_offset(point)
     }
 
     pub(super) fn display_point_to_offset_with_bias(
@@ -347,14 +310,6 @@ impl DisplaySnapshot {
     ) -> DisplayMapResult<ByteOffset> {
         self.block_snapshot
             .display_point_to_offset_with_bias(point, bias)
-    }
-
-    pub(super) fn display_to_logical_column(
-        &self,
-        line: Line,
-        column: DisplayColumn,
-    ) -> DisplayMapResult<LogicalColumn> {
-        self.block_snapshot.display_to_logical_column(line, column)
     }
 
     pub(super) fn excerpt_for_output_line(&self, line: usize) -> Option<&ExcerptSnapshot> {
@@ -527,17 +482,13 @@ impl DisplayMap {
             .min(self.line_count());
         let block_snapshot = self.current_block_snapshot();
         for display_row in start_row.get()..end {
-            let Some(row) = block_snapshot.display_row_to_wrap_row(DisplayRow::new(display_row))
+            let Some(wrap_row) =
+                block_snapshot.display_row_to_wrap_row(DisplayRow::new(display_row))
             else {
                 continue;
             };
-            if let Some(line) = self
-                .fold_map
-                .snapshot()
-                .projected_line_kind(ProjectedLineIndex::new(row.get()))
-            {
-                self.tab_map.measure_line(line.logical_line())?;
-            }
+            let tab_row = self.wrap_map.snapshot().tab_row_for_wrap_row(wrap_row)?;
+            self.tab_map.measure_line(tab_row)?;
         }
         Ok(())
     }
@@ -604,7 +555,37 @@ impl DisplayMap {
         &self,
         point: DisplayPoint,
     ) -> DisplayMapResult<ByteOffset> {
-        self.current_block_snapshot().display_point_to_offset(point)
+        self.snapshot().display_point_to_offset(point)
+    }
+
+    pub(crate) fn display_point_to_offset_with_bias(
+        &self,
+        point: DisplayPoint,
+        bias: FoldBias,
+    ) -> DisplayMapResult<ByteOffset> {
+        self.snapshot()
+            .display_point_to_offset_with_bias(point, bias)
+    }
+
+    /// 按文本移动粒度计算水平目标，并由显示层跨过占位符。
+    pub(crate) fn move_offset(
+        &self,
+        offset: ByteOffset,
+        direction: MovementDirection,
+        unit: MovementUnit,
+    ) -> TextResult<ByteOffset> {
+        let display_snapshot = self.snapshot();
+        let snapshot = display_snapshot.buffer_snapshot();
+        let char_offset = snapshot.byte_to_char(offset)?;
+        let target = snapshot.movement_boundary(char_offset, direction, unit)?;
+        let target = snapshot.char_to_byte(target)?;
+        Ok(match display_snapshot.fold_range_covering_offset(target) {
+            Some((start, end)) => match direction {
+                MovementDirection::Previous => start,
+                MovementDirection::Next => end,
+            },
+            None => target,
+        })
     }
 
     pub(crate) fn beginning_of_row(&self, offset: ByteOffset) -> DisplayMapResult<ByteOffset> {
@@ -672,65 +653,38 @@ mod tests {
         assert_ne!(light, dark, "同一 DisplayMap 应按当前主题重新派生语法颜色");
     }
 
-    fn buffer_point_to_display_point(
-        map: &DisplayMap,
-        point: BufferPoint,
-    ) -> DisplayMapResult<DisplayPoint> {
-        let offset = map.buffer_snapshot().position_to_byte(point.position())?;
-        map.offset_to_display_point(offset)
-    }
-
-    fn display_point_to_buffer_point(
-        map: &DisplayMap,
-        point: DisplayPoint,
-    ) -> DisplayMapResult<BufferPoint> {
-        let offset = map.display_point_to_offset(point)?;
-        Ok(map
-            .buffer_snapshot()
-            .byte_to_position(offset)
-            .map(BufferPoint::from)?)
-    }
-
     #[test]
     fn projection_map_roundtrips_unicode_buffer_points_and_byte_offsets() {
         let buffer = Buffer::scratch("a你😀\nβ".to_string(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let map = DisplayMap::new(buffer.snapshot());
         let cases = [
-            (ByteOffset::new(0), BufferPoint::ZERO),
-            (
-                ByteOffset::new(1),
-                BufferPoint::new(Line::ZERO, LogicalColumn::new(1)),
-            ),
-            (
-                ByteOffset::new(4),
-                BufferPoint::new(Line::ZERO, LogicalColumn::new(2)),
-            ),
-            (
-                ByteOffset::new(8),
-                BufferPoint::new(Line::ZERO, LogicalColumn::new(3)),
-            ),
-            (
-                ByteOffset::new(9),
-                BufferPoint::new(Line::new(1), LogicalColumn::ZERO),
-            ),
-            (
-                ByteOffset::new(11),
-                BufferPoint::new(Line::new(1), LogicalColumn::new(1)),
-            ),
+            ByteOffset::new(0),
+            ByteOffset::new(1),
+            ByteOffset::new(4),
+            ByteOffset::new(8),
+            ByteOffset::new(9),
+            ByteOffset::new(11),
         ];
 
-        for (offset, buffer_point) in cases {
-            let display_point = buffer_point_to_display_point(&map, buffer_point)
-                .expect("合法 BufferPoint 应能映射");
+        for offset in cases {
+            let display_point = map
+                .offset_to_display_point(offset)
+                .expect("合法字节偏移应能映射");
             assert_eq!(
-                display_point_to_buffer_point(&map, display_point)
-                    .expect("合法 DisplayPoint 应能还原"),
-                buffer_point
+                map.buffer_snapshot()
+                    .byte_to_position(
+                        map.display_point_to_offset(display_point)
+                            .expect("合法显示点应能还原"),
+                    )
+                    .expect("合法显示点应能还原"),
+                map.buffer_snapshot()
+                    .byte_to_position(offset)
+                    .expect("合法字节偏移应能转换为位置")
             );
             assert_eq!(
                 map.offset_to_display_point(offset)
-                    .expect("合法 ByteOffset 应能映射"),
+                    .expect("合法字节偏移应能映射"),
                 display_point
             );
             assert_eq!(
@@ -765,15 +719,12 @@ mod tests {
         let map = DisplayMap::new(buffer.snapshot());
 
         assert!(
-            buffer_point_to_display_point(
-                &map,
-                BufferPoint::new(Line::ZERO, LogicalColumn::new(2),),
-            )
-            .is_err()
+            map.buffer_snapshot()
+                .position_to_byte(Position::new(Line::ZERO, LogicalColumn::new(2)))
+                .is_err()
         );
         assert!(
-            display_point_to_buffer_point(
-                &map,
+            map.display_point_to_offset(
                 DisplayPoint::new(DisplayRow::new(1), DisplayColumn::ZERO,)
             )
             .is_err()
@@ -837,6 +788,24 @@ mod tests {
             viewport.rows()[1].kind(),
             WrapViewportRowKind::Text { .. }
         ));
+    }
+
+    #[test]
+    fn measuring_folded_rows_uses_tab_projection_rows() {
+        let text = "before\nfn folded() {\n  let value = 1;\n}\nafter\n";
+        let buffer = Buffer::scratch(text.to_owned(), BufferConfig::default())
+            .expect("测试 Buffer 应能创建");
+        let mut map = DisplayMap::new(buffer.snapshot());
+        let fold_start = text.find('\n').expect("折叠入口行应有换行符");
+        let fold_end = text.find("}\n").expect("折叠范围应有闭合行");
+        map.fold_range(
+            TextRange::new(ByteOffset::new(fold_start), ByteOffset::new(fold_end))
+                .expect("折叠范围应合法"),
+        )
+        .expect("折叠应成功");
+
+        map.measure_rows(DisplayRow::ZERO, map.line_count())
+            .expect("折叠后的每个显示行都应能完成测量");
     }
 
     #[test]
@@ -1071,13 +1040,11 @@ mod tests {
             fragment_index,
             byte_range,
             indent,
-            column_base,
             ..
         } = rows[1].kind();
         assert_eq!(*fragment_index, 1);
         assert!(*indent > 0, "前导空白应产生续行缩进");
         assert!(byte_range.start > 0, "续行应从行中某字节开始");
-        assert!(*column_base > 0, "续行片段起始字符列应大于 0");
     }
 
     #[gpui::test]

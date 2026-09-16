@@ -20,6 +20,8 @@ use crate::pane::Pane;
 use crate::provider_registry::ProviderRegistry;
 
 pub type PreviewToggleCallback = Rc<dyn Fn(&mut Window, &mut App)>;
+/// 预览内容请求打开工作区文件时使用的宿主能力。
+pub type OpenPathCallback = Rc<dyn Fn(PathBuf, &mut Window, &mut App)>;
 
 /// 交给 Preview Provider 的文档输入：预览视图的源码 Item 与展示路径。
 #[derive(Clone)]
@@ -29,6 +31,8 @@ pub struct PreviewDocument {
     pub multi_buffer: Entity<MultiBuffer>,
     /// 预览工具栏的鼠标点击回调；快捷键仍通过 action 处理。
     pub toggle_preview: PreviewToggleCallback,
+    /// 预览内容请求打开工作区文件时使用的宿主回调。
+    pub open_path: Option<OpenPathCallback>,
 }
 
 /// 预览视图 Item 的 object-safe 句柄，经 `Item::as_preview_item` 获取。

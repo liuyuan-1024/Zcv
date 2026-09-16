@@ -16,7 +16,7 @@ use zcv_theme::{FileIcons, color, space};
 use zcv_ui::{Button, SvgIcon, Tab};
 
 use crate::layout_state::{SerializedPane, SerializedPaneItem};
-use crate::preview::{PreviewDocument, PreviewToggleCallback, provider_for};
+use crate::preview::{OpenPathCallback, PreviewDocument, PreviewToggleCallback, provider_for};
 use crate::tab_bar::{TabBar, TabBarTrailing};
 use crate::{ItemEvent, ItemHandle};
 
@@ -102,6 +102,8 @@ pub struct Pane {
     scroll_handle: ScrollHandle,
     /// 面板注入的标签栏右侧插槽构建器；渲染时原样转发给 TabBar（插槽本体在 TabBar 组件内）。
     tab_bar_trailing: Option<TabBarTrailing>,
+    /// 工作区注入的文件打开能力；独立测试 Pane 可以不提供该能力。
+    open_path: Option<OpenPathCallback>,
 }
 
 impl Pane {
@@ -124,7 +126,13 @@ impl Pane {
             transient_preview_item_id: None,
             scroll_handle: ScrollHandle::new(),
             tab_bar_trailing: None,
+            open_path: None,
         }
+    }
+
+    /// 注入工作区的文件打开能力，供预览内容中的本地链接使用。
+    pub fn set_open_path(&mut self, open_path: OpenPathCallback) {
+        self.open_path = Some(open_path);
     }
 
     /// 设置标签栏右侧功能插槽构建器，渲染时转发给 TabBar 的尾部插槽（不随标签滚动）。
@@ -274,6 +282,7 @@ impl Pane {
                 source_item: item,
                 multi_buffer,
                 toggle_preview: self.preview_toggle_handler(cx),
+                open_path: self.open_path.clone(),
             },
             cx,
         );
@@ -319,6 +328,7 @@ impl Pane {
                 source_item,
                 multi_buffer,
                 toggle_preview: self.preview_toggle_handler(cx),
+                open_path: self.open_path.clone(),
             },
             cx,
         );
@@ -349,6 +359,7 @@ impl Pane {
                 source_item,
                 multi_buffer,
                 toggle_preview: self.preview_toggle_handler(cx),
+                open_path: self.open_path.clone(),
             },
             cx,
         );

@@ -422,6 +422,7 @@ mod tests {
                     source_item: Box::new(editor),
                     multi_buffer,
                     toggle_preview: Rc::new(|_, _| {}),
+                    open_path: None,
                 },
                 cx,
             )

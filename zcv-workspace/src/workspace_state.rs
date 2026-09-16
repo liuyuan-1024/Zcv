@@ -5,6 +5,7 @@
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,7 +22,6 @@ use zcv_project::Project;
 use zcv_settings::SettingsStore;
 use zcv_theme::{color, typography, typography::Typography};
 
-use crate::ItemHandle;
 use crate::dock::{Dock, DockEvent, DockPosition, DockStructure, DraggedDock, render_body};
 use crate::item_provider::{item_provider_for_path, serialized_item_provider_for_kind};
 use crate::layout_state::{self, PanelState, SerializedPane, SerializedPaneItem, WorkspaceLayout};
@@ -30,6 +30,7 @@ use crate::panel::PanelHandle;
 use crate::status_bar::StatusBar;
 use crate::toast::{ToastAction, ToastKind, ToastLayer};
 use crate::window_bounds;
+use crate::{ItemHandle, OpenPathCallback};
 
 const LAYOUT_SAVE_THROTTLE: Duration = Duration::from_millis(200);
 const WINDOW_BOUNDS_SAVE_THROTTLE: Duration = Duration::from_millis(100);
@@ -112,6 +113,15 @@ impl Workspace {
         );
 
         let pane = cx.new(Pane::new);
+        let workspace = cx.weak_entity();
+        let open_path: OpenPathCallback = Rc::new(move |path, window, cx| {
+            workspace
+                .update(cx, |workspace, cx| {
+                    workspace.open_path(path, true, window, cx)
+                })
+                .ok();
+        });
+        pane.update(cx, |pane, _| pane.set_open_path(open_path));
         let layout_path = layout_state::path_for_workspace(project.read(cx).root());
         let restored_layout = layout_state::load(&layout_path).unwrap_or_default();
         let restored_pane = restored_layout.pane.clone();

@@ -8,10 +8,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, AnyEntity, AnyView, App, Context, ElementId, Entity, EventEmitter, FocusHandle,
-    Focusable, FontStyle, FontWeight, HighlightStyle, Image, ImageFormat, InteractiveText,
-    ObjectFit, Render, ScrollHandle, SharedString, StatefulInteractiveElement, StrikethroughStyle,
-    StyledImage, StyledText, Subscription, Task, UnderlineStyle, Window, div, img, prelude::*, px,
+    AnyElement, AnyEntity, AnyView, App, Bounds, Context, Element, ElementId, Entity, EventEmitter,
+    FocusHandle, Focusable, FontStyle, FontWeight, GlobalElementId, HighlightStyle, Hsla, Image,
+    ImageFormat, InspectorElementId, InteractiveText, LayoutId, ObjectFit, Pixels, Render,
+    ScrollHandle, SharedString, StatefulInteractiveElement, StrikethroughStyle, StyledImage,
+    StyledText, Subscription, Task, TextAlign, TextLayout, UnderlineStyle, Window, div, fill, img,
+    point, prelude::*, px,
 };
 use pulldown_cmark::Alignment;
 use zcv_language::{
@@ -23,16 +25,20 @@ use zcv_project::Project;
 use zcv_theme::{color, space, syntax, typography};
 use zcv_ui::{Button, Scrollbar};
 use zcv_workspace::{
-    Breadcrumbs, Item, ItemEvent, ItemHandle, PreviewDocument, PreviewItem, PreviewItemHandle,
-    PreviewToggleCallback, typography_for_window,
+    Breadcrumbs, Item, ItemEvent, ItemHandle, OpenPathCallback, PreviewDocument, PreviewItem,
+    PreviewItemHandle, PreviewToggleCallback, typography_for_window,
 };
 
 use crate::document::{Block, Inline, parse};
 
 const MARKDOWN_REPARSE_DEBOUNCE: Duration = Duration::from_millis(200);
+const INLINE_CODE_CHIP_HORIZONTAL_OUTSET: Pixels = space::S2;
+const INLINE_CODE_CHIP_VERTICAL_INSET: f32 = 0.1;
+const INLINE_CODE_CHIP_CORNER_RADIUS: Pixels = px(4.);
 
 struct MarkdownRenderContext<'a> {
     source_directory: Option<&'a Path>,
+    open_path: Option<&'a OpenPathCallback>,
     type_scale: typography::Typography,
     math_images: &'a HashMap<String, Result<Arc<gpui::RenderImage>, String>>,
     cx: &'a App,
@@ -41,6 +47,7 @@ struct MarkdownRenderContext<'a> {
 pub(crate) struct MarkdownPreviewView {
     source_item: Box<dyn ItemHandle>,
     multi_buffer: Entity<MultiBuffer>,
+    open_path: Option<OpenPathCallback>,
     focus: FocusHandle,
     scroll_handle: ScrollHandle,
     scrollbar: Scrollbar<ScrollHandle>,
@@ -93,6 +100,7 @@ pub(crate) enum MarkdownPreviewEvent {
 impl MarkdownPreviewView {
     pub(crate) fn new(document: PreviewDocument, cx: &mut Context<Self>) -> Self {
         let source_item = document.source_item;
+        let open_path = document.open_path;
         let breadcrumbs = cx.new(|_| Breadcrumbs::without_project());
         breadcrumbs.update(cx, |view, cx| view.set_item(Some(source_item.as_ref()), cx));
         let toolbar = cx.new(|_| MarkdownPreviewToolbar {
@@ -124,6 +132,7 @@ impl MarkdownPreviewView {
         let mut view = Self {
             source_item,
             multi_buffer,
+            open_path,
             focus: cx.focus_handle(),
             scrollbar: Scrollbar::vertical(scroll_handle.clone()),
             scroll_handle,
@@ -275,6 +284,7 @@ impl Render for MarkdownPreviewView {
             .map(Path::to_path_buf);
         let render_context = MarkdownRenderContext {
             source_directory: source_directory.as_deref(),
+            open_path: self.open_path.as_ref(),
             type_scale,
             math_images: &self.math_images,
             cx,
@@ -648,6 +658,8 @@ fn render_inline(
                             render_text_inline(
                                 std::slice::from_ref(inline),
                                 key + line_index + index,
+                                render_context.source_directory,
+                                render_context.open_path,
                                 cx,
                             )
                         }
@@ -655,14 +667,27 @@ fn render_inline(
             }))
             .into_any_element();
     }
-    render_text_inline(content, key, cx)
+    render_text_inline(
+        content,
+        key,
+        render_context.source_directory,
+        render_context.open_path,
+        cx,
+    )
 }
 
-fn render_text_inline(content: &[Inline], key: usize, cx: &App) -> AnyElement {
+fn render_text_inline(
+    content: &[Inline],
+    key: usize,
+    source_directory: Option<&Path>,
+    open_path: Option<&OpenPathCallback>,
+    cx: &App,
+) -> AnyElement {
     let mut text = String::new();
     let mut highlights = Vec::new();
     let mut links = Vec::new();
     let mut link_ranges = Vec::new();
+    let mut code_ranges = Vec::new();
 
     for inline in content {
         let start = text.len();
@@ -672,12 +697,10 @@ fn render_text_inline(content: &[Inline], key: usize, cx: &App) -> AnyElement {
             continue;
         }
         let style = &inline.style;
-        if style.emphasis
-            || style.strong
-            || style.strikethrough
-            || style.code
-            || style.link.is_some()
-        {
+        if style.code {
+            code_ranges.push(start..end);
+        }
+        if style.emphasis || style.strong || style.strikethrough || style.link.is_some() {
             highlights.push((
                 start..end,
                 HighlightStyle {
@@ -687,9 +710,6 @@ fn render_text_inline(content: &[Inline], key: usize, cx: &App) -> AnyElement {
                         thickness: px(2.),
                         color: Some(color::current(cx).text.into()),
                     }),
-                    background_color: style
-                        .code
-                        .then_some(color::current(cx).surface_background.into()),
                     color: style
                         .link
                         .as_ref()
@@ -710,14 +730,192 @@ fn render_text_inline(content: &[Inline], key: usize, cx: &App) -> AnyElement {
     }
 
     let text = StyledText::new(text).with_highlights(highlights);
-    if links.is_empty() {
+    let layout = text.layout().clone();
+    let text = if links.is_empty() {
         text.into_any_element()
     } else {
+        let source_directory = source_directory.map(Path::to_path_buf);
+        let open_path = open_path.cloned();
         InteractiveText::new(("markdown-link", key), text)
-            .on_click(link_ranges, move |index, _window, cx| {
-                cx.open_url(&links[index])
+            .on_click(link_ranges, move |index, window, cx| {
+                let link = &links[index];
+                if let Some(path) = resolve_markdown_file_link(link, source_directory.as_deref())
+                    && let Some(open_path) = &open_path
+                {
+                    open_path(path, window, cx);
+                } else {
+                    cx.open_url(link);
+                }
             })
             .into_any_element()
+    };
+    if code_ranges.is_empty() {
+        text
+    } else {
+        MarkdownInlineText {
+            text,
+            layout,
+            code_ranges,
+            code_color: color::current(cx).border_variant.into(),
+        }
+        .into_any_element()
+    }
+}
+
+fn resolve_markdown_file_link(link: &str, source_directory: Option<&Path>) -> Option<PathBuf> {
+    let (link, _) = link.split_once('#').unwrap_or((link, ""));
+    if link.is_empty() || link.contains("://") || link.starts_with("mailto:") {
+        return None;
+    }
+    let source_directory = source_directory?;
+    let path = Path::new(link);
+    Some(if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        source_directory.join(path)
+    })
+}
+
+/// 在文本布局上绘制行内代码背景，不把视觉留白写入文本内容或交互索引。
+struct MarkdownInlineText {
+    text: AnyElement,
+    layout: TextLayout,
+    code_ranges: Vec<Range<usize>>,
+    code_color: Hsla,
+}
+
+impl Element for MarkdownInlineText {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        (self.text.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self::PrepaintState {
+        self.text.prepaint(window, cx);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        paint_inline_code_chips(&self.layout, &self.code_ranges, self.code_color, window);
+        self.text.paint(window, cx);
+    }
+}
+
+impl gpui::IntoElement for MarkdownInlineText {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+fn paint_inline_code_chips(
+    layout: &TextLayout,
+    code_ranges: &[Range<usize>],
+    color: Hsla,
+    window: &mut Window,
+) {
+    let line_bounds = layout.bounds();
+    let line_height = layout.line_height();
+    let text_align = window.text_style().text_align;
+    let mut row_top = line_bounds.origin.y;
+    let mut line_start = 0;
+
+    for line in layout.line_layouts() {
+        let line_end = line_start + line.len();
+        let unwrapped_layout = &line.unwrapped_layout;
+        let mut row_start = line_start;
+        let mut row_start_x = Pixels::ZERO;
+        let row_ends = line
+            .wrap_boundaries()
+            .iter()
+            .map(|boundary| {
+                let glyph = &unwrapped_layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix];
+                (line_start + glyph.index, glyph.position.x)
+            })
+            .chain([(line_end, unwrapped_layout.width)]);
+
+        for (row_end, row_end_x) in row_ends {
+            for code_range in code_ranges {
+                let selection_start = code_range.start.max(row_start);
+                let selection_end = code_range.end.min(row_end);
+                if selection_start >= selection_end {
+                    continue;
+                }
+
+                let alignment_offset = match text_align {
+                    TextAlign::Left => Pixels::ZERO,
+                    TextAlign::Center => {
+                        ((line_bounds.size.width - (row_end_x - row_start_x)) / 2.).max(px(0.))
+                    }
+                    TextAlign::Right => {
+                        (line_bounds.size.width - (row_end_x - row_start_x)).max(px(0.))
+                    }
+                };
+                let x_for_index = |index| {
+                    line_bounds.left()
+                        + alignment_offset
+                        + unwrapped_layout.x_for_index(index - line_start)
+                        - row_start_x
+                };
+                let top = row_top + line_height * INLINE_CODE_CHIP_VERTICAL_INSET;
+                let bottom = row_top + line_height * (1. - INLINE_CODE_CHIP_VERTICAL_INSET);
+                window.paint_quad(
+                    fill(
+                        Bounds::from_corners(
+                            point(
+                                x_for_index(selection_start) - INLINE_CODE_CHIP_HORIZONTAL_OUTSET,
+                                top,
+                            ),
+                            point(
+                                x_for_index(selection_end) + INLINE_CODE_CHIP_HORIZONTAL_OUTSET,
+                                bottom,
+                            ),
+                        ),
+                        color,
+                    )
+                    .corner_radii(INLINE_CODE_CHIP_CORNER_RADIUS),
+                );
+            }
+
+            row_start = row_end;
+            row_start_x = row_end_x;
+            row_top += line_height;
+        }
+
+        line_start = line_end + 1;
     }
 }
 
@@ -1056,10 +1254,14 @@ impl PreviewItem for MarkdownPreviewView {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::cell::RefCell;
+    use std::path::{Path, PathBuf};
     use std::rc::Rc;
 
-    use gpui::{AppContext, TestAppContext};
+    use gpui::{
+        AppContext, Context, IntoElement, Modifiers, ParentElement, Render, StyledText,
+        TestAppContext, Window, div, point, px, size,
+    };
     use zcv_editor::Editor;
     use zcv_theme::typography;
     use zcv_workspace::PreviewDocument;
@@ -1067,8 +1269,9 @@ mod tests {
     use crate::document::{Inline, InlineStyle, parse};
 
     use super::{
-        Block, MARKDOWN_REPARSE_DEBOUNCE, MarkdownPreviewView, code_lines, heading_line_height,
-        heading_size, highlight_code_blocks, list_marker_char_count, render_math,
+        Block, MARKDOWN_REPARSE_DEBOUNCE, MarkdownInlineText, MarkdownPreviewView,
+        OpenPathCallback, code_lines, heading_line_height, heading_size, highlight_code_blocks,
+        list_marker_char_count, render_math, render_text_inline, resolve_markdown_file_link,
         visible_highlights_for_line,
     };
     use zcv_language::{HighlightSpan, SnippetHighlightCancellation};
@@ -1089,6 +1292,74 @@ mod tests {
         assert_eq!(
             code_lines("let x = 1;\n\n").collect::<Vec<_>>(),
             ["let x = 1;", ""]
+        );
+    }
+
+    #[test]
+    fn resolves_relative_file_links_against_the_markdown_directory() {
+        let directory = Path::new("/project/docs");
+
+        assert_eq!(
+            resolve_markdown_file_link("../src/main.rs#main", Some(directory)),
+            Some(PathBuf::from("/project/docs/../src/main.rs"))
+        );
+        assert_eq!(
+            resolve_markdown_file_link("https://zcv.dev", Some(directory)),
+            None
+        );
+        assert_eq!(
+            resolve_markdown_file_link("#section", Some(directory)),
+            None
+        );
+    }
+
+    #[gpui::test]
+    fn clicking_relative_file_link_uses_the_workspace_opener(cx: &mut TestAppContext) {
+        struct TestWindow {
+            content: Vec<Inline>,
+            directory: PathBuf,
+            open_path: OpenPathCallback,
+        }
+
+        impl Render for TestWindow {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().child(render_text_inline(
+                    &self.content,
+                    0,
+                    Some(self.directory.as_path()),
+                    Some(&self.open_path),
+                    _cx,
+                ))
+            }
+        }
+
+        let opened_path = Rc::new(RefCell::new(None));
+        let open_path: OpenPathCallback = {
+            let opened_path = opened_path.clone();
+            Rc::new(move |path, _, _| {
+                *opened_path.borrow_mut() = Some(path);
+            })
+        };
+        let blocks = parse("[Rust 示例](./main.rs)");
+        let Block::Paragraph(content) = blocks[0].clone() else {
+            panic!("应解析为段落");
+        };
+        let directory = PathBuf::from("/project/docs");
+        let (_, cx) = cx.add_window_view(move |_, _| TestWindow {
+            content,
+            directory,
+            open_path,
+        });
+        cx.refresh().expect("测试窗口应完成首次绘制");
+        cx.simulate_click(point(px(12.), px(8.)), Modifiers::none());
+
+        assert_eq!(
+            opened_path.borrow().as_deref(),
+            Some(Path::new("/project/docs/./main.rs"))
         );
     }
 
@@ -1144,6 +1415,60 @@ mod tests {
             let size = heading_size(level, type_scale);
             assert!(heading_line_height(level, size, type_scale) >= size * 1.2);
         }
+    }
+
+    #[gpui::test]
+    fn inline_code_chip_outsets_text_and_uses_rounded_background(cx: &mut TestAppContext) {
+        struct TestWindow;
+
+        impl Render for TestWindow {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div()
+            }
+        }
+
+        let (_, cx) = cx.add_window_view(|_, _| TestWindow);
+        let chip_color = gpui::red();
+        let text = StyledText::new("a xxx b");
+        let layout = text.layout().clone();
+        let expected_layout = layout.clone();
+
+        cx.draw(Default::default(), size(px(400.), px(100.)), |_, _| {
+            MarkdownInlineText {
+                text: text.into_any_element(),
+                layout,
+                code_ranges: vec![2..5],
+                code_color: chip_color,
+            }
+        });
+
+        let code_start = expected_layout
+            .position_for_index(2)
+            .expect("行内代码起点应存在");
+        let code_end = expected_layout
+            .position_for_index(5)
+            .expect("行内代码终点应存在");
+        let content_width = code_end.x - code_start.x;
+
+        let chip = cx.update(|window, _| {
+            window
+                .painted_quads()
+                .into_iter()
+                .find(|quad| quad.background == chip_color.into())
+                .expect("应绘制行内代码背景")
+        });
+        assert!(
+            chip.bounds.size.width.as_f32() > content_width.as_f32(),
+            "行内代码背景应比文字本身更宽"
+        );
+        assert!(
+            chip.corner_radii.top_left.as_f32() > 0.,
+            "行内代码背景应使用圆角"
+        );
     }
 
     #[gpui::test]
@@ -1208,6 +1533,7 @@ mod tests {
                     source_item: Box::new(editor.clone()),
                     multi_buffer,
                     toggle_preview: Rc::new(|_, _| {}),
+                    open_path: None,
                 },
                 cx,
             )
@@ -1249,6 +1575,7 @@ mod tests {
                     source_item: Box::new(editor.clone()),
                     multi_buffer,
                     toggle_preview: Rc::new(|_, _| {}),
+                    open_path: None,
                 },
                 cx,
             )

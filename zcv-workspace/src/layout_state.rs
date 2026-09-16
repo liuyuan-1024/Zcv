@@ -12,13 +12,14 @@ use zcv_settings::config_dir;
 use crate::dock::DockStructure;
 use crate::persistence;
 
-pub(crate) const LAYOUT_VERSION: u32 = 3;
+pub(crate) const LAYOUT_VERSION: u32 = 4;
 
 /// 可持久化的 Pane 标签类型。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SerializedPaneItem {
     Source(PathBuf),
     Preview(PathBuf),
+    StandalonePreview(PathBuf),
     /// 由具体 Item 重新构建的非文件标签。
     Custom {
         kind: String,
@@ -30,7 +31,7 @@ impl SerializedPaneItem {
     /// 文件标签的路径；非文件标签没有可替代的单一路径。
     pub(crate) fn path(&self) -> Option<&Path> {
         match self {
-            Self::Source(path) | Self::Preview(path) => Some(path),
+            Self::Source(path) | Self::Preview(path) | Self::StandalonePreview(path) => Some(path),
             Self::Custom { .. } => None,
         }
     }
@@ -102,6 +103,7 @@ mod tests {
                 items: vec![
                     SerializedPaneItem::Source(PathBuf::from("a.txt")),
                     SerializedPaneItem::Preview(PathBuf::from("b.txt")),
+                    SerializedPaneItem::StandalonePreview(PathBuf::from("image.png")),
                     SerializedPaneItem::Custom {
                         kind: "project-diff".into(),
                         state: serde_json::json!({ "kind": "staged" }),

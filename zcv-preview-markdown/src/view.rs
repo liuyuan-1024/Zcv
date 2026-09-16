@@ -99,15 +99,22 @@ pub(crate) enum MarkdownPreviewEvent {
 
 impl MarkdownPreviewView {
     pub(crate) fn new(document: PreviewDocument, cx: &mut Context<Self>) -> Self {
-        let source_item = document.source_item;
-        let open_path = document.open_path;
+        let PreviewDocument::Source {
+            source_item,
+            multi_buffer,
+            open_path,
+            toggle_preview,
+            ..
+        } = document
+        else {
+            panic!("Markdown 预览必须从源码 Item 创建")
+        };
         let breadcrumbs = cx.new(|_| Breadcrumbs::without_project());
         breadcrumbs.update(cx, |view, cx| view.set_item(Some(source_item.as_ref()), cx));
         let toolbar = cx.new(|_| MarkdownPreviewToolbar {
             breadcrumbs: breadcrumbs.clone(),
-            toggle_preview: document.toggle_preview.clone(),
+            toggle_preview,
         });
-        let multi_buffer = document.multi_buffer;
         let document_subscription = cx.subscribe(&multi_buffer, |view, _, event, cx| {
             if matches!(event, MultiBufferEvent::TextChanged) {
                 view.schedule_refresh(cx);
@@ -1530,7 +1537,7 @@ mod tests {
         let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
         let view = cx.new(|cx| {
             MarkdownPreviewView::new(
-                PreviewDocument {
+                PreviewDocument::Source {
                     path: PathBuf::from("README.md"),
                     source_item: Box::new(editor.clone()),
                     multi_buffer,
@@ -1572,7 +1579,7 @@ mod tests {
         let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
         let view = cx.new(|cx| {
             MarkdownPreviewView::new(
-                PreviewDocument {
+                PreviewDocument::Source {
                     path: PathBuf::from("README.md"),
                     source_item: Box::new(editor.clone()),
                     multi_buffer,

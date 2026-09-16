@@ -16,7 +16,9 @@ use zcv_theme::{FileIcons, color, space};
 use zcv_ui::{Button, SvgIcon, Tab};
 
 use crate::layout_state::{SerializedPane, SerializedPaneItem};
-use crate::preview::{OpenPathCallback, PreviewDocument, PreviewToggleCallback, provider_for};
+use crate::preview::{
+    OpenPathCallback, PreviewDocument, PreviewToggleCallback, source_provider_for,
+};
 use crate::tab_bar::{TabBar, TabBarTrailing};
 use crate::{ItemEvent, ItemHandle};
 
@@ -270,14 +272,14 @@ impl Pane {
             cx.notify();
             return source_focus;
         };
-        let Some(provider) = provider_for(&path, cx) else {
+        let Some(provider) = source_provider_for(&path, cx) else {
             let source_focus = self.add_boxed_item_at(item, transient_index, window, cx);
             self.transient_source_item_id = Some(source_id);
             cx.notify();
             return source_focus;
         };
         let preview = provider.create(
-            PreviewDocument {
+            PreviewDocument::Source {
                 path,
                 source_item: item,
                 multi_buffer,
@@ -320,10 +322,10 @@ impl Pane {
             return Some(focus);
         }
         let path = source_item.item_path(cx)?;
-        let provider = provider_for(&path, cx)?;
+        let provider = source_provider_for(&path, cx)?;
         let multi_buffer = source_item.multi_buffer(cx)?;
         let preview = provider.create(
-            PreviewDocument {
+            PreviewDocument::Source {
                 path,
                 source_item,
                 multi_buffer,
@@ -351,10 +353,10 @@ impl Pane {
         cx: &mut Context<Self>,
     ) -> Option<FocusHandle> {
         let path = source_item.item_path(cx)?;
-        let provider = provider_for(&path, cx)?;
+        let provider = source_provider_for(&path, cx)?;
         let multi_buffer = source_item.multi_buffer(cx)?;
         let preview = provider.create(
-            PreviewDocument {
+            PreviewDocument::Source {
                 path,
                 source_item,
                 multi_buffer,
@@ -1387,9 +1389,20 @@ mod tests {
                 .is_some_and(|extension| extension == "svg")
         }
 
+        fn mode(&self) -> crate::PreviewMode {
+            crate::PreviewMode::Source
+        }
+
+        fn presentation(&self) -> crate::PreviewPresentation {
+            crate::PreviewPresentation::Canvas
+        }
+
         fn create(&self, document: PreviewDocument, cx: &mut App) -> Box<dyn ItemHandle> {
+            let PreviewDocument::Source { source_item, .. } = document else {
+                panic!("测试预览 Provider 应接收源码预览文档")
+            };
             let view = cx.new(|cx| FakePreviewItem {
-                source_item: document.source_item,
+                source_item,
                 focus: cx.focus_handle(),
             });
             Box::new(view)

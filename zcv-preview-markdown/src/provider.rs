@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use gpui::{App, AppContext};
-use zcv_workspace::{ItemHandle, PreviewDocument, PreviewProvider};
+use zcv_workspace::{
+    ItemHandle, PreviewDocument, PreviewMode, PreviewPresentation, PreviewProvider,
+};
 
 use crate::view::MarkdownPreviewView;
 
@@ -11,6 +13,14 @@ impl PreviewProvider for MarkdownPreviewProvider {
     fn supports(&self, path: &Path, _cx: &App) -> bool {
         zcv_language::language_for_file(path, None)
             .is_some_and(|language| language.name() == "Markdown")
+    }
+
+    fn mode(&self) -> PreviewMode {
+        PreviewMode::Source
+    }
+
+    fn presentation(&self) -> PreviewPresentation {
+        PreviewPresentation::Flow
     }
 
     fn create(&self, document: PreviewDocument, cx: &mut App) -> Box<dyn ItemHandle> {

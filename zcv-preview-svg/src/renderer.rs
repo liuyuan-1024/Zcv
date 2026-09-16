@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 const SVG_PREVIEW_MAX_RASTER_EDGE: f32 = 2048.0;
-pub(crate) const SVG_PREVIEW_MIN_DISPLAY_EDGE: f32 = 128.0;
+pub(crate) const SVG_PREVIEW_MIN_DISPLAY_EDGE: f32 = 32.0;
 
 pub(crate) struct RasterizedSvg {
     pub(crate) png: Vec<u8>,
@@ -58,13 +58,14 @@ mod tests {
             1.,
         )
         .expect("有效 SVG 应能渲染");
+        let expected_scale = (SVG_PREVIEW_MIN_DISPLAY_EDGE / 16.).max(1.);
         assert_eq!(
             u32::from_be_bytes(image.png[16..20].try_into().unwrap()),
-            128
+            (16. * expected_scale).ceil() as u32
         );
         assert_eq!(
             u32::from_be_bytes(image.png[20..24].try_into().unwrap()),
-            64
+            (8. * expected_scale).ceil() as u32
         );
     }
 

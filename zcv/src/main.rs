@@ -46,6 +46,7 @@ fn main() {
             zcv_preview_markdown::init(cx);
             zcv_preview_svg::init(cx);
             zcv_editor::init(cx);
+            zcv_preview_image::init(cx);
             zcv_keymap::init(cx).expect("内置快捷键应能注册");
             auto_update::init(cx);
 

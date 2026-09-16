@@ -27,6 +27,7 @@ use crate::item_provider::{item_provider_for_path, serialized_item_provider_for_
 use crate::layout_state::{self, PanelState, SerializedPane, SerializedPaneItem, WorkspaceLayout};
 use crate::pane::{Pane, PaneEvent};
 use crate::panel::PanelHandle;
+use crate::preview::{PreviewDocument, standalone_provider_for};
 use crate::status_bar::StatusBar;
 use crate::toast::{ToastAction, ToastKind, ToastLayer};
 use crate::window_bounds;
@@ -454,7 +455,24 @@ impl Workspace {
         let items = state.items.clone();
         let mut source_tasks = Vec::new();
         let mut custom_tasks = Vec::new();
+        let mut standalone_items = Vec::new();
         for (index, item) in items.iter().enumerate() {
+            if let SerializedPaneItem::StandalonePreview(serialized_path) = item {
+                let Some(path) = AbsolutePathBuf::canonicalize(serialized_path)
+                    .ok()
+                    .map(AbsolutePathBuf::into_path_buf)
+                else {
+                    continue;
+                };
+                let Some(provider) = standalone_provider_for(&path, cx) else {
+                    continue;
+                };
+                standalone_items.push((
+                    index,
+                    provider.create(PreviewDocument::Standalone { path }, cx),
+                ));
+                continue;
+            }
             let Some(serialized_path) = item.path().map(Path::to_path_buf) else {
                 let SerializedPaneItem::Custom { kind, state } = item else {
                     continue;
@@ -506,6 +524,9 @@ impl Workspace {
                     restored_items[index] = Some(item);
                 }
             }
+            for (index, item) in standalone_items {
+                restored_items[index] = Some(item);
+            }
 
             let mut restored = vec![None; items.len()];
             for (index, serialized_item) in items.iter().enumerate() {
@@ -518,7 +539,8 @@ impl Workspace {
                                 .is_some_and(|item_path| path == item_path)
                         })
                         .map(|(_, item)| item.boxed_clone()),
-                    SerializedPaneItem::Custom { .. } => restored_items[index]
+                    SerializedPaneItem::StandalonePreview(_)
+                    | SerializedPaneItem::Custom { .. } => restored_items[index]
                         .as_ref()
                         .map(|item| item.boxed_clone()),
                 };
@@ -535,7 +557,8 @@ impl Workspace {
                             SerializedPaneItem::Preview(_) => pane
                                 .open_persistent_preview(item, window, cx)
                                 .and_then(|_| pane.active_item().map(ItemHandle::item_id)),
-                            SerializedPaneItem::Custom { .. } => {
+                            SerializedPaneItem::StandalonePreview(_)
+                            | SerializedPaneItem::Custom { .. } => {
                                 pane.open_item(item, false, window, cx);
                                 pane.active_item().map(ItemHandle::item_id)
                             }
@@ -664,6 +687,17 @@ impl Workspace {
                 return;
             }
         };
+        if let Some(provider) = standalone_provider_for(&path, cx) {
+            let preview = provider.create(PreviewDocument::Standalone { path: path.clone() }, cx);
+            let focus = self.pane.update(cx, |pane, cx| {
+                pane.open_item(preview, !focus_opened_item, window, cx)
+            });
+            if focus_opened_item {
+                window.focus(&focus, cx);
+            }
+            window.refresh();
+            return;
+        }
         let Some(provider) = item_provider_for_path(&path, cx) else {
             self.show_toast(
                 ToastKind::Error,

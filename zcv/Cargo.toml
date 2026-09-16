@@ -24,6 +24,7 @@ zcv-keymap.workspace = true
 zcv-multi-buffer.workspace = true
 zcv-outline.workspace = true
 zcv-preview-markdown.workspace = true
+zcv-preview-image.workspace = true
 zcv-preview-svg.workspace = true
 zcv-project.workspace = true
 zcv-path.workspace = true

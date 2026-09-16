@@ -1,0 +1,22 @@
+[package]
+name = "zcv-preview-image"
+version.workspace = true
+edition.workspace = true
+description = "栅格图片文件预览"
+
+[lib]
+path = "src/preview_image.rs"
+
+[dependencies]
+anyhow.workspace = true
+gpui.workspace = true
+zcv-project.workspace = true
+zcv-theme.workspace = true
+zcv-workspace.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

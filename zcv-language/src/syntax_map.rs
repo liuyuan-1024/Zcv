@@ -1,19 +1,19 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::{ControlFlow, Range};
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 use tree_sitter::StreamingIterator;
 use zcv_text::{BufferVersion, Snapshot, TextChangeBatch};
 
-use crate::Language;
 use crate::registry::{language_for_file, language_for_injection};
 use crate::tree_sitter_utils::{
     IncrementalParser, PARSE_TIME_SLICE, ParseCancellation, QueryCursorHandle,
     SnapshotTextProvider, drop_offloaded, edit_tree, map_range_through_changes, node_text,
     parse_tree, ranges_overlap,
 };
+use crate::{HighlightSpan, Language};
 
 /// 可增量更新的语法状态。
 ///
@@ -34,11 +34,16 @@ struct SyntaxState {
     /// 最近一次解析安装的 capture 全局表（见 `SyntaxSnapshot::rebuild_capture_table`）。
     capture_names: Arc<[Arc<str>]>,
     capture_index_by_language: HashMap<&'static str, Arc<[u32]>>,
+    pub(crate) highlight_cache: Arc<Mutex<HashMap<usize, Arc<[HighlightSpan]>>>>,
 }
 
 impl SyntaxState {
     fn has_trees(&self) -> bool {
         self.tree.is_some() || !self.injections.is_empty()
+    }
+
+    fn clear_highlight_cache(&mut self) {
+        self.highlight_cache = Arc::new(Mutex::new(HashMap::new()));
     }
 }
 
@@ -165,6 +170,7 @@ impl SyntaxMap {
             && old_snapshot.version() == self.interpolated_version;
 
         let state = Arc::make_mut(&mut self.state);
+        state.clear_highlight_cache();
         let mut tree = state.tree.take();
         if can_increment {
             if tree
@@ -226,6 +232,12 @@ impl SyntaxMap {
 }
 
 impl SyntaxSnapshot {
+    pub(crate) fn highlight_cache(
+        &self,
+    ) -> &Mutex<HashMap<usize, Arc<[crate::highlighting::HighlightSpan]>>> {
+        &self.state.highlight_cache
+    }
+
     /// 空语法快照（无语言、无树）：语言匹配前或未安装语法时的占位，查询一律返回空。
     pub fn empty(version: BufferVersion) -> Self {
         Self {
@@ -295,6 +307,7 @@ impl SyntaxSnapshot {
         };
         {
             let state = Arc::make_mut(&mut self.state);
+            state.clear_highlight_cache();
             let old_tree = state.tree.take();
             // 主树解析按时间片进行：预算用尽中断后保留 parser 状态，下一片从断点恢复（每片 ~3ms，避免大文件解析长期独占后台线程）。
             let new_tree = if language.grammar().is_some() {
@@ -432,6 +445,7 @@ impl SyntaxSnapshot {
             add_language(&layer.language);
         }
         let state = Arc::make_mut(&mut self.state);
+        state.clear_highlight_cache();
         state.capture_names = Arc::from(names);
         state.capture_index_by_language = index_by_language;
     }

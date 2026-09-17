@@ -8,6 +8,7 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::ops::Range;
+use std::sync::Arc;
 
 use tree_sitter::StreamingIterator;
 use zcv_text::Snapshot;
@@ -61,7 +62,47 @@ impl SyntaxSnapshot {
     /// 每层一个 capture 流（文档序），k 路归并后以全局活动栈直接产出 spans：
     /// 树中节点要么嵌套要么不相交，注入层 capture 又受其内容节点约束，因此全局栈的 LIFO 顺序就是覆盖顺序，栈顶即当前最内层。
     pub fn highlights(&self, range: Range<usize>, text: &Snapshot) -> Vec<HighlightSpan> {
-        self.highlights_impl(range, text, None).unwrap_or_default()
+        if range.start >= range.end || text.version() != self.version {
+            return Vec::new();
+        }
+        const CACHE_CHUNK_BYTES: usize = 4096;
+        let first = range.start / CACHE_CHUNK_BYTES * CACHE_CHUNK_BYTES;
+        let end = range.end.min(text.len_bytes().get());
+        let mut spans = Vec::new();
+        let mut chunk_start = first;
+        while chunk_start < end {
+            let chunk_end = (chunk_start + CACHE_CHUNK_BYTES).min(text.len_bytes().get());
+            let cached = {
+                let cache = self
+                    .highlight_cache()
+                    .lock()
+                    .expect("语法高亮缓存锁不应中毒");
+                cache.get(&chunk_start).cloned()
+            };
+            let cached = cached.unwrap_or_else(|| {
+                let computed = Arc::from(
+                    self.highlights_impl(chunk_start..chunk_end, text, None)
+                        .unwrap_or_default()
+                        .into_boxed_slice(),
+                );
+                let mut cache = self
+                    .highlight_cache()
+                    .lock()
+                    .expect("语法高亮缓存锁不应中毒");
+                cache.insert(chunk_start, Arc::clone(&computed));
+                computed
+            });
+            spans.extend(cached.iter().filter_map(|span| {
+                let start = span.range.start.max(range.start);
+                let end = span.range.end.min(range.end);
+                (start < end).then_some(HighlightSpan {
+                    range: start..end,
+                    capture: span.capture,
+                })
+            }));
+            chunk_start = chunk_end;
+        }
+        spans
     }
 
     /// 查询指定字节范围，并允许后台消费者放弃过期高亮任务。

@@ -14,7 +14,7 @@ use zcv_text::{ByteOffset, CoordinateError, Line, TextRange};
 
 use super::error::DisplayMapResult;
 use super::fold_map::{FoldBias, ProjectedLineIndex, ProjectedPoint, ProjectedRange};
-use super::wrap_map::{WrapRowKind, WrapRows, WrapSnapshot};
+use super::wrap_map::{WrapEdit, WrapRowKind, WrapRows, WrapSnapshot};
 use super::{DisplayPoint, DisplayRow};
 
 pub(crate) const FILE_HEADER_HEIGHT: usize = 2;
@@ -48,6 +48,8 @@ struct BlockPlacement {
     display_row: usize,
     height: usize,
     block: DisplayBlock,
+    /// 该块来自的片段下标；换行布局未变时据此刷新 `block.excerpt`。
+    excerpt_index: usize,
     next_buffer_header_row: Option<usize>,
 }
 
@@ -121,12 +123,29 @@ impl<'a> Dimension<'a, TransformSummary> for OutputRows {
 type InputToOutput = Dimensions<InputRows, OutputRows>;
 type OutputToInput = Dimensions<OutputRows, InputRows>;
 
+/// 块的换行行锚点；与 [`BlockPlacement`] 分离，使换行重排只需平移锚点而无需重算片段分组。
+#[derive(Debug, Clone)]
+struct BlockSpec {
+    wrap_row: usize,
+    excerpt_index: usize,
+    height: usize,
+    kind: DisplayBlockKind,
+    /// 整文件折叠组：该块吞掉到下一个块之前的全部换行行。
+    folded_group: bool,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct BlockSnapshot {
     wrap_snapshot: WrapSnapshot,
     transforms: SumTree<Transform>,
     placements: Vec<BlockPlacement>,
     excerpts: Arc<[ExcerptSnapshot]>,
+    /// 块起始片段在 `excerpts` 中的下标；换行布局未变时据此刷新块视图。
+    block_start_indices: Arc<[usize]>,
+    /// 构建时的整文件折叠集合；变化会使块布局失效。
+    folded_buffers: HashSet<PathBuf>,
+    /// 块锚点（wrap 行）；换行编辑时按区间平移并重排。
+    specs: Arc<[BlockSpec]>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -318,6 +337,32 @@ enum RowMapping<'a> {
     Block(&'a BlockPlacement),
 }
 
+/// 把块锚点从旧换行行坐标平移到新坐标；锚点落入编辑区间时用新换行快照重算。
+fn relocated_wrap_row(
+    old_row: usize,
+    excerpt_index: usize,
+    wrap_edits: &[WrapEdit],
+    wrap_snapshot: &WrapSnapshot,
+    excerpts: &[ExcerptSnapshot],
+) -> Option<usize> {
+    let mut row = old_row as isize;
+    for edit in wrap_edits {
+        if row < edit.old.start as isize {
+            break;
+        }
+        if row >= edit.old.end as isize {
+            row +=
+                (edit.new.end - edit.new.start) as isize - (edit.old.end - edit.old.start) as isize;
+        } else {
+            return wrap_snapshot
+                .offset_to_display_point(excerpts[excerpt_index].output_range().start())
+                .ok()
+                .map(|point| point.row().get());
+        }
+    }
+    (row >= 0).then_some(row as usize)
+}
+
 impl BlockSnapshot {
     pub(super) fn wrap_snapshot(&self) -> &WrapSnapshot {
         &self.wrap_snapshot
@@ -329,50 +374,43 @@ impl BlockSnapshot {
 
     pub(super) fn new(
         wrap_snapshot: WrapSnapshot,
-        excerpts: &[ExcerptSnapshot],
+        excerpts: Arc<[ExcerptSnapshot]>,
         folded_buffers: &HashSet<PathBuf>,
     ) -> Self {
-        struct BlockSpec {
-            wrap_row: usize,
-            height: usize,
-            block: DisplayBlock,
-            hide_until: Option<usize>,
-        }
-
         let excerpt_starts = excerpts
             .iter()
-            .filter(|excerpt| excerpt.starts_new_excerpt())
-            .filter_map(|excerpt| {
+            .enumerate()
+            .filter(|(_, excerpt)| excerpt.starts_new_excerpt())
+            .filter_map(|(index, excerpt)| {
                 wrap_snapshot
                     .offset_to_display_point(excerpt.output_range().start())
                     .ok()
-                    .map(|point| (point.row().get(), excerpt.clone()))
+                    .map(|point| (point.row().get(), index))
             })
             .collect::<Vec<_>>();
+        let block_start_indices: Arc<[usize]> =
+            excerpt_starts.iter().map(|(_, index)| *index).collect();
         let mut specs = Vec::new();
         let mut group_start = 0usize;
         while group_start < excerpt_starts.len() {
-            let path = excerpt_starts[group_start].1.path();
+            let path = excerpts[excerpt_starts[group_start].1].path();
             let mut group_end = group_start + 1;
-            while group_end < excerpt_starts.len() && excerpt_starts[group_end].1.path() == path {
+            while group_end < excerpt_starts.len()
+                && excerpts[excerpt_starts[group_end].1].path() == path
+            {
                 group_end += 1;
             }
-            let wrap_end = excerpt_starts
-                .get(group_end)
-                .map_or_else(|| wrap_snapshot.line_count(), |(row, _)| *row);
             if folded_buffers.contains(path) {
-                let (wrap_row, excerpt) = &excerpt_starts[group_start];
+                let (wrap_row, excerpt_index) = excerpt_starts[group_start];
                 specs.push(BlockSpec {
-                    wrap_row: *wrap_row,
+                    wrap_row,
+                    excerpt_index,
                     height: FILE_HEADER_HEIGHT,
-                    block: DisplayBlock {
-                        kind: DisplayBlockKind::BufferHeader,
-                        excerpt: excerpt.clone(),
-                    },
-                    hide_until: Some(wrap_end),
+                    kind: DisplayBlockKind::BufferHeader,
+                    folded_group: true,
                 });
             } else {
-                for (index, (wrap_row, excerpt)) in
+                for (index, (wrap_row, excerpt_index)) in
                     excerpt_starts[group_start..group_end].iter().enumerate()
                 {
                     let kind = if index == 0 {
@@ -382,15 +420,13 @@ impl BlockSnapshot {
                     };
                     specs.push(BlockSpec {
                         wrap_row: *wrap_row,
+                        excerpt_index: *excerpt_index,
                         height: match kind {
                             DisplayBlockKind::BufferHeader => FILE_HEADER_HEIGHT,
                             DisplayBlockKind::ExcerptBoundary => EXCERPT_BOUNDARY_HEIGHT,
                         },
-                        block: DisplayBlock {
-                            kind,
-                            excerpt: excerpt.clone(),
-                        },
-                        hide_until: None,
+                        kind,
+                        folded_group: false,
                     });
                 }
             }
@@ -398,13 +434,29 @@ impl BlockSnapshot {
         }
 
         specs.sort_by_key(|spec| spec.wrap_row);
+        Self::place(
+            specs.into(),
+            block_start_indices,
+            wrap_snapshot,
+            excerpts,
+            folded_buffers.clone(),
+        )
+    }
 
+    /// 由块锚点表构建 placements 与 WrapRow→BlockRow 变换树。
+    fn place(
+        specs: Arc<[BlockSpec]>,
+        block_start_indices: Arc<[usize]>,
+        wrap_snapshot: WrapSnapshot,
+        excerpts: Arc<[ExcerptSnapshot]>,
+        folded_buffers: HashSet<PathBuf>,
+    ) -> Self {
         let wrap_line_count = wrap_snapshot.line_count();
         let mut placements = Vec::new();
         let mut transforms = Vec::new();
         let mut wrap_row = 0usize;
         let mut display_row = 0usize;
-        for spec in specs {
+        for (index, spec) in specs.iter().enumerate() {
             let spec_wrap_row = spec.wrap_row.min(wrap_line_count);
             if wrap_row < spec_wrap_row {
                 let row_count = spec_wrap_row - wrap_row;
@@ -420,12 +472,20 @@ impl BlockSnapshot {
             placements.push(BlockPlacement {
                 display_row,
                 height: spec.height,
-                block: spec.block,
+                block: DisplayBlock {
+                    kind: spec.kind,
+                    excerpt: excerpts[spec.excerpt_index].clone(),
+                },
+                excerpt_index: spec.excerpt_index,
                 next_buffer_header_row: None,
             });
-            let hidden_end = spec
-                .hide_until
-                .map_or(wrap_row, |end| end.min(wrap_line_count));
+            let hidden_end = if spec.folded_group {
+                specs
+                    .get(index + 1)
+                    .map_or(wrap_line_count, |next| next.wrap_row.min(wrap_line_count))
+            } else {
+                wrap_row
+            };
             transforms.push(Transform {
                 kind: TransformKind::Block(placement_index),
                 input_rows: hidden_end.saturating_sub(wrap_row),
@@ -455,8 +515,68 @@ impl BlockSnapshot {
             wrap_snapshot,
             transforms: SumTree::from_iter(transforms, ()),
             placements,
-            excerpts: Arc::from(excerpts),
+            excerpts,
+            block_start_indices,
+            folded_buffers,
+            specs,
         }
+    }
+
+    /// 消费换行编辑流：块起始不变时按编辑平移块锚点并重排，否则返回 None 由调用方整体重建。
+    pub(super) fn resync(
+        &self,
+        wrap_snapshot: WrapSnapshot,
+        excerpts: Arc<[ExcerptSnapshot]>,
+        folded_buffers: &HashSet<PathBuf>,
+        wrap_edits: &[WrapEdit],
+    ) -> Option<BlockSnapshot> {
+        if &self.folded_buffers != folded_buffers {
+            return None;
+        }
+        let block_start_indices: Arc<[usize]> = excerpts
+            .iter()
+            .enumerate()
+            .filter(|(_, excerpt)| excerpt.starts_new_excerpt())
+            .map(|(index, _)| index)
+            .collect();
+        if block_start_indices != self.block_start_indices {
+            return None;
+        }
+        if wrap_edits.is_empty() {
+            // 换行行布局未变：复用变换与块位置，只刷新片段视图。
+            let mut placements = self.placements.clone();
+            for placement in &mut placements {
+                placement.block.excerpt = excerpts[placement.excerpt_index].clone();
+            }
+            return Some(BlockSnapshot {
+                wrap_snapshot,
+                transforms: self.transforms.clone(),
+                placements,
+                excerpts,
+                block_start_indices,
+                folded_buffers: folded_buffers.clone(),
+                specs: self.specs.clone(),
+            });
+        }
+        // 换行行布局变化：按编辑平移块锚点，落入编辑区间的锚点用新换行快照重算。
+        let mut specs = self.specs.to_vec();
+        for spec in &mut specs {
+            spec.wrap_row = relocated_wrap_row(
+                spec.wrap_row,
+                spec.excerpt_index,
+                wrap_edits,
+                &wrap_snapshot,
+                &excerpts,
+            )?;
+        }
+        specs.sort_by_key(|spec| spec.wrap_row);
+        Some(Self::place(
+            specs.into(),
+            block_start_indices,
+            wrap_snapshot,
+            excerpts,
+            folded_buffers.clone(),
+        ))
     }
 
     pub(super) fn line_count(&self) -> usize {

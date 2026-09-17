@@ -304,8 +304,8 @@ impl ProjectSearchView {
         key_context.add("ProjectSearchBar");
         let expansion = {
             let snapshot = self.excerpts.read(cx).snapshot(cx);
-            let paths = snapshot
-                .excerpts()
+            let excerpts = snapshot.excerpts();
+            let paths = excerpts
                 .iter()
                 .map(|excerpt| excerpt.path())
                 .collect::<Vec<_>>();

@@ -215,6 +215,45 @@ fn removing_middle_diff_file_matches_fresh_two_file_build(cx: &mut TestAppContex
     assert_eq!(incremental, fresh);
 }
 
+/// 移除路径顺序末尾的文件后，前一个文件不再需要分隔合成换行，投影必须与全新单文件构建一致。
+#[gpui::test]
+fn removing_last_diff_file_matches_fresh_single_file_build(cx: &mut TestAppContext) {
+    let a = singleton("src/a.rs", "a1\na2", cx);
+    let c = singleton("src/c.rs", "c1\nc2", cx);
+
+    let two = cx.new(MultiBuffer::empty);
+    two.update(cx, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![
+                test_diff(a.clone(), "src/a.rs", "a1\naX\n"),
+                test_diff(c.clone(), "src/c.rs", "c1\ncX\n"),
+            ]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    let one = cx.new(MultiBuffer::empty);
+    one.update(cx, |buffer, cx| {
+        buffer.inject_diffs(Some(vec![test_diff(a.clone(), "src/a.rs", "a1\naX\n")]), cx);
+    });
+    cx.run_until_parked();
+
+    let removed = two.update(cx, |buffer, cx| {
+        buffer.remove_diff(Path::new("src/c.rs"), cx)
+    });
+    assert!(removed);
+    cx.run_until_parked();
+
+    let incremental = cx.read_entity(&two, |buffer, cx| {
+        String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("投影应为 UTF-8")
+    });
+    let fresh = cx.read_entity(&one, |buffer, cx| {
+        String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("投影应为 UTF-8")
+    });
+    assert_eq!(incremental, fresh);
+}
+
 /// 单个文件的 diff 版本变化必须只原地重物化该路径，其余文件与全新构建一致。
 #[gpui::test]
 fn single_file_version_change_matches_fresh_three_file_build(cx: &mut TestAppContext) {
@@ -729,6 +768,27 @@ fn set_excerpts_for_path_replaces_only_that_path(cx: &mut TestAppContext) {
     assert_eq!(snapshot.excerpts()[0].path(), Path::new("src/a.rs"));
     assert_eq!(snapshot.excerpts()[1].path(), Path::new("src/a.rs"));
     assert_eq!(snapshot.excerpts()[2].path(), Path::new("src/b.rs"));
+}
+#[gpui::test]
+fn excerpt_view_is_derived_and_shared_once_per_snapshot(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "a\nb\n", cx);
+    let second = singleton("src/b.rs", "c\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                MultiBufferExcerpt::line_range(first.clone(), 0..1, cx),
+                MultiBufferExcerpt::line_range(second.clone(), 0..1, cx),
+            ],
+            cx,
+        );
+    });
+
+    let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    let view = snapshot.excerpts_arc();
+    // 派生视图按快照惰性物化一次；重复读取共用同一份分配，权威树不因此变成第二数据源。
+    assert!(Arc::ptr_eq(&view, &snapshot.excerpts_arc()));
+    assert_eq!(view.len(), 2);
 }
 
 #[gpui::test]

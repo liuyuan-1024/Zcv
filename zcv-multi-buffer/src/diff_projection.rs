@@ -18,8 +18,8 @@ use zcv_text::{Anchor, ByteOffset, Line, Snapshot};
 
 use crate::buffer_diff::{BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkStaging, DiffRefresh};
 use crate::{
-    ExcerptDiffKind, ExcerptMapping, MultiBuffer, MultiBufferEvent, MultiBufferExcerpt, PathKey,
-    ProjectionRemap, mapping_count, mapping_vec,
+    DiffTransform, ExcerptDiffKind, ExcerptMapping, MultiBuffer, MultiBufferEvent,
+    MultiBufferExcerpt, PathKey, ProjectionRemap, mapping_count, mapping_vec,
 };
 
 /// 编辑器投影使用的显示 hunk（组合文档行坐标）。
@@ -411,10 +411,7 @@ impl MultiBuffer {
             .read(cx)
             .file_path()
             .map_or_else(PathBuf::new, Path::to_path_buf);
-        let mappings = mapping_vec(&self.state.mappings);
-        let start = mappings.partition_point(|mapping| mapping.path.as_path() < source_path);
-        let end = mappings.partition_point(|mapping| mapping.path.as_path() <= source_path);
-        let removed_count = end.saturating_sub(start);
+        let (_, removed_count) = self.path_mapping_range(&PathKey::new(source_path.clone()));
 
         self.remove_excerpts_for_path(&source_path, cx);
 
@@ -572,7 +569,7 @@ impl MultiBuffer {
     /// 折叠/展开不改变源，编辑器源锚点选区自然存活，无需返回投影重映射。
     pub fn toggle_diff_hunk_at(&mut self, display_index: usize, cx: &mut Context<Self>) {
         let expanded_by_default = self.diff_expanded_by_default;
-        let mut toggled = false;
+        let mut file_index = None;
         if let Some(diff) = &mut self.diff
             && let Some(source) = diff.display_sources.get(display_index)
             && let Some(hunk) = diff.display_hunks.get(display_index)
@@ -582,12 +579,13 @@ impl MultiBuffer {
                 .map(|file| &mut file.expansion)
         {
             expansion.toggle(hunk.kind, &hunk.old_range, expanded_by_default);
-            toggled = true;
+            file_index = Some(source.file_index);
         }
-        if !toggled {
+        let Some(file_index) = file_index else {
             return;
-        }
-        self.rebuild_diff_projection(cx);
+        };
+        // 只重物化该文件所在路径；其余文件及其组合坐标保持不变。
+        self.replace_materialized_file(file_index, cx);
         cx.emit(MultiBufferEvent::DiffExpansionChanged);
     }
 
@@ -1021,10 +1019,7 @@ impl MultiBuffer {
                 .file_path()
                 .map_or_else(PathBuf::new, Path::to_path_buf),
         );
-        let mappings = mapping_vec(&self.state.mappings);
-        let base = mappings.partition_point(|mapping| mapping.path < path);
-        let end = mappings.partition_point(|mapping| mapping.path <= path);
-        let old_count = end.saturating_sub(base);
+        let (base, old_count) = self.path_mapping_range(&path);
         let new_count = excerpts.len();
         for hunk in &mut materialized {
             if let Some(old) = &mut hunk.old_excerpt {
@@ -1078,7 +1073,7 @@ impl MultiBuffer {
     /// 尚未重物化时保存映射，随后无论 hunk 怎样裁剪或失效，都用该映射解析编辑后的选区。
     pub(crate) fn rebuild_diff_projection_from(
         &mut self,
-        before: SumTree<ExcerptMapping>,
+        before: SumTree<DiffTransform>,
         cx: &mut Context<Self>,
     ) -> ProjectionRemap {
         if self.diff.is_none() {
@@ -1137,8 +1132,7 @@ impl MultiBuffer {
 
     /// diff 片段在最终组合文档中的真实逻辑行范围。
     /// 空片段仍对应编辑器中的一个空逻辑行。
-    fn diff_excerpt_output_lines(&self, excerpt: usize) -> Range<usize> {
-        let mappings = mapping_vec(&self.state.mappings);
+    fn diff_excerpt_output_lines(mappings: &[ExcerptMapping], excerpt: usize) -> Range<usize> {
         let mapping = mappings
             .get(excerpt)
             .expect("diff excerpt 必须存在对应组合映射");
@@ -1153,6 +1147,8 @@ impl MultiBuffer {
         materialized: impl IntoIterator<Item = &'a MaterializedHunk>,
     ) -> DiffDisplay {
         let materialized = materialized.into_iter().collect::<Vec<_>>();
+        // 组合映射只展开一次；显示坐标按 hunk 查询，不再每个 hunk 重复拍平整棵树。
+        let mappings = mapping_vec(&self.state.mappings);
         let mut hunks = Vec::with_capacity(materialized.len());
         let mut old_ranges = Vec::with_capacity(materialized.len());
         let mut sources = Vec::with_capacity(materialized.len());
@@ -1161,14 +1157,14 @@ impl MultiBuffer {
         for hunk in materialized {
             let old_display = hunk
                 .old_excerpt
-                .map(|excerpt| self.diff_excerpt_output_lines(excerpt));
-            word_diffs.push(self.combined_word_diffs(hunk));
+                .map(|excerpt| Self::diff_excerpt_output_lines(&mappings, excerpt));
+            word_diffs.push(Self::combined_word_diffs(&mappings, hunk));
             let new_range = match hunk.new_location {
                 MaterializedHunkLocation::Excerpt(excerpt) => {
-                    self.diff_excerpt_output_lines(excerpt)
+                    Self::diff_excerpt_output_lines(&mappings, excerpt)
                 }
                 MaterializedHunkLocation::Boundary(boundary) => {
-                    let line = self.diff_excerpt_boundary_line(boundary);
+                    let line = Self::diff_excerpt_boundary_line(&mappings, boundary);
                     line..line
                 }
             };
@@ -1217,13 +1213,15 @@ impl MultiBuffer {
     ///
     /// 旧侧 word diff 相对 base 字节范围起点，新侧 anchor 归于 working 源；
     /// 两者都经各自 excerpt 的源码→组合偏移映射换算到组合文档坐标。
-    fn combined_word_diffs(&self, hunk: &MaterializedHunk) -> Vec<(DiffHunkKind, Range<usize>)> {
+    fn combined_word_diffs(
+        mappings: &[ExcerptMapping],
+        hunk: &MaterializedHunk,
+    ) -> Vec<(DiffHunkKind, Range<usize>)> {
         let mut word_diffs = Vec::new();
         // 只有展开的旧侧才真正物化 base 行；折叠态是 working 坐标的占位片段，不能套用 base 偏移。
         if hunk.expanded
             && let Some(excerpt) = hunk.old_excerpt
         {
-            let mappings = mapping_vec(&self.state.mappings);
             let mapping = &mappings[excerpt];
             let output_start = mapping.output_range.start().get();
             let source_start = mapping.source_range.start().get();
@@ -1234,7 +1232,6 @@ impl MultiBuffer {
             }));
         }
         if let MaterializedHunkLocation::Excerpt(excerpt) = &hunk.new_location {
-            let mappings = mapping_vec(&self.state.mappings);
             let mapping = &mappings[*excerpt];
             let output_start = mapping.output_range.start().get();
             let source_start = mapping.source_range.start().get();
@@ -1248,8 +1245,7 @@ impl MultiBuffer {
     }
 
     /// excerpt 序列边界在最终组合文档中的真实逻辑行。
-    fn diff_excerpt_boundary_line(&self, boundary: usize) -> usize {
-        let mappings = mapping_vec(&self.state.mappings);
+    fn diff_excerpt_boundary_line(mappings: &[ExcerptMapping], boundary: usize) -> usize {
         if let Some(next) = mappings.get(boundary) {
             next.output_start_line
         } else if let Some(previous) = boundary
@@ -1510,7 +1506,6 @@ fn materialize_file(
                             false,
                         )
                         .expect("展开的旧侧投影必须生成 excerpt");
-                    materializer.excerpts[old_excerpt].order_line = Some(hunk.buffer_lines.start);
                     starts_new_excerpt = false;
                     Some(old_excerpt)
                 } else if context_lines.is_some() {
@@ -1527,7 +1522,6 @@ fn materialize_file(
                             true,
                         )
                         .expect("折叠的旧侧占位必须生成 excerpt");
-                    materializer.excerpts[old_excerpt].order_line = Some(hunk.buffer_lines.start);
                     starts_new_excerpt = false;
                     Some(old_excerpt)
                 } else {

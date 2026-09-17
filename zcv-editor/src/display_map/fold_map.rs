@@ -252,6 +252,16 @@ impl FoldEdit {
     pub(super) fn is_structural(&self) -> bool {
         self.structural || self.old.start != self.new.start || self.old.end != self.new.end
     }
+
+    /// 旧子树的投影输入行区间（tab 输入行）；结构编辑中被替换的部分。
+    pub(super) fn old_rows(&self) -> Range<usize> {
+        self.old.start.get()..self.old.end.get()
+    }
+
+    /// 新子树的投影输入行区间（tab 输入行）；结构编辑中替换后的部分。
+    pub(super) fn new_rows(&self) -> Range<usize> {
+        self.new.start.get()..self.new.end.get()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -674,7 +684,7 @@ impl FoldMap {
         input: InlaySnapshot,
         batch: &TextChangeBatch,
     ) -> (FoldSnapshot, Vec<FoldEdit>, ApplyOutcome) {
-        let buffer = input.buffer_snapshot();
+        let buffer = input.buffer_snapshot().clone();
         let old_buffer = self.snapshot.buffer_snapshot().clone();
         // 注入配置变化（inlay 增删改）不产生 buffer 编辑：整体重建 fold 拓扑。
         let inlay_changed = input.version() != self.snapshot.input.version();
@@ -755,7 +765,7 @@ impl FoldMap {
                 continue;
             };
             fold.range = Anchor::range_inside(new_version, range);
-            fold.line_span = fold_line_span(buffer, range)
+            fold.line_span = fold_line_span(&buffer, range)
                 .expect("映射后的折叠锚点范围必须位于当前 Snapshot 内");
             self.snapshot.fold_metadata_by_id.insert(fold.id, range);
             retained.push(fold);
@@ -779,7 +789,10 @@ impl FoldMap {
             ApplyOutcome::Compatible
         };
         let edits = if structural {
-            vec![full_fold_edit(old_rows, self.snapshot.line_count())]
+            linear_fold_edit(batch, &old_buffer, &buffer, &old_spans, &new_spans).map_or_else(
+                || vec![full_fold_edit(old_rows, self.snapshot.line_count())],
+                |edit| vec![edit],
+            )
         } else {
             inline_fold_edits(batch, self.snapshot.stream(), &self.snapshot.folds)
         };
@@ -856,6 +869,8 @@ impl FoldMapWriter<'_> {
                 .checked_add(1)
                 .ok_or(FoldError::IdOverflow)?,
         );
+        let stream_line_count = self.0.snapshot.stream().line_count();
+        let old_spans = hidden_spans_in_stream(self.0.snapshot.stream(), &self.0.snapshot.folds);
         let mut folds: Vec<_> = self.0.snapshot.folds.iter().cloned().collect();
         let fold = Fold::new(
             id,
@@ -865,24 +880,25 @@ impl FoldMapWriter<'_> {
         );
         folds.push(fold);
         sort_folds(&mut folds);
-        let old_rows = self.0.snapshot.line_count();
         self.0.snapshot.folds = SumTree::from_iter(folds, ());
         let indexed_folds = self.0.snapshot.folds.iter().cloned().collect::<Vec<_>>();
         self.0.snapshot.lookup = FoldLookup::from_folds(&indexed_folds);
         self.0.snapshot.fold_metadata_by_id.insert(id, range);
         let spans = hidden_spans_in_stream(self.0.snapshot.stream(), &self.0.snapshot.folds);
-        self.0.snapshot.transforms =
-            build_transforms(&spans, self.0.snapshot.stream().line_count());
+        self.0.snapshot.transforms = build_transforms(&spans, stream_line_count);
         self.0.snapshot.version += 1;
-        let edit = full_fold_edit(old_rows, self.0.snapshot.line_count());
-        Ok((self.0.snapshot.clone(), vec![edit]))
+        Ok((
+            self.0.snapshot.clone(),
+            span_edit(&old_spans, &spans).into_iter().collect(),
+        ))
     }
 
     fn unfold(&mut self, id: FoldId) -> (FoldSnapshot, Vec<FoldEdit>) {
         if !self.0.snapshot.fold_metadata_by_id.contains_key(&id) {
             return (self.0.snapshot.clone(), Vec::new());
         }
-        let old_rows = self.0.snapshot.line_count();
+        let stream_line_count = self.0.snapshot.stream().line_count();
+        let old_spans = hidden_spans_in_stream(self.0.snapshot.stream(), &self.0.snapshot.folds);
         let retained: Vec<_> = self
             .0
             .snapshot
@@ -896,11 +912,12 @@ impl FoldMapWriter<'_> {
         self.0.snapshot.lookup = FoldLookup::from_folds(&indexed_folds);
         self.0.snapshot.fold_metadata_by_id.remove(&id);
         let spans = hidden_spans_in_stream(self.0.snapshot.stream(), &self.0.snapshot.folds);
-        self.0.snapshot.transforms =
-            build_transforms(&spans, self.0.snapshot.stream().line_count());
+        self.0.snapshot.transforms = build_transforms(&spans, stream_line_count);
         self.0.snapshot.version += 1;
-        let edit = full_fold_edit(old_rows, self.0.snapshot.line_count());
-        (self.0.snapshot.clone(), vec![edit])
+        (
+            self.0.snapshot.clone(),
+            span_edit(&old_spans, &spans).into_iter().collect(),
+        )
     }
 }
 
@@ -958,6 +975,145 @@ fn full_fold_edit(old_rows: usize, new_rows: usize) -> FoldEdit {
         changed_lines: Vec::new(),
         structural: true,
     }
+}
+
+/// 由隐藏跨度差异派生**局部**结构编辑：只覆盖 old/new 跨度真正不同的区间。
+///
+/// 跨度在 stream 行空间（投影行前缀由累计隐藏行数决定）。前后公共跨度的投影行
+/// 数量相同，因此编辑两端在旧/新拓扑中落在同一投影行，只有中间区间需要被 Wrap 重排。
+/// 完全相同（折叠被内层/外层吞并等）时返回 None，上游无需重排。
+fn span_edit(old_spans: &[Range<usize>], new_spans: &[Range<usize>]) -> Option<FoldEdit> {
+    let mut prefix = 0;
+    while prefix < old_spans.len()
+        && prefix < new_spans.len()
+        && old_spans[prefix] == new_spans[prefix]
+    {
+        prefix += 1;
+    }
+    let mut suffix = 0;
+    while suffix < old_spans.len() - prefix
+        && suffix < new_spans.len() - prefix
+        && old_spans[old_spans.len() - 1 - suffix] == new_spans[new_spans.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+    let old_middle = &old_spans[prefix..old_spans.len() - suffix];
+    let new_middle = &new_spans[prefix..new_spans.len() - suffix];
+    if old_middle == new_middle {
+        return None;
+    }
+    // 变更区间只看中间跨度：公共前缀/后缀之外、真正被替换的 stream 行区间。
+    let region_start = match (old_middle.first(), new_middle.first()) {
+        (Some(old_span), Some(new_span)) => old_span.start.min(new_span.start),
+        (Some(old_span), None) => old_span.start,
+        (None, Some(new_span)) => new_span.start,
+        (None, None) => return None,
+    };
+    let region_end = match (old_middle.last(), new_middle.last()) {
+        (Some(old_span), Some(new_span)) => old_span.end.max(new_span.end),
+        (Some(old_span), None) => old_span.end,
+        (None, Some(new_span)) => new_span.end,
+        (None, None) => return None,
+    };
+    let hidden_before = hidden_lines(&old_spans[..prefix]);
+    // 公共前缀在旧/新拓扑中投影行数相同：区间起点在两种拓扑里落在同一 tab 行。
+    let start = region_start - hidden_before + prefix;
+    // 一个隐藏跨度贡献 1 个投影行（而非 0）：投影行数 = 行数 - 隐藏行数 + 跨度数。
+    let visible = region_end - region_start;
+    let old_end = start + visible - hidden_lines(old_middle) + old_middle.len();
+    let new_end = start + visible - hidden_lines(new_middle) + new_middle.len();
+    Some(FoldEdit {
+        old: ProjectedLineIndex::new(start)..ProjectedLineIndex::new(old_end),
+        new: ProjectedLineIndex::new(start)..ProjectedLineIndex::new(new_end),
+        changed_lines: Vec::new(),
+        structural: true,
+    })
+}
+
+fn hidden_lines(spans: &[Range<usize>]) -> usize {
+    spans.iter().map(|span| span.end - span.start).sum()
+}
+
+/// 由 patch 的旧/新行区间派生**局部**结构编辑。
+///
+/// buffer 行经折叠跨度投影为 tab 行：折叠覆盖行投射到 anchor 行的合并行，
+/// 其余行线性平移。因此编辑即使落在折叠内部，也只需重排它所在的合并行。
+/// 批次要求整体重建时返回 None，调用方回退到整份重建。
+fn linear_fold_edit(
+    batch: &TextChangeBatch,
+    old_buffer: &MultiBufferSnapshot,
+    new_buffer: &MultiBufferSnapshot,
+    old_spans: &[Range<usize>],
+    new_spans: &[Range<usize>],
+) -> Option<FoldEdit> {
+    if batch.requires_reset() {
+        return None;
+    }
+    let mut old_rows: Option<Range<usize>> = None;
+    let mut new_rows: Option<Range<usize>> = None;
+    for edit in batch.patch().edits() {
+        let old_start = old_buffer
+            .byte_to_line(edit.old_range().start())
+            .ok()?
+            .get();
+        let old_end = old_buffer.byte_to_line(edit.old_range().end()).ok()?.get() + 1;
+        let new_start = new_buffer
+            .byte_to_line(edit.new_range().start())
+            .ok()?
+            .get();
+        let new_end = new_buffer.byte_to_line(edit.new_range().end()).ok()?.get() + 1;
+        old_rows = Some(merge_row_range(old_rows, old_start..old_end));
+        new_rows = Some(merge_row_range(new_rows, new_start..new_end));
+    }
+    let old_spanned = projected_span(old_spans, &old_rows?);
+    let new_spanned = projected_span(new_spans, &new_rows?);
+    Some(FoldEdit {
+        old: ProjectedLineIndex::new(old_spanned.start)..ProjectedLineIndex::new(old_spanned.end),
+        new: ProjectedLineIndex::new(new_spanned.start)..ProjectedLineIndex::new(new_spanned.end),
+        changed_lines: Vec::new(),
+        structural: true,
+    })
+}
+
+fn merge_row_range(existing: Option<Range<usize>>, next: Range<usize>) -> Range<usize> {
+    match existing {
+        Some(range) => range.start.min(next.start)..range.end.max(next.end),
+        None => next,
+    }
+}
+
+/// buffer 行区间的投影 tab 行区间：折叠覆盖的连续行坍缩为同一合并行。
+fn projected_span(spans: &[Range<usize>], rows: &Range<usize>) -> Range<usize> {
+    if rows.is_empty() {
+        let row = projected_row(spans, rows.start);
+        return row..row;
+    }
+    let first = projected_row(spans, rows.start);
+    let last = projected_row(spans, rows.end - 1);
+    first..last + 1
+}
+
+/// 单个 buffer 行投射到的 tab 行；折叠覆盖行投射到其 anchor 行的合并行。
+fn projected_row(spans: &[Range<usize>], row: usize) -> usize {
+    for span in spans {
+        if row < span.start {
+            break;
+        }
+        if row < span.end {
+            let anchor = span.start - 1;
+            return anchor - hidden_before(spans, anchor);
+        }
+    }
+    row - hidden_before(spans, row)
+}
+
+/// 位于 `row` 之前的隐藏行总数（跨度的终点行必须严格早于 `row`）。
+fn hidden_before(spans: &[Range<usize>], row: usize) -> usize {
+    spans
+        .iter()
+        .filter(|span| span.end <= row)
+        .map(|span| span.end - span.start)
+        .sum()
 }
 
 fn inline_fold_edits(
@@ -1069,6 +1225,39 @@ mod tests {
     }
 
     #[test]
+    fn folding_a_middle_range_emits_a_localized_structural_edit() {
+        let buffer = Buffer::scratch("a\nb\nc\nd\ne\nf\n".to_string(), BufferConfig::default())
+            .expect("测试 Buffer 应能创建");
+        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        let (after, edits) = map.write().fold(text_range(2, 7)).unwrap();
+
+        assert_eq!(after.line_count(), 5);
+        let edit = &edits[0];
+        assert!(edit.is_structural());
+        // 只覆盖被折叠的 tab 行，折叠点前后的可见行保留原变换。
+        assert_eq!(edit.old_rows(), 2..4);
+        assert_eq!(edit.new_rows(), 2..3);
+    }
+
+    #[test]
+    fn unfolding_a_middle_fold_restores_only_its_rows() {
+        let buffer = Buffer::scratch("a\nb\nc\nd\ne\nf\n".to_string(), BufferConfig::default())
+            .expect("测试 Buffer 应能创建");
+        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        map.write().fold(text_range(2, 7)).unwrap();
+        let (after, edits) = map
+            .write()
+            .unfold_lines(LineRange::new(Line::new(0), Line::new(7)).unwrap())
+            .unwrap();
+
+        assert_eq!(after.line_count(), 7);
+        let edit = &edits[0];
+        assert!(edit.is_structural());
+        assert_eq!(edit.old_rows(), 2..3);
+        assert_eq!(edit.new_rows(), 2..4);
+    }
+
+    #[test]
     fn fold_writer_rejects_partial_overlap_but_accepts_nesting() {
         let buffer = Buffer::scratch("abcdef".to_string(), BufferConfig::default()).unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
@@ -1130,6 +1319,33 @@ mod tests {
     }
 
     #[test]
+    fn editing_inside_a_fold_remeasures_only_the_merged_row() {
+        let mut buffer =
+            Buffer::scratch("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
+        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        map.write().fold(text_range(6, 13)).unwrap();
+        let subscription = buffer.subscribe();
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::new(9), "new\n").unwrap()],
+                TransactionMetadata::default(),
+            )
+            .unwrap();
+
+        let (snapshot, edits, outcome) = map.read(
+            InlayMap::new(LineStream::new(buffer.snapshot())).1,
+            &subscription.consume(),
+        );
+        assert_eq!(outcome, ApplyOutcome::Spliced);
+        // 折叠内部插入整行：隐藏行数随之变化，tab 行数不变；只有合并行需要重排。
+        assert_eq!(snapshot.line_count(), 2);
+        let edit = &edits[0];
+        assert!(edit.is_structural());
+        assert_eq!(edit.old_rows(), 0..1);
+        assert_eq!(edit.new_rows(), 0..1);
+    }
+
+    #[test]
     fn newline_edit_rebuilds_transform_tree_and_emits_structural_fold_edit() {
         let mut buffer =
             Buffer::scratch("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
@@ -1153,6 +1369,31 @@ mod tests {
             buffer.snapshot().line_count()
         );
         assert!(edits.iter().all(FoldEdit::is_structural));
+    }
+    #[test]
+    fn newline_edit_outside_folds_emits_a_localized_structural_edit() {
+        let mut buffer =
+            Buffer::scratch("a\nb\nc\nd\ne\nf\n".to_string(), BufferConfig::default()).unwrap();
+        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        let subscription = buffer.subscribe();
+        // 在未折叠区域插入换行：只应重排该行附近的 tab 行，而不是整份文档。
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::new(4), "\n").unwrap()],
+                TransactionMetadata::default(),
+            )
+            .unwrap();
+
+        let (snapshot, edits, outcome) = map.read(
+            InlayMap::new(LineStream::new(buffer.snapshot())).1,
+            &subscription.consume(),
+        );
+        assert_eq!(outcome, ApplyOutcome::Spliced);
+        assert_eq!(snapshot.line_count(), 8);
+        let edit = &edits[0];
+        assert!(edit.is_structural());
+        assert_eq!(edit.old_rows(), 2..3);
+        assert_eq!(edit.new_rows(), 2..4);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! DisplayMap 的 Tab 展开与 display-column 映射。
 //!
 //! `TabMap` 只测量实际进入投影视口的逻辑行，并在同行编辑后精确失效对应缓存。
-//! 初次构建不遍历全文；结构编辑会清空已测量行，但后续仍按需重新填充。
+//! 初次构建不遍历全文；结构编辑按行区间平移已测量行（被编辑行失效），后续仍按需重新填充。
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -142,12 +142,21 @@ impl TabMap {
         }
 
         let new_version = self.snapshot.version + 1;
-        // 折叠/行内提示等结构变化会位移投影行号，宽度缓存键随之错位，必须清空；
+        // 结构编辑按 FoldEdit 的旧/新行区间平移宽度缓存；
         // 行内编辑按 changed_lines 精确失效。
         let structural = fold_edits.iter().any(FoldEdit::is_structural);
-        if !same_configuration || structural {
+        if !same_configuration {
             self.measured_line_widths.clear();
             self.longest_measured = None;
+        } else if structural {
+            for edit in fold_edits.iter().filter(|edit| edit.is_structural()) {
+                self.shift_measured_widths(edit.old_rows(), edit.new_rows());
+            }
+            self.longest_measured = self
+                .measured_line_widths
+                .iter()
+                .max_by_key(|(_, width)| **width)
+                .map(|(line, width)| (*line, *width));
         } else {
             let mut changed_lines = BTreeSet::new();
             for edit in fold_edits {
@@ -171,6 +180,27 @@ impl TabMap {
             version: new_version,
         };
         self.snapshot.clone()
+    }
+
+    /// 结构编辑后平移宽度缓存：旧行区间内的键失效，其后的键按行数差整体平移。
+    ///
+    /// 折叠覆盖行仍映射到其 anchor 行的合并行；被编辑的合并行落在旧行区间内，因而被丢弃。
+    fn shift_measured_widths(&mut self, old_rows: Range<usize>, new_rows: Range<usize>) {
+        debug_assert_eq!(
+            old_rows.start, new_rows.start,
+            "结构编辑的旧/新行区间必须共享起点，才能平移未受影响的缓存"
+        );
+        let delta = new_rows.len() as isize - old_rows.len() as isize;
+        let widths = std::mem::take(&mut self.measured_line_widths);
+        for (line, width) in widths {
+            let row = line.get();
+            if row < old_rows.start {
+                self.measured_line_widths.insert(line, width);
+            } else if row >= old_rows.end {
+                self.measured_line_widths
+                    .insert(Line::new((row as isize + delta) as usize), width);
+            }
+        }
     }
 
     pub(super) fn measure_line(&mut self, line: Line) -> DisplayMapResult<DisplayColumn> {

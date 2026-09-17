@@ -1150,6 +1150,7 @@ impl ProjectDiffView {
 
     fn conflict_editor_hunks(&self, cx: &App) -> Vec<EditorHunk> {
         let snapshot = self.multi_buffer.read(cx).snapshot(cx);
+        let excerpts = snapshot.excerpts();
         let mut hunks = Vec::new();
         for (buffer, path) in self.multi_buffer.read(cx).file_buffers(cx) {
             let source = buffer.read(cx).snapshot();
@@ -1161,7 +1162,7 @@ impl ProjectDiffView {
             };
             let text = text.to_string();
             for (index, region) in parse_conflict_regions(&text).iter().enumerate() {
-                let Some(excerpt) = snapshot.excerpts().iter().find(|excerpt| {
+                let Some(excerpt) = excerpts.iter().find(|excerpt| {
                     excerpt.path() == path
                         && excerpt
                             .source_range()
@@ -1539,11 +1540,8 @@ impl ProjectDiffView {
             return;
         };
         let snapshot = self.multi_buffer.read(cx).snapshot(cx);
-        let Some(excerpt) = snapshot
-            .excerpts()
-            .iter()
-            .find(|excerpt| excerpt.path() == path)
-        else {
+        let excerpts = snapshot.excerpts();
+        let Some(excerpt) = excerpts.iter().find(|excerpt| excerpt.path() == path) else {
             return;
         };
         let offset = excerpt.output_range().start().get();
@@ -2110,9 +2108,9 @@ mod tests {
 
         cx.read_entity(&view, |view, cx| {
             let snapshot = view.multi_buffer.read(cx).snapshot(cx);
+            let excerpts = snapshot.excerpts();
             // 修改行的 Deleted 片段：首行（旧侧 "修改前"）→ 工作区第 5 行（0-based 4）。
-            let modified_excerpt = snapshot
-                .excerpts()
+            let modified_excerpt = excerpts
                 .iter()
                 .find(|excerpt| {
                     excerpt.path() == modified_path
@@ -2149,8 +2147,7 @@ mod tests {
                 "夹具应让 Deleted 片段正好覆盖被修改的旧行（含行尾换行）"
             );
             // 整文件删除：纯删除 hunk 的 range 为空，锚定到变更块起点（0-based 0）。
-            let removed_excerpt = snapshot
-                .excerpts()
+            let removed_excerpt = excerpts
                 .iter()
                 .find(|excerpt| {
                     excerpt.path().file_name().and_then(|name| name.to_str()) == Some("removed.txt")

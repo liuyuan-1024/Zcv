@@ -11,7 +11,7 @@ use super::common::{
     buffer_text, engine_buffer, focus_editor, inject_editor_diff, inject_file_diff, test_buffer,
 };
 use super::*;
-use crate::display_map::{ProjectedLineIndex, ProjectedPoint, WrapRowKind};
+use crate::display_map::{DisplayRow, ProjectedLineIndex, ProjectedPoint, WrapRowKind};
 
 /// 构造 context_lines=2 的裁剪投影项，供组合文档裁剪测试复用。
 fn clipped_diff_file(
@@ -1099,6 +1099,179 @@ fn multibuffer_soft_wrap_uses_the_regular_display_map_pipeline(cx: &mut TestAppC
         cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
         wrapped_rows,
         "再次点击 header chevron 应完整恢复 excerpts"
+    );
+}
+
+#[gpui::test]
+fn wrapped_multibuffer_reuses_block_rows_across_within_line_edits(cx: &mut TestAppContext) {
+    let first = test_buffer(cx, "let alpha = 1;\nlet beta = 2;\n");
+    first.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("a.rs"), cx)
+    });
+    let second = test_buffer(cx, "let gamma = 3;\n");
+    second.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("b.rs"), cx)
+    });
+
+    let combined = cx.new(MultiBuffer::empty);
+    let first_len = cx.read_entity(&engine_buffer(&first, cx), |buffer, _| buffer.len_bytes());
+    let second_len = cx.read_entity(&engine_buffer(&second, cx), |buffer, _| buffer.len_bytes());
+    combined.update(cx, |combined, cx| {
+        combined.set_excerpts(
+            vec![
+                MultiBufferExcerpt::new(
+                    first.clone(),
+                    TextRange::new(ByteOffset::ZERO, first_len).expect("完整片段范围应有效"),
+                    Vec::new(),
+                ),
+                MultiBufferExcerpt::new(
+                    second.clone(),
+                    TextRange::new(ByteOffset::ZERO, second_len).expect("完整片段范围应有效"),
+                    Vec::new(),
+                ),
+            ],
+            cx,
+        );
+    });
+
+    let (editor, cx) = cx.add_window_view({
+        let combined = combined.clone();
+        move |_, cx| Editor::for_multi_buffer(combined, cx)
+    });
+    cx.run_until_parked();
+    editor.update(cx, |editor, cx| {
+        editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx);
+    });
+    cx.run_until_parked();
+
+    let before = cx.read_entity(&editor, |editor, _| {
+        let snapshot = &editor.display_snapshot;
+        let mut rows = snapshot.rows(DisplayRow::ZERO, snapshot.line_count());
+        let mut result = Vec::new();
+        while let Some(row) = rows.next() {
+            if let Some(block) = row.block() {
+                result.push((row.index().get(), block.excerpt.path().to_path_buf()));
+            }
+        }
+        result
+    });
+    assert_eq!(before.len(), 2, "两个文件各有一个 BufferHeader 块");
+
+    // 同宽行内替换：断行结果不变，块布局应保持原样，只刷新片段视图。
+    let first_buffer = cx.read_entity(&first, |source, _| source.buffer());
+    cx.update_entity(&first_buffer, |buffer, cx| {
+        buffer
+            .edit(
+                [Edit::replace(
+                    TextRange::new(ByteOffset::new(4), ByteOffset::new(9)).expect("替换范围应有效"),
+                    "ALPHA",
+                )],
+                TransactionMetadata::default(),
+            )
+            .expect("源编辑应成功");
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    let after = cx.read_entity(&editor, |editor, _| {
+        let snapshot = &editor.display_snapshot;
+        let mut rows = snapshot.rows(DisplayRow::ZERO, snapshot.line_count());
+        let mut result = Vec::new();
+        while let Some(row) = rows.next() {
+            if let Some(block) = row.block() {
+                result.push((row.index().get(), block.excerpt.path().to_path_buf()));
+            }
+        }
+        result
+    });
+    assert_eq!(after, before);
+}
+
+#[gpui::test]
+fn wrapped_multibuffer_relocates_blocks_when_wrap_rows_change(cx: &mut TestAppContext) {
+    let first = test_buffer(cx, "let alpha = 1;\nlet beta = 2;\n");
+    first.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("a.rs"), cx)
+    });
+    let second = test_buffer(cx, "let gamma = 3;\n");
+    second.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("b.rs"), cx)
+    });
+
+    let combined = cx.new(MultiBuffer::empty);
+    let first_len = cx.read_entity(&engine_buffer(&first, cx), |buffer, _| buffer.len_bytes());
+    let second_len = cx.read_entity(&engine_buffer(&second, cx), |buffer, _| buffer.len_bytes());
+    combined.update(cx, |combined, cx| {
+        combined.set_excerpts(
+            vec![
+                MultiBufferExcerpt::new(
+                    first.clone(),
+                    TextRange::new(ByteOffset::ZERO, first_len).expect("完整片段范围应有效"),
+                    Vec::new(),
+                ),
+                MultiBufferExcerpt::new(
+                    second.clone(),
+                    TextRange::new(ByteOffset::ZERO, second_len).expect("完整片段范围应有效"),
+                    Vec::new(),
+                ),
+            ],
+            cx,
+        );
+    });
+
+    let (editor, cx) = cx.add_window_view({
+        let combined = combined.clone();
+        move |_, cx| Editor::for_multi_buffer(combined, cx)
+    });
+    cx.run_until_parked();
+    editor.update(cx, |editor, cx| {
+        editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx);
+    });
+    cx.run_until_parked();
+
+    let before = cx.read_entity(&editor, |editor, _| {
+        let snapshot = &editor.display_snapshot;
+        let mut rows = snapshot.rows(DisplayRow::ZERO, snapshot.line_count());
+        let mut result = Vec::new();
+        while let Some(row) = rows.next() {
+            if let Some(block) = row.block() {
+                result.push((row.index().get(), block.excerpt.path().to_path_buf()));
+            }
+        }
+        result
+    });
+    assert_eq!(
+        before,
+        vec![(0, PathBuf::from("a.rs")), (4, PathBuf::from("b.rs"))]
+    );
+
+    // 在第一个文件首行后插入换行：a.rs 标题不动，b.rs 标题整体后移一行。
+    let first_buffer = cx.read_entity(&first, |source, _| source.buffer());
+    cx.update_entity(&first_buffer, |buffer, cx| {
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::new(14), "\n").unwrap()],
+                TransactionMetadata::default(),
+            )
+            .expect("源编辑应成功");
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    let after = cx.read_entity(&editor, |editor, _| {
+        let snapshot = &editor.display_snapshot;
+        let mut rows = snapshot.rows(DisplayRow::ZERO, snapshot.line_count());
+        let mut result = Vec::new();
+        while let Some(row) = rows.next() {
+            if let Some(block) = row.block() {
+                result.push((row.index().get(), block.excerpt.path().to_path_buf()));
+            }
+        }
+        result
+    });
+    assert_eq!(
+        after,
+        vec![(0, PathBuf::from("a.rs")), (5, PathBuf::from("b.rs"))]
     );
 }
 

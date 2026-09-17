@@ -51,7 +51,8 @@ enum TransformKind {
 struct Transform {
     kind: TransformKind,
     input_lines: usize,
-    wrap_points: Vec<WrapPointInfo>,
+    /// 换行点共享存储：克隆 Transform（增量重建时大量发生）只增加引用计数，不深拷贝换行点。
+    wrap_points: Arc<[WrapPointInfo]>,
 }
 
 impl Transform {
@@ -59,7 +60,7 @@ impl Transform {
         Self {
             kind: TransformKind::Isomorphic,
             input_lines,
-            wrap_points: Vec::new(),
+            wrap_points: Vec::new().into(),
         }
     }
 
@@ -797,11 +798,59 @@ impl WrapSnapshot {
     }
 }
 
+/// 由「换行输入行区间 + 重测后的输出行数」派生显示行编辑。
+///
+/// 多个区间按输入行升序处理，前一次重排的输出行差会平移后续区间的显示坐标。
+/// 只有输出行数量真正变化的区间才记录；空列表精确表示显示行布局未变。
+fn wrap_edits(
+    measure: &SumTree<Transform>,
+    old_ranges: &[Range<usize>],
+    new_lengths: &[usize],
+) -> Vec<WrapEdit> {
+    let mut result = Vec::new();
+    let mut delta = 0isize;
+    for (old_rows, new_len) in old_ranges.iter().zip(new_lengths) {
+        let old_before = output_rows_before(measure, old_rows.start);
+        let old_after = output_rows_before(measure, old_rows.end);
+        let start = (old_before as isize + delta) as usize;
+        let old_range = start..start + (old_after - old_before);
+        let new_range = start..start + new_len;
+        if old_range != new_range {
+            result.push(WrapEdit {
+                old: old_range,
+                new: new_range,
+            });
+        }
+        delta += *new_len as isize - (old_after - old_before) as isize;
+    }
+    result
+}
+
 /// 文本中第 `chars` 个字符的字节偏移（超出末尾返回文本长度）。
 fn byte_after_chars(text: &str, chars: usize) -> usize {
     text.char_indices()
         .nth(chars)
         .map_or(text.len(), |(byte, _)| byte)
+}
+/// 一次换行重排影响的显示行区间（换行输出行空间）。
+///
+/// 无重排时列表为空，因此「空」精确表示显示行布局未变；有重排时才记录旧/新区间，
+/// 供 BlockMap 判断块位置是否需要重建。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WrapEdit {
+    pub(super) old: Range<usize>,
+    pub(super) new: Range<usize>,
+}
+
+/// 给定输入行之前累计的输出行数（换行树的 InputToOutput 维度）。
+///
+/// 非零输出行的 item 只有 Wrap（input_lines 恒为 1），因此落在 item 内部的行只可能
+/// 属于 Isomorphic 段，其增量与输入行偏移一致；用 `Bias::Right` 让区间终点的边界行落到后继 item。
+fn output_rows_before(tree: &SumTree<Transform>, input_row: usize) -> usize {
+    let mut cursor = tree.cursor::<InputToOutput>(());
+    cursor.seek(&InputLines(input_row), Bias::Right);
+    let start = cursor.start();
+    start.1.0 + (input_row - start.0.0)
 }
 
 #[derive(Clone)]
@@ -853,29 +902,33 @@ impl WrapMap {
 
     /// 同步 tab 层变化。tab 版本未变时不做任何事；换行开启时按 fold edit 的
     /// 结构性变化全量重排或按 changed_lines 增量重排，关闭时重建单段透传。
-    pub(super) fn sync(&mut self, tab_snapshot: TabSnapshot, fold_edits: &[FoldEdit]) {
+    pub(super) fn sync(
+        &mut self,
+        tab_snapshot: TabSnapshot,
+        fold_edits: &[FoldEdit],
+    ) -> Vec<WrapEdit> {
         if tab_snapshot.version() == self.snapshot.tab_snapshot.version() {
-            return;
+            return Vec::new();
         }
         self.snapshot.tab_snapshot = tab_snapshot;
-        if let Some(wrap_width) = self.wrap_width {
-            // 行内提示变化由 fold 发 structural edit（单一信号）。
-            let line_count_changed = self.snapshot.tab_snapshot.line_count()
-                != self.snapshot.transforms.summary().input_lines;
-            if line_count_changed || fold_edits.iter().any(FoldEdit::is_structural) {
-                self.rewrap_all(wrap_width);
+        let edits = if let Some(wrap_width) = self.wrap_width {
+            // 结构编辑（折叠/展开、行内提示变化）按 FoldEdit 的旧/新输入行区间局部重排；
+            // 覆盖全量的结构编辑自然退化为整段重建，不需要单独的“全量”分支。
+            if fold_edits.iter().any(FoldEdit::is_structural) {
+                self.update_structural(fold_edits, wrap_width)
             } else {
                 let changed_lines: Vec<Line> = fold_edits
                     .iter()
                     .flat_map(|edit| edit.changed_lines().iter().copied())
                     .collect();
-                self.update_inline(&changed_lines, wrap_width);
+                self.update_inline(&changed_lines, wrap_width)
             }
         } else {
-            self.set_isomorphic_all();
-        }
+            self.set_isomorphic_all()
+        };
         self.check_invariants();
         self.snapshot.version += 1;
+        edits
     }
 
     /// 设置换行宽度与字体。只有 (宽度, 字体, 字号) 任一变化时才重建；
@@ -886,7 +939,7 @@ impl WrapMap {
         font: Font,
         font_size: Pixels,
         text_system: Arc<TextSystem>,
-    ) -> bool {
+    ) -> (bool, Vec<WrapEdit>) {
         let width_changed = wrap_width != self.wrap_width;
         let font_changed =
             self.font_with_size
@@ -906,26 +959,115 @@ impl WrapMap {
         }
         self.text_system = Some(text_system);
         if !needs_rewrap {
-            return false;
+            return (false, Vec::new());
         }
         self.wrap_width = wrap_width;
         self.font_with_size = Some((font, font_size));
-        match wrap_width {
+        let edits = match wrap_width {
             None => self.set_isomorphic_all(),
             Some(width) => self.rewrap_all(width),
-        }
+        };
         self.snapshot.version += 1;
-        true
+        (true, edits)
     }
 
-    fn set_isomorphic_all(&mut self) {
+    fn set_isomorphic_all(&mut self) -> Vec<WrapEdit> {
+        let old_rows = self.snapshot.transforms.summary().output_rows;
         self.snapshot.transforms = isomorphic_tree(self.snapshot.tab_snapshot.line_count());
         self.snapshot.wrapped = false;
         self.check_invariants();
+        vec![WrapEdit {
+            old: 0..old_rows,
+            new: 0..self.snapshot.transforms.summary().output_rows,
+        }]
+    }
+
+    /// 结构编辑的局部重排：按 FoldEdit 的旧/新输入行区间替换换行变换。
+    ///
+    /// 未命中的前缀/后缀子树直接复用（Arc 共享）；被替换区间内的行重新测量换行。
+    /// 覆盖全量的结构编辑会退化为整段重建，与 [`Self::rewrap_all`] 等价。
+    fn update_structural(&mut self, fold_edits: &[FoldEdit], wrap_width: Pixels) -> Vec<WrapEdit> {
+        let mut edits: Vec<(Range<usize>, Range<usize>)> = fold_edits
+            .iter()
+            .map(|edit| (edit.old_rows(), edit.new_rows()))
+            .collect();
+        edits.sort_by_key(|(old_rows, _)| old_rows.start);
+
+        // 以输入行为维度的游标 splice：未命中的前缀/后缀子树直接复用（Arc 共享），
+        // 只有与被替换行相交的边界 item 需要拆分，受影响行重新测量换行。
+        let measure = self.snapshot.transforms.clone();
+        let old_transforms = std::mem::replace(&mut self.snapshot.transforms, SumTree::new(()));
+        let mut cursor = old_transforms.cursor::<InputLines>(());
+        let mut new_tree = SumTree::new(());
+        let mut buffered = Vec::new();
+        let mut measured = Vec::with_capacity(edits.len());
+        for (old_rows, new_rows) in &edits {
+            new_tree.append(cursor.slice(&InputLines(old_rows.start), Bias::Left), ());
+
+            // 起始边界：item 若从 old_rows.start 之前开始，保留 [item_start, old_rows.start) 部分。
+            if let Some(transform) = cursor.item() {
+                let transform_start = cursor.start().0;
+                if transform_start < old_rows.start {
+                    push_transform_slice(
+                        &mut buffered,
+                        transform,
+                        old_rows.start - transform_start,
+                    );
+                }
+            }
+
+            // 丢弃 [old_rows.start, old_rows.end) 内的 item；跨过 end 的 item 保留尾部。
+            let mut tail: Option<Transform> = None;
+            while let Some(transform) = cursor.item() {
+                let transform_start = cursor.start().0;
+                if transform_start >= old_rows.end {
+                    break;
+                }
+                let transform_end = transform_start + transform.input_lines;
+                if transform_end > old_rows.end {
+                    tail = Some(if transform.kind == TransformKind::Isomorphic {
+                        Transform::isomorphic(transform_end - old_rows.end)
+                    } else {
+                        transform.clone()
+                    });
+                    cursor.next();
+                    break;
+                }
+                cursor.next();
+            }
+
+            let measured_start = buffered.len();
+            for tab_row in new_rows.clone() {
+                self.push_wrap_transform(&mut buffered, tab_row, wrap_width);
+            }
+            measured.push(
+                buffered[measured_start..]
+                    .iter()
+                    .map(Transform::output_rows)
+                    .sum::<usize>(),
+            );
+            if let Some(tail) = tail {
+                buffered.push(tail);
+            }
+            new_tree.extend(buffered.drain(..), ());
+        }
+        new_tree.append(cursor.suffix(), ());
+        self.snapshot.transforms = new_tree;
+        self.snapshot.wrapped = true;
+        self.check_invariants();
+        wrap_edits(
+            &measure,
+            &edits
+                .iter()
+                .map(|(old_rows, _)| old_rows.clone())
+                .collect::<Vec<_>>(),
+            &measured,
+        )
     }
 
     /// 全量重建：对每个 tab 行重新计算换行点。
-    fn rewrap_all(&mut self, wrap_width: Pixels) {
+    fn rewrap_all(&mut self, wrap_width: Pixels) -> Vec<WrapEdit> {
+        let old_rows = self.snapshot.transforms.summary().output_rows;
         let mut transforms = Vec::new();
         for tab_row in 0..self.snapshot.tab_snapshot.line_count() {
             self.push_wrap_transform(&mut transforms, tab_row, wrap_width);
@@ -933,10 +1075,14 @@ impl WrapMap {
         self.snapshot.transforms = SumTree::from_iter(transforms, ());
         self.snapshot.wrapped = true;
         self.check_invariants();
+        vec![WrapEdit {
+            old: 0..old_rows,
+            new: 0..self.snapshot.transforms.summary().output_rows,
+        }]
     }
 
     /// 行级增量：只重排 changed_lines 对应的 tab 行，其余段落原样保留。
-    fn update_inline(&mut self, changed_lines: &[Line], wrap_width: Pixels) {
+    fn update_inline(&mut self, changed_lines: &[Line], wrap_width: Pixels) -> Vec<WrapEdit> {
         let fold = self.snapshot.tab_snapshot.fold_snapshot();
         let mut rows: Vec<usize> = changed_lines
             .iter()
@@ -948,48 +1094,69 @@ impl WrapMap {
         rows.sort_unstable();
         rows.dedup();
         if rows.is_empty() {
-            return;
+            return Vec::new();
         }
         let row_edits = merge_ranges(&rows);
-        let old_transforms: Vec<_> = self.snapshot.transforms.iter().cloned().collect();
-        let mut new_transforms = Vec::new();
-        let mut edit_index = 0;
-        let mut input_start = 0;
-        for transform in &old_transforms {
-            let input_end = input_start + transform.input_lines;
-            while row_edits
-                .get(edit_index)
-                .is_some_and(|edit| edit.end <= input_start)
-            {
-                edit_index += 1;
+
+        // 以输入行为维度的游标 splice：未命中的前缀/后缀子树直接复用（Arc 共享），
+        // 只有与被编辑行相交的边界 item 需要拆分，受影响行重新测量换行。
+        let measure = self.snapshot.transforms.clone();
+        let old_transforms = std::mem::replace(&mut self.snapshot.transforms, SumTree::new(()));
+        let mut cursor = old_transforms.cursor::<InputLines>(());
+        let mut new_tree = SumTree::new(());
+        let mut buffered = Vec::new();
+        let mut measured = Vec::with_capacity(row_edits.len());
+        for edit in &row_edits {
+            new_tree.append(cursor.slice(&InputLines(edit.start), Bias::Left), ());
+
+            // 起始边界：item 若从 edit.start 之前开始，保留 [item_start, edit.start) 部分。
+            if let Some(transform) = cursor.item() {
+                let transform_start = cursor.start().0;
+                if transform_start < edit.start {
+                    push_transform_slice(&mut buffered, transform, edit.start - transform_start);
+                }
             }
 
-            let mut position = input_start;
-            while let Some(edit) = row_edits.get(edit_index) {
-                if edit.start >= input_end {
+            // 丢弃 [edit.start, edit.end) 内的 item；跨过 edit.end 的 item 保留尾部。
+            let mut tail: Option<Transform> = None;
+            while let Some(transform) = cursor.item() {
+                let transform_start = cursor.start().0;
+                if transform_start >= edit.end {
                     break;
                 }
-                let unchanged_end = edit.start.max(position).min(input_end);
-                push_transform_slice(&mut new_transforms, transform, unchanged_end - position);
-
-                let changed_start = edit.start.max(position);
-                let changed_end = edit.end.min(input_end);
-                for tab_row in changed_start..changed_end {
-                    self.push_wrap_transform(&mut new_transforms, tab_row, wrap_width);
-                }
-                position = changed_end;
-                if edit.end <= input_end {
-                    edit_index += 1;
-                } else {
+                let transform_end = transform_start + transform.input_lines;
+                if transform_end > edit.end {
+                    tail = Some(if transform.kind == TransformKind::Isomorphic {
+                        Transform::isomorphic(transform_end - edit.end)
+                    } else {
+                        transform.clone()
+                    });
+                    cursor.next();
                     break;
                 }
+                cursor.next();
             }
-            push_transform_slice(&mut new_transforms, transform, input_end - position);
-            input_start = input_end;
+
+            let measured_start = buffered.len();
+            for tab_row in edit.start..edit.end {
+                self.push_wrap_transform(&mut buffered, tab_row, wrap_width);
+            }
+            measured.push(
+                buffered[measured_start..]
+                    .iter()
+                    .map(Transform::output_rows)
+                    .sum::<usize>(),
+            );
+            if let Some(tail) = tail {
+                buffered.push(tail);
+            }
+            new_tree.extend(buffered.drain(..), ());
         }
-        self.snapshot.transforms = SumTree::from_iter(new_transforms, ());
+        new_tree.append(cursor.suffix(), ());
+        self.snapshot.transforms = new_tree;
         self.snapshot.wrapped = true;
         self.check_invariants();
+        wrap_edits(&measure, &row_edits, &measured)
     }
 
     /// 计算单个 tab 行的换行变换并压入（相邻 Isomorphic 自动合并）。
@@ -1015,7 +1182,7 @@ impl WrapMap {
             transforms.push(Transform {
                 kind: TransformKind::Wrap,
                 input_lines: 1,
-                wrap_points: boundaries.to_vec(),
+                wrap_points: boundaries.into(),
             });
         }
     }

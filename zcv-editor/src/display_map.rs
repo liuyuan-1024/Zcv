@@ -50,7 +50,7 @@ use line_stream::LineStream;
 use tab_map::TabMap;
 pub(crate) use tab_map::{byte_for_display_column, display_column_for_byte};
 pub(crate) use wrap_map::WrapRowKind;
-use wrap_map::{WrapMap, WrapSnapshot};
+use wrap_map::{WrapEdit, WrapMap, WrapSnapshot};
 use zcv_language::HighlightSpan;
 use zcv_multi_buffer::{MultiBuffer, MultiBufferSnapshot, MultiBufferSubscription};
 use zcv_text::{
@@ -395,7 +395,7 @@ impl DisplayMap {
             buffer_subscription: None,
         };
         this.set_capture_names(snapshot.capture_names());
-        this.refresh_snapshot();
+        this.refresh_snapshot(&[]);
         this
     }
 
@@ -500,10 +500,10 @@ impl DisplayMap {
             .clone()
     }
 
-    fn refresh_snapshot(&mut self) {
+    fn refresh_snapshot(&mut self, wrap_edits: &[WrapEdit]) {
         self.snapshot = Some(DisplaySnapshot {
             revision: self.revision,
-            block_snapshot: Arc::new(self.current_block_snapshot()),
+            block_snapshot: Arc::new(self.current_block_snapshot(wrap_edits)),
             multi_buffer_snapshot: self.multi_buffer_snapshot.clone(),
             capture_names: std::sync::Arc::clone(&self.capture_names),
         });
@@ -521,7 +521,7 @@ impl DisplayMap {
         };
         if changed {
             self.revision = self.revision.wrapping_add(1);
-            self.refresh_snapshot();
+            self.refresh_snapshot(&[]);
         }
     }
 
@@ -533,12 +533,12 @@ impl DisplayMap {
         font_size: gpui::Pixels,
         text_system: &std::sync::Arc<gpui::TextSystem>,
     ) -> bool {
-        let changed =
+        let (changed, wrap_edits) =
             self.wrap_map
                 .set_wrap_width(wrap_width, font, font_size, text_system.clone());
         if changed {
             self.revision = self.revision.wrapping_add(1);
-            self.refresh_snapshot();
+            self.refresh_snapshot(&wrap_edits);
         }
         changed
     }
@@ -601,8 +601,8 @@ impl DisplayMap {
         let inlay_snapshot = self.inlay_map.read(stream, self.inlays.clone());
         let (fold_snapshot, fold_edits, outcome) = self.fold_map.read(inlay_snapshot, &batch);
         let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
-        self.wrap_map.sync(tab_snapshot, &fold_edits);
-        self.refresh_snapshot();
+        let wrap_edits = self.wrap_map.sync(tab_snapshot, &fold_edits);
+        self.refresh_snapshot(&wrap_edits);
         outcome
     }
 
@@ -610,9 +610,9 @@ impl DisplayMap {
     pub(crate) fn fold_range(&mut self, range: TextRange) -> DisplayMapResult<()> {
         let (fold_snapshot, fold_edits) = self.fold_map.write().fold(range)?;
         let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
-        self.wrap_map.sync(tab_snapshot, &fold_edits);
+        let wrap_edits = self.wrap_map.sync(tab_snapshot, &fold_edits);
         self.revision = self.revision.wrapping_add(1);
-        self.refresh_snapshot();
+        self.refresh_snapshot(&wrap_edits);
         Ok(())
     }
 
@@ -620,18 +620,27 @@ impl DisplayMap {
     pub(crate) fn unfold_lines(&mut self, line_range: LineRange) -> DisplayMapResult<()> {
         let (fold_snapshot, fold_edits) = self.fold_map.write().unfold_lines(line_range)?;
         let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
-        self.wrap_map.sync(tab_snapshot, &fold_edits);
+        let wrap_edits = self.wrap_map.sync(tab_snapshot, &fold_edits);
         self.revision = self.revision.wrapping_add(1);
-        self.refresh_snapshot();
+        self.refresh_snapshot(&wrap_edits);
         Ok(())
     }
 
-    fn current_block_snapshot(&self) -> BlockSnapshot {
-        BlockSnapshot::new(
-            self.wrap_map.snapshot().clone(),
-            self.multi_buffer_snapshot.excerpts(),
-            &self.folded_buffers,
-        )
+    fn current_block_snapshot(&self, wrap_edits: &[WrapEdit]) -> BlockSnapshot {
+        let wrap_snapshot = self.wrap_map.snapshot().clone();
+        let excerpts = self.multi_buffer_snapshot.excerpts_arc();
+        // 消费换行编辑流：块起始不变时复用或平移块布局，只重排受编辑影响的块。
+        if let Some(previous) = &self.snapshot
+            && let Some(resynced) = previous.block_snapshot.resync(
+                wrap_snapshot.clone(),
+                excerpts.clone(),
+                &self.folded_buffers,
+                wrap_edits,
+            )
+        {
+            return resynced;
+        }
+        BlockSnapshot::new(wrap_snapshot, excerpts, &self.folded_buffers)
     }
 }
 
@@ -646,13 +655,13 @@ mod tests {
     use super::fold_map::ProjectedPoint;
     use super::*;
 
-    fn rebuild_from_stream(map: &mut DisplayMap, stream: LineStream) {
+    fn rebuild_from_stream(map: &mut DisplayMap, stream: LineStream) -> Vec<WrapEdit> {
         let inlay_snapshot = map.inlay_map.read(stream, map.inlays.clone());
         let (fold_snapshot, fold_edits, _) = map
             .fold_map
             .read(inlay_snapshot, &TextChangeBatch::default());
         let tab_snapshot = map.tab_map.sync(fold_snapshot, &fold_edits);
-        map.wrap_map.sync(tab_snapshot, &fold_edits);
+        map.wrap_map.sync(tab_snapshot, &fold_edits)
     }
 
     fn set_inlays(map: &mut DisplayMap, inlays: Vec<Inlay>) {
@@ -661,8 +670,8 @@ mod tests {
         }
         map.inlays = inlays;
         let stream = map.fold_map.snapshot().stream().clone();
-        rebuild_from_stream(map, stream);
-        map.refresh_snapshot();
+        let wrap_edits = rebuild_from_stream(map, stream);
+        map.refresh_snapshot(&wrap_edits);
     }
 
     fn apply_test_theme(cx: &mut TestAppContext, id: &'static str) {
@@ -1040,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn structural_edit_clears_tab_measurements_until_rows_are_requested_again() {
+    fn structural_edit_shifts_tab_measurements_instead_of_clearing_them() {
         let mut buffer = Buffer::scratch("short\nwide".to_string(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let mut map = DisplayMap::new(buffer.snapshot());
@@ -1058,7 +1067,9 @@ mod tests {
             map.sync(buffer.snapshot(), subscription.consume()),
             ApplyOutcome::Spliced
         );
-        assert_eq!(map.longest_measured_row(), DisplayRow::ZERO);
+        // 未受影响的已测行（"wide"）从第 1 行平移到第 2 行，缓存保留；
+        // 被编辑的第 0 行失效，重新测量前不参与最长行。
+        assert_eq!(map.longest_measured_row(), DisplayRow::new(2));
         map.measure_rows(DisplayRow::new(1), 1)
             .expect("结构编辑后的行应能惰性测量");
         assert_eq!(map.longest_measured_row(), DisplayRow::new(1));

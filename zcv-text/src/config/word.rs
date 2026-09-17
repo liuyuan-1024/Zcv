@@ -37,7 +37,10 @@ pub(crate) struct WordBoundaryClassifier {
 }
 
 impl WordBoundaryPolicy {
-    pub(crate) fn is_identifier_continue(self, ch: char) -> bool {
+    /// 判断字符是否属于当前配置下的标识符主体。
+    ///
+    /// 组合文本需要在不物化全文的前提下复用与单 Buffer 相同的词边界语义。
+    pub fn is_identifier_continue(self, ch: char) -> bool {
         ch.is_alphanumeric()
             || is_zero_width(ch)
             || (self.underscore_is_identifier && ch == '_')

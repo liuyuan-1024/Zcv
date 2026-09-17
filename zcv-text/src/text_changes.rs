@@ -97,6 +97,28 @@ impl TextPatch {
     pub(crate) fn from_edits(edits: Vec<PatchEdit>) -> Self {
         Self { edits }
     }
+
+    /// 把所有编辑的旧/新坐标整体平移；用于把某个源片段的变化换算到组合坐标。
+    pub fn shifted_by(&self, shift: usize) -> Self {
+        Self {
+            edits: self
+                .edits
+                .iter()
+                .map(|edit| PatchEdit {
+                    old: shift_range(edit.old, shift),
+                    new: shift_range(edit.new, shift),
+                })
+                .collect(),
+        }
+    }
+}
+
+fn shift_range(range: TextRange, shift: usize) -> TextRange {
+    TextRange::new(
+        ByteOffset::new(range.start().get() + shift),
+        ByteOffset::new(range.end().get() + shift),
+    )
+    .expect("整体平移后的文本范围必须有序")
 }
 
 /// 一个订阅者从上次消费到当前版本积累的组合文本变化。
@@ -110,6 +132,20 @@ pub struct TextChangeBatch {
 }
 
 impl TextChangeBatch {
+    /// 为不拥有物化 Buffer 的派生文本投影创建一次整体拓扑更新。
+    ///
+    /// 这类投影仍然拥有独立版本与订阅边界，但没有单一 Rope 编辑可用于构造精确 patch。
+    /// 消费者必须保留源锚点，并按当前快照重建派生坐标。
+    pub fn reset(old_version: BufferVersion, new_version: BufferVersion) -> Self {
+        Self {
+            patch: TextPatch::default(),
+            old_version: Some(old_version),
+            new_version: Some(new_version),
+            transaction_id: None,
+            reset: true,
+        }
+    }
+
     /// 从一次已提交的文本事件创建显示消费者使用的单事件批次。
     ///
     /// Buffer 事件是唯一的文本变更事实；订阅只是把多个事件组合成消费者自己的批次。
@@ -121,6 +157,23 @@ impl TextChangeBatch {
             new_version: Some(event.new_version()),
             transaction_id: Some(event.transaction_id()),
             reset: false,
+        }
+    }
+
+    /// 把所有编辑坐标整体平移；用于把源片段变化换算到组合坐标。
+    pub fn shifted_by(&self, shift: usize) -> Self {
+        Self {
+            patch: self.patch.shifted_by(shift),
+            ..self.clone()
+        }
+    }
+
+    /// 用新的版本区间重新发布本批次；保持增量语义。
+    pub fn rebased_to(&self, old_version: BufferVersion, new_version: BufferVersion) -> Self {
+        Self {
+            old_version: Some(old_version),
+            new_version: Some(new_version),
+            ..self.clone()
         }
     }
 

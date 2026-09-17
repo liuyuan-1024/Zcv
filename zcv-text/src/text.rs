@@ -34,9 +34,11 @@ pub use movement::{MovementDirection, MovementUnit};
 pub use position_map::{Affinity, Bias, MappingResult, PositionMap, Stickiness};
 pub use search::{
     PreparedSearchQuery, RegexSearchOptions, RegexSearchResult, SearchMatch, SearchOptions,
-    SearchQuery, SearchQueryResult, SearchResult,
+    SearchQuery, SearchQueryResult, SearchResult, regex_replacement_for_match,
+    regex_replacements_in_text,
 };
 pub use snapshot::Snapshot;
+pub use storage::TextRead;
 pub use text_changes::{TextChangeBatch, TextSubscription};
 pub use tracking::Anchor;
 pub use transaction::{

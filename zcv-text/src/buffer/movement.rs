@@ -41,18 +41,7 @@ impl Buffer {
     ///
     /// 拖拽扩展选区时用于判断光标是否仍停留在某个词内部，决定是否按整词边界吸附。
     pub fn is_inside_word(&self, offset: CharOffset) -> TextResult<bool> {
-        let Some(classifier) = self
-            .config
-            .word_boundary
-            .classifier(MovementUnit::Identifier)
-        else {
-            return movement_unit_bug(MovementUnit::Identifier);
-        };
-        let previous = grapheme_before(&self.storage, offset)?
-            .is_some_and(|grapheme| classifier.is_body(grapheme.first));
-        let next = grapheme_at(&self.storage, offset)?
-            .is_some_and(|grapheme| classifier.is_body(grapheme.first));
-        Ok(previous && next)
+        is_inside_word_in_text(&self.storage, self.config.word_boundary, offset)
     }
 }
 
@@ -470,7 +459,7 @@ fn surrounding_kind(classifier: WordBoundaryClassifier, ch: char) -> Surrounding
     }
 }
 
-fn surrounding_word_in_text<T: TextRead>(
+pub(crate) fn surrounding_word_in_text<T: TextRead>(
     storage: &T,
     policy: WordBoundaryPolicy,
     offset: CharOffset,
@@ -515,4 +504,19 @@ fn surrounding_word_in_text<T: TextRead>(
     }
 
     Ok((start, end))
+}
+
+pub(crate) fn is_inside_word_in_text<T: TextRead>(
+    storage: &T,
+    policy: WordBoundaryPolicy,
+    offset: CharOffset,
+) -> TextResult<bool> {
+    let Some(classifier) = policy.classifier(MovementUnit::Identifier) else {
+        return movement_unit_bug(MovementUnit::Identifier);
+    };
+    let previous = grapheme_before(storage, offset)?
+        .is_some_and(|grapheme| classifier.is_body(grapheme.first));
+    let next =
+        grapheme_at(storage, offset)?.is_some_and(|grapheme| classifier.is_body(grapheme.first));
+    Ok(previous && next)
 }

@@ -21,7 +21,7 @@ use crate::{
 /// - `chunks(range)` 是**首选 API**，永不分配。
 /// - `slice_text` 在单块场景返回 `Cow::Borrowed`（零拷贝），多块时才物化为 `Cow::Owned`。
 /// - `slice_to_string` 明确分配语义，命名让代价显眼。
-pub(crate) trait TextRead {
+pub trait TextRead {
     /// 返回指定字节区间的文本。**单块快路径返回 `Cow::Borrowed`，零拷贝**；
     /// 跨多个 chunk 时退化为 `Cow::Owned`。热路径应改用 `chunks(range)`。
     /// 区间端点必须落在 UTF-8 字符边界。

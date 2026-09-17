@@ -11,4 +11,5 @@ mod traits;
 
 pub(crate) use fingerprint::TextFingerprint;
 pub(crate) use ropey::{RopeyPreparedReplace, RopeySnapshot, RopeyStorage};
-pub(crate) use traits::{TextRead, TextStorage, text_coordinate_gateway};
+pub use traits::TextRead;
+pub(crate) use traits::{TextStorage, text_coordinate_gateway};

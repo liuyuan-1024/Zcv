@@ -49,6 +49,18 @@ impl SearchQuery {
     pub fn search(&self, snapshot: &Snapshot) -> TextResult<SearchQueryResult> {
         self.prepare()?.search(snapshot)
     }
+
+    /// 在任意连续文本视图上执行搜索。
+    ///
+    /// 组合文档通过实现 [`crate::TextRead`] 直接参与流式搜索，不能为了复用搜索算法先复制成临时 `Buffer`。
+    pub fn search_in<T: TextRead>(
+        &self,
+        text: &T,
+        version: BufferVersion,
+        config: &BufferConfig,
+    ) -> TextResult<SearchQueryResult> {
+        self.prepare()?.search_in(text, version, config)
+    }
 }
 
 /// 已完成语法解析的查询；跨文件搜索时只需复用其中的正则自动机。
@@ -76,6 +88,36 @@ impl PreparedSearchQuery {
                         .with_whole_word(self.query.whole_word),
                 )
                 .map(SearchQueryResult::Literal)
+        }
+    }
+
+    /// 在任意文本视图上执行已编译查询。
+    pub fn search_in<T: TextRead>(
+        &self,
+        text: &T,
+        version: BufferVersion,
+        config: &BufferConfig,
+    ) -> TextResult<SearchQueryResult> {
+        if let Some(regex) = &self.regex {
+            search_regex_streaming_with_regex(
+                text,
+                version,
+                &self.query.query,
+                regex,
+                RegexSearchOptions::new().with_case_sensitive(self.query.case_sensitive),
+            )
+            .map(SearchQueryResult::Regex)
+        } else {
+            search_in_text(
+                text,
+                version,
+                config,
+                &self.query.query,
+                SearchOptions::new()
+                    .with_case_sensitive(self.query.case_sensitive)
+                    .with_whole_word(self.query.whole_word),
+            )
+            .map(SearchQueryResult::Literal)
         }
     }
 }
@@ -316,15 +358,6 @@ impl<O: Copy> SearchResultSet<O> {
 
     pub fn version(&self) -> BufferVersion {
         self.matches.version()
-    }
-
-    /// 把结果重绑到另一个版本。
-    ///
-    /// 只适用于与绑定缓冲区文本完全一致的一次性副本（如编辑 planner 的 scratch 拷贝）：
-    /// 过期校验必须已由权威缓冲区在重绑前完成，副本仅继承坐标参与替换。
-    pub fn rebinding_to(mut self, version: BufferVersion) -> Self {
-        self.matches = VersionedResult::new(version, self.matches.into_value());
-        self
     }
 
     /// 本次搜索的查询输入（literal query 或 regex pattern）。
@@ -581,7 +614,7 @@ pub(crate) fn search_regex_in_text_with_automata<T: TextRead>(
     search_regex_streaming_with_regex(storage, version, pattern, regex, options)
 }
 
-pub(crate) fn regex_replacements_in_text<'a, T: TextRead>(
+pub fn regex_replacements_in_text<'a, T: TextRead>(
     storage: &T,
     result: &RegexSearchResult,
     replacement: &'a str,
@@ -603,7 +636,7 @@ pub(crate) fn regex_replacements_in_text<'a, T: TextRead>(
     })
 }
 
-pub(crate) fn regex_replacement_for_match<T: TextRead>(
+pub fn regex_replacement_for_match<T: TextRead>(
     storage: &T,
     result: &RegexSearchResult,
     ordinal: usize,

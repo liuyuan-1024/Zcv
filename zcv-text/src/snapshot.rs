@@ -64,6 +64,14 @@ impl Snapshot {
         )
     }
 
+    pub fn surrounding_word(&self, offset: CharOffset) -> TextResult<(CharOffset, CharOffset)> {
+        crate::buffer::surrounding_word_in_text(&self.storage, self.config.word_boundary, offset)
+    }
+
+    pub fn is_inside_word(&self, offset: CharOffset) -> TextResult<bool> {
+        crate::buffer::is_inside_word_in_text(&self.storage, self.config.word_boundary, offset)
+    }
+
     // 坐标查询门面（len / byte / char / UTF-16 / grapheme 系列）与 Buffer 共用一份实现。
     text_coordinate_gateway!();
 

@@ -311,7 +311,7 @@ impl ProjectSearchView {
                 .collect::<Vec<_>>();
             let expanded = paths
                 .iter()
-                .any(|path| !self.results_editor.read(cx).is_buffer_folded(path));
+                .any(|path| !self.results_editor.read(cx).is_buffer_folded(path, cx));
             let weak = weak.clone();
             Button::icon(
                 "project-search-expansion",
@@ -474,7 +474,7 @@ impl ProjectSearchView {
         }
         self.results_editor.update(cx, |editor, cx| {
             for path in paths {
-                if editor.is_buffer_folded(&path) != folded {
+                if editor.is_buffer_folded(&path, cx) != folded {
                     editor.toggle_buffer_fold(path, cx);
                 }
             }

@@ -61,7 +61,7 @@ fn materialize_excerpts(c: &mut Criterion) {
                         let snapshot = cx.read_entity(&multi_buffer, |multi_buffer, cx| {
                             multi_buffer.snapshot(cx)
                         });
-                        black_box(snapshot.text().len_bytes());
+                        black_box(snapshot.len_bytes());
                     },
                     BatchSize::SmallInput,
                 );

@@ -21,7 +21,7 @@ use zcv_actions::{
 };
 use zcv_editor::{Editor, EditorEvent, EditorHunk, EditorHunkMarkerKind, EditorHunkPart};
 use zcv_git::{DiffHunkKind, FileStatus, GitRevision, parse_conflict_regions};
-use zcv_multi_buffer::{BufferDiffInput, DiffFile, DiffProjection};
+use zcv_multi_buffer::{BufferDiffInput, DiffFile};
 use zcv_project::{
     FileWatcherError, FileWatcherOperation, GitOperationKind, GitOperationOutcome, GitStoreEvent,
     Project, ProjectEvent,
@@ -1071,7 +1071,7 @@ fn inject_editor_diff(
         .map(|entry| entry.status);
     if !editor_diff_applies(status) {
         editor.update(cx, |editor, cx| {
-            editor.set_diff_projection(Some(DiffProjection::empty()), cx);
+            editor.clear_diffs(cx);
         });
         return;
     }
@@ -1117,7 +1117,7 @@ fn inject_editor_diff(
         show_file_header: false,
     };
     editor.update(cx, |editor, cx| {
-        editor.set_diff_projection(Some(DiffProjection::new(vec![file])), cx);
+        editor.set_diff_files(vec![file], cx);
     });
 }
 

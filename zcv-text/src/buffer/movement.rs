@@ -52,7 +52,7 @@ struct MovementGrapheme {
     first: char,
 }
 
-pub(crate) fn movement_boundary_in_text<T: TextRead>(
+pub fn movement_boundary_in_text<T: TextRead>(
     storage: &T,
     policy: WordBoundaryPolicy,
     offset: CharOffset,

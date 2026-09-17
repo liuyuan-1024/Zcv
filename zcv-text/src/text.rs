@@ -21,7 +21,10 @@ mod transaction;
 mod types;
 mod versioned;
 
-pub use buffer::{Buffer, HistoryEditOutcome, HistoryNodeId, HistoryNodeView, HistoryStatus};
+pub use buffer::{
+    Buffer, HistoryEditOutcome, HistoryNodeId, HistoryNodeView, HistoryStatus,
+    movement_boundary_in_text,
+};
 pub use config::{
     BufferConfig, EncodingConfig, LargeFilePolicy, LargeTransactionPolicy, LineEndingConfig,
     TabConfig, WordBoundaryPolicy,

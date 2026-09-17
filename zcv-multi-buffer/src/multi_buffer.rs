@@ -760,19 +760,22 @@ impl MultiBufferSnapshot {
             .ok_or(CoordinateError::OutOfBounds(offset))?;
         let content_end =
             ByteOffset::new(mapping.output_range.start().get() + mapping.source_range.len());
-        if offset >= content_end {
-            return Ok(Line::new(mapping.output_end_line));
-        }
         let source = self
             .excerpt_sources
             .get(mapping.source_index)
             .ok_or(CoordinateError::OutOfBounds(offset))?;
-        let source_offset = ByteOffset::new(
-            mapping.source_range.start().get()
-                + offset
-                    .get()
-                    .saturating_sub(mapping.output_range.start().get()),
-        );
+        // 片段末尾（含为分隔补出的合成换行）按源范围末端定位：
+        // 区间终点必须落在最后一条内容行上，不能提前跳到下一片段。
+        let source_offset = if offset >= content_end {
+            mapping.source_range.end()
+        } else {
+            ByteOffset::new(
+                mapping.source_range.start().get()
+                    + offset
+                        .get()
+                        .saturating_sub(mapping.output_range.start().get()),
+            )
+        };
         let source_line = source.text.byte_to_line(source_offset)?.get();
         Ok(Line::new(
             mapping.output_start_line + source_line.saturating_sub(mapping.source_start_line),
@@ -963,40 +966,14 @@ impl MultiBufferSnapshot {
         direction: MovementDirection,
         unit: MovementUnit,
     ) -> TextResult<CharOffset> {
-        let byte = self.char_to_byte(offset)?;
-        if matches!(unit, MovementUnit::LineEdge) {
-            let line = self.byte_to_line(byte)?;
-            let target = match direction {
-                MovementDirection::Previous => self.line_start_byte(line)?,
-                MovementDirection::Next => {
-                    let next = line.get() + 1;
-                    if next < self.line_count() {
-                        self.line_start_byte(Line::new(next))?
-                    } else {
-                        self.len_bytes()
-                    }
-                }
-            };
-            return self.byte_to_char(target);
-        }
-        let boundary = match direction {
-            MovementDirection::Previous => self
-                .text_chunks(ByteOffset::ZERO..byte)
-                .flat_map(|chunk| chunk.text.grapheme_indices(true))
-                .last()
-                .map_or(ByteOffset::ZERO, |(start, _)| ByteOffset::new(start)),
-            MovementDirection::Next => {
-                self.text_chunks(byte..self.len_bytes())
-                    .next()
-                    .and_then(|chunk| {
-                        chunk.text.graphemes(true).next().map(|text| {
-                            ByteOffset::new(chunk.output_range.start.get() + text.len())
-                        })
-                    })
-                    .unwrap_or(self.len_bytes())
-            }
-        };
-        self.byte_to_char(boundary)
+        // 与单 Buffer 共用同一份文本移动语义，组合文档不得另实现一套边界规则。
+        zcv_text::movement_boundary_in_text(
+            self,
+            self.config.word_boundary,
+            offset,
+            direction,
+            unit,
+        )
     }
 
     /// 返回包含当前位置的词边界。组合文本沿连续 chunk 读取，不构造临时字符串。
@@ -3309,7 +3286,9 @@ impl MultiBuffer {
             );
             return Ok(Some(MultiBufferHistoryOutcome {
                 transaction_id: outcome.transaction_id(),
-                position_map: PositionMap::default(),
+                // 回放结果必须携带源事务的坐标映射：调用方用它推进锚定在投影坐标
+                // 上的派生状态（自动闭合区域等）。空映射会让这些锚点停留在旧偏移。
+                position_map: source_map.clone(),
                 old_version,
                 new_version: self.snapshot(cx).version(),
             }));

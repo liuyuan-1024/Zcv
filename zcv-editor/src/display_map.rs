@@ -446,8 +446,14 @@ impl DisplayMap {
     }
 
     fn set_capture_names(&mut self, capture_names: std::sync::Arc<[std::sync::Arc<str>]>) {
-        if self.capture_names != capture_names {
-            self.capture_names = capture_names;
+        if self.capture_names == capture_names {
+            return;
+        }
+        self.capture_names = Arc::clone(&capture_names);
+        // capture 表只影响样式解析，不改变显示拓扑：就地推进当前帧快照，
+        // 保证 set_capture_names 之后 snapshot 不再暴露旧表。
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.capture_names = capture_names;
         }
     }
 

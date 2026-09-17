@@ -3,10 +3,7 @@ use std::path::{Path, PathBuf};
 use gpui::{AppContext as _, TestAppContext};
 use std::sync::Arc;
 
-use crate::{
-    BufferDiff, BufferDiffInput, DiffFile, DiffHunkStaging, DiffOperations, DiffProjection,
-    DisplayHunk,
-};
+use crate::{BufferDiff, BufferDiffInput, DiffFile, DiffHunkStaging, DiffOperations, DisplayHunk};
 use zcv_git::DiffHunkKind;
 use zcv_language::LanguageBuffer;
 use zcv_text::{
@@ -31,33 +28,359 @@ struct TestDiff {
 impl MultiBuffer {
     /// 测试辅助：按描述预创建 `BufferDiff`，再以 `DiffFile` 注入。
     fn inject_diffs(&mut self, files: Option<Vec<TestDiff>>, cx: &mut gpui::Context<Self>) -> bool {
-        let files = files.map(|files| {
-            files
-                .into_iter()
-                .map(|file| DiffFile {
-                    diff: cx.new(|cx| {
-                        BufferDiff::new(
-                            BufferDiffInput {
-                                working: file.working,
-                                path: file.path,
-                                base_text: file.base_text,
-                                index_text: file.index_text,
-                                operations: file.operations,
-                            },
-                            cx,
-                        )
-                    }),
-                    display_path: file.display_path,
-                    context_lines: file.context_lines,
-                    show_file_header: file.show_file_header,
-                })
-                .collect()
-        });
-        self.set_diff_projection(files.map(DiffProjection::new), cx)
+        let Some(files) = files else {
+            return false;
+        };
+        let files = files
+            .into_iter()
+            .map(|file| DiffFile {
+                diff: cx.new(|cx| {
+                    BufferDiff::new(
+                        BufferDiffInput {
+                            working: file.working,
+                            path: file.path,
+                            base_text: file.base_text,
+                            index_text: file.index_text,
+                            operations: file.operations,
+                        },
+                        cx,
+                    )
+                }),
+                display_path: file.display_path,
+                context_lines: file.context_lines,
+                show_file_header: file.show_file_header,
+            })
+            .collect();
+        self.set_diff_files(files, cx)
+    }
+}
+
+/// 测试辅助：构造一个注入用 diff 描述。
+fn test_diff(working: gpui::Entity<LanguageBuffer>, path: &str, base: &str) -> TestDiff {
+    TestDiff {
+        working,
+        path: PathBuf::from(path),
+        base_text: Some(Arc::from(base)),
+        index_text: None,
+        operations: None,
+        display_path: PathBuf::from(path),
+        context_lines: None,
+        show_file_header: false,
+    }
+}
+
+/// 测试辅助：构造一个可直接 add_diff 的 DiffFile。
+fn test_diff_file(
+    working: gpui::Entity<LanguageBuffer>,
+    path: &str,
+    base: &str,
+    cx: &mut gpui::Context<MultiBuffer>,
+) -> DiffFile {
+    DiffFile {
+        diff: cx.new(|cx| {
+            BufferDiff::new(
+                BufferDiffInput {
+                    working,
+                    path: PathBuf::from(path),
+                    base_text: Some(Arc::from(base)),
+                    index_text: None,
+                    operations: None,
+                },
+                cx,
+            )
+        }),
+        display_path: PathBuf::from(path),
+        context_lines: None,
+        show_file_header: false,
     }
 }
 
 /// 清空 Git 状态后，组合文档必须移除旧的 diff 投影，而不是保留过期 hunk。
+/// 移除中间文件后的投影必须与"从一开始就没有该文件"完全一致（含增量下标顺延）。
+/// 中段插入文件后的投影必须与"一开始就包含该文件"完全一致（含增量下标顺延）。
+#[gpui::test]
+fn inserting_middle_diff_file_matches_fresh_three_file_build(cx: &mut TestAppContext) {
+    let a = singleton("src/a.rs", "a1\na2\n", cx);
+    let b = singleton("src/b.rs", "b1\nb2\n", cx);
+    let c = singleton("src/c.rs", "c1\nc2\n", cx);
+
+    let incremental = cx.new(MultiBuffer::empty);
+    incremental.update(cx, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![
+                test_diff(a.clone(), "src/a.rs", "a1\naX\n"),
+                test_diff(c.clone(), "src/c.rs", "c1\ncX\n"),
+            ]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    incremental.update(cx, |buffer, cx| {
+        buffer.add_diff(test_diff_file(b.clone(), "src/b.rs", "b1\nbX\n", cx), cx);
+    });
+    cx.run_until_parked();
+
+    let fresh = cx.new(MultiBuffer::empty);
+    fresh.update(cx, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![
+                test_diff(a.clone(), "src/a.rs", "a1\naX\n"),
+                test_diff(b.clone(), "src/b.rs", "b1\nbX\n"),
+                test_diff(c.clone(), "src/c.rs", "c1\ncX\n"),
+            ]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    let incremental_state = cx.read_entity(&incremental, |buffer, _| {
+        (
+            buffer
+                .diff_paths()
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            buffer.diff_hunks().to_vec(),
+        )
+    });
+    let fresh_state = cx.read_entity(&fresh, |buffer, _| {
+        (
+            buffer
+                .diff_paths()
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            buffer.diff_hunks().to_vec(),
+        )
+    });
+    assert_eq!(incremental_state, fresh_state);
+}
+
+#[gpui::test]
+fn removing_middle_diff_file_matches_fresh_two_file_build(cx: &mut TestAppContext) {
+    let a = singleton("src/a.rs", "a1\na2\n", cx);
+    let b = singleton("src/b.rs", "b1\nb2\n", cx);
+    let c = singleton("src/c.rs", "c1\nc2\n", cx);
+
+    let three = cx.new(MultiBuffer::empty);
+    three.update(cx, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![
+                test_diff(a.clone(), "src/a.rs", "a1\naX\n"),
+                test_diff(b.clone(), "src/b.rs", "b1\nbX\n"),
+                test_diff(c.clone(), "src/c.rs", "c1\ncX\n"),
+            ]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    let two = cx.new(MultiBuffer::empty);
+    two.update(cx, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![
+                test_diff(a.clone(), "src/a.rs", "a1\naX\n"),
+                test_diff(c.clone(), "src/c.rs", "c1\ncX\n"),
+            ]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    let removed = three.update(cx, |buffer, cx| {
+        buffer.remove_diff(Path::new("src/b.rs"), cx)
+    });
+    assert!(removed);
+
+    let incremental = cx.read_entity(&three, |buffer, _| {
+        (
+            buffer
+                .diff_paths()
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            buffer.diff_hunks().to_vec(),
+        )
+    });
+    let fresh = cx.read_entity(&two, |buffer, _| {
+        (
+            buffer
+                .diff_paths()
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            buffer.diff_hunks().to_vec(),
+        )
+    });
+    assert_eq!(incremental, fresh);
+}
+
+/// 单个文件的 diff 版本变化必须只原地重物化该路径，其余文件与全新构建一致。
+#[gpui::test]
+fn single_file_version_change_matches_fresh_three_file_build(cx: &mut TestAppContext) {
+    let a = singleton("src/a.rs", "a1\na2\n", cx);
+    let b = singleton("src/b.rs", "b1\nb2\nb3\n", cx);
+    let c = singleton("src/c.rs", "c1\nc2\n", cx);
+
+    let incremental = cx.new(MultiBuffer::empty);
+    incremental.update(cx, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![
+                test_diff(a.clone(), "src/a.rs", "a1\naX\n"),
+                test_diff(b.clone(), "src/b.rs", "b1\nb2\n"),
+                test_diff(c.clone(), "src/c.rs", "c1\ncX\n"),
+            ]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    // 编辑 b 的 working 文本，只触发 b 的 diff 版本变化（既有 Added hunk 变为 Modified + Added）；
+    // 保存使 b 不再是 dirty 源，diff 结果回合时投影必须跟随新快照重物化。
+    let b_buffer = cx.read_entity(&b, |b, _| b.buffer());
+    cx.update_entity(&b_buffer, |buffer, cx| {
+        buffer
+            .edit(
+                vec![Edit::replace(
+                    TextRange::new(ByteOffset::new(3), ByteOffset::new(5)).unwrap(),
+                    "bX",
+                )],
+                TransactionMetadata::default(),
+            )
+            .unwrap();
+        buffer.mark_saved();
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    let fresh = cx.new(MultiBuffer::empty);
+    fresh.update(cx, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![
+                test_diff(a.clone(), "src/a.rs", "a1\naX\n"),
+                test_diff(b.clone(), "src/b.rs", "b1\nb2\n"),
+                test_diff(c.clone(), "src/c.rs", "c1\ncX\n"),
+            ]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    let incremental_state = cx.read_entity(&incremental, |buffer, _| {
+        (
+            buffer
+                .diff_paths()
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            buffer.diff_hunks().to_vec(),
+        )
+    });
+    let fresh_state = cx.read_entity(&fresh, |buffer, _| {
+        (
+            buffer
+                .diff_paths()
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            buffer.diff_hunks().to_vec(),
+        )
+    });
+    assert_eq!(incremental_state, fresh_state);
+}
+
+/// ProjectDiffView 形态：源路径为绝对路径、显示路径为相对路径。
+/// 组合映射树按源路径排序，中间插入与按显示路径移除都必须与之对齐。
+#[gpui::test]
+fn relative_display_paths_stay_consistent_across_middle_edit(cx: &mut TestAppContext) {
+    let a = singleton("/repo/src/a.rs", "a1\na2\n", cx);
+    let b = singleton("/repo/src/b.rs", "b1\nb2\n", cx);
+    let c = singleton("/repo/src/c.rs", "c1\nc2\n", cx);
+    let diff = |working, display: &str, base: &str| TestDiff {
+        working,
+        path: PathBuf::from(format!("/repo/{display}")),
+        base_text: Some(Arc::from(base)),
+        index_text: None,
+        operations: None,
+        display_path: PathBuf::from(display),
+        context_lines: None,
+        show_file_header: false,
+    };
+
+    let three = cx.new(MultiBuffer::empty);
+    three.update(cx, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![
+                diff(a.clone(), "src/a.rs", "a1\naX\n"),
+                diff(b.clone(), "src/b.rs", "b1\nbX\n"),
+                diff(c.clone(), "src/c.rs", "c1\ncX\n"),
+            ]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let expected = read_diff_state(&three, cx);
+
+    // 按显示路径移除中间文件，必须真正移除对应源路径的 excerpts。
+    three.update(cx, |buffer, cx| {
+        assert!(buffer.remove_diff(Path::new("src/b.rs"), cx));
+    });
+    cx.run_until_parked();
+    let two = cx.new(MultiBuffer::empty);
+    two.update(cx, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![
+                diff(a.clone(), "src/a.rs", "a1\naX\n"),
+                diff(c.clone(), "src/c.rs", "c1\ncX\n"),
+            ]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(read_diff_state(&three, cx), read_diff_state(&two, cx));
+
+    // 再以显示相对路径插回中间，投影必须与初始三文件一致。
+    let b_diff = DiffFile {
+        diff: cx.new(|cx| {
+            BufferDiff::new(
+                BufferDiffInput {
+                    working: b.clone(),
+                    path: PathBuf::from("/repo/src/b.rs"),
+                    base_text: Some(Arc::from("b1\nbX\n")),
+                    index_text: None,
+                    operations: None,
+                },
+                cx,
+            )
+        }),
+        display_path: PathBuf::from("src/b.rs"),
+        context_lines: None,
+        show_file_header: false,
+    };
+    three.update(cx, |buffer, cx| {
+        assert!(buffer.add_diff(b_diff, cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(read_diff_state(&three, cx), expected);
+}
+
+/// 读取投影的可观察状态（显示路径顺序 + 显示 hunk）。
+fn read_diff_state(
+    buffer: &gpui::Entity<MultiBuffer>,
+    cx: &mut TestAppContext,
+) -> (Vec<String>, Vec<DisplayHunk>) {
+    cx.read_entity(buffer, |buffer, _| {
+        (
+            buffer
+                .diff_paths()
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect(),
+            buffer.diff_hunks().to_vec(),
+        )
+    })
+}
+
 #[gpui::test]
 fn clearing_buffer_diffs_removes_previous_hunks(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "one\nworking\nthree\n", cx);
@@ -84,7 +407,7 @@ fn clearing_buffer_diffs_removes_previous_hunks(cx: &mut TestAppContext) {
     );
 
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_diff_projection(Some(DiffProjection::empty()), cx);
+        buffer.clear_diffs(cx);
     });
     assert!(cx.read_entity(&combined, |buffer, _| buffer.diff_hunks().is_empty()));
 }
@@ -282,6 +605,266 @@ fn singleton(path: &str, text: &str, cx: &mut TestAppContext) -> gpui::Entity<La
 }
 
 #[gpui::test]
+fn title_prefers_explicit_value_and_derives_from_path(cx: &mut TestAppContext) {
+    let source = singleton(
+        "src/main.rs",
+        "fn main() {}
+",
+        cx,
+    );
+    let multi_buffer = cx.new(|cx| MultiBuffer::from_working_source(source, cx));
+
+    cx.read_entity(&multi_buffer, |buffer, cx| {
+        assert_eq!(buffer.title(cx).as_deref(), Some("main.rs"));
+    });
+    cx.update_entity(&multi_buffer, |buffer, cx| {
+        buffer.set_title(Some("变更".to_owned()), cx);
+    });
+    cx.read_entity(&multi_buffer, |buffer, cx| {
+        assert_eq!(buffer.title(cx).as_deref(), Some("变更"));
+    });
+    cx.update_entity(&multi_buffer, |buffer, cx| {
+        buffer.set_title(None, cx);
+    });
+    cx.read_entity(&multi_buffer, |buffer, cx| {
+        assert_eq!(buffer.title(cx).as_deref(), Some("main.rs"));
+    });
+}
+
+#[gpui::test]
+fn anchor_resolves_to_neighbor_path_after_removal(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "a\n", cx);
+    let second = singleton("src/b.rs", "b\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                MultiBufferExcerpt::line_range(first.clone(), 0..1, cx),
+                MultiBufferExcerpt::line_range(second.clone(), 0..1, cx),
+            ],
+            cx,
+        );
+    });
+
+    // b.rs 的组合起点是 2（a "a\n" 占 2 字节）。
+    let anchor = cx.read_entity(&combined, |buffer, _| {
+        buffer
+            .anchor_for_offset(ByteOffset::new(2))
+            .expect("b.rs 内应能锚定")
+    });
+
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.remove_excerpts_for_path(Path::new("src/b.rs"), cx)
+    });
+
+    let resolved = cx.read_entity(&combined, |buffer, _| buffer.resolve_anchor(&anchor));
+    assert_eq!(
+        resolved,
+        Some(ByteOffset::new(2)),
+        "b.rs 消失后应回退到前驱 a.rs 的末尾"
+    );
+}
+
+#[gpui::test]
+fn excerpt_at_output_offset_uses_the_offset_cursor(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "a\nb\n", cx);
+    let second = singleton("src/b.rs", "c\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                MultiBufferExcerpt::line_range(first, 0..2, cx),
+                MultiBufferExcerpt::line_range(second, 0..1, cx),
+            ],
+            cx,
+        );
+    });
+
+    let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    assert_eq!(snapshot.len_bytes(), ByteOffset::new(6));
+    assert_eq!(
+        snapshot
+            .excerpt_at_output_offset(ByteOffset::new(0))
+            .map(|excerpt| excerpt.path().to_path_buf()),
+        Some(PathBuf::from("src/a.rs"))
+    );
+    assert_eq!(
+        snapshot
+            .excerpt_at_output_offset(ByteOffset::new(4))
+            .map(|excerpt| excerpt.path().to_path_buf()),
+        Some(PathBuf::from("src/b.rs"))
+    );
+}
+
+#[gpui::test]
+fn set_excerpts_for_path_replaces_only_that_path(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "a\nb\n", cx);
+    let second = singleton("src/b.rs", "c\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                MultiBufferExcerpt::line_range(first.clone(), 0..1, cx),
+                MultiBufferExcerpt::line_range(second.clone(), 0..1, cx),
+            ],
+            cx,
+        );
+    });
+
+    let replaced = cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts_for_path(
+            vec![
+                MultiBufferExcerpt::line_range(first.clone(), 0..1, cx),
+                MultiBufferExcerpt::line_range(first.clone(), 1..2, cx),
+            ],
+            cx,
+        )
+    });
+    assert!(replaced);
+
+    let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    assert_eq!(snapshot.excerpts().len(), 3);
+    assert_eq!(snapshot.excerpts_for_path(Path::new("src/a.rs")).count(), 2);
+    assert_eq!(snapshot.excerpts_for_path(Path::new("src/b.rs")).count(), 1);
+    assert_eq!(snapshot.excerpts()[0].path(), Path::new("src/a.rs"));
+    assert_eq!(snapshot.excerpts()[1].path(), Path::new("src/a.rs"));
+    assert_eq!(snapshot.excerpts()[2].path(), Path::new("src/b.rs"));
+}
+
+#[gpui::test]
+fn remove_excerpts_for_path_drops_only_that_path(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "a", cx);
+    let second = singleton("src/b.rs", "b", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                MultiBufferExcerpt::line_range(first, 0..1, cx),
+                MultiBufferExcerpt::line_range(second, 0..1, cx),
+            ],
+            cx,
+        );
+    });
+
+    let before = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx).len_bytes());
+    assert_eq!(before, ByteOffset::new(3), "a + 合成换行 + b");
+
+    let removed = cx.update_entity(&combined, |buffer, cx| {
+        buffer.remove_excerpts_for_path(Path::new("src/a.rs"), cx)
+    });
+    assert!(removed);
+
+    let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    assert_eq!(snapshot.excerpts().len(), 1);
+    assert_eq!(snapshot.excerpts()[0].path(), Path::new("src/b.rs"));
+    assert_eq!(
+        snapshot.len_bytes(),
+        ByteOffset::new(1),
+        "b 成为末尾片段后不再补合成换行"
+    );
+
+    let again = cx.update_entity(&combined, |buffer, cx| {
+        buffer.remove_excerpts_for_path(Path::new("src/a.rs"), cx)
+    });
+    assert!(!again);
+}
+
+#[gpui::test]
+fn excerpts_for_path_uses_the_path_cursor(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "a\n", cx);
+    let second = singleton("src/b.rs", "b\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                MultiBufferExcerpt::line_range(first, 0..1, cx),
+                MultiBufferExcerpt::line_range(second, 0..1, cx),
+            ],
+            cx,
+        );
+    });
+
+    let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    let paths = snapshot
+        .excerpts_for_path(Path::new("src/a.rs"))
+        .map(|excerpt| excerpt.path().to_path_buf())
+        .collect::<Vec<_>>();
+    assert_eq!(paths, vec![PathBuf::from("src/a.rs")]);
+    assert_eq!(snapshot.excerpts_for_path(Path::new("src/c.rs")).count(), 0);
+}
+
+#[gpui::test]
+fn text_chunks_stream_excerpt_sources_and_inserted_boundary(cx: &mut TestAppContext) {
+    let first = singleton("src/first.rs", "first", cx);
+    let second = singleton("src/second.rs", "second\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                MultiBufferExcerpt::line_range(first, 0..1, cx),
+                MultiBufferExcerpt::line_range(second, 0..1, cx),
+            ],
+            cx,
+        );
+    });
+
+    let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    let chunks = snapshot
+        .text_chunks(ByteOffset::ZERO..snapshot.len_bytes())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        chunks.iter().map(|chunk| chunk.text).collect::<String>(),
+        "first\nsecond\n"
+    );
+    assert_eq!(chunks[0].output_range, ByteOffset::ZERO..ByteOffset::new(5));
+    assert_eq!(chunks[1].text, "\n");
+    assert_eq!(
+        chunks[1].output_range,
+        ByteOffset::new(5)..ByteOffset::new(6)
+    );
+    assert_eq!(
+        chunks
+            .last()
+            .expect("第二个 excerpt 必须有文本")
+            .output_range
+            .end,
+        snapshot.len_bytes()
+    );
+    assert_eq!(snapshot.text_bytes(), b"first\nsecond\n");
+    assert_eq!(snapshot.line_count(), 3);
+    assert_eq!(
+        snapshot.byte_to_line(ByteOffset::new(6)).unwrap(),
+        Line::new(1)
+    );
+    assert_eq!(
+        snapshot.line_start_byte(Line::new(1)).unwrap(),
+        ByteOffset::new(6)
+    );
+    assert_eq!(
+        snapshot.byte_to_position(ByteOffset::new(9)).unwrap(),
+        zcv_text::Position::new(Line::new(1), zcv_text::LogicalColumn::new(3))
+    );
+}
+
+#[test]
+fn plain_snapshot_streams_its_source_without_materializing() {
+    let buffer = Buffer::scratch("alpha\nbeta".to_string(), BufferConfig::default())
+        .expect("测试文本必须能创建");
+    let snapshot = MultiBufferSnapshot::from(buffer.snapshot());
+
+    let chunks = snapshot
+        .text_chunks(ByteOffset::new(2)..ByteOffset::new(8))
+        .map(|chunk| chunk.text)
+        .collect::<String>();
+    assert_eq!(chunks, "pha\nbe");
+    assert_eq!(
+        snapshot.chunk_at_byte(ByteOffset::new(6)).unwrap().0,
+        "alpha\nbeta"
+    );
+}
+
+#[gpui::test]
 fn working_source_updates_the_display_stream_without_reset(cx: &mut TestAppContext) {
     let source = singleton("src/main.rs", "fn main() {}\n", cx);
     let multi_buffer = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
@@ -309,7 +892,7 @@ fn working_source_updates_the_display_stream_without_reset(cx: &mut TestAppConte
         String::from_utf8(updated.text_bytes()).expect("编辑器快照必须是 UTF-8"),
         "fn async main() {}\n"
     );
-    assert_eq!(updated.text().version(), updated.syntax().version());
+    assert_eq!(updated.version(), updated.syntax_version());
     assert!(
         !subscription.consume().requires_reset(),
         "单文件源编辑不应通过投影整体重载"
@@ -1102,7 +1685,7 @@ fn undo_keeps_rust_highlighting_in_diff_projection(cx: &mut TestAppContext) {
         let snapshot = buffer.snapshot(cx);
         assert!(
             !snapshot
-                .highlights(0..snapshot.text().len_bytes().get())
+                .highlights(0..snapshot.len_bytes().get())
                 .is_empty(),
             "撤销后 Git hunk 投影仍应保留 Rust 高亮"
         );
@@ -1154,7 +1737,7 @@ fn save_after_diff_hunk_edit_keeps_rust_highlighting(cx: &mut TestAppContext) {
         let snapshot = buffer.snapshot(cx);
         assert!(
             !snapshot
-                .highlights(0..snapshot.text().len_bytes().get())
+                .highlights(0..snapshot.len_bytes().get())
                 .is_empty()
         );
     });
@@ -1563,7 +2146,7 @@ fn pending_new_file_does_not_hide_ready_diff_hunks(cx: &mut TestAppContext) {
         1
     );
 
-    // 加入第二个文件；不 park，使它的 diff 仍在计算中（set_diff_projection 因而提前返回）。
+    // 加入第二个文件；不 park，使它的 diff 仍在计算中（add_diff 因而提前返回）。
     let source_c = singleton("src/c.rs", "x\ny\nz\n", cx);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.inject_diffs(

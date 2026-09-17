@@ -8,9 +8,10 @@
 use std::{borrow::Cow, cmp::Reverse, collections::BTreeMap, ops::Range};
 
 use sum_tree::{Bias as TreeBias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
+use zcv_multi_buffer::MultiBufferSnapshot;
 use zcv_text::{
     Anchor, BufferVersion, ByteOffset, CoordinateError, Line, LineRange, LogicalColumn,
-    MappingResult, Position, Snapshot, Stickiness, TextChangeBatch, TextRange,
+    MappingResult, Position, Stickiness, TextChangeBatch, TextRange,
 };
 
 use super::error::{DisplayMapResult, FoldError};
@@ -363,7 +364,7 @@ impl FoldSnapshot {
         &self.input
     }
 
-    pub(super) fn buffer_snapshot(&self) -> &Snapshot {
+    pub(super) fn buffer_snapshot(&self) -> &MultiBufferSnapshot {
         self.input.buffer_snapshot()
     }
 
@@ -396,6 +397,14 @@ impl FoldSnapshot {
                 let (start, end) = fold.line_span;
                 (start < end).then_some(start)
             })
+            .collect()
+    }
+
+    pub(super) fn fold_anchor_lines_in_range(&self, line_range: Range<Line>) -> Vec<Line> {
+        self.lookup
+            .anchor_by_line
+            .range(line_range)
+            .map(|(line, _)| *line)
             .collect()
     }
 
@@ -483,12 +492,9 @@ impl FoldSnapshot {
         let inlay = self.inlay_snapshot();
         let stream = self.stream();
         let anchor_stream = stream.buffer_to_stream(anchor);
-        let anchor_text = inlay
-            .line_text(anchor_stream)
+        let (anchor_len, anchor_chars) = inlay
+            .projected_line_content_metrics(anchor_stream)
             .expect("折叠 anchor 行必须位于流内");
-        let anchor_content = line_content(anchor_text.as_ref());
-        let anchor_chars = anchor_content.chars().count();
-        let anchor_len = anchor_content.len();
         let close_line = fold.line_span.1;
         let close_stream = stream.buffer_to_stream(close_line);
         let close_start = self
@@ -499,16 +505,10 @@ impl FoldSnapshot {
             close_stream,
             fold.text_range().end().get() - close_start.get(),
         );
-        let content_end_projected = {
-            let content_end = self
-                .buffer_snapshot()
-                .line_content(close_line, None)
-                .expect("折叠 close 行必须位于当前 Snapshot 内")
-                .text_range()
-                .end()
-                .get();
-            inlay.to_projected_offset(close_stream, content_end - close_start.get())
-        };
+        let content_end_projected = inlay
+            .projected_line_content_metrics(close_stream)
+            .expect("折叠 close 行必须位于流内")
+            .0;
         let tail_start_col = self
             .buffer_snapshot()
             .byte_to_position(fold.text_range().end())
@@ -516,7 +516,6 @@ impl FoldSnapshot {
             .map_or(0, |position| position.column().get());
         Ok(FoldMergedGeometry {
             row,
-            anchor_line: anchor,
             anchor_stream,
             anchor_chars,
             anchor_len,
@@ -540,23 +539,17 @@ impl FoldSnapshot {
     }
 
     /// 投影行 → 折叠合并行的段表（合并文本字节空间的切分，文本顺序）。
-    pub(crate) fn fold_row_segments(&self, row: ProjectedLineIndex) -> Option<Vec<FoldRowSegment>> {
+    pub(crate) fn fold_row_segments(&self, row: ProjectedLineIndex) -> Option<[FoldRowSegment; 3]> {
         let fold = self.fold_for_row(row)?;
         let geometry = self.fold_merged_geometry(fold).ok()?;
-        let placeholder_len = FOLD_PLACEHOLDER.len();
         let tail_len = geometry.content_end_projected - geometry.tail_projected;
-        let tail_start = geometry.anchor_len + placeholder_len;
-        Some(vec![
+        let tail_start = geometry.anchor_len + FOLD_PLACEHOLDER.len();
+        Some([
             FoldRowSegment {
                 merged_range: 0..geometry.anchor_len,
                 kind: FoldRowSegmentKind::Text {
                     stream_line: geometry.anchor_stream,
                     projected_range: 0..geometry.anchor_len,
-                    global_start: self
-                        .buffer_snapshot()
-                        .line_start_byte(geometry.anchor_line)
-                        .ok()?
-                        .get(),
                 },
             },
             FoldRowSegment {
@@ -568,7 +561,6 @@ impl FoldSnapshot {
                 kind: FoldRowSegmentKind::Text {
                     stream_line: geometry.close_stream,
                     projected_range: geometry.tail_projected..geometry.content_end_projected,
-                    global_start: fold.text_range().end().get(),
                 },
             },
         ])
@@ -577,7 +569,22 @@ impl FoldSnapshot {
     /// 投影行 → 行文本；折叠合并行为 anchor 全文 + 占位符 + 闭合行尾段。
     pub(crate) fn row_text(&self, row: ProjectedLineIndex) -> Option<Cow<'_, str>> {
         if let Some(fold) = self.fold_for_row(row) {
-            return self.merged_row_text(fold);
+            let geometry = self.fold_merged_geometry(fold).ok()?;
+            let anchor = self.input.line_text(geometry.anchor_stream)?;
+            let close = self.input.line_text(geometry.close_stream)?;
+            let mut text = String::with_capacity(
+                geometry.anchor_len
+                    + FOLD_PLACEHOLDER.len()
+                    + geometry
+                        .content_end_projected
+                        .saturating_sub(geometry.tail_projected)
+                    + 1,
+            );
+            text.push_str(line_content(anchor.as_ref()));
+            text.push_str(FOLD_PLACEHOLDER);
+            text.push_str(&close.as_ref()[geometry.tail_projected..geometry.content_end_projected]);
+            text.push('\n');
+            return Some(Cow::Owned(text));
         }
         let line = self.projected_line_kind(row)?.logical_line();
         self.input.line_text(line)
@@ -588,26 +595,6 @@ impl FoldSnapshot {
         let text = self.projected_line_kind(row)?;
         let buffer_line = self.input.source(text.logical_line())?.line();
         self.lookup.anchor_by_line.get(&Line::new(buffer_line))
-    }
-
-    /// 折叠合并行文本：anchor 内容 + 占位符 + 闭合行尾段（以闭合行换行符结尾）。
-    fn merged_row_text(&self, fold: &Fold) -> Option<Cow<'_, str>> {
-        let geometry = self.fold_merged_geometry(fold).ok()?;
-        let inlay = self.inlay_snapshot();
-        let anchor_text = inlay.line_text(geometry.anchor_stream)?;
-        let close_text = inlay.line_text(geometry.close_stream)?;
-        let mut merged = String::with_capacity(
-            geometry.anchor_len + FOLD_PLACEHOLDER.len() + geometry.content_end_projected
-                - geometry.tail_projected
-                + 1,
-        );
-        merged.push_str(line_content(anchor_text.as_ref()));
-        merged.push_str(FOLD_PLACEHOLDER);
-        merged.push_str(
-            &close_text.as_ref()[geometry.tail_projected..geometry.content_end_projected],
-        );
-        merged.push('\n');
-        Some(Cow::Owned(merged))
     }
 
     /// close 行尾段内逻辑列 → 合并行内的投影列（尾段起点之后，含注入）。
@@ -747,16 +734,31 @@ impl FoldMap {
         let mut retained = Vec::new();
         self.snapshot.fold_metadata_by_id.clear();
         for mut fold in self.snapshot.folds.iter().cloned() {
-            let mapped =
-                position_map.map_old_range_with_stickiness(fold.text_range(), Stickiness::Never);
-            if !matches!(mapped, MappingResult::Collapsed(_)) {
-                let range = mapped.value();
-                fold.range = Anchor::range_inside(new_version, range);
-                fold.line_span = fold_line_span(buffer, range)
-                    .expect("映射后的折叠锚点范围必须位于当前 Snapshot 内");
-                self.snapshot.fold_metadata_by_id.insert(fold.id, range);
-                retained.push(fold);
-            }
+            let old_range = fold.text_range();
+            let remapped = if batch.requires_reset() {
+                // 投影重建（如 diff 展开/折叠）：源文本未变，用源锚点把旧投影范围重映射到新投影，
+                // 不能把旧投影偏移直接当成新偏移。
+                let start_anchor = old_buffer.anchor_for_offset(old_range.start());
+                let end_anchor = old_buffer.anchor_for_offset(old_range.end());
+                start_anchor.zip(end_anchor).and_then(|(start, end)| {
+                    buffer
+                        .resolve_anchor(&start)
+                        .zip(buffer.resolve_anchor(&end))
+                        .and_then(|(start, end)| TextRange::new(start, end).ok())
+                })
+            } else {
+                let mapped =
+                    position_map.map_old_range_with_stickiness(old_range, Stickiness::Never);
+                (!matches!(mapped, MappingResult::Collapsed(_))).then(|| mapped.value())
+            };
+            let Some(range) = remapped else {
+                continue;
+            };
+            fold.range = Anchor::range_inside(new_version, range);
+            fold.line_span = fold_line_span(buffer, range)
+                .expect("映射后的折叠锚点范围必须位于当前 Snapshot 内");
+            self.snapshot.fold_metadata_by_id.insert(fold.id, range);
+            retained.push(fold);
         }
         sort_folds(&mut retained);
         self.snapshot.lookup = FoldLookup::from_folds(&retained);
@@ -1004,7 +1006,10 @@ fn inline_fold_edits(
 /// 折叠范围的逻辑行跨度：起点行（anchor）与终点所在行（close，含隐藏前缀）。
 ///
 /// 折叠范围是字节级的（终点在 close 行内），终点行即被折叠的 close 行，不再按"终点恰在行首"回退（行首终点只可能来自旧的整行折叠形状）。
-fn fold_line_span(snapshot: &Snapshot, range: TextRange) -> DisplayMapResult<(Line, Line)> {
+fn fold_line_span(
+    snapshot: &MultiBufferSnapshot,
+    range: TextRange,
+) -> DisplayMapResult<(Line, Line)> {
     let start = snapshot.byte_to_line(range.start())?;
     let end = snapshot.byte_to_line(range.end())?;
     Ok((start, end))
@@ -1409,11 +1414,10 @@ impl FoldRowSegment {
 /// 折叠合并行段的来源。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FoldRowSegmentKind {
-    /// 行内容段：流行号 + 行内投影字节范围 + 行首全局字节（spans 换算）。
+    /// 行内容段：流行号与行内投影字节范围。
     Text {
         stream_line: Line,
         projected_range: Range<usize>,
-        global_start: usize,
     },
     /// 折叠占位符段（无源坐标）。
     Placeholder,
@@ -1424,8 +1428,6 @@ pub(crate) enum FoldRowSegmentKind {
 struct FoldMergedGeometry {
     /// 合并行的投影行号（anchor 行）。
     row: ProjectedLineIndex,
-    /// anchor 行（buffer 行号）。
-    anchor_line: Line,
     /// anchor 行流行号。
     anchor_stream: Line,
     /// anchor 段字符数（含行内提示注入，不含行尾换行）。

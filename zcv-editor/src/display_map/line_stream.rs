@@ -6,7 +6,8 @@
 use std::borrow::Cow;
 use std::ops::Range;
 
-use zcv_text::{ByteOffset, Line, Snapshot};
+use zcv_multi_buffer::MultiBufferSnapshot;
+use zcv_text::{ByteOffset, Line};
 
 /// 显示输入行的文本来源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,11 +26,12 @@ impl StreamLineSource {
 /// display 消费链的输入流。
 #[derive(Debug, Clone)]
 pub(crate) struct LineStream {
-    buffer: Snapshot,
+    buffer: MultiBufferSnapshot,
 }
 
 impl LineStream {
-    pub(crate) fn new(buffer: Snapshot) -> Self {
+    pub(crate) fn new<S: Into<MultiBufferSnapshot>>(buffer: S) -> Self {
+        let buffer = buffer.into();
         Self { buffer }
     }
 
@@ -47,9 +49,21 @@ impl LineStream {
     }
 
     pub(crate) fn line_text(&self, line: Line) -> Option<Cow<'_, str>> {
-        let buffer_line = self.source(line)?.line();
-        let slice = self.buffer.slice_line(Line::new(buffer_line)).ok()?;
-        Some(slice.into_text())
+        let range = self.line_byte_range(line)?;
+        // 空行（含末尾空行）的范围为空，没有 chunk 可消费；它仍然是有效行，文本为空串。
+        if range.is_empty() {
+            return Some(Cow::Borrowed(""));
+        }
+        let mut chunks = self.buffer.text_chunks(range);
+        let first = chunks.next()?;
+        if let Some(second) = chunks.next() {
+            let mut text = String::from(first.text);
+            text.push_str(second.text);
+            text.extend(chunks.map(|chunk| chunk.text));
+            Some(Cow::Owned(text))
+        } else {
+            Some(Cow::Borrowed(first.text))
+        }
     }
 
     pub(crate) fn line_byte_range(&self, line: Line) -> Option<Range<ByteOffset>> {
@@ -66,8 +80,8 @@ impl LineStream {
         Some(start..end)
     }
 
-    /// buffer 快照（高亮、选区等真实 buffer 需求；行文本读取请用 `line_text`）。
-    pub(crate) fn buffer_snapshot(&self) -> &Snapshot {
+    /// 虚拟组合快照（高亮、选区和行流共享唯一 source 投影）。
+    pub(crate) fn buffer_snapshot(&self) -> &MultiBufferSnapshot {
         &self.buffer
     }
 }

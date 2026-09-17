@@ -1,13 +1,17 @@
 //! Editor 的文件内搜索：持有搜索结果（绑定 BufferVersion），编辑后自动重搜。
 
 use std::ops::Range;
+use std::sync::{Arc, Mutex};
 
+use gpui::{Bounds, Pixels};
 use zcv_text::{
     Affinity, Anchor, BufferVersion, PositionMap, RegexSearchResult, SearchQuery,
     SearchQueryResult, SearchResult, TextRange,
 };
 use zcv_workspace::{Direction, SearchEvent, SearchableItem};
 
+use crate::display_map::{DisplaySnapshot, ProjectedRange};
+use crate::scrollbar::{ScrollbarMarker, ScrollbarMarkerKind, marker_geometry};
 use crate::selection::EditOutcome;
 
 use super::{Editor, edit_metadata};
@@ -24,6 +28,116 @@ pub(crate) enum SearchResultKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SearchMatchAnchor {
     range: Range<Anchor>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct MarkerGeometryKey {
+    track_top: f32,
+    track_height: f32,
+    scroll_per_pixel: f32,
+    line_height: f32,
+}
+
+/// 绑定搜索状态与显示拓扑版本的不可变装饰快照。
+///
+/// 视口高亮按字节范围 seek 后连续消费；滚动栏行投影只在快照建立时计算一次。
+pub(crate) struct SearchDecorationSnapshot {
+    ranges: Arc<[TextRange]>,
+    active_index: usize,
+    projected_rows: Arc<[Range<usize>]>,
+    markers: Mutex<Option<(MarkerGeometryKey, Arc<[ScrollbarMarker]>)>>,
+}
+
+impl SearchDecorationSnapshot {
+    fn new(display: &DisplaySnapshot, search: &EditorSearch) -> Self {
+        let ranges = search
+            .matches()
+            .iter()
+            .map(SearchMatchAnchor::range)
+            .collect::<Arc<[_]>>();
+        Self::from_ranges(display, ranges, search.active_index.unwrap_or(0))
+    }
+
+    fn from_ranges(
+        display: &DisplaySnapshot,
+        ranges: Arc<[TextRange]>,
+        active_index: usize,
+    ) -> Self {
+        let projected_rows = ranges
+            .iter()
+            .flat_map(|range| display.project_text_range(*range).unwrap_or_default())
+            .map(projected_row_range)
+            .collect::<Arc<[_]>>();
+        Self {
+            ranges,
+            active_index,
+            projected_rows,
+            markers: Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn visible_ranges(
+        &self,
+        viewport: Range<usize>,
+    ) -> impl Iterator<Item = (usize, TextRange)> + '_ {
+        let start = self
+            .ranges
+            .partition_point(|range| range.end().get() <= viewport.start);
+        self.ranges[start..]
+            .iter()
+            .enumerate()
+            .take_while(move |(_, range)| range.start().get() < viewport.end)
+            .map(move |(index, range)| (start + index, *range))
+    }
+
+    pub(crate) fn is_active(&self, index: usize) -> bool {
+        index == self.active_index
+    }
+
+    pub(crate) fn scrollbar_markers(
+        &self,
+        track_bounds: Bounds<Pixels>,
+        scroll_per_pixel: f32,
+        line_height: Pixels,
+    ) -> Arc<[ScrollbarMarker]> {
+        let key = MarkerGeometryKey {
+            track_top: f32::from(track_bounds.top()),
+            track_height: f32::from(track_bounds.size.height),
+            scroll_per_pixel,
+            line_height: f32::from(line_height),
+        };
+        let mut cache = self.markers.lock().expect("搜索标记缓存锁不应中毒");
+        if let Some((cached_key, markers)) = &*cache
+            && *cached_key == key
+        {
+            return Arc::clone(markers);
+        }
+        let markers = Arc::from(
+            marker_geometry(
+                self.projected_rows
+                    .iter()
+                    .cloned()
+                    .map(|rows| (rows, ScrollbarMarkerKind::Search)),
+                track_bounds,
+                scroll_per_pixel,
+                line_height,
+            )
+            .into_boxed_slice(),
+        );
+        *cache = Some((key, Arc::clone(&markers)));
+        markers
+    }
+}
+
+fn projected_row_range(range: ProjectedRange) -> Range<usize> {
+    let start = range.start();
+    let end = range.end();
+    let end_line = if end.line() == start.line() || end.column().get() != 0 {
+        end.line().get().saturating_add(1)
+    } else {
+        end.line().get()
+    };
+    start.line().get()..end_line
 }
 
 impl SearchMatchAnchor {
@@ -93,13 +207,12 @@ impl SearchableItem for Editor {
         if range.is_empty() {
             return None;
         }
-        let snapshot = self.text_buffer(cx).read(cx).snapshot();
+        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
         Some(
             snapshot
-                .slice_byte_range(range.start(), range.end())
-                .expect("主选区范围在当前投影快照内必须可读取")
-                .as_str()
-                .to_owned(),
+                .text_chunks(range.start()..range.end())
+                .map(|chunk| chunk.text)
+                .collect(),
         )
     }
 
@@ -110,6 +223,7 @@ impl SearchableItem for Editor {
         cx: &mut gpui::Context<Self>,
     ) {
         self.search = self.execute_search(query, cx);
+        self.invalidate_search_decorations();
         // 自动定位到第一个匹配（选区 + 视口滚动，光标跟随）。
         if let Some(search) = &self.search
             && let Some(index) = search.active_index
@@ -124,6 +238,7 @@ impl SearchableItem for Editor {
 
     fn clear_search(&mut self, _window: &mut gpui::Window, cx: &mut gpui::Context<Self>) {
         self.search = None;
+        self.invalidate_search_decorations();
         cx.notify();
         cx.emit(SearchEvent::MatchesInvalidated);
     }
@@ -155,6 +270,7 @@ impl SearchableItem for Editor {
         };
         search.active_index = Some(next);
         let range = search.match_range(next);
+        self.invalidate_search_decorations();
         self.select_byte_range(range, cx);
         cx.emit(SearchEvent::ActiveMatchChanged);
     }
@@ -173,7 +289,7 @@ impl SearchableItem for Editor {
             return false;
         };
         let (literal, regex) = search.cloned_result();
-        // 搜索结果绑定投影版本：过期校验在权威文档侧完成，编辑 planner 是与投影文本一致的 scratch 副本，重绑后继承坐标。
+        // 搜索结果绑定投影版本；过期校验与直接提交都在权威组合文档侧完成。
         if self.search_result_stale(&literal, &regex, cx) {
             return false;
         }
@@ -185,23 +301,15 @@ impl SearchableItem for Editor {
         });
         let outcome = self.change(before, metadata, cx, |buffer| {
             if let Some(result) = literal {
-                buffer
-                    .replace_search_match(
-                        &result.rebinding_to(buffer.version()),
-                        index,
-                        replacement,
-                    )
-                    .map(EditOutcome::from_transaction)
+                buffer.replace_search_match(&result, index, replacement)
             } else if let Some(result) = regex {
-                buffer
-                    .replace_regex_match(&result.rebinding_to(buffer.version()), index, replacement)
-                    .map(EditOutcome::from_transaction)
+                buffer.replace_regex_match(&result, index, replacement)
             } else {
                 Ok(EditOutcome::unchanged())
             }
         });
         // 只有真正发生替换（事务非空）才视为成功，避免 search_bar 无意义地前移活动匹配。
-        outcome.is_ok_and(|outcome| outcome.transaction().is_some())
+        outcome.is_ok_and(|outcome| outcome.position_map().is_some())
     }
 
     fn replace_all(
@@ -224,23 +332,46 @@ impl SearchableItem for Editor {
         });
         let outcome = self.change(before, metadata, cx, |buffer| {
             if let Some(result) = literal {
-                buffer
-                    .replace_all_search_matches(&result.rebinding_to(buffer.version()), replacement)
-                    .map(EditOutcome::from_transaction)
+                buffer.replace_all_search_matches(&result, replacement)
             } else if let Some(result) = regex {
-                buffer
-                    .replace_all_regex_matches(&result.rebinding_to(buffer.version()), replacement)
-                    .map(EditOutcome::from_transaction)
+                buffer.replace_all_regex_matches(&result, replacement)
             } else {
                 Ok(EditOutcome::unchanged())
             }
         });
-        let replaced = outcome.is_ok_and(|outcome| outcome.transaction().is_some());
+        let replaced = outcome.is_ok_and(|outcome| outcome.position_map().is_some());
         if replaced { count } else { 0 }
     }
 }
 
 impl Editor {
+    fn invalidate_search_decorations(&mut self) {
+        self.search_revision = self.search_revision.wrapping_add(1);
+        self.search_decorations = None;
+    }
+
+    pub(crate) fn search_decorations(
+        &mut self,
+        display: &DisplaySnapshot,
+    ) -> Option<Arc<SearchDecorationSnapshot>> {
+        let search = self.search.as_ref()?;
+        if search.len() == 0 {
+            return None;
+        }
+        let key = super::SearchDecorationKey {
+            display_revision: display.revision(),
+            search_revision: self.search_revision,
+        };
+        if let Some((cached_key, decorations)) = &self.search_decorations
+            && *cached_key == key
+        {
+            return Some(Arc::clone(decorations));
+        }
+        let decorations = Arc::new(SearchDecorationSnapshot::new(display, search));
+        self.search_decorations = Some((key, Arc::clone(&decorations)));
+        Some(decorations)
+    }
+
     /// 在搜索协调器完成重算前，先让已有高亮随同一批文本变化移动。
     ///
     /// 这只维护已有范围的位置；匹配是否仍然存在，仍由随后基于当前快照的重算决定。
@@ -253,6 +384,7 @@ impl Editor {
         let Some(search) = &mut self.search else {
             return;
         };
+        let mut changed = false;
         for search_match in &mut search.matches {
             if search_match.range.start.version() != old_version
                 || search_match.range.end.version() != old_version
@@ -269,6 +401,10 @@ impl Editor {
                     .end
                     .map_through_position_map(new_version, position_map)
                     .value();
+            changed = true;
+        }
+        if changed {
+            self.invalidate_search_decorations();
         }
     }
 
@@ -279,7 +415,7 @@ impl Editor {
         regex: &Option<RegexSearchResult>,
         cx: &gpui::Context<Self>,
     ) -> bool {
-        let projection_version = self.text_buffer(cx).read(cx).version();
+        let projection_version = self.multi_buffer.read(cx).snapshot(cx).version();
         literal
             .as_ref()
             .is_some_and(|result| result.version() != projection_version)
@@ -295,7 +431,7 @@ impl Editor {
         ranges: Vec<TextRange>,
         cx: &mut gpui::Context<Self>,
     ) {
-        let version = self.text_buffer(cx).read(cx).snapshot().version();
+        let version = self.multi_buffer.read(cx).snapshot(cx).version();
         let matches = ranges
             .into_iter()
             .map(|range| SearchMatchAnchor::from_range(version, range))
@@ -307,6 +443,7 @@ impl Editor {
             matches,
             active_index,
         });
+        self.invalidate_search_decorations();
         if let Some(range) = self
             .search
             .as_ref()
@@ -329,7 +466,7 @@ impl Editor {
         ranges: Vec<TextRange>,
         cx: &mut gpui::Context<Self>,
     ) {
-        let version = self.text_buffer(cx).read(cx).snapshot().version();
+        let version = self.multi_buffer.read(cx).snapshot(cx).version();
         let can_append = self.search.as_ref().is_some_and(|search| {
             search.query == query
                 && matches!(search.result, Some(SearchResultKind::External { .. }))
@@ -355,6 +492,7 @@ impl Editor {
                 .into_iter()
                 .map(|range| SearchMatchAnchor::from_range(version, range)),
         );
+        self.invalidate_search_decorations();
         cx.notify();
         cx.emit(SearchEvent::MatchesInvalidated);
     }
@@ -368,13 +506,19 @@ impl Editor {
         if query.query.is_empty() {
             return None;
         }
-        let snapshot = self.text_buffer(cx).read(cx).snapshot();
-        let result = query.search(&snapshot).ok()?;
+        let virtual_snapshot = self.multi_buffer.read(cx).snapshot(cx);
+        let result = query
+            .search_in(
+                &virtual_snapshot,
+                virtual_snapshot.version(),
+                virtual_snapshot.config(),
+            )
+            .ok()?;
         let matches = result
             .matches()
             .iter()
             .map(|search_match| {
-                SearchMatchAnchor::from_range(snapshot.version(), search_match.range())
+                SearchMatchAnchor::from_range(virtual_snapshot.version(), search_match.range())
             })
             .collect();
         let search = EditorSearch {
@@ -400,7 +544,7 @@ impl Editor {
         if search.query.query.is_empty() {
             return;
         }
-        let version = self.text_buffer(cx).read(cx).snapshot().version();
+        let version = self.multi_buffer.read(cx).snapshot(cx).version();
         if !search.is_stale(version) {
             return;
         }
@@ -413,16 +557,44 @@ impl Editor {
                 .filter(|index| *index < len)
                 .or_else(|| (len > 0).then_some(0));
         }
+        self.invalidate_search_decorations();
         cx.notify();
         cx.emit(SearchEvent::MatchesInvalidated);
     }
+}
 
-    /// 搜索状态存在且非空时的匹配高亮（供 element 渲染层读取）。
-    pub(crate) fn search_highlights(&self) -> Option<(&[SearchMatchAnchor], usize)> {
-        let search = self.search.as_ref()?;
-        if search.len() == 0 {
-            return None;
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    impl SearchDecorationSnapshot {
+        pub(crate) fn for_test(
+            display: &DisplaySnapshot,
+            matches: &[SearchMatchAnchor],
+            active_index: usize,
+        ) -> Self {
+            Self::from_ranges(
+                display,
+                matches
+                    .iter()
+                    .map(SearchMatchAnchor::range)
+                    .collect::<Arc<[_]>>(),
+                active_index,
+            )
         }
-        Some((search.matches(), search.active_index.unwrap_or(0)))
+
+        pub(crate) fn projected_rows_for_test(&self) -> &[Range<usize>] {
+            &self.projected_rows
+        }
+    }
+
+    impl Editor {
+        pub(crate) fn search_highlights(&self) -> Option<(&[SearchMatchAnchor], usize)> {
+            let search = self.search.as_ref()?;
+            if search.len() == 0 {
+                return None;
+            }
+            Some((search.matches(), search.active_index.unwrap_or(0)))
+        }
     }
 }

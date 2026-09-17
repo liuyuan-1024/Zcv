@@ -27,7 +27,7 @@ fn begin_selection_at_offset(
 ) {
     editor.update(cx, |editor, cx| {
         let display_point = editor
-            .display_map
+            .display_snapshot
             .offset_to_display_point(offset)
             .expect("测试选区偏移应能映射到显示点");
         editor.begin_selection(display_point, click_count, extend, cx);
@@ -41,7 +41,7 @@ fn update_selection_at_offset(
 ) {
     editor.update(cx, |editor, cx| {
         let display_point = editor
-            .display_map
+            .display_snapshot
             .offset_to_display_point(offset)
             .expect("测试选区偏移应能映射到显示点");
         editor.update_selection(display_point, cx);

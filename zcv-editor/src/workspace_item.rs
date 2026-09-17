@@ -19,11 +19,10 @@ impl Item for Editor {
     }
 
     fn tab_content_text(&self, cx: &App) -> SharedString {
-        self.file_path(cx)
-            .and_then(|path| {
-                path.file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-            })
+        // 标题归文档模型所有：显式标题优先，否则按文档身份派生。
+        self.multi_buffer()
+            .read(cx)
+            .title(cx)
             .unwrap_or_default()
             .into()
     }
@@ -93,7 +92,7 @@ impl Item for Editor {
         range: std::ops::Range<usize>,
         cx: &mut Context<Self>,
     ) -> bool {
-        if range.end > self.text_buffer(cx).read(cx).len_bytes().get() {
+        if range.end > self.multi_buffer().read(cx).snapshot(cx).len_bytes().get() {
             return false;
         }
         self.select_byte_range(range, cx);

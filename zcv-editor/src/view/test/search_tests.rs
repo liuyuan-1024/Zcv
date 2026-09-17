@@ -8,8 +8,7 @@ use zcv_workspace::{Direction, SearchableItem};
 use super::common::test_buffer;
 use super::*;
 use crate::display_map::{
-    DisplayMap, DisplayRow, LineStyles, ViewportChunkSource, WrapViewportRowKind,
-    render_viewport_chunks,
+    ChunkSource, ChunkText, DisplayMap, DisplayRow, HighlightStyles, WrapChunks, WrapRowKind,
 };
 
 fn editor_with_text<'a>(
@@ -23,12 +22,7 @@ fn editor_with_text<'a>(
 fn editor_text(editor: &Entity<Editor>, cx: &VisualTestContext) -> String {
     cx.read_entity(editor, |this, cx| {
         let buffer = this.multi_buffer.read(cx).snapshot(cx);
-        let buffer = buffer.text();
-        buffer
-            .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
-            .expect("完整测试 Buffer 应可读取")
-            .as_str()
-            .to_owned()
+        String::from_utf8(buffer.text_bytes()).expect("完整测试 Buffer 应可读取")
     })
 }
 
@@ -324,7 +318,8 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
         });
         let engine_snapshot = editor.read(cx).render_snapshot();
         let display = DisplayMap::new(engine_snapshot.clone()).snapshot();
-        let viewport = display.slice_viewport(DisplayRow::new(0), 1).unwrap();
+        let mut cursor = display.rows(DisplayRow::new(0), 1);
+        let viewport: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
         // 与 element.rs 相同的背景层构建。
         let search_highlights = editor.read(cx).search_highlights().unwrap();
         let colors = color::current(cx);
@@ -345,14 +340,17 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
             })
             .collect();
         assert_eq!(search_backgrounds.len(), 3, "三个匹配都应进入背景层");
-        let row = viewport.rows().first().expect("未找到文本行");
-        let WrapViewportRowKind::Text {
+        let row = viewport.first().expect("未找到文本行");
+        let WrapRowKind::Text {
             source,
-            text,
             byte_range,
             global_byte_start,
+            projected_line,
             ..
         } = row.kind();
+        let text = display
+            .row_text(*projected_line)
+            .expect("显示行文本应可解析");
         let inlay_snapshot = display
             .wrap_snapshot()
             .tab_snapshot()
@@ -362,16 +360,18 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
             .stream()
             .buffer_to_stream(Line::new(source.line()));
         let tab_width = display.buffer_snapshot().config().tab.tab_width();
-        let rendered = render_viewport_chunks(
-            ViewportChunkSource {
-                text: text.as_ref(),
+        let rendered: Vec<_> = WrapChunks::new(
+            ChunkSource {
+                text: ChunkText::Borrowed(text.as_ref()),
+                projected_len: text.len(),
                 global_byte_start: *global_byte_start,
                 stream_line,
                 segments: None,
                 inlay: inlay_snapshot,
+                inject_inlays: false,
             },
             tab_width,
-            LineStyles {
+            HighlightStyles {
                 spans: &[],
                 styles: &[],
                 backgrounds: &search_backgrounds,
@@ -379,12 +379,10 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
                 dimmed: &[],
             },
             byte_range.clone(),
-        );
-        let with_bg = rendered
-            .chunks
-            .iter()
-            .filter(|c| c.background.is_some())
-            .count();
+            usize::MAX,
+        )
+        .collect();
+        let with_bg = rendered.iter().filter(|c| c.background.is_some()).count();
         assert!(with_bg >= 2, "同一行多个匹配都应带背景，实际 {with_bg}");
     });
 }
@@ -417,16 +415,20 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
                 )
             })
             .collect();
-        let viewport = display.slice_viewport(DisplayRow::new(0), 4).unwrap();
+        let mut cursor = display.rows(DisplayRow::new(0), 4);
+        let viewport: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
         let mut with_bg = 0usize;
-        for row in viewport.rows() {
-            let WrapViewportRowKind::Text {
+        for row in &viewport {
+            let WrapRowKind::Text {
                 source,
-                text,
                 byte_range,
                 global_byte_start,
+                projected_line,
                 ..
             } = row.kind();
+            let text = display
+                .row_text(*projected_line)
+                .expect("显示行文本应可解析");
             {
                 let inlay_snapshot = display
                     .wrap_snapshot()
@@ -437,16 +439,18 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
                     .stream()
                     .buffer_to_stream(Line::new(source.line()));
                 let tab_width = display.buffer_snapshot().config().tab.tab_width();
-                let rendered = render_viewport_chunks(
-                    ViewportChunkSource {
-                        text: text.as_ref(),
+                let rendered: Vec<_> = WrapChunks::new(
+                    ChunkSource {
+                        text: ChunkText::Borrowed(text.as_ref()),
+                        projected_len: text.len(),
                         global_byte_start: *global_byte_start,
                         stream_line,
                         segments: None,
                         inlay: inlay_snapshot,
+                        inject_inlays: false,
                     },
                     tab_width,
-                    LineStyles {
+                    HighlightStyles {
                         spans: &[],
                         styles: &[],
                         backgrounds: &search_backgrounds,
@@ -454,12 +458,10 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
                         dimmed: &[],
                     },
                     byte_range.clone(),
-                );
-                with_bg += rendered
-                    .chunks
-                    .iter()
-                    .filter(|c| c.background.is_some())
-                    .count();
+                    usize::MAX,
+                )
+                .collect();
+                with_bg += rendered.iter().filter(|c| c.background.is_some()).count();
             }
         }
         assert_eq!(with_bg, 3, "三行的匹配都应带背景，实际 {with_bg}");
@@ -530,18 +532,24 @@ zcv final
             })
             .collect();
         // 渲染全部行，统计带背景的 chunk（应与匹配数一致）。
-        let viewport = display
-            .slice_viewport(DisplayRow::new(0), line_count)
-            .unwrap();
+        let mut cursor = display.rows(DisplayRow::new(0), line_count);
+        let viewport: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
+        let source_ranges = display
+            .rows(DisplayRow::new(0), line_count)
+            .source_line_ranges();
+        let syntax_spans = display.highlighted_spans_for_source_ranges(source_ranges);
         let mut with_bg = 0usize;
-        for row in viewport.rows() {
-            let WrapViewportRowKind::Text {
+        for row in &viewport {
+            let WrapRowKind::Text {
                 source,
-                text,
                 byte_range,
                 global_byte_start,
+                projected_line,
                 ..
             } = row.kind();
+            let text = display
+                .row_text(*projected_line)
+                .expect("显示行文本应可解析");
             {
                 let inlay_snapshot = display
                     .wrap_snapshot()
@@ -553,30 +561,30 @@ zcv final
                     .buffer_to_stream(Line::new(source.line()));
                 let tab_width = display.buffer_snapshot().config().tab.tab_width();
                 let highlight_styles = display.highlight_styles();
-                let rendered = render_viewport_chunks(
-                    ViewportChunkSource {
-                        text: text.as_ref(),
+                let rendered: Vec<_> = WrapChunks::new(
+                    ChunkSource {
+                        text: ChunkText::Borrowed(text.as_ref()),
+                        projected_len: text.len(),
                         global_byte_start: *global_byte_start,
                         stream_line,
                         segments: None,
                         inlay: inlay_snapshot,
+                        inject_inlays: false,
                     },
                     tab_width,
-                    LineStyles {
+                    HighlightStyles {
                         // 与 element 相同：语法高亮 spans + 搜索背景层共存。
-                        spans: &display.highlighted_spans_for_viewport(&viewport),
+                        spans: &syntax_spans,
                         styles: &highlight_styles,
                         backgrounds: &search_backgrounds,
                         marked: &[],
                         dimmed: &[],
                     },
                     byte_range.clone(),
-                );
-                with_bg += rendered
-                    .chunks
-                    .iter()
-                    .filter(|c| c.background.is_some())
-                    .count();
+                    usize::MAX,
+                )
+                .collect();
+                with_bg += rendered.iter().filter(|c| c.background.is_some()).count();
             }
         }
         assert_eq!(

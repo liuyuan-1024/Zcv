@@ -4,15 +4,19 @@
 //! 渲染端只消费计算出的 `HunkRendering` 做布局与绘制。
 
 use std::ops::Range;
+use std::sync::{Arc, Mutex};
 
 use zcv_git::DiffHunkKind;
 use zcv_multi_buffer::{DiffHunkStaging, DisplayHunk};
-use zcv_text::Line;
+use zcv_text::{ByteOffset, Line, TextRange};
 
-use crate::display_map::DisplaySnapshot;
+use crate::display_map::{DisplaySnapshot, ProjectedRange};
+use crate::scrollbar::{ScrollbarMarker, ScrollbarMarkerKind, marker_geometry};
 use crate::view::{EditorHunk, EditorHunkMarkerKind, HunkControlTarget};
+use gpui::{Bounds, Pixels};
 
 /// hunks 的单遍渲染数据：行标记 / 竖条 / 点击区域共用同一份行区间计算。
+#[derive(Clone)]
 pub(crate) struct HunkRendering {
     /// 行标记：显示行区间、行级色、以及 hunk 相对 index 的暂存语义。
     pub(crate) diff_rows: Vec<(Range<usize>, DiffHunkKind, DiffHunkStaging)>,
@@ -30,6 +34,233 @@ pub(crate) struct HunkRendering {
     pub(crate) hollow_blocks: Vec<Range<usize>>,
     /// 展开 hunk 的词级变化片段（组合文档字节范围 + 新增/删除色）。
     pub(crate) word_diff_highlights: Vec<(DiffHunkKind, Range<usize>)>,
+}
+
+/// 绑定一条显示快照的 diff 装饰派生状态。
+///
+/// 逻辑 hunk 只在显示映射版本变化时投影一次。
+/// 滚动帧通过 `viewport` 和 `visible_word_diff_highlights` 消费已有的显示行数据，不重新访问逻辑 hunk 或重新执行逻辑坐标到显示坐标的转换。
+#[derive(Clone)]
+pub(crate) struct DiffDecorationSnapshot {
+    rendering: HunkRendering,
+    expanded: Vec<bool>,
+    projected_word_diff_highlights: Vec<(DiffHunkKind, ProjectedRange)>,
+    scrollbar_diff_markers: Vec<(Range<usize>, DiffHunkKind)>,
+    scrollbar_markers: ScrollbarMarkerCache,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct ScrollbarMarkerGeometryKey {
+    track_top: f32,
+    track_height: f32,
+    scroll_per_pixel: f32,
+    line_height: f32,
+}
+
+type ScrollbarMarkerCache =
+    Arc<Mutex<Option<(ScrollbarMarkerGeometryKey, Arc<[ScrollbarMarker]>)>>>;
+
+impl DiffDecorationSnapshot {
+    pub(crate) fn new(
+        snapshot: &DisplaySnapshot,
+        hunks: &[DisplayHunk],
+        expanded: Vec<bool>,
+        old_display_ranges: &[Option<Range<usize>>],
+        word_diffs: &[Vec<(DiffHunkKind, Range<usize>)>],
+        editor_hunks: &[EditorHunk],
+    ) -> Self {
+        let mut rendering =
+            hunk_rendering(snapshot, hunks, &expanded, old_display_ranges, word_diffs);
+        rendering.editor_hunks = editor_hunk_rendering(snapshot, editor_hunks);
+        rendering.controls.extend(
+            rendering
+                .editor_hunks
+                .iter()
+                .map(|(rows, hunk)| (rows.clone(), HunkControlTarget::Editor(hunk.clone()))),
+        );
+        rendering
+            .controls
+            .sort_by_key(|(rows, _)| (rows.start, rows.end));
+        rendering.editor_hunk_parts = editor_hunk_part_rendering(snapshot, editor_hunks);
+
+        let projected_word_diff_highlights = rendering
+            .word_diff_highlights
+            .iter()
+            .filter_map(|(kind, range)| {
+                let text_range =
+                    TextRange::new(ByteOffset::new(range.start), ByteOffset::new(range.end))
+                        .ok()?;
+                Some(
+                    snapshot
+                        .project_text_range(text_range)
+                        .ok()?
+                        .into_iter()
+                        .map(|range| (*kind, range)),
+                )
+            })
+            .flatten()
+            .collect();
+
+        let mut scrollbar_diff_markers = rendering
+            .diff_rows
+            .iter()
+            .map(|(rows, kind, _)| (rows.clone(), *kind))
+            .collect::<Vec<_>>();
+        for (rows, index, kind) in &rendering.hit_regions {
+            if *kind == DiffHunkKind::Deleted && !expanded.get(*index).copied().unwrap_or(false) {
+                scrollbar_diff_markers.push((rows.clone(), DiffHunkKind::Deleted));
+            }
+        }
+
+        Self {
+            rendering,
+            expanded,
+            projected_word_diff_highlights,
+            scrollbar_diff_markers,
+            scrollbar_markers: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub(crate) fn rendering_for_viewport(&self, viewport: Range<usize>) -> HunkRendering {
+        HunkRendering {
+            diff_rows: visible_triples(&self.rendering.diff_rows, &viewport),
+            strips: visible_triples(&self.rendering.strips, &viewport),
+            hit_regions: visible_triples(&self.rendering.hit_regions, &viewport),
+            controls: Vec::new(),
+            editor_hunks: visible_pairs(&self.rendering.editor_hunks, &viewport),
+            editor_hunk_parts: visible_triples(&self.rendering.editor_hunk_parts, &viewport),
+            expanded_rows: visible_ranges(&self.rendering.expanded_rows, &viewport),
+            hollow_blocks: visible_ranges(&self.rendering.hollow_blocks, &viewport),
+            word_diff_highlights: Vec::new(),
+        }
+    }
+
+    pub(crate) fn visible_controls(
+        &self,
+        viewport: &Range<usize>,
+    ) -> Vec<(usize, Range<usize>, HunkControlTarget)> {
+        let start = self
+            .rendering
+            .controls
+            .partition_point(|(rows, _)| rows.end <= viewport.start);
+        self.rendering.controls[start..]
+            .iter()
+            .enumerate()
+            .take_while(|(_, (rows, _))| rows.start < viewport.end)
+            .filter(|(_, (rows, _))| ranges_overlap(rows, viewport))
+            .map(|(index, (rows, target))| (start + index, rows.clone(), target.clone()))
+            .collect()
+    }
+
+    pub(crate) fn visible_word_diff_highlights<'a>(
+        &'a self,
+        viewport: &'a Range<usize>,
+    ) -> impl Iterator<Item = (DiffHunkKind, ProjectedRange)> + 'a {
+        let start = self
+            .projected_word_diff_highlights
+            .partition_point(|(_, range)| {
+                range.end().line().get().max(range.start().line().get() + 1) <= viewport.start
+            });
+        self.projected_word_diff_highlights[start..]
+            .iter()
+            .take_while(|(_, range)| range.start().line().get() < viewport.end)
+            .filter(|(_, range)| {
+                let range_start = range.start().line().get();
+                let range_end = range.end().line().get().max(range_start + 1);
+                range_start < viewport.end && range_end > viewport.start
+            })
+            .copied()
+    }
+
+    pub(crate) fn is_expanded(&self, index: usize) -> bool {
+        self.expanded.get(index).copied().unwrap_or(false)
+    }
+
+    pub(crate) fn scrollbar_markers(
+        &self,
+        track_bounds: Bounds<Pixels>,
+        scroll_per_pixel: f32,
+        line_height: Pixels,
+    ) -> Arc<[ScrollbarMarker]> {
+        let key = ScrollbarMarkerGeometryKey {
+            track_top: f32::from(track_bounds.top()),
+            track_height: f32::from(track_bounds.size.height),
+            scroll_per_pixel,
+            line_height: f32::from(line_height),
+        };
+        let mut cache = self
+            .scrollbar_markers
+            .lock()
+            .expect("滚动栏差异标记缓存锁不应中毒");
+        if let Some((cached_key, markers)) = &*cache
+            && *cached_key == key
+        {
+            return Arc::clone(markers);
+        }
+
+        let diff_markers = self.scrollbar_diff_markers.iter().map(|(rows, kind)| {
+            (
+                rows.clone(),
+                ScrollbarMarkerKind::Git(EditorHunkMarkerKind::Diff(*kind)),
+            )
+        });
+        let editor_hunk_markers = self
+            .rendering
+            .editor_hunk_parts
+            .iter()
+            .map(|(rows, _, marker)| (rows.clone(), ScrollbarMarkerKind::Git(*marker)));
+        let markers = Arc::from(
+            marker_geometry(
+                diff_markers.chain(editor_hunk_markers),
+                track_bounds,
+                scroll_per_pixel,
+                line_height,
+            )
+            .into_boxed_slice(),
+        );
+        *cache = Some((key, Arc::clone(&markers)));
+        markers
+    }
+}
+
+fn ranges_overlap(left: &Range<usize>, right: &Range<usize>) -> bool {
+    left.start < right.end && right.start < left.end
+}
+
+fn visible_pairs<T: Clone>(
+    items: &[(Range<usize>, T)],
+    viewport: &Range<usize>,
+) -> Vec<(Range<usize>, T)> {
+    let start = items.partition_point(|(range, _)| range.end <= viewport.start);
+    items[start..]
+        .iter()
+        .take_while(|(range, _)| range.start < viewport.end)
+        .filter(|(range, _)| ranges_overlap(range, viewport))
+        .map(|(range, value)| (range.clone(), value.clone()))
+        .collect()
+}
+
+fn visible_ranges(items: &[Range<usize>], viewport: &Range<usize>) -> Vec<Range<usize>> {
+    let start = items.partition_point(|range| range.end <= viewport.start);
+    items[start..]
+        .iter()
+        .take_while(|range| range.start < viewport.end)
+        .filter(|range| ranges_overlap(range, viewport))
+        .cloned()
+        .collect()
+}
+
+fn visible_triples<T: Clone, U: Clone>(
+    items: &[(Range<usize>, T, U)],
+    viewport: &Range<usize>,
+) -> Vec<(Range<usize>, T, U)> {
+    let start = items.partition_point(|(range, _, _)| range.end <= viewport.start);
+    items[start..]
+        .iter()
+        .take_while(|(range, _, _)| range.start < viewport.end)
+        .filter(|(range, _, _)| ranges_overlap(range, viewport))
+        .map(|(range, first, second)| (range.clone(), first.clone(), second.clone()))
+        .collect()
 }
 
 /// hunks（逻辑行）→ 行级渲染数据，单遍遍历产出五份视图：

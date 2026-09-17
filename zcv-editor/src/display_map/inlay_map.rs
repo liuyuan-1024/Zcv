@@ -4,9 +4,12 @@
 //! 注入配置版本独立于 buffer 版本，变化时 fold 层整体重建（下游测量/换行依赖文本内容）。
 
 use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
+use std::sync::Arc;
 
-use zcv_text::{ByteOffset, Line, Snapshot};
+use zcv_multi_buffer::MultiBufferSnapshot;
+use zcv_text::{ByteOffset, Line};
 
 use super::chunk::InlayInfo;
 use super::line_stream::{LineStream, StreamLineSource};
@@ -26,6 +29,10 @@ pub(crate) struct InlaySnapshot {
     stream: LineStream,
     /// 按 position 排序的行内提示。
     inlays: Vec<Inlay>,
+    /// 每个投影行的注入段表。
+    /// 它只保存注入的锚点与共享文本，不缓存或拼接投影后的整行；
+    /// 消费游标据此直接穿行于源文本和 inlay 文本之间。
+    line_inlays: Arc<BTreeMap<Line, Arc<[InlayInfo]>>>,
     /// 注入配置版本（与 buffer 版本独立；变化时消费链整体重建）。
     version: u64,
 }
@@ -40,6 +47,7 @@ impl InlayMap {
         let snapshot = InlaySnapshot {
             stream,
             inlays: Vec::new(),
+            line_inlays: Arc::new(BTreeMap::new()),
             version: 0,
         };
         (
@@ -54,10 +62,12 @@ impl InlayMap {
     /// 流变化（buffer 编辑）不递增注入版本，由消费链按 buffer 版本处理。
     pub(super) fn read(&mut self, stream: LineStream, inlays: Vec<Inlay>) -> InlaySnapshot {
         let inlay_changed = self.snapshot.inlays != inlays;
+        let line_inlays = line_inlays(&stream, &inlays);
         self.snapshot = InlaySnapshot {
             stream,
             version: self.snapshot.version + inlay_changed as u64,
             inlays,
+            line_inlays,
         };
         self.snapshot.clone()
     }
@@ -68,7 +78,7 @@ impl InlaySnapshot {
         &self.stream
     }
 
-    pub(super) fn buffer_snapshot(&self) -> &Snapshot {
+    pub(super) fn buffer_snapshot(&self) -> &MultiBufferSnapshot {
         self.stream.buffer_snapshot()
     }
 
@@ -92,57 +102,100 @@ impl InlaySnapshot {
         self.stream.line_byte_range(line)
     }
 
-    /// 投影行文本（含行内提示注入）：无注入时借用，有则自持。
+    /// 行内容的源字节范围，不含行尾换行。
+    pub(crate) fn line_content_byte_range(&self, line: Line) -> Option<Range<ByteOffset>> {
+        let source = self.source(line)?;
+        let range = self.stream.line_byte_range(Line::new(source.line()))?;
+        let mut end = range.end;
+        while end > range.start {
+            let last = ByteOffset::new(end.get() - 1);
+            let is_line_break = self
+                .buffer_snapshot()
+                .text_chunks(last..end)
+                .next()
+                .and_then(|chunk| chunk.text.as_bytes().first().copied())
+                .is_some_and(|byte| byte == b'\n' || byte == b'\r');
+            if !is_line_break {
+                break;
+            }
+            end = last;
+        }
+        Some(range.start..end)
+    }
+
+    /// 仅供坐标计算和换行重建临时读取投影行文本。
+    ///
+    /// 连续行游标只在当前行的回调生命周期内借用这个临时值；
+    /// 它不会进入 DisplaySnapshot，也不会成为跨帧的投影文本缓存。
     pub(super) fn line_text(&self, line: Line) -> Option<Cow<'_, str>> {
-        let buffer_line = self.stream.source(line)?.line();
-        let range = self.stream.line_byte_range(Line::new(buffer_line))?;
-        let inlays = self.inlays_in(&range);
-        if inlays.is_empty() {
-            return self.stream.line_text(line);
-        }
         let text = self.stream.line_text(line)?;
-        // 注入信息：投影偏移 = 锚定偏移（行内）+ 此前注入长度和。
-        let mut infos = Vec::with_capacity(inlays.len());
-        let mut prefix = 0usize;
+        let inlays = self.line_inlays(line);
+        if inlays.is_empty() {
+            return Some(text);
+        }
+        let mut output = String::with_capacity(
+            text.len() + inlays.iter().map(|inlay| inlay.text.len()).sum::<usize>(),
+        );
+        let mut cursor = 0;
         for inlay in inlays {
-            let anchor = inlay.position.get() - range.start.get();
-            infos.push(InlayInfo {
-                anchor,
-                projected: anchor + prefix,
-                text: &inlay.text,
-            });
-            prefix += inlay.text.len();
+            output.push_str(&text[cursor..inlay.anchor]);
+            output.push_str(&inlay.text);
+            cursor = inlay.anchor;
         }
-        // 注入坐标是含此前前缀的投影偏移：按锚定序从前往后注入（后注入的位置在注入后的文本中）。
-        let mut projected = String::with_capacity(text.len() + prefix);
-        projected.push_str(&text);
-        for info in infos {
-            projected.insert_str(info.projected, info.text);
-        }
-        Some(Cow::Owned(projected))
+        output.push_str(&text[cursor..]);
+        Some(Cow::Owned(output))
     }
 
     /// 行的注入段信息（供渲染合成：anchor 为行内原始偏移，projected 为投影偏移）。
-    pub(crate) fn line_inlays(&self, line: Line) -> Vec<InlayInfo<'_>> {
-        let Some(source) = self.stream.source(line) else {
-            return Vec::new();
-        };
-        let buffer_line = source.line();
-        let Some(range) = self.stream.line_byte_range(Line::new(buffer_line)) else {
-            return Vec::new();
-        };
-        let mut infos = Vec::new();
-        let mut prefix = 0usize;
-        for inlay in self.inlays_in(&range) {
-            let anchor = inlay.position.get() - range.start.get();
-            infos.push(InlayInfo {
-                anchor,
-                projected: anchor + prefix,
-                text: &inlay.text,
-            });
-            prefix += inlay.text.len();
+    pub(crate) fn line_inlays(&self, line: Line) -> &[InlayInfo] {
+        self.line_inlays
+            .get(&line)
+            .map_or(&[], |inlays| inlays.as_ref())
+    }
+
+    /// 投影行的字节长度，不拼接源文本与 inlay 文本。
+    ///
+    /// WrapMap 的断行点位于这一坐标域；
+    /// 渲染游标只需要这个长度来裁剪片段，不应为了求长度物化整行。
+    pub(crate) fn projected_line_len(&self, line: Line) -> Option<usize> {
+        let range = self.line_byte_range(line)?;
+        Some(
+            range.end.get() - range.start.get()
+                + self
+                    .line_inlays(line)
+                    .iter()
+                    .map(|inlay| inlay.text.len())
+                    .sum::<usize>(),
+        )
+    }
+
+    /// 投影行内容（不含换行）的字节长度和字符数。
+    ///
+    /// 折叠层只需要这两个几何量，不应为了统计它们拼接 anchor 行文本。
+    pub(crate) fn projected_line_content_metrics(&self, line: Line) -> Option<(usize, usize)> {
+        let content = self.line_content_byte_range(line)?;
+        let content_len = content.end.get() - content.start.get();
+        let mut byte = content.start.get();
+        let mut chars = 0;
+        while byte < content.end.get() {
+            let (chunk, chunk_start) = self
+                .buffer_snapshot()
+                .chunk_at_byte(ByteOffset::new(byte))
+                .ok()?;
+            let start = byte - chunk_start.get();
+            let end = (content.end.get() - chunk_start.get()).min(chunk.len());
+            chars += chunk[start..end].chars().count();
+            byte = chunk_start.get() + end;
         }
-        infos
+        let inlays = self.line_inlays(line);
+        Some((
+            content_len + inlays.iter().map(|inlay| inlay.text.len()).sum::<usize>(),
+            chars
+                + inlays
+                    .iter()
+                    .map(|inlay| inlay.text.chars().count())
+                    .sum::<usize>(),
+        ))
     }
 
     /// 行内原始字节偏移 → 投影偏移。
@@ -162,7 +215,7 @@ impl InlaySnapshot {
     /// 投影偏移 → 行内原始字节偏移；落在注入段内时吸附到锚定之后（不可逆，Left bias）。
     pub(super) fn to_original_offset(&self, line: Line, projected: usize) -> usize {
         let inlays = self.line_inlays(line);
-        for inlay in &inlays {
+        for inlay in inlays {
             if projected >= inlay.projected && projected < inlay.projected + inlay.text.len() {
                 return inlay.anchor;
             }
@@ -174,100 +227,53 @@ impl InlaySnapshot {
                 .map(|inlay| inlay.text.len())
                 .sum::<usize>()
     }
+}
 
-    /// 字节范围（行首/行尾）内的注入段（保持 position 升序）。
-    fn inlays_in(&self, range: &Range<ByteOffset>) -> Vec<&Inlay> {
-        self.inlays
+fn line_inlays(stream: &LineStream, inlays: &[Inlay]) -> Arc<BTreeMap<Line, Arc<[InlayInfo]>>> {
+    if inlays.is_empty() {
+        return Arc::new(BTreeMap::new());
+    }
+    let mut line_infos = BTreeMap::new();
+    let lines = inlays
+        .iter()
+        .filter_map(|inlay| {
+            stream
+                .buffer_snapshot()
+                .byte_to_position(inlay.position)
+                .ok()
+                .map(|position| position.line())
+        })
+        .collect::<BTreeSet<_>>();
+    for line in lines {
+        let Some(source) = stream.source(line) else {
+            continue;
+        };
+        let Some(range) = stream.line_byte_range(Line::new(source.line())) else {
+            continue;
+        };
+        let line_inlays = inlays
             .iter()
             .filter(|inlay| inlay.position >= range.start && inlay.position < range.end)
-            .collect()
+            .collect::<Vec<_>>();
+        if line_inlays.is_empty() {
+            continue;
+        }
+        let mut prefix = 0usize;
+        let mut infos = Vec::with_capacity(line_inlays.len());
+        for inlay in line_inlays {
+            let anchor = inlay.position.get() - range.start.get();
+            infos.push(InlayInfo {
+                anchor,
+                projected: anchor + prefix,
+                text: Arc::from(inlay.text.as_str()),
+            });
+            prefix += inlay.text.len();
+        }
+        line_infos.insert(line, Arc::from(infos));
     }
+    Arc::new(line_infos)
 }
 
-/// 流文本 → 投影 Cow（借用透传；Buffer 变体携带流的借用）。
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use zcv_text::{Buffer, BufferConfig};
-
-    fn snapshot_with(text: &str, inlays: Vec<Inlay>) -> InlaySnapshot {
-        let buffer = Buffer::scratch(text.to_owned(), BufferConfig::default())
-            .expect("测试 Buffer 应能创建");
-        let (mut map, _) = InlayMap::new(LineStream::new(buffer.snapshot()));
-        map.read(LineStream::new(buffer.snapshot()), inlays)
-    }
-
-    fn inlay(position: usize, text: &str) -> Inlay {
-        Inlay {
-            position: ByteOffset::new(position),
-            text: text.to_owned(),
-        }
-    }
-
-    #[test]
-    fn line_text_borrows_without_inlays() {
-        let snapshot = snapshot_with("ab\ncd", Vec::new());
-        let text = snapshot.line_text(Line::new(0)).expect("行 0 应可解析");
-        assert_eq!(text, "ab\n");
-        assert!(matches!(text, Cow::Borrowed(_)));
-    }
-
-    #[test]
-    fn line_text_projects_inlays_after_anchor_characters() {
-        let snapshot = snapshot_with("ab\ncd", vec![inlay(1, ": hint")]);
-        // 行 0 投影：锚定 'a' 之后注入。
-        assert_eq!(snapshot.line_text(Line::new(0)).unwrap(), "a: hintb\n");
-        // buffer 行 1 无注入。
-        assert_eq!(snapshot.line_text(Line::new(1)).unwrap(), "cd");
-    }
-
-    #[test]
-    fn multiple_inlays_accumulate_prefix() {
-        let snapshot = snapshot_with("ab\ncd", vec![inlay(0, "A"), inlay(1, "BB")]);
-        let infos = snapshot.line_inlays(Line::new(0));
-        assert_eq!(infos.len(), 2);
-        assert_eq!(infos[0].anchor, 0);
-        assert_eq!(infos[0].projected, 0);
-        assert_eq!(infos[1].anchor, 1);
-        assert_eq!(infos[1].projected, 1 + 1);
-        assert_eq!(snapshot.line_text(Line::new(0)).unwrap(), "AaBBb\n");
-    }
-
-    #[test]
-    fn offset_roundtrip_and_inlay_snapping() {
-        let snapshot = snapshot_with("abcdef\n", vec![inlay(2, "XY")]);
-        let line = Line::new(0);
-        // 原始 → 投影（字符起点语义）：锚定偏移处的字符在注入文本之后，右移注入长度。
-        assert_eq!(snapshot.to_projected_offset(line, 1), 1);
-        assert_eq!(snapshot.to_projected_offset(line, 2), 4);
-        assert_eq!(snapshot.to_projected_offset(line, 3), 5);
-        // 投影 → 原始：注入段内吸附到锚定后；段外减去前缀。
-        assert_eq!(snapshot.to_original_offset(line, 2), 2);
-        assert_eq!(snapshot.to_original_offset(line, 3), 2);
-        assert_eq!(snapshot.to_original_offset(line, 4), 2);
-        assert_eq!(snapshot.to_original_offset(line, 5), 3);
-        assert_eq!(snapshot.to_original_offset(line, 7), 5);
-        // roundtrip：原始 → 投影 → 原始 恒等。
-        for byte in 0..6 {
-            assert_eq!(
-                snapshot.to_original_offset(line, snapshot.to_projected_offset(line, byte)),
-                byte
-            );
-        }
-    }
-
-    #[test]
-    fn version_changes_only_on_inlay_config_change() {
-        let buffer = Buffer::scratch("ab\n".to_owned(), BufferConfig::default())
-            .expect("测试 Buffer 应能创建");
-        let mut map = InlayMap::new(LineStream::new(buffer.snapshot())).0;
-        let stream = LineStream::new(buffer.snapshot());
-        let snapshot = map.read(stream, vec![inlay(1, "x")]);
-        // 相同配置重复读：不变化。
-        let snapshot2 = map.read(snapshot.stream().clone(), snapshot.inlays.clone());
-        assert_eq!(snapshot2.version(), snapshot.version());
-        // 配置变化：版本递增。
-        let snapshot3 = map.read(snapshot2.stream().clone(), vec![inlay(1, "xx")]);
-        assert_eq!(snapshot3.version(), snapshot.version() + 1);
-    }
-}
+#[path = "test/inlay_map.rs"]
+mod test;

@@ -6,15 +6,13 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use gpui::{App, ClipboardItem, Context, Window};
+use zcv_multi_buffer::MultiBufferSnapshot;
 use zcv_text::{
-    ByteOffset, Line, MovementDirection, MovementUnit, Snapshot, TextError, TextResult,
+    ByteOffset, Line, MovementDirection, MovementUnit, TextError, TextRange, TextResult,
 };
 
 use super::*;
-use crate::selection::{
-    Selection, SelectionSet, apply_edits_with_after_mapping, apply_targeted_edits,
-    replace_selections,
-};
+use crate::selection::{Selection, SelectionSet, apply_targeted_edits, replace_selections};
 
 impl Editor {
     fn delete(
@@ -45,8 +43,7 @@ impl Editor {
         self.composition = None;
         let before_selections = self.resolved_selections();
         let targets = {
-            let buffer_entity = self.text_buffer(cx);
-            let buffer = buffer_entity.read(cx);
+            let buffer = self.multi_buffer.read(cx).snapshot(cx);
             before_selections
                 .as_slice()
                 .iter()
@@ -91,7 +88,7 @@ impl Editor {
         let metadata = edit_metadata(description);
         let _ = self.change_with_after(before_selections, metadata.clone(), cx, |buffer| {
             let targets = targets?;
-            replace_selections(buffer, &targets, "", metadata)
+            replace_selections(buffer, &targets, "")
         });
     }
 
@@ -111,8 +108,7 @@ impl Editor {
         caret_motion: Option<(MovementDirection, MovementUnit)>,
         cx: &App,
     ) -> TextResult<SelectionSet> {
-        let buffer_entity = self.text_buffer(cx);
-        let buffer = buffer_entity.read(cx);
+        let buffer = self.multi_buffer.read(cx).snapshot(cx);
         let mut targets = Vec::new();
         for selection in selections.as_slice() {
             if !selection.is_caret() {
@@ -144,7 +140,7 @@ impl Editor {
             return;
         }
         let before = self.resolved_selections().normalized();
-        let snapshot = self.text_buffer(cx).read(cx).snapshot();
+        let snapshot = self.text_snapshot(cx);
         let all_carets = before
             .as_slice()
             .iter()
@@ -161,7 +157,7 @@ impl Editor {
                         .tab;
                     let text: Arc<str> = if tab.insert_spaces {
                         let column = self
-                            .display_map
+                            .display_snapshot
                             .offset_to_display_point(selection.head())
                             .map_err(|error| TextError::InvariantViolation {
                                 location: "Editor::indent",
@@ -199,12 +195,10 @@ impl Editor {
         let metadata = edit_metadata("增加缩进");
         let _ = self.change_with_after(before.clone(), metadata.clone(), cx, |buffer| {
             let targets = targets?;
-            let outcome = apply_targeted_edits(buffer, targets, metadata)?;
-            // 行首插入是文本编辑目标，不是新的用户选区。
-            // 显式映射原选区的两端，既让端点越过新增缩进，又保持原有选区数量、方向和 primary 归属。
-            let after = outcome.transaction().map_or_else(
+            let outcome = apply_targeted_edits(buffer, targets)?;
+            let after = outcome.position_map().map_or_else(
                 || before.clone(),
-                |transaction| before.map_through_position_map(transaction.event().position_map()),
+                |position_map| before.map_through_position_map(position_map),
             );
             Ok((outcome, after))
         });
@@ -215,7 +209,7 @@ impl Editor {
             return;
         }
         let before = self.resolved_selections();
-        let snapshot = self.text_buffer(cx).read(cx).snapshot();
+        let snapshot = self.text_snapshot(cx);
         let targets = touched_lines(&snapshot, &before).and_then(|lines| {
             lines
                 .into_iter()
@@ -241,10 +235,10 @@ impl Editor {
         let metadata = edit_metadata("减少缩进");
         let _ = self.change_with_after(before.clone(), metadata.clone(), cx, |buffer| {
             let targets = targets?;
-            let outcome = apply_targeted_edits(buffer, targets, metadata)?;
-            let after = outcome.transaction().map_or_else(
+            let outcome = apply_targeted_edits(buffer, targets)?;
+            let after = outcome.position_map().map_or_else(
                 || before.clone(),
-                |transaction| before.map_through_position_map(transaction.event().position_map()),
+                |position_map| before.map_through_position_map(position_map),
             );
             Ok((outcome, after))
         });
@@ -255,9 +249,9 @@ impl Editor {
             return;
         }
         self.composition = None;
-        self.sync_display_map(cx);
+        self.refresh_multi_snapshot(cx);
         let before = self.resolved_selections().normalized();
-        let snapshot = self.text_buffer(cx).read(cx).snapshot();
+        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
         // 逐选区计算插入文本与光标落点：
         // 光标处于声明了 newline 的括号对之间时，闭合符前额外补一个基准缩进空行，与自动缩进共用同一回车路径）。
         let mut trailing_lens = Vec::new();
@@ -266,7 +260,7 @@ impl Editor {
             .iter()
             .map(|selection| {
                 let offset = selection.start();
-                let suggestion = self.display_map.suggested_newline_indent(offset)?;
+                let suggestion = self.multi_snapshot.suggested_newline_indent(offset)?;
                 let tab = self.multi_buffer.read(cx).buffer_config_at(offset, cx).tab;
                 let indent = if suggestion.additional_levels > 0 {
                     if tab.insert_spaces {
@@ -293,11 +287,8 @@ impl Editor {
         let metadata = edit_metadata("插入换行");
         let _ = self.change_with_after(before.clone(), metadata.clone(), cx, |buffer| {
             let targets = targets?;
-            let outcome = apply_targeted_edits(buffer, targets, metadata)?;
-            let position_map = outcome
-                .transaction()
-                .map(|transaction| transaction.event().position_map().clone())
-                .unwrap_or_default();
+            let outcome = apply_targeted_edits(buffer, targets)?;
+            let position_map = outcome.position_map().cloned().unwrap_or_default();
             // 括号对场景光标落在中间行行尾（回退末尾空行的长度），其余落在插入文本末尾。
             let after = SelectionSet::new(
                 before
@@ -318,17 +309,35 @@ impl Editor {
 
     /// 光标处是否需要括号内额外空行：
     /// 光标前后跳过非换行空白后，分别紧邻声明了 `newline` 的配对起始与闭合字符。
-    fn extra_newline_in_pair(&self, offset: ByteOffset, snapshot: &Snapshot, cx: &App) -> bool {
+    fn extra_newline_in_pair(
+        &self,
+        offset: ByteOffset,
+        snapshot: &MultiBufferSnapshot,
+        cx: &App,
+    ) -> bool {
         let Some(pairs) = self.auto_close_pairs(offset, cx) else {
             return false;
         };
         let Ok((line, column)) = snapshot.byte_to_point(offset) else {
             return false;
         };
-        let Ok(line_slice) = snapshot.line_content(line, None) else {
+        let Some(line_end) = (if line.get() + 1 < snapshot.line_count() {
+            snapshot.line_start_byte(Line::new(line.get() + 1)).ok()
+        } else {
+            Some(snapshot.len_bytes())
+        }) else {
             return false;
         };
-        let before = &line_slice.as_str()[..column];
+        let Ok(line_start) = snapshot.line_start_byte(line) else {
+            return false;
+        };
+        let Ok(range) = TextRange::new(line_start, line_end) else {
+            return false;
+        };
+        let Ok(before) = snapshot.text_for_range(range) else {
+            return false;
+        };
+        let before = &before[..column.min(before.len())];
         pairs.iter().any(|pair| {
             pair.newline
                 && before.trim_end().ends_with(pair.start)
@@ -337,19 +346,13 @@ impl Editor {
     }
 
     fn selected_text(&self, cx: &App) -> Option<String> {
-        let snapshot = self.text_buffer(cx).read(cx).snapshot();
+        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
         let mut parts = Vec::new();
         for selection in self.resolved_selections().as_slice() {
             if selection.is_caret() {
                 continue;
             }
-            parts.push(
-                snapshot
-                    .slice_text(selection.range())
-                    .ok()?
-                    .as_str()
-                    .to_owned(),
-            );
+            parts.push(snapshot.text_for_range(selection.range()).ok()?);
         }
         (!parts.is_empty()).then(|| parts.join("\n"))
     }
@@ -409,7 +412,7 @@ impl Editor {
 
     fn synchronize_after_history_edit(&mut self, cx: &mut Context<Self>) {
         self.composition = None;
-        self.sync_display_map(cx);
+        self.refresh_multi_snapshot(cx);
         self.request_autoscroll();
         self.input_layout = None;
         cx.notify();
@@ -516,7 +519,7 @@ impl Editor {
         let before_selections = self.resolved_selections();
         let metadata = edit_metadata("剪切");
         let _ = self.change_with_after(before_selections.clone(), metadata.clone(), cx, |buffer| {
-            replace_selections(buffer, &before_selections, "", metadata)
+            replace_selections(buffer, &before_selections, "")
         });
     }
 
@@ -573,23 +576,30 @@ impl Editor {
             MovementDirection::Previous => "移动行到上方",
             MovementDirection::Next => "移动行到下方",
         };
-        let snapshot = self.text_buffer(cx).read(cx).snapshot();
+        let snapshot = self.text_snapshot(cx);
         let metadata = edit_metadata(description);
-        let _ = self.change_with_after(before.clone(), metadata.clone(), cx, |buffer| {
-            let (targets, plans) = line_blocks(&snapshot, &before).and_then(|blocks| {
-                let targets = move_line_targets(&snapshot, &blocks, direction)?;
-                let plans = pending_selection_shift(&snapshot, &before, &blocks, direction)?;
-                Ok((targets, plans))
-            })?;
-            apply_edits_with_after_mapping(buffer, targets, metadata, |snapshot| {
-                resolve_selection_shift(snapshot, &before, &plans)
-            })
-        });
+        let _ = self.change_with_after_post(
+            before.clone(),
+            metadata.clone(),
+            cx,
+            |buffer| {
+                let (targets, plans) = line_blocks(&snapshot, &before).and_then(|blocks| {
+                    let targets = move_line_targets(&snapshot, &blocks, direction)?;
+                    let plans = pending_selection_shift(&snapshot, &before, &blocks, direction)?;
+                    Ok((targets, plans))
+                })?;
+                Ok((apply_targeted_edits(buffer, targets)?, plans))
+            },
+            |plans, snapshot| resolve_selection_shift(snapshot, &before, &plans),
+        );
     }
 }
 
 /// 选区涉及的行合并为不相邻的行块（相邻行并成一块），返回 (起始行, 末行)。
-fn line_blocks(snapshot: &Snapshot, selections: &SelectionSet) -> TextResult<Vec<(usize, usize)>> {
+fn line_blocks(
+    snapshot: &MultiBufferSnapshot,
+    selections: &SelectionSet,
+) -> TextResult<Vec<(usize, usize)>> {
     let mut blocks: Vec<(usize, usize)> = Vec::new();
     for line in touched_lines(snapshot, selections)? {
         let row = line.get();
@@ -605,7 +615,7 @@ fn line_blocks(snapshot: &Snapshot, selections: &SelectionSet) -> TextResult<Vec
 }
 
 /// 行块末行行尾的字节偏移（含换行符；最后一行无换行则到文档末尾）。
-fn line_block_end(snapshot: &Snapshot, end: usize) -> TextResult<ByteOffset> {
+fn line_block_end(snapshot: &MultiBufferSnapshot, end: usize) -> TextResult<ByteOffset> {
     let line_count = snapshot.line_count();
     if end + 1 < line_count {
         snapshot.line_start_byte(Line::new(end + 1))
@@ -615,7 +625,7 @@ fn line_block_end(snapshot: &Snapshot, end: usize) -> TextResult<ByteOffset> {
 }
 
 /// 行内容末尾的字节偏移（不含换行符）。
-fn line_content_end(snapshot: &Snapshot, line: usize) -> TextResult<ByteOffset> {
+fn line_content_end(snapshot: &MultiBufferSnapshot, line: usize) -> TextResult<ByteOffset> {
     let end = line_block_end(snapshot, line)?;
     if line + 1 < snapshot.line_count() {
         Ok(ByteOffset::new(end.get().saturating_sub(1)))
@@ -628,7 +638,7 @@ fn line_content_end(snapshot: &Snapshot, line: usize) -> TextResult<ByteOffset> 
 ///
 /// 上移把前面一行移到行块后，下移把行块移到后面一行后。
 fn move_line_targets(
-    snapshot: &Snapshot,
+    snapshot: &MultiBufferSnapshot,
     blocks: &[(usize, usize)],
     direction: MovementDirection,
 ) -> TextResult<Vec<(Selection, Arc<str>)>> {
@@ -651,25 +661,29 @@ fn move_line_targets(
             MovementDirection::Previous => {
                 let previous_start = snapshot.line_start_byte(Line::new(start - 1))?;
                 let previous_end = snapshot.line_start_byte(Line::new(start))?;
-                let content = snapshot
-                    .slice_byte_range(previous_start, line_content_end(snapshot, start - 1)?)?;
+                let content = snapshot.text_for_range(
+                    TextRange::new(previous_start, line_content_end(snapshot, start - 1)?)
+                        .expect("完整行范围必须合法"),
+                )?;
                 let insertion = line_content_end(snapshot, end)?;
                 targets.push((Selection::new(previous_start, previous_end), Arc::from("")));
                 targets.push((
                     Selection::caret(insertion),
-                    Arc::from(format!("\n{}", content.as_str())),
+                    Arc::from(format!("\n{content}")),
                 ));
             }
             MovementDirection::Next => {
                 let block_start = snapshot.line_start_byte(Line::new(start))?;
                 let block_end = line_block_end(snapshot, end)?;
-                let content =
-                    snapshot.slice_byte_range(block_start, line_content_end(snapshot, end)?)?;
+                let content = snapshot.text_for_range(
+                    TextRange::new(block_start, line_content_end(snapshot, end)?)
+                        .expect("完整行范围必须合法"),
+                )?;
                 let insertion = line_content_end(snapshot, end + 1)?;
                 targets.push((Selection::new(block_start, block_end), Arc::from("")));
                 targets.push((
                     Selection::caret(insertion),
-                    Arc::from(format!("\n{}", content.as_str())),
+                    Arc::from(format!("\n{content}")),
                 ));
             }
         }
@@ -682,7 +696,7 @@ fn move_line_targets(
 /// 行内容整体移动，行内字节偏移编辑前后一致；
 /// 行号平移只在端点行属于实际移动的行块时发生（选区端点所在行必有选区，理论上一概在行块内）。
 fn pending_selection_shift(
-    snapshot: &Snapshot,
+    snapshot: &MultiBufferSnapshot,
     selections: &SelectionSet,
     blocks: &[(usize, usize)],
     direction: MovementDirection,
@@ -713,7 +727,7 @@ fn pending_selection_shift(
 
 /// 按编辑后的快照把 (行内偏移, 目标行) 还原为字节偏移；新行较短时钳制到行尾。
 fn resolve_selection_shift(
-    snapshot: &Snapshot,
+    snapshot: &MultiBufferSnapshot,
     selections: &SelectionSet,
     plans: &[(usize, usize)],
 ) -> TextResult<SelectionSet> {
@@ -734,7 +748,7 @@ fn resolve_selection_shift(
 }
 
 fn resolve_point(
-    snapshot: &Snapshot,
+    snapshot: &MultiBufferSnapshot,
     (offset_in_line, target_line): (usize, usize),
 ) -> TextResult<ByteOffset> {
     let line_start = snapshot.line_start_byte(Line::new(target_line))?.get();
@@ -745,7 +759,7 @@ fn resolve_point(
 }
 
 pub(super) fn touched_lines(
-    snapshot: &Snapshot,
+    snapshot: &MultiBufferSnapshot,
     selections: &SelectionSet,
 ) -> TextResult<Vec<Line>> {
     let mut lines = BTreeSet::new();
@@ -762,13 +776,14 @@ pub(super) fn touched_lines(
 }
 
 fn leading_indent_range(
-    snapshot: &Snapshot,
+    snapshot: &MultiBufferSnapshot,
     line: Line,
     indent_width: usize,
 ) -> TextResult<Option<Selection>> {
     let start = snapshot.line_start_byte(line)?;
-    let text = snapshot.slice_line(line)?;
-    let content = text.as_str();
+    let end = line_block_end(snapshot, line.get())?;
+    let content =
+        snapshot.text_for_range(TextRange::new(start, end).expect("逻辑行范围必须合法"))?;
     let end = if content.starts_with('\t') {
         start.checked_add(1)
     } else {
@@ -785,7 +800,7 @@ fn leading_indent_range(
 }
 
 /// `offset` 之后跳过非换行空白，是否以 `text` 开头（括号内额外空行的闭合符检查）。
-fn text_after_trim_is(snapshot: &Snapshot, offset: ByteOffset, text: &str) -> bool {
+fn text_after_trim_is(snapshot: &MultiBufferSnapshot, offset: ByteOffset, text: &str) -> bool {
     let mut cursor = offset;
     loop {
         let Ok((chunk, chunk_start)) = snapshot.chunk_at_byte(cursor) else {

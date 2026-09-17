@@ -24,12 +24,12 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
         editor.selection_history.insert_transaction(
             TransactionId::new(1),
             EditorSelections::from_selection_set(
-                &editor.multi_snapshot,
+                editor.display_snapshot.buffer_snapshot(),
                 &SelectionSet::caret(ByteOffset::ZERO),
             ),
         );
         let redo = EditorSelections::from_selection_set(
-            &editor.multi_snapshot,
+            editor.display_snapshot.buffer_snapshot(),
             &SelectionSet::caret(ByteOffset::new(1)),
         );
         editor
@@ -57,10 +57,7 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
             editor.multi_buffer().read(cx).working_source(),
             Some(buffer.clone())
         );
-        assert_eq!(
-            editor.text_buffer(cx).read(cx).len_bytes(),
-            ByteOffset::new(4)
-        );
+        assert_eq!(editor.render_snapshot().len_bytes(), ByteOffset::new(4));
         assert_eq!(editor.render_snapshot().len_bytes(), ByteOffset::new(4));
         assert_eq!(editor.selections(), SelectionSet::caret(ByteOffset::ZERO));
         assert_eq!(editor.scroll_manager.anchor(), DisplayPoint::ZERO);
@@ -137,7 +134,12 @@ fn working_source_buffer_config_controls_editor_indentation(cx: &mut TestAppCont
 
     cx.read_entity(&editor, |editor, cx| {
         assert!(
-            !editor.text_buffer(cx).read(cx).config().tab.insert_spaces,
+            !editor
+                .multi_buffer()
+                .read(cx)
+                .buffer_config_at(ByteOffset::ZERO, cx)
+                .tab
+                .insert_spaces,
             "工作源配置变化必须同步到普通编辑器的显示投影"
         );
     });
@@ -332,13 +334,13 @@ fn constructors_create_expected_modes_and_independent_scratch_buffers(cx: &mut T
         assert_eq!(editor.mode, EditorMode::SingleLine);
         assert_eq!(editor.selections(), SelectionSet::default());
         assert_eq!(
-            editor.display_map.buffer_snapshot().version(),
-            editor.text_buffer(cx).read(cx).version()
+            editor.display_snapshot.buffer_snapshot().version(),
+            editor.multi_buffer().read(cx).snapshot(cx).version()
         );
         let _focus = editor.focus_handle();
-        editor.text_buffer(cx)
+        editor.multi_buffer().entity_id()
     });
-    let auto_height_buffer = cx.read_entity(&auto_height, |editor, cx| {
+    let auto_height_buffer = cx.read_entity(&auto_height, |editor, _cx| {
         assert_eq!(
             editor.mode,
             EditorMode::AutoHeight {
@@ -346,7 +348,7 @@ fn constructors_create_expected_modes_and_independent_scratch_buffers(cx: &mut T
                 max_lines: Some(6),
             }
         );
-        editor.text_buffer(cx)
+        editor.multi_buffer().entity_id()
     });
 
     assert_ne!(single_buffer, auto_height_buffer);

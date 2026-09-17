@@ -13,8 +13,10 @@ use std::sync::Arc;
 use gpui::{Font, Pixels, TextRun, TextSystem, WindowTextSystem};
 use sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use unicode_segmentation::UnicodeSegmentation;
-use zcv_text::{ByteOffset, CoordinateError, Line, LogicalColumn, Position, Snapshot, TextRange};
+use zcv_multi_buffer::MultiBufferSnapshot;
+use zcv_text::{ByteOffset, CoordinateError, Line, LogicalColumn, Position, TextRange};
 
+use super::chunk::{Chunk, ChunkBase, ChunkText, FoldChunks, HighlightStyles, InlayChunks};
 use super::display_width::DisplayColumn;
 use super::error::DisplayMapResult;
 use super::fold_map::{
@@ -145,50 +147,82 @@ pub(super) enum WrapFragmentKind {
     Text(StreamLineSource),
 }
 
-/// 视口内单条显示行。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct WrapViewportRow<'a> {
-    kind: WrapViewportRowKind<'a>,
-}
-
-impl<'a> WrapViewportRow<'a> {
-    pub(super) fn new(kind: WrapViewportRowKind<'a>) -> Self {
-        Self { kind }
-    }
-
-    pub(super) fn kind(&self) -> &WrapViewportRowKind<'a> {
-        &self.kind
-    }
-}
-
-/// 视口显示行内容种类。
+/// Wrap 层输出的行元数据。
 ///
-/// Text 行携带整行投影文本（`text`，含行内提示注入，行尾换行未剥）与本段投影字节范围；
-/// 渲染端在 `indent` > 0 时把假空格拼在段文本前面。
-/// 行的文本来源用于行号、高亮与命中映射。
-/// 折叠合并行（anchor 文本 + 占位符 + 闭合尾段）携带段表，渲染端按段合成高亮与命中。
+/// 文本本身由下游 `FoldSnapshot`/`TabSnapshot` 在消费 chunk 时按投影行读取；
+/// 游标只传递坐标和来源，不在每一行物化 `Cow`/`Arc` 文本。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum WrapViewportRowKind<'a> {
+pub(crate) enum WrapRowKind {
     Text {
         source: StreamLineSource,
-        text: std::borrow::Cow<'a, str>,
+        projected_line: usize,
         byte_range: Range<usize>,
         global_byte_start: usize,
         fragment_index: usize,
         indent: usize,
-        segments: Option<Vec<FoldRowSegment>>,
     },
 }
 
-/// 一次显示行视口读取结果。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct WrapViewportSlice<'a> {
-    rows: Vec<WrapViewportRow<'a>>,
+/// 按显示行顺序消费 Wrap 快照的游标。
+///
+/// 游标只在起点定位一次，之后通过 `next` 连续推进 transform；
+/// 上层的 Block 游标跳过虚拟块时也只允许向前 seek，从而不会在每一行重新建立换行映射。
+pub(super) struct WrapRows<'a> {
+    snapshot: &'a WrapSnapshot,
+    cursor: sum_tree::Cursor<'a, 'static, Transform, OutputToInput>,
+    row: usize,
+    end: usize,
 }
 
-impl<'a> WrapViewportSlice<'a> {
-    pub(super) fn rows(&self) -> &[WrapViewportRow<'a>] {
-        &self.rows
+impl<'a> WrapRows<'a> {
+    pub(super) fn new(snapshot: &'a WrapSnapshot, start: usize, end: usize) -> Self {
+        let end = end.min(snapshot.transforms.summary().output_rows);
+        let mut cursor = snapshot.transforms.cursor::<OutputToInput>(());
+        cursor.seek(&OutputRows(start), Bias::Right);
+        Self {
+            snapshot,
+            cursor,
+            row: start,
+            end,
+        }
+    }
+
+    pub(super) fn seek_forward(&mut self, row: usize) {
+        debug_assert!(row >= self.row);
+        if row > self.row {
+            self.cursor.seek_forward(&OutputRows(row), Bias::Right);
+            self.row = row;
+        }
+    }
+
+    pub(super) fn next(&mut self) -> Option<WrapRowKind> {
+        if self.row >= self.end {
+            return None;
+        }
+        let Some(transform) = self.cursor.item() else {
+            // 空投影可能保留逻辑行计数，但没有可消费的变换项。
+            // 将游标标记为耗尽，避免初始化阶段把不存在的行当作有效显示片段。
+            self.row = self.end;
+            return None;
+        };
+        let transform_start = *self.cursor.start();
+        let Some(fragment) = self
+            .snapshot
+            .fragment_in_transform(transform, transform_start, self.row)
+            .ok()
+        else {
+            self.row += 1;
+            return self.next();
+        };
+        let Some(row) = self.snapshot.row_kind(fragment).ok() else {
+            self.row += 1;
+            return self.next();
+        };
+        self.row += 1;
+        if self.row >= self.cursor.end().0.0 {
+            self.cursor.next();
+        }
+        Some(row)
     }
 }
 
@@ -206,7 +240,7 @@ impl WrapSnapshot {
         &self.tab_snapshot
     }
 
-    pub(super) fn buffer_snapshot(&self) -> &Snapshot {
+    pub(super) fn buffer_snapshot(&self) -> &MultiBufferSnapshot {
         self.tab_snapshot.buffer_snapshot()
     }
 
@@ -280,7 +314,7 @@ impl WrapSnapshot {
                         &content[fragment.byte_range.clone()],
                         fragment.indent,
                         point.column().get(),
-                        buffer,
+                        buffer.config(),
                     );
                     return self.merged_byte_to_offset(
                         &segments,
@@ -294,7 +328,7 @@ impl WrapSnapshot {
                     &content[byte_range.clone()],
                     fragment.indent,
                     point.column().get(),
-                    buffer,
+                    buffer.config(),
                 );
                 // 投影行内偏移逆投影回原始行内偏移（注入段内吸附到锚定后）。
                 let stream_line = self
@@ -324,95 +358,136 @@ impl WrapSnapshot {
         let placeholder = &segments[1];
         let tail = &segments[2];
         if merged_byte < anchor.merged_range.end {
-            let FoldRowSegmentKind::Text {
-                stream_line,
-                global_start,
-                ..
-            } = &anchor.kind
-            else {
+            let FoldRowSegmentKind::Text { stream_line, .. } = &anchor.kind else {
                 unreachable!("折叠合并行首段必须是 anchor 文本段");
             };
             let original = inlay.to_original_offset(*stream_line, merged_byte);
-            return Ok(ByteOffset::new(global_start + original));
+            return self.stream_offset(*stream_line, original);
         }
         if merged_byte < placeholder.merged_range.end {
             // 占位符列按选区方向吸附到折叠起点或终点；这样拖拽经过折叠时，隐藏内容会整体纳入选区。
             if bias == FoldBias::Right {
-                let FoldRowSegmentKind::Text { global_start, .. } = &tail.kind else {
+                let FoldRowSegmentKind::Text {
+                    stream_line,
+                    projected_range,
+                } = &tail.kind
+                else {
                     unreachable!("折叠合并行尾段必须是 close 文本段");
                 };
-                return Ok(ByteOffset::new(*global_start));
+                let original = inlay.to_original_offset(*stream_line, projected_range.start);
+                return self.stream_offset(*stream_line, original);
             }
-            let FoldRowSegmentKind::Text {
-                stream_line,
-                global_start,
-                ..
-            } = &anchor.kind
-            else {
+            let FoldRowSegmentKind::Text { stream_line, .. } = &anchor.kind else {
                 unreachable!("折叠合并行首段必须是 anchor 文本段");
             };
             let anchor_end = inlay.to_original_offset(*stream_line, anchor.merged_range.end);
-            return Ok(ByteOffset::new(*global_start + anchor_end));
+            return self.stream_offset(*stream_line, anchor_end);
         }
         let FoldRowSegmentKind::Text {
             stream_line,
             projected_range,
-            global_start,
         } = &tail.kind
         else {
             unreachable!("折叠合并行尾段必须是 close 文本段");
         };
         let tail_projected = projected_range.start + (merged_byte - tail.merged_range.start);
         let original = inlay.to_original_offset(*stream_line, tail_projected);
-        let tail_original_start = inlay.to_original_offset(*stream_line, projected_range.start);
-        Ok(ByteOffset::new(
-            *global_start + original - tail_original_start,
-        ))
+        self.stream_offset(*stream_line, original)
     }
 
-    pub(super) fn slice_viewport(
+    fn stream_offset(&self, stream_line: Line, original: usize) -> DisplayMapResult<ByteOffset> {
+        let inlay = self.tab_snapshot.fold_snapshot().inlay_snapshot();
+        let range = inlay
+            .line_byte_range(stream_line)
+            .ok_or(CoordinateError::LineOutOfBounds(stream_line))?;
+        Ok(ByteOffset::new(range.start.get() + original))
+    }
+
+    pub(super) fn rows(&self, start: usize, end: usize) -> WrapRows<'_> {
+        WrapRows::new(self, start, end.min(self.line_count()))
+    }
+
+    /// Tab 投影行的内容长度，不读取或拼接投影整行。
+    fn content_len_for_tab_row(&self, tab_row: usize) -> DisplayMapResult<usize> {
+        let line = Line::new(tab_row);
+        let fold = self.tab_snapshot.fold_snapshot();
+        if let Some(segments) = fold.fold_row_segments(ProjectedLineIndex::new(tab_row)) {
+            return Ok(segments
+                .last()
+                .expect("折叠合并行必须至少包含一个段")
+                .merged_range()
+                .end);
+        }
+        let stream_line = self
+            .tab_snapshot
+            .stream_line_for_projected(line)
+            .ok_or(CoordinateError::LineOutOfBounds(line))?;
+        fold.inlay_snapshot()
+            .projected_line_content_metrics(stream_line)
+            .map(|metrics| metrics.0)
+            .ok_or_else(|| CoordinateError::LineOutOfBounds(line).into())
+    }
+
+    fn fragment_in_transform(
         &self,
-        start_row: DisplayRow,
-        line_count: usize,
-    ) -> DisplayMapResult<WrapViewportSlice<'_>> {
-        let total = self.line_count();
-        let start = start_row.get();
-        if start > total {
-            return Err(CoordinateError::LineOutOfBounds(Line::new(start)).into());
+        transform: &Transform,
+        transform_start: OutputToInput,
+        row: usize,
+    ) -> DisplayMapResult<WrapFragment> {
+        let output_start = transform_start.0.0;
+        let input_start = transform_start.1.0;
+        match transform.kind {
+            TransformKind::Isomorphic => {
+                let tab_row = input_start + row - output_start;
+                let kind = self.projected_kind(tab_row)?;
+                let content_len = self.content_len_for_tab_row(tab_row)?;
+                Ok(WrapFragment {
+                    tab_row,
+                    kind,
+                    byte_range: 0..content_len,
+                    indent: 0,
+                    fragment_index: 0,
+                })
+            }
+            TransformKind::Wrap => {
+                let kind = self.projected_kind(input_start)?;
+                let content_len = self.content_len_for_tab_row(input_start)?;
+                let fragment_index = row - output_start;
+                Ok(WrapFragment {
+                    tab_row: input_start,
+                    kind,
+                    byte_range: fragment_byte_range(
+                        &transform.wrap_points,
+                        fragment_index,
+                        content_len,
+                    ),
+                    indent: fragment_index
+                        .checked_sub(1)
+                        .map_or(0, |index| transform.wrap_points[index].indent as usize),
+                    fragment_index,
+                })
+            }
         }
-        let end = start.saturating_add(line_count).min(total);
-        let mut rows = Vec::with_capacity(end - start);
-        for row in start..end {
-            let fragment = self.display_row_to_fragment(DisplayRow::new(row))?;
-            let kind = match fragment.kind {
-                WrapFragmentKind::Text(source) => {
-                    // 投影文本包含行内提示注入；行首为原始 buffer 字节。
-                    let tab_row = Line::new(fragment.tab_row);
-                    let projected = ProjectedLineIndex::new(fragment.tab_row);
-                    let fold = self.tab_snapshot.fold_snapshot();
-                    let segments = fold.fold_row_segments(projected);
-                    let line_range = self
-                        .tab_snapshot
-                        .line_byte_range(tab_row)
-                        .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
-                    let text = self
-                        .tab_snapshot
-                        .line_text(tab_row)
-                        .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
-                    WrapViewportRowKind::Text {
-                        source,
-                        text,
-                        byte_range: fragment.byte_range,
-                        global_byte_start: line_range.start.get(),
-                        fragment_index: fragment.fragment_index,
-                        indent: fragment.indent,
-                        segments,
-                    }
-                }
-            };
-            rows.push(WrapViewportRow::new(kind));
+    }
+
+    fn row_kind(&self, fragment: WrapFragment) -> DisplayMapResult<WrapRowKind> {
+        match fragment.kind {
+            WrapFragmentKind::Text(source) => {
+                let tab_row = Line::new(fragment.tab_row);
+                let line_range = self
+                    .tab_snapshot
+                    .line_byte_range(tab_row)
+                    .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
+                Ok(WrapRowKind::Text {
+                    source,
+                    projected_line: fragment.tab_row,
+                    byte_range: fragment.byte_range,
+                    global_byte_start: line_range.start.get(),
+                    fragment_index: fragment.fragment_index,
+                    indent: fragment.indent,
+                })
+            }
         }
-        Ok(WrapViewportSlice { rows })
     }
 
     pub(super) fn project_text_range(
@@ -514,13 +589,7 @@ impl WrapSnapshot {
             TransformKind::Isomorphic => {
                 let tab_row = input_start + (row.get() - output_start);
                 let kind = self.projected_kind(tab_row)?;
-                let content_len = line_content(
-                    self.tab_snapshot
-                        .line_text(Line::new(tab_row))
-                        .expect("可见行必须可解析")
-                        .as_ref(),
-                )
-                .len();
+                let content_len = self.content_len_for_tab_row(tab_row)?;
                 Ok(WrapFragment {
                     tab_row,
                     kind,
@@ -531,13 +600,7 @@ impl WrapSnapshot {
             }
             TransformKind::Wrap => {
                 let kind = self.projected_kind(input_start)?;
-                let content_len = line_content(
-                    self.tab_snapshot
-                        .line_text(Line::new(input_start))
-                        .expect("可见行必须可解析")
-                        .as_ref(),
-                )
-                .len();
+                let content_len = self.content_len_for_tab_row(input_start)?;
                 let fragment_index = row.get() - output_start;
                 Ok(WrapFragment {
                     tab_row: input_start,
@@ -653,7 +716,7 @@ impl WrapSnapshot {
         let column = content[fragment_start..target_projected]
             .graphemes(true)
             .fold(indent, |column, grapheme| {
-                advance_display_column(column, grapheme, buffer)
+                advance_display_column(column, grapheme, buffer.config())
             });
         Ok(DisplayPoint::new(
             DisplayRow::new(output_start + fragment_index),
@@ -797,7 +860,9 @@ impl WrapMap {
         self.snapshot.tab_snapshot = tab_snapshot;
         if let Some(wrap_width) = self.wrap_width {
             // 行内提示变化由 fold 发 structural edit（单一信号）。
-            if fold_edits.iter().any(FoldEdit::is_structural) {
+            let line_count_changed = self.snapshot.tab_snapshot.line_count()
+                != self.snapshot.transforms.summary().input_lines;
+            if line_count_changed || fold_edits.iter().any(FoldEdit::is_structural) {
                 self.rewrap_all(wrap_width);
             } else {
                 let changed_lines: Vec<Line> = fold_edits
@@ -934,32 +999,82 @@ impl WrapMap {
         tab_row: usize,
         wrap_width: Pixels,
     ) {
-        match self.snapshot.projected_kind(tab_row) {
-            Err(_) => push_isomorphic(transforms, 1),
-            Ok(WrapFragmentKind::Text(_)) => {
-                // 文本统一走流，共用换行计算。
-                let text = self
-                    .snapshot
-                    .tab_snapshot
-                    .line_text(Line::new(tab_row))
-                    .expect("可见行必须可解析");
-                let content = line_content(text.as_ref());
-                let boundaries = self.wrap_points(content, wrap_width);
-                if boundaries.is_empty() {
-                    push_isomorphic(transforms, 1);
-                } else {
-                    transforms.push(Transform {
-                        kind: TransformKind::Wrap,
-                        input_lines: 1,
-                        wrap_points: boundaries.to_vec(),
-                    });
-                }
-            }
+        // 调用点保证 tab_row 落在当前 tab 行数内；越界说明换行层与 fold/tab 快照不一致，应直接暴露。
+        let WrapFragmentKind::Text(_) = self
+            .snapshot
+            .projected_kind(tab_row)
+            .expect("换行变换只能作用于已投影的文本行");
+        let prepared = self
+            .prepared_wrap_text(tab_row)
+            .expect("已投影的文本行必须能建立塑形输入");
+        let boundaries = self.wrap_points(prepared, wrap_width);
+        if boundaries.is_empty() {
+            // 无需软换行：一个输入行对应一个输出行。
+            push_isomorphic(transforms, 1);
+        } else {
+            transforms.push(Transform {
+                kind: TransformKind::Wrap,
+                input_lines: 1,
+                wrap_points: boundaries.to_vec(),
+            });
         }
     }
 
+    /// 为单个投影行建立文字塑形输入。
+    ///
+    /// 软换行必须把当前行交给文字系统塑形；
+    /// 这里直接消费 Fold/Inlay 连续 chunk，只保留塑形所需的一份临时文本，不先生成另一份投影整行。
+    fn prepared_wrap_text(&self, tab_row: usize) -> DisplayMapResult<PreparedWrapText> {
+        let tab = &self.snapshot.tab_snapshot;
+        let fold = tab.fold_snapshot();
+        let tab_width = tab.buffer_snapshot().config().tab.tab_width();
+        if let Some(segments) = fold.fold_row_segments(ProjectedLineIndex::new(tab_row)) {
+            let content_len = segments
+                .last()
+                .expect("折叠合并行必须至少包含一个段")
+                .merged_range()
+                .end;
+            return Ok(PreparedWrapText::from_chunks(
+                FoldChunks::new(
+                    &segments,
+                    fold.inlay_snapshot(),
+                    HighlightStyles::default(),
+                    0..content_len,
+                ),
+                tab_width,
+            ));
+        }
+        let line = Line::new(tab_row);
+        let stream_line = tab
+            .stream_line_for_projected(line)
+            .ok_or(CoordinateError::LineOutOfBounds(line))?;
+        let inlay = fold.inlay_snapshot();
+        let range = inlay
+            .line_content_byte_range(stream_line)
+            .ok_or(CoordinateError::LineOutOfBounds(line))?;
+        let content_len = inlay
+            .projected_line_content_metrics(stream_line)
+            .ok_or(CoordinateError::LineOutOfBounds(line))?
+            .0;
+        Ok(PreparedWrapText::from_chunks(
+            InlayChunks::new(
+                ChunkText::Virtual {
+                    snapshot: inlay.buffer_snapshot(),
+                    range: range.clone(),
+                },
+                range.start.get(),
+                inlay.line_inlays(stream_line),
+                ChunkBase::ZERO,
+                HighlightStyles::default(),
+                0..content_len,
+                true,
+            ),
+            tab_width,
+        ))
+    }
+
     /// 使用最终字形位置计算换行点，避免字符宽度估算与渲染 shaping 使用两套标准。
-    fn wrap_points(&self, content: &str, wrap_width: Pixels) -> Vec<WrapPointInfo> {
+    fn wrap_points(&self, prepared: PreparedWrapText, wrap_width: Pixels) -> Vec<WrapPointInfo> {
         let window_text_system = self
             .window_text_system
             .as_ref()
@@ -968,15 +1083,6 @@ impl WrapMap {
             .font_with_size
             .as_ref()
             .expect("换行开启时必须先通过 set_wrap_width 缓存字体");
-        let prepared = PreparedWrapText::new(
-            content,
-            self.snapshot
-                .tab_snapshot
-                .buffer_snapshot()
-                .config()
-                .tab
-                .tab_width(),
-        );
         if prepared.chars.is_empty() {
             return Vec::new();
         }
@@ -1021,8 +1127,10 @@ impl WrapMap {
                 if indent.is_none()
                     && let Some(first_non_whitespace) = first_non_whitespace
                 {
-                    let indent_columns = content[..first_non_whitespace]
-                        .chars()
+                    let indent_columns = prepared
+                        .chars
+                        .iter()
+                        .take_while(|character| character.raw_start < first_non_whitespace)
                         .count()
                         .min(gpui::LineWrapper::MAX_INDENT as usize);
                     indent = Some(indent_columns);
@@ -1081,26 +1189,34 @@ struct PreparedWrapText {
 }
 
 impl PreparedWrapText {
-    fn new(content: &str, tab_width: usize) -> Self {
-        let mut text = String::with_capacity(content.len());
-        let mut chars = Vec::with_capacity(content.chars().count());
+    fn from_chunks<'a>(chunks: impl IntoIterator<Item = Chunk<'a>>, tab_width: usize) -> Self {
+        let mut text = String::new();
+        let mut chars = Vec::new();
         let mut column = 0usize;
-        for (raw_start, ch) in content.char_indices() {
-            let expanded_start = text.len();
-            if ch == '\t' {
-                let width = tab_width - column % tab_width;
-                text.extend(std::iter::repeat_n(' ', width));
-                column += width;
-            } else {
-                text.push(ch);
-                column += 1;
+        let mut raw_start = 0usize;
+        for chunk in chunks {
+            for ch in chunk.text.chars() {
+                if ch == '\n' || ch == '\r' {
+                    raw_start += ch.len_utf8();
+                    continue;
+                }
+                let expanded_start = text.len();
+                if ch == '\t' {
+                    let width = tab_width - column % tab_width;
+                    text.extend(std::iter::repeat_n(' ', width));
+                    column += width;
+                } else {
+                    text.push(ch);
+                    column += 1;
+                }
+                chars.push(PreparedWrapChar {
+                    ch,
+                    raw_start,
+                    expanded_start,
+                    expanded_end: text.len(),
+                });
+                raw_start += ch.len_utf8();
             }
-            chars.push(PreparedWrapChar {
-                ch,
-                raw_start,
-                expanded_start,
-                expanded_end: text.len(),
-            });
         }
         Self { text, chars }
     }

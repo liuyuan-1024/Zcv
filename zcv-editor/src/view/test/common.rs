@@ -1,6 +1,6 @@
 use super::*;
 use gpui::{Bounds, Pixels, TestAppContext, VisualTestContext, point, size};
-use zcv_multi_buffer::{BufferDiff, BufferDiffInput, DiffFile, DiffProjection, DisplayHunk};
+use zcv_multi_buffer::{BufferDiff, BufferDiffInput, DiffFile, DisplayHunk};
 use zcv_text::{Buffer, BufferConfig, ByteOffset};
 
 use crate::scrollbar::{SCROLLBAR_WIDTH, thumb_geometry};
@@ -77,6 +77,11 @@ pub(super) fn inject_editor_diff(
     cx: &mut TestAppContext,
 ) {
     editor.update(cx, |editor, cx| {
+        // diff 路径必须与工作区源一致：excerpt 的路径身份来自源，生产不变式是两者相同。
+        let working_path = source
+            .read(cx)
+            .file_path()
+            .map_or_else(|| PathBuf::from("src/a.rs"), |path| path.to_path_buf());
         let diff = cx.new(|cx| {
             BufferDiff::new(
                 BufferDiffInput {
@@ -86,18 +91,18 @@ pub(super) fn inject_editor_diff(
                     // 派生该 Added hunk，而不是注入 hunk。
                     base_text: Some(base_text.unwrap_or_else(|| Arc::from(""))),
                     index_text: None,
-                    path: PathBuf::from("src/a.rs"),
+                    path: working_path.clone(),
                 },
                 cx,
             )
         });
-        editor.set_diff_projection(
-            Some(DiffProjection::new(vec![DiffFile {
+        editor.set_diff_files(
+            vec![DiffFile {
                 diff,
-                display_path: PathBuf::from("src/a.rs"),
+                display_path: working_path.clone(),
                 context_lines: None,
                 show_file_header: false,
-            }])),
+            }],
             cx,
         );
     });
@@ -113,6 +118,11 @@ pub(super) fn inject_file_diff(
     cx: &mut TestAppContext,
 ) {
     editor.update(cx, |editor, cx| {
+        // diff 路径必须与工作区源一致：excerpt 的路径身份来自源，生产不变式是两者相同。
+        let working_path = source
+            .read(cx)
+            .file_path()
+            .map_or_else(|| PathBuf::from("src/a.rs"), |path| path.to_path_buf());
         let diff = cx.new(|cx| {
             BufferDiff::new(
                 BufferDiffInput {
@@ -120,18 +130,18 @@ pub(super) fn inject_file_diff(
                     working: source.clone(),
                     base_text: Some(base_text),
                     index_text: None,
-                    path: PathBuf::from("src/a.rs"),
+                    path: working_path.clone(),
                 },
                 cx,
             )
         });
-        editor.set_diff_projection(
-            Some(DiffProjection::new(vec![DiffFile {
+        editor.set_diff_files(
+            vec![DiffFile {
                 diff,
-                display_path: PathBuf::from("src/a.rs"),
+                display_path: working_path.clone(),
                 context_lines: None,
                 show_file_header: false,
-            }])),
+            }],
             cx,
         );
     });

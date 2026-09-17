@@ -69,7 +69,7 @@ fn composite_refresh_restores_scroll_from_source_anchor(cx: &mut TestAppContext)
                 .capture_scroll_anchor(cx)
                 .expect("组合视口应能锚定到底层文件"),
             editor
-                .display_map
+                .display_snapshot
                 .display_point_to_offset(editor.scroll_anchor())
                 .expect("旧视口顶部应能映射到组合偏移"),
         )
@@ -89,7 +89,7 @@ fn composite_refresh_restores_scroll_from_source_anchor(cx: &mut TestAppContext)
     });
     let new_output_offset = cx.read_entity(&editor, |editor, _| {
         editor
-            .display_map
+            .display_snapshot
             .display_point_to_offset(editor.scroll_anchor())
             .expect("新视口顶部应能映射到组合偏移")
     });
@@ -184,7 +184,7 @@ fn folding_a_later_file_preserves_the_viewport_anchor(cx: &mut TestAppContext) {
         assert!(editor.scroll_to(line_height * 60., cx));
         assert!(editor.capture_scroll_anchor(cx).is_some());
         editor
-            .display_map
+            .display_snapshot
             .display_point_to_offset(editor.scroll_anchor())
             .expect("折叠前视口顶部应能映射到组合偏移")
     });
@@ -202,7 +202,7 @@ fn folding_a_later_file_preserves_the_viewport_anchor(cx: &mut TestAppContext) {
 
     let new_output_offset = cx.read_entity(&editor, |editor, _| {
         editor
-            .display_map
+            .display_snapshot
             .display_point_to_offset(editor.scroll_anchor())
             .expect("折叠后视口顶部应能映射到组合偏移")
     });
@@ -311,7 +311,7 @@ fn navigation_before_wrap_layout_lands_on_target_row(cx: &mut TestAppContext) {
             .position_to_byte(Position::new(Line::new(target_line), LogicalColumn::ZERO))
             .expect("目标行应有效")
     });
-    let before_nav = cx.read_entity(&editor, |editor, _| editor.display_map.line_count());
+    let before_nav = cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count());
     assert_eq!(before_nav, 120, "导航前 Editor 未布局，不应换行");
     editor.update(cx, |editor, cx| {
         editor.select_byte_range(target_offset.get()..target_offset.get(), cx);
@@ -327,7 +327,7 @@ fn navigation_before_wrap_layout_lands_on_target_row(cx: &mut TestAppContext) {
     cx.read_entity(&editor, |editor, _| {
         let head = editor.selections().primary().head();
         let point = editor
-            .display_map
+            .display_snapshot
             .offset_to_display_point(head)
             .expect("目标显示点应可映射");
         let viewport_top = editor.scroll_anchor().row().get();

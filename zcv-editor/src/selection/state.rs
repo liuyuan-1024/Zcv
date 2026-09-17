@@ -11,8 +11,8 @@ use std::sync::Arc;
 use gpui::EntityId;
 use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferSnapshot};
 use zcv_text::{
-    Affinity, Buffer, ByteOffset, CoordinateError, Edit, PositionMap, Snapshot, TextResult,
-    TransactionId, TransactionMetadata, TransactionOutcome,
+    Affinity, ByteOffset, CoordinateError, Edit, PositionMap, RegexSearchResult, SearchResult,
+    TextError, TextRange, TextRead, TextResult, TransactionId, regex_replacement_for_match,
 };
 
 use super::{Selection, SelectionSet};
@@ -20,30 +20,140 @@ use crate::display_map::DisplayColumn;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EditOutcome {
-    transaction: Option<TransactionOutcome>,
+    position_map: Option<PositionMap>,
 }
 
 impl EditOutcome {
     pub(crate) fn unchanged() -> Self {
-        Self { transaction: None }
+        Self { position_map: None }
     }
 
-    pub(crate) fn edited(transaction: TransactionOutcome) -> Self {
+    pub(crate) fn edited(position_map: PositionMap) -> Self {
         Self {
-            transaction: Some(transaction),
+            position_map: Some(position_map),
         }
     }
 
-    /// 折叠事务结果：`None`（无实际编辑）视为未变化，`Some` 视为一次编辑。
-    pub(crate) fn from_transaction(transaction: Option<TransactionOutcome>) -> Self {
-        match transaction {
-            Some(transaction) => Self::edited(transaction),
-            None => Self::unchanged(),
+    pub(crate) fn position_map(&self) -> Option<&PositionMap> {
+        self.position_map.as_ref()
+    }
+}
+
+/// 一次 Editor 编辑的投影坐标批次。
+///
+/// 计划只保存本次操作的 `Edit` 与由其派生的 `PositionMap`；
+/// 它直接以 `MultiBufferSnapshot` 校验坐标，绝不复制组合文本或创建临时 `Buffer`。
+pub(crate) struct EditPlan<'a> {
+    snapshot: &'a MultiBufferSnapshot,
+    edits: Vec<Edit>,
+}
+
+impl<'a> EditPlan<'a> {
+    pub(crate) fn new(snapshot: &'a MultiBufferSnapshot) -> Self {
+        Self {
+            snapshot,
+            edits: Vec::new(),
         }
     }
 
-    pub(crate) fn transaction(&self) -> Option<&TransactionOutcome> {
-        self.transaction.as_ref()
+    pub(crate) fn snapshot(&self) -> &MultiBufferSnapshot {
+        self.snapshot
+    }
+
+    pub(crate) fn edit(&mut self, edits: Vec<Edit>) -> TextResult<EditOutcome> {
+        let mut changed = Vec::with_capacity(edits.len());
+        for edit in edits {
+            let range = edit.range();
+            let current = self.snapshot.text_for_range(range)?;
+            if current != edit.replacement() {
+                changed.push(edit);
+            }
+        }
+        if changed.is_empty() {
+            return Ok(EditOutcome::unchanged());
+        }
+        // `PositionMap` 与底层事务都以编辑前坐标的升序解释同一批编辑。
+        changed.sort_unstable_by_key(|edit| (edit.range().start(), edit.range().end()));
+        let position_map = PositionMap::from_edits(&changed);
+        self.edits.extend(changed);
+        Ok(EditOutcome::edited(position_map))
+    }
+
+    pub(crate) fn into_edits(self) -> Vec<Edit> {
+        self.edits
+    }
+
+    pub(crate) fn replace_search_match(
+        &mut self,
+        result: &SearchResult,
+        ordinal: usize,
+        replacement: &str,
+    ) -> TextResult<EditOutcome> {
+        self.require_search_version(result.version(), "replace_search_match")?;
+        let matched = result
+            .match_at(ordinal)
+            .ok_or_else(|| TextError::InvariantViolation {
+                location: "EditPlan::replace_search_match",
+                detail: "搜索匹配不存在".into(),
+            })?;
+        self.edit(vec![Edit::replace(matched.range(), replacement)])
+    }
+
+    pub(crate) fn replace_all_search_matches(
+        &mut self,
+        result: &SearchResult,
+        replacement: &str,
+    ) -> TextResult<EditOutcome> {
+        self.require_search_version(result.version(), "replace_all_search_matches")?;
+        self.edit(
+            result
+                .ranges()
+                .map(|range| Edit::replace(range, replacement))
+                .collect(),
+        )
+    }
+
+    pub(crate) fn replace_regex_match(
+        &mut self,
+        result: &RegexSearchResult,
+        ordinal: usize,
+        replacement: &str,
+    ) -> TextResult<EditOutcome> {
+        self.require_search_version(result.version(), "replace_regex_match")?;
+        let (range, replacement) =
+            regex_replacement_for_match(self.snapshot, result, ordinal, replacement)?.ok_or_else(
+                || TextError::InvariantViolation {
+                    location: "EditPlan::replace_regex_match",
+                    detail: "搜索匹配不存在".into(),
+                },
+            )?;
+        self.edit(vec![Edit::replace(range, replacement)])
+    }
+
+    pub(crate) fn replace_all_regex_matches(
+        &mut self,
+        result: &RegexSearchResult,
+        replacement: &str,
+    ) -> TextResult<EditOutcome> {
+        self.require_search_version(result.version(), "replace_all_regex_matches")?;
+        let edits = zcv_text::regex_replacements_in_text(self.snapshot, result, replacement)?
+            .map(|edit| edit.map(|(range, replacement)| Edit::replace(range, replacement)))
+            .collect::<TextResult<Vec<_>>>()?;
+        self.edit(edits)
+    }
+
+    fn require_search_version(
+        &self,
+        version: zcv_text::BufferVersion,
+        operation: &'static str,
+    ) -> TextResult<()> {
+        if version == self.snapshot.version() {
+            return Ok(());
+        }
+        Err(TextError::InvariantViolation {
+            location: operation,
+            detail: "搜索结果版本与组合快照不一致".into(),
+        })
     }
 }
 
@@ -51,41 +161,39 @@ impl EditOutcome {
 ///
 /// 目标区间为空且替换文本也为空时不产生编辑；全部无编辑时返回 `None`。
 pub(crate) fn apply_edits(
-    buffer: &mut Buffer,
+    plan: &mut EditPlan<'_>,
     targets: &[(Selection, Arc<str>)],
-    metadata: TransactionMetadata,
-) -> TextResult<Option<TransactionOutcome>> {
-    let snapshot = buffer.snapshot();
+) -> TextResult<EditOutcome> {
+    let snapshot = plan.snapshot();
     let mut edits = Vec::with_capacity(targets.len());
     for (selection, replacement) in targets {
-        validate_selection(&snapshot, *selection)?;
+        validate_selection(snapshot, *selection)?;
         let range = selection.range();
         if !(range.is_empty() && replacement.is_empty()) {
             edits.push(Edit::replace(range, Arc::clone(replacement)));
         }
     }
     if edits.is_empty() {
-        return Ok(None);
+        return Ok(EditOutcome::unchanged());
     }
-    buffer.edit(edits, metadata).map(Some)
+    plan.edit(edits)
 }
 
 pub(crate) fn replace_selections(
-    buffer: &mut Buffer,
+    plan: &mut EditPlan<'_>,
     selections: &SelectionSet,
     replacement: &str,
-    metadata: TransactionMetadata,
 ) -> TextResult<(EditOutcome, SelectionSet)> {
     let replacement: Arc<str> = Arc::from(replacement);
     let selections = selections.normalized();
-    let snapshot = buffer.snapshot();
+    let snapshot = plan.snapshot();
 
     // 替换为相同文本或双方均为空时不产生编辑，选区由 Editor 侧锚点映射跟随。
     let mut targets = Vec::with_capacity(selections.len());
     for selection in selections.as_slice() {
         let range = selection.range();
         if !(range.is_empty() && replacement.is_empty())
-            && snapshot.slice_text(range)?.as_str() != replacement.as_ref()
+            && snapshot.text_for_range(range)? != replacement.as_ref()
         {
             targets.push((*selection, Arc::clone(&replacement)));
         }
@@ -94,81 +202,49 @@ pub(crate) fn replace_selections(
     // 替换命令的结果不是让旧选区端点被动跟随 PositionMap，而是显式成为每段插入文本末尾的 caret。
     //
     // 这尤其重要于删除非空选区：无论选区方向、端点 affinity 或同时存在的其他编辑如何，结果都必须是删除起点的单个 caret。
-    let (outcome, after_selections) = match apply_edits(buffer, &targets, metadata)? {
-        None => (
-            EditOutcome::unchanged(),
-            SelectionSet::new_with_primary(
-                selections
-                    .as_slice()
-                    .iter()
-                    .map(|selection| {
-                        Selection::caret(ByteOffset::new(
-                            selection.start().get() + replacement.len(),
-                        ))
-                    })
-                    .collect(),
-                selections.primary_index(),
-            ),
+    let outcome = apply_edits(plan, &targets)?;
+    let after_selections = match outcome.position_map() {
+        None => SelectionSet::new_with_primary(
+            selections
+                .as_slice()
+                .iter()
+                .map(|selection| {
+                    Selection::caret(ByteOffset::new(selection.start().get() + replacement.len()))
+                })
+                .collect(),
+            selections.primary_index(),
         ),
-        Some(transaction) => {
-            let position_map = transaction.event().position_map();
-            let after_selections = SelectionSet::new_with_primary(
-                selections
-                    .as_slice()
-                    .iter()
-                    .map(|selection| {
-                        let start = position_map.map_old_position(selection.start()).value();
-                        // 插入到空选区时，PositionMap 已将 caret 吸附到插入文本之后；
-                        // 非空选区的起点则映射到替换起点，需要跨过替换文本。
-                        let end = if selection.is_caret() {
-                            start
-                        } else {
-                            ByteOffset::new(start.get() + replacement.len())
-                        };
-                        Selection::caret(end)
-                    })
-                    .collect(),
-                selections.primary_index(),
-            );
-            (EditOutcome::edited(transaction), after_selections)
-        }
+        Some(position_map) => SelectionSet::new_with_primary(
+            selections
+                .as_slice()
+                .iter()
+                .map(|selection| {
+                    let start = position_map.map_old_position(selection.start()).value();
+                    let end = if selection.is_caret() {
+                        start
+                    } else {
+                        ByteOffset::new(start.get() + replacement.len())
+                    };
+                    Selection::caret(end)
+                })
+                .collect(),
+            selections.primary_index(),
+        ),
     };
     Ok((outcome, after_selections))
 }
 
 pub(crate) fn apply_targeted_edits(
-    buffer: &mut Buffer,
+    plan: &mut EditPlan<'_>,
     targets: Vec<(Selection, Arc<str>)>,
-    metadata: TransactionMetadata,
 ) -> TextResult<EditOutcome> {
-    match apply_edits(buffer, &targets, metadata)? {
-        None => Ok(EditOutcome::unchanged()),
-        Some(transaction) => Ok(EditOutcome::edited(transaction)),
-    }
+    apply_edits(plan, &targets)
 }
 
-/// 应用编辑目标，并返回编辑后的选区。
-///
-/// 行移动等场景的选区需要基于编辑后的行位置重新定位端点， position_map 的默认映射会把删除范围内的点吸附到删除起点，无法跟随整体移动的行块。
-pub(crate) fn apply_edits_with_after_mapping(
-    buffer: &mut Buffer,
-    targets: Vec<(Selection, Arc<str>)>,
-    metadata: TransactionMetadata,
-    map_after: impl FnOnce(&Snapshot) -> TextResult<SelectionSet>,
-) -> TextResult<(EditOutcome, SelectionSet)> {
-    match apply_edits(buffer, &targets, metadata)? {
-        None => Ok((EditOutcome::unchanged(), map_after(&buffer.snapshot())?)),
-        Some(transaction) => Ok((
-            EditOutcome::edited(transaction),
-            map_after(&buffer.snapshot())?,
-        )),
-    }
-}
-
-fn validate_selection(snapshot: &Snapshot, selection: Selection) -> TextResult<()> {
+fn validate_selection(snapshot: &MultiBufferSnapshot, selection: Selection) -> TextResult<()> {
     for offset in [selection.anchor(), selection.head()] {
-        snapshot.slice_byte_range(offset, offset)?;
-        if !snapshot.is_grapheme_boundary_byte(offset)? {
+        snapshot.text_for_range(TextRange::new(offset, offset).expect("零宽选区必须合法"))?;
+        if !snapshot.is_grapheme_boundary(offset)? {
             return Err(CoordinateError::InvalidGraphemeBoundary(offset).into());
         }
     }

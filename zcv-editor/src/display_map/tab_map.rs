@@ -8,8 +8,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
-use zcv_text::{ByteOffset, CoordinateError, Line, Snapshot};
+use zcv_multi_buffer::MultiBufferSnapshot;
+use zcv_text::{BufferConfig, ByteOffset, CoordinateError, Line};
 
+use super::chunk::{ChunkBase, ChunkText, FoldChunks, HighlightStyles, InlayChunks};
 use super::display_width::{DisplayColumn, char_width};
 use super::{
     error::DisplayMapResult,
@@ -35,7 +37,7 @@ impl TabSnapshot {
         self.fold_snapshot.stream()
     }
 
-    pub(super) fn buffer_snapshot(&self) -> &Snapshot {
+    pub(super) fn buffer_snapshot(&self) -> &MultiBufferSnapshot {
         self.fold_snapshot.buffer_snapshot()
     }
 
@@ -103,6 +105,7 @@ impl TabSnapshot {
 pub(super) struct TabMap {
     snapshot: TabSnapshot,
     measured_line_widths: BTreeMap<Line, DisplayColumn>,
+    longest_measured: Option<(Line, DisplayColumn)>,
 }
 
 impl TabMap {
@@ -112,6 +115,7 @@ impl TabMap {
             Self {
                 snapshot: snapshot.clone(),
                 measured_line_widths: BTreeMap::new(),
+                longest_measured: None,
             },
             snapshot,
         )
@@ -143,6 +147,7 @@ impl TabMap {
         let structural = fold_edits.iter().any(FoldEdit::is_structural);
         if !same_configuration || structural {
             self.measured_line_widths.clear();
+            self.longest_measured = None;
         } else {
             let mut changed_lines = BTreeSet::new();
             for edit in fold_edits {
@@ -150,6 +155,16 @@ impl TabMap {
             }
             self.measured_line_widths
                 .retain(|line, _| !changed_lines.contains(line));
+            if self
+                .longest_measured
+                .is_some_and(|(line, _)| changed_lines.contains(&line))
+            {
+                self.longest_measured = self
+                    .measured_line_widths
+                    .iter()
+                    .max_by_key(|(_, width)| **width)
+                    .map(|(line, width)| (*line, *width));
+            }
         }
         self.snapshot = TabSnapshot {
             fold_snapshot,
@@ -162,21 +177,72 @@ impl TabMap {
         if let Some(width) = self.measured_line_widths.get(&line) {
             return Ok(*width);
         }
-        // line 是投影行，按投影文本测量。
-        let Some(text) = self.snapshot.line_text(line) else {
-            return Err(CoordinateError::LineOutOfBounds(line).into());
-        };
         let snapshot = self.snapshot.stream().buffer_snapshot();
-        let width = DisplayColumn::new(display_width(line_content(text.as_ref()), snapshot));
+        let fold = self.snapshot.fold_snapshot();
+        let projected = ProjectedLineIndex::new(line.get());
+        let mut width = 0;
+        if let Some(segments) = fold.fold_row_segments(projected) {
+            let content_len = segments
+                .last()
+                .expect("折叠合并行必须至少包含一个段")
+                .merged_range()
+                .end;
+            for chunk in FoldChunks::new(
+                &segments,
+                fold.inlay_snapshot(),
+                HighlightStyles::default(),
+                0..content_len,
+            ) {
+                width = display_width_chunk(width, chunk.text, snapshot.config());
+            }
+        } else {
+            let stream_line = self
+                .snapshot
+                .stream_line_for_projected(line)
+                .ok_or(CoordinateError::LineOutOfBounds(line))?;
+            let inlay = fold.inlay_snapshot();
+            let range = inlay
+                .line_content_byte_range(stream_line)
+                .ok_or(CoordinateError::LineOutOfBounds(line))?;
+            let content_len = inlay
+                .projected_line_content_metrics(stream_line)
+                .ok_or(CoordinateError::LineOutOfBounds(line))?
+                .0;
+            for chunk in InlayChunks::new(
+                ChunkText::Virtual {
+                    snapshot: inlay.buffer_snapshot(),
+                    range: range.clone(),
+                },
+                range.start.get(),
+                inlay.line_inlays(stream_line),
+                ChunkBase::ZERO,
+                HighlightStyles::default(),
+                0..content_len,
+                true,
+            ) {
+                width = display_width_chunk(width, chunk.text, snapshot.config());
+            }
+        }
+        let width = DisplayColumn::new(width);
         self.measured_line_widths.insert(line, width);
+        if self
+            .longest_measured
+            .is_none_or(|(_, longest)| width > longest)
+        {
+            self.longest_measured = Some((line, width));
+        }
         Ok(width)
     }
 
-    pub(super) fn measured_lines(&self) -> impl Iterator<Item = (Line, DisplayColumn)> + '_ {
-        self.measured_line_widths
-            .iter()
-            .map(|(line, width)| (*line, *width))
+    pub(super) fn longest_measured(&self) -> Option<(Line, DisplayColumn)> {
+        self.longest_measured
     }
+}
+
+fn display_width_chunk(column: usize, text: &str, config: &BufferConfig) -> usize {
+    text.graphemes(true).fold(column, |column, grapheme| {
+        advance_display_column(column, grapheme, config)
+    })
 }
 
 pub(super) fn line_content(text: &str) -> &str {
@@ -185,15 +251,13 @@ pub(super) fn line_content(text: &str) -> &str {
         .unwrap_or(text)
 }
 
-pub(super) fn display_width(text: &str, snapshot: &Snapshot) -> usize {
-    text.graphemes(true).fold(0, |column, grapheme| {
-        advance_display_column(column, grapheme, snapshot)
-    })
-}
-
-pub(crate) fn advance_display_column(column: usize, grapheme: &str, snapshot: &Snapshot) -> usize {
+pub(crate) fn advance_display_column(
+    column: usize,
+    grapheme: &str,
+    config: &BufferConfig,
+) -> usize {
     if grapheme == "\t" {
-        let tab_width = snapshot.config().tab.tab_width();
+        let tab_width = config.tab.tab_width();
         return column + tab_width - column % tab_width;
     }
     let Some(first) = grapheme.chars().next() else {
@@ -207,7 +271,7 @@ pub(crate) fn display_column_for_byte(
     text: &str,
     start_column: usize,
     target_byte: usize,
-    snapshot: &Snapshot,
+    config: &BufferConfig,
 ) -> usize {
     let mut display = start_column;
     let mut byte = 0;
@@ -219,7 +283,7 @@ pub(crate) fn display_column_for_byte(
         if target_byte < next_byte {
             break;
         }
-        display = advance_display_column(display, grapheme, snapshot);
+        display = advance_display_column(display, grapheme, config);
         byte = next_byte;
     }
     display
@@ -233,7 +297,7 @@ pub(crate) fn byte_for_display_column(
     text: &str,
     start_column: usize,
     target_column: usize,
-    snapshot: &Snapshot,
+    config: &BufferConfig,
 ) -> usize {
     if target_column <= start_column {
         return 0;
@@ -244,7 +308,7 @@ pub(crate) fn byte_for_display_column(
         if target_column == display {
             return byte;
         }
-        let next_display = advance_display_column(display, grapheme, snapshot);
+        let next_display = advance_display_column(display, grapheme, config);
         let next_byte = byte + grapheme.len();
         if target_column == next_display {
             return next_byte;
@@ -260,4 +324,17 @@ pub(crate) fn byte_for_display_column(
         byte = next_byte;
     }
     text.len()
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    impl TabMap {
+        pub(crate) fn measured_lines(&self) -> impl Iterator<Item = (Line, DisplayColumn)> + '_ {
+            self.measured_line_widths
+                .iter()
+                .map(|(line, width)| (*line, *width))
+        }
+    }
 }

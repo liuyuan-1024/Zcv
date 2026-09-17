@@ -13,7 +13,7 @@ use zcv_text::ByteOffset;
 impl Editor {
     /// 返回当前组合文档的文件级语法大纲。
     pub fn outline_items(&self) -> Vec<OutlineItem> {
-        self.display_map.outline_items()
+        self.multi_snapshot.outline_items()
     }
 
     /// 按大纲文本过滤当前文件大纲；匹配不改变语法层结果的顺序和层级。
@@ -39,7 +39,7 @@ impl Editor {
         for part in &item.text_ranges {
             let source_start = part.source_range.start;
             for (range, style) in self
-                .display_map
+                .display_snapshot
                 .highlights_for_range(part.source_range.clone())
             {
                 let start = range.start.max(part.source_range.start);
@@ -58,17 +58,17 @@ impl Editor {
 
     /// 返回当前单文件文档中可确定归属的局部绑定。
     pub fn local_bindings(&self) -> Vec<LocalBinding> {
-        self.display_map.local_bindings()
+        self.multi_snapshot.local_bindings()
     }
 
     /// 返回组合文档中指定光标的语法节点；结果与当前 Editor 快照版本绑定。
     pub fn syntax_node_at(&self, offset: ByteOffset) -> Option<SyntaxNode> {
-        self.display_map.syntax_node_at(offset)
+        self.multi_snapshot.node_at(offset)
     }
 
     /// 返回指定选区的语法祖先链，顺序为最小节点到语法根节点。
     pub fn syntax_node_ancestors(&self, range: Range<usize>) -> Vec<SyntaxNode> {
-        self.display_map.syntax_node_ancestors(range)
+        self.multi_snapshot.node_ancestors(range)
     }
 
     /// 将大纲项定位到其名称范围，并拒绝异步刷新后已经失效的结果。

@@ -85,7 +85,7 @@ impl Editor {
         let metadata = edit_metadata("重命名局部绑定");
         let replacement = new_name.to_owned();
         self.change_with_after(before_selections, metadata.clone(), cx, move |buffer| {
-            replace_selections(buffer, &targets, &replacement, metadata)
+            replace_selections(buffer, &targets, &replacement)
         })
         .map(|_| ())
         .map_err(|error| LocalRenameError::Edit(error.to_string()))

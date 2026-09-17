@@ -9,12 +9,13 @@ use std::sync::Arc;
 use gpui::{
     App, Bounds, Context, EntityInputHandler, Pixels, Point, UTF16Selection, Window, px, size,
 };
-use zcv_text::{Anchor, ByteOffset, Snapshot, TextRange, TransactionId, Utf16Offset};
+use zcv_multi_buffer::MultiBufferSnapshot;
+use zcv_text::{Anchor, ByteOffset, TextRange, TransactionId, Utf16Offset};
 
 use super::*;
 use crate::element::EditorInputLayout;
 use crate::selection::{
-    EditOutcome, EditorSelections, Selection, SelectionSet, apply_edits, replace_selections,
+    EditorSelections, Selection, SelectionSet, apply_edits, replace_selections,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,7 +55,7 @@ impl Editor {
     }
 
     fn selection_for_utf16_range(&self, range: Range<usize>, cx: &App) -> Option<SelectionSet> {
-        let snapshot = self.text_buffer(cx).read(cx).snapshot();
+        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
         let start = snapshot
             .utf16_cu_to_byte(Utf16Offset::new(range.start))
             .ok()?;
@@ -90,7 +91,7 @@ impl Editor {
         // 编辑统一入口负责提交与选区落位；失败时恢复组合会话（选区已由入口恢复）。
         if self
             .change_with_after(before_selections, metadata.clone(), cx, |buffer| {
-                replace_selections(buffer, &targets, &text, metadata)
+                replace_selections(buffer, &targets, &text)
             })
             .is_err()
         {
@@ -170,12 +171,11 @@ impl Editor {
         relative_range: Range<usize>,
         cx: &App,
     ) -> Option<TextRange> {
-        let snapshot = self.text_buffer(cx).read(cx).snapshot();
-        let text = snapshot.slice_text(containing_range).ok()?;
-        let text = text.as_str();
-        let utf16_len = utf16_len(text);
-        let start = byte_for_utf16_offset(text, relative_range.start.min(utf16_len))?;
-        let end = byte_for_utf16_offset(text, relative_range.end.min(utf16_len))?;
+        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
+        let text = snapshot.text_for_range(containing_range).ok()?;
+        let utf16_len = utf16_len(&text);
+        let start = byte_for_utf16_offset(&text, relative_range.start.min(utf16_len))?;
+        let end = byte_for_utf16_offset(&text, relative_range.end.min(utf16_len))?;
         TextRange::new(
             ByteOffset::new(containing_range.start().get() + start),
             ByteOffset::new(containing_range.start().get() + end),
@@ -212,7 +212,7 @@ impl Editor {
             return false;
         }
 
-        let snapshot = self.text_buffer(cx).read(cx).snapshot();
+        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
 
         // 逐选区决策，产出目标编辑、编辑后落点与新区域（以编辑前坐标为基准）。
         let mut targets: Vec<(Selection, Arc<str>)> = Vec::new();
@@ -285,11 +285,8 @@ impl Editor {
         let mut new_regions_after: Vec<(TextRange, AutoClosePair)> = Vec::new();
         let metadata = input_metadata("输入文本", false);
         let result = self.change_with_after(before.clone(), metadata.clone(), cx, |buffer| {
-            let outcome = apply_edits(buffer, &targets, metadata.clone())?;
-            let position_map = outcome
-                .as_ref()
-                .map(|transaction| transaction.event().position_map().clone())
-                .unwrap_or_default();
+            let outcome = apply_edits(buffer, &targets)?;
+            let position_map = outcome.position_map().cloned().unwrap_or_default();
             for (index, range) in new_regions.iter().enumerate() {
                 // 区域锚在闭合符起点：光标经映射吸收到配对之后，回退 close 长度即闭合符起点。
                 // （不能用零宽区间经 Expand 映射——同点插入会把整个配对吸进区间。）
@@ -336,10 +333,10 @@ impl Editor {
                     .collect(),
                 before.primary_index(),
             );
-            Ok((EditOutcome::from_transaction(outcome), after))
+            Ok((outcome, after))
         });
         if result.is_ok() {
-            let version = self.text_buffer(cx).read(cx).snapshot().version();
+            let version = self.multi_buffer.read(cx).snapshot(cx).version();
             self.autoclose_regions
                 .extend(
                     new_regions_after
@@ -368,7 +365,7 @@ impl Editor {
         &self,
         end: ByteOffset,
         typed: char,
-        snapshot: &Snapshot,
+        snapshot: &MultiBufferSnapshot,
     ) -> Option<AutocloseRegion> {
         self.autoclose_regions
             .iter()
@@ -384,7 +381,7 @@ impl Editor {
 
     /// 光标贴着自动补全闭合符起点时扩展选区覆盖整对，使退格一次删除整对；非空选区或未命中区域时选区不变。
     pub(super) fn select_autoclose_pair(&mut self, cx: &App) {
-        let snapshot = self.text_buffer(cx).read(cx).snapshot();
+        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
         let before = self.resolved_selections();
         let mut changed = false;
         let selections: Vec<Selection> = before
@@ -445,7 +442,7 @@ impl Editor {
 /// 自动闭合的后续检查：光标后是空白、行尾或常见语句分隔符时才自动闭合，避免在标识符前键入 open 时被自动补上 close。
 const AUTOCLOSE_BEFORE: &str = ";:.,=}])>";
 
-fn following_text_allows_autoclose(snapshot: &Snapshot, offset: ByteOffset) -> bool {
+fn following_text_allows_autoclose(snapshot: &MultiBufferSnapshot, offset: ByteOffset) -> bool {
     let Ok((chunk, chunk_start)) = snapshot.chunk_at_byte(offset) else {
         return true;
     };
@@ -457,7 +454,7 @@ fn following_text_allows_autoclose(snapshot: &Snapshot, offset: ByteOffset) -> b
 
 /// 自动闭合的前置检查：引号类配对（start == end）前是词字符时不自动闭合，避免在单词末尾输入引号时被当成新的开启引号。
 fn preceding_text_allows_autoclose(
-    snapshot: &Snapshot,
+    snapshot: &MultiBufferSnapshot,
     offset: ByteOffset,
     pair: &AutoClosePair,
 ) -> bool {
@@ -470,10 +467,23 @@ fn preceding_text_allows_autoclose(
     if column == 0 {
         return true;
     }
-    let Ok(line_slice) = snapshot.line_content(line, None) else {
+    let Ok(line_start) = snapshot.line_start_byte(line) else {
         return true;
     };
-    let prefix = &line_slice.as_str()[..column];
+    let line_end = match if line.get() + 1 < snapshot.line_count() {
+        snapshot.line_start_byte(zcv_text::Line::new(line.get() + 1))
+    } else {
+        Ok(snapshot.len_bytes())
+    } {
+        Ok(end) => end,
+        Err(_) => return true,
+    };
+    let Ok(line_text) =
+        snapshot.text_for_range(TextRange::new(line_start, line_end).expect("行范围必须合法"))
+    else {
+        return true;
+    };
+    let prefix = &line_text[..column.min(line_text.len())];
     !prefix
         .chars()
         .next_back()
@@ -481,11 +491,11 @@ fn preceding_text_allows_autoclose(
 }
 
 /// `offset` 处是否为指定文本（越界或文本不符返回 false）。
-fn text_at(snapshot: &Snapshot, offset: ByteOffset, text: &str) -> bool {
+fn text_at(snapshot: &MultiBufferSnapshot, offset: ByteOffset, text: &str) -> bool {
     offset.checked_add(text.len()).is_some_and(|end| {
         snapshot
-            .slice_byte_range(offset, end)
-            .is_ok_and(|slice| slice.as_str() == text)
+            .text_for_range(TextRange::new(offset, end).expect("文本范围必须合法"))
+            .is_ok_and(|slice| slice == text)
     })
 }
 
@@ -508,7 +518,7 @@ impl EntityInputHandler for Editor {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        let snapshot = self.display_map.buffer_snapshot();
+        let snapshot = &self.multi_snapshot;
         let selection = *self.resolved_selections().primary();
         Some(UTF16Selection {
             range: snapshot.byte_to_utf16_cu(selection.start()).ok()?.get()
@@ -570,7 +580,7 @@ impl EntityInputHandler for Editor {
             before_selections.clone(),
             metadata.clone(),
             cx,
-            |buffer| replace_selections(buffer, &targets, &text, metadata),
+            |buffer| replace_selections(buffer, &targets, &text),
         );
         // 会话提交后组合历史的当前条目即本次编辑的归属节点（合并进前节点时指向前节点），用它作为组合会话的事务身份：连续候选更新据此合并进同一撤销步。
         // 不能用编辑 outcome 的 history_transaction_id——会话 id 在合并进前节点后不指向任何历史节点，后续合并判断会失败。

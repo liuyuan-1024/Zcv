@@ -4,6 +4,7 @@
 //! 本模块只负责几何计算，全部公式用 Pixels 模型表达。
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use super::scroll::ScrollbarThumbState;
 use super::view::EditorHunkMarkerKind;
@@ -34,8 +35,8 @@ pub(super) struct ScrollbarLayout {
     pub(super) scroll_per_pixel: f32,
     /// 当前三态（每帧由 ScrollManager 的跨帧状态填充，决定绘制颜色）。
     pub(super) thumb_state: ScrollbarThumbState,
-    /// 本帧的 git diff marker（prepaint 计算，paint 只画）。
-    pub(super) markers: Vec<ScrollbarMarker>,
+    /// 按装饰来源共享的 marker 快照（prepaint 只换引用，paint 顺序消费）。
+    pub(super) marker_groups: [Option<Arc<[ScrollbarMarker]>>; 2],
 }
 
 /// 滚动轴上单个 diff marker：轨道内 y 区间 + 颜色类别。
@@ -68,7 +69,7 @@ impl ScrollbarLayout {
             thumb_bounds,
             scroll_per_pixel,
             thumb_state,
-            markers: Vec::new(),
+            marker_groups: [None, None],
         }
     }
 

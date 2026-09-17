@@ -2,8 +2,8 @@ use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 use std::path::PathBuf;
 use zcv_git::DiffHunkKind;
 use zcv_multi_buffer::{
-    BufferDiff, BufferDiffInput, DiffFile, DiffHunkStaging, DiffProjection, DisplayHunk,
-    MultiBuffer, MultiBufferExcerpt,
+    BufferDiff, BufferDiffInput, DiffFile, DiffHunkStaging, DisplayHunk, MultiBuffer,
+    MultiBufferExcerpt,
 };
 use zcv_text::{Buffer, ByteOffset, Edit, Line, LogicalColumn, TextRange, TransactionMetadata};
 
@@ -11,7 +11,7 @@ use super::common::{
     buffer_text, engine_buffer, focus_editor, inject_editor_diff, inject_file_diff, test_buffer,
 };
 use super::*;
-use crate::display_map::{ProjectedLineIndex, ProjectedPoint, WrapViewportRowKind};
+use crate::display_map::{ProjectedLineIndex, ProjectedPoint, WrapRowKind};
 
 /// 构造 context_lines=2 的裁剪投影项，供组合文档裁剪测试复用。
 fn clipped_diff_file(
@@ -77,11 +77,39 @@ fn single_file_diff_uses_the_composite_projection_path(cx: &mut TestAppContext) 
         assert_eq!(editor.diff_hunk_expanded(cx), vec![false]);
     });
 
-    editor.update(cx, |editor, cx| {
-        editor.set_diff_projection(Some(DiffProjection::empty()), cx)
-    });
+    editor.update(cx, |editor, cx| editor.clear_diffs(cx));
     assert_eq!(buffer_text(&source, cx), "a\nworking\nc\n");
     assert!(cx.read_entity(&editor, |editor, cx| editor.diff_hunks(cx).is_empty()));
+}
+
+#[gpui::test]
+fn diff_decorations_are_cached_and_consumed_by_viewport(cx: &mut TestAppContext) {
+    let source = test_buffer(cx, "a\nworking\nc\n");
+    let editor = cx.new(|cx| Editor::from_language_buffer(source.clone(), EditorMode::Full, cx));
+    inject_file_diff(&editor, &source, Arc::from("a\nold\nc\n"), cx);
+
+    let cached = editor.update(cx, |editor, cx| {
+        let snapshot = editor.display_snapshot();
+        editor.diff_decorations(&snapshot, cx)
+    });
+    let reused = editor.update(cx, |editor, cx| {
+        let snapshot = editor.display_snapshot();
+        editor.diff_decorations(&snapshot, cx)
+    });
+    assert!(
+        std::sync::Arc::ptr_eq(&cached, &reused),
+        "没有显示映射变化时，diff 装饰应复用同一快照"
+    );
+
+    assert!(
+        cached.rendering_for_viewport(0..1).diff_rows.is_empty(),
+        "视口外的 diff 行不应进入本帧消费数据"
+    );
+    assert_eq!(
+        cached.rendering_for_viewport(1..2).diff_rows.len(),
+        1,
+        "视口内的 diff 行应从派生快照切片得到"
+    );
 }
 
 #[gpui::test]
@@ -104,9 +132,7 @@ fn switching_single_file_diff_after_source_edit_keeps_text_consumer_aligned(
     });
     cx.run_until_parked();
 
-    editor.update(cx, |editor, cx| {
-        editor.set_diff_projection(Some(DiffProjection::empty()), cx)
-    });
+    editor.update(cx, |editor, cx| editor.clear_diffs(cx));
     cx.run_until_parked();
 
     cx.read_entity(&editor, |editor, cx| {
@@ -115,7 +141,7 @@ fn switching_single_file_diff_after_source_edit_keeps_text_consumer_aligned(
             String::from_utf8(snapshot.text_bytes()).expect("编辑器快照必须是 UTF-8"),
             "prefix\na\nworking\nc\n"
         );
-        assert_eq!(editor.display_map.line_count(), 5);
+        assert_eq!(editor.display_snapshot.line_count(), 5);
     });
 }
 
@@ -273,7 +299,7 @@ fn deleted_hunk_expands_and_collapses_readonly_excerpt(cx: &mut TestAppContext) 
     });
     let source = buffer.clone();
     cx.run_until_parked();
-    let base_rows = cx.read_entity(&editor, |editor, _| editor.display_map.line_count());
+    let base_rows = cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count());
     assert_eq!(base_rows, 3);
 
     // 注入 Deleted hunk（新侧行 1 处删除了 HEAD 的 1..3 行）+ HEAD 全文。
@@ -291,7 +317,7 @@ fn deleted_hunk_expands_and_collapses_readonly_excerpt(cx: &mut TestAppContext) 
     );
     // 未展开：行数不变。
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
         3
     );
     assert!(
@@ -307,7 +333,7 @@ fn deleted_hunk_expands_and_collapses_readonly_excerpt(cx: &mut TestAppContext) 
     // 展开删除块：HEAD 的 1..3 行（old1/old2）作为只读 excerpt 插入。
     editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
         5,
         "展开后应增加 2 个被删除行"
     );
@@ -326,7 +352,7 @@ fn deleted_hunk_expands_and_collapses_readonly_excerpt(cx: &mut TestAppContext) 
     );
     cx.run_until_parked();
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
         3,
         "点击 gutter 折叠后应回到 3 行"
     );
@@ -453,13 +479,12 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
     // 折叠 fn main（入口行 0）：隐藏块内 2 行，无占位行，总行数 6 → 4。
     editor.update(cx, |editor, cx| editor.toggle_fold_at_line(Line::ZERO, cx));
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
         4
     );
     assert!(cx.read_entity(&editor, |editor, _| {
         editor
-            .display_map
-            .snapshot()
+            .display_snapshot()
             .fold_anchor_lines()
             .contains(&Line::ZERO)
     }));
@@ -467,13 +492,12 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
     // 再次切换：展开，恢复 6 行。
     editor.update(cx, |editor, cx| editor.toggle_fold_at_line(Line::ZERO, cx));
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
         6
     );
     assert!(!cx.read_entity(&editor, |editor, _| {
         editor
-            .display_map
-            .snapshot()
+            .display_snapshot()
             .fold_anchor_lines()
             .contains(&Line::ZERO)
     }));
@@ -498,7 +522,7 @@ fn toggle_fold_action_uses_the_cursor_block_and_the_whole_folded_row(cx: &mut Te
         editor.toggle_fold_at_cursor(cx);
     });
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
         4,
         "应只折叠内层 if 块"
     );
@@ -511,7 +535,7 @@ fn toggle_fold_action_uses_the_cursor_block_and_the_whole_folded_row(cx: &mut Te
         editor.toggle_fold_at_cursor(cx);
     });
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
         6,
         "折叠合并行任意位置都应能展开"
     );
@@ -541,7 +565,7 @@ fn clicking_the_crease_toggles_fold_without_selecting_the_line(cx: &mut TestAppC
 
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(
-            editor.display_map.line_count(),
+            editor.display_snapshot.line_count(),
             4,
             "点击 crease 应折叠首个函数"
         );
@@ -576,8 +600,7 @@ fn expanding_diff_hunk_preserves_code_fold(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(
         cx.read_entity(&editor, |editor, _| editor
-            .display_map
-            .snapshot()
+            .display_snapshot()
             .fold_anchor_lines()),
         vec![Line::new(4)]
     );
@@ -586,8 +609,7 @@ fn expanding_diff_hunk_preserves_code_fold(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(
         cx.read_entity(&editor, |editor, _| editor
-            .display_map
-            .snapshot()
+            .display_snapshot()
             .fold_anchor_lines()),
         vec![Line::new(5)],
         "展开 hunk 后已折叠代码应保持折叠，锚点随插入的旧侧行下移"
@@ -667,8 +689,7 @@ fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
     });
     assert!(cx.read_entity(&editor, |editor, _| {
         editor
-            .display_map
-            .snapshot()
+            .display_snapshot()
             .fold_anchor_lines()
             .contains(&Line::new(1))
     }));
@@ -694,12 +715,14 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
         pair.close.clone()
     });
     // 合并行文本：anchor + 占位符 + 真实 `}`。
-    let snapshot = cx.read_entity(&editor, |editor, _| editor.display_map.snapshot());
-    let viewport = snapshot
-        .slice_viewport(DisplayRow::ZERO, 1)
-        .expect("视口应可读取");
-    let WrapViewportRowKind::Text { text, .. } = viewport.rows()[0].kind();
-    assert_eq!(text.as_ref(), "fn main() {…}\n");
+    let snapshot = cx.read_entity(&editor, |editor, _| editor.display_snapshot());
+    let mut cursor = snapshot.rows(DisplayRow::ZERO, 1);
+    let row = cursor.next().expect("视口应可读取");
+    let WrapRowKind::Text { projected_line, .. } = row.kind();
+    assert_eq!(
+        snapshot.row_text(*projected_line).unwrap().as_ref(),
+        "fn main() {…}\n"
+    );
     // 真实 `}` 范围投影到合并行占位符之后的列（anchor 11 字符 + 占位符 1 列 = 12）。
     let projected = snapshot
         .project_text_range(
@@ -812,7 +835,7 @@ fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppCo
             editor.selections().primary().head(),
             after_offset,
             "折叠后的下一行应能通过向下移动到达；显示行数={}，光标位置={:?}",
-            editor.display_map.line_count(),
+            editor.display_snapshot.line_count(),
             editor
                 .render_snapshot()
                 .byte_to_position(editor.selections().primary().head())
@@ -843,10 +866,10 @@ fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppCo
     assert_eq!(buffer_text(&buffer, cx), text.replace("after", "aft!er"));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(
-            editor.display_map.line_count(),
+            editor.display_snapshot.line_count(),
             4,
             "编辑后折叠应保持；折叠入口={:?}，折叠范围数={}",
-            editor.display_map.snapshot().fold_anchor_lines(),
+            editor.display_snapshot().fold_anchor_lines(),
             editor.fold_ranges().len()
         );
     });
@@ -868,20 +891,19 @@ fn unfold_all_expands_every_fold(cx: &mut TestAppContext) {
         editor.toggle_fold_at_line(Line::new(3), cx)
     });
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
         2
     );
 
     // 全部展开：恢复 6 行。
     editor.update(cx, |editor, cx| editor.unfold_all_ranges(cx));
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
         6
     );
     assert!(!cx.read_entity(&editor, |editor, _| {
         editor
-            .display_map
-            .snapshot()
+            .display_snapshot()
             .fold_anchor_lines()
             .contains(&Line::ZERO)
     }));
@@ -959,10 +981,10 @@ fn soft_wrap_renders_continuation_rows_and_click_hits_fragment(cx: &mut TestAppC
     cx.run_until_parked();
 
     let (line_count, continuation_offset) = cx.read_entity(&editor, |editor, _| {
-        let line_count = editor.display_map.line_count();
+        let line_count = editor.display_snapshot.line_count();
         assert!(line_count > 1, "宽行应拆成多个显示行");
         let continuation = editor
-            .display_map
+            .display_snapshot
             .display_point_to_offset(DisplayPoint::new(DisplayRow::new(1), DisplayColumn::ZERO))
             .expect("续行行首应可映射");
         (line_count, continuation)
@@ -1009,7 +1031,7 @@ fn single_line_editor_never_wraps_and_follows_caret_horizontally(cx: &mut TestAp
 
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(
-            editor.display_map.line_count(),
+            editor.display_snapshot.line_count(),
             1,
             "单行输入不应拆成多个显示行"
         );
@@ -1051,13 +1073,13 @@ fn multibuffer_soft_wrap_uses_the_regular_display_map_pipeline(cx: &mut TestAppC
         move |_, cx| Editor::for_multi_buffer(combined, cx)
     });
     cx.run_until_parked();
-    let unwrapped_rows = cx.read_entity(&editor, |editor, _| editor.display_map.line_count());
+    let unwrapped_rows = cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count());
 
     editor.update(cx, |editor, cx| {
         editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx);
     });
     cx.run_until_parked();
-    let wrapped_rows = cx.read_entity(&editor, |editor, _| editor.display_map.line_count());
+    let wrapped_rows = cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count());
 
     assert!(
         wrapped_rows > unwrapped_rows,
@@ -1067,93 +1089,17 @@ fn multibuffer_soft_wrap_uses_the_regular_display_map_pipeline(cx: &mut TestAppC
     editor.update(cx, |editor, cx| {
         editor.toggle_buffer_fold(PathBuf::from("文档/引擎.md"), cx)
     });
-    let folded_rows = cx.read_entity(&editor, |editor, _| editor.display_map.line_count());
+    let folded_rows = cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count());
     assert_eq!(folded_rows, 2, "整文件折叠后只保留两行高的 BufferHeader");
 
     editor.update(cx, |editor, cx| {
         editor.toggle_buffer_fold(PathBuf::from("文档/引擎.md"), cx)
     });
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_map.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
         wrapped_rows,
         "再次点击 header chevron 应完整恢复 excerpts"
     );
-}
-
-#[gpui::test]
-fn viewport_highlight_cache_reuses_identical_query_frames(cx: &mut TestAppContext) {
-    // 光标闪烁/焦点切换等重复帧：相同版本与区间的高亮查询直接命中跨帧缓存，不重复执行树查询。
-    let buffer = cx.new(|_| {
-        Buffer::scratch(
-            "fn main() { let value = 1; }\n".to_owned(),
-            BufferConfig::default(),
-        )
-        .expect("测试 Buffer 应能创建")
-    });
-    let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
-    let editor = cx.new(|cx| Editor::from_language_buffer(buffer.clone(), EditorMode::Full, cx));
-    cx.run_until_parked();
-
-    let (first_ptr, second_ptr, first_len) = cx.read_entity(&editor, |editor, _| {
-        let snapshot = editor.display_map.snapshot();
-        let viewport = snapshot
-            .slice_viewport(DisplayRow::ZERO, 1)
-            .expect("视口应可读取");
-        let first = snapshot.highlighted_spans_for_viewport(&viewport);
-        let first_ptr = Arc::as_ptr(&first);
-        let first_len = first.len();
-        let second = snapshot.highlighted_spans_for_viewport(&viewport);
-        (first_ptr, Arc::as_ptr(&second), first_len)
-    });
-    assert!(first_len > 0, "rust 源码视口应产出高亮 spans");
-    assert_eq!(
-        first_ptr, second_ptr,
-        "相同帧的重复查询应命中缓存（同一 Arc）"
-    );
-}
-
-#[gpui::test]
-fn viewport_highlight_cache_invalidates_after_text_edit(cx: &mut TestAppContext) {
-    let buffer = cx.new(|_| {
-        Buffer::scratch(
-            "fn main() { let value = 1; }\n".to_owned(),
-            BufferConfig::default(),
-        )
-        .expect("测试 Buffer 应能创建")
-    });
-    let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
-    let engine = engine_buffer(&buffer, cx);
-    let editor = cx.new(|cx| Editor::from_language_buffer(buffer.clone(), EditorMode::Full, cx));
-    cx.run_until_parked();
-
-    let first_ptr = cx.read_entity(&editor, |editor, _| {
-        let snapshot = editor.display_map.snapshot();
-        let viewport = snapshot
-            .slice_viewport(DisplayRow::ZERO, 1)
-            .expect("视口应可读取");
-        Arc::as_ptr(&snapshot.highlighted_spans_for_viewport(&viewport))
-    });
-
-    // 编辑文本：版本推进后同一视口的查询结果必须重新计算。
-    cx.update_entity(&engine, |buffer, cx| {
-        buffer
-            .edit(
-                [Edit::insert(ByteOffset::new(20), " // 注释").unwrap()],
-                TransactionMetadata::default(),
-            )
-            .expect("插入应成功");
-        cx.notify();
-    });
-    cx.run_until_parked();
-
-    let second_ptr = cx.read_entity(&editor, |editor, _| {
-        let snapshot = editor.display_map.snapshot();
-        let viewport = snapshot
-            .slice_viewport(DisplayRow::ZERO, 1)
-            .expect("视口应可读取");
-        Arc::as_ptr(&snapshot.highlighted_spans_for_viewport(&viewport))
-    });
-    assert_ne!(first_ptr, second_ptr, "编辑后高亮必须重新查询");
 }
 
 #[gpui::test]
@@ -1167,12 +1113,10 @@ fn long_line_highlight_query_is_clipped_to_render_budget(cx: &mut TestAppContext
     cx.run_until_parked();
 
     cx.read_entity(&editor, |editor, _| {
-        let snapshot = editor.display_map.snapshot();
-        let viewport = snapshot
-            .slice_viewport(DisplayRow::ZERO, 1)
-            .expect("视口应可读取");
-        let spans = snapshot.highlighted_spans_for_viewport(&viewport);
-        let buffer = editor.display_map.buffer_snapshot();
+        let snapshot = editor.display_snapshot();
+        let source_ranges = snapshot.rows(DisplayRow::ZERO, 1).source_line_ranges();
+        let spans = snapshot.highlighted_spans_for_source_ranges(source_ranges);
+        let buffer = editor.display_snapshot.buffer_snapshot();
         let second_line = buffer
             .line_start_byte(Line::new(1))
             .expect("第二行行首应存在");
@@ -1202,54 +1146,27 @@ fn horizontal_windowing_clips_wide_rows_to_the_visible_window(cx: &mut TestAppCo
     });
     cx.run_until_parked();
 
-    let (windowed_len, window_start, full_len) = cx.read_entity(&editor, |editor, app| {
-        let snapshot = editor.display_map.snapshot();
-        let viewport = snapshot
-            .slice_viewport(DisplayRow::ZERO, 2)
-            .expect("视口应可读取");
-        let base = gpui::TextRun {
-            len: 0,
-            font: gpui::Font {
-                family: ".SystemUIFont".into(),
-                features: Default::default(),
-                fallbacks: None,
-                weight: gpui::FontWeight::default(),
-                style: gpui::FontStyle::default(),
-            },
-            color: gpui::white(),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
+    let (windowed_len, window_start, full_len) = cx.read_entity(&editor, |editor, _app| {
+        let snapshot = editor.display_snapshot();
+        let row_metrics = |start: usize, window| {
+            let mut chunks = snapshot.chunks(
+                DisplayRow::new(start)..DisplayRow::new(start + 1),
+                crate::display_map::HighlightStyles::default(),
+                window,
+            );
+            let mut len = 0;
+            let mut window_start = 0;
+            chunks.for_each_row(|event| {
+                if let crate::display_map::DisplayRowEvent::Text { row, chunks } = event {
+                    window_start = row.window_start_column;
+                    len += chunks.map(|chunk| chunk.text.len()).sum::<usize>();
+                }
+            });
+            (len, window_start)
         };
-        let style = crate::display_map::RowStyleInput {
-            visible_highlights: &[],
-            highlight_styles: &[],
-            search_backgrounds: &[],
-            marked_ranges: &[],
-            dimmed_ranges: &[],
-        };
-        let window = Some((200usize, 500usize));
-        let row0 = crate::display_map::render_viewport_row(
-            viewport.rows()[0].kind(),
-            &snapshot,
-            &style,
-            base.clone(),
-            window,
-            app,
-        );
-        let row1 = crate::display_map::render_viewport_row(
-            viewport.rows()[1].kind(),
-            &snapshot,
-            &style,
-            base.clone(),
-            None,
-            app,
-        );
-        (
-            row0.display_text.len(),
-            row0.window_start_column,
-            row1.display_text.len(),
-        )
+        let (windowed_len, window_start) = row_metrics(0, Some((200usize, 500usize)));
+        let (full_len, _) = row_metrics(1, None);
+        (windowed_len, window_start, full_len)
     });
     assert!(
         windowed_len < 4096,
@@ -1356,7 +1273,7 @@ fn materialized_deleted_excerpt_keeps_editing_and_cursor(cx: &mut TestAppContext
 /// 回归：组合文档（git hunk 上下文裁剪）未保存删除整行后，保留既有 excerpt 与源光标。
 ///
 /// 删除顶部上下文行会移动裁剪窗口（新行从顶部进入），投影被整体重建（reload）；
-/// 编辑器若把 planner 裸偏移直接重锚到重建后的投影版本，光标会跳到错误行。
+/// 编辑器若把编辑后裸偏移直接重锚到重建后的投影版本，光标会跳到错误行。
 #[gpui::test]
 fn combined_diff_dirty_edit_keeps_existing_excerpt_and_cursor(cx: &mut TestAppContext) {
     let working_text = "L0\nL1\nL2\nL3\nADDED\nL5\nL6\nL7\nL8\n";
@@ -1370,14 +1287,7 @@ fn combined_diff_dirty_edit_keeps_existing_excerpt_and_cursor(cx: &mut TestAppCo
     let combined_source = source.clone();
     let combined = cx.new(MultiBuffer::empty);
     combined.update(cx, |combined, cx| {
-        combined.set_diff_projection(
-            Some(DiffProjection::new(vec![clipped_diff_file(
-                combined_source,
-                head_text,
-                cx,
-            )])),
-            cx,
-        );
+        combined.set_diff_files(vec![clipped_diff_file(combined_source, head_text, cx)], cx);
     });
     // diff 后台计算完成后投影才可用；组合文档断言前等待落定。
     cx.run_until_parked();
@@ -1517,14 +1427,7 @@ fn combined_diff_undo_redo_restores_cursor_parity_with_plain_editor(cx: &mut Tes
     let combined_source = source.clone();
     let combined = cx.new(MultiBuffer::empty);
     combined.update(cx, |combined, cx| {
-        combined.set_diff_projection(
-            Some(DiffProjection::new(vec![clipped_diff_file(
-                combined_source,
-                head_text,
-                cx,
-            )])),
-            cx,
-        );
+        combined.set_diff_files(vec![clipped_diff_file(combined_source, head_text, cx)], cx);
     });
     // diff 后台计算完成后投影才可用；组合文档断言前等待落定。
     cx.run_until_parked();
@@ -1665,7 +1568,7 @@ fn folded_deleted_hunk_anchor_is_at_the_deletion_row_boundary(cx: &mut TestAppCo
     cx.read_entity(&editor, |editor, cx| {
         // 折叠态：组合保持新侧 19 行（普通编辑器整文件模式）。
         assert_eq!(editor.text(cx), working_text);
-        let snapshot = editor.display_map.snapshot();
+        let snapshot = editor.display_snapshot();
         let rendering = hunk_rendering(
             &snapshot,
             editor.diff_hunks(cx),
@@ -1922,7 +1825,7 @@ fn plain_editor_expanded_modified_hunk_keeps_old_rows_and_gutter_strip(cx: &mut 
 
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(editor.text(cx), "a\nold\nnew\nc");
-        let snapshot = editor.display_map.snapshot();
+        let snapshot = editor.display_snapshot();
         let rendering = hunk_rendering(
             &snapshot,
             editor.diff_hunks(cx),

@@ -10,6 +10,6 @@ mod state;
 pub use core::Selection;
 pub use selection_set::SelectionSet;
 pub(crate) use state::{
-    EditOutcome, EditorSelections, SelectionHistory, apply_edits, apply_edits_with_after_mapping,
-    apply_targeted_edits, map_selection_set, replace_selections,
+    EditOutcome, EditPlan, EditorSelections, SelectionHistory, apply_edits, apply_targeted_edits,
+    map_selection_set, replace_selections,
 };

@@ -6,19 +6,23 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use zcv_text::{Snapshot, TextRange, Utf16Offset};
+use zcv_multi_buffer::MultiBufferSnapshot;
+use zcv_text::{TextRange, Utf16Offset};
 
 use super::input::EditorComposition;
 
 #[derive(Debug, Clone)]
 pub(crate) struct EditorPresentation {
-    snapshot: Snapshot,
+    snapshot: MultiBufferSnapshot,
     composition: Option<EditorComposition>,
     dimmed_ranges: Arc<[Range<usize>]>,
 }
 
 impl EditorPresentation {
-    pub(crate) fn new(snapshot: &Snapshot, composition: Option<&EditorComposition>) -> Self {
+    pub(crate) fn new(
+        snapshot: &MultiBufferSnapshot,
+        composition: Option<&EditorComposition>,
+    ) -> Self {
         Self {
             snapshot: snapshot.clone(),
             composition: composition.cloned(),
@@ -59,9 +63,11 @@ impl EditorPresentation {
             .snapshot
             .utf16_cu_to_byte(Utf16Offset::new(range.end))
             .ok()?;
-        self.snapshot
-            .slice_byte_range(start, end)
-            .ok()
-            .map(|text| text.as_str().to_owned())
+        Some(
+            self.snapshot
+                .text_chunks(start..end)
+                .map(|chunk| chunk.text)
+                .collect(),
+        )
     }
 }

@@ -14,30 +14,30 @@ use gpui::{
 };
 use zcv_actions::{OpenExcerpts, ToggleFold};
 use zcv_git::DiffHunkKind;
-use zcv_language::BracketPair;
-use zcv_multi_buffer::DiffHunkStaging;
-use zcv_text::{ByteOffset, Line, LogicalColumn, Snapshot, TextRange};
+use zcv_language::{BracketPair, FoldRange};
+use zcv_multi_buffer::{DiffHunkStaging, MultiBufferSnapshot};
+use zcv_text::{ByteOffset, Line, LogicalColumn, TextRange};
 use zcv_theme::{color, space};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon, drag_autoscroll_delta};
 
 use crate::selection::SelectionSet;
 
 use super::display_map::{
-    DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot,
-    FILE_HEADER_HEIGHT, FoldRowSegment, ProjectedLineIndex, ProjectedRange, RenderedWhitespace,
-    RowStyleInput, StickyBufferHeader, WrapRowInfo, WrapViewportRowKind, byte_for_display_column,
-    display_column_for_byte, render_viewport_row,
+    DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint, DisplayRow, DisplayRowEvent,
+    DisplaySnapshot, FILE_HEADER_HEIGHT, FoldRowSegment, HighlightStyles, ProjectedLineIndex,
+    ProjectedRange, RenderedWhitespace, StickyBufferHeader, WrapRowInfo, byte_for_display_column,
+    chunk_to_run, display_column_for_byte,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
 use super::scrollbar::{
     SCROLLBAR_WIDTH, ScrollbarLayout, ScrollbarMarkerKind, marker_column_x_range_at,
-    marker_geometry,
 };
+#[cfg(test)]
+use super::view::hunk_rendering;
 use super::view::{
-    Editor, EditorHunkMarkerKind, EditorMode, EditorPresentation, HunkControlTarget, HunkRendering,
-    SoftWrap, diff_row_for_row, editor_hunk_part_rendering, editor_hunk_rendering, hunk_rendering,
-    is_hollow_hunk,
+    DiffDecorationSnapshot, Editor, EditorHunkMarkerKind, EditorMode, EditorPresentation,
+    HunkControlTarget, SearchDecorationSnapshot, SoftWrap, diff_row_for_row, is_hollow_hunk,
 };
 
 const CARET_WIDTH: Pixels = px(2.);
@@ -236,6 +236,9 @@ pub(super) struct VisibleLineLayoutParams<'a> {
     pub(super) fold_anchor_lines: &'a BTreeSet<Line>,
     pub(super) start_row: DisplayRow,
     pub(super) scroll_offset: Point<Pixels>,
+    /// 主光标的完整显示列。
+    /// 未换行时，窗口化必须覆盖待自动滚动的光标，否则命中测试只能看到当前水平窗口的末尾，无法把视口带到真实光标位置。
+    pub(super) primary_caret_column: Option<usize>,
     pub(super) line_height: Pixels,
     /// git diff 显示行区间（prepaint 从 `diff_hunk_rows` 计算，gutter/内容共用）。
     pub(super) diff_rows: &'a [(Range<usize>, DiffHunkKind, DiffHunkStaging)],
@@ -265,7 +268,7 @@ impl EditorLayout {
             &line.shaped.text,
             line.window_start_column,
             byte_index,
-            self.display_snapshot.buffer_snapshot(),
+            self.display_snapshot.buffer_snapshot().config(),
         );
         Some((
             line,
@@ -685,7 +688,7 @@ fn build_crease_toggles(
 
 fn build_diff_hunk_controls(
     layout: &EditorLayout,
-    hunks: &[(Range<usize>, HunkControlTarget)],
+    hunks: &[(usize, Range<usize>, HunkControlTarget)],
     sticky_header_height: Pixels,
     editor: &Entity<Editor>,
     window: &mut Window,
@@ -697,7 +700,7 @@ fn build_diff_hunk_controls(
     let hovered_hunk = editor.read(cx).hovered_diff_hunk();
     let mut controls = Vec::new();
     let sticky_top = layout.text_clip_bounds.top() + sticky_header_height;
-    for (hunk_index, (rows, hunk)) in hunks.iter().enumerate() {
+    for (hunk_index, rows, hunk) in hunks {
         let Some(visible_line) = layout
             .lines
             .iter()
@@ -720,7 +723,7 @@ fn build_diff_hunk_controls(
                 visible_bottom - visible_top,
             ),
         };
-        let element = if hovered_hunk == Some(hunk_index)
+        let element = if hovered_hunk == Some(*hunk_index)
             || hover_bounds.contains(&window.mouse_position())
         {
             let Some(mut element) =
@@ -749,7 +752,7 @@ fn build_diff_hunk_controls(
             (Some(element), Some(bounds))
         });
         controls.push(DiffHunkControls {
-            hunk_index,
+            hunk_index: *hunk_index,
             hover_bounds,
             control_bounds,
             element,
@@ -781,7 +784,7 @@ fn buffer_header_element(
     let open_excerpt = block.excerpt.clone();
     let open_from_path = block.excerpt.clone();
     let fold_path = block.excerpt.path().to_path_buf();
-    let folded = editor.read(cx).is_buffer_folded(&fold_path);
+    let folded = editor.read(cx).is_buffer_folded(&fold_path, cx);
     let editor_for_button = editor.clone();
     let editor_for_path = editor.clone();
     let editor_for_fold = editor.clone();
@@ -1031,100 +1034,46 @@ fn sticky_buffer_header_origin_y(
 }
 
 /// 滚动轴布局：thumb 几何 + diff marker（折叠的删除块行内无标记，滚动条 marker 仍指示删除位置）。
-fn layout_scrollbar(
-    mode: &EditorMode,
+struct ScrollbarLayoutInput<'a> {
+    mode: &'a EditorMode,
     scrollbar_bounds: Bounds<Pixels>,
-    hunk_render: &HunkRendering,
+    diff_decorations: &'a DiffDecorationSnapshot,
+    search_decorations: Option<&'a SearchDecorationSnapshot>,
     line_height: Pixels,
+}
+
+fn layout_scrollbar(
+    input: ScrollbarLayoutInput<'_>,
     editor: &Entity<Editor>,
     cx: &App,
     window: &mut Window,
 ) -> Option<ScrollbarLayout> {
-    (*mode == EditorMode::Full).then(|| {
+    (*input.mode == EditorMode::Full).then(|| {
         let editor = editor.read(cx);
         let mut scrollbar_layout = ScrollbarLayout::new(
-            scrollbar_bounds,
+            input.scrollbar_bounds,
             editor.max_scroll_top(),
             editor.scroll_top(),
             editor.scrollbar_thumb_state(),
             window,
         );
-        // marker 每帧计算（hunks 数量级小；滚动中实时跟随，无需缓存/后台任务）。
+        // 行范围在 diff 装饰快照建立时已经派生；滚动帧只把这些范围换算为当前滚动轴几何。
         // scroll_per_pixel 取 layout 自身算好的值，与 thumb 换算严格一致。
-        let expanded_flags = editor.diff_hunk_expanded(cx);
-        let folded_deleted_markers: Vec<(Range<usize>, DiffHunkKind)> = hunk_render
-            .hit_regions
-            .iter()
-            .filter(|(_, index, kind)| {
-                *kind == DiffHunkKind::Deleted
-                    && !expanded_flags.get(*index).copied().unwrap_or(false)
-            })
-            .map(|(rows, _, _)| (rows.clone(), DiffHunkKind::Deleted))
-            .collect();
-        let diff_markers = hunk_render
-            .diff_rows
-            .iter()
-            .map(|(rows, kind, _)| (rows.clone(), *kind))
-            .chain(folded_deleted_markers)
-            .map(|(rows, kind)| {
-                (
-                    rows,
-                    ScrollbarMarkerKind::Git(EditorHunkMarkerKind::Diff(kind)),
-                )
-            });
-        let editor_hunk_markers = hunk_render
-            .editor_hunk_parts
-            .iter()
-            .map(|(rows, _, marker)| (rows.clone(), ScrollbarMarkerKind::Git(*marker)));
-        let search_markers = editor
-            .search_highlights()
-            .into_iter()
-            .flat_map(|(matches, _)| {
-                search_marker_rows(
-                    &editor.display_snapshot(),
-                    matches.iter().map(crate::view::SearchMatchAnchor::range),
-                )
-            })
-            .map(|rows| (rows, ScrollbarMarkerKind::Search));
-        scrollbar_layout.markers = marker_geometry(
-            diff_markers
-                .chain(editor_hunk_markers)
-                .chain(search_markers),
+        let diff_markers = input.diff_decorations.scrollbar_markers(
             scrollbar_layout.hitbox.bounds,
             scrollbar_layout.scroll_per_pixel,
-            line_height,
+            input.line_height,
         );
+        let search_markers = input.search_decorations.map(|decorations| {
+            decorations.scrollbar_markers(
+                scrollbar_layout.hitbox.bounds,
+                scrollbar_layout.scroll_per_pixel,
+                input.line_height,
+            )
+        });
+        scrollbar_layout.marker_groups = [Some(diff_markers), search_markers];
         scrollbar_layout
     })
-}
-
-/// 将当前组合投影中的搜索字节范围转换为显示行范围。
-///
-/// 搜索范围本身由 `Editor` 依其搜索来源提供：文件内搜索来自编辑器的锚点，项目搜索来自 `MultiBuffer` 的当前组合投影。
-/// 滚动栏只消费统一后的范围，不保存或重建另一份搜索结果。
-/// 字节范围到显示范围的投影完全交由 `DisplaySnapshot`，以统一处理 UTF-8、软换行、折叠与组合文档文件头。
-fn search_marker_rows(
-    display_snapshot: &DisplaySnapshot,
-    ranges: impl IntoIterator<Item = TextRange>,
-) -> Vec<Range<usize>> {
-    ranges
-        .into_iter()
-        .flat_map(|range| {
-            display_snapshot
-                .project_text_range(range)
-                .unwrap_or_default()
-        })
-        .map(|range| {
-            let start = range.start();
-            let end = range.end();
-            let end_line = if end.line() == start.line() || end.column() != LogicalColumn::ZERO {
-                end.line().get().saturating_add(1)
-            } else {
-                end.line().get()
-            };
-            start.line().get()..end_line
-        })
-        .collect()
 }
 
 impl IntoElement for EditorElement {
@@ -1181,7 +1130,6 @@ impl Element for EditorElement {
             presentation,
             selections,
             shows_gutter,
-            active_lines,
             soft_wrap,
             mode,
             preferred_line_length,
@@ -1192,7 +1140,6 @@ impl Element for EditorElement {
                 editor.presentation(),
                 editor.selections(),
                 editor.shows_gutter(),
-                editor.active_lines().into_iter().collect::<BTreeSet<_>>(),
                 editor.soft_wrap(),
                 editor.mode().clone(),
                 editor.preferred_line_length(),
@@ -1264,15 +1211,15 @@ impl Element for EditorElement {
         });
         // 软换行模式下显示行不再由 TabMap 测量（水平滚动收敛到视口宽度）。
         if !display_snapshot.is_wrapped() {
-            self.editor.update(cx, |editor, _| {
-                editor.measure_display_rows(editor.scroll_anchor().row(), visible_line_count);
+            self.editor.update(cx, |editor, cx| {
+                editor.measure_display_rows(editor.scroll_anchor().row(), visible_line_count, cx);
             });
         }
         let content_width = if display_snapshot.is_wrapped() {
             text_bounds.size.width
         } else {
-            self.editor.update(cx, |editor, _| {
-                let longest_row = editor.longest_display_row();
+            self.editor.update(cx, |editor, cx| {
+                let longest_row = editor.longest_display_row(cx);
                 editor.longest_line_width(longest_row, font.clone(), font_size, window)
             }) + CARET_WIDTH
         };
@@ -1293,56 +1240,77 @@ impl Element for EditorElement {
             let editor = self.editor.read(cx);
             (editor.scroll_anchor().row(), editor.scroll_offset())
         };
-        // 折叠入口行集合（crease 折叠态判断：anchor 行已折叠常显展开箭头）。
-        let fold_anchor_lines: BTreeSet<Line> =
-            display_snapshot.fold_anchor_lines().into_iter().collect();
-        // 可折叠行集合（crease 显示判断：折叠范围起点行即折叠入口行）。
+        let visible_rows = visible_display_row_range(
+            start_row,
+            display_snapshot.line_count(),
+            text_bounds.size.height,
+            scroll_offset.y,
+            line_height,
+        );
+        // placeholder 也经同一显示快照管线；本帧先由显示游标取得源范围，
+        // 随后重新从同一快照起点创建布局游标，两个消费方都按顺序推进。
+        let placeholder = self.editor.read(cx).placeholder_snapshot_if_empty(cx);
+        let layout_snapshot = placeholder.as_ref().unwrap_or(&display_snapshot);
+        let layout_visible_rows = visible_display_row_range(
+            start_row,
+            layout_snapshot.line_count(),
+            text_bounds.size.height,
+            scroll_offset.y,
+            line_height,
+        );
+        let primary_caret_column = layout_snapshot
+            .offset_to_display_point(selections.primary().head())
+            .ok()
+            .map(|point| point.column().get());
+        let visible_source_ranges = layout_snapshot
+            .chunks(
+                DisplayRow::new(layout_visible_rows.start)
+                    ..DisplayRow::new(layout_visible_rows.end),
+                HighlightStyles::default(),
+                None,
+            )
+            .source_line_ranges();
+        let visible_source_lines = source_ranges_bounds(&visible_source_ranges);
+        let active_lines = self
+            .editor
+            .read(cx)
+            .active_lines_in_range(visible_source_lines.as_ref())
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let fold_anchor_lines: BTreeSet<Line> = visible_source_lines
+            .clone()
+            .map(|range| {
+                display_snapshot
+                    .fold_anchor_lines_in_range(range)
+                    .into_iter()
+                    .collect()
+            })
+            .unwrap_or_default();
         let foldable_lines: BTreeSet<Line> = {
             let editor = self.editor.read(cx);
-            let snapshot = display_snapshot.buffer_snapshot();
-            editor
-                .fold_ranges()
-                .iter()
-                .filter_map(|range| {
-                    snapshot
-                        .byte_to_line(ByteOffset::new(range.range.start))
-                        .ok()
-                })
-                .collect()
+            visible_source_lines
+                .as_ref()
+                .map(|range| visible_foldable_lines(&display_snapshot, editor.fold_ranges(), range))
+                .unwrap_or_default()
         };
-        // git diff 渲染数据：行标记、竖条与点击区域单遍计算共用（只依赖 snapshot 与注入 hunks，与滚动位置无关，autoscroll 重排可复用）。
-        let mut hunk_render = {
-            let editor = self.editor.read(cx);
-            hunk_rendering(
-                &display_snapshot,
-                editor.diff_hunks(cx),
-                &editor.diff_hunk_expanded(cx),
-                editor.diff_hunk_old_ranges(cx),
-                editor.diff_hunk_word_diffs(cx),
-            )
-        };
-        let editor_hunks = {
-            let editor = self.editor.read(cx);
-            editor_hunk_rendering(&display_snapshot, editor.editor_hunks())
-        };
-        hunk_render.controls.extend(
-            editor_hunks
-                .iter()
-                .map(|(rows, hunk)| (rows.clone(), HunkControlTarget::Editor(hunk.clone()))),
-        );
-        hunk_render.editor_hunks = editor_hunks;
-        hunk_render.editor_hunk_parts = {
-            let editor = self.editor.read(cx);
-            editor_hunk_part_rendering(&display_snapshot, editor.editor_hunks())
-        };
+        // diff 装饰由 Editor 按显示映射版本维护；本帧只取当前视口的行范围。
+        let diff_decorations = self.editor.update(cx, |editor, cx| {
+            editor.diff_decorations(&display_snapshot, cx)
+        });
+        let search_decorations = self
+            .editor
+            .update(cx, |editor, _| editor.search_decorations(&display_snapshot));
+        let hunk_render = diff_decorations.rendering_for_viewport(visible_rows.clone());
         let diff_rows = &hunk_render.diff_rows;
-        // placeholder 模式：空 buffer 时行数据源替换为 placeholder 快照（折行/行高一致）。
-        let placeholder = self.editor.read(cx).placeholder_snapshot_if_empty(cx);
-        let mut layout = layout_visible_lines(
-            display_snapshot.clone(),
-            placeholder.clone(),
+        let mut layout = layout_visible_lines_from_viewport(
+            VisibleViewport {
+                display_snapshot: layout_snapshot,
+                placeholder_mode: placeholder.is_some(),
+                visible_source_ranges,
+                visible_source_lines,
+            },
             presentation.clone(),
-            self.editor.read(cx).search_highlights(),
+            search_decorations.as_deref(),
             VisibleLineLayoutParams {
                 geometry,
                 active_lines: &active_lines,
@@ -1350,6 +1318,7 @@ impl Element for EditorElement {
                 fold_anchor_lines: &fold_anchor_lines,
                 start_row,
                 scroll_offset,
+                primary_caret_column,
                 line_height,
                 diff_rows,
             },
@@ -1402,8 +1371,11 @@ impl Element for EditorElement {
         // 背景片段合成：选区与 run 背景逐行合成为互不重叠的片段。
         let (selection_segments, carets) = layout_selections(&selections, &layout, line_height, cx);
         let background_fragments = layout_background_fragments(&layout, &selection_segments, cx);
-        let word_diff_fragments =
-            layout_word_diff_fragments(&hunk_render.word_diff_highlights, &layout, cx);
+        let word_diff_fragments = layout_word_diff_fragments(
+            diff_decorations.visible_word_diff_highlights(&visible_rows),
+            &layout,
+            cx,
+        );
         let mut bracket_matches = Vec::new();
         if let Some(pair) = matching_bracket_pair {
             layout_bracket_pair(pair, &layout, line_height, &mut bracket_matches, cx);
@@ -1416,8 +1388,6 @@ impl Element for EditorElement {
         let hunk_strips = Arc::new(hunk_render.strips.clone());
         // hunk 色带 hitbox：点击切换折叠/展开（hitbox 挂在色带区域，BlockMouse 不穿透）。
         let deleted_hunk_hitboxes = Arc::new({
-            let editor = self.editor.read(cx);
-            let expanded_flags = editor.diff_hunk_expanded(cx);
             let mut hitboxes = Vec::new();
             if let Some(gutter) = &layout.gutter {
                 let strip_width = gutter_strip_width(line_height);
@@ -1430,7 +1400,7 @@ impl Element for EditorElement {
                         continue;
                     };
                     // 折叠的删除块是红色三角标记；其余是普通色带区域。
-                    let expanded = expanded_flags.get(*index).copied().unwrap_or(false);
+                    let expanded = diff_decorations.is_expanded(*index);
                     let width = strip_width;
                     hitboxes.push((
                         window.insert_hitbox(
@@ -1485,17 +1455,20 @@ impl Element for EditorElement {
         let crease_toggles = build_crease_toggles(&layout, &self.editor, window, cx);
         let diff_hunk_controls = build_diff_hunk_controls(
             &layout,
-            &hunk_render.controls,
+            &diff_decorations.visible_controls(&visible_rows),
             sticky_header_height,
             &self.editor,
             window,
             cx,
         );
         let scrollbar = layout_scrollbar(
-            &mode,
-            scrollbar_bounds,
-            &hunk_render,
-            line_height,
+            ScrollbarLayoutInput {
+                mode: &mode,
+                scrollbar_bounds,
+                diff_decorations: &diff_decorations,
+                search_decorations: search_decorations.as_deref(),
+                line_height,
+            },
             &self.editor,
             cx,
             window,
@@ -2040,7 +2013,12 @@ impl Element for EditorElement {
                 colors.scrollbar_track_background,
             ));
             // marker 图层位于 track 之上、thumb 之下；Git diff 与搜索结果分别占用独立列。
-            for marker in &scrollbar.markers {
+            for marker in scrollbar
+                .marker_groups
+                .iter()
+                .flatten()
+                .flat_map(|markers| markers.iter())
+            {
                 let column_x = marker_column_x_range_at(
                     scrollbar.hitbox.bounds,
                     match marker.kind {
@@ -2391,6 +2369,50 @@ fn calculate_wrap_width(
     }
 }
 
+fn visible_display_row_range(
+    start_row: DisplayRow,
+    line_count: usize,
+    viewport_height: Pixels,
+    scroll_offset_y: Pixels,
+    line_height: Pixels,
+) -> Range<usize> {
+    let start = start_row.get().min(line_count);
+    let count = ((viewport_height + scroll_offset_y) / line_height).ceil() as usize + 1;
+    start..(start + count).min(line_count)
+}
+
+fn visible_foldable_lines(
+    snapshot: &DisplaySnapshot,
+    fold_ranges: &[FoldRange],
+    visible_lines: &Range<Line>,
+) -> BTreeSet<Line> {
+    let Some(range) = source_line_byte_range(snapshot, visible_lines) else {
+        return BTreeSet::new();
+    };
+    let start = range.start;
+    let end = range.end;
+    let buffer = snapshot.buffer_snapshot();
+    let start_index = fold_ranges.partition_point(|fold| fold.range.start < start);
+    fold_ranges[start_index..]
+        .iter()
+        .take_while(|fold| fold.range.start < end)
+        .filter_map(|fold| buffer.byte_to_line(ByteOffset::new(fold.range.start)).ok())
+        .collect()
+}
+
+fn source_line_byte_range(snapshot: &DisplaySnapshot, lines: &Range<Line>) -> Option<Range<usize>> {
+    let buffer = snapshot.buffer_snapshot();
+    let start = buffer.line_start_byte(lines.start).ok()?.get();
+    let end = if lines.end < Line::new(buffer.line_count()) {
+        buffer
+            .line_start_byte(lines.end)
+            .map_or(buffer.len_bytes().get(), |offset| offset.get())
+    } else {
+        buffer.len_bytes().get()
+    };
+    Some(start..end)
+}
+
 /// 返回换行和绘制共同使用的右侧安全边界。
 fn wrap_edge_safety(soft_wrap: SoftWrap, em_advance: Pixels) -> Pixels {
     if soft_wrap == SoftWrap::None {
@@ -2401,15 +2423,33 @@ fn wrap_edge_safety(soft_wrap: SoftWrap, em_advance: Pixels) -> Pixels {
     }
 }
 
-fn layout_visible_lines(
-    display_snapshot: DisplaySnapshot,
-    placeholder: Option<DisplaySnapshot>,
+fn source_ranges_bounds(ranges: &[Range<Line>]) -> Option<Range<Line>> {
+    let first = ranges.first()?.start;
+    let last = ranges.last()?.end;
+    Some(first..last)
+}
+
+struct VisibleViewport<'a> {
+    display_snapshot: &'a DisplaySnapshot,
+    placeholder_mode: bool,
+    visible_source_ranges: Vec<Range<Line>>,
+    visible_source_lines: Option<Range<Line>>,
+}
+
+fn layout_visible_lines_from_viewport(
+    viewport: VisibleViewport<'_>,
     presentation: EditorPresentation,
-    search_highlights: Option<(&[crate::view::SearchMatchAnchor], usize)>,
+    search_decorations: Option<&SearchDecorationSnapshot>,
     params: VisibleLineLayoutParams<'_>,
     window: &mut Window,
     cx: &App,
 ) -> EditorLayout {
+    let VisibleViewport {
+        display_snapshot,
+        placeholder_mode,
+        visible_source_ranges,
+        visible_source_lines,
+    } = viewport;
     let VisibleLineLayoutParams {
         geometry:
             EditorGeometry {
@@ -2422,13 +2462,10 @@ fn layout_visible_lines(
         fold_anchor_lines,
         start_row,
         scroll_offset,
+        primary_caret_column,
         line_height,
         diff_rows,
     } = params;
-    // placeholder 模式：行数据源替换为 placeholder 快照（折行/行高与真实文本同一管线）；
-    // 无高亮/折叠的查询对 placeholder 快照自然返回空。
-    let placeholder_mode = placeholder.is_some();
-    let display_snapshot = placeholder.as_ref().unwrap_or(&display_snapshot);
     let line_count = display_snapshot.line_count();
     let start = start_row.get().min(line_count.saturating_sub(1));
     let visible_count =
@@ -2449,39 +2486,36 @@ fn layout_visible_lines(
             text_clip_bounds.size.height,
         ),
     );
-    let viewport = display_snapshot
-        .slice_viewport(DisplayRow::new(start), end.saturating_sub(start))
-        .ok();
     // 语法高亮只在基础 buffer chunk 的真实行范围内查询；
     // inlay/fold/tab/wrap都是其后的 chunk 变换，不能用显示片段长度反推 buffer 字节坐标。
-    let visible_highlights = viewport
-        .as_ref()
-        .map(|viewport| display_snapshot.highlighted_spans_for_viewport(viewport))
-        .unwrap_or_default();
+    let visible_highlights =
+        display_snapshot.highlighted_spans_for_source_ranges(visible_source_ranges);
     // capture 索引 → 样式的预展开表：渲染每 run 一次数组索引，不再逐 run 做字符串回退查找。
     let highlight_styles = display_snapshot.highlight_styles();
     // 搜索高亮：独立背景覆盖层。
-    let search_backgrounds: Vec<(Range<usize>, gpui::Rgba)> = match search_highlights {
-        Some((matches, active_index)) => {
-            let colors = color::current(cx);
-            matches
-                .iter()
-                .enumerate()
-                .map(|(index, search_match)| {
-                    let range = search_match.range();
-                    (
-                        range.start().get()..range.end().get(),
-                        if index == active_index {
-                            colors.search_active_match_background
-                        } else {
-                            colors.search_match_background
-                        },
-                    )
-                })
-                .collect()
-        }
-        None => Vec::new(),
-    };
+    let visible_byte_range = visible_source_lines
+        .as_ref()
+        .and_then(|range| source_line_byte_range(display_snapshot, range));
+    let search_backgrounds: Vec<(Range<usize>, gpui::Rgba)> =
+        match search_decorations.zip(visible_byte_range) {
+            Some((decorations, visible_range)) => {
+                let colors = color::current(cx);
+                decorations
+                    .visible_ranges(visible_range)
+                    .map(|(index, range)| {
+                        (
+                            range.start().get()..range.end().get(),
+                            if decorations.is_active(index) {
+                                colors.search_active_match_background
+                            } else {
+                                colors.search_match_background
+                            },
+                        )
+                    })
+                    .collect()
+            }
+            None => Vec::new(),
+        };
 
     // 基础 run：样式段在其上合并。
     let base = TextRun {
@@ -2509,10 +2543,19 @@ fn layout_visible_lines(
         let scroll_cols = (scroll_offset.x / em_advance).floor() as usize;
         let visible_cols = (text_clip_bounds.size.width / em_advance).ceil() as usize;
         let margin = 64usize;
-        Some((
-            scroll_cols.saturating_sub(margin),
-            scroll_cols + visible_cols + margin,
-        ))
+        let viewport_start = scroll_cols.saturating_sub(margin);
+        let viewport_end = scroll_cols + visible_cols + margin;
+        // 正常帧围绕当前水平视口塑形；
+        // 自动滚动帧的主光标若在窗口外，改为围绕主光标塑形。
+        // 这使布局后能得到其真实 x 坐标，再由 ScrollManager 统一钳制水平偏移，而无需物化整条长行。
+        let (start, end) = primary_caret_column
+            .filter(|column| *column < viewport_start || *column > viewport_end)
+            .map(|column| {
+                let start = column.saturating_sub(margin);
+                (start, start + visible_cols + margin * 2)
+            })
+            .unwrap_or((viewport_start, viewport_end));
+        Some((start, end))
     } else {
         None
     };
@@ -2526,6 +2569,7 @@ fn layout_visible_lines(
                          fold_segments: Option<Vec<FoldRowSegment>>,
                          whitespaces: Vec<RenderedWhitespace>,
                          window_start_column: usize,
+                         window_prefix: &str,
                          runs: Vec<TextRun>| {
         let shaped =
             window
@@ -2541,13 +2585,30 @@ fn layout_visible_lines(
             byte_offset += run.len;
         }
         let git_diff = diff_row_for_row(diff_rows, row);
+        let window_prefix_width = if window_prefix.is_empty() {
+            Pixels::ZERO
+        } else {
+            let prefix_run = TextRun {
+                len: window_prefix.len(),
+                ..base.clone()
+            };
+            window
+                .text_system()
+                .shape_line(
+                    window_prefix.to_owned().into(),
+                    font_size,
+                    &[prefix_run],
+                    None,
+                )
+                .width
+        };
         lines.push(LayoutLine {
             row: DisplayRow::new(row),
             logical_line,
             active: logical_line.is_some_and(|line| active_lines.contains(&line)),
             origin: point(
                 // 窗口化行：shaped 文本从窗口起点开始，行原点随窗口起点列右移。
-                text_bounds.left() - scroll_offset.x + em_advance * window_start_column as f32,
+                text_bounds.left() - scroll_offset.x + window_prefix_width,
                 text_bounds.top() + line_height * (row - start) - scroll_offset.y,
             ),
             shaped,
@@ -2611,78 +2672,96 @@ fn layout_visible_lines(
         }
     };
 
-    if let Some(viewport) = viewport {
-        for row in viewport.rows() {
-            if let Some(block) = row.block() {
+    {
+        let window_for_chunks = horizontal_window;
+        let mut chunks = display_snapshot.chunks(
+            DisplayRow::new(start)..DisplayRow::new(end),
+            HighlightStyles {
+                spans: &visible_highlights,
+                styles: &highlight_styles,
+                backgrounds: &search_backgrounds,
+                marked: presentation.marked_ranges(),
+                dimmed: presentation.dimmed_ranges(),
+            },
+            window_for_chunks,
+        );
+        chunks.for_each_row(|row| match row {
+            DisplayRowEvent::Block { row, height, block } => {
                 blocks.push(LayoutBlock {
-                    row: row.index(),
-                    height: row.height(),
+                    row,
+                    height,
                     origin: point(
                         block_clip_bounds.left(),
-                        // 即使视口从多行块的中间开始，多行块也会返回其真实的第一显示行。
-                        // 此时，其原点有意位于裁剪边界之上，因此该增量可能为负值（例如，对于从第 1 行开始的视口，则为第 0 行）。
-                        text_bounds.top() + line_height * (row.index().get() as f32 - start as f32)
+                        text_bounds.top() + line_height * (row.get() as f32 - start as f32)
                             - scroll_offset.y,
                     ),
                     block: block.clone(),
                 });
-                continue;
             }
-            match row.kind() {
-                WrapViewportRowKind::Text { .. } => {
-                    // 光标行不窗口化：光标像素定位基于 shaped 文本，窗口外光标会被夹到窗口内，导致水平 autoscroll 失效；
-                    // 光标行退回整行上限（超长行仍有 1024 兜底）。
-                    let window_for_row = match row.kind() {
-                        WrapViewportRowKind::Text { source, .. }
-                            if active_lines.contains(&Line::new(source.line())) =>
-                        {
-                            None
-                        }
-                        _ => horizontal_window,
-                    };
-                    // 行解构、四层快照链穿透、chunk 合成与 run 映射都在管线侧完成，这里只消费渲染结果。
-                    let rendered = render_viewport_row(
-                        row.kind(),
-                        display_snapshot,
-                        &RowStyleInput {
-                            visible_highlights: &visible_highlights,
-                            highlight_styles: &highlight_styles,
-                            search_backgrounds: &search_backgrounds,
-                            marked_ranges: presentation.marked_ranges(),
-                            dimmed_ranges: presentation.dimmed_ranges(),
-                        },
-                        base.clone(),
-                        window_for_row,
-                        cx,
-                    );
-                    let (gutter_line, gutter_number) = match rendered.gutter_line {
-                        Some(line) => match display_snapshot.excerpt_for_output_line(line.get()) {
-                            Some(excerpt) => {
-                                match excerpt.source_line_for_output_line(line.get()) {
-                                    Some(number) => (Some(line), Some(number)),
-                                    None => (None, None),
-                                }
-                            }
-                            None => (Some(line), Some(line.get() + 1)),
-                        },
-                        None => (None, None),
-                    };
-                    push_line(
-                        row.index().get(),
-                        rendered.logical_line,
-                        gutter_line,
-                        gutter_number,
-                        &rendered.display_text,
-                        rendered.utf16_start,
-                        rendered.wrap_info,
-                        rendered.fold_segments,
-                        rendered.whitespaces,
-                        rendered.window_start_column,
-                        rendered.runs,
-                    );
+            DisplayRowEvent::Text { row, chunks } => {
+                let mut row_text = String::new();
+                let mut row_runs = Vec::new();
+                let mut row_whitespaces = Vec::new();
+                if row.indent > 0 {
+                    row_text.push_str(&" ".repeat(row.indent));
+                    row_runs.push(TextRun {
+                        len: row.indent,
+                        ..base.clone()
+                    });
                 }
+                for text_chunk in chunks.by_ref() {
+                    let display_start = row_text.len();
+                    row_text.push_str(text_chunk.text);
+                    row_whitespaces.extend(text_chunk.text.char_indices().filter_map(
+                        |(offset, ch)| {
+                            (!text_chunk.is_tab
+                                && !text_chunk.is_inlay
+                                && !text_chunk.is_placeholder
+                                && ch.is_whitespace())
+                            .then_some(RenderedWhitespace {
+                                byte_range: display_start + offset
+                                    ..display_start + offset + ch.len_utf8(),
+                                display_column: row.window_start_column
+                                    + row.indent
+                                    + row_text[display_start..display_start + offset]
+                                        .chars()
+                                        .count(),
+                            })
+                        },
+                    ));
+                    let mut run = chunk_to_run(&text_chunk, base.clone());
+                    if text_chunk.is_placeholder {
+                        run.color = color::current(cx).text_placeholder.into();
+                    }
+                    row_runs.push(run);
+                }
+                let gutter_line = (row.fragment_index == 0).then_some(Line::new(row.source_line));
+                let (gutter_line, gutter_number) = match gutter_line {
+                    Some(line) => match row.excerpt {
+                        Some(excerpt) => excerpt
+                            .source_line_for_output_line(line.get())
+                            .map(|number| (Some(line), Some(number)))
+                            .unwrap_or((None, None)),
+                        None => (Some(line), Some(line.get() + 1)),
+                    },
+                    None => (None, None),
+                };
+                push_line(
+                    row.row.get(),
+                    Some(Line::new(row.source_line)),
+                    gutter_line,
+                    gutter_number,
+                    &row_text,
+                    row.utf16_start,
+                    (row.fragment_index > 0).then_some(WrapRowInfo { indent: row.indent }),
+                    row.fold_segments.map(ToOwned::to_owned),
+                    row_whitespaces,
+                    row.window_start_column,
+                    row.window_prefix,
+                    row_runs,
+                );
             }
-        }
+        });
     }
 
     EditorLayout {
@@ -2917,56 +2996,46 @@ fn layout_selection_segments(
 /// 输入是组合文档字节范围；经显示投影换算到显示行与行内字符列，
 /// 再复用与选区一致的 `x_for_index` 映射（含 wrap 续行片段起点列）。
 fn layout_word_diff_fragments(
-    highlights: &[(DiffHunkKind, Range<usize>)],
+    highlights: impl IntoIterator<Item = (DiffHunkKind, ProjectedRange)>,
     layout: &EditorLayout,
     cx: &App,
 ) -> Vec<Vec<(Pixels, Pixels, gpui::Rgba)>> {
     let colors = color::current(cx);
     let mut per_line = vec![Vec::new(); layout.lines.len()];
-    for (kind, range) in highlights {
+    for (kind, projected_range) in highlights {
         let color = match kind {
             DiffHunkKind::Added => colors.version_control_word_added,
             DiffHunkKind::Deleted => colors.version_control_word_deleted,
             DiffHunkKind::Modified => continue,
         };
-        let Ok(text_range) =
-            TextRange::new(ByteOffset::new(range.start), ByteOffset::new(range.end))
-        else {
-            continue;
-        };
-        let Ok(projected) = layout.display_snapshot.project_text_range(text_range) else {
-            continue;
-        };
-        for projected_range in projected {
-            for (ix, line) in layout.lines.iter().enumerate() {
-                let row = ProjectedLineIndex::new(line.row.get());
-                if row < projected_range.start().line() || row > projected_range.end().line() {
-                    continue;
-                }
-                let line_columns = line.shaped.text.chars().count();
-                let start_column = if row == projected_range.start().line() {
-                    projected_range.start().column().get().min(line_columns)
-                } else {
-                    0
-                };
-                let end_column = if row == projected_range.end().line() {
-                    projected_range.end().column().get().min(line_columns)
-                } else {
-                    line_columns
-                };
-                let start_x = line.origin.x
-                    + line
-                        .shaped
-                        .x_for_index(column_to_byte(&line.shaped.text, start_column));
-                let end_x = line.origin.x
-                    + line
-                        .shaped
-                        .x_for_index(column_to_byte(&line.shaped.text, end_column));
-                if end_x <= start_x {
-                    continue;
-                }
-                per_line[ix].push((start_x, end_x, color));
+        for (ix, line) in layout.lines.iter().enumerate() {
+            let row = ProjectedLineIndex::new(line.row.get());
+            if row < projected_range.start().line() || row > projected_range.end().line() {
+                continue;
             }
+            let line_columns = line.shaped.text.chars().count();
+            let start_column = if row == projected_range.start().line() {
+                projected_range.start().column().get().min(line_columns)
+            } else {
+                0
+            };
+            let end_column = if row == projected_range.end().line() {
+                projected_range.end().column().get().min(line_columns)
+            } else {
+                line_columns
+            };
+            let start_x = line.origin.x
+                + line
+                    .shaped
+                    .x_for_index(column_to_byte(&line.shaped.text, start_column));
+            let end_x = line.origin.x
+                + line
+                    .shaped
+                    .x_for_index(column_to_byte(&line.shaped.text, end_column));
+            if end_x <= start_x {
+                continue;
+            }
+            per_line[ix].push((start_x, end_x, color));
         }
     }
     per_line
@@ -3222,11 +3291,11 @@ fn local_byte_for_display_point(
         &line.shaped.text,
         line.window_start_column,
         point.column().get(),
-        display_snapshot.buffer_snapshot(),
+        display_snapshot.buffer_snapshot().config(),
     )
 }
 
-fn line_end_offset(snapshot: &Snapshot, offset: ByteOffset) -> Option<ByteOffset> {
+fn line_end_offset(snapshot: &MultiBufferSnapshot, offset: ByteOffset) -> Option<ByteOffset> {
     let line = snapshot.byte_to_position(offset).ok()?.line();
     if line.get() + 1 < snapshot.line_count() {
         snapshot
@@ -3269,7 +3338,50 @@ fn selection_autoscroll_delta(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::display_map::DisplayMap;
+
+    #[cfg(test)]
+    fn layout_visible_lines(
+        display_snapshot: DisplaySnapshot,
+        placeholder: Option<DisplaySnapshot>,
+        presentation: EditorPresentation,
+        search_decorations: Option<&SearchDecorationSnapshot>,
+        params: VisibleLineLayoutParams<'_>,
+        window: &mut Window,
+        cx: &App,
+    ) -> EditorLayout {
+        let placeholder_mode = placeholder.is_some();
+        let display_snapshot = placeholder.as_ref().unwrap_or(&display_snapshot);
+        let line_count = display_snapshot.line_count();
+        let start = params.start_row.get().min(line_count.saturating_sub(1));
+        let visible_count = ((params.geometry.text_bounds.size.height + params.scroll_offset.y)
+            / params.line_height)
+            .ceil() as usize
+            + 1;
+        let visible_source_ranges = display_snapshot
+            .chunks(
+                DisplayRow::new(start)
+                    ..DisplayRow::new(start + visible_count.min(line_count.saturating_sub(start))),
+                HighlightStyles::default(),
+                None,
+            )
+            .source_line_ranges();
+        let visible_source_lines = source_ranges_bounds(&visible_source_ranges);
+        layout_visible_lines_from_viewport(
+            VisibleViewport {
+                display_snapshot,
+                placeholder_mode,
+                visible_source_ranges,
+                visible_source_lines,
+            },
+            presentation,
+            search_decorations,
+            params,
+            window,
+            cx,
+        )
+    }
+
+    use crate::display_map::{DisplayMap, WrapRowKind};
     use gpui::{AppContext, Empty, TestAppContext};
     use std::path::{Path, PathBuf};
     use zcv_language::LanguageBuffer;
@@ -3296,14 +3408,18 @@ mod tests {
     fn search_marker_rows_cover_every_current_search_range() {
         let buffer = Buffer::scratch("first\nmiddle\n项目".to_owned(), BufferConfig::default())
             .expect("应创建搜索 marker 测试 Buffer");
-        let display = DisplayMap::new(buffer.snapshot()).snapshot();
+        let snapshot = buffer.snapshot();
+        let display = DisplayMap::new(snapshot.clone()).snapshot();
         let ranges = [
             TextRange::new(ByteOffset::ZERO, ByteOffset::new(5)).unwrap(),
             TextRange::new(ByteOffset::new(13), ByteOffset::new(19)).unwrap(),
         ];
+        let matches = ranges
+            .map(|range| crate::view::SearchMatchAnchor::from_range(snapshot.version(), range));
+        let decorations = SearchDecorationSnapshot::for_test(&display, &matches, 0);
 
         assert_eq!(
-            search_marker_rows(&display, ranges),
+            decorations.projected_rows_for_test(),
             vec![0..1, 2..3],
             "每个当前搜索范围都应转换为滚动栏 marker 的显示行范围"
         );
@@ -3336,15 +3452,22 @@ mod tests {
                 cx,
             );
         });
-        let (display, ranges) = cx.read_entity(&combined, |combined, cx| {
+        let (display, version, ranges) = cx.read_entity(&combined, |combined, cx| {
+            let snapshot = combined.snapshot(cx);
             (
-                DisplayMap::new(combined.snapshot(cx)).snapshot(),
+                DisplayMap::new(snapshot.clone()).snapshot(),
+                snapshot.version(),
                 combined.match_ranges().to_vec(),
             )
         });
+        let matches = ranges
+            .into_iter()
+            .map(|range| crate::view::SearchMatchAnchor::from_range(version, range))
+            .collect::<Vec<_>>();
+        let decorations = SearchDecorationSnapshot::for_test(&display, &matches, 0);
 
         assert_eq!(
-            search_marker_rows(&display, ranges),
+            decorations.projected_rows_for_test(),
             vec![2..3, 4..5],
             "组合文档的文件头与中文命中都必须按组合投影定位"
         );
@@ -3434,13 +3557,15 @@ mod tests {
             .update(cx, |_, window, cx| {
                 let map = DisplayMap::new(multi_snapshot.clone());
                 let display = map.snapshot();
+                let search_decorations =
+                    SearchDecorationSnapshot::for_test(&display, &matches, 0);
                 // 文本区起点 = 60px（真实编辑器带 gutter 时的典型偏移）。
                 let text_origin_x = px(60.);
                 let layout = layout_visible_lines(
                     display,
                     None,
-                    EditorPresentation::new(&snapshot, None),
-                    Some((&matches, 0)),
+                    EditorPresentation::new(&snapshot.clone().into(), None),
+                    Some(&search_decorations),
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
                             text_bounds: Bounds::new(
@@ -3458,6 +3583,7 @@ mod tests {
                         fold_anchor_lines: &BTreeSet::new(),
                         start_row: DisplayRow::new(0),
                         scroll_offset: point(px(0.), px(0.)),
+                        primary_caret_column: None,
                         line_height: px(20.),
                         diff_rows: &[],
                     },
@@ -3510,7 +3636,7 @@ mod tests {
                 let layout = layout_visible_lines(
                     display,
                     None,
-                    EditorPresentation::new(&snapshot, None),
+                    EditorPresentation::new(&snapshot.clone().into(), None),
                     None,
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
@@ -3529,6 +3655,7 @@ mod tests {
                         fold_anchor_lines: &BTreeSet::new(),
                         start_row: DisplayRow::ZERO,
                         scroll_offset: point(px(0.), px(0.)),
+                        primary_caret_column: None,
                         line_height: px(20.),
                         diff_rows: &[],
                     },
@@ -3606,18 +3733,22 @@ mod tests {
                             window.text_system(),
                         );
                         let display = map.snapshot();
-                        let viewport = display
-                            .slice_viewport(DisplayRow::ZERO, display.line_count())
-                            .expect("应读取完整软换行视口");
+                        let mut cursor = display.rows(DisplayRow::ZERO, display.line_count());
+                        let viewport: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
                         if text.starts_with("新增") && quarter_pixels == 720 {
                             let rows: Vec<_> = viewport
-                                .rows()
                                 .iter()
                                 .map(|row| {
-                                    let WrapViewportRowKind::Text {
-                                        text, byte_range, ..
+                                    let WrapRowKind::Text {
+                                        byte_range,
+                                        projected_line,
+                                        ..
                                     } = row.kind();
-                                    text.as_ref()[byte_range.clone()].to_owned()
+                                    display
+                                        .row_text(*projected_line)
+                                        .expect("显示行文本应可解析")
+                                        .as_ref()[byte_range.clone()]
+                                        .to_owned()
                                 })
                                 .collect();
                             assert_eq!(
@@ -3629,11 +3760,16 @@ mod tests {
                             );
                         }
 
-                        for row in viewport.rows() {
-                            let WrapViewportRowKind::Text {
-                                text, byte_range, ..
+                        for row in &viewport {
+                            let WrapRowKind::Text {
+                                byte_range,
+                                projected_line,
+                                ..
                             } = row.kind();
-                            let row_text = &text.as_ref()[byte_range.clone()];
+                            let row_text = display
+                                .row_text(*projected_line)
+                                .expect("显示行文本应可解析");
+                            let row_text = &row_text.as_ref()[byte_range.clone()];
                             let run = TextRun {
                                 len: row_text.len(),
                                 font: font.clone(),
@@ -3689,7 +3825,7 @@ mod tests {
         cx.run_until_parked();
 
         let multi_snapshot = cx.read_entity(&combined, |combined, cx| combined.snapshot(cx));
-        let text_snapshot = multi_snapshot.text().clone();
+        let text_snapshot = multi_snapshot.clone();
         let display_snapshot = DisplayMap::new(multi_snapshot).snapshot();
         let window = cx.add_window(|_, _| Empty);
         window
@@ -3727,6 +3863,7 @@ mod tests {
                         fold_anchor_lines: &BTreeSet::new(),
                         start_row: DisplayRow::new(1),
                         scroll_offset: point(px(0.), px(0.)),
+                        primary_caret_column: None,
                         line_height: px(20.),
                         diff_rows: &[],
                     },
@@ -3777,10 +3914,9 @@ mod tests {
 
         let snapshot = cx.read_entity(&combined, |combined, cx| combined.snapshot(cx));
         let display = DisplayMap::new(snapshot).snapshot();
-        let blocks = display
-            .slice_viewport(DisplayRow::ZERO, display.line_count())
-            .expect("应读取完整显示投影")
-            .rows()
+        let mut cursor = display.rows(DisplayRow::ZERO, display.line_count());
+        let rows: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
+        let blocks = rows
             .iter()
             .filter_map(|row| {
                 row.block()
@@ -3867,13 +4003,17 @@ mod tests {
                 for width in [px(320.), px(400.), px(480.), px(560.), px(640.)] {
                     map.set_wrap_width(Some(width), font.clone(), font_size, &text_system);
                     let display = map.snapshot();
-                    let viewport = display
-                        .slice_viewport(DisplayRow::ZERO, display.line_count())
-                        .expect("应读取完整视口");
-                    offending_row = viewport.rows().iter().find_map(|row| {
-                        let WrapViewportRowKind::Text {
-                            text, byte_range, ..
+                    let mut cursor = display.rows(DisplayRow::ZERO, display.line_count());
+                    let viewport: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
+                    offending_row = viewport.iter().find_map(|row| {
+                        let WrapRowKind::Text {
+                            byte_range,
+                            projected_line,
+                            ..
                         } = row.kind();
+                        let text = display
+                            .row_text(*projected_line)
+                            .expect("显示行文本应可解析");
                         (!text.is_char_boundary(byte_range.len())).then_some(row.index())
                     });
                     if offending_row.is_some() {
@@ -3885,7 +4025,7 @@ mod tests {
                 let layout = layout_visible_lines(
                     display,
                     None,
-                    EditorPresentation::new(&snapshot, None),
+                    EditorPresentation::new(&snapshot.clone().into(), None),
                     None,
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
@@ -3904,6 +4044,7 @@ mod tests {
                         fold_anchor_lines: &BTreeSet::new(),
                         start_row: offending_row,
                         scroll_offset: point(px(0.), px(0.)),
+                        primary_caret_column: None,
                         line_height: px(20.),
                         diff_rows: &[],
                     },
@@ -3930,7 +4071,7 @@ mod tests {
                 let snapshot = Buffer::scratch(text, BufferConfig::default())
                     .expect("大文本测试 Buffer 应能创建")
                     .snapshot();
-                let presentation = EditorPresentation::new(&snapshot, None);
+                let presentation = EditorPresentation::new(&snapshot.clone().into(), None);
                 let display_snapshot = DisplayMap::new(snapshot.clone()).snapshot();
                 let layout = layout_visible_lines(
                     display_snapshot,
@@ -3954,6 +4095,7 @@ mod tests {
                         fold_anchor_lines: &BTreeSet::new(),
                         start_row: DisplayRow::new(5_000),
                         scroll_offset: point(px(0.), px(10.)),
+                        primary_caret_column: None,
                         line_height: px(20.),
                         diff_rows: &[],
                     },
@@ -3998,7 +4140,7 @@ mod tests {
                 let layout = layout_visible_lines(
                     DisplayMap::new(snapshot.clone()).snapshot(),
                     None,
-                    EditorPresentation::new(&snapshot, None),
+                    EditorPresentation::new(&snapshot.clone().into(), None),
                     None,
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
@@ -4014,6 +4156,7 @@ mod tests {
                         fold_anchor_lines: &BTreeSet::new(),
                         start_row: DisplayRow::ZERO,
                         scroll_offset: point(px(20.), px(0.)),
+                        primary_caret_column: None,
                         line_height: px(20.),
                         diff_rows: &[],
                     },
@@ -4054,7 +4197,7 @@ mod tests {
                 let layout = layout_visible_lines(
                     map.snapshot(),
                     None,
-                    EditorPresentation::new(&snapshot, None),
+                    EditorPresentation::new(&snapshot.clone().into(), None),
                     None,
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
@@ -4073,6 +4216,7 @@ mod tests {
                         fold_anchor_lines: &BTreeSet::new(),
                         start_row: DisplayRow::ZERO,
                         scroll_offset: point(px(0.), px(0.)),
+                        primary_caret_column: None,
                         line_height: px(20.),
                         diff_rows: &[],
                     },
@@ -4100,7 +4244,7 @@ mod tests {
                 let layout = layout_visible_lines(
                     DisplayMap::new(snapshot.clone()).snapshot(),
                     None,
-                    EditorPresentation::new(&snapshot, None),
+                    EditorPresentation::new(&snapshot.clone().into(), None),
                     None,
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
@@ -4119,6 +4263,7 @@ mod tests {
                         fold_anchor_lines: &BTreeSet::new(),
                         start_row: DisplayRow::ZERO,
                         scroll_offset: point(px(0.), px(0.)),
+                        primary_caret_column: None,
                         line_height: px(20.),
                         diff_rows: &[],
                     },
@@ -4171,7 +4316,7 @@ mod tests {
                 let layout = layout_visible_lines(
                     DisplayMap::new(snapshot.clone()).snapshot(),
                     None,
-                    EditorPresentation::new(&snapshot, None),
+                    EditorPresentation::new(&snapshot.clone().into(), None),
                     None,
                     VisibleLineLayoutParams {
                         geometry: EditorGeometry {
@@ -4190,6 +4335,7 @@ mod tests {
                         fold_anchor_lines: &BTreeSet::new(),
                         start_row: DisplayRow::ZERO,
                         scroll_offset: point(px(0.), px(0.)),
+                        primary_caret_column: None,
                         line_height: px(20.),
                         diff_rows: &[],
                     },
@@ -4233,7 +4379,7 @@ mod tests {
                 )
                 .expect("测试 Buffer 应能创建")
                 .snapshot();
-                let presentation = EditorPresentation::new(&snapshot, None);
+                let presentation = EditorPresentation::new(&snapshot.clone().into(), None);
                 let display_snapshot = DisplayMap::new(snapshot.clone()).snapshot();
                 let layout = layout_visible_lines(
                     display_snapshot,
@@ -4257,6 +4403,7 @@ mod tests {
                         fold_anchor_lines: &BTreeSet::new(),
                         start_row: DisplayRow::new(10),
                         scroll_offset: point(px(0.), px(0.)),
+                        primary_caret_column: None,
                         line_height: px(20.),
                         diff_rows: &[],
                     },
@@ -4289,7 +4436,7 @@ mod tests {
         cx.run_until_parked();
 
         let multi_snapshot = cx.read_entity(&combined, |combined, cx| combined.snapshot(cx));
-        let multi_text = multi_snapshot.text().clone();
+        let multi_text = multi_snapshot.clone();
         let single_text =
             Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("应创建单文件 Buffer");
         let single_snapshot = single_text.snapshot();
@@ -4316,13 +4463,14 @@ mod tests {
                     fold_anchor_lines: &fold_anchor_lines,
                     start_row: DisplayRow::ZERO,
                     scroll_offset: point(px(0.), px(0.)),
+                    primary_caret_column: None,
                     line_height: px(20.),
                     diff_rows: &[],
                 };
                 let single_layout = layout_visible_lines(
                     DisplayMap::new(single_snapshot.clone()).snapshot(),
                     None,
-                    EditorPresentation::new(&single_snapshot, None),
+                    EditorPresentation::new(&single_snapshot.clone().into(), None),
                     None,
                     params(geometry),
                     window,

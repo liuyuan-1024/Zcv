@@ -290,7 +290,14 @@ fn selection_extension_crosses_folded_placeholder_and_continues(cx: &mut TestApp
     let raw_buffer = cx.new(|_| {
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
-    let buffer = cx.new(|cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx));
+    let buffer = cx.new(|cx| {
+        LanguageBuffer::new(
+            raw_buffer,
+            Some(PathBuf::from("main.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    });
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
         move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)

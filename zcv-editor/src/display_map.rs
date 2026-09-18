@@ -866,7 +866,12 @@ mod tests {
                 .expect("测试 Buffer 应能创建")
         });
         let source = cx.new(|cx| {
-            LanguageBuffer::new(source_buffer.clone(), Some(PathBuf::from("main.rs")), cx)
+            LanguageBuffer::new(
+                source_buffer.clone(),
+                Some(PathBuf::from("main.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
         });
         cx.run_until_parked();
         let multi_buffer = cx.new(|cx| zcv_multi_buffer::MultiBuffer::singleton(source, cx));
@@ -908,7 +913,12 @@ mod tests {
                 .expect("测试 Buffer 应能创建")
         });
         let source = cx.new(|cx| {
-            LanguageBuffer::new(source_buffer.clone(), Some(PathBuf::from("main.rs")), cx)
+            LanguageBuffer::new(
+                source_buffer.clone(),
+                Some(PathBuf::from("main.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
         });
         cx.run_until_parked();
 

@@ -6,7 +6,9 @@ mod highlighting;
 mod registry;
 mod snippet;
 
+mod highlight_cache;
 mod language_buffer;
+mod language_settings;
 mod structure;
 mod syntax_map;
 mod tree_sitter_utils;
@@ -14,9 +16,11 @@ mod tree_sitter_utils;
 #[cfg(test)]
 mod test;
 
+pub use highlight_cache::HighlightCache;
 pub use highlighting::HighlightSpan;
-pub use language_buffer::{LanguageBuffer, LanguageBufferEvent};
-pub use registry::{Language, language_for_file, language_for_name_or_extension};
+pub use language_buffer::{LanguageBuffer, LanguageBufferEvent, LanguageBufferSnapshot};
+pub use language_settings::LanguageSettings;
+pub use registry::{Language, LanguageRegistry};
 pub use snippet::{
     SnippetHighlightCancellation, SnippetHighlights, highlight_snippet,
     highlight_snippet_with_cancellation,

@@ -12,7 +12,7 @@ use anyhow::Context as _;
 use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 use zcv_git::{ConflictChoice, FileStatus, parse_conflict_regions, resolve_conflict};
-use zcv_language::LanguageBuffer;
+use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::MultiBuffer;
 use zcv_path::{AbsolutePathBuf, normalize_for_comparison, simplify_native};
 use zcv_text::{Buffer, ByteOffset, Edit, TextRange, TransactionMetadata};
@@ -53,6 +53,8 @@ pub struct Project {
     /// git store 属于 Project 而非 worktree，无 worktree 时以无根状态存在（仓库查询与 git job 为空操作）。
     git_store: Entity<GitStore>,
     buffer_store: BufferStore,
+    /// 项目唯一的语言注册表；所有语言 Buffer 与 diff 源共享同一份，避免多处独立加载。
+    language_registry: Arc<LanguageRegistry>,
     /// 项目创建阶段尚未建立工作区订阅时产生的监听错误。
     pending_file_watcher_errors: Vec<FileWatcherError>,
 }
@@ -105,6 +107,7 @@ impl Project {
 
         let git_store = cx.new(|cx| GitStore::new(Some(root.as_path().to_path_buf()), cx));
         git_store.update(cx, |store, cx| store.schedule_scan(cx));
+        let language_registry = Arc::new(LanguageRegistry::new());
 
         Self {
             worktree: Some(ProjectWorktree {
@@ -114,7 +117,8 @@ impl Project {
                 _fs_task: fs_task,
             }),
             git_store,
-            buffer_store: BufferStore::new(),
+            buffer_store: BufferStore::new(Arc::clone(&language_registry)),
+            language_registry,
             pending_file_watcher_errors,
         }
     }
@@ -122,12 +126,19 @@ impl Project {
     /// 创建没有 worktree 的本地项目，供空工作区使用。
     pub fn empty(cx: &mut Context<Self>) -> Self {
         let git_store = cx.new(|cx| GitStore::new(None, cx));
+        let language_registry = Arc::new(LanguageRegistry::new());
         Self {
             worktree: None,
             git_store,
-            buffer_store: BufferStore::new(),
+            buffer_store: BufferStore::new(Arc::clone(&language_registry)),
+            language_registry,
             pending_file_watcher_errors: Vec::new(),
         }
+    }
+
+    /// 项目唯一的语言注册表。
+    pub fn language_registry(&self) -> Arc<LanguageRegistry> {
+        Arc::clone(&self.language_registry)
     }
 
     /// 取出项目创建期间尚未通过 ProjectEvent 投递的文件监听错误。
@@ -255,10 +266,18 @@ impl Project {
         let plan = worktree.snapshot.search_plan();
         let opened_snapshots = self.buffer_store.opened_snapshots(cx);
         let background_executor = cx.background_executor().clone();
+        let language_registry = Arc::clone(&self.language_registry);
         let (tx, rx) = async_channel::bounded(8);
         let task = cx.background_executor().spawn(async move {
-            let _ = search::search_worktree(plan, opened_snapshots, query, tx, background_executor)
-                .await;
+            let _ = search::search_worktree(
+                plan,
+                opened_snapshots,
+                query,
+                language_registry,
+                tx,
+                background_executor,
+            )
+            .await;
         });
         SearchResults { task, rx }
     }

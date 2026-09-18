@@ -1,6 +1,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -8,9 +9,9 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System as ProcessSystem, get_current_pid};
 use zcv_benchmarks::{cached_injection_stress_document, cached_rust_document};
-use zcv_language::highlight_snippet;
+use zcv_language::{LanguageRegistry, highlight_snippet};
 use zcv_project::SearchQuery;
-use zcv_text::{Buffer, BufferConfig};
+use zcv_text::{Buffer, BufferConfig, WordBoundaryPolicy};
 
 struct CountingAllocator;
 
@@ -181,6 +182,7 @@ fn measure<T>(
 fn main() {
     let mut rss = RssMeter::new();
     let mut samples = Vec::new();
+    let language_registry = Arc::new(LanguageRegistry::new());
 
     for size in [64 * 1024, 1024 * 1024, 16 * 1024 * 1024] {
         let text = cached_rust_document(size);
@@ -205,14 +207,21 @@ fn main() {
             &mut rss,
             format!("text_buffer/search_literal/{input_bytes}"),
             input_bytes,
-            || literal_query.search(&snapshot).expect("搜索应成功"),
+            || {
+                literal_query
+                    .search(&snapshot, WordBoundaryPolicy::default())
+                    .expect("搜索应成功")
+            },
         ));
 
         samples.push(measure(
             &mut rss,
             format!("language/highlight_rust_document/{input_bytes}"),
             input_bytes,
-            || highlight_snippet("rust", text.as_ref()).expect("Rust 高亮应成功"),
+            || {
+                highlight_snippet(&language_registry, "rust", text.as_ref())
+                    .expect("Rust 高亮应成功")
+            },
         ));
 
         // 注入压力测试：病态宏密集语料放大「宏 → 注入 rust 子解析」级联，RSS 峰值主要是 tree-sitter 的 C 侧嵌套子树，非代表性负载，须与代表档对照解读。
@@ -222,7 +231,10 @@ fn main() {
             &mut rss,
             format!("language/highlight_injection_stress/{stress_bytes}"),
             stress_bytes,
-            || highlight_snippet("rust", stress_text.as_ref()).expect("注入压力高亮应成功"),
+            || {
+                highlight_snippet(&language_registry, "rust", stress_text.as_ref())
+                    .expect("注入压力高亮应成功")
+            },
         ));
     }
 

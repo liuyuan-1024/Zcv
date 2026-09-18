@@ -7,7 +7,7 @@ use crate::{
     BufferDiff, BufferDiffInput, DiffFile, DiffHunkKind, DiffHunkStaging, DiffOperations,
     DisplayHunk,
 };
-use zcv_language::LanguageBuffer;
+use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_text::{
     Buffer, BufferConfig, ByteOffset, CharOffset, Edit, Line, StorageError, TextError, TextRange,
     TransactionMetadata, Utf16Offset,
@@ -665,7 +665,14 @@ fn singleton(path: &str, text: &str, cx: &mut TestAppContext) -> gpui::Entity<La
     let buffer = cx.new(|_| {
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建测试 Buffer")
     });
-    cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from(path)), cx))
+    cx.new(|cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(PathBuf::from(path)),
+            Arc::new(LanguageRegistry::new()),
+            cx,
+        )
+    })
 }
 
 #[gpui::test]
@@ -1362,7 +1369,12 @@ fn singleton_source_preserves_rust_fold_ranges(cx: &mut TestAppContext) {
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.run_until_parked();
 
-    let source_folds = cx.read_entity(&source, |buffer, _| buffer.fold_ranges());
+    let source_folds = cx.read_entity(&source, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        snapshot
+            .syntax
+            .fold_ranges(0..snapshot.text.len_bytes().get(), &snapshot.text)
+    });
     let source_offsets = cx.read_entity(&source, |buffer, cx| {
         let snapshot = buffer.text_snapshot(cx);
         resolve_folds(&source_folds, &snapshot)
@@ -1397,10 +1409,10 @@ fn outline_projects_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
     let source = singleton("src/main.rs", "// 前置\nfn 数据() {}\n// 后置\n", cx);
     cx.run_until_parked();
     let (function_range, source_name_start) = cx.read_entity(&source, |source, cx| {
-        let text = source.text_snapshot(cx);
-        let syntax = source.syntax_snapshot();
-        let item = syntax
-            .outline(0..text.len_bytes().get(), &text)
+        let snapshot = source.snapshot(cx);
+        let item = snapshot
+            .syntax
+            .outline(0..snapshot.text.len_bytes().get(), &snapshot.text)
             .into_iter()
             .find(|item| item.name == "数据")
             .expect("Rust 函数应出现在源大纲中");
@@ -1440,13 +1452,14 @@ fn syntax_nodes_project_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let source_name_start = "// 前置\nfn ".len();
     let function_range = cx.read_entity(&source, |source, cx| {
-        let text = source.text_snapshot(cx);
-        let syntax = source.syntax_snapshot();
-        let node = syntax
-            .node_at(source_name_start, &text)
+        let snapshot = source.snapshot(cx);
+        let node = snapshot
+            .syntax
+            .node_at(source_name_start, &snapshot.text)
             .expect("Rust 函数名应有语法节点");
-        let function = syntax
-            .node_ancestors(node.range.clone(), &text)
+        let function = snapshot
+            .syntax
+            .node_ancestors(node.range.clone(), &snapshot.text)
             .into_iter()
             .find(|node| node.kind == "function_item")
             .expect("Rust 函数应出现在语法祖先链");
@@ -1488,12 +1501,14 @@ fn excerpt_projects_contained_fold_range_to_output_coordinates(cx: &mut TestAppC
         cx,
     );
     cx.run_until_parked();
-    let source_fold = cx.read_entity(&source, |buffer, _| {
-        buffer
-            .fold_ranges()
-            .first()
+    let source_fold = cx.read_entity(&source, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        snapshot
+            .syntax
+            .fold_ranges(0..snapshot.text.len_bytes().get(), &snapshot.text)
+            .into_iter()
+            .next()
             .expect("Rust 函数应产生折叠范围")
-            .clone()
     });
     let source_start = cx.read_entity(&source, |buffer, cx| {
         buffer
@@ -1546,7 +1561,12 @@ fn fold_projection_accounts_for_nonzero_output_start(cx: &mut TestAppContext) {
         cx,
     );
     cx.run_until_parked();
-    let source_folds = cx.read_entity(&source, |buffer, _| buffer.fold_ranges());
+    let source_folds = cx.read_entity(&source, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        snapshot
+            .syntax
+            .fold_ranges(0..snapshot.text.len_bytes().get(), &snapshot.text)
+    });
     let (source_fold_start, source_fold_end) = cx.read_entity(&source, |buffer, cx| {
         let snapshot = buffer.text_snapshot(cx);
         let folded = resolve_folds(&source_folds, &snapshot);

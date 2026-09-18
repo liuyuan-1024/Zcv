@@ -13,8 +13,9 @@ use futures::{StreamExt, stream};
 use gpui::{BackgroundExecutor, Task};
 use gpui_util::new_std_command;
 use zcv_git::path_from_git_bytes;
+use zcv_language::LanguageRegistry;
 use zcv_path::AbsolutePathBuf;
-use zcv_text::{Buffer, BufferConfig, ByteOffset, Line, Snapshot, TextRange};
+use zcv_text::{Buffer, BufferConfig, ByteOffset, Line, Snapshot, TextRange, WordBoundaryPolicy};
 
 use crate::worktree::WorktreeSearchPlan;
 
@@ -70,6 +71,7 @@ pub(crate) async fn search_worktree(
     plan: WorktreeSearchPlan,
     opened_snapshots: HashMap<AbsolutePathBuf, Snapshot>,
     query: SearchQuery,
+    language_registry: Arc<LanguageRegistry>,
     tx: Sender<FileSearchResult>,
     background_executor: BackgroundExecutor,
 ) -> anyhow::Result<()> {
@@ -98,6 +100,7 @@ pub(crate) async fn search_worktree(
         .min(8);
     let opened_snapshots = Arc::new(opened_snapshots);
     let prepared_query = Arc::new(prepared_query);
+    let language_registry = Arc::new(language_registry);
     let root = Arc::new(plan.root);
 
     // `buffered` 同时限制在途读取数与乱序完成结果的保留量。
@@ -106,13 +109,20 @@ pub(crate) async fn search_worktree(
         .map(|path| {
             let opened_snapshots = Arc::clone(&opened_snapshots);
             let prepared_query = Arc::clone(&prepared_query);
+            let language_registry = Arc::clone(&language_registry);
             let root = Arc::clone(&root);
             let background_executor = background_executor.clone();
             async move {
                 background_executor
-                    .spawn(
-                        async move { search_file(path, &root, &opened_snapshots, &prepared_query) },
-                    )
+                    .spawn(async move {
+                        search_file(
+                            path,
+                            &root,
+                            &opened_snapshots,
+                            &prepared_query,
+                            &language_registry,
+                        )
+                    })
                     .await
             }
         })
@@ -153,6 +163,7 @@ fn search_file(
     root: &AbsolutePathBuf,
     opened_snapshots: &HashMap<AbsolutePathBuf, Snapshot>,
     query: &PreparedSearchQuery,
+    language_registry: &Arc<LanguageRegistry>,
 ) -> Option<FileSearchResult> {
     // 已打开文件用内存快照搜索；
     // 其余文件在后台读盘并保留 Buffer，避免结果装配阶段在主线程重新读文件。
@@ -163,7 +174,12 @@ fn search_file(
         let buffer = Buffer::from_text(text, BufferConfig::default()).ok()?;
         (buffer.snapshot(), Some(buffer))
     };
-    let matches = search_snapshot(&snapshot, query).ok()?;
+    let word_boundary = language_registry
+        .language_for_file(path.as_path(), None)
+        .map_or_else(WordBoundaryPolicy::default, |language| {
+            language.word_boundary()
+        });
+    let matches = search_snapshot(&snapshot, query, word_boundary).ok()?;
     if matches.is_empty() {
         return None;
     }
@@ -198,8 +214,9 @@ fn truncate_excerpts(excerpts: &mut Vec<ExcerptMatches>, limit: usize) {
 fn search_snapshot(
     snapshot: &Snapshot,
     query: &PreparedSearchQuery,
+    word_boundary: WordBoundaryPolicy,
 ) -> anyhow::Result<Vec<TextRange>> {
-    Ok(query.search(snapshot)?.ranges().collect())
+    Ok(query.search(snapshot, word_boundary)?.ranges().collect())
 }
 
 fn collect_files(

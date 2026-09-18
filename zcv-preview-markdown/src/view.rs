@@ -17,7 +17,7 @@ use gpui::{
 };
 use pulldown_cmark::Alignment;
 use zcv_language::{
-    HighlightSpan, SnippetHighlightCancellation, SnippetHighlights,
+    HighlightSpan, LanguageRegistry, SnippetHighlightCancellation, SnippetHighlights,
     highlight_snippet_with_cancellation,
 };
 use zcv_multi_buffer::{MultiBuffer, MultiBufferEvent};
@@ -47,6 +47,8 @@ struct MarkdownRenderContext<'a> {
 pub(crate) struct MarkdownPreviewView {
     source_item: Box<dyn ItemHandle>,
     multi_buffer: Entity<MultiBuffer>,
+    /// 代码围栏高亮使用的语言注册表；与源码 MultiBuffer 共享同一份。
+    language_registry: Arc<LanguageRegistry>,
     open_path: Option<OpenPathCallback>,
     focus: FocusHandle,
     scroll_handle: ScrollHandle,
@@ -138,9 +140,14 @@ impl MarkdownPreviewView {
             }),
         );
         let scroll_handle = ScrollHandle::new();
+        let language_registry = multi_buffer
+            .read(cx)
+            .language_registry(cx)
+            .unwrap_or_else(|| Arc::new(LanguageRegistry::new()));
         let mut view = Self {
             source_item,
             multi_buffer,
+            language_registry,
             open_path,
             focus: cx.focus_handle(),
             scrollbar: Scrollbar::vertical(scroll_handle.clone()),
@@ -199,8 +206,9 @@ impl MarkdownPreviewView {
         let cancellation = SnippetHighlightCancellation::default();
         self.code_highlight_cancellation = Some(cancellation.clone());
         let mut blocks = (*self.blocks).clone();
+        let language_registry = Arc::clone(&self.language_registry);
         let highlights = cx.background_spawn(async move {
-            highlight_code_blocks(&mut blocks, &cancellation).then_some(blocks)
+            highlight_code_blocks(&mut blocks, &language_registry, &cancellation).then_some(blocks)
         });
         self.code_highlight_task = Some(cx.spawn(async move |this, cx| {
             let Some(blocks) = highlights.await else {
@@ -1039,6 +1047,7 @@ fn render_math(
 
 fn highlight_code_blocks(
     blocks: &mut [Block],
+    language_registry: &Arc<LanguageRegistry>,
     cancellation: &SnippetHighlightCancellation,
 ) -> bool {
     for block in blocks {
@@ -1050,15 +1059,22 @@ fn highlight_code_blocks(
                 language: Some(language),
                 text,
                 highlights,
-            } => *highlights = highlight_snippet_with_cancellation(language, text, cancellation),
+            } => {
+                *highlights = highlight_snippet_with_cancellation(
+                    language_registry,
+                    language,
+                    text,
+                    cancellation,
+                )
+            }
             Block::Quote(blocks) => {
-                if !highlight_code_blocks(blocks, cancellation) {
+                if !highlight_code_blocks(blocks, language_registry, cancellation) {
                     return false;
                 }
             }
             Block::List { items, .. } => {
                 for item in items {
-                    if !highlight_code_blocks(item, cancellation) {
+                    if !highlight_code_blocks(item, language_registry, cancellation) {
                         return false;
                     }
                 }
@@ -1266,6 +1282,7 @@ mod tests {
     use std::cell::RefCell;
     use std::path::{Path, PathBuf};
     use std::rc::Rc;
+    use std::sync::Arc;
 
     use gpui::{
         AppContext, Context, IntoElement, Modifiers, ParentElement, Render, StyledText,
@@ -1283,7 +1300,7 @@ mod tests {
         list_marker_char_count, render_math, render_text_inline, resolve_markdown_file_link,
         visible_highlights_for_line,
     };
-    use zcv_language::{HighlightSpan, SnippetHighlightCancellation};
+    use zcv_language::{HighlightSpan, LanguageRegistry, SnippetHighlightCancellation};
 
     fn plain(text: &str) -> Inline {
         Inline {
@@ -1516,6 +1533,7 @@ mod tests {
         let mut blocks = parse("```rust\nfn main() {}\n```");
         assert!(highlight_code_blocks(
             &mut blocks,
+            &Arc::new(LanguageRegistry::new()),
             &SnippetHighlightCancellation::default()
         ));
         assert!(matches!(

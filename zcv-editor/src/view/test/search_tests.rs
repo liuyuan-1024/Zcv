@@ -318,8 +318,14 @@ fn replace_keeps_syntax_snapshot_in_sync(cx: &mut TestAppContext) {
     let buffer =
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
     let buffer = cx.new(|_| buffer);
-    let language_buffer =
-        cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("main.rs")), cx));
+    let language_buffer = cx.new(|cx| {
+        LanguageBuffer::new(
+            buffer.clone(),
+            Some(PathBuf::from("main.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    });
     cx.run_until_parked();
     let (editor, cx) =
         cx.add_window_view(|_, cx| Editor::for_language_buffer(language_buffer.clone(), cx));
@@ -331,9 +337,9 @@ fn replace_keeps_syntax_snapshot_in_sync(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     let buffer_version = cx.read_entity(&buffer, |buffer, _| buffer.version());
-    cx.read_entity(&language_buffer, |language_buffer, _| {
+    cx.read_entity(&language_buffer, |language_buffer, cx| {
         assert_eq!(
-            language_buffer.syntax_snapshot().version(),
+            language_buffer.snapshot(cx).syntax.version(),
             buffer_version,
             "替换后语法快照必须与文本版本同步"
         );
@@ -523,6 +529,7 @@ zcv final
         LanguageBuffer::new(
             buffer,
             Some(std::path::PathBuf::from("search_fixture.md")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
             cx,
         )
     });

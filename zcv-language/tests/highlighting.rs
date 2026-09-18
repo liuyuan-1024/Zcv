@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use zcv_language::{HighlightSpan, language_for_file};
+use zcv_language::{HighlightSpan, LanguageRegistry};
 
 struct Fixture {
     file: &'static str,
@@ -147,11 +147,12 @@ fn capture_names(highlights: &[HighlightSpan], names: &[Arc<str>]) -> Vec<String
 #[test]
 fn local_language_files_are_recognized_and_highlighted() {
     let fixture_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../高亮测试");
+    let registry = Arc::new(LanguageRegistry::new());
     for fixture in FIXTURES {
         let path = Path::new(fixture.file);
         let source = std::fs::read_to_string(fixture_dir.join(fixture.file))
             .unwrap_or_else(|error| panic!("读取 {} 失败：{error}", fixture.file));
-        let language = language_for_file(path, source.lines().next());
+        let language = registry.language_for_file(path, source.lines().next());
         let language = language.unwrap_or_else(|| panic!("{} 应识别语言", fixture.file));
         assert_eq!(
             language.name(),
@@ -164,7 +165,7 @@ fn local_language_files_are_recognized_and_highlighted() {
             .extension()
             .and_then(|extension| extension.to_str())
             .expect("高亮样例文件应有扩展名");
-        let highlights = zcv_language::highlight_snippet(extension, &source)
+        let highlights = zcv_language::highlight_snippet(&registry, extension, &source)
             .unwrap_or_else(|| panic!("{} 应产生高亮", fixture.file));
         let actual = capture_names(&highlights.spans, &highlights.capture_names);
         for expected in fixture.captures {

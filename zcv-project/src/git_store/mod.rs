@@ -2180,7 +2180,14 @@ mod tests {
             )
             .expect("应创建 Buffer");
             let buffer = cx.new(|_| buffer);
-            cx.new(|cx| zcv_language::LanguageBuffer::new(buffer, Some(native_path.clone()), cx))
+            cx.new(|cx| {
+                zcv_language::LanguageBuffer::new(
+                    buffer,
+                    Some(native_path.clone()),
+                    Arc::new(zcv_language::LanguageRegistry::new()),
+                    cx,
+                )
+            })
         });
         let spec = |store: &GitStore| BufferDiffInput {
             working: working.clone(),
@@ -2241,7 +2248,14 @@ mod tests {
             )
             .expect("应创建 Buffer");
             let buffer = cx.new(|_| buffer);
-            cx.new(|cx| zcv_language::LanguageBuffer::new(buffer, Some(native_path.clone()), cx))
+            cx.new(|cx| {
+                zcv_language::LanguageBuffer::new(
+                    buffer,
+                    Some(native_path.clone()),
+                    Arc::new(zcv_language::LanguageRegistry::new()),
+                    cx,
+                )
+            })
         });
         let operations =
             git_store.read_with(cx, |store, _| store.diff_operations(GitRevision::Index));
@@ -2331,7 +2345,14 @@ mod tests {
             )
             .expect("应创建 Buffer");
             let buffer = cx.new(|_| buffer);
-            cx.new(|cx| zcv_language::LanguageBuffer::new(buffer, Some(native_path.clone()), cx))
+            cx.new(|cx| {
+                zcv_language::LanguageBuffer::new(
+                    buffer,
+                    Some(native_path.clone()),
+                    Arc::new(zcv_language::LanguageRegistry::new()),
+                    cx,
+                )
+            })
         });
         let operations =
             git_store.read_with(cx, |store, _| store.diff_operations(GitRevision::Index));

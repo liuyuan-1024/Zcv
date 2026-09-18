@@ -1201,7 +1201,14 @@ mod tests {
         let buffer = cx.new(|_| {
             Buffer::from_text(text.into(), BufferConfig::default()).expect("应创建测试 Buffer")
         });
-        let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, None, cx));
+        let language_buffer = cx.new(|cx| {
+            LanguageBuffer::new(
+                buffer,
+                None,
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        });
         cx.new(|cx| MultiBuffer::singleton(language_buffer, cx))
     }
 

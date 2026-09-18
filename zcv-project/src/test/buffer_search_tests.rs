@@ -1,4 +1,6 @@
-use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TextRange, TransactionMetadata};
+use zcv_text::{
+    Buffer, BufferConfig, ByteOffset, Edit, TextRange, TransactionMetadata, WordBoundaryPolicy,
+};
 
 use super::*;
 use crate::search::SearchError;
@@ -29,7 +31,7 @@ fn unified_search_query_dispatches_literal_and_regex_with_the_same_options() {
         whole_word: true,
         regex: false,
     }
-    .search(&buffer.snapshot())
+    .search(&buffer.snapshot(), WordBoundaryPolicy::default())
     .unwrap();
     assert!(matches!(literal, SearchQueryResult::Literal(_)));
     assert_eq!(
@@ -44,7 +46,9 @@ fn unified_search_query_dispatches_literal_and_regex_with_the_same_options() {
         regex: true,
     };
     let prepared = regex_query.prepare().unwrap();
-    let regex = prepared.search(&buffer.snapshot()).unwrap();
+    let regex = prepared
+        .search(&buffer.snapshot(), WordBoundaryPolicy::default())
+        .unwrap();
     assert!(matches!(regex, SearchQueryResult::Regex(_)));
     assert_eq!(regex.ranges().collect::<Vec<_>>(), vec![range(16, 19)]);
 }
@@ -56,7 +60,7 @@ fn literal_search_should_return_versioned_byte_ranges_with_case_and_range_option
     let result = search_in_text(
         &snapshot,
         snapshot.version(),
-        snapshot.config(),
+        WordBoundaryPolicy::default(),
         "alpha",
         SearchOptions::new()
             .case_insensitive()
@@ -81,7 +85,7 @@ fn empty_search_query_should_return_specific_error_variant() {
         query: String::new(),
         ..Default::default()
     }
-    .search(&buffer.snapshot())
+    .search(&buffer.snapshot(), WordBoundaryPolicy::default())
     .unwrap_err();
 
     assert!(matches!(error, SearchError::EmptyQuery));
@@ -95,7 +99,7 @@ fn whole_word_search_should_not_match_inside_identifier() {
         whole_word: true,
         ..Default::default()
     }
-    .search(&buffer.snapshot())
+    .search(&buffer.snapshot(), WordBoundaryPolicy::default())
     .unwrap();
 
     assert_eq!(
@@ -111,7 +115,7 @@ fn search_result_should_remap_forward_and_drop_deleted_matches() {
     let result = search_in_text(
         &snapshot,
         snapshot.version(),
-        snapshot.config(),
+        WordBoundaryPolicy::default(),
         "aa",
         SearchOptions::new(),
     )

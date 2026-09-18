@@ -33,6 +33,7 @@ tree-sitter-toml-ng.workspace = true
 tree-sitter-typescript.workspace = true
 tree-sitter-yaml.workspace = true
 tree-sitter-zig.workspace = true
+zcv-settings.workspace = true
 zcv-text.workspace = true
 
 [dev-dependencies]

@@ -5,10 +5,11 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::translate_path;
 use gpui::{App, AppContext, Entity, WeakEntity};
-use zcv_language::LanguageBuffer;
+use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_path::{AbsolutePathBuf, normalize_for_comparison};
 use zcv_text::Snapshot;
 use zcv_text::{Buffer, BufferConfig};
@@ -17,12 +18,14 @@ use crate::text_file::{BufferLoadError, EncodingConfig, decode_to_string};
 
 pub(crate) struct BufferStore {
     opened_buffers: HashMap<AbsolutePathBuf, WeakEntity<LanguageBuffer>>,
+    language_registry: Arc<LanguageRegistry>,
 }
 
 impl BufferStore {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(language_registry: Arc<LanguageRegistry>) -> Self {
         Self {
             opened_buffers: HashMap::new(),
+            language_registry,
         }
     }
 
@@ -86,8 +89,14 @@ impl BufferStore {
         }
         let buffer = load()?;
         let buffer = cx.new(|_| buffer);
-        let language_buffer =
-            cx.new(|cx| LanguageBuffer::new(buffer, Some(path.as_path().to_path_buf()), cx));
+        let language_buffer = cx.new(|cx| {
+            LanguageBuffer::new(
+                buffer,
+                Some(path.as_path().to_path_buf()),
+                Arc::clone(&self.language_registry),
+                cx,
+            )
+        });
         self.opened_buffers
             .insert(path, language_buffer.downgrade());
         Ok(language_buffer)

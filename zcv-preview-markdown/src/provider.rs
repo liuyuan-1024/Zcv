@@ -1,17 +1,22 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use gpui::{App, AppContext};
+use zcv_language::LanguageRegistry;
 use zcv_workspace::{
     ItemHandle, PreviewDocument, PreviewMode, PreviewPresentation, PreviewProvider,
 };
 
 use crate::view::MarkdownPreviewView;
 
-pub(crate) struct MarkdownPreviewProvider;
+pub(crate) struct MarkdownPreviewProvider {
+    pub(crate) language_registry: Arc<LanguageRegistry>,
+}
 
 impl PreviewProvider for MarkdownPreviewProvider {
     fn supports(&self, path: &Path, _cx: &App) -> bool {
-        zcv_language::language_for_file(path, None)
+        self.language_registry
+            .language_for_file(path, None)
             .is_some_and(|language| language.name() == "Markdown")
     }
 
@@ -31,15 +36,19 @@ impl PreviewProvider for MarkdownPreviewProvider {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::Arc;
 
     use gpui::TestAppContext;
+    use zcv_language::LanguageRegistry;
     use zcv_workspace::PreviewProvider;
 
     use super::MarkdownPreviewProvider;
 
     #[gpui::test]
     fn supports_paths_recognized_as_markdown(cx: &mut TestAppContext) {
-        let provider = MarkdownPreviewProvider;
+        let provider = MarkdownPreviewProvider {
+            language_registry: Arc::new(LanguageRegistry::new()),
+        };
         cx.update(|cx| {
             assert!(provider.supports(Path::new("README.md"), cx));
             assert!(provider.supports(Path::new("notes.markdown"), cx));

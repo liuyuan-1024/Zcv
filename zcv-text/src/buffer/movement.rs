@@ -15,17 +15,12 @@ impl Buffer {
     /// 按纯文本粒度查找相邻边界。垂直移动与 selection 变换由宿主 Editor 负责。
     pub fn movement_boundary(
         &self,
+        policy: WordBoundaryPolicy,
         offset: CharOffset,
         direction: MovementDirection,
         unit: MovementUnit,
     ) -> TextResult<CharOffset> {
-        movement_boundary_in_text(
-            &self.storage,
-            self.config.word_boundary,
-            offset,
-            direction,
-            unit,
-        )
+        movement_boundary_in_text(&self.storage, policy, offset, direction, unit)
     }
 
     /// 以 offset 为中心取连续同类字符范围（双击选词语义）。
@@ -33,15 +28,23 @@ impl Buffer {
     /// 目标类别取光标前后字符中"更词"的那一个（Word > Symbol > Space），随后向左右扫描吃掉连续同类字符；
     /// 换行不参与任何类别的连续性。
     /// 扫描按 grapheme 边界推进，零宽字符（组合音标等）随前导字符归属同一词。
-    pub fn surrounding_word(&self, offset: CharOffset) -> TextResult<(CharOffset, CharOffset)> {
-        surrounding_word_in_text(&self.storage, self.config.word_boundary, offset)
+    pub fn surrounding_word(
+        &self,
+        policy: WordBoundaryPolicy,
+        offset: CharOffset,
+    ) -> TextResult<(CharOffset, CharOffset)> {
+        surrounding_word_in_text(&self.storage, policy, offset)
     }
 
     /// 光标前后都是词字符时返回 true。
     ///
     /// 拖拽扩展选区时用于判断光标是否仍停留在某个词内部，决定是否按整词边界吸附。
-    pub fn is_inside_word(&self, offset: CharOffset) -> TextResult<bool> {
-        is_inside_word_in_text(&self.storage, self.config.word_boundary, offset)
+    pub fn is_inside_word(
+        &self,
+        policy: WordBoundaryPolicy,
+        offset: CharOffset,
+    ) -> TextResult<bool> {
+        is_inside_word_in_text(&self.storage, policy, offset)
     }
 }
 

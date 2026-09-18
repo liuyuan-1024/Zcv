@@ -23,7 +23,7 @@ use zcv_actions::{
     SelectToEndOfLine, SelectToNextWord, SelectToPreviousWord, SelectUp, ToggleFold, Undo,
     UnfoldAll,
 };
-use zcv_language::{AutoClosePair, BracketPair, LanguageBuffer};
+use zcv_language::{AutoClosePair, BracketPair, LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{
     DiffFile, DiffHunkKind, DiffHunkSource, DisplayHunk, ExcerptDiffKind, ExcerptLocation,
     ExcerptSnapshot, MultiBuffer, MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot,
@@ -343,7 +343,9 @@ impl Editor {
         let buffer = Buffer::from_text(String::new(), BufferConfig::default())
             .expect("新建空白 Buffer 不应失败");
         let buffer = cx.new(|_| buffer);
-        let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, None, cx));
+        // 单行输入编辑器不携带文件路径，语言状态不会启用；独立注册表避免共享可变单例。
+        let language_buffer =
+            cx.new(|cx| LanguageBuffer::new(buffer, None, Arc::new(LanguageRegistry::new()), cx));
         Self::from_language_buffer(language_buffer, EditorMode::SingleLine, cx)
     }
 
@@ -358,7 +360,9 @@ impl Editor {
         let buffer = Buffer::from_text(String::new(), BufferConfig::default())
             .expect("新建空白 Buffer 不应失败");
         let buffer = cx.new(|_| buffer);
-        let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, None, cx));
+        // 单行输入编辑器不携带文件路径，语言状态不会启用；独立注册表避免共享可变单例。
+        let language_buffer =
+            cx.new(|cx| LanguageBuffer::new(buffer, None, Arc::new(LanguageRegistry::new()), cx));
         Self::from_language_buffer(
             language_buffer,
             EditorMode::AutoHeight {
@@ -875,9 +879,16 @@ impl Editor {
         } else {
             let buffer = Buffer::from_text(text, BufferConfig::default())
                 .expect("placeholder Buffer 应能创建");
+            let tab_width = self
+                .multi_buffer
+                .read(cx)
+                .snapshot(cx)
+                .language_settings()
+                .tab
+                .tab_width;
             Some(cx.new(|cx| {
                 let mut map = DisplayMap::new(buffer.snapshot(), cx);
-                map.set_tab_width(SettingsStore::tab_config(cx).tab_width, cx);
+                map.set_tab_width(tab_width, cx);
                 map
             }))
         };
@@ -1577,7 +1588,8 @@ impl Editor {
         let display_map = cx.new(|cx| {
             let mut map = DisplayMap::new(snapshot.clone(), cx);
             map.set_multi_buffer(multi_buffer.clone(), multi_buffer_subscription, cx);
-            map.set_tab_width(SettingsStore::tab_config(cx).tab_width, cx);
+            // Tab 宽度按 buffer/language 解析（对齐 Zed LanguageSettings），不再读全局设置。
+            map.set_tab_width(snapshot.language_settings().tab.tab_width, cx);
             map
         });
         let display_snapshot = display_map.read(cx).snapshot();
@@ -1684,14 +1696,6 @@ impl Editor {
             let Some(settings) = SettingsStore::try_get(cx) else {
                 return;
             };
-            // tab 宽度始终跟随设置；软换行覆盖只影响换行模式。
-            editor
-                .display_map
-                .update(cx, |map, cx| map.set_tab_width(settings.tab.tab_width, cx));
-            let placeholder = editor.placeholder_display_map.clone();
-            if let Some(placeholder) = placeholder {
-                placeholder.update(cx, |map, cx| map.set_tab_width(settings.tab.tab_width, cx));
-            }
             if editor.soft_wrap_override.is_none() {
                 editor.soft_wrap = settings.soft_wrap.into();
                 editor.preferred_line_length = settings.preferred_line_length;
@@ -2142,6 +2146,16 @@ impl Editor {
     /// 模型事件、编辑提交与结构重建都只经此入口，不再并列刷新组合快照与显示快照；
     /// 选区以源锚点保存，解析时直接读该快照，不需要逐状态重映射。
     fn advance_snapshots(&mut self, cx: &mut Context<Self>) {
+        // Tab 宽度源自从语言设置解析出的显示参数；设置变化经 LanguageBuffer → MultiBuffer 元数据事件到达。
+        let tab_width = self
+            .multi_buffer
+            .read(cx)
+            .snapshot(cx)
+            .language_settings()
+            .tab
+            .tab_width;
+        self.display_map
+            .update(cx, |map, cx| map.set_tab_width(tab_width, cx));
         // gpui 的 emit 是延迟效应：编辑返回时 DisplayMap 的订阅尚未执行。
         // 在读取唯一派生快照前先把待处理的组合变更同步进 DisplayMap，
         // 保证快照内的组合文本与刚提交的事务同版本；后续订阅回调走无变化快速路径。
@@ -2151,9 +2165,7 @@ impl Editor {
         self.scroll_manager.refresh(&self.snapshot.display_snapshot);
     }
 
-    /// 读取共享 LanguageBuffer 的折叠缓存（后台解析时已计算，主线程零查询）。
-    ///
-    /// 缓存只在 Reparsed 安装后整体替换；文本已编辑但新解析未安装的窗口期保留上一版结果。
+    /// 读取当前语法快照的折叠候选（按当前版本即时查询，不跨版本缓存）。
     fn refresh_fold_ranges(&mut self, cx: &App) {
         self.fold_ranges = self.multi_buffer.read(cx).fold_ranges(cx);
     }

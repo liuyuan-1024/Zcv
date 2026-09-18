@@ -22,7 +22,14 @@ fn editor_with_text(
     });
     let language_buffer = cx.new({
         let buffer = buffer.clone();
-        move |cx| LanguageBuffer::new(buffer, None, cx)
+        move |cx| {
+            LanguageBuffer::new(
+                buffer,
+                None,
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     let editor = cx.new({
         let language_buffer = language_buffer.clone();
@@ -53,7 +60,14 @@ fn rename_local_at_replaces_only_the_resolved_binding(cx: &mut TestAppContext) {
     });
     let language_buffer = cx.new({
         let buffer = buffer.clone();
-        move |cx| LanguageBuffer::new(buffer, Some(PathBuf::from("rename.rs")), cx)
+        move |cx| {
+            LanguageBuffer::new(
+                buffer,
+                Some(PathBuf::from("rename.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     let editor = cx.new({
         let language_buffer = language_buffer.clone();
@@ -82,7 +96,14 @@ fn rename_local_at_rejects_ambiguous_binding(cx: &mut TestAppContext) {
     });
     let language_buffer = cx.new({
         let buffer = buffer.clone();
-        move |cx| LanguageBuffer::new(buffer, Some(PathBuf::from("ambiguous.rs")), cx)
+        move |cx| {
+            LanguageBuffer::new(
+                buffer,
+                Some(PathBuf::from("ambiguous.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     let editor = cx.new({
         let language_buffer = language_buffer.clone();
@@ -107,7 +128,14 @@ fn rename_local_at_rejects_unresolved_reference(cx: &mut TestAppContext) {
     });
     let language_buffer = cx.new({
         let buffer = buffer.clone();
-        move |cx| LanguageBuffer::new(buffer, Some(PathBuf::from("unresolved.rs")), cx)
+        move |cx| {
+            LanguageBuffer::new(
+                buffer,
+                Some(PathBuf::from("unresolved.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     let editor = cx.new({
         let language_buffer = language_buffer.clone();
@@ -187,11 +215,25 @@ fn editing_a_later_composite_excerpt_keeps_following_input_in_that_source(cx: &m
     });
     let first = cx.new({
         let first = first.clone();
-        move |cx| LanguageBuffer::new(first, None, cx)
+        move |cx| {
+            LanguageBuffer::new(
+                first,
+                None,
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     let second = cx.new({
         let second = second.clone();
-        move |cx| LanguageBuffer::new(second, None, cx)
+        move |cx| {
+            LanguageBuffer::new(
+                second,
+                None,
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {

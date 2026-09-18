@@ -203,7 +203,14 @@ fn outline_items_filter_and_navigate_using_current_snapshot(cx: &mut TestAppCont
     });
     let language_buffer = cx.new({
         let raw_buffer = raw_buffer.clone();
-        move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+        move |cx| {
+            LanguageBuffer::new(
+                raw_buffer,
+                Some(PathBuf::from("main.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     let editor = cx.new({
         let language_buffer = language_buffer.clone();
@@ -549,7 +556,14 @@ fn select_larger_smaller_syntax_node_uses_tree_sitter_ancestors(cx: &mut TestApp
     });
     let language_buffer = cx.new({
         let raw_buffer = raw_buffer.clone();
-        move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+        move |cx| {
+            LanguageBuffer::new(
+                raw_buffer,
+                Some(PathBuf::from("main.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     cx.run_until_parked();
     let (editor, cx) = cx.add_window_view({
@@ -638,7 +652,14 @@ fn f2_opens_inline_local_rename_and_enter_commits_it(cx: &mut TestAppContext) {
     });
     let language_buffer = cx.new({
         let raw_buffer = raw_buffer.clone();
-        move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+        move |cx| {
+            LanguageBuffer::new(
+                raw_buffer,
+                Some(PathBuf::from("main.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     let (editor, cx) = cx.add_window_view({
         let language_buffer = language_buffer.clone();
@@ -704,7 +725,14 @@ fn select_larger_syntax_node_reaches_file_root_from_rust_imports_and_structures(
     });
     let language_buffer = cx.new({
         let raw_buffer = raw_buffer.clone();
-        move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+        move |cx| {
+            LanguageBuffer::new(
+                raw_buffer,
+                Some(PathBuf::from("main.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     cx.run_until_parked();
     let (editor, cx) = cx.add_window_view({
@@ -742,7 +770,14 @@ fn matching_brackets_come_from_tree_sitter_query(cx: &mut TestAppContext) {
     });
     let language_buffer = cx.new({
         let raw_buffer = raw_buffer.clone();
-        move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+        move |cx| {
+            LanguageBuffer::new(
+                raw_buffer,
+                Some(PathBuf::from("main.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     let editor = cx.new({
         let language_buffer = language_buffer.clone();
@@ -1287,7 +1322,14 @@ fn newline_uses_tree_sitter_indent_query(cx: &mut TestAppContext) {
     });
     let language_buffer = cx.new({
         let raw_buffer = raw_buffer.clone();
-        move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+        move |cx| {
+            LanguageBuffer::new(
+                raw_buffer,
+                Some(PathBuf::from("main.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     let editor = cx.new({
         let language_buffer = language_buffer.clone();
@@ -1314,7 +1356,14 @@ fn composite_excerpt_uses_its_source_tree_sitter_indent_query(cx: &mut TestAppCo
     });
     let language_buffer = cx.new({
         let raw_buffer = raw_buffer.clone();
-        move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+        move |cx| {
+            LanguageBuffer::new(
+                raw_buffer,
+                Some(PathBuf::from("main.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
@@ -1357,7 +1406,14 @@ fn newline_does_not_compound_indent_inside_an_outer_rust_block(cx: &mut TestAppC
     });
     let language_buffer = cx.new({
         let raw_buffer = raw_buffer.clone();
-        move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+        move |cx| {
+            LanguageBuffer::new(
+                raw_buffer,
+                Some(PathBuf::from("main.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     let editor = cx.new({
         let language_buffer = language_buffer.clone();
@@ -1388,7 +1444,14 @@ fn newline_uses_the_nearest_code_line_as_its_indent_basis(cx: &mut TestAppContex
     });
     let language_buffer = cx.new({
         let raw_buffer = raw_buffer.clone();
-        move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+        move |cx| {
+            LanguageBuffer::new(
+                raw_buffer,
+                Some(PathBuf::from("main.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     let editor = cx.new({
         let language_buffer = language_buffer.clone();

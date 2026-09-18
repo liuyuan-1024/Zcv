@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use crate::{
     Affinity, Anchor, BufferConfig, BufferVersion, ByteOffset, CharOffset, Line, LineRange,
     MovementDirection, MovementUnit, Position, TextChangeBatch, TextRange, TextResult, Utf16Offset,
-    Utf16Position,
+    Utf16Position, WordBoundaryPolicy,
     slicing::{LineContent, LineSlice, TextSlice},
     slicing::{
         line_content_for_text, text_range_for_byte_range, text_range_for_line,
@@ -83,25 +83,28 @@ impl Snapshot {
     /// 快照与可编辑 Buffer 共享同一套移动语义，使显示层可以在不可变文本视图上完成显示坐标到逻辑坐标的完整移动，不必重新取得可变 Buffer。
     pub fn movement_boundary(
         &self,
+        policy: WordBoundaryPolicy,
         offset: CharOffset,
         direction: MovementDirection,
         unit: MovementUnit,
     ) -> TextResult<CharOffset> {
-        crate::buffer::movement_boundary_in_text(
-            &self.storage,
-            self.config.word_boundary,
-            offset,
-            direction,
-            unit,
-        )
+        crate::buffer::movement_boundary_in_text(&self.storage, policy, offset, direction, unit)
     }
 
-    pub fn surrounding_word(&self, offset: CharOffset) -> TextResult<(CharOffset, CharOffset)> {
-        crate::buffer::surrounding_word_in_text(&self.storage, self.config.word_boundary, offset)
+    pub fn surrounding_word(
+        &self,
+        policy: WordBoundaryPolicy,
+        offset: CharOffset,
+    ) -> TextResult<(CharOffset, CharOffset)> {
+        crate::buffer::surrounding_word_in_text(&self.storage, policy, offset)
     }
 
-    pub fn is_inside_word(&self, offset: CharOffset) -> TextResult<bool> {
-        crate::buffer::is_inside_word_in_text(&self.storage, self.config.word_boundary, offset)
+    pub fn is_inside_word(
+        &self,
+        policy: WordBoundaryPolicy,
+        offset: CharOffset,
+    ) -> TextResult<bool> {
+        crate::buffer::is_inside_word_in_text(&self.storage, policy, offset)
     }
 
     // 坐标查询门面（len / byte / char / UTF-16 / grapheme 系列）与 Buffer 共用一份实现。

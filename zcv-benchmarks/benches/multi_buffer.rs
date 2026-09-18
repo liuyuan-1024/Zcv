@@ -23,7 +23,14 @@ fn projection_setup(
                 )
                 .unwrap()
             });
-            cx.new(|cx| LanguageBuffer::new(buffer, None, cx))
+            cx.new(|cx| {
+                LanguageBuffer::new(
+                    buffer,
+                    None,
+                    std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                    cx,
+                )
+            })
         })
         .collect::<Vec<_>>();
     let excerpts = cx.read(|cx| {

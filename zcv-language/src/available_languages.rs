@@ -110,6 +110,8 @@ pub(crate) struct LanguageSpec {
     /// 注入查询使用的别名；只参与注入查找，不参与文件识别。
     pub(crate) injection_alias: Option<&'static str>,
     pub(crate) auto_close_pairs: &'static [AutoClosePair],
+    /// 除字母数字与 `_` 外，本语言额外视为词字符的字符集合（对齐 Zed 的 word_characters）。
+    pub(crate) word_characters: &'static str,
 }
 
 impl LanguageSpec {
@@ -127,6 +129,7 @@ impl LanguageSpec {
             support: LanguageSupport::TreeSitter { grammar, queries },
             injection_alias,
             auto_close_pairs,
+            word_characters: "",
         }
     }
 
@@ -137,7 +140,14 @@ impl LanguageSpec {
             support: LanguageSupport::PlainText,
             injection_alias: None,
             auto_close_pairs: &[],
+            word_characters: "",
         }
+    }
+
+    /// 声明语言的额外词字符（对齐 Zed `LanguageConfig::word_characters`）。
+    fn with_word_characters(mut self, word_characters: &'static str) -> Self {
+        self.word_characters = word_characters;
+        self
     }
 
     /// 注入名匹配：别名、语言名与文件后缀均忽略大小写。
@@ -303,7 +313,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 .with_locals(include_str!("../queries/javascript/locals.scm")),
             None,
             COMMON_PAIRS,
-        ),
+        )
+        .with_word_characters("$#"),
         LanguageSpec::tree_sitter(
             "JSX",
             LanguageMatcher {
@@ -317,7 +328,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 .with_locals(include_str!("../queries/jsx/locals.scm")),
             None,
             COMMON_PAIRS,
-        ),
+        )
+        .with_word_characters("$#"),
         LanguageSpec::tree_sitter(
             "TypeScript",
             LanguageMatcher {
@@ -331,7 +343,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 .with_locals(include_str!("../queries/typescript/locals.scm")),
             None,
             COMMON_PAIRS,
-        ),
+        )
+        .with_word_characters("$#"),
         LanguageSpec::tree_sitter(
             "TSX",
             LanguageMatcher {
@@ -345,7 +358,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 .with_locals(include_str!("../queries/tsx/locals.scm")),
             None,
             COMMON_PAIRS,
-        ),
+        )
+        .with_word_characters("$#"),
         LanguageSpec::tree_sitter(
             "Java",
             LanguageMatcher {
@@ -478,7 +492,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             file_language_queries!("json"),
             None,
             COMMON_PAIRS,
-        ),
+        )
+        .with_word_characters("#"),
         LanguageSpec::tree_sitter(
             "YAML",
             LanguageMatcher {
@@ -541,7 +556,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             file_language_queries!("css"),
             None,
             COMMON_PAIRS,
-        ),
+        )
+        .with_word_characters("#"),
         LanguageSpec::plain_text(
             "纯文本",
             LanguageMatcher {

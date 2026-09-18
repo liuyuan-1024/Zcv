@@ -703,16 +703,9 @@ impl FoldMap {
         // 注入配置变化（inlay 增删改）不产生 buffer 编辑：整体重建 fold 拓扑。
         let inlay_changed = input.version() != old_inlay.version();
         if buffer.version() == old_buffer.version() && !inlay_changed {
-            let config_changed = buffer.config() != old_buffer.config();
             // 文本与 inlay 结构未变，但捕获表或元数据可能已更新：
             // 采用新输入快照，保证 fold 链上仍持有当前 MultiBufferSnapshot。
             self.snapshot.input = input;
-            if config_changed {
-                let old_rows = self.snapshot.line_count();
-                self.snapshot.version += 1;
-                let edit = full_fold_edit(old_rows, self.snapshot.line_count());
-                return (self.snapshot.clone(), vec![edit]);
-            }
             return (self.snapshot.clone(), Vec::new());
         }
 

@@ -141,7 +141,14 @@ fn ime_candidate_remains_in_the_syntax_highlight_pipeline(cx: &mut TestAppContex
     let raw_buffer = cx.new(|_| raw_buffer);
     let language_buffer = cx.new({
         let raw_buffer = raw_buffer.clone();
-        move |cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx)
+        move |cx| {
+            LanguageBuffer::new(
+                raw_buffer,
+                Some(PathBuf::from("main.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     let (editor, cx) = cx.add_window_view({
         let language_buffer = language_buffer.clone();

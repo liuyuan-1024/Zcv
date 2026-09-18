@@ -14,7 +14,7 @@ fn opening_the_same_file_reuses_its_buffer(cx: &mut TestAppContext) {
     fs::write(&path, "共享内容").expect("测试文件应可写入");
 
     let (first, second) = cx.update(|cx| {
-        let mut store = BufferStore::new();
+        let mut store = BufferStore::new(Arc::new(LanguageRegistry::new()));
         let first = store.open_buffer(&path, cx).expect("首次打开应成功");
         let second = store.open_buffer(&path, cx).expect("再次打开应成功");
         (first, second)
@@ -28,7 +28,7 @@ fn opening_the_same_file_reuses_its_buffer(cx: &mut TestAppContext) {
 fn deleted_file_buffer_keeps_the_same_identity_after_file_is_recreated(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let path = directory.path().join("deleted.txt");
-    let mut store = BufferStore::new();
+    let mut store = BufferStore::new(Arc::new(LanguageRegistry::new()));
     let deleted = cx.update(|cx| {
         store
             .open_deleted_buffer(&path, cx)
@@ -50,8 +50,8 @@ fn separate_project_buffer_stores_do_not_share_buffers(cx: &mut TestAppContext) 
     fs::write(&path, "项目隔离").expect("测试文件应可写入");
 
     let (first, second) = cx.update(|cx| {
-        let mut first_store = BufferStore::new();
-        let mut second_store = BufferStore::new();
+        let mut first_store = BufferStore::new(Arc::new(LanguageRegistry::new()));
+        let mut second_store = BufferStore::new(Arc::new(LanguageRegistry::new()));
         let first = first_store
             .open_buffer(&path, cx)
             .expect("第一项目应打开文件");
@@ -77,7 +77,7 @@ fn remove_path_drops_matching_indexes_and_keeps_others(cx: &mut TestAppContext) 
     fs::write(&nested, "嵌套").expect("应创建测试文件");
     fs::write(&sibling, "同级").expect("应创建测试文件");
 
-    let mut store = BufferStore::new();
+    let mut store = BufferStore::new(Arc::new(LanguageRegistry::new()));
     let (file_buffer, nested_buffer, sibling_buffer) = cx.update(|cx| {
         (
             store.open_buffer(&file, cx).expect("应打开测试文件"),
@@ -113,7 +113,7 @@ fn released_buffer_is_loaded_again(cx: &mut TestAppContext) {
     let path = test_file_path();
     fs::write(&path, "第一次").expect("测试文件应可写入");
 
-    let mut store = BufferStore::new();
+    let mut store = BufferStore::new(Arc::new(LanguageRegistry::new()));
     let first_id = cx.update(|cx| {
         let buffer = store.open_buffer(&path, cx).expect("首次打开应成功");
         buffer.entity_id()
@@ -154,7 +154,7 @@ fn reopening_live_buffer_does_not_load_changed_disk_contents(cx: &mut TestAppCon
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let path = directory.path().join("live.txt");
     fs::write(&path, "内存文档").expect("应写入文件");
-    let mut store = BufferStore::new();
+    let mut store = BufferStore::new(Arc::new(LanguageRegistry::new()));
     let first = cx.update(|cx| store.open_buffer(&path, cx).expect("首次打开应成功"));
     fs::write(&path, [0xff, 0xfe, 0xff]).expect("应替换为非 UTF-8 内容");
     let second = cx.update(|cx| store.open_buffer(&path, cx).expect("存活文档应直接复用"));

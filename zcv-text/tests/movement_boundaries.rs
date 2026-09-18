@@ -1,7 +1,7 @@
 mod common;
 
 use common::*;
-use zcv_text::{CoordinateError, MovementDirection, MovementUnit, TextError};
+use zcv_text::{CoordinateError, MovementDirection, MovementUnit, TextError, WordBoundaryPolicy};
 
 #[test]
 fn movement_boundaries_dispatch_by_unit_and_reject_invalid_offsets() {
@@ -9,31 +9,56 @@ fn movement_boundaries_dispatch_by_unit_and_reject_invalid_offsets() {
 
     assert_eq!(
         buffer
-            .movement_boundary(c(0), MovementDirection::Next, MovementUnit::Word)
+            .movement_boundary(
+                WordBoundaryPolicy::default(),
+                c(0),
+                MovementDirection::Next,
+                MovementUnit::Word
+            )
             .unwrap(),
         c(3)
     );
     assert_eq!(
         buffer
-            .movement_boundary(c(0), MovementDirection::Next, MovementUnit::Identifier)
+            .movement_boundary(
+                WordBoundaryPolicy::default(),
+                c(0),
+                MovementDirection::Next,
+                MovementUnit::Identifier
+            )
             .unwrap(),
         c(12)
     );
     assert_eq!(
         buffer
-            .movement_boundary(c(0), MovementDirection::Next, MovementUnit::Subword)
+            .movement_boundary(
+                WordBoundaryPolicy::default(),
+                c(0),
+                MovementDirection::Next,
+                MovementUnit::Subword
+            )
             .unwrap(),
         c(3)
     );
     assert_eq!(
         buffer
-            .movement_boundary(c(13), MovementDirection::Next, MovementUnit::Symbol)
+            .movement_boundary(
+                WordBoundaryPolicy::default(),
+                c(13),
+                MovementDirection::Next,
+                MovementUnit::Symbol
+            )
             .unwrap(),
         c(15)
     );
     assert!(
         buffer
-            .movement_boundary(c(99), MovementDirection::Next, MovementUnit::Word)
+            .movement_boundary(
+                WordBoundaryPolicy::default(),
+                c(99),
+                MovementDirection::Next,
+                MovementUnit::Word
+            )
             .is_err()
     );
 }
@@ -59,6 +84,7 @@ fn word_boundaries_keep_newline_as_an_independent_category() {
     assert_eq!(
         buffer
             .movement_boundary(
+                WordBoundaryPolicy::default(),
                 empty_line_start,
                 MovementDirection::Next,
                 MovementUnit::Word,
@@ -69,6 +95,7 @@ fn word_boundaries_keep_newline_as_an_independent_category() {
     assert_eq!(
         buffer
             .movement_boundary(
+                WordBoundaryPolicy::default(),
                 empty_line_start,
                 MovementDirection::Previous,
                 MovementUnit::Word,

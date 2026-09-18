@@ -2,9 +2,10 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use tree_sitter::Query;
+use zcv_text::WordBoundaryPolicy;
 
 use crate::AutoClosePair;
 use crate::available_languages::{
@@ -17,6 +18,7 @@ pub struct Language {
     name: &'static str,
     syntax: LanguageSyntax,
     auto_close_pairs: &'static [AutoClosePair],
+    word_characters: &'static str,
 }
 
 #[derive(Debug)]
@@ -113,6 +115,13 @@ impl Language {
         self.auto_close_pairs
     }
 
+    /// 本语言的词边界分类策略（对齐 Zed 的 `LanguageConfig::word_characters`）。
+    pub fn word_boundary(&self) -> WordBoundaryPolicy {
+        WordBoundaryPolicy {
+            word_characters: self.word_characters,
+        }
+    }
+
     /// capture 名字表（capture index -> 名字），供跨语言全局表构建与渲染查表使用。
     pub(crate) fn capture_names(&self) -> &[Arc<str>] {
         match &self.syntax {
@@ -146,6 +155,7 @@ impl LanguageSpec {
             name: self.name,
             syntax,
             auto_close_pairs: self.auto_close_pairs,
+            word_characters: self.word_characters,
         }
     }
 }
@@ -188,18 +198,15 @@ fn compile_query(
 }
 
 /// 语言注册表：持有内置规格，负责文件识别与惰性加载。
-pub(crate) struct LanguageRegistry {
+///
+/// 由应用装配层创建一次并以 `Arc` 显式注入 `LanguageBuffer`/`SyntaxMap`，不提供全局单例。
+pub struct LanguageRegistry {
     languages: Vec<LanguageSpec>,
     loaded_languages: Mutex<HashMap<&'static str, Arc<Language>>>,
 }
 
-pub(crate) fn registry() -> &'static LanguageRegistry {
-    static REGISTRY: OnceLock<LanguageRegistry> = OnceLock::new();
-    REGISTRY.get_or_init(LanguageRegistry::new)
-}
-
 impl LanguageRegistry {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             languages: builtin_languages(),
             loaded_languages: Mutex::new(HashMap::new()),
@@ -216,7 +223,7 @@ impl LanguageRegistry {
     }
 
     /// 按注入名查语言（语法树注入层使用）。
-    pub(crate) fn language_for_injection(&self, name: &str) -> Option<Arc<Language>> {
+    pub fn language_for_injection(&self, name: &str) -> Option<Arc<Language>> {
         self.languages
             .iter()
             .find(|entry| entry.matches_injection_name(name))
@@ -224,7 +231,7 @@ impl LanguageRegistry {
     }
 
     /// 按文件名和首行内容选择语言规格。
-    pub(crate) fn language_for_file(
+    pub fn language_for_file(
         &self,
         path: &Path,
         first_line: Option<&str>,
@@ -237,7 +244,7 @@ impl LanguageRegistry {
     ///
     /// 围栏代码块使用语言名而非文件路径；
     /// 该入口让预览、文档等消费者与文件识别共享同一份语言注册表，而不是各自维护别名映射。
-    pub(crate) fn language_for_name_or_extension(&self, name: &str) -> Option<Arc<Language>> {
+    pub fn language_for_name_or_extension(&self, name: &str) -> Option<Arc<Language>> {
         let name = name.trim().trim_start_matches('.');
         if name.is_empty() {
             return None;
@@ -302,26 +309,10 @@ fn ends_with_dot_suffix(filename: &str, suffix: &str) -> bool {
         .is_some_and(|stem| stem.ends_with('.'))
 }
 
-// ── 顶层查询入口（调用方经此处访问注册表）────────────────────────────
-
-/// 按注入名查语言（语法树注入层使用）。
-pub(crate) fn language_for_injection(name: &str) -> Option<Arc<Language>> {
-    registry().language_for_injection(name)
-}
-
-/// 根据文件名和首行内容选择语言规格。
-/// 根据文件名和首行内容识别语言。
-///
-/// 文件类型消费方应通过此接口共享语言识别结果，不能各自维护后缀匹配表。
-pub fn language_for_file(path: &Path, first_line: Option<&str>) -> Option<Arc<Language>> {
-    registry().language_for_file(path, first_line)
-}
-
-/// 根据语言展示名、文件扩展名或注入别名识别语言。
-///
-/// 适用于 Markdown 围栏代码块等只有语言标识、没有实际文件路径的场景。
-pub fn language_for_name_or_extension(name: &str) -> Option<Arc<Language>> {
-    registry().language_for_name_or_extension(name)
+impl Default for LanguageRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -333,13 +324,15 @@ mod tests {
     #[test]
     fn detects_rust_and_tsx_with_distinct_grammars() {
         assert_eq!(
-            language_for_file(Path::new("main.rs"), None)
+            LanguageRegistry::new()
+                .language_for_file(Path::new("main.rs"), None)
                 .unwrap()
                 .name(),
             "Rust"
         );
         assert_eq!(
-            language_for_file(Path::new("view.tsx"), None)
+            LanguageRegistry::new()
+                .language_for_file(Path::new("view.tsx"), None)
                 .unwrap()
                 .name(),
             "TSX"
@@ -364,7 +357,10 @@ mod tests {
             ("query.sql", "SQL"),
         ] {
             assert_eq!(
-                language_for_file(Path::new(path), None).unwrap().name(),
+                LanguageRegistry::new()
+                    .language_for_file(Path::new(path), None)
+                    .unwrap()
+                    .name(),
                 expected,
                 "{path} 应识别为 {expected}"
             );
@@ -381,7 +377,8 @@ mod tests {
             ("//usr/bin/env go run $0 $@; exit", "Go"),
         ] {
             assert_eq!(
-                language_for_file(Path::new("script"), Some(first_line))
+                LanguageRegistry::new()
+                    .language_for_file(Path::new("script"), Some(first_line))
                     .unwrap()
                     .name(),
                 expected,
@@ -392,8 +389,13 @@ mod tests {
 
     #[test]
     fn reuses_loaded_language_and_compiled_queries() {
-        let first = language_for_file(Path::new("main.rs"), None).unwrap();
-        let second = language_for_file(Path::new("lib.rs"), None).unwrap();
+        let registry = LanguageRegistry::new();
+        let first = registry
+            .language_for_file(Path::new("main.rs"), None)
+            .unwrap();
+        let second = registry
+            .language_for_file(Path::new("lib.rs"), None)
+            .unwrap();
         assert!(Arc::ptr_eq(&first, &second));
         assert!(Arc::ptr_eq(
             first.highlights().unwrap(),
@@ -404,7 +406,8 @@ mod tests {
     #[test]
     fn detects_shell_from_shebang() {
         assert_eq!(
-            language_for_file(Path::new("script"), Some("#!/usr/bin/env bash"))
+            LanguageRegistry::new()
+                .language_for_file(Path::new("script"), Some("#!/usr/bin/env bash"))
                 .unwrap()
                 .name(),
             "Shell"
@@ -415,39 +418,48 @@ mod tests {
     fn unknown_files_fall_back_to_plain_text() {
         // 未支持的语言后缀也必须明确回落为纯文本，不能注册成缺少 grammar 的半支持语言。
         for path in ["main.dart", "main.ex", "main.hs", "query.graphql"] {
-            let language = language_for_file(Path::new(path), None).unwrap();
+            let language = LanguageRegistry::new()
+                .language_for_file(Path::new(path), None)
+                .unwrap();
             assert_eq!(language.name(), "纯文本", "{path} 尚未提供完整语言规格");
             assert!(language.grammar().is_none());
         }
 
         // .gitignore 等无扩展名文件与未知后缀都以纯文本兜底，语言名始终可显示。
         assert_eq!(
-            language_for_file(Path::new(".gitignore"), None)
+            LanguageRegistry::new()
+                .language_for_file(Path::new(".gitignore"), None)
                 .unwrap()
                 .name(),
             "纯文本"
         );
         assert_eq!(
-            language_for_file(Path::new("Makefile"), None)
+            LanguageRegistry::new()
+                .language_for_file(Path::new("Makefile"), None)
                 .unwrap()
                 .name(),
             "纯文本"
         );
         assert_eq!(
-            language_for_file(Path::new("archive.unknown_ext"), None)
+            LanguageRegistry::new()
+                .language_for_file(Path::new("archive.unknown_ext"), None)
                 .unwrap()
                 .name(),
             "纯文本"
         );
         // .txt 显式匹配 Plain Text；无语法树语言不产出高亮查询。
-        let plain = language_for_file(Path::new("notes.txt"), None).unwrap();
+        let plain = LanguageRegistry::new()
+            .language_for_file(Path::new("notes.txt"), None)
+            .unwrap();
         assert_eq!(plain.name(), "纯文本");
         assert!(plain.highlights().is_none(), "纯文本语言不应有高亮查询");
     }
 
     #[test]
     fn javascript_family_compiles_declared_query_layers() {
-        let jsx = language_for_file(Path::new("view.jsx"), None).unwrap();
+        let jsx = LanguageRegistry::new()
+            .language_for_file(Path::new("view.jsx"), None)
+            .unwrap();
         assert!(
             jsx.highlights()
                 .unwrap()
@@ -462,7 +474,9 @@ mod tests {
         );
         assert!(jsx.injections().is_some());
 
-        let typescript = language_for_file(Path::new("main.ts"), None).unwrap();
+        let typescript = LanguageRegistry::new()
+            .language_for_file(Path::new("main.ts"), None)
+            .unwrap();
         assert!(
             typescript
                 .highlights()
@@ -479,7 +493,9 @@ mod tests {
         );
         assert!(typescript.injections().is_some());
 
-        let tsx = language_for_file(Path::new("view.tsx"), None).unwrap();
+        let tsx = LanguageRegistry::new()
+            .language_for_file(Path::new("view.tsx"), None)
+            .unwrap();
         assert!(
             tsx.highlights()
                 .unwrap()
@@ -512,7 +528,9 @@ mod tests {
             ("index.html", true),
             ("notes.txt", false),
         ] {
-            let language = language_for_file(Path::new(path), None).unwrap();
+            let language = LanguageRegistry::new()
+                .language_for_file(Path::new(path), None)
+                .unwrap();
             assert_eq!(
                 language.outline().is_some(),
                 expected,
@@ -562,7 +580,7 @@ mod tests {
 
     #[test]
     fn builtin_language_specs_are_complete_unique_and_reachable() {
-        let registry = registry();
+        let registry = LanguageRegistry::new();
         let mut plain_text_count = 0;
         let mut names = HashSet::new();
         let mut suffixes = HashSet::new();
@@ -631,9 +649,37 @@ mod tests {
     }
 
     #[test]
+    fn languages_declare_their_extra_word_characters() {
+        let registry = LanguageRegistry::new();
+        let javascript = registry
+            .language_for_file(Path::new("main.js"), None)
+            .unwrap();
+        assert!(
+            javascript.word_boundary().is_identifier_continue('$'),
+            "JavaScript 应把 $ 视为词字符"
+        );
+        assert!(
+            javascript.word_boundary().is_identifier_continue('#'),
+            "JavaScript 应把 # 视为词字符"
+        );
+        let rust = registry
+            .language_for_file(Path::new("main.rs"), None)
+            .unwrap();
+        assert!(
+            !rust.word_boundary().is_identifier_continue('$'),
+            "Rust 不应把 $ 视为词字符"
+        );
+        assert!(
+            rust.word_boundary().is_identifier_continue('_'),
+            "下划线始终是词字符"
+        );
+    }
+
+    #[test]
     fn loaded_languages_declare_input_autoclose_pairs() {
         for path in ["main.rs", "main.py", "data.json", "README.md", "style.css"] {
-            let language = language_for_file(Path::new(path), None)
+            let language = LanguageRegistry::new()
+                .language_for_file(Path::new(path), None)
                 .unwrap_or_else(|| panic!("{path} 应加载语言"));
             let pairs = language.auto_close_pairs();
             assert!(!pairs.is_empty(), "{path} 应声明输入自动闭合配对");

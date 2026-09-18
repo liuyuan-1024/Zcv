@@ -14,6 +14,7 @@ use tree_sitter::StreamingIterator;
 use zcv_text::Snapshot;
 
 use crate::Language;
+use crate::highlight_cache::HighlightCache;
 use crate::syntax_map::SyntaxSnapshot;
 use crate::tree_sitter_utils::{
     ParseCancellation, QueryCursorHandle, SnapshotTextProvider, ranges_overlap,
@@ -61,7 +62,12 @@ impl SyntaxSnapshot {
     ///
     /// 每层一个 capture 流（文档序），k 路归并后以全局活动栈直接产出 spans：
     /// 树中节点要么嵌套要么不相交，注入层 capture 又受其内容节点约束，因此全局栈的 LIFO 顺序就是覆盖顺序，栈顶即当前最内层。
-    pub fn highlights(&self, range: Range<usize>, text: &Snapshot) -> Vec<HighlightSpan> {
+    pub fn highlights(
+        &self,
+        range: Range<usize>,
+        text: &Snapshot,
+        cache: &HighlightCache,
+    ) -> Vec<HighlightSpan> {
         if range.start >= range.end || text.version() != self.version {
             return Vec::new();
         }
@@ -72,23 +78,12 @@ impl SyntaxSnapshot {
         let mut chunk_start = first;
         while chunk_start < end {
             let chunk_end = (chunk_start + CACHE_CHUNK_BYTES).min(text.len_bytes().get());
-            let cached = {
-                let cache = self
-                    .highlight_cache()
-                    .lock()
-                    .expect("语法高亮缓存锁不应中毒");
-                cache.get(&chunk_start).cloned()
-            };
-            let cached = cached.unwrap_or_else(|| {
+            let cached = cache.get(chunk_start).unwrap_or_else(|| {
                 let computed = Arc::from(
                     self.highlights_impl(chunk_start..chunk_end, text, None)
                         .unwrap_or_default()
                         .into_boxed_slice(),
                 );
-                let mut cache = self
-                    .highlight_cache()
-                    .lock()
-                    .expect("语法高亮缓存锁不应中毒");
                 cache.insert(chunk_start, Arc::clone(&computed));
                 computed
             });
@@ -287,6 +282,7 @@ fn emit_until(
 mod tests {
     use std::collections::BTreeSet;
 
+    use crate::highlight_cache::HighlightCache;
     use crate::test::{parsed_syntax, rust_buffer};
 
     fn capture_names_for(path: &str, source: &str) -> BTreeSet<String> {
@@ -294,7 +290,11 @@ mod tests {
         let snapshot = buffer.snapshot();
         let syntax = syntax.snapshot();
         let names = syntax.capture_names();
-        let spans = syntax.highlights(0..snapshot.len_bytes().get(), &snapshot);
+        let spans = syntax.highlights(
+            0..snapshot.len_bytes().get(),
+            &snapshot,
+            &HighlightCache::new(),
+        );
         for pair in spans.windows(2) {
             assert!(
                 pair[0].range.end <= pair[1].range.start,
@@ -316,7 +316,11 @@ mod tests {
         let snapshot = buffer.snapshot();
         let syntax_snapshot = syntax.snapshot();
         let names = syntax_snapshot.capture_names();
-        let spans = syntax_snapshot.highlights(0..snapshot.len_bytes().get(), &snapshot);
+        let spans = syntax_snapshot.highlights(
+            0..snapshot.len_bytes().get(),
+            &snapshot,
+            &HighlightCache::new(),
+        );
 
         let main = source.find("main").unwrap();
         let covering = spans
@@ -344,7 +348,11 @@ mod tests {
         let snapshot = buffer.snapshot();
         let syntax_snapshot = syntax.snapshot();
         let names = syntax_snapshot.capture_names();
-        let spans = syntax_snapshot.highlights(0..snapshot.len_bytes().get(), &snapshot);
+        let spans = syntax_snapshot.highlights(
+            0..snapshot.len_bytes().get(),
+            &snapshot,
+            &HighlightCache::new(),
+        );
 
         assert!(
             spans
@@ -552,7 +560,11 @@ mod tests {
                 .any(|layer| layer.language.name() == "Markdown Inline")
         );
         let names = syntax.capture_names();
-        let spans = syntax.highlights(0..snapshot.len_bytes().get(), &snapshot);
+        let spans = syntax.highlights(
+            0..snapshot.len_bytes().get(),
+            &snapshot,
+            &HighlightCache::new(),
+        );
         assert!(
             spans
                 .iter()
@@ -584,7 +596,11 @@ mod tests {
                 .any(|layer| layer.language.name() == "JavaScript")
         );
         let names = syntax.capture_names();
-        let spans = syntax.highlights(0..snapshot.len_bytes().get(), &snapshot);
+        let spans = syntax.highlights(
+            0..snapshot.len_bytes().get(),
+            &snapshot,
+            &HighlightCache::new(),
+        );
         assert!(
             spans
                 .iter()
@@ -606,7 +622,11 @@ mod tests {
         let snapshot = buffer.snapshot();
         let syntax = syntax.snapshot();
         let names = syntax.capture_names();
-        let spans = syntax.highlights(0..snapshot.len_bytes().get(), &snapshot);
+        let spans = syntax.highlights(
+            0..snapshot.len_bytes().get(),
+            &snapshot,
+            &HighlightCache::new(),
+        );
 
         let component_start = "<main><".len();
         assert!(
@@ -664,7 +684,11 @@ mod tests {
                 .any(|layer| layer.language.name() == "CSS")
         );
         let names = syntax.capture_names();
-        let spans = syntax.highlights(0..snapshot.len_bytes().get(), &snapshot);
+        let spans = syntax.highlights(
+            0..snapshot.len_bytes().get(),
+            &snapshot,
+            &HighlightCache::new(),
+        );
         assert!(
             spans
                 .iter()

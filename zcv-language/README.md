@@ -2,6 +2,8 @@
 
 `zcv-language` 负责文件语言识别、Tree-sitter 解析、高亮、语言注入和结构查询。编辑器只消费 `LanguageBuffer` 与 `SyntaxSnapshot`，不单独维护语言状态。
 
+`LanguageBuffer::snapshot(cx)` 是文本与语法的一致读取边界：返回前先把语法插值到文本版本，并同时给出按语言解析的 `LanguageSettings` 与派生高亮缓存句柄；消费方不再调用任何手动同步协议。语言注册表 `LanguageRegistry` 由应用装配层创建并以 `Arc` 显式注入，`zcv-language` 不提供全局单例。
+
 文件级符号使用各语言自己的 `queries/<language>/outline.scm`。查询结果由 `SyntaxSnapshot::outline` 产生，携带文本版本、源文件字节范围、名称范围、语法层和父子层级；没有该查询的语言明确返回空结果。`MultiBuffer` 只负责把完整落在 excerpt 内的结果映射到组合文档，`Editor` 提供当前大纲、名称过滤和名称定位入口。
 
 节点导航使用 `SyntaxSnapshot::node_at` 和 `SyntaxSnapshot::node_ancestors`，返回带版本、UTF-8 字节范围、节点种类和语法层的不可变节点摘要。
@@ -17,6 +19,8 @@
 
 - `PlainText`：真正的纯文本兜底，不创建语法树；
 - `TreeSitter`：必须同时提供 grammar 与高亮查询；可直接识别文件的语言还必须提供括号、缩进和折叠查询。
+
+规格可通过 `with_word_characters` 声明除字母数字与 `_` 外额外视为词字符的字符（对齐 Zed 的 `word_characters`），例如 JavaScript/TypeScript 的 `$`、`#`；词边界策略由 `Language::word_boundary()` 提供给文本移动消费方。
 
 不要登记只有文件名、没有 grammar 的占位语言。尚未完整支持的文件统一按纯文本打开。
 

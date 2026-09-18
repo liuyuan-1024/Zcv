@@ -1512,7 +1512,9 @@ impl ProjectDiffView {
         let buffer = Buffer::from_text(text.to_string(), BufferConfig::default())
             .expect("Git 修订文本必须能创建 Buffer");
         let buffer = cx.new(|_| buffer);
-        let source = cx.new(|cx| LanguageBuffer::new(buffer, Some(path.to_path_buf()), cx));
+        let language_registry = self.project.read(cx).language_registry();
+        let source = cx
+            .new(|cx| LanguageBuffer::new(buffer, Some(path.to_path_buf()), language_registry, cx));
         self.revision_sources.insert(key, source.clone());
         source
     }

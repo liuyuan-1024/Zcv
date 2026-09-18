@@ -38,6 +38,13 @@ pub(crate) fn buffer(text: &str) -> Buffer {
     Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
 }
 
+/// 词边界策略：测试沿用历史语义，把 `$` 视为额外词字符（与 JavaScript/TypeScript 语言声明一致）。
+pub(crate) fn word_policy() -> WordBoundaryPolicy {
+    WordBoundaryPolicy {
+        word_characters: "$",
+    }
+}
+
 // ---- 文本读取 ----
 
 pub(crate) trait FullText {

@@ -20,14 +20,10 @@ fn is_zero_width(ch: char) -> bool {
 /// 不同宿主可以把 Option/Alt/Ctrl + Left/Right 映射到 Word / Identifier / Subword / Symbol。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WordBoundaryPolicy {
-    /// `_` 是否视为 identifier 的一部分。
+    /// 除字母数字、`_` 与零宽字符外，额外视为 identifier 主体的字符集合。
     ///
-    /// 默认开启，适配 `snake_case`、Rust / C / JS 常见标识符。
-    pub underscore_is_identifier: bool,
-    /// `$` 是否视为 identifier 的一部分。
-    ///
-    /// 默认开启，适配 JS / shell / 部分模板语言常见标识符。
-    pub dollar_is_identifier: bool,
+    /// 默认空；语言层按语言声明其扩展字符（例如 JavaScript/TypeScript 的 `$`、`#`）。
+    pub word_characters: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,10 +37,7 @@ impl WordBoundaryPolicy {
     ///
     /// 组合文本需要在不物化全文的前提下复用与单 Buffer 相同的词边界语义。
     pub fn is_identifier_continue(self, ch: char) -> bool {
-        ch.is_alphanumeric()
-            || is_zero_width(ch)
-            || (self.underscore_is_identifier && ch == '_')
-            || (self.dollar_is_identifier && ch == '$')
+        ch.is_alphanumeric() || is_zero_width(ch) || ch == '_' || self.word_characters.contains(ch)
     }
 
     pub(crate) fn is_symbol_char(self, ch: char) -> bool {
@@ -104,8 +97,7 @@ fn is_natural_word_body(ch: char) -> bool {
 impl Default for WordBoundaryPolicy {
     fn default() -> Self {
         Self {
-            underscore_is_identifier: true,
-            dollar_is_identifier: true,
+            word_characters: "",
         }
     }
 }

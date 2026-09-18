@@ -1,5 +1,7 @@
 use std::path::Path;
+use std::sync::Arc;
 
+use crate::registry::LanguageRegistry;
 use crate::syntax_map::SyntaxMap;
 use crate::tree_sitter_utils::ParseCancellation;
 use zcv_text::{Buffer, BufferConfig, Line};
@@ -13,7 +15,8 @@ pub(crate) fn rust_buffer(text: &str) -> (Buffer, SyntaxMap) {
 pub(crate) fn parsed_syntax(path: &str, text: &str) -> (Buffer, SyntaxMap) {
     let buffer = Buffer::from_text(text.to_owned(), BufferConfig::default()).unwrap();
     let snapshot = buffer.snapshot();
-    let mut syntax = SyntaxMap::new(&snapshot);
+    let registry = Arc::new(LanguageRegistry::new());
+    let mut syntax = SyntaxMap::new(Arc::clone(&registry), &snapshot);
     let first_line = snapshot
         .slice_line(Line::ZERO)
         .unwrap()
@@ -23,7 +26,7 @@ pub(crate) fn parsed_syntax(path: &str, text: &str) -> (Buffer, SyntaxMap) {
     syntax.set_language_for_file(Path::new(path), Some(&first_line), &snapshot);
     let parsed = syntax
         .snapshot()
-        .reparse(&snapshot, None, &ParseCancellation::default())
+        .reparse(&snapshot, &registry, &ParseCancellation::default())
         .expect("测试解析不应取消");
     assert!(syntax.did_parse(parsed));
     (buffer, syntax)

@@ -3,7 +3,9 @@ use criterion::{
 };
 use zcv_benchmarks::cached_rust_document;
 use zcv_project::SearchQuery;
-use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TransactionMetadata};
+use zcv_text::{
+    Buffer, BufferConfig, ByteOffset, Edit, Line, TransactionMetadata, WordBoundaryPolicy,
+};
 
 const DOCUMENT_SIZES: [usize; 3] = [64 * 1024, 1024 * 1024, 16 * 1024 * 1024];
 
@@ -69,7 +71,15 @@ fn searches(c: &mut Criterion) {
             BenchmarkId::new("literal", byte_len),
             &snapshot,
             |b, snapshot| {
-                b.iter(|| black_box(literal_query.search(snapshot).unwrap().matches().len()));
+                b.iter(|| {
+                    black_box(
+                        literal_query
+                            .search(snapshot, WordBoundaryPolicy::default())
+                            .unwrap()
+                            .matches()
+                            .len(),
+                    )
+                });
             },
         );
 
@@ -84,7 +94,15 @@ fn searches(c: &mut Criterion) {
             BenchmarkId::new("prepared_regex", byte_len),
             &snapshot,
             |b, snapshot| {
-                b.iter(|| black_box(query.search(snapshot).unwrap().matches().len()));
+                b.iter(|| {
+                    black_box(
+                        query
+                            .search(snapshot, WordBoundaryPolicy::default())
+                            .unwrap()
+                            .matches()
+                            .len(),
+                    )
+                });
             },
         );
     }

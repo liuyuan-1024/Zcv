@@ -158,8 +158,14 @@ fn clicking_deep_after_fold_preserves_the_visual_column(cx: &mut TestAppContext)
         Buffer::from_text(text.to_owned(), zcv_text::BufferConfig::default())
             .expect("keymap 测试 Buffer 应能创建")
     });
-    let language_buffer =
-        cx.new(|cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("default-macos.json")), cx));
+    let language_buffer = cx.new(|cx| {
+        LanguageBuffer::new(
+            raw_buffer,
+            Some(PathBuf::from("default-macos.json")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    });
     let (editor, cx) = cx.add_window_view({
         let language_buffer = language_buffer.clone();
         move |_, cx| Editor::from_language_buffer(language_buffer, EditorMode::Full, cx)
@@ -469,7 +475,14 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
     let buffer = cx.new(|_| {
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
-    let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
+    let buffer = cx.new(|cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(PathBuf::from("main.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    });
     let editor = cx.new(|cx| Editor::from_language_buffer(buffer.clone(), EditorMode::Full, cx));
     cx.run_until_parked();
     // 语法解析完成后语言层提供两个折叠范围（fn main 与 fn other 的块体）。
@@ -515,8 +528,14 @@ fn toggle_fold_action_uses_the_cursor_block_and_the_whole_folded_row(cx: &mut Te
     let buffer = cx.new(|_| {
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
-    let language_buffer =
-        cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
+    let language_buffer = cx.new(|cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(PathBuf::from("main.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    });
     let editor = cx.new(|cx| Editor::from_language_buffer(language_buffer, EditorMode::Full, cx));
     cx.run_until_parked();
 
@@ -553,8 +572,14 @@ fn clicking_the_crease_toggles_fold_without_selecting_the_line(cx: &mut TestAppC
     let buffer = cx.new(|_| {
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
-    let language_buffer =
-        cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
+    let language_buffer = cx.new(|cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(PathBuf::from("main.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    });
     let (editor, cx) = cx.add_window_view({
         let language_buffer = language_buffer.clone();
         move |_, cx| Editor::from_language_buffer(language_buffer, EditorMode::Full, cx)
@@ -662,8 +687,14 @@ fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
     let buffer = cx.new(|_| {
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
-    let language_buffer =
-        cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("main.rs")), cx));
+    let language_buffer = cx.new(|cx| {
+        LanguageBuffer::new(
+            buffer.clone(),
+            Some(PathBuf::from("main.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    });
     let editor = cx.new(|cx| Editor::from_language_buffer(language_buffer, EditorMode::Full, cx));
     cx.run_until_parked();
 
@@ -707,7 +738,14 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
     let buffer = cx.new(|_| {
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
-    let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
+    let buffer = cx.new(|cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(PathBuf::from("main.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    });
     let editor = cx.new(|cx| Editor::from_language_buffer(buffer.clone(), EditorMode::Full, cx));
     cx.run_until_parked();
     editor.update(cx, |editor, cx| editor.toggle_fold_at_line(Line::ZERO, cx));
@@ -757,8 +795,14 @@ fn horizontal_movement_jumps_over_folded_content(cx: &mut TestAppContext) {
     let buffer = cx.new(|_| {
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
-    let language_buffer =
-        cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
+    let language_buffer = cx.new(|cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(PathBuf::from("main.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    });
     let (editor, cx) = cx.add_window_view({
         let language_buffer = language_buffer.clone();
         move |_, cx| Editor::from_language_buffer(language_buffer, EditorMode::Full, cx)
@@ -817,8 +861,14 @@ fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppCo
         Buffer::from_text(text.to_owned(), zcv_text::BufferConfig::default())
             .expect("Rust 测试 Buffer 应能创建")
     });
-    let buffer =
-        cx.new(|cx| LanguageBuffer::new(raw_buffer.clone(), Some(PathBuf::from("main.rs")), cx));
+    let buffer = cx.new(|cx| {
+        LanguageBuffer::new(
+            raw_buffer.clone(),
+            Some(PathBuf::from("main.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    });
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
         move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)
@@ -887,7 +937,14 @@ fn unfold_all_expands_every_fold(cx: &mut TestAppContext) {
     let buffer = cx.new(|_| {
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
-    let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
+    let buffer = cx.new(|cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(PathBuf::from("main.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    });
     let editor = cx.new(|cx| Editor::from_language_buffer(buffer.clone(), EditorMode::Full, cx));
     cx.run_until_parked();
 
@@ -1365,7 +1422,14 @@ fn long_line_highlight_query_is_clipped_to_render_budget(cx: &mut TestAppContext
     let long = "let text = \"".to_owned() + &"a".repeat(8192) + "\";\n";
     let buffer =
         cx.new(|_| Buffer::from_text(long, BufferConfig::default()).expect("测试 Buffer 应能创建"));
-    let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
+    let buffer = cx.new(|cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(PathBuf::from("main.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    });
     let editor = cx.new(|cx| Editor::from_language_buffer(buffer.clone(), EditorMode::Full, cx));
     cx.run_until_parked();
 
@@ -1396,7 +1460,14 @@ fn horizontal_windowing_clips_wide_rows_to_the_visible_window(cx: &mut TestAppCo
         Buffer::from_text(format!("{long}\n{long}\n"), BufferConfig::default())
             .expect("测试 Buffer 应能创建")
     });
-    let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
+    let buffer = cx.new(|cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(PathBuf::from("main.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    });
     let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
         move |_, cx| Editor::for_language_buffer(buffer, cx)
@@ -2186,7 +2257,14 @@ fn test_file_buffer(cx: &mut TestAppContext, path: &str, text: &str) -> Entity<L
     let buffer = cx.new(|_| {
         Buffer::from_text(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
-    cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from(path)), cx))
+    cx.new(|cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(PathBuf::from(path)),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    })
 }
 
 /// 读取主光标所在投影偏移对应的源位置。

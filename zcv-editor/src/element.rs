@@ -3462,7 +3462,14 @@ mod tests {
             Buffer::from_text("first\n项目\nlast".to_owned(), BufferConfig::default())
                 .expect("应创建组合搜索 marker 测试 Buffer")
         });
-        let source = cx.new(|cx| LanguageBuffer::new(source_buffer, None, cx));
+        let source = cx.new(|cx| {
+            LanguageBuffer::new(
+                source_buffer,
+                None,
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        });
         let combined = cx.new(MultiBuffer::empty);
         let first_match =
             MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(5)).unwrap();
@@ -3571,8 +3578,14 @@ mod tests {
         let buffer = cx.new(|_| {
             Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建 Buffer")
         });
-        let language_buffer =
-            cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("README.md")), cx));
+        let language_buffer = cx.new(|cx| {
+            LanguageBuffer::new(
+                buffer.clone(),
+                Some(PathBuf::from("README.md")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        });
         cx.run_until_parked();
         let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.snapshot());
         let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));
@@ -3843,7 +3856,14 @@ mod tests {
         });
         let source = cx.new({
             let source_text = source_text.clone();
-            move |cx| LanguageBuffer::new(source_text, Some(PathBuf::from("文档/引擎.md")), cx)
+            move |cx| {
+                LanguageBuffer::new(
+                    source_text,
+                    Some(PathBuf::from("文档/引擎.md")),
+                    std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                    cx,
+                )
+            }
         });
         let combined = cx.new(MultiBuffer::empty);
         cx.update_entity(&combined, |combined, cx| {
@@ -3930,16 +3950,28 @@ mod tests {
             Buffer::from_text(first_text.to_owned(), BufferConfig::default())
                 .expect("应创建第一个源 Buffer")
         });
-        let first = cx
-            .new(move |cx| LanguageBuffer::new(first_buffer, Some(PathBuf::from("src/a.rs")), cx));
+        let first = cx.new(move |cx| {
+            LanguageBuffer::new(
+                first_buffer,
+                Some(PathBuf::from("src/a.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        });
 
         let second_text = "b0\nb1\n";
         let second_buffer = cx.new(|_| {
             Buffer::from_text(second_text.to_owned(), BufferConfig::default())
                 .expect("应创建第二个源 Buffer")
         });
-        let second = cx
-            .new(move |cx| LanguageBuffer::new(second_buffer, Some(PathBuf::from("src/b.rs")), cx));
+        let second = cx.new(move |cx| {
+            LanguageBuffer::new(
+                second_buffer,
+                Some(PathBuf::from("src/b.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        });
 
         let combined = cx.new(MultiBuffer::empty);
         cx.update_entity(&combined, |combined, cx| {
@@ -4018,8 +4050,14 @@ mod tests {
         let buffer = cx.new(|_| {
             Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建 Buffer")
         });
-        let language_buffer =
-            cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("README.md")), cx));
+        let language_buffer = cx.new(|cx| {
+            LanguageBuffer::new(
+                buffer.clone(),
+                Some(PathBuf::from("README.md")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        });
         cx.run_until_parked();
         let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.snapshot());
         let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));
@@ -4481,7 +4519,12 @@ mod tests {
             Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建源 Buffer")
         });
         let source = cx.new(move |cx| {
-            LanguageBuffer::new(source_buffer, Some(PathBuf::from("src/example.rs")), cx)
+            LanguageBuffer::new(
+                source_buffer,
+                Some(PathBuf::from("src/example.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
         });
         let combined = cx.new(MultiBuffer::empty);
         cx.update_entity(&combined, |combined, cx| {

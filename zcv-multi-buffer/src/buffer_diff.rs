@@ -274,12 +274,15 @@ impl BufferDiff {
             hunks: Vec::new(),
             pending_hunks: Vec::new(),
         };
+        let registry = input.working.read(cx).language_registry();
         let base_source = input.base_text.as_ref().map(|text| {
             let buffer = Buffer::from_text(text.to_string(), BufferConfig::default())
                 .expect("base 修订文本必须能创建 Buffer");
             let buffer = cx.new(|_| buffer);
             // 旧侧源的文件路径必须与工作区源一致（绝对），excerpt 定位与导航按源路径匹配。
-            cx.new(|cx| LanguageBuffer::new(buffer, Some(input.path.clone()), cx))
+            cx.new(|cx| {
+                LanguageBuffer::new(buffer, Some(input.path.clone()), Arc::clone(&registry), cx)
+            })
         });
         let mut this = Self {
             working: input.working,

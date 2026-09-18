@@ -23,7 +23,14 @@ pub(super) fn test_buffer(
     let buffer =
         Buffer::from_text(text.into(), BufferConfig::default()).expect("测试 Buffer 应能创建");
     let buffer = cx.new(|_| buffer);
-    cx.new(|cx| LanguageBuffer::new(buffer, None, cx))
+    cx.new(|cx| {
+        LanguageBuffer::new(
+            buffer,
+            None,
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    })
 }
 
 pub(super) fn focus_editor(editor: &Entity<Editor>, cx: &mut VisualTestContext) {

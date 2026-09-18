@@ -2,22 +2,19 @@
 //!
 //! 本文件只做配置拼装和默认值，不把策略应用到文本，也不读取宿主环境。
 
-use super::{LargeFilePolicy, WordBoundaryPolicy};
+use super::LargeFilePolicy;
 
 /// Buffer 级别的综合配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BufferConfig {
     /// 大文件、长行和历史保留相关的降级阈值。
     pub large_file: LargeFilePolicy,
-    /// Word / Identifier / Symbol movement 使用的字符分类策略。
-    pub word_boundary: WordBoundaryPolicy,
 }
 
 impl Default for BufferConfig {
     fn default() -> Self {
         Self {
             large_file: LargeFilePolicy::default(),
-            word_boundary: WordBoundaryPolicy::default(),
         }
     }
 }

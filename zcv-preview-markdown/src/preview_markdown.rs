@@ -12,5 +12,7 @@ use provider::MarkdownPreviewProvider;
 
 /// 注册 Markdown Preview Provider。可重复调用。
 pub fn init(cx: &mut App) {
-    zcv_workspace::register(MarkdownPreviewProvider, cx);
+    // Provider 只做语言识别，没有 Project 上下文；在注册时创建并持有自己的注册表。
+    let language_registry = std::sync::Arc::new(zcv_language::LanguageRegistry::new());
+    zcv_workspace::register(MarkdownPreviewProvider { language_registry }, cx);
 }

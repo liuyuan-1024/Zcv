@@ -1,19 +1,19 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::{ControlFlow, Range};
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::thread;
 
 use tree_sitter::StreamingIterator;
 use zcv_text::{BufferVersion, Snapshot, TextChangeBatch};
 
-use crate::registry::{language_for_file, language_for_injection};
+use crate::Language;
+use crate::registry::LanguageRegistry;
 use crate::tree_sitter_utils::{
     IncrementalParser, PARSE_TIME_SLICE, ParseCancellation, QueryCursorHandle,
     SnapshotTextProvider, drop_offloaded, edit_tree, map_range_through_changes, node_text,
     parse_tree, ranges_overlap,
 };
-use crate::{HighlightSpan, Language};
 
 /// 可增量更新的语法状态。
 ///
@@ -21,10 +21,13 @@ use crate::{HighlightSpan, Language};
 /// `interpolated_version` 表示旧树已经通过 `InputEdit` 推进到的文本版本。
 /// 两者分离后，前台可以立即使用坐标正确的旧树，真正的增量解析则交给后台完成。
 pub(crate) struct SyntaxMap {
+    registry: Arc<LanguageRegistry>,
     language: Option<Arc<Language>>,
     state: Arc<SyntaxState>,
     parsed_version: BufferVersion,
     interpolated_version: BufferVersion,
+    /// 最近一次插值对应的文本快照：推进语法树坐标与折叠范围时作为旧坐标基准。
+    interpolated_snapshot: Snapshot,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -34,16 +37,11 @@ struct SyntaxState {
     /// 最近一次解析安装的 capture 全局表（见 `SyntaxSnapshot::rebuild_capture_table`）。
     capture_names: Arc<[Arc<str>]>,
     capture_index_by_language: HashMap<&'static str, Arc<[u32]>>,
-    pub(crate) highlight_cache: Arc<Mutex<HashMap<usize, Arc<[HighlightSpan]>>>>,
 }
 
 impl SyntaxState {
     fn has_trees(&self) -> bool {
         self.tree.is_some() || !self.injections.is_empty()
-    }
-
-    fn clear_highlight_cache(&mut self) {
-        self.highlight_cache = Arc::new(Mutex::new(HashMap::new()));
     }
 }
 
@@ -55,6 +53,9 @@ impl SyntaxState {
 pub struct SyntaxSnapshot {
     pub(crate) language: Option<Arc<Language>>,
     state: Arc<SyntaxState>,
+    /// 语法树真正完成解析的版本；增量解析按它推导编辑区间。
+    parsed_version: BufferVersion,
+    /// 树坐标已经推进到的文本版本；查询一律以它为有效版本。
     pub(crate) version: BufferVersion,
 }
 
@@ -113,12 +114,23 @@ impl SyntaxMap {
         self.language.as_deref()
     }
 
-    pub(crate) fn new(snapshot: &Snapshot) -> Self {
+    /// 当前语言的共享句柄；调用方需要在 `SyntaxMap` 之外持有语言时使用。
+    pub(crate) fn language_arc(&self) -> Option<Arc<Language>> {
+        self.language.clone()
+    }
+
+    pub(crate) fn registry(&self) -> Arc<LanguageRegistry> {
+        Arc::clone(&self.registry)
+    }
+
+    pub(crate) fn new(registry: Arc<LanguageRegistry>, snapshot: &Snapshot) -> Self {
         Self {
+            registry,
             language: None,
             state: empty_syntax_state(),
             parsed_version: snapshot.version(),
             interpolated_version: snapshot.version(),
+            interpolated_snapshot: snapshot.clone(),
         }
     }
 
@@ -128,7 +140,7 @@ impl SyntaxMap {
         first_line: Option<&str>,
         snapshot: &Snapshot,
     ) -> bool {
-        self.set_language(language_for_file(path, first_line), snapshot)
+        self.set_language(self.registry.language_for_file(path, first_line), snapshot)
     }
 
     pub(crate) fn set_language(
@@ -148,31 +160,39 @@ impl SyntaxMap {
         offload_state_if_last(std::mem::replace(&mut self.state, empty_syntax_state()));
         self.parsed_version = snapshot.version();
         self.interpolated_version = snapshot.version();
+        self.interpolated_snapshot = snapshot.clone();
         true
     }
 
     /// 只把旧树推进到新坐标，不在调用线程执行解析。
-    pub(crate) fn interpolate(
-        &mut self,
-        old_snapshot: &Snapshot,
-        new_snapshot: &Snapshot,
-        changes: &TextChangeBatch,
-    ) {
+    ///
+    /// 编辑区间由 `interpolated_version` 与当前快照推导；调用方无需携带订阅批次，
+    /// 因此快照读取与 observer 唤醒可以各自幂等推进（对齐 Zed `Buffer::snapshot()`）。
+    pub(crate) fn interpolate(&mut self, new_snapshot: &Snapshot) {
+        // 同版本重复调用必须保持原树；否则 `edits_since` 的空批次会走整体重置分支。
+        if new_snapshot.version() == self.interpolated_version {
+            return;
+        }
         if self.language.is_none() {
             self.parsed_version = new_snapshot.version();
             self.interpolated_version = new_snapshot.version();
+            self.interpolated_snapshot = new_snapshot.clone();
             return;
         }
 
-        let can_increment = !changes.requires_reset()
-            && changes.old_version() == Some(self.interpolated_version)
-            && changes.new_version() == Some(new_snapshot.version())
-            && old_snapshot.version() == self.interpolated_version;
+        let changes = new_snapshot
+            .edits_since(self.interpolated_version)
+            .ok()
+            .filter(|changes| {
+                !changes.requires_reset()
+                    && changes.old_version() == Some(self.interpolated_version)
+                    && changes.new_version() == Some(new_snapshot.version())
+            });
 
+        let old_snapshot = &self.interpolated_snapshot;
         let state = Arc::make_mut(&mut self.state);
-        state.clear_highlight_cache();
         let mut tree = state.tree.take();
-        if can_increment {
+        if let Some(changes) = changes.as_ref() {
             if tree
                 .as_mut()
                 .is_some_and(|tree| !edit_tree(tree, old_snapshot, new_snapshot, changes))
@@ -204,12 +224,14 @@ impl SyntaxMap {
 
         state.tree = tree;
         self.interpolated_version = new_snapshot.version();
+        self.interpolated_snapshot = new_snapshot.clone();
     }
 
     pub(crate) fn snapshot(&self) -> SyntaxSnapshot {
         SyntaxSnapshot {
             language: self.language.clone(),
             state: Arc::clone(&self.state),
+            parsed_version: self.parsed_version,
             version: self.interpolated_version,
         }
     }
@@ -226,23 +248,18 @@ impl SyntaxMap {
         let parsed_state = std::mem::replace(&mut parsed.state, empty_syntax_state());
         let old_state = std::mem::replace(&mut self.state, parsed_state);
         offload_state_if_last(old_state);
-        self.parsed_version = parsed.version;
+        self.parsed_version = parsed.parsed_version;
         true
     }
 }
 
 impl SyntaxSnapshot {
-    pub(crate) fn highlight_cache(
-        &self,
-    ) -> &Mutex<HashMap<usize, Arc<[crate::highlighting::HighlightSpan]>>> {
-        &self.state.highlight_cache
-    }
-
     /// 空语法快照（无语言、无树）：语言匹配前或未安装语法时的占位，查询一律返回空。
     pub fn empty(version: BufferVersion) -> Self {
         Self {
             language: None,
             state: empty_syntax_state(),
+            parsed_version: version,
             version,
         }
     }
@@ -294,20 +311,26 @@ impl SyntaxSnapshot {
     pub(crate) fn reparse(
         mut self,
         snapshot: &Snapshot,
-        edits: Option<&[Range<usize>]>,
+        registry: &Arc<LanguageRegistry>,
         cancellation: &ParseCancellation,
     ) -> Option<Self> {
         if cancellation.is_cancelled() {
             return None;
         }
+        // 编辑区间按上一次真正完成解析的版本推导；调用方不再传递订阅批次。
+        let edits = snapshot
+            .edits_since(self.parsed_version)
+            .ok()
+            .and_then(|batch| edit_ranges(&batch));
+        let edits = edits.as_deref();
         let Some(language) = self.language.as_ref() else {
             self.state = empty_syntax_state();
             self.version = snapshot.version();
+            self.parsed_version = snapshot.version();
             return Some(self);
         };
         {
             let state = Arc::make_mut(&mut self.state);
-            state.clear_highlight_cache();
             let old_tree = state.tree.take();
             // 主树解析按时间片进行：预算用尽中断后保留 parser 状态，下一片从断点恢复（每片 ~3ms，避免大文件解析长期独占后台线程）。
             let new_tree = if language.grammar().is_some() {
@@ -375,6 +398,7 @@ impl SyntaxSnapshot {
             if let Some(tree) = state.tree.as_ref() {
                 let mut collector = InjectionCollector {
                     snapshot,
+                    registry,
                     edits,
                     old_trees: &mut old_trees,
                     seen: &mut seen,
@@ -405,6 +429,7 @@ impl SyntaxSnapshot {
             state.injections = final_layers;
         }
         self.version = snapshot.version();
+        self.parsed_version = snapshot.version();
         self.rebuild_capture_table();
         Some(self)
     }
@@ -445,7 +470,6 @@ impl SyntaxSnapshot {
             add_language(&layer.language);
         }
         let state = Arc::make_mut(&mut self.state);
-        state.clear_highlight_cache();
         state.capture_names = Arc::from(names);
         state.capture_index_by_language = index_by_language;
     }
@@ -549,6 +573,7 @@ impl<'a> Iterator for LayersInRange<'a> {
 /// 按变化区间收集注入：查询限定在 `range` 内，旧树按注入键复用做增量解析，未变化的嵌套注入通过 `seen`（含全部保留层键）跳过，不重复收集。
 struct InjectionCollector<'a> {
     snapshot: &'a Snapshot,
+    registry: &'a Arc<LanguageRegistry>,
     /// 本次编辑的新坐标字节区间（等长替换等树变化不可见的信号，递归时按层范围裁剪）。
     edits: Option<&'a [Range<usize>]>,
     old_trees: &'a mut HashMap<InjectionKey, tree_sitter::Tree>,
@@ -615,7 +640,7 @@ impl InjectionCollector<'_> {
             let Some(language_name) = language_name else {
                 continue;
             };
-            let Some(language) = language_for_injection(&language_name) else {
+            let Some(language) = self.registry.language_for_injection(&language_name) else {
                 continue;
             };
             for range in content_ranges {
@@ -708,21 +733,19 @@ mod tests {
     use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TextRange, TransactionMetadata};
 
     use super::*;
+    use crate::highlight_cache::HighlightCache;
     use crate::test::{parsed_syntax, rust_buffer};
 
     /// 测试共用：按给定编辑把语法映射推进到新版本（插值 + 后台解析 + 安装）。
     fn edit_and_reparse(buffer: &mut Buffer, syntax: &mut SyntaxMap, edits: Vec<Edit>) {
-        let subscription = buffer.subscribe();
-        let old_snapshot = buffer.snapshot();
         buffer.edit(edits, TransactionMetadata::default()).unwrap();
         let new_snapshot = buffer.snapshot();
-        let changes = subscription.consume();
-        syntax.interpolate(&old_snapshot, &new_snapshot, &changes);
+        syntax.interpolate(&new_snapshot);
         let parsed = syntax
             .snapshot()
             .reparse(
                 &new_snapshot,
-                edit_ranges(&changes).as_deref(),
+                &syntax.registry(),
                 &ParseCancellation::default(),
             )
             .expect("测试解析不应取消");
@@ -770,8 +793,6 @@ const x = 2;
 
         // 变长编辑（"1" → "42"）：等长替换对 tree-sitter 增量解析不可见，无法用于断言"重新解析"。
         let one = source.find('1').unwrap();
-        let subscription = buffer.subscribe();
-        let old_snapshot = buffer.snapshot();
         buffer
             .edit(
                 [Edit::replace(
@@ -782,15 +803,14 @@ const x = 2;
             )
             .unwrap();
         let new_snapshot = buffer.snapshot();
-        let changes = subscription.consume();
-        syntax.interpolate(&old_snapshot, &new_snapshot, &changes);
+        syntax.interpolate(&new_snapshot);
         // 插值后的层：保留层此刻就是插值树本身（未重新解析）。
         let interpolated: Vec<SyntaxLayer> = syntax.snapshot().injection_layers().to_vec();
         let parsed = syntax
             .snapshot()
             .reparse(
                 &new_snapshot,
-                edit_ranges(&changes).as_deref(),
+                &syntax.registry(),
                 &ParseCancellation::default(),
             )
             .expect("测试解析不应取消");
@@ -832,8 +852,6 @@ const x = 2;
         let source = "```rust\nlet a = 1;\n```\n";
         let (mut buffer, mut syntax) = parsed_syntax("README.md", source);
         let fence = source.find("```rust").unwrap() + 3;
-        let subscription = buffer.subscribe();
-        let old_snapshot = buffer.snapshot();
         buffer
             .edit(
                 [Edit::insert(ByteOffset::new(fence + 4), " ").unwrap()],
@@ -841,13 +859,12 @@ const x = 2;
             )
             .unwrap();
         let new_snapshot = buffer.snapshot();
-        let changes = subscription.consume();
-        syntax.interpolate(&old_snapshot, &new_snapshot, &changes);
+        syntax.interpolate(&new_snapshot);
         let parsed = syntax
             .snapshot()
             .reparse(
                 &new_snapshot,
-                edit_ranges(&changes).as_deref(),
+                &syntax.registry(),
                 &ParseCancellation::default(),
             )
             .expect("解析不应取消");
@@ -859,8 +876,6 @@ const x = 2;
         let source = "```rust\nlet a = 1;\n```\n```python\nprint(1)\n```\n";
         let (mut buffer, mut syntax) = parsed_syntax("README.md", source);
         let rust = source.find("rust").unwrap();
-        let subscription = buffer.subscribe();
-        let old_snapshot = buffer.snapshot();
         buffer
             .edit(
                 [Edit::replace(
@@ -871,13 +886,12 @@ const x = 2;
             )
             .unwrap();
         let new_snapshot = buffer.snapshot();
-        let changes = subscription.consume();
-        syntax.interpolate(&old_snapshot, &new_snapshot, &changes);
+        syntax.interpolate(&new_snapshot);
         let parsed = syntax
             .snapshot()
             .reparse(
                 &new_snapshot,
-                edit_ranges(&changes).as_deref(),
+                &syntax.registry(),
                 &ParseCancellation::default(),
             )
             .expect("解析不应取消");
@@ -937,8 +951,6 @@ const x = 2;
         let source = "```rust\nlet a = 1;\n```\n";
         let (mut buffer, mut syntax) = parsed_syntax("README.md", source);
         let fence = source.find("```rust").unwrap() + 3;
-        let subscription = buffer.subscribe();
-        let old_snapshot = buffer.snapshot();
         buffer
             .edit(
                 [Edit::insert(ByteOffset::new(fence + 4), " ").unwrap()],
@@ -946,14 +958,13 @@ const x = 2;
             )
             .unwrap();
         let new_snapshot = buffer.snapshot();
-        let changes = subscription.consume();
-        syntax.interpolate(&old_snapshot, &new_snapshot, &changes);
+        syntax.interpolate(&new_snapshot);
         let interpolated = syntax.snapshot().injection_layers().to_vec();
         let parsed = syntax
             .snapshot()
             .reparse(
                 &new_snapshot,
-                edit_ranges(&changes).as_deref(),
+                &syntax.registry(),
                 &ParseCancellation::default(),
             )
             .expect("测试解析不应取消");
@@ -1037,8 +1048,6 @@ const x = 2;
         find_layer(&layers_before, 2, "Markdown Inline");
 
         let world = source.find("world").unwrap();
-        let subscription = buffer.subscribe();
-        let old_snapshot = buffer.snapshot();
         buffer
             .edit(
                 [Edit::replace(
@@ -1049,14 +1058,13 @@ const x = 2;
             )
             .unwrap();
         let new_snapshot = buffer.snapshot();
-        let changes = subscription.consume();
-        syntax.interpolate(&old_snapshot, &new_snapshot, &changes);
+        syntax.interpolate(&new_snapshot);
         let interpolated = syntax.snapshot().injection_layers().to_vec();
         let parsed = syntax
             .snapshot()
             .reparse(
                 &new_snapshot,
-                edit_ranges(&changes).as_deref(),
+                &syntax.registry(),
                 &ParseCancellation::default(),
             )
             .expect("测试解析不应取消");
@@ -1179,7 +1187,6 @@ let b = 2;
         let second = syntax.snapshot();
         assert!(Arc::ptr_eq(&first.state, &second.state));
 
-        let subscription = buffer.subscribe();
         let old_snapshot = buffer.snapshot();
         buffer
             .edit(
@@ -1188,7 +1195,7 @@ let b = 2;
             )
             .unwrap();
         let new_snapshot = buffer.snapshot();
-        syntax.interpolate(&old_snapshot, &new_snapshot, &subscription.consume());
+        syntax.interpolate(&new_snapshot);
 
         let interpolated = syntax.snapshot();
         assert!(!Arc::ptr_eq(&first.state, &interpolated.state));
@@ -1208,7 +1215,8 @@ let b = 2;
         }
         let buffer = Buffer::from_text(source.to_owned(), BufferConfig::default()).unwrap();
         let snapshot = buffer.snapshot();
-        let language = crate::registry::language_for_file(Path::new("main.rs"), None)
+        let language = Arc::new(LanguageRegistry::new())
+            .language_for_file(Path::new("main.rs"), None)
             .expect("Rust 语言应可加载");
         let cancellation = ParseCancellation::default();
 
@@ -1250,7 +1258,8 @@ let b = 2;
         let source = "fn main() { let value = 1; }\n";
         let buffer = Buffer::from_text(source.to_owned(), BufferConfig::default()).unwrap();
         let snapshot = buffer.snapshot();
-        let language = crate::registry::language_for_file(Path::new("main.rs"), None)
+        let language = Arc::new(LanguageRegistry::new())
+            .language_for_file(Path::new("main.rs"), None)
             .expect("Rust 语言应可加载");
         let cancellation = ParseCancellation::default();
         let mut parser = IncrementalParser::new();
@@ -1282,7 +1291,7 @@ let b = 2;
     fn cancelled_parse_produces_no_installable_snapshot() {
         let buffer = Buffer::from_text("fn main() {}\n".to_owned(), Default::default()).unwrap();
         let snapshot = buffer.snapshot();
-        let mut syntax = SyntaxMap::new(&snapshot);
+        let mut syntax = SyntaxMap::new(Arc::new(LanguageRegistry::new()), &snapshot);
         let first_line = "fn main() {}";
         syntax.set_language_for_file(Path::new("main.rs"), Some(first_line), &snapshot);
         let cancellation = ParseCancellation::default();
@@ -1291,7 +1300,7 @@ let b = 2;
         assert!(
             syntax
                 .snapshot()
-                .reparse(&snapshot, None, &cancellation)
+                .reparse(&snapshot, &syntax.registry(), &cancellation)
                 .is_none()
         );
     }
@@ -1300,8 +1309,6 @@ let b = 2;
     fn unchanged_injection_reuses_its_tree_across_parent_edits() {
         let source = "<style>.item { color: red; }</style><script>let value = 1;</script>";
         let (mut buffer, mut syntax) = parsed_syntax("index.html", source);
-        let subscription = buffer.subscribe();
-        let old_snapshot = buffer.snapshot();
         let red = source.find("red").unwrap();
         buffer
             .edit(
@@ -1313,8 +1320,7 @@ let b = 2;
             )
             .unwrap();
         let new_snapshot = buffer.snapshot();
-        let changes = subscription.consume();
-        syntax.interpolate(&old_snapshot, &new_snapshot, &changes);
+        syntax.interpolate(&new_snapshot);
         let interpolated_tree = syntax
             .snapshot()
             .injection_layers()
@@ -1327,7 +1333,7 @@ let b = 2;
             .snapshot()
             .reparse(
                 &new_snapshot,
-                edit_ranges(&changes).as_deref(),
+                &syntax.registry(),
                 &ParseCancellation::default(),
             )
             .expect("测试解析不应取消");
@@ -1347,7 +1353,6 @@ let b = 2;
     #[test]
     fn incrementally_reparses_after_edit() {
         let (mut buffer, mut syntax) = rust_buffer("fn main() { let value = 1; }\n");
-        let subscription = buffer.subscribe();
         let old_snapshot = buffer.snapshot();
         let start = old_snapshot
             .slice_byte_range(ByteOffset::ZERO, old_snapshot.len_bytes())
@@ -1362,13 +1367,12 @@ let b = 2;
             )
             .unwrap();
         let new_snapshot = buffer.snapshot();
-        let changes = subscription.consume();
-        syntax.interpolate(&old_snapshot, &new_snapshot, &changes);
+        syntax.interpolate(&new_snapshot);
         let parsed = syntax
             .snapshot()
             .reparse(
                 &new_snapshot,
-                edit_ranges(&changes).as_deref(),
+                &syntax.registry(),
                 &ParseCancellation::default(),
             )
             .expect("测试解析不应取消");
@@ -1376,7 +1380,11 @@ let b = 2;
 
         let syntax_snapshot = syntax.snapshot();
         let names = syntax_snapshot.capture_names();
-        let spans = syntax_snapshot.highlights(0..new_snapshot.len_bytes().get(), &new_snapshot);
+        let spans = syntax_snapshot.highlights(
+            0..new_snapshot.len_bytes().get(),
+            &new_snapshot,
+            &HighlightCache::new(),
+        );
         assert!(
             spans
                 .iter()
@@ -1388,7 +1396,6 @@ let b = 2;
     #[test]
     fn incrementally_reparses_multiple_unicode_edits() {
         let (mut buffer, mut syntax) = rust_buffer("fn main() { let x = 1; let y = 2; }\n");
-        let subscription = buffer.subscribe();
         let old_snapshot = buffer.snapshot();
         let source = old_snapshot
             .slice_byte_range(ByteOffset::ZERO, old_snapshot.len_bytes())
@@ -1412,13 +1419,12 @@ let b = 2;
             )
             .unwrap();
         let new_snapshot = buffer.snapshot();
-        let changes = subscription.consume();
-        syntax.interpolate(&old_snapshot, &new_snapshot, &changes);
+        syntax.interpolate(&new_snapshot);
         let parsed = syntax
             .snapshot()
             .reparse(
                 &new_snapshot,
-                edit_ranges(&changes).as_deref(),
+                &syntax.registry(),
                 &ParseCancellation::default(),
             )
             .expect("测试解析不应取消");
@@ -1427,7 +1433,11 @@ let b = 2;
         let syntax_snapshot = syntax.snapshot();
         let names = syntax_snapshot.capture_names();
         let string_count = syntax_snapshot
-            .highlights(0..new_snapshot.len_bytes().get(), &new_snapshot)
+            .highlights(
+                0..new_snapshot.len_bytes().get(),
+                &new_snapshot,
+                &HighlightCache::new(),
+            )
             .iter()
             .filter(|span| names[span.capture as usize].as_ref() == "string")
             .count();
@@ -1438,7 +1448,6 @@ let b = 2;
     fn stale_parse_result_cannot_replace_interpolated_tree() {
         let (mut buffer, mut syntax) = rust_buffer("fn main() {}\n");
         let stale_parse = syntax.snapshot();
-        let subscription = buffer.subscribe();
         let old_snapshot = buffer.snapshot();
         buffer
             .edit(
@@ -1447,10 +1456,14 @@ let b = 2;
             )
             .unwrap();
         let new_snapshot = buffer.snapshot();
-        syntax.interpolate(&old_snapshot, &new_snapshot, &subscription.consume());
+        syntax.interpolate(&new_snapshot);
 
         let stale = stale_parse
-            .reparse(&old_snapshot, None, &ParseCancellation::default())
+            .reparse(
+                &old_snapshot,
+                &syntax.registry(),
+                &ParseCancellation::default(),
+            )
             .expect("测试解析不应取消");
         assert!(!syntax.did_parse(stale));
         assert_eq!(syntax.snapshot().version(), new_snapshot.version());

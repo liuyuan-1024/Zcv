@@ -28,15 +28,16 @@ use gpui::{App, Context, Entity, EventEmitter, Subscription};
 use sum_tree::{Bias, ContextLessSummary, Cursor, Dimension, Item, SeekTarget, SumTree};
 use unicode_segmentation::UnicodeSegmentation;
 use zcv_language::{
-    AutoClosePair, BracketPair, HighlightSpan, LanguageBuffer, LanguageBufferEvent, LocalBinding,
-    NewlineIndent, OutlineItem, OutlineTextRange, SyntaxNode, SyntaxSnapshot,
+    AutoClosePair, BracketPair, HighlightCache, HighlightSpan, LanguageBuffer, LanguageBufferEvent,
+    LanguageBufferSnapshot, LanguageRegistry, LanguageSettings, LocalBinding, NewlineIndent,
+    OutlineItem, OutlineTextRange, SyntaxNode, SyntaxSnapshot,
 };
 use zcv_text::{
-    Affinity, Anchor, Buffer, BufferConfig, BufferVersion, ByteOffset, CharOffset, CoordinateError,
-    Edit, Line, LineEndingStyle, LogicalColumn, MovementDirection, MovementUnit, Position,
-    PositionMap, Snapshot, Stickiness, StorageError, TextChangeBatch, TextError, TextRange,
-    TextRead, TextResult, TextSubscription, TransactionId, TransactionMetadata, Utf16Offset,
-    Utf16Position,
+    Affinity, Anchor, Buffer, BufferVersion, ByteOffset, CharOffset, CoordinateError, Edit, Line,
+    LineEndingStyle, LogicalColumn, MovementDirection, MovementUnit, Position, PositionMap,
+    Snapshot, Stickiness, StorageError, TextChangeBatch, TextError, TextRange, TextRead,
+    TextResult, TextSubscription, TransactionId, TransactionMetadata, Utf16Offset, Utf16Position,
+    WordBoundaryPolicy,
 };
 
 /// 组合文档中的一个源片段。
@@ -215,6 +216,12 @@ struct ExcerptSource {
     entity: Entity<LanguageBuffer>,
     text: Snapshot,
     syntax: SyntaxSnapshot,
+    /// 派生高亮缓存句柄；随源快照版本变化整体替换。
+    highlight_cache: Arc<HighlightCache>,
+    /// 源语言的词边界策略（对齐 Zed 的 per-language word_characters）。
+    word_boundary: WordBoundaryPolicy,
+    /// 源语言解析后的编辑器设置。
+    settings: Arc<LanguageSettings>,
     capture_map: Arc<[u32]>,
 }
 
@@ -223,6 +230,9 @@ struct ExcerptSource {
 struct ExcerptSourceSnapshot {
     text: Snapshot,
     syntax: SyntaxSnapshot,
+    highlight_cache: Arc<HighlightCache>,
+    word_boundary: WordBoundaryPolicy,
+    settings: Arc<LanguageSettings>,
     capture_map: Arc<[u32]>,
 }
 
@@ -1523,7 +1533,6 @@ impl ExcerptSnapshot {
 /// 一帧组合文档的不可变快照。
 #[derive(Clone, Debug)]
 pub struct MultiBufferSnapshot {
-    config: BufferConfig,
     projection_version: BufferVersion,
     /// 输入侧 excerpts 的权威快照；源坐标由自身 Summary 派生。
     excerpts: SumTree<Excerpt>,
@@ -1693,8 +1702,37 @@ pub enum MultiBufferEvent {
 }
 
 impl MultiBufferSnapshot {
-    pub fn config(&self) -> &BufferConfig {
-        &self.config
+    /// 主源语言的词边界策略；无源时返回默认。
+    ///
+    /// 全文搜索等不携带具体位置的消费方使用它；按位置消费方用 `word_boundary_at`。
+    pub fn word_boundary(&self) -> WordBoundaryPolicy {
+        self.excerpt_sources
+            .first()
+            .map_or_else(WordBoundaryPolicy::default, |source| source.word_boundary)
+    }
+
+    /// 指定组合偏移所属源语言的词边界策略。
+    pub fn word_boundary_at(&self, offset: MultiBufferOffset) -> WordBoundaryPolicy {
+        self.source_point(offset.into())
+            .map_or_else(WordBoundaryPolicy::default, |(_, source, _)| {
+                source.word_boundary
+            })
+    }
+
+    /// 主源语言解析后的编辑器设置（对齐 Zed `LanguageSettings::for_buffer`）。
+    pub fn language_settings(&self) -> Arc<LanguageSettings> {
+        self.excerpt_sources.first().map_or_else(
+            || Arc::new(LanguageSettings::default()),
+            |source| Arc::clone(&source.settings),
+        )
+    }
+
+    /// 指定组合偏移所属源语言解析后的编辑器设置。
+    pub fn language_settings_at(&self, offset: MultiBufferOffset) -> Arc<LanguageSettings> {
+        self.source_point(offset.into()).map_or_else(
+            || Arc::new(LanguageSettings::default()),
+            |(_, source, _)| Arc::clone(&source.settings),
+        )
     }
 
     /// 当前源快照元数据版本。
@@ -1967,22 +2005,18 @@ impl MultiBufferSnapshot {
         unit: MovementUnit,
     ) -> TextResult<CharOffset> {
         // 与单 Buffer 共用同一份文本移动语义，组合文档不得另实现一套边界规则。
-        zcv_text::movement_boundary_in_text(
-            self,
-            self.config.word_boundary,
-            offset,
-            direction,
-            unit,
-        )
+        let byte = self.char_to_byte(offset)?;
+        let policy = self.word_boundary_at(byte);
+        zcv_text::movement_boundary_in_text(self, policy, offset, direction, unit)
     }
 
     /// 返回包含当前位置的词边界。组合文本沿连续 chunk 读取，不构造临时字符串。
     pub fn surrounding_word(&self, offset: CharOffset) -> TextResult<(CharOffset, CharOffset)> {
         let offset = self.char_to_byte(offset)?;
+        let policy = self.word_boundary_at(offset);
         let is_word = |byte: ByteOffset| {
-            self.char_at_byte(byte).is_some_and(|character| {
-                self.config.word_boundary.is_identifier_continue(character)
-            })
+            self.char_at_byte(byte)
+                .is_some_and(|character| policy.is_identifier_continue(character))
         };
         let mut start = offset;
         while start > ByteOffset::ZERO.into() {
@@ -2001,9 +2035,10 @@ impl MultiBufferSnapshot {
 
     pub fn is_inside_word(&self, offset: CharOffset) -> TextResult<bool> {
         let offset = self.char_to_byte(offset)?;
+        let policy = self.word_boundary_at(offset);
         Ok(self
             .char_at_byte(offset.into())
-            .is_some_and(|character| self.config.word_boundary.is_identifier_continue(character)))
+            .is_some_and(|character| policy.is_identifier_continue(character)))
     }
 
     pub fn byte_to_utf16_cu(&self, offset: MultiBufferOffset) -> TextResult<Utf16Offset> {
@@ -2232,7 +2267,11 @@ impl MultiBufferSnapshot {
                 spans.extend(
                     source
                         .syntax
-                        .highlights(source_start..source_end, &source.text)
+                        .highlights(
+                            source_start..source_end,
+                            &source.text,
+                            &source.highlight_cache,
+                        )
                         .into_iter()
                         .filter_map(|span| {
                             let capture = *source.capture_map.get(span.capture as usize)?;
@@ -2801,7 +2840,6 @@ impl From<Snapshot> for MultiBufferSnapshot {
         };
         let diff_transforms = SumTree::from_iter([DiffTransform::from_excerpt(&excerpt)], ());
         Self {
-            config: text.config().clone(),
             projection_version: text.version(),
             excerpts: SumTree::from_iter([excerpt], ()),
             diff_transforms,
@@ -2810,12 +2848,30 @@ impl From<Snapshot> for MultiBufferSnapshot {
             excerpt_sources: Arc::from([ExcerptSourceSnapshot {
                 text,
                 syntax,
+                highlight_cache: Arc::new(HighlightCache::new()),
+                word_boundary: WordBoundaryPolicy::default(),
+                settings: Arc::new(LanguageSettings::default()),
                 capture_map: Arc::from([]),
             }]),
             capture_names,
             metadata_version: 0,
         }
     }
+}
+
+/// 取源快照对应语言的词边界策略；未识别语言回退默认策略。
+fn snapshot_word_boundary(snapshot: &LanguageBufferSnapshot) -> WordBoundaryPolicy {
+    snapshot
+        .language
+        .as_ref()
+        .map_or_else(WordBoundaryPolicy::default, |language| {
+            language.word_boundary()
+        })
+}
+
+/// 取源快照按语言解析后的设置。
+fn snapshot_settings(snapshot: &LanguageBufferSnapshot) -> Arc<LanguageSettings> {
+    Arc::clone(&snapshot.settings)
 }
 
 struct ExcerptState {
@@ -3167,8 +3223,8 @@ impl MultiBuffer {
                     }
                     LanguageBufferEvent::Reparsed => this.source_reparsed(observed.entity_id(), cx),
                     LanguageBufferEvent::MetadataChanged => {
-                        this.snapshot_epoch = this.snapshot_epoch.wrapping_add(1);
-                        this.state.metadata_epoch = this.state.metadata_epoch.wrapping_add(1);
+                        // 设置/语言变化：用新快照刷新该源的设置与词边界，再通知组合层消费者。
+                        this.refresh_source_snapshot(observed.entity_id(), cx);
                         cx.emit(MultiBufferEvent::MetadataChanged);
                         cx.notify();
                     }
@@ -3203,19 +3259,19 @@ impl MultiBuffer {
             let source = excerpt.source.read(cx);
             // 无路径的临时 Buffer（单行输入框等）以空路径参与组合；
             // 路径身份用于文件级折叠、标题与锚点解析。
-            let path = PathKey::new(
-                source
-                    .file_path()
-                    .map_or_else(PathBuf::new, Path::to_path_buf),
-            );
+            let path = PathKey::new(source.file_path().unwrap_or_default());
             let source_id = excerpt.source.entity_id();
             let source_index = match next_source_indices.get(&source_id).copied() {
                 Some(index) => index,
                 None => {
+                    let snapshot = source.snapshot(cx);
                     next_sources.push(ExcerptSource {
                         entity: excerpt.source.clone(),
-                        text: source.text_snapshot(cx),
-                        syntax: source.syntax_snapshot(),
+                        word_boundary: snapshot_word_boundary(&snapshot),
+                        settings: snapshot_settings(&snapshot),
+                        text: snapshot.text,
+                        syntax: snapshot.syntax,
+                        highlight_cache: snapshot.highlight_cache,
                         capture_map: Arc::from([]),
                     });
                     let index = next_sources.len() - 1;
@@ -3343,13 +3399,7 @@ impl MultiBuffer {
                 unreachable!("追加片段的源必须已注册");
             };
             let source = &self.state.sources[source_index];
-            let path = PathKey::new(
-                source
-                    .entity
-                    .read(cx)
-                    .file_path()
-                    .map_or_else(PathBuf::new, Path::to_path_buf),
-            );
+            let path = PathKey::new(source.entity.read(cx).file_path().unwrap_or_default());
             if !snapshot_range_is_valid(&source.text, excerpt.source_range) {
                 continue;
             }
@@ -3485,13 +3535,7 @@ impl MultiBuffer {
                 continue;
             };
             let source = &self.state.sources[source_index];
-            let path = PathKey::new(
-                source
-                    .entity
-                    .read(cx)
-                    .file_path()
-                    .map_or_else(PathBuf::new, Path::to_path_buf),
-            );
+            let path = PathKey::new(source.entity.read(cx).file_path().unwrap_or_default());
             let display_path = excerpt.display_path.clone().unwrap_or_else(|| path.clone());
             let Some((text_summary, ends_with_newline)) =
                 snapshot_range_summary(&source.text, excerpt.source_range)
@@ -3546,15 +3590,7 @@ impl MultiBuffer {
             .sources
             .iter()
             .find(|source| source.entity.entity_id() == source_id)
-            .map(|source| {
-                PathKey::new(
-                    source
-                        .entity
-                        .read(cx)
-                        .file_path()
-                        .map_or_else(PathBuf::new, Path::to_path_buf),
-                )
-            })
+            .map(|source| PathKey::new(source.entity.read(cx).file_path().unwrap_or_default()))
         else {
             return;
         };
@@ -3747,22 +3783,26 @@ impl MultiBuffer {
                     }
                     LanguageBufferEvent::Reparsed => this.source_reparsed(observed.entity_id(), cx),
                     LanguageBufferEvent::MetadataChanged => {
-                        this.snapshot_epoch = this.snapshot_epoch.wrapping_add(1);
-                        this.state.metadata_epoch = this.state.metadata_epoch.wrapping_add(1);
+                        // 设置/语言变化：用新快照刷新该源的设置与词边界，再通知组合层消费者。
+                        this.refresh_source_snapshot(observed.entity_id(), cx);
                         cx.emit(MultiBufferEvent::MetadataChanged);
                         cx.notify();
                     }
                 })
             })
             .collect::<Vec<_>>();
-        self.state
-            .sources
-            .extend(new_sources.iter().map(|source| ExcerptSource {
+        self.state.sources.extend(new_sources.iter().map(|source| {
+            let snapshot = source.read(cx).snapshot(cx);
+            ExcerptSource {
                 entity: source.clone(),
-                text: source.read(cx).text_snapshot(cx),
-                syntax: source.read(cx).syntax_snapshot(),
+                word_boundary: snapshot_word_boundary(&snapshot),
+                settings: snapshot_settings(&snapshot),
+                text: snapshot.text,
+                syntax: snapshot.syntax,
+                highlight_cache: snapshot.highlight_cache,
                 capture_map: Arc::from([]),
-            }));
+            }
+        }));
         self.state
             .source_subscriptions
             .extend(new_source_subscriptions);
@@ -3792,7 +3832,7 @@ impl MultiBuffer {
                 .entity
                 .read(cx)
                 .file_path()
-                .map_or_else(PathBuf::new, Path::to_path_buf),
+                .unwrap_or_default(),
         )
     }
 
@@ -3925,8 +3965,7 @@ impl MultiBuffer {
         else {
             return;
         };
-        let text = source.read(cx).text_snapshot(cx);
-        let syntax = source.read(cx).syntax_snapshot();
+        let snapshot = source.read(cx).snapshot(cx);
         self.snapshot_epoch = self.snapshot_epoch.wrapping_add(1);
         self.state.metadata_epoch = self.state.metadata_epoch.wrapping_add(1);
         if let Some(excerpt_source) = self
@@ -3935,8 +3974,11 @@ impl MultiBuffer {
             .iter_mut()
             .find(|source| source.entity.entity_id() == source_id)
         {
-            excerpt_source.text = text.clone();
-            excerpt_source.syntax = syntax;
+            excerpt_source.text = snapshot.text.clone();
+            excerpt_source.syntax = snapshot.syntax.clone();
+            excerpt_source.highlight_cache = Arc::clone(&snapshot.highlight_cache);
+            excerpt_source.word_boundary = snapshot_word_boundary(&snapshot);
+            excerpt_source.settings = snapshot_settings(&snapshot);
         }
         self.state.capture_names = rebuild_capture_table(&mut self.state.sources);
     }
@@ -3959,8 +4001,7 @@ impl MultiBuffer {
         else {
             return;
         };
-        let text = source.read(cx).text_snapshot(cx);
-        let syntax = source.read(cx).syntax_snapshot();
+        let snapshot = source.read(cx).snapshot(cx);
 
         if let Some(excerpt_source) = self
             .state
@@ -3968,8 +4009,11 @@ impl MultiBuffer {
             .iter_mut()
             .find(|source| source.entity.entity_id() == source_id)
         {
-            excerpt_source.text = text;
-            excerpt_source.syntax = syntax;
+            excerpt_source.word_boundary = snapshot_word_boundary(&snapshot);
+            excerpt_source.settings = snapshot_settings(&snapshot);
+            excerpt_source.text = snapshot.text;
+            excerpt_source.syntax = snapshot.syntax;
+            excerpt_source.highlight_cache = snapshot.highlight_cache;
         }
         self.state.capture_names = rebuild_capture_table(&mut self.state.sources);
         let old_mappings =
@@ -3993,8 +4037,7 @@ impl MultiBuffer {
         else {
             return;
         };
-        let text = source.read(cx).text_snapshot(cx);
-        let syntax = source.read(cx).syntax_snapshot();
+        let snapshot = source.read(cx).snapshot(cx);
         self.snapshot_epoch = self.snapshot_epoch.wrapping_add(1);
         self.state.metadata_epoch = self.state.metadata_epoch.wrapping_add(1);
         // 按源去重：只更新该源共享的一份 (text, syntax)，所有映射自动跟随。
@@ -4004,8 +4047,11 @@ impl MultiBuffer {
             .iter_mut()
             .find(|source| source.entity.entity_id() == source_id)
         {
-            excerpt_source.text = text;
-            excerpt_source.syntax = syntax;
+            excerpt_source.text = snapshot.text.clone();
+            excerpt_source.syntax = snapshot.syntax.clone();
+            excerpt_source.highlight_cache = Arc::clone(&snapshot.highlight_cache);
+            excerpt_source.word_boundary = snapshot_word_boundary(&snapshot);
+            excerpt_source.settings = snapshot_settings(&snapshot);
         }
         self.state.capture_names = rebuild_capture_table(&mut self.state.sources);
         cx.emit(MultiBufferEvent::Reparsed);
@@ -4209,9 +4255,6 @@ impl MultiBuffer {
             }
             Ok(result)
         })?;
-        source.update(cx, |source, cx| {
-            source.synchronize_pending_changes(cx);
-        });
         Ok(result)
     }
 
@@ -4228,7 +4271,7 @@ impl MultiBuffer {
                     .entity
                     .read(cx)
                     .file_path()
-                    .map_or_else(PathBuf::new, Path::to_path_buf),
+                    .unwrap_or_default(),
             );
             entry.path = path.clone();
             entry.display_path = path;
@@ -4556,12 +4599,6 @@ impl MultiBuffer {
 
     fn build_snapshot(&self, _cx: &App) -> MultiBufferSnapshot {
         MultiBufferSnapshot {
-            config: self
-                .state
-                .sources
-                .first()
-                .map(|source| source.entity.read(_cx).buffer().read(_cx).config().clone())
-                .unwrap_or_default(),
             projection_version: self.state.projection_version,
             diff_transforms: self.state.diff_transforms.clone(),
             excerpts: self.state.excerpts.clone(),
@@ -4574,6 +4611,9 @@ impl MultiBuffer {
                     .map(|source| ExcerptSourceSnapshot {
                         text: source.text.clone(),
                         syntax: source.syntax.clone(),
+                        highlight_cache: Arc::clone(&source.highlight_cache),
+                        word_boundary: source.word_boundary,
+                        settings: Arc::clone(&source.settings),
                         capture_map: Arc::clone(&source.capture_map),
                     })
                     .collect::<Vec<_>>(),
@@ -4595,6 +4635,16 @@ impl MultiBuffer {
     /// 普通编辑器的工作区源（展开 diff 时作为新侧输入）。
     pub fn singleton_source(&self) -> Option<Entity<LanguageBuffer>> {
         self.singleton_source.clone()
+    }
+
+    /// 组合文档首个源的语言注册表；空组合文档返回 None。
+    ///
+    /// 需要创建关联语言 Buffer 的消费方复用本组合文档已经使用的注册表。
+    pub fn language_registry(&self, cx: &App) -> Option<Arc<LanguageRegistry>> {
+        self.state
+            .sources
+            .first()
+            .map(|source| source.entity.read(cx).language_registry())
     }
 
     pub fn is_read_only(&self) -> bool {
@@ -4685,7 +4735,7 @@ impl MultiBuffer {
         // 无工作区源时退回第一个可编辑片段（ProjectDiffView 等组合视图）。
         self.singleton_source
             .as_ref()
-            .and_then(|source| source.read(cx).file_path().map(Path::to_path_buf))
+            .and_then(|source| source.read(cx).file_path())
             .or_else(|| {
                 let mut cursor =
                     MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
@@ -4696,8 +4746,7 @@ impl MultiBuffer {
                         path = self.state.sources[entry.source_index]
                             .entity
                             .read(cx)
-                            .file_path()
-                            .map(Path::to_path_buf);
+                            .file_path();
                         if path.is_some() {
                             break;
                         }
@@ -4822,27 +4871,27 @@ impl MultiBuffer {
         let snapshot = self.snapshot(cx);
         let mut projected: Vec<Range<MultiBufferAnchor>> = Vec::new();
         for (source_index, source) in self.state.sources.iter().enumerate() {
-            let source_folds = source.entity.read(cx).fold_ranges();
+            let (source_text, source_folds) = {
+                let snapshot = source.entity.read(cx).snapshot(cx);
+                let folds = snapshot
+                    .syntax
+                    .fold_ranges(0..snapshot.text.len_bytes().get(), &snapshot.text);
+                (snapshot.text, folds)
+            };
             if source_folds.is_empty() {
                 continue;
             }
             for fold in source_folds.iter() {
                 let (Some(start), Some(end)) = (
-                    fold.range.start.resolve_in(&source.text),
-                    fold.range.end.resolve_in(&source.text),
+                    fold.range.start.resolve_in(&source_text),
+                    fold.range.end.resolve_in(&source_text),
                 ) else {
                     continue;
                 };
                 if start >= end {
                     continue;
                 }
-                let path = PathKey::new(
-                    source
-                        .entity
-                        .read(cx)
-                        .file_path()
-                        .map_or_else(PathBuf::new, Path::to_path_buf),
-                );
+                let path = PathKey::new(source.entity.read(cx).file_path().unwrap_or_default());
                 let Some((start_mapping, end_mapping)) = source_mapping_range(
                     &self.state.excerpts,
                     &self.state.diff_transforms,

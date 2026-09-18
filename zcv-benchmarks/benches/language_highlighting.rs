@@ -1,19 +1,23 @@
+use std::sync::Arc;
+
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use zcv_benchmarks::{cached_injection_stress_document, cached_rust_document};
-use zcv_language::highlight_snippet;
+use zcv_language::{LanguageRegistry, highlight_snippet};
 
 const DOCUMENT_SIZES: [usize; 3] = [64 * 1024, 1024 * 1024, 16 * 1024 * 1024];
 
 /// 代表性 Rust 文档（宏密度贴近真实源码）的整块高亮，是解读高亮成本的默认档。
 fn highlight_rust_document(c: &mut Criterion) {
     let mut group = c.benchmark_group("language/highlight_rust_document");
+    let registry = Arc::new(LanguageRegistry::new());
 
     for size in DOCUMENT_SIZES {
         let text = cached_rust_document(size);
         group.throughput(Throughput::Bytes(text.len() as u64));
         group.bench_with_input(BenchmarkId::from_parameter(text.len()), &text, |b, text| {
             b.iter(|| {
-                let highlights = highlight_snippet("rust", black_box(text.as_ref())).unwrap();
+                let highlights =
+                    highlight_snippet(&registry, "rust", black_box(text.as_ref())).unwrap();
                 black_box(highlights.spans.len());
             });
         });
@@ -26,13 +30,15 @@ fn highlight_rust_document(c: &mut Criterion) {
 /// 用于压测注入引擎，非代表性负载；绝对数字须与 `highlight_rust_document` 对照解读。
 fn highlight_injection_stress(c: &mut Criterion) {
     let mut group = c.benchmark_group("language/highlight_injection_stress");
+    let registry = Arc::new(LanguageRegistry::new());
 
     for size in DOCUMENT_SIZES {
         let text = cached_injection_stress_document(size);
         group.throughput(Throughput::Bytes(text.len() as u64));
         group.bench_with_input(BenchmarkId::from_parameter(text.len()), &text, |b, text| {
             b.iter(|| {
-                let highlights = highlight_snippet("rust", black_box(text.as_ref())).unwrap();
+                let highlights =
+                    highlight_snippet(&registry, "rust", black_box(text.as_ref())).unwrap();
                 black_box(highlights.spans.len());
             });
         });

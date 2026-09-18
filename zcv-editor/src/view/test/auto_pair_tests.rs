@@ -28,7 +28,14 @@ fn editor_with_rust<'a>(
     });
     let language_buffer = cx.new({
         let buffer = buffer.clone();
-        move |cx| LanguageBuffer::new(buffer, Some(PathBuf::from("test.rs")), cx)
+        move |cx| {
+            LanguageBuffer::new(
+                buffer,
+                Some(PathBuf::from("test.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     let editor = cx.add_window_view({
         let language_buffer = language_buffer.clone();
@@ -56,7 +63,14 @@ fn editor_without_language<'a>(
     });
     let language_buffer = cx.new({
         let buffer = buffer.clone();
-        move |cx| LanguageBuffer::new(buffer, None, cx)
+        move |cx| {
+            LanguageBuffer::new(
+                buffer,
+                None,
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     let editor = cx.add_window_view({
         let language_buffer = language_buffer.clone();
@@ -107,11 +121,25 @@ fn each_composite_selection_uses_its_source_language_pairs(cx: &mut TestAppConte
     });
     let plain = cx.new({
         let plain_buffer = plain_buffer.clone();
-        move |cx| LanguageBuffer::new(plain_buffer, None, cx)
+        move |cx| {
+            LanguageBuffer::new(
+                plain_buffer,
+                None,
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     let rust = cx.new({
         let rust_buffer = rust_buffer.clone();
-        move |cx| LanguageBuffer::new(rust_buffer, Some(PathBuf::from("test.rs")), cx)
+        move |cx| {
+            LanguageBuffer::new(
+                rust_buffer,
+                Some(PathBuf::from("test.rs")),
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        }
     });
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {

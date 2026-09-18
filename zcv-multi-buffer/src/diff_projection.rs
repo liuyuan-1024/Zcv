@@ -371,7 +371,7 @@ impl MultiBuffer {
             .working()
             .read(cx)
             .file_path()
-            .map_or_else(PathBuf::new, Path::to_path_buf);
+            .unwrap_or_default();
         self.remove_excerpts_for_path(&source_path, cx);
 
         // DiffState 持有自己的订阅，移除即取消订阅；hunk 身份随节点消失，无需下标顺延。
@@ -898,7 +898,7 @@ impl MultiBuffer {
                 .working()
                 .read(cx)
                 .file_path()
-                .map_or_else(PathBuf::new, Path::to_path_buf),
+                .unwrap_or_default(),
         );
         // 该文件已无可见 hunk（差异被消除等）时必须移除其路径的 excerpts；
         // set_excerpts_for_path 对空片段集合是空操作，无法表达“清空该路径”。

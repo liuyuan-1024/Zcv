@@ -5,6 +5,7 @@
 //! 默认值与各领域设置由本模块统一提供；具体的运行时类型转换由消费方完成。
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::num::NonZeroUsize;
@@ -81,6 +82,26 @@ impl Default for TabConfig {
     }
 }
 
+/// 按语言覆盖的 Tab / 缩进策略；字段为 `None` 时沿用全局默认。
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default)]
+struct LanguageTabOverrideContent {
+    #[serde(deserialize_with = "fallible")]
+    tab_width: Option<usize>,
+    #[serde(deserialize_with = "fallible")]
+    indent_width: Option<usize>,
+    #[serde(deserialize_with = "fallible")]
+    insert_spaces: Option<bool>,
+}
+
+/// 一门语言的 Tab / 缩进覆盖值。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TabOverride {
+    pub tab_width: Option<NonZeroUsize>,
+    pub indent_width: Option<NonZeroUsize>,
+    pub insert_spaces: Option<bool>,
+}
+
 /// 字段级容错：该字段值非法时解析为「未配置」（`None`），由 merge 层用内置默认补齐，不影响其他字段。
 /// JSON 语法错误仍整体失败。
 ///
@@ -136,6 +157,9 @@ struct UserSettingsContent {
     terminal_option_as_meta: Option<bool>,
     #[serde(deserialize_with = "fallible")]
     terminal_shell: Option<String>,
+    /// 按语言覆盖的 Tab / 缩进策略；键为语言展示名。
+    #[serde(deserialize_with = "fallible")]
+    languages: Option<HashMap<String, LanguageTabOverrideContent>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -150,6 +174,8 @@ pub struct UserSettings {
     pub content_line_height: f32,
     /// Tab 展示宽度与缩进输入策略。
     pub tab: TabConfig,
+    /// 按语言覆盖的 Tab / 缩进策略；键为语言展示名。
+    pub languages: HashMap<String, TabOverride>,
     pub soft_wrap: SoftWrapMode,
     /// 软换行的目标行宽（列数）；仅在 `soft_wrap = "bounded"` 时生效。
     pub preferred_line_length: usize,
@@ -187,6 +213,25 @@ impl Default for UserSettings {
 }
 
 impl UserSettings {
+    /// 解析某语言的 Tab / 缩进策略：全局默认为底，按语言覆盖逐字段替换。
+    ///
+    /// `language_name` 为 `None`（未识别语言）时只返回全局默认。
+    pub fn tab_for_language(&self, language_name: Option<&str>) -> TabConfig {
+        let mut tab = self.tab;
+        if let Some(over) = language_name.and_then(|name| self.languages.get(name)) {
+            if let Some(value) = over.tab_width {
+                tab.tab_width = value;
+            }
+            if let Some(value) = over.indent_width {
+                tab.indent_width = value;
+            }
+            if let Some(value) = over.insert_spaces {
+                tab.insert_spaces = value;
+            }
+        }
+        tab
+    }
+
     /// 将用户配置合并到内置默认层：用户显式配置的字段覆盖默认，未配置的字段（`None`）回退到内置初始设置。
     fn merge(content: UserSettingsContent) -> Self {
         let defaults = default_content();
@@ -222,6 +267,21 @@ impl UserSettings {
                     .or(defaults.insert_spaces)
                     .unwrap_or(default_tab.insert_spaces),
             },
+            languages: content
+                .languages
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(language, content)| {
+                    (
+                        language,
+                        TabOverride {
+                            tab_width: content.tab_width.and_then(NonZeroUsize::new),
+                            indent_width: content.indent_width.and_then(NonZeroUsize::new),
+                            insert_spaces: content.insert_spaces,
+                        },
+                    )
+                })
+                .collect(),
             soft_wrap: content
                 .soft_wrap
                 .or(defaults.soft_wrap)
@@ -316,13 +376,6 @@ impl SettingsStore {
     /// 设置未注册时返回 None，消费方回退默认值。
     pub fn try_get(cx: &App) -> Option<UserSettings> {
         cx.try_global::<Self>().map(|store| store.settings.clone())
-    }
-
-    /// 读取编辑器的 Tab / 缩进策略；SettingsStore 未初始化（如单元测试）时回退到默认。
-    pub fn tab_config(cx: &App) -> TabConfig {
-        cx.try_global::<Self>()
-            .map(|store| store.settings.tab)
-            .unwrap_or_default()
     }
 
     /// 读取扫描排除名单；SettingsStore 未初始化（如单元测试）时回退到默认名单。
@@ -670,6 +723,31 @@ mod tests {
 
         let content = parse_user_settings(r#"{"soft_wrap": "none"}"#).unwrap();
         assert_eq!(UserSettings::merge(content).soft_wrap, SoftWrapMode::None);
+    }
+
+    #[test]
+    fn per_language_overrides_replace_global_tab_fields() {
+        let settings = UserSettings::merge(
+            parse_user_settings(
+                r#"{
+                    "tab_width": 4,
+                    "indent_width": 4,
+                    "insert_spaces": true,
+                    "languages": {
+                        "Rust": { "tab_width": 2 },
+                        "Go": { "insert_spaces": false }
+                    }
+                }"#,
+            )
+            .unwrap(),
+        );
+
+        assert_eq!(settings.tab_for_language(Some("Rust")).tab_width(), 2);
+        assert_eq!(settings.tab_for_language(Some("Rust")).indent_width(), 4);
+        assert!(settings.tab_for_language(Some("Rust")).insert_spaces);
+        assert!(!settings.tab_for_language(Some("Go")).insert_spaces);
+        assert_eq!(settings.tab_for_language(Some("Unknown")).tab_width(), 4);
+        assert_eq!(settings.tab_for_language(None).tab_width(), 4);
     }
 
     #[test]

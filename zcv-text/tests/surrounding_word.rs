@@ -10,7 +10,7 @@ use common::*;
 fn assert_word(text: &str, offset: usize, expected: (usize, usize)) {
     let buffer = buffer(text);
     assert_eq!(
-        buffer.surrounding_word(c(offset)).unwrap(),
+        buffer.surrounding_word(word_policy(), c(offset)).unwrap(),
         (c(expected.0), c(expected.1)),
         "文本 {text:?} 在 {offset} 处双击选词结果不符"
     );
@@ -81,7 +81,10 @@ fn surrounding_word_at_empty_line_gap_returns_empty_range() {
     // 光标夹在两个换行之间（空行中间）时没有可选的词。
     let buffer = buffer("abc\n\n  next");
     let gap = "abc\n".chars().count();
-    assert_eq!(buffer.surrounding_word(c(gap)).unwrap(), (c(gap), c(gap)));
+    assert_eq!(
+        buffer.surrounding_word(word_policy(), c(gap)).unwrap(),
+        (c(gap), c(gap))
+    );
 }
 
 #[test]
@@ -89,21 +92,21 @@ fn surrounding_word_rejects_non_grapheme_boundaries() {
     // 组合音标中间不是合法 grapheme 边界，surrounding_word 拒绝查询；
     // is_inside_word 不做校验，组合音标是零宽词字符，两侧查询自然为词内。
     let buffer = buffer("e\u{301}x");
-    assert!(buffer.surrounding_word(c(1)).is_err());
-    assert!(buffer.is_inside_word(c(1)).unwrap());
+    assert!(buffer.surrounding_word(word_policy(), c(1)).is_err());
+    assert!(buffer.is_inside_word(word_policy(), c(1)).unwrap());
 }
 
 #[test]
 fn is_inside_word_detects_word_interior() {
     let buffer = buffer("foo bar");
-    assert!(buffer.is_inside_word(c(1)).unwrap());
-    assert!(buffer.is_inside_word(c(2)).unwrap());
+    assert!(buffer.is_inside_word(word_policy(), c(1)).unwrap());
+    assert!(buffer.is_inside_word(word_policy(), c(2)).unwrap());
     // 词首/词尾与分隔符处都不算词内。
-    assert!(!buffer.is_inside_word(c(0)).unwrap());
-    assert!(!buffer.is_inside_word(c(3)).unwrap());
-    assert!(!buffer.is_inside_word(c(4)).unwrap());
-    assert!(!buffer.is_inside_word(c(7)).unwrap());
+    assert!(!buffer.is_inside_word(word_policy(), c(0)).unwrap());
+    assert!(!buffer.is_inside_word(word_policy(), c(3)).unwrap());
+    assert!(!buffer.is_inside_word(word_policy(), c(4)).unwrap());
+    assert!(!buffer.is_inside_word(word_policy(), c(7)).unwrap());
     // 下划线属于词字符，foo_bar 内部仍是词内。
     let underscore = common::buffer("foo_bar");
-    assert!(underscore.is_inside_word(c(4)).unwrap());
+    assert!(underscore.is_inside_word(word_policy(), c(4)).unwrap());
 }

@@ -6,8 +6,8 @@ use regex::{Regex, RegexBuilder};
 use regex_automata::meta;
 
 use zcv_text::{
-    BufferConfig, BufferVersion, ByteOffset, CoordinateError, DeltaEvent, MappingResult,
-    PositionMap, Snapshot, Stickiness, TextError, TextRange, TextRead,
+    BufferVersion, ByteOffset, CoordinateError, DeltaEvent, MappingResult, PositionMap, Snapshot,
+    Stickiness, TextError, TextRange, TextRead, WordBoundaryPolicy,
 };
 
 use super::error::{SearchError, SearchTextResult};
@@ -44,8 +44,12 @@ impl SearchQuery {
     }
 
     /// 在一个不可变文本快照上执行查询。
-    pub fn search(&self, snapshot: &Snapshot) -> SearchTextResult<SearchQueryResult> {
-        self.prepare()?.search(snapshot)
+    pub fn search(
+        &self,
+        snapshot: &Snapshot,
+        word_boundary: WordBoundaryPolicy,
+    ) -> SearchTextResult<SearchQueryResult> {
+        self.prepare()?.search(snapshot, word_boundary)
     }
 
     /// 在任意连续文本视图上执行搜索。
@@ -55,9 +59,9 @@ impl SearchQuery {
         &self,
         text: &T,
         version: BufferVersion,
-        config: &BufferConfig,
+        word_boundary: WordBoundaryPolicy,
     ) -> SearchTextResult<SearchQueryResult> {
-        self.prepare()?.search_in(text, version, config)
+        self.prepare()?.search_in(text, version, word_boundary)
     }
 }
 
@@ -68,7 +72,11 @@ pub struct PreparedSearchQuery {
 }
 
 impl PreparedSearchQuery {
-    pub fn search(&self, snapshot: &Snapshot) -> SearchTextResult<SearchQueryResult> {
+    pub fn search(
+        &self,
+        snapshot: &Snapshot,
+        word_boundary: WordBoundaryPolicy,
+    ) -> SearchTextResult<SearchQueryResult> {
         if let Some(regex) = &self.regex {
             search_regex_streaming_with_regex(
                 snapshot,
@@ -82,7 +90,7 @@ impl PreparedSearchQuery {
             search_in_text(
                 snapshot,
                 snapshot.version(),
-                snapshot.config(),
+                word_boundary,
                 &self.query.query,
                 SearchOptions::new()
                     .with_case_sensitive(self.query.case_sensitive)
@@ -97,7 +105,7 @@ impl PreparedSearchQuery {
         &self,
         text: &T,
         version: BufferVersion,
-        config: &BufferConfig,
+        word_boundary: WordBoundaryPolicy,
     ) -> SearchTextResult<SearchQueryResult> {
         if let Some(regex) = &self.regex {
             search_regex_streaming_with_regex(
@@ -112,7 +120,7 @@ impl PreparedSearchQuery {
             search_in_text(
                 text,
                 version,
-                config,
+                word_boundary,
                 &self.query.query,
                 SearchOptions::new()
                     .with_case_sensitive(self.query.case_sensitive)
@@ -440,7 +448,7 @@ fn remap_search_matches(matches: Vec<SearchMatch>, position_map: &PositionMap) -
 pub(crate) fn search_in_text<T: TextRead>(
     storage: &T,
     version: BufferVersion,
-    config: &BufferConfig,
+    word_boundary: WordBoundaryPolicy,
     query: &str,
     options: SearchOptions,
 ) -> SearchTextResult<SearchResult> {
@@ -452,10 +460,16 @@ pub(crate) fn search_in_text<T: TextRead>(
     validate_search_range(storage, search_range)?;
 
     let matches = if options.is_case_sensitive() {
-        find_case_sensitive_matches_streaming(storage, config, search_range, query, options)?
+        find_case_sensitive_matches_streaming(storage, word_boundary, search_range, query, options)?
     } else {
         // 大小写不敏感：流式 chunks 扫描 + 滑动折叠窗口，**不物化整个 haystack**。
-        find_case_insensitive_matches_streaming(storage, config, search_range, query, options)?
+        find_case_insensitive_matches_streaming(
+            storage,
+            word_boundary,
+            search_range,
+            query,
+            options,
+        )?
     };
 
     Ok(SearchResult::new(
@@ -738,7 +752,7 @@ fn validate_search_range<T: TextRead>(storage: &T, range: TextRange) -> SearchTe
 
 fn find_case_sensitive_matches_streaming<T: TextRead>(
     storage: &T,
-    config: &BufferConfig,
+    word_boundary: WordBoundaryPolicy,
     search_range: TextRange,
     query: &str,
     options: SearchOptions,
@@ -780,7 +794,7 @@ fn find_case_sensitive_matches_streaming<T: TextRead>(
                 ByteOffset::new(absolute_end),
             )?;
 
-            if passes_whole_word_filter(storage, config, range, options)? {
+            if passes_whole_word_filter(storage, word_boundary, range, options)? {
                 matches.push(SearchMatch::new(matches.len(), range));
                 next_allowed_start = absolute_end;
                 search_from = byte_end;
@@ -807,7 +821,7 @@ fn find_case_sensitive_matches_streaming<T: TextRead>(
 /// 5. 窗口超过 `q_len * 8` 时批量裁剪到 `q_len * 2`（amortized O(N) total）
 fn find_case_insensitive_matches_streaming<T: TextRead>(
     storage: &T,
-    config: &BufferConfig,
+    word_boundary: WordBoundaryPolicy,
     search_range: TextRange,
     query: &str,
     options: SearchOptions,
@@ -881,7 +895,7 @@ fn find_case_insensitive_matches_streaming<T: TextRead>(
                         ByteOffset::new(match_orig_end),
                     )?;
 
-                    if passes_whole_word_filter(storage, config, range, options)? {
+                    if passes_whole_word_filter(storage, word_boundary, range, options)? {
                         matches.push(SearchMatch::new(matches.len(), range));
                         // 非重叠：清空窗口，从下一字符开始重新累积
                         folded_buf.clear();
@@ -914,7 +928,7 @@ fn find_case_insensitive_matches_streaming<T: TextRead>(
 /// 仅当 `options.is_whole_word()` 为 `true` 时才执行过滤；否则直接通过。
 fn passes_whole_word_filter<T: TextRead>(
     storage: &T,
-    config: &BufferConfig,
+    word_boundary: WordBoundaryPolicy,
     range: TextRange,
     options: SearchOptions,
 ) -> SearchTextResult<bool> {
@@ -932,8 +946,8 @@ fn passes_whole_word_filter<T: TextRead>(
     let after = storage.char_at_byte(range.end());
 
     Ok(
-        !before.is_some_and(|ch| config.word_boundary.is_identifier_continue(ch))
-            && !after.is_some_and(|ch| config.word_boundary.is_identifier_continue(ch)),
+        !before.is_some_and(|ch| word_boundary.is_identifier_continue(ch))
+            && !after.is_some_and(|ch| word_boundary.is_identifier_continue(ch)),
     )
 }
 

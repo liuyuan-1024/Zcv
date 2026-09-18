@@ -62,6 +62,26 @@ impl Anchor {
             ..Self::new(version, range.end()).with_affinity(Affinity::After)
     }
 
+    /// 把锚点解析到目标快照的当前坐标。
+    ///
+    /// 目标版本更旧、或锚点版本已被编辑日志裁剪时返回 None；
+    /// 调用方必须回退到自己的稳定表示，不能把锚点原始偏移直接当成目标快照坐标。
+    pub fn resolve_in(&self, snapshot: &crate::Snapshot) -> Option<ByteOffset> {
+        if self.version == snapshot.version() {
+            return Some(self.offset);
+        }
+        if self.version > snapshot.version() {
+            return None;
+        }
+        let batch = snapshot.edits_since(self.version).ok()?;
+        Some(
+            batch
+                .position_map()
+                .map_old_position_with_affinity(self.offset, self.affinity)
+                .value(),
+        )
+    }
+
     pub fn map_through_position_map(
         self,
         new_version: BufferVersion,

@@ -1011,37 +1011,20 @@ impl MultiBuffer {
     /// 返回本次重建的投影坐标重映射：
     /// 投影版本未变时恒等，变化时携带重建前的投影→源映射，供调用方把重建前的光标经源忠实落到重建后投影（reload 会重裁剪并重置版本，裸偏移不再有效）。
     pub(crate) fn rebuild_diff_projection(&mut self, cx: &mut Context<Self>) -> ProjectionRemap {
-        let before = (
-            self.state.excerpts.clone(),
-            self.state.diff_transforms.clone(),
-        );
-        self.rebuild_diff_projection_from(before, cx)
+        let before = self.projection_trees();
+        self.rebuild_diff_projection_from(before, None, cx)
     }
 
-    /// 按调用方在 hunk 生命周期变更前冻结的投影映射重建。
+    /// 按调用方在 hunk 生命周期变更前冻结的投影树重建 diff 投影。
     ///
     /// 编辑坐标恢复属于投影事务，而非 hunk 刷新：调用方在源文本已更新、hunk
-    /// 尚未重物化时保存映射，随后无论 hunk 怎样裁剪或失效，都用该映射解析编辑后的选区。
+    /// 尚未重物化时保存旧投影树，随后无论 hunk 怎样裁剪或失效，都用该树推导增量范围并解析编辑后的选区。
+    /// 外部整体重载会先替换源快照，再重建 excerpts；
+    /// 旧投影树必须在源快照替换前冻结，不能从更新后的源映射重新拼出旧帧。
+    /// 结构变化范围直接由前后两棵投影树的游标推导，不物化旧输出文本。
     pub(crate) fn rebuild_diff_projection_from(
         &mut self,
         before: (SumTree<crate::Excerpt>, SumTree<DiffTransform>),
-        cx: &mut Context<Self>,
-    ) -> ProjectionRemap {
-        if self.diff.is_none() {
-            return ProjectionRemap::identity();
-        }
-        let old_snapshot = self.snapshot(cx);
-        self.rebuild_diff_projection_from_text(before, old_snapshot.text_bytes(), None, cx)
-    }
-
-    /// 使用调用方在源快照更新前保存的旧输出重建 diff 投影。
-    ///
-    /// 外部整体重载会先替换源快照，再重建 excerpts。旧映射此时仍可能只覆盖新文本的前缀；
-    /// 因而旧输出必须在源快照替换前冻结，不能从更新后的源映射重新拼出旧帧。
-    pub(crate) fn rebuild_diff_projection_from_text(
-        &mut self,
-        before: (SumTree<crate::Excerpt>, SumTree<DiffTransform>),
-        old_text: Vec<u8>,
         source_change: Option<&zcv_text::TextChangeBatch>,
         cx: &mut Context<Self>,
     ) -> ProjectionRemap {
@@ -1070,12 +1053,10 @@ impl MultiBuffer {
             expected_excerpt_count,
             "diff 物化生成的 excerpt 必须全部建立组合映射"
         );
-        let new_snapshot = self.build_snapshot(cx);
-        let new_text = new_snapshot.text_bytes();
         if let Some(source_change) = source_change {
-            self.publish_source_projection_edit(&old_text, &new_text, source_change);
+            self.publish_source_projection_edit(&before, source_change);
         } else {
-            self.publish_projection_edit(&old_text, &new_text, old_version);
+            self.publish_projection_edit(&before, old_version);
         }
         let display = self.derive_diff_display(materialized_hunks.iter());
         for file in &mut self.diffs {
@@ -1112,7 +1093,8 @@ impl MultiBuffer {
         let mut cursor = MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
         cursor.seek_output(ByteOffset::ZERO, sum_tree::Bias::Right);
         while let Some((excerpt, _)) = cursor.item() {
-            if excerpt.source_id == anchor.source_id && excerpt.source_range == anchor.source_range
+            if excerpt.source_id == Some(anchor.source_id)
+                && excerpt.source_range.range() == anchor.source_range
             {
                 return cursor.mapping();
             }
@@ -1260,7 +1242,7 @@ impl MultiBuffer {
         cursor.seek_output(ByteOffset::ZERO, sum_tree::Bias::Right);
         let mut previous_end = None;
         while let Some((excerpt, _)) = cursor.item() {
-            if excerpt.source_id == boundary.source_id {
+            if excerpt.source_id == Some(boundary.source_id) {
                 let start = excerpt.source_range.start();
                 let end = excerpt.source_range.end();
                 if boundary.offset < start {
@@ -1279,7 +1261,8 @@ impl MultiBuffer {
                 }
                 if boundary.offset == end {
                     previous_end = Some(
-                        (cursor.start().lines + excerpt.line_span).max(cursor.start().lines + 1),
+                        (cursor.start().lines + excerpt.text_summary.lines)
+                            .max(cursor.start().lines + 1),
                     );
                 }
             }

@@ -3,6 +3,8 @@
 //! 输入法组合的 marked text 从第一次 preedit 起就走普通文本事务（与键盘输入同管线），组合区域只在语法样式之上叠加下划线；
 //! 这里只维护组合会话身份与候选框定位数据。
 
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -10,7 +12,7 @@ use gpui::{
     App, Bounds, Context, EntityInputHandler, Pixels, Point, UTF16Selection, Window, px, size,
 };
 use zcv_multi_buffer::MultiBufferSnapshot;
-use zcv_text::{Anchor, ByteOffset, TextRange, TransactionId, Utf16Offset};
+use zcv_text::{Anchor, TransactionId, Utf16Offset};
 
 use super::*;
 use crate::element::EditorInputLayout;
@@ -20,7 +22,7 @@ use crate::selection::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EditorComposition {
-    pub(super) ranges: Arc<[TextRange]>,
+    pub(super) ranges: Arc<[MultiBufferRange]>,
     pub(super) primary_index: usize,
     pub(super) history_transaction_id: Option<TransactionId>,
 }
@@ -43,7 +45,10 @@ enum AfterAction {
     /// （map_old_position 在同点插入处返回插入文本之后，需回退 close 长度）。
     BetweenPair { close_len: usize },
     /// 跳过闭合符：不产生编辑，光标越过闭合符（落点 = 区域末端 + 闭合符长度）。
-    SkipPast { end: ByteOffset, close_len: usize },
+    SkipPast {
+        end: MultiBufferOffset,
+        close_len: usize,
+    },
     /// 包裹选区：编辑后选区覆盖包裹后的文本（端点映射后回退 close 长度，不吸收闭合符）。
     Mapped { close_len: usize },
 }
@@ -167,18 +172,18 @@ impl Editor {
 
     fn relative_utf16_range(
         &self,
-        containing_range: TextRange,
+        containing_range: MultiBufferRange,
         relative_range: Range<usize>,
         cx: &App,
-    ) -> Option<TextRange> {
+    ) -> Option<MultiBufferRange> {
         let snapshot = self.multi_buffer.read(cx).snapshot(cx);
         let text = snapshot.text_for_range(containing_range).ok()?;
         let utf16_len = utf16_len(&text);
         let start = byte_for_utf16_offset(&text, relative_range.start.min(utf16_len))?;
         let end = byte_for_utf16_offset(&text, relative_range.end.min(utf16_len))?;
-        TextRange::new(
-            ByteOffset::new(containing_range.start().get() + start),
-            ByteOffset::new(containing_range.start().get() + end),
+        MultiBufferRange::new(
+            MultiBufferOffset::new(containing_range.start().get() + start),
+            MultiBufferOffset::new(containing_range.start().get() + end),
         )
         .ok()
     }
@@ -217,7 +222,7 @@ impl Editor {
         // 逐选区决策，产出目标编辑、编辑后落点与新区域（以编辑前坐标为基准）。
         let mut targets: Vec<(Selection, Arc<str>)> = Vec::new();
         let mut after_actions: Vec<AfterAction> = Vec::new();
-        let mut new_regions: Vec<TextRange> = Vec::new();
+        let mut new_regions: Vec<MultiBufferRange> = Vec::new();
         let mut new_region_pairs: Vec<AutoClosePair> = Vec::new();
         let mut consumed = false;
         for selection in before.as_slice() {
@@ -246,7 +251,7 @@ impl Editor {
                 && let Some(region) = self.autoclose_region_at(selection.end(), typed, &snapshot)
             {
                 after_actions.push(AfterAction::SkipPast {
-                    end: region.range.end.offset(),
+                    end: region.range.end.offset().into(),
                     close_len: region.pair.end.len(),
                 });
                 consumed = true;
@@ -267,7 +272,8 @@ impl Editor {
                     close_len: pair.end.len(),
                 });
                 new_regions.push(
-                    TextRange::new(selection.end(), selection.end()).expect("零宽区间必然合法"),
+                    MultiBufferRange::new(selection.end(), selection.end())
+                        .expect("零宽区间必然合法"),
                 );
                 new_region_pairs.push(*pair);
                 consumed = true;
@@ -282,7 +288,7 @@ impl Editor {
 
         // 统一提交：跳过场景不产生编辑，其余按目标文本插入；
         // 新区域在闭包内经 PositionMap 换算到编辑后坐标。
-        let mut new_regions_after: Vec<(TextRange, AutoClosePair)> = Vec::new();
+        let mut new_regions_after: Vec<(MultiBufferRange, AutoClosePair)> = Vec::new();
         let metadata = input_metadata("输入文本", false);
         let result = self.change_with_after(before.clone(), metadata.clone(), cx, |buffer| {
             let outcome = apply_edits(buffer, &targets)?;
@@ -290,10 +296,11 @@ impl Editor {
             for (index, range) in new_regions.iter().enumerate() {
                 // 区域锚在闭合符起点：光标经映射吸收到配对之后，回退 close 长度即闭合符起点。
                 // （不能用零宽区间经 Expand 映射——同点插入会把整个配对吸进区间。）
-                let mapped = position_map.map_old_position(range.start()).value();
-                let close_start = ByteOffset::new(mapped.get() - new_region_pairs[index].end.len());
+                let mapped = position_map.map_old_position(range.start().into()).value();
+                let close_start =
+                    MultiBufferOffset::new(mapped.get() - new_region_pairs[index].end.len());
                 new_regions_after.push((
-                    TextRange::new(close_start, close_start).expect("零宽区间必然合法"),
+                    MultiBufferRange::new(close_start, close_start).expect("零宽区间必然合法"),
                     new_region_pairs[index],
                 ));
             }
@@ -304,29 +311,37 @@ impl Editor {
                     .zip(after_actions.iter())
                     .map(|(selection, action)| match action {
                         AfterAction::Insert { was_caret } => {
-                            let start = position_map.map_old_position(selection.start()).value();
+                            let start = position_map
+                                .map_old_position(selection.start().into())
+                                .value();
                             Selection::caret(if *was_caret {
-                                start
+                                start.into()
                             } else {
-                                ByteOffset::new(start.get() + typed.len_utf8())
+                                MultiBufferOffset::new(start.get() + typed.len_utf8())
                             })
                         }
                         AfterAction::BetweenPair { close_len } => {
-                            let start = position_map.map_old_position(selection.start()).value();
-                            Selection::caret(ByteOffset::new(start.get() - close_len))
+                            let start = position_map
+                                .map_old_position(selection.start().into())
+                                .value();
+                            Selection::caret(MultiBufferOffset::new(start.get() - close_len))
                         }
                         AfterAction::SkipPast { end, close_len } => {
-                            let end = position_map.map_old_position(*end).value();
-                            Selection::caret(ByteOffset::new(end.get() + close_len))
+                            let end = position_map.map_old_position((*end).into()).value();
+                            Selection::caret(MultiBufferOffset::new(end.get() + close_len))
                         }
                         AfterAction::Mapped { close_len } => {
-                            let start = position_map.map_old_position(selection.start()).value();
-                            let end = position_map.map_old_position(selection.end()).value();
-                            let end = ByteOffset::new(end.get() - close_len);
+                            let start = position_map
+                                .map_old_position(selection.start().into())
+                                .value();
+                            let end = position_map
+                                .map_old_position(selection.end().into())
+                                .value();
+                            let end = MultiBufferOffset::new(end.get() - close_len);
                             if selection.is_reversed() {
-                                Selection::new(end, start)
+                                Selection::new(end, start.into())
                             } else {
-                                Selection::new(start, end)
+                                Selection::new(start.into(), end)
                             }
                         }
                     })
@@ -342,7 +357,7 @@ impl Editor {
                     new_regions_after
                         .into_iter()
                         .map(|(range, pair)| AutocloseRegion {
-                            range: Anchor::range_outside(version, range),
+                            range: Anchor::range_outside(version, range.into()),
                             pair,
                         }),
                 );
@@ -353,17 +368,19 @@ impl Editor {
     /// `offset` 处所在源语言的自动闭合配对表。
     pub(super) fn auto_close_pairs(
         &self,
-        offset: ByteOffset,
+        offset: MultiBufferOffset,
         cx: &App,
     ) -> Option<&'static [AutoClosePair]> {
-        self.multi_buffer.read(cx).auto_close_pairs(offset, cx)
+        self.multi_buffer
+            .read(cx)
+            .auto_close_pairs(offset.into(), cx)
     }
 
     /// 光标处的待跳过自动闭合区域：区域末端锚与光标重合、该处文本确为配对闭合符。
     /// 嵌套配对取最内层（区域起点最大者）；区域版本滞后于当前快照（未跟踪的外部编辑）视为失效。
     fn autoclose_region_at(
         &self,
-        end: ByteOffset,
+        end: MultiBufferOffset,
         typed: char,
         snapshot: &MultiBufferSnapshot,
     ) -> Option<AutocloseRegion> {
@@ -371,7 +388,7 @@ impl Editor {
             .iter()
             .filter(|region| {
                 region.range.start.version() == snapshot.version()
-                    && region.range.end.offset() == end
+                    && region.range.end.offset() == end.into()
                     && region.pair.end == typed.to_string()
                     && text_at(snapshot, end, region.pair.end)
             })
@@ -396,7 +413,7 @@ impl Editor {
                     .iter()
                     .filter(|region| {
                         region.range.start.version() == snapshot.version()
-                            && region.range.start.offset() == selection.end()
+                            && region.range.start.offset() == selection.end().into()
                     })
                     .max_by_key(|region| region.range.start.offset())
                     .cloned()
@@ -412,15 +429,15 @@ impl Editor {
                 else {
                     return *selection;
                 };
-                let start = ByteOffset::new(start);
+                let start = MultiBufferOffset::new(start);
                 let close_start = region.range.end.offset();
                 let Some(end) = close_start.get().checked_add(region.pair.end.len()) else {
                     return *selection;
                 };
-                let end = ByteOffset::new(end);
+                let end = MultiBufferOffset::new(end);
                 // 校验开合文本确实位于区域两端，再扩展选区覆盖整对。
                 if text_at(&snapshot, start, region.pair.start)
-                    && text_at(&snapshot, close_start, region.pair.end)
+                    && text_at(&snapshot, close_start.into(), region.pair.end)
                 {
                     changed = true;
                     Selection::new(start, end)
@@ -442,7 +459,10 @@ impl Editor {
 /// 自动闭合的后续检查：光标后是空白、行尾或常见语句分隔符时才自动闭合，避免在标识符前键入 open 时被自动补上 close。
 const AUTOCLOSE_BEFORE: &str = ";:.,=}])>";
 
-fn following_text_allows_autoclose(snapshot: &MultiBufferSnapshot, offset: ByteOffset) -> bool {
+fn following_text_allows_autoclose(
+    snapshot: &MultiBufferSnapshot,
+    offset: MultiBufferOffset,
+) -> bool {
     let Ok((chunk, chunk_start)) = snapshot.chunk_at_byte(offset) else {
         return true;
     };
@@ -455,7 +475,7 @@ fn following_text_allows_autoclose(snapshot: &MultiBufferSnapshot, offset: ByteO
 /// 自动闭合的前置检查：引号类配对（start == end）前是词字符时不自动闭合，避免在单词末尾输入引号时被当成新的开启引号。
 fn preceding_text_allows_autoclose(
     snapshot: &MultiBufferSnapshot,
-    offset: ByteOffset,
+    offset: MultiBufferOffset,
     pair: &AutoClosePair,
 ) -> bool {
     if pair.start != pair.end {
@@ -478,8 +498,8 @@ fn preceding_text_allows_autoclose(
         Ok(end) => end,
         Err(_) => return true,
     };
-    let Ok(line_text) =
-        snapshot.text_for_range(TextRange::new(line_start, line_end).expect("行范围必须合法"))
+    let Ok(line_text) = snapshot
+        .text_for_range(MultiBufferRange::new(line_start, line_end).expect("行范围必须合法"))
     else {
         return true;
     };
@@ -491,10 +511,10 @@ fn preceding_text_allows_autoclose(
 }
 
 /// `offset` 处是否为指定文本（越界或文本不符返回 false）。
-fn text_at(snapshot: &MultiBufferSnapshot, offset: ByteOffset, text: &str) -> bool {
+fn text_at(snapshot: &MultiBufferSnapshot, offset: MultiBufferOffset, text: &str) -> bool {
     offset.checked_add(text.len()).is_some_and(|end| {
         snapshot
-            .text_for_range(TextRange::new(offset, end).expect("文本范围必须合法"))
+            .text_for_range(MultiBufferRange::new(offset, end).expect("文本范围必须合法"))
             .is_ok_and(|slice| slice == text)
     })
 }
@@ -604,8 +624,9 @@ impl EntityInputHandler for Editor {
             .iter()
             .map(|selection| {
                 let end = selection.head();
-                let start = ByteOffset::new(end.get().saturating_sub(text.len()));
-                TextRange::new(start, end).expect("替换后的选区必须能够还原出 marked text 范围")
+                let start = MultiBufferOffset::new(end.get().saturating_sub(text.len()));
+                MultiBufferRange::new(start, end)
+                    .expect("替换后的选区必须能够还原出 marked text 范围")
             })
             .collect::<Vec<_>>();
         let text_utf16_len = utf16_len(&text);
@@ -624,8 +645,8 @@ impl EntityInputHandler for Editor {
                     .iter()
                     .map(|marked_range| {
                         Selection::new(
-                            ByteOffset::new(marked_range.start().get() + selected_start),
-                            ByteOffset::new(marked_range.start().get() + selected_end),
+                            MultiBufferOffset::new(marked_range.start().get() + selected_start),
+                            MultiBufferOffset::new(marked_range.start().get() + selected_end),
                         )
                     })
                     .collect(),

@@ -40,6 +40,12 @@ impl ByteOffset {
     }
 }
 
+impl From<ByteOffset> for usize {
+    fn from(value: ByteOffset) -> Self {
+        value.get()
+    }
+}
+
 impl core::fmt::Display for ByteOffset {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", self.0)

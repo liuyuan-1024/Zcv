@@ -5,14 +5,16 @@
 //! 消费时按当前 Snapshot 解析为字节偏移。
 //! `Selection` / `SelectionSet` 是编辑算法与历史快照使用的 Editor 领域原语。
 
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::EntityId;
 use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferSnapshot};
 use zcv_text::{
-    Affinity, ByteOffset, CoordinateError, Edit, PositionMap, RegexSearchResult, SearchResult,
-    TextError, TextRange, TextRead, TextResult, TransactionId, regex_replacement_for_match,
+    Affinity, CoordinateError, Edit, PositionMap, RegexSearchResult, SearchResult, TextError,
+    TextRead, TextResult, TransactionId, regex_replacement_for_match,
 };
 
 use super::{Selection, SelectionSet};
@@ -64,7 +66,7 @@ impl<'a> EditPlan<'a> {
         let mut changed = Vec::with_capacity(edits.len());
         for edit in edits {
             let range = edit.range();
-            let current = self.snapshot.text_for_range(range)?;
+            let current = self.snapshot.text_for_range(range.into())?;
             if current != edit.replacement() {
                 changed.push(edit);
             }
@@ -170,7 +172,7 @@ pub(crate) fn apply_edits(
         validate_selection(snapshot, *selection)?;
         let range = selection.range();
         if !(range.is_empty() && replacement.is_empty()) {
-            edits.push(Edit::replace(range, Arc::clone(replacement)));
+            edits.push(Edit::replace(range.into(), Arc::clone(replacement)));
         }
     }
     if edits.is_empty() {
@@ -209,7 +211,9 @@ pub(crate) fn replace_selections(
                 .as_slice()
                 .iter()
                 .map(|selection| {
-                    Selection::caret(ByteOffset::new(selection.start().get() + replacement.len()))
+                    Selection::caret(MultiBufferOffset::new(
+                        selection.start().get() + replacement.len(),
+                    ))
                 })
                 .collect(),
             selections.primary_index(),
@@ -219,11 +223,13 @@ pub(crate) fn replace_selections(
                 .as_slice()
                 .iter()
                 .map(|selection| {
-                    let start = position_map.map_old_position(selection.start()).value();
+                    let start = position_map
+                        .map_old_position(selection.start().into())
+                        .value();
                     let end = if selection.is_caret() {
-                        start
+                        start.into()
                     } else {
-                        ByteOffset::new(start.get() + replacement.len())
+                        MultiBufferOffset::new(start.get() + replacement.len())
                     };
                     Selection::caret(end)
                 })
@@ -243,9 +249,10 @@ pub(crate) fn apply_targeted_edits(
 
 fn validate_selection(snapshot: &MultiBufferSnapshot, selection: Selection) -> TextResult<()> {
     for offset in [selection.anchor(), selection.head()] {
-        snapshot.text_for_range(TextRange::new(offset, offset).expect("零宽选区必须合法"))?;
-        if !snapshot.is_grapheme_boundary(offset)? {
-            return Err(CoordinateError::InvalidGraphemeBoundary(offset).into());
+        snapshot
+            .text_for_range(MultiBufferRange::new(offset, offset).expect("零宽选区必须合法"))?;
+        if !snapshot.is_grapheme_boundary(offset.into())? {
+            return Err(CoordinateError::InvalidGraphemeBoundary(offset.into()).into());
         }
     }
     Ok(())
@@ -274,7 +281,7 @@ pub(crate) struct EditorSelection {
 impl EditorSelection {
     fn from_selection(
         selection: Selection,
-        anchor: &impl Fn(ByteOffset) -> Option<MultiBufferAnchor>,
+        anchor: &impl Fn(MultiBufferOffset) -> Option<MultiBufferAnchor>,
     ) -> Self {
         let start = selection.start();
         let end = selection.end();
@@ -321,17 +328,17 @@ pub(crate) fn map_selection_set(set: &SelectionSet, position_map: &PositionMap) 
                     Affinity::Before
                 };
                 let start = position_map
-                    .map_old_position_with_affinity(selection.start(), start_affinity)
+                    .map_old_position_with_affinity(selection.start().into(), start_affinity)
                     .value();
                 let end = position_map
-                    .map_old_position_with_affinity(selection.end(), Affinity::After)
+                    .map_old_position_with_affinity(selection.end().into(), Affinity::After)
                     .value();
                 let (anchor, head) = if selection.is_reversed() {
                     (end, start)
                 } else {
                     (start, end)
                 };
-                Selection::new(anchor, head).with_goal(selection.goal())
+                Selection::new(anchor.into(), head.into()).with_goal(selection.goal())
             })
             .collect(),
         set.primary_index(),
@@ -342,11 +349,11 @@ pub(crate) fn map_selection_set(set: &SelectionSet, position_map: &PositionMap) 
 fn resolve_anchor_offset(
     snapshot: &MultiBufferSnapshot,
     anchor: &Option<MultiBufferAnchor>,
-) -> ByteOffset {
+) -> MultiBufferOffset {
     anchor
         .as_ref()
         .and_then(|anchor| snapshot.resolve_anchor(anchor))
-        .unwrap_or(ByteOffset::ZERO)
+        .unwrap_or(MultiBufferOffset::ZERO)
 }
 
 /// Editor 视图层的选区集合：端点以源锚点表达（单一数据源，不绑定投影版本）。
@@ -373,7 +380,7 @@ impl EditorSelections {
     /// 编辑落位用重建前映射锚定（[`zcv_multi_buffer::MultiBuffer::anchor_after_edit`]）。
     pub(crate) fn anchored(
         set: &SelectionSet,
-        anchor: &impl Fn(ByteOffset) -> Option<MultiBufferAnchor>,
+        anchor: &impl Fn(MultiBufferOffset) -> Option<MultiBufferAnchor>,
     ) -> Self {
         Self {
             selections: set

@@ -2,7 +2,7 @@
 //!
 //! 本文件只维护单个 selection 的方向、范围和映射；排序、合并和 primary 归属在 SelectionSet。
 
-use zcv_text::{ByteOffset, TextRange};
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
 
 /// 一个选区，使用 anchor/head 模型。
 ///
@@ -10,13 +10,13 @@ use zcv_text::{ByteOffset, TextRange};
 /// 垂直移动时持久保留的目标显示列：目标行比目标列短时光标被钳制到行尾，但目标列保留，下一次垂直移动仍回到原目标列。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Selection {
-    anchor: ByteOffset,
-    head: ByteOffset,
+    anchor: MultiBufferOffset,
+    head: MultiBufferOffset,
     goal: Option<usize>,
 }
 
 impl Selection {
-    pub const fn new(anchor: ByteOffset, head: ByteOffset) -> Self {
+    pub const fn new(anchor: MultiBufferOffset, head: MultiBufferOffset) -> Self {
         Self {
             anchor,
             head,
@@ -24,7 +24,7 @@ impl Selection {
         }
     }
 
-    pub const fn caret(offset: ByteOffset) -> Self {
+    pub const fn caret(offset: MultiBufferOffset) -> Self {
         Self {
             anchor: offset,
             head: offset,
@@ -43,11 +43,11 @@ impl Selection {
         self.goal
     }
 
-    pub const fn anchor(self) -> ByteOffset {
+    pub const fn anchor(self) -> MultiBufferOffset {
         self.anchor
     }
 
-    pub const fn head(self) -> ByteOffset {
+    pub const fn head(self) -> MultiBufferOffset {
         self.head
     }
 
@@ -59,21 +59,21 @@ impl Selection {
         self.anchor > self.head
     }
 
-    pub fn start(self) -> ByteOffset {
+    pub fn start(self) -> MultiBufferOffset {
         self.anchor.min(self.head)
     }
 
-    pub fn end(self) -> ByteOffset {
+    pub fn end(self) -> MultiBufferOffset {
         self.anchor.max(self.head)
     }
 
-    pub fn range(self) -> TextRange {
-        TextRange::new(self.start(), self.end())
+    pub fn range(self) -> MultiBufferRange {
+        MultiBufferRange::new(self.start(), self.end())
             .expect("Selection 的 start 和 end 由 min/max 生成，必须满足 start <= end")
     }
 
     /// 移动 head 到新位置；垂直扩展选区时保留 goal。
-    pub fn with_head(self, head: ByteOffset) -> Self {
+    pub fn with_head(self, head: MultiBufferOffset) -> Self {
         Self {
             anchor: self.anchor,
             head,
@@ -86,12 +86,12 @@ impl Selection {
 mod tests {
     use super::*;
 
-    fn b(value: usize) -> ByteOffset {
-        ByteOffset::new(value)
+    fn b(value: usize) -> MultiBufferOffset {
+        MultiBufferOffset::new(value)
     }
 
-    fn range(start: usize, end: usize) -> TextRange {
-        TextRange::new(b(start), b(end)).unwrap()
+    fn range(start: usize, end: usize) -> MultiBufferRange {
+        MultiBufferRange::new(b(start), b(end)).unwrap()
     }
 
     fn selection(anchor: usize, head: usize) -> Selection {

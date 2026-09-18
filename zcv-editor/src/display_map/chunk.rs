@@ -10,12 +10,14 @@
 //! 基础文本 chunk 经 inlay、样式与 tab 变换，产出带样式与 is_tab/is_inlay 标记的渲染 chunk；
 //! 渲染端逐 chunk 生成 TextRun 后统一 shape。
 
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+
 use std::{ops::Range, sync::Arc};
 
 use gpui::{HighlightStyle, UnderlineStyle, px};
 use zcv_language::HighlightSpan;
 use zcv_multi_buffer::MultiBufferSnapshot;
-use zcv_text::{ByteOffset, Line, TextRange};
+use zcv_text::Line;
 
 use super::block_map::{BlockRow, BlockRows, DisplayBlock};
 use super::fold_map::{FOLD_PLACEHOLDER, FoldRowSegment, FoldRowSegmentKind, ProjectedLineIndex};
@@ -228,7 +230,7 @@ pub(crate) struct HighlightStyles<'a> {
     pub(crate) styles: &'a [HighlightStyle],
     /// 背景覆盖层：命中区间优先于语法 style 的背景色。
     pub(crate) backgrounds: &'a [(Range<usize>, gpui::Rgba)],
-    pub(crate) marked: &'a [TextRange],
+    pub(crate) marked: &'a [MultiBufferRange],
     /// 局部重命名期间需要淡化的文本范围。
     pub(crate) dimmed: &'a [Range<usize>],
 }
@@ -272,7 +274,7 @@ pub(crate) enum ChunkText<'a> {
     Borrowed(&'a str),
     Virtual {
         snapshot: &'a MultiBufferSnapshot,
-        range: Range<zcv_text::ByteOffset>,
+        range: Range<MultiBufferOffset>,
     },
 }
 
@@ -598,8 +600,8 @@ impl<'a> SourceTextChunks<'a> {
                 Some(chunk)
             }
             ChunkText::Virtual { snapshot, range } => {
-                let absolute = ByteOffset::new(range.start.get() + self.offset);
-                let chunk = snapshot.text_chunks(absolute..range.end).next()?;
+                let absolute = MultiBufferOffset::new(range.start.get() + self.offset);
+                let chunk = snapshot.bytes_in_range(absolute..range.end).next()?;
                 let available = (range.end.get() - absolute.get()).min(chunk.text.len());
                 let mut end = available.min(limit);
                 while !chunk.text.is_char_boundary(end) {
@@ -819,8 +821,10 @@ impl<'a, 'b> Iterator for FoldChunks<'a, 'b> {
                         InlayChunks::new(
                             ChunkText::Virtual {
                                 snapshot: self.inlay.buffer_snapshot(),
-                                range: ByteOffset::new(line_range.start.get() + original_start)
-                                    ..ByteOffset::new(line_range.start.get() + original_end),
+                                range: MultiBufferOffset::new(
+                                    line_range.start.get() + original_start,
+                                )
+                                    ..MultiBufferOffset::new(line_range.start.get() + original_end),
                             },
                             line_range.start.get(),
                             self.inlay.line_inlays(*stream_line),
@@ -1208,7 +1212,6 @@ impl<'a, 'b> BlockChunks<'a, 'b> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zcv_text::ByteOffset;
 
     /// 行文本的 chunk 迭代器（128 字节对齐）。
     pub(crate) struct TextChunks<'a> {
@@ -1476,7 +1479,11 @@ mod tests {
                 backgrounds: &[],
                 spans: &[],
                 styles: &[],
-                marked: &[TextRange::new(ByteOffset::new(2), ByteOffset::new(4)).unwrap()],
+                marked: &[MultiBufferRange::new(
+                    MultiBufferOffset::new(2),
+                    MultiBufferOffset::new(4),
+                )
+                .unwrap()],
                 dimmed: &[],
             },
             0..6,
@@ -1501,7 +1508,11 @@ mod tests {
                 backgrounds: &[],
                 spans: &[],
                 styles: &[],
-                marked: &[TextRange::new(ByteOffset::new(1), ByteOffset::new(7)).unwrap()],
+                marked: &[MultiBufferRange::new(
+                    MultiBufferOffset::new(1),
+                    MultiBufferOffset::new(7),
+                )
+                .unwrap()],
                 dimmed: &[],
             },
             0..text.len(),

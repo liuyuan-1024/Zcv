@@ -1,3 +1,5 @@
+use zcv_multi_buffer::MultiBufferOffset;
+
 use super::*;
 use zcv_text::{Buffer, BufferConfig};
 
@@ -10,7 +12,7 @@ fn snapshot_with(text: &str, inlays: Vec<Inlay>) -> InlaySnapshot {
 
 fn inlay(position: usize, text: &str) -> Inlay {
     Inlay {
-        position: ByteOffset::new(position),
+        position: MultiBufferOffset::new(position),
         text: text.to_owned(),
     }
 }

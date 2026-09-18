@@ -10,6 +10,8 @@
 //! 每一层都持有自己的 Map 和不可变 Snapshot；
 //! 上一层 Snapshot 固化下一层 Snapshot，从而让一次渲染只能看到一条内部一致的显示状态。
 
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+
 mod block_map;
 mod chunk;
 mod display_width;
@@ -54,8 +56,8 @@ use wrap_map::{WrapEdit, WrapMap, WrapSnapshot};
 use zcv_language::HighlightSpan;
 use zcv_multi_buffer::{MultiBuffer, MultiBufferSnapshot, MultiBufferSubscription};
 use zcv_text::{
-    ByteOffset, Line, LineRange, LogicalColumn, MovementDirection, MovementUnit, Position,
-    TextChangeBatch, TextRange, TextResult,
+    Line, LineRange, LogicalColumn, MovementDirection, MovementUnit, Position, TextChangeBatch,
+    TextResult,
 };
 use zcv_theme::syntax;
 
@@ -200,8 +202,8 @@ impl DisplaySnapshot {
     /// 覆盖该字节偏移的最外层折叠的隐藏范围（水平移动跨折叠吸附用）。
     pub(super) fn fold_range_covering_offset(
         &self,
-        offset: ByteOffset,
-    ) -> Option<(ByteOffset, ByteOffset)> {
+        offset: MultiBufferOffset,
+    ) -> Option<(MultiBufferOffset, MultiBufferOffset)> {
         self.fold_snapshot().fold_range_covering_offset(offset)
     }
 
@@ -251,14 +253,14 @@ impl DisplaySnapshot {
 
     pub(super) fn project_text_range(
         &self,
-        range: TextRange,
+        range: MultiBufferRange,
     ) -> DisplayMapResult<Vec<ProjectedRange>> {
         self.block_snapshot.project_text_range(range)
     }
 
     pub(super) fn offset_to_display_point(
         &self,
-        offset: ByteOffset,
+        offset: MultiBufferOffset,
     ) -> DisplayMapResult<DisplayPoint> {
         self.block_snapshot.offset_to_display_point(offset)
     }
@@ -266,7 +268,7 @@ impl DisplaySnapshot {
     pub(super) fn display_point_to_offset(
         &self,
         point: DisplayPoint,
-    ) -> DisplayMapResult<ByteOffset> {
+    ) -> DisplayMapResult<MultiBufferOffset> {
         self.block_snapshot.display_point_to_offset(point)
     }
 
@@ -274,7 +276,7 @@ impl DisplaySnapshot {
         &self,
         point: DisplayPoint,
         bias: FoldBias,
-    ) -> DisplayMapResult<ByteOffset> {
+    ) -> DisplayMapResult<MultiBufferOffset> {
         self.block_snapshot
             .display_point_to_offset_with_bias(point, bias)
     }
@@ -315,10 +317,10 @@ impl DisplaySnapshot {
     /// 按文本移动粒度计算水平目标，并由显示层跨过占位符。
     pub(super) fn move_offset(
         &self,
-        offset: ByteOffset,
+        offset: MultiBufferOffset,
         direction: MovementDirection,
         unit: MovementUnit,
-    ) -> TextResult<ByteOffset> {
+    ) -> TextResult<MultiBufferOffset> {
         let snapshot = self.buffer_snapshot();
         let char_offset = snapshot.byte_to_char(offset)?;
         let target = snapshot.movement_boundary(char_offset, direction, unit)?;
@@ -332,11 +334,17 @@ impl DisplaySnapshot {
         })
     }
 
-    pub(super) fn beginning_of_row(&self, offset: ByteOffset) -> DisplayMapResult<ByteOffset> {
+    pub(super) fn beginning_of_row(
+        &self,
+        offset: MultiBufferOffset,
+    ) -> DisplayMapResult<MultiBufferOffset> {
         self.wrap_snapshot().beginning_of_row(offset)
     }
 
-    pub(super) fn end_of_row(&self, offset: ByteOffset) -> DisplayMapResult<ByteOffset> {
+    pub(super) fn end_of_row(
+        &self,
+        offset: MultiBufferOffset,
+    ) -> DisplayMapResult<MultiBufferOffset> {
         self.wrap_snapshot().end_of_row(offset)
     }
 }
@@ -607,7 +615,7 @@ impl DisplayMap {
     }
 
     /// 折叠字节范围（入口行行尾换行符 → 闭合括号前；闭合括号保留可见）。
-    pub(crate) fn fold_range(&mut self, range: TextRange) -> DisplayMapResult<()> {
+    pub(crate) fn fold_range(&mut self, range: MultiBufferRange) -> DisplayMapResult<()> {
         let (fold_snapshot, fold_edits) = self.fold_map.write().fold(range)?;
         let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
         let wrap_edits = self.wrap_map.sync(tab_snapshot, &fold_edits);
@@ -650,7 +658,7 @@ mod tests {
 
     use gpui::{AppContext, TestAppContext, font, px};
     use zcv_language::LanguageBuffer;
-    use zcv_text::{Buffer, BufferConfig, Edit, Line, TextRange, TransactionMetadata};
+    use zcv_text::{Buffer, BufferConfig, Edit, Line, TransactionMetadata};
     use zcv_theme::ThemeChoice;
 
     use super::fold_map::ProjectedPoint;
@@ -750,7 +758,7 @@ mod tests {
         source_buffer.update(cx, |buffer, cx| {
             buffer
                 .edit(
-                    [Edit::insert(ByteOffset::new(3), "async ").unwrap()],
+                    [Edit::insert(MultiBufferOffset::new(3).into(), "async ").unwrap()],
                     TransactionMetadata::default(),
                 )
                 .expect("测试编辑应成功");
@@ -795,12 +803,12 @@ mod tests {
             .expect("测试 Buffer 应能创建");
         let map = DisplayMap::new(buffer.snapshot());
         let cases = [
-            ByteOffset::new(0),
-            ByteOffset::new(1),
-            ByteOffset::new(4),
-            ByteOffset::new(8),
-            ByteOffset::new(9),
-            ByteOffset::new(11),
+            MultiBufferOffset::new(0),
+            MultiBufferOffset::new(1),
+            MultiBufferOffset::new(4),
+            MultiBufferOffset::new(8),
+            MultiBufferOffset::new(9),
+            MultiBufferOffset::new(11),
         ];
 
         for offset in cases {
@@ -831,7 +839,7 @@ mod tests {
             assert_eq!(
                 map.snapshot()
                     .display_point_to_offset(display_point)
-                    .expect("合法 DisplayPoint 应能转回 ByteOffset"),
+                    .expect("合法 DisplayPoint 应能转回 MultiBufferOffset"),
                 offset
             );
         }
@@ -845,14 +853,14 @@ mod tests {
 
         let after_tab = map
             .snapshot()
-            .offset_to_display_point(ByteOffset::new(1))
+            .offset_to_display_point(MultiBufferOffset::new(1))
             .expect("tab 后的偏移应能映射");
         assert_eq!(after_tab.column(), DisplayColumn::new(4));
         assert_eq!(
             map.snapshot()
                 .display_point_to_offset(after_tab)
                 .expect("显示列应能还原为 tab 后的偏移"),
-            ByteOffset::new(1)
+            MultiBufferOffset::new(1)
         );
     }
 
@@ -877,7 +885,7 @@ mod tests {
         );
         assert!(
             map.snapshot()
-                .offset_to_display_point(ByteOffset::new(1))
+                .offset_to_display_point(MultiBufferOffset::new(1))
                 .is_err()
         );
     }
@@ -891,7 +899,7 @@ mod tests {
 
         buffer
             .edit(
-                [Edit::insert(ByteOffset::new(1), "b").unwrap()],
+                [Edit::insert(MultiBufferOffset::new(1).into(), "b").unwrap()],
                 TransactionMetadata::default(),
             )
             .expect("测试编辑应成功");
@@ -900,11 +908,11 @@ mod tests {
         assert_eq!(map.snapshot().buffer_snapshot().version(), mapped_version);
         assert_eq!(
             map.snapshot().buffer_snapshot().len_bytes(),
-            ByteOffset::new(1)
+            MultiBufferOffset::new(1)
         );
         assert!(
             map.snapshot()
-                .offset_to_display_point(ByteOffset::new(2))
+                .offset_to_display_point(MultiBufferOffset::new(2))
                 .is_err()
         );
     }
@@ -919,14 +927,15 @@ mod tests {
         let mut map = DisplayMap::new(buffer.snapshot());
         let before = map.snapshot();
         map.fold_range(
-            TextRange::new(ByteOffset::new(6), ByteOffset::new(28)).expect("折叠范围应合法"),
+            MultiBufferRange::new(MultiBufferOffset::new(6), MultiBufferOffset::new(28))
+                .expect("折叠范围应合法"),
         )
         .expect("折叠应成功");
 
         assert_eq!(map.snapshot().line_count(), 2);
         assert_eq!(
             map.snapshot()
-                .offset_to_display_point(ByteOffset::new("anchor\nhidden ".len()))
+                .offset_to_display_point(MultiBufferOffset::new("anchor\nhidden ".len()))
                 .expect("隐藏位置应能投影")
                 .row(),
             DisplayRow::ZERO
@@ -953,8 +962,11 @@ mod tests {
         let fold_start = text.find('\n').expect("折叠入口行应有换行符");
         let fold_end = text.find("}\n").expect("折叠范围应有闭合行");
         map.fold_range(
-            TextRange::new(ByteOffset::new(fold_start), ByteOffset::new(fold_end))
-                .expect("折叠范围应合法"),
+            MultiBufferRange::new(
+                MultiBufferOffset::new(fold_start),
+                MultiBufferOffset::new(fold_end),
+            )
+            .expect("折叠范围应合法"),
         )
         .expect("折叠应成功");
 
@@ -973,7 +985,8 @@ mod tests {
         let mut map = DisplayMap::new(buffer.snapshot());
         // 折叠 fn main：范围 = [行 0 换行符(11), `}`(27))。
         map.fold_range(
-            TextRange::new(ByteOffset::new(11), ByteOffset::new(27)).expect("折叠范围应合法"),
+            MultiBufferRange::new(MultiBufferOffset::new(11), MultiBufferOffset::new(27))
+                .expect("折叠范围应合法"),
         )
         .expect("折叠应成功");
         let snapshot = map.snapshot();
@@ -981,7 +994,8 @@ mod tests {
         // 真实 `}` 的字节范围投影到合并行占位符之后的列（anchor 11 字符 + 占位符 1 列 = 12）。
         let projected = snapshot
             .project_text_range(
-                TextRange::new(ByteOffset::new(27), ByteOffset::new(28)).expect("`}` 范围应合法"),
+                MultiBufferRange::new(MultiBufferOffset::new(27), MultiBufferOffset::new(28))
+                    .expect("`}` 范围应合法"),
             )
             .expect("投影应成功");
         assert_eq!(projected.len(), 1);
@@ -1002,7 +1016,7 @@ mod tests {
                     DisplayColumn::new(11)
                 ))
                 .expect("占位符列应可映射"),
-            ByteOffset::new(11)
+            MultiBufferOffset::new(11)
         );
         assert_eq!(
             snapshot
@@ -1011,7 +1025,7 @@ mod tests {
                     DisplayColumn::new(12)
                 ))
                 .expect("尾段列应可映射"),
-            ByteOffset::new(27)
+            MultiBufferOffset::new(27)
         );
         assert_eq!(
             snapshot
@@ -1020,7 +1034,7 @@ mod tests {
                     FoldBias::Left,
                 )
                 .expect("占位符左偏置应可映射"),
-            ByteOffset::new(11)
+            MultiBufferOffset::new(11)
         );
         assert_eq!(
             snapshot
@@ -1029,25 +1043,25 @@ mod tests {
                     FoldBias::Right,
                 )
                 .expect("占位符右偏置应可映射到折叠终点"),
-            ByteOffset::new(27)
+            MultiBufferOffset::new(27)
         );
         // 合并行行尾 = close 行内容末尾。
         assert_eq!(
             map.snapshot()
-                .end_of_row(ByteOffset::new(11))
+                .end_of_row(MultiBufferOffset::new(11))
                 .expect("行尾应可定位"),
-            ByteOffset::new(28)
+            MultiBufferOffset::new(28)
         );
         // 可见字节全偏移 roundtrip（26 是折叠内隐藏字节，投影不可逆）。
         for offset in [0usize, 11, 27, 28, 29, 57] {
             let point = snapshot
-                .offset_to_display_point(ByteOffset::new(offset))
+                .offset_to_display_point(MultiBufferOffset::new(offset))
                 .expect("可见偏移应能映射");
             assert_eq!(
                 snapshot
                     .display_point_to_offset(point)
                     .expect("显示点应能还原"),
-                ByteOffset::new(offset)
+                MultiBufferOffset::new(offset)
             );
         }
     }
@@ -1064,7 +1078,7 @@ mod tests {
         let subscription = buffer.subscribe();
         buffer
             .edit(
-                [Edit::insert(ByteOffset::new(5), " becomes longest").unwrap()],
+                [Edit::insert(MultiBufferOffset::new(5).into(), " becomes longest").unwrap()],
                 TransactionMetadata::default(),
             )
             .expect("测试编辑应成功");
@@ -1131,7 +1145,7 @@ mod tests {
         let subscription = buffer.subscribe();
         buffer
             .edit(
-                [Edit::insert(ByteOffset::new(5), "\nvery very wide").unwrap()],
+                [Edit::insert(MultiBufferOffset::new(5).into(), "\nvery very wide").unwrap()],
                 TransactionMetadata::default(),
             )
             .expect("测试编辑应成功");
@@ -1168,20 +1182,23 @@ mod tests {
         let mut offset = 0;
         while offset < len {
             let point = snapshot
-                .offset_to_display_point(ByteOffset::new(offset))
+                .offset_to_display_point(MultiBufferOffset::new(offset))
                 .expect("合法偏移应能映射");
             assert_eq!(
                 snapshot
                     .display_point_to_offset(point)
                     .expect("显示点应能还原"),
-                ByteOffset::new(offset),
+                MultiBufferOffset::new(offset),
                 "offset {offset} roundtrip 失败"
             );
             offset += snapshot
                 .buffer_snapshot()
                 .text_for_range(
-                    TextRange::new(ByteOffset::new(offset), ByteOffset::new(len))
-                        .expect("测试范围应合法"),
+                    MultiBufferRange::new(
+                        MultiBufferOffset::new(offset),
+                        MultiBufferOffset::new(len),
+                    )
+                    .expect("测试范围应合法"),
                 )
                 .expect("文本应可读取")
                 .chars()
@@ -1304,7 +1321,7 @@ mod tests {
         let subscription = buffer.subscribe();
         buffer
             .edit(
-                [Edit::insert(ByteOffset::new("aa bbb ".len()), "xxxx").unwrap()],
+                [Edit::insert(MultiBufferOffset::new("aa bbb ".len()).into(), "xxxx").unwrap()],
                 TransactionMetadata::default(),
             )
             .expect("测试编辑应成功");
@@ -1360,7 +1377,7 @@ mod tests {
         let subscription = buffer.subscribe();
         buffer
             .edit(
-                [Edit::insert(ByteOffset::new(3), "\n").unwrap()],
+                [Edit::insert(MultiBufferOffset::new(3).into(), "\n").unwrap()],
                 TransactionMetadata::default(),
             )
             .expect("测试编辑应成功");
@@ -1389,11 +1406,11 @@ mod tests {
         buffer
             .edit(
                 [Edit::replace(
-                TextRange::new(
+                MultiBufferRange::new(
                     buffer.line_start_byte(Line::new(5)).expect("测试行应存在"),
                     buffer.line_start_byte(Line::new(8)).expect("测试行应存在"),
                 )
-                .expect("测试行区间应合法"),
+                .expect("测试行区间应合法").into(),
                 "replaced line aaaaaaaaaaaaaaaaaaaaa\nreplaced line bbbbbbbbbbbbbbbbbbbbbbb\nreplaced line ccccccccccccccccccccc\n",
                 )],
                 TransactionMetadata::default(),
@@ -1422,7 +1439,8 @@ mod tests {
         .expect("测试 Buffer 应能创建");
         let mut map = DisplayMap::new(buffer.snapshot());
         map.fold_range(
-            TextRange::new(ByteOffset::new(6), ByteOffset::new(28)).expect("折叠范围应合法"),
+            MultiBufferRange::new(MultiBufferOffset::new(6), MultiBufferOffset::new(28))
+                .expect("折叠范围应合法"),
         )
         .expect("折叠应成功");
         map.set_wrap_width(Some(px(72.)), font("Helvetica"), px(16.), cx.text_system());
@@ -1439,13 +1457,13 @@ mod tests {
             "anchor\nhidden one\nhidden two\nafter".len() - 1,
         ] {
             let point = snapshot
-                .offset_to_display_point(ByteOffset::new(offset))
+                .offset_to_display_point(MultiBufferOffset::new(offset))
                 .expect("可见偏移应能映射");
             assert_eq!(
                 snapshot
                     .display_point_to_offset(point)
                     .expect("显示点应能还原"),
-                ByteOffset::new(offset)
+                MultiBufferOffset::new(offset)
             );
         }
     }
@@ -1494,7 +1512,7 @@ mod tests {
             end
         );
         // 片段中间的任意位置行首都回到片段起点。
-        let middle = ByteOffset::new((continuation_offset.get() + end.get()) / 2);
+        let middle = MultiBufferOffset::new((continuation_offset.get() + end.get()) / 2);
         assert_eq!(
             map.snapshot()
                 .beginning_of_row(middle)
@@ -1513,7 +1531,7 @@ mod tests {
         set_inlays(
             &mut map,
             vec![Inlay {
-                position: ByteOffset::new(1),
+                position: MultiBufferOffset::new(1),
                 text: ": hint".to_owned(),
             }],
         );
@@ -1541,19 +1559,19 @@ mod tests {
             &mut map,
             vec![
                 Inlay {
-                    position: ByteOffset::new(1),
+                    position: MultiBufferOffset::new(1),
                     text: "<anchor>".to_owned(),
                 },
                 Inlay {
-                    position: ByteOffset::new(close + 1),
+                    position: MultiBufferOffset::new(close + 1),
                     text: "<tail>".to_owned(),
                 },
             ],
         );
         map.fold_range(
-            TextRange::new(
-                ByteOffset::new(text.find('\n').expect("入口行应有换行符")),
-                ByteOffset::new(close),
+            MultiBufferRange::new(
+                MultiBufferOffset::new(text.find('\n').expect("入口行应有换行符")),
+                MultiBufferOffset::new(close),
             )
             .expect("折叠范围应合法"),
         )
@@ -1592,7 +1610,7 @@ mod tests {
         set_inlays(
             &mut map,
             vec![Inlay {
-                position: ByteOffset::new(1),
+                position: MultiBufferOffset::new(1),
                 text: "XY".to_owned(),
             }],
         );
@@ -1601,12 +1619,12 @@ mod tests {
         let offset = snapshot
             .display_point_to_offset(DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(3)))
             .expect("锚定后的字符应映射回原始偏移");
-        assert_eq!(offset, ByteOffset::new(1));
+        assert_eq!(offset, MultiBufferOffset::new(1));
         // 注入段内（列 1-2）吸附到锚定后（不可逆）。
         let offset = snapshot
             .display_point_to_offset(DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(1)))
             .expect("注入段内应吸附到锚定后");
-        assert_eq!(offset, ByteOffset::new(1));
+        assert_eq!(offset, MultiBufferOffset::new(1));
     }
 
     #[test]
@@ -1618,7 +1636,7 @@ mod tests {
         set_inlays(
             &mut map,
             vec![Inlay {
-                position: ByteOffset::new(1),
+                position: MultiBufferOffset::new(1),
                 text: "x".to_owned(),
             }],
         );
@@ -1626,7 +1644,9 @@ mod tests {
         buffer
             .edit(
                 [Edit::replace(
-                    TextRange::new(ByteOffset::ZERO, ByteOffset::new(1)).unwrap(),
+                    MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(1))
+                        .unwrap()
+                        .into(),
                     "AB",
                 )],
                 TransactionMetadata::default(),

@@ -144,7 +144,7 @@ mod tests {
 
     use gpui::{AppContext as _, Empty, TestAppContext};
     use zcv_multi_buffer::ExcerptRange;
-    use zcv_text::{ByteOffset, TextRange};
+
     use zcv_workspace::ItemHandle;
 
     use super::*;
@@ -228,7 +228,8 @@ mod tests {
             combined.set_excerpts(
                 vec![ExcerptRange::new(
                     source,
-                    TextRange::new(ByteOffset::ZERO, source_len).expect("完整范围应有效"),
+                    zcv_text::TextRange::new(zcv_text::ByteOffset::ZERO, source_len)
+                        .expect("完整范围应有效"),
                     Vec::new(),
                 )],
                 cx,

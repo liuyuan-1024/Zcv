@@ -3,10 +3,12 @@
 //! 主路径通过显示点驱动 Editor 的 begin/update/end selection；
 //! 偏移辅助函数只负责构造稳定的测试坐标，另有两个事件级冒烟测试验证 element.rs 的事件接线。
 
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+
 use gpui::{Modifiers, MouseButton, MouseDownEvent, TestAppContext, point, px};
 use std::path::PathBuf;
 use zcv_language::LanguageBuffer;
-use zcv_text::{Buffer, BufferConfig, ByteOffset, TextRange};
+use zcv_text::{Buffer, BufferConfig};
 
 use super::common::{buffer_text, focus_editor, scrolling_text, test_buffer};
 use super::*;
@@ -14,13 +16,13 @@ use crate::display_map::{DisplayColumn, DisplayPoint, DisplayRow};
 use crate::selection::{Selection, SelectionSet};
 
 /// 字节偏移构造辅助（测试文本均为 ASCII，字节数即字符数）。
-fn b(value: usize) -> ByteOffset {
-    ByteOffset::new(value)
+fn b(value: usize) -> MultiBufferOffset {
+    MultiBufferOffset::new(value)
 }
 
 fn begin_selection_at_offset(
     editor: &Entity<Editor>,
-    offset: ByteOffset,
+    offset: MultiBufferOffset,
     click_count: usize,
     extend: bool,
     cx: &mut TestAppContext,
@@ -36,7 +38,7 @@ fn begin_selection_at_offset(
 
 fn update_selection_at_offset(
     editor: &Entity<Editor>,
-    offset: ByteOffset,
+    offset: MultiBufferOffset,
     cx: &mut TestAppContext,
 ) {
     editor.update(cx, |editor, cx| {
@@ -250,7 +252,10 @@ fn dragging_leftwards_anchors_against_the_original_word_end(cx: &mut TestAppCont
     cx.read_entity(&editor, |editor, _| {
         let selections = editor.selections();
         let selection = selections.primary();
-        assert_eq!(selection.range(), TextRange::new(b(4), b(13)).unwrap());
+        assert_eq!(
+            selection.range(),
+            MultiBufferRange::new(b(4), b(13)).unwrap()
+        );
         assert_eq!(selection.anchor(), b(13));
         assert_eq!(selection.head(), b(4));
     });
@@ -293,7 +298,7 @@ fn selection_extension_crosses_folded_placeholder_and_continues(cx: &mut TestApp
     cx.run_until_parked();
 
     editor.update(cx, |editor, cx| editor.toggle_fold_at_line(Line::ZERO, cx));
-    begin_selection_at_offset(&editor, ByteOffset::new(11), 1, false, cx);
+    begin_selection_at_offset(&editor, MultiBufferOffset::new(11), 1, false, cx);
 
     // 显示层的占位符只有一个显示列，但右偏置必须把它解析为整个折叠源范围。
     editor.update(cx, |editor, cx| {
@@ -305,7 +310,10 @@ fn selection_extension_crosses_folded_placeholder_and_continues(cx: &mut TestApp
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(
             editor.selections(),
-            selections(Selection::new(ByteOffset::new(11), ByteOffset::new(27)))
+            selections(Selection::new(
+                MultiBufferOffset::new(11),
+                MultiBufferOffset::new(27)
+            ))
         );
     });
 
@@ -319,7 +327,10 @@ fn selection_extension_crosses_folded_placeholder_and_continues(cx: &mut TestApp
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(
             editor.selections(),
-            selections(Selection::new(ByteOffset::new(11), ByteOffset::new(29)))
+            selections(Selection::new(
+                MultiBufferOffset::new(11),
+                MultiBufferOffset::new(29)
+            ))
         );
     });
 }
@@ -398,7 +409,7 @@ fn mouse_events_drive_double_click_through_the_element(cx: &mut TestAppContext) 
         let selection = selections.primary();
         assert_eq!(
             selection.range(),
-            TextRange::new(b(expected_start), b(expected_end)).unwrap(),
+            MultiBufferRange::new(b(expected_start), b(expected_end)).unwrap(),
             "双击应选中命中列所在词"
         );
     });

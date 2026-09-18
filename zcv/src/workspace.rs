@@ -1026,15 +1026,15 @@ fn sync_editor_conflict_hunks(
             .ok()?;
             Some(EditorHunk {
                 id: format!("{}\n{index}", path.display()).into(),
-                range: outer,
+                range: outer.into(),
                 parts: vec![
                     EditorHunkPart {
-                        range: ours,
+                        range: ours.into(),
                         content_kind: DiffHunkKind::Deleted,
                         marker_kind: EditorHunkMarkerKind::Conflict,
                     },
                     EditorHunkPart {
-                        range: theirs,
+                        range: theirs.into(),
                         content_kind: DiffHunkKind::Added,
                         marker_kind: EditorHunkMarkerKind::Conflict,
                     },

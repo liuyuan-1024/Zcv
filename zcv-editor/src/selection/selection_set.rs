@@ -4,6 +4,8 @@
 //!
 //! **Zero-copy 纪律**：内部存储为 `Arc<[Selection]>`，`Clone` 是 O(1) 引用计数递增。
 
+use zcv_multi_buffer::MultiBufferOffset;
+
 use std::sync::Arc;
 
 use super::Selection;
@@ -28,7 +30,7 @@ impl SelectionSet {
         normalize_selections(selections, primary_index)
     }
 
-    pub fn caret(offset: ByteOffset) -> Self {
+    pub fn caret(offset: MultiBufferOffset) -> Self {
         Self {
             selections: Arc::from(vec![Selection::caret(offset)]),
             primary_index: 0,
@@ -63,23 +65,27 @@ impl SelectionSet {
     pub fn map_through_position_map(&self, position_map: &PositionMap) -> Self {
         // 批量映射：收集全部 anchor/head 点排序后单遍推进，替代逐 selection 各自线性扫描，映射成本从 O(A×E) 降为 O(A log A + E)。
         let selection_count = self.selections.len();
-        let mut points: Vec<(ByteOffset, usize, bool)> = Vec::with_capacity(selection_count * 2);
+        let mut points: Vec<(MultiBufferOffset, usize, bool)> =
+            Vec::with_capacity(selection_count * 2);
         for (index, selection) in self.selections.iter().copied().enumerate() {
             points.push((selection.anchor(), index, true));
             points.push((selection.head(), index, false));
         }
         points.sort_unstable_by_key(|(offset, ..)| *offset);
-        let offsets: Vec<ByteOffset> = points.iter().map(|(offset, ..)| *offset).collect();
+        let offsets: Vec<ByteOffset> = points
+            .iter()
+            .map(|(offset, ..)| ByteOffset::new(offset.get()))
+            .collect();
         let results = position_map.map_old_positions(&offsets, Affinity::After);
 
-        let mut anchors = vec![ByteOffset::ZERO; selection_count];
-        let mut heads = vec![ByteOffset::ZERO; selection_count];
+        let mut anchors = vec![MultiBufferOffset::ZERO; selection_count];
+        let mut heads = vec![MultiBufferOffset::ZERO; selection_count];
         for ((_, index, is_anchor), result) in points.iter().zip(results) {
             let offset = result.value();
             if *is_anchor {
-                anchors[*index] = offset;
+                anchors[*index] = offset.into();
             } else {
-                heads[*index] = offset;
+                heads[*index] = offset.into();
             }
         }
 
@@ -99,13 +105,13 @@ impl SelectionSet {
 
 impl Default for SelectionSet {
     fn default() -> Self {
-        Self::caret(ByteOffset::ZERO)
+        Self::caret(MultiBufferOffset::ZERO)
     }
 }
 
 fn normalize_selections(selections: Vec<Selection>, primary_index: usize) -> SelectionSet {
     if selections.is_empty() {
-        return SelectionSet::caret(ByteOffset::ZERO);
+        return SelectionSet::caret(MultiBufferOffset::ZERO);
     }
 
     let original_primary_index = primary_index.min(selections.len() - 1);
@@ -158,21 +164,22 @@ fn should_merge(current: Selection, next: Selection) -> bool {
     current.end() >= next.start()
 }
 
-fn contains_offset(selection: Selection, offset: ByteOffset) -> bool {
+fn contains_offset(selection: Selection, offset: MultiBufferOffset) -> bool {
     selection.start() <= offset && offset <= selection.end()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use zcv_text::TextRange;
+    use zcv_multi_buffer::MultiBufferRange;
 
-    fn b(value: usize) -> ByteOffset {
-        ByteOffset::new(value)
+    use super::*;
+
+    fn b(value: usize) -> MultiBufferOffset {
+        MultiBufferOffset::new(value)
     }
 
-    fn range(start: usize, end: usize) -> TextRange {
-        TextRange::new(b(start), b(end)).unwrap()
+    fn range(start: usize, end: usize) -> MultiBufferRange {
+        MultiBufferRange::new(b(start), b(end)).unwrap()
     }
 
     fn selection(anchor: usize, head: usize) -> Selection {

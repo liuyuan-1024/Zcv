@@ -1,12 +1,14 @@
 //! Editor 的文件内搜索：持有搜索结果（绑定 BufferVersion），编辑后自动重搜。
 
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use gpui::{Bounds, Pixels};
 use zcv_text::{
     Affinity, Anchor, BufferVersion, PositionMap, RegexSearchResult, SearchQuery,
-    SearchQueryResult, SearchResult, TextRange,
+    SearchQueryResult, SearchResult,
 };
 use zcv_workspace::{Direction, SearchEvent, SearchableItem};
 
@@ -42,7 +44,7 @@ struct MarkerGeometryKey {
 ///
 /// 视口高亮按字节范围 seek 后连续消费；滚动栏行投影只在快照建立时计算一次。
 pub(crate) struct SearchDecorationSnapshot {
-    ranges: Arc<[TextRange]>,
+    ranges: Arc<[MultiBufferRange]>,
     active_index: usize,
     projected_rows: Arc<[Range<usize>]>,
     markers: Mutex<Option<(MarkerGeometryKey, Arc<[ScrollbarMarker]>)>>,
@@ -60,7 +62,7 @@ impl SearchDecorationSnapshot {
 
     fn from_ranges(
         display: &DisplaySnapshot,
-        ranges: Arc<[TextRange]>,
+        ranges: Arc<[MultiBufferRange]>,
         active_index: usize,
     ) -> Self {
         let projected_rows = ranges
@@ -79,7 +81,7 @@ impl SearchDecorationSnapshot {
     pub(crate) fn visible_ranges(
         &self,
         viewport: Range<usize>,
-    ) -> impl Iterator<Item = (usize, TextRange)> + '_ {
+    ) -> impl Iterator<Item = (usize, MultiBufferRange)> + '_ {
         let start = self
             .ranges
             .partition_point(|range| range.end().get() <= viewport.start);
@@ -141,17 +143,20 @@ fn projected_row_range(range: ProjectedRange) -> Range<usize> {
 }
 
 impl SearchMatchAnchor {
-    pub(crate) fn from_range(version: BufferVersion, range: TextRange) -> Self {
+    pub(crate) fn from_range(version: BufferVersion, range: MultiBufferRange) -> Self {
         Self {
             // 匹配边界不吸收恰好发生在边界上的插入。
-            range: Anchor::new(version, range.start()).with_affinity(Affinity::After)
-                ..Anchor::new(version, range.end()).with_affinity(Affinity::Before),
+            range: Anchor::new(version, range.start().into()).with_affinity(Affinity::After)
+                ..Anchor::new(version, range.end().into()).with_affinity(Affinity::Before),
         }
     }
 
-    pub(crate) fn range(&self) -> TextRange {
-        TextRange::new(self.range.start.offset(), self.range.end.offset())
-            .expect("搜索匹配锚点范围必须有序")
+    pub(crate) fn range(&self) -> MultiBufferRange {
+        MultiBufferRange::new(
+            MultiBufferOffset::new(self.range.start.offset().get()),
+            MultiBufferOffset::new(self.range.end.offset().get()),
+        )
+        .expect("搜索匹配锚点范围必须有序")
     }
 }
 
@@ -210,7 +215,7 @@ impl SearchableItem for Editor {
         let snapshot = self.multi_buffer.read(cx).snapshot(cx);
         Some(
             snapshot
-                .text_chunks(range.start()..range.end())
+                .bytes_in_range(range.start()..range.end())
                 .map(|chunk| chunk.text)
                 .collect(),
         )
@@ -428,7 +433,7 @@ impl Editor {
     pub fn set_search_ranges(
         &mut self,
         query: SearchQuery,
-        ranges: Vec<TextRange>,
+        ranges: Vec<MultiBufferRange>,
         cx: &mut gpui::Context<Self>,
     ) {
         let version = self.multi_buffer.read(cx).snapshot(cx).version();
@@ -463,7 +468,7 @@ impl Editor {
     pub fn append_search_ranges(
         &mut self,
         query: SearchQuery,
-        ranges: Vec<TextRange>,
+        ranges: Vec<MultiBufferRange>,
         cx: &mut gpui::Context<Self>,
     ) {
         let version = self.multi_buffer.read(cx).snapshot(cx).version();
@@ -518,7 +523,10 @@ impl Editor {
             .matches()
             .iter()
             .map(|search_match| {
-                SearchMatchAnchor::from_range(virtual_snapshot.version(), search_match.range())
+                SearchMatchAnchor::from_range(
+                    virtual_snapshot.version(),
+                    search_match.range().into(),
+                )
             })
             .collect();
         let search = EditorSearch {

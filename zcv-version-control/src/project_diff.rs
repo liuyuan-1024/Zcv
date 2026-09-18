@@ -1005,7 +1005,8 @@ impl ProjectDiffView {
             .read(cx)
             .snapshot(cx)
             .excerpts()
-            .is_empty()
+            .next()
+            .is_none()
     }
 
     /// 从 GitStore 权威快照重建文件集合；真实内容始终复用 Project 的文档实体。
@@ -1150,7 +1151,7 @@ impl ProjectDiffView {
 
     fn conflict_editor_hunks(&self, cx: &App) -> Vec<EditorHunk> {
         let snapshot = self.multi_buffer.read(cx).snapshot(cx);
-        let excerpts = snapshot.excerpts();
+        let mut excerpts = snapshot.excerpts();
         let mut hunks = Vec::new();
         for (buffer, path) in self.multi_buffer.read(cx).file_buffers(cx) {
             let source = buffer.read(cx).snapshot();
@@ -1162,7 +1163,7 @@ impl ProjectDiffView {
             };
             let text = text.to_string();
             for (index, region) in parse_conflict_regions(&text).iter().enumerate() {
-                let Some(excerpt) = excerpts.iter().find(|excerpt| {
+                let Some(excerpt) = excerpts.find(|excerpt| {
                     excerpt.path() == path
                         && excerpt
                             .source_range()
@@ -1184,14 +1185,15 @@ impl ProjectDiffView {
                 };
                 hunks.push(EditorHunk {
                     id: format!("{}\n{index}", path.display()).into(),
-                    range,
+                    range: range.into(),
                     parts: vec![
                         EditorHunkPart {
                             range: TextRange::new(
                                 output_offset(region.outer.start),
                                 output_offset(region.theirs.start),
                             )
-                            .expect("冲突当前侧范围必须有效"),
+                            .expect("冲突当前侧范围必须有效")
+                            .into(),
                             content_kind: DiffHunkKind::Deleted,
                             marker_kind: EditorHunkMarkerKind::Conflict,
                         },
@@ -1200,7 +1202,8 @@ impl ProjectDiffView {
                                 output_offset(region.theirs.start),
                                 output_offset(region.outer.end),
                             )
-                            .expect("冲突传入侧范围必须有效"),
+                            .expect("冲突传入侧范围必须有效")
+                            .into(),
                             content_kind: DiffHunkKind::Added,
                             marker_kind: EditorHunkMarkerKind::Conflict,
                         },
@@ -1540,8 +1543,8 @@ impl ProjectDiffView {
             return;
         };
         let snapshot = self.multi_buffer.read(cx).snapshot(cx);
-        let excerpts = snapshot.excerpts();
-        let Some(excerpt) = excerpts.iter().find(|excerpt| excerpt.path() == path) else {
+        let mut excerpts = snapshot.excerpts();
+        let Some(excerpt) = excerpts.find(|excerpt| excerpt.path() == path) else {
             return;
         };
         let offset = excerpt.output_range().start().get();
@@ -2048,7 +2051,6 @@ mod tests {
             let snapshot = view.multi_buffer.read(cx).snapshot(cx);
             let paths = snapshot
                 .excerpts()
-                .iter()
                 .filter(|excerpt| excerpt.starts_new_excerpt())
                 .map(|excerpt| {
                     excerpt
@@ -2108,10 +2110,9 @@ mod tests {
 
         cx.read_entity(&view, |view, cx| {
             let snapshot = view.multi_buffer.read(cx).snapshot(cx);
-            let excerpts = snapshot.excerpts();
+            let mut excerpts = snapshot.excerpts();
             // 修改行的 Deleted 片段：首行（旧侧 "修改前"）→ 工作区第 5 行（0-based 4）。
             let modified_excerpt = excerpts
-                .iter()
                 .find(|excerpt| {
                     excerpt.path() == modified_path
                         && excerpt.diff_kind() == Some(ExcerptDiffKind::Deleted)
@@ -2148,7 +2149,6 @@ mod tests {
             );
             // 整文件删除：纯删除 hunk 的 range 为空，锚定到变更块起点（0-based 0）。
             let removed_excerpt = excerpts
-                .iter()
                 .find(|excerpt| {
                     excerpt.path().file_name().and_then(|name| name.to_str()) == Some("removed.txt")
                         && excerpt.diff_kind() == Some(ExcerptDiffKind::Deleted)

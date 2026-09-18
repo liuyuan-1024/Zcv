@@ -219,6 +219,15 @@ impl Buffer {
     ) {
         self.storage = next_storage;
         self.version = event.new_version();
+        // 编辑日志是版本化编辑的唯一事实：Anchor 与组合文档据此跨版本重建坐标。
+        let patch = crate::text_changes::TextPatch::from_delta(event.delta());
+        self.edit_log = self.edit_log.appended(
+            event.old_version(),
+            event.new_version(),
+            patch,
+            event.requires_reset(),
+            self.config.large_file.max_undo_history,
+        );
         self.commit_delta_event(next_transaction_id, event);
     }
 

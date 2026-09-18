@@ -54,6 +54,7 @@ impl Buffer {
             saved_fingerprint,
             next_transaction_id: TransactionId::INITIAL,
             text_changes: Default::default(),
+            edit_log: Default::default(),
             history: history::HistoryState::new(),
             session: None,
         };

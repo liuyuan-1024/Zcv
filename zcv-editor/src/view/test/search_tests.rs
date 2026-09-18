@@ -1,7 +1,9 @@
 //! 文件内搜索：SearchableItem 实现（搜索/跳转/替换/编辑后自动重搜）。
 
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+
 use gpui::{TestAppContext, VisualTestContext};
-use zcv_text::{Buffer, ByteOffset, Line, SearchQuery, TextRange};
+use zcv_text::{Buffer, Line, SearchQuery};
 use zcv_theme::color;
 use zcv_workspace::{Direction, SearchableItem};
 
@@ -45,7 +47,8 @@ fn search_finds_all_matches_and_reports_count(cx: &mut TestAppContext) {
             let matches = editor.search_highlights().unwrap().0;
             assert_eq!(
                 matches[0].range(),
-                TextRange::new(ByteOffset::new(0), ByteOffset::new(3),).unwrap()
+                MultiBufferRange::new(MultiBufferOffset::new(0), MultiBufferOffset::new(3),)
+                    .unwrap()
             );
             assert!(editor.search_highlights().is_some());
         });
@@ -59,13 +62,19 @@ fn external_search_ranges_append_without_resetting_active_match(cx: &mut TestApp
         editor.update(cx, |editor, cx| {
             editor.append_search_ranges(
                 query("abc"),
-                vec![TextRange::new(ByteOffset::ZERO, ByteOffset::new(3)).unwrap()],
+                vec![
+                    MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(3))
+                        .unwrap(),
+                ],
                 cx,
             );
             assert_eq!(editor.search_count(cx), (1, Some(0)));
             editor.append_search_ranges(
                 query("abc"),
-                vec![TextRange::new(ByteOffset::new(8), ByteOffset::new(11)).unwrap()],
+                vec![
+                    MultiBufferRange::new(MultiBufferOffset::new(8), MultiBufferOffset::new(11))
+                        .unwrap(),
+                ],
                 cx,
             );
             assert_eq!(editor.search_count(cx), (2, Some(0)));
@@ -110,7 +119,8 @@ fn search_regex_matches_pattern(cx: &mut TestAppContext) {
             let matches = editor.search_highlights().unwrap().0;
             assert_eq!(
                 matches[2].range(),
-                TextRange::new(ByteOffset::new(8), ByteOffset::new(11),).unwrap()
+                MultiBufferRange::new(MultiBufferOffset::new(8), MultiBufferOffset::new(11),)
+                    .unwrap()
             );
         });
     });
@@ -149,8 +159,14 @@ fn activate_match_moves_in_direction_and_wraps(cx: &mut TestAppContext) {
             editor.activate_match_in_direction(Direction::Prev, 1, window, cx);
             assert_eq!(editor.search_count(cx), (3, Some(2)));
             // 跳转会移动选区到匹配位置（选区 head 指向匹配终点）。
-            assert_eq!(editor.selections().primary().head(), ByteOffset::new(11));
-            assert_eq!(editor.selections().primary().start(), ByteOffset::new(8));
+            assert_eq!(
+                editor.selections().primary().head(),
+                MultiBufferOffset::new(11)
+            );
+            assert_eq!(
+                editor.selections().primary().start(),
+                MultiBufferOffset::new(8)
+            );
         });
     });
 }
@@ -600,8 +616,8 @@ fn query_suggestion_seeds_search_from_selection(cx: &mut TestAppContext) {
     cx.update(|_window, cx| {
         editor.update(cx, |editor, cx| {
             editor.set_selections(SelectionSet::new(vec![Selection::new(
-                ByteOffset::new(6),
-                ByteOffset::new(11),
+                MultiBufferOffset::new(6),
+                MultiBufferOffset::new(11),
             )]));
             assert_eq!(
                 editor.query_suggestion(cx),
@@ -609,7 +625,7 @@ fn query_suggestion_seeds_search_from_selection(cx: &mut TestAppContext) {
                 "非空主选区应返回选中文本"
             );
 
-            editor.set_selections(SelectionSet::caret(ByteOffset::new(3)));
+            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(3)));
             assert_eq!(
                 editor.query_suggestion(cx),
                 None,

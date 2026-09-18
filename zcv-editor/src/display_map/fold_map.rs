@@ -5,13 +5,15 @@
 //! 折叠模型：折叠范围是字节级的（入口行行尾换行符 → 闭合括号前），折叠段不产生投影行，占位符文本拼入 anchor 行的合并行（anchor 全文 + 占位符 +闭合行尾段），因此闭合括号保留为真实可见文本。
 //! 隐藏点投影遵循 bias 约定（Left 吸附折叠起点列，Right 吸附折叠终点列）。
 
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+
 use std::{borrow::Cow, cmp::Reverse, collections::BTreeMap, ops::Range};
 
 use sum_tree::{Bias as TreeBias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use zcv_multi_buffer::MultiBufferSnapshot;
 use zcv_text::{
-    Anchor, BufferVersion, ByteOffset, CoordinateError, Line, LineRange, LogicalColumn,
-    MappingResult, Position, Stickiness, TextChangeBatch, TextRange,
+    Anchor, BufferVersion, CoordinateError, Line, LineRange, LogicalColumn, MappingResult,
+    Position, Stickiness, TextChangeBatch,
 };
 
 use super::error::{DisplayMapResult, FoldError};
@@ -41,17 +43,25 @@ struct Fold {
 }
 
 impl Fold {
-    fn new(id: FoldId, version: BufferVersion, range: TextRange, line_span: (Line, Line)) -> Self {
+    fn new(
+        id: FoldId,
+        version: BufferVersion,
+        range: MultiBufferRange,
+        line_span: (Line, Line),
+    ) -> Self {
         Self {
             id,
-            range: Anchor::range_inside(version, range),
+            range: Anchor::range_inside(version, range.into()),
             line_span,
         }
     }
 
-    fn text_range(&self) -> TextRange {
-        TextRange::new(self.range.start.offset(), self.range.end.offset())
-            .expect("折叠锚点范围必须有序")
+    fn text_range(&self) -> MultiBufferRange {
+        MultiBufferRange::new(
+            MultiBufferOffset::new(self.range.start.offset().get()),
+            MultiBufferOffset::new(self.range.end.offset().get()),
+        )
+        .expect("折叠锚点范围必须有序")
     }
 }
 
@@ -271,7 +281,7 @@ pub(crate) struct FoldSnapshot {
     folds: SumTree<Fold>,
     lookup: FoldLookup,
     transforms: SumTree<Transform>,
-    fold_metadata_by_id: BTreeMap<FoldId, TextRange>,
+    fold_metadata_by_id: BTreeMap<FoldId, MultiBufferRange>,
     version: u64,
 }
 
@@ -338,7 +348,7 @@ impl FoldLookup {
         }
     }
 
-    fn covering_offset(&self, offset: ByteOffset) -> Option<&Fold> {
+    fn covering_offset(&self, offset: MultiBufferOffset) -> Option<&Fold> {
         let upper = self
             .by_start
             .partition_point(|fold| fold.text_range().start() <= offset);
@@ -391,8 +401,8 @@ impl FoldSnapshot {
     /// 水平移动用：目标落在折叠内时按方向吸附到折叠终点/起点（折叠在显示上占一个字符）。
     pub(crate) fn fold_range_covering_offset(
         &self,
-        offset: ByteOffset,
-    ) -> Option<(ByteOffset, ByteOffset)> {
+        offset: MultiBufferOffset,
+    ) -> Option<(MultiBufferOffset, MultiBufferOffset)> {
         self.lookup.covering_offset(offset).map(|fold| {
             let range = fold.text_range();
             (range.start(), range.end())
@@ -754,17 +764,17 @@ impl FoldMap {
                     buffer
                         .resolve_anchor(&start)
                         .zip(buffer.resolve_anchor(&end))
-                        .and_then(|(start, end)| TextRange::new(start, end).ok())
+                        .and_then(|(start, end)| MultiBufferRange::new(start, end).ok())
                 })
             } else {
                 let mapped =
-                    position_map.map_old_range_with_stickiness(old_range, Stickiness::Never);
-                (!matches!(mapped, MappingResult::Collapsed(_))).then(|| mapped.value())
+                    position_map.map_old_range_with_stickiness(old_range.into(), Stickiness::Never);
+                (!matches!(mapped, MappingResult::Collapsed(_))).then(|| mapped.value().into())
             };
             let Some(range) = remapped else {
                 continue;
             };
-            fold.range = Anchor::range_inside(new_version, range);
+            fold.range = Anchor::range_inside(new_version, range.into());
             fold.line_span = fold_line_span(&buffer, range)
                 .expect("映射后的折叠锚点范围必须位于当前 Snapshot 内");
             self.snapshot.fold_metadata_by_id.insert(fold.id, range);
@@ -838,7 +848,7 @@ impl FoldMapWriter<'_> {
 
     pub(super) fn fold(
         &mut self,
-        range: TextRange,
+        range: MultiBufferRange,
     ) -> DisplayMapResult<(FoldSnapshot, Vec<FoldEdit>)> {
         if range.is_empty() {
             return Err(FoldError::EmptyRange { range }.into());
@@ -1053,15 +1063,23 @@ fn linear_fold_edit(
     let mut new_rows: Option<Range<usize>> = None;
     for edit in batch.patch().edits() {
         let old_start = old_buffer
-            .byte_to_line(edit.old_range().start())
+            .byte_to_line(edit.old_range().start().into())
             .ok()?
             .get();
-        let old_end = old_buffer.byte_to_line(edit.old_range().end()).ok()?.get() + 1;
+        let old_end = old_buffer
+            .byte_to_line(edit.old_range().end().into())
+            .ok()?
+            .get()
+            + 1;
         let new_start = new_buffer
-            .byte_to_line(edit.new_range().start())
+            .byte_to_line(edit.new_range().start().into())
             .ok()?
             .get();
-        let new_end = new_buffer.byte_to_line(edit.new_range().end()).ok()?.get() + 1;
+        let new_end = new_buffer
+            .byte_to_line(edit.new_range().end().into())
+            .ok()?
+            .get()
+            + 1;
         old_rows = Some(merge_row_range(old_rows, old_start..old_end));
         new_rows = Some(merge_row_range(new_rows, new_start..new_end));
     }
@@ -1127,8 +1145,8 @@ fn inline_fold_edits(
         .iter()
         .filter_map(|edit| {
             let buffer = stream.buffer_snapshot();
-            let start = buffer.byte_to_line(edit.new_range().start()).ok()?;
-            let end = buffer.byte_to_line(edit.new_range().end()).ok()?;
+            let start = buffer.byte_to_line(edit.new_range().start().into()).ok()?;
+            let end = buffer.byte_to_line(edit.new_range().end().into()).ok()?;
             // changed_lines 是流行号（下游缓存失效按流行）。
             //
             // 折叠覆盖行（anchor 与 close 之间的隐藏行、close 行）的编辑映射到最外层折叠的 anchor 行：
@@ -1164,14 +1182,14 @@ fn inline_fold_edits(
 /// 折叠范围是字节级的（终点在 close 行内），终点行即被折叠的 close 行，不再按"终点恰在行首"回退（行首终点只可能来自旧的整行折叠形状）。
 fn fold_line_span(
     snapshot: &MultiBufferSnapshot,
-    range: TextRange,
+    range: MultiBufferRange,
 ) -> DisplayMapResult<(Line, Line)> {
     let start = snapshot.byte_to_line(range.start())?;
     let end = snapshot.byte_to_line(range.end())?;
     Ok((start, end))
 }
 
-fn ranges_disjoint_or_nested(left: TextRange, right: TextRange) -> bool {
+fn ranges_disjoint_or_nested(left: MultiBufferRange, right: MultiBufferRange) -> bool {
     left.end() <= right.start()
         || right.end() <= left.start()
         || (left.start() <= right.start() && right.end() <= left.end())
@@ -1186,8 +1204,8 @@ mod tests {
     use super::super::inlay_map::InlayMap;
     use super::*;
 
-    fn text_range(start: usize, end: usize) -> TextRange {
-        TextRange::new(ByteOffset::new(start), ByteOffset::new(end)).unwrap()
+    fn text_range(start: usize, end: usize) -> MultiBufferRange {
+        MultiBufferRange::new(MultiBufferOffset::new(start), MultiBufferOffset::new(end)).unwrap()
     }
 
     #[test]
@@ -1303,7 +1321,7 @@ mod tests {
         let subscription = buffer.subscribe();
         buffer
             .edit(
-                [Edit::insert(ByteOffset::new(9), "!").unwrap()],
+                [Edit::insert(MultiBufferOffset::new(9).into(), "!").unwrap()],
                 TransactionMetadata::default(),
             )
             .unwrap();
@@ -1327,7 +1345,7 @@ mod tests {
         let subscription = buffer.subscribe();
         buffer
             .edit(
-                [Edit::insert(ByteOffset::new(9), "new\n").unwrap()],
+                [Edit::insert(MultiBufferOffset::new(9).into(), "new\n").unwrap()],
                 TransactionMetadata::default(),
             )
             .unwrap();
@@ -1354,7 +1372,7 @@ mod tests {
         let subscription = buffer.subscribe();
         buffer
             .edit(
-                [Edit::insert(ByteOffset::new(9), "new\n").unwrap()],
+                [Edit::insert(MultiBufferOffset::new(9).into(), "new\n").unwrap()],
                 TransactionMetadata::default(),
             )
             .unwrap();
@@ -1379,7 +1397,7 @@ mod tests {
         // 在未折叠区域插入换行：只应重排该行附近的 tab 行，而不是整份文档。
         buffer
             .edit(
-                [Edit::insert(ByteOffset::new(4), "\n").unwrap()],
+                [Edit::insert(MultiBufferOffset::new(4).into(), "\n").unwrap()],
                 TransactionMetadata::default(),
             )
             .unwrap();
@@ -1405,7 +1423,7 @@ mod tests {
         let subscription = buffer.subscribe();
         buffer
             .edit(
-                [Edit::delete(text_range(0, "anchor\nhidden\n".len()))],
+                [Edit::delete(text_range(0, "anchor\nhidden\n".len()).into())],
                 TransactionMetadata::default(),
             )
             .unwrap();
@@ -1459,7 +1477,7 @@ mod tests {
         let subscription = buffer.subscribe();
         buffer
             .edit(
-                [Edit::insert(fold_range.start(), "X").unwrap()],
+                [Edit::insert(fold_range.start().into(), "X").unwrap()],
                 TransactionMetadata::default(),
             )
             .unwrap();
@@ -1484,7 +1502,7 @@ mod tests {
         let subscription = buffer.subscribe();
         buffer
             .edit(
-                [Edit::insert(ByteOffset::new(9), "X").unwrap()],
+                [Edit::insert(MultiBufferOffset::new(9).into(), "X").unwrap()],
                 TransactionMetadata::default(),
             )
             .unwrap();

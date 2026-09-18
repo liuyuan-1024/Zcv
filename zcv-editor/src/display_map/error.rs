@@ -1,5 +1,7 @@
+use zcv_multi_buffer::MultiBufferRange;
+
 use thiserror::Error;
-use zcv_text::{CoordinateError, TextError, TextRange};
+use zcv_text::{CoordinateError, TextError};
 
 pub(crate) type DisplayMapResult<T> = Result<T, DisplayMapError>;
 
@@ -19,9 +21,9 @@ pub(crate) enum FoldError {
     IdOverflow,
     #[error("折叠区间与已有折叠部分重叠：已有 {existing:?}，候选 {candidate:?}")]
     OverlapWithoutNesting {
-        existing: TextRange,
-        candidate: TextRange,
+        existing: MultiBufferRange,
+        candidate: MultiBufferRange,
     },
     #[error("折叠区间不能为空：{range:?}")]
-    EmptyRange { range: TextRange },
+    EmptyRange { range: MultiBufferRange },
 }

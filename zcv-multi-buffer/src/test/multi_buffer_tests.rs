@@ -7,8 +7,8 @@ use crate::{BufferDiff, BufferDiffInput, DiffFile, DiffHunkStaging, DiffOperatio
 use zcv_git::DiffHunkKind;
 use zcv_language::LanguageBuffer;
 use zcv_text::{
-    Buffer, BufferConfig, ByteOffset, Edit, Line, StorageError, TextError, TextRange,
-    TransactionMetadata,
+    Buffer, BufferConfig, ByteOffset, CharOffset, Edit, Line, StorageError, TextError, TextRange,
+    TransactionMetadata, Utf16Offset,
 };
 
 use super::*;
@@ -688,7 +688,7 @@ fn anchor_resolves_to_neighbor_path_after_removal(cx: &mut TestAppContext) {
     // b.rs 的组合起点是 2（a "a\n" 占 2 字节）。
     let anchor = cx.read_entity(&combined, |buffer, _| {
         buffer
-            .anchor_for_offset(ByteOffset::new(2))
+            .anchor_for_offset(ByteOffset::new(2).into())
             .expect("b.rs 内应能锚定")
     });
 
@@ -699,7 +699,7 @@ fn anchor_resolves_to_neighbor_path_after_removal(cx: &mut TestAppContext) {
     let resolved = cx.read_entity(&combined, |buffer, _| buffer.resolve_anchor(&anchor));
     assert_eq!(
         resolved,
-        Some(ByteOffset::new(2)),
+        Some(Into::into(ByteOffset::new(2))),
         "b.rs 消失后应回退到前驱 a.rs 的末尾"
     );
 }
@@ -720,16 +720,16 @@ fn excerpt_at_output_offset_uses_the_offset_cursor(cx: &mut TestAppContext) {
     });
 
     let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
-    assert_eq!(snapshot.len_bytes(), ByteOffset::new(6));
+    assert_eq!(snapshot.len_bytes(), MultiBufferOffset::new(6));
     assert_eq!(
         snapshot
-            .excerpt_at_output_offset(ByteOffset::new(0))
+            .excerpt_at_output_offset(ByteOffset::new(0).into())
             .map(|excerpt| excerpt.path().to_path_buf()),
         Some(PathBuf::from("src/a.rs"))
     );
     assert_eq!(
         snapshot
-            .excerpt_at_output_offset(ByteOffset::new(4))
+            .excerpt_at_output_offset(ByteOffset::new(4).into())
             .map(|excerpt| excerpt.path().to_path_buf()),
         Some(PathBuf::from("src/b.rs"))
     );
@@ -762,12 +762,21 @@ fn set_excerpts_for_path_replaces_only_that_path(cx: &mut TestAppContext) {
     assert!(replaced);
 
     let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
-    assert_eq!(snapshot.excerpts().len(), 3);
+    assert_eq!(snapshot.excerpts().count(), 3);
     assert_eq!(snapshot.excerpts_for_path(Path::new("src/a.rs")).count(), 2);
     assert_eq!(snapshot.excerpts_for_path(Path::new("src/b.rs")).count(), 1);
-    assert_eq!(snapshot.excerpts()[0].path(), Path::new("src/a.rs"));
-    assert_eq!(snapshot.excerpts()[1].path(), Path::new("src/a.rs"));
-    assert_eq!(snapshot.excerpts()[2].path(), Path::new("src/b.rs"));
+    assert_eq!(
+        snapshot.excerpts().next().unwrap().path(),
+        Path::new("src/a.rs")
+    );
+    assert_eq!(
+        snapshot.excerpts().nth(1).unwrap().path(),
+        Path::new("src/a.rs")
+    );
+    assert_eq!(
+        snapshot.excerpts().nth(2).unwrap().path(),
+        Path::new("src/b.rs")
+    );
 }
 #[gpui::test]
 fn excerpt_view_is_derived_and_shared_once_per_snapshot(cx: &mut TestAppContext) {
@@ -807,7 +816,7 @@ fn remove_excerpts_for_path_drops_only_that_path(cx: &mut TestAppContext) {
     });
 
     let before = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx).len_bytes());
-    assert_eq!(before, ByteOffset::new(3), "a + 合成换行 + b");
+    assert_eq!(before, MultiBufferOffset::new(3), "a + 合成换行 + b");
 
     let removed = cx.update_entity(&combined, |buffer, cx| {
         buffer.remove_excerpts_for_path(Path::new("src/a.rs"), cx)
@@ -815,11 +824,14 @@ fn remove_excerpts_for_path_drops_only_that_path(cx: &mut TestAppContext) {
     assert!(removed);
 
     let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
-    assert_eq!(snapshot.excerpts().len(), 1);
-    assert_eq!(snapshot.excerpts()[0].path(), Path::new("src/b.rs"));
+    assert_eq!(snapshot.excerpts().count(), 1);
+    assert_eq!(
+        snapshot.excerpts().next().unwrap().path(),
+        Path::new("src/b.rs")
+    );
     assert_eq!(
         snapshot.len_bytes(),
-        ByteOffset::new(1),
+        MultiBufferOffset::new(1),
         "b 成为末尾片段后不再补合成换行"
     );
 
@@ -870,18 +882,21 @@ fn text_chunks_stream_excerpt_sources_and_inserted_boundary(cx: &mut TestAppCont
 
     let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
     let chunks = snapshot
-        .text_chunks(ByteOffset::ZERO..snapshot.len_bytes())
+        .bytes_in_range(ByteOffset::ZERO.into()..snapshot.len_bytes())
         .collect::<Vec<_>>();
 
     assert_eq!(
         chunks.iter().map(|chunk| chunk.text).collect::<String>(),
         "first\nsecond\n"
     );
-    assert_eq!(chunks[0].output_range, ByteOffset::ZERO..ByteOffset::new(5));
+    assert_eq!(
+        chunks[0].output_range,
+        (ByteOffset::ZERO..ByteOffset::new(5)).into_multi_buffer_range()
+    );
     assert_eq!(chunks[1].text, "\n");
     assert_eq!(
         chunks[1].output_range,
-        ByteOffset::new(5)..ByteOffset::new(6)
+        (ByteOffset::new(5)..ByteOffset::new(6)).into_multi_buffer_range()
     );
     assert_eq!(
         chunks
@@ -894,15 +909,17 @@ fn text_chunks_stream_excerpt_sources_and_inserted_boundary(cx: &mut TestAppCont
     assert_eq!(snapshot.text_bytes(), b"first\nsecond\n");
     assert_eq!(snapshot.line_count(), 3);
     assert_eq!(
-        snapshot.byte_to_line(ByteOffset::new(6)).unwrap(),
+        snapshot.byte_to_line(ByteOffset::new(6).into()).unwrap(),
         Line::new(1)
     );
     assert_eq!(
         snapshot.line_start_byte(Line::new(1)).unwrap(),
-        ByteOffset::new(6)
+        MultiBufferOffset::new(6)
     );
     assert_eq!(
-        snapshot.byte_to_position(ByteOffset::new(9)).unwrap(),
+        snapshot
+            .byte_to_position(ByteOffset::new(9).into())
+            .unwrap(),
         zcv_text::Position::new(Line::new(1), zcv_text::LogicalColumn::new(3))
     );
     assert_eq!(
@@ -923,12 +940,12 @@ fn plain_snapshot_streams_its_source_without_materializing() {
     let snapshot = MultiBufferSnapshot::from(buffer.snapshot());
 
     let chunks = snapshot
-        .text_chunks(ByteOffset::new(2)..ByteOffset::new(8))
+        .bytes_in_range((ByteOffset::new(2)..ByteOffset::new(8)).into_multi_buffer_range())
         .map(|chunk| chunk.text)
         .collect::<String>();
     assert_eq!(chunks, "pha\nbe");
     assert_eq!(
-        snapshot.chunk_at_byte(ByteOffset::new(6)).unwrap().0,
+        snapshot.chunk_at_byte(ByteOffset::new(6).into()).unwrap().0,
         "alpha\nbeta"
     );
 }
@@ -1145,6 +1162,94 @@ fn excerpt_topology_changes_publish_output_edits(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn dropping_a_middle_excerpt_publishes_a_single_output_edit_without_reset(cx: &mut TestAppContext) {
+    let first = singleton("src/first.rs", "a\n", cx);
+    let second = singleton("src/second.rs", "b\n", cx);
+    let third = singleton("src/third.rs", "c\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                ExcerptRange::line_range(first.clone(), 0..1, cx),
+                ExcerptRange::line_range(second, 0..1, cx),
+                ExcerptRange::line_range(third.clone(), 0..1, cx),
+            ],
+            cx,
+        );
+    });
+    let subscription =
+        cx.update_entity(&combined, |buffer, cx| buffer.subscribe_and_snapshot(cx).0);
+
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                ExcerptRange::line_range(first, 0..1, cx),
+                ExcerptRange::line_range(third, 0..1, cx),
+            ],
+            cx,
+        );
+    });
+
+    // 组合拓扑变化必须沿增量 output edit 发布；范围由前后 excerpt 游标推导，不物化组合文本。
+    let changes = subscription.consume();
+    assert!(
+        !changes.requires_reset(),
+        "excerpt 顺序变化应沿 output edit 协议发布"
+    );
+    assert_eq!(changes.patch().edits().len(), 1);
+    assert_eq!(
+        changes.patch().edits()[0].old_range(),
+        TextRange::new(ByteOffset::new(2), ByteOffset::new(4)).unwrap()
+    );
+    assert_eq!(
+        changes.patch().edits()[0].new_range(),
+        TextRange::new(ByteOffset::new(2), ByteOffset::new(2)).unwrap()
+    );
+}
+
+#[gpui::test]
+fn composite_char_and_utf16_coordinates_count_synthetic_newlines(cx: &mut TestAppContext) {
+    let first = singleton("src/first.rs", "αβ", cx);
+    let second = singleton("src/second.rs", "γ\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                ExcerptRange::line_range(first, 0..1, cx),
+                ExcerptRange::line_range(second, 0..1, cx),
+            ],
+            cx,
+        );
+    });
+
+    // 组合文本为「αβ\nγ\n」：excerpt 间的合成换行同时计入 char 与 UTF-16 坐标。
+    let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    assert_eq!(snapshot.len_bytes(), MultiBufferOffset::new(8));
+    for (byte, character) in [(0, 0), (4, 2), (5, 3), (8, 5)] {
+        assert_eq!(
+            snapshot.byte_to_char(ByteOffset::new(byte).into()).unwrap(),
+            CharOffset::new(character)
+        );
+        assert_eq!(
+            snapshot.char_to_byte(CharOffset::new(character)).unwrap(),
+            MultiBufferOffset::new(byte)
+        );
+    }
+    for (byte, units) in [(0, 0), (4, 2), (5, 3), (8, 5)] {
+        assert_eq!(
+            snapshot
+                .byte_to_utf16_cu(ByteOffset::new(byte).into())
+                .unwrap(),
+            Utf16Offset::new(units)
+        );
+        assert_eq!(
+            snapshot.utf16_cu_to_byte(Utf16Offset::new(units)).unwrap(),
+            MultiBufferOffset::new(byte)
+        );
+    }
+}
+
+#[gpui::test]
 fn source_excerpts_and_display_transforms_use_separate_coordinate_trees(cx: &mut TestAppContext) {
     let source = singleton("src/diff.rs", "working\nremoved", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -1169,15 +1274,20 @@ fn source_excerpts_and_display_transforms_use_separate_coordinate_trees(cx: &mut
     });
 
     cx.read_entity(&combined, |buffer, cx| {
-        assert_eq!(buffer.state.excerpts.summary().count, 2);
+        // 删除块只占输出坐标：输入树只含消费输入的工作区片段。
+        assert_eq!(buffer.state.excerpts.summary().count, 1);
         assert_eq!(buffer.state.diff_transforms.summary().output.count, 2);
-        assert_eq!(buffer.state.diff_transforms.summary().input.bytes, 7);
-        assert_eq!(buffer.state.diff_transforms.summary().output.bytes, 15);
+        assert_eq!(buffer.state.diff_transforms.summary().input.text.len, 7);
+        assert_eq!(buffer.state.diff_transforms.summary().output.text.len, 15);
 
         let snapshot = buffer.snapshot(cx);
-        assert_eq!(snapshot.excerpts.summary().count, 2);
+        assert_eq!(snapshot.excerpts.summary().count, 1);
         assert_eq!(snapshot.diff_transforms.summary().output.count, 2);
-        assert_eq!(snapshot.excerpts().len(), 2);
+        assert_eq!(snapshot.excerpts().count(), 2);
+        assert_eq!(
+            snapshot.excerpts().nth(1).unwrap().diff_kind(),
+            Some(crate::ExcerptDiffKind::Deleted)
+        );
     });
 }
 
@@ -1396,7 +1506,13 @@ fn fold_projection_accounts_for_nonzero_output_start(cx: &mut TestAppContext) {
 
     let (projected, output_start) = cx.read_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
-        let output_start = snapshot.excerpts()[1].output_range().start().get();
+        let output_start = snapshot
+            .excerpts()
+            .nth(1)
+            .unwrap()
+            .output_range()
+            .start()
+            .get();
         assert!(output_start > 0, "第二个 excerpt 的组合起点必须非零");
         (buffer.fold_ranges(cx), output_start)
     });
@@ -1442,11 +1558,12 @@ fn excerpts_preserve_order_and_map_output_to_source(cx: &mut TestAppContext) {
             let second_offset = ByteOffset::new(text.find("beta").unwrap());
             (
                 text,
-                snapshot.excerpts().to_vec(),
+                snapshot.excerpts().collect::<Vec<_>>(),
                 buffer
                     .location_for_range(
                         TextRange::new(first_offset, ByteOffset::new(first_offset.get() + 3))
-                            .unwrap(),
+                            .unwrap()
+                            .into(),
                     )
                     .unwrap(),
                 buffer.location_for_offset(second_offset).unwrap(),
@@ -1503,14 +1620,14 @@ fn append_excerpts_extends_projection_without_rebuilding_existing_ranges(cx: &mu
             String::from_utf8(snapshot.text_bytes()).unwrap(),
             "one\nbeta"
         );
-        assert_eq!(snapshot.excerpts().len(), 2);
+        assert_eq!(snapshot.excerpts().count(), 2);
         assert_eq!(
-            snapshot.excerpts()[0].output_range().start(),
-            ByteOffset::ZERO
+            snapshot.excerpts().next().unwrap().output_range().start(),
+            ByteOffset::ZERO.into()
         );
         assert_eq!(
-            snapshot.excerpts()[1].output_range().start(),
-            ByteOffset::new(4)
+            snapshot.excerpts().nth(1).unwrap().output_range().start(),
+            MultiBufferOffset::new(4)
         );
         assert_eq!(
             buffer
@@ -1540,9 +1657,9 @@ fn composite_anchor_resolves_in_the_same_file_after_excerpt_refresh(cx: &mut Tes
     });
     let anchor = cx.read_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
-        let excerpt = &snapshot.excerpts()[1];
+        let excerpt = &snapshot.excerpts().nth(1).unwrap();
         buffer
-            .anchor_for_offset(ByteOffset::new(excerpt.output_range().start().get() + 2))
+            .anchor_for_offset(ByteOffset::new(excerpt.output_range().start().get() + 2).into())
             .expect("应捕获第二个 hunk 内的位置")
     });
 
@@ -1553,7 +1670,13 @@ fn composite_anchor_resolves_in_the_same_file_after_excerpt_refresh(cx: &mut Tes
             .expect("同一文件仍有 excerpt 时应解析到最近位置");
         assert_eq!(
             offset,
-            buffer.snapshot(cx).excerpts()[0].output_range().end()
+            buffer
+                .snapshot(cx)
+                .excerpts()
+                .next()
+                .unwrap()
+                .output_range()
+                .end()
         );
     });
 }
@@ -1571,7 +1694,7 @@ fn source_anchor_at_excerpt_boundary_resolves_to_following_excerpt(cx: &mut Test
             cx,
         );
         let snapshot = buffer.snapshot(cx);
-        let boundary = snapshot.excerpts()[1].output_range().start();
+        let boundary = snapshot.excerpts().nth(1).unwrap().output_range().start();
         let anchor = buffer
             .anchor_for_offset(boundary)
             .expect("后续 excerpt 起点必须可以锚定");
@@ -1601,7 +1724,7 @@ fn composite_anchor_falls_forward_when_its_file_leaves_the_diff(cx: &mut TestApp
     });
     let anchor = cx.read_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
-        let excerpt = &snapshot.excerpts()[0];
+        let excerpt = &snapshot.excerpts().next().unwrap();
         buffer
             .anchor_for_offset(excerpt.output_range().start())
             .expect("应捕获首文件位置")
@@ -1614,7 +1737,13 @@ fn composite_anchor_falls_forward_when_its_file_leaves_the_diff(cx: &mut TestApp
             .expect("原文件消失后应解析到仍存在的后继文件");
         assert_eq!(
             offset,
-            buffer.snapshot(cx).excerpts()[0].output_range().start()
+            buffer
+                .snapshot(cx)
+                .excerpts()
+                .next()
+                .unwrap()
+                .output_range()
+                .start()
         );
     });
 }
@@ -1638,8 +1767,8 @@ fn empty_files_keep_distinct_composite_lines_and_locations(cx: &mut TestAppConte
         let snapshot = buffer.snapshot(cx);
         // 尾换行不变式：非末尾空片段补一个换行占边界行，末尾片段保留原样（文档自身的末尾空行仍为其保留组合行）。
         assert_eq!(String::from_utf8(snapshot.text_bytes()).unwrap(), "\n");
-        assert_eq!(snapshot.excerpts()[0].output_start_line(), 0);
-        assert_eq!(snapshot.excerpts()[1].output_start_line(), 1);
+        assert_eq!(snapshot.excerpts().next().unwrap().output_start_line(), 0);
+        assert_eq!(snapshot.excerpts().nth(1).unwrap().output_start_line(), 1);
         assert_eq!(
             buffer.location_for_offset(ByteOffset::new(1)).unwrap().path,
             PathBuf::from("deleted/b.rs")
@@ -1702,14 +1831,14 @@ fn composite_edit_maps_excerpt_source_ranges_exactly_once(cx: &mut TestAppContex
     cx.read_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         assert_eq!(
-            snapshot.excerpts()[0].source_range(),
+            snapshot.excerpts().next().unwrap().source_range(),
             TextRange::new(ByteOffset::new(5), ByteOffset::new(10)).unwrap()
         );
     });
     cx.run_until_parked();
     cx.read_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
-        let excerpt = &snapshot.excerpts()[0];
+        let excerpt = &snapshot.excerpts().next().unwrap();
         // 只映射一次：源 'o'（5..6）替换为 "OO" → 源范围 5..10；二次映射会变成 5..11。
         assert_eq!(
             excerpt.source_range(),
@@ -2255,8 +2384,9 @@ fn dirty_source_keeps_existing_diff_projection_until_saved(cx: &mut TestAppConte
         );
     });
     cx.run_until_parked();
-    let initial_excerpt_count =
-        cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx).excerpts().len());
+    let initial_excerpt_count = cx.read_entity(&combined, |buffer, cx| {
+        buffer.snapshot(cx).excerpts().count()
+    });
     assert!(initial_excerpt_count > 0, "初始 hunk 应生成 excerpt");
 
     let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
@@ -2281,14 +2411,13 @@ fn dirty_source_keeps_existing_diff_projection_until_saved(cx: &mut TestAppConte
             "组合文档应能读取文件 working source 的 dirty 状态"
         );
         assert_eq!(
-            snapshot.excerpts().len(),
+            snapshot.excerpts().count(),
             initial_excerpt_count,
             "未保存期间不能因 hunk 为空而移除既有 excerpt"
         );
         assert!(
             snapshot
                 .excerpts()
-                .iter()
                 .all(|excerpt| excerpt.path() == Path::new("src/a.rs"))
         );
         assert_eq!(String::from_utf8(snapshot.text_bytes()).unwrap(), "a\n");
@@ -2810,19 +2939,26 @@ fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &m
             String::from_utf8(snapshot.text_bytes()).unwrap(),
             "上下文\n旧内容\n新内容\n之后\n"
         );
-        assert_eq!(snapshot.excerpts().len(), 4);
-        assert!(snapshot.excerpts()[0].starts_new_excerpt());
-        assert!(!snapshot.excerpts()[1].starts_new_excerpt());
-        assert_eq!(snapshot.excerpts()[1].source_line_for_output_line(1), None);
+        assert_eq!(snapshot.excerpts().count(), 4);
+        assert!(snapshot.excerpts().next().unwrap().starts_new_excerpt());
+        assert!(!snapshot.excerpts().nth(1).unwrap().starts_new_excerpt());
+        assert_eq!(
+            snapshot
+                .excerpts()
+                .nth(1)
+                .unwrap()
+                .source_line_for_output_line(1),
+            None
+        );
         assert_eq!(buffer.file_buffers(cx).len(), 1, "旧修订来源不能参与保存");
 
         let old_offset = "上下文\n".len() + 1;
         let old_anchor = buffer
-            .anchor_for_offset(ByteOffset::new(old_offset))
+            .anchor_for_offset(ByteOffset::new(old_offset).into())
             .expect("旧侧必须能建立普通 MultiBuffer 锚点");
         assert_eq!(
             buffer.resolve_anchor(&old_anchor),
-            Some(ByteOffset::new(old_offset))
+            Some(Into::into(ByteOffset::new(old_offset)))
         );
     });
 

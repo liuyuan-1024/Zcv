@@ -13,6 +13,7 @@ use crate::{
     BufferConfig, BufferVersion, TransactionId,
     storage::{RopeySnapshot, RopeyStorage, TextFingerprint},
     text_changes::TextChangeTopic,
+    tracking::EditLog,
 };
 
 mod coordinates;
@@ -46,6 +47,8 @@ pub struct Buffer {
     saved_fingerprint: TextFingerprint,
     next_transaction_id: TransactionId,
     text_changes: TextChangeTopic,
+    /// 版本索引的向前编辑日志：Snapshot 据此重建自某版本以来的净编辑。
+    edit_log: EditLog,
     history: history::HistoryState,
     /// 进行中的编辑会话（`start_transaction` 开启，`end_transaction` 提交）。
     session: Option<history::TransactionSession>,

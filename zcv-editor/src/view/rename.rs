@@ -3,13 +3,15 @@
 //! Tree-sitter 绑定解析由 `zcv-language` 提供；
 //! 本模块拥有重命名会话、事务入口和输入框定位，让语法查询、编辑状态与界面绘制保持各自的职责边界。
 
+use zcv_multi_buffer::MultiBufferOffset;
+
 use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::{AppContext, Context, Entity, Focusable, Pixels, Point, point, px};
 use zcv_actions::{CancelLocalRename, ConfirmLocalRename, RenameLocal};
 use zcv_language::LocalBinding;
-use zcv_text::{BufferVersion, ByteOffset};
+use zcv_text::BufferVersion;
 
 use super::{Editor, EditorEvent, EditorMode, edit_metadata};
 use crate::element::EditorInputLayout;
@@ -20,7 +22,7 @@ use crate::selection::{Selection, SelectionSet, replace_selections};
 /// 输入框是独立的单行 Editor；
 /// 源文档仍由外层 Editor 的 MultiBuffer 持有，提交时重新通过当前语法快照解析绑定，避免把输入框文本变成第二份文档状态。
 pub(super) struct LocalRenameState {
-    pub(super) offset: ByteOffset,
+    pub(super) offset: MultiBufferOffset,
     pub(super) version: BufferVersion,
     pub(super) name: String,
     pub(super) input: Entity<Editor>,
@@ -51,7 +53,7 @@ impl Editor {
     /// 只有语法层明确解析出的定义和引用会参与编辑；组合文档、过期快照和未解析名称均拒绝操作。
     pub fn rename_local_at(
         &mut self,
-        offset: ByteOffset,
+        offset: MultiBufferOffset,
         new_name: &str,
         cx: &mut Context<Self>,
     ) -> Result<(), LocalRenameError> {
@@ -77,7 +79,10 @@ impl Editor {
             ranges
                 .into_iter()
                 .map(|range| {
-                    Selection::new(ByteOffset::new(range.start), ByteOffset::new(range.end))
+                    Selection::new(
+                        MultiBufferOffset::new(range.start),
+                        MultiBufferOffset::new(range.end),
+                    )
                 })
                 .collect(),
         );
@@ -151,8 +156,8 @@ impl Editor {
             let mut input = Editor::single_line_with_content_typography(cx);
             input.set_text(&name, cx);
             input.set_selections(SelectionSet::new(vec![Selection::new(
-                ByteOffset::ZERO,
-                ByteOffset::new(name.len()),
+                MultiBufferOffset::ZERO,
+                MultiBufferOffset::new(name.len()),
             )]));
             input
         });
@@ -294,9 +299,9 @@ fn local_rename_geometry_for_layout(
     layout: &EditorInputLayout,
     range: &Range<usize>,
 ) -> Option<(Point<Pixels>, Pixels)> {
-    let start = layout.caret_position_for_offset(ByteOffset::new(range.start))?;
-    let name_end = layout.caret_position_for_offset(ByteOffset::new(range.end))?;
-    let line_end = layout.line_end_position_for_offset(ByteOffset::new(range.start))?;
+    let start = layout.caret_position_for_offset(MultiBufferOffset::new(range.start))?;
+    let name_end = layout.caret_position_for_offset(MultiBufferOffset::new(range.end))?;
+    let line_end = layout.line_end_position_for_offset(MultiBufferOffset::new(range.start))?;
     (start.y == name_end.y && start.y <= line_end.y).then_some((
         point(start.x, line_end.y + layout.line_height()),
         name_end.x - start.x,

@@ -1,5 +1,7 @@
 //! Editor View 的跨帧状态与交互。
 
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+
 use std::cell::Cell;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -29,9 +31,9 @@ use zcv_multi_buffer::{
 };
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
-    Buffer, BufferConfig, BufferVersion, ByteOffset, Line, LineRange, LogicalColumn,
-    MovementDirection, MovementUnit, Position, PositionMap, TextError, TextRange, TextResult,
-    TransactionId, TransactionMergePolicy, TransactionMetadata, TransactionSource,
+    Buffer, BufferConfig, BufferVersion, Line, LineRange, LogicalColumn, MovementDirection,
+    MovementUnit, Position, PositionMap, TextError, TextResult, TransactionId,
+    TransactionMergePolicy, TransactionMetadata, TransactionSource,
 };
 use zcv_theme::{color, typography};
 use zcv_workspace::typography_for_window;
@@ -69,13 +71,13 @@ pub(crate) use search::{EditorSearch, SearchDecorationSnapshot};
 #[derive(Clone, Debug, PartialEq)]
 pub struct EditorHunk {
     pub id: SharedString,
-    pub range: TextRange,
+    pub range: MultiBufferRange,
     pub parts: Arc<[EditorHunkPart]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EditorHunkPart {
-    pub range: TextRange,
+    pub range: MultiBufferRange,
     pub content_kind: DiffHunkKind,
     pub marker_kind: EditorHunkMarkerKind,
 }
@@ -189,8 +191,8 @@ impl From<MovementUnit> for Motion {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum MouseSelectMode {
     Character,
-    Word(Range<ByteOffset>),
-    Line(Range<ByteOffset>),
+    Word(Range<MultiBufferOffset>),
+    Line(Range<MultiBufferOffset>),
     All,
 }
 
@@ -198,7 +200,7 @@ pub(super) enum MouseSelectMode {
 #[derive(Debug, Clone)]
 struct PendingSelection {
     /// 按下点字节偏移，字符粒度拖拽的固定端。
-    anchor: ByteOffset,
+    anchor: MultiBufferOffset,
     /// 点击时的粒度与锚定范围。
     mode: MouseSelectMode,
 }
@@ -301,7 +303,7 @@ pub struct Editor {
     /// 匹配括号缓存：键 = (primary head, buffer 版本, 源元数据版本)。
     /// 光标移动或任一版本推进即重查；
     /// 滚动/纯重绘帧直接命中，不再跑 tree-sitter 查询。
-    bracket_pair_cache: Option<(ByteOffset, BufferVersion, u64, Option<BracketPair>)>,
+    bracket_pair_cache: Option<(MultiBufferOffset, BufferVersion, u64, Option<BracketPair>)>,
     /// 最近一次鼠标手势的选区粒度；Shift+点击时按此粒度扩展。
     mouse_select_mode: MouseSelectMode,
     /// 正在进行的鼠标选区手势；普通选区变更会终止它。
@@ -425,7 +427,9 @@ impl Editor {
             locations: vec![ExcerptLocation {
                 path: excerpt.path().to_path_buf(),
                 // Header 的 Open File 是“跳到 excerpt 起点”，不是选中整段 excerpt。
-                source_range: TextRange::new(start, start).expect("同点源范围必须有效"),
+                source_range: MultiBufferRange::new(start, start)
+                    .expect("同点源范围必须有效")
+                    .into(),
             }],
             split,
         });
@@ -775,19 +779,19 @@ impl Editor {
             let snapshot = self.render_snapshot();
             let range = self.fold_ranges.iter().find(|range| {
                 snapshot
-                    .byte_to_line(ByteOffset::new(range.range.start))
+                    .byte_to_line(MultiBufferOffset::new(range.range.start))
                     .is_ok_and(|start| start == line)
             });
             if let Some(range) = range
-                && let Ok(start) = snapshot.byte_to_line(ByteOffset::new(range.range.start))
+                && let Ok(start) = snapshot.byte_to_line(MultiBufferOffset::new(range.range.start))
                 && start == line
             {
                 // 折叠范围是字节级的（终点在闭合括号前）：直接按字节范围折叠。
                 if let Err(error) = self.display_map.update(cx, |map, _| {
                     map.fold_range(
-                        TextRange::new(
-                            ByteOffset::new(range.range.start),
-                            ByteOffset::new(range.range.end),
+                        MultiBufferRange::new(
+                            MultiBufferOffset::new(range.range.start),
+                            MultiBufferOffset::new(range.range.end),
                         )
                         .expect("折叠范围应合法"),
                     )
@@ -844,10 +848,10 @@ impl Editor {
             .iter()
             .filter_map(|range| {
                 let start = snapshot
-                    .byte_to_line(ByteOffset::new(range.range.start))
+                    .byte_to_line(MultiBufferOffset::new(range.range.start))
                     .ok()?;
                 let end = snapshot
-                    .byte_to_line(ByteOffset::new(range.range.end))
+                    .byte_to_line(MultiBufferOffset::new(range.range.end))
                     .ok()?;
                 (start <= head_line && head_line <= end).then_some((range, start, end))
             })
@@ -857,8 +861,11 @@ impl Editor {
         if let Some(range) = range
             && let Err(error) = self.display_map.update(cx, |map, _| {
                 map.fold_range(
-                    TextRange::new(ByteOffset::new(range.start), ByteOffset::new(range.end))
-                        .expect("折叠范围应合法"),
+                    MultiBufferRange::new(
+                        MultiBufferOffset::new(range.start),
+                        MultiBufferOffset::new(range.end),
+                    )
+                    .expect("折叠范围应合法"),
                 )
             })
         {
@@ -909,7 +916,7 @@ impl Editor {
         self.composition = None;
         let before_selections = self.resolved_selections();
         let targets = SelectionSet::new(vec![Selection::new(
-            ByteOffset::ZERO,
+            MultiBufferOffset::ZERO,
             self.multi_buffer.read(cx).snapshot(cx).len_bytes(),
         )]);
         let text = if self.mode == EditorMode::SingleLine {
@@ -926,11 +933,11 @@ impl Editor {
     /// 将单个选择区设置为给定的 UTF-8 字节范围。
     pub fn select_byte_range(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
         let end = self.multi_buffer.read(cx).snapshot(cx).len_bytes();
-        assert!(range.start <= range.end && ByteOffset::new(range.end) <= end);
+        assert!(range.start <= range.end && MultiBufferOffset::new(range.end) <= end);
         self.change_selections(
             SelectionSet::new(vec![Selection::new(
-                ByteOffset::new(range.start),
-                ByteOffset::new(range.end),
+                MultiBufferOffset::new(range.start),
+                MultiBufferOffset::new(range.end),
             )]),
             cx,
         );
@@ -1084,7 +1091,7 @@ impl Editor {
         let head = self.resolved_selections().primary().head();
         let multi_snapshot = self.multi_buffer.read(cx).snapshot(cx);
         // 无片段的空组合文档：光标没有归属的源文件，不显示行列。
-        if multi_snapshot.excerpts().is_empty() {
+        if multi_snapshot.excerpts().next().is_none() {
             return String::new();
         }
         let Ok(point) = multi_snapshot.byte_to_position(head) else {
@@ -1356,7 +1363,11 @@ impl Editor {
                     MouseSelectMode::Line(line_start..line_end),
                 )
             }
-            _ => (ByteOffset::ZERO, buffer.len_bytes(), MouseSelectMode::All),
+            _ => (
+                MultiBufferOffset::ZERO,
+                buffer.len_bytes(),
+                MouseSelectMode::All,
+            ),
         };
 
         // Shift+点击：以上次选区锚点为固定端，按点击位置向两侧扩展；点击范围覆盖锚点时整段纳入。
@@ -2098,10 +2109,11 @@ impl Editor {
                         {
                             return Ok(if extend {
                                 selection
-                                    .with_head(ByteOffset::ZERO)
+                                    .with_head(MultiBufferOffset::ZERO)
                                     .with_goal(Some(goal.get()))
                             } else {
-                                Selection::caret(ByteOffset::ZERO).with_goal(Some(goal.get()))
+                                Selection::caret(MultiBufferOffset::ZERO)
+                                    .with_goal(Some(goal.get()))
                             });
                         }
                         if direction == MovementDirection::Next && point.row().get() >= last_row {
@@ -2135,7 +2147,7 @@ impl Editor {
                             })?
                     }
                     Motion::DocumentEdge => match direction {
-                        MovementDirection::Previous => ByteOffset::ZERO,
+                        MovementDirection::Previous => MultiBufferOffset::ZERO,
                         MovementDirection::Next => {
                             self.multi_buffer.read(cx).snapshot(cx).len_bytes()
                         }
@@ -2562,7 +2574,7 @@ impl Editor {
     ) {
         let end = self.multi_buffer.read(cx).snapshot(cx).len_bytes();
         self.change_selections(
-            SelectionSet::new(vec![Selection::new(ByteOffset::ZERO, end)]),
+            SelectionSet::new(vec![Selection::new(MultiBufferOffset::ZERO, end)]),
             cx,
         );
     }
@@ -2582,7 +2594,10 @@ impl Editor {
                 self.display_snapshot
                     .ancestor_range(range)
                     .map(|range| {
-                        Selection::new(ByteOffset::new(range.start), ByteOffset::new(range.end))
+                        Selection::new(
+                            MultiBufferOffset::new(range.start),
+                            MultiBufferOffset::new(range.end),
+                        )
                     })
                     .unwrap_or(*selection)
             })

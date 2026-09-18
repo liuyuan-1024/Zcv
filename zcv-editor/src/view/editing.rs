@@ -2,14 +2,14 @@
 //!
 //! 所有文本修改统一经 `Editor::change` 族提交编辑事务，handler 仅做参数翻译。
 
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use gpui::{App, ClipboardItem, Context, Window};
 use zcv_multi_buffer::MultiBufferSnapshot;
-use zcv_text::{
-    ByteOffset, Line, MovementDirection, MovementUnit, TextError, TextRange, TextResult,
-};
+use zcv_text::{Line, MovementDirection, MovementUnit, TextError, TextResult};
 
 use super::*;
 use crate::selection::{Selection, SelectionSet, apply_targeted_edits, replace_selections};
@@ -296,10 +296,13 @@ impl Editor {
                     .iter()
                     .zip(trailing_lens.iter())
                     .map(|(selection, trailing)| {
-                        let start = position_map.map_old_position(selection.start()).value();
-                        let offset = trailing
-                            .map_or(start, |trailing| ByteOffset::new(start.get() - trailing));
-                        Selection::caret(offset)
+                        let start = position_map
+                            .map_old_position(selection.start().into())
+                            .value();
+                        let offset = trailing.map_or(start, |trailing| {
+                            MultiBufferOffset::new(start.get() - trailing).into()
+                        });
+                        Selection::caret(offset.into())
                     })
                     .collect(),
             );
@@ -311,7 +314,7 @@ impl Editor {
     /// 光标前后跳过非换行空白后，分别紧邻声明了 `newline` 的配对起始与闭合字符。
     fn extra_newline_in_pair(
         &self,
-        offset: ByteOffset,
+        offset: MultiBufferOffset,
         snapshot: &MultiBufferSnapshot,
         cx: &App,
     ) -> bool {
@@ -331,7 +334,7 @@ impl Editor {
         let Ok(line_start) = snapshot.line_start_byte(line) else {
             return false;
         };
-        let Ok(range) = TextRange::new(line_start, line_end) else {
+        let Ok(range) = MultiBufferRange::new(line_start, line_end) else {
             return false;
         };
         let Ok(before) = snapshot.text_for_range(range) else {
@@ -615,20 +618,20 @@ fn line_blocks(
 }
 
 /// 行块末行行尾的字节偏移（含换行符；最后一行无换行则到文档末尾）。
-fn line_block_end(snapshot: &MultiBufferSnapshot, end: usize) -> TextResult<ByteOffset> {
+fn line_block_end(snapshot: &MultiBufferSnapshot, end: usize) -> TextResult<MultiBufferOffset> {
     let line_count = snapshot.line_count();
     if end + 1 < line_count {
         snapshot.line_start_byte(Line::new(end + 1))
     } else {
-        Ok(ByteOffset::new(snapshot.len_bytes().get()))
+        Ok(MultiBufferOffset::new(snapshot.len_bytes().get()))
     }
 }
 
 /// 行内容末尾的字节偏移（不含换行符）。
-fn line_content_end(snapshot: &MultiBufferSnapshot, line: usize) -> TextResult<ByteOffset> {
+fn line_content_end(snapshot: &MultiBufferSnapshot, line: usize) -> TextResult<MultiBufferOffset> {
     let end = line_block_end(snapshot, line)?;
     if line + 1 < snapshot.line_count() {
-        Ok(ByteOffset::new(end.get().saturating_sub(1)))
+        Ok(MultiBufferOffset::new(end.get().saturating_sub(1)))
     } else {
         Ok(end)
     }
@@ -662,7 +665,7 @@ fn move_line_targets(
                 let previous_start = snapshot.line_start_byte(Line::new(start - 1))?;
                 let previous_end = snapshot.line_start_byte(Line::new(start))?;
                 let content = snapshot.text_for_range(
-                    TextRange::new(previous_start, line_content_end(snapshot, start - 1)?)
+                    MultiBufferRange::new(previous_start, line_content_end(snapshot, start - 1)?)
                         .expect("完整行范围必须合法"),
                 )?;
                 let insertion = line_content_end(snapshot, end)?;
@@ -676,7 +679,7 @@ fn move_line_targets(
                 let block_start = snapshot.line_start_byte(Line::new(start))?;
                 let block_end = line_block_end(snapshot, end)?;
                 let content = snapshot.text_for_range(
-                    TextRange::new(block_start, line_content_end(snapshot, end)?)
+                    MultiBufferRange::new(block_start, line_content_end(snapshot, end)?)
                         .expect("完整行范围必须合法"),
                 )?;
                 let insertion = line_content_end(snapshot, end + 1)?;
@@ -750,10 +753,10 @@ fn resolve_selection_shift(
 fn resolve_point(
     snapshot: &MultiBufferSnapshot,
     (offset_in_line, target_line): (usize, usize),
-) -> TextResult<ByteOffset> {
+) -> TextResult<MultiBufferOffset> {
     let line_start = snapshot.line_start_byte(Line::new(target_line))?.get();
     let content_len = line_content_end(snapshot, target_line)?.get() - line_start;
-    Ok(ByteOffset::new(
+    Ok(MultiBufferOffset::new(
         line_start + offset_in_line.min(content_len),
     ))
 }
@@ -783,7 +786,7 @@ fn leading_indent_range(
     let start = snapshot.line_start_byte(line)?;
     let end = line_block_end(snapshot, line.get())?;
     let content =
-        snapshot.text_for_range(TextRange::new(start, end).expect("逻辑行范围必须合法"))?;
+        snapshot.text_for_range(MultiBufferRange::new(start, end).expect("逻辑行范围必须合法"))?;
     let end = if content.starts_with('\t') {
         start.checked_add(1)
     } else {
@@ -800,7 +803,11 @@ fn leading_indent_range(
 }
 
 /// `offset` 之后跳过非换行空白，是否以 `text` 开头（括号内额外空行的闭合符检查）。
-fn text_after_trim_is(snapshot: &MultiBufferSnapshot, offset: ByteOffset, text: &str) -> bool {
+fn text_after_trim_is(
+    snapshot: &MultiBufferSnapshot,
+    offset: MultiBufferOffset,
+    text: &str,
+) -> bool {
     let mut cursor = offset;
     loop {
         let Ok((chunk, chunk_start)) = snapshot.chunk_at_byte(cursor) else {
@@ -811,7 +818,7 @@ fn text_after_trim_is(snapshot: &MultiBufferSnapshot, offset: ByteOffset, text: 
             return false;
         };
         if first.is_whitespace() && first != '\n' {
-            cursor = ByteOffset::new(cursor.get() + first.len_utf8());
+            cursor = MultiBufferOffset::new(cursor.get() + first.len_utf8());
             continue;
         }
         return rest.starts_with(text);

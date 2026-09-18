@@ -3,12 +3,13 @@
 //! Tree-sitter 查询由 `zcv-language` 负责，`DisplayMap` 负责把组合文档坐标投影到查询结果。
 //! 本模块只把这些结果转换为编辑器级的筛选、导航和编辑操作。
 
+use zcv_multi_buffer::MultiBufferOffset;
+
 use std::ops::Range;
 
 use super::{Editor, NAVIGATION_TOP_OFFSET};
 use gpui::{Context, HighlightStyle};
 use zcv_language::{LocalBinding, OutlineItem, SyntaxNode};
-use zcv_text::ByteOffset;
 
 impl Editor {
     /// 返回当前组合文档的文件级语法大纲。
@@ -62,7 +63,7 @@ impl Editor {
     }
 
     /// 返回组合文档中指定光标的语法节点；结果与当前 Editor 快照版本绑定。
-    pub fn syntax_node_at(&self, offset: ByteOffset) -> Option<SyntaxNode> {
+    pub fn syntax_node_at(&self, offset: MultiBufferOffset) -> Option<SyntaxNode> {
         self.multi_snapshot.node_at(offset)
     }
 

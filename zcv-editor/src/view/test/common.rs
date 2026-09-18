@@ -1,7 +1,9 @@
+use zcv_multi_buffer::MultiBufferOffset;
+
 use super::*;
 use gpui::{Bounds, Pixels, TestAppContext, VisualTestContext, point, size};
 use zcv_multi_buffer::{BufferDiff, BufferDiffInput, DiffFile, DisplayHunk};
-use zcv_text::{Buffer, BufferConfig, ByteOffset};
+use zcv_text::{Buffer, BufferConfig};
 
 use crate::scrollbar::{SCROLLBAR_WIDTH, thumb_geometry};
 
@@ -40,7 +42,7 @@ pub(super) fn buffer_text(buffer: &Entity<LanguageBuffer>, cx: &TestAppContext) 
     let buffer = engine_buffer(buffer, cx);
     cx.read_entity(&buffer, |buffer, _| {
         buffer
-            .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
+            .slice_byte_range(MultiBufferOffset::ZERO.into(), buffer.len_bytes())
             .expect("完整测试 Buffer 应可读取")
             .as_str()
             .to_owned()

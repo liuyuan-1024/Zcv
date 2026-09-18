@@ -3,12 +3,14 @@
 //! 与像素渲染无关的"逻辑行→显示行"映射集中在这里；
 //! 渲染端只消费计算出的 `HunkRendering` 做布局与绘制。
 
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use zcv_git::DiffHunkKind;
 use zcv_multi_buffer::{DiffHunkStaging, DisplayHunk};
-use zcv_text::{ByteOffset, Line, TextRange};
+use zcv_text::Line;
 
 use crate::display_map::{DisplaySnapshot, ProjectedRange};
 use crate::scrollbar::{ScrollbarMarker, ScrollbarMarkerKind, marker_geometry};
@@ -87,9 +89,11 @@ impl DiffDecorationSnapshot {
             .word_diff_highlights
             .iter()
             .filter_map(|(kind, range)| {
-                let text_range =
-                    TextRange::new(ByteOffset::new(range.start), ByteOffset::new(range.end))
-                        .ok()?;
+                let text_range = MultiBufferRange::new(
+                    MultiBufferOffset::new(range.start),
+                    MultiBufferOffset::new(range.end),
+                )
+                .ok()?;
                 Some(
                     snapshot
                         .project_text_range(text_range)

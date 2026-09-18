@@ -11,6 +11,11 @@ impl Buffer {
     /// 底层通过 `RopeyStorage::snapshot()` 获取基于 `ropey::Rope::clone()` 的低成本快照；
     /// 这里仅负责把快照与 BufferVersion / BufferConfig 绑定成 public Snapshot。
     pub fn snapshot(&self) -> Snapshot {
-        Snapshot::new(self.storage.snapshot(), self.version, self.config.clone())
+        Snapshot::new(
+            self.storage.snapshot(),
+            self.version,
+            self.config.clone(),
+            self.edit_log.clone(),
+        )
     }
 }

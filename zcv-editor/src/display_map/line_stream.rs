@@ -3,11 +3,13 @@
 //! MultiBuffer 已将工作区文本、deleted hunk 等来源统一物化为普通文本；
 //! fold/tab/wrap 只消费这一份组合快照，不再维护第二套合成行坐标。
 
+use zcv_multi_buffer::MultiBufferOffset;
+
 use std::borrow::Cow;
 use std::ops::Range;
 
 use zcv_multi_buffer::MultiBufferSnapshot;
-use zcv_text::{ByteOffset, Line};
+use zcv_text::Line;
 
 /// 显示输入行的文本来源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +56,7 @@ impl LineStream {
         if range.is_empty() {
             return Some(Cow::Borrowed(""));
         }
-        let mut chunks = self.buffer.text_chunks(range);
+        let mut chunks = self.buffer.bytes_in_range(range);
         let first = chunks.next()?;
         if let Some(second) = chunks.next() {
             let mut text = String::from(first.text);
@@ -66,7 +68,7 @@ impl LineStream {
         }
     }
 
-    pub(crate) fn line_byte_range(&self, line: Line) -> Option<Range<ByteOffset>> {
+    pub(crate) fn line_byte_range(&self, line: Line) -> Option<Range<MultiBufferOffset>> {
         let buffer_line = self.source(line)?.line();
         let start = self.buffer.line_start_byte(Line::new(buffer_line)).ok()?;
         // 行尾 = 下一行行首（或文档末尾），与 fold 的 line_boundary 同模式。

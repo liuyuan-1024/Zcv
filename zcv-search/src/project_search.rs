@@ -306,8 +306,7 @@ impl ProjectSearchView {
             let snapshot = self.excerpts.read(cx).snapshot(cx);
             let excerpts = snapshot.excerpts();
             let paths = excerpts
-                .iter()
-                .map(|excerpt| excerpt.path())
+                .map(|excerpt| excerpt.path().to_path_buf())
                 .collect::<Vec<_>>();
             let expanded = paths
                 .iter()
@@ -583,7 +582,11 @@ impl ProjectSearchView {
             .excerpts
             .update(cx, |buffer, cx| buffer.append_excerpts(excerpts, cx));
         results_editor.update(cx, |editor, cx| {
-            editor.append_search_ranges(query, match_ranges, cx)
+            editor.append_search_ranges(
+                query,
+                match_ranges.into_iter().map(Into::into).collect(),
+                cx,
+            )
         });
         self.match_count = Some(match_count);
         cx.emit(SearchEvent::MatchesInvalidated);

@@ -3,13 +3,15 @@
 //! InlayMap：inlay 文本以注入式投影进入行文本（不占行数、不替换文本），消费链（测量/换行/渲染）只感知投影文本；行内坐标双轨（原始偏移 ↔ 投影偏移）。
 //! 注入配置版本独立于 buffer 版本，变化时 fold 层整体重建（下游测量/换行依赖文本内容）。
 
+use zcv_multi_buffer::MultiBufferOffset;
+
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::Arc;
 
 use zcv_multi_buffer::MultiBufferSnapshot;
-use zcv_text::{ByteOffset, Line};
+use zcv_text::Line;
 
 use super::chunk::InlayInfo;
 use super::line_stream::{LineStream, StreamLineSource};
@@ -19,7 +21,7 @@ use super::line_stream::{LineStream, StreamLineSource};
 /// 本层只负责显示投影，不绑定数据来源。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Inlay {
-    pub(crate) position: ByteOffset,
+    pub(crate) position: MultiBufferOffset,
     pub(crate) text: String,
 }
 
@@ -98,20 +100,20 @@ impl InlaySnapshot {
     }
 
     /// 行的原始字节范围（委托流）。
-    pub(super) fn line_byte_range(&self, line: Line) -> Option<Range<ByteOffset>> {
+    pub(super) fn line_byte_range(&self, line: Line) -> Option<Range<MultiBufferOffset>> {
         self.stream.line_byte_range(line)
     }
 
     /// 行内容的源字节范围，不含行尾换行。
-    pub(crate) fn line_content_byte_range(&self, line: Line) -> Option<Range<ByteOffset>> {
+    pub(crate) fn line_content_byte_range(&self, line: Line) -> Option<Range<MultiBufferOffset>> {
         let source = self.source(line)?;
         let range = self.stream.line_byte_range(Line::new(source.line()))?;
         let mut end = range.end;
         while end > range.start {
-            let last = ByteOffset::new(end.get() - 1);
+            let last = MultiBufferOffset::new(end.get() - 1);
             let is_line_break = self
                 .buffer_snapshot()
-                .text_chunks(last..end)
+                .bytes_in_range(last..end)
                 .next()
                 .and_then(|chunk| chunk.text.as_bytes().first().copied())
                 .is_some_and(|byte| byte == b'\n' || byte == b'\r');
@@ -180,7 +182,7 @@ impl InlaySnapshot {
         while byte < content.end.get() {
             let (chunk, chunk_start) = self
                 .buffer_snapshot()
-                .chunk_at_byte(ByteOffset::new(byte))
+                .chunk_at_byte(MultiBufferOffset::new(byte))
                 .ok()?;
             let start = byte - chunk_start.get();
             let end = (content.end.get() - chunk_start.get()).min(chunk.len());

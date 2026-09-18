@@ -1,8 +1,8 @@
 //! Editor 视图滚动状态。
 
-use gpui::{Pixels, Point, point, px};
+use zcv_multi_buffer::MultiBufferOffset;
 
-use zcv_text::ByteOffset;
+use gpui::{Pixels, Point, point, px};
 
 use super::display_map::{DisplayPoint, DisplayRow};
 
@@ -35,10 +35,10 @@ pub(super) enum ScrollbarThumbState {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum PendingAutoscroll {
     /// 最小滚动：目标行进出视口才滚动（正常编辑跟随）。
-    Fit(ByteOffset),
+    Fit(MultiBufferOffset),
     /// 顶部相对定位：目标行固定在视口顶部下方指定行数（导航跳转）。
     TopRelative {
-        head: ByteOffset,
+        head: MultiBufferOffset,
         offset_rows: usize,
     },
 }
@@ -105,12 +105,12 @@ impl ScrollManager {
         self.anchor != old_anchor || self.offset != old_offset
     }
 
-    pub(super) fn request_autoscroll(&mut self, head: ByteOffset) {
+    pub(super) fn request_autoscroll(&mut self, head: MultiBufferOffset) {
         self.pending_autoscroll = Some(PendingAutoscroll::Fit(head));
     }
 
     /// 顶部相对定位：目标字节固定在视口顶部下方指定行数。
-    pub(super) fn request_scroll_to_top(&mut self, head: ByteOffset, offset_rows: usize) {
+    pub(super) fn request_scroll_to_top(&mut self, head: MultiBufferOffset, offset_rows: usize) {
         self.pending_autoscroll = Some(PendingAutoscroll::TopRelative { head, offset_rows });
     }
 
@@ -118,7 +118,7 @@ impl ScrollManager {
     fn apply_autoscroll(
         &mut self,
         pending: PendingAutoscroll,
-        project: impl Fn(ByteOffset) -> Option<DisplayPoint>,
+        project: impl Fn(MultiBufferOffset) -> Option<DisplayPoint>,
     ) {
         match pending {
             PendingAutoscroll::Fit(head) => {
@@ -224,7 +224,7 @@ impl ScrollManager {
     /// 在布局前应用可让首遍布局即为最终布局，避免光标移动帧的第二遍全量重排。
     pub(super) fn apply_pending_autoscroll_vertical(
         &mut self,
-        project: impl Fn(ByteOffset) -> Option<DisplayPoint>,
+        project: impl Fn(MultiBufferOffset) -> Option<DisplayPoint>,
     ) -> bool {
         // 视口未就绪（首帧布局前）时保留请求，由布局时的 update_viewport 设置视口后再次应用；
         // 否则 take 会吞掉请求导致导航定位丢失。
@@ -365,21 +365,21 @@ mod tests {
     #[test]
     fn pending_autoscroll_reveals_rows_after_viewport_update() {
         // 测试换算闭包：字节偏移直接当显示行号。
-        let project = |head: ByteOffset| {
+        let project = |head: MultiBufferOffset| {
             Some(DisplayPoint::new(
                 DisplayRow::new(head.get()),
                 DisplayColumn::ZERO,
             ))
         };
         let mut manager = ScrollManager::default();
-        manager.request_autoscroll(ByteOffset::new(20));
+        manager.request_autoscroll(MultiBufferOffset::new(20));
         manager.update_viewport(50, px(100.), px(100.), px(200.), px(20.), px(0.));
         assert!(manager.apply_pending_autoscroll_vertical(project));
 
         assert_eq!(manager.anchor().row(), DisplayRow::new(16));
         assert_eq!(manager.offset().y, px(0.));
 
-        manager.request_autoscroll(ByteOffset::new(2));
+        manager.request_autoscroll(MultiBufferOffset::new(2));
         manager.update_viewport(50, px(100.), px(100.), px(200.), px(20.), px(0.));
         assert!(manager.apply_pending_autoscroll_vertical(project));
         assert_eq!(manager.anchor().row(), DisplayRow::new(2));
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn autoscroll_keeps_target_below_sticky_header() {
-        let project = |head: ByteOffset| {
+        let project = |head: MultiBufferOffset| {
             Some(DisplayPoint::new(
                 DisplayRow::new(head.get()),
                 DisplayColumn::ZERO,
@@ -398,11 +398,11 @@ mod tests {
         manager.update_viewport(50, px(100.), px(100.), px(200.), px(20.), px(40.));
         manager.scroll_to(px(200.));
 
-        manager.request_autoscroll(ByteOffset::new(10));
+        manager.request_autoscroll(MultiBufferOffset::new(10));
         assert!(manager.apply_pending_autoscroll_vertical(project));
         assert_eq!(manager.scroll_top(), px(160.));
 
-        manager.request_scroll_to_top(ByteOffset::new(10), 2);
+        manager.request_scroll_to_top(MultiBufferOffset::new(10), 2);
         assert!(manager.apply_pending_autoscroll_vertical(project));
         assert_eq!(manager.scroll_top(), px(120.));
     }
@@ -451,7 +451,7 @@ mod tests {
 
     #[test]
     fn caret_autoscroll_reveals_exact_bounds_without_affecting_manual_scroll() {
-        let project = |head: ByteOffset| {
+        let project = |head: MultiBufferOffset| {
             Some(DisplayPoint::new(
                 DisplayRow::new(head.get()),
                 DisplayColumn::ZERO,
@@ -459,7 +459,7 @@ mod tests {
         };
         let mut manager = ScrollManager::default();
         manager.update_viewport(1, px(100.), px(40.), px(300.), px(20.), px(0.));
-        manager.request_autoscroll(ByteOffset::new(0));
+        manager.request_autoscroll(MultiBufferOffset::new(0));
 
         // 垂直部分布局前应用（光标行在视口内，无变化）；水平部分布局后钳制。
         assert!(!manager.apply_pending_autoscroll_vertical(project));

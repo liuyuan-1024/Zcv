@@ -1,3 +1,5 @@
+use zcv_multi_buffer::MultiBufferOffset;
+
 use std::path::PathBuf;
 
 use gpui::{
@@ -15,7 +17,7 @@ impl Render for EditorInWindow {
 }
 use zcv_git::DiffHunkKind;
 use zcv_multi_buffer::{DiffHunkStaging, ExcerptRange, MultiBuffer};
-use zcv_text::{ByteOffset, Line, LogicalColumn, Position};
+use zcv_text::{Line, LogicalColumn, Position};
 
 use super::common::focus_editor;
 
@@ -396,7 +398,7 @@ fn horizontal_scroll_stops_at_content_edge_and_caret_autoscrolls(cx: &mut TestAp
 
     cx.update_entity(&editor, |editor, cx| {
         editor.scroll_manager.scroll_by(point(px(100_000.), px(0.)));
-        editor.set_selections(SelectionSet::caret(ByteOffset::new(text.len())));
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(text.len())));
         editor.request_autoscroll();
         cx.notify();
     });
@@ -445,7 +447,7 @@ fn clicking_scrollbar_track_pages_and_enters_dragging(cx: &mut TestAppContext) {
         assert!(scroll_top <= editor.max_scroll_top());
         assert_eq!(
             editor.selections().primary().head(),
-            ByteOffset::ZERO,
+            MultiBufferOffset::ZERO,
             "点击滚动轴不应移动光标"
         );
     });

@@ -1,5 +1,6 @@
+use zcv_multi_buffer::MultiBufferOffset;
+
 use gpui::{EntityInputHandler, TestAppContext, px, size};
-use zcv_text::ByteOffset;
 
 use super::common::{buffer_text, test_buffer};
 use super::*;
@@ -12,7 +13,7 @@ fn marked_text_updates_buffer_and_unmark_finishes_composition(cx: &mut TestAppCo
         let buffer = buffer.clone();
         move |_, cx| {
             let mut editor = Editor::for_language_buffer(buffer, cx);
-            editor.set_selections(SelectionSet::caret(ByteOffset::new(1)));
+            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(1)));
             editor
         }
     });
@@ -48,7 +49,10 @@ fn marked_text_updates_buffer_and_unmark_finishes_composition(cx: &mut TestAppCo
     assert_eq!(buffer_text(&buffer, cx), "a中文😀b");
     cx.read_entity(&editor, |editor, _| {
         assert!(editor.composition.is_none());
-        assert_eq!(editor.selections().primary().head(), ByteOffset::new(7));
+        assert_eq!(
+            editor.selections().primary().head(),
+            MultiBufferOffset::new(7)
+        );
     });
 }
 #[gpui::test]
@@ -58,7 +62,7 @@ fn ime_candidate_updates_merge_into_one_undo_step(cx: &mut TestAppContext) {
         let buffer = buffer.clone();
         move |_, cx| {
             let mut editor = Editor::for_language_buffer(buffer, cx);
-            editor.set_selections(SelectionSet::caret(ByteOffset::new(1)));
+            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(1)));
             editor
         }
     });
@@ -76,13 +80,19 @@ fn ime_candidate_updates_merge_into_one_undo_step(cx: &mut TestAppContext) {
     cx.update_entity(&editor, |editor, cx| editor.undo(cx));
     assert_eq!(buffer_text(&buffer, cx), "ab");
     cx.read_entity(&editor, |editor, _| {
-        assert_eq!(editor.selections(), SelectionSet::caret(ByteOffset::new(1)));
+        assert_eq!(
+            editor.selections(),
+            SelectionSet::caret(MultiBufferOffset::new(1))
+        );
     });
 
     cx.update_entity(&editor, |editor, cx| editor.redo(cx));
     assert_eq!(buffer_text(&buffer, cx), "a中b");
     cx.read_entity(&editor, |editor, _| {
-        assert_eq!(editor.selections(), SelectionSet::caret(ByteOffset::new(4)));
+        assert_eq!(
+            editor.selections(),
+            SelectionSet::caret(MultiBufferOffset::new(4))
+        );
     });
 }
 #[gpui::test]
@@ -90,8 +100,8 @@ fn ime_updates_every_cursor_and_tracks_the_primary_marked_range(cx: &mut TestApp
     let buffer = test_buffer(cx, "ab cd");
     let initial_selections = SelectionSet::new_with_primary(
         vec![
-            Selection::caret(ByteOffset::new(1)),
-            Selection::caret(ByteOffset::new(4)),
+            Selection::caret(MultiBufferOffset::new(1)),
+            Selection::caret(MultiBufferOffset::new(4)),
         ],
         1,
     );
@@ -137,7 +147,7 @@ fn ime_candidate_remains_in_the_syntax_highlight_pipeline(cx: &mut TestAppContex
         let language_buffer = language_buffer.clone();
         move |_, cx| {
             let mut editor = Editor::for_language_buffer(language_buffer, cx);
-            editor.set_selections(SelectionSet::caret(ByteOffset::new(insertion)));
+            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(insertion)));
             editor
         }
     });
@@ -207,7 +217,10 @@ fn marked_text_can_cancel_and_committed_range_uses_utf16_offsets(cx: &mut TestAp
 
     assert_eq!(buffer_text(&buffer, cx), "a你b");
     cx.read_entity(&editor, |editor, _| {
-        assert_eq!(editor.selections().primary().head(), ByteOffset::new(4));
+        assert_eq!(
+            editor.selections().primary().head(),
+            MultiBufferOffset::new(4)
+        );
     });
 }
 #[gpui::test]

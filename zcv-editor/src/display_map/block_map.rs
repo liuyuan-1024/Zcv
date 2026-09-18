@@ -3,6 +3,8 @@
 //! 本层位于 WrapMap 之上：文本换行坐标保持不变，文件标题和同文件片段分隔线作为不属于文本的虚拟显示块插入。
 //! 这样搜索、diff、诊断等宿主只负责提供 excerpts，滚动、命中测试、选区和通用文件标题都由 Editor 复用同一条管线。
 
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+
 use std::collections::{BTreeSet, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
@@ -10,7 +12,7 @@ use std::sync::Arc;
 
 use sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use zcv_multi_buffer::ExcerptSnapshot;
-use zcv_text::{ByteOffset, CoordinateError, Line, TextRange};
+use zcv_text::{CoordinateError, Line};
 
 use super::error::DisplayMapResult;
 use super::fold_map::{FoldBias, ProjectedLineIndex, ProjectedPoint, ProjectedRange};
@@ -642,7 +644,7 @@ impl BlockSnapshot {
 
     pub(super) fn offset_to_display_point(
         &self,
-        offset: ByteOffset,
+        offset: MultiBufferOffset,
     ) -> DisplayMapResult<DisplayPoint> {
         let point = self.wrap_snapshot.offset_to_display_point(offset)?;
         Ok(DisplayPoint::new(
@@ -655,7 +657,7 @@ impl BlockSnapshot {
         &self,
         point: DisplayPoint,
         bias: FoldBias,
-    ) -> DisplayMapResult<ByteOffset> {
+    ) -> DisplayMapResult<MultiBufferOffset> {
         if point.row().get() >= self.line_count() {
             return Err(CoordinateError::LineOutOfBounds(Line::new(point.row().get())).into());
         }
@@ -670,13 +672,13 @@ impl BlockSnapshot {
     pub(super) fn display_point_to_offset(
         &self,
         point: DisplayPoint,
-    ) -> DisplayMapResult<ByteOffset> {
+    ) -> DisplayMapResult<MultiBufferOffset> {
         self.display_point_to_offset_with_bias(point, FoldBias::Left)
     }
 
     pub(super) fn project_text_range(
         &self,
-        range: TextRange,
+        range: MultiBufferRange,
     ) -> DisplayMapResult<Vec<ProjectedRange>> {
         self.wrap_snapshot
             .project_text_range(range)?
@@ -716,7 +718,7 @@ impl BlockSnapshot {
         })
     }
 
-    pub(super) fn line_to_display_row(&self, offset: ByteOffset) -> Option<DisplayRow> {
+    pub(super) fn line_to_display_row(&self, offset: MultiBufferOffset) -> Option<DisplayRow> {
         self.offset_to_display_point(offset)
             .ok()
             .map(DisplayPoint::row)

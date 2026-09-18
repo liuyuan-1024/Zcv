@@ -1,10 +1,12 @@
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+
 use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 use std::path::PathBuf;
 use zcv_git::DiffHunkKind;
 use zcv_multi_buffer::{
     BufferDiff, BufferDiffInput, DiffFile, DiffHunkStaging, DisplayHunk, ExcerptRange, MultiBuffer,
 };
-use zcv_text::{Buffer, ByteOffset, Edit, Line, LogicalColumn, TextRange, TransactionMetadata};
+use zcv_text::{Buffer, Edit, Line, LogicalColumn, TransactionMetadata};
 
 use super::common::{
     buffer_text, engine_buffer, focus_editor, inject_editor_diff, inject_file_diff, test_buffer,
@@ -68,7 +70,12 @@ fn single_file_diff_uses_the_composite_projection_path(cx: &mut TestAppContext) 
     assert_eq!(buffer_text(&source, cx), "a\nworking\nc\n");
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.multi_buffer().read(cx).snapshot(cx).excerpts().len(),
+            editor
+                .multi_buffer()
+                .read(cx)
+                .snapshot(cx)
+                .excerpts()
+                .count(),
             3
         );
         assert_eq!(editor.diff_hunks(cx).len(), 1);
@@ -123,7 +130,7 @@ fn switching_single_file_diff_after_source_edit_keeps_text_consumer_aligned(
     cx.update_entity(&source_buffer, |buffer, cx| {
         buffer
             .edit(
-                [Edit::insert(ByteOffset::ZERO, "prefix\n").unwrap()],
+                [Edit::insert(MultiBufferOffset::ZERO.into(), "prefix\n").unwrap()],
                 TransactionMetadata::default(),
             )
             .expect("源编辑应成功");
@@ -164,8 +171,8 @@ fn clicking_deep_after_fold_preserves_the_visual_column(cx: &mut TestAppContext)
     });
     cx.refresh().expect("折叠后的编辑器应能刷新");
 
-    let target_offset = ByteOffset::new(text.find("行内").expect("测试文本应包含 行内"));
-    let target_end = ByteOffset::new(target_offset.get() + "行内".len());
+    let target_offset = MultiBufferOffset::new(text.find("行内").expect("测试文本应包含 行内"));
+    let target_end = MultiBufferOffset::new(target_offset.get() + "行内".len());
     let (click, line_height) = cx.read_entity(&editor, |editor, _| {
         let layout = editor
             .input_layout
@@ -515,7 +522,7 @@ fn toggle_fold_action_uses_the_cursor_block_and_the_whole_folded_row(cx: &mut Te
 
     // 光标在 if 块内部时，折叠包含它的最内层范围，而不要求位于 crease 所在行。
     editor.update(cx, |editor, cx| {
-        editor.set_selections(SelectionSet::caret(ByteOffset::new(
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(
             text.find("let x").expect("测试文本应包含 let x"),
         )));
         editor.toggle_fold_at_cursor(cx);
@@ -528,7 +535,7 @@ fn toggle_fold_action_uses_the_cursor_block_and_the_whole_folded_row(cx: &mut Te
 
     // 光标位于折叠占位符之后的闭合尾段时，仍按同一显示行展开。
     editor.update(cx, |editor, cx| {
-        editor.set_selections(SelectionSet::caret(ByteOffset::new(
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(
             text.find("    }\n}").expect("测试文本应包含内层闭合括号") + 4,
         )));
         editor.toggle_fold_at_cursor(cx);
@@ -554,7 +561,7 @@ fn clicking_the_crease_toggles_fold_without_selecting_the_line(cx: &mut TestAppC
     });
     cx.run_until_parked();
 
-    let initial_selection = SelectionSet::caret(ByteOffset::new(3));
+    let initial_selection = SelectionSet::caret(MultiBufferOffset::new(3));
     editor.update(cx, |editor, _| {
         editor.set_selections(initial_selection.clone());
     });
@@ -664,7 +671,7 @@ fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
     cx.update_entity(&buffer, |buffer, cx| {
         buffer
             .edit(
-                [Edit::insert(ByteOffset::new(7), "// 注释\n").unwrap()],
+                [Edit::insert(MultiBufferOffset::new(7).into(), "// 注释\n").unwrap()],
                 TransactionMetadata::default(),
             )
             .expect("插入应成功");
@@ -707,7 +714,7 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
 
     // 光标在 `{` 上（字节 10；字节 8/9 会命中 `()` 对）。
     let close_range = cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::caret(ByteOffset::new(10)));
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(10)));
         let pair = editor
             .matching_bracket_pair()
             .expect("光标旁的括号应由 tree-sitter query 匹配");
@@ -725,9 +732,9 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
     // 真实 `}` 范围投影到合并行占位符之后的列（anchor 11 字符 + 占位符 1 列 = 12）。
     let projected = snapshot
         .project_text_range(
-            TextRange::new(
-                ByteOffset::new(close_range.start),
-                ByteOffset::new(close_range.end),
+            MultiBufferRange::new(
+                MultiBufferOffset::new(close_range.start),
+                MultiBufferOffset::new(close_range.end),
             )
             .expect("`}` 范围应合法"),
         )
@@ -761,14 +768,14 @@ fn horizontal_movement_jumps_over_folded_content(cx: &mut TestAppContext) {
 
     // 光标在折叠起点（anchor 行行尾，字节 11）。
     editor.update(cx, |editor, _| {
-        editor.set_selections(SelectionSet::caret(ByteOffset::new(11)));
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(11)));
     });
     focus_editor(&editor, cx);
     cx.dispatch_action(MoveRight);
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(
             editor.selections().primary().head(),
-            ByteOffset::new(27),
+            MultiBufferOffset::new(27),
             "右箭头应一步跨过折叠，落在闭合括号"
         );
     });
@@ -776,20 +783,20 @@ fn horizontal_movement_jumps_over_folded_content(cx: &mut TestAppContext) {
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(
             editor.selections().primary().head(),
-            ByteOffset::new(11),
+            MultiBufferOffset::new(11),
             "左箭头应回到折叠起点"
         );
     });
 
     // 选区扩展也把折叠视为一个显示单元；跨过占位符后，下一次扩展必须继续进入可见尾段。
     editor.update(cx, |editor, _| {
-        editor.set_selections(SelectionSet::caret(ByteOffset::new(11)));
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(11)));
     });
     cx.dispatch_action(SelectRight);
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(
             editor.selections().primary(),
-            &Selection::new(ByteOffset::new(11), ByteOffset::new(27)),
+            &Selection::new(MultiBufferOffset::new(11), MultiBufferOffset::new(27)),
             "第一次向右扩展应一次选中折叠源范围"
         );
     });
@@ -797,7 +804,7 @@ fn horizontal_movement_jumps_over_folded_content(cx: &mut TestAppContext) {
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(
             editor.selections().primary(),
-            &Selection::new(ByteOffset::new(11), ByteOffset::new(28)),
+            &Selection::new(MultiBufferOffset::new(11), MultiBufferOffset::new(28)),
             "选中折叠后仍应能继续向右扩展"
         );
     });
@@ -822,11 +829,11 @@ fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppCo
     editor.update(cx, |editor, cx| {
         editor.toggle_fold_at_line(Line::new(1), cx)
     });
-    let after_offset = ByteOffset::new(text.find("after").expect("测试文本应包含 after"));
+    let after_offset = MultiBufferOffset::new(text.find("after").expect("测试文本应包含 after"));
 
     focus_editor(&editor, cx);
     editor.update(cx, |editor, _| {
-        editor.set_selections(SelectionSet::caret(ByteOffset::new(7)));
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(7)));
     });
     cx.dispatch_action(MoveDown);
     cx.read_entity(&editor, |editor, _| {
@@ -939,7 +946,7 @@ fn diff_hunks_follow_buffer_edits_without_losing_highlight(cx: &mut TestAppConte
         editor.multi_buffer.update(cx, |buffer, cx| {
             buffer
                 .edit(
-                    vec![Edit::insert(ByteOffset::ZERO, "changed\n").unwrap()],
+                    vec![Edit::insert(MultiBufferOffset::ZERO.into(), "changed\n").unwrap()],
                     TransactionMetadata::default(),
                     cx,
                 )
@@ -988,11 +995,12 @@ fn external_reparse_refreshes_added_diff_syntax_highlights(cx: &mut TestAppConte
         buffer
             .edit(
                 [Edit::replace(
-                    TextRange::new(
-                        ByteOffset::new("fn main() {\n".len()),
-                        ByteOffset::new(old_line.len()),
+                    MultiBufferRange::new(
+                        MultiBufferOffset::new("fn main() {\n".len()),
+                        MultiBufferOffset::new(old_line.len()),
                     )
-                    .unwrap(),
+                    .unwrap()
+                    .into(),
                     "    // 外部编辑\n    let value = 1;\n",
                 )],
                 TransactionMetadata::default(),
@@ -1124,7 +1132,9 @@ fn multibuffer_soft_wrap_uses_the_regular_display_map_pipeline(cx: &mut TestAppC
         combined.set_excerpts(
             vec![ExcerptRange::new(
                 source_multi,
-                TextRange::new(ByteOffset::ZERO, source_end).expect("完整片段范围应有效"),
+                MultiBufferRange::new(MultiBufferOffset::ZERO, source_end)
+                    .expect("完整片段范围应有效")
+                    .into(),
                 Vec::new(),
             )],
             cx,
@@ -1184,12 +1194,16 @@ fn wrapped_multibuffer_reuses_block_rows_across_within_line_edits(cx: &mut TestA
             vec![
                 ExcerptRange::new(
                     first.clone(),
-                    TextRange::new(ByteOffset::ZERO, first_len).expect("完整片段范围应有效"),
+                    MultiBufferRange::new(MultiBufferOffset::ZERO, first_len)
+                        .expect("完整片段范围应有效")
+                        .into(),
                     Vec::new(),
                 ),
                 ExcerptRange::new(
                     second.clone(),
-                    TextRange::new(ByteOffset::ZERO, second_len).expect("完整片段范围应有效"),
+                    MultiBufferRange::new(MultiBufferOffset::ZERO, second_len)
+                        .expect("完整片段范围应有效")
+                        .into(),
                     Vec::new(),
                 ),
             ],
@@ -1226,7 +1240,9 @@ fn wrapped_multibuffer_reuses_block_rows_across_within_line_edits(cx: &mut TestA
         buffer
             .edit(
                 [Edit::replace(
-                    TextRange::new(ByteOffset::new(4), ByteOffset::new(9)).expect("替换范围应有效"),
+                    MultiBufferRange::new(MultiBufferOffset::new(4), MultiBufferOffset::new(9))
+                        .expect("替换范围应有效")
+                        .into(),
                     "ALPHA",
                 )],
                 TransactionMetadata::default(),
@@ -1269,12 +1285,16 @@ fn wrapped_multibuffer_relocates_blocks_when_wrap_rows_change(cx: &mut TestAppCo
             vec![
                 ExcerptRange::new(
                     first.clone(),
-                    TextRange::new(ByteOffset::ZERO, first_len).expect("完整片段范围应有效"),
+                    MultiBufferRange::new(MultiBufferOffset::ZERO, first_len)
+                        .expect("完整片段范围应有效")
+                        .into(),
                     Vec::new(),
                 ),
                 ExcerptRange::new(
                     second.clone(),
-                    TextRange::new(ByteOffset::ZERO, second_len).expect("完整片段范围应有效"),
+                    MultiBufferRange::new(MultiBufferOffset::ZERO, second_len)
+                        .expect("完整片段范围应有效")
+                        .into(),
                     Vec::new(),
                 ),
             ],
@@ -1313,7 +1333,7 @@ fn wrapped_multibuffer_relocates_blocks_when_wrap_rows_change(cx: &mut TestAppCo
     cx.update_entity(&first_buffer, |buffer, cx| {
         buffer
             .edit(
-                [Edit::insert(ByteOffset::new(14), "\n").unwrap()],
+                [Edit::insert(MultiBufferOffset::new(14).into(), "\n").unwrap()],
                 TransactionMetadata::default(),
             )
             .expect("源编辑应成功");
@@ -1550,7 +1570,7 @@ fn combined_diff_dirty_edit_keeps_existing_excerpt_and_cursor(cx: &mut TestAppCo
         let selections = editor.selections();
         let caret = selections.primary();
         assert!(caret.is_caret(), "删除后应为单光标");
-        assert_eq!(caret.head(), ByteOffset::ZERO);
+        assert_eq!(caret.head(), MultiBufferOffset::ZERO);
     });
 }
 
@@ -1581,7 +1601,7 @@ fn combined_diff_toggle_hunk_keeps_cursor_at_same_source_position(cx: &mut TestA
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(editor.text(cx), "a\nb\nc");
         let selections = editor.selections();
-        assert_eq!(selections.primary().head(), ByteOffset::new(2));
+        assert_eq!(selections.primary().head(), MultiBufferOffset::new(2));
     });
 
     // 展开 Deleted hunk：只读旧行插入删除点，投影整体重建（reload，版本重置）。
@@ -1595,7 +1615,7 @@ fn combined_diff_toggle_hunk_keeps_cursor_at_same_source_position(cx: &mut TestA
         let selections = editor.selections();
         let caret = selections.primary();
         assert!(caret.is_caret(), "折叠/展开后应保持单光标");
-        assert_eq!(caret.head(), ByteOffset::new(12));
+        assert_eq!(caret.head(), MultiBufferOffset::new(12));
     });
 }
 
@@ -1625,7 +1645,10 @@ fn external_source_edit_moves_combined_diff_cursor_like_plain_editor(cx: &mut Te
     editor.update(cx, |editor, cx| editor.select_byte_range(14..14, cx));
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(editor.text(cx), "alpha\nbravo\ncharlie");
-        assert_eq!(editor.selections().primary().head(), ByteOffset::new(14));
+        assert_eq!(
+            editor.selections().primary().head(),
+            MultiBufferOffset::new(14)
+        );
     });
 
     // 外部在 "bravo" 与 "charlie" 之间插入整行 "NEW"：hunk 位置随源下移，组合投影整体重建（reload）。
@@ -1644,7 +1667,7 @@ fn external_source_edit_moves_combined_diff_cursor_like_plain_editor(cx: &mut Te
         let selections = editor.selections();
         let caret = selections.primary();
         assert!(caret.is_caret(), "外部编辑后应保持单光标");
-        assert_eq!(caret.head(), ByteOffset::new(18));
+        assert_eq!(caret.head(), MultiBufferOffset::new(18));
     });
 }
 
@@ -1675,7 +1698,10 @@ fn combined_diff_undo_redo_restores_cursor_parity_with_plain_editor(cx: &mut Tes
     cx.run_until_parked();
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(editor.text(cx), "L3\nADDED\nL5\nL6\n");
-        assert_eq!(editor.selections().primary().head(), ByteOffset::ZERO);
+        assert_eq!(
+            editor.selections().primary().head(),
+            MultiBufferOffset::ZERO
+        );
     });
 
     // undo：源与裁剪窗口都回到编辑前，光标恢复为编辑前选区（投影 0..3），而不是被重建重置到开头。
@@ -1685,8 +1711,8 @@ fn combined_diff_undo_redo_restores_cursor_parity_with_plain_editor(cx: &mut Tes
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(editor.text(cx), "L2\nL3\nADDED\nL5\nL6\n");
         let selections = editor.selections();
-        assert_eq!(selections.primary().anchor(), ByteOffset::new(0));
-        assert_eq!(selections.primary().head(), ByteOffset::new(3));
+        assert_eq!(selections.primary().anchor(), MultiBufferOffset::new(0));
+        assert_eq!(selections.primary().head(), MultiBufferOffset::new(3));
     });
 
     // redo：再次删除；脏文档保留当前投影，光标回到投影起点。
@@ -1697,7 +1723,7 @@ fn combined_diff_undo_redo_restores_cursor_parity_with_plain_editor(cx: &mut Tes
         let selections = editor.selections();
         let caret = selections.primary();
         assert!(caret.is_caret(), "redo 后应为删除落点的单光标");
-        assert_eq!(caret.head(), ByteOffset::ZERO);
+        assert_eq!(caret.head(), MultiBufferOffset::ZERO);
     });
 }
 
@@ -1740,7 +1766,7 @@ fn single_file_diff_expansion_uses_composite_projection(cx: &mut TestAppContext)
         editor.multi_buffer.update(cx, |buffer, cx| {
             buffer
                 .edit(
-                    vec![Edit::insert(ByteOffset::new(12), "edited\n").unwrap()],
+                    vec![Edit::insert(MultiBufferOffset::new(12).into(), "edited\n").unwrap()],
                     TransactionMetadata::default(),
                     cx,
                 )

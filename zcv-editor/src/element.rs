@@ -1,5 +1,7 @@
 //! Editor 的逐帧文本布局、绘制与像素命中测试。
 
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+
 use std::collections::BTreeSet;
 use std::ops::Range;
 use std::sync::Arc;
@@ -16,7 +18,7 @@ use zcv_actions::{OpenExcerpts, ToggleFold};
 use zcv_git::DiffHunkKind;
 use zcv_language::{BracketPair, FoldRange};
 use zcv_multi_buffer::{DiffHunkStaging, MultiBufferSnapshot};
-use zcv_text::{ByteOffset, Line, LogicalColumn, TextRange};
+use zcv_text::{Line, LogicalColumn};
 use zcv_theme::{color, space};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon, drag_autoscroll_delta};
 
@@ -173,7 +175,7 @@ impl EditorLayout {
     fn insert_local_rename_row(&mut self, range: &Range<usize>) {
         let Some(line_end) = line_end_offset(
             self.display_snapshot.buffer_snapshot(),
-            ByteOffset::new(range.start),
+            MultiBufferOffset::new(range.start),
         ) else {
             return;
         };
@@ -295,7 +297,10 @@ impl EditorInputLayout {
         }
     }
 
-    pub(super) fn caret_position_for_offset(&self, offset: ByteOffset) -> Option<Point<Pixels>> {
+    pub(super) fn caret_position_for_offset(
+        &self,
+        offset: MultiBufferOffset,
+    ) -> Option<Point<Pixels>> {
         let display_point = self
             .layout
             .display_snapshot
@@ -318,7 +323,10 @@ impl EditorInputLayout {
         self.layout.line_height
     }
 
-    pub(super) fn line_end_position_for_offset(&self, offset: ByteOffset) -> Option<Point<Pixels>> {
+    pub(super) fn line_end_position_for_offset(
+        &self,
+        offset: MultiBufferOffset,
+    ) -> Option<Point<Pixels>> {
         let line_end = line_end_offset(self.layout.display_snapshot.buffer_snapshot(), offset)?;
         self.caret_position_for_offset(line_end)
     }
@@ -2396,7 +2404,11 @@ fn visible_foldable_lines(
     fold_ranges[start_index..]
         .iter()
         .take_while(|fold| fold.range.start < end)
-        .filter_map(|fold| buffer.byte_to_line(ByteOffset::new(fold.range.start)).ok())
+        .filter_map(|fold| {
+            buffer
+                .byte_to_line(MultiBufferOffset::new(fold.range.start))
+                .ok()
+        })
         .collect()
 }
 
@@ -3164,8 +3176,10 @@ fn layout_bracket_pair(
 ) {
     let bracket_background = color::current(cx).editor_document_highlight_bracket_background;
     for range in [pair.open, pair.close] {
-        let Ok(range) = TextRange::new(ByteOffset::new(range.start), ByteOffset::new(range.end))
-        else {
+        let Ok(range) = MultiBufferRange::new(
+            MultiBufferOffset::new(range.start),
+            MultiBufferOffset::new(range.end),
+        ) else {
             continue;
         };
         let Ok(projected) = layout.display_snapshot.project_text_range(range) else {
@@ -3254,7 +3268,7 @@ fn layout_primary_caret(
 }
 
 fn layout_caret_at_buffer_offset(
-    offset: ByteOffset,
+    offset: MultiBufferOffset,
     layout: &EditorLayout,
     line_height: Pixels,
     cx: &App,
@@ -3295,15 +3309,18 @@ fn local_byte_for_display_point(
     )
 }
 
-fn line_end_offset(snapshot: &MultiBufferSnapshot, offset: ByteOffset) -> Option<ByteOffset> {
+fn line_end_offset(
+    snapshot: &MultiBufferSnapshot,
+    offset: MultiBufferOffset,
+) -> Option<MultiBufferOffset> {
     let line = snapshot.byte_to_position(offset).ok()?.line();
     if line.get() + 1 < snapshot.line_count() {
         snapshot
             .line_start_byte(Line::new(line.get() + 1))
             .ok()
-            .map(|start| ByteOffset::new(start.get().saturating_sub(1)))
+            .map(|start| MultiBufferOffset::new(start.get().saturating_sub(1)))
     } else {
-        Some(ByteOffset::new(snapshot.len_bytes().get()))
+        Some(MultiBufferOffset::new(snapshot.len_bytes().get()))
     }
 }
 
@@ -3387,7 +3404,7 @@ mod tests {
     use zcv_language::LanguageBuffer;
     use zcv_multi_buffer::{DiffHunkStaging, DisplayHunk};
     use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
-    use zcv_text::{Buffer, BufferConfig, ByteOffset, Line, TextRange};
+    use zcv_text::{Buffer, BufferConfig, Line};
     use zcv_theme::typography;
 
     #[test]
@@ -3411,8 +3428,8 @@ mod tests {
         let snapshot = buffer.snapshot();
         let display = DisplayMap::new(snapshot.clone()).snapshot();
         let ranges = [
-            TextRange::new(ByteOffset::ZERO, ByteOffset::new(5)).unwrap(),
-            TextRange::new(ByteOffset::new(13), ByteOffset::new(19)).unwrap(),
+            MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(5)).unwrap(),
+            MultiBufferRange::new(MultiBufferOffset::new(13), MultiBufferOffset::new(19)).unwrap(),
         ];
         let matches = ranges
             .map(|range| crate::view::SearchMatchAnchor::from_range(snapshot.version(), range));
@@ -3433,20 +3450,29 @@ mod tests {
         });
         let source = cx.new(|cx| LanguageBuffer::new(source_buffer, None, cx));
         let combined = cx.new(MultiBuffer::empty);
-        let first_match = TextRange::new(ByteOffset::ZERO, ByteOffset::new(5)).unwrap();
-        let second_match = TextRange::new(ByteOffset::new(6), ByteOffset::new(12)).unwrap();
+        let first_match =
+            MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(5)).unwrap();
+        let second_match =
+            MultiBufferRange::new(MultiBufferOffset::new(6), MultiBufferOffset::new(12)).unwrap();
         combined.update(cx, |combined, cx| {
             combined.set_excerpts(
                 vec![
                     ExcerptRange::new(
                         source.clone(),
-                        TextRange::new(ByteOffset::ZERO, ByteOffset::new(5)).unwrap(),
-                        vec![first_match],
+                        MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(5))
+                            .unwrap()
+                            .into(),
+                        vec![first_match.into()],
                     ),
                     ExcerptRange::new(
                         source,
-                        TextRange::new(ByteOffset::new(6), ByteOffset::new(12)).unwrap(),
-                        vec![second_match],
+                        MultiBufferRange::new(
+                            MultiBufferOffset::new(6),
+                            MultiBufferOffset::new(12),
+                        )
+                        .unwrap()
+                        .into(),
+                        vec![second_match.into()],
                     ),
                 ],
                 cx,
@@ -3545,11 +3571,13 @@ mod tests {
         let matches = vec![
             crate::view::SearchMatchAnchor::from_range(
                 snapshot.version(),
-                TextRange::new(ByteOffset::new(0), ByteOffset::new(6)).unwrap(),
+                MultiBufferRange::new(MultiBufferOffset::new(0), MultiBufferOffset::new(6))
+                    .unwrap(),
             ),
             crate::view::SearchMatchAnchor::from_range(
                 snapshot.version(),
-                TextRange::new(ByteOffset::new(11), ByteOffset::new(17)).unwrap(),
+                MultiBufferRange::new(MultiBufferOffset::new(11), MultiBufferOffset::new(17))
+                    .unwrap(),
             ),
         ];
         let window = cx.add_window(|_, _| Empty);
@@ -3813,8 +3841,12 @@ mod tests {
                 vec![
                     ExcerptRange::new(
                         source,
-                        TextRange::new(ByteOffset::ZERO, ByteOffset::new(text.len()))
-                            .expect("片段范围应有效"),
+                        MultiBufferRange::new(
+                            MultiBufferOffset::ZERO,
+                            MultiBufferOffset::new(text.len()),
+                        )
+                        .expect("片段范围应有效")
+                        .into(),
                         Vec::new(),
                     )
                     .with_display_path(PathBuf::from("文档/引擎.md")),
@@ -4190,7 +4222,7 @@ mod tests {
                 .snapshot();
                 let mut map = DisplayMap::new(snapshot.clone());
                 map.fold_range(
-                    TextRange::new(ByteOffset::new(6), ByteOffset::new(28))
+                    MultiBufferRange::new(MultiBufferOffset::new(6), MultiBufferOffset::new(28))
                         .expect("折叠范围应合法"),
                 )
                 .expect("折叠应成功");
@@ -4271,8 +4303,8 @@ mod tests {
                     cx,
                 );
                 let selections = SelectionSet::new(vec![crate::selection::Selection::new(
-                    ByteOffset::new(2),
-                    ByteOffset::new(12),
+                    MultiBufferOffset::new(2),
+                    MultiBufferOffset::new(12),
                 )]);
                 let (segments, _) = layout_selections(&selections, &layout, px(20.), cx);
                 let segments = segments
@@ -4345,8 +4377,8 @@ mod tests {
 
                 assert_eq!(layout.lines[0].whitespaces.len(), 2);
                 let selected_spaces = SelectionSet::new(vec![crate::selection::Selection::new(
-                    ByteOffset::new(1),
-                    ByteOffset::new(3),
+                    MultiBufferOffset::new(1),
+                    MultiBufferOffset::new(3),
                 )]);
                 let markers =
                     layout_selected_whitespace(&selected_spaces, &layout, px(20.), window, cx)
@@ -4356,8 +4388,8 @@ mod tests {
                 assert!(markers.origins[0].x < markers.origins[1].x);
 
                 let selected_tab = SelectionSet::new(vec![crate::selection::Selection::new(
-                    ByteOffset::new(4),
-                    ByteOffset::new(5),
+                    MultiBufferOffset::new(4),
+                    MultiBufferOffset::new(5),
                 )]);
                 assert!(
                     layout_selected_whitespace(&selected_tab, &layout, px(20.), window, cx,)
@@ -4410,8 +4442,12 @@ mod tests {
                     window,
                     cx,
                 );
-                let (_, carets) =
-                    layout_selections(&SelectionSet::caret(ByteOffset::ZERO), &layout, px(20.), cx);
+                let (_, carets) = layout_selections(
+                    &SelectionSet::caret(MultiBufferOffset::ZERO),
+                    &layout,
+                    px(20.),
+                    cx,
+                );
 
                 assert!(carets.is_empty());
             })
@@ -4441,8 +4477,8 @@ mod tests {
             Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("应创建单文件 Buffer");
         let single_snapshot = single_text.snapshot();
         let selection = SelectionSet::new(vec![crate::selection::Selection::new(
-            ByteOffset::new(2),
-            ByteOffset::new(12),
+            MultiBufferOffset::new(2),
+            MultiBufferOffset::new(12),
         )]);
 
         let window = cx.add_window(|_, _| Empty);

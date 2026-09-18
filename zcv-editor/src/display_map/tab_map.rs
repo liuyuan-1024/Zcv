@@ -3,13 +3,15 @@
 //! `TabMap` 只测量实际进入投影视口的逻辑行，并在同行编辑后精确失效对应缓存。
 //! 初次构建不遍历全文；结构编辑按行区间平移已测量行（被编辑行失效），后续仍按需重新填充。
 
+use zcv_multi_buffer::MultiBufferOffset;
+
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
 use zcv_multi_buffer::MultiBufferSnapshot;
-use zcv_text::{BufferConfig, ByteOffset, CoordinateError, Line};
+use zcv_text::{BufferConfig, CoordinateError, Line};
 
 use super::chunk::{ChunkBase, ChunkText, FoldChunks, HighlightStyles, InlayChunks};
 use super::display_width::{DisplayColumn, char_width};
@@ -69,7 +71,7 @@ impl TabSnapshot {
     }
 
     /// 投影行 → 字节范围（折叠合并行为锚定行行首的伪坐标）。
-    pub(super) fn line_byte_range(&self, line: Line) -> Option<Range<ByteOffset>> {
+    pub(super) fn line_byte_range(&self, line: Line) -> Option<Range<MultiBufferOffset>> {
         let fold = self.fold_snapshot();
         let projected = ProjectedLineIndex::new(line.get());
         if let Some(anchor_stream) = fold.fold_row_anchor_stream_line(projected) {

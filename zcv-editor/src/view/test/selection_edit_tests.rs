@@ -1,11 +1,13 @@
 //! Editor 选区编辑行为测试。
 
+use zcv_multi_buffer::MultiBufferOffset;
+
 use std::path::PathBuf;
 
 use gpui::{AppContext, TestAppContext};
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
-use zcv_text::{Buffer, BufferConfig, ByteOffset};
+use zcv_text::{Buffer, BufferConfig};
 
 use super::Editor;
 use crate::selection::{Selection, SelectionSet};
@@ -36,7 +38,7 @@ fn editor_with_text(
 fn buffer_text(buffer: &gpui::Entity<Buffer>, cx: &TestAppContext) -> String {
     cx.read_entity(buffer, |buffer, _| {
         buffer
-            .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
+            .slice_byte_range(MultiBufferOffset::ZERO.into(), buffer.len_bytes())
             .expect("完整测试范围应可读取")
             .as_str()
             .to_string()
@@ -62,7 +64,7 @@ fn rename_local_at_replaces_only_the_resolved_binding(cx: &mut TestAppContext) {
     let result_offset = source.find("result").expect("测试文本应包含局部变量");
     cx.update_entity(&editor, |editor, cx| {
         editor
-            .rename_local_at(ByteOffset::new(result_offset), "answer", cx)
+            .rename_local_at(MultiBufferOffset::new(result_offset), "answer", cx)
             .expect("已解析的局部绑定应可重命名");
     });
 
@@ -90,7 +92,7 @@ fn rename_local_at_rejects_ambiguous_binding(cx: &mut TestAppContext) {
 
     let value_offset = source.find("value").expect("测试文本应包含重复绑定");
     let result = cx.update_entity(&editor, |editor, cx| {
-        editor.rename_local_at(ByteOffset::new(value_offset), "answer", cx)
+        editor.rename_local_at(MultiBufferOffset::new(value_offset), "answer", cx)
     });
 
     assert!(result.is_err(), "歧义绑定不能执行批量重命名");
@@ -115,7 +117,7 @@ fn rename_local_at_rejects_unresolved_reference(cx: &mut TestAppContext) {
 
     let missing_offset = source.find("missing").expect("测试文本应包含未解析引用");
     let result = cx.update_entity(&editor, |editor, cx| {
-        editor.rename_local_at(ByteOffset::new(missing_offset), "answer", cx)
+        editor.rename_local_at(MultiBufferOffset::new(missing_offset), "answer", cx)
     });
 
     assert!(result.is_err(), "未解析引用不能执行批量重命名");
@@ -124,8 +126,10 @@ fn rename_local_at_rejects_unresolved_reference(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn indent_and_outdent_are_editor_owned_selection_edits(cx: &mut TestAppContext) {
-    let selections =
-        SelectionSet::new(vec![Selection::new(ByteOffset::new(0), ByteOffset::new(3))]);
+    let selections = SelectionSet::new(vec![Selection::new(
+        MultiBufferOffset::new(0),
+        MultiBufferOffset::new(3),
+    )]);
     let (buffer, editor) = editor_with_text(cx, "a\nb", selections);
 
     cx.update_entity(&editor, |editor, cx| editor.indent(cx));
@@ -134,8 +138,8 @@ fn indent_and_outdent_are_editor_owned_selection_edits(cx: &mut TestAppContext) 
         assert_eq!(
             editor.selections(),
             SelectionSet::new(vec![Selection::new(
-                ByteOffset::new(4),
-                ByteOffset::new(11),
+                MultiBufferOffset::new(4),
+                MultiBufferOffset::new(11),
             )]),
             "多行缩进后应保持一个覆盖原内容的选区"
         );
@@ -146,7 +150,10 @@ fn indent_and_outdent_are_editor_owned_selection_edits(cx: &mut TestAppContext) 
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(
             editor.selections(),
-            SelectionSet::new(vec![Selection::new(ByteOffset::ZERO, ByteOffset::new(3))]),
+            SelectionSet::new(vec![Selection::new(
+                MultiBufferOffset::ZERO,
+                MultiBufferOffset::new(3)
+            )]),
             "减少缩进后应恢复原选区"
         );
     });
@@ -154,13 +161,17 @@ fn indent_and_outdent_are_editor_owned_selection_edits(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn caret_indent_uses_display_map_tab_column(cx: &mut TestAppContext) {
-    let (buffer, editor) = editor_with_text(cx, "\tx", SelectionSet::caret(ByteOffset::new(1)));
+    let (buffer, editor) =
+        editor_with_text(cx, "\tx", SelectionSet::caret(MultiBufferOffset::new(1)));
 
     cx.update_entity(&editor, |editor, cx| editor.indent(cx));
 
     assert_eq!(buffer_text(&buffer, cx), "\t    x");
     cx.read_entity(&editor, |editor, _| {
-        assert_eq!(editor.selections().primary().head(), ByteOffset::new(5));
+        assert_eq!(
+            editor.selections().primary().head(),
+            MultiBufferOffset::new(5)
+        );
     });
 }
 
@@ -196,7 +207,7 @@ fn editing_a_later_composite_excerpt_keeps_following_input_in_that_source(cx: &m
     });
 
     cx.update_entity(&editor, |editor, cx| {
-        editor.set_selections(SelectionSet::caret(ByteOffset::new(6)));
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(6)));
         editor.replace_text(None, "A", cx);
         editor.replace_text(None, "B", cx);
     });

@@ -7,6 +7,8 @@
 //! 与 FoldMap 一样，WrapMap 用 `SumTree<Transform>` 维护"输入 tab 行 → 输出显示行"的拓扑：Isomorphic 段把连续不换行行合并，Wrap 段把单个宽行拆成 `wrap_points.len() + 1` 个显示行。
 //! 折叠与换行是正交的两层变换：折叠先塌缩文本，换行再按像素宽度切分。
 
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -14,7 +16,7 @@ use gpui::{Font, Pixels, TextRun, TextSystem, WindowTextSystem};
 use sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use unicode_segmentation::UnicodeSegmentation;
 use zcv_multi_buffer::MultiBufferSnapshot;
-use zcv_text::{ByteOffset, CoordinateError, Line, LogicalColumn, Position, TextRange};
+use zcv_text::{CoordinateError, Line, LogicalColumn, Position};
 
 use super::chunk::{Chunk, ChunkBase, ChunkText, FoldChunks, HighlightStyles, InlayChunks};
 use super::display_width::DisplayColumn;
@@ -267,7 +269,7 @@ impl WrapSnapshot {
 
     pub(super) fn offset_to_display_point(
         &self,
-        offset: ByteOffset,
+        offset: MultiBufferOffset,
     ) -> DisplayMapResult<DisplayPoint> {
         let position = self
             .tab_snapshot
@@ -281,7 +283,7 @@ impl WrapSnapshot {
     pub(super) fn display_point_to_offset(
         &self,
         point: DisplayPoint,
-    ) -> DisplayMapResult<ByteOffset> {
+    ) -> DisplayMapResult<MultiBufferOffset> {
         self.display_point_to_offset_with_bias(point, FoldBias::Left)
     }
 
@@ -289,7 +291,7 @@ impl WrapSnapshot {
         &self,
         point: DisplayPoint,
         bias: FoldBias,
-    ) -> DisplayMapResult<ByteOffset> {
+    ) -> DisplayMapResult<MultiBufferOffset> {
         let fragment = self.display_row_to_fragment(point.row())?;
         match fragment.kind {
             WrapFragmentKind::Text(_source) => {
@@ -339,7 +341,7 @@ impl WrapSnapshot {
                 let inlay = fold.inlay_snapshot();
                 let projected_byte = byte_range.start + local;
                 let original_byte = inlay.to_original_offset(stream_line, projected_byte);
-                Ok(ByteOffset::new(line_start + original_byte))
+                Ok(MultiBufferOffset::new(line_start + original_byte))
             }
         }
     }
@@ -353,7 +355,7 @@ impl WrapSnapshot {
         segments: &[FoldRowSegment],
         merged_byte: usize,
         bias: FoldBias,
-    ) -> DisplayMapResult<ByteOffset> {
+    ) -> DisplayMapResult<MultiBufferOffset> {
         let inlay = self.tab_snapshot.fold_snapshot().inlay_snapshot();
         let anchor = &segments[0];
         let placeholder = &segments[1];
@@ -396,12 +398,16 @@ impl WrapSnapshot {
         self.stream_offset(*stream_line, original)
     }
 
-    fn stream_offset(&self, stream_line: Line, original: usize) -> DisplayMapResult<ByteOffset> {
+    fn stream_offset(
+        &self,
+        stream_line: Line,
+        original: usize,
+    ) -> DisplayMapResult<MultiBufferOffset> {
         let inlay = self.tab_snapshot.fold_snapshot().inlay_snapshot();
         let range = inlay
             .line_byte_range(stream_line)
             .ok_or(CoordinateError::LineOutOfBounds(stream_line))?;
-        Ok(ByteOffset::new(range.start.get() + original))
+        Ok(MultiBufferOffset::new(range.start.get() + original))
     }
 
     pub(super) fn rows(&self, start: usize, end: usize) -> WrapRows<'_> {
@@ -493,7 +499,7 @@ impl WrapSnapshot {
 
     pub(super) fn project_text_range(
         &self,
-        range: TextRange,
+        range: MultiBufferRange,
     ) -> DisplayMapResult<Vec<ProjectedRange>> {
         let buffer = self.tab_snapshot.buffer_snapshot();
         let logical = LogicalRange::new(
@@ -537,13 +543,19 @@ impl WrapSnapshot {
     }
 
     /// 光标所在的显示行行首（列 0）对应的字节偏移。
-    pub(super) fn beginning_of_row(&self, offset: ByteOffset) -> DisplayMapResult<ByteOffset> {
+    pub(super) fn beginning_of_row(
+        &self,
+        offset: MultiBufferOffset,
+    ) -> DisplayMapResult<MultiBufferOffset> {
         let point = self.offset_to_display_point(offset)?;
         self.display_point_to_offset(DisplayPoint::new(point.row(), DisplayColumn::ZERO))
     }
 
     /// 光标所在的显示行行尾（本段末尾，不含换行符）对应的字节偏移。
-    pub(super) fn end_of_row(&self, offset: ByteOffset) -> DisplayMapResult<ByteOffset> {
+    pub(super) fn end_of_row(
+        &self,
+        offset: MultiBufferOffset,
+    ) -> DisplayMapResult<MultiBufferOffset> {
         let point = self.offset_to_display_point(offset)?;
         let fragment = self.display_row_to_fragment(point.row())?;
         match fragment.kind {
@@ -573,7 +585,7 @@ impl WrapSnapshot {
                     .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
                 let inlay = fold.inlay_snapshot();
                 let original_end = inlay.to_original_offset(stream_line, fragment.byte_range.end);
-                Ok(ByteOffset::new(line_start + original_end))
+                Ok(MultiBufferOffset::new(line_start + original_end))
             }
         }
     }
@@ -788,7 +800,7 @@ impl WrapSnapshot {
             let inlay = fold.inlay_snapshot();
             let original_start = inlay.to_original_offset(stream_line, fragment_start);
             buffer
-                .byte_to_position(ByteOffset::new(line_start + original_start))
+                .byte_to_position(MultiBufferOffset::new(line_start + original_start))
                 .map_or(0, |position| position.column().get())
         };
         Ok((

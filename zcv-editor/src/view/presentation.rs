@@ -3,11 +3,13 @@
 //! 展示快照把源文本快照与输入法标记、重命名淡化范围组合起来，供布局层消费；
 //! 它不拥有文档内容或任何编辑会话状态。
 
+use zcv_multi_buffer::MultiBufferRange;
+
 use std::ops::Range;
 use std::sync::Arc;
 
 use zcv_multi_buffer::MultiBufferSnapshot;
-use zcv_text::{TextRange, Utf16Offset};
+use zcv_text::Utf16Offset;
 
 use super::input::EditorComposition;
 
@@ -39,7 +41,7 @@ impl EditorPresentation {
         &self.dimmed_ranges
     }
 
-    pub(crate) fn marked_ranges(&self) -> &[TextRange] {
+    pub(crate) fn marked_ranges(&self) -> &[MultiBufferRange] {
         self.composition
             .as_ref()
             .map_or(&[], |composition| composition.ranges.as_ref())
@@ -65,7 +67,7 @@ impl EditorPresentation {
             .ok()?;
         Some(
             self.snapshot
-                .text_chunks(start..end)
+                .bytes_in_range(start..end)
                 .map(|chunk| chunk.text)
                 .collect(),
         )

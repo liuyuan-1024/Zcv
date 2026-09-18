@@ -3,8 +3,9 @@
 //! 本文件保证后台读取可脱离可变 Buffer；它不提交编辑、不维护历史，也不暴露 Ropey 内部类型。
 
 use crate::{
-    BufferConfig, BufferVersion, ByteOffset, CharOffset, Line, LineRange, MovementDirection,
-    MovementUnit, RegexSearchResult, SearchResult, TextRange, TextResult,
+    Affinity, Anchor, BufferConfig, BufferVersion, ByteOffset, CharOffset, Line, LineRange,
+    MovementDirection, MovementUnit, RegexSearchResult, SearchResult, TextChangeBatch, TextRange,
+    TextResult,
     search::{
         RegexSearchOptions, SearchOptions, search_in_text, search_regex_in_text,
         search_regex_in_text_with_automata,
@@ -15,6 +16,7 @@ use crate::{
         text_range_for_line_range,
     },
     storage::{RopeySnapshot, TextRead, text_coordinate_gateway},
+    tracking::EditLog,
 };
 
 /// 不可变文本快照。
@@ -23,6 +25,8 @@ pub struct Snapshot {
     storage: RopeySnapshot,
     version: BufferVersion,
     config: BufferConfig,
+    /// Buffer 在该版本时可见的版本化编辑日志，供 edits_since / Anchor 跨版本解析。
+    edit_log: EditLog,
 }
 
 impl Snapshot {
@@ -30,16 +34,46 @@ impl Snapshot {
         storage: RopeySnapshot,
         version: BufferVersion,
         config: BufferConfig,
+        edit_log: EditLog,
     ) -> Self {
         Self {
             storage,
             version,
             config,
+            edit_log,
         }
     }
 
     pub fn version(&self) -> BufferVersion {
         self.version
+    }
+
+    /// 返回自 `since` 版本到本快照版本的净编辑批次。
+    ///
+    /// 这是 Zed BufferSnapshot::edits_since_in_range 的本地等价：
+    /// Buffer 是版本化编辑的唯一事实，组合文档不再依赖订阅的瞬时批次。
+    pub fn edits_since(&self, since: BufferVersion) -> TextResult<TextChangeBatch> {
+        self.edit_log.batch_since(since, self.version)
+    }
+
+    /// 返回自 `since` 版本以来与 `range` 相交的编辑批次。
+    pub fn edits_since_in_range(
+        &self,
+        since: BufferVersion,
+        range: TextRange,
+    ) -> TextResult<TextChangeBatch> {
+        self.edit_log
+            .batch_since_in_range(since, self.version, range)
+    }
+
+    /// 在 `offset` 处创建吸附到插入文本之前的锚点。
+    pub fn anchor_before(&self, offset: ByteOffset) -> Anchor {
+        Anchor::new(self.version, offset).with_affinity(Affinity::Before)
+    }
+
+    /// 在 `offset` 处创建吸附到插入文本之后的锚点。
+    pub fn anchor_after(&self, offset: ByteOffset) -> Anchor {
+        Anchor::new(self.version, offset).with_affinity(Affinity::After)
     }
 
     pub fn config(&self) -> &BufferConfig {

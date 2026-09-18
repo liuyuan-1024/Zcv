@@ -64,11 +64,16 @@ impl TextPatch {
     }
 
     pub(crate) fn from_delta(delta: &Delta) -> Self {
+        Self::from_edit_list(delta.edits())
+    }
+
+    /// 从一次事务的向前编辑构造净变化（坐标以旧文本为基准）。
+    pub(crate) fn from_edit_list(source: &[crate::Edit]) -> Self {
         let mut removed = 0usize;
         let mut inserted = 0usize;
-        let mut edits = Vec::with_capacity(delta.edits().len());
+        let mut edits = Vec::with_capacity(source.len());
 
-        for edit in delta.edits() {
+        for edit in source {
             let old = edit.range();
             let new_start = old
                 .start()
@@ -92,6 +97,25 @@ impl TextPatch {
         }
 
         Self { edits }
+    }
+
+    /// 只保留旧坐标与 `range` 相交的编辑；新坐标保持组合后的绝对值。
+    pub(crate) fn filtered_to_old_range(&self, range: TextRange) -> Self {
+        Self {
+            edits: self
+                .edits
+                .iter()
+                .filter(|edit| {
+                    let old = edit.old;
+                    if old.is_empty() {
+                        range.start() <= old.start() && old.start() <= range.end()
+                    } else {
+                        old.start() < range.end() && range.start() < old.end()
+                    }
+                })
+                .cloned()
+                .collect(),
+        }
     }
 
     pub(crate) fn from_edits(edits: Vec<PatchEdit>) -> Self {
@@ -181,6 +205,30 @@ impl TextChangeBatch {
             new_version: Some(new_version),
             transaction_id: None,
             reset: false,
+        }
+    }
+
+    /// 从组合后的净变化构造批次；`reset` 表示区间内发生过整体基线替换。
+    pub(crate) fn from_patch(
+        old_version: BufferVersion,
+        new_version: BufferVersion,
+        patch: TextPatch,
+        reset: bool,
+    ) -> Self {
+        Self {
+            patch,
+            old_version: Some(old_version),
+            new_version: Some(new_version),
+            transaction_id: None,
+            reset,
+        }
+    }
+
+    /// 只保留旧坐标与 `range` 相交的编辑；版本区间与事务身份保持。
+    pub(crate) fn filtered_to_old_range(&self, range: TextRange) -> Self {
+        Self {
+            patch: self.patch.filtered_to_old_range(range),
+            ..self.clone()
         }
     }
 

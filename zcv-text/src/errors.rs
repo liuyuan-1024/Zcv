@@ -238,6 +238,13 @@ pub enum TextError {
     #[error("HistoryNodeId 溢出")]
     HistoryIdExhausted,
 
+    /// 编辑日志已裁剪掉请求版本，无法重建该版本到当前的编辑；调用方必须回退。
+    #[error("编辑日志已裁剪版本：请求版本 {requested:?}，最早可查版本 {earliest:?}")]
+    VersionEvicted {
+        requested: BufferVersion,
+        earliest: BufferVersion,
+    },
+
     /// 文本内核内部不变量被违反；这是 bug，不是可恢复的外部错误。
     /// 用 `location` 定位代码点，`detail` 携带最少诊断信息，便于宿主上报。
     #[error("文本内核不变量违反：{location}：{detail}")]

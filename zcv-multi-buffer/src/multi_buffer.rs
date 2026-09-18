@@ -670,15 +670,15 @@ fn snapshot_excerpts(entries: &SumTree<DiffTransform>) -> Vec<ExcerptSnapshot> {
     excerpts
 }
 
-/// 用 `entries` 替换映射树上 `path` 区间的全部 item；其余路径的子树原样保留。
+/// 用 `entries` 替换输入 excerpts 树上 `path` 区间的全部 item；其余路径的子树原样保留。
 ///
 /// item 不存储绝对输出坐标，因此 splice 不需要触碰下游 item。
-fn splice_path_entries(
-    tree: &SumTree<DiffTransform>,
+fn splice_excerpt_entries(
+    tree: &SumTree<Excerpt>,
     path: &PathKey,
-    entries: Vec<DiffTransform>,
-) -> SumTree<DiffTransform> {
-    let mut cursor = tree.cursor::<DiffTransformSummary>(());
+    entries: Vec<Excerpt>,
+) -> SumTree<Excerpt> {
+    let mut cursor = tree.cursor::<ExcerptSummary>(());
     let mut new_tree = cursor.slice(path, Bias::Left);
     cursor.seek(path, Bias::Right);
     new_tree.extend(entries, ());
@@ -860,10 +860,10 @@ pub struct MultiBufferSnapshot {
     plain_syntax: Option<SyntaxSnapshot>,
     config: BufferConfig,
     projection_version: BufferVersion,
-    /// 按路径升序的映射树；组合片段的唯一权威存储，输出坐标由累积 Summary 派生。
-    diff_transforms: SumTree<DiffTransform>,
-    /// 输入侧源 excerpts；删除 hunk 不占用输入坐标，显示层只通过 diff_transforms 看到它。
+    /// 输入侧 excerpts 的权威快照；源坐标由自身 Summary 派生。
     excerpts: SumTree<Excerpt>,
+    /// 由输入 excerpts 派生的输出变换树；输出坐标由累积 Summary 派生。
+    diff_transforms: SumTree<DiffTransform>,
     /// 由权威树惰性物化的片段视图；同一版本内多次读取共用一份派生结果。
     excerpts_cache: Arc<OnceLock<Arc<[ExcerptSnapshot]>>>,
     /// 路径索引表：PathKeyIndex 对应的路径，供锚点解析按路径 seek。
@@ -2087,9 +2087,10 @@ impl From<Snapshot> for MultiBufferSnapshot {
 struct ExcerptState {
     source_subscriptions: Vec<SourceSubscription>,
     source_event_subscriptions: Vec<Subscription>,
-    diff_transforms: SumTree<DiffTransform>,
-    /// 从显示变换投影出的输入侧 excerpts 索引；不承载输出坐标或删除 hunk。
+    /// 输入侧 excerpts 的唯一权威树。
     excerpts: SumTree<Excerpt>,
+    /// 从输入 excerpts 派生的输出变换树。
+    diff_transforms: SumTree<DiffTransform>,
     /// 按源去重的 (text, syntax, capture_map) 表。
     sources: Vec<ExcerptSource>,
     /// 源实体到 `sources` 索引的派生索引，供增量追加按身份查找源状态。
@@ -2476,6 +2477,7 @@ impl MultiBuffer {
         let ExcerptState {
             source_subscriptions,
             source_event_subscriptions,
+            excerpts: authoritative_excerpts,
             diff_transforms,
             sources,
             source_indices,
@@ -2544,7 +2546,7 @@ impl MultiBuffer {
         // 末尾片段保留内容原样。空片段（空文件、折叠 hunk 占位）经此不变式自然占据边界行，不做特例补行。
         let prepared_count = prepared.len();
         let mut output_offset = 0usize;
-        let mut next_mappings = Vec::with_capacity(prepared_count);
+        let mut next_excerpts = Vec::with_capacity(prepared_count);
         let mut next_match_ranges = Vec::new();
         for (position, item) in prepared.into_iter().enumerate() {
             let display_path = item
@@ -2580,7 +2582,7 @@ impl MultiBuffer {
                 TextRange::new(ByteOffset::new(start), ByteOffset::new(end)).ok()
             }));
             let path_index = intern_path(path_keys, path_key_indices, &item.path);
-            next_mappings.push(DiffTransform::from_entry(Excerpt {
+            next_excerpts.push(Excerpt {
                 path: item.path,
                 path_index,
                 display_path,
@@ -2595,12 +2597,19 @@ impl MultiBuffer {
                 editable: item.excerpt.editable,
                 starts_new_excerpt: item.excerpt.starts_new_excerpt,
                 diff_kind: item.excerpt.diff_kind,
-            }));
+            });
         }
 
         *source_subscriptions = next_source_subscriptions;
         *source_event_subscriptions = next_source_event_subscriptions;
-        *diff_transforms = SumTree::from_iter(next_mappings, ());
+        *authoritative_excerpts = SumTree::from_iter(next_excerpts, ());
+        *diff_transforms = SumTree::from_iter(
+            authoritative_excerpts
+                .iter()
+                .cloned()
+                .map(DiffTransform::from_entry),
+            (),
+        );
         *sources = next_sources;
         *source_indices = sources
             .iter()
@@ -2610,7 +2619,6 @@ impl MultiBuffer {
         *has_match_ranges = !next_match_ranges.is_empty();
         *match_ranges = next_match_ranges;
         *composite_capture_names = rebuild_capture_table(sources);
-        self.sync_excerpts_from_diff_transforms();
         cx.emit(MultiBufferEvent::TextChanged);
         cx.notify();
     }
@@ -2697,7 +2705,7 @@ impl MultiBuffer {
         });
         if existing_output_len > 0 && !output_ends_with_newline {
             // 前一个片段此前是末尾（无合成换行），追加后它不再是末尾，补上分隔换行。
-            self.state.diff_transforms.update_last(
+            self.state.excerpts.update_last(
                 |mapping| {
                     mapping.adds_newline = true;
                 },
@@ -2708,7 +2716,7 @@ impl MultiBuffer {
         let mut next_path_keys = std::mem::take(&mut self.state.path_keys);
         let mut next_path_key_indices = std::mem::take(&mut self.state.path_key_indices);
         let prepared_count = prepared.len();
-        let mut next_mappings = Vec::with_capacity(prepared_count);
+        let mut next_excerpts = Vec::with_capacity(prepared_count);
         let mut next_match_ranges = Vec::new();
         for (position, item) in prepared.into_iter().enumerate() {
             let display_path = item
@@ -2745,7 +2753,7 @@ impl MultiBuffer {
             }));
             let path_index =
                 intern_path(&mut next_path_keys, &mut next_path_key_indices, &item.path);
-            next_mappings.push(DiffTransform::from_entry(Excerpt {
+            next_excerpts.push(Excerpt {
                 path: item.path,
                 path_index,
                 display_path,
@@ -2760,13 +2768,13 @@ impl MultiBuffer {
                 editable: item.excerpt.editable,
                 starts_new_excerpt: item.excerpt.starts_new_excerpt,
                 diff_kind: item.excerpt.diff_kind,
-            }));
+            });
         }
 
         self.state.path_keys = next_path_keys;
         self.state.path_key_indices = next_path_key_indices;
-        self.state.diff_transforms.extend(next_mappings, ());
-        self.sync_excerpts_from_diff_transforms();
+        self.state.excerpts.extend(next_excerpts, ());
+        self.rebuild_diff_transforms_from_excerpts();
         self.state.has_match_ranges |= !next_match_ranges.is_empty();
         self.state
             .match_ranges
@@ -2785,7 +2793,7 @@ impl MultiBuffer {
         start_index: usize,
         total: usize,
         cx: &App,
-    ) -> Vec<DiffTransform> {
+    ) -> Vec<Excerpt> {
         let mut path_keys = std::mem::take(&mut self.state.path_keys);
         let mut path_key_indices = std::mem::take(&mut self.state.path_key_indices);
         let mut entries = Vec::with_capacity(excerpts.len());
@@ -2814,7 +2822,7 @@ impl MultiBuffer {
                 .byte_to_line(excerpt.source_range.start())
                 .map_or(0, |line| line.get());
             let path_index = intern_path(&mut path_keys, &mut path_key_indices, &path);
-            entries.push(DiffTransform::from_entry(Excerpt {
+            entries.push(Excerpt {
                 path,
                 path_index,
                 display_path,
@@ -2829,7 +2837,7 @@ impl MultiBuffer {
                 editable: excerpt.editable,
                 starts_new_excerpt: excerpt.starts_new_excerpt,
                 diff_kind: excerpt.diff_kind,
-            }));
+            });
         }
         self.state.path_keys = path_keys;
         self.state.path_key_indices = path_key_indices;
@@ -2865,14 +2873,14 @@ impl MultiBuffer {
             return;
         };
         let start_index = {
-            let mut cursor = self.state.diff_transforms.cursor::<MappingPosition>(());
+            let mut cursor = self.state.excerpts.cursor::<ExcerptSummary>(());
             cursor.seek(&path, Bias::Left);
-            cursor.start().index
+            cursor.start().count
         };
-        let total = self.state.diff_transforms.summary().output.count;
+        let total = self.state.excerpts.summary().count;
         let mut entries = Vec::new();
         {
-            let mut cursor = self.state.diff_transforms.cursor::<MappingPosition>(());
+            let mut cursor = self.state.excerpts.cursor::<ExcerptSummary>(());
             cursor.seek(&path, Bias::Left);
             let mut local = 0usize;
             while let Some(entry) = cursor.item() {
@@ -2918,9 +2926,8 @@ impl MultiBuffer {
                 cursor.next();
             }
         }
-        self.state.diff_transforms =
-            splice_path_entries(&self.state.diff_transforms, &path, entries);
-        self.sync_excerpts_from_diff_transforms();
+        self.state.excerpts = splice_excerpt_entries(&self.state.excerpts, &path, entries);
+        self.rebuild_diff_transforms_from_excerpts();
         self.fix_document_tail_newline();
     }
 
@@ -2938,32 +2945,28 @@ impl MultiBuffer {
     ///
     /// 移除末尾路径时，前一个路径的最后一个 item 会变成文档尾，必须清掉它此前的分隔换行标记。
     fn fix_document_tail_newline(&mut self) {
-        if self.state.diff_transforms.is_empty() {
-            self.state.excerpts = SumTree::new(());
+        if self.state.excerpts.is_empty() {
+            self.state.diff_transforms = SumTree::new(());
             return;
         }
         self.state
-            .diff_transforms
+            .excerpts
             .update_last(|entry| entry.adds_newline = false, ());
-        self.sync_excerpts_from_diff_transforms();
+        self.rebuild_diff_transforms_from_excerpts();
     }
 
-    /// 从显示变换树派生输入侧 excerpts 树。
+    /// 从输入 excerpts 树重建输出变换树。
     ///
-    /// 该树只保存可映射到源输入坐标的内容节点；删除 hunk 是输出侧变换，
-    /// 因而不会出现在输入树中。两棵树共享同一套源范围事实，输出坐标只存在于
-    /// `diff_transforms` 的摘要维度中。
-    fn sync_excerpts_from_diff_transforms(&mut self) {
+    /// 输入树是唯一权威数据源；输出树只保存按同一顺序排列的显示变换。
+    fn rebuild_diff_transforms_from_excerpts(&mut self) {
         let excerpts = self
             .state
-            .diff_transforms
+            .excerpts
             .iter()
-            .filter_map(|transform| match transform {
-                DiffTransform::BufferContent(entry) => Some(entry.clone()),
-                DiffTransform::DeletedHunk(_) => None,
-            })
+            .cloned()
+            .map(DiffTransform::from_entry)
             .collect::<Vec<_>>();
-        self.state.excerpts = SumTree::from_iter(excerpts, ());
+        self.state.diff_transforms = SumTree::from_iter(excerpts, ());
     }
 
     /// 从当前映射树重算组合坐标下的搜索匹配范围。
@@ -3013,9 +3016,8 @@ impl MultiBuffer {
         }
         let old_text = self.build_snapshot(cx).text_bytes();
         let old_version = self.state.projection_version;
-        self.state.diff_transforms =
-            splice_path_entries(&self.state.diff_transforms, &path_key, Vec::new());
-        self.sync_excerpts_from_diff_transforms();
+        self.state.excerpts = splice_excerpt_entries(&self.state.excerpts, &path_key, Vec::new());
+        self.rebuild_diff_transforms_from_excerpts();
         self.fix_document_tail_newline();
         self.rebuild_match_ranges_from_tree();
         let new_text = self.build_snapshot(cx).text_bytes();
@@ -3149,19 +3151,18 @@ impl MultiBuffer {
         let old_version = self.state.projection_version;
         // 该路径在树中的起始序号与原有条目数，决定新条目的全局位置与分隔换行标记。
         let (start_index, old_count) = {
-            let mut start = self.state.diff_transforms.cursor::<MappingPosition>(());
+            let mut start = self.state.excerpts.cursor::<ExcerptSummary>(());
             start.seek(&path, Bias::Left);
-            let start_index = start.start().index;
-            let mut end = self.state.diff_transforms.cursor::<MappingPosition>(());
+            let start_index = start.start().count;
+            let mut end = self.state.excerpts.cursor::<ExcerptSummary>(());
             end.seek(&path, Bias::Right);
-            (start_index, end.start().index.saturating_sub(start_index))
+            (start_index, end.start().count.saturating_sub(start_index))
         };
-        let total = self.state.diff_transforms.summary().output.count - old_count + excerpts.len();
+        let total = self.state.excerpts.summary().count - old_count + excerpts.len();
         let entries = self.build_entries_for_excerpts(excerpts, start_index, total, cx);
         self.state.has_match_ranges |= entries.iter().any(|entry| !entry.match_ranges.is_empty());
-        self.state.diff_transforms =
-            splice_path_entries(&self.state.diff_transforms, &path, entries);
-        self.sync_excerpts_from_diff_transforms();
+        self.state.excerpts = splice_excerpt_entries(&self.state.excerpts, &path, entries);
+        self.rebuild_diff_transforms_from_excerpts();
         self.fix_document_tail_newline();
         self.rebuild_match_ranges_from_tree();
         let new_text = self.build_snapshot(cx).text_bytes();
@@ -3518,25 +3519,18 @@ impl MultiBuffer {
         let old_version = self.state.projection_version;
         let mut path_keys = std::mem::take(&mut self.state.path_keys);
         let mut path_key_indices = std::mem::take(&mut self.state.path_key_indices);
-        let mut entries = Vec::with_capacity(self.state.diff_transforms.summary().output.count);
-        {
-            let mut cursor = self.state.diff_transforms.cursor::<MappingPosition>(());
-            cursor.seek(&OutputOffset(0), Bias::Right);
-            while let Some(current) = cursor.item() {
-                let mut entry = current.clone();
-                let path = PathKey::new(
-                    self.state.sources[entry.source_index]
-                        .entity
-                        .read(cx)
-                        .file_path()
-                        .map_or_else(PathBuf::new, Path::to_path_buf),
-                );
-                entry.path = path.clone();
-                entry.display_path = path;
-                entry.path_index = intern_path(&mut path_keys, &mut path_key_indices, &entry.path);
-                entries.push(entry);
-                cursor.next();
-            }
+        let mut entries = self.state.excerpts.iter().cloned().collect::<Vec<_>>();
+        for entry in &mut entries {
+            let path = PathKey::new(
+                self.state.sources[entry.source_index]
+                    .entity
+                    .read(cx)
+                    .file_path()
+                    .map_or_else(PathBuf::new, Path::to_path_buf),
+            );
+            entry.path = path.clone();
+            entry.display_path = path;
+            entry.path_index = intern_path(&mut path_keys, &mut path_key_indices, &entry.path);
         }
         // 路径顺序可能变化；整体重排并按新位置重算分隔标记。
         entries.sort_by(|a, b| Ord::cmp(&a.path, &b.path));
@@ -3553,8 +3547,8 @@ impl MultiBuffer {
         }
         self.state.path_keys = path_keys;
         self.state.path_key_indices = path_key_indices;
-        self.state.diff_transforms = SumTree::from_iter(entries, ());
-        self.sync_excerpts_from_diff_transforms();
+        self.state.excerpts = SumTree::from_iter(entries, ());
+        self.rebuild_diff_transforms_from_excerpts();
         self.rebuild_match_ranges_from_tree();
         let new_text = self.build_snapshot(cx).text_bytes();
         self.publish_projection_edit(&old_text, &new_text, old_version);

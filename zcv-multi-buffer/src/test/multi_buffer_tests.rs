@@ -1116,13 +1116,13 @@ fn source_excerpts_and_display_transforms_use_separate_coordinate_trees(cx: &mut
     });
 
     cx.read_entity(&combined, |buffer, cx| {
-        assert_eq!(buffer.state.excerpts.summary().count, 1);
+        assert_eq!(buffer.state.excerpts.summary().count, 2);
         assert_eq!(buffer.state.diff_transforms.summary().output.count, 2);
         assert_eq!(buffer.state.diff_transforms.summary().input.bytes, 7);
         assert_eq!(buffer.state.diff_transforms.summary().output.bytes, 15);
 
         let snapshot = buffer.snapshot(cx);
-        assert_eq!(snapshot.excerpts.summary().count, 1);
+        assert_eq!(snapshot.excerpts.summary().count, 2);
         assert_eq!(snapshot.diff_transforms.summary().output.count, 2);
         assert_eq!(snapshot.excerpts().len(), 2);
     });

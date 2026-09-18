@@ -2,7 +2,8 @@ use zcv_multi_buffer::MultiBufferOffset;
 
 use super::*;
 use gpui::{Bounds, Pixels, TestAppContext, VisualTestContext, point, size};
-use zcv_multi_buffer::{BufferDiff, BufferDiffInput, DiffFile, DisplayHunk};
+use zcv_buffer_diff::{BufferDiff, BufferDiffInput};
+use zcv_multi_buffer::{DiffFile, DisplayHunk};
 use zcv_text::{Buffer, BufferConfig};
 
 use crate::scrollbar::{SCROLLBAR_WIDTH, thumb_geometry};
@@ -27,6 +28,25 @@ pub(super) fn test_buffer(
         LanguageBuffer::new(
             buffer,
             None,
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    })
+}
+
+/// 以指定文本和路径创建测试用修订文档（diff 的 base/index 侧）。
+pub(super) fn revision_buffer(
+    text: &str,
+    path: &std::path::Path,
+    cx: &mut impl gpui::AppContext,
+) -> Entity<LanguageBuffer> {
+    let buffer =
+        Buffer::from_text(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建");
+    let buffer = cx.new(|_| buffer);
+    cx.new(|cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(path.to_path_buf()),
             std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
             cx,
         )
@@ -91,15 +111,20 @@ pub(super) fn inject_editor_diff(
             .read(cx)
             .file_path()
             .map_or_else(|| PathBuf::from("src/a.rs"), |path| path.to_path_buf());
+        // 旧测试会用 None 表示“整份文本均为新增”。现在仍由一对真实文档快照
+        // 派生该 Added hunk，而不是注入 hunk。
+        let base = Some(revision_buffer(
+            base_text.as_deref().unwrap_or_default(),
+            &working_path,
+            cx,
+        ));
         let diff = cx.new(|cx| {
             BufferDiff::new(
                 BufferDiffInput {
                     operations: None,
                     working: source.clone(),
-                    // 旧测试会用 None 表示“整份文本均为新增”。现在仍由一对真实文本快照
-                    // 派生该 Added hunk，而不是注入 hunk。
-                    base_text: Some(base_text.unwrap_or_else(|| Arc::from(""))),
-                    index_text: None,
+                    base,
+                    index: None,
                     path: working_path.clone(),
                 },
                 cx,
@@ -132,13 +157,14 @@ pub(super) fn inject_file_diff(
             .read(cx)
             .file_path()
             .map_or_else(|| PathBuf::from("src/a.rs"), |path| path.to_path_buf());
+        let base = Some(revision_buffer(&base_text, &working_path, cx));
         let diff = cx.new(|cx| {
             BufferDiff::new(
                 BufferDiffInput {
                     operations: None,
                     working: source.clone(),
-                    base_text: Some(base_text),
-                    index_text: None,
+                    base,
+                    index: None,
                     path: working_path.clone(),
                 },
                 cx,

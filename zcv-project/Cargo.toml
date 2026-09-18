@@ -20,6 +20,7 @@ trash.workspace = true
 zcv-text.workspace = true
 zcv-fs-watch.workspace = true
 zcv-git.workspace = true
+zcv-buffer-diff.workspace = true
 zcv-language.workspace = true
 zcv-multi-buffer.workspace = true
 zcv-path.workspace = true

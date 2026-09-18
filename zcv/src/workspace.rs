@@ -19,9 +19,10 @@ use zcv_actions::{
     IncreaseContentFontSize, IncreaseUiFontSize, NewTerminal, ResetContentFontSize,
     ResetUiFontSize, RestartToUpdate, SelectGitBranch, ToggleHarnessMode, ToggleProjectPicker,
 };
+use zcv_buffer_diff::{BufferDiffInput, DiffHunkKind};
 use zcv_editor::{Editor, EditorEvent, EditorHunk, EditorHunkMarkerKind, EditorHunkPart};
 use zcv_git::{FileStatus, GitRevision, parse_conflict_regions};
-use zcv_multi_buffer::{BufferDiffInput, DiffFile, DiffHunkKind};
+use zcv_multi_buffer::DiffFile;
 use zcv_project::{
     FileWatcherError, FileWatcherOperation, GitOperationKind, GitOperationOutcome, GitStoreEvent,
     Project, ProjectEvent,
@@ -1075,12 +1076,12 @@ fn inject_editor_diff(
         });
         return;
     }
-    // HEAD/index 全文由 GitStore 异步提供；加载完成后重新注入。
+    // HEAD/index 修订文档由 GitStore 异步提供；加载完成后重新注入。
     for revision in [GitRevision::Head, GitRevision::Index] {
-        if store.read(cx).revision_text_loaded(revision, path) {
+        if store.read(cx).revision_document_loaded(revision, path) {
             continue;
         }
-        let task = store.read(cx).load_revision_text(revision, path, cx);
+        let task = store.read(cx).load_revision_document(revision, path, cx);
         let project = project.clone();
         let editor = editor.clone();
         let path = path.to_path_buf();
@@ -1091,19 +1092,22 @@ fn inject_editor_diff(
         .detach();
     }
     // 主旧侧尚未加载完成时注入会把未知当成新建，等待加载回调重试。
-    if !store.read(cx).revision_text_loaded(GitRevision::Head, path) {
+    if !store
+        .read(cx)
+        .revision_document_loaded(GitRevision::Head, path)
+    {
         return;
     }
-    let base_text = store.read(cx).revision_text(GitRevision::Head, path);
+    let base = store.read(cx).revision_document(GitRevision::Head, path);
     // index 参照：未提交视图（HEAD↔工作区）用它逐 hunk 判定已暂存 / 未暂存。
-    let index_text = store.read(cx).revision_text(GitRevision::Index, path);
+    let index = store.read(cx).revision_document(GitRevision::Index, path);
     let Some(working) = editor.read(cx).multi_buffer().read(cx).singleton_source() else {
         return;
     };
     let input = BufferDiffInput {
         working,
-        base_text,
-        index_text,
+        base,
+        index,
         path: path.to_path_buf(),
         // 普通编辑器只显示 gutter 差异，不提供变更块操作。
         operations: None,

@@ -2,17 +2,17 @@ use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
 
 use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 use std::path::PathBuf;
-use zcv_multi_buffer::{
-    BufferDiff, BufferDiffInput, DiffFile, DiffHunkKind, DiffHunkStaging, DisplayHunk,
-    ExcerptRange, MultiBuffer,
-};
+use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging};
+use zcv_multi_buffer::{DiffFile, DisplayHunk, ExcerptRange, MultiBuffer};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TransactionMetadata};
 
 use super::common::{
-    buffer_text, engine_buffer, focus_editor, inject_editor_diff, inject_file_diff, test_buffer,
+    buffer_text, engine_buffer, focus_editor, inject_editor_diff, inject_file_diff,
+    revision_buffer, test_buffer,
 };
 use super::*;
 use crate::display_map::{DisplayColumn, DisplayPoint, DisplayRow, WrapRowKind};
+use crate::view::diff::hunk_rendering;
 
 /// 构造 context_lines=2 的裁剪投影项，供组合文档裁剪测试复用。
 fn clipped_diff_file(
@@ -20,14 +20,16 @@ fn clipped_diff_file(
     base_text: &str,
     cx: &mut gpui::Context<MultiBuffer>,
 ) -> DiffFile {
+    let path = PathBuf::from("src/a.rs");
+    let base = revision_buffer(base_text, &path, cx);
     let diff = cx.new(|cx| {
         BufferDiff::new(
             BufferDiffInput {
                 operations: None,
                 working,
-                base_text: Some(Arc::from(base_text)),
-                index_text: None,
-                path: PathBuf::from("src/a.rs"),
+                base: Some(base),
+                index: None,
+                path,
             },
             cx,
         )
@@ -2307,7 +2309,7 @@ fn diff_expansion_preserves_selection_source_anchor(cx: &mut TestAppContext) {
     );
 }
 
-/// 回归：外部源变更按源 PositionMap 推进选区源 Anchor，重建投影后仍落在同一逻辑源位置。
+/// 回归：外部源变更后选区源 Anchor 按当前快照解析，重建投影后仍落在同一逻辑源位置。
 #[gpui::test]
 fn external_source_change_advances_selection_source_anchor(cx: &mut TestAppContext) {
     let source = test_file_buffer(cx, "src/a.rs", "a\nworking\nc\n");
@@ -2338,6 +2340,30 @@ fn external_source_change_advances_selection_source_anchor(cx: &mut TestAppConte
     assert_eq!(
         caret_source_range(&editor, cx),
         zcv_text::TextRange::new(ByteOffset::new(9), ByteOffset::new(9)).unwrap(),
-        "外部源变更后选区源 Anchor 应经源 PositionMap 推进到同一逻辑位置"
+        "外部源变更后选区源 Anchor 应按当前快照解析到同一逻辑位置"
+    );
+}
+
+/// 只有空文本且设置了 placeholder 时才返回提示快照；判空走当前快照，不在渲染帧物化整份文本。
+#[gpui::test]
+fn placeholder_snapshot_requires_empty_text(cx: &mut TestAppContext) {
+    let editor = cx.new(Editor::single_line);
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_placeholder_text("输入内容", cx);
+    });
+    assert!(
+        cx.read_entity(&editor, |editor, cx| editor
+            .placeholder_snapshot_if_empty(cx))
+            .is_some(),
+        "空文本应返回 placeholder 快照"
+    );
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_text("内容", cx);
+    });
+    assert!(
+        cx.read_entity(&editor, |editor, cx| editor
+            .placeholder_snapshot_if_empty(cx))
+            .is_none(),
+        "非空文本不得返回 placeholder 快照"
     );
 }

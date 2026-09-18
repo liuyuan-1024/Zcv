@@ -142,6 +142,7 @@ impl SvgPreviewView {
 
     fn start_render(&mut self, content_scale: f32, cx: &mut Context<Self>) {
         let snapshot = self.multi_buffer.read(cx).snapshot(cx);
+        // SVG 光栅化需要整份文档文本；这是只读边界，不进入编辑/显示热路径。
         let bytes = snapshot.text_bytes();
         let version = snapshot.version();
         let resources_dir = self.resources_dir.clone();

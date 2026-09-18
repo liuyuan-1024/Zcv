@@ -3,10 +3,8 @@ use std::path::{Path, PathBuf};
 use gpui::{AppContext as _, TestAppContext};
 use std::sync::Arc;
 
-use crate::{
-    BufferDiff, BufferDiffInput, DiffFile, DiffHunkKind, DiffHunkStaging, DiffOperations,
-    DisplayHunk,
-};
+use crate::{DiffFile, DisplayHunk};
+use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging, DiffOperations};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_text::{
     Buffer, BufferConfig, ByteOffset, CharOffset, Edit, Line, StorageError, TextError, TextRange,
@@ -38,6 +36,50 @@ fn resolve_folds(
         .collect()
 }
 
+/// 测试辅助：按文本与路径建立修订文档（diff 的 base/index 侧）。
+fn revision_document(
+    text: &str,
+    path: &Path,
+    cx: &mut impl gpui::AppContext,
+) -> gpui::Entity<LanguageBuffer> {
+    let buffer = Buffer::from_text(text.to_string(), BufferConfig::default())
+        .expect("测试文本必须能创建 Buffer");
+    let buffer = cx.new(|_| buffer);
+    cx.new(|cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(path.to_path_buf()),
+            Arc::new(LanguageRegistry::new()),
+            cx,
+        )
+    })
+}
+
+/// 测试辅助：按可选 base/index 文本建立独立 diff 实体（供直接读取快照的测试使用）。
+fn test_diff_entity(
+    working: gpui::Entity<LanguageBuffer>,
+    path: &str,
+    base: Option<&str>,
+    index: Option<&str>,
+    cx: &mut impl gpui::AppContext,
+) -> gpui::Entity<BufferDiff> {
+    let native_path = PathBuf::from(path);
+    let base = base.map(|text| revision_document(text, &native_path, cx));
+    let index = index.map(|text| revision_document(text, &native_path, cx));
+    cx.new(|cx| {
+        BufferDiff::new(
+            BufferDiffInput {
+                working,
+                path: native_path,
+                base,
+                index,
+                operations: None,
+            },
+            cx,
+        )
+    })
+}
+
 /// 测试用的 diff 注入描述；由 `inject_diffs` 转成预创建的 `DiffFile`。
 struct TestDiff {
     working: gpui::Entity<LanguageBuffer>,
@@ -58,22 +100,32 @@ impl MultiBuffer {
         };
         let files = files
             .into_iter()
-            .map(|file| DiffFile {
-                diff: cx.new(|cx| {
-                    BufferDiff::new(
-                        BufferDiffInput {
-                            working: file.working,
-                            path: file.path,
-                            base_text: file.base_text,
-                            index_text: file.index_text,
-                            operations: file.operations,
-                        },
-                        cx,
-                    )
-                }),
-                display_path: file.display_path,
-                context_lines: file.context_lines,
-                show_file_header: file.show_file_header,
+            .map(|file| {
+                let base = file
+                    .base_text
+                    .as_deref()
+                    .map(|text| revision_document(text, &file.path, cx));
+                let index = file
+                    .index_text
+                    .as_deref()
+                    .map(|text| revision_document(text, &file.path, cx));
+                DiffFile {
+                    diff: cx.new(|cx| {
+                        BufferDiff::new(
+                            BufferDiffInput {
+                                working: file.working,
+                                path: file.path,
+                                base,
+                                index,
+                                operations: file.operations,
+                            },
+                            cx,
+                        )
+                    }),
+                    display_path: file.display_path,
+                    context_lines: file.context_lines,
+                    show_file_header: file.show_file_header,
+                }
             })
             .collect();
         self.set_diff_files(files, cx)
@@ -101,14 +153,16 @@ fn test_diff_file(
     base: &str,
     cx: &mut gpui::Context<MultiBuffer>,
 ) -> DiffFile {
+    let native_path = PathBuf::from(path);
+    let base_document = revision_document(base, &native_path, cx);
     DiffFile {
         diff: cx.new(|cx| {
             BufferDiff::new(
                 BufferDiffInput {
                     working,
-                    path: PathBuf::from(path),
-                    base_text: Some(Arc::from(base)),
-                    index_text: None,
+                    path: native_path,
+                    base: Some(base_document),
+                    index: None,
                     operations: None,
                 },
                 cx,
@@ -405,18 +459,7 @@ fn relative_display_paths_stay_consistent_across_middle_edit(cx: &mut TestAppCon
 
     // 再以显示相对路径插回中间，投影必须与初始三文件一致。
     let b_diff = DiffFile {
-        diff: cx.new(|cx| {
-            BufferDiff::new(
-                BufferDiffInput {
-                    working: b.clone(),
-                    path: PathBuf::from("/repo/src/b.rs"),
-                    base_text: Some(Arc::from("b1\nbX\n")),
-                    index_text: None,
-                    operations: None,
-                },
-                cx,
-            )
-        }),
+        diff: test_diff_entity(b.clone(), "/repo/src/b.rs", Some("b1\nbX\n"), None, cx),
         display_path: PathBuf::from("src/b.rs"),
         context_lines: None,
         show_file_header: false,
@@ -480,20 +523,13 @@ fn clearing_buffer_diffs_removes_previous_hunks(cx: &mut TestAppContext) {
 #[gpui::test]
 fn unified_diff_marks_staged_and_unstaged_hunks(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "one\nworking\nthree\n", cx);
-    let diff = cx.update(|cx| {
-        cx.new(|cx| {
-            BufferDiff::new(
-                BufferDiffInput {
-                    working: source.clone(),
-                    base_text: Some(Arc::from("one\nhead\nthree\n")),
-                    index_text: Some(Arc::from("one\nindex\nthree\n")),
-                    path: PathBuf::from("src/a.rs"),
-                    operations: None,
-                },
-                cx,
-            )
-        })
-    });
+    let diff = test_diff_entity(
+        source.clone(),
+        "src/a.rs",
+        Some("one\nhead\nthree\n"),
+        Some("one\nindex\nthree\n"),
+        cx,
+    );
     cx.run_until_parked();
     assert_eq!(
         cx.read_entity(&diff, |diff, _| {
@@ -507,20 +543,13 @@ fn unified_diff_marks_staged_and_unstaged_hunks(cx: &mut TestAppContext) {
     );
 
     let staged_source = singleton("src/staged.rs", "one\nstaged\nthree\n", cx);
-    let staged_diff = cx.update(|cx| {
-        cx.new(|cx| {
-            BufferDiff::new(
-                BufferDiffInput {
-                    working: staged_source,
-                    base_text: Some(Arc::from("one\nhead\nthree\n")),
-                    index_text: Some(Arc::from("one\nstaged\nthree\n")),
-                    path: PathBuf::from("src/staged.rs"),
-                    operations: None,
-                },
-                cx,
-            )
-        })
-    });
+    let staged_diff = test_diff_entity(
+        staged_source,
+        "src/staged.rs",
+        Some("one\nhead\nthree\n"),
+        Some("one\nstaged\nthree\n"),
+        cx,
+    );
     cx.run_until_parked();
     assert_eq!(
         cx.read_entity(&staged_diff, |diff, _| {
@@ -538,20 +567,13 @@ fn unified_diff_marks_staged_and_unstaged_hunks(cx: &mut TestAppContext) {
 #[gpui::test]
 fn unified_diff_marks_mixed_staged_and_unstaged_hunks(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "a\nB\nc\nd\nE\n", cx);
-    let diff = cx.update(|cx| {
-        cx.new(|cx| {
-            BufferDiff::new(
-                BufferDiffInput {
-                    working: source.clone(),
-                    base_text: Some(Arc::from("a\nb\nc\nd\ne\n")),
-                    index_text: Some(Arc::from("a\nB\nc\nd\ne\n")),
-                    path: PathBuf::from("src/a.rs"),
-                    operations: None,
-                },
-                cx,
-            )
-        })
-    });
+    let diff = test_diff_entity(
+        source.clone(),
+        "src/a.rs",
+        Some("a\nb\nc\nd\ne\n"),
+        Some("a\nB\nc\nd\ne\n"),
+        cx,
+    );
     cx.run_until_parked();
     assert_eq!(
         cx.read_entity(&diff, |diff, _| {
@@ -605,20 +627,13 @@ fn standalone_staged_view_classifies_all_hunks_as_staged(cx: &mut TestAppContext
 #[gpui::test]
 fn staged_hunk_with_partial_unstaged_edit_is_partially_staged(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "line1\nSTAGED\nNEW\nline3\n", cx);
-    let diff = cx.update(|cx| {
-        cx.new(|cx| {
-            BufferDiff::new(
-                BufferDiffInput {
-                    working: source.clone(),
-                    base_text: Some(Arc::from("line1\nline2\nline3\n")),
-                    index_text: Some(Arc::from("line1\nSTAGED\nline3\n")),
-                    path: PathBuf::from("src/a.rs"),
-                    operations: None,
-                },
-                cx,
-            )
-        })
-    });
+    let diff = test_diff_entity(
+        source.clone(),
+        "src/a.rs",
+        Some("line1\nline2\nline3\n"),
+        Some("line1\nSTAGED\nline3\n"),
+        cx,
+    );
     cx.run_until_parked();
     let stagings = cx.read_entity(&diff, |diff, _| {
         diff.snapshot()
@@ -634,20 +649,13 @@ fn staged_hunk_with_partial_unstaged_edit_is_partially_staged(cx: &mut TestAppCo
 #[gpui::test]
 fn unified_diff_marks_partially_staged_hunk(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "one\nX\nY\nthree\n", cx);
-    let diff = cx.update(|cx| {
-        cx.new(|cx| {
-            BufferDiff::new(
-                BufferDiffInput {
-                    working: source.clone(),
-                    base_text: Some(Arc::from("one\nhead\nthree\n")),
-                    index_text: Some(Arc::from("one\nX\nthree\n")),
-                    path: PathBuf::from("src/a.rs"),
-                    operations: None,
-                },
-                cx,
-            )
-        })
-    });
+    let diff = test_diff_entity(
+        source.clone(),
+        "src/a.rs",
+        Some("one\nhead\nthree\n"),
+        Some("one\nX\nthree\n"),
+        cx,
+    );
     cx.run_until_parked();
     assert_eq!(
         cx.read_entity(&diff, |diff, _| {
@@ -2670,20 +2678,7 @@ fn pending_new_file_does_not_hide_ready_diff_hunks(cx: &mut TestAppContext) {
 #[gpui::test]
 fn diff_recovers_when_initial_result_is_stale(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "a\nb\nc\n", cx);
-    let diff = cx.update(|cx| {
-        cx.new(|cx| {
-            BufferDiff::new(
-                BufferDiffInput {
-                    working: source.clone(),
-                    base_text: Some(Arc::from("a\nB\nc\n")),
-                    index_text: None,
-                    path: PathBuf::from("src/a.rs"),
-                    operations: None,
-                },
-                cx,
-            )
-        })
-    });
+    let diff = test_diff_entity(source.clone(), "src/a.rs", Some("a\nB\nc\n"), None, cx);
     // 不 park，立即编辑源：初始后台结果会对应旧版本并被版本门控拒绝。
     let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
     cx.update_entity(&source_buffer, |buffer, cx| {
@@ -2789,24 +2784,6 @@ fn added_hunk_background_follows_view_expansion_policy(cx: &mut TestAppContext) 
     assert_eq!(
         cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunk_expanded()),
         vec![true]
-    );
-}
-
-/// 词级 diff 按空白 / 单词 / 标点切分：只有真正变化的词进入范围，相同文本无范围。
-#[test]
-fn word_diff_ranges_split_words_and_punctuation() {
-    let (old, new) = crate::word_diff::word_diff_ranges("let x = 1;\n", "let x = 2;\n");
-    assert_eq!(old, vec![8..9], "旧侧只应包含变化的数字");
-    assert_eq!(new, vec![8..9], "新侧只应包含变化的数字");
-
-    let (old, new) = crate::word_diff::word_diff_ranges("a b c", "a X c");
-    assert_eq!(old, vec![2..3]);
-    assert_eq!(new, vec![2..3]);
-
-    assert_eq!(
-        crate::word_diff::word_diff_ranges("same\n", "same\n"),
-        (Vec::new(), Vec::new()),
-        "相同文本不应产生词级范围"
     );
 }
 

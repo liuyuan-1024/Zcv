@@ -17,12 +17,12 @@ use sum_tree::SumTree;
 use zcv_language::LanguageBuffer;
 use zcv_text::{Anchor, ByteOffset, Line, Snapshot};
 
-use crate::buffer_diff::{
-    BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkKind, DiffHunkStaging, DiffRefresh,
-};
 use crate::{
     DiffTransform, DiffTransformHunkInfo, DiffTransformHunkSide, Excerpt, ExcerptDiffKind,
     ExcerptRange, MultiBuffer, MultiBufferCursor, MultiBufferEvent, PathKey, mapping_count,
+};
+use zcv_buffer_diff::{
+    BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkKind, DiffHunkStaging, DiffRefresh,
 };
 
 /// 编辑器投影使用的显示 hunk（组合文档行坐标）。

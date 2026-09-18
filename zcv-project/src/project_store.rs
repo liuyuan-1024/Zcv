@@ -105,9 +105,15 @@ impl Project {
             }
         });
 
-        let git_store = cx.new(|cx| GitStore::new(Some(root.as_path().to_path_buf()), cx));
-        git_store.update(cx, |store, cx| store.schedule_scan(cx));
         let language_registry = Arc::new(LanguageRegistry::new());
+        let git_store = cx.new(|cx| {
+            GitStore::new(
+                Some(root.as_path().to_path_buf()),
+                Arc::clone(&language_registry),
+                cx,
+            )
+        });
+        git_store.update(cx, |store, cx| store.schedule_scan(cx));
 
         Self {
             worktree: Some(ProjectWorktree {
@@ -125,8 +131,8 @@ impl Project {
 
     /// 创建没有 worktree 的本地项目，供空工作区使用。
     pub fn empty(cx: &mut Context<Self>) -> Self {
-        let git_store = cx.new(|cx| GitStore::new(None, cx));
         let language_registry = Arc::new(LanguageRegistry::new());
+        let git_store = cx.new(|cx| GitStore::new(None, Arc::clone(&language_registry), cx));
         Self {
             worktree: None,
             git_store,

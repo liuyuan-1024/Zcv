@@ -7,8 +7,8 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::{Context, Entity};
+use zcv_buffer_diff::BufferDiff;
 use zcv_git::{GitCancellation, GitHunkOperation, HunkEdit, WorkingCopySnapshot};
-use zcv_multi_buffer::BufferDiff;
 use zcv_path::AbsolutePathBuf;
 
 use super::{GitOperationOutcome, GitStore, GitStoreEvent};

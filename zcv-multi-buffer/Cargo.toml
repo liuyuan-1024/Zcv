@@ -11,7 +11,7 @@ path = "src/multi_buffer.rs"
 gpui.workspace = true
 zcv-text.workspace = true
 zcv-language.workspace = true
-imara-diff.workspace = true
+zcv-buffer-diff.workspace = true
 unicode-segmentation.workspace = true
 sum-tree.workspace = true
 

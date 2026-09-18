@@ -8,7 +8,8 @@ use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
-use zcv_multi_buffer::{DiffHunkKind, DiffHunkStaging, DisplayHunk};
+use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
+use zcv_multi_buffer::DisplayHunk;
 use zcv_text::Line;
 
 use crate::display_map::{DisplayRange, DisplaySnapshot};

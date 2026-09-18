@@ -27,7 +27,7 @@ impl Editor {
         }
         self.composition = None;
         let before_selections = self.resolved_selections();
-        let targets = self.delete_targets(&before_selections, Some((direction, unit)), cx);
+        let targets = self.delete_targets(&before_selections, Some((direction, unit)));
         self.apply_deletion(targets, description, cx);
     }
 
@@ -43,7 +43,7 @@ impl Editor {
         self.composition = None;
         let before_selections = self.resolved_selections();
         let targets = {
-            let buffer = self.multi_buffer.read(cx).snapshot(cx);
+            let buffer = self.snapshot.buffer_snapshot();
             before_selections
                 .as_slice()
                 .iter()
@@ -106,9 +106,8 @@ impl Editor {
         &self,
         selections: &SelectionSet,
         caret_motion: Option<(MovementDirection, MovementUnit)>,
-        cx: &App,
     ) -> TextResult<SelectionSet> {
-        let buffer = self.multi_buffer.read(cx).snapshot(cx);
+        let buffer = self.snapshot.buffer_snapshot();
         let mut targets = Vec::new();
         for selection in selections.as_slice() {
             if !selection.is_caret() {
@@ -253,7 +252,7 @@ impl Editor {
         self.composition = None;
         self.advance_snapshots(cx);
         let before = self.resolved_selections().normalized();
-        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
+        let snapshot = self.snapshot.buffer_snapshot().clone();
         // 逐选区计算插入文本与光标落点：
         // 光标处于声明了 newline 的括号对之间时，闭合符前额外补一个基准缩进空行，与自动缩进共用同一回车路径）。
         let mut trailing_lens = Vec::new();
@@ -357,8 +356,8 @@ impl Editor {
         })
     }
 
-    fn selected_text(&self, cx: &App) -> Option<String> {
-        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
+    fn selected_text(&self) -> Option<String> {
+        let snapshot = self.snapshot.buffer_snapshot();
         let mut parts = Vec::new();
         for selection in self.resolved_selections().as_slice() {
             if selection.is_caret() {
@@ -441,7 +440,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         // 光标贴着自动补全的闭合符时先扩展选区覆盖整对，一次退格删除整对。
-        self.select_autoclose_pair(cx);
+        self.select_autoclose_pair();
         self.delete(
             MovementDirection::Previous,
             MovementUnit::Grapheme,
@@ -518,7 +517,7 @@ impl Editor {
     }
 
     pub(crate) fn handle_copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = self.selected_text(cx) {
+        if let Some(text) = self.selected_text() {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }
@@ -527,7 +526,7 @@ impl Editor {
         if self.is_read_only(cx) {
             return;
         }
-        let Some(text) = self.selected_text(cx) else {
+        let Some(text) = self.selected_text() else {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));

@@ -576,17 +576,10 @@ mod test {
     impl SearchDecorationSnapshot {
         pub(crate) fn for_test(
             display: &DisplaySnapshot,
-            matches: &[SearchMatchAnchor],
+            ranges: &[MultiBufferRange],
             active_index: usize,
         ) -> Self {
-            Self::from_ranges(
-                display,
-                matches
-                    .iter()
-                    .map(SearchMatchAnchor::range)
-                    .collect::<Arc<[_]>>(),
-                active_index,
-            )
+            Self::from_ranges(display, Arc::from(ranges), active_index)
         }
 
         pub(crate) fn projected_rows_for_test(&self) -> &[Range<usize>] {

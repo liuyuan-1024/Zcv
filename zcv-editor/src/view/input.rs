@@ -57,8 +57,8 @@ impl Editor {
         self.input_layout = Some(layout);
     }
 
-    fn selection_for_utf16_range(&self, range: Range<usize>, cx: &App) -> Option<SelectionSet> {
-        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
+    fn selection_for_utf16_range(&self, range: Range<usize>) -> Option<SelectionSet> {
+        let snapshot = self.snapshot.buffer_snapshot();
         let start = snapshot
             .utf16_cu_to_byte(Utf16Offset::new(range.start))
             .ok()?;
@@ -114,7 +114,7 @@ impl Editor {
         description: &'static str,
         cx: &mut Context<Self>,
     ) -> Option<(SelectionSet, String, TransactionMetadata)> {
-        let targets = match self.replacement_targets(composition.as_ref(), range_utf16, cx) {
+        let targets = match self.replacement_targets(composition.as_ref(), range_utf16) {
             Some(targets) => targets,
             None => {
                 self.composition = composition;
@@ -141,7 +141,6 @@ impl Editor {
         &self,
         composition: Option<&EditorComposition>,
         range_utf16: Option<Range<usize>>,
-        cx: &App,
     ) -> Option<SelectionSet> {
         if let Some(composition) = composition {
             let ranges = composition
@@ -150,7 +149,7 @@ impl Editor {
                 .copied()
                 .map(|range| {
                     range_utf16.clone().map_or(Some(range), |relative_range| {
-                        self.relative_utf16_range(range, relative_range, cx)
+                        self.relative_utf16_range(range, relative_range)
                     })
                 })
                 .collect::<Option<Vec<_>>>()?;
@@ -163,7 +162,7 @@ impl Editor {
             ));
         }
         if let Some(range) = range_utf16 {
-            return self.selection_for_utf16_range(range, cx);
+            return self.selection_for_utf16_range(range);
         }
         Some(self.resolved_selections())
     }
@@ -172,9 +171,8 @@ impl Editor {
         &self,
         containing_range: MultiBufferRange,
         relative_range: Range<usize>,
-        cx: &App,
     ) -> Option<MultiBufferRange> {
-        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
+        let snapshot = self.snapshot.buffer_snapshot();
         let text = snapshot.text_for_range(containing_range).ok()?;
         let utf16_len = utf16_len(&text);
         let start = byte_for_utf16_offset(&text, relative_range.start.min(utf16_len))?;
@@ -215,7 +213,7 @@ impl Editor {
             return false;
         }
 
-        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
+        let snapshot = self.snapshot.buffer_snapshot().clone();
 
         // 逐选区决策，产出目标编辑、编辑后落点与新区域（以编辑前坐标为基准）。
         let mut targets: Vec<(Selection, Arc<str>)> = Vec::new();
@@ -395,8 +393,8 @@ impl Editor {
     }
 
     /// 光标贴着自动补全闭合符起点时扩展选区覆盖整对，使退格一次删除整对；非空选区或未命中区域时选区不变。
-    pub(super) fn select_autoclose_pair(&mut self, cx: &App) {
-        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
+    pub(super) fn select_autoclose_pair(&mut self) {
+        let snapshot = self.snapshot.buffer_snapshot().clone();
         let before = self.resolved_selections();
         let mut changed = false;
         let selections: Vec<Selection> = before

@@ -19,7 +19,7 @@ mod workspace_item;
 
 pub use view::{
     DiffHunkDelegate, Editor, EditorEvent, EditorHunk, EditorHunkMarkerKind, EditorHunkPart,
-    HunkControlTarget, LocalRenameError,
+    HunkControlTarget, LocalRenameError, SoftWrap,
 };
 
 pub fn init(cx: &mut App) {

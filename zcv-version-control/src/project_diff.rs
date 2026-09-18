@@ -4,7 +4,7 @@
 //! 点击版本管理条目时按分组复用对应 Item 并定位文件，不为 Git 状态建立界面侧副本。
 
 use std::any::TypeId;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -17,6 +17,7 @@ use zcv_actions::{
     Backtab, FindNext, FindPrevious, ReplaceAll, ReplaceNext, Tab, ToggleCaseSensitive,
     ToggleRegex, ToggleReplace, ToggleWholeWord,
 };
+use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind};
 use zcv_editor::{
     DiffHunkDelegate, Editor, EditorEvent, EditorHunk, EditorHunkMarkerKind, EditorHunkPart,
     HunkControlTarget,
@@ -24,15 +25,12 @@ use zcv_editor::{
 use zcv_git::{
     ConflictChoice, FileStatus, GitHunkOperation, GitRevision, StatusCode, parse_conflict_regions,
 };
-use zcv_language::LanguageBuffer;
-use zcv_multi_buffer::{
-    BufferDiff, BufferDiffInput, DiffFile, DiffHunkKind, DiffHunkSource, DisplayHunk,
-};
+use zcv_multi_buffer::{DiffFile, DiffHunkSource, DisplayHunk};
 use zcv_multi_buffer::{ExcerptLocation, ExcerptRange, MultiBuffer};
 use zcv_path::AbsolutePathBuf;
 use zcv_project::SearchQuery;
 use zcv_project::{GitStoreEvent, Project};
-use zcv_text::{Anchor, Buffer, BufferConfig, ByteOffset, Snapshot, TextRange};
+use zcv_text::{Anchor, ByteOffset, Snapshot, TextRange};
 use zcv_theme::{color, space};
 use zcv_ui::{
     Button, ButtonSize, ButtonStyle, Checkbox, MatchOption, MatchOptions, ReplaceInput,
@@ -405,7 +403,6 @@ pub struct ProjectDiffView {
     /// base 变更（HEAD 变化）后需要整体重建投影。
     rebase_projection: bool,
     pending_path: Option<PathBuf>,
-    revision_sources: HashMap<(GitRevision, PathBuf), Entity<LanguageBuffer>>,
     loading_revision_text: HashSet<(GitRevision, PathBuf)>,
     search_options: MatchOptions,
     search_input: Option<Entity<Editor>>,
@@ -986,7 +983,6 @@ impl ProjectDiffView {
             files: Vec::new(),
             rebase_projection: false,
             pending_path: None,
-            revision_sources: Default::default(),
             loading_revision_text: Default::default(),
             search_options: MatchOptions::default(),
             search_input: None,
@@ -1032,13 +1028,6 @@ impl ProjectDiffView {
         };
 
         self.files = changed;
-        let visible_paths = self
-            .files
-            .iter()
-            .map(|file| file.path.clone())
-            .collect::<HashSet<_>>();
-        self.revision_sources
-            .retain(|(_, path), _| visible_paths.contains(path));
 
         if self.kind == ProjectDiffKind::Conflict || std::mem::take(&mut self.rebase_projection) {
             // 冲突视图与 base 变更需要整体重建；普通状态刷新只做路径增量。
@@ -1209,13 +1198,9 @@ impl ProjectDiffView {
     ) -> Option<DiffFile> {
         let git_store = self.project.read(cx).git_store();
         let working = match self.kind {
-            ProjectDiffKind::Staged => {
-                let index_text = git_store
-                    .read(cx)
-                    .revision_text(GitRevision::Index, &file.path)
-                    .map(|text| text.to_string())?;
-                self.revision_source(GitRevision::Index, &file.path, &index_text, cx)
-            }
+            ProjectDiffKind::Staged => git_store
+                .read(cx)
+                .revision_document(GitRevision::Index, &file.path)?,
             ProjectDiffKind::Unstaged => {
                 let opened = self.project.update(cx, |project, cx| {
                     if self.kind.is_deleted(file.status) && !file.path.exists() {
@@ -1247,30 +1232,25 @@ impl ProjectDiffView {
                 source
             }
         };
-        let base_text = if self.kind == ProjectDiffKind::Conflict {
-            None
+        // base / index 参照都由 GitStore 持有的修订文档提供：
+        // 已暂存视图 base=HEAD、index=Index；未暂存视图 base=index=Index；冲突视图不建立 diff。
+        let (base, index) = if self.kind == ProjectDiffKind::Conflict {
+            (None, None)
         } else {
-            git_store
-                .read(cx)
-                .revision_text(self.kind.base_revision(), &file.path)
+            let store = git_store.read(cx);
+            (
+                store.revision_document(self.kind.base_revision(), &file.path),
+                store.revision_document(GitRevision::Index, &file.path),
+            )
         };
-        // index 参照：已暂存视图 working 就是 index，未暂存视图 base 就是 index；
-        // 统一分类自然得到全部 Staged / 全部 Unstaged。
-        let index_text = (self.kind != ProjectDiffKind::Conflict)
-            .then(|| {
-                git_store
-                    .read(cx)
-                    .revision_text(GitRevision::Index, &file.path)
-            })
-            .flatten();
         let display_path = root
             .and_then(|root| file.path.strip_prefix(root).ok())
             .unwrap_or(&file.path)
             .to_path_buf();
         let input = BufferDiffInput {
             working,
-            base_text,
-            index_text,
+            base,
+            index,
             path: file.path.clone(),
             operations: (self.kind != ProjectDiffKind::Conflict).then(|| {
                 git_store
@@ -1385,9 +1365,9 @@ impl ProjectDiffView {
         let git_store = self.project.read(cx).git_store();
         let store = git_store.read(cx);
         (self.kind == ProjectDiffKind::Conflict
-            || store.revision_text_loaded(self.kind.base_revision(), &file.path))
+            || store.revision_document_loaded(self.kind.base_revision(), &file.path))
             && (self.kind != ProjectDiffKind::Staged
-                || store.revision_text_loaded(GitRevision::Index, &file.path))
+                || store.revision_document_loaded(GitRevision::Index, &file.path))
     }
 
     /// 一次性为全部变更文件发起修订读取（同一文件的 base/index 并行）。
@@ -1408,7 +1388,7 @@ impl ProjectDiffView {
             for revision in &revisions {
                 if git_store
                     .read(cx)
-                    .revision_text_loaded(*revision, &file.path)
+                    .revision_document_loaded(*revision, &file.path)
                     || !self
                         .loading_revision_text
                         .insert((*revision, file.path.clone()))
@@ -1417,7 +1397,9 @@ impl ProjectDiffView {
                 }
                 let path = file.path.clone();
                 let revision = *revision;
-                let load = git_store.read(cx).load_revision_text(revision, &path, cx);
+                let load = git_store
+                    .read(cx)
+                    .load_revision_document(revision, &path, cx);
                 cx.spawn(async move |this, cx| {
                     let _ = load.await;
                     this.update(cx, |view, cx| {
@@ -1480,43 +1462,6 @@ impl ProjectDiffView {
             }
             rebuilt
         });
-    }
-
-    /// Git 修订来源由视图按“修订 + 路径”唯一拥有，并在对应文本变化后原位刷新。
-    fn revision_source(
-        &mut self,
-        revision: GitRevision,
-        path: &Path,
-        text: &str,
-        cx: &mut Context<Self>,
-    ) -> Entity<LanguageBuffer> {
-        let key = (revision, path.to_path_buf());
-        if let Some(source) = self.revision_sources.get(&key) {
-            let snapshot = source.read(cx).text_snapshot(cx);
-            let source_text = snapshot
-                .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
-                .expect("Git 修订快照范围必须有效")
-                .as_str()
-                .to_owned();
-            if source_text != text {
-                let buffer = source.read(cx).buffer();
-                buffer.update(cx, |buffer, _| {
-                    buffer
-                        .reset(text.to_string())
-                        .expect("Git 修订文本必须能原位刷新")
-                });
-            }
-            return source.clone();
-        }
-
-        let buffer = Buffer::from_text(text.to_string(), BufferConfig::default())
-            .expect("Git 修订文本必须能创建 Buffer");
-        let buffer = cx.new(|_| buffer);
-        let language_registry = self.project.read(cx).language_registry();
-        let source = cx
-            .new(|cx| LanguageBuffer::new(buffer, Some(path.to_path_buf()), language_registry, cx));
-        self.revision_sources.insert(key, source.clone());
-        source
     }
 
     fn move_to_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -1778,8 +1723,9 @@ mod tests {
     use gpui::{AppContext as _, TestAppContext};
 
     use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
+    use zcv_language::LanguageBuffer;
     use zcv_multi_buffer::ExcerptDiffKind;
-    use zcv_text::{Edit, Line, TransactionMetadata};
+    use zcv_text::{Buffer, BufferConfig, Edit, Line, TransactionMetadata};
 
     #[test]
     fn project_diff_persistence_state_keeps_group_and_active_path() {
@@ -1852,12 +1798,17 @@ mod tests {
         path: PathBuf,
         cx: &mut Context<Editor>,
     ) -> DiffFile {
+        let registry = working.read(cx).language_registry();
+        let base_buffer = Buffer::from_text(base_text.to_string(), BufferConfig::default())
+            .expect("测试 base 文本必须能创建 Buffer");
+        let base_buffer = cx.new(|_| base_buffer);
+        let base = cx.new(|cx| LanguageBuffer::new(base_buffer, Some(path.clone()), registry, cx));
         let diff = cx.new(|cx| {
             BufferDiff::new(
                 BufferDiffInput {
                     working,
-                    base_text: Some(Arc::from(base_text)),
-                    index_text: None,
+                    base: Some(base),
+                    index: None,
                     path: path.clone(),
                     operations: None,
                 },

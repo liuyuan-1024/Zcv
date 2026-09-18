@@ -26,13 +26,14 @@ use gpui::{
     App, AppContext as _, AsyncApp, BackgroundExecutor, Context, Entity, EventEmitter, Task,
     WeakEntity,
 };
+use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffOperations, PendingHunk};
 use zcv_git::{
     Branch, DiffStat, FileStatus, GitCancellation, GitHunkOperation, GitRepository, GitRevision,
     GraphCommit, HunkEdit, WorkingCopySnapshot, apply_hunk_edits_to_text,
 };
-use zcv_multi_buffer::{BufferDiff, BufferDiffInput, DiffOperations, PendingHunk};
+use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_path::{AbsolutePathBuf, RelativePathBuf, normalize_for_comparison};
-use zcv_text::{Anchor, ByteOffset, TextRange};
+use zcv_text::{Anchor, Buffer, BufferConfig, ByteOffset, Snapshot, TextRange};
 
 /// 一次增量刷新最多累积的路径数，超过则升级为全量扫描。
 const MAX_INCREMENTAL_PATHS: usize = 500;
@@ -243,12 +244,12 @@ fn repository_working_directory(repository: &dyn GitRepository) -> AbsolutePathB
         .expect("Git 仓库工作目录必须是绝对路径")
 }
 
-/// 共享 diff 缓存的键：路径、working 实体、base 文本、index 文本。
+/// 共享 diff 缓存的键：路径、working 实体、base 文档、index 文档。
 type SharedDiffKey = (
     AbsolutePathBuf,
     gpui::EntityId,
-    Option<Arc<str>>,
-    Option<Arc<str>>,
+    Option<gpui::EntityId>,
+    Option<gpui::EntityId>,
 );
 
 pub struct GitStore {
@@ -263,16 +264,19 @@ pub struct GitStore {
     /// 活动仓库（按 working_directory 标识）：分支显示与 fetch/pull/push 等 git 操作的目标。
     /// 用 working_directory 而非索引：全量扫描重建 Vec，索引不稳定。
     active_repo_workdir: Option<AbsolutePathBuf>,
-    /// HEAD/index 文本缓存；状态或 HEAD 变化时失效。
+    /// HEAD/index 修订文档缓存；状态或 HEAD 变化时失效。
     /// 值 `None` 表示该修订中文件不存在（已加载但缺失），键存在即表示已加载完成。
-    revision_text_cache: HashMap<(GitRevision, AbsolutePathBuf), Option<Arc<str>>>,
+    /// 修订文档是 HEAD/index 的唯一权威实例，工作区视图与 diff 都从这里取用。
+    revision_documents: HashMap<(GitRevision, AbsolutePathBuf), Option<Entity<LanguageBuffer>>>,
     /// 分修订递增的缓存版本；失效前启动的后台读取不得回填新缓存。
-    revision_text_generations: HashMap<GitRevision, u64>,
+    revision_generations: HashMap<GitRevision, u64>,
     /// 已写入内存、尚待后台落盘确认的 index 文本的原始值；同一路径同时只允许一个写入，失败时据此回滚。
     optimistic_index_bases: HashMap<AbsolutePathBuf, Arc<str>>,
-    /// 按 (路径, working 实体, base 文本, index 文本) 共享的 diff 实体；
+    /// 按 (路径, working 实体, base 文档, index 文档) 共享的 diff 实体；
     /// 同一份 diff 跨编辑器 / 面板视图复用，head/index 变化时按路径失效。
     shared_diffs: HashMap<SharedDiffKey, Entity<BufferDiff>>,
+    /// 项目唯一的语言注册表；修订文档与工作区文档共用。
+    language_registry: Arc<LanguageRegistry>,
     background: BackgroundExecutor,
     /// 自身弱句柄：后台任务完成后回填缓存等状态用（构造时注入）。
     self_handle: WeakEntity<Self>,
@@ -286,7 +290,11 @@ pub struct GitStore {
 }
 
 impl GitStore {
-    pub fn new(root: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        root: Option<PathBuf>,
+        language_registry: Arc<LanguageRegistry>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         // 仓库的 working_directory 来自 canonicalize，root 同样归一化，保证路径前缀匹配一致。
         let root = root.map(|root| canonicalize_path(&root));
         let background = cx.background_executor().clone();
@@ -388,13 +396,11 @@ impl GitStore {
             repository_scan_ready: false,
             status_index: Arc::new(GitStatusSnapshot::default()),
             active_repo_workdir: None,
-            revision_text_cache: HashMap::new(),
-            revision_text_generations: HashMap::from([
-                (GitRevision::Head, 1),
-                (GitRevision::Index, 1),
-            ]),
+            revision_documents: HashMap::new(),
+            revision_generations: HashMap::from([(GitRevision::Head, 1), (GitRevision::Index, 1)]),
             optimistic_index_bases: HashMap::new(),
             shared_diffs: HashMap::new(),
+            language_registry,
             background,
             self_handle,
             job_sender,
@@ -496,10 +502,10 @@ impl GitStore {
         })
     }
 
-    /// 按 (路径, working 实体, base 文本, index 文本) 共享单个文件的 diff 实体。
+    /// 按 (路径, working 实体, base 文档, index 文档) 共享单个文件的 diff 实体。
     ///
     /// 同一份 diff 跨编辑器与面板视图复用；
-    /// head/index 文本变化时由失效逻辑丢弃缓存，下一次请求会用新文本重建实体。
+    /// head/index 文档变化时由失效逻辑丢弃缓存，下一次请求会用新文档重建实体。
     pub fn file_diff(
         &mut self,
         input: &BufferDiffInput,
@@ -509,8 +515,8 @@ impl GitStore {
         let key = (
             path,
             input.working.entity_id(),
-            input.base_text.clone(),
-            input.index_text.clone(),
+            input.base.as_ref().map(Entity::entity_id),
+            input.index.as_ref().map(Entity::entity_id),
         );
         if let Some(entity) = self.shared_diffs.get(&key) {
             return entity.clone();
@@ -545,7 +551,9 @@ impl GitStore {
             let diff_ref = diff.read(cx);
             let working = diff_ref.working().clone();
             let working_text = working.read(cx).text_snapshot(cx);
-            let base_text = diff_ref.base_text();
+            let base_text = diff_ref
+                .base_source()
+                .map(|base| Arc::<str>::from(snapshot_text(&base.read(cx).text_snapshot(cx))));
             let mut edits = Vec::new();
             let mut pending = Vec::new();
             for range in &ranges {
@@ -619,7 +627,10 @@ impl GitStore {
         }
         let path = canonicalize_path(&path);
         if let Some(index_text) = &index_text
-            && self.revision_text(GitRevision::Index, &path).as_deref() != Some(index_text)
+            && self
+                .revision_document_text(GitRevision::Index, &path, cx)
+                .as_deref()
+                != Some(index_text)
         {
             return Err("暂存区内容已变化，请刷新后重试".into());
         }
@@ -650,15 +661,7 @@ impl GitStore {
         if let (Some(index_text), Some(next_index_text)) = (&index_text, &next_index_text) {
             self.optimistic_index_bases
                 .insert(path.clone(), index_text.clone());
-            self.revision_text_cache.insert(
-                (GitRevision::Index, path.clone()),
-                Some(next_index_text.clone()),
-            );
-            let generation = self
-                .revision_text_generations
-                .entry(GitRevision::Index)
-                .or_insert(0);
-            *generation = generation.wrapping_add(1).max(1);
+            self.reset_revision_document_text(GitRevision::Index, &path, next_index_text, cx);
             // 乐观 index 更新：本路径的共享 diff 立即失效，视图按 IndexText 事件重新请求。
             self.invalidate_shared_diffs(Some(std::slice::from_ref(&path)));
             cx.emit(GitStoreEvent::IndexText);
@@ -1022,15 +1025,16 @@ impl GitStore {
         self.repository_scan_ready
     }
 
-    /// 读取 HEAD 或 index 中 `path` 的文本并回填缓存。
+    /// 读取 HEAD 或 index 中 `path` 的文本，建立/原位刷新修订文档并回填缓存。
     ///
-    /// 缓存生命周期全部由 GitStore 管理：加载即回填，HEAD 变化时 commit_job 清空。
-    pub fn load_revision_text(
+    /// 缓存生命周期全部由 GitStore 管理：加载即回填，HEAD/index 变化时 commit_job 清空。
+    /// 返回 `None` 表示该修订中文件不存在（同样写入缓存，避免调用方反复重试）。
+    pub fn load_revision_document(
         &self,
         revision: GitRevision,
         path: &Path,
         cx: &App,
-    ) -> Task<Option<String>> {
+    ) -> Task<Option<Entity<LanguageBuffer>>> {
         let background = self.background.clone();
         let path = canonicalize_path(path);
         let Some(repository) = self.repo_for_path(path.as_path()) else {
@@ -1038,7 +1042,7 @@ impl GitStore {
         };
         let repository = repository.repository.clone();
         let generation = self
-            .revision_text_generations
+            .revision_generations
             .get(&revision)
             .copied()
             .unwrap_or_default();
@@ -1056,26 +1060,104 @@ impl GitStore {
             Some(String::from_utf8_lossy(&content).into_owned())
         });
         let this = self.self_handle.clone();
+        let language_registry = Arc::clone(&self.language_registry);
         cx.spawn(async move |cx| {
             let text = loaded.await;
-            this.update(cx, |store, _| {
-                if store.revision_text_generations.get(&revision).copied() == Some(generation) {
-                    // 缺失（None）也要写入缓存：键存在表示“已加载”，避免调用方反复重试。
-                    store
-                        .revision_text_cache
-                        .insert((revision, path.clone()), text.clone().map(Arc::from));
+            this.update(cx, |store, cx| {
+                if store.revision_generations.get(&revision).copied() != Some(generation) {
+                    return None;
                 }
+                store.store_revision_document(revision, path, text, &language_registry, cx)
             })
-            .ok();
-            text
+            .ok()
+            .flatten()
         })
+    }
+
+    /// 建立或原位刷新修订文档；`text` 为 None 表示该修订中文件不存在。
+    fn store_revision_document(
+        &mut self,
+        revision: GitRevision,
+        path: AbsolutePathBuf,
+        text: Option<String>,
+        language_registry: &Arc<LanguageRegistry>,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<LanguageBuffer>> {
+        let key = (revision, path.clone());
+        let Some(text) = text else {
+            // 缺失也要写入缓存：键存在表示“已加载”，避免调用方反复重试。
+            self.revision_documents.insert(key, None);
+            return None;
+        };
+        if let Some(Some(document)) = self.revision_documents.get(&key).cloned() {
+            let snapshot = document.read(cx).text_snapshot(cx);
+            if snapshot_text(&snapshot) != text {
+                let buffer = document.read(cx).buffer();
+                buffer.update(cx, |buffer, _| {
+                    buffer.reset(text).expect("修订文档文本必须能原位刷新");
+                });
+            }
+            return Some(document);
+        }
+        let buffer = Buffer::from_text(text, BufferConfig::default())
+            .expect("修订文档文本必须能创建 Buffer");
+        let buffer = cx.new(|_| buffer);
+        // 修订源的文件路径必须与工作区源一致（绝对），excerpt 定位、语言解析与导航按源路径匹配。
+        let document = cx.new(|cx| {
+            LanguageBuffer::new(
+                buffer,
+                Some(path.as_path().to_path_buf()),
+                Arc::clone(language_registry),
+                cx,
+            )
+        });
+        self.revision_documents.insert(key, Some(document.clone()));
+        Some(document)
+    }
+
+    /// 用给定文本原位刷新已加载的修订文档（乐观 index 写入与回滚）。
+    fn reset_revision_document_text(
+        &mut self,
+        revision: GitRevision,
+        path: &AbsolutePathBuf,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (revision, path.clone());
+        match self.revision_documents.get(&key).cloned() {
+            Some(Some(document)) => {
+                let buffer = document.read(cx).buffer();
+                buffer.update(cx, |buffer, _| {
+                    buffer
+                        .reset(text.to_string())
+                        .expect("修订文档文本必须能原位刷新");
+                });
+            }
+            // 缓存尚未建立时按乐观文本直接建立，语义与旧文本缓存一致。
+            _ => {
+                let buffer = Buffer::from_text(text.to_string(), BufferConfig::default())
+                    .expect("修订文档文本必须能创建 Buffer");
+                let buffer = cx.new(|_| buffer);
+                let document = cx.new(|cx| {
+                    LanguageBuffer::new(
+                        buffer,
+                        Some(path.as_path().to_path_buf()),
+                        Arc::clone(&self.language_registry),
+                        cx,
+                    )
+                });
+                self.revision_documents.insert(key, Some(document));
+            }
+        }
+        let generation = self.revision_generations.entry(revision).or_insert(0);
+        *generation = generation.wrapping_add(1).max(1);
     }
 
     /// 后台加载活动仓库的提交图数据（一次性读，不进 job 队列、不维护快照状态）。
     ///
     /// `offset` 为已跳过的提交数量：`None` 从历史开头开始，`Some(offset)` 从该位置继续；
     /// `limit` 为单批提交数上限。lane 布局由视图侧用 `zcv_git::GraphLayoutState` 计算。
-    /// 无活动仓库时返回空列表。仿 `load_revision_text` 的 `background.spawn` 一次性后台读模式。
+    /// 无活动仓库时返回空列表。仿 `load_revision_document` 的 `background.spawn` 一次性后台读模式。
     pub fn load_commit_graph(
         &self,
         offset: Option<usize>,
@@ -1089,41 +1171,58 @@ impl GitStore {
         background.spawn(async move { repository.commit_graph(offset, limit) })
     }
 
-    /// 读取缓存的修订文本；`None` 表示文件在该修订中缺失。
+    /// 读取缓存的修订文档；`None` 表示文件在该修订中缺失或尚未加载。
     ///
-    /// 与 [`GitStore::revision_text_loaded`] 搭配区分“未加载”和“确实不存在”。
-    pub fn revision_text(&self, revision: GitRevision, path: &Path) -> Option<Arc<str>> {
-        self.revision_text_cache
+    /// 与 [`GitStore::revision_document_loaded`] 搭配区分“未加载”和“确实不存在”。
+    pub fn revision_document(
+        &self,
+        revision: GitRevision,
+        path: &Path,
+    ) -> Option<Entity<LanguageBuffer>> {
+        self.revision_documents
             .get(&(revision, canonicalize_path(path)))
-            .and_then(|text| text.clone())
+            .and_then(|document| document.clone())
     }
 
-    /// 该修订文本是否已经完成一次加载（缺失也算已加载）。
-    pub fn revision_text_loaded(&self, revision: GitRevision, path: &Path) -> bool {
-        self.revision_text_cache
+    /// 该修订文档是否已经完成一次加载（缺失也算已加载）。
+    pub fn revision_document_loaded(&self, revision: GitRevision, path: &Path) -> bool {
+        self.revision_documents
             .contains_key(&(revision, canonicalize_path(path)))
     }
 
-    fn invalidate_revision_text(&mut self, revision: GitRevision) {
-        self.revision_text_cache
+    /// 读取缓存修订文档的全文；派生值，用于乐观写入的基准校验。
+    fn revision_document_text(
+        &self,
+        revision: GitRevision,
+        path: &Path,
+        cx: &App,
+    ) -> Option<Arc<str>> {
+        let document = self.revision_document(revision, path)?;
+        Some(Arc::from(
+            snapshot_text(&document.read(cx).text_snapshot(cx)).as_str(),
+        ))
+    }
+
+    fn invalidate_revision_documents(&mut self, revision: GitRevision) {
+        self.revision_documents
             .retain(|(cached_revision, path), _| {
                 *cached_revision != revision
                     || (revision == GitRevision::Index
                         && self.optimistic_index_bases.contains_key(path))
             });
-        let generation = self.revision_text_generations.entry(revision).or_insert(0);
+        let generation = self.revision_generations.entry(revision).or_insert(0);
         *generation = generation.wrapping_add(1).max(1);
-        // head/index 文本变了：基于旧文本的共享 diff 全部失效。
+        // head/index 文档变了：基于旧文档的共享 diff 全部失效。
         self.invalidate_shared_diffs(None);
     }
 
-    fn invalidate_revision_text_for_paths(
+    fn invalidate_revision_documents_for_paths(
         &mut self,
         revision: GitRevision,
         paths: &[AbsolutePathBuf],
     ) {
         let changed_paths = paths.to_vec();
-        self.revision_text_cache
+        self.revision_documents
             .retain(|(cached_revision, path), _| {
                 *cached_revision != revision
                     || (revision == GitRevision::Index
@@ -1132,7 +1231,7 @@ impl GitStore {
                         .iter()
                         .any(|changed_path| path.starts_with(changed_path))
             });
-        let generation = self.revision_text_generations.entry(revision).or_insert(0);
+        let generation = self.revision_generations.entry(revision).or_insert(0);
         *generation = generation.wrapping_add(1).max(1);
         self.invalidate_shared_diffs(Some(paths));
     }
@@ -1351,6 +1450,17 @@ pub(super) fn canonicalize_path(path: &Path) -> AbsolutePathBuf {
         .expect("路径归一化后必须保持为绝对路径")
 }
 
+/// 读取快照全文；修订文档派生文本的唯一转换点。
+fn snapshot_text(snapshot: &Snapshot) -> String {
+    snapshot
+        .slice_text(
+            TextRange::new(ByteOffset::ZERO, snapshot.len_bytes()).expect("全文范围必须有序"),
+        )
+        .expect("全文范围必须有效")
+        .as_str()
+        .to_owned()
+}
+
 impl EventEmitter<GitStoreEvent> for GitStore {}
 
 struct JobPreparation {
@@ -1371,9 +1481,26 @@ mod tests {
     use super::*;
     use crate::test_support::{rev_parse, run_git, test_git_repo};
 
+    /// 测试用语言注册表；GitStore 的修订文档按它解析语言。
+    fn test_registry() -> Arc<LanguageRegistry> {
+        Arc::new(LanguageRegistry::new())
+    }
+
+    /// 测试用修订文档；用于构造 diff 的 base/index 侧。
+    fn test_language_buffer(
+        text: &str,
+        path: &Path,
+        cx: &mut impl gpui::AppContext,
+    ) -> Entity<LanguageBuffer> {
+        let buffer = Buffer::from_text(text.to_string(), BufferConfig::default())
+            .expect("测试文本必须能创建 Buffer");
+        let buffer = cx.new(|_| buffer);
+        cx.new(|cx| LanguageBuffer::new(buffer, Some(path.to_path_buf()), test_registry(), cx))
+    }
+
     use gpui::AppContext;
+    use zcv_buffer_diff::BufferDiffInput;
     use zcv_git::StatusCode;
-    use zcv_multi_buffer::BufferDiffInput;
 
     fn absolute(path: PathBuf) -> AbsolutePathBuf {
         AbsolutePathBuf::canonicalize(&path)
@@ -1393,7 +1520,8 @@ mod tests {
         let (root, _temp) = test_git_repo();
         fs::write(root.join("tracked.txt"), "已修改\n").expect("应修改文件");
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1415,7 +1543,8 @@ mod tests {
         let (root, _temp) = test_git_repo();
         // 先做一次未暂存修改（1 增 1 删：改写第二行内容）。
         std::fs::write(root.join("tracked.txt"), "第一行\n第二行（改）\n").expect("应写入文件");
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
         let total = cx.read_entity(&git_store, |store, _| store.total_diff_stat());
@@ -1441,8 +1570,9 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("应创建临时目录");
         run_git(temp_dir.path(), &["init", "-q", "-b", "master"]);
 
-        let git_store =
-            cx.update(|cx| cx.new(|cx| GitStore::new(Some(temp_dir.path().to_path_buf()), cx)));
+        let git_store = cx.update(|cx| {
+            cx.new(|cx| GitStore::new(Some(temp_dir.path().to_path_buf()), test_registry(), cx))
+        });
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1455,7 +1585,8 @@ mod tests {
     #[gpui::test]
     fn incremental_refresh_updates_statuses(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1495,7 +1626,8 @@ mod tests {
         let path = root.join("tracked.txt");
         fs::write(&path, "暂存内容\n").expect("应修改文件");
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1520,7 +1652,8 @@ mod tests {
         fs::write(root.join("tracked.txt"), "feature 内容\n").expect("应写入");
         run_git(&root, &["commit", "-q", "-am", "feature"]);
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1542,7 +1675,8 @@ mod tests {
     #[gpui::test]
     fn load_revision_text_returns_head_content(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1551,13 +1685,13 @@ mod tests {
         let path = root.join("tracked.txt");
         // 前台任务由测试调度器驱动（block 只跑后台任务，无法推进）。
         cx.read_entity(&git_store, |store, cx| {
-            store.load_revision_text(GitRevision::Head, &path, cx)
+            store.load_revision_document(GitRevision::Head, &path, cx)
         })
         .detach();
         cx.run_until_parked();
         // 加载结果已由 GitStore 自行回填缓存。
-        let text = cx.read_entity(&git_store, |store, _| {
-            store.revision_text(GitRevision::Head, &path)
+        let text = cx.read_entity(&git_store, |store, cx| {
+            store.revision_document_text(GitRevision::Head, &path, cx)
         });
         assert_eq!(text.as_deref(), Some("第一行\n第二行\n"));
     }
@@ -1573,22 +1707,23 @@ mod tests {
         run_git(&root, &["add", "tracked.txt"]);
         fs::write(root.join("tracked.txt"), "工作区内容\n").expect("应写入工作区版本");
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
         let path = root.join("tracked.txt");
         cx.read_entity(&git_store, |store, cx| {
-            store.load_revision_text(GitRevision::Index, &path, cx)
+            store.load_revision_document(GitRevision::Index, &path, cx)
         })
         .detach();
         cx.read_entity(&git_store, |store, cx| {
-            store.load_revision_text(GitRevision::Index, &unchanged_path, cx)
+            store.load_revision_document(GitRevision::Index, &unchanged_path, cx)
         })
         .detach();
         cx.run_until_parked();
 
-        let text = cx.read_entity(&git_store, |store, _| {
-            store.revision_text(GitRevision::Index, &path)
+        let text = cx.read_entity(&git_store, |store, cx| {
+            store.revision_document_text(GitRevision::Index, &path, cx)
         });
         assert_eq!(text.as_deref(), Some("已暂存内容\n"));
 
@@ -1601,25 +1736,31 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(
-            cx.read_entity(&git_store, |store, _| store
-                .revision_text(GitRevision::Index, &path))
-                .is_none(),
+            cx.read_entity(&git_store, |store, cx| store.revision_document_text(
+                GitRevision::Index,
+                &path,
+                cx
+            ))
+            .is_none(),
             "即使状态枚举与行数未变，刷新路径也必须使旧 index 文本失效"
         );
         assert_eq!(
-            cx.read_entity(&git_store, |store, _| store
-                .revision_text(GitRevision::Index, &unchanged_path)),
+            cx.read_entity(&git_store, |store, cx| store.revision_document_text(
+                GitRevision::Index,
+                &unchanged_path,
+                cx
+            )),
             Some(Arc::from("未变更内容\n")),
             "单路径刷新不应使其他文件的 index 文本失效"
         );
 
         cx.read_entity(&git_store, |store, cx| {
-            store.load_revision_text(GitRevision::Index, &path, cx)
+            store.load_revision_document(GitRevision::Index, &path, cx)
         })
         .detach();
         cx.run_until_parked();
-        let text = cx.read_entity(&git_store, |store, _| {
-            store.revision_text(GitRevision::Index, &path)
+        let text = cx.read_entity(&git_store, |store, cx| {
+            store.revision_document_text(GitRevision::Index, &path, cx)
         });
         assert_eq!(text.as_deref(), Some("第二版暂存\n"));
     }
@@ -1634,7 +1775,8 @@ mod tests {
         fs::create_dir_all(root.join("docs")).expect("应创建目录");
         fs::create_dir_all(root.join("empty")).expect("应创建目录");
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1688,7 +1830,8 @@ mod tests {
         fs::write(root.join("node_modules/pkg/index.js"), "x\n").expect("应创建文件");
         fs::write(root.join(".gitignore"), "node_modules/\n").expect("应写入 .gitignore");
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1709,7 +1852,8 @@ mod tests {
         run_git(&root, &["add", "assets/logo.png"]);
         run_git(&root, &["commit", "-q", "-m", "add assets"]);
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1746,7 +1890,8 @@ mod tests {
         let empty_dir = root.join("tmp/empty");
         fs::create_dir_all(&empty_dir).expect("应创建被忽略目录");
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1809,7 +1954,7 @@ mod tests {
         );
         run_git(&root, &["push", "-q", "-u", "origin", "master"]);
 
-        let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), cx));
+        let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
         git_store.update(cx, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked(); // 首次扫描完成，repositories 就绪。
         let ready = cx.read_entity(&git_store, |store, _| !store.repositories.is_empty());
@@ -1840,7 +1985,7 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         let (root, _temp) = test_git_repo();
-        let git_store = cx.new(|cx| GitStore::new(Some(root), cx));
+        let git_store = cx.new(|cx| GitStore::new(Some(root), test_registry(), cx));
         git_store.update(cx, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -1884,7 +2029,7 @@ mod tests {
 
     #[gpui::test]
     fn stale_job_completion_does_not_remove_newer_same_key(cx: &mut gpui::TestAppContext) {
-        let git_store = cx.new(|cx| GitStore::new(None, cx));
+        let git_store = cx.new(|cx| GitStore::new(None, test_registry(), cx));
         git_store.update(cx, |store, cx| {
             let key = GitJobKey::GitOperation(GitOperationKind::Push);
             let old_id = store
@@ -1956,7 +2101,7 @@ mod tests {
         permissions.set_mode(0o755);
         fs::set_permissions(&hook_path, permissions).expect("应设置钩子可执行权限");
 
-        let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), cx));
+        let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
         git_store.update(cx, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -2003,7 +2148,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("应创建临时目录");
         let root = temp_dir.path().to_path_buf();
 
-        let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), cx));
+        let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
         git_store.update(cx, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
         let empty = cx.read_entity(&git_store, |store, _| !store.has_repositories());
@@ -2026,7 +2171,7 @@ mod tests {
         let (root, _temp) = test_git_repo();
         fs::write(root.join("tracked.txt"), "修改后的内容\n").expect("应修改文件");
 
-        let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), cx));
+        let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
         git_store.update(cx, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -2117,7 +2262,7 @@ mod tests {
         fs::write(root.join("src/new.txt"), "新文件\n").expect("应写入文件");
         fs::write(root.join("src/sub/b.txt"), "改动的 b\n").expect("应写入文件");
 
-        let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), cx));
+        let git_store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
         git_store.update(cx, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -2161,14 +2306,15 @@ mod tests {
     fn file_diff_is_shared_by_working_base_and_index(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
         fs::write(root.join("tracked.txt"), "第一行\n已修改\n").expect("应修改工作区文件");
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
         let path = canonicalize_path(&root.join("tracked.txt"));
         let native_path = path.clone().into_path_buf();
         for revision in [GitRevision::Head, GitRevision::Index] {
             cx.read_entity(&git_store, |store, cx| {
-                store.load_revision_text(revision, &path, cx)
+                store.load_revision_document(revision, &path, cx)
             })
             .detach();
         }
@@ -2192,8 +2338,8 @@ mod tests {
         let spec = |store: &GitStore| BufferDiffInput {
             working: working.clone(),
             path: native_path.clone(),
-            base_text: store.revision_text(GitRevision::Head, &path),
-            index_text: store.revision_text(GitRevision::Index, &path),
+            base: store.revision_document(GitRevision::Head, &path),
+            index: store.revision_document(GitRevision::Index, &path),
             operations: None,
         };
         let first = git_store.update(cx, |store, cx| {
@@ -2230,14 +2376,15 @@ mod tests {
         let (root, _temp) = test_git_repo();
         fs::write(root.join("tracked.txt"), "第一行\n已修改\n").expect("应修改工作区文件");
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
         let path = canonicalize_path(&root.join("tracked.txt"));
         let native_path = path.clone().into_path_buf();
         cx.read_entity(&git_store, |store, cx| {
-            store.load_revision_text(GitRevision::Index, &path, cx)
+            store.load_revision_document(GitRevision::Index, &path, cx)
         })
         .detach();
         cx.run_until_parked();
@@ -2259,14 +2406,15 @@ mod tests {
         });
         let operations =
             git_store.read_with(cx, |store, _| store.diff_operations(GitRevision::Index));
+        let base = test_language_buffer("第一行\n第二行\n", &native_path, cx);
         let diff = cx.update(|cx| {
             cx.new(|cx| {
                 BufferDiff::new(
                     BufferDiffInput {
                         working: working.clone(),
                         path: native_path.clone(),
-                        base_text: Some(Arc::from("第一行\n第二行\n")),
-                        index_text: None,
+                        base: Some(base),
+                        index: None,
                         operations: Some(operations),
                     },
                     cx,
@@ -2293,8 +2441,8 @@ mod tests {
             assert_eq!(diff.snapshot().pending_hunks().len(), 1);
         });
         assert_eq!(
-            cx.read_entity(&git_store, |store, _| {
-                store.revision_text(GitRevision::Index, &path)
+            cx.read_entity(&git_store, |store, cx| {
+                store.revision_document_text(GitRevision::Index, &path, cx)
             })
             .as_deref(),
             Some("第一行\n已修改\n"),
@@ -2327,14 +2475,15 @@ mod tests {
         let (root, _temp) = test_git_repo();
         fs::write(root.join("tracked.txt"), "第一行\n已修改\n").expect("应修改工作区文件");
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
         let path = canonicalize_path(&root.join("tracked.txt"));
         let native_path = path.clone().into_path_buf();
         cx.read_entity(&git_store, |store, cx| {
-            store.load_revision_text(GitRevision::Index, &path, cx)
+            store.load_revision_document(GitRevision::Index, &path, cx)
         })
         .detach();
         cx.run_until_parked();
@@ -2356,15 +2505,16 @@ mod tests {
         });
         let operations =
             git_store.read_with(cx, |store, _| store.diff_operations(GitRevision::Index));
+        // base 文本与真实 index 不一致，后台校验必然失败。
+        let base = test_language_buffer("第一行\n不存在的原始行\n", &native_path, cx);
         let diff = cx.update(|cx| {
             cx.new(|cx| {
                 BufferDiff::new(
                     BufferDiffInput {
                         working: working.clone(),
                         path: native_path.clone(),
-                        // base 文本与真实 index 不一致，后台校验必然失败。
-                        base_text: Some(Arc::from("第一行\n不存在的原始行\n")),
-                        index_text: None,
+                        base: Some(base),
+                        index: None,
                         operations: Some(operations),
                     },
                     cx,
@@ -2399,7 +2549,8 @@ mod tests {
         run_git(&nested, &["add", "n.txt"]);
         run_git(&nested, &["commit", "-q", "-m", "nested initial"]);
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -2452,7 +2603,8 @@ mod tests {
         );
         run_git(&nested, &["push", "-q", "-u", "origin", "master"]);
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -2494,7 +2646,8 @@ mod tests {
         run_git(&nested, &["add", "n.txt"]);
         run_git(&nested, &["commit", "-q", "-m", "nested initial"]);
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -2531,7 +2684,8 @@ mod tests {
         );
         run_git(&root, &["push", "-q", "-u", "origin", "master"]);
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -2578,7 +2732,8 @@ mod tests {
     #[gpui::test]
     fn remote_operation_state_defaults_without_remote(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -2591,7 +2746,8 @@ mod tests {
         let (root, _temp) = test_git_repo();
         run_git(&root, &["checkout", "-q", "-b", "feature"]);
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -2612,7 +2768,8 @@ mod tests {
         let (root, _temp) = test_git_repo();
         run_git(&root, &["checkout", "-q", "-b", "feature"]);
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -2640,7 +2797,8 @@ mod tests {
     #[gpui::test]
     fn create_branch_creates_and_refreshes(cx: &mut gpui::TestAppContext) {
         let (root, _temp) = test_git_repo();
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -2667,7 +2825,8 @@ mod tests {
         let (root, _temp) = test_git_repo();
         run_git(&root, &["checkout", "-q", "-b", "feature"]);
 
-        let git_store = cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), cx)));
+        let git_store =
+            cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
@@ -2693,8 +2852,9 @@ mod tests {
     fn branch_ops_skip_when_no_repository(cx: &mut gpui::TestAppContext) {
         // 非 git 目录：checkout/create 入口不 panic，仅触发扫描后返回。
         let temp_dir = tempfile::tempdir().expect("应创建临时目录");
-        let git_store =
-            cx.update(|cx| cx.new(|cx| GitStore::new(Some(temp_dir.path().to_path_buf()), cx)));
+        let git_store = cx.update(|cx| {
+            cx.new(|cx| GitStore::new(Some(temp_dir.path().to_path_buf()), test_registry(), cx))
+        });
         cx.update_entity(&git_store, |store, cx| {
             store.checkout_branch("master".into(), cx);
             store.create_branch("feature".into(), cx);

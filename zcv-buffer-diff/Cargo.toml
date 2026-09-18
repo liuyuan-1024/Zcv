@@ -1,0 +1,17 @@
+[package]
+name = "zcv-buffer-diff"
+version.workspace = true
+edition.workspace = true
+description = "单文件版本化 diff 状态"
+
+[lib]
+path = "src/buffer_diff.rs"
+
+[dependencies]
+gpui.workspace = true
+imara-diff.workspace = true
+zcv-text.workspace = true
+zcv-language.workspace = true
+
+[lints]
+workspace = true

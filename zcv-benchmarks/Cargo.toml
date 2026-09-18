@@ -14,6 +14,7 @@ gpui = { workspace = true, features = ["test-support"] }
 serde.workspace = true
 serde_json.workspace = true
 sysinfo.workspace = true
+zcv-editor.workspace = true
 zcv-language.workspace = true
 zcv-multi-buffer.workspace = true
 zcv-project.workspace = true
@@ -33,6 +34,10 @@ harness = false
 
 [[bench]]
 name = "memory"
+harness = false
+
+[[bench]]
+name = "editor_display"
 harness = false
 
 [lints]

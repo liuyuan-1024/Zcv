@@ -15,8 +15,9 @@ use gpui::{
     div, fill, point, prelude::*, px, relative, size,
 };
 use zcv_actions::{OpenExcerpts, ToggleFold};
+use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
 use zcv_language::BracketPair;
-use zcv_multi_buffer::{DiffHunkKind, DiffHunkStaging, MultiBufferSnapshot};
+use zcv_multi_buffer::MultiBufferSnapshot;
 use zcv_text::Line;
 use zcv_theme::{color, space};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon, drag_autoscroll_delta};
@@ -34,8 +35,6 @@ use super::scroll::ScrollbarThumbState;
 use super::scrollbar::{
     SCROLLBAR_WIDTH, ScrollbarLayout, ScrollbarMarkerKind, marker_column_x_range_at,
 };
-#[cfg(test)]
-use super::view::hunk_rendering;
 use super::view::{
     DiffDecorationSnapshot, Editor, EditorHunkMarkerKind, EditorMode, EditorPresentation,
     HunkControlTarget, SearchDecorationSnapshot, SoftWrap, diff_row_for_row, is_hollow_hunk,
@@ -3400,9 +3399,9 @@ mod tests {
     use gpui::{AppContext, Empty, TestAppContext};
 
     use std::path::{Path, PathBuf};
+    use zcv_buffer_diff::DiffHunkStaging;
     use zcv_language::LanguageBuffer;
-    use zcv_multi_buffer::{DiffHunkStaging, DisplayHunk};
-    use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
+    use zcv_multi_buffer::{DisplayHunk, ExcerptRange, MultiBuffer};
     use zcv_text::{Buffer, BufferConfig, Line};
     use zcv_theme::typography;
 
@@ -3445,9 +3444,7 @@ mod tests {
             MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(5)).unwrap(),
             MultiBufferRange::new(MultiBufferOffset::new(13), MultiBufferOffset::new(19)).unwrap(),
         ];
-        let matches = ranges
-            .map(|range| crate::view::SearchMatchAnchor::from_range(snapshot.version(), range));
-        let decorations = SearchDecorationSnapshot::for_test(&display, &matches, 0);
+        let decorations = SearchDecorationSnapshot::for_test(&display, &ranges, 0);
 
         assert_eq!(
             decorations.projected_rows_for_test(),
@@ -3503,13 +3500,8 @@ mod tests {
             let snapshot = combined.snapshot(cx);
             (snapshot, combined.match_ranges().to_vec())
         });
-        let version = snapshot.version();
         let display = project_display_snapshot(cx, snapshot);
-        let matches = ranges
-            .into_iter()
-            .map(|range| crate::view::SearchMatchAnchor::from_range(version, range))
-            .collect::<Vec<_>>();
-        let decorations = SearchDecorationSnapshot::for_test(&display, &matches, 0);
+        let decorations = SearchDecorationSnapshot::for_test(&display, &ranges, 0);
 
         assert_eq!(
             decorations.projected_rows_for_test(),
@@ -3518,44 +3510,65 @@ mod tests {
         );
     }
 
-    /// 行级标记的显示行区间（`hunk_rendering` 的薄包装，测试专用）。
-    /// 行级标记的显示行区间（hunk_rendering 的薄包装，测试专用）。
+    /// 测试专用：以完整视口构建 diff 行渲染数据。
+    ///
+    /// 走生产入口 `DiffDecorationSnapshot::new`，不另外暴露内部 `hunk_rendering`。
+    fn test_hunk_rendering(
+        snapshot: &DisplaySnapshot,
+        hunks: &[DisplayHunk],
+        expanded: &[bool],
+        old_display_ranges: &[Option<Range<usize>>],
+    ) -> DiffDecorationSnapshot {
+        DiffDecorationSnapshot::new(
+            snapshot,
+            hunks,
+            expanded.to_vec(),
+            old_display_ranges,
+            &[],
+            &[],
+        )
+    }
+
+    /// 行级标记的显示行区间（测试专用）。
     fn diff_hunk_rows(
         snapshot: &DisplaySnapshot,
         hunks: &[DisplayHunk],
         expanded: &[bool],
         old_display_ranges: &[Option<Range<usize>>],
     ) -> Vec<(Range<usize>, DiffHunkKind)> {
-        hunk_rendering(snapshot, hunks, expanded, old_display_ranges, &[])
+        test_hunk_rendering(snapshot, hunks, expanded, old_display_ranges)
+            .rendering_for_viewport(0..usize::MAX)
             .diff_rows
             .into_iter()
             .map(|(rows, kind, _)| (rows, kind))
             .collect()
     }
 
-    /// hunk 竖条范围与状态色（`hunk_rendering` 的薄包装，测试专用）。
-    /// hunk 竖条范围与状态色（hunk_rendering 的薄包装，测试专用）。
+    /// hunk 竖条范围与状态色（测试专用）。
     fn hunk_strip_rows(
         snapshot: &DisplaySnapshot,
         hunks: &[DisplayHunk],
         expanded: &[bool],
         old_display_ranges: &[Option<Range<usize>>],
     ) -> Vec<(Range<usize>, DiffHunkKind)> {
-        hunk_rendering(snapshot, hunks, expanded, old_display_ranges, &[])
+        test_hunk_rendering(snapshot, hunks, expanded, old_display_ranges)
+            .rendering_for_viewport(0..usize::MAX)
             .strips
             .into_iter()
             .map(|(rows, kind, _)| (rows, kind))
             .collect()
     }
 
-    /// 可点击的 hunk 色带区域（`hunk_rendering` 的薄包装，测试专用）。
+    /// 可点击的 hunk 色带区域（测试专用）。
     fn hunk_hit_regions(
         snapshot: &DisplaySnapshot,
         hunks: &[DisplayHunk],
         expanded: &[bool],
         old_display_ranges: &[Option<Range<usize>>],
     ) -> Vec<(Range<usize>, usize, DiffHunkKind)> {
-        hunk_rendering(snapshot, hunks, expanded, old_display_ranges, &[]).hit_regions
+        test_hunk_rendering(snapshot, hunks, expanded, old_display_ranges)
+            .rendering_for_viewport(0..usize::MAX)
+            .hit_regions
     }
 
     #[test]
@@ -3593,17 +3606,9 @@ mod tests {
         let multi_snapshot =
             cx.read_entity(&multi_buffer, |multi_buffer, cx| multi_buffer.snapshot(cx));
 
-        let matches = vec![
-            crate::view::SearchMatchAnchor::from_range(
-                snapshot.version(),
-                MultiBufferRange::new(MultiBufferOffset::new(0), MultiBufferOffset::new(6))
-                    .unwrap(),
-            ),
-            crate::view::SearchMatchAnchor::from_range(
-                snapshot.version(),
-                MultiBufferRange::new(MultiBufferOffset::new(11), MultiBufferOffset::new(17))
-                    .unwrap(),
-            ),
+        let ranges = vec![
+            MultiBufferRange::new(MultiBufferOffset::new(0), MultiBufferOffset::new(6)).unwrap(),
+            MultiBufferRange::new(MultiBufferOffset::new(11), MultiBufferOffset::new(17)).unwrap(),
         ];
         let window = cx.add_window(|_, _| Empty);
         window
@@ -3611,7 +3616,7 @@ mod tests {
                 let map = new_display_map(cx, multi_snapshot.clone());
                 let display = cx.read_entity(&map, |map, _| map.snapshot());
                 let search_decorations =
-                    SearchDecorationSnapshot::for_test(&display, &matches, 0);
+                    SearchDecorationSnapshot::for_test(&display, &ranges, 0);
                 // 文本区起点 = 60px（真实编辑器带 gutter 时的典型偏移）。
                 let text_origin_x = px(60.);
                 let layout = layout_visible_lines(

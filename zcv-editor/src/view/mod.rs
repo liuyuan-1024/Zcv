@@ -23,10 +23,11 @@ use zcv_actions::{
     SelectToEndOfLine, SelectToNextWord, SelectToPreviousWord, SelectUp, ToggleFold, Undo,
     UnfoldAll,
 };
+use zcv_buffer_diff::DiffHunkKind;
 use zcv_language::{AutoClosePair, BracketPair, LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{
-    DiffFile, DiffHunkKind, DiffHunkSource, DisplayHunk, ExcerptDiffKind, ExcerptLocation,
-    ExcerptSnapshot, MultiBuffer, MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot,
+    DiffFile, DiffHunkSource, DisplayHunk, ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot,
+    MultiBuffer, MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot,
 };
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
@@ -57,11 +58,7 @@ pub use rename::LocalRenameError;
 use rename::LocalRenameState;
 
 pub(crate) use diff::DiffDecorationSnapshot;
-#[cfg(test)]
-pub(crate) use diff::hunk_rendering;
 pub(crate) use diff::{diff_row_for_row, is_hollow_hunk};
-#[cfg(test)]
-pub(crate) use search::SearchMatchAnchor;
 pub(crate) use search::{EditorSearch, SearchDecorationSnapshot};
 
 /// 宿主注入的 hunk 展示数据。
@@ -859,6 +856,9 @@ impl Editor {
         cx.notify();
     }
 
+    /// 读取整份组合文本的只读边界；供 Input 契约等外部取回文本使用。
+    ///
+    /// 会物化整份文本，编辑与显示热路径不得调用；只需判空时用快照的 len_bytes()。
     pub fn text(&self, cx: &App) -> String {
         String::from_utf8(self.multi_buffer.read(cx).snapshot(cx).text_bytes())
             .expect("组合文本必须是合法 UTF-8")
@@ -895,8 +895,10 @@ impl Editor {
     }
 
     /// 空 buffer 且有 placeholder 时返回其快照（渲染层行数据源替换用）。
+    ///
+    /// 判空走当前快照的字节长度，不能在每帧渲染路径上物化整份组合文本。
     pub(super) fn placeholder_snapshot_if_empty(&self, cx: &App) -> Option<DisplaySnapshot> {
-        if !self.text(cx).is_empty() {
+        if self.snapshot.buffer_snapshot().len_bytes().get() != 0 {
             return None;
         }
         self.placeholder_display_map
@@ -910,10 +912,8 @@ impl Editor {
         }
         self.composition = None;
         let before_selections = self.resolved_selections();
-        let targets = SelectionSet::new(vec![Selection::new(
-            MultiBufferOffset::ZERO,
-            self.multi_buffer.read(cx).snapshot(cx).len_bytes(),
-        )]);
+        let end = self.snapshot.buffer_snapshot().len_bytes();
+        let targets = SelectionSet::new(vec![Selection::new(MultiBufferOffset::ZERO, end)]);
         let text = if self.mode == EditorMode::SingleLine {
             text.replace(['\r', '\n'], "")
         } else {
@@ -927,7 +927,7 @@ impl Editor {
 
     /// 将单个选择区设置为给定的 UTF-8 字节范围。
     pub fn select_byte_range(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
-        let end = self.multi_buffer.read(cx).snapshot(cx).len_bytes();
+        let end = self.snapshot.buffer_snapshot().len_bytes();
         assert!(range.start <= range.end && MultiBufferOffset::new(range.end) <= end);
         self.change_selections(
             SelectionSet::new(vec![Selection::new(
@@ -2083,9 +2083,7 @@ impl Editor {
                     }
                     Motion::DocumentEdge => match direction {
                         MovementDirection::Previous => MultiBufferOffset::ZERO,
-                        MovementDirection::Next => {
-                            self.multi_buffer.read(cx).snapshot(cx).len_bytes()
-                        }
+                        MovementDirection::Next => self.snapshot.buffer_snapshot().len_bytes(),
                     },
                 };
                 // 垂直移动持久保留本次使用的目标列（即使被行尾钳制）；其余移动清除 goal。
@@ -2489,7 +2487,7 @@ impl Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let end = self.multi_buffer.read(cx).snapshot(cx).len_bytes();
+        let end = self.snapshot.buffer_snapshot().len_bytes();
         self.change_selections(
             SelectionSet::new(vec![Selection::new(MultiBufferOffset::ZERO, end)]),
             cx,

@@ -4,16 +4,16 @@
 //! 它不订阅 working buffer，也不决定何时重算：宿主在源文本变化时调用 [`BufferDiff::recompute`]，本层只负责后台计算、版本门控与结果发布。
 //! hunk 的暂存语义统一相对 index 参照判定，所有视图共用同一套；展开/折叠、显示路径与上下文裁剪由 `MultiBuffer` 的 diff 投影持有。
 
+mod word_diff;
+
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui::{App, AppContext as _, Context, Entity, EventEmitter};
+use gpui::{App, Context, Entity, EventEmitter};
 use imara_diff::{Algorithm, Diff, InternedInput};
 use zcv_language::LanguageBuffer;
-use zcv_text::{
-    Anchor, Buffer, BufferConfig, BufferVersion, ByteOffset, Line, Snapshot, TextRange,
-};
+use zcv_text::{Anchor, BufferVersion, ByteOffset, Line, Snapshot, TextRange};
 
 use crate::word_diff::{MAX_WORD_DIFF_BYTES, MAX_WORD_DIFF_LINES, word_diff_ranges};
 
@@ -54,15 +54,15 @@ pub struct BufferDiffInput {
     pub working: Entity<LanguageBuffer>,
     /// 新侧源文件路径（绝对；hunk 操作与导航定位用）。
     pub path: PathBuf,
-    /// 旧侧（base 修订）全文；None 表示没有旧侧（如整体新增文件）。
-    pub base_text: Option<Arc<str>>,
-    /// index 参照全文；hunk 的暂存语义统一相对它判定。
+    /// 旧侧（base 修订）文档；None 表示没有旧侧（如整体新增文件）。
+    pub base: Option<Entity<LanguageBuffer>>,
+    /// index 参照文档；hunk 的暂存语义统一相对它判定。
     ///
     /// - 未提交视图（如普通编辑器 gutter）：HEAD 为 base、工作区为 working，真实 index 用于逐 hunk 判定；
     /// - 已暂存视图：working 本身就是 index，分类自然得到全部 Staged；
     /// - 未暂存视图：base 本身就是 index，分类自然得到全部 Unstaged；
     /// - None：index 尚未加载或无暂存语境，暂按 NoStaging（实心）渲染。
-    pub index_text: Option<Arc<str>>,
+    pub index: Option<Entity<LanguageBuffer>>,
     /// 由宿主注入的 diff 操作实现；无操作能力（普通编辑器 gutter）时为 None。
     pub operations: Option<Arc<dyn DiffOperations>>,
 }
@@ -252,8 +252,7 @@ impl BufferDiffSnapshot {
 pub struct BufferDiff {
     working: Entity<LanguageBuffer>,
     base_source: Option<Entity<LanguageBuffer>>,
-    base_text: Option<Arc<str>>,
-    index_text: Option<Arc<str>>,
+    index_source: Option<Entity<LanguageBuffer>>,
     path: PathBuf,
     snapshot: BufferDiffSnapshot,
     operations: Option<Arc<dyn DiffOperations>>,
@@ -274,21 +273,10 @@ impl BufferDiff {
             hunks: Vec::new(),
             pending_hunks: Vec::new(),
         };
-        let registry = input.working.read(cx).language_registry();
-        let base_source = input.base_text.as_ref().map(|text| {
-            let buffer = Buffer::from_text(text.to_string(), BufferConfig::default())
-                .expect("base 修订文本必须能创建 Buffer");
-            let buffer = cx.new(|_| buffer);
-            // 旧侧源的文件路径必须与工作区源一致（绝对），excerpt 定位与导航按源路径匹配。
-            cx.new(|cx| {
-                LanguageBuffer::new(buffer, Some(input.path.clone()), Arc::clone(&registry), cx)
-            })
-        });
         let mut this = Self {
             working: input.working,
-            base_source,
-            base_text: input.base_text,
-            index_text: input.index_text,
+            base_source: input.base,
+            index_source: input.index,
             path: input.path,
             snapshot,
             operations: input.operations,
@@ -311,14 +299,24 @@ impl BufferDiff {
     pub fn recompute_with_refresh(&mut self, refresh: DiffRefresh, cx: &mut Context<Self>) {
         let working = self.working.read(cx).text_snapshot(cx);
         let working_version = working.version();
-        let base_text = self.base_text.clone();
-        let index_text = self.index_text.clone();
+        // base/index 的权威文档由 GitStore 持有；这里只克隆廉价快照，
+        // 全文物化留在后台，避免 UI 线程因重建修订文档而阻塞。
+        let base = self
+            .base_source
+            .as_ref()
+            .map(|base| base.read(cx).text_snapshot(cx));
+        let index = self
+            .index_source
+            .as_ref()
+            .map(|index| index.read(cx).text_snapshot(cx));
         let background = cx.background_executor().clone();
         cx.spawn(async move |this, cx| {
             let hunks = background
                 .spawn(async move {
                     // working 全文只物化一次：主 hunk 与 index 参照 hunk 共用同一份文本。
                     let working_text = full_text(&working);
+                    let base_text = base.as_ref().map(full_text);
+                    let index_text = index.as_ref().map(full_text);
                     let mut hunks = compute_hunks(base_text.as_deref(), &working_text, &working);
                     let index_hunks = index_reference_hunks(
                         base_text.as_deref(),
@@ -392,17 +390,13 @@ impl BufferDiff {
         self.base_source.as_ref()
     }
 
-    pub fn base_text(&self) -> Option<Arc<str>> {
-        self.base_text.clone()
-    }
-
     pub fn path(&self) -> &PathBuf {
         &self.path
     }
 
     /// 文件整体是否为新增：旧侧（base）缺失。
     pub fn is_created(&self) -> bool {
-        self.base_text.is_none()
+        self.base_source.is_none()
     }
 
     pub fn operations(&self) -> Option<Arc<dyn DiffOperations>> {

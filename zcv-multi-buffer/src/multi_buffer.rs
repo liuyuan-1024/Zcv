@@ -5,15 +5,9 @@
 //! Editor 始终只消费本层，不感知来源数量。
 //! diff 显示拓扑（git hunks、展开状态、跟踪区间与显示坐标）只服务需要重排 excerpts 的组合文档，见 [`diff_projection`]。
 
-mod buffer_diff;
 mod diff_projection;
 mod path_key;
-mod word_diff;
 
-pub use buffer_diff::{
-    BufferDiff, BufferDiffEvent, BufferDiffInput, BufferDiffSnapshot, DiffHunk, DiffHunkKind,
-    DiffHunkStaging, DiffOperations, DiffRefresh, PendingHunk, PendingSense,
-};
 pub use diff_projection::{DiffFile, DiffHunkSource, DisplayHunk};
 pub use path_key::{PathKey, PathKeyIndex};
 
@@ -27,6 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use gpui::{App, Context, Entity, EventEmitter, Subscription};
 use sum_tree::{Bias, ContextLessSummary, Cursor, Dimension, Item, SeekTarget, SumTree};
 use unicode_segmentation::UnicodeSegmentation;
+use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging, DiffRefresh};
 use zcv_language::{
     AutoClosePair, BracketPair, HighlightCache, HighlightSpan, LanguageBuffer, LanguageBufferEvent,
     LanguageBufferSnapshot, LanguageRegistry, LanguageSettings, LocalBinding, NewlineIndent,

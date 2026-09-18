@@ -18,6 +18,7 @@ smol.workspace = true
 tokio.workspace = true
 zcv-actions.workspace = true
 zcv-assets.workspace = true
+zcv-buffer-diff.workspace = true
 zcv-editor.workspace = true
 zcv-git.workspace = true
 zcv-keymap.workspace = true

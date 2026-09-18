@@ -23,15 +23,15 @@ use zcv_actions::{
     SelectToEndOfLine, SelectToNextWord, SelectToPreviousWord, SelectUp, ToggleFold, Undo,
     UnfoldAll,
 };
-use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer};
+use zcv_language::{AutoClosePair, BracketPair, LanguageBuffer};
 use zcv_multi_buffer::{
     DiffFile, DiffHunkKind, DiffHunkSource, DisplayHunk, ExcerptDiffKind, ExcerptLocation,
     ExcerptSnapshot, MultiBuffer, MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot,
 };
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
-    Buffer, BufferConfig, BufferVersion, Line, LineRange, LogicalColumn, MovementDirection,
-    MovementUnit, Position, PositionMap, TextError, TextResult, TransactionId,
+    Affinity, Buffer, BufferConfig, BufferVersion, Line, LineRange, LogicalColumn,
+    MovementDirection, MovementUnit, Position, PositionMap, TextError, TextResult, TransactionId,
     TransactionMergePolicy, TransactionMetadata, TransactionSource,
 };
 use zcv_theme::{color, typography};
@@ -44,8 +44,7 @@ use super::display_map::{
 use super::element::{AUTOSCROLL_INTERVAL, EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollbarThumbState};
 use super::selection::{
-    EditOutcome, EditPlan, EditorSelections, Selection, SelectionHistory, SelectionSet,
-    map_selection_set, replace_selections,
+    EditOutcome, EditPlan, Selection, SelectionHistory, SelectionSet, replace_selections,
 };
 
 mod diff;
@@ -119,8 +118,8 @@ pub(super) const NAVIGATION_TOP_OFFSET: usize = 4;
 pub enum EditorEvent {
     /// 编辑器关联的文件路径发生变化。
     PathChanged,
-    /// 文档内容被编辑。
-    Edited,
+    /// 文档内容被编辑；只在真实事务提交时发布。
+    Edited { transaction_id: TransactionId },
     /// 文档是否包含未保存修改发生变化。
     DirtyChanged,
     /// 复合文档请求宿主打开底层文件。
@@ -160,15 +159,18 @@ pub trait DiffHunkDelegate {
     }
 }
 
-/// 绑定到底层文件位置的编辑器视口锚点。
+/// Editor 的派生快照：同一版本链上的只读文档与显示视图。
 ///
-/// 与显示行号不同，该锚点可在组合文档 excerpts 增删、重排后重新解析。
-#[derive(Clone, Debug)]
-pub struct EditorScrollAnchor {
-    /// 锚定到底层文件的长期位置；显示行在恢复时由 DisplayMap 解析。
-    buffer_anchor: MultiBufferAnchor,
-    /// 锚点行内的像素偏移量。
-    offset: Point<Pixels>,
+/// 可丢弃、可重建，不是新的文档模型；由 [`Editor::advance_snapshots`] 整体替换。
+#[derive(Clone)]
+struct EditorSnapshot {
+    display_snapshot: DisplaySnapshot,
+}
+
+impl EditorSnapshot {
+    fn buffer_snapshot(&self) -> &MultiBufferSnapshot {
+        self.display_snapshot.buffer_snapshot()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,16 +193,16 @@ impl From<MovementUnit> for Motion {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum MouseSelectMode {
     Character,
-    Word(Range<MultiBufferOffset>),
-    Line(Range<MultiBufferOffset>),
+    Word(Range<MultiBufferAnchor>),
+    Line(Range<MultiBufferAnchor>),
     All,
 }
 
 /// 拖拽中的选区状态：固定锚点 + 点击时的粒度。
 #[derive(Debug, Clone)]
 struct PendingSelection {
-    /// 按下点字节偏移，字符粒度拖拽的固定端。
-    anchor: MultiBufferOffset,
+    /// 按下点源锚点，字符粒度拖拽的固定端。
+    anchor: MultiBufferAnchor,
     /// 点击时的粒度与锚定范围。
     mode: MouseSelectMode,
 }
@@ -249,26 +251,21 @@ pub struct Editor {
     multi_buffer: Entity<MultiBuffer>,
     last_dirty: bool,
     display_map: Entity<DisplayMap>,
-    /// 与 `display_map` 权威状态一致的只读显示快照。
+    /// Editor 唯一的派生快照；由 `advance_snapshots` 整体替换。
     ///
-    /// 派生数据：由 `DisplayMap` 快照克隆而来，在其广播管线推进后刷新。
-    /// 只服务显示坐标（显示行、折行、折叠、命中测试）；组合文本与选区读取走 `multi_snapshot`。
-    display_snapshot: DisplaySnapshot,
-    /// 当前组合文本快照；由 MultiBuffer 直接派生，编辑提交后与事件到达时刷新。
-    /// 选区、偏移与语法读取以它为权威；显示坐标仍走 display_snapshot。
-    multi_snapshot: MultiBufferSnapshot,
-    /// 本次编辑事务提交前的组合快照；供编辑结果落位解析「编辑前选区」。
-    edit_before_snapshot: Option<MultiBufferSnapshot>,
+    /// `DisplaySnapshot` 内含与其同版本链的 `MultiBufferSnapshot`；
+    /// Editor 不再并列保存可独立更新的两份快照，一次操作只读取这一份。
+    snapshot: EditorSnapshot,
     mode: EditorMode,
     /// 单行嵌入编辑器是否跟随代码编辑器的内容排版。
     content_typography: bool,
     /// 空 buffer 时显示的提示文本（如提交信息编辑器的"输入提交信息…"）。
     /// 独立 DisplayMap 承载（placeholder 走真实渲染管线，折行/行高一致）。
     placeholder_display_map: Option<Entity<DisplayMap>>,
-    selections: EditorSelections,
+    selections: SelectionSet<MultiBufferAnchor>,
     selection_history: SelectionHistory,
     /// 结构化选择扩展链；普通选区变更或文本编辑后失效。
-    structured_selection_history: Vec<SelectionSet>,
+    structured_selection_history: Vec<SelectionSet<MultiBufferAnchor>>,
     scroll_manager: ScrollManager,
     composition: Option<EditorComposition>,
     input_layout: Option<EditorInputLayout>,
@@ -299,7 +296,7 @@ pub struct Editor {
     /// 语言层提供的可折叠范围（crease 显示与折叠命令的数据源；
     /// 在 buffer 编辑或语法快照更新时刷新）。
     /// 折叠范围（共享 LanguageBuffer 缓存：Reparsed 后整体替换，多个 Editor 复用同一份）。
-    fold_ranges: Arc<[FoldRange]>,
+    fold_ranges: Arc<[Range<MultiBufferAnchor>]>,
     /// 匹配括号缓存：键 = (primary head, buffer 版本, 源元数据版本)。
     /// 光标移动或任一版本推进即重查；
     /// 滚动/纯重绘帧直接命中，不再跑 tree-sitter 查询。
@@ -442,14 +439,11 @@ impl Editor {
     /// 折叠/展开 MultiBuffer 中一个文件的全部 excerpts。
     /// 这是 BlockMap 变换，不修改组合文本，也不借用语法折叠范围。
     pub fn toggle_buffer_fold(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
-        let scroll_anchor = self.capture_scroll_anchor(cx);
         let folded = !self.display_map.read(cx).is_buffer_folded(&path);
         self.display_map
             .update(cx, |map, cx| map.set_buffer_folded(path, folded, cx));
-        self.refresh_display_snapshot(cx);
-        if let Some(scroll_anchor) = scroll_anchor {
-            self.restore_scroll_anchor(scroll_anchor, cx);
-        }
+        // 滚动位置是长期组合锚点，显示拓扑重建后按当前快照解析即自动落回原内容位置。
+        self.advance_snapshots(cx);
         self.input_layout = None;
         cx.notify();
     }
@@ -524,7 +518,7 @@ impl Editor {
             map.set_wrap_width(wrap_width, font, font_size, &text_system, cx)
         });
         if changed {
-            self.refresh_display_snapshot(cx);
+            self.advance_snapshots(cx);
         }
         changed
     }
@@ -742,7 +736,7 @@ impl Editor {
     /// 这里只同步显示快照，不得把选区重置到组合文档起点。
     fn reset_after_diff_injection(&mut self, rebuilt: bool, cx: &mut Context<Self>) {
         if rebuilt {
-            self.sync_display_map(cx);
+            self.advance_snapshots(cx);
         }
         cx.notify();
     }
@@ -750,14 +744,14 @@ impl Editor {
     /// diff 展开/折叠重建后同步视图层状态：
     /// 结构刷新不改变源，源锚点选区自然存活——同步 DisplayMap 后按重建后快照解析即落到同一逻辑源位置，光标不会被重置到开头（与普通编辑器折叠不移动光标一致）。
     fn after_diff_expansion(&mut self, cx: &mut Context<Self>) {
-        self.sync_display_map(cx);
+        self.advance_snapshots(cx);
         // 展开/折叠 hunk 重排了组合文本，crease 依赖的折叠范围必须随之换算。
         self.refresh_fold_ranges(cx);
         cx.notify();
     }
 
     /// 语言层可折叠范围（crease 渲染与折叠命令共用）。
-    pub(crate) fn fold_ranges(&self) -> &[FoldRange] {
+    pub(crate) fn fold_ranges(&self) -> &[Range<MultiBufferAnchor>] {
         &self.fold_ranges
     }
 
@@ -765,7 +759,7 @@ impl Editor {
     ///
     /// 该行是折叠入口行则展开覆盖它的折叠；否则若该行是可折叠范围起点则折叠整个范围。
     pub(crate) fn toggle_fold_at_line(&mut self, line: Line, cx: &mut Context<Self>) {
-        let display_snapshot = self.display_snapshot.clone();
+        let display_snapshot = self.snapshot.display_snapshot.clone();
         if display_snapshot.fold_anchor_lines().contains(&line) {
             let line_range =
                 LineRange::new(line, Line::new(line.get() + 1)).expect("光标行 +1 应合法");
@@ -777,31 +771,22 @@ impl Editor {
             }
         } else {
             let snapshot = self.render_snapshot();
+            // 折叠候选以组合锚点保存，按当前快照解析起点行定位入口行。
             let range = self.fold_ranges.iter().find(|range| {
                 snapshot
-                    .byte_to_line(MultiBufferOffset::new(range.range.start))
-                    .is_ok_and(|start| start == line)
+                    .resolve_anchor(&range.start)
+                    .and_then(|offset| snapshot.byte_to_line(offset).ok())
+                    .is_some_and(|start| start == line)
             });
             if let Some(range) = range
-                && let Ok(start) = snapshot.byte_to_line(MultiBufferOffset::new(range.range.start))
-                && start == line
+                && let Err(error) = self
+                    .display_map
+                    .update(cx, |map, cx| map.fold_range(range.clone(), cx))
             {
-                // 折叠范围是字节级的（终点在闭合括号前）：直接按字节范围折叠。
-                if let Err(error) = self.display_map.update(cx, |map, cx| {
-                    map.fold_range(
-                        MultiBufferRange::new(
-                            MultiBufferOffset::new(range.range.start),
-                            MultiBufferOffset::new(range.range.end),
-                        )
-                        .expect("折叠范围应合法"),
-                        cx,
-                    )
-                }) {
-                    cx.emit(EditorEvent::Error(format!("折叠失败：{error:#}")));
-                }
+                cx.emit(EditorEvent::Error(format!("折叠失败：{error:#}")));
             }
         }
-        self.refresh_display_snapshot(cx);
+        self.advance_snapshots(cx);
         cx.notify();
     }
 
@@ -811,7 +796,7 @@ impl Editor {
     /// 未折叠时，折叠包含光标逻辑行的最内层范围。
     fn toggle_fold_at_cursor(&mut self, cx: &mut Context<Self>) {
         let head = self.resolved_selections().primary().head();
-        let display_snapshot = self.display_snapshot.clone();
+        let display_snapshot = self.snapshot.display_snapshot.clone();
         let Ok(display_row) = display_snapshot
             .offset_to_display_point(head)
             .map(DisplayPoint::row)
@@ -835,7 +820,7 @@ impl Editor {
                     cx.emit(EditorEvent::Error(format!("展开折叠失败：{error:#}")));
                 }
             }
-            self.refresh_display_snapshot(cx);
+            self.advance_snapshots(cx);
             cx.notify();
             return;
         }
@@ -849,31 +834,24 @@ impl Editor {
             .iter()
             .filter_map(|range| {
                 let start = snapshot
-                    .byte_to_line(MultiBufferOffset::new(range.range.start))
-                    .ok()?;
+                    .resolve_anchor(&range.start)
+                    .and_then(|offset| snapshot.byte_to_line(offset).ok())?;
                 let end = snapshot
-                    .byte_to_line(MultiBufferOffset::new(range.range.end))
-                    .ok()?;
+                    .resolve_anchor(&range.end)
+                    .and_then(|offset| snapshot.byte_to_line(offset).ok())?;
                 (start <= head_line && head_line <= end).then_some((range, start, end))
             })
             .min_by_key(|(_, start, end)| (head_line.get() - start.get(), end.get() - start.get()))
-            .map(|(range, _, _)| range.range.clone());
+            .map(|(range, _, _)| range.clone());
 
         if let Some(range) = range
-            && let Err(error) = self.display_map.update(cx, |map, cx| {
-                map.fold_range(
-                    MultiBufferRange::new(
-                        MultiBufferOffset::new(range.start),
-                        MultiBufferOffset::new(range.end),
-                    )
-                    .expect("折叠范围应合法"),
-                    cx,
-                )
-            })
+            && let Err(error) = self
+                .display_map
+                .update(cx, |map, cx| map.fold_range(range, cx))
         {
             cx.emit(EditorEvent::Error(format!("折叠失败：{error:#}")));
         }
-        self.refresh_display_snapshot(cx);
+        self.advance_snapshots(cx);
         cx.notify();
     }
 
@@ -983,15 +961,15 @@ impl Editor {
     }
 
     pub(crate) fn render_snapshot(&self) -> MultiBufferSnapshot {
-        self.multi_snapshot.clone()
+        self.snapshot.buffer_snapshot().clone()
     }
 
-    pub(super) fn text_snapshot(&self, cx: &App) -> MultiBufferSnapshot {
-        self.multi_buffer.read(cx).snapshot(cx)
+    pub(super) fn text_snapshot(&self) -> MultiBufferSnapshot {
+        self.snapshot.buffer_snapshot().clone()
     }
 
     pub(super) fn display_snapshot(&self) -> DisplaySnapshot {
-        self.display_snapshot.clone()
+        self.snapshot.display_snapshot.clone()
     }
 
     pub(super) fn longest_line_width(
@@ -1001,7 +979,7 @@ impl Editor {
         font_size: Pixels,
         window: &mut Window,
     ) -> Pixels {
-        let snapshot = self.display_snapshot.clone();
+        let snapshot = self.snapshot.display_snapshot.clone();
         let font_id = window.text_system().resolve_font(&font);
         if let Some(cache) = &self.line_width_cache
             && cache.version == snapshot.buffer_snapshot().version()
@@ -1033,10 +1011,10 @@ impl Editor {
         {
             return None;
         }
-        let snapshot = &self.multi_snapshot;
+        let snapshot = self.snapshot.buffer_snapshot();
         let caret = selections.primary().head();
         let buffer_version = snapshot.version();
-        let metadata_version = self.multi_snapshot.metadata_version();
+        let metadata_version = snapshot.metadata_version();
         if let Some((cached_caret, cached_buffer, cached_metadata, cached)) =
             &self.bracket_pair_cache
             && *cached_caret == caret
@@ -1047,7 +1025,8 @@ impl Editor {
         }
         let caret_offset = caret.get();
         let result = self
-            .multi_snapshot
+            .snapshot
+            .buffer_snapshot()
             .bracket_pairs_at(caret)
             .into_iter()
             .find(|pair| {
@@ -1082,13 +1061,12 @@ impl Editor {
     /// 更新 pending selection 显示出的当前选区。
     /// 只有 begin/update selection 可以调用这个入口。
     fn set_pending_selection(&mut self, selections: SelectionSet) {
-        let anchored = EditorSelections::from_selection_set(&self.multi_snapshot, &selections);
-        self.selections = anchored;
+        self.selections = selections.anchored(self.snapshot.buffer_snapshot());
     }
 
-    /// 按当前渲染快照把源锚点选区解析为投影 offset 版选区集合。
+    /// 按当前派生快照把源锚点选区解析为投影 offset 版选区集合。
     fn resolved_selections(&self) -> SelectionSet {
-        self.selections.resolve(&self.multi_snapshot)
+        self.selections.resolve(self.snapshot.buffer_snapshot())
     }
 
     /// 光标位置的 "行:列" 文本，行和列均从 1 开始计数。
@@ -1126,7 +1104,7 @@ impl Editor {
     }
 
     pub(super) fn presentation(&self) -> EditorPresentation {
-        EditorPresentation::new(&self.multi_snapshot, self.composition.as_ref())
+        EditorPresentation::new(&self.snapshot.buffer_snapshot(), self.composition.as_ref())
             .with_dimmed_ranges(self.local_rename_ranges())
     }
 
@@ -1138,7 +1116,7 @@ impl Editor {
         let Some(visible) = visible else {
             return Vec::new();
         };
-        let snapshot = &self.multi_snapshot;
+        let snapshot = &self.snapshot.buffer_snapshot();
         let mut lines = std::collections::BTreeSet::new();
         for selection in self.resolved_selections().as_slice() {
             let range = selection.range();
@@ -1171,51 +1149,6 @@ impl Editor {
         self.scroll_manager.offset()
     }
 
-    /// 捕获当前视口顶部对应的底层文件位置。
-    pub fn capture_scroll_anchor(&mut self, cx: &mut Context<Self>) -> Option<EditorScrollAnchor> {
-        self.sync_display_map(cx);
-        let display_point = self.scroll_manager.anchor();
-        let output_offset = self
-            .display_snapshot
-            .display_point_to_offset(display_point)
-            .ok()?;
-        let buffer_anchor = self
-            .multi_buffer
-            .read(cx)
-            .anchor_for_offset(output_offset)?;
-        Some(EditorScrollAnchor {
-            buffer_anchor,
-            offset: self.scroll_manager.offset(),
-        })
-    }
-
-    /// 在组合文档结构刷新后恢复视口；目标片段消失时由 MultiBuffer 解析到最近邻文件。
-    pub fn restore_scroll_anchor(
-        &mut self,
-        anchor: EditorScrollAnchor,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        self.sync_display_map(cx);
-        let Some(output_offset) = self
-            .multi_buffer
-            .read(cx)
-            .resolve_anchor(&anchor.buffer_anchor)
-        else {
-            return false;
-        };
-        let Ok(display_point) = self.display_snapshot.offset_to_display_point(output_offset) else {
-            return false;
-        };
-        if self
-            .scroll_manager
-            .restore_anchor(display_point, anchor.offset)
-        {
-            self.input_layout = None;
-            cx.notify();
-        }
-        true
-    }
-
     pub(super) fn longest_display_row(&self, cx: &App) -> DisplayRow {
         self.display_map.read(cx).longest_measured_row()
     }
@@ -1243,7 +1176,10 @@ impl Editor {
             .line_start_byte(Line::new(line.get() + 1))
             .unwrap_or_else(|_| snapshot.len_bytes());
         let selection = if extend {
-            let current = *self.selections.resolve(&self.multi_snapshot).primary();
+            let current = *self
+                .selections
+                .resolve(&self.snapshot.buffer_snapshot())
+                .primary();
             if end <= current.start() {
                 Selection::new(current.end(), start)
             } else if start >= current.end() {
@@ -1271,9 +1207,11 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         self.structured_selection_history.clear();
+        let snapshot = self.snapshot.buffer_snapshot().clone();
         let offset = if extend {
-            let anchor = self.resolved_selections().primary().anchor();
+            let anchor = self.resolved_selections().primary().tail();
             let Ok(left_offset) = self
+                .snapshot
                 .display_snapshot
                 .display_point_to_offset_with_bias(display_point, FoldBias::Left)
             else {
@@ -1285,6 +1223,7 @@ impl Editor {
                 FoldBias::Left
             };
             let Ok(offset) = self
+                .snapshot
                 .display_snapshot
                 .display_point_to_offset_with_bias(display_point, bias)
             else {
@@ -1293,6 +1232,7 @@ impl Editor {
             offset
         } else {
             let Ok(offset) = self
+                .snapshot
                 .display_snapshot
                 .display_point_to_offset_with_bias(display_point, FoldBias::Left)
             else {
@@ -1300,8 +1240,7 @@ impl Editor {
             };
             offset
         };
-        let buffer = self.text_snapshot(cx);
-        let Ok(char_offset) = buffer.byte_to_char(offset) else {
+        let Ok(char_offset) = snapshot.byte_to_char(offset) else {
             return;
         };
         // Shift 按下时按上次手势粒度提升点击次数：双击后 Shift+点按词扩展，三击后按行扩展。
@@ -1316,51 +1255,57 @@ impl Editor {
             click_count
         };
 
-        // 本次点击粒度对应的候选范围；坐标计算失败时放弃手势。
+        // 本次点击粒度对应的候选范围；锚定后跨编辑仍按当前快照解析。
         let (start, end, mode) = match click_count {
             1 => (offset, offset, MouseSelectMode::Character),
             2 => {
-                let Ok((word_start, word_end)) = buffer.surrounding_word(char_offset) else {
+                let Ok((word_start, word_end)) = snapshot.surrounding_word(char_offset) else {
                     return;
                 };
-                let Ok(word_start) = buffer.char_to_byte(word_start) else {
+                let Ok(word_start) = snapshot.char_to_byte(word_start) else {
                     return;
                 };
-                let Ok(word_end) = buffer.char_to_byte(word_end) else {
+                let Ok(word_end) = snapshot.char_to_byte(word_end) else {
                     return;
                 };
                 (
                     word_start,
                     word_end,
-                    MouseSelectMode::Word(word_start..word_end),
+                    MouseSelectMode::Word(
+                        snapshot.anchor_at(word_start, Affinity::Before)
+                            ..snapshot.anchor_at(word_end, Affinity::After),
+                    ),
                 )
             }
             3 => {
-                let Ok(line) = buffer.byte_to_line(offset) else {
+                let Ok(line) = snapshot.byte_to_line(offset) else {
                     return;
                 };
-                let Ok(line_start) = buffer.line_start_byte(line) else {
+                let Ok(line_start) = snapshot.line_start_byte(line) else {
                     return;
                 };
-                let line_end = buffer
+                let line_end = snapshot
                     .line_start_byte(Line::new(line.get() + 1))
-                    .unwrap_or(buffer.len_bytes());
+                    .unwrap_or(snapshot.len_bytes());
                 (
                     line_start,
                     line_end,
-                    MouseSelectMode::Line(line_start..line_end),
+                    MouseSelectMode::Line(
+                        snapshot.anchor_at(line_start, Affinity::Before)
+                            ..snapshot.anchor_at(line_end, Affinity::After),
+                    ),
                 )
             }
             _ => (
                 MultiBufferOffset::ZERO,
-                buffer.len_bytes(),
+                snapshot.len_bytes(),
                 MouseSelectMode::All,
             ),
         };
 
         // Shift+点击：以上次选区锚点为固定端，按点击位置向两侧扩展；点击范围覆盖锚点时整段纳入。
         let selection = if extend {
-            let tail = self.resolved_selections().primary().anchor();
+            let tail = self.resolved_selections().primary().tail();
             let mut start = start;
             let mut end = end;
             let mut reversed = false;
@@ -1385,7 +1330,7 @@ impl Editor {
         self.request_autoscroll();
         self.input_layout = None;
         self.pending_selection = Some(PendingSelection {
-            anchor: offset,
+            anchor: snapshot.anchor_at(offset, Affinity::After),
             mode,
         });
         cx.notify();
@@ -1398,44 +1343,54 @@ impl Editor {
         let Some(pending) = self.pending_selection.clone() else {
             return;
         };
+        let snapshot = self.snapshot.buffer_snapshot().clone();
+        let resolve = |anchor: &MultiBufferAnchor| {
+            snapshot
+                .resolve_anchor(anchor)
+                .unwrap_or(MultiBufferOffset::ZERO)
+        };
         let Ok(left_offset) = self
+            .snapshot
             .display_snapshot
             .display_point_to_offset_with_bias(display_point, FoldBias::Left)
         else {
             return;
         };
-        let fold_bias = if left_offset >= pending.anchor {
+        let pending_anchor = resolve(&pending.anchor);
+        let fold_bias = if left_offset >= pending_anchor {
             FoldBias::Right
         } else {
             FoldBias::Left
         };
         let Ok(offset) = self
+            .snapshot
             .display_snapshot
             .display_point_to_offset_with_bias(display_point, fold_bias)
         else {
             return;
         };
-        let buffer = self.text_snapshot(cx);
-        let Ok(char_offset) = buffer.byte_to_char(offset) else {
+        let Ok(char_offset) = snapshot.byte_to_char(offset) else {
             return;
         };
         let (head, tail) = match pending.mode {
-            MouseSelectMode::Character => (offset, pending.anchor),
+            MouseSelectMode::Character => (offset, pending_anchor),
             MouseSelectMode::Word(original_range) => {
+                let original_start = resolve(&original_range.start);
+                let original_end = resolve(&original_range.end);
                 // 光标仍在词内（或落在原词范围内）时按整词边界吸附，head 取点击侧的词端。
-                let inside = buffer.is_inside_word(char_offset).unwrap_or(false)
-                    || original_range.contains(&offset);
+                let inside = snapshot.is_inside_word(char_offset).unwrap_or(false)
+                    || (original_start..original_end).contains(&offset);
                 let head = if inside {
-                    let Ok((word_start, word_end)) = buffer.surrounding_word(char_offset) else {
+                    let Ok((word_start, word_end)) = snapshot.surrounding_word(char_offset) else {
                         return;
                     };
-                    let Ok(word_start) = buffer.char_to_byte(word_start) else {
+                    let Ok(word_start) = snapshot.char_to_byte(word_start) else {
                         return;
                     };
-                    let Ok(word_end) = buffer.char_to_byte(word_end) else {
+                    let Ok(word_end) = snapshot.char_to_byte(word_end) else {
                         return;
                     };
-                    if word_start < original_range.start {
+                    if word_start < original_start {
                         word_start
                     } else {
                         word_end
@@ -1444,32 +1399,34 @@ impl Editor {
                     offset
                 };
                 // 活动端在原词左侧时锚定原词右端，否则锚定左端。
-                if head <= original_range.start {
-                    (head, original_range.end)
+                if head <= original_start {
+                    (head, original_end)
                 } else {
-                    (head, original_range.start)
+                    (head, original_start)
                 }
             }
             MouseSelectMode::Line(original_range) => {
+                let original_start = resolve(&original_range.start);
+                let original_end = resolve(&original_range.end);
                 // 行粒度：head 所在整行纳入（含行尾换行符）。
-                let Ok(line) = buffer.byte_to_line(offset) else {
+                let Ok(line) = snapshot.byte_to_line(offset) else {
                     return;
                 };
-                let Ok(line_start) = buffer.line_start_byte(line) else {
+                let Ok(line_start) = snapshot.line_start_byte(line) else {
                     return;
                 };
-                let next_line_start = buffer
+                let next_line_start = snapshot
                     .line_start_byte(Line::new(line.get() + 1))
-                    .unwrap_or(buffer.len_bytes());
-                let head = if line_start < original_range.start {
+                    .unwrap_or(snapshot.len_bytes());
+                let head = if line_start < original_start {
                     line_start
                 } else {
                     next_line_start
                 };
-                if head <= original_range.start {
-                    (head, original_range.end)
+                if head <= original_start {
+                    (head, original_end)
                 } else {
-                    (head, original_range.start)
+                    (head, original_start)
                 }
             }
             MouseSelectMode::All => return,
@@ -1513,18 +1470,21 @@ impl Editor {
         line_height: Pixels,
         top_inset: Pixels,
     ) {
+        let display_snapshot = self.snapshot.display_snapshot.clone();
         self.scroll_manager.update_viewport(
-            self.display_snapshot.line_count(),
+            display_snapshot.line_count(),
             viewport_size.width,
             viewport_size.height,
             content_width,
             line_height,
             top_inset,
+            &display_snapshot,
         );
     }
 
     pub(super) fn scroll_by(&mut self, delta: Point<Pixels>, cx: &mut Context<Self>) -> bool {
-        if self.scroll_manager.scroll_by(delta) {
+        let display_snapshot = self.snapshot.display_snapshot.clone();
+        if self.scroll_manager.scroll_by(delta, &display_snapshot) {
             self.input_layout = None;
             cx.notify();
             true
@@ -1535,12 +1495,11 @@ impl Editor {
 
     /// 布局前消费待自动滚动点并应用垂直部分（见 `ScrollManager::apply_pending_autoscroll_vertical`）。
     ///
-    /// 目标显示点按当前布局换算：软换行宽度在此帧已确定，换算出的行号与最终布局一致，避免导航请求在换行重排前固化错误的目标行。
+    /// 目标显示点按当前布局快照解析：软换行宽度在此帧已确定，行号与最终布局一致，避免导航请求在换行重排前固化错误的目标行。
     pub(super) fn apply_pending_autoscroll_vertical(&mut self) -> bool {
+        let display_snapshot = self.snapshot.display_snapshot.clone();
         self.scroll_manager
-            .apply_pending_autoscroll_vertical(|head| {
-                self.display_snapshot.offset_to_display_point(head).ok()
-            })
+            .apply_pending_autoscroll_vertical(&display_snapshot)
     }
 
     /// 布局后做水平自动滚动钳制（见 `ScrollManager::complete_autoscroll_horizontal`）。
@@ -1565,7 +1524,8 @@ impl Editor {
 
     /// 绝对滚动到指定顶部位置（滚动轴拖动/跳页入口）。
     pub(super) fn scroll_to(&mut self, scroll_top: Pixels, cx: &mut Context<Self>) -> bool {
-        if self.scroll_manager.scroll_to(scroll_top) {
+        let display_snapshot = self.snapshot.display_snapshot.clone();
+        if self.scroll_manager.scroll_to(scroll_top, &display_snapshot) {
             self.input_layout = None;
             cx.notify();
             true
@@ -1621,6 +1581,8 @@ impl Editor {
             map
         });
         let display_snapshot = display_map.read(cx).snapshot();
+        let initial_selections =
+            SelectionSet::default().anchored(display_snapshot.buffer_snapshot());
         cx.observe(&multi_buffer, |editor, multi_buffer, cx| {
             let dirty = multi_buffer.read(cx).is_dirty(cx);
             if editor.last_dirty != dirty {
@@ -1632,10 +1594,10 @@ impl Editor {
         .detach();
         cx.subscribe(&multi_buffer, |editor, _, event, cx| {
             editor.structured_selection_history.clear();
-            editor.refresh_multi_snapshot(cx);
+            // 组合文档事件同样经唯一快照入口刷新；语法/元数据变化随后由 match 分支处理。
+            editor.advance_snapshots(cx);
             match event {
                 MultiBufferEvent::TextChanged => {
-                    editor.consume_source_remaps(cx);
                     editor.research_after_edit(cx);
                 }
                 MultiBufferEvent::Reparsed => {
@@ -1652,12 +1614,15 @@ impl Editor {
             cx.notify();
         })
         .detach();
-        // DisplayMap 自行消费组合文本变更并广播；Editor 订阅以刷新只读显示快照缓存，
-        // 并推进投影坐标派生的搜索锚点。组合文本与选区读取走 multi_snapshot，不依赖此事件时序。
+        // DisplayMap 订阅是显示投影推进的唯一入口；Editor 在这里同步唯一派生快照，
+        // 并推进投影坐标派生的搜索锚点。文本与选区都从同一份快照读取。
         cx.subscribe(&display_map, |editor, map, event, cx| {
-            editor.display_snapshot = map.read(cx).snapshot();
+            editor.snapshot.display_snapshot = map.read(cx).snapshot();
+            editor
+                .scroll_manager
+                .refresh(&editor.snapshot.display_snapshot);
             if let Some(old_version) = event.changes.old_version() {
-                let text_version = editor.display_snapshot.buffer_snapshot().version();
+                let text_version = editor.snapshot.buffer_snapshot().version();
                 let position_map = event.changes.position_map();
                 editor.map_search_anchors(old_version, text_version, &position_map);
             }
@@ -1675,13 +1640,11 @@ impl Editor {
             multi_buffer,
             last_dirty,
             display_map,
-            display_snapshot,
-            multi_snapshot: snapshot.clone(),
-            edit_before_snapshot: None,
+            snapshot: EditorSnapshot { display_snapshot },
             mode,
             content_typography: false,
             placeholder_display_map: None,
-            selections: EditorSelections::from_selection_set(&snapshot, &SelectionSet::default()),
+            selections: initial_selections,
             selection_history: SelectionHistory::default(),
             structured_selection_history: Vec::new(),
             fold_ranges: Arc::from([]),
@@ -1752,8 +1715,9 @@ impl Editor {
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut EditPlan<'_>) -> TextResult<EditOutcome>,
     ) -> TextResult<EditOutcome> {
-        let (node_id, outcome) = self.commit_session(before_selections, metadata, cx, f)?;
-        self.apply_edit_outcome(node_id, outcome, cx)
+        let (node_id, before_snapshot, outcome) =
+            self.commit_session(before_selections, metadata, cx, f)?;
+        self.apply_edit_outcome(before_snapshot, node_id, outcome, cx)
     }
 
     /// 编辑后选区由闭包按编辑语义重算的变体（删除、剪切、行移动、输入等特判场景）。
@@ -1764,30 +1728,9 @@ impl Editor {
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut EditPlan<'_>) -> TextResult<(EditOutcome, SelectionSet)>,
     ) -> TextResult<(EditOutcome, SelectionSet)> {
-        self.change_with_after_impl(before_selections, metadata, cx, f, true)
-    }
-
-    /// 应用输入法组合更新；组合尚未结束时不向外发出普通编辑事件。
-    pub(super) fn change_with_after_without_edited(
-        &mut self,
-        before_selections: SelectionSet,
-        metadata: TransactionMetadata,
-        cx: &mut Context<Self>,
-        f: impl FnOnce(&mut EditPlan<'_>) -> TextResult<(EditOutcome, SelectionSet)>,
-    ) -> TextResult<(EditOutcome, SelectionSet)> {
-        self.change_with_after_impl(before_selections, metadata, cx, f, false)
-    }
-
-    fn change_with_after_impl(
-        &mut self,
-        before_selections: SelectionSet,
-        metadata: TransactionMetadata,
-        cx: &mut Context<Self>,
-        f: impl FnOnce(&mut EditPlan<'_>) -> TextResult<(EditOutcome, SelectionSet)>,
-        emit_edited: bool,
-    ) -> TextResult<(EditOutcome, SelectionSet)> {
-        let (node_id, outcome) = self.commit_session(before_selections, metadata, cx, f)?;
-        self.apply_edit_outcome_with_after(node_id, outcome, emit_edited, cx)
+        let (node_id, before_snapshot, outcome) =
+            self.commit_session(before_selections, metadata, cx, f)?;
+        self.apply_edit_outcome_with_after(before_snapshot, node_id, outcome, cx)
     }
 
     /// 需要读取提交后投影才能确定选区的编辑变体。
@@ -1802,11 +1745,16 @@ impl Editor {
         plan: impl FnOnce(&mut EditPlan<'_>) -> TextResult<(EditOutcome, P)>,
         after: impl FnOnce(P, &MultiBufferSnapshot) -> TextResult<SelectionSet>,
     ) -> TextResult<(EditOutcome, SelectionSet)> {
-        let (node_id, (outcome, post_state)) =
+        let (node_id, before_snapshot, (outcome, post_state)) =
             self.commit_session(before_selections, metadata, cx, plan)?;
-        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
+        let snapshot = self.snapshot.buffer_snapshot().clone();
         let after_selections = after(post_state, &snapshot)?;
-        self.apply_edit_outcome_with_after(node_id, (outcome, after_selections), true, cx)
+        self.apply_edit_outcome_with_after(
+            before_snapshot,
+            node_id,
+            (outcome, after_selections),
+            cx,
+        )
     }
 
     /// 会话化编辑的共享骨架：开启会话并记录 undo 选区（事务开始时记录）→ 闭包编辑（统一 Buffer 通知）→ 提交会话，返回 (节点身份, 编辑结果)。
@@ -1819,20 +1767,18 @@ impl Editor {
         metadata: TransactionMetadata,
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut EditPlan<'_>) -> TextResult<T>,
-    ) -> TextResult<(Option<TransactionId>, T)> {
+    ) -> TextResult<(Option<TransactionId>, MultiBufferSnapshot, T)> {
         let operation = metadata.description().unwrap_or("编辑").to_owned();
+        // 编辑前快照是本次事务的局部输入，不进入 Editor 长期状态。
+        let before_snapshot = self.snapshot.buffer_snapshot().clone();
         let session_id = self.start_transaction(cx)?;
-        let projection_snapshot = self.multi_buffer.read(cx).snapshot(cx);
-        self.edit_before_snapshot = Some(projection_snapshot.clone());
-        let mut plan = EditPlan::new(&projection_snapshot);
+        let mut plan = EditPlan::new(&before_snapshot);
         let outcome = match f(&mut plan) {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.end_transaction(cx);
                 cx.emit(EditorEvent::Error(format!("{operation}失败：{error:#}")));
-                let restored =
-                    EditorSelections::from_selection_set(&projection_snapshot, &before_selections);
-                self.selections = restored;
+                self.selections = before_selections.clone().anchored(&before_snapshot);
                 return Err(error);
             }
         };
@@ -1845,20 +1791,18 @@ impl Editor {
             self.multi_buffer
                 .update(cx, |buffer, cx| buffer.edit(edits, metadata, cx))
         })();
-        self.refresh_multi_snapshot(cx);
+        self.advance_snapshots(cx);
         if let Err(error) = applied {
             self.end_transaction(cx);
             cx.emit(EditorEvent::Error(format!("{operation}失败：{error:#}")));
-            let restored =
-                EditorSelections::from_selection_set(&projection_snapshot, &before_selections);
-            self.selections = restored;
+            self.selections = before_selections.clone().anchored(&before_snapshot);
             return Err(error);
         }
         let node_id = self.end_transaction(cx);
         if node_id != Some(session_id) {
             self.selection_history.remove_transaction(session_id);
         }
-        Ok((node_id, outcome))
+        Ok((node_id, before_snapshot, outcome))
     }
 
     /// 开启编辑会话并记录 undo 选区。
@@ -1880,80 +1824,67 @@ impl Editor {
             .update(cx, |buffer, cx| buffer.end_transaction(cx))
     }
 
-    /// 编辑事务结果落位：选区锚定、redo 选区记录与 display_map 同步。
+    /// 编辑事务结果落位：自动闭合区域推进、redo 选区记录与事件发布。
     ///
-    /// 会话提交后的历史节点身份（与本次编辑的事件身份分离，合并进前节点时指向被合并的既有节点）；
-    /// `None` 表示空会话或历史被预算清空，此时不记录选区历史。
-    /// 编辑失败路径由 `change` 统一处理，这里只消费成功结果。
+    /// 选区以源锚点为单一数据源，编辑后按当前快照解析即自动跟随，不再经 PositionMap 重映射。
+    /// 只有 `end_transaction` 返回真实事务身份时才发布 `Edited`；空事务只收尾不发布。
     fn apply_edit_outcome(
         &mut self,
+        before_snapshot: MultiBufferSnapshot,
         transaction_id: Option<TransactionId>,
         outcome: EditOutcome,
         cx: &mut Context<Self>,
     ) -> TextResult<EditOutcome> {
-        let before_snapshot = self.edit_before_snapshot.take();
         if let Some(position_map) = outcome.position_map() {
-            let before_snapshot = before_snapshot.expect("编辑事务必须先保存编辑前快照");
-            let new_version = self.multi_snapshot.version();
-            let old_version = before_snapshot.version();
-            self.update_autoclose_regions_with(position_map, old_version, new_version);
-            // 编辑前选区按编辑前投影快照解析，经事务坐标映射推进到编辑后的当前投影坐标；
-            // 再由 land_after_edit 锚定为源锚点（投影重建按源忠实落位）。
-            let before = self.selections.resolve(&before_snapshot);
-            let after = map_selection_set(&before, position_map);
-            self.land_after_edit(after, transaction_id, true, cx);
-        } else {
-            self.finish_edit(cx);
-            cx.emit(EditorEvent::Edited);
+            let new_version = self.snapshot.buffer_snapshot().version();
+            self.update_autoclose_regions_with(
+                position_map,
+                before_snapshot.version(),
+                new_version,
+            );
         }
+        self.finish_transaction(transaction_id, cx);
         Ok(outcome)
     }
 
     /// 行移动等特判场景：编辑后选区由闭包按行语义重算（「编辑后、重建前」投影坐标），直接锚定落位。
     fn apply_edit_outcome_with_after(
         &mut self,
+        before_snapshot: MultiBufferSnapshot,
         transaction_id: Option<TransactionId>,
         outcome: (EditOutcome, SelectionSet),
-        emit_edited: bool,
         cx: &mut Context<Self>,
     ) -> TextResult<(EditOutcome, SelectionSet)> {
-        let before_snapshot = self.edit_before_snapshot.take();
         let (outcome, after_selections) = outcome;
         if let Some(position_map) = outcome.position_map() {
-            let new_version = self.multi_snapshot.version();
-            let old_version = before_snapshot
-                .expect("编辑事务必须先保存编辑前快照")
-                .version();
-            self.update_autoclose_regions_with(position_map, old_version, new_version);
+            let new_version = self.snapshot.buffer_snapshot().version();
+            self.update_autoclose_regions_with(
+                position_map,
+                before_snapshot.version(),
+                new_version,
+            );
         }
-        self.land_after_edit(after_selections, transaction_id, emit_edited, cx);
+        // 编辑后投影坐标直接在当前快照锚定为源锚点；投影重建不改变源，随后解析即忠实落位。
+        self.selections = after_selections.anchored(self.snapshot.buffer_snapshot());
+        self.finish_transaction(transaction_id, cx);
         Ok((outcome, self.resolved_selections()))
     }
 
-    /// 编辑落位共享骨架：把编辑后的投影坐标选区锚定为源锚点。
-    ///
-    /// 选区以源锚点为单一数据源，投影重建（diff 裁剪窗口移动）不改变源；
-    /// 编辑后投影坐标直接在当前快照上锚定到源，随后按当前快照解析即忠实落到同一源位置。
-    fn land_after_edit(
+    /// 事务收尾：记录 redo 选区、结束编辑态，并在有真实事务身份时发布唯一编辑事件。
+    fn finish_transaction(
         &mut self,
-        after: SelectionSet,
         transaction_id: Option<TransactionId>,
-        emit_edited: bool,
         cx: &mut Context<Self>,
     ) {
-        let anchored = EditorSelections::anchored(&after, &|offset| {
-            self.multi_snapshot.anchor_for_offset(offset)
-        });
-        self.selections = anchored;
-        if let Some(transaction_id) = transaction_id
-            && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
-        {
-            // 事务结束时记录 redo 选区（源锚点）。
-            transaction.set_redo(self.selections.clone());
+        if let Some(transaction_id) = transaction_id {
+            if let Some(transaction) = self.selection_history.transaction_mut(transaction_id) {
+                // 事务结束时记录 redo 选区（源锚点）。
+                transaction.set_redo(self.selections.clone());
+            }
         }
         self.finish_edit(cx);
-        if emit_edited {
-            cx.emit(EditorEvent::Edited);
+        if let Some(transaction_id) = transaction_id {
+            cx.emit(EditorEvent::Edited { transaction_id });
         }
     }
 
@@ -2043,23 +1974,27 @@ impl Editor {
                             return Ok(Selection::caret(base).with_goal(None));
                         }
                         // 软换行模式下行首/行尾按显示行边界移动，其余单位走文本边界。
-                        if unit == MovementUnit::LineEdge && self.display_snapshot.is_wrapped() {
+                        if unit == MovementUnit::LineEdge
+                            && self.snapshot.display_snapshot.is_wrapped()
+                        {
                             let head = selection.head();
                             return match direction {
                                 MovementDirection::Previous => self
+                                    .snapshot
                                     .display_snapshot
                                     .beginning_of_row(head)
                                     .map_err(|error| TextError::InvariantViolation {
                                         location: "Editor::move_selections",
                                         detail: error.to_string(),
                                     }),
-                                MovementDirection::Next => self
-                                    .display_snapshot
-                                    .end_of_row(head)
-                                    .map_err(|error| TextError::InvariantViolation {
-                                        location: "Editor::move_selections",
-                                        detail: error.to_string(),
-                                    }),
+                                MovementDirection::Next => {
+                                    self.snapshot.display_snapshot.end_of_row(head).map_err(
+                                        |error| TextError::InvariantViolation {
+                                            location: "Editor::move_selections",
+                                            detail: error.to_string(),
+                                        },
+                                    )
+                                }
                             }
                             .map(|new_head| {
                                 // 行内水平移动清除垂直移动遗留的目标列。
@@ -2071,7 +2006,9 @@ impl Editor {
                                 .with_goal(None)
                             });
                         }
-                        self.display_snapshot.move_offset(base, direction, unit)?
+                        self.snapshot
+                            .display_snapshot
+                            .move_offset(base, direction, unit)?
                     }
                     Motion::LineStep | Motion::PageStep(_) => {
                         let row_step = match motion {
@@ -2079,6 +2016,7 @@ impl Editor {
                             _ => 1,
                         };
                         let point = self
+                            .snapshot
                             .display_snapshot
                             .offset_to_display_point(base)
                             .map_err(|error| TextError::InvariantViolation {
@@ -2091,7 +2029,11 @@ impl Editor {
                             .map(DisplayColumn::new)
                             .unwrap_or(point.column());
                         vertical_goal = Some(goal);
-                        let last_row = self.display_snapshot.line_count().saturating_sub(1);
+                        let last_row = self
+                            .snapshot
+                            .display_snapshot
+                            .line_count()
+                            .saturating_sub(1);
                         if direction == MovementDirection::Previous
                             && point.row() == DisplayRow::ZERO
                         {
@@ -2105,7 +2047,7 @@ impl Editor {
                             });
                         }
                         if direction == MovementDirection::Next && point.row().get() >= last_row {
-                            let new_head = self.multi_snapshot.len_bytes();
+                            let new_head = self.snapshot.buffer_snapshot().len_bytes();
                             return Ok(if extend {
                                 selection.with_head(new_head).with_goal(Some(goal.get()))
                             } else {
@@ -2124,7 +2066,8 @@ impl Editor {
                             MovementDirection::Previous => FoldBias::Left,
                             MovementDirection::Next => FoldBias::Right,
                         };
-                        self.display_snapshot
+                        self.snapshot
+                            .display_snapshot
                             .display_point_to_offset_with_bias(
                                 DisplayPoint::new(DisplayRow::new(target_row), goal),
                                 fold_bias,
@@ -2156,12 +2099,11 @@ impl Editor {
                 self.composition = None;
                 // 普通光标移动结束结构化选择扩展链，避免下次收缩跳回移动前选区。
                 self.structured_selection_history.clear();
-                let anchored =
-                    EditorSelections::from_selection_set(&self.multi_snapshot, &selections);
-                self.selections = anchored;
+                self.selections = selections.anchored(self.snapshot.buffer_snapshot());
                 if matches!(motion, Motion::PageStep(_)) {
+                    let display_snapshot = self.snapshot.display_snapshot.clone();
                     self.scroll_manager
-                        .scroll_page(direction == MovementDirection::Next);
+                        .scroll_page(direction == MovementDirection::Next, &display_snapshot);
                 }
                 self.request_autoscroll();
                 self.input_layout = None;
@@ -2176,50 +2118,37 @@ impl Editor {
 
     fn request_autoscroll(&mut self) {
         let head = self.resolved_selections().primary().head();
-        self.scroll_manager.request_autoscroll(head);
+        let anchor = self
+            .snapshot
+            .buffer_snapshot()
+            .anchor_at(head, Affinity::After);
+        self.scroll_manager.request_autoscroll(anchor);
     }
 
     /// 导航跳转定位：把光标行固定在视口顶部下方指定行数。
     pub(super) fn request_scroll_to_top(&mut self, offset_rows: usize) {
         let head = self.resolved_selections().primary().head();
-        self.scroll_manager.request_scroll_to_top(head, offset_rows);
+        let anchor = self
+            .snapshot
+            .buffer_snapshot()
+            .anchor_at(head, Affinity::After);
+        self.scroll_manager
+            .request_scroll_to_top(anchor, offset_rows);
     }
 
-    /// 从权威 `DisplayMap` 刷新只读显示快照缓存。
-    fn refresh_display_snapshot(&mut self, cx: &App) {
-        self.display_snapshot = self.display_map.read(cx).snapshot();
-    }
-
-    /// 从 MultiBuffer 直接刷新当前组合快照。
+    /// 唯一派生快照推进入口。
     ///
-    /// 编辑提交后同步调用，保证同一事务内的选区/偏移读取看到编辑后的文本；
-    /// 外部变更经 MultiBuffer 事件到达时也会刷新。
-    fn refresh_multi_snapshot(&mut self, cx: &App) {
-        self.multi_snapshot = self.multi_buffer.read(cx).snapshot(cx);
-    }
-
-    /// 刷新显示坐标缓存。
-    ///
-    /// DisplayMap 是组合文本变更的唯一消费者，它在自己的订阅回调里完成投影推进并广播
-    /// `DisplayMapEvent`；Editor 的显示订阅是唯一同步入口。这里只把缓存对齐到已推进的权威 DisplayMap，
-    /// 不再二次调用投影同步，避免出现第二条推进路径。
-    fn sync_display_map(&mut self, cx: &mut Context<Self>) {
-        self.refresh_multi_snapshot(cx);
-        self.refresh_display_snapshot(cx);
-    }
-
-    /// 消费 MultiBuffer 暂存的外部源变更，把绑定该源的源锚点选区经源 PositionMap 推进。
-    ///
-    /// 只有外部源变更（共享 Buffer 的其他 Editor、直接编辑源）会暂存；本编辑器自己的编辑已在 `MultiBuffer::edit` 内物化到显示流，不进此路径。
-    /// 投影重建（折叠/展开、编辑落位、undo/redo）不改变源，也不经过这里——源锚点直接按重建后快照解析即落位。
-    fn consume_source_remaps(&mut self, cx: &mut Context<Self>) {
-        let remaps = self
-            .multi_buffer
-            .update(cx, |buffer, _| buffer.take_pending_source_remaps());
-        for (source_id, position_map) in remaps {
-            self.selections
-                .map_through_source_change(source_id, &position_map);
-        }
+    /// DisplayMap 是显示投影的唯一推进者；Editor 在这里把唯一派生快照对齐到它。
+    /// 模型事件、编辑提交与结构重建都只经此入口，不再并列刷新组合快照与显示快照；
+    /// 选区以源锚点保存，解析时直接读该快照，不需要逐状态重映射。
+    fn advance_snapshots(&mut self, cx: &mut Context<Self>) {
+        // gpui 的 emit 是延迟效应：编辑返回时 DisplayMap 的订阅尚未执行。
+        // 在读取唯一派生快照前先把待处理的组合变更同步进 DisplayMap，
+        // 保证快照内的组合文本与刚提交的事务同版本；后续订阅回调走无变化快速路径。
+        self.display_map
+            .update(cx, |map, cx| map.sync_from_multi_buffer(cx));
+        self.snapshot.display_snapshot = self.display_map.read(cx).snapshot();
+        self.scroll_manager.refresh(&self.snapshot.display_snapshot);
     }
 
     /// 读取共享 LanguageBuffer 的折叠缓存（后台解析时已计算，主线程零查询）。
@@ -2249,7 +2178,7 @@ impl Editor {
 
     /// 展开全部折叠。
     fn unfold_all_ranges(&mut self, cx: &mut Context<Self>) {
-        let line_count = self.multi_snapshot.line_count();
+        let line_count = self.snapshot.buffer_snapshot().line_count();
         if let Ok(line_range) = LineRange::new(Line::ZERO, Line::new(line_count))
             && let Err(error) = self
                 .display_map
@@ -2257,7 +2186,7 @@ impl Editor {
         {
             cx.emit(EditorEvent::Error(format!("展开折叠失败：{error:#}")));
         }
-        self.refresh_display_snapshot(cx);
+        self.advance_snapshots(cx);
         cx.notify();
     }
 
@@ -2567,7 +2496,8 @@ impl Editor {
             .iter()
             .map(|selection| {
                 let range = selection.start().get()..selection.end().get();
-                self.display_snapshot
+                self.snapshot
+                    .display_snapshot
                     .ancestor_range(range)
                     .map(|range| {
                         Selection::new(
@@ -2582,7 +2512,8 @@ impl Editor {
         if expanded == current {
             return;
         }
-        self.structured_selection_history.push(current);
+        self.structured_selection_history
+            .push(self.selections.clone());
         self.apply_selection_change(expanded, cx);
     }
 
@@ -2595,7 +2526,12 @@ impl Editor {
         let Some(previous) = self.structured_selection_history.pop() else {
             return;
         };
-        self.apply_selection_change(previous, cx);
+        // 结构化选择恢复是显式入口：直接恢复锚点集合，不经过常规选区清空路径。
+        self.composition = None;
+        self.selections = previous;
+        self.request_autoscroll();
+        self.input_layout = None;
+        cx.notify();
     }
 
     /// 键位上下文：Editor 标识 + mode 标签。
@@ -2708,7 +2644,7 @@ impl Render for Editor {
                 min_lines,
                 max_lines,
             } => {
-                let line_count = self.display_snapshot.line_count().max(min_lines);
+                let line_count = self.snapshot.display_snapshot.line_count().max(min_lines);
                 Some(max_lines.map_or(line_count, |maximum| line_count.min(maximum)))
             }
             EditorMode::Full => None,

@@ -1231,6 +1231,8 @@ impl WrapMap {
     /// 同步应用一批编辑；返回该批次的换行编辑。
     fn apply_edits(&mut self, tab_snapshot: TabSnapshot, fold_edits: &[FoldEdit]) -> Vec<WrapEdit> {
         if tab_snapshot.version() == self.snapshot.tab_snapshot.version() {
+            // 换行拓扑未变，但下层可能携带新的文本/元数据快照：采用新快照保持链上版本一致。
+            self.snapshot.tab_snapshot = tab_snapshot;
             return Vec::new();
         }
         self.snapshot.tab_snapshot = tab_snapshot;

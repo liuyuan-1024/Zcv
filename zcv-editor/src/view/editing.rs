@@ -140,7 +140,7 @@ impl Editor {
             return;
         }
         let before = self.resolved_selections().normalized();
-        let snapshot = self.text_snapshot(cx);
+        let snapshot = self.text_snapshot();
         let all_carets = before
             .as_slice()
             .iter()
@@ -153,6 +153,7 @@ impl Editor {
                     let tab = zcv_settings::SettingsStore::tab_config(cx);
                     let text: Arc<str> = if tab.insert_spaces {
                         let column = self
+                            .snapshot
                             .display_snapshot
                             .offset_to_display_point(selection.head())
                             .map_err(|error| TextError::InvariantViolation {
@@ -205,7 +206,7 @@ impl Editor {
             return;
         }
         let before = self.resolved_selections();
-        let snapshot = self.text_snapshot(cx);
+        let snapshot = self.text_snapshot();
         let targets = touched_lines(&snapshot, &before).and_then(|lines| {
             lines
                 .into_iter()
@@ -236,7 +237,7 @@ impl Editor {
             return;
         }
         self.composition = None;
-        self.refresh_multi_snapshot(cx);
+        self.advance_snapshots(cx);
         let before = self.resolved_selections().normalized();
         let snapshot = self.multi_buffer.read(cx).snapshot(cx);
         // 逐选区计算插入文本与光标落点：
@@ -247,7 +248,10 @@ impl Editor {
             .iter()
             .map(|selection| {
                 let offset = selection.start();
-                let suggestion = self.multi_snapshot.suggested_newline_indent(offset)?;
+                let suggestion = self
+                    .snapshot
+                    .buffer_snapshot()
+                    .suggested_newline_indent(offset)?;
                 let tab = zcv_settings::SettingsStore::tab_config(cx);
                 let indent = if suggestion.additional_levels > 0 {
                     if tab.insert_spaces {
@@ -392,6 +396,10 @@ impl Editor {
                     self.selections = selections;
                 }
                 self.synchronize_after_history_edit(cx);
+                // 撤销/重做与普通编辑共用同一事件出口，携带真实事务身份。
+                cx.emit(EditorEvent::Edited {
+                    transaction_id: outcome.transaction_id(),
+                });
             }
             Ok(None) => {}
             Err(error) => cx.emit(EditorEvent::Error(format!(
@@ -402,7 +410,7 @@ impl Editor {
 
     fn synchronize_after_history_edit(&mut self, cx: &mut Context<Self>) {
         self.composition = None;
-        self.refresh_multi_snapshot(cx);
+        self.advance_snapshots(cx);
         self.request_autoscroll();
         self.input_layout = None;
         cx.notify();
@@ -566,7 +574,7 @@ impl Editor {
             MovementDirection::Previous => "移动行到上方",
             MovementDirection::Next => "移动行到下方",
         };
-        let snapshot = self.text_snapshot(cx);
+        let snapshot = self.text_snapshot();
         let metadata = edit_metadata(description);
         let _ = self.change_with_after_post(
             before.clone(),
@@ -698,7 +706,7 @@ fn pending_selection_shift(
     selections
         .as_slice()
         .iter()
-        .flat_map(|selection| [selection.anchor(), selection.head()])
+        .flat_map(|selection| [selection.tail(), selection.head()])
         .map(|offset| {
             let line = snapshot.byte_to_line(offset)?.get();
             let line_start = snapshot.line_start_byte(Line::new(line))?.get();

@@ -19,7 +19,7 @@ use zcv_actions::{
 };
 use zcv_editor::{
     DiffHunkDelegate, Editor, EditorEvent, EditorHunk, EditorHunkMarkerKind, EditorHunkPart,
-    EditorScrollAnchor, HunkControlTarget,
+    HunkControlTarget,
 };
 use zcv_git::{
     ConflictChoice, FileStatus, GitHunkOperation, GitRevision, StatusCode, parse_conflict_regions,
@@ -405,7 +405,6 @@ pub struct ProjectDiffView {
     /// base 变更（HEAD 变化）后需要整体重建投影。
     rebase_projection: bool,
     pending_path: Option<PathBuf>,
-    refresh_scroll_anchor: Option<EditorScrollAnchor>,
     revision_sources: HashMap<(GitRevision, PathBuf), Entity<LanguageBuffer>>,
     loading_revision_text: HashSet<(GitRevision, PathBuf)>,
     search_options: MatchOptions,
@@ -468,7 +467,7 @@ impl ProjectDiffView {
             .push(window.subscribe(&search_input, cx, {
                 let weak = weak.clone();
                 move |_, event: &EditorEvent, window, cx| {
-                    if *event == EditorEvent::Edited
+                    if matches!(event, EditorEvent::Edited { .. })
                         && let Some(view) = weak.upgrade()
                     {
                         view.update(cx, |view, cx| view.run_search_from_input(window, cx));
@@ -947,7 +946,7 @@ impl ProjectDiffView {
             // 展开状态变化会改变组合片段：由 MultiBuffer 统一重建并通知宿主恢复视口。
             cx.subscribe(&editor, |view, _, event: &EditorEvent, cx| match event {
                 EditorEvent::DiffHunksExpandedChanged => view.rebuild_projection(cx),
-                EditorEvent::Edited
+                EditorEvent::Edited { .. }
                 | EditorEvent::PathChanged
                 | EditorEvent::DirtyChanged
                 | EditorEvent::OpenExcerptsRequested { .. }
@@ -987,7 +986,6 @@ impl ProjectDiffView {
             files: Vec::new(),
             rebase_projection: false,
             pending_path: None,
-            refresh_scroll_anchor: None,
             revision_sources: Default::default(),
             loading_revision_text: Default::default(),
             search_options: MatchOptions::default(),
@@ -1080,18 +1078,8 @@ impl ProjectDiffView {
     /// 以 hunk 为核心重建已就绪文件的 excerpts；旧侧与新侧都属于同一个 MultiBuffer 坐标空间。
     /// 修订读取由文件游标推进，已加载文件先进入统一投影，避免把整个暂存区一次性物化。
     fn rebuild_projection(&mut self, cx: &mut Context<Self>) {
-        if self.pending_path.is_none() && self.refresh_scroll_anchor.is_none() {
-            self.refresh_scroll_anchor = self
-                .editor
-                .update(cx, |editor, cx| editor.capture_scroll_anchor(cx));
-        }
         if self.kind == ProjectDiffKind::Conflict {
             self.rebuild_conflict_projection(cx);
-            if let Some(scroll_anchor) = self.refresh_scroll_anchor.take() {
-                self.editor.update(cx, |editor, cx| {
-                    editor.restore_scroll_anchor(scroll_anchor, cx);
-                });
-            }
             self.apply_pending_path(cx);
             cx.notify();
             return;
@@ -1112,11 +1100,6 @@ impl ProjectDiffView {
             editor.set_editor_hunks(Vec::new(), cx);
             editor.set_diff_files(diff_files, cx)
         });
-        if let Some(scroll_anchor) = self.refresh_scroll_anchor.take() {
-            self.editor.update(cx, |editor, cx| {
-                editor.restore_scroll_anchor(scroll_anchor, cx);
-            });
-        }
         self.apply_pending_path(cx);
         cx.notify();
     }
@@ -1535,7 +1518,6 @@ impl ProjectDiffView {
     }
 
     fn move_to_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        self.refresh_scroll_anchor = None;
         self.pending_path = Some(path);
         self.apply_pending_path(cx);
     }

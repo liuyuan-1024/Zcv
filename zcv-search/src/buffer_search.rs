@@ -135,7 +135,7 @@ impl DocumentToolbar {
             .push(window.subscribe(&query_input, cx, {
                 let weak = weak.clone();
                 move |_, event: &EditorEvent, window, cx| {
-                    if *event != EditorEvent::Edited {
+                    if !matches!(event, EditorEvent::Edited { .. }) {
                         return;
                     }
                     if let Some(search_bar) = weak.upgrade() {
@@ -149,7 +149,7 @@ impl DocumentToolbar {
             .push(window.subscribe(&replace_input, cx, {
                 let weak = weak.clone();
                 move |_, event: &EditorEvent, _window, cx| {
-                    if *event != EditorEvent::Edited {
+                    if !matches!(event, EditorEvent::Edited { .. }) {
                         return;
                     }
                     if let Some(search_bar) = weak.upgrade() {

@@ -2,7 +2,9 @@
 
 `zcv-editor` 是可嵌入的文本编辑组件。它把文本与语言状态投影成可交互的编辑视图，并负责选择、滚动、输入法和编辑器交互状态。
 
-公共入口是 [`src/editor.rs`](src/editor.rs)。crate 对外提供 `Editor`、编辑事件、滚动锚点和差异块委托；内部显示、输入与渲染细节保持私有。
+公共入口是 [`src/editor.rs`](src/editor.rs)。crate 对外提供 `Editor`、编辑事件与差异块委托；内部显示、输入与渲染细节保持私有。
+
+`Editor` 的长期位置状态（选择、滚动、折叠）统一以 `MultiBufferAnchor` 表达；显示行与像素位置按当前 `DisplaySnapshot` 解析，不长期保存显示坐标。
 
 ## 数据流与所有权
 

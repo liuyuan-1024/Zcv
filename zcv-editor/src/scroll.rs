@@ -1,10 +1,11 @@
 //! Editor 视图滚动状态。
 
-use zcv_multi_buffer::MultiBufferOffset;
+use zcv_multi_buffer::MultiBufferAnchor;
 
 use gpui::{Pixels, Point, point, px};
+use zcv_text::Affinity;
 
-use super::display_map::{DisplayPoint, DisplayRow};
+use super::display_map::{DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ScrollViewport {
@@ -19,7 +20,7 @@ struct ScrollViewport {
 
 /// 垂直滚动轴 thumb 的三态。
 ///
-/// 状态跨帧持久存于 ScrollManager（滚动状态归属 Editor），每帧由EditorElement 读取决定绘制颜色与事件分支。
+/// 状态跨帧持久存于 ScrollManager（滚动状态归属 Editor），每帧由 EditorElement 读取决定绘制颜色与事件分支。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum ScrollbarThumbState {
     #[default]
@@ -28,25 +29,45 @@ pub(super) enum ScrollbarThumbState {
     Dragging,
 }
 
+/// 长期滚动位置：组合锚点 + 锚点行内像素余量。
+///
+/// 显示行与像素位置在消费时按当前 DisplaySnapshot 解析；不长期保存 DisplayPoint。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct ScrollAnchor {
+    pub(super) anchor: MultiBufferAnchor,
+    pub(super) offset: Point<Pixels>,
+}
+
+impl ScrollAnchor {
+    fn new() -> Self {
+        Self {
+            anchor: MultiBufferAnchor::Min,
+            offset: point(px(0.0), px(0.0)),
+        }
+    }
+}
+
 /// 待应用的自动滚动请求。
 ///
-/// 目标以字节偏移保存，显示点（DisplayPoint）在应用时按当时的布局换算：
+/// 目标以组合锚点保存，显示点（DisplayPoint）在应用时按当前布局换算：
 /// 软换行宽度在首帧布局时才确定，提前换算会把换行前的显示行号固化进请求，导致长行文件导航时滚动不到位。
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum PendingAutoscroll {
     /// 最小滚动：目标行进出视口才滚动（正常编辑跟随）。
-    Fit(MultiBufferOffset),
+    Fit(MultiBufferAnchor),
     /// 顶部相对定位：目标行固定在视口顶部下方指定行数（导航跳转）。
     TopRelative {
-        head: MultiBufferOffset,
+        anchor: MultiBufferAnchor,
         offset_rows: usize,
     },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct ScrollManager {
-    anchor: DisplayPoint,
-    offset: Point<Pixels>,
+    /// 权威长期位置。
+    anchor: ScrollAnchor,
+    /// 当前帧派生显示点；由锚点按快照解析，供不持有快照的读取方（布局、滚动条几何）使用。
+    display_point: DisplayPoint,
     viewport: Option<ScrollViewport>,
     pending_autoscroll: Option<PendingAutoscroll>,
     /// 本次自动滚动请求的水平部分待布局后钳制（垂直部分已在布局前应用）。
@@ -55,12 +76,20 @@ pub(super) struct ScrollManager {
 }
 
 impl ScrollManager {
+    /// 当前帧派生显示点。
     pub(super) fn anchor(&self) -> DisplayPoint {
-        self.anchor
+        self.display_point
     }
 
     pub(super) fn offset(&self) -> Point<Pixels> {
-        self.offset
+        self.anchor.offset
+    }
+
+    /// 按当前快照从权威锚点重新解析派生显示点。
+    pub(super) fn refresh(&mut self, snapshot: &DisplaySnapshot) {
+        if let Some(point) = resolve_display_point(snapshot, &self.anchor.anchor) {
+            self.display_point = point;
+        }
     }
 
     pub(super) fn update_viewport(
@@ -71,6 +100,7 @@ impl ScrollManager {
         content_width: Pixels,
         line_height: Pixels,
         top_inset: Pixels,
+        snapshot: &DisplaySnapshot,
     ) -> bool {
         if line_height <= Pixels::ZERO {
             return false;
@@ -85,57 +115,58 @@ impl ScrollManager {
         });
 
         let old_anchor = self.anchor;
-        let old_offset = self.offset;
-        self.set_scroll_left(self.offset.x);
-        self.set_scroll_top(self.scroll_top());
-        // 待自动滚动请求统一由布局前的 `apply_pending_autoscroll_vertical` 应用：
-        // 视口几何就绪后它必然紧随本方法被调用，目标显示点也在那一刻按最终布局换算。
-        self.anchor != old_anchor || self.offset != old_offset
+        let old_point = self.display_point;
+        self.set_scroll_left(self.anchor.offset.x);
+        self.set_scroll_top(self.scroll_top(), snapshot);
+        self.anchor != old_anchor || self.display_point != old_point
     }
 
-    pub(super) fn scroll_by(&mut self, delta: Point<Pixels>) -> bool {
+    pub(super) fn scroll_by(&mut self, delta: Point<Pixels>, snapshot: &DisplaySnapshot) -> bool {
         let old_anchor = self.anchor;
-        let old_offset = self.offset;
+        let old_point = self.display_point;
         self.pending_autoscroll = None;
         self.pending_horizontal_autoscroll = false;
 
-        self.set_scroll_left(self.offset.x - delta.x);
-        self.set_scroll_top(self.scroll_top() - delta.y);
+        self.set_scroll_left(self.anchor.offset.x - delta.x);
+        self.set_scroll_top(self.scroll_top() - delta.y, snapshot);
 
-        self.anchor != old_anchor || self.offset != old_offset
+        self.anchor != old_anchor || self.display_point != old_point
     }
 
-    pub(super) fn request_autoscroll(&mut self, head: MultiBufferOffset) {
-        self.pending_autoscroll = Some(PendingAutoscroll::Fit(head));
+    pub(super) fn request_autoscroll(&mut self, anchor: MultiBufferAnchor) {
+        self.pending_autoscroll = Some(PendingAutoscroll::Fit(anchor));
     }
 
-    /// 顶部相对定位：目标字节固定在视口顶部下方指定行数。
-    pub(super) fn request_scroll_to_top(&mut self, head: MultiBufferOffset, offset_rows: usize) {
-        self.pending_autoscroll = Some(PendingAutoscroll::TopRelative { head, offset_rows });
+    /// 顶部相对定位：目标锚点固定在视口顶部下方指定行数。
+    pub(super) fn request_scroll_to_top(&mut self, anchor: MultiBufferAnchor, offset_rows: usize) {
+        self.pending_autoscroll = Some(PendingAutoscroll::TopRelative {
+            anchor,
+            offset_rows,
+        });
     }
 
-    /// 应用待自动滚动的垂直部分；目标显示点由 `project` 按当前布局换算。
-    fn apply_autoscroll(
-        &mut self,
-        pending: PendingAutoscroll,
-        project: impl Fn(MultiBufferOffset) -> Option<DisplayPoint>,
-    ) {
+    /// 应用待自动滚动的垂直部分；目标显示点由锚点按当前布局快照解析。
+    fn apply_autoscroll(&mut self, pending: PendingAutoscroll, snapshot: &DisplaySnapshot) {
         match pending {
-            PendingAutoscroll::Fit(head) => {
-                if let Some(point) = project(head) {
-                    self.ensure_visible(point);
+            PendingAutoscroll::Fit(anchor) => {
+                if let Some(point) = resolve_display_point(snapshot, &anchor) {
+                    self.ensure_visible(point, snapshot);
                 }
             }
-            PendingAutoscroll::TopRelative { head, offset_rows } => {
+            PendingAutoscroll::TopRelative {
+                anchor,
+                offset_rows,
+            } => {
                 let Some(viewport) = self.viewport else {
                     return;
                 };
-                let Some(point) = project(head) else {
+                let Some(point) = resolve_display_point(snapshot, &anchor) else {
                     return;
                 };
                 let row_top = viewport.line_height * point.row().get();
                 self.set_scroll_top(
                     row_top - viewport.top_inset - viewport.line_height * offset_rows,
+                    snapshot,
                 );
             }
         }
@@ -147,7 +178,7 @@ impl ScrollManager {
         Some(visible_rows.saturating_sub(1).max(1))
     }
 
-    pub(super) fn scroll_page(&mut self, down: bool) -> bool {
+    pub(super) fn scroll_page(&mut self, down: bool, snapshot: &DisplaySnapshot) -> bool {
         let viewport = match self.viewport {
             Some(viewport) => viewport,
             None => return false,
@@ -158,15 +189,15 @@ impl ScrollManager {
         } else {
             point(Pixels::ZERO, distance)
         };
-        self.scroll_by(delta)
+        self.scroll_by(delta, snapshot)
     }
 
     /// 可见区顶部滚动量（像素）。
     pub(super) fn scroll_top(&self) -> Pixels {
         let Some(viewport) = self.viewport else {
-            return self.offset.y;
+            return self.anchor.offset.y;
         };
-        viewport.line_height * self.anchor.row().get() + self.offset.y
+        viewport.line_height * self.display_point.row().get() + self.anchor.offset.y
     }
 
     /// 可滚动上界：内容总高 − 视口高；未设置视口时为 0。
@@ -178,23 +209,13 @@ impl ScrollManager {
 
     /// 绝对滚动到指定顶部位置：清除待自动滚动，钳制到 [0, max_scroll_top]。
     /// 返回是否发生变化（供 Editor 包装层决定是否 notify）。
-    pub(super) fn scroll_to(&mut self, scroll_top: Pixels) -> bool {
+    pub(super) fn scroll_to(&mut self, scroll_top: Pixels, snapshot: &DisplaySnapshot) -> bool {
         let old_anchor = self.anchor;
-        let old_offset = self.offset;
+        let old_point = self.display_point;
         self.pending_autoscroll = None;
         self.pending_horizontal_autoscroll = false;
-        self.set_scroll_top(scroll_top);
-        self.anchor != old_anchor || self.offset != old_offset
-    }
-
-    /// 在组合文档结构刷新后恢复已经重新解析到当前投影的锚点。
-    pub(super) fn restore_anchor(&mut self, anchor: DisplayPoint, offset: Point<Pixels>) -> bool {
-        let changed = self.anchor != anchor || self.offset != offset;
-        self.anchor = anchor;
-        self.offset = offset;
-        self.pending_autoscroll = None;
-        self.pending_horizontal_autoscroll = false;
-        changed
+        self.set_scroll_top(scroll_top, snapshot);
+        self.anchor != old_anchor || self.display_point != old_point
     }
 
     /// 滚动轴 thumb 当前三态。
@@ -219,13 +240,9 @@ impl ScrollManager {
 
     /// 布局前调用：消费待自动滚动点并只应用垂直部分（光标行进出视口的锚点修正）。
     ///
-    /// 目标显示点由 `project`（字节 → 显示点）按当前布局换算；软换行重排发生在布局前，因此这里换算出的行号与最终布局一致。
-    /// 垂直部分只依赖光标行与视口几何，不依赖布局；
-    /// 在布局前应用可让首遍布局即为最终布局，避免光标移动帧的第二遍全量重排。
-    pub(super) fn apply_pending_autoscroll_vertical(
-        &mut self,
-        project: impl Fn(MultiBufferOffset) -> Option<DisplayPoint>,
-    ) -> bool {
+    /// 目标显示点按当前布局快照解析；软换行重排发生在布局前，因此这里换算出的行号与最终布局一致。
+    /// 垂直部分只依赖光标行与视口几何，不依赖布局；在布局前应用可让首遍布局即为最终布局。
+    pub(super) fn apply_pending_autoscroll_vertical(&mut self, snapshot: &DisplaySnapshot) -> bool {
         // 视口未就绪（首帧布局前）时保留请求，由布局时的 update_viewport 设置视口后再次应用；
         // 否则 take 会吞掉请求导致导航定位丢失。
         if self.viewport.is_none() {
@@ -237,9 +254,9 @@ impl ScrollManager {
         // 本次请求的水平部分留给布局后钳制（需要光标像素坐标）。
         self.pending_horizontal_autoscroll = true;
         let old_anchor = self.anchor;
-        let old_offset = self.offset;
-        self.apply_autoscroll(pending, project);
-        self.anchor != old_anchor || self.offset != old_offset
+        let old_point = self.display_point;
+        self.apply_autoscroll(pending, snapshot);
+        self.anchor != old_anchor || self.display_point != old_point
     }
 
     /// 布局后调用：若本次有自动滚动请求则做水平钳制（光标 x 进出视口时平移），返回是否变化。
@@ -255,22 +272,22 @@ impl ScrollManager {
             return false;
         }
         self.pending_horizontal_autoscroll = false;
-        let old_offset = self.offset;
+        let old_offset = self.anchor.offset;
         if let (Some(viewport), Some(caret_left), Some(caret_right)) =
             (self.viewport, caret_left, caret_right)
         {
-            let visible_left = self.offset.x;
-            let visible_right = self.offset.x + viewport.width;
+            let visible_left = self.anchor.offset.x;
+            let visible_right = self.anchor.offset.x + viewport.width;
             if caret_left < visible_left {
                 self.set_scroll_left(caret_left);
             } else if caret_right > visible_right {
                 self.set_scroll_left(caret_right - viewport.width);
             }
         }
-        self.offset != old_offset
+        self.anchor.offset != old_offset
     }
 
-    fn ensure_visible(&mut self, point: DisplayPoint) {
+    fn ensure_visible(&mut self, point: DisplayPoint, snapshot: &DisplaySnapshot) {
         let Some(viewport) = self.viewport else {
             return;
         };
@@ -281,9 +298,9 @@ impl ScrollManager {
         let viewport_bottom = scroll_top + viewport.height;
 
         if row_top < viewport_top {
-            self.set_scroll_top(row_top - viewport.top_inset);
+            self.set_scroll_top(row_top - viewport.top_inset, snapshot);
         } else if row_bottom > viewport_bottom {
-            self.set_scroll_top(row_bottom - viewport.height);
+            self.set_scroll_top(row_bottom - viewport.height, snapshot);
         }
     }
 
@@ -291,15 +308,15 @@ impl ScrollManager {
         let maximum = self
             .viewport
             .map(|viewport| (viewport.content_width - viewport.width).max(Pixels::ZERO));
-        self.offset.x = match maximum {
+        self.anchor.offset.x = match maximum {
             Some(maximum) => scroll_left.max(Pixels::ZERO).min(maximum),
             None => scroll_left.max(Pixels::ZERO),
         };
     }
 
-    fn set_scroll_top(&mut self, scroll_top: Pixels) {
+    fn set_scroll_top(&mut self, scroll_top: Pixels, snapshot: &DisplaySnapshot) {
         let Some(viewport) = self.viewport else {
-            self.offset.y = scroll_top.max(Pixels::ZERO);
+            self.anchor.offset.y = scroll_top.max(Pixels::ZERO);
             return;
         };
         let content_height = viewport.line_height * viewport.line_count;
@@ -307,9 +324,20 @@ impl ScrollManager {
         let scroll_top = scroll_top.max(Pixels::ZERO).min(maximum);
         let row = ((scroll_top / viewport.line_height).floor() as usize)
             .min(viewport.line_count.saturating_sub(1));
+        self.set_anchor_row(DisplayRow::new(row), snapshot);
+        self.anchor.offset.y = scroll_top - viewport.line_height * row;
+    }
 
-        self.anchor = DisplayPoint::new(DisplayRow::new(row), self.anchor.column());
-        self.offset.y = scroll_top - viewport.line_height * row;
+    /// 把视口顶部锚定到指定显示行：更新派生显示点，并用快照把该行起点重新锚定为组合锚点。
+    fn set_anchor_row(&mut self, row: DisplayRow, snapshot: &DisplaySnapshot) {
+        let display_point = DisplayPoint::new(row, DisplayColumn::ZERO);
+        self.display_point = display_point;
+        let offset = snapshot
+            .display_point_to_offset(display_point)
+            .unwrap_or(zcv_multi_buffer::MultiBufferOffset::ZERO);
+        self.anchor.anchor = snapshot
+            .buffer_snapshot()
+            .anchor_at(offset, Affinity::Before);
     }
 
     fn update_thumb_state(&mut self, state: ScrollbarThumbState) -> bool {
@@ -325,8 +353,8 @@ impl ScrollManager {
 impl Default for ScrollManager {
     fn default() -> Self {
         Self {
-            anchor: DisplayPoint::ZERO,
-            offset: point(px(0.0), px(0.0)),
+            anchor: ScrollAnchor::new(),
+            display_point: DisplayPoint::ZERO,
             viewport: None,
             pending_autoscroll: None,
             pending_horizontal_autoscroll: false,
@@ -335,189 +363,11 @@ impl Default for ScrollManager {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::display_map::DisplayColumn;
-
-    use super::*;
-
-    #[test]
-    fn wheel_delta_normalizes_anchor_and_clamps_document_edges() {
-        let mut manager = ScrollManager::default();
-        manager.update_viewport(100, px(100.), px(100.), px(200.), px(20.), px(0.));
-
-        assert!(manager.scroll_by(point(px(0.), px(-55.))));
-        assert_eq!(
-            manager.anchor(),
-            DisplayPoint::new(DisplayRow::new(2), DisplayColumn::ZERO)
-        );
-        assert_eq!(manager.offset().y, px(15.));
-
-        manager.scroll_by(point(px(0.), px(-10_000.)));
-        assert_eq!(manager.anchor().row(), DisplayRow::new(95));
-        assert_eq!(manager.offset().y, px(0.));
-
-        manager.scroll_by(point(px(0.), px(10_000.)));
-        assert_eq!(manager.anchor(), DisplayPoint::ZERO);
-        assert_eq!(manager.offset(), point(px(0.), px(0.)));
-    }
-
-    #[test]
-    fn pending_autoscroll_reveals_rows_after_viewport_update() {
-        // 测试换算闭包：字节偏移直接当显示行号。
-        let project = |head: MultiBufferOffset| {
-            Some(DisplayPoint::new(
-                DisplayRow::new(head.get()),
-                DisplayColumn::ZERO,
-            ))
-        };
-        let mut manager = ScrollManager::default();
-        manager.request_autoscroll(MultiBufferOffset::new(20));
-        manager.update_viewport(50, px(100.), px(100.), px(200.), px(20.), px(0.));
-        assert!(manager.apply_pending_autoscroll_vertical(project));
-
-        assert_eq!(manager.anchor().row(), DisplayRow::new(16));
-        assert_eq!(manager.offset().y, px(0.));
-
-        manager.request_autoscroll(MultiBufferOffset::new(2));
-        manager.update_viewport(50, px(100.), px(100.), px(200.), px(20.), px(0.));
-        assert!(manager.apply_pending_autoscroll_vertical(project));
-        assert_eq!(manager.anchor().row(), DisplayRow::new(2));
-        assert_eq!(manager.offset().y, px(0.));
-    }
-
-    #[test]
-    fn autoscroll_keeps_target_below_sticky_header() {
-        let project = |head: MultiBufferOffset| {
-            Some(DisplayPoint::new(
-                DisplayRow::new(head.get()),
-                DisplayColumn::ZERO,
-            ))
-        };
-        let mut manager = ScrollManager::default();
-        manager.update_viewport(50, px(100.), px(100.), px(200.), px(20.), px(40.));
-        manager.scroll_to(px(200.));
-
-        manager.request_autoscroll(MultiBufferOffset::new(10));
-        assert!(manager.apply_pending_autoscroll_vertical(project));
-        assert_eq!(manager.scroll_top(), px(160.));
-
-        manager.request_scroll_to_top(MultiBufferOffset::new(10), 2);
-        assert!(manager.apply_pending_autoscroll_vertical(project));
-        assert_eq!(manager.scroll_top(), px(120.));
-    }
-
-    #[test]
-    fn page_scroll_moves_one_visible_page_with_one_row_overlap() {
-        let mut manager = ScrollManager::default();
-        manager.update_viewport(100, px(100.), px(100.), px(200.), px(20.), px(0.));
-
-        assert_eq!(manager.page_row_count(), Some(4));
-        assert!(manager.scroll_page(true));
-        assert_eq!(manager.anchor().row(), DisplayRow::new(4));
-        assert!(manager.scroll_page(false));
-        assert_eq!(manager.anchor().row(), DisplayRow::ZERO);
-    }
-
-    #[test]
-    fn viewport_resize_clamps_existing_scroll_position() {
-        let mut manager = ScrollManager::default();
-        manager.update_viewport(10, px(100.), px(40.), px(200.), px(20.), px(0.));
-        manager.scroll_by(point(px(-12.), px(-500.)));
-        assert_eq!(manager.offset().x, px(12.));
-        assert_eq!(manager.anchor().row(), DisplayRow::new(8));
-
-        manager.update_viewport(3, px(100.), px(100.), px(200.), px(20.), px(0.));
-        assert_eq!(manager.anchor().row(), DisplayRow::ZERO);
-        assert_eq!(manager.offset().y, px(0.));
-        assert_eq!(manager.offset().x, px(12.));
-    }
-
-    #[test]
-    fn horizontal_scroll_is_clamped_to_content_width() {
-        let mut manager = ScrollManager::default();
-        manager.update_viewport(1, px(100.), px(40.), px(260.), px(20.), px(0.));
-
-        manager.scroll_by(point(px(-10_000.), px(0.)));
-        assert_eq!(manager.offset().x, px(160.));
-
-        manager.scroll_by(point(px(10_000.), px(0.)));
-        assert_eq!(manager.offset().x, px(0.));
-
-        manager.scroll_by(point(px(-10_000.), px(0.)));
-        manager.update_viewport(1, px(180.), px(40.), px(220.), px(20.), px(0.));
-        assert_eq!(manager.offset().x, px(40.));
-    }
-
-    #[test]
-    fn caret_autoscroll_reveals_exact_bounds_without_affecting_manual_scroll() {
-        let project = |head: MultiBufferOffset| {
-            Some(DisplayPoint::new(
-                DisplayRow::new(head.get()),
-                DisplayColumn::ZERO,
-            ))
-        };
-        let mut manager = ScrollManager::default();
-        manager.update_viewport(1, px(100.), px(40.), px(300.), px(20.), px(0.));
-        manager.request_autoscroll(MultiBufferOffset::new(0));
-
-        // 垂直部分布局前应用（光标行在视口内，无变化）；水平部分布局后钳制。
-        assert!(!manager.apply_pending_autoscroll_vertical(project));
-        assert!(manager.complete_autoscroll_horizontal(Some(px(180.)), Some(px(182.))));
-        assert_eq!(manager.offset().x, px(82.));
-
-        // 手动滚动清除自动滚动请求，水平钳制不再触发。
-        manager.scroll_by(point(px(-20.), px(0.)));
-        assert_eq!(manager.offset().x, px(102.));
-        assert!(!manager.complete_autoscroll_horizontal(Some(px(180.)), Some(px(182.))));
-        assert_eq!(manager.offset().x, px(102.));
-    }
-
-    #[test]
-    fn scroll_to_clamps_and_normalizes_anchor_and_offset() {
-        let mut manager = ScrollManager::default();
-        manager.update_viewport(100, px(100.), px(100.), px(200.), px(20.), px(0.));
-
-        assert!(manager.scroll_to(px(35.)));
-        assert_eq!(manager.anchor().row(), DisplayRow::new(1));
-        assert_eq!(manager.offset().y, px(15.));
-        assert_eq!(manager.scroll_top(), px(35.));
-
-        assert!(manager.scroll_to(px(10_000.)));
-        assert_eq!(manager.scroll_top(), px(1_900.));
-        assert_eq!(manager.anchor().row(), DisplayRow::new(95));
-        assert_eq!(manager.offset().y, px(0.));
-
-        assert!(manager.scroll_to(px(-100.)));
-        assert_eq!(manager.scroll_top(), px(0.));
-        assert_eq!(manager.anchor(), DisplayPoint::ZERO);
-
-        assert!(!manager.scroll_to(px(0.)));
-    }
-
-    #[test]
-    fn scroll_to_without_viewport_writes_subpixel_offset() {
-        let mut manager = ScrollManager::default();
-
-        assert_eq!(manager.max_scroll_top(), px(0.));
-        assert!(manager.scroll_to(px(42.)));
-        assert_eq!(manager.offset().y, px(42.));
-        assert_eq!(manager.scroll_top(), px(42.));
-        assert!(!manager.scroll_to(px(42.)));
-    }
-
-    #[test]
-    fn thumb_state_transitions_are_dirty_checked() {
-        let mut manager = ScrollManager::default();
-
-        assert_eq!(manager.thumb_state(), ScrollbarThumbState::Idle);
-        assert!(manager.set_thumb_hovered());
-        assert!(!manager.set_thumb_hovered());
-        assert_eq!(manager.thumb_state(), ScrollbarThumbState::Hovered);
-        assert!(manager.set_thumb_dragged());
-        assert_eq!(manager.thumb_state(), ScrollbarThumbState::Dragging);
-        assert!(manager.reset_thumb_state());
-        assert_eq!(manager.thumb_state(), ScrollbarThumbState::Idle);
-        assert!(!manager.reset_thumb_state());
-    }
+/// 把组合锚点按当前快照解析为显示点。
+fn resolve_display_point(
+    snapshot: &DisplaySnapshot,
+    anchor: &MultiBufferAnchor,
+) -> Option<DisplayPoint> {
+    let offset = snapshot.buffer_snapshot().resolve_anchor(anchor)?;
+    snapshot.offset_to_display_point(offset).ok()
 }

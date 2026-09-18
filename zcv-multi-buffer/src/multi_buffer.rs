@@ -28,8 +28,8 @@ use gpui::{App, Context, Entity, EventEmitter, Subscription};
 use sum_tree::{Bias, ContextLessSummary, Cursor, Dimension, Item, SeekTarget, SumTree};
 use unicode_segmentation::UnicodeSegmentation;
 use zcv_language::{
-    AutoClosePair, BracketPair, FoldRange, HighlightSpan, LanguageBuffer, LanguageBufferEvent,
-    LocalBinding, NewlineIndent, OutlineItem, OutlineTextRange, SyntaxNode, SyntaxSnapshot,
+    AutoClosePair, BracketPair, HighlightSpan, LanguageBuffer, LanguageBufferEvent, LocalBinding,
+    NewlineIndent, OutlineItem, OutlineTextRange, SyntaxNode, SyntaxSnapshot,
 };
 use zcv_text::{
     Affinity, Anchor, Buffer, BufferConfig, BufferVersion, ByteOffset, CharOffset, CoordinateError,
@@ -164,32 +164,45 @@ pub struct ExcerptLocation {
 
 /// 组合文档中的稳定位置。
 ///
-/// 主位置绑定到底层文件与源字节；文件退出投影时按原有文件顺序解析到最近的后继，
-/// 没有后继时再回到前驱。该语义用于在 excerpts 结构刷新后保持阅读位置。
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MultiBufferAnchor {
+/// 对齐 Zed 的组合 Anchor：要么是文档边界，要么绑定一个源片段身份与源文本 Anchor。
+/// 稳定位置不保存裸偏移；解析时按当前快照用源 Anchor 推进，再按 excerpt 身份投影到组合坐标。
+/// 文件退出投影时按当前路径顺序解析到最近的后继，没有后继时回到前驱。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MultiBufferAnchor {
+    /// 始终解析到组合文档开头。
+    Min,
+    /// 绑定具体源片段的组合位置。
+    Excerpt(ExcerptAnchor),
+    /// 始终解析到组合文档末尾。
+    Max,
+}
+
+/// 绑定源片段身份与源文本 Anchor 的组合位置。
+///
+/// `source_id` 为 `None` 表示纯文本派生快照（没有工作区源实体）；
+/// `text_anchor` 承载源内位置与插入点吸附方向（affinity）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ExcerptAnchor {
     path: PathKeyIndex,
-    source_id: gpui::EntityId,
-    source_offset: ByteOffset,
-    following_paths: Vec<PathKeyIndex>,
-    preceding_paths: Vec<PathKeyIndex>,
+    source_id: Option<gpui::EntityId>,
+    text_anchor: Anchor,
 }
 
 impl MultiBufferAnchor {
-    /// 源自身变更（外部编辑、共享 Buffer 的其他 Editor 编辑）后推进源偏移。
-    ///
-    /// 仅当锚点绑定该源时生效；按 `affinity` 决定同点插入的吸附方向。
-    /// 投影重建不经过这里——重建不改变源，源锚点直接按重建后快照解析即可。
-    pub fn map_through_source_change(
-        &mut self,
-        source_id: gpui::EntityId,
-        position_map: &PositionMap,
-        affinity: Affinity,
-    ) {
-        if self.source_id == source_id {
-            self.source_offset = position_map
-                .map_old_position_with_affinity(self.source_offset, affinity)
-                .value();
+    fn excerpt(path: PathKeyIndex, source_id: Option<gpui::EntityId>, text_anchor: Anchor) -> Self {
+        Self::Excerpt(ExcerptAnchor {
+            path,
+            source_id,
+            text_anchor,
+        })
+    }
+
+    /// 空投影中的边界锚点：文首取 Min，其余取 Max。
+    fn boundary(offset: MultiBufferOffset) -> Self {
+        if offset == MultiBufferOffset::ZERO {
+            Self::Min
+        } else {
+            Self::Max
         }
     }
 }
@@ -2160,8 +2173,19 @@ impl MultiBufferSnapshot {
     }
 
     /// 把快照内的组合偏移锚定到底层源坐标（Editor 源锚点选区：投影→源）。
-    pub fn anchor_for_offset(&self, offset: MultiBufferOffset) -> Option<MultiBufferAnchor> {
-        anchor_in_mappings(&self.excerpts, &self.diff_transforms, offset.into())
+    pub fn anchor_at(
+        &self,
+        offset: impl Into<MultiBufferOffset>,
+        affinity: Affinity,
+    ) -> MultiBufferAnchor {
+        let offset: MultiBufferOffset = offset.into();
+        anchor_in_mappings(
+            &self.excerpts,
+            &self.diff_transforms,
+            offset.into(),
+            affinity,
+        )
+        .unwrap_or_else(|| MultiBufferAnchor::boundary(offset))
     }
 
     /// 把源锚点解析回快照内的组合偏移（Editor 源锚点选区：源→投影）。
@@ -2172,6 +2196,7 @@ impl MultiBufferSnapshot {
             &self.excerpts,
             &self.diff_transforms,
             &self.path_keys,
+            &self.excerpt_sources[..],
             anchor,
         )
         .map(Into::into)
@@ -2856,12 +2881,6 @@ pub struct MultiBuffer {
     diff_expanded_by_default: bool,
     /// 已物化进组合文档的前导文件数量（diff 以路径顺序登记，就绪前缀之外的文件尚未物化）。
     diff_materialized_files: usize,
-    /// 外部源变更（共享 Buffer 的其他 Editor、直接编辑源）留下的源 PositionMap。
-    ///
-    /// 源锚点选区是单一数据源：只有源自身变更才需要推进源锚点，投影重建不经过这里。
-    /// 本编辑器自己发起的编辑在 [`MultiBuffer::edit`] 内已经物化到显示流；
-    /// 后续源事件只消费到相同版本，不会再次进入此队列。
-    pending_source_remaps: Vec<(gpui::EntityId, PositionMap)>,
     /// 快照相关状态的单调版本；任何 excerpt/源文本/语法变化都推进它。
     snapshot_epoch: u64,
     /// `snapshot()` 的 O(1) 缓存：epoch 未变时直接复用上一份快照。
@@ -2930,7 +2949,6 @@ impl MultiBuffer {
             diff: None,
             diff_expanded_by_default: false,
             diff_materialized_files: 0,
-            pending_source_remaps: Vec::new(),
             snapshot_epoch: 0,
             snapshot_cache: std::cell::RefCell::new(None),
         }
@@ -3841,7 +3859,7 @@ impl MultiBuffer {
     }
 
     fn source_changed(&mut self, source_id: gpui::EntityId, cx: &mut Context<Self>) {
-        self.synchronize_source_change(source_id, DiffRefresh::RebuildProjection, None, true, cx);
+        self.synchronize_source_change(source_id, DiffRefresh::RebuildProjection, None, cx);
     }
 
     /// 从 MultiBuffer 自己拥有的源订阅拉取下一段连续变化并推进投影。
@@ -3853,7 +3871,6 @@ impl MultiBuffer {
         source_id: gpui::EntityId,
         diff_refresh: DiffRefresh,
         expanded_excerpts: Option<&HashSet<usize>>,
-        record_external_remap: bool,
         cx: &mut Context<Self>,
     ) -> Option<TextChangeBatch> {
         let source_change = self
@@ -3879,11 +3896,6 @@ impl MultiBuffer {
             "MultiBuffer 必须按自己的源订阅连续消费文本变化"
         );
         let position_map = source_change.position_map();
-        if record_external_remap {
-            // 外部源变更：选区先按源坐标推进，再解析到重建后的显示拓扑。
-            self.pending_source_remaps
-                .push((source_id, position_map.clone()));
-        }
         // 外部整体刷新会重建 excerpt 拓扑；文本始终由当前 source 快照按需读取。
         if source_change.requires_reset() && self.is_diff_source(source_id, cx) {
             let before = self.projection_trees();
@@ -4169,7 +4181,6 @@ impl MultiBuffer {
                 source_id,
                 DiffRefresh::PreserveProjection,
                 Some(&edited_excerpts),
-                false,
                 cx,
             )
             .ok_or_else(|| TextError::InvariantViolation {
@@ -4421,7 +4432,6 @@ impl MultiBuffer {
                     source.entity_id(),
                     DiffRefresh::PreserveProjection,
                     None,
-                    false,
                     cx,
                 )
                 .ok_or_else(|| TextError::InvariantViolation {
@@ -4509,17 +4519,11 @@ impl MultiBuffer {
             replayed_source_ids.push(source_id);
         }
         for source_id in replayed_source_ids {
-            self.synchronize_source_change(
-                source_id,
-                DiffRefresh::PreserveProjection,
-                None,
-                false,
-                cx,
-            )
-            .ok_or_else(|| TextError::InvariantViolation {
-                location: "MultiBuffer::replay_history",
-                detail: "源 Buffer 已回放历史但 MultiBuffer 订阅未收到变化".to_string(),
-            })?;
+            self.synchronize_source_change(source_id, DiffRefresh::PreserveProjection, None, cx)
+                .ok_or_else(|| TextError::InvariantViolation {
+                    location: "MultiBuffer::replay_history",
+                    detail: "源 Buffer 已回放历史但 MultiBuffer 订阅未收到变化".to_string(),
+                })?;
         }
         let position_map = PositionMap::default();
         let new_version = self.snapshot(cx).version();
@@ -4713,20 +4717,20 @@ impl MultiBuffer {
         self.location_for_range(range)
     }
 
-    /// 把当前组合偏移锚定到底层文件坐标，并记录文件消失时的邻接解析顺序。
-    pub fn anchor_for_offset(&self, offset: MultiBufferOffset) -> Option<MultiBufferAnchor> {
+    /// 把当前组合偏移锚定到底层源坐标；affinity 决定同点插入的吸附方向。
+    pub fn anchor_at(
+        &self,
+        offset: impl Into<MultiBufferOffset>,
+        affinity: Affinity,
+    ) -> MultiBufferAnchor {
+        let offset: MultiBufferOffset = offset.into();
         anchor_in_mappings(
             &self.state.excerpts,
             &self.state.diff_transforms,
             offset.into(),
+            affinity,
         )
-    }
-
-    /// 取走并清空外部源变更留下的源 PositionMap（编辑器据此推进源锚点选区）。
-    pub fn take_pending_source_remaps(&mut self) -> Vec<(gpui::EntityId, PositionMap)> {
-        std::mem::take(&mut self.pending_source_remaps)
-            .into_iter()
-            .collect()
+        .unwrap_or_else(|| MultiBufferAnchor::boundary(offset))
     }
 
     /// 在当前 excerpts 中解析稳定位置；同一文件仍存在时优先落到最接近的源片段。
@@ -4735,6 +4739,7 @@ impl MultiBuffer {
             &self.state.excerpts,
             &self.state.diff_transforms,
             &self.state.path_keys,
+            self.state.sources.as_slice(),
             anchor,
         )
         .map(Into::into)
@@ -4806,20 +4811,28 @@ impl MultiBuffer {
             .language_name()
     }
 
-    /// 当前已安装解析对应的折叠范围。
+    /// 当前源折叠投影到组合坐标后的锚点范围。
     ///
+    /// 源折叠端点先按当前源快照推进为源偏移，再投影到组合坐标并锚定为 MultiBufferAnchor；
+    /// 消费方无需跨版本补偿。
     /// 一个源可能被展开的 diff hunk 切成多个 excerpt：
     /// 只要这些 excerpt 在源内连续覆盖，折叠范围就跨它们投影到组合坐标（中间夹入的旧侧 excerpt 也落在折叠范围内）；
     /// 跨过未展示内容或文件边界的折叠仍被丢弃。
-    pub fn fold_ranges(&self, cx: &App) -> Arc<[FoldRange]> {
-        let mut projected = Vec::new();
+    pub fn fold_ranges(&self, cx: &App) -> Arc<[Range<MultiBufferAnchor>]> {
+        let snapshot = self.snapshot(cx);
+        let mut projected: Vec<Range<MultiBufferAnchor>> = Vec::new();
         for (source_index, source) in self.state.sources.iter().enumerate() {
             let source_folds = source.entity.read(cx).fold_ranges();
             if source_folds.is_empty() {
                 continue;
             }
             for fold in source_folds.iter() {
-                let (start, end) = (fold.range.start, fold.range.end);
+                let (Some(start), Some(end)) = (
+                    fold.range.start.resolve_in(&source.text),
+                    fold.range.end.resolve_in(&source.text),
+                ) else {
+                    continue;
+                };
                 if start >= end {
                     continue;
                 }
@@ -4835,23 +4848,33 @@ impl MultiBuffer {
                     &self.state.diff_transforms,
                     &path,
                     source_index,
-                    start,
-                    end,
+                    start.get(),
+                    end.get(),
                 ) else {
                     continue;
                 };
-                let output_start = start_mapping.output_range.start().get() + start
+                let output_start = start_mapping.output_range.start().get() + start.get()
                     - start_mapping.source_range.start().get();
-                let output_end = end_mapping.output_range.start().get() + end
+                let output_end = end_mapping.output_range.start().get() + end.get()
                     - end_mapping.source_range.start().get();
                 if output_start < output_end {
-                    projected.push(FoldRange {
-                        range: output_start..output_end,
-                    });
+                    projected.push(
+                        snapshot.anchor_at(ByteOffset::new(output_start), Affinity::Before)
+                            ..snapshot.anchor_at(ByteOffset::new(output_end), Affinity::After),
+                    );
                 }
             }
         }
-        projected.sort_unstable_by_key(|fold| (fold.range.start, fold.range.end));
+        projected.sort_unstable_by_key(|range| {
+            (
+                snapshot
+                    .resolve_anchor(&range.start)
+                    .map_or(0, |offset| offset.get()),
+                snapshot
+                    .resolve_anchor(&range.end)
+                    .map_or(0, |offset| offset.get()),
+            )
+        });
         projected.dedup();
         Arc::from(projected)
     }
@@ -5051,64 +5074,106 @@ fn source_mapping_range(
     None
 }
 
-/// 在给定投影→源映射中把投影偏移锚定到源坐标，并记录文件消失时的邻接解析顺序。
+/// 解析组合锚点时读取源文本快照的统一入口。
 ///
-/// 供 [`MultiBuffer::anchor_for_offset`] 与 [`MultiBufferSnapshot::anchor_for_offset`] 共用。
+/// 组合锚点保存源 `zcv_text::Anchor`，解析时必须用当前源快照把锚点版本推进到当前坐标。
+trait SourceTexts {
+    fn source_text(&self, source_index: usize) -> Option<&Snapshot>;
+}
+
+impl SourceTexts for [ExcerptSource] {
+    fn source_text(&self, source_index: usize) -> Option<&Snapshot> {
+        self.get(source_index).map(|source| &source.text)
+    }
+}
+
+impl SourceTexts for [ExcerptSourceSnapshot] {
+    fn source_text(&self, source_index: usize) -> Option<&Snapshot> {
+        self.get(source_index).map(|source| &source.text)
+    }
+}
+
+/// 在给定投影→源映射中把投影偏移锚定到源坐标。
+///
+/// 供 [`MultiBuffer::anchor_at`] 与 [`MultiBufferSnapshot::anchor_at`] 共用。
 fn anchor_in_mappings(
     excerpts: &SumTree<Excerpt>,
     tree: &SumTree<DiffTransform>,
     offset: ByteOffset,
+    affinity: Affinity,
 ) -> Option<MultiBufferAnchor> {
     let (mapping, at) = mapping_at_tree(excerpts, tree, offset)?;
     let source_offset = ByteOffset::new(
         (mapping.source_range.start().get() + offset.get().saturating_sub(at.bytes))
             .min(mapping.source_range.end().get()),
     );
-    let path_index = mapping.path_index;
-    let source_id = mapping.source_id?;
-    let found_start = at.bytes;
+    let text_anchor =
+        Anchor::new(mapping.source_range.version(), source_offset).with_affinity(affinity);
+    Some(MultiBufferAnchor::excerpt(
+        mapping.path_index,
+        mapping.source_id,
+        text_anchor,
+    ))
+}
 
-    let mut following = HashSet::new();
-    let mut following_paths = Vec::new();
-    let mut cursor = MultiBufferCursor::new(excerpts, tree);
-    cursor.seek_output(ByteOffset::new(found_start), Bias::Right);
-    if cursor
-        .item()
-        .is_some_and(|_| cursor.start().bytes == found_start)
-    {
-        cursor.next();
-    }
-    while let Some((item, _)) = cursor.item() {
-        if item.path_index != path_index && following.insert(item.path_index) {
-            following_paths.push(item.path_index);
+/// 把锚点绑定的源 Anchor 按当前源文本快照推进到源坐标。
+///
+/// 找不到绑定源、或锚点版本已被编辑日志裁剪时返回 None，由调用方按最近路径回退。
+fn excerpt_anchor_source_offset<S: SourceTexts + ?Sized>(
+    excerpts: &SumTree<Excerpt>,
+    path_keys: &[PathKey],
+    sources: &S,
+    anchor: &ExcerptAnchor,
+) -> Option<ByteOffset> {
+    let path_key = path_keys.get(anchor.path.get() as usize)?;
+    let mut cursor = excerpts.cursor::<ExcerptSummary>(());
+    cursor.seek(path_key, Bias::Left);
+    while let Some(excerpt) = cursor.item() {
+        if &excerpt.path != path_key {
+            break;
+        }
+        if excerpt.source_id == anchor.source_id {
+            let text = sources.source_text(excerpt.source_index)?;
+            return anchor.text_anchor.resolve_in(text);
         }
         cursor.next();
     }
+    None
+}
 
-    let mut preceding = HashSet::new();
-    let mut preceding_paths = Vec::new();
-    let mut cursor = MultiBufferCursor::new(excerpts, tree);
-    cursor.seek_output(ByteOffset::new(found_start), Bias::Left);
-    if cursor
-        .item()
-        .is_some_and(|_| cursor.start().bytes == found_start)
-    {
-        cursor.prev();
-    }
-    while let Some((item, _)) = cursor.item() {
-        if item.path_index != path_index && preceding.insert(item.path_index) {
-            preceding_paths.push(item.path_index);
+/// 锚点绑定路径退出投影后，按当前路径顺序解析到最近的后继/前驱片段。
+fn nearest_path_output_offset(
+    excerpts: &SumTree<Excerpt>,
+    tree: &SumTree<DiffTransform>,
+    path_keys: &[PathKey],
+    path: PathKeyIndex,
+) -> Option<ByteOffset> {
+    let anchor_key = path_keys.get(path.get() as usize)?;
+    let mut following: Option<&PathKey> = None;
+    let mut preceding: Option<&PathKey> = None;
+    for key in path_keys {
+        if key == anchor_key || first_mapping_for_path(excerpts, tree, key).is_none() {
+            continue;
         }
-        cursor.prev();
+        if key > anchor_key {
+            if following.is_none_or(|current| key < current) {
+                following = Some(key);
+            }
+        } else if preceding.is_none_or(|current| key > current) {
+            preceding = Some(key);
+        }
     }
-
-    Some(MultiBufferAnchor {
-        path: path_index,
-        source_id,
-        source_offset,
-        following_paths,
-        preceding_paths,
-    })
+    if let Some(path_key) = following
+        && let Some((output_start, _)) = first_mapping_for_path(excerpts, tree, path_key)
+    {
+        return Some(ByteOffset::new(output_start));
+    }
+    if let Some(path_key) = preceding
+        && let Some((output_end, _)) = last_mapping_for_path(excerpts, tree, path_key)
+    {
+        return Some(ByteOffset::new(output_end));
+    }
+    None
 }
 
 fn nearest_output_offset_for_source(
@@ -5187,50 +5252,49 @@ fn nearest_output_offset_for_source(
         .map(|(_, _, output)| output)
 }
 
-/// 在给定投影→源映射中把源锚点解析回投影偏移；同一文件仍存在时优先落到最接近的源片段。
+/// 在给定投影→源映射中把源锚点解析回投影偏移。
 ///
+/// 同一文件仍存在时优先落到最接近的源片段；文件退出投影时按当前路径顺序落到最近的后继/前驱。
 /// [`MultiBuffer::resolve_anchor`]（当前映射）与 [`MultiBufferSnapshot::resolve_anchor`]（快照映射）共用此解析逻辑。
-fn resolve_anchor_in_mappings(
+fn resolve_anchor_in_mappings<S: SourceTexts + ?Sized>(
     excerpts: &SumTree<Excerpt>,
     tree: &SumTree<DiffTransform>,
     path_keys: &[PathKey],
+    sources: &S,
     anchor: &MultiBufferAnchor,
 ) -> Option<ByteOffset> {
-    if let Some(offset) = nearest_output_offset_for_source(
-        excerpts,
-        tree,
-        path_keys,
-        anchor.path,
-        Some(anchor.source_id),
-        anchor.source_offset,
-    ) {
-        return Some(offset);
-    }
-    if let Some(offset) = nearest_output_offset_for_source(
-        excerpts,
-        tree,
-        path_keys,
-        anchor.path,
-        None,
-        anchor.source_offset,
-    ) {
-        return Some(offset);
-    }
-    for path in &anchor.following_paths {
-        if let Some(path_key) = path_keys.get(path.get() as usize)
-            && let Some((output_start, _)) = first_mapping_for_path(excerpts, tree, path_key)
-        {
-            return Some(ByteOffset::new(output_start));
+    let excerpt_anchor = match anchor {
+        MultiBufferAnchor::Min => return Some(ByteOffset::ZERO),
+        MultiBufferAnchor::Max => {
+            return Some(ByteOffset::new(tree.summary().output.text.len));
+        }
+        MultiBufferAnchor::Excerpt(excerpt_anchor) => excerpt_anchor,
+    };
+    if let Some(source_offset) =
+        excerpt_anchor_source_offset(excerpts, path_keys, sources, excerpt_anchor)
+    {
+        if let Some(offset) = nearest_output_offset_for_source(
+            excerpts,
+            tree,
+            path_keys,
+            excerpt_anchor.path,
+            excerpt_anchor.source_id,
+            source_offset,
+        ) {
+            return Some(offset);
+        }
+        if let Some(offset) = nearest_output_offset_for_source(
+            excerpts,
+            tree,
+            path_keys,
+            excerpt_anchor.path,
+            None,
+            source_offset,
+        ) {
+            return Some(offset);
         }
     }
-    for path in &anchor.preceding_paths {
-        if let Some(path_key) = path_keys.get(path.get() as usize)
-            && let Some((output_end, _)) = last_mapping_for_path(excerpts, tree, path_key)
-        {
-            return Some(ByteOffset::new(output_end));
-        }
-    }
-    None
+    nearest_path_output_offset(excerpts, tree, path_keys, excerpt_anchor.path)
 }
 
 /// 路径区间内的第一个映射及其输出起点（路径不存在时 None）。

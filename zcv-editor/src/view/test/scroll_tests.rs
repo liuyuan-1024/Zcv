@@ -63,17 +63,12 @@ fn composite_refresh_restores_scroll_from_source_anchor(cx: &mut TestAppContext)
     cx.run_until_parked();
     cx.refresh().expect("测试窗口应可刷新");
     let line_height = cx.update(|window, _| window.line_height());
-    let (scroll_anchor, old_output_offset) = cx.update_entity(&editor, |editor, cx| {
+    let old_output_offset = cx.update_entity(&editor, |editor, cx| {
         assert!(editor.scroll_to(line_height * 70., cx));
-        (
-            editor
-                .capture_scroll_anchor(cx)
-                .expect("组合视口应能锚定到底层文件"),
-            editor
-                .display_snapshot
-                .display_point_to_offset(editor.scroll_anchor())
-                .expect("旧视口顶部应能映射到组合偏移"),
-        )
+        editor
+            .display_snapshot()
+            .display_point_to_offset(editor.scroll_anchor())
+            .expect("旧视口顶部应能映射到组合偏移")
     });
     let old_location = cx.read_entity(&combined, |buffer, _| {
         buffer
@@ -84,13 +79,16 @@ fn composite_refresh_restores_scroll_from_source_anchor(cx: &mut TestAppContext)
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(vec![ExcerptRange::line_range(second, 20..70, cx)], cx);
     });
-    cx.update_entity(&editor, |editor, cx| {
-        assert!(editor.restore_scroll_anchor(scroll_anchor, cx));
-        assert_ne!(editor.scroll_anchor().row().get(), 0);
-    });
+    cx.run_until_parked();
+    cx.refresh().expect("结构刷新后测试窗口应可刷新");
+    // 长期滚动锚点由 ScrollManager 持有，excerpt 重建后按当前快照解析即回到原文件内容位置。
+    assert_ne!(
+        cx.read_entity(&editor, |editor, _| editor.scroll_anchor().row().get()),
+        0
+    );
     let new_output_offset = cx.read_entity(&editor, |editor, _| {
         editor
-            .display_snapshot
+            .display_snapshot()
             .display_point_to_offset(editor.scroll_anchor())
             .expect("新视口顶部应能映射到组合偏移")
     });
@@ -127,19 +125,18 @@ fn composite_refresh_keeps_the_viewport_anchored_to_the_file(cx: &mut TestAppCon
     cx.run_until_parked();
     cx.refresh().expect("测试窗口应可刷新");
 
-    let anchor = cx.update_entity(&editor, |editor, cx| {
-        assert_eq!(editor.scroll_anchor().row(), DisplayRow::ZERO);
-        editor
-            .capture_scroll_anchor(cx)
-            .expect("文件标题应能锚定到底层文件")
+    // 文件标题块占两个显示行，视口锚点解析到该文件首个文本行。
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(editor.scroll_anchor().row(), DisplayRow::new(2));
     });
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(vec![ExcerptRange::line_range(source, 10..70, cx)], cx);
     });
-    cx.update_entity(&editor, |editor, cx| {
-        assert!(editor.restore_scroll_anchor(anchor, cx));
-        // 锚点保存的是底层文件位置；DisplayMap 把文件标题解析为 sticky 块，
-        // 视口落在该文件的第一个文本行（标题占 2 行）。
+    cx.run_until_parked();
+    cx.refresh().expect("结构刷新后测试窗口应可刷新");
+    // 锚点保存的是底层文件位置；DisplayMap 把文件标题解析为 sticky 块，
+    // 视口落在该文件的第一个文本行（标题占 2 行）。
+    cx.read_entity(&editor, |editor, _| {
         assert_eq!(editor.scroll_anchor().row(), DisplayRow::new(2));
     });
 }
@@ -185,9 +182,8 @@ fn folding_a_later_file_preserves_the_viewport_anchor(cx: &mut TestAppContext) {
     let line_height = cx.update(|window, _| window.line_height());
     let old_output_offset = cx.update_entity(&editor, |editor, cx| {
         assert!(editor.scroll_to(line_height * 60., cx));
-        assert!(editor.capture_scroll_anchor(cx).is_some());
         editor
-            .display_snapshot
+            .display_snapshot()
             .display_point_to_offset(editor.scroll_anchor())
             .expect("折叠前视口顶部应能映射到组合偏移")
     });
@@ -205,7 +201,7 @@ fn folding_a_later_file_preserves_the_viewport_anchor(cx: &mut TestAppContext) {
 
     let new_output_offset = cx.read_entity(&editor, |editor, _| {
         editor
-            .display_snapshot
+            .display_snapshot()
             .display_point_to_offset(editor.scroll_anchor())
             .expect("折叠后视口顶部应能映射到组合偏移")
     });
@@ -314,7 +310,7 @@ fn navigation_before_wrap_layout_lands_on_target_row(cx: &mut TestAppContext) {
             .position_to_byte(Position::new(Line::new(target_line), LogicalColumn::ZERO))
             .expect("目标行应有效")
     });
-    let before_nav = cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count());
+    let before_nav = cx.read_entity(&editor, |editor, _| editor.display_snapshot().line_count());
     assert_eq!(before_nav, 120, "导航前 Editor 未布局，不应换行");
     editor.update(cx, |editor, cx| {
         editor.select_byte_range(target_offset.get()..target_offset.get(), cx);
@@ -330,7 +326,7 @@ fn navigation_before_wrap_layout_lands_on_target_row(cx: &mut TestAppContext) {
     cx.read_entity(&editor, |editor, _| {
         let head = editor.selections().primary().head();
         let point = editor
-            .display_snapshot
+            .display_snapshot()
             .offset_to_display_point(head)
             .expect("目标显示点应可映射");
         let viewport_top = editor.scroll_anchor().row().get();
@@ -398,7 +394,10 @@ fn horizontal_scroll_stops_at_content_edge_and_caret_autoscrolls(cx: &mut TestAp
     });
 
     cx.update_entity(&editor, |editor, cx| {
-        editor.scroll_manager.scroll_by(point(px(100_000.), px(0.)));
+        let display = editor.display_snapshot();
+        editor
+            .scroll_manager
+            .scroll_by(point(px(100_000.), px(0.)), &display);
         editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(text.len())));
         editor.request_autoscroll();
         cx.notify();

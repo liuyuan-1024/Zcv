@@ -16,9 +16,7 @@ use zcv_text::{Anchor, TransactionId, Utf16Offset};
 
 use super::*;
 use crate::element::EditorInputLayout;
-use crate::selection::{
-    EditorSelections, Selection, SelectionSet, apply_edits, replace_selections,
-};
+use crate::selection::{Selection, SelectionSet, apply_edits, replace_selections};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EditorComposition {
@@ -338,7 +336,7 @@ impl Editor {
                                 .map_old_position(selection.end().into())
                                 .value();
                             let end = MultiBufferOffset::new(end.get() - close_len);
-                            if selection.is_reversed() {
+                            if selection.reversed() {
                                 Selection::new(end, start.into())
                             } else {
                                 Selection::new(start.into(), end)
@@ -449,11 +447,8 @@ impl Editor {
         if changed {
             // 自动闭合配对扩展属于普通选区变更，结束结构化选择扩展链。
             self.structured_selection_history.clear();
-            let anchored = EditorSelections::from_selection_set(
-                &self.multi_snapshot,
-                &SelectionSet::new_with_primary(selections, before.primary_index()),
-            );
-            self.selections = anchored;
+            self.selections = SelectionSet::new_with_primary(selections, before.primary_index())
+                .anchored(self.snapshot.buffer_snapshot());
         }
     }
 }
@@ -540,12 +535,12 @@ impl EntityInputHandler for Editor {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        let snapshot = &self.multi_snapshot;
+        let snapshot = self.snapshot.buffer_snapshot();
         let selection = *self.resolved_selections().primary();
         Some(UTF16Selection {
             range: snapshot.byte_to_utf16_cu(selection.start()).ok()?.get()
                 ..snapshot.byte_to_utf16_cu(selection.end()).ok()?.get(),
-            reversed: selection.is_reversed(),
+            reversed: selection.reversed(),
         })
     }
 
@@ -558,12 +553,10 @@ impl EntityInputHandler for Editor {
     }
 
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let was_composing = self.composition.take().is_some();
+        // 组合过程本身已经通过真实事务发布编辑事件，这里只清组合会话，不另造事件出口。
+        self.composition = None;
         self.input_layout = None;
         cx.notify();
-        if was_composing {
-            cx.emit(EditorEvent::Edited);
-        }
     }
 
     fn replace_text_in_range(
@@ -598,12 +591,10 @@ impl EntityInputHandler for Editor {
         let previous_history_transaction = previous_composition
             .as_ref()
             .and_then(|composition| composition.history_transaction_id);
-        let outcome = self.change_with_after_without_edited(
-            before_selections.clone(),
-            metadata.clone(),
-            cx,
-            |buffer| replace_selections(buffer, &targets, &text),
-        );
+        let outcome =
+            self.change_with_after(before_selections.clone(), metadata.clone(), cx, |buffer| {
+                replace_selections(buffer, &targets, &text)
+            });
         // 会话提交后组合历史的当前条目即本次编辑的归属节点（合并进前节点时指向前节点），用它作为组合会话的事务身份：连续候选更新据此合并进同一撤销步。
         // 不能用编辑 outcome 的 history_transaction_id——会话 id 在合并进前节点后不指向任何历史节点，后续合并判断会失败。
         let history_transaction_id = self
@@ -640,22 +631,19 @@ impl EntityInputHandler for Editor {
         let selected_end =
             byte_for_utf16_offset(&text, selected_range_utf16.end.min(text_utf16_len))
                 .unwrap_or(text.len());
-        let anchored = EditorSelections::from_selection_set(
-            &self.multi_snapshot,
-            &SelectionSet::new_with_primary(
-                marked_ranges
-                    .iter()
-                    .map(|marked_range| {
-                        Selection::new(
-                            MultiBufferOffset::new(marked_range.start().get() + selected_start),
-                            MultiBufferOffset::new(marked_range.start().get() + selected_end),
-                        )
-                    })
-                    .collect(),
-                inserted_selections.primary_index(),
-            ),
-        );
-        self.selections = anchored;
+        self.selections = SelectionSet::new_with_primary(
+            marked_ranges
+                .iter()
+                .map(|marked_range| {
+                    Selection::new(
+                        MultiBufferOffset::new(marked_range.start().get() + selected_start),
+                        MultiBufferOffset::new(marked_range.start().get() + selected_end),
+                    )
+                })
+                .collect(),
+            inserted_selections.primary_index(),
+        )
+        .anchored(self.snapshot.buffer_snapshot());
         if let Some(transaction_id) = history_transaction_id
             && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
         {

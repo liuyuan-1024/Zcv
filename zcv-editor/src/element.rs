@@ -1,6 +1,6 @@
 //! Editor 的逐帧文本布局、绘制与像素命中测试。
 
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferRange};
 
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -15,7 +15,7 @@ use gpui::{
     div, fill, point, prelude::*, px, relative, size,
 };
 use zcv_actions::{OpenExcerpts, ToggleFold};
-use zcv_language::{BracketPair, FoldRange};
+use zcv_language::BracketPair;
 use zcv_multi_buffer::{DiffHunkKind, DiffHunkStaging, MultiBufferSnapshot};
 use zcv_text::Line;
 use zcv_theme::{color, space};
@@ -2390,23 +2390,22 @@ fn visible_display_row_range(
 
 fn visible_foldable_lines(
     snapshot: &DisplaySnapshot,
-    fold_ranges: &[FoldRange],
+    fold_ranges: &[Range<MultiBufferAnchor>],
     visible_lines: &Range<Line>,
 ) -> BTreeSet<Line> {
     let Some(range) = source_line_byte_range(snapshot, visible_lines) else {
         return BTreeSet::new();
     };
-    let start = range.start;
-    let end = range.end;
     let buffer = snapshot.buffer_snapshot();
-    let start_index = fold_ranges.partition_point(|fold| fold.range.start < start);
-    fold_ranges[start_index..]
+    // 折叠候选以组合锚点保存，按当前快照解析起点字节后筛选可见入口行。
+    fold_ranges
         .iter()
-        .take_while(|fold| fold.range.start < end)
         .filter_map(|fold| {
-            buffer
-                .byte_to_line(MultiBufferOffset::new(fold.range.start))
-                .ok()
+            let start = buffer.resolve_anchor(&fold.start)?;
+            if start.get() < range.start || start.get() >= range.end {
+                return None;
+            }
+            buffer.byte_to_line(start).ok()
         })
         .collect()
 }
@@ -4235,14 +4234,14 @@ mod tests {
                 .snapshot();
                 let map = new_display_map(cx, snapshot.clone());
                 cx.update_entity(&map, |map, cx| {
-                    map.fold_range(
-                        MultiBufferRange::new(
-                            MultiBufferOffset::new(6),
-                            MultiBufferOffset::new(28),
-                        )
-                        .expect("折叠范围应合法"),
-                        cx,
-                    )
+                    let range = {
+                        let display = map.snapshot();
+                        let snapshot = display.buffer_snapshot();
+                        snapshot.anchor_at(MultiBufferOffset::new(6), zcv_text::Affinity::Before)
+                            ..snapshot
+                                .anchor_at(MultiBufferOffset::new(28), zcv_text::Affinity::After)
+                    };
+                    map.fold_range(range, cx)
                 })
                 .expect("折叠应成功");
                 let layout = layout_visible_lines(

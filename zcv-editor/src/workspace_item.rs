@@ -31,7 +31,7 @@ impl Item for Editor {
         match event {
             EditorEvent::PathChanged => emit(ItemEvent::PathChanged),
             EditorEvent::DirtyChanged => emit(ItemEvent::UpdateTab),
-            EditorEvent::Edited => emit(ItemEvent::Edit),
+            EditorEvent::Edited { .. } => emit(ItemEvent::Edit),
             EditorEvent::OpenExcerptsRequested { .. } => {}
             EditorEvent::DiffHunksExpandedChanged => {}
             EditorEvent::Error(message) => emit(ItemEvent::Error(message.clone())),
@@ -153,7 +153,12 @@ mod tests {
     #[test]
     fn item_events_preserve_distinct_semantics() {
         let mut events = Vec::new();
-        Editor::to_item_events(&EditorEvent::Edited, &mut |event| events.push(event));
+        Editor::to_item_events(
+            &EditorEvent::Edited {
+                transaction_id: zcv_text::TransactionId::INITIAL,
+            },
+            &mut |event| events.push(event),
+        );
         assert_eq!(events, vec![ItemEvent::Edit]);
 
         events.clear();

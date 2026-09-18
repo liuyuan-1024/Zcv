@@ -147,7 +147,7 @@ fn switching_single_file_diff_after_source_edit_keeps_text_consumer_aligned(
             String::from_utf8(snapshot.text_bytes()).expect("编辑器快照必须是 UTF-8"),
             "prefix\na\nworking\nc\n"
         );
-        assert_eq!(editor.display_snapshot.line_count(), 5);
+        assert_eq!(editor.display_snapshot().line_count(), 5);
     });
 }
 
@@ -305,7 +305,7 @@ fn deleted_hunk_expands_and_collapses_readonly_excerpt(cx: &mut TestAppContext) 
     });
     let source = buffer.clone();
     cx.run_until_parked();
-    let base_rows = cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count());
+    let base_rows = cx.read_entity(&editor, |editor, _| editor.display_snapshot().line_count());
     assert_eq!(base_rows, 3);
 
     // 注入 Deleted hunk（新侧行 1 处删除了 HEAD 的 1..3 行）+ HEAD 全文。
@@ -323,7 +323,7 @@ fn deleted_hunk_expands_and_collapses_readonly_excerpt(cx: &mut TestAppContext) 
     );
     // 未展开：行数不变。
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot().line_count()),
         3
     );
     assert!(
@@ -339,7 +339,7 @@ fn deleted_hunk_expands_and_collapses_readonly_excerpt(cx: &mut TestAppContext) 
     // 展开删除块：HEAD 的 1..3 行（old1/old2）作为只读 excerpt 插入。
     editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot().line_count()),
         5,
         "展开后应增加 2 个被删除行"
     );
@@ -358,7 +358,7 @@ fn deleted_hunk_expands_and_collapses_readonly_excerpt(cx: &mut TestAppContext) 
     );
     cx.run_until_parked();
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot().line_count()),
         3,
         "点击 gutter 折叠后应回到 3 行"
     );
@@ -477,7 +477,7 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
         editor
             .fold_ranges()
             .iter()
-            .map(|range| range.range.clone())
+            .map(|range| range.clone())
             .collect::<Vec<_>>()
     });
     assert_eq!(fold_ranges.len(), 2);
@@ -485,7 +485,7 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
     // 折叠 fn main（入口行 0）：隐藏块内 2 行，无占位行，总行数 6 → 4。
     editor.update(cx, |editor, cx| editor.toggle_fold_at_line(Line::ZERO, cx));
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot().line_count()),
         4
     );
     assert!(cx.read_entity(&editor, |editor, _| {
@@ -498,7 +498,7 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
     // 再次切换：展开，恢复 6 行。
     editor.update(cx, |editor, cx| editor.toggle_fold_at_line(Line::ZERO, cx));
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot().line_count()),
         6
     );
     assert!(!cx.read_entity(&editor, |editor, _| {
@@ -528,7 +528,7 @@ fn toggle_fold_action_uses_the_cursor_block_and_the_whole_folded_row(cx: &mut Te
         editor.toggle_fold_at_cursor(cx);
     });
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot().line_count()),
         4,
         "应只折叠内层 if 块"
     );
@@ -541,7 +541,7 @@ fn toggle_fold_action_uses_the_cursor_block_and_the_whole_folded_row(cx: &mut Te
         editor.toggle_fold_at_cursor(cx);
     });
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot().line_count()),
         6,
         "折叠合并行任意位置都应能展开"
     );
@@ -571,7 +571,7 @@ fn clicking_the_crease_toggles_fold_without_selecting_the_line(cx: &mut TestAppC
 
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(
-            editor.display_snapshot.line_count(),
+            editor.display_snapshot().line_count(),
             4,
             "点击 crease 应折叠首个函数"
         );
@@ -684,7 +684,7 @@ fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
         editor
             .fold_ranges()
             .iter()
-            .map(|range| range.range.clone())
+            .map(|range| range.clone())
             .collect::<Vec<_>>()
     });
     assert_eq!(fold_ranges.len(), 2, "编辑后折叠范围应保持两个");
@@ -841,7 +841,7 @@ fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppCo
             editor.selections().primary().head(),
             after_offset,
             "折叠后的下一行应能通过向下移动到达；显示行数={}，光标位置={:?}",
-            editor.display_snapshot.line_count(),
+            editor.display_snapshot().line_count(),
             editor
                 .render_snapshot()
                 .byte_to_position(editor.selections().primary().head())
@@ -872,7 +872,7 @@ fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppCo
     assert_eq!(buffer_text(&buffer, cx), text.replace("after", "aft!er"));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(
-            editor.display_snapshot.line_count(),
+            editor.display_snapshot().line_count(),
             4,
             "编辑后折叠应保持；折叠入口={:?}，折叠范围数={}",
             editor.display_snapshot().fold_anchor_lines(),
@@ -897,14 +897,14 @@ fn unfold_all_expands_every_fold(cx: &mut TestAppContext) {
         editor.toggle_fold_at_line(Line::new(3), cx)
     });
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot().line_count()),
         2
     );
 
     // 全部展开：恢复 6 行。
     editor.update(cx, |editor, cx| editor.unfold_all_ranges(cx));
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot().line_count()),
         6
     );
     assert!(!cx.read_entity(&editor, |editor, _| {
@@ -1052,10 +1052,10 @@ fn soft_wrap_renders_continuation_rows_and_click_hits_fragment(cx: &mut TestAppC
     cx.run_until_parked();
 
     let (line_count, continuation_offset) = cx.read_entity(&editor, |editor, _| {
-        let line_count = editor.display_snapshot.line_count();
+        let line_count = editor.display_snapshot().line_count();
         assert!(line_count > 1, "宽行应拆成多个显示行");
         let continuation = editor
-            .display_snapshot
+            .display_snapshot()
             .display_point_to_offset(DisplayPoint::new(DisplayRow::new(1), DisplayColumn::ZERO))
             .expect("续行行首应可映射");
         (line_count, continuation)
@@ -1102,7 +1102,7 @@ fn single_line_editor_never_wraps_and_follows_caret_horizontally(cx: &mut TestAp
 
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(
-            editor.display_snapshot.line_count(),
+            editor.display_snapshot().line_count(),
             1,
             "单行输入不应拆成多个显示行"
         );
@@ -1146,13 +1146,14 @@ fn multibuffer_soft_wrap_uses_the_regular_display_map_pipeline(cx: &mut TestAppC
         move |_, cx| Editor::for_multi_buffer(combined, cx)
     });
     cx.run_until_parked();
-    let unwrapped_rows = cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count());
+    let unwrapped_rows =
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot().line_count());
 
     editor.update(cx, |editor, cx| {
         editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx);
     });
     cx.run_until_parked();
-    let wrapped_rows = cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count());
+    let wrapped_rows = cx.read_entity(&editor, |editor, _| editor.display_snapshot().line_count());
 
     assert!(
         wrapped_rows > unwrapped_rows,
@@ -1162,14 +1163,14 @@ fn multibuffer_soft_wrap_uses_the_regular_display_map_pipeline(cx: &mut TestAppC
     editor.update(cx, |editor, cx| {
         editor.toggle_buffer_fold(PathBuf::from("文档/引擎.md"), cx)
     });
-    let folded_rows = cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count());
+    let folded_rows = cx.read_entity(&editor, |editor, _| editor.display_snapshot().line_count());
     assert_eq!(folded_rows, 2, "整文件折叠后只保留两行高的 BufferHeader");
 
     editor.update(cx, |editor, cx| {
         editor.toggle_buffer_fold(PathBuf::from("文档/引擎.md"), cx)
     });
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.display_snapshot.line_count()),
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot().line_count()),
         wrapped_rows,
         "再次点击 header chevron 应完整恢复 excerpts"
     );
@@ -1222,7 +1223,7 @@ fn wrapped_multibuffer_reuses_block_rows_across_within_line_edits(cx: &mut TestA
     cx.run_until_parked();
 
     let before = cx.read_entity(&editor, |editor, _| {
-        let snapshot = &editor.display_snapshot;
+        let snapshot = editor.display_snapshot();
         let mut rows = snapshot.rows(DisplayRow::ZERO, snapshot.line_count());
         let mut result = Vec::new();
         while let Some(row) = rows.next() {
@@ -1253,7 +1254,7 @@ fn wrapped_multibuffer_reuses_block_rows_across_within_line_edits(cx: &mut TestA
     cx.run_until_parked();
 
     let after = cx.read_entity(&editor, |editor, _| {
-        let snapshot = &editor.display_snapshot;
+        let snapshot = editor.display_snapshot();
         let mut rows = snapshot.rows(DisplayRow::ZERO, snapshot.line_count());
         let mut result = Vec::new();
         while let Some(row) = rows.next() {
@@ -1313,7 +1314,7 @@ fn wrapped_multibuffer_relocates_blocks_when_wrap_rows_change(cx: &mut TestAppCo
     cx.run_until_parked();
 
     let before = cx.read_entity(&editor, |editor, _| {
-        let snapshot = &editor.display_snapshot;
+        let snapshot = editor.display_snapshot();
         let mut rows = snapshot.rows(DisplayRow::ZERO, snapshot.line_count());
         let mut result = Vec::new();
         while let Some(row) = rows.next() {
@@ -1342,7 +1343,7 @@ fn wrapped_multibuffer_relocates_blocks_when_wrap_rows_change(cx: &mut TestAppCo
     cx.run_until_parked();
 
     let after = cx.read_entity(&editor, |editor, _| {
-        let snapshot = &editor.display_snapshot;
+        let snapshot = editor.display_snapshot();
         let mut rows = snapshot.rows(DisplayRow::ZERO, snapshot.line_count());
         let mut result = Vec::new();
         while let Some(row) = rows.next() {
@@ -1372,7 +1373,7 @@ fn long_line_highlight_query_is_clipped_to_render_budget(cx: &mut TestAppContext
         let snapshot = editor.display_snapshot();
         let source_ranges = snapshot.rows(DisplayRow::ZERO, 1).source_line_ranges();
         let spans = snapshot.highlighted_spans_for_source_ranges(source_ranges);
-        let buffer = editor.display_snapshot.buffer_snapshot();
+        let buffer = snapshot.buffer_snapshot();
         let second_line = buffer
             .line_start_byte(Line::new(1))
             .expect("第二行行首应存在");
@@ -1711,7 +1712,7 @@ fn combined_diff_undo_redo_restores_cursor_parity_with_plain_editor(cx: &mut Tes
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(editor.text(cx), "L2\nL3\nADDED\nL5\nL6\n");
         let selections = editor.selections();
-        assert_eq!(selections.primary().anchor(), MultiBufferOffset::new(0));
+        assert_eq!(selections.primary().tail(), MultiBufferOffset::new(0));
         assert_eq!(selections.primary().head(), MultiBufferOffset::new(3));
     });
 

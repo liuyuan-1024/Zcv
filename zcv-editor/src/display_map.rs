@@ -10,7 +10,7 @@
 //! 每一层都持有自己的 Map 和不可变 Snapshot；
 //! 上一层 Snapshot 固化下一层 Snapshot，从而让一次渲染只能看到一条内部一致的显示状态。
 
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferRange};
 
 mod block_map;
 mod chunk;
@@ -700,10 +700,12 @@ impl DisplayMap {
         self.refresh_snapshot(&wrap_snapshot, &wrap_edits);
     }
 
-    /// 折叠字节范围（入口行行尾换行符 → 闭合括号前；闭合括号保留可见）。
+    /// 折叠组合锚点范围（入口行行尾换行符 → 闭合括号前；闭合括号保留可见）。
+    ///
+    /// 端点以组合锚点保存，折叠拓扑在每次同步时按当前快照重新解析。
     pub(crate) fn fold_range(
         &mut self,
-        range: MultiBufferRange,
+        range: Range<MultiBufferAnchor>,
         cx: &mut Context<Self>,
     ) -> DisplayMapResult<()> {
         let (fold_snapshot, fold_edits) = self.fold_map.write().fold(range)?;
@@ -761,7 +763,7 @@ mod tests {
 
     use gpui::{AppContext, TestAppContext, font, px};
     use zcv_language::LanguageBuffer;
-    use zcv_text::{Buffer, BufferConfig, Edit, Line, TransactionMetadata};
+    use zcv_text::{Affinity, Buffer, BufferConfig, Edit, Line, TransactionMetadata};
     use zcv_theme::ThemeChoice;
 
     use super::inlay_map::Inlay;
@@ -806,9 +808,18 @@ mod tests {
     fn fold_range(
         cx: &mut TestAppContext,
         map: &Entity<DisplayMap>,
-        range: MultiBufferRange,
+        start: usize,
+        end: usize,
     ) -> DisplayMapResult<()> {
-        cx.update_entity(map, |map, cx| map.fold_range(range, cx))
+        cx.update_entity(map, |map, cx| {
+            let range = {
+                let display = map.snapshot();
+                let snapshot = display.buffer_snapshot();
+                snapshot.anchor_at(MultiBufferOffset::new(start), Affinity::Before)
+                    ..snapshot.anchor_at(MultiBufferOffset::new(end), Affinity::After)
+            };
+            map.fold_range(range, cx)
+        })
     }
 
     fn set_tab_width(cx: &mut TestAppContext, map: &Entity<DisplayMap>, tab_width: NonZeroUsize) {
@@ -1094,13 +1105,7 @@ mod tests {
         .expect("测试 Buffer 应能创建");
         let map = cx.new(|cx| DisplayMap::new(buffer.snapshot(), cx));
         let before = display_snapshot(cx, &map);
-        fold_range(
-            cx,
-            &map,
-            MultiBufferRange::new(MultiBufferOffset::new(6), MultiBufferOffset::new(28))
-                .expect("折叠范围应合法"),
-        )
-        .expect("折叠应成功");
+        fold_range(cx, &map, 6, 28).expect("折叠应成功");
 
         assert_eq!(display_snapshot(cx, &map).line_count(), 2);
         assert_eq!(
@@ -1131,16 +1136,7 @@ mod tests {
         let map = cx.new(|cx| DisplayMap::new(buffer.snapshot(), cx));
         let fold_start = text.find('\n').expect("折叠入口行应有换行符");
         let fold_end = text.find("}\n").expect("折叠范围应有闭合行");
-        fold_range(
-            cx,
-            &map,
-            MultiBufferRange::new(
-                MultiBufferOffset::new(fold_start),
-                MultiBufferOffset::new(fold_end),
-            )
-            .expect("折叠范围应合法"),
-        )
-        .expect("折叠应成功");
+        fold_range(cx, &map, fold_start, fold_end).expect("折叠应成功");
 
         measure_rows(
             cx,
@@ -1161,13 +1157,7 @@ mod tests {
         .expect("测试 Buffer 应能创建");
         let map = cx.new(|cx| DisplayMap::new(buffer.snapshot(), cx));
         // 折叠 fn main：范围 = [行 0 换行符(11), `}`(27))。
-        fold_range(
-            cx,
-            &map,
-            MultiBufferRange::new(MultiBufferOffset::new(11), MultiBufferOffset::new(27))
-                .expect("折叠范围应合法"),
-        )
-        .expect("折叠应成功");
+        fold_range(cx, &map, 11, 27).expect("折叠应成功");
         let snapshot = display_snapshot(cx, &map);
 
         // 真实 `}` 的字节范围投影到合并行占位符之后的列（anchor 11 字符 + 占位符 1 列 = 12）。
@@ -1642,13 +1632,7 @@ mod tests {
         )
         .expect("测试 Buffer 应能创建");
         let map = cx.new(|cx| DisplayMap::new(buffer.snapshot(), cx));
-        fold_range(
-            cx,
-            &map,
-            MultiBufferRange::new(MultiBufferOffset::new(6), MultiBufferOffset::new(28))
-                .expect("折叠范围应合法"),
-        )
-        .expect("折叠应成功");
+        fold_range(cx, &map, 6, 28).expect("折叠应成功");
         set_wrap_width(cx, &map, Some(px(72.)), font("Helvetica"), px(16.));
 
         let snapshot = display_snapshot(cx, &map);
@@ -1768,16 +1752,8 @@ mod tests {
                 inlay(&snapshot, close + 1, "<tail>"),
             ],
         );
-        fold_range(
-            cx,
-            &map,
-            MultiBufferRange::new(
-                MultiBufferOffset::new(text.find('\n').expect("入口行应有换行符")),
-                MultiBufferOffset::new(close),
-            )
-            .expect("折叠范围应合法"),
-        )
-        .expect("折叠应成功");
+        fold_range(cx, &map, text.find('\n').expect("入口行应有换行符"), close)
+            .expect("折叠应成功");
 
         let snapshot = display_snapshot(cx, &map);
         let mut rows = snapshot.chunks(

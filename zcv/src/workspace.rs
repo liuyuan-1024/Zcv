@@ -964,7 +964,7 @@ fn subscribe_to_editor_events(
     workspace.add_subscription(cx.subscribe(
         &editor,
         move |_workspace, editor, event: &EditorEvent, cx| {
-            if matches!(event, EditorEvent::Edited) {
+            if matches!(event, EditorEvent::Edited { .. }) {
                 let path = editor.read(cx).file_path(cx);
                 if let Some(path) = path {
                     sync_editor_conflict_hunks(&editor, &path, &project, cx);

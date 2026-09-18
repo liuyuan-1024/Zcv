@@ -134,7 +134,7 @@ impl ProjectSearchView {
             cx.subscribe(
                 &results_editor,
                 |_, _, event: &EditorEvent, cx| match event {
-                    EditorEvent::Edited => cx.emit(ProjectSearchEvent::Edited),
+                    EditorEvent::Edited { .. } => cx.emit(ProjectSearchEvent::Edited),
                     EditorEvent::DirtyChanged => cx.emit(ProjectSearchEvent::DirtyChanged),
                     EditorEvent::OpenExcerptsRequested { locations, .. } => {
                         cx.emit(ProjectSearchEvent::OpenExcerptsRequested(locations.clone()));
@@ -179,7 +179,7 @@ impl ProjectSearchView {
             &query_input,
             cx,
             move |_, event: &EditorEvent, window, cx| {
-                if *event != EditorEvent::Edited {
+                if !matches!(event, EditorEvent::Edited { .. }) {
                     return;
                 }
                 if let Some(view) = weak.upgrade() {

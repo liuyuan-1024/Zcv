@@ -29,7 +29,7 @@ fn begin_selection_at_offset(
 ) {
     editor.update(cx, |editor, cx| {
         let display_point = editor
-            .display_snapshot
+            .display_snapshot()
             .offset_to_display_point(offset)
             .expect("测试选区偏移应能映射到显示点");
         editor.begin_selection(display_point, click_count, extend, cx);
@@ -43,7 +43,7 @@ fn update_selection_at_offset(
 ) {
     editor.update(cx, |editor, cx| {
         let display_point = editor
-            .display_snapshot
+            .display_snapshot()
             .offset_to_display_point(offset)
             .expect("测试选区偏移应能映射到显示点");
         editor.update_selection(display_point, cx);
@@ -256,7 +256,7 @@ fn dragging_leftwards_anchors_against_the_original_word_end(cx: &mut TestAppCont
             selection.range(),
             MultiBufferRange::new(b(4), b(13)).unwrap()
         );
-        assert_eq!(selection.anchor(), b(13));
+        assert_eq!(selection.tail(), b(13));
         assert_eq!(selection.head(), b(4));
     });
 }

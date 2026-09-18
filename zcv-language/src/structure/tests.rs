@@ -6,6 +6,31 @@ use super::NewlineIndent;
 use crate::test::{parsed_syntax, rust_buffer};
 use zcv_text::{ByteOffset, Edit, TransactionMetadata};
 
+/// 测试辅助：把折叠锚点按快照解析为字节范围，便于直接按文本切片断言。
+struct ResolvedFold {
+    range: std::ops::Range<usize>,
+}
+
+fn resolve_folds(folds: Vec<crate::FoldRange>, snapshot: &zcv_text::Snapshot) -> Vec<ResolvedFold> {
+    folds
+        .into_iter()
+        .map(|fold| ResolvedFold {
+            range: fold
+                .range
+                .start
+                .resolve_in(snapshot)
+                .expect("折叠起点应可解析")
+                .get()
+                ..fold
+                    .range
+                    .end
+                    .resolve_in(snapshot)
+                    .expect("折叠终点应可解析")
+                    .get(),
+        })
+        .collect()
+}
+
 #[test]
 fn rust_syntax_snapshot_exposes_zed_structure_queries() {
     let source = "struct Demo { value: i32 }\nfn main() { let x = (1 + 2); }\n";
@@ -468,7 +493,7 @@ fn baseline_languages_expose_brackets_indents_and_folds() {
             "{path} 应产生缩进范围"
         );
         assert!(
-            !syntax.fold_ranges(full, &snapshot).is_empty(),
+            !resolve_folds(syntax.fold_ranges(full, &snapshot), &snapshot).is_empty(),
             "{path} 应产生折叠范围"
         );
     }
@@ -492,9 +517,12 @@ fn existing_languages_with_new_fold_queries_produce_ranges() {
     for (path, source) in cases {
         let (buffer, syntax) = parsed_syntax(path, source);
         let snapshot = buffer.snapshot();
-        let folds = syntax
-            .snapshot()
-            .fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
+        let folds = resolve_folds(
+            syntax
+                .snapshot()
+                .fold_ranges(0..snapshot.len_bytes().get(), &snapshot),
+            &snapshot,
+        );
         assert!(!folds.is_empty(), "{path} 应产生折叠范围");
     }
 }
@@ -504,9 +532,12 @@ fn markdown_section_folds_through_nested_fenced_code() {
     let source = "# 第一节\n\n正文。\n\n```rust\nlet value = 1;\n```\n\n标题后的正文。\n\n# 第二节\n\n不应属于第一节。\n";
     let (buffer, syntax) = parsed_syntax("README.md", source);
     let snapshot = buffer.snapshot();
-    let folds = syntax
-        .snapshot()
-        .fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
+    let folds = resolve_folds(
+        syntax
+            .snapshot()
+            .fold_ranges(0..snapshot.len_bytes().get(), &snapshot),
+        &snapshot,
+    );
     let first_section = folds
         .iter()
         .find(|fold| fold.range.start == source.find('\n').unwrap())
@@ -521,9 +552,12 @@ fn structural_fold_ignores_nested_multiline_delimiters() {
     let source = "def build(\n    first,\n    second,\n):\n    return first + second\n";
     let (buffer, syntax) = parsed_syntax("build.py", source);
     let snapshot = buffer.snapshot();
-    let folds = syntax
-        .snapshot()
-        .fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
+    let folds = resolve_folds(
+        syntax
+            .snapshot()
+            .fold_ranges(0..snapshot.len_bytes().get(), &snapshot),
+        &snapshot,
+    );
 
     assert!(
         folds
@@ -538,9 +572,12 @@ fn macro_definition_declares_its_closing_boundary() {
         "macro_rules! pair {\n    ($value:expr) => {\n        ($value, $value)\n    };\n}\n";
     let (buffer, syntax) = parsed_syntax("macros.rs", source);
     let snapshot = buffer.snapshot();
-    let folds = syntax
-        .snapshot()
-        .fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
+    let folds = resolve_folds(
+        syntax
+            .snapshot()
+            .fold_ranges(0..snapshot.len_bytes().get(), &snapshot),
+        &snapshot,
+    );
     let outer = folds
         .iter()
         .find(|fold| fold.range.start == source.find('\n').unwrap())
@@ -584,7 +621,10 @@ fn rust_fold_ranges_cover_blocks_and_skip_single_lines() {
     let (buffer, syntax) = rust_buffer(source);
     let snapshot = buffer.snapshot();
     let syntax = syntax.snapshot();
-    let folds = syntax.fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
+    let folds = resolve_folds(
+        syntax.fold_ranges(0..snapshot.len_bytes().get(), &snapshot),
+        &snapshot,
+    );
     let texts: Vec<&str> = folds
         .iter()
         .map(|fold| &source[fold.range.clone()])
@@ -617,7 +657,10 @@ fn use_declarations_fold_independently_and_skip_single_lines() {
     let (buffer, syntax) = rust_buffer(source);
     let snapshot = buffer.snapshot();
     let syntax = syntax.snapshot();
-    let folds = syntax.fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
+    let folds = resolve_folds(
+        syntax.fold_ranges(0..snapshot.len_bytes().get(), &snapshot),
+        &snapshot,
+    );
     let texts: Vec<&str> = folds
         .iter()
         .map(|fold| &source[fold.range.clone()])
@@ -634,7 +677,10 @@ fn single_line_doc_comments_do_not_fold() {
     let (buffer, syntax) = rust_buffer(source);
     let snapshot = buffer.snapshot();
     let syntax = syntax.snapshot();
-    let folds = syntax.fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
+    let folds = resolve_folds(
+        syntax.fold_ranges(0..snapshot.len_bytes().get(), &snapshot),
+        &snapshot,
+    );
     let texts: Vec<&str> = folds
         .iter()
         .map(|fold| &source[fold.range.clone()])
@@ -650,7 +696,10 @@ fn multi_line_macro_invocation_folds_but_single_line_does_not() {
     let (buffer, syntax) = rust_buffer(source);
     let snapshot = buffer.snapshot();
     let syntax = syntax.snapshot();
-    let folds = syntax.fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
+    let folds = resolve_folds(
+        syntax.fold_ranges(0..snapshot.len_bytes().get(), &snapshot),
+        &snapshot,
+    );
     let texts: Vec<&str> = folds
         .iter()
         .map(|fold| &source[fold.range.clone()])

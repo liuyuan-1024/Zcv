@@ -19,7 +19,7 @@ mod workspace_item;
 
 pub use view::{
     DiffHunkDelegate, Editor, EditorEvent, EditorHunk, EditorHunkMarkerKind, EditorHunkPart,
-    EditorScrollAnchor, HunkControlTarget, LocalRenameError,
+    HunkControlTarget, LocalRenameError,
 };
 
 pub fn init(cx: &mut App) {
@@ -55,7 +55,7 @@ impl ErasedEditor for ErasedEditorHandle {
         cx: &mut App,
     ) -> Subscription {
         window.subscribe(&self.0, cx, move |_, event: &EditorEvent, window, cx| {
-            if *event == EditorEvent::Edited {
+            if matches!(event, EditorEvent::Edited { .. }) {
                 callback(ErasedEditorEvent::Edited, window, cx);
             }
         })

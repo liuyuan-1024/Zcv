@@ -26,4 +26,6 @@ pub(crate) enum FoldError {
     },
     #[error("折叠区间不能为空：{range:?}")]
     EmptyRange { range: MultiBufferRange },
+    #[error("折叠端点无法在当前快照中解析")]
+    UnresolvableAnchor,
 }

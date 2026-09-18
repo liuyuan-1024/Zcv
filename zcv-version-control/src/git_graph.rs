@@ -278,7 +278,7 @@ impl GitGraphView {
         });
         let search_subscription =
             cx.subscribe(&search_input, |view, _input, event: &EditorEvent, cx| {
-                if *event == EditorEvent::Edited {
+                if matches!(event, EditorEvent::Edited { .. }) {
                     let query = view.search_input.read(cx).text(cx);
                     let search_query = SearchQuery {
                         query,

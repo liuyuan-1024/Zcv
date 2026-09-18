@@ -15,6 +15,29 @@ use zcv_text::{
 
 use super::*;
 
+/// 测试辅助：把折叠锚点按源快照解析为字节范围。
+fn resolve_folds(
+    folds: &[zcv_language::FoldRange],
+    snapshot: &zcv_text::Snapshot,
+) -> Vec<std::ops::Range<usize>> {
+    folds
+        .iter()
+        .map(|fold| {
+            fold.range
+                .start
+                .resolve_in(snapshot)
+                .expect("折叠起点应可解析")
+                .get()
+                ..fold
+                    .range
+                    .end
+                    .resolve_in(snapshot)
+                    .expect("折叠终点应可解析")
+                    .get()
+        })
+        .collect()
+}
+
 /// 测试用的 diff 注入描述；由 `inject_diffs` 转成预创建的 `DiffFile`。
 struct TestDiff {
     working: gpui::Entity<LanguageBuffer>,
@@ -689,9 +712,7 @@ fn anchor_resolves_to_neighbor_path_after_removal(cx: &mut TestAppContext) {
 
     // b.rs 的组合起点是 2（a "a\n" 占 2 字节）。
     let anchor = cx.read_entity(&combined, |buffer, _| {
-        buffer
-            .anchor_for_offset(ByteOffset::new(2).into())
-            .expect("b.rs 内应能锚定")
+        buffer.anchor_at(ByteOffset::new(2), Affinity::After)
     });
 
     cx.update_entity(&combined, |buffer, cx| {
@@ -1342,12 +1363,31 @@ fn singleton_source_preserves_rust_fold_ranges(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     let source_folds = cx.read_entity(&source, |buffer, _| buffer.fold_ranges());
+    let source_offsets = cx.read_entity(&source, |buffer, cx| {
+        let snapshot = buffer.text_snapshot(cx);
+        resolve_folds(&source_folds, &snapshot)
+    });
     let projected_folds = cx.read_entity(&combined, |buffer, cx| buffer.fold_ranges(cx));
+    let projected_offsets = cx.read_entity(&combined, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        projected_folds
+            .iter()
+            .map(|range| {
+                snapshot
+                    .resolve_anchor(&range.start)
+                    .expect("折叠起点应可解析")
+                    .get()
+                    ..snapshot
+                        .resolve_anchor(&range.end)
+                        .expect("折叠终点应可解析")
+                        .get()
+            })
+            .collect::<Vec<_>>()
+    });
 
     assert_eq!(source_folds.len(), 2, "Rust 源文档应产生两个折叠范围");
     assert_eq!(
-        projected_folds.as_ref(),
-        source_folds.as_ref(),
+        projected_offsets, source_offsets,
         "整文件 excerpt 不得丢失或偏移源折叠范围"
     );
 }
@@ -1462,17 +1502,36 @@ fn excerpt_projects_contained_fold_range_to_output_coordinates(cx: &mut TestAppC
             .expect("函数起始行应存在")
             .get()
     });
+    let (source_fold_start, source_fold_end) = cx.read_entity(&source, |buffer, cx| {
+        let snapshot = buffer.text_snapshot(cx);
+        let folded = resolve_folds(std::slice::from_ref(&source_fold), &snapshot);
+        (folded[0].start, folded[0].end)
+    });
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(vec![ExcerptRange::line_range(source, 1..4, cx)], cx);
     });
 
-    let projected = cx.read_entity(&combined, |buffer, cx| buffer.fold_ranges(cx));
+    let projected = cx.read_entity(&combined, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        buffer
+            .fold_ranges(cx)
+            .iter()
+            .map(|range| {
+                snapshot
+                    .resolve_anchor(&range.start)
+                    .expect("折叠起点应可解析")
+                    .get()
+                    ..snapshot
+                        .resolve_anchor(&range.end)
+                        .expect("折叠终点应可解析")
+                        .get()
+            })
+            .collect::<Vec<_>>()
+    });
     assert_eq!(
-        projected.as_ref(),
-        [FoldRange {
-            range: source_fold.range.start - source_start..source_fold.range.end - source_start,
-        }],
+        projected,
+        [source_fold_start - source_start..source_fold_end - source_start],
         "折叠范围应相对 excerpt 输出起点投影"
     );
 }
@@ -1488,6 +1547,11 @@ fn fold_projection_accounts_for_nonzero_output_start(cx: &mut TestAppContext) {
     );
     cx.run_until_parked();
     let source_folds = cx.read_entity(&source, |buffer, _| buffer.fold_ranges());
+    let (source_fold_start, source_fold_end) = cx.read_entity(&source, |buffer, cx| {
+        let snapshot = buffer.text_snapshot(cx);
+        let folded = resolve_folds(&source_folds, &snapshot);
+        (folded[0].start, folded[0].end)
+    });
     let source_start = cx.read_entity(&source, |buffer, cx| {
         buffer
             .text_snapshot(cx)
@@ -1516,14 +1580,26 @@ fn fold_projection_accounts_for_nonzero_output_start(cx: &mut TestAppContext) {
             .start()
             .get();
         assert!(output_start > 0, "第二个 excerpt 的组合起点必须非零");
-        (buffer.fold_ranges(cx), output_start)
+        let projected = buffer
+            .fold_ranges(cx)
+            .iter()
+            .map(|range| {
+                snapshot
+                    .resolve_anchor(&range.start)
+                    .expect("折叠起点应可解析")
+                    .get()
+                    ..snapshot
+                        .resolve_anchor(&range.end)
+                        .expect("折叠终点应可解析")
+                        .get()
+            })
+            .collect::<Vec<_>>();
+        (projected, output_start)
     });
     assert_eq!(
-        projected.as_ref(),
-        [FoldRange {
-            range: output_start + source_folds[0].range.start - source_start
-                ..output_start + source_folds[0].range.end - source_start,
-        }],
+        projected,
+        [output_start + source_fold_start - source_start
+            ..output_start + source_fold_end - source_start],
         "折叠范围应叠加后续 excerpt 的组合起点偏移"
     );
 }
@@ -1660,9 +1736,10 @@ fn composite_anchor_resolves_in_the_same_file_after_excerpt_refresh(cx: &mut Tes
     let anchor = cx.read_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         let excerpt = &snapshot.excerpts().nth(1).unwrap();
-        buffer
-            .anchor_for_offset(ByteOffset::new(excerpt.output_range().start().get() + 2).into())
-            .expect("应捕获第二个 hunk 内的位置")
+        buffer.anchor_at(
+            ByteOffset::new(excerpt.output_range().start().get() + 2),
+            Affinity::After,
+        )
     });
 
     cx.update_entity(&combined, |buffer, cx| {
@@ -1697,9 +1774,7 @@ fn source_anchor_at_excerpt_boundary_resolves_to_following_excerpt(cx: &mut Test
         );
         let snapshot = buffer.snapshot(cx);
         let boundary = snapshot.excerpts().nth(1).unwrap().output_range().start();
-        let anchor = buffer
-            .anchor_for_offset(boundary)
-            .expect("后续 excerpt 起点必须可以锚定");
+        let anchor = buffer.anchor_at(boundary, Affinity::After);
         assert_eq!(
             buffer.resolve_anchor(&anchor),
             Some(boundary),
@@ -1727,9 +1802,7 @@ fn composite_anchor_falls_forward_when_its_file_leaves_the_diff(cx: &mut TestApp
     let anchor = cx.read_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         let excerpt = &snapshot.excerpts().next().unwrap();
-        buffer
-            .anchor_for_offset(excerpt.output_range().start())
-            .expect("应捕获首文件位置")
+        buffer.anchor_at(excerpt.output_range().start(), Affinity::After)
     });
 
     cx.update_entity(&combined, |buffer, cx| {
@@ -2987,9 +3060,7 @@ fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &m
         assert_eq!(buffer.file_buffers(cx).len(), 1, "旧修订来源不能参与保存");
 
         let old_offset = "上下文\n".len() + 1;
-        let old_anchor = buffer
-            .anchor_for_offset(ByteOffset::new(old_offset).into())
-            .expect("旧侧必须能建立普通 MultiBuffer 锚点");
+        let old_anchor = buffer.anchor_at(ByteOffset::new(old_offset), Affinity::After);
         assert_eq!(
             buffer.resolve_anchor(&old_anchor),
             Some(Into::into(ByteOffset::new(old_offset)))

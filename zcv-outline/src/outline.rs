@@ -41,7 +41,7 @@ impl OutlinePanel {
         });
         let search_subscription =
             cx.subscribe(&search_input, |panel, _input, event: &EditorEvent, cx| {
-                if *event == EditorEvent::Edited {
+                if matches!(event, EditorEvent::Edited { .. }) {
                     panel.refresh_items(cx);
                 }
             });

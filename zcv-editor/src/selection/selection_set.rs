@@ -1,43 +1,43 @@
-//! SelectionSet：多光标/多选区的归一化集合。
+//! SelectionSet<T>：多光标/多选区的归一化集合。
 //!
-//! 本文件维护排序、合并和 primary selection 归属，是 Editor 唯一的选区模型。
+//! 偏移态集合可归一化（排序、合并、primary 归属）；
+//! 锚点态集合由偏移态按当前快照锚定得到，本身不再排序，保留原顺序与 primary。
 //!
-//! **Zero-copy 纪律**：内部存储为 `Arc<[Selection]>`，`Clone` 是 O(1) 引用计数递增。
-
-use zcv_multi_buffer::MultiBufferOffset;
+//! **Zero-copy 纪律**：内部存储为 `Arc<[Selection<T>]>`，`Clone` 是 O(1) 引用计数递增。
 
 use std::sync::Arc;
 
-use super::Selection;
+use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferSnapshot};
 use zcv_text::{Affinity, ByteOffset, PositionMap};
 
+use super::Selection;
+
 /// 归一化后的多选区 / 多光标集合。
-///
-/// 内部 `Arc<[Selection]>`：`Clone` 是 O(1)，宿主在编辑事务前后传递时零深拷贝。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct SelectionSet {
-    selections: Arc<[Selection]>,
+pub struct SelectionSet<T = MultiBufferOffset> {
+    selections: Arc<[Selection<T>]>,
     primary_index: usize,
 }
 
-impl SelectionSet {
-    /// 空集合会被规范化为文首单 caret。
-    pub fn new(selections: Vec<Selection>) -> Self {
-        Self::new_with_primary(selections, 0)
+impl<T: Copy> SelectionSet<T> {
+    /// 由已归属的选区集合直接构造；不做归一化（锚点态无法在无快照时排序）。
+    pub(crate) fn from_selections(selections: Vec<Selection<T>>, primary_index: usize) -> Self {
+        assert!(!selections.is_empty(), "选区集合不能为空");
+        let primary_index = primary_index.min(selections.len() - 1);
+        Self {
+            selections: Arc::from(selections),
+            primary_index,
+        }
     }
 
-    pub fn new_with_primary(selections: Vec<Selection>, primary_index: usize) -> Self {
-        normalize_selections(selections, primary_index)
-    }
-
-    pub fn caret(offset: MultiBufferOffset) -> Self {
+    pub fn caret(offset: T) -> Self {
         Self {
             selections: Arc::from(vec![Selection::caret(offset)]),
             primary_index: 0,
         }
     }
 
-    pub fn as_slice(&self) -> &[Selection] {
+    pub fn as_slice(&self) -> &[Selection<T>] {
         &self.selections
     }
 
@@ -49,27 +49,39 @@ impl SelectionSet {
         self.primary_index
     }
 
-    pub fn primary(&self) -> &Selection {
+    pub fn primary(&self) -> &Selection<T> {
         &self.selections[self.primary_index]
+    }
+}
+
+impl<T: Copy + Ord + Default> SelectionSet<T> {
+    /// 空集合会被规范化为文首单 caret。
+    pub fn new(selections: Vec<Selection<T>>) -> Self {
+        Self::new_with_primary(selections, 0)
+    }
+
+    pub fn new_with_primary(selections: Vec<Selection<T>>, primary_index: usize) -> Self {
+        normalize_selections(selections, primary_index)
     }
 
     pub fn normalized(&self) -> Self {
         // 归一化是纯函数；如果当前已经归一化，复制 Arc 即可（外部观察一致）。
-        // 这里仍走 new_with_primary 以保证语义不变；其内部会做排序 / 合并。
         Self::new_with_primary(
             self.selections.iter().copied().collect(),
             self.primary_index,
         )
     }
+}
 
+impl SelectionSet<MultiBufferOffset> {
     pub fn map_through_position_map(&self, position_map: &PositionMap) -> Self {
-        // 批量映射：收集全部 anchor/head 点排序后单遍推进，替代逐 selection 各自线性扫描，映射成本从 O(A×E) 降为 O(A log A + E)。
+        // 批量映射：收集全部端点排序后单遍推进，替代逐 selection 各自线性扫描，映射成本从 O(A×E) 降为 O(A log A + E)。
         let selection_count = self.selections.len();
         let mut points: Vec<(MultiBufferOffset, usize, bool)> =
             Vec::with_capacity(selection_count * 2);
         for (index, selection) in self.selections.iter().copied().enumerate() {
-            points.push((selection.anchor(), index, true));
-            points.push((selection.head(), index, false));
+            points.push((selection.start(), index, true));
+            points.push((selection.end(), index, false));
         }
         points.sort_unstable_by_key(|(offset, ..)| *offset);
         let offsets: Vec<ByteOffset> = points
@@ -78,56 +90,96 @@ impl SelectionSet {
             .collect();
         let results = position_map.map_old_positions(&offsets, Affinity::After);
 
-        let mut anchors = vec![MultiBufferOffset::ZERO; selection_count];
-        let mut heads = vec![MultiBufferOffset::ZERO; selection_count];
-        for ((_, index, is_anchor), result) in points.iter().zip(results) {
+        let mut starts = vec![MultiBufferOffset::ZERO; selection_count];
+        let mut ends = vec![MultiBufferOffset::ZERO; selection_count];
+        for ((_, index, is_start), result) in points.iter().zip(results) {
             let offset = result.value();
-            if *is_anchor {
-                anchors[*index] = offset.into();
+            if *is_start {
+                starts[*index] = offset.into();
             } else {
-                heads[*index] = offset.into();
+                ends[*index] = offset.into();
             }
         }
 
-        Self::new_with_primary(
+        Self::from_selections(
             self.selections
                 .iter()
                 .copied()
                 .enumerate()
                 .map(|(index, selection)| {
-                    Selection::new(anchors[index], heads[index]).with_goal(selection.goal())
+                    Selection::from_parts(
+                        starts[index],
+                        ends[index],
+                        selection.reversed(),
+                        selection.goal(),
+                    )
                 })
+                .collect(),
+            self.primary_index,
+        )
+    }
+
+    /// 把偏移选区集合按其所属快照锚定为源锚点集合；顺序与 primary 保持不变。
+    pub(crate) fn anchored(
+        self,
+        snapshot: &MultiBufferSnapshot,
+    ) -> SelectionSet<MultiBufferAnchor> {
+        SelectionSet::from_selections(
+            self.selections
+                .iter()
+                .copied()
+                .map(|selection| selection.anchored(snapshot))
                 .collect(),
             self.primary_index,
         )
     }
 }
 
-impl Default for SelectionSet {
+impl SelectionSet<MultiBufferAnchor> {
+    /// 按当前快照把源锚点集合解析为偏移集合；顺序与 primary 保持不变。
+    pub(crate) fn resolve(
+        &self,
+        snapshot: &MultiBufferSnapshot,
+    ) -> SelectionSet<MultiBufferOffset> {
+        SelectionSet::from_selections(
+            self.selections
+                .iter()
+                .copied()
+                .map(|selection| selection.resolve(snapshot))
+                .collect(),
+            self.primary_index,
+        )
+    }
+}
+
+impl Default for SelectionSet<MultiBufferOffset> {
     fn default() -> Self {
         Self::caret(MultiBufferOffset::ZERO)
     }
 }
 
-fn normalize_selections(selections: Vec<Selection>, primary_index: usize) -> SelectionSet {
+fn normalize_selections<T: Copy + Ord + Default>(
+    selections: Vec<Selection<T>>,
+    primary_index: usize,
+) -> SelectionSet<T> {
     if selections.is_empty() {
-        return SelectionSet::caret(MultiBufferOffset::ZERO);
+        return SelectionSet::caret(T::default());
     }
 
     let original_primary_index = primary_index.min(selections.len() - 1);
     let original_primary_head = selections[original_primary_index].head();
 
-    let mut indexed: Vec<(usize, Selection)> = selections.into_iter().enumerate().collect();
+    let mut indexed: Vec<(usize, Selection<T>)> = selections.into_iter().enumerate().collect();
     indexed.sort_by_key(|(_, selection)| {
         (
             selection.start(),
             selection.end(),
             selection.head(),
-            selection.anchor(),
+            selection.tail(),
         )
     });
 
-    let mut merged: Vec<Selection> = Vec::new();
+    let mut merged: Vec<Selection<T>> = Vec::new();
 
     for (_, selection) in indexed {
         let Some(current) = merged.last_mut() else {
@@ -135,7 +187,7 @@ fn normalize_selections(selections: Vec<Selection>, primary_index: usize) -> Sel
             continue;
         };
 
-        if should_merge(*current, selection) {
+        if current.end() >= selection.start() {
             let start = current.start().min(selection.start());
             let end = current.end().max(selection.end());
             *current = Selection::new(start, end);
@@ -160,11 +212,7 @@ fn normalize_selections(selections: Vec<Selection>, primary_index: usize) -> Sel
     }
 }
 
-fn should_merge(current: Selection, next: Selection) -> bool {
-    current.end() >= next.start()
-}
-
-fn contains_offset(selection: Selection, offset: MultiBufferOffset) -> bool {
+fn contains_offset<T: Copy + Ord>(selection: Selection<T>, offset: T) -> bool {
     selection.start() <= offset && offset <= selection.end()
 }
 
@@ -182,11 +230,11 @@ mod tests {
         MultiBufferRange::new(b(start), b(end)).unwrap()
     }
 
-    fn selection(anchor: usize, head: usize) -> Selection {
+    fn selection(anchor: usize, head: usize) -> Selection<MultiBufferOffset> {
         Selection::new(b(anchor), b(head))
     }
 
-    fn caret(offset: usize) -> Selection {
+    fn caret(offset: usize) -> Selection<MultiBufferOffset> {
         Selection::caret(b(offset))
     }
 

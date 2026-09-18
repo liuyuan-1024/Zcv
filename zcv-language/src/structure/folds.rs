@@ -6,15 +6,17 @@
 use std::ops::Range;
 
 use tree_sitter::StreamingIterator;
-use zcv_text::{ByteOffset, Line, Snapshot};
+use zcv_text::{Anchor, ByteOffset, Line, Snapshot};
 
 use crate::syntax_map::SyntaxSnapshot;
 use crate::tree_sitter_utils::{QueryCursorHandle, SnapshotTextProvider};
 
 /// 一个可折叠的源文本范围。
+///
+/// 端点以源文本 Anchor 表达：折叠候选跨版本缓存，消费时按当前源快照推进，不保存裸字节偏移。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FoldRange {
-    pub range: Range<usize>,
+    pub range: Range<Anchor>,
 }
 
 impl SyntaxSnapshot {
@@ -119,10 +121,10 @@ impl SyntaxSnapshot {
                 continue;
             }
             ranges.push(FoldRange {
-                range: start.get()..end.get(),
+                range: Anchor::new(text.version(), start)..Anchor::new(text.version(), end),
             });
         }
-        ranges.sort_unstable_by_key(|range| (range.range.start, range.range.end));
+        ranges.sort_unstable_by_key(|range| (range.range.start.offset(), range.range.end.offset()));
         ranges
     }
 }

@@ -8,7 +8,7 @@ use zcv_text::{Edit, TransactionId, TransactionMetadata};
 use super::common::{buffer_text, engine_buffer, focus_editor, test_buffer};
 use super::*;
 use crate::display_map::{DisplayPoint, DisplayRow};
-use crate::selection::{EditorSelections, Selection, SelectionSet};
+use crate::selection::{Selection, SelectionSet};
 
 #[gpui::test]
 fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext) {
@@ -18,21 +18,25 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
 
     cx.update_entity(&first, |editor, cx| {
         editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(1)));
+        let display = editor.display_snapshot();
+        editor.scroll_manager.update_viewport(
+            1,
+            px(100.0),
+            px(40.0),
+            px(200.0),
+            px(20.0),
+            px(0.0),
+            &display,
+        );
         editor
             .scroll_manager
-            .update_viewport(1, px(100.0), px(40.0), px(200.0), px(20.0), px(0.0));
-        editor.scroll_manager.scroll_by(point(px(-4.0), px(0.0)));
+            .scroll_by(point(px(-4.0), px(0.0)), &display);
         editor.selection_history.insert_transaction(
             TransactionId::new(1),
-            EditorSelections::from_selection_set(
-                editor.display_snapshot.buffer_snapshot(),
-                &SelectionSet::caret(MultiBufferOffset::ZERO),
-            ),
+            SelectionSet::caret(MultiBufferOffset::ZERO).anchored(display.buffer_snapshot()),
         );
-        let redo = EditorSelections::from_selection_set(
-            editor.display_snapshot.buffer_snapshot(),
-            &SelectionSet::caret(MultiBufferOffset::new(1)),
-        );
+        let redo =
+            SelectionSet::caret(MultiBufferOffset::new(1)).anchored(display.buffer_snapshot());
         editor
             .selection_history
             .transaction_mut(TransactionId::new(1))
@@ -326,7 +330,7 @@ fn constructors_create_expected_modes_and_independent_scratch_buffers(cx: &mut T
         assert_eq!(editor.mode, EditorMode::SingleLine);
         assert_eq!(editor.selections(), SelectionSet::default());
         assert_eq!(
-            editor.display_snapshot.buffer_snapshot().version(),
+            editor.display_snapshot().buffer_snapshot().version(),
             editor.multi_buffer().read(cx).snapshot(cx).version()
         );
         let _focus = editor.focus_handle();

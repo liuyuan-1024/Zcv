@@ -23,11 +23,11 @@ use zcv_actions::{
     SelectToEndOfLine, SelectToNextWord, SelectToPreviousWord, SelectUp, ToggleFold, Undo,
     UnfoldAll,
 };
-use zcv_git::DiffHunkKind;
 use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer};
 use zcv_multi_buffer::{
-    DiffFile, DiffHunkSource, DisplayHunk, ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot,
-    MultiBuffer, MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot, ProjectionRemap,
+    DiffFile, DiffHunkKind, DiffHunkSource, DisplayHunk, ExcerptDiffKind, ExcerptLocation,
+    ExcerptSnapshot, MultiBuffer, MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot,
+    ProjectionRemap,
 };
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
@@ -976,7 +976,7 @@ impl Editor {
         cx.notify();
     }
 
-    pub fn render_snapshot(&self) -> MultiBufferSnapshot {
+    pub(crate) fn render_snapshot(&self) -> MultiBufferSnapshot {
         self.multi_snapshot.clone()
     }
 
@@ -2166,6 +2166,8 @@ impl Editor {
         match outcome {
             Ok(selections) => {
                 self.composition = None;
+                // 普通光标移动结束结构化选择扩展链，避免下次收缩跳回移动前选区。
+                self.structured_selection_history.clear();
                 let anchored =
                     EditorSelections::from_selection_set(&self.multi_snapshot, &selections);
                 self.selections = anchored;

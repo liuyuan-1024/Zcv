@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 use gpui::{AppContext as _, TestAppContext};
 use std::sync::Arc;
 
-use crate::{BufferDiff, BufferDiffInput, DiffFile, DiffHunkStaging, DiffOperations, DisplayHunk};
-use zcv_git::DiffHunkKind;
+use crate::{
+    BufferDiff, BufferDiffInput, DiffFile, DiffHunkKind, DiffHunkStaging, DiffOperations,
+    DisplayHunk,
+};
 use zcv_language::LanguageBuffer;
 use zcv_text::{
     Buffer, BufferConfig, ByteOffset, CharOffset, Edit, Line, StorageError, TextError, TextRange,

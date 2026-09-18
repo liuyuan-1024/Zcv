@@ -182,7 +182,7 @@ pub(super) fn marker_column_x_range_at(
 mod tests {
     use super::*;
     use DiffHunkKind::*;
-    use zcv_git::DiffHunkKind;
+    use zcv_multi_buffer::DiffHunkKind;
 
     fn track_bounds(height: f32) -> Bounds<Pixels> {
         Bounds {

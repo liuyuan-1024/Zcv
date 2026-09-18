@@ -447,6 +447,8 @@ impl Editor {
             })
             .collect();
         if changed {
+            // 自动闭合配对扩展属于普通选区变更，结束结构化选择扩展链。
+            self.structured_selection_history.clear();
             let anchored = EditorSelections::from_selection_set(
                 &self.multi_snapshot,
                 &SelectionSet::new_with_primary(selections, before.primary_index()),

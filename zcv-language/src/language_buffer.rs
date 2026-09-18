@@ -256,10 +256,7 @@ impl LanguageBuffer {
             let _ = this.update(cx, |this, cx| {
                 // 结果已被 sync 同步安装（parse_task 已替换为 None）时不再重复安装。
                 this.parse_task = None;
-                let installed = this.syntax_map.did_parse(parsed);
-                if installed {
-                    this.fold_ranges = Arc::from(folds);
-                    cx.emit(LanguageBufferEvent::Reparsed);
+                if this.install_parse_result(parsed, folds, cx) {
                     cx.notify();
                 }
             });
@@ -279,12 +276,25 @@ impl LanguageBuffer {
         let Some((parsed, folds)) = parse_task.wait_completion(SYNC_PARSE_TIMEOUT) else {
             return;
         };
-        if self.syntax_map.did_parse(parsed) {
-            self.fold_ranges = Arc::from(folds);
+        if self.install_parse_result(parsed, folds, cx) {
             // 结果已同步安装：丢弃异步安装路径（ParseTask::drop 取消后台任务）。
             self.parse_task = None;
-            cx.emit(LanguageBufferEvent::Reparsed);
         }
+    }
+
+    /// 唯一的解析安装入口：同步预算内完成与异步完成两条路径都经这里替换语法与折叠派生数据。
+    fn install_parse_result(
+        &mut self,
+        parsed: SyntaxSnapshot,
+        folds: Vec<FoldRange>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.syntax_map.did_parse(parsed) {
+            return false;
+        }
+        self.fold_ranges = Arc::from(folds);
+        cx.emit(LanguageBufferEvent::Reparsed);
+        true
     }
 }
 

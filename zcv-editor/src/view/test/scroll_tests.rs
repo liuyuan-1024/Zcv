@@ -15,8 +15,7 @@ impl Render for EditorInWindow {
         self.0.clone()
     }
 }
-use zcv_git::DiffHunkKind;
-use zcv_multi_buffer::{DiffHunkStaging, ExcerptRange, MultiBuffer};
+use zcv_multi_buffer::{DiffHunkKind, DiffHunkStaging, ExcerptRange, MultiBuffer};
 use zcv_text::{Line, LogicalColumn, Position};
 
 use super::common::focus_editor;

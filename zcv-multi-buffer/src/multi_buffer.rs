@@ -11,8 +11,8 @@ mod path_key;
 mod word_diff;
 
 pub use buffer_diff::{
-    BufferDiff, BufferDiffEvent, BufferDiffInput, BufferDiffSnapshot, DiffHunk, DiffHunkStaging,
-    DiffOperations, DiffRefresh, PendingHunk, PendingSense,
+    BufferDiff, BufferDiffEvent, BufferDiffInput, BufferDiffSnapshot, DiffHunk, DiffHunkKind,
+    DiffHunkStaging, DiffOperations, DiffRefresh, PendingHunk, PendingSense,
 };
 pub use diff_projection::{DiffFile, DiffHunkSource, DisplayHunk};
 pub use path_key::{PathKey, PathKeyIndex};

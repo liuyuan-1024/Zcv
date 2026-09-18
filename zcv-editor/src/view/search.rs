@@ -430,7 +430,7 @@ impl Editor {
     }
 
     /// 使用调用方提供的精确范围建立只读搜索高亮，供 MultiBuffer excerpts 等组合结果使用。
-    pub fn set_search_ranges(
+    pub(crate) fn set_search_ranges(
         &mut self,
         query: SearchQuery,
         ranges: Vec<MultiBufferRange>,

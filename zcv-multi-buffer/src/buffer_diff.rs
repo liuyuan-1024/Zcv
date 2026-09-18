@@ -10,13 +10,25 @@ use std::sync::Arc;
 
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter};
 use imara_diff::{Algorithm, Diff, InternedInput};
-use zcv_git::DiffHunkKind;
 use zcv_language::LanguageBuffer;
 use zcv_text::{
     Anchor, Buffer, BufferConfig, BufferVersion, ByteOffset, Line, Snapshot, TextRange,
 };
 
 use crate::word_diff::{MAX_WORD_DIFF_BYTES, MAX_WORD_DIFF_LINES, word_diff_ranges};
+
+/// hunk 变化类型（判定规则：旧侧空→Added、新侧空→Deleted）。
+///
+/// 由本层的行级 diff 计算产生，是编辑器、版本控制视图与 gutter 共用的稳定变化类型。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DiffHunkKind {
+    /// 旧侧计数为 0（纯新增）。
+    Added,
+    /// 新旧两侧计数均非 0。
+    Modified,
+    /// 新侧计数为 0（纯删除）。
+    Deleted,
+}
 
 /// BufferDiff 变更事件。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -22,11 +22,12 @@ use zcv_editor::{
     EditorScrollAnchor, HunkControlTarget,
 };
 use zcv_git::{
-    ConflictChoice, DiffHunkKind, FileStatus, GitHunkOperation, GitRevision, StatusCode,
-    parse_conflict_regions,
+    ConflictChoice, FileStatus, GitHunkOperation, GitRevision, StatusCode, parse_conflict_regions,
 };
 use zcv_language::LanguageBuffer;
-use zcv_multi_buffer::{BufferDiff, BufferDiffInput, DiffFile, DiffHunkSource, DisplayHunk};
+use zcv_multi_buffer::{
+    BufferDiff, BufferDiffInput, DiffFile, DiffHunkKind, DiffHunkSource, DisplayHunk,
+};
 use zcv_multi_buffer::{ExcerptLocation, ExcerptRange, MultiBuffer};
 use zcv_path::AbsolutePathBuf;
 use zcv_project::{GitStoreEvent, Project};

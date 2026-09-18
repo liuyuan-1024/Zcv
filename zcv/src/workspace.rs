@@ -20,8 +20,8 @@ use zcv_actions::{
     ResetUiFontSize, RestartToUpdate, SelectGitBranch, ToggleHarnessMode, ToggleProjectPicker,
 };
 use zcv_editor::{Editor, EditorEvent, EditorHunk, EditorHunkMarkerKind, EditorHunkPart};
-use zcv_git::{DiffHunkKind, FileStatus, GitRevision, parse_conflict_regions};
-use zcv_multi_buffer::{BufferDiffInput, DiffFile};
+use zcv_git::{FileStatus, GitRevision, parse_conflict_regions};
+use zcv_multi_buffer::{BufferDiffInput, DiffFile, DiffHunkKind};
 use zcv_project::{
     FileWatcherError, FileWatcherOperation, GitOperationKind, GitOperationOutcome, GitStoreEvent,
     Project, ProjectEvent,

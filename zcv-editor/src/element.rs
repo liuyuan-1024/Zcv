@@ -15,9 +15,8 @@ use gpui::{
     div, fill, point, prelude::*, px, relative, size,
 };
 use zcv_actions::{OpenExcerpts, ToggleFold};
-use zcv_git::DiffHunkKind;
 use zcv_language::{BracketPair, FoldRange};
-use zcv_multi_buffer::{DiffHunkStaging, MultiBufferSnapshot};
+use zcv_multi_buffer::{DiffHunkKind, DiffHunkStaging, MultiBufferSnapshot};
 use zcv_text::{Line, LogicalColumn};
 use zcv_theme::{color, space};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon, drag_autoscroll_delta};

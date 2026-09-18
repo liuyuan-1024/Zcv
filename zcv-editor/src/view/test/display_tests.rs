@@ -2,9 +2,9 @@ use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
 
 use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 use std::path::PathBuf;
-use zcv_git::DiffHunkKind;
 use zcv_multi_buffer::{
-    BufferDiff, BufferDiffInput, DiffFile, DiffHunkStaging, DisplayHunk, ExcerptRange, MultiBuffer,
+    BufferDiff, BufferDiffInput, DiffFile, DiffHunkKind, DiffHunkStaging, DisplayHunk,
+    ExcerptRange, MultiBuffer,
 };
 use zcv_text::{Buffer, Edit, Line, LogicalColumn, TransactionMetadata};
 

@@ -12,11 +12,12 @@ use std::path::{Path, PathBuf};
 
 use gpui::{App, Context, Entity};
 use sum_tree::SumTree;
-use zcv_git::DiffHunkKind;
 use zcv_language::LanguageBuffer;
 use zcv_text::{Affinity, Anchor, ByteOffset, Line, PositionMap, Snapshot, Stickiness};
 
-use crate::buffer_diff::{BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkStaging, DiffRefresh};
+use crate::buffer_diff::{
+    BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkKind, DiffHunkStaging, DiffRefresh,
+};
 use crate::{
     DiffTransform, ExcerptDiffKind, ExcerptRange, MultiBuffer, MultiBufferCursor, MultiBufferEvent,
     PathKey, ProjectionRemap, mapping_count,

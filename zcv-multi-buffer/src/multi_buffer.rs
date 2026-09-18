@@ -40,7 +40,7 @@ use zcv_text::{
 
 /// 组合文档中的一个源片段。
 #[derive(Clone)]
-pub struct MultiBufferExcerpt {
+pub struct ExcerptRange {
     source: Entity<LanguageBuffer>,
     source_range: TextRange,
     match_ranges: Vec<TextRange>,
@@ -57,7 +57,7 @@ pub enum ExcerptDiffKind {
     Deleted,
 }
 
-impl MultiBufferExcerpt {
+impl ExcerptRange {
     pub fn new(
         source: Entity<LanguageBuffer>,
         source_range: TextRange,
@@ -236,9 +236,9 @@ struct ExcerptSourceSnapshot {
 /// 组合映射树的 item：位置无关的片段数据。
 ///
 /// 只承载源坐标与内容摘要；
-/// 绝对输出坐标由 `ExcerptMappingSummary` 的 `OutputOffset` 维度在游标上累加得到，因此按路径 splice 不需要重算下游 item。
+/// 绝对输出坐标由 `DiffTransformSummary` 的 `OutputOffset` 维度在游标上累加得到，因此按路径 splice 不需要重算下游 item。
 #[derive(Clone, Debug)]
-struct ExcerptEntry {
+struct Excerpt {
     path: PathKey,
     /// 路径身份索引；锚点解析用它做整数比较。
     path_index: PathKeyIndex,
@@ -266,7 +266,7 @@ struct ExcerptEntry {
 /// 树本身是权威；该视图只在快照/派生读取时短暂存在，不反向写回。
 #[derive(Clone, Debug)]
 struct ExcerptMapping {
-    entry: ExcerptEntry,
+    entry: Excerpt,
     /// 在组合文档中的顺序位置（由树序推导，不存储在 item 上）。
     excerpt_index: usize,
     output_range: TextRange,
@@ -275,9 +275,9 @@ struct ExcerptMapping {
 }
 
 impl std::ops::Deref for ExcerptMapping {
-    type Target = ExcerptEntry;
+    type Target = Excerpt;
 
-    fn deref(&self) -> &ExcerptEntry {
+    fn deref(&self) -> &Excerpt {
         &self.entry
     }
 }
@@ -288,13 +288,13 @@ impl std::ops::Deref for ExcerptMapping {
 /// 坐标由片段的 Summary/Dimension 推导；删除块不再作为独立来源的 excerpt 另立门户。
 #[derive(Clone, Debug)]
 enum DiffTransform {
-    BufferContent(ExcerptEntry),
-    DeletedHunk(ExcerptEntry),
+    BufferContent(Excerpt),
+    DeletedHunk(Excerpt),
 }
 
 impl DiffTransform {
     /// 由片段节点构造：`Deleted` 片段产生删除块 transform，其余为工作区内容。
-    fn from_entry(entry: ExcerptEntry) -> Self {
+    fn from_entry(entry: Excerpt) -> Self {
         if entry.diff_kind == Some(ExcerptDiffKind::Deleted) {
             Self::DeletedHunk(entry)
         } else {
@@ -328,9 +328,9 @@ impl DiffTransform {
 }
 
 impl std::ops::Deref for DiffTransform {
-    type Target = ExcerptEntry;
+    type Target = Excerpt;
 
-    fn deref(&self) -> &ExcerptEntry {
+    fn deref(&self) -> &Excerpt {
         match self {
             Self::BufferContent(entry) | Self::DeletedHunk(entry) => entry,
         }
@@ -338,14 +338,14 @@ impl std::ops::Deref for DiffTransform {
 }
 
 impl std::ops::DerefMut for DiffTransform {
-    fn deref_mut(&mut self) -> &mut ExcerptEntry {
+    fn deref_mut(&mut self) -> &mut Excerpt {
         match self {
             Self::BufferContent(entry) | Self::DeletedHunk(entry) => entry,
         }
     }
 }
 
-impl ExcerptEntry {
+impl Excerpt {
     /// 在给定游标位置（输出字节 + 输出行起点）上构造派生视图。
     fn to_mapping(&self, at: MappingPosition) -> ExcerptMapping {
         let separator = self.adds_newline as usize;
@@ -365,27 +365,21 @@ impl ExcerptEntry {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct ExcerptMappingSummary {
+struct TransformSummary {
     bytes: usize,
     lines: usize,
     count: usize,
-    /// 子树内按路径升序的最后一个路径；按路径游标 seek 依赖它。
     path_key: PathKey,
 }
 
-impl ContextLessSummary for ExcerptMappingSummary {
-    fn zero() -> Self {
-        Self::default()
-    }
-
-    fn add_summary(&mut self, summary: &Self) {
+impl TransformSummary {
+    fn add(&mut self, summary: &Self) {
         debug_assert!(
             summary.path_key >= self.path_key,
-            "excerpt 必须按路径升序排列：{:?} 之后出现了 {:?}",
+            "变换节点必须按路径升序排列：{:?} 之后出现了 {:?}",
             self.path_key,
             summary.path_key,
         );
-        // 同一路径内的顺序就是调用方给出的显示/输出顺序（片段树按插入顺序排列），不再用源偏移键约束。
         self.bytes += summary.bytes;
         self.lines += summary.lines;
         self.count += summary.count;
@@ -393,8 +387,30 @@ impl ContextLessSummary for ExcerptMappingSummary {
     }
 }
 
+/// Zed 式输入坐标到输出坐标的变换摘要。
+///
+/// `input` 是基础 excerpts 的坐标长度，`output` 是 Editor 实际消费的坐标长度。
+/// 普通内容节点两者相同；删除 hunk 只存在于 output，因此 input 为空而 output
+/// 仍保留删除文本。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct DiffTransformSummary {
+    input: TransformSummary,
+    output: TransformSummary,
+}
+
+impl ContextLessSummary for DiffTransformSummary {
+    fn zero() -> Self {
+        Self::default()
+    }
+
+    fn add_summary(&mut self, summary: &Self) {
+        self.input.add(&summary.input);
+        self.output.add(&summary.output);
+    }
+}
+
 impl Item for DiffTransform {
-    type Summary = ExcerptMappingSummary;
+    type Summary = DiffTransformSummary;
 
     fn summary(&self, _cx: ()) -> Self::Summary {
         // 用节点自身的内容摘要（内容长度 + 是否补合成换行）描述子树，不依赖其在文档中的绝对输出坐标；
@@ -403,28 +419,36 @@ impl Item for DiffTransform {
             Self::BufferContent(node) | Self::DeletedHunk(node) => node,
         };
         let separator = node.adds_newline as usize;
-        Self::Summary {
+        let output = TransformSummary {
             bytes: node.content_len + separator,
             lines: node.line_span + separator,
             count: 1,
             path_key: node.path.clone(),
-        }
+        };
+        let input = match self {
+            Self::BufferContent(_) => output.clone(),
+            Self::DeletedHunk(_) => TransformSummary {
+                path_key: node.path.clone(),
+                ..TransformSummary::default()
+            },
+        };
+        DiffTransformSummary { input, output }
     }
 }
 
-impl Dimension<'_, ExcerptMappingSummary> for PathKey {
+impl Dimension<'_, DiffTransformSummary> for PathKey {
     fn zero(_: ()) -> Self {
         Self::min()
     }
 
-    fn add_summary(&mut self, summary: &ExcerptMappingSummary, _: ()) {
-        *self = summary.path_key.clone();
+    fn add_summary(&mut self, summary: &DiffTransformSummary, _: ()) {
+        *self = summary.output.path_key.clone();
     }
 }
 
-impl SeekTarget<'_, ExcerptMappingSummary, ExcerptMappingSummary> for PathKey {
-    fn cmp(&self, cursor_location: &ExcerptMappingSummary, _: ()) -> Ordering {
-        Ord::cmp(self, &cursor_location.path_key)
+impl SeekTarget<'_, DiffTransformSummary, DiffTransformSummary> for PathKey {
+    fn cmp(&self, cursor_location: &DiffTransformSummary, _: ()) -> Ordering {
+        Ord::cmp(self, &cursor_location.output.path_key)
     }
 }
 
@@ -432,13 +456,13 @@ impl SeekTarget<'_, ExcerptMappingSummary, ExcerptMappingSummary> for PathKey {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct OutputOffset(usize);
 
-impl Dimension<'_, ExcerptMappingSummary> for OutputOffset {
+impl Dimension<'_, DiffTransformSummary> for OutputOffset {
     fn zero(_: ()) -> Self {
         Self(0)
     }
 
-    fn add_summary(&mut self, summary: &ExcerptMappingSummary, _: ()) {
-        self.0 += summary.bytes;
+    fn add_summary(&mut self, summary: &DiffTransformSummary, _: ()) {
+        self.0 += summary.output.bytes;
     }
 }
 
@@ -448,13 +472,13 @@ impl Dimension<'_, ExcerptMappingSummary> for OutputOffset {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct OutputLine(usize);
 
-impl Dimension<'_, ExcerptMappingSummary> for OutputLine {
+impl Dimension<'_, DiffTransformSummary> for OutputLine {
     fn zero(_: ()) -> Self {
         Self(0)
     }
 
-    fn add_summary(&mut self, summary: &ExcerptMappingSummary, _: ()) {
-        self.0 += summary.lines;
+    fn add_summary(&mut self, summary: &DiffTransformSummary, _: ()) {
+        self.0 += summary.output.lines;
     }
 }
 
@@ -470,32 +494,32 @@ struct MappingPosition {
     path: PathKey,
 }
 
-impl Dimension<'_, ExcerptMappingSummary> for MappingPosition {
+impl Dimension<'_, DiffTransformSummary> for MappingPosition {
     fn zero(_: ()) -> Self {
         Self::default()
     }
 
-    fn add_summary(&mut self, summary: &ExcerptMappingSummary, _: ()) {
-        self.bytes += summary.bytes;
-        self.lines += summary.lines;
-        self.index += summary.count;
-        self.path = summary.path_key.clone();
+    fn add_summary(&mut self, summary: &DiffTransformSummary, _: ()) {
+        self.bytes += summary.output.bytes;
+        self.lines += summary.output.lines;
+        self.index += summary.output.count;
+        self.path = summary.output.path_key.clone();
     }
 }
 
-impl SeekTarget<'_, ExcerptMappingSummary, MappingPosition> for OutputOffset {
+impl SeekTarget<'_, DiffTransformSummary, MappingPosition> for OutputOffset {
     fn cmp(&self, cursor_location: &MappingPosition, _: ()) -> Ordering {
         Ord::cmp(&self.0, &cursor_location.bytes)
     }
 }
 
-impl SeekTarget<'_, ExcerptMappingSummary, MappingPosition> for OutputLine {
+impl SeekTarget<'_, DiffTransformSummary, MappingPosition> for OutputLine {
     fn cmp(&self, cursor_location: &MappingPosition, _: ()) -> Ordering {
         Ord::cmp(&self.0, &cursor_location.lines)
     }
 }
 
-impl SeekTarget<'_, ExcerptMappingSummary, MappingPosition> for PathKey {
+impl SeekTarget<'_, DiffTransformSummary, MappingPosition> for PathKey {
     fn cmp(&self, cursor_location: &MappingPosition, _: ()) -> Ordering {
         Ord::cmp(self, &cursor_location.path)
     }
@@ -517,7 +541,7 @@ fn intern_path(
 }
 
 fn mapping_count(mappings: &SumTree<DiffTransform>) -> usize {
-    mappings.summary().count
+    mappings.summary().output.count
 }
 
 /// 展开映射树为含绝对输出坐标的扁平视图。
@@ -526,7 +550,7 @@ fn mapping_count(mappings: &SumTree<DiffTransform>) -> usize {
 /// 这也是按路径 splice 之后无需重算下游 item 的原因。
 fn mapping_vec(entries: &SumTree<DiffTransform>) -> Vec<ExcerptMapping> {
     let mut at = MappingPosition::default();
-    let mut mappings = Vec::with_capacity(entries.summary().count);
+    let mut mappings = Vec::with_capacity(entries.summary().output.count);
     for entry in entries.iter() {
         mappings.push(entry.to_mapping(at.clone()));
         let separator = entry.adds_newline as usize;
@@ -542,7 +566,7 @@ fn mapping_vec(entries: &SumTree<DiffTransform>) -> Vec<ExcerptMapping> {
 /// 仅在需要随机访问或向显示层移交所有权时调用；组合坐标查询直接用树游标，不经过本函数。
 fn snapshot_excerpts(entries: &SumTree<DiffTransform>) -> Vec<ExcerptSnapshot> {
     let mut at = MappingPosition::default();
-    let mut excerpts = Vec::with_capacity(entries.summary().count);
+    let mut excerpts = Vec::with_capacity(entries.summary().output.count);
     for entry in entries.iter() {
         excerpts.push(entry.to_snapshot(at.clone()));
         let separator = entry.adds_newline as usize;
@@ -561,7 +585,7 @@ fn splice_path_entries(
     path: &PathKey,
     entries: Vec<DiffTransform>,
 ) -> SumTree<DiffTransform> {
-    let mut cursor = tree.cursor::<ExcerptMappingSummary>(());
+    let mut cursor = tree.cursor::<DiffTransformSummary>(());
     let mut new_tree = cursor.slice(path, Bias::Left);
     cursor.seek(path, Bias::Right);
     new_tree.extend(entries, ());
@@ -662,7 +686,6 @@ fn extend_capture_table(
 /// 单次源编辑换算到组合坐标所需的信息。
 struct SourceIncremental {
     batch: TextChangeBatch,
-    shift: usize,
 }
 
 /// 多文件文档中一个可见片段的一帧元数据。
@@ -745,7 +768,7 @@ pub struct MultiBufferSnapshot {
     config: BufferConfig,
     projection_version: BufferVersion,
     /// 按路径升序的映射树；组合片段的唯一权威存储，输出坐标由累积 Summary 派生。
-    excerpt_tree: SumTree<DiffTransform>,
+    diff_transforms: SumTree<DiffTransform>,
     /// 由权威树惰性物化的片段视图；同一版本内多次读取共用一份派生结果。
     excerpts_cache: Arc<OnceLock<Arc<[ExcerptSnapshot]>>>,
     /// 路径索引表：PathKeyIndex 对应的路径，供锚点解析按路径 seek。
@@ -921,12 +944,12 @@ impl MultiBufferSnapshot {
     /// 组合文本总字节数。
     /// 这个值由最后一个 excerpt 的派生输出范围决定，不读取或复制组合文本。
     pub fn len_bytes(&self) -> ByteOffset {
-        if self.excerpt_tree.is_empty() {
+        if self.diff_transforms.is_empty() {
             self.plain_text
                 .as_ref()
                 .map_or(ByteOffset::ZERO, Snapshot::len_bytes)
         } else {
-            ByteOffset::new(self.excerpt_tree.summary().bytes)
+            ByteOffset::new(self.diff_transforms.summary().output.bytes)
         }
     }
 
@@ -934,11 +957,11 @@ impl MultiBufferSnapshot {
     ///
     /// excerpt 映射在建立时已经累计了输出行边界，因此这里不扫描、更不拼接所有源文本。
     pub fn line_count(&self) -> usize {
-        if self.excerpt_tree.is_empty() {
+        if self.diff_transforms.is_empty() {
             self.plain_text.as_ref().map_or(1, Snapshot::line_count)
         } else {
             // 末尾片段的输出行终点等于 Summary 累积行数；总行数比终点多一行。
-            self.excerpt_tree.summary().lines + 1
+            self.diff_transforms.summary().output.lines + 1
         }
     }
 
@@ -948,13 +971,13 @@ impl MultiBufferSnapshot {
     /// 它是 DisplayMap 迁出物化 `Snapshot` 后的基础坐标入口。
     pub fn byte_to_line(&self, offset: ByteOffset) -> TextResult<Line> {
         self.ensure_output_boundary(offset)?;
-        if self.excerpt_tree.is_empty() {
+        if self.diff_transforms.is_empty() {
             return self
                 .plain_text
                 .as_ref()
                 .map_or(Ok(Line::ZERO), |text| text.byte_to_line(offset));
         }
-        let (entry, at) = mapping_covering_output_end(&self.excerpt_tree, offset.get())
+        let (entry, at) = mapping_covering_output_end(&self.diff_transforms, offset.get())
             .ok_or(CoordinateError::OutOfBounds(offset))?;
         let content_end = ByteOffset::new(at.bytes + entry.source_range.len());
         let source = self
@@ -983,13 +1006,13 @@ impl MultiBufferSnapshot {
             return Ok(ByteOffset::ZERO);
         }
 
-        if self.excerpt_tree.is_empty() {
+        if self.diff_transforms.is_empty() {
             return self.plain_text.as_ref().map_or(
                 Err(CoordinateError::LineOutOfBounds(target).into()),
                 |text| text.line_start_byte(target),
             );
         }
-        let (entry, at) = mapping_at_output_line(&self.excerpt_tree, target.get())
+        let (entry, at) = mapping_at_output_line(&self.diff_transforms, target.get())
             .ok_or(CoordinateError::LineOutOfBounds(target))?;
         let source = self
             .excerpt_sources
@@ -1023,7 +1046,7 @@ impl MultiBufferSnapshot {
 
     /// 读取指定组合范围；结果只在调用方需要跨源拼接时短暂存在。
     pub fn text_for_range(&self, range: TextRange) -> TextResult<String> {
-        if self.excerpt_tree.is_empty() {
+        if self.diff_transforms.is_empty() {
             return self
                 .plain_text
                 .as_ref()
@@ -1042,14 +1065,15 @@ impl MultiBufferSnapshot {
     /// 注意与 `text_chunks(offset..)` 的区别：后者从偏移处切开块，本方法返回偏移所在的完整块。
     pub fn chunk_at_byte(&self, offset: ByteOffset) -> TextResult<(&str, ByteOffset)> {
         self.ensure_output_boundary(offset)?;
-        if self.excerpt_tree.is_empty() {
+        if self.diff_transforms.is_empty() {
             let text = self
                 .plain_text
                 .as_ref()
                 .ok_or_else(|| TextError::from(CoordinateError::OutOfBounds(offset)))?;
             return text.chunk_at_byte(offset);
         }
-        if let Some((entry, at)) = mapping_covering_output_end(&self.excerpt_tree, offset.get()) {
+        if let Some((entry, at)) = mapping_covering_output_end(&self.diff_transforms, offset.get())
+        {
             let content_start = ByteOffset::new(at.bytes);
             let content_end = ByteOffset::new(content_start.get() + entry.source_range.len());
             if content_start <= offset && offset < content_end {
@@ -1221,7 +1245,7 @@ impl MultiBufferSnapshot {
     pub fn text_chunks(&self, range: Range<ByteOffset>) -> MultiBufferChunks<'_> {
         let end = range.end.min(self.len_bytes());
         let start = range.start.min(end);
-        let mut cursor = self.excerpt_tree.cursor::<MappingPosition>(());
+        let mut cursor = self.diff_transforms.cursor::<MappingPosition>(());
         cursor.seek(&OutputOffset(start.get()), Bias::Right);
         MultiBufferChunks {
             snapshot: self,
@@ -1239,7 +1263,7 @@ impl MultiBufferSnapshot {
             return Ok(());
         }
 
-        if self.excerpt_tree.is_empty() {
+        if self.diff_transforms.is_empty() {
             return self
                 .plain_text
                 .as_ref()
@@ -1249,7 +1273,7 @@ impl MultiBufferSnapshot {
                 .map_err(|_| CoordinateError::InvalidByteBoundary(offset).into());
         }
 
-        let (entry, at) = mapping_covering_output_end(&self.excerpt_tree, offset.get())
+        let (entry, at) = mapping_covering_output_end(&self.diff_transforms, offset.get())
             .ok_or(CoordinateError::OutOfBounds(offset))?;
         let output_start = ByteOffset::new(at.bytes);
         let separator = entry.adds_newline as usize;
@@ -1292,7 +1316,7 @@ impl MultiBufferSnapshot {
     pub fn excerpts_arc(&self) -> Arc<[ExcerptSnapshot]> {
         Arc::clone(
             self.excerpts_cache
-                .get_or_init(|| Arc::from(snapshot_excerpts(&self.excerpt_tree))),
+                .get_or_init(|| Arc::from(snapshot_excerpts(&self.diff_transforms))),
         )
     }
 
@@ -1301,7 +1325,7 @@ impl MultiBufferSnapshot {
     /// 用按路径升序的映射树做路径游标定位，不扫描全部 excerpts。
     pub fn excerpts_for_path(&self, path: &Path) -> impl Iterator<Item = ExcerptSnapshot> {
         let path_key = PathKey::new(path);
-        let mut cursor = self.excerpt_tree.cursor::<MappingPosition>(());
+        let mut cursor = self.diff_transforms.cursor::<MappingPosition>(());
         cursor.seek(&path_key, Bias::Left);
         let mut snapshots = Vec::new();
         while let Some(entry) = cursor.item() {
@@ -1316,7 +1340,7 @@ impl MultiBufferSnapshot {
 
     /// 组合输出偏移所在的 excerpt（用累积输出字节的偏移游标在路径有序树上定位）。
     pub fn excerpt_at_output_offset(&self, offset: ByteOffset) -> Option<ExcerptSnapshot> {
-        let mut cursor = self.excerpt_tree.cursor::<MappingPosition>(());
+        let mut cursor = self.diff_transforms.cursor::<MappingPosition>(());
         cursor.seek(&OutputOffset(offset.get()), Bias::Right);
         let entry = cursor.item()?;
         Some(entry.to_snapshot(cursor.start().clone()))
@@ -1324,14 +1348,14 @@ impl MultiBufferSnapshot {
 
     /// 把快照内的组合偏移锚定到底层源坐标（Editor 源锚点选区：投影→源）。
     pub fn anchor_for_offset(&self, offset: ByteOffset) -> Option<MultiBufferAnchor> {
-        anchor_in_mappings(&self.excerpt_tree, offset)
+        anchor_in_mappings(&self.diff_transforms, offset)
     }
 
     /// 把源锚点解析回快照内的组合偏移（Editor 源锚点选区：源→投影）。
     ///
     /// 源锚点选区按需解析：投影重建不改变源，选区无需重映射，用重建后快照直接解析即得当前投影偏移。
     pub fn resolve_anchor(&self, anchor: &MultiBufferAnchor) -> Option<ByteOffset> {
-        resolve_anchor_in_mappings(&self.excerpt_tree, &self.path_keys, anchor)
+        resolve_anchor_in_mappings(&self.diff_transforms, &self.path_keys, anchor)
     }
 
     pub fn capture_names(&self) -> Arc<[Arc<str>]> {
@@ -1342,7 +1366,7 @@ impl MultiBufferSnapshot {
     ///
     /// 无 excerpt 的纯文本帧（placeholder 等）退回快照自身语法表。
     pub fn highlights(&self, range: std::ops::Range<usize>) -> Vec<HighlightSpan> {
-        if self.excerpt_tree.is_empty() {
+        if self.diff_transforms.is_empty() {
             return match (&self.plain_syntax, &self.plain_text) {
                 (Some(syntax), Some(text)) => syntax.highlights(range, text),
                 _ => Vec::new(),
@@ -1351,7 +1375,7 @@ impl MultiBufferSnapshot {
         let mut spans = Vec::new();
         // 片段按输出顺序排列，内容结束位置单调递增；
         // 先用输出字节游标定位第一个可能重叠的片段，避免每个视口范围都扫描整份多文件结果。
-        let mut cursor = self.excerpt_tree.cursor::<MappingPosition>(());
+        let mut cursor = self.diff_transforms.cursor::<MappingPosition>(());
         cursor.seek(&OutputOffset(range.start), Bias::Right);
         while let Some(entry) = cursor.item() {
             let output_start = cursor.start().bytes;
@@ -1497,14 +1521,14 @@ impl MultiBufferSnapshot {
     /// 大纲先从每个源的 `SyntaxSnapshot` 计算，再只投影完整落在 excerpt 内的定义；
     /// 这样不会把跨未展示内容的语法节点误投影到差异或搜索组合文档中。
     pub fn outline_items(&self) -> Vec<OutlineItem> {
-        if self.excerpt_tree.is_empty() {
+        if self.diff_transforms.is_empty() {
             return match (&self.plain_syntax, &self.plain_text) {
                 (Some(syntax), Some(text)) => syntax.outline(0..self.len_bytes().get(), text),
                 _ => Vec::new(),
             };
         }
 
-        let excerpts = snapshot_excerpts(&self.excerpt_tree);
+        let excerpts = snapshot_excerpts(&self.diff_transforms);
         let mut projected = Vec::new();
         for (source_index, source) in self.excerpt_sources.iter().enumerate() {
             let outlines = source
@@ -1536,10 +1560,10 @@ impl MultiBufferSnapshot {
     /// 局部绑定仍以源文件字节范围为语义；
     /// 多文件 excerpt 可能只展示作用域的一部分，因而这里不返回不完整的绑定，避免编辑器把组合坐标误当成源坐标执行重命名。
     pub fn local_bindings(&self) -> Vec<LocalBinding> {
-        if self.excerpt_tree.summary().count != 1 {
+        if self.diff_transforms.summary().output.count != 1 {
             return Vec::new();
         }
-        let Some(mapping) = snapshot_excerpts(&self.excerpt_tree).into_iter().next() else {
+        let Some(mapping) = snapshot_excerpts(&self.diff_transforms).into_iter().next() else {
             return Vec::new();
         };
         let Some(source) = self.excerpt_sources.get(mapping.source_index) else {
@@ -1560,7 +1584,7 @@ impl MultiBufferSnapshot {
         &self,
         offset: ByteOffset,
     ) -> Option<(ExcerptMapping, &ExcerptSourceSnapshot, ByteOffset)> {
-        let (mapping, at) = mapping_at_tree(&self.excerpt_tree, offset)?;
+        let (mapping, at) = mapping_at_tree(&self.diff_transforms, offset)?;
         let source = self.excerpt_sources.get(mapping.source_index)?;
         let delta = offset
             .get()
@@ -1581,7 +1605,7 @@ impl MultiBufferSnapshot {
         &ExcerptSourceSnapshot,
         std::ops::Range<usize>,
     )> {
-        let (mapping, at) = mapping_at_tree(&self.excerpt_tree, ByteOffset::new(range.start))?;
+        let (mapping, at) = mapping_at_tree(&self.diff_transforms, ByteOffset::new(range.start))?;
         let output_start = at.bytes;
         let content_end = output_start + mapping.source_range.len();
         if range.start < output_start || range.end > content_end {
@@ -1594,7 +1618,7 @@ impl MultiBufferSnapshot {
     }
 
     pub fn excerpt_for_output_line(&self, line: usize) -> Option<ExcerptSnapshot> {
-        let (entry, at) = mapping_at_output_line(&self.excerpt_tree, line)?;
+        let (entry, at) = mapping_at_output_line(&self.diff_transforms, line)?;
         let excerpt = entry.to_snapshot(at);
         ((excerpt.output_start_line <= line && line < excerpt.output_end_line)
             || (excerpt.output_start_line == excerpt.output_end_line
@@ -1803,7 +1827,7 @@ impl<'a> Iterator for MultiBufferChunks<'a> {
     type Item = MultiBufferChunk<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.snapshot.excerpt_tree.is_empty() {
+        if self.snapshot.diff_transforms.is_empty() {
             if self.offset >= self.range.end {
                 return None;
             }
@@ -1951,7 +1975,7 @@ impl From<Snapshot> for MultiBufferSnapshot {
             plain_syntax: Some(SyntaxSnapshot::empty(text.version())),
             config: text.config().clone(),
             projection_version: text.version(),
-            excerpt_tree: SumTree::new(()),
+            diff_transforms: SumTree::new(()),
             excerpts_cache: Arc::new(OnceLock::new()),
             path_keys: Arc::from([]),
             excerpt_sources: Arc::from([]),
@@ -1964,7 +1988,7 @@ impl From<Snapshot> for MultiBufferSnapshot {
 struct ExcerptState {
     source_subscriptions: Vec<SourceSubscription>,
     source_event_subscriptions: Vec<Subscription>,
-    mappings: SumTree<DiffTransform>,
+    diff_transforms: SumTree<DiffTransform>,
     /// 按源去重的 (text, syntax, capture_map) 表。
     sources: Vec<ExcerptSource>,
     /// 源实体到 `sources` 索引的派生索引，供增量追加按身份查找源状态。
@@ -2011,7 +2035,7 @@ pub struct MultiBuffer {
     /// excerpts 会因 diff 展开而改变形状，不能据此推断文档角色；
     /// 历史、配置、重命名与保存等文件级事实按本字段委托给底层 LanguageBuffer。
     /// `None` 表示真正的多来源组合文档。
-    working_source: Option<Entity<LanguageBuffer>>,
+    singleton_source: Option<Entity<LanguageBuffer>>,
     /// 显式标题；`None` 时由文档身份派生（当前文件路径的文件名）。
     title: Option<String>,
     /// 按显示路径排序的每文件 diff 状态（diff 实体、显示配置与展开覆盖）。
@@ -2056,7 +2080,7 @@ impl MultiBuffer {
     /// 同一个文档模型根据源数量选择历史协调者：
     /// 单源文档复用共享源历史，多源文档由自身协调多个源的历史。
     fn history_owner(&self) -> HistoryOwner {
-        if self.working_source.is_some() {
+        if self.singleton_source.is_some() {
             HistoryOwner::SourceBuffer
         } else {
             HistoryOwner::MultiBuffer
@@ -2073,13 +2097,13 @@ impl MultiBuffer {
     /// 普通编辑器的文档统一经此构造：项目共享 LanguageBuffer 只作为工作区源（source），展开 diff hunk 时的 set_excerpts 只影响本组合文档，不污染项目共享文档。
     /// 整文件片段不创建文件标题块（单文件文档无多文件边界；
     /// 标题块由多文件投影与 diff 投影按 `show_file_header` 自行声明）。
-    pub fn from_working_source(source: Entity<LanguageBuffer>, cx: &mut Context<Self>) -> Self {
+    pub fn singleton(source: Entity<LanguageBuffer>, cx: &mut Context<Self>) -> Self {
         let line_count = source.read(cx).text_snapshot(cx).line_count();
         let mut multi_buffer = Self::empty(cx);
-        multi_buffer.working_source = Some(source.clone());
+        multi_buffer.singleton_source = Some(source.clone());
         multi_buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(source.clone(), 0..line_count, cx)
+                ExcerptRange::line_range(source.clone(), 0..line_count, cx)
                     .with_starts_new_excerpt(false),
             ],
             cx,
@@ -2096,7 +2120,7 @@ impl MultiBuffer {
         Self {
             state: Self::empty_excerpt_state(cx),
             capability,
-            working_source: None,
+            singleton_source: None,
             title: None,
             diffs: Vec::new(),
             diff: None,
@@ -2116,7 +2140,7 @@ impl MultiBuffer {
         ExcerptState {
             source_subscriptions: Vec::new(),
             source_event_subscriptions: Vec::new(),
-            mappings: SumTree::new(()),
+            diff_transforms: SumTree::new(()),
             sources: Vec::new(),
             source_indices: HashMap::new(),
             match_ranges: Vec::new(),
@@ -2142,47 +2166,182 @@ impl MultiBuffer {
             .next()
             .expect("组合投影版本不应溢出；溢出时必须创建新文档生命周期");
         self.state.projection_version = new_version;
-        let batch = incremental.map(|incremental| {
-            incremental
-                .batch
-                .shifted_by(incremental.shift)
-                .rebased_to(old_version, new_version)
-        });
+        let batch =
+            incremental.map(|incremental| incremental.batch.rebased_to(old_version, new_version));
         self.state
             .projection_changes
             .publish(old_version, new_version, batch);
     }
 
-    /// 把单次源编辑换算到组合坐标；跨多个 excerpt 或整体重载时返回 None（走整体重载）。
+    fn publish_projection_edit(
+        &mut self,
+        old_text: &[u8],
+        new_text: &[u8],
+        old_version: BufferVersion,
+    ) {
+        let (old_range, new_range) = Self::changed_output_ranges(old_text, new_text);
+        let batch =
+            TextChangeBatch::from_edits(old_version, old_version, vec![(old_range, new_range)]);
+        self.publish_projection_change(Some(SourceIncremental { batch }));
+    }
+
+    /// 计算两帧组合 output 之间最小的单段替换范围。
+    ///
+    /// 结构重排只改变 output 中的一段时，局部 edit 允许 DisplayMap 保留折叠、
+    /// 换行和滚动锚点；只有首尾都发生变化时才退化为整段替换。
+    fn changed_output_ranges(old: &[u8], new: &[u8]) -> (TextRange, TextRange) {
+        let prefix = old
+            .iter()
+            .zip(new)
+            .take_while(|(old, new)| old == new)
+            .count();
+        let suffix = old[prefix..]
+            .iter()
+            .rev()
+            .zip(new[prefix..].iter().rev())
+            .take_while(|(old, new)| old == new)
+            .count();
+        let prefix = old[..prefix]
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |index| index + 1);
+        let mut old_end = old.len().saturating_sub(suffix).max(prefix);
+        let mut new_end = new.len().saturating_sub(suffix).max(prefix);
+        if let Some(index) = old[old_end..].iter().position(|byte| *byte == b'\n') {
+            old_end += index + 1;
+        }
+        if let Some(index) = new[new_end..].iter().position(|byte| *byte == b'\n') {
+            new_end += index + 1;
+        }
+        (
+            TextRange::new(ByteOffset::new(prefix), ByteOffset::new(old_end))
+                .expect("旧 output replacement 必须有效"),
+            TextRange::new(ByteOffset::new(prefix), ByteOffset::new(new_end))
+                .expect("新 output replacement 必须有效"),
+        )
+    }
+
+    /// 把一次源编辑换算到所有受影响 excerpt 的组合坐标。
+    ///
+    /// Zed 的 `sync_from_buffer_changes` 不要求一个源只能对应一个 excerpt；
+    /// 同一源的多个可见区间会分别生成 output edit。这里保留旧、当前两帧的
+    /// excerpt 顺序，按源坐标配对后再计算每个 output 区间。
     fn source_incremental_change(
         &self,
         source_id: gpui::EntityId,
         source_change: Option<&TextChangeBatch>,
+        old_mappings: &[ExcerptMapping],
     ) -> Option<SourceIncremental> {
         let source_change = source_change?;
         if source_change.requires_reset() || source_change.patch().is_empty() {
             return None;
         }
-        let mut matching = mapping_vec(&self.state.mappings)
+        let old_mappings = old_mappings
+            .iter()
+            .filter(|mapping| mapping.source_id == source_id)
+            .collect::<Vec<_>>();
+        let new_mappings = mapping_vec(&self.state.diff_transforms)
             .into_iter()
-            .filter(|mapping| mapping.source_id == source_id);
-        let mapping = matching.next()?;
-        if matching.next().is_some() {
+            .filter(|mapping| mapping.source_id == source_id)
+            .collect::<Vec<_>>();
+        if old_mappings.len() != new_mappings.len() {
             return None;
         }
-        let shift = mapping
-            .output_range
-            .start()
-            .get()
-            .checked_sub(mapping.source_range.start().get())?;
+        let mut output_edits = Vec::new();
+        for (old_mapping, new_mapping) in old_mappings.into_iter().zip(new_mappings) {
+            for patch_edit in source_change.patch().edits() {
+                let old_range = patch_edit.old_range();
+                let excerpt_range = old_mapping.source_range;
+                let overlap = if old_range.is_empty() {
+                    (old_range.start() >= excerpt_range.start()
+                        && old_range.start() < excerpt_range.end())
+                    .then_some(old_range)
+                } else {
+                    TextRange::new(
+                        old_range.start().max(excerpt_range.start()),
+                        old_range.end().min(excerpt_range.end()),
+                    )
+                    .ok()
+                    .filter(|range| !range.is_empty())
+                };
+                let Some(overlap) = overlap else {
+                    continue;
+                };
+
+                let old_output_start = old_mapping.output_range.start().get()
+                    + overlap.start().get()
+                    - excerpt_range.start().get();
+                let old_output_end = old_mapping.output_range.start().get() + overlap.end().get()
+                    - excerpt_range.start().get();
+                let new_start_source = source_change
+                    .position_map()
+                    .map_old_position_with_affinity(overlap.start(), Affinity::Before)
+                    .value();
+                let mut new_end_source = source_change
+                    .position_map()
+                    .map_old_position_with_affinity(overlap.end(), Affinity::After)
+                    .value();
+
+                // 如果替换范围跨越多个 excerpt，替换文本只应插入到包含旧起点的
+                // 第一个 excerpt 中；后续 excerpt 只删除自己可见的旧内容。
+                let owns_replacement = old_range.start() >= excerpt_range.start()
+                    && old_range.start() < excerpt_range.end();
+                if owns_replacement && overlap.end() < old_range.end() {
+                    new_end_source =
+                        ByteOffset::new(new_end_source.get() + patch_edit.new_range().len());
+                }
+                let new_source_range = new_mapping.source_range;
+                let new_output_start = new_mapping.output_range.start().get()
+                    + new_start_source
+                        .get()
+                        .saturating_sub(new_source_range.start().get())
+                        .min(new_source_range.len());
+                let new_output_end = new_mapping.output_range.start().get()
+                    + new_end_source
+                        .get()
+                        .saturating_sub(new_source_range.start().get())
+                        .min(new_source_range.len());
+                output_edits.push((
+                    TextRange::new(
+                        ByteOffset::new(old_output_start),
+                        ByteOffset::new(old_output_end),
+                    )
+                    .ok()?,
+                    TextRange::new(
+                        ByteOffset::new(new_output_start),
+                        ByteOffset::new(new_output_end),
+                    )
+                    .ok()?,
+                ));
+            }
+        }
+        if output_edits.is_empty() {
+            return None;
+        }
+        output_edits.sort_by_key(|(old, _)| old.start());
         Some(SourceIncremental {
-            batch: source_change.clone(),
-            shift,
+            batch: TextChangeBatch::from_edits(
+                source_change.old_version()?,
+                source_change.new_version()?,
+                output_edits,
+            ),
         })
     }
 
     /// 以给定顺序重建组合文档。每个片段都保留源文件路径和源坐标映射。
-    pub fn set_excerpts(&mut self, excerpts: Vec<MultiBufferExcerpt>, cx: &mut Context<Self>) {
+    ///
+    /// 结构变化也通过 output edit 发布。订阅者因此仍能沿用同一套 DisplayMap
+    /// 增量同步协议；只有订阅者已经合并了多个无法连续组合的事件时，才需要自行
+    /// 将批次退化为整体重建。
+    pub fn set_excerpts(&mut self, excerpts: Vec<ExcerptRange>, cx: &mut Context<Self>) {
+        let old_text = self.build_snapshot(cx).text_bytes();
+        let old_version = self.state.projection_version;
+        self.set_excerpts_internal(excerpts, cx);
+        let new_text = self.build_snapshot(cx).text_bytes();
+        self.publish_projection_edit(&old_text, &new_text, old_version);
+    }
+
+    fn set_excerpts_internal(&mut self, excerpts: Vec<ExcerptRange>, cx: &mut Context<Self>) {
         let mut unique_sources = Vec::<Entity<LanguageBuffer>>::new();
         let mut unique_source_ids = HashSet::new();
         for excerpt in &excerpts {
@@ -2218,7 +2377,7 @@ impl MultiBuffer {
         let ExcerptState {
             source_subscriptions,
             source_event_subscriptions,
-            mappings,
+            diff_transforms,
             sources,
             source_indices,
             match_ranges,
@@ -2233,7 +2392,7 @@ impl MultiBuffer {
         let mut next_sources: Vec<ExcerptSource> = Vec::new();
         let mut next_source_indices = HashMap::new();
         struct PreparedExcerpt {
-            excerpt: MultiBufferExcerpt,
+            excerpt: ExcerptRange,
             path: PathKey,
             source_index: usize,
             source_id: gpui::EntityId,
@@ -2322,7 +2481,7 @@ impl MultiBuffer {
                 TextRange::new(ByteOffset::new(start), ByteOffset::new(end)).ok()
             }));
             let path_index = intern_path(path_keys, path_key_indices, &item.path);
-            next_mappings.push(DiffTransform::from_entry(ExcerptEntry {
+            next_mappings.push(DiffTransform::from_entry(Excerpt {
                 path: item.path,
                 path_index,
                 display_path,
@@ -2342,7 +2501,7 @@ impl MultiBuffer {
 
         *source_subscriptions = next_source_subscriptions;
         *source_event_subscriptions = next_source_event_subscriptions;
-        *mappings = SumTree::from_iter(next_mappings, ());
+        *diff_transforms = SumTree::from_iter(next_mappings, ());
         *sources = next_sources;
         *source_indices = sources
             .iter()
@@ -2352,7 +2511,6 @@ impl MultiBuffer {
         *has_match_ranges = !next_match_ranges.is_empty();
         *match_ranges = next_match_ranges;
         *composite_capture_names = rebuild_capture_table(sources);
-        self.publish_projection_change(None);
         cx.emit(MultiBufferEvent::TextChanged);
         cx.notify();
     }
@@ -2363,12 +2521,14 @@ impl MultiBuffer {
     /// 需要替换顺序或删除片段时仍应使用 [`Self::set_excerpts`]。
     pub fn append_excerpts(
         &mut self,
-        excerpts: Vec<MultiBufferExcerpt>,
+        excerpts: Vec<ExcerptRange>,
         cx: &mut Context<Self>,
     ) -> Vec<TextRange> {
         if excerpts.is_empty() {
             return Vec::new();
         }
+        let old_text = self.build_snapshot(cx).text_bytes();
+        let old_version = self.state.projection_version;
 
         let mut new_sources = Vec::new();
         let mut seen_source_ids = HashSet::new();
@@ -2383,7 +2543,7 @@ impl MultiBuffer {
         self.register_sources(new_sources, cx);
 
         struct PreparedExcerpt {
-            excerpt: MultiBufferExcerpt,
+            excerpt: ExcerptRange,
             path: PathKey,
             source_index: usize,
             source_id: gpui::EntityId,
@@ -2424,8 +2584,8 @@ impl MultiBuffer {
         }
 
         // 追加后的输出起点由当前树摘要推导，不读 item 上存储的绝对坐标。
-        let mut existing_output_len = self.state.mappings.summary().bytes;
-        let output_ends_with_newline = self.state.mappings.last().is_some_and(|mapping| {
+        let mut existing_output_len = self.state.diff_transforms.summary().output.bytes;
+        let output_ends_with_newline = self.state.diff_transforms.last().is_some_and(|mapping| {
             mapping.adds_newline
                 || self.state.sources[mapping.source_index]
                     .text
@@ -2437,7 +2597,7 @@ impl MultiBuffer {
         });
         if existing_output_len > 0 && !output_ends_with_newline {
             // 前一个片段此前是末尾（无合成换行），追加后它不再是末尾，补上分隔换行。
-            self.state.mappings.update_last(
+            self.state.diff_transforms.update_last(
                 |mapping| {
                     mapping.adds_newline = true;
                 },
@@ -2485,7 +2645,7 @@ impl MultiBuffer {
             }));
             let path_index =
                 intern_path(&mut next_path_keys, &mut next_path_key_indices, &item.path);
-            next_mappings.push(DiffTransform::from_entry(ExcerptEntry {
+            next_mappings.push(DiffTransform::from_entry(Excerpt {
                 path: item.path,
                 path_index,
                 display_path,
@@ -2505,12 +2665,13 @@ impl MultiBuffer {
 
         self.state.path_keys = next_path_keys;
         self.state.path_key_indices = next_path_key_indices;
-        self.state.mappings.extend(next_mappings, ());
+        self.state.diff_transforms.extend(next_mappings, ());
         self.state.has_match_ranges |= !next_match_ranges.is_empty();
         self.state
             .match_ranges
             .extend(next_match_ranges.iter().copied());
-        self.publish_projection_change(None);
+        let new_text = self.build_snapshot(cx).text_bytes();
+        self.publish_projection_edit(&old_text, &new_text, old_version);
         cx.emit(MultiBufferEvent::TextChanged);
         cx.notify();
         next_match_ranges
@@ -2519,7 +2680,7 @@ impl MultiBuffer {
     /// 为一组同路径片段构建位置无关映射项；`start_index` 是它们在文档中的起始序号。
     fn build_entries_for_excerpts(
         &mut self,
-        excerpts: Vec<MultiBufferExcerpt>,
+        excerpts: Vec<ExcerptRange>,
         start_index: usize,
         total: usize,
         cx: &App,
@@ -2552,7 +2713,7 @@ impl MultiBuffer {
                 .byte_to_line(excerpt.source_range.start())
                 .map_or(0, |line| line.get());
             let path_index = intern_path(&mut path_keys, &mut path_key_indices, &path);
-            entries.push(DiffTransform::from_entry(ExcerptEntry {
+            entries.push(DiffTransform::from_entry(Excerpt {
                 path,
                 path_index,
                 display_path,
@@ -2603,14 +2764,14 @@ impl MultiBuffer {
             return;
         };
         let start_index = {
-            let mut cursor = self.state.mappings.cursor::<MappingPosition>(());
+            let mut cursor = self.state.diff_transforms.cursor::<MappingPosition>(());
             cursor.seek(&path, Bias::Left);
             cursor.start().index
         };
-        let total = self.state.mappings.summary().count;
+        let total = self.state.diff_transforms.summary().output.count;
         let mut entries = Vec::new();
         {
-            let mut cursor = self.state.mappings.cursor::<MappingPosition>(());
+            let mut cursor = self.state.diff_transforms.cursor::<MappingPosition>(());
             cursor.seek(&path, Bias::Left);
             let mut local = 0usize;
             while let Some(entry) = cursor.item() {
@@ -2656,16 +2817,17 @@ impl MultiBuffer {
                 cursor.next();
             }
         }
-        self.state.mappings = splice_path_entries(&self.state.mappings, &path, entries);
+        self.state.diff_transforms =
+            splice_path_entries(&self.state.diff_transforms, &path, entries);
         self.fix_document_tail_newline();
     }
 
     /// 映射树中给定路径的起始序号与条目数（按路径游标，O(log n)）。
     fn path_mapping_range(&self, path: &PathKey) -> (usize, usize) {
-        let mut start = self.state.mappings.cursor::<MappingPosition>(());
+        let mut start = self.state.diff_transforms.cursor::<MappingPosition>(());
         start.seek(path, Bias::Left);
         let base = start.start().index;
-        let mut end = self.state.mappings.cursor::<MappingPosition>(());
+        let mut end = self.state.diff_transforms.cursor::<MappingPosition>(());
         end.seek(path, Bias::Right);
         (base, end.start().index.saturating_sub(base))
     }
@@ -2674,11 +2836,11 @@ impl MultiBuffer {
     ///
     /// 移除末尾路径时，前一个路径的最后一个 item 会变成文档尾，必须清掉它此前的分隔换行标记。
     fn fix_document_tail_newline(&mut self) {
-        if self.state.mappings.is_empty() {
+        if self.state.diff_transforms.is_empty() {
             return;
         }
         self.state
-            .mappings
+            .diff_transforms
             .update_last(|entry| entry.adds_newline = false, ());
     }
 
@@ -2691,7 +2853,7 @@ impl MultiBuffer {
             return;
         }
         let mut ranges = Vec::new();
-        for mapping in mapping_vec(&self.state.mappings) {
+        for mapping in mapping_vec(&self.state.diff_transforms) {
             let output_start = mapping.output_range.start().get();
             let source_start = mapping.source_range.start().get();
             for matched in &mapping.match_ranges {
@@ -2716,17 +2878,21 @@ impl MultiBuffer {
     pub fn remove_excerpts_for_path(&mut self, path: &Path, cx: &mut Context<Self>) -> bool {
         let path_key = PathKey::new(path.to_path_buf());
         let removed = {
-            let mut cursor = self.state.mappings.cursor::<MappingPosition>(());
+            let mut cursor = self.state.diff_transforms.cursor::<MappingPosition>(());
             cursor.seek(&path_key, Bias::Left);
             cursor.item().is_some_and(|entry| entry.path == path_key)
         };
         if !removed {
             return false;
         }
-        self.state.mappings = splice_path_entries(&self.state.mappings, &path_key, Vec::new());
+        let old_text = self.build_snapshot(cx).text_bytes();
+        let old_version = self.state.projection_version;
+        self.state.diff_transforms =
+            splice_path_entries(&self.state.diff_transforms, &path_key, Vec::new());
         self.fix_document_tail_newline();
         self.rebuild_match_ranges_from_tree();
-        self.publish_projection_change(None);
+        let new_text = self.build_snapshot(cx).text_bytes();
+        self.publish_projection_edit(&old_text, &new_text, old_version);
         cx.emit(MultiBufferEvent::TextChanged);
         cx.notify();
         true
@@ -2800,7 +2966,7 @@ impl MultiBuffer {
     }
 
     /// 片段源文件路径；源必须已注册。
-    fn excerpt_path(&self, excerpt: &MultiBufferExcerpt, cx: &App) -> PathKey {
+    fn excerpt_path(&self, excerpt: &ExcerptRange, cx: &App) -> PathKey {
         let source_index = self.state.source_indices[&excerpt.source.entity_id()];
         PathKey::new(
             self.state.sources[source_index]
@@ -2817,7 +2983,7 @@ impl MultiBuffer {
     /// 新增源自动注册，其余路径的片段与其组合坐标保持不变。
     pub fn set_excerpts_for_path(
         &mut self,
-        excerpts: Vec<MultiBufferExcerpt>,
+        excerpts: Vec<ExcerptRange>,
         cx: &mut Context<Self>,
     ) -> bool {
         if excerpts.is_empty() {
@@ -2849,25 +3015,29 @@ impl MultiBuffer {
     fn apply_excerpts_for_path(
         &mut self,
         path: PathKey,
-        excerpts: Vec<MultiBufferExcerpt>,
+        excerpts: Vec<ExcerptRange>,
         cx: &mut Context<Self>,
     ) {
+        let old_text = self.build_snapshot(cx).text_bytes();
+        let old_version = self.state.projection_version;
         // 该路径在树中的起始序号与原有条目数，决定新条目的全局位置与分隔换行标记。
         let (start_index, old_count) = {
-            let mut start = self.state.mappings.cursor::<MappingPosition>(());
+            let mut start = self.state.diff_transforms.cursor::<MappingPosition>(());
             start.seek(&path, Bias::Left);
             let start_index = start.start().index;
-            let mut end = self.state.mappings.cursor::<MappingPosition>(());
+            let mut end = self.state.diff_transforms.cursor::<MappingPosition>(());
             end.seek(&path, Bias::Right);
             (start_index, end.start().index.saturating_sub(start_index))
         };
-        let total = self.state.mappings.summary().count - old_count + excerpts.len();
+        let total = self.state.diff_transforms.summary().output.count - old_count + excerpts.len();
         let entries = self.build_entries_for_excerpts(excerpts, start_index, total, cx);
         self.state.has_match_ranges |= entries.iter().any(|entry| !entry.match_ranges.is_empty());
-        self.state.mappings = splice_path_entries(&self.state.mappings, &path, entries);
+        self.state.diff_transforms =
+            splice_path_entries(&self.state.diff_transforms, &path, entries);
         self.fix_document_tail_newline();
         self.rebuild_match_ranges_from_tree();
-        self.publish_projection_change(None);
+        let new_text = self.build_snapshot(cx).text_bytes();
+        self.publish_projection_edit(&old_text, &new_text, old_version);
         cx.emit(MultiBufferEvent::TextChanged);
         cx.notify();
     }
@@ -2897,13 +3067,15 @@ impl MultiBuffer {
             // 外部源变更：选区先按源坐标推进，再解析到重建后的显示拓扑。
             self.pending_source_remaps
                 .push((source_id, position_map.clone()));
-            self.recompute_diff_for_source(source_id, DiffRefresh::RebuildProjection, cx);
             // 外部整体刷新会重建 excerpt 拓扑；文本始终由当前 source 快照按需读取。
             if source_change.requires_reset() && self.is_diff_source(source_id, cx) {
+                let before = self.state.diff_transforms.clone();
+                let old_text = self.build_snapshot(cx).text_bytes();
                 self.refresh_source_snapshot(source_id, cx);
-                self.rebuild_diff_projection(cx);
+                self.rebuild_diff_projection_from_text(before, old_text, cx);
                 return;
             }
+            self.recompute_diff_for_source(source_id, DiffRefresh::RebuildProjection, cx);
             // 普通编辑只更新受影响 source 的派生坐标；BufferDiff 仍独立维护 hunk 拓扑。
             self.apply_source_change(source_id, &position_map, Some(&source_change), None, cx);
         } else {
@@ -2981,11 +3153,12 @@ impl MultiBuffer {
             excerpt_source.syntax = syntax;
         }
         self.state.capture_names = rebuild_capture_table(&mut self.state.sources);
+        let old_mappings = mapping_vec(&self.state.diff_transforms);
         // 绝对输出坐标由树摘要推导：源范围变化只 splice 受影响路径的 item，其余路径不变。
         self.splice_source_path(source_id, source_position_map, expanded_excerpts, cx);
         self.rebuild_match_ranges_from_tree();
         self.refresh_diff_display(cx);
-        let incremental = self.source_incremental_change(source_id, _source_change);
+        let incremental = self.source_incremental_change(source_id, _source_change, &old_mappings);
         self.publish_projection_change(incremental);
         cx.emit(MultiBufferEvent::TextChanged);
         cx.notify();
@@ -3040,7 +3213,7 @@ impl MultiBuffer {
             return Err(StorageError::ReadOnly.into());
         }
 
-        let mappings = mapping_vec(&self.state.mappings);
+        let mappings = mapping_vec(&self.state.diff_transforms);
         // 源实体按 source_index 稳定索引；供闭包查源而不借用整个 state。
         let source_entities = self
             .state
@@ -3247,9 +3420,11 @@ impl MultiBuffer {
 
     /// 源文件路径变化后，按各源当前路径重建映射项（低频操作，允许整体重排）。
     fn rebuild_display(&mut self, cx: &mut Context<Self>) {
+        let old_text = self.build_snapshot(cx).text_bytes();
+        let old_version = self.state.projection_version;
         let mut path_keys = std::mem::take(&mut self.state.path_keys);
         let mut path_key_indices = std::mem::take(&mut self.state.path_key_indices);
-        let mut entries = mapping_vec(&self.state.mappings)
+        let mut entries = mapping_vec(&self.state.diff_transforms)
             .into_iter()
             .map(|mapping| {
                 let mut entry = mapping.entry;
@@ -3281,9 +3456,10 @@ impl MultiBuffer {
         }
         self.state.path_keys = path_keys;
         self.state.path_key_indices = path_key_indices;
-        self.state.mappings = SumTree::from_iter(entries, ());
+        self.state.diff_transforms = SumTree::from_iter(entries, ());
         self.rebuild_match_ranges_from_tree();
-        self.publish_projection_change(None);
+        let new_text = self.build_snapshot(cx).text_bytes();
+        self.publish_projection_edit(&old_text, &new_text, old_version);
         cx.emit(MultiBufferEvent::TextChanged);
         cx.notify();
     }
@@ -3291,7 +3467,7 @@ impl MultiBuffer {
     pub fn start_transaction(&mut self, cx: &mut Context<Self>) -> TextResult<TransactionId> {
         if self.history_owner() == HistoryOwner::SourceBuffer {
             let source = self
-                .working_source
+                .singleton_source
                 .as_ref()
                 .expect("共享源历史必须有工作区源");
             return source
@@ -3306,7 +3482,7 @@ impl MultiBuffer {
         // 先收集需要开启底层事务的源，避免与后续对 state 的可变借用冲突。
         let sources = self
             .state
-            .mappings
+            .diff_transforms
             .iter()
             .filter(|entry| entry.editable)
             .map(|entry| self.state.sources[entry.source_index].entity.clone())
@@ -3354,7 +3530,7 @@ impl MultiBuffer {
     pub fn end_transaction(&mut self, cx: &mut Context<Self>) -> Option<TransactionId> {
         if self.history_owner() == HistoryOwner::SourceBuffer {
             let source = self
-                .working_source
+                .singleton_source
                 .as_ref()
                 .expect("共享源历史必须有工作区源");
             return source
@@ -3412,7 +3588,7 @@ impl MultiBuffer {
     pub fn current_history_transaction(&self, cx: &App) -> Option<TransactionId> {
         if self.history_owner() == HistoryOwner::SourceBuffer {
             let source = self
-                .working_source
+                .singleton_source
                 .as_ref()
                 .expect("共享源历史必须有工作区源");
             let buffer = source.read(cx).buffer();
@@ -3446,7 +3622,7 @@ impl MultiBuffer {
     ) -> TextResult<Option<MultiBufferHistoryOutcome>> {
         if self.history_owner() == HistoryOwner::SourceBuffer {
             let source = self
-                .working_source
+                .singleton_source
                 .clone()
                 .expect("共享源历史必须有工作区源");
             let source_buffer = source.read(cx).buffer();
@@ -3513,7 +3689,7 @@ impl MultiBuffer {
             // 订阅源 Buffer：合并事务的 undo/redo 会回放多个批次，订阅批次经 compose 给出跨批次复合 old→new 映射。
             let Some(source) = self
                 .state
-                .mappings
+                .diff_transforms
                 .iter()
                 .find(|entry| {
                     self.state.sources[entry.source_index]
@@ -3582,14 +3758,16 @@ impl MultiBuffer {
     }
 
     fn build_snapshot(&self, _cx: &App) -> MultiBufferSnapshot {
-        let (plain_text, plain_syntax) = if self.state.mappings.is_empty() {
-            self.working_source.as_ref().map_or((None, None), |source| {
-                let source = source.read(_cx);
-                (
-                    Some(source.text_snapshot(_cx)),
-                    Some(source.syntax_snapshot()),
-                )
-            })
+        let (plain_text, plain_syntax) = if self.state.diff_transforms.is_empty() {
+            self.singleton_source
+                .as_ref()
+                .map_or((None, None), |source| {
+                    let source = source.read(_cx);
+                    (
+                        Some(source.text_snapshot(_cx)),
+                        Some(source.syntax_snapshot()),
+                    )
+                })
         } else {
             (None, None)
         };
@@ -3603,7 +3781,7 @@ impl MultiBuffer {
                 .map(|source| source.entity.read(_cx).buffer().read(_cx).config().clone())
                 .unwrap_or_default(),
             projection_version: self.state.projection_version,
-            excerpt_tree: self.state.mappings.clone(),
+            diff_transforms: self.state.diff_transforms.clone(),
             excerpts_cache: Arc::new(OnceLock::new()),
             path_keys: Arc::from(self.state.path_keys.clone()),
             excerpt_sources: Arc::from(
@@ -3625,14 +3803,14 @@ impl MultiBuffer {
     ///
     /// 文档角色由构造时的 working source 决定，不随 diff 展开后的 excerpt 形状变化。
     pub fn as_singleton(&self, cx: &App) -> Option<Entity<Buffer>> {
-        self.working_source
+        self.singleton_source
             .as_ref()
             .map(|source| source.read(cx).buffer())
     }
 
     /// 普通编辑器的工作区源（展开 diff 时作为新侧输入）。
-    pub fn working_source(&self) -> Option<Entity<LanguageBuffer>> {
-        self.working_source.clone()
+    pub fn singleton_source(&self) -> Option<Entity<LanguageBuffer>> {
+        self.singleton_source.clone()
     }
 
     pub fn is_read_only(&self) -> bool {
@@ -3641,7 +3819,7 @@ impl MultiBuffer {
 
     pub fn is_dirty(&self, cx: &App) -> bool {
         self.state
-            .mappings
+            .diff_transforms
             .iter()
             .filter(|entry| entry.editable)
             .any(|entry| {
@@ -3660,7 +3838,12 @@ impl MultiBuffer {
     /// 显示文本物化 Buffer 永远不会出现在结果中。
     pub fn file_buffers(&self, cx: &App) -> Vec<(Entity<Buffer>, PathBuf)> {
         let mut buffers = Vec::<(Entity<Buffer>, PathBuf)>::new();
-        for entry in self.state.mappings.iter().filter(|entry| entry.editable) {
+        for entry in self
+            .state
+            .diff_transforms
+            .iter()
+            .filter(|entry| entry.editable)
+        {
             let source = self.state.sources[entry.source_index].entity.read(cx);
             let Some(path) = source.file_path() else {
                 continue;
@@ -3710,12 +3893,12 @@ impl MultiBuffer {
     pub fn file_path(&self, cx: &App) -> Option<PathBuf> {
         // 普通编辑器：从工作区源推导文件路径；
         // 无工作区源时退回第一个可编辑片段（ProjectDiffView 等组合视图）。
-        self.working_source
+        self.singleton_source
             .as_ref()
             .and_then(|source| source.read(cx).file_path().map(Path::to_path_buf))
             .or_else(|| {
                 self.state
-                    .mappings
+                    .diff_transforms
                     .iter()
                     .find(|entry| entry.editable)
                     .and_then(|entry| {
@@ -3735,7 +3918,7 @@ impl MultiBuffer {
 
     /// 把当前组合偏移锚定到底层文件坐标，并记录文件消失时的邻接解析顺序。
     pub fn anchor_for_offset(&self, offset: ByteOffset) -> Option<MultiBufferAnchor> {
-        anchor_in_mappings(&self.state.mappings, offset)
+        anchor_in_mappings(&self.state.diff_transforms, offset)
     }
 
     /// 把「编辑后、重建前」投影坐标锚定为源锚点（编辑器源锚点选区的编辑落位）。
@@ -3762,13 +3945,13 @@ impl MultiBuffer {
 
     /// 在当前 excerpts 中解析稳定位置；同一文件仍存在时优先落到最接近的源片段。
     pub fn resolve_anchor(&self, anchor: &MultiBufferAnchor) -> Option<ByteOffset> {
-        resolve_anchor_in_mappings(&self.state.mappings, &self.state.path_keys, anchor)
+        resolve_anchor_in_mappings(&self.state.diff_transforms, &self.state.path_keys, anchor)
     }
 
     /// 把组合文档中的选区映射回同一个源片段；跨片段选区没有单一源位置。
     pub fn location_for_range(&self, range: TextRange) -> Option<ExcerptLocation> {
         let state = &self.state;
-        let mappings = mapping_vec(&state.mappings);
+        let mappings = mapping_vec(&state.diff_transforms);
         let mapping = mappings.iter().enumerate().find_map(|(index, mapping)| {
             let starts_inside = range.start() >= mapping.output_range.start();
             let ends_inside = range.end() <= mapping.output_range.end();
@@ -3806,7 +3989,7 @@ impl MultiBuffer {
 
     /// 更新工作区源的文件路径并重建投影（路径参与 excerpt 元数据与锚点解析）。
     pub fn set_file_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let Some(source) = self.working_source.clone() else {
+        let Some(source) = self.singleton_source.clone() else {
             return;
         };
         source.update(cx, |source, cx| source.set_file_path(path, cx));
@@ -3845,7 +4028,7 @@ impl MultiBuffer {
             if source_folds.is_empty() {
                 continue;
             }
-            let mappings: Vec<ExcerptMapping> = mapping_vec(&self.state.mappings)
+            let mappings: Vec<ExcerptMapping> = mapping_vec(&self.state.diff_transforms)
                 .into_iter()
                 .filter(|mapping| mapping.source_index == source_index)
                 .collect();
@@ -3896,7 +4079,7 @@ impl MultiBuffer {
 
     /// 定位组合偏移所属的映射；最后一个映射的结束偏移视为命中（光标位于文档末尾）。
     fn mapping_at(&self, offset: ByteOffset) -> Option<ExcerptMapping> {
-        mapping_at_tree(&self.state.mappings, offset).map(|(entry, at)| entry.to_mapping(at))
+        mapping_at_tree(&self.state.diff_transforms, offset).map(|(entry, at)| entry.to_mapping(at))
     }
 
     /// `offset` 处所在 excerpt 源语言的自动闭合对。
@@ -3925,7 +4108,7 @@ fn mapping_covering_output_end(
         return Some((entry, cursor.start().clone()));
     }
     let mut last = tree.cursor::<MappingPosition>(());
-    last.seek(&OutputOffset(tree.summary().bytes), Bias::Left);
+    last.seek(&OutputOffset(tree.summary().output.bytes), Bias::Left);
     last.item().map(|entry| (entry, last.start().clone()))
 }
 
@@ -3945,7 +4128,7 @@ fn mapping_at_tree(
     if cursor.item().is_none() {
         // 偏移在文档末尾（或之后）：命中最后一个映射。
         let mut last = tree.cursor::<MappingPosition>(());
-        last.seek(&OutputOffset(tree.summary().bytes), Bias::Left);
+        last.seek(&OutputOffset(tree.summary().output.bytes), Bias::Left);
         return last.item().map(|entry| (entry, last.start().clone()));
     }
     let (content_end, is_empty, at) = {
@@ -3966,7 +4149,7 @@ fn mapping_at_tree(
         return Some((next, cursor.start().clone()));
     }
     let mut last = tree.cursor::<MappingPosition>(());
-    last.seek(&OutputOffset(tree.summary().bytes), Bias::Left);
+    last.seek(&OutputOffset(tree.summary().output.bytes), Bias::Left);
     last.item().map(|entry| (entry, last.start().clone()))
 }
 
@@ -3984,7 +4167,7 @@ fn mapping_at_output_line(
         return Some((entry, cursor.start().clone()));
     }
     let mut last = tree.cursor::<MappingPosition>(());
-    last.seek(&OutputLine(tree.summary().lines), Bias::Left);
+    last.seek(&OutputLine(tree.summary().output.lines), Bias::Left);
     last.item().map(|entry| (entry, last.start().clone()))
 }
 
@@ -4162,7 +4345,7 @@ fn resolve_anchor_in_mappings(
 fn first_mapping_for_path<'a>(
     tree: &'a SumTree<DiffTransform>,
     path_key: &PathKey,
-) -> Option<(usize, &'a ExcerptEntry)> {
+) -> Option<(usize, &'a Excerpt)> {
     let mut cursor = tree.cursor::<MappingPosition>(());
     cursor.seek(path_key, Bias::Left);
     let entry = cursor.item().filter(|entry| &entry.path == path_key)?;
@@ -4173,7 +4356,7 @@ fn first_mapping_for_path<'a>(
 fn last_mapping_for_path<'a>(
     tree: &'a SumTree<DiffTransform>,
     path_key: &PathKey,
-) -> Option<(usize, &'a ExcerptEntry)> {
+) -> Option<(usize, &'a Excerpt)> {
     let mut cursor = tree.cursor::<MappingPosition>(());
     // Right 定位到路径区间之后（或末尾），回退一个即该路径的最后一个映射。
     cursor.seek(path_key, Bias::Right);

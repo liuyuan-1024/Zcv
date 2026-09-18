@@ -143,7 +143,7 @@ mod tests {
     use std::rc::Rc;
 
     use gpui::{AppContext as _, Empty, TestAppContext};
-    use zcv_multi_buffer::MultiBufferExcerpt;
+    use zcv_multi_buffer::ExcerptRange;
     use zcv_text::{ByteOffset, TextRange};
     use zcv_workspace::ItemHandle;
 
@@ -226,7 +226,7 @@ mod tests {
         let combined = cx.new(MultiBuffer::empty);
         combined.update(cx, |combined, cx| {
             combined.set_excerpts(
-                vec![MultiBufferExcerpt::new(
+                vec![ExcerptRange::new(
                     source,
                     TextRange::new(ByteOffset::ZERO, source_len).expect("完整范围应有效"),
                     Vec::new(),
@@ -270,7 +270,7 @@ mod tests {
             project.open_buffer(&old_path, cx).expect("应打开测试文件")
         });
         let editor = cx.new(|cx| {
-            let multi_buffer = cx.new(|cx| MultiBuffer::from_working_source(language_buffer, cx));
+            let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));
             Editor::for_multi_buffer(multi_buffer, cx)
         });
 

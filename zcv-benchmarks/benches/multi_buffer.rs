@@ -4,7 +4,7 @@ use criterion::{
 use gpui::{AppContext as _, TestAppContext, TestDispatcher};
 use zcv_benchmarks::cached_rust_document;
 use zcv_language::LanguageBuffer;
-use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
+use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
 use zcv_text::{Buffer, BufferConfig};
 
 const SOURCE_COUNTS: [usize; 2] = [2, 16];
@@ -12,11 +12,7 @@ const SOURCE_BYTES: usize = 1024 * 1024;
 
 fn projection_setup(
     source_count: usize,
-) -> (
-    TestAppContext,
-    gpui::Entity<MultiBuffer>,
-    Vec<MultiBufferExcerpt>,
-) {
+) -> (TestAppContext, gpui::Entity<MultiBuffer>, Vec<ExcerptRange>) {
     let mut cx = TestAppContext::build(TestDispatcher::new(1), None);
     let sources = (0..source_count)
         .map(|_| {
@@ -35,7 +31,7 @@ fn projection_setup(
             .iter()
             .map(|source| {
                 let line_count = source.read(cx).text_snapshot(cx).line_count();
-                MultiBufferExcerpt::line_range(source.clone(), 0..line_count, cx)
+                ExcerptRange::line_range(source.clone(), 0..line_count, cx)
             })
             .collect()
     });

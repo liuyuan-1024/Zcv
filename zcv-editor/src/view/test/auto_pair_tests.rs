@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use gpui::{AppContext, TestAppContext, VisualTestContext};
 use zcv_actions::Backspace;
 use zcv_language::LanguageBuffer;
-use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
+use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, TextRange};
 
 use super::Editor;
@@ -115,12 +115,12 @@ fn each_composite_selection_uses_its_source_language_pairs(cx: &mut TestAppConte
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::new(
+                ExcerptRange::new(
                     plain,
                     TextRange::new(ByteOffset::ZERO, ByteOffset::new(2)).unwrap(),
                     Vec::new(),
                 ),
-                MultiBufferExcerpt::new(
+                ExcerptRange::new(
                     rust,
                     TextRange::new(ByteOffset::ZERO, ByteOffset::new(2)).unwrap(),
                     Vec::new(),

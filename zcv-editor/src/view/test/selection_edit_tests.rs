@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use gpui::{AppContext, TestAppContext};
 use zcv_language::LanguageBuffer;
-use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
+use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
 use zcv_text::{Buffer, BufferConfig, ByteOffset};
 
 use super::Editor;
@@ -184,8 +184,8 @@ fn editing_a_later_composite_excerpt_keeps_following_input_in_that_source(cx: &m
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(first, 0..1, cx),
-                MultiBufferExcerpt::line_range(second.clone(), 0..1, cx),
+                ExcerptRange::line_range(first, 0..1, cx),
+                ExcerptRange::line_range(second.clone(), 0..1, cx),
             ],
             cx,
         );

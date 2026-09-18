@@ -1476,7 +1476,7 @@ mod tests {
         );
 
         // 保存后 git 状态应变为已修改。
-        let multi_buffer = cx.new(|cx| MultiBuffer::from_working_source(buffer.clone(), cx));
+        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
         project
             .update(cx, |project, cx| {
                 project.save_buffer(&multi_buffer, &file, cx)
@@ -1510,8 +1510,7 @@ mod tests {
             })
             .expect("编辑应成功");
 
-        let multi_buffer =
-            cx.new(|cx| MultiBuffer::from_working_source(language_buffer.clone(), cx));
+        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer.clone(), cx));
         project
             .update(cx, |project, cx| {
                 project.save_buffer(&multi_buffer, &file, cx)

@@ -15,7 +15,7 @@ use zcv_actions::{
     ToggleCaseSensitive, ToggleRegex, ToggleWholeWord,
 };
 use zcv_editor::{Editor, EditorEvent};
-use zcv_multi_buffer::{ExcerptLocation, MultiBuffer, MultiBufferExcerpt};
+use zcv_multi_buffer::{ExcerptLocation, ExcerptRange, MultiBuffer};
 use zcv_project::Project;
 use zcv_text::SearchQuery;
 use zcv_theme::{color, space};
@@ -506,7 +506,7 @@ impl ProjectSearchView {
         let results_editor = self.results_editor.clone();
         self.pending_search = Some(cx.spawn_in(window, async move |this, cx| {
             let _search_task = search_task;
-            let mut batched = Vec::<MultiBufferExcerpt>::new();
+            let mut batched = Vec::<ExcerptRange>::new();
             let mut match_count = 0usize;
             loop {
                 // 被更新的查询取代时放弃本次流式装配；
@@ -534,7 +534,7 @@ impl ProjectSearchView {
                 };
                 for excerpt in item.excerpts {
                     match_count += excerpt.matches.len();
-                    batched.push(MultiBufferExcerpt::new(
+                    batched.push(ExcerptRange::new(
                         source.clone(),
                         excerpt.range,
                         excerpt.matches,
@@ -573,7 +573,7 @@ impl ProjectSearchView {
     /// 将新增片段追加到组合文档，并更新匹配高亮与命中计数。
     fn append_search_batch(
         &mut self,
-        excerpts: Vec<MultiBufferExcerpt>,
+        excerpts: Vec<ExcerptRange>,
         match_count: usize,
         results_editor: &Entity<Editor>,
         query: SearchQuery,

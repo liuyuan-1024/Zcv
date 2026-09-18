@@ -2,8 +2,7 @@ use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 use std::path::PathBuf;
 use zcv_git::DiffHunkKind;
 use zcv_multi_buffer::{
-    BufferDiff, BufferDiffInput, DiffFile, DiffHunkStaging, DisplayHunk, MultiBuffer,
-    MultiBufferExcerpt,
+    BufferDiff, BufferDiffInput, DiffFile, DiffHunkStaging, DisplayHunk, ExcerptRange, MultiBuffer,
 };
 use zcv_text::{Buffer, ByteOffset, Edit, Line, LogicalColumn, TextRange, TransactionMetadata};
 
@@ -1059,7 +1058,7 @@ fn multibuffer_soft_wrap_uses_the_regular_display_map_pipeline(cx: &mut TestAppC
     let combined = cx.new(MultiBuffer::empty);
     combined.update(cx, |combined, cx| {
         combined.set_excerpts(
-            vec![MultiBufferExcerpt::new(
+            vec![ExcerptRange::new(
                 source_multi,
                 TextRange::new(ByteOffset::ZERO, source_end).expect("完整片段范围应有效"),
                 Vec::new(),
@@ -1119,12 +1118,12 @@ fn wrapped_multibuffer_reuses_block_rows_across_within_line_edits(cx: &mut TestA
     combined.update(cx, |combined, cx| {
         combined.set_excerpts(
             vec![
-                MultiBufferExcerpt::new(
+                ExcerptRange::new(
                     first.clone(),
                     TextRange::new(ByteOffset::ZERO, first_len).expect("完整片段范围应有效"),
                     Vec::new(),
                 ),
-                MultiBufferExcerpt::new(
+                ExcerptRange::new(
                     second.clone(),
                     TextRange::new(ByteOffset::ZERO, second_len).expect("完整片段范围应有效"),
                     Vec::new(),
@@ -1204,12 +1203,12 @@ fn wrapped_multibuffer_relocates_blocks_when_wrap_rows_change(cx: &mut TestAppCo
     combined.update(cx, |combined, cx| {
         combined.set_excerpts(
             vec![
-                MultiBufferExcerpt::new(
+                ExcerptRange::new(
                     first.clone(),
                     TextRange::new(ByteOffset::ZERO, first_len).expect("完整片段范围应有效"),
                     Vec::new(),
                 ),
-                MultiBufferExcerpt::new(
+                ExcerptRange::new(
                     second.clone(),
                     TextRange::new(ByteOffset::ZERO, second_len).expect("完整片段范围应有效"),
                     Vec::new(),
@@ -1365,10 +1364,7 @@ fn cursor_text_maps_excerpt_output_to_real_source_line(cx: &mut TestAppContext) 
     let source_multi = source;
     let combined = cx.new(MultiBuffer::empty);
     combined.update(cx, |combined, cx| {
-        combined.set_excerpts(
-            vec![MultiBufferExcerpt::line_range(source_multi, 5..7, cx)],
-            cx,
-        );
+        combined.set_excerpts(vec![ExcerptRange::line_range(source_multi, 5..7, cx)], cx);
     });
     let editor = cx.new(move |cx| Editor::for_multi_buffer(combined, cx));
 
@@ -1412,11 +1408,11 @@ fn materialized_deleted_excerpt_keeps_editing_and_cursor(cx: &mut TestAppContext
     combined.update(cx, |combined, cx| {
         combined.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(work_multi.clone(), 0..1, cx),
-                MultiBufferExcerpt::line_range(head_multi, 1..3, cx)
+                ExcerptRange::line_range(work_multi.clone(), 0..1, cx),
+                ExcerptRange::line_range(head_multi, 1..3, cx)
                     .with_diff_kind(ExcerptDiffKind::Deleted)
                     .with_editable(false),
-                MultiBufferExcerpt::line_range(work_multi, 1..3, cx),
+                ExcerptRange::line_range(work_multi, 1..3, cx),
             ],
             cx,
         );

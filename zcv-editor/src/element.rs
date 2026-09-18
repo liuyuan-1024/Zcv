@@ -3386,7 +3386,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use zcv_language::LanguageBuffer;
     use zcv_multi_buffer::{DiffHunkStaging, DisplayHunk};
-    use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
+    use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
     use zcv_text::{Buffer, BufferConfig, ByteOffset, Line, TextRange};
     use zcv_theme::typography;
 
@@ -3438,12 +3438,12 @@ mod tests {
         combined.update(cx, |combined, cx| {
             combined.set_excerpts(
                 vec![
-                    MultiBufferExcerpt::new(
+                    ExcerptRange::new(
                         source.clone(),
                         TextRange::new(ByteOffset::ZERO, ByteOffset::new(5)).unwrap(),
                         vec![first_match],
                     ),
-                    MultiBufferExcerpt::new(
+                    ExcerptRange::new(
                         source,
                         TextRange::new(ByteOffset::new(6), ByteOffset::new(12)).unwrap(),
                         vec![second_match],
@@ -3537,7 +3537,7 @@ mod tests {
             cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("README.md")), cx));
         cx.run_until_parked();
         let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.snapshot());
-        let multi_buffer = cx.new(|cx| MultiBuffer::from_working_source(language_buffer, cx));
+        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));
         cx.run_until_parked();
         let multi_snapshot =
             cx.read_entity(&multi_buffer, |multi_buffer, cx| multi_buffer.snapshot(cx));
@@ -3811,7 +3811,7 @@ mod tests {
         cx.update_entity(&combined, |combined, cx| {
             combined.set_excerpts(
                 vec![
-                    MultiBufferExcerpt::new(
+                    ExcerptRange::new(
                         source,
                         TextRange::new(ByteOffset::ZERO, ByteOffset::new(text.len()))
                             .expect("片段范围应有效"),
@@ -3903,9 +3903,9 @@ mod tests {
         cx.update_entity(&combined, |combined, cx| {
             combined.set_excerpts(
                 vec![
-                    MultiBufferExcerpt::line_range(first.clone(), 0..2, cx),
-                    MultiBufferExcerpt::line_range(first, 5..7, cx),
-                    MultiBufferExcerpt::line_range(second, 0..2, cx),
+                    ExcerptRange::line_range(first.clone(), 0..2, cx),
+                    ExcerptRange::line_range(first, 5..7, cx),
+                    ExcerptRange::line_range(second, 0..2, cx),
                 ],
                 cx,
             );
@@ -3980,7 +3980,7 @@ mod tests {
             cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("README.md")), cx));
         cx.run_until_parked();
         let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.snapshot());
-        let multi_buffer = cx.new(|cx| MultiBuffer::from_working_source(language_buffer, cx));
+        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));
         cx.run_until_parked();
         let multi_snapshot =
             cx.read_entity(&multi_buffer, |multi_buffer, cx| multi_buffer.snapshot(cx));
@@ -4431,7 +4431,7 @@ mod tests {
         });
         let combined = cx.new(MultiBuffer::empty);
         cx.update_entity(&combined, |combined, cx| {
-            combined.set_excerpts(vec![MultiBufferExcerpt::line_range(source, 0..3, cx)], cx)
+            combined.set_excerpts(vec![ExcerptRange::line_range(source, 0..3, cx)], cx)
         });
         cx.run_until_parked();
 

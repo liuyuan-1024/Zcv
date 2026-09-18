@@ -1,6 +1,6 @@
 use gpui::{TestAppContext, point, px, size};
 use zcv_actions::{ConfirmLocalRename, RenameLocal};
-use zcv_multi_buffer::{MultiBuffer, MultiBufferExcerpt};
+use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
 use zcv_text::TextRange;
 use zcv_text::{ByteOffset, Edit, TransactionId, TransactionMetadata};
 
@@ -54,7 +54,7 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
         assert_eq!(editor.mode, EditorMode::Full);
         // 新架构下两个 Editor 各自持有独立组合文档，共享的是工作区源 LanguageBuffer。
         assert_eq!(
-            editor.multi_buffer().read(cx).working_source(),
+            editor.multi_buffer().read(cx).singleton_source(),
             Some(buffer.clone())
         );
         assert_eq!(editor.render_snapshot().len_bytes(), ByteOffset::new(4));
@@ -89,7 +89,7 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
-fn editors_sharing_a_working_source_also_share_text_history(cx: &mut TestAppContext) {
+fn editors_sharing_a_singleton_source_also_share_text_history(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "abc");
     let first = cx.new({
         let buffer = buffer.clone();
@@ -117,7 +117,7 @@ fn editors_sharing_a_working_source_also_share_text_history(cx: &mut TestAppCont
 }
 
 #[gpui::test]
-fn working_source_buffer_config_controls_editor_indentation(cx: &mut TestAppContext) {
+fn singleton_source_buffer_config_controls_editor_indentation(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "value");
     let editor = cx.new({
         let buffer = buffer.clone();
@@ -162,7 +162,7 @@ fn multibuffer_editor_edits_the_underlying_file(cx: &mut TestAppContext) {
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
-            vec![MultiBufferExcerpt::new(
+            vec![ExcerptRange::new(
                 source_multi,
                 TextRange::new(ByteOffset::ZERO, ByteOffset::new(4)).unwrap(),
                 Vec::new(),
@@ -1276,7 +1276,7 @@ fn composite_excerpt_uses_its_source_tree_sitter_indent_query(cx: &mut TestAppCo
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
-            vec![MultiBufferExcerpt::new(
+            vec![ExcerptRange::new(
                 language_buffer.clone(),
                 TextRange::new(ByteOffset::ZERO, ByteOffset::new(source_text.len())).unwrap(),
                 Vec::new(),

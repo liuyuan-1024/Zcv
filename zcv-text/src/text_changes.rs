@@ -160,6 +160,30 @@ impl TextChangeBatch {
         }
     }
 
+    /// 从一个源变更在输出坐标中投影出的编辑创建增量批次。
+    ///
+    /// 组合文档没有单一可变 Rope；
+    /// 多个 excerpt 可能同时显示同一个源的不同区间，因此一次源事务可以对应多个 output 编辑。
+    /// 由组合文档负责计算坐标，文本内核只负责携带版本和编辑列表。
+    pub fn from_edits(
+        old_version: BufferVersion,
+        new_version: BufferVersion,
+        edits: Vec<(TextRange, TextRange)>,
+    ) -> Self {
+        Self {
+            patch: TextPatch::from_edits(
+                edits
+                    .into_iter()
+                    .map(|(old, new)| PatchEdit { old, new })
+                    .collect(),
+            ),
+            old_version: Some(old_version),
+            new_version: Some(new_version),
+            transaction_id: None,
+            reset: false,
+        }
+    }
+
     /// 把所有编辑坐标整体平移；用于把源片段变化换算到组合坐标。
     pub fn shifted_by(&self, shift: usize) -> Self {
         Self {

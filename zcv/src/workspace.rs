@@ -995,7 +995,7 @@ fn sync_editor_conflict_hunks(
         editor.update(cx, |editor, cx| editor.set_editor_hunks(Vec::new(), cx));
         return;
     }
-    let Some(working) = editor.read(cx).multi_buffer().read(cx).working_source() else {
+    let Some(working) = editor.read(cx).multi_buffer().read(cx).singleton_source() else {
         return;
     };
     let snapshot = working.read(cx).text_snapshot(cx);
@@ -1097,7 +1097,7 @@ fn inject_editor_diff(
     let base_text = store.read(cx).revision_text(GitRevision::Head, path);
     // index 参照：未提交视图（HEAD↔工作区）用它逐 hunk 判定已暂存 / 未暂存。
     let index_text = store.read(cx).revision_text(GitRevision::Index, path);
-    let Some(working) = editor.read(cx).multi_buffer().read(cx).working_source() else {
+    let Some(working) = editor.read(cx).multi_buffer().read(cx).singleton_source() else {
         return;
     };
     let input = BufferDiffInput {

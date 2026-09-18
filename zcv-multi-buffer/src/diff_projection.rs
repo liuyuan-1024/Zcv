@@ -18,8 +18,8 @@ use zcv_text::{Anchor, ByteOffset, Line, Snapshot};
 
 use crate::buffer_diff::{BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkStaging, DiffRefresh};
 use crate::{
-    DiffTransform, ExcerptDiffKind, ExcerptMapping, MultiBuffer, MultiBufferEvent,
-    MultiBufferExcerpt, PathKey, ProjectionRemap, mapping_count, mapping_vec,
+    DiffTransform, ExcerptDiffKind, ExcerptMapping, ExcerptRange, MultiBuffer, MultiBufferEvent,
+    PathKey, ProjectionRemap, mapping_count, mapping_vec,
 };
 
 /// 编辑器投影使用的显示 hunk（组合文档行坐标）。
@@ -182,7 +182,7 @@ struct DiffDisplay {
 }
 
 struct ExcerptMaterializer<'a> {
-    excerpts: &'a mut Vec<MultiBufferExcerpt>,
+    excerpts: &'a mut Vec<ExcerptRange>,
     display_path: &'a Path,
 }
 
@@ -338,7 +338,7 @@ impl MultiBuffer {
         // 新路径在组合流中的起点（插入前）；映射树按源路径（而非显示路径）排序。
         let base = self
             .state
-            .mappings
+            .diff_transforms
             .iter()
             .take_while(|mapping| mapping.path < new_path)
             .count();
@@ -437,7 +437,7 @@ impl MultiBuffer {
 
     /// 清除全部 diff，使组合文档回到无 diff 状态。
     pub fn clear_diffs(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.diff.is_none() && self.working_source.is_none() {
+        if self.diff.is_none() && self.singleton_source.is_none() {
             return false;
         }
         self.set_diff_files(Vec::new(), cx)
@@ -448,14 +448,14 @@ impl MultiBuffer {
     /// 按路径增量更新请使用 Self::add_diff / Self::remove_diff。
     pub fn set_diff_files(&mut self, inputs: Vec<DiffFile>, cx: &mut Context<Self>) -> bool {
         if inputs.is_empty()
-            && let Some(source) = self.working_source.clone()
+            && let Some(source) = self.singleton_source.clone()
         {
             self.diff = None;
             self.diffs.clear();
             let line_count = source.read(cx).text_snapshot(cx).line_count();
             self.set_excerpts(
                 vec![
-                    MultiBufferExcerpt::line_range(source, 0..line_count, cx)
+                    ExcerptRange::line_range(source, 0..line_count, cx)
                         .with_starts_new_excerpt(false),
                 ],
                 cx,
@@ -924,7 +924,7 @@ impl MultiBuffer {
 
     /// 追加指定范围文件的物化结果，只扩展组合映射与显示坐标，不重建已有片段。
     fn append_materialized_files(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
-        let base_excerpt_count = mapping_count(&self.state.mappings);
+        let base_excerpt_count = mapping_count(&self.state.diff_transforms);
         let expanded_by_default = self.diff_expanded_by_default;
         let mut excerpts = Vec::new();
         let mut materialized = Vec::new();
@@ -958,7 +958,7 @@ impl MultiBuffer {
         let expected_excerpt_count = excerpts.len();
         let _ = self.append_excerpts(excerpts, cx);
         assert_eq!(
-            mapping_count(&self.state.mappings),
+            mapping_count(&self.state.diff_transforms),
             base_excerpt_count + expected_excerpt_count,
             "追加 diff 物化必须全部建立组合映射"
         );
@@ -1063,7 +1063,7 @@ impl MultiBuffer {
     /// 返回本次重建的投影坐标重映射：
     /// 投影版本未变时恒等，变化时携带重建前的投影→源映射，供调用方把重建前的光标经源忠实落到重建后投影（reload 会重裁剪并重置版本，裸偏移不再有效）。
     pub(crate) fn rebuild_diff_projection(&mut self, cx: &mut Context<Self>) -> ProjectionRemap {
-        let before = self.state.mappings.clone();
+        let before = self.state.diff_transforms.clone();
         self.rebuild_diff_projection_from(before, cx)
     }
 
@@ -1079,7 +1079,24 @@ impl MultiBuffer {
         if self.diff.is_none() {
             return ProjectionRemap::identity();
         }
-        let old_version = self.snapshot(cx).version();
+        let old_snapshot = self.snapshot(cx);
+        self.rebuild_diff_projection_from_text(before, old_snapshot.text_bytes(), cx)
+    }
+
+    /// 使用调用方在源快照更新前保存的旧输出重建 diff 投影。
+    ///
+    /// 外部整体重载会先替换源快照，再重建 excerpts。旧映射此时仍可能只覆盖新文本的前缀；
+    /// 因而旧输出必须在源快照替换前冻结，不能从更新后的源映射重新拼出旧帧。
+    pub(crate) fn rebuild_diff_projection_from_text(
+        &mut self,
+        before: SumTree<DiffTransform>,
+        old_text: Vec<u8>,
+        cx: &mut Context<Self>,
+    ) -> ProjectionRemap {
+        if self.diff.is_none() {
+            return ProjectionRemap::identity();
+        }
+        let old_version = self.state.projection_version;
         let expanded_by_default = self.diff_expanded_by_default;
         let mut excerpts = Vec::new();
         let mut materialized_hunks = Vec::new();
@@ -1095,12 +1112,15 @@ impl MultiBuffer {
             );
         }
         let expected_excerpt_count = excerpts.len();
-        self.set_excerpts(excerpts, cx);
+        self.set_excerpts_internal(excerpts, cx);
         assert_eq!(
-            mapping_count(&self.state.mappings),
+            mapping_count(&self.state.diff_transforms),
             expected_excerpt_count,
             "diff 物化生成的 excerpt 必须全部建立组合映射"
         );
+        let new_snapshot = self.build_snapshot(cx);
+        let new_text = new_snapshot.text_bytes();
+        self.publish_projection_edit(&old_text, &new_text, old_version);
         let display = self.derive_diff_display(materialized_hunks.iter());
         for file in &mut self.diffs {
             file.materialized.clear();
@@ -1148,7 +1168,7 @@ impl MultiBuffer {
     ) -> DiffDisplay {
         let materialized = materialized.into_iter().collect::<Vec<_>>();
         // 组合映射只展开一次；显示坐标按 hunk 查询，不再每个 hunk 重复拍平整棵树。
-        let mappings = mapping_vec(&self.state.mappings);
+        let mappings = mapping_vec(&self.state.diff_transforms);
         let mut hunks = Vec::with_capacity(materialized.len());
         let mut old_ranges = Vec::with_capacity(materialized.len());
         let mut sources = Vec::with_capacity(materialized.len());
@@ -1405,7 +1425,7 @@ fn materialize_file(
     expansion: &DiffExpansionState,
     cx: &App,
     expanded_by_default: bool,
-    excerpts: &mut Vec<MultiBufferExcerpt>,
+    excerpts: &mut Vec<ExcerptRange>,
     materialized_hunks: &mut Vec<MaterializedHunk>,
 ) {
     let resolved = resolve_file_hunks(file, cx);
@@ -1586,11 +1606,11 @@ fn projected_excerpt(
     diff_kind: Option<ExcerptDiffKind>,
     starts_new_excerpt: bool,
     allow_empty: bool,
-) -> Option<MultiBufferExcerpt> {
+) -> Option<ExcerptRange> {
     if lines.is_empty() && !allow_empty {
         return None;
     }
-    let mut excerpt = MultiBufferExcerpt::line_range_from_text(source.clone(), text, lines);
+    let mut excerpt = ExcerptRange::line_range_from_text(source.clone(), text, lines);
     // 空源范围的普通片段没有可显示内容：跳过（deleted 文件的占位上下文等）。
     // 整文件显示（allow_empty）保留占位行，diff 片段（旧侧/新增）始终物化。
     if excerpt.source_range().is_empty() && !allow_empty && diff_kind.is_none() {

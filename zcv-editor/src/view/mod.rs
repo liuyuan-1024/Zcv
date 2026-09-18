@@ -979,11 +979,7 @@ impl Editor {
     }
 
     pub(super) fn text_snapshot(&self, cx: &App) -> MultiBufferSnapshot {
-        let multi_buffer = self.multi_buffer.read(cx);
-        if let Some(source) = multi_buffer.working_source() {
-            return MultiBufferSnapshot::from(source.read(cx).text_snapshot(cx));
-        }
-        multi_buffer.snapshot(cx)
+        self.multi_buffer.read(cx).snapshot(cx)
     }
 
     pub(super) fn display_snapshot(&self) -> DisplaySnapshot {
@@ -1614,7 +1610,7 @@ impl Editor {
         mode: EditorMode,
         cx: &mut Context<Self>,
     ) -> Self {
-        let multi_buffer = cx.new(|cx| MultiBuffer::from_working_source(language_buffer, cx));
+        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));
         Self::new(multi_buffer, mode, cx)
     }
 

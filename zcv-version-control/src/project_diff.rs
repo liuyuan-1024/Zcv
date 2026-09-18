@@ -27,7 +27,7 @@ use zcv_git::{
 };
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::{BufferDiff, BufferDiffInput, DiffFile, DiffHunkSource, DisplayHunk};
-use zcv_multi_buffer::{ExcerptLocation, MultiBuffer, MultiBufferExcerpt};
+use zcv_multi_buffer::{ExcerptLocation, ExcerptRange, MultiBuffer};
 use zcv_path::AbsolutePathBuf;
 use zcv_project::{GitStoreEvent, Project};
 use zcv_text::{Anchor, Buffer, BufferConfig, ByteOffset, SearchQuery, Snapshot, TextRange};
@@ -1134,7 +1134,7 @@ impl ProjectDiffView {
                 continue;
             };
             excerpts.push(
-                MultiBufferExcerpt::new(source, source_range, Vec::new())
+                ExcerptRange::new(source, source_range, Vec::new())
                     .with_display_path(file.path.clone()),
             );
         }
@@ -2426,8 +2426,8 @@ mod tests {
         let working = project
             .update(cx, |project, cx| project.open_buffer(&modified_path, cx))
             .expect("工作区文件应能打开");
-        // 统一经 from_working_source 构建独立组合文档（与 item_provider 同一路径）。
-        let combined = cx.new(|cx| MultiBuffer::from_working_source(working.clone(), cx));
+        // 统一经 singleton 构建独立组合文档（与 item_provider 同一路径）。
+        let combined = cx.new(|cx| MultiBuffer::singleton(working.clone(), cx));
         let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
         editor.update(cx, |editor, cx| {
             editor.set_diff_files(
@@ -2492,8 +2492,8 @@ mod tests {
         let working = project
             .update(cx, |project, cx| project.open_buffer(&modified_path, cx))
             .expect("工作区文件应能打开");
-        // 统一经 from_working_source 构建独立组合文档（与 item_provider 同一路径）。
-        let combined = cx.new(|cx| MultiBuffer::from_working_source(working.clone(), cx));
+        // 统一经 singleton 构建独立组合文档（与 item_provider 同一路径）。
+        let combined = cx.new(|cx| MultiBuffer::singleton(working.clone(), cx));
         let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
         editor.update(cx, |editor, cx| {
             editor.set_diff_files(

@@ -14,7 +14,7 @@ impl Render for EditorInWindow {
     }
 }
 use zcv_git::DiffHunkKind;
-use zcv_multi_buffer::{DiffHunkStaging, MultiBuffer, MultiBufferExcerpt};
+use zcv_multi_buffer::{DiffHunkStaging, ExcerptRange, MultiBuffer};
 use zcv_text::{ByteOffset, Line, LogicalColumn, Position};
 
 use super::common::focus_editor;
@@ -49,8 +49,8 @@ fn composite_refresh_restores_scroll_from_source_anchor(cx: &mut TestAppContext)
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(first, 0..40, cx),
-                MultiBufferExcerpt::line_range(second.clone(), 0..80, cx),
+                ExcerptRange::line_range(first, 0..40, cx),
+                ExcerptRange::line_range(second.clone(), 0..80, cx),
             ],
             cx,
         );
@@ -81,7 +81,7 @@ fn composite_refresh_restores_scroll_from_source_anchor(cx: &mut TestAppContext)
     });
 
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(vec![MultiBufferExcerpt::line_range(second, 20..70, cx)], cx);
+        buffer.set_excerpts(vec![ExcerptRange::line_range(second, 20..70, cx)], cx);
     });
     cx.update_entity(&editor, |editor, cx| {
         assert!(editor.restore_scroll_anchor(scroll_anchor, cx));
@@ -115,7 +115,7 @@ fn composite_refresh_keeps_the_viewport_on_a_virtual_file_header(cx: &mut TestAp
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
-            vec![MultiBufferExcerpt::line_range(source.clone(), 0..60, cx)],
+            vec![ExcerptRange::line_range(source.clone(), 0..60, cx)],
             cx,
         );
     });
@@ -133,7 +133,7 @@ fn composite_refresh_keeps_the_viewport_on_a_virtual_file_header(cx: &mut TestAp
             .expect("文件标题应能锚定到底层文件")
     });
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(vec![MultiBufferExcerpt::line_range(source, 10..70, cx)], cx);
+        buffer.set_excerpts(vec![ExcerptRange::line_range(source, 10..70, cx)], cx);
     });
     cx.update_entity(&editor, |editor, cx| {
         assert!(editor.restore_scroll_anchor(anchor, cx));
@@ -166,8 +166,8 @@ fn folding_a_later_file_preserves_the_viewport_anchor(cx: &mut TestAppContext) {
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(first, 0..120, cx),
-                MultiBufferExcerpt::line_range(second, 0..120, cx),
+                ExcerptRange::line_range(first, 0..120, cx),
+                ExcerptRange::line_range(second, 0..120, cx),
             ],
             cx,
         );

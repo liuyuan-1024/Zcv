@@ -423,7 +423,7 @@ fn read_diff_state(
 #[gpui::test]
 fn clearing_buffer_diffs_removes_previous_hunks(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "one\nworking\nthree\n", cx);
-    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
         buffer.inject_diffs(
             Some(vec![TestDiff {
@@ -545,7 +545,7 @@ fn unified_diff_marks_mixed_staged_and_unstaged_hunks(cx: &mut TestAppContext) {
 #[gpui::test]
 fn standalone_staged_view_classifies_all_hunks_as_staged(cx: &mut TestAppContext) {
     let index_source = singleton("src/a.rs", "one\nstaged\nthree\n", cx);
-    let combined = cx.new(|cx| MultiBuffer::from_working_source(index_source.clone(), cx));
+    let combined = cx.new(|cx| MultiBuffer::singleton(index_source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
         buffer.inject_diffs(
             Some(vec![TestDiff {
@@ -651,7 +651,7 @@ fn title_prefers_explicit_value_and_derives_from_path(cx: &mut TestAppContext) {
 ",
         cx,
     );
-    let multi_buffer = cx.new(|cx| MultiBuffer::from_working_source(source, cx));
+    let multi_buffer = cx.new(|cx| MultiBuffer::singleton(source, cx));
 
     cx.read_entity(&multi_buffer, |buffer, cx| {
         assert_eq!(buffer.title(cx).as_deref(), Some("main.rs"));
@@ -678,8 +678,8 @@ fn anchor_resolves_to_neighbor_path_after_removal(cx: &mut TestAppContext) {
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(first.clone(), 0..1, cx),
-                MultiBufferExcerpt::line_range(second.clone(), 0..1, cx),
+                ExcerptRange::line_range(first.clone(), 0..1, cx),
+                ExcerptRange::line_range(second.clone(), 0..1, cx),
             ],
             cx,
         );
@@ -712,8 +712,8 @@ fn excerpt_at_output_offset_uses_the_offset_cursor(cx: &mut TestAppContext) {
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(first, 0..2, cx),
-                MultiBufferExcerpt::line_range(second, 0..1, cx),
+                ExcerptRange::line_range(first, 0..2, cx),
+                ExcerptRange::line_range(second, 0..1, cx),
             ],
             cx,
         );
@@ -743,8 +743,8 @@ fn set_excerpts_for_path_replaces_only_that_path(cx: &mut TestAppContext) {
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(first.clone(), 0..1, cx),
-                MultiBufferExcerpt::line_range(second.clone(), 0..1, cx),
+                ExcerptRange::line_range(first.clone(), 0..1, cx),
+                ExcerptRange::line_range(second.clone(), 0..1, cx),
             ],
             cx,
         );
@@ -753,8 +753,8 @@ fn set_excerpts_for_path_replaces_only_that_path(cx: &mut TestAppContext) {
     let replaced = cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts_for_path(
             vec![
-                MultiBufferExcerpt::line_range(first.clone(), 0..1, cx),
-                MultiBufferExcerpt::line_range(first.clone(), 1..2, cx),
+                ExcerptRange::line_range(first.clone(), 0..1, cx),
+                ExcerptRange::line_range(first.clone(), 1..2, cx),
             ],
             cx,
         )
@@ -777,8 +777,8 @@ fn excerpt_view_is_derived_and_shared_once_per_snapshot(cx: &mut TestAppContext)
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(first.clone(), 0..1, cx),
-                MultiBufferExcerpt::line_range(second.clone(), 0..1, cx),
+                ExcerptRange::line_range(first.clone(), 0..1, cx),
+                ExcerptRange::line_range(second.clone(), 0..1, cx),
             ],
             cx,
         );
@@ -799,8 +799,8 @@ fn remove_excerpts_for_path_drops_only_that_path(cx: &mut TestAppContext) {
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(first, 0..1, cx),
-                MultiBufferExcerpt::line_range(second, 0..1, cx),
+                ExcerptRange::line_range(first, 0..1, cx),
+                ExcerptRange::line_range(second, 0..1, cx),
             ],
             cx,
         );
@@ -837,8 +837,8 @@ fn excerpts_for_path_uses_the_path_cursor(cx: &mut TestAppContext) {
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(first, 0..1, cx),
-                MultiBufferExcerpt::line_range(second, 0..1, cx),
+                ExcerptRange::line_range(first, 0..1, cx),
+                ExcerptRange::line_range(second, 0..1, cx),
             ],
             cx,
         );
@@ -861,8 +861,8 @@ fn text_chunks_stream_excerpt_sources_and_inserted_boundary(cx: &mut TestAppCont
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(first, 0..1, cx),
-                MultiBufferExcerpt::line_range(second, 0..1, cx),
+                ExcerptRange::line_range(first, 0..1, cx),
+                ExcerptRange::line_range(second, 0..1, cx),
             ],
             cx,
         );
@@ -925,9 +925,9 @@ fn plain_snapshot_streams_its_source_without_materializing() {
 }
 
 #[gpui::test]
-fn working_source_updates_the_display_stream_without_reset(cx: &mut TestAppContext) {
+fn singleton_source_updates_the_display_stream_without_reset(cx: &mut TestAppContext) {
     let source = singleton("src/main.rs", "fn main() {}\n", cx);
-    let multi_buffer = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    let multi_buffer = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     let source_buffer = cx.read_entity(&multi_buffer, |buffer, cx| {
         assert_eq!(buffer.file_path(cx), Some(PathBuf::from("src/main.rs")));
         buffer.as_singleton(cx).expect("应为整文件单 excerpt")
@@ -981,8 +981,8 @@ fn source_edit_updates_only_its_composite_excerpt_without_reset(cx: &mut TestApp
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(first, 0..1, cx),
-                MultiBufferExcerpt::line_range(second.clone(), 0..1, cx),
+                ExcerptRange::line_range(first, 0..1, cx),
+                ExcerptRange::line_range(second.clone(), 0..1, cx),
             ],
             cx,
         );
@@ -1013,15 +1013,94 @@ fn source_edit_updates_only_its_composite_excerpt_without_reset(cx: &mut TestApp
 }
 
 #[gpui::test]
+fn one_source_edit_updates_all_visible_excerpts_incrementally(cx: &mut TestAppContext) {
+    let source = singleton("src/repeated.rs", "line\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                ExcerptRange::line_range(source.clone(), 0..1, cx),
+                ExcerptRange::line_range(source.clone(), 0..1, cx),
+            ],
+            cx,
+        );
+    });
+    let subscription =
+        cx.update_entity(&combined, |buffer, cx| buffer.subscribe_and_snapshot(cx).0);
+    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
+
+    cx.update_entity(&source_buffer, |buffer, cx| {
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::ZERO, "changed ").unwrap()],
+                TransactionMetadata::default(),
+            )
+            .expect("源编辑应成功");
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    let changes = subscription.consume();
+    assert!(
+        !changes.requires_reset(),
+        "同一源的多个 excerpt 不应整体重载"
+    );
+    assert_eq!(changes.patch().edits().len(), 2);
+    assert_eq!(
+        cx.read_entity(&combined, |buffer, cx| {
+            String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("组合文本必须是 UTF-8")
+        }),
+        "changed line\nchanged line\n"
+    );
+}
+
+#[gpui::test]
+fn excerpt_topology_changes_publish_output_edits(cx: &mut TestAppContext) {
+    let first = singleton("src/first.rs", "first\n", cx);
+    let second = singleton("src/second.rs", "second\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(vec![ExcerptRange::line_range(first.clone(), 0..1, cx)], cx);
+    });
+    let subscription =
+        cx.update_entity(&combined, |buffer, cx| buffer.subscribe_and_snapshot(cx).0);
+
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                ExcerptRange::line_range(first, 0..1, cx),
+                ExcerptRange::line_range(second, 0..1, cx),
+            ],
+            cx,
+        );
+    });
+
+    let changes = subscription.consume();
+    assert!(
+        !changes.requires_reset(),
+        "组合拓扑变化应沿 output edit 协议发布"
+    );
+    assert_eq!(changes.patch().edits().len(), 1);
+    assert_eq!(
+        changes.patch().edits()[0].old_range(),
+        TextRange::new(ByteOffset::new(6), ByteOffset::new(6)).unwrap()
+    );
+    assert_eq!(
+        changes.patch().edits()[0].new_range(),
+        TextRange::new(ByteOffset::new(6), ByteOffset::new(13)).unwrap()
+    );
+}
+
+#[gpui::test]
 fn singleton_role_does_not_depend_on_current_excerpt_shape(cx: &mut TestAppContext) {
     let source = singleton("src/main.rs", "first\nsecond\n", cx);
     let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
-    let working = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    let working = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&working, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(source.clone(), 0..1, cx),
-                MultiBufferExcerpt::line_range(source.clone(), 1..2, cx),
+                ExcerptRange::line_range(source.clone(), 0..1, cx),
+                ExcerptRange::line_range(source.clone(), 1..2, cx),
             ],
             cx,
         );
@@ -1033,7 +1112,7 @@ fn singleton_role_does_not_depend_on_current_excerpt_shape(cx: &mut TestAppConte
     let composite = cx.new(MultiBuffer::empty);
     cx.update_entity(&composite, |buffer, cx| {
         buffer.set_excerpts(
-            vec![MultiBufferExcerpt::new(
+            vec![ExcerptRange::new(
                 source,
                 TextRange::new(ByteOffset::ZERO, ByteOffset::new(13)).unwrap(),
                 Vec::new(),
@@ -1051,13 +1130,13 @@ fn singleton_role_does_not_depend_on_current_excerpt_shape(cx: &mut TestAppConte
 
 /// 普通编辑器把完整文件包装成工作源 excerpt 后，语言层折叠范围必须投影到组合坐标。
 #[gpui::test]
-fn working_source_preserves_rust_fold_ranges(cx: &mut TestAppContext) {
+fn singleton_source_preserves_rust_fold_ranges(cx: &mut TestAppContext) {
     let source = singleton(
         "src/main.rs",
         "fn main() {\n    let value = 1;\n}\nfn other() {\n    let value = 2;\n}\n",
         cx,
     );
-    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.run_until_parked();
 
     let source_folds = cx.read_entity(&source, |buffer, _| buffer.fold_ranges());
@@ -1088,7 +1167,7 @@ fn outline_projects_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
-            vec![MultiBufferExcerpt::new(
+            vec![ExcerptRange::new(
                 source,
                 TextRange::new(
                     ByteOffset::new(function_range.start),
@@ -1134,7 +1213,7 @@ fn syntax_nodes_project_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
-            vec![MultiBufferExcerpt::new(
+            vec![ExcerptRange::new(
                 source,
                 TextRange::new(
                     ByteOffset::new(function_range.start),
@@ -1183,7 +1262,7 @@ fn excerpt_projects_contained_fold_range_to_output_coordinates(cx: &mut TestAppC
     });
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(vec![MultiBufferExcerpt::line_range(source, 1..4, cx)], cx);
+        buffer.set_excerpts(vec![ExcerptRange::line_range(source, 1..4, cx)], cx);
     });
 
     let projected = cx.read_entity(&combined, |buffer, cx| buffer.fold_ranges(cx));
@@ -1218,8 +1297,8 @@ fn fold_projection_accounts_for_nonzero_output_start(cx: &mut TestAppContext) {
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(filler, 0..1, cx),
-                MultiBufferExcerpt::line_range(source, 1..4, cx),
+                ExcerptRange::line_range(filler, 0..1, cx),
+                ExcerptRange::line_range(source, 1..4, cx),
             ],
             cx,
         );
@@ -1250,12 +1329,12 @@ fn excerpts_preserve_order_and_map_output_to_source(cx: &mut TestAppContext) {
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::new(
+                ExcerptRange::new(
                     first,
                     TextRange::new(ByteOffset::new(5), ByteOffset::new(9)).unwrap(),
                     vec![TextRange::new(ByteOffset::new(5), ByteOffset::new(8)).unwrap()],
                 ),
-                MultiBufferExcerpt::new(
+                ExcerptRange::new(
                     second,
                     TextRange::new(ByteOffset::new(6), ByteOffset::new(11)).unwrap(),
                     vec![TextRange::new(ByteOffset::new(6), ByteOffset::new(10)).unwrap()],
@@ -1311,7 +1390,7 @@ fn append_excerpts_extends_projection_without_rebuilding_existing_ranges(cx: &mu
 
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
-            vec![MultiBufferExcerpt::new(
+            vec![ExcerptRange::new(
                 first,
                 TextRange::new(ByteOffset::new(5), ByteOffset::new(8)).unwrap(),
                 vec![TextRange::new(ByteOffset::new(5), ByteOffset::new(8)).unwrap()],
@@ -1319,7 +1398,7 @@ fn append_excerpts_extends_projection_without_rebuilding_existing_ranges(cx: &mu
             cx,
         );
         buffer.append_excerpts(
-            vec![MultiBufferExcerpt::new(
+            vec![ExcerptRange::new(
                 second,
                 TextRange::new(ByteOffset::new(6), ByteOffset::new(10)).unwrap(),
                 vec![TextRange::new(ByteOffset::new(6), ByteOffset::new(10)).unwrap()],
@@ -1362,9 +1441,9 @@ fn composite_anchor_resolves_in_the_same_file_after_excerpt_refresh(cx: &mut Tes
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(first.clone(), 0..2, cx),
-                MultiBufferExcerpt::line_range(first.clone(), 3..5, cx),
-                MultiBufferExcerpt::line_range(second, 0..2, cx),
+                ExcerptRange::line_range(first.clone(), 0..2, cx),
+                ExcerptRange::line_range(first.clone(), 3..5, cx),
+                ExcerptRange::line_range(second, 0..2, cx),
             ],
             cx,
         );
@@ -1378,7 +1457,7 @@ fn composite_anchor_resolves_in_the_same_file_after_excerpt_refresh(cx: &mut Tes
     });
 
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(vec![MultiBufferExcerpt::line_range(first, 0..2, cx)], cx);
+        buffer.set_excerpts(vec![ExcerptRange::line_range(first, 0..2, cx)], cx);
         let offset = buffer
             .resolve_anchor(&anchor)
             .expect("同一文件仍有 excerpt 时应解析到最近位置");
@@ -1396,8 +1475,8 @@ fn source_anchor_at_excerpt_boundary_resolves_to_following_excerpt(cx: &mut Test
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(source.clone(), 0..1, cx),
-                MultiBufferExcerpt::line_range(source, 1..3, cx),
+                ExcerptRange::line_range(source.clone(), 0..1, cx),
+                ExcerptRange::line_range(source, 1..3, cx),
             ],
             cx,
         );
@@ -1423,9 +1502,9 @@ fn composite_anchor_falls_forward_when_its_file_leaves_the_diff(cx: &mut TestApp
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(first.clone(), 0..1, cx),
-                MultiBufferExcerpt::line_range(second, 0..1, cx),
-                MultiBufferExcerpt::line_range(third.clone(), 0..1, cx),
+                ExcerptRange::line_range(first.clone(), 0..1, cx),
+                ExcerptRange::line_range(second, 0..1, cx),
+                ExcerptRange::line_range(third.clone(), 0..1, cx),
             ],
             cx,
         );
@@ -1439,7 +1518,7 @@ fn composite_anchor_falls_forward_when_its_file_leaves_the_diff(cx: &mut TestApp
     });
 
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(vec![MultiBufferExcerpt::line_range(third, 0..1, cx)], cx);
+        buffer.set_excerpts(vec![ExcerptRange::line_range(third, 0..1, cx)], cx);
         let offset = buffer
             .resolve_anchor(&anchor)
             .expect("原文件消失后应解析到仍存在的后继文件");
@@ -1458,8 +1537,8 @@ fn empty_files_keep_distinct_composite_lines_and_locations(cx: &mut TestAppConte
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(first, 0..1, cx),
-                MultiBufferExcerpt::line_range(second, 0..1, cx),
+                ExcerptRange::line_range(first, 0..1, cx),
+                ExcerptRange::line_range(second, 0..1, cx),
             ],
             cx,
         );
@@ -1485,7 +1564,7 @@ fn source_reparse_does_not_reload_composite_text(cx: &mut TestAppContext) {
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |combined, cx| {
         combined.set_excerpts(
-            vec![MultiBufferExcerpt::new(
+            vec![ExcerptRange::new(
                 source,
                 TextRange::new(ByteOffset::ZERO, source_len).unwrap(),
                 Vec::new(),
@@ -1509,7 +1588,7 @@ fn composite_edit_maps_excerpt_source_ranges_exactly_once(cx: &mut TestAppContex
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
-            vec![MultiBufferExcerpt::new(
+            vec![ExcerptRange::new(
                 source,
                 TextRange::new(ByteOffset::new(5), ByteOffset::new(9)).unwrap(),
                 Vec::new(),
@@ -1554,7 +1633,7 @@ fn composite_edit_maps_excerpt_source_ranges_exactly_once(cx: &mut TestAppContex
 #[gpui::test]
 fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "zero\none\ntwo\nthree\n", cx);
-    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
         buffer.inject_diffs(
             Some(vec![TestDiff {
@@ -1638,7 +1717,7 @@ fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
 #[gpui::test]
 fn diff_expansion_survives_hunk_refresh_and_merge(cx: &mut TestAppContext) {
     let source = singleton("tracked.txt", "line0\n改过\nline2\nline3\n", cx);
-    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     let base_text: Arc<str> = Arc::from("line0\nline1\nline2\nline3\n");
 
     cx.update_entity(&combined, |buffer, cx| {
@@ -1898,7 +1977,7 @@ fn diff_hunk_coordinates_follow_materialized_excerpts_across_files(cx: &mut Test
 #[gpui::test]
 fn diff_expansion_survives_base_change_when_working_text_is_unchanged(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "zero\none\ntwo\nthree\n", cx);
-    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
         buffer.inject_diffs(
             Some(vec![TestDiff {
@@ -1946,7 +2025,7 @@ fn diff_expansion_survives_base_change_when_working_text_is_unchanged(cx: &mut T
 #[gpui::test]
 fn external_full_replacement_invalidates_stale_diff_hunks(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "first\nchanged\nthird\n", cx);
-    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
         buffer.inject_diffs(
             Some(vec![TestDiff {
@@ -1992,7 +2071,7 @@ fn external_full_replacement_invalidates_stale_diff_hunks(cx: &mut TestAppContex
 #[gpui::test]
 fn host_drives_buffer_diff_recompute_from_source_edits(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "a\nb\n", cx);
-    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
         buffer.inject_diffs(
             Some(vec![TestDiff {
@@ -2069,7 +2148,7 @@ fn host_drives_buffer_diff_recompute_from_source_edits(cx: &mut TestAppContext) 
 #[gpui::test]
 fn dirty_source_keeps_existing_diff_projection_until_saved(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "a\nb\n", cx);
-    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
         buffer.inject_diffs(
             Some(vec![TestDiff {
@@ -2130,7 +2209,7 @@ fn dirty_source_keeps_existing_diff_projection_until_saved(cx: &mut TestAppConte
 #[gpui::test]
 fn diff_hunks_survive_geometry_preserving_edits(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "a\nb\nc\n", cx);
-    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
         buffer.inject_diffs(
             Some(vec![TestDiff {
@@ -2184,7 +2263,7 @@ fn diff_hunks_survive_geometry_preserving_edits(cx: &mut TestAppContext) {
 #[gpui::test]
 fn pending_new_file_does_not_hide_ready_diff_hunks(cx: &mut TestAppContext) {
     let source_a = singleton("src/a.rs", "a\nb\nc\n", cx);
-    let combined = cx.new(|cx| MultiBuffer::from_working_source(source_a.clone(), cx));
+    let combined = cx.new(|cx| MultiBuffer::singleton(source_a.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
         buffer.inject_diffs(
             Some(vec![TestDiff {
@@ -2284,7 +2363,7 @@ fn diff_recovers_when_initial_result_is_stale(cx: &mut TestAppContext) {
 #[gpui::test]
 fn diff_hunks_survive_rapid_edits(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "a\nb\nc\n", cx);
-    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
         buffer.inject_diffs(
             Some(vec![TestDiff {
@@ -2330,7 +2409,7 @@ fn diff_hunks_survive_rapid_edits(cx: &mut TestAppContext) {
 #[gpui::test]
 fn added_hunk_background_follows_view_expansion_policy(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "a\nb\nc\n", cx);
-    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
         buffer.inject_diffs(
             Some(vec![TestDiff {
@@ -2389,7 +2468,7 @@ fn word_diff_ranges_split_words_and_punctuation() {
 #[gpui::test]
 fn expanded_modified_hunk_exposes_word_diffs_in_composite_coordinates(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "let x = 2;\n", cx);
-    let combined = cx.new(|cx| MultiBuffer::from_working_source(source.clone(), cx));
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
         buffer.inject_diffs(
             Some(vec![TestDiff {
@@ -2437,7 +2516,7 @@ fn composite_edits_are_applied_to_the_underlying_buffer(cx: &mut TestAppContext)
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
-            vec![MultiBufferExcerpt::new(
+            vec![ExcerptRange::new(
                 source,
                 TextRange::new(ByteOffset::new(5), ByteOffset::new(9)).unwrap(),
                 Vec::new(),
@@ -2488,12 +2567,12 @@ fn composite_file_buffers_are_deduplicated_across_excerpts(cx: &mut TestAppConte
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::new(
+                ExcerptRange::new(
                     source.clone(),
                     TextRange::new(ByteOffset::ZERO, ByteOffset::new(5)).unwrap(),
                     Vec::new(),
                 ),
-                MultiBufferExcerpt::new(
+                ExcerptRange::new(
                     source,
                     TextRange::new(ByteOffset::new(5), ByteOffset::new(9)).unwrap(),
                     Vec::new(),
@@ -2515,7 +2594,7 @@ fn composite_tracks_edits_made_through_another_editor(cx: &mut TestAppContext) {
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
-            vec![MultiBufferExcerpt::new(
+            vec![ExcerptRange::new(
                 source,
                 TextRange::new(ByteOffset::new(5), ByteOffset::new(9)).unwrap(),
                 Vec::new(),
@@ -2554,12 +2633,12 @@ fn composite_splits_cross_excerpt_edits_across_source_buffers(cx: &mut TestAppCo
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::new(
+                ExcerptRange::new(
                     first,
                     TextRange::new(ByteOffset::ZERO, ByteOffset::new(4)).unwrap(),
                     Vec::new(),
                 ),
-                MultiBufferExcerpt::new(
+                ExcerptRange::new(
                     second,
                     TextRange::new(ByteOffset::ZERO, ByteOffset::new(4)).unwrap(),
                     Vec::new(),
@@ -2599,7 +2678,7 @@ fn read_only_composite_rejects_edits(cx: &mut TestAppContext) {
     let source = singleton("index.txt", "index 内容\n", cx);
     let combined = cx.new(MultiBuffer::empty_read_only);
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(vec![MultiBufferExcerpt::line_range(source, 0..1, cx)], cx);
+        buffer.set_excerpts(vec![ExcerptRange::line_range(source, 0..1, cx)], cx);
         assert!(buffer.is_read_only());
         let error = buffer
             .edit(
@@ -2621,15 +2700,15 @@ fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &m
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
-                MultiBufferExcerpt::line_range(current.clone(), 0..1, cx),
-                MultiBufferExcerpt::line_range(old.clone(), 0..1, cx)
+                ExcerptRange::line_range(current.clone(), 0..1, cx),
+                ExcerptRange::line_range(old.clone(), 0..1, cx)
                     .with_editable(false)
                     .with_starts_new_excerpt(false)
                     .with_diff_kind(ExcerptDiffKind::Deleted),
-                MultiBufferExcerpt::line_range(current.clone(), 1..2, cx)
+                ExcerptRange::line_range(current.clone(), 1..2, cx)
                     .with_starts_new_excerpt(false)
                     .with_diff_kind(ExcerptDiffKind::Added),
-                MultiBufferExcerpt::line_range(current, 2..3, cx).with_starts_new_excerpt(false),
+                ExcerptRange::line_range(current, 2..3, cx).with_starts_new_excerpt(false),
             ],
             cx,
         );

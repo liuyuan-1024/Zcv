@@ -3046,16 +3046,6 @@ impl MultiBuffer {
         self.fix_document_tail_newline();
     }
 
-    /// 映射树中给定路径的起始序号与条目数（按路径游标，O(log n)）。
-    fn path_mapping_range(&self, path: &PathKey) -> (usize, usize) {
-        let mut start = MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
-        start.seek_path(path, Bias::Left);
-        let base = start.start().index;
-        let mut end = MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
-        end.seek_path(path, Bias::Right);
-        (base, end.start().index.saturating_sub(base))
-    }
-
     /// 组合文档末尾的片段不应再有分隔用的合成换行；splice/移除后修正末尾 item。
     ///
     /// 移除末尾路径时，前一个路径的最后一个 item 会变成文档尾，必须清掉它此前的分隔换行标记。
@@ -3403,6 +3393,7 @@ impl MultiBuffer {
             excerpt_source.syntax = syntax;
         }
         self.state.capture_names = rebuild_capture_table(&mut self.state.sources);
+        self.map_materialized_source_anchors(source_id, source_position_map);
         let old_mappings =
             mappings_for_source(&self.state.excerpts, &self.state.diff_transforms, source_id);
         // 绝对输出坐标由树摘要推导：源范围变化只 splice 受影响路径的 item，其余路径不变。

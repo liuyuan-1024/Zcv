@@ -14,12 +14,12 @@ use gpui::{App, Context, Entity};
 use sum_tree::SumTree;
 use zcv_git::DiffHunkKind;
 use zcv_language::LanguageBuffer;
-use zcv_text::{Anchor, ByteOffset, Line, Snapshot};
+use zcv_text::{Affinity, Anchor, ByteOffset, Line, PositionMap, Snapshot, Stickiness};
 
 use crate::buffer_diff::{BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkStaging, DiffRefresh};
 use crate::{
     DiffTransform, ExcerptDiffKind, ExcerptRange, MultiBuffer, MultiBufferCursor, MultiBufferEvent,
-    PathKey, ProjectionRemap, mapping_at_excerpt_index, mapping_count,
+    PathKey, ProjectionRemap, mapping_count,
 };
 
 /// 编辑器投影使用的显示 hunk（组合文档行坐标）。
@@ -149,15 +149,27 @@ struct ResolvedHunk {
     base_word_diffs: Vec<Range<usize>>,
 }
 
-/// 一个 hunk 在本次物化出的 excerpt 序列中的位置。
+/// 一个输入 excerpt 的稳定身份。
 ///
-/// 最终组合行坐标只能在 `MultiBuffer::set_excerpts` 建立实际映射后派生；
-/// 这里保存 excerpt 身份或 excerpt 边界，不平行累计另一份组合行号。
+/// 身份绑定源实体与源范围，不绑定组合文档中的序号，因此路径增删和 hunk 重物化不会使它失效。
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ExcerptAnchor {
+    source_id: gpui::EntityId,
+    source_range: zcv_text::TextRange,
+}
+
+/// 源文档中的显示边界。
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SourceBoundary {
+    source_id: gpui::EntityId,
+    offset: ByteOffset,
+}
+
 struct MaterializedHunk {
     old_range: Range<usize>,
     kind: DiffHunkKind,
     staging: DiffHunkStaging,
-    old_excerpt: Option<usize>,
+    old_excerpt: Option<ExcerptAnchor>,
     new_location: MaterializedHunkLocation,
     source: DisplayHunkSource,
     expanded: bool,
@@ -168,8 +180,8 @@ struct MaterializedHunk {
 
 #[derive(Clone, Copy)]
 enum MaterializedHunkLocation {
-    Excerpt(usize),
-    Boundary(usize),
+    Excerpt(ExcerptAnchor),
+    Boundary(SourceBoundary),
 }
 
 /// 一次物化派生出的显示坐标；只依赖 hunk 身份与当前组合映射，可在编辑后重算。
@@ -195,7 +207,7 @@ impl ExcerptMaterializer<'_> {
         diff_kind: Option<ExcerptDiffKind>,
         starts_new_excerpt: bool,
         allow_empty: bool,
-    ) -> Option<usize> {
+    ) -> Option<ExcerptAnchor> {
         let excerpt = projected_excerpt(
             source,
             text,
@@ -205,13 +217,32 @@ impl ExcerptMaterializer<'_> {
             starts_new_excerpt,
             allow_empty,
         )?;
-        let index = self.excerpts.len();
+        let anchor = ExcerptAnchor {
+            source_id: excerpt.source.entity_id(),
+            source_range: excerpt.source_range,
+        };
         self.excerpts.push(excerpt);
-        Some(index)
+        Some(anchor)
     }
+}
 
-    fn boundary(&self) -> usize {
-        self.excerpts.len()
+impl ExcerptAnchor {
+    fn map_through_source_change(&mut self, source_id: gpui::EntityId, position_map: &PositionMap) {
+        if self.source_id == source_id {
+            self.source_range = position_map
+                .map_old_range_with_stickiness(self.source_range, Stickiness::Expand)
+                .value();
+        }
+    }
+}
+
+impl SourceBoundary {
+    fn map_through_source_change(&mut self, source_id: gpui::EntityId, position_map: &PositionMap) {
+        if self.source_id == source_id {
+            self.offset = position_map
+                .map_old_position_with_affinity(self.offset, Affinity::Before)
+                .value();
+        }
     }
 }
 
@@ -259,28 +290,10 @@ impl MultiBuffer {
         self.insert_diff_file(insert_at, file, cx)
     }
 
-    /// 路径顺序在某文件之后的所有物化记录：excerpt 下标平移 excerpt_shift，文件下标平移 file_shift。
-    fn shift_downstream_files(
-        &mut self,
-        file_index: usize,
-        excerpt_shift: isize,
-        file_shift: isize,
-    ) {
+    /// 路径顺序在某文件之后的物化记录只需平移文件身份；excerpt 身份由源 anchor 保持稳定。
+    fn shift_downstream_files(&mut self, file_index: usize, file_shift: isize) {
         for file in self.diffs.iter_mut().skip(file_index + 1) {
             for hunk in &mut file.materialized {
-                if let Some(old) = &mut hunk.old_excerpt {
-                    *old = (*old as isize + excerpt_shift) as usize;
-                }
-                hunk.new_location = match hunk.new_location {
-                    MaterializedHunkLocation::Excerpt(index) => {
-                        MaterializedHunkLocation::Excerpt((index as isize + excerpt_shift) as usize)
-                    }
-                    MaterializedHunkLocation::Boundary(index) => {
-                        MaterializedHunkLocation::Boundary(
-                            (index as isize + excerpt_shift) as usize,
-                        )
-                    }
-                };
                 hunk.source.file_index = (hunk.source.file_index as isize + file_shift) as usize;
             }
         }
@@ -305,16 +318,6 @@ impl MultiBuffer {
             let BufferDiffEvent::DiffChanged { refresh } = event;
             this.diff_changed(*refresh, cx);
         });
-        // 映射树按源路径排序；显示路径只用于渲染与宿主按路径查找。
-        let new_path = PathKey::new(
-            state
-                .diff
-                .read(cx)
-                .working()
-                .read(cx)
-                .file_path()
-                .map_or_else(PathBuf::new, Path::to_path_buf),
-        );
         self.diffs.insert(insert_at, state);
         self.diff_subscriptions.insert(insert_at, subscription);
         self.diff_pending_expansion_migrations
@@ -335,29 +338,8 @@ impl MultiBuffer {
                 &mut materialized,
             );
         }
-        // 新路径在组合流中的起点（插入前）；映射树按源路径（而非显示路径）排序。
-        let base = {
-            let mut cursor =
-                MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
-            cursor.seek_path(&new_path, sum_tree::Bias::Left);
-            cursor.start().index
-        };
-        let inserted_count = excerpts.len();
-        for hunk in &mut materialized {
-            if let Some(old) = &mut hunk.old_excerpt {
-                *old += base;
-            }
-            hunk.new_location = match hunk.new_location {
-                MaterializedHunkLocation::Excerpt(index) => {
-                    MaterializedHunkLocation::Excerpt(index + base)
-                }
-                MaterializedHunkLocation::Boundary(index) => {
-                    MaterializedHunkLocation::Boundary(index + base)
-                }
-            };
-        }
         // 路径顺序在插入点之后的文件整体顺延。
-        self.shift_downstream_files(insert_at, inserted_count as isize, 1);
+        self.shift_downstream_files(insert_at, 1);
         self.set_excerpts_for_path(excerpts, cx);
         for hunk in materialized {
             self.diffs[hunk.source.file_index].materialized.push(hunk);
@@ -411,15 +393,13 @@ impl MultiBuffer {
             .read(cx)
             .file_path()
             .map_or_else(PathBuf::new, Path::to_path_buf);
-        let (_, removed_count) = self.path_mapping_range(&PathKey::new(source_path.clone()));
-
         self.remove_excerpts_for_path(&source_path, cx);
 
         drop(self.diff_subscriptions.remove(file_index));
         self.diff_display_revisions.remove(file_index);
         self.diff_pending_expansion_migrations.remove(file_index);
-        // 路径顺序在被移除文件之后的文件：excerpt 下标整体前移 removed_count，文件下标前移 1。
-        self.shift_downstream_files(file_index, -(removed_count as isize), -1);
+        // 路径顺序在被移除文件之后的文件只需平移文件身份。
+        self.shift_downstream_files(file_index, -1);
         self.diffs.remove(file_index);
 
         let display =
@@ -941,20 +921,6 @@ impl MultiBuffer {
                 );
             }
         }
-        // 物化按文件内局部 excerpt 索引生成，统一平移为组合文档中的全局索引。
-        for hunk in &mut materialized {
-            if let Some(old_excerpt) = &mut hunk.old_excerpt {
-                *old_excerpt += base_excerpt_count;
-            }
-            hunk.new_location = match hunk.new_location {
-                MaterializedHunkLocation::Excerpt(index) => {
-                    MaterializedHunkLocation::Excerpt(index + base_excerpt_count)
-                }
-                MaterializedHunkLocation::Boundary(index) => {
-                    MaterializedHunkLocation::Boundary(index + base_excerpt_count)
-                }
-            };
-        }
         let expected_excerpt_count = excerpts.len();
         let _ = self.append_excerpts(excerpts, cx);
         assert_eq!(
@@ -985,8 +951,7 @@ impl MultiBuffer {
     /// 原地重物化单个文件，只替换其路径的 excerpts，其余路径保持不变。
     ///
     /// 用于某个文件的 diff 结果发生版本或身份变化时避免整份组合文档重建：
-    /// 先按当前 hunk 收敛该文件的展开覆盖，再物化该文件；
-    /// 路径顺序在其之后的文件按 excerpt 数量差平移下标，最后只重算显示坐标。
+    /// 先按当前 hunk 收敛该文件的展开覆盖，再物化该文件，最后只重算显示坐标。
     fn replace_materialized_file(&mut self, file_index: usize, cx: &mut Context<Self>) {
         let resolved = resolve_file_hunks(&self.diffs[file_index], cx);
         self.diffs[file_index]
@@ -1008,8 +973,7 @@ impl MultiBuffer {
                 &mut materialized,
             );
         }
-        // 该路径在组合流中的区间；映射树按源路径排序，显示路径可能被裁剪为相对路径。
-        // 新片段按局部索引生成，统一平移为全局索引。
+        // 映射树按源路径排序，显示路径可能被裁剪为相对路径。
         let path = PathKey::new(
             self.diffs[file_index]
                 .diff
@@ -1019,22 +983,6 @@ impl MultiBuffer {
                 .file_path()
                 .map_or_else(PathBuf::new, Path::to_path_buf),
         );
-        let (base, old_count) = self.path_mapping_range(&path);
-        let new_count = excerpts.len();
-        for hunk in &mut materialized {
-            if let Some(old) = &mut hunk.old_excerpt {
-                *old += base;
-            }
-            hunk.new_location = match hunk.new_location {
-                MaterializedHunkLocation::Excerpt(index) => {
-                    MaterializedHunkLocation::Excerpt(index + base)
-                }
-                MaterializedHunkLocation::Boundary(index) => {
-                    MaterializedHunkLocation::Boundary(index + base)
-                }
-            };
-        }
-        self.shift_downstream_files(file_index, new_count as isize - old_count as isize, 0);
         // 该文件已无可见 hunk（差异被消除等）时必须移除其路径的 excerpts；
         // set_excerpts_for_path 对空片段集合是空操作，无法表达“清空该路径”。
         if excerpts.is_empty() {
@@ -1153,13 +1101,48 @@ impl MultiBuffer {
         }
     }
 
-    /// diff 片段在最终组合文档中的真实逻辑行范围。
+    /// 根据稳定源身份定位 excerpt 在当前组合文档中的真实逻辑行范围。
     /// 空片段仍对应编辑器中的一个空逻辑行。
-    fn diff_excerpt_output_lines(&self, excerpt: usize) -> Range<usize> {
-        let mapping =
-            mapping_at_excerpt_index(&self.state.excerpts, &self.state.diff_transforms, excerpt)
-                .expect("diff excerpt 必须存在对应组合映射");
+    fn mapping_for_excerpt_anchor(&self, anchor: ExcerptAnchor) -> Option<crate::ExcerptMapping> {
+        let mut cursor = MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
+        cursor.seek_output(ByteOffset::ZERO, sum_tree::Bias::Right);
+        while let Some((excerpt, _)) = cursor.item() {
+            if excerpt.source_id == anchor.source_id && excerpt.source_range == anchor.source_range
+            {
+                return cursor.mapping();
+            }
+            cursor.next();
+        }
+        None
+    }
+
+    fn diff_excerpt_output_lines(&self, anchor: ExcerptAnchor) -> Range<usize> {
+        let mapping = self
+            .mapping_for_excerpt_anchor(anchor)
+            .expect("diff excerpt 必须存在对应组合映射");
         mapping.output_start_line..mapping.output_end_line.max(mapping.output_start_line + 1)
+    }
+
+    pub(crate) fn map_materialized_source_anchors(
+        &mut self,
+        source_id: gpui::EntityId,
+        position_map: &PositionMap,
+    ) {
+        for file in &mut self.diffs {
+            for hunk in &mut file.materialized {
+                if let Some(anchor) = &mut hunk.old_excerpt {
+                    anchor.map_through_source_change(source_id, position_map);
+                }
+                match &mut hunk.new_location {
+                    MaterializedHunkLocation::Excerpt(anchor) => {
+                        anchor.map_through_source_change(source_id, position_map);
+                    }
+                    MaterializedHunkLocation::Boundary(boundary) => {
+                        boundary.map_through_source_change(source_id, position_map);
+                    }
+                }
+            }
+        }
     }
 
     /// 从已物化的 hunk 身份与当前组合映射派生显示坐标。
@@ -1240,12 +1223,9 @@ impl MultiBuffer {
         if hunk.expanded
             && let Some(excerpt) = hunk.old_excerpt
         {
-            let mapping = mapping_at_excerpt_index(
-                &self.state.excerpts,
-                &self.state.diff_transforms,
-                excerpt,
-            )
-            .expect("旧侧 diff excerpt 必须存在对应组合映射");
+            let mapping = self
+                .mapping_for_excerpt_anchor(excerpt)
+                .expect("旧侧 diff excerpt 必须存在对应组合映射");
             let output_start = mapping.output_range.start().get();
             let source_start = mapping.source_range.start().get();
             word_diffs.extend(hunk.base_word_diffs.iter().map(|diff| {
@@ -1255,12 +1235,9 @@ impl MultiBuffer {
             }));
         }
         if let MaterializedHunkLocation::Excerpt(excerpt) = &hunk.new_location {
-            let mapping = mapping_at_excerpt_index(
-                &self.state.excerpts,
-                &self.state.diff_transforms,
-                *excerpt,
-            )
-            .expect("新侧 diff excerpt 必须存在对应组合映射");
+            let mapping = self
+                .mapping_for_excerpt_anchor(*excerpt)
+                .expect("新侧 diff excerpt 必须存在对应组合映射");
             let output_start = mapping.output_range.start().get();
             let source_start = mapping.source_range.start().get();
             word_diffs.extend(hunk.buffer_word_diffs.iter().map(|diff| {
@@ -1272,19 +1249,38 @@ impl MultiBuffer {
         word_diffs
     }
 
-    /// excerpt 序列边界在最终组合文档中的真实逻辑行。
-    fn diff_excerpt_boundary_line(&self, boundary: usize) -> usize {
-        if let Some(next) =
-            mapping_at_excerpt_index(&self.state.excerpts, &self.state.diff_transforms, boundary)
-        {
-            next.output_start_line
-        } else if let Some(previous) = boundary.checked_sub(1).and_then(|index| {
-            mapping_at_excerpt_index(&self.state.excerpts, &self.state.diff_transforms, index)
-        }) {
-            previous.output_end_line.max(previous.output_start_line + 1)
-        } else {
-            0
+    /// 根据源文档边界定位当前组合文档中的逻辑行。
+    fn diff_excerpt_boundary_line(&self, boundary: SourceBoundary) -> usize {
+        let mut cursor = MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
+        cursor.seek_output(ByteOffset::ZERO, sum_tree::Bias::Right);
+        let mut previous_end = None;
+        while let Some((excerpt, _)) = cursor.item() {
+            if excerpt.source_id == boundary.source_id {
+                let start = excerpt.source_range.start();
+                let end = excerpt.source_range.end();
+                if boundary.offset < start {
+                    return cursor.start().lines;
+                }
+                if boundary.offset == start || (start == end && boundary.offset == end) {
+                    return cursor.start().lines;
+                }
+                if boundary.offset < end {
+                    let source_line = self.state.sources[excerpt.source_index]
+                        .text
+                        .byte_to_line(boundary.offset)
+                        .map_or(excerpt.source_start_line, |line| line.get());
+                    return cursor.start().lines
+                        + source_line.saturating_sub(excerpt.source_start_line);
+                }
+                if boundary.offset == end {
+                    previous_end = Some(
+                        (cursor.start().lines + excerpt.line_span).max(cursor.start().lines + 1),
+                    );
+                }
+            }
+            cursor.next();
         }
+        previous_end.unwrap_or(0)
     }
 }
 
@@ -1574,7 +1570,10 @@ fn materialize_file(
                 starts_new_excerpt = false;
                 MaterializedHunkLocation::Excerpt(new_excerpt)
             } else {
-                MaterializedHunkLocation::Boundary(materializer.boundary())
+                MaterializedHunkLocation::Boundary(SourceBoundary {
+                    source_id: working.entity_id(),
+                    offset: hunk.buffer_range.start.offset(),
+                })
             };
             materialized_hunks.push(MaterializedHunk {
                 old_range: hunk.base_lines.clone(),

@@ -17,17 +17,17 @@ use gpui::{
 use zcv_actions::{OpenExcerpts, ToggleFold};
 use zcv_language::{BracketPair, FoldRange};
 use zcv_multi_buffer::{DiffHunkKind, DiffHunkStaging, MultiBufferSnapshot};
-use zcv_text::{Line, LogicalColumn};
+use zcv_text::Line;
 use zcv_theme::{color, space};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon, drag_autoscroll_delta};
 
 use crate::selection::SelectionSet;
 
 use super::display_map::{
-    DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint, DisplayRow, DisplayRowEvent,
-    DisplaySnapshot, FILE_HEADER_HEIGHT, FoldRowSegment, HighlightStyles, ProjectedLineIndex,
-    ProjectedRange, RenderedWhitespace, StickyBufferHeader, WrapRowInfo, byte_for_display_column,
-    chunk_to_run, display_column_for_byte,
+    DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint, DisplayRange, DisplayRow,
+    DisplayRowEvent, DisplaySnapshot, FILE_HEADER_HEIGHT, FoldRowSegment, HighlightStyles,
+    RenderedWhitespace, StickyBufferHeader, WrapRowInfo, byte_for_display_column, chunk_to_run,
+    display_column_for_byte,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
@@ -2768,7 +2768,7 @@ fn layout_visible_lines_from_viewport(
                     row.fold_segments.map(ToOwned::to_owned),
                     row_whitespaces,
                     row.window_start_column,
-                    row.window_prefix,
+                    row.window_prefix.as_ref(),
                     row_runs,
                 );
             }
@@ -2886,14 +2886,14 @@ fn layout_selected_whitespace(
 
     let mut positions = Vec::new();
     for line in &layout.lines {
-        let row = ProjectedLineIndex::new(line.row.get());
+        let row = line.row;
         for whitespace in &line.whitespaces {
-            let column = LogicalColumn::new(whitespace.display_column);
+            let column = DisplayColumn::new(whitespace.display_column);
             let selected = ranges.iter().any(|range| {
                 let start = range.start();
                 let end = range.end();
-                (row > start.line() || (row == start.line() && column >= start.column()))
-                    && (row < end.line() || (row == end.line() && column < end.column()))
+                (row > start.row() || (row == start.row() && column >= start.column()))
+                    && (row < end.row() || (row == end.row() && column < end.column()))
             });
             if !selected || whitespace.byte_range.end > line.shaped.text.len() {
                 continue;
@@ -2945,7 +2945,7 @@ fn layout_selected_whitespace(
 
 /// 把单个投影选区切分为各显示行的片段：跨行连续段合并为轮廓（行间隙处断开），轮廓上下文在 finish_selection_contour 中计算每行四角样式。
 fn layout_selection_segments(
-    range: ProjectedRange,
+    range: DisplayRange,
     layout: &EditorLayout,
     line_height: Pixels,
     per_line: &mut [Vec<SelectionLineSegment>],
@@ -2959,21 +2959,21 @@ fn layout_selection_segments(
     let mut contour: Vec<(usize, Pixels, Pixels)> = Vec::new();
     let mut previous_y: Option<Pixels> = None;
     for (ix, line) in layout.lines.iter().enumerate() {
-        let row = ProjectedLineIndex::new(line.row.get());
-        if row < start.line() || row > end.line() {
+        let row = line.row;
+        if row < start.row() || row > end.row() {
             continue;
         }
-        if row == end.line() && row != start.line() && end.column() == LogicalColumn::ZERO {
+        if row == end.row() && row != start.row() && end.column() == DisplayColumn::ZERO {
             continue;
         }
 
         let line_columns = line.shaped.text.chars().count();
-        let start_column = if row == start.line() {
+        let start_column = if row == start.row() {
             start.column().get().min(line_columns)
         } else {
             0
         };
-        let end_column = if row == end.line() {
+        let end_column = if row == end.row() {
             end.column().get().min(line_columns)
         } else {
             line_columns
@@ -2986,7 +2986,7 @@ fn layout_selection_segments(
             + line
                 .shaped
                 .x_for_index(column_to_byte(&line.shaped.text, end_column));
-        if row != end.line() {
+        if row != end.row() {
             end_x += line_end_overshoot;
         }
         if end_x <= start_x {
@@ -3007,7 +3007,7 @@ fn layout_selection_segments(
 /// 输入是组合文档字节范围；经显示投影换算到显示行与行内字符列，
 /// 再复用与选区一致的 `x_for_index` 映射（含 wrap 续行片段起点列）。
 fn layout_word_diff_fragments(
-    highlights: impl IntoIterator<Item = (DiffHunkKind, ProjectedRange)>,
+    highlights: impl IntoIterator<Item = (DiffHunkKind, DisplayRange)>,
     layout: &EditorLayout,
     cx: &App,
 ) -> Vec<Vec<(Pixels, Pixels, gpui::Rgba)>> {
@@ -3020,17 +3020,17 @@ fn layout_word_diff_fragments(
             DiffHunkKind::Modified => continue,
         };
         for (ix, line) in layout.lines.iter().enumerate() {
-            let row = ProjectedLineIndex::new(line.row.get());
-            if row < projected_range.start().line() || row > projected_range.end().line() {
+            let row = line.row;
+            if row < projected_range.start().row() || row > projected_range.end().row() {
                 continue;
             }
             let line_columns = line.shaped.text.chars().count();
-            let start_column = if row == projected_range.start().line() {
+            let start_column = if row == projected_range.start().row() {
                 projected_range.start().column().get().min(line_columns)
             } else {
                 0
             };
-            let end_column = if row == projected_range.end().line() {
+            let end_column = if row == projected_range.end().row() {
                 projected_range.end().column().get().min(line_columns)
             } else {
                 line_columns
@@ -3191,7 +3191,7 @@ fn layout_bracket_pair(
 }
 
 fn layout_projected_range_quad(
-    range: ProjectedRange,
+    range: DisplayRange,
     layout: &EditorLayout,
     line_height: Pixels,
     background: gpui::Rgba,
@@ -3200,21 +3200,21 @@ fn layout_projected_range_quad(
     let start = range.start();
     let end = range.end();
     for line in &layout.lines {
-        let row = ProjectedLineIndex::new(line.row.get());
-        if row < start.line() || row > end.line() {
+        let row = line.row;
+        if row < start.row() || row > end.row() {
             continue;
         }
-        if row == end.line() && row != start.line() && end.column() == LogicalColumn::ZERO {
+        if row == end.row() && row != start.row() && end.column() == DisplayColumn::ZERO {
             continue;
         }
 
         let line_columns = line.shaped.text.chars().count();
-        let start_column = if row == start.line() {
+        let start_column = if row == start.row() {
             start.column().get().min(line_columns)
         } else {
             0
         };
-        let end_column = if row == end.line() {
+        let end_column = if row == end.row() {
             end.column().get().min(line_columns)
         } else {
             line_columns
@@ -3229,7 +3229,7 @@ fn layout_projected_range_quad(
         };
         let start_x = line.shaped.x_for_index(local_start);
         let mut end_x = line.shaped.x_for_index(local_end);
-        if end_x <= start_x && row != end.line() {
+        if end_x <= start_x && row != end.row() {
             end_x = start_x + px(8.);
         }
         if end_x <= start_x {
@@ -3397,14 +3397,30 @@ mod tests {
         )
     }
 
-    use crate::display_map::{DisplayMap, WrapRowKind};
+    use crate::display_map::{DisplayMap, DisplaySnapshot, WrapRowKind};
     use gpui::{AppContext, Empty, TestAppContext};
+
     use std::path::{Path, PathBuf};
     use zcv_language::LanguageBuffer;
     use zcv_multi_buffer::{DiffHunkStaging, DisplayHunk};
     use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
     use zcv_text::{Buffer, BufferConfig, Line};
     use zcv_theme::typography;
+
+    fn new_display_map(
+        cx: &mut impl AppContext,
+        snapshot: impl Into<MultiBufferSnapshot>,
+    ) -> Entity<DisplayMap> {
+        cx.new(|cx| DisplayMap::new(snapshot, cx))
+    }
+
+    fn project_display_snapshot(
+        cx: &mut impl AppContext,
+        snapshot: impl Into<MultiBufferSnapshot>,
+    ) -> DisplaySnapshot {
+        let map = new_display_map(cx, snapshot);
+        cx.read_entity(&map, |map, _| map.snapshot())
+    }
 
     #[test]
     fn collapsed_deleted_hunk_triangle_is_centered_on_the_deletion_boundary() {
@@ -3420,12 +3436,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn search_marker_rows_cover_every_current_search_range() {
+    #[gpui::test]
+    fn search_marker_rows_cover_every_current_search_range(cx: &mut TestAppContext) {
         let buffer = Buffer::from_text("first\nmiddle\n项目".to_owned(), BufferConfig::default())
             .expect("应创建搜索 marker 测试 Buffer");
         let snapshot = buffer.snapshot();
-        let display = DisplayMap::new(snapshot.clone()).snapshot();
+        let display = project_display_snapshot(cx, snapshot.clone());
         let ranges = [
             MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(5)).unwrap(),
             MultiBufferRange::new(MultiBufferOffset::new(13), MultiBufferOffset::new(19)).unwrap(),
@@ -3477,14 +3493,12 @@ mod tests {
                 cx,
             );
         });
-        let (display, version, ranges) = cx.read_entity(&combined, |combined, cx| {
+        let (snapshot, ranges) = cx.read_entity(&combined, |combined, cx| {
             let snapshot = combined.snapshot(cx);
-            (
-                DisplayMap::new(snapshot.clone()).snapshot(),
-                snapshot.version(),
-                combined.match_ranges().to_vec(),
-            )
+            (snapshot, combined.match_ranges().to_vec())
         });
+        let version = snapshot.version();
+        let display = project_display_snapshot(cx, snapshot);
         let matches = ranges
             .into_iter()
             .map(|range| crate::view::SearchMatchAnchor::from_range(version, range))
@@ -3582,8 +3596,8 @@ mod tests {
         let window = cx.add_window(|_, _| Empty);
         window
             .update(cx, |_, window, cx| {
-                let map = DisplayMap::new(multi_snapshot.clone());
-                let display = map.snapshot();
+                let map = new_display_map(cx, multi_snapshot.clone());
+                let display = cx.read_entity(&map, |map, _| map.snapshot());
                 let search_decorations =
                     SearchDecorationSnapshot::for_test(&display, &matches, 0);
                 // 文本区起点 = 60px（真实编辑器带 gutter 时的典型偏移）。
@@ -3648,14 +3662,17 @@ mod tests {
                     .snapshot();
                 let text_style = window.text_style();
                 let font_size = text_style.font_size.to_pixels(window.rem_size());
-                let mut map = DisplayMap::new(snapshot.clone());
-                map.set_wrap_width(
-                    Some(px(100.)),
-                    text_style.font(),
-                    font_size,
-                    window.text_system(),
-                );
-                let display = map.snapshot();
+                let map = new_display_map(cx, snapshot.clone());
+                cx.update_entity(&map, |map, cx| {
+                    map.set_wrap_width(
+                        Some(px(100.)),
+                        text_style.font(),
+                        font_size,
+                        window.text_system(),
+                        cx,
+                    )
+                });
+                let display = cx.read_entity(&map, |map, _| map.snapshot());
                 let dimensions = gutter_dimensions(&display, window);
                 let gutter_bounds =
                     Bounds::new(point(px(0.), px(0.)), size(dimensions.width, px(200.)));
@@ -3725,7 +3742,7 @@ mod tests {
     fn editor_width_soft_wrap_keeps_mixed_cjk_inside_text_bounds(cx: &mut TestAppContext) {
         let window = cx.add_window(|_, _| Empty);
         window
-            .update(cx, |_, window, _cx| {
+            .update(cx, |_, window, cx| {
                 let font = typography::ui_font();
                 let font_size = typography::ui_size();
                 let font_id = window.text_system().resolve_font(&font);
@@ -3741,7 +3758,7 @@ mod tests {
                     let snapshot = Buffer::from_text(text.to_owned(), BufferConfig::default())
                         .expect("测试 Buffer 应能创建")
                         .snapshot();
-                    let mut map = DisplayMap::new(snapshot);
+                    let map = new_display_map(cx, snapshot);
                     for quarter_pixels in 720..=2_400 {
                         let text_width = px(quarter_pixels as f32 / 4.);
                         let text_layout_width = (text_width
@@ -3753,13 +3770,8 @@ mod tests {
                             80,
                             em_advance,
                         );
-                        map.set_wrap_width(
-                            wrap_width,
-                            font.clone(),
-                            font_size,
-                            window.text_system(),
-                        );
-                        let display = map.snapshot();
+                        cx.update_entity(&map, |map, cx| map.set_wrap_width(wrap_width, font.clone(), font_size, window.text_system(), cx));
+                        let display = cx.read_entity(&map, |map, _| map.snapshot());
                         let mut cursor = display.rows(DisplayRow::ZERO, display.line_count());
                         let viewport: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
                         if text.starts_with("新增") && quarter_pixels == 720 {
@@ -3857,7 +3869,7 @@ mod tests {
 
         let multi_snapshot = cx.read_entity(&combined, |combined, cx| combined.snapshot(cx));
         let text_snapshot = multi_snapshot.clone();
-        let display_snapshot = DisplayMap::new(multi_snapshot).snapshot();
+        let display_snapshot = project_display_snapshot(cx, multi_snapshot);
         let window = cx.add_window(|_, _| Empty);
         window
             .update(cx, |_, window, cx| {
@@ -3944,7 +3956,7 @@ mod tests {
         cx.run_until_parked();
 
         let snapshot = cx.read_entity(&combined, |combined, cx| combined.snapshot(cx));
-        let display = DisplayMap::new(snapshot).snapshot();
+        let display = project_display_snapshot(cx, snapshot);
         let mut cursor = display.rows(DisplayRow::ZERO, display.line_count());
         let rows: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
         let blocks = rows
@@ -4026,14 +4038,16 @@ mod tests {
                 let text_system = window.text_system().clone();
                 let font = window.text_style().font();
                 let font_size = window.text_style().font_size.to_pixels(window.rem_size());
-                let mut map = DisplayMap::new(multi_snapshot.clone());
+                let map = new_display_map(cx, multi_snapshot.clone());
 
                 // 选择一个“片段长度不是行首 UTF-8 边界”的续行。旧实现把这个长度
                 // 拼到行首上查询高亮，正好会制造落在中文编码内部的 capture 端点。
                 let mut offending_row = None;
                 for width in [px(320.), px(400.), px(480.), px(560.), px(640.)] {
-                    map.set_wrap_width(Some(width), font.clone(), font_size, &text_system);
-                    let display = map.snapshot();
+                    cx.update_entity(&map, |map, cx| {
+                        map.set_wrap_width(Some(width), font.clone(), font_size, &text_system, cx)
+                    });
+                    let display = cx.read_entity(&map, |map, _| map.snapshot());
                     let mut cursor = display.rows(DisplayRow::ZERO, display.line_count());
                     let viewport: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
                     offending_row = viewport.iter().find_map(|row| {
@@ -4052,7 +4066,7 @@ mod tests {
                     }
                 }
                 let offending_row = offending_row.expect("测试文本应产生目标 UTF-8 续行");
-                let display = map.snapshot();
+                let display = cx.read_entity(&map, |map, _| map.snapshot());
                 let layout = layout_visible_lines(
                     display,
                     None,
@@ -4103,7 +4117,7 @@ mod tests {
                     .expect("大文本测试 Buffer 应能创建")
                     .snapshot();
                 let presentation = EditorPresentation::new(&snapshot.clone().into(), None);
-                let display_snapshot = DisplayMap::new(snapshot.clone()).snapshot();
+                let display_snapshot = project_display_snapshot(cx, snapshot.clone());
                 let layout = layout_visible_lines(
                     display_snapshot,
                     None,
@@ -4169,7 +4183,7 @@ mod tests {
                     Bounds::new(point(px(0.), px(0.)), size(dimensions.width, px(100.)));
                 let text_bounds = Bounds::new(point(px(59.), px(0.)), size(px(341.), px(100.)));
                 let layout = layout_visible_lines(
-                    DisplayMap::new(snapshot.clone()).snapshot(),
+                    project_display_snapshot(cx, snapshot.clone()),
                     None,
                     EditorPresentation::new(&snapshot.clone().into(), None),
                     None,
@@ -4219,14 +4233,20 @@ mod tests {
                 )
                 .expect("测试 Buffer 应能创建")
                 .snapshot();
-                let mut map = DisplayMap::new(snapshot.clone());
-                map.fold_range(
-                    MultiBufferRange::new(MultiBufferOffset::new(6), MultiBufferOffset::new(28))
+                let map = new_display_map(cx, snapshot.clone());
+                cx.update_entity(&map, |map, cx| {
+                    map.fold_range(
+                        MultiBufferRange::new(
+                            MultiBufferOffset::new(6),
+                            MultiBufferOffset::new(28),
+                        )
                         .expect("折叠范围应合法"),
-                )
+                        cx,
+                    )
+                })
                 .expect("折叠应成功");
                 let layout = layout_visible_lines(
-                    map.snapshot(),
+                    cx.read_entity(&map, |map, _| map.snapshot()),
                     None,
                     EditorPresentation::new(&snapshot.clone().into(), None),
                     None,
@@ -4273,7 +4293,7 @@ mod tests {
                         .expect("测试 Buffer 应能创建")
                         .snapshot();
                 let layout = layout_visible_lines(
-                    DisplayMap::new(snapshot.clone()).snapshot(),
+                    project_display_snapshot(cx, snapshot.clone()),
                     None,
                     EditorPresentation::new(&snapshot.clone().into(), None),
                     None,
@@ -4345,7 +4365,7 @@ mod tests {
                     .expect("测试 Buffer 应能创建")
                     .snapshot();
                 let layout = layout_visible_lines(
-                    DisplayMap::new(snapshot.clone()).snapshot(),
+                    project_display_snapshot(cx, snapshot.clone()),
                     None,
                     EditorPresentation::new(&snapshot.clone().into(), None),
                     None,
@@ -4411,7 +4431,7 @@ mod tests {
                 .expect("测试 Buffer 应能创建")
                 .snapshot();
                 let presentation = EditorPresentation::new(&snapshot.clone().into(), None);
-                let display_snapshot = DisplayMap::new(snapshot.clone()).snapshot();
+                let display_snapshot = project_display_snapshot(cx, snapshot.clone());
                 let layout = layout_visible_lines(
                     display_snapshot,
                     None,
@@ -4503,7 +4523,7 @@ mod tests {
                     diff_rows: &[],
                 };
                 let single_layout = layout_visible_lines(
-                    DisplayMap::new(single_snapshot.clone()).snapshot(),
+                    project_display_snapshot(cx, single_snapshot.clone()),
                     None,
                     EditorPresentation::new(&single_snapshot.clone().into(), None),
                     None,
@@ -4512,7 +4532,7 @@ mod tests {
                     cx,
                 );
                 let multi_layout = layout_visible_lines(
-                    DisplayMap::new(multi_snapshot).snapshot(),
+                    project_display_snapshot(cx, multi_snapshot),
                     None,
                     EditorPresentation::new(&multi_text, None),
                     None,
@@ -4581,7 +4601,7 @@ mod tests {
     fn diff_hunk_rows_maps_logical_rows_to_display_rows(cx: &mut TestAppContext) {
         let window = cx.add_window(|_, _| Empty);
         window
-            .update(cx, |_, window, _cx| {
+            .update(cx, |_, window, cx| {
                 let text_system = window.text_system().clone();
                 let font = window.text_style().font();
                 let font_size = window.text_style().font_size.to_pixels(window.rem_size());
@@ -4592,7 +4612,7 @@ mod tests {
                     BufferConfig::default(),
                 )
                 .expect("应创建 Buffer");
-                let snapshot = DisplayMap::new(buffer.snapshot()).snapshot();
+                let snapshot = project_display_snapshot(cx, buffer.snapshot());
                 assert_eq!(
                     diff_hunk_rows(
                         &snapshot,
@@ -4632,12 +4652,18 @@ mod tests {
                     BufferConfig::default(),
                 )
                 .expect("应创建 Buffer");
-                let mut map = DisplayMap::new(buffer.snapshot());
+                let map = new_display_map(cx, buffer.snapshot());
                 assert!(
-                    map.set_wrap_width(Some(px(100.)), font.clone(), font_size, &text_system),
+                    cx.update_entity(&map, |map, cx| map.set_wrap_width(
+                        Some(px(100.)),
+                        font.clone(),
+                        font_size,
+                        &text_system,
+                        cx
+                    )),
                     "宽行应产生换行"
                 );
-                let snapshot = map.snapshot();
+                let snapshot = cx.read_entity(&map, |map, _| map.snapshot());
                 let line_count = snapshot.line_count();
                 assert!(line_count > 2, "宽行应拆成多个显示行");
                 let row_1 = snapshot
@@ -4680,17 +4706,17 @@ mod tests {
             .expect("测试窗口应保持可用");
     }
 
-    #[test]
-    fn diff_hunk_rows_expanded_deleted_marks_materialized_old_rows() {
-        let collapsed = DisplayMap::new(
+    #[gpui::test]
+    fn diff_hunk_rows_expanded_deleted_marks_materialized_old_rows(cx: &mut TestAppContext) {
+        let collapsed = project_display_snapshot(
+            cx,
             Buffer::from_text(
                 "line 0\nline 1\nline 2\n".to_owned(),
                 BufferConfig::default(),
             )
             .expect("应创建 Buffer")
             .snapshot(),
-        )
-        .snapshot();
+        );
         let collapsed_hunk = DisplayHunk {
             range: 1..1,
             old_range: 1..3,
@@ -4717,15 +4743,15 @@ mod tests {
             vec![(1..2, 0, DiffHunkKind::Deleted)]
         );
 
-        let expanded = DisplayMap::new(
+        let expanded = project_display_snapshot(
+            cx,
             Buffer::from_text(
                 "line 0\nline 1\nold 1\nold 2\nline 2\n".to_owned(),
                 BufferConfig::default(),
             )
             .expect("应创建 Buffer")
             .snapshot(),
-        )
-        .snapshot();
+        );
         let expanded_hunk = DisplayHunk {
             range: 4..4,
             old_range: 1..3,
@@ -4747,17 +4773,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn modified_hunk_expansion_marks_old_and_new_rows() {
-        let snapshot = DisplayMap::new(
+    #[gpui::test]
+    fn modified_hunk_expansion_marks_old_and_new_rows(cx: &mut TestAppContext) {
+        let snapshot = project_display_snapshot(
+            cx,
             Buffer::from_text(
                 "line 0\nold 1\nnew 1\nline 2\n".to_owned(),
                 BufferConfig::default(),
             )
             .expect("应创建 Buffer")
             .snapshot(),
-        )
-        .snapshot();
+        );
         let hunk = DisplayHunk {
             range: 2..3,
             old_range: 1..2,
@@ -4779,18 +4805,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn modified_hunk_strip_stays_yellow_when_expanded() {
+    #[gpui::test]
+    fn modified_hunk_strip_stays_yellow_when_expanded(cx: &mut TestAppContext) {
         // 竖条色不随展开变化：展开的修改块竖条保持黄色并覆盖旧行 + 修改行。
-        let snapshot = DisplayMap::new(
+        let snapshot = project_display_snapshot(
+            cx,
             Buffer::from_text(
                 "line 0\nold 1\nnew 1\nline 2\n".to_owned(),
                 BufferConfig::default(),
             )
             .expect("应创建 Buffer")
             .snapshot(),
-        )
-        .snapshot();
+        );
         let hunk = DisplayHunk {
             range: 2..3,
             old_range: 1..2,

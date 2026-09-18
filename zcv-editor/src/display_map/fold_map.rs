@@ -11,22 +11,12 @@ use std::{borrow::Cow, cmp::Reverse, collections::BTreeMap, ops::Range};
 
 use sum_tree::{Bias as TreeBias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use zcv_multi_buffer::MultiBufferSnapshot;
-use zcv_text::{
-    Anchor, BufferVersion, CoordinateError, Line, LineRange, LogicalColumn, MappingResult,
-    Position, Stickiness, TextChangeBatch,
-};
+use zcv_text::{Anchor, BufferVersion, CoordinateError, Line, LineRange, LogicalColumn, Position};
 
+use super::edit::{ProjectionEdit, remap_offset};
 use super::error::{DisplayMapResult, FoldError};
-use super::inlay_map::InlaySnapshot;
-use super::line_stream::{LineStream, StreamLineSource};
+use super::inlay_map::{InlayEdit, InlaySnapshot};
 use super::tab_map::line_content;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ApplyOutcome {
-    Compatible,
-    Spliced,
-    Rebuilt,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct FoldId(u64);
@@ -254,6 +244,9 @@ pub(super) struct FoldEdit {
     structural: bool,
 }
 
+/// InlayEdit 还原到 buffer 坐标后的一段编辑，供 fold 拓扑定位使用。
+type FoldBufferEdit = ProjectionEdit<MultiBufferOffset>;
+
 impl FoldEdit {
     pub(super) fn changed_lines(&self) -> &[Line] {
         &self.changed_lines
@@ -376,10 +369,6 @@ impl FoldLookup {
 }
 
 impl FoldSnapshot {
-    pub(super) fn stream(&self) -> &LineStream {
-        self.input.stream()
-    }
-
     pub(crate) fn inlay_snapshot(&self) -> &InlaySnapshot {
         &self.input
     }
@@ -510,13 +499,12 @@ impl FoldSnapshot {
             LogicalProjection::Hidden => unreachable!("折叠 anchor 行必须可见"),
         };
         let inlay = self.inlay_snapshot();
-        let stream = self.stream();
-        let anchor_stream = stream.buffer_to_stream(anchor);
+        let anchor_stream = anchor;
         let (anchor_len, anchor_chars) = inlay
             .projected_line_content_metrics(anchor_stream)
             .expect("折叠 anchor 行必须位于流内");
         let close_line = fold.line_span.1;
-        let close_stream = stream.buffer_to_stream(close_line);
+        let close_stream = close_line;
         let close_start = self
             .buffer_snapshot()
             .line_start_byte(close_line)
@@ -554,8 +542,7 @@ impl FoldSnapshot {
 
     /// 投影行 → 折叠合并行的 anchor 行（流行号）。
     pub(crate) fn fold_row_anchor_stream_line(&self, row: ProjectedLineIndex) -> Option<Line> {
-        self.fold_for_row(row)
-            .map(|fold| self.stream().buffer_to_stream(fold.line_span.0))
+        self.fold_for_row(row).map(|fold| fold.line_span.0)
     }
 
     /// 投影行 → 折叠合并行的段表（合并文本字节空间的切分，文本顺序）。
@@ -613,8 +600,8 @@ impl FoldSnapshot {
     /// 折叠对应的可见 anchor 行（未被外层折叠覆盖），供合并行查询。
     fn fold_for_row(&self, row: ProjectedLineIndex) -> Option<&Fold> {
         let text = self.projected_line_kind(row)?;
-        let buffer_line = self.input.source(text.logical_line())?.line();
-        self.lookup.anchor_by_line.get(&Line::new(buffer_line))
+        let buffer_line = self.input.source(text.logical_line())?;
+        self.lookup.anchor_by_line.get(&buffer_line)
     }
 
     /// close 行尾段内逻辑列 → 合并行内的投影列（尾段起点之后，含注入）。
@@ -631,10 +618,9 @@ impl FoldSnapshot {
                 LogicalColumn::new(column),
             ))?
             .get();
-        let projected = self.inlay_snapshot().to_projected_offset(
-            self.stream().buffer_to_stream(geometry.close_line),
-            byte - close_start.get(),
-        );
+        let projected = self
+            .inlay_snapshot()
+            .to_projected_offset(geometry.close_line, byte - close_start.get());
         Ok(projected - geometry.tail_projected)
     }
 
@@ -656,7 +642,7 @@ impl FoldSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StreamProjectedKind {
     /// 可见文本行及其 buffer 行来源。
-    Text(StreamLineSource),
+    Text(Line),
 }
 
 #[derive(Debug, Clone)]
@@ -692,36 +678,29 @@ impl FoldMap {
     pub(super) fn read(
         &mut self,
         input: InlaySnapshot,
-        batch: &TextChangeBatch,
-    ) -> (FoldSnapshot, Vec<FoldEdit>, ApplyOutcome) {
+        inlay_edits: Vec<InlayEdit>,
+    ) -> (FoldSnapshot, Vec<FoldEdit>) {
         let buffer = input.buffer_snapshot().clone();
         let old_buffer = self.snapshot.buffer_snapshot().clone();
+        let old_inlay = self.snapshot.input.clone();
         // 注入配置变化（inlay 增删改）不产生 buffer 编辑：整体重建 fold 拓扑。
-        let inlay_changed = input.version() != self.snapshot.input.version();
+        let inlay_changed = input.version() != old_inlay.version();
         if buffer.version() == old_buffer.version() && !inlay_changed {
             if buffer.config() != old_buffer.config() {
-                let old_end = ProjectedLineIndex::new(self.snapshot.line_count());
+                let old_rows = self.snapshot.line_count();
                 self.snapshot.input = input;
                 self.snapshot.version += 1;
-                let edit = FoldEdit {
-                    old: ProjectedLineIndex::ZERO..old_end,
-                    new: ProjectedLineIndex::ZERO
-                        ..ProjectedLineIndex::new(self.snapshot.line_count()),
-                    changed_lines: Vec::new(),
-                    structural: true,
-                };
-                return (self.snapshot.clone(), vec![edit], ApplyOutcome::Compatible);
+                let edit = full_fold_edit(old_rows, self.snapshot.line_count());
+                return (self.snapshot.clone(), vec![edit]);
             }
-            return (self.snapshot.clone(), Vec::new(), ApplyOutcome::Compatible);
+            return (self.snapshot.clone(), Vec::new());
         }
 
-        let old_version = old_buffer.version();
-        let new_version = buffer.version();
-        // 行内提示配置变化不产生 buffer 编辑：整体重建 fold 拓扑。
         if inlay_changed {
             let old_rows = self.snapshot.line_count();
+            let stream_line_count = input.line_count();
             self.snapshot = FoldSnapshot {
-                transforms: build_transforms(&[], input.line_count()),
+                transforms: build_transforms(&[], stream_line_count),
                 input,
                 folds: self.snapshot.folds.clone(),
                 lookup: self.snapshot.lookup.clone(),
@@ -729,54 +708,43 @@ impl FoldMap {
                 version: self.snapshot.version + 1,
             };
             let edit = full_fold_edit(old_rows, self.snapshot.line_count());
-            return (self.snapshot.clone(), vec![edit], ApplyOutcome::Rebuilt);
+            return (self.snapshot.clone(), vec![edit]);
         }
-        // reset 批次（如 diff 投影重建）也按 patch 映射折叠：
-        // 组合文本只是重排，底层工作区源未变，折叠端点应随 patch 跟随，不能整体清空。
-        // 仅当批次版本与当前快照对不上（订阅者漏版本）时才整体重建。
-        if batch.old_version() != Some(old_version) || batch.new_version() != Some(new_version) {
-            let old_rows = self.snapshot.line_count();
-            self.snapshot = FoldSnapshot {
-                transforms: build_transforms(&[], input.line_count()),
-                input,
-                folds: SumTree::new(()),
-                lookup: FoldLookup::default(),
-                fold_metadata_by_id: BTreeMap::new(),
-                version: self.snapshot.version + 1,
-            };
-            let edit = full_fold_edit(old_rows, self.snapshot.line_count());
-            return (self.snapshot.clone(), vec![edit], ApplyOutcome::Rebuilt);
-        }
+
+        // InlayEdit 位于 inlay 坐标空间；用旧/新 inlay 快照还原到 buffer 坐标，
+        // 供 fold 拓扑与下游换行定位使用。fold 的长期端点保存 Anchor，直接按当前快照解析，不读 PositionMap。
+        let buffer_edits: Vec<FoldBufferEdit> = inlay_edits
+            .iter()
+            .map(|edit| {
+                ProjectionEdit::new(
+                    old_inlay.to_buffer_offset(edit.old.start)
+                        ..old_inlay.to_buffer_offset(edit.old.end),
+                    input.to_buffer_offset(edit.new.start)..input.to_buffer_offset(edit.new.end),
+                )
+            })
+            .collect();
 
         let old_rows = self.snapshot.line_count();
         let old_spans = hidden_spans(&self.snapshot.folds);
-        let position_map = batch.position_map();
+        let new_version = buffer.version();
         let mut retained = Vec::new();
         self.snapshot.fold_metadata_by_id.clear();
         for mut fold in self.snapshot.folds.iter().cloned() {
-            let old_range = fold.text_range();
-            let remapped = if batch.requires_reset() {
-                // 投影重建（如 diff 展开/折叠）：源文本未变，用源锚点把旧投影范围重映射到新投影，
-                // 不能把旧投影偏移直接当成新偏移。
-                let start_anchor = old_buffer.anchor_for_offset(old_range.start());
-                let end_anchor = old_buffer.anchor_for_offset(old_range.end());
-                start_anchor.zip(end_anchor).and_then(|(start, end)| {
-                    buffer
-                        .resolve_anchor(&start)
-                        .zip(buffer.resolve_anchor(&end))
-                        .and_then(|(start, end)| MultiBufferRange::new(start, end).ok())
-                })
-            } else {
-                let mapped =
-                    position_map.map_old_range_with_stickiness(old_range.into(), Stickiness::Never);
-                (!matches!(mapped, MappingResult::Collapsed(_))).then(|| mapped.value().into())
+            let start = remap_offset(fold.text_range().start(), &buffer_edits);
+            let end = remap_offset(fold.text_range().end(), &buffer_edits);
+            let Some((start, end)) = start.zip(end) else {
+                continue;
             };
-            let Some(range) = remapped else {
+            // 映射后为空（被删除吞并）的折叠不再保留。
+            if start >= end {
+                continue;
+            }
+            let Ok(range) = MultiBufferRange::new(start, end) else {
                 continue;
             };
             fold.range = Anchor::range_inside(new_version, range.into());
             fold.line_span = fold_line_span(&buffer, range)
-                .expect("映射后的折叠锚点范围必须位于当前 Snapshot 内");
+                .expect("重新解析后的折叠锚点范围必须位于当前 Snapshot 内");
             self.snapshot.fold_metadata_by_id.insert(fold.id, range);
             retained.push(fold);
         }
@@ -784,29 +752,25 @@ impl FoldMap {
         self.snapshot.lookup = FoldLookup::from_folds(&retained);
         self.snapshot.folds = SumTree::from_iter(retained, ());
         let new_spans = hidden_spans(&self.snapshot.folds);
-        // 行数不变且折叠拓扑不变时，编辑只改变与 new_range 相交行的内容，`inline_fold_edits` 的 changed_lines 恰好覆盖；
-        // 软换行的逐行重排（update_inline）
-        // 对行数不变的多行编辑同样正确，无需按"含换行"升级为全量重建。
+        // 行数不变且折叠拓扑不变时，编辑只改变与编辑区间相交行的内容，`inline_fold_edits` 的 changed_lines 恰好覆盖；
+        // 软换行的逐行重排（update_inline）对行数不变的多行编辑同样正确。
         let structural = old_spans != new_spans || old_buffer.line_count() != buffer.line_count();
         self.snapshot.input = input;
         self.snapshot.version += 1;
-        let outcome = if structural {
-            let stream = self.snapshot.stream();
-            let spans = hidden_spans_in_stream(stream, &self.snapshot.folds);
-            self.snapshot.transforms = build_transforms(&spans, stream.line_count());
-            ApplyOutcome::Spliced
-        } else {
-            ApplyOutcome::Compatible
-        };
+        if structural {
+            let spans = hidden_spans_in_stream(&self.snapshot.input, &self.snapshot.folds);
+            self.snapshot.transforms = build_transforms(&spans, self.snapshot.input.line_count());
+        }
         let edits = if structural {
-            linear_fold_edit(batch, &old_buffer, &buffer, &old_spans, &new_spans).map_or_else(
-                || vec![full_fold_edit(old_rows, self.snapshot.line_count())],
-                |edit| vec![edit],
-            )
+            linear_fold_edit(&buffer_edits, &old_buffer, &buffer, &old_spans, &new_spans)
+                .map_or_else(
+                    || vec![full_fold_edit(old_rows, self.snapshot.line_count())],
+                    |edit| vec![edit],
+                )
         } else {
-            inline_fold_edits(batch, self.snapshot.stream(), &self.snapshot.folds)
+            inline_fold_edits(&buffer_edits, &self.snapshot.input, &self.snapshot.folds)
         };
-        (self.snapshot.clone(), edits, outcome)
+        (self.snapshot.clone(), edits)
     }
 
     pub(super) fn write(&mut self) -> FoldMapWriter<'_> {
@@ -879,8 +843,8 @@ impl FoldMapWriter<'_> {
                 .checked_add(1)
                 .ok_or(FoldError::IdOverflow)?,
         );
-        let stream_line_count = self.0.snapshot.stream().line_count();
-        let old_spans = hidden_spans_in_stream(self.0.snapshot.stream(), &self.0.snapshot.folds);
+        let stream_line_count = self.0.snapshot.input.line_count();
+        let old_spans = hidden_spans_in_stream(&self.0.snapshot.input, &self.0.snapshot.folds);
         let mut folds: Vec<_> = self.0.snapshot.folds.iter().cloned().collect();
         let fold = Fold::new(
             id,
@@ -894,7 +858,7 @@ impl FoldMapWriter<'_> {
         let indexed_folds = self.0.snapshot.folds.iter().cloned().collect::<Vec<_>>();
         self.0.snapshot.lookup = FoldLookup::from_folds(&indexed_folds);
         self.0.snapshot.fold_metadata_by_id.insert(id, range);
-        let spans = hidden_spans_in_stream(self.0.snapshot.stream(), &self.0.snapshot.folds);
+        let spans = hidden_spans_in_stream(&self.0.snapshot.input, &self.0.snapshot.folds);
         self.0.snapshot.transforms = build_transforms(&spans, stream_line_count);
         self.0.snapshot.version += 1;
         Ok((
@@ -907,8 +871,8 @@ impl FoldMapWriter<'_> {
         if !self.0.snapshot.fold_metadata_by_id.contains_key(&id) {
             return (self.0.snapshot.clone(), Vec::new());
         }
-        let stream_line_count = self.0.snapshot.stream().line_count();
-        let old_spans = hidden_spans_in_stream(self.0.snapshot.stream(), &self.0.snapshot.folds);
+        let stream_line_count = self.0.snapshot.input.line_count();
+        let old_spans = hidden_spans_in_stream(&self.0.snapshot.input, &self.0.snapshot.folds);
         let retained: Vec<_> = self
             .0
             .snapshot
@@ -921,7 +885,7 @@ impl FoldMapWriter<'_> {
         let indexed_folds = self.0.snapshot.folds.iter().cloned().collect::<Vec<_>>();
         self.0.snapshot.lookup = FoldLookup::from_folds(&indexed_folds);
         self.0.snapshot.fold_metadata_by_id.remove(&id);
-        let spans = hidden_spans_in_stream(self.0.snapshot.stream(), &self.0.snapshot.folds);
+        let spans = hidden_spans_in_stream(&self.0.snapshot.input, &self.0.snapshot.folds);
         self.0.snapshot.transforms = build_transforms(&spans, stream_line_count);
         self.0.snapshot.version += 1;
         (
@@ -952,13 +916,11 @@ fn hidden_spans(folds: &SumTree<Fold>) -> Vec<Range<usize>> {
 }
 
 /// 折叠区间（buffer 行范围）→ 流行范围（fold 拓扑的输入行空间）。
-fn hidden_spans_in_stream(stream: &LineStream, folds: &SumTree<Fold>) -> Vec<Range<usize>> {
+fn hidden_spans_in_stream(inlay: &InlaySnapshot, folds: &SumTree<Fold>) -> Vec<Range<usize>> {
+    let _ = inlay;
     hidden_spans(folds)
         .into_iter()
-        .map(|span| {
-            stream.buffer_to_stream(Line::new(span.start)).get()
-                ..stream.buffer_to_stream(Line::new(span.end)).get()
-        })
+        .map(|span| span.start..span.end)
         .collect()
 }
 
@@ -1050,36 +1012,19 @@ fn hidden_lines(spans: &[Range<usize>]) -> usize {
 /// 其余行线性平移。因此编辑即使落在折叠内部，也只需重排它所在的合并行。
 /// 批次要求整体重建时返回 None，调用方回退到整份重建。
 fn linear_fold_edit(
-    batch: &TextChangeBatch,
+    edits: &[FoldBufferEdit],
     old_buffer: &MultiBufferSnapshot,
     new_buffer: &MultiBufferSnapshot,
     old_spans: &[Range<usize>],
     new_spans: &[Range<usize>],
 ) -> Option<FoldEdit> {
-    if batch.requires_reset() {
-        return None;
-    }
     let mut old_rows: Option<Range<usize>> = None;
     let mut new_rows: Option<Range<usize>> = None;
-    for edit in batch.patch().edits() {
-        let old_start = old_buffer
-            .byte_to_line(edit.old_range().start().into())
-            .ok()?
-            .get();
-        let old_end = old_buffer
-            .byte_to_line(edit.old_range().end().into())
-            .ok()?
-            .get()
-            + 1;
-        let new_start = new_buffer
-            .byte_to_line(edit.new_range().start().into())
-            .ok()?
-            .get();
-        let new_end = new_buffer
-            .byte_to_line(edit.new_range().end().into())
-            .ok()?
-            .get()
-            + 1;
+    for edit in edits {
+        let old_start = old_buffer.byte_to_line(edit.old.start).ok()?.get();
+        let old_end = old_buffer.byte_to_line(edit.old.end).ok()?.get() + 1;
+        let new_start = new_buffer.byte_to_line(edit.new.start).ok()?.get();
+        let new_end = new_buffer.byte_to_line(edit.new.end).ok()?.get() + 1;
         old_rows = Some(merge_row_range(old_rows, old_start..old_end));
         new_rows = Some(merge_row_range(new_rows, new_start..new_end));
     }
@@ -1135,18 +1080,16 @@ fn hidden_before(spans: &[Range<usize>], row: usize) -> usize {
 }
 
 fn inline_fold_edits(
-    batch: &TextChangeBatch,
-    stream: &LineStream,
+    edits: &[FoldBufferEdit],
+    inlay: &InlaySnapshot,
     folds: &SumTree<Fold>,
 ) -> Vec<FoldEdit> {
-    batch
-        .patch()
-        .edits()
+    edits
         .iter()
         .filter_map(|edit| {
-            let buffer = stream.buffer_snapshot();
-            let start = buffer.byte_to_line(edit.new_range().start().into()).ok()?;
-            let end = buffer.byte_to_line(edit.new_range().end().into()).ok()?;
+            let buffer = inlay.buffer_snapshot();
+            let start = buffer.byte_to_line(edit.new.start).ok()?;
+            let end = buffer.byte_to_line(edit.new.end).ok()?;
             // changed_lines 是流行号（下游缓存失效按流行）。
             //
             // 折叠覆盖行（anchor 与 close 之间的隐藏行、close 行）的编辑映射到最外层折叠的 anchor 行：
@@ -1154,7 +1097,7 @@ fn inline_fold_edits(
             // anchor 行自身可见，其编辑已在行列表中，不映射。
             let changed_lines = (start.get()..=end.get())
                 .map(|line| {
-                    let stream_line = stream.buffer_to_stream(Line::new(line));
+                    let stream_line = Line::new(line);
                     folds
                         .iter()
                         .filter(|fold| {
@@ -1162,9 +1105,7 @@ fn inline_fold_edits(
                             span_start.get() < line && line <= span_end.get()
                         })
                         .min_by_key(|fold| fold.line_span.0)
-                        .map_or(stream_line, |fold| {
-                            stream.buffer_to_stream(fold.line_span.0)
-                        })
+                        .map_or(stream_line, |fold| fold.line_span.0)
                 })
                 .collect();
             Some(FoldEdit {
@@ -1198,8 +1139,9 @@ fn ranges_disjoint_or_nested(left: MultiBufferRange, right: MultiBufferRange) ->
 
 #[cfg(test)]
 mod tests {
-    use zcv_text::{Buffer, BufferConfig, Edit, TransactionMetadata};
+    use zcv_text::{Buffer, BufferConfig, Edit, TextSubscription, TransactionMetadata};
 
+    use super::super::buffer_edits_from_batch;
     use super::super::error::DisplayMapError;
     use super::super::inlay_map::InlayMap;
     use super::*;
@@ -1208,11 +1150,29 @@ mod tests {
         MultiBufferRange::new(MultiBufferOffset::new(start), MultiBufferOffset::new(end)).unwrap()
     }
 
+    impl FoldMap {
+        /// 测试辅助：把订阅者批次换算成 InlayEdit，再推进 fold 层。
+        fn read_test(
+            &mut self,
+            buffer: &Buffer,
+            subscription: &TextSubscription,
+        ) -> (FoldSnapshot, Vec<FoldEdit>) {
+            let new_snapshot: MultiBufferSnapshot = buffer.snapshot().into();
+            let old_snapshot = self.snapshot.buffer_snapshot().clone();
+            let batch = subscription.consume();
+            let buffer_edits = buffer_edits_from_batch(&batch, &old_snapshot, &new_snapshot);
+            let mut inlay_map = InlayMap::new(old_snapshot).0;
+            let (inlay_snapshot, inlay_edits) =
+                inlay_map.sync(new_snapshot, buffer_edits, Vec::new());
+            self.read(inlay_snapshot, inlay_edits)
+        }
+    }
+
     #[test]
     fn projected_kind_rejects_the_end_boundary() {
         let buffer = Buffer::from_text("first\nsecond".to_string(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
-        let (_, snapshot) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        let (_, snapshot) = FoldMap::new(InlayMap::new(buffer.snapshot().into()).1);
 
         assert!(
             snapshot
@@ -1228,7 +1188,7 @@ mod tests {
             BufferConfig::default(),
         )
         .expect("测试 Buffer 应能创建");
-        let (mut map, before) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        let (mut map, before) = FoldMap::new(InlayMap::new(buffer.snapshot().into()).1);
         let (after, edits) = map.write().fold(text_range(6, 21)).unwrap();
 
         assert_eq!(before.line_count(), 4);
@@ -1246,7 +1206,7 @@ mod tests {
     fn folding_a_middle_range_emits_a_localized_structural_edit() {
         let buffer = Buffer::from_text("a\nb\nc\nd\ne\nf\n".to_string(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
-        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        let (mut map, _) = FoldMap::new(InlayMap::new(buffer.snapshot().into()).1);
         let (after, edits) = map.write().fold(text_range(2, 7)).unwrap();
 
         assert_eq!(after.line_count(), 5);
@@ -1261,7 +1221,7 @@ mod tests {
     fn unfolding_a_middle_fold_restores_only_its_rows() {
         let buffer = Buffer::from_text("a\nb\nc\nd\ne\nf\n".to_string(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
-        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        let (mut map, _) = FoldMap::new(InlayMap::new(buffer.snapshot().into()).1);
         map.write().fold(text_range(2, 7)).unwrap();
         let (after, edits) = map
             .write()
@@ -1278,7 +1238,7 @@ mod tests {
     #[test]
     fn fold_writer_rejects_partial_overlap_but_accepts_nesting() {
         let buffer = Buffer::from_text("abcdef".to_string(), BufferConfig::default()).unwrap();
-        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        let (mut map, _) = FoldMap::new(InlayMap::new(buffer.snapshot().into()).1);
         map.write().fold(text_range(1, 5)).unwrap();
         map.write().fold(text_range(2, 4)).unwrap();
 
@@ -1294,7 +1254,7 @@ mod tests {
     fn unfolding_outer_fold_reveals_the_nested_transform() {
         let buffer =
             Buffer::from_text("a\nb\nc\nd\ne".to_string(), BufferConfig::default()).unwrap();
-        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        let (mut map, _) = FoldMap::new(InlayMap::new(buffer.snapshot().into()).1);
         map.write().fold(text_range(1, 7)).unwrap();
         map.write().fold(text_range(3, 5)).unwrap();
         let outer = map
@@ -1317,7 +1277,7 @@ mod tests {
         let mut buffer =
             Buffer::from_text("anchor\nhidden\nafter".to_string(), BufferConfig::default())
                 .unwrap();
-        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        let (mut map, _) = FoldMap::new(InlayMap::new(buffer.snapshot().into()).1);
         map.write().fold(text_range(6, 13)).unwrap();
         let transforms = map.snapshot.transforms.clone();
         let subscription = buffer.subscribe();
@@ -1328,11 +1288,7 @@ mod tests {
             )
             .unwrap();
 
-        let (snapshot, edits, outcome) = map.read(
-            InlayMap::new(LineStream::new(buffer.snapshot())).1,
-            &subscription.consume(),
-        );
-        assert_eq!(outcome, ApplyOutcome::Compatible);
+        let (snapshot, edits) = map.read_test(&buffer, &subscription);
         assert_eq!(snapshot.transforms, transforms);
         assert_eq!(snapshot.folds.summary().count, 1);
         assert!(edits.iter().all(|edit| !edit.is_structural()));
@@ -1343,7 +1299,7 @@ mod tests {
         let mut buffer =
             Buffer::from_text("anchor\nhidden\nafter".to_string(), BufferConfig::default())
                 .unwrap();
-        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        let (mut map, _) = FoldMap::new(InlayMap::new(buffer.snapshot().into()).1);
         map.write().fold(text_range(6, 13)).unwrap();
         let subscription = buffer.subscribe();
         buffer
@@ -1353,11 +1309,7 @@ mod tests {
             )
             .unwrap();
 
-        let (snapshot, edits, outcome) = map.read(
-            InlayMap::new(LineStream::new(buffer.snapshot())).1,
-            &subscription.consume(),
-        );
-        assert_eq!(outcome, ApplyOutcome::Spliced);
+        let (snapshot, edits) = map.read_test(&buffer, &subscription);
         // 折叠内部插入整行：隐藏行数随之变化，tab 行数不变；只有合并行需要重排。
         assert_eq!(snapshot.line_count(), 2);
         let edit = &edits[0];
@@ -1371,7 +1323,7 @@ mod tests {
         let mut buffer =
             Buffer::from_text("anchor\nhidden\nafter".to_string(), BufferConfig::default())
                 .unwrap();
-        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        let (mut map, _) = FoldMap::new(InlayMap::new(buffer.snapshot().into()).1);
         map.write().fold(text_range(6, 13)).unwrap();
         let subscription = buffer.subscribe();
         buffer
@@ -1381,11 +1333,7 @@ mod tests {
             )
             .unwrap();
 
-        let (snapshot, edits, outcome) = map.read(
-            InlayMap::new(LineStream::new(buffer.snapshot())).1,
-            &subscription.consume(),
-        );
-        assert_eq!(outcome, ApplyOutcome::Spliced);
+        let (snapshot, edits) = map.read_test(&buffer, &subscription);
         assert_eq!(
             snapshot.logical_line_count(),
             buffer.snapshot().line_count()
@@ -1396,7 +1344,7 @@ mod tests {
     fn newline_edit_outside_folds_emits_a_localized_structural_edit() {
         let mut buffer =
             Buffer::from_text("a\nb\nc\nd\ne\nf\n".to_string(), BufferConfig::default()).unwrap();
-        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        let (mut map, _) = FoldMap::new(InlayMap::new(buffer.snapshot().into()).1);
         let subscription = buffer.subscribe();
         // 在未折叠区域插入换行：只应重排该行附近的 tab 行，而不是整份文档。
         buffer
@@ -1406,11 +1354,7 @@ mod tests {
             )
             .unwrap();
 
-        let (snapshot, edits, outcome) = map.read(
-            InlayMap::new(LineStream::new(buffer.snapshot())).1,
-            &subscription.consume(),
-        );
-        assert_eq!(outcome, ApplyOutcome::Spliced);
+        let (snapshot, edits) = map.read_test(&buffer, &subscription);
         assert_eq!(snapshot.line_count(), 8);
         let edit = &edits[0];
         assert!(edit.is_structural());
@@ -1423,7 +1367,7 @@ mod tests {
         let mut buffer =
             Buffer::from_text("anchor\nhidden\nafter".to_string(), BufferConfig::default())
                 .unwrap();
-        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        let (mut map, _) = FoldMap::new(InlayMap::new(buffer.snapshot().into()).1);
         map.write().fold(text_range(6, 13)).unwrap();
         let subscription = buffer.subscribe();
         buffer
@@ -1433,10 +1377,7 @@ mod tests {
             )
             .unwrap();
 
-        let (snapshot, _, _) = map.read(
-            InlayMap::new(LineStream::new(buffer.snapshot())).1,
-            &subscription.consume(),
-        );
+        let (snapshot, _) = map.read_test(&buffer, &subscription);
         assert_eq!(snapshot.folds.summary().count, 0);
         assert_eq!(
             snapshot.line_count(),
@@ -1452,7 +1393,7 @@ mod tests {
             BufferConfig::default(),
         )
         .unwrap();
-        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        let (mut map, _) = FoldMap::new(InlayMap::new(buffer.snapshot().into()).1);
         // range = [行 0 换行符(8), `}`(15))。
         let (snapshot, _) = map.write().fold(text_range(8, 15)).unwrap();
 
@@ -1475,7 +1416,7 @@ mod tests {
         let mut buffer =
             Buffer::from_text("anchor\nhidden\nafter".to_string(), BufferConfig::default())
                 .unwrap();
-        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        let (mut map, _) = FoldMap::new(InlayMap::new(buffer.snapshot().into()).1);
         map.write().fold(text_range(6, 13)).unwrap();
         let fold_range = map.snapshot.folds.iter().next().unwrap().text_range();
         // 折叠起点 = anchor 行换行符位置（6）。
@@ -1487,10 +1428,7 @@ mod tests {
                 TransactionMetadata::default(),
             )
             .unwrap();
-        let (snapshot, _, _) = map.read(
-            InlayMap::new(LineStream::new(buffer.snapshot())).1,
-            &subscription.consume(),
-        );
+        let (snapshot, _) = map.read_test(&buffer, &subscription);
         // 起点插入在折叠外：折叠范围随插入右移，anchor 行文本变为 "anchorX"。
         let moved = snapshot.folds.iter().next().unwrap().text_range();
         assert_eq!(moved.start().get(), 7);
@@ -1503,7 +1441,7 @@ mod tests {
         let mut buffer =
             Buffer::from_text("anchor\nhidden\nafter".to_string(), BufferConfig::default())
                 .unwrap();
-        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        let (mut map, _) = FoldMap::new(InlayMap::new(buffer.snapshot().into()).1);
         map.write().fold(text_range(6, 13)).unwrap();
         // 编辑落在隐藏行（行 1）与 close 行（行 2）：changed_lines 都映射到 anchor 行（行 0）。
         let subscription = buffer.subscribe();
@@ -1513,18 +1451,14 @@ mod tests {
                 TransactionMetadata::default(),
             )
             .unwrap();
-        let (_, edits, outcome) = map.read(
-            InlayMap::new(LineStream::new(buffer.snapshot())).1,
-            &subscription.consume(),
-        );
-        assert_eq!(outcome, ApplyOutcome::Compatible);
+        let (_, edits) = map.read_test(&buffer, &subscription);
         assert_eq!(edits[0].changed_lines(), &[Line::ZERO]);
     }
 
     #[test]
     fn folded_points_map_through_anchor_in_both_directions() {
         let buffer = Buffer::from_text("a\nb\nc\nd".to_string(), BufferConfig::default()).unwrap();
-        let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
+        let (mut map, _) = FoldMap::new(InlayMap::new(buffer.snapshot().into()).1);
         let (snapshot, _) = map.write().fold(text_range(1, 5)).unwrap();
 
         // 折叠段不产生投影行：行数 = 4 - 2 隐藏 = 2。

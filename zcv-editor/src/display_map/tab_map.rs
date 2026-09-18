@@ -19,7 +19,6 @@ use super::display_width::{DisplayColumn, char_width};
 use super::{
     error::DisplayMapResult,
     fold_map::{FoldEdit, FoldSnapshot, ProjectedLineIndex, StreamProjectedKind},
-    line_stream::LineStream,
 };
 
 #[derive(Debug, Clone)]
@@ -40,10 +39,6 @@ impl TabSnapshot {
 
     pub(crate) fn tab_width(&self) -> NonZeroUsize {
         self.tab_width
-    }
-
-    pub(crate) fn stream(&self) -> &LineStream {
-        self.fold_snapshot.stream()
     }
 
     pub(super) fn buffer_snapshot(&self) -> &MultiBufferSnapshot {
@@ -83,11 +78,8 @@ impl TabSnapshot {
         let projected = ProjectedLineIndex::new(line.get());
         if let Some(anchor_stream) = fold.fold_row_anchor_stream_line(projected) {
             // 合并行：anchor 行行首的伪坐标，roundtrip 不可逆。
-            let buffer_line = fold.inlay_snapshot().source(anchor_stream)?.line();
-            let start = fold
-                .buffer_snapshot()
-                .line_start_byte(Line::new(buffer_line))
-                .ok()?;
+            let buffer_line = fold.inlay_snapshot().source(anchor_stream)?;
+            let start = fold.buffer_snapshot().line_start_byte(buffer_line).ok()?;
             return Some(start..start);
         }
         let inlay = fold.inlay_snapshot();
@@ -97,11 +89,8 @@ impl TabSnapshot {
 
     /// 投影行 → 流行号（坐标换算用）。
     pub(super) fn stream_line_for_projected(&self, line: Line) -> Option<Line> {
-        let inlay = self.fold_snapshot.inlay_snapshot();
         match self.projected_kind(line)? {
-            StreamProjectedKind::Text(source) => {
-                Some(inlay.stream().buffer_to_stream(Line::new(source.line())))
-            }
+            StreamProjectedKind::Text(source) => Some(source),
         }
     }
 
@@ -128,6 +117,10 @@ impl TabMap {
             },
             snapshot,
         )
+    }
+
+    pub(super) fn snapshot(&self) -> &TabSnapshot {
+        &self.snapshot
     }
 
     pub(super) fn sync(

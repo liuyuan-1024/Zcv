@@ -1,18 +1,34 @@
 //! 文件内搜索：SearchableItem 实现（搜索/跳转/替换/编辑后自动重搜）。
 
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot};
 
-use gpui::{TestAppContext, VisualTestContext};
+use gpui::{AppContext, TestAppContext, VisualTestContext};
 use zcv_project::SearchQuery;
-use zcv_text::{Buffer, Line};
+use zcv_text::Buffer;
 use zcv_theme::color;
 use zcv_workspace::{Direction, SearchableItem};
 
 use super::common::test_buffer;
 use super::*;
 use crate::display_map::{
-    ChunkSource, ChunkText, DisplayMap, DisplayRow, HighlightStyles, WrapChunks, WrapRowKind,
+    ChunkSource, ChunkText, DisplayMap, DisplayRow, DisplaySnapshot, HighlightStyles, WrapChunks,
+    WrapRowKind,
 };
+
+fn new_display_map(
+    cx: &mut impl AppContext,
+    snapshot: impl Into<MultiBufferSnapshot>,
+) -> Entity<DisplayMap> {
+    cx.new(|cx| DisplayMap::new(snapshot, cx))
+}
+
+fn project_display_snapshot(
+    cx: &mut impl AppContext,
+    snapshot: impl Into<MultiBufferSnapshot>,
+) -> DisplaySnapshot {
+    let map = new_display_map(cx, snapshot);
+    cx.read_entity(&map, |map, _| map.snapshot())
+}
 
 fn editor_with_text<'a>(
     cx: &'a mut TestAppContext,
@@ -334,7 +350,7 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
             editor.search(&query("abc"), window, cx);
         });
         let engine_snapshot = editor.read(cx).render_snapshot();
-        let display = DisplayMap::new(engine_snapshot.clone()).snapshot();
+        let display = project_display_snapshot(cx, engine_snapshot.clone());
         let mut cursor = display.rows(DisplayRow::new(0), 1);
         let viewport: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
         // 与 element.rs 相同的背景层构建。
@@ -373,9 +389,7 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
             .tab_snapshot()
             .fold_snapshot()
             .inlay_snapshot();
-        let stream_line = inlay_snapshot
-            .stream()
-            .buffer_to_stream(Line::new(source.line()));
+        let stream_line = *source;
         let tab_width = display.tab_width().get();
         let rendered: Vec<_> = WrapChunks::new(
             ChunkSource {
@@ -412,7 +426,7 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
             editor.search(&query("abc"), window, cx);
         });
         let engine_snapshot = editor.read(cx).render_snapshot();
-        let display = DisplayMap::new(engine_snapshot.clone()).snapshot();
+        let display = project_display_snapshot(cx, engine_snapshot.clone());
         // 渲染全部 4 行，统计带背景的 chunk。
         let search_highlights = editor.read(cx).search_highlights().unwrap();
         let colors = color::current(cx);
@@ -452,9 +466,7 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
                     .tab_snapshot()
                     .fold_snapshot()
                     .inlay_snapshot();
-                let stream_line = inlay_snapshot
-                    .stream()
-                    .buffer_to_stream(Line::new(source.line()));
+                let stream_line = *source;
                 let tab_width = display.tab_width().get();
                 let rendered: Vec<_> = WrapChunks::new(
                     ChunkSource {
@@ -523,7 +535,7 @@ zcv final
         });
         // 用 zcv-text 快照构造 DisplayMap（与 element 渲染相同路径）。
         let snapshot = editor.read(cx).render_snapshot();
-        let display = DisplayMap::new(snapshot.clone()).snapshot();
+        let display = project_display_snapshot(cx, snapshot.clone());
         let line_count = display.line_count();
         let search_highlights = editor.read(cx).search_highlights().unwrap();
         assert_eq!(
@@ -573,9 +585,7 @@ zcv final
                     .tab_snapshot()
                     .fold_snapshot()
                     .inlay_snapshot();
-                let stream_line = inlay_snapshot
-                    .stream()
-                    .buffer_to_stream(Line::new(source.line()));
+                let stream_line = *source;
                 let tab_width = display.tab_width().get();
                 let highlight_styles = display.highlight_styles();
                 let rendered: Vec<_> = WrapChunks::new(

@@ -9,10 +9,13 @@
 
 use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
 
+use std::collections::VecDeque;
+use std::mem;
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Duration;
 
-use gpui::{Font, Pixels, TextRun, TextSystem, WindowTextSystem};
+use gpui::{AppContext as _, Context, Font, Pixels, Task, TextRun, TextSystem, WindowTextSystem};
 use sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use unicode_segmentation::UnicodeSegmentation;
 use zcv_multi_buffer::MultiBufferSnapshot;
@@ -25,9 +28,8 @@ use super::fold_map::{
     FoldBias, FoldEdit, FoldRowSegment, FoldRowSegmentKind, LogicalPoint, LogicalProjection,
     LogicalRange, ProjectedLineIndex, ProjectedPoint, ProjectedRange, StreamProjectedKind,
 };
-use super::line_stream::StreamLineSource;
 use super::tab_map::{TabSnapshot, advance_display_column, byte_for_display_column, line_content};
-use super::{DisplayPoint, DisplayRow};
+use super::{WrapPoint, WrapRow};
 
 /// 换行点：行内容（已剥 `\r\n`）内的半开字节分界与下一续行的假空格数。
 ///
@@ -147,7 +149,7 @@ pub(super) struct WrapFragment {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WrapFragmentKind {
     /// 文本行（携带对应的 buffer 行来源）。
-    Text(StreamLineSource),
+    Text(Line),
 }
 
 /// Wrap 层输出的行元数据。
@@ -157,7 +159,7 @@ pub(super) enum WrapFragmentKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WrapRowKind {
     Text {
-        source: StreamLineSource,
+        source: Line,
         projected_line: usize,
         byte_range: Range<usize>,
         global_byte_start: usize,
@@ -235,6 +237,8 @@ pub(crate) struct WrapSnapshot {
     transforms: SumTree<Transform>,
     /// 是否处于软换行模式（false = 透传，显示行 == tab 行）。
     wrapped: bool,
+    /// 是否只是按编辑急切插值、尚未经过真实 shaping 重排（由后台任务补齐）。
+    interpolated: bool,
     version: u64,
 }
 
@@ -256,43 +260,119 @@ impl WrapSnapshot {
         self.transforms.summary().output_rows
     }
 
+    /// 按编辑急切插值：结构编辑区间用 isomorphic 段占位，不重新 shaping。
+    ///
+    /// 后台重排完成前，变换树仍与新的 tab 行数保持一致；interpolated 标记它尚未真实测量。
+    fn interpolate(
+        &mut self,
+        new_tab_snapshot: TabSnapshot,
+        fold_edits: &[FoldEdit],
+    ) -> Vec<WrapEdit> {
+        let mut structural: Vec<(Range<usize>, Range<usize>)> = fold_edits
+            .iter()
+            .filter(|edit| edit.is_structural())
+            .map(|edit| (edit.old_rows(), edit.new_rows()))
+            .collect();
+        if structural.is_empty() {
+            self.tab_snapshot = new_tab_snapshot;
+            self.interpolated = true;
+            self.version += 1;
+            return Vec::new();
+        }
+        structural.sort_by_key(|(old_rows, _)| old_rows.start);
+
+        let measure = self.transforms.clone();
+        let old_transforms = mem::replace(&mut self.transforms, SumTree::new(()));
+        let mut cursor = old_transforms.cursor::<InputLines>(());
+        let mut new_tree = SumTree::new(());
+        let mut buffered = Vec::new();
+        let mut old_ranges = Vec::with_capacity(structural.len());
+        let mut measured = Vec::with_capacity(structural.len());
+        for (old_rows, new_rows) in &structural {
+            new_tree.append(cursor.slice(&InputLines(old_rows.start), Bias::Left), ());
+            if let Some(transform) = cursor.item() {
+                let transform_start = cursor.start().0;
+                if transform_start < old_rows.start {
+                    push_transform_slice(
+                        &mut buffered,
+                        transform,
+                        old_rows.start - transform_start,
+                    );
+                }
+            }
+            let mut tail: Option<Transform> = None;
+            while let Some(transform) = cursor.item() {
+                let transform_start = cursor.start().0;
+                if transform_start >= old_rows.end {
+                    break;
+                }
+                let transform_end = transform_start + transform.input_lines;
+                if transform_end > old_rows.end {
+                    tail = Some(if transform.kind == TransformKind::Isomorphic {
+                        Transform::isomorphic(transform_end - old_rows.end)
+                    } else {
+                        transform.clone()
+                    });
+                    cursor.next();
+                    break;
+                }
+                cursor.next();
+            }
+            // 急切插值：新行按 isomorphic 占位，等待后台真实重排。
+            push_isomorphic(&mut buffered, new_rows.len());
+            old_ranges.push(old_rows.clone());
+            measured.push(new_rows.len());
+            if let Some(tail) = tail {
+                buffered.push(tail);
+            }
+            new_tree.extend(buffered.drain(..), ());
+        }
+        new_tree.append(cursor.suffix(), ());
+        self.transforms = new_tree;
+        self.tab_snapshot = new_tab_snapshot;
+        self.wrapped = true;
+        self.interpolated = true;
+        self.version += 1;
+        wrap_edits(&measure, &old_ranges, &measured)
+    }
+
     /// 返回 Wrap 投影行对应的 Tab 投影行。
     ///
     /// 一个 Tab 投影行可能被软换行拆成多个 Wrap 行，因此调用方不能把 Wrap 行号直接当作 Tab 行号使用。
-    pub(super) fn tab_row_for_wrap_row(&self, row: DisplayRow) -> DisplayMapResult<Line> {
-        Ok(Line::new(self.display_row_to_fragment(row)?.tab_row))
+    pub(super) fn tab_row_for_wrap_row(&self, row: WrapRow) -> DisplayMapResult<Line> {
+        Ok(Line::new(self.wrap_row_to_fragment(row)?.tab_row))
     }
 
     pub(super) fn is_wrapped(&self) -> bool {
         self.wrapped
     }
 
-    pub(super) fn offset_to_display_point(
+    pub(super) fn offset_to_wrap_point(
         &self,
         offset: MultiBufferOffset,
-    ) -> DisplayMapResult<DisplayPoint> {
+    ) -> DisplayMapResult<WrapPoint> {
         let position = self
             .tab_snapshot
             .buffer_snapshot()
             .byte_to_position(offset)?;
         // fold 拓扑的输入坐标是流行号。
-        let stream_line = self.tab_snapshot.stream().buffer_to_stream(position.line());
-        self.logical_point_to_display_point(stream_line, position.column())
+        let stream_line = position.line();
+        self.logical_point_to_wrap_point(stream_line, position.column())
     }
 
-    pub(super) fn display_point_to_offset(
+    pub(super) fn wrap_point_to_offset(
         &self,
-        point: DisplayPoint,
+        point: WrapPoint,
     ) -> DisplayMapResult<MultiBufferOffset> {
-        self.display_point_to_offset_with_bias(point, FoldBias::Left)
+        self.wrap_point_to_offset_with_bias(point, FoldBias::Left)
     }
 
-    pub(super) fn display_point_to_offset_with_bias(
+    pub(super) fn wrap_point_to_offset_with_bias(
         &self,
-        point: DisplayPoint,
+        point: WrapPoint,
         bias: FoldBias,
     ) -> DisplayMapResult<MultiBufferOffset> {
-        let fragment = self.display_row_to_fragment(point.row())?;
+        let fragment = self.wrap_row_to_fragment(point.row())?;
         match fragment.kind {
             WrapFragmentKind::Text(_source) => {
                 let tab_row = Line::new(fragment.tab_row);
@@ -546,8 +626,8 @@ impl WrapSnapshot {
         &self,
         offset: MultiBufferOffset,
     ) -> DisplayMapResult<MultiBufferOffset> {
-        let point = self.offset_to_display_point(offset)?;
-        self.display_point_to_offset(DisplayPoint::new(point.row(), DisplayColumn::ZERO))
+        let point = self.offset_to_wrap_point(offset)?;
+        self.wrap_point_to_offset(WrapPoint::new(point.row(), DisplayColumn::ZERO))
     }
 
     /// 光标所在的显示行行尾（本段末尾，不含换行符）对应的字节偏移。
@@ -555,8 +635,8 @@ impl WrapSnapshot {
         &self,
         offset: MultiBufferOffset,
     ) -> DisplayMapResult<MultiBufferOffset> {
-        let point = self.offset_to_display_point(offset)?;
-        let fragment = self.display_row_to_fragment(point.row())?;
+        let point = self.offset_to_wrap_point(offset)?;
+        let fragment = self.wrap_row_to_fragment(point.row())?;
         match fragment.kind {
             WrapFragmentKind::Text(_source) => {
                 let tab_row = Line::new(fragment.tab_row);
@@ -590,7 +670,7 @@ impl WrapSnapshot {
     }
 
     /// 显示行 → (tab 行, 片段信息)。
-    fn display_row_to_fragment(&self, row: DisplayRow) -> DisplayMapResult<WrapFragment> {
+    fn wrap_row_to_fragment(&self, row: WrapRow) -> DisplayMapResult<WrapFragment> {
         let (start, _, transform) =
             self.transforms
                 .find::<OutputToInput, _>((), &OutputRows(row.get()), Bias::Right);
@@ -639,16 +719,16 @@ impl WrapSnapshot {
     }
 
     /// 逻辑行内的点 → 显示点；列 = 显示行内 display column（含假空格缩进）。
-    fn logical_point_to_display_point(
+    fn logical_point_to_wrap_point(
         &self,
         line: Line,
         column: LogicalColumn,
-    ) -> DisplayMapResult<DisplayPoint> {
+    ) -> DisplayMapResult<WrapPoint> {
         let fold = self.tab_snapshot.fold_snapshot();
         // 隐藏点吸附折叠起点列（光标在折叠内的默认落点）。
         let point =
             fold.logical_to_projected_point(LogicalPoint::new(line, column), FoldBias::Left)?;
-        self.projected_point_to_display_point(point)
+        self.projected_point_to_wrap_point(point)
     }
 
     /// 投影点（tab 行 + 逻辑列）→ 显示点。
@@ -683,7 +763,7 @@ impl WrapSnapshot {
             .ok_or(CoordinateError::LineOutOfBounds(line))?;
         let inlay = fold.inlay_snapshot();
         let buffer_line = match inlay.source(stream_line) {
-            Some(source) => Line::new(source.line()),
+            Some(source) => source,
             _ => return Err(CoordinateError::LineOutOfBounds(line).into()),
         };
         let target_byte = buffer
@@ -693,10 +773,7 @@ impl WrapSnapshot {
         Ok(inlay.to_projected_offset(stream_line, target_byte))
     }
 
-    fn projected_point_to_display_point(
-        &self,
-        point: ProjectedPoint,
-    ) -> DisplayMapResult<DisplayPoint> {
+    fn projected_point_to_wrap_point(&self, point: ProjectedPoint) -> DisplayMapResult<WrapPoint> {
         let tab_row = point.line().get();
         let line = Line::new(tab_row);
         // 投影文本（含行内提示注入）；目标列 → 行内投影字节。
@@ -729,8 +806,8 @@ impl WrapSnapshot {
             .fold(indent, |column, grapheme| {
                 advance_display_column(column, grapheme, self.tab_snapshot().tab_width().get())
             });
-        Ok(DisplayPoint::new(
-            DisplayRow::new(output_start + fragment_index),
+        Ok(WrapPoint::new(
+            WrapRow::new(output_start + fragment_index),
             DisplayColumn::new(column),
         ))
     }
@@ -751,7 +828,7 @@ impl WrapSnapshot {
     fn projected_point_to_range_point(
         &self,
         point: ProjectedPoint,
-    ) -> DisplayMapResult<(DisplayRow, usize)> {
+    ) -> DisplayMapResult<(WrapRow, usize)> {
         let tab_row = point.line().get();
         let line = Line::new(tab_row);
         let buffer = self.tab_snapshot.buffer_snapshot();
@@ -802,7 +879,7 @@ impl WrapSnapshot {
                 .map_or(0, |position| position.column().get())
         };
         Ok((
-            DisplayRow::new(output_start + fragment_index),
+            WrapRow::new(output_start + fragment_index),
             indent + (point.column().get() - column_base),
         ))
     }
@@ -852,6 +929,196 @@ pub(super) struct WrapEdit {
     pub(super) new: Range<usize>,
 }
 
+impl WrapEdit {
+    fn old_len(&self) -> usize {
+        self.old.end - self.old.start
+    }
+
+    fn new_len(&self) -> usize {
+        self.new.end - self.new.start
+    }
+}
+
+/// 显示行坐标上的组合 Patch：把「旧 → 中间」「中间 → 新」两段编辑组合成「旧 → 新」。
+///
+/// 与 zcv-text 的文本 Patch 使用同一组合算法，只是坐标空间换成换行输出行号。
+/// WrapMap 用它记录后台重排期间的急切插值编辑，真实重排落地时先反转再组合，
+/// 使 edits_since_sync 始终是从上次对外快照到当前真实快照的净编辑。
+#[derive(Debug, Default)]
+struct WrapPatch {
+    edits: Vec<WrapEdit>,
+}
+
+impl WrapPatch {
+    fn new(edits: Vec<WrapEdit>) -> Self {
+        Self { edits }
+    }
+
+    fn iter(&self) -> std::slice::Iter<'_, WrapEdit> {
+        self.edits.iter()
+    }
+
+    fn clear(&mut self) {
+        self.edits.clear();
+    }
+
+    fn into_inner(self) -> Vec<WrapEdit> {
+        self.edits
+    }
+
+    fn invert(&mut self) -> &mut Self {
+        for edit in &mut self.edits {
+            std::mem::swap(&mut edit.old, &mut edit.new);
+        }
+        self
+    }
+
+    fn compose(&self, next: impl IntoIterator<Item = WrapEdit>) -> Self {
+        let mut old = self.edits.iter().cloned().peekable();
+        let mut next = next.into_iter().peekable();
+        let mut composed = Vec::new();
+        let mut old_position = 0usize;
+        let mut new_position = 0usize;
+
+        loop {
+            let old_edit = old.peek_mut();
+            let next_edit = next.peek_mut();
+
+            if let Some(edit) = old_edit.as_ref()
+                && next_edit
+                    .as_ref()
+                    .is_none_or(|next| edit.new.end < next.old.start)
+            {
+                let unchanged = edit.old.start - old_position;
+                old_position += unchanged;
+                new_position += unchanged;
+                push_wrap_edit(
+                    &mut composed,
+                    WrapEdit {
+                        old: old_position..old_position + edit.old_len(),
+                        new: new_position..new_position + edit.new_len(),
+                    },
+                );
+                old_position += edit.old_len();
+                new_position += edit.new_len();
+                old.next();
+                continue;
+            }
+
+            if let Some(edit) = next_edit.as_ref()
+                && old_edit
+                    .as_ref()
+                    .is_none_or(|old| edit.old.end < old.new.start)
+            {
+                let unchanged = edit.new.start - new_position;
+                old_position += unchanged;
+                new_position += unchanged;
+                push_wrap_edit(
+                    &mut composed,
+                    WrapEdit {
+                        old: old_position..old_position + edit.old_len(),
+                        new: new_position..new_position + edit.new_len(),
+                    },
+                );
+                old_position += edit.old_len();
+                new_position += edit.new_len();
+                next.next();
+                continue;
+            }
+
+            let Some((old_edit, next_edit)) = old_edit.zip(next_edit) else {
+                break;
+            };
+
+            if old_edit.new.start < next_edit.old.start {
+                let unchanged = old_edit.old.start - old_position;
+                old_position += unchanged;
+                new_position += unchanged;
+                let overlap_offset = next_edit.old.start - old_edit.new.start;
+                let old_end = (old_position + overlap_offset).min(old_edit.old.end);
+                let new_end = new_position + overlap_offset;
+                push_wrap_edit(
+                    &mut composed,
+                    WrapEdit {
+                        old: old_position..old_end,
+                        new: new_position..new_end,
+                    },
+                );
+                old_edit.old.start = old_end;
+                old_edit.new.start += overlap_offset;
+                old_position = old_end;
+                new_position = new_end;
+            } else {
+                let unchanged = next_edit.new.start - new_position;
+                old_position += unchanged;
+                new_position += unchanged;
+                let overlap_offset = old_edit.new.start - next_edit.old.start;
+                let old_end = old_position + overlap_offset;
+                let new_end = (new_position + overlap_offset).min(next_edit.new.end);
+                push_wrap_edit(
+                    &mut composed,
+                    WrapEdit {
+                        old: old_position..old_end,
+                        new: new_position..new_end,
+                    },
+                );
+                next_edit.old.start += overlap_offset;
+                next_edit.new.start = new_end;
+                old_position = old_end;
+                new_position = new_end;
+            }
+
+            if old_edit.new.end > next_edit.old.end {
+                let old_end = old_position + old_edit.old_len().min(next_edit.old_len());
+                let new_end = new_position + next_edit.new_len();
+                push_wrap_edit(
+                    &mut composed,
+                    WrapEdit {
+                        old: old_position..old_end,
+                        new: new_position..new_end,
+                    },
+                );
+                old_edit.old.start = old_end;
+                old_edit.new.start = next_edit.old.end;
+                old_position = old_end;
+                new_position = new_end;
+                next.next();
+            } else {
+                let old_end = old_position + old_edit.old_len();
+                let new_end = new_position + old_edit.new_len().min(next_edit.new_len());
+                push_wrap_edit(
+                    &mut composed,
+                    WrapEdit {
+                        old: old_position..old_end,
+                        new: new_position..new_end,
+                    },
+                );
+                next_edit.old.start = old_edit.new.end;
+                next_edit.new.start = new_end;
+                old_position = old_end;
+                new_position = new_end;
+                old.next();
+            }
+        }
+
+        Self { edits: composed }
+    }
+}
+
+fn push_wrap_edit(edits: &mut Vec<WrapEdit>, edit: WrapEdit) {
+    if edit.old.is_empty() && edit.new.is_empty() {
+        return;
+    }
+    if let Some(last) = edits.last_mut()
+        && last.old.end >= edit.old.start
+    {
+        last.old.end = edit.old.end;
+        last.new.end = edit.new.end;
+    } else {
+        edits.push(edit);
+    }
+}
+
 /// 给定输入行之前累计的输出行数（换行树的 InputToOutput 维度）。
 ///
 /// 非零输出行的 item 只有 Wrap（input_lines 恒为 1），因此落在 item 内部的行只可能
@@ -863,7 +1130,6 @@ fn output_rows_before(tree: &SumTree<Transform>, input_row: usize) -> usize {
     start.1.0 + (input_row - start.0.0)
 }
 
-#[derive(Clone)]
 pub(super) struct WrapMap {
     snapshot: WrapSnapshot,
     wrap_width: Option<Pixels>,
@@ -872,6 +1138,16 @@ pub(super) struct WrapMap {
     text_system: Option<Arc<TextSystem>>,
     /// 换行阶段的整行 shaping 缓存；与文本系统共享字体资源，但独立于窗口布局生命周期。
     window_text_system: Option<Arc<WindowTextSystem>>,
+    /// 尚未落地到真实重排的编辑批次（tab 快照 + fold 编辑）。
+    pending_edits: VecDeque<(TabSnapshot, Vec<FoldEdit>)>,
+    /// 后台重排期间为保持渲染最新而急切插入的换行编辑；真实重排落地时先反转再组合。
+    interpolated_edits: WrapPatch,
+    /// 自上次被消费以来发布给下游的换行编辑。
+    edits_since_sync: WrapPatch,
+    /// 正在进行的后台重排任务。
+    background_task: Option<Task<()>>,
+    /// 后台任务已经覆盖的 tab 版本，完成后据此从 pending 中移除。
+    in_flight_versions: Vec<u64>,
 }
 
 impl std::fmt::Debug for WrapMap {
@@ -886,37 +1162,74 @@ impl std::fmt::Debug for WrapMap {
 }
 
 impl WrapMap {
-    pub(super) fn new(tab_snapshot: TabSnapshot) -> (Self, WrapSnapshot) {
+    /// 创建换行层状态。WrapMap 自己拥有配置、变换树、待处理批次与后台任务句柄。
+    pub(super) fn new(tab_snapshot: TabSnapshot) -> Self {
         let transforms = isomorphic_tree(tab_snapshot.line_count());
-        let snapshot = WrapSnapshot {
-            tab_snapshot,
-            transforms,
-            wrapped: false,
-            version: 0,
-        };
-        (
-            Self {
-                snapshot: snapshot.clone(),
-                wrap_width: None,
-                font_with_size: None,
-                text_system: None,
-                window_text_system: None,
+        WrapMap {
+            snapshot: WrapSnapshot {
+                tab_snapshot,
+                transforms,
+                wrapped: false,
+                interpolated: false,
+                version: 0,
             },
-            snapshot,
-        )
+            wrap_width: None,
+            font_with_size: None,
+            text_system: None,
+            window_text_system: None,
+            pending_edits: VecDeque::new(),
+            interpolated_edits: WrapPatch::default(),
+            edits_since_sync: WrapPatch::default(),
+            background_task: None,
+            in_flight_versions: Vec::new(),
+        }
+    }
+
+    /// 供后台任务使用的配置+快照副本；不带队列与任务句柄。
+    fn worker_clone(&self) -> WrapMap {
+        WrapMap {
+            snapshot: self.snapshot.clone(),
+            wrap_width: self.wrap_width,
+            font_with_size: self.font_with_size.clone(),
+            text_system: self.text_system.clone(),
+            window_text_system: self.window_text_system.clone(),
+            pending_edits: VecDeque::new(),
+            interpolated_edits: WrapPatch::default(),
+            edits_since_sync: WrapPatch::default(),
+            background_task: None,
+            in_flight_versions: Vec::new(),
+        }
     }
 
     pub(super) fn snapshot(&self) -> &WrapSnapshot {
         &self.snapshot
     }
 
-    /// 同步 tab 层变化。tab 版本未变时不做任何事；换行开启时按 fold edit 的
-    /// 结构性变化全量重排或按 changed_lines 增量重排，关闭时重建单段透传。
+    /// 唯一推进入口：入队后先尝试同步完成，超时则后台重排并急切插值。
+    ///
+    /// 返回当前快照与自上次消费以来的换行编辑；后台未完成时快照是急切插值态。
     pub(super) fn sync(
         &mut self,
         tab_snapshot: TabSnapshot,
         fold_edits: &[FoldEdit],
-    ) -> Vec<WrapEdit> {
+        cx: &mut Context<Self>,
+    ) -> (WrapSnapshot, Vec<WrapEdit>) {
+        self.pending_edits
+            .push_back((tab_snapshot, fold_edits.to_vec()));
+        self.flush_edits(cx);
+        (
+            self.snapshot.clone(),
+            mem::take(&mut self.edits_since_sync).into_inner(),
+        )
+    }
+
+    /// 取走自上次消费以来的换行编辑；后台重排完成时由 DisplayMap 观察后调用。
+    pub(super) fn take_edits_since_sync(&mut self) -> Vec<WrapEdit> {
+        mem::take(&mut self.edits_since_sync).into_inner()
+    }
+
+    /// 同步应用一批编辑；返回该批次的换行编辑。
+    fn apply_edits(&mut self, tab_snapshot: TabSnapshot, fold_edits: &[FoldEdit]) -> Vec<WrapEdit> {
         if tab_snapshot.version() == self.snapshot.tab_snapshot.version() {
             return Vec::new();
         }
@@ -936,9 +1249,104 @@ impl WrapMap {
         } else {
             self.set_isomorphic_all()
         };
+        self.snapshot.interpolated = false;
         self.check_invariants();
         self.snapshot.version += 1;
         edits
+    }
+
+    /// 是否有尚未落地的换行重排（pending 或后台任务）。
+    pub(super) fn is_rewrapping(&self) -> bool {
+        !self.pending_edits.is_empty() || self.background_task.is_some()
+    }
+
+    /// 后台重排完成：用真实编辑替换急切插值编辑，落地真实快照、处理剩余批次并通知下游观察者。
+    fn finish_background_rewrap(
+        &mut self,
+        snapshot: WrapSnapshot,
+        edits: WrapPatch,
+        cx: &mut Context<Self>,
+    ) {
+        self.snapshot = snapshot;
+        self.snapshot.version += 1;
+        // 先反转急切插值编辑，再用真实重排编辑组合，得到「上次对外快照 → 真实快照」的净编辑。
+        let mut interpolated = mem::take(&mut self.interpolated_edits);
+        self.edits_since_sync = self
+            .edits_since_sync
+            .compose(interpolated.invert().iter().cloned())
+            .compose(edits.into_inner());
+        let in_flight = mem::take(&mut self.in_flight_versions);
+        self.pending_edits
+            .retain(|(tab_snapshot, _)| !in_flight.contains(&tab_snapshot.version()));
+        self.background_task = None;
+        self.flush_edits(cx);
+        cx.notify();
+    }
+
+    /// 尝试在时限内同步完成待处理批次；超时则启动后台重排，并急切插值 pending。
+    fn flush_edits(&mut self, cx: &mut Context<Self>) {
+        if self.pending_edits.is_empty() {
+            return;
+        }
+        if self.wrap_width.is_none() {
+            // 未开启软换行：透传投影无测量成本，直接同步处理。
+            let pending: Vec<_> = self.pending_edits.drain(..).collect();
+            let mut real_edits = WrapPatch::default();
+            for (tab_snapshot, fold_edits) in pending {
+                real_edits = real_edits.compose(self.apply_edits(tab_snapshot, &fold_edits));
+            }
+            self.edits_since_sync = self.edits_since_sync.compose(real_edits.into_inner());
+            return;
+        }
+        if self.background_task.is_none() {
+            let pending: Vec<(TabSnapshot, Vec<FoldEdit>)> =
+                self.pending_edits.iter().cloned().collect();
+            let in_flight_versions: Vec<u64> = pending
+                .iter()
+                .map(|(tab_snapshot, _)| tab_snapshot.version())
+                .collect();
+            let mut worker = self.worker_clone();
+            let task = cx.background_spawn(async move {
+                let mut edits = WrapPatch::default();
+                for (tab_snapshot, fold_edits) in &pending {
+                    edits = edits.compose(worker.apply_edits(tab_snapshot.clone(), fold_edits));
+                }
+                (worker.snapshot.clone(), edits)
+            });
+            match cx
+                .foreground_executor()
+                .block_with_timeout(Duration::from_millis(3), task)
+            {
+                Ok((snapshot, edits)) => {
+                    self.snapshot = snapshot;
+                    self.snapshot.version += 1;
+                    self.edits_since_sync = self.edits_since_sync.compose(edits.into_inner());
+                    self.pending_edits.clear();
+                    return;
+                }
+                Err(task) => {
+                    self.in_flight_versions = in_flight_versions;
+                    self.background_task = Some(cx.spawn(async move |this, cx| {
+                        let (snapshot, edits) = task.await;
+                        this.update(cx, |map, cx| {
+                            map.finish_background_rewrap(snapshot, edits, cx);
+                        })
+                        .ok();
+                    }));
+                }
+            }
+        }
+        // 后台任务进行中：急切插值 pending，保证渲染使用最新文本；真实换行点由后台补齐。
+        let pending: Vec<(TabSnapshot, Vec<FoldEdit>)> =
+            self.pending_edits.iter().cloned().collect();
+        for (tab_snapshot, fold_edits) in pending {
+            if tab_snapshot.version() <= self.snapshot.tab_snapshot.version() {
+                continue;
+            }
+            let interpolated = WrapPatch::new(self.snapshot.interpolate(tab_snapshot, &fold_edits));
+            self.edits_since_sync = self.edits_since_sync.compose(interpolated.iter().cloned());
+            self.interpolated_edits = self.interpolated_edits.compose(interpolated.into_inner());
+        }
     }
 
     /// 设置换行宽度与字体。只有 (宽度, 字体, 字号) 任一变化时才重建；
@@ -973,10 +1381,17 @@ impl WrapMap {
         }
         self.wrap_width = wrap_width;
         self.font_with_size = Some((font, font_size));
+        // 全量重排取代所有未落地的局部批次，取消在途任务。
+        self.pending_edits.clear();
+        self.interpolated_edits.clear();
+        self.edits_since_sync.clear();
+        self.background_task = None;
+        self.in_flight_versions.clear();
         let edits = match wrap_width {
             None => self.set_isomorphic_all(),
             Some(width) => self.rewrap_all(width),
         };
+        self.snapshot.interpolated = false;
         self.snapshot.version += 1;
         (true, edits)
     }
@@ -1521,5 +1936,54 @@ fn isomorphic_tree(tab_rows: usize) -> SumTree<Transform> {
         SumTree::new(())
     } else {
         SumTree::from_item(Transform::isomorphic(tab_rows), ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WrapEdit, WrapPatch};
+    use std::ops::Range;
+
+    fn edit(old: Range<usize>, new: Range<usize>) -> WrapEdit {
+        WrapEdit { old, new }
+    }
+
+    fn compose(old: Vec<WrapEdit>, next: Vec<WrapEdit>) -> Vec<WrapEdit> {
+        WrapPatch::new(old).compose(next).into_inner()
+    }
+
+    #[test]
+    fn compose_disjoint_before() {
+        assert_eq!(
+            compose(vec![edit(1..3, 1..4)], vec![edit(0..0, 0..4)]),
+            vec![edit(0..0, 0..4), edit(1..3, 5..8)],
+        );
+    }
+
+    #[test]
+    fn compose_disjoint_after() {
+        assert_eq!(
+            compose(vec![edit(1..3, 1..4)], vec![edit(5..9, 5..7)]),
+            vec![edit(1..3, 1..4), edit(4..8, 5..7)],
+        );
+    }
+
+    #[test]
+    fn compose_overlapping() {
+        assert_eq!(
+            compose(vec![edit(1..3, 1..4)], vec![edit(3..5, 3..6)]),
+            vec![edit(1..4, 1..6)],
+        );
+    }
+
+    #[test]
+    fn compose_two_disjoint_and_overlapping() {
+        assert_eq!(
+            compose(
+                vec![edit(1..3, 1..4), edit(8..12, 9..11)],
+                vec![edit(0..0, 0..4), edit(3..10, 7..9)],
+            ),
+            vec![edit(0..0, 0..4), edit(1..12, 5..10)],
+        );
     }
 }

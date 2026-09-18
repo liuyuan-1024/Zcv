@@ -165,8 +165,9 @@ pub trait DiffHunkDelegate {
 /// 与显示行号不同，该锚点可在组合文档 excerpts 增删、重排后重新解析。
 #[derive(Clone, Debug)]
 pub struct EditorScrollAnchor {
+    /// 锚定到底层文件的长期位置；显示行在恢复时由 DisplayMap 解析。
     buffer_anchor: MultiBufferAnchor,
-    preceding_virtual_rows: usize,
+    /// 锚点行内的像素偏移量。
     offset: Point<Pixels>,
 }
 
@@ -444,7 +445,7 @@ impl Editor {
         let scroll_anchor = self.capture_scroll_anchor(cx);
         let folded = !self.display_map.read(cx).is_buffer_folded(&path);
         self.display_map
-            .update(cx, |map, _| map.set_buffer_folded(path, folded));
+            .update(cx, |map, cx| map.set_buffer_folded(path, folded, cx));
         self.refresh_display_snapshot(cx);
         if let Some(scroll_anchor) = scroll_anchor {
             self.restore_scroll_anchor(scroll_anchor, cx);
@@ -519,8 +520,8 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> bool {
         let text_system = cx.text_system().clone();
-        let changed = self.display_map.update(cx, |map, _| {
-            map.set_wrap_width(wrap_width, font, font_size, &text_system)
+        let changed = self.display_map.update(cx, |map, cx| {
+            map.set_wrap_width(wrap_width, font, font_size, &text_system, cx)
         });
         if changed {
             self.refresh_display_snapshot(cx);
@@ -770,7 +771,7 @@ impl Editor {
                 LineRange::new(line, Line::new(line.get() + 1)).expect("光标行 +1 应合法");
             if let Err(error) = self
                 .display_map
-                .update(cx, |map, _| map.unfold_lines(line_range))
+                .update(cx, |map, cx| map.unfold_lines(line_range, cx))
             {
                 cx.emit(EditorEvent::Error(format!("展开折叠失败：{error:#}")));
             }
@@ -786,13 +787,14 @@ impl Editor {
                 && start == line
             {
                 // 折叠范围是字节级的（终点在闭合括号前）：直接按字节范围折叠。
-                if let Err(error) = self.display_map.update(cx, |map, _| {
+                if let Err(error) = self.display_map.update(cx, |map, cx| {
                     map.fold_range(
                         MultiBufferRange::new(
                             MultiBufferOffset::new(range.range.start),
                             MultiBufferOffset::new(range.range.end),
                         )
                         .expect("折叠范围应合法"),
+                        cx,
                     )
                 }) {
                     cx.emit(EditorEvent::Error(format!("折叠失败：{error:#}")));
@@ -828,7 +830,7 @@ impl Editor {
                     LineRange::new(line, Line::new(line.get() + 1)).expect("折叠入口行 +1 应合法");
                 if let Err(error) = self
                     .display_map
-                    .update(cx, |map, _| map.unfold_lines(line_range))
+                    .update(cx, |map, cx| map.unfold_lines(line_range, cx))
                 {
                     cx.emit(EditorEvent::Error(format!("展开折叠失败：{error:#}")));
                 }
@@ -858,13 +860,14 @@ impl Editor {
             .map(|(range, _, _)| range.range.clone());
 
         if let Some(range) = range
-            && let Err(error) = self.display_map.update(cx, |map, _| {
+            && let Err(error) = self.display_map.update(cx, |map, cx| {
                 map.fold_range(
                     MultiBufferRange::new(
                         MultiBufferOffset::new(range.start),
                         MultiBufferOffset::new(range.end),
                     )
                     .expect("折叠范围应合法"),
+                    cx,
                 )
             })
         {
@@ -895,8 +898,8 @@ impl Editor {
             let buffer = Buffer::from_text(text, BufferConfig::default())
                 .expect("placeholder Buffer 应能创建");
             Some(cx.new(|cx| {
-                let mut map = DisplayMap::new(buffer.snapshot());
-                map.set_tab_width(SettingsStore::tab_config(cx).tab_width);
+                let mut map = DisplayMap::new(buffer.snapshot(), cx);
+                map.set_tab_width(SettingsStore::tab_config(cx).tab_width, cx);
                 map
             }))
         };
@@ -1176,20 +1179,12 @@ impl Editor {
             .display_snapshot
             .display_point_to_offset(display_point)
             .ok()?;
-        let canonical_point = self
-            .display_snapshot
-            .offset_to_display_point(output_offset)
-            .ok()?;
         let buffer_anchor = self
             .multi_buffer
             .read(cx)
             .anchor_for_offset(output_offset)?;
         Some(EditorScrollAnchor {
             buffer_anchor,
-            preceding_virtual_rows: canonical_point
-                .row()
-                .get()
-                .saturating_sub(display_point.row().get()),
             offset: self.scroll_manager.offset(),
         })
     }
@@ -1208,19 +1203,9 @@ impl Editor {
         else {
             return false;
         };
-        let Ok(canonical_point) = self.display_snapshot.offset_to_display_point(output_offset)
-        else {
+        let Ok(display_point) = self.display_snapshot.offset_to_display_point(output_offset) else {
             return false;
         };
-        let display_point = DisplayPoint::new(
-            DisplayRow::new(
-                canonical_point
-                    .row()
-                    .get()
-                    .saturating_sub(anchor.preceding_virtual_rows),
-            ),
-            canonical_point.column(),
-        );
         if self
             .scroll_manager
             .restore_anchor(display_point, anchor.offset)
@@ -1243,7 +1228,7 @@ impl Editor {
     ) {
         if let Err(error) = self
             .display_map
-            .update(cx, |map, _| map.measure_rows(start, line_count))
+            .update(cx, |map, cx| map.measure_rows(start, line_count, cx))
         {
             eprintln!("Editor 测量显示行失败：{error}");
         }
@@ -1630,9 +1615,9 @@ impl Editor {
             multi_buffer.update(cx, |buffer, cx| buffer.subscribe_and_snapshot(cx));
         let last_dirty = multi_buffer.read(cx).is_dirty(cx);
         let display_map = cx.new(|cx| {
-            let mut map = DisplayMap::new(snapshot.clone());
+            let mut map = DisplayMap::new(snapshot.clone(), cx);
             map.set_multi_buffer(multi_buffer.clone(), multi_buffer_subscription, cx);
-            map.set_tab_width(SettingsStore::tab_config(cx).tab_width);
+            map.set_tab_width(SettingsStore::tab_config(cx).tab_width, cx);
             map
         });
         let display_snapshot = display_map.read(cx).snapshot();
@@ -1739,10 +1724,10 @@ impl Editor {
             // tab 宽度始终跟随设置；软换行覆盖只影响换行模式。
             editor
                 .display_map
-                .update(cx, |map, _| map.set_tab_width(settings.tab.tab_width));
+                .update(cx, |map, cx| map.set_tab_width(settings.tab.tab_width, cx));
             let placeholder = editor.placeholder_display_map.clone();
             if let Some(placeholder) = placeholder {
-                placeholder.update(cx, |map, _| map.set_tab_width(settings.tab.tab_width));
+                placeholder.update(cx, |map, cx| map.set_tab_width(settings.tab.tab_width, cx));
             }
             if editor.soft_wrap_override.is_none() {
                 editor.soft_wrap = settings.soft_wrap.into();
@@ -2213,28 +2198,14 @@ impl Editor {
         self.multi_snapshot = self.multi_buffer.read(cx).snapshot(cx);
     }
 
-    /// 同步显示管线并刷新显示快照缓存。
+    /// 刷新显示坐标缓存。
     ///
-    /// 只在需要同步读取显示坐标的边界调用（滚动锚点捕获/恢复、diff 注入后的视图刷新）。
-    /// 组合文本、选区与语法读取走 multi_snapshot，不依赖这里；
-    /// DisplayMap 也自订阅 MultiBuffer 变化，渲染帧的显示缓存由它的广播刷新。
+    /// DisplayMap 是组合文本变更的唯一消费者，它在自己的订阅回调里完成投影推进并广播
+    /// `DisplayMapEvent`；Editor 的显示订阅是唯一同步入口。这里只把缓存对齐到已推进的权威 DisplayMap，
+    /// 不再二次调用投影同步，避免出现第二条推进路径。
     fn sync_display_map(&mut self, cx: &mut Context<Self>) {
-        let changes = self
-            .display_map
-            .update(cx, |map, cx| map.sync_from_multi_buffer(cx));
         self.refresh_multi_snapshot(cx);
         self.refresh_display_snapshot(cx);
-        if changes.is_empty() {
-            return;
-        }
-        if let Some(old_version) = changes.old_version() {
-            // `requires_reset` 只说明投影文本需整体重建，不能决定选区归零。
-            // 选区的权威位置是源锚点：外部 reload 已由 consume_source_remaps 用源事务 PositionMap 推进；
-            // 这里仅推进投影坐标派生的搜索锚点。
-            let text_version = self.display_snapshot.buffer_snapshot().version();
-            let position_map = changes.position_map();
-            self.map_search_anchors(old_version, text_version, &position_map);
-        }
     }
 
     /// 消费 MultiBuffer 暂存的外部源变更，把绑定该源的源锚点选区经源 PositionMap 推进。
@@ -2282,7 +2253,7 @@ impl Editor {
         if let Ok(line_range) = LineRange::new(Line::ZERO, Line::new(line_count))
             && let Err(error) = self
                 .display_map
-                .update(cx, |map, _| map.unfold_lines(line_range))
+                .update(cx, |map, cx| map.unfold_lines(line_range, cx))
         {
             cx.emit(EditorEvent::Error(format!("展开折叠失败：{error:#}")));
         }

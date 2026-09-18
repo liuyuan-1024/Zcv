@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use zcv_multi_buffer::{DiffHunkKind, DiffHunkStaging, DisplayHunk};
 use zcv_text::Line;
 
-use crate::display_map::{DisplaySnapshot, ProjectedRange};
+use crate::display_map::{DisplayRange, DisplaySnapshot};
 use crate::scrollbar::{ScrollbarMarker, ScrollbarMarkerKind, marker_geometry};
 use crate::view::{EditorHunk, EditorHunkMarkerKind, HunkControlTarget};
 use gpui::{Bounds, Pixels};
@@ -45,7 +45,7 @@ pub(crate) struct HunkRendering {
 pub(crate) struct DiffDecorationSnapshot {
     rendering: HunkRendering,
     expanded: Vec<bool>,
-    projected_word_diff_highlights: Vec<(DiffHunkKind, ProjectedRange)>,
+    projected_word_diff_highlights: Vec<(DiffHunkKind, DisplayRange)>,
     scrollbar_diff_markers: Vec<(Range<usize>, DiffHunkKind)>,
     scrollbar_markers: ScrollbarMarkerCache,
 }
@@ -158,18 +158,18 @@ impl DiffDecorationSnapshot {
     pub(crate) fn visible_word_diff_highlights<'a>(
         &'a self,
         viewport: &'a Range<usize>,
-    ) -> impl Iterator<Item = (DiffHunkKind, ProjectedRange)> + 'a {
+    ) -> impl Iterator<Item = (DiffHunkKind, DisplayRange)> + 'a {
         let start = self
             .projected_word_diff_highlights
             .partition_point(|(_, range)| {
-                range.end().line().get().max(range.start().line().get() + 1) <= viewport.start
+                range.end().row().get().max(range.start().row().get() + 1) <= viewport.start
             });
         self.projected_word_diff_highlights[start..]
             .iter()
-            .take_while(|(_, range)| range.start().line().get() < viewport.end)
+            .take_while(|(_, range)| range.start().row().get() < viewport.end)
             .filter(|(_, range)| {
-                let range_start = range.start().line().get();
-                let range_end = range.end().line().get().max(range_start + 1);
+                let range_start = range.start().row().get();
+                let range_end = range.end().row().get().max(range_start + 1);
                 range_start < viewport.end && range_end > viewport.start
             })
             .copied()
@@ -386,8 +386,8 @@ pub(crate) fn editor_hunk_rendering(
                 .ok()?
                 .into_iter()
                 .next()?;
-            let start = projected.start().line().get();
-            let end = projected.end().line().get();
+            let start = projected.start().row().get();
+            let end = projected.end().row().get();
             let end = end.max(start + 1);
             Some((start..end, hunk.clone()))
         })
@@ -407,8 +407,8 @@ pub(crate) fn editor_hunk_part_rendering(
                 .ok()?
                 .into_iter()
                 .next()?;
-            let start = projected.start().line().get();
-            let end = projected.end().line().get().max(start + 1);
+            let start = projected.start().row().get();
+            let end = projected.end().row().get().max(start + 1);
             Some((start..end, part.content_kind, part.marker_kind))
         })
         .collect()
@@ -456,9 +456,26 @@ pub(crate) fn is_hollow_hunk(staging: DiffHunkStaging) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::display_map::DisplayMap;
-    use gpui::{Empty, TestAppContext, px};
+    use crate::display_map::{DisplayMap, DisplaySnapshot};
+    use gpui::{AppContext, Empty, Entity, TestAppContext, px};
+    use zcv_multi_buffer::MultiBufferSnapshot;
+
     use zcv_text::{Buffer, BufferConfig, Line};
+
+    fn new_display_map(
+        cx: &mut impl AppContext,
+        snapshot: impl Into<MultiBufferSnapshot>,
+    ) -> Entity<DisplayMap> {
+        cx.new(|cx| DisplayMap::new(snapshot, cx))
+    }
+
+    fn project_display_snapshot(
+        cx: &mut impl AppContext,
+        snapshot: impl Into<MultiBufferSnapshot>,
+    ) -> DisplaySnapshot {
+        let map = new_display_map(cx, snapshot);
+        cx.read_entity(&map, |map, _| map.snapshot())
+    }
 
     #[gpui::test]
     fn folded_deleted_hunk_anchor_covers_all_wrapped_subrows(cx: &mut TestAppContext) {
@@ -467,7 +484,7 @@ mod tests {
         // 点击区域整行可点，而不是只落在第一个子行之间。
         let window = cx.add_window(|_, _| Empty);
         window
-            .update(cx, |_, window, _| {
+            .update(cx, |_, window, cx| {
                 let text_system = window.text_system().clone();
                 let font = window.text_style().font();
                 let font_size = window.text_style().font_size.to_pixels(window.rem_size());
@@ -483,12 +500,18 @@ mod tests {
                     .join("\n");
                 let buffer =
                     Buffer::from_text(lines, BufferConfig::default()).expect("应创建测试 Buffer");
-                let mut map = DisplayMap::new(buffer.snapshot());
+                let map = new_display_map(cx, buffer.snapshot());
                 assert!(
-                    map.set_wrap_width(Some(px(100.)), font.clone(), font_size, &text_system),
+                    cx.update_entity(&map, |map, cx| map.set_wrap_width(
+                        Some(px(100.)),
+                        font.clone(),
+                        font_size,
+                        &text_system,
+                        cx
+                    )),
                     "第 20 行应产生软换行"
                 );
-                let snapshot = map.snapshot();
+                let snapshot = cx.read_entity(&map, |map, _| map.snapshot());
                 let start_row = snapshot
                     .line_to_display_row(Line::new(20))
                     .expect("第 20 行应可映射");
@@ -530,7 +553,7 @@ mod tests {
         // 三角落在删除点行行尾 = 软换行第一子行行首（被删行在软换行之前）。
         let window = cx.add_window(|_, _| Empty);
         window
-            .update(cx, |_, window, _| {
+            .update(cx, |_, window, cx| {
                 let text_system = window.text_system().clone();
                 let font = window.text_style().font();
                 let font_size = window.text_style().font_size.to_pixels(window.rem_size());
@@ -546,12 +569,18 @@ mod tests {
                     .join("\n");
                 let buffer =
                     Buffer::from_text(lines, BufferConfig::default()).expect("应创建测试 Buffer");
-                let mut map = DisplayMap::new(buffer.snapshot());
+                let map = new_display_map(cx, buffer.snapshot());
                 assert!(
-                    map.set_wrap_width(Some(px(100.)), font.clone(), font_size, &text_system),
+                    cx.update_entity(&map, |map, cx| map.set_wrap_width(
+                        Some(px(100.)),
+                        font.clone(),
+                        font_size,
+                        &text_system,
+                        cx
+                    )),
                     "第 16 行应产生软换行"
                 );
-                let snapshot = map.snapshot();
+                let snapshot = cx.read_entity(&map, |map, _| map.snapshot());
                 let del_start = snapshot
                     .line_to_display_row(Line::new(15))
                     .expect("删除点行应可映射")
@@ -616,14 +645,14 @@ mod tests {
         assert_eq!(diff_row_for_row(&[], 0), None);
     }
 
-    #[test]
-    fn every_diff_hunk_exposes_a_control_anchor() {
+    #[gpui::test]
+    fn every_diff_hunk_exposes_a_control_anchor(cx: &mut TestAppContext) {
         let buffer = Buffer::from_text(
             "line0\nline1\nline2\nline3\nline4\n".into(),
             BufferConfig::default(),
         )
         .expect("应创建测试 Buffer");
-        let snapshot = DisplayMap::new(buffer.snapshot()).snapshot();
+        let snapshot = project_display_snapshot(cx, buffer.snapshot());
         let hunks = vec![
             DisplayHunk {
                 range: 0..1,
@@ -685,12 +714,12 @@ mod tests {
         assert_eq!(expanded_added.expanded_rows, vec![0..1]);
     }
 
-    #[test]
-    fn materialized_modified_hunk_uses_real_old_and_new_document_rows() {
+    #[gpui::test]
+    fn materialized_modified_hunk_uses_real_old_and_new_document_rows(cx: &mut TestAppContext) {
         let buffer =
             Buffer::from_text("context\nold\nnew\nafter\n".into(), BufferConfig::default())
                 .expect("应创建测试 Buffer");
-        let snapshot = DisplayMap::new(buffer.snapshot()).snapshot();
+        let snapshot = project_display_snapshot(cx, buffer.snapshot());
         let hunk = DisplayHunk {
             range: 2..3,
             old_range: 10..11,
@@ -729,12 +758,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn word_diff_highlights_only_render_for_expanded_hunks() {
+    #[gpui::test]
+    fn word_diff_highlights_only_render_for_expanded_hunks(cx: &mut TestAppContext) {
         // 词级背景只在展开态出现：折叠的修改块没有物化旧侧，也就没有行内变化文本可着色。
         let buffer = Buffer::from_text("old\nnew\n".into(), BufferConfig::default())
             .expect("应创建测试 Buffer");
-        let snapshot = DisplayMap::new(buffer.snapshot()).snapshot();
+        let snapshot = project_display_snapshot(cx, buffer.snapshot());
         let hunks = vec![DisplayHunk {
             range: 1..2,
             old_range: 0..1,
@@ -756,12 +785,12 @@ mod tests {
         assert_eq!(expanded.word_diff_highlights, word_diffs[0]);
     }
 
-    #[test]
-    fn staging_drives_hollow_blocks() {
+    #[gpui::test]
+    fn staging_drives_hollow_blocks(cx: &mut TestAppContext) {
         // hunk_rendering 把暂存语义透传到行标记与 gutter 竖条，渲染端据此选空心 / 实心。
         let buffer = Buffer::from_text("a\nb\nc\n".into(), BufferConfig::default())
             .expect("应创建测试 Buffer");
-        let snapshot = DisplayMap::new(buffer.snapshot()).snapshot();
+        let snapshot = project_display_snapshot(cx, buffer.snapshot());
         let staged = DisplayHunk {
             range: 1..3,
             old_range: 1..3,
@@ -794,12 +823,12 @@ mod tests {
         assert!(rendered.hollow_blocks.is_empty());
     }
 
-    #[test]
-    fn hunk_click_regions_do_not_depend_on_staging() {
+    #[gpui::test]
+    fn hunk_click_regions_do_not_depend_on_staging(cx: &mut TestAppContext) {
         // 点击展开只由 hunk 类型决定；已暂存 / 未暂存只影响配色，避免形成双轨。
         let buffer = Buffer::from_text("a\nb\nc\n".into(), BufferConfig::default())
             .expect("应创建测试 Buffer");
-        let snapshot = DisplayMap::new(buffer.snapshot()).snapshot();
+        let snapshot = project_display_snapshot(cx, buffer.snapshot());
         for staging in [
             DiffHunkStaging::Staged,
             DiffHunkStaging::Unstaged,

@@ -12,7 +12,10 @@
 
 use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
 
+use std::borrow::Cow;
 use std::{ops::Range, sync::Arc};
+
+use unicode_segmentation::UnicodeSegmentation;
 
 use gpui::{HighlightStyle, UnderlineStyle, px};
 use zcv_language::HighlightSpan;
@@ -22,7 +25,7 @@ use zcv_text::Line;
 use super::block_map::{BlockRow, BlockRows, DisplayBlock};
 use super::fold_map::{FOLD_PLACEHOLDER, FoldRowSegment, FoldRowSegmentKind, ProjectedLineIndex};
 use super::inlay_map::InlaySnapshot;
-use super::tab_map::{byte_for_display_column, display_column_for_byte};
+use super::tab_map::advance_display_column;
 use super::wrap_map::WrapRowKind;
 use super::{DisplayRow, DisplaySnapshot};
 use zcv_multi_buffer::ExcerptSnapshot;
@@ -953,6 +956,120 @@ impl<'a, 'b> Iterator for WrapChunks<'a, 'b> {
     }
 }
 
+/// 未展开 tab 的投影 chunk 流：水平窗口的列→字节换算不再物化整行文本。
+enum ProjectedChunkSource<'a, 'b> {
+    Fold(FoldChunks<'a, 'b>),
+    Inlay(InlayChunks<'a, 'b>),
+}
+
+impl<'a> Iterator for ProjectedChunkSource<'a, '_> {
+    type Item = Chunk<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Fold(chunks) => chunks.next(),
+            Self::Inlay(chunks) => chunks.next(),
+        }
+    }
+}
+
+fn make_projected_chunks<'a, 'b>(
+    source: &ChunkSource<'a>,
+    styles: HighlightStyles<'b>,
+    fragment_range: Range<usize>,
+) -> ProjectedChunkSource<'a, 'b> {
+    if let Some(segments) = source.segments {
+        ProjectedChunkSource::Fold(FoldChunks::new(
+            segments,
+            source.inlay,
+            styles,
+            fragment_range,
+        ))
+    } else {
+        ProjectedChunkSource::Inlay(InlayChunks::new(
+            source.text.clone(),
+            source.global_byte_start,
+            source.inlay.line_inlays(source.stream_line),
+            ChunkBase::ZERO,
+            styles,
+            fragment_range,
+            source.inject_inlays,
+        ))
+    }
+}
+
+/// 在未展开 tab 的投影文本里，按显示列定位字节偏移，返回 `(字节, 实际列)`。
+///
+/// 与 `byte_for_display_column` 的 grapheme / tab 规则一致。
+fn projected_byte_for_column(
+    chunks: ProjectedChunkSource<'_, '_>,
+    tab_width: usize,
+    target: usize,
+) -> (usize, usize) {
+    if target == 0 {
+        return (0, 0);
+    }
+    let mut display = 0usize;
+    let mut byte = 0usize;
+    for chunk in chunks {
+        for grapheme in chunk.text.graphemes(true) {
+            let next_display = advance_display_column(display, grapheme, tab_width);
+            let next_byte = byte + grapheme.len();
+            if target == display {
+                return (byte, display);
+            }
+            if target == next_display {
+                return (next_byte, next_display);
+            }
+            if target > display && target < next_display {
+                return if target - display <= next_display - target {
+                    (byte, display)
+                } else {
+                    (next_byte, next_display)
+                };
+            }
+            display = next_display;
+            byte = next_byte;
+        }
+    }
+    (byte, display)
+}
+
+/// 计算水平窗口在投影文本字节空间的裁剪范围、窗口起点列与窗口前的投影文本。
+fn projected_window_metrics(
+    source: &ChunkSource<'_>,
+    tab_width: usize,
+    window: (usize, usize),
+) -> (Range<usize>, usize, String) {
+    let (start_byte, start_column) = projected_byte_for_column(
+        make_projected_chunks(source, HighlightStyles::default(), 0..source.projected_len),
+        tab_width,
+        window.0,
+    );
+    let (end_byte, _) = projected_byte_for_column(
+        make_projected_chunks(source, HighlightStyles::default(), 0..source.projected_len),
+        tab_width,
+        window.1,
+    );
+    let mut prefix = String::new();
+    let mut byte = 0usize;
+    'outer: for chunk in
+        make_projected_chunks(source, HighlightStyles::default(), 0..source.projected_len)
+    {
+        for grapheme in chunk.text.graphemes(true) {
+            if byte >= start_byte {
+                break 'outer;
+            }
+            let next = byte + grapheme.len();
+            if next <= start_byte {
+                prefix.push_str(grapheme);
+            }
+            byte = next;
+        }
+    }
+    (start_byte.min(end_byte)..end_byte, start_column, prefix)
+}
+
 /// 软换行片段信息：后续 wrap 片段显示为缩进续行。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct WrapRowInfo {
@@ -1022,7 +1139,7 @@ pub(crate) struct DisplayTextRow<'a> {
     pub(crate) window_start_column: usize,
     /// 水平窗口之前的投影文本。仅在窗口化时携带，布局层用同一字体测得
     /// 实际像素前缀宽度，不能把 display column 乘拉丁字宽。
-    pub(crate) window_prefix: &'a str,
+    pub(crate) window_prefix: Cow<'a, str>,
     pub(crate) fold_segments: Option<&'a [FoldRowSegment]>,
 }
 
@@ -1085,55 +1202,47 @@ impl<'a, 'b> BlockChunks<'a, 'b> {
         let projected = ProjectedLineIndex::new(*projected_line);
         let segments = fold.fold_row_segments(projected);
         let inlay = fold.inlay_snapshot();
-        let stream_line = inlay.stream().buffer_to_stream(Line::new(source.line()));
+        let stream_line = *source;
         let mut range = byte_range.clone();
         let mut window_start_column = 0;
-        let mut window_prefix = "";
-        // 只有水平窗口需要随机访问完整投影行。
-        // 普通滚动包括折叠行，都从源段连续输出，不为整行创建投影字符串。
-        let needs_projected_text = self.window_columns.is_some();
-        let text = if needs_projected_text {
-            if segments.is_some() {
-                fold.row_text(projected)
-            } else {
-                inlay.line_text(stream_line)
-            }
-        } else {
-            None
-        };
-        if needs_projected_text && text.is_none() {
-            return;
-        }
+        let mut window_prefix: Cow<'_, str> = Cow::Borrowed("");
         let Some(raw_range) = inlay.line_byte_range(stream_line) else {
             return;
         };
-        let inject_inlays = segments.is_none() && !needs_projected_text;
+        let inject_inlays = segments.is_none();
         let projected_len = if let Some(segments) = segments.as_ref() {
             segments
                 .last()
                 .expect("折叠合并行必须至少包含一个段")
                 .merged_range
                 .end
-        } else if inject_inlays {
+        } else {
             inlay
                 .projected_line_len(stream_line)
                 .expect("可见流行必须具有投影长度")
-        } else {
-            text.as_ref().expect("投影行必须具有文本").len()
         };
-        if let Some((start, end)) = self.window_columns {
-            let row_text = text.as_ref().expect("水平窗口必须读取投影行文本").as_ref();
-            // 水平窗口的输入是显示列而非字节。
-            // 必须沿与命中测试一致的 grapheme/tab 宽度规则转换；
-            // 直接把列当作字节会让 CJK、tab 和行内提示把窗口以及光标 x 坐标错位。
-            let start = byte_for_display_column(row_text, 0, start, self.tab_width);
-            let end = byte_for_display_column(row_text, 0, end, self.tab_width);
-            range.start = range.start.max(start);
-            range.end = range.end.min(end);
+        let source = ChunkSource {
+            text: ChunkText::Virtual {
+                snapshot: inlay.buffer_snapshot(),
+                range: raw_range,
+            },
+            projected_len,
+            global_byte_start: *global_byte_start,
+            stream_line,
+            segments: segments.as_ref().map(|segments| segments.as_slice()),
+            inlay,
+            inject_inlays,
+        };
+        if let Some(window) = self.window_columns {
+            // 水平窗口的输入是显示列而非字节；沿未展开 tab 的 Fold/Inlay chunk 游标按显示列累计，
+            // 不物化整行投影文本。
+            let (window_range, start_column, prefix) =
+                projected_window_metrics(&source, self.tab_width, window);
+            range.start = range.start.max(window_range.start);
+            range.end = range.end.min(window_range.end);
             if range.start > byte_range.start {
-                window_start_column =
-                    display_column_for_byte(row_text, 0, range.start, self.tab_width);
-                window_prefix = &row_text[..range.start];
+                window_start_column = start_column;
+                window_prefix = Cow::Owned(prefix);
             }
         }
         let budget = MAX_RENDERED_LINE_LEN.saturating_sub(*indent);
@@ -1144,33 +1253,12 @@ impl<'a, 'b> BlockChunks<'a, 'b> {
                         .line_byte_range(stream_line)
                         .map_or(0, |range| range.end.get() - range.start.get()),
         );
-        let text_ref = text.as_ref().map(|text| text.as_ref());
-        let mut chunks = WrapChunks::new(
-            ChunkSource {
-                text: match text_ref {
-                    Some(text) => ChunkText::Borrowed(text),
-                    None => ChunkText::Virtual {
-                        snapshot: inlay.buffer_snapshot(),
-                        range: raw_range,
-                    },
-                },
-                projected_len,
-                global_byte_start: *global_byte_start,
-                stream_line,
-                segments: segments.as_ref().map(|segments| segments.as_slice()),
-                inlay,
-                inject_inlays,
-            },
-            self.tab_width,
-            line_styles,
-            range,
-            budget,
-        );
+        let mut chunks = WrapChunks::new(source, self.tab_width, line_styles, range, budget);
         on_row(DisplayRowEvent::Text {
             row: DisplayTextRow {
                 row: row.index(),
                 excerpt: row.excerpt(),
-                source_line: source.line(),
+                source_line: stream_line.get(),
                 fragment_index: *fragment_index,
                 indent: *indent,
                 utf16_start: chunks.utf16_start(),

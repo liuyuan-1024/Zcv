@@ -10,7 +10,7 @@ use zcv_project::{RegexSearchResult, SearchQuery, SearchQueryResult, SearchResul
 use zcv_text::{Affinity, Anchor, BufferVersion, PositionMap};
 use zcv_workspace::{Direction, SearchEvent, SearchableItem};
 
-use crate::display_map::{DisplaySnapshot, ProjectedRange};
+use crate::display_map::{DisplayRange, DisplaySnapshot};
 use crate::scrollbar::{ScrollbarMarker, ScrollbarMarkerKind, marker_geometry};
 use crate::selection::EditOutcome;
 
@@ -129,15 +129,15 @@ impl SearchDecorationSnapshot {
     }
 }
 
-fn projected_row_range(range: ProjectedRange) -> Range<usize> {
+fn projected_row_range(range: DisplayRange) -> Range<usize> {
     let start = range.start();
     let end = range.end();
-    let end_line = if end.line() == start.line() || end.column().get() != 0 {
-        end.line().get().saturating_add(1)
+    let end_line = if end.row() == start.row() || end.column().get() != 0 {
+        end.row().get().saturating_add(1)
     } else {
-        end.line().get()
+        end.row().get()
     };
-    start.line().get()..end_line
+    start.row().get()..end_line
 }
 
 impl SearchMatchAnchor {

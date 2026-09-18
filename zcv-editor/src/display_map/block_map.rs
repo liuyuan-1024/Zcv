@@ -15,9 +15,9 @@ use zcv_multi_buffer::ExcerptSnapshot;
 use zcv_text::{CoordinateError, Line};
 
 use super::error::DisplayMapResult;
-use super::fold_map::{FoldBias, ProjectedLineIndex, ProjectedPoint, ProjectedRange};
+use super::fold_map::{FoldBias, ProjectedLineIndex};
 use super::wrap_map::{WrapEdit, WrapRowKind, WrapRows, WrapSnapshot};
-use super::{DisplayPoint, DisplayRow};
+use super::{DisplayColumn, DisplayPoint, DisplayRange, DisplayRow, WrapPoint, WrapRow};
 
 pub(crate) const FILE_HEADER_HEIGHT: usize = 2;
 pub(super) const EXCERPT_BOUNDARY_HEIGHT: usize = 1;
@@ -265,7 +265,7 @@ impl<'a> BlockRows<'a> {
                 let excerpt = match &wrap {
                     WrapRowKind::Text { source, .. } => self
                         .snapshot
-                        .excerpt_for_line(source.line(), &mut self.excerpt_index)
+                        .excerpt_for_line(source.get(), &mut self.excerpt_index)
                         .cloned(),
                 };
                 let row = BlockRow {
@@ -285,13 +285,12 @@ impl<'a> BlockRows<'a> {
     }
 
     pub(crate) fn source_line_ranges(mut self) -> Vec<Range<Line>> {
-        let stream = self
+        let inlay = self
             .snapshot
             .wrap_snapshot
             .tab_snapshot()
             .fold_snapshot()
-            .inlay_snapshot()
-            .stream();
+            .inlay_snapshot();
         let mut lines = BTreeSet::new();
         while let Some(row) = self.next() {
             let BlockRowKind::Text(WrapRowKind::Text {
@@ -312,30 +311,30 @@ impl<'a> BlockRows<'a> {
                 for segment in segments.iter() {
                     if let super::fold_map::FoldRowSegmentKind::Text { stream_line, .. } =
                         segment.kind
-                        && let Some(source) = stream.source(stream_line)
+                        && let Some(source) = inlay.source(stream_line)
                     {
-                        lines.insert(source.line());
+                        lines.insert(source);
                     }
                 }
             } else {
-                lines.insert(source.line());
+                lines.insert(source);
             }
         }
         let mut ranges = Vec::new();
         let mut lines = lines.into_iter().peekable();
         while let Some(start) = lines.next() {
             let mut end = start;
-            while lines.peek().is_some_and(|line| *line == end + 1) {
+            while lines.peek().is_some_and(|line| line.get() == end.get() + 1) {
                 end = lines.next().expect("连续源行的下一个元素必须存在");
             }
-            ranges.push(Line::new(start)..Line::new(end.saturating_add(1)));
+            ranges.push(start..Line::new(end.get() + 1));
         }
         ranges
     }
 }
 
 enum RowMapping<'a> {
-    Text(DisplayRow),
+    Text(WrapRow),
     Block(&'a BlockPlacement),
 }
 
@@ -357,7 +356,7 @@ fn relocated_wrap_row(
                 (edit.new.end - edit.new.start) as isize - (edit.old.end - edit.old.start) as isize;
         } else {
             return wrap_snapshot
-                .offset_to_display_point(excerpts[excerpt_index].output_range().start())
+                .offset_to_wrap_point(excerpts[excerpt_index].output_range().start())
                 .ok()
                 .map(|point| point.row().get());
         }
@@ -385,7 +384,7 @@ impl BlockSnapshot {
             .filter(|(_, excerpt)| excerpt.starts_new_excerpt())
             .filter_map(|(index, excerpt)| {
                 wrap_snapshot
-                    .offset_to_display_point(excerpt.output_range().start())
+                    .offset_to_wrap_point(excerpt.output_range().start())
                     .ok()
                     .map(|point| (point.row().get(), index))
             })
@@ -615,7 +614,7 @@ impl BlockSnapshot {
         }
     }
 
-    pub(super) fn display_row_to_wrap_row(&self, display_row: DisplayRow) -> Option<DisplayRow> {
+    pub(super) fn display_row_to_wrap_row(&self, display_row: DisplayRow) -> Option<WrapRow> {
         if display_row.get() >= self.line_count() {
             return None;
         }
@@ -634,11 +633,11 @@ impl BlockSnapshot {
             self.transforms
                 .find::<OutputToInput, _>((), &OutputRows(display_row), Bias::Right);
         match transform.map(|transform| transform.kind) {
-            Some(TransformKind::Text) => RowMapping::Text(DisplayRow::new(
+            Some(TransformKind::Text) => RowMapping::Text(WrapRow::new(
                 start.1.0 + display_row.saturating_sub(start.0.0),
             )),
             Some(TransformKind::Block(placement)) => RowMapping::Block(&self.placements[placement]),
-            None => RowMapping::Text(DisplayRow::ZERO),
+            None => RowMapping::Text(WrapRow::ZERO),
         }
     }
 
@@ -646,7 +645,7 @@ impl BlockSnapshot {
         &self,
         offset: MultiBufferOffset,
     ) -> DisplayMapResult<DisplayPoint> {
-        let point = self.wrap_snapshot.offset_to_display_point(offset)?;
+        let point = self.wrap_snapshot.offset_to_wrap_point(offset)?;
         Ok(DisplayPoint::new(
             DisplayRow::new(self.wrap_row_to_display_row(point.row().get())),
             point.column(),
@@ -664,7 +663,7 @@ impl BlockSnapshot {
         match self.display_row_mapping(point.row().get()) {
             RowMapping::Text(row) => self
                 .wrap_snapshot
-                .display_point_to_offset_with_bias(DisplayPoint::new(row, point.column()), bias),
+                .wrap_point_to_offset_with_bias(WrapPoint::new(row, point.column()), bias),
             RowMapping::Block(placement) => Ok(placement.block.excerpt.output_range().start()),
         }
     }
@@ -679,26 +678,26 @@ impl BlockSnapshot {
     pub(super) fn project_text_range(
         &self,
         range: MultiBufferRange,
-    ) -> DisplayMapResult<Vec<ProjectedRange>> {
-        self.wrap_snapshot
+    ) -> DisplayMapResult<Vec<DisplayRange>> {
+        Ok(self
+            .wrap_snapshot
             .project_text_range(range)?
             .into_iter()
             .map(|range| {
                 let start = range.start();
                 let end = range.end();
-                ProjectedRange::new(
-                    ProjectedPoint::new(
-                        ProjectedLineIndex::new(self.wrap_row_to_display_row(start.line().get())),
-                        start.column(),
+                DisplayRange::new(
+                    DisplayPoint::new(
+                        DisplayRow::new(self.wrap_row_to_display_row(start.line().get())),
+                        DisplayColumn::new(start.column().get()),
                     ),
-                    ProjectedPoint::new(
-                        ProjectedLineIndex::new(self.wrap_row_to_display_row(end.line().get())),
-                        end.column(),
+                    DisplayPoint::new(
+                        DisplayRow::new(self.wrap_row_to_display_row(end.line().get())),
+                        DisplayColumn::new(end.column().get()),
                     ),
                 )
-                .map_err(Into::into)
             })
-            .collect()
+            .collect())
     }
 
     fn excerpt_for_line<'a>(

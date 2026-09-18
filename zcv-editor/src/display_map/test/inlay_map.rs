@@ -1,25 +1,35 @@
-use zcv_multi_buffer::MultiBufferOffset;
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferSnapshot};
+use zcv_text::{Buffer, BufferConfig, Line};
 
 use super::*;
-use zcv_text::{Buffer, BufferConfig};
 
-fn snapshot_with(text: &str, inlays: Vec<Inlay>) -> InlaySnapshot {
-    let buffer =
-        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
-    let (mut map, _) = InlayMap::new(LineStream::new(buffer.snapshot()));
-    map.read(LineStream::new(buffer.snapshot()), inlays)
+fn multi_snapshot(text: &str) -> MultiBufferSnapshot {
+    Buffer::from_text(text.to_owned(), BufferConfig::default())
+        .expect("测试 Buffer 应能创建")
+        .snapshot()
+        .into()
 }
 
-fn inlay(position: usize, text: &str) -> Inlay {
+fn inlay(_snapshot: &MultiBufferSnapshot, position: usize, text: &str) -> Inlay {
     Inlay {
         position: MultiBufferOffset::new(position),
         text: text.to_owned(),
     }
 }
 
+fn snapshot_with(text: &str, specs: &[(usize, &str)]) -> InlaySnapshot {
+    let buffer = multi_snapshot(text);
+    let mut map = InlayMap::new(buffer.clone()).0;
+    let inlays = specs
+        .iter()
+        .map(|(position, text)| inlay(&buffer, *position, text))
+        .collect();
+    map.sync(buffer, Vec::new(), inlays).0
+}
+
 #[test]
 fn line_text_borrows_without_inlays() {
-    let snapshot = snapshot_with("ab\ncd", Vec::new());
+    let snapshot = snapshot_with("ab\ncd", &[]);
     let text = snapshot.line_text(Line::new(0)).expect("行 0 应可解析");
     assert_eq!(text, "ab\n");
     assert!(matches!(text, Cow::Borrowed(_)));
@@ -27,7 +37,7 @@ fn line_text_borrows_without_inlays() {
 
 #[test]
 fn line_text_projects_inlays_after_anchor_characters() {
-    let snapshot = snapshot_with("ab\ncd", vec![inlay(1, ": hint")]);
+    let snapshot = snapshot_with("ab\ncd", &[(1, ": hint")]);
     // 行 0 投影：锚定 'a' 之后注入。
     let text = snapshot.line_text(Line::new(0)).unwrap();
     assert_eq!(text, "a: hintb\n");
@@ -38,7 +48,7 @@ fn line_text_projects_inlays_after_anchor_characters() {
 
 #[test]
 fn multiple_inlays_accumulate_prefix() {
-    let snapshot = snapshot_with("ab\ncd", vec![inlay(0, "A"), inlay(1, "BB")]);
+    let snapshot = snapshot_with("ab\ncd", &[(0, "A"), (1, "BB")]);
     let infos = snapshot.line_inlays(Line::new(0));
     assert_eq!(infos.len(), 2);
     assert_eq!(infos[0].anchor, 0);
@@ -50,7 +60,7 @@ fn multiple_inlays_accumulate_prefix() {
 
 #[test]
 fn offset_roundtrip_and_inlay_snapping() {
-    let snapshot = snapshot_with("abcdef\n", vec![inlay(2, "XY")]);
+    let snapshot = snapshot_with("abcdef\n", &[(2, "XY")]);
     let line = Line::new(0);
     // 原始 → 投影（字符起点语义）：锚定偏移处的字符在注入文本之后，右移注入长度。
     assert_eq!(snapshot.to_projected_offset(line, 1), 1);
@@ -73,15 +83,18 @@ fn offset_roundtrip_and_inlay_snapping() {
 
 #[test]
 fn version_changes_only_on_inlay_config_change() {
-    let buffer = Buffer::from_text("ab\n".to_owned(), BufferConfig::default())
-        .expect("测试 Buffer 应能创建");
-    let mut map = InlayMap::new(LineStream::new(buffer.snapshot())).0;
-    let stream = LineStream::new(buffer.snapshot());
-    let snapshot = map.read(stream, vec![inlay(1, "x")]);
-    // 相同配置重复读：不变化。
-    let snapshot2 = map.read(snapshot.stream().clone(), snapshot.inlays.clone());
-    assert_eq!(snapshot2.version(), snapshot.version());
+    let buffer = multi_snapshot("ab\n");
+    let mut map = InlayMap::new(buffer.clone()).0;
+    let first = map
+        .sync(buffer.clone(), Vec::new(), vec![inlay(&buffer, 1, "x")])
+        .0;
+    // 相同配置重复同步：不变化。
+    let second = map
+        .sync(buffer.clone(), Vec::new(), vec![inlay(&buffer, 1, "x")])
+        .0;
+    assert_eq!(second.version(), first.version());
     // 配置变化：版本递增。
-    let snapshot3 = map.read(snapshot2.stream().clone(), vec![inlay(1, "xx")]);
-    assert_eq!(snapshot3.version(), snapshot.version() + 1);
+    let third_inlays = vec![inlay(&buffer, 1, "xx")];
+    let third = map.sync(buffer, Vec::new(), third_inlays).0;
+    assert_eq!(third.version(), first.version() + 1);
 }

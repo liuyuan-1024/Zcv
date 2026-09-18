@@ -6,13 +6,13 @@ use zcv_multi_buffer::{
     BufferDiff, BufferDiffInput, DiffFile, DiffHunkKind, DiffHunkStaging, DisplayHunk,
     ExcerptRange, MultiBuffer,
 };
-use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, LogicalColumn, TransactionMetadata};
+use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TransactionMetadata};
 
 use super::common::{
     buffer_text, engine_buffer, focus_editor, inject_editor_diff, inject_file_diff, test_buffer,
 };
 use super::*;
-use crate::display_map::{DisplayRow, ProjectedLineIndex, ProjectedPoint, WrapRowKind};
+use crate::display_map::{DisplayColumn, DisplayPoint, DisplayRow, WrapRowKind};
 
 /// 构造 context_lines=2 的裁剪投影项，供组合文档裁剪测试复用。
 fn clipped_diff_file(
@@ -742,11 +742,11 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
     assert_eq!(projected.len(), 1);
     assert_eq!(
         projected[0].start(),
-        ProjectedPoint::new(ProjectedLineIndex::new(0), LogicalColumn::new(12))
+        DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(12))
     );
     assert_eq!(
         projected[0].end(),
-        ProjectedPoint::new(ProjectedLineIndex::new(0), LogicalColumn::new(13))
+        DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(13))
     );
 }
 

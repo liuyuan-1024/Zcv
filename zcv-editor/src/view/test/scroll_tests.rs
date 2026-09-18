@@ -103,7 +103,7 @@ fn composite_refresh_restores_scroll_from_source_anchor(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
-fn composite_refresh_keeps_the_viewport_on_a_virtual_file_header(cx: &mut TestAppContext) {
+fn composite_refresh_keeps_the_viewport_anchored_to_the_file(cx: &mut TestAppContext) {
     let source = test_buffer(
         cx,
         (0..80)
@@ -138,7 +138,9 @@ fn composite_refresh_keeps_the_viewport_on_a_virtual_file_header(cx: &mut TestAp
     });
     cx.update_entity(&editor, |editor, cx| {
         assert!(editor.restore_scroll_anchor(anchor, cx));
-        assert_eq!(editor.scroll_anchor().row(), DisplayRow::ZERO);
+        // 锚点保存的是底层文件位置；DisplayMap 把文件标题解析为 sticky 块，
+        // 视口落在该文件的第一个文本行（标题占 2 行）。
+        assert_eq!(editor.scroll_anchor().row(), DisplayRow::new(2));
     });
 }
 

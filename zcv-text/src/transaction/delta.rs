@@ -53,10 +53,6 @@ impl Delta {
 pub struct DeltaEvent {
     /// 本次成功提交分配到的事务身份。
     transaction_id: TransactionId,
-    /// 事件对应的旧 BufferVersion。
-    old_version: BufferVersion,
-    /// 事件对应的新 BufferVersion。
-    new_version: BufferVersion,
     /// 事务来源，用于历史观察和外部同步，不表达 Command 层语义。
     source: TransactionSource,
     /// 文本增量事实。
@@ -65,6 +61,10 @@ pub struct DeltaEvent {
     changeset: ChangeSet,
     /// old -> new / new -> old 坐标映射器，供 Anchor 和宿主复用。
     position_map: PositionMap,
+    /// 整体基线是否已被替换。
+    ///
+    /// reset 仍然携带精确 Delta 供 Anchor 跟随，但依赖旧文本语义的派生状态必须重建。
+    reset: bool,
 }
 
 impl DeltaEvent {
@@ -74,15 +74,15 @@ impl DeltaEvent {
         delta: Delta,
         changeset: ChangeSet,
         position_map: PositionMap,
+        reset: bool,
     ) -> Self {
         Self {
             transaction_id,
-            old_version: delta.old_version(),
-            new_version: delta.new_version(),
             source,
             delta,
             changeset,
             position_map,
+            reset,
         }
     }
 
@@ -91,11 +91,11 @@ impl DeltaEvent {
     }
 
     pub fn old_version(&self) -> BufferVersion {
-        self.old_version
+        self.delta.old_version()
     }
 
     pub fn new_version(&self) -> BufferVersion {
-        self.new_version
+        self.delta.new_version()
     }
 
     pub fn source(&self) -> TransactionSource {
@@ -112,5 +112,9 @@ impl DeltaEvent {
 
     pub fn position_map(&self) -> &PositionMap {
         &self.position_map
+    }
+
+    pub fn requires_reset(&self) -> bool {
+        self.reset
     }
 }

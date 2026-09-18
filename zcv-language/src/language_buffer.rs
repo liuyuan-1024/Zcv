@@ -14,6 +14,7 @@ use crate::tree_sitter_utils::ParseCancellation;
 /// 文本插值、后台解析和元数据变化具有不同消费成本。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LanguageBufferEvent {
+    /// 文本订阅已有新变化；事件只唤醒消费者，不携带可延迟重放的版本化增量。
     TextChanged,
     Reparsed,
     MetadataChanged,
@@ -441,7 +442,11 @@ mod tests {
         let observed = Rc::clone(&events);
         let _subscription = cx.update(|cx| {
             cx.subscribe(&language_buffer, move |_, event, _| {
-                observed.borrow_mut().push(*event);
+                observed.borrow_mut().push(match event {
+                    LanguageBufferEvent::TextChanged => "text",
+                    LanguageBufferEvent::Reparsed => "reparsed",
+                    LanguageBufferEvent::MetadataChanged => "metadata",
+                });
             })
         });
 
@@ -455,13 +460,7 @@ mod tests {
             cx.notify();
         });
         cx.run_until_parked();
-        assert_eq!(
-            events.borrow().as_slice(),
-            [
-                LanguageBufferEvent::TextChanged,
-                LanguageBufferEvent::Reparsed
-            ]
-        );
+        assert_eq!(events.borrow().as_slice(), ["text", "reparsed"]);
 
         events.borrow_mut().clear();
         buffer.update(cx, |buffer, cx| {
@@ -469,9 +468,52 @@ mod tests {
             cx.notify();
         });
         cx.run_until_parked();
+        assert_eq!(events.borrow().as_slice(), ["metadata"]);
+    }
+
+    #[gpui::test]
+    fn text_event_wakes_consumers_after_language_snapshot_reaches_the_batch_version(
+        cx: &mut TestAppContext,
+    ) {
+        let buffer = cx.new(|_| {
+            Buffer::scratch("fn main() {}\n".to_owned(), BufferConfig::default())
+                .expect("应创建测试 Buffer")
+        });
+        let direct_subscription = buffer.update(cx, |buffer, _| buffer.subscribe());
+        let language_buffer =
+            cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("main.rs")), cx));
+        cx.run_until_parked();
+
+        let text_event_count = Rc::new(RefCell::new(0));
+        let observed = Rc::clone(&text_event_count);
+        let _subscription = cx.update(|cx| {
+            cx.subscribe(&language_buffer, move |_, event, _| {
+                if *event == LanguageBufferEvent::TextChanged {
+                    *observed.borrow_mut() += 1;
+                }
+            })
+        });
+
+        buffer.update(cx, |buffer, cx| {
+            buffer
+                .edit(
+                    [Edit::insert(ByteOffset::new(3), "async ").unwrap()],
+                    TransactionMetadata::default(),
+                )
+                .expect("测试编辑应成功");
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        let direct = direct_subscription.consume();
+        assert_eq!(*text_event_count.borrow(), 1);
+        assert!(direct.transaction_id().is_some());
+        let language_version = cx.read_entity(&language_buffer, |buffer, cx| {
+            buffer.text_snapshot(cx).version()
+        });
         assert_eq!(
-            events.borrow().as_slice(),
-            [LanguageBufferEvent::MetadataChanged]
+            language_version,
+            direct.new_version().expect("文本变化应有新版本")
         );
     }
 
@@ -492,7 +534,11 @@ mod tests {
         let observed = Rc::clone(&events);
         let _subscription = cx.update(|cx| {
             cx.subscribe(&language_buffer, move |_, event, _| {
-                observed.borrow_mut().push(*event);
+                observed.borrow_mut().push(match event {
+                    LanguageBufferEvent::TextChanged => "text",
+                    LanguageBufferEvent::Reparsed => "reparsed",
+                    LanguageBufferEvent::MetadataChanged => "metadata",
+                });
             })
         });
 
@@ -517,7 +563,7 @@ mod tests {
             events
                 .borrow()
                 .iter()
-                .filter(|event| **event == LanguageBufferEvent::Reparsed)
+                .filter(|event| **event == "reparsed")
                 .count(),
             1
         );

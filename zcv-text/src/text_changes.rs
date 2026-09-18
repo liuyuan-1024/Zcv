@@ -156,7 +156,7 @@ impl TextChangeBatch {
             old_version: Some(event.old_version()),
             new_version: Some(event.new_version()),
             transaction_id: Some(event.transaction_id()),
-            reset: false,
+            reset: event.requires_reset(),
         }
     }
 
@@ -181,6 +181,25 @@ impl TextChangeBatch {
             new_version: Some(new_version),
             transaction_id: None,
             reset: false,
+        }
+    }
+
+    /// 用源批次的坐标映射结果创建投影批次，并保留源事务身份。
+    ///
+    /// 投影层可以改变编辑范围和版本空间，但不能丢失这次变化来自哪个源事务；
+    /// Editor、LanguageBuffer 与 MultiBuffer 因而仍能关联到同一提交事实。
+    pub fn projected_from(&self, edits: Vec<(TextRange, TextRange)>) -> Self {
+        Self {
+            patch: TextPatch::from_edits(
+                edits
+                    .into_iter()
+                    .map(|(old, new)| PatchEdit { old, new })
+                    .collect(),
+            ),
+            old_version: self.old_version,
+            new_version: self.new_version,
+            transaction_id: self.transaction_id,
+            reset: self.reset,
         }
     }
 

@@ -1105,6 +1105,10 @@ struct CompositeHistoryEntry {
     buffers: Vec<(Entity<Buffer>, TransactionId)>,
 }
 
+/// MultiBuffer 拥有的源文本增量游标。
+///
+/// GPUI 事件只负责唤醒；
+/// 连续版本和 Patch 必须由该独立订阅拉取，避免把延迟派发的旧事件当成当前坐标事实。
 struct SourceSubscription {
     source: Entity<LanguageBuffer>,
     text: TextSubscription,
@@ -2405,6 +2409,17 @@ impl MultiBuffer {
         self.publish_projection_change(Some(SourceIncremental { batch }));
     }
 
+    pub(crate) fn publish_source_projection_edit(
+        &mut self,
+        old_text: &[u8],
+        new_text: &[u8],
+        source_change: &TextChangeBatch,
+    ) {
+        let (old_range, new_range) = Self::changed_output_ranges(old_text, new_text);
+        let batch = source_change.projected_from(vec![(old_range, new_range)]);
+        self.publish_projection_change(Some(SourceIncremental { batch }));
+    }
+
     /// 计算两帧组合 output 之间最小的单段替换范围。
     ///
     /// 结构重排只改变 output 中的一段时，局部 edit 允许 DisplayMap 保留折叠、
@@ -2449,11 +2464,15 @@ impl MultiBuffer {
     fn source_incremental_change(
         &self,
         source_id: gpui::EntityId,
-        source_change: Option<&TextChangeBatch>,
+        source_change: &TextChangeBatch,
         old_mappings: &[ExcerptMapping],
     ) -> Option<SourceIncremental> {
-        let source_change = source_change?;
-        if source_change.requires_reset() || source_change.patch().is_empty() {
+        if source_change.requires_reset() {
+            return Some(SourceIncremental {
+                batch: source_change.projected_from(Vec::new()),
+            });
+        }
+        if source_change.patch().is_empty() {
             return None;
         }
         let old_mappings = old_mappings
@@ -2538,11 +2557,7 @@ impl MultiBuffer {
         }
         output_edits.sort_by_key(|(old, _)| old.start());
         Some(SourceIncremental {
-            batch: TextChangeBatch::from_edits(
-                source_change.old_version()?,
-                source_change.new_version()?,
-                output_edits,
-            ),
+            batch: source_change.projected_from(output_edits),
         })
     }
 
@@ -3288,48 +3303,70 @@ impl MultiBuffer {
     }
 
     fn source_changed(&mut self, source_id: gpui::EntityId, cx: &mut Context<Self>) {
-        // 源变更在这里统一驱动 diff 重算，并推进虚拟组合投影。
+        self.synchronize_source_change(source_id, DiffRefresh::RebuildProjection, None, true, cx);
+    }
+
+    /// 从 MultiBuffer 自己拥有的源订阅拉取下一段连续变化并推进投影。
+    ///
+    /// `LanguageBufferEvent` 只是唤醒信号；直接编辑、外部编辑和历史回放都经过此入口，
+    /// 因而同一源只有一个增量游标，不会重放已消费的旧事件。
+    fn synchronize_source_change(
+        &mut self,
+        source_id: gpui::EntityId,
+        diff_refresh: DiffRefresh,
+        expanded_excerpts: Option<&HashSet<usize>>,
+        record_external_remap: bool,
+        cx: &mut Context<Self>,
+    ) -> Option<TextChangeBatch> {
         let source_change = self
             .state
             .source_subscriptions
             .iter()
             .find(|state| state.source.entity_id() == source_id)
-            .map(|state| state.text.consume());
-        if let Some(source_change) = source_change
-            && !source_change.is_empty()
-        {
-            // 直接编辑已同步当前源快照时，事件只消费对应版本，不能重复推进映射。
-            let stored_version = self
-                .state
-                .sources
-                .iter()
-                .find(|source| source.entity.entity_id() == source_id)
-                .map(|source| source.text.version());
-            if source_change.new_version() == stored_version {
-                return;
-            }
-            let position_map = source_change.position_map();
+            .map(|state| state.text.consume())?;
+        if source_change.is_empty() {
+            // 文本变化已被主动同步；延迟到达的事件只需刷新语法快照。
+            self.refresh_source_snapshot(source_id, cx);
+            return None;
+        }
+        let stored_version = self
+            .state
+            .sources
+            .iter()
+            .find(|source| source.entity.entity_id() == source_id)
+            .map(|source| source.text.version())?;
+        assert_eq!(
+            source_change.old_version(),
+            Some(stored_version),
+            "MultiBuffer 必须按自己的源订阅连续消费文本变化"
+        );
+        let position_map = source_change.position_map();
+        if record_external_remap {
             // 外部源变更：选区先按源坐标推进，再解析到重建后的显示拓扑。
             self.pending_source_remaps
                 .push((source_id, position_map.clone()));
-            // 外部整体刷新会重建 excerpt 拓扑；文本始终由当前 source 快照按需读取。
-            if source_change.requires_reset() && self.is_diff_source(source_id, cx) {
-                let before = (
-                    self.state.excerpts.clone(),
-                    self.state.diff_transforms.clone(),
-                );
-                let old_text = self.build_snapshot(cx).text_bytes();
-                self.refresh_source_snapshot(source_id, cx);
-                self.rebuild_diff_projection_from_text(before, old_text, cx);
-                return;
-            }
-            self.recompute_diff_for_source(source_id, DiffRefresh::RebuildProjection, cx);
-            // 普通编辑只更新受影响 source 的派生坐标；BufferDiff 仍独立维护 hunk 拓扑。
-            self.apply_source_change(source_id, &position_map, Some(&source_change), None, cx);
-        } else {
-            // 组合编辑已消费该源事务；这里只刷新可能稍后到达的语法快照。
-            self.refresh_source_snapshot(source_id, cx);
         }
+        // 外部整体刷新会重建 excerpt 拓扑；文本始终由当前 source 快照按需读取。
+        if source_change.requires_reset() && self.is_diff_source(source_id, cx) {
+            let before = (
+                self.state.excerpts.clone(),
+                self.state.diff_transforms.clone(),
+            );
+            let old_text = self.build_snapshot(cx).text_bytes();
+            self.refresh_source_snapshot(source_id, cx);
+            self.rebuild_diff_projection_from_text(before, old_text, Some(&source_change), cx);
+            return Some(source_change);
+        }
+        self.recompute_diff_for_source(source_id, diff_refresh, cx);
+        // 普通编辑只更新受影响 source 的派生坐标；BufferDiff 仍独立维护 hunk 拓扑。
+        self.apply_source_change(
+            source_id,
+            &position_map,
+            &source_change,
+            expanded_excerpts,
+            cx,
+        );
+        Some(source_change)
     }
 
     fn refresh_source_snapshot(&mut self, source_id: gpui::EntityId, cx: &App) {
@@ -3362,7 +3399,7 @@ impl MultiBuffer {
         &mut self,
         source_id: gpui::EntityId,
         source_position_map: &PositionMap,
-        _source_change: Option<&TextChangeBatch>,
+        source_change: &TextChangeBatch,
         expanded_excerpts: Option<&HashSet<usize>>,
         cx: &mut Context<Self>,
     ) {
@@ -3375,19 +3412,6 @@ impl MultiBuffer {
         else {
             return;
         };
-        // 源事件可能已经由 LanguageBuffer 的同步通知路径物化到显示流；
-        // 版本相等表示这次 PositionMap 已被消费，不能再次推进 excerpt 范围。
-        let source_version = source.read(cx).text_snapshot(cx).version();
-        let stored_version = self
-            .state
-            .sources
-            .iter()
-            .find(|candidate| candidate.entity.entity_id() == source_id)
-            .map(|candidate| candidate.text.version());
-        if _source_change.is_none() && stored_version == Some(source_version) {
-            self.refresh_source_snapshot(source_id, cx);
-            return;
-        }
         let text = source.read(cx).text_snapshot(cx);
         let syntax = source.read(cx).syntax_snapshot();
 
@@ -3408,7 +3432,7 @@ impl MultiBuffer {
         self.splice_source_path(source_id, source_position_map, expanded_excerpts, cx);
         self.rebuild_match_ranges_from_tree();
         self.refresh_diff_display(cx);
-        let incremental = self.source_incremental_change(source_id, _source_change, &old_mappings);
+        let incremental = self.source_incremental_change(source_id, source_change, &old_mappings);
         self.publish_projection_change(incremental);
         cx.emit(MultiBufferEvent::TextChanged);
         cx.notify();
@@ -3417,10 +3441,10 @@ impl MultiBuffer {
     fn source_reparsed(&mut self, source_id: gpui::EntityId, cx: &mut Context<Self>) {
         let Some(source) = self
             .state
-            .source_subscriptions
+            .sources
             .iter()
-            .find(|state| state.source.entity_id() == source_id)
-            .map(|state| state.source.clone())
+            .find(|state| state.entity.entity_id() == source_id)
+            .map(|state| state.entity.clone())
         else {
             return;
         };
@@ -3592,32 +3616,32 @@ impl MultiBuffer {
             }
         }
 
-        let mut source_maps = Vec::with_capacity(grouped.len());
+        let mut edited_source_ids = Vec::with_capacity(grouped.len());
         for (source, source_edits) in grouped {
-            let outcome = Self::update_source_text(
+            Self::update_source_text(
                 &source,
                 |buffer| buffer.edit(source_edits, metadata.clone()),
                 cx,
             )?;
-            source_maps.push((
-                source.entity_id(),
-                outcome.event().position_map().clone(),
-                TextChangeBatch::from_event(outcome.event()),
-            ));
+            edited_source_ids.push(source.entity_id());
         }
 
-        // 组合编辑写回工作区源后，直接将同一份源事件映射到受影响 excerpts。
-        // 源事件稍后到达时会看到相同的显示版本，只消费事件而不再次物化。
+        // 组合编辑写回工作区源后，立即从 MultiBuffer 拥有的订阅拉取同一批变化。
+        // 稍后到达的 LanguageBuffer 事件只负责唤醒，不再携带或重放增量。
         // hunk 变化由 BufferDiffEvent::DiffChanged 异步驱动物化；
         // 本轮回传的映射即编辑后、重物化前的坐标系，选区落位不依赖 diff 重建时机。
-        for (source_id, position_map, source_change) in &source_maps {
-            self.apply_source_change(
-                *source_id,
-                position_map,
-                Some(source_change),
+        for source_id in edited_source_ids {
+            self.synchronize_source_change(
+                source_id,
+                DiffRefresh::PreserveProjection,
                 Some(&edited_excerpts),
+                false,
                 cx,
-            );
+            )
+            .ok_or_else(|| TextError::InvariantViolation {
+                location: "MultiBuffer::edit",
+                detail: "源 Buffer 已提交编辑但 MultiBuffer 订阅未收到变化".to_string(),
+            })?;
         }
         Ok(ProjectionRemap::identity())
     }
@@ -3856,9 +3880,7 @@ impl MultiBuffer {
                 .singleton_source
                 .clone()
                 .expect("共享源历史必须有工作区源");
-            let source_buffer = source.read(cx).buffer();
             let old_version = self.snapshot(cx).version();
-            let source_subscription = source_buffer.update(cx, |buffer, _| buffer.subscribe());
             let outcome = Self::update_source_text(
                 &source,
                 |buffer| if redo { buffer.redo() } else { buffer.undo() },
@@ -3867,16 +3889,19 @@ impl MultiBuffer {
             let Some(outcome) = outcome else {
                 return Ok(None);
             };
-            let source_change = source_subscription.consume();
+            let source_change = self
+                .synchronize_source_change(
+                    source.entity_id(),
+                    DiffRefresh::PreserveProjection,
+                    None,
+                    false,
+                    cx,
+                )
+                .ok_or_else(|| TextError::InvariantViolation {
+                    location: "MultiBuffer::replay_history",
+                    detail: "源 Buffer 已回放历史但 MultiBuffer 订阅未收到变化".to_string(),
+                })?;
             let source_map = source_change.position_map();
-            self.recompute_diff_for_source(source.entity_id(), DiffRefresh::PreserveProjection, cx);
-            self.apply_source_change(
-                source.entity_id(),
-                &source_map,
-                Some(&source_change),
-                None,
-                cx,
-            );
             return Ok(Some(MultiBufferHistoryOutcome {
                 transaction_id: outcome.transaction_id(),
                 // 回放结果必须携带源事务的坐标映射：调用方用它推进锚定在投影坐标
@@ -3903,7 +3928,7 @@ impl MultiBuffer {
             (entry, self.snapshot(cx).version())
         };
 
-        let mut source_changes = Vec::new();
+        let mut replayed_source_ids = Vec::new();
         for (buffer, expected_transaction) in &entry.buffers {
             if !redo
                 && buffer
@@ -3917,7 +3942,6 @@ impl MultiBuffer {
                     detail: "底层 Buffer 历史已在 MultiBuffer 外部分叉".to_string(),
                 });
             }
-            // 订阅源 Buffer：合并事务的 undo/redo 会回放多个批次，订阅批次经 compose 给出跨批次复合 old→new 映射。
             let mut cursor =
                 MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
             cursor.seek_output(ByteOffset::ZERO, Bias::Right);
@@ -3942,7 +3966,6 @@ impl MultiBuffer {
                     detail: "历史 Buffer 不再属于当前组合文档源".to_string(),
                 });
             };
-            let source_subscription = buffer.update(cx, |buffer, _| buffer.subscribe());
             let outcome = Self::update_source_text(
                 &source,
                 |buffer| if redo { buffer.redo() } else { buffer.undo() },
@@ -3957,12 +3980,20 @@ impl MultiBuffer {
             // 历史条目记录的是 excerpt 源的内层 Buffer；
             // source id 与 diff 文件（按 working LanguageBuffer 索引）和 excerpt 源统一身份口径。
             let source_id = source.entity_id();
-            let source_change = source_subscription.consume();
-            source_changes.push((source_id, source_change.position_map(), source_change));
+            replayed_source_ids.push(source_id);
         }
-        for (source_id, position_map, source_change) in &source_changes {
-            self.recompute_diff_for_source(*source_id, DiffRefresh::PreserveProjection, cx);
-            self.apply_source_change(*source_id, position_map, Some(source_change), None, cx);
+        for source_id in replayed_source_ids {
+            self.synchronize_source_change(
+                source_id,
+                DiffRefresh::PreserveProjection,
+                None,
+                false,
+                cx,
+            )
+            .ok_or_else(|| TextError::InvariantViolation {
+                location: "MultiBuffer::replay_history",
+                detail: "源 Buffer 已回放历史但 MultiBuffer 订阅未收到变化".to_string(),
+            })?;
         }
         let position_map = PositionMap::default();
         let new_version = self.snapshot(cx).version();

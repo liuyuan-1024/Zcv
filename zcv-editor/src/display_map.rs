@@ -646,9 +646,10 @@ impl DisplayMap {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroUsize;
+    use std::{cell::RefCell, num::NonZeroUsize, path::PathBuf, rc::Rc};
 
-    use gpui::{TestAppContext, font, px};
+    use gpui::{AppContext, TestAppContext, font, px};
+    use zcv_language::LanguageBuffer;
     use zcv_text::{Buffer, BufferConfig, Edit, Line, TextRange, TransactionMetadata};
     use zcv_theme::ThemeChoice;
 
@@ -713,6 +714,78 @@ mod tests {
         assert!(
             Arc::ptr_eq(&after.block_snapshot, &before.block_snapshot),
             "纯元数据同步不得重建 Block/Fold/Wrap 显示拓扑"
+        );
+    }
+
+    #[gpui::test]
+    fn display_pipeline_receives_the_source_transaction_batch(cx: &mut TestAppContext) {
+        let source_buffer = cx.new(|_| {
+            zcv_text::Buffer::scratch("fn main() {}\n".to_owned(), BufferConfig::default())
+                .expect("测试 Buffer 应能创建")
+        });
+        let source = cx.new(|cx| {
+            LanguageBuffer::new(source_buffer.clone(), Some(PathBuf::from("main.rs")), cx)
+        });
+        cx.run_until_parked();
+
+        let multi_buffer = cx.new(|cx| zcv_multi_buffer::MultiBuffer::singleton(source, cx));
+        let (projection_subscription, snapshot) =
+            cx.update_entity(&multi_buffer, |multi, cx| multi.subscribe_and_snapshot(cx));
+        let display = cx.new(|_| DisplayMap::new(snapshot));
+        display.update(cx, |display, cx| {
+            display.set_multi_buffer(multi_buffer.clone(), projection_subscription, cx);
+        });
+
+        let source_subscription = source_buffer.update(cx, |buffer, _| buffer.subscribe());
+        let changes = Rc::new(RefCell::new(None));
+        let observed = Rc::clone(&changes);
+        let _display_subscription = cx.update(|cx| {
+            cx.subscribe(&display, move |_, event, _| {
+                if !event.changes.is_empty() {
+                    *observed.borrow_mut() = Some(event.changes.clone());
+                }
+            })
+        });
+
+        source_buffer.update(cx, |buffer, cx| {
+            buffer
+                .edit(
+                    [Edit::insert(ByteOffset::new(3), "async ").unwrap()],
+                    TransactionMetadata::default(),
+                )
+                .expect("测试编辑应成功");
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        let source_changes = source_subscription.consume();
+        let display_changes = changes
+            .borrow_mut()
+            .take()
+            .expect("显示管线应收到组合投影变化");
+        assert_eq!(
+            display_changes.transaction_id(),
+            source_changes.transaction_id()
+        );
+        assert_eq!(display_changes.patch(), source_changes.patch());
+
+        let reload_subscription = source_buffer.update(cx, |buffer, _| buffer.subscribe());
+        source_buffer.update(cx, |buffer, cx| {
+            buffer
+                .reload_from_text("fn replacement() {}\n".to_owned())
+                .expect("外部重载应成功");
+            cx.notify();
+        });
+        cx.run_until_parked();
+
+        let source_reload = reload_subscription.consume();
+        let display_reload = changes.borrow_mut().take().expect("显示管线应收到重载变化");
+        assert!(source_reload.requires_reset());
+        assert!(display_reload.requires_reset());
+        assert_eq!(
+            display_reload.transaction_id(),
+            source_reload.transaction_id(),
+            "reset 经过语言、组合与显示投影后必须保留源事务身份"
         );
     }
 

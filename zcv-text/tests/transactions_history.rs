@@ -36,7 +36,87 @@ fn edit_should_emit_delta_changeset_position_map_and_subscription_patch() {
     assert_eq!(event.position_map().map_old_position(b(7)).value(), b(8));
     assert_eq!(changes.old_version(), Some(base));
     assert_eq!(changes.new_version(), Some(buffer.version()));
+    let event_changes = TextChangeBatch::from_event(event);
+    assert_eq!(event_changes.old_version(), changes.old_version());
+    assert_eq!(event_changes.new_version(), changes.new_version());
+    assert_eq!(event_changes.transaction_id(), changes.transaction_id());
+    assert_eq!(event_changes.patch(), changes.patch());
     assert_eq!(changes.patch().edits().len(), 2);
+}
+
+#[test]
+fn anchor_follows_continuous_delta_events_without_reinterpreting_coordinates() {
+    let mut buffer = buffer("abcd");
+    let mut anchor = Anchor::new(buffer.version(), b(2)).with_affinity(Affinity::After);
+
+    let first = buffer
+        .edit(
+            [Edit::insert(b(2), "XY".to_string()).unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    anchor
+        .update_through_delta_event(first.event())
+        .expect("连续事件的首个版本应匹配");
+    assert_eq!(anchor.offset(), b(4));
+
+    let second = buffer
+        .edit(
+            [Edit::insert(b(4), "!".to_string()).unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    anchor
+        .update_through_delta_event(second.event())
+        .expect("连续事件的后续版本应匹配");
+    assert_eq!(anchor.version(), buffer.version());
+    assert_eq!(anchor.offset(), b(5));
+}
+
+#[test]
+fn anchors_map_through_a_multi_edit_transaction_with_their_affinity() {
+    let mut buffer = buffer("abcdef");
+    let version = buffer.version();
+    let mut before_insert = Anchor::new(version, b(1)).with_affinity(Affinity::Before);
+    let mut after_insert = Anchor::new(version, b(1)).with_affinity(Affinity::After);
+    let mut before_replace = Anchor::new(version, b(3)).with_affinity(Affinity::Before);
+    let mut after_replace = Anchor::new(version, b(5)).with_affinity(Affinity::After);
+
+    let outcome = buffer
+        .edit(
+            [
+                Edit::insert(b(1), "XY".to_string()).unwrap(),
+                Edit::replace(range(3, 5), "Z".to_string()),
+            ],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+
+    for anchor in [
+        &mut before_insert,
+        &mut after_insert,
+        &mut before_replace,
+        &mut after_replace,
+    ] {
+        anchor
+            .update_through_delta_event(outcome.event())
+            .expect("同一事务的所有锚点版本必须一致");
+        assert_eq!(anchor.version(), buffer.version());
+    }
+
+    assert_eq!(buffer_text(&buffer), "aXYbcZf");
+    assert_eq!(before_insert.offset(), b(1), "贴前插入的锚点不跟随插入");
+    assert_eq!(after_insert.offset(), b(3), "贴后插入的锚点跟随插入");
+    assert_eq!(
+        before_replace.offset(),
+        b(5),
+        "替换起点前的锚点落在替换文本前"
+    );
+    assert_eq!(
+        after_replace.offset(),
+        b(6),
+        "替换终点后的锚点落在替换文本后"
+    );
 }
 
 #[test]
@@ -124,6 +204,40 @@ fn explicit_history_merge_should_return_one_canonical_identity_for_editor_select
     let redo = buffer.redo().unwrap().unwrap();
     assert_eq!(buffer_text(&buffer), "abc");
     assert_eq!(redo.transaction_id(), canonical_transaction_id.unwrap());
+}
+
+#[test]
+fn merged_transaction_undo_publishes_one_composed_change_batch() {
+    let mut buffer = buffer("ab");
+    let changes = buffer.subscribe();
+
+    buffer
+        .edit(
+            [Edit::insert(b(1), "z").unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    changes.consume();
+    for (range, replacement) in [(range(1, 2), "zh"), (range(1, 3), "中")] {
+        buffer
+            .edit(
+                [Edit::replace(range, replacement)],
+                TransactionMetadata::new(TransactionSource::Programmatic)
+                    .with_merge_policy(TransactionMergePolicy::MergeWithPrevious),
+            )
+            .unwrap();
+        changes.consume();
+    }
+
+    buffer.undo().unwrap().expect("合并事务应可撤销");
+    let undo_changes = changes.consume();
+
+    assert_eq!(buffer_text(&buffer), "ab");
+    assert_eq!(undo_changes.old_version(), Some(BufferVersion::new(3)));
+    assert_eq!(undo_changes.new_version(), Some(BufferVersion::new(6)));
+    assert_eq!(undo_changes.patch().edits().len(), 1);
+    assert_eq!(undo_changes.patch().edits()[0].old_range(), range(1, 4));
+    assert_eq!(undo_changes.patch().edits()[0].new_range(), range(1, 1));
 }
 
 #[test]

@@ -92,6 +92,7 @@ mod tests {
             delta,
             changeset,
             position_map,
+            false,
         )
     }
 

@@ -49,6 +49,10 @@ impl TransactionSession {
         self.redo_batches.clear();
         self.record_history = false;
     }
+
+    pub(in crate::buffer) fn history_transaction_id(&self) -> Option<TransactionId> {
+        self.record_history.then_some(self.transaction_id)
+    }
 }
 
 impl Buffer {

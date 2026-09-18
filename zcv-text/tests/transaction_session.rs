@@ -143,6 +143,59 @@ fn skip_history_edit_discards_whole_session_history() {
 }
 
 #[test]
+fn skip_history_edit_does_not_report_a_history_identity() {
+    let mut buffer = buffer("hello");
+    let session_id = buffer.start_transaction().unwrap().expect("应开启会话");
+
+    let recorded = buffer
+        .edit(
+            [Edit::insert(b(5), " world".to_string()).unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    assert_eq!(recorded.history_transaction_id(), Some(session_id));
+
+    let skipped = buffer
+        .edit(
+            [Edit::insert(b(11), "!".to_string()).unwrap()],
+            TransactionMetadata::new(TransactionSource::Programmatic).without_history(),
+        )
+        .unwrap();
+    assert!(skipped.history_transaction_id().is_none());
+
+    let later = buffer
+        .edit(
+            [Edit::insert(b(12), "?".to_string()).unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    assert!(later.history_transaction_id().is_none());
+    assert_eq!(buffer.end_transaction().unwrap(), None);
+    assert!(!buffer.can_undo());
+}
+
+#[test]
+fn reload_ends_the_active_session_and_replaces_its_history_baseline() {
+    let mut buffer = buffer("hello");
+    buffer.start_transaction().unwrap().expect("应开启会话");
+    buffer
+        .edit(
+            [Edit::insert(b(5), " world".to_string()).unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+
+    buffer
+        .reload_from_text("replacement".to_owned())
+        .expect("外部重载应成功");
+
+    assert_eq!(buffer_text(&buffer), "replacement");
+    assert_eq!(buffer.end_transaction().unwrap(), None);
+    assert!(!buffer.can_undo());
+    assert!(!buffer.can_redo());
+}
+
+#[test]
 fn session_survives_across_edit_failures() {
     let mut buffer = buffer("hello");
     buffer.start_transaction().unwrap();

@@ -1031,7 +1031,7 @@ impl MultiBuffer {
             return ProjectionRemap::identity();
         }
         let old_snapshot = self.snapshot(cx);
-        self.rebuild_diff_projection_from_text(before, old_snapshot.text_bytes(), cx)
+        self.rebuild_diff_projection_from_text(before, old_snapshot.text_bytes(), None, cx)
     }
 
     /// 使用调用方在源快照更新前保存的旧输出重建 diff 投影。
@@ -1042,6 +1042,7 @@ impl MultiBuffer {
         &mut self,
         before: (SumTree<crate::Excerpt>, SumTree<DiffTransform>),
         old_text: Vec<u8>,
+        source_change: Option<&zcv_text::TextChangeBatch>,
         cx: &mut Context<Self>,
     ) -> ProjectionRemap {
         if self.diff.is_none() {
@@ -1071,7 +1072,11 @@ impl MultiBuffer {
         );
         let new_snapshot = self.build_snapshot(cx);
         let new_text = new_snapshot.text_bytes();
-        self.publish_projection_edit(&old_text, &new_text, old_version);
+        if let Some(source_change) = source_change {
+            self.publish_source_projection_edit(&old_text, &new_text, source_change);
+        } else {
+            self.publish_projection_edit(&old_text, &new_text, old_version);
+        }
         let display = self.derive_diff_display(materialized_hunks.iter());
         for file in &mut self.diffs {
             file.materialized.clear();

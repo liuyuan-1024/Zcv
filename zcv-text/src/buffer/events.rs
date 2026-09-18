@@ -34,7 +34,7 @@ impl Buffer {
             event.old_version(),
             event.new_version(),
             patch,
-            false,
+            event.requires_reset(),
             Some(event.transaction_id()),
         );
     }

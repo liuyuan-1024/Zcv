@@ -31,47 +31,34 @@ impl Buffer {
     /// 成功返回事务身份、历史归属和增量事实，并按事务元数据记录 Undo 历史。
     pub(crate) fn apply_transaction(&mut self, tx: Transaction) -> TextResult<TransactionOutcome> {
         self.ensure_writable()?;
-        let mut prepared = self.prepare_transaction(tx)?;
+        let (mut prepared, next_transaction_id, event) = self.prepare_transaction(tx)?;
         self.apply_large_transaction_policy(&mut prepared)?;
+        self.commit_prepared_edit_list(&prepared.edits, next_transaction_id, &event)?;
 
-        let (transaction_id, _delta, _changeset, event) = self.apply_edit_list(
-            prepared.base_version,
-            prepared.edits.clone(),
-            prepared.metadata.source(),
-        )?;
-
-        let history_transaction_id = self.finish_transaction(prepared, transaction_id)?;
+        let history_transaction_id = self.finish_transaction(prepared, event.transaction_id())?;
         Ok(TransactionOutcome::new(history_transaction_id, event))
     }
 
-    fn prepare_transaction(&mut self, tx: Transaction) -> TextResult<PreparedTransaction> {
+    fn prepare_transaction(
+        &self,
+        tx: Transaction,
+    ) -> TextResult<(PreparedTransaction, crate::TransactionId, DeltaEvent)> {
         let (base_version, edits, metadata) = tx.into_parts();
-
-        self.verify_transaction_base_version(base_version)?;
-        self.validate_edit_list(&edits)?;
-
+        let (next_transaction_id, event) =
+            self.prepare_delta_event(base_version, edits.clone(), metadata.source(), false)?;
         let undo_edits = self.build_inverse_edit_list(&edits)?;
         let redo_edits = edits.clone();
 
-        Ok(PreparedTransaction {
-            base_version,
-            edits,
-            metadata,
-            undo_edits,
-            redo_edits,
-        })
-    }
-
-    fn verify_transaction_base_version(&self, base_version: BufferVersion) -> TextResult<()> {
-        if base_version != self.version {
-            return Err(TransactionError::VersionMismatch {
-                expected: self.version,
-                actual: base_version,
-            }
-            .into());
-        }
-
-        Ok(())
+        Ok((
+            PreparedTransaction {
+                edits,
+                metadata,
+                undo_edits,
+                redo_edits,
+            },
+            next_transaction_id,
+            event,
+        ))
     }
 
     fn finish_transaction(
@@ -81,13 +68,13 @@ impl Buffer {
     ) -> TextResult<Option<crate::TransactionId>> {
         if let Some(session) = &mut self.session {
             // 会话内：只累积 undo/redo 批次，历史写入推迟到 `end_transaction`。
-            if prepared.metadata.record_history() {
+            if prepared.metadata.record_history() && session.history_transaction_id().is_some() {
                 session.append(prepared.undo_edits, prepared.redo_edits, &prepared.metadata);
             } else {
                 // 超大事务放弃历史（SkipHistory）：整个会话的历史作废，否则 undo 回放会漏掉会话内的这些文本变化。
                 session.discard_history();
             }
-            return Ok(Some(session.transaction_id));
+            return Ok(session.history_transaction_id());
         }
 
         if prepared.metadata.record_history() {
@@ -155,23 +142,24 @@ impl Buffer {
         base_version: BufferVersion,
         tx_edits: EditList,
         source: TransactionSource,
-    ) -> TextResult<(crate::TransactionId, Delta, ChangeSet, DeltaEvent)> {
+    ) -> TextResult<DeltaEvent> {
         // ===== Fallible 段：在 Buffer 本体变异前完成全部可失败检查 =====
         self.ensure_writable()?;
 
-        if base_version != self.version {
-            return Err(TransactionError::VersionMismatch {
-                expected: self.version,
-                actual: base_version,
-            }
-            .into());
-        }
+        let (next_transaction_id, event) =
+            self.prepare_delta_event(base_version, tx_edits.clone(), source, false)?;
+        self.commit_prepared_edit_list(&tx_edits, next_transaction_id, &event)?;
+        Ok(event)
+    }
 
-        self.validate_edit_list(&tx_edits)?;
-        let (transaction_id, next_transaction_id) = self.prepare_transaction_id()?;
-        let old_version = self.version;
-        let new_version = old_version.next().ok_or(TextError::VersionOverflow)?;
-        let prepared_replaces = self.prepare_storage_replaces(&tx_edits)?;
+    /// 将已验证并已绑定事务身份的编辑落到克隆存储，再原子替换 Buffer 状态。
+    fn commit_prepared_edit_list(
+        &mut self,
+        tx_edits: &EditList,
+        next_transaction_id: crate::TransactionId,
+        event: &DeltaEvent,
+    ) -> TextResult<()> {
+        let prepared_replaces = self.prepare_storage_replaces(tx_edits)?;
         let mut next_storage = self.storage.clone();
         for (edit, prepared_replace) in tx_edits
             .as_slice()
@@ -182,24 +170,56 @@ impl Buffer {
             next_storage.replace_prepared(prepared_replace, edit.replacement());
         }
 
+        // ===== Commit 段：从这里起 Buffer 本体变异不允许失败 =====
+        // 文本已经在 clone storage 上完整构造；真正提交只做 move assignment 与订阅发布。
+        self.commit_prepared_text_change(next_storage, next_transaction_id, event);
+        Ok(())
+    }
+
+    /// 为一次已确定的文本变化构造唯一的版本、事务与坐标映射事实。
+    ///
+    /// 普通编辑和外部基线重载共用该边界；两者只在历史策略和 reset 语义上不同。
+    pub(in crate::buffer) fn prepare_delta_event(
+        &self,
+        base_version: BufferVersion,
+        tx_edits: EditList,
+        source: TransactionSource,
+        reset: bool,
+    ) -> TextResult<(crate::TransactionId, DeltaEvent)> {
+        if base_version != self.version {
+            return Err(TransactionError::VersionMismatch {
+                expected: self.version,
+                actual: base_version,
+            }
+            .into());
+        }
+
+        self.validate_edit_list(&tx_edits)?;
+        let (transaction_id, next_transaction_id) = self.prepare_transaction_id()?;
+        let new_version = base_version.next().ok_or(TextError::VersionOverflow)?;
         let changeset = ChangeSet::from_edit_list(&tx_edits);
         let position_map = changeset.position_map();
-        let delta = Delta::new(old_version, new_version, tx_edits);
+        let delta = Delta::new(base_version, new_version, tx_edits);
         let event = DeltaEvent::new(
             transaction_id,
             source,
-            delta.clone(),
-            changeset.clone(),
+            delta,
+            changeset,
             position_map,
+            reset,
         );
+        Ok((next_transaction_id, event))
+    }
 
-        // ===== Commit 段：从这里起 Buffer 本体变异不允许失败 =====
-        // 文本已经在 clone storage 上完整构造；真正提交只做 move assignment 与订阅发布。
+    pub(in crate::buffer) fn commit_prepared_text_change(
+        &mut self,
+        next_storage: crate::storage::RopeyStorage,
+        next_transaction_id: crate::TransactionId,
+        event: &DeltaEvent,
+    ) {
         self.storage = next_storage;
-        self.version = new_version;
-        self.commit_delta_event(next_transaction_id, &event);
-
-        Ok((transaction_id, delta, changeset, event))
+        self.version = event.new_version();
+        self.commit_delta_event(next_transaction_id, event);
     }
 
     fn prepare_storage_replaces(
@@ -219,5 +239,43 @@ impl Buffer {
         }
 
         Ok(prepared_replaces)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BufferConfig, ByteOffset, Edit};
+
+    #[test]
+    fn stale_transaction_is_rejected_before_text_version_and_history_change() {
+        let mut buffer = Buffer::scratch("abc".to_owned(), BufferConfig::default()).unwrap();
+        let stale_version = buffer.version();
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::new(3), "!").unwrap()],
+                Default::default(),
+            )
+            .unwrap();
+        let current_version = buffer.version();
+        let can_undo = buffer.can_undo();
+        let can_redo = buffer.can_redo();
+        let transaction = Transaction::from_edits(
+            stale_version,
+            vec![Edit::insert(ByteOffset::ZERO, "stale").unwrap()],
+        )
+        .unwrap();
+
+        let error = buffer.apply_transaction(transaction).unwrap_err();
+
+        assert!(matches!(
+            error,
+            TextError::Transaction(TransactionError::VersionMismatch { expected, actual })
+                if expected == current_version && actual == stale_version
+        ));
+        assert_eq!(buffer.version(), current_version);
+        assert_eq!(buffer.can_undo(), can_undo);
+        assert_eq!(buffer.can_redo(), can_redo);
+        assert_eq!(buffer.len_bytes(), ByteOffset::new(4));
     }
 }

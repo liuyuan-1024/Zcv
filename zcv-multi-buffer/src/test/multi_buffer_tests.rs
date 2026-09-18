@@ -970,6 +970,8 @@ fn singleton_source_updates_the_display_stream_without_reset(cx: &mut TestAppCon
     let subscription = cx.update_entity(&multi_buffer, |buffer, cx| {
         buffer.subscribe_and_snapshot(cx).0
     });
+    let source_subscription =
+        cx.read_entity(&source, |source, cx| source.buffer().read(cx).subscribe());
 
     cx.update_entity(&source_buffer, |buffer, cx| {
         buffer
@@ -982,6 +984,19 @@ fn singleton_source_updates_the_display_stream_without_reset(cx: &mut TestAppCon
     });
     cx.run_until_parked();
 
+    let source_changes = source_subscription.consume();
+    let projection_changes = subscription.consume();
+    assert_eq!(
+        projection_changes.transaction_id(),
+        source_changes.transaction_id(),
+        "组合投影必须保留源事务身份"
+    );
+    assert_eq!(
+        projection_changes.patch(),
+        source_changes.patch(),
+        "单文件投影必须直接转发源批次的编辑范围"
+    );
+
     let updated = cx.read_entity(&multi_buffer, |buffer, cx| buffer.snapshot(cx));
     assert_eq!(
         String::from_utf8(updated.text_bytes()).expect("编辑器快照必须是 UTF-8"),
@@ -992,7 +1007,7 @@ fn singleton_source_updates_the_display_stream_without_reset(cx: &mut TestAppCon
         "源编辑后的组合快照必须携带新的源元数据版本"
     );
     assert!(
-        !subscription.consume().requires_reset(),
+        !projection_changes.requires_reset(),
         "单文件源编辑不应通过投影整体重载"
     );
 

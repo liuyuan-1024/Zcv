@@ -11,6 +11,7 @@ use crate::{
     diff::diff_patch,
     errors::TransactionError,
     storage::{RopeyStorage, TextRead},
+    transaction::{Edit, EditList, TransactionSource},
 };
 
 impl Buffer {
@@ -33,17 +34,26 @@ impl Buffer {
             return Ok(());
         }
         let patch = diff_patch(&old_text, &text);
+        let edits = EditList::new(
+            patch
+                .edits()
+                .iter()
+                .map(|edit| {
+                    Edit::replace(
+                        edit.old_range(),
+                        &text[edit.new_range().start().get()..edit.new_range().end().get()],
+                    )
+                })
+                .collect(),
+        )?;
         let new_storage = RopeyStorage::new(text);
-        let new_version = self.version.next().ok_or(TextError::VersionOverflow)?;
-        self.storage = new_storage;
-        self.version = new_version;
+        let (next_transaction_id, event) =
+            self.prepare_delta_event(old_version, edits, TransactionSource::Programmatic, true)?;
+        self.commit_prepared_text_change(new_storage, next_transaction_id, &event);
         self.history.clear();
+        self.session = None;
         self.mark_clean_internal();
         self.apply_large_file_auto_read_only();
-        // reload 替换了整份存储并清空历史。
-        // 位置型消费者仍可使用 patch 跟随选区，但依赖旧文本语义的派生状态（如 diff hunk）必须重建，不能把它视为普通增量编辑。
-        self.text_changes
-            .publish(old_version, self.version, patch, true, None);
         Ok(())
     }
 
@@ -166,7 +176,12 @@ mod tests {
 
         buffer.reload_from_text("after\n".to_owned()).unwrap();
 
-        assert!(subscription.consume().requires_reset());
+        let changes = subscription.consume();
+        assert!(changes.requires_reset());
+        assert!(changes.transaction_id().is_some());
+        assert_eq!(changes.old_version(), Some(BufferVersion::INITIAL));
+        assert_eq!(changes.new_version(), Some(BufferVersion::new(1)));
+        assert!(!changes.patch().is_empty());
     }
 
     #[test]

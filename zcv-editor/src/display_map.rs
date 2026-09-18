@@ -470,7 +470,7 @@ impl DisplayMap {
     /// 只要它描述的是相同的文本、语法和 capture 表，就继续直接复用 `DisplaySnapshot`，不分配新的外壳。
     pub(crate) fn has_current_snapshot(&self, snapshot: &MultiBufferSnapshot) -> bool {
         self.has_text_snapshot(snapshot)
-            && self.multi_buffer_snapshot.syntax_version() == snapshot.syntax_version()
+            && self.multi_buffer_snapshot.metadata_version() == snapshot.metadata_version()
             && self.capture_names.as_ref() == snapshot.capture_names().as_ref()
     }
 

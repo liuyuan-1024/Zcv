@@ -966,9 +966,13 @@ pub struct MultiBufferSnapshot {
     excerpts_cache: Arc<OnceLock<Arc<[ExcerptSnapshot]>>>,
     /// 路径索引表：PathKeyIndex 对应的路径，供锚点解析按路径 seek。
     path_keys: Arc<[PathKey]>,
-    /// 按源去重的 (text, syntax, capture_map) 表（映射经 `source_index` 引用）。
+    /// 按源去重的源快照表（映射经 `source_index` 引用）。
+    ///
+    /// 文本与语法属于同一源快照；
+    /// 语法重解析时通过 `metadata_version` 推进整帧，不允许显示层继续持有旧源快照。
     excerpt_sources: Arc<[ExcerptSourceSnapshot]>,
     capture_names: Arc<[Arc<str>]>,
+    metadata_version: u64,
 }
 
 /// 虚拟组合文本的一段连续借用。
@@ -1121,8 +1125,11 @@ impl MultiBufferSnapshot {
         &self.config
     }
 
-    pub fn syntax_version(&self) -> BufferVersion {
-        self.projection_version
+    /// 当前源快照元数据版本。
+    ///
+    /// 该版本独立于组合文本投影版本：语法重解析不改变文本坐标，但必须让显示层替换其持有的源快照。
+    pub fn metadata_version(&self) -> u64 {
+        self.metadata_version
     }
 
     /// 返回当前组合文档的完整 UTF-8 内容，供预览等只读消费者使用。
@@ -2188,6 +2195,7 @@ impl From<Snapshot> for MultiBufferSnapshot {
             path_keys: Arc::from([]),
             excerpt_sources: Arc::from([]),
             capture_names,
+            metadata_version: 0,
             plain_text: Some(text),
         }
     }
@@ -4025,6 +4033,7 @@ impl MultiBuffer {
                     .collect::<Vec<_>>(),
             ),
             capture_names: Arc::clone(&self.state.capture_names),
+            metadata_version: self.snapshot_epoch,
         }
     }
 

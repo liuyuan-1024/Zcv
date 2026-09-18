@@ -298,15 +298,10 @@ pub struct Editor {
     /// 在 buffer 编辑或语法快照更新时刷新）。
     /// 折叠范围（共享 LanguageBuffer 缓存：Reparsed 后整体替换，多个 Editor 复用同一份）。
     fold_ranges: Arc<[FoldRange]>,
-    /// 匹配括号缓存：键 = (primary head, buffer 版本, 语法版本)。
+    /// 匹配括号缓存：键 = (primary head, buffer 版本, 源元数据版本)。
     /// 光标移动或任一版本推进即重查；
     /// 滚动/纯重绘帧直接命中，不再跑 tree-sitter 查询。
-    bracket_pair_cache: Option<(
-        ByteOffset,
-        BufferVersion,
-        BufferVersion,
-        Option<BracketPair>,
-    )>,
+    bracket_pair_cache: Option<(ByteOffset, BufferVersion, u64, Option<BracketPair>)>,
     /// 最近一次鼠标手势的选区粒度；Shift+点击时按此粒度扩展。
     mouse_select_mode: MouseSelectMode,
     /// 正在进行的鼠标选区手势；普通选区变更会终止它。
@@ -1028,11 +1023,12 @@ impl Editor {
         let snapshot = &self.multi_snapshot;
         let caret = selections.primary().head();
         let buffer_version = snapshot.version();
-        let syntax_version = self.multi_snapshot.syntax_version();
-        if let Some((cached_caret, cached_buffer, cached_syntax, cached)) = &self.bracket_pair_cache
+        let metadata_version = self.multi_snapshot.metadata_version();
+        if let Some((cached_caret, cached_buffer, cached_metadata, cached)) =
+            &self.bracket_pair_cache
             && *cached_caret == caret
             && *cached_buffer == buffer_version
-            && *cached_syntax == syntax_version
+            && *cached_metadata == metadata_version
         {
             return cached.clone();
         }
@@ -1050,7 +1046,7 @@ impl Editor {
                 ]
                 .contains(&caret_offset)
             });
-        self.bracket_pair_cache = Some((caret, buffer_version, syntax_version, result.clone()));
+        self.bracket_pair_cache = Some((caret, buffer_version, metadata_version, result.clone()));
         result
     }
 

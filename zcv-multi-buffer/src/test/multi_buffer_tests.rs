@@ -952,7 +952,10 @@ fn singleton_source_updates_the_display_stream_without_reset(cx: &mut TestAppCon
         String::from_utf8(updated.text_bytes()).expect("编辑器快照必须是 UTF-8"),
         "fn async main() {}\n"
     );
-    assert_eq!(updated.version(), updated.syntax_version());
+    assert!(
+        updated.metadata_version() > 0,
+        "源编辑后的组合快照必须携带新的源元数据版本"
+    );
     assert!(
         !subscription.consume().requires_reset(),
         "单文件源编辑不应通过投影整体重载"

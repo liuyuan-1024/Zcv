@@ -966,6 +966,70 @@ fn diff_hunks_follow_buffer_edits_without_losing_highlight(cx: &mut TestAppConte
         assert_eq!(editor.diff_hunks(cx).len(), 1, "重新注入后应恢复");
     });
 }
+
+#[gpui::test]
+fn external_reparse_refreshes_added_diff_syntax_highlights(cx: &mut TestAppContext) {
+    let source = test_buffer(cx, "fn main() {\n    let value = 1;\n}\n");
+    source.update(cx, |source, cx| {
+        source.set_file_path(PathBuf::from("src/main.rs"), cx);
+    });
+    let editor = cx.new(|cx| Editor::for_language_buffer(source.clone(), cx));
+    inject_file_diff(
+        &editor,
+        &source,
+        Arc::from("fn main() {\n    let value = 0;\n}\n"),
+        cx,
+    );
+    editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
+
+    let source_buffer = engine_buffer(&source, cx);
+    cx.update_entity(&source_buffer, |buffer, cx| {
+        let old_line = "fn main() {\n    let value = 1;\n";
+        buffer
+            .edit(
+                [Edit::replace(
+                    TextRange::new(
+                        ByteOffset::new("fn main() {\n".len()),
+                        ByteOffset::new(old_line.len()),
+                    )
+                    .unwrap(),
+                    "    // 外部编辑\n    let value = 1;\n",
+                )],
+                TransactionMetadata::default(),
+            )
+            .expect("外部源编辑应成功");
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    cx.read_entity(&editor, |editor, cx| {
+        let snapshot = editor.display_snapshot();
+        let hunk = &editor.diff_hunks(cx)[0];
+        let buffer = snapshot.buffer_snapshot();
+        let start = buffer
+            .line_start_byte(Line::new(hunk.range.start))
+            .expect("新增 hunk 起点应位于组合文档中")
+            .get();
+        let end = if hunk.range.end < buffer.line_count() {
+            buffer
+                .line_start_byte(Line::new(hunk.range.end))
+                .expect("新增 hunk 终点应位于组合文档中")
+                .get()
+        } else {
+            buffer.len_bytes().get()
+        };
+        let names = buffer.capture_names();
+        assert!(
+            buffer.highlights(start..end).iter().any(|span| {
+                names
+                    .get(span.capture as usize)
+                    .is_some_and(|name| name.as_ref() == "comment")
+            }),
+            "外部重解析后，绿色 working excerpt 应保留新语法高亮"
+        );
+    });
+}
+
 #[gpui::test]
 fn soft_wrap_renders_continuation_rows_and_click_hits_fragment(cx: &mut TestAppContext) {
     // 超长行（超出测试窗口宽度）在 editor-width 模式下拆成多个显示行。

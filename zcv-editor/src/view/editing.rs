@@ -150,11 +150,7 @@ impl Editor {
                 .as_slice()
                 .iter()
                 .map(|selection| {
-                    let tab = self
-                        .multi_buffer
-                        .read(cx)
-                        .buffer_config_at(selection.head(), cx)
-                        .tab;
+                    let tab = zcv_settings::SettingsStore::tab_config(cx);
                     let text: Arc<str> = if tab.insert_spaces {
                         let column = self
                             .display_snapshot
@@ -181,7 +177,7 @@ impl Editor {
                         let offset = snapshot
                             .line_start_byte(line)
                             .expect("已验证逻辑行必须有行首");
-                        let tab = self.multi_buffer.read(cx).buffer_config_at(offset, cx).tab;
+                        let tab = zcv_settings::SettingsStore::tab_config(cx);
                         let text: Arc<str> = if tab.insert_spaces {
                             Arc::from(" ".repeat(tab.indent_width()))
                         } else {
@@ -214,16 +210,7 @@ impl Editor {
             lines
                 .into_iter()
                 .filter_map(|line| {
-                    let offset = match snapshot.line_start_byte(line) {
-                        Ok(offset) => offset,
-                        Err(error) => return Some(Err(error)),
-                    };
-                    let indent_width = self
-                        .multi_buffer
-                        .read(cx)
-                        .buffer_config_at(offset, cx)
-                        .tab
-                        .indent_width();
+                    let indent_width = zcv_settings::SettingsStore::tab_config(cx).indent_width();
                     match leading_indent_range(&snapshot, line, indent_width) {
                         Ok(Some(selection)) => Some(Ok((selection, Arc::from("")))),
                         Ok(None) => None,
@@ -261,7 +248,7 @@ impl Editor {
             .map(|selection| {
                 let offset = selection.start();
                 let suggestion = self.multi_snapshot.suggested_newline_indent(offset)?;
-                let tab = self.multi_buffer.read(cx).buffer_config_at(offset, cx).tab;
+                let tab = zcv_settings::SettingsStore::tab_config(cx);
                 let indent = if suggestion.additional_levels > 0 {
                     if tab.insert_spaces {
                         " ".repeat(tab.indent_width() * suggestion.additional_levels)

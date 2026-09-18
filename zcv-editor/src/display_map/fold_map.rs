@@ -1210,7 +1210,7 @@ mod tests {
 
     #[test]
     fn projected_kind_rejects_the_end_boundary() {
-        let buffer = Buffer::scratch("first\nsecond".to_string(), BufferConfig::default())
+        let buffer = Buffer::from_text("first\nsecond".to_string(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let (_, snapshot) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
 
@@ -1223,7 +1223,7 @@ mod tests {
 
     #[test]
     fn fold_snapshot_owns_fold_and_transform_trees_and_keeps_old_snapshots_stable() {
-        let buffer = Buffer::scratch(
+        let buffer = Buffer::from_text(
             "anchor\nhidden one\nhidden two\nafter".to_string(),
             BufferConfig::default(),
         )
@@ -1244,7 +1244,7 @@ mod tests {
 
     #[test]
     fn folding_a_middle_range_emits_a_localized_structural_edit() {
-        let buffer = Buffer::scratch("a\nb\nc\nd\ne\nf\n".to_string(), BufferConfig::default())
+        let buffer = Buffer::from_text("a\nb\nc\nd\ne\nf\n".to_string(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
         let (after, edits) = map.write().fold(text_range(2, 7)).unwrap();
@@ -1259,7 +1259,7 @@ mod tests {
 
     #[test]
     fn unfolding_a_middle_fold_restores_only_its_rows() {
-        let buffer = Buffer::scratch("a\nb\nc\nd\ne\nf\n".to_string(), BufferConfig::default())
+        let buffer = Buffer::from_text("a\nb\nc\nd\ne\nf\n".to_string(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
         map.write().fold(text_range(2, 7)).unwrap();
@@ -1277,7 +1277,7 @@ mod tests {
 
     #[test]
     fn fold_writer_rejects_partial_overlap_but_accepts_nesting() {
-        let buffer = Buffer::scratch("abcdef".to_string(), BufferConfig::default()).unwrap();
+        let buffer = Buffer::from_text("abcdef".to_string(), BufferConfig::default()).unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
         map.write().fold(text_range(1, 5)).unwrap();
         map.write().fold(text_range(2, 4)).unwrap();
@@ -1292,7 +1292,8 @@ mod tests {
 
     #[test]
     fn unfolding_outer_fold_reveals_the_nested_transform() {
-        let buffer = Buffer::scratch("a\nb\nc\nd\ne".to_string(), BufferConfig::default()).unwrap();
+        let buffer =
+            Buffer::from_text("a\nb\nc\nd\ne".to_string(), BufferConfig::default()).unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
         map.write().fold(text_range(1, 7)).unwrap();
         map.write().fold(text_range(3, 5)).unwrap();
@@ -1314,7 +1315,8 @@ mod tests {
     #[test]
     fn inline_edit_advances_fold_snapshot_without_rebuilding_transforms() {
         let mut buffer =
-            Buffer::scratch("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
+            Buffer::from_text("anchor\nhidden\nafter".to_string(), BufferConfig::default())
+                .unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
         map.write().fold(text_range(6, 13)).unwrap();
         let transforms = map.snapshot.transforms.clone();
@@ -1339,7 +1341,8 @@ mod tests {
     #[test]
     fn editing_inside_a_fold_remeasures_only_the_merged_row() {
         let mut buffer =
-            Buffer::scratch("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
+            Buffer::from_text("anchor\nhidden\nafter".to_string(), BufferConfig::default())
+                .unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
         map.write().fold(text_range(6, 13)).unwrap();
         let subscription = buffer.subscribe();
@@ -1366,7 +1369,8 @@ mod tests {
     #[test]
     fn newline_edit_rebuilds_transform_tree_and_emits_structural_fold_edit() {
         let mut buffer =
-            Buffer::scratch("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
+            Buffer::from_text("anchor\nhidden\nafter".to_string(), BufferConfig::default())
+                .unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
         map.write().fold(text_range(6, 13)).unwrap();
         let subscription = buffer.subscribe();
@@ -1391,7 +1395,7 @@ mod tests {
     #[test]
     fn newline_edit_outside_folds_emits_a_localized_structural_edit() {
         let mut buffer =
-            Buffer::scratch("a\nb\nc\nd\ne\nf\n".to_string(), BufferConfig::default()).unwrap();
+            Buffer::from_text("a\nb\nc\nd\ne\nf\n".to_string(), BufferConfig::default()).unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
         let subscription = buffer.subscribe();
         // 在未折叠区域插入换行：只应重排该行附近的 tab 行，而不是整份文档。
@@ -1417,7 +1421,8 @@ mod tests {
     #[test]
     fn deleting_folded_text_invalidates_anchor_range() {
         let mut buffer =
-            Buffer::scratch("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
+            Buffer::from_text("anchor\nhidden\nafter".to_string(), BufferConfig::default())
+                .unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
         map.write().fold(text_range(6, 13)).unwrap();
         let subscription = buffer.subscribe();
@@ -1442,7 +1447,7 @@ mod tests {
     #[test]
     fn merged_row_text_joins_anchor_placeholder_and_close_tail() {
         // 折叠范围 = [anchor 行换行符, 闭合括号前)：anchor 文本、占位符、真实 `}` 拼成同一行。
-        let buffer = Buffer::scratch(
+        let buffer = Buffer::from_text(
             "fn b() {\n    2\n}\nrest".to_string(),
             BufferConfig::default(),
         )
@@ -1468,7 +1473,8 @@ mod tests {
     fn fold_boundary_insertions_remain_visible() {
         // Stickiness::Never：折叠起点插入的文本在折叠外（可见），折叠终点插入的文本在折叠内。
         let mut buffer =
-            Buffer::scratch("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
+            Buffer::from_text("anchor\nhidden\nafter".to_string(), BufferConfig::default())
+                .unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
         map.write().fold(text_range(6, 13)).unwrap();
         let fold_range = map.snapshot.folds.iter().next().unwrap().text_range();
@@ -1495,7 +1501,8 @@ mod tests {
     #[test]
     fn edits_on_folded_lines_map_to_anchor_row() {
         let mut buffer =
-            Buffer::scratch("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
+            Buffer::from_text("anchor\nhidden\nafter".to_string(), BufferConfig::default())
+                .unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
         map.write().fold(text_range(6, 13)).unwrap();
         // 编辑落在隐藏行（行 1）与 close 行（行 2）：changed_lines 都映射到 anchor 行（行 0）。
@@ -1516,7 +1523,7 @@ mod tests {
 
     #[test]
     fn folded_points_map_through_anchor_in_both_directions() {
-        let buffer = Buffer::scratch("a\nb\nc\nd".to_string(), BufferConfig::default()).unwrap();
+        let buffer = Buffer::from_text("a\nb\nc\nd".to_string(), BufferConfig::default()).unwrap();
         let (mut map, _) = FoldMap::new(InlayMap::new(LineStream::new(buffer.snapshot())).1);
         let (snapshot, _) = map.write().fold(text_range(1, 5)).unwrap();
 

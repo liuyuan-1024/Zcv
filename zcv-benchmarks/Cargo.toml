@@ -16,6 +16,7 @@ serde_json.workspace = true
 sysinfo.workspace = true
 zcv-language.workspace = true
 zcv-multi-buffer.workspace = true
+zcv-project.workspace = true
 zcv-text.workspace = true
 
 [[bench]]

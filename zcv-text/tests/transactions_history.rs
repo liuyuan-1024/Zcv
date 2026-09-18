@@ -195,7 +195,7 @@ fn explicit_history_merge_should_return_one_canonical_identity_for_editor_select
     }
 
     assert_eq!(buffer_text(&buffer), "abc");
-    assert_eq!(buffer.history_status().undo_depth, 1);
+    assert!(buffer.can_undo());
 
     let undo = buffer.undo().unwrap().unwrap();
     assert_eq!(buffer_text(&buffer), "");
@@ -254,7 +254,7 @@ fn default_transactions_should_stay_separate() {
         .unwrap();
 
     assert_eq!(buffer_text(&buffer), "");
-    assert_eq!(buffer.history_status().undo_depth, 2);
+    assert!(buffer.can_undo());
 
     buffer.undo().unwrap().unwrap();
     assert_eq!(buffer_text(&buffer), "a");
@@ -279,7 +279,6 @@ fn set_config_should_apply_the_new_history_budget_immediately() {
     buffer.set_config(config);
 
     assert!(!buffer.can_undo());
-    assert_eq!(buffer.history_status().node_count, 0);
 }
 
 #[test]
@@ -309,7 +308,7 @@ fn transaction_should_not_report_history_identity_when_history_is_disabled() {
 }
 
 #[test]
-fn branch_history_should_expose_redo_branches_and_replay_selected_branch() {
+fn editing_after_undo_creates_a_new_branch_and_redo_follows_the_latest_one() {
     let mut buffer = buffer("a");
 
     buffer
@@ -327,11 +326,9 @@ fn branch_history_should_expose_redo_branches_and_replay_selected_branch() {
         .unwrap();
     buffer.undo().unwrap().unwrap();
 
-    let branches = buffer.redo_branches();
-    assert_eq!(branches.len(), 2);
-
-    buffer.redo_to_branch(branches[0]).unwrap();
-    assert!(matches!(buffer_text(&buffer).as_str(), "ab" | "ac"));
+    // 撤销后重新编辑形成分支；redo 沿最近创建的默认分支回放。
+    buffer.redo().unwrap().expect("应可 redo 默认分支");
+    assert_eq!(buffer_text(&buffer), "ac");
 }
 
 #[test]
@@ -363,5 +360,5 @@ fn large_transaction_reject_policy_should_preserve_history_and_state() {
     ));
     assert_eq!(buffer_text(&buffer), "abc");
     assert_eq!(buffer.version(), version);
-    assert_eq!(buffer.history_status().undo_depth, 0);
+    assert!(!buffer.can_undo());
 }

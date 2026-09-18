@@ -482,7 +482,7 @@ mod tests {
                     .collect::<Vec<_>>()
                     .join("\n");
                 let buffer =
-                    Buffer::scratch(lines, BufferConfig::default()).expect("应创建测试 Buffer");
+                    Buffer::from_text(lines, BufferConfig::default()).expect("应创建测试 Buffer");
                 let mut map = DisplayMap::new(buffer.snapshot());
                 assert!(
                     map.set_wrap_width(Some(px(100.)), font.clone(), font_size, &text_system),
@@ -545,7 +545,7 @@ mod tests {
                     .collect::<Vec<_>>()
                     .join("\n");
                 let buffer =
-                    Buffer::scratch(lines, BufferConfig::default()).expect("应创建测试 Buffer");
+                    Buffer::from_text(lines, BufferConfig::default()).expect("应创建测试 Buffer");
                 let mut map = DisplayMap::new(buffer.snapshot());
                 assert!(
                     map.set_wrap_width(Some(px(100.)), font.clone(), font_size, &text_system),
@@ -618,7 +618,7 @@ mod tests {
 
     #[test]
     fn every_diff_hunk_exposes_a_control_anchor() {
-        let buffer = Buffer::scratch(
+        let buffer = Buffer::from_text(
             "line0\nline1\nline2\nline3\nline4\n".into(),
             BufferConfig::default(),
         )
@@ -687,8 +687,9 @@ mod tests {
 
     #[test]
     fn materialized_modified_hunk_uses_real_old_and_new_document_rows() {
-        let buffer = Buffer::scratch("context\nold\nnew\nafter\n".into(), BufferConfig::default())
-            .expect("应创建测试 Buffer");
+        let buffer =
+            Buffer::from_text("context\nold\nnew\nafter\n".into(), BufferConfig::default())
+                .expect("应创建测试 Buffer");
         let snapshot = DisplayMap::new(buffer.snapshot()).snapshot();
         let hunk = DisplayHunk {
             range: 2..3,
@@ -731,7 +732,7 @@ mod tests {
     #[test]
     fn word_diff_highlights_only_render_for_expanded_hunks() {
         // 词级背景只在展开态出现：折叠的修改块没有物化旧侧，也就没有行内变化文本可着色。
-        let buffer = Buffer::scratch("old\nnew\n".into(), BufferConfig::default())
+        let buffer = Buffer::from_text("old\nnew\n".into(), BufferConfig::default())
             .expect("应创建测试 Buffer");
         let snapshot = DisplayMap::new(buffer.snapshot()).snapshot();
         let hunks = vec![DisplayHunk {
@@ -758,7 +759,7 @@ mod tests {
     #[test]
     fn staging_drives_hollow_blocks() {
         // hunk_rendering 把暂存语义透传到行标记与 gutter 竖条，渲染端据此选空心 / 实心。
-        let buffer = Buffer::scratch("a\nb\nc\n".into(), BufferConfig::default())
+        let buffer = Buffer::from_text("a\nb\nc\n".into(), BufferConfig::default())
             .expect("应创建测试 Buffer");
         let snapshot = DisplayMap::new(buffer.snapshot()).snapshot();
         let staged = DisplayHunk {
@@ -796,7 +797,7 @@ mod tests {
     #[test]
     fn hunk_click_regions_do_not_depend_on_staging() {
         // 点击展开只由 hunk 类型决定；已暂存 / 未暂存只影响配色，避免形成双轨。
-        let buffer = Buffer::scratch("a\nb\nc\n".into(), BufferConfig::default())
+        let buffer = Buffer::from_text("a\nb\nc\n".into(), BufferConfig::default())
             .expect("应创建测试 Buffer");
         let snapshot = DisplayMap::new(buffer.snapshot()).snapshot();
         for staging in [

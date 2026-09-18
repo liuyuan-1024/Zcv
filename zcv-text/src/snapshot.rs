@@ -2,14 +2,12 @@
 //!
 //! 本文件保证后台读取可脱离可变 Buffer；它不提交编辑、不维护历史，也不暴露 Ropey 内部类型。
 
+use std::borrow::Cow;
+
 use crate::{
     Affinity, Anchor, BufferConfig, BufferVersion, ByteOffset, CharOffset, Line, LineRange,
-    MovementDirection, MovementUnit, RegexSearchResult, SearchResult, TextChangeBatch, TextRange,
-    TextResult,
-    search::{
-        RegexSearchOptions, SearchOptions, search_in_text, search_regex_in_text,
-        search_regex_in_text_with_automata,
-    },
+    MovementDirection, MovementUnit, Position, TextChangeBatch, TextRange, TextResult, Utf16Offset,
+    Utf16Position,
     slicing::{LineContent, LineSlice, TextSlice},
     slicing::{
         line_content_for_text, text_range_for_byte_range, text_range_for_line,
@@ -165,35 +163,95 @@ impl Snapshot {
     ) -> TextResult<LineContent<'_>> {
         line_content_for_text(&self.storage, line, max_line_chars)
     }
+}
 
-    /// 在该不可变快照中执行 literal 搜索，结果绑定快照版本。
-    ///
-    /// 本方法只执行同步匹配；后台调度、取消和进度由宿主搜索层负责。
-    pub fn search(&self, query: &str, options: SearchOptions) -> TextResult<SearchResult> {
-        search_in_text(&self.storage, self.version, &self.config, query, options)
+impl TextRead for Snapshot {
+    fn slice_text(&self, range: TextRange) -> TextResult<Cow<'_, str>> {
+        self.storage.slice_text(range)
     }
 
-    /// 使用默认选项执行大小写敏感的全文 literal 搜索。
-    pub fn search_literal(&self, query: &str) -> TextResult<SearchResult> {
-        self.search(query, SearchOptions::default())
+    fn chunks(&self, range: TextRange) -> TextResult<impl Iterator<Item = &str> + '_> {
+        self.storage.chunks(range)
     }
 
-    /// 在该不可变快照中执行 regex 搜索，结果绑定快照版本。
-    pub fn search_regex(
-        &self,
-        pattern: &str,
-        options: RegexSearchOptions,
-    ) -> TextResult<RegexSearchResult> {
-        search_regex_in_text(&self.storage, self.version, pattern, options)
+    fn len_bytes(&self) -> ByteOffset {
+        self.storage.len_bytes()
     }
 
-    pub(crate) fn search_regex_with_automata(
-        &self,
-        pattern: &str,
-        regex: &regex_automata::meta::Regex,
-        options: RegexSearchOptions,
-    ) -> TextResult<RegexSearchResult> {
-        search_regex_in_text_with_automata(&self.storage, self.version, pattern, regex, options)
+    fn len_chars(&self) -> CharOffset {
+        self.storage.len_chars()
+    }
+
+    fn line_count(&self) -> usize {
+        self.storage.line_count()
+    }
+
+    fn line_start(&self, line: Line) -> TextResult<ByteOffset> {
+        self.storage.line_start(line)
+    }
+
+    fn byte_to_position(&self, offset: ByteOffset) -> TextResult<Position> {
+        self.storage.byte_to_position(offset)
+    }
+
+    fn position_to_byte(&self, position: Position) -> TextResult<ByteOffset> {
+        self.storage.position_to_byte(position)
+    }
+
+    fn char_to_position(&self, offset: CharOffset) -> TextResult<Position> {
+        self.storage.char_to_position(offset)
+    }
+
+    fn position_to_char(&self, position: Position) -> TextResult<CharOffset> {
+        self.storage.position_to_char(position)
+    }
+
+    fn char_at(&self, offset: CharOffset) -> Option<char> {
+        self.storage.char_at(offset)
+    }
+
+    fn char_at_byte(&self, offset: ByteOffset) -> Option<char> {
+        self.storage.char_at_byte(offset)
+    }
+
+    fn char_to_byte(&self, offset: CharOffset) -> TextResult<ByteOffset> {
+        self.storage.char_to_byte(offset)
+    }
+
+    fn byte_to_char(&self, offset: ByteOffset) -> TextResult<CharOffset> {
+        self.storage.byte_to_char(offset)
+    }
+
+    fn byte_to_utf16_position(&self, offset: ByteOffset) -> TextResult<Utf16Position> {
+        self.storage.byte_to_utf16_position(offset)
+    }
+
+    fn utf16_position_to_byte(&self, position: Utf16Position) -> TextResult<ByteOffset> {
+        self.storage.utf16_position_to_byte(position)
+    }
+
+    fn byte_to_utf16_cu(&self, offset: ByteOffset) -> TextResult<Utf16Offset> {
+        self.storage.byte_to_utf16_cu(offset)
+    }
+
+    fn utf16_cu_to_byte(&self, offset: Utf16Offset) -> TextResult<ByteOffset> {
+        self.storage.utf16_cu_to_byte(offset)
+    }
+
+    fn is_grapheme_boundary(&self, offset: ByteOffset) -> TextResult<bool> {
+        self.storage.is_grapheme_boundary(offset)
+    }
+
+    fn previous_grapheme_boundary(&self, offset: ByteOffset) -> TextResult<ByteOffset> {
+        self.storage.previous_grapheme_boundary(offset)
+    }
+
+    fn next_grapheme_boundary(&self, offset: ByteOffset) -> TextResult<ByteOffset> {
+        self.storage.next_grapheme_boundary(offset)
+    }
+
+    fn line_ending_style(&self) -> crate::LineEndingStyle {
+        self.storage.line_ending_style()
     }
 }
 
@@ -205,7 +263,7 @@ mod tests {
     #[test]
     fn snapshot_coordinates_define_empty_document_and_eof_boundaries() {
         let empty =
-            Buffer::scratch(String::new(), BufferConfig::default()).expect("空文档快照应能创建");
+            Buffer::from_text(String::new(), BufferConfig::default()).expect("空文档快照应能创建");
         let empty_snapshot = empty.snapshot();
         assert_eq!(empty_snapshot.len_bytes(), ByteOffset::ZERO);
         assert_eq!(empty_snapshot.line_count(), 1);
@@ -219,8 +277,8 @@ mod tests {
             Line::ZERO
         );
 
-        let text =
-            Buffer::scratch("a\n".to_owned(), BufferConfig::default()).expect("带换行文本应能创建");
+        let text = Buffer::from_text("a\n".to_owned(), BufferConfig::default())
+            .expect("带换行文本应能创建");
         let snapshot = text.snapshot();
         assert_eq!(snapshot.line_count(), 2);
         assert_eq!(
@@ -236,8 +294,8 @@ mod tests {
 
     #[test]
     fn snapshot_remains_immutable_when_buffer_advances() {
-        let mut buffer =
-            Buffer::scratch("a".to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
+        let mut buffer = Buffer::from_text("a".to_owned(), BufferConfig::default())
+            .expect("测试 Buffer 应能创建");
         let before = buffer.snapshot();
 
         buffer

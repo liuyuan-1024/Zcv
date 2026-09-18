@@ -7,6 +7,7 @@
 use std::borrow::Cow;
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -49,6 +50,37 @@ pub enum SoftWrapMode {
     Bounded,
 }
 
+/// Tab 展示宽度与缩进输入策略。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TabConfig {
+    /// 制表符的视觉列宽，必须大于 0。
+    pub tab_width: NonZeroUsize,
+    /// 自动缩进的宽度，必须大于 0。
+    pub indent_width: NonZeroUsize,
+    /// 缩进时是否使用空格替代真实的 '\t'。
+    pub insert_spaces: bool,
+}
+
+impl TabConfig {
+    pub fn tab_width(self) -> usize {
+        self.tab_width.get()
+    }
+
+    pub fn indent_width(self) -> usize {
+        self.indent_width.get()
+    }
+}
+
+impl Default for TabConfig {
+    fn default() -> Self {
+        Self {
+            tab_width: NonZeroUsize::new(4).expect("默认 tab 宽度必须大于 0"),
+            indent_width: NonZeroUsize::new(4).expect("默认缩进宽度必须大于 0"),
+            insert_spaces: true,
+        }
+    }
+}
+
 /// 字段级容错：该字段值非法时解析为「未配置」（`None`），由 merge 层用内置默认补齐，不影响其他字段。
 /// JSON 语法错误仍整体失败。
 ///
@@ -74,6 +106,12 @@ struct UserSettingsContent {
     ui_font_size: Option<f32>,
     #[serde(deserialize_with = "fallible")]
     content_line_height: Option<f32>,
+    #[serde(deserialize_with = "fallible")]
+    tab_width: Option<usize>,
+    #[serde(deserialize_with = "fallible")]
+    indent_width: Option<usize>,
+    #[serde(deserialize_with = "fallible")]
+    insert_spaces: Option<bool>,
     #[serde(deserialize_with = "fallible")]
     soft_wrap: Option<SoftWrapMode>,
     #[serde(deserialize_with = "fallible")]
@@ -110,6 +148,8 @@ pub struct UserSettings {
     pub ui_font_size: f32,
     /// 文档内容行高（相对字号的倍数）。
     pub content_line_height: f32,
+    /// Tab 展示宽度与缩进输入策略。
+    pub tab: TabConfig,
     pub soft_wrap: SoftWrapMode,
     /// 软换行的目标行宽（列数）；仅在 `soft_wrap = "bounded"` 时生效。
     pub preferred_line_length: usize,
@@ -150,6 +190,7 @@ impl UserSettings {
     /// 将用户配置合并到内置默认层：用户显式配置的字段覆盖默认，未配置的字段（`None`）回退到内置初始设置。
     fn merge(content: UserSettingsContent) -> Self {
         let defaults = default_content();
+        let default_tab = TabConfig::default();
         // 默认值唯一数据源是内置 initial_user_settings.json。
         Self {
             theme: content.theme.or(defaults.theme).expect("内置默认应存在"),
@@ -165,6 +206,22 @@ impl UserSettings {
                 .content_line_height
                 .or(defaults.content_line_height)
                 .expect("内置默认应存在"),
+            tab: TabConfig {
+                tab_width: content
+                    .tab_width
+                    .or(defaults.tab_width)
+                    .and_then(NonZeroUsize::new)
+                    .unwrap_or(default_tab.tab_width),
+                indent_width: content
+                    .indent_width
+                    .or(defaults.indent_width)
+                    .and_then(NonZeroUsize::new)
+                    .unwrap_or(default_tab.indent_width),
+                insert_spaces: content
+                    .insert_spaces
+                    .or(defaults.insert_spaces)
+                    .unwrap_or(default_tab.insert_spaces),
+            },
             soft_wrap: content
                 .soft_wrap
                 .or(defaults.soft_wrap)
@@ -259,6 +316,13 @@ impl SettingsStore {
     /// 设置未注册时返回 None，消费方回退默认值。
     pub fn try_get(cx: &App) -> Option<UserSettings> {
         cx.try_global::<Self>().map(|store| store.settings.clone())
+    }
+
+    /// 读取编辑器的 Tab / 缩进策略；SettingsStore 未初始化（如单元测试）时回退到默认。
+    pub fn tab_config(cx: &App) -> TabConfig {
+        cx.try_global::<Self>()
+            .map(|store| store.settings.tab)
+            .unwrap_or_default()
     }
 
     /// 读取扫描排除名单；SettingsStore 未初始化（如单元测试）时回退到默认名单。

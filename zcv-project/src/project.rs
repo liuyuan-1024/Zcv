@@ -5,6 +5,7 @@ mod buffer_store;
 mod git_store;
 mod project_store;
 mod search;
+mod text_file;
 
 #[cfg(test)]
 #[path = "test/test_support.rs"]
@@ -17,7 +18,16 @@ pub use git_store::{
     RemoteOperationState, RepositorySnapshot, StatusEntry,
 };
 pub use project_store::{FileWatcherError, FileWatcherOperation, Project, ProjectEvent};
-pub use search::{ExcerptMatches, FileSearchResult, SearchResults};
+pub use search::{
+    ExcerptMatches, FileSearchResult, PreparedSearchQuery, RegexSearchOptions, RegexSearchResult,
+    SearchError, SearchMatch, SearchOptions, SearchQuery, SearchQueryResult, SearchResult,
+    SearchResults, SearchTextResult, VersionedResult, VersionedResultError,
+    regex_replacement_for_match, regex_replacements_in_text,
+};
+pub use text_file::{
+    BomPolicy, BufferLoadError, BufferSaveError, EncodingConfig, InvalidUtf8Policy,
+    LineEndingConfig,
+};
 pub use worktree::{
     NewEntryDestination, WorktreeEntry, new_entry_destination, rename_destination, translate_path,
 };

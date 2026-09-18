@@ -1,4 +1,4 @@
-//! RopeyStorage 生产后端：把 `ropey` 的高性能文本结构封装成文本内核内部 TextRead/TextStorage 能力。
+//! RopeyStorage 生产后端：把 `ropey` 的高性能文本结构封装成文本内核内部 TextRead 能力。
 //!
 //! **坐标系唯一真理**：本文件实现的 trait 以 `ByteOffset` 为深核位置类型；
 //! 内部桥接 ropey 的 char-based API，对外只暴露 byte 接口（保留 char 作为边界投影）。
@@ -8,7 +8,7 @@ use std::borrow::Cow;
 use ropey::Rope;
 use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
 
-use super::{TextFingerprint, TextRead, TextStorage};
+use super::TextRead;
 use crate::{
     errors::{CoordinateError, EditError, TextResult},
     types::{
@@ -71,23 +71,6 @@ impl RopeyStorage {
         Self {
             rope: Rope::from_str(&text),
         }
-    }
-
-    /// 从已构建的 `Rope` 直接接管所有权，避免再做一次全量 `from_str`。
-    ///
-    /// 给流式加载路径（`Buffer::from_reader`）走——decoder 已经把
-    /// 字节增量喂进 `RopeBuilder`，`finish()` 返回 `Rope` 后我们只是把它装进
-    /// storage，不再二次拷贝。
-    pub(crate) fn from_rope(rope: Rope) -> Self {
-        Self { rope }
-    }
-
-    pub(crate) fn fingerprint(&self) -> TextFingerprint {
-        fingerprint_rope(&self.rope)
-    }
-
-    pub(crate) fn has_same_text(&self, snapshot: &RopeySnapshot) -> bool {
-        ropes_have_same_text(&self.rope, &snapshot.rope)
     }
 }
 
@@ -196,21 +179,23 @@ impl TextRead for RopeyStorage {
     }
 }
 
-impl TextStorage for RopeyStorage {
-    type Snapshot = RopeySnapshot;
-    type PreparedReplace = RopeyPreparedReplace;
-
-    fn snapshot(&self) -> Self::Snapshot {
+impl RopeyStorage {
+    /// 创建基于 `Rope::clone()` 的低成本不可变快照。
+    pub(crate) fn snapshot(&self) -> RopeySnapshot {
         RopeySnapshot {
             rope: self.rope.clone(),
         }
     }
 
-    fn prepare_replace(
+    /// 预检一次替换。`range` 端点必须落在 UTF-8 字符边界。
+    ///
+    /// 所有可能失败的后端校验、坐标换算和容量预约都必须发生在这里，
+    /// 事务管线进入实际文本变异后只能调用不可失败的 `replace_prepared`。
+    pub(crate) fn prepare_replace(
         &self,
         range: TextRange,
         _replacement: &str,
-    ) -> TextResult<Self::PreparedReplace> {
+    ) -> TextResult<RopeyPreparedReplace> {
         validate_byte_range_in_rope(&self.rope, range)?;
 
         let start_byte = range.start().get();
@@ -221,7 +206,12 @@ impl TextStorage for RopeyStorage {
         })
     }
 
-    fn replace_prepared(&mut self, prepared: Self::PreparedReplace, replacement: &str) {
+    /// 执行已经 `prepare_replace` 预检过的替换。
+    ///
+    /// 调用方必须按旧文本坐标的倒序应用 prepared edits，使每个 prepared range
+    /// 在当前文本中仍指向同一段旧文本。该 primitive 不返回 `Result`，从而保护事务
+    /// 提交阶段不会在半提交后才发现可恢复错误。
+    pub(crate) fn replace_prepared(&mut self, prepared: RopeyPreparedReplace, replacement: &str) {
         if prepared.start_char != prepared.end_char {
             self.rope.remove(prepared.start_char..prepared.end_char);
         }
@@ -241,10 +231,6 @@ pub(crate) struct RopeySnapshot {
 }
 
 impl RopeySnapshot {
-    pub(crate) fn fingerprint(&self) -> TextFingerprint {
-        fingerprint_rope(&self.rope)
-    }
-
     /// 返回包含给定 byte offset 的 chunk 与该 chunk 在全文里的起点。
     ///
     /// `offset` 越界视为指向末端：仍返回最后一段 chunk 与其起点，对应 `Rope::chunk_at_byte` 的语义。
@@ -867,34 +853,4 @@ fn char_at_byte(rope: &Rope, byte_offset: usize) -> Option<char> {
     }
     let char_offset = rope.byte_to_char(byte_offset);
     char_at(rope, char_offset)
-}
-
-fn fingerprint_rope(rope: &Rope) -> TextFingerprint {
-    // 手写 FNV-1a 哈希而非引入标准 hash crate（如 fnv / rustc-hash）。
-    //
-    // TextFingerprint 只需要 64 位非密码学哈希用于快速文本等价性探测，不参与安全决策；
-    // FNV-1a 实现仅 6 行代码，增量开销为零，且比引入一个仅暴露 pub const 的 micro crate 更符合"依赖最小化"原则。
-    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
-
-    let mut hash = FNV_OFFSET;
-
-    for chunk in rope.chunks() {
-        for byte in chunk.as_bytes() {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
-    }
-
-    TextFingerprint::new(
-        ByteOffset::new(rope.len_bytes()),
-        CharOffset::new(rope.len_chars()),
-        hash,
-    )
-}
-
-fn ropes_have_same_text(left: &Rope, right: &Rope) -> bool {
-    left.len_bytes() == right.len_bytes()
-        && left.len_chars() == right.len_chars()
-        && left.chars().eq(right.chars())
 }

@@ -6,10 +6,8 @@ use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
 use gpui::{Bounds, Pixels};
-use zcv_text::{
-    Affinity, Anchor, BufferVersion, PositionMap, RegexSearchResult, SearchQuery,
-    SearchQueryResult, SearchResult,
-};
+use zcv_project::{RegexSearchResult, SearchQuery, SearchQueryResult, SearchResult};
+use zcv_text::{Affinity, Anchor, BufferVersion, PositionMap};
 use zcv_workspace::{Direction, SearchEvent, SearchableItem};
 
 use crate::display_map::{DisplaySnapshot, ProjectedRange};

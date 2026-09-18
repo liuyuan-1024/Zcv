@@ -19,8 +19,8 @@ use zcv_actions::{
 };
 use zcv_editor::{Editor, EditorEvent};
 use zcv_git::{GraphCommit, GraphLayoutState, GraphLine, GraphRowLayout};
+use zcv_project::SearchQuery;
 use zcv_project::{GitStoreEvent, Project};
-use zcv_text::SearchQuery;
 use zcv_theme::color::{self, ThemeColors};
 use zcv_theme::{space, typography};
 use zcv_ui::{ButtonLike, MatchOption, MatchOptions, Scrollbar, SearchInput, TooltipSpec};

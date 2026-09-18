@@ -1,6 +1,6 @@
 //! 换行风格事实：记录文本中实际检测到的行结束符形态。
 //!
-//! 它不同于 LineEndingConfig；前者是文本事实，后者是保存/规范化策略。
+//! 它是文本中实际检测到的事实；保存/规范化策略属于文件边界（`zcv-project`），不在文本内核。
 
 /// 文件中检测到的换行风格。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]

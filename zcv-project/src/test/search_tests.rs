@@ -1,11 +1,9 @@
+use crate::Project;
+use crate::search::{FileSearchResult, SearchQuery};
+use crate::test_support::test_project;
 use gpui::{Entity, TestAppContext};
 use std::path::PathBuf;
 use std::process::Command;
-use zcv_text::SearchQuery;
-
-use crate::Project;
-use crate::search::FileSearchResult;
-use crate::test_support::test_project;
 
 /// 收集一次流式搜索的全部命中（直到后台关闭通道）。
 async fn collect_search(

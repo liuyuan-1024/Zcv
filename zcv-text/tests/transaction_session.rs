@@ -23,11 +23,7 @@ fn session_groups_multiple_edits_into_one_undo_step() {
     buffer.end_transaction().unwrap().expect("会话应提交");
 
     assert_eq!(buffer_text(&buffer), "hello world!");
-    assert_eq!(
-        buffer.history_status().undo_depth,
-        1,
-        "会话内两次编辑应合并为一个撤销步"
-    );
+    assert!(buffer.can_undo(), "会话内两次编辑应合并为一个撤销步");
     buffer.undo().unwrap().expect("应可撤销整个会话");
     assert_eq!(buffer_text(&buffer), "hello");
 }
@@ -94,7 +90,7 @@ fn session_with_merge_policy_merges_into_previous_node() {
             TransactionMetadata::default(),
         )
         .unwrap();
-    assert_eq!(buffer.history_status().undo_depth, 1);
+    assert!(buffer.can_undo());
 
     // 会话内的编辑带 MergeWithPrevious：整个会话合并到前一个节点，undo 深度不增加。
     buffer.start_transaction().unwrap();
@@ -106,11 +102,7 @@ fn session_with_merge_policy_merges_into_previous_node() {
         )
         .unwrap();
     buffer.end_transaction().unwrap().expect("会话应提交");
-    assert_eq!(
-        buffer.history_status().undo_depth,
-        1,
-        "MergeWithPrevious 会话应合并入前节点"
-    );
+    assert!(buffer.can_undo(), "MergeWithPrevious 会话应合并入前节点");
 
     // 一次撤销回退两个编辑（合并节点 + 会话文本）。
     buffer.undo().unwrap().expect("应可撤销");
@@ -175,7 +167,7 @@ fn skip_history_edit_does_not_report_a_history_identity() {
 }
 
 #[test]
-fn reload_ends_the_active_session_and_replaces_its_history_baseline() {
+fn reset_ends_the_active_session_and_replaces_its_history_baseline() {
     let mut buffer = buffer("hello");
     buffer.start_transaction().unwrap().expect("应开启会话");
     buffer
@@ -186,7 +178,7 @@ fn reload_ends_the_active_session_and_replaces_its_history_baseline() {
         .unwrap();
 
     buffer
-        .reload_from_text("replacement".to_owned())
+        .reset("replacement".to_owned())
         .expect("外部重载应成功");
 
     assert_eq!(buffer_text(&buffer), "replacement");

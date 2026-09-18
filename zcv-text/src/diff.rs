@@ -1,10 +1,10 @@
 //! 文本差异：把旧文本变为新文本的最小编辑段（行级 LCS + 字符级细化）。
 //!
-//! reload 等外部整体替换场景用 diff 生成真实的 old -> new 坐标映射 patch，使选区 / 折叠端点跟随外部变更后的具体位置，而不是整体替换塌缩。
+//! `Buffer::reset` 等外部整体重置场景用 diff 生成真实的 old -> new 坐标映射 patch，使选区 / 折叠端点跟随外部变更后的具体位置，而不是整体替换塌缩。
 
 use crate::text_changes::{PatchEdit, TextPatch};
 
-/// 行级 LCS 的 DP 表上限（行数乘积）。超过后回退为"中间区域整体替换"，避免 reload 大文件时 diff 计算卡死。
+/// 行级 LCS 的 DP 表上限（行数乘积）。超过后回退为"中间区域整体替换"，避免外部重置大文件时 diff 计算卡死。
 const MAX_LCS_CELLS: usize = 4_000_000;
 
 /// 把 `old` 变为 `new` 的净变化 patch；

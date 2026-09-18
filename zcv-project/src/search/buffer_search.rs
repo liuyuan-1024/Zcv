@@ -1,19 +1,17 @@
-//! 当前 Buffer / Snapshot 内的 literal search 与 regex search 契约。
+//! 文本搜索能力域：查询模型、literal/regex 匹配与正则替换算法。
 //!
-//! 本模块只实现单 Buffer 文本搜索结果模型、纯字符串匹配和正则匹配；不做跨文件索引，也不承担 UI 高亮语义。
+//! 只消费 `zcv-text` 的 `TextRead` 与 `Snapshot`；不做跨文件索引，也不承担 UI 高亮语义。
 
 use regex::{Regex, RegexBuilder};
 use regex_automata::meta;
 
-use crate::{
-    BufferConfig, BufferVersion, ByteOffset, CoordinateError, Snapshot, Stickiness, TextError,
-    TextRange, TextResult,
-    errors::SearchError,
-    position_map::{MappingResult, PositionMap},
-    storage::TextRead,
-    transaction::DeltaEvent,
-    versioned::VersionedResult,
+use zcv_text::{
+    BufferConfig, BufferVersion, ByteOffset, CoordinateError, DeltaEvent, MappingResult,
+    PositionMap, Snapshot, Stickiness, TextError, TextRange, TextRead,
 };
+
+use super::error::{SearchError, SearchTextResult};
+use super::versioned::VersionedResult;
 
 /// 与宿主和搜索范围无关的统一文本查询。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -26,7 +24,7 @@ pub struct SearchQuery {
 
 impl SearchQuery {
     /// 预编译一次查询，供跨多个快照的后台搜索复用正则机。
-    pub fn prepare(&self) -> TextResult<PreparedSearchQuery> {
+    pub fn prepare(&self) -> SearchTextResult<PreparedSearchQuery> {
         if self.query.is_empty() {
             return Err(SearchError::EmptyQuery.into());
         }
@@ -46,19 +44,19 @@ impl SearchQuery {
     }
 
     /// 在一个不可变文本快照上执行查询。
-    pub fn search(&self, snapshot: &Snapshot) -> TextResult<SearchQueryResult> {
+    pub fn search(&self, snapshot: &Snapshot) -> SearchTextResult<SearchQueryResult> {
         self.prepare()?.search(snapshot)
     }
 
     /// 在任意连续文本视图上执行搜索。
     ///
-    /// 组合文档通过实现 [`crate::TextRead`] 直接参与流式搜索，不能为了复用搜索算法先复制成临时 `Buffer`。
+    /// 组合文档通过实现 [`zcv_text::TextRead`] 直接参与流式搜索，不能为了复用搜索算法先复制成临时 `Buffer`。
     pub fn search_in<T: TextRead>(
         &self,
         text: &T,
         version: BufferVersion,
         config: &BufferConfig,
-    ) -> TextResult<SearchQueryResult> {
+    ) -> SearchTextResult<SearchQueryResult> {
         self.prepare()?.search_in(text, version, config)
     }
 }
@@ -70,24 +68,27 @@ pub struct PreparedSearchQuery {
 }
 
 impl PreparedSearchQuery {
-    pub fn search(&self, snapshot: &Snapshot) -> TextResult<SearchQueryResult> {
+    pub fn search(&self, snapshot: &Snapshot) -> SearchTextResult<SearchQueryResult> {
         if let Some(regex) = &self.regex {
-            snapshot
-                .search_regex_with_automata(
-                    &self.query.query,
-                    regex,
-                    RegexSearchOptions::new().with_case_sensitive(self.query.case_sensitive),
-                )
-                .map(SearchQueryResult::Regex)
+            search_regex_streaming_with_regex(
+                snapshot,
+                snapshot.version(),
+                &self.query.query,
+                regex,
+                RegexSearchOptions::new().with_case_sensitive(self.query.case_sensitive),
+            )
+            .map(SearchQueryResult::Regex)
         } else {
-            snapshot
-                .search(
-                    &self.query.query,
-                    SearchOptions::new()
-                        .with_case_sensitive(self.query.case_sensitive)
-                        .with_whole_word(self.query.whole_word),
-                )
-                .map(SearchQueryResult::Literal)
+            search_in_text(
+                snapshot,
+                snapshot.version(),
+                snapshot.config(),
+                &self.query.query,
+                SearchOptions::new()
+                    .with_case_sensitive(self.query.case_sensitive)
+                    .with_whole_word(self.query.whole_word),
+            )
+            .map(SearchQueryResult::Literal)
         }
     }
 
@@ -97,7 +98,7 @@ impl PreparedSearchQuery {
         text: &T,
         version: BufferVersion,
         config: &BufferConfig,
-    ) -> TextResult<SearchQueryResult> {
+    ) -> SearchTextResult<SearchQueryResult> {
         if let Some(regex) = &self.regex {
             search_regex_streaming_with_regex(
                 text,
@@ -403,7 +404,7 @@ impl<O: Copy> SearchResultSet<O> {
     /// `Deleted` / `Collapsed` 的匹配（被删除或塌缩为零宽）整条丢弃。
     /// query / options 由调用方自行决定是否需要在新版本上重新搜索；
     /// regex 替换 / capture 展开必须基于同版本上的新结果，不应基于 remap 后的结果。
-    pub fn try_remap(self, event: &DeltaEvent) -> TextResult<Self> {
+    pub fn try_remap(self, event: &DeltaEvent) -> SearchTextResult<Self> {
         let Self {
             matches,
             query,
@@ -442,7 +443,7 @@ pub(crate) fn search_in_text<T: TextRead>(
     config: &BufferConfig,
     query: &str,
     options: SearchOptions,
-) -> TextResult<SearchResult> {
+) -> SearchTextResult<SearchResult> {
     if query.is_empty() {
         return Err(SearchError::EmptyQuery.into());
     }
@@ -469,23 +470,13 @@ pub(crate) fn search_in_text<T: TextRead>(
 ///
 /// 滑动窗口 + 重叠区保证跨窗口边界匹配不被截断；
 /// 若匹配命中 buffer 末端且还有更多数据则动态扩展——在罕见长匹配场景退化为物化，保证正确性。
-fn search_regex_streaming<T: TextRead>(
-    storage: &T,
-    version: BufferVersion,
-    pattern: &str,
-    options: RegexSearchOptions,
-) -> TextResult<RegexSearchResult> {
-    let regex = build_regex_automata(pattern, options)?;
-    search_regex_streaming_with_regex(storage, version, pattern, &regex, options)
-}
-
 fn search_regex_streaming_with_regex<T: TextRead>(
     storage: &T,
     version: BufferVersion,
     pattern: &str,
     regex: &meta::Regex,
     options: RegexSearchOptions,
-) -> TextResult<RegexSearchResult> {
+) -> SearchTextResult<RegexSearchResult> {
     let search_range = resolve_search_range(storage, options.range())?;
     validate_search_range(storage, search_range)?;
 
@@ -595,30 +586,11 @@ fn search_regex_streaming_with_regex<T: TextRead>(
     ))
 }
 
-pub(crate) fn search_regex_in_text<T: TextRead>(
-    storage: &T,
-    version: BufferVersion,
-    pattern: &str,
-    options: RegexSearchOptions,
-) -> TextResult<RegexSearchResult> {
-    search_regex_streaming(storage, version, pattern, options)
-}
-
-pub(crate) fn search_regex_in_text_with_automata<T: TextRead>(
-    storage: &T,
-    version: BufferVersion,
-    pattern: &str,
-    regex: &meta::Regex,
-    options: RegexSearchOptions,
-) -> TextResult<RegexSearchResult> {
-    search_regex_streaming_with_regex(storage, version, pattern, regex, options)
-}
-
 pub fn regex_replacements_in_text<'a, T: TextRead>(
     storage: &T,
     result: &RegexSearchResult,
     replacement: &'a str,
-) -> TextResult<impl Iterator<Item = TextResult<(TextRange, String)>> + 'a> {
+) -> SearchTextResult<impl Iterator<Item = SearchTextResult<(TextRange, String)>> + 'a> {
     let regex = build_regex(result.query(), result.options())?;
     let search_range = resolve_search_range(storage, result.options().range())?;
     validate_search_range(storage, search_range)?;
@@ -641,7 +613,7 @@ pub fn regex_replacement_for_match<T: TextRead>(
     result: &RegexSearchResult,
     ordinal: usize,
     replacement: &str,
-) -> TextResult<Option<(TextRange, String)>> {
+) -> SearchTextResult<Option<(TextRange, String)>> {
     for (index, regex_replacement) in
         regex_replacements_in_text(storage, result, replacement)?.enumerate()
     {
@@ -664,7 +636,7 @@ struct RegexReplacementIter<'a> {
 }
 
 impl Iterator for RegexReplacementIter<'_> {
-    type Item = TextResult<(TextRange, String)>;
+    type Item = SearchTextResult<(TextRange, String)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.done || self.next_start > self.haystack.len() {
@@ -700,14 +672,14 @@ impl Iterator for RegexReplacementIter<'_> {
 fn resolve_search_range<T: TextRead>(
     storage: &T,
     requested: Option<TextRange>,
-) -> TextResult<TextRange> {
+) -> SearchTextResult<TextRange> {
     match requested {
         Some(r) => Ok(r),
         None => text_range(ByteOffset::ZERO, storage.len_bytes()),
     }
 }
 
-fn build_regex(pattern: &str, options: RegexSearchOptions) -> TextResult<Regex> {
+fn build_regex(pattern: &str, options: RegexSearchOptions) -> SearchTextResult<Regex> {
     RegexBuilder::new(pattern)
         .case_insensitive(!options.is_case_sensitive())
         .multi_line(options.is_multi_line())
@@ -724,7 +696,10 @@ fn build_regex(pattern: &str, options: RegexSearchOptions) -> TextResult<Regex> 
         })
 }
 
-fn build_regex_automata(pattern: &str, options: RegexSearchOptions) -> TextResult<meta::Regex> {
+fn build_regex_automata(
+    pattern: &str,
+    options: RegexSearchOptions,
+) -> SearchTextResult<meta::Regex> {
     let syntax = regex_automata::util::syntax::Config::new()
         .case_insensitive(!options.is_case_sensitive())
         .multi_line(options.is_multi_line())
@@ -746,11 +721,14 @@ fn build_regex_automata(pattern: &str, options: RegexSearchOptions) -> TextResul
         })
 }
 
-fn regex_haystack_owned<T: TextRead>(storage: &T, search_range: TextRange) -> TextResult<String> {
-    storage.slice_to_string(search_range)
+fn regex_haystack_owned<T: TextRead>(
+    storage: &T,
+    search_range: TextRange,
+) -> SearchTextResult<String> {
+    Ok(storage.slice_to_string(search_range)?)
 }
 
-fn validate_search_range<T: TextRead>(storage: &T, range: TextRange) -> TextResult<()> {
+fn validate_search_range<T: TextRead>(storage: &T, range: TextRange) -> SearchTextResult<()> {
     if range.end() > storage.len_bytes() {
         return Err(CoordinateError::OutOfBounds(range.end()).into());
     }
@@ -764,7 +742,7 @@ fn find_case_sensitive_matches_streaming<T: TextRead>(
     search_range: TextRange,
     query: &str,
     options: SearchOptions,
-) -> TextResult<Vec<SearchMatch>> {
+) -> SearchTextResult<Vec<SearchMatch>> {
     let mut matches = Vec::new();
     let mut carry = String::new();
     let mut scratch = String::new();
@@ -833,7 +811,7 @@ fn find_case_insensitive_matches_streaming<T: TextRead>(
     search_range: TextRange,
     query: &str,
     options: SearchOptions,
-) -> TextResult<Vec<SearchMatch>> {
+) -> SearchTextResult<Vec<SearchMatch>> {
     let folded_query: String = query.chars().flat_map(char::to_lowercase).collect();
     if folded_query.is_empty() {
         return Ok(Vec::new());
@@ -939,7 +917,7 @@ fn passes_whole_word_filter<T: TextRead>(
     config: &BufferConfig,
     range: TextRange,
     options: SearchOptions,
-) -> TextResult<bool> {
+) -> SearchTextResult<bool> {
     if !options.is_whole_word() {
         return Ok(true);
     }
@@ -960,10 +938,12 @@ fn passes_whole_word_filter<T: TextRead>(
 }
 
 /// 内部 byte 区间构造：调用方应保证 `start <= end`；违反时返回 `InvariantViolation`，**永不 panic**。
-fn text_range(start: ByteOffset, end: ByteOffset) -> TextResult<TextRange> {
-    TextRange::new(start, end).map_err(|_| TextError::InvariantViolation {
-        location: "search::text_range",
-        detail: format!("生成了反向区间：start（{start:?}）> end（{end:?}）"),
+fn text_range(start: ByteOffset, end: ByteOffset) -> SearchTextResult<TextRange> {
+    TextRange::new(start, end).map_err(|_| {
+        SearchError::Text(TextError::InvariantViolation {
+            location: "search::text_range",
+            detail: format!("生成了反向区间：start（{start:?}）> end（{end:?}）"),
+        })
     })
 }
 
@@ -999,3 +979,7 @@ fn next_regex_search_start(haystack: &str, start: usize, end: usize) -> usize {
 
     next_char_boundary_after(haystack, end)
 }
+
+#[cfg(test)]
+#[path = "../test/buffer_search_tests.rs"]
+mod tests;

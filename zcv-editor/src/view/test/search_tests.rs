@@ -3,7 +3,8 @@
 use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
 
 use gpui::{TestAppContext, VisualTestContext};
-use zcv_text::{Buffer, Line, SearchQuery};
+use zcv_project::SearchQuery;
+use zcv_text::{Buffer, Line};
 use zcv_theme::color;
 use zcv_workspace::{Direction, SearchableItem};
 
@@ -299,7 +300,7 @@ fn replace_keeps_syntax_snapshot_in_sync(cx: &mut TestAppContext) {
     // 否则语法快照停留在旧版本，渲染层按版本闸门清空全部高亮。
     let text = "fn main() {\n    let x = 1;\n}\n";
     let buffer =
-        Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
     let buffer = cx.new(|_| buffer);
     let language_buffer =
         cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("main.rs")), cx));
@@ -375,7 +376,7 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
         let stream_line = inlay_snapshot
             .stream()
             .buffer_to_stream(Line::new(source.line()));
-        let tab_width = display.buffer_snapshot().config().tab.tab_width();
+        let tab_width = display.tab_width().get();
         let rendered: Vec<_> = WrapChunks::new(
             ChunkSource {
                 text: ChunkText::Borrowed(text.as_ref()),
@@ -454,7 +455,7 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
                 let stream_line = inlay_snapshot
                     .stream()
                     .buffer_to_stream(Line::new(source.line()));
-                let tab_width = display.buffer_snapshot().config().tab.tab_width();
+                let tab_width = display.tab_width().get();
                 let rendered: Vec<_> = WrapChunks::new(
                     ChunkSource {
                         text: ChunkText::Borrowed(text.as_ref()),
@@ -504,7 +505,7 @@ zcv final
 ```
 "#;
     let expected = text.matches("zcv").count();
-    let buffer = Buffer::scratch(text.to_owned(), Default::default()).unwrap();
+    let buffer = Buffer::from_text(text.to_owned(), Default::default()).unwrap();
     let buffer = cx.new(|_| buffer);
     let language_buffer = cx.new(|cx| {
         LanguageBuffer::new(
@@ -575,7 +576,7 @@ zcv final
                 let stream_line = inlay_snapshot
                     .stream()
                     .buffer_to_stream(Line::new(source.line()));
-                let tab_width = display.buffer_snapshot().config().tab.tab_width();
+                let tab_width = display.tab_width().get();
                 let highlight_styles = display.highlight_styles();
                 let rendered: Vec<_> = WrapChunks::new(
                     ChunkSource {

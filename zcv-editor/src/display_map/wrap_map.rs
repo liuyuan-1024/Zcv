@@ -295,7 +295,6 @@ impl WrapSnapshot {
         let fragment = self.display_row_to_fragment(point.row())?;
         match fragment.kind {
             WrapFragmentKind::Text(_source) => {
-                let buffer = self.tab_snapshot.buffer_snapshot();
                 let tab_row = Line::new(fragment.tab_row);
                 let line_start = self
                     .tab_snapshot
@@ -317,7 +316,7 @@ impl WrapSnapshot {
                         &content[fragment.byte_range.clone()],
                         fragment.indent,
                         point.column().get(),
-                        buffer.config(),
+                        self.tab_snapshot().tab_width().get(),
                     );
                     return self.merged_byte_to_offset(
                         &segments,
@@ -331,7 +330,7 @@ impl WrapSnapshot {
                     &content[byte_range.clone()],
                     fragment.indent,
                     point.column().get(),
-                    buffer.config(),
+                    self.tab_snapshot().tab_width().get(),
                 );
                 // 投影行内偏移逆投影回原始行内偏移（注入段内吸附到锚定后）。
                 let stream_line = self
@@ -700,7 +699,6 @@ impl WrapSnapshot {
     ) -> DisplayMapResult<DisplayPoint> {
         let tab_row = point.line().get();
         let line = Line::new(tab_row);
-        let buffer = self.tab_snapshot.buffer_snapshot();
         // 投影文本（含行内提示注入）；目标列 → 行内投影字节。
         let text = self
             .tab_snapshot
@@ -729,7 +727,7 @@ impl WrapSnapshot {
         let column = content[fragment_start..target_projected]
             .graphemes(true)
             .fold(indent, |column, grapheme| {
-                advance_display_column(column, grapheme, buffer.config())
+                advance_display_column(column, grapheme, self.tab_snapshot().tab_width().get())
             });
         Ok(DisplayPoint::new(
             DisplayRow::new(output_start + fragment_index),
@@ -1206,7 +1204,7 @@ impl WrapMap {
     fn prepared_wrap_text(&self, tab_row: usize) -> DisplayMapResult<PreparedWrapText> {
         let tab = &self.snapshot.tab_snapshot;
         let fold = tab.fold_snapshot();
-        let tab_width = tab.buffer_snapshot().config().tab.tab_width();
+        let tab_width = tab.tab_width().get();
         if let Some(segments) = fold.fold_row_segments(ProjectedLineIndex::new(tab_row)) {
             let content_len = segments
                 .last()

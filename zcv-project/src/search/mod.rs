@@ -1,4 +1,4 @@
-//! 本地项目内容搜索。
+//! 搜索能力域：查询模型、单 Buffer 匹配/替换与本地项目内容搜索。
 //!
 //! 磁盘遍历、文本匹配与未打开文件的加载全部在后台完成；
 //! 命中文件随扫描进度逐文件通过通道流出，UI 线程按批装配进 MultiBuffer ordered excerpts。
@@ -14,11 +14,21 @@ use gpui::{BackgroundExecutor, Task};
 use gpui_util::new_std_command;
 use zcv_git::path_from_git_bytes;
 use zcv_path::AbsolutePathBuf;
-use zcv_text::{
-    Buffer, BufferConfig, ByteOffset, Line, PreparedSearchQuery, SearchQuery, Snapshot, TextRange,
-};
+use zcv_text::{Buffer, BufferConfig, ByteOffset, Line, Snapshot, TextRange};
 
 use crate::worktree::WorktreeSearchPlan;
+
+mod buffer_search;
+mod error;
+mod versioned;
+
+pub use buffer_search::{
+    PreparedSearchQuery, RegexSearchOptions, RegexSearchResult, SearchMatch, SearchOptions,
+    SearchQuery, SearchQueryResult, SearchResult, regex_replacement_for_match,
+    regex_replacements_in_text,
+};
+pub use error::{SearchError, SearchTextResult, VersionedResultError};
+pub use versioned::VersionedResult;
 
 const CONTEXT_LINES: usize = 2;
 const MAX_MATCHES: usize = 10_000;
@@ -150,7 +160,7 @@ fn search_file(
         (snapshot.clone(), None)
     } else {
         let text = std::fs::read_to_string(path.as_path()).ok()?;
-        let buffer = Buffer::scratch(text, BufferConfig::default()).ok()?;
+        let buffer = Buffer::from_text(text, BufferConfig::default()).ok()?;
         (buffer.snapshot(), Some(buffer))
     };
     let matches = search_snapshot(&snapshot, query).ok()?;
@@ -297,5 +307,5 @@ fn excerpt_matches(snapshot: &Snapshot, matches: &[TextRange]) -> Vec<ExcerptMat
 }
 
 #[cfg(test)]
-#[path = "test/search_tests.rs"]
+#[path = "../test/search_tests.rs"]
 mod tests;

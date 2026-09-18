@@ -30,8 +30,9 @@ use zcv_multi_buffer::{
 };
 use zcv_multi_buffer::{ExcerptLocation, ExcerptRange, MultiBuffer};
 use zcv_path::AbsolutePathBuf;
+use zcv_project::SearchQuery;
 use zcv_project::{GitStoreEvent, Project};
-use zcv_text::{Anchor, Buffer, BufferConfig, ByteOffset, SearchQuery, Snapshot, TextRange};
+use zcv_text::{Anchor, Buffer, BufferConfig, ByteOffset, Snapshot, TextRange};
 use zcv_theme::{color, space};
 use zcv_ui::{
     Button, ButtonSize, ButtonStyle, Checkbox, MatchOption, MatchOptions, ReplaceInput,
@@ -1518,7 +1519,7 @@ impl ProjectDiffView {
                 let buffer = source.read(cx).buffer();
                 buffer.update(cx, |buffer, _| {
                     buffer
-                        .reload_from_text(text.to_string())
+                        .reset(text.to_string())
                         .expect("Git 修订文本必须能原位刷新")
                 });
             }
@@ -2102,7 +2103,7 @@ mod tests {
         cx.run_until_parked();
 
         // 工作区文件文本（与磁盘内容一致），供换算钳制行列。
-        let working_text = Buffer::scratch(
+        let working_text = Buffer::from_text(
             "line0\nline1\nline2\nline3\n修改后\nline5\nline6\nline7\n".to_owned(),
             BufferConfig::default(),
         )
@@ -2160,7 +2161,7 @@ mod tests {
                 source_range: removed_excerpt.source_range(),
             };
             // 已删除文件的工作区文本为空。
-            let empty_text = Buffer::scratch(String::new(), BufferConfig::default())
+            let empty_text = Buffer::from_text(String::new(), BufferConfig::default())
                 .expect("空 Buffer 应能创建")
                 .snapshot();
             let removed_target = view
@@ -2173,7 +2174,7 @@ mod tests {
 
     #[test]
     fn clamp_column_to_line_caps_at_line_length() {
-        let snapshot = Buffer::scratch(
+        let snapshot = Buffer::from_text(
             "abc\n一个很长的中文行\n".to_owned(),
             BufferConfig::default(),
         )

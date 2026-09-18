@@ -5,7 +5,7 @@ use zcv_text::{Buffer, BufferConfig};
 
 fn snapshot_with(text: &str, inlays: Vec<Inlay>) -> InlaySnapshot {
     let buffer =
-        Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
     let (mut map, _) = InlayMap::new(LineStream::new(buffer.snapshot()));
     map.read(LineStream::new(buffer.snapshot()), inlays)
 }
@@ -73,8 +73,8 @@ fn offset_roundtrip_and_inlay_snapping() {
 
 #[test]
 fn version_changes_only_on_inlay_config_change() {
-    let buffer =
-        Buffer::scratch("ab\n".to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
+    let buffer = Buffer::from_text("ab\n".to_owned(), BufferConfig::default())
+        .expect("测试 Buffer 应能创建");
     let mut map = InlayMap::new(LineStream::new(buffer.snapshot())).0;
     let stream = LineStream::new(buffer.snapshot());
     let snapshot = map.read(stream, vec![inlay(1, "x")]);

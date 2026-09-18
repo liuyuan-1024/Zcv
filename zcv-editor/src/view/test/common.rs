@@ -21,7 +21,7 @@ pub(super) fn test_buffer(
     text: impl Into<String>,
 ) -> Entity<LanguageBuffer> {
     let buffer =
-        Buffer::scratch(text.into(), BufferConfig::default()).expect("测试 Buffer 应能创建");
+        Buffer::from_text(text.into(), BufferConfig::default()).expect("测试 Buffer 应能创建");
     let buffer = cx.new(|_| buffer);
     cx.new(|cx| LanguageBuffer::new(buffer, None, cx))
 }

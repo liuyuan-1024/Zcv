@@ -3,7 +3,7 @@
 //! 搜索条只面向此 trait 编程，Editor 等 Item 提供搜索执行与匹配跳转。
 
 use gpui::{App, Context, Entity, EventEmitter, Subscription, Window};
-use zcv_text::SearchQuery;
+use zcv_project::SearchQuery;
 
 use crate::item::{Item, ItemHandle};
 
@@ -29,7 +29,7 @@ pub enum Direction {
 /// 可在自身内容中搜索的 Item。
 ///
 /// 实现方持有匹配结果与活动位置；搜索会话控制器通过本协议派发统一的
-/// [`zcv_text::SearchQuery`]。
+/// [`zcv_project::SearchQuery`]。
 pub trait SearchableItem: Item + EventEmitter<SearchEvent> {
     /// 是否支持替换。项目搜索等只读搜索目标返回 false，SearchBar 据此禁用替换入口。
     fn supports_replace(&self) -> bool {

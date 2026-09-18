@@ -17,7 +17,7 @@ use zcv_actions::{
 use zcv_editor::{Editor, EditorEvent};
 use zcv_multi_buffer::{ExcerptLocation, ExcerptRange, MultiBuffer};
 use zcv_project::Project;
-use zcv_text::SearchQuery;
+use zcv_project::SearchQuery;
 use zcv_theme::{color, space};
 use zcv_ui::{Button, MatchOption, MatchOptions, SearchInput};
 use zcv_workspace::{

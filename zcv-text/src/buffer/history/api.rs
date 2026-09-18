@@ -1,10 +1,8 @@
 //! History public API：把 Undo / Redo + 本地分支能力暴露为 Buffer 方法。
 //!
-//! 本文件负责历史图的 cursor 移动、分支查询与重放，不定义 HistoryEntry 的存储形态。
+//! 本文件只管理历史图的 cursor 移动与回放编排；可重放编辑来自 `EditLog` 的版本区间。
 
-use std::sync::Arc;
-
-use super::{HistoryEntry, HistoryNodeId, HistoryStatus};
+use super::{HistoryEntry, HistoryNodeId};
 use crate::{
     TextError, TextRange, TextResult, TransactionId, TransactionSource,
     buffer::Buffer,
@@ -12,29 +10,9 @@ use crate::{
     transaction::{Edit, EditList, TransactionMergePolicy, TransactionMetadata},
 };
 
-/// 当前历史节点的只读视图，用于宿主感知节点身份和分支结构。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HistoryNodeView {
-    /// 节点稳定身份。
-    pub id: HistoryNodeId,
-    /// 节点创建时分配的单调序号，跨 Buffer 寿命永不复用。
-    pub sequence_number: u64,
-    /// 父节点身份；`None` 表示该节点是历史树的根（首次提交后的节点）。
-    pub parent: Option<HistoryNodeId>,
-    /// 子节点身份列表，按创建时间顺序排列，末尾为最近一次创建（默认 redo 目标）。
-    pub children: Vec<HistoryNodeId>,
-    /// 宿主用于关联视图状态历史的规范事务身份。
-    pub transaction_id: TransactionId,
-    /// 节点描述（来自 `TransactionMetadata::description`）。
-    /// `Arc<str>` 让 host 端 clone 这个 view 时仍是 O(1) 引用计数。
-    pub description: Option<Arc<str>>,
-}
-
 /// 一次 Undo / Redo 文本回放的结果。
 ///
-/// 只携带被回放历史节点的规范事务身份：
-/// 一次回放可能由合并事务的多个批次组成，跨批次的复合文本变化由源 Buffer 的订阅（`subscribe`/`consume`）权威给出；
-/// 回放结果不再单独暴露只含最后一批、坐标残缺的 delta/changeset。
+/// 只携带被回放历史节点的规范事务身份；跨批次的复合文本变化由源 Buffer 的订阅权威给出。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryEditOutcome {
     transaction_id: TransactionId,
@@ -60,32 +38,11 @@ impl Buffer {
         self.history.can_redo()
     }
 
-    pub fn history_status(&self) -> HistoryStatus {
-        self.history.status()
-    }
-
-    /// 当前所在历史节点；`None` 表示历史树根（空 Buffer 或全部 undo 后的状态）。
-    pub fn current_history_node(&self) -> Option<HistoryNodeId> {
-        self.history.current()
-    }
-
-    /// 读取指定节点的只读视图。
-    pub fn history_node(&self, id: HistoryNodeId) -> Option<HistoryNodeView> {
-        self.history.node(id).map(|node| HistoryNodeView {
-            id: node.id,
-            sequence_number: node.sequence_number,
-            parent: node.parent,
-            children: node.children.clone(),
-            transaction_id: node.entry.transaction_id,
-            description: node.entry.description.clone(),
-        })
-    }
-
-    /// 当前节点可选 redo 分支（即子节点列表），按最近创建优先排列。
-    pub fn redo_branches(&self) -> Vec<HistoryNodeId> {
-        let mut children = self.history.children_of_current().to_vec();
-        children.reverse();
-        children
+    /// 当前历史节点的事务身份；无历史时为 `None`。
+    ///
+    /// 组合文档用它把源文档历史与自己的选区历史对齐，不暴露历史图内部节点身份。
+    pub fn current_history_transaction_id(&self) -> Option<TransactionId> {
+        self.history.current_transaction_id()
     }
 
     /// 撤销最近一次历史节点。
@@ -112,36 +69,20 @@ impl Buffer {
     /// 没有可 redo 节点时返回 `Ok(None)`。
     pub fn redo(&mut self) -> TextResult<Option<HistoryEditOutcome>> {
         self.ensure_writable()?;
-        let Some(target) = self.history.default_redo_target() else {
+        let Some(node_id) = self.history.default_redo_target() else {
             return Ok(None);
         };
-        self.redo_into_branch(target).map(Some)
-    }
-
-    /// 重做到指定的 redo 分支节点。
-    ///
-    /// `node_id` 必须是 `redo_branches()` 之一，否则返回 `TextError::InvalidHistoryBranch`。
-    pub fn redo_to_branch(&mut self, node_id: HistoryNodeId) -> TextResult<HistoryEditOutcome> {
-        if !self.history.children_of_current().contains(&node_id) {
-            return Err(TextError::InvalidHistoryBranch(node_id));
-        }
-        self.redo_into_branch(node_id)
-    }
-
-    fn redo_into_branch(&mut self, node_id: HistoryNodeId) -> TextResult<HistoryEditOutcome> {
-        self.ensure_writable()?;
-
         let target = self.history_target(node_id, ReplayKind::Redo)?;
         self.history
             .step_redo_into(node_id)
             .ok_or_else(|| TextError::InvariantViolation {
-                location: "Buffer::redo_into_branch",
+                location: "Buffer::redo",
                 detail: format!("已验证的 redo 目标节点 {node_id:?} 不是当前历史节点的子节点"),
             })?;
-        self.replay_history_batches(target)
+        self.replay_history_batches(target).map(Some)
     }
 
-    /// 取历史节点上待回放的批次与身份；undo / redo 只差一个批次方向。
+    /// 取历史节点对应的版本区间与事务身份；undo / redo 只差一个回放方向。
     fn history_target(&self, node_id: HistoryNodeId, kind: ReplayKind) -> TextResult<ReplayTarget> {
         let node = self
             .history
@@ -150,36 +91,40 @@ impl Buffer {
                 location: "Buffer::history_target",
                 detail: format!("回放目标节点 {node_id:?} 缺失"),
             })?;
-        let batches = match kind {
-            ReplayKind::Undo => &node.entry.undo_batches,
-            ReplayKind::Redo => &node.entry.redo_batches,
-        };
-        if batches.is_empty() {
+        let entry = &node.entry;
+        if entry.start_version == entry.end_version {
             return Err(TextError::InvariantViolation {
                 location: "Buffer::history_target",
-                detail: format!("历史节点 {node_id:?} 没有 {:?} 批次", kind),
+                detail: format!("历史节点 {node_id:?} 没有版本推进"),
             });
         }
 
         Ok(ReplayTarget {
-            transaction_id: node.entry.transaction_id,
-            batches: batches.clone(),
+            transaction_id: entry.transaction_id,
+            start_version: entry.start_version,
+            end_version: entry.end_version,
             kind,
         })
     }
 
-    /// 按批次回放 undo / redo 编辑，返回被回放节点的规范事务身份。
-    ///
-    /// 合并事务的多个批次各自 `apply_edit_list` 并向订阅发布，跨批次的复合变化由订阅权威给出；
-    /// 这里只负责依次回放并回传节点身份。`history_target` 已保证批次非空。
+    /// 按版本区间从编辑日志取编辑并回放，返回被回放节点的规范事务身份。
     fn replay_history_batches(&mut self, target: ReplayTarget) -> TextResult<HistoryEditOutcome> {
-        for tx_edits in target.batches.iter() {
+        let batches = match target.kind {
+            ReplayKind::Undo => self
+                .edit_log
+                .undo_batches(target.start_version, target.end_version)?,
+            ReplayKind::Redo => self
+                .edit_log
+                .redo_batches(target.start_version, target.end_version)?,
+        };
+        for tx_edits in batches {
             self.apply_edit_list(
                 self.version,
-                tx_edits.clone(), // EditList::clone 是 O(1) Arc 递增
+                tx_edits, // EditList::clone 是 O(1) Arc 递增
                 target.kind.source(),
             )?;
         }
+        self.truncate_edit_history_to_budget();
         Ok(HistoryEditOutcome::new(target.transaction_id))
     }
 
@@ -191,13 +136,10 @@ impl Buffer {
         if metadata.merge_policy() == TransactionMergePolicy::MergeWithPrevious
             && self.history.merge_into_current(entry.clone())
         {
-            // 合并入当前节点：节点身份与事务身份都不变，只追加批次。
-            self.truncate_undo_history_to_budget();
             return Ok(self.history.current_transaction_id());
         }
 
         self.history.push_child(entry)?;
-        self.truncate_undo_history_to_budget();
         Ok(self.history.current_transaction_id())
     }
 
@@ -207,10 +149,17 @@ impl Buffer {
         self.history.drop_children_of_current();
     }
 
-    pub(in crate::buffer) fn truncate_undo_history_to_budget(&mut self) {
+    /// 按编辑历史预算裁剪日志，并同步丢弃超出保留窗口的历史节点。
+    pub(in crate::buffer) fn truncate_edit_history_to_budget(&mut self) {
         let policy = &self.config.large_file;
+        self.edit_log = self.edit_log.truncated(
+            policy.max_edit_history_entries,
+            policy.max_edit_history_bytes,
+        );
         self.history
-            .truncate_to_budget(policy.max_undo_history, policy.max_undo_history_bytes);
+            .retain_versions_since(self.edit_log.earliest_version());
+        self.history
+            .truncate_to_node_budget(policy.max_undo_history);
     }
 
     /// 构造 `edits` 的逆操作 `EditList`，用于 Undo 回放。
@@ -268,10 +217,10 @@ impl ReplayKind {
     }
 }
 
-/// 待回放的历史事实：规范事务身份 + 批次序列 + 回放方向。
+/// 待回放的历史事实：规范事务身份 + 版本区间 + 回放方向。
 struct ReplayTarget {
     transaction_id: TransactionId,
-    /// `Arc::clone` 是 O(1)；批次本身复用历史节点拥有的存储。
-    batches: Arc<[EditList]>,
+    start_version: crate::BufferVersion,
+    end_version: crate::BufferVersion,
     kind: ReplayKind,
 }

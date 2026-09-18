@@ -1,8 +1,8 @@
 //! Zcv 的纯文本内核。
 //! 此文件是 `zcv-text` crate 的公共入口。
 //!
-//! 不直接负责 UI 渲染、LSP 协议、语法树生成或项目级索引。
-//! 仅专注于文本存储、坐标模型、事务变异、历史系统以及外部系统所需的底层文本协作接口。
+//! 不直接负责 UI 渲染、文件 IO、LSP 协议、语法树生成或项目级索引。
+//! 仅专注于文本存储、坐标模型、事务变异、历史系统与只读快照。
 
 mod buffer;
 mod config;
@@ -10,36 +10,21 @@ mod diff;
 mod errors;
 mod movement;
 mod position_map;
-mod search;
 mod slicing;
 mod snapshot;
 mod storage;
 mod text_changes;
-mod text_loading;
 mod tracking;
 mod transaction;
 mod types;
-mod versioned;
 
-pub use buffer::{
-    Buffer, HistoryEditOutcome, HistoryNodeId, HistoryNodeView, HistoryStatus,
-    movement_boundary_in_text,
-};
-pub use config::{
-    BufferConfig, EncodingConfig, LargeFilePolicy, LargeTransactionPolicy, LineEndingConfig,
-    TabConfig, WordBoundaryPolicy,
-};
+pub use buffer::{Buffer, HistoryEditOutcome, movement_boundary_in_text};
+pub use config::{BufferConfig, LargeFilePolicy, LargeTransactionPolicy, WordBoundaryPolicy};
 pub use errors::{
-    AnchorError, BufferLoadError, BufferSaveError, CoordinateError, EditError, SearchError,
-    StorageError, TextError, TextResult, TransactionError, VersionedResultError,
+    AnchorError, CoordinateError, EditError, StorageError, TextError, TextResult, TransactionError,
 };
 pub use movement::{MovementDirection, MovementUnit};
-pub use position_map::{Affinity, Bias, MappingResult, PositionMap, Stickiness};
-pub use search::{
-    PreparedSearchQuery, RegexSearchOptions, RegexSearchResult, SearchMatch, SearchOptions,
-    SearchQuery, SearchQueryResult, SearchResult, regex_replacement_for_match,
-    regex_replacements_in_text,
-};
+pub use position_map::{Affinity, MappingResult, PositionMap, Stickiness};
 pub use snapshot::Snapshot;
 pub use storage::TextRead;
 pub use text_changes::{TextChangeBatch, TextSubscription};

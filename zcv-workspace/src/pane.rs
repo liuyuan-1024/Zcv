@@ -1199,7 +1199,7 @@ mod tests {
 
     fn test_buffer(cx: &mut TestAppContext, text: impl Into<String>) -> Entity<MultiBuffer> {
         let buffer = cx.new(|_| {
-            Buffer::scratch(text.into(), BufferConfig::default()).expect("应创建测试 Buffer")
+            Buffer::from_text(text.into(), BufferConfig::default()).expect("应创建测试 Buffer")
         });
         let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, None, cx));
         cx.new(|cx| MultiBuffer::singleton(language_buffer, cx))

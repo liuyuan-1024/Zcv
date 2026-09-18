@@ -2,7 +2,8 @@ use criterion::{
     BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
 };
 use zcv_benchmarks::cached_rust_document;
-use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, SearchQuery, TransactionMetadata};
+use zcv_project::SearchQuery;
+use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TransactionMetadata};
 
 const DOCUMENT_SIZES: [usize; 3] = [64 * 1024, 1024 * 1024, 16 * 1024 * 1024];
 
@@ -58,11 +59,17 @@ fn searches(c: &mut Criterion) {
         let snapshot = Buffer::from_text(text.to_string(), BufferConfig::default())
             .unwrap()
             .snapshot();
+        let literal_query = SearchQuery {
+            query: "render_document".to_string(),
+            ..Default::default()
+        }
+        .prepare()
+        .unwrap();
         group.bench_with_input(
             BenchmarkId::new("literal", byte_len),
             &snapshot,
             |b, snapshot| {
-                b.iter(|| black_box(snapshot.search_literal("render_document").unwrap().len()));
+                b.iter(|| black_box(literal_query.search(snapshot).unwrap().matches().len()));
             },
         );
 

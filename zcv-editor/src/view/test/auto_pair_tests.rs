@@ -24,7 +24,7 @@ fn editor_with_rust<'a>(
     &'a mut VisualTestContext,
 ) {
     let buffer = cx.new(|_| {
-        Buffer::scratch(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+        Buffer::from_text(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
     let language_buffer = cx.new({
         let buffer = buffer.clone();
@@ -52,7 +52,7 @@ fn editor_without_language<'a>(
     &'a mut VisualTestContext,
 ) {
     let buffer = cx.new(|_| {
-        Buffer::scratch(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+        Buffer::from_text(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
     let language_buffer = cx.new({
         let buffer = buffer.clone();
@@ -100,10 +100,10 @@ fn backspace(editor: &gpui::Entity<Editor>, cx: &mut VisualTestContext) {
 #[gpui::test]
 fn each_composite_selection_uses_its_source_language_pairs(cx: &mut TestAppContext) {
     let plain_buffer = cx.new(|_| {
-        Buffer::scratch("x ".to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+        Buffer::from_text("x ".to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
     let rust_buffer = cx.new(|_| {
-        Buffer::scratch("y ".to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+        Buffer::from_text("y ".to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
     let plain = cx.new({
         let plain_buffer = plain_buffer.clone();

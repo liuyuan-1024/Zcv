@@ -38,13 +38,6 @@ pub(crate) fn buffer(text: &str) -> Buffer {
     Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()
 }
 
-pub(crate) fn loaded_buffer(
-    bytes: impl AsRef<[u8]>,
-    config: BufferConfig,
-) -> Result<Buffer, BufferLoadError> {
-    Buffer::from_reader(std::io::Cursor::new(bytes.as_ref().to_vec()), config)
-}
-
 // ---- 文本读取 ----
 
 pub(crate) trait FullText {

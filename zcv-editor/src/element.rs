@@ -269,7 +269,7 @@ impl EditorLayout {
             &line.shaped.text,
             line.window_start_column,
             byte_index,
-            self.display_snapshot.buffer_snapshot().config(),
+            self.display_snapshot.tab_width().get(),
         );
         Some((
             line,
@@ -3304,7 +3304,7 @@ fn local_byte_for_display_point(
         &line.shaped.text,
         line.window_start_column,
         point.column().get(),
-        display_snapshot.buffer_snapshot().config(),
+        display_snapshot.tab_width().get(),
     )
 }
 
@@ -3422,7 +3422,7 @@ mod tests {
 
     #[test]
     fn search_marker_rows_cover_every_current_search_range() {
-        let buffer = Buffer::scratch("first\nmiddle\n项目".to_owned(), BufferConfig::default())
+        let buffer = Buffer::from_text("first\nmiddle\n项目".to_owned(), BufferConfig::default())
             .expect("应创建搜索 marker 测试 Buffer");
         let snapshot = buffer.snapshot();
         let display = DisplayMap::new(snapshot.clone()).snapshot();
@@ -3444,7 +3444,7 @@ mod tests {
     #[gpui::test]
     fn search_marker_rows_use_combined_document_coordinates(cx: &mut TestAppContext) {
         let source_buffer = cx.new(|_| {
-            Buffer::scratch("first\n项目\nlast".to_owned(), BufferConfig::default())
+            Buffer::from_text("first\n项目\nlast".to_owned(), BufferConfig::default())
                 .expect("应创建组合搜索 marker 测试 Buffer")
         });
         let source = cx.new(|cx| LanguageBuffer::new(source_buffer, None, cx));
@@ -3556,7 +3556,7 @@ mod tests {
     fn background_fragments_include_line_origin_x(cx: &mut TestAppContext) {
         let text = "代码 abc 代码\n";
         let buffer = cx.new(|_| {
-            Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("应创建 Buffer")
+            Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建 Buffer")
         });
         let language_buffer =
             cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("README.md")), cx));
@@ -3643,7 +3643,7 @@ mod tests {
         window
             .update(cx, |_, window, cx| {
                 let text = "aaaa bbbb cccc dddd eeee ".repeat(3) + "\nshort\n";
-                let snapshot = Buffer::scratch(text, BufferConfig::default())
+                let snapshot = Buffer::from_text(text, BufferConfig::default())
                     .expect("测试 Buffer 应能创建")
                     .snapshot();
                 let text_style = window.text_style();
@@ -3738,7 +3738,7 @@ mod tests {
                     "补全各语言的括号、缩进、折叠与注入查询文件",
                     "修复 SVG 与 Markdown 公式预览的缩放、居中、清晰度、颜色及边界裁剪问题",
                 ] {
-                    let snapshot = Buffer::scratch(text.to_owned(), BufferConfig::default())
+                    let snapshot = Buffer::from_text(text.to_owned(), BufferConfig::default())
                         .expect("测试 Buffer 应能创建")
                         .snapshot();
                     let mut map = DisplayMap::new(snapshot);
@@ -3828,7 +3828,7 @@ mod tests {
     fn multibuffer_header_can_start_above_viewport(cx: &mut TestAppContext) {
         let text = "引擎\n";
         let source_text = cx.new(|_| {
-            Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("应创建源 Buffer")
+            Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建源 Buffer")
         });
         let source = cx.new({
             let source_text = source_text.clone();
@@ -3916,7 +3916,7 @@ mod tests {
     fn sticky_buffer_header_follows_excerpts_and_points_to_the_next_file(cx: &mut TestAppContext) {
         let first_text = "a0\na1\na2\na3\na4\na5\na6\na7\n";
         let first_buffer = cx.new(|_| {
-            Buffer::scratch(first_text.to_owned(), BufferConfig::default())
+            Buffer::from_text(first_text.to_owned(), BufferConfig::default())
                 .expect("应创建第一个源 Buffer")
         });
         let first = cx
@@ -3924,7 +3924,7 @@ mod tests {
 
         let second_text = "b0\nb1\n";
         let second_buffer = cx.new(|_| {
-            Buffer::scratch(second_text.to_owned(), BufferConfig::default())
+            Buffer::from_text(second_text.to_owned(), BufferConfig::default())
                 .expect("应创建第二个源 Buffer")
         });
         let second = cx
@@ -4005,7 +4005,7 @@ mod tests {
     fn wrapped_unicode_markdown_queries_highlights_from_source_chunks(cx: &mut TestAppContext) {
         let text = "> **The reconstructed Functionally Equivalent Scene（功能等价场景）can be directly imported into ROS（机器人操作系统）to support interactive simulation（交互式仿真）and long-horizon robot task execution（长时序机器人任务执行）.**\n";
         let buffer = cx.new(|_| {
-            Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("应创建 Buffer")
+            Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建 Buffer")
         });
         let language_buffer =
             cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("README.md")), cx));
@@ -4099,7 +4099,7 @@ mod tests {
                 let text = (0..10_000)
                     .map(|row| format!("line {row}\n"))
                     .collect::<String>();
-                let snapshot = Buffer::scratch(text, BufferConfig::default())
+                let snapshot = Buffer::from_text(text, BufferConfig::default())
                     .expect("大文本测试 Buffer 应能创建")
                     .snapshot();
                 let presentation = EditorPresentation::new(&snapshot.clone().into(), None);
@@ -4155,7 +4155,7 @@ mod tests {
         window
             .update(cx, |_, window, cx| {
                 let snapshot =
-                    Buffer::scratch("one\ntwo\nthree".to_owned(), BufferConfig::default())
+                    Buffer::from_text("one\ntwo\nthree".to_owned(), BufferConfig::default())
                         .expect("测试 Buffer 应能创建")
                         .snapshot();
                 let dimensions = GutterDimensions {
@@ -4213,7 +4213,7 @@ mod tests {
         let window = cx.add_window(|_, _| Empty);
         window
             .update(cx, |_, window, cx| {
-                let snapshot = Buffer::scratch(
+                let snapshot = Buffer::from_text(
                     "anchor\nhidden one\nhidden two\nafter".to_owned(),
                     BufferConfig::default(),
                 )
@@ -4269,7 +4269,7 @@ mod tests {
         window
             .update(cx, |_, window, cx| {
                 let snapshot =
-                    Buffer::scratch("abcdef\nx\nabcde".to_owned(), BufferConfig::default())
+                    Buffer::from_text("abcdef\nx\nabcde".to_owned(), BufferConfig::default())
                         .expect("测试 Buffer 应能创建")
                         .snapshot();
                 let layout = layout_visible_lines(
@@ -4341,7 +4341,7 @@ mod tests {
         let window = cx.add_window(|_, _| Empty);
         window
             .update(cx, |_, window, cx| {
-                let snapshot = Buffer::scratch("a  b\tc".to_owned(), BufferConfig::default())
+                let snapshot = Buffer::from_text("a  b\tc".to_owned(), BufferConfig::default())
                     .expect("测试 Buffer 应能创建")
                     .snapshot();
                 let layout = layout_visible_lines(
@@ -4404,7 +4404,7 @@ mod tests {
         let window = cx.add_window(|_, _| Empty);
         window
             .update(cx, |_, window, cx| {
-                let snapshot = Buffer::scratch(
+                let snapshot = Buffer::from_text(
                     (0..20).map(|_| "x\n").collect::<String>(),
                     BufferConfig::default(),
                 )
@@ -4459,7 +4459,7 @@ mod tests {
     ) {
         let text = "abcdef\nx\nabcde\n";
         let source_buffer = cx.new(|_| {
-            Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("应创建源 Buffer")
+            Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建源 Buffer")
         });
         let source = cx.new(move |cx| {
             LanguageBuffer::new(source_buffer, Some(PathBuf::from("src/example.rs")), cx)
@@ -4472,8 +4472,8 @@ mod tests {
 
         let multi_snapshot = cx.read_entity(&combined, |combined, cx| combined.snapshot(cx));
         let multi_text = multi_snapshot.clone();
-        let single_text =
-            Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("应创建单文件 Buffer");
+        let single_text = Buffer::from_text(text.to_owned(), BufferConfig::default())
+            .expect("应创建单文件 Buffer");
         let single_snapshot = single_text.snapshot();
         let selection = SelectionSet::new(vec![crate::selection::Selection::new(
             MultiBufferOffset::new(2),
@@ -4587,7 +4587,7 @@ mod tests {
                 let font_size = window.text_style().font_size.to_pixels(window.rem_size());
 
                 // 无 wrap：逻辑行 == 显示行；纯删除空范围锚定一个显示行。
-                let buffer = Buffer::scratch(
+                let buffer = Buffer::from_text(
                     "line 0\nline 1\nline 2\nline 3\nline 4\n".to_owned(),
                     BufferConfig::default(),
                 )
@@ -4627,7 +4627,7 @@ mod tests {
                 );
 
                 // wrap：宽行拆成多个显示行，marker 覆盖全部片段。
-                let buffer = Buffer::scratch(
+                let buffer = Buffer::from_text(
                     "aaaa bbbb cccc dddd eeee ".repeat(10) + "\nline 1\n",
                     BufferConfig::default(),
                 )
@@ -4683,7 +4683,7 @@ mod tests {
     #[test]
     fn diff_hunk_rows_expanded_deleted_marks_materialized_old_rows() {
         let collapsed = DisplayMap::new(
-            Buffer::scratch(
+            Buffer::from_text(
                 "line 0\nline 1\nline 2\n".to_owned(),
                 BufferConfig::default(),
             )
@@ -4718,7 +4718,7 @@ mod tests {
         );
 
         let expanded = DisplayMap::new(
-            Buffer::scratch(
+            Buffer::from_text(
                 "line 0\nline 1\nold 1\nold 2\nline 2\n".to_owned(),
                 BufferConfig::default(),
             )
@@ -4750,7 +4750,7 @@ mod tests {
     #[test]
     fn modified_hunk_expansion_marks_old_and_new_rows() {
         let snapshot = DisplayMap::new(
-            Buffer::scratch(
+            Buffer::from_text(
                 "line 0\nold 1\nnew 1\nline 2\n".to_owned(),
                 BufferConfig::default(),
             )
@@ -4783,7 +4783,7 @@ mod tests {
     fn modified_hunk_strip_stays_yellow_when_expanded() {
         // 竖条色不随展开变化：展开的修改块竖条保持黄色并覆盖旧行 + 修改行。
         let snapshot = DisplayMap::new(
-            Buffer::scratch(
+            Buffer::from_text(
                 "line 0\nold 1\nnew 1\nline 2\n".to_owned(),
                 BufferConfig::default(),
             )

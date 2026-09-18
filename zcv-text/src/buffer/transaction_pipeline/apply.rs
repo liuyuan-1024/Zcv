@@ -8,22 +8,13 @@ use crate::{
     config::LargeTransactionPolicy,
     errors::{EditError, StorageError, TransactionError},
     errors::{TextError, TextResult},
-    storage::{RopeyPreparedReplace, TextStorage},
+    storage::{RopeyPreparedReplace, RopeyStorage},
     transaction::TransactionOutcome,
-    transaction::{ChangeSet, Delta, DeltaEvent, EditList, Transaction, TransactionSource},
+    transaction::{
+        ChangeSet, Delta, DeltaEvent, EditList, Transaction, TransactionMetadata, TransactionSource,
+    },
     types::BufferVersion,
 };
-
-/// 单个 `EditList` 内所有 `Edit::replacement` 的 UTF-8 字节和。
-///
-/// 避免事务 prepare 阶段的预算检查与最终 `HistoryEntry` 的字节统计漂移。
-pub(in crate::buffer) fn edit_list_replacement_bytes(edits: &EditList) -> usize {
-    edits
-        .as_slice()
-        .iter()
-        .map(|edit| edit.replacement().len())
-        .sum()
-}
 
 impl Buffer {
     /// 提交并应用事务。
@@ -33,9 +24,19 @@ impl Buffer {
         self.ensure_writable()?;
         let (mut prepared, next_transaction_id, event) = self.prepare_transaction(tx)?;
         self.apply_large_transaction_policy(&mut prepared)?;
-        self.commit_prepared_edit_list(&prepared.edits, next_transaction_id, &event)?;
 
-        let history_transaction_id = self.finish_transaction(prepared, event.transaction_id())?;
+        // 进入历史的事务才保存逆编辑；SkipHistory 大事务不白存被删文本。
+        let undo_edits = self
+            .records_history(&prepared.metadata)
+            .then(|| prepared.undo_edits.clone());
+        self.commit_prepared_edit_list(&prepared.edits, undo_edits, next_transaction_id, &event)?;
+
+        let history_transaction_id = self.finish_transaction(
+            prepared,
+            event.transaction_id(),
+            event.old_version(),
+            event.new_version(),
+        )?;
         Ok(TransactionOutcome::new(history_transaction_id, event))
     }
 
@@ -47,29 +48,42 @@ impl Buffer {
         let (next_transaction_id, event) =
             self.prepare_delta_event(base_version, edits.clone(), metadata.source(), false)?;
         let undo_edits = self.build_inverse_edit_list(&edits)?;
-        let redo_edits = edits.clone();
 
         Ok((
             PreparedTransaction {
                 edits,
                 metadata,
                 undo_edits,
-                redo_edits,
             },
             next_transaction_id,
             event,
         ))
     }
 
+    /// 本次编辑是否进入历史：事务自身要求记录，且当前会话没有放弃历史。
+    fn records_history(&self, metadata: &TransactionMetadata) -> bool {
+        if !metadata.record_history() {
+            return false;
+        }
+        match &self.session {
+            Some(session) => session.history_transaction_id().is_some(),
+            None => true,
+        }
+    }
+
     fn finish_transaction(
         &mut self,
         prepared: PreparedTransaction,
         transaction_id: crate::TransactionId,
+        old_version: BufferVersion,
+        new_version: BufferVersion,
     ) -> TextResult<Option<crate::TransactionId>> {
+        let records_history = self.records_history(&prepared.metadata);
         if let Some(session) = &mut self.session {
-            // 会话内：只累积 undo/redo 批次，历史写入推迟到 `end_transaction`。
-            if prepared.metadata.record_history() && session.history_transaction_id().is_some() {
-                session.append(prepared.undo_edits, prepared.redo_edits, &prepared.metadata);
+            // 会话内：历史写入推迟到 `end_transaction`，这里只延续/放弃会话记录。
+            // 不在会话内裁剪日志，否则会丢掉本会话更早版本、导致 `end_transaction` 后无法回放。
+            if records_history {
+                session.record_edit(&prepared.metadata);
             } else {
                 // 超大事务放弃历史（SkipHistory）：整个会话的历史作废，否则 undo 回放会漏掉会话内的这些文本变化。
                 session.discard_history();
@@ -80,18 +94,16 @@ impl Buffer {
         if prepared.metadata.record_history() {
             // Arc::clone：description 字符串只在历史节点持有一份共享
             let description = prepared.metadata.description_arc().cloned();
-            let entry = HistoryEntry::new(
-                transaction_id,
-                prepared.undo_edits,
-                prepared.redo_edits,
-                description,
-            );
-            return self.push_history(entry, &prepared.metadata);
+            let entry = HistoryEntry::new(transaction_id, old_version, new_version, description);
+            self.push_history(entry, &prepared.metadata)?;
+            self.truncate_edit_history_to_budget();
+            return Ok(self.history.current_transaction_id());
         }
 
         // record_history=false 提交后，当前节点下的 redo 分支已经基于过期文本，
         // 整体丢弃以避免后续 redo 走到不一致状态；undo 路径保持不变。
         self.drop_unrecorded_redo_branches();
+        self.truncate_edit_history_to_budget();
         Ok(None)
     }
 
@@ -99,7 +111,7 @@ impl Buffer {
     ///
     /// `Reject`：原子拒绝事务，文本 / 版本 / 历史完全不变。
     /// `SkipHistory`：把 metadata 的 `record_history` 关掉，复用既有
-    /// `finish_transaction` 中 `record_history=false` 路径，文本前进但不入历史
+    /// `records_history` 中 `record_history=false` 路径，文本前进但不入历史
     /// 且丢弃当前节点子树。
     fn apply_large_transaction_policy(&self, prepared: &mut PreparedTransaction) -> TextResult<()> {
         let threshold = self.config.large_file.large_transaction_threshold_bytes;
@@ -107,8 +119,8 @@ impl Buffer {
             return Ok(());
         }
 
-        let entry_bytes = edit_list_replacement_bytes(&prepared.edits)
-            + edit_list_replacement_bytes(&prepared.undo_edits);
+        let entry_bytes =
+            prepared.edits.replacement_bytes() + prepared.undo_edits.replacement_bytes();
         if entry_bytes <= threshold {
             return Ok(());
         }
@@ -148,20 +160,21 @@ impl Buffer {
 
         let (next_transaction_id, event) =
             self.prepare_delta_event(base_version, tx_edits.clone(), source, false)?;
-        self.commit_prepared_edit_list(&tx_edits, next_transaction_id, &event)?;
+        self.commit_prepared_edit_list(&tx_edits, None, next_transaction_id, &event)?;
         Ok(event)
     }
 
     /// 将已验证并已绑定事务身份的编辑落到克隆存储，再原子替换 Buffer 状态。
     fn commit_prepared_edit_list(
         &mut self,
-        tx_edits: &EditList,
+        forward: &EditList,
+        undo: Option<EditList>,
         next_transaction_id: crate::TransactionId,
         event: &DeltaEvent,
     ) -> TextResult<()> {
-        let prepared_replaces = self.prepare_storage_replaces(tx_edits)?;
+        let prepared_replaces = self.prepare_storage_replaces(forward)?;
         let mut next_storage = self.storage.clone();
-        for (edit, prepared_replace) in tx_edits
+        for (edit, prepared_replace) in forward
             .as_slice()
             .iter()
             .rev()
@@ -172,7 +185,13 @@ impl Buffer {
 
         // ===== Commit 段：从这里起 Buffer 本体变异不允许失败 =====
         // 文本已经在 clone storage 上完整构造；真正提交只做 move assignment 与订阅发布。
-        self.commit_prepared_text_change(next_storage, next_transaction_id, event);
+        self.commit_prepared_text_change(
+            next_storage,
+            forward.clone(),
+            undo,
+            next_transaction_id,
+            event,
+        );
         Ok(())
     }
 
@@ -213,20 +232,21 @@ impl Buffer {
 
     pub(in crate::buffer) fn commit_prepared_text_change(
         &mut self,
-        next_storage: crate::storage::RopeyStorage,
+        next_storage: RopeyStorage,
+        forward: EditList,
+        undo: Option<EditList>,
         next_transaction_id: crate::TransactionId,
         event: &DeltaEvent,
     ) {
         self.storage = next_storage;
         self.version = event.new_version();
-        // 编辑日志是版本化编辑的唯一事实：Anchor 与组合文档据此跨版本重建坐标。
-        let patch = crate::text_changes::TextPatch::from_delta(event.delta());
+        // 编辑日志是版本化编辑的唯一事实：Anchor、组合文档增量同步与历史回放都据此重建坐标。
         self.edit_log = self.edit_log.appended(
             event.old_version(),
             event.new_version(),
-            patch,
+            forward,
+            undo,
             event.requires_reset(),
-            self.config.large_file.max_undo_history,
         );
         self.commit_delta_event(next_transaction_id, event);
     }
@@ -258,7 +278,7 @@ mod tests {
 
     #[test]
     fn stale_transaction_is_rejected_before_text_version_and_history_change() {
-        let mut buffer = Buffer::scratch("abc".to_owned(), BufferConfig::default()).unwrap();
+        let mut buffer = Buffer::from_text("abc".to_owned(), BufferConfig::default()).unwrap();
         let stale_version = buffer.version();
         buffer
             .edit(

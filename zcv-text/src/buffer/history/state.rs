@@ -1,28 +1,11 @@
 //! 历史图：以单调 `HistoryNodeId` 维护节点 + parent/children 边，支撑撤销后的本地分支。
 //!
-//! 本文件只管理图的局部不变量；replay batches 与版本推进由 history::api 负责。
+//! 节点只保存版本区间与事务身份；可重放编辑由 `tracking::EditLog` 按版本区间提供。
 
 use std::collections::BTreeMap;
 
 use super::{HistoryEntry, HistoryNode, HistoryNodeId};
-use crate::{TextError, TextResult, TransactionId};
-
-/// 历史摘要：与线性历史一致的 undo / redo 深度语义；`current_node` 暴露当前历史
-/// 节点身份；`node_count` / `memory_bytes` 暴露当前历史预算占用，便于宿主观测。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HistoryStatus {
-    /// 当前节点到根的祖先数量；线性场景下与原 `undo_stack.len()` 一致。
-    pub undo_depth: usize,
-    /// 沿默认 redo 分支（最近创建子节点链）从当前节点走到叶子的节点数；
-    /// 线性场景下与原 `redo_stack.len()` 一致；分支节点通过 `redo_branches()` 单独枚举。
-    pub redo_depth: usize,
-    /// 当前所在历史节点身份；`None` 表示位于历史树根（空 Buffer 或全部 undo 后的状态）。
-    pub current_node: Option<HistoryNodeId>,
-    /// 历史图当前持有的节点总数（含所有分支）。
-    pub node_count: usize,
-    /// 历史图按 `HistoryEntry::byte_size` 累加的字节占用估算。
-    pub memory_bytes: usize,
-}
+use crate::{BufferVersion, TextError, TextResult};
 
 #[derive(Debug, Clone, Default)]
 pub(in crate::buffer) struct HistoryState {
@@ -30,8 +13,6 @@ pub(in crate::buffer) struct HistoryState {
     roots: Vec<HistoryNodeId>,
     current: Option<HistoryNodeId>,
     next_id: u64,
-    /// 所有节点 `entry_bytes` 的累计和；预算截断时避免每轮全量重算。
-    total_bytes: usize,
 }
 
 impl HistoryState {
@@ -51,8 +32,8 @@ impl HistoryState {
         self.current.is_some()
     }
 
-    /// 当前历史节点的事务身份；历史被预算清空（如 `max_undo_history=0`）时为 `None`。
-    pub(in crate::buffer) fn current_transaction_id(&self) -> Option<TransactionId> {
+    /// 当前历史节点的事务身份；历史被预算清空时为 `None`。
+    pub(in crate::buffer) fn current_transaction_id(&self) -> Option<crate::TransactionId> {
         self.current
             .and_then(|id| self.nodes.get(&id))
             .map(|node| node.entry.transaction_id)
@@ -60,24 +41,6 @@ impl HistoryState {
 
     pub(in crate::buffer) fn can_redo(&self) -> bool {
         self.children_of_current().last().is_some()
-    }
-
-    pub(in crate::buffer) fn node_count(&self) -> usize {
-        self.nodes.len()
-    }
-
-    pub(in crate::buffer) fn total_bytes(&self) -> usize {
-        self.total_bytes
-    }
-
-    pub(in crate::buffer) fn status(&self) -> HistoryStatus {
-        HistoryStatus {
-            undo_depth: self.undo_depth(),
-            redo_depth: self.redo_depth(),
-            current_node: self.current,
-            node_count: self.node_count(),
-            memory_bytes: self.total_bytes(),
-        }
     }
 
     /// 当前可选 redo 分支，按创建顺序排列（末尾为最近一次创建的子节点 = 默认 redo 目标）。
@@ -98,7 +61,6 @@ impl HistoryState {
         entry: HistoryEntry,
     ) -> TextResult<HistoryNodeId> {
         let id = HistoryNodeId::new(self.next_id);
-        let sequence = self.next_id;
         let next_id = self
             .next_id
             .checked_add(1)
@@ -106,8 +68,7 @@ impl HistoryState {
         self.next_id = next_id;
 
         let parent = self.current;
-        let node = HistoryNode::new(id, sequence, parent, entry);
-        self.total_bytes += node.entry_bytes;
+        let node = HistoryNode::new(id, parent, entry);
         self.nodes.insert(id, node);
 
         match parent {
@@ -123,7 +84,7 @@ impl HistoryState {
         Ok(id)
     }
 
-    /// 把 `entry` 的批次合并到当前节点（用于 `MergeWithPrevious`），仅在当前节点没有子节点时允许。
+    /// 把 `entry` 的版本区间合并到当前节点（用于 `MergeWithPrevious`），仅在当前节点没有子节点时允许。
     pub(in crate::buffer) fn merge_into_current(&mut self, entry: HistoryEntry) -> bool {
         let Some(current_id) = self.current else {
             return false;
@@ -134,9 +95,7 @@ impl HistoryState {
         if !current_node.children.is_empty() {
             return false;
         }
-        let old_bytes = current_node.entry_bytes;
         let merged = HistoryEntry::merge(current_node.entry.clone(), entry);
-        self.total_bytes = self.total_bytes - old_bytes + merged.byte_size();
         current_node.replace_entry(merged);
         true
     }
@@ -166,7 +125,6 @@ impl HistoryState {
         self.nodes.get(&child_id)
     }
 
-    /// 删除当前节点的所有子节点子树（含递归）。配合 `record_history=false` 的提交语义。
     pub(in crate::buffer) fn drop_children_of_current(&mut self) {
         let children: Vec<HistoryNodeId> = match self.current {
             Some(id) => self
@@ -190,7 +148,6 @@ impl HistoryState {
         let mut stack = vec![root];
         while let Some(id) = stack.pop() {
             if let Some(node) = self.nodes.remove(&id) {
-                self.total_bytes -= node.entry_bytes;
                 stack.extend(node.children);
             }
         }
@@ -200,41 +157,49 @@ impl HistoryState {
         self.nodes.clear();
         self.roots.clear();
         self.current = None;
-        self.total_bytes = 0;
     }
 
-    /// 双预算截断：节点数上限 + 历史字节上限。
+    /// 按节点数预算裁剪最老的非 current 节点。
     ///
-    /// - `max_nodes == 0` 直接清空整个历史图。
-    /// - `max_bytes == 0` 表示不限制字节预算，仅按节点计数截断。
-    /// - 截断按 sequence_number 从最老的非 current 节点开始丢弃；被丢弃节点的子节点被 splice 到原父节点（或 roots）的同一位置，保持图连通。
-    /// - current 节点永远保留：即使仅存它一个时仍超字节预算也不丢（防止丢失编辑位置事实，调用方应通过 `Buffer::set_config` 选择更宽预算）。
-    pub(in crate::buffer) fn truncate_to_budget(&mut self, max_nodes: usize, max_bytes: usize) {
+    /// current 节点保留：撤销位置本身是有效事实，预算只限制可回溯的深度。
+    pub(in crate::buffer) fn truncate_to_node_budget(&mut self, max_nodes: usize) {
         if max_nodes == 0 {
             self.clear();
             return;
         }
-
-        // 预算内的常见路径 O(1) 早退：字节计数已缓存，不再每轮全量求和。
-        loop {
-            let over_count = self.nodes.len() > max_nodes;
-            let over_bytes = max_bytes != 0 && self.total_bytes > max_bytes;
-            if !over_count && !over_bytes {
-                break;
-            }
-            let Some(victim) = self.find_oldest_disposable() else {
+        while self.nodes.len() > max_nodes {
+            let Some(victim) = self
+                .nodes
+                .iter()
+                .find(|(_, node)| Some(node.id) != self.current)
+                .map(|(id, _)| *id)
+            else {
                 break;
             };
             self.splice_out_and_remove(victim);
         }
     }
 
-    /// 最老的可淘汰节点：BTreeMap 按节点 id 升序（id 即创建序号），从最小 id 起找到的第一个非 current 节点即最老可淘汰者。
-    fn find_oldest_disposable(&self) -> Option<HistoryNodeId> {
-        self.nodes
-            .iter()
-            .find(|(_, node)| Some(node.id) != self.current)
-            .map(|(id, _)| *id)
+    /// 丢弃起点早于 `earliest` 的历史节点，使它们与编辑日志的保留窗口一致。
+    ///
+    /// `None` 表示日志已清空，历史随之清空。current 节点也参与裁剪：
+    /// 逆编辑已不在日志中时，它本来就无法回放。
+    pub(in crate::buffer) fn retain_versions_since(&mut self, earliest: Option<BufferVersion>) {
+        let Some(earliest) = earliest else {
+            self.clear();
+            return;
+        };
+        loop {
+            let victim = self
+                .nodes
+                .iter()
+                .find(|(_, node)| node.entry.start_version < earliest)
+                .map(|(id, _)| *id);
+            let Some(victim) = victim else {
+                break;
+            };
+            self.splice_out_and_remove(victim);
+        }
     }
 
     /// 把 `id` 从图中移除，并把它的子节点 splice 到 `id` 原父节点（或 roots）的
@@ -243,9 +208,12 @@ impl HistoryState {
         let Some(node) = self.nodes.remove(&id) else {
             return;
         };
-        self.total_bytes -= node.entry_bytes;
         let children = node.children;
         let parent = node.parent;
+
+        if self.current == Some(id) {
+            self.current = parent;
+        }
 
         for child_id in &children {
             if let Some(child) = self.nodes.get_mut(child_id) {
@@ -261,38 +229,6 @@ impl HistoryState {
             }
             None => splice_children(&mut self.roots, id, &children),
         }
-    }
-
-    fn undo_depth(&self) -> usize {
-        let mut depth = 0;
-        let mut cursor = self.current;
-        while let Some(id) = cursor {
-            depth += 1;
-            cursor = self.nodes.get(&id).and_then(|node| node.parent);
-        }
-        depth
-    }
-
-    fn redo_depth(&self) -> usize {
-        let mut depth = 0;
-        let mut cursor = self.current;
-        loop {
-            let next = match cursor {
-                Some(id) => self
-                    .nodes
-                    .get(&id)
-                    .and_then(|node| node.children.last().copied()),
-                None => self.roots.last().copied(),
-            };
-            match next {
-                Some(next_id) => {
-                    depth += 1;
-                    cursor = Some(next_id);
-                }
-                None => break,
-            }
-        }
-        depth
     }
 }
 

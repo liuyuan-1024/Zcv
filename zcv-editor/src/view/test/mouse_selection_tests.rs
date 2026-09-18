@@ -288,7 +288,7 @@ fn shift_click_extends_selection_from_the_anchor(cx: &mut TestAppContext) {
 fn selection_extension_crosses_folded_placeholder_and_continues(cx: &mut TestAppContext) {
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
     let raw_buffer = cx.new(|_| {
-        Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
     let buffer = cx.new(|cx| LanguageBuffer::new(raw_buffer, Some(PathBuf::from("main.rs")), cx));
     let (editor, cx) = cx.add_window_view({

@@ -343,7 +343,7 @@ impl Editor {
     }
 
     pub fn single_line(cx: &mut Context<Self>) -> Self {
-        let buffer = Buffer::scratch(String::new(), BufferConfig::default())
+        let buffer = Buffer::from_text(String::new(), BufferConfig::default())
             .expect("新建空白 Buffer 不应失败");
         let buffer = cx.new(|_| buffer);
         let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, None, cx));
@@ -358,7 +358,7 @@ impl Editor {
     }
 
     pub fn auto_height(min_lines: usize, max_lines: Option<usize>, cx: &mut Context<Self>) -> Self {
-        let buffer = Buffer::scratch(String::new(), BufferConfig::default())
+        let buffer = Buffer::from_text(String::new(), BufferConfig::default())
             .expect("新建空白 Buffer 不应失败");
         let buffer = cx.new(|_| buffer);
         let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, None, cx));
@@ -893,9 +893,13 @@ impl Editor {
         self.placeholder_display_map = if text.is_empty() {
             None
         } else {
-            let buffer = Buffer::scratch(text, BufferConfig::default())
+            let buffer = Buffer::from_text(text, BufferConfig::default())
                 .expect("placeholder Buffer 应能创建");
-            Some(cx.new(|_| DisplayMap::new(buffer.snapshot())))
+            Some(cx.new(|cx| {
+                let mut map = DisplayMap::new(buffer.snapshot());
+                map.set_tab_width(SettingsStore::tab_config(cx).tab_width);
+                map
+            }))
         };
     }
 
@@ -1629,6 +1633,7 @@ impl Editor {
         let display_map = cx.new(|cx| {
             let mut map = DisplayMap::new(snapshot.clone());
             map.set_multi_buffer(multi_buffer.clone(), multi_buffer_subscription, cx);
+            map.set_tab_width(SettingsStore::tab_config(cx).tab_width);
             map
         });
         let display_snapshot = display_map.read(cx).snapshot();
@@ -1729,14 +1734,22 @@ impl Editor {
         };
         // 设置变化时自动跟随（覆盖场景除外）；编辑器在测试环境无 SettingsStore 时保持默认。
         cx.observe_global::<SettingsStore>(|editor, cx| {
-            if editor.soft_wrap_override.is_some() {
+            let Some(settings) = SettingsStore::try_get(cx) else {
                 return;
+            };
+            // tab 宽度始终跟随设置；软换行覆盖只影响换行模式。
+            editor
+                .display_map
+                .update(cx, |map, _| map.set_tab_width(settings.tab.tab_width));
+            let placeholder = editor.placeholder_display_map.clone();
+            if let Some(placeholder) = placeholder {
+                placeholder.update(cx, |map, _| map.set_tab_width(settings.tab.tab_width));
             }
-            if let Some(settings) = SettingsStore::try_get(cx) {
+            if editor.soft_wrap_override.is_none() {
                 editor.soft_wrap = settings.soft_wrap.into();
                 editor.preferred_line_length = settings.preferred_line_length;
-                cx.notify();
             }
+            cx.notify();
         })
         .detach();
         this.refresh_fold_ranges(cx);

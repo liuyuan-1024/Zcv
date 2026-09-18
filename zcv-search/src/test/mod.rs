@@ -4,7 +4,7 @@ use gpui::{
     App, Context, EventEmitter, FocusHandle, Focusable, Render, TestAppContext, Window, div,
     prelude::*,
 };
-use zcv_text::SearchQuery;
+use zcv_project::SearchQuery;
 use zcv_workspace::{
     Breadcrumbs, Direction, Item, ItemHandle, Pane, PreviewButton, SearchEvent, SearchableItem,
     SearchableItemHandle,

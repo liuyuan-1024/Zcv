@@ -11,7 +11,9 @@ use gpui::{App, AppContext, Entity, WeakEntity};
 use zcv_language::LanguageBuffer;
 use zcv_path::{AbsolutePathBuf, normalize_for_comparison};
 use zcv_text::Snapshot;
-use zcv_text::{Buffer, BufferConfig, BufferLoadError};
+use zcv_text::{Buffer, BufferConfig};
+
+use crate::text_file::{BufferLoadError, EncodingConfig, decode_to_string};
 
 pub(crate) struct BufferStore {
     opened_buffers: HashMap<AbsolutePathBuf, WeakEntity<LanguageBuffer>>,
@@ -33,8 +35,9 @@ impl BufferStore {
         self.get_or_load_buffer(
             path,
             || {
-                let file = File::open(path).map_err(BufferLoadError::Io)?;
-                Buffer::from_reader(file, BufferConfig::default())
+                let file = File::open(path)?;
+                let text = decode_to_string(file, &EncodingConfig::default())?;
+                Buffer::from_text(text, BufferConfig::default()).map_err(BufferLoadError::Text)
             },
             cx,
         )
@@ -53,7 +56,7 @@ impl BufferStore {
         self.get_or_load_buffer(
             path,
             || {
-                Ok(Buffer::scratch(String::new(), BufferConfig::default())
+                Ok(Buffer::from_text(String::new(), BufferConfig::default())
                     .expect("空的删除文件 Buffer 应能创建"))
             },
             cx,
@@ -113,7 +116,10 @@ impl BufferStore {
         else {
             return;
         };
-        let Ok(text) = std::fs::read_to_string(canonical.as_path()) else {
+        let Ok(file) = File::open(canonical.as_path()) else {
+            return;
+        };
+        let Ok(text) = decode_to_string(file, &EncodingConfig::default()) else {
             return;
         };
         let buffer = language_buffer.read(cx).buffer();
@@ -123,7 +129,7 @@ impl BufferStore {
             if buffer.is_dirty() {
                 return;
             }
-            if buffer.reload_from_text(text).is_ok() {
+            if buffer.reset(text).is_ok() {
                 cx.notify();
             }
         });

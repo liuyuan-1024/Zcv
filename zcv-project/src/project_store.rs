@@ -15,16 +15,16 @@ use zcv_git::{ConflictChoice, FileStatus, parse_conflict_regions, resolve_confli
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::MultiBuffer;
 use zcv_path::{AbsolutePathBuf, normalize_for_comparison, simplify_native};
-use zcv_text::{
-    Buffer, BufferLoadError, BufferSaveError, ByteOffset, Edit, SearchQuery, TextRange,
-    TransactionMetadata,
-};
+use zcv_text::{Buffer, ByteOffset, Edit, TextRange, TransactionMetadata};
+
+use crate::search::SearchQuery;
 
 mod platform;
 
 use super::buffer_store::BufferStore;
 use super::git_store::{GitStatusSnapshot, GitStore};
 use super::search::{self, SearchResults};
+use super::text_file::{BufferLoadError, BufferSaveError, LineEndingConfig, write_buffer_to};
 use super::worktree::{Worktree, WorktreeEntry, collect_visible_entries};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -650,7 +650,7 @@ fn keep_git_state_event(path: &Path) -> bool {
 fn write_buffer_to_path(buffer: &mut Buffer, path: &Path) -> Result<(), BufferSaveError> {
     let version = buffer.version();
     let mut file = File::create(path)?;
-    buffer.write_to(version, &mut file)?;
+    write_buffer_to(buffer, version, &mut file, LineEndingConfig::Preserve)?;
     file.sync_all()?;
     buffer.mark_saved();
     Ok(())
@@ -848,7 +848,7 @@ mod tests {
     fn saving_buffer_writes_current_version_and_marks_it_clean() {
         let path = test_file_path();
         let mut buffer =
-            Buffer::scratch("旧内容".to_owned(), BufferConfig::default()).expect("应创建 Buffer");
+            Buffer::from_text("旧内容".to_owned(), BufferConfig::default()).expect("应创建 Buffer");
         buffer
             .edit(
                 [Edit::insert(buffer.len_bytes(), " + 新内容").unwrap()],
@@ -871,7 +871,7 @@ mod tests {
     fn failed_save_keeps_buffer_dirty() {
         let path = test_file_path().join("missing.txt");
         let mut buffer =
-            Buffer::scratch("内容".to_owned(), BufferConfig::default()).expect("应创建 Buffer");
+            Buffer::from_text("内容".to_owned(), BufferConfig::default()).expect("应创建 Buffer");
         buffer
             .edit(
                 [Edit::insert(ByteOffset::ZERO, "未保存").unwrap()],

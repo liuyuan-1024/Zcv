@@ -53,7 +53,7 @@ fn edits_since_composes_continuous_versions_into_old_and_new_coordinates() {
 #[test]
 fn edits_since_reports_eviction_when_the_version_left_the_log() {
     let mut config = BufferConfig::default();
-    config.large_file.max_undo_history = 1;
+    config.large_file.max_edit_history_entries = 1;
     let mut buffer = Buffer::from_text("abc".to_string(), config).unwrap();
     let v0 = buffer.version();
     buffer

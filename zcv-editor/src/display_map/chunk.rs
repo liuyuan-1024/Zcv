@@ -1063,7 +1063,7 @@ impl<'a, 'b> BlockChunks<'a, 'b> {
             snapshot,
             rows: snapshot.rows(display_rows.start, line_count),
             styles,
-            tab_width: snapshot.buffer_snapshot().config().tab.tab_width(),
+            tab_width: snapshot.tab_width().get(),
             window_columns,
         }
     }
@@ -1123,17 +1123,16 @@ impl<'a, 'b> BlockChunks<'a, 'b> {
         };
         if let Some((start, end)) = self.window_columns {
             let row_text = text.as_ref().expect("水平窗口必须读取投影行文本").as_ref();
-            let buffer = self.snapshot.buffer_snapshot();
             // 水平窗口的输入是显示列而非字节。
             // 必须沿与命中测试一致的 grapheme/tab 宽度规则转换；
             // 直接把列当作字节会让 CJK、tab 和行内提示把窗口以及光标 x 坐标错位。
-            let start = byte_for_display_column(row_text, 0, start, buffer.config());
-            let end = byte_for_display_column(row_text, 0, end, buffer.config());
+            let start = byte_for_display_column(row_text, 0, start, self.tab_width);
+            let end = byte_for_display_column(row_text, 0, end, self.tab_width);
             range.start = range.start.max(start);
             range.end = range.end.min(end);
             if range.start > byte_range.start {
                 window_start_column =
-                    display_column_for_byte(row_text, 0, range.start, buffer.config());
+                    display_column_for_byte(row_text, 0, range.start, self.tab_width);
                 window_prefix = &row_text[..range.start];
             }
         }

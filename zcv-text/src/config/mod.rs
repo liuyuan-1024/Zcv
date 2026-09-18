@@ -3,14 +3,10 @@
 //! 本模块只定义纯数据策略及其默认值，不读取文本、不提交编辑，也不绑定具体宿主 UI。
 
 mod buffer;
-mod encoding;
 mod large_file;
-mod line_endings;
 mod word;
 
-pub use buffer::{BufferConfig, TabConfig};
-pub use encoding::EncodingConfig;
+pub use buffer::BufferConfig;
 pub use large_file::{LargeFilePolicy, LargeTransactionPolicy};
-pub use line_endings::LineEndingConfig;
 pub(crate) use word::WordBoundaryClassifier;
 pub use word::WordBoundaryPolicy;

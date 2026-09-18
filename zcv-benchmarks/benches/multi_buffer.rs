@@ -17,7 +17,7 @@ fn projection_setup(
     let sources = (0..source_count)
         .map(|_| {
             let buffer = cx.new(|_| {
-                Buffer::scratch(
+                Buffer::from_text(
                     cached_rust_document(SOURCE_BYTES).to_string(),
                     BufferConfig::default(),
                 )

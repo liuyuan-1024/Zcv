@@ -10,10 +10,8 @@
 //! - `validation`：Buffer 级边界校验
 
 use crate::{
-    BufferConfig, BufferVersion, TransactionId,
-    storage::{RopeySnapshot, RopeyStorage, TextFingerprint},
-    text_changes::TextChangeTopic,
-    tracking::EditLog,
+    BufferConfig, BufferVersion, TransactionId, storage::RopeyStorage,
+    text_changes::TextChangeTopic, tracking::EditLog,
 };
 
 mod coordinates;
@@ -22,9 +20,7 @@ mod events;
 mod history;
 mod lifecycle;
 mod movement;
-mod platform;
-mod reload;
-mod replace;
+mod reset;
 mod slicing;
 mod transaction_pipeline;
 mod validation;
@@ -33,7 +29,7 @@ mod versioning;
 pub use movement::movement_boundary_in_text;
 pub(crate) use movement::{is_inside_word_in_text, surrounding_word_in_text};
 
-pub use history::{HistoryEditOutcome, HistoryNodeId, HistoryNodeView, HistoryStatus};
+pub use history::HistoryEditOutcome;
 
 /// 最小可编辑 Buffer。
 #[derive(Debug)]
@@ -43,11 +39,9 @@ pub struct Buffer {
     storage: RopeyStorage,
     version: BufferVersion,
     saved_version: BufferVersion,
-    saved_snapshot: RopeySnapshot,
-    saved_fingerprint: TextFingerprint,
     next_transaction_id: TransactionId,
     text_changes: TextChangeTopic,
-    /// 版本索引的向前编辑日志：Snapshot 据此重建自某版本以来的净编辑。
+    /// 唯一的版本化编辑事实：Snapshot 据此重建净编辑，History 据此回放 undo/redo。
     edit_log: EditLog,
     history: history::HistoryState,
     /// 进行中的编辑会话（`start_transaction` 开启，`end_transaction` 提交）。

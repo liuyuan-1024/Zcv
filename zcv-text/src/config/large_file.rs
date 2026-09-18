@@ -3,12 +3,14 @@
 /// 大文件与降级策略。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LargeFilePolicy {
-    /// 最大允许保留的 Undo 历史节点数。
+    /// 最大保留的 Undo 历史节点数（会话算一个节点）；`0` 表示禁用 Undo / Redo。
     pub max_undo_history: usize,
-    /// 历史保留的最大累积字节数（含 undo + redo 的 replacement 文本）；`0` 表示不限。
+    /// 编辑日志保留的最大版本条目数。
     ///
-    /// 超出预算时，截断按节点序号从最老的非 current 叶子开始丢弃，直到 ≤ 预算或没有可丢弃叶子。current 节点永不被丢弃。
-    pub max_undo_history_bytes: usize,
+    /// 独立于 Undo 深度命名：即使禁用 Undo，增量同步窗口仍可由本预算维持。
+    pub max_edit_history_entries: usize,
+    /// 编辑日志保留的最大累积字节数（含 forward 与 undo 的 replacement 文本）；`0` 表示不限。
+    pub max_edit_history_bytes: usize,
     /// 单事务允许进入历史的最大字节数；`0` 表示不限。
     ///
     /// 超过阈值时按 `large_transaction_policy` 处理。
@@ -17,9 +19,9 @@ pub struct LargeFilePolicy {
     pub large_transaction_policy: LargeTransactionPolicy,
     /// 文本字节数大于此阈值的 Buffer 视为大文件；`0` 表示不限。
     ///
-    /// 文本内核本身不拒绝大文件加载，只把判断结果暴露给 `Buffer::is_large_file()`，并按 `auto_read_only_on_large_file` 决定是否在加载 / reload 时切到只读。
+    /// 文本内核本身不拒绝大文件加载，只把判断结果暴露给 `Buffer::is_large_file()`，并按 `auto_read_only_on_large_file` 决定是否在加载 / 外部重置时切到只读。
     pub large_file_threshold_bytes: usize,
-    /// 超过 `large_file_threshold_bytes` 的 Buffer 在加载 / reload 时是否自动切到只读。
+    /// 超过 `large_file_threshold_bytes` 的 Buffer 在加载 / 外部重置时是否自动切到只读。
     /// 默认 `false`：仅暴露事实，行为由宿主控制。
     pub auto_read_only_on_large_file: bool,
 }
@@ -38,7 +40,8 @@ impl Default for LargeFilePolicy {
     fn default() -> Self {
         Self {
             max_undo_history: 1000,
-            max_undo_history_bytes: 64 * 1024 * 1024,
+            max_edit_history_entries: 1000,
+            max_edit_history_bytes: 64 * 1024 * 1024,
             large_transaction_threshold_bytes: 16 * 1024 * 1024,
             large_transaction_policy: LargeTransactionPolicy::SkipHistory,
             large_file_threshold_bytes: 5 * 1024 * 1024,

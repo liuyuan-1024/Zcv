@@ -7,11 +7,12 @@ use zcv_multi_buffer::MultiBufferOffset;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroUsize;
 use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
 use zcv_multi_buffer::MultiBufferSnapshot;
-use zcv_text::{BufferConfig, CoordinateError, Line};
+use zcv_text::{CoordinateError, Line};
 
 use super::chunk::{ChunkBase, ChunkText, FoldChunks, HighlightStyles, InlayChunks};
 use super::display_width::{DisplayColumn, char_width};
@@ -25,14 +26,20 @@ use super::{
 pub(crate) struct TabSnapshot {
     fold_snapshot: FoldSnapshot,
     version: u64,
+    tab_width: NonZeroUsize,
 }
 
 impl TabSnapshot {
-    pub(super) fn new(fold_snapshot: FoldSnapshot) -> Self {
+    pub(super) fn new(fold_snapshot: FoldSnapshot, tab_width: NonZeroUsize) -> Self {
         Self {
             fold_snapshot,
             version: 0,
+            tab_width,
         }
+    }
+
+    pub(crate) fn tab_width(&self) -> NonZeroUsize {
+        self.tab_width
     }
 
     pub(crate) fn stream(&self) -> &LineStream {
@@ -111,8 +118,8 @@ pub(super) struct TabMap {
 }
 
 impl TabMap {
-    pub(super) fn new(fold_snapshot: FoldSnapshot) -> (Self, TabSnapshot) {
-        let snapshot = TabSnapshot::new(fold_snapshot);
+    pub(super) fn new(fold_snapshot: FoldSnapshot, tab_width: NonZeroUsize) -> (Self, TabSnapshot) {
+        let snapshot = TabSnapshot::new(fold_snapshot, tab_width);
         (
             Self {
                 snapshot: snapshot.clone(),
@@ -127,11 +134,10 @@ impl TabMap {
         &mut self,
         fold_snapshot: FoldSnapshot,
         fold_edits: &[FoldEdit],
+        tab_width: NonZeroUsize,
     ) -> TabSnapshot {
-        let snapshot = fold_snapshot.buffer_snapshot();
-        let previous_snapshot = self.snapshot.buffer_snapshot();
-        // display 策略随 BufferConfig 移除，缓存失效只以 tab 配置变化为键。
-        let same_configuration = previous_snapshot.config().tab == snapshot.config().tab;
+        // 缓存失效只以 tab 宽度变化为键。
+        let same_configuration = self.snapshot.tab_width() == tab_width;
         // fold 拓扑（折叠/行内提示变化都会使 fold 版本前进）。
         let same_fold_version = self.snapshot.fold_snapshot.version() == fold_snapshot.version();
 
@@ -139,6 +145,7 @@ impl TabMap {
             self.snapshot = TabSnapshot {
                 fold_snapshot,
                 version: self.snapshot.version,
+                tab_width,
             };
             return self.snapshot.clone();
         }
@@ -180,6 +187,7 @@ impl TabMap {
         self.snapshot = TabSnapshot {
             fold_snapshot,
             version: new_version,
+            tab_width,
         };
         self.snapshot.clone()
     }
@@ -209,7 +217,7 @@ impl TabMap {
         if let Some(width) = self.measured_line_widths.get(&line) {
             return Ok(*width);
         }
-        let snapshot = self.snapshot.stream().buffer_snapshot();
+        let tab_width = self.snapshot.tab_width().get();
         let fold = self.snapshot.fold_snapshot();
         let projected = ProjectedLineIndex::new(line.get());
         let mut width = 0;
@@ -225,7 +233,7 @@ impl TabMap {
                 HighlightStyles::default(),
                 0..content_len,
             ) {
-                width = display_width_chunk(width, chunk.text, snapshot.config());
+                width = display_width_chunk(width, chunk.text, tab_width);
             }
         } else {
             let stream_line = self
@@ -252,7 +260,7 @@ impl TabMap {
                 0..content_len,
                 true,
             ) {
-                width = display_width_chunk(width, chunk.text, snapshot.config());
+                width = display_width_chunk(width, chunk.text, tab_width);
             }
         }
         let width = DisplayColumn::new(width);
@@ -271,9 +279,9 @@ impl TabMap {
     }
 }
 
-fn display_width_chunk(column: usize, text: &str, config: &BufferConfig) -> usize {
+fn display_width_chunk(column: usize, text: &str, tab_width: usize) -> usize {
     text.graphemes(true).fold(column, |column, grapheme| {
-        advance_display_column(column, grapheme, config)
+        advance_display_column(column, grapheme, tab_width)
     })
 }
 
@@ -283,13 +291,8 @@ pub(super) fn line_content(text: &str) -> &str {
         .unwrap_or(text)
 }
 
-pub(crate) fn advance_display_column(
-    column: usize,
-    grapheme: &str,
-    config: &BufferConfig,
-) -> usize {
+pub(crate) fn advance_display_column(column: usize, grapheme: &str, tab_width: usize) -> usize {
     if grapheme == "\t" {
-        let tab_width = config.tab.tab_width();
         return column + tab_width - column % tab_width;
     }
     let Some(first) = grapheme.chars().next() else {
@@ -303,7 +306,7 @@ pub(crate) fn display_column_for_byte(
     text: &str,
     start_column: usize,
     target_byte: usize,
-    config: &BufferConfig,
+    tab_width: usize,
 ) -> usize {
     let mut display = start_column;
     let mut byte = 0;
@@ -315,7 +318,7 @@ pub(crate) fn display_column_for_byte(
         if target_byte < next_byte {
             break;
         }
-        display = advance_display_column(display, grapheme, config);
+        display = advance_display_column(display, grapheme, tab_width);
         byte = next_byte;
     }
     display
@@ -329,7 +332,7 @@ pub(crate) fn byte_for_display_column(
     text: &str,
     start_column: usize,
     target_column: usize,
-    config: &BufferConfig,
+    tab_width: usize,
 ) -> usize {
     if target_column <= start_column {
         return 0;
@@ -340,7 +343,7 @@ pub(crate) fn byte_for_display_column(
         if target_column == display {
             return byte;
         }
-        let next_display = advance_display_column(display, grapheme, config);
+        let next_display = advance_display_column(display, grapheme, tab_width);
         let next_byte = byte + grapheme.len();
         if target_column == next_display {
             return next_byte;

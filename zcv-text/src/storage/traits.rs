@@ -152,11 +152,6 @@ pub trait TextRead {
     fn line_ending_style(&self) -> LineEndingStyle;
 }
 
-/// 可跨线程读取的不可变文本快照。
-pub(crate) trait TextSnapshot: TextRead + Clone + Send + Sync + 'static {}
-
-impl<T> TextSnapshot for T where T: TextRead + Clone + Send + Sync + 'static {}
-
 /// Buffer / Snapshot 共用的坐标门面批量转发宏。
 ///
 /// 两份门面（`Buffer::storage` 与 `Snapshot::storage` 都实现 `TextRead`）的方法签名与转发体逐行相同。
@@ -345,28 +340,3 @@ macro_rules! text_coordinate_gateway {
     };
 }
 pub(crate) use text_coordinate_gateway;
-
-/// 可变文本存储后端。
-pub(crate) trait TextStorage: TextRead + Clone {
-    type Snapshot: TextSnapshot;
-    type PreparedReplace;
-
-    fn snapshot(&self) -> Self::Snapshot;
-
-    /// 预检一次替换。`range` 端点必须落在 UTF-8 字符边界。
-    ///
-    /// 所有可能失败的后端校验、坐标换算和容量预约都必须发生在这里，
-    /// 事务管线进入实际文本变异后只能调用不可失败的 `replace_prepared`。
-    fn prepare_replace(
-        &self,
-        range: TextRange,
-        replacement: &str,
-    ) -> TextResult<Self::PreparedReplace>;
-
-    /// 执行已经 `prepare_replace` 预检过的替换。
-    ///
-    /// 调用方必须按旧文本坐标的倒序应用 prepared edits，使每个 prepared range
-    /// 在当前文本中仍指向同一段旧文本。该 primitive 不返回 `Result`，从而保护事务
-    /// 提交阶段不会在半提交后才发现可恢复错误。
-    fn replace_prepared(&mut self, prepared: Self::PreparedReplace, replacement: &str);
-}

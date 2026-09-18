@@ -4365,11 +4365,7 @@ impl MultiBuffer {
                 .as_ref()
                 .expect("共享源历史必须有工作区源");
             let buffer = source.read(cx).buffer();
-            let buffer = buffer.read(cx);
-            return buffer
-                .current_history_node()
-                .and_then(|node| buffer.history_node(node))
-                .map(|node| node.transaction_id);
+            return buffer.read(cx).current_history_transaction_id();
         }
         self.state.undo_stack.last().map(|entry| entry.id)
     }
@@ -4451,9 +4447,8 @@ impl MultiBuffer {
             if !redo
                 && buffer
                     .read(cx)
-                    .current_history_node()
-                    .and_then(|id| buffer.read(cx).history_node(id))
-                    .is_none_or(|node| node.transaction_id != *expected_transaction)
+                    .current_history_transaction_id()
+                    .is_none_or(|transaction_id| transaction_id != *expected_transaction)
             {
                 return Err(TextError::InvariantViolation {
                     location: "MultiBuffer::undo",
@@ -4812,16 +4807,6 @@ impl MultiBuffer {
             .entity
             .read(cx)
             .language_name()
-    }
-
-    /// `offset` 处 source 的 Buffer 配置；无 excerpt 时使用显式默认配置。
-    pub fn buffer_config_at(&self, offset: MultiBufferOffset, cx: &App) -> BufferConfig {
-        let offset: MultiBufferOffset = offset;
-        self.mapping_at(ByteOffset::new(offset.get()))
-            .and_then(|mapping| self.state.sources.get(mapping.source_index))
-            .map(|source| source.entity.read(cx).buffer())
-            .map(|buffer| buffer.read(cx).config().clone())
-            .unwrap_or_default()
     }
 
     /// 当前已安装解析对应的折叠范围。

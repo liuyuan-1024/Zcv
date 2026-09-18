@@ -24,6 +24,7 @@ mod wrap_map;
 
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -119,11 +120,17 @@ pub(super) struct DisplaySnapshot {
     multi_buffer_snapshot: MultiBufferSnapshot,
     /// 语法快照提供的 capture 名字表；主题样式由调用方按需解析。
     capture_names: std::sync::Arc<[std::sync::Arc<str>]>,
+    /// 本帧生效的 tab 视觉列宽；来自编辑器设置层，不属于文本快照。
+    tab_width: NonZeroUsize,
 }
 
 impl DisplaySnapshot {
     pub(super) const fn revision(&self) -> u64 {
         self.revision
+    }
+
+    pub(super) fn tab_width(&self) -> NonZeroUsize {
+        self.tab_width
     }
 
     pub(super) fn wrap_snapshot(&self) -> &WrapSnapshot {
@@ -377,15 +384,22 @@ pub(crate) struct DisplayMap {
     /// 组合文本源：DisplayMap 是组合文本变更与同步的唯一持有者。
     multi_buffer: Option<Entity<MultiBuffer>>,
     buffer_subscription: Option<MultiBufferSubscription>,
+    /// 当前生效的 tab 视觉列宽；由编辑器设置层注入，不随文本快照复制。
+    tab_width: NonZeroUsize,
+}
+
+fn default_tab_width() -> NonZeroUsize {
+    NonZeroUsize::new(4).expect("默认 tab 宽度必须大于 0")
 }
 
 impl DisplayMap {
     pub(crate) fn new(snapshot: impl Into<MultiBufferSnapshot>) -> Self {
         let snapshot = snapshot.into();
+        let tab_width = default_tab_width();
         let stream = LineStream::new(snapshot.clone());
         let (inlay_map, inlay_snapshot) = InlayMap::new(stream);
         let (fold_map, fold_snapshot) = FoldMap::new(inlay_snapshot);
-        let (tab_map, tab_snapshot) = TabMap::new(fold_snapshot);
+        let (tab_map, tab_snapshot) = TabMap::new(fold_snapshot, tab_width);
         let (wrap_map, wrap_snapshot) = WrapMap::new(tab_snapshot);
         let _ = wrap_snapshot;
         let mut this = Self {
@@ -401,6 +415,7 @@ impl DisplayMap {
             snapshot: None,
             multi_buffer: None,
             buffer_subscription: None,
+            tab_width,
         };
         this.set_capture_names(snapshot.capture_names());
         this.refresh_snapshot(&[]);
@@ -498,6 +513,7 @@ impl DisplayMap {
             block_snapshot: Arc::clone(&previous.block_snapshot),
             multi_buffer_snapshot: snapshot,
             capture_names: Arc::clone(&self.capture_names),
+            tab_width: self.tab_width,
         });
     }
 
@@ -514,7 +530,21 @@ impl DisplayMap {
             block_snapshot: Arc::new(self.current_block_snapshot(wrap_edits)),
             multi_buffer_snapshot: self.multi_buffer_snapshot.clone(),
             capture_names: std::sync::Arc::clone(&self.capture_names),
+            tab_width: self.tab_width,
         });
+    }
+
+    /// 设置 tab 视觉列宽；变化时重建 tab 与 wrap 投影并刷新当前显示快照。
+    pub(crate) fn set_tab_width(&mut self, tab_width: NonZeroUsize) {
+        if self.tab_width == tab_width {
+            return;
+        }
+        self.tab_width = tab_width;
+        self.revision = self.revision.wrapping_add(1);
+        let fold_snapshot = self.fold_map.snapshot().clone();
+        let tab_snapshot = self.tab_map.sync(fold_snapshot, &[], tab_width);
+        let wrap_edits = self.wrap_map.sync(tab_snapshot, &[]);
+        self.refresh_snapshot(&wrap_edits);
     }
 
     pub(crate) fn is_buffer_folded(&self, path: &Path) -> bool {
@@ -608,7 +638,9 @@ impl DisplayMap {
         let stream = LineStream::new(current_snapshot.clone());
         let inlay_snapshot = self.inlay_map.read(stream, self.inlays.clone());
         let (fold_snapshot, fold_edits, outcome) = self.fold_map.read(inlay_snapshot, &batch);
-        let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
+        let tab_snapshot = self
+            .tab_map
+            .sync(fold_snapshot, &fold_edits, self.tab_width);
         let wrap_edits = self.wrap_map.sync(tab_snapshot, &fold_edits);
         self.refresh_snapshot(&wrap_edits);
         outcome
@@ -617,7 +649,9 @@ impl DisplayMap {
     /// 折叠字节范围（入口行行尾换行符 → 闭合括号前；闭合括号保留可见）。
     pub(crate) fn fold_range(&mut self, range: MultiBufferRange) -> DisplayMapResult<()> {
         let (fold_snapshot, fold_edits) = self.fold_map.write().fold(range)?;
-        let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
+        let tab_snapshot = self
+            .tab_map
+            .sync(fold_snapshot, &fold_edits, self.tab_width);
         let wrap_edits = self.wrap_map.sync(tab_snapshot, &fold_edits);
         self.revision = self.revision.wrapping_add(1);
         self.refresh_snapshot(&wrap_edits);
@@ -627,7 +661,9 @@ impl DisplayMap {
     /// 展开与行范围交叠的全部折叠（半开区间）。
     pub(crate) fn unfold_lines(&mut self, line_range: LineRange) -> DisplayMapResult<()> {
         let (fold_snapshot, fold_edits) = self.fold_map.write().unfold_lines(line_range)?;
-        let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits);
+        let tab_snapshot = self
+            .tab_map
+            .sync(fold_snapshot, &fold_edits, self.tab_width);
         let wrap_edits = self.wrap_map.sync(tab_snapshot, &fold_edits);
         self.revision = self.revision.wrapping_add(1);
         self.refresh_snapshot(&wrap_edits);
@@ -669,7 +705,7 @@ mod tests {
         let (fold_snapshot, fold_edits, _) = map
             .fold_map
             .read(inlay_snapshot, &TextChangeBatch::default());
-        let tab_snapshot = map.tab_map.sync(fold_snapshot, &fold_edits);
+        let tab_snapshot = map.tab_map.sync(fold_snapshot, &fold_edits, map.tab_width);
         map.wrap_map.sync(tab_snapshot, &fold_edits)
     }
 
@@ -690,7 +726,7 @@ mod tests {
     #[gpui::test]
     fn display_snapshot_resolves_syntax_styles_from_current_theme(cx: &mut TestAppContext) {
         apply_test_theme(cx, "light");
-        let buffer = Buffer::scratch("paragraph".to_string(), BufferConfig::default())
+        let buffer = Buffer::from_text("paragraph".to_string(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let mut map = DisplayMap::new(buffer.snapshot());
         map.set_capture_names(std::sync::Arc::from([std::sync::Arc::from("text")]));
@@ -704,7 +740,7 @@ mod tests {
 
     #[test]
     fn metadata_sync_reuses_the_display_topology_snapshot() {
-        let buffer = Buffer::scratch("paragraph".to_string(), BufferConfig::default())
+        let buffer = Buffer::from_text("paragraph".to_string(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let mut map = DisplayMap::new(buffer.snapshot());
         let before = map.snapshot();
@@ -728,7 +764,7 @@ mod tests {
     #[gpui::test]
     fn display_pipeline_receives_the_source_transaction_batch(cx: &mut TestAppContext) {
         let source_buffer = cx.new(|_| {
-            zcv_text::Buffer::scratch("fn main() {}\n".to_owned(), BufferConfig::default())
+            zcv_text::Buffer::from_text("fn main() {}\n".to_owned(), BufferConfig::default())
                 .expect("测试 Buffer 应能创建")
         });
         let source = cx.new(|cx| {
@@ -780,7 +816,7 @@ mod tests {
         let reload_subscription = source_buffer.update(cx, |buffer, _| buffer.subscribe());
         source_buffer.update(cx, |buffer, cx| {
             buffer
-                .reload_from_text("fn replacement() {}\n".to_owned())
+                .reset("fn replacement() {}\n".to_owned())
                 .expect("外部重载应成功");
             cx.notify();
         });
@@ -799,7 +835,7 @@ mod tests {
 
     #[test]
     fn projection_map_roundtrips_unicode_buffer_points_and_byte_offsets() {
-        let buffer = Buffer::scratch("a你😀\nβ".to_string(), BufferConfig::default())
+        let buffer = Buffer::from_text("a你😀\nβ".to_string(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let map = DisplayMap::new(buffer.snapshot());
         let cases = [
@@ -847,7 +883,7 @@ mod tests {
 
     #[test]
     fn projection_map_uses_display_columns_for_tabs() {
-        let buffer = Buffer::scratch("\tx".to_string(), BufferConfig::default())
+        let buffer = Buffer::from_text("\tx".to_string(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let map = DisplayMap::new(buffer.snapshot());
 
@@ -866,7 +902,7 @@ mod tests {
 
     #[test]
     fn projection_map_rejects_out_of_bounds_points_and_invalid_byte_boundaries() {
-        let buffer = Buffer::scratch("你".to_string(), BufferConfig::default())
+        let buffer = Buffer::from_text("你".to_string(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let map = DisplayMap::new(buffer.snapshot());
 
@@ -892,7 +928,7 @@ mod tests {
 
     #[test]
     fn projection_map_keeps_its_snapshot_version_after_buffer_changes() {
-        let mut buffer = Buffer::scratch("a".to_string(), BufferConfig::default())
+        let mut buffer = Buffer::from_text("a".to_string(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let map = DisplayMap::new(buffer.snapshot());
         let mapped_version = map.snapshot().buffer_snapshot().version();
@@ -919,7 +955,7 @@ mod tests {
 
     #[test]
     fn folding_changes_display_rows_and_viewport_contents() {
-        let buffer = Buffer::scratch(
+        let buffer = Buffer::from_text(
             "anchor\nhidden one\nhidden two\nafter".to_string(),
             BufferConfig::default(),
         )
@@ -956,7 +992,7 @@ mod tests {
     #[test]
     fn measuring_folded_rows_uses_tab_projection_rows() {
         let text = "before\nfn folded() {\n  let value = 1;\n}\nafter\n";
-        let buffer = Buffer::scratch(text.to_owned(), BufferConfig::default())
+        let buffer = Buffer::from_text(text.to_owned(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let mut map = DisplayMap::new(buffer.snapshot());
         let fold_start = text.find('\n').expect("折叠入口行应有换行符");
@@ -977,7 +1013,7 @@ mod tests {
     #[test]
     fn folded_bracket_projects_close_to_merged_row() {
         // 回归：折叠后闭合括号保留可见，光标在 `{` 上的括号高亮投影到合并行的真实 `}` 列。
-        let buffer = Buffer::scratch(
+        let buffer = Buffer::from_text(
             "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}".to_string(),
             BufferConfig::default(),
         )
@@ -1068,7 +1104,7 @@ mod tests {
 
     #[test]
     fn tab_map_invalidates_only_changed_measured_line() {
-        let mut buffer = Buffer::scratch("short\nlonger".to_string(), BufferConfig::default())
+        let mut buffer = Buffer::from_text("short\nlonger".to_string(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let mut map = DisplayMap::new(buffer.snapshot());
         assert_eq!(map.tab_map.measured_lines().count(), 0);
@@ -1092,8 +1128,8 @@ mod tests {
     }
 
     #[test]
-    fn tab_snapshot_advances_when_configuration_changes_without_a_buffer_edit() {
-        let mut buffer = Buffer::scratch("\t".to_string(), BufferConfig::default())
+    fn tab_snapshot_advances_when_tab_width_changes_without_a_buffer_edit() {
+        let buffer = Buffer::from_text("\t".to_string(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let mut map = DisplayMap::new(buffer.snapshot());
         map.measure_rows(DisplayRow::ZERO, 1)
@@ -1104,11 +1140,7 @@ mod tests {
         );
 
         let before = map.snapshot();
-        let subscription = buffer.subscribe();
-        let mut config = buffer.config().clone();
-        config.tab.tab_width = NonZeroUsize::new(2).expect("测试 Tab 宽度必须非零");
-        buffer.set_config(config);
-        map.sync(buffer.snapshot(), subscription.consume());
+        map.set_tab_width(NonZeroUsize::new(2).expect("测试 Tab 宽度必须非零"));
 
         let after = map.snapshot();
         assert_ne!(before.version(), after.version());
@@ -1123,7 +1155,7 @@ mod tests {
 
     #[test]
     fn rows_consumes_the_requested_rows() {
-        let buffer = Buffer::scratch("a\nb\nc".to_string(), BufferConfig::default())
+        let buffer = Buffer::from_text("a\nb\nc".to_string(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let map = DisplayMap::new(buffer.snapshot());
         let snapshot = map.snapshot();
@@ -1137,7 +1169,7 @@ mod tests {
 
     #[test]
     fn structural_edit_shifts_tab_measurements_instead_of_clearing_them() {
-        let mut buffer = Buffer::scratch("short\nwide".to_string(), BufferConfig::default())
+        let mut buffer = Buffer::from_text("short\nwide".to_string(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let mut map = DisplayMap::new(buffer.snapshot());
         map.measure_rows(DisplayRow::ZERO, 2)
@@ -1163,7 +1195,7 @@ mod tests {
     }
 
     fn wrap_map(text: &str, width: f32, cx: &TestAppContext) -> DisplayMap {
-        let buffer = Buffer::scratch(text.to_owned(), BufferConfig::default())
+        let buffer = Buffer::from_text(text.to_owned(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let mut map = DisplayMap::new(buffer.snapshot());
         map.set_wrap_width(
@@ -1287,7 +1319,7 @@ mod tests {
 
     #[gpui::test]
     fn soft_wrap_passthrough_when_disabled(cx: &mut TestAppContext) {
-        let buffer = Buffer::scratch(
+        let buffer = Buffer::from_text(
             "aa bbb cccc ddddd eeee\nshort".to_string(),
             BufferConfig::default(),
         )
@@ -1308,7 +1340,7 @@ mod tests {
 
     #[gpui::test]
     fn soft_wrap_inline_edit_rewraps_affected_line(cx: &mut TestAppContext) {
-        let mut buffer = Buffer::scratch(
+        let mut buffer = Buffer::from_text(
             "aa bbb cccc ddddd eeee\nshort".to_string(),
             BufferConfig::default(),
         )
@@ -1341,7 +1373,7 @@ mod tests {
             .map(|row| format!("let value_{row} = {row};\n"))
             .collect::<String>();
         let mut buffer =
-            Buffer::scratch(text, BufferConfig::default()).expect("测试 Buffer 应能创建");
+            Buffer::from_text(text, BufferConfig::default()).expect("测试 Buffer 应能创建");
         let mut map = DisplayMap::new(buffer.snapshot());
         map.set_wrap_width(Some(px(800.)), font("Helvetica"), px(16.), cx.text_system());
         let expected_lines = buffer.line_count();
@@ -1366,7 +1398,7 @@ mod tests {
 
     #[gpui::test]
     fn soft_wrap_structural_edit_rewraps_all_rows(cx: &mut TestAppContext) {
-        let mut buffer = Buffer::scratch(
+        let mut buffer = Buffer::from_text(
             "aa bbb cccc ddddd eeee\nshort".to_string(),
             BufferConfig::default(),
         )
@@ -1396,7 +1428,7 @@ mod tests {
             .map(|row| format!("line number {row} content here\n"))
             .collect::<String>();
         let mut buffer =
-            Buffer::scratch(text, BufferConfig::default()).expect("测试 Buffer 应能创建");
+            Buffer::from_text(text, BufferConfig::default()).expect("测试 Buffer 应能创建");
         let mut map = DisplayMap::new(buffer.snapshot());
         map.set_wrap_width(Some(px(150.)), font("Helvetica"), px(16.), cx.text_system());
         let expected_rows = map.snapshot().line_count();
@@ -1432,7 +1464,7 @@ mod tests {
 
     #[gpui::test]
     fn soft_wrap_with_fold_collapses_hidden_rows(cx: &mut TestAppContext) {
-        let buffer = Buffer::scratch(
+        let buffer = Buffer::from_text(
             "anchor\nhidden one\nhidden two\nafter".to_string(),
             BufferConfig::default(),
         )
@@ -1470,7 +1502,7 @@ mod tests {
 
     #[gpui::test]
     fn soft_wrap_row_boundaries_follow_fragments(cx: &mut TestAppContext) {
-        let buffer = Buffer::scratch(
+        let buffer = Buffer::from_text(
             "aa bbb cccc ddddd eeee".to_string(),
             BufferConfig::default(),
         )
@@ -1524,7 +1556,7 @@ mod tests {
     #[test]
     fn set_inlays_preserves_line_count_and_projects_text() {
         let mut map = DisplayMap::new(
-            Buffer::scratch("ab\ncd".to_owned(), BufferConfig::default())
+            Buffer::from_text("ab\ncd".to_owned(), BufferConfig::default())
                 .expect("测试 Buffer 应能创建")
                 .snapshot(),
         );
@@ -1550,7 +1582,7 @@ mod tests {
     fn folded_row_streams_inlays_from_anchor_and_close_tail() {
         let text = "a{\nhidden\n}tail\n";
         let mut map = DisplayMap::new(
-            Buffer::scratch(text.to_owned(), BufferConfig::default())
+            Buffer::from_text(text.to_owned(), BufferConfig::default())
                 .expect("测试 Buffer 应能创建")
                 .snapshot(),
         );
@@ -1603,7 +1635,7 @@ mod tests {
     #[test]
     fn inlay_hit_test_maps_through_projection() {
         let mut map = DisplayMap::new(
-            Buffer::scratch("abc\n".to_owned(), BufferConfig::default())
+            Buffer::from_text("abc\n".to_owned(), BufferConfig::default())
                 .expect("测试 Buffer 应能创建")
                 .snapshot(),
         );
@@ -1629,7 +1661,7 @@ mod tests {
 
     #[test]
     fn inlay_changes_trigger_rebuild_but_edits_stay_incremental() {
-        let mut buffer = Buffer::scratch("ab\ncd\n".to_owned(), BufferConfig::default())
+        let mut buffer = Buffer::from_text("ab\ncd\n".to_owned(), BufferConfig::default())
             .expect("测试 Buffer 应能创建");
         let mut map = DisplayMap::new(buffer.snapshot());
         let subscription = buffer.subscribe();

@@ -640,7 +640,7 @@ fn unified_diff_marks_partially_staged_hunk(cx: &mut TestAppContext) {
 
 fn singleton(path: &str, text: &str, cx: &mut TestAppContext) -> gpui::Entity<LanguageBuffer> {
     let buffer = cx.new(|_| {
-        Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("应创建测试 Buffer")
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建测试 Buffer")
     });
     cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from(path)), cx))
 }
@@ -937,7 +937,7 @@ fn text_chunks_stream_excerpt_sources_and_inserted_boundary(cx: &mut TestAppCont
 
 #[test]
 fn plain_snapshot_streams_its_source_without_materializing() {
-    let buffer = Buffer::scratch("alpha\nbeta".to_string(), BufferConfig::default())
+    let buffer = Buffer::from_text("alpha\nbeta".to_string(), BufferConfig::default())
         .expect("测试文本必须能创建");
     let snapshot = MultiBufferSnapshot::from(buffer.snapshot());
 
@@ -2266,7 +2266,7 @@ fn external_full_replacement_invalidates_stale_diff_hunks(cx: &mut TestAppContex
     let source_text = cx.read_entity(&source, |source, _| source.buffer());
     cx.update_entity(&source_text, |buffer, cx| {
         buffer
-            .reload_from_text("replacement\n".to_owned())
+            .reset("replacement\n".to_owned())
             .expect("外部整体替换应成功");
         cx.notify();
     });

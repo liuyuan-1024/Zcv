@@ -375,7 +375,7 @@ mod tests {
     #[gpui::test]
     fn parsing_finishes_without_blocking_buffer_edits(cx: &mut TestAppContext) {
         let buffer = cx.new(|_| {
-            Buffer::scratch("fn main() {}\n".to_owned(), BufferConfig::default())
+            Buffer::from_text("fn main() {}\n".to_owned(), BufferConfig::default())
                 .expect("应创建测试 Buffer")
         });
         let language_buffer =
@@ -402,7 +402,7 @@ mod tests {
     #[gpui::test]
     fn language_name_and_syntax_follow_first_line_changes(cx: &mut TestAppContext) {
         let buffer = cx.new(|_| {
-            Buffer::scratch(String::new(), BufferConfig::default()).expect("应创建测试 Buffer")
+            Buffer::from_text(String::new(), BufferConfig::default()).expect("应创建测试 Buffer")
         });
         let language_buffer =
             cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("script")), cx));
@@ -441,7 +441,7 @@ mod tests {
     #[gpui::test]
     fn distinguishes_text_parse_and_metadata_events(cx: &mut TestAppContext) {
         let buffer = cx.new(|_| {
-            Buffer::scratch("fn main() {}\n".to_owned(), BufferConfig::default())
+            Buffer::from_text("fn main() {}\n".to_owned(), BufferConfig::default())
                 .expect("应创建测试 Buffer")
         });
         let language_buffer =
@@ -486,7 +486,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         let buffer = cx.new(|_| {
-            Buffer::scratch("fn main() {}\n".to_owned(), BufferConfig::default())
+            Buffer::from_text("fn main() {}\n".to_owned(), BufferConfig::default())
                 .expect("应创建测试 Buffer")
         });
         let direct_subscription = buffer.update(cx, |buffer, _| buffer.subscribe());
@@ -533,7 +533,7 @@ mod tests {
     /// 生产环境（真实线程池）中每次编辑的极快解析会在编辑轮内同步安装，事件数可能更多，但任何时刻安装的语法都与当次文本版本一致。
     fn rapid_edits_install_only_the_latest_parse(cx: &mut TestAppContext) {
         let buffer = cx.new(|_| {
-            Buffer::scratch("fn main() {}\n".to_owned(), BufferConfig::default())
+            Buffer::from_text("fn main() {}\n".to_owned(), BufferConfig::default())
                 .expect("应创建测试 Buffer")
         });
         let language_buffer =

@@ -4,46 +4,7 @@
 
 use thiserror::Error;
 
-use crate::{
-    buffer::HistoryNodeId,
-    types::{BufferVersion, ByteOffset, CharOffset, Line, TextRange, Utf16Position},
-};
-
-/// `BufferLoadError` 与 `BufferSaveError` 的共享 impl 模板。
-/// 两份类型结构相同仅文案不同，`From` / `Display` / `Error` 收敛到这一个宏里。
-macro_rules! define_buffer_io_error {
-    ($name:ident, $io_label:expr, $text_label:expr) => {
-        impl From<std::io::Error> for $name {
-            fn from(value: std::io::Error) -> Self {
-                Self::Io(value)
-            }
-        }
-
-        impl From<TextError> for $name {
-            fn from(value: TextError) -> Self {
-                Self::Text(value)
-            }
-        }
-
-        impl std::fmt::Display for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                match self {
-                    Self::Io(e) => write!(f, "Buffer {}：{e}", $io_label),
-                    Self::Text(e) => write!(f, "Buffer {}：{e}", $text_label),
-                }
-            }
-        }
-
-        impl std::error::Error for $name {
-            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-                match self {
-                    Self::Io(e) => Some(e),
-                    Self::Text(e) => Some(e),
-                }
-            }
-        }
-    };
-}
+use crate::types::{BufferVersion, ByteOffset, CharOffset, Line, TextRange, Utf16Position};
 
 /// 坐标转换、边界校验或越界相关的错误（坐标不合法）。
 ///
@@ -138,40 +99,6 @@ pub enum AnchorError {
     },
 }
 
-/// VersionedResult 版本绑定与 remap 相关错误。
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum VersionedResultError {
-    /// 调用方传入的 DeltaEvent::old_version() 与 VersionedResult 当前绑定版本不一致。
-    #[error("VersionedResult 版本不匹配：预期版本 {expected:?}，实际版本 {actual:?}")]
-    VersionMismatch {
-        expected: BufferVersion,
-        actual: BufferVersion,
-    },
-}
-
-/// 当前 Buffer 内搜索相关错误。
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum SearchError {
-    /// 空 query 没有稳定的匹配语义，调用方应在 UI / 宿主层决定如何展示空搜索。
-    #[error("搜索 query 不能为空")]
-    EmptyQuery,
-
-    /// 搜索结果必须基于 Buffer 当前版本，过期结果不能继续用于替换。
-    #[error("搜索结果版本不匹配：预期版本 {expected:?}，实际版本 {actual:?}")]
-    VersionMismatch {
-        expected: BufferVersion,
-        actual: BufferVersion,
-    },
-
-    /// 调用方请求替换不存在的搜索匹配序号。
-    #[error("搜索匹配不存在：ordinal {ordinal}")]
-    MatchNotFound { ordinal: usize },
-
-    /// 正则表达式无法编译。
-    #[error("非法正则表达式：pattern {pattern:?}，message {message}")]
-    InvalidRegex { pattern: String, message: String },
-}
-
 /// 底层存储相关的错误（存储后端做不了）。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum StorageError {
@@ -182,13 +109,6 @@ pub enum StorageError {
     /// 当前存储实例拒绝变异操作；这是存储能力边界，不是文件系统权限错误。
     #[error("只读模式下不支持此操作")]
     ReadOnly,
-
-    /// 外部 bytes 不能按当前 UTF-8 策略进入 Buffer。
-    #[error("输入不是合法 UTF-8：valid_up_to {valid_up_to}，error_len {error_len:?}")]
-    InvalidUtf8 {
-        valid_up_to: usize,
-        error_len: Option<usize>,
-    },
 }
 
 /// 文本内核统一错误类型。
@@ -210,21 +130,9 @@ pub enum TextError {
     #[error(transparent)]
     Anchor(#[from] AnchorError),
 
-    /// 当前 Buffer 内搜索请求不合法。
-    #[error(transparent)]
-    Search(#[from] SearchError),
-
-    /// VersionedResult 版本绑定或 remap 失败。
-    #[error(transparent)]
-    Versioned(#[from] VersionedResultError),
-
     /// 底层文本存储或加载边界失败。
     #[error(transparent)]
     Storage(#[from] StorageError),
-
-    /// `redo_to_branch` 收到的节点不是当前节点的子节点，无法作为 redo 目标。
-    #[error("非法历史分支节点：{0:?}")]
-    InvalidHistoryBranch(HistoryNodeId),
 
     /// BufferVersion 递增越过 u64 上限；调用方应创建新 Buffer 生命周期。
     #[error("BufferVersion 溢出")]
@@ -274,40 +182,6 @@ macro_rules! invariant {
     };
 }
 pub(crate) use invariant;
-
-/// 流式加载（`Buffer::from_reader`）失败的统一错误类型。
-///
-/// 加载路径同时跨 `io::Read` 与文本内核解码校验两个边界；任一侧失败都用本类型上抛。
-///
-/// 不进 [`TextError`]：`io::Error` 不可比较 / 不可哈希，混入 `TextError`
-/// 会破坏现有的 `PartialEq` 派生与测试模式。
-///
-/// 实现由 `define_buffer_io_error!` 生成，与 `BufferSaveError` 共享同一份定义模板。
-#[derive(Debug)]
-pub enum BufferLoadError {
-    Io(std::io::Error),
-    Text(TextError),
-}
-
-define_buffer_io_error!(BufferLoadError, "加载 IO 失败", "加载解码失败");
-
-impl From<StorageError> for BufferLoadError {
-    fn from(value: StorageError) -> Self {
-        Self::Text(value.into())
-    }
-}
-
-/// 流式保存（`Buffer::write_to`）失败的统一错误类型。
-///
-/// 保存路径同时跨 `io::Write` 与文本内核版本检查两个边界；任一侧失败都用本类型上抛。
-/// 实现由 `define_buffer_io_error!` 生成，与 `BufferLoadError` 共享同一份定义模板。
-#[derive(Debug)]
-pub enum BufferSaveError {
-    Io(std::io::Error),
-    Text(TextError),
-}
-
-define_buffer_io_error!(BufferSaveError, "保存 IO 失败", "保存校验失败");
 
 #[cfg(test)]
 mod tests {

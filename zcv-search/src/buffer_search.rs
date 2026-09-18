@@ -14,7 +14,7 @@ use zcv_actions::{
     SelectAll, Tab, ToggleCaseSensitive, ToggleRegex, ToggleReplace, ToggleWholeWord,
 };
 use zcv_editor::{Editor, EditorEvent};
-use zcv_text::SearchQuery;
+use zcv_project::SearchQuery;
 use zcv_theme::{color, space};
 use zcv_ui::{Button, MatchOption, MatchOptions, ReplaceInput, SearchInput};
 

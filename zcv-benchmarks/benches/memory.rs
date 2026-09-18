@@ -9,6 +9,7 @@ use serde::Serialize;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System as ProcessSystem, get_current_pid};
 use zcv_benchmarks::{cached_injection_stress_document, cached_rust_document};
 use zcv_language::highlight_snippet;
+use zcv_project::SearchQuery;
 use zcv_text::{Buffer, BufferConfig};
 
 struct CountingAllocator;
@@ -194,15 +195,17 @@ fn main() {
         let snapshot = Buffer::from_text(text.to_string(), BufferConfig::default())
             .expect("应创建搜索快照")
             .snapshot();
+        let literal_query = SearchQuery {
+            query: "render_document".to_string(),
+            ..Default::default()
+        }
+        .prepare()
+        .expect("搜索查询应能预编译");
         samples.push(measure(
             &mut rss,
             format!("text_buffer/search_literal/{input_bytes}"),
             input_bytes,
-            || {
-                snapshot
-                    .search_literal("render_document")
-                    .expect("搜索应成功")
-            },
+            || literal_query.search(&snapshot).expect("搜索应成功"),
         ));
 
         samples.push(measure(

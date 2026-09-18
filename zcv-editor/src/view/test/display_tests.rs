@@ -155,7 +155,7 @@ fn switching_single_file_diff_after_source_edit_keeps_text_consumer_aligned(
 fn clicking_deep_after_fold_preserves_the_visual_column(cx: &mut TestAppContext) {
     let text = include_str!("../../../../assets/keymaps/default-macos.json");
     let raw_buffer = cx.new(|_| {
-        Buffer::scratch(text.to_owned(), zcv_text::BufferConfig::default())
+        Buffer::from_text(text.to_owned(), zcv_text::BufferConfig::default())
             .expect("keymap 测试 Buffer 应能创建")
     });
     let language_buffer =
@@ -467,7 +467,7 @@ fn added_hunk_strip_clickable_when_start_scrolled_out(cx: &mut TestAppContext) {
 fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
     let buffer = cx.new(|_| {
-        Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
     let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
     let editor = cx.new(|cx| Editor::from_language_buffer(buffer.clone(), EditorMode::Full, cx));
@@ -513,7 +513,7 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
 fn toggle_fold_action_uses_the_cursor_block_and_the_whole_folded_row(cx: &mut TestAppContext) {
     let text = "fn main() {\n    if true {\n        let x = 1;\n    }\n}\nfn other() {}";
     let buffer = cx.new(|_| {
-        Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
     let language_buffer =
         cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
@@ -551,7 +551,7 @@ fn toggle_fold_action_uses_the_cursor_block_and_the_whole_folded_row(cx: &mut Te
 fn clicking_the_crease_toggles_fold_without_selecting_the_line(cx: &mut TestAppContext) {
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
     let buffer = cx.new(|_| {
-        Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
     let language_buffer =
         cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
@@ -660,7 +660,7 @@ fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
     // 回归：编辑后折叠范围与折叠状态必须保持（crease 箭头显示依赖 fold_ranges / fold_anchor_lines）。
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
     let buffer = cx.new(|_| {
-        Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
     let language_buffer =
         cx.new(|cx| LanguageBuffer::new(buffer.clone(), Some(PathBuf::from("main.rs")), cx));
@@ -705,7 +705,7 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
     // 回归：折叠块后光标在入口行 `{` 上，另一半括号高亮投影到合并行的真实 `}` 列。
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
     let buffer = cx.new(|_| {
-        Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
     let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
     let editor = cx.new(|cx| Editor::from_language_buffer(buffer.clone(), EditorMode::Full, cx));
@@ -755,7 +755,7 @@ fn horizontal_movement_jumps_over_folded_content(cx: &mut TestAppContext) {
     // 折叠在显示上占一个字符：右箭头从折叠起点一步跨到闭合括号，左箭头回到折叠起点。
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
     let buffer = cx.new(|_| {
-        Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
     let language_buffer =
         cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
@@ -814,7 +814,7 @@ fn horizontal_movement_jumps_over_folded_content(cx: &mut TestAppContext) {
 fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppContext) {
     let text = "before\nfn folded() {\n  let value = 1;\n}\nafter\n";
     let raw_buffer = cx.new(|_| {
-        Buffer::scratch(text.to_owned(), zcv_text::BufferConfig::default())
+        Buffer::from_text(text.to_owned(), zcv_text::BufferConfig::default())
             .expect("Rust 测试 Buffer 应能创建")
     });
     let buffer =
@@ -885,7 +885,7 @@ fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppCo
 fn unfold_all_expands_every_fold(cx: &mut TestAppContext) {
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
     let buffer = cx.new(|_| {
-        Buffer::scratch(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
     let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
     let editor = cx.new(|cx| Editor::from_language_buffer(buffer.clone(), EditorMode::Full, cx));
@@ -1363,7 +1363,7 @@ fn long_line_highlight_query_is_clipped_to_render_budget(cx: &mut TestAppContext
     // 超长单行：高亮查询只覆盖可见前缀（渲染端同样只塑形前 MAX_RENDERED_LINE_LEN 字节）。
     let long = "let text = \"".to_owned() + &"a".repeat(8192) + "\";\n";
     let buffer =
-        cx.new(|_| Buffer::scratch(long, BufferConfig::default()).expect("测试 Buffer 应能创建"));
+        cx.new(|_| Buffer::from_text(long, BufferConfig::default()).expect("测试 Buffer 应能创建"));
     let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
     let editor = cx.new(|cx| Editor::from_language_buffer(buffer.clone(), EditorMode::Full, cx));
     cx.run_until_parked();
@@ -1392,7 +1392,7 @@ fn horizontal_windowing_clips_wide_rows_to_the_visible_window(cx: &mut TestAppCo
     // 并回报窗口起点列供渲染端补偿行原点；光标行保持整行 shaping（autoscroll 依赖光标像素）。
     let long = "a".repeat(4096) + "tail";
     let buffer = cx.new(|_| {
-        Buffer::scratch(format!("{long}\n{long}\n"), BufferConfig::default())
+        Buffer::from_text(format!("{long}\n{long}\n"), BufferConfig::default())
             .expect("测试 Buffer 应能创建")
     });
     let buffer = cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("main.rs")), cx));
@@ -1655,7 +1655,7 @@ fn external_source_edit_moves_combined_diff_cursor_like_plain_editor(cx: &mut Te
     let raw_buffer = engine_buffer(&buffer, cx);
     cx.update_entity(&raw_buffer, |buffer, cx| {
         buffer
-            .reload_from_text("alpha\nbravo\nNEW\ncharlie".to_owned())
+            .reset("alpha\nbravo\nNEW\ncharlie".to_owned())
             .expect("外部 reload 应成功");
         cx.notify();
     });

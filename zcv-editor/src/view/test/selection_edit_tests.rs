@@ -18,7 +18,7 @@ fn editor_with_text(
     selections: SelectionSet,
 ) -> (gpui::Entity<Buffer>, gpui::Entity<Editor>) {
     let buffer = cx.new(|_| {
-        Buffer::scratch(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+        Buffer::from_text(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建")
     });
     let language_buffer = cx.new({
         let buffer = buffer.clone();
@@ -49,7 +49,7 @@ fn buffer_text(buffer: &gpui::Entity<Buffer>, cx: &TestAppContext) -> String {
 fn rename_local_at_replaces_only_the_resolved_binding(cx: &mut TestAppContext) {
     let source = "fn main(value: i32) { let result = value; return result; }\n";
     let buffer = cx.new(|_| {
-        Buffer::scratch(source.to_string(), BufferConfig::default()).expect("测试 Buffer 应创建")
+        Buffer::from_text(source.to_string(), BufferConfig::default()).expect("测试 Buffer 应创建")
     });
     let language_buffer = cx.new({
         let buffer = buffer.clone();
@@ -78,7 +78,7 @@ fn rename_local_at_replaces_only_the_resolved_binding(cx: &mut TestAppContext) {
 fn rename_local_at_rejects_ambiguous_binding(cx: &mut TestAppContext) {
     let source = "fn main() { let value = 1; let value = 2; value; }\n";
     let buffer = cx.new(|_| {
-        Buffer::scratch(source.to_string(), BufferConfig::default()).expect("测试 Buffer 应创建")
+        Buffer::from_text(source.to_string(), BufferConfig::default()).expect("测试 Buffer 应创建")
     });
     let language_buffer = cx.new({
         let buffer = buffer.clone();
@@ -103,7 +103,7 @@ fn rename_local_at_rejects_ambiguous_binding(cx: &mut TestAppContext) {
 fn rename_local_at_rejects_unresolved_reference(cx: &mut TestAppContext) {
     let source = "fn main() { let value = missing; value; }\n";
     let buffer = cx.new(|_| {
-        Buffer::scratch(source.to_string(), BufferConfig::default()).expect("测试 Buffer 应创建")
+        Buffer::from_text(source.to_string(), BufferConfig::default()).expect("测试 Buffer 应创建")
     });
     let language_buffer = cx.new({
         let buffer = buffer.clone();
@@ -178,10 +178,12 @@ fn caret_indent_uses_display_map_tab_column(cx: &mut TestAppContext) {
 #[gpui::test]
 fn editing_a_later_composite_excerpt_keeps_following_input_in_that_source(cx: &mut TestAppContext) {
     let first = cx.new(|_| {
-        Buffer::scratch("first\n".to_string(), BufferConfig::default()).expect("应创建测试 Buffer")
+        Buffer::from_text("first\n".to_string(), BufferConfig::default())
+            .expect("应创建测试 Buffer")
     });
     let second = cx.new(|_| {
-        Buffer::scratch("second\n".to_string(), BufferConfig::default()).expect("应创建测试 Buffer")
+        Buffer::from_text("second\n".to_string(), BufferConfig::default())
+            .expect("应创建测试 Buffer")
     });
     let first = cx.new({
         let first = first.clone();

@@ -12,9 +12,9 @@ use std::sync::Arc;
 
 use gpui::EntityId;
 use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferSnapshot};
+use zcv_project::{RegexSearchResult, SearchResult, regex_replacement_for_match};
 use zcv_text::{
-    Affinity, CoordinateError, Edit, PositionMap, RegexSearchResult, SearchResult, TextError,
-    TextRead, TextResult, TransactionId, regex_replacement_for_match,
+    Affinity, CoordinateError, Edit, PositionMap, TextError, TextRead, TextResult, TransactionId,
 };
 
 use super::{Selection, SelectionSet};
@@ -123,12 +123,15 @@ impl<'a> EditPlan<'a> {
     ) -> TextResult<EditOutcome> {
         self.require_search_version(result.version(), "replace_regex_match")?;
         let (range, replacement) =
-            regex_replacement_for_match(self.snapshot, result, ordinal, replacement)?.ok_or_else(
-                || TextError::InvariantViolation {
+            regex_replacement_for_match(self.snapshot, result, ordinal, replacement)
+                .map_err(|error| TextError::InvariantViolation {
+                    location: "EditPlan::replace_regex_match",
+                    detail: format!("正则替换生成失败：{error}"),
+                })?
+                .ok_or_else(|| TextError::InvariantViolation {
                     location: "EditPlan::replace_regex_match",
                     detail: "搜索匹配不存在".into(),
-                },
-            )?;
+                })?;
         self.edit(vec![Edit::replace(range, replacement)])
     }
 
@@ -138,8 +141,18 @@ impl<'a> EditPlan<'a> {
         replacement: &str,
     ) -> TextResult<EditOutcome> {
         self.require_search_version(result.version(), "replace_all_regex_matches")?;
-        let edits = zcv_text::regex_replacements_in_text(self.snapshot, result, replacement)?
-            .map(|edit| edit.map(|(range, replacement)| Edit::replace(range, replacement)))
+        let edits = zcv_project::regex_replacements_in_text(self.snapshot, result, replacement)
+            .map_err(|error| TextError::InvariantViolation {
+                location: "EditPlan::replace_all_regex_matches",
+                detail: format!("正则替换生成失败：{error}"),
+            })?
+            .map(|edit| {
+                edit.map(|(range, replacement)| Edit::replace(range, replacement))
+                    .map_err(|error| TextError::InvariantViolation {
+                        location: "EditPlan::replace_all_regex_matches",
+                        detail: format!("正则替换生成失败：{error}"),
+                    })
+            })
             .collect::<TextResult<Vec<_>>>()?;
         self.edit(edits)
     }

@@ -58,7 +58,7 @@ pub fn highlight_snippet_with_cancellation(
     let language = language_for_name_or_extension(language)?;
     language.grammar()?;
 
-    let buffer = Buffer::scratch(source.to_owned(), BufferConfig::default()).ok()?;
+    let buffer = Buffer::from_text(source.to_owned(), BufferConfig::default()).ok()?;
     let text = buffer.snapshot();
     let mut syntax = SyntaxMap::new(&text);
     syntax.set_language(Some(language), &text);

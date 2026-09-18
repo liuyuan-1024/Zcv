@@ -20,16 +20,6 @@ pub enum Affinity {
     After,
 }
 
-/// 反向映射遇到歧义时选择偏左还是偏右的旧文本落点。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum Bias {
-    /// 选择歧义区域左侧 / 起点。
-    #[default]
-    Left,
-    /// 选择歧义区域右侧 / 终点。
-    Right,
-}
-
 /// 旧区间边界遇到同点插入时的扩张策略。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Stickiness {
@@ -169,53 +159,6 @@ impl PositionMap {
         MappingResult::Mapped(invariant!(
             shift.apply_old_to_new(pos),
             "old position 映射不会发生字节偏移溢出"
-        ))
-    }
-
-    /// new byte position -> old byte position，显式指定歧义区域偏向。
-    pub fn map_new_position_with_bias(
-        &self,
-        pos: ByteOffset,
-        bias: Bias,
-    ) -> MappingResult<ByteOffset> {
-        let mut shift = OffsetShift::ZERO;
-
-        for edit in &self.edits {
-            let range = edit.old;
-            let old_start = range.start();
-            let old_end = range.end();
-            let old_len = range.len();
-            let replacement_len = edit.new_len;
-            let new_start = invariant!(
-                shift.apply_old_to_new(old_start),
-                "old start 映射不会发生字节偏移溢出"
-            );
-            let new_end = invariant!(
-                checked_add_offset(new_start, replacement_len),
-                "在 map_new_position_with_bias 映射时发生字节偏移溢出"
-            );
-
-            if pos < new_start {
-                break;
-            }
-
-            if replacement_len == 0 {
-                if old_len > 0 && pos == new_start {
-                    return MappingResult::Ambiguous(biased_offset(old_start, old_end, bias));
-                }
-            } else if pos < new_end {
-                return MappingResult::Ambiguous(biased_offset(old_start, old_end, bias));
-            }
-
-            shift = invariant!(
-                shift.after_edit(old_len, replacement_len),
-                "累计编辑位移不会溢出"
-            );
-        }
-
-        MappingResult::Mapped(invariant!(
-            shift.apply_new_to_old(pos),
-            "new position 映射不会发生字节偏移溢出"
         ))
     }
 
@@ -437,14 +380,6 @@ impl OffsetShift {
             .map(ByteOffset::new)
     }
 
-    pub(crate) fn apply_new_to_old(self, new_offset: ByteOffset) -> Option<ByteOffset> {
-        new_offset
-            .get()
-            .checked_sub(self.inserted_bytes)?
-            .checked_add(self.removed_bytes)
-            .map(ByteOffset::new)
-    }
-
     pub(crate) fn after_edit(self, old_len: usize, replacement_len: usize) -> Option<Self> {
         Some(Self {
             removed_bytes: self.removed_bytes.checked_add(old_len)?,
@@ -459,13 +394,6 @@ impl OffsetShift {
 /// 还是按 `MappingResult` 语义静默处理，**本函数不 panic**。
 fn checked_add_offset(offset: ByteOffset, rhs: usize) -> Option<ByteOffset> {
     offset.checked_add(rhs)
-}
-
-fn biased_offset(start: ByteOffset, end: ByteOffset, bias: Bias) -> ByteOffset {
-    match bias {
-        Bias::Left => start,
-        Bias::Right => end,
-    }
 }
 
 fn text_range(start: ByteOffset, end: ByteOffset) -> TextRange {
@@ -531,14 +459,10 @@ mod tests {
     }
 
     #[test]
-    fn position_map_should_expose_affinity_bias_stickiness_and_point_mapping() {
+    fn position_map_should_expose_affinity_stickiness_and_point_mapping() {
         let map = PositionMap::from_edits(&[Edit::replace(range(1, 3), "XYZ".to_string())]);
 
         assert!(matches!(map.map_old_position(b(2)), MappingResult::Deleted(pos) if pos == b(1)));
-        assert!(matches!(
-            map.map_new_position_with_bias(b(2), Bias::Right),
-            MappingResult::Ambiguous(pos) if pos == b(3)
-        ));
         assert_eq!(
             map.map_old_range_with_stickiness(range(1, 3), Stickiness::Expand)
                 .value(),

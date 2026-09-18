@@ -127,42 +127,6 @@ fn editors_sharing_a_singleton_source_also_share_text_history(cx: &mut TestAppCo
 }
 
 #[gpui::test]
-fn singleton_source_buffer_config_controls_editor_indentation(cx: &mut TestAppContext) {
-    let buffer = test_buffer(cx, "value");
-    let editor = cx.new({
-        let buffer = buffer.clone();
-        move |cx| Editor::for_language_buffer(buffer, cx)
-    });
-    let raw_buffer = engine_buffer(&buffer, cx);
-    cx.update_entity(&raw_buffer, |buffer, cx| {
-        let mut config = buffer.config().clone();
-        config.tab.insert_spaces = false;
-        buffer.set_config(config);
-        cx.notify();
-    });
-    cx.run_until_parked();
-
-    cx.read_entity(&editor, |editor, cx| {
-        assert!(
-            !editor
-                .multi_buffer()
-                .read(cx)
-                .buffer_config_at(MultiBufferOffset::ZERO, cx)
-                .tab
-                .insert_spaces,
-            "工作源配置变化必须同步到普通编辑器的显示投影"
-        );
-    });
-
-    cx.update_entity(&editor, |editor, cx| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::ZERO));
-        editor.indent(cx);
-    });
-
-    assert_eq!(buffer_text(&buffer, cx), "\tvalue");
-}
-
-#[gpui::test]
 fn multibuffer_editor_edits_the_underlying_file(cx: &mut TestAppContext) {
     let source = test_buffer(cx, "abc\n");
     cx.update_entity(&source, |buffer, cx| {
@@ -230,7 +194,7 @@ fn navigate_to_line_column_uses_unicode_logical_columns(cx: &mut TestAppContext)
 fn outline_items_filter_and_navigate_using_current_snapshot(cx: &mut TestAppContext) {
     let source = "struct 数据 {\n    value: i32,\n}\nfn build() {}\n";
     let raw_buffer = cx.new(|_| {
-        Buffer::scratch(source.to_owned(), BufferConfig::default())
+        Buffer::from_text(source.to_owned(), BufferConfig::default())
             .expect("Rust 测试 Buffer 应能创建")
     });
     let language_buffer = cx.new({
@@ -320,7 +284,7 @@ fn external_reload_moves_selection_through_diff(cx: &mut TestAppContext) {
     let raw_buffer = engine_buffer(&buffer, cx);
     cx.update_entity(&raw_buffer, |buffer, cx| {
         buffer
-            .reload_from_text("alpha\nbrxavo\ncharlie".to_owned())
+            .reset("alpha\nbrxavo\ncharlie".to_owned())
             .expect("外部 reload 应成功");
         cx.notify();
     });
@@ -344,9 +308,7 @@ fn external_reload_collapses_selection_when_text_is_rewritten(cx: &mut TestAppCo
     // 完全重写（无公共内容）：diff 回退为整体替换段，光标塌缩到文档开头。
     let raw_buffer = engine_buffer(&buffer, cx);
     cx.update_entity(&raw_buffer, |buffer, cx| {
-        buffer
-            .reload_from_text("x".to_owned())
-            .expect("外部 reload 应成功");
+        buffer.reset("x".to_owned()).expect("外部 reload 应成功");
         cx.notify();
     });
     cx.run_until_parked();
@@ -578,7 +540,7 @@ fn replacing_a_reversed_selection_places_the_caret_after_inserted_text(cx: &mut 
 fn select_larger_smaller_syntax_node_uses_tree_sitter_ancestors(cx: &mut TestAppContext) {
     let source = "fn main() { let value = 1; }\n";
     let raw_buffer = cx.new(|_| {
-        Buffer::scratch(source.to_owned(), BufferConfig::default())
+        Buffer::from_text(source.to_owned(), BufferConfig::default())
             .expect("Rust 测试 Buffer 应能创建")
     });
     let language_buffer = cx.new({
@@ -667,7 +629,7 @@ fn select_larger_smaller_syntax_node_uses_tree_sitter_ancestors(cx: &mut TestApp
 fn f2_opens_inline_local_rename_and_enter_commits_it(cx: &mut TestAppContext) {
     let source = "fn main() {\n    let value = 1; let padding = \"0123456789012345678901234567890123456789\";\n    return value;\n}\n";
     let raw_buffer = cx.new(|_| {
-        Buffer::scratch(source.to_owned(), BufferConfig::default())
+        Buffer::from_text(source.to_owned(), BufferConfig::default())
             .expect("Rust 测试 Buffer 应能创建")
     });
     let language_buffer = cx.new({
@@ -733,7 +695,7 @@ fn select_larger_syntax_node_reaches_file_root_from_rust_imports_and_structures(
 ) {
     let source = "use gpui::{\n    AnyElement,\n    AnyView,\n    App,\n};\n\nstruct EditorState {\n    value: usize,\n}\n";
     let raw_buffer = cx.new(|_| {
-        Buffer::scratch(source.to_owned(), BufferConfig::default())
+        Buffer::from_text(source.to_owned(), BufferConfig::default())
             .expect("Rust 测试 Buffer 应能创建")
     });
     let language_buffer = cx.new({
@@ -771,7 +733,7 @@ fn select_larger_syntax_node_reaches_file_root_from_rust_imports_and_structures(
 fn matching_brackets_come_from_tree_sitter_query(cx: &mut TestAppContext) {
     let source = "fn main() { call(); }\n";
     let raw_buffer = cx.new(|_| {
-        Buffer::scratch(source.to_owned(), BufferConfig::default())
+        Buffer::from_text(source.to_owned(), BufferConfig::default())
             .expect("Rust 测试 Buffer 应能创建")
     });
     let language_buffer = cx.new({
@@ -1316,7 +1278,7 @@ fn newline_uses_tree_sitter_indent_query(cx: &mut TestAppContext) {
     let source = "fn main() {}\n";
     let caret = source.find('{').unwrap() + 1;
     let raw_buffer = cx.new(|_| {
-        Buffer::scratch(source.to_owned(), BufferConfig::default())
+        Buffer::from_text(source.to_owned(), BufferConfig::default())
             .expect("Rust 测试 Buffer 应能创建")
     });
     let language_buffer = cx.new({
@@ -1343,7 +1305,7 @@ fn composite_excerpt_uses_its_source_tree_sitter_indent_query(cx: &mut TestAppCo
     let source_text = "fn main() {}\n";
     let caret = source_text.find('{').unwrap() + 1;
     let raw_buffer = cx.new(|_| {
-        Buffer::scratch(source_text.to_owned(), BufferConfig::default())
+        Buffer::from_text(source_text.to_owned(), BufferConfig::default())
             .expect("Rust 测试 Buffer 应能创建")
     });
     let language_buffer = cx.new({
@@ -1386,7 +1348,7 @@ fn newline_does_not_compound_indent_inside_an_outer_rust_block(cx: &mut TestAppC
     let source = "pub(crate) fn config_dir() -> &'static Path {\n    static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();\n    CONFIG_DIR.get_or_init(|| home_dir().join(\".zcv\")).as_path()\n}";
     let caret = source.find(".as_path()").unwrap() + ".as_path()".len();
     let raw_buffer = cx.new(|_| {
-        Buffer::scratch(source.to_owned(), BufferConfig::default())
+        Buffer::from_text(source.to_owned(), BufferConfig::default())
             .expect("Rust 测试 Buffer 应能创建")
     });
     let language_buffer = cx.new({
@@ -1417,7 +1379,7 @@ fn newline_uses_the_nearest_code_line_as_its_indent_basis(cx: &mut TestAppContex
     let source = "fn main() {\n    build()\n}";
     let caret = source.find("build(").unwrap() + "build(".len();
     let raw_buffer = cx.new(|_| {
-        Buffer::scratch(source.to_owned(), BufferConfig::default())
+        Buffer::from_text(source.to_owned(), BufferConfig::default())
             .expect("Rust 测试 Buffer 应能创建")
     });
     let language_buffer = cx.new({

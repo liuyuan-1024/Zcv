@@ -61,8 +61,8 @@ fn apply_edit_at_invalid_utf8_boundary_should_fail_atomically() {
 
 #[test]
 fn read_only_state_should_reject_all_text_mutations_without_state_transition() {
-    let mut buffer = loaded_buffer(
-        b"abc",
+    let mut buffer = Buffer::from_text(
+        "abc".to_string(),
         BufferConfig {
             large_file: LargeFilePolicy {
                 large_file_threshold_bytes: 2,
@@ -136,23 +136,7 @@ fn snapshot_should_remain_version_bound_and_immutable_after_buffer_transition() 
 }
 
 #[test]
-fn loaded_text_boundary_should_apply_bom_and_invalid_utf8_policies() {
-    let buffer = loaded_buffer(b"\xEF\xBB\xBFhello\r\n", BufferConfig::default()).unwrap();
-
-    assert_eq!(buffer_text(&buffer), "hello\r\n");
-
-    let err = loaded_buffer(b"a\xff", BufferConfig::default()).unwrap_err();
-    assert!(matches!(
-        err,
-        BufferLoadError::Text(TextError::Storage(StorageError::InvalidUtf8 {
-            valid_up_to: 1,
-            error_len: Some(1)
-        }))
-    ));
-}
-
-#[test]
-fn reload_should_replace_storage_clear_history_and_leave_view_selection_to_host() {
+fn reset_should_replace_storage_clear_history_and_leave_view_selection_to_host() {
     let mut buffer = buffer("old");
     buffer
         .edit(
@@ -162,7 +146,7 @@ fn reload_should_replace_storage_clear_history_and_leave_view_selection_to_host(
         .unwrap();
     assert!(buffer.can_undo());
 
-    buffer.reload_from_text("new\n".to_string()).unwrap();
+    buffer.reset("new\n".to_string()).unwrap();
 
     assert_eq!(buffer_text(&buffer), "new\n");
     assert_eq!(buffer.line_start(line(1)).unwrap(), c(4));
@@ -172,7 +156,7 @@ fn reload_should_replace_storage_clear_history_and_leave_view_selection_to_host(
 }
 
 #[test]
-fn reload_with_same_text_should_preserve_history_and_refresh_saved_baseline() {
+fn reset_with_same_text_should_preserve_history_and_refresh_saved_baseline() {
     let mut buffer = buffer("old");
     buffer
         .edit(
@@ -184,7 +168,7 @@ fn reload_with_same_text_should_preserve_history_and_refresh_saved_baseline() {
     assert!(buffer.is_dirty());
     assert!(buffer.can_undo());
 
-    buffer.reload_from_text("old!".to_string()).unwrap();
+    buffer.reset("old!".to_string()).unwrap();
 
     assert_eq!(buffer.version(), version);
     assert!(!buffer.is_dirty());
@@ -192,37 +176,6 @@ fn reload_with_same_text_should_preserve_history_and_refresh_saved_baseline() {
     buffer.undo().unwrap().unwrap();
     assert_eq!(buffer_text(&buffer), "old");
     assert!(buffer.is_dirty());
-}
-
-#[test]
-fn write_to_should_reject_stale_version_and_normalize_configured_line_endings() {
-    let mut buffer = buffer("a\nb");
-    let stale = buffer.version();
-    buffer
-        .edit(
-            [Edit::insert(b(3), "\r\nc").unwrap()],
-            TransactionMetadata::default(),
-        )
-        .unwrap();
-
-    let err = buffer.write_to(stale, Vec::new()).unwrap_err();
-    assert!(matches!(
-        err,
-        BufferSaveError::Text(TextError::Transaction(TransactionError::VersionMismatch { expected, actual }))
-            if expected == buffer.version() && actual == stale
-    ));
-
-    let crlf = Buffer::from_text(
-        "a\nb\rc".to_string(),
-        BufferConfig {
-            line_ending: LineEndingConfig::Crlf,
-            ..BufferConfig::default()
-        },
-    )
-    .unwrap();
-    let mut saved = Vec::new();
-    crlf.write_to(crlf.version(), &mut saved).unwrap();
-    assert_eq!(String::from_utf8(saved).unwrap(), "a\r\nb\r\nc");
 }
 
 #[test]
@@ -236,7 +189,7 @@ fn large_file_policy_should_auto_mark_large_buffer_read_only() {
         large_file: policy,
         ..BufferConfig::default()
     };
-    let buffer = loaded_buffer(b"abcd", config).unwrap();
+    let buffer = Buffer::from_text("abcd".to_string(), config).unwrap();
 
     assert!(buffer.is_large_file());
     assert!(buffer.is_read_only());

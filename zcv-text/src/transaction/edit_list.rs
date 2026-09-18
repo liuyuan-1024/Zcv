@@ -56,6 +56,11 @@ impl EditList {
     pub(crate) fn as_slice(&self) -> &[Edit] {
         &self.edits
     }
+
+    /// 本列表内所有 `Edit::replacement` 的 UTF-8 字节和。
+    pub(crate) fn replacement_bytes(&self) -> usize {
+        self.edits.iter().map(|edit| edit.replacement().len()).sum()
+    }
 }
 
 fn share_repeated_replacements(edits: &mut [Edit]) {

@@ -7,6 +7,6 @@ use crate::transaction::{EditList, TransactionMetadata};
 pub(in crate::buffer) struct PreparedTransaction {
     pub(in crate::buffer) edits: EditList,
     pub(in crate::buffer) metadata: TransactionMetadata,
+    /// 逆编辑；进入历史时写入编辑日志，供 undo 回放。
     pub(in crate::buffer) undo_edits: EditList,
-    pub(in crate::buffer) redo_edits: EditList,
 }

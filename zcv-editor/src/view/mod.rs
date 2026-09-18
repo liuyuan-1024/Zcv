@@ -27,7 +27,6 @@ use zcv_language::{AutoClosePair, BracketPair, FoldRange, LanguageBuffer};
 use zcv_multi_buffer::{
     DiffFile, DiffHunkKind, DiffHunkSource, DisplayHunk, ExcerptDiffKind, ExcerptLocation,
     ExcerptSnapshot, MultiBuffer, MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot,
-    ProjectionRemap,
 };
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
@@ -1768,8 +1767,8 @@ impl Editor {
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut EditPlan<'_>) -> TextResult<EditOutcome>,
     ) -> TextResult<EditOutcome> {
-        let (node_id, outcome, remap) = self.commit_session(before_selections, metadata, cx, f)?;
-        self.apply_edit_outcome(node_id, outcome, remap, cx)
+        let (node_id, outcome) = self.commit_session(before_selections, metadata, cx, f)?;
+        self.apply_edit_outcome(node_id, outcome, cx)
     }
 
     /// 编辑后选区由闭包按编辑语义重算的变体（删除、剪切、行移动、输入等特判场景）。
@@ -1802,8 +1801,8 @@ impl Editor {
         f: impl FnOnce(&mut EditPlan<'_>) -> TextResult<(EditOutcome, SelectionSet)>,
         emit_edited: bool,
     ) -> TextResult<(EditOutcome, SelectionSet)> {
-        let (node_id, outcome, remap) = self.commit_session(before_selections, metadata, cx, f)?;
-        self.apply_edit_outcome_with_after(node_id, outcome, remap, emit_edited, cx)
+        let (node_id, outcome) = self.commit_session(before_selections, metadata, cx, f)?;
+        self.apply_edit_outcome_with_after(node_id, outcome, emit_edited, cx)
     }
 
     /// 需要读取提交后投影才能确定选区的编辑变体。
@@ -1818,11 +1817,11 @@ impl Editor {
         plan: impl FnOnce(&mut EditPlan<'_>) -> TextResult<(EditOutcome, P)>,
         after: impl FnOnce(P, &MultiBufferSnapshot) -> TextResult<SelectionSet>,
     ) -> TextResult<(EditOutcome, SelectionSet)> {
-        let (node_id, (outcome, post_state), remap) =
+        let (node_id, (outcome, post_state)) =
             self.commit_session(before_selections, metadata, cx, plan)?;
         let snapshot = self.multi_buffer.read(cx).snapshot(cx);
         let after_selections = after(post_state, &snapshot)?;
-        self.apply_edit_outcome_with_after(node_id, (outcome, after_selections), remap, true, cx)
+        self.apply_edit_outcome_with_after(node_id, (outcome, after_selections), true, cx)
     }
 
     /// 会话化编辑的共享骨架：开启会话并记录 undo 选区（事务开始时记录）→ 闭包编辑（统一 Buffer 通知）→ 提交会话，返回 (节点身份, 编辑结果)。
@@ -1835,7 +1834,7 @@ impl Editor {
         metadata: TransactionMetadata,
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut EditPlan<'_>) -> TextResult<T>,
-    ) -> TextResult<(Option<TransactionId>, T, ProjectionRemap)> {
+    ) -> TextResult<(Option<TransactionId>, T)> {
         let operation = metadata.description().unwrap_or("编辑").to_owned();
         let session_id = self.start_transaction(cx)?;
         let projection_snapshot = self.multi_buffer.read(cx).snapshot(cx);
@@ -1854,31 +1853,27 @@ impl Editor {
         };
         let edits = plan.into_edits();
         // 编辑映射与提交可能失败（如命中只读 excerpt）：失败必须结束空会话并恢复编辑前选区，否则事务残留会阻塞后续所有编辑。
-        // 成功时返回本次编辑的投影重映射（组合文档重建后坐标经源解析；单文件恒等）。
-        let applied = (|| -> TextResult<ProjectionRemap> {
+        let applied = (|| -> TextResult<()> {
             if edits.is_empty() {
-                return Ok(ProjectionRemap::identity());
+                return Ok(());
             }
             self.multi_buffer
                 .update(cx, |buffer, cx| buffer.edit(edits, metadata, cx))
         })();
         self.refresh_multi_snapshot(cx);
-        let remap = match applied {
-            Ok(remap) => remap,
-            Err(error) => {
-                self.end_transaction(cx);
-                cx.emit(EditorEvent::Error(format!("{operation}失败：{error:#}")));
-                let restored =
-                    EditorSelections::from_selection_set(&projection_snapshot, &before_selections);
-                self.selections = restored;
-                return Err(error);
-            }
-        };
+        if let Err(error) = applied {
+            self.end_transaction(cx);
+            cx.emit(EditorEvent::Error(format!("{operation}失败：{error:#}")));
+            let restored =
+                EditorSelections::from_selection_set(&projection_snapshot, &before_selections);
+            self.selections = restored;
+            return Err(error);
+        }
         let node_id = self.end_transaction(cx);
         if node_id != Some(session_id) {
             self.selection_history.remove_transaction(session_id);
         }
-        Ok((node_id, outcome, remap))
+        Ok((node_id, outcome))
     }
 
     /// 开启编辑会话并记录 undo 选区。
@@ -1909,7 +1904,6 @@ impl Editor {
         &mut self,
         transaction_id: Option<TransactionId>,
         outcome: EditOutcome,
-        remap: ProjectionRemap,
         cx: &mut Context<Self>,
     ) -> TextResult<EditOutcome> {
         let before_snapshot = self.edit_before_snapshot.take();
@@ -1918,11 +1912,11 @@ impl Editor {
             let new_version = self.multi_snapshot.version();
             let old_version = before_snapshot.version();
             self.update_autoclose_regions_with(position_map, old_version, new_version);
-            // 编辑前选区按编辑前投影快照解析，经事务坐标映射推进到「编辑后、重建前」投影坐标；
-            // 再由 land_after_edit 锚定为源锚点（组合文档重建后按源忠实落位）。
+            // 编辑前选区按编辑前投影快照解析，经事务坐标映射推进到编辑后的当前投影坐标；
+            // 再由 land_after_edit 锚定为源锚点（投影重建按源忠实落位）。
             let before = self.selections.resolve(&before_snapshot);
             let after = map_selection_set(&before, position_map);
-            self.land_after_edit(after, &remap, transaction_id, true, cx);
+            self.land_after_edit(after, transaction_id, true, cx);
         } else {
             self.finish_edit(cx);
             cx.emit(EditorEvent::Edited);
@@ -1935,7 +1929,6 @@ impl Editor {
         &mut self,
         transaction_id: Option<TransactionId>,
         outcome: (EditOutcome, SelectionSet),
-        remap: ProjectionRemap,
         emit_edited: bool,
         cx: &mut Context<Self>,
     ) -> TextResult<(EditOutcome, SelectionSet)> {
@@ -1948,27 +1941,24 @@ impl Editor {
                 .version();
             self.update_autoclose_regions_with(position_map, old_version, new_version);
         }
-        self.land_after_edit(after_selections, &remap, transaction_id, emit_edited, cx);
+        self.land_after_edit(after_selections, transaction_id, emit_edited, cx);
         Ok((outcome, self.resolved_selections()))
     }
 
-    /// 编辑落位共享骨架：把「编辑后、重建前」投影坐标的选区锚定为源锚点，落到重建后的当前投影。
+    /// 编辑落位共享骨架：把编辑后的投影坐标选区锚定为源锚点。
     ///
-    /// 选区以源锚点为单一数据源，投影重建（diff 裁剪窗口移动）不改变源，故不触碰选区：
-    /// `anchor_after_edit` 用重建前映射（`remap.before`）把编辑后投影偏移锚定到源，未重建时用当前映射；
-    /// 随后按重建后快照解析即忠实落到同一源位置，组合文档编辑器光标落位与普通单文件编辑器完全一致。
+    /// 选区以源锚点为单一数据源，投影重建（diff 裁剪窗口移动）不改变源；
+    /// 编辑后投影坐标直接在当前快照上锚定到源，随后按当前快照解析即忠实落到同一源位置。
     fn land_after_edit(
         &mut self,
         after: SelectionSet,
-        remap: &ProjectionRemap,
         transaction_id: Option<TransactionId>,
         emit_edited: bool,
         cx: &mut Context<Self>,
     ) {
-        let anchored = {
-            let multi = self.multi_buffer.read(cx);
-            EditorSelections::anchored(&after, &|offset| multi.anchor_after_edit(remap, offset))
-        };
+        let anchored = EditorSelections::anchored(&after, &|offset| {
+            self.multi_snapshot.anchor_for_offset(offset)
+        });
         self.selections = anchored;
         if let Some(transaction_id) = transaction_id
             && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)

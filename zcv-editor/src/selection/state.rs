@@ -389,8 +389,8 @@ impl EditorSelections {
 
     /// 用自定义锚定把投影 offset 选区转为源锚点选区。
     ///
-    /// [`EditorSelections::from_selection_set`] 用当前快照锚定；
-    /// 编辑落位用重建前映射锚定（[`zcv_multi_buffer::MultiBuffer::anchor_after_edit`]）。
+    /// [`EditorSelections::from_selection_set`] 与编辑落位都用当前快照锚定；
+    /// 投影重建不改变源，编辑后偏移直接按当前快照解析为源 Anchor。
     pub(crate) fn anchored(
         set: &SelectionSet,
         anchor: &impl Fn(MultiBufferOffset) -> Option<MultiBufferAnchor>,

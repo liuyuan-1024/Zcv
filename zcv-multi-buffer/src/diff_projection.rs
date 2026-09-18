@@ -1,31 +1,33 @@
-//! MultiBuffer 的 git diff 投影：把版本化的 `BufferDiff` 结果物化为 excerpts 与显示坐标。
+//! MultiBuffer 的 git diff 投影：把版本化的 BufferDiff 结果物化为 excerpts 与显示坐标。
 //!
 //! 普通编辑器与多文件投影（Git 差异视图）共用同一套物化：
-//! 宿主注入同一工作区源快照对应的 `BufferDiff`，本层只消费其 `BufferDiffSnapshot`，
+//! 宿主注入同一工作区源快照对应的 BufferDiff，本层只消费其 BufferDiffSnapshot，
 //! 按展开状态把旧侧行物化为只读 excerpt、按显示策略裁剪可见行，并派生组合坐标显示 hunks。
 //!
-//! diff 状态（base/working、版本、hunk、pending、操作）全部归 `BufferDiff` 所有；
+//! diff 状态（base/working、版本、hunk、pending、操作）全部归 BufferDiff 所有；
+//! hunk 身份随输出变换节点（Excerpt）承载，输出坐标由游标推导；
 //! 展开/折叠、显示路径与上下文裁剪归本层所有，不进入 diff 快照。
 
+use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use gpui::{App, Context, Entity};
+use gpui::{App, Context, Entity, Subscription};
 use sum_tree::SumTree;
 use zcv_language::LanguageBuffer;
-use zcv_text::{Affinity, Anchor, ByteOffset, Line, PositionMap, Snapshot, Stickiness};
+use zcv_text::{Anchor, ByteOffset, Line, Snapshot};
 
 use crate::buffer_diff::{
     BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkKind, DiffHunkStaging, DiffRefresh,
 };
 use crate::{
-    DiffTransform, ExcerptDiffKind, ExcerptRange, MultiBuffer, MultiBufferCursor, MultiBufferEvent,
-    PathKey, ProjectionRemap, mapping_count,
+    DiffTransform, DiffTransformHunkInfo, DiffTransformHunkSide, Excerpt, ExcerptDiffKind,
+    ExcerptRange, MultiBuffer, MultiBufferCursor, MultiBufferEvent, PathKey, mapping_count,
 };
 
 /// 编辑器投影使用的显示 hunk（组合文档行坐标）。
 ///
-/// `range` 与 `old_range` 都是组合文档中的逻辑行范围；源文本定位由 `DiffHunkSource` 提供。
+/// range 与 old_range 都是组合文档中的逻辑行范围；源文本定位由 DiffHunkSource 提供。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DisplayHunk {
     pub range: Range<usize>,
@@ -62,7 +64,9 @@ pub struct DiffHunkSource {
     pub range: Option<Range<Anchor>>,
 }
 
-/// 一个文件的显示配置；diff 状态由 `BufferDiff` 持有。
+/// 一个文件的显示状态：diff 配置、展开覆盖、订阅与物化版本。
+///
+/// diff 结果由 BufferDiff 持有；本结构只持有显示层状态，随文件在 MultiBuffer 中增删而创建销毁。
 pub(crate) struct DiffState {
     diff: Entity<BufferDiff>,
     /// 组合文档中的显示路径（文件标题与导航定位）。
@@ -73,9 +77,12 @@ pub(crate) struct DiffState {
     show_file_header: bool,
     /// 显示层拥有的展开/折叠状态，与版本化 diff 结果分离。
     expansion: DiffExpansionState,
-    /// 该文件物化出的变换记录（excerpt / boundary 索引、词级 anchor 等）。
-    /// 编辑只增量更新组合映射，因此可据此只重算显示坐标而不重新物化 excerpt。
-    materialized: Vec<MaterializedHunk>,
+    /// BufferDiff 订阅；只作为守卫随 DiffState 生命周期创建销毁，不直接读取。
+    _subscription: Subscription,
+    /// 上次物化时该文件的 diff 版本；None 表示尚未物化进组合文档。
+    revision: Option<u64>,
+    /// 替换 base 后，新 BufferDiff 的首次后台结果返回前暂存的展开状态迁移来源。
+    pending_expansion_migration: Option<PendingExpansionMigration>,
 }
 
 impl DiffState {
@@ -87,6 +94,13 @@ impl DiffState {
             context_lines: self.context_lines,
             show_file_header: self.show_file_header,
         }
+    }
+
+    fn subscribe(diff: &Entity<BufferDiff>, cx: &mut Context<MultiBuffer>) -> Subscription {
+        cx.subscribe(diff, |this, _, event, cx| {
+            let BufferDiffEvent::DiffChanged { refresh } = event;
+            this.diff_changed(*refresh, cx);
+        })
     }
 }
 
@@ -128,7 +142,8 @@ pub(crate) struct PendingExpansionMigration {
 
 #[derive(Clone)]
 struct DisplayHunkSource {
-    file_index: usize,
+    /// 稳定文件键：working 源实体，不随组合文档序号变化。
+    working: gpui::EntityId,
     hunk_index: Option<usize>,
 }
 
@@ -146,46 +161,11 @@ struct ResolvedHunk {
     base_byte_start: usize,
     /// 新侧词级变化片段（working 锚点）。
     buffer_word_diffs: Vec<Range<Anchor>>,
-    /// 旧侧词级变化片段（相对 `diff_base_byte_range.start`）。
+    /// 旧侧词级变化片段（相对 diff_base_byte_range.start）。
     base_word_diffs: Vec<Range<usize>>,
 }
 
-/// 一个输入 excerpt 的稳定身份。
-///
-/// 身份绑定源实体与源范围，不绑定组合文档中的序号，因此路径增删和 hunk 重物化不会使它失效。
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct ExcerptAnchor {
-    source_id: gpui::EntityId,
-    source_range: zcv_text::TextRange,
-}
-
-/// 源文档中的显示边界。
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct SourceBoundary {
-    source_id: gpui::EntityId,
-    offset: ByteOffset,
-}
-
-struct MaterializedHunk {
-    old_range: Range<usize>,
-    kind: DiffHunkKind,
-    staging: DiffHunkStaging,
-    old_excerpt: Option<ExcerptAnchor>,
-    new_location: MaterializedHunkLocation,
-    source: DisplayHunkSource,
-    expanded: bool,
-    base_byte_start: usize,
-    buffer_word_diffs: Vec<Range<Anchor>>,
-    base_word_diffs: Vec<Range<usize>>,
-}
-
-#[derive(Clone, Copy)]
-enum MaterializedHunkLocation {
-    Excerpt(ExcerptAnchor),
-    Boundary(SourceBoundary),
-}
-
-/// 一次物化派生出的显示坐标；只依赖 hunk 身份与当前组合映射，可在编辑后重算。
+/// 一次物化派生出的显示坐标；由输出变换树单次游标遍历推导。
 struct DiffDisplay {
     hunks: Vec<DisplayHunk>,
     old_ranges: Vec<Option<Range<usize>>>,
@@ -194,12 +174,50 @@ struct DiffDisplay {
     word_diffs: Vec<Vec<(DiffHunkKind, Range<usize>)>>,
 }
 
+/// 单次游标遍历中按 hunk 身份聚合的输出范围与词级片段。
+struct HunkAccum {
+    working: gpui::EntityId,
+    hunk_index: Option<usize>,
+    kind: DiffHunkKind,
+    staging: DiffHunkStaging,
+    base_lines: Range<usize>,
+    expanded: bool,
+    content_range: Option<Range<usize>>,
+    old_range: Option<Range<usize>>,
+    boundary_start: Option<usize>,
+    boundary_end: Option<usize>,
+    old_word_diffs: Vec<(DiffHunkKind, Range<usize>)>,
+    new_word_diffs: Vec<(DiffHunkKind, Range<usize>)>,
+}
+
+impl HunkAccum {
+    fn new(info: &DiffTransformHunkInfo) -> Self {
+        Self {
+            working: info.working,
+            hunk_index: info.hunk_index,
+            kind: info.kind,
+            staging: info.staging,
+            base_lines: info.base_lines.clone(),
+            expanded: info.expanded,
+            content_range: None,
+            old_range: None,
+            boundary_start: None,
+            boundary_end: None,
+            old_word_diffs: Vec::new(),
+            new_word_diffs: Vec::new(),
+        }
+    }
+}
+
 struct ExcerptMaterializer<'a> {
     excerpts: &'a mut Vec<ExcerptRange>,
     display_path: &'a Path,
 }
 
 impl ExcerptMaterializer<'_> {
+    /// 构造并推入一个投影片段，并标注它承担的 hunk 身份。
+    ///
+    /// 返回未挂载的 hunk 身份：片段被空行策略跳过时，调用方据此恢复待挂载状态（通常是纯删除边界）。
     fn push(
         &mut self,
         lines: Range<usize>,
@@ -208,8 +226,9 @@ impl ExcerptMaterializer<'_> {
         diff_kind: Option<ExcerptDiffKind>,
         starts_new_excerpt: bool,
         allow_empty: bool,
-    ) -> Option<ExcerptAnchor> {
-        let excerpt = projected_excerpt(
+        hunks: Vec<DiffTransformHunkInfo>,
+    ) -> Vec<DiffTransformHunkInfo> {
+        let Some(mut excerpt) = projected_excerpt(
             source,
             text,
             lines,
@@ -217,42 +236,40 @@ impl ExcerptMaterializer<'_> {
             diff_kind,
             starts_new_excerpt,
             allow_empty,
-        )?;
-        let anchor = ExcerptAnchor {
-            source_id: excerpt.source.entity_id(),
-            source_range: excerpt.source_range,
+        ) else {
+            return hunks;
         };
+        for hunk in hunks {
+            excerpt = excerpt.with_diff_hunk(hunk);
+        }
         self.excerpts.push(excerpt);
-        Some(anchor)
+        Vec::new()
     }
 }
 
-impl ExcerptAnchor {
-    fn map_through_source_change(&mut self, source_id: gpui::EntityId, position_map: &PositionMap) {
-        if self.source_id == source_id {
-            self.source_range = position_map
-                .map_old_range_with_stickiness(self.source_range, Stickiness::Expand)
-                .value();
-        }
-    }
-}
-
-impl SourceBoundary {
-    fn map_through_source_change(&mut self, source_id: gpui::EntityId, position_map: &PositionMap) {
-        if self.source_id == source_id {
-            self.offset = position_map
-                .map_old_position_with_affinity(self.offset, Affinity::Before)
-                .value();
-        }
+/// 一个 hunk 节点携带的身份与显示元数据。
+fn hunk_info(
+    working: gpui::EntityId,
+    hunk_index: usize,
+    side: DiffTransformHunkSide,
+    hunk: &ResolvedHunk,
+    expanded: bool,
+) -> DiffTransformHunkInfo {
+    DiffTransformHunkInfo {
+        working,
+        hunk_index: Some(hunk_index),
+        side,
+        kind: hunk.kind,
+        staging: hunk.staging,
+        base_lines: hunk.base_lines.clone(),
+        base_byte_start: hunk.base_byte_start,
+        buffer_word_diffs: hunk.buffer_word_diffs.clone(),
+        base_word_diffs: hunk.base_word_diffs.clone(),
+        expanded,
     }
 }
 
 impl MultiBuffer {
-    /// 统一注入 git diff 投影（普通编辑器与多文件投影共用）。
-    ///
-    /// None 是加载态（新 diff 尚未算完），保留现有 hunks 与用户展开状态；
-    /// Some 注入后按文本跟踪区间迁移展开状态并重建投影。
-    /// 返回 true 表示组合文档被重建；调用方应同步显示快照，但不能重置源锚点选区。
     /// 按路径增量挂接一个文件的 diff。
     ///
     /// 新路径按路径顺序追加；同路径的 diff 变化重建整份投影以迁移展开状态。
@@ -291,15 +308,6 @@ impl MultiBuffer {
         self.insert_diff_file(insert_at, file, cx)
     }
 
-    /// 路径顺序在某文件之后的物化记录只需平移文件身份；excerpt 身份由源 anchor 保持稳定。
-    fn shift_downstream_files(&mut self, file_index: usize, file_shift: isize) {
-        for file in self.diffs.iter_mut().skip(file_index + 1) {
-            for hunk in &mut file.materialized {
-                hunk.source.file_index = (hunk.source.file_index as isize + file_shift) as usize;
-            }
-        }
-    }
-
     /// 在 insert_at 处插入一个 diff 文件，只物化该文件的 excerpts 并按路径 splice。
     fn insert_diff_file(
         &mut self,
@@ -307,68 +315,38 @@ impl MultiBuffer {
         file: DiffFile,
         cx: &mut Context<Self>,
     ) -> bool {
+        let diff = file.diff;
+        let subscription = DiffState::subscribe(&diff, cx);
         let state = DiffState {
-            diff: file.diff,
+            diff,
             display_path: PathKey::new(file.display_path),
             context_lines: file.context_lines,
             show_file_header: file.show_file_header,
             expansion: DiffExpansionState::default(),
-            materialized: Vec::new(),
+            _subscription: subscription,
+            revision: None,
+            pending_expansion_migration: None,
         };
-        let subscription = cx.subscribe(&state.diff, |this, _, event, cx| {
-            let BufferDiffEvent::DiffChanged { refresh } = event;
-            this.diff_changed(*refresh, cx);
-        });
         self.diffs.insert(insert_at, state);
-        self.diff_subscriptions.insert(insert_at, subscription);
-        self.diff_pending_expansion_migrations
-            .insert(insert_at, None);
 
         let expanded_by_default = self.diff_expanded_by_default;
         let mut excerpts = Vec::new();
-        let mut materialized = Vec::new();
         {
             let file = &self.diffs[insert_at];
-            materialize_file(
-                insert_at,
-                file,
-                &file.expansion,
-                cx,
-                expanded_by_default,
-                &mut excerpts,
-                &mut materialized,
-            );
+            materialize_file(file, cx, expanded_by_default, &mut excerpts);
         }
-        // 路径顺序在插入点之后的文件整体顺延。
-        self.shift_downstream_files(insert_at, 1);
         self.set_excerpts_for_path(excerpts, cx);
-        for hunk in materialized {
-            self.diffs[hunk.source.file_index].materialized.push(hunk);
-        }
-        let revision = (
-            self.diffs[insert_at].diff.entity_id(),
-            self.diffs[insert_at].diff.read(cx).revision(),
-        );
-        self.diff_display_revisions.insert(insert_at, revision);
+        self.diffs[insert_at].revision = Some(self.diffs[insert_at].diff.read(cx).revision());
         if insert_at < self.diff_materialized_files {
             self.diff_materialized_files += 1;
         }
-        let display =
-            self.derive_diff_display(self.diffs.iter().flat_map(|file| file.materialized.iter()));
-        let diff = self.diff.as_mut().expect("已确认 diff 投影存在");
-        diff.display_hunks = display.hunks;
-        diff.display_old_ranges = display.old_ranges;
-        diff.display_sources = display.sources;
-        diff.display_expanded = display.expanded;
-        diff.display_word_diffs = display.word_diffs;
-        cx.notify();
+        self.refresh_diff_display(cx);
         true
     }
 
     /// 移除指定显示路径的 diff；用于 Git 状态中不再存在的文件。
     ///
-    /// 按路径增量移除该文件的 excerpts（不动其余文件的源订阅），
-    /// 再把路径顺序在其之后的物化记录下标整体前移，最后只重算显示坐标。
+    /// 按路径增量移除该文件的 excerpts（不动其余文件的源订阅），再只重算显示坐标。
     /// 移除最后一个文件时回退到整份清理路径（可能恢复整文件 excerpt）。
     pub fn remove_diff(&mut self, path: &Path, cx: &mut Context<Self>) -> bool {
         if self.diff.is_none() {
@@ -396,21 +374,9 @@ impl MultiBuffer {
             .map_or_else(PathBuf::new, Path::to_path_buf);
         self.remove_excerpts_for_path(&source_path, cx);
 
-        drop(self.diff_subscriptions.remove(file_index));
-        self.diff_display_revisions.remove(file_index);
-        self.diff_pending_expansion_migrations.remove(file_index);
-        // 路径顺序在被移除文件之后的文件只需平移文件身份。
-        self.shift_downstream_files(file_index, -1);
+        // DiffState 持有自己的订阅，移除即取消订阅；hunk 身份随节点消失，无需下标顺延。
         self.diffs.remove(file_index);
-
-        let display =
-            self.derive_diff_display(self.diffs.iter().flat_map(|file| file.materialized.iter()));
-        let diff = self.diff.as_mut().expect("已确认 diff 投影存在");
-        diff.display_hunks = display.hunks;
-        diff.display_old_ranges = display.old_ranges;
-        diff.display_sources = display.sources;
-        diff.display_expanded = display.expanded;
-        diff.display_word_diffs = display.word_diffs;
+        self.refresh_diff_display(cx);
         self.diff_materialized_files = self.diffs.len();
         cx.notify();
         true
@@ -467,17 +433,22 @@ impl MultiBuffer {
 
         let mut next_files: Vec<DiffState> = inputs
             .into_iter()
-            .map(|file| DiffState {
-                diff: file.diff,
-                display_path: PathKey::new(file.display_path),
-                context_lines: file.context_lines,
-                show_file_header: file.show_file_header,
-                expansion: DiffExpansionState::default(),
-                materialized: Vec::new(),
+            .map(|file| {
+                let diff = file.diff;
+                let subscription = DiffState::subscribe(&diff, cx);
+                DiffState {
+                    diff,
+                    display_path: PathKey::new(file.display_path),
+                    context_lines: file.context_lines,
+                    show_file_header: file.show_file_header,
+                    expansion: DiffExpansionState::default(),
+                    _subscription: subscription,
+                    revision: None,
+                    pending_expansion_migration: None,
+                }
             })
             .collect();
 
-        let mut pending_expansion_migrations = Vec::with_capacity(next_files.len());
         for file in &mut next_files {
             let mut pending_migration = None;
             if let Some(old_files) = old_files.as_deref()
@@ -502,19 +473,9 @@ impl MultiBuffer {
                     });
                 }
             }
-            pending_expansion_migrations.push(pending_migration);
+            file.pending_expansion_migration = pending_migration;
         }
-        self.diff_subscriptions = next_files
-            .iter()
-            .map(|file| {
-                cx.subscribe(&file.diff, |this, _, event, cx| {
-                    let BufferDiffEvent::DiffChanged { refresh } = event;
-                    this.diff_changed(*refresh, cx);
-                })
-            })
-            .collect();
         self.diffs = next_files;
-        self.diff_pending_expansion_migrations = pending_expansion_migrations;
         // 新文件的 hunk 尚未算完时，保留已物化投影，避免先清空再展示结果导致一次
         // Git 刷新产生两次可见重建；各文件的就绪状态互不影响。
         if self
@@ -524,12 +485,10 @@ impl MultiBuffer {
         {
             return false;
         }
-        !self.rebuild_diff_projection(cx).is_identity()
+        self.rebuild_diff_projection(cx)
     }
 
     /// 设置新 hunk 的初始展开策略；用户之后的显式展开/折叠不受投影刷新覆盖。
-    ///
-    /// 折叠/展开不改变源，编辑器源锚点选区自然存活，无需返回投影重映射。
     pub fn set_diff_hunks_expanded_by_default(&mut self, expanded: bool, cx: &mut Context<Self>) {
         self.diff
             .get_or_insert_with(|| Box::new(DiffDisplayCache::default()));
@@ -550,21 +509,23 @@ impl MultiBuffer {
     /// 折叠/展开不改变源，编辑器源锚点选区自然存活，无需返回投影重映射。
     pub fn toggle_diff_hunk_at(&mut self, display_index: usize, cx: &mut Context<Self>) {
         let expanded_by_default = self.diff_expanded_by_default;
-        let mut file_index = None;
-        if let Some(diff) = &mut self.diff
-            && let Some(source) = diff.display_sources.get(display_index)
-            && let Some(hunk) = diff.display_hunks.get(display_index)
-            && let Some(expansion) = self
-                .diffs
-                .get_mut(source.file_index)
-                .map(|file| &mut file.expansion)
-        {
-            expansion.toggle(hunk.kind, &hunk.old_range, expanded_by_default);
-            file_index = Some(source.file_index);
-        }
-        let Some(file_index) = file_index else {
+        let Some((working, kind, old_range)) = self.diff.as_ref().and_then(|diff| {
+            let source = diff.display_sources.get(display_index)?;
+            let hunk = diff.display_hunks.get(display_index)?;
+            Some((source.working, hunk.kind, hunk.old_range.clone()))
+        }) else {
             return;
         };
+        let Some(file_index) = self
+            .diffs
+            .iter()
+            .position(|file| file.diff.read(cx).working().entity_id() == working)
+        else {
+            return;
+        };
+        self.diffs[file_index]
+            .expansion
+            .toggle(kind, &old_range, expanded_by_default);
         // 只重物化该文件所在路径；其余文件及其组合坐标保持不变。
         self.replace_materialized_file(file_index, cx);
         cx.emit(MultiBufferEvent::DiffExpansionChanged);
@@ -624,18 +585,11 @@ impl MultiBuffer {
     /// 显示 hunk 到源定位（hunk 操作与导航用）。
     pub fn buffer_diff_hunk_at(&self, display_index: usize, cx: &App) -> Option<DiffHunkSource> {
         let diff = self.diff.as_ref()?;
-        // 缓存必须对应当前文件集合，否则 display_sources 的 file_index 可能指向别的文件。
-        if self.diffs.len() != self.diff_display_revisions.len()
-            || !self
-                .diffs
-                .iter()
-                .zip(&self.diff_display_revisions)
-                .all(|(file, previous)| file.diff.entity_id() == previous.0)
-        {
-            return None;
-        }
         let source = diff.display_sources.get(display_index)?.clone();
-        let file = self.diffs.get(source.file_index)?;
+        let file = self
+            .diffs
+            .iter()
+            .find(|file| file.diff.read(cx).working().entity_id() == source.working)?;
         let entity = file.diff.clone();
         let is_created = entity.read(cx).is_created();
         let path = entity.read(cx).path().clone();
@@ -764,29 +718,31 @@ impl MultiBuffer {
 
     /// BufferDiff 事件入口：只有当前物化结果落后于 diff 版本时才重建。
     fn diff_changed(&mut self, refresh: DiffRefresh, cx: &mut Context<Self>) {
-        let Some(diff) = &mut self.diff else {
-            return;
-        };
-        if refresh == DiffRefresh::PreserveProjection {
-            return;
-        }
-        let working_is_dirty = self.diffs.iter().any(|file| {
-            file.diff
-                .read(cx)
-                .working()
-                .read(cx)
-                .buffer()
-                .read(cx)
-                .is_dirty()
-        });
-        if working_is_dirty && !diff.display_expanded.iter().any(|&expanded| expanded) {
-            // 折叠态组合文档的 excerpt 是用户当前正在编辑的稳定窗口。
-            // 没有展开 hunk 时只更新 BufferDiff 快照，等保存/重新注入后再提交新的窗口；
-            // 展开态则必须跟随新的 working 快照重物化，保证可见 hunk 与正文一致。
-            return;
+        {
+            let Some(diff) = &self.diff else {
+                return;
+            };
+            if refresh == DiffRefresh::PreserveProjection {
+                return;
+            }
+            let working_is_dirty = self.diffs.iter().any(|file| {
+                file.diff
+                    .read(cx)
+                    .working()
+                    .read(cx)
+                    .buffer()
+                    .read(cx)
+                    .is_dirty()
+            });
+            if working_is_dirty && !diff.display_expanded.iter().any(|&expanded| expanded) {
+                // 折叠态组合文档的 excerpt 是用户当前正在编辑的稳定窗口。
+                // 没有展开 hunk 时只更新 BufferDiff 快照，等保存/重新注入后再提交新的窗口；
+                // 展开态则必须跟随新的 working 快照重物化，保证可见 hunk 与正文一致。
+                return;
+            }
         }
         for index in 0..self.diffs.len() {
-            if self.diff_pending_expansion_migrations[index].is_none()
+            if self.diffs[index].pending_expansion_migration.is_none()
                 || !self.diffs[index]
                     .diff
                     .read(cx)
@@ -794,7 +750,8 @@ impl MultiBuffer {
             {
                 continue;
             }
-            let pending = self.diff_pending_expansion_migrations[index]
+            let pending = self.diffs[index]
+                .pending_expansion_migration
                 .take()
                 .expect("已检查 pending expansion migration 存在");
             let new_hunks = resolve_file_hunks(&self.diffs[index], cx);
@@ -805,29 +762,31 @@ impl MultiBuffer {
                 &mut self.diffs[index].expansion,
             );
         }
-        let (calculated_prefix, materialized, prefix_changed) = {
+        let (calculated_prefix, materialized, any_materialized, prefix_changed) = {
             let calculated_prefix = self
                 .diffs
                 .iter()
                 .take_while(|file| file.diff.read(cx).is_current_version_calculated(cx))
                 .count();
             let materialized = self.diff_materialized_files.min(self.diffs.len());
+            let any_materialized = self.diffs[..materialized]
+                .iter()
+                .any(|file| file.revision.is_some());
             let prefix_changed = self.diff_materialized_files > self.diffs.len()
-                || self.diff_display_revisions.is_empty()
-                || !self.diffs[..materialized]
+                || !any_materialized
+                || self.diffs[..materialized]
                     .iter()
-                    .zip(self.diff_display_revisions.iter())
-                    .all(|(file, previous)| {
-                        file.diff.entity_id() == previous.0
-                            && file.diff.read(cx).revision() == previous.1
-                    });
-            (calculated_prefix, materialized, prefix_changed)
+                    .any(|file| file.revision != Some(file.diff.read(cx).revision()));
+            (
+                calculated_prefix,
+                materialized,
+                any_materialized,
+                prefix_changed,
+            )
         };
         if prefix_changed {
             // 尚无任何已物化文件（首个 diff 结果到达）或文件集合与已物化前缀不一致时整体重建。
-            if self.diff_display_revisions.is_empty()
-                || self.diff_materialized_files > self.diffs.len()
-            {
+            if !any_materialized || self.diff_materialized_files > self.diffs.len() {
                 self.rebuild_diff_projection(cx);
                 return;
             }
@@ -835,12 +794,7 @@ impl MultiBuffer {
             // 未变化的路径其组合坐标与展开状态保持不变。
             let changed = (0..materialized)
                 .filter(|&index| {
-                    self.diff_display_revisions
-                        .get(index)
-                        .is_none_or(|(entity_id, revision)| {
-                            self.diffs[index].diff.entity_id() != *entity_id
-                                || self.diffs[index].diff.read(cx).revision() != *revision
-                        })
+                    self.diffs[index].revision != Some(self.diffs[index].diff.read(cx).revision())
                 })
                 .collect::<Vec<_>>();
             for index in changed {
@@ -863,31 +817,24 @@ impl MultiBuffer {
         if self.diff.is_none() {
             return self.set_diff_files(files, cx);
         }
-        let file_count = files.len();
         let next_files: Vec<DiffState> = files
             .into_iter()
-            .map(|file| DiffState {
-                diff: file.diff,
-                display_path: PathKey::new(file.display_path),
-                context_lines: file.context_lines,
-                show_file_header: file.show_file_header,
-                expansion: DiffExpansionState::default(),
-                materialized: Vec::new(),
+            .map(|file| {
+                let diff = file.diff;
+                let subscription = DiffState::subscribe(&diff, cx);
+                DiffState {
+                    diff,
+                    display_path: PathKey::new(file.display_path),
+                    context_lines: file.context_lines,
+                    show_file_header: file.show_file_header,
+                    expansion: DiffExpansionState::default(),
+                    _subscription: subscription,
+                    revision: None,
+                    pending_expansion_migration: None,
+                }
             })
             .collect();
-        let subscriptions = next_files
-            .iter()
-            .map(|file| {
-                cx.subscribe(&file.diff, |this, _, event, cx| {
-                    let BufferDiffEvent::DiffChanged { refresh } = event;
-                    this.diff_changed(*refresh, cx);
-                })
-            })
-            .collect::<Vec<_>>();
-        self.diff_subscriptions.extend(subscriptions);
         self.diffs.extend(next_files);
-        self.diff_pending_expansion_migrations
-            .extend((0..file_count).map(|_| None));
         let (from, to) = {
             let from = self.diff_materialized_files;
             let to = self
@@ -908,18 +855,9 @@ impl MultiBuffer {
         let base_excerpt_count = mapping_count(&self.state.diff_transforms);
         let expanded_by_default = self.diff_expanded_by_default;
         let mut excerpts = Vec::new();
-        let mut materialized = Vec::new();
         {
             for index in from..to {
-                materialize_file(
-                    index,
-                    &self.diffs[index],
-                    &self.diffs[index].expansion,
-                    cx,
-                    expanded_by_default,
-                    &mut excerpts,
-                    &mut materialized,
-                );
+                materialize_file(&self.diffs[index], cx, expanded_by_default, &mut excerpts);
             }
         }
         let expected_excerpt_count = excerpts.len();
@@ -929,24 +867,11 @@ impl MultiBuffer {
             base_excerpt_count + expected_excerpt_count,
             "追加 diff 物化必须全部建立组合映射"
         );
-        let display = self.derive_diff_display(materialized.iter());
-        for hunk in materialized {
-            self.diffs[hunk.source.file_index].materialized.push(hunk);
+        for index in from..to {
+            self.diffs[index].revision = Some(self.diffs[index].diff.read(cx).revision());
         }
-        let diff = self.diff.as_mut().expect("追加物化前 diff 状态必须存在");
-        diff.display_hunks.extend(display.hunks);
-        diff.display_old_ranges.extend(display.old_ranges);
-        diff.display_sources.extend(display.sources);
-        diff.display_expanded.extend(display.expanded);
-        diff.display_word_diffs.extend(display.word_diffs);
-        let revisions = self.diffs[from..to]
-            .iter()
-            .map(|file| (file.diff.entity_id(), file.diff.read(cx).revision()))
-            .collect::<Vec<_>>();
-        self.diff_display_revisions.truncate(from);
-        self.diff_display_revisions.extend(revisions);
         self.diff_materialized_files = to;
-        cx.notify();
+        self.refresh_diff_display(cx);
     }
 
     /// 原地重物化单个文件，只替换其路径的 excerpts，其余路径保持不变。
@@ -961,18 +886,9 @@ impl MultiBuffer {
 
         let expanded_by_default = self.diff_expanded_by_default;
         let mut excerpts = Vec::new();
-        let mut materialized = Vec::new();
         {
             let file = &self.diffs[file_index];
-            materialize_file(
-                file_index,
-                file,
-                &file.expansion,
-                cx,
-                expanded_by_default,
-                &mut excerpts,
-                &mut materialized,
-            );
+            materialize_file(file, cx, expanded_by_default, &mut excerpts);
         }
         // 映射树按源路径排序，显示路径可能被裁剪为相对路径。
         let path = PathKey::new(
@@ -991,61 +907,38 @@ impl MultiBuffer {
         } else {
             self.set_excerpts_for_path(excerpts, cx);
         }
-        self.diffs[file_index].materialized = materialized;
-        self.diff_display_revisions[file_index] = (
-            self.diffs[file_index].diff.entity_id(),
-            self.diffs[file_index].diff.read(cx).revision(),
-        );
-        let display =
-            self.derive_diff_display(self.diffs.iter().flat_map(|file| file.materialized.iter()));
-        let diff = self.diff.as_mut().expect("已确认 diff 投影存在");
-        diff.display_hunks = display.hunks;
-        diff.display_old_ranges = display.old_ranges;
-        diff.display_sources = display.sources;
-        diff.display_expanded = display.expanded;
-        diff.display_word_diffs = display.word_diffs;
-        cx.notify();
+        self.diffs[file_index].revision = Some(self.diffs[file_index].diff.read(cx).revision());
+        self.refresh_diff_display(cx);
     }
 
     /// 按展开状态与显示策略重建可见 excerpts，并派生显示坐标 hunks。
     ///
-    /// 返回本次重建的投影坐标重映射：
-    /// 投影版本未变时恒等，变化时携带重建前的投影→源映射，供调用方把重建前的光标经源忠实落到重建后投影（reload 会重裁剪并重置版本，裸偏移不再有效）。
-    pub(crate) fn rebuild_diff_projection(&mut self, cx: &mut Context<Self>) -> ProjectionRemap {
+    /// 返回是否推进了投影版本；选区与滚动位置由源 Anchor 在当前快照上重新解析，不经过重建映射。
+    pub(crate) fn rebuild_diff_projection(&mut self, cx: &mut Context<Self>) -> bool {
         let before = self.projection_trees();
         self.rebuild_diff_projection_from(before, None, cx)
     }
 
     /// 按调用方在 hunk 生命周期变更前冻结的投影树重建 diff 投影。
     ///
-    /// 编辑坐标恢复属于投影事务，而非 hunk 刷新：调用方在源文本已更新、hunk
-    /// 尚未重物化时保存旧投影树，随后无论 hunk 怎样裁剪或失效，都用该树推导增量范围并解析编辑后的选区。
+    /// 冻结旧投影树用于推导本次结构变化的增量范围（对齐 excerpt 边界），不物化旧输出文本。
     /// 外部整体重载会先替换源快照，再重建 excerpts；
     /// 旧投影树必须在源快照替换前冻结，不能从更新后的源映射重新拼出旧帧。
-    /// 结构变化范围直接由前后两棵投影树的游标推导，不物化旧输出文本。
+    /// 返回是否推进了投影版本。
     pub(crate) fn rebuild_diff_projection_from(
         &mut self,
-        before: (SumTree<crate::Excerpt>, SumTree<DiffTransform>),
+        before: (SumTree<Excerpt>, SumTree<DiffTransform>),
         source_change: Option<&zcv_text::TextChangeBatch>,
         cx: &mut Context<Self>,
-    ) -> ProjectionRemap {
+    ) -> bool {
         if self.diff.is_none() {
-            return ProjectionRemap::identity();
+            return false;
         }
         let old_version = self.state.projection_version;
         let expanded_by_default = self.diff_expanded_by_default;
         let mut excerpts = Vec::new();
-        let mut materialized_hunks = Vec::new();
-        for (file_index, file) in self.diffs.iter().enumerate() {
-            materialize_file(
-                file_index,
-                file,
-                &file.expansion,
-                cx,
-                expanded_by_default,
-                &mut excerpts,
-                &mut materialized_hunks,
-            );
+        for file in &self.diffs {
+            materialize_file(file, cx, expanded_by_default, &mut excerpts);
         }
         let expected_excerpt_count = excerpts.len();
         self.set_excerpts_internal(excerpts, cx);
@@ -1059,116 +952,112 @@ impl MultiBuffer {
         } else {
             self.publish_projection_edit(&before, old_version);
         }
-        let display = self.derive_diff_display(materialized_hunks.iter());
         for file in &mut self.diffs {
-            file.materialized.clear();
+            file.revision = Some(file.diff.read(cx).revision());
         }
-        for hunk in materialized_hunks {
-            self.diffs[hunk.source.file_index].materialized.push(hunk);
-        }
-        let new_version = self.snapshot(cx).version();
-        let diff = self.diff.as_mut().expect("投影重建前 diff 状态必须存在");
-        diff.display_hunks = display.hunks;
-        diff.display_old_ranges = display.old_ranges;
-        diff.display_sources = display.sources;
-        diff.display_expanded = display.expanded;
-        diff.display_word_diffs = display.word_diffs;
-        self.diff_display_revisions = self
-            .diffs
-            .iter()
-            .map(|file| (file.diff.entity_id(), file.diff.read(cx).revision()))
-            .collect();
         // 整体重建会物化全部文件（未就绪文件按空 hunk 投影），因此前缀直接取文件总数。
         self.diff_materialized_files = self.diffs.len();
-        cx.notify();
-        if new_version != old_version {
-            ProjectionRemap::rebuilt(before.0, before.1)
-        } else {
-            ProjectionRemap::identity()
-        }
+        self.refresh_diff_display(cx);
+        let new_version = self.snapshot(cx).version();
+        new_version != old_version
     }
 
-    /// 根据稳定源身份定位 excerpt 在当前组合文档中的真实逻辑行范围。
-    /// 空片段仍对应编辑器中的一个空逻辑行。
-    fn mapping_for_excerpt_anchor(&self, anchor: ExcerptAnchor) -> Option<crate::ExcerptMapping> {
+    /// 单次 cursor 遍历输出变换树，从节点携带的 hunk 身份派生显示坐标。
+    ///
+    /// 输出范围由游标位置推导，不再为每个 hunk 反查 excerpt，也不保留源坐标副本。
+    fn derive_diff_display(&self) -> DiffDisplay {
+        let mut index_of: HashMap<(gpui::EntityId, Option<usize>), usize> = HashMap::new();
+        let mut accums: Vec<HunkAccum> = Vec::new();
         let mut cursor = MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
-        cursor.seek_output(ByteOffset::ZERO, sum_tree::Bias::Right);
+        // 用 Left 偏置从第一个节点开始遍历：整份删除的零长度边界节点也必须被访问。
+        cursor.seek_output(ByteOffset::ZERO, sum_tree::Bias::Left);
         while let Some((excerpt, _)) = cursor.item() {
-            if excerpt.source_id == Some(anchor.source_id)
-                && excerpt.source_range.range() == anchor.source_range
-            {
-                return cursor.mapping();
+            if !excerpt.diff_hunks.is_empty() {
+                let start = cursor.start().clone();
+                let content_lines = excerpt.text_summary.lines + excerpt.adds_newline as usize;
+                let range = start.lines..(start.lines + content_lines).max(start.lines + 1);
+                for info in &excerpt.diff_hunks {
+                    let key = (info.working, info.hunk_index);
+                    let index = *index_of.entry(key).or_insert_with(|| {
+                        accums.push(HunkAccum::new(info));
+                        accums.len() - 1
+                    });
+                    let accum = &mut accums[index];
+                    accum.expanded = info.expanded;
+                    match info.side {
+                        DiffTransformHunkSide::Content => {
+                            accum.content_range = Some(range.clone());
+                            let output_start = start.bytes;
+                            let source_start = excerpt.source_range.start().get();
+                            accum.new_word_diffs = info
+                                .buffer_word_diffs
+                                .iter()
+                                .map(|diff| {
+                                    let start =
+                                        output_start + diff.start.offset().get() - source_start;
+                                    let end = output_start + diff.end.offset().get() - source_start;
+                                    (DiffHunkKind::Added, start..end)
+                                })
+                                .collect();
+                        }
+                        DiffTransformHunkSide::Old => {
+                            accum.old_range = Some(range.clone());
+                            if info.expanded {
+                                let output_start = start.bytes;
+                                let source_start = excerpt.source_range.start().get();
+                                accum.old_word_diffs = info
+                                    .base_word_diffs
+                                    .iter()
+                                    .map(|diff| {
+                                        let start =
+                                            output_start + info.base_byte_start + diff.start
+                                                - source_start;
+                                        let end = output_start + info.base_byte_start + diff.end
+                                            - source_start;
+                                        (DiffHunkKind::Deleted, start..end)
+                                    })
+                                    .collect();
+                            }
+                        }
+                        DiffTransformHunkSide::BoundaryStart => {
+                            accum.boundary_start = Some(start.lines);
+                        }
+                        DiffTransformHunkSide::BoundaryEnd => {
+                            accum.boundary_end = Some(start.lines + content_lines);
+                        }
+                    }
+                }
             }
             cursor.next();
         }
-        None
-    }
 
-    fn diff_excerpt_output_lines(&self, anchor: ExcerptAnchor) -> Range<usize> {
-        let mapping = self
-            .mapping_for_excerpt_anchor(anchor)
-            .expect("diff excerpt 必须存在对应组合映射");
-        mapping.output_start_line..mapping.output_end_line.max(mapping.output_start_line + 1)
-    }
-
-    pub(crate) fn map_materialized_source_anchors(
-        &mut self,
-        source_id: gpui::EntityId,
-        position_map: &PositionMap,
-    ) {
-        for file in &mut self.diffs {
-            for hunk in &mut file.materialized {
-                if let Some(anchor) = &mut hunk.old_excerpt {
-                    anchor.map_through_source_change(source_id, position_map);
-                }
-                match &mut hunk.new_location {
-                    MaterializedHunkLocation::Excerpt(anchor) => {
-                        anchor.map_through_source_change(source_id, position_map);
-                    }
-                    MaterializedHunkLocation::Boundary(boundary) => {
-                        boundary.map_through_source_change(source_id, position_map);
-                    }
-                }
-            }
-        }
-    }
-
-    /// 从已物化的 hunk 身份与当前组合映射派生显示坐标。
-    ///
-    /// 与 `set_excerpts` 解耦：编辑只增量更新组合映射，因此可只重算坐标而不重新物化 excerpt。
-    fn derive_diff_display<'a>(
-        &self,
-        materialized: impl IntoIterator<Item = &'a MaterializedHunk>,
-    ) -> DiffDisplay {
-        let materialized = materialized.into_iter().collect::<Vec<_>>();
-        let mut hunks = Vec::with_capacity(materialized.len());
-        let mut old_ranges = Vec::with_capacity(materialized.len());
-        let mut sources = Vec::with_capacity(materialized.len());
-        let mut expanded = Vec::with_capacity(materialized.len());
-        let mut word_diffs = Vec::with_capacity(materialized.len());
-        for hunk in materialized {
-            let old_display = hunk
-                .old_excerpt
-                .map(|excerpt| self.diff_excerpt_output_lines(excerpt));
-            word_diffs.push(self.combined_word_diffs(hunk));
-            let new_range = match hunk.new_location {
-                MaterializedHunkLocation::Excerpt(excerpt) => {
-                    self.diff_excerpt_output_lines(excerpt)
-                }
-                MaterializedHunkLocation::Boundary(boundary) => {
-                    let line = self.diff_excerpt_boundary_line(boundary);
-                    line..line
-                }
-            };
+        let mut hunks = Vec::with_capacity(accums.len());
+        let mut old_ranges = Vec::with_capacity(accums.len());
+        let mut sources = Vec::with_capacity(accums.len());
+        let mut expanded = Vec::with_capacity(accums.len());
+        let mut word_diffs = Vec::with_capacity(accums.len());
+        for accum in accums {
+            let range = accum
+                .content_range
+                .or_else(|| accum.old_range.as_ref().map(|range| range.end..range.end))
+                .or_else(|| accum.boundary_start.map(|line| line..line))
+                .or_else(|| accum.boundary_end.map(|line| line..line))
+                .expect("diff hunk 必须挂到输出变换节点");
+            let mut combined = accum.old_word_diffs;
+            combined.extend(accum.new_word_diffs);
             hunks.push(DisplayHunk {
-                range: new_range,
-                old_range: hunk.old_range.clone(),
-                kind: hunk.kind,
-                staging: hunk.staging,
+                range,
+                old_range: accum.base_lines,
+                kind: accum.kind,
+                staging: accum.staging,
             });
-            old_ranges.push(old_display);
-            sources.push(hunk.source.clone());
-            expanded.push(hunk.expanded);
+            old_ranges.push(accum.old_range);
+            sources.push(DisplayHunkSource {
+                working: accum.working,
+                hunk_index: accum.hunk_index,
+            });
+            expanded.push(accum.expanded);
+            word_diffs.push(combined);
         }
         DiffDisplay {
             hunks,
@@ -1181,17 +1070,13 @@ impl MultiBuffer {
 
     /// 编辑后按当前组合映射重算显示坐标，不重新物化 excerpt。
     ///
-    /// `apply_source_change` 增量更新了 excerpt 映射；
+    /// apply_source_change 增量更新了 excerpt 映射；
     /// 显示坐标必须同步刷新，否则版本门控会让全部 diff 高亮消失，直到下一次整体重建。
     pub(crate) fn refresh_diff_display(&mut self, cx: &mut Context<Self>) {
         if self.diff.is_none() {
             return;
         }
-        if self.diffs.iter().all(|file| file.materialized.is_empty()) {
-            return;
-        }
-        let display =
-            self.derive_diff_display(self.diffs.iter().flat_map(|file| file.materialized.iter()));
+        let display = self.derive_diff_display();
         let diff = self.diff.as_mut().expect("已确认 diff 投影存在");
         diff.display_hunks = display.hunks;
         diff.display_old_ranges = display.old_ranges;
@@ -1199,77 +1084,6 @@ impl MultiBuffer {
         diff.display_expanded = display.expanded;
         diff.display_word_diffs = display.word_diffs;
         cx.notify();
-    }
-
-    /// 一个物化 hunk 的词级片段在组合文档中的字节范围。
-    ///
-    /// 旧侧 word diff 相对 base 字节范围起点，新侧 anchor 归于 working 源；
-    /// 两者都经各自 excerpt 的源码→组合偏移映射换算到组合文档坐标。
-    fn combined_word_diffs(&self, hunk: &MaterializedHunk) -> Vec<(DiffHunkKind, Range<usize>)> {
-        let mut word_diffs = Vec::new();
-        // 只有展开的旧侧才真正物化 base 行；折叠态是 working 坐标的占位片段，不能套用 base 偏移。
-        if hunk.expanded
-            && let Some(excerpt) = hunk.old_excerpt
-        {
-            let mapping = self
-                .mapping_for_excerpt_anchor(excerpt)
-                .expect("旧侧 diff excerpt 必须存在对应组合映射");
-            let output_start = mapping.output_range.start().get();
-            let source_start = mapping.source_range.start().get();
-            word_diffs.extend(hunk.base_word_diffs.iter().map(|diff| {
-                let start = output_start + hunk.base_byte_start + diff.start - source_start;
-                let end = output_start + hunk.base_byte_start + diff.end - source_start;
-                (DiffHunkKind::Deleted, start..end)
-            }));
-        }
-        if let MaterializedHunkLocation::Excerpt(excerpt) = &hunk.new_location {
-            let mapping = self
-                .mapping_for_excerpt_anchor(*excerpt)
-                .expect("新侧 diff excerpt 必须存在对应组合映射");
-            let output_start = mapping.output_range.start().get();
-            let source_start = mapping.source_range.start().get();
-            word_diffs.extend(hunk.buffer_word_diffs.iter().map(|diff| {
-                let start = output_start + diff.start.offset().get() - source_start;
-                let end = output_start + diff.end.offset().get() - source_start;
-                (DiffHunkKind::Added, start..end)
-            }));
-        }
-        word_diffs
-    }
-
-    /// 根据源文档边界定位当前组合文档中的逻辑行。
-    fn diff_excerpt_boundary_line(&self, boundary: SourceBoundary) -> usize {
-        let mut cursor = MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
-        cursor.seek_output(ByteOffset::ZERO, sum_tree::Bias::Right);
-        let mut previous_end = None;
-        while let Some((excerpt, _)) = cursor.item() {
-            if excerpt.source_id == Some(boundary.source_id) {
-                let start = excerpt.source_range.start();
-                let end = excerpt.source_range.end();
-                if boundary.offset < start {
-                    return cursor.start().lines;
-                }
-                if boundary.offset == start || (start == end && boundary.offset == end) {
-                    return cursor.start().lines;
-                }
-                if boundary.offset < end {
-                    let source_line = self.state.sources[excerpt.source_index]
-                        .text
-                        .byte_to_line(boundary.offset)
-                        .map_or(excerpt.source_start_line, |line| line.get());
-                    return cursor.start().lines
-                        + source_line.saturating_sub(excerpt.source_start_line);
-                }
-                if boundary.offset == end {
-                    previous_end = Some(
-                        (cursor.start().lines + excerpt.text_summary.lines)
-                            .max(cursor.start().lines + 1),
-                    );
-                }
-            }
-            cursor.next();
-        }
-        previous_end.unwrap_or(0)
     }
 }
 
@@ -1412,15 +1226,15 @@ fn migrate_expansion_state(
     }
 }
 
-/// 把单个文件的可见行物化为 excerpts，并派生显示坐标 hunks。
+/// 把单个文件的可见行物化为 excerpts，并在 excerpt 上标注 hunk 身份。
+///
+/// hunk 身份随 excerpt 进入输入树、再派生到输出变换树；输出行范围因此无需在物化期存储，
+/// 也无需在源编辑后手工推进第二份源坐标。
 fn materialize_file(
-    file_index: usize,
     file: &DiffState,
-    expansion: &DiffExpansionState,
     cx: &App,
     expanded_by_default: bool,
     excerpts: &mut Vec<ExcerptRange>,
-    materialized_hunks: &mut Vec<MaterializedHunk>,
 ) {
     let resolved = resolve_file_hunks(file, cx);
     let working = file.diff.read(cx).working().clone();
@@ -1431,6 +1245,8 @@ fn materialize_file(
     let display_path = file.display_path.clone();
     let context_lines = file.context_lines;
     let show_file_header = file.show_file_header;
+    let working_id = working.entity_id();
+    let expansion = &file.expansion;
     let mut materializer = ExcerptMaterializer {
         excerpts,
         display_path: display_path.as_path(),
@@ -1438,43 +1254,39 @@ fn materialize_file(
 
     // 整文件新增：整个新侧文件作为 Added 显示（无旧侧）。
     if is_created && resolved.is_empty() {
-        let new_excerpt = materializer
-            .push(
-                0..line_count,
-                &working_text,
-                &working,
-                Some(ExcerptDiffKind::Added),
-                show_file_header,
-                false,
-            )
-            .expect("整文件新增投影必须生成 excerpt");
-        materialized_hunks.push(MaterializedHunk {
-            old_range: 0..0,
-            kind: DiffHunkKind::Added,
-            staging: DiffHunkStaging::NoStaging,
-            old_excerpt: None,
-            new_location: MaterializedHunkLocation::Excerpt(new_excerpt),
-            source: DisplayHunkSource {
-                file_index,
+        materializer.push(
+            0..line_count,
+            &working_text,
+            &working,
+            Some(ExcerptDiffKind::Added),
+            show_file_header,
+            false,
+            vec![DiffTransformHunkInfo {
+                working: working_id,
                 hunk_index: None,
-            },
-            expanded: true,
-            base_byte_start: 0,
-            buffer_word_diffs: Vec::new(),
-            base_word_diffs: Vec::new(),
-        });
+                side: DiffTransformHunkSide::Content,
+                kind: DiffHunkKind::Added,
+                staging: DiffHunkStaging::NoStaging,
+                base_lines: 0..0,
+                base_byte_start: 0,
+                buffer_word_diffs: Vec::new(),
+                base_word_diffs: Vec::new(),
+                expanded: true,
+            }],
+        );
         return;
     }
     // 无行级差异：整文件模式显示整个新侧文件（空文件保留占位行），裁剪模式不显示。
     if resolved.is_empty() {
         if context_lines.is_none() {
-            let _ = materializer.push(
+            materializer.push(
                 0..line_count,
                 &working_text,
                 &working,
                 None,
                 show_file_header,
                 true,
+                Vec::new(),
             );
         }
         return;
@@ -1488,108 +1300,138 @@ fn materialize_file(
         let mut current = context_range.start;
         // 文件标题块只在宿主声明时创建（ProjectDiffView 多文件投影；普通编辑器整文件不创建）。
         let mut starts_new_excerpt = show_file_header;
+        // 无旧侧物化的纯删除需要一个相邻内容节点承载边界；挂到后继内容起点，无后继时挂到前驱终点。
+        let mut pending_boundary: Option<DiffTransformHunkInfo> = None;
         for (hunk_index, hunk) in resolved
             .iter()
             .enumerate()
             .filter(|(_, hunk)| hunk_is_inside_excerpt(hunk, &context_range))
         {
             if current < hunk.buffer_lines.start {
-                let _ = materializer.push(
+                let boundary = pending_boundary.take().into_iter().collect();
+                materializer.push(
                     current..hunk.buffer_lines.start,
                     &working_text,
                     &working,
                     None,
                     starts_new_excerpt,
                     false,
+                    boundary,
                 );
                 starts_new_excerpt = false;
             }
+            let expanded = expansion.is_expanded(hunk.kind, &hunk.base_lines, expanded_by_default);
             // 旧侧：展开时物化完整旧行；裁剪模式折叠时用空占位行标记删除点。
-            let old_display = if !hunk.base_lines.is_empty() {
-                if expansion.is_expanded(hunk.kind, &hunk.base_lines, expanded_by_default)
-                    && let Some(base) = base_source.as_ref()
-                {
+            let mut old_materialized = false;
+            if !hunk.base_lines.is_empty() {
+                if expanded && let Some(base) = base_source.as_ref() {
                     let base_text = base.read(cx).text_snapshot(cx);
-                    let old_excerpt = materializer
-                        .push(
-                            hunk.base_lines.clone(),
-                            &base_text,
-                            base,
-                            Some(ExcerptDiffKind::Deleted),
-                            starts_new_excerpt,
-                            false,
-                        )
-                        .expect("展开的旧侧投影必须生成 excerpt");
+                    // 边界标记的是 working 侧位置：旧侧是 base 坐标，不承载待挂载边界。
+                    let hunks = vec![hunk_info(
+                        working_id,
+                        hunk_index,
+                        DiffTransformHunkSide::Old,
+                        hunk,
+                        expanded,
+                    )];
+                    materializer.push(
+                        hunk.base_lines.clone(),
+                        &base_text,
+                        base,
+                        Some(ExcerptDiffKind::Deleted),
+                        starts_new_excerpt,
+                        false,
+                        hunks,
+                    );
+                    old_materialized = true;
                     starts_new_excerpt = false;
-                    Some(old_excerpt)
                 } else if context_lines.is_some() {
                     // 折叠占位行：空 Deleted 片段（组合文档为它保留一个显示行）。
                     let base = base_source.as_ref().expect("删除点占位需要 base 来源");
                     let base_text = base.read(cx).text_snapshot(cx);
-                    let old_excerpt = materializer
-                        .push(
-                            hunk.base_lines.start..hunk.base_lines.start,
-                            &base_text,
-                            base,
-                            Some(ExcerptDiffKind::Deleted),
-                            starts_new_excerpt,
-                            true,
-                        )
-                        .expect("折叠的旧侧占位必须生成 excerpt");
-                    starts_new_excerpt = false;
-                    Some(old_excerpt)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            // 新侧：可编辑 excerpt；纯删除 hunk 用空范围锚定到删除点。
-            let new_location = if !hunk.buffer_lines.is_empty() {
-                let new_excerpt = materializer
-                    .push(
-                        hunk.buffer_lines.clone(),
-                        &working_text,
-                        &working,
-                        Some(ExcerptDiffKind::Added),
-                        starts_new_excerpt,
+                    let hunks = vec![hunk_info(
+                        working_id,
+                        hunk_index,
+                        DiffTransformHunkSide::Old,
+                        hunk,
                         false,
-                    )
-                    .expect("非空新侧投影必须生成 excerpt");
+                    )];
+                    materializer.push(
+                        hunk.base_lines.start..hunk.base_lines.start,
+                        &base_text,
+                        base,
+                        Some(ExcerptDiffKind::Deleted),
+                        starts_new_excerpt,
+                        true,
+                        hunks,
+                    );
+                    old_materialized = true;
+                    starts_new_excerpt = false;
+                }
+            }
+            // 新侧：可编辑 excerpt；纯删除 hunk 无新侧内容，由旧侧节点或相邻内容节点承载边界。
+            if !hunk.buffer_lines.is_empty() {
+                let mut hunks = pending_boundary.take().into_iter().collect::<Vec<_>>();
+                hunks.push(hunk_info(
+                    working_id,
+                    hunk_index,
+                    DiffTransformHunkSide::Content,
+                    hunk,
+                    expanded,
+                ));
+                materializer.push(
+                    hunk.buffer_lines.clone(),
+                    &working_text,
+                    &working,
+                    Some(ExcerptDiffKind::Added),
+                    starts_new_excerpt,
+                    false,
+                    hunks,
+                );
                 starts_new_excerpt = false;
-                MaterializedHunkLocation::Excerpt(new_excerpt)
-            } else {
-                MaterializedHunkLocation::Boundary(SourceBoundary {
-                    source_id: working.entity_id(),
-                    offset: hunk.buffer_range.start.offset(),
-                })
-            };
-            materialized_hunks.push(MaterializedHunk {
-                old_range: hunk.base_lines.clone(),
-                kind: hunk.kind,
-                staging: hunk.staging,
-                old_excerpt: old_display,
-                new_location,
-                source: DisplayHunkSource {
-                    file_index,
-                    hunk_index: Some(hunk_index),
-                },
-                expanded: expansion.is_expanded(hunk.kind, &hunk.base_lines, expanded_by_default),
-                base_byte_start: hunk.base_byte_start,
-                buffer_word_diffs: hunk.buffer_word_diffs.clone(),
-                base_word_diffs: hunk.base_word_diffs.clone(),
-            });
+            } else if !old_materialized {
+                pending_boundary = Some(hunk_info(
+                    working_id,
+                    hunk_index,
+                    DiffTransformHunkSide::BoundaryStart,
+                    hunk,
+                    expanded,
+                ));
+            }
             current = hunk.buffer_lines.end;
         }
         if current < context_range.end {
-            let _ = materializer.push(
+            let leftover = materializer.push(
                 current..context_range.end,
                 &working_text,
                 &working,
                 None,
                 starts_new_excerpt,
                 false,
+                pending_boundary.take().into_iter().collect(),
             );
+            // 片段被空行策略跳过时恢复边界，交给收尾逻辑挂到零长度节点。
+            pending_boundary = leftover.into_iter().next();
+        }
+        if let Some(mut info) = pending_boundary.take() {
+            // 文档末尾（或本投影范围末尾）的纯删除没有后继内容：挂到前驱内容节点的终点。
+            info.side = DiffTransformHunkSide::BoundaryEnd;
+            if materializer.excerpts.is_empty() {
+                // 整份工作区为空且没有任何内容节点：保留一个零长度工作区节点承载边界，
+                // 与无差异空文件的占位行语义一致；它不产生输出行，只为 hunk 提供节点。
+                materializer.push(
+                    0..line_count.max(1),
+                    &working_text,
+                    &working,
+                    None,
+                    show_file_header,
+                    true,
+                    Vec::new(),
+                );
+            }
+            if let Some(last) = materializer.excerpts.last_mut() {
+                last.diff_hunks.push(info);
+            }
         }
     }
 }

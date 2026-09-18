@@ -2288,6 +2288,38 @@ fn external_full_replacement_invalidates_stale_diff_hunks(cx: &mut TestAppContex
     });
 }
 
+/// 回归：工作区整份被删除且没有内容节点时，纯删除 hunk 仍必须挂到输出变换树并可见。
+#[gpui::test]
+fn fully_deleted_file_keeps_boundary_hunk(cx: &mut TestAppContext) {
+    let source = singleton("src/gone.rs", "", cx);
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![test_diff(source.clone(), "src/gone.rs", "removed\n")]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    cx.read_entity(&combined, |buffer, cx| {
+        assert_eq!(
+            buffer.diff_hunks().len(),
+            1,
+            "整份删除必须保留一个显示 hunk"
+        );
+        assert_eq!(buffer.diff_hunks()[0].kind, DiffHunkKind::Deleted);
+        assert_eq!(buffer.diff_hunks()[0].range, 0..0);
+        assert!(
+            buffer.diff_hunk_old_ranges()[0].is_none(),
+            "整文件模式折叠态不物化旧侧"
+        );
+        assert!(
+            buffer.buffer_diff_hunk_at(0, cx).is_some(),
+            "纯删除 hunk 必须能定位到源"
+        );
+    });
+}
+
 /// BufferDiff 不自行订阅源：working 文本变化由宿主（组合文档投影）驱动重算。
 #[gpui::test]
 fn host_drives_buffer_diff_recompute_from_source_edits(cx: &mut TestAppContext) {

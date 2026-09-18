@@ -49,6 +49,9 @@ pub struct ExcerptRange {
     editable: bool,
     starts_new_excerpt: bool,
     diff_kind: Option<ExcerptDiffKind>,
+    /// diff 投影物化时标注的 hunk 身份；普通 excerpt 为空。
+    /// 同一节点可同时承担「前驱纯删除的边界」与「自身内容 hunk」，因此按 hunk 顺序保存。
+    diff_hunks: Vec<DiffTransformHunkInfo>,
 }
 
 /// 组合投影片段在统一 diff 中承担的文本侧别。
@@ -72,6 +75,7 @@ impl ExcerptRange {
             editable: true,
             starts_new_excerpt: true,
             diff_kind: None,
+            diff_hunks: Vec::new(),
         }
     }
 
@@ -94,6 +98,12 @@ impl ExcerptRange {
 
     pub fn with_diff_kind(mut self, diff_kind: ExcerptDiffKind) -> Self {
         self.diff_kind = Some(diff_kind);
+        self
+    }
+
+    /// diff 投影物化时追加该片段承担的 hunk 身份；普通 excerpt 不携带。
+    pub(crate) fn with_diff_hunk(mut self, hunk: DiffTransformHunkInfo) -> Self {
+        self.diff_hunks.push(hunk);
         self
     }
 
@@ -184,37 +194,6 @@ impl MultiBufferAnchor {
     }
 }
 
-/// 一次组合投影重建造成的坐标重映射。
-///
-/// 把「重建前」的投影坐标经源忠实映射到重建后的当前投影坐标：
-/// 未触发重建时投影坐标连续，映射为恒等；
-/// 重建（reload 重裁剪）后同一源位置的投影偏移可能改变，必须经源解析——重建前的光标不能把裸偏移直接当作重建后投影坐标。
-/// 编辑落位与 diff 展开/折叠共用同一映射：结构刷新不改变源，光标同样经源保持逻辑位置。
-#[derive(Clone, Debug)]
-pub struct ProjectionRemap {
-    /// 重建前的输入 excerpts 与输出变换快照；`None` 表示恒等。
-    before: Option<(SumTree<Excerpt>, SumTree<DiffTransform>)>,
-}
-
-impl ProjectionRemap {
-    /// 恒等重映射：投影坐标连续，无需经源解析。
-    pub fn identity() -> Self {
-        Self { before: None }
-    }
-
-    /// 一次真实重建：`before` 是重建前的投影→源映射快照。
-    pub(crate) fn rebuilt(excerpts: SumTree<Excerpt>, transforms: SumTree<DiffTransform>) -> Self {
-        Self {
-            before: Some((excerpts, transforms)),
-        }
-    }
-
-    /// 是否为恒等映射（本次未触发投影重建）。
-    pub fn is_identity(&self) -> bool {
-        self.before.is_none()
-    }
-}
-
 /// 一个源文档的去重共享状态：文本、语法与 capture 映射各保存一份，
 /// 该源的所有 excerpt 映射只引用 `source_index`，避免同一文件大量搜索片段重复克隆。
 #[derive(Clone, Debug)]
@@ -232,6 +211,37 @@ struct ExcerptSourceSnapshot {
     text: Snapshot,
     syntax: SyntaxSnapshot,
     capture_map: Arc<[u32]>,
+}
+
+/// 输出变换节点携带的 diff hunk 身份与显示元数据。
+///
+/// 身份绑定 working 源与 `BufferDiffSnapshot::visible_hunks()` 下标，不随组合文档序号或源范围变化。
+/// 输出行/字节范围由 `derive_diff_display` 的游标推导；节点不保存绝对输出坐标，也不保存源坐标副本。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DiffTransformHunkInfo {
+    working: gpui::EntityId,
+    hunk_index: Option<usize>,
+    side: DiffTransformHunkSide,
+    kind: DiffHunkKind,
+    staging: DiffHunkStaging,
+    base_lines: Range<usize>,
+    base_byte_start: usize,
+    buffer_word_diffs: Vec<Range<Anchor>>,
+    base_word_diffs: Vec<Range<usize>>,
+    expanded: bool,
+}
+
+/// 一个 hunk 在输出变换树中的节点角色。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DiffTransformHunkSide {
+    /// 新侧内容节点；hunk 主范围取本节点内容行。
+    Content,
+    /// 旧侧删除节点；提供旧侧显示范围。
+    Old,
+    /// 无旧侧物化的纯删除挂到后继内容节点；主范围取本节点起点。
+    BoundaryStart,
+    /// 无后继内容节点时挂到前驱内容节点；主范围取本节点终点。
+    BoundaryEnd,
 }
 
 /// 输入侧 excerpts 树的 item：位置无关的源片段数据。
@@ -260,6 +270,8 @@ struct Excerpt {
     editable: bool,
     starts_new_excerpt: bool,
     diff_kind: Option<ExcerptDiffKind>,
+    /// diff 投影物化时标注的 hunk 身份；普通 excerpt 为空。
+    diff_hunks: Vec<DiffTransformHunkInfo>,
 }
 
 /// excerpt 在源文档中的锚点范围。
@@ -351,8 +363,6 @@ struct ExcerptMapping {
     /// 在组合文档中的顺序位置（由树序推导，不存储在 item 上）。
     excerpt_index: usize,
     output_range: MultiBufferRange,
-    output_start_line: usize,
-    output_end_line: usize,
 }
 
 impl std::ops::Deref for ExcerptMapping {
@@ -462,8 +472,6 @@ impl Excerpt {
                 MultiBufferOffset::new(at.bytes + len),
             )
             .expect("组合片段输出范围必须正序"),
-            output_start_line: at.lines,
-            output_end_line: at.lines + self.text_summary.lines + separator,
         }
     }
 }
@@ -1015,6 +1023,7 @@ fn projection_items_equal(
         && old_excerpt.editable == new_excerpt.editable
         && old_excerpt.starts_new_excerpt == new_excerpt.starts_new_excerpt
         && old_excerpt.diff_kind == new_excerpt.diff_kind
+        && old_excerpt.diff_hunks == new_excerpt.diff_hunks
         && matches!(
             (old_transform, new_transform),
             (
@@ -1514,7 +1523,8 @@ pub struct MultiBufferSnapshot {
     /// 按源去重的源快照表（映射经 `source_index` 引用）。
     ///
     /// 文本与语法属于同一源快照；
-    /// 语法重解析时通过 `metadata_version` 推进整帧，不允许显示层继续持有旧源快照。
+    /// `metadata_version` 只随非文本状态（语法安装、元数据变化）推进，
+    /// 纯文本编辑由 `projection_version` 表达；显示层据此替换只读附属数据而不重建显示拓扑。
     excerpt_sources: Arc<[ExcerptSourceSnapshot]>,
     capture_names: Arc<[Arc<str>]>,
     metadata_version: u64,
@@ -2762,6 +2772,7 @@ impl From<Snapshot> for MultiBufferSnapshot {
             editable: true,
             starts_new_excerpt: false,
             diff_kind: None,
+            diff_hunks: Vec::new(),
         };
         let diff_transforms = SumTree::from_iter([DiffTransform::from_excerpt(&excerpt)], ());
         Self {
@@ -2798,6 +2809,8 @@ struct ExcerptState {
     path_key_indices: HashMap<PathKey, PathKeyIndex>,
     capture_names: Arc<[Arc<str>]>,
     projection_version: BufferVersion,
+    /// 非文本状态（语法安装、捕获表等）版本；纯文本编辑不推进它。
+    metadata_epoch: u64,
     projection_changes: ProjectionChangeTopic,
     next_transaction_id: TransactionId,
     active_transaction: Option<TransactionId>,
@@ -2843,12 +2856,6 @@ pub struct MultiBuffer {
     diff_expanded_by_default: bool,
     /// 已物化进组合文档的前导文件数量（diff 以路径顺序登记，就绪前缀之外的文件尚未物化）。
     diff_materialized_files: usize,
-    /// 对每个 BufferDiff 的订阅：diff 结果或 pending 变化时重新物化显示。
-    diff_subscriptions: Vec<Subscription>,
-    /// 上次物化时各文件的 BufferDiff 身份与版本；实体替换或版本推进都视为缓存过期。
-    diff_display_revisions: Vec<(gpui::EntityId, u64)>,
-    /// 替换 base 后，新 BufferDiff 的首次后台结果返回前暂存的展开状态迁移来源。
-    diff_pending_expansion_migrations: Vec<Option<diff_projection::PendingExpansionMigration>>,
     /// 外部源变更（共享 Buffer 的其他 Editor、直接编辑源）留下的源 PositionMap。
     ///
     /// 源锚点选区是单一数据源：只有源自身变更才需要推进源锚点，投影重建不经过这里。
@@ -2923,9 +2930,6 @@ impl MultiBuffer {
             diff: None,
             diff_expanded_by_default: false,
             diff_materialized_files: 0,
-            diff_subscriptions: Vec::new(),
-            diff_display_revisions: Vec::new(),
-            diff_pending_expansion_migrations: Vec::new(),
             pending_source_remaps: Vec::new(),
             snapshot_epoch: 0,
             snapshot_cache: std::cell::RefCell::new(None),
@@ -2945,6 +2949,7 @@ impl MultiBuffer {
             path_key_indices: HashMap::new(),
             capture_names: Arc::from([]),
             projection_version: BufferVersion::INITIAL,
+            metadata_epoch: 0,
             projection_changes: ProjectionChangeTopic::default(),
             next_transaction_id: TransactionId::INITIAL,
             active_transaction: None,
@@ -3144,6 +3149,8 @@ impl MultiBuffer {
                     }
                     LanguageBufferEvent::Reparsed => this.source_reparsed(observed.entity_id(), cx),
                     LanguageBufferEvent::MetadataChanged => {
+                        this.snapshot_epoch = this.snapshot_epoch.wrapping_add(1);
+                        this.state.metadata_epoch = this.state.metadata_epoch.wrapping_add(1);
                         cx.emit(MultiBufferEvent::MetadataChanged);
                         cx.notify();
                     }
@@ -3252,6 +3259,7 @@ impl MultiBuffer {
                 editable: item.excerpt.editable,
                 starts_new_excerpt: item.excerpt.starts_new_excerpt,
                 diff_kind: item.excerpt.diff_kind,
+                diff_hunks: item.excerpt.diff_hunks,
             });
         }
 
@@ -3428,6 +3436,7 @@ impl MultiBuffer {
                 editable: item.excerpt.editable,
                 starts_new_excerpt: item.excerpt.starts_new_excerpt,
                 diff_kind: item.excerpt.diff_kind,
+                diff_hunks: item.excerpt.diff_hunks,
             });
         }
 
@@ -3495,6 +3504,7 @@ impl MultiBuffer {
                 editable: excerpt.editable,
                 starts_new_excerpt: excerpt.starts_new_excerpt,
                 diff_kind: excerpt.diff_kind,
+                diff_hunks: excerpt.diff_hunks,
             });
         }
         self.state.path_keys = path_keys;
@@ -3719,6 +3729,8 @@ impl MultiBuffer {
                     }
                     LanguageBufferEvent::Reparsed => this.source_reparsed(observed.entity_id(), cx),
                     LanguageBufferEvent::MetadataChanged => {
+                        this.snapshot_epoch = this.snapshot_epoch.wrapping_add(1);
+                        this.state.metadata_epoch = this.state.metadata_epoch.wrapping_add(1);
                         cx.emit(MultiBufferEvent::MetadataChanged);
                         cx.notify();
                     }
@@ -3904,6 +3916,7 @@ impl MultiBuffer {
         let text = source.read(cx).text_snapshot(cx);
         let syntax = source.read(cx).syntax_snapshot();
         self.snapshot_epoch = self.snapshot_epoch.wrapping_add(1);
+        self.state.metadata_epoch = self.state.metadata_epoch.wrapping_add(1);
         if let Some(excerpt_source) = self
             .state
             .sources
@@ -3947,7 +3960,6 @@ impl MultiBuffer {
             excerpt_source.syntax = syntax;
         }
         self.state.capture_names = rebuild_capture_table(&mut self.state.sources);
-        self.map_materialized_source_anchors(source_id, source_position_map);
         let old_mappings =
             mappings_for_source(&self.state.excerpts, &self.state.diff_transforms, source_id);
         // 绝对输出坐标由树摘要推导：源范围变化只 splice 受影响路径的 item，其余路径不变。
@@ -3972,6 +3984,7 @@ impl MultiBuffer {
         let text = source.read(cx).text_snapshot(cx);
         let syntax = source.read(cx).syntax_snapshot();
         self.snapshot_epoch = self.snapshot_epoch.wrapping_add(1);
+        self.state.metadata_epoch = self.state.metadata_epoch.wrapping_add(1);
         // 按源去重：只更新该源共享的一份 (text, syntax)，所有映射自动跟随。
         if let Some(excerpt_source) = self
             .state
@@ -3997,13 +4010,13 @@ impl MultiBuffer {
     /// 同一 excerpt 直接映射；跨 excerpt 替换只在起始 excerpt 插入新文本，
     /// 并删除起始尾段、中间 excerpt 和结束首段。
     ///
-    /// 返回本次编辑的投影重映射：调用方据此把「编辑后、重建前」的投影坐标（如光标）经源忠实落到重建后的当前投影，而不是把裸偏移直接当作重建后坐标。
+    /// 编辑本身不返回投影重映射：选区以源 Anchor 为唯一权威，调用方在编辑后按当前快照重新锚定即可。
     pub fn edit(
         &mut self,
         edits: Vec<Edit>,
         metadata: TransactionMetadata,
         cx: &mut Context<Self>,
-    ) -> TextResult<ProjectionRemap> {
+    ) -> TextResult<()> {
         if self.capability.is_read_only() {
             return Err(StorageError::ReadOnly.into());
         }
@@ -4164,7 +4177,7 @@ impl MultiBuffer {
                 detail: "源 Buffer 已提交编辑但 MultiBuffer 订阅未收到变化".to_string(),
             })?;
         }
-        Ok(ProjectionRemap::identity())
+        Ok(())
     }
 
     /// MultiBuffer 写入源 Buffer 的唯一入口。
@@ -4562,7 +4575,7 @@ impl MultiBuffer {
                     .collect::<Vec<_>>(),
             ),
             capture_names: Arc::clone(&self.state.capture_names),
-            metadata_version: self.snapshot_epoch,
+            metadata_version: self.state.metadata_epoch,
         }
     }
 
@@ -4707,22 +4720,6 @@ impl MultiBuffer {
             &self.state.diff_transforms,
             offset.into(),
         )
-    }
-
-    /// 把「编辑后、重建前」投影坐标锚定为源锚点（编辑器源锚点选区的编辑落位）。
-    ///
-    /// 闭包给出的编辑后选区落在重建前投影坐标；
-    /// 重建（reclip）时用重建前映射锚定，未重建时当前映射即编辑后映射。锚定到源后，重建不改变源，选区按重建后快照解析即忠实落位。
-    pub fn anchor_after_edit(
-        &self,
-        remap: &ProjectionRemap,
-        offset: impl Into<MultiBufferOffset>,
-    ) -> Option<MultiBufferAnchor> {
-        let offset: MultiBufferOffset = offset.into();
-        match &remap.before {
-            Some((excerpts, transforms)) => anchor_in_mappings(excerpts, transforms, offset.into()),
-            None => self.anchor_for_offset(offset),
-        }
     }
 
     /// 取走并清空外部源变更留下的源 PositionMap（编辑器据此推进源锚点选区）。
@@ -5056,7 +5053,7 @@ fn source_mapping_range(
 
 /// 在给定投影→源映射中把投影偏移锚定到源坐标，并记录文件消失时的邻接解析顺序。
 ///
-/// [`MultiBuffer::anchor_for_offset`]（当前映射）与 [`MultiBuffer::remap_offset`]（重建前映射）共用此锚定逻辑。
+/// 供 [`MultiBuffer::anchor_for_offset`] 与 [`MultiBufferSnapshot::anchor_for_offset`] 共用。
 fn anchor_in_mappings(
     excerpts: &SumTree<Excerpt>,
     tree: &SumTree<DiffTransform>,

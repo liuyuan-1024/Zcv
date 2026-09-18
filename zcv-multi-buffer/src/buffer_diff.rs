@@ -314,10 +314,13 @@ impl BufferDiff {
         cx.spawn(async move |this, cx| {
             let hunks = background
                 .spawn(async move {
-                    let mut hunks = compute_hunks(base_text.as_deref(), &working);
+                    // working 全文只物化一次：主 hunk 与 index 参照 hunk 共用同一份文本。
+                    let working_text = full_text(&working);
+                    let mut hunks = compute_hunks(base_text.as_deref(), &working_text, &working);
                     let index_hunks = index_reference_hunks(
                         base_text.as_deref(),
                         index_text.as_deref(),
+                        &working_text,
                         &working,
                         &hunks,
                     );
@@ -437,17 +440,18 @@ impl BufferDiff {
 fn index_reference_hunks(
     base_text: Option<&str>,
     index_text: Option<&str>,
+    working_text: &str,
     working: &Snapshot,
     main_hunks: &[DiffHunk],
 ) -> Option<Vec<DiffHunk>> {
     let index = index_text?;
-    if index == full_text(working).as_str() {
+    if index == working_text {
         return Some(Vec::new());
     }
     if base_text == Some(index) {
         return Some(main_hunks.to_vec());
     }
-    Some(compute_hunks(Some(index), working))
+    Some(compute_hunks(Some(index), working_text, working))
 }
 
 /// working 快照全文。
@@ -466,7 +470,11 @@ fn full_text(working: &Snapshot) -> String {
 ///
 /// 返回的 `buffer_range` 归属于 working，`diff_base_byte_range` 归属于 base_text；
 /// 二者共同构成后台执行所需的确定编辑依据。暂存语义初值为 NoStaging，由调用方随后标注。
-pub(crate) fn compute_hunks(base_text: Option<&str>, working: &Snapshot) -> Vec<DiffHunk> {
+pub(crate) fn compute_hunks(
+    base_text: Option<&str>,
+    working_str: &str,
+    working: &Snapshot,
+) -> Vec<DiffHunk> {
     let version = working.version();
     // base 不存在即整份工作区文本为新增（新建文件）。
     let Some(base_text) = base_text else {
@@ -479,12 +487,6 @@ pub(crate) fn compute_hunks(base_text: Option<&str>, working: &Snapshot) -> Vec<
             base_word_diffs: Vec::new(),
         }];
     };
-    let working_text = working
-        .slice_text(
-            TextRange::new(ByteOffset::ZERO, working.len_bytes()).expect("工作区全文范围必须有序"),
-        )
-        .expect("工作区全文范围必须有效");
-    let working_str = working_text.as_str();
     let input = InternedInput::new(base_text, working_str);
     let mut diff = Diff::compute(Algorithm::Histogram, &input);
     diff.postprocess_lines(&input);

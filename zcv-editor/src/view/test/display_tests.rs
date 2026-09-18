@@ -6,7 +6,7 @@ use zcv_multi_buffer::{
     BufferDiff, BufferDiffInput, DiffFile, DiffHunkKind, DiffHunkStaging, DisplayHunk,
     ExcerptRange, MultiBuffer,
 };
-use zcv_text::{Buffer, Edit, Line, LogicalColumn, TransactionMetadata};
+use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, LogicalColumn, TransactionMetadata};
 
 use super::common::{
     buffer_text, engine_buffer, focus_editor, inject_editor_diff, inject_file_diff, test_buffer,
@@ -2178,4 +2178,87 @@ fn editing_readonly_deleted_row_then_editing_working_text_still_works(cx: &mut T
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(editor.text(cx), "a\nold1\nold2\nB\nc");
     });
+}
+
+/// 带文件路径的测试源：diff 旧侧源复用同一路径，展开旧侧时路径身份才能一致。
+fn test_file_buffer(cx: &mut TestAppContext, path: &str, text: &str) -> Entity<LanguageBuffer> {
+    let buffer = cx.new(|_| {
+        Buffer::from_text(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+    });
+    cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from(path)), cx))
+}
+
+/// 读取主光标所在投影偏移对应的源位置。
+fn caret_source_range(editor: &Entity<Editor>, cx: &TestAppContext) -> zcv_text::TextRange {
+    cx.read_entity(editor, |editor, cx| {
+        let caret = editor.selections().primary().head();
+        editor
+            .multi_buffer()
+            .read(cx)
+            .location_for_offset(caret)
+            .expect("光标必须落在可见 excerpt 内")
+            .source_range
+    })
+}
+
+/// 回归：diff 展开/折叠只重建投影拓扑，选区按源 Anchor 解析到同一源位置。
+#[gpui::test]
+fn diff_expansion_preserves_selection_source_anchor(cx: &mut TestAppContext) {
+    let source = test_file_buffer(cx, "src/a.rs", "a\nworking\nc\n");
+    let editor = cx.new(|cx| Editor::from_language_buffer(source.clone(), EditorMode::Full, cx));
+    inject_file_diff(&editor, &source, Arc::from("a\nold\nc\n"), cx);
+
+    editor.update(cx, |editor, _| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(2)));
+    });
+    let before = caret_source_range(&editor, cx);
+
+    editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
+    cx.run_until_parked();
+
+    assert_eq!(
+        cx.read_entity(&editor, |editor, cx| editor.diff_hunk_expanded(cx)),
+        vec![true],
+        "切换后 hunk 应处于展开态"
+    );
+    assert_eq!(
+        caret_source_range(&editor, cx),
+        before,
+        "展开/折叠重建投影后，选区源位置不得改变"
+    );
+}
+
+/// 回归：外部源变更按源 PositionMap 推进选区源 Anchor，重建投影后仍落在同一逻辑源位置。
+#[gpui::test]
+fn external_source_change_advances_selection_source_anchor(cx: &mut TestAppContext) {
+    let source = test_file_buffer(cx, "src/a.rs", "a\nworking\nc\n");
+    let editor = cx.new(|cx| Editor::from_language_buffer(source.clone(), EditorMode::Full, cx));
+    inject_file_diff(&editor, &source, Arc::from("a\nold\nc\n"), cx);
+
+    editor.update(cx, |editor, _| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(2)));
+    });
+    assert_eq!(
+        caret_source_range(&editor, cx),
+        zcv_text::TextRange::new(ByteOffset::new(2), ByteOffset::new(2)).unwrap()
+    );
+
+    // 外部（未经本编辑器）在源开头插入 "prefix\n"，光标源位置应随源变更右移 7 字节。
+    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
+    cx.update_entity(&source_buffer, |buffer, cx| {
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::ZERO, "prefix\n").unwrap()],
+                TransactionMetadata::default(),
+            )
+            .expect("外部源编辑应成功");
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    assert_eq!(
+        caret_source_range(&editor, cx),
+        zcv_text::TextRange::new(ByteOffset::new(9), ByteOffset::new(9)).unwrap(),
+        "外部源变更后选区源 Anchor 应经源 PositionMap 推进到同一逻辑位置"
+    );
 }

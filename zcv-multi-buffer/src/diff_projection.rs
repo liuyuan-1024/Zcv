@@ -18,8 +18,8 @@ use zcv_text::{Anchor, ByteOffset, Line, Snapshot};
 
 use crate::buffer_diff::{BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkStaging, DiffRefresh};
 use crate::{
-    DiffTransform, ExcerptDiffKind, ExcerptRange, MultiBuffer, MultiBufferEvent, PathKey,
-    ProjectionRemap, excerpt_at_index, mapping_at_excerpt_index, mapping_count,
+    DiffTransform, ExcerptDiffKind, ExcerptRange, MultiBuffer, MultiBufferCursor, MultiBufferEvent,
+    PathKey, ProjectionRemap, mapping_at_excerpt_index, mapping_count,
 };
 
 /// 编辑器投影使用的显示 hunk（组合文档行坐标）。
@@ -336,15 +336,12 @@ impl MultiBuffer {
             );
         }
         // 新路径在组合流中的起点（插入前）；映射树按源路径（而非显示路径）排序。
-        let base = self
-            .state
-            .diff_transforms
-            .iter()
-            .take_while(|transform| {
-                excerpt_at_index(&self.state.excerpts, transform.excerpt_index())
-                    .is_some_and(|excerpt| excerpt.path < new_path)
-            })
-            .count();
+        let base = {
+            let mut cursor =
+                MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
+            cursor.seek_path(&new_path, sum_tree::Bias::Left);
+            cursor.start().index
+        };
         let inserted_count = excerpts.len();
         for hunk in &mut materialized {
             if let Some(old) = &mut hunk.old_excerpt {

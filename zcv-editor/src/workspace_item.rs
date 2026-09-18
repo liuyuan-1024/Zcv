@@ -141,8 +141,10 @@ mod tests {
     use std::cell::RefCell;
     use std::fs;
     use std::rc::Rc;
+    use std::sync::Arc;
 
     use gpui::{AppContext as _, Empty, TestAppContext};
+    use zcv_language::LanguageRegistry;
     use zcv_multi_buffer::ExcerptRange;
 
     use zcv_workspace::ItemHandle;
@@ -223,7 +225,7 @@ mod tests {
         let root = directory.path().canonicalize().expect("临时目录应可规范化");
         let path = root.join("source.txt");
         std::fs::write(&path, "旧内容\n").expect("应创建源文件");
-        let project = cx.new(|cx| Project::new(root, cx));
+        let project = cx.new(|cx| Project::new(root, Arc::new(LanguageRegistry::new()), cx));
         let source = project.update(cx, |project, cx| {
             project.open_buffer(&path, cx).expect("应打开源文件")
         });
@@ -270,7 +272,7 @@ mod tests {
         let new_path = root.join("bar.rs");
         fs::write(&old_path, "旧内容").expect("应创建测试文件");
 
-        let project = cx.new(|cx| Project::new(root, cx));
+        let project = cx.new(|cx| Project::new(root, Arc::new(LanguageRegistry::new()), cx));
         // open_buffer 返回已承载规范路径的 LanguageBuffer（与 item_provider 同路径包装成组合文档）。
         let language_buffer = project.update(cx, |project, cx| {
             project.open_buffer(&old_path, cx).expect("应打开测试文件")
@@ -301,11 +303,11 @@ mod tests {
 
         // 编辑后保存：应写入新路径。
         cx.update_entity(&editor, |editor, cx| editor.set_text("新内容", cx));
-        let multi_buffer = cx.read_entity(&editor, |editor, _| editor.multi_buffer());
+        let buffers = cx.read_entity(&editor, |editor, cx| {
+            editor.multi_buffer().read(cx).file_buffers(cx)
+        });
         project
-            .update(cx, |project, cx| {
-                project.save_buffer(&multi_buffer, &path, cx)
-            })
+            .update(cx, |project, cx| project.save_file_buffers(buffers, cx))
             .expect("保存应成功");
         assert_eq!(
             fs::read_to_string(&new_path).expect("新路径应有保存内容"),

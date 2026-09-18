@@ -62,22 +62,17 @@ impl HunkEdit {
 
 /// 一次 hunk 操作绑定的工作区文本快照。
 ///
-/// 编辑器操作必须携带已捕获的文本，避免后台重新读取磁盘而与 anchor 范围脱节；
-/// 仅 Git 层单元测试可显式选择磁盘文本。
+/// 编辑器操作必须携带已捕获的文本，避免后台重新读取磁盘而与 anchor 范围脱节。
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct WorkingCopySnapshot(Option<Arc<[u8]>>);
+pub struct WorkingCopySnapshot(Arc<[u8]>);
 
 impl WorkingCopySnapshot {
     pub fn from_editor_text(text: Vec<u8>) -> Self {
-        Self(Some(Arc::from(text)))
+        Self(Arc::from(text))
     }
 
-    pub fn from_disk() -> Self {
-        Self(None)
-    }
-
-    fn bytes(&self) -> Option<&[u8]> {
-        self.0.as_deref()
+    fn bytes(&self) -> &[u8] {
+        &self.0
     }
 }
 
@@ -196,6 +191,12 @@ fn publish_progress(cancellation: &GitCancellation, line: &[u8]) {
 pub trait GitRepository: Send + Sync {
     /// 仓库工作目录（status 路径参数的基准）。
     fn working_directory(&self) -> &Path;
+
+    /// 列出工作目录下 Git 工作树中的文件（已跟踪 + 未跟踪且未被忽略）。
+    ///
+    /// 返回相对仓库工作目录的路径；`-z` 保证含空格与换行的路径不被截断。
+    /// 输出顺序与 git ls-files 一致（路径字典序）。
+    fn list_worktree_files(&self) -> Result<Vec<PathBuf>>;
 
     /// 查询指定路径的 git 状态（`git status --porcelain=v1 -z`）。
     ///
@@ -567,6 +568,23 @@ impl GitRepository for RealGitRepository {
         &self.working_directory
     }
 
+    fn list_worktree_files(&self) -> Result<Vec<PathBuf>> {
+        let mut command = self.build_command(&[
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ]);
+        let output = self.run_command(&mut command, "git ls-files")?;
+        Ok(output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(crate::path_from_git_bytes)
+            .collect())
+    }
+
     fn has_remote(&self) -> Result<bool> {
         // `git remote` 无 remote 时退出码仍为 0（输出为空），须按输出内容判定。
         Ok(self
@@ -649,11 +667,7 @@ impl GitRepository for RealGitRepository {
                 self.write_index_text(relative_path_buf, Some(next_index.as_bytes()))
             }
             GitHunkOperation::Restore => {
-                let current = working_snapshot
-                    .bytes()
-                    .map(ToOwned::to_owned)
-                    .or_else(|| std::fs::read(self.working_directory.join(relative_path_buf)).ok())
-                    .context("工作区文件不存在，无法还原变更块")?;
+                let current = working_snapshot.bytes().to_vec();
                 let current = String::from_utf8_lossy(&current);
                 let restored = apply_hunk_edits_to_text(&current, edits)?;
                 std::fs::write(self.working_directory.join(relative_path_buf), restored)

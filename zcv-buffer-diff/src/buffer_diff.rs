@@ -205,21 +205,15 @@ impl PendingHunk {
 
 /// 某个明确版本下的不可变 diff 结果。
 ///
-/// 只表达 diff 本身：buffer 版本、anchor hunk 与 pending 的 optimistic 结果；
+/// 只表达 diff 本身：anchor hunk 与 pending 的 optimistic 结果；
 /// 展开/折叠、显示坐标与上下文裁剪由显示层派生。
 #[derive(Clone)]
 pub struct BufferDiffSnapshot {
-    working_version: BufferVersion,
     hunks: Vec<DiffHunk>,
     pending_hunks: Vec<PendingHunk>,
 }
 
 impl BufferDiffSnapshot {
-    /// 当前 diff 对应的 working buffer 版本。
-    pub fn working_version(&self) -> BufferVersion {
-        self.working_version
-    }
-
     /// 原始 hunks（忽略 pending 抑制）；生成编辑与跨 diff 关联时使用。
     pub fn hunks(&self) -> &[DiffHunk] {
         &self.hunks
@@ -267,9 +261,7 @@ impl EventEmitter<BufferDiffEvent> for BufferDiff {}
 impl BufferDiff {
     /// 依据 base/working 快照建立 diff 状态。
     pub fn new(input: BufferDiffInput, cx: &mut Context<Self>) -> Self {
-        let working_text = input.working.read(cx).text_snapshot(cx);
         let snapshot = BufferDiffSnapshot {
-            working_version: working_text.version(),
             hunks: Vec::new(),
             pending_hunks: Vec::new(),
         };
@@ -283,19 +275,14 @@ impl BufferDiff {
             revision: 0,
             calculated_working_version: None,
         };
-        this.recompute(cx);
+        this.recompute_with_refresh(DiffRefresh::RebuildProjection, cx);
         this
     }
 
-    /// 捕获当前 working 快照，在后台计算 diff。
+    /// 捕获当前 working 快照，在后台按指定投影策略重算。
     ///
     /// 由宿主在创建后与 working 文本变化时调用；本实体不订阅 working buffer。
     /// 结果回到前台后必须再次比对版本，避免较早任务覆盖后续编辑的 hunk。
-    pub fn recompute(&mut self, cx: &mut Context<Self>) {
-        self.recompute_with_refresh(DiffRefresh::RebuildProjection, cx);
-    }
-
-    /// 按指定投影策略异步重算当前 working 快照。
     pub fn recompute_with_refresh(&mut self, refresh: DiffRefresh, cx: &mut Context<Self>) {
         let working = self.working.read(cx).text_snapshot(cx);
         let working_version = working.version();
@@ -359,7 +346,6 @@ impl BufferDiff {
             return false;
         }
         self.snapshot = BufferDiffSnapshot {
-            working_version,
             hunks,
             pending_hunks: Vec::new(),
         };
@@ -467,11 +453,7 @@ fn full_text(working: &Snapshot) -> String {
 ///
 /// 返回的 `buffer_range` 归属于 working，`diff_base_byte_range` 归属于 base_text；
 /// 二者共同构成后台执行所需的确定编辑依据。暂存语义初值为 NoStaging，由调用方随后标注。
-pub(crate) fn compute_hunks(
-    base_text: Option<&str>,
-    working_str: &str,
-    working: &Snapshot,
-) -> Vec<DiffHunk> {
+fn compute_hunks(base_text: Option<&str>, working_str: &str, working: &Snapshot) -> Vec<DiffHunk> {
     let version = working.version();
     // base 不存在即整份工作区文本为新增（新建文件）。
     let Some(base_text) = base_text else {

@@ -764,7 +764,7 @@ impl Panel for ProjectTreePanel {
 
 /// 将进入项目树状态的本地路径统一为可比较的绝对路径。
 fn absolute_for_comparison(path: &Path) -> Option<AbsolutePathBuf> {
-    AbsolutePathBuf::new(normalize_for_comparison(path).ok()?).ok()
+    normalize_for_comparison(path).ok()
 }
 
 #[cfg(test)]

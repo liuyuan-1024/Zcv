@@ -381,7 +381,6 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
         assert_eq!(search_backgrounds.len(), 3, "三个匹配都应进入背景层");
         let row = viewport.first().expect("未找到文本行");
         let WrapRowKind::Text {
-            source,
             byte_range,
             global_byte_start,
             projected_line,
@@ -390,22 +389,13 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
         let text = display
             .row_text(*projected_line)
             .expect("显示行文本应可解析");
-        let inlay_snapshot = display
-            .wrap_snapshot()
-            .tab_snapshot()
-            .fold_snapshot()
-            .inlay_snapshot();
-        let stream_line = *source;
         let tab_width = display.tab_width().get();
         let rendered: Vec<_> = WrapChunks::new(
             ChunkSource {
                 text: ChunkText::Borrowed(text.as_ref()),
                 projected_len: text.len(),
                 global_byte_start: *global_byte_start,
-                stream_line,
                 segments: None,
-                inlay: inlay_snapshot,
-                inject_inlays: false,
             },
             tab_width,
             HighlightStyles {
@@ -457,7 +447,6 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
         let mut with_bg = 0usize;
         for row in &viewport {
             let WrapRowKind::Text {
-                source,
                 byte_range,
                 global_byte_start,
                 projected_line,
@@ -467,22 +456,13 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
                 .row_text(*projected_line)
                 .expect("显示行文本应可解析");
             {
-                let inlay_snapshot = display
-                    .wrap_snapshot()
-                    .tab_snapshot()
-                    .fold_snapshot()
-                    .inlay_snapshot();
-                let stream_line = *source;
                 let tab_width = display.tab_width().get();
                 let rendered: Vec<_> = WrapChunks::new(
                     ChunkSource {
                         text: ChunkText::Borrowed(text.as_ref()),
                         projected_len: text.len(),
                         global_byte_start: *global_byte_start,
-                        stream_line,
                         segments: None,
-                        inlay: inlay_snapshot,
-                        inject_inlays: false,
                     },
                     tab_width,
                     HighlightStyles {
@@ -577,7 +557,6 @@ zcv final
         let mut with_bg = 0usize;
         for row in &viewport {
             let WrapRowKind::Text {
-                source,
                 byte_range,
                 global_byte_start,
                 projected_line,
@@ -587,23 +566,14 @@ zcv final
                 .row_text(*projected_line)
                 .expect("显示行文本应可解析");
             {
-                let inlay_snapshot = display
-                    .wrap_snapshot()
-                    .tab_snapshot()
-                    .fold_snapshot()
-                    .inlay_snapshot();
-                let stream_line = *source;
                 let tab_width = display.tab_width().get();
-                let highlight_styles = display.highlight_styles();
+                let highlight_styles = display.highlight_styles(cx);
                 let rendered: Vec<_> = WrapChunks::new(
                     ChunkSource {
                         text: ChunkText::Borrowed(text.as_ref()),
                         projected_len: text.len(),
                         global_byte_start: *global_byte_start,
-                        stream_line,
                         segments: None,
-                        inlay: inlay_snapshot,
-                        inject_inlays: false,
                     },
                     tab_width,
                     HighlightStyles {

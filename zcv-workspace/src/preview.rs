@@ -17,9 +17,10 @@ use gpui::{
 };
 use zcv_actions::TogglePreview;
 use zcv_multi_buffer::MultiBuffer;
-use zcv_theme::color;
+use zcv_theme::{color, space};
 use zcv_ui::Button;
 
+use crate::breadcrumbs::Breadcrumbs;
 use crate::item::{Item, ItemEvent, ItemHandle};
 use crate::pane::Pane;
 use crate::provider_registry::ProviderRegistry;
@@ -91,7 +92,7 @@ impl PreviewViewport {
     ///
     /// 仅供格式实现需要按缩放比例准备资源时使用；最终显示尺寸仍由 [`Self::render`] 统一计算。
     pub fn content_scale(window: &Window, cx: &App) -> f32 {
-        crate::typography_for_window(window, cx).content_scale()
+        crate::typography_for_window(window, cx).content_scale(cx)
     }
 
     /// 内容尺寸或资源变化后请求重新居中。
@@ -404,6 +405,57 @@ fn provider_for_mode(path: &Path, mode: PreviewMode, cx: &App) -> Option<Arc<dyn
     })
 }
 
+/// 源码派生预览共用的工具栏：左侧源码面包屑，右侧「返回源码」按钮。
+///
+/// 元素 id 由格式实现传入，避免同屏多个预览的元素 id 冲突；
+/// 面包屑随源码 Item 的路径/标题变化经 refresh_breadcrumbs 刷新。
+pub struct PreviewToolbar {
+    breadcrumbs: Entity<Breadcrumbs>,
+    toggle_preview: PreviewToggleCallback,
+    source_button_id: &'static str,
+}
+
+impl PreviewToolbar {
+    pub fn new(
+        source_item: &dyn ItemHandle,
+        toggle_preview: PreviewToggleCallback,
+        source_button_id: &'static str,
+        cx: &mut App,
+    ) -> Entity<Self> {
+        let breadcrumbs = cx.new(|_| Breadcrumbs::without_project());
+        breadcrumbs.update(cx, |view, cx| view.set_item(Some(source_item), cx));
+        cx.new(move |_| Self {
+            breadcrumbs,
+            toggle_preview,
+            source_button_id,
+        })
+    }
+
+    /// 源码 Item 的路径或标题变化后刷新面包屑。
+    pub fn refresh_breadcrumbs(&mut self, cx: &mut Context<Self>) {
+        self.breadcrumbs.update(cx, |_, cx| cx.notify());
+    }
+}
+
+impl Render for PreviewToolbar {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap(space::S6)
+            .child(div().flex_1().min_w_0().child(self.breadcrumbs.clone()))
+            .child(
+                Button::icon(self.source_button_id, "icons/eye_off.svg")
+                    .label("返回源码")
+                    .on_click({
+                        let toggle_preview = self.toggle_preview.clone();
+                        move |_, window, cx| toggle_preview(window, cx)
+                    }),
+            )
+    }
+}
+
 /// 预览切换按钮的当前语义。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PreviewControl {
@@ -494,7 +546,7 @@ impl Render for PreviewButton {
                 Button::icon("toolbar-preview", icon)
                     .label(label)
                     .color(color::current(cx).text_muted)
-                    .shortcut(&TogglePreview, cx)
+                    .shortcut(zcv_keymap::display_shortcut(&TogglePreview, cx))
                     .on_click(move |_, window, cx| {
                         pane.update(cx, |pane, cx| {
                             pane.toggle_preview(window, cx);

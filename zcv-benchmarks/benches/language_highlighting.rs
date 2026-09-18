@@ -1,8 +1,15 @@
 use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use zcv_benchmarks::{cached_injection_stress_document, cached_rust_document};
-use zcv_language::{LanguageRegistry, highlight_snippet};
+mod common;
+#[path = "common/injection_stress.rs"]
+mod injection_stress;
+
+use common::cached_rust_document;
+use injection_stress::cached_injection_stress_document;
+use zcv_language::{
+    LanguageRegistry, SnippetHighlightCancellation, highlight_snippet_with_cancellation,
+};
 
 const DOCUMENT_SIZES: [usize; 3] = [64 * 1024, 1024 * 1024, 16 * 1024 * 1024];
 
@@ -16,8 +23,13 @@ fn highlight_rust_document(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(text.len() as u64));
         group.bench_with_input(BenchmarkId::from_parameter(text.len()), &text, |b, text| {
             b.iter(|| {
-                let highlights =
-                    highlight_snippet(&registry, "rust", black_box(text.as_ref())).unwrap();
+                let highlights = highlight_snippet_with_cancellation(
+                    &registry,
+                    "rust",
+                    black_box(text.as_ref()),
+                    &SnippetHighlightCancellation::default(),
+                )
+                .unwrap();
                 black_box(highlights.spans.len());
             });
         });
@@ -37,8 +49,13 @@ fn highlight_injection_stress(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(text.len() as u64));
         group.bench_with_input(BenchmarkId::from_parameter(text.len()), &text, |b, text| {
             b.iter(|| {
-                let highlights =
-                    highlight_snippet(&registry, "rust", black_box(text.as_ref())).unwrap();
+                let highlights = highlight_snippet_with_cancellation(
+                    &registry,
+                    "rust",
+                    black_box(text.as_ref()),
+                    &SnippetHighlightCancellation::default(),
+                )
+                .unwrap();
                 black_box(highlights.spans.len());
             });
         });

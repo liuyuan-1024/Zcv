@@ -23,10 +23,10 @@ use zcv_language::{
 use zcv_multi_buffer::{MultiBuffer, MultiBufferEvent};
 use zcv_project::Project;
 use zcv_theme::{color, space, syntax, typography};
-use zcv_ui::{Button, Scrollbar};
+use zcv_ui::Scrollbar;
 use zcv_workspace::{
-    Breadcrumbs, Item, ItemEvent, ItemHandle, OpenPathCallback, PreviewDocument, PreviewItem,
-    PreviewItemHandle, PreviewToggleCallback, typography_for_window,
+    Item, ItemEvent, ItemHandle, OpenPathCallback, PreviewDocument, PreviewItem, PreviewItemHandle,
+    PreviewToolbar, typography_for_window,
 };
 
 use crate::document::{Block, Inline, parse};
@@ -61,37 +61,12 @@ pub(crate) struct MarkdownPreviewView {
     refresh_task: Option<Task<()>>,
     _document_subscription: Subscription,
     _item_subscription: Subscription,
-    breadcrumbs: Entity<Breadcrumbs>,
-    toolbar: Entity<MarkdownPreviewToolbar>,
+    toolbar: Entity<PreviewToolbar>,
     math_images: Arc<HashMap<String, Result<Arc<gpui::RenderImage>, String>>>,
     math_content_size: Option<gpui::Pixels>,
     math_color: Option<gpui::Rgba>,
     math_render_task: Option<Task<()>>,
     math_render_generation: u64,
-}
-
-struct MarkdownPreviewToolbar {
-    breadcrumbs: Entity<Breadcrumbs>,
-    toggle_preview: PreviewToggleCallback,
-}
-
-impl Render for MarkdownPreviewToolbar {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .w_full()
-            .flex()
-            .items_center()
-            .gap(space::S6)
-            .child(div().flex_1().min_w_0().child(self.breadcrumbs.clone()))
-            .child(
-                Button::icon("markdown-preview-source", "icons/eye_off.svg")
-                    .label("返回源码")
-                    .on_click({
-                        let toggle_preview = self.toggle_preview.clone();
-                        move |_, window, cx| toggle_preview(window, cx)
-                    }),
-            )
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,12 +86,12 @@ impl MarkdownPreviewView {
         else {
             panic!("Markdown 预览必须从源码 Item 创建")
         };
-        let breadcrumbs = cx.new(|_| Breadcrumbs::without_project());
-        breadcrumbs.update(cx, |view, cx| view.set_item(Some(source_item.as_ref()), cx));
-        let toolbar = cx.new(|_| MarkdownPreviewToolbar {
-            breadcrumbs: breadcrumbs.clone(),
+        let toolbar = PreviewToolbar::new(
+            source_item.as_ref(),
             toggle_preview,
-        });
+            "markdown-preview-source",
+            cx,
+        );
         let document_subscription = cx.subscribe(&multi_buffer, |view, _, event, cx| {
             if matches!(event, MultiBufferEvent::TextChanged) {
                 view.schedule_refresh(cx);
@@ -131,7 +106,8 @@ impl MarkdownPreviewView {
                     ItemEvent::PathChanged | ItemEvent::UpdateTab | ItemEvent::UpdateBreadcrumbs
                 ) {
                     this.update(cx, |view, cx| {
-                        view.breadcrumbs.update(cx, |_, cx| cx.notify());
+                        view.toolbar
+                            .update(cx, |toolbar, cx| toolbar.refresh_breadcrumbs(cx));
                         cx.emit(MarkdownPreviewEvent::SourceMetadataChanged);
                         cx.notify();
                     })
@@ -143,7 +119,7 @@ impl MarkdownPreviewView {
         let language_registry = multi_buffer
             .read(cx)
             .language_registry(cx)
-            .unwrap_or_else(|| Arc::new(LanguageRegistry::new()));
+            .expect("源码派生 Markdown 预览要求 MultiBuffer 携带语言注册表；缺少说明装配顺序错误");
         let mut view = Self {
             source_item,
             multi_buffer,
@@ -160,7 +136,6 @@ impl MarkdownPreviewView {
             refresh_task: None,
             _document_subscription: document_subscription,
             _item_subscription: item_subscription,
-            breadcrumbs,
             toolbar,
             math_images: Arc::new(HashMap::new()),
             math_content_size: None,
@@ -407,7 +382,7 @@ fn render_block(
             }
             let styles = highlights
                 .as_ref()
-                .map(|highlights| syntax::style_table(&highlights.capture_names));
+                .map(|highlights| syntax::style_table(&highlights.capture_names, cx));
             let mut line_start = 0;
             let mut highlight_index = 0;
             for line in code_lines(text) {
@@ -1435,9 +1410,9 @@ mod tests {
         assert_eq!(list_marker_char_count(Some(98), 3), 4);
     }
 
-    #[test]
-    fn headings_preserve_a_minimum_line_height_at_their_own_font_size() {
-        let type_scale = typography::current();
+    #[gpui::test]
+    fn headings_preserve_a_minimum_line_height_at_their_own_font_size(cx: &mut TestAppContext) {
+        let type_scale = cx.update(|cx| typography::current(cx));
         for level in 1..=6 {
             let size = heading_size(level, type_scale);
             assert!(heading_line_height(level, size, type_scale) >= size * 1.2);
@@ -1468,7 +1443,7 @@ mod tests {
             MarkdownInlineText {
                 text: text.into_any_element(),
                 layout,
-                code_ranges: vec![2..5],
+                code_ranges: std::iter::once(2..5).collect(),
                 code_color: chip_color,
             }
         });

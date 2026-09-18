@@ -7,8 +7,8 @@ mod core;
 mod selection_set;
 mod state;
 
-pub use core::Selection;
-pub use selection_set::SelectionSet;
+pub(crate) use core::Selection;
+pub(crate) use selection_set::SelectionSet;
 pub(crate) use state::{
     EditOutcome, EditPlan, SelectionHistory, apply_edits, apply_targeted_edits, replace_selections,
 };

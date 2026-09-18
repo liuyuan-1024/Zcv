@@ -7,12 +7,16 @@ mod document;
 mod provider;
 mod view;
 
+use std::sync::Arc;
+
 use gpui::App;
+use zcv_language::LanguageRegistry;
+
 use provider::MarkdownPreviewProvider;
 
 /// 注册 Markdown Preview Provider。可重复调用。
-pub fn init(cx: &mut App) {
-    // Provider 只做语言识别，没有 Project 上下文；在注册时创建并持有自己的注册表。
-    let language_registry = std::sync::Arc::new(zcv_language::LanguageRegistry::new());
+///
+/// 语言注册表由应用装配层创建并注入；Provider 只做文件识别，不持有独立的注册表。
+pub fn init(language_registry: Arc<LanguageRegistry>, cx: &mut App) {
     zcv_workspace::register(MarkdownPreviewProvider { language_registry }, cx);
 }

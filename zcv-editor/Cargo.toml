@@ -18,6 +18,7 @@ thiserror.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
 zcv-actions.workspace = true
+zcv-keymap.workspace = true
 zcv-text.workspace = true
 zcv-language.workspace = true
 zcv-buffer-diff.workspace = true

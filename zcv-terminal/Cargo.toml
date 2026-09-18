@@ -19,6 +19,7 @@ serde_json.workspace = true
 sysinfo.workspace = true
 unicode-width.workspace = true
 zcv-actions.workspace = true
+zcv-keymap.workspace = true
 zcv-project.workspace = true
 zcv-settings.workspace = true
 zcv-theme.workspace = true
@@ -31,6 +32,7 @@ libc.workspace = true
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 zcv-fs-watch.workspace = true
+zcv-language.workspace = true
 tempfile.workspace = true
 zcv-assets.workspace = true
 

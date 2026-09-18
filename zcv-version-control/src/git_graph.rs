@@ -1,6 +1,6 @@
 //! GitGraphView —— 只读图形化提交历史视图（workspace Item）。
 //!
-//! 数据来自 GitStore 的后台分批加载（`load_commit_graph`），lane 布局由 `zcv_git::GraphLayoutState` 逐行计算；
+//! 数据来自 GitStore 的后台分批加载（`load_commit_graph`），lane 布局由 `crate::graph::GraphLayoutState` 逐行计算；
 //! 视图侧只负责用 `gpui::canvas` 把每行的绘制指令画成圆点与连线，并渲染提交文本。
 //! 与 `ProjectDiffView` 一致，通过 `deploy_at` 在 pane 中打开/复用，不做序列化持久化。
 
@@ -18,7 +18,9 @@ use zcv_actions::{
     Backtab, FindNext, FindPrevious, Tab, ToggleCaseSensitive, ToggleRegex, ToggleWholeWord,
 };
 use zcv_editor::{Editor, EditorEvent};
-use zcv_git::{GraphCommit, GraphLayoutState, GraphLine, GraphRowLayout};
+use zcv_git::GraphCommit;
+
+use crate::graph::{GraphLayoutState, GraphLine, GraphRowLayout};
 use zcv_project::SearchQuery;
 use zcv_project::{GitStoreEvent, Project};
 use zcv_theme::color::{self, ThemeColors};
@@ -26,7 +28,7 @@ use zcv_theme::{space, typography};
 use zcv_ui::{ButtonLike, MatchOption, MatchOptions, Scrollbar, SearchInput, TooltipSpec};
 use zcv_workspace::{
     Direction, Item, ItemHandle, SearchEvent, SearchableItem, SerializedItemProvider,
-    SerializedPaneItem, Workspace,
+    SerializedPaneItem, Workspace, typography_for_window,
 };
 
 // ── 布局常量 ────────────────────────────────
@@ -216,6 +218,7 @@ impl Render for GitGraphToolbar {
             .gap(space::S6)
             .child(
                 SearchInput::new("git-graph", read.search_input.clone().into_any_element())
+                    .shortcut_resolver(zcv_keymap::display_shortcut)
                     .options(read.search_options)
                     .on_toggle({
                         let view = self.view.clone();
@@ -472,7 +475,8 @@ impl Render for GitGraphView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = *color::current(cx);
         let palette = lane_palette(&colors);
-        let row_height = row_height();
+        let type_scale = typography_for_window(window, cx);
+        let row_height = row_height(type_scale.content_line());
         let root = div()
             .debug_selector(|| "git-graph-view".into())
             .size_full()
@@ -502,7 +506,7 @@ impl Render for GitGraphView {
             .bg(colors.editor_background)
             // 提交文本属于内容：字号走内容通道，字体族沿用 UI 比例字体，只有短 SHA 用等宽。
             .font(typography::ui_font())
-            .text_size(typography::content_size())
+            .text_size(type_scale.content_size())
             .text_color(colors.text);
         if self.rows.is_empty() {
             let message = if self.loading {
@@ -528,7 +532,7 @@ impl Render for GitGraphView {
         } else {
             self.search_matches.len()
         };
-        self.update_content_fit_widths(window);
+        self.update_content_fit_widths(window, cx);
         let weak = cx.weak_entity();
         let column_widths = self.column_widths;
         let graph_content_width = graph_column_width(&self.rows);
@@ -619,7 +623,12 @@ impl Render for GitGraphView {
             .min_h_0()
             .flex()
             .flex_col()
-            .child(render_graph_header(column_widths, colors, &weak))
+            .child(render_graph_header(
+                column_widths,
+                colors,
+                &weak,
+                row_height,
+            ))
             .child(list);
 
         let horizontal_scroll = div()
@@ -647,11 +656,11 @@ impl Render for GitGraphView {
 
 impl GitGraphView {
     /// 根据已加载提交的实际字宽更新尚未手动调整的列。
-    fn update_content_fit_widths(&mut self, window: &Window) {
-        let font_size = typography::content_size();
+    fn update_content_fit_widths(&mut self, window: &Window, cx: &App) {
+        let font_size = typography_for_window(window, cx).content_size();
         if self.content_fit_row_count != self.rows.len() || self.content_fit_font_size != font_size
         {
-            self.content_fit_widths = content_fit_column_widths(&self.rows, window);
+            self.content_fit_widths = content_fit_column_widths(&self.rows, window, cx);
             self.content_fit_row_count = self.rows.len();
             self.content_fit_font_size = font_size;
         }
@@ -929,8 +938,8 @@ pub fn deploy_at(workspace: &mut Workspace, window: &mut Window, cx: &mut Contex
 
 /// 单行高度：由内容行高派生（+ 少量竖直留白），随内容字号缩放。
 /// uniform_list 要求所有行等高，故集中在此计算。
-fn row_height() -> Pixels {
-    typography::content_line() + space::S4
+fn row_height(line_height: Pixels) -> Pixels {
+    line_height + space::S4
 }
 
 /// 分支配色板：取主题终端 ANSI 色，随主题切换（无独立 accent 序列，故复用这组区分度高的色）。
@@ -1127,10 +1136,14 @@ fn graph_column_width(rows: &[GraphRow]) -> Pixels {
 }
 
 /// 根据已加载内容计算默认列宽；默认值只受内容最大宽度限制。
-fn content_fit_column_widths(rows: &[GraphRow], window: &Window) -> [Pixels; COLUMN_COUNT] {
+fn content_fit_column_widths(
+    rows: &[GraphRow],
+    window: &Window,
+    cx: &App,
+) -> [Pixels; COLUMN_COUNT] {
     let ui_font = typography::ui_font();
     let content_font = typography::content_font();
-    let font_size = typography::content_size();
+    let font_size = typography_for_window(window, cx).content_size();
     let cell_padding = space::S2 * 2.0 + space::S1;
     let header_padding = space::S6 * 2.0 + space::S1;
     let labels = ["图形", "提交信息", "作者", "时间", "哈希"];
@@ -1237,12 +1250,13 @@ fn render_graph_header(
     column_widths: [Pixels; COLUMN_COUNT],
     colors: ThemeColors,
     weak: &WeakEntity<GitGraphView>,
+    row_height: Pixels,
 ) -> impl IntoElement {
     let labels = ["图形", "提交信息", "作者", "时间", "哈希"];
     let mut header = div()
         .id("git-graph-header")
         .w_full()
-        .h(row_height())
+        .h(row_height)
         .flex()
         .items_center()
         .flex_none()
@@ -1524,11 +1538,11 @@ mod tests {
     #[gpui::test]
     fn row_height_follows_content_font_size(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
-            let original = f32::from(typography::content_size());
-            let baseline = row_height();
+            let original = f32::from(typography::content_size(cx));
+            let baseline = row_height(typography::content_line(cx));
 
             typography::set_base_typography(cx, Some(original + 4.), None, None);
-            let enlarged = row_height();
+            let enlarged = row_height(typography::content_line(cx));
             // 临时调整基础字号，验证行高随字号变化；测试结束后立即还原。
             typography::set_base_typography(cx, Some(original), None, None);
 
@@ -1538,7 +1552,7 @@ mod tests {
                 original + 4.
             );
             assert_eq!(
-                row_height(),
+                row_height(typography::content_line(cx)),
                 baseline,
                 "还原内容字号后行高应回到原值（字号以 f32 存储，往返无损）"
             );

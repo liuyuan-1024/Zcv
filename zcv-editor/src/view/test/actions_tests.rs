@@ -8,6 +8,7 @@ use zcv_text::{Edit, TransactionId, TransactionMetadata};
 use super::common::{buffer_text, engine_buffer, focus_editor, test_buffer};
 use super::*;
 use crate::display_map::{DisplayPoint, DisplayRow};
+use crate::scroll::ScrollViewport;
 use crate::selection::{Selection, SelectionSet};
 
 #[gpui::test]
@@ -20,12 +21,7 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
         editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(1)));
         let display = editor.display_snapshot();
         editor.scroll_manager.update_viewport(
-            1,
-            px(100.0),
-            px(40.0),
-            px(200.0),
-            px(20.0),
-            px(0.0),
+            ScrollViewport::new(1, px(100.0), px(40.0), px(200.0), px(20.0), px(0.0)),
             &display,
         );
         editor

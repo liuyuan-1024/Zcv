@@ -285,12 +285,6 @@ impl<'a> BlockRows<'a> {
     }
 
     pub(crate) fn source_line_ranges(mut self) -> Vec<Range<Line>> {
-        let inlay = self
-            .snapshot
-            .wrap_snapshot
-            .tab_snapshot()
-            .fold_snapshot()
-            .inlay_snapshot();
         let mut lines = BTreeSet::new();
         while let Some(row) = self.next() {
             let BlockRowKind::Text(WrapRowKind::Text {
@@ -311,9 +305,8 @@ impl<'a> BlockRows<'a> {
                 for segment in segments.iter() {
                     if let super::fold_map::FoldRowSegmentKind::Text { stream_line, .. } =
                         segment.kind
-                        && let Some(source) = inlay.source(stream_line)
                     {
-                        lines.insert(source);
+                        lines.insert(stream_line);
                     }
                 }
             } else {

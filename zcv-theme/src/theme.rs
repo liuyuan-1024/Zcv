@@ -47,12 +47,12 @@ impl ThemeChoice {
     pub fn apply(self, cx: &mut App, window: Option<&Window>) {
         let theme = self.effective(window);
         color::set_theme(theme, cx);
-        syntax::set_theme(theme);
+        syntax::set_theme(theme, cx);
     }
 }
 
 /// 无窗口且注册表为空时的兜底（内置深色主题）。
-fn first_theme() -> &'static ThemeData {
+pub(crate) fn first_theme() -> &'static ThemeData {
     themes()
         .first()
         .expect("主题注册表不应为空（至少包含内置主题）")

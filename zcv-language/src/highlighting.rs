@@ -382,12 +382,18 @@ mod tests {
             (
                 "main.rs",
                 "fn main() { let enabled = true; let count = 3; }\n",
-                &["function.definition", "boolean", "number"],
+                &["keyword", "function.definition", "boolean", "number"],
             ),
             (
                 "main.py",
                 "@decorator\ndef greet(name: str) -> str:\n    return f\"Hi {name}\"\n",
-                &["function.decorator", "function.definition", "type.builtin"],
+                &[
+                    "keyword",
+                    "function.decorator",
+                    "function.definition",
+                    "type.builtin",
+                    "string",
+                ],
             ),
             (
                 "main.js",

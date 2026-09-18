@@ -37,10 +37,14 @@ pub(crate) fn deploy_project_search(
     deploy_project_search_view(workspace, seed, window, cx);
 }
 
+/// 注册搜索能力域的进程级 provider；在 `main` 初始化阶段调用一次。
+pub fn init(cx: &mut App) {
+    zcv_workspace::register_serialized_item_provider(ProjectSearchSerializedItemProvider, cx);
+}
+
 /// 把独立的 Buffer/Project 搜索栏及其 action 路由注入一个 Workspace。
 pub fn install(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let document_toolbar = buffer_search::install(workspace, window, cx);
-    zcv_workspace::register_serialized_item_provider(ProjectSearchSerializedItemProvider, cx);
     let workspace_handle = cx.weak_entity();
     let status_bar = workspace.status_bar().clone();
     status_bar.update(cx, |status_bar, cx| {

@@ -9,7 +9,7 @@ mod diff_projection;
 mod path_key;
 
 pub use diff_projection::{DiffFile, DiffHunkSource, DisplayHunk};
-pub use path_key::{PathKey, PathKeyIndex};
+pub(crate) use path_key::{PathKey, PathKeyIndex};
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -721,42 +721,7 @@ impl Dimension<'_, DiffTransformSummary> for MultiBufferOffset {
 
 /// 组合文本的逻辑行号。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MultiBufferRow(pub usize);
-
-impl MultiBufferRow {
-    pub const ZERO: Self = Self(0);
-
-    pub const fn new(value: usize) -> Self {
-        Self(value)
-    }
-
-    pub const fn get(self) -> usize {
-        self.0
-    }
-}
-
-/// 组合文本中的一个点：逻辑行 + 行内字节列。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MultiBufferPoint {
-    pub row: MultiBufferRow,
-    pub column: usize,
-}
-
-/// 输入 excerpts 空间的字节偏移；删除块不占该空间。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ExcerptOffset(pub usize);
-
-impl ExcerptOffset {
-    pub const ZERO: Self = Self(0);
-
-    pub const fn new(value: usize) -> Self {
-        Self(value)
-    }
-
-    pub const fn get(self) -> usize {
-        self.0
-    }
-}
+pub(crate) struct MultiBufferRow(pub usize);
 
 /// 组合文本中的半开字节区间。
 ///
@@ -801,34 +766,6 @@ impl MultiBufferRange {
 
     pub fn contains(self, point: MultiBufferOffset) -> bool {
         self.start <= point && point < self.end
-    }
-}
-
-/// 组合层与文本协议之间的区间坐标转换。
-///
-/// 两者都是半开字节区间，只是坐标空间不同；跨空间必须显式调用。
-pub trait RangeOffsetExt {
-    fn into_multi_buffer_range(self) -> Range<MultiBufferOffset>;
-    fn into_byte_range(self) -> Range<ByteOffset>;
-}
-
-impl RangeOffsetExt for Range<ByteOffset> {
-    fn into_multi_buffer_range(self) -> Range<MultiBufferOffset> {
-        MultiBufferOffset::new(self.start.get())..MultiBufferOffset::new(self.end.get())
-    }
-
-    fn into_byte_range(self) -> Range<ByteOffset> {
-        self
-    }
-}
-
-impl RangeOffsetExt for Range<MultiBufferOffset> {
-    fn into_multi_buffer_range(self) -> Range<MultiBufferOffset> {
-        self
-    }
-
-    fn into_byte_range(self) -> Range<ByteOffset> {
-        ByteOffset::new(self.start.get())..ByteOffset::new(self.end.get())
     }
 }
 
@@ -898,7 +835,6 @@ impl_offset_ops!(MultiBufferOffset);
 impl_offset_ops!(MultiBufferRow);
 impl_offset_ops!(MultiBufferCharOffset);
 impl_offset_ops!(MultiBufferOffsetUtf16);
-impl_offset_ops!(ExcerptOffset);
 
 /// 在路径有序树上按累积输出行 seek。
 ///
@@ -1814,6 +1750,74 @@ impl MultiBufferSnapshot {
         Ok(ByteOffset::new(at.bytes + relative).into())
     }
 
+    /// 组合逻辑行的完整字节范围（含行尾换行符）；行号越界返回 None。
+    ///
+    /// 最后一行以组合文本末尾为终点。
+    pub fn line_byte_range(&self, line: Line) -> Option<Range<MultiBufferOffset>> {
+        let start = self.line_start_byte(line).ok()?;
+        let end = if line.get() + 1 < self.line_count() {
+            self.line_start_byte(Line::new(line.get() + 1)).ok()?
+        } else {
+            self.len_bytes()
+        };
+        Some(start..end)
+    }
+
+    /// 组合逻辑行内容的字节范围（不含行尾 `\r`/`\n`）。
+    pub fn line_content_byte_range(&self, line: Line) -> Option<Range<MultiBufferOffset>> {
+        let range = self.line_byte_range(line)?;
+        let mut end = range.end;
+        while end > range.start {
+            let last = MultiBufferOffset::new(end.get() - 1);
+            let is_line_break = self
+                .bytes_in_range(last..end)
+                .next()
+                .and_then(|chunk| chunk.text.as_bytes().first().copied())
+                .is_some_and(|byte| byte == b'\n' || byte == b'\r');
+            if !is_line_break {
+                break;
+            }
+            end = last;
+        }
+        Some(range.start..end)
+    }
+
+    /// 组合逻辑行的文本（含行尾换行符）；单块时借用源文本切片，跨块时拼接。
+    ///
+    /// 行号越界返回 None。
+    pub fn line_text(&self, line: Line) -> Option<Cow<'_, str>> {
+        let range = self.line_byte_range(line)?;
+        if range.is_empty() {
+            return Some(Cow::Borrowed(""));
+        }
+        let mut chunks = self.bytes_in_range(range);
+        let first = chunks.next()?;
+        if let Some(second) = chunks.next() {
+            let mut text = String::from(first.text);
+            text.push_str(second.text);
+            text.extend(chunks.map(|chunk| chunk.text));
+            Some(Cow::Owned(text))
+        } else {
+            Some(Cow::Borrowed(first.text))
+        }
+    }
+
+    /// 组合逻辑行内容的字节长度与字符数（不含行尾换行符）。
+    pub fn line_content_metrics(&self, line: Line) -> Option<(usize, usize)> {
+        let content = self.line_content_byte_range(line)?;
+        let content_len = content.end.get() - content.start.get();
+        let mut byte = content.start.get();
+        let mut chars = 0;
+        while byte < content.end.get() {
+            let (chunk, chunk_start) = self.chunk_at_byte(MultiBufferOffset::new(byte)).ok()?;
+            let start = byte - chunk_start.get();
+            let end = (content.end.get() - chunk_start.get()).min(chunk.len());
+            chars += chunk[start..end].chars().count();
+            byte = chunk_start.get() + end;
+        }
+        Some((content_len, chars))
+    }
+
     /// 把组合字节偏移转换为按 Unicode scalar value 计数的逻辑位置。
     pub fn byte_to_position(&self, offset: MultiBufferOffset) -> TextResult<Position> {
         let line = self.byte_to_line(offset)?;
@@ -1830,17 +1834,6 @@ impl MultiBufferSnapshot {
         let line = self.byte_to_line(offset)?;
         let line_start = self.line_start_byte(line)?;
         Ok((line, offset.get() - line_start.get()))
-    }
-
-    /// 组合文本末端坐标（最后一个逻辑行与行内字节列）。
-    pub fn max_point(&self) -> MultiBufferPoint {
-        let (line, column) = self
-            .byte_to_point(self.len_bytes())
-            .expect("组合文本末端必须是有效坐标");
-        MultiBufferPoint {
-            row: MultiBufferRow::new(line.get()),
-            column,
-        }
     }
 
     /// 组合范围的文本多维摘要。
@@ -2897,7 +2890,7 @@ struct ExcerptState {
 
 /// 组合文档的写入能力。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Capability {
+pub(crate) enum Capability {
     /// 只读：拒绝组合编辑，仅用于不可直接编辑的数据投影（索引、暂存 diff 视图等）。
     ReadOnly,
     /// 可读写。

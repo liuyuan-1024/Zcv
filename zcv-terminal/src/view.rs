@@ -85,9 +85,8 @@ impl TerminalView {
     }
 
     /// 排空终端事件队列并刷新渲染快照（渲染元素每帧调用）。
-    pub(crate) fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.terminal
-            .update(cx, |terminal, cx| terminal.sync(window, cx));
+    pub(crate) fn sync(&mut self, cx: &mut Context<Self>) {
+        self.terminal.update(cx, |terminal, cx| terminal.sync(cx));
     }
 
     fn subscribe_terminal_events(&mut self, cx: &mut Context<Self>) {

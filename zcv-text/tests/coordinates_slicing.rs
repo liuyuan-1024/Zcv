@@ -1,6 +1,29 @@
 use zcv_text::*;
-mod common;
-use common::*;
+
+#[path = "common/buffer.rs"]
+mod buffer;
+#[path = "common/byte_range.rs"]
+mod byte_range;
+#[path = "common/char_offset.rs"]
+mod char_offset;
+#[path = "common/full_text.rs"]
+mod full_text;
+#[path = "common/line.rs"]
+mod line;
+
+use buffer::buffer;
+use byte_range::{b, range};
+use char_offset::c;
+use full_text::buffer_text;
+use line::line;
+
+fn col(value: usize) -> LogicalColumn {
+    LogicalColumn::new(value)
+}
+
+fn line_range(start: usize, end: usize) -> LineRange {
+    LineRange::new(line(start), line(end)).unwrap()
+}
 
 #[test]
 fn byte_char_position_utf16_roundtrip_should_preserve_explicit_coordinate_domains() {
@@ -116,7 +139,7 @@ fn crlf_middle_should_not_be_valid_line_position_or_edit_boundary() {
         TextError::Edit(EditError::InvalidBoundary { offset }) if offset == b(2)
     ));
     assert_eq!(buffer_text(&buffer), "a\r\nb");
-    assert_eq!(buffer.line_start(line(1)).unwrap(), c(3));
+    assert_eq!(buffer.line_start_char(line(1)).unwrap(), c(3));
     assert_eq!(buffer.line_start_byte(line(1)).unwrap(), b(3));
 }
 

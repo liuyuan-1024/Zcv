@@ -8,9 +8,7 @@ description = "栅格图片文件预览"
 path = "src/preview_image.rs"
 
 [dependencies]
-anyhow.workspace = true
 gpui.workspace = true
-zcv-project.workspace = true
 zcv-theme.workspace = true
 zcv-workspace.workspace = true
 

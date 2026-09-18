@@ -929,12 +929,12 @@ fn text_chunks_stream_excerpt_sources_and_inserted_boundary(cx: &mut TestAppCont
     );
     assert_eq!(
         chunks[0].output_range,
-        (ByteOffset::ZERO..ByteOffset::new(5)).into_multi_buffer_range()
+        MultiBufferOffset::new(0)..MultiBufferOffset::new(5)
     );
     assert_eq!(chunks[1].text, "\n");
     assert_eq!(
         chunks[1].output_range,
-        (ByteOffset::new(5)..ByteOffset::new(6)).into_multi_buffer_range()
+        MultiBufferOffset::new(5)..MultiBufferOffset::new(6)
     );
     assert_eq!(
         chunks
@@ -978,7 +978,7 @@ fn plain_snapshot_streams_its_source_without_materializing() {
     let snapshot = MultiBufferSnapshot::from(buffer.snapshot());
 
     let chunks = snapshot
-        .bytes_in_range((ByteOffset::new(2)..ByteOffset::new(8)).into_multi_buffer_range())
+        .bytes_in_range(MultiBufferOffset::new(2)..MultiBufferOffset::new(8))
         .map(|chunk| chunk.text)
         .collect::<String>();
     assert_eq!(chunks, "pha\nbe");
@@ -1554,7 +1554,8 @@ fn excerpt_projects_contained_fold_range_to_output_coordinates(cx: &mut TestAppC
     });
     assert_eq!(
         projected,
-        [source_fold_start - source_start..source_fold_end - source_start],
+        std::iter::once(source_fold_start - source_start..source_fold_end - source_start)
+            .collect::<Vec<_>>(),
         "折叠范围应相对 excerpt 输出起点投影"
     );
 }
@@ -1626,8 +1627,11 @@ fn fold_projection_accounts_for_nonzero_output_start(cx: &mut TestAppContext) {
     });
     assert_eq!(
         projected,
-        [output_start + source_fold_start - source_start
-            ..output_start + source_fold_end - source_start],
+        std::iter::once(
+            output_start + source_fold_start - source_start
+                ..output_start + source_fold_end - source_start,
+        )
+        .collect::<Vec<_>>(),
         "折叠范围应叠加后续 excerpt 的组合起点偏移"
     );
 }

@@ -1,17 +1,17 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-mod active_buffer_language;
 mod auto_update;
-mod cursor_position;
 mod harness;
 mod workspace;
 
 use std::ffi::OsString;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use gpui::{App, Application};
 use workspace::{open_empty_workspace, open_empty_workspace_with_error, open_project_window};
 use zcv_assets::Assets;
+use zcv_language::LanguageRegistry;
 use zcv_settings::SettingsStore;
 use zcv_theme::typography;
 use zcv_workspace::most_recent_valid_project;
@@ -43,10 +43,14 @@ fn main() {
                     Some(settings.content_line_height),
                 );
             }
-            zcv_preview_markdown::init(cx);
+            // 应用级唯一语言注册表：预览 Provider 与工作区内的 Project 共享同一份。
+            let languages = Arc::new(LanguageRegistry::new());
+            zcv_preview_markdown::init(Arc::clone(&languages), cx);
             zcv_preview_svg::init(cx);
             zcv_editor::init(cx);
             zcv_preview_image::init(cx);
+            zcv_search::init(cx);
+            zcv_version_control::init(cx);
             zcv_keymap::init(cx).expect("内置快捷键应能注册");
             auto_update::init(cx);
 
@@ -59,13 +63,17 @@ fn main() {
             match initial_project_root(std::env::args_os(), most_recent_valid_project()) {
                 Some(root) => {
                     // 打开失败（路径已失效等）回退空工作区，不阻塞启动。
-                    if let Err(error) = open_project_window(root, cx) {
-                        open_empty_workspace_with_error(format!("打开项目失败：{error:#}"), cx)
-                            .expect("空工作区窗口应能创建");
+                    if let Err(error) = open_project_window(root, Arc::clone(&languages), cx) {
+                        open_empty_workspace_with_error(
+                            format!("打开项目失败：{error:#}"),
+                            languages,
+                            cx,
+                        )
+                        .expect("空工作区窗口应能创建");
                     }
                 }
                 None => {
-                    open_empty_workspace(cx).expect("空工作区窗口应能创建");
+                    open_empty_workspace(languages, cx).expect("空工作区窗口应能创建");
                 }
             }
 

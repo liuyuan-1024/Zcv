@@ -3,7 +3,7 @@
 //! ANSI 16 色与 dim 变体从当前主题读取（`terminal.ansi.*` token，跟随主题切换）；
 //! xterm 256 色算法与主题无关，在此内联实现。
 
-use gpui::{App, Rgba, Window};
+use gpui::{App, Rgba};
 use zcv_theme::color;
 
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
@@ -18,7 +18,7 @@ const fn rgb_u8(r: u8, g: u8, b: u8) -> Rgba {
 }
 
 /// 把 alacritty 颜色枚举解析为 RGBA。
-pub(crate) fn color_to_rgba(color: &Color, _window: &Window, cx: &App) -> Rgba {
+pub(crate) fn color_to_rgba(color: &Color, cx: &App) -> Rgba {
     match color {
         Color::Named(NamedColor::Foreground) => color::current(cx).text,
         Color::Named(NamedColor::Background) => color::current(cx).editor_background,
@@ -36,7 +36,7 @@ pub(crate) fn color_to_rgba(color: &Color, _window: &Window, cx: &App) -> Rgba {
 }
 
 /// OSC 颜色查询（ColorRequest）的兜底：按索引查 16 色表 / 256 色算法 / 语义占位。
-pub(crate) fn get_color_at_index(index: usize, _window: &Window, cx: &App) -> Rgba {
+pub(crate) fn get_color_at_index(index: usize, cx: &App) -> Rgba {
     match index {
         0..=15 => theme_ansi_colors(cx)[index],
         16..=255 => indexed_color(index as u8),

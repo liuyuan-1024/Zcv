@@ -301,7 +301,7 @@ impl GlobalWatcher {
         mode: WatcherMode,
         case_insensitive: bool,
         cb: impl Fn(&notify::Event) + Send + Sync + 'static,
-    ) -> anyhow::Result<Option<WatcherRegistrationId>> {
+    ) -> anyhow::Result<WatcherRegistrationId> {
         let key = WatchKey::for_path(&path, case_insensitive);
         let mut state = self.state.lock().unwrap();
 
@@ -342,7 +342,7 @@ impl GlobalWatcher {
                 has_os_watcher: !path_already_covered,
             });
 
-        Ok(Some(id))
+        Ok(id)
     }
 
     /// 移除一条监听注册。
@@ -708,39 +708,33 @@ impl FsWatcher {
                         }
 
                         // 路径已创建，尝试注册到 GlobalWatcher
-                        match register_existing_path(
+                        if let Ok(reg) = register_existing_path(
                             poll_path.clone(),
                             semantics,
                             signal_tx.clone(),
                             pending_events.clone(),
                         ) {
-                            Ok(Some(reg)) => {
-                                let mut regs = registrations.lock().unwrap();
-                                if pending_regs.lock().unwrap().remove(&poll_path).is_none() {
-                                    global_watcher().remove(reg.id);
-                                    continue;
-                                }
-                                regs.insert(key, reg);
-                                // 发送 Created + Rescan 事件通知消费方
-                                enqueue_path_events(
-                                    &signal_tx,
-                                    &pending_events,
-                                    vec![
-                                        PathEvent {
-                                            path: absolute_event_path(poll_path.to_path_buf()),
-                                            kind: Some(PathEventKind::Created),
-                                        },
-                                        PathEvent {
-                                            path: absolute_event_path(poll_path.to_path_buf()),
-                                            kind: Some(PathEventKind::Rescan),
-                                        },
-                                    ],
-                                );
+                            let mut regs = registrations.lock().unwrap();
+                            if pending_regs.lock().unwrap().remove(&poll_path).is_none() {
+                                global_watcher().remove(reg.id);
+                                continue;
                             }
-                            Ok(None) => {
-                                // 全局 watcher 拒绝注册（如 watch limit），继续重试
-                            }
-                            Err(_) => {}
+                            regs.insert(key, reg);
+                            // 发送 Created + Rescan 事件通知消费方
+                            enqueue_path_events(
+                                &signal_tx,
+                                &pending_events,
+                                vec![
+                                    PathEvent {
+                                        path: absolute_event_path(poll_path.to_path_buf()),
+                                        kind: Some(PathEventKind::Created),
+                                    },
+                                    PathEvent {
+                                        path: absolute_event_path(poll_path.to_path_buf()),
+                                        kind: Some(PathEventKind::Rescan),
+                                    },
+                                ],
+                            );
                         }
                     }
                 }
@@ -786,20 +780,13 @@ impl Watcher for FsWatcher {
             }
         }
 
-        match register_existing_path(
+        let reg = register_existing_path(
             path.clone(),
             semantics,
             self.signal_tx.clone(),
             self.pending_path_events.clone(),
-        )? {
-            Some(reg) => {
-                self.registrations.lock().unwrap().insert(key, reg);
-            }
-            None => {
-                // 注册被跳过（如 watch limit 冷却），后台重试
-                self.add_pending_path(path);
-            }
-        }
+        )?;
+        self.registrations.lock().unwrap().insert(key, reg);
 
         Ok(())
     }
@@ -854,7 +841,7 @@ fn register_existing_path(
     semantics: platform::FileSystemSemantics,
     signal_tx: async_channel::Sender<()>,
     pending_events: Arc<Mutex<Vec<PathEvent>>>,
-) -> anyhow::Result<Option<FsWatcherRegistration>> {
+) -> anyhow::Result<FsWatcherRegistration> {
     let mode = if semantics.requires_poll_watcher {
         WatcherMode::Poll
     } else {
@@ -863,7 +850,7 @@ fn register_existing_path(
 
     let path_for_cb = path.clone();
 
-    let Some(id) = global_watcher().add(
+    let id = global_watcher().add(
         path,
         mode,
         !semantics.case_sensitive,
@@ -876,12 +863,9 @@ fn register_existing_path(
                 event,
             );
         },
-    )?
-    else {
-        return Ok(None);
-    };
+    )?;
 
-    Ok(Some(FsWatcherRegistration { id, mode }))
+    Ok(FsWatcherRegistration { id, mode })
 }
 
 /// 判断某路径是否被当前注册的递归监听覆盖。

@@ -3,11 +3,11 @@
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, AnyView, App, Div, Entity, WeakEntity, Window, WindowControlArea, div, prelude::*,
+    AnyElement, AnyView, App, Div, Entity, Subscription, WeakEntity, Window, WindowControlArea,
+    div, prelude::*,
 };
 use zcv_actions::OpenSettings;
-use zcv_git::Branch;
-use zcv_project::{GitJobPhase, GitOperationKind, RemoteOperationState};
+use zcv_project::{GitJobPhase, GitOperationKind, GitStore, GitStoreEvent, RemoteOperationState};
 use zcv_theme::{color, space};
 use zcv_ui::Button;
 
@@ -30,22 +30,22 @@ pub struct TopBarCallbacks {
 
 pub struct TopBar {
     pub project_picker: Entity<ProjectPicker>,
-    /// 分支选择器（显示当前分支名；由 Workspace 订阅 GitStore 事件刷新）。
+    /// 分支选择器（显示当前分支名；与 TopBar 一样直接读取 GitStore）。
     pub branch_picker: Entity<BranchPicker>,
-    /// 项目是否已发现 git 仓库（控制同步/推送/拉取按钮）。
-    has_repositories: bool,
-    /// 活动仓库的远程操作状态（无 remote 时同步/推送/拉取按钮都不显示）。
-    remote_operation_state: RemoteOperationState,
+    /// Git 状态权威；TopBar 只在渲染时读取，不再由宿主推送可写副本。
+    git_store: Entity<GitStore>,
     /// 应用级更新控件由 binary 装配层注入；TopBar 只负责其固定布局位置。
     update_control: Option<AnyView>,
     workspace: WeakEntity<Workspace>,
     callbacks: TopBarCallbacks,
+    _git_subscription: Subscription,
 }
 
 impl TopBar {
     pub fn new(
         on_selected: OnProjectSelected,
         workspace: WeakEntity<Workspace>,
+        git_store: Entity<GitStore>,
         on_branch: OnBranchSelected,
         callbacks: TopBarCallbacks,
         window: &mut Window,
@@ -53,41 +53,18 @@ impl TopBar {
     ) -> Self {
         let project_picker =
             cx.new(|cx| ProjectPicker::new(on_selected, workspace.clone(), window, cx));
-        let branch_picker = cx.new(|cx| BranchPicker::new(on_branch, window, cx));
+        let branch_picker =
+            cx.new(|cx| BranchPicker::new(git_store.clone(), on_branch, window, cx));
+        let git_subscription = cx.subscribe(&git_store, |_, _, _: &GitStoreEvent, cx| cx.notify());
         Self {
             project_picker,
             branch_picker,
-            has_repositories: false,
-            remote_operation_state: RemoteOperationState::default(),
+            git_store,
             update_control: None,
             workspace,
             callbacks,
+            _git_subscription: git_subscription,
         }
-    }
-
-    /// 分支数据由 Workspace 订阅 GitStore 事件后推送（按钮与列表同仓库）。
-    pub fn set_branch(&mut self, branch: Option<String>, cx: &mut gpui::Context<Self>) {
-        self.branch_picker
-            .update(cx, |picker, _| picker.set_branch(branch));
-    }
-
-    /// 设置活动仓库 HEAD 提交的 oid（detached HEAD 时分支选择器显示短 SHA）。
-    pub fn set_head_commit(&mut self, head_commit: Option<String>, cx: &mut gpui::Context<Self>) {
-        self.branch_picker
-            .update(cx, |picker, _| picker.set_head_commit(head_commit));
-    }
-
-    pub fn set_branches(&mut self, branches: Vec<Branch>, cx: &mut gpui::Context<Self>) {
-        self.branch_picker
-            .update(cx, |picker, cx| picker.set_branches(branches, cx));
-    }
-
-    pub fn set_has_repositories(&mut self, has_repositories: bool) {
-        self.has_repositories = has_repositories;
-    }
-
-    pub fn set_remote_operation_state(&mut self, state: RemoteOperationState) {
-        self.remote_operation_state = state;
     }
 
     pub fn set_update_control(&mut self, update_control: AnyView, cx: &mut gpui::Context<Self>) {
@@ -147,16 +124,18 @@ fn leading_slots(window: &Window, top_bar: &TopBar, cx: &App) -> Vec<AnyElement>
     out.push(top_bar.project_picker.clone().into_any_element());
 
     // Git 分支与同步/推送/拉取操作：项目不是 git 仓库时不显示。
-    if top_bar.has_repositories {
+    let has_repositories = top_bar.git_store.read(cx).has_repositories();
+    if has_repositories {
         // 空仓库没有分支或 HEAD，不显示分支选择器；其余仓库由选择器显示分支名或短 SHA。
-        if top_bar.branch_picker.read(cx).has_branch_context() {
+        if top_bar.branch_picker.read(cx).has_branch_context(cx) {
             out.push(top_bar.branch_picker.clone().into_any_element());
         }
         // 无 remote 时 fetch/pull/push 都会报错，不给出入口；
         // 有 remote 时同步常显（主动检查更新的兜底），推送/拉取仅在可推/可拉时出现。
-        if top_bar.remote_operation_state.has_remote {
-            let busy = top_bar.remote_operation_state.operation.is_some();
-            let operation_label = remote_operation_label(top_bar.remote_operation_state);
+        let remote_operation_state = top_bar.git_store.read(cx).remote_operation_state();
+        if remote_operation_state.has_remote {
+            let busy = remote_operation_state.operation.is_some();
+            let operation_label = remote_operation_label(remote_operation_state);
             out.push(
                 Button::icon("top-bar.git-fetch", "icons/arrow_circle.svg")
                     .label(operation_label.unwrap_or("同步"))
@@ -167,12 +146,12 @@ fn leading_slots(window: &Window, top_bar: &TopBar, cx: &App) -> Vec<AnyElement>
                     })
                     .into_any_element(),
             );
-            if top_bar.remote_operation_state.behind > 0 {
+            if remote_operation_state.behind > 0 {
                 out.push(
                     Button::icon_text(
                         "top-bar.git-pull",
                         "icons/arrow_down.svg",
-                        top_bar.remote_operation_state.behind.to_string(),
+                        remote_operation_state.behind.to_string(),
                     )
                     .label(operation_label.unwrap_or("拉取"))
                     .disabled(busy)
@@ -183,12 +162,12 @@ fn leading_slots(window: &Window, top_bar: &TopBar, cx: &App) -> Vec<AnyElement>
                     .into_any_element(),
                 );
             }
-            if top_bar.remote_operation_state.ahead > 0 {
+            if remote_operation_state.ahead > 0 {
                 out.push(
                     Button::icon_text(
                         "top-bar.git-push",
                         "icons/arrow_up.svg",
-                        top_bar.remote_operation_state.ahead.to_string(),
+                        remote_operation_state.ahead.to_string(),
                     )
                     .label(operation_label.unwrap_or("推送"))
                     .disabled(busy)
@@ -235,7 +214,7 @@ fn trailing_slots(
     out.push(
         Button::icon("top-bar.settings", "icons/settings.svg")
             .label("设置")
-            .shortcut(&OpenSettings, cx)
+            .shortcut(zcv_keymap::display_shortcut(&OpenSettings, cx))
             .on_click(move |_, window, cx| {
                 workspace
                     .update(cx, |workspace, cx| workspace.open_settings(window, cx))

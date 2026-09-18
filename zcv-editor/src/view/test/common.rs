@@ -15,6 +15,19 @@ impl Editor {
     ) -> Self {
         Self::from_language_buffer(language_buffer, EditorMode::Full, cx)
     }
+
+    /// 测试用：覆盖换行模式（UI 覆盖入口没有生产消费方，仅测试驱动换行重排）。
+    pub(super) fn set_soft_wrap_mode(
+        &mut self,
+        soft_wrap: Option<SoftWrap>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.soft_wrap_override == soft_wrap {
+            return;
+        }
+        self.soft_wrap_override = soft_wrap;
+        cx.notify();
+    }
 }
 
 pub(super) fn test_buffer(

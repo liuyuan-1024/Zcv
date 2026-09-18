@@ -37,24 +37,10 @@ impl SnippetHighlightCancellation {
     }
 }
 
-/// 使用给定语言注册表高亮一段代码。
+/// 使用给定语言注册表高亮一段代码，并允许调用方取消过期计算。
 ///
 /// `language` 可使用语言名、文件扩展名或注入别名，例如 `Rust`、`rs`、`typescript`、`ts`、`golang`。
 /// 未知语言或不含语法树的语言返回 `None`。
-pub fn highlight_snippet(
-    registry: &Arc<LanguageRegistry>,
-    language: &str,
-    source: &str,
-) -> Option<SnippetHighlights> {
-    highlight_snippet_with_cancellation(
-        registry,
-        language,
-        source,
-        &SnippetHighlightCancellation::default(),
-    )
-}
-
-/// 使用给定语言注册表高亮一段代码，并允许调用方取消过期计算。
 pub fn highlight_snippet_with_cancellation(
     registry: &Arc<LanguageRegistry>,
     language: &str,
@@ -90,8 +76,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        LanguageRegistry, SnippetHighlightCancellation, highlight_snippet,
-        highlight_snippet_with_cancellation,
+        LanguageRegistry, SnippetHighlightCancellation, highlight_snippet_with_cancellation,
     };
 
     fn test_registry() -> Arc<LanguageRegistry> {
@@ -100,9 +85,13 @@ mod tests {
 
     #[test]
     fn highlights_rust_with_the_registered_language() {
-        let highlights =
-            highlight_snippet(&test_registry(), "rust", "fn main() { let count = 1; }")
-                .expect("rust 围栏语言应被识别");
+        let highlights = highlight_snippet_with_cancellation(
+            &test_registry(),
+            "rust",
+            "fn main() { let count = 1; }",
+            &SnippetHighlightCancellation::default(),
+        )
+        .expect("rust 围栏语言应被识别");
         assert!(!highlights.spans.is_empty());
         assert!(
             highlights
@@ -114,13 +103,38 @@ mod tests {
 
     #[test]
     fn accepts_extensions_and_injection_aliases() {
-        assert!(highlight_snippet(&test_registry(), "ts", "const value: number = 1;").is_some());
-        assert!(highlight_snippet(&test_registry(), "golang", "package main").is_some());
+        let cancellation = SnippetHighlightCancellation::default();
+        assert!(
+            highlight_snippet_with_cancellation(
+                &test_registry(),
+                "ts",
+                "const value: number = 1;",
+                &cancellation
+            )
+            .is_some()
+        );
+        assert!(
+            highlight_snippet_with_cancellation(
+                &test_registry(),
+                "golang",
+                "package main",
+                &cancellation
+            )
+            .is_some()
+        );
     }
 
     #[test]
     fn leaves_unknown_languages_unhighlighted() {
-        assert!(highlight_snippet(&test_registry(), "not-a-language", "plain text").is_none());
+        assert!(
+            highlight_snippet_with_cancellation(
+                &test_registry(),
+                "not-a-language",
+                "plain text",
+                &SnippetHighlightCancellation::default()
+            )
+            .is_none()
+        );
     }
 
     #[test]

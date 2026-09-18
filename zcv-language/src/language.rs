@@ -22,8 +22,7 @@ pub use language_buffer::{LanguageBuffer, LanguageBufferEvent, LanguageBufferSna
 pub use language_settings::LanguageSettings;
 pub use registry::{Language, LanguageRegistry};
 pub use snippet::{
-    SnippetHighlightCancellation, SnippetHighlights, highlight_snippet,
-    highlight_snippet_with_cancellation,
+    SnippetHighlightCancellation, SnippetHighlights, highlight_snippet_with_cancellation,
 };
 pub use structure::{
     BracketPair, FoldRange, LocalBinding, NewlineIndent, OutlineItem, OutlineTextRange, SyntaxNode,

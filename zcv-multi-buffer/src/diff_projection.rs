@@ -209,6 +209,16 @@ impl HunkAccum {
     }
 }
 
+/// 一个投影片段的裁剪与标注选项。
+struct ExcerptShape {
+    /// diff 语义；None 表示不标注类型。
+    diff_kind: Option<ExcerptDiffKind>,
+    /// 是否作为新 excerpt 的起点（文件头之后的首个片段）。
+    starts_new_excerpt: bool,
+    /// 是否允许空片段（空文件占位行、删除点占位行）。
+    allow_empty: bool,
+}
+
 struct ExcerptMaterializer<'a> {
     excerpts: &'a mut Vec<ExcerptRange>,
     display_path: &'a Path,
@@ -223,9 +233,7 @@ impl ExcerptMaterializer<'_> {
         lines: Range<usize>,
         text: &Snapshot,
         source: &Entity<LanguageBuffer>,
-        diff_kind: Option<ExcerptDiffKind>,
-        starts_new_excerpt: bool,
-        allow_empty: bool,
+        shape: ExcerptShape,
         hunks: Vec<DiffTransformHunkInfo>,
     ) -> Vec<DiffTransformHunkInfo> {
         let Some(mut excerpt) = projected_excerpt(
@@ -233,9 +241,9 @@ impl ExcerptMaterializer<'_> {
             text,
             lines,
             self.display_path,
-            diff_kind,
-            starts_new_excerpt,
-            allow_empty,
+            shape.diff_kind,
+            shape.starts_new_excerpt,
+            shape.allow_empty,
         ) else {
             return hunks;
         };
@@ -1258,9 +1266,11 @@ fn materialize_file(
             0..line_count,
             &working_text,
             &working,
-            Some(ExcerptDiffKind::Added),
-            show_file_header,
-            false,
+            ExcerptShape {
+                diff_kind: Some(ExcerptDiffKind::Added),
+                starts_new_excerpt: show_file_header,
+                allow_empty: false,
+            },
             vec![DiffTransformHunkInfo {
                 working: working_id,
                 hunk_index: None,
@@ -1283,9 +1293,11 @@ fn materialize_file(
                 0..line_count,
                 &working_text,
                 &working,
-                None,
-                show_file_header,
-                true,
+                ExcerptShape {
+                    diff_kind: None,
+                    starts_new_excerpt: show_file_header,
+                    allow_empty: true,
+                },
                 Vec::new(),
             );
         }
@@ -1313,9 +1325,11 @@ fn materialize_file(
                     current..hunk.buffer_lines.start,
                     &working_text,
                     &working,
-                    None,
-                    starts_new_excerpt,
-                    false,
+                    ExcerptShape {
+                        diff_kind: None,
+                        starts_new_excerpt,
+                        allow_empty: false,
+                    },
                     boundary,
                 );
                 starts_new_excerpt = false;
@@ -1338,9 +1352,11 @@ fn materialize_file(
                         hunk.base_lines.clone(),
                         &base_text,
                         base,
-                        Some(ExcerptDiffKind::Deleted),
-                        starts_new_excerpt,
-                        false,
+                        ExcerptShape {
+                            diff_kind: Some(ExcerptDiffKind::Deleted),
+                            starts_new_excerpt,
+                            allow_empty: false,
+                        },
                         hunks,
                     );
                     old_materialized = true;
@@ -1360,9 +1376,11 @@ fn materialize_file(
                         hunk.base_lines.start..hunk.base_lines.start,
                         &base_text,
                         base,
-                        Some(ExcerptDiffKind::Deleted),
-                        starts_new_excerpt,
-                        true,
+                        ExcerptShape {
+                            diff_kind: Some(ExcerptDiffKind::Deleted),
+                            starts_new_excerpt,
+                            allow_empty: true,
+                        },
                         hunks,
                     );
                     old_materialized = true;
@@ -1383,9 +1401,11 @@ fn materialize_file(
                     hunk.buffer_lines.clone(),
                     &working_text,
                     &working,
-                    Some(ExcerptDiffKind::Added),
-                    starts_new_excerpt,
-                    false,
+                    ExcerptShape {
+                        diff_kind: Some(ExcerptDiffKind::Added),
+                        starts_new_excerpt,
+                        allow_empty: false,
+                    },
                     hunks,
                 );
                 starts_new_excerpt = false;
@@ -1405,9 +1425,11 @@ fn materialize_file(
                 current..context_range.end,
                 &working_text,
                 &working,
-                None,
-                starts_new_excerpt,
-                false,
+                ExcerptShape {
+                    diff_kind: None,
+                    starts_new_excerpt,
+                    allow_empty: false,
+                },
                 pending_boundary.take().into_iter().collect(),
             );
             // 片段被空行策略跳过时恢复边界，交给收尾逻辑挂到零长度节点。
@@ -1423,9 +1445,11 @@ fn materialize_file(
                     0..line_count.max(1),
                     &working_text,
                     &working,
-                    None,
-                    show_file_header,
-                    true,
+                    ExcerptShape {
+                        diff_kind: None,
+                        starts_new_excerpt: show_file_header,
+                        allow_empty: true,
+                    },
                     Vec::new(),
                 );
             }

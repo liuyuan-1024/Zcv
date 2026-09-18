@@ -17,11 +17,8 @@ use zcv_actions::{
     Backtab, FindNext, FindPrevious, ReplaceAll, ReplaceNext, Tab, ToggleCaseSensitive,
     ToggleRegex, ToggleReplace, ToggleWholeWord,
 };
-use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind};
-use zcv_editor::{
-    DiffHunkDelegate, Editor, EditorEvent, EditorHunk, EditorHunkMarkerKind, EditorHunkPart,
-    HunkControlTarget,
-};
+use zcv_buffer_diff::{BufferDiff, BufferDiffInput};
+use zcv_editor::{DiffHunkDelegate, Editor, EditorEvent, EditorHunk, HunkControlTarget};
 use zcv_git::{
     ConflictChoice, FileStatus, GitHunkOperation, GitRevision, StatusCode, parse_conflict_regions,
 };
@@ -308,7 +305,7 @@ impl ProjectDiffKind {
         }
     }
 
-    fn includes(self, status: FileStatus) -> bool {
+    pub(crate) fn includes(self, status: FileStatus) -> bool {
         match self {
             Self::Staged => status.has_staged(),
             Self::Unstaged => status.has_unstaged(),
@@ -654,7 +651,7 @@ impl ProjectDiffView {
             let weak = weak.clone();
             Button::icon("project-diff-toggle-replace", "icons/replace.svg")
                 .label("替换")
-                .shortcut(&ToggleReplace, cx)
+                .shortcut(zcv_keymap::display_shortcut(&ToggleReplace, cx))
                 .color(if self.show_replace {
                     colors.icon_accent
                 } else {
@@ -694,6 +691,7 @@ impl ProjectDiffView {
                         .clone()
                         .into_any_element(),
                 )
+                .shortcut_resolver(zcv_keymap::display_shortcut)
                 .on_replace(replace_action)
                 .on_replace_all(replace_all_action)
                 .into_any_element()
@@ -820,6 +818,7 @@ impl ProjectDiffView {
                                     .clone()
                                     .into_any_element(),
                             )
+                            .shortcut_resolver(zcv_keymap::display_shortcut)
                             .options(self.search_options)
                             .on_toggle({
                                 let weak = weak.clone();
@@ -1146,44 +1145,18 @@ impl ProjectDiffView {
                     continue;
                 };
                 let output_offset = |offset: usize| {
-                    ByteOffset::new(
-                        excerpt.output_range().start().get()
-                            + offset.saturating_sub(excerpt.source_range().start().get()),
-                    )
+                    excerpt.output_range().start().get()
+                        + offset.saturating_sub(excerpt.source_range().start().get())
                 };
-                let Ok(range) = TextRange::new(
-                    output_offset(region.outer.start),
-                    output_offset(region.outer.end),
+                let Some(hunk) = EditorHunk::conflict(
+                    format!("{}\n{index}", path.display()),
+                    region.outer.clone(),
+                    region.theirs.start,
+                    output_offset,
                 ) else {
                     continue;
                 };
-                hunks.push(EditorHunk {
-                    id: format!("{}\n{index}", path.display()).into(),
-                    range: range.into(),
-                    parts: vec![
-                        EditorHunkPart {
-                            range: TextRange::new(
-                                output_offset(region.outer.start),
-                                output_offset(region.theirs.start),
-                            )
-                            .expect("冲突当前侧范围必须有效")
-                            .into(),
-                            content_kind: DiffHunkKind::Deleted,
-                            marker_kind: EditorHunkMarkerKind::Conflict,
-                        },
-                        EditorHunkPart {
-                            range: TextRange::new(
-                                output_offset(region.theirs.start),
-                                output_offset(region.outer.end),
-                            )
-                            .expect("冲突传入侧范围必须有效")
-                            .into(),
-                            content_kind: DiffHunkKind::Added,
-                            marker_kind: EditorHunkMarkerKind::Conflict,
-                        },
-                    ]
-                    .into(),
-                });
+                hunks.push(hunk);
             }
         }
         hunks
@@ -1723,9 +1696,46 @@ mod tests {
     use gpui::{AppContext as _, TestAppContext};
 
     use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
-    use zcv_language::LanguageBuffer;
+    use zcv_language::{LanguageBuffer, LanguageRegistry};
     use zcv_multi_buffer::ExcerptDiffKind;
     use zcv_text::{Buffer, BufferConfig, Edit, Line, TransactionMetadata};
+
+    #[test]
+    fn includes_matches_section_membership_for_every_status() {
+        // 冲突条目只属于冲突组，不进入暂存/未暂存组。
+        assert!(!ProjectDiffKind::Staged.includes(FileStatus::Unmerged));
+        assert!(!ProjectDiffKind::Unstaged.includes(FileStatus::Unmerged));
+        assert!(ProjectDiffKind::Conflict.includes(FileStatus::Unmerged));
+
+        assert!(!ProjectDiffKind::Staged.includes(FileStatus::Untracked));
+        assert!(ProjectDiffKind::Unstaged.includes(FileStatus::Untracked));
+
+        assert!(!ProjectDiffKind::Staged.includes(FileStatus::Ignored));
+        assert!(!ProjectDiffKind::Unstaged.includes(FileStatus::Ignored));
+        assert!(!ProjectDiffKind::Conflict.includes(FileStatus::Ignored));
+
+        let staged = FileStatus::Tracked {
+            index_status: StatusCode::Modified,
+            worktree_status: StatusCode::Unmodified,
+        };
+        assert!(ProjectDiffKind::Staged.includes(staged));
+        assert!(!ProjectDiffKind::Unstaged.includes(staged));
+
+        let unstaged = FileStatus::Tracked {
+            index_status: StatusCode::Unmodified,
+            worktree_status: StatusCode::Modified,
+        };
+        assert!(!ProjectDiffKind::Staged.includes(unstaged));
+        assert!(ProjectDiffKind::Unstaged.includes(unstaged));
+
+        // 部分暂存：两组同时出现。
+        let partial = FileStatus::Tracked {
+            index_status: StatusCode::Added,
+            worktree_status: StatusCode::Deleted,
+        };
+        assert!(ProjectDiffKind::Staged.includes(partial));
+        assert!(ProjectDiffKind::Unstaged.includes(partial));
+    }
 
     #[test]
     fn project_diff_persistence_state_keeps_group_and_active_path() {
@@ -1782,7 +1792,7 @@ mod tests {
 
     fn test_project(root: PathBuf, cx: &mut TestAppContext) -> Entity<Project> {
         let watcher: Arc<dyn Watcher> = Arc::new(PassiveWatcher::new());
-        cx.new(|cx| Project::new_with_watcher(root, watcher, cx))
+        cx.new(|cx| Project::new_with_watcher(root, watcher, Arc::new(LanguageRegistry::new()), cx))
     }
 
     fn canonical_root(path: &Path) -> PathBuf {

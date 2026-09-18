@@ -14,11 +14,10 @@ use gpui::{
 };
 use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
-use zcv_theme::{color, space};
-use zcv_ui::Button;
+use zcv_theme::color;
 use zcv_workspace::{
-    Breadcrumbs, Item, ItemEvent, ItemHandle, PreviewDocument, PreviewItem, PreviewItemHandle,
-    PreviewToggleCallback, PreviewViewport, PreviewViewportOptions,
+    Item, ItemEvent, ItemHandle, PreviewDocument, PreviewItem, PreviewItemHandle, PreviewToolbar,
+    PreviewViewport, PreviewViewportOptions,
 };
 
 use crate::renderer::{SVG_PREVIEW_MIN_DISPLAY_EDGE, rasterize_svg};
@@ -47,32 +46,7 @@ pub(crate) struct SvgPreviewView {
     render_task: Option<Task<()>>,
     _document_subscription: Subscription,
     _item_subscription: Subscription,
-    breadcrumbs: Entity<Breadcrumbs>,
-    toolbar: Entity<SvgPreviewToolbar>,
-}
-
-struct SvgPreviewToolbar {
-    breadcrumbs: Entity<Breadcrumbs>,
-    toggle_preview: PreviewToggleCallback,
-}
-
-impl Render for SvgPreviewToolbar {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .w_full()
-            .flex()
-            .items_center()
-            .gap(space::S6)
-            .child(div().flex_1().min_w_0().child(self.breadcrumbs.clone()))
-            .child(
-                Button::icon("svg-preview-source", "icons/eye_off.svg")
-                    .label("返回源码")
-                    .on_click({
-                        let toggle_preview = self.toggle_preview.clone();
-                        move |_, window, cx| toggle_preview(window, cx)
-                    }),
-            )
-    }
+    toolbar: Entity<PreviewToolbar>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,12 +66,12 @@ impl SvgPreviewView {
         else {
             panic!("SVG 预览必须从源码 Item 创建")
         };
-        let breadcrumbs = cx.new(|_| Breadcrumbs::without_project());
-        breadcrumbs.update(cx, |view, cx| view.set_item(Some(source_item.as_ref()), cx));
-        let toolbar = cx.new(|_| SvgPreviewToolbar {
-            breadcrumbs: breadcrumbs.clone(),
+        let toolbar = PreviewToolbar::new(
+            source_item.as_ref(),
             toggle_preview,
-        });
+            "svg-preview-source",
+            cx,
+        );
         let resources_dir = path.parent().map(PathBuf::from);
         let document_subscription = cx.observe(&multi_buffer, |view, _, cx| {
             view.start_render(1., cx);
@@ -113,7 +87,8 @@ impl SvgPreviewView {
                 {
                     this.update(cx, |view, cx| {
                         view.resources_dir = path.parent().map(PathBuf::from);
-                        view.breadcrumbs.update(cx, |_, cx| cx.notify());
+                        view.toolbar
+                            .update(cx, |toolbar, cx| toolbar.refresh_breadcrumbs(cx));
                         view.start_render(1., cx);
                         cx.emit(SvgPreviewEvent::SourcePathChanged);
                     })
@@ -133,7 +108,6 @@ impl SvgPreviewView {
             render_task: None,
             _document_subscription: document_subscription,
             _item_subscription: item_subscription,
-            breadcrumbs,
             toolbar,
         };
         view.start_render(1., cx);

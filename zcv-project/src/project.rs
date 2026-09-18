@@ -19,15 +19,8 @@ pub use git_store::{
 };
 pub use project_store::{FileWatcherError, FileWatcherOperation, Project, ProjectEvent};
 pub use search::{
-    ExcerptMatches, FileSearchResult, PreparedSearchQuery, RegexSearchOptions, RegexSearchResult,
-    SearchError, SearchMatch, SearchOptions, SearchQuery, SearchQueryResult, SearchResult,
-    SearchResults, SearchTextResult, VersionedResult, VersionedResultError,
-    regex_replacement_for_match, regex_replacements_in_text,
+    RegexSearchResult, SearchQuery, SearchQueryResult, SearchResult, regex_replacement_for_match,
+    regex_replacements_in_text,
 };
-pub use text_file::{
-    BomPolicy, BufferLoadError, BufferSaveError, EncodingConfig, InvalidUtf8Policy,
-    LineEndingConfig,
-};
-pub use worktree::{
-    NewEntryDestination, WorktreeEntry, new_entry_destination, rename_destination, translate_path,
-};
+pub use text_file::{BomPolicy, EncodingConfig, InvalidUtf8Policy, LineEndingConfig};
+pub use worktree::{WorktreeEntry, new_entry_destination, rename_destination, translate_path};

@@ -10,8 +10,10 @@ path = "src/git.rs"
 [dependencies]
 anyhow.workspace = true
 gpui_util.workspace = true
-libc.workspace = true
 zcv-path.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

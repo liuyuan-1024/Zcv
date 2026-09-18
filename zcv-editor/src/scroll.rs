@@ -8,7 +8,7 @@ use zcv_text::Affinity;
 use super::display_map::{DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct ScrollViewport {
+pub(crate) struct ScrollViewport {
     line_count: usize,
     width: Pixels,
     height: Pixels,
@@ -75,6 +75,28 @@ pub(super) struct ScrollManager {
     thumb_state: ScrollbarThumbState,
 }
 
+impl ScrollViewport {
+    /// 构造视口度量；行数与尺寸做下限保护。
+    pub(crate) fn new(
+        line_count: usize,
+        width: Pixels,
+        height: Pixels,
+        content_width: Pixels,
+        line_height: Pixels,
+        top_inset: Pixels,
+    ) -> Self {
+        let height = height.max(Pixels::ZERO);
+        Self {
+            line_count: line_count.max(1),
+            width: width.max(Pixels::ZERO),
+            height,
+            content_width: content_width.max(Pixels::ZERO),
+            line_height,
+            top_inset: top_inset.max(Pixels::ZERO).min(height),
+        }
+    }
+}
+
 impl ScrollManager {
     /// 当前帧派生显示点。
     pub(super) fn anchor(&self) -> DisplayPoint {
@@ -94,25 +116,13 @@ impl ScrollManager {
 
     pub(super) fn update_viewport(
         &mut self,
-        line_count: usize,
-        width: Pixels,
-        height: Pixels,
-        content_width: Pixels,
-        line_height: Pixels,
-        top_inset: Pixels,
+        viewport: ScrollViewport,
         snapshot: &DisplaySnapshot,
     ) -> bool {
-        if line_height <= Pixels::ZERO {
+        if viewport.line_height <= Pixels::ZERO {
             return false;
         }
-        self.viewport = Some(ScrollViewport {
-            line_count: line_count.max(1),
-            width: width.max(Pixels::ZERO),
-            height: height.max(Pixels::ZERO),
-            content_width: content_width.max(Pixels::ZERO),
-            line_height,
-            top_inset: top_inset.max(Pixels::ZERO).min(height.max(Pixels::ZERO)),
-        });
+        self.viewport = Some(viewport);
 
         let old_anchor = self.anchor;
         let old_point = self.display_point;

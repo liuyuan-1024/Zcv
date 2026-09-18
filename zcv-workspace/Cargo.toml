@@ -15,19 +15,19 @@ zcv-actions.workspace = true
 gpui.workspace = true
 zcv-git.workspace = true
 zcv-keymap.workspace = true
+zcv-language.workspace = true
 zcv-multi-buffer.workspace = true
 zcv-picker.workspace = true
 zcv-path.workspace = true
 zcv-project.workspace = true
 zcv-settings.workspace = true
 zcv-theme.workspace = true
-zcv-text.workspace = true
 zcv-ui.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
-zcv-language.workspace = true
+zcv-text.workspace = true
 
 [lints]
 workspace = true

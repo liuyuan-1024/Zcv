@@ -26,7 +26,7 @@ impl SearchQuery {
     /// 预编译一次查询，供跨多个快照的后台搜索复用正则机。
     pub fn prepare(&self) -> SearchTextResult<PreparedSearchQuery> {
         if self.query.is_empty() {
-            return Err(SearchError::EmptyQuery.into());
+            return Err(SearchError::EmptyQuery);
         }
         let regex = self
             .regex
@@ -453,7 +453,7 @@ pub(crate) fn search_in_text<T: TextRead>(
     options: SearchOptions,
 ) -> SearchTextResult<SearchResult> {
     if query.is_empty() {
-        return Err(SearchError::EmptyQuery.into());
+        return Err(SearchError::EmptyQuery);
     }
 
     let search_range = resolve_search_range(storage, options.range())?;
@@ -701,12 +701,9 @@ fn build_regex(pattern: &str, options: RegexSearchOptions) -> SearchTextResult<R
         .size_limit(options.size_limit())
         .dfa_size_limit(options.dfa_size_limit())
         .build()
-        .map_err(|error| {
-            SearchError::InvalidRegex {
-                pattern: pattern.to_string(),
-                message: error.to_string(),
-            }
-            .into()
+        .map_err(|error| SearchError::InvalidRegex {
+            pattern: pattern.to_string(),
+            message: error.to_string(),
         })
 }
 
@@ -726,12 +723,9 @@ fn build_regex_automata(
         .configure(meta_config)
         .syntax(syntax)
         .build(pattern)
-        .map_err(|error| {
-            SearchError::InvalidRegex {
-                pattern: pattern.to_string(),
-                message: error.to_string(),
-            }
-            .into()
+        .map_err(|error| SearchError::InvalidRegex {
+            pattern: pattern.to_string(),
+            message: error.to_string(),
         })
 }
 

@@ -549,16 +549,10 @@ fn add_diff_stats(a: DiffStat, b: DiffStat) -> DiffStat {
     }
 }
 
-/// 绝对路径 → 仓库相对路径（unix 分隔符，git 参数格式）。
-pub(super) fn repo_relative_path(working_directory: &Path, path: &Path) -> Option<RelativePathBuf> {
-    let relative = path.strip_prefix(working_directory).ok()?;
-    RelativePathBuf::from_path(relative).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use zcv_git::{DiffStat, FileStatus, RealGitRepository};
 
@@ -757,18 +751,6 @@ mod tests {
         assert!(head_changed);
         assert_eq!(prev.branch_list.len(), 2);
         assert!(prev.branch_list[1].is_head);
-    }
-
-    #[test]
-    fn relative_path_converts_to_unix_style() {
-        assert_eq!(
-            repo_relative_path(Path::new("/repo"), Path::new("/repo/src/main.rs")),
-            Some(RelativePathBuf::from_unix_str("src/main.rs").unwrap())
-        );
-        assert_eq!(
-            repo_relative_path(Path::new("/repo"), Path::new("/other/file.rs")),
-            None
-        );
     }
 
     #[test]

@@ -21,7 +21,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use background::{JobResult, execute_job, repo_relative_path};
+use background::{JobResult, execute_job};
 use gpui::{
     App, AppContext as _, AsyncApp, BackgroundExecutor, Context, Entity, EventEmitter, Task,
     WeakEntity,
@@ -129,7 +129,7 @@ pub struct RepositorySnapshot {
 ///
 /// GitStore 仍是唯一状态所有者；该类型只是一次不可变的派生视图，不参与写回。
 #[derive(Clone, Default)]
-pub struct GitStatusSnapshot {
+pub(crate) struct GitStatusSnapshot {
     repositories: Vec<GitRepositoryStatusSnapshot>,
 }
 
@@ -200,9 +200,7 @@ impl GitStatusSnapshot {
 
     fn status_for_path(&self, path: &Path) -> Option<&StatusEntry> {
         let repository = self.repository_for_path(path)?;
-        let relative =
-            RelativePathBuf::from_path(path.strip_prefix(&repository.working_directory).ok()?)
-                .ok()?;
+        let relative = repository.working_directory.relative_path(path)?;
         repository
             .statuses_by_path
             .get(&relative)
@@ -211,9 +209,7 @@ impl GitStatusSnapshot {
 
     fn status_for_directory(&self, path: &Path) -> Option<FileStatus> {
         let repository = self.repository_for_path(path)?;
-        let relative =
-            RelativePathBuf::from_path(path.strip_prefix(&repository.working_directory).ok()?)
-                .ok()?;
+        let relative = repository.working_directory.relative_path(path)?;
         let statuses = &repository.statuses_by_path;
         if let Some(entry) = statuses.get(&relative)
             && entry.status.is_ignored()
@@ -296,7 +292,10 @@ impl GitStore {
         cx: &mut Context<Self>,
     ) -> Self {
         // 仓库的 working_directory 来自 canonicalize，root 同样归一化，保证路径前缀匹配一致。
-        let root = root.map(|root| canonicalize_path(&root));
+        let root = root
+            .map(|root| canonicalize_path(&root))
+            .transpose()
+            .expect("项目根路径必须可归一化");
         let background = cx.background_executor().clone();
         let (job_sender, job_receiver) = async_channel::unbounded::<ScheduledGitJob>();
         // 单 worker 循环（照 fs_task 先例）：顺序处理 job，每个 job 在后台线程执行 git 命令，结果提交回 UI 线程。
@@ -511,7 +510,7 @@ impl GitStore {
         input: &BufferDiffInput,
         cx: &mut Context<Self>,
     ) -> Entity<BufferDiff> {
-        let path = canonicalize_path(&input.path);
+        let path = canonicalize_path(&input.path).expect("diff 输入路径必须可归一化");
         let key = (
             path,
             input.working.entity_id(),
@@ -625,7 +624,7 @@ impl GitStore {
         if edits.is_empty() {
             return Err("变更块已过期，请刷新后重试".into());
         }
-        let path = canonicalize_path(&path);
+        let path = canonicalize_path(&path).map_err(|error| format!("路径归一化失败：{error}"))?;
         if let Some(index_text) = &index_text
             && self
                 .revision_document_text(GitRevision::Index, &path, cx)
@@ -789,7 +788,7 @@ impl GitStore {
     }
 
     /// 捕获当前 Git 状态快照，供后台消费者按自己的可见行集合派生状态。
-    pub fn status_snapshot(&self) -> Arc<GitStatusSnapshot> {
+    pub(crate) fn status_snapshot(&self) -> Arc<GitStatusSnapshot> {
         Arc::clone(&self.status_index)
     }
 
@@ -817,7 +816,7 @@ impl GitStore {
         // 调用方传入的路径可能未 canonicalize，与归一化后的 root 比较前先归一化。
         let paths: BTreeSet<AbsolutePathBuf> = paths
             .iter()
-            .map(|path| canonicalize_path(path))
+            .filter_map(|path| canonicalize_path(path).ok())
             .filter(|path| {
                 self.root
                     .as_ref()
@@ -829,11 +828,11 @@ impl GitStore {
                 let Some(repository) = self.repo_for_path(path.as_path()) else {
                     return path;
                 };
-                let relative = path
-                    .strip_prefix(repository.repository.working_directory())
-                    .ok();
+                let relative = repository_working_directory(repository.repository.as_ref())
+                    .relative_path(path.as_path());
                 if relative.is_some_and(|relative| {
                     relative
+                        .as_path()
                         .components()
                         .next()
                         .is_some_and(|component| component.as_os_str() == ".git")
@@ -860,7 +859,7 @@ impl GitStore {
     ///
     /// 状态索引内部按仓库工作目录（canonicalize 后）比较，调用方传入的路径可能未归一化。
     pub fn status_for_path(&self, path: &Path) -> Option<&StatusEntry> {
-        let path = canonicalize_path(path);
+        let path = canonicalize_path(path).ok()?;
         self.status_index.status_for_path(path.as_path())
     }
 
@@ -1005,7 +1004,9 @@ impl GitStore {
     /// 路径可能未 canonicalize（如设置文件入口），先归一化再匹配；
     /// 路径不在任何仓库中（如已删除）时保持当前活动仓库不变。
     pub fn set_active_repository_for_path(&mut self, path: &Path, cx: &mut Context<Self>) {
-        let path = canonicalize_path(path);
+        let Ok(path) = canonicalize_path(path) else {
+            return;
+        };
         let Some(repository) = self.repo_for_path(&path) else {
             return;
         };
@@ -1036,7 +1037,9 @@ impl GitStore {
         cx: &App,
     ) -> Task<Option<Entity<LanguageBuffer>>> {
         let background = self.background.clone();
-        let path = canonicalize_path(path);
+        let Ok(path) = canonicalize_path(path) else {
+            return background.spawn(async { None });
+        };
         let Some(repository) = self.repo_for_path(path.as_path()) else {
             return background.spawn(async { None });
         };
@@ -1046,7 +1049,8 @@ impl GitStore {
             .get(&revision)
             .copied()
             .unwrap_or_default();
-        let Some(relative) = repo_relative_path(repository.working_directory(), path.as_path())
+        let Some(relative) =
+            repository_working_directory(repository.as_ref()).relative_path(path.as_path())
         else {
             return background.spawn(async { None });
         };
@@ -1156,7 +1160,7 @@ impl GitStore {
     /// 后台加载活动仓库的提交图数据（一次性读，不进 job 队列、不维护快照状态）。
     ///
     /// `offset` 为已跳过的提交数量：`None` 从历史开头开始，`Some(offset)` 从该位置继续；
-    /// `limit` 为单批提交数上限。lane 布局由视图侧用 `zcv_git::GraphLayoutState` 计算。
+    /// `limit` 为单批提交数上限。lane 布局由版本控制视图计算。
     /// 无活动仓库时返回空列表。仿 `load_revision_document` 的 `background.spawn` 一次性后台读模式。
     pub fn load_commit_graph(
         &self,
@@ -1180,14 +1184,16 @@ impl GitStore {
         path: &Path,
     ) -> Option<Entity<LanguageBuffer>> {
         self.revision_documents
-            .get(&(revision, canonicalize_path(path)))
+            .get(&(revision, canonicalize_path(path).ok()?))
             .and_then(|document| document.clone())
     }
 
     /// 该修订文档是否已经完成一次加载（缺失也算已加载）。
     pub fn revision_document_loaded(&self, revision: GitRevision, path: &Path) -> bool {
-        self.revision_documents
-            .contains_key(&(revision, canonicalize_path(path)))
+        let Ok(path) = canonicalize_path(path) else {
+            return false;
+        };
+        self.revision_documents.contains_key(&(revision, path))
     }
 
     /// 读取缓存修订文档的全文；派生值，用于乐观写入的基准校验。
@@ -1377,11 +1383,11 @@ impl GitStore {
         let mut grouped_paths = vec![Vec::new(); self.repositories.len()];
         for (index, repository) in self.repositories.iter().enumerate() {
             repositories.push(repository.repository.clone());
-            let workdir = repository.repository.working_directory();
+            let workdir = repository_working_directory(repository.repository.as_ref());
             grouped_paths[index].extend(paths.iter().filter_map(|path| {
                 // fs 事件路径可能未 canonicalize（如 macOS 的 /var → /private/var）。
-                path.starts_with(workdir)
-                    .then(|| repo_relative_path(workdir, path.as_path()))
+                path.starts_with(&workdir)
+                    .then(|| workdir.relative_path(path.as_path()))
                     .flatten()
             }));
         }
@@ -1444,10 +1450,11 @@ impl DiffOperations for GitDiffOperations {
     }
 }
 
-/// 路径归一化（canonicalize 失败时保留原样，如路径已删除）。
-pub(super) fn canonicalize_path(path: &Path) -> AbsolutePathBuf {
-    AbsolutePathBuf::new(normalize_for_comparison(path).unwrap_or_else(|_| path.to_path_buf()))
-        .expect("路径归一化后必须保持为绝对路径")
+/// 路径归一化：把调用方可能未 canonicalize 的路径转换为可比较的绝对路径。
+///
+/// 路径及其祖先都已不存在等无法归一化的情况由调用方决定如何降级，这里不再静默保留原路径。
+pub(super) fn canonicalize_path(path: &Path) -> std::io::Result<AbsolutePathBuf> {
+    normalize_for_comparison(path)
 }
 
 /// 读取快照全文；修订文档派生文本的唯一转换点。
@@ -1511,7 +1518,7 @@ mod tests {
     impl GitStore {
         fn status_for_directory(&self, path: &Path) -> Option<FileStatus> {
             self.status_index
-                .status_for_directory(&canonicalize_path(path))
+                .status_for_directory(&canonicalize_path(path).expect("测试路径必须可归一化"))
         }
     }
 
@@ -2310,7 +2317,7 @@ mod tests {
             cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
-        let path = canonicalize_path(&root.join("tracked.txt"));
+        let path = canonicalize_path(&root.join("tracked.txt")).expect("测试路径必须可归一化");
         let native_path = path.clone().into_path_buf();
         for revision in [GitRevision::Head, GitRevision::Index] {
             cx.read_entity(&git_store, |store, cx| {
@@ -2320,17 +2327,14 @@ mod tests {
         }
         cx.run_until_parked();
         let working = cx.update(|cx| {
-            let buffer = zcv_text::Buffer::from_text(
-                "第一行\n已修改\n".to_owned(),
-                zcv_text::BufferConfig::default(),
-            )
-            .expect("应创建 Buffer");
+            let buffer = Buffer::from_text("第一行\n已修改\n".to_owned(), BufferConfig::default())
+                .expect("应创建 Buffer");
             let buffer = cx.new(|_| buffer);
             cx.new(|cx| {
-                zcv_language::LanguageBuffer::new(
+                LanguageBuffer::new(
                     buffer,
                     Some(native_path.clone()),
-                    Arc::new(zcv_language::LanguageRegistry::new()),
+                    Arc::new(LanguageRegistry::new()),
                     cx,
                 )
             })
@@ -2381,7 +2385,7 @@ mod tests {
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
-        let path = canonicalize_path(&root.join("tracked.txt"));
+        let path = canonicalize_path(&root.join("tracked.txt")).expect("测试路径必须可归一化");
         let native_path = path.clone().into_path_buf();
         cx.read_entity(&git_store, |store, cx| {
             store.load_revision_document(GitRevision::Index, &path, cx)
@@ -2389,17 +2393,14 @@ mod tests {
         .detach();
         cx.run_until_parked();
         let working = cx.update(|cx| {
-            let buffer = zcv_text::Buffer::from_text(
-                "第一行\n已修改\n".to_owned(),
-                zcv_text::BufferConfig::default(),
-            )
-            .expect("应创建 Buffer");
+            let buffer = Buffer::from_text("第一行\n已修改\n".to_owned(), BufferConfig::default())
+                .expect("应创建 Buffer");
             let buffer = cx.new(|_| buffer);
             cx.new(|cx| {
-                zcv_language::LanguageBuffer::new(
+                LanguageBuffer::new(
                     buffer,
                     Some(native_path.clone()),
-                    Arc::new(zcv_language::LanguageRegistry::new()),
+                    Arc::new(LanguageRegistry::new()),
                     cx,
                 )
             })
@@ -2480,7 +2481,7 @@ mod tests {
         cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
         cx.run_until_parked();
 
-        let path = canonicalize_path(&root.join("tracked.txt"));
+        let path = canonicalize_path(&root.join("tracked.txt")).expect("测试路径必须可归一化");
         let native_path = path.clone().into_path_buf();
         cx.read_entity(&git_store, |store, cx| {
             store.load_revision_document(GitRevision::Index, &path, cx)
@@ -2488,17 +2489,14 @@ mod tests {
         .detach();
         cx.run_until_parked();
         let working = cx.update(|cx| {
-            let buffer = zcv_text::Buffer::from_text(
-                "第一行\n已修改\n".to_owned(),
-                zcv_text::BufferConfig::default(),
-            )
-            .expect("应创建 Buffer");
+            let buffer = Buffer::from_text("第一行\n已修改\n".to_owned(), BufferConfig::default())
+                .expect("应创建 Buffer");
             let buffer = cx.new(|_| buffer);
             cx.new(|cx| {
-                zcv_language::LanguageBuffer::new(
+                LanguageBuffer::new(
                     buffer,
                     Some(native_path.clone()),
-                    Arc::new(zcv_language::LanguageRegistry::new()),
+                    Arc::new(LanguageRegistry::new()),
                     cx,
                 )
             })

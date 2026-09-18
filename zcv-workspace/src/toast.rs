@@ -36,8 +36,8 @@ pub enum ToastKind {
 /// Toast 上的操作按钮（如"重试"）：点击执行后关闭当前 toast。
 #[derive(Clone)]
 pub struct ToastAction {
-    pub label: SharedString,
-    pub on_click: ToastClickHandler,
+    label: SharedString,
+    on_click: ToastClickHandler,
 }
 
 impl ToastAction {

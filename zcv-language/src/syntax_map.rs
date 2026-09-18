@@ -268,15 +268,6 @@ impl SyntaxSnapshot {
         self.version
     }
 
-    pub fn has_language(&self) -> bool {
-        self.language.is_some()
-    }
-
-    /// 返回严格包围当前范围的最小语法节点，用于选择扩展。
-    pub fn ancestor_range(&self, range: Range<usize>, text: &Snapshot) -> Option<Range<usize>> {
-        self.expand_selection_range(range, text)
-    }
-
     pub(crate) fn can_query(&self, range: &Range<usize>, text: &Snapshot) -> bool {
         text.version() == self.version
             && range.start <= range.end
@@ -1171,11 +1162,11 @@ let b = 2;
         let syntax = syntax.snapshot();
         let caret = source.find("value").unwrap();
         let identifier = syntax
-            .ancestor_range(caret..caret, &snapshot)
+            .expand_selection_range(caret..caret, &snapshot)
             .expect("光标应扩展到 identifier");
         assert_eq!(&source[identifier.clone()], "value");
         let parent = syntax
-            .ancestor_range(identifier, &snapshot)
+            .expand_selection_range(identifier, &snapshot)
             .expect("identifier 应继续扩展到父语法节点");
         assert!(parent.len() > "value".len());
     }

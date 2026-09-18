@@ -1,17 +1,18 @@
 //! BranchPicker —— git 分支选择器。
 //!
 //! 自含按钮 + 浮层，浮层内嵌 `Picker<BranchPickerDelegate>`。
-//! 分支列表由 Workspace 订阅 GitStore 事件后推送（同步快照，打开即渲染，无加载态）；
-//! 切换/创建分支通过回调转发到 git_store 后台执行，完成后 GitStore 自动重扫并推送新列表。
+//! 分支列表直接读取 GitStore 快照（打开即渲染，无加载态）；
+//! 切换/创建分支通过回调转发到 git_store 后台执行，完成后 GitStore 自动重扫。
 //!
 //! 搜索无匹配时列表尾部追加"创建分支"虚拟行：以当前 HEAD 为基创建并切换。
 
 use std::rc::Rc;
 
-use gpui::{App, Context, Entity, Render, Window, div, prelude::*};
+use gpui::{App, Context, Entity, Render, Subscription, Window, div, prelude::*};
 use zcv_actions::{DeleteGitBranch, SelectGitBranch};
 use zcv_git::Branch;
 use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, PickerHost};
+use zcv_project::{GitStore, GitStoreEvent};
 use zcv_theme::color;
 use zcv_ui::ListItem;
 use zcv_ui::{Button, SvgIcon};
@@ -57,11 +58,6 @@ impl BranchPickerDelegate {
 
     /// 替换分支列表并重过滤（toggle 打开时调用；空 query 自动回到当前分支）。
     fn reload(&mut self, branches: Vec<Branch>) {
-        self.branches = branches;
-        self.do_filter();
-    }
-
-    fn update_branches(&mut self, branches: Vec<Branch>) {
         self.branches = branches;
         self.do_filter();
     }
@@ -168,7 +164,7 @@ impl PickerDelegate for BranchPickerDelegate {
             Button::icon(("delete-branch", index), "icons/trash.svg")
                 .color(color::current(cx).icon_muted)
                 .label("删除分支")
-                .shortcut(&DeleteGitBranch, cx)
+                .shortcut(zcv_keymap::display_shortcut(&DeleteGitBranch, cx))
                 .on_click(move |_, window, cx| {
                     on_delete(GitBranchAction::Delete(branch_name.clone()), window, cx);
                 }),
@@ -190,16 +186,29 @@ impl PickerDelegate for BranchPickerDelegate {
 pub struct BranchPicker {
     host: PickerHost,
     picker: Entity<Picker<BranchPickerDelegate>>,
-    /// 当前分支名（由 Workspace 订阅 GitStore 的 Head 事件刷新）。
-    current_branch: Option<String>,
-    /// HEAD 提交的完整 oid（detached HEAD 时用于显示短 SHA）。
-    head_commit: Option<String>,
-    /// 分支列表快照（由 Workspace 订阅 GitStore 事件推送；打开时同步渲染）。
-    branches: Vec<Branch>,
+    git_store: Entity<GitStore>,
+    _git_subscription: Subscription,
+}
+
+/// 按钮显示名：分支名 → 8 位短 SHA（detached HEAD）。
+fn branch_display_name(current_branch: Option<&str>, head_commit: Option<&str>) -> Option<String> {
+    current_branch
+        .map(str::to_owned)
+        .or_else(|| head_commit.map(|oid| oid.chars().take(8).collect()))
+}
+
+/// 当前状态是否足以显示分支选择器。
+fn has_branch_context(current_branch: Option<&str>, head_commit: Option<&str>) -> bool {
+    current_branch.is_some() || head_commit.is_some()
 }
 
 impl BranchPicker {
-    pub fn new(on_select: OnBranchSelected, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        git_store: Entity<GitStore>,
+        on_select: OnBranchSelected,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let delegate = BranchPickerDelegate::new(Vec::new(), on_select);
 
         let picker = cx.new(|cx| Picker::new(delegate, PICKER_WIDTH, window, cx));
@@ -208,59 +217,54 @@ impl BranchPicker {
             picker.set_on_dismiss(host.on_dismiss_handler())
         });
 
+        let git_subscription =
+            cx.subscribe(&git_store, |picker, store, _event: &GitStoreEvent, cx| {
+                if picker.host.is_open(cx) {
+                    let branches = store
+                        .read(cx)
+                        .active_branch_list()
+                        .map(<[Branch]>::to_vec)
+                        .unwrap_or_default();
+                    picker.picker.update(cx, |picker, _| {
+                        picker.delegate_mut().reload(branches);
+                    });
+                }
+                cx.notify();
+            });
+
         Self {
             host,
             picker,
-            current_branch: None,
-            head_commit: None,
-            branches: Vec::new(),
+            git_store,
+            _git_subscription: git_subscription,
         }
-    }
-
-    /// 设置当前分支名。
-    pub fn set_branch(&mut self, branch: Option<String>) {
-        self.current_branch = branch;
-    }
-
-    /// 设置 HEAD 提交的完整 oid（按钮短 SHA 回退的数据源）。
-    pub fn set_head_commit(&mut self, head_commit: Option<String>) {
-        self.head_commit = head_commit;
     }
 
     /// 当前状态是否足以显示分支选择器。
-    pub(crate) fn has_branch_context(&self) -> bool {
-        self.current_branch.is_some() || self.head_commit.is_some()
+    pub(crate) fn has_branch_context(&self, cx: &App) -> bool {
+        let store = self.git_store.read(cx);
+        has_branch_context(store.current_branch(), store.current_head_commit())
     }
 
     /// 按钮显示名：分支名 → 8 位短 SHA（detached HEAD）。
-    fn display_name(&self) -> Option<String> {
-        self.current_branch.clone().or_else(|| {
-            self.head_commit
-                .as_ref()
-                .map(|oid| oid.chars().take(8).collect())
-        })
-    }
-
-    /// 设置分支列表快照（打开时同步渲染，无加载态）。
-    pub fn set_branches(&mut self, branches: Vec<Branch>, cx: &mut Context<Self>) {
-        self.branches = branches.clone();
-        if self.host.is_open(cx) {
-            self.picker.update(cx, |picker, _| {
-                picker.delegate_mut().update_branches(branches);
-            });
-        }
+    fn display_name(&self, cx: &App) -> Option<String> {
+        let store = self.git_store.read(cx);
+        branch_display_name(store.current_branch(), store.current_head_commit())
     }
 
     /// 外部切换（快捷键/点击等）。
     pub fn toggle(&mut self, window: &mut Window, cx: &mut App) {
         if !self.host.is_open(cx) {
-            // 打开时用最新快照重建列表，清空搜索框。
-            let branches = self.branches.clone();
+            // 打开时用 GitStore 最新快照重建列表，清空搜索框。
+            let branches = self
+                .git_store
+                .read(cx)
+                .active_branch_list()
+                .map(<[Branch]>::to_vec)
+                .unwrap_or_default();
             self.picker.update(cx, |picker, cx| {
                 picker.delegate_mut().reload(branches);
-                if let Some(input) = picker.search_input() {
-                    input.set_text("", cx);
-                }
+                picker.search_input().set_text("", cx);
                 cx.notify();
             });
         }
@@ -301,14 +305,14 @@ impl Render for BranchPicker {
             color::current(cx).text
         };
 
-        let Some(display_name) = self.display_name() else {
+        let Some(display_name) = self.display_name(cx) else {
             return div();
         };
 
         // 空仓库没有当前分支或 HEAD，直接不渲染选择器。
         let button = Button::icon_text("top-bar.branch", "icons/git_branch.svg", display_name)
             .label("分支")
-            .shortcut(&SelectGitBranch, cx)
+            .shortcut(zcv_keymap::display_shortcut(&SelectGitBranch, cx))
             .color(color_value)
             .on_click(cx.listener(|picker, _, window, cx| picker.toggle(window, cx)));
 
@@ -368,34 +372,25 @@ mod tests {
         )
     }
 
-    #[gpui::test]
-    fn display_name_and_visibility_follow_branch_state(cx: &mut gpui::TestAppContext) {
-        let on_select: OnBranchSelected = Rc::new(|_, _, _| {});
-        let window = cx.add_window(|window, cx| BranchPicker::new(on_select, window, cx));
-
+    #[test]
+    fn display_name_and_visibility_follow_branch_state() {
         // 有分支：显示分支名。
-        let _ = window.update(cx, |picker, _, _| picker.set_branch(Some("feature".into())));
-        let _ = window.update(cx, |picker, _, _| {
-            assert_eq!(picker.display_name().as_deref(), Some("feature"));
-            assert!(picker.has_branch_context());
-        });
+        assert_eq!(
+            branch_display_name(Some("feature"), None).as_deref(),
+            Some("feature")
+        );
+        assert!(has_branch_context(Some("feature"), None));
 
         // detached HEAD（无分支但有提交）：显示 8 位短 SHA。
-        let _ = window.update(cx, |picker, _, _| {
-            picker.set_branch(None);
-            picker.set_head_commit(Some("0123456789abcdef".into()));
-        });
-        let _ = window.update(cx, |picker, _, _| {
-            assert_eq!(picker.display_name().as_deref(), Some("01234567"));
-            assert!(picker.has_branch_context());
-        });
+        assert_eq!(
+            branch_display_name(None, Some("0123456789abcdef")).as_deref(),
+            Some("01234567")
+        );
+        assert!(has_branch_context(None, Some("0123456789abcdef")));
 
         // 空仓库（无分支无提交）：不显示分支选择器。
-        let _ = window.update(cx, |picker, _, _| picker.set_head_commit(None));
-        let _ = window.update(cx, |picker, _, _| {
-            assert_eq!(picker.display_name(), None);
-            assert!(!picker.has_branch_context());
-        });
+        assert_eq!(branch_display_name(None, None), None);
+        assert!(!has_branch_context(None, None));
     }
 
     #[test]

@@ -31,9 +31,6 @@ mod top_bar;
 mod window_bounds;
 mod workspace_state;
 
-#[cfg(test)]
-mod test;
-
 pub use activity_indicator::ActivityIndicator;
 pub use branch_picker::{GitBranchAction, OnBranchSelected};
 pub use breadcrumbs::Breadcrumbs;
@@ -48,7 +45,7 @@ pub use panel::{Panel, PanelEvent, PanelHandle};
 pub use panel_buttons::PanelButtons;
 pub use preview::{
     OpenPathCallback, PreviewButton, PreviewDocument, PreviewItem, PreviewItemHandle, PreviewMode,
-    PreviewPresentation, PreviewProvider, PreviewToggleCallback, PreviewViewport,
+    PreviewPresentation, PreviewProvider, PreviewToggleCallback, PreviewToolbar, PreviewViewport,
     PreviewViewportOptions, register,
 };
 pub use project_picker::OnProjectSelected;
@@ -70,5 +67,5 @@ pub fn typography_for_window(window: &Window, cx: &App) -> Typography {
         .root::<Workspace>()
         .flatten()
         .map(|workspace| workspace.read(cx).typography())
-        .unwrap_or_else(zcv_theme::typography::current)
+        .unwrap_or_else(|| zcv_theme::typography::current(cx))
 }

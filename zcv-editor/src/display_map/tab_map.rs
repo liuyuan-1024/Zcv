@@ -14,7 +14,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use zcv_multi_buffer::MultiBufferSnapshot;
 use zcv_text::{CoordinateError, Line};
 
-use super::chunk::{ChunkBase, ChunkText, FoldChunks, HighlightStyles, InlayChunks};
+use super::chunk::{ChunkText, FoldChunks, HighlightStyles, StyledChunks};
 use super::display_width::{DisplayColumn, char_width};
 use super::{
     error::DisplayMapResult,
@@ -67,9 +67,8 @@ impl TabSnapshot {
         if fold.is_fold_row(projected) {
             return fold.row_text(projected);
         }
-        let inlay = fold.inlay_snapshot();
         let stream_line = self.stream_line_for_projected(line)?;
-        inlay.line_text(stream_line)
+        fold.buffer_snapshot().line_text(stream_line)
     }
 
     /// 投影行 → 字节范围（折叠合并行为锚定行行首的伪坐标）。
@@ -78,13 +77,11 @@ impl TabSnapshot {
         let projected = ProjectedLineIndex::new(line.get());
         if let Some(anchor_stream) = fold.fold_row_anchor_stream_line(projected) {
             // 合并行：anchor 行行首的伪坐标，roundtrip 不可逆。
-            let buffer_line = fold.inlay_snapshot().source(anchor_stream)?;
-            let start = fold.buffer_snapshot().line_start_byte(buffer_line).ok()?;
+            let start = fold.buffer_snapshot().line_start_byte(anchor_stream).ok()?;
             return Some(start..start);
         }
-        let inlay = fold.inlay_snapshot();
         let stream_line = self.stream_line_for_projected(line)?;
-        inlay.line_byte_range(stream_line)
+        fold.buffer_snapshot().line_byte_range(stream_line)
     }
 
     /// 投影行 → 流行号（坐标换算用）。
@@ -222,7 +219,7 @@ impl TabMap {
                 .end;
             for chunk in FoldChunks::new(
                 &segments,
-                fold.inlay_snapshot(),
+                fold.buffer_snapshot(),
                 HighlightStyles::default(),
                 0..content_len,
             ) {
@@ -233,25 +230,23 @@ impl TabMap {
                 .snapshot
                 .stream_line_for_projected(line)
                 .ok_or(CoordinateError::LineOutOfBounds(line))?;
-            let inlay = fold.inlay_snapshot();
-            let range = inlay
+            let buffer = fold.buffer_snapshot();
+            let range = buffer
                 .line_content_byte_range(stream_line)
                 .ok_or(CoordinateError::LineOutOfBounds(line))?;
-            let content_len = inlay
-                .projected_line_content_metrics(stream_line)
+            let content_len = buffer
+                .line_content_metrics(stream_line)
                 .ok_or(CoordinateError::LineOutOfBounds(line))?
                 .0;
-            for chunk in InlayChunks::new(
+            for chunk in StyledChunks::new(
                 ChunkText::Virtual {
-                    snapshot: inlay.buffer_snapshot(),
+                    snapshot: buffer,
                     range: range.clone(),
                 },
                 range.start.get(),
-                inlay.line_inlays(stream_line),
-                ChunkBase::ZERO,
+                0,
                 HighlightStyles::default(),
                 0..content_len,
-                true,
             ) {
                 width = display_width_chunk(width, chunk.text, tab_width);
             }

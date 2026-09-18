@@ -1,6 +1,12 @@
 use zcv_text::*;
-mod common;
-use common::*;
+
+#[path = "common/buffer.rs"]
+mod buffer;
+#[path = "common/byte_range.rs"]
+mod byte_range;
+
+use buffer::buffer;
+use byte_range::{b, range};
 
 #[test]
 fn edits_since_composes_continuous_versions_into_old_and_new_coordinates() {

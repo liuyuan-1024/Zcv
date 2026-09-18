@@ -2,7 +2,9 @@ use criterion::{
     BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
 };
 use gpui::{AppContext as _, TestAppContext, TestDispatcher};
-use zcv_benchmarks::cached_rust_document;
+mod common;
+
+use common::cached_rust_document;
 use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
 use zcv_text::{Buffer, BufferConfig};

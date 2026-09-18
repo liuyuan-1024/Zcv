@@ -78,45 +78,44 @@ fn canonical_project_path(path: &Path) -> Option<PathBuf> {
     (path.is_dir() && path.file_name().is_some()).then_some(path)
 }
 
-/// 保存最近项目列表到磁盘。
-pub(crate) fn save_recent_projects(projects: &[ProjectEntry]) {
-    let dir = config_dir();
-    let _ = std::fs::create_dir_all(dir);
+/// 保存最近项目列表到磁盘（原子写盘，失败返回错误）。
+pub(crate) fn save_recent_projects(projects: &[ProjectEntry]) -> anyhow::Result<()> {
     let data = RecentProjects {
         recent: projects.to_vec(),
     };
-    if let Ok(content) = serde_json::to_string_pretty(&data) {
-        let _ = std::fs::write(recent_path(), content);
-    }
+    let content = serde_json::to_vec_pretty(&data)
+        .map_err(|error| anyhow::anyhow!("序列化最近项目列表失败：{error}"))?;
+    crate::persistence::atomic_write(&recent_path(), &content)
 }
 
 /// 从最近项目列表移除一条路径（幂等，不存在时无副作用）。
-pub(crate) fn remove_from_recent(path: &str) {
+pub(crate) fn remove_from_recent(path: &str) -> anyhow::Result<()> {
     let mut projects = load_recent_projects();
     let before = projects.len();
     projects.retain(|p| p.path != path);
     // 列表未变化时不写盘，避免无谓 IO
-    if projects.len() != before {
-        save_recent_projects(&projects);
+    if projects.len() == before {
+        return Ok(());
     }
+    save_recent_projects(&projects)
 }
 
 /// 把一条路径添加到最近项目列表前端（去重，首位即最近打开的项目）。
-pub fn add_to_recent(path: &str) {
+pub fn add_to_recent(path: &str) -> anyhow::Result<()> {
     let Some(path) = canonical_project_path(Path::new(path)) else {
-        return;
+        return Ok(());
     };
     let path = path.to_string_lossy().to_string();
 
     let mut projects = load_recent_projects();
     // 已在首位时不动，避免无谓写盘
     if projects.first().is_some_and(|p| p.path == path) {
-        return;
+        return Ok(());
     }
     projects.retain(|p| p.path != path);
     projects.insert(0, ProjectEntry { path });
     projects.truncate(20);
-    save_recent_projects(&projects);
+    save_recent_projects(&projects)
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use gpui::{AppContext as _, Entity, TestAppContext};
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
+use zcv_language::LanguageRegistry;
 
 use crate::Project;
 
@@ -37,8 +38,13 @@ impl Watcher for TestWatcher {
     }
 }
 
+/// 测试用语言注册表；生产装配层创建应用级唯一实例，测试各自提供一份。
+pub(crate) fn test_languages() -> Arc<LanguageRegistry> {
+    Arc::new(LanguageRegistry::new())
+}
+
 pub(crate) fn test_project(root: PathBuf, cx: &mut TestAppContext) -> Entity<Project> {
-    cx.new(|cx| Project::new_with_watcher(root, Arc::new(TestWatcher::new()), cx))
+    cx.new(|cx| Project::new_with_watcher(root, Arc::new(TestWatcher::new()), test_languages(), cx))
 }
 
 /// 创建带一个初始提交的临时 git 仓库，返回 (仓库根, 目录句柄)。

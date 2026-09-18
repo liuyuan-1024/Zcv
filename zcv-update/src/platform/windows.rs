@@ -1,18 +1,29 @@
-use std::{os::windows::ffi::OsStrExt as _, path::Path};
+use std::fs;
+use std::os::windows::ffi::OsStrExt as _;
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, ensure};
 use async_zip::base::read::mem::ZipFileReader;
 use futures::io::AsyncWriteExt as _;
 use semver::Version;
-use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS, GetLastError};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, ERROR_SUCCESS, GetLastError,
+    WAIT_OBJECT_0,
+};
 use windows_sys::Win32::Storage::FileSystem::{
     MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
 };
 use windows_sys::Win32::System::RestartManager::{
     CCH_RM_SESSION_KEY, RmEndSession, RmGetList, RmRegisterResources, RmShutdown, RmStartSession,
 };
+use windows_sys::Win32::System::Threading::{
+    INFINITE, OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+};
 
-use super::UpdateInstallation;
+use super::{ApplyBackend, StagedUpdate, UpdateInstallation};
+use crate::UpdateTransaction;
 
 pub const APP_DIRECTORY_NAME: &str = "Zcv";
 pub const APP_EXECUTABLE_RELATIVE_PATH: &str = "Zcv.exe";
@@ -63,7 +74,7 @@ pub fn prepare_helper(_: &Path) -> Result<()> {
 /// Windows 允许外部进程短暂持有应用目录中的文件；
 /// 这些句柄会使后续目录重命名失败。
 /// Restart Manager 只负责尽力释放句柄，真正的替换仍由 helper 的事务回滚流程负责。
-pub(super) fn release_file_handles(app: &Path) -> Result<()> {
+fn release_file_handles(app: &Path) -> Result<()> {
     let paths = [
         app.join(APP_EXECUTABLE_RELATIVE_PATH),
         app.join(HELPER_RELATIVE_PATH),
@@ -207,4 +218,170 @@ fn platform_key() -> Result<&'static str> {
         "aarch64" => Ok("windows-aarch64"),
         architecture => anyhow::bail!("不支持 Windows 自动更新架构 {architecture}"),
     }
+}
+
+/// Windows helper 后端：备份/重命名切换与进程退出等待。
+pub(crate) struct WindowsBackend;
+
+impl ApplyBackend for WindowsBackend {
+    fn wait_for_process_exit(&self, pid: u32) -> Result<()> {
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+        if handle.is_null() {
+            ensure!(
+                unsafe { GetLastError() } == ERROR_INVALID_PARAMETER,
+                "无法打开 Zcv 进程以等待退出"
+            );
+            return Ok(());
+        }
+        let result = unsafe { WaitForSingleObject(handle, INFINITE) };
+        unsafe { CloseHandle(handle) };
+        ensure!(result == WAIT_OBJECT_0, "等待 Zcv 退出失败");
+        Ok(())
+    }
+
+    fn stage(&self, transaction: &UpdateTransaction) -> Result<StagedUpdate> {
+        verify_app(&transaction.staged_app_path, &transaction.to_version)?;
+        if let Err(error) = release_file_handles(&transaction.install_path) {
+            eprintln!("无法释放 Windows 更新文件占用，将继续尝试替换：{error:#}");
+        }
+        let candidate_path = candidate_path(transaction)?;
+        let backup_path = backup_path(transaction)?;
+        if candidate_path.exists() {
+            fs::remove_dir_all(&candidate_path)
+                .with_context(|| format!("无法清理旧更新候选目录 {}", candidate_path.display()))?;
+        }
+        copy_dir(&transaction.staged_app_path, &candidate_path)?;
+        let candidate_transaction = UpdateTransaction {
+            staged_app_path: candidate_path.clone(),
+            ..transaction.clone()
+        };
+        if let Err(error) = verify_app(
+            &candidate_transaction.staged_app_path,
+            &candidate_transaction.to_version,
+        ) {
+            let _ = fs::remove_dir_all(&candidate_path);
+            return Err(error).context("安装目录中的更新副本验证失败");
+        }
+        Ok(StagedUpdate {
+            candidate_path,
+            previous_path: backup_path,
+        })
+    }
+
+    fn switch(&self, transaction: &UpdateTransaction, staged: &StagedUpdate) -> Result<()> {
+        let backup_path = &staged.previous_path;
+        if backup_path.exists() {
+            fs::remove_dir_all(backup_path)
+                .with_context(|| format!("无法清理旧版本备份 {}", backup_path.display()))?;
+        }
+        retry_rename(
+            &transaction.install_path,
+            backup_path,
+            format!(
+                "无法移动当前安装目录 {} → {}",
+                transaction.install_path.display(),
+                backup_path.display()
+            ),
+        )?;
+        if let Err(error) = retry_rename(
+            &staged.candidate_path,
+            &transaction.install_path,
+            format!(
+                "无法把更新目录移动到安装位置 {}",
+                transaction.install_path.display()
+            ),
+        ) {
+            let _ = retry_rename(
+                backup_path,
+                &transaction.install_path,
+                format!(
+                    "无法恢复当前安装目录 {}",
+                    transaction.install_path.display()
+                ),
+            );
+            return Err(error).context("无法把更新目录移动到安装位置");
+        }
+        Ok(())
+    }
+
+    fn rollback(&self, transaction: &UpdateTransaction, staged: &StagedUpdate) -> Result<()> {
+        fs::remove_dir_all(&transaction.install_path)
+            .context("新版本启动失败，且无法移除新版本")?;
+        retry_rename(
+            &staged.previous_path,
+            &transaction.install_path,
+            "新版本启动失败，且旧版本回滚失败".to_owned(),
+        )
+    }
+
+    fn cleanup(&self, _transaction: &UpdateTransaction, staged: &StagedUpdate) {
+        if staged.previous_path.exists()
+            && let Err(error) = fs::remove_dir_all(&staged.previous_path)
+        {
+            eprintln!(
+                "新版本已启动，但无法删除旧版本备份 {}：{error}",
+                staged.previous_path.display()
+            );
+        }
+        let _ = fs::remove_dir_all(&staged.candidate_path);
+    }
+}
+
+fn retry_rename(from: &Path, to: &Path, context: String) -> Result<()> {
+    const RETRY_TIMEOUT: Duration = Duration::from_secs(5);
+    const POLL_INTERVAL: Duration = Duration::from_millis(100);
+    let start = Instant::now();
+    loop {
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(_error) if start.elapsed() < RETRY_TIMEOUT => {
+                thread::sleep(POLL_INTERVAL);
+            }
+            Err(error) => return Err(error).context(context),
+        }
+    }
+}
+
+fn copy_dir(source: &Path, destination: &Path) -> Result<()> {
+    fs::create_dir_all(destination)
+        .with_context(|| format!("无法创建更新目录 {}", destination.display()))?;
+    for entry in
+        fs::read_dir(source).with_context(|| format!("无法读取更新目录 {}", source.display()))?
+    {
+        let entry = entry.with_context(|| format!("无法读取目录项 {}", source.display()))?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        if entry
+            .file_type()
+            .with_context(|| format!("无法读取文件类型 {}", source_path.display()))?
+            .is_dir()
+        {
+            copy_dir(&source_path, &destination_path)?;
+        } else {
+            fs::copy(&source_path, &destination_path).with_context(|| {
+                format!(
+                    "无法复制更新文件 {} → {}",
+                    source_path.display(),
+                    destination_path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn candidate_path(transaction: &UpdateTransaction) -> Result<PathBuf> {
+    let parent = transaction
+        .install_path
+        .parent()
+        .context("安装路径没有父目录")?;
+    Ok(parent.join(format!(".Zcv.update-{}", transaction.id)))
+}
+
+fn backup_path(transaction: &UpdateTransaction) -> Result<PathBuf> {
+    let parent = transaction
+        .install_path
+        .parent()
+        .context("安装路径没有父目录")?;
+    Ok(parent.join(format!(".Zcv.backup-{}", transaction.id)))
 }

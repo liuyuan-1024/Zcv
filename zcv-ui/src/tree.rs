@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use gpui::{AnyElement, App, ElementId, Pixels, div, prelude::*};
+use gpui::{AnyElement, App, ElementId, Pixels, Window, div, prelude::*};
 use zcv_theme::{FileIcons, color, space, typography};
 
 use crate::SvgIcon;
@@ -24,10 +24,10 @@ impl TreeRowFrame {
     /// 按树深度设置缩进，并添加与项目树一致的层级引导线。
     ///
     /// 深度只描述几何，不决定行首图标或点击行为，因此文件树、大纲等不同树形视图可以共享。
-    pub fn tree_depth(mut self, depth: usize, cx: &App) -> Self {
-        self.left_padding = metrics().indent_left(depth);
+    pub fn tree_depth(mut self, depth: usize, window: &Window, cx: &App) -> Self {
+        self.left_padding = metrics(window.rem_size(), cx).indent_left(depth);
         self.decorations.extend(
-            guide_lines(depth, cx)
+            guide_lines(depth, window, cx)
                 .into_iter()
                 .map(IntoElement::into_any_element),
         );
@@ -56,18 +56,23 @@ impl TreeRowFrame {
     ///
     /// 选择框、拖拽和具体点击动作仍由树形消费方叠加；
     /// 这里仅统一行身份、指针和悬停背景。
-    pub fn interactive(self, id: impl Into<ElementId>, cx: &App) -> gpui::Stateful<gpui::Div> {
-        self.render()
+    pub fn interactive(
+        self,
+        id: impl Into<ElementId>,
+        window: &Window,
+        cx: &App,
+    ) -> gpui::Stateful<gpui::Div> {
+        self.render(window, cx)
             .id(id)
             .cursor_pointer()
             .hover(|style| style.bg(color::current(cx).element_hover))
     }
 
-    pub fn render(self) -> gpui::Div {
-        let mut row = blank_row()
+    pub fn render(self, window: &Window, cx: &App) -> gpui::Div {
+        let mut row = blank_row(window, cx)
             .relative()
             .pl(self.left_padding)
-            .pr(metrics().padding)
+            .pr(metrics(window.rem_size(), cx).padding)
             .flex_row()
             .gap(space::S6)
             .children(self.decorations);
@@ -121,7 +126,7 @@ pub fn tree_row_label(element: impl IntoElement) -> gpui::Div {
 impl Default for TreeRowFrame {
     fn default() -> Self {
         Self {
-            left_padding: metrics().padding,
+            left_padding: space::S6,
             content: Vec::new(),
             leading: Vec::new(),
             decorations: Vec::new(),
@@ -165,11 +170,11 @@ impl TreeNodeRow {
     }
 
     /// 将文件树节点组装为通用树行框架。
-    pub fn frame(self, cx: &App) -> TreeRowFrame {
+    pub fn frame(self, window: &Window, cx: &App) -> TreeRowFrame {
         let mut frame = TreeRowFrame::default()
-            .tree_depth(self.depth, cx)
+            .tree_depth(self.depth, window, cx)
             .content(self.content)
-            .leading(icon(&self.path, self.is_dir, self.expanded));
+            .leading(icon(&self.path, self.is_dir, self.expanded, window, cx));
         for trailing in self.trailing {
             frame = frame.trailing(trailing);
         }
@@ -178,13 +183,13 @@ impl TreeNodeRow {
 }
 
 /// 树行行高（= 空白行基座高度）：滚动计算、命中测试坐标等需要行高数值的场景读取。
-pub fn tree_row_height() -> gpui::Pixels {
-    metrics().row_height
+pub fn tree_row_height(window: &Window, cx: &App) -> gpui::Pixels {
+    metrics(window.rem_size(), cx).row_height
 }
 
 /// 选中框——absolute 覆盖整行，不参与行布局。
-pub fn selection_border(cx: &App) -> gpui::Div {
-    let m = metrics();
+pub fn selection_border(window: &Window, cx: &App) -> gpui::Div {
+    let m = metrics(window.rem_size(), cx);
     div()
         .absolute()
         .top(Pixels::ZERO)
@@ -227,13 +232,17 @@ pub fn row_click_action(is_dir: bool, click_count: usize) -> RowClickAction {
 /// 行高只定义在 [`metrics`] 并经本函数落地：
 /// 文件条目行与文本行都构建在它之上，uniform_list 按对第 0 行的实测决定槽高、要求列表内所有行等高，因此同一棵树内的行必须全部出自本基座。
 /// 派生行不得覆写高度，也不得叠加垂直 padding（会撑出行盒，超出等宽槽）。
-fn blank_row() -> gpui::Div {
-    div().w_full().flex().items_center().h(metrics().row_height)
+fn blank_row(window: &Window, cx: &App) -> gpui::Div {
+    div()
+        .w_full()
+        .flex()
+        .items_center()
+        .h(metrics(window.rem_size(), cx).row_height)
 }
 
 /// 渲染缩进竖线——每条线直接 absolute 定位在行上。
-fn guide_lines(depth: usize, cx: &App) -> Vec<gpui::Div> {
-    let m = metrics();
+fn guide_lines(depth: usize, window: &Window, cx: &App) -> Vec<gpui::Div> {
+    let m = metrics(window.rem_size(), cx);
     let line_color = color::current(cx).border_variant;
     let line_w = space::S1;
 
@@ -252,8 +261,8 @@ fn guide_lines(depth: usize, cx: &App) -> Vec<gpui::Div> {
 }
 
 /// 根据条目类型和展开/折叠状态返回对应的图标元素。
-fn icon(path: &Path, is_dir: bool, expanded: bool) -> impl IntoElement {
-    let m = metrics();
+fn icon(path: &Path, is_dir: bool, expanded: bool, window: &Window, cx: &App) -> impl IntoElement {
+    let m = metrics(window.rem_size(), cx);
     let path = if is_dir {
         FileIcons::get_folder_icon(expanded, path)
     } else {
@@ -588,12 +597,12 @@ struct TreeMetrics {
     icon_size: gpui::Pixels,
 }
 
-fn metrics() -> TreeMetrics {
+fn metrics(ui_size: Pixels, cx: &App) -> TreeMetrics {
     TreeMetrics {
-        row_height: typography::ui_line() + space::S6,
-        indent: typography::ui_size(),
+        row_height: typography::ui_line_at(ui_size, cx) + space::S6,
+        indent: ui_size,
         padding: space::S6,
-        icon_size: typography::ui_size(),
+        icon_size: ui_size,
     }
 }
 

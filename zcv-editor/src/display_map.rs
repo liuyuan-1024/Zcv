@@ -1,7 +1,6 @@
 //! 决定 Buffer 文本如何映射到 Editor 的显示坐标。
 //!
 //! DisplayMap 由一组自底向上的变换层组成：
-//! - InlayMap：在 Buffer 文本中投影行内提示；
 //! - FoldMap：维护折叠范围和折叠后的文本拓扑；
 //! - TabMap：在 FoldSnapshot 之上处理硬 Tab 的显示列；
 //! - WrapMap：在 TabSnapshot 之上按像素宽度软换行。
@@ -18,7 +17,6 @@ mod display_width;
 mod edit;
 mod error;
 mod fold_map;
-mod inlay_map;
 mod tab_map;
 mod wrap_map;
 
@@ -46,7 +44,6 @@ use error::DisplayMapResult;
 pub(crate) use fold_map::{FoldBias, FoldRowSegment, ProjectedLineIndex};
 use fold_map::{FoldMap, FoldSnapshot, LogicalProjection};
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, HighlightStyle};
-use inlay_map::{Inlay, InlayMap};
 use tab_map::TabMap;
 pub(crate) use tab_map::{byte_for_display_column, display_column_for_byte};
 pub(crate) use wrap_map::WrapRowKind;
@@ -240,9 +237,9 @@ impl DisplaySnapshot {
         Arc::from(spans)
     }
 
-    /// 按当前主题生成 capture 索引 → 样式的预展开表。
-    pub(super) fn highlight_styles(&self) -> Vec<HighlightStyle> {
-        syntax::style_table(&self.buffer_snapshot().capture_names())
+    /// 按当前 App 主题生成 capture 索引 → 样式的预展开表。
+    pub(super) fn highlight_styles(&self, cx: &App) -> Vec<HighlightStyle> {
+        syntax::style_table(&self.buffer_snapshot().capture_names(), cx)
     }
 
     #[cfg(test)]
@@ -302,7 +299,7 @@ impl DisplaySnapshot {
         }
     }
 
-    /// 从显示快照的起点连续消费 Block/Fold/Wrap/Inlay 产生的 chunk。
+    /// 从显示快照的起点连续消费 Block/Fold/Wrap 产生的 chunk。
     ///
     /// 这是渲染、宽度测量和命中测试共享的唯一文本消费入口；
     /// 调用方只提供显示行范围，各投影层在快照内部通过持久游标向前推进。
@@ -361,8 +358,9 @@ impl DisplaySnapshot {
     pub(super) fn highlights_for_range(
         &self,
         range: Range<usize>,
+        cx: &App,
     ) -> Vec<(Range<usize>, HighlightStyle)> {
-        let highlight_styles = syntax::style_table(&self.buffer_snapshot().capture_names());
+        let highlight_styles = syntax::style_table(&self.buffer_snapshot().capture_names(), cx);
         self.buffer_snapshot()
             .highlights(range)
             .into_iter()
@@ -420,7 +418,7 @@ impl EventEmitter<DisplayMapEvent> for DisplayMap {}
 
 /// 把订阅者独立积累的组合文本批次换算成 Buffer 坐标的投影编辑。
 ///
-/// `DisplayMap` 是唯一文本变更消费者：它把批次交给 InlayMap，由 InlayMap 发布 InlayEdit，
+/// `DisplayMap` 是唯一文本变更消费者：它把批次换算成组合文本编辑后交给 FoldMap，
 /// 其后各层只消费上层编辑，不再回读文本层的 PositionMap。
 pub(crate) fn buffer_edits_from_batch(
     batch: &TextChangeBatch,
@@ -452,13 +450,10 @@ pub(crate) fn buffer_edits_from_batch(
 pub(crate) struct DisplayMap {
     /// 显示映射的派生状态版本。滚动不改变它，换行、折叠和文本同步才会推进它。
     revision: u64,
-    inlay_map: InlayMap,
     fold_map: FoldMap,
     tab_map: TabMap,
     /// 换行层实体：它自己拥有配置、变换树、待处理批次与后台重排任务。
     wrap_map: Entity<WrapMap>,
-    /// 宿主提供的行内提示配置；InlayMap 是变换树的权威，这里只保存期望配置。
-    inlays: Vec<Inlay>,
     /// 由 BufferHeader 控制的整文件折叠；BlockMap 在 WrapMap 之上隐藏对应文本行。
     folded_buffers: HashSet<PathBuf>,
     /// 当前显示管线的持久派生快照；滚动和普通重绘只克隆快照，不重建 BlockSnapshot。
@@ -476,18 +471,15 @@ impl DisplayMap {
     pub(crate) fn new(snapshot: impl Into<MultiBufferSnapshot>, cx: &mut Context<Self>) -> Self {
         let snapshot = snapshot.into();
         let tab_width = default_tab_width();
-        let (inlay_map, inlay_snapshot) = InlayMap::new(snapshot.clone());
-        let (fold_map, fold_snapshot) = FoldMap::new(inlay_snapshot);
+        let (fold_map, fold_snapshot) = FoldMap::new(snapshot.clone());
         let (tab_map, tab_snapshot) = TabMap::new(fold_snapshot, tab_width);
         let wrap_map = cx.new(|_| WrapMap::new(tab_snapshot));
         let wrap_snapshot = wrap_map.read(cx).snapshot().clone();
         let mut this = Self {
             revision: 0,
-            inlay_map,
             fold_map,
             tab_map,
             wrap_map,
-            inlays: Vec::new(),
             folded_buffers: HashSet::new(),
             snapshot: None,
             multi_buffer: None,
@@ -530,7 +522,7 @@ impl DisplayMap {
     /// 消费自上次同步以来的组合文本变化，并推进显示管线。
     ///
     /// 返回本次消费的文本变化，供 Editor 推进它自己的投影派生状态（搜索锚点等）。
-    /// 文本编辑与纯元数据变化走同一入口：InlayMap 按编辑推进，Fold/Tab/Wrap/Block 逐层消费。
+    /// 文本编辑与纯元数据变化走同一入口：Fold/Tab/Wrap/Block 逐层消费组合文本编辑。
     pub(crate) fn sync_from_multi_buffer(&mut self, cx: &mut Context<Self>) -> TextChangeBatch {
         let snapshot = self
             .multi_buffer
@@ -675,23 +667,19 @@ impl DisplayMap {
         cx: &mut Context<Self>,
     ) {
         let current_snapshot = current_snapshot.into();
-        let old_snapshot = self.inlay_map.snapshot().buffer_snapshot().clone();
+        let old_snapshot = self.fold_map.snapshot().buffer_snapshot().clone();
         // 无文本、无语法、无 capture 变化且没有未落地换行重排时不做推进，避免滚动帧重复重建显示拓扑。
         if batch.is_empty()
             && old_snapshot.version() == current_snapshot.version()
             && old_snapshot.metadata_version() == current_snapshot.metadata_version()
             && old_snapshot.capture_names().as_ref() == current_snapshot.capture_names().as_ref()
-            && self.inlays.as_slice() == self.inlay_map.inlays()
             && !self.wrap_map.read(cx).is_rewrapping()
         {
             return;
         }
         self.revision = self.revision.wrapping_add(1);
         let buffer_edits = buffer_edits_from_batch(&batch, &old_snapshot, &current_snapshot);
-        let (inlay_snapshot, inlay_edits) =
-            self.inlay_map
-                .sync(current_snapshot, buffer_edits, self.inlays.clone());
-        let (fold_snapshot, fold_edits) = self.fold_map.read(inlay_snapshot, inlay_edits);
+        let (fold_snapshot, fold_edits) = self.fold_map.read(current_snapshot, buffer_edits);
         let tab_width = self.tab_map.snapshot().tab_width();
         let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits, tab_width);
         let (wrap_snapshot, wrap_edits) = self
@@ -741,7 +729,7 @@ impl DisplayMap {
         wrap_snapshot: &WrapSnapshot,
         wrap_edits: &[WrapEdit],
     ) -> BlockSnapshot {
-        let excerpts = self.inlay_map.snapshot().buffer_snapshot().excerpts_arc();
+        let excerpts = self.fold_map.snapshot().buffer_snapshot().excerpts_arc();
         // 消费换行编辑流：块起始不变时复用或平移块布局，只重排受编辑影响的块。
         if let Some(previous) = &self.snapshot
             && let Some(resynced) = previous.block_snapshot.resync(
@@ -766,7 +754,6 @@ mod tests {
     use zcv_text::{Affinity, Buffer, BufferConfig, Edit, Line, TransactionMetadata};
     use zcv_theme::ThemeChoice;
 
-    use super::inlay_map::Inlay;
     use super::*;
 
     fn display_snapshot(cx: &TestAppContext, map: &Entity<DisplayMap>) -> DisplaySnapshot {
@@ -839,21 +826,6 @@ mod tests {
         });
     }
 
-    fn set_inlays(cx: &mut TestAppContext, map: &Entity<DisplayMap>, inlays: Vec<Inlay>) {
-        cx.update_entity(map, |map, _| map.inlays = inlays);
-        let buffer = cx.read_entity(map, |map, _| {
-            map.inlay_map.snapshot().buffer_snapshot().clone()
-        });
-        sync(cx, map, buffer, TextChangeBatch::default());
-    }
-
-    fn inlay(_snapshot: &MultiBufferSnapshot, position: usize, text: &str) -> Inlay {
-        Inlay {
-            position: MultiBufferOffset::new(position),
-            text: text.to_owned(),
-        }
-    }
-
     fn apply_test_theme(cx: &mut TestAppContext, id: &'static str) {
         cx.update(|cx| ThemeChoice::Named(id).apply(cx, None));
     }
@@ -874,16 +846,17 @@ mod tests {
             )
         });
         cx.run_until_parked();
-        let multi_buffer = cx.new(|cx| zcv_multi_buffer::MultiBuffer::singleton(source, cx));
+        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(source, cx));
         let (_, snapshot) =
             cx.update_entity(&multi_buffer, |multi, cx| multi.subscribe_and_snapshot(cx));
         let map = cx.new(|cx| DisplayMap::new(snapshot, cx));
 
-        let styles = display_snapshot(cx, &map).highlight_styles();
+        let snapshot = display_snapshot(cx, &map);
+        let styles = cx.update(|app| snapshot.highlight_styles(app));
         assert!(!styles.is_empty(), "语法解析应提供 capture 表");
         let light = styles[0].color;
         apply_test_theme(cx, "dark");
-        let dark = display_snapshot(cx, &map).highlight_styles()[0].color;
+        let dark = cx.update(|app| snapshot.highlight_styles(app))[0].color;
 
         assert_ne!(light, dark, "同一 DisplayMap 应按当前主题重新派生语法颜色");
     }
@@ -909,7 +882,7 @@ mod tests {
     #[gpui::test]
     fn display_pipeline_receives_the_source_transaction_batch(cx: &mut TestAppContext) {
         let source_buffer = cx.new(|_| {
-            zcv_text::Buffer::from_text("fn main() {}\n".to_owned(), BufferConfig::default())
+            Buffer::from_text("fn main() {}\n".to_owned(), BufferConfig::default())
                 .expect("测试 Buffer 应能创建")
         });
         let source = cx.new(|cx| {
@@ -922,7 +895,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let multi_buffer = cx.new(|cx| zcv_multi_buffer::MultiBuffer::singleton(source, cx));
+        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(source, cx));
         let (projection_subscription, snapshot) =
             cx.update_entity(&multi_buffer, |multi, cx| multi.subscribe_and_snapshot(cx));
         let display = cx.new(|cx| DisplayMap::new(snapshot, cx));
@@ -1717,128 +1690,6 @@ mod tests {
                 .beginning_of_row(middle)
                 .expect("片段中间行首应回到片段起点"),
             continuation_offset
-        );
-    }
-
-    #[gpui::test]
-    fn set_inlays_preserves_line_count_and_projects_text(cx: &mut TestAppContext) {
-        let snapshot: MultiBufferSnapshot =
-            Buffer::from_text("ab\ncd".to_owned(), BufferConfig::default())
-                .expect("测试 Buffer 应能创建")
-                .snapshot()
-                .into();
-        let map = cx.new(|cx| DisplayMap::new(snapshot.clone(), cx));
-        set_inlays(cx, &map, vec![inlay(&snapshot, 1, ": hint")]);
-        assert_eq!(
-            display_snapshot(cx, &map).line_count(),
-            2,
-            "行内提示不占行数"
-        );
-        let snapshot = display_snapshot(cx, &map);
-        let mut cursor = snapshot.rows(DisplayRow::ZERO, 1);
-        let row = cursor.next().expect("视口应可读取");
-        let WrapRowKind::Text { projected_line, .. } = row.kind();
-        assert_eq!(
-            snapshot.row_text(*projected_line).unwrap().as_ref(),
-            "a: hintb\n"
-        );
-    }
-
-    #[gpui::test]
-    fn folded_row_streams_inlays_from_anchor_and_close_tail(cx: &mut TestAppContext) {
-        let text = "a{\nhidden\n}tail\n";
-        let snapshot: MultiBufferSnapshot =
-            Buffer::from_text(text.to_owned(), BufferConfig::default())
-                .expect("测试 Buffer 应能创建")
-                .snapshot()
-                .into();
-        let map = cx.new(|cx| DisplayMap::new(snapshot.clone(), cx));
-        let close = text.find('}').expect("测试文本应包含闭合括号");
-        set_inlays(
-            cx,
-            &map,
-            vec![
-                inlay(&snapshot, 1, "<anchor>"),
-                inlay(&snapshot, close + 1, "<tail>"),
-            ],
-        );
-        fold_range(cx, &map, text.find('\n').expect("入口行应有换行符"), close)
-            .expect("折叠应成功");
-
-        let snapshot = display_snapshot(cx, &map);
-        let mut rows = snapshot.chunks(
-            DisplayRow::ZERO..DisplayRow::new(1),
-            HighlightStyles::default(),
-            None,
-        );
-        let mut rendered = String::new();
-        let mut inlay_chunks = 0;
-        rows.for_each_row(|event| {
-            if let DisplayRowEvent::Text { chunks, .. } = event {
-                for chunk in chunks {
-                    rendered.push_str(chunk.text);
-                    inlay_chunks += usize::from(chunk.is_inlay);
-                }
-            }
-        });
-        assert_eq!(rendered, "a<anchor>{…}<tail>tail");
-        assert_eq!(
-            inlay_chunks, 2,
-            "anchor 与 close 尾段的提示都必须只输出一次"
-        );
-    }
-
-    #[gpui::test]
-    fn inlay_hit_test_maps_through_projection(cx: &mut TestAppContext) {
-        let snapshot: MultiBufferSnapshot =
-            Buffer::from_text("abc\n".to_owned(), BufferConfig::default())
-                .expect("测试 Buffer 应能创建")
-                .snapshot()
-                .into();
-        let map = cx.new(|cx| DisplayMap::new(snapshot.clone(), cx));
-        set_inlays(cx, &map, vec![inlay(&snapshot, 1, "XY")]);
-        let snapshot = display_snapshot(cx, &map);
-        // 投影文本 "aXYbc"：'b' 的显示列 3 → 原始偏移 1（锚定后）。
-        let offset = snapshot
-            .display_point_to_offset(DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(3)))
-            .expect("锚定后的字符应映射回原始偏移");
-        assert_eq!(offset, MultiBufferOffset::new(1));
-        // 注入段内（列 1-2）吸附到锚定后（不可逆）。
-        let offset = snapshot
-            .display_point_to_offset(DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(1)))
-            .expect("注入段内应吸附到锚定后");
-        assert_eq!(offset, MultiBufferOffset::new(1));
-    }
-
-    #[gpui::test]
-    fn inlay_changes_trigger_rebuild_but_edits_stay_incremental(cx: &mut TestAppContext) {
-        let mut buffer = Buffer::from_text("ab\ncd\n".to_owned(), BufferConfig::default())
-            .expect("测试 Buffer 应能创建");
-        let snapshot: MultiBufferSnapshot = buffer.snapshot().into();
-        let map = cx.new(|cx| DisplayMap::new(snapshot.clone(), cx));
-        let subscription = buffer.subscribe();
-        set_inlays(cx, &map, vec![inlay(&snapshot, 1, "x")]);
-        // 注入配置变化后，行内编辑仍走增量路径（Compatible）。
-        buffer
-            .edit(
-                [Edit::replace(
-                    MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(1))
-                        .unwrap()
-                        .into(),
-                    "AB",
-                )],
-                TransactionMetadata::default(),
-            )
-            .expect("测试编辑应成功");
-        sync(cx, &map, buffer.snapshot(), subscription.consume());
-        // inlay 位置随同一批文本编辑推进：replace [0,1) 为 "AB" 后，原偏移 1 落在插入文本之后（偏移 2）。
-        let snapshot = display_snapshot(cx, &map);
-        let mut cursor = snapshot.rows(DisplayRow::ZERO, 1);
-        let row = cursor.next().expect("视口应可读取");
-        let WrapRowKind::Text { projected_line, .. } = row.kind();
-        assert_eq!(
-            snapshot.row_text(*projected_line).unwrap().as_ref(),
-            "ABxb\n"
         );
     }
 }

@@ -18,7 +18,7 @@ mod platform;
 
 /// 快捷键绑定集合：正向（注册） + 反向（查询）。
 pub struct KeyBindings {
-    pub bindings: Vec<KeyBinding>,
+    bindings: Vec<KeyBinding>,
     shortcuts: Vec<(Box<dyn Action>, String)>,
 }
 
@@ -41,6 +41,15 @@ impl KeyBindings {
             .find(|(action, _)| action.name() == action_name)
             .map(|(_, keys)| platform::display_format(keys))
     }
+}
+
+/// 从 App 的 [`KeyBindings`] 全局解析 action 的显示快捷键文本。
+///
+/// 供 UI 装配层在构造按钮/图标提示前解析；
+/// 设计系统组件只消费已解析文本，不依赖快捷键注册表。
+pub fn display_shortcut(action: &dyn Action, cx: &App) -> Option<String> {
+    cx.try_global::<KeyBindings>()
+        .and_then(|bindings| bindings.display_shortcut(action))
 }
 
 impl gpui::Global for KeyBindings {}

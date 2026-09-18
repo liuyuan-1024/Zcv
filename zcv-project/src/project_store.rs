@@ -13,8 +13,7 @@ use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakE
 use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 use zcv_git::{ConflictChoice, FileStatus, parse_conflict_regions, resolve_conflict};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
-use zcv_multi_buffer::MultiBuffer;
-use zcv_path::{AbsolutePathBuf, normalize_for_comparison, simplify_native};
+use zcv_path::{AbsolutePathBuf, normalize_for_comparison};
 use zcv_text::{Buffer, ByteOffset, Edit, TextRange, TransactionMetadata};
 
 use crate::search::SearchQuery;
@@ -53,7 +52,7 @@ pub struct Project {
     /// git store 属于 Project 而非 worktree，无 worktree 时以无根状态存在（仓库查询与 git job 为空操作）。
     git_store: Entity<GitStore>,
     buffer_store: BufferStore,
-    /// 项目唯一的语言注册表；所有语言 Buffer 与 diff 源共享同一份，避免多处独立加载。
+    /// 应用装配层创建并注入的唯一语言注册表；项目内所有语言 Buffer 与 diff 源共享同一份，避免多处独立加载。
     language_registry: Arc<LanguageRegistry>,
     /// 项目创建阶段尚未建立工作区订阅时产生的监听错误。
     pending_file_watcher_errors: Vec<FileWatcherError>,
@@ -67,16 +66,21 @@ struct ProjectWorktree {
 }
 
 impl Project {
-    pub fn new(root: PathBuf, cx: &mut Context<Self>) -> Self {
-        Self::new_with_watcher(root, Arc::new(FsWatcher::new()), cx)
+    /// 使用默认文件监听后端创建项目。
+    ///
+    /// 语言注册表由应用装配层创建并显式注入，项目只持有同一份 Arc，不在内部新建。
+    pub fn new(root: PathBuf, languages: Arc<LanguageRegistry>, cx: &mut Context<Self>) -> Self {
+        Self::new_with_watcher(root, Arc::new(FsWatcher::new()), languages, cx)
     }
 
     /// 使用指定的文件监听后端创建项目。
     ///
     /// 项目负责监听器的生命周期和事件消费；调用方负责选择符合当前运行环境的后端。
+    /// 语言注册表由应用装配层创建并显式注入，项目内的语言 Buffer 与 diff 源共享同一份。
     pub fn new_with_watcher(
         root: PathBuf,
         fs_watcher: Arc<dyn Watcher>,
+        languages: Arc<LanguageRegistry>,
         cx: &mut Context<Self>,
     ) -> Self {
         // ProjectWorktree、文件监听器和 GitStore 共用同一个已规范化根路径。
@@ -105,11 +109,10 @@ impl Project {
             }
         });
 
-        let language_registry = Arc::new(LanguageRegistry::new());
         let git_store = cx.new(|cx| {
             GitStore::new(
                 Some(root.as_path().to_path_buf()),
-                Arc::clone(&language_registry),
+                Arc::clone(&languages),
                 cx,
             )
         });
@@ -123,21 +126,22 @@ impl Project {
                 _fs_task: fs_task,
             }),
             git_store,
-            buffer_store: BufferStore::new(Arc::clone(&language_registry)),
-            language_registry,
+            buffer_store: BufferStore::new(Arc::clone(&languages)),
+            language_registry: languages,
             pending_file_watcher_errors,
         }
     }
 
     /// 创建没有 worktree 的本地项目，供空工作区使用。
-    pub fn empty(cx: &mut Context<Self>) -> Self {
-        let language_registry = Arc::new(LanguageRegistry::new());
-        let git_store = cx.new(|cx| GitStore::new(None, Arc::clone(&language_registry), cx));
+    ///
+    /// 语言注册表同样由应用装配层注入。
+    pub fn empty(languages: Arc<LanguageRegistry>, cx: &mut Context<Self>) -> Self {
+        let git_store = cx.new(|cx| GitStore::new(None, Arc::clone(&languages), cx));
         Self {
             worktree: None,
             git_store,
-            buffer_store: BufferStore::new(Arc::clone(&language_registry)),
-            language_registry,
+            buffer_store: BufferStore::new(Arc::clone(&languages)),
+            language_registry: languages,
             pending_file_watcher_errors: Vec::new(),
         }
     }
@@ -298,20 +302,7 @@ impl Project {
         self.buffer_store.register_loaded_buffer(path, buffer, cx)
     }
 
-    pub fn save_buffer(
-        &mut self,
-        multi_buffer: &Entity<MultiBuffer>,
-        path: &Path,
-        cx: &mut Context<Self>,
-    ) -> Result<(), BufferSaveError> {
-        let mut buffers = multi_buffer.read(cx).file_buffers(cx);
-        let (buffer, _) = buffers.pop().expect("当前 Project 只保存单文件组合文档");
-        assert!(buffers.is_empty(), "当前 Project 只保存单文件组合文档");
-        self.save_file_buffers(vec![(buffer, path.to_path_buf())], cx)
-    }
-
-    /// 保存 MultiBuffer 引用的真实源文件 Buffer；
-    /// 组合投影不会参与落盘。
+    /// 保存真实源文件的 Buffer；组合投影不会参与落盘。
     pub fn save_file_buffers(
         &mut self,
         buffers: Vec<(Entity<Buffer>, PathBuf)>,
@@ -376,7 +367,7 @@ impl Project {
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?;
         anyhow::ensure!(
-            from == worktree.root.as_path() || from.starts_with(worktree.root.as_path()),
+            from.as_path() == worktree.root.as_path() || from.starts_with(worktree.root.as_path()),
             "条目不在当前项目中"
         );
         let indexed_from = AbsolutePathBuf::canonicalize(&from)?;
@@ -395,19 +386,19 @@ impl Project {
         self.buffer_store
             .rename_path(indexed_from.as_path(), &indexed_to);
 
-        if from == worktree.root.as_path() {
+        if from.as_path() == worktree.root.as_path() {
             let new_root = AbsolutePathBuf::canonicalize(&to)?;
             if let Err(error) = worktree.fs_watcher.add(&to) {
                 cx.emit(ProjectEvent::FileWatcherError(FileWatcherError {
                     operation: FileWatcherOperation::Add,
-                    path: to.to_path_buf(),
+                    path: to.as_path().to_path_buf(),
                     error: format!("{error:#}"),
                 }));
             }
             if let Err(error) = worktree.fs_watcher.remove(&from) {
                 cx.emit(ProjectEvent::FileWatcherError(FileWatcherError {
                     operation: FileWatcherOperation::Remove,
-                    path: from.to_path_buf(),
+                    path: from.as_path().to_path_buf(),
                     error: format!("{error:#}"),
                 }));
             }
@@ -462,7 +453,7 @@ impl Project {
         let root = self
             .root()
             .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?;
-        anyhow::ensure!(path != root, "不能删除项目根目录");
+        anyhow::ensure!(path.as_path() != root, "不能删除项目根目录");
         anyhow::ensure!(path.starts_with(root), "条目不在当前项目中");
         trash::delete(&path)?;
         self.buffer_store.remove_path(&path);
@@ -487,7 +478,7 @@ impl Project {
             .root()
             .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?
             .to_path_buf();
-        anyhow::ensure!(from != root, "不能移动项目根目录");
+        anyhow::ensure!(from.as_path() != root, "不能移动项目根目录");
         anyhow::ensure!(from.starts_with(&root), "条目不在当前项目中");
         anyhow::ensure!(to.starts_with(&root), "目标不在当前项目中");
         anyhow::ensure!(!to.starts_with(&from), "不能把条目移动到自身内部");
@@ -546,7 +537,7 @@ impl Project {
             .root()
             .ok_or_else(|| anyhow::anyhow!("当前项目没有 worktree"))?
             .to_path_buf();
-        anyhow::ensure!(source != root, "不能复制项目根目录");
+        anyhow::ensure!(source.as_path() != root, "不能复制项目根目录");
         anyhow::ensure!(source.starts_with(&root), "条目不在当前项目中");
         anyhow::ensure!(destination.starts_with(&root), "目标不在当前项目中");
         anyhow::ensure!(
@@ -566,8 +557,8 @@ impl Project {
         );
         anyhow::ensure!(source.exists(), "源条目不存在：{}", source.display());
         // 不在同步阶段预删已存在目标：后台复制先把完整副本落到同级临时条目，成功后才替换目标（见 `copy_entry_overwrite`），任何一步失败原目标内容完好。
-        let source = source.to_path_buf();
-        let destination = destination.to_path_buf();
+        let source = source.as_path().to_path_buf();
+        let destination = destination.as_path().to_path_buf();
         // 任务交由调用方驱动（drop 即取消）：进度面板逐项 await 推进，不随 Project 持久保存字段。
         Ok(
             cx.spawn(move |project: WeakEntity<Self>, asynccx: &mut AsyncApp| {
@@ -598,10 +589,10 @@ impl Project {
         let events: Vec<_> = events
             .into_iter()
             .map(|mut event| {
-                let path = normalize_for_comparison(&event.path)
-                    .unwrap_or_else(|_| simplify_native(&event.path));
-                event.path =
-                    AbsolutePathBuf::new(path).expect("文件监听事件路径必须保持为绝对路径");
+                let Ok(path) = normalize_for_comparison(&event.path) else {
+                    return event;
+                };
+                event.path = path;
                 event
             })
             .filter(|event| event.path.starts_with(&worktree.root))
@@ -803,7 +794,7 @@ mod tests {
 
     use super::*;
     use crate::git_store::StatusEntry;
-    use crate::test_support::{test_git_repo, test_project};
+    use crate::test_support::{test_git_repo, test_languages, test_project};
 
     fn git_status_for_path(project: &Project, path: &Path, cx: &App) -> Option<StatusEntry> {
         project.git_store.read(cx).status_for_path(path).cloned()
@@ -811,7 +802,7 @@ mod tests {
 
     #[gpui::test]
     fn empty_project_has_no_worktree_or_project_services(cx: &mut TestAppContext) {
-        let project = cx.update(|cx| cx.new(Project::empty));
+        let project = cx.update(|cx| cx.new(|cx| Project::empty(test_languages(), cx)));
         cx.read_entity(&project, |project, _| {
             assert!(!project.has_worktree());
             assert!(project.root().is_none());
@@ -851,14 +842,23 @@ mod tests {
     ) {
         let directory = tempfile::tempdir().expect("应创建临时目录");
         let root = directory.path().to_path_buf();
-        let project = cx
-            .new(|cx| Project::new_with_watcher(root.clone(), Arc::new(FailingWatcher::new()), cx));
+        let project = cx.new(|cx| {
+            Project::new_with_watcher(
+                root.clone(),
+                Arc::new(FailingWatcher::new()),
+                test_languages(),
+                cx,
+            )
+        });
 
         let errors = project.update(cx, |project, _| project.take_pending_file_watcher_errors());
 
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].operation, FileWatcherOperation::Add);
-        assert_eq!(errors[0].path, normalize_for_comparison(&root).unwrap());
+        assert_eq!(
+            errors[0].path,
+            normalize_for_comparison(&root).unwrap().into_path_buf()
+        );
         assert_eq!(errors[0].error, "测试监听失败");
         assert!(
             project
@@ -1447,7 +1447,7 @@ mod tests {
         // 前缀不匹配，事件会被 fs_watcher 过滤掉。
         let (root, _temp) = test_git_repo();
         let root = root.canonicalize().expect("应可 canonicalize");
-        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        let project = cx.new(|cx| Project::new(root.clone(), test_languages(), cx));
         cx.run_until_parked();
 
         // 等 notify 在后台线程建立 watch，避免写入事件丢失。
@@ -1501,10 +1501,9 @@ mod tests {
         );
 
         // 保存后 git 状态应变为已修改。
-        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(buffer.clone(), cx));
         project
             .update(cx, |project, cx| {
-                project.save_buffer(&multi_buffer, &file, cx)
+                project.save_file_buffers(vec![(engine_buffer.clone(), file.clone())], cx)
             })
             .expect("保存应成功");
         cx.run_until_parked();
@@ -1535,10 +1534,9 @@ mod tests {
             })
             .expect("编辑应成功");
 
-        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer.clone(), cx));
         project
             .update(cx, |project, cx| {
-                project.save_buffer(&multi_buffer, &file, cx)
+                project.save_file_buffers(vec![(buffer.clone(), file.clone())], cx)
             })
             .expect("保存应成功");
         project.update(cx, |project, cx| {

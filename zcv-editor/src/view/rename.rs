@@ -34,7 +34,7 @@ pub(super) struct LocalRenameState {
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum LocalRenameError {
+pub(crate) enum LocalRenameError {
     #[error("当前文档不是可安全重命名的单文件文档")]
     UnsupportedDocument,
     #[error("新名称不能为空或不是有效标识符")]
@@ -51,7 +51,7 @@ impl Editor {
     /// 在当前光标位置安全重命名局部绑定。
     ///
     /// 只有语法层明确解析出的定义和引用会参与编辑；组合文档、过期快照和未解析名称均拒绝操作。
-    pub fn rename_local_at(
+    pub(crate) fn rename_local_at(
         &mut self,
         offset: MultiBufferOffset,
         new_name: &str,
@@ -131,7 +131,7 @@ impl Editor {
         rename_ranges.dedup();
         let line_height = self
             .last_line_height
-            .unwrap_or_else(zcv_theme::typography::content_line);
+            .unwrap_or_else(|| zcv_theme::typography::content_line(cx));
         let cursor_position = self
             .pixel_position_of_newest_cursor
             .unwrap_or_else(|| point(Pixels::ZERO, Pixels::ZERO));

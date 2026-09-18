@@ -47,7 +47,7 @@ impl Render for HarnessButton {
             .child(
                 Button::icon(ElementId::Name("harness".into()), "icons/zed_assistant.svg")
                     .label("Harness 模式")
-                    .shortcut(&ToggleHarnessMode, cx)
+                    .shortcut(zcv_keymap::display_shortcut(&ToggleHarnessMode, cx))
                     .color(fg)
                     .on_click(cx.listener(|button, _, _window, cx| button.toggle(cx))),
             )

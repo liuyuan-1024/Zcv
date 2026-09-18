@@ -26,10 +26,10 @@ pub use icon::SvgIcon;
 pub use input::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent};
 pub use list_item::ListItem;
 pub use replace_input::ReplaceInput;
-pub use scrollbar::{MIN_THUMB_SIZE, ScrollableHandle, Scrollbar};
+pub use scrollbar::{MIN_THUMB_SIZE, ScrollableHandle, Scrollbar, thumb_geometry};
 pub use search_input::{MatchOption, MatchOptions, SearchInput};
 pub use tab::Tab;
-pub use tooltip::TooltipSpec;
+pub use tooltip::{ShortcutResolver, TooltipSpec};
 pub use tree::{
     RowClickAction, TreeNodeRow, TreeRow, TreeRowFrame, TreeState, row_click_action,
     selection_border, tree_row_height, tree_row_label,

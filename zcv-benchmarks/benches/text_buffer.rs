@@ -1,7 +1,9 @@
 use criterion::{
     BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
 };
-use zcv_benchmarks::cached_rust_document;
+mod common;
+
+use common::cached_rust_document;
 use zcv_project::{SearchQuery, SearchQueryResult, regex_replacements_in_text};
 use zcv_text::{
     Buffer, BufferConfig, ByteOffset, Edit, Line, TransactionMetadata, WordBoundaryPolicy,

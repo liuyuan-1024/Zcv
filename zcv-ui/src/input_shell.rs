@@ -70,7 +70,7 @@ impl RenderOnce for InputShell {
                                 .flex_none()
                                 .flex()
                                 .items_center()
-                                .h(typography::ui_line_at(window.rem_size()))
+                                .h(typography::ui_line_at(window.rem_size(), cx))
                                 .gap(space::S6)
                                 .children(self.internal),
                         )

@@ -9,7 +9,6 @@ use std::sync::Arc;
 use super::scroll::ScrollbarThumbState;
 use super::view::EditorHunkMarkerKind;
 use gpui::{Bounds, Hitbox, HitboxBehavior, Pixels, Point, Window, point, px, size};
-use zcv_ui::MIN_THUMB_SIZE;
 
 /// 滚动轴宽度。
 pub(super) const SCROLLBAR_WIDTH: Pixels = px(15.);
@@ -82,33 +81,19 @@ impl ScrollbarLayout {
 
 /// 纯几何：由轨道边界、内容高度与滚动位置推导 thumb 与换算系数。
 ///
-/// 数学：
-/// - total = max_scroll + track_length（内容总高，轨道高度即视口高度）
-/// - thumb_size = track_length × track_length/total，夹 [MIN_THUMB_SIZE, track_length]
-/// - travel = track_length − thumb_size（thumb 可活动行程），下限 1px 防除零
-/// - scroll_per_pixel = max_scroll / travel
-/// - thumb 顶 = scroll_top / scroll_per_pixel（scroll_top=0 贴顶、=max_scroll 贴底）
-///
-/// 内容不高于视口（max_scroll ≤ 0）时返回 None。
+/// 共享 [`zcv_ui::thumb_geometry`] 的垂直轨道结果，只补充轨道原点的边界换算。
 pub(super) fn thumb_geometry(
     track_bounds: Bounds<Pixels>,
     max_scroll: Pixels,
     scroll_top: Pixels,
 ) -> Option<(Bounds<Pixels>, f32)> {
-    if max_scroll <= Pixels::ZERO {
-        return None;
-    }
-    let track_length = track_bounds.size.height;
-    let total = max_scroll + track_length;
-    let thumb_size = (track_length * (track_length / total))
-        .max(MIN_THUMB_SIZE)
-        .min(track_length);
-    // 轨道不足 25px 时 thumb 占满轨道，travel 下限 1px 保证换算系数有界。
-    let travel = (track_length - thumb_size).max(px(1.));
-    let scroll_per_pixel = max_scroll / travel;
-    let thumb_top = scroll_top * (1.0 / scroll_per_pixel);
+    let (thumb_size, thumb_position, scroll_per_pixel) =
+        zcv_ui::thumb_geometry(track_bounds.size.height, max_scroll, scroll_top)?;
     let thumb_bounds = Bounds {
-        origin: point(track_bounds.origin.x, track_bounds.origin.y + thumb_top),
+        origin: point(
+            track_bounds.origin.x,
+            track_bounds.origin.y + thumb_position,
+        ),
         size: size(track_bounds.size.width, thumb_size),
     };
     Some((thumb_bounds, scroll_per_pixel))

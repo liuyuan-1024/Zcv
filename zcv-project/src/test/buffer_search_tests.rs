@@ -3,7 +3,7 @@ use zcv_text::{
 };
 
 use super::*;
-use crate::search::SearchError;
+use crate::search::error::SearchError;
 
 fn buffer(text: &str) -> Buffer {
     Buffer::from_text(text.to_string(), BufferConfig::default()).unwrap()

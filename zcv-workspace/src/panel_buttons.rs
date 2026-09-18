@@ -85,7 +85,7 @@ impl Render for PanelButtons {
 
                 Button::icon(ElementId::Name(icon_path.into()), icon_path)
                     .label(label)
-                    .shortcut(&shortcut_action, cx)
+                    .shortcut(zcv_keymap::display_shortcut(&shortcut_action, cx))
                     .color(fg)
                     .on_click(on_click)
                     .into_any_element()

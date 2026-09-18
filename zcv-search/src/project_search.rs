@@ -56,8 +56,6 @@ pub(crate) struct ProjectSearchView {
     project: Entity<Project>,
     results_editor: Entity<Editor>,
     excerpts: Entity<MultiBuffer>,
-    // 最近一次成功搜索的命中数；None 表示尚未完成任何搜索。
-    match_count: Option<usize>,
     search_generation: u64,
     debounce_task: Option<Task<()>>,
     pending_search: Option<Task<()>>,
@@ -151,7 +149,6 @@ impl ProjectSearchView {
             project,
             results_editor,
             excerpts,
-            match_count: None,
             search_generation: 0,
             debounce_task: None,
             pending_search: None,
@@ -426,6 +423,7 @@ impl ProjectSearchView {
                                 "project-search",
                                 query_input.clone().into_any_element(),
                             )
+                            .shortcut_resolver(zcv_keymap::display_shortcut)
                             .options(self.search_state.options)
                             .on_toggle({
                                 let weak = weak.clone();
@@ -493,7 +491,6 @@ impl ProjectSearchView {
             .update(cx, |project, cx| project.search(query.clone(), cx));
         let search_task = results.task;
         let results_rx = results.rx;
-        self.match_count = None;
         self.excerpts.update(cx, |buffer, cx| buffer.clear(cx));
         self.results_editor.update(cx, |editor, cx| {
             SearchableItem::clear_search(editor, window, cx)
@@ -506,7 +503,6 @@ impl ProjectSearchView {
         self.pending_search = Some(cx.spawn_in(window, async move |this, cx| {
             let _search_task = search_task;
             let mut batched = Vec::<ExcerptRange>::new();
-            let mut match_count = 0usize;
             loop {
                 // 被更新的查询取代时放弃本次流式装配；
                 // 放弃通道会让后台在下次发送时感知并提前结束扫描。
@@ -532,7 +528,6 @@ impl ProjectSearchView {
                     continue;
                 };
                 for excerpt in item.excerpts {
-                    match_count += excerpt.matches.len();
                     batched.push(ExcerptRange::new(
                         source.clone(),
                         excerpt.range,
@@ -544,13 +539,7 @@ impl ProjectSearchView {
                 }
                 let batch = std::mem::take(&mut batched);
                 this.update_in(cx, |this, _window, cx| {
-                    this.append_search_batch(
-                        batch,
-                        match_count,
-                        &results_editor,
-                        query.clone(),
-                        cx,
-                    );
+                    this.append_search_batch(batch, &results_editor, query.clone(), cx);
                 })
                 .ok();
                 // 让出主循环：每批装配后重绘，结果渐进可见。
@@ -558,7 +547,7 @@ impl ProjectSearchView {
             }
             this.update_in(cx, |this, _window, cx| {
                 if !batched.is_empty() {
-                    this.append_search_batch(batched, match_count, &results_editor, query, cx);
+                    this.append_search_batch(batched, &results_editor, query, cx);
                 }
                 this.pending_search = None;
                 cx.emit(SearchEvent::MatchesInvalidated);
@@ -569,11 +558,10 @@ impl ProjectSearchView {
         }));
     }
 
-    /// 将新增片段追加到组合文档，并更新匹配高亮与命中计数。
+    /// 将新增片段追加到组合文档，并更新匹配高亮。
     fn append_search_batch(
         &mut self,
         excerpts: Vec<ExcerptRange>,
-        match_count: usize,
         results_editor: &Entity<Editor>,
         query: SearchQuery,
         cx: &mut Context<Self>,
@@ -588,14 +576,12 @@ impl ProjectSearchView {
                 cx,
             )
         });
-        self.match_count = Some(match_count);
         cx.emit(SearchEvent::MatchesInvalidated);
         cx.notify();
     }
 
     fn reset_results(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.pending_search = None;
-        self.match_count = None;
         self.excerpts.update(cx, |buffer, cx| buffer.clear(cx));
         self.results_editor.update(cx, |editor, cx| {
             SearchableItem::clear_search(editor, window, cx)
@@ -618,8 +604,10 @@ impl Focusable for ProjectSearchView {
 impl Render for ProjectSearchView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         let colors = color::current(cx);
-        let has_results = self.match_count.is_some_and(|count| count > 0);
-        let show_empty = self.match_count == Some(0);
+        let (match_count, _) = SearchableItem::search_count(self, cx);
+        let has_results = match_count > 0;
+        // 已有查询但无匹配时显示空态；尚未输入查询时保持空白。
+        let show_empty = match_count == 0 && !self.search_state.query.is_empty();
 
         div()
             .key_context("ProjectSearchView")
@@ -864,7 +852,7 @@ impl Render for ProjectSearchButton {
         let workspace = self.workspace.clone();
         Button::icon("search-button", "icons/magnifying_glass.svg")
             .label("项目搜索")
-            .shortcut(&DeployProjectSearch, cx)
+            .shortcut(zcv_keymap::display_shortcut(&DeployProjectSearch, cx))
             .on_click(move |_, window, cx| {
                 workspace
                     .update(cx, |workspace, cx| {
@@ -883,6 +871,7 @@ mod tests {
 
     use gpui::{AppContext as _, Context, TestAppContext, VisualTestContext, Window};
     use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
+    use zcv_language::LanguageRegistry;
     use zcv_path::AbsolutePathBuf;
     use zcv_project::Project;
     use zcv_text::{ByteOffset, TextRange};
@@ -920,8 +909,14 @@ mod tests {
         window: &mut Window,
         cx: &mut Context<Workspace>,
     ) -> Workspace {
-        let project =
-            cx.new(|cx| Project::new_with_watcher(root, Arc::new(PassiveWatcher::new()), cx));
+        let project = cx.new(|cx| {
+            Project::new_with_watcher(
+                root,
+                Arc::new(PassiveWatcher::new()),
+                Arc::new(LanguageRegistry::new()),
+                cx,
+            )
+        });
         Workspace::new_with_project(project, window, cx)
     }
 

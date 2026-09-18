@@ -173,7 +173,8 @@ impl PickerHost {
         if let Some(on_close) = on_close {
             on_close(window, cx);
         }
-        if opened && let Some(input) = picker.read(cx).search_input().cloned() {
+        if opened {
+            let input = picker.read(cx).search_input().clone();
             window.focus(&input.focus_handle(cx), cx);
         }
         window.refresh();

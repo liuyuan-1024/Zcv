@@ -9,7 +9,7 @@ use super::error::{SearchError, VersionedResultError};
 
 /// 与 `BufferVersion` 绑定的泛型结果载体。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct VersionedResult<T> {
+pub(crate) struct VersionedResult<T> {
     version: BufferVersion,
     value: T,
 }

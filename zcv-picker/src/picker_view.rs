@@ -63,8 +63,8 @@ pub(crate) type OnDismiss = Box<dyn Fn(&mut Window, &mut App)>;
 
 pub struct Picker<D: PickerDelegate> {
     delegate: D,
-    /// 单行输入控件（EDITOR_FACTORY 未初始化时缺席，Picker 降级为无过滤输入）。
-    search_input: Option<Arc<dyn ErasedEditor>>,
+    /// 单行输入控件；由 zcv_editor::init 注入的 EDITOR_FACTORY 创建。
+    search_input: Arc<dyn ErasedEditor>,
     focus_handle: FocusHandle,
     width: Pixels,
     query: String,
@@ -77,12 +77,12 @@ impl<D: PickerDelegate> Picker<D> {
         let focus = cx.focus_handle();
         let placeholder = delegate.placeholder_text().to_owned();
         let match_count = delegate.match_count();
-        // 工厂未初始化（无装配环境）时输入框缺席，Picker 保持可创建（纯列表降级）。
-        let search_input = EDITOR_FACTORY.get().map(|factory| {
-            let input = factory(cx);
-            input.set_placeholder_text(&placeholder, cx);
-            input
-        });
+        // 编辑器工厂是搜索框的前提；缺失说明 zcv_editor::init 先于窗口/选择器装配被跳过，必须显式失败。
+        let factory = EDITOR_FACTORY
+            .get()
+            .expect("Picker 需要 zcv_editor::init 注入编辑器工厂");
+        let search_input = factory(cx);
+        search_input.set_placeholder_text(&placeholder, cx);
 
         let picker = Self {
             delegate,
@@ -93,17 +93,14 @@ impl<D: PickerDelegate> Picker<D> {
             on_dismiss: None,
             list_state: ListState::new(match_count, ListAlignment::Top, px(100.0)),
         };
-        if let Some(search_input) = &picker.search_input {
+        {
             let weak = cx.weak_entity();
-            search_input
+            picker
+                .search_input
                 .subscribe(
                     Box::new(move |ErasedEditorEvent::Edited, _, cx| {
                         weak.update(cx, |picker, cx| {
-                            let query = picker
-                                .search_input
-                                .as_ref()
-                                .map(|input| input.text(cx))
-                                .unwrap_or_default();
+                            let query = picker.search_input.text(cx);
                             if picker.query != query {
                                 picker.query = query.clone();
                                 picker.delegate.update_matches(query);
@@ -134,8 +131,8 @@ impl<D: PickerDelegate> Picker<D> {
         &mut self.delegate
     }
 
-    pub fn search_input(&self) -> Option<&Arc<dyn ErasedEditor>> {
-        self.search_input.as_ref()
+    pub fn search_input(&self) -> &Arc<dyn ErasedEditor> {
+        &self.search_input
     }
 
     // ══ 内部：action handler ════════════════════════════════════
@@ -260,15 +257,13 @@ impl<D: PickerDelegate> Render for Picker<D> {
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel));
 
-        root.when_some(self.search_input.as_ref(), |el, input| {
-            el.child(picker_search_box(input.render(), cx))
-        })
-        .when_some(self.delegate.render_header(), |el, h| el.child(h))
-        .when_some(no_match, |el, n| el.child(n))
-        .child(items)
-        .when_some(self.delegate.render_footer(_window, cx), |el, f| {
-            el.child(f)
-        })
+        root.child(picker_search_box(self.search_input.render(), cx))
+            .when_some(self.delegate.render_header(), |el, h| el.child(h))
+            .when_some(no_match, |el, n| el.child(n))
+            .child(items)
+            .when_some(self.delegate.render_footer(_window, cx), |el, f| {
+                el.child(f)
+            })
     }
 }
 
@@ -515,7 +510,7 @@ mod tests {
                 cx,
             )
         });
-        let input = cx.read_entity(&picker, |picker, _| picker.search_input().unwrap().clone());
+        let input = cx.read_entity(&picker, |picker, _| picker.search_input().clone());
 
         cx.update(|_, cx| input.set_text("分支", cx));
         cx.run_until_parked();
@@ -567,7 +562,7 @@ mod tests {
             let selected_index = selected_index.clone();
             move |window, cx| {
                 cx.bind_keys([
-                    KeyBinding::new("down", zcv_actions::MoveDown, Some("Editor")),
+                    KeyBinding::new("down", MoveDown, Some("Editor")),
                     KeyBinding::new("down", PickerSelectNext, Some("Picker")),
                     KeyBinding::new("enter", Newline, Some("Editor")),
                     KeyBinding::new("enter", PickerConfirm, Some("Picker")),
@@ -583,7 +578,7 @@ mod tests {
                 )
             }
         });
-        let input = cx.read_entity(&picker, |picker, _| picker.search_input().unwrap().clone());
+        let input = cx.read_entity(&picker, |picker, _| picker.search_input().clone());
         cx.update(|window, cx| {
             let focus = input.focus_handle(cx);
             window.focus(&focus, cx);
@@ -639,7 +634,7 @@ mod tests {
             }
         });
         let input = cx.read_entity(&view, |view, cx| {
-            view.picker.read(cx).search_input().unwrap().clone()
+            view.picker.read(cx).search_input().clone()
         });
         cx.update(|window, cx| {
             let focus = input.focus_handle(cx);
@@ -675,7 +670,7 @@ mod tests {
             }
         });
         let input = cx.read_entity(&view, |view, cx| {
-            view.picker.read(cx).search_input().unwrap().clone()
+            view.picker.read(cx).search_input().clone()
         });
         cx.update(|window, cx| {
             let focus = input.focus_handle(cx);

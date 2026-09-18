@@ -157,7 +157,7 @@ fn switching_single_file_diff_after_source_edit_keeps_text_consumer_aligned(
 fn clicking_deep_after_fold_preserves_the_visual_column(cx: &mut TestAppContext) {
     let text = include_str!("../../../../assets/keymaps/default-macos.json");
     let raw_buffer = cx.new(|_| {
-        Buffer::from_text(text.to_owned(), zcv_text::BufferConfig::default())
+        Buffer::from_text(text.to_owned(), BufferConfig::default())
             .expect("keymap 测试 Buffer 应能创建")
     });
     let language_buffer = cx.new(|cx| {
@@ -488,13 +488,7 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
     let editor = cx.new(|cx| Editor::from_language_buffer(buffer.clone(), EditorMode::Full, cx));
     cx.run_until_parked();
     // 语法解析完成后语言层提供两个折叠范围（fn main 与 fn other 的块体）。
-    let fold_ranges = cx.read_entity(&editor, |editor, _| {
-        editor
-            .fold_ranges()
-            .iter()
-            .map(|range| range.clone())
-            .collect::<Vec<_>>()
-    });
+    let fold_ranges = cx.read_entity(&editor, |editor, _| editor.fold_ranges().to_vec());
     assert_eq!(fold_ranges.len(), 2);
 
     // 折叠 fn main（入口行 0）：隐藏块内 2 行，无占位行，总行数 6 → 4。
@@ -713,13 +707,7 @@ fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     // 编辑后语言层折叠范围仍可用（插值树版本与 buffer 同步）。
-    let fold_ranges = cx.read_entity(&editor, |editor, _| {
-        editor
-            .fold_ranges()
-            .iter()
-            .map(|range| range.clone())
-            .collect::<Vec<_>>()
-    });
+    let fold_ranges = cx.read_entity(&editor, |editor, _| editor.fold_ranges().to_vec());
     assert_eq!(fold_ranges.len(), 2, "编辑后折叠范围应保持两个");
 
     // 注释行插入后 `{` 落到行 1（fold 范围起点行随编辑推进），入口行折叠仍可用。
@@ -860,7 +848,7 @@ fn horizontal_movement_jumps_over_folded_content(cx: &mut TestAppContext) {
 fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppContext) {
     let text = "before\nfn folded() {\n  let value = 1;\n}\nafter\n";
     let raw_buffer = cx.new(|_| {
-        Buffer::from_text(text.to_owned(), zcv_text::BufferConfig::default())
+        Buffer::from_text(text.to_owned(), BufferConfig::default())
             .expect("Rust 测试 Buffer 应能创建")
     });
     let buffer = cx.new(|cx| {

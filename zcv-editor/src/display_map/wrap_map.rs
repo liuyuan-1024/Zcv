@@ -21,7 +21,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use zcv_multi_buffer::MultiBufferSnapshot;
 use zcv_text::{CoordinateError, Line, LogicalColumn, Position};
 
-use super::chunk::{Chunk, ChunkBase, ChunkText, FoldChunks, HighlightStyles, InlayChunks};
+use super::chunk::{Chunk, ChunkText, FoldChunks, HighlightStyles, StyledChunks};
 use super::display_width::DisplayColumn;
 use super::error::DisplayMapResult;
 use super::fold_map::{
@@ -412,15 +412,8 @@ impl WrapSnapshot {
                     point.column().get(),
                     self.tab_snapshot().tab_width().get(),
                 );
-                // 投影行内偏移逆投影回原始行内偏移（注入段内吸附到锚定后）。
-                let stream_line = self
-                    .tab_snapshot
-                    .stream_line_for_projected(tab_row)
-                    .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
-                let inlay = fold.inlay_snapshot();
                 let projected_byte = byte_range.start + local;
-                let original_byte = inlay.to_original_offset(stream_line, projected_byte);
-                Ok(MultiBufferOffset::new(line_start + original_byte))
+                Ok(MultiBufferOffset::new(line_start + projected_byte))
             }
         }
     }
@@ -435,7 +428,6 @@ impl WrapSnapshot {
         merged_byte: usize,
         bias: FoldBias,
     ) -> DisplayMapResult<MultiBufferOffset> {
-        let inlay = self.tab_snapshot.fold_snapshot().inlay_snapshot();
         let anchor = &segments[0];
         let placeholder = &segments[1];
         let tail = &segments[2];
@@ -443,8 +435,7 @@ impl WrapSnapshot {
             let FoldRowSegmentKind::Text { stream_line, .. } = &anchor.kind else {
                 unreachable!("折叠合并行首段必须是 anchor 文本段");
             };
-            let original = inlay.to_original_offset(*stream_line, merged_byte);
-            return self.stream_offset(*stream_line, original);
+            return self.stream_offset(*stream_line, merged_byte);
         }
         if merged_byte < placeholder.merged_range.end {
             // 占位符列按选区方向吸附到折叠起点或终点；这样拖拽经过折叠时，隐藏内容会整体纳入选区。
@@ -456,14 +447,12 @@ impl WrapSnapshot {
                 else {
                     unreachable!("折叠合并行尾段必须是 close 文本段");
                 };
-                let original = inlay.to_original_offset(*stream_line, projected_range.start);
-                return self.stream_offset(*stream_line, original);
+                return self.stream_offset(*stream_line, projected_range.start);
             }
             let FoldRowSegmentKind::Text { stream_line, .. } = &anchor.kind else {
                 unreachable!("折叠合并行首段必须是 anchor 文本段");
             };
-            let anchor_end = inlay.to_original_offset(*stream_line, anchor.merged_range.end);
-            return self.stream_offset(*stream_line, anchor_end);
+            return self.stream_offset(*stream_line, anchor.merged_range.end);
         }
         let FoldRowSegmentKind::Text {
             stream_line,
@@ -473,8 +462,7 @@ impl WrapSnapshot {
             unreachable!("折叠合并行尾段必须是 close 文本段");
         };
         let tail_projected = projected_range.start + (merged_byte - tail.merged_range.start);
-        let original = inlay.to_original_offset(*stream_line, tail_projected);
-        self.stream_offset(*stream_line, original)
+        self.stream_offset(*stream_line, tail_projected)
     }
 
     fn stream_offset(
@@ -482,8 +470,10 @@ impl WrapSnapshot {
         stream_line: Line,
         original: usize,
     ) -> DisplayMapResult<MultiBufferOffset> {
-        let inlay = self.tab_snapshot.fold_snapshot().inlay_snapshot();
-        let range = inlay
+        let range = self
+            .tab_snapshot
+            .fold_snapshot()
+            .buffer_snapshot()
             .line_byte_range(stream_line)
             .ok_or(CoordinateError::LineOutOfBounds(stream_line))?;
         Ok(MultiBufferOffset::new(range.start.get() + original))
@@ -508,8 +498,8 @@ impl WrapSnapshot {
             .tab_snapshot
             .stream_line_for_projected(line)
             .ok_or(CoordinateError::LineOutOfBounds(line))?;
-        fold.inlay_snapshot()
-            .projected_line_content_metrics(stream_line)
+        fold.buffer_snapshot()
+            .line_content_metrics(stream_line)
             .map(|metrics| metrics.0)
             .ok_or_else(|| CoordinateError::LineOutOfBounds(line).into())
     }
@@ -657,14 +647,7 @@ impl WrapSnapshot {
                         FoldBias::Left,
                     );
                 }
-                // 片段终点（投影偏移）逆投影回原始行内偏移。
-                let stream_line = self
-                    .tab_snapshot
-                    .stream_line_for_projected(tab_row)
-                    .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
-                let inlay = fold.inlay_snapshot();
-                let original_end = inlay.to_original_offset(stream_line, fragment.byte_range.end);
-                Ok(MultiBufferOffset::new(line_start + original_end))
+                Ok(MultiBufferOffset::new(line_start + fragment.byte_range.end))
             }
         }
     }
@@ -761,16 +744,11 @@ impl WrapSnapshot {
             .tab_snapshot
             .stream_line_for_projected(line)
             .ok_or(CoordinateError::LineOutOfBounds(line))?;
-        let inlay = fold.inlay_snapshot();
-        let buffer_line = match inlay.source(stream_line) {
-            Some(source) => source,
-            _ => return Err(CoordinateError::LineOutOfBounds(line).into()),
-        };
         let target_byte = buffer
-            .position_to_byte(Position::new(buffer_line, column))?
+            .position_to_byte(Position::new(stream_line, column))?
             .get()
             - line_start;
-        Ok(inlay.to_projected_offset(stream_line, target_byte))
+        Ok(target_byte)
     }
 
     fn projected_point_to_wrap_point(&self, point: ProjectedPoint) -> DisplayMapResult<WrapPoint> {
@@ -868,14 +846,8 @@ impl WrapSnapshot {
                 .ok_or(CoordinateError::LineOutOfBounds(line))?
                 .start
                 .get();
-            let stream_line = self
-                .tab_snapshot
-                .stream_line_for_projected(line)
-                .ok_or(CoordinateError::LineOutOfBounds(line))?;
-            let inlay = fold.inlay_snapshot();
-            let original_start = inlay.to_original_offset(stream_line, fragment_start);
             buffer
-                .byte_to_position(MultiBufferOffset::new(line_start + original_start))
+                .byte_to_position(MultiBufferOffset::new(line_start + fragment_start))
                 .map_or(0, |position| position.column().get())
         };
         Ok((
@@ -1617,7 +1589,7 @@ impl WrapMap {
     /// 为单个投影行建立文字塑形输入。
     ///
     /// 软换行必须把当前行交给文字系统塑形；
-    /// 这里直接消费 Fold/Inlay 连续 chunk，只保留塑形所需的一份临时文本，不先生成另一份投影整行。
+    /// 这里直接消费 Fold 连续 chunk，只保留塑形所需的一份临时文本，不先生成另一份投影整行。
     fn prepared_wrap_text(&self, tab_row: usize) -> DisplayMapResult<PreparedWrapText> {
         let tab = &self.snapshot.tab_snapshot;
         let fold = tab.fold_snapshot();
@@ -1631,7 +1603,7 @@ impl WrapMap {
             return Ok(PreparedWrapText::from_chunks(
                 FoldChunks::new(
                     &segments,
-                    fold.inlay_snapshot(),
+                    fold.buffer_snapshot(),
                     HighlightStyles::default(),
                     0..content_len,
                 ),
@@ -1642,26 +1614,24 @@ impl WrapMap {
         let stream_line = tab
             .stream_line_for_projected(line)
             .ok_or(CoordinateError::LineOutOfBounds(line))?;
-        let inlay = fold.inlay_snapshot();
-        let range = inlay
+        let buffer = fold.buffer_snapshot();
+        let range = buffer
             .line_content_byte_range(stream_line)
             .ok_or(CoordinateError::LineOutOfBounds(line))?;
-        let content_len = inlay
-            .projected_line_content_metrics(stream_line)
+        let content_len = buffer
+            .line_content_metrics(stream_line)
             .ok_or(CoordinateError::LineOutOfBounds(line))?
             .0;
         Ok(PreparedWrapText::from_chunks(
-            InlayChunks::new(
+            StyledChunks::new(
                 ChunkText::Virtual {
-                    snapshot: inlay.buffer_snapshot(),
+                    snapshot: buffer,
                     range: range.clone(),
                 },
                 range.start.get(),
-                inlay.line_inlays(stream_line),
-                ChunkBase::ZERO,
+                0,
                 HighlightStyles::default(),
                 0..content_len,
-                true,
             ),
             tab_width,
         ))

@@ -13,4 +13,4 @@ pub use picker_view::{Picker, PickerDelegate, picker_divider};
 pub const PICKER_WIDTH: gpui::Pixels = gpui::px(360.0);
 
 /// 浮层高度上限（内容超出时列表滚动）。
-pub const PICKER_MAX_HEIGHT: gpui::Pixels = gpui::px(420.0);
+pub(crate) const PICKER_MAX_HEIGHT: gpui::Pixels = gpui::px(420.0);

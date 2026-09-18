@@ -11,6 +11,8 @@ fn home_dir() -> PathBuf {
     #[cfg(not(windows))]
     let home = std::env::var_os("HOME");
 
+    // 配置目录是所有持久化数据的根；缺少主目录时必须在最早的使用点失败，
+    // 不能把进程当前目录当作数据目录静默继续。
     home.map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()))
+        .expect("无法确定用户主目录：缺少 HOME/USERPROFILE 环境变量")
 }

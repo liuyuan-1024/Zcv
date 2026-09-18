@@ -6,7 +6,7 @@
 use std::rc::Rc;
 
 use gpui::{
-    Action, App, ClickEvent, CursorStyle, ElementId, IntoElement, MouseButton, Pixels, RenderOnce,
+    App, ClickEvent, CursorStyle, ElementId, IntoElement, MouseButton, Pixels, RenderOnce,
     ViewElement, Window, div, prelude::*,
 };
 use zcv_theme::{color, space, typography};
@@ -153,9 +153,9 @@ impl Button {
         self
     }
 
-    /// 从当前 keymap 中获取 action 对应的快捷键并设为提示。
-    pub fn shortcut(mut self, action: &dyn Action, cx: &App) -> Self {
-        self.tooltip = self.tooltip.with_action(action, cx);
+    /// 设置调用方已解析的快捷键文本；`None` 表示该 action 无绑定。
+    pub fn shortcut(mut self, shortcut: Option<impl Into<String>>) -> Self {
+        self.tooltip = self.tooltip.with_shortcut(shortcut);
         self
     }
 
@@ -192,7 +192,7 @@ impl IntoElement for Button {
 impl RenderOnce for Button {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let ui_size = window.rem_size();
-        let ui_line = typography::ui_line_at(ui_size);
+        let ui_line = typography::ui_line_at(ui_size, cx);
         let colors = *color::current(cx);
         let disabled = self.disabled;
         let has_click = self.on_click.is_some();
@@ -330,9 +330,9 @@ mod tests {
 
     #[gpui::test]
     fn content_and_visual_style_share_the_default_height(cx: &mut TestAppContext) {
-        let (host, cx) = cx.add_window_view(|window, _| ButtonHeightHost {
+        let (host, cx) = cx.add_window_view(|window, cx| ButtonHeightHost {
             compact_height: expected_height(
-                typography::ui_line_at(window.rem_size()),
+                typography::ui_line_at(window.rem_size(), cx),
                 ButtonSize::Compact,
             ),
         });
@@ -373,13 +373,13 @@ mod tests {
 
     #[gpui::test]
     fn loose_size_scales_height_and_padding(cx: &mut TestAppContext) {
-        let (host, cx) = cx.add_window_view(|window, _| LooseButtonHost {
+        let (host, cx) = cx.add_window_view(|window, cx| LooseButtonHost {
             compact_height: expected_height(
-                typography::ui_line_at(window.rem_size()),
+                typography::ui_line_at(window.rem_size(), cx),
                 ButtonSize::Compact,
             ),
             loose_height: expected_height(
-                typography::ui_line_at(window.rem_size()),
+                typography::ui_line_at(window.rem_size(), cx),
                 ButtonSize::Loose,
             ),
         });

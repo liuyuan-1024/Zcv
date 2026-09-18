@@ -1,7 +1,8 @@
 //! 文件内搜索的会话控制器与界面。
 //!
 //! 搜索/替换输入框统一使用 `zcv-ui` 的 [`SearchInput`] / [`ReplaceInput`]（项目搜索等各视图各自装配，不共享本模块）；
-//! 本模块只持有查询、选项、替换文本、可见性和输入焦点等会话状态，把用户操作组装成 [`SearchQuery`] 并派发给当前 Item 的 [`SearchableItemHandle`]；
+//! 本模块只持有匹配选项、搜索条可见性与当前搜索目标；查询与替换文本由输入编辑器自身持有，本模块按需读取，
+//! 把用户操作组装成 [`SearchQuery`] 并派发给当前 Item 的 [`SearchableItemHandle`]；
 //! 匹配与结果数据仍由具体 Item 持有。
 //! 跨文件搜索执行位于 `project_search`。
 
@@ -27,16 +28,13 @@ pub(crate) struct DocumentToolbar {
     context: &'static str,
     visible: bool,
     show_replace: bool,
-    query: String,
     options: MatchOptions,
-    replacement: String,
     /// 当前搜索目标（pane 的活动 item 的可搜索句柄）。
     active_item: Option<Box<dyn SearchableItemHandle>>,
     query_input: Option<Entity<Editor>>,
     replace_input: Option<Entity<Editor>>,
     input_subscriptions: Vec<gpui::Subscription>,
     active_item_subscription: Option<gpui::Subscription>,
-    content_toolbar: gpui::AnyView,
     preview_button: Entity<PreviewButton>,
     breadcrumbs: Entity<Breadcrumbs>,
 }
@@ -45,22 +43,18 @@ impl DocumentToolbar {
     pub(super) fn new(
         preview_button: Entity<PreviewButton>,
         breadcrumbs: Entity<Breadcrumbs>,
-        cx: &mut Context<Self>,
     ) -> Self {
         // 输入框懒创建（首次打开搜索条时）：ErasedEditor 的创建与订阅都需要 window，且避免在无装配（如 Pane 单测）环境下构造。
         Self {
             context: "BufferSearchBar",
             visible: false,
             show_replace: false,
-            query: String::new(),
             options: MatchOptions::default(),
-            replacement: String::new(),
             active_item: None,
             query_input: None,
             replace_input: None,
             input_subscriptions: Vec::new(),
             active_item_subscription: None,
-            content_toolbar: cx.entity().into(),
             preview_button,
             breadcrumbs,
         }
@@ -74,7 +68,7 @@ impl DocumentToolbar {
         cx: &mut Context<Self>,
     ) {
         if let Some(editor) = item.and_then(|item| item.act_as::<Editor>(cx)) {
-            let content_toolbar = self.content_toolbar.clone();
+            let content_toolbar: gpui::AnyView = cx.entity().into();
             editor.update(cx, |editor, cx| {
                 editor.set_content_toolbar_view(content_toolbar, cx)
             });
@@ -145,23 +139,6 @@ impl DocumentToolbar {
                     }
                 }
             }));
-        self.input_subscriptions
-            .push(window.subscribe(&replace_input, cx, {
-                let weak = weak.clone();
-                move |_, event: &EditorEvent, _window, cx| {
-                    if !matches!(event, EditorEvent::Edited { .. }) {
-                        return;
-                    }
-                    if let Some(search_bar) = weak.upgrade() {
-                        search_bar.update(cx, |search_bar, cx| {
-                            search_bar.replacement = search_bar
-                                .replace_input
-                                .as_ref()
-                                .map_or(String::new(), |input| input.read(cx).text(cx));
-                        });
-                    }
-                }
-            }));
         self.query_input = Some(query_input);
         self.replace_input = Some(replace_input);
     }
@@ -188,13 +165,13 @@ impl DocumentToolbar {
         let seeded = seed.is_some();
         if let Some(seed) = seed {
             // 正则模式下先转义原始文本，避免选区中的元字符改变查询语义。
-            self.query = if self.options.regex {
+            let seed = if self.options.regex {
                 regex::escape(&seed)
             } else {
                 seed
             };
+            query_input.update(cx, |editor, cx| editor.set_text(&seed, cx));
         }
-        query_input.update(cx, |editor, cx| editor.set_text(&self.query, cx));
         window.focus(&query_input.read(cx).focus_handle(), cx);
         // 全选查询文本：直接击键即可整体替换。
         window.dispatch_action(Box::new(SelectAll), cx);
@@ -225,7 +202,7 @@ impl DocumentToolbar {
 
     /// 用当前 query 与选项在活动 item 上执行搜索；计数由渲染时读取 item 状态。
     fn run_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.query = self
+        let query_text = self
             .query_input
             .as_ref()
             .map_or(String::new(), |input| input.read(cx).text(cx));
@@ -233,7 +210,7 @@ impl DocumentToolbar {
             return;
         };
         let query = SearchQuery {
-            query: self.query.clone(),
+            query: query_text,
             case_sensitive: self.options.case_sensitive,
             whole_word: self.options.whole_word,
             regex: self.options.regex,
@@ -267,7 +244,6 @@ impl DocumentToolbar {
         if self.show_replace
             && let Some(replace_input) = &self.replace_input
         {
-            replace_input.update(cx, |editor, cx| editor.set_text(&self.replacement, cx));
             // 打开替换行时默认聚焦替换输入框。
             window.focus(&replace_input.read(cx).focus_handle(), cx);
         }
@@ -279,12 +255,12 @@ impl DocumentToolbar {
     }
 
     fn replace_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.replacement = self
+        let replacement = self
             .replace_input
             .as_ref()
             .map_or(String::new(), |input| input.read(cx).text(cx));
         if let Some(item) = &self.active_item
-            && item.replace_current(&self.replacement, window, cx)
+            && item.replace_current(&replacement, window, cx)
         {
             // 替换触发编辑 → Item 侧重搜并 emit；这里跟随活动匹配前移一位。
             self.move_active(Direction::Next, window, cx);
@@ -292,12 +268,12 @@ impl DocumentToolbar {
     }
 
     fn replace_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.replacement = self
+        let replacement = self
             .replace_input
             .as_ref()
             .map_or(String::new(), |input| input.read(cx).text(cx));
         if let Some(item) = &self.active_item {
-            item.replace_all(&self.replacement, window, cx);
+            item.replace_all(&replacement, window, cx);
         }
     }
 
@@ -357,9 +333,9 @@ impl Render for DocumentToolbar {
                             }
                         });
                 if self.visible {
-                    search_toggle.shortcut(&ClearSearch, cx)
+                    search_toggle.shortcut(zcv_keymap::display_shortcut(&ClearSearch, cx))
                 } else {
-                    search_toggle.shortcut(&DeployBufferSearch, cx)
+                    search_toggle.shortcut(zcv_keymap::display_shortcut(&DeployBufferSearch, cx))
                 }
             })
             .into_any_element();
@@ -446,6 +422,7 @@ impl Render for DocumentToolbar {
                 .clone()
                 .into_any_element(),
         )
+        .shortcut_resolver(zcv_keymap::display_shortcut)
         .options(self.options)
         .on_toggle(on_toggle)
         .count(active_match_index, match_count)
@@ -456,7 +433,7 @@ impl Render for DocumentToolbar {
         .external(
             Button::icon("search-toggle-replace", "icons/replace.svg")
                 .label("替换")
-                .shortcut(&ToggleReplace, cx)
+                .shortcut(zcv_keymap::display_shortcut(&ToggleReplace, cx))
                 .color(if self.show_replace {
                     colors.icon_accent
                 } else {
@@ -476,6 +453,7 @@ impl Render for DocumentToolbar {
                     .clone()
                     .into_any_element(),
             )
+            .shortcut_resolver(zcv_keymap::display_shortcut)
             .on_replace(replace_action)
             .on_replace_all(replace_all_action)
             .into_any_element()
@@ -616,7 +594,7 @@ pub(super) fn install(
     let pane = workspace.pane().clone();
     let preview_button = cx.new(|_| PreviewButton::new(pane.downgrade()));
     let breadcrumbs = cx.new(|_| Breadcrumbs::new(workspace.project().clone()));
-    let document_toolbar = cx.new(|cx| DocumentToolbar::new(preview_button, breadcrumbs, cx));
+    let document_toolbar = cx.new(|_| DocumentToolbar::new(preview_button, breadcrumbs));
     cx.subscribe_in(&pane, window, {
         let document_toolbar = document_toolbar.clone();
         move |_, pane, event, window, cx| {

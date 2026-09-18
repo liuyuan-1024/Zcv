@@ -14,12 +14,14 @@ mod item_provider;
 mod scroll;
 mod scrollbar;
 mod selection;
+mod status_items;
 mod view;
 mod workspace_item;
 
+pub use status_items::install_status_items;
 pub use view::{
     DiffHunkDelegate, Editor, EditorEvent, EditorHunk, EditorHunkMarkerKind, EditorHunkPart,
-    HunkControlTarget, LocalRenameError, SoftWrap,
+    HunkControlTarget,
 };
 
 pub fn init(cx: &mut App) {

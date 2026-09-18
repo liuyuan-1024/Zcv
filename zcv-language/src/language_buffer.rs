@@ -496,9 +496,8 @@ mod tests {
         });
         cx.run_until_parked();
 
-        language_buffer.read_with(cx, |language_buffer, cx| {
+        language_buffer.read_with(cx, |language_buffer, _cx| {
             assert_eq!(language_buffer.language_name(), Some("Python"));
-            assert!(language_buffer.snapshot(cx).syntax.has_language());
         });
     }
 

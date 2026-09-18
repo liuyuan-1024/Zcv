@@ -11,25 +11,21 @@ use std::sync::Arc;
 use async_channel::{Receiver, Sender};
 use futures::{StreamExt, stream};
 use gpui::{BackgroundExecutor, Task};
-use gpui_util::new_std_command;
-use zcv_git::path_from_git_bytes;
+use zcv_git::GitRepository;
 use zcv_language::LanguageRegistry;
 use zcv_path::AbsolutePathBuf;
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Line, Snapshot, TextRange, WordBoundaryPolicy};
 
-use crate::worktree::WorktreeSearchPlan;
+use crate::worktree::{WorktreeSearchPlan, discover_git_repository};
 
 mod buffer_search;
 mod error;
 mod versioned;
 
 pub use buffer_search::{
-    PreparedSearchQuery, RegexSearchOptions, RegexSearchResult, SearchMatch, SearchOptions,
-    SearchQuery, SearchQueryResult, SearchResult, regex_replacement_for_match,
-    regex_replacements_in_text,
+    PreparedSearchQuery, RegexSearchResult, SearchQuery, SearchQueryResult, SearchResult,
+    regex_replacement_for_match, regex_replacements_in_text,
 };
-pub use error::{SearchError, SearchTextResult, VersionedResultError};
-pub use versioned::VersionedResult;
 
 const CONTEXT_LINES: usize = 2;
 const MAX_MATCHES: usize = 10_000;
@@ -255,31 +251,21 @@ fn collect_files(
 /// 避免进入 target/node_modules 等 `.gitignore` 已排除的巨大目录。
 /// 非 Git 目录或 Git 不可用时回退到递归扫描。
 fn git_search_paths(plan: &WorktreeSearchPlan) -> Option<Vec<AbsolutePathBuf>> {
-    let output = new_std_command("git")
-        .arg("-C")
-        .arg(plan.root.as_path())
-        .args([
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "-z",
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
+    let repository = discover_git_repository(plan.root.as_path()).ok()??;
+    let working_directory =
+        AbsolutePathBuf::new(repository.working_directory().to_path_buf()).ok()?;
     Some(
-        output
-            .stdout
-            .split(|byte| *byte == 0)
-            .filter(|path| !path.is_empty())
-            .map(path_from_git_bytes)
-            .filter_map(|relative| AbsolutePathBuf::new(plan.root.as_path().join(relative)).ok())
-            // Git 输出的是文件条目；去掉逐文件 metadata 查询，实际读取失败时仍由下方 read_to_string 路径自然跳过。
-            .filter(|path| !plan.is_excluded(path.as_path()))
+        repository
+            .list_worktree_files()
+            .ok()?
+            .into_iter()
+            .filter_map(|relative| {
+                let path = AbsolutePathBuf::new(working_directory.as_path().join(relative)).ok()?;
+                // 项目根可能位于外层仓库内：Git 会列出根之外的文件，这里按项目根收敛搜索范围。
+                path.as_path().strip_prefix(plan.root.as_path()).ok()?;
+                // Git 输出的是文件条目；去掉逐文件 metadata 查询，实际读取失败时仍由下方 read_to_string 路径自然跳过。
+                (!plan.is_excluded(path.as_path())).then_some(path)
+            })
             .collect(),
     )
 }

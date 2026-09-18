@@ -13,7 +13,7 @@ use crate::tree_sitter_utils::{QueryCursorHandle, SnapshotTextProvider};
 
 /// 语法结构产生的缩进范围。
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IndentRange {
+pub(crate) struct IndentRange {
     pub range: Range<usize>,
     pub end: Option<Range<usize>>,
 }
@@ -27,7 +27,7 @@ pub struct NewlineIndent {
 
 impl SyntaxSnapshot {
     /// 查询范围内由 `indent.scm` 声明的缩进结构。
-    pub fn indent_ranges(&self, range: Range<usize>, text: &Snapshot) -> Vec<IndentRange> {
+    pub(crate) fn indent_ranges(&self, range: Range<usize>, text: &Snapshot) -> Vec<IndentRange> {
         if !self.can_query(&range, text) {
             return Vec::new();
         }

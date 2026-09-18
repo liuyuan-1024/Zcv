@@ -198,6 +198,36 @@ struct ScrollbarInteraction {
     drag_scroll_position: Cell<Pixels>,
 }
 
+/// 纯几何：在长度为 `track_length` 的轨道上，由内容滚动范围与当前位置推导 thumb。
+///
+/// 返回 `(thumb_length, thumb_position, scroll_per_pixel)`；
+/// `thumb_position` 相对轨道起点（不含 padding），内容不高于视口时返回 None。
+///
+/// 公式：
+/// - total = max_scroll + track_length（内容总高，轨道长度即视口长度）
+/// - thumb_length = track_length × track_length/total，夹 [MIN_THUMB_SIZE, track_length]
+/// - travel = track_length − thumb_length（thumb 行程），下限 1px 防除零
+/// - scroll_per_pixel = max_scroll / travel
+/// - thumb_position = clamp(scroll_top, 0, max_scroll) / scroll_per_pixel
+pub fn thumb_geometry(
+    track_length: Pixels,
+    max_scroll: Pixels,
+    scroll_top: Pixels,
+) -> Option<(Pixels, Pixels, f32)> {
+    if max_scroll <= Pixels::ZERO || track_length <= Pixels::ZERO {
+        return None;
+    }
+    let total = max_scroll + track_length;
+    let thumb_length = (track_length * (track_length / total))
+        .max(MIN_THUMB_SIZE)
+        .min(track_length);
+    let travel = (track_length - thumb_length).max(px(1.));
+    let scroll_per_pixel = max_scroll / travel;
+    let scroll_position = scroll_top.clamp(Pixels::ZERO, max_scroll);
+    let thumb_position = scroll_position / scroll_per_pixel;
+    Some((thumb_length, thumb_position, scroll_per_pixel))
+}
+
 /// 滚动条的可渲染元素；通常通过 [`Scrollbar`] 构造。
 pub struct ScrollbarElement<T: ScrollableHandle> {
     handle: T,
@@ -266,18 +296,12 @@ impl<T: ScrollableHandle> Element for ScrollbarElement<T> {
                 (viewport_bounds.size.width - PADDING * 2.).max(Pixels::ZERO)
             }
         };
-        if max_scroll <= Pixels::ZERO || track_length <= Pixels::ZERO {
-            return None;
-        }
-
-        let thumb_length = (track_length * (track_length / (track_length + max_scroll)))
-            .max(MIN_THUMB_SIZE)
-            .min(track_length);
-        let travel = (track_length - thumb_length).max(px(1.));
-        let scroll_per_pixel = max_scroll / travel;
-        let scroll_position =
-            (-self.axis.max_offset(self.handle.offset())).clamp(Pixels::ZERO, max_scroll);
-        let thumb_position = PADDING + scroll_position / scroll_per_pixel;
+        let (thumb_length, thumb_position, scroll_per_pixel) = thumb_geometry(
+            track_length,
+            max_scroll,
+            -self.axis.max_offset(self.handle.offset()),
+        )?;
+        let thumb_position = PADDING + thumb_position;
         let thumb_bounds = match self.axis {
             ScrollbarAxis::Vertical => Bounds::new(
                 point(

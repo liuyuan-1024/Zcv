@@ -14,6 +14,7 @@ use zcv_theme::color;
 
 use crate::button::Button;
 use crate::input_shell::InputShell;
+use crate::tooltip::ShortcutResolver;
 
 /// 匹配选项的当前状态,决定选项按钮是否高亮;会话侧可直接以它为状态字段。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -115,6 +116,8 @@ pub struct SearchInput {
     previous: Option<ActionHandler>,
     next: Option<ActionHandler>,
     external: Vec<AnyElement>,
+    /// 快捷键文本解析器；由装配层从 keymap 注入。
+    resolver: Option<ShortcutResolver>,
 }
 
 impl SearchInput {
@@ -129,7 +132,14 @@ impl SearchInput {
             previous: None,
             next: None,
             external: Vec::new(),
+            resolver: None,
         }
+    }
+
+    /// 注入快捷键文本解析器；不注入时按钮不显示快捷键提示。
+    pub fn shortcut_resolver(mut self, resolver: ShortcutResolver) -> Self {
+        self.resolver = Some(resolver);
+        self
     }
 
     /// 匹配选项的激活状态。
@@ -193,7 +203,10 @@ impl RenderOnce for SearchInput {
                 shell = shell.internal(
                     Button::icon(option.id(prefix), option.icon())
                         .label(option.label())
-                        .shortcut(option.shortcut(), cx)
+                        .shortcut(
+                            self.resolver
+                                .and_then(|resolve| resolve(option.shortcut(), cx)),
+                        )
                         .color(if option.active(self.options) {
                             colors.icon_accent
                         } else {
@@ -207,7 +220,7 @@ impl RenderOnce for SearchInput {
             shell = shell.external(
                 Button::icon(format!("{prefix}-previous"), "icons/chevron_left.svg")
                     .label("上一个匹配")
-                    .shortcut(&FindPrevious, cx)
+                    .shortcut(self.resolver.and_then(|resolve| resolve(&FindPrevious, cx)))
                     .on_click(move |_, window, cx| previous(window, cx)),
             );
         }
@@ -215,7 +228,7 @@ impl RenderOnce for SearchInput {
             shell = shell.external(
                 Button::icon(format!("{prefix}-next"), "icons/chevron_right.svg")
                     .label("下一个匹配")
-                    .shortcut(&FindNext, cx)
+                    .shortcut(self.resolver.and_then(|resolve| resolve(&FindNext, cx)))
                     .on_click(move |_, window, cx| next(window, cx)),
             );
         }

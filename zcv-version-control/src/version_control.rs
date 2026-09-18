@@ -20,7 +20,7 @@ use zcv_actions::{
     Uncommit,
 };
 use zcv_editor::Editor;
-use zcv_git::{DiffStat, FileStatus, StatusCode};
+use zcv_git::{DiffStat, FileStatus};
 use zcv_path::{AbsolutePathBuf, RelativePathBuf};
 use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, space};
@@ -81,24 +81,6 @@ impl<T> GitSections<T> {
     }
 }
 
-/// 条目出现在哪些组：(已暂存, 未暂存)；冲突条目由建树逻辑单独放入冲突组。
-///
-/// Ignored 由调用方过滤；冲突条目由建树逻辑单独放入冲突组。
-fn entry_sections(status: FileStatus) -> (bool, bool) {
-    match status {
-        FileStatus::Unmerged => (false, false),
-        FileStatus::Untracked => (false, true),
-        FileStatus::Tracked {
-            index_status,
-            worktree_status,
-        } => (
-            index_status != StatusCode::Unmodified,
-            worktree_status != StatusCode::Unmodified,
-        ),
-        FileStatus::Ignored => (false, false),
-    }
-}
-
 /// 按分组构建变更目录树（每组的根列表），并完成目录聚合与排序。
 ///
 /// 所有仓库合并进同一棵分组树：嵌套仓库在父仓库的 status 中不展开（目录级 untracked 条目被解析器跳过），路径前缀互斥，合并无冲突。
@@ -112,7 +94,8 @@ fn build_section_trees<'a>(
             if entry.status.is_ignored() {
                 continue;
             }
-            let (in_staged, in_unstaged) = entry_sections(entry.status);
+            let in_staged = ProjectDiffKind::Staged.includes(entry.status);
+            let in_unstaged = ProjectDiffKind::Unstaged.includes(entry.status);
             if in_staged {
                 insert_entry(
                     &mut roots.staged,
@@ -133,7 +116,7 @@ fn build_section_trees<'a>(
                     entry.unstaged_diff_stat,
                 );
             }
-            if matches!(entry.status, FileStatus::Unmerged) {
+            if ProjectDiffKind::Conflict.includes(entry.status) {
                 insert_entry(
                     &mut roots.conflict,
                     root,
@@ -563,11 +546,7 @@ impl VersionControlPanel {
             }
             self.rebuild_rows(cx);
         } else if let Some(callback) = self.on_open_file.clone() {
-            let kind = match entry.section {
-                GitSection::Staged => ProjectDiffKind::Staged,
-                GitSection::Unstaged => ProjectDiffKind::Unstaged,
-                GitSection::Conflict => ProjectDiffKind::Conflict,
-            };
+            let kind = ProjectDiffKind::from(entry.section);
             callback(
                 kind,
                 entry.path.into_path_buf(),
@@ -800,7 +779,7 @@ impl Render for VersionControlPanel {
         // 面板顶部：加减号图标 + 总变更行数（有仓库时显示，Diff 图标 + DiffStat）。
         let header = has_repositories.then(|| {
             let total = self.project.read(cx).git_store().read(cx).total_diff_stat();
-            render_total_diff_stat(total, cx)
+            render_total_diff_stat(total, window, cx)
         });
 
         // 顶部统计行、列表与提交区必须放进同一个 flex_col 容器（列表 flex_1 占满剩余高度）。
@@ -833,7 +812,7 @@ impl Render for VersionControlPanel {
 // ═══ 私有渲染辅助函数 ═══════════════════════════════════════════
 
 /// 面板顶部统计行：加减号图标 + 总新增/删除行数（全零时只留图标）。
-fn render_total_diff_stat(total: DiffStat, cx: &App) -> Div {
+fn render_total_diff_stat(total: DiffStat, window: &Window, cx: &App) -> Div {
     let colors = color::current(cx);
     let mut frame = TreeRowFrame::default().leading(
         SvgIcon::new("icons/diff.svg")
@@ -854,7 +833,7 @@ fn render_total_diff_stat(total: DiffStat, cx: &App) -> Div {
                     .child(format!("−{}", total.deleted)),
             );
     }
-    frame.render().text_color(colors.text_muted)
+    frame.render(window, cx).text_color(colors.text_muted)
 }
 
 fn render_list(
@@ -865,7 +844,7 @@ fn render_list(
 ) -> gpui::UniformList {
     let handle = scroll_handle.clone();
     let len = render_context.rows.len();
-    uniform_list("version-control-list", len, move |range, _, cx| {
+    uniform_list("version-control-list", len, move |range, window, cx| {
         let state = render_context.state.borrow();
         let rows = &render_context.rows;
         let selected = state.selected.clone();
@@ -873,7 +852,8 @@ fn render_list(
             .filter_map(|i| rows.get(i))
             .map(|row| {
                 let sel = row_entry_key(row) == selected;
-                render_row(row, sel, changes_tree_focused, &render_context, cx).into_any_element()
+                render_row(row, sel, changes_tree_focused, &render_context, window, cx)
+                    .into_any_element()
             })
             .collect()
     })
@@ -887,6 +867,7 @@ fn render_row(
     sel: bool,
     changes_tree_focused: bool,
     render_context: &GitPanelRenderContext,
+    window: &Window,
     cx: &mut App,
 ) -> impl IntoElement {
     match row {
@@ -937,7 +918,7 @@ fn render_row(
                 );
             }
             frame
-                .render()
+                .render(window, cx)
                 .id(ElementId::Name(
                     format!("version-control-header-row-{section:?}").into(),
                 ))
@@ -957,7 +938,7 @@ fn render_row(
         // 空分组提示只是树内容的一部分，不参与选择、焦点或鼠标交互。
         GitRow::Empty(section) => TreeRowFrame::default()
             .content(section.empty_message())
-            .render()
+            .render(window, cx)
             .text_color(color::current(cx).text_placeholder)
             .into_any_element(),
         GitRow::Entry(entry) => {
@@ -996,7 +977,7 @@ fn render_row(
                     } else {
                         "暂存"
                     })
-                    .shortcut(&ToggleStaged, cx)
+                    .shortcut(zcv_keymap::display_shortcut(&ToggleStaged, cx))
                     .on_click({
                         let weak = render_context.weak.clone();
                         let path = path.clone();
@@ -1032,17 +1013,18 @@ fn render_row(
             if let Some(checkbox) = checkbox {
                 node = node.trailing(checkbox);
             }
-            node.frame(cx)
+            node.frame(window, cx)
                 .interactive(
                     ElementId::Name(
                         format!("version-control-row-{:?}-{}", section, entry.path.display())
                             .into(),
                     ),
+                    window,
                     cx,
                 )
                 .when(sel && changes_tree_focused, |el| {
                     el.child(
-                        selection_border(cx)
+                        selection_border(window, cx)
                             .debug_selector(|| "version-control-selection-border".into()),
                     )
                 })
@@ -1116,7 +1098,7 @@ fn render_commit_footer(
                                         .style(ButtonStyle::Solid)
                                         .disabled(!has_staged_changes)
                                         .label("提交当前暂存")
-                                        .shortcut(&Commit, cx)
+                                        .shortcut(zcv_keymap::display_shortcut(&Commit, cx))
                                         .color(if message.trim().is_empty() {
                                             colors.text_muted
                                         } else {
@@ -1284,6 +1266,16 @@ impl GitSection {
     }
 }
 
+impl From<GitSection> for ProjectDiffKind {
+    fn from(section: GitSection) -> Self {
+        match section {
+            GitSection::Staged => Self::Staged,
+            GitSection::Unstaged => Self::Unstaged,
+            GitSection::Conflict => Self::Conflict,
+        }
+    }
+}
+
 /// 统一行模型：分组头和空分组提示不可选择，只有条目行参与树交互。
 #[derive(Clone, Debug)]
 enum GitRow {
@@ -1367,6 +1359,8 @@ mod tests {
     use tempfile::TempDir;
 
     use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
+    use zcv_git::StatusCode;
+    use zcv_language::LanguageRegistry;
     use zcv_project::{Project, StatusEntry};
     use zcv_ui::tree_row_height;
 
@@ -1439,30 +1433,6 @@ mod tests {
                 GitRow::Header(_) | GitRow::Empty(_) => None,
             })
             .collect()
-    }
-
-    #[test]
-    fn entry_sections_assigns_each_status_to_sections() {
-        // 冲突文件由建树逻辑放入独立冲突组，不进入暂存/未暂存组。
-        assert_eq!(entry_sections(FileStatus::Unmerged), (false, false));
-        assert_eq!(entry_sections(FileStatus::Untracked), (false, true));
-        assert_eq!(entry_sections(FileStatus::Ignored), (false, false));
-        let staged = FileStatus::Tracked {
-            index_status: StatusCode::Modified,
-            worktree_status: StatusCode::Unmodified,
-        };
-        assert_eq!(entry_sections(staged), (true, false));
-        let unstaged = FileStatus::Tracked {
-            index_status: StatusCode::Unmodified,
-            worktree_status: StatusCode::Modified,
-        };
-        assert_eq!(entry_sections(unstaged), (false, true));
-        // 部分暂存：两组同时出现。
-        let partial = FileStatus::Tracked {
-            index_status: StatusCode::Added,
-            worktree_status: StatusCode::Deleted,
-        };
-        assert_eq!(entry_sections(partial), (true, true));
     }
 
     #[test]
@@ -1747,7 +1717,7 @@ mod tests {
 
     fn test_project(root: PathBuf, cx: &mut TestAppContext) -> Entity<Project> {
         let watcher: Arc<dyn Watcher> = Arc::new(PassiveWatcher::new());
-        cx.new(|cx| Project::new_with_watcher(root, watcher, cx))
+        cx.new(|cx| Project::new_with_watcher(root, watcher, Arc::new(LanguageRegistry::new()), cx))
     }
 
     #[gpui::test]
@@ -1830,7 +1800,7 @@ mod tests {
 
         // 单击 tracked.txt 行内容区（x=100 避开行首复选框）：
         // 行高为 ui_line()，以临时标签打开（focus_opened_item=false）。
-        let row_height = tree_row_height();
+        let row_height = cx.update(|window, cx| tree_row_height(window, cx));
         let click = |cx: &mut VisualTestContext| {
             // y 加 1 行偏移：顶部统计行占一行高度；
             // 冲突组固定在顶部后再经过两个冲突行。
@@ -2259,7 +2229,7 @@ mod tests {
     /// 测试时钟不会自动推进：手动拨过 500ms tooltip 显示延迟后再渲染一帧。
     /// 顶部统计行占一行高度，行坐标加 1 行偏移。
     fn assert_hover_tooltip(cx: &mut gpui::VisualTestContext, row_index: usize) {
-        let row_height = tree_row_height();
+        let row_height = cx.update(|window, cx| tree_row_height(window, cx));
         cx.simulate_mouse_move(
             point(
                 px(1907.),
@@ -2315,7 +2285,7 @@ mod tests {
         cx.run_until_parked();
 
         // 悬停可视区第 5 行（未暂存组的一个文件）行尾复选框；顶部统计行占一行，坐标加偏移。
-        let row_height = tree_row_height();
+        let row_height = cx.update(|window, cx| tree_row_height(window, cx));
         let hover_y = f32::from(row_height) * 7.5;
         cx.simulate_mouse_move(
             point(px(1907.), px(hover_y)),
@@ -2349,7 +2319,7 @@ mod tests {
         cx.run_until_parked();
 
         // 先悬停未暂存组的一个文件复选框，确认 tooltip 正常；顶部统计行占一行，坐标加偏移。
-        let row_height = tree_row_height();
+        let row_height = cx.update(|window, cx| tree_row_height(window, cx));
         cx.simulate_mouse_move(
             point(px(1907.), px(f32::from(row_height) * 6.5)),
             None,
@@ -2422,7 +2392,7 @@ mod tests {
 
         // 行布局：两个分组标题 + 已暂存组 tracked.txt + 未暂存组 tracked.txt；
         // 顶部统计行占一行，坐标加偏移。
-        let row_height = tree_row_height();
+        let row_height = cx.update(|window, cx| tree_row_height(window, cx));
         // 先悬停未暂存组的复选框（第 5 行）。
         cx.simulate_mouse_move(
             point(px(1907.), px(f32::from(row_height) * 6.5)),
@@ -2490,7 +2460,7 @@ mod tests {
 
         // tracked.txt（未暂存组）行尾复选框：窗口 1920 宽，右边缘 6px + 复选框半宽 7px；
         // 顶部统计行占一行，坐标加偏移。
-        let row_height = tree_row_height();
+        let row_height = cx.update(|window, cx| tree_row_height(window, cx));
         cx.simulate_click(
             point(px(1907.), px(f32::from(row_height) * 6.5)),
             gpui::Modifiers::default(),

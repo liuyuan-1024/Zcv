@@ -2,8 +2,9 @@
 //!
 //! `RopeyStorage` 的编辑入口以 `ByteOffset` / `TextRange(byte range)` 为唯一坐标，不假设全文可借出为单段 `&str`；它是唯一后端（有意决策，直接绑定 ropey）。
 //!
-//! `TextRead` 是**内部契约**：供 Buffer / Snapshot 门面与测试约束坐标系纪律（字节优先、zero-copy），不代表可插拔存储承诺；
-//! 所有生产代码直接以 `RopeyStorage` / `RopeySnapshot` 具体类型持有存储。
+//! `TextRead` 是跨文本算法（如项目搜索）消费只读视图的**跨 crate 协议**，`MultiBufferSnapshot` 实现它；
+//! 它同时约束 Buffer / Snapshot 门面的坐标系纪律（字节优先、zero-copy），不代表可插拔存储承诺：
+//! `RopeyStorage` / `RopeySnapshot` 仍是唯一存储后端，所有生产代码直接以具体类型持有存储。
 
 mod ropey;
 mod traits;

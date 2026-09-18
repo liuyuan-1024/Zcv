@@ -1,9 +1,11 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use gpui::{
     App, Context, EventEmitter, FocusHandle, Focusable, Render, TestAppContext, Window, div,
     prelude::*,
 };
+use zcv_language::LanguageRegistry;
 use zcv_project::SearchQuery;
 use zcv_workspace::{
     Breadcrumbs, Direction, Item, ItemHandle, Pane, PreviewButton, SearchEvent, SearchableItem,
@@ -102,9 +104,11 @@ impl SearchableItem for TestItem {
 fn buffer_search_does_not_require_an_active_path(cx: &mut TestAppContext) {
     let pane = cx.new(Pane::new);
     let preview_button = cx.new(|_| PreviewButton::new(pane.downgrade()));
-    let project = cx.new(|cx| zcv_project::Project::new(PathBuf::from("."), cx));
+    let project = cx.new(|cx| {
+        zcv_project::Project::new(PathBuf::from("."), Arc::new(LanguageRegistry::new()), cx)
+    });
     let breadcrumbs = cx.new(|_| Breadcrumbs::new(project));
-    let bar = cx.new(|cx| DocumentToolbar::new(preview_button, breadcrumbs, cx));
+    let bar = cx.new(|_| DocumentToolbar::new(preview_button, breadcrumbs));
     cx.add_window_view(|window, cx| {
         let item = cx.new(|cx| TestItem {
             focus: cx.focus_handle(),
@@ -124,9 +128,11 @@ fn buffer_search_does_not_require_an_active_path(cx: &mut TestAppContext) {
 fn buffer_search_does_not_use_a_path_as_search_capability(cx: &mut TestAppContext) {
     let pane = cx.new(Pane::new);
     let preview_button = cx.new(|_| PreviewButton::new(pane.downgrade()));
-    let project = cx.new(|cx| zcv_project::Project::new(PathBuf::from("."), cx));
+    let project = cx.new(|cx| {
+        zcv_project::Project::new(PathBuf::from("."), Arc::new(LanguageRegistry::new()), cx)
+    });
     let breadcrumbs = cx.new(|_| Breadcrumbs::new(project));
-    let bar = cx.new(|cx| DocumentToolbar::new(preview_button, breadcrumbs, cx));
+    let bar = cx.new(|_| DocumentToolbar::new(preview_button, breadcrumbs));
     cx.add_window_view(|window, cx| {
         let item = cx.new(|cx| TestItem {
             focus: cx.focus_handle(),

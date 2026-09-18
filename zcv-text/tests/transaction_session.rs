@@ -2,8 +2,16 @@
 
 use zcv_text::*;
 
-mod common;
-use common::*;
+#[path = "common/buffer.rs"]
+mod buffer;
+#[path = "common/byte_range.rs"]
+mod byte_range;
+#[path = "common/full_text.rs"]
+mod full_text;
+
+use buffer::buffer;
+use byte_range::{b, range};
+use full_text::buffer_text;
 
 #[test]
 fn session_groups_multiple_edits_into_one_undo_step() {

@@ -6,7 +6,6 @@
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
-
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -19,36 +18,28 @@ use zcv_actions::{
     IncreaseContentFontSize, IncreaseUiFontSize, NewTerminal, ResetContentFontSize,
     ResetUiFontSize, RestartToUpdate, SelectGitBranch, ToggleHarnessMode, ToggleProjectPicker,
 };
-use zcv_buffer_diff::{BufferDiffInput, DiffHunkKind};
-use zcv_editor::{Editor, EditorEvent, EditorHunk, EditorHunkMarkerKind, EditorHunkPart};
-use zcv_git::{FileStatus, GitRevision, parse_conflict_regions};
-use zcv_multi_buffer::DiffFile;
+use zcv_editor::{Editor, EditorEvent};
+use zcv_language::LanguageRegistry;
 use zcv_project::{
     FileWatcherError, FileWatcherOperation, GitOperationKind, GitOperationOutcome, GitStoreEvent,
-    Project, ProjectEvent,
+    ProjectEvent,
 };
 use zcv_settings::{GlobalSettingsErrorReporter, SettingsStore};
-use zcv_text::{ByteOffset, TextRange};
 use zcv_theme::{ThemeChoice, typography};
 use zcv_workspace::{
     ActivityIndicator, Dock, DockPosition, GitBranchAction, OnBranchSelected, OnProjectSelected,
-    Pane, PaneEvent, Panel, PanelButtons, PanelEvent, PanelHandle, ToastAction, ToastKind, TopBar,
-    TopBarCallbacks, Workspace, add_to_recent, load_window_bounds,
-    register_serialized_item_provider, save_window_bounds,
+    PaneEvent, PanelButtons, ToastAction, ToastKind, TopBar, TopBarCallbacks, Workspace,
+    add_to_recent, load_window_bounds, save_window_bounds,
 };
 
-use crate::active_buffer_language::ActiveBufferLanguage;
 use crate::auto_update::{UpdateButton, UpdateManager};
-use crate::cursor_position::CursorPosition;
 use crate::harness::HarnessButton;
 use zcv_outline::OutlinePanel;
 use zcv_path::AbsolutePathBuf;
 use zcv_project_tree::{OnCreate, OnMove, OnOpenFile, OnRename, OnTrash, ProjectTreePanel};
 use zcv_terminal::TerminalPanel;
 use zcv_version_control::{
-    GitGraphSerializedItemProvider, OnOpenGitDiff, OnOpenGitGraph,
-    ProjectDiffSerializedItemProvider, ProjectDiffView, VersionControlPanel, deploy_git_graph,
-    deploy_project_diff,
+    OnOpenGitDiff, OnOpenGitGraph, VersionControlPanel, deploy_git_graph, deploy_project_diff,
 };
 
 /// 构造打开文件回调（两个面板共用同一契约）。
@@ -95,43 +86,10 @@ fn on_open_git_graph_callback(weak: &WeakEntity<Workspace>) -> OnOpenGitGraph {
     })
 }
 
-/// 以类型擦除句柄注册面板；同时让所属 dock 订阅面板事件（Dock 统一处理面板请求）。
-fn register_panel<P: Panel>(
-    workspace: &mut Workspace,
-    entity: Entity<P>,
-    position: DockPosition,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) {
-    let dock = workspace.dock(position).clone();
-    let workspace_for_events = cx.weak_entity();
-    dock.update(cx, |dock, cx| {
-        let subscription = cx.subscribe_in(
-            &entity,
-            window,
-            move |dock, _, event: &PanelEvent, window, cx| {
-                match event {
-                    // 面板请求关闭（如终端最后一个会话关闭）时折叠 dock。
-                    PanelEvent::Close => dock.set_open(false, window, cx),
-                    // 面板自持状态变化（如终端会话增删）时保存布局。
-                    PanelEvent::StateChanged => {
-                        if let Some(workspace) = workspace_for_events.upgrade() {
-                            workspace.update(cx, |workspace, cx| {
-                                workspace.schedule_layout_save(window, cx);
-                            });
-                        }
-                    }
-                }
-            },
-        );
-        dock.add_subscription(subscription);
-    });
-    let handle: Arc<dyn PanelHandle> = Arc::new(entity);
-    workspace.register_panel(handle, position, window, cx);
-}
-
 /// 「切换项目」回调：在同一窗口内替换工作区根，窗口本体（尺寸/位置）保持不变。
-fn switch_project_callback() -> OnProjectSelected {
+///
+/// 替换后的工作区必须继续使用应用级语言注册表，因此回调捕获同一份 Arc。
+fn switch_project_callback(languages: Arc<LanguageRegistry>) -> OnProjectSelected {
     Rc::new(move |path, window, app| {
         let Ok(root) = canonical_project_root(PathBuf::from(&path)) else {
             if let Some(workspace) = window.root::<Workspace>().flatten() {
@@ -147,7 +105,9 @@ fn switch_project_callback() -> OnProjectSelected {
             }
             return; // 窗口保持原样。
         };
-        add_to_recent(&root.to_string_lossy());
+        let recent_error = add_to_recent(&root.to_string_lossy())
+            .err()
+            .map(|error| format!("更新最近项目列表失败：{error:#}"));
         // 先保存当前窗口边界（全局默认 + 旧项目记录）；随后窗口不重建，尺寸自然保持。
         let current_root = window.root::<Workspace>().flatten().and_then(|workspace| {
             workspace
@@ -162,7 +122,20 @@ fn switch_project_callback() -> OnProjectSelected {
         if let Some(Some(workspace)) = window.root::<Workspace>() {
             workspace.update(app, |workspace, cx| workspace.flush_layout(cx));
         }
-        window.replace_root(app, |window, cx| build_workspace(&Some(root), window, cx));
+        let languages = Arc::clone(&languages);
+        window.replace_root(app, move |window, cx| {
+            let workspace = build_workspace(&Some(root), languages, window, cx);
+            if let Some(message) = recent_error {
+                workspace.show_toast(
+                    ToastKind::Error,
+                    message,
+                    None,
+                    Some(Duration::from_secs(5)),
+                    cx,
+                );
+            }
+            workspace
+        });
     })
 }
 
@@ -179,24 +152,38 @@ fn canonical_project_root(root: PathBuf) -> anyhow::Result<PathBuf> {
 }
 
 /// 打开一个项目窗口（CLI 启动入口）。
-pub(crate) fn open_project_window(root: PathBuf, cx: &mut App) -> anyhow::Result<()> {
+pub(crate) fn open_project_window(
+    root: PathBuf,
+    languages: Arc<LanguageRegistry>,
+    cx: &mut App,
+) -> anyhow::Result<()> {
     let root = canonical_project_root(root)?;
-    add_to_recent(&root.to_string_lossy());
-    open_workspace_window(Some(root), None, cx)
+    let startup_error = add_to_recent(&root.to_string_lossy())
+        .err()
+        .map(|error| format!("更新最近项目列表失败：{error:#}"));
+    open_workspace_window(Some(root), languages, startup_error, cx)
 }
 
 /// 打开不绑定任何目录的空工作区。
-pub(crate) fn open_empty_workspace(cx: &mut App) -> anyhow::Result<()> {
-    open_workspace_window(None, None, cx)
+pub(crate) fn open_empty_workspace(
+    languages: Arc<LanguageRegistry>,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    open_workspace_window(None, languages, None, cx)
 }
 
-pub(crate) fn open_empty_workspace_with_error(message: String, cx: &mut App) -> anyhow::Result<()> {
-    open_workspace_window(None, Some(message), cx)
+pub(crate) fn open_empty_workspace_with_error(
+    message: String,
+    languages: Arc<LanguageRegistry>,
+    cx: &mut App,
+) -> anyhow::Result<()> {
+    open_workspace_window(None, languages, Some(message), cx)
 }
 
 /// 项目与空工作区共用同一条窗口创建路径；差异只在 Project 是否含 worktree。
 fn open_workspace_window(
     root: Option<PathBuf>,
+    languages: Arc<LanguageRegistry>,
     startup_error: Option<String>,
     cx: &mut App,
 ) -> anyhow::Result<()> {
@@ -222,7 +209,7 @@ fn open_workspace_window(
         },
         |window, cx| {
             cx.new(|cx| {
-                let workspace = build_workspace(&root, window, cx);
+                let workspace = build_workspace(&root, languages, window, cx);
                 if let Some(message) = startup_error {
                     workspace.show_toast(
                         ToastKind::Error,
@@ -242,19 +229,21 @@ fn open_workspace_window(
 /// 在给定窗口内创建并装配工作区；窗口创建与「切换项目」的根替换共用（须在 cx.new 闭包内调用）。
 fn build_workspace(
     root: &Option<PathBuf>,
+    languages: Arc<LanguageRegistry>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Workspace {
     let workspace = match root {
-        Some(root) => Workspace::new(root.clone(), window, cx),
-        None => Workspace::new_empty(window, cx),
+        Some(root) => Workspace::new(root.clone(), Arc::clone(&languages), window, cx),
+        None => Workspace::new_empty(Arc::clone(&languages), window, cx),
     };
-    finish_build_workspace(workspace, window, cx)
+    finish_build_workspace(workspace, languages, window, cx)
 }
 
 /// 将工作区状态装配为应用界面。
 fn finish_build_workspace(
     mut workspace: Workspace,
+    languages: Arc<LanguageRegistry>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Workspace {
@@ -262,7 +251,7 @@ fn finish_build_workspace(
     // UI 字号是当前工作区的窗口基准；临时缩放不会影响其他窗口。
     window.set_rem_size(workspace.typography().ui_size());
     // 装配不区分空/项目工作区：面板无条件注册，空态由各面板自行渲染。
-    initialize_workspace(&mut workspace, window, cx);
+    initialize_workspace(&mut workspace, languages, window, cx);
     // 焦点延后到首帧渲染完成后：track_focus 元素未挂载前 focus 会静默丢失，导致启动后 keymap dispatch 无焦点链，快捷键不生效，直到用户点击界面（焦点链建立）才恢复。
     let focus = workspace.focus_handle().clone();
     window.defer(cx, move |window, cx| {
@@ -284,8 +273,8 @@ fn initialize_common_workspace(
     let terminal = cx.new(|cx| TerminalPanel::new(terminal_project, cx));
 
     let terminal_for_new = terminal.clone();
-    register_panel(workspace, outline.clone(), DockPosition::Left, window, cx);
-    register_panel(workspace, terminal, DockPosition::Bottom, window, cx);
+    workspace.register_panel(outline.clone(), DockPosition::Left, window, cx);
+    workspace.register_panel(terminal, DockPosition::Bottom, window, cx);
 
     // 新建终端：先创建再确保面板可见，避免面板激活时的懒创建重复生成终端。
     workspace.register_action(move |workspace, _: &NewTerminal, window, cx| {
@@ -345,13 +334,12 @@ fn initialize_common_workspace(
     let left_dock = workspace.dock(DockPosition::Left).clone();
     let bottom_dock = workspace.dock(DockPosition::Bottom).clone();
     let workspace_entity = cx.weak_entity();
+    zcv_editor::install_status_items(workspace, cx);
     status_bar.update(cx, |bar, cx| {
         bar.add_left_item(
             cx.new(|cx| PanelButtons::new(left_dock.clone(), workspace_entity.clone(), cx)),
             cx,
         );
-        bar.add_right_item(cx.new(|_| CursorPosition::new()), cx);
-        bar.add_right_item(cx.new(|_| ActiveBufferLanguage::new()), cx);
         bar.add_right_item(
             cx.new(|cx| PanelButtons::new(bottom_dock.clone(), workspace_entity.clone(), cx)),
             cx,
@@ -511,11 +499,10 @@ fn show_file_watcher_error(
 
 fn initialize_workspace(
     workspace: &mut Workspace,
+    languages: Arc<LanguageRegistry>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    register_serialized_item_provider(ProjectDiffSerializedItemProvider, cx);
-    register_serialized_item_provider(GitGraphSerializedItemProvider, cx);
     // ═══ 顶栏注入 ═══════════════════════════════════════════════════
 
     let weak_self: gpui::WeakEntity<Workspace> = cx.weak_entity();
@@ -581,6 +568,7 @@ fn initialize_workspace(
         }
     });
 
+    let git_store = workspace.project().read(cx).git_store();
     let top_bar = cx.new(|cx| {
         let on_git_fetch = {
             let workspace = weak_self.clone();
@@ -613,8 +601,9 @@ fn initialize_workspace(
             })
         };
         TopBar::new(
-            switch_project_callback(),
+            switch_project_callback(languages),
             weak_self.clone(),
+            git_store.clone(),
             on_branch,
             TopBarCallbacks {
                 on_git_fetch,
@@ -652,9 +641,7 @@ fn initialize_workspace(
         branch_picker.update(cx, |picker, cx| picker.toggle(window, cx));
     });
     workspace.set_open_settings_provider(Box::new(|_cx| {
-        zcv_settings::ensure_user_settings_file()
-            .ok()
-            .map(|path| path.to_path_buf())
+        zcv_settings::ensure_user_settings_file().map(Path::to_path_buf)
     }));
 
     // ═══ 面板创建与注册 ═══════════════════════════════════════════
@@ -709,14 +696,8 @@ fn initialize_workspace(
         panel
     });
 
-    register_panel(
-        workspace,
-        project_tree.clone(),
-        DockPosition::Left,
-        window,
-        cx,
-    );
-    register_panel(workspace, version_control, DockPosition::Left, window, cx);
+    workspace.register_panel(project_tree.clone(), DockPosition::Left, window, cx);
+    workspace.register_panel(version_control, DockPosition::Left, window, cx);
     initialize_common_workspace(workspace, window, cx);
 
     // ═══ 状态栏注册 ═══════════════════════════════════════════════
@@ -734,25 +715,7 @@ fn initialize_workspace(
     let pane = workspace.pane().clone();
 
     let git_store = project.read(cx).git_store();
-    let git_subscription = cx.subscribe(&git_store, move |workspace, store, event, cx| {
-        let branch = store.read(cx).current_branch().map(str::to_string);
-        let head_commit = store.read(cx).current_head_commit().map(str::to_string);
-        let has_repositories = store.read(cx).has_repositories();
-        let remote_operation_state = store.read(cx).remote_operation_state();
-        // 分支列表随事件推送（活动仓库；选择器打开时同步渲染，无加载态）。
-        let branch_list = store
-            .read(cx)
-            .active_branch_list()
-            .map(|branches| branches.to_vec())
-            .unwrap_or_default();
-        top_bar.update(cx, |bar, cx| {
-            bar.set_branch(branch, cx);
-            bar.set_head_commit(head_commit, cx);
-            bar.set_branches(branch_list, cx);
-            bar.set_has_repositories(has_repositories);
-            bar.set_remote_operation_state(remote_operation_state);
-            cx.notify();
-        });
+    let git_subscription = cx.subscribe(&git_store, move |workspace, _store, event, cx| {
         if let GitStoreEvent::UncommitFailed(error) = event {
             workspace.show_toast(
                 ToastKind::Error,
@@ -771,7 +734,11 @@ fn initialize_workspace(
                 | GitStoreEvent::Head
                 | GitStoreEvent::IndexText
         ) {
-            push_diff_hunks(workspace.pane(), workspace.project(), cx);
+            zcv_version_control::refresh_pane_git_projection(
+                workspace.pane(),
+                workspace.project(),
+                cx,
+            );
         }
     });
 
@@ -816,7 +783,7 @@ fn initialize_workspace(
             subscribe_to_editor_events(workspace, editor, cx);
         }
         // 打开/激活编辑器时推送 git diff hunks（打开即有快照里的现成数据）。
-        push_diff_hunks(workspace.pane(), workspace.project(), cx);
+        zcv_version_control::refresh_pane_git_projection(workspace.pane(), workspace.project(), cx);
     });
 
     // 项目事件订阅：根重命名与文件树变化驱动项目树刷新。
@@ -919,7 +886,7 @@ fn initialize_workspace(
     for editor in editors {
         subscribe_to_editor_events(&mut *workspace, editor, cx);
     }
-    push_diff_hunks(&pane, workspace.project(), cx);
+    zcv_version_control::refresh_pane_git_projection(&pane, workspace.project(), cx);
 }
 
 /// 将设置层的文本主题 id 解析并应用为主题运行时状态。
@@ -927,35 +894,8 @@ fn apply_theme(theme: &str, cx: &mut App, window: Option<&Window>) {
     ThemeChoice::from_config(theme).apply(cx, window);
 }
 
-/// 把 GitStore 的 base 文本快照推送给打开的 Editor。
-///
-/// 不接收 Workspace 实体：订阅注册时的初始回调发生在 Workspace 更新期间，
-/// 读取自身实体会触发 double-lease panic。
-fn push_diff_hunks(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App) {
-    let opened: Vec<(Entity<Editor>, PathBuf)> = pane
-        .read(cx)
-        .tabs()
-        .iter()
-        .filter_map(|item| {
-            if item.act_as::<ProjectDiffView>(cx).is_some() {
-                return None;
-            }
-            let editor = item.act_as::<Editor>(cx)?;
-            let path = item.item_path(cx)?;
-            Some((editor, path))
-        })
-        .collect();
-    // 普通编辑器统一注入：working + HEAD 全文，显示 hunk 仅由这对快照派生。
-    for (editor, path) in &opened {
-        sync_editor_conflict_hunks(editor, path, project, cx);
-        inject_editor_diff(editor, path, project, cx);
-    }
-}
-
-/// 让普通编辑器的文本变化只同步工作区文本上的冲突标记。
-///
-/// Git diff 属于 Editor 内部 MultiBuffer 的投影状态。
-/// 文本编辑已经由 MultiBuffer 的源变更链路驱动 diff 重算，不能在这里重新注入，否则会把编辑器持有的 hunk 展开状态重新迁移并可能折叠。
+/// 普通编辑器的文本变化只同步工作区文本上的冲突标记；
+/// 其余 Git diff 投影由 zcv-version-control 的拥有域能力承载。
 fn subscribe_to_editor_events(
     workspace: &mut Workspace,
     editor: Entity<Editor>,
@@ -968,170 +908,27 @@ fn subscribe_to_editor_events(
             if matches!(event, EditorEvent::Edited { .. }) {
                 let path = editor.read(cx).file_path(cx);
                 if let Some(path) = path {
-                    sync_editor_conflict_hunks(&editor, &path, &project, cx);
+                    zcv_version_control::sync_editor_conflict_hunks(&editor, &path, &project, cx);
                 }
             }
         },
     ));
 }
 
-/// 从当前工作区源派生冲突 hunk；
-/// GitStore 的状态只决定该文件是否仍处于未合并事务中。
-///
-/// 冲突标记属于工作区文本，不在打开文件时缓存。
-/// 这样编辑、保存、提交和重启都经过同一条同步路径，解决最后一处冲突后，编辑器中的冲突标记会与变更树一起消失。
-fn sync_editor_conflict_hunks(
-    editor: &Entity<Editor>,
-    path: &Path,
-    project: &Entity<Project>,
-    cx: &mut App,
-) {
-    let is_unmerged = project
-        .read(cx)
-        .git_store()
-        .read(cx)
-        .status_for_path(path)
-        .is_some_and(|entry| entry.status == FileStatus::Unmerged);
-    if !is_unmerged {
-        editor.update(cx, |editor, cx| editor.set_editor_hunks(Vec::new(), cx));
-        return;
-    }
-    let Some(working) = editor.read(cx).multi_buffer().read(cx).singleton_source() else {
-        return;
-    };
-    let snapshot = working.read(cx).text_snapshot(cx);
-    let text_range =
-        TextRange::new(ByteOffset::ZERO, snapshot.len_bytes()).expect("工作区文本范围必须有效");
-    let text = snapshot
-        .slice_text(text_range)
-        .expect("工作区文本快照必须可切片")
-        .to_string();
-    let hunks = parse_conflict_regions(&text)
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, region)| {
-            let outer = TextRange::new(
-                ByteOffset::new(region.outer.start),
-                ByteOffset::new(region.outer.end),
-            )
-            .ok()?;
-            let ours = TextRange::new(
-                ByteOffset::new(region.outer.start),
-                ByteOffset::new(region.theirs.start),
-            )
-            .ok()?;
-            let theirs = TextRange::new(
-                ByteOffset::new(region.theirs.start),
-                ByteOffset::new(region.outer.end),
-            )
-            .ok()?;
-            Some(EditorHunk {
-                id: format!("{}\n{index}", path.display()).into(),
-                range: outer.into(),
-                parts: vec![
-                    EditorHunkPart {
-                        range: ours.into(),
-                        content_kind: DiffHunkKind::Deleted,
-                        marker_kind: EditorHunkMarkerKind::Conflict,
-                    },
-                    EditorHunkPart {
-                        range: theirs.into(),
-                        content_kind: DiffHunkKind::Added,
-                        marker_kind: EditorHunkMarkerKind::Conflict,
-                    },
-                ]
-                .into(),
-            })
-        })
-        .collect();
-    editor.update(cx, |editor, cx| editor.set_editor_hunks(hunks, cx));
-}
-
-/// 普通编辑器是否应注入 HEAD 差异。
-///
-/// 只有 index/HEAD 中的已跟踪文件可能有 HEAD 差异；未跟踪、被忽略或干净文件没有 HEAD 文本，
-/// 把“缺失”当成空 base 注入会把整份工作区文本投影成新增（绿色背景）。
-fn editor_diff_applies(status: Option<FileStatus>) -> bool {
-    status.is_some_and(|status| matches!(status, FileStatus::Tracked { .. }))
-}
-
-/// 把单个普通编辑器的工作区源与 HEAD/index 全文统一注入。
-///
-/// GitStore 提供 HEAD 与 index 全文；显示 hunk 由 base/working 快照派生，
-/// 并以 index 参照逐 hunk 标注已暂存 / 未暂存。
-fn inject_editor_diff(
-    editor: &Entity<Editor>,
-    path: &Path,
-    project: &Entity<Project>,
-    cx: &mut App,
-) {
-    let store = project.read(cx).git_store();
-    let status = store
-        .read(cx)
-        .status_for_path(path)
-        .map(|entry| entry.status);
-    if !editor_diff_applies(status) {
-        editor.update(cx, |editor, cx| {
-            editor.clear_diffs(cx);
-        });
-        return;
-    }
-    // HEAD/index 修订文档由 GitStore 异步提供；加载完成后重新注入。
-    for revision in [GitRevision::Head, GitRevision::Index] {
-        if store.read(cx).revision_document_loaded(revision, path) {
-            continue;
-        }
-        let task = store.read(cx).load_revision_document(revision, path, cx);
-        let project = project.clone();
-        let editor = editor.clone();
-        let path = path.to_path_buf();
-        cx.spawn(async move |cx| {
-            let _ = task.await;
-            cx.update(|app| inject_editor_diff(&editor, &path, &project, app));
-        })
-        .detach();
-    }
-    // 主旧侧尚未加载完成时注入会把未知当成新建，等待加载回调重试。
-    if !store
-        .read(cx)
-        .revision_document_loaded(GitRevision::Head, path)
-    {
-        return;
-    }
-    let base = store.read(cx).revision_document(GitRevision::Head, path);
-    // index 参照：未提交视图（HEAD↔工作区）用它逐 hunk 判定已暂存 / 未暂存。
-    let index = store.read(cx).revision_document(GitRevision::Index, path);
-    let Some(working) = editor.read(cx).multi_buffer().read(cx).singleton_source() else {
-        return;
-    };
-    let input = BufferDiffInput {
-        working,
-        base,
-        index,
-        path: path.to_path_buf(),
-        // 普通编辑器只显示 gutter 差异，不提供变更块操作。
-        operations: None,
-    };
-    // GitStore 预创建并按 (working, base, index) 共享同一 diff 实体。
-    let diff = store.update(cx, |store, cx| store.file_diff(&input, cx));
-    let file = DiffFile {
-        diff,
-        display_path: path.to_path_buf(),
-        context_lines: None,
-        show_file_header: false,
-    };
-    editor.update(cx, |editor, cx| {
-        editor.set_diff_files(vec![file], cx);
-    });
-}
-
 // ── 内部类型 ────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use gpui::{AppContext, TestAppContext};
+    use zcv_language::LanguageRegistry;
 
     use super::{DockPosition, Workspace, build_workspace};
+
+    fn test_languages() -> Arc<LanguageRegistry> {
+        Arc::new(LanguageRegistry::new())
+    }
 
     /// 空工作区与项目工作区走同一条装配路径：全部面板无条件注册，空态由面板自行渲染。
     #[gpui::test]
@@ -1140,7 +937,8 @@ mod tests {
             zcv_settings::init(cx);
             zcv_editor::init(cx);
         });
-        let (workspace, cx) = cx.add_window_view(|window, cx| build_workspace(&None, window, cx));
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| build_workspace(&None, test_languages(), window, cx));
 
         cx.read_entity(&workspace, |workspace, cx| {
             assert_eq!(workspace.dock(DockPosition::Left).read(cx).panel_count(), 3);
@@ -1164,11 +962,13 @@ mod tests {
             zcv_editor::init(cx);
         });
         let (old_workspace, cx) =
-            cx.add_window_view(|window, cx| build_workspace(&None, window, cx));
+            cx.add_window_view(|window, cx| build_workspace(&None, test_languages(), window, cx));
         let old_id = old_workspace.entity_id();
 
         cx.update(|window, app| {
-            window.replace_root(app, |window, cx| build_workspace(&None, window, cx));
+            window.replace_root(app, |window, cx| {
+                build_workspace(&None, test_languages(), window, cx)
+            });
         });
 
         // 新根已就位，且不是旧工作区实体。
@@ -1176,23 +976,5 @@ mod tests {
             let new_root = window.root::<Workspace>().flatten().expect("新根应已就位");
             assert_ne!(new_root.entity_id(), old_id);
         });
-    }
-
-    /// 回归：被忽略/未跟踪文件没有 HEAD 差异，普通编辑器不得注入 HEAD 差异投影，
-    /// 否则缺失的 HEAD 文本会被当成空 base，把整份工作区文本投影成新增（绿色背景）。
-    #[test]
-    fn editor_diff_only_applies_to_tracked_files() {
-        use zcv_git::{FileStatus, StatusCode};
-
-        use super::editor_diff_applies;
-
-        assert!(!editor_diff_applies(None), "状态未知/干净文件不注入");
-        assert!(!editor_diff_applies(Some(FileStatus::Untracked)));
-        assert!(!editor_diff_applies(Some(FileStatus::Ignored)));
-        assert!(!editor_diff_applies(Some(FileStatus::Unmerged)));
-        assert!(editor_diff_applies(Some(FileStatus::Tracked {
-            index_status: StatusCode::Modified,
-            worktree_status: StatusCode::Unmodified,
-        })));
     }
 }

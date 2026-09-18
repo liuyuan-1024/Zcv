@@ -109,6 +109,32 @@ fn status_accepts_path_prefixes() {
 }
 
 #[test]
+fn list_worktree_files_includes_tracked_and_untracked_but_not_ignored() {
+    let (root, _temp) = test_repo();
+    let repo = open_repo(&root);
+    fs::write(root.join(".gitignore"), "target/\n").expect("应写入 .gitignore");
+    fs::write(root.join("new.txt"), "新文件\n").expect("应新建文件");
+    fs::create_dir_all(root.join("target")).expect("应创建被忽略目录");
+    fs::write(root.join("target/generated.txt"), "生成\n").expect("应创建被忽略文件");
+
+    let files = repo
+        .list_worktree_files()
+        .expect("list_worktree_files 应成功");
+    assert!(
+        files.contains(&PathBuf::from("tracked.txt")),
+        "应包含已跟踪文件"
+    );
+    assert!(
+        files.contains(&PathBuf::from("new.txt")),
+        "应包含未跟踪文件"
+    );
+    assert!(
+        !files.iter().any(|path| path.starts_with("target")),
+        "不应包含被 .gitignore 忽略的文件：{files:?}"
+    );
+}
+
+#[test]
 fn diff_stat_reports_staged_and_unstaged() {
     let (root, _temp) = test_repo();
     let repo = open_repo(&root);
@@ -576,7 +602,9 @@ fn hunk_edits_apply_to_index_byte_ranges() {
                 std::sync::Arc::from(""),
                 std::sync::Arc::from("只暂存这一行\n"),
             )],
-            &WorkingCopySnapshot::from_disk(),
+            &WorkingCopySnapshot::from_editor_text(
+                fs::read(root.join(&tracked)).expect("应读取工作区文本"),
+            ),
         )
         .expect("应只暂存后一个变更块");
 
@@ -621,7 +649,9 @@ fn unstage_edits_replace_index_range_with_head_text() {
                 std::sync::Arc::from("改了"),
                 std::sync::Arc::from("第二行"),
             )],
-            &WorkingCopySnapshot::from_disk(),
+            &WorkingCopySnapshot::from_editor_text(
+                fs::read(root.join(&tracked)).expect("应读取工作区文本"),
+            ),
         )
         .expect("应取消暂存该变更块");
 
@@ -676,7 +706,9 @@ fn stale_hunk_edits_are_rejected() {
             std::sync::Arc::from("已经不存在"),
             std::sync::Arc::from("改"),
         )],
-        &WorkingCopySnapshot::from_disk(),
+        &WorkingCopySnapshot::from_editor_text(
+            fs::read(root.join("tracked.txt")).expect("应读取工作区文本"),
+        ),
     );
     assert!(result.is_err(), "目标文本变化后必须拒绝写入");
 }

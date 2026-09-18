@@ -2,9 +2,21 @@
 //!
 //! 目标类别取光标两侧"更词"的一侧，再向左右扫描连续同类字符；换行不参与任何类别的连续性。
 
-mod common;
+use zcv_text::WordBoundaryPolicy;
 
-use common::*;
+#[path = "common/buffer.rs"]
+mod buffer;
+#[path = "common/char_offset.rs"]
+mod char_offset;
+
+use buffer::buffer;
+use char_offset::c;
+
+fn word_policy() -> WordBoundaryPolicy {
+    WordBoundaryPolicy {
+        word_characters: "$",
+    }
+}
 
 /// 断言 offset 处双击选中的字符范围（CharOffset）。
 fn assert_word(text: &str, offset: usize, expected: (usize, usize)) {
@@ -107,6 +119,6 @@ fn is_inside_word_detects_word_interior() {
     assert!(!buffer.is_inside_word(word_policy(), c(4)).unwrap());
     assert!(!buffer.is_inside_word(word_policy(), c(7)).unwrap());
     // 下划线属于词字符，foo_bar 内部仍是词内。
-    let underscore = common::buffer("foo_bar");
+    let underscore = buffer::buffer("foo_bar");
     assert!(underscore.is_inside_word(word_policy(), c(4)).unwrap());
 }

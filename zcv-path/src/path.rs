@@ -9,6 +9,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+mod platform;
+
 /// 当前路径字符串使用的语法。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathStyle {
@@ -17,14 +19,8 @@ pub enum PathStyle {
 }
 
 impl PathStyle {
-    #[cfg(target_os = "windows")]
-    pub const fn local() -> Self {
-        Self::Windows
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    pub const fn local() -> Self {
-        Self::Unix
+    pub(crate) const fn local() -> Self {
+        platform::local_style()
     }
 }
 
@@ -82,7 +78,7 @@ pub fn simplify_native(path: &Path) -> PathBuf {
 ///
 /// 这用于创建目标、删除事件和重命名目标等场景：
 /// 最终路径可能尚不存在，但已有祖先仍然可以提供稳定的绝对路径身份。
-pub fn normalize_for_comparison(path: &Path) -> io::Result<PathBuf> {
+pub fn normalize_for_comparison(path: &Path) -> io::Result<AbsolutePathBuf> {
     let path = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -110,7 +106,7 @@ pub fn normalize_for_comparison(path: &Path) -> io::Result<PathBuf> {
     for component in missing_components.into_iter().rev() {
         normalized.push(component);
     }
-    Ok(simplify_native(&normalized))
+    AbsolutePathBuf::new(simplify_native(&normalized))
 }
 
 impl AsRef<Path> for AbsolutePathBuf {
@@ -152,7 +148,7 @@ impl RelativePathBuf {
         Self::from_path_with_style(path, PathStyle::local())
     }
 
-    pub fn from_path_with_style(path: &Path, style: PathStyle) -> io::Result<Self> {
+    pub(crate) fn from_path_with_style(path: &Path, style: PathStyle) -> io::Result<Self> {
         let text = path
             .to_str()
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "路径不是有效的 UTF-8"))?;
@@ -250,18 +246,7 @@ impl fmt::Display for RelativePathBuf {
 /// 调用方应在路径进入工作区时先完成磁盘 canonicalize；
 /// 此类型只负责把已确定的绝对路径转换为跨平台稳定的字符串，不改变文件系统语义。
 pub fn stable_identity(path: &Path) -> String {
-    let text = path.to_string_lossy();
-    #[cfg(target_os = "windows")]
-    {
-        let text = text
-            .strip_prefix(r"\\?\UNC\")
-            .map(|unc| format!(r"\\{unc}"))
-            .or_else(|| text.strip_prefix(r"\\?\").map(str::to_owned))
-            .unwrap_or_else(|| text.into_owned());
-        text.replace('\\', "/")
-    }
-    #[cfg(not(target_os = "windows"))]
-    text.into_owned()
+    platform::stable_identity(path)
 }
 
 #[cfg(test)]
@@ -296,6 +281,19 @@ mod tests {
         let path = AbsolutePathBuf::canonicalize(directory.path()).unwrap();
         assert!(path.as_path().is_absolute());
         assert!(!path.to_string().starts_with(r"\\?\"));
+    }
+
+    #[test]
+    fn absolute_path_relativizes_against_a_known_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = AbsolutePathBuf::canonicalize(directory.path()).unwrap();
+        let file = root.as_path().join("src/main.rs");
+        assert_eq!(
+            root.relative_path(&file),
+            Some(RelativePathBuf::from_unix_str("src/main.rs").unwrap())
+        );
+        let outside = root.as_path().parent().unwrap().join("other/file.rs");
+        assert_eq!(root.relative_path(&outside), None);
     }
 
     #[test]

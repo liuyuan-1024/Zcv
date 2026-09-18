@@ -1,6 +1,23 @@
 use zcv_text::*;
-mod common;
-use common::*;
+
+#[path = "common/buffer.rs"]
+mod buffer;
+#[path = "common/byte_range.rs"]
+mod byte_range;
+#[path = "common/full_text.rs"]
+mod full_text;
+
+use buffer::buffer;
+use byte_range::{b, range};
+use full_text::buffer_text;
+
+fn metadata(description: &str) -> TransactionMetadata {
+    TransactionMetadata::new(TransactionSource::Programmatic).with_description(description)
+}
+
+fn merge_metadata(description: &str) -> TransactionMetadata {
+    metadata(description).with_merge_policy(TransactionMergePolicy::MergeWithPrevious)
+}
 
 #[test]
 fn edit_should_emit_delta_changeset_position_map_and_subscription_patch() {
@@ -290,7 +307,6 @@ fn transaction_should_not_report_history_identity_when_history_is_disabled() {
                 max_undo_history: 0,
                 ..LargeFilePolicy::default()
             },
-            ..BufferConfig::default()
         },
     )
     .unwrap();
@@ -341,7 +357,6 @@ fn large_transaction_reject_policy_should_preserve_history_and_state() {
                 large_transaction_policy: LargeTransactionPolicy::Reject,
                 ..LargeFilePolicy::default()
             },
-            ..BufferConfig::default()
         },
     )
     .unwrap();

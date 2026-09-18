@@ -31,9 +31,9 @@ use zcv_multi_buffer::{
 };
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
-    Affinity, Buffer, BufferConfig, BufferVersion, Line, LineRange, LogicalColumn,
-    MovementDirection, MovementUnit, Position, PositionMap, TextError, TextResult, TransactionId,
-    TransactionMergePolicy, TransactionMetadata, TransactionSource,
+    Affinity, Buffer, BufferConfig, BufferVersion, ByteOffset, Line, LineRange, LogicalColumn,
+    MovementDirection, MovementUnit, Position, PositionMap, TextError, TextRange, TextResult,
+    TransactionId, TransactionMergePolicy, TransactionMetadata, TransactionSource,
 };
 use zcv_theme::{color, typography};
 use zcv_workspace::typography_for_window;
@@ -43,7 +43,7 @@ use super::display_map::{
     DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot, FoldBias, WrapRowKind,
 };
 use super::element::{AUTOSCROLL_INTERVAL, EditorElement, EditorInputLayout};
-use super::scroll::{ScrollManager, ScrollbarThumbState};
+use super::scroll::{ScrollManager, ScrollViewport, ScrollbarThumbState};
 use super::selection::{
     EditOutcome, EditPlan, Selection, SelectionHistory, SelectionSet, replace_selections,
 };
@@ -54,7 +54,6 @@ mod rename;
 mod search;
 mod syntax;
 
-pub use rename::LocalRenameError;
 use rename::LocalRenameState;
 
 pub(crate) use diff::DiffDecorationSnapshot;
@@ -68,6 +67,53 @@ pub struct EditorHunk {
     pub id: SharedString,
     pub range: MultiBufferRange,
     pub parts: Arc<[EditorHunkPart]>,
+}
+
+impl EditorHunk {
+    /// 由一段 Git 冲突标记构造未解决的冲突 hunk。
+    ///
+    /// `outer` 是包含冲突标记的完整源范围，`theirs_start` 是传入侧正文的起始偏移；
+    /// `map_offset` 把源字节偏移映射到目标文档坐标（普通编辑器为恒等映射，
+    /// 项目差异视图使用 excerpt 输出偏移）。范围无效时返回 `None`。
+    pub fn conflict(
+        id: impl Into<SharedString>,
+        outer: Range<usize>,
+        theirs_start: usize,
+        map_offset: impl Fn(usize) -> usize,
+    ) -> Option<Self> {
+        let range = TextRange::new(
+            ByteOffset::new(map_offset(outer.start)),
+            ByteOffset::new(map_offset(outer.end)),
+        )
+        .ok()?;
+        let ours = TextRange::new(
+            ByteOffset::new(map_offset(outer.start)),
+            ByteOffset::new(map_offset(theirs_start)),
+        )
+        .ok()?;
+        let theirs = TextRange::new(
+            ByteOffset::new(map_offset(theirs_start)),
+            ByteOffset::new(map_offset(outer.end)),
+        )
+        .ok()?;
+        Some(Self {
+            id: id.into(),
+            range: range.into(),
+            parts: vec![
+                EditorHunkPart {
+                    range: ours.into(),
+                    content_kind: DiffHunkKind::Deleted,
+                    marker_kind: EditorHunkMarkerKind::Conflict,
+                },
+                EditorHunkPart {
+                    range: theirs.into(),
+                    content_kind: DiffHunkKind::Added,
+                    marker_kind: EditorHunkMarkerKind::Conflict,
+                },
+            ]
+            .into(),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -222,9 +268,9 @@ pub(crate) enum EditorMode {
     Full,
 }
 
-/// 软换行模式。
+/// 软换行模式；仅编辑器内部与测试使用，外部宿主通过设置决定。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SoftWrap {
+pub(crate) enum SoftWrap {
     /// 不换行（超长行横向滚动）。
     #[default]
     None,
@@ -290,9 +336,9 @@ pub struct Editor {
     search: Option<EditorSearch>,
     search_revision: u64,
     search_decorations: Option<(SearchDecorationKey, Arc<SearchDecorationSnapshot>)>,
-    /// 语言层提供的可折叠范围（crease 显示与折叠命令的数据源；
-    /// 在 buffer 编辑或语法快照更新时刷新）。
-    /// 折叠范围（共享 LanguageBuffer 缓存：Reparsed 后整体替换，多个 Editor 复用同一份）。
+    /// 折叠候选（crease 显示与折叠命令的数据源）：
+    /// 由 Editor 依据当前 SyntaxSnapshot 即时查询 MultiBuffer 派生，随快照重建、可丢弃，不跨版本缓存；
+    /// 持久折叠状态由 FoldMap 的 Range<MultiBufferAnchor> 拥有。
     fold_ranges: Arc<[Range<MultiBufferAnchor>]>,
     /// 匹配括号缓存：键 = (primary head, buffer 版本, 源元数据版本)。
     /// 光标移动或任一版本推进即重查；
@@ -314,26 +360,10 @@ pub struct Editor {
 }
 
 impl Editor {
-    /// 设置普通文档内容顶部的视图。视图状态由调用方持有，Editor 只负责布局。
-    pub fn set_content_toolbar<T: Render + 'static>(
-        &mut self,
-        toolbar: Entity<T>,
-        cx: &mut Context<Self>,
-    ) {
-        self.set_content_toolbar_view(toolbar.into(), cx);
-    }
-
     /// 设置普通文档顶部的已类型擦除视图。
     pub fn set_content_toolbar_view(&mut self, toolbar: AnyView, cx: &mut Context<Self>) {
         self.content_toolbar = Some(toolbar);
         cx.notify();
-    }
-
-    /// 清除普通文档视图的顶部内容区域。
-    pub fn clear_content_toolbar(&mut self, cx: &mut Context<Self>) {
-        if self.content_toolbar.take().is_some() {
-            cx.notify();
-        }
     }
 
     pub fn single_line(cx: &mut Context<Self>) -> Self {
@@ -477,18 +507,6 @@ impl Editor {
         }
     }
 
-    /// 覆盖换行模式（UI 场景强制使用，不随全局设置变化）；`None` 清除覆盖恢复设置值。
-    ///
-    /// SingleLine 模式恒不换行（见 [`Editor::soft_wrap`]），覆盖对其不生效。
-    /// 实际换行在下一帧 prepaint 计算 wrap 宽度时生效。
-    pub fn set_soft_wrap_mode(&mut self, soft_wrap: Option<SoftWrap>, cx: &mut Context<Self>) {
-        if self.soft_wrap_override == soft_wrap {
-            return;
-        }
-        self.soft_wrap_override = soft_wrap;
-        cx.notify();
-    }
-
     /// 生效的换行模式：SingleLine 恒为不换行——单行输入只有一行视口，换行会把文本切到可见范围外（光标跟随的是换行后的显示行，前段文字整体不可见）；
     /// 其余模式覆盖优先，否则跟随全局设置。
     pub(crate) fn soft_wrap(&self) -> SoftWrap {
@@ -585,18 +603,6 @@ impl Editor {
     /// 当前已挂接 diff 的显示路径集合（按组合文档顺序）。
     pub fn diff_paths(&self, cx: &App) -> Vec<std::path::PathBuf> {
         self.multi_buffer.read(cx).diff_paths()
-    }
-
-    /// 追加已就绪的 diff 文件；只物化新增片段，不重建整份组合文档。
-    ///
-    /// 返回 true 表示新增文件已全部物化；
-    /// 仍有 diff 在后台计算时返回 false，结果到达后自动增量追加。
-    pub fn append_diff_projection(&mut self, files: Vec<DiffFile>, cx: &mut Context<Self>) -> bool {
-        let rebuilt = self
-            .multi_buffer
-            .update(cx, |buffer, cx| buffer.append_diff_projection(files, cx));
-        self.reset_after_diff_injection(rebuilt, cx);
-        rebuilt
     }
 
     pub fn set_diff_hunk_delegate(
@@ -751,7 +757,7 @@ impl Editor {
         cx.notify();
     }
 
-    /// 语言层可折叠范围（crease 渲染与折叠命令共用）。
+    /// 当前语法快照派生的折叠候选（crease 渲染与折叠命令共用）。
     pub(crate) fn fold_ranges(&self) -> &[Range<MultiBufferAnchor>] {
         &self.fold_ranges
     }
@@ -1115,7 +1121,7 @@ impl Editor {
     }
 
     pub(super) fn presentation(&self) -> EditorPresentation {
-        EditorPresentation::new(&self.snapshot.buffer_snapshot(), self.composition.as_ref())
+        EditorPresentation::new(self.snapshot.buffer_snapshot(), self.composition.as_ref())
             .with_dimmed_ranges(self.local_rename_ranges())
     }
 
@@ -1189,7 +1195,7 @@ impl Editor {
         let selection = if extend {
             let current = *self
                 .selections
-                .resolve(&self.snapshot.buffer_snapshot())
+                .resolve(self.snapshot.buffer_snapshot())
                 .primary();
             if end <= current.start() {
                 Selection::new(current.end(), start)
@@ -1483,12 +1489,14 @@ impl Editor {
     ) {
         let display_snapshot = self.snapshot.display_snapshot.clone();
         self.scroll_manager.update_viewport(
-            display_snapshot.line_count(),
-            viewport_size.width,
-            viewport_size.height,
-            content_width,
-            line_height,
-            top_inset,
+            ScrollViewport::new(
+                display_snapshot.line_count(),
+                viewport_size.width,
+                viewport_size.height,
+                content_width,
+                line_height,
+                top_inset,
+            ),
             &display_snapshot,
         );
     }
@@ -1880,11 +1888,11 @@ impl Editor {
         transaction_id: Option<TransactionId>,
         cx: &mut Context<Self>,
     ) {
-        if let Some(transaction_id) = transaction_id {
-            if let Some(transaction) = self.selection_history.transaction_mut(transaction_id) {
-                // 事务结束时记录 redo 选区（源锚点）。
-                transaction.set_redo(self.selections.clone());
-            }
+        if let Some(transaction_id) = transaction_id
+            && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
+        {
+            // 事务结束时记录 redo 选区（源锚点）。
+            transaction.set_redo(self.selections.clone());
         }
         self.finish_edit(cx);
         if let Some(transaction_id) = transaction_id {
@@ -2749,6 +2757,10 @@ mod mouse_selection_tests;
 #[cfg(test)]
 #[path = "test/cursor_activation_tests.rs"]
 mod cursor_activation_tests;
+
+#[cfg(test)]
+#[path = "test/conflict_hunk_tests.rs"]
+mod conflict_hunk_tests;
 
 /// 编辑事务元数据（供编辑命令与输入共用）。
 pub(super) fn edit_metadata(description: &'static str) -> TransactionMetadata {

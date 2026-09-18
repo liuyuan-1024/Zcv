@@ -168,7 +168,7 @@ impl BufferStore {
 
 /// 为已存在与刚删除的文件生成同一种规范化索引路径。
 fn index_path(path: &Path) -> std::io::Result<AbsolutePathBuf> {
-    AbsolutePathBuf::new(normalize_for_comparison(path)?)
+    normalize_for_comparison(path)
 }
 
 #[cfg(test)]

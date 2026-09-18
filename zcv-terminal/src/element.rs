@@ -194,71 +194,12 @@ impl From<&TextRun> for RunStyle {
 const SHAPED_RUN_CACHE_LIMIT: usize = 4096;
 
 #[cfg(test)]
-mod shaped_run_key_tests {
-    use super::*;
-
-    fn key(font_size: Pixels, cell_width: Pixels, scale_factor: f32) -> ShapedRunKey {
-        let font = typography::content_font();
-        ShapedRunKey {
-            text: "a".to_owned(),
-            styles: vec![RunStyle {
-                len: 1,
-                font,
-                color: 0,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            }],
-            font_size,
-            cell_width,
-            scale_factor_bits: scale_factor.to_bits(),
-        }
-    }
-
-    #[test]
-    fn layout_changes_invalidate_shaped_run_keys() {
-        let base = key(px(14.), px(8.), 1.);
-        assert_ne!(base, key(px(15.), px(8.), 1.));
-        assert_ne!(base, key(px(14.), px(9.), 1.));
-        assert_ne!(base, key(px(14.), px(8.), 1.25));
-
-        let mut changed_font = base.clone();
-        changed_font.styles[0].font = gpui::font(".SystemUIFont");
-        assert_ne!(base, changed_font);
-    }
-}
+#[path = "test/shaped_run_key_tests.rs"]
+mod shaped_run_key_tests;
 
 #[cfg(test)]
-mod grid_layout_tests {
-    use super::*;
-
-    #[test]
-    fn snaps_height_to_complete_device_rows() {
-        let layout = grid_layout(
-            Bounds::new(Point::new(px(2.), px(3.)), size(px(100.), px(101.))),
-            px(8.),
-            px(20.),
-            1.,
-            false,
-        );
-
-        assert_eq!(layout.bounds.num_lines(), 5);
-        assert_eq!(layout.origin, Point::new(px(2.), px(3.)));
-    }
-
-    #[test]
-    fn anchors_complete_rows_to_the_bottom_when_requested() {
-        let layout = grid_layout(
-            Bounds::new(Point::new(px(2.), px(3.)), size(px(100.), px(101.))),
-            px(8.),
-            px(20.),
-            1.,
-            true,
-        );
-
-        assert_eq!(layout.origin, Point::new(px(2.), px(4.)));
-    }
-}
+#[path = "test/grid_layout_tests.rs"]
+mod grid_layout_tests;
 
 impl TerminalElement {
     pub(super) fn new(view: gpui::Entity<TerminalView>) -> Self {
@@ -426,7 +367,7 @@ impl Element for TerminalElement {
                 self.view.update(cx, |view, cx| {
                     view.terminal
                         .update(cx, |terminal, cx| terminal.set_size(grid_layout.bounds, cx));
-                    view.sync(window, cx);
+                    view.sync(cx);
                 });
 
                 let content = self.view.read(cx).terminal.read(cx).last_content().clone();
@@ -463,7 +404,6 @@ impl Element for TerminalElement {
                     &mut layout,
                     &mut self.row_cache,
                     ime_marked_text.as_deref(),
-                    window,
                     cx,
                 );
                 let show_cursor = self.view.read(cx).should_show_cursor(focused, cx);
@@ -685,7 +625,6 @@ fn layout_grid(
     layout: &mut TerminalLayout,
     row_cache: &mut HashMap<u64, CachedRow>,
     ime_marked_text: Option<&str>,
-    window: &mut Window,
     cx: &mut App,
 ) {
     let TerminalLayout {
@@ -730,7 +669,7 @@ fn layout_grid(
             let fingerprint = row_fingerprint(part_cells);
             let (text, spans, span_columns, bg_ranges) = {
                 let entry = row_cache.entry(fingerprint).or_insert_with(|| {
-                    let row = row_to_styled_line(part_cells, window, cx);
+                    let row = row_to_styled_line(part_cells, cx);
                     CachedRow {
                         text: row.text,
                         spans: row.spans,
@@ -909,7 +848,7 @@ fn ime_row_parts(
 
 /// 一行网格单元格 → 行文本 + 行内样式段 + 非默认背景区间。
 /// 样式段按同样式连续格合并，尾随空格裁剪；背景区间按同色连续列合并。
-fn row_to_styled_line(cells: &[IndexedCell], window: &mut Window, cx: &mut App) -> StyledRow {
+fn row_to_styled_line(cells: &[IndexedCell], cx: &mut App) -> StyledRow {
     let mut text = String::with_capacity(cells.len());
     let mut spans: Vec<TerminalStyleSpan> = Vec::new();
     let mut span_columns: Vec<usize> = Vec::new();
@@ -939,7 +878,7 @@ fn row_to_styled_line(cells: &[IndexedCell], window: &mut Window, cx: &mut App) 
             if ch != ' ' {
                 content_end = end;
             }
-            let style = cell_highlight_style(cell, window, cx);
+            let style = cell_highlight_style(cell, cx);
             // 样式变化或网格列不连续（宽字符跨 2 列）时切段；
             // 段起点列号供渲染层按列定位（force_width 1 格 + 列号间距）。
             let col_contiguous = last_column.is_none_or(|last| column == last + 1);
@@ -963,7 +902,7 @@ fn row_to_styled_line(cells: &[IndexedCell], window: &mut Window, cx: &mut App) 
             last_column = Some(column);
         }
         // 背景：非默认背景画块（同色连续列合并）。
-        let bg = background_for(cell, window, cx);
+        let bg = background_for(cell, cx);
         let needs_rect = bg != default_background;
         let bg_color = u32::from(bg);
         match (needs_rect, bg_start) {
@@ -1010,19 +949,19 @@ fn row_to_styled_line(cells: &[IndexedCell], window: &mut Window, cx: &mut App) 
 }
 
 /// 单元格 → 行内样式：逆显交换前景/背景，dim 降亮度，粗体/斜体/下划线/删除线映射。
-fn cell_highlight_style(cell: &Cell, window: &mut Window, cx: &mut App) -> HighlightStyle {
+fn cell_highlight_style(cell: &Cell, cx: &mut App) -> HighlightStyle {
     let mut fg = if cell.is_inverse() {
-        palette::color_to_rgba(&cell.background(), window, cx)
+        palette::color_to_rgba(&cell.background(), cx)
     } else {
-        palette::color_to_rgba(&cell.foreground(), window, cx)
+        palette::color_to_rgba(&cell.foreground(), cx)
     };
     if cell.is_dim() {
         fg.a *= 0.5;
     }
     let bg = if cell.is_inverse() {
-        palette::color_to_rgba(&cell.foreground(), window, cx)
+        palette::color_to_rgba(&cell.foreground(), cx)
     } else {
-        palette::color_to_rgba(&cell.background(), window, cx)
+        palette::color_to_rgba(&cell.background(), cx)
     };
     HighlightStyle {
         color: Some(fg.into()),
@@ -1182,11 +1121,11 @@ fn layout_cursor(
 }
 
 /// 单元格背景色：逆显时交换为前景色。
-fn background_for(cell: &Cell, window: &mut Window, cx: &mut App) -> Rgba {
+fn background_for(cell: &Cell, cx: &mut App) -> Rgba {
     if cell.is_inverse() {
-        palette::color_to_rgba(&cell.foreground(), window, cx)
+        palette::color_to_rgba(&cell.foreground(), cx)
     } else {
-        palette::color_to_rgba(&cell.background(), window, cx)
+        palette::color_to_rgba(&cell.background(), cx)
     }
 }
 
@@ -1196,365 +1135,13 @@ fn last_column(cells: &[IndexedCell]) -> usize {
 }
 
 #[cfg(test)]
-mod cursor_tests {
-    use super::*;
-    use crate::{Cursor, Modes, Point, alacritty::AlacrittyCell};
-
-    /// 光标行是视口相对行：滚动（display_offset 增大）时光标随内容上移，而不是停留在原屏幕位置。
-    #[test]
-    fn cursor_row_is_viewport_relative_and_clamped() {
-        let content = |display_offset: usize, line: i32| Content {
-            cells: Vec::new(),
-            mode: Modes::NONE,
-            total_lines: 100,
-            display_offset,
-            columns: 80,
-            screen_lines: 30,
-            selection_text: None,
-            selection: None,
-            cursor: Cursor {
-                shape: CursorShape::Block,
-                point: Point { line, column: 3 },
-            },
-            cursor_cell: Cell::new(AlacrittyCell {
-                c: 'x',
-                ..Default::default()
-            }),
-            terminal_bounds: TerminalBounds::default(),
-            scrolled_to_top: false,
-            scrolled_to_bottom: false,
-            bottom_row_occupied: false,
-        };
-        // 滚动 10 行后视口行 5 的光标仍定位在第 5 行（若错误叠加偏移会得到 15）。
-        assert_eq!(cursor_row(&content(10, 5)), Some(5));
-        // 光标滚出视口（行号越界）时隐藏而非钳制悬浮。
-        assert_eq!(cursor_row(&content(0, 50)), None);
-        assert_eq!(cursor_row(&content(0, -3)), None);
-    }
-}
+#[path = "test/cursor_tests.rs"]
+mod cursor_tests;
 
 #[cfg(test)]
-mod ime_layout_tests {
-    use super::*;
-    use crate::{Point as TerminalPoint, alacritty::AlacrittyCell};
-
-    fn cells(text: &str) -> Vec<IndexedCell> {
-        text.chars()
-            .enumerate()
-            .map(|(column, character)| IndexedCell {
-                point: TerminalPoint { line: 0, column },
-                cell: Cell::new(AlacrittyCell {
-                    c: character,
-                    ..Default::default()
-                }),
-            })
-            .collect()
-    }
-
-    #[test]
-    fn ime_preview_inserts_columns_at_cursor() {
-        let cells = cells("abcd");
-        assert_eq!(
-            ime_row_parts(&cells, 0, 0, 0, ime_text_width("kaifazhe"))
-                .into_iter()
-                .flatten()
-                .map(|(cells, shift)| (cells.first().map(|cell| cell.point.column), shift))
-                .collect::<Vec<_>>(),
-            vec![(Some(0), 8)]
-        );
-        assert_eq!(
-            ime_row_parts(&cells, 0, 0, 2, ime_text_width("kaifazhe"))
-                .into_iter()
-                .flatten()
-                .map(|(cells, shift)| (cells.first().map(|cell| cell.point.column), shift))
-                .collect::<Vec<_>>(),
-            vec![(Some(0), 0), (Some(2), 8)]
-        );
-    }
-
-    #[test]
-    fn ime_preview_uses_terminal_width_for_wide_characters() {
-        assert_eq!(ime_text_width("kaifazhe"), 8);
-        assert_eq!(ime_text_width("中"), 2);
-        assert_eq!(ime_text_width("e\u{301}"), 1);
-    }
-}
+#[path = "test/ime_layout_tests.rs"]
+mod ime_layout_tests;
 
 #[cfg(test)]
-mod styled_line_tests {
-    use super::*;
-    use crate::{Point as TerminalPoint, alacritty::AlacrittyCell};
-    use alacritty_terminal::{
-        term::cell::Flags,
-        vte::ansi::{Color, NamedColor, Rgb},
-    };
-    use gpui::{Context, div};
-    use zcv_theme::ThemeChoice;
-
-    #[derive(Default)]
-    struct EmptyView;
-
-    impl gpui::Render for EmptyView {
-        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-            div()
-        }
-    }
-
-    fn cell(ch: char, fg: Color, bg: Color) -> IndexedCell {
-        IndexedCell {
-            point: TerminalPoint { line: 0, column: 0 },
-            cell: Cell::new(AlacrittyCell {
-                c: ch,
-                fg,
-                bg,
-                flags: Flags::empty(),
-                ..Default::default()
-            }),
-        }
-    }
-
-    fn cell_at(ch: char, column: usize, fg: Color, bg: Color) -> IndexedCell {
-        IndexedCell {
-            point: TerminalPoint { line: 0, column },
-            cell: Cell::new(AlacrittyCell {
-                c: ch,
-                fg,
-                bg,
-                flags: Flags::empty(),
-                ..Default::default()
-            }),
-        }
-    }
-
-    #[test]
-    fn terminal_style_maps_directly_to_text_run() {
-        let foreground: Hsla = gpui::red();
-        let background: Hsla = gpui::blue();
-        let underline = gpui::UnderlineStyle {
-            color: Some(foreground),
-            thickness: px(1.),
-            wavy: false,
-        };
-        let strikethrough = gpui::StrikethroughStyle {
-            color: Some(foreground),
-            thickness: px(1.),
-        };
-        let run = styled_text_run(
-            TextRun {
-                len: 3,
-                font: gpui::font(".SystemUIFont"),
-                color: Default::default(),
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            },
-            HighlightStyle {
-                color: Some(foreground),
-                background_color: Some(background),
-                font_weight: Some(gpui::FontWeight::BOLD),
-                font_style: Some(gpui::FontStyle::Italic),
-                underline: Some(underline),
-                strikethrough: Some(strikethrough),
-                ..Default::default()
-            },
-        );
-
-        assert_eq!(run.len, 3);
-        assert_eq!(run.color, foreground);
-        assert_eq!(run.background_color, Some(background));
-        assert_eq!(run.font.weight, gpui::FontWeight::BOLD);
-        assert_eq!(run.font.style, gpui::FontStyle::Italic);
-        assert_eq!(run.underline, Some(underline));
-        assert_eq!(run.strikethrough, Some(strikethrough));
-    }
-
-    /// 宽字符渲染：force_width 强制每字形 1 格宽（CJK 字形 advance 恰好 1 格），宽字符占 2 格的间距由段起始列号 × 格宽定位补足（不补空格）。
-    /// "中"（列 0）"文"（列 2）"a"（列 4）三段渲染总宽应等于 5 格。
-    #[gpui::test]
-    fn wide_char_force_width_aligns_render_width(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| {
-            zcv_assets::Assets.load_fonts(cx).expect("内置字体应能加载");
-        });
-        let (_, cx) = cx.add_window_view(|window, cx| {
-            ThemeChoice::System.apply(cx, Some(window));
-            EmptyView
-        });
-        cx.update(|window, cx| {
-            let font = typography::content_font();
-            let font_size = typography::content_size();
-            let run = |ch: char| TextRun {
-                len: ch.len_utf8(),
-                font: font.clone(),
-                color: color::current(cx).text.into(),
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-            let cell_width = window
-                .text_system()
-                .shape_line("m".into(), font_size, &[run('m')], None)
-                .width;
-            // 前提：CJK 字形 advance 恰好 1 格（0.6em = 格宽），宽字符第二格由列号定位承担。
-            let zhong = window
-                .text_system()
-                .shape_line("中".into(), font_size, &[run('中')], None)
-                .width;
-            assert!(
-                (f32::from(zhong) - f32::from(cell_width)).abs() < 0.1,
-                "CJK 字形应恰好 1 格：实际 {zhong:?}，格宽 {cell_width:?}"
-            );
-            // force_width 下每字形 1 格："中文" 2 字形 = 2 格。
-            let forced = window
-                .text_system()
-                .shape_line(
-                    "中文".into(),
-                    font_size,
-                    &[run('中'), run('文')],
-                    Some(cell_width),
-                )
-                .width;
-            assert!(
-                (f32::from(forced) - f32::from(cell_width) * 2.0).abs() < 0.1,
-                "force_width 下 '中文' 应等于 2 格：实际 {forced:?}，期望 {:?}",
-                cell_width * 2.0
-            );
-            // 列号定位：段起点 [0, 2, 4]，各段 1 格宽 → 渲染总宽 5 格（网格 中+文+a = 5 列）。
-            let segments = ["中", "文", "a"]
-                .iter()
-                .map(|ch| {
-                    window
-                        .text_system()
-                        .shape_line(
-                            (*ch).into(),
-                            font_size,
-                            &[run(ch.chars().next().unwrap())],
-                            Some(cell_width),
-                        )
-                        .width
-                })
-                .collect::<Vec<_>>();
-            let starts = [0usize, 2, 4];
-            let total = starts
-                .iter()
-                .zip(segments)
-                .map(|(col, width)| *col as f32 * f32::from(cell_width) + f32::from(width))
-                .fold(0.0f32, f32::max);
-            assert!(
-                (total - f32::from(cell_width) * 5.0).abs() < 0.1,
-                "列号定位后宽字符行渲染宽度应等于 5 格：实际 {total:?}，期望 {:?}",
-                cell_width * 5.0
-            );
-        });
-    }
-
-    /// 指纹对相同内容稳定、对内容变化敏感（行缓存失效判定的正确性）。
-    #[test]
-    fn row_fingerprint_is_stable_and_sensitive() {
-        let red = Color::Spec(Rgb { r: 255, g: 0, b: 0 });
-        let bg = Color::Named(NamedColor::Background);
-        let same = || vec![cell('a', red, bg), cell('b', red, bg)];
-        let changed = || vec![cell('a', red, bg), cell('c', red, bg)];
-        assert_eq!(
-            row_fingerprint(&same()),
-            row_fingerprint(&same()),
-            "相同内容指纹应一致"
-        );
-        assert_ne!(
-            row_fingerprint(&same()),
-            row_fingerprint(&changed()),
-            "内容变化指纹应不同"
-        );
-    }
-
-    /// 宽字符：占位格不产生文本；跨列切段并记录段起始列号（渲染按列定位），背景仍按格绘制。
-    #[gpui::test]
-    fn wide_char_spacer_skips_text_not_background(cx: &mut gpui::TestAppContext) {
-        let (_, cx) = cx.add_window_view(|window, cx| {
-            ThemeChoice::System.apply(cx, Some(window));
-            EmptyView
-        });
-        let red = Color::Spec(Rgb { r: 255, g: 0, b: 0 });
-        let bg = Color::Named(NamedColor::Background);
-        let wide = |ch: char, column: usize| IndexedCell {
-            point: TerminalPoint { line: 0, column },
-            cell: Cell::new(AlacrittyCell {
-                c: ch,
-                fg: red,
-                bg,
-                flags: Flags::WIDE_CHAR,
-                ..Default::default()
-            }),
-        };
-        let spacer = |column: usize| IndexedCell {
-            point: TerminalPoint { line: 0, column },
-            cell: Cell::new(AlacrittyCell {
-                c: ' ',
-                fg: red,
-                bg,
-                flags: Flags::WIDE_CHAR_SPACER,
-                ..Default::default()
-            }),
-        };
-        let row = cx.update(|window, cx| {
-            let cells = vec![wide('中', 0), spacer(1), wide('文', 2), spacer(3)];
-            row_to_styled_line(&cells, window, cx)
-        });
-        assert_eq!(row.text, "中文", "宽字符占位格不产生文本");
-        assert_eq!(row.spans.len(), 2, "宽字符跨 2 列，相邻段按列切分");
-        assert_eq!(row.spans[0].range, 0..3);
-        assert_eq!(row.spans[1].range, 3..6);
-        assert_eq!(
-            row.span_columns.as_ref(),
-            [0, 2],
-            "段起始列号反映宽字符占 2 列（渲染按列号定位）"
-        );
-    }
-
-    /// 相邻同样式格合并为一段；样式变化分段；尾随空格不参与 shaping。
-    #[gpui::test]
-    fn row_to_styled_line_merges_same_style_and_trims_trailing_spaces(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        let (_, cx) = cx.add_window_view(|window, cx| {
-            ThemeChoice::System.apply(cx, Some(window));
-            EmptyView
-        });
-        let red = Color::Spec(Rgb { r: 255, g: 0, b: 0 });
-        let green = Color::Spec(Rgb { r: 0, g: 255, b: 0 });
-        let bg = Color::Named(NamedColor::Background);
-        let row = cx.update(|window, cx| {
-            let cells = vec![
-                cell_at('a', 0, red, bg),
-                cell_at('b', 1, red, bg),
-                cell_at('c', 2, green, bg),
-                cell_at(' ', 3, red, bg),
-            ];
-            row_to_styled_line(&cells, window, cx)
-        });
-        assert_eq!(row.text, "abc", "尾随空格应被裁剪");
-        assert_eq!(row.spans.len(), 2, "相邻同样式格应合并为一段");
-        assert_eq!(row.spans[0].range, 0..2);
-        assert_eq!(row.spans[1].range, 2..3);
-        assert_eq!(row.span_columns.as_ref(), [0, 2], "段起始列号按格连续推进");
-        // 逆显格交换前景与背景。
-        let inverse_row = cx.update(|window, cx| {
-            // 手工构造逆显格。
-            let inverse = AlacrittyCell {
-                c: 'y',
-                fg: red,
-                bg,
-                flags: Flags::INVERSE,
-                ..Default::default()
-            };
-            let cells = vec![
-                cell('x', red, bg),
-                IndexedCell {
-                    point: TerminalPoint { line: 0, column: 1 },
-                    cell: Cell::new(inverse),
-                },
-            ];
-            row_to_styled_line(&cells, window, cx)
-        });
-        assert_eq!(inverse_row.spans.len(), 2, "逆显格样式不同应分段");
-    }
-}
+#[path = "test/styled_line_tests.rs"]
+mod styled_line_tests;

@@ -994,7 +994,7 @@ fn close_button(
     Button::icon(("tab-close", item_id), "icons/close.svg")
         .no_occlude()
         .label("关闭")
-        .shortcut(&CloseTab, cx)
+        .shortcut(zcv_keymap::display_shortcut(&CloseTab, cx))
         .on_click(
             move |_: &gpui::ClickEvent, window: &mut gpui::Window, cx: &mut gpui::App| {
                 // 焦点归还在 close_tab 内统一处理（点击时焦点在 Pane 内）。

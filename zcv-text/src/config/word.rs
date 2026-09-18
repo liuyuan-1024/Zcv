@@ -18,7 +18,7 @@ fn is_zero_width(ch: char) -> bool {
 ///
 /// 文本内核层只定义纯文本移动语义，不绑定具体 UI 快捷键。
 /// 不同宿主可以把 Option/Alt/Ctrl + Left/Right 映射到 Word / Identifier / Subword / Symbol。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct WordBoundaryPolicy {
     /// 除字母数字、`_` 与零宽字符外，额外视为 identifier 主体的字符集合。
     ///
@@ -92,12 +92,4 @@ impl WordBoundaryClassifier {
 
 fn is_natural_word_body(ch: char) -> bool {
     ch.is_alphanumeric() || is_zero_width(ch)
-}
-
-impl Default for WordBoundaryPolicy {
-    fn default() -> Self {
-        Self {
-            word_characters: "",
-        }
-    }
 }

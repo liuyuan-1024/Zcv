@@ -9,6 +9,7 @@ use zcv_actions::{ReplaceAll, ReplaceNext};
 
 use crate::button::Button;
 use crate::input_shell::InputShell;
+use crate::tooltip::ShortcutResolver;
 
 /// 替换动作回调。
 type ActionHandler = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -19,6 +20,8 @@ pub struct ReplaceInput {
     input: AnyElement,
     replace: Option<ActionHandler>,
     replace_all: Option<ActionHandler>,
+    /// 快捷键文本解析器；由装配层从 keymap 注入。
+    resolver: Option<ShortcutResolver>,
 }
 
 impl ReplaceInput {
@@ -29,7 +32,14 @@ impl ReplaceInput {
             input: input.into(),
             replace: None,
             replace_all: None,
+            resolver: None,
         }
+    }
+
+    /// 注入快捷键文本解析器；不注入时按钮不显示快捷键提示。
+    pub fn shortcut_resolver(mut self, resolver: ShortcutResolver) -> Self {
+        self.resolver = Some(resolver);
+        self
     }
 
     /// 替换当前匹配(并前进到下一个匹配)。
@@ -61,7 +71,7 @@ impl RenderOnce for ReplaceInput {
             shell = shell.external(
                 Button::icon(format!("{prefix}-replace"), "icons/replace_next.svg")
                     .label("替换")
-                    .shortcut(&ReplaceNext, cx)
+                    .shortcut(self.resolver.and_then(|resolve| resolve(&ReplaceNext, cx)))
                     .on_click(move |_, window, cx| replace(window, cx)),
             );
         }
@@ -69,7 +79,7 @@ impl RenderOnce for ReplaceInput {
             shell = shell.external(
                 Button::icon(format!("{prefix}-replace-all"), "icons/replace_all.svg")
                     .label("全部替换")
-                    .shortcut(&ReplaceAll, cx)
+                    .shortcut(self.resolver.and_then(|resolve| resolve(&ReplaceAll, cx)))
                     .on_click(move |_, window, cx| replace_all(window, cx)),
             );
         }

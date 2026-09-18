@@ -1,6 +1,10 @@
-mod common;
+#[path = "common/buffer.rs"]
+mod buffer;
+#[path = "common/char_offset.rs"]
+mod char_offset;
 
-use common::*;
+use buffer::buffer;
+use char_offset::c;
 use zcv_text::{CoordinateError, MovementDirection, MovementUnit, TextError, WordBoundaryPolicy};
 
 #[test]

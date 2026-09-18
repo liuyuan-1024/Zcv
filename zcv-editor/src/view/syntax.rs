@@ -3,13 +3,11 @@
 //! Tree-sitter 查询由 `zcv-language` 负责，`DisplayMap` 负责把组合文档坐标投影到查询结果。
 //! 本模块只把这些结果转换为编辑器级的筛选、导航和编辑操作。
 
-use zcv_multi_buffer::MultiBufferOffset;
-
 use std::ops::Range;
 
 use super::{Editor, NAVIGATION_TOP_OFFSET};
-use gpui::{Context, HighlightStyle};
-use zcv_language::{LocalBinding, OutlineItem, SyntaxNode};
+use gpui::{App, Context, HighlightStyle};
+use zcv_language::{LocalBinding, OutlineItem};
 
 impl Editor {
     /// 返回当前组合文档的文件级语法大纲。
@@ -35,6 +33,7 @@ impl Editor {
     pub fn outline_item_highlights(
         &self,
         item: &OutlineItem,
+        cx: &App,
     ) -> Vec<(Range<usize>, HighlightStyle)> {
         let mut highlights = Vec::new();
         for part in &item.text_ranges {
@@ -42,7 +41,7 @@ impl Editor {
             for (range, style) in self
                 .snapshot
                 .display_snapshot
-                .highlights_for_range(part.source_range.clone())
+                .highlights_for_range(part.source_range.clone(), cx)
             {
                 let start = range.start.max(part.source_range.start);
                 let end = range.end.min(part.source_range.end);
@@ -61,16 +60,6 @@ impl Editor {
     /// 返回当前单文件文档中可确定归属的局部绑定。
     pub fn local_bindings(&self) -> Vec<LocalBinding> {
         self.snapshot.buffer_snapshot().local_bindings()
-    }
-
-    /// 返回组合文档中指定光标的语法节点；结果与当前 Editor 快照版本绑定。
-    pub fn syntax_node_at(&self, offset: MultiBufferOffset) -> Option<SyntaxNode> {
-        self.snapshot.buffer_snapshot().node_at(offset)
-    }
-
-    /// 返回指定选区的语法祖先链，顺序为最小节点到语法根节点。
-    pub fn syntax_node_ancestors(&self, range: Range<usize>) -> Vec<SyntaxNode> {
-        self.snapshot.buffer_snapshot().node_ancestors(range)
     }
 
     /// 将大纲项定位到其名称范围，并拒绝异步刷新后已经失效的结果。

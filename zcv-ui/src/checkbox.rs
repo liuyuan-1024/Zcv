@@ -5,8 +5,7 @@
 use std::rc::Rc;
 
 use gpui::{
-    Action, App, ElementId, IntoElement, MouseButton, RenderOnce, ViewElement, Window, div,
-    prelude::*,
+    App, ElementId, IntoElement, MouseButton, RenderOnce, ViewElement, Window, div, prelude::*,
 };
 use zcv_theme::color;
 
@@ -38,9 +37,9 @@ impl Checkbox {
         self
     }
 
-    /// 关联 action：快捷键从 keymap 查询并显示在悬停提示里。
-    pub fn shortcut(mut self, action: &dyn Action, cx: &App) -> Self {
-        self.tooltip = self.tooltip.with_action(action, cx);
+    /// 设置调用方已解析的快捷键文本；`None` 表示该 action 无绑定。
+    pub fn shortcut(mut self, shortcut: Option<impl Into<String>>) -> Self {
+        self.tooltip = self.tooltip.with_shortcut(shortcut);
         self
     }
 

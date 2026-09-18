@@ -25,13 +25,14 @@ pub use errors::{
 };
 pub use movement::{MovementDirection, MovementUnit};
 pub use position_map::{Affinity, MappingResult, PositionMap, Stickiness};
+pub use slicing::{LineContent, LineSlice, TextSlice};
 pub use snapshot::Snapshot;
 pub use storage::TextRead;
-pub use text_changes::{TextChangeBatch, TextSubscription};
+pub use text_changes::{PatchEdit, TextChangeBatch, TextPatch, TextSubscription};
 pub use tracking::Anchor;
 pub use transaction::{
-    DeltaEvent, Edit, TransactionMergePolicy, TransactionMetadata, TransactionOutcome,
-    TransactionSource,
+    ChangeSet, Delta, DeltaEvent, Edit, TransactionMergePolicy, TransactionMetadata,
+    TransactionOutcome, TransactionSource,
 };
 pub use types::{
     BufferVersion, ByteOffset, CharOffset, Line, LineEndingStyle, LineRange, LogicalColumn,

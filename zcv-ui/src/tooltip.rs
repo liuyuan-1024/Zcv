@@ -1,12 +1,16 @@
 //! Tooltip —— 悬停提示视图。
 //!
 //! 单一实现，供 Button、SvgIcon、Checkbox 等组件复用。
-//! 快捷键的查询与显示也是 Tooltip 的职责：消费方只需提供 action 名称。
-//! 悬停延迟与触发由 gpui 的 `div.tooltip()` 机制承担，这里只负责气泡视觉与快捷键查询。
+//! 快捷键文本由调用方解析后注入（`TooltipSpec::shortcut`），本模块不查询快捷键注册表。
+//! 悬停延迟与触发由 gpui 的 `div.tooltip()` 机制承担，这里只负责气泡视觉。
 
-use gpui::{AnyView, App, Context, Render, Window, div, prelude::*, px};
-use zcv_keymap::KeyBindings;
+use gpui::{Action, AnyView, App, Context, Render, Window, div, prelude::*, px};
 use zcv_theme::{color, space, typography};
+
+/// 把 action 解析为快捷键显示文本；由拥有 keymap 的调用方注入。
+///
+/// 设计系统组件只消费已解析文本，因此不依赖快捷键注册表。
+pub type ShortcutResolver = fn(&dyn Action, &App) -> Option<String>;
 
 /// 构造提示气泡视图（多行内容 + 可选快捷键）。
 fn tooltip_view(cx: &mut App, lines: Vec<String>, shortcut: Option<String>) -> AnyView {
@@ -43,13 +47,10 @@ impl TooltipSpec {
         self
     }
 
-    /// 从当前 keymap 中查询 action 的快捷键并设为提示（Button/SvgIcon/Checkbox 等共用）。
-    pub fn with_action(mut self, action: &dyn gpui::Action, cx: &App) -> Self {
-        if let Some(s) = cx
-            .try_global::<KeyBindings>()
-            .and_then(|kb| kb.display_shortcut(action))
-        {
-            self.shortcut = Some(s);
+    /// 设置调用方已解析的快捷键文本；`None` 表示该 action 无绑定。
+    pub fn with_shortcut(mut self, shortcut: Option<impl Into<String>>) -> Self {
+        if let Some(shortcut) = shortcut {
+            self.shortcut = Some(shortcut.into());
         }
         self
     }
@@ -98,7 +99,7 @@ impl Render for TooltipView {
             // 浮动层挂在 window 层，不在根元素树内：
             // 字号经 window rem 基准自动正确；字体需显式设置；行高 = ui_line()（墨迹高度，与根元素同源 token）。
             .font(typography::ui_font())
-            .line_height(typography::ui_line_at(window.rem_size()))
+            .line_height(typography::ui_line_at(window.rem_size(), cx))
             .bg(color::current(cx).elevated_surface_background)
             .border_1()
             .border_color(color::current(cx).border_variant)

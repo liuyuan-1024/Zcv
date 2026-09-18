@@ -415,14 +415,14 @@ fn text_range_from_mapped_endpoints(start: ByteOffset, end: ByteOffset) -> (Text
 ///
 /// 同一个 `Stickiness` 在起点和终点上的 affinity 往往相反，因此内部映射必须显式区分端点。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BoundarySide {
+enum BoundarySide {
     /// 区间左边界 / start offset。
     Start,
     /// 区间右边界 / end offset。
     End,
 }
 
-pub(crate) fn boundary_affinity(stickiness: Stickiness, side: BoundarySide) -> Affinity {
+fn boundary_affinity(stickiness: Stickiness, side: BoundarySide) -> Affinity {
     match stickiness {
         Stickiness::BeforeInsertion => Affinity::Before,
         Stickiness::AfterInsertion => Affinity::After,

@@ -103,13 +103,6 @@ impl Language {
         }
     }
 
-    pub fn has_locals_query(&self) -> bool {
-        match &self.syntax {
-            LanguageSyntax::PlainText => false,
-            LanguageSyntax::TreeSitter { queries, .. } => queries.locals.is_some(),
-        }
-    }
-
     /// 输入级自动闭合配对表（编辑器输入行为的数据源）。
     pub fn auto_close_pairs(&self) -> &'static [AutoClosePair] {
         self.auto_close_pairs
@@ -223,7 +216,7 @@ impl LanguageRegistry {
     }
 
     /// 按注入名查语言（语法树注入层使用）。
-    pub fn language_for_injection(&self, name: &str) -> Option<Arc<Language>> {
+    pub(crate) fn language_for_injection(&self, name: &str) -> Option<Arc<Language>> {
         self.languages
             .iter()
             .find(|entry| entry.matches_injection_name(name))
@@ -244,7 +237,7 @@ impl LanguageRegistry {
     ///
     /// 围栏代码块使用语言名而非文件路径；
     /// 该入口让预览、文档等消费者与文件识别共享同一份语言注册表，而不是各自维护别名映射。
-    pub fn language_for_name_or_extension(&self, name: &str) -> Option<Arc<Language>> {
+    pub(crate) fn language_for_name_or_extension(&self, name: &str) -> Option<Arc<Language>> {
         let name = name.trim().trim_start_matches('.');
         if name.is_empty() {
             return None;
@@ -563,7 +556,7 @@ mod tests {
                     | "main.cpp"
             );
             assert_eq!(
-                language.has_locals_query(),
+                language.locals().is_some(),
                 locals_expected,
                 "{path} 局部语义查询能力错误"
             );

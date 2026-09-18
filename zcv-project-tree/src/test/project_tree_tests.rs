@@ -11,6 +11,7 @@ use zcv_actions::{
 };
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 
+use zcv_language::LanguageRegistry;
 use zcv_path::AbsolutePathBuf;
 use zcv_project::Project;
 use zcv_ui::{ConfirmAnswer, tree_row_height};
@@ -55,8 +56,13 @@ impl Watcher for TestWatcher {
     }
 }
 
+/// 测试用语言注册表；生产装配层创建应用级唯一实例，测试各自提供一份。
+fn test_languages() -> Arc<LanguageRegistry> {
+    Arc::new(LanguageRegistry::new())
+}
+
 fn test_project(root: std::path::PathBuf, cx: &mut TestAppContext) -> gpui::Entity<Project> {
-    cx.new(|cx| Project::new_with_watcher(root, Arc::new(TestWatcher::new()), cx))
+    cx.new(|cx| Project::new_with_watcher(root, Arc::new(TestWatcher::new()), test_languages(), cx))
 }
 
 fn abs(path: impl Into<std::path::PathBuf>) -> AbsolutePathBuf {
@@ -317,7 +323,7 @@ fn first_click_on_unfocused_tree_focuses_and_opens(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     // 单击第二行（a.txt，depth 1）：行高为 ui_line()。
-    let row_height = tree_row_height();
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let click = |cx: &mut VisualTestContext| {
         cx.simulate_click(
             point(px(10.), px(f32::from(row_height) + 1.)),
@@ -776,7 +782,7 @@ fn ignored_directory_expands_with_ignored_children(cx: &mut TestAppContext) {
 /// 无 worktree 的空项目：面板照常构造，root 为空、行模型为空（渲染空态提示）。
 #[gpui::test]
 fn empty_project_has_no_root_and_empty_rows(cx: &mut TestAppContext) {
-    let project = cx.update(|cx| cx.new(Project::empty));
+    let project = cx.update(|cx| cx.new(|cx| Project::empty(test_languages(), cx)));
     let (tree, cx) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project, cx));
 
     cx.read_entity(&tree, |tree, _| {
@@ -870,7 +876,7 @@ fn shift_click_extends_selection_range(cx: &mut TestAppContext) {
     focus_tree(&tree, cx);
 
     // 行序 [根, a.txt, b.txt, c.txt]；行高为 ui_line()。
-    let row_height = tree_row_height();
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     // 先普通点击 a.txt（行 1）建立单选锚点。
     cx.simulate_click(
         point(px(10.), px(f32::from(row_height) * 1.0 + 1.)),
@@ -919,7 +925,7 @@ fn secondary_click_toggles_selection_membership(cx: &mut TestAppContext) {
     cx.run_until_parked();
     focus_tree(&tree, cx);
 
-    let row_height = tree_row_height();
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     // 普通点击 a.txt（行 1）建立单选。
     cx.simulate_click(
         point(px(10.), px(f32::from(row_height) * 1.0 + 1.)),
@@ -1827,7 +1833,7 @@ fn escape_during_conflict_cancels_conflict_and_keeps_clipboard(cx: &mut TestAppC
 /// 模拟一次拖拽手势：按住源行 → 移动（越过拖拽阈值）→ 在目标行释放。
 /// 行 i 的 y 坐标为 ui_line * i + 1（与既有点击测试的坐标约定一致）。
 fn simulate_drag(cx: &mut VisualTestContext, from_row: usize, to_row: usize) {
-    let row_height = tree_row_height();
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
     cx.simulate_mouse_down(
         point(px(10.), row_y(from_row)),
@@ -1961,7 +1967,7 @@ fn drag_does_not_open_file_preview_and_keeps_selection(cx: &mut TestAppContext) 
 
     // 多选 {a, b} 并完成渲染（普通点击 a 预览打开一次属正常点击行为），
     // 记录打开次数后从 a 行拖起放到 dst。
-    let row_height = tree_row_height();
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
     cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::default());
     cx.simulate_click(point(px(10.), row_y(3)), gpui::Modifiers::secondary_key());
@@ -2040,7 +2046,7 @@ fn drag_after_cmd_click_multi_selection_moves_all_items(cx: &mut TestAppContext)
     focus_tree(&tree, cx);
 
     // 行序 [根, dst, a, b, c]：真实点击序列——普通点击 a 后逐个 cmd 点击 b、c。
-    let row_height = tree_row_height();
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
     cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::default());
     cx.simulate_click(point(px(10.), row_y(3)), gpui::Modifiers::secondary_key());
@@ -2094,7 +2100,7 @@ fn drop_trusts_snapshot_frozen_at_drag_start(cx: &mut TestAppContext) {
     cx.run_until_parked();
     focus_tree(&tree, cx);
 
-    let row_height = tree_row_height();
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
     // 普通点击 a（行 2）+ cmd 点击 b（行 3）：建立多选 {a, b} 并完成渲染。
     cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::default());
@@ -2169,7 +2175,7 @@ fn drag_after_unfocused_first_cmd_click_moves_all_items(cx: &mut TestAppContext)
     });
     cx.run_until_parked();
     // 不预先聚焦，模拟用户从编辑器转向项目树的真实入口。
-    let row_height = tree_row_height();
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
     cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::secondary_key());
     cx.simulate_click(point(px(10.), row_y(3)), gpui::Modifiers::secondary_key());
@@ -2208,7 +2214,7 @@ fn drag_after_shift_range_selection_moves_all_items(cx: &mut TestAppContext) {
     focus_tree(&tree, cx);
 
     // 普通点击 a（行 2）建立锚点，shift 点击 c（行 4）扩展区间 {a, b, c}。
-    let row_height = tree_row_height();
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
     cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::default());
     cx.simulate_click(
@@ -2255,7 +2261,7 @@ fn second_drag_after_successful_move_still_moves_multi_selection(cx: &mut TestAp
     cx.run_until_parked();
     focus_tree(&tree, cx);
 
-    let row_height = tree_row_height();
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
     // 第一轮：普通点击 a（行 2）+ cmd 点击 b（行 3），拖到 dst（行 1）。
     cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::default());
@@ -2345,7 +2351,7 @@ fn drag_hovering_folded_directory_expands_it_after_delay(cx: &mut TestAppContext
     cx.run_until_parked();
 
     // 拖起 a.txt（行 2）后悬停在折叠的 dst 行（行 1）上不释放。
-    let row_height = tree_row_height();
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
     cx.simulate_mouse_down(
         point(px(10.), row_y(2)),
@@ -2419,7 +2425,7 @@ fn clicking_blank_area_below_rows_keeps_selection_and_focuses_panel(cx: &mut Tes
     cx.run_until_parked();
 
     // 先显式点击 a.txt（行 1）建立期望选中（首击聚焦并选中该行）。
-    let row_height = tree_row_height();
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     cx.simulate_click(
         point(px(10.), px(f32::from(row_height) + 1.)),
         Modifiers::default(),
@@ -2486,7 +2492,7 @@ fn blank_click_between_multi_selection_and_drag_keeps_set(cx: &mut TestAppContex
     focus_tree(&tree, cx);
 
     // 行序 [根, dst, a, b, c]：普通点击 a（行 2）+ cmd 点击 b（行 3）建立多选。
-    let row_height = tree_row_height();
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
     cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::default());
     cx.simulate_click(point(px(10.), row_y(3)), gpui::Modifiers::secondary_key());
@@ -2558,7 +2564,7 @@ fn clicking_blank_area_without_prior_row_click_keeps_fallback_selection(cx: &mut
     });
 
     // 点击行区域以下的空白。
-    let row_height = tree_row_height();
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
     let blank = point(px(10.), px(f32::from(row_height) * 2. + 10.));
     cx.simulate_click(blank, Modifiers::default());
     cx.run_until_parked();

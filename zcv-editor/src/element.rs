@@ -674,7 +674,7 @@ fn build_crease_toggles(
         let focus = editor.read(cx).focus_handle();
         let mut toggle = Button::icon(("gutter_crease", line.get()), path)
             .label(if folded { "展开" } else { "折叠" })
-            .shortcut(&ToggleFold, cx)
+            .shortcut(zcv_keymap::display_shortcut(&ToggleFold, cx))
             .on_click(move |_event, window, cx| {
                 window.focus(&focus, cx);
                 editor.update(cx, |editor, cx| editor.toggle_fold_at_line(line, cx));
@@ -924,7 +924,7 @@ fn buffer_header_element(
                         .style(ButtonStyle::Solid)
                         .size(ButtonSize::Loose)
                         .label("打开文件并跳转到指定位置")
-                        .shortcut(&OpenExcerpts, cx)
+                        .shortcut(zcv_keymap::display_shortcut(&OpenExcerpts, cx))
                         .on_click(move |_event, _window, cx| {
                             editor_for_button.update(cx, |editor, cx| {
                                 editor.open_excerpt(&open_excerpt, false, cx)
@@ -2496,11 +2496,11 @@ fn layout_visible_lines_from_viewport(
         ),
     );
     // 语法高亮只在基础 buffer chunk 的真实行范围内查询；
-    // inlay/fold/tab/wrap都是其后的 chunk 变换，不能用显示片段长度反推 buffer 字节坐标。
+    // fold/tab/wrap 都是其后的 chunk 变换，不能用显示片段长度反推 buffer 字节坐标。
     let visible_highlights =
         display_snapshot.highlighted_spans_for_source_ranges(visible_source_ranges);
     // capture 索引 → 样式的预展开表：渲染每 run 一次数组索引，不再逐 run 做字符串回退查找。
-    let highlight_styles = display_snapshot.highlight_styles();
+    let highlight_styles = display_snapshot.highlight_styles(cx);
     // 搜索高亮：独立背景覆盖层。
     let visible_byte_range = visible_source_lines
         .as_ref()
@@ -2723,19 +2723,16 @@ fn layout_visible_lines_from_viewport(
                     row_text.push_str(text_chunk.text);
                     row_whitespaces.extend(text_chunk.text.char_indices().filter_map(
                         |(offset, ch)| {
-                            (!text_chunk.is_tab
-                                && !text_chunk.is_inlay
-                                && !text_chunk.is_placeholder
-                                && ch.is_whitespace())
-                            .then_some(RenderedWhitespace {
-                                byte_range: display_start + offset
-                                    ..display_start + offset + ch.len_utf8(),
-                                display_column: row.window_start_column
-                                    + row.indent
-                                    + row_text[display_start..display_start + offset]
-                                        .chars()
-                                        .count(),
-                            })
+                            (!text_chunk.is_tab && !text_chunk.is_placeholder && ch.is_whitespace())
+                                .then_some(RenderedWhitespace {
+                                    byte_range: display_start + offset
+                                        ..display_start + offset + ch.len_utf8(),
+                                    display_column: row.window_start_column
+                                        + row.indent
+                                        + row_text[display_start..display_start + offset]
+                                            .chars()
+                                            .count(),
+                                })
                         },
                     ));
                     let mut run = chunk_to_run(&text_chunk, base.clone());
@@ -3761,7 +3758,7 @@ mod tests {
         window
             .update(cx, |_, window, cx| {
                 let font = typography::ui_font();
-                let font_size = typography::ui_size();
+                let font_size = typography::ui_size(cx);
                 let font_id = window.text_system().resolve_font(&font);
                 let em_advance = window
                     .text_system()

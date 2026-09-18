@@ -5,18 +5,10 @@
 use super::LargeFilePolicy;
 
 /// Buffer 级别的综合配置。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BufferConfig {
     /// 大文件、长行和历史保留相关的降级阈值。
     pub large_file: LargeFilePolicy,
-}
-
-impl Default for BufferConfig {
-    fn default() -> Self {
-        Self {
-            large_file: LargeFilePolicy::default(),
-        }
-    }
 }
 
 #[cfg(test)]

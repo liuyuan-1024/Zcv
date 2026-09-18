@@ -132,7 +132,7 @@ fn entry_card(cx: &App) -> Div {
         .items_center()
         .gap(space::S6)
         .px(space::S6)
-        .h(typography::ui_line())
+        .h(typography::ui_line(cx))
         .rounded_xs()
         .bg(color::current(cx).element_selected)
 }

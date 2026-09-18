@@ -1,0 +1,8 @@
+[package]
+name = "zcv-syntax-sample"
+edition = "2024"
+enabled = true
+
+[profile.release]
+opt-level = 3
+lto = true

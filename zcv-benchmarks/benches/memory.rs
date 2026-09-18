@@ -8,8 +8,15 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System as ProcessSystem, get_current_pid};
-use zcv_benchmarks::{cached_injection_stress_document, cached_rust_document};
-use zcv_language::{LanguageRegistry, highlight_snippet};
+mod common;
+#[path = "common/injection_stress.rs"]
+mod injection_stress;
+
+use common::cached_rust_document;
+use injection_stress::cached_injection_stress_document;
+use zcv_language::{
+    LanguageRegistry, SnippetHighlightCancellation, highlight_snippet_with_cancellation,
+};
 use zcv_project::SearchQuery;
 use zcv_text::{Buffer, BufferConfig, WordBoundaryPolicy};
 
@@ -219,8 +226,13 @@ fn main() {
             format!("language/highlight_rust_document/{input_bytes}"),
             input_bytes,
             || {
-                highlight_snippet(&language_registry, "rust", text.as_ref())
-                    .expect("Rust 高亮应成功")
+                highlight_snippet_with_cancellation(
+                    &language_registry,
+                    "rust",
+                    text.as_ref(),
+                    &SnippetHighlightCancellation::default(),
+                )
+                .expect("Rust 高亮应成功")
             },
         ));
 
@@ -232,8 +244,13 @@ fn main() {
             format!("language/highlight_injection_stress/{stress_bytes}"),
             stress_bytes,
             || {
-                highlight_snippet(&language_registry, "rust", stress_text.as_ref())
-                    .expect("注入压力高亮应成功")
+                highlight_snippet_with_cancellation(
+                    &language_registry,
+                    "rust",
+                    stress_text.as_ref(),
+                    &SnippetHighlightCancellation::default(),
+                )
+                .expect("注入压力高亮应成功")
             },
         ));
     }

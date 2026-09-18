@@ -43,7 +43,7 @@ impl TerminalPanel {
                 let weak_for_click = weak.clone();
                 Button::icon(("terminal-new-terminal", 0usize), "icons/plus.svg")
                     .label("新建终端")
-                    .shortcut(&NewTerminal, _cx)
+                    .shortcut(zcv_keymap::display_shortcut(&NewTerminal, _cx))
                     .on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
                         if let Some(panel) = weak_for_click.upgrade() {
                             panel.update(cx, |panel, cx| {

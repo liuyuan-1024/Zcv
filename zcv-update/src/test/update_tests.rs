@@ -183,3 +183,58 @@ fn deflated_release_archive_is_valid() {
     let result = smol::block_on(async { validate_archive(bytes).await });
     assert!(result.is_ok(), "deflate 条目解析失败：{result:?}");
 }
+
+#[test]
+fn downloaded_digest_and_size_are_both_verified() {
+    let sha256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let asset = ReleaseAsset {
+        url: "https://example.com/Zcv.zip".to_owned(),
+        size: 3,
+        sha256: sha256.to_owned(),
+    };
+    assert!(verify_downloaded(3, sha256, &asset).is_ok());
+    assert!(
+        verify_downloaded(2, sha256, &asset).is_err(),
+        "大小不符必须拒绝"
+    );
+    assert!(
+        verify_downloaded(3, "00", &asset).is_err(),
+        "摘要不符必须拒绝"
+    );
+}
+
+#[test]
+fn acknowledgement_path_is_shared_by_app_and_helper() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = acknowledgement_path(directory.path(), "7-9");
+    assert_eq!(path, directory.path().join("ack-7-9.json"));
+
+    write_acknowledgement(directory.path(), "7-9", &path).unwrap();
+    let written: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(written["transaction_id"], "7-9");
+
+    let other = directory.path().join("ack-other.json");
+    assert!(write_acknowledgement(directory.path(), "7-9", &other).is_err());
+}
+
+#[test]
+fn update_result_is_consumed_after_reading() {
+    let directory = tempfile::tempdir().unwrap();
+    let result = UpdateResult {
+        transaction_id: "42-1".to_owned(),
+        from_version: "1.0.0".parse().unwrap(),
+        to_version: "1.0.1".parse().unwrap(),
+        status: UpdateResultStatus::RolledBack,
+        error: Some("签名无效".to_owned()),
+    };
+    atomic_write_json(&update_result_path(directory.path()), &result).unwrap();
+
+    let first = take_update_result(directory.path()).unwrap().unwrap();
+    assert_eq!(first, result);
+    assert!(
+        !update_result_path(directory.path()).exists(),
+        "结果文件应被消费"
+    );
+    assert!(take_update_result(directory.path()).unwrap().is_none());
+}

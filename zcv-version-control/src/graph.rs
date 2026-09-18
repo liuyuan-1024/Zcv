@@ -4,7 +4,7 @@
 //! 算法参考经典 `git log --graph`：
 //! 为每条"已画出但尚未落地的父提交边"分配一条 lane，提交出现时确定自身所在 lane、汇入所有等待它的边、再为自己的父提交延续（第一父）或分叉（其余父）出新的 lane。
 
-use crate::repository::GraphCommit;
+use zcv_git::GraphCommit;
 
 /// 一行图形中需要绘制的线段。
 ///

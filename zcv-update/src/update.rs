@@ -16,12 +16,11 @@ use ring::signature;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+mod helper;
 mod platform;
 
-pub use platform::{UpdateInstallation, application_executable_path, prepare_helper, verify_app};
-
-#[cfg(target_os = "windows")]
-pub use platform::release_file_handles;
+pub use helper::run_helper;
+pub use platform::{UpdateInstallation, prepare_helper, verify_app};
 
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub const TRANSACTION_SCHEMA_VERSION: u32 = 2;
@@ -130,14 +129,21 @@ pub fn sha256_file(path: &Path) -> Result<String> {
 pub fn verify_downloaded_asset(path: &Path, asset: &ReleaseAsset) -> Result<()> {
     let metadata =
         fs::metadata(path).with_context(|| format!("无法读取更新产物元数据 {}", path.display()))?;
-    ensure!(
-        metadata.len() == asset.size,
-        "更新产物大小不匹配：预期 {} 字节，实际 {} 字节",
-        asset.size,
-        metadata.len()
-    );
     let actual = sha256_file(path)?;
-    ensure!(actual == asset.sha256, "更新产物 SHA-256 不匹配");
+    verify_downloaded(metadata.len(), &actual, asset)
+}
+
+/// 校验已计算的大小与 SHA-256 是否与清单产物一致。
+///
+/// 流式下载与落盘校验共用这一份不变量；`sha256` 必须是十六进制小写表示。
+pub fn verify_downloaded(size: u64, sha256: &str, asset: &ReleaseAsset) -> Result<()> {
+    ensure!(
+        size == asset.size,
+        "更新下载大小不匹配：预期 {} 字节，实际 {} 字节",
+        asset.size,
+        size
+    );
+    ensure!(sha256 == asset.sha256, "更新下载 SHA-256 不匹配");
     Ok(())
 }
 
@@ -308,6 +314,66 @@ pub fn read_transaction(path: &Path) -> Result<UpdateTransaction> {
     Ok(transaction)
 }
 
+/// 更新确认文件名：与结果文件同目录，按事务 ID 区分。
+pub fn acknowledgement_path(directory: &Path, transaction_id: &str) -> PathBuf {
+    directory.join(format!("ack-{transaction_id}.json"))
+}
+
+/// 应用启动确认写入：校验路径属于当前事务后原子写入确认内容。
+///
+/// app 与 helper 共用同一路径契约；路径或命名不一致会在这里显式失败。
+pub fn write_acknowledgement(
+    directory: &Path,
+    transaction_id: &str,
+    ack_path: &Path,
+) -> Result<()> {
+    ensure!(
+        ack_path == acknowledgement_path(directory, transaction_id),
+        "更新确认路径与事务不匹配"
+    );
+    atomic_write_json(
+        ack_path,
+        &serde_json::json!({ "transaction_id": transaction_id }),
+    )
+    .with_context(|| format!("无法提交更新启动确认 {}", ack_path.display()))
+}
+
+/// 上一次更新结果的文件名（与事务确认文件同目录）。
+pub const UPDATE_RESULT_FILE: &str = "last-result.json";
+
+pub fn update_result_path(updates_dir: &Path) -> PathBuf {
+    updates_dir.join(UPDATE_RESULT_FILE)
+}
+
+/// 读取并消费上一次更新的落盘结果。
+///
+/// 返回 `Ok(None)` 表示没有待处理结果；读到结果后删除文件，保证只被消费一次。
+pub fn take_update_result(updates_dir: &Path) -> Result<Option<UpdateResult>> {
+    let path = update_result_path(updates_dir);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| format!("无法读取更新结果 {}", path.display()));
+        }
+    };
+    let result: UpdateResult = serde_json::from_slice(&bytes).context("更新结果不是合法 JSON")?;
+    ensure!(
+        !result.transaction_id.trim().is_empty(),
+        "更新结果缺少事务 ID"
+    );
+    ensure!(
+        result.to_version > result.from_version,
+        "更新结果版本顺序无效"
+    );
+    fs::remove_file(&path).with_context(|| format!("无法消费更新结果 {}", path.display()))?;
+    Ok(Some(result))
+}
+
 #[cfg(test)]
 #[path = "test/update_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "test/update_helper_tests.rs"]
+mod helper_tests;

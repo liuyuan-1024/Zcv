@@ -116,28 +116,32 @@ impl OutlinePanel {
     }
 
     fn visible_items(&self) -> Vec<(OutlineItem, bool, bool)> {
-        let mut visible = Vec::new();
-        let mut collapsed_depth = None;
-        for (index, item) in self.items.iter().enumerate() {
-            if collapsed_depth.is_some_and(|depth| item.depth > depth) {
-                continue;
-            }
-            collapsed_depth = None;
-            let has_children = self
-                .items
-                .get(index + 1)
-                .is_some_and(|next| next.depth > item.depth);
-            let collapsed = has_children
-                && self
-                    .collapsed_items
-                    .contains(&OutlineItemKey::from_item(item));
-            visible.push((item.clone(), has_children, collapsed));
-            if collapsed {
-                collapsed_depth = Some(item.depth);
-            }
-        }
-        visible
+        visible_items(&self.items, &self.collapsed_items)
     }
+}
+
+/// 从大纲项与折叠集合推导可见行：折叠项隐藏其后所有更深层级的后代，但不影响同层兄弟。
+fn visible_items(
+    items: &[OutlineItem],
+    collapsed_items: &HashSet<OutlineItemKey>,
+) -> Vec<(OutlineItem, bool, bool)> {
+    let mut visible = Vec::new();
+    let mut collapsed_depth = None;
+    for (index, item) in items.iter().enumerate() {
+        if collapsed_depth.is_some_and(|depth| item.depth > depth) {
+            continue;
+        }
+        collapsed_depth = None;
+        let has_children = items
+            .get(index + 1)
+            .is_some_and(|next| next.depth > item.depth);
+        let collapsed = has_children && collapsed_items.contains(&OutlineItemKey::from_item(item));
+        visible.push((item.clone(), has_children, collapsed));
+        if collapsed {
+            collapsed_depth = Some(item.depth);
+        }
+    }
+    visible
 }
 
 impl gpui::EventEmitter<PanelEvent> for OutlinePanel {}
@@ -169,21 +173,24 @@ impl Render for OutlinePanel {
         let active_editor = self.active_editor.clone();
         let weak_panel = cx.weak_entity();
         let weak_panel_for_toggle = weak_panel.clone();
-        let list = uniform_list("outline-items", items_len, move |range, _window, cx| {
+        let list = uniform_list("outline-items", items_len, move |range, window, cx| {
             range
                 .map(|index| {
                     let (item, has_children, collapsed) = visible_items[index].clone();
                     let editor = active_editor.clone();
                     let highlights = editor
                         .as_ref()
-                        .map(|editor| editor.read(cx).outline_item_highlights(&item))
+                        .map(|editor| editor.read(cx).outline_item_highlights(&item, cx))
                         .unwrap_or_default();
                     let panel = weak_panel_for_toggle.clone();
                     outline_item::render(
                         item,
-                        has_children,
-                        collapsed,
+                        outline_item::OutlineItemFold {
+                            has_children,
+                            collapsed,
+                        },
                         highlights,
+                        window,
                         cx,
                         move |key, cx| {
                             if let Some(panel) = panel.upgrade() {
@@ -234,5 +241,57 @@ impl Render for OutlinePanel {
             .text_color(colors.text)
             .child(div().w_full().p(space::S4).child(search))
             .child(content)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(text: &str, depth: usize, start: usize) -> OutlineItem {
+        OutlineItem {
+            version: Default::default(),
+            range: start..start + 1,
+            name_range: start..start + 1,
+            name: text.to_string(),
+            text: text.to_string(),
+            text_ranges: Vec::new(),
+            kind: "function".to_string(),
+            depth,
+            language: "Rust",
+            language_depth: 0,
+            body_range: None,
+            annotation_range: None,
+        }
+    }
+
+    #[test]
+    fn collapsed_parent_hides_descendants_but_not_siblings() {
+        let items = vec![
+            item("mod", 0, 0),
+            item("fn", 1, 1),
+            item("fn2", 1, 2),
+            item("other", 0, 3),
+        ];
+        let collapsed: HashSet<_> = [OutlineItemKey::from_item(&items[0])].into_iter().collect();
+        let visible = visible_items(&items, &collapsed);
+        let texts: Vec<_> = visible
+            .iter()
+            .map(|(item, _, _)| item.text.as_str())
+            .collect();
+        assert_eq!(texts, vec!["mod", "other"]);
+        assert!(visible[0].1, "折叠父项应有子项");
+        assert!(visible[0].2, "父项应标记为折叠");
+    }
+
+    #[test]
+    fn has_children_follows_next_item_depth() {
+        let items = vec![item("a", 0, 0), item("b", 1, 1), item("c", 0, 2)];
+        let visible = visible_items(&items, &HashSet::new());
+        assert_eq!(visible.len(), 3);
+        assert!(visible[0].1);
+        assert!(!visible[1].1);
+        assert!(!visible[2].1);
+        assert!(visible.iter().all(|(_, _, collapsed)| !collapsed));
     }
 }

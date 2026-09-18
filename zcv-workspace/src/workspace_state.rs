@@ -17,6 +17,7 @@ use zcv_actions::{
     FocusOrHidePanel, MinimizeWindow, OpenSettings, QuitWindow, Save, ToggleBottomDock,
     ToggleLeftDock, ToggleMaximizeWindow, ToggleRightDock,
 };
+use zcv_language::LanguageRegistry;
 use zcv_path::AbsolutePathBuf;
 use zcv_project::Project;
 use zcv_settings::SettingsStore;
@@ -26,7 +27,7 @@ use crate::dock::{Dock, DockEvent, DockPosition, DockStructure, DraggedDock, ren
 use crate::item_provider::{item_provider_for_path, serialized_item_provider_for_kind};
 use crate::layout_state::{self, PanelState, SerializedPane, SerializedPaneItem, WorkspaceLayout};
 use crate::pane::{Pane, PaneEvent};
-use crate::panel::PanelHandle;
+use crate::panel::{Panel, PanelEvent, PanelHandle};
 use crate::preview::{PreviewDocument, standalone_provider_for};
 use crate::status_bar::StatusBar;
 use crate::toast::{ToastAction, ToastKind, ToastLayer};
@@ -36,8 +37,9 @@ use crate::{ItemHandle, OpenPathCallback};
 const LAYOUT_SAVE_THROTTLE: Duration = Duration::from_millis(200);
 const WINDOW_BOUNDS_SAVE_THROTTLE: Duration = Duration::from_millis(100);
 
-/// 打开设置文件的路径提供者：宿主注入，返回设置文件路径。
-pub(crate) type OpenSettingsPathProvider = Box<dyn Fn(&mut App) -> Option<PathBuf> + Send + Sync>;
+/// 打开设置文件的路径提供者：宿主注入，返回设置文件路径或创建失败原因。
+pub(crate) type OpenSettingsPathProvider =
+    Box<dyn Fn(&mut App) -> anyhow::Result<PathBuf> + Send + Sync>;
 
 type WorkspaceAction =
     Box<dyn Fn(gpui::Stateful<gpui::Div>, &mut Context<Workspace>) -> gpui::Stateful<gpui::Div>>;
@@ -80,8 +82,13 @@ impl Workspace {
         self._subscriptions.push(sub);
     }
 
-    pub fn new(root: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let project = cx.new(|cx| Project::new(root, cx));
+    pub fn new(
+        root: PathBuf,
+        languages: Arc<LanguageRegistry>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let project = cx.new(|cx| Project::new(root, languages, cx));
         Self::new_with_project(project, window, cx)
     }
 
@@ -97,8 +104,14 @@ impl Workspace {
     }
 
     /// 创建不绑定项目目录的工作区。
-    pub fn new_empty(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let project = cx.new(Project::empty);
+    ///
+    /// 语言注册表由应用装配层注入；空工作区与项目工作区共享同一份。
+    pub fn new_empty(
+        languages: Arc<LanguageRegistry>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let project = cx.new(|cx| Project::empty(languages, cx));
         Self::build(project, window, cx)
     }
 
@@ -396,20 +409,38 @@ impl Workspace {
         }
     }
 
-    /// 注册面板。
-    pub fn register_panel(
+    /// 注册面板：类型擦除后加入对应 Dock，并接线面板生命周期事件。
+    ///
+    /// `Close` 折叠所属 Dock；`StateChanged` 触发工作区布局保存。
+    /// 接线随注册一起完成，任何注册路径都不会遗漏事件处理。
+    pub fn register_panel<P: Panel>(
         &mut self,
-        handle: Arc<dyn PanelHandle>,
+        entity: Entity<P>,
         position: DockPosition,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let dock = match position {
-            DockPosition::Left => &self.left_dock,
-            DockPosition::Right => &self.right_dock,
-            DockPosition::Bottom => &self.bottom_dock,
-        };
-        dock.update(cx, |dock, cx| dock.add_panel(handle, window, cx));
+        let dock = self.dock(position).clone();
+        let workspace_for_events = cx.weak_entity();
+        let handle: Arc<dyn PanelHandle> = Arc::new(entity.clone());
+        dock.update(cx, |dock, cx| {
+            let subscription = cx.subscribe_in(
+                &entity,
+                window,
+                move |dock, _, event: &PanelEvent, window, cx| match event {
+                    PanelEvent::Close => dock.set_open(false, window, cx),
+                    PanelEvent::StateChanged => {
+                        if let Some(workspace) = workspace_for_events.upgrade() {
+                            workspace.update(cx, |workspace, cx| {
+                                workspace.schedule_layout_save(window, cx);
+                            });
+                        }
+                    }
+                },
+            );
+            dock.add_subscription(subscription);
+            dock.add_panel(handle, window, cx);
+        });
         cx.notify();
     }
 
@@ -971,10 +1002,16 @@ impl Workspace {
         let Some(provider) = &self.open_settings_path_provider else {
             return;
         };
-        let Some(path) = provider(cx) else {
-            return;
-        };
-        self.open_path(path, true, window, cx);
+        match provider(cx) {
+            Ok(path) => self.open_path(path, true, window, cx),
+            Err(error) => self.show_toast(
+                ToastKind::Error,
+                format!("打开设置失败：{error:#}"),
+                None,
+                Some(Duration::from_secs(8)),
+                cx,
+            ),
+        }
     }
 
     fn handle_open_settings(
@@ -1102,9 +1139,16 @@ mod tests {
     use super::{DockPosition, LAYOUT_SAVE_THROTTLE, Workspace};
     use crate::dock::DockData;
     use crate::panel::PanelEvent;
-    use crate::{Panel, PanelHandle, layout_state};
+    use crate::{Panel, layout_state};
     use gpui::EventEmitter;
     use zcv_actions::FocusOrHidePanel;
+    use zcv_language::LanguageRegistry;
+    use zcv_theme::typography;
+
+    /// 测试用语言注册表；生产装配层创建应用级唯一实例，测试各自提供一份。
+    fn test_languages() -> Arc<LanguageRegistry> {
+        Arc::new(LanguageRegistry::new())
+    }
 
     struct TestPanel {
         focus: FocusHandle,
@@ -1138,15 +1182,18 @@ mod tests {
 
     #[gpui::test]
     fn empty_workspace_has_a_project_without_a_worktree(cx: &mut TestAppContext) {
-        let (workspace, cx) = cx.add_window_view(Workspace::new_empty);
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::new_empty(test_languages(), window, cx));
         let project = cx.read_entity(&workspace, |workspace, _| workspace.project().clone());
         assert!(!cx.read_entity(&project, |project, _| project.has_worktree()));
     }
 
     #[gpui::test]
     fn typography_override_belongs_to_one_workspace(cx: &mut TestAppContext) {
-        let (first, cx) = cx.add_window_view(Workspace::new_empty);
-        let (second, cx) = cx.add_window_view(Workspace::new_empty);
+        let (first, cx) =
+            cx.add_window_view(|window, cx| Workspace::new_empty(test_languages(), window, cx));
+        let (second, cx) =
+            cx.add_window_view(|window, cx| Workspace::new_empty(test_languages(), window, cx));
         let original = cx.read_entity(&second, |workspace, _| {
             f32::from(workspace.typography().content_size())
         });
@@ -1165,11 +1212,34 @@ mod tests {
         assert_eq!(first_size, original + 1.);
     }
 
+    /// 回归：字号快捷键写工作区覆盖后，窗口级读取入口读取覆盖值，全局基准不受影响。
+    ///
+    /// 版本控制图、终端、Markdown 预览等渲染统一经 typography_for_window 读取，
+    /// 因此本测试代表全部窗口级视图的读取路径。
+    #[gpui::test]
+    fn font_size_override_projects_through_window_typography(cx: &mut TestAppContext) {
+        let (workspace, cx) =
+            cx.add_window_view(|window, cx| Workspace::new_empty(test_languages(), window, cx));
+        let baseline =
+            cx.update(|window, cx| crate::typography_for_window(window, cx).content_size());
+        let global_before = cx.update(|_, cx| typography::content_size(cx));
+
+        workspace.update(cx, |workspace, cx| {
+            workspace.increase_content_font_size(2., cx);
+        });
+
+        let projected =
+            cx.update(|window, cx| crate::typography_for_window(window, cx).content_size());
+        let global_after = cx.update(|_, cx| typography::content_size(cx));
+        assert_eq!(projected, baseline + px(2.0));
+        assert_eq!(global_after, global_before, "工作区覆盖不应写回全局基准");
+    }
+
     /// 回归：序列化 visible=true 的 dock 随面板注册恢复打开（重启不展开问题）。
     #[gpui::test]
     fn workspace_restores_visible_dock(cx: &mut TestAppContext) {
         let (workspace, cx) = cx.add_window_view(|window, cx| {
-            let mut workspace = Workspace::new_empty(window, cx);
+            let mut workspace = Workspace::new_empty(test_languages(), window, cx);
             workspace.bottom_dock.update(cx, |dock, cx| {
                 dock.set_serialized_state(
                     DockData {
@@ -1184,8 +1254,7 @@ mod tests {
             let panel = cx.new(|cx| TestPanel {
                 focus: cx.focus_handle(),
             });
-            let handle: Arc<dyn PanelHandle> = Arc::new(panel);
-            workspace.register_panel(handle, DockPosition::Bottom, window, cx);
+            workspace.register_panel(panel, DockPosition::Bottom, window, cx);
             workspace
         });
         cx.run_until_parked();
@@ -1204,12 +1273,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let layout_path = directory.path().join("layout.json");
         let (workspace, cx) = cx.add_window_view(|window, cx| {
-            let mut workspace = Workspace::new_empty(window, cx);
+            let mut workspace = Workspace::new_empty(test_languages(), window, cx);
             let panel = cx.new(|cx| TestPanel {
                 focus: cx.focus_handle(),
             });
-            let handle: Arc<dyn PanelHandle> = Arc::new(panel);
-            workspace.register_panel(handle, DockPosition::Bottom, window, cx);
+            workspace.register_panel(panel, DockPosition::Bottom, window, cx);
             workspace
         });
         workspace.update(cx, |workspace, _| {
@@ -1235,12 +1303,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let layout_path = directory.path().join("layout.json");
         let (workspace, cx) = cx.add_window_view(|window, cx| {
-            let mut workspace = Workspace::new_empty(window, cx);
+            let mut workspace = Workspace::new_empty(test_languages(), window, cx);
             let panel = cx.new(|cx| TestPanel {
                 focus: cx.focus_handle(),
             });
-            let handle: Arc<dyn PanelHandle> = Arc::new(panel);
-            workspace.register_panel(handle, DockPosition::Bottom, window, cx);
+            workspace.register_panel(panel, DockPosition::Bottom, window, cx);
             workspace
         });
         workspace.update(cx, |workspace, _| {
@@ -1281,12 +1348,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let layout_path = directory.path().join("layout.json");
         let (workspace, cx) = cx.add_window_view(|window, cx| {
-            let mut workspace = Workspace::new_empty(window, cx);
+            let mut workspace = Workspace::new_empty(test_languages(), window, cx);
             let panel = cx.new(|cx| TestPanel {
                 focus: cx.focus_handle(),
             });
-            let handle: Arc<dyn PanelHandle> = Arc::new(panel);
-            workspace.register_panel(handle, DockPosition::Left, window, cx);
+            workspace.register_panel(panel, DockPosition::Left, window, cx);
             workspace
         });
         workspace.update(cx, |workspace, _| {

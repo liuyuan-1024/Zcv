@@ -9,7 +9,7 @@ use gpui::App;
 use zcv_settings::{SettingsStore, TabConfig};
 
 /// 一门语言解析后的编辑器设置。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct LanguageSettings {
     /// Tab 展示宽度与缩进输入策略。
     pub tab: TabConfig,
@@ -22,13 +22,5 @@ impl LanguageSettings {
             settings.tab_for_language(language_name)
         });
         Arc::new(Self { tab })
-    }
-}
-
-impl Default for LanguageSettings {
-    fn default() -> Self {
-        Self {
-            tab: TabConfig::default(),
-        }
     }
 }

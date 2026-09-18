@@ -1,6 +1,21 @@
 use zcv_text::*;
-mod common;
-use common::*;
+
+#[path = "common/buffer.rs"]
+mod buffer;
+#[path = "common/byte_range.rs"]
+mod byte_range;
+#[path = "common/char_offset.rs"]
+mod char_offset;
+#[path = "common/full_text.rs"]
+mod full_text;
+#[path = "common/line.rs"]
+mod line;
+
+use buffer::buffer;
+use byte_range::{b, range};
+use char_offset::c;
+use full_text::buffer_text;
+use line::line;
 
 #[test]
 fn create_edit_delete_replace_should_update_text_version_dirty_and_line_index() {
@@ -69,7 +84,6 @@ fn read_only_state_should_reject_all_text_mutations_without_state_transition() {
                 auto_read_only_on_large_file: true,
                 ..LargeFilePolicy::default()
             },
-            ..BufferConfig::default()
         },
     )
     .unwrap();
@@ -149,7 +163,7 @@ fn reset_should_replace_storage_clear_history_and_leave_view_selection_to_host()
     buffer.reset("new\n".to_string()).unwrap();
 
     assert_eq!(buffer_text(&buffer), "new\n");
-    assert_eq!(buffer.line_start(line(1)).unwrap(), c(4));
+    assert_eq!(buffer.line_start_char(line(1)).unwrap(), c(4));
     assert!(!buffer.can_undo());
     assert!(!buffer.can_redo());
     assert!(!buffer.is_dirty());
@@ -185,10 +199,7 @@ fn large_file_policy_should_auto_mark_large_buffer_read_only() {
         auto_read_only_on_large_file: true,
         ..LargeFilePolicy::default()
     };
-    let config = BufferConfig {
-        large_file: policy,
-        ..BufferConfig::default()
-    };
+    let config = BufferConfig { large_file: policy };
     let buffer = Buffer::from_text("abcd".to_string(), config).unwrap();
 
     assert!(buffer.is_large_file());

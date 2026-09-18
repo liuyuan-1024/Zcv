@@ -4,6 +4,7 @@ use std::{path::Path, sync::Arc};
 
 use gpui::{AppContext as _, TestAppContext};
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
+use zcv_language::LanguageRegistry;
 use zcv_project::Project;
 
 use super::project_terminal_cwd;
@@ -42,6 +43,7 @@ fn new_terminal_uses_the_project_root_as_working_directory(cx: &mut TestAppConte
         Project::new_with_watcher(
             temporary_directory.path().to_path_buf(),
             Arc::new(PassiveWatcher::new()),
+            Arc::new(LanguageRegistry::new()),
             cx,
         )
     });

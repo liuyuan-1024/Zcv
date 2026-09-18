@@ -21,9 +21,10 @@ use smol::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use zcv_actions::RestartToUpdate;
 use zcv_ui::Button;
 use zcv_update::{
-    ReleaseAsset, SelectedRelease, UpdateInstallation, UpdateTransaction, atomic_write_json,
-    extract_verified_archive, prepare_helper, verify_and_parse_manifest, verify_app,
-    verify_downloaded_asset,
+    SelectedRelease, UpdateInstallation, UpdateResult, UpdateResultStatus, UpdateTransaction,
+    atomic_write_json, extract_verified_archive, prepare_helper, take_update_result,
+    update_result_path, verify_and_parse_manifest, verify_app, verify_downloaded,
+    verify_downloaded_asset, write_acknowledgement,
 };
 use zcv_workspace::{ToastKind, Workspace};
 
@@ -73,6 +74,7 @@ pub(crate) struct UpdateManager {
     status: UpdateStatus,
     config: Option<UpdateConfig>,
     prepared: Option<PreparedUpdate>,
+    startup_notification: Option<Arc<str>>,
     check_task: Option<Task<()>>,
     restart_started: bool,
 }
@@ -87,9 +89,48 @@ pub(crate) fn init(cx: &mut App) {
         eprintln!("自动更新未启用：{error:#}");
         error
     });
-    let manager = cx.new(|cx| UpdateManager::new(config.ok(), cx));
+    let startup_notification = startup_update_notification();
+    let manager = cx.new(|cx| UpdateManager::new(config.ok(), startup_notification, cx));
     cx.set_global(GlobalUpdateManager(Some(manager.clone())));
     manager.update(cx, |manager, cx| manager.check_for_update(cx));
+}
+
+fn updates_dir() -> PathBuf {
+    zcv_settings::config_dir().join("updates")
+}
+
+/// 读取并消费上次更新的落盘结果。
+///
+/// 回滚需要用户反馈；已应用的结果只记录诊断信息，文件由 `take_update_result` 消费。
+fn startup_update_notification() -> Option<Arc<str>> {
+    match take_update_result(&updates_dir()) {
+        Ok(Some(result)) => {
+            if result.status == UpdateResultStatus::Applied {
+                eprintln!(
+                    "自动更新已应用：{} → {}",
+                    result.from_version, result.to_version
+                );
+            }
+            update_result_notification(&result)
+        }
+        Ok(None) => None,
+        Err(error) => {
+            eprintln!("无法读取上次更新结果：{error:#}");
+            None
+        }
+    }
+}
+
+/// 把更新结果映射为一次性用户提示；成功结果不提示。
+fn update_result_notification(result: &UpdateResult) -> Option<Arc<str>> {
+    match result.status {
+        UpdateResultStatus::Applied => None,
+        UpdateResultStatus::RolledBack => Some(Arc::from(format!(
+            "自动更新失败，已回滚到 {}：{}",
+            result.from_version,
+            result.error.as_deref().unwrap_or("未知错误")
+        ))),
+    }
 }
 
 pub(crate) fn acknowledge_started_update() -> Result<()> {
@@ -98,20 +139,7 @@ pub(crate) fn acknowledge_started_update() -> Result<()> {
     };
     let transaction_id =
         std::env::var("ZCV_UPDATE_TRANSACTION_ID").context("缺少 ZCV_UPDATE_TRANSACTION_ID")?;
-    let updates_dir = zcv_settings::config_dir().join("updates");
-    let expected_ack_name = format!("ack-{transaction_id}.json");
-    ensure!(
-        ack_path.parent() == Some(updates_dir.as_path())
-            && ack_path.file_name().and_then(|name| name.to_str())
-                == Some(expected_ack_name.as_str()),
-        "更新确认路径与事务不匹配"
-    );
-    atomic_write_json(
-        &ack_path,
-        &serde_json::json!({ "transaction_id": transaction_id }),
-    )
-    .with_context(|| format!("无法提交更新启动确认 {}", ack_path.display()))?;
-    Ok(())
+    write_acknowledgement(&updates_dir(), &transaction_id, &ack_path)
 }
 
 impl UpdateConfig {
@@ -136,7 +164,11 @@ impl UpdateConfig {
 }
 
 impl UpdateManager {
-    fn new(config: Option<UpdateConfig>, _cx: &mut Context<Self>) -> Self {
+    fn new(
+        config: Option<UpdateConfig>,
+        startup_notification: Option<Arc<str>>,
+        _cx: &mut Context<Self>,
+    ) -> Self {
         Self {
             status: if config.is_some() {
                 UpdateStatus::Idle
@@ -145,9 +177,15 @@ impl UpdateManager {
             },
             config,
             prepared: None,
+            startup_notification,
             check_task: None,
             restart_started: false,
         }
+    }
+
+    /// 取出启动时读取的上次更新提示；每个进程只会返回一次。
+    pub(crate) fn take_startup_notification(&mut self) -> Option<Arc<str>> {
+        self.startup_notification.take()
     }
 
     pub(crate) fn get(cx: &App) -> Option<Entity<Self>> {
@@ -223,7 +261,7 @@ impl UpdateManager {
     fn launch_helper_inner(&self) -> Result<()> {
         let config = self.config.as_ref().context("自动更新未启用")?;
         let prepared = self.prepared.as_ref().context("没有已暂存的更新")?;
-        let result_path = config.updates_dir.join("last-result.json");
+        let result_path = update_result_path(&config.updates_dir);
         let transaction = UpdateTransaction::new(
             config.current_version.clone(),
             prepared.version.clone(),
@@ -426,27 +464,16 @@ async fn download_release(
     file.flush()
         .await
         .map_err(|error| CheckFailure::Permanent(error.into()))?;
-    ensure_download_matches(downloaded, &digest.finalize(), &release.asset)
-        .map_err(CheckFailure::Permanent)?;
+    let actual = digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    verify_downloaded(downloaded, &actual, &release.asset).map_err(CheckFailure::Permanent)?;
     smol::fs::rename(&partial, archive_path)
         .await
         .map_err(|error| CheckFailure::Permanent(error.into()))?;
     on_progress(release.version.clone(), 100);
-    Ok(())
-}
-
-fn ensure_download_matches(downloaded: u64, digest: &[u8], asset: &ReleaseAsset) -> Result<()> {
-    ensure!(
-        downloaded == asset.size,
-        "更新下载大小不匹配：预期 {} 字节，实际 {} 字节",
-        asset.size,
-        downloaded
-    );
-    let actual = digest
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    ensure!(actual == asset.sha256, "更新下载 SHA-256 不匹配");
     Ok(())
 }
 
@@ -464,6 +491,10 @@ impl UpdateButton {
             };
         };
         let status = manager.read(cx).status();
+        if let Some(message) = manager.update(cx, |manager, _| manager.take_startup_notification())
+        {
+            show_failure_toast(&workspace, message, cx);
+        }
         if let Some(message) = new_failure(&UpdateStatus::Disabled, &status) {
             show_failure_toast(&workspace, message, cx);
         }

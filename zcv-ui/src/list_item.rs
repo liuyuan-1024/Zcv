@@ -71,7 +71,7 @@ impl IntoElement for ListItem {
 impl RenderOnce for ListItem {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let ui_size = window.rem_size();
-        let ui_line = typography::ui_line_at(ui_size);
+        let ui_line = typography::ui_line_at(ui_size, cx);
         // hover 闭包只有 style 参数，先取色再 move 进闭包
         let hover_bg = color::current(cx).element_hover;
         let mut row = div()

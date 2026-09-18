@@ -4,8 +4,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::{
-    App, Div, ElementId, Entity, MouseButton, UniformListScrollHandle, WeakEntity, div, prelude::*,
-    uniform_list,
+    App, Div, ElementId, Entity, MouseButton, UniformListScrollHandle, WeakEntity, Window, div,
+    prelude::*, uniform_list,
 };
 use zcv_editor::Editor;
 use zcv_path::AbsolutePathBuf;
@@ -74,7 +74,7 @@ pub(super) fn render_list(
 ) -> gpui::UniformList {
     let handle = scroll_handle.clone();
 
-    uniform_list("project-tree-list", len, move |range, _, cx| {
+    uniform_list("project-tree-list", len, move |range, window, cx| {
         let mut render_context = render_context.clone();
         let state = render_context.state.borrow();
         let rows = &render_context.rows;
@@ -92,11 +92,14 @@ pub(super) fn render_list(
                 let in_set = !row.is_new && state.is_in_selection_set(&row.path);
                 render_row(
                     row,
-                    sel,
-                    marked,
-                    in_set,
-                    is_focused,
+                    RowVisualState {
+                        selected: sel,
+                        marked,
+                        in_set,
+                        focused: is_focused,
+                    },
                     render_context.clone(),
+                    window,
                     cx,
                 )
                 .into_any_element()
@@ -107,13 +110,20 @@ pub(super) fn render_list(
     .track_scroll(&handle)
     .with_decoration(scrollbar.clone())
 }
+/// 单行的交互视觉状态。
+#[derive(Clone, Copy, Default)]
+pub(super) struct RowVisualState {
+    pub(super) selected: bool,
+    pub(super) marked: bool,
+    pub(super) in_set: bool,
+    pub(super) focused: bool,
+}
+
 pub(super) fn render_row(
     row: &ProjectTreeRow,
-    sel: bool,
-    marked: bool,
-    in_set: bool,
-    focused: bool,
+    visual: RowVisualState,
     render_context: ProjectTreeRenderContext,
+    window: &Window,
     cx: &mut App,
 ) -> impl IntoElement {
     let path = row.path.clone();
@@ -188,12 +198,16 @@ pub(super) fn render_row(
     );
 
     TreeNodeRow::new(depth, &row.path, is_dir, row.expanded, content)
-        .frame(cx)
-        .interactive(row_id, cx)
+        .frame(window, cx)
+        .interactive(row_id, window, cx)
         // 多选标记用选中背景；活动文件标记用更弱的悬停背景，两者不同色——用户据此区分「选区成员」与「编辑器当前打开的文件」，避免把后者误当作选区参与拖拽。
-        .when(marked, |el| el.bg(color::current(cx).element_hover))
-        .when(in_set, |el| el.bg(color::current(cx).element_selected))
-        .when(sel && focused, |el| el.child(selection_border(cx)))
+        .when(visual.marked, |el| el.bg(color::current(cx).element_hover))
+        .when(visual.in_set, |el| {
+            el.bg(color::current(cx).element_selected)
+        })
+        .when(visual.selected && visual.focused, |el| {
+            el.child(selection_border(window, cx))
+        })
         .when_some(drag_payload, |element, drag| {
             let weak = render_context.weak.clone();
             element.on_drag(drag, move |drag, _, _, cx| {

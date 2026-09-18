@@ -30,6 +30,9 @@ pub type OnProjectSelected = Rc<dyn Fn(String, &mut Window, &mut App)>;
 
 type OnOpenLocalProject = Rc<dyn Fn(&mut Window, &mut App)>;
 
+/// 项目选择器向宿主上报用户可见错误的回调（由装配层决定 toast 呈现）。
+type ErrorReporter = Rc<dyn Fn(String, &mut App)>;
+
 // ═══ 数据源 ═══════════════════════════════════════════════════════
 
 /// 项目选择器数据源。
@@ -40,6 +43,7 @@ struct ProjectPickerDelegate {
     selected_index: usize,
     on_selected: OnProjectSelected,
     on_open_local_project: OnOpenLocalProject,
+    on_error: ErrorReporter,
 }
 
 impl ProjectPickerDelegate {
@@ -47,6 +51,7 @@ impl ProjectPickerDelegate {
         projects: Vec<ProjectEntry>,
         on_selected: OnProjectSelected,
         on_open_local_project: OnOpenLocalProject,
+        on_error: ErrorReporter,
     ) -> Self {
         let filtered: Vec<usize> = (0..projects.len()).collect();
         // 列表第一位即最近打开的项目，作为默认选中项
@@ -58,6 +63,7 @@ impl ProjectPickerDelegate {
             selected_index,
             on_selected,
             on_open_local_project,
+            on_error,
         }
     }
 
@@ -81,12 +87,13 @@ impl ProjectPickerDelegate {
             .min(self.filtered.len().saturating_sub(1));
     }
 
-    /// 删除 filtered 索引对应的最近项目（落盘 + 内存）。
-    fn remove_project(&mut self, ix: usize) {
+    /// 删除 filtered 索引对应的最近项目（落盘 + 内存）；落盘失败时不改动内存列表，由调用方上报。
+    fn remove_project(&mut self, ix: usize) -> anyhow::Result<()> {
         let project_ix = self.filtered[ix];
         let path = self.projects[project_ix].path.clone();
-        recent_projects::remove_from_recent(&path);
+        recent_projects::remove_from_recent(&path)?;
         self.remove_project_in_memory(project_ix);
+        Ok(())
     }
 
     /// 从内存列表移除一个项目，并重算过滤结果与选中项。
@@ -143,8 +150,11 @@ impl PickerDelegate for ProjectPickerDelegate {
     ) -> gpui::AnyElement {
         let entry = &self.projects[self.filtered[index]];
         let icon_color = color::current(cx).icon_muted;
+        let on_error = self.on_error.clone();
         let remove = cx.listener(move |this, _: &ClickEvent, window, cx| {
-            this.delegate_mut().remove_project(index);
+            if let Err(error) = this.delegate_mut().remove_project(index) {
+                on_error(format!("删除最近项目失败：{error:#}"), cx);
+            }
             cx.notify();
             window.refresh();
         });
@@ -160,7 +170,7 @@ impl PickerDelegate for ProjectPickerDelegate {
                 Button::icon(("delete-project", index), "icons/trash.svg")
                     .color(icon_color)
                     .label("移除")
-                    .shortcut(&DeleteRecentProject, cx)
+                    .shortcut(zcv_keymap::display_shortcut(&DeleteRecentProject, cx))
                     .on_click(remove),
             )
             .into_any_element()
@@ -234,8 +244,28 @@ impl ProjectPicker {
                 Self::open_local_project(pending_path.clone(), workspace.clone(), cx)
             })
         };
-        let delegate =
-            ProjectPickerDelegate::new(projects, on_selected.clone(), on_open_local_project);
+        let on_error: ErrorReporter = {
+            let workspace = workspace.clone();
+            Rc::new(move |message, cx| {
+                if let Some(workspace) = workspace.upgrade() {
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.show_toast(
+                            ToastKind::Error,
+                            message,
+                            None,
+                            Some(Duration::from_secs(5)),
+                            cx,
+                        );
+                    });
+                }
+            })
+        };
+        let delegate = ProjectPickerDelegate::new(
+            projects,
+            on_selected.clone(),
+            on_open_local_project,
+            on_error,
+        );
 
         let picker = cx.new(|cx| Picker::new(delegate, PICKER_WIDTH, window, cx));
         let host = PickerHost::new(cx.focus_handle());
@@ -265,9 +295,7 @@ impl ProjectPicker {
             self.picker.update(cx, |picker, cx| {
                 picker.delegate_mut().reload_projects();
                 // 清空搜索框文字
-                if let Some(input) = picker.search_input() {
-                    input.set_text("", cx);
-                }
+                picker.search_input().set_text("", cx);
                 cx.notify();
             });
             // 同步按钮上显示的当前项目名
@@ -286,14 +314,19 @@ impl ProjectPicker {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.picker.update(cx, |picker, cx| {
+        let result = self.picker.update(cx, |picker, cx| {
             if picker.delegate().match_count() == 0 {
-                return;
+                return Ok(());
             }
             let ix = picker.delegate().selected_index();
-            picker.delegate_mut().remove_project(ix);
+            let result = picker.delegate_mut().remove_project(ix);
             cx.notify();
+            result
         });
+        if let Err(error) = result {
+            let reporter = self.picker.read(cx).delegate().on_error.clone();
+            reporter(format!("删除最近项目失败：{error:#}"), cx);
+        }
         window.refresh();
     }
 
@@ -380,7 +413,7 @@ impl Render for ProjectPicker {
 
         let button = Button::text("project-picker", button_text.to_string())
             .label("项目选择器")
-            .shortcut(&ToggleProjectPicker, cx)
+            .shortcut(zcv_keymap::display_shortcut(&ToggleProjectPicker, cx))
             .color(color_value)
             .on_click(cx.listener(|picker, _, window, cx| picker.toggle(window, cx)));
 
@@ -432,6 +465,7 @@ mod tests {
             }],
             on_selected,
             Rc::new(|_, _| {}),
+            Rc::new(|_, _| {}),
         );
         let window = cx.add_window(|_window, _cx| TestView);
         let _ = window.update(cx, |_, window, cx| {
@@ -456,6 +490,7 @@ mod tests {
                 },
             ],
             on_selected,
+            Rc::new(|_, _| {}),
             Rc::new(|_, _| {}),
         )
     }

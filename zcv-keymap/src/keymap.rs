@@ -5,4 +5,4 @@
 
 mod loader;
 
-pub use loader::{KeyBindings, init};
+pub use loader::{KeyBindings, display_shortcut, init};

@@ -1,13 +1,17 @@
-use std::ffi::OsStr;
+use std::ffi::{CString, OsStr};
 use std::fs;
-use std::path::Path;
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::thread;
+use std::time::Duration;
 
 use anyhow::{Context as _, Result, ensure};
 use semver::Version;
 use smol::process::Command;
 
-use super::UpdateInstallation;
+use super::{ApplyBackend, StagedUpdate, UpdateInstallation};
+use crate::UpdateTransaction;
 
 pub const APP_DIRECTORY_NAME: &str = "Zcv.app";
 pub const APP_EXECUTABLE_RELATIVE_PATH: &str = "Contents/MacOS/Zcv";
@@ -123,5 +127,214 @@ fn platform_key() -> Result<&'static str> {
     match std::env::consts::ARCH {
         "aarch64" => Ok("macos-aarch64"),
         architecture => anyhow::bail!("不支持 macOS 自动更新架构 {architecture}"),
+    }
+}
+
+/// macOS helper 后端：原子交换原语与进程退出等待。
+pub(crate) struct MacosBackend;
+
+impl ApplyBackend for MacosBackend {
+    fn wait_for_process_exit(&self, pid: u32) -> Result<()> {
+        loop {
+            let result = unsafe { libc::kill(pid as libc::pid_t, 0) };
+            if result != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        Ok(())
+    }
+
+    fn stage(&self, transaction: &UpdateTransaction) -> Result<StagedUpdate> {
+        verify_transaction_app(transaction)?;
+        let candidate_path = candidate_path(transaction)?;
+        if candidate_path.exists() {
+            fs::remove_dir_all(&candidate_path)
+                .with_context(|| format!("无法清理旧更新候选目录 {}", candidate_path.display()))?;
+        }
+
+        let copy = std::process::Command::new("/usr/bin/ditto")
+            .arg(&transaction.staged_app_path)
+            .arg(&candidate_path)
+            .output()
+            .context("无法启动 ditto 复制更新应用")?;
+        ensure!(
+            copy.status.success(),
+            "无法把更新复制到安装目录：{}",
+            String::from_utf8_lossy(&copy.stderr).trim()
+        );
+
+        let candidate_transaction = UpdateTransaction {
+            staged_app_path: candidate_path.clone(),
+            ..transaction.clone()
+        };
+        if let Err(error) = verify_transaction_app(&candidate_transaction) {
+            let _ = fs::remove_dir_all(&candidate_path);
+            return Err(error).context("安装目录中的更新副本验证失败");
+        }
+        strip_download_metadata(&candidate_path).context("无法清理安装副本的下载元数据")?;
+        Ok(StagedUpdate {
+            candidate_path: candidate_path.clone(),
+            previous_path: candidate_path,
+        })
+    }
+
+    fn switch(&self, transaction: &UpdateTransaction, staged: &StagedUpdate) -> Result<()> {
+        atomic_swap(&transaction.install_path, &staged.candidate_path)
+            .context("无法原子切换 Zcv.app")
+    }
+
+    fn rollback(&self, transaction: &UpdateTransaction, staged: &StagedUpdate) -> Result<()> {
+        atomic_swap(&transaction.install_path, &staged.candidate_path).context("无法回滚 Zcv.app")
+    }
+
+    fn cleanup(&self, _transaction: &UpdateTransaction, staged: &StagedUpdate) {
+        if staged.previous_path.exists()
+            && let Err(error) = fs::remove_dir_all(&staged.previous_path)
+        {
+            eprintln!(
+                "新版本已启动，但无法删除旧版本备份 {}：{error}",
+                staged.previous_path.display()
+            );
+        }
+    }
+}
+
+fn candidate_path(transaction: &UpdateTransaction) -> Result<PathBuf> {
+    let parent = transaction
+        .install_path
+        .parent()
+        .context("Zcv.app 安装路径没有父目录")?;
+    Ok(parent.join(format!(".Zcv.update-{}.app", transaction.id)))
+}
+
+fn verify_transaction_app(transaction: &UpdateTransaction) -> Result<()> {
+    verify_app(&transaction.staged_app_path, &transaction.to_version)
+}
+
+/// 移除下载元数据（quarantine / provenance）。
+///
+/// 只作用于已经通过清单签名、SHA-256 与代码签名验证的副本；避免 Gatekeeper
+/// 对已验证副本在每次更新后再次要求人工批准。normal 路径下副本通常没有这些
+/// 属性，removexattr 以 ENOATTR 结束并被忽略。
+fn strip_download_metadata(root: &Path) -> Result<()> {
+    fn strip_one(path: &Path) -> Result<()> {
+        for attribute in ["com.apple.quarantine", "com.apple.provenance"] {
+            let c_path = CString::new(path.as_os_str().as_bytes()).context("路径包含空字节")?;
+            let c_attribute = CString::new(attribute).context("属性名包含空字节")?;
+            let result = unsafe { libc::removexattr(c_path.as_ptr(), c_attribute.as_ptr(), 0) };
+            if result != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ENOATTR) {
+                    return Err(error).with_context(|| {
+                        format!("无法移除 {} 的属性 {attribute}", path.display())
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+    fn visit(path: &Path) -> Result<()> {
+        for entry in
+            fs::read_dir(path).with_context(|| format!("无法读取目录 {}", path.display()))?
+        {
+            let entry = entry.with_context(|| format!("无法读取目录项 {}", path.display()))?;
+            let entry_path = entry.path();
+            strip_one(&entry_path)?;
+            if entry
+                .file_type()
+                .with_context(|| format!("无法读取文件类型 {}", entry_path.display()))?
+                .is_dir()
+            {
+                visit(&entry_path)?;
+            }
+        }
+        Ok(())
+    }
+    strip_one(root)?;
+    visit(root)
+}
+
+fn atomic_swap(first: &Path, second: &Path) -> Result<()> {
+    let first = CString::new(first.as_os_str().as_bytes()).context("安装路径包含空字节")?;
+    let second = CString::new(second.as_os_str().as_bytes()).context("候选路径包含空字节")?;
+    let result = unsafe { libc::renamex_np(first.as_ptr(), second.as_ptr(), libc::RENAME_SWAP) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error()).context("renamex_np(RENAME_SWAP) 失败");
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn download_metadata_is_stripped_recursively() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let file = nested.join("file.txt");
+        std::fs::write(&file, "content").unwrap();
+
+        for path in [root.path(), &nested, &file] {
+            let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
+            let c_attr = CString::new("com.apple.quarantine").unwrap();
+            let value = b"0083;5f0b2f00;Safari;";
+            let result = unsafe {
+                libc::setxattr(
+                    c_path.as_ptr(),
+                    c_attr.as_ptr(),
+                    value.as_ptr().cast(),
+                    value.len(),
+                    0,
+                    0,
+                )
+            };
+            assert_eq!(result, 0, "无法为 {} 设置测试属性", path.display());
+        }
+
+        strip_download_metadata(root.path()).unwrap();
+
+        for path in [root.path(), &nested, &file] {
+            let c_path = CString::new(path.as_os_str().as_bytes()).unwrap();
+            let c_attr = CString::new("com.apple.quarantine").unwrap();
+            let result = unsafe {
+                libc::getxattr(
+                    c_path.as_ptr(),
+                    c_attr.as_ptr(),
+                    std::ptr::null_mut(),
+                    0,
+                    0,
+                    0,
+                )
+            };
+            assert_eq!(result, -1, "属性应已被移除: {}", path.display());
+        }
+    }
+
+    #[test]
+    fn atomic_swap_exchanges_complete_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        std::fs::create_dir(&first).unwrap();
+        std::fs::create_dir(&second).unwrap();
+        std::fs::write(first.join("version"), "old").unwrap();
+        std::fs::write(second.join("version"), "new").unwrap();
+
+        atomic_swap(&first, &second).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(first.join("version")).unwrap(),
+            "new"
+        );
+        assert_eq!(
+            std::fs::read_to_string(second.join("version")).unwrap(),
+            "old"
+        );
     }
 }

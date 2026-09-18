@@ -1092,6 +1092,43 @@ fn excerpt_topology_changes_publish_output_edits(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn source_excerpts_and_display_transforms_use_separate_coordinate_trees(cx: &mut TestAppContext) {
+    let source = singleton("src/diff.rs", "working\nremoved", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                ExcerptRange::new(
+                    source.clone(),
+                    TextRange::new(ByteOffset::new(0), ByteOffset::new(7)).unwrap(),
+                    Vec::new(),
+                ),
+                ExcerptRange::new(
+                    source,
+                    TextRange::new(ByteOffset::new(8), ByteOffset::new(15)).unwrap(),
+                    Vec::new(),
+                )
+                .with_diff_kind(ExcerptDiffKind::Deleted)
+                .with_editable(false),
+            ],
+            cx,
+        );
+    });
+
+    cx.read_entity(&combined, |buffer, cx| {
+        assert_eq!(buffer.state.excerpts.summary().count, 1);
+        assert_eq!(buffer.state.diff_transforms.summary().output.count, 2);
+        assert_eq!(buffer.state.diff_transforms.summary().input.bytes, 7);
+        assert_eq!(buffer.state.diff_transforms.summary().output.bytes, 15);
+
+        let snapshot = buffer.snapshot(cx);
+        assert_eq!(snapshot.excerpts.summary().count, 1);
+        assert_eq!(snapshot.diff_transforms.summary().output.count, 2);
+        assert_eq!(snapshot.excerpts().len(), 2);
+    });
+}
+
+#[gpui::test]
 fn singleton_role_does_not_depend_on_current_excerpt_shape(cx: &mut TestAppContext) {
     let source = singleton("src/main.rs", "first\nsecond\n", cx);
     let source_buffer = cx.read_entity(&source, |source, _| source.buffer());

@@ -19,7 +19,7 @@ use zcv_text::{Anchor, ByteOffset, Line, Snapshot};
 use crate::buffer_diff::{BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkStaging, DiffRefresh};
 use crate::{
     DiffTransform, ExcerptDiffKind, ExcerptRange, MultiBuffer, MultiBufferEvent, PathKey,
-    ProjectionRemap, mapping_at_excerpt_index, mapping_count,
+    ProjectionRemap, excerpt_at_index, mapping_at_excerpt_index, mapping_count,
 };
 
 /// 编辑器投影使用的显示 hunk（组合文档行坐标）。
@@ -340,7 +340,10 @@ impl MultiBuffer {
             .state
             .diff_transforms
             .iter()
-            .take_while(|mapping| mapping.path < new_path)
+            .take_while(|transform| {
+                excerpt_at_index(&self.state.excerpts, transform.excerpt_index())
+                    .is_some_and(|excerpt| excerpt.path < new_path)
+            })
             .count();
         let inserted_count = excerpts.len();
         for hunk in &mut materialized {
@@ -1063,7 +1066,10 @@ impl MultiBuffer {
     /// 返回本次重建的投影坐标重映射：
     /// 投影版本未变时恒等，变化时携带重建前的投影→源映射，供调用方把重建前的光标经源忠实落到重建后投影（reload 会重裁剪并重置版本，裸偏移不再有效）。
     pub(crate) fn rebuild_diff_projection(&mut self, cx: &mut Context<Self>) -> ProjectionRemap {
-        let before = self.state.diff_transforms.clone();
+        let before = (
+            self.state.excerpts.clone(),
+            self.state.diff_transforms.clone(),
+        );
         self.rebuild_diff_projection_from(before, cx)
     }
 
@@ -1073,7 +1079,7 @@ impl MultiBuffer {
     /// 尚未重物化时保存映射，随后无论 hunk 怎样裁剪或失效，都用该映射解析编辑后的选区。
     pub(crate) fn rebuild_diff_projection_from(
         &mut self,
-        before: SumTree<DiffTransform>,
+        before: (SumTree<crate::Excerpt>, SumTree<DiffTransform>),
         cx: &mut Context<Self>,
     ) -> ProjectionRemap {
         if self.diff.is_none() {
@@ -1089,7 +1095,7 @@ impl MultiBuffer {
     /// 因而旧输出必须在源快照替换前冻结，不能从更新后的源映射重新拼出旧帧。
     pub(crate) fn rebuild_diff_projection_from_text(
         &mut self,
-        before: SumTree<DiffTransform>,
+        before: (SumTree<crate::Excerpt>, SumTree<DiffTransform>),
         old_text: Vec<u8>,
         cx: &mut Context<Self>,
     ) -> ProjectionRemap {
@@ -1144,7 +1150,7 @@ impl MultiBuffer {
         self.diff_materialized_files = self.diffs.len();
         cx.notify();
         if new_version != old_version {
-            ProjectionRemap::rebuilt(before)
+            ProjectionRemap::rebuilt(before.0, before.1)
         } else {
             ProjectionRemap::identity()
         }
@@ -1153,8 +1159,9 @@ impl MultiBuffer {
     /// diff 片段在最终组合文档中的真实逻辑行范围。
     /// 空片段仍对应编辑器中的一个空逻辑行。
     fn diff_excerpt_output_lines(&self, excerpt: usize) -> Range<usize> {
-        let mapping = mapping_at_excerpt_index(&self.state.diff_transforms, excerpt)
-            .expect("diff excerpt 必须存在对应组合映射");
+        let mapping =
+            mapping_at_excerpt_index(&self.state.excerpts, &self.state.diff_transforms, excerpt)
+                .expect("diff excerpt 必须存在对应组合映射");
         mapping.output_start_line..mapping.output_end_line.max(mapping.output_start_line + 1)
     }
 
@@ -1236,8 +1243,12 @@ impl MultiBuffer {
         if hunk.expanded
             && let Some(excerpt) = hunk.old_excerpt
         {
-            let mapping = mapping_at_excerpt_index(&self.state.diff_transforms, excerpt)
-                .expect("旧侧 diff excerpt 必须存在对应组合映射");
+            let mapping = mapping_at_excerpt_index(
+                &self.state.excerpts,
+                &self.state.diff_transforms,
+                excerpt,
+            )
+            .expect("旧侧 diff excerpt 必须存在对应组合映射");
             let output_start = mapping.output_range.start().get();
             let source_start = mapping.source_range.start().get();
             word_diffs.extend(hunk.base_word_diffs.iter().map(|diff| {
@@ -1247,8 +1258,12 @@ impl MultiBuffer {
             }));
         }
         if let MaterializedHunkLocation::Excerpt(excerpt) = &hunk.new_location {
-            let mapping = mapping_at_excerpt_index(&self.state.diff_transforms, *excerpt)
-                .expect("新侧 diff excerpt 必须存在对应组合映射");
+            let mapping = mapping_at_excerpt_index(
+                &self.state.excerpts,
+                &self.state.diff_transforms,
+                *excerpt,
+            )
+            .expect("新侧 diff excerpt 必须存在对应组合映射");
             let output_start = mapping.output_range.start().get();
             let source_start = mapping.source_range.start().get();
             word_diffs.extend(hunk.buffer_word_diffs.iter().map(|diff| {
@@ -1262,12 +1277,13 @@ impl MultiBuffer {
 
     /// excerpt 序列边界在最终组合文档中的真实逻辑行。
     fn diff_excerpt_boundary_line(&self, boundary: usize) -> usize {
-        if let Some(next) = mapping_at_excerpt_index(&self.state.diff_transforms, boundary) {
-            next.output_start_line
-        } else if let Some(previous) = boundary
-            .checked_sub(1)
-            .and_then(|index| mapping_at_excerpt_index(&self.state.diff_transforms, index))
+        if let Some(next) =
+            mapping_at_excerpt_index(&self.state.excerpts, &self.state.diff_transforms, boundary)
         {
+            next.output_start_line
+        } else if let Some(previous) = boundary.checked_sub(1).and_then(|index| {
+            mapping_at_excerpt_index(&self.state.excerpts, &self.state.diff_transforms, index)
+        }) {
             previous.output_end_line.max(previous.output_start_line + 1)
         } else {
             0

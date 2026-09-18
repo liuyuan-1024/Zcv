@@ -905,6 +905,15 @@ fn text_chunks_stream_excerpt_sources_and_inserted_boundary(cx: &mut TestAppCont
         snapshot.byte_to_position(ByteOffset::new(9)).unwrap(),
         zcv_text::Position::new(Line::new(1), zcv_text::LogicalColumn::new(3))
     );
+    assert_eq!(
+        snapshot.line_start_byte(Line::new(2)).unwrap(),
+        snapshot.len_bytes()
+    );
+    assert_eq!(
+        snapshot.byte_to_line(snapshot.len_bytes()).unwrap(),
+        Line::new(2)
+    );
+    assert!(snapshot.line_start_byte(Line::new(3)).is_err());
 }
 
 #[test]
@@ -922,6 +931,32 @@ fn plain_snapshot_streams_its_source_without_materializing() {
         snapshot.chunk_at_byte(ByteOffset::new(6)).unwrap().0,
         "alpha\nbeta"
     );
+}
+
+#[gpui::test]
+fn composite_snapshot_remains_immutable_until_a_new_frame_is_read(cx: &mut TestAppContext) {
+    let source = singleton("src/main.rs", "one\ntwo\n", cx);
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
+    let before = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
+
+    cx.update_entity(&source_buffer, |buffer, cx| {
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::ZERO, "zero\n").unwrap()],
+                TransactionMetadata::default(),
+            )
+            .expect("源编辑应成功");
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    let after = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    assert_ne!(before.version(), after.version());
+    assert_eq!(before.text_bytes(), b"one\ntwo\n");
+    assert_eq!(after.text_bytes(), b"zero\none\ntwo\n");
+    assert_eq!(before.line_count(), 3);
+    assert_eq!(after.line_count(), 4);
 }
 
 #[gpui::test]

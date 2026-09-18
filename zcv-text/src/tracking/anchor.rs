@@ -169,6 +169,59 @@ mod tests {
     }
 
     #[test]
+    fn anchor_should_follow_boundary_insertion_according_to_affinity() {
+        let insert_event = event_for_edits(
+            BufferVersion::INITIAL,
+            BufferVersion::new(1),
+            vec![Edit::insert(b(2), "XX".to_string()).unwrap()],
+        );
+        let after = Anchor::new(BufferVersion::INITIAL, b(2)).with_affinity(Affinity::After);
+
+        assert_eq!(
+            after
+                .map_through_delta_event(&insert_event)
+                .unwrap()
+                .value()
+                .offset(),
+            b(4)
+        );
+    }
+
+    #[test]
+    fn anchor_inside_deleted_text_reports_deleted_mapping() {
+        let delete_event = event_for_edits(
+            BufferVersion::INITIAL,
+            BufferVersion::new(1),
+            vec![Edit::replace(
+                TextRange::new(b(2), b(4)).unwrap(),
+                String::new(),
+            )],
+        );
+        let anchor = Anchor::new(BufferVersion::INITIAL, b(3)).with_affinity(Affinity::After);
+
+        assert!(matches!(
+            anchor.map_through_delta_event(&delete_event).unwrap(),
+            MappingResult::Deleted(mapped)
+                if mapped.offset() == b(2) && mapped.affinity() == Affinity::After
+        ));
+    }
+
+    #[test]
+    fn anchor_rejects_a_delta_from_another_snapshot_version() {
+        let event = event_for_edits(
+            BufferVersion::new(1),
+            BufferVersion::new(2),
+            vec![Edit::insert(b(0), "x".to_string()).unwrap()],
+        );
+        let anchor = Anchor::default();
+
+        assert!(matches!(
+            anchor.map_through_delta_event(&event),
+            Err(AnchorError::VersionMismatch { .. })
+        ));
+    }
+
+    #[test]
     fn anchor_ranges_should_express_boundary_insertion_policy() {
         let range = TextRange::new(b(2), b(5)).unwrap();
         let inside = Anchor::range_inside(BufferVersion::INITIAL, range);

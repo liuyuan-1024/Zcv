@@ -833,13 +833,11 @@ mod tests {
     #[gpui::test]
     fn display_snapshot_resolves_syntax_styles_from_current_theme(cx: &mut TestAppContext) {
         apply_test_theme(cx, "light");
-        let source_buffer = cx.new(|_| {
-            Buffer::from_text("fn main() {}".to_owned(), BufferConfig::default())
-                .expect("测试 Buffer 应能创建")
-        });
+        let source_buffer = Buffer::from_text("fn main() {}".to_owned(), BufferConfig::default())
+            .expect("测试 Buffer 应能创建");
         let source = cx.new(|cx| {
             LanguageBuffer::new(
-                source_buffer.clone(),
+                source_buffer,
                 Some(PathBuf::from("main.rs")),
                 std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
                 cx,
@@ -881,13 +879,11 @@ mod tests {
 
     #[gpui::test]
     fn display_pipeline_receives_the_source_transaction_batch(cx: &mut TestAppContext) {
-        let source_buffer = cx.new(|_| {
-            Buffer::from_text("fn main() {}\n".to_owned(), BufferConfig::default())
-                .expect("测试 Buffer 应能创建")
-        });
+        let source_buffer = Buffer::from_text("fn main() {}\n".to_owned(), BufferConfig::default())
+            .expect("测试 Buffer 应能创建");
         let source = cx.new(|cx| {
             LanguageBuffer::new(
-                source_buffer.clone(),
+                source_buffer,
                 Some(PathBuf::from("main.rs")),
                 std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
                 cx,
@@ -895,7 +891,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(source, cx));
+        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
         let (projection_subscription, snapshot) =
             cx.update_entity(&multi_buffer, |multi, cx| multi.subscribe_and_snapshot(cx));
         let display = cx.new(|cx| DisplayMap::new(snapshot, cx));
@@ -903,7 +899,7 @@ mod tests {
             display.set_multi_buffer(multi_buffer.clone(), projection_subscription, cx);
         });
 
-        let source_subscription = source_buffer.update(cx, |buffer, _| buffer.subscribe());
+        let source_subscription = cx.read_entity(&source, |source, _| source.subscribe());
         let changes = Rc::new(RefCell::new(None));
         let observed = Rc::clone(&changes);
         let _display_subscription = cx.update(|cx| {
@@ -914,14 +910,14 @@ mod tests {
             })
         });
 
-        source_buffer.update(cx, |buffer, cx| {
-            buffer
+        cx.update_entity(&source, |source, cx| {
+            source
                 .edit(
                     [Edit::insert(MultiBufferOffset::new(3).into(), "async ").unwrap()],
                     TransactionMetadata::default(),
+                    cx,
                 )
                 .expect("测试编辑应成功");
-            cx.notify();
         });
         cx.run_until_parked();
 
@@ -936,12 +932,11 @@ mod tests {
         );
         assert_eq!(display_changes.patch(), source_changes.patch());
 
-        let reload_subscription = source_buffer.update(cx, |buffer, _| buffer.subscribe());
-        source_buffer.update(cx, |buffer, cx| {
-            buffer
-                .reset("fn replacement() {}\n".to_owned())
+        let reload_subscription = cx.read_entity(&source, |source, _| source.subscribe());
+        cx.update_entity(&source, |source, cx| {
+            source
+                .reset("fn replacement() {}\n".to_owned(), cx)
                 .expect("外部重载应成功");
-            cx.notify();
         });
         cx.run_until_parked();
 

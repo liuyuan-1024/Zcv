@@ -44,7 +44,6 @@ fn revision_document(
 ) -> gpui::Entity<LanguageBuffer> {
     let buffer = Buffer::from_text(text.to_string(), BufferConfig::default())
         .expect("测试文本必须能创建 Buffer");
-    let buffer = cx.new(|_| buffer);
     cx.new(|cx| {
         LanguageBuffer::new(
             buffer,
@@ -355,19 +354,18 @@ fn single_file_version_change_matches_fresh_three_file_build(cx: &mut TestAppCon
 
     // 编辑 b 的 working 文本，只触发 b 的 diff 版本变化（既有 Added hunk 变为 Modified + Added）；
     // 保存使 b 不再是 dirty 源，diff 结果回合时投影必须跟随新快照重物化。
-    let b_buffer = cx.read_entity(&b, |b, _| b.buffer());
-    cx.update_entity(&b_buffer, |buffer, cx| {
-        buffer
+    cx.update_entity(&b, |source, cx| {
+        source
             .edit(
                 vec![Edit::replace(
                     TextRange::new(ByteOffset::new(3), ByteOffset::new(5)).unwrap(),
                     "bX",
                 )],
                 TransactionMetadata::default(),
+                cx,
             )
             .unwrap();
-        buffer.mark_saved();
-        cx.notify();
+        source.mark_saved(cx);
     });
     cx.run_until_parked();
 
@@ -670,9 +668,8 @@ fn unified_diff_marks_partially_staged_hunk(cx: &mut TestAppContext) {
 }
 
 fn singleton(path: &str, text: &str, cx: &mut TestAppContext) -> gpui::Entity<LanguageBuffer> {
-    let buffer = cx.new(|_| {
-        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建测试 Buffer")
-    });
+    let buffer =
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建测试 Buffer");
     cx.new(|cx| {
         LanguageBuffer::new(
             buffer,
@@ -993,16 +990,14 @@ fn composite_snapshot_remains_immutable_until_a_new_frame_is_read(cx: &mut TestA
     let source = singleton("src/main.rs", "one\ntwo\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     let before = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
-    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
-
-    cx.update_entity(&source_buffer, |buffer, cx| {
-        buffer
+    cx.update_entity(&source, |source, cx| {
+        source
             .edit(
                 [Edit::insert(ByteOffset::ZERO, "zero\n").unwrap()],
                 TransactionMetadata::default(),
+                cx,
             )
             .expect("源编辑应成功");
-        cx.notify();
     });
     cx.run_until_parked();
 
@@ -1018,24 +1013,23 @@ fn composite_snapshot_remains_immutable_until_a_new_frame_is_read(cx: &mut TestA
 fn singleton_source_updates_the_display_stream_without_reset(cx: &mut TestAppContext) {
     let source = singleton("src/main.rs", "fn main() {}\n", cx);
     let multi_buffer = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
-    let source_buffer = cx.read_entity(&multi_buffer, |buffer, cx| {
+    cx.read_entity(&multi_buffer, |buffer, cx| {
         assert_eq!(buffer.file_path(cx), Some(PathBuf::from("src/main.rs")));
-        buffer.as_singleton(cx).expect("应为整文件单 excerpt")
+        assert!(buffer.singleton_source().is_some(), "应为整文件单 excerpt");
     });
     let subscription = cx.update_entity(&multi_buffer, |buffer, cx| {
         buffer.subscribe_and_snapshot(cx).0
     });
-    let source_subscription =
-        cx.read_entity(&source, |source, cx| source.buffer().read(cx).subscribe());
+    let source_subscription = cx.read_entity(&source, |source, _| source.subscribe());
 
-    cx.update_entity(&source_buffer, |buffer, cx| {
-        buffer
+    cx.update_entity(&source, |source, cx| {
+        source
             .edit(
                 [Edit::insert(ByteOffset::new(3), "async ").unwrap()],
                 TransactionMetadata::default(),
+                cx,
             )
             .expect("测试编辑应成功");
-        cx.notify();
     });
     cx.run_until_parked();
 
@@ -1098,15 +1092,14 @@ fn source_edit_updates_only_its_composite_excerpt_without_reset(cx: &mut TestApp
     let subscription =
         cx.update_entity(&combined, |buffer, cx| buffer.subscribe_and_snapshot(cx).0);
 
-    let source_buffer = cx.read_entity(&second, |source, _| source.buffer());
-    cx.update_entity(&source_buffer, |buffer, cx| {
-        buffer
+    cx.update_entity(&second, |source, cx| {
+        source
             .edit(
                 [Edit::insert(ByteOffset::new(0), "changed ").unwrap()],
                 TransactionMetadata::default(),
+                cx,
             )
             .expect("源编辑应成功");
-        cx.notify();
     });
     cx.run_until_parked();
 
@@ -1135,16 +1128,14 @@ fn one_source_edit_updates_all_visible_excerpts_incrementally(cx: &mut TestAppCo
     });
     let subscription =
         cx.update_entity(&combined, |buffer, cx| buffer.subscribe_and_snapshot(cx).0);
-    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
-
-    cx.update_entity(&source_buffer, |buffer, cx| {
-        buffer
+    cx.update_entity(&source, |source, cx| {
+        source
             .edit(
                 [Edit::insert(ByteOffset::ZERO, "changed ").unwrap()],
                 TransactionMetadata::default(),
+                cx,
             )
             .expect("源编辑应成功");
-        cx.notify();
     });
     cx.run_until_parked();
 
@@ -1332,7 +1323,6 @@ fn source_excerpts_and_display_transforms_use_separate_coordinate_trees(cx: &mut
 #[gpui::test]
 fn singleton_role_does_not_depend_on_current_excerpt_shape(cx: &mut TestAppContext) {
     let source = singleton("src/main.rs", "first\nsecond\n", cx);
-    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
     let working = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&working, |buffer, cx| {
         buffer.set_excerpts(
@@ -1343,8 +1333,8 @@ fn singleton_role_does_not_depend_on_current_excerpt_shape(cx: &mut TestAppConte
             cx,
         );
     });
-    cx.read_entity(&working, |buffer, cx| {
-        assert_eq!(buffer.as_singleton(cx), Some(source_buffer.clone()));
+    cx.read_entity(&working, |buffer, _| {
+        assert_eq!(buffer.singleton_source(), Some(source.clone()));
     });
 
     let composite = cx.new(MultiBuffer::empty);
@@ -1358,9 +1348,9 @@ fn singleton_role_does_not_depend_on_current_excerpt_shape(cx: &mut TestAppConte
             cx,
         );
     });
-    cx.read_entity(&composite, |buffer, cx| {
+    cx.read_entity(&composite, |buffer, _| {
         assert!(
-            buffer.as_singleton(cx).is_none(),
+            buffer.singleton_source().is_none(),
             "完整文件单 excerpt 也不能把组合文档误判为普通文档"
         );
     });
@@ -1377,14 +1367,14 @@ fn singleton_source_preserves_rust_fold_ranges(cx: &mut TestAppContext) {
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.run_until_parked();
 
-    let source_folds = cx.read_entity(&source, |buffer, cx| {
-        let snapshot = buffer.snapshot(cx);
+    let source_folds = cx.read_entity(&source, |buffer, _| {
+        let snapshot = buffer.snapshot();
         snapshot
             .syntax
             .fold_ranges(0..snapshot.text.len_bytes().get(), &snapshot.text)
     });
-    let source_offsets = cx.read_entity(&source, |buffer, cx| {
-        let snapshot = buffer.text_snapshot(cx);
+    let source_offsets = cx.read_entity(&source, |buffer, _| {
+        let snapshot = buffer.text_snapshot();
         resolve_folds(&source_folds, &snapshot)
     });
     let projected_folds = cx.read_entity(&combined, |buffer, cx| buffer.fold_ranges(cx));
@@ -1416,8 +1406,8 @@ fn singleton_source_preserves_rust_fold_ranges(cx: &mut TestAppContext) {
 fn outline_projects_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
     let source = singleton("src/main.rs", "// 前置\nfn 数据() {}\n// 后置\n", cx);
     cx.run_until_parked();
-    let (function_range, source_name_start) = cx.read_entity(&source, |source, cx| {
-        let snapshot = source.snapshot(cx);
+    let (function_range, source_name_start) = cx.read_entity(&source, |source, _| {
+        let snapshot = source.snapshot();
         let item = snapshot
             .syntax
             .outline(0..snapshot.text.len_bytes().get(), &snapshot.text)
@@ -1459,8 +1449,8 @@ fn syntax_nodes_project_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
     let source = singleton("src/main.rs", "// 前置\nfn 数据() {}\n// 后置\n", cx);
     cx.run_until_parked();
     let source_name_start = "// 前置\nfn ".len();
-    let function_range = cx.read_entity(&source, |source, cx| {
-        let snapshot = source.snapshot(cx);
+    let function_range = cx.read_entity(&source, |source, _| {
+        let snapshot = source.snapshot();
         let node = snapshot
             .syntax
             .node_at(source_name_start, &snapshot.text)
@@ -1509,8 +1499,8 @@ fn excerpt_projects_contained_fold_range_to_output_coordinates(cx: &mut TestAppC
         cx,
     );
     cx.run_until_parked();
-    let source_fold = cx.read_entity(&source, |buffer, cx| {
-        let snapshot = buffer.snapshot(cx);
+    let source_fold = cx.read_entity(&source, |buffer, _| {
+        let snapshot = buffer.snapshot();
         snapshot
             .syntax
             .fold_ranges(0..snapshot.text.len_bytes().get(), &snapshot.text)
@@ -1518,15 +1508,15 @@ fn excerpt_projects_contained_fold_range_to_output_coordinates(cx: &mut TestAppC
             .next()
             .expect("Rust 函数应产生折叠范围")
     });
-    let source_start = cx.read_entity(&source, |buffer, cx| {
+    let source_start = cx.read_entity(&source, |buffer, _| {
         buffer
-            .text_snapshot(cx)
+            .text_snapshot()
             .line_start_byte(Line::new(1))
             .expect("函数起始行应存在")
             .get()
     });
-    let (source_fold_start, source_fold_end) = cx.read_entity(&source, |buffer, cx| {
-        let snapshot = buffer.text_snapshot(cx);
+    let (source_fold_start, source_fold_end) = cx.read_entity(&source, |buffer, _| {
+        let snapshot = buffer.text_snapshot();
         let folded = resolve_folds(std::slice::from_ref(&source_fold), &snapshot);
         (folded[0].start, folded[0].end)
     });
@@ -1570,20 +1560,20 @@ fn fold_projection_accounts_for_nonzero_output_start(cx: &mut TestAppContext) {
         cx,
     );
     cx.run_until_parked();
-    let source_folds = cx.read_entity(&source, |buffer, cx| {
-        let snapshot = buffer.snapshot(cx);
+    let source_folds = cx.read_entity(&source, |buffer, _| {
+        let snapshot = buffer.snapshot();
         snapshot
             .syntax
             .fold_ranges(0..snapshot.text.len_bytes().get(), &snapshot.text)
     });
-    let (source_fold_start, source_fold_end) = cx.read_entity(&source, |buffer, cx| {
-        let snapshot = buffer.text_snapshot(cx);
+    let (source_fold_start, source_fold_end) = cx.read_entity(&source, |buffer, _| {
+        let snapshot = buffer.text_snapshot();
         let folded = resolve_folds(&source_folds, &snapshot);
         (folded[0].start, folded[0].end)
     });
-    let source_start = cx.read_entity(&source, |buffer, cx| {
+    let source_start = cx.read_entity(&source, |buffer, _| {
         buffer
-            .text_snapshot(cx)
+            .text_snapshot()
             .line_start_byte(Line::new(1))
             .expect("函数起始行应存在")
             .get()
@@ -1855,6 +1845,49 @@ fn composite_anchor_falls_forward_when_its_file_leaves_the_diff(cx: &mut TestApp
     });
 }
 
+/// 源锚点版本失效（晚于目标快照或代际被替换）时，禁止落到邻近文件/坐标。
+#[gpui::test]
+fn invalid_source_anchor_does_not_fall_forward_to_another_file(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "one\n", cx);
+    let second = singleton("src/b.rs", "two\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                ExcerptRange::line_range(first, 0..1, cx),
+                ExcerptRange::line_range(second, 0..1, cx),
+            ],
+            cx,
+        );
+    });
+    let valid = cx.read_entity(&combined, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        let excerpt = snapshot.excerpts().next().unwrap();
+        buffer.anchor_at(excerpt.output_range().start(), Affinity::After)
+    });
+    let invalid = match valid {
+        MultiBufferAnchor::Excerpt(anchor) => MultiBufferAnchor::Excerpt(ExcerptAnchor {
+            path: anchor.path,
+            source_id: anchor.source_id,
+            text_anchor: Anchor::new(
+                anchor.text_anchor.generation(),
+                BufferVersion::new(u64::MAX),
+                anchor.text_anchor.offset(),
+            )
+            .with_affinity(anchor.text_anchor.affinity()),
+        }),
+        other => other,
+    };
+
+    cx.read_entity(&combined, |buffer, _| {
+        assert!(buffer.resolve_anchor(&valid).is_some());
+        assert!(
+            buffer.resolve_anchor(&invalid).is_none(),
+            "版本失效的源锚点不得落到邻近文件/坐标"
+        );
+    });
+}
+
 #[gpui::test]
 fn empty_files_keep_distinct_composite_lines_and_locations(cx: &mut TestAppContext) {
     let first = singleton("deleted/a.rs", "", cx);
@@ -1886,7 +1919,7 @@ fn empty_files_keep_distinct_composite_lines_and_locations(cx: &mut TestAppConte
 #[gpui::test]
 fn source_reparse_does_not_reload_composite_text(cx: &mut TestAppContext) {
     let source = singleton("src/main.rs", "fn main() {\n    println!(\"ok\");\n}\n", cx);
-    let source_len = cx.read_entity(&source, |source, cx| source.text_snapshot(cx).len_bytes());
+    let source_len = cx.read_entity(&source, |source, _| source.text_snapshot().len_bytes());
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |combined, cx| {
         combined.set_excerpts(
@@ -1985,15 +2018,14 @@ fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
     );
 
     // 编辑工作区源：文件头部插入一行（行号整体 +1），显示坐标应随编辑推进。
-    let source_text = cx.read_entity(&source, |buffer, _| buffer.buffer());
-    cx.update_entity(&source_text, |buffer, cx| {
-        buffer
+    cx.update_entity(&source, |source, cx| {
+        source
             .edit(
                 vec![Edit::insert(ByteOffset::new(0), "pre\n").unwrap()],
                 TransactionMetadata::default(),
+                cx,
             )
             .unwrap();
-        cx.notify();
     });
     cx.run_until_parked();
 
@@ -2064,15 +2096,14 @@ fn diff_expansion_survives_hunk_refresh_and_merge(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.update_entity(&combined, |buffer, cx| buffer.toggle_diff_hunk_at(0, cx));
 
-    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
-    cx.update_entity(&source_buffer, |buffer, cx| {
-        buffer
+    cx.update_entity(&source, |source, cx| {
+        source
             .edit(
                 [Edit::insert(ByteOffset::new(13), "改过2\n").unwrap()],
                 TransactionMetadata::default(),
+                cx,
             )
             .unwrap();
-        cx.notify();
     });
     cx.run_until_parked();
 
@@ -2191,10 +2222,7 @@ fn save_after_diff_hunk_edit_keeps_rust_highlighting(cx: &mut TestAppContext) {
             .expect("hunk 编辑应成功");
     });
     cx.update_entity(&source, |source, cx| {
-        source.buffer().update(cx, |buffer, cx| {
-            buffer.mark_saved();
-            cx.notify();
-        });
+        source.mark_saved(cx);
     });
     cx.run_until_parked();
 
@@ -2368,12 +2396,10 @@ fn external_full_replacement_invalidates_stale_diff_hunks(cx: &mut TestAppContex
         );
     });
 
-    let source_text = cx.read_entity(&source, |source, _| source.buffer());
-    cx.update_entity(&source_text, |buffer, cx| {
-        buffer
-            .reset("replacement\n".to_owned())
+    cx.update_entity(&source, |source, cx| {
+        source
+            .reset("replacement\n".to_owned(), cx)
             .expect("外部整体替换应成功");
-        cx.notify();
     });
     cx.run_until_parked();
 
@@ -2453,18 +2479,17 @@ fn host_drives_buffer_diff_recompute_from_source_edits(cx: &mut TestAppContext) 
     );
 
     // 直接编辑 working buffer，不经过任何显示层调用；宿主订阅到变化后驱动重算。
-    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
-    cx.update_entity(&source_buffer, |buffer, cx| {
-        buffer
+    cx.update_entity(&source, |source, cx| {
+        source
             .edit(
                 vec![Edit::replace(
                     TextRange::new(ByteOffset::new(2), ByteOffset::new(4)).unwrap(),
                     "",
                 )],
                 TransactionMetadata::default(),
+                cx,
             )
             .unwrap();
-        cx.notify();
     });
     cx.run_until_parked();
 
@@ -2475,9 +2500,8 @@ fn host_drives_buffer_diff_recompute_from_source_edits(cx: &mut TestAppContext) 
     );
 
     // 保存后由宿主重新注入 diff，才提交新的 hunk 投影。
-    cx.update_entity(&source_buffer, |buffer, cx| {
-        buffer.mark_saved();
-        cx.notify();
+    cx.update_entity(&source, |source, cx| {
+        source.mark_saved(cx);
     });
     cx.update_entity(&combined, |buffer, cx| {
         buffer.inject_diffs(
@@ -2528,18 +2552,17 @@ fn dirty_source_keeps_existing_diff_projection_until_saved(cx: &mut TestAppConte
     });
     assert!(initial_excerpt_count > 0, "初始 hunk 应生成 excerpt");
 
-    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
-    cx.update_entity(&source_buffer, |buffer, cx| {
-        buffer
+    cx.update_entity(&source, |source, cx| {
+        source
             .edit(
                 vec![Edit::replace(
                     TextRange::new(ByteOffset::new(2), ByteOffset::new(4)).unwrap(),
                     "",
                 )],
                 TransactionMetadata::default(),
+                cx,
             )
             .unwrap();
-        cx.notify();
     });
     cx.run_until_parked();
 
@@ -2590,18 +2613,17 @@ fn diff_hunks_survive_geometry_preserving_edits(cx: &mut TestAppContext) {
     );
 
     // 同一行内改内容：行数不变、hunk 行范围与词级范围都不变，diff 不会发出 DiffChanged。
-    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
-    cx.update_entity(&source_buffer, |buffer, cx| {
-        buffer
+    cx.update_entity(&source, |source, cx| {
+        source
             .edit(
                 vec![Edit::replace(
                     TextRange::new(ByteOffset::new(2), ByteOffset::new(3)).unwrap(),
                     "z",
                 )],
                 TransactionMetadata::default(),
+                cx,
             )
             .unwrap();
-        cx.notify();
     });
     cx.run_until_parked();
 
@@ -2684,18 +2706,17 @@ fn diff_recovers_when_initial_result_is_stale(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "a\nb\nc\n", cx);
     let diff = test_diff_entity(source.clone(), "src/a.rs", Some("a\nB\nc\n"), None, cx);
     // 不 park，立即编辑源：初始后台结果会对应旧版本并被版本门控拒绝。
-    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
-    cx.update_entity(&source_buffer, |buffer, cx| {
-        buffer
+    cx.update_entity(&source, |source, cx| {
+        source
             .edit(
                 vec![Edit::replace(
                     TextRange::new(ByteOffset::new(2), ByteOffset::new(3)).unwrap(),
                     "z",
                 )],
                 TransactionMetadata::default(),
+                cx,
             )
             .unwrap();
-        cx.notify();
     });
     cx.run_until_parked();
     assert!(
@@ -2725,21 +2746,20 @@ fn diff_hunks_survive_rapid_edits(cx: &mut TestAppContext) {
         );
     });
     cx.run_until_parked();
-    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
     // 快速连续编辑同一行（每次都改变 working 版本，但 hunk 几何不变）。
     for i in 0..6u8 {
         let replacement = char::from(b'a' + i).to_string();
-        cx.update_entity(&source_buffer, |buffer, cx| {
-            buffer
+        cx.update_entity(&source, |source, cx| {
+            source
                 .edit(
                     vec![Edit::replace(
                         TextRange::new(ByteOffset::new(2), ByteOffset::new(3)).unwrap(),
                         replacement.clone(),
                     )],
                     TransactionMetadata::default(),
+                    cx,
                 )
                 .unwrap();
-            cx.notify();
         });
     }
     cx.run_until_parked();
@@ -2839,12 +2859,11 @@ fn expanded_modified_hunk_exposes_word_diffs_in_composite_coordinates(cx: &mut T
 #[gpui::test]
 fn composite_edits_are_applied_to_the_underlying_buffer(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "zero\none\ntwo\n", cx);
-    let source_text = cx.read_entity(&source, |buffer, _| buffer.buffer());
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![ExcerptRange::new(
-                source,
+                source.clone(),
                 TextRange::new(ByteOffset::new(5), ByteOffset::new(9)).unwrap(),
                 Vec::new(),
             )],
@@ -2864,9 +2883,10 @@ fn composite_edits_are_applied_to_the_underlying_buffer(cx: &mut TestAppContext)
         assert!(buffer.end_transaction(cx).is_some());
     });
 
-    let source_contents = cx.read_entity(&source_text, |buffer, _| {
-        buffer
-            .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
+    let source_contents = cx.read_entity(&source, |source, _| {
+        let snapshot = source.text_snapshot();
+        snapshot
+            .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
             .unwrap()
             .as_str()
             .to_owned()
@@ -2917,12 +2937,11 @@ fn composite_file_buffers_are_deduplicated_across_excerpts(cx: &mut TestAppConte
 #[gpui::test]
 fn composite_tracks_edits_made_through_another_editor(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "zero\none\ntwo\n", cx);
-    let source_text = cx.read_entity(&source, |buffer, _| buffer.buffer());
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![ExcerptRange::new(
-                source,
+                source.clone(),
                 TextRange::new(ByteOffset::new(5), ByteOffset::new(9)).unwrap(),
                 Vec::new(),
             )],
@@ -2930,17 +2949,17 @@ fn composite_tracks_edits_made_through_another_editor(cx: &mut TestAppContext) {
         )
     });
 
-    cx.update_entity(&source_text, |buffer, cx| {
-        buffer
+    cx.update_entity(&source, |source, cx| {
+        source
             .edit(
                 [Edit::replace(
                     TextRange::new(ByteOffset::new(5), ByteOffset::new(8)).unwrap(),
                     "ONE",
                 )],
                 TransactionMetadata::default(),
+                cx,
             )
             .unwrap();
-        cx.notify();
     });
     cx.run_until_parked();
 
@@ -2954,19 +2973,17 @@ fn composite_tracks_edits_made_through_another_editor(cx: &mut TestAppContext) {
 fn composite_splits_cross_excerpt_edits_across_source_buffers(cx: &mut TestAppContext) {
     let first = singleton("src/a.rs", "one\n", cx);
     let second = singleton("src/b.rs", "two\n", cx);
-    let first_text = cx.read_entity(&first, |buffer, _| buffer.buffer());
-    let second_text = cx.read_entity(&second, |buffer, _| buffer.buffer());
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
                 ExcerptRange::new(
-                    first,
+                    first.clone(),
                     TextRange::new(ByteOffset::ZERO, ByteOffset::new(4)).unwrap(),
                     Vec::new(),
                 ),
                 ExcerptRange::new(
-                    second,
+                    second.clone(),
                     TextRange::new(ByteOffset::ZERO, ByteOffset::new(4)).unwrap(),
                     Vec::new(),
                 ),
@@ -2987,17 +3004,18 @@ fn composite_splits_cross_excerpt_edits_across_source_buffers(cx: &mut TestAppCo
         assert!(buffer.end_transaction(cx).is_some());
     });
 
-    let read = |buffer: &gpui::Entity<Buffer>, cx: &TestAppContext| {
+    let read = |buffer: &gpui::Entity<LanguageBuffer>, cx: &TestAppContext| {
         cx.read_entity(buffer, |buffer, _| {
-            buffer
-                .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
+            let snapshot = buffer.text_snapshot();
+            snapshot
+                .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
                 .unwrap()
                 .as_str()
                 .to_owned()
         })
     };
-    assert_eq!(read(&first_text, cx), "oX");
-    assert_eq!(read(&second_text, cx), "o\n");
+    assert_eq!(read(&first, cx), "oX");
+    assert_eq!(read(&second, cx), "o\n");
 }
 
 #[gpui::test]
@@ -3022,7 +3040,7 @@ fn read_only_composite_rejects_edits(cx: &mut TestAppContext) {
 fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &mut TestAppContext) {
     let old = singleton("src/a.rs", "旧内容\n", cx);
     let current = singleton("src/a.rs", "上下文\n新内容\n之后\n", cx);
-    let current_buffer = cx.read_entity(&current, |source, _| source.buffer());
+    let current_buffer = current.clone();
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
@@ -3088,8 +3106,9 @@ fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &m
     });
 
     let current_text = cx.read_entity(&current_buffer, |buffer, _| {
-        buffer
-            .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
+        let snapshot = buffer.text_snapshot();
+        snapshot
+            .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
             .unwrap()
             .as_str()
             .to_owned()

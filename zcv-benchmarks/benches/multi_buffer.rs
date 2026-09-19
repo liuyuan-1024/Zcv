@@ -18,13 +18,11 @@ fn projection_setup(
     let mut cx = TestAppContext::build(TestDispatcher::new(1), None);
     let sources = (0..source_count)
         .map(|_| {
-            let buffer = cx.new(|_| {
-                Buffer::from_text(
-                    cached_rust_document(SOURCE_BYTES).to_string(),
-                    BufferConfig::default(),
-                )
-                .unwrap()
-            });
+            let buffer = Buffer::from_text(
+                cached_rust_document(SOURCE_BYTES).to_string(),
+                BufferConfig::default(),
+            )
+            .unwrap();
             cx.new(|cx| {
                 LanguageBuffer::new(
                     buffer,
@@ -39,7 +37,7 @@ fn projection_setup(
         sources
             .iter()
             .map(|source| {
-                let line_count = source.read(cx).text_snapshot(cx).line_count();
+                let line_count = source.read(cx).text_snapshot().line_count();
                 ExcerptRange::line_range(source.clone(), 0..line_count, cx)
             })
             .collect()

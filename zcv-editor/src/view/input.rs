@@ -12,7 +12,7 @@ use gpui::{
     App, Bounds, Context, EntityInputHandler, Pixels, Point, UTF16Selection, Window, px, size,
 };
 use zcv_multi_buffer::MultiBufferSnapshot;
-use zcv_text::{Anchor, TransactionId, Utf16Offset};
+use zcv_text::{Anchor, BufferGeneration, TransactionId, Utf16Offset};
 
 use super::*;
 use crate::element::EditorInputLayout;
@@ -353,7 +353,11 @@ impl Editor {
                     new_regions_after
                         .into_iter()
                         .map(|(range, pair)| AutocloseRegion {
-                            range: Anchor::range_outside(version, range.into()),
+                            range: Anchor::range_outside(
+                                BufferGeneration::INITIAL,
+                                version,
+                                range.into(),
+                            ),
                             pair,
                         }),
                 );

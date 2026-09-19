@@ -16,20 +16,16 @@ fn editor_with_text(
     cx: &mut TestAppContext,
     text: &str,
     selections: SelectionSet,
-) -> (gpui::Entity<Buffer>, gpui::Entity<Editor>) {
-    let buffer = cx.new(|_| {
-        Buffer::from_text(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建")
-    });
-    let language_buffer = cx.new({
-        let buffer = buffer.clone();
-        move |cx| {
-            LanguageBuffer::new(
-                buffer,
-                None,
-                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
-                cx,
-            )
-        }
+) -> (gpui::Entity<LanguageBuffer>, gpui::Entity<Editor>) {
+    let buffer =
+        Buffer::from_text(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建");
+    let language_buffer = cx.new(move |cx| {
+        LanguageBuffer::new(
+            buffer,
+            None,
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
     });
     let editor = cx.new({
         let language_buffer = language_buffer.clone();
@@ -39,13 +35,14 @@ fn editor_with_text(
             editor
         }
     });
-    (buffer, editor)
+    (language_buffer, editor)
 }
 
-fn buffer_text(buffer: &gpui::Entity<Buffer>, cx: &TestAppContext) -> String {
-    cx.read_entity(buffer, |buffer, _| {
-        buffer
-            .slice_byte_range(MultiBufferOffset::ZERO.into(), buffer.len_bytes())
+fn buffer_text(buffer: &gpui::Entity<LanguageBuffer>, cx: &TestAppContext) -> String {
+    cx.read_entity(buffer, |language_buffer, _| {
+        let snapshot = language_buffer.text_snapshot();
+        snapshot
+            .slice_byte_range(MultiBufferOffset::ZERO.into(), snapshot.len_bytes())
             .expect("完整测试范围应可读取")
             .as_str()
             .to_string()
@@ -55,19 +52,15 @@ fn buffer_text(buffer: &gpui::Entity<Buffer>, cx: &TestAppContext) -> String {
 #[gpui::test]
 fn rename_local_at_replaces_only_the_resolved_binding(cx: &mut TestAppContext) {
     let source = "fn main(value: i32) { let result = value; return result; }\n";
-    let buffer = cx.new(|_| {
-        Buffer::from_text(source.to_string(), BufferConfig::default()).expect("测试 Buffer 应创建")
-    });
-    let language_buffer = cx.new({
-        let buffer = buffer.clone();
-        move |cx| {
-            LanguageBuffer::new(
-                buffer,
-                Some(PathBuf::from("rename.rs")),
-                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
-                cx,
-            )
-        }
+    let buffer =
+        Buffer::from_text(source.to_string(), BufferConfig::default()).expect("测试 Buffer 应创建");
+    let language_buffer = cx.new(move |cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(PathBuf::from("rename.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
     });
     let editor = cx.new({
         let language_buffer = language_buffer.clone();
@@ -83,7 +76,7 @@ fn rename_local_at_replaces_only_the_resolved_binding(cx: &mut TestAppContext) {
     });
 
     assert_eq!(
-        buffer_text(&buffer, cx),
+        buffer_text(&language_buffer, cx),
         "fn main(value: i32) { let answer = value; return answer; }\n"
     );
 }
@@ -91,19 +84,15 @@ fn rename_local_at_replaces_only_the_resolved_binding(cx: &mut TestAppContext) {
 #[gpui::test]
 fn rename_local_at_rejects_ambiguous_binding(cx: &mut TestAppContext) {
     let source = "fn main() { let value = 1; let value = 2; value; }\n";
-    let buffer = cx.new(|_| {
-        Buffer::from_text(source.to_string(), BufferConfig::default()).expect("测试 Buffer 应创建")
-    });
-    let language_buffer = cx.new({
-        let buffer = buffer.clone();
-        move |cx| {
-            LanguageBuffer::new(
-                buffer,
-                Some(PathBuf::from("ambiguous.rs")),
-                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
-                cx,
-            )
-        }
+    let buffer =
+        Buffer::from_text(source.to_string(), BufferConfig::default()).expect("测试 Buffer 应创建");
+    let language_buffer = cx.new(move |cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(PathBuf::from("ambiguous.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
     });
     let editor = cx.new({
         let language_buffer = language_buffer.clone();
@@ -117,25 +106,21 @@ fn rename_local_at_rejects_ambiguous_binding(cx: &mut TestAppContext) {
     });
 
     assert!(result.is_err(), "歧义绑定不能执行批量重命名");
-    assert_eq!(buffer_text(&buffer, cx), source);
+    assert_eq!(buffer_text(&language_buffer, cx), source);
 }
 
 #[gpui::test]
 fn rename_local_at_rejects_unresolved_reference(cx: &mut TestAppContext) {
     let source = "fn main() { let value = missing; value; }\n";
-    let buffer = cx.new(|_| {
-        Buffer::from_text(source.to_string(), BufferConfig::default()).expect("测试 Buffer 应创建")
-    });
-    let language_buffer = cx.new({
-        let buffer = buffer.clone();
-        move |cx| {
-            LanguageBuffer::new(
-                buffer,
-                Some(PathBuf::from("unresolved.rs")),
-                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
-                cx,
-            )
-        }
+    let buffer =
+        Buffer::from_text(source.to_string(), BufferConfig::default()).expect("测试 Buffer 应创建");
+    let language_buffer = cx.new(move |cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(PathBuf::from("unresolved.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
     });
     let editor = cx.new({
         let language_buffer = language_buffer.clone();
@@ -149,7 +134,7 @@ fn rename_local_at_rejects_unresolved_reference(cx: &mut TestAppContext) {
     });
 
     assert!(result.is_err(), "未解析引用不能执行批量重命名");
-    assert_eq!(buffer_text(&buffer, cx), source);
+    assert_eq!(buffer_text(&language_buffer, cx), source);
 }
 
 #[gpui::test]
@@ -205,35 +190,25 @@ fn caret_indent_uses_display_map_tab_column(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn editing_a_later_composite_excerpt_keeps_following_input_in_that_source(cx: &mut TestAppContext) {
-    let first = cx.new(|_| {
-        Buffer::from_text("first\n".to_string(), BufferConfig::default())
-            .expect("应创建测试 Buffer")
+    let first = Buffer::from_text("first\n".to_string(), BufferConfig::default())
+        .expect("应创建测试 Buffer");
+    let second = Buffer::from_text("second\n".to_string(), BufferConfig::default())
+        .expect("应创建测试 Buffer");
+    let first = cx.new(|cx| {
+        LanguageBuffer::new(
+            first,
+            None,
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
     });
-    let second = cx.new(|_| {
-        Buffer::from_text("second\n".to_string(), BufferConfig::default())
-            .expect("应创建测试 Buffer")
-    });
-    let first = cx.new({
-        let first = first.clone();
-        move |cx| {
-            LanguageBuffer::new(
-                first,
-                None,
-                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
-                cx,
-            )
-        }
-    });
-    let second = cx.new({
-        let second = second.clone();
-        move |cx| {
-            LanguageBuffer::new(
-                second,
-                None,
-                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
-                cx,
-            )
-        }
+    let second = cx.new(|cx| {
+        LanguageBuffer::new(
+            second,
+            None,
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
     });
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
@@ -256,6 +231,5 @@ fn editing_a_later_composite_excerpt_keeps_following_input_in_that_source(cx: &m
         editor.replace_text(None, "B", cx);
     });
 
-    let second_text = cx.read_entity(&second, |source, _| source.buffer());
-    assert_eq!(buffer_text(&second_text, cx), "ABsecond\n");
+    assert_eq!(buffer_text(&second, cx), "ABsecond\n");
 }

@@ -138,17 +138,13 @@ fn ime_candidate_remains_in_the_syntax_highlight_pipeline(cx: &mut TestAppContex
     let insertion = source.find("\"\"").unwrap() + 1;
     let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
         .expect("Rust 测试 Buffer 应能创建");
-    let raw_buffer = cx.new(|_| raw_buffer);
-    let language_buffer = cx.new({
-        let raw_buffer = raw_buffer.clone();
-        move |cx| {
-            LanguageBuffer::new(
-                raw_buffer,
-                Some(PathBuf::from("main.rs")),
-                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
-                cx,
-            )
-        }
+    let language_buffer = cx.new(|cx| {
+        LanguageBuffer::new(
+            raw_buffer,
+            Some(PathBuf::from("main.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
     });
     let (editor, cx) = cx.add_window_view({
         let language_buffer = language_buffer.clone();

@@ -36,7 +36,6 @@ pub(super) fn test_buffer(
 ) -> Entity<LanguageBuffer> {
     let buffer =
         Buffer::from_text(text.into(), BufferConfig::default()).expect("测试 Buffer 应能创建");
-    let buffer = cx.new(|_| buffer);
     cx.new(|cx| {
         LanguageBuffer::new(
             buffer,
@@ -55,7 +54,6 @@ pub(super) fn revision_buffer(
 ) -> Entity<LanguageBuffer> {
     let buffer =
         Buffer::from_text(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建");
-    let buffer = cx.new(|_| buffer);
     cx.new(|cx| {
         LanguageBuffer::new(
             buffer,
@@ -72,18 +70,12 @@ pub(super) fn focus_editor(editor: &Entity<Editor>, cx: &mut VisualTestContext) 
         window.focus(&focus, cx);
     });
 }
-pub(super) fn engine_buffer(
-    buffer: &Entity<LanguageBuffer>,
-    cx: &TestAppContext,
-) -> Entity<Buffer> {
-    cx.read_entity(buffer, |buffer, _| buffer.buffer())
-}
 pub(super) fn buffer_text(buffer: &Entity<LanguageBuffer>, cx: &TestAppContext) -> String {
-    let buffer = engine_buffer(buffer, cx);
-    cx.read_entity(&buffer, |buffer, _| {
-        buffer
-            .slice_byte_range(MultiBufferOffset::ZERO.into(), buffer.len_bytes())
-            .expect("完整测试 Buffer 应可读取")
+    cx.read_entity(buffer, |language_buffer, _| {
+        let snapshot = language_buffer.text_snapshot();
+        snapshot
+            .slice_byte_range(MultiBufferOffset::ZERO.into(), snapshot.len_bytes())
+            .expect("完整文本应可读取")
             .as_str()
             .to_owned()
     })

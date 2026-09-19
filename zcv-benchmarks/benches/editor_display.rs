@@ -37,27 +37,25 @@ fn long_line_document() -> String {
 // 基准夹具：实体字段必须声明在 cx 之前，保证实体先于测试上下文释放。
 struct Fixture {
     editor: Entity<Editor>,
-    buffer: Entity<Buffer>,
+    source: Entity<LanguageBuffer>,
     cx: TestAppContext,
 }
 
 fn fixture(text: String) -> Fixture {
     let mut cx = TestAppContext::build(TestDispatcher::new(1), None);
-    let buffer = cx.new(|_| {
-        Buffer::from_text(text, BufferConfig::default()).expect("基准文档应能创建 Buffer")
-    });
-    let language = cx.new(|cx| {
+    let buffer = Buffer::from_text(text, BufferConfig::default()).expect("基准文档应能创建 Buffer");
+    let source = cx.new(|cx| {
         LanguageBuffer::new(
-            buffer.clone(),
+            buffer,
             Some(PathBuf::from("src/main.rs")),
             Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
-    let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language, cx));
+    let multi_buffer = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     let editor = cx.new(|cx| Editor::for_multi_buffer(multi_buffer, cx));
     cx.run_until_parked();
-    Fixture { editor, buffer, cx }
+    Fixture { editor, source, cx }
 }
 
 /// 取文档中部一个合法编辑位置。
@@ -65,8 +63,8 @@ fn fixture(text: String) -> Fixture {
 /// 基准文档含多字节字符，直接用字节长度的一半会落在字符中间；
 /// 这里取中间行的行首，保证是字符边界。
 fn middle_offset(fixture: &Fixture) -> usize {
-    fixture.cx.read_entity(&fixture.buffer, |buffer, _| {
-        let snapshot = buffer.snapshot();
+    fixture.cx.read_entity(&fixture.source, |source, _| {
+        let snapshot = source.text_snapshot();
         snapshot
             .line_start_byte(Line::new(snapshot.line_count() / 2))
             .unwrap_or_else(|_| snapshot.len_bytes())
@@ -82,12 +80,13 @@ fn continuous_input(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(1));
     group.bench_function("insert_char_at_middle", |b| {
         b.iter(|| {
-            fixture.cx.update_entity(&fixture.buffer, |buffer, _| {
-                let offset = ByteOffset::new(midpoint.min(buffer.len_bytes().get()));
-                buffer
+            fixture.cx.update_entity(&fixture.source, |source, cx| {
+                let offset = ByteOffset::new(midpoint.min(source.len_bytes().get()));
+                source
                     .edit(
                         [Edit::insert(offset, "x").expect("插入编辑必须合法")],
                         TransactionMetadata::default(),
+                        cx,
                     )
                     .expect("连续输入应成功");
             });
@@ -106,12 +105,13 @@ fn long_line_edit(c: &mut Criterion) {
     group.throughput(Throughput::Bytes(1));
     group.bench_function("insert_char_at_middle", |b| {
         b.iter(|| {
-            fixture.cx.update_entity(&fixture.buffer, |buffer, _| {
-                let offset = ByteOffset::new(buffer.len_bytes().get().min(midpoint));
-                buffer
+            fixture.cx.update_entity(&fixture.source, |source, cx| {
+                let offset = ByteOffset::new(source.len_bytes().get().min(midpoint));
+                source
                     .edit(
                         [Edit::insert(offset, "x").expect("插入编辑必须合法")],
                         TransactionMetadata::default(),
+                        cx,
                     )
                     .expect("长行输入应成功");
             });

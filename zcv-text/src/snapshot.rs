@@ -5,16 +5,18 @@
 use std::borrow::Cow;
 
 use crate::{
-    Affinity, Anchor, BufferConfig, BufferVersion, ByteOffset, CharOffset, Line, LineRange,
-    MovementDirection, MovementUnit, Position, TextChangeBatch, TextRange, TextResult, Utf16Offset,
-    Utf16Position, WordBoundaryPolicy,
+    Affinity, Anchor, BufferConfig, BufferGeneration, BufferVersion, ByteOffset, CharOffset, Line,
+    LineRange, MovementDirection, MovementUnit, Position, TextChangeBatch, TextRange, TextResult,
+    Utf16Offset, Utf16Position, WordBoundaryPolicy,
+    errors::AnchorError,
+    position_map::PositionMap,
     slicing::{LineContent, LineSlice, TextSlice},
     slicing::{
         line_content_for_text, text_range_for_byte_range, text_range_for_line,
         text_range_for_line_range,
     },
     storage::{RopeySnapshot, TextRead, text_coordinate_gateway},
-    tracking::EditLog,
+    tracking::{CoordinateIndex, EditLog},
 };
 
 /// 不可变文本快照。
@@ -22,28 +24,81 @@ use crate::{
 pub struct Snapshot {
     storage: RopeySnapshot,
     version: BufferVersion,
+    generation: BufferGeneration,
     config: BufferConfig,
-    /// Buffer 在该版本时可见的版本化编辑日志，供 edits_since / Anchor 跨版本解析。
+    /// Buffer 在该版本时可见的版本化编辑日志，供 edits_since 增量同步。
     edit_log: EditLog,
+    /// 不随编辑日志预算衰减的版本坐标索引，供 Anchor 与跨版本坐标解析。
+    coordinate_index: CoordinateIndex,
 }
 
 impl Snapshot {
     pub(crate) fn new(
         storage: RopeySnapshot,
         version: BufferVersion,
+        generation: BufferGeneration,
         config: BufferConfig,
         edit_log: EditLog,
+        coordinate_index: CoordinateIndex,
     ) -> Self {
         Self {
             storage,
             version,
+            generation,
             config,
             edit_log,
+            coordinate_index,
         }
     }
 
     pub fn version(&self) -> BufferVersion {
         self.version
+    }
+
+    /// 当前内容代际；reset / 基线替换后与旧锚点不同。
+    pub fn generation(&self) -> BufferGeneration {
+        self.generation
+    }
+
+    /// 用不衰减坐标索引返回 `since` 到当前版本的坐标映射。
+    ///
+    /// `generation` 必须与快照一致，否则锚点已被基线替换淘汰；
+    /// `since` 晚于当前版本或不在索引覆盖范围内都会显式失败。
+    pub fn position_map_since(
+        &self,
+        generation: BufferGeneration,
+        since: BufferVersion,
+    ) -> TextResult<PositionMap> {
+        if generation != self.generation {
+            return Err(AnchorError::GenerationMismatch {
+                anchor: generation,
+                target: self.generation,
+            }
+            .into());
+        }
+        self.position_map_for_rebase(since)
+    }
+
+    /// 跨代际返回 `since` 到当前版本的坐标映射。
+    ///
+    /// 这是 reset / 基线替换后的显式重锚入口；普通解析必须走
+    /// [`Snapshot::position_map_since`]，由它拒绝把旧代际当作普通版本推进。
+    pub fn position_map_for_rebase(&self, since: BufferVersion) -> TextResult<PositionMap> {
+        if since > self.version {
+            return Err(AnchorError::TargetBeforeSource {
+                anchor: since,
+                target: self.version,
+            }
+            .into());
+        }
+        let patch = self
+            .coordinate_index
+            .patch_since(since, self.version)
+            .ok_or(AnchorError::VersionNotIndexed {
+                requested: since,
+                current: self.version,
+            })?;
+        Ok(PositionMap::from_text_patch(&patch))
     }
 
     /// 返回自 `since` 版本到本快照版本的净编辑批次。
@@ -66,12 +121,12 @@ impl Snapshot {
 
     /// 在 `offset` 处创建吸附到插入文本之前的锚点。
     pub fn anchor_before(&self, offset: ByteOffset) -> Anchor {
-        Anchor::new(self.version, offset).with_affinity(Affinity::Before)
+        Anchor::new(self.generation, self.version, offset).with_affinity(Affinity::Before)
     }
 
     /// 在 `offset` 处创建吸附到插入文本之后的锚点。
     pub fn anchor_after(&self, offset: ByteOffset) -> Anchor {
-        Anchor::new(self.version, offset).with_affinity(Affinity::After)
+        Anchor::new(self.generation, self.version, offset).with_affinity(Affinity::After)
     }
 
     pub fn config(&self) -> &BufferConfig {

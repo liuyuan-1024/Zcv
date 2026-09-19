@@ -10,8 +10,10 @@
 //! - `validation`：Buffer 级边界校验
 
 use crate::{
-    BufferConfig, BufferVersion, TransactionId, storage::RopeyStorage,
-    text_changes::TextChangeTopic, tracking::EditLog,
+    BufferConfig, BufferGeneration, BufferVersion, TransactionId,
+    storage::RopeyStorage,
+    text_changes::TextChangeTopic,
+    tracking::{CoordinateIndex, EditLog},
 };
 
 mod coordinates;
@@ -38,11 +40,15 @@ pub struct Buffer {
     config: BufferConfig,
     storage: RopeyStorage,
     version: BufferVersion,
+    /// 当前内容代际；reset / 基线替换后开启新代际。
+    generation: BufferGeneration,
     saved_version: BufferVersion,
     next_transaction_id: TransactionId,
     text_changes: TextChangeTopic,
     /// 唯一的版本化编辑事实：Snapshot 据此重建净编辑，History 据此回放 undo/redo。
     edit_log: EditLog,
+    /// 不随编辑日志预算裁剪的版本坐标索引：Anchor 解析与跨版本坐标映射的唯一事实。
+    coordinate_index: CoordinateIndex,
     history: history::HistoryState,
     /// 进行中的编辑会话（`start_transaction` 开启，`end_transaction` 提交）。
     session: Option<history::TransactionSession>,

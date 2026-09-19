@@ -58,8 +58,13 @@ fn write_rejects_stale_version() {
         .unwrap();
 
     let mut output = Vec::new();
-    let error =
-        write_buffer_to(&buffer, stale, &mut output, LineEndingConfig::Preserve).unwrap_err();
+    let error = write_buffer_to(
+        &buffer.snapshot(),
+        stale,
+        &mut output,
+        LineEndingConfig::Preserve,
+    )
+    .unwrap_err();
     assert!(matches!(
         error,
         BufferSaveError::Text(TextError::Transaction(
@@ -75,7 +80,7 @@ fn write_preserves_or_normalizes_line_endings() {
 
     let mut preserved = Vec::new();
     write_buffer_to(
-        &buffer,
+        &buffer.snapshot(),
         buffer.version(),
         &mut preserved,
         LineEndingConfig::Preserve,
@@ -84,6 +89,12 @@ fn write_preserves_or_normalizes_line_endings() {
     assert_eq!(String::from_utf8(preserved).unwrap(), "a\nb\rc");
 
     let mut crlf = Vec::new();
-    write_buffer_to(&buffer, buffer.version(), &mut crlf, LineEndingConfig::Crlf).unwrap();
+    write_buffer_to(
+        &buffer.snapshot(),
+        buffer.version(),
+        &mut crlf,
+        LineEndingConfig::Crlf,
+    )
+    .unwrap();
     assert_eq!(String::from_utf8(crlf).unwrap(), "a\r\nb\r\nc");
 }

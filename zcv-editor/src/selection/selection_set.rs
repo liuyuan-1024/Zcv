@@ -137,18 +137,22 @@ impl SelectionSet<MultiBufferOffset> {
 
 impl SelectionSet<MultiBufferAnchor> {
     /// 按当前快照把源锚点集合解析为偏移集合；顺序与 primary 保持不变。
+    ///
+    /// 端点版本已被 reset / 基线替换淘汰的选区无法表示，直接丢弃；
+    /// 全部不可解析时退化为默认单光标（选区集合必须非空）。
     pub(crate) fn resolve(
         &self,
         snapshot: &MultiBufferSnapshot,
     ) -> SelectionSet<MultiBufferOffset> {
-        SelectionSet::from_selections(
-            self.selections
-                .iter()
-                .copied()
-                .map(|selection| selection.resolve(snapshot))
-                .collect(),
-            self.primary_index,
-        )
+        let resolved: Vec<_> = self
+            .selections
+            .iter()
+            .filter_map(|selection| selection.resolve(snapshot))
+            .collect();
+        if resolved.is_empty() {
+            return SelectionSet::default();
+        }
+        SelectionSet::from_selections(resolved, self.primary_index)
     }
 }
 

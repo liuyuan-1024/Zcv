@@ -3452,10 +3452,9 @@ mod tests {
 
     #[gpui::test]
     fn search_marker_rows_use_combined_document_coordinates(cx: &mut TestAppContext) {
-        let source_buffer = cx.new(|_| {
+        let source_buffer =
             Buffer::from_text("first\n项目\nlast".to_owned(), BufferConfig::default())
-                .expect("应创建组合搜索 marker 测试 Buffer")
-        });
+                .expect("应创建组合搜索 marker 测试 Buffer");
         let source = cx.new(|cx| {
             LanguageBuffer::new(
                 source_buffer,
@@ -3585,19 +3584,20 @@ mod tests {
     #[gpui::test]
     fn background_fragments_include_line_origin_x(cx: &mut TestAppContext) {
         let text = "代码 abc 代码\n";
-        let buffer = cx.new(|_| {
-            Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建 Buffer")
-        });
+        let buffer =
+            Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建 Buffer");
         let language_buffer = cx.new(|cx| {
             LanguageBuffer::new(
-                buffer.clone(),
+                buffer,
                 Some(PathBuf::from("README.md")),
                 std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
                 cx,
             )
         });
         cx.run_until_parked();
-        let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.snapshot());
+        let snapshot = cx.read_entity(&language_buffer, |language_buffer, _| {
+            language_buffer.text_snapshot()
+        });
         let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));
         cx.run_until_parked();
         let multi_snapshot =
@@ -3853,11 +3853,9 @@ mod tests {
     #[gpui::test]
     fn multibuffer_header_can_start_above_viewport(cx: &mut TestAppContext) {
         let text = "引擎\n";
-        let source_text = cx.new(|_| {
-            Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建源 Buffer")
-        });
+        let source_text =
+            Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建源 Buffer");
         let source = cx.new({
-            let source_text = source_text.clone();
             move |cx| {
                 LanguageBuffer::new(
                     source_text,
@@ -3948,10 +3946,8 @@ mod tests {
     #[gpui::test]
     fn sticky_buffer_header_follows_excerpts_and_points_to_the_next_file(cx: &mut TestAppContext) {
         let first_text = "a0\na1\na2\na3\na4\na5\na6\na7\n";
-        let first_buffer = cx.new(|_| {
-            Buffer::from_text(first_text.to_owned(), BufferConfig::default())
-                .expect("应创建第一个源 Buffer")
-        });
+        let first_buffer = Buffer::from_text(first_text.to_owned(), BufferConfig::default())
+            .expect("应创建第一个源 Buffer");
         let first = cx.new(move |cx| {
             LanguageBuffer::new(
                 first_buffer,
@@ -3962,10 +3958,8 @@ mod tests {
         });
 
         let second_text = "b0\nb1\n";
-        let second_buffer = cx.new(|_| {
-            Buffer::from_text(second_text.to_owned(), BufferConfig::default())
-                .expect("应创建第二个源 Buffer")
-        });
+        let second_buffer = Buffer::from_text(second_text.to_owned(), BufferConfig::default())
+            .expect("应创建第二个源 Buffer");
         let second = cx.new(move |cx| {
             LanguageBuffer::new(
                 second_buffer,
@@ -4049,19 +4043,20 @@ mod tests {
     #[gpui::test]
     fn wrapped_unicode_markdown_queries_highlights_from_source_chunks(cx: &mut TestAppContext) {
         let text = "> **The reconstructed Functionally Equivalent Scene（功能等价场景）can be directly imported into ROS（机器人操作系统）to support interactive simulation（交互式仿真）and long-horizon robot task execution（长时序机器人任务执行）.**\n";
-        let buffer = cx.new(|_| {
-            Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建 Buffer")
-        });
+        let buffer =
+            Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建 Buffer");
         let language_buffer = cx.new(|cx| {
             LanguageBuffer::new(
-                buffer.clone(),
+                buffer,
                 Some(PathBuf::from("README.md")),
                 std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
                 cx,
             )
         });
         cx.run_until_parked();
-        let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.snapshot());
+        let snapshot = cx.read_entity(&language_buffer, |language_buffer, _| {
+            language_buffer.text_snapshot()
+        });
         let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));
         cx.run_until_parked();
         let multi_snapshot =
@@ -4517,9 +4512,8 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         let text = "abcdef\nx\nabcde\n";
-        let source_buffer = cx.new(|_| {
-            Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建源 Buffer")
-        });
+        let source_buffer =
+            Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建源 Buffer");
         let source = cx.new(move |cx| {
             LanguageBuffer::new(
                 source_buffer,

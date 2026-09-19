@@ -8,6 +8,7 @@
 mod diff_projection;
 mod path_key;
 
+use diff_projection::DiffSourceRole;
 pub use diff_projection::{DiffFile, DiffHunkSource, DisplayHunk};
 pub(crate) use path_key::{PathKey, PathKeyIndex};
 
@@ -28,11 +29,11 @@ use zcv_language::{
     OutlineItem, OutlineTextRange, SyntaxNode, SyntaxSnapshot,
 };
 use zcv_text::{
-    Affinity, Anchor, Buffer, BufferVersion, ByteOffset, CharOffset, CoordinateError, Edit, Line,
-    LineEndingStyle, LogicalColumn, MovementDirection, MovementUnit, Position, PositionMap,
-    Snapshot, Stickiness, StorageError, TextChangeBatch, TextError, TextRange, TextRead,
-    TextResult, TextSubscription, TransactionId, TransactionMetadata, Utf16Offset, Utf16Position,
-    WordBoundaryPolicy,
+    Affinity, Anchor, BufferGeneration, BufferVersion, ByteOffset, CharOffset, CoordinateError,
+    Edit, Line, LineEndingStyle, LogicalColumn, MovementDirection, MovementUnit, Position,
+    PositionMap, Snapshot, Stickiness, StorageError, TextChangeBatch, TextError, TextRange,
+    TextRead, TextResult, TextSubscription, TransactionId, TransactionMetadata, Utf16Offset,
+    Utf16Position, WordBoundaryPolicy,
 };
 
 /// 组合文档中的一个源片段。
@@ -112,7 +113,7 @@ impl ExcerptRange {
         lines: std::ops::Range<usize>,
         cx: &App,
     ) -> Self {
-        let text = source.read(cx).buffer().read(cx).snapshot();
+        let text = source.read(cx).text_snapshot();
         Self::line_range_from_text(source, &text, lines)
     }
 
@@ -304,17 +305,26 @@ struct ExcerptContext {
 }
 
 impl ExcerptContext {
-    /// 在指定源快照版本上创建锚点范围；outside 让边界插入纳入范围。
-    fn new(version: BufferVersion, range: TextRange, outside: bool) -> Self {
+    /// 在指定源快照代际与版本上创建锚点范围；outside 让边界插入纳入范围。
+    fn new(
+        generation: BufferGeneration,
+        version: BufferVersion,
+        range: TextRange,
+        outside: bool,
+    ) -> Self {
         let (start_affinity, end_affinity) = if outside {
             (Affinity::Before, Affinity::After)
         } else {
             (Affinity::After, Affinity::Before)
         };
         Self {
-            start: Anchor::new(version, range.start()).with_affinity(start_affinity),
-            end: Anchor::new(version, range.end()).with_affinity(end_affinity),
+            start: Anchor::new(generation, version, range.start()).with_affinity(start_affinity),
+            end: Anchor::new(generation, version, range.end()).with_affinity(end_affinity),
         }
+    }
+
+    fn generation(&self) -> BufferGeneration {
+        self.start.generation()
     }
 
     fn version(&self) -> BufferVersion {
@@ -341,16 +351,15 @@ impl ExcerptContext {
         self.start.offset() == self.end.offset()
     }
 
-    /// 用目标源快照的版本化编辑日志把锚点范围推进到当前坐标。
+    /// 用目标源快照的不衰减坐标索引把锚点范围推进到当前坐标。
     ///
-    /// outside 决定边界插入是否纳入；锚点版本已被日志裁剪时返回 None。
-    fn mapped(&self, snapshot: &Snapshot, outside: bool) -> Option<Self> {
+    /// outside 决定边界插入是否纳入；锚点代际与目标不一致（reset / 基线替换）时显式失败，
+    /// 同一代际内索引永不衰减，不会因编辑日志预算裁剪而失效。
+    fn mapped(&self, snapshot: &Snapshot, outside: bool) -> TextResult<Self> {
         let range = self.range();
-        // 位置推进必须用“自锚点版本以来的全部编辑”：范围之前的编辑同样会平移它，
-        // 只取范围相交编辑（edits_since_in_range）会漏掉这些位移。
-        let batch = snapshot.edits_since(self.version()).ok()?;
-        let mapped = batch
-            .position_map()
+        // 位置推进必须用“自锚点版本以来的全部坐标增量”：范围之前的编辑同样会平移它。
+        let map = snapshot.position_map_since(self.generation(), self.version())?;
+        let mapped = map
             .map_old_range_with_stickiness(
                 range,
                 if outside {
@@ -360,7 +369,12 @@ impl ExcerptContext {
                 },
             )
             .value();
-        Some(Self::new(snapshot.version(), mapped, outside))
+        Ok(Self::new(
+            snapshot.generation(),
+            snapshot.version(),
+            mapped,
+            outside,
+        ))
     }
 }
 
@@ -1610,7 +1624,7 @@ impl MultiBufferHistoryOutcome {
 
 struct CompositeHistoryEntry {
     id: TransactionId,
-    buffers: Vec<(Entity<Buffer>, TransactionId)>,
+    buffers: Vec<(Entity<LanguageBuffer>, TransactionId)>,
 }
 
 /// MultiBuffer 拥有的源文本增量游标。
@@ -2814,7 +2828,7 @@ impl From<Snapshot> for MultiBufferSnapshot {
             path: path.clone(),
             path_index: PathKeyIndex::new(0),
             display_path: path,
-            source_range: ExcerptContext::new(text.version(), range, false),
+            source_range: ExcerptContext::new(text.generation(), text.version(), range, false),
             source_start_line: 0,
             text_summary,
             adds_newline: false,
@@ -2883,7 +2897,7 @@ struct ExcerptState {
     projection_changes: ProjectionChangeTopic,
     next_transaction_id: TransactionId,
     active_transaction: Option<TransactionId>,
-    active_source_transactions: Vec<Entity<Buffer>>,
+    active_source_transactions: Vec<Entity<LanguageBuffer>>,
     undo_stack: Vec<CompositeHistoryEntry>,
     redo_stack: Vec<CompositeHistoryEntry>,
 }
@@ -2965,7 +2979,7 @@ impl MultiBuffer {
     /// 整文件片段不创建文件标题块（单文件文档无多文件边界；
     /// 标题块由多文件投影与 diff 投影按 `show_file_header` 自行声明）。
     pub fn singleton(source: Entity<LanguageBuffer>, cx: &mut Context<Self>) -> Self {
-        let line_count = source.read(cx).text_snapshot(cx).line_count();
+        let line_count = source.read(cx).text_snapshot().line_count();
         let mut multi_buffer = Self::empty(cx);
         multi_buffer.singleton_source = Some(source.clone());
         multi_buffer.set_excerpts(
@@ -3196,9 +3210,7 @@ impl MultiBuffer {
             .iter()
             .map(|source| SourceSubscription {
                 source: source.clone(),
-                text: source.update(cx, |source, cx| {
-                    source.buffer().update(cx, |buffer, _| buffer.subscribe())
-                }),
+                text: source.read(cx).subscribe(),
             })
             .collect::<Vec<_>>();
         let next_source_event_subscriptions = unique_sources
@@ -3252,7 +3264,7 @@ impl MultiBuffer {
             let source_index = match next_source_indices.get(&source_id).copied() {
                 Some(index) => index,
                 None => {
-                    let snapshot = source.snapshot(cx);
+                    let snapshot = source.snapshot();
                     next_sources.push(ExcerptSource {
                         entity: excerpt.source.clone(),
                         word_boundary: snapshot_word_boundary(&snapshot),
@@ -3308,6 +3320,7 @@ impl MultiBuffer {
                 path_index,
                 display_path,
                 source_range: ExcerptContext::new(
+                    next_sources[item.source_index].text.generation(),
                     next_sources[item.source_index].text.version(),
                     item.excerpt.source_range,
                     false,
@@ -3479,6 +3492,7 @@ impl MultiBuffer {
                 path_index,
                 display_path,
                 source_range: ExcerptContext::new(
+                    self.state.sources[item.source_index].text.generation(),
                     self.state.sources[item.source_index].text.version(),
                     item.excerpt.source_range,
                     false,
@@ -3541,6 +3555,7 @@ impl MultiBuffer {
                 path_index,
                 display_path,
                 source_range: ExcerptContext::new(
+                    source.text.generation(),
                     source.text.version(),
                     excerpt.source_range,
                     false,
@@ -3569,6 +3584,7 @@ impl MultiBuffer {
     fn splice_source_path(
         &mut self,
         source_id: gpui::EntityId,
+        reset: bool,
         source_position_map: &PositionMap,
         expanded_excerpts: Option<&HashSet<usize>>,
         cx: &App,
@@ -3603,27 +3619,32 @@ impl MultiBuffer {
                     let outside = expanded_excerpts
                         .is_none_or(|expanded| expanded.contains(&(start_index + local)));
                     let source = &self.state.sources[entry.source_index];
-                    // 源范围的权威表示是 Anchor：用源快照的版本化编辑日志推进，
-                    // 不再把订阅批次的 PositionMap 当作版本事实。日志裁剪掉锚点版本时用本次变更的映射恢复。
-                    entry.source_range = entry
-                        .source_range
-                        .mapped(&source.text, outside)
-                        .unwrap_or_else(|| {
-                            ExcerptContext::new(
-                                source.text.version(),
-                                source_position_map
-                                    .map_old_range_with_stickiness(
-                                        entry.source_range.range(),
-                                        if outside {
-                                            Stickiness::Expand
-                                        } else {
-                                            Stickiness::Never
-                                        },
-                                    )
-                                    .value(),
-                                outside,
-                            )
-                        });
+                    if reset {
+                        // 基线替换：显式用本次 reset 的坐标映射把 excerpt 重锚到新代际，
+                        // 不把旧锚点当作普通版本推进继续映射。
+                        entry.source_range = ExcerptContext::new(
+                            source.text.generation(),
+                            source.text.version(),
+                            source_position_map
+                                .map_old_range_with_stickiness(
+                                    entry.source_range.range(),
+                                    if outside {
+                                        Stickiness::Expand
+                                    } else {
+                                        Stickiness::Never
+                                    },
+                                )
+                                .value(),
+                            outside,
+                        );
+                    } else {
+                        // 源范围的权威表示是 Anchor：用不衰减坐标索引推进；
+                        // 同一代际内索引覆盖全部版本，失败即内部状态不一致。
+                        entry.source_range = entry
+                            .source_range
+                            .mapped(&source.text, outside)
+                            .expect("同一代际内的源编辑必须能由不衰减坐标索引解析");
+                    }
                     entry.match_ranges = entry
                         .match_ranges
                         .iter()
@@ -3756,9 +3777,7 @@ impl MultiBuffer {
             .iter()
             .map(|source| SourceSubscription {
                 source: source.clone(),
-                text: source.update(cx, |source, cx| {
-                    source.buffer().update(cx, |buffer, _| buffer.subscribe())
-                }),
+                text: source.read(cx).subscribe(),
             })
             .collect::<Vec<_>>();
         let new_source_event_subscriptions = new_sources
@@ -3780,7 +3799,7 @@ impl MultiBuffer {
             })
             .collect::<Vec<_>>();
         self.state.sources.extend(new_sources.iter().map(|source| {
-            let snapshot = source.read(cx).snapshot(cx);
+            let snapshot = source.read(cx).snapshot();
             ExcerptSource {
                 entity: source.clone(),
                 word_boundary: snapshot_word_boundary(&snapshot),
@@ -3925,11 +3944,24 @@ impl MultiBuffer {
         );
         let position_map = source_change.position_map();
         // 外部整体刷新会重建 excerpt 拓扑；文本始终由当前 source 快照按需读取。
-        if source_change.requires_reset() && self.is_diff_source(source_id, cx) {
-            let before = self.projection_trees();
-            self.refresh_source_snapshot(source_id, cx);
-            self.rebuild_diff_projection_from(before, Some(&source_change), cx);
-            return Some(source_change);
+        if source_change.requires_reset() {
+            match self.diff_source_role(source_id, cx) {
+                // working 文档整体替换：组合正文必须立即按新快照重物化。
+                Some(DiffSourceRole::Working) => {
+                    let before = self.projection_trees();
+                    self.refresh_source_snapshot(source_id, cx);
+                    self.rebuild_diff_projection_from(before, Some(&source_change), cx);
+                    return Some(source_change);
+                }
+                // base/index 修订文档整体替换：旧侧内容与 hunk 几何都由 BufferDiff 拥有。
+                // 源路径若按旧 hunk 提前重物化，会与随后 DiffChanged 的权威结果重复且几何不一致；
+                // 这里只触发所属 diff 重算，投影重建统一交给 DiffChanged。
+                Some(DiffSourceRole::Revision) => {
+                    self.recompute_diff_for_source(source_id, diff_refresh, cx);
+                    return Some(source_change);
+                }
+                None => {}
+            }
         }
         self.recompute_diff_for_source(source_id, diff_refresh, cx);
         // 普通编辑只更新受影响 source 的派生坐标；BufferDiff 仍独立维护 hunk 拓扑。
@@ -3953,7 +3985,7 @@ impl MultiBuffer {
         else {
             return;
         };
-        let snapshot = source.read(cx).snapshot(cx);
+        let snapshot = source.read(cx).snapshot();
         self.snapshot_epoch = self.snapshot_epoch.wrapping_add(1);
         self.state.metadata_epoch = self.state.metadata_epoch.wrapping_add(1);
         if let Some(excerpt_source) = self
@@ -3989,7 +4021,7 @@ impl MultiBuffer {
         else {
             return;
         };
-        let snapshot = source.read(cx).snapshot(cx);
+        let snapshot = source.read(cx).snapshot();
 
         if let Some(excerpt_source) = self
             .state
@@ -4007,7 +4039,13 @@ impl MultiBuffer {
         let old_mappings =
             mappings_for_source(&self.state.excerpts, &self.state.diff_transforms, source_id);
         // 绝对输出坐标由树摘要推导：源范围变化只 splice 受影响路径的 item，其余路径不变。
-        self.splice_source_path(source_id, source_position_map, expanded_excerpts, cx);
+        self.splice_source_path(
+            source_id,
+            source_change.requires_reset(),
+            source_position_map,
+            expanded_excerpts,
+            cx,
+        );
         self.refresh_diff_display(cx);
         let incremental = self.source_incremental_change(source_id, source_change, &old_mappings);
         self.publish_projection_change(incremental);
@@ -4025,7 +4063,7 @@ impl MultiBuffer {
         else {
             return;
         };
-        let snapshot = source.read(cx).snapshot(cx);
+        let snapshot = source.read(cx).snapshot();
         self.snapshot_epoch = self.snapshot_epoch.wrapping_add(1);
         self.state.metadata_epoch = self.state.metadata_epoch.wrapping_add(1);
         // 按源去重：只更新该源共享的一份 (text, syntax)，所有映射自动跟随。
@@ -4198,11 +4236,9 @@ impl MultiBuffer {
 
         let mut edited_source_ids = Vec::with_capacity(grouped.len());
         for (source, source_edits) in grouped {
-            Self::update_source_text(
-                &source,
-                |buffer| buffer.edit(source_edits, metadata.clone()),
-                cx,
-            )?;
+            source.update(cx, |source, cx| {
+                source.edit(source_edits, metadata.clone(), cx)
+            })?;
             edited_source_ids.push(source.entity_id());
         }
 
@@ -4223,27 +4259,6 @@ impl MultiBuffer {
             })?;
         }
         Ok(())
-    }
-
-    /// MultiBuffer 写入源 Buffer 的唯一入口。
-    ///
-    /// 文本内核只发布版本化变更；这里同步推进 LanguageBuffer，确保返回前文本与语法属于同一版本。
-    /// 普通编辑与历史回放共同经过这一入口，不能各自维护跨层同步协议。
-    fn update_source_text<T>(
-        source: &Entity<LanguageBuffer>,
-        update: impl FnOnce(&mut Buffer) -> TextResult<T>,
-        cx: &mut Context<Self>,
-    ) -> TextResult<T> {
-        let source_buffer = source.read(cx).buffer();
-        let result = source_buffer.update(cx, |buffer, cx| -> TextResult<T> {
-            let version = buffer.version();
-            let result = update(buffer)?;
-            if buffer.version() != version {
-                cx.notify();
-            }
-            Ok(result)
-        })?;
-        Ok(result)
     }
 
     /// 源文件路径变化后，按各源当前路径重建映射项（低频操作，允许整体重排）。
@@ -4293,9 +4308,7 @@ impl MultiBuffer {
                 .as_ref()
                 .expect("共享源历史必须有工作区源");
             return source
-                .read(cx)
-                .buffer()
-                .update(cx, |buffer, _| buffer.start_transaction())?
+                .update(cx, |source, _| source.start_transaction())?
                 .ok_or_else(|| TextError::InvariantViolation {
                     location: "MultiBuffer::start_transaction",
                     detail: "工作区源 Buffer 已有活动事务".to_string(),
@@ -4336,20 +4349,19 @@ impl MultiBuffer {
                 })?;
         let id = *next_transaction_id;
         for source in sources {
-            let buffer = source.read(cx).buffer();
             if active_source_transactions
                 .iter()
-                .any(|candidate| candidate.entity_id() == buffer.entity_id())
+                .any(|candidate| candidate.entity_id() == source.entity_id())
             {
                 continue;
             }
-            buffer
-                .update(cx, |buffer, _| buffer.start_transaction())?
+            source
+                .update(cx, |source, _| source.start_transaction())?
                 .ok_or_else(|| TextError::InvariantViolation {
                     location: "MultiBuffer::start_transaction",
                     detail: "excerpt 底层 Buffer 已有活动事务".to_string(),
                 })?;
-            active_source_transactions.push(buffer);
+            active_source_transactions.push(source);
         }
         *active_transaction = Some(id);
         Ok(id)
@@ -4362,9 +4374,7 @@ impl MultiBuffer {
                 .as_ref()
                 .expect("共享源历史必须有工作区源");
             return source
-                .read(cx)
-                .buffer()
-                .update(cx, |buffer, _| buffer.end_transaction())
+                .update(cx, |source, _| source.end_transaction())
                 .ok()
                 .flatten();
         }
@@ -4377,13 +4387,13 @@ impl MultiBuffer {
         } = &mut self.state;
         let id = active_transaction.take()?;
         let mut transactions = Vec::new();
-        for buffer in active_source_transactions.drain(..) {
-            if let Some(transaction_id) = buffer
-                .update(cx, |buffer, _| buffer.end_transaction())
+        for source in active_source_transactions.drain(..) {
+            if let Some(transaction_id) = source
+                .update(cx, |source, _| source.end_transaction())
                 .ok()
                 .flatten()
             {
-                transactions.push((buffer, transaction_id));
+                transactions.push((source, transaction_id));
             }
         }
         if transactions.is_empty() {
@@ -4419,8 +4429,7 @@ impl MultiBuffer {
                 .singleton_source
                 .as_ref()
                 .expect("共享源历史必须有工作区源");
-            let buffer = source.read(cx).buffer();
-            return buffer.read(cx).current_history_transaction_id();
+            return source.read(cx).current_history_transaction_id();
         }
         self.state.undo_stack.last().map(|entry| entry.id)
     }
@@ -4450,11 +4459,13 @@ impl MultiBuffer {
                 .clone()
                 .expect("共享源历史必须有工作区源");
             let old_version = self.snapshot(cx).version();
-            let outcome = Self::update_source_text(
-                &source,
-                |buffer| if redo { buffer.redo() } else { buffer.undo() },
-                cx,
-            )?;
+            let outcome = source.update(cx, |source, cx| {
+                if redo {
+                    source.redo(cx)
+                } else {
+                    source.undo(cx)
+                }
+            })?;
             let Some(outcome) = outcome else {
                 return Ok(None);
             };
@@ -4516,12 +4527,7 @@ impl MultiBuffer {
                 let Some((excerpt, _)) = cursor.item() else {
                     break None;
                 };
-                if self.state.sources[excerpt.source_index]
-                    .entity
-                    .read(cx)
-                    .buffer()
-                    .entity_id()
-                    == buffer.entity_id()
+                if self.state.sources[excerpt.source_index].entity.entity_id() == buffer.entity_id()
                 {
                     break Some(self.state.sources[excerpt.source_index].entity.clone());
                 }
@@ -4533,11 +4539,13 @@ impl MultiBuffer {
                     detail: "历史 Buffer 不再属于当前组合文档源".to_string(),
                 });
             };
-            let outcome = Self::update_source_text(
-                &source,
-                |buffer| if redo { buffer.redo() } else { buffer.undo() },
-                cx,
-            )?;
+            let outcome = source.update(cx, |source, cx| {
+                if redo {
+                    source.redo(cx)
+                } else {
+                    source.undo(cx)
+                }
+            })?;
             if outcome.is_none() {
                 return Err(TextError::InvariantViolation {
                     location: "MultiBuffer::replay_history",
@@ -4611,15 +4619,6 @@ impl MultiBuffer {
         }
     }
 
-    /// 普通整文件文档的底层文本。
-    ///
-    /// 文档角色由构造时的 working source 决定，不随 diff 展开后的 excerpt 形状变化。
-    pub fn as_singleton(&self, cx: &App) -> Option<Entity<Buffer>> {
-        self.singleton_source
-            .as_ref()
-            .map(|source| source.read(cx).buffer())
-    }
-
     /// 普通编辑器的工作区源（展开 diff 时作为新侧输入）。
     pub fn singleton_source(&self) -> Option<Entity<LanguageBuffer>> {
         self.singleton_source.clone()
@@ -4647,8 +4646,6 @@ impl MultiBuffer {
                 && self.state.sources[excerpt.source_index]
                     .entity
                     .read(cx)
-                    .buffer()
-                    .read(cx)
                     .is_dirty()
             {
                 return true;
@@ -4662,8 +4659,8 @@ impl MultiBuffer {
     ///
     /// 收集可编辑 excerpts 的源 Buffer 并按实体去重；无路径源（内存草稿）不参与。
     /// 显示文本物化 Buffer 永远不会出现在结果中。
-    pub fn file_buffers(&self, cx: &App) -> Vec<(Entity<Buffer>, PathBuf)> {
-        let mut buffers = Vec::<(Entity<Buffer>, PathBuf)>::new();
+    pub fn file_buffers(&self, cx: &App) -> Vec<(Entity<LanguageBuffer>, PathBuf)> {
+        let mut buffers = Vec::<(Entity<LanguageBuffer>, PathBuf)>::new();
         let mut cursor = MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
         cursor.seek_output(ByteOffset::ZERO, Bias::Right);
         while let Some((entry, _)) = cursor.item() {
@@ -4671,16 +4668,15 @@ impl MultiBuffer {
                 cursor.next();
                 continue;
             }
-            let source = self.state.sources[entry.source_index].entity.read(cx);
-            let Some(path) = source.file_path() else {
+            let source = self.state.sources[entry.source_index].entity.clone();
+            let Some(path) = source.read(cx).file_path() else {
                 continue;
             };
-            let buffer = source.buffer();
             if !buffers
                 .iter()
-                .any(|(existing, _)| existing.entity_id() == buffer.entity_id())
+                .any(|(existing, _)| existing.entity_id() == source.entity_id())
             {
-                buffers.push((buffer, path.to_path_buf()));
+                buffers.push((source, path.to_path_buf()));
             }
             cursor.next();
         }
@@ -4860,7 +4856,7 @@ impl MultiBuffer {
         let mut projected: Vec<Range<MultiBufferAnchor>> = Vec::new();
         for (source_index, source) in self.state.sources.iter().enumerate() {
             let (source_text, source_folds) = {
-                let snapshot = source.entity.read(cx).snapshot(cx);
+                let snapshot = source.entity.read(cx).snapshot();
                 let folds = snapshot
                     .syntax
                     .fold_ranges(0..snapshot.text.len_bytes().get(), &snapshot.text);
@@ -4870,10 +4866,11 @@ impl MultiBuffer {
                 continue;
             }
             for fold in source_folds.iter() {
-                let (Some(start), Some(end)) = (
+                let (Ok(start), Ok(end)) = (
                     fold.range.start.resolve_in(&source_text),
                     fold.range.end.resolve_in(&source_text),
                 ) else {
+                    // 折叠候选代际已被 reset / 基线替换淘汰时不再投影。
                     continue;
                 };
                 if start >= end {
@@ -4902,16 +4899,18 @@ impl MultiBuffer {
                 }
             }
         }
-        projected.sort_unstable_by_key(|range| {
-            (
-                snapshot
-                    .resolve_anchor(&range.start)
-                    .map_or(0, |offset| offset.get()),
-                snapshot
-                    .resolve_anchor(&range.end)
-                    .map_or(0, |offset| offset.get()),
-            )
-        });
+        // 先解析再排序：无法解析的候选直接丢弃，不用坐标 0 作为静默排序键。
+        let mut keyed: Vec<((usize, usize), Range<MultiBufferAnchor>)> = projected
+            .into_iter()
+            .filter_map(|range| {
+                let start = snapshot.resolve_anchor(&range.start)?;
+                let end = snapshot.resolve_anchor(&range.end)?;
+                Some(((start.get(), end.get()), range))
+            })
+            .collect();
+        keyed.sort_unstable_by_key(|(key, _)| *key);
+        let mut projected: Vec<Range<MultiBufferAnchor>> =
+            keyed.into_iter().map(|(_, range)| range).collect();
         projected.dedup();
         Arc::from(projected)
     }
@@ -5144,8 +5143,12 @@ fn anchor_in_mappings(
         (mapping.source_range.start().get() + offset.get().saturating_sub(at.bytes))
             .min(mapping.source_range.end().get()),
     );
-    let text_anchor =
-        Anchor::new(mapping.source_range.version(), source_offset).with_affinity(affinity);
+    let text_anchor = Anchor::new(
+        mapping.source_range.generation(),
+        mapping.source_range.version(),
+        source_offset,
+    )
+    .with_affinity(affinity);
     Some(MultiBufferAnchor::excerpt(
         mapping.path_index,
         mapping.source_id,
@@ -5153,16 +5156,26 @@ fn anchor_in_mappings(
     ))
 }
 
+/// 源锚点解析结果：区分“路径退出投影”（允许就近回退）与“锚点版本失效”（禁止猜测坐标）。
+enum SourceAnchorResolution {
+    /// 锚点仍绑定在投影中的源上，已解析到源偏移。
+    Mapped(ByteOffset),
+    /// 锚点绑定的路径或源已退出投影。
+    PathNotProjected,
+    /// 锚点版本早于目标快照或代际已被 reset / 基线替换淘汰。
+    Invalid,
+}
+
 /// 把锚点绑定的源 Anchor 按当前源文本快照推进到源坐标。
-///
-/// 找不到绑定源、或锚点版本已被编辑日志裁剪时返回 None，由调用方按最近路径回退。
 fn excerpt_anchor_source_offset<S: SourceTexts + ?Sized>(
     excerpts: &SumTree<Excerpt>,
     path_keys: &[PathKey],
     sources: &S,
     anchor: &ExcerptAnchor,
-) -> Option<ByteOffset> {
-    let path_key = path_keys.get(anchor.path.get() as usize)?;
+) -> SourceAnchorResolution {
+    let Some(path_key) = path_keys.get(anchor.path.get() as usize) else {
+        return SourceAnchorResolution::PathNotProjected;
+    };
     let mut cursor = excerpts.cursor::<ExcerptSummary>(());
     cursor.seek(path_key, Bias::Left);
     while let Some(excerpt) = cursor.item() {
@@ -5170,12 +5183,22 @@ fn excerpt_anchor_source_offset<S: SourceTexts + ?Sized>(
             break;
         }
         if excerpt.source_id == anchor.source_id {
-            let text = sources.source_text(excerpt.source_index)?;
-            return anchor.text_anchor.resolve_in(text);
+            let Some(text) = sources.source_text(excerpt.source_index) else {
+                return SourceAnchorResolution::PathNotProjected;
+            };
+            return match anchor.text_anchor.resolve_in(text) {
+                Ok(offset) => SourceAnchorResolution::Mapped(offset),
+                // 显式重锚：锚点代际被 reset / 基线替换淘汰时，按提交时的坐标映射
+                // 推进到当前代际；这是调用方的显式恢复，不是普通版本推进。
+                Err(_) => match anchor.text_anchor.rebase_across_generations(text) {
+                    Ok(reanchored) => SourceAnchorResolution::Mapped(reanchored.offset()),
+                    Err(_) => SourceAnchorResolution::Invalid,
+                },
+            };
         }
         cursor.next();
     }
-    None
+    SourceAnchorResolution::PathNotProjected
 }
 
 /// 锚点绑定路径退出投影后，按当前路径顺序解析到最近的后继/前驱片段。
@@ -5292,6 +5315,7 @@ fn nearest_output_offset_for_source(
 /// 在给定投影→源映射中把源锚点解析回投影偏移。
 ///
 /// 同一文件仍存在时优先落到最接近的源片段；文件退出投影时按当前路径顺序落到最近的后继/前驱。
+/// 锚点版本已被 reset / 基线替换淘汰时返回 None，不进入就近回退。
 /// [`MultiBuffer::resolve_anchor`]（当前映射）与 [`MultiBufferSnapshot::resolve_anchor`]（快照映射）共用此解析逻辑。
 fn resolve_anchor_in_mappings<S: SourceTexts + ?Sized>(
     excerpts: &SumTree<Excerpt>,
@@ -5307,31 +5331,38 @@ fn resolve_anchor_in_mappings<S: SourceTexts + ?Sized>(
         }
         MultiBufferAnchor::Excerpt(excerpt_anchor) => excerpt_anchor,
     };
-    if let Some(source_offset) =
-        excerpt_anchor_source_offset(excerpts, path_keys, sources, excerpt_anchor)
-    {
-        if let Some(offset) = nearest_output_offset_for_source(
-            excerpts,
-            tree,
-            path_keys,
-            excerpt_anchor.path,
-            excerpt_anchor.source_id,
-            source_offset,
-        ) {
-            return Some(offset);
+    match excerpt_anchor_source_offset(excerpts, path_keys, sources, excerpt_anchor) {
+        SourceAnchorResolution::Mapped(source_offset) => {
+            if let Some(offset) = nearest_output_offset_for_source(
+                excerpts,
+                tree,
+                path_keys,
+                excerpt_anchor.path,
+                excerpt_anchor.source_id,
+                source_offset,
+            ) {
+                return Some(offset);
+            }
+            if let Some(offset) = nearest_output_offset_for_source(
+                excerpts,
+                tree,
+                path_keys,
+                excerpt_anchor.path,
+                None,
+                source_offset,
+            ) {
+                return Some(offset);
+            }
+            // 源路径仍在投影中，只是该源没有可命中片段：允许路径级就近回退。
+            nearest_path_output_offset(excerpts, tree, path_keys, excerpt_anchor.path)
         }
-        if let Some(offset) = nearest_output_offset_for_source(
-            excerpts,
-            tree,
-            path_keys,
-            excerpt_anchor.path,
-            None,
-            source_offset,
-        ) {
-            return Some(offset);
+        // 路径退出投影：允许按当前路径顺序就近回退。
+        SourceAnchorResolution::PathNotProjected => {
+            nearest_path_output_offset(excerpts, tree, path_keys, excerpt_anchor.path)
         }
+        // 锚点版本失效 / 代际被替换：禁止进入 nearest_path_output_offset 猜测坐标。
+        SourceAnchorResolution::Invalid => None,
     }
-    nearest_path_output_offset(excerpts, tree, path_keys, excerpt_anchor.path)
 }
 
 /// 路径区间内的第一个映射及其输出起点（路径不存在时 None）。

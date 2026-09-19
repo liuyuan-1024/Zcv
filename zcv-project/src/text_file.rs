@@ -6,7 +6,7 @@
 use std::io::{self, Write};
 
 use zcv_text::{
-    Buffer, BufferVersion, ByteOffset, TextError, TextRange, TextRead, TransactionError,
+    BufferVersion, ByteOffset, Snapshot, TextError, TextRange, TextRead, TransactionError,
 };
 
 /// 单次 `read` 系统调用最多吃多少字节。
@@ -261,25 +261,24 @@ pub fn decode_to_string<R: io::Read>(
     Ok(output)
 }
 
-/// 把 Buffer 文本写入 `writer`，先校验调用方持有的版本仍然新鲜。
+/// 把文本快照写入 `writer`，先校验调用方持有的版本仍然新鲜。
 ///
-/// 不修改 Buffer 状态；宿主完成真实写盘后再调用 `Buffer::mark_saved()`。
+/// 只消费只读快照；宿主完成真实写盘后由文档实体标记保存点。
 pub fn write_buffer_to<W: Write>(
-    buffer: &Buffer,
+    snapshot: &Snapshot,
     expected_version: BufferVersion,
     writer: &mut W,
     line_ending: LineEndingConfig,
 ) -> Result<(), BufferSaveError> {
-    if expected_version != buffer.version() {
+    if expected_version != snapshot.version() {
         return Err(BufferSaveError::Text(TextError::Transaction(
             TransactionError::VersionMismatch {
-                expected: buffer.version(),
+                expected: snapshot.version(),
                 actual: expected_version,
             },
         )));
     }
 
-    let snapshot = buffer.snapshot();
     let range = TextRange::new(ByteOffset::ZERO, snapshot.len_bytes()).map_err(TextError::from)?;
     let chunks = snapshot.chunks(range)?;
     match line_ending {

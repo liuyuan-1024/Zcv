@@ -2,7 +2,7 @@
 
 `zcv-language` 负责文件语言识别、Tree-sitter 解析、高亮、语言注入和结构查询。编辑器只消费 `LanguageBuffer` 与 `SyntaxSnapshot`，不单独维护语言状态。
 
-`LanguageBuffer::snapshot(cx)` 是文本与语法的一致读取边界：返回前先把语法插值到文本版本，并同时给出按语言解析的 `LanguageSettings` 与派生高亮缓存句柄；消费方不再调用任何手动同步协议。语言注册表 `LanguageRegistry` 由应用装配层创建并以 `Arc` 显式注入，`zcv-language` 不提供全局单例。
+`LanguageBuffer` 直接持有文本 `Buffer` 与语法状态；`LanguageBuffer::snapshot()` 是文本与语法的一致读取边界：返回前先把语法插值到文本版本，并同时给出按语言解析的 `LanguageSettings` 与派生高亮缓存句柄；消费方不再调用任何手动同步协议，也不通过第二个实体读取文本。同源的 `text_snapshot()` 只读取同一份权威文本，不构成第二数据源。语言注册表 `LanguageRegistry` 由应用装配层创建并以 `Arc` 显式注入，`zcv-language` 不提供全局单例。
 
 文件级符号使用各语言自己的 `queries/<language>/outline.scm`。查询结果由 `SyntaxSnapshot::outline` 产生，携带文本版本、源文件字节范围、名称范围、语法层和父子层级；没有该查询的语言明确返回空结果。`MultiBuffer` 只负责把完整落在 excerpt 内的结果映射到组合文档，`Editor` 提供当前大纲、名称过滤和名称定位入口。
 

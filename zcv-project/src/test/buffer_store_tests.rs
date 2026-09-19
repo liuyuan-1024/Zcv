@@ -124,12 +124,12 @@ fn released_buffer_is_loaded_again(cx: &mut TestAppContext) {
     let second = cx.update(|cx| store.open_buffer(&path, cx).expect("重新打开应成功"));
 
     assert_ne!(first_id, second.entity_id());
-    let buffer = cx.read_entity(&second, |language_buffer, _| language_buffer.buffer());
-    cx.read_entity(&buffer, |buffer, _| {
+    cx.read_entity(&second, |language_buffer, _| {
+        let snapshot = language_buffer.text_snapshot();
         assert_eq!(
-            buffer
-                .slice_byte_range(zcv_text::ByteOffset::ZERO, buffer.len_bytes())
-                .expect("完整 Buffer 应可读取")
+            snapshot
+                .slice_byte_range(zcv_text::ByteOffset::ZERO, snapshot.len_bytes())
+                .expect("完整文本应可读取")
                 .as_str(),
             "第二次"
         );

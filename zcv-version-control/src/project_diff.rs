@@ -1103,7 +1103,7 @@ impl ProjectDiffView {
             else {
                 continue;
             };
-            let source_len = source.read(cx).text_snapshot(cx).len_bytes();
+            let source_len = source.read(cx).text_snapshot().len_bytes();
             let Ok(source_range) = TextRange::new(ByteOffset::ZERO, source_len) else {
                 continue;
             };
@@ -1127,7 +1127,7 @@ impl ProjectDiffView {
         let mut excerpts = snapshot.excerpts();
         let mut hunks = Vec::new();
         for (buffer, path) in self.multi_buffer.read(cx).file_buffers(cx) {
-            let source = buffer.read(cx).snapshot();
+            let source = buffer.read(cx).text_snapshot();
             let Ok(text_range) = TextRange::new(ByteOffset::ZERO, source.len_bytes()) else {
                 continue;
             };
@@ -1633,7 +1633,7 @@ fn subscribe_to_open_excerpts(
                 let Ok(buffer) = project.open_buffer(&location.path, cx) else {
                     return None;
                 };
-                let text = cx.read_entity(&buffer, |buffer, cx| buffer.text_snapshot(cx));
+                let text = cx.read_entity(&buffer, |buffer, _| buffer.text_snapshot());
                 cx.read_entity(view, |view, cx| {
                     view.deleted_navigation_target(location, &text, cx)
                 })
@@ -1811,7 +1811,6 @@ mod tests {
         let registry = working.read(cx).language_registry();
         let base_buffer = Buffer::from_text(base_text.to_string(), BufferConfig::default())
             .expect("测试 base 文本必须能创建 Buffer");
-        let base_buffer = cx.new(|_| base_buffer);
         let base = cx.new(|cx| LanguageBuffer::new(base_buffer, Some(path.clone()), registry, cx));
         let diff = cx.new(|cx| {
             BufferDiff::new(
@@ -2461,18 +2460,17 @@ mod tests {
         cx.run_until_parked();
 
         // 编辑工作区（删除 "改过" 行 → 行数变化）。
-        let engine_buffer = cx.read_entity(&working, |working, _| working.buffer());
-        engine_buffer.update(cx, |buffer, cx| {
-            buffer
+        working.update(cx, |working, cx| {
+            working
                 .edit(
                     vec![Edit::delete(
                         TextRange::new(ByteOffset::new(6), ByteOffset::new(13))
                             .expect("删除范围应有效"),
                     )],
                     TransactionMetadata::default(),
+                    cx,
                 )
                 .expect("工作区编辑应成功");
-            cx.notify();
         });
         // 触发 Git 状态刷新。
         project.update(cx, |project, cx| {

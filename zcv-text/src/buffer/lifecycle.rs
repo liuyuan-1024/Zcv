@@ -4,8 +4,9 @@
 
 use super::{Buffer, history};
 use crate::{
-    BufferConfig, BufferVersion, TextResult, TransactionId,
+    BufferConfig, BufferGeneration, BufferVersion, TextResult, TransactionId,
     storage::{RopeyStorage, TextRead},
+    tracking::CoordinateIndex,
 };
 
 impl Buffer {
@@ -24,10 +25,12 @@ impl Buffer {
             config,
             storage,
             version: BufferVersion::INITIAL,
+            generation: BufferGeneration::INITIAL,
             saved_version: BufferVersion::INITIAL,
             next_transaction_id: TransactionId::INITIAL,
             text_changes: Default::default(),
             edit_log: Default::default(),
+            coordinate_index: CoordinateIndex::default(),
             history: history::HistoryState::new(),
             session: None,
         };

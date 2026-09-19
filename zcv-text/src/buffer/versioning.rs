@@ -14,8 +14,10 @@ impl Buffer {
         Snapshot::new(
             self.storage.snapshot(),
             self.version,
+            self.generation,
             self.config.clone(),
             self.edit_log.clone(),
+            self.coordinate_index.clone(),
         )
     }
 }

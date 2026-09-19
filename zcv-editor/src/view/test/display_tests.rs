@@ -7,8 +7,7 @@ use zcv_multi_buffer::{DiffFile, DisplayHunk, ExcerptRange, MultiBuffer};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TransactionMetadata};
 
 use super::common::{
-    buffer_text, engine_buffer, focus_editor, inject_editor_diff, inject_file_diff,
-    revision_buffer, test_buffer,
+    buffer_text, focus_editor, inject_editor_diff, inject_file_diff, revision_buffer, test_buffer,
 };
 use super::*;
 use crate::display_map::{DisplayColumn, DisplayPoint, DisplayRow, WrapRowKind};
@@ -128,15 +127,14 @@ fn switching_single_file_diff_after_source_edit_keeps_text_consumer_aligned(
     let editor = cx.new(|cx| Editor::from_language_buffer(source.clone(), EditorMode::Full, cx));
     inject_file_diff(&editor, &source, Arc::from("a\nold\nc\n"), cx);
 
-    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
-    cx.update_entity(&source_buffer, |buffer, cx| {
-        buffer
+    cx.update_entity(&source, |source, cx| {
+        source
             .edit(
                 [Edit::insert(MultiBufferOffset::ZERO.into(), "prefix\n").unwrap()],
                 TransactionMetadata::default(),
+                cx,
             )
             .expect("源编辑应成功");
-        cx.notify();
     });
     cx.run_until_parked();
 
@@ -156,10 +154,8 @@ fn switching_single_file_diff_after_source_edit_keeps_text_consumer_aligned(
 #[gpui::test]
 fn clicking_deep_after_fold_preserves_the_visual_column(cx: &mut TestAppContext) {
     let text = include_str!("../../../../assets/keymaps/default-macos.json");
-    let raw_buffer = cx.new(|_| {
-        Buffer::from_text(text.to_owned(), BufferConfig::default())
-            .expect("keymap 测试 Buffer 应能创建")
-    });
+    let raw_buffer = Buffer::from_text(text.to_owned(), BufferConfig::default())
+        .expect("keymap 测试 Buffer 应能创建");
     let language_buffer = cx.new(|cx| {
         LanguageBuffer::new(
             raw_buffer,
@@ -474,9 +470,8 @@ fn added_hunk_strip_clickable_when_start_scrolled_out(cx: &mut TestAppContext) {
 #[gpui::test]
 fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
-    let buffer = cx.new(|_| {
-        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
-    });
+    let buffer =
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
     let buffer = cx.new(|cx| {
         LanguageBuffer::new(
             buffer,
@@ -521,9 +516,8 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
 #[gpui::test]
 fn toggle_fold_action_uses_the_cursor_block_and_the_whole_folded_row(cx: &mut TestAppContext) {
     let text = "fn main() {\n    if true {\n        let x = 1;\n    }\n}\nfn other() {}";
-    let buffer = cx.new(|_| {
-        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
-    });
+    let buffer =
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
     let language_buffer = cx.new(|cx| {
         LanguageBuffer::new(
             buffer,
@@ -565,9 +559,8 @@ fn toggle_fold_action_uses_the_cursor_block_and_the_whole_folded_row(cx: &mut Te
 #[gpui::test]
 fn clicking_the_crease_toggles_fold_without_selecting_the_line(cx: &mut TestAppContext) {
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
-    let buffer = cx.new(|_| {
-        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
-    });
+    let buffer =
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
     let language_buffer = cx.new(|cx| {
         LanguageBuffer::new(
             buffer,
@@ -680,29 +673,29 @@ fn expanding_diff_hunk_keeps_crease_of_enclosing_fold(cx: &mut TestAppContext) {
 fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
     // 回归：编辑后折叠范围与折叠状态必须保持（crease 箭头显示依赖 fold_ranges / fold_anchor_lines）。
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
-    let buffer = cx.new(|_| {
-        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
-    });
+    let buffer =
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
     let language_buffer = cx.new(|cx| {
         LanguageBuffer::new(
-            buffer.clone(),
+            buffer,
             Some(PathBuf::from("main.rs")),
             std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
             cx,
         )
     });
-    let editor = cx.new(|cx| Editor::from_language_buffer(language_buffer, EditorMode::Full, cx));
+    let editor =
+        cx.new(|cx| Editor::from_language_buffer(language_buffer.clone(), EditorMode::Full, cx));
     cx.run_until_parked();
 
     // 编辑 buffer：在首行后插入一行注释。
-    cx.update_entity(&buffer, |buffer, cx| {
-        buffer
+    cx.update_entity(&language_buffer, |language_buffer, cx| {
+        language_buffer
             .edit(
                 [Edit::insert(MultiBufferOffset::new(7).into(), "// 注释\n").unwrap()],
                 TransactionMetadata::default(),
+                cx,
             )
             .expect("插入应成功");
-        cx.notify();
     });
     cx.run_until_parked();
 
@@ -725,9 +718,8 @@ fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
 fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
     // 回归：折叠块后光标在入口行 `{` 上，另一半括号高亮投影到合并行的真实 `}` 列。
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
-    let buffer = cx.new(|_| {
-        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
-    });
+    let buffer =
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
     let buffer = cx.new(|cx| {
         LanguageBuffer::new(
             buffer,
@@ -782,9 +774,8 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
 fn horizontal_movement_jumps_over_folded_content(cx: &mut TestAppContext) {
     // 折叠在显示上占一个字符：右箭头从折叠起点一步跨到闭合括号，左箭头回到折叠起点。
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
-    let buffer = cx.new(|_| {
-        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
-    });
+    let buffer =
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
     let language_buffer = cx.new(|cx| {
         LanguageBuffer::new(
             buffer,
@@ -847,13 +838,11 @@ fn horizontal_movement_jumps_over_folded_content(cx: &mut TestAppContext) {
 #[gpui::test]
 fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppContext) {
     let text = "before\nfn folded() {\n  let value = 1;\n}\nafter\n";
-    let raw_buffer = cx.new(|_| {
-        Buffer::from_text(text.to_owned(), BufferConfig::default())
-            .expect("Rust 测试 Buffer 应能创建")
-    });
+    let raw_buffer = Buffer::from_text(text.to_owned(), BufferConfig::default())
+        .expect("Rust 测试 Buffer 应能创建");
     let buffer = cx.new(|cx| {
         LanguageBuffer::new(
-            raw_buffer.clone(),
+            raw_buffer,
             Some(PathBuf::from("main.rs")),
             std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
             cx,
@@ -924,9 +913,8 @@ fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppCo
 #[gpui::test]
 fn unfold_all_expands_every_fold(cx: &mut TestAppContext) {
     let text = "fn main() {\n    let x = 1;\n}\nfn other() {\n    let y = 2;\n}";
-    let buffer = cx.new(|_| {
-        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
-    });
+    let buffer =
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
     let buffer = cx.new(|cx| {
         LanguageBuffer::new(
             buffer,
@@ -1036,10 +1024,9 @@ fn external_reparse_refreshes_added_diff_syntax_highlights(cx: &mut TestAppConte
     );
     editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
 
-    let source_buffer = engine_buffer(&source, cx);
-    cx.update_entity(&source_buffer, |buffer, cx| {
+    cx.update_entity(&source, |source, cx| {
         let old_line = "fn main() {\n    let value = 1;\n";
-        buffer
+        source
             .edit(
                 [Edit::replace(
                     MultiBufferRange::new(
@@ -1051,9 +1038,9 @@ fn external_reparse_refreshes_added_diff_syntax_highlights(cx: &mut TestAppConte
                     "    // 外部编辑\n    let value = 1;\n",
                 )],
                 TransactionMetadata::default(),
+                cx,
             )
             .expect("外部源编辑应成功");
-        cx.notify();
     });
     cx.run_until_parked();
 
@@ -1169,10 +1156,7 @@ fn multibuffer_soft_wrap_uses_the_regular_display_map_pipeline(cx: &mut TestAppC
     source.update(cx, |source, cx| {
         source.set_file_path(PathBuf::from("文档/引擎.md"), cx)
     });
-    let source_end = {
-        let buffer = engine_buffer(&source, cx);
-        cx.read_entity(&buffer, |buffer, _| buffer.len_bytes())
-    };
+    let source_end = cx.read_entity(&source, |source, _| source.len_bytes());
     let source_multi = source.clone();
     let combined = cx.new(MultiBuffer::empty);
     combined.update(cx, |combined, cx| {
@@ -1235,8 +1219,8 @@ fn wrapped_multibuffer_reuses_block_rows_across_within_line_edits(cx: &mut TestA
     });
 
     let combined = cx.new(MultiBuffer::empty);
-    let first_len = cx.read_entity(&engine_buffer(&first, cx), |buffer, _| buffer.len_bytes());
-    let second_len = cx.read_entity(&engine_buffer(&second, cx), |buffer, _| buffer.len_bytes());
+    let first_len = cx.read_entity(&first, |buffer, _| buffer.len_bytes());
+    let second_len = cx.read_entity(&second, |buffer, _| buffer.len_bytes());
     combined.update(cx, |combined, cx| {
         combined.set_excerpts(
             vec![
@@ -1283,9 +1267,8 @@ fn wrapped_multibuffer_reuses_block_rows_across_within_line_edits(cx: &mut TestA
     assert_eq!(before.len(), 2, "两个文件各有一个 BufferHeader 块");
 
     // 同宽行内替换：断行结果不变，块布局应保持原样，只刷新片段视图。
-    let first_buffer = cx.read_entity(&first, |source, _| source.buffer());
-    cx.update_entity(&first_buffer, |buffer, cx| {
-        buffer
+    cx.update_entity(&first, |source, cx| {
+        source
             .edit(
                 [Edit::replace(
                     MultiBufferRange::new(MultiBufferOffset::new(4), MultiBufferOffset::new(9))
@@ -1294,9 +1277,9 @@ fn wrapped_multibuffer_reuses_block_rows_across_within_line_edits(cx: &mut TestA
                     "ALPHA",
                 )],
                 TransactionMetadata::default(),
+                cx,
             )
             .expect("源编辑应成功");
-        cx.notify();
     });
     cx.run_until_parked();
 
@@ -1326,8 +1309,8 @@ fn wrapped_multibuffer_relocates_blocks_when_wrap_rows_change(cx: &mut TestAppCo
     });
 
     let combined = cx.new(MultiBuffer::empty);
-    let first_len = cx.read_entity(&engine_buffer(&first, cx), |buffer, _| buffer.len_bytes());
-    let second_len = cx.read_entity(&engine_buffer(&second, cx), |buffer, _| buffer.len_bytes());
+    let first_len = cx.read_entity(&first, |buffer, _| buffer.len_bytes());
+    let second_len = cx.read_entity(&second, |buffer, _| buffer.len_bytes());
     combined.update(cx, |combined, cx| {
         combined.set_excerpts(
             vec![
@@ -1377,15 +1360,14 @@ fn wrapped_multibuffer_relocates_blocks_when_wrap_rows_change(cx: &mut TestAppCo
     );
 
     // 在第一个文件首行后插入换行：a.rs 标题不动，b.rs 标题整体后移一行。
-    let first_buffer = cx.read_entity(&first, |source, _| source.buffer());
-    cx.update_entity(&first_buffer, |buffer, cx| {
-        buffer
+    cx.update_entity(&first, |source, cx| {
+        source
             .edit(
                 [Edit::insert(MultiBufferOffset::new(14).into(), "\n").unwrap()],
                 TransactionMetadata::default(),
+                cx,
             )
             .expect("源编辑应成功");
-        cx.notify();
     });
     cx.run_until_parked();
 
@@ -1410,8 +1392,7 @@ fn wrapped_multibuffer_relocates_blocks_when_wrap_rows_change(cx: &mut TestAppCo
 fn long_line_highlight_query_is_clipped_to_render_budget(cx: &mut TestAppContext) {
     // 超长单行：高亮查询只覆盖可见前缀（渲染端同样只塑形前 MAX_RENDERED_LINE_LEN 字节）。
     let long = "let text = \"".to_owned() + &"a".repeat(8192) + "\";\n";
-    let buffer =
-        cx.new(|_| Buffer::from_text(long, BufferConfig::default()).expect("测试 Buffer 应能创建"));
+    let buffer = Buffer::from_text(long, BufferConfig::default()).expect("测试 Buffer 应能创建");
     let buffer = cx.new(|cx| {
         LanguageBuffer::new(
             buffer,
@@ -1446,10 +1427,8 @@ fn horizontal_windowing_clips_wide_rows_to_the_visible_window(cx: &mut TestAppCo
     // 未换行 + 超长行：非光标行只合成/塑形可见列窗口（±边距）内的文本，
     // 并回报窗口起点列供渲染端补偿行原点；光标行保持整行 shaping（autoscroll 依赖光标像素）。
     let long = "a".repeat(4096) + "tail";
-    let buffer = cx.new(|_| {
-        Buffer::from_text(format!("{long}\n{long}\n"), BufferConfig::default())
-            .expect("测试 Buffer 应能创建")
-    });
+    let buffer = Buffer::from_text(format!("{long}\n{long}\n"), BufferConfig::default())
+        .expect("测试 Buffer 应能创建");
     let buffer = cx.new(|cx| {
         LanguageBuffer::new(
             buffer,
@@ -1714,12 +1693,10 @@ fn external_source_edit_moves_combined_diff_cursor_like_plain_editor(cx: &mut Te
     });
 
     // 外部在 "bravo" 与 "charlie" 之间插入整行 "NEW"：hunk 位置随源下移，组合投影整体重建（reload）。
-    let raw_buffer = engine_buffer(&buffer, cx);
-    cx.update_entity(&raw_buffer, |buffer, cx| {
+    cx.update_entity(&buffer, |buffer, cx| {
         buffer
-            .reset("alpha\nbravo\nNEW\ncharlie".to_owned())
+            .reset("alpha\nbravo\nNEW\ncharlie".to_owned(), cx)
             .expect("外部 reload 应成功");
-        cx.notify();
     });
     cx.run_until_parked();
 
@@ -2244,9 +2221,8 @@ fn editing_readonly_deleted_row_then_editing_working_text_still_works(cx: &mut T
 
 /// 带文件路径的测试源：diff 旧侧源复用同一路径，展开旧侧时路径身份才能一致。
 fn test_file_buffer(cx: &mut TestAppContext, path: &str, text: &str) -> Entity<LanguageBuffer> {
-    let buffer = cx.new(|_| {
-        Buffer::from_text(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建")
-    });
+    let buffer =
+        Buffer::from_text(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建");
     cx.new(|cx| {
         LanguageBuffer::new(
             buffer,
@@ -2313,12 +2289,12 @@ fn external_source_change_advances_selection_source_anchor(cx: &mut TestAppConte
     );
 
     // 外部（未经本编辑器）在源开头插入 "prefix\n"，光标源位置应随源变更右移 7 字节。
-    let source_buffer = cx.read_entity(&source, |source, _| source.buffer());
-    cx.update_entity(&source_buffer, |buffer, cx| {
-        buffer
+    cx.update_entity(&source, |source, cx| {
+        source
             .edit(
                 [Edit::insert(ByteOffset::ZERO, "prefix\n").unwrap()],
                 TransactionMetadata::default(),
+                cx,
             )
             .expect("外部源编辑应成功");
         cx.notify();

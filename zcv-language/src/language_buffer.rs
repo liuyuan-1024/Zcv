@@ -2,9 +2,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use gpui::{App, AppContext, Context, Entity, EventEmitter, Task};
+use gpui::{App, AppContext, Context, EventEmitter, Task};
 use zcv_settings::SettingsStore;
-use zcv_text::{Buffer, Line, Snapshot, TextSubscription};
+use zcv_text::{
+    Buffer, BufferVersion, ByteOffset, Edit, HistoryEditOutcome, Line, Snapshot, TextResult,
+    TextSubscription, TransactionId, TransactionMetadata, TransactionOutcome,
+};
 
 use crate::Language;
 use crate::highlight_cache::HighlightCache;
@@ -87,7 +90,6 @@ pub struct LanguageBufferSnapshot {
 
 /// 受同一把锁保护的派生语言状态。
 struct LanguageState {
-    text_snapshot: Snapshot,
     syntax_map: SyntaxMap,
     detection_first_line: String,
     file_path: Option<PathBuf>,
@@ -95,26 +97,25 @@ struct LanguageState {
     highlight_cache: Arc<HighlightCache>,
 }
 
-/// 将文本 Buffer 与语言派生状态绑定在一起。
+/// 一个打开文档的唯一权威实体：直接拥有文本 Buffer 与树语法状态。
 ///
-/// 语法树跟随文本而不是某个 Editor。
-/// 多个 Editor 可以共享一个 `LanguageBuffer`，后台也只会存在一个解析任务。
+/// 文本与语法同属一个实体，snapshot() 返回同一版本的二者；
+/// 语言层不暴露内层文本实体，也不维护第二份派生文本快照。
+/// 多个 Editor 可以共享一个 LanguageBuffer，后台也只会存在一个解析任务。
 pub struct LanguageBuffer {
-    buffer: Entity<Buffer>,
-    subscription: TextSubscription,
+    buffer: Buffer,
     state: Mutex<LanguageState>,
     parse_task: Option<ParseTask>,
 }
 
 impl LanguageBuffer {
     pub fn new(
-        buffer: Entity<Buffer>,
+        buffer: Buffer,
         file_path: Option<PathBuf>,
         registry: Arc<LanguageRegistry>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (subscription, snapshot) =
-            buffer.update(cx, |buffer, _| (buffer.subscribe(), buffer.snapshot()));
+        let snapshot = buffer.snapshot();
         let first_line = first_line(&snapshot);
         let mut syntax_map = SyntaxMap::new(Arc::clone(&registry), &snapshot);
         if let Some(path) = file_path.as_deref() {
@@ -122,10 +123,6 @@ impl LanguageBuffer {
         }
         let settings = resolve_settings(&syntax_map, cx);
 
-        cx.observe(&buffer, |language_buffer, _, cx| {
-            language_buffer.sync(cx);
-        })
-        .detach();
         // 设置变化时刷新按语言解析的结果；测试环境未注册 SettingsStore 时不建立订阅。
         if cx.try_global::<SettingsStore>().is_some() {
             cx.observe_global::<SettingsStore>(|language_buffer, cx| {
@@ -136,9 +133,7 @@ impl LanguageBuffer {
 
         let mut this = Self {
             buffer,
-            subscription,
             state: Mutex::new(LanguageState {
-                text_snapshot: snapshot,
                 syntax_map,
                 detection_first_line: first_line,
                 file_path,
@@ -151,10 +146,6 @@ impl LanguageBuffer {
         this
     }
 
-    pub fn buffer(&self) -> Entity<Buffer> {
-        self.buffer.clone()
-    }
-
     /// 本 Buffer 使用的语言注册表；需要创建关联语言 Buffer 的消费方复用同一份注册表。
     pub fn language_registry(&self) -> Arc<LanguageRegistry> {
         self.state
@@ -164,11 +155,11 @@ impl LanguageBuffer {
             .registry()
     }
 
-    /// 一致性快照：返回前把语法状态推进到文本版本，文本与语法属于同一 `BufferVersion`。
-    pub fn snapshot(&self, cx: &App) -> LanguageBufferSnapshot {
-        let text = self.buffer.read(cx).snapshot();
+    /// 一致性快照：返回前把语法状态推进到文本版本，文本与语法属于同一 BufferVersion。
+    pub fn snapshot(&self) -> LanguageBufferSnapshot {
+        let text = self.buffer.snapshot();
         let mut state = self.state.lock().expect("语言 Buffer 状态锁不应中毒");
-        advance_state(&mut state, &text, cx);
+        state.syntax_map.interpolate(&text);
         LanguageBufferSnapshot {
             text,
             syntax: state.syntax_map.snapshot(),
@@ -179,9 +170,44 @@ impl LanguageBuffer {
         }
     }
 
-    /// 文本专用只读快照（不需要语法状态的消费方使用）。
-    pub fn text_snapshot(&self, cx: &App) -> Snapshot {
-        self.buffer.read(cx).snapshot()
+    /// 同源只读文本快照：直接取自唯一权威文本，不复制第二份文本。
+    ///
+    /// 需要文本与语法一致版本的消费方应使用 Self::snapshot。
+    pub fn text_snapshot(&self) -> Snapshot {
+        self.buffer.snapshot()
+    }
+
+    /// 订阅本 Buffer 的版本化文本增量；语言层只转发权威文本的订阅，不维护第二份变更游标。
+    pub fn subscribe(&self) -> TextSubscription {
+        self.buffer.subscribe()
+    }
+
+    /// 当前文本版本。
+    pub fn version(&self) -> BufferVersion {
+        self.buffer.version()
+    }
+
+    /// 当前文本字节长度。
+    pub fn len_bytes(&self) -> ByteOffset {
+        self.buffer.len_bytes()
+    }
+
+    /// 自保存点以来是否存在结构性文本编辑。
+    pub fn is_dirty(&self) -> bool {
+        self.buffer.is_dirty()
+    }
+
+    /// 当前历史节点的事务身份；无历史时为 None。
+    pub fn current_history_transaction_id(&self) -> Option<TransactionId> {
+        self.buffer.current_history_transaction_id()
+    }
+
+    pub fn can_undo(&self) -> bool {
+        self.buffer.can_undo()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.buffer.can_redo()
     }
 
     pub fn file_path(&self) -> Option<PathBuf> {
@@ -208,11 +234,12 @@ impl LanguageBuffer {
     }
 
     pub fn set_file_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let text = self.buffer.read(cx).snapshot();
+        let text = self.buffer.snapshot();
         let language_changed = {
             let mut state = self.state.lock().expect("语言 Buffer 状态锁不应中毒");
-            advance_state(&mut state, &text, cx);
-            let first_line = state.detection_first_line.clone();
+            state.syntax_map.interpolate(&text);
+            let first_line = first_line(&text);
+            state.detection_first_line = first_line.clone();
             let language_changed =
                 state
                     .syntax_map
@@ -231,6 +258,65 @@ impl LanguageBuffer {
         cx.notify();
     }
 
+    /// 应用一个本地编辑批次；委托权威文本提交后推进语法插值、解析与事件。
+    pub fn edit(
+        &mut self,
+        edits: impl IntoIterator<Item = Edit>,
+        metadata: TransactionMetadata,
+        cx: &mut Context<Self>,
+    ) -> TextResult<TransactionOutcome> {
+        let before = self.buffer.version();
+        let outcome = self.buffer.edit(edits, metadata)?;
+        if self.buffer.version() != before {
+            self.did_edit(cx);
+        }
+        Ok(outcome)
+    }
+
+    /// 用外部文本整体重置文本；文本变化时推进语法与事件，文本相同时只刷新保存点。
+    pub fn reset(&mut self, text: String, cx: &mut Context<Self>) -> TextResult<()> {
+        let before = self.buffer.version();
+        self.buffer.reset(text)?;
+        if self.buffer.version() != before {
+            self.did_edit(cx);
+        } else {
+            cx.emit(LanguageBufferEvent::MetadataChanged);
+            cx.notify();
+        }
+        Ok(())
+    }
+
+    pub fn undo(&mut self, cx: &mut Context<Self>) -> TextResult<Option<HistoryEditOutcome>> {
+        let outcome = self.buffer.undo()?;
+        if outcome.is_some() {
+            self.did_edit(cx);
+        }
+        Ok(outcome)
+    }
+
+    pub fn redo(&mut self, cx: &mut Context<Self>) -> TextResult<Option<HistoryEditOutcome>> {
+        let outcome = self.buffer.redo()?;
+        if outcome.is_some() {
+            self.did_edit(cx);
+        }
+        Ok(outcome)
+    }
+
+    pub fn start_transaction(&mut self) -> TextResult<Option<TransactionId>> {
+        self.buffer.start_transaction()
+    }
+
+    pub fn end_transaction(&mut self) -> TextResult<Option<TransactionId>> {
+        self.buffer.end_transaction()
+    }
+
+    /// 标记当前版本为保存点；保存点是元数据变化，不推进语法。
+    pub fn mark_saved(&mut self, cx: &mut Context<Self>) {
+        self.buffer.mark_saved();
+        cx.emit(LanguageBufferEvent::MetadataChanged);
+        cx.notify();
+    }
+
     /// 设置变化时刷新按语言解析的结果。
     fn refresh_settings(&mut self, cx: &mut Context<Self>) {
         let mut state = self.state.lock().expect("语言 Buffer 状态锁不应中毒");
@@ -243,17 +329,29 @@ impl LanguageBuffer {
         }
     }
 
-    fn sync(&mut self, cx: &mut Context<Self>) {
-        let changes = self.subscription.consume();
-        if changes.is_empty() {
-            cx.emit(LanguageBufferEvent::MetadataChanged);
-            cx.notify();
-            return;
-        }
+    /// 文本提交后推进语言状态：插值到新版本、失效高亮、必要时重检测语言并调度解析。
+    fn did_edit(&mut self, cx: &mut Context<Self>) {
+        let text = self.buffer.snapshot();
         {
-            let text = self.buffer.read(cx).snapshot();
             let mut state = self.state.lock().expect("语言 Buffer 状态锁不应中毒");
-            advance_state(&mut state, &text, cx);
+            state.syntax_map.interpolate(&text);
+            // 文本版本变化：高亮结果整体失效（对齐 Zed 的 Buffer::invalidate_tree_sitter_data）。
+            state.highlight_cache = Arc::new(HighlightCache::new());
+
+            let next_first_line = first_line(&text);
+            if next_first_line != state.detection_first_line {
+                state.detection_first_line = next_first_line;
+                let detection_first_line = state.detection_first_line.clone();
+                if let Some(path) = state.file_path.clone()
+                    && state.syntax_map.set_language_for_file(
+                        &path,
+                        Some(&detection_first_line),
+                        &text,
+                    )
+                {
+                    state.settings = resolve_settings(&state.syntax_map, cx);
+                }
+            }
         }
         self.start_reparse(cx);
         cx.emit(LanguageBufferEvent::TextChanged);
@@ -263,9 +361,10 @@ impl LanguageBuffer {
     }
 
     fn start_reparse(&mut self, cx: &mut Context<Self>) {
-        // `ParseTask::drop` 会先通知 Tree-sitter 中止旧工作，再取消等待结果的前台任务。
+        // ParseTask::drop 会先通知 Tree-sitter 中止旧工作，再取消等待结果的前台任务。
         self.parse_task = None;
-        let (text, syntax, registry) = {
+        let text = self.buffer.snapshot();
+        let (syntax, registry) = {
             let state = self.state.lock().expect("语言 Buffer 状态锁不应中毒");
             if state
                 .syntax_map
@@ -275,18 +374,14 @@ impl LanguageBuffer {
             {
                 return;
             }
-            (
-                state.text_snapshot.clone(),
-                state.syntax_map.snapshot(),
-                state.syntax_map.registry(),
-            )
+            (state.syntax_map.snapshot(), state.syntax_map.registry())
         };
 
         let cancellation = ParseCancellation::default();
         let parse_cancellation = cancellation.clone();
         let completion: Arc<ParseCompletion> = Arc::default();
         let task_completion = Arc::clone(&completion);
-        // 完成后置入完成信号：正在主线程短等待的 sync 可以直接同步安装新鲜语法。
+        // 完成后置入完成信号：正在主线程短等待的 did_edit 可以直接同步安装新鲜语法。
         let parse_task = cx.background_spawn(async move {
             let outcome = syntax.reparse(&text, &registry, &parse_cancellation);
             let (lock, cvar) = &*task_completion;
@@ -299,7 +394,7 @@ impl LanguageBuffer {
                 return;
             };
             let _ = this.update(cx, |this, cx| {
-                // 结果已被 sync 同步安装（parse_task 已替换为 None）时不再重复安装。
+                // 结果已被 did_edit 同步安装（parse_task 已替换为 None）时不再重复安装。
                 this.parse_task = None;
                 if this.install_parse_result(parsed, cx) {
                     cx.notify();
@@ -341,31 +436,6 @@ impl LanguageBuffer {
     }
 }
 
-/// 把语言状态推进到给定文本版本；文本版本变化时高亮缓存整体重建。
-fn advance_state(state: &mut LanguageState, text: &Snapshot, cx: &App) {
-    if state.text_snapshot.version() == text.version() {
-        return;
-    }
-    state.syntax_map.interpolate(text);
-    state.text_snapshot = text.clone();
-    // 文本版本变化：高亮结果失效（对齐 Zed `Buffer::invalidate_tree_sitter_data`）。
-    state.highlight_cache = Arc::new(HighlightCache::new());
-
-    let next_first_line = first_line(text);
-    if next_first_line != state.detection_first_line {
-        state.detection_first_line = next_first_line;
-        if let Some(path) = state.file_path.clone()
-            && state.syntax_map.set_language_for_file(
-                &path,
-                Some(&state.detection_first_line),
-                text,
-            )
-        {
-            state.settings = resolve_settings(&state.syntax_map, cx);
-        }
-    }
-}
-
 fn resolve_settings(syntax_map: &SyntaxMap, cx: &App) -> Arc<LanguageSettings> {
     LanguageSettings::resolve(syntax_map.language().map(Language::name), cx)
 }
@@ -385,12 +455,16 @@ mod tests {
     use std::rc::Rc;
 
     use gpui::TestAppContext;
-    use zcv_text::{BufferConfig, BufferVersion, ByteOffset, Edit, TransactionMetadata};
+    use zcv_text::{BufferConfig, Edit, TransactionMetadata};
 
     use super::*;
 
     fn test_registry() -> Arc<LanguageRegistry> {
         Arc::new(LanguageRegistry::new())
+    }
+
+    fn test_buffer(text: &str) -> Buffer {
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建测试 Buffer")
     }
 
     #[test]
@@ -424,55 +498,45 @@ mod tests {
 
     #[gpui::test]
     fn parsing_finishes_without_blocking_buffer_edits(cx: &mut TestAppContext) {
-        let buffer = cx.new(|_| {
-            Buffer::from_text("fn main() {}\n".to_owned(), BufferConfig::default())
-                .expect("应创建测试 Buffer")
-        });
         let language_buffer = cx.new(|cx| {
             LanguageBuffer::new(
-                buffer.clone(),
+                test_buffer("fn main() {}\n"),
                 Some(PathBuf::from("main.rs")),
                 test_registry(),
                 cx,
             )
         });
 
-        buffer.update(cx, |buffer, cx| {
-            buffer
+        language_buffer.update(cx, |language_buffer, cx| {
+            language_buffer
                 .edit(
                     [Edit::insert(ByteOffset::new(3), "async ").unwrap()],
                     TransactionMetadata::default(),
+                    cx,
                 )
                 .expect("测试编辑应成功");
-            cx.notify();
         });
         cx.run_until_parked();
 
-        let buffer_version = cx.read_entity(&buffer, |buffer, _| buffer.version());
-        language_buffer.read_with(cx, |language_buffer, cx| {
-            assert_eq!(
-                language_buffer.snapshot(cx).syntax.version(),
-                buffer_version
-            );
+        language_buffer.read_with(cx, |language_buffer, _| {
+            let snapshot = language_buffer.snapshot();
+            assert_eq!(snapshot.syntax.version(), snapshot.text.version());
         });
     }
 
     #[gpui::test]
     fn language_name_and_syntax_follow_first_line_changes(cx: &mut TestAppContext) {
-        let buffer = cx.new(|_| {
-            Buffer::from_text(String::new(), BufferConfig::default()).expect("应创建测试 Buffer")
-        });
         let language_buffer = cx.new(|cx| {
             LanguageBuffer::new(
-                buffer.clone(),
+                test_buffer(""),
                 Some(PathBuf::from("script")),
                 test_registry(),
                 cx,
             )
         });
 
-        cx.read_entity(&language_buffer, |language_buffer, _| {
-            // 未识别文件以”纯文本“兜底，且无语法树。
+        language_buffer.read_with(cx, |language_buffer, _| {
+            // 未识别文件以纯文本兜底，且无语法树。
             assert_eq!(language_buffer.language_name(), Some("纯文本"));
             let language = language_buffer.language().expect("兜底语言应存在");
             assert_eq!(language.name(), "纯文本");
@@ -482,17 +546,17 @@ mod tests {
                 "纯文本不应启动无意义的后台解析任务"
             );
         });
-        buffer.update(cx, |buffer, cx| {
-            buffer
+        language_buffer.update(cx, |language_buffer, cx| {
+            language_buffer
                 .edit(
                     [
                         Edit::insert(ByteOffset::ZERO, "#!/usr/bin/env python\nprint('ok')\n")
                             .unwrap(),
                     ],
                     TransactionMetadata::default(),
+                    cx,
                 )
                 .expect("测试编辑应成功");
-            cx.notify();
         });
         cx.run_until_parked();
 
@@ -503,13 +567,9 @@ mod tests {
 
     #[gpui::test]
     fn distinguishes_text_parse_and_metadata_events(cx: &mut TestAppContext) {
-        let buffer = cx.new(|_| {
-            Buffer::from_text("fn main() {}\n".to_owned(), BufferConfig::default())
-                .expect("应创建测试 Buffer")
-        });
         let language_buffer = cx.new(|cx| {
             LanguageBuffer::new(
-                buffer.clone(),
+                test_buffer("fn main() {}\n"),
                 Some(PathBuf::from("main.rs")),
                 test_registry(),
                 cx,
@@ -529,22 +589,21 @@ mod tests {
             })
         });
 
-        buffer.update(cx, |buffer, cx| {
-            buffer
+        language_buffer.update(cx, |language_buffer, cx| {
+            language_buffer
                 .edit(
                     [Edit::insert(ByteOffset::new(3), "async ").unwrap()],
                     TransactionMetadata::default(),
+                    cx,
                 )
                 .expect("测试编辑应成功");
-            cx.notify();
         });
         cx.run_until_parked();
         assert_eq!(events.borrow().as_slice(), ["text", "reparsed"]);
 
         events.borrow_mut().clear();
-        buffer.update(cx, |buffer, cx| {
-            buffer.mark_saved();
-            cx.notify();
+        language_buffer.update(cx, |language_buffer, cx| {
+            language_buffer.mark_saved(cx);
         });
         cx.run_until_parked();
         assert_eq!(events.borrow().as_slice(), ["metadata"]);
@@ -554,14 +613,9 @@ mod tests {
     fn text_event_wakes_consumers_after_language_snapshot_reaches_the_batch_version(
         cx: &mut TestAppContext,
     ) {
-        let buffer = cx.new(|_| {
-            Buffer::from_text("fn main() {}\n".to_owned(), BufferConfig::default())
-                .expect("应创建测试 Buffer")
-        });
-        let direct_subscription = buffer.update(cx, |buffer, _| buffer.subscribe());
         let language_buffer = cx.new(|cx| {
             LanguageBuffer::new(
-                buffer.clone(),
+                test_buffer("fn main() {}\n"),
                 Some(PathBuf::from("main.rs")),
                 test_registry(),
                 cx,
@@ -569,6 +623,8 @@ mod tests {
         });
         cx.run_until_parked();
 
+        let direct_subscription =
+            language_buffer.read_with(cx, |language_buffer, _| language_buffer.subscribe());
         let text_event_count = Rc::new(RefCell::new(0));
         let observed = Rc::clone(&text_event_count);
         let _subscription = cx.update(|cx| {
@@ -579,21 +635,21 @@ mod tests {
             })
         });
 
-        buffer.update(cx, |buffer, cx| {
-            buffer
+        language_buffer.update(cx, |language_buffer, cx| {
+            language_buffer
                 .edit(
                     [Edit::insert(ByteOffset::new(3), "async ").unwrap()],
                     TransactionMetadata::default(),
+                    cx,
                 )
                 .expect("测试编辑应成功");
-            cx.notify();
         });
         cx.run_until_parked();
 
         let direct = direct_subscription.consume();
         assert_eq!(*text_event_count.borrow(), 1);
         assert!(direct.transaction_id().is_some());
-        let language_snapshot = cx.read_entity(&language_buffer, |buffer, cx| buffer.snapshot(cx));
+        let language_snapshot = cx.read_entity(&language_buffer, |buffer, _| buffer.snapshot());
         assert_eq!(
             language_snapshot.text.version(),
             direct.new_version().expect("文本变化应有新版本")
@@ -605,17 +661,10 @@ mod tests {
     }
 
     #[gpui::test]
-    /// 快速连续编辑：测试环境的后台任务由确定性调度驱动（不与主线程并发），
-    /// sync 的 ~1ms 等待总是超时，中间解析被取消，只安装最新一次（1 次 Reparsed）。
-    /// 生产环境（真实线程池）中每次编辑的极快解析会在编辑轮内同步安装，事件数可能更多，但任何时刻安装的语法都与当次文本版本一致。
     fn rapid_edits_install_only_the_latest_parse(cx: &mut TestAppContext) {
-        let buffer = cx.new(|_| {
-            Buffer::from_text("fn main() {}\n".to_owned(), BufferConfig::default())
-                .expect("应创建测试 Buffer")
-        });
         let language_buffer = cx.new(|cx| {
             LanguageBuffer::new(
-                buffer.clone(),
+                test_buffer("fn main() {}\n"),
                 Some(PathBuf::from("main.rs")),
                 test_registry(),
                 cx,
@@ -636,24 +685,23 @@ mod tests {
         });
 
         for text in ["a", "b", "c"] {
-            buffer.update(cx, |buffer, cx| {
-                buffer
+            language_buffer.update(cx, |language_buffer, cx| {
+                let offset = language_buffer.len_bytes();
+                language_buffer
                     .edit(
-                        [Edit::insert(buffer.len_bytes(), text).unwrap()],
+                        [Edit::insert(offset, text).unwrap()],
                         TransactionMetadata::default(),
+                        cx,
                     )
                     .expect("测试编辑应成功");
-                cx.notify();
             });
         }
-        let latest_version = cx.read_entity(&buffer, |buffer, _| buffer.version());
+        let latest_version =
+            language_buffer.read_with(cx, |language_buffer, _| language_buffer.version());
         cx.run_until_parked();
 
-        language_buffer.read_with(cx, |language_buffer, cx| {
-            assert_eq!(
-                language_buffer.snapshot(cx).syntax.version(),
-                latest_version
-            );
+        language_buffer.read_with(cx, |language_buffer, _| {
+            assert_eq!(language_buffer.snapshot().syntax.version(), latest_version);
         });
         assert_eq!(
             events
@@ -663,5 +711,66 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    /// 回归：文本与语法在同一实体上编辑后必须停留在同一版本，不再依赖跨实体观察者。
+    #[gpui::test]
+    fn text_and_syntax_share_the_version_after_same_entity_edit(cx: &mut TestAppContext) {
+        let language_buffer = cx.new(|cx| {
+            LanguageBuffer::new(
+                test_buffer("fn main() {}\n"),
+                Some(PathBuf::from("main.rs")),
+                test_registry(),
+                cx,
+            )
+        });
+        language_buffer.update(cx, |language_buffer, cx| {
+            language_buffer
+                .edit(
+                    [Edit::insert(ByteOffset::new(3), "async ").unwrap()],
+                    TransactionMetadata::default(),
+                    cx,
+                )
+                .expect("测试编辑应成功");
+        });
+        cx.run_until_parked();
+
+        language_buffer.read_with(cx, |language_buffer, _| {
+            let snapshot = language_buffer.snapshot();
+            assert_eq!(snapshot.text.version(), language_buffer.version());
+            assert_eq!(snapshot.syntax.version(), snapshot.text.version());
+        });
+    }
+
+    /// 回归：LanguageBuffer 仍需暴露与持有文本同源的版本化增量，供组合层惰性拉取。
+    #[gpui::test]
+    fn versioned_incremental_batch_is_still_available(cx: &mut TestAppContext) {
+        let language_buffer = cx.new(|cx| {
+            LanguageBuffer::new(
+                test_buffer("fn main() {}\n"),
+                Some(PathBuf::from("main.rs")),
+                test_registry(),
+                cx,
+            )
+        });
+        let subscription =
+            language_buffer.read_with(cx, |language_buffer, _| language_buffer.subscribe());
+        let old_version =
+            language_buffer.read_with(cx, |language_buffer, _| language_buffer.version());
+
+        language_buffer.update(cx, |language_buffer, cx| {
+            language_buffer
+                .edit(
+                    [Edit::insert(ByteOffset::new(3), "async ").unwrap()],
+                    TransactionMetadata::default(),
+                    cx,
+                )
+                .expect("测试编辑应成功");
+        });
+
+        let changes = subscription.consume();
+        assert!(!changes.is_empty(), "应能拉取到版本化增量");
+        assert_eq!(changes.old_version(), Some(old_version));
+        assert!(changes.new_version().is_some());
     }
 }

@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use gpui::{Bounds, Pixels};
 use zcv_project::{RegexSearchResult, SearchQuery, SearchQueryResult, SearchResult};
-use zcv_text::{Affinity, Anchor, BufferVersion, PositionMap};
+use zcv_text::{Affinity, Anchor, BufferGeneration, BufferVersion, PositionMap};
 use zcv_workspace::{Direction, SearchEvent, SearchableItem};
 
 use crate::display_map::{DisplayRange, DisplaySnapshot};
@@ -144,8 +144,10 @@ impl SearchMatchAnchor {
     pub(crate) fn from_range(version: BufferVersion, range: MultiBufferRange) -> Self {
         Self {
             // 匹配边界不吸收恰好发生在边界上的插入。
-            range: Anchor::new(version, range.start().into()).with_affinity(Affinity::After)
-                ..Anchor::new(version, range.end().into()).with_affinity(Affinity::Before),
+            range: Anchor::new(BufferGeneration::INITIAL, version, range.start().into())
+                .with_affinity(Affinity::After)
+                ..Anchor::new(BufferGeneration::INITIAL, version, range.end().into())
+                    .with_affinity(Affinity::Before),
         }
     }
 

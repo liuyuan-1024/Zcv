@@ -5,7 +5,7 @@ use zcv_actions::{ConfirmLocalRename, RenameLocal};
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
 use zcv_text::{Edit, TransactionId, TransactionMetadata};
 
-use super::common::{buffer_text, engine_buffer, focus_editor, test_buffer};
+use super::common::{buffer_text, focus_editor, test_buffer};
 use super::*;
 use crate::display_map::{DisplayPoint, DisplayRow};
 use crate::scroll::ScrollViewport;
@@ -193,12 +193,9 @@ fn navigate_to_line_column_uses_unicode_logical_columns(cx: &mut TestAppContext)
 #[gpui::test]
 fn outline_items_filter_and_navigate_using_current_snapshot(cx: &mut TestAppContext) {
     let source = "struct 数据 {\n    value: i32,\n}\nfn build() {}\n";
-    let raw_buffer = cx.new(|_| {
-        Buffer::from_text(source.to_owned(), BufferConfig::default())
-            .expect("Rust 测试 Buffer 应能创建")
-    });
+    let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
+        .expect("Rust 测试 Buffer 应能创建");
     let language_buffer = cx.new({
-        let raw_buffer = raw_buffer.clone();
         move |cx| {
             LanguageBuffer::new(
                 raw_buffer,
@@ -288,12 +285,10 @@ fn external_reload_moves_selection_through_diff(cx: &mut TestAppContext) {
     });
 
     // 外部在行内插入 "x"：diff patch 保留 "br" 与 "avo" 匹配段，端点映射到插入 "x" 之后。
-    let raw_buffer = engine_buffer(&buffer, cx);
-    cx.update_entity(&raw_buffer, |buffer, cx| {
+    cx.update_entity(&buffer, |buffer, cx| {
         buffer
-            .reset("alpha\nbrxavo\ncharlie".to_owned())
+            .reset("alpha\nbrxavo\ncharlie".to_owned(), cx)
             .expect("外部 reload 应成功");
-        cx.notify();
     });
     cx.run_until_parked();
 
@@ -313,10 +308,10 @@ fn external_reload_collapses_selection_when_text_is_rewritten(cx: &mut TestAppCo
     });
 
     // 完全重写（无公共内容）：diff 回退为整体替换段，光标塌缩到文档开头。
-    let raw_buffer = engine_buffer(&buffer, cx);
-    cx.update_entity(&raw_buffer, |buffer, cx| {
-        buffer.reset("x".to_owned()).expect("外部 reload 应成功");
-        cx.notify();
+    cx.update_entity(&buffer, |buffer, cx| {
+        buffer
+            .reset("x".to_owned(), cx)
+            .expect("外部 reload 应成功");
     });
     cx.run_until_parked();
 
@@ -546,12 +541,9 @@ fn replacing_a_reversed_selection_places_the_caret_after_inserted_text(cx: &mut 
 #[gpui::test]
 fn select_larger_smaller_syntax_node_uses_tree_sitter_ancestors(cx: &mut TestAppContext) {
     let source = "fn main() { let value = 1; }\n";
-    let raw_buffer = cx.new(|_| {
-        Buffer::from_text(source.to_owned(), BufferConfig::default())
-            .expect("Rust 测试 Buffer 应能创建")
-    });
+    let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
+        .expect("Rust 测试 Buffer 应能创建");
     let language_buffer = cx.new({
-        let raw_buffer = raw_buffer.clone();
         move |cx| {
             LanguageBuffer::new(
                 raw_buffer,
@@ -642,12 +634,9 @@ fn select_larger_smaller_syntax_node_uses_tree_sitter_ancestors(cx: &mut TestApp
 #[gpui::test]
 fn f2_opens_inline_local_rename_and_enter_commits_it(cx: &mut TestAppContext) {
     let source = "fn main() {\n    let value = 1; let padding = \"0123456789012345678901234567890123456789\";\n    return value;\n}\n";
-    let raw_buffer = cx.new(|_| {
-        Buffer::from_text(source.to_owned(), BufferConfig::default())
-            .expect("Rust 测试 Buffer 应能创建")
-    });
+    let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
+        .expect("Rust 测试 Buffer 应能创建");
     let language_buffer = cx.new({
-        let raw_buffer = raw_buffer.clone();
         move |cx| {
             LanguageBuffer::new(
                 raw_buffer,
@@ -715,12 +704,9 @@ fn select_larger_syntax_node_reaches_file_root_from_rust_imports_and_structures(
     cx: &mut TestAppContext,
 ) {
     let source = "use gpui::{\n    AnyElement,\n    AnyView,\n    App,\n};\n\nstruct EditorState {\n    value: usize,\n}\n";
-    let raw_buffer = cx.new(|_| {
-        Buffer::from_text(source.to_owned(), BufferConfig::default())
-            .expect("Rust 测试 Buffer 应能创建")
-    });
+    let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
+        .expect("Rust 测试 Buffer 应能创建");
     let language_buffer = cx.new({
-        let raw_buffer = raw_buffer.clone();
         move |cx| {
             LanguageBuffer::new(
                 raw_buffer,
@@ -760,12 +746,9 @@ fn select_larger_syntax_node_reaches_file_root_from_rust_imports_and_structures(
 #[gpui::test]
 fn matching_brackets_come_from_tree_sitter_query(cx: &mut TestAppContext) {
     let source = "fn main() { call(); }\n";
-    let raw_buffer = cx.new(|_| {
-        Buffer::from_text(source.to_owned(), BufferConfig::default())
-            .expect("Rust 测试 Buffer 应能创建")
-    });
+    let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
+        .expect("Rust 测试 Buffer 应能创建");
     let language_buffer = cx.new({
-        let raw_buffer = raw_buffer.clone();
         move |cx| {
             LanguageBuffer::new(
                 raw_buffer,
@@ -937,8 +920,7 @@ fn page_actions_move_selection_and_viewport_together(cx: &mut TestAppContext) {
         );
     });
 
-    let raw_buffer = engine_buffer(&buffer, cx);
-    let snapshot = cx.read_entity(&raw_buffer, |buffer, _| buffer.snapshot());
+    let snapshot = cx.read_entity(&buffer, |buffer, _| buffer.text_snapshot());
     let first_page: MultiBufferOffset = snapshot
         .line_start_byte(Line::new(page_rows))
         .expect("第一页目标行应存在")
@@ -1022,8 +1004,7 @@ fn clipboard_actions_edit_selected_text_through_transactions(cx: &mut TestAppCon
     });
     cx.dispatch_action(Paste);
     assert_eq!(buffer_text(&buffer, cx), "helloell");
-    let raw_buffer = engine_buffer(&buffer, cx);
-    assert!(cx.read_entity(&raw_buffer, |buffer, _| buffer.can_undo()));
+    assert!(cx.read_entity(&buffer, |buffer, _| buffer.can_undo()));
 }
 #[gpui::test]
 fn move_line_up_and_down_reorders_lines_and_follows_selection(cx: &mut TestAppContext) {
@@ -1290,8 +1271,7 @@ fn newline_is_a_transaction_and_undo_restores_selection(cx: &mut TestAppContext)
 
     cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
     assert_eq!(buffer_text(&buffer, cx), "a\nb");
-    let raw_buffer = engine_buffer(&buffer, cx);
-    assert!(cx.read_entity(&raw_buffer, |buffer, _| buffer.can_undo()));
+    assert!(cx.read_entity(&buffer, |buffer, _| buffer.can_undo()));
     cx.read_entity(&editor, |editor, _| {
         assert_eq!(
             editor.selections(),
@@ -1312,12 +1292,9 @@ fn newline_is_a_transaction_and_undo_restores_selection(cx: &mut TestAppContext)
 fn newline_uses_tree_sitter_indent_query(cx: &mut TestAppContext) {
     let source = "fn main() {}\n";
     let caret = source.find('{').unwrap() + 1;
-    let raw_buffer = cx.new(|_| {
-        Buffer::from_text(source.to_owned(), BufferConfig::default())
-            .expect("Rust 测试 Buffer 应能创建")
-    });
+    let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
+        .expect("Rust 测试 Buffer 应能创建");
     let language_buffer = cx.new({
-        let raw_buffer = raw_buffer.clone();
         move |cx| {
             LanguageBuffer::new(
                 raw_buffer,
@@ -1346,12 +1323,9 @@ fn newline_uses_tree_sitter_indent_query(cx: &mut TestAppContext) {
 fn composite_excerpt_uses_its_source_tree_sitter_indent_query(cx: &mut TestAppContext) {
     let source_text = "fn main() {}\n";
     let caret = source_text.find('{').unwrap() + 1;
-    let raw_buffer = cx.new(|_| {
-        Buffer::from_text(source_text.to_owned(), BufferConfig::default())
-            .expect("Rust 测试 Buffer 应能创建")
-    });
+    let raw_buffer = Buffer::from_text(source_text.to_owned(), BufferConfig::default())
+        .expect("Rust 测试 Buffer 应能创建");
     let language_buffer = cx.new({
-        let raw_buffer = raw_buffer.clone();
         move |cx| {
             LanguageBuffer::new(
                 raw_buffer,
@@ -1396,12 +1370,9 @@ fn composite_excerpt_uses_its_source_tree_sitter_indent_query(cx: &mut TestAppCo
 fn newline_does_not_compound_indent_inside_an_outer_rust_block(cx: &mut TestAppContext) {
     let source = "pub(crate) fn config_dir() -> &'static Path {\n    static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();\n    CONFIG_DIR.get_or_init(|| home_dir().join(\".zcv\")).as_path()\n}";
     let caret = source.find(".as_path()").unwrap() + ".as_path()".len();
-    let raw_buffer = cx.new(|_| {
-        Buffer::from_text(source.to_owned(), BufferConfig::default())
-            .expect("Rust 测试 Buffer 应能创建")
-    });
+    let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
+        .expect("Rust 测试 Buffer 应能创建");
     let language_buffer = cx.new({
-        let raw_buffer = raw_buffer.clone();
         move |cx| {
             LanguageBuffer::new(
                 raw_buffer,
@@ -1434,12 +1405,9 @@ fn newline_does_not_compound_indent_inside_an_outer_rust_block(cx: &mut TestAppC
 fn newline_uses_the_nearest_code_line_as_its_indent_basis(cx: &mut TestAppContext) {
     let source = "fn main() {\n    build()\n}";
     let caret = source.find("build(").unwrap() + "build(".len();
-    let raw_buffer = cx.new(|_| {
-        Buffer::from_text(source.to_owned(), BufferConfig::default())
-            .expect("Rust 测试 Buffer 应能创建")
-    });
+    let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
+        .expect("Rust 测试 Buffer 应能创建");
     let language_buffer = cx.new({
-        let raw_buffer = raw_buffer.clone();
         move |cx| {
             LanguageBuffer::new(
                 raw_buffer,

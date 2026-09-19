@@ -31,6 +31,33 @@ impl Default for BufferVersion {
     }
 }
 
+/// Buffer 内容代际：标识一段连续可映射的版本历史。
+///
+/// 普通版本推进不改变代际；reset / 外部基线替换会开启新代际，
+/// 使替换前的锚点无法再被当作普通编辑继续映射。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BufferGeneration(BufferVersion);
+
+impl BufferGeneration {
+    /// 初始代际：Buffer 创建后、首次基线替换前的版本空间。
+    pub const INITIAL: Self = Self(BufferVersion::INITIAL);
+
+    pub const fn new(version: BufferVersion) -> Self {
+        Self(version)
+    }
+
+    /// 该代际起始的版本。首个提交属于本代际时等于该提交的 new_version。
+    pub const fn version(self) -> BufferVersion {
+        self.0
+    }
+}
+
+impl Default for BufferGeneration {
+    fn default() -> Self {
+        Self::INITIAL
+    }
+}
+
 /// 事务 ID。
 ///
 /// 用于标识一次事务提交，通常单调递增。

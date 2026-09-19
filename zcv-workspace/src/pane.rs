@@ -1198,9 +1198,8 @@ mod tests {
     }
 
     fn test_buffer(cx: &mut TestAppContext, text: impl Into<String>) -> Entity<MultiBuffer> {
-        let buffer = cx.new(|_| {
-            Buffer::from_text(text.into(), BufferConfig::default()).expect("应创建测试 Buffer")
-        });
+        let buffer =
+            Buffer::from_text(text.into(), BufferConfig::default()).expect("应创建测试 Buffer");
         let language_buffer = cx.new(|cx| {
             LanguageBuffer::new(
                 buffer,

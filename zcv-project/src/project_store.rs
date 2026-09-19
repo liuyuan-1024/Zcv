@@ -14,7 +14,7 @@ use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 use zcv_git::{ConflictChoice, FileStatus, parse_conflict_regions, resolve_conflict};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_path::{AbsolutePathBuf, normalize_for_comparison};
-use zcv_text::{Buffer, ByteOffset, Edit, TextRange, TransactionMetadata};
+use zcv_text::{Buffer, ByteOffset, Edit, Snapshot, TextRange, TransactionMetadata};
 
 use crate::search::SearchQuery;
 
@@ -235,8 +235,7 @@ impl Project {
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
         let language_buffer = self.open_buffer(path, cx)?;
-        let buffer = language_buffer.read(cx).buffer();
-        let snapshot = language_buffer.read(cx).text_snapshot(cx);
+        let snapshot = language_buffer.read(cx).text_snapshot();
         let text_range = TextRange::new(ByteOffset::ZERO, snapshot.len_bytes())?;
         let text = snapshot.slice_text(text_range)?.to_string();
         let regions = parse_conflict_regions(&text);
@@ -245,13 +244,14 @@ impl Project {
             .ok_or_else(|| anyhow::anyhow!("冲突序号无效：{conflict_index}"))?;
         let resolved = resolve_conflict(&text, region, choice);
         let full_range = TextRange::new(ByteOffset::ZERO, ByteOffset::new(text.len()))?;
-        buffer.update(cx, |buffer, _| {
-            buffer.edit(
+        language_buffer.update(cx, |language_buffer, cx| {
+            language_buffer.edit(
                 [Edit::replace(full_range, resolved)],
                 TransactionMetadata::default(),
+                cx,
             )
         })?;
-        self.save_file_buffers(vec![(buffer, path.to_path_buf())], cx)?;
+        self.save_file_buffers(vec![(language_buffer, path.to_path_buf())], cx)?;
         Ok(())
     }
 
@@ -305,24 +305,24 @@ impl Project {
     /// 保存真实源文件的 Buffer；组合投影不会参与落盘。
     pub fn save_file_buffers(
         &mut self,
-        buffers: Vec<(Entity<Buffer>, PathBuf)>,
+        buffers: Vec<(Entity<LanguageBuffer>, PathBuf)>,
         cx: &mut Context<Self>,
     ) -> Result<(), BufferSaveError> {
         let mut saved_paths = Vec::with_capacity(buffers.len());
         let mut resolved_conflict_paths: Vec<AbsolutePathBuf> = Vec::new();
-        for (buffer, path) in buffers {
+        for (language_buffer, path) in buffers {
+            let snapshot = language_buffer.read(cx).text_snapshot();
             let is_unmerged = self
                 .git_store
                 .read(cx)
                 .status_for_path(&path)
                 .is_some_and(|entry| entry.status == FileStatus::Unmerged);
             if is_unmerged {
-                let snapshot = buffer.read(cx).snapshot();
                 let range = TextRange::new(ByteOffset::ZERO, snapshot.len_bytes())
-                    .expect("Buffer 快照的全文范围必须有效");
+                    .expect("文本快照的全文范围必须有效");
                 let text = snapshot
                     .slice_text(range)
-                    .expect("Buffer 快照必须可切片")
+                    .expect("文本快照必须可切片")
                     .to_string();
                 if parse_conflict_regions(&text).is_empty() {
                     resolved_conflict_paths.push(
@@ -331,11 +331,8 @@ impl Project {
                     );
                 }
             }
-            buffer.update(cx, |buffer, cx| {
-                write_buffer_to_path(buffer, &path)?;
-                cx.notify();
-                Ok::<_, BufferSaveError>(())
-            })?;
+            write_buffer_to_path(&snapshot, &path)?;
+            language_buffer.update(cx, |language_buffer, cx| language_buffer.mark_saved(cx));
             saved_paths.push(path);
         }
         // 保存成功后立即刷新 git 状态（快路径，不等 fs 事件；
@@ -663,12 +660,11 @@ fn keep_git_state_event(path: &Path) -> bool {
     true
 }
 
-fn write_buffer_to_path(buffer: &mut Buffer, path: &Path) -> Result<(), BufferSaveError> {
-    let version = buffer.version();
+fn write_buffer_to_path(snapshot: &Snapshot, path: &Path) -> Result<(), BufferSaveError> {
+    let version = snapshot.version();
     let mut file = File::create(path)?;
-    write_buffer_to(buffer, version, &mut file, LineEndingConfig::Preserve)?;
+    write_buffer_to(snapshot, version, &mut file, LineEndingConfig::Preserve)?;
     file.sync_all()?;
-    buffer.mark_saved();
     Ok(())
 }
 
@@ -882,7 +878,8 @@ mod tests {
             .expect("测试编辑应成功");
         assert!(buffer.is_dirty());
 
-        write_buffer_to_path(&mut buffer, &path).expect("保存应成功");
+        write_buffer_to_path(&buffer.snapshot(), &path).expect("保存应成功");
+        buffer.mark_saved();
 
         assert_eq!(
             fs::read_to_string(&path).expect("应读回文件"),
@@ -904,7 +901,7 @@ mod tests {
             )
             .expect("测试编辑应成功");
 
-        assert!(write_buffer_to_path(&mut buffer, &path).is_err());
+        assert!(write_buffer_to_path(&buffer.snapshot(), &path).is_err());
         assert!(buffer.is_dirty());
     }
 
@@ -1484,12 +1481,13 @@ mod tests {
         let buffer = project
             .update(cx, |project, cx| project.open_buffer(&file, cx))
             .expect("应打开文件");
-        let engine_buffer = cx.read_entity(&buffer, |language_buffer, _| language_buffer.buffer());
-        engine_buffer
-            .update(cx, |buffer, _| {
-                buffer.edit(
-                    [Edit::insert(buffer.len_bytes(), "新增行\n").unwrap()],
+        buffer
+            .update(cx, |language_buffer, cx| {
+                let offset = language_buffer.len_bytes();
+                language_buffer.edit(
+                    [Edit::insert(offset, "新增行\n").unwrap()],
                     TransactionMetadata::default(),
+                    cx,
                 )
             })
             .expect("编辑应成功");
@@ -1503,7 +1501,7 @@ mod tests {
         // 保存后 git 状态应变为已修改。
         project
             .update(cx, |project, cx| {
-                project.save_file_buffers(vec![(engine_buffer.clone(), file.clone())], cx)
+                project.save_file_buffers(vec![(buffer.clone(), file.clone())], cx)
             })
             .expect("保存应成功");
         cx.run_until_parked();
@@ -1522,21 +1520,20 @@ mod tests {
         let language_buffer = project
             .update(cx, |project, cx| project.open_buffer(&file, cx))
             .expect("应打开测试文件");
-        let buffer = cx.read_entity(&language_buffer, |language_buffer, _| {
-            language_buffer.buffer()
-        });
-        buffer
-            .update(cx, |buffer, _| {
-                buffer.edit(
-                    [Edit::insert(buffer.len_bytes(), " + 修改").unwrap()],
+        language_buffer
+            .update(cx, |language_buffer, cx| {
+                let offset = language_buffer.len_bytes();
+                language_buffer.edit(
+                    [Edit::insert(offset, " + 修改").unwrap()],
                     TransactionMetadata::default(),
+                    cx,
                 )
             })
             .expect("编辑应成功");
 
         project
             .update(cx, |project, cx| {
-                project.save_file_buffers(vec![(buffer.clone(), file.clone())], cx)
+                project.save_file_buffers(vec![(language_buffer.clone(), file.clone())], cx)
             })
             .expect("保存应成功");
         project.update(cx, |project, cx| {
@@ -1549,21 +1546,22 @@ mod tests {
             );
         });
 
-        buffer.read_with(cx, |buffer, _| assert!(buffer.can_undo()));
-        buffer
-            .update(cx, |buffer, _| buffer.undo())
+        language_buffer.read_with(cx, |language_buffer, _| assert!(language_buffer.can_undo()));
+        language_buffer
+            .update(cx, |language_buffer, cx| language_buffer.undo(cx))
             .expect("撤销应成功")
             .expect("保存前的编辑应仍在历史中");
-        buffer.read_with(cx, |buffer, _| {
+        language_buffer.read_with(cx, |language_buffer, _| {
+            let snapshot = language_buffer.text_snapshot();
             assert_eq!(
-                buffer
-                    .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
+                snapshot
+                    .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
                     .expect("应读取完整文本")
                     .as_str(),
                 "原内容"
             );
-            assert!(buffer.is_dirty());
-            assert!(buffer.can_redo());
+            assert!(language_buffer.is_dirty());
+            assert!(language_buffer.can_redo());
         });
 
         // 同一次保存可能产生重复或延迟事件；用户撤销后文档已变脏，事件不能反向覆盖。
@@ -1576,15 +1574,16 @@ mod tests {
                 cx,
             );
         });
-        buffer.read_with(cx, |buffer, _| {
+        language_buffer.read_with(cx, |language_buffer, _| {
+            let snapshot = language_buffer.text_snapshot();
             assert_eq!(
-                buffer
-                    .slice_byte_range(ByteOffset::ZERO, buffer.len_bytes())
+                snapshot
+                    .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
                     .expect("应读取完整文本")
                     .as_str(),
                 "原内容"
             );
-            assert!(buffer.can_redo());
+            assert!(language_buffer.can_redo());
         });
     }
 

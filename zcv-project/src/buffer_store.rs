@@ -88,7 +88,6 @@ impl BufferStore {
             return Ok(buffer);
         }
         let buffer = load()?;
-        let buffer = cx.new(|_| buffer);
         let language_buffer = cx.new(|cx| {
             LanguageBuffer::new(
                 buffer,
@@ -107,7 +106,7 @@ impl BufferStore {
             .iter()
             .filter_map(|(path, buffer)| {
                 let buffer = buffer.upgrade()?;
-                Some((path.clone(), buffer.read(cx).text_snapshot(cx)))
+                Some((path.clone(), buffer.read(cx).text_snapshot()))
             })
             .collect()
     }
@@ -131,16 +130,13 @@ impl BufferStore {
         let Ok(text) = decode_to_string(file, &EncodingConfig::default()) else {
             return;
         };
-        let buffer = language_buffer.read(cx).buffer();
-        buffer.update(cx, |buffer, cx| {
+        language_buffer.update(cx, |language_buffer, cx| {
             // 脏 Buffer 的文本由用户编辑拥有；文件事件不能用磁盘内容覆盖它。
             // 保存产生的延迟事件也可能在用户已经继续编辑或撤销后到达。
-            if buffer.is_dirty() {
+            if language_buffer.is_dirty() {
                 return;
             }
-            if buffer.reset(text).is_ok() {
-                cx.notify();
-            }
+            let _ = language_buffer.reset(text, cx);
         });
     }
 

@@ -277,6 +277,15 @@ fn hunk_info(
     }
 }
 
+/// 某个源在 diff 投影中的角色。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DiffSourceRole {
+    /// 新侧工作区文档：其文本直接构成组合正文。
+    Working,
+    /// 旧侧修订文档（base/index）：内容与 hunk 几何都由 BufferDiff 拥有。
+    Revision,
+}
+
 impl MultiBuffer {
     /// 按路径增量挂接一个文件的 diff。
     ///
@@ -407,7 +416,7 @@ impl MultiBuffer {
         {
             self.diff = None;
             self.diffs.clear();
-            let line_count = source.read(cx).text_snapshot(cx).line_count();
+            let line_count = source.read(cx).text_snapshot().line_count();
             self.set_excerpts(
                 vec![
                     ExcerptRange::line_range(source, 0..line_count, cx)
@@ -631,14 +640,7 @@ impl MultiBuffer {
         self.diff.as_ref().is_some_and(|_| {
             self.diffs.iter().any(|file| {
                 file.diff.read(cx).path() == path
-                    && file
-                        .diff
-                        .read(cx)
-                        .working()
-                        .read(cx)
-                        .buffer()
-                        .read(cx)
-                        .is_dirty()
+                    && file.diff.read(cx).working().read(cx).is_dirty()
             })
         })
     }
@@ -674,7 +676,7 @@ impl MultiBuffer {
             .iter()
             .find(|file| file.diff.read(cx).path() == &location.path)?;
         let base = file.diff.read(cx).base_source()?.clone();
-        let base_text = base.read(cx).text_snapshot(cx);
+        let base_text = base.read(cx).text_snapshot();
         let position = base_text
             .byte_to_position(location.source_range.start())
             .ok()?;
@@ -698,13 +700,41 @@ impl MultiBuffer {
         Some((line, column))
     }
 
-    /// 指定源是否属于当前 diff 投影。
-    pub(crate) fn is_diff_source(&self, source_id: gpui::EntityId, cx: &App) -> bool {
-        self.diff.as_ref().is_some_and(|_| {
-            self.diffs
-                .iter()
-                .any(|file| file.diff.read(cx).working().entity_id() == source_id)
+    /// 拥有指定源的 diff 及其角色；源不属于任何已挂接 diff 时返回 None。
+    ///
+    /// working、base 与 index 是一个 diff 的全部文本输入，三者的变化都必须回到该 diff，
+    /// 不能按普通组合文档源各自处理。
+    fn diff_source(
+        &self,
+        source_id: gpui::EntityId,
+        cx: &App,
+    ) -> Option<(Entity<BufferDiff>, DiffSourceRole)> {
+        self.diff.as_ref()?;
+        self.diffs.iter().find_map(|file| {
+            let diff = file.diff.read(cx);
+            if diff.working().entity_id() == source_id {
+                return Some((file.diff.clone(), DiffSourceRole::Working));
+            }
+            if diff
+                .base_source()
+                .is_some_and(|source| source.entity_id() == source_id)
+                || diff
+                    .index_source()
+                    .is_some_and(|source| source.entity_id() == source_id)
+            {
+                return Some((file.diff.clone(), DiffSourceRole::Revision));
+            }
+            None
         })
+    }
+
+    /// 指定源在 diff 投影中的角色。
+    pub(crate) fn diff_source_role(
+        &self,
+        source_id: gpui::EntityId,
+        cx: &App,
+    ) -> Option<DiffSourceRole> {
+        self.diff_source(source_id, cx).map(|(_, role)| role)
     }
 
     pub(crate) fn recompute_diff_for_source(
@@ -713,12 +743,7 @@ impl MultiBuffer {
         refresh: DiffRefresh,
         cx: &mut Context<Self>,
     ) {
-        let diff = self.diff.as_ref().and_then(|_| {
-            self.diffs
-                .iter()
-                .find(|file| file.diff.read(cx).working().entity_id() == source_id)
-                .map(|file| file.diff.clone())
-        });
+        let diff = self.diff_source(source_id, cx).map(|(diff, _)| diff);
         if let Some(diff) = diff {
             diff.update(cx, |diff, cx| diff.recompute_with_refresh(refresh, cx));
         }
@@ -733,15 +758,10 @@ impl MultiBuffer {
             if refresh == DiffRefresh::PreserveProjection {
                 return;
             }
-            let working_is_dirty = self.diffs.iter().any(|file| {
-                file.diff
-                    .read(cx)
-                    .working()
-                    .read(cx)
-                    .buffer()
-                    .read(cx)
-                    .is_dirty()
-            });
+            let working_is_dirty = self
+                .diffs
+                .iter()
+                .any(|file| file.diff.read(cx).working().read(cx).is_dirty());
             if working_is_dirty && !diff.display_expanded.iter().any(|&expanded| expanded) {
                 // 折叠态组合文档的 excerpt 是用户当前正在编辑的稳定窗口。
                 // 没有展开 hunk 时只更新 BufferDiff 快照，等保存/重新注入后再提交新的窗口；
@@ -1100,10 +1120,8 @@ fn resolve_file_hunks(file: &DiffState, cx: &App) -> Vec<ResolvedHunk> {
     let entity = file.diff.clone();
     let (working_text, base_text, hunks) = {
         let diff = entity.read(cx);
-        let working_text = diff.working().read(cx).text_snapshot(cx);
-        let base_text = diff
-            .base_source()
-            .map(|base| base.read(cx).text_snapshot(cx));
+        let working_text = diff.working().read(cx).text_snapshot();
+        let base_text = diff.base_source().map(|base| base.read(cx).text_snapshot());
         (working_text, base_text, diff.snapshot().visible_hunks())
     };
     hunks
@@ -1248,7 +1266,7 @@ fn materialize_file(
     let working = file.diff.read(cx).working().clone();
     let base_source = file.diff.read(cx).base_source().cloned();
     let is_created = file.diff.read(cx).is_created();
-    let working_text = working.read(cx).text_snapshot(cx);
+    let working_text = working.read(cx).text_snapshot();
     let line_count = working_text.line_count();
     let display_path = file.display_path.clone();
     let context_lines = file.context_lines;
@@ -1339,7 +1357,7 @@ fn materialize_file(
             let mut old_materialized = false;
             if !hunk.base_lines.is_empty() {
                 if expanded && let Some(base) = base_source.as_ref() {
-                    let base_text = base.read(cx).text_snapshot(cx);
+                    let base_text = base.read(cx).text_snapshot();
                     // 边界标记的是 working 侧位置：旧侧是 base 坐标，不承载待挂载边界。
                     let hunks = vec![hunk_info(
                         working_id,
@@ -1364,7 +1382,7 @@ fn materialize_file(
                 } else if context_lines.is_some() {
                     // 折叠占位行：空 Deleted 片段（组合文档为它保留一个显示行）。
                     let base = base_source.as_ref().expect("删除点占位需要 base 来源");
-                    let base_text = base.read(cx).text_snapshot(cx);
+                    let base_text = base.read(cx).text_snapshot();
                     let hunks = vec![hunk_info(
                         working_id,
                         hunk_index,

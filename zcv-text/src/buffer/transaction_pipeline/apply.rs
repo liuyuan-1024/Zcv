@@ -9,11 +9,12 @@ use crate::{
     errors::{EditError, StorageError, TransactionError},
     errors::{TextError, TextResult},
     storage::{RopeyPreparedReplace, RopeyStorage},
+    text_changes::TextPatch,
     transaction::TransactionOutcome,
     transaction::{
         ChangeSet, Delta, DeltaEvent, EditList, Transaction, TransactionMetadata, TransactionSource,
     },
-    types::BufferVersion,
+    types::{BufferGeneration, BufferVersion},
 };
 
 impl Buffer {
@@ -240,7 +241,18 @@ impl Buffer {
     ) {
         self.storage = next_storage;
         self.version = event.new_version();
-        // 编辑日志是版本化编辑的唯一事实：Anchor、组合文档增量同步与历史回放都据此重建坐标。
+        // reset / 基线替换开启新代际：普通解析拒绝把旧代际锚点当作普通编辑继续映射；
+        // 跨代际映射仍保留在坐标索引中，供调用方显式重锚（例如外部 reload 后的光标恢复）。
+        if event.requires_reset() {
+            self.generation = BufferGeneration::new(event.new_version());
+        }
+        // 不衰减坐标索引与带文本 EditLog 一起追加；预算裁剪只作用于后者。
+        self.coordinate_index = self.coordinate_index.appended(
+            event.old_version(),
+            event.new_version(),
+            TextPatch::from_delta(event.delta()),
+        );
+        // 编辑日志是版本化编辑的唯一事实：组合文档增量同步与历史回放都据此重建坐标。
         self.edit_log = self.edit_log.appended(
             event.old_version(),
             event.new_version(),

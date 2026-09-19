@@ -204,16 +204,15 @@ mod tests {
         events.borrow_mut().clear();
         // dirty 的权威来源是工作区源 Buffer；
         // 投影 Buffer 只由组合文档重建，不参与保存状态。
-        let buffer = cx.read_entity(&editor, |editor, cx| {
+        let language_buffer = cx.read_entity(&editor, |editor, cx| {
             editor
                 .multi_buffer()
                 .read(cx)
-                .as_singleton(cx)
+                .singleton_source()
                 .expect("单行编辑器的整文件源应可取回")
         });
-        cx.update_entity(&buffer, |buffer, cx| {
-            buffer.mark_saved();
-            cx.notify();
+        cx.update_entity(&language_buffer, |language_buffer, cx| {
+            language_buffer.mark_saved(cx);
         });
         cx.run_until_parked();
         assert!(events.borrow().contains(&EditorEvent::DirtyChanged));
@@ -229,7 +228,7 @@ mod tests {
         let source = project.update(cx, |project, cx| {
             project.open_buffer(&path, cx).expect("应打开源文件")
         });
-        let source_len = cx.read_entity(&source, |source, cx| source.text_snapshot(cx).len_bytes());
+        let source_len = cx.read_entity(&source, |source, _| source.text_snapshot().len_bytes());
         let combined = cx.new(MultiBuffer::empty);
         combined.update(cx, |combined, cx| {
             combined.set_excerpts(

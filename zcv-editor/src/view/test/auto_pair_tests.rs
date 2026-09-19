@@ -19,23 +19,19 @@ fn editor_with_rust<'a>(
     text: &str,
     selections: SelectionSet,
 ) -> (
-    gpui::Entity<Buffer>,
+    gpui::Entity<LanguageBuffer>,
     gpui::Entity<Editor>,
     &'a mut VisualTestContext,
 ) {
-    let buffer = cx.new(|_| {
-        Buffer::from_text(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建")
-    });
-    let language_buffer = cx.new({
-        let buffer = buffer.clone();
-        move |cx| {
-            LanguageBuffer::new(
-                buffer,
-                Some(PathBuf::from("test.rs")),
-                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
-                cx,
-            )
-        }
+    let buffer =
+        Buffer::from_text(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建");
+    let language_buffer = cx.new(move |cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(PathBuf::from("test.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
     });
     let editor = cx.add_window_view({
         let language_buffer = language_buffer.clone();
@@ -45,7 +41,7 @@ fn editor_with_rust<'a>(
             editor
         }
     });
-    (buffer, editor.0, editor.1)
+    (language_buffer, editor.0, editor.1)
 }
 
 /// 不带语言的编辑器（无配对表，输入应原样插入）。
@@ -54,23 +50,19 @@ fn editor_without_language<'a>(
     text: &str,
     selections: SelectionSet,
 ) -> (
-    gpui::Entity<Buffer>,
+    gpui::Entity<LanguageBuffer>,
     gpui::Entity<Editor>,
     &'a mut VisualTestContext,
 ) {
-    let buffer = cx.new(|_| {
-        Buffer::from_text(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建")
-    });
-    let language_buffer = cx.new({
-        let buffer = buffer.clone();
-        move |cx| {
-            LanguageBuffer::new(
-                buffer,
-                None,
-                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
-                cx,
-            )
-        }
+    let buffer =
+        Buffer::from_text(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建");
+    let language_buffer = cx.new(move |cx| {
+        LanguageBuffer::new(
+            buffer,
+            None,
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
     });
     let editor = cx.add_window_view({
         let language_buffer = language_buffer.clone();
@@ -80,13 +72,14 @@ fn editor_without_language<'a>(
             editor
         }
     });
-    (buffer, editor.0, editor.1)
+    (language_buffer, editor.0, editor.1)
 }
 
-fn buffer_text(buffer: &gpui::Entity<Buffer>, cx: &VisualTestContext) -> String {
-    cx.read_entity(buffer, |buffer, _| {
-        buffer
-            .slice_byte_range(MultiBufferOffset::ZERO.into(), buffer.len_bytes())
+fn buffer_text(buffer: &gpui::Entity<LanguageBuffer>, cx: &VisualTestContext) -> String {
+    cx.read_entity(buffer, |language_buffer, _| {
+        let snapshot = language_buffer.text_snapshot();
+        snapshot
+            .slice_byte_range(MultiBufferOffset::ZERO.into(), snapshot.len_bytes())
             .expect("完整测试范围应可读取")
             .as_str()
             .to_string()
@@ -113,47 +106,37 @@ fn backspace(editor: &gpui::Entity<Editor>, cx: &mut VisualTestContext) {
 
 #[gpui::test]
 fn each_composite_selection_uses_its_source_language_pairs(cx: &mut TestAppContext) {
-    let plain_buffer = cx.new(|_| {
-        Buffer::from_text("x ".to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
+    let plain = cx.new(|cx| {
+        LanguageBuffer::new(
+            Buffer::from_text("x ".to_owned(), BufferConfig::default())
+                .expect("测试 Buffer 应能创建"),
+            None,
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
     });
-    let rust_buffer = cx.new(|_| {
-        Buffer::from_text("y ".to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建")
-    });
-    let plain = cx.new({
-        let plain_buffer = plain_buffer.clone();
-        move |cx| {
-            LanguageBuffer::new(
-                plain_buffer,
-                None,
-                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
-                cx,
-            )
-        }
-    });
-    let rust = cx.new({
-        let rust_buffer = rust_buffer.clone();
-        move |cx| {
-            LanguageBuffer::new(
-                rust_buffer,
-                Some(PathBuf::from("test.rs")),
-                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
-                cx,
-            )
-        }
+    let rust = cx.new(|cx| {
+        LanguageBuffer::new(
+            Buffer::from_text("y ".to_owned(), BufferConfig::default())
+                .expect("测试 Buffer 应能创建"),
+            Some(PathBuf::from("test.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
     });
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(
             vec![
                 ExcerptRange::new(
-                    plain,
+                    plain.clone(),
                     MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(2))
                         .unwrap()
                         .into(),
                     Vec::new(),
                 ),
                 ExcerptRange::new(
-                    rust,
+                    rust.clone(),
                     MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(2))
                         .unwrap()
                         .into(),
@@ -178,8 +161,8 @@ fn each_composite_selection_uses_its_source_language_pairs(cx: &mut TestAppConte
 
     type_text(&editor, cx, "(");
 
-    assert_eq!(buffer_text(&plain_buffer, cx), "x( ");
-    assert_eq!(buffer_text(&rust_buffer, cx), "y() ");
+    assert_eq!(buffer_text(&plain, cx), "x( ");
+    assert_eq!(buffer_text(&rust, cx), "y() ");
 }
 
 #[gpui::test]

@@ -123,18 +123,20 @@ impl Selection<MultiBufferOffset> {
 }
 
 impl Selection<MultiBufferAnchor> {
-    /// 按当前快照解析为偏移选区；端点已退出投影时落到组合文首。
-    pub(crate) fn resolve(self, snapshot: &MultiBufferSnapshot) -> Selection<MultiBufferOffset> {
-        Selection::from_parts(
-            snapshot
-                .resolve_anchor(&self.start)
-                .unwrap_or(MultiBufferOffset::ZERO),
-            snapshot
-                .resolve_anchor(&self.end)
-                .unwrap_or(MultiBufferOffset::ZERO),
+    /// 按当前快照解析为偏移选区。
+    ///
+    /// 端点锚点版本已被 reset / 基线替换淘汰时无法表示，返回 None；
+    /// 调用方必须显式丢弃该选区，不得把端点静默换成组合文首。
+    pub(crate) fn resolve(
+        self,
+        snapshot: &MultiBufferSnapshot,
+    ) -> Option<Selection<MultiBufferOffset>> {
+        Some(Selection::from_parts(
+            snapshot.resolve_anchor(&self.start)?,
+            snapshot.resolve_anchor(&self.end)?,
             self.reversed,
             self.goal,
-        )
+        ))
     }
 }
 

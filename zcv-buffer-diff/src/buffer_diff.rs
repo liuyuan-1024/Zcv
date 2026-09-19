@@ -13,7 +13,7 @@ use std::sync::Arc;
 use gpui::{App, Context, Entity, EventEmitter};
 use imara_diff::{Algorithm, Diff, InternedInput};
 use zcv_language::LanguageBuffer;
-use zcv_text::{Anchor, BufferVersion, ByteOffset, Line, Snapshot, TextRange};
+use zcv_text::{Anchor, BufferGeneration, BufferVersion, ByteOffset, Line, Snapshot, TextRange};
 
 use crate::word_diff::{MAX_WORD_DIFF_BYTES, MAX_WORD_DIFF_LINES, word_diff_ranges};
 
@@ -284,18 +284,18 @@ impl BufferDiff {
     /// 由宿主在创建后与 working 文本变化时调用；本实体不订阅 working buffer。
     /// 结果回到前台后必须再次比对版本，避免较早任务覆盖后续编辑的 hunk。
     pub fn recompute_with_refresh(&mut self, refresh: DiffRefresh, cx: &mut Context<Self>) {
-        let working = self.working.read(cx).text_snapshot(cx);
+        let working = self.working.read(cx).text_snapshot();
         let working_version = working.version();
         // base/index 的权威文档由 GitStore 持有；这里只克隆廉价快照，
         // 全文物化留在后台，避免 UI 线程因重建修订文档而阻塞。
         let base = self
             .base_source
             .as_ref()
-            .map(|base| base.read(cx).text_snapshot(cx));
+            .map(|base| base.read(cx).text_snapshot());
         let index = self
             .index_source
             .as_ref()
-            .map(|index| index.read(cx).text_snapshot(cx));
+            .map(|index| index.read(cx).text_snapshot());
         let background = cx.background_executor().clone();
         cx.spawn(async move |this, cx| {
             let hunks = background
@@ -334,7 +334,7 @@ impl BufferDiff {
         refresh: DiffRefresh,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.working.read(cx).text_snapshot(cx).version() != working_version {
+        if self.working.read(cx).text_snapshot().version() != working_version {
             // 结果对应的 working 版本已过期：立即按当前版本补算。
             // 否则若期间没有新的源事件（例如订阅尚未建立），diff 会永久停留在未计算状态，而显示层要求所有 diff 已计算，整份文档的 git 高亮就会消失。
             self.recompute_with_refresh(refresh, cx);
@@ -361,7 +361,7 @@ impl BufferDiff {
 
     /// 当前 working 版本的后台计算是否已经完成。
     pub fn is_current_version_calculated(&self, cx: &App) -> bool {
-        self.calculated_working_version == Some(self.working.read(cx).text_snapshot(cx).version())
+        self.calculated_working_version == Some(self.working.read(cx).text_snapshot().version())
     }
 
     pub fn snapshot(&self) -> &BufferDiffSnapshot {
@@ -455,6 +455,7 @@ fn full_text(working: &Snapshot) -> String {
 /// 二者共同构成后台执行所需的确定编辑依据。暂存语义初值为 NoStaging，由调用方随后标注。
 fn compute_hunks(base_text: Option<&str>, working_str: &str, working: &Snapshot) -> Vec<DiffHunk> {
     let version = working.version();
+    let generation = working.generation();
     // base 不存在即整份工作区文本为新增（新建文件）。
     let Some(base_text) = base_text else {
         return vec![DiffHunk {
@@ -502,6 +503,7 @@ fn compute_hunks(base_text: Option<&str>, working_str: &str, working: &Snapshot)
                     &base_text[diff_base_byte_range.clone()],
                     &working_str[working_byte_range.clone()],
                     working_byte_range.start,
+                    generation,
                     version,
                 )
             } else {
@@ -540,6 +542,7 @@ fn word_diff_anchors(
     base_snippet: &str,
     working_snippet: &str,
     working_offset: usize,
+    generation: BufferGeneration,
     version: BufferVersion,
 ) -> (Vec<Range<usize>>, Vec<Range<Anchor>>) {
     let (base_word_diffs, buffer_word_diffs) = word_diff_ranges(base_snippet, working_snippet);
@@ -547,6 +550,7 @@ fn word_diff_anchors(
         .into_iter()
         .map(|range| {
             Anchor::range_inside(
+                generation,
                 version,
                 TextRange::new(
                     ByteOffset::new(working_offset + range.start),
@@ -599,6 +603,7 @@ fn anchor_line_range(
     let start = line_start_or_end(text, lines.start);
     let end = line_start_or_end(text, lines.end);
     Anchor::range_inside(
+        text.generation(),
         version,
         TextRange::new(start, end).expect("hunk 行范围必须正序"),
     )
@@ -611,6 +616,7 @@ fn line_start_or_end(text: &Snapshot, line: usize) -> ByteOffset {
 
 fn full_buffer_range(text: &Snapshot, version: BufferVersion) -> Range<Anchor> {
     Anchor::range_inside(
+        text.generation(),
         version,
         TextRange::new(ByteOffset::ZERO, text.len_bytes()).expect("全文范围必须有序"),
     )

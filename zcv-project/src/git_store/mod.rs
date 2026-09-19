@@ -549,10 +549,10 @@ impl GitStore {
         let (path, edits, pending, working_snapshot, index_text) = {
             let diff_ref = diff.read(cx);
             let working = diff_ref.working().clone();
-            let working_text = working.read(cx).text_snapshot(cx);
+            let working_text = working.read(cx).text_snapshot();
             let base_text = diff_ref
                 .base_source()
-                .map(|base| Arc::<str>::from(snapshot_text(&base.read(cx).text_snapshot(cx))));
+                .map(|base| Arc::<str>::from(snapshot_text(&base.read(cx).text_snapshot())));
             let mut edits = Vec::new();
             let mut pending = Vec::new();
             for range in &ranges {
@@ -1094,18 +1094,18 @@ impl GitStore {
             return None;
         };
         if let Some(Some(document)) = self.revision_documents.get(&key).cloned() {
-            let snapshot = document.read(cx).text_snapshot(cx);
+            let snapshot = document.read(cx).text_snapshot();
             if snapshot_text(&snapshot) != text {
-                let buffer = document.read(cx).buffer();
-                buffer.update(cx, |buffer, _| {
-                    buffer.reset(text).expect("修订文档文本必须能原位刷新");
+                document.update(cx, |document, cx| {
+                    document
+                        .reset(text, cx)
+                        .expect("修订文档文本必须能原位刷新");
                 });
             }
             return Some(document);
         }
         let buffer = Buffer::from_text(text, BufferConfig::default())
             .expect("修订文档文本必须能创建 Buffer");
-        let buffer = cx.new(|_| buffer);
         // 修订源的文件路径必须与工作区源一致（绝对），excerpt 定位、语言解析与导航按源路径匹配。
         let document = cx.new(|cx| {
             LanguageBuffer::new(
@@ -1130,10 +1130,9 @@ impl GitStore {
         let key = (revision, path.clone());
         match self.revision_documents.get(&key).cloned() {
             Some(Some(document)) => {
-                let buffer = document.read(cx).buffer();
-                buffer.update(cx, |buffer, _| {
-                    buffer
-                        .reset(text.to_string())
+                document.update(cx, |document, cx| {
+                    document
+                        .reset(text.to_string(), cx)
                         .expect("修订文档文本必须能原位刷新");
                 });
             }
@@ -1141,7 +1140,6 @@ impl GitStore {
             _ => {
                 let buffer = Buffer::from_text(text.to_string(), BufferConfig::default())
                     .expect("修订文档文本必须能创建 Buffer");
-                let buffer = cx.new(|_| buffer);
                 let document = cx.new(|cx| {
                     LanguageBuffer::new(
                         buffer,
@@ -1205,7 +1203,7 @@ impl GitStore {
     ) -> Option<Arc<str>> {
         let document = self.revision_document(revision, path)?;
         Some(Arc::from(
-            snapshot_text(&document.read(cx).text_snapshot(cx)).as_str(),
+            snapshot_text(&document.read(cx).text_snapshot()).as_str(),
         ))
     }
 
@@ -1501,7 +1499,6 @@ mod tests {
     ) -> Entity<LanguageBuffer> {
         let buffer = Buffer::from_text(text.to_string(), BufferConfig::default())
             .expect("测试文本必须能创建 Buffer");
-        let buffer = cx.new(|_| buffer);
         cx.new(|cx| LanguageBuffer::new(buffer, Some(path.to_path_buf()), test_registry(), cx))
     }
 
@@ -2329,7 +2326,6 @@ mod tests {
         let working = cx.update(|cx| {
             let buffer = Buffer::from_text("第一行\n已修改\n".to_owned(), BufferConfig::default())
                 .expect("应创建 Buffer");
-            let buffer = cx.new(|_| buffer);
             cx.new(|cx| {
                 LanguageBuffer::new(
                     buffer,
@@ -2395,7 +2391,6 @@ mod tests {
         let working = cx.update(|cx| {
             let buffer = Buffer::from_text("第一行\n已修改\n".to_owned(), BufferConfig::default())
                 .expect("应创建 Buffer");
-            let buffer = cx.new(|_| buffer);
             cx.new(|cx| {
                 LanguageBuffer::new(
                     buffer,
@@ -2491,7 +2486,6 @@ mod tests {
         let working = cx.update(|cx| {
             let buffer = Buffer::from_text("第一行\n已修改\n".to_owned(), BufferConfig::default())
                 .expect("应创建 Buffer");
-            let buffer = cx.new(|_| buffer);
             cx.new(|cx| {
                 LanguageBuffer::new(
                     buffer,

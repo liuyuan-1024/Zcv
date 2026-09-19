@@ -64,7 +64,7 @@ pub fn sync_editor_conflict_hunks(
     let Some(working) = editor.read(cx).multi_buffer().read(cx).singleton_source() else {
         return;
     };
-    let snapshot = working.read(cx).text_snapshot(cx);
+    let snapshot = working.read(cx).text_snapshot();
     let text_range =
         TextRange::new(ByteOffset::ZERO, snapshot.len_bytes()).expect("工作区文本范围必须有效");
     let text = snapshot

@@ -6,12 +6,12 @@
 
 `Editor` 的长期位置状态（选择、滚动、折叠）统一以 `MultiBufferAnchor` 表达；显示行与像素位置按当前 `DisplaySnapshot` 解析，不长期保存显示坐标。
 
+`MultiBufferAnchor` 绑定源内容代际与版本，经不衰减坐标索引解析。源 reset / 基线替换会更换代际，文本层对旧代际锚点显式失败；组合层按 reset 的坐标映射显式重锚，重锚失败才丢弃选区端点，不把端点静默换到文首；路径退出投影时仍按组合文档约定就近回退。
+
 ## 数据流与所有权
 
 ```text
-zcv-text::Buffer
-        ↓
-zcv-language::LanguageBuffer
+zcv-language::LanguageBuffer（直接持有 zcv-text::Buffer）
         ↓
 zcv-multi-buffer::MultiBuffer
         ↓
@@ -22,8 +22,7 @@ DisplayMap
 EditorElement
 ```
 
-- `Buffer` 是文本内容的权威数据源。
-- `LanguageBuffer` 持有 Tree-sitter 语言与语法状态。
+- `LanguageBuffer` 直接持有文本 `Buffer` 与 Tree-sitter 语言、语法状态；文本内容的权威数据源仍是它持有的 `Buffer`。
 - `MultiBuffer` 负责把一个或多个缓冲区组织成 `Editor` 消费的文档内容与坐标映射：工作区源是唯一逻辑事实，普通完整文件、excerpt 组合和 diff 都通过同一条显示快照流消费。
 - `Editor` 持有选择、选择历史、滚动、输入法组合、焦点、搜索、折叠和编辑模式等交互状态。
 - 普通文档与组合文档不是两种编辑器或两套编辑逻辑；它们只是 `Editor` 展示的内容组织和显示投影不同，共享同一套编辑交互管线。

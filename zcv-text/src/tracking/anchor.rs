@@ -1,5 +1,8 @@
-//! Anchor：绑定 `BufferVersion` 的稳定位置标记。
-//! 通过 `PositionMap` 更新，不持有 Buffer，也不参与事务提交。
+//! Anchor：绑定 `BufferGeneration` 与 `BufferVersion` 的稳定位置标记。
+//!
+//! 普通版本推进不改变代际；`resolve_in` 通过 Buffer 的不衰减坐标索引重新定位，
+//! 不依赖会被预算裁剪的带文本编辑日志。reset / 基线替换会开启新代际，
+//! 旧代际锚点解析显式失败，不会被钳到邻近坐标。
 
 use std::ops::Range;
 
@@ -7,20 +10,22 @@ use crate::{
     errors::AnchorError,
     position_map::{Affinity, MappingResult, PositionMap},
     transaction::DeltaEvent,
-    types::{BufferVersion, ByteOffset, TextRange},
+    types::{BufferGeneration, BufferVersion, ByteOffset, TextRange},
 };
 
-/// 绑定 BufferVersion 的稳定位置。
+/// 绑定内容代际与 BufferVersion 的稳定位置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Anchor {
+    generation: BufferGeneration,
     version: BufferVersion,
     offset: ByteOffset,
     affinity: Affinity,
 }
 
 impl Anchor {
-    pub fn new(version: BufferVersion, offset: ByteOffset) -> Self {
+    pub fn new(generation: BufferGeneration, version: BufferVersion, offset: ByteOffset) -> Self {
         Self {
+            generation,
             version,
             offset,
             affinity: Affinity::default(),
@@ -30,6 +35,10 @@ impl Anchor {
     pub fn with_affinity(mut self, affinity: Affinity) -> Self {
         self.affinity = affinity;
         self
+    }
+
+    pub fn generation(self) -> BufferGeneration {
+        self.generation
     }
 
     pub fn version(self) -> BufferVersion {
@@ -48,50 +57,65 @@ impl Anchor {
     ///
     /// 起点贴在插入内容之后，终点贴在插入内容之前；
     /// 适合折叠、diff hunk 等只跟随原有文本而不扩张的范围。
-    pub fn range_inside(version: BufferVersion, range: TextRange) -> Range<Self> {
-        Self::new(version, range.start()).with_affinity(Affinity::After)
-            ..Self::new(version, range.end()).with_affinity(Affinity::Before)
+    pub fn range_inside(
+        generation: BufferGeneration,
+        version: BufferVersion,
+        range: TextRange,
+    ) -> Range<Self> {
+        Self::new(generation, version, range.start()).with_affinity(Affinity::After)
+            ..Self::new(generation, version, range.end()).with_affinity(Affinity::Before)
     }
 
     /// 创建一个吸收边界插入的锚点范围。
     ///
     /// 起点贴在插入内容之前，终点贴在插入内容之后。
     /// 适合自动闭合对这类需要把内部新输入继续纳入范围的标记。
-    pub fn range_outside(version: BufferVersion, range: TextRange) -> Range<Self> {
-        Self::new(version, range.start()).with_affinity(Affinity::Before)
-            ..Self::new(version, range.end()).with_affinity(Affinity::After)
+    pub fn range_outside(
+        generation: BufferGeneration,
+        version: BufferVersion,
+        range: TextRange,
+    ) -> Range<Self> {
+        Self::new(generation, version, range.start()).with_affinity(Affinity::Before)
+            ..Self::new(generation, version, range.end()).with_affinity(Affinity::After)
     }
 
     /// 把锚点解析到目标快照的当前坐标。
     ///
-    /// 目标版本更旧、或锚点版本已被编辑日志裁剪时返回 None；
-    /// 调用方必须回退到自己的稳定表示，不能把锚点原始偏移直接当成目标快照坐标。
-    pub fn resolve_in(&self, snapshot: &crate::Snapshot) -> Option<ByteOffset> {
-        if self.version == snapshot.version() {
-            return Some(self.offset);
-        }
-        if self.version > snapshot.version() {
-            return None;
-        }
-        let batch = snapshot.edits_since(self.version).ok()?;
-        Some(
-            batch
-                .position_map()
-                .map_old_position_with_affinity(self.offset, self.affinity)
-                .value(),
-        )
+    /// 目标快照更旧返回 [`AnchorError::TargetBeforeSource`]；锚点代际已被
+    /// reset / 基线替换淘汰返回 [`AnchorError::GenerationMismatch`]。
+    /// 调用方必须显式处理失败，不得把锚点原始偏移当成目标快照坐标。
+    pub fn resolve_in(&self, snapshot: &crate::Snapshot) -> crate::TextResult<ByteOffset> {
+        let map = snapshot.position_map_since(self.generation, self.version)?;
+        Ok(map
+            .map_old_position_with_affinity(self.offset, self.affinity)
+            .value())
     }
 
+    /// 跨代际显式重锚到目标快照。
+    ///
+    /// 用于 reset / 基线替换后恢复调用方自己的稳定表示（例如外部 reload 后的光标）；
+    /// 这不是普通版本推进，只有明确知晓重置语义的调用方才应使用。
+    pub fn rebase_across_generations(self, snapshot: &crate::Snapshot) -> crate::TextResult<Self> {
+        let map = snapshot.position_map_for_rebase(self.version)?;
+        Ok(Self::new(
+            snapshot.generation(),
+            snapshot.version(),
+            map.map_old_position_with_affinity(self.offset, self.affinity)
+                .value(),
+        )
+        .with_affinity(self.affinity))
+    }
+
+    /// 用一次显式增量把锚点推进到新版本，保留当前内容代际。
+    ///
+    /// 调用方保证该增量属于同一代际（没有发生 reset / 基线替换）；
+    /// 跨代际的推进必须走 [`Anchor::map_through_delta_event`]，由它切换代际。
     pub fn map_through_position_map(
         self,
         new_version: BufferVersion,
         position_map: &PositionMap,
     ) -> MappingResult<Self> {
-        map_anchor_result(
-            position_map.map_old_position_with_affinity(self.offset, self.affinity),
-            new_version,
-            self.affinity,
-        )
+        self.advance(new_version, self.generation, position_map)
     }
 
     pub fn map_through_delta_event(
@@ -99,7 +123,13 @@ impl Anchor {
         event: &DeltaEvent,
     ) -> Result<MappingResult<Self>, AnchorError> {
         self.verify_event_version(event)?;
-        Ok(self.map_through_position_map(event.new_version(), event.position_map()))
+        // reset 会开启新代际；只有显式跟随 reset 事件的锚点才切换到新代际。
+        let generation = if event.requires_reset() {
+            BufferGeneration::new(event.new_version())
+        } else {
+            self.generation
+        };
+        Ok(self.advance(event.new_version(), generation, event.position_map()))
     }
 
     pub fn update_through_delta_event(
@@ -109,6 +139,17 @@ impl Anchor {
         let mapped = self.map_through_delta_event(event)?;
         *self = mapped.value();
         Ok(mapped)
+    }
+
+    fn advance(
+        self,
+        new_version: BufferVersion,
+        generation: BufferGeneration,
+        position_map: &PositionMap,
+    ) -> MappingResult<Self> {
+        position_map
+            .map_old_position_with_affinity(self.offset, self.affinity)
+            .map(|offset| Anchor::new(generation, new_version, offset).with_affinity(self.affinity))
     }
 
     fn verify_event_version(self, event: &DeltaEvent) -> Result<(), AnchorError> {
@@ -125,16 +166,12 @@ impl Anchor {
 
 impl Default for Anchor {
     fn default() -> Self {
-        Self::new(BufferVersion::INITIAL, ByteOffset::ZERO)
+        Self::new(
+            BufferGeneration::INITIAL,
+            BufferVersion::INITIAL,
+            ByteOffset::ZERO,
+        )
     }
-}
-
-fn map_anchor_result(
-    result: MappingResult<ByteOffset>,
-    version: BufferVersion,
-    affinity: Affinity,
-) -> MappingResult<Anchor> {
-    result.map(|offset| Anchor::new(version, offset).with_affinity(affinity))
 }
 
 #[cfg(test)]
@@ -177,7 +214,8 @@ mod tests {
             BufferVersion::new(1),
             vec![Edit::insert(b(2), "XX".to_string()).unwrap()],
         );
-        let anchor = Anchor::new(BufferVersion::INITIAL, b(2)).with_affinity(Affinity::Before);
+        let anchor = Anchor::new(BufferGeneration::INITIAL, BufferVersion::INITIAL, b(2))
+            .with_affinity(Affinity::Before);
 
         assert_eq!(
             anchor
@@ -196,7 +234,8 @@ mod tests {
             BufferVersion::new(1),
             vec![Edit::insert(b(2), "XX".to_string()).unwrap()],
         );
-        let after = Anchor::new(BufferVersion::INITIAL, b(2)).with_affinity(Affinity::After);
+        let after = Anchor::new(BufferGeneration::INITIAL, BufferVersion::INITIAL, b(2))
+            .with_affinity(Affinity::After);
 
         assert_eq!(
             after
@@ -218,7 +257,8 @@ mod tests {
                 String::new(),
             )],
         );
-        let anchor = Anchor::new(BufferVersion::INITIAL, b(3)).with_affinity(Affinity::After);
+        let anchor = Anchor::new(BufferGeneration::INITIAL, BufferVersion::INITIAL, b(3))
+            .with_affinity(Affinity::After);
 
         assert!(matches!(
             anchor.map_through_delta_event(&delete_event).unwrap(),
@@ -245,8 +285,9 @@ mod tests {
     #[test]
     fn anchor_ranges_should_express_boundary_insertion_policy() {
         let range = TextRange::new(b(2), b(5)).unwrap();
-        let inside = Anchor::range_inside(BufferVersion::INITIAL, range);
-        let outside = Anchor::range_outside(BufferVersion::INITIAL, range);
+        let inside = Anchor::range_inside(BufferGeneration::INITIAL, BufferVersion::INITIAL, range);
+        let outside =
+            Anchor::range_outside(BufferGeneration::INITIAL, BufferVersion::INITIAL, range);
 
         assert_eq!(inside.start.affinity(), Affinity::After);
         assert_eq!(inside.end.affinity(), Affinity::Before);

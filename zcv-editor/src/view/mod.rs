@@ -369,7 +369,6 @@ impl Editor {
     pub fn single_line(cx: &mut Context<Self>) -> Self {
         let buffer = Buffer::from_text(String::new(), BufferConfig::default())
             .expect("新建空白 Buffer 不应失败");
-        let buffer = cx.new(|_| buffer);
         // 单行输入编辑器不携带文件路径，语言状态不会启用；独立注册表避免共享可变单例。
         let language_buffer =
             cx.new(|cx| LanguageBuffer::new(buffer, None, Arc::new(LanguageRegistry::new()), cx));
@@ -386,7 +385,6 @@ impl Editor {
     pub fn auto_height(min_lines: usize, max_lines: Option<usize>, cx: &mut Context<Self>) -> Self {
         let buffer = Buffer::from_text(String::new(), BufferConfig::default())
             .expect("新建空白 Buffer 不应失败");
-        let buffer = cx.new(|_| buffer);
         // 单行输入编辑器不携带文件路径，语言状态不会启用；独立注册表避免共享可变单例。
         let language_buffer =
             cx.new(|cx| LanguageBuffer::new(buffer, None, Arc::new(LanguageRegistry::new()), cx));
@@ -485,7 +483,7 @@ impl Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.multi_buffer.read(cx).as_singleton(cx).is_some() {
+        if self.multi_buffer.read(cx).singleton_source().is_some() {
             cx.propagate();
             return;
         }
@@ -1361,10 +1359,15 @@ impl Editor {
             return;
         };
         let snapshot = self.snapshot.buffer_snapshot().clone();
-        let resolve = |anchor: &MultiBufferAnchor| {
-            snapshot
-                .resolve_anchor(anchor)
-                .unwrap_or(MultiBufferOffset::ZERO)
+        // 拖动端点锚点版本已被 reset / 基线替换淘汰时无法继续拖动，显式放弃本次更新。
+        let Some(pending_anchor) = snapshot.resolve_anchor(&pending.anchor) else {
+            return;
+        };
+        let resolve_original = |range: &Range<MultiBufferAnchor>| {
+            Some((
+                snapshot.resolve_anchor(&range.start)?,
+                snapshot.resolve_anchor(&range.end)?,
+            ))
         };
         let Ok(left_offset) = self
             .snapshot
@@ -1373,7 +1376,6 @@ impl Editor {
         else {
             return;
         };
-        let pending_anchor = resolve(&pending.anchor);
         let fold_bias = if left_offset >= pending_anchor {
             FoldBias::Right
         } else {
@@ -1392,8 +1394,10 @@ impl Editor {
         let (head, tail) = match pending.mode {
             MouseSelectMode::Character => (offset, pending_anchor),
             MouseSelectMode::Word(original_range) => {
-                let original_start = resolve(&original_range.start);
-                let original_end = resolve(&original_range.end);
+                let Some((original_start, original_end)) = resolve_original(&original_range) else {
+                    // 原词锚点版本已被替换：退回按当前偏移落点。
+                    return;
+                };
                 // 光标仍在词内（或落在原词范围内）时按整词边界吸附，head 取点击侧的词端。
                 let inside = snapshot.is_inside_word(char_offset).unwrap_or(false)
                     || (original_start..original_end).contains(&offset);
@@ -1423,8 +1427,10 @@ impl Editor {
                 }
             }
             MouseSelectMode::Line(original_range) => {
-                let original_start = resolve(&original_range.start);
-                let original_end = resolve(&original_range.end);
+                let Some((original_start, original_end)) = resolve_original(&original_range) else {
+                    // 原行锚点版本已被替换：退回按当前偏移落点。
+                    return;
+                };
                 // 行粒度：head 所在整行纳入（含行尾换行符）。
                 let Ok(line) = snapshot.byte_to_line(offset) else {
                     return;

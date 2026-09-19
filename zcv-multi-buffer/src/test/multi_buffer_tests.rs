@@ -667,6 +667,45 @@ fn unified_diff_marks_partially_staged_hunk(cx: &mut TestAppContext) {
     );
 }
 
+/// 回归：diff 显示元数据变化必须推进组合快照的元数据版本。
+///
+/// 显示链的快速路径按「文本版本 + 元数据版本」判断是否同步。
+/// `refresh_diff_display` 只重建显示坐标 hunks（staging、展开态等），不改变 excerpt 拓扑；
+/// 若不推进元数据版本，按旧显示版本键控的装饰缓存会被错误复用，staging 变化看起来不会生效。
+#[gpui::test]
+fn diff_display_metadata_change_advances_metadata_version(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "one\nworking\nthree\n", cx);
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
+                operations: None,
+                working: source,
+                base_text: Some(Arc::from("one\nhead\nthree\n")),
+                index_text: Some(Arc::from("one\nindex\nthree\n")),
+                path: PathBuf::from("src/a.rs"),
+                display_path: PathBuf::from("src/a.rs"),
+                context_lines: None,
+                show_file_header: false,
+            }]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    let before = cx.read_entity(&combined, |buffer, cx| {
+        buffer.snapshot(cx).metadata_version()
+    });
+    cx.update_entity(&combined, |buffer, cx| buffer.refresh_diff_display(cx));
+    let after = cx.read_entity(&combined, |buffer, cx| {
+        buffer.snapshot(cx).metadata_version()
+    });
+    assert!(
+        after > before,
+        "diff 显示元数据变化必须推进元数据版本（before={before}, after={after}）"
+    );
+}
+
 fn singleton(path: &str, text: &str, cx: &mut TestAppContext) -> gpui::Entity<LanguageBuffer> {
     let buffer =
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("应创建测试 Buffer");

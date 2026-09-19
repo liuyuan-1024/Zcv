@@ -6,8 +6,8 @@
 use std::ops::Range;
 use std::sync::Arc;
 
+use super::display_map::EditorHunkMarkerKind;
 use super::scroll::ScrollbarThumbState;
-use super::view::EditorHunkMarkerKind;
 use gpui::{Bounds, Hitbox, HitboxBehavior, Pixels, Point, Window, point, px, size};
 
 /// 滚动轴宽度。

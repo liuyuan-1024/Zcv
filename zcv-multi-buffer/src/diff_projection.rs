@@ -1111,6 +1111,11 @@ impl MultiBuffer {
         diff.display_sources = display.sources;
         diff.display_expanded = display.expanded;
         diff.display_word_diffs = display.word_diffs;
+        // diff 显示元数据（staging、展开态等）变化时 excerpt 拓扑可能不变；
+        // 显示链的快速路径按文本版本 + 元数据版本判定是否同步，若不推进元数据版本，按旧显示版本键控的装饰就会陈旧。
+        // 元数据版本随快照缓存键（snapshot_epoch）一同推进，保证再次读取能看到新版本。
+        self.snapshot_epoch = self.snapshot_epoch.wrapping_add(1);
+        self.state.metadata_epoch = self.state.metadata_epoch.wrapping_add(1);
         cx.notify();
     }
 }

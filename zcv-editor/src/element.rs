@@ -25,20 +25,18 @@ use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon, drag_autoscroll_delta};
 use crate::selection::SelectionSet;
 
 use super::display_map::{
-    DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint, DisplayRange, DisplayRow,
-    DisplayRowEvent, DisplaySnapshot, FILE_HEADER_HEIGHT, FoldRowSegment, HighlightStyles,
-    RenderedWhitespace, StickyBufferHeader, WrapRowInfo, byte_for_display_column, chunk_to_run,
-    display_column_for_byte,
+    DiffDecorationSnapshot, DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint,
+    DisplayRange, DisplayRow, DisplayRowEvent, DisplaySnapshot, EditorHunkMarkerKind,
+    FILE_HEADER_HEIGHT, FoldRowSegment, HighlightStyles, HunkControlTarget, RenderedWhitespace,
+    SearchDecorationSnapshot, StickyBufferHeader, WrapRowInfo, byte_for_display_column,
+    chunk_to_run, diff_row_for_row, display_column_for_byte, is_hollow_hunk,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
 use super::scrollbar::{
     SCROLLBAR_WIDTH, ScrollbarLayout, ScrollbarMarkerKind, marker_column_x_range_at,
 };
-use super::view::{
-    DiffDecorationSnapshot, Editor, EditorHunkMarkerKind, EditorMode, EditorPresentation,
-    HunkControlTarget, SearchDecorationSnapshot, SoftWrap, diff_row_for_row, is_hollow_hunk,
-};
+use super::view::{Editor, EditorMode, EditorPresentation, SoftWrap};
 
 const CARET_WIDTH: Pixels = px(2.);
 
@@ -1293,19 +1291,20 @@ impl Element for EditorElement {
             })
             .unwrap_or_default();
         let foldable_lines: BTreeSet<Line> = {
-            let editor = self.editor.read(cx);
             visible_source_lines
                 .as_ref()
-                .map(|range| visible_foldable_lines(&display_snapshot, editor.fold_ranges(), range))
+                .map(|range| {
+                    visible_foldable_lines(
+                        &display_snapshot,
+                        display_snapshot.fold_creases(),
+                        range,
+                    )
+                })
                 .unwrap_or_default()
         };
-        // diff 装饰由 Editor 按显示映射版本维护；本帧只取当前视口的行范围。
-        let diff_decorations = self.editor.update(cx, |editor, cx| {
-            editor.diff_decorations(&display_snapshot, cx)
-        });
-        let search_decorations = self
-            .editor
-            .update(cx, |editor, _| editor.search_decorations(&display_snapshot));
+        // diff 与搜索装饰由显示链按显示版本投影；本帧只取当前视口的行范围。
+        let diff_decorations = display_snapshot.diff_decorations();
+        let search_decorations = display_snapshot.search_decorations();
         let hunk_render = diff_decorations.rendering_for_viewport(visible_rows.clone());
         let diff_rows = &hunk_render.diff_rows;
         let mut layout = layout_visible_lines_from_viewport(

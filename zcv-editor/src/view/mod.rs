@@ -10,8 +10,7 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, IntoElement,
-    KeyContext, Pixels, Point, Render, SharedString, Styled, TextRun, Window, div, point,
-    prelude::*,
+    KeyContext, Pixels, Point, Render, Styled, TextRun, Window, div, point, prelude::*,
 };
 use zcv_actions::{
     Backspace, Copy, Cut, Delete, DeleteToBeginningOfLine, DeleteToEndOfLine, DeleteToNextWordEnd,
@@ -31,16 +30,17 @@ use zcv_multi_buffer::{
 };
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
-    Affinity, Buffer, BufferConfig, BufferVersion, ByteOffset, Line, LineRange, LogicalColumn,
-    MovementDirection, MovementUnit, Position, PositionMap, TextError, TextRange, TextResult,
-    TransactionId, TransactionMergePolicy, TransactionMetadata, TransactionSource,
+    Affinity, Buffer, BufferConfig, BufferVersion, Line, LineRange, LogicalColumn,
+    MovementDirection, MovementUnit, Position, PositionMap, TextError, TextResult, TransactionId,
+    TransactionMergePolicy, TransactionMetadata, TransactionSource,
 };
 use zcv_theme::{color, typography};
 use zcv_workspace::typography_for_window;
 
 use super::blink_manager::BlinkManager;
 use super::display_map::{
-    DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot, FoldBias, WrapRowKind,
+    DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot, EditorHunk, FoldBias,
+    HunkControlTarget, WrapRowKind,
 };
 use super::element::{AUTOSCROLL_INTERVAL, EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollViewport, ScrollbarThumbState};
@@ -48,7 +48,6 @@ use super::selection::{
     EditOutcome, EditPlan, Selection, SelectionHistory, SelectionSet, replace_selections,
 };
 
-mod diff;
 mod presentation;
 mod rename;
 mod search;
@@ -56,102 +55,7 @@ mod syntax;
 
 use rename::LocalRenameState;
 
-pub(crate) use diff::DiffDecorationSnapshot;
-pub(crate) use diff::{diff_row_for_row, is_hollow_hunk};
-pub(crate) use search::{EditorSearch, SearchDecorationSnapshot};
-
-/// 宿主注入的 hunk 展示数据。
-/// 文本内容仍由 MultiBuffer 持有，Editor 只消费范围和视觉语义。
-#[derive(Clone, Debug, PartialEq)]
-pub struct EditorHunk {
-    pub id: SharedString,
-    pub range: MultiBufferRange,
-    pub parts: Arc<[EditorHunkPart]>,
-}
-
-impl EditorHunk {
-    /// 由一段 Git 冲突标记构造未解决的冲突 hunk。
-    ///
-    /// `outer` 是包含冲突标记的完整源范围，`theirs_start` 是传入侧正文的起始偏移；
-    /// `map_offset` 把源字节偏移映射到目标文档坐标（普通编辑器为恒等映射，
-    /// 项目差异视图使用 excerpt 输出偏移）。范围无效时返回 `None`。
-    pub fn conflict(
-        id: impl Into<SharedString>,
-        outer: Range<usize>,
-        theirs_start: usize,
-        map_offset: impl Fn(usize) -> usize,
-    ) -> Option<Self> {
-        let range = TextRange::new(
-            ByteOffset::new(map_offset(outer.start)),
-            ByteOffset::new(map_offset(outer.end)),
-        )
-        .ok()?;
-        let ours = TextRange::new(
-            ByteOffset::new(map_offset(outer.start)),
-            ByteOffset::new(map_offset(theirs_start)),
-        )
-        .ok()?;
-        let theirs = TextRange::new(
-            ByteOffset::new(map_offset(theirs_start)),
-            ByteOffset::new(map_offset(outer.end)),
-        )
-        .ok()?;
-        Some(Self {
-            id: id.into(),
-            range: range.into(),
-            parts: vec![
-                EditorHunkPart {
-                    range: ours.into(),
-                    content_kind: DiffHunkKind::Deleted,
-                    marker_kind: EditorHunkMarkerKind::Conflict,
-                },
-                EditorHunkPart {
-                    range: theirs.into(),
-                    content_kind: DiffHunkKind::Added,
-                    marker_kind: EditorHunkMarkerKind::Conflict,
-                },
-            ]
-            .into(),
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct EditorHunkPart {
-    pub range: MultiBufferRange,
-    pub content_kind: DiffHunkKind,
-    pub marker_kind: EditorHunkMarkerKind,
-}
-
-/// Git hunk 的外围状态标记。
-///
-/// 内容背景由 `content_kind` 决定；
-/// gutter 和滚动条则由这里的状态决定，因此冲突可以复用新增/删除的内容背景，同时保留冲突专有的标记颜色。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EditorHunkMarkerKind {
-    /// 普通 Git diff hunk，颜色由具体差异类型决定。
-    Diff(DiffHunkKind),
-    /// 未解决的 Git 冲突，使用主题中的冲突颜色。
-    Conflict,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum HunkControlTarget {
-    Diff(DisplayHunk),
-    Editor(EditorHunk),
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct DiffDecorationKey {
-    display_revision: u64,
-    editor_hunks_revision: u64,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct SearchDecorationKey {
-    display_revision: u64,
-    search_revision: u64,
-}
+pub(crate) use search::EditorSearch;
 
 /// 导航跳转（打开文件/行列定位）时目标行距视口顶部的固定行数，留出上下文。
 pub(super) const NAVIGATION_TOP_OFFSET: usize = 4;
@@ -325,21 +229,11 @@ pub struct Editor {
     preferred_line_length: usize,
     diff_hunk_delegate: Option<Arc<dyn DiffHunkDelegate>>,
     hovered_diff_hunk: Option<usize>,
-    editor_hunks: Arc<[EditorHunk]>,
-    /// 当前显示映射和宿主 hunk 输入派生出的 diff 装饰快照。
-    /// 滚动只读取当前范围；显示拓扑或 hunk 输入变化时按版本重建。
-    diff_decorations: Option<(DiffDecorationKey, Arc<DiffDecorationSnapshot>)>,
-    editor_hunks_revision: u64,
     /// 拖拽选择自动滚动的限频时间戳（跨帧持久；事件频率可远超帧率，滚动频率需封顶）。
     pub(crate) last_drag_autoscroll: Cell<Instant>,
     /// 文件内搜索状态（搜索条执行过一次搜索后存在，编辑后自动重搜）。
+    /// 命中范围作为显示装饰输入注入显示链，显示坐标投影归 DisplayMap 所有。
     search: Option<EditorSearch>,
-    search_revision: u64,
-    search_decorations: Option<(SearchDecorationKey, Arc<SearchDecorationSnapshot>)>,
-    /// 折叠候选（crease 显示与折叠命令的数据源）：
-    /// 由 Editor 依据当前 SyntaxSnapshot 即时查询 MultiBuffer 派生，随快照重建、可丢弃，不跨版本缓存；
-    /// 持久折叠状态由 FoldMap 的 Range<MultiBufferAnchor> 拥有。
-    fold_ranges: Arc<[Range<MultiBufferAnchor>]>,
     /// 匹配括号缓存：键 = (primary head, buffer 版本, 源元数据版本)。
     /// 光标移动或任一版本推进即重查；
     /// 滚动/纯重绘帧直接命中，不再跑 tree-sitter 查询。
@@ -614,55 +508,16 @@ impl Editor {
         }
     }
 
-    /// 注入宿主拥有的文档内虚拟块；Editor 只负责布局和绘制。
+    /// 注入宿主拥有的文档内 hunk 装饰。
+    ///
+    /// Editor 只把锚点范围交给显示链；
+    /// 显示坐标投影与视口查询归 DisplayMap，不再在 Editor 中建立并列的显示坐标装饰缓存。
     pub fn set_editor_hunks(&mut self, hunks: Vec<EditorHunk>, cx: &mut Context<Self>) {
         let hunks = Arc::from(hunks);
-        if self.editor_hunks == hunks {
-            return;
-        }
-        self.editor_hunks = hunks;
-        self.editor_hunks_revision = self.editor_hunks_revision.wrapping_add(1);
+        self.display_map
+            .update(cx, |map, cx| map.set_editor_hunks(hunks, cx));
+        self.advance_snapshots(cx);
         cx.notify();
-    }
-
-    /// 获取当前显示快照对应的 diff 装饰派生状态。
-    ///
-    /// `DisplayMap` 的版本只在显示拓扑变化时推进，因此滚动、光标闪烁和普通重绘不会重新遍历逻辑 hunk；
-    /// 首次消费或版本变化时才重新建立显示行坐标和命中区域。
-    pub(crate) fn diff_decorations(
-        &mut self,
-        display_snapshot: &DisplaySnapshot,
-        cx: &App,
-    ) -> Arc<DiffDecorationSnapshot> {
-        let key = DiffDecorationKey {
-            display_revision: display_snapshot.revision(),
-            editor_hunks_revision: self.editor_hunks_revision,
-        };
-        if let Some((cached_key, decorations)) = &self.diff_decorations
-            && *cached_key == key
-        {
-            return Arc::clone(decorations);
-        }
-
-        let (hunks, expanded, old_display_ranges, word_diffs) = {
-            let multi_buffer = self.multi_buffer.read(cx);
-            (
-                multi_buffer.diff_hunks().to_vec(),
-                multi_buffer.diff_hunk_expanded(),
-                multi_buffer.diff_hunk_old_ranges().to_vec(),
-                multi_buffer.diff_hunk_word_diffs().to_vec(),
-            )
-        };
-        let decorations = Arc::new(DiffDecorationSnapshot::new(
-            display_snapshot,
-            &hunks,
-            expanded,
-            &old_display_ranges,
-            &word_diffs,
-            &self.editor_hunks,
-        ));
-        self.diff_decorations = Some((key, Arc::clone(&decorations)));
-        decorations
     }
 
     pub(crate) fn diff_hunk_delegate(&self) -> Option<Arc<dyn DiffHunkDelegate>> {
@@ -742,14 +597,7 @@ impl Editor {
     /// 结构刷新不改变源，源锚点选区自然存活——同步 DisplayMap 后按重建后快照解析即落到同一逻辑源位置，光标不会被重置到开头（与普通编辑器折叠不移动光标一致）。
     fn after_diff_expansion(&mut self, cx: &mut Context<Self>) {
         self.advance_snapshots(cx);
-        // 展开/折叠 hunk 重排了组合文本，crease 依赖的折叠范围必须随之换算。
-        self.refresh_fold_ranges(cx);
         cx.notify();
-    }
-
-    /// 当前语法快照派生的折叠候选（crease 渲染与折叠命令共用）。
-    pub(crate) fn fold_ranges(&self) -> &[Range<MultiBufferAnchor>] {
-        &self.fold_ranges
     }
 
     /// 折叠/展开指定逻辑行（crease 点击与 ToggleFold 命令的共享实现）。
@@ -769,7 +617,7 @@ impl Editor {
         } else {
             let snapshot = self.render_snapshot();
             // 折叠候选以组合锚点保存，按当前快照解析起点行定位入口行。
-            let range = self.fold_ranges.iter().find(|range| {
+            let range = display_snapshot.fold_creases().iter().find(|range| {
                 snapshot
                     .resolve_anchor(&range.start)
                     .and_then(|offset| snapshot.byte_to_line(offset).ok())
@@ -826,8 +674,8 @@ impl Editor {
         let Ok(head_line) = snapshot.byte_to_line(head) else {
             return;
         };
-        let range = self
-            .fold_ranges
+        let range = display_snapshot
+            .fold_creases()
             .iter()
             .filter_map(|range| {
                 let start = snapshot
@@ -1619,12 +1467,11 @@ impl Editor {
                     editor.research_after_edit(cx);
                 }
                 MultiBufferEvent::Reparsed => {
-                    editor.bracket_pair_cache = None;
-                    editor.refresh_fold_ranges(cx);
+                    // 括号缓存键含元数据版本，版本推进即自然失效，无需手动清空。
                 }
                 MultiBufferEvent::MetadataChanged => {}
                 MultiBufferEvent::DiffExpansionChanged => {
-                    editor.refresh_fold_ranges(cx);
+                    // 折叠候选归显示链所有，随组合元数据版本在 DisplayMap 内重建。
                     cx.emit(EditorEvent::DiffHunksExpandedChanged);
                 }
             }
@@ -1636,14 +1483,13 @@ impl Editor {
         // 并推进投影坐标派生的搜索锚点。文本与选区都从同一份快照读取。
         cx.subscribe(&display_map, |editor, map, event, cx| {
             editor.snapshot.display_snapshot = map.read(cx).snapshot();
-            editor
-                .scroll_manager
-                .refresh(&editor.snapshot.display_snapshot);
             if let Some(old_version) = event.changes.old_version() {
                 let text_version = editor.snapshot.buffer_snapshot().version();
                 let position_map = event.changes.position_map();
                 editor.map_search_anchors(old_version, text_version, &position_map);
             }
+            // 锚点映射后把搜索装饰输入重新注入显示链，再拉取被替换的装饰。
+            editor.advance_snapshots(cx);
             cx.notify();
         })
         .detach();
@@ -1654,7 +1500,7 @@ impl Editor {
         // 换行模式默认来自全局设置，与编辑器模式无关；
         // UI 场景可用 set_soft_wrap_mode 覆盖（覆盖存在时设置变化不生效）。
         let settings = SettingsStore::try_get(cx);
-        let mut this = Self {
+        let this = Self {
             multi_buffer,
             last_dirty,
             display_map,
@@ -1665,17 +1511,11 @@ impl Editor {
             selections: initial_selections,
             selection_history: SelectionHistory::default(),
             structured_selection_history: Vec::new(),
-            fold_ranges: Arc::from([]),
             bracket_pair_cache: None,
             scroll_manager: ScrollManager::default(),
             diff_hunk_delegate: None,
-            editor_hunks: Arc::from([]),
-            diff_decorations: None,
-            editor_hunks_revision: 0,
             last_drag_autoscroll: Cell::new(Instant::now() - AUTOSCROLL_INTERVAL),
             search: None,
-            search_revision: 0,
-            search_decorations: None,
             composition: None,
             input_layout: None,
             pixel_position_of_newest_cursor: None,
@@ -1708,7 +1548,6 @@ impl Editor {
             cx.notify();
         })
         .detach();
-        this.refresh_fold_ranges(cx);
         this
     }
 
@@ -2164,13 +2003,17 @@ impl Editor {
         // 保证快照内的组合文本与刚提交的事务同版本；后续订阅回调走无变化快速路径。
         self.display_map
             .update(cx, |map, cx| map.sync_from_multi_buffer(cx));
+        // 搜索命中是显示装饰输入：
+        // 把 Editor 拥有的匹配锚点解析结果交给显示链投影，输入未变化时 DisplayMap 快速返回；
+        // 随后统一拉取被替换的显示快照。
+        let search = self
+            .search
+            .as_ref()
+            .and_then(EditorSearch::decoration_input);
+        self.display_map
+            .update(cx, |map, cx| map.set_search_decorations(search, cx));
         self.snapshot.display_snapshot = self.display_map.read(cx).snapshot();
         self.scroll_manager.refresh(&self.snapshot.display_snapshot);
-    }
-
-    /// 读取当前语法快照的折叠候选（按当前版本即时查询，不跨版本缓存）。
-    fn refresh_fold_ranges(&mut self, cx: &App) {
-        self.fold_ranges = self.multi_buffer.read(cx).fold_ranges(cx);
     }
 
     pub(super) fn handle_toggle_fold(

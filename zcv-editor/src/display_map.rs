@@ -13,6 +13,7 @@ use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferRange};
 
 mod block_map;
 mod chunk;
+mod decorations;
 mod display_width;
 mod edit;
 mod error;
@@ -38,6 +39,13 @@ pub(crate) use chunk::{
 };
 #[cfg(test)]
 pub(crate) use chunk::{ChunkSource, ChunkText, WrapChunks};
+#[cfg(test)]
+pub(crate) use decorations::hunk_rendering;
+pub(crate) use decorations::{
+    DiffDecorationInput, DiffDecorationSnapshot, DisplayDecorations, SearchDecorationInput,
+    SearchDecorationSnapshot, diff_row_for_row, is_hollow_hunk,
+};
+pub use decorations::{EditorHunk, EditorHunkMarkerKind, EditorHunkPart, HunkControlTarget};
 pub(crate) use display_width::DisplayColumn;
 use edit::ProjectionEdit;
 use error::DisplayMapResult;
@@ -172,15 +180,26 @@ impl DisplayRange {
 /// 不会阻塞 Editor 接收后续 Buffer 更新。主题样式不属于显示快照，渲染需要时按当前主题派生。
 #[derive(Debug, Clone)]
 pub(super) struct DisplaySnapshot {
-    /// 显示拓扑版本；任何会改变逻辑行到显示行映射的操作都会推进它。
-    revision: u64,
     /// 唯一的显示拓扑权威；链叶即唯一的 MultiBufferSnapshot。
     block_snapshot: Arc<BlockSnapshot>,
+    /// 与本显示版本绑定的显示装饰投影；随快照整体替换、可丢弃。
+    decorations: Arc<DisplayDecorations>,
 }
 
 impl DisplaySnapshot {
-    pub(super) const fn revision(&self) -> u64 {
-        self.revision
+    /// diff hunk 装饰的视口投影。
+    pub(crate) fn diff_decorations(&self) -> Arc<DiffDecorationSnapshot> {
+        self.decorations.diff()
+    }
+
+    /// 搜索命中装饰；无搜索时为空。
+    pub(crate) fn search_decorations(&self) -> Option<Arc<SearchDecorationSnapshot>> {
+        self.decorations.search()
+    }
+
+    /// 折叠候选（crease）范围；随组合元数据版本重建。
+    pub(crate) fn fold_creases(&self) -> &[Range<MultiBufferAnchor>] {
+        self.decorations.fold_creases()
     }
 
     pub(super) fn tab_width(&self) -> NonZeroUsize {
@@ -448,8 +467,6 @@ pub(crate) fn buffer_edits_from_batch(
 
 #[derive(Debug)]
 pub(crate) struct DisplayMap {
-    /// 显示映射的派生状态版本。滚动不改变它，换行、折叠和文本同步才会推进它。
-    revision: u64,
     fold_map: FoldMap,
     tab_map: TabMap,
     /// 换行层实体：它自己拥有配置、变换树、待处理批次与后台重排任务。
@@ -461,10 +478,30 @@ pub(crate) struct DisplayMap {
     /// 组合文本源：DisplayMap 是组合文本变更与同步的唯一持有者。
     multi_buffer: Option<Entity<MultiBuffer>>,
     buffer_subscription: Option<MultiBufferSubscription>,
+    /// 宿主注入的 hunk 显示输入（显示装饰领域键之一）。
+    editor_hunks: Arc<[EditorHunk]>,
+    /// 搜索命中的显示输入（显示装饰领域键之一）。
+    search: Option<SearchDecorationInput>,
+    /// 折叠候选（crease）；只随组合元数据版本重建，不进入滚动/换行热路径。
+    fold_creases: Arc<[Range<MultiBufferAnchor>]>,
+    /// fold_creases 对应的组合元数据版本；用于避免换行帧重算语法折叠。
+    fold_creases_metadata_version: u64,
 }
 
 fn default_tab_width() -> NonZeroUsize {
     NonZeroUsize::new(4).expect("默认 tab 宽度必须大于 0")
+}
+
+/// 两份搜索装饰输入是否等价：范围内容相同且活动序号相同。
+///
+/// 每次 advance_snapshots 都会重新产出范围输入，若只比较 Arc 身份会导致
+/// 每次推进都无谓重建整套装饰；这里按内容比较，未变化时保留现有投影。
+fn search_input_eq(a: Option<&SearchDecorationInput>, b: Option<&SearchDecorationInput>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.active_index == b.active_index && a.ranges == b.ranges,
+        _ => false,
+    }
 }
 
 impl DisplayMap {
@@ -476,7 +513,6 @@ impl DisplayMap {
         let wrap_map = cx.new(|_| WrapMap::new(tab_snapshot));
         let wrap_snapshot = wrap_map.read(cx).snapshot().clone();
         let mut this = Self {
-            revision: 0,
             fold_map,
             tab_map,
             wrap_map,
@@ -484,8 +520,12 @@ impl DisplayMap {
             snapshot: None,
             multi_buffer: None,
             buffer_subscription: None,
+            editor_hunks: Arc::from([]),
+            search: None,
+            fold_creases: Arc::from([]),
+            fold_creases_metadata_version: u64::MAX,
         };
-        this.refresh_snapshot(&wrap_snapshot, &[]);
+        this.refresh_snapshot(&wrap_snapshot, &[], cx);
         // 换行层自己拥有后台重排；完成后 DisplayMap 观察并重建 Block 投影。
         cx.observe(&this.wrap_map, |display, _, cx| {
             let wrap_edits = display
@@ -493,8 +533,7 @@ impl DisplayMap {
                 .update(cx, |map, _| map.take_edits_since_sync());
             if !wrap_edits.is_empty() {
                 let wrap_snapshot = display.wrap_map.read(cx).snapshot().clone();
-                display.revision = display.revision.wrapping_add(1);
-                display.refresh_snapshot(&wrap_snapshot, &wrap_edits);
+                display.refresh_snapshot(&wrap_snapshot, &wrap_edits, cx);
             }
             cx.notify();
         })
@@ -517,6 +556,8 @@ impl DisplayMap {
         .detach();
         self.multi_buffer = Some(multi_buffer);
         self.buffer_subscription = Some(subscription);
+        // 绑定后重建一次装饰，使 diff 与折叠候选立即可见。
+        self.refresh_snapshot_from_current(cx);
     }
 
     /// 消费自上次同步以来的组合文本变化，并推进显示管线。
@@ -547,11 +588,98 @@ impl DisplayMap {
             .clone()
     }
 
-    fn refresh_snapshot(&mut self, wrap_snapshot: &WrapSnapshot, wrap_edits: &[WrapEdit]) {
-        self.snapshot = Some(DisplaySnapshot {
-            revision: self.revision,
-            block_snapshot: Arc::new(self.current_block_snapshot(wrap_snapshot, wrap_edits)),
-        });
+    /// 宿主注入的 hunk 显示输入；只替换显示链上的装饰，不影响显示拓扑。
+    pub(crate) fn set_editor_hunks(&mut self, hunks: Arc<[EditorHunk]>, cx: &mut Context<Self>) {
+        if self.editor_hunks == hunks {
+            return;
+        }
+        self.editor_hunks = hunks;
+        self.rebuild_decorations(cx);
+    }
+
+    /// 替换搜索命中的显示输入；范围已由 Editor 解析到组合坐标。
+    pub(crate) fn set_search_decorations(
+        &mut self,
+        search: Option<SearchDecorationInput>,
+        cx: &mut Context<Self>,
+    ) {
+        if search_input_eq(self.search.as_ref(), search.as_ref()) {
+            return;
+        }
+        self.search = search;
+        self.rebuild_decorations(cx);
+    }
+
+    /// 用当前 wrap 快照重建显示快照与装饰。
+    fn refresh_snapshot_from_current(&mut self, cx: &mut Context<Self>) {
+        let wrap_snapshot = self.wrap_map.read(cx).snapshot().clone();
+        self.refresh_snapshot(&wrap_snapshot, &[], cx);
+    }
+
+    /// 只替换当前快照的装饰层；显示拓扑与版本保持不变。
+    ///
+    /// 装饰输入（diff、搜索、宿主 hunk）变化走这里，避免无意义地重建 Block 投影。
+    fn rebuild_decorations(&mut self, cx: &mut Context<Self>) {
+        let Some(mut snapshot) = self.snapshot.take() else {
+            return;
+        };
+        snapshot.decorations = Arc::new(self.build_decorations(&snapshot, cx));
+        self.snapshot = Some(snapshot);
+        cx.notify();
+    }
+
+    /// 按当前显示拓扑和装饰输入投影出一份完整装饰。
+    fn build_decorations(&self, snapshot: &DisplaySnapshot, cx: &App) -> DisplayDecorations {
+        let (hunks, expanded, old_display_ranges, word_diffs) = match &self.multi_buffer {
+            Some(multi_buffer) => {
+                let multi_buffer = multi_buffer.read(cx);
+                (
+                    multi_buffer.diff_hunks().to_vec(),
+                    multi_buffer.diff_hunk_expanded(),
+                    multi_buffer.diff_hunk_old_ranges().to_vec(),
+                    multi_buffer.diff_hunk_word_diffs().to_vec(),
+                )
+            }
+            None => (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+        };
+        DisplayDecorations::new(
+            snapshot,
+            DiffDecorationInput {
+                hunks: &hunks,
+                expanded,
+                old_display_ranges: &old_display_ranges,
+                word_diffs: &word_diffs,
+            },
+            self.search.as_ref(),
+            Arc::clone(&self.editor_hunks),
+            Arc::clone(&self.fold_creases),
+        )
+    }
+
+    fn refresh_snapshot(
+        &mut self,
+        wrap_snapshot: &WrapSnapshot,
+        wrap_edits: &[WrapEdit],
+        cx: &App,
+    ) {
+        let block_snapshot = Arc::new(self.current_block_snapshot(wrap_snapshot, wrap_edits));
+        // 折叠候选只随组合元数据版本（语法/设置等）重建，滚动与换行帧复用缓存。
+        let metadata_version = block_snapshot
+            .wrap_snapshot()
+            .buffer_snapshot()
+            .metadata_version();
+        if self.fold_creases_metadata_version != metadata_version
+            && let Some(multi_buffer) = &self.multi_buffer
+        {
+            self.fold_creases = multi_buffer.read(cx).fold_ranges(cx);
+            self.fold_creases_metadata_version = metadata_version;
+        }
+        let mut snapshot = DisplaySnapshot {
+            block_snapshot,
+            decorations: Arc::new(DisplayDecorations::empty()),
+        };
+        snapshot.decorations = Arc::new(self.build_decorations(&snapshot, cx));
+        self.snapshot = Some(snapshot);
     }
 
     /// 设置 tab 视觉列宽；变化时重建 tab 与 wrap 投影并刷新当前显示快照。
@@ -559,13 +687,12 @@ impl DisplayMap {
         if self.tab_map.snapshot().tab_width() == tab_width {
             return;
         }
-        self.revision = self.revision.wrapping_add(1);
         let fold_snapshot = self.fold_map.snapshot().clone();
         let tab_snapshot = self.tab_map.sync(fold_snapshot, &[], tab_width);
         let (wrap_snapshot, wrap_edits) = self
             .wrap_map
             .update(cx, |map, cx| map.sync(tab_snapshot, &[], cx));
-        self.refresh_snapshot(&wrap_snapshot, &wrap_edits);
+        self.refresh_snapshot(&wrap_snapshot, &wrap_edits, cx);
     }
 
     pub(crate) fn is_buffer_folded(&self, path: &Path) -> bool {
@@ -584,9 +711,8 @@ impl DisplayMap {
             self.folded_buffers.remove(&path)
         };
         if changed {
-            self.revision = self.revision.wrapping_add(1);
             let wrap_snapshot = self.wrap_map.read(cx).snapshot().clone();
-            self.refresh_snapshot(&wrap_snapshot, &[]);
+            self.refresh_snapshot(&wrap_snapshot, &[], cx);
         }
     }
 
@@ -603,9 +729,8 @@ impl DisplayMap {
             map.set_wrap_width(wrap_width, font, font_size, text_system.clone())
         });
         if changed {
-            self.revision = self.revision.wrapping_add(1);
             let wrap_snapshot = self.wrap_map.read(cx).snapshot().clone();
-            self.refresh_snapshot(&wrap_snapshot, &wrap_edits);
+            self.refresh_snapshot(&wrap_snapshot, &wrap_edits, cx);
         }
         changed
     }
@@ -677,7 +802,6 @@ impl DisplayMap {
         {
             return;
         }
-        self.revision = self.revision.wrapping_add(1);
         let buffer_edits = buffer_edits_from_batch(&batch, &old_snapshot, &current_snapshot);
         let (fold_snapshot, fold_edits) = self.fold_map.read(current_snapshot, buffer_edits);
         let tab_width = self.tab_map.snapshot().tab_width();
@@ -685,7 +809,7 @@ impl DisplayMap {
         let (wrap_snapshot, wrap_edits) = self
             .wrap_map
             .update(cx, |map, cx| map.sync(tab_snapshot, &fold_edits, cx));
-        self.refresh_snapshot(&wrap_snapshot, &wrap_edits);
+        self.refresh_snapshot(&wrap_snapshot, &wrap_edits, cx);
     }
 
     /// 折叠组合锚点范围（入口行行尾换行符 → 闭合括号前；闭合括号保留可见）。
@@ -702,8 +826,7 @@ impl DisplayMap {
         let (wrap_snapshot, wrap_edits) = self
             .wrap_map
             .update(cx, |map, cx| map.sync(tab_snapshot, &fold_edits, cx));
-        self.revision = self.revision.wrapping_add(1);
-        self.refresh_snapshot(&wrap_snapshot, &wrap_edits);
+        self.refresh_snapshot(&wrap_snapshot, &wrap_edits, cx);
         Ok(())
     }
 
@@ -719,8 +842,7 @@ impl DisplayMap {
         let (wrap_snapshot, wrap_edits) = self
             .wrap_map
             .update(cx, |map, cx| map.sync(tab_snapshot, &fold_edits, cx));
-        self.revision = self.revision.wrapping_add(1);
-        self.refresh_snapshot(&wrap_snapshot, &wrap_edits);
+        self.refresh_snapshot(&wrap_snapshot, &wrap_edits, cx);
         Ok(())
     }
 
@@ -870,7 +992,6 @@ mod tests {
         sync(cx, &map, current, TextChangeBatch::default());
 
         let after = display_snapshot(cx, &map);
-        assert_eq!(after.revision(), before.revision());
         assert!(
             Arc::ptr_eq(&after.block_snapshot, &before.block_snapshot),
             "无文本与元数据变化的同步不得重建 Block/Fold/Wrap 显示拓扑"

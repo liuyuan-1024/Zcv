@@ -1,4 +1,7 @@
 use super::*;
+use crate::display_map::EditorHunkMarkerKind;
+use gpui::SharedString;
+use zcv_text::{ByteOffset, TextRange};
 
 fn multi_buffer_range(start: usize, end: usize) -> MultiBufferRange {
     MultiBufferRange::from(TextRange::new(ByteOffset::new(start), ByteOffset::new(end)).unwrap())

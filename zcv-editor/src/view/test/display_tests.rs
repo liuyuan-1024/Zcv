@@ -10,8 +10,7 @@ use super::common::{
     buffer_text, focus_editor, inject_editor_diff, inject_file_diff, revision_buffer, test_buffer,
 };
 use super::*;
-use crate::display_map::{DisplayColumn, DisplayPoint, DisplayRow, WrapRowKind};
-use crate::view::diff::hunk_rendering;
+use crate::display_map::{DisplayColumn, DisplayPoint, DisplayRow, WrapRowKind, hunk_rendering};
 
 /// 构造 context_lines=2 的裁剪投影项，供组合文档裁剪测试复用。
 fn clipped_diff_file(
@@ -95,14 +94,8 @@ fn diff_decorations_are_cached_and_consumed_by_viewport(cx: &mut TestAppContext)
     let editor = cx.new(|cx| Editor::from_language_buffer(source.clone(), EditorMode::Full, cx));
     inject_file_diff(&editor, &source, Arc::from("a\nold\nc\n"), cx);
 
-    let cached = editor.update(cx, |editor, cx| {
-        let snapshot = editor.display_snapshot();
-        editor.diff_decorations(&snapshot, cx)
-    });
-    let reused = editor.update(cx, |editor, cx| {
-        let snapshot = editor.display_snapshot();
-        editor.diff_decorations(&snapshot, cx)
-    });
+    let cached = editor.update(cx, |editor, _| editor.display_snapshot().diff_decorations());
+    let reused = editor.update(cx, |editor, _| editor.display_snapshot().diff_decorations());
     assert!(
         std::sync::Arc::ptr_eq(&cached, &reused),
         "没有显示映射变化时，diff 装饰应复用同一快照"
@@ -483,7 +476,9 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
     let editor = cx.new(|cx| Editor::from_language_buffer(buffer.clone(), EditorMode::Full, cx));
     cx.run_until_parked();
     // 语法解析完成后语言层提供两个折叠范围（fn main 与 fn other 的块体）。
-    let fold_ranges = cx.read_entity(&editor, |editor, _| editor.fold_ranges().to_vec());
+    let fold_ranges = cx.read_entity(&editor, |editor, _| {
+        editor.display_snapshot().fold_creases().to_vec()
+    });
     assert_eq!(fold_ranges.len(), 2);
 
     // 折叠 fn main（入口行 0）：隐藏块内 2 行，无占位行，总行数 6 → 4。
@@ -654,14 +649,19 @@ fn expanding_diff_hunk_keeps_crease_of_enclosing_fold(cx: &mut TestAppContext) {
     inject_editor_diff(&editor, &source, Vec::new(), Some(Arc::from(base)), cx);
     cx.run_until_parked();
     assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor.fold_ranges().len()),
+        cx.read_entity(&editor, |editor, _| editor
+            .display_snapshot()
+            .fold_creases()
+            .len()),
         1,
         "fn main 展开前应有折叠范围"
     );
 
     editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
     cx.run_until_parked();
-    let after = cx.read_entity(&editor, |editor, _| editor.fold_ranges().to_vec());
+    let after = cx.read_entity(&editor, |editor, _| {
+        editor.display_snapshot().fold_creases().to_vec()
+    });
     assert_eq!(
         after.len(),
         1,
@@ -700,7 +700,9 @@ fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     // 编辑后语言层折叠范围仍可用（插值树版本与 buffer 同步）。
-    let fold_ranges = cx.read_entity(&editor, |editor, _| editor.fold_ranges().to_vec());
+    let fold_ranges = cx.read_entity(&editor, |editor, _| {
+        editor.display_snapshot().fold_creases().to_vec()
+    });
     assert_eq!(fold_ranges.len(), 2, "编辑后折叠范围应保持两个");
 
     // 注释行插入后 `{` 落到行 1（fold 范围起点行随编辑推进），入口行折叠仍可用。
@@ -905,7 +907,7 @@ fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppCo
             4,
             "编辑后折叠应保持；折叠入口={:?}，折叠范围数={}",
             editor.display_snapshot().fold_anchor_lines(),
-            editor.fold_ranges().len()
+            editor.display_snapshot().fold_creases().len()
         );
     });
 }

@@ -1,21 +1,203 @@
-//! diff 显示语义：hunks（逻辑行）→ 行级渲染数据。
+//! 显示链的装饰投影：把各领域的显示元数据统一投影到显示坐标。
 //!
-//! 与像素渲染无关的"逻辑行→显示行"映射集中在这里；
-//! 渲染端只消费计算出的 `HunkRendering` 做布局与绘制。
+//! 装饰以「领域键 + 组合坐标范围」表达，权威仍属其领域所有者：
+//! - diff hunk 与词级变化由 MultiBuffer 的投影提供；
+//! - 搜索命中与宿主 hunk 由 Editor 注入锚点范围；
+//! - 折叠候选（crease）由 MultiBuffer 的语法折叠投影提供。
+//!
+//! DisplayMap 在同一显示版本上把输入投影为显示行坐标并随快照保存；
+//! EditorElement 只从 DisplaySnapshot 按视口消费，不持有显示坐标副本。
 
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferRange};
 
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 
+use gpui::{Bounds, Pixels, SharedString};
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
 use zcv_multi_buffer::DisplayHunk;
-use zcv_text::Line;
+use zcv_text::{ByteOffset, Line, TextRange};
 
-use crate::display_map::{DisplayRange, DisplaySnapshot};
 use crate::scrollbar::{ScrollbarMarker, ScrollbarMarkerKind, marker_geometry};
-use crate::view::{EditorHunk, EditorHunkMarkerKind, HunkControlTarget};
-use gpui::{Bounds, Pixels};
+
+use super::{DisplayRange, DisplaySnapshot};
+
+/// 宿主注入的 hunk 展示数据。
+/// 文本内容仍由 MultiBuffer 持有，Editor 只消费范围和视觉语义。
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditorHunk {
+    pub id: SharedString,
+    pub range: MultiBufferRange,
+    pub parts: Arc<[EditorHunkPart]>,
+}
+
+impl EditorHunk {
+    /// 由一段 Git 冲突标记构造未解决的冲突 hunk。
+    ///
+    /// `outer` 是包含冲突标记的完整源范围，`theirs_start` 是传入侧正文的起始偏移；
+    /// `map_offset` 把源字节偏移映射到目标文档坐标（普通编辑器为恒等映射，项目差异视图使用 excerpt 输出偏移）。范围无效时返回 `None`。
+    pub fn conflict(
+        id: impl Into<SharedString>,
+        outer: Range<usize>,
+        theirs_start: usize,
+        map_offset: impl Fn(usize) -> usize,
+    ) -> Option<Self> {
+        let range = TextRange::new(
+            ByteOffset::new(map_offset(outer.start)),
+            ByteOffset::new(map_offset(outer.end)),
+        )
+        .ok()?;
+        let ours = TextRange::new(
+            ByteOffset::new(map_offset(outer.start)),
+            ByteOffset::new(map_offset(theirs_start)),
+        )
+        .ok()?;
+        let theirs = TextRange::new(
+            ByteOffset::new(map_offset(theirs_start)),
+            ByteOffset::new(map_offset(outer.end)),
+        )
+        .ok()?;
+        Some(Self {
+            id: id.into(),
+            range: range.into(),
+            parts: vec![
+                EditorHunkPart {
+                    range: ours.into(),
+                    content_kind: DiffHunkKind::Deleted,
+                    marker_kind: EditorHunkMarkerKind::Conflict,
+                },
+                EditorHunkPart {
+                    range: theirs.into(),
+                    content_kind: DiffHunkKind::Added,
+                    marker_kind: EditorHunkMarkerKind::Conflict,
+                },
+            ]
+            .into(),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EditorHunkPart {
+    pub range: MultiBufferRange,
+    pub content_kind: DiffHunkKind,
+    pub marker_kind: EditorHunkMarkerKind,
+}
+
+/// Git hunk 的外围状态标记。
+///
+/// 内容背景由 `content_kind` 决定；
+/// gutter 和滚动条则由这里的状态决定，因此冲突可以复用新增/删除的内容背景，同时保留冲突专有的标记颜色。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorHunkMarkerKind {
+    /// 普通 Git diff hunk，颜色由具体差异类型决定。
+    Diff(DiffHunkKind),
+    /// 未解决的 Git 冲突，使用主题中的冲突颜色。
+    Conflict,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum HunkControlTarget {
+    Diff(DisplayHunk),
+    Editor(EditorHunk),
+}
+
+/// 搜索命中的显示装饰输入：已解析到组合坐标的匹配范围与活动序号。
+///
+/// 搜索会话（query、活动匹配、替换）仍由 Editor 的搜索状态拥有；
+/// 这里只承载供显示链投影的范围输入，不构成第二份搜索权威。
+#[derive(Clone, Debug)]
+pub(crate) struct SearchDecorationInput {
+    pub(crate) ranges: Arc<[MultiBufferRange]>,
+    pub(crate) active_index: usize,
+}
+
+impl SearchDecorationInput {
+    pub(crate) fn new(ranges: Arc<[MultiBufferRange]>, active_index: usize) -> Self {
+        Self {
+            ranges,
+            active_index,
+        }
+    }
+}
+
+/// diff 显示装饰输入：MultiBuffer 投影提供的逻辑 hunk 与展开态。
+pub(crate) struct DiffDecorationInput<'a> {
+    pub(crate) hunks: &'a [DisplayHunk],
+    pub(crate) expanded: Vec<bool>,
+    pub(crate) old_display_ranges: &'a [Option<Range<usize>>],
+    pub(crate) word_diffs: &'a [Vec<(DiffHunkKind, Range<usize>)>],
+}
+
+/// 绑定一条显示快照的全部显示装饰。
+///
+/// 随 DisplaySnapshot 整体替换、可丢弃、可重建，不跨显示版本解释旧坐标。
+#[derive(Clone)]
+pub(crate) struct DisplayDecorations {
+    diff: Arc<DiffDecorationSnapshot>,
+    search: Option<Arc<SearchDecorationSnapshot>>,
+    fold_creases: Arc<[Range<MultiBufferAnchor>]>,
+}
+
+impl std::fmt::Debug for DisplayDecorations {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DisplayDecorations")
+            .field("fold_creases", &self.fold_creases.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl DisplayDecorations {
+    /// 无任何装饰的占位值；用于构造投影装饰前的基线显示快照。
+    pub(crate) fn empty() -> Self {
+        Self {
+            diff: Arc::new(DiffDecorationSnapshot::empty()),
+            search: None,
+            fold_creases: Arc::from([]),
+        }
+    }
+
+    pub(crate) fn new(
+        snapshot: &DisplaySnapshot,
+        diff: DiffDecorationInput<'_>,
+        search: Option<&SearchDecorationInput>,
+        editor_hunks: Arc<[EditorHunk]>,
+        fold_creases: Arc<[Range<MultiBufferAnchor>]>,
+    ) -> Self {
+        let diff = Arc::new(DiffDecorationSnapshot::new(
+            snapshot,
+            diff.hunks,
+            diff.expanded,
+            diff.old_display_ranges,
+            diff.word_diffs,
+            &editor_hunks,
+        ));
+        let search = search.map(|input| {
+            Arc::new(SearchDecorationSnapshot::from_ranges(
+                snapshot,
+                Arc::clone(&input.ranges),
+                input.active_index,
+            ))
+        });
+        Self {
+            diff,
+            search,
+            fold_creases,
+        }
+    }
+
+    pub(crate) fn diff(&self) -> Arc<DiffDecorationSnapshot> {
+        Arc::clone(&self.diff)
+    }
+
+    pub(crate) fn search(&self) -> Option<Arc<SearchDecorationSnapshot>> {
+        self.search.as_ref().map(Arc::clone)
+    }
+
+    pub(crate) fn fold_creases(&self) -> &[Range<MultiBufferAnchor>] {
+        &self.fold_creases
+    }
+}
 
 /// hunks 的单遍渲染数据：行标记 / 竖条 / 点击区域共用同一份行区间计算。
 #[derive(Clone)]
@@ -63,6 +245,26 @@ type ScrollbarMarkerCache =
     Arc<Mutex<Option<(ScrollbarMarkerGeometryKey, Arc<[ScrollbarMarker]>)>>>;
 
 impl DiffDecorationSnapshot {
+    fn empty() -> Self {
+        Self {
+            rendering: HunkRendering {
+                diff_rows: Vec::new(),
+                strips: Vec::new(),
+                hit_regions: Vec::new(),
+                controls: Vec::new(),
+                editor_hunks: Vec::new(),
+                editor_hunk_parts: Vec::new(),
+                expanded_rows: Vec::new(),
+                hollow_blocks: Vec::new(),
+                word_diff_highlights: Vec::new(),
+            },
+            expanded: Vec::new(),
+            projected_word_diff_highlights: Vec::new(),
+            scrollbar_diff_markers: Vec::new(),
+            scrollbar_markers: Arc::new(Mutex::new(None)),
+        }
+    }
+
     pub(crate) fn new(
         snapshot: &DisplaySnapshot,
         hunks: &[DisplayHunk],
@@ -377,8 +579,8 @@ pub(crate) fn hunk_rendering(
 
 pub(crate) fn editor_hunk_rendering(
     snapshot: &DisplaySnapshot,
-    hunks: &[crate::view::EditorHunk],
-) -> Vec<(Range<usize>, crate::view::EditorHunk)> {
+    hunks: &[EditorHunk],
+) -> Vec<(Range<usize>, EditorHunk)> {
     hunks
         .iter()
         .filter_map(|hunk| {
@@ -397,7 +599,7 @@ pub(crate) fn editor_hunk_rendering(
 
 pub(crate) fn editor_hunk_part_rendering(
     snapshot: &DisplaySnapshot,
-    hunks: &[crate::view::EditorHunk],
+    hunks: &[EditorHunk],
 ) -> Vec<(Range<usize>, DiffHunkKind, EditorHunkMarkerKind)> {
     hunks
         .iter()
@@ -454,14 +656,115 @@ pub(crate) fn is_hollow_hunk(staging: DiffHunkStaging) -> bool {
     matches!(staging, DiffHunkStaging::Staged)
 }
 
+#[derive(Clone, Copy, PartialEq)]
+struct MarkerGeometryKey {
+    track_top: f32,
+    track_height: f32,
+    scroll_per_pixel: f32,
+    line_height: f32,
+}
+
+/// 绑定搜索状态与显示拓扑版本的不可变装饰快照。
+///
+/// 视口高亮按字节范围 seek 后连续消费；
+/// 滚动栏行投影只在快照建立时计算一次。
+pub(crate) struct SearchDecorationSnapshot {
+    ranges: Arc<[MultiBufferRange]>,
+    active_index: usize,
+    projected_rows: Arc<[Range<usize>]>,
+    markers: Mutex<Option<(MarkerGeometryKey, Arc<[ScrollbarMarker]>)>>,
+}
+
+impl SearchDecorationSnapshot {
+    fn from_ranges(
+        display: &DisplaySnapshot,
+        ranges: Arc<[MultiBufferRange]>,
+        active_index: usize,
+    ) -> Self {
+        let projected_rows = ranges
+            .iter()
+            .flat_map(|range| display.project_text_range(*range).unwrap_or_default())
+            .map(projected_row_range)
+            .collect::<Arc<[_]>>();
+        Self {
+            ranges,
+            active_index,
+            projected_rows,
+            markers: Mutex::new(None),
+        }
+    }
+
+    pub(crate) fn visible_ranges(
+        &self,
+        viewport: Range<usize>,
+    ) -> impl Iterator<Item = (usize, MultiBufferRange)> + '_ {
+        let start = self
+            .ranges
+            .partition_point(|range| range.end().get() <= viewport.start);
+        self.ranges[start..]
+            .iter()
+            .enumerate()
+            .take_while(move |(_, range)| range.start().get() < viewport.end)
+            .map(move |(index, range)| (start + index, *range))
+    }
+
+    pub(crate) fn is_active(&self, index: usize) -> bool {
+        index == self.active_index
+    }
+
+    pub(crate) fn scrollbar_markers(
+        &self,
+        track_bounds: Bounds<Pixels>,
+        scroll_per_pixel: f32,
+        line_height: Pixels,
+    ) -> Arc<[ScrollbarMarker]> {
+        let key = MarkerGeometryKey {
+            track_top: f32::from(track_bounds.top()),
+            track_height: f32::from(track_bounds.size.height),
+            scroll_per_pixel,
+            line_height: f32::from(line_height),
+        };
+        let mut cache = self.markers.lock().expect("搜索标记缓存锁不应中毒");
+        if let Some((cached_key, markers)) = &*cache
+            && *cached_key == key
+        {
+            return Arc::clone(markers);
+        }
+        let markers = Arc::from(
+            marker_geometry(
+                self.projected_rows
+                    .iter()
+                    .cloned()
+                    .map(|rows| (rows, ScrollbarMarkerKind::Search)),
+                track_bounds,
+                scroll_per_pixel,
+                line_height,
+            )
+            .into_boxed_slice(),
+        );
+        *cache = Some((key, Arc::clone(&markers)));
+        markers
+    }
+}
+
+fn projected_row_range(range: DisplayRange) -> Range<usize> {
+    let start = range.start();
+    let end = range.end();
+    let end_line = if end.row() == start.row() || end.column().get() != 0 {
+        end.row().get().saturating_add(1)
+    } else {
+        end.row().get()
+    };
+    start.row().get()..end_line
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::display_map::{DisplayMap, DisplaySnapshot};
+    use crate::display_map::DisplayMap;
     use gpui::{AppContext, Empty, Entity, TestAppContext, px};
     use zcv_multi_buffer::MultiBufferSnapshot;
-
-    use zcv_text::{Buffer, BufferConfig, Line};
+    use zcv_text::{Buffer, BufferConfig};
 
     fn new_display_map(
         cx: &mut impl AppContext,
@@ -478,11 +781,24 @@ mod tests {
         cx.read_entity(&map, |map, _| map.snapshot())
     }
 
+    impl SearchDecorationSnapshot {
+        pub(crate) fn for_test(
+            display: &DisplaySnapshot,
+            ranges: &[MultiBufferRange],
+            active_index: usize,
+        ) -> Self {
+            Self::from_ranges(display, Arc::from(ranges), active_index)
+        }
+
+        pub(crate) fn projected_rows_for_test(&self) -> &[Range<usize>] {
+            &self.projected_rows
+        }
+    }
+
     #[gpui::test]
     fn folded_deleted_hunk_anchor_covers_all_wrapped_subrows(cx: &mut TestAppContext) {
         // 删除点逻辑行软换行拆成多个子行时，折叠的纯删除块锚点必须覆盖全部子行：
-        // 三角标记落在删除点行尾（最后子行行尾 = 与下一行的边界），
-        // 点击区域整行可点，而不是只落在第一个子行之间。
+        // 三角标记落在删除点行尾（最后子行行尾 = 与下一行的边界），点击区域整行可点，而不是只落在第一个子行之间。
         let window = cx.add_window(|_, _| Empty);
         window
             .update(cx, |_, window, cx| {

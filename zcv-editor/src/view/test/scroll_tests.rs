@@ -23,6 +23,7 @@ use super::common::focus_editor;
 
 use super::common::{inject_editor_diff, scrollbar_geometry, scrolling_text, test_buffer};
 use super::*;
+use crate::display_map::EditorHunkMarkerKind;
 use crate::scroll::ScrollbarThumbState;
 use crate::scrollbar::{ScrollbarMarkerKind, marker_geometry};
 use crate::selection::SelectionSet;

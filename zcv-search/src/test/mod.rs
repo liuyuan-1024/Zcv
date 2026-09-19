@@ -105,6 +105,61 @@ impl SearchableItem for TestItem {
     }
 }
 
+/// 组合 Item：通过 `act_as_type` 暴露内层编辑器，但自身不是编辑器。
+struct CompositeItem {
+    focus: FocusHandle,
+    inner_editor: gpui::Entity<Editor>,
+}
+
+impl EventEmitter<SearchEvent> for CompositeItem {}
+
+impl Focusable for CompositeItem {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl Render for CompositeItem {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+impl Item for CompositeItem {
+    type Event = SearchEvent;
+
+    fn tab_content_text(&self, _cx: &App) -> gpui::SharedString {
+        "组合文档".into()
+    }
+
+    fn uses_editor_document_toolbar(&self, _cx: &App) -> bool {
+        false
+    }
+
+    fn as_searchable(
+        &self,
+        _self_handle: &gpui::Entity<Self>,
+        _cx: &App,
+    ) -> Option<Box<dyn SearchableItemHandle>> {
+        Some(Box::new(self.inner_editor.clone()))
+    }
+
+    fn act_as_type(
+        &self,
+        type_id: std::any::TypeId,
+        self_handle: &gpui::Entity<Self>,
+        _cx: &App,
+    ) -> Option<gpui::AnyEntity> {
+        if type_id == std::any::TypeId::of::<Self>() {
+            Some(self_handle.clone().into())
+        } else if type_id == std::any::TypeId::of::<Editor>() {
+            Some(self.inner_editor.clone().into())
+        } else {
+            None
+        }
+    }
+}
+
 fn document_toolbar(cx: &mut TestAppContext) -> gpui::Entity<DocumentToolbar> {
     let pane = cx.new(Pane::new);
     let preview_button = cx.new(|_| PreviewButton::new(pane.downgrade()));
@@ -112,7 +167,7 @@ fn document_toolbar(cx: &mut TestAppContext) -> gpui::Entity<DocumentToolbar> {
         zcv_project::Project::new(PathBuf::from("."), Arc::new(LanguageRegistry::new()), cx)
     });
     let breadcrumbs = cx.new(|_| Breadcrumbs::new(project));
-    cx.new(|_| DocumentToolbar::new(preview_button, breadcrumbs))
+    cx.new(|cx| DocumentToolbar::new(preview_button, breadcrumbs, cx))
 }
 
 #[gpui::test]
@@ -172,6 +227,48 @@ fn document_toolbar_is_visible_for_editor_and_hidden_for_other_items(cx: &mut Te
             bar.set_active_pane_item(Some(&other as &dyn ItemHandle), window, cx)
         });
         assert_eq!(other_location, ToolbarItemLocation::Hidden);
+        TestView
+    });
+}
+
+/// 组合 Item 仅暴露内层编辑器时，编辑器搜索工具区必须隐藏（差异/提交图等由各自工具项承担搜索）。
+#[gpui::test]
+fn document_toolbar_is_hidden_for_composite_items_that_expose_an_editor(cx: &mut TestAppContext) {
+    let bar = document_toolbar(cx);
+    cx.add_window_view(|window, cx| {
+        let inner_editor = cx.new(Editor::single_line);
+        let composite = cx.new(|cx| CompositeItem {
+            focus: cx.focus_handle(),
+            inner_editor,
+        });
+        let location = bar.update(cx, |bar, cx| {
+            bar.set_active_pane_item(Some(&composite as &dyn ItemHandle), window, cx)
+        });
+        assert_eq!(
+            location,
+            ToolbarItemLocation::Hidden,
+            "组合 Item 暴露内层编辑器时不应再显示编辑器搜索工具区"
+        );
+        TestView
+    });
+}
+
+/// 项目搜索的结果编辑器同样通过 Item 协议暴露为编辑器。
+#[gpui::test]
+fn project_search_view_acts_as_editor_and_owns_its_toolbar(cx: &mut TestAppContext) {
+    let project = cx.new(|cx| {
+        zcv_project::Project::new(PathBuf::from("."), Arc::new(LanguageRegistry::new()), cx)
+    });
+    let view = cx.new(|cx| crate::project_search::ProjectSearchView::new(project, cx));
+    cx.add_window_view(|_window, cx| {
+        let handle: &dyn ItemHandle = &view;
+        assert!(
+            handle.act_as::<Editor>(cx).is_some(),
+            "搜索结果同样是编辑器，应通过 act_as_type 暴露结果编辑器"
+        );
+        assert!(handle.as_searchable(cx).is_some());
+        assert!(!handle.uses_editor_document_toolbar(cx));
+        assert!(!handle.receives_git_projection(cx));
         TestView
     });
 }

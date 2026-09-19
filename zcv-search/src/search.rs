@@ -5,9 +5,12 @@
 
 mod buffer_search;
 mod project_search;
+mod search_bar;
 
 #[cfg(test)]
 mod test;
+
+pub use search_bar::{SearchBar, SearchBarConfig, SearchBarSlots};
 
 use gpui::{App, AppContext, Context, Window};
 use zcv_actions::{DeployBufferSearch, DeployProjectSearch};

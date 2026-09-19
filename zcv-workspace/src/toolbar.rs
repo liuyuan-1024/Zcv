@@ -129,7 +129,14 @@ impl Toolbar {
     ) -> impl Iterator<Item = AnyView> + '_ {
         self.items
             .iter()
-            .filter_map(move |(item, current)| (*current == location).then(|| item.to_any()))
+            .filter(move |(_, current)| *current == location)
+            .map(|(item, _)| item.to_any())
+    }
+}
+
+impl Default for Toolbar {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

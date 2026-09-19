@@ -51,7 +51,9 @@ pub use preview::{
 };
 pub use project_picker::OnProjectSelected;
 pub use recent_projects::{add_to_recent, most_recent_valid_project};
-pub use searchable::{Direction, SearchEvent, SearchableItem, SearchableItemHandle};
+pub use searchable::{
+    Direction, SearchEvent, SearchableItem, SearchableItemHandle, WeakSearchableItemHandle,
+};
 pub use status_bar::StatusItemView;
 pub use status_color::git_status_color;
 pub use toast::{ToastAction, ToastKind};

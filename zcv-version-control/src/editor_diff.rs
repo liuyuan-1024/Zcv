@@ -4,6 +4,7 @@
 //! 这里把 GitStore 持有的 HEAD/index 修订文档和当前工作区文本注入统一 diff 实体，并把工作区文本中的冲突标记映射为编辑器 hunk。
 //! app 只负责在 git/pane/editor 事件上注册订阅。
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use gpui::{App, Entity};
@@ -15,26 +16,33 @@ use zcv_project::Project;
 use zcv_text::{ByteOffset, TextRange};
 use zcv_workspace::Pane;
 
-use crate::project_diff::ProjectDiffView;
-
 /// 把 GitStore 的 base 文本快照推送给打开的普通编辑器。
 ///
 /// 不接收 Workspace 实体：
 /// 订阅注册时的初始回调发生在 Workspace 更新期间，读取自身实体会触发 double-lease panic。
 pub fn refresh_pane_git_projection(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App) {
-    let opened: Vec<(Entity<Editor>, PathBuf)> = pane
-        .read(cx)
-        .tabs()
-        .iter()
-        .filter_map(|item| {
-            if item.act_as::<ProjectDiffView>(cx).is_some() {
-                return None;
+    // 通用按文件 git 投影只服务声明接收它的编辑器文档：
+    // 普通文件编辑器接收，差异视图自带投影、搜索结果由多源派生，都由 Item 显式声明不接收。
+    // 预览等代理 Item 会暴露同一个源编辑器，按编辑器实体去重避免重复注入。
+    let mut opened = Vec::<(Entity<Editor>, PathBuf)>::new();
+    let mut seen = HashSet::new();
+    {
+        let pane_ref = pane.read(cx);
+        for item in pane_ref.tabs() {
+            if !item.receives_git_projection(cx) {
+                continue;
             }
-            let editor = item.act_as::<Editor>(cx)?;
-            let path = item.item_path(cx)?;
-            Some((editor, path))
-        })
-        .collect();
+            let Some(editor) = item.act_as::<Editor>(cx) else {
+                continue;
+            };
+            let Some(path) = item.item_path(cx) else {
+                continue;
+            };
+            if seen.insert(editor.entity_id()) {
+                opened.push((editor, path));
+            }
+        }
+    }
     for (editor, path) in &opened {
         sync_editor_conflict_hunks(editor, path, project, cx);
         inject_editor_diff(editor, path, project, cx);

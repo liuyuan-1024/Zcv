@@ -8,28 +8,28 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, Font,
-    InteractiveElement, IntoElement, IsZero, KeyContext, MouseButton, PathBuilder, Pixels, Render,
-    Rgba, ScrollHandle, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, TextRun, UniformListScrollHandle, WeakEntity, Window, canvas, div, point,
-    prelude::*, px, uniform_list,
+    InteractiveElement, IntoElement, IsZero, MouseButton, PathBuilder, Pixels, Render, Rgba,
+    ScrollHandle, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled, Subscription,
+    TextRun, UniformListScrollHandle, WeakEntity, Window, canvas, div, point, prelude::*, px,
+    uniform_list,
 };
 use regex::RegexBuilder;
 use zcv_actions::{
     Backtab, FindNext, FindPrevious, Tab, ToggleCaseSensitive, ToggleRegex, ToggleWholeWord,
 };
-use zcv_editor::{Editor, EditorEvent};
 use zcv_git::GraphCommit;
 
 use crate::graph::{GraphLayoutState, GraphLine, GraphRowLayout};
 use zcv_project::SearchQuery;
 use zcv_project::{GitStoreEvent, Project};
+use zcv_search::{SearchBar, SearchBarConfig, SearchBarSlots};
 use zcv_theme::color::{self, ThemeColors};
 use zcv_theme::{space, typography};
-use zcv_ui::{ButtonLike, MatchOption, MatchOptions, Scrollbar, SearchInput, TooltipSpec};
+use zcv_ui::{ButtonLike, Scrollbar, TooltipSpec};
 use zcv_workspace::{
     Direction, Item, ItemHandle, SearchEvent, SearchableItem, SerializedItemProvider,
-    SerializedPaneItem, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView, Workspace,
-    typography_for_window,
+    SerializedPaneItem, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
+    WeakSearchableItemHandle, Workspace, typography_for_window,
 };
 
 // ── 布局常量 ────────────────────────────────
@@ -115,21 +115,25 @@ pub(crate) struct GitGraphView {
     pending_column_reset: Option<usize>,
     column_resize: Option<ColumnResizeState>,
     _git_subscription: Subscription,
-    search_input: Entity<Editor>,
-    _search_subscription: Subscription,
-    search_options: MatchOptions,
+    /// 共享搜索栏会话：查询、匹配选项、可见性与按键接线由它唯一持有。
+    search_bar: Entity<SearchBar>,
 }
 
 /// Git 提交图的搜索工具栏。
 ///
-/// 作为 Pane 工具项存在：活动 Item 是提交图视图时显示搜索条，否则隐藏。
+/// 作为 Pane 工具项存在：活动 Item 是提交图视图时显示搜索栏，否则隐藏；
+/// 搜索目标是提交图视图自身（它实现 SearchableItem，命中计算保留在视图领域逻辑中）。
 pub(crate) struct GitGraphToolbar {
     active_view: Option<Entity<GitGraphView>>,
+    search_bar: Option<Entity<SearchBar>>,
 }
 
 impl GitGraphToolbar {
     pub(crate) fn new() -> Self {
-        Self { active_view: None }
+        Self {
+            active_view: None,
+            search_bar: None,
+        }
     }
 }
 
@@ -139,187 +143,62 @@ impl ToolbarItemView for GitGraphToolbar {
     fn set_active_pane_item(
         &mut self,
         item: Option<&dyn ItemHandle>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> ToolbarItemLocation {
         self.active_view = item.and_then(|item| item.act_as::<GitGraphView>(cx));
-        if self.active_view.is_some() {
-            ToolbarItemLocation::PrimaryLeft
-        } else {
-            ToolbarItemLocation::Hidden
+        let Some(view) = self.active_view.clone() else {
+            if let Some(bar) = self.search_bar.take() {
+                bar.update(cx, |bar, cx| bar.set_target(None, window, cx));
+            }
+            return ToolbarItemLocation::Hidden;
+        };
+        let bar = view.read(cx).search_bar.clone();
+        // 同一视图重复激活时保留搜索会话；切换到另一视图时解除旧栏目标绑定。
+        if let Some(previous) = self.search_bar.replace(bar.clone())
+            && previous.entity_id() != bar.entity_id()
+        {
+            previous.update(cx, |bar, cx| bar.set_target(None, window, cx));
         }
+        // 搜索目标是提交图视图自身；以弱句柄保存，避免与视图持有的搜索栏构成强引用环。
+        let target: Box<dyn WeakSearchableItemHandle> = Box::new(view.downgrade());
+        bar.update(cx, |bar, cx| bar.set_target(Some(target), window, cx));
+        ToolbarItemLocation::PrimaryLeft
     }
 }
 
 impl Render for GitGraphToolbar {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(view) = self.active_view.clone() else {
-            return div();
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(search_bar) = self.search_bar.clone() else {
+            return div().into_any_element();
         };
-        let weak = view.downgrade();
-        let read = view.read(cx);
-
-        let mut key_context = KeyContext::new_with_defaults();
-        key_context.add("GitGraphSearchBar");
-        let on_find_next = {
-            let view = weak.clone();
-            move |_: &FindNext, _: &mut Window, cx: &mut App| {
-                if let Some(view) = view.upgrade() {
-                    view.update(cx, |view, cx| {
-                        view.move_active_match(Direction::Next, 1, cx);
-                    });
-                }
-            }
-        };
-        let on_find_previous = {
-            let view = weak.clone();
-            move |_: &FindPrevious, _: &mut Window, cx: &mut App| {
-                if let Some(view) = view.upgrade() {
-                    view.update(cx, |view, cx| {
-                        view.move_active_match(Direction::Prev, 1, cx);
-                    });
-                }
-            }
-        };
-        let on_toggle_case = {
-            let view = weak.clone();
-            move |_: &ToggleCaseSensitive, _: &mut Window, cx: &mut App| {
-                if let Some(view) = view.upgrade() {
-                    view.update(cx, |view, cx| {
-                        view.toggle_search_option(MatchOption::CaseSensitive, cx);
-                    });
-                }
-            }
-        };
-        let on_toggle_word = {
-            let view = weak.clone();
-            move |_: &ToggleWholeWord, _: &mut Window, cx: &mut App| {
-                if let Some(view) = view.upgrade() {
-                    view.update(cx, |view, cx| {
-                        view.toggle_search_option(MatchOption::WholeWord, cx);
-                    });
-                }
-            }
-        };
-        let on_toggle_regex = {
-            let view = weak.clone();
-            move |_: &ToggleRegex, _: &mut Window, cx: &mut App| {
-                if let Some(view) = view.upgrade() {
-                    view.update(cx, |view, cx| {
-                        view.toggle_search_option(MatchOption::Regex, cx);
-                    });
-                }
-            }
-        };
-        let on_tab = {
-            let view = weak.clone();
-            move |_: &Tab, window: &mut Window, cx: &mut App| {
-                if let Some(view) = view.upgrade() {
-                    view.update(cx, |view, cx| {
-                        window.focus(&view.search_input.read(cx).focus_handle(), cx);
-                    });
-                }
-            }
-        };
-        let on_backtab = {
-            let view = weak.clone();
-            move |_: &Backtab, window: &mut Window, cx: &mut App| {
-                if let Some(view) = view.upgrade() {
-                    view.update(cx, |view, cx| {
-                        window.focus(&view.search_input.read(cx).focus_handle(), cx);
-                    });
-                }
-            }
-        };
-        div()
-            .key_context(key_context)
-            .on_action(on_find_next)
-            .on_action(on_find_previous)
-            .on_action(on_toggle_case)
-            .on_action(on_toggle_word)
-            .on_action(on_toggle_regex)
-            .on_action(on_tab)
-            .on_action(on_backtab)
-            .w_full()
-            .flex()
-            .items_center()
-            .gap(space::S6)
-            .child(
-                SearchInput::new("git-graph", read.search_input.clone().into_any_element())
-                    .shortcut_resolver(zcv_keymap::display_shortcut)
-                    .options(read.search_options)
-                    .on_toggle({
-                        let view = weak.clone();
-                        move |option, _window, cx| {
-                            if let Some(view) = view.upgrade() {
-                                view.update(cx, |view, cx| {
-                                    view.toggle_search_option(option, cx);
-                                });
-                            }
-                        }
-                    })
-                    .count(read.active_search_match, read.search_matches.len())
-                    .on_previous({
-                        let view = weak.clone();
-                        move |_window, cx| {
-                            if let Some(view) = view.upgrade() {
-                                view.update(cx, |view, cx| {
-                                    view.move_active_match(Direction::Prev, 1, cx);
-                                });
-                            }
-                        }
-                    })
-                    .on_next({
-                        let view = weak.clone();
-                        move |_window, cx| {
-                            if let Some(view) = view.upgrade() {
-                                view.update(cx, |view, cx| {
-                                    view.move_active_match(Direction::Next, 1, cx);
-                                });
-                            }
-                        }
-                    }),
-            )
+        search_bar
+            .update(cx, |bar, cx| {
+                bar.render(SearchBarSlots::default(), window, cx)
+            })
+            .into_any_element()
     }
 }
 
 impl GitGraphView {
-    fn toggle_search_option(&mut self, option: MatchOption, cx: &mut Context<Self>) {
-        self.search_options = self.search_options.toggled(option);
-        let query = self.search_input.read(cx).text(cx);
-        self.run_search(
-            &SearchQuery {
-                query,
-                case_sensitive: self.search_options.case_sensitive,
-                whole_word: self.search_options.whole_word,
-                regex: self.search_options.regex,
-            },
-            cx,
-        );
-    }
-
     fn new(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         let scroll_handle = UniformListScrollHandle::default();
         let scrollbar = Scrollbar::vertical(scroll_handle.clone());
         let git_store = project.read(cx).git_store();
-        let search_input = cx.new(Editor::single_line);
-        search_input.update(cx, |editor, cx| {
-            editor.set_placeholder_text("搜索…", cx);
+        let search_bar = cx.new(|cx| {
+            SearchBar::new(
+                SearchBarConfig {
+                    id_prefix: "git-graph",
+                    key_context: "GitGraphSearchBar",
+                    supports_replace: false,
+                    query_placeholder: "搜索…",
+                    replace_placeholder: "替换为…",
+                    dismissible: false,
+                },
+                cx,
+            )
         });
-        let search_subscription =
-            cx.subscribe(&search_input, |view, _input, event: &EditorEvent, cx| {
-                if matches!(event, EditorEvent::Edited { .. }) {
-                    let query = view.search_input.read(cx).text(cx);
-                    let search_query = SearchQuery {
-                        query,
-                        case_sensitive: view.search_options.case_sensitive,
-                        whole_word: view.search_options.whole_word,
-                        regex: view.search_options.regex,
-                    };
-                    view.run_search(&search_query, cx);
-                }
-            });
         let git_subscription = cx.subscribe(&git_store, |view, _, event, cx| {
             if matches!(
                 event,
@@ -355,9 +234,7 @@ impl GitGraphView {
             pending_column_reset: None,
             column_resize: None,
             _git_subscription: git_subscription,
-            search_input,
-            _search_subscription: search_subscription,
-            search_options: MatchOptions::default(),
+            search_bar,
         };
         if git_store.read(cx).is_repository_scan_ready() {
             view.load_more(cx);
@@ -471,16 +348,17 @@ impl GitGraphView {
         if batch_len < BATCH_SIZE {
             self.reached_end = true;
         }
-        let query = self.search_input.read(cx).text(cx);
+        let query = self.search_bar.read(cx).query_text(cx);
         if query.is_empty() {
             cx.notify();
         } else {
+            let options = self.search_bar.read(cx).options();
             self.run_search(
                 &SearchQuery {
                     query,
-                    case_sensitive: self.search_options.case_sensitive,
-                    whole_word: self.search_options.whole_word,
-                    regex: self.search_options.regex,
+                    case_sensitive: options.case_sensitive,
+                    whole_word: options.whole_word,
+                    regex: options.regex,
                 },
                 cx,
             );
@@ -492,7 +370,7 @@ impl EventEmitter<SearchEvent> for GitGraphView {}
 
 impl Focusable for GitGraphView {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        self.search_input.read(cx).focus_handle()
+        self.search_bar.read(cx).query_focus_handle(cx)
     }
 }
 
@@ -502,32 +380,70 @@ impl Render for GitGraphView {
         let palette = lane_palette(&colors);
         let type_scale = typography_for_window(window, cx);
         let row_height = row_height(type_scale.content_line());
+        // 视图体聚焦时仍走 GitGraphSearchBar 键位上下文：
+        // 提交图自身没有按键处理，搜索 action 一律转发给它持有的 SearchBar。
+        // 转发用弱句柄而非 cx.listener，后者会在回调期间租借视图，而 SearchBar 的导航/选项操作又要回写本视图，造成同一实体二次租借。
         let root = div()
             .debug_selector(|| "git-graph-view".into())
             .size_full()
             .track_focus(&self.focus)
             .key_context("GitGraphSearchBar")
-            .on_action(cx.listener(|view, _: &FindNext, _, cx| {
-                view.move_active_match(Direction::Next, 1, cx);
-            }))
-            .on_action(cx.listener(|view, _: &FindPrevious, _, cx| {
-                view.move_active_match(Direction::Prev, 1, cx);
-            }))
-            .on_action(cx.listener(|view, _: &ToggleCaseSensitive, _, cx| {
-                view.toggle_search_option(MatchOption::CaseSensitive, cx);
-            }))
-            .on_action(cx.listener(|view, _: &ToggleWholeWord, _, cx| {
-                view.toggle_search_option(MatchOption::WholeWord, cx);
-            }))
-            .on_action(cx.listener(|view, _: &ToggleRegex, _, cx| {
-                view.toggle_search_option(MatchOption::Regex, cx);
-            }))
-            .on_action(cx.listener(|view, _: &Tab, window, cx| {
-                window.focus(&view.search_input.read(cx).focus_handle(), cx);
-            }))
-            .on_action(cx.listener(|view, _: &Backtab, window, cx| {
-                window.focus(&view.search_input.read(cx).focus_handle(), cx);
-            }))
+            .on_action({
+                let bar = self.search_bar.downgrade();
+                move |_: &FindNext, window, cx| {
+                    if let Some(bar) = bar.upgrade() {
+                        bar.update(cx, |bar, cx| bar.find_next(window, cx));
+                    }
+                }
+            })
+            .on_action({
+                let bar = self.search_bar.downgrade();
+                move |_: &FindPrevious, window, cx| {
+                    if let Some(bar) = bar.upgrade() {
+                        bar.update(cx, |bar, cx| bar.find_previous(window, cx));
+                    }
+                }
+            })
+            .on_action({
+                let bar = self.search_bar.downgrade();
+                move |_: &ToggleCaseSensitive, window, cx| {
+                    if let Some(bar) = bar.upgrade() {
+                        bar.update(cx, |bar, cx| bar.toggle_case_sensitive(window, cx));
+                    }
+                }
+            })
+            .on_action({
+                let bar = self.search_bar.downgrade();
+                move |_: &ToggleWholeWord, window, cx| {
+                    if let Some(bar) = bar.upgrade() {
+                        bar.update(cx, |bar, cx| bar.toggle_whole_word(window, cx));
+                    }
+                }
+            })
+            .on_action({
+                let bar = self.search_bar.downgrade();
+                move |_: &ToggleRegex, window, cx| {
+                    if let Some(bar) = bar.upgrade() {
+                        bar.update(cx, |bar, cx| bar.toggle_regex(window, cx));
+                    }
+                }
+            })
+            .on_action({
+                let bar = self.search_bar.downgrade();
+                move |_: &Tab, window, cx| {
+                    if let Some(bar) = bar.upgrade() {
+                        bar.update(cx, |bar, cx| bar.focus_query(window, cx));
+                    }
+                }
+            })
+            .on_action({
+                let bar = self.search_bar.downgrade();
+                move |_: &Backtab, window, cx| {
+                    if let Some(bar) = bar.upgrade() {
+                        bar.update(cx, |bar, cx| bar.focus_query(window, cx));
+                    }
+                }
+            })
             .bg(colors.editor_background)
             // 提交文本属于内容：字号走内容通道，字体族沿用 UI 比例字体，只有短 SHA 用等宽。
             .font(typography::ui_font())
@@ -551,7 +467,7 @@ impl Render for GitGraphView {
             );
         }
 
-        let has_query = !self.search_input.read(cx).text(cx).is_empty();
+        let has_query = !self.search_bar.read(cx).query_text(cx).is_empty();
         let len = if !has_query {
             self.rows.len()
         } else {
@@ -728,8 +644,8 @@ impl Item for GitGraphView {
         Some(SerializedPaneItem::Custom {
             kind: GIT_GRAPH_SERIALIZED_KIND.into(),
             state: serde_json::json!({
-                "query": self.search_input.read(cx).text(cx),
-                "options": self.search_options,
+                "query": self.search_bar.read(cx).query_text(cx),
+                "options": self.search_bar.read(cx).options(),
             }),
         })
     }
@@ -764,9 +680,8 @@ impl SerializedItemProvider for GitGraphSerializedItemProvider {
             })
             .unwrap_or_default();
         view.update(cx, |view, cx| {
-            view.search_options = options;
-            view.search_input
-                .update(cx, |editor, cx| editor.set_text(query, cx));
+            let search_bar = view.search_bar.clone();
+            search_bar.update(cx, |bar, cx| bar.restore(query, options, cx));
         });
         gpui::Task::ready(Ok(Box::new(view) as Box<dyn ItemHandle>))
     }
@@ -1552,6 +1467,10 @@ fn relative_time(timestamp: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use zcv_language::LanguageRegistry;
+
     use super::*;
 
     /// 行高必须跟随内容字号通道：内容字号放大后行高应变大。
@@ -1649,5 +1568,53 @@ mod tests {
         assert_eq!(widths[0], px(160.0));
         assert_eq!(widths[1], px(480.0));
         assert!((total_before - total_after).abs() < f32::EPSILON);
+    }
+
+    /// 回归：提交图视图与其搜索栏之间不得互相强引用。
+    ///
+    /// C4 后视图持有 SearchBar，SearchBar 又强持有视图作为搜索目标，构成环；
+    /// 关闭标签/面板（不触发活动 Item 变化、因而不会清 target）时两者都无法释放。
+    /// 目标改为弱句柄后，释放外部强引用即可让视图与搜索栏一起释放。
+    #[gpui::test]
+    fn git_graph_view_and_search_bar_release_together(cx: &mut gpui::TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let project = cx.new(|cx| {
+            Project::new(
+                directory.path().to_path_buf(),
+                Arc::new(LanguageRegistry::new()),
+                cx,
+            )
+        });
+        let view = cx.new(|cx| GitGraphView::new(project, cx));
+        let search_bar = cx.read_entity(&view, |view, _| view.search_bar.clone());
+        let weak_view = view.downgrade();
+        let weak_search_bar = search_bar.downgrade();
+
+        // 模拟工具项激活：搜索栏把视图登记为自搜索目标。
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let toolbar = cx.new(|_| GitGraphToolbar::new());
+            toolbar.update(cx, |toolbar, cx| {
+                toolbar.set_active_pane_item(Some(&view as &dyn ItemHandle), window, cx);
+            });
+            gpui::Empty
+        });
+        visual.run_until_parked();
+
+        drop(search_bar);
+        drop(view);
+        // 实体释放分多轮 effect 完成：逐轮刷新直到视图与搜索栏都被回收。
+        for _ in 0..4 {
+            visual.update(|_, _| {});
+            visual.run_until_parked();
+        }
+
+        assert!(
+            weak_view.upgrade().is_none(),
+            "提交图视图在外部强引用释放后应被回收（不再被搜索栏强持有）"
+        );
+        assert!(
+            weak_search_bar.upgrade().is_none(),
+            "搜索栏应随视图一起释放"
+        );
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! 搜索条只面向此 trait 编程，Editor 等 Item 提供搜索执行与匹配跳转。
 
-use gpui::{App, Context, Entity, EventEmitter, Subscription, Window};
+use gpui::{App, Context, Entity, EntityId, EventEmitter, Subscription, WeakEntity, Window};
 use zcv_project::SearchQuery;
 
 use crate::item::{Item, ItemHandle};
@@ -79,6 +79,11 @@ pub trait SearchableItem: Item + EventEmitter<SearchEvent> {
 
 /// SearchableItem 的类型擦除句柄。
 pub trait SearchableItemHandle: ItemHandle {
+    /// 生成指向同一目标的弱句柄。
+    ///
+    /// 搜索目标可能是搜索栏宿主自身，搜索栏若持有强句柄就与宿主构成环；
+    /// 因此搜索栏一律保存弱句柄。
+    fn downgrade(&self) -> Box<dyn WeakSearchableItemHandle>;
     fn boxed_clone(&self) -> Box<dyn SearchableItemHandle>;
     fn subscribe_to_search_events(
         &self,
@@ -103,6 +108,10 @@ pub trait SearchableItemHandle: ItemHandle {
 }
 
 impl<T: SearchableItem> SearchableItemHandle for Entity<T> {
+    fn downgrade(&self) -> Box<dyn WeakSearchableItemHandle> {
+        Box::new(Entity::downgrade(self))
+    }
+
     fn boxed_clone(&self) -> Box<dyn SearchableItemHandle> {
         Box::new(self.clone())
     }
@@ -156,5 +165,27 @@ impl<T: SearchableItem> SearchableItemHandle for Entity<T> {
 
     fn replace_all(&self, replacement: &str, window: &mut Window, cx: &mut App) -> usize {
         self.update(cx, |item, cx| item.replace_all(replacement, window, cx))
+    }
+}
+
+/// 搜索目标的类型擦除弱句柄。
+///
+/// 与 [`SearchableItemHandle`] 相对：它不延长目标生命周期。
+/// 目标释放后升级失败，依赖目标的搜索操作自然成为空操作。
+pub trait WeakSearchableItemHandle: Send + Sync {
+    /// 目标实体 id；用于判断目标是否被更换。
+    fn id(&self) -> EntityId;
+
+    /// 升级为目标强句柄；目标已释放时返回 None。
+    fn upgrade(&self) -> Option<Box<dyn SearchableItemHandle>>;
+}
+
+impl<T: SearchableItem> WeakSearchableItemHandle for WeakEntity<T> {
+    fn id(&self) -> EntityId {
+        self.entity_id()
+    }
+
+    fn upgrade(&self) -> Option<Box<dyn SearchableItemHandle>> {
+        Some(Box::new(WeakEntity::upgrade(self)?))
     }
 }

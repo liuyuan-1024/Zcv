@@ -48,6 +48,22 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
         true
     }
 
+    /// 是否使用编辑器通用文档工具栏（面包屑、预览入口与缓冲区搜索）。
+    ///
+    /// 组合文档同样是编辑器；
+    /// 某个文档形态若注册了自己的工具项来承担工具栏与搜索，应覆盖为 `false`，避免通用文档工具栏与它的专用工具项重复显示。
+    fn uses_editor_document_toolbar(&self, _cx: &App) -> bool {
+        true
+    }
+
+    /// 是否接收通用的按文件 git 投影（diff hunk 与冲突标记）。
+    ///
+    /// 普通文件编辑器接收；
+    /// 自带差异投影或由多源派生的组合文档由各自机制承担，覆盖为 `false`，避免通用投影与专用投影重复注入。
+    fn receives_git_projection(&self) -> bool {
+        true
+    }
+
     fn to_item_events(_event: &Self::Event, _emit: &mut dyn FnMut(ItemEvent)) {}
 
     fn is_dirty(&self, _cx: &App) -> bool {
@@ -158,6 +174,8 @@ pub trait ItemHandle: Send + 'static {
     fn tab_content_text(&self, cx: &App) -> SharedString;
     fn tab_icon(&self, cx: &App) -> Option<SharedString>;
     fn show_toolbar(&self, cx: &App) -> bool;
+    fn uses_editor_document_toolbar(&self, cx: &App) -> bool;
+    fn receives_git_projection(&self, cx: &App) -> bool;
     fn is_dirty(&self, cx: &App) -> bool;
     fn item_path(&self, cx: &App) -> Option<PathBuf>;
     fn serialized_pane_item(&self, cx: &App) -> Option<SerializedPaneItem>;
@@ -224,6 +242,14 @@ impl<T: Item> ItemHandle for Entity<T> {
 
     fn show_toolbar(&self, cx: &App) -> bool {
         self.read(cx).show_toolbar()
+    }
+
+    fn uses_editor_document_toolbar(&self, cx: &App) -> bool {
+        self.read(cx).uses_editor_document_toolbar(cx)
+    }
+
+    fn receives_git_projection(&self, cx: &App) -> bool {
+        self.read(cx).receives_git_projection()
     }
 
     fn is_dirty(&self, cx: &App) -> bool {

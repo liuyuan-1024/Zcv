@@ -20,6 +20,7 @@ zcv-buffer-diff.workspace = true
 zcv-multi-buffer.workspace = true
 zcv-path.workspace = true
 zcv-project.workspace = true
+zcv-search.workspace = true
 zcv-text.workspace = true
 zcv-theme.workspace = true
 zcv-ui.workspace = true

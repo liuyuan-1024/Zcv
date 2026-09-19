@@ -1416,7 +1416,7 @@ fn singleton_source_preserves_rust_fold_ranges(cx: &mut TestAppContext) {
         let snapshot = buffer.text_snapshot();
         resolve_folds(&source_folds, &snapshot)
     });
-    let projected_folds = cx.read_entity(&combined, |buffer, cx| buffer.fold_ranges(cx));
+    let projected_folds = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx).fold_ranges());
     let projected_offsets = cx.read_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         projected_folds
@@ -1567,7 +1567,8 @@ fn excerpt_projects_contained_fold_range_to_output_coordinates(cx: &mut TestAppC
     let projected = cx.read_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         buffer
-            .fold_ranges(cx)
+            .snapshot(cx)
+            .fold_ranges()
             .iter()
             .map(|range| {
                 snapshot
@@ -1639,7 +1640,8 @@ fn fold_projection_accounts_for_nonzero_output_start(cx: &mut TestAppContext) {
             .get();
         assert!(output_start > 0, "第二个 excerpt 的组合起点必须非零");
         let projected = buffer
-            .fold_ranges(cx)
+            .snapshot(cx)
+            .fold_ranges()
             .iter()
             .map(|range| {
                 snapshot

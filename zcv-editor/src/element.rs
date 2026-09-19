@@ -1,6 +1,6 @@
 //! Editor 的逐帧文本布局、绘制与像素命中测试。
 
-use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferRange};
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
 
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -1293,13 +1293,7 @@ impl Element for EditorElement {
         let foldable_lines: BTreeSet<Line> = {
             visible_source_lines
                 .as_ref()
-                .map(|range| {
-                    visible_foldable_lines(
-                        &display_snapshot,
-                        display_snapshot.fold_creases(),
-                        range,
-                    )
-                })
+                .map(|range| visible_foldable_lines(&display_snapshot, range))
                 .unwrap_or_default()
         };
         // diff 与搜索装饰由显示链按显示版本投影；本帧只取当前视口的行范围。
@@ -2388,21 +2382,16 @@ fn visible_display_row_range(
 
 fn visible_foldable_lines(
     snapshot: &DisplaySnapshot,
-    fold_ranges: &[Range<MultiBufferAnchor>],
     visible_lines: &Range<Line>,
 ) -> BTreeSet<Line> {
-    let Some(range) = source_line_byte_range(snapshot, visible_lines) else {
-        return BTreeSet::new();
-    };
     let buffer = snapshot.buffer_snapshot();
-    // 折叠候选以组合锚点保存，按当前快照解析起点字节后筛选可见入口行。
-    fold_ranges
-        .iter()
-        .filter_map(|fold| {
-            let start = buffer.resolve_anchor(&fold.start)?;
-            if start.get() < range.start || start.get() >= range.end {
-                return None;
-            }
+    // 折叠候选以组合锚点保存在 CreaseMap 中；按可见行范围 seek，
+    // 不遍历整份候选集合（D-7：显示热路径只按可见范围读取）。
+    snapshot
+        .crease_snapshot()
+        .creases_in_range(visible_lines.clone(), buffer)
+        .filter_map(|crease| {
+            let start = buffer.resolve_anchor(&crease.range().start)?;
             buffer.byte_to_line(start).ok()
         })
         .collect()

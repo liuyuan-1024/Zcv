@@ -616,17 +616,15 @@ impl Editor {
             }
         } else {
             let snapshot = self.render_snapshot();
-            // 折叠候选以组合锚点保存，按当前快照解析起点行定位入口行。
-            let range = display_snapshot.fold_creases().iter().find(|range| {
-                snapshot
-                    .resolve_anchor(&range.start)
-                    .and_then(|offset| snapshot.byte_to_line(offset).ok())
-                    .is_some_and(|start| start == line)
-            });
+            // 折叠候选以组合锚点保存在 CreaseMap 中；按行 seek 定位入口行。
+            let range = display_snapshot
+                .crease_snapshot()
+                .crease_at_line(line, &snapshot)
+                .map(|crease| crease.range().clone());
             if let Some(range) = range
                 && let Err(error) = self
                     .display_map
-                    .update(cx, |map, cx| map.fold_range(range.clone(), cx))
+                    .update(cx, |map, cx| map.fold_range(range, cx))
             {
                 cx.emit(EditorEvent::Error(format!("折叠失败：{error:#}")));
             }
@@ -675,9 +673,10 @@ impl Editor {
             return;
         };
         let range = display_snapshot
-            .fold_creases()
-            .iter()
-            .filter_map(|range| {
+            .crease_snapshot()
+            .creases()
+            .filter_map(|crease| {
+                let range = crease.range();
                 let start = snapshot
                     .resolve_anchor(&range.start)
                     .and_then(|offset| snapshot.byte_to_line(offset).ok())?;

@@ -13,6 +13,7 @@ use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferRange};
 
 mod block_map;
 mod chunk;
+mod crease_map;
 mod decorations;
 mod display_width;
 mod edit;
@@ -22,7 +23,7 @@ mod tab_map;
 mod wrap_map;
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -39,6 +40,7 @@ pub(crate) use chunk::{
 };
 #[cfg(test)]
 pub(crate) use chunk::{ChunkSource, ChunkText, WrapChunks};
+use crease_map::{Crease, CreaseId, CreaseMap, CreaseSnapshot};
 #[cfg(test)]
 pub(crate) use decorations::hunk_rendering;
 pub(crate) use decorations::{
@@ -59,8 +61,8 @@ use wrap_map::{WrapEdit, WrapMap, WrapSnapshot};
 use zcv_language::HighlightSpan;
 use zcv_multi_buffer::{MultiBuffer, MultiBufferSnapshot, MultiBufferSubscription};
 use zcv_text::{
-    Line, LineRange, LogicalColumn, MovementDirection, MovementUnit, Position, TextChangeBatch,
-    TextResult,
+    Anchor, Line, LineRange, LogicalColumn, MovementDirection, MovementUnit, Position,
+    TextChangeBatch, TextResult,
 };
 use zcv_theme::syntax;
 
@@ -182,6 +184,8 @@ impl DisplayRange {
 pub(super) struct DisplaySnapshot {
     /// 唯一的显示拓扑权威；链叶即唯一的 MultiBufferSnapshot。
     block_snapshot: Arc<BlockSnapshot>,
+    /// 与本显示版本绑定的折叠候选索引；随快照整体替换、可丢弃。
+    crease_snapshot: CreaseSnapshot,
     /// 与本显示版本绑定的显示装饰投影；随快照整体替换、可丢弃。
     decorations: Arc<DisplayDecorations>,
 }
@@ -197,9 +201,9 @@ impl DisplaySnapshot {
         self.decorations.search()
     }
 
-    /// 折叠候选（crease）范围；随组合元数据版本重建。
-    pub(crate) fn fold_creases(&self) -> &[Range<MultiBufferAnchor>] {
-        self.decorations.fold_creases()
+    /// 折叠候选（crease）索引；随组合元数据版本重建，渲染按可见行范围查询。
+    pub(crate) fn crease_snapshot(&self) -> &CreaseSnapshot {
+        &self.crease_snapshot
     }
 
     pub(super) fn tab_width(&self) -> NonZeroUsize {
@@ -482,10 +486,18 @@ pub(crate) struct DisplayMap {
     editor_hunks: Arc<[EditorHunk]>,
     /// 搜索命中的显示输入（显示装饰领域键之一）。
     search: Option<SearchDecorationInput>,
-    /// 折叠候选（crease）；只随组合元数据版本重建，不进入滚动/换行热路径。
-    fold_creases: Arc<[Range<MultiBufferAnchor>]>,
-    /// fold_creases 对应的组合元数据版本；用于避免换行帧重算语法折叠。
-    fold_creases_metadata_version: u64,
+    /// 折叠候选（crease）索引；按源增量替换，滚动帧按锚点 seek 查询。
+    crease_map: CreaseMap,
+    /// 每个源当前已物化的折叠候选身份；句柄不变即跳过，不做整份重建。
+    source_creases: HashMap<Option<gpui::EntityId>, SourceCreases>,
+}
+
+/// 一个源在 `CreaseMap` 中已物化的折叠候选。
+#[derive(Debug)]
+struct SourceCreases {
+    /// 该源折叠候选锚点句柄；句柄变化即表示候选集合变化。
+    fold_anchors: Arc<[Range<Anchor>]>,
+    ids: Vec<CreaseId>,
 }
 
 fn default_tab_width() -> NonZeroUsize {
@@ -522,8 +534,8 @@ impl DisplayMap {
             buffer_subscription: None,
             editor_hunks: Arc::from([]),
             search: None,
-            fold_creases: Arc::from([]),
-            fold_creases_metadata_version: u64::MAX,
+            crease_map: CreaseMap::new(&snapshot),
+            source_creases: HashMap::new(),
         };
         this.refresh_snapshot(&wrap_snapshot, &[], cx);
         // 换行层自己拥有后台重排；完成后 DisplayMap 观察并重建 Block 投影。
@@ -652,7 +664,6 @@ impl DisplayMap {
             },
             self.search.as_ref(),
             Arc::clone(&self.editor_hunks),
-            Arc::clone(&self.fold_creases),
         )
     }
 
@@ -663,23 +674,66 @@ impl DisplayMap {
         cx: &App,
     ) {
         let block_snapshot = Arc::new(self.current_block_snapshot(wrap_snapshot, wrap_edits));
-        // 折叠候选只随组合元数据版本（语法/设置等）重建，滚动与换行帧复用缓存。
-        let metadata_version = block_snapshot
-            .wrap_snapshot()
-            .buffer_snapshot()
-            .metadata_version();
-        if self.fold_creases_metadata_version != metadata_version
-            && let Some(multi_buffer) = &self.multi_buffer
-        {
-            self.fold_creases = multi_buffer.read(cx).fold_ranges(cx);
-            self.fold_creases_metadata_version = metadata_version;
-        }
+        // 折叠候选按源句柄增量同步：未变化的源不重投影；源集合增删由身份差异自然收敛。
+        self.reconcile_source_creases(block_snapshot.wrap_snapshot().buffer_snapshot());
         let mut snapshot = DisplaySnapshot {
             block_snapshot,
+            crease_snapshot: self.crease_map.snapshot(),
             decorations: Arc::new(DisplayDecorations::empty()),
         };
         snapshot.decorations = Arc::new(self.build_decorations(&snapshot, cx));
         self.snapshot = Some(snapshot);
+    }
+
+    /// 按源增量同步折叠候选：只有候选句柄变化的源重投影并替换其 `CreaseId`，其余源保持不动。
+    fn reconcile_source_creases(&mut self, snapshot: &MultiBufferSnapshot) {
+        let mut changed = Vec::new();
+        let mut seen = HashSet::new();
+        for (index, (source_id, fold_anchors)) in snapshot.fold_sources().enumerate() {
+            seen.insert(source_id);
+            let stale = self
+                .source_creases
+                .get(&source_id)
+                .is_none_or(|state| !Arc::ptr_eq(&state.fold_anchors, fold_anchors));
+            if stale {
+                changed.push((source_id, index, Arc::clone(fold_anchors)));
+            }
+        }
+
+        // 退出投影的源：移除其候选身份。
+        let mut removed_ids = Vec::new();
+        self.source_creases.retain(|source_id, state| {
+            if seen.contains(source_id) {
+                true
+            } else {
+                removed_ids.extend(state.ids.iter().copied());
+                false
+            }
+        });
+
+        // 候选集合变化的源：移除旧身份、投影新候选；未变化的源不触碰。
+        let mut next_ranges = Vec::new();
+        let mut counts = Vec::new();
+        for (source_id, index, fold_anchors) in changed {
+            if let Some(state) = self.source_creases.remove(&source_id) {
+                removed_ids.extend(state.ids.iter().copied());
+            }
+            let ranges = snapshot
+                .fold_ranges_for_source(index)
+                .into_iter()
+                .map(Crease::simple)
+                .collect::<Vec<_>>();
+            counts.push((source_id, fold_anchors, ranges.len()));
+            next_ranges.extend(ranges);
+        }
+        self.crease_map.remove(removed_ids, snapshot);
+        let ids = self.crease_map.insert(next_ranges, snapshot);
+        let mut ids = ids.into_iter();
+        for (source_id, fold_anchors, count) in counts {
+            let ids = ids.by_ref().take(count).collect::<Vec<_>>();
+            self.source_creases
+                .insert(source_id, SourceCreases { fold_anchors, ids });
+        }
     }
 
     /// 设置 tab 视觉列宽；变化时重建 tab 与 wrap 投影并刷新当前显示快照。

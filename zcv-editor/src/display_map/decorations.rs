@@ -2,13 +2,13 @@
 //!
 //! 装饰以「领域键 + 组合坐标范围」表达，权威仍属其领域所有者：
 //! - diff hunk 与词级变化由 MultiBuffer 的投影提供；
-//! - 搜索命中与宿主 hunk 由 Editor 注入锚点范围；
-//! - 折叠候选（crease）由 MultiBuffer 的语法折叠投影提供。
+//! - 搜索命中与宿主 hunk 由 Editor 注入锚点范围。
 //!
+//! 折叠候选是独立的 `CreaseMap` 快照，不经过本模块。
 //! DisplayMap 在同一显示版本上把输入投影为显示行坐标并随快照保存；
 //! EditorElement 只从 DisplaySnapshot 按视口消费，不持有显示坐标副本。
 
-use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferRange};
+use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
 
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
@@ -136,14 +136,11 @@ pub(crate) struct DiffDecorationInput<'a> {
 pub(crate) struct DisplayDecorations {
     diff: Arc<DiffDecorationSnapshot>,
     search: Option<Arc<SearchDecorationSnapshot>>,
-    fold_creases: Arc<[Range<MultiBufferAnchor>]>,
 }
 
 impl std::fmt::Debug for DisplayDecorations {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DisplayDecorations")
-            .field("fold_creases", &self.fold_creases.len())
-            .finish_non_exhaustive()
+        f.debug_struct("DisplayDecorations").finish_non_exhaustive()
     }
 }
 
@@ -153,7 +150,6 @@ impl DisplayDecorations {
         Self {
             diff: Arc::new(DiffDecorationSnapshot::empty()),
             search: None,
-            fold_creases: Arc::from([]),
         }
     }
 
@@ -162,7 +158,6 @@ impl DisplayDecorations {
         diff: DiffDecorationInput<'_>,
         search: Option<&SearchDecorationInput>,
         editor_hunks: Arc<[EditorHunk]>,
-        fold_creases: Arc<[Range<MultiBufferAnchor>]>,
     ) -> Self {
         let diff = Arc::new(DiffDecorationSnapshot::new(
             snapshot,
@@ -179,11 +174,7 @@ impl DisplayDecorations {
                 input.active_index,
             ))
         });
-        Self {
-            diff,
-            search,
-            fold_creases,
-        }
+        Self { diff, search }
     }
 
     pub(crate) fn diff(&self) -> Arc<DiffDecorationSnapshot> {
@@ -192,10 +183,6 @@ impl DisplayDecorations {
 
     pub(crate) fn search(&self) -> Option<Arc<SearchDecorationSnapshot>> {
         self.search.as_ref().map(Arc::clone)
-    }
-
-    pub(crate) fn fold_creases(&self) -> &[Range<MultiBufferAnchor>] {
-        &self.fold_creases
     }
 }
 

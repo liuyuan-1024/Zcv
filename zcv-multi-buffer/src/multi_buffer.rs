@@ -218,18 +218,37 @@ struct ExcerptSource {
     word_boundary: WordBoundaryPolicy,
     /// 源语言解析后的编辑器设置。
     settings: Arc<LanguageSettings>,
+    /// 源语法的折叠候选锚点；只在该源 reparse 时重算，随源文本 Anchor 跨编辑存活。
+    fold_anchors: Arc<[Range<Anchor>]>,
     capture_map: Arc<[u32]>,
 }
 
 /// 不可变快照帧中的源状态（不携带实体引用）。
 #[derive(Clone, Debug)]
 struct ExcerptSourceSnapshot {
+    /// 源实体身份：显示层按它增量同步源级派生（折叠候选等）；纯文本派生快照没有实体源。
+    source_id: Option<gpui::EntityId>,
+    path: PathKey,
     text: Snapshot,
     syntax: SyntaxSnapshot,
     highlight_cache: Arc<HighlightCache>,
     word_boundary: WordBoundaryPolicy,
     settings: Arc<LanguageSettings>,
+    /// 源级折叠候选锚点；只在源 reparse 时整体替换，句柄变化即表示候选集合变化。
+    fold_anchors: Arc<[Range<Anchor>]>,
     capture_map: Arc<[u32]>,
+}
+
+/// 源语法折叠候选：端点保留为源 Anchor，跨文本编辑存活；只在该源 reparse 时重算。
+fn source_fold_anchors(snapshot: &LanguageBufferSnapshot) -> Arc<[Range<Anchor>]> {
+    Arc::from(
+        snapshot
+            .syntax
+            .fold_ranges(0..snapshot.text.len_bytes().get(), &snapshot.text)
+            .into_iter()
+            .map(|fold| fold.range)
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// 输出变换节点携带的 diff hunk 身份与显示元数据。
@@ -2291,6 +2310,78 @@ impl MultiBufferSnapshot {
     }
 
     /// 查询组合坐标中光标所在 source 的括号对，并映射回组合坐标。
+    /// 按源的折叠候选锚点句柄；显示层比较句柄即可判定该源候选是否变化。
+    pub fn fold_sources(
+        &self,
+    ) -> impl Iterator<Item = (Option<gpui::EntityId>, &Arc<[Range<Anchor>]>)> {
+        self.excerpt_sources
+            .iter()
+            .map(|source| (source.source_id, &source.fold_anchors))
+    }
+
+    /// 单个源的折叠候选（组合坐标，按源内顺序）。
+    pub fn fold_ranges_for_source(&self, source_index: usize) -> Vec<Range<MultiBufferAnchor>> {
+        let Some(source) = self.excerpt_sources.get(source_index) else {
+            return Vec::new();
+        };
+        let mut projected = Vec::new();
+        for fold in source.fold_anchors.iter() {
+            let (Ok(start), Ok(end)) = (
+                fold.start.resolve_in(&source.text),
+                fold.end.resolve_in(&source.text),
+            ) else {
+                // 折叠候选代际已被 reset / 基线替换淘汰时不再投影。
+                continue;
+            };
+            if start >= end {
+                continue;
+            }
+            let Some((start_mapping, end_mapping)) = source_mapping_range(
+                &self.excerpts,
+                &self.diff_transforms,
+                &source.path,
+                source_index,
+                start.get(),
+                end.get(),
+            ) else {
+                continue;
+            };
+            let output_start = start_mapping.output_range.start().get() + start.get()
+                - start_mapping.source_range.start().get();
+            let output_end = end_mapping.output_range.start().get() + end.get()
+                - end_mapping.source_range.start().get();
+            if output_start < output_end {
+                projected.push(
+                    self.anchor_at(ByteOffset::new(output_start), Affinity::Before)
+                        ..self.anchor_at(ByteOffset::new(output_end), Affinity::After),
+                );
+            }
+        }
+        projected
+    }
+
+    /// 全部折叠候选（组合坐标）；按输出位置排序并去重。
+    pub fn fold_ranges(&self) -> Arc<[Range<MultiBufferAnchor>]> {
+        let mut projected: Vec<Range<MultiBufferAnchor>> = Vec::new();
+        for source_index in 0..self.excerpt_sources.len() {
+            projected.extend(self.fold_ranges_for_source(source_index));
+        }
+        let mut keyed: Vec<((usize, usize), Range<MultiBufferAnchor>)> = projected
+            .into_iter()
+            .filter_map(|range| {
+                let start = self.resolve_anchor(&range.start)?;
+                let end = self.resolve_anchor(&range.end)?;
+                Some(((start.get(), end.get()), range))
+            })
+            .collect();
+        keyed.sort_unstable_by_key(|(key, _)| *key);
+        let projected: Vec<Range<MultiBufferAnchor>> =
+            keyed.into_iter().map(|(_, range)| range).collect();
+        let mut projected = projected;
+        projected.dedup();
+        Arc::from(projected)
+    }
+
     pub fn bracket_pairs_at(&self, offset: impl Into<MultiBufferOffset>) -> Vec<BracketPair> {
         let offset: MultiBufferOffset = offset.into();
         let offset = ByteOffset::new(offset.get());
@@ -2848,11 +2939,14 @@ impl From<Snapshot> for MultiBufferSnapshot {
             excerpts_cache: Arc::new(OnceLock::new()),
             path_keys: Arc::from([PathKey::min()]),
             excerpt_sources: Arc::from([ExcerptSourceSnapshot {
+                source_id: None,
+                path: PathKey::min(),
                 text,
                 syntax,
                 highlight_cache: Arc::new(HighlightCache::new()),
                 word_boundary: WordBoundaryPolicy::default(),
                 settings: Arc::new(LanguageSettings::default()),
+                fold_anchors: Arc::from([]),
                 capture_map: Arc::from([]),
             }]),
             capture_names,
@@ -3231,6 +3325,13 @@ impl MultiBuffer {
                 })
             })
             .collect::<Vec<_>>();
+        // 折叠候选在源级缓存：结构重建时复用同一源已缓存的锚点，只有 reparse 才重算。
+        let previous_fold_anchors = self
+            .state
+            .sources
+            .iter()
+            .map(|source| (source.entity.entity_id(), Arc::clone(&source.fold_anchors)))
+            .collect::<HashMap<_, _>>();
         let ExcerptState {
             source_subscriptions,
             source_event_subscriptions,
@@ -3265,6 +3366,10 @@ impl MultiBuffer {
                 Some(index) => index,
                 None => {
                     let snapshot = source.snapshot();
+                    let fold_anchors = previous_fold_anchors
+                        .get(&source_id)
+                        .cloned()
+                        .unwrap_or_else(|| source_fold_anchors(&snapshot));
                     next_sources.push(ExcerptSource {
                         entity: excerpt.source.clone(),
                         word_boundary: snapshot_word_boundary(&snapshot),
@@ -3272,6 +3377,7 @@ impl MultiBuffer {
                         text: snapshot.text,
                         syntax: snapshot.syntax,
                         highlight_cache: snapshot.highlight_cache,
+                        fold_anchors,
                         capture_map: Arc::from([]),
                     });
                     let index = next_sources.len() - 1;
@@ -3800,6 +3906,7 @@ impl MultiBuffer {
             .collect::<Vec<_>>();
         self.state.sources.extend(new_sources.iter().map(|source| {
             let snapshot = source.read(cx).snapshot();
+            let fold_anchors = source_fold_anchors(&snapshot);
             ExcerptSource {
                 entity: source.clone(),
                 word_boundary: snapshot_word_boundary(&snapshot),
@@ -3807,6 +3914,7 @@ impl MultiBuffer {
                 text: snapshot.text,
                 syntax: snapshot.syntax,
                 highlight_cache: snapshot.highlight_cache,
+                fold_anchors,
                 capture_map: Arc::from([]),
             }
         }));
@@ -4078,6 +4186,8 @@ impl MultiBuffer {
             excerpt_source.highlight_cache = Arc::clone(&snapshot.highlight_cache);
             excerpt_source.word_boundary = snapshot_word_boundary(&snapshot);
             excerpt_source.settings = snapshot_settings(&snapshot);
+            // 语法重解析是折叠候选唯一的变化来源：只重算该源，锚点跨后续编辑存活。
+            excerpt_source.fold_anchors = source_fold_anchors(&snapshot);
         }
         self.state.capture_names = rebuild_capture_table(&mut self.state.sources);
         cx.emit(MultiBufferEvent::Reparsed);
@@ -4593,7 +4703,7 @@ impl MultiBuffer {
         snapshot
     }
 
-    fn build_snapshot(&self, _cx: &App) -> MultiBufferSnapshot {
+    fn build_snapshot(&self, cx: &App) -> MultiBufferSnapshot {
         MultiBufferSnapshot {
             projection_version: self.state.projection_version,
             diff_transforms: self.state.diff_transforms.clone(),
@@ -4605,11 +4715,14 @@ impl MultiBuffer {
                     .sources
                     .iter()
                     .map(|source| ExcerptSourceSnapshot {
+                        source_id: Some(source.entity.entity_id()),
+                        path: PathKey::new(source.entity.read(cx).file_path().unwrap_or_default()),
                         text: source.text.clone(),
                         syntax: source.syntax.clone(),
                         highlight_cache: Arc::clone(&source.highlight_cache),
                         word_boundary: source.word_boundary,
                         settings: Arc::clone(&source.settings),
+                        fold_anchors: Arc::clone(&source.fold_anchors),
                         capture_map: Arc::clone(&source.capture_map),
                     })
                     .collect::<Vec<_>>(),
@@ -4842,77 +4955,6 @@ impl MultiBuffer {
             .entity
             .read(cx)
             .language_name()
-    }
-
-    /// 当前源折叠投影到组合坐标后的锚点范围。
-    ///
-    /// 源折叠端点先按当前源快照推进为源偏移，再投影到组合坐标并锚定为 MultiBufferAnchor；
-    /// 消费方无需跨版本补偿。
-    /// 一个源可能被展开的 diff hunk 切成多个 excerpt：
-    /// 只要这些 excerpt 在源内连续覆盖，折叠范围就跨它们投影到组合坐标（中间夹入的旧侧 excerpt 也落在折叠范围内）；
-    /// 跨过未展示内容或文件边界的折叠仍被丢弃。
-    pub fn fold_ranges(&self, cx: &App) -> Arc<[Range<MultiBufferAnchor>]> {
-        let snapshot = self.snapshot(cx);
-        let mut projected: Vec<Range<MultiBufferAnchor>> = Vec::new();
-        for (source_index, source) in self.state.sources.iter().enumerate() {
-            let (source_text, source_folds) = {
-                let snapshot = source.entity.read(cx).snapshot();
-                let folds = snapshot
-                    .syntax
-                    .fold_ranges(0..snapshot.text.len_bytes().get(), &snapshot.text);
-                (snapshot.text, folds)
-            };
-            if source_folds.is_empty() {
-                continue;
-            }
-            for fold in source_folds.iter() {
-                let (Ok(start), Ok(end)) = (
-                    fold.range.start.resolve_in(&source_text),
-                    fold.range.end.resolve_in(&source_text),
-                ) else {
-                    // 折叠候选代际已被 reset / 基线替换淘汰时不再投影。
-                    continue;
-                };
-                if start >= end {
-                    continue;
-                }
-                let path = PathKey::new(source.entity.read(cx).file_path().unwrap_or_default());
-                let Some((start_mapping, end_mapping)) = source_mapping_range(
-                    &self.state.excerpts,
-                    &self.state.diff_transforms,
-                    &path,
-                    source_index,
-                    start.get(),
-                    end.get(),
-                ) else {
-                    continue;
-                };
-                let output_start = start_mapping.output_range.start().get() + start.get()
-                    - start_mapping.source_range.start().get();
-                let output_end = end_mapping.output_range.start().get() + end.get()
-                    - end_mapping.source_range.start().get();
-                if output_start < output_end {
-                    projected.push(
-                        snapshot.anchor_at(ByteOffset::new(output_start), Affinity::Before)
-                            ..snapshot.anchor_at(ByteOffset::new(output_end), Affinity::After),
-                    );
-                }
-            }
-        }
-        // 先解析再排序：无法解析的候选直接丢弃，不用坐标 0 作为静默排序键。
-        let mut keyed: Vec<((usize, usize), Range<MultiBufferAnchor>)> = projected
-            .into_iter()
-            .filter_map(|range| {
-                let start = snapshot.resolve_anchor(&range.start)?;
-                let end = snapshot.resolve_anchor(&range.end)?;
-                Some(((start.get(), end.get()), range))
-            })
-            .collect();
-        keyed.sort_unstable_by_key(|(key, _)| *key);
-        let mut projected: Vec<Range<MultiBufferAnchor>> =
-            keyed.into_iter().map(|(_, range)| range).collect();
-        projected.dedup();
-        Arc::from(projected)
     }
 
     /// 定位组合偏移所属的映射；最后一个映射的结束偏移视为命中（光标位于文档末尾）。

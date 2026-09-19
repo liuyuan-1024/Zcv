@@ -948,10 +948,11 @@ fn span_edit(old_spans: &[Range<usize>], new_spans: &[Range<usize>]) -> Option<F
     let hidden_before = hidden_lines(&old_spans[..prefix]);
     // 公共前缀在旧/新拓扑中投影行数相同：区间起点在两种拓扑里落在同一 tab 行。
     let start = region_start - hidden_before + prefix;
-    // 一个隐藏跨度贡献 1 个投影行（而非 0）：投影行数 = 行数 - 隐藏行数 + 跨度数。
+    // 折叠段 output_rows = 0：隐藏行并入其 anchor 行，anchor 行可见且已计入 visible，
+    // 因此投影行数 = 行数 − 隐藏行数，不按跨度数额外加行。
     let visible = region_end - region_start;
-    let old_end = start + visible - hidden_lines(old_middle) + old_middle.len();
-    let new_end = start + visible - hidden_lines(new_middle) + new_middle.len();
+    let old_end = start + visible - hidden_lines(old_middle);
+    let new_end = start + visible - hidden_lines(new_middle);
     Some(FoldEdit {
         old: ProjectedLineIndex::new(start)..ProjectedLineIndex::new(old_end),
         new: ProjectedLineIndex::new(start)..ProjectedLineIndex::new(new_end),
@@ -1180,8 +1181,9 @@ mod tests {
         let edit = &edits[0];
         assert!(edit.is_structural());
         // 只覆盖被折叠的 tab 行，折叠点前后的可见行保留原变换。
+        // 折叠段不产生投影行：被隐藏的两行整段移除，anchor 行不在编辑区间内。
         assert_eq!(edit.old_rows(), 2..4);
-        assert_eq!(edit.new_rows(), 2..3);
+        assert_eq!(edit.new_rows(), 2..2);
     }
 
     #[test]
@@ -1198,7 +1200,8 @@ mod tests {
         assert_eq!(after.line_count(), 7);
         let edit = &edits[0];
         assert!(edit.is_structural());
-        assert_eq!(edit.old_rows(), 2..3);
+        // 折叠段不产生投影行：展开恢复的两行整段插入，anchor 行不在编辑区间内。
+        assert_eq!(edit.old_rows(), 2..2);
         assert_eq!(edit.new_rows(), 2..4);
     }
 

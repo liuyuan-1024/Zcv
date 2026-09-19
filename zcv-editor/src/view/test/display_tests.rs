@@ -477,7 +477,12 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
     cx.run_until_parked();
     // 语法解析完成后语言层提供两个折叠范围（fn main 与 fn other 的块体）。
     let fold_ranges = cx.read_entity(&editor, |editor, _| {
-        editor.display_snapshot().fold_creases().to_vec()
+        editor
+            .display_snapshot()
+            .crease_snapshot()
+            .creases()
+            .map(|crease| crease.range().clone())
+            .collect::<Vec<_>>()
     });
     assert_eq!(fold_ranges.len(), 2);
 
@@ -651,8 +656,9 @@ fn expanding_diff_hunk_keeps_crease_of_enclosing_fold(cx: &mut TestAppContext) {
     assert_eq!(
         cx.read_entity(&editor, |editor, _| editor
             .display_snapshot()
-            .fold_creases()
-            .len()),
+            .crease_snapshot()
+            .creases()
+            .count()),
         1,
         "fn main 展开前应有折叠范围"
     );
@@ -660,7 +666,12 @@ fn expanding_diff_hunk_keeps_crease_of_enclosing_fold(cx: &mut TestAppContext) {
     editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
     cx.run_until_parked();
     let after = cx.read_entity(&editor, |editor, _| {
-        editor.display_snapshot().fold_creases().to_vec()
+        editor
+            .display_snapshot()
+            .crease_snapshot()
+            .creases()
+            .map(|crease| crease.range().clone())
+            .collect::<Vec<_>>()
     });
     assert_eq!(
         after.len(),
@@ -701,7 +712,12 @@ fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
 
     // 编辑后语言层折叠范围仍可用（插值树版本与 buffer 同步）。
     let fold_ranges = cx.read_entity(&editor, |editor, _| {
-        editor.display_snapshot().fold_creases().to_vec()
+        editor
+            .display_snapshot()
+            .crease_snapshot()
+            .creases()
+            .map(|crease| crease.range().clone())
+            .collect::<Vec<_>>()
     });
     assert_eq!(fold_ranges.len(), 2, "编辑后折叠范围应保持两个");
 
@@ -907,7 +923,11 @@ fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppCo
             4,
             "编辑后折叠应保持；折叠入口={:?}，折叠范围数={}",
             editor.display_snapshot().fold_anchor_lines(),
-            editor.display_snapshot().fold_creases().len()
+            editor
+                .display_snapshot()
+                .crease_snapshot()
+                .creases()
+                .count()
         );
     });
 }
@@ -2331,5 +2351,40 @@ fn placeholder_snapshot_requires_empty_text(cx: &mut TestAppContext) {
             .placeholder_snapshot_if_empty(cx))
             .is_none(),
         "非空文本不得返回 placeholder 快照"
+    );
+}
+
+#[gpui::test]
+fn folding_a_section_with_soft_wrap_enabled_keeps_wrap_map_invariant(cx: &mut TestAppContext) {
+    // 软换行先开启、再折叠：结构编辑必须让 Wrap 变换树的 input 行数等于折叠后的 tab 行数。
+    let text = "# 架构决策记录\n\n第一段正文。\n\n第二段正文。\n\n第三段正文。\n";
+    let buffer = Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("Buffer");
+    let source = cx.new(|cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(PathBuf::from("docs/架构决策记录.md")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    });
+    let (editor, cx) = cx.add_window_view({
+        let source = source.clone();
+        move |_, cx| Editor::from_language_buffer(source, EditorMode::Full, cx)
+    });
+    cx.run_until_parked();
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx);
+    });
+    cx.run_until_parked();
+    cx.update_entity(&editor, |editor, cx| {
+        editor.toggle_fold_at_line(Line::ZERO, cx);
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.read_entity(&editor, |editor, _| editor
+            .display_snapshot()
+            .fold_anchor_lines()
+            .contains(&Line::ZERO)),
+        "折叠入口行应保持折叠"
     );
 }

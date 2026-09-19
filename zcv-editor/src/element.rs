@@ -25,11 +25,11 @@ use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon, drag_autoscroll_delta};
 use crate::selection::SelectionSet;
 
 use super::display_map::{
-    DiffDecorationSnapshot, DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint,
-    DisplayRange, DisplayRow, DisplayRowEvent, DisplaySnapshot, EditorHunkMarkerKind,
-    FILE_HEADER_HEIGHT, FoldRowSegment, HighlightStyles, HunkControlTarget, RenderedWhitespace,
-    SearchDecorationSnapshot, StickyBufferHeader, WrapRowInfo, byte_for_display_column,
-    chunk_to_run, diff_row_for_row, display_column_for_byte, is_hollow_hunk,
+    DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint, DisplayRange, DisplayRow,
+    DisplayRowEvent, DisplaySnapshot, EditorHunkMarkerKind, FILE_HEADER_HEIGHT, FoldRowSegment,
+    HighlightStyles, HunkControlTarget, RenderedWhitespace, SearchDecorationSnapshot,
+    StickyBufferHeader, WrapRowInfo, byte_for_display_column, chunk_to_run, diff_row_for_row,
+    display_column_for_byte, is_hollow_hunk,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
@@ -1037,45 +1037,25 @@ fn sticky_buffer_header_origin_y(
     }
 }
 
-/// 滚动轴布局：thumb 几何 + diff marker（折叠的删除块行内无标记，滚动条 marker 仍指示删除位置）。
-struct ScrollbarLayoutInput<'a> {
-    mode: &'a EditorMode,
-    scrollbar_bounds: Bounds<Pixels>,
-    diff_decorations: &'a DiffDecorationSnapshot,
-    search_decorations: Option<&'a SearchDecorationSnapshot>,
-    line_height: Pixels,
-}
-
+/// 滚动轴布局：thumb 几何 + editor 缓存的标记分组。
 fn layout_scrollbar(
-    input: ScrollbarLayoutInput<'_>,
+    mode: &EditorMode,
+    scrollbar_bounds: Bounds<Pixels>,
     editor: &Entity<Editor>,
     cx: &App,
     window: &mut Window,
 ) -> Option<ScrollbarLayout> {
-    (*input.mode == EditorMode::Full).then(|| {
+    (*mode == EditorMode::Full).then(|| {
         let editor = editor.read(cx);
         let mut scrollbar_layout = ScrollbarLayout::new(
-            input.scrollbar_bounds,
+            scrollbar_bounds,
             editor.max_scroll_top(),
             editor.scroll_top(),
             editor.scrollbar_thumb_state(),
             window,
         );
-        // 行范围在 diff 装饰快照建立时已经派生；滚动帧只把这些范围换算为当前滚动轴几何。
-        // scroll_per_pixel 取 layout 自身算好的值，与 thumb 换算严格一致。
-        let diff_markers = input.diff_decorations.scrollbar_markers(
-            scrollbar_layout.hitbox.bounds,
-            scrollbar_layout.scroll_per_pixel,
-            input.line_height,
-        );
-        let search_markers = input.search_decorations.map(|decorations| {
-            decorations.scrollbar_markers(
-                scrollbar_layout.hitbox.bounds,
-                scrollbar_layout.scroll_per_pixel,
-                input.line_height,
-            )
-        });
-        scrollbar_layout.marker_groups = [Some(diff_markers), search_markers];
+        // 标记几何由 Editor 按显示版本与轨道几何在后台计算并缓存。
+        scrollbar_layout.marker_groups = editor.scrollbar_marker_groups();
         scrollbar_layout
     })
 }
@@ -1127,28 +1107,21 @@ impl Element for EditorElement {
         let text_style = window.text_style();
         let font = text_style.font();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
-        // 用上一帧的 snapshot 计算文本区域宽度；
+        // 用上一帧的渲染快照计算文本区域宽度；
         // wrap 生效后行数变化会让 gutter 位数在下一帧自动修正，不影响正确性。
-        let (
-            display_snapshot,
-            presentation,
-            selections,
-            shows_gutter,
-            soft_wrap,
-            mode,
-            preferred_line_length,
-        ) = {
+        let (mut render_snapshot, presentation, selections) = {
             let editor = self.editor.read(cx);
             (
-                editor.display_snapshot(),
+                editor.snapshot(cx),
                 editor.presentation(),
                 editor.selections(),
-                editor.shows_gutter(),
-                editor.soft_wrap(),
-                editor.mode().clone(),
-                editor.preferred_line_length(),
             )
         };
+        let display_snapshot = render_snapshot.display_snapshot().clone();
+        let shows_gutter = render_snapshot.shows_gutter();
+        let soft_wrap = render_snapshot.soft_wrap();
+        let mode = render_snapshot.mode().clone();
+        let preferred_line_length = render_snapshot.preferred_line_length();
         // 匹配括号按 (光标, buffer 版本, 语法版本) 缓存，滚动/纯重绘帧不重跑 tree-sitter 查询。
         // 在 read 块之后执行：缓存写入需要可变借用，read 块内的引用类型已在块内克隆。
         let matching_bracket_pair = self
@@ -1208,10 +1181,11 @@ impl Element for EditorElement {
             preferred_line_length,
             em_advance,
         );
-        // 设置换行宽度（变化才重排），随后读取最新 snapshot 供本帧布局使用。
+        // 设置换行宽度（变化才重排），随后从最新渲染快照读取显示拓扑供本帧布局使用。
         let display_snapshot = self.editor.update(cx, |editor, cx| {
             editor.set_wrap_width(wrap_width, font.clone(), font_size, cx);
-            editor.display_snapshot()
+            render_snapshot = editor.snapshot(cx);
+            render_snapshot.display_snapshot().clone()
         });
         // 软换行模式下显示行不再由 TabMap 测量（水平滚动收敛到视口宽度）。
         if !display_snapshot.is_wrapped() {
@@ -1241,8 +1215,11 @@ impl Element for EditorElement {
             editor.apply_pending_autoscroll_vertical();
         });
         let (start_row, scroll_offset) = {
-            let editor = self.editor.read(cx);
-            (editor.scroll_anchor().row(), editor.scroll_offset())
+            let render_snapshot = self.editor.read(cx).snapshot(cx);
+            (
+                render_snapshot.scroll_anchor().row(),
+                render_snapshot.scroll_offset(),
+            )
         };
         let visible_rows = visible_display_row_range(
             start_row,
@@ -1253,7 +1230,7 @@ impl Element for EditorElement {
         );
         // placeholder 也经同一显示快照管线；本帧先由显示游标取得源范围，
         // 随后重新从同一快照起点创建布局游标，两个消费方都按顺序推进。
-        let placeholder = self.editor.read(cx).placeholder_snapshot_if_empty(cx);
+        let placeholder = render_snapshot.placeholder_display_snapshot().cloned();
         let layout_snapshot = placeholder.as_ref().unwrap_or(&display_snapshot);
         let layout_visible_rows = visible_display_row_range(
             start_row,
@@ -1460,18 +1437,19 @@ impl Element for EditorElement {
             window,
             cx,
         );
-        let scrollbar = layout_scrollbar(
-            ScrollbarLayoutInput {
-                mode: &mode,
-                scrollbar_bounds,
-                diff_decorations: &diff_decorations,
-                search_decorations: search_decorations.as_deref(),
-                line_height,
-            },
-            &self.editor,
-            cx,
-            window,
-        );
+        let scrollbar = layout_scrollbar(&mode, scrollbar_bounds, &self.editor, cx, window);
+        // 标记缓存随显示版本失效；这里按当前轨道几何触发后台刷新，渲染帧只读缓存。
+        if let Some(scrollbar) = &scrollbar {
+            self.editor.update(cx, |editor, cx| {
+                editor.refresh_scrollbar_markers(
+                    display_snapshot.clone(),
+                    scrollbar.hitbox.bounds,
+                    scrollbar.scroll_per_pixel,
+                    line_height,
+                    cx,
+                );
+            });
+        }
 
         // 整行差异背景范围（内容区与 gutter 共用；未展开的修改/删除 hunk 只由竖条/三角提示）。
         let expanded_rows = Arc::new(hunk_render.expanded_rows.clone());
@@ -3336,6 +3314,8 @@ fn selection_autoscroll_delta(
 
 #[cfg(test)]
 mod tests {
+    use crate::display_map::DiffDecorationSnapshot;
+
     use super::*;
 
     #[cfg(test)]
@@ -3439,58 +3419,61 @@ mod tests {
     }
 
     #[gpui::test]
-    fn search_marker_rows_use_combined_document_coordinates(cx: &mut TestAppContext) {
-        let source_buffer =
-            Buffer::from_text("first\n项目\nlast".to_owned(), BufferConfig::default())
-                .expect("应创建组合搜索 marker 测试 Buffer");
-        let source = cx.new(|cx| {
+    fn search_scrollbar_markers_only_render_for_singleton_documents(cx: &mut TestAppContext) {
+        // 对齐 zed：搜索命中的滚动轴标记只服务单文档编辑器；
+        // 组合文档不投影整份命中，避免结果很多时每次重建都做整份显示行投影。
+        let text = "first\n项目\nlast";
+        let singleton_source = cx.new(|cx| {
+            let buffer = Buffer::from_text(text.to_owned(), BufferConfig::default())
+                .expect("应创建单文档搜索 marker 测试 Buffer");
             LanguageBuffer::new(
-                source_buffer,
+                buffer,
                 None,
                 std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
                 cx,
             )
         });
-        let combined = cx.new(MultiBuffer::empty);
-        let first_match =
-            MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(5)).unwrap();
-        let second_match =
-            MultiBufferRange::new(MultiBufferOffset::new(6), MultiBufferOffset::new(12)).unwrap();
-        combined.update(cx, |combined, cx| {
-            combined.set_excerpts_for_path(
-                vec![
-                    ExcerptRange::new(
-                        source.clone(),
-                        MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(5))
-                            .unwrap()
-                            .into(),
-                        vec![first_match.into()],
-                    ),
-                    ExcerptRange::new(
-                        source,
-                        MultiBufferRange::new(
-                            MultiBufferOffset::new(6),
-                            MultiBufferOffset::new(12),
-                        )
-                        .unwrap()
-                        .into(),
-                        vec![second_match.into()],
-                    ),
-                ],
+        let singleton_buffer = cx.new(|cx| MultiBuffer::singleton(singleton_source, cx));
+        let singleton_editor = cx.new(|cx| Editor::for_multi_buffer(singleton_buffer, cx));
+
+        let combined_source = cx.new(|cx| {
+            let buffer = Buffer::from_text(text.to_owned(), BufferConfig::default())
+                .expect("应创建组合文档搜索 marker 测试 Buffer");
+            LanguageBuffer::new(
+                buffer,
+                None,
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        });
+        let combined_buffer = cx.new(MultiBuffer::empty);
+        let source_len = cx.read_entity(&combined_source, |source, _| {
+            source.text_snapshot().len_bytes()
+        });
+        combined_buffer.update(cx, |buffer, cx| {
+            buffer.set_excerpts_for_path(
+                vec![ExcerptRange::new(
+                    combined_source.clone(),
+                    zcv_text::TextRange::new(zcv_text::ByteOffset::ZERO, source_len)
+                        .expect("整文件范围应合法"),
+                    Vec::new(),
+                )],
                 cx,
             );
         });
-        let (snapshot, ranges) = cx.read_entity(&combined, |combined, cx| {
-            let snapshot = combined.snapshot(cx);
-            (snapshot, combined.match_ranges().to_vec())
-        });
-        let display = project_display_snapshot(cx, snapshot);
-        let decorations = SearchDecorationSnapshot::for_test(&display, &ranges, 0);
+        let combined_editor = cx.new(|cx| Editor::for_multi_buffer(combined_buffer, cx));
 
-        assert_eq!(
-            decorations.projected_rows_for_test(),
-            vec![2..3, 4..5],
-            "组合文档的文件头与中文命中都必须按组合投影定位"
+        assert!(
+            cx.read_entity(&singleton_editor, |editor, cx| {
+                editor.shows_search_scrollbar_markers(cx)
+            }),
+            "单文档编辑器应渲染搜索 marker"
+        );
+        assert!(
+            !cx.read_entity(&combined_editor, |editor, cx| {
+                editor.shows_search_scrollbar_markers(cx)
+            }),
+            "组合文档不应投影搜索 marker"
         );
     }
 

@@ -53,12 +53,24 @@ pub(crate) struct EditorSearch {
     query: SearchQuery,
     result: Option<SearchResultKind>,
     matches: Vec<SearchMatchAnchor>,
+    /// `matches` 的字节范围派生缓存；未变化时复用同一 `Arc`，
+    /// 让显示链按身份判断搜索装饰输入是否需要重建。
+    ranges: Arc<[MultiBufferRange]>,
     active_index: Option<usize>,
 }
 
 impl EditorSearch {
     fn matches(&self) -> &[SearchMatchAnchor] {
         &self.matches
+    }
+
+    /// 在 `matches` 变化后重建字节范围派生缓存。
+    fn rebuild_ranges(&mut self) {
+        self.ranges = self
+            .matches
+            .iter()
+            .map(SearchMatchAnchor::range)
+            .collect::<Arc<[_]>>();
     }
 
     /// 把当前匹配锚点解析为显示链的搜索装饰输入。
@@ -68,13 +80,8 @@ impl EditorSearch {
         if self.matches.is_empty() {
             return None;
         }
-        let ranges = self
-            .matches
-            .iter()
-            .map(SearchMatchAnchor::range)
-            .collect::<Arc<[_]>>();
         Some(SearchDecorationInput::new(
-            ranges,
+            Arc::clone(&self.ranges),
             self.active_index.unwrap_or(0),
         ))
     }
@@ -285,6 +292,7 @@ impl Editor {
                     .map_through_position_map(new_version, position_map)
                     .value();
         }
+        search.rebuild_ranges();
     }
 
     /// 搜索结果是否已偏离当前投影版本（过期校验在搜索绑定的权威文档侧完成）。
@@ -315,11 +323,16 @@ impl Editor {
             .into_iter()
             .map(|range| SearchMatchAnchor::from_range(version, range))
             .collect::<Vec<_>>();
+        let ranges = matches
+            .iter()
+            .map(SearchMatchAnchor::range)
+            .collect::<Arc<[_]>>();
         let active_index = (!matches.is_empty()).then_some(0);
         self.search = Some(EditorSearch {
             query,
             result: Some(SearchResultKind::External { version }),
             matches,
+            ranges,
             active_index,
         });
         self.advance_snapshots(cx);
@@ -371,6 +384,7 @@ impl Editor {
                 .into_iter()
                 .map(|range| SearchMatchAnchor::from_range(version, range)),
         );
+        search.rebuild_ranges();
         self.advance_snapshots(cx);
         cx.notify();
         cx.emit(SearchEvent::MatchesInvalidated);
@@ -402,11 +416,16 @@ impl Editor {
                     search_match.range().into(),
                 )
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let ranges = matches
+            .iter()
+            .map(SearchMatchAnchor::range)
+            .collect::<Arc<[_]>>();
         let search = EditorSearch {
             query: query.clone(),
             result: Some(SearchResultKind::Query(result)),
             matches,
+            ranges,
             active_index: None,
         };
         let search = if search.matches().is_empty() {

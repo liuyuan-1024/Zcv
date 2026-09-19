@@ -43,7 +43,7 @@ impl Editor {
         self.composition = None;
         let before_selections = self.resolved_selections();
         let targets = {
-            let buffer = self.snapshot.buffer_snapshot();
+            let buffer = self.display_snapshot.buffer_snapshot();
             before_selections
                 .as_slice()
                 .iter()
@@ -107,7 +107,7 @@ impl Editor {
         selections: &SelectionSet,
         caret_motion: Option<(MovementDirection, MovementUnit)>,
     ) -> TextResult<SelectionSet> {
-        let buffer = self.snapshot.buffer_snapshot();
+        let buffer = self.display_snapshot.buffer_snapshot();
         let mut targets = Vec::new();
         for selection in selections.as_slice() {
             if !selection.is_caret() {
@@ -150,13 +150,12 @@ impl Editor {
                 .iter()
                 .map(|selection| {
                     let tab = self
-                        .snapshot
+                        .display_snapshot
                         .buffer_snapshot()
                         .language_settings_at(selection.head())
                         .tab;
                     let text: Arc<str> = if tab.insert_spaces {
                         let column = self
-                            .snapshot
                             .display_snapshot
                             .offset_to_display_point(selection.head())
                             .map_err(|error| TextError::InvariantViolation {
@@ -182,7 +181,7 @@ impl Editor {
                             .line_start_byte(line)
                             .expect("已验证逻辑行必须有行首");
                         let tab = self
-                            .snapshot
+                            .display_snapshot
                             .buffer_snapshot()
                             .language_settings_at(offset)
                             .tab;
@@ -220,7 +219,7 @@ impl Editor {
                 .filter_map(|line| {
                     let offset = snapshot.line_start_byte(line).unwrap_or_default();
                     let indent_width = self
-                        .snapshot
+                        .display_snapshot
                         .buffer_snapshot()
                         .language_settings_at(offset)
                         .tab
@@ -252,7 +251,7 @@ impl Editor {
         self.composition = None;
         self.advance_snapshots(cx);
         let before = self.resolved_selections().normalized();
-        let snapshot = self.snapshot.buffer_snapshot().clone();
+        let snapshot = self.display_snapshot.buffer_snapshot().clone();
         // 逐选区计算插入文本与光标落点：
         // 光标处于声明了 newline 的括号对之间时，闭合符前额外补一个基准缩进空行，与自动缩进共用同一回车路径）。
         let mut trailing_lens = Vec::new();
@@ -262,11 +261,11 @@ impl Editor {
             .map(|selection| {
                 let offset = selection.start();
                 let suggestion = self
-                    .snapshot
+                    .display_snapshot
                     .buffer_snapshot()
                     .suggested_newline_indent(offset)?;
                 let tab = self
-                    .snapshot
+                    .display_snapshot
                     .buffer_snapshot()
                     .language_settings_at(offset)
                     .tab;
@@ -357,7 +356,7 @@ impl Editor {
     }
 
     fn selected_text(&self) -> Option<String> {
-        let snapshot = self.snapshot.buffer_snapshot();
+        let snapshot = self.display_snapshot.buffer_snapshot();
         let mut parts = Vec::new();
         for selection in self.resolved_selections().as_slice() {
             if selection.is_caret() {

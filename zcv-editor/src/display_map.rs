@@ -29,6 +29,8 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::scrollbar::{ScrollbarMarker, marker_geometry};
+
 use block_map::BlockSnapshot;
 pub(crate) use block_map::{
     BlockRows, DisplayBlock, DisplayBlockKind, FILE_HEADER_HEIGHT, StickyBufferHeader,
@@ -53,7 +55,7 @@ use edit::ProjectionEdit;
 use error::DisplayMapResult;
 pub(crate) use fold_map::{FoldBias, FoldRowSegment, ProjectedLineIndex};
 use fold_map::{FoldMap, FoldSnapshot, LogicalProjection};
-use gpui::{App, AppContext as _, Context, Entity, EventEmitter, HighlightStyle};
+use gpui::{App, AppContext as _, Bounds, Context, Entity, EventEmitter, HighlightStyle, Pixels};
 use tab_map::TabMap;
 pub(crate) use tab_map::{byte_for_display_column, display_column_for_byte};
 pub(crate) use wrap_map::WrapRowKind;
@@ -199,6 +201,43 @@ impl DisplaySnapshot {
     /// 搜索命中装饰；无搜索时为空。
     pub(crate) fn search_decorations(&self) -> Option<Arc<SearchDecorationSnapshot>> {
         self.decorations.search()
+    }
+
+    /// 滚动条慢标记的轨道几何；由 Editor 在后台按显示版本计算并缓存。
+    ///
+    /// 组合文档只计算 diff 标记，搜索命中标记仅单文档编辑器计算（对齐 Zed）。
+    pub(crate) fn scrollbar_marker_groups(
+        &self,
+        track_bounds: Bounds<Pixels>,
+        scroll_per_pixel: f32,
+        line_height: Pixels,
+        is_singleton: bool,
+    ) -> [Option<Arc<[ScrollbarMarker]>>; 2] {
+        let diff_markers = Arc::from(
+            marker_geometry(
+                self.diff_decorations().scrollbar_marker_ranges(),
+                track_bounds,
+                scroll_per_pixel,
+                line_height,
+            )
+            .into_boxed_slice(),
+        );
+        let search_markers = is_singleton
+            .then(|| {
+                self.search_decorations().map(|search| {
+                    Arc::from(
+                        marker_geometry(
+                            search.scrollbar_marker_ranges(self),
+                            track_bounds,
+                            scroll_per_pixel,
+                            line_height,
+                        )
+                        .into_boxed_slice(),
+                    )
+                })
+            })
+            .flatten();
+        [Some(diff_markers), search_markers]
     }
 
     /// 折叠候选（crease）索引；随组合元数据版本重建，渲染按可见行范围查询。
@@ -500,18 +539,39 @@ struct SourceCreases {
     ids: Vec<CreaseId>,
 }
 
+/// 影响显示快照的全部只读输入摘要。
+///
+/// 快速路径只比较它：文本版本、元数据版本与 capture 表。
+/// 折叠候选与装饰输入分别由元数据事件和 rebuild_decorations 显式驱动，不进入本摘要。
+#[derive(PartialEq)]
+struct DisplaySyncInputs {
+    version: zcv_text::BufferVersion,
+    metadata_version: u64,
+    capture_names: Arc<[Arc<str>]>,
+}
+
+impl DisplaySyncInputs {
+    fn of(snapshot: &MultiBufferSnapshot) -> Self {
+        Self {
+            version: snapshot.version(),
+            metadata_version: snapshot.metadata_version(),
+            capture_names: snapshot.capture_names(),
+        }
+    }
+}
+
 fn default_tab_width() -> NonZeroUsize {
     NonZeroUsize::new(4).expect("默认 tab 宽度必须大于 0")
 }
 
-/// 两份搜索装饰输入是否等价：范围内容相同且活动序号相同。
+/// 两份搜索装饰输入是否等价：范围句柄相同且活动序号相同。
 ///
-/// 每次 advance_snapshots 都会重新产出范围输入，若只比较 Arc 身份会导致
-/// 每次推进都无谓重建整套装饰；这里按内容比较，未变化时保留现有投影。
+/// 命中范围由 `Editor` 持有并在未变化时复用同一 `Arc`；
+/// 这里用身份比较避免每次推进都逐项比较整份命中。
 fn search_input_eq(a: Option<&SearchDecorationInput>, b: Option<&SearchDecorationInput>) -> bool {
     match (a, b) {
         (None, None) => true,
-        (Some(a), Some(b)) => a.active_index == b.active_index && a.ranges == b.ranges,
+        (Some(a), Some(b)) => a.active_index == b.active_index && Arc::ptr_eq(&a.ranges, &b.ranges),
         _ => false,
     }
 }
@@ -848,10 +908,9 @@ impl DisplayMap {
         let current_snapshot = current_snapshot.into();
         let old_snapshot = self.fold_map.snapshot().buffer_snapshot().clone();
         // 无文本、无语法、无 capture 变化且没有未落地换行重排时不做推进，避免滚动帧重复重建显示拓扑。
+        // 影响显示快照的只读输入收敛为一个摘要；后续新增输入必须并入 DisplaySyncInputs。
         if batch.is_empty()
-            && old_snapshot.version() == current_snapshot.version()
-            && old_snapshot.metadata_version() == current_snapshot.metadata_version()
-            && old_snapshot.capture_names().as_ref() == current_snapshot.capture_names().as_ref()
+            && DisplaySyncInputs::of(&old_snapshot) == DisplaySyncInputs::of(&current_snapshot)
             && !self.wrap_map.read(cx).is_rewrapping()
         {
             return;

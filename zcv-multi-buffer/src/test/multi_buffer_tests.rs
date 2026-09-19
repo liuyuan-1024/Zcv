@@ -41,6 +41,13 @@ fn group_excerpts_by_path(excerpts: Vec<ExcerptRange>, cx: &App) -> Vec<Vec<Exce
     groups.into_iter().map(|(_, group)| group).collect()
 }
 
+/// 组合文档的全部折叠候选（按源拼接）；仅测试使用，生产显示层按可见范围查询。
+fn projected_fold_ranges(snapshot: &MultiBufferSnapshot) -> Vec<Range<MultiBufferAnchor>> {
+    (0..snapshot.fold_sources().count())
+        .flat_map(|index| snapshot.fold_ranges_for_source(index))
+        .collect()
+}
+
 /// 测试辅助：把折叠锚点按源快照解析为字节范围。
 fn resolve_folds(
     folds: &[zcv_language::FoldRange],
@@ -1431,7 +1438,9 @@ fn singleton_source_preserves_rust_fold_ranges(cx: &mut TestAppContext) {
         let snapshot = buffer.text_snapshot();
         resolve_folds(&source_folds, &snapshot)
     });
-    let projected_folds = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx).fold_ranges());
+    let projected_folds = cx.read_entity(&combined, |buffer, cx| {
+        projected_fold_ranges(&buffer.snapshot(cx))
+    });
     let projected_offsets = cx.read_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         projected_folds
@@ -1581,9 +1590,7 @@ fn excerpt_projects_contained_fold_range_to_output_coordinates(cx: &mut TestAppC
 
     let projected = cx.read_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
-        buffer
-            .snapshot(cx)
-            .fold_ranges()
+        projected_fold_ranges(&snapshot)
             .iter()
             .map(|range| {
                 snapshot
@@ -1654,9 +1661,7 @@ fn fold_projection_accounts_for_nonzero_output_start(cx: &mut TestAppContext) {
             .start()
             .get();
         assert!(output_start > 0, "第二个 excerpt 的组合起点必须非零");
-        let projected = buffer
-            .snapshot(cx)
-            .fold_ranges()
+        let projected = projected_fold_ranges(&snapshot)
             .iter()
             .map(|range| {
                 snapshot
@@ -3170,4 +3175,29 @@ fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &m
             "上下文\n旧内容\n可写新内容\n之后\n"
         );
     });
+}
+
+/// 文档起点的零长度 excerpt（空文件）必须被 excerpts() 访问；
+/// 统一用 Bias::Left 起始遍历，避免跳过零长度边界节点。
+#[gpui::test]
+fn zero_length_excerpt_at_document_start_is_visited(cx: &mut TestAppContext) {
+    let empty = singleton("src/empty.rs", "", cx);
+    let other = singleton("src/other.rs", "x\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(empty, 0..1, cx)], cx);
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(other, 0..1, cx)], cx);
+    });
+
+    let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    let paths = snapshot
+        .excerpts()
+        .map(|excerpt| excerpt.path().to_path_buf())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths,
+        vec![PathBuf::from("src/empty.rs"), PathBuf::from("src/other.rs")],
+        "零长度 excerpt 位于文档起点时不能被跳过"
+    );
+    assert_eq!(snapshot.excerpts_arc().len(), 2);
 }

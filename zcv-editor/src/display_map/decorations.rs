@@ -11,14 +11,14 @@
 use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
 
 use std::ops::Range;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, OnceLock};
 
-use gpui::{Bounds, Pixels, SharedString};
+use gpui::SharedString;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
 use zcv_multi_buffer::DisplayHunk;
 use zcv_text::{ByteOffset, Line, TextRange};
 
-use crate::scrollbar::{ScrollbarMarker, ScrollbarMarkerKind, marker_geometry};
+use crate::scrollbar::ScrollbarMarkerKind;
 
 use super::{DisplayRange, DisplaySnapshot};
 
@@ -169,7 +169,6 @@ impl DisplayDecorations {
         ));
         let search = search.map(|input| {
             Arc::new(SearchDecorationSnapshot::from_ranges(
-                snapshot,
                 Arc::clone(&input.ranges),
                 input.active_index,
             ))
@@ -217,19 +216,7 @@ pub(crate) struct DiffDecorationSnapshot {
     expanded: Vec<bool>,
     projected_word_diff_highlights: Vec<(DiffHunkKind, DisplayRange)>,
     scrollbar_diff_markers: Vec<(Range<usize>, DiffHunkKind)>,
-    scrollbar_markers: ScrollbarMarkerCache,
 }
-
-#[derive(Clone, Copy, PartialEq)]
-struct ScrollbarMarkerGeometryKey {
-    track_top: f32,
-    track_height: f32,
-    scroll_per_pixel: f32,
-    line_height: f32,
-}
-
-type ScrollbarMarkerCache =
-    Arc<Mutex<Option<(ScrollbarMarkerGeometryKey, Arc<[ScrollbarMarker]>)>>>;
 
 impl DiffDecorationSnapshot {
     fn empty() -> Self {
@@ -248,7 +235,6 @@ impl DiffDecorationSnapshot {
             expanded: Vec::new(),
             projected_word_diff_highlights: Vec::new(),
             scrollbar_diff_markers: Vec::new(),
-            scrollbar_markers: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -310,7 +296,6 @@ impl DiffDecorationSnapshot {
             expanded,
             projected_word_diff_highlights,
             scrollbar_diff_markers,
-            scrollbar_markers: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -369,28 +354,10 @@ impl DiffDecorationSnapshot {
         self.expanded.get(index).copied().unwrap_or(false)
     }
 
-    pub(crate) fn scrollbar_markers(
+    /// 滚动条 diff 标记的显示行范围；几何换算由 Editor 的后台任务完成。
+    pub(crate) fn scrollbar_marker_ranges(
         &self,
-        track_bounds: Bounds<Pixels>,
-        scroll_per_pixel: f32,
-        line_height: Pixels,
-    ) -> Arc<[ScrollbarMarker]> {
-        let key = ScrollbarMarkerGeometryKey {
-            track_top: f32::from(track_bounds.top()),
-            track_height: f32::from(track_bounds.size.height),
-            scroll_per_pixel,
-            line_height: f32::from(line_height),
-        };
-        let mut cache = self
-            .scrollbar_markers
-            .lock()
-            .expect("滚动栏差异标记缓存锁不应中毒");
-        if let Some((cached_key, markers)) = &*cache
-            && *cached_key == key
-        {
-            return Arc::clone(markers);
-        }
-
+    ) -> impl Iterator<Item = (Range<usize>, ScrollbarMarkerKind)> + '_ {
         let diff_markers = self.scrollbar_diff_markers.iter().map(|(rows, kind)| {
             (
                 rows.clone(),
@@ -402,17 +369,7 @@ impl DiffDecorationSnapshot {
             .editor_hunk_parts
             .iter()
             .map(|(rows, _, marker)| (rows.clone(), ScrollbarMarkerKind::Git(*marker)));
-        let markers = Arc::from(
-            marker_geometry(
-                diff_markers.chain(editor_hunk_markers),
-                track_bounds,
-                scroll_per_pixel,
-                line_height,
-            )
-            .into_boxed_slice(),
-        );
-        *cache = Some((key, Arc::clone(&markers)));
-        markers
+        diff_markers.chain(editor_hunk_markers)
     }
 }
 
@@ -643,42 +600,35 @@ pub(crate) fn is_hollow_hunk(staging: DiffHunkStaging) -> bool {
     matches!(staging, DiffHunkStaging::Staged)
 }
 
-#[derive(Clone, Copy, PartialEq)]
-struct MarkerGeometryKey {
-    track_top: f32,
-    track_height: f32,
-    scroll_per_pixel: f32,
-    line_height: f32,
-}
-
 /// 绑定搜索状态与显示拓扑版本的不可变装饰快照。
 ///
 /// 视口高亮按字节范围 seek 后连续消费；
-/// 滚动栏行投影只在快照建立时计算一次。
+/// 滚动栏行投影只在需要绘制滚动条标记时惰性构建，
+/// 组合文档不渲染搜索标记，因此不触发整份命中的行投影。
 pub(crate) struct SearchDecorationSnapshot {
     ranges: Arc<[MultiBufferRange]>,
     active_index: usize,
-    projected_rows: Arc<[Range<usize>]>,
-    markers: Mutex<Option<(MarkerGeometryKey, Arc<[ScrollbarMarker]>)>>,
+    projected_rows: OnceLock<Arc<[Range<usize>]>>,
 }
 
 impl SearchDecorationSnapshot {
-    fn from_ranges(
-        display: &DisplaySnapshot,
-        ranges: Arc<[MultiBufferRange]>,
-        active_index: usize,
-    ) -> Self {
-        let projected_rows = ranges
-            .iter()
-            .flat_map(|range| display.project_text_range(*range).unwrap_or_default())
-            .map(projected_row_range)
-            .collect::<Arc<[_]>>();
+    fn from_ranges(ranges: Arc<[MultiBufferRange]>, active_index: usize) -> Self {
         Self {
             ranges,
             active_index,
-            projected_rows,
-            markers: Mutex::new(None),
+            projected_rows: OnceLock::new(),
         }
+    }
+
+    /// 显示行投影；只服务滚动轴标记，按需构建并随快照缓存。
+    fn projected_rows(&self, display: &DisplaySnapshot) -> &Arc<[Range<usize>]> {
+        self.projected_rows.get_or_init(|| {
+            self.ranges
+                .iter()
+                .flat_map(|range| display.project_text_range(*range).unwrap_or_default())
+                .map(projected_row_range)
+                .collect::<Arc<[_]>>()
+        })
     }
 
     pub(crate) fn visible_ranges(
@@ -699,38 +649,15 @@ impl SearchDecorationSnapshot {
         index == self.active_index
     }
 
-    pub(crate) fn scrollbar_markers(
-        &self,
-        track_bounds: Bounds<Pixels>,
-        scroll_per_pixel: f32,
-        line_height: Pixels,
-    ) -> Arc<[ScrollbarMarker]> {
-        let key = MarkerGeometryKey {
-            track_top: f32::from(track_bounds.top()),
-            track_height: f32::from(track_bounds.size.height),
-            scroll_per_pixel,
-            line_height: f32::from(line_height),
-        };
-        let mut cache = self.markers.lock().expect("搜索标记缓存锁不应中毒");
-        if let Some((cached_key, markers)) = &*cache
-            && *cached_key == key
-        {
-            return Arc::clone(markers);
-        }
-        let markers = Arc::from(
-            marker_geometry(
-                self.projected_rows
-                    .iter()
-                    .cloned()
-                    .map(|rows| (rows, ScrollbarMarkerKind::Search)),
-                track_bounds,
-                scroll_per_pixel,
-                line_height,
-            )
-            .into_boxed_slice(),
-        );
-        *cache = Some((key, Arc::clone(&markers)));
-        markers
+    /// 搜索命中滚动条标记的显示行范围；仅在单文档编辑器上消费。
+    pub(crate) fn scrollbar_marker_ranges<'a>(
+        &'a self,
+        display: &'a DisplaySnapshot,
+    ) -> impl Iterator<Item = (Range<usize>, ScrollbarMarkerKind)> + 'a {
+        self.projected_rows(display)
+            .iter()
+            .cloned()
+            .map(|rows| (rows, ScrollbarMarkerKind::Search))
     }
 }
 
@@ -774,11 +701,22 @@ mod tests {
             ranges: &[MultiBufferRange],
             active_index: usize,
         ) -> Self {
-            Self::from_ranges(display, Arc::from(ranges), active_index)
+            let projected_rows = ranges
+                .iter()
+                .flat_map(|range| display.project_text_range(*range).unwrap_or_default())
+                .map(projected_row_range)
+                .collect::<Arc<[_]>>();
+            let projected_rows_lock = OnceLock::new();
+            let _ = projected_rows_lock.set(projected_rows);
+            Self {
+                ranges: Arc::from(ranges),
+                active_index,
+                projected_rows: projected_rows_lock,
+            }
         }
 
         pub(crate) fn projected_rows_for_test(&self) -> &[Range<usize>] {
-            &self.projected_rows
+            self.projected_rows.get().map_or(&[], |rows| rows.as_ref())
         }
     }
 

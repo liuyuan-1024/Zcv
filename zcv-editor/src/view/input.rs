@@ -58,7 +58,7 @@ impl Editor {
     }
 
     fn selection_for_utf16_range(&self, range: Range<usize>) -> Option<SelectionSet> {
-        let snapshot = self.snapshot.buffer_snapshot();
+        let snapshot = self.display_snapshot.buffer_snapshot();
         let start = snapshot
             .utf16_cu_to_byte(Utf16Offset::new(range.start))
             .ok()?;
@@ -172,7 +172,7 @@ impl Editor {
         containing_range: MultiBufferRange,
         relative_range: Range<usize>,
     ) -> Option<MultiBufferRange> {
-        let snapshot = self.snapshot.buffer_snapshot();
+        let snapshot = self.display_snapshot.buffer_snapshot();
         let text = snapshot.text_for_range(containing_range).ok()?;
         let utf16_len = utf16_len(&text);
         let start = byte_for_utf16_offset(&text, relative_range.start.min(utf16_len))?;
@@ -213,7 +213,7 @@ impl Editor {
             return false;
         }
 
-        let snapshot = self.snapshot.buffer_snapshot().clone();
+        let snapshot = self.display_snapshot.buffer_snapshot().clone();
 
         // 逐选区决策，产出目标编辑、编辑后落点与新区域（以编辑前坐标为基准）。
         let mut targets: Vec<(Selection, Arc<str>)> = Vec::new();
@@ -398,7 +398,7 @@ impl Editor {
 
     /// 光标贴着自动补全闭合符起点时扩展选区覆盖整对，使退格一次删除整对；非空选区或未命中区域时选区不变。
     pub(super) fn select_autoclose_pair(&mut self) {
-        let snapshot = self.snapshot.buffer_snapshot().clone();
+        let snapshot = self.display_snapshot.buffer_snapshot().clone();
         let before = self.resolved_selections();
         let mut changed = false;
         let selections: Vec<Selection> = before
@@ -450,7 +450,7 @@ impl Editor {
             // 自动闭合配对扩展属于普通选区变更，结束结构化选择扩展链。
             self.structured_selection_history.clear();
             self.selections = SelectionSet::new_with_primary(selections, before.primary_index())
-                .anchored(self.snapshot.buffer_snapshot());
+                .anchored(self.display_snapshot.buffer_snapshot());
         }
     }
 }
@@ -537,7 +537,7 @@ impl EntityInputHandler for Editor {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        let snapshot = self.snapshot.buffer_snapshot();
+        let snapshot = self.display_snapshot.buffer_snapshot();
         let selection = *self.resolved_selections().primary();
         Some(UTF16Selection {
             range: snapshot.byte_to_utf16_cu(selection.start()).ok()?.get()
@@ -645,7 +645,7 @@ impl EntityInputHandler for Editor {
                 .collect(),
             inserted_selections.primary_index(),
         )
-        .anchored(self.snapshot.buffer_snapshot());
+        .anchored(self.display_snapshot.buffer_snapshot());
         if let Some(transaction_id) = history_transaction_id
             && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
         {

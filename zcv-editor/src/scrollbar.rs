@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use super::display_map::EditorHunkMarkerKind;
 use super::scroll::ScrollbarThumbState;
-use gpui::{Bounds, Hitbox, HitboxBehavior, Pixels, Point, Window, point, px, size};
+use gpui::{Bounds, Hitbox, HitboxBehavior, Pixels, Point, Size, Task, Window, point, px, size};
 
 /// 滚动轴宽度。
 pub(super) const SCROLLBAR_WIDTH: Pixels = px(15.);
@@ -49,6 +49,45 @@ pub(super) struct ScrollbarMarker {
 pub(super) enum ScrollbarMarkerKind {
     Git(EditorHunkMarkerKind),
     Search,
+}
+
+/// 滚动条慢标记的 editor 拥有缓存（对齐 Zed ScrollbarMarkerState）。
+///
+/// 标记几何按显示版本与滚动条尺寸缓存，计算在后台执行；
+/// EditorElement 只读取缓存并触发刷新，不在渲染帧内做随文档规模增长的派生。
+#[derive(Default)]
+pub(crate) struct ScrollbarMarkerState {
+    scrollbar_size: Size<Pixels>,
+    dirty: bool,
+    pub(crate) marker_groups: [Option<Arc<[ScrollbarMarker]>>; 2],
+    pub(crate) pending_refresh: Option<Task<()>>,
+}
+
+impl ScrollbarMarkerState {
+    /// 尺寸变化或显示版本失效时重新计算；刷新任务在途时不重复排队。
+    pub(crate) fn should_refresh(&self, scrollbar_size: Size<Pixels>) -> bool {
+        self.pending_refresh.is_none() && (self.scrollbar_size != scrollbar_size || self.dirty)
+    }
+
+    /// 显示版本或标记输入变化：下次布局重新计算。
+    pub(crate) fn invalidate(&mut self) {
+        self.dirty = true;
+    }
+
+    pub(crate) fn begin_refresh(&mut self, task: Task<()>) {
+        self.dirty = false;
+        self.pending_refresh = Some(task);
+    }
+
+    pub(crate) fn finish_refresh(
+        &mut self,
+        scrollbar_size: Size<Pixels>,
+        marker_groups: [Option<Arc<[ScrollbarMarker]>>; 2],
+    ) {
+        self.scrollbar_size = scrollbar_size;
+        self.marker_groups = marker_groups;
+        self.pending_refresh = None;
+    }
 }
 
 impl ScrollbarLayout {

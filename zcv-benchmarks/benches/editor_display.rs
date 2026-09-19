@@ -13,10 +13,12 @@ mod common;
 use common::cached_rust_document;
 use zcv_editor::Editor;
 use zcv_language::{LanguageBuffer, LanguageRegistry};
-use zcv_multi_buffer::MultiBuffer;
+use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TransactionMetadata};
 
 const DOC_BYTES: usize = 256 * 1024;
+const EXCERPT_DOC_BYTES: usize = 16 * 1024;
+const MULTI_EXCERPT_COUNTS: [usize; 3] = [2, 32, 256];
 const LONG_LINE_ROWS: usize = 2_000;
 const LONG_LINE_COLUMNS: usize = 400;
 
@@ -139,10 +141,177 @@ fn fold_toggle(c: &mut Criterion) {
     group.finish();
 }
 
+/// 多 excerpt 组合文档的编辑帧：编辑一个源后整帧刷新。
+///
+/// 锁定「显示帧内不存在随文档规模增长的派生」：每帧时间应随 excerpt 数基本不变。
+/// 编辑一个源并推进显示同步，但不强制整帧刷新：隔离编辑/同步成本。
+fn multi_excerpt_edit_only(c: &mut Criterion) {
+    let mut group = c.benchmark_group("editor/multi_excerpt_edit_only");
+    for excerpt_count in MULTI_EXCERPT_COUNTS {
+        let mut cx = TestAppContext::build(TestDispatcher::new(1), None);
+        let sources = (0..excerpt_count)
+            .map(|index| {
+                let buffer = Buffer::from_text(
+                    cached_rust_document(EXCERPT_DOC_BYTES).to_string(),
+                    BufferConfig::default(),
+                )
+                .expect("基准文档应能创建 Buffer");
+                cx.new(|cx| {
+                    LanguageBuffer::new(
+                        buffer,
+                        Some(PathBuf::from(format!("src/f{index}.rs"))),
+                        Arc::new(LanguageRegistry::new()),
+                        cx,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let source = sources[0].clone();
+        let multi_buffer = cx.new(MultiBuffer::empty);
+        cx.update_entity(&multi_buffer, |buffer, cx| {
+            for source in sources {
+                let line_count = source.read(cx).text_snapshot().line_count();
+                buffer.set_excerpts_for_path(
+                    vec![ExcerptRange::line_range(source, 0..line_count, cx)],
+                    cx,
+                );
+            }
+        });
+        let (editor, cx) =
+            cx.add_window_view(move |_, cx| Editor::for_multi_buffer(multi_buffer, cx));
+        cx.run_until_parked();
+        cx.refresh().expect("组合文档窗口应可刷新");
+        group.bench_function(format!("{excerpt_count}"), |b| {
+            b.iter(|| {
+                cx.update_entity(&source, |source, cx| {
+                    source
+                        .edit(
+                            [Edit::insert(ByteOffset::ZERO, "x").expect("插入编辑必须合法")],
+                            TransactionMetadata::default(),
+                            cx,
+                        )
+                        .expect("组合文档源编辑应成功");
+                });
+                cx.run_until_parked();
+                black_box(editor.entity_id());
+            });
+        });
+    }
+    group.finish();
+}
+
+/// 不编辑，只整帧刷新：隔离渲染帧成本。
+fn multi_excerpt_idle_frame(c: &mut Criterion) {
+    let mut group = c.benchmark_group("editor/multi_excerpt_idle_frame");
+    for excerpt_count in MULTI_EXCERPT_COUNTS {
+        let mut cx = TestAppContext::build(TestDispatcher::new(1), None);
+        let sources = (0..excerpt_count)
+            .map(|index| {
+                let buffer = Buffer::from_text(
+                    cached_rust_document(EXCERPT_DOC_BYTES).to_string(),
+                    BufferConfig::default(),
+                )
+                .expect("基准文档应能创建 Buffer");
+                cx.new(|cx| {
+                    LanguageBuffer::new(
+                        buffer,
+                        Some(PathBuf::from(format!("src/f{index}.rs"))),
+                        Arc::new(LanguageRegistry::new()),
+                        cx,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let source = sources[0].clone();
+        let multi_buffer = cx.new(MultiBuffer::empty);
+        cx.update_entity(&multi_buffer, |buffer, cx| {
+            for source in sources {
+                let line_count = source.read(cx).text_snapshot().line_count();
+                buffer.set_excerpts_for_path(
+                    vec![ExcerptRange::line_range(source, 0..line_count, cx)],
+                    cx,
+                );
+            }
+        });
+        let (editor, cx) =
+            cx.add_window_view(move |_, cx| Editor::for_multi_buffer(multi_buffer, cx));
+        cx.run_until_parked();
+        cx.refresh().expect("组合文档窗口应可刷新");
+        let _ = &source;
+        group.bench_function(format!("{excerpt_count}"), |b| {
+            b.iter(|| {
+                cx.refresh().expect("组合文档空闲帧应可刷新");
+                black_box(editor.entity_id());
+            });
+        });
+    }
+    group.finish();
+}
+
+/// 编辑一个源后整帧刷新：组合文档完整编辑帧。
+fn multi_excerpt_edit_frame(c: &mut Criterion) {
+    let mut group = c.benchmark_group("editor/multi_excerpt_edit_frame");
+    for excerpt_count in MULTI_EXCERPT_COUNTS {
+        let mut cx = TestAppContext::build(TestDispatcher::new(1), None);
+        let sources = (0..excerpt_count)
+            .map(|index| {
+                let buffer = Buffer::from_text(
+                    cached_rust_document(EXCERPT_DOC_BYTES).to_string(),
+                    BufferConfig::default(),
+                )
+                .expect("基准文档应能创建 Buffer");
+                cx.new(|cx| {
+                    LanguageBuffer::new(
+                        buffer,
+                        Some(PathBuf::from(format!("src/f{index}.rs"))),
+                        Arc::new(LanguageRegistry::new()),
+                        cx,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let source = sources[0].clone();
+        let multi_buffer = cx.new(MultiBuffer::empty);
+        cx.update_entity(&multi_buffer, |buffer, cx| {
+            for source in sources {
+                let line_count = source.read(cx).text_snapshot().line_count();
+                buffer.set_excerpts_for_path(
+                    vec![ExcerptRange::line_range(source, 0..line_count, cx)],
+                    cx,
+                );
+            }
+        });
+        let (editor, cx) =
+            cx.add_window_view(move |_, cx| Editor::for_multi_buffer(multi_buffer, cx));
+        cx.run_until_parked();
+        cx.refresh().expect("组合文档窗口应可刷新");
+        group.bench_function(format!("{excerpt_count}"), |b| {
+            b.iter(|| {
+                cx.update_entity(&source, |source, cx| {
+                    source
+                        .edit(
+                            [Edit::insert(ByteOffset::ZERO, "x").expect("插入编辑必须合法")],
+                            TransactionMetadata::default(),
+                            cx,
+                        )
+                        .expect("组合文档源编辑应成功");
+                });
+                cx.run_until_parked();
+                cx.refresh().expect("组合文档编辑帧应可刷新");
+                black_box(editor.entity_id());
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     editor_display_benches,
     continuous_input,
     long_line_edit,
-    fold_toggle
+    fold_toggle,
+    multi_excerpt_edit_only,
+    multi_excerpt_idle_frame,
+    multi_excerpt_edit_frame
 );
 criterion_main!(editor_display_benches);

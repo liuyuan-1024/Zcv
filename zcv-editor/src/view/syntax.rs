@@ -12,7 +12,7 @@ use zcv_language::{LocalBinding, OutlineItem};
 impl Editor {
     /// 返回当前组合文档的文件级语法大纲。
     pub fn outline_items(&self) -> Vec<OutlineItem> {
-        self.snapshot.buffer_snapshot().outline_items()
+        self.display_snapshot.buffer_snapshot().outline_items()
     }
 
     /// 按大纲文本过滤当前文件大纲；匹配不改变语法层结果的顺序和层级。
@@ -39,7 +39,6 @@ impl Editor {
         for part in &item.text_ranges {
             let source_start = part.source_range.start;
             for (range, style) in self
-                .snapshot
                 .display_snapshot
                 .highlights_for_range(part.source_range.clone(), cx)
             {
@@ -59,7 +58,7 @@ impl Editor {
 
     /// 返回当前单文件文档中可确定归属的局部绑定。
     pub fn local_bindings(&self) -> Vec<LocalBinding> {
-        self.snapshot.buffer_snapshot().local_bindings()
+        self.display_snapshot.buffer_snapshot().local_bindings()
     }
 
     /// 将大纲项定位到其名称范围，并拒绝异步刷新后已经失效的结果。

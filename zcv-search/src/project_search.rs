@@ -276,7 +276,9 @@ impl ProjectSearchView {
         let results_editor = self.results_editor.clone();
         self.pending_search = Some(cx.spawn_in(window, async move |this, cx| {
             let _search_task = search_task;
-            let mut batched = Vec::<ExcerptRange>::new();
+            // 每个文件是一个路径批次：按 Zed 的设计逐路径插入，插入顺序不影响文档的路径序。
+            let mut batched = Vec::<Vec<ExcerptRange>>::new();
+            let mut batched_excerpt_count = 0usize;
             loop {
                 // 被更新的查询取代时放弃本次流式装配；
                 // 放弃通道会让后台在下次发送时感知并提前结束扫描。
@@ -301,17 +303,20 @@ impl ProjectSearchView {
                 }) else {
                     continue;
                 };
-                for excerpt in item.excerpts {
-                    batched.push(ExcerptRange::new(
-                        source.clone(),
-                        excerpt.range,
-                        excerpt.matches,
-                    ));
-                }
-                if batched.len() < SEARCH_BATCH_SIZE {
+                let excerpts = item
+                    .excerpts
+                    .into_iter()
+                    .map(|excerpt| {
+                        ExcerptRange::new(source.clone(), excerpt.range, excerpt.matches)
+                    })
+                    .collect::<Vec<_>>();
+                batched_excerpt_count += excerpts.len();
+                batched.push(excerpts);
+                if batched_excerpt_count < SEARCH_BATCH_SIZE {
                     continue;
                 }
                 let batch = std::mem::take(&mut batched);
+                batched_excerpt_count = 0;
                 this.update_in(cx, |this, _window, cx| {
                     this.append_search_batch(batch, &results_editor, query.clone(), cx);
                 })
@@ -335,21 +340,29 @@ impl ProjectSearchView {
     /// 将新增片段追加到组合文档，并更新匹配高亮。
     fn append_search_batch(
         &mut self,
-        excerpts: Vec<ExcerptRange>,
+        batches: Vec<Vec<ExcerptRange>>,
         results_editor: &Entity<Editor>,
         query: SearchQuery,
         cx: &mut Context<Self>,
     ) {
-        let match_ranges = self
-            .excerpts
-            .update(cx, |buffer, cx| buffer.append_excerpts(excerpts, cx));
-        results_editor.update(cx, |editor, cx| {
-            editor.append_search_ranges(
-                query,
-                match_ranges.into_iter().map(Into::into).collect(),
-                cx,
-            )
-        });
+        for excerpts in batches {
+            if excerpts.is_empty() {
+                continue;
+            }
+            let match_ranges = self
+                .excerpts
+                .update(cx, |buffer, cx| buffer.set_excerpts_for_path(excerpts, cx));
+            if match_ranges.is_empty() {
+                continue;
+            }
+            results_editor.update(cx, |editor, cx| {
+                editor.append_search_ranges(
+                    query.clone(),
+                    match_ranges.into_iter().map(Into::into).collect(),
+                    cx,
+                )
+            });
+        }
         cx.emit(SearchEvent::MatchesInvalidated);
         cx.notify();
     }

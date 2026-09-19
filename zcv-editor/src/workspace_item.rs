@@ -227,7 +227,7 @@ mod tests {
         let source_len = cx.read_entity(&source, |source, _| source.text_snapshot().len_bytes());
         let combined = cx.new(MultiBuffer::empty);
         combined.update(cx, |combined, cx| {
-            combined.set_excerpts(
+            combined.set_excerpts_for_path(
                 vec![ExcerptRange::new(
                     source,
                     zcv_text::TextRange::new(zcv_text::ByteOffset::ZERO, source_len)

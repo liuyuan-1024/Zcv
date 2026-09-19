@@ -135,7 +135,7 @@ fn multibuffer_editor_edits_the_underlying_file(cx: &mut TestAppContext) {
     let source_multi = source.clone();
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(
+        buffer.set_excerpts_for_path(
             vec![ExcerptRange::new(
                 source_multi,
                 MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(4))
@@ -1337,7 +1337,7 @@ fn composite_excerpt_uses_its_source_tree_sitter_indent_query(cx: &mut TestAppCo
     });
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(
+        buffer.set_excerpts_for_path(
             vec![ExcerptRange::new(
                 language_buffer.clone(),
                 MultiBufferRange::new(

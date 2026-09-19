@@ -417,7 +417,8 @@ impl MultiBuffer {
             self.diff = None;
             self.diffs.clear();
             let line_count = source.read(cx).text_snapshot().line_count();
-            self.set_excerpts(
+            self.clear(cx);
+            self.set_excerpts_for_path(
                 vec![
                     ExcerptRange::line_range(source, 0..line_count, cx)
                         .with_starts_new_excerpt(false),
@@ -878,18 +879,22 @@ impl MultiBuffer {
         to == self.diffs.len()
     }
 
-    /// 追加指定范围文件的物化结果，只扩展组合映射与显示坐标，不重建已有片段。
+    /// 追加指定范围文件的物化结果，按路径插入组合映射，不重建已有片段。
     fn append_materialized_files(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
         let base_excerpt_count = mapping_count(&self.state.diff_transforms);
         let expanded_by_default = self.diff_expanded_by_default;
-        let mut excerpts = Vec::new();
-        {
-            for index in from..to {
-                materialize_file(&self.diffs[index], cx, expanded_by_default, &mut excerpts);
+        let mut expected_excerpt_count = 0;
+        for index in from..to {
+            let mut excerpts = Vec::new();
+            {
+                let file = &self.diffs[index];
+                materialize_file(file, cx, expanded_by_default, &mut excerpts);
+            }
+            expected_excerpt_count += excerpts.len();
+            if !excerpts.is_empty() {
+                self.set_excerpts_for_path(excerpts, cx);
             }
         }
-        let expected_excerpt_count = excerpts.len();
-        let _ = self.append_excerpts(excerpts, cx);
         assert_eq!(
             mapping_count(&self.state.diff_transforms),
             base_excerpt_count + expected_excerpt_count,
@@ -969,7 +974,7 @@ impl MultiBuffer {
             materialize_file(file, cx, expanded_by_default, &mut excerpts);
         }
         let expected_excerpt_count = excerpts.len();
-        self.set_excerpts_internal(excerpts, cx);
+        self.replace_all_excerpts(excerpts, cx);
         assert_eq!(
             mapping_count(&self.state.diff_transforms),
             expected_excerpt_count,

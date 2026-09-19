@@ -3457,7 +3457,7 @@ mod tests {
         let second_match =
             MultiBufferRange::new(MultiBufferOffset::new(6), MultiBufferOffset::new(12)).unwrap();
         combined.update(cx, |combined, cx| {
-            combined.set_excerpts(
+            combined.set_excerpts_for_path(
                 vec![
                     ExcerptRange::new(
                         source.clone(),
@@ -3855,7 +3855,7 @@ mod tests {
         });
         let combined = cx.new(MultiBuffer::empty);
         cx.update_entity(&combined, |combined, cx| {
-            combined.set_excerpts(
+            combined.set_excerpts_for_path(
                 vec![
                     ExcerptRange::new(
                         source,
@@ -3959,14 +3959,14 @@ mod tests {
 
         let combined = cx.new(MultiBuffer::empty);
         cx.update_entity(&combined, |combined, cx| {
-            combined.set_excerpts(
+            combined.set_excerpts_for_path(
                 vec![
                     ExcerptRange::line_range(first.clone(), 0..2, cx),
                     ExcerptRange::line_range(first, 5..7, cx),
-                    ExcerptRange::line_range(second, 0..2, cx),
                 ],
                 cx,
             );
+            combined.set_excerpts_for_path(vec![ExcerptRange::line_range(second, 0..2, cx)], cx);
         });
         cx.run_until_parked();
 
@@ -4512,7 +4512,7 @@ mod tests {
         });
         let combined = cx.new(MultiBuffer::empty);
         cx.update_entity(&combined, |combined, cx| {
-            combined.set_excerpts(vec![ExcerptRange::line_range(source, 0..3, cx)], cx)
+            combined.set_excerpts_for_path(vec![ExcerptRange::line_range(source, 0..3, cx)], cx)
         });
         cx.run_until_parked();
 

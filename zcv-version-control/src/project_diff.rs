@@ -774,7 +774,8 @@ impl ProjectDiffView {
     /// 冲突视图使用完整工作区文本，不创建 BufferDiff；
     /// 冲突块和区域装饰由同一份解析结果注入 Editor。
     fn rebuild_conflict_projection(&mut self, cx: &mut Context<Self>) {
-        let mut excerpts = Vec::new();
+        // 每个文件是一个路径批次：按路径写入，文档顺序由 MultiBuffer 维护。
+        let mut groups: Vec<Vec<ExcerptRange>> = Vec::new();
         for file in &self.files {
             let Ok(source) = self
                 .project
@@ -786,14 +787,17 @@ impl ProjectDiffView {
             let Ok(source_range) = TextRange::new(ByteOffset::ZERO, source_len) else {
                 continue;
             };
-            excerpts.push(
+            groups.push(vec![
                 ExcerptRange::new(source, source_range, Vec::new())
                     .with_display_path(file.path.clone()),
-            );
+            ]);
         }
         self.multi_buffer.update(cx, |buffer, cx| {
             buffer.clear_diffs(cx);
-            buffer.set_excerpts(excerpts, cx);
+            buffer.clear(cx);
+            for group in groups {
+                buffer.set_excerpts_for_path(group, cx);
+            }
         });
         let hunks = self.conflict_editor_hunks(cx);
         self.editor.update(cx, |editor, cx| {

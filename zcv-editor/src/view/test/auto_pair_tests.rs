@@ -126,23 +126,24 @@ fn each_composite_selection_uses_its_source_language_pairs(cx: &mut TestAppConte
     });
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(
-            vec![
-                ExcerptRange::new(
-                    plain.clone(),
-                    MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(2))
-                        .unwrap()
-                        .into(),
-                    Vec::new(),
-                ),
-                ExcerptRange::new(
-                    rust.clone(),
-                    MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(2))
-                        .unwrap()
-                        .into(),
-                    Vec::new(),
-                ),
-            ],
+        buffer.set_excerpts_for_path(
+            vec![ExcerptRange::new(
+                plain.clone(),
+                MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(2))
+                    .unwrap()
+                    .into(),
+                Vec::new(),
+            )],
+            cx,
+        );
+        buffer.set_excerpts_for_path(
+            vec![ExcerptRange::new(
+                rust.clone(),
+                MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(2))
+                    .unwrap()
+                    .into(),
+                Vec::new(),
+            )],
             cx,
         );
     });

@@ -50,11 +50,9 @@ fn composite_refresh_restores_scroll_from_source_anchor(cx: &mut TestAppContext)
     });
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(
-            vec![
-                ExcerptRange::line_range(first, 0..40, cx),
-                ExcerptRange::line_range(second.clone(), 0..80, cx),
-            ],
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(first, 0..40, cx)], cx);
+        buffer.set_excerpts_for_path(
+            vec![ExcerptRange::line_range(second.clone(), 0..80, cx)],
             cx,
         );
     });
@@ -79,7 +77,7 @@ fn composite_refresh_restores_scroll_from_source_anchor(cx: &mut TestAppContext)
     });
 
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(vec![ExcerptRange::line_range(second, 20..70, cx)], cx);
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(second, 20..70, cx)], cx);
     });
     cx.run_until_parked();
     cx.refresh().expect("结构刷新后测试窗口应可刷新");
@@ -115,7 +113,7 @@ fn composite_refresh_keeps_the_viewport_anchored_to_the_file(cx: &mut TestAppCon
     });
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(
+        buffer.set_excerpts_for_path(
             vec![ExcerptRange::line_range(source.clone(), 0..60, cx)],
             cx,
         );
@@ -132,7 +130,7 @@ fn composite_refresh_keeps_the_viewport_anchored_to_the_file(cx: &mut TestAppCon
         assert_eq!(editor.scroll_anchor().row(), DisplayRow::new(2));
     });
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(vec![ExcerptRange::line_range(source, 10..70, cx)], cx);
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(source, 10..70, cx)], cx);
     });
     cx.run_until_parked();
     cx.refresh().expect("结构刷新后测试窗口应可刷新");
@@ -166,13 +164,8 @@ fn folding_a_later_file_preserves_the_viewport_anchor(cx: &mut TestAppContext) {
 
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(
-            vec![
-                ExcerptRange::line_range(first, 0..120, cx),
-                ExcerptRange::line_range(second, 0..120, cx),
-            ],
-            cx,
-        );
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(first, 0..120, cx)], cx);
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(second, 0..120, cx)], cx);
     });
     let (editor, cx) = cx.add_window_view({
         let combined = combined.clone();

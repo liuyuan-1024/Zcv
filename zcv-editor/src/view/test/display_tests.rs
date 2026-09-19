@@ -1182,7 +1182,7 @@ fn multibuffer_soft_wrap_uses_the_regular_display_map_pipeline(cx: &mut TestAppC
     let source_multi = source.clone();
     let combined = cx.new(MultiBuffer::empty);
     combined.update(cx, |combined, cx| {
-        combined.set_excerpts(
+        combined.set_excerpts_for_path(
             vec![ExcerptRange::new(
                 source_multi,
                 MultiBufferRange::new(MultiBufferOffset::ZERO, source_end)
@@ -1244,23 +1244,24 @@ fn wrapped_multibuffer_reuses_block_rows_across_within_line_edits(cx: &mut TestA
     let first_len = cx.read_entity(&first, |buffer, _| buffer.len_bytes());
     let second_len = cx.read_entity(&second, |buffer, _| buffer.len_bytes());
     combined.update(cx, |combined, cx| {
-        combined.set_excerpts(
-            vec![
-                ExcerptRange::new(
-                    first.clone(),
-                    MultiBufferRange::new(MultiBufferOffset::ZERO, first_len)
-                        .expect("完整片段范围应有效")
-                        .into(),
-                    Vec::new(),
-                ),
-                ExcerptRange::new(
-                    second.clone(),
-                    MultiBufferRange::new(MultiBufferOffset::ZERO, second_len)
-                        .expect("完整片段范围应有效")
-                        .into(),
-                    Vec::new(),
-                ),
-            ],
+        combined.set_excerpts_for_path(
+            vec![ExcerptRange::new(
+                first.clone(),
+                MultiBufferRange::new(MultiBufferOffset::ZERO, first_len)
+                    .expect("完整片段范围应有效")
+                    .into(),
+                Vec::new(),
+            )],
+            cx,
+        );
+        combined.set_excerpts_for_path(
+            vec![ExcerptRange::new(
+                second.clone(),
+                MultiBufferRange::new(MultiBufferOffset::ZERO, second_len)
+                    .expect("完整片段范围应有效")
+                    .into(),
+                Vec::new(),
+            )],
             cx,
         );
     });
@@ -1334,23 +1335,24 @@ fn wrapped_multibuffer_relocates_blocks_when_wrap_rows_change(cx: &mut TestAppCo
     let first_len = cx.read_entity(&first, |buffer, _| buffer.len_bytes());
     let second_len = cx.read_entity(&second, |buffer, _| buffer.len_bytes());
     combined.update(cx, |combined, cx| {
-        combined.set_excerpts(
-            vec![
-                ExcerptRange::new(
-                    first.clone(),
-                    MultiBufferRange::new(MultiBufferOffset::ZERO, first_len)
-                        .expect("完整片段范围应有效")
-                        .into(),
-                    Vec::new(),
-                ),
-                ExcerptRange::new(
-                    second.clone(),
-                    MultiBufferRange::new(MultiBufferOffset::ZERO, second_len)
-                        .expect("完整片段范围应有效")
-                        .into(),
-                    Vec::new(),
-                ),
-            ],
+        combined.set_excerpts_for_path(
+            vec![ExcerptRange::new(
+                first.clone(),
+                MultiBufferRange::new(MultiBufferOffset::ZERO, first_len)
+                    .expect("完整片段范围应有效")
+                    .into(),
+                Vec::new(),
+            )],
+            cx,
+        );
+        combined.set_excerpts_for_path(
+            vec![ExcerptRange::new(
+                second.clone(),
+                MultiBufferRange::new(MultiBufferOffset::ZERO, second_len)
+                    .expect("完整片段范围应有效")
+                    .into(),
+                Vec::new(),
+            )],
             cx,
         );
     });
@@ -1511,7 +1513,7 @@ fn cursor_text_maps_excerpt_output_to_real_source_line(cx: &mut TestAppContext) 
     let source_multi = source;
     let combined = cx.new(MultiBuffer::empty);
     combined.update(cx, |combined, cx| {
-        combined.set_excerpts(vec![ExcerptRange::line_range(source_multi, 5..7, cx)], cx);
+        combined.set_excerpts_for_path(vec![ExcerptRange::line_range(source_multi, 5..7, cx)], cx);
     });
     let editor = cx.new(move |cx| Editor::for_multi_buffer(combined, cx));
 
@@ -1553,7 +1555,7 @@ fn materialized_deleted_excerpt_keeps_editing_and_cursor(cx: &mut TestAppContext
     // Deleted hunk：新侧行 1 处删除 HEAD 的 1..3 行。
     // 组合 = [工作区 0..1] + [HEAD 1..3（只读红色行）] + [工作区 1..3]。
     combined.update(cx, |combined, cx| {
-        combined.set_excerpts(
+        combined.set_excerpts_for_path(
             vec![
                 ExcerptRange::line_range(work_multi.clone(), 0..1, cx),
                 ExcerptRange::line_range(head_multi, 1..3, cx)

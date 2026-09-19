@@ -13,6 +13,34 @@ use zcv_text::{
 
 use super::*;
 
+/// 测试辅助：按路径分组写入，替代已删除的整篇 set_excerpts 入口。
+trait SetExcerptsByPath {
+    fn set_excerpts(&mut self, excerpts: Vec<ExcerptRange>, cx: &mut Context<Self>)
+    where
+        Self: Sized;
+}
+
+impl SetExcerptsByPath for MultiBuffer {
+    fn set_excerpts(&mut self, excerpts: Vec<ExcerptRange>, cx: &mut Context<Self>) {
+        for group in group_excerpts_by_path(excerpts, cx) {
+            self.set_excerpts_for_path(group, cx);
+        }
+    }
+}
+
+/// 按源文件路径分组；同一路径的片段保持调用方顺序。
+fn group_excerpts_by_path(excerpts: Vec<ExcerptRange>, cx: &App) -> Vec<Vec<ExcerptRange>> {
+    let mut groups: Vec<(PathBuf, Vec<ExcerptRange>)> = Vec::new();
+    for excerpt in excerpts {
+        let path = excerpt.source.read(cx).file_path().unwrap_or_default();
+        match groups.iter_mut().find(|(candidate, _)| *candidate == path) {
+            Some((_, group)) => group.push(excerpt),
+            None => groups.push((path, vec![excerpt])),
+        }
+    }
+    groups.into_iter().map(|(_, group)| group).collect()
+}
+
 /// 测试辅助：把折叠锚点按源快照解析为字节范围。
 fn resolve_folds(
     folds: &[zcv_language::FoldRange],
@@ -824,7 +852,7 @@ fn set_excerpts_for_path_replaces_only_that_path(cx: &mut TestAppContext) {
         );
     });
 
-    let replaced = cx.update_entity(&combined, |buffer, cx| {
+    cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts_for_path(
             vec![
                 ExcerptRange::line_range(first.clone(), 0..1, cx),
@@ -833,7 +861,6 @@ fn set_excerpts_for_path_replaces_only_that_path(cx: &mut TestAppContext) {
             cx,
         )
     });
-    assert!(replaced);
 
     let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
     assert_eq!(snapshot.excerpts().count(), 3);
@@ -1204,13 +1231,7 @@ fn excerpt_topology_changes_publish_output_edits(cx: &mut TestAppContext) {
         cx.update_entity(&combined, |buffer, cx| buffer.subscribe_and_snapshot(cx).0);
 
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(
-            vec![
-                ExcerptRange::line_range(first, 0..1, cx),
-                ExcerptRange::line_range(second, 0..1, cx),
-            ],
-            cx,
-        );
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(second, 0..1, cx)], cx);
     });
 
     let changes = subscription.consume();
@@ -1249,13 +1270,7 @@ fn dropping_a_middle_excerpt_publishes_a_single_output_edit_without_reset(cx: &m
         cx.update_entity(&combined, |buffer, cx| buffer.subscribe_and_snapshot(cx).0);
 
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(
-            vec![
-                ExcerptRange::line_range(first, 0..1, cx),
-                ExcerptRange::line_range(third, 0..1, cx),
-            ],
-            cx,
-        );
+        buffer.remove_excerpts_for_path(Path::new("src/second.rs"), cx);
     });
 
     // 组合拓扑变化必须沿增量 output edit 发布；范围由前后 excerpt 游标推导，不物化组合文本。
@@ -1731,25 +1746,28 @@ fn excerpts_preserve_order_and_map_output_to_source(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn append_excerpts_extends_projection_without_rebuilding_existing_ranges(cx: &mut TestAppContext) {
-    let first = singleton("src/a.rs", "zero\none\n", cx);
-    let second = singleton("src/b.rs", "alpha\nbeta\n", cx);
+fn per_path_excerpts_keep_path_order_regardless_of_insertion_order(cx: &mut TestAppContext) {
+    // 这两个路径的字节序与 PathKey 组件序相反：git ls-files 先给 zcv-workspace，
+    // 但 PathKey 序要求 zcv 在前。按字节序插入，验证组合文档仍按 PathKey 排序。
+    let first = singleton("zcv/src/workspace.rs", "zero\none\n", cx);
+    let second = singleton("zcv-workspace/src/workspace_state.rs", "alpha\nbeta\n", cx);
     let combined = cx.new(MultiBuffer::empty);
 
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(
-            vec![ExcerptRange::new(
-                first,
-                TextRange::new(ByteOffset::new(5), ByteOffset::new(8)).unwrap(),
-                vec![TextRange::new(ByteOffset::new(5), ByteOffset::new(8)).unwrap()],
-            )],
-            cx,
-        );
-        buffer.append_excerpts(
+        // 先插入 PathKey 较大的 zcv-workspace，再插入 zcv：路径序由 MultiBuffer 维护，不由调用方顺序决定。
+        buffer.set_excerpts_for_path(
             vec![ExcerptRange::new(
                 second,
                 TextRange::new(ByteOffset::new(6), ByteOffset::new(10)).unwrap(),
                 vec![TextRange::new(ByteOffset::new(6), ByteOffset::new(10)).unwrap()],
+            )],
+            cx,
+        );
+        buffer.set_excerpts_for_path(
+            vec![ExcerptRange::new(
+                first,
+                TextRange::new(ByteOffset::new(5), ByteOffset::new(8)).unwrap(),
+                vec![TextRange::new(ByteOffset::new(5), ByteOffset::new(8)).unwrap()],
             )],
             cx,
         );
@@ -1763,24 +1781,15 @@ fn append_excerpts_extends_projection_without_rebuilding_existing_ranges(cx: &mu
         );
         assert_eq!(snapshot.excerpts().count(), 2);
         assert_eq!(
-            snapshot.excerpts().next().unwrap().output_range().start(),
-            ByteOffset::ZERO.into()
+            snapshot.excerpts().next().unwrap().path(),
+            Path::new("zcv/src/workspace.rs")
         );
         assert_eq!(
-            snapshot.excerpts().nth(1).unwrap().output_range().start(),
-            MultiBufferOffset::new(4)
-        );
-        assert_eq!(
-            buffer
-                .match_ranges()
-                .iter()
-                .map(|range| range.start().get())
-                .collect::<Vec<_>>(),
-            vec![0, 4]
+            snapshot.excerpts().nth(1).unwrap().path(),
+            Path::new("zcv-workspace/src/workspace_state.rs")
         );
     });
 }
-
 #[gpui::test]
 fn composite_anchor_resolves_in_the_same_file_after_excerpt_refresh(cx: &mut TestAppContext) {
     let first = singleton("src/a.rs", "zero\none\ntwo\nthree\nfour\n", cx);

@@ -197,7 +197,7 @@ fn editing_a_later_composite_excerpt_keeps_following_input_in_that_source(cx: &m
     let first = cx.new(|cx| {
         LanguageBuffer::new(
             first,
-            None,
+            Some(std::path::PathBuf::from("src/first.rs")),
             std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
             cx,
         )
@@ -205,20 +205,15 @@ fn editing_a_later_composite_excerpt_keeps_following_input_in_that_source(cx: &m
     let second = cx.new(|cx| {
         LanguageBuffer::new(
             second,
-            None,
+            Some(std::path::PathBuf::from("src/second.rs")),
             std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
             cx,
         )
     });
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(
-            vec![
-                ExcerptRange::line_range(first, 0..1, cx),
-                ExcerptRange::line_range(second.clone(), 0..1, cx),
-            ],
-            cx,
-        );
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(first, 0..1, cx)], cx);
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(second.clone(), 0..1, cx)], cx);
     });
     let editor = cx.new({
         let combined = combined.clone();

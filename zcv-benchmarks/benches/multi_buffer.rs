@@ -1,6 +1,8 @@
 use criterion::{
     BatchSize, BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main,
 };
+use std::path::PathBuf;
+
 use gpui::{AppContext as _, TestAppContext, TestDispatcher};
 mod common;
 
@@ -17,7 +19,7 @@ fn projection_setup(
 ) -> (TestAppContext, gpui::Entity<MultiBuffer>, Vec<ExcerptRange>) {
     let mut cx = TestAppContext::build(TestDispatcher::new(1), None);
     let sources = (0..source_count)
-        .map(|_| {
+        .map(|index| {
             let buffer = Buffer::from_text(
                 cached_rust_document(SOURCE_BYTES).to_string(),
                 BufferConfig::default(),
@@ -26,7 +28,7 @@ fn projection_setup(
             cx.new(|cx| {
                 LanguageBuffer::new(
                     buffer,
-                    None,
+                    Some(PathBuf::from(format!("src/source_{index}.rs"))),
                     std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
                     cx,
                 )
@@ -59,7 +61,9 @@ fn materialize_excerpts(c: &mut Criterion) {
                     || projection_setup(source_count),
                     |(mut cx, multi_buffer, excerpts)| {
                         cx.update_entity(&multi_buffer, |multi_buffer, cx| {
-                            multi_buffer.set_excerpts(excerpts, cx);
+                            for excerpt in excerpts {
+                                multi_buffer.set_excerpts_for_path(vec![excerpt], cx);
+                            }
                         });
                         let snapshot = cx.read_entity(&multi_buffer, |multi_buffer, cx| {
                             multi_buffer.snapshot(cx)

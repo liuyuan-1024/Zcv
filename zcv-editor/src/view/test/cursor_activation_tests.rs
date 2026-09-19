@@ -63,7 +63,7 @@ fn focused_read_only_editor_keeps_editor_selection_and_shows_a_steady_caret(
     });
     let combined = cx.new(MultiBuffer::empty_read_only);
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(vec![ExcerptRange::line_range(source, 0..1, cx)], cx)
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(source, 0..1, cx)], cx)
     });
     let (editor, cx) = cx.add_window_view(move |window, cx| {
         let editor = Editor::for_multi_buffer(combined, cx);

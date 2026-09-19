@@ -14,7 +14,8 @@ use zcv_actions::{DeployBufferSearch, DeployProjectSearch};
 use zcv_workspace::Workspace;
 
 use project_search::{
-    ProjectSearchButton, ProjectSearchSerializedItemProvider, deploy as deploy_project_search_view,
+    ProjectSearchButton, ProjectSearchSerializedItemProvider, ProjectSearchToolbar,
+    deploy as deploy_project_search_view,
 };
 
 /// 部署项目搜索时从活动 Item 取查询建议；
@@ -44,7 +45,15 @@ pub fn init(cx: &mut App) {
 
 /// 把独立的 Buffer/Project 搜索栏及其 action 路由注入一个 Workspace。
 pub fn install(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    let document_toolbar = buffer_search::install(workspace, window, cx);
+    let pane = workspace.pane().clone();
+    let document_toolbar = buffer_search::install(workspace, cx);
+    let project_search_toolbar = cx.new(|_| ProjectSearchToolbar::new());
+    pane.update(cx, |pane, cx| {
+        pane.toolbar().update(cx, |toolbar, cx| {
+            toolbar.add_item(document_toolbar.clone(), window, cx);
+            toolbar.add_item(project_search_toolbar, window, cx);
+        });
+    });
     let workspace_handle = cx.weak_entity();
     let status_bar = workspace.status_bar().clone();
     status_bar.update(cx, |status_bar, cx| {

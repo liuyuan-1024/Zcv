@@ -8,16 +8,16 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
-    AnyEntity, AnyView, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Image,
-    ImageFormat, IntoElement, ObjectFit, Render, RenderImage, SharedString, Styled, StyledImage,
-    Subscription, Task, Window, div, img, prelude::*, size,
+    AnyEntity, App, Context, Entity, EventEmitter, FocusHandle, Focusable, Image, ImageFormat,
+    IntoElement, ObjectFit, Render, RenderImage, SharedString, Styled, StyledImage, Subscription,
+    Task, Window, div, img, prelude::*, size,
 };
 use zcv_multi_buffer::MultiBuffer;
 use zcv_project::Project;
 use zcv_theme::color;
 use zcv_workspace::{
-    Item, ItemEvent, ItemHandle, PreviewDocument, PreviewItem, PreviewItemHandle, PreviewToolbar,
-    PreviewViewport, PreviewViewportOptions,
+    Item, ItemEvent, ItemHandle, PreviewDocument, PreviewItem, PreviewItemHandle, PreviewViewport,
+    PreviewViewportOptions,
 };
 
 use crate::renderer::{SVG_PREVIEW_MIN_DISPLAY_EDGE, rasterize_svg};
@@ -46,7 +46,6 @@ pub(crate) struct SvgPreviewView {
     render_task: Option<Task<()>>,
     _document_subscription: Subscription,
     _item_subscription: Subscription,
-    toolbar: Entity<PreviewToolbar>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,18 +59,11 @@ impl SvgPreviewView {
             path,
             source_item,
             multi_buffer,
-            toggle_preview,
             ..
         } = document
         else {
             panic!("SVG 预览必须从源码 Item 创建")
         };
-        let toolbar = PreviewToolbar::new(
-            source_item.as_ref(),
-            toggle_preview,
-            "svg-preview-source",
-            cx,
-        );
         let resources_dir = path.parent().map(PathBuf::from);
         let document_subscription = cx.observe(&multi_buffer, |view, _, cx| {
             view.start_render(1., cx);
@@ -87,8 +79,6 @@ impl SvgPreviewView {
                 {
                     this.update(cx, |view, cx| {
                         view.resources_dir = path.parent().map(PathBuf::from);
-                        view.toolbar
-                            .update(cx, |toolbar, cx| toolbar.refresh_breadcrumbs(cx));
                         view.start_render(1., cx);
                         cx.emit(SvgPreviewEvent::SourcePathChanged);
                     })
@@ -108,7 +98,6 @@ impl SvgPreviewView {
             render_task: None,
             _document_subscription: document_subscription,
             _item_subscription: item_subscription,
-            toolbar,
         };
         view.start_render(1., cx);
         view
@@ -243,10 +232,6 @@ fn svg_display_scale(image_size: gpui::Size<gpui::Pixels>, raster_scale: f32) ->
 impl Item for SvgPreviewView {
     type Event = SvgPreviewEvent;
 
-    fn toolbar_view(&self, _self_handle: &Entity<Self>, _cx: &App) -> Option<AnyView> {
-        Some(self.toolbar.clone().into())
-    }
-
     fn tab_content_text(&self, cx: &App) -> SharedString {
         self.source_item
             .item_path(cx)
@@ -333,8 +318,6 @@ impl PreviewItem for SvgPreviewView {
 
 #[cfg(test)]
 mod tests {
-    use std::rc::Rc;
-
     use std::path::PathBuf;
 
     use gpui::{AppContext as _, TestAppContext, px, size};
@@ -376,7 +359,6 @@ mod tests {
                     path: PathBuf::from("icon.svg"),
                     source_item: Box::new(editor),
                     multi_buffer,
-                    toggle_preview: Rc::new(|_, _| {}),
                     open_path: None,
                 },
                 cx,

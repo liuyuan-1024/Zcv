@@ -22,7 +22,8 @@ use zcv_theme::{color, space};
 use zcv_ui::{Button, MatchOption, MatchOptions, SearchInput};
 use zcv_workspace::{
     Direction, Item, ItemEvent, ItemHandle, SearchEvent, SearchableItem, SearchableItemHandle,
-    SerializedItemProvider, SerializedPaneItem, StatusItemView, Workspace,
+    SerializedItemProvider, SerializedPaneItem, StatusItemView, ToolbarItemEvent,
+    ToolbarItemLocation, ToolbarItemView, Workspace,
 };
 
 const PROJECT_SEARCH_SERIALIZED_KIND: &str = "project-search";
@@ -63,33 +64,50 @@ pub(crate) struct ProjectSearchView {
     search_bar_visible: bool,
     query_input: Option<Entity<Editor>>,
     input_subscriptions: Vec<Subscription>,
-    toolbar: Entity<ProjectSearchToolbar>,
     _subscriptions: Vec<Subscription>,
 }
 
-/// 项目搜索的工具栏视图代理。
+/// 项目搜索的工具栏视图。
 ///
-/// Pane 的工具栏条要求独立的 Render 实体(`Item::toolbar_view` 返回 `AnyView`),同一视图实体不能既作内容区又作工具栏条;
-/// 本代理把工具栏区渲染委托给持有全部搜索会话状态的 [`ProjectSearchView`],自身零状态。
+/// 作为 Pane 工具项存在：活动 Item 是项目搜索视图时显示搜索条，否则隐藏；
+/// 它只持有指向活动视图的实体引用，搜索状态仍由视图唯一持有。
 pub(crate) struct ProjectSearchToolbar {
-    view: WeakEntity<ProjectSearchView>,
+    active_view: Option<Entity<ProjectSearchView>>,
 }
 
 impl ProjectSearchToolbar {
-    pub(crate) fn new(view: WeakEntity<ProjectSearchView>) -> Self {
-        Self { view }
+    pub(crate) fn new() -> Self {
+        Self { active_view: None }
+    }
+}
+
+impl EventEmitter<ToolbarItemEvent> for ProjectSearchToolbar {}
+
+impl ToolbarItemView for ProjectSearchToolbar {
+    fn set_active_pane_item(
+        &mut self,
+        item: Option<&dyn ItemHandle>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ToolbarItemLocation {
+        self.active_view = item.and_then(|item| item.act_as::<ProjectSearchView>(cx));
+        if self.active_view.is_some() {
+            ToolbarItemLocation::PrimaryLeft
+        } else {
+            ToolbarItemLocation::Hidden
+        }
     }
 }
 
 impl Render for ProjectSearchToolbar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.view.upgrade().map_or_else(
-            || div().into_any_element(),
-            |view| {
-                view.read(cx)
-                    .render_search_bar(window, cx, self.view.clone())
-            },
-        )
+        let Some(view) = self.active_view.clone() else {
+            return div().into_any_element();
+        };
+        view.update(cx, |view, cx| view.ensure_search_input(window, cx));
+        view.read(cx)
+            .render_search_bar(window, cx, view.downgrade())
+            .into_any_element()
     }
 }
 
@@ -143,8 +161,6 @@ impl ProjectSearchView {
                 },
             ),
         ];
-        let view = cx.weak_entity();
-        let toolbar = cx.new(|_| ProjectSearchToolbar::new(view));
         Self {
             project,
             results_editor,
@@ -159,7 +175,6 @@ impl ProjectSearchView {
             search_bar_visible: false,
             query_input: None,
             input_subscriptions: Vec::new(),
-            toolbar,
             _subscriptions: subscriptions,
         }
     }
@@ -331,6 +346,7 @@ impl ProjectSearchView {
         };
 
         div()
+            .w_full()
             .key_context(key_context)
             .on_action({
                 let weak = weak.clone();
@@ -643,10 +659,6 @@ impl Item for ProjectSearchView {
 
     fn tab_icon(&self, _cx: &App) -> Option<SharedString> {
         Some("icons/magnifying_glass.svg".into())
-    }
-
-    fn toolbar_view(&self, _self_handle: &Entity<Self>, _cx: &App) -> Option<gpui::AnyView> {
-        Some(self.toolbar.clone().into())
     }
 
     fn serialized_pane_item(&self, _cx: &App) -> Option<SerializedPaneItem> {

@@ -7,8 +7,8 @@
 //! 跨文件搜索执行位于 `project_search`。
 
 use gpui::{
-    App, Context, Entity, IntoElement, KeyContext, ParentElement, Render, Styled, Window, div,
-    prelude::*,
+    App, Context, Entity, EventEmitter, IntoElement, KeyContext, ParentElement, Render, Styled,
+    Window, div, prelude::*,
 };
 use zcv_actions::{
     Backtab, ClearSearch, DeployBufferSearch, FindNext, FindPrevious, ReplaceAll, ReplaceNext,
@@ -20,7 +20,8 @@ use zcv_theme::{color, space};
 use zcv_ui::{Button, MatchOption, MatchOptions, ReplaceInput, SearchInput};
 
 use zcv_workspace::{
-    Breadcrumbs, Direction, ItemHandle, PaneEvent, PreviewButton, SearchableItemHandle, Workspace,
+    Breadcrumbs, Direction, ItemHandle, PreviewButton, SearchableItemHandle, ToolbarItemEvent,
+    ToolbarItemLocation, ToolbarItemView, Workspace,
 };
 
 pub(crate) struct DocumentToolbar {
@@ -57,58 +58,6 @@ impl DocumentToolbar {
             active_item_subscription: None,
             preview_button,
             breadcrumbs,
-        }
-    }
-
-    /// pane 的活动 item 变化时同步搜索目标；搜索条可见时在新 item 上重跑当前 query。
-    pub(super) fn set_active_item(
-        &mut self,
-        item: Option<&dyn ItemHandle>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(editor) = item.and_then(|item| item.act_as::<Editor>(cx)) {
-            let content_toolbar: gpui::AnyView = cx.entity().into();
-            editor.update(cx, |editor, cx| {
-                editor.set_content_toolbar_view(content_toolbar, cx)
-            });
-        }
-        self.preview_button.update(cx, |preview_button, cx| {
-            preview_button.set_active_item(item, window, cx)
-        });
-        self.breadcrumbs
-            .update(cx, |breadcrumbs, cx| breadcrumbs.set_item(item, cx));
-        let new_item = item.and_then(|item| item.as_searchable(cx));
-        // 重建订阅：item 切换后旧订阅失效（emit 方已释放）。
-        self.active_item_subscription = None;
-        if let Some(item) = &new_item {
-            let weak = cx.weak_entity();
-            self.active_item_subscription = Some(item.subscribe_to_search_events(
-                window,
-                cx,
-                Box::new(move |_, _window, cx| {
-                    if let Some(search_bar) = weak.upgrade() {
-                        // 计数渲染时从 item 读取，这里只需触发重绘。
-                        search_bar.update(cx, |_, cx| cx.notify());
-                    }
-                }),
-            ));
-        }
-        let item_changed = new_item.as_ref().is_none_or(|new| {
-            self.active_item
-                .as_ref()
-                .is_none_or(|old| old.item_id() != new.item_id())
-        });
-        self.active_item = new_item;
-        if !self
-            .active_item
-            .as_ref()
-            .is_some_and(|item| item.supports_replace(cx))
-        {
-            self.show_replace = false;
-        }
-        if item_changed && self.visible {
-            self.run_search(window, cx);
         }
     }
 
@@ -296,6 +245,63 @@ impl DocumentToolbar {
         };
         window.focus(&handles[next], cx);
         cx.stop_propagation();
+    }
+}
+
+impl EventEmitter<ToolbarItemEvent> for DocumentToolbar {}
+
+impl ToolbarItemView for DocumentToolbar {
+    /// 活动 Item 变化时同步搜索目标与工具栏内容，并返回本工具项的显示位置。
+    ///
+    /// 只有编辑器 Item 显示缓冲搜索工具区；预览、差异、提交图等 Item 由各自的工具项承担工具区。
+    fn set_active_pane_item(
+        &mut self,
+        item: Option<&dyn ItemHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ToolbarItemLocation {
+        self.preview_button.update(cx, |preview_button, cx| {
+            preview_button.set_active_item(item, window, cx)
+        });
+        self.breadcrumbs
+            .update(cx, |breadcrumbs, cx| breadcrumbs.set_item(item, cx));
+        let new_item = item.and_then(|item| item.as_searchable(cx));
+        // 重建订阅：item 切换后旧订阅失效（emit 方已释放）。
+        self.active_item_subscription = None;
+        if let Some(item) = &new_item {
+            let weak = cx.weak_entity();
+            self.active_item_subscription = Some(item.subscribe_to_search_events(
+                window,
+                cx,
+                Box::new(move |_, _window, cx| {
+                    if let Some(search_bar) = weak.upgrade() {
+                        // 计数渲染时从 item 读取，这里只需触发重绘。
+                        search_bar.update(cx, |_, cx| cx.notify());
+                    }
+                }),
+            ));
+        }
+        let item_changed = new_item.as_ref().is_none_or(|new| {
+            self.active_item
+                .as_ref()
+                .is_none_or(|old| old.item_id() != new.item_id())
+        });
+        self.active_item = new_item;
+        if !self
+            .active_item
+            .as_ref()
+            .is_some_and(|item| item.supports_replace(cx))
+        {
+            self.show_replace = false;
+        }
+        if item_changed && self.visible {
+            self.run_search(window, cx);
+        }
+        if item.and_then(|item| item.act_as::<Editor>(cx)).is_some() {
+            ToolbarItemLocation::Secondary
+        } else {
+            ToolbarItemLocation::Hidden
+        }
     }
 }
 
@@ -588,29 +594,10 @@ impl DocumentToolbar {
 
 pub(super) fn install(
     workspace: &mut Workspace,
-    window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Entity<DocumentToolbar> {
     let pane = workspace.pane().clone();
     let preview_button = cx.new(|_| PreviewButton::new(pane.downgrade()));
     let breadcrumbs = cx.new(|_| Breadcrumbs::new(workspace.project().clone()));
-    let document_toolbar = cx.new(|_| DocumentToolbar::new(preview_button, breadcrumbs));
-    cx.subscribe_in(&pane, window, {
-        let document_toolbar = document_toolbar.clone();
-        move |_, pane, event, window, cx| {
-            if matches!(
-                event,
-                PaneEvent::AddItem { .. }
-                    | PaneEvent::ActivateItem { .. }
-                    | PaneEvent::RemovedItem { .. }
-            ) {
-                let active_item = pane.read(cx).active_item().map(ItemHandle::boxed_clone);
-                document_toolbar.update(cx, |toolbar, cx| {
-                    toolbar.set_active_item(active_item.as_deref(), window, cx)
-                });
-            }
-        }
-    })
-    .detach();
-    document_toolbar
+    cx.new(|_| DocumentToolbar::new(preview_button, breadcrumbs))
 }

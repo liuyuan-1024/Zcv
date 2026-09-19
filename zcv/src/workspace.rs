@@ -28,8 +28,8 @@ use zcv_settings::{GlobalSettingsErrorReporter, SettingsStore};
 use zcv_theme::{ThemeChoice, typography};
 use zcv_workspace::{
     ActivityIndicator, Dock, DockPosition, GitBranchAction, OnBranchSelected, OnProjectSelected,
-    PaneEvent, PanelButtons, ToastAction, ToastKind, TopBar, TopBarCallbacks, Workspace,
-    add_to_recent, load_window_bounds, save_window_bounds,
+    PaneEvent, PanelButtons, PreviewToolbar, ToastAction, ToastKind, TopBar, TopBarCallbacks,
+    Workspace, add_to_recent, load_window_bounds, save_window_bounds,
 };
 
 use crate::auto_update::{UpdateButton, UpdateManager};
@@ -40,6 +40,7 @@ use zcv_project_tree::{OnCreate, OnMove, OnOpenFile, OnRename, OnTrash, ProjectT
 use zcv_terminal::TerminalPanel;
 use zcv_version_control::{
     OnOpenGitDiff, OnOpenGitGraph, VersionControlPanel, deploy_git_graph, deploy_project_diff,
+    install as install_version_control,
 };
 
 /// 构造打开文件回调（两个面板共用同一契约）。
@@ -383,6 +384,15 @@ fn initialize_common_workspace(
     });
 
     zcv_search::install(workspace, window, cx);
+    install_version_control(workspace, window, cx);
+
+    let pane = workspace.pane().clone();
+    let preview_toolbar = cx.new(|cx| PreviewToolbar::new(pane.downgrade(), cx));
+    pane.update(cx, |pane, cx| {
+        pane.toolbar().update(cx, |toolbar, cx| {
+            toolbar.add_item(preview_toolbar, window, cx);
+        });
+    });
 
     for dock in [
         workspace.dock(DockPosition::Left).clone(),

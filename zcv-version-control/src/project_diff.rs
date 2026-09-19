@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, AnyEntity, AnyView, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    KeyContext, ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity,
-    Window, div, prelude::*,
+    AnyElement, AnyEntity, App, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyContext,
+    ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity, Window, div,
+    prelude::*,
 };
 use zcv_actions::{
     Backtab, FindNext, FindPrevious, ReplaceAll, ReplaceNext, Tab, ToggleCaseSensitive,
@@ -35,7 +35,8 @@ use zcv_ui::{
 };
 use zcv_workspace::{
     Direction, Item, ItemEvent, ItemHandle, SearchableItem, SearchableItemHandle,
-    SerializedItemProvider, SerializedPaneItem, Workspace,
+    SerializedItemProvider, SerializedPaneItem, ToolbarItemEvent, ToolbarItemLocation,
+    ToolbarItemView, Workspace,
 };
 
 const PROJECT_DIFF_SERIALIZED_KIND: &str = "project-diff";
@@ -407,23 +408,49 @@ pub struct ProjectDiffView {
     show_replace: bool,
     search_subscriptions: Vec<Subscription>,
     _subscriptions: Vec<Subscription>,
-    toolbar: Entity<ProjectDiffToolbar>,
 }
 
-struct ProjectDiffToolbar {
-    view: WeakEntity<ProjectDiffView>,
+/// 项目差异的工具栏视图。
+///
+/// 作为 Pane 工具项存在：活动 Item 是本差异视图时显示搜索条，否则隐藏；
+/// 它只持有指向活动视图的实体引用，差异状态仍由视图唯一持有。
+pub(crate) struct ProjectDiffToolbar {
+    active_view: Option<Entity<ProjectDiffView>>,
+}
+
+impl ProjectDiffToolbar {
+    pub(crate) fn new() -> Self {
+        Self { active_view: None }
+    }
+}
+
+impl EventEmitter<ToolbarItemEvent> for ProjectDiffToolbar {}
+
+impl ToolbarItemView for ProjectDiffToolbar {
+    fn set_active_pane_item(
+        &mut self,
+        item: Option<&dyn ItemHandle>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ToolbarItemLocation {
+        self.active_view = item.and_then(|item| item.act_as::<ProjectDiffView>(cx));
+        if self.active_view.is_some() {
+            ToolbarItemLocation::PrimaryRight
+        } else {
+            ToolbarItemLocation::Hidden
+        }
+    }
 }
 
 impl Render for ProjectDiffToolbar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.view.upgrade().map_or_else(
-            || div().into_any_element(),
-            |view| {
-                view.update(cx, |view, cx| view.ensure_search_input(window, cx));
-                view.read(cx)
-                    .render_search_bar(window, cx, self.view.clone())
-            },
-        )
+        let Some(view) = self.active_view.clone() else {
+            return div().into_any_element();
+        };
+        view.update(cx, |view, cx| view.ensure_search_input(window, cx));
+        view.read(cx)
+            .render_search_bar(window, cx, view.downgrade())
+            .into_any_element()
     }
 }
 
@@ -702,6 +729,7 @@ impl ProjectDiffView {
         let mut in_replace_context = KeyContext::new_with_defaults();
         in_replace_context.add("in_replace");
         div()
+            .w_full()
             .key_context(key_context)
             .flex()
             .flex_col()
@@ -971,8 +999,6 @@ impl ProjectDiffView {
                 | GitStoreEvent::UncommitFailed(_) => {}
             }),
         ];
-        let toolbar_view = cx.entity().downgrade();
-        let toolbar = cx.new(|_| ProjectDiffToolbar { view: toolbar_view });
         let mut view = Self {
             kind,
             project,
@@ -989,7 +1015,6 @@ impl ProjectDiffView {
             show_replace: false,
             search_subscriptions: Vec::new(),
             _subscriptions: subscriptions,
-            toolbar,
         };
         view.refresh_files(cx);
         view
@@ -1493,10 +1518,6 @@ impl Render for ProjectDiffView {
 
 impl Item for ProjectDiffView {
     type Event = EditorEvent;
-
-    fn toolbar_view(&self, _self_handle: &Entity<Self>, _cx: &App) -> Option<AnyView> {
-        Some(self.toolbar.clone().into())
-    }
 
     fn tab_content_text(&self, _cx: &App) -> SharedString {
         self.kind.title().into()
@@ -2500,5 +2521,27 @@ mod tests {
             "命令 {args:?} 失败：{}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    /// 活动 Item 是本差异视图时工具栏显示在右侧；其他 Item 时隐藏。
+    #[gpui::test]
+    fn project_diff_toolbar_follows_active_item(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().expect("应创建临时项目目录");
+        let project = test_project(directory.path().to_path_buf(), cx);
+        let toolbar = cx.new(|_| ProjectDiffToolbar::new());
+        let (view, cx) = cx.add_window_view(move |_, cx| {
+            ProjectDiffView::new(ProjectDiffKind::Staged, project, cx)
+        });
+        cx.update(|window, cx| {
+            let location = toolbar.update(cx, |toolbar, cx| {
+                toolbar.set_active_pane_item(Some(&view as &dyn ItemHandle), window, cx)
+            });
+            assert_eq!(location, ToolbarItemLocation::PrimaryRight);
+
+            let hidden = toolbar.update(cx, |toolbar, cx| {
+                toolbar.set_active_pane_item(None, window, cx)
+            });
+            assert_eq!(hidden, ToolbarItemLocation::Hidden);
+        });
     }
 }

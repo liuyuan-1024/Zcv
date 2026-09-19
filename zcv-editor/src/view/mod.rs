@@ -9,9 +9,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, AnyView, App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle,
-    IntoElement, KeyContext, Pixels, Point, Render, SharedString, Styled, TextRun, Window, div,
-    point, prelude::*,
+    AnyElement, App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, IntoElement,
+    KeyContext, Pixels, Point, Render, SharedString, Styled, TextRun, Window, div, point,
+    prelude::*,
 };
 use zcv_actions::{
     Backspace, Copy, Cut, Delete, DeleteToBeginningOfLine, DeleteToEndOfLine, DeleteToNextWordEnd,
@@ -355,17 +355,9 @@ pub struct Editor {
     autoclose_regions: Vec<AutocloseRegion>,
     /// 未换行模式下最长行的像素宽度；按文本版本、显示行和字体失效。
     line_width_cache: Option<LineWidthCache>,
-    /// 普通文档视图自己的顶部内容区域；具体内容由装配方注入，Editor 不拥有其业务状态。
-    pub(crate) content_toolbar: Option<AnyView>,
 }
 
 impl Editor {
-    /// 设置普通文档顶部的已类型擦除视图。
-    pub fn set_content_toolbar_view(&mut self, toolbar: AnyView, cx: &mut Context<Self>) {
-        self.content_toolbar = Some(toolbar);
-        cx.notify();
-    }
-
     pub fn single_line(cx: &mut Context<Self>) -> Self {
         let buffer = Buffer::from_text(String::new(), BufferConfig::default())
             .expect("新建空白 Buffer 不应失败");
@@ -1703,7 +1695,6 @@ impl Editor {
             local_rename: None,
             autoclose_regions: Vec::new(),
             line_width_cache: None,
-            content_toolbar: None,
         };
         // 设置变化时自动跟随（覆盖场景除外）；编辑器在测试环境无 SettingsStore 时保持默认。
         cx.observe_global::<SettingsStore>(|editor, cx| {

@@ -27,6 +27,7 @@ mod status_bar;
 mod status_color;
 mod tab_bar;
 mod toast;
+mod toolbar;
 mod top_bar;
 mod window_bounds;
 mod workspace_state;
@@ -45,8 +46,8 @@ pub use panel::{Panel, PanelEvent, PanelHandle};
 pub use panel_buttons::PanelButtons;
 pub use preview::{
     OpenPathCallback, PreviewButton, PreviewDocument, PreviewItem, PreviewItemHandle, PreviewMode,
-    PreviewPresentation, PreviewProvider, PreviewToggleCallback, PreviewToolbar, PreviewViewport,
-    PreviewViewportOptions, register,
+    PreviewPresentation, PreviewProvider, PreviewToolbar, PreviewViewport, PreviewViewportOptions,
+    register,
 };
 pub use project_picker::OnProjectSelected;
 pub use recent_projects::{add_to_recent, most_recent_valid_project};
@@ -54,6 +55,7 @@ pub use searchable::{Direction, SearchEvent, SearchableItem, SearchableItemHandl
 pub use status_bar::StatusItemView;
 pub use status_color::git_status_color;
 pub use toast::{ToastAction, ToastKind};
+pub use toolbar::{Toolbar, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 pub use top_bar::{TopBar, TopBarCallbacks};
 pub use window_bounds::{load_window_bounds, save_window_bounds};
 pub use workspace_state::Workspace;

@@ -11,9 +11,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, Bounds, Context, Element, ElementId, Entity, FocusHandle, GlobalElementId,
-    InspectorElementId, IntoElement, LayoutId, Pixels, Render, Rgba, ScrollHandle, Size, Style,
-    Subscription, WeakEntity, Window, div, point, prelude::*, relative, size,
+    AnyElement, App, Bounds, Context, Element, ElementId, Entity, EventEmitter, FocusHandle,
+    GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels, Render, Rgba, ScrollHandle,
+    Size, Style, Subscription, WeakEntity, Window, div, point, prelude::*, relative, size,
 };
 use zcv_actions::TogglePreview;
 use zcv_multi_buffer::MultiBuffer;
@@ -24,8 +24,8 @@ use crate::breadcrumbs::Breadcrumbs;
 use crate::item::{Item, ItemEvent, ItemHandle};
 use crate::pane::Pane;
 use crate::provider_registry::ProviderRegistry;
+use crate::toolbar::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
 
-pub type PreviewToggleCallback = Rc<dyn Fn(&mut Window, &mut App)>;
 /// 预览内容请求打开工作区文件时使用的宿主能力。
 pub type OpenPathCallback = Rc<dyn Fn(PathBuf, &mut Window, &mut App)>;
 
@@ -342,8 +342,6 @@ pub enum PreviewDocument {
         path: PathBuf,
         source_item: Box<dyn ItemHandle>,
         multi_buffer: Entity<MultiBuffer>,
-        /// 预览工具栏的鼠标点击回调；快捷键仍通过 action 处理。
-        toggle_preview: PreviewToggleCallback,
         /// 预览内容请求打开工作区文件时使用的宿主回调。
         open_path: Option<OpenPathCallback>,
     },
@@ -407,33 +405,65 @@ fn provider_for_mode(path: &Path, mode: PreviewMode, cx: &App) -> Option<Arc<dyn
 
 /// 源码派生预览共用的工具栏：左侧源码面包屑，右侧「返回源码」按钮。
 ///
-/// 元素 id 由格式实现传入，避免同屏多个预览的元素 id 冲突；
-/// 面包屑随源码 Item 的路径/标题变化经 refresh_breadcrumbs 刷新。
+/// 工具项是 Pane 级的持久实体：活动 Item 是预览视图时显示，否则隐藏。
+/// 预览格式实现不再各自持有工具栏视图，也不再注入返回源码回调。
 pub struct PreviewToolbar {
+    pane: WeakEntity<Pane>,
     breadcrumbs: Entity<Breadcrumbs>,
-    toggle_preview: PreviewToggleCallback,
-    source_button_id: &'static str,
+    _source_subscription: Option<Subscription>,
 }
 
 impl PreviewToolbar {
-    pub fn new(
-        source_item: &dyn ItemHandle,
-        toggle_preview: PreviewToggleCallback,
-        source_button_id: &'static str,
-        cx: &mut App,
-    ) -> Entity<Self> {
+    pub fn new(pane: WeakEntity<Pane>, cx: &mut Context<Self>) -> Self {
         let breadcrumbs = cx.new(|_| Breadcrumbs::without_project());
-        breadcrumbs.update(cx, |view, cx| view.set_item(Some(source_item), cx));
-        cx.new(move |_| Self {
+        Self {
+            pane,
             breadcrumbs,
-            toggle_preview,
-            source_button_id,
-        })
+            _source_subscription: None,
+        }
     }
+}
 
-    /// 源码 Item 的路径或标题变化后刷新面包屑。
-    pub fn refresh_breadcrumbs(&mut self, cx: &mut Context<Self>) {
-        self.breadcrumbs.update(cx, |_, cx| cx.notify());
+impl EventEmitter<ToolbarItemEvent> for PreviewToolbar {}
+
+impl ToolbarItemView for PreviewToolbar {
+    fn set_active_pane_item(
+        &mut self,
+        item: Option<&dyn ItemHandle>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ToolbarItemLocation {
+        self._source_subscription = None;
+        let preview = item.and_then(|item| item.as_preview_item(cx));
+        let source = preview.as_ref().and_then(|preview| preview.source_item(cx));
+        self.breadcrumbs.update(cx, |breadcrumbs, cx| {
+            breadcrumbs.set_item(source.as_deref(), cx)
+        });
+        if let Some(source) = &source {
+            let this = cx.entity().downgrade();
+            self._source_subscription = Some(source.subscribe_to_item_events(
+                cx,
+                Box::new(move |event, cx| {
+                    if matches!(
+                        event,
+                        ItemEvent::PathChanged
+                            | ItemEvent::UpdateTab
+                            | ItemEvent::UpdateBreadcrumbs
+                    ) {
+                        this.update(cx, |toolbar, cx| {
+                            toolbar.breadcrumbs.update(cx, |_, cx| cx.notify());
+                            cx.notify();
+                        })
+                        .ok();
+                    }
+                }),
+            ));
+        }
+        if preview.is_some() {
+            ToolbarItemLocation::Secondary
+        } else {
+            ToolbarItemLocation::Hidden
+        }
     }
 }
 
@@ -446,11 +476,16 @@ impl Render for PreviewToolbar {
             .gap(space::S6)
             .child(div().flex_1().min_w_0().child(self.breadcrumbs.clone()))
             .child(
-                Button::icon(self.source_button_id, "icons/eye_off.svg")
+                Button::icon("preview-toolbar-source", "icons/eye_off.svg")
                     .label("返回源码")
                     .on_click({
-                        let toggle_preview = self.toggle_preview.clone();
-                        move |_, window, cx| toggle_preview(window, cx)
+                        let pane = self.pane.clone();
+                        move |_, window, cx| {
+                            pane.update(cx, |pane, cx| {
+                                pane.toggle_preview(window, cx);
+                            })
+                            .ok();
+                        }
                     }),
             )
     }
@@ -560,7 +595,7 @@ impl Render for PreviewButton {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{TestAppContext, px};
+    use gpui::{Focusable, TestAppContext, px};
 
     use super::*;
 
@@ -736,6 +771,79 @@ mod tests {
 
         cx.read_entity(&view, |view, _| {
             assert!(!view.viewport.center_after_layout.get());
+        });
+    }
+
+    struct ProbeItem {
+        focus: FocusHandle,
+        is_preview: bool,
+    }
+
+    impl EventEmitter<()> for ProbeItem {}
+
+    impl Focusable for ProbeItem {
+        fn focus_handle(&self, _cx: &App) -> FocusHandle {
+            self.focus.clone()
+        }
+    }
+
+    impl Render for ProbeItem {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    impl Item for ProbeItem {
+        type Event = ();
+
+        fn tab_content_text(&self, _cx: &App) -> gpui::SharedString {
+            "预览探针".into()
+        }
+
+        fn as_preview_item(
+            &self,
+            self_handle: &Entity<Self>,
+            _cx: &App,
+        ) -> Option<Box<dyn PreviewItemHandle>> {
+            self.is_preview
+                .then(|| Box::new(self_handle.clone()) as Box<dyn PreviewItemHandle>)
+        }
+    }
+
+    impl PreviewItem for ProbeItem {}
+
+    struct TestView;
+
+    impl Render for TestView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    /// 活动 Item 是预览视图时工具区显示；普通 Item 时隐藏。
+    #[gpui::test]
+    fn preview_toolbar_follows_preview_items(cx: &mut TestAppContext) {
+        let pane = cx.new(Pane::new);
+        let toolbar = cx.new(|cx| PreviewToolbar::new(pane.downgrade(), cx));
+        cx.add_window_view(|window, cx| {
+            let preview = cx.new(|cx| ProbeItem {
+                focus: cx.focus_handle(),
+                is_preview: true,
+            });
+            let preview_location = toolbar.update(cx, |toolbar, cx| {
+                toolbar.set_active_pane_item(Some(&preview as &dyn ItemHandle), window, cx)
+            });
+            assert_eq!(preview_location, ToolbarItemLocation::Secondary);
+
+            let plain = cx.new(|cx| ProbeItem {
+                focus: cx.focus_handle(),
+                is_preview: false,
+            });
+            let plain_location = toolbar.update(cx, |toolbar, cx| {
+                toolbar.set_active_pane_item(Some(&plain as &dyn ItemHandle), window, cx)
+            });
+            assert_eq!(plain_location, ToolbarItemLocation::Hidden);
+            TestView
         });
     }
 }

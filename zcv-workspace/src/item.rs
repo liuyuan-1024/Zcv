@@ -43,9 +43,9 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
         None
     }
 
-    /// 当前 Item 自己提供的顶部工具区内容；Pane 只负责渲染统一壳子。
-    fn toolbar_view(&self, _self_handle: &Entity<Self>, _cx: &App) -> Option<AnyView> {
-        None
+    /// 当前 Item 是否允许 Pane 显示工具区；工具项内容由装配层注册，不经过 Item。
+    fn show_toolbar(&self) -> bool {
+        true
     }
 
     fn to_item_events(_event: &Self::Event, _emit: &mut dyn FnMut(ItemEvent)) {}
@@ -157,7 +157,7 @@ pub trait ItemHandle: Send + 'static {
     fn boxed_clone(&self) -> Box<dyn ItemHandle>;
     fn tab_content_text(&self, cx: &App) -> SharedString;
     fn tab_icon(&self, cx: &App) -> Option<SharedString>;
-    fn toolbar_view(&self, cx: &App) -> Option<AnyView>;
+    fn show_toolbar(&self, cx: &App) -> bool;
     fn is_dirty(&self, cx: &App) -> bool;
     fn item_path(&self, cx: &App) -> Option<PathBuf>;
     fn serialized_pane_item(&self, cx: &App) -> Option<SerializedPaneItem>;
@@ -222,8 +222,8 @@ impl<T: Item> ItemHandle for Entity<T> {
         self.read(cx).tab_icon(cx)
     }
 
-    fn toolbar_view(&self, cx: &App) -> Option<AnyView> {
-        self.read(cx).toolbar_view(self, cx)
+    fn show_toolbar(&self, cx: &App) -> bool {
+        self.read(cx).show_toolbar()
     }
 
     fn is_dirty(&self, cx: &App) -> bool {

@@ -7,9 +7,9 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    AnyView, App, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    Font, InteractiveElement, IntoElement, IsZero, KeyContext, MouseButton, PathBuilder, Pixels,
-    Render, Rgba, ScrollHandle, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled,
+    App, Bounds, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable, Font,
+    InteractiveElement, IntoElement, IsZero, KeyContext, MouseButton, PathBuilder, Pixels, Render,
+    Rgba, ScrollHandle, ScrollStrategy, SharedString, StatefulInteractiveElement, Styled,
     Subscription, TextRun, UniformListScrollHandle, WeakEntity, Window, canvas, div, point,
     prelude::*, px, uniform_list,
 };
@@ -28,7 +28,8 @@ use zcv_theme::{space, typography};
 use zcv_ui::{ButtonLike, MatchOption, MatchOptions, Scrollbar, SearchInput, TooltipSpec};
 use zcv_workspace::{
     Direction, Item, ItemHandle, SearchEvent, SearchableItem, SerializedItemProvider,
-    SerializedPaneItem, Workspace, typography_for_window,
+    SerializedPaneItem, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView, Workspace,
+    typography_for_window,
 };
 
 // ── 布局常量 ────────────────────────────────
@@ -117,24 +118,51 @@ pub(crate) struct GitGraphView {
     search_input: Entity<Editor>,
     _search_subscription: Subscription,
     search_options: MatchOptions,
-    toolbar: Entity<GitGraphToolbar>,
 }
 
-struct GitGraphToolbar {
-    view: WeakEntity<GitGraphView>,
+/// Git 提交图的搜索工具栏。
+///
+/// 作为 Pane 工具项存在：活动 Item 是提交图视图时显示搜索条，否则隐藏。
+pub(crate) struct GitGraphToolbar {
+    active_view: Option<Entity<GitGraphView>>,
+}
+
+impl GitGraphToolbar {
+    pub(crate) fn new() -> Self {
+        Self { active_view: None }
+    }
+}
+
+impl EventEmitter<ToolbarItemEvent> for GitGraphToolbar {}
+
+impl ToolbarItemView for GitGraphToolbar {
+    fn set_active_pane_item(
+        &mut self,
+        item: Option<&dyn ItemHandle>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ToolbarItemLocation {
+        self.active_view = item.and_then(|item| item.act_as::<GitGraphView>(cx));
+        if self.active_view.is_some() {
+            ToolbarItemLocation::PrimaryLeft
+        } else {
+            ToolbarItemLocation::Hidden
+        }
+    }
 }
 
 impl Render for GitGraphToolbar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(view) = self.view.upgrade() else {
+        let Some(view) = self.active_view.clone() else {
             return div();
         };
+        let weak = view.downgrade();
         let read = view.read(cx);
 
         let mut key_context = KeyContext::new_with_defaults();
         key_context.add("GitGraphSearchBar");
         let on_find_next = {
-            let view = self.view.clone();
+            let view = weak.clone();
             move |_: &FindNext, _: &mut Window, cx: &mut App| {
                 if let Some(view) = view.upgrade() {
                     view.update(cx, |view, cx| {
@@ -144,7 +172,7 @@ impl Render for GitGraphToolbar {
             }
         };
         let on_find_previous = {
-            let view = self.view.clone();
+            let view = weak.clone();
             move |_: &FindPrevious, _: &mut Window, cx: &mut App| {
                 if let Some(view) = view.upgrade() {
                     view.update(cx, |view, cx| {
@@ -154,7 +182,7 @@ impl Render for GitGraphToolbar {
             }
         };
         let on_toggle_case = {
-            let view = self.view.clone();
+            let view = weak.clone();
             move |_: &ToggleCaseSensitive, _: &mut Window, cx: &mut App| {
                 if let Some(view) = view.upgrade() {
                     view.update(cx, |view, cx| {
@@ -164,7 +192,7 @@ impl Render for GitGraphToolbar {
             }
         };
         let on_toggle_word = {
-            let view = self.view.clone();
+            let view = weak.clone();
             move |_: &ToggleWholeWord, _: &mut Window, cx: &mut App| {
                 if let Some(view) = view.upgrade() {
                     view.update(cx, |view, cx| {
@@ -174,7 +202,7 @@ impl Render for GitGraphToolbar {
             }
         };
         let on_toggle_regex = {
-            let view = self.view.clone();
+            let view = weak.clone();
             move |_: &ToggleRegex, _: &mut Window, cx: &mut App| {
                 if let Some(view) = view.upgrade() {
                     view.update(cx, |view, cx| {
@@ -184,7 +212,7 @@ impl Render for GitGraphToolbar {
             }
         };
         let on_tab = {
-            let view = self.view.clone();
+            let view = weak.clone();
             move |_: &Tab, window: &mut Window, cx: &mut App| {
                 if let Some(view) = view.upgrade() {
                     view.update(cx, |view, cx| {
@@ -194,7 +222,7 @@ impl Render for GitGraphToolbar {
             }
         };
         let on_backtab = {
-            let view = self.view.clone();
+            let view = weak.clone();
             move |_: &Backtab, window: &mut Window, cx: &mut App| {
                 if let Some(view) = view.upgrade() {
                     view.update(cx, |view, cx| {
@@ -221,7 +249,7 @@ impl Render for GitGraphToolbar {
                     .shortcut_resolver(zcv_keymap::display_shortcut)
                     .options(read.search_options)
                     .on_toggle({
-                        let view = self.view.clone();
+                        let view = weak.clone();
                         move |option, _window, cx| {
                             if let Some(view) = view.upgrade() {
                                 view.update(cx, |view, cx| {
@@ -232,7 +260,7 @@ impl Render for GitGraphToolbar {
                     })
                     .count(read.active_search_match, read.search_matches.len())
                     .on_previous({
-                        let view = self.view.clone();
+                        let view = weak.clone();
                         move |_window, cx| {
                             if let Some(view) = view.upgrade() {
                                 view.update(cx, |view, cx| {
@@ -242,7 +270,7 @@ impl Render for GitGraphToolbar {
                         }
                     })
                     .on_next({
-                        let view = self.view.clone();
+                        let view = weak.clone();
                         move |_window, cx| {
                             if let Some(view) = view.upgrade() {
                                 view.update(cx, |view, cx| {
@@ -302,8 +330,6 @@ impl GitGraphView {
                 view.reload(cx);
             }
         });
-        let view_weak = cx.entity().downgrade();
-        let toolbar = cx.new(|_| GitGraphToolbar { view: view_weak });
         let horizontal_scroll_handle = ScrollHandle::new();
         let mut view = Self {
             focus,
@@ -332,7 +358,6 @@ impl GitGraphView {
             search_input,
             _search_subscription: search_subscription,
             search_options: MatchOptions::default(),
-            toolbar,
         };
         if git_store.read(cx).is_repository_scan_ready() {
             view.load_more(cx);
@@ -684,10 +709,6 @@ impl GitGraphView {
 
 impl Item for GitGraphView {
     type Event = SearchEvent;
-
-    fn toolbar_view(&self, _self_handle: &Entity<Self>, _cx: &App) -> Option<AnyView> {
-        Some(self.toolbar.clone().into())
-    }
 
     fn tab_content_text(&self, _cx: &App) -> SharedString {
         self.project

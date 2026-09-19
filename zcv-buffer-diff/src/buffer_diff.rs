@@ -376,6 +376,11 @@ impl BufferDiff {
         self.base_source.as_ref()
     }
 
+    /// index 参照文档；hunk 暂存语义相对它判定。
+    pub fn index_source(&self) -> Option<&Entity<LanguageBuffer>> {
+        self.index_source.as_ref()
+    }
+
     pub fn path(&self) -> &PathBuf {
         &self.path
     }

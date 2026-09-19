@@ -12,15 +12,13 @@ use gpui::{
     Window, div, prelude::*, px,
 };
 use zcv_actions::{CloseTab, NextTab, PrevTab, TogglePreview};
-use zcv_theme::{FileIcons, color, space};
+use zcv_theme::{FileIcons, color};
 use zcv_ui::{Button, SvgIcon, Tab};
 
 use crate::layout_state::{SerializedPane, SerializedPaneItem};
-use crate::preview::{
-    OpenPathCallback, PreviewDocument, PreviewToggleCallback, source_provider_for,
-};
+use crate::preview::{OpenPathCallback, PreviewDocument, source_provider_for};
 use crate::tab_bar::{TabBar, TabBarTrailing};
-use crate::{ItemEvent, ItemHandle};
+use crate::{ItemEvent, ItemHandle, Toolbar};
 
 // ═══ Pane 事件 ════════════════════════════════════════════════════════
 
@@ -106,19 +104,11 @@ pub struct Pane {
     tab_bar_trailing: Option<TabBarTrailing>,
     /// 工作区注入的文件打开能力；独立测试 Pane 可以不提供该能力。
     open_path: Option<OpenPathCallback>,
+    /// 顶部工具区；工具项由装配层注册，Pane 只负责随活动项同步。
+    toolbar: Entity<Toolbar>,
 }
 
 impl Pane {
-    fn preview_toggle_handler(&self, cx: &Context<Self>) -> PreviewToggleCallback {
-        let pane = cx.entity().downgrade();
-        Rc::new(move |window, cx| {
-            pane.update(cx, |pane, cx| {
-                pane.toggle_preview(window, cx);
-            })
-            .ok();
-        })
-    }
-
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self {
             focus: cx.focus_handle(),
@@ -129,6 +119,7 @@ impl Pane {
             scroll_handle: ScrollHandle::new(),
             tab_bar_trailing: None,
             open_path: None,
+            toolbar: cx.new(|_| Toolbar::new()),
         }
     }
 
@@ -179,7 +170,7 @@ impl Pane {
         &mut self,
         item: Box<dyn ItemHandle>,
         destination_index: Option<usize>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> FocusHandle {
         let item_id = item.item_id();
@@ -218,6 +209,7 @@ impl Pane {
         self.scroll_to_tab(index);
         cx.emit(PaneEvent::AddItem { item_id });
         cx.emit(PaneEvent::ActivateItem { item_id });
+        self.update_toolbar(window, cx);
         cx.notify();
         focus
     }
@@ -283,7 +275,6 @@ impl Pane {
                 path,
                 source_item: item,
                 multi_buffer,
-                toggle_preview: self.preview_toggle_handler(cx),
                 open_path: self.open_path.clone(),
             },
             cx,
@@ -329,7 +320,6 @@ impl Pane {
                 path,
                 source_item,
                 multi_buffer,
-                toggle_preview: self.preview_toggle_handler(cx),
                 open_path: self.open_path.clone(),
             },
             cx,
@@ -360,7 +350,6 @@ impl Pane {
                 path,
                 source_item,
                 multi_buffer,
-                toggle_preview: self.preview_toggle_handler(cx),
                 open_path: self.open_path.clone(),
             },
             cx,
@@ -456,7 +445,7 @@ impl Pane {
     fn activate_item_at(
         &mut self,
         index: usize,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> FocusHandle {
         let item_id = self.tabs[index].item_id();
@@ -464,6 +453,7 @@ impl Pane {
         self.active = Some(item_id);
         self.scroll_to_tab(index);
         cx.emit(PaneEvent::ActivateItem { item_id });
+        self.update_toolbar(window, cx);
         cx.notify();
         focus
     }
@@ -503,6 +493,11 @@ impl Pane {
         self.focus.clone()
     }
 
+    /// 顶部工具区；装配层通过它注册工具项。
+    pub fn toolbar(&self) -> &Entity<Toolbar> {
+        &self.toolbar
+    }
+
     /// 将已打开编辑器的文件路径随文件或目录重命名一起迁移。
     pub fn rename_path(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
         for item in &self.tabs {
@@ -528,12 +523,7 @@ impl Pane {
     }
 
     /// 激活指定 tab，并滚入视图。
-    pub fn activate_tab(
-        &mut self,
-        item_id: EntityId,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn activate_tab(&mut self, item_id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(pos) = self.tabs.iter().position(|item| item.item_id() == item_id) {
             if self.active == Some(item_id) {
                 return;
@@ -541,12 +531,13 @@ impl Pane {
             self.active = Some(item_id);
             self.scroll_to_tab(pos);
             cx.emit(PaneEvent::ActivateItem { item_id });
+            self.update_toolbar(window, cx);
             cx.notify();
         }
     }
 
     /// 切换到下一个 tab，并滚入视图。
-    pub fn next_tab(&mut self) {
+    pub fn next_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.tabs.is_empty() {
             return;
         }
@@ -560,10 +551,11 @@ impl Pane {
         };
         self.active = Some(self.tabs[next].item_id());
         self.scroll_to_tab(next);
+        self.update_toolbar(window, cx);
     }
 
     /// 切换到上一个 tab，并滚入视图。
-    pub fn prev_tab(&mut self) {
+    pub fn prev_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.tabs.is_empty() {
             return;
         }
@@ -577,6 +569,7 @@ impl Pane {
         };
         self.active = Some(self.tabs[prev].item_id());
         self.scroll_to_tab(prev);
+        self.update_toolbar(window, cx);
     }
 
     /// 关闭指定 tab，激活原位置的下一个；统一在此发射 `Removed` 事件。
@@ -604,6 +597,7 @@ impl Pane {
                 .map(|item| item.item_id())
                 .or_else(|| self.tabs.last().map(|item| item.item_id()));
         }
+        self.update_toolbar(window, cx);
         // 焦点归还：聚焦新激活 item；全部关闭后回落到 Pane 自身句柄（tab 栏容器 track_focus 挂载，焦点链与 Pane 快捷键保持有效）。
         if had_focus {
             let focus = self
@@ -647,6 +641,14 @@ impl Pane {
             window.focus(&item.item_focus_handle(cx), cx);
         }
     }
+
+    /// 把当前活动 Item 同步给工具区，让每个工具项重新选择位置与显隐。
+    fn update_toolbar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let active_item = self.active_item().map(ItemHandle::boxed_clone);
+        self.toolbar.update(cx, |toolbar, cx| {
+            toolbar.set_active_item(active_item.as_deref(), window, cx);
+        });
+    }
 }
 
 // ═══ 拖拽重排序 ═══════════════════════════════════════════════════
@@ -666,7 +668,7 @@ impl Pane {
         &mut self,
         dragged: &DraggedTab,
         target_ix: usize,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.move_tab(dragged.ix, target_ix);
@@ -681,6 +683,7 @@ impl Pane {
         cx.emit(PaneEvent::ActivateItem {
             item_id: self.active.unwrap_or(dragged.item_id),
         });
+        self.update_toolbar(window, cx);
         cx.notify();
     }
 }
@@ -698,7 +701,7 @@ impl Pane {
     }
 
     fn handle_next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.next_tab();
+        self.next_tab(window, cx);
         // 关闭最后一个 tab 后按快捷键会走到这里：next_tab 对空 tabs 早退，active 可能为 None。
         let Some(item_id) = self.active else {
             return;
@@ -710,7 +713,7 @@ impl Pane {
     }
 
     fn handle_prev_tab(&mut self, _: &PrevTab, window: &mut Window, cx: &mut Context<Self>) {
-        self.prev_tab();
+        self.prev_tab(window, cx);
         let Some(item_id) = self.active else {
             return;
         };
@@ -770,19 +773,7 @@ impl Render for Pane {
                     cx,
                 ))
             })
-            .when_some(
-                active_item.and_then(|item| item.toolbar_view(cx)),
-                |pane, toolbar| {
-                    pane.child(
-                        div()
-                            .w_full()
-                            .p(space::S6)
-                            .border_b_1()
-                            .border_color(color::current(cx).border)
-                            .child(toolbar),
-                    )
-                },
-            )
+            .child(self.toolbar.clone())
             .child(render_content(active_item_id, active_item, cx))
     }
 }
@@ -1128,13 +1119,15 @@ mod tests {
     use std::rc::Rc;
 
     use gpui::{
-        AppContext, Context, Pixels, Point, Render, TestAppContext, Window, div, prelude::*,
+        AppContext, Context, EventEmitter, Pixels, Point, Render, TestAppContext, Window, div,
+        prelude::*,
     };
     use zcv_language::LanguageBuffer;
     use zcv_multi_buffer::MultiBuffer;
     use zcv_text::{Buffer, BufferConfig};
 
     use super::*;
+    use crate::toolbar::{ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView};
     use crate::{Item, PreviewItem, PreviewItemHandle, PreviewProvider, register};
 
     /// 辅助视图类型，仅用于测试中创建窗口。
@@ -1143,6 +1136,64 @@ mod tests {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div()
         }
+    }
+
+    /// 记录最近一次活动 Item 的工具项，用于断言 Pane 会把活动项同步给工具区。
+    struct RecordingToolbar {
+        active_item: Option<gpui::EntityId>,
+    }
+
+    impl EventEmitter<ToolbarItemEvent> for RecordingToolbar {}
+
+    impl Render for RecordingToolbar {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    impl ToolbarItemView for RecordingToolbar {
+        fn set_active_pane_item(
+            &mut self,
+            item: Option<&dyn ItemHandle>,
+            _window: &mut Window,
+            _cx: &mut Context<Self>,
+        ) -> ToolbarItemLocation {
+            self.active_item = item.map(ItemHandle::item_id);
+            if item.is_some() {
+                ToolbarItemLocation::PrimaryLeft
+            } else {
+                ToolbarItemLocation::Hidden
+            }
+        }
+    }
+
+    /// Pane 在活动项变化后把新活动项同步给工具区。
+    #[gpui::test]
+    fn pane_syncs_toolbar_with_active_item(cx: &mut TestAppContext) {
+        let buffer = test_buffer(cx, "工具区同步");
+        let pane = cx.new(Pane::new);
+        cx.add_window_view(|window, cx| {
+            let recorder = cx.new(|_| RecordingToolbar { active_item: None });
+            pane.update(cx, |pane, cx| {
+                pane.toolbar().update(cx, |toolbar, cx| {
+                    toolbar.add_item(recorder.clone(), window, cx)
+                });
+            });
+            let item =
+                cx.new(|cx| TestSourceItem::new(buffer.clone(), PathBuf::from("toolbar.txt"), cx));
+            pane.update(cx, |pane, cx| {
+                pane.open_item(Box::new(item), false, window, cx)
+            });
+
+            let active = pane.read(cx).active_item().map(ItemHandle::item_id);
+            assert!(active.is_some(), "打开 Item 后应有活动项");
+            assert_eq!(
+                recorder.read(cx).active_item,
+                active,
+                "Pane 应把活动项同步给工具区"
+            );
+            TestView
+        });
     }
 
     #[test]

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, AnyEntity, AnyView, App, Bounds, Context, Element, ElementId, Entity, EventEmitter,
+    AnyElement, AnyEntity, App, Bounds, Context, Element, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, FontStyle, FontWeight, GlobalElementId, HighlightStyle, Hsla, Image,
     ImageFormat, InspectorElementId, InteractiveText, LayoutId, ObjectFit, Pixels, Render,
     ScrollHandle, SharedString, StatefulInteractiveElement, StrikethroughStyle, StyledImage,
@@ -26,7 +26,7 @@ use zcv_theme::{color, space, syntax, typography};
 use zcv_ui::Scrollbar;
 use zcv_workspace::{
     Item, ItemEvent, ItemHandle, OpenPathCallback, PreviewDocument, PreviewItem, PreviewItemHandle,
-    PreviewToolbar, typography_for_window,
+    typography_for_window,
 };
 
 use crate::document::{Block, Inline, parse};
@@ -61,7 +61,6 @@ pub(crate) struct MarkdownPreviewView {
     refresh_task: Option<Task<()>>,
     _document_subscription: Subscription,
     _item_subscription: Subscription,
-    toolbar: Entity<PreviewToolbar>,
     math_images: Arc<HashMap<String, Result<Arc<gpui::RenderImage>, String>>>,
     math_content_size: Option<gpui::Pixels>,
     math_color: Option<gpui::Rgba>,
@@ -80,18 +79,11 @@ impl MarkdownPreviewView {
             source_item,
             multi_buffer,
             open_path,
-            toggle_preview,
             ..
         } = document
         else {
             panic!("Markdown 预览必须从源码 Item 创建")
         };
-        let toolbar = PreviewToolbar::new(
-            source_item.as_ref(),
-            toggle_preview,
-            "markdown-preview-source",
-            cx,
-        );
         let document_subscription = cx.subscribe(&multi_buffer, |view, _, event, cx| {
             if matches!(event, MultiBufferEvent::TextChanged) {
                 view.schedule_refresh(cx);
@@ -105,9 +97,7 @@ impl MarkdownPreviewView {
                     event,
                     ItemEvent::PathChanged | ItemEvent::UpdateTab | ItemEvent::UpdateBreadcrumbs
                 ) {
-                    this.update(cx, |view, cx| {
-                        view.toolbar
-                            .update(cx, |toolbar, cx| toolbar.refresh_breadcrumbs(cx));
+                    this.update(cx, |_view, cx| {
                         cx.emit(MarkdownPreviewEvent::SourceMetadataChanged);
                         cx.notify();
                     })
@@ -136,7 +126,6 @@ impl MarkdownPreviewView {
             refresh_task: None,
             _document_subscription: document_subscription,
             _item_subscription: item_subscription,
-            toolbar,
             math_images: Arc::new(HashMap::new()),
             math_content_size: None,
             math_color: None,
@@ -1161,10 +1150,6 @@ fn heading_scale(level: u8) -> f32 {
 impl Item for MarkdownPreviewView {
     type Event = MarkdownPreviewEvent;
 
-    fn toolbar_view(&self, _self_handle: &Entity<Self>, _cx: &App) -> Option<AnyView> {
-        Some(self.toolbar.clone().into())
-    }
-
     fn tab_content_text(&self, cx: &App) -> SharedString {
         self.source_item
             .item_path(cx)
@@ -1535,7 +1520,6 @@ mod tests {
                     path: PathBuf::from("README.md"),
                     source_item: Box::new(editor.clone()),
                     multi_buffer,
-                    toggle_preview: Rc::new(|_, _| {}),
                     open_path: None,
                 },
                 cx,
@@ -1577,7 +1561,6 @@ mod tests {
                     path: PathBuf::from("README.md"),
                     source_item: Box::new(editor.clone()),
                     multi_buffer,
-                    toggle_preview: Rc::new(|_, _| {}),
                     open_path: None,
                 },
                 cx,

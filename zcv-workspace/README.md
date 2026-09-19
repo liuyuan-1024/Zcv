@@ -7,7 +7,7 @@
 ## 所有权
 
 - `Workspace` 是窗口级根实体，拥有当前 `Project`、中心 `Pane`、三个 `Dock`、状态栏、Toast 层和布局持久化任务。
-- `Pane` 拥有中心区域的 `ItemHandle` 集合、活动项与标签生命周期。
+- `Pane` 拥有中心区域的 `ItemHandle` 集合、活动项、标签生命周期与顶部工具区（`Toolbar`）。
 - 每个 `Item` 自己拥有文档或视图状态，通过 `ItemHandle` 在 `Pane` 中类型擦除。
 - 每个 `Panel` 是独立 `Entity`，自己拥有面板状态与焦点；`Dock` 只组织异构面板、开合和尺寸。
 - 应用装配层 `zcv` 注入应用级顶栏、面板、订阅与命令处理；工作区仍负责承载这些内容的窗口级生命周期和布局。
@@ -19,6 +19,8 @@
 ### Item
 
 实现 `Item` 以进入中心 `Pane`。协议覆盖标签标识、焦点、保存、关闭、导航以及可选能力。搜索、预览和 `MultiBuffer` 访问通过可选接口暴露，而不是让工作区了解具体类型。
+
+`Item` 不持有也不返回工具区视图：它只通过 `show_toolbar` 与面包屑数据参与 Pane 的工具区。工具项实现 `ToolbarItemView`，由装配层注册到 Pane 的 `Toolbar`；每个工具项依据当前活动 `Item` 返回自己的 `ToolbarItemLocation`，显隐与换位由工具区统一完成。
 
 ### Panel
 

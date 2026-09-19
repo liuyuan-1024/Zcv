@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use gpui::{AnyView, App, Context, Entity, SharedString, Task, Window};
+use gpui::{App, Context, Entity, SharedString, Task, Window};
 use zcv_multi_buffer::MultiBuffer;
 use zcv_path::simplify_native;
 use zcv_project::Project;
@@ -13,10 +13,6 @@ use crate::{Editor, EditorEvent};
 
 impl Item for Editor {
     type Event = EditorEvent;
-
-    fn toolbar_view(&self, _self_handle: &Entity<Self>, _cx: &App) -> Option<AnyView> {
-        self.content_toolbar.clone()
-    }
 
     fn tab_content_text(&self, cx: &App) -> SharedString {
         // 标题归文档模型所有：显式标题优先，否则按文档身份派生。

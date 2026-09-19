@@ -703,7 +703,7 @@ fn f2_opens_inline_local_rename_and_enter_commits_it(cx: &mut TestAppContext) {
 fn select_larger_syntax_node_reaches_file_root_from_rust_imports_and_structures(
     cx: &mut TestAppContext,
 ) {
-    let source = "use gpui::{\n    AnyElement,\n    AnyView,\n    App,\n};\n\nstruct EditorState {\n    value: usize,\n}\n";
+    let source = "use gpui::{\n    AnyElement,\n    Entity,\n    App,\n};\n\nstruct EditorState {\n    value: usize,\n}\n";
     let raw_buffer = Buffer::from_text(source.to_owned(), BufferConfig::default())
         .expect("Rust 测试 Buffer 应能创建");
     let language_buffer = cx.new({

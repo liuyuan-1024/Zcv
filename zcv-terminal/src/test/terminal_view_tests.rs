@@ -1,7 +1,10 @@
 use std::time::{Duration, Instant};
 
 use super::*;
-use crate::TerminalView;
+use crate::{
+    TerminalView,
+    test::support::{display_only_terminal, write_output},
+};
 use gpui::{
     Context, Entity, EntityInputHandler, IntoElement, MouseButton, Render, TestAppContext,
     VisualTestContext, Window, div, point, prelude::*, px, size,
@@ -17,7 +20,7 @@ impl Render for EmptyView {
 }
 
 fn build_terminal(cx: &mut TestAppContext) -> Entity<Terminal> {
-    cx.new(|cx| Terminal::new_display_only(&TerminalBuilder::new(), cx))
+    cx.new(|cx| display_only_terminal(&TerminalBuilder::new(), cx))
 }
 
 /// 刷新渲染快照并断言内容满足条件。
@@ -56,7 +59,7 @@ async fn terminal_output_updates_content(cx: &mut TestAppContext) {
 
     cx.update(|_window, cx| {
         terminal.update(cx, |t, cx| {
-            t.write_output(b"zcv-terminal-ok\r\n", cx);
+            write_output(t, b"zcv-terminal-ok\r\n", cx);
         });
     });
 
@@ -127,7 +130,7 @@ async fn cursor_focus_binding(cx: &mut TestAppContext) {
     assert!(focused, "聚焦时应显示光标");
 }
 
-/// 渲染冒烟：真实 PTY 终端 + 视图渲染一帧不 panic。
+/// 渲染冒烟：display-only 终端渲染一帧不 panic，输入写入不依赖 PTY。
 #[gpui::test]
 async fn render_smoke(cx: &mut TestAppContext) {
     let terminal = build_terminal(cx);

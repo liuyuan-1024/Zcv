@@ -16,6 +16,7 @@ mod view;
 mod test;
 
 use std::{
+    borrow::Cow,
     collections::HashMap,
     path::{Path, PathBuf},
     sync::Arc,
@@ -499,10 +500,44 @@ impl TerminalBuilder {
 
 // ─── 终端 ─────────────────────────────────────────────────────────
 
-/// 终端状态机：持有 alacritty 模拟器、PTY 发送句柄与主线程事件队列。
+/// 终端持有的 PTY 运行资源：活动时是事件循环发送句柄，关闭后释放。
+///
+/// 关闭终端把该状态替换为 [`PtyResources::Released`]，之后的写入与尺寸通知自然成为空操作，
+/// 不再需要额外的“是否已关闭”标志。
+enum PtyResources {
+    Active(PtySender),
+    Released,
+}
+
+impl PtyResources {
+    /// 把输入字节写入 PTY；资源已释放时忽略。
+    fn notify(&self, input: impl Into<Cow<'static, [u8]>>) {
+        if let Self::Active(pty_tx) = self {
+            pty_tx.notify(input);
+        }
+    }
+
+    /// 通知 PTY 调整窗口尺寸；资源已释放时忽略。
+    fn resize(&self, bounds: &TerminalBounds) -> anyhow::Result<()> {
+        match self {
+            Self::Active(pty_tx) => pty_tx.resize(bounds),
+            Self::Released => Ok(()),
+        }
+    }
+
+    /// 关闭事件循环并标记资源已释放；重复调用是空操作。
+    fn release(&mut self) -> anyhow::Result<()> {
+        match std::mem::replace(self, Self::Released) {
+            Self::Active(pty_tx) => pty_tx.shutdown(),
+            Self::Released => Ok(()),
+        }
+    }
+}
+
+/// 终端状态机：持有 alacritty 模拟器、PTY 运行资源与主线程事件队列。
 pub(crate) struct Terminal {
     term: Arc<AlacrittyTermLock>,
-    pty_tx: PtySender,
+    pty_resources: PtyResources,
     events: std::collections::VecDeque<InternalEvent>,
     events_rx: Option<Receiver<PtyEvent>>,
     event_loop_task: Option<Task<()>>,
@@ -513,7 +548,6 @@ pub(crate) struct Terminal {
     process_info: Arc<PtyProcessInfo>,
     background_executor: BackgroundExecutor,
     lifecycle: TerminalLifecycle,
-    pty_resources_closed: bool,
     /// 当前工作目录（持久化恢复终端会话用）。
     cwd: Option<PathBuf>,
     /// 当前终端会话的临时字号覆盖；None 时跟随 SettingsStore。
@@ -561,7 +595,7 @@ impl Terminal {
 
         let mut terminal = Terminal {
             term,
-            pty_tx,
+            pty_resources: PtyResources::Active(pty_tx),
             events: Default::default(),
             events_rx: Some(events_rx),
             event_loop_task: None,
@@ -572,7 +606,6 @@ impl Terminal {
             process_info,
             background_executor,
             lifecycle: TerminalLifecycle::Running,
-            pty_resources_closed: false,
             cwd: builder.cwd.clone(),
             font_size_override: None,
             mouse_gesture: None,
@@ -586,41 +619,6 @@ impl Terminal {
         Ok(terminal)
     }
 
-    #[cfg(all(test, unix))]
-    fn new_display_only(builder: &TerminalBuilder, cx: &mut Context<Self>) -> Self {
-        let settings = TerminalSettings::load(cx, None);
-        let bounds = TerminalBounds::default();
-        let (events_tx, _) = unbounded();
-        let term = alacritty::new_term(
-            &alacritty::pty_term_config(settings.max_scroll_history_lines, settings.cursor_shape),
-            &bounds,
-            &events_tx,
-            settings.alternate_scroll,
-        );
-        let initial_content = alacritty::make_content(&term.lock(), None);
-
-        Self {
-            term,
-            pty_tx: PtySender::inert(),
-            events: Default::default(),
-            events_rx: None,
-            event_loop_task: None,
-            last_content: initial_content,
-            title: None,
-            shell_name: configured_shell_name(settings.shell.as_deref()),
-            scroll_px: Pixels::ZERO,
-            process_info: Arc::new(PtyProcessInfo::new(alacritty::process_id_getter_for_test())),
-            background_executor: cx.background_executor().clone(),
-            lifecycle: TerminalLifecycle::Running,
-            pty_resources_closed: false,
-            cwd: builder.cwd.clone(),
-            font_size_override: None,
-            mouse_gesture: None,
-            selection_drag: None,
-            selection_autoscroll_scheduled: false,
-        }
-    }
-
     pub(crate) fn settings(&self, cx: &App) -> TerminalSettings {
         TerminalSettings::load(cx, self.font_size_override)
     }
@@ -631,12 +629,6 @@ impl Terminal {
         cx: &mut Context<Self>,
     ) {
         self.font_size_override = font_size;
-        cx.notify();
-    }
-
-    #[cfg(all(test, unix))]
-    fn write_output(&mut self, bytes: &[u8], cx: &mut Context<Self>) {
-        alacritty::write_output(&mut self.term.lock(), bytes);
         cx.notify();
     }
 
@@ -737,12 +729,12 @@ impl Terminal {
             match event {
                 InternalEvent::Resize(bounds) => {
                     // 先通知 PTY（触发 SIGWINCH），再调整网格。
-                    if let Err(error) = self.pty_tx.resize(&bounds) {
+                    if let Err(error) = self.pty_resources.resize(&bounds) {
                         cx.emit(Event::Error(format!("终端调整大小失败：{error:#}")));
                     }
                     alacritty::resize(&mut self.term.lock(), &bounds);
                 }
-                InternalEvent::PtyWrite(bytes) => self.pty_tx.notify(bytes),
+                InternalEvent::PtyWrite(bytes) => self.pty_resources.notify(bytes),
                 InternalEvent::Scroll(scroll) => {
                     self.term.lock().scroll_display(scroll.to_alacritty());
                 }
@@ -764,18 +756,18 @@ impl Terminal {
                 }
                 InternalEvent::ClipboardLoad(formatter) => {
                     if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                        self.pty_tx.notify(formatter(&text).into_bytes());
+                        self.pty_resources.notify(formatter(&text).into_bytes());
                     }
                 }
                 InternalEvent::ColorRequest(index, formatter) => {
                     let color = self.term.lock().colors()[index]
                         .unwrap_or_else(|| to_vte_rgb(palette::get_color_at_index(index, cx)));
-                    self.pty_tx.notify(formatter(color).into_bytes());
+                    self.pty_resources.notify(formatter(color).into_bytes());
                 }
                 InternalEvent::TextAreaSizeRequest(formatter) => {
                     let size =
                         alacritty::window_size_from_bounds(&self.last_content.terminal_bounds);
-                    self.pty_tx.notify(formatter(size).into_bytes());
+                    self.pty_resources.notify(formatter(size).into_bytes());
                 }
                 InternalEvent::Bell => {
                     cx.emit(Event::Bell);
@@ -804,14 +796,14 @@ impl Terminal {
 
     /// 把输入字节写入 PTY（不附带 UI 状态变更）。
     pub fn write_to_pty(&self, bytes: Vec<u8>) {
-        self.pty_tx.notify(bytes);
+        self.pty_resources.notify(bytes);
     }
 
     /// 用户输入：先滚到底部并清除选择，再写入 PTY。
     pub fn write_input(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
         self.events.push_back(InternalEvent::Scroll(Scroll::Bottom));
         self.events.push_back(InternalEvent::SetSelection(None));
-        self.pty_tx.notify(bytes);
+        self.pty_resources.notify(bytes);
         cx.notify();
     }
 
@@ -1081,7 +1073,7 @@ impl Terminal {
         }
         term.is_focused = focused;
         if self.last_content.mode.contains(Modes::FOCUS_IN_OUT) {
-            self.pty_tx.notify(if focused {
+            self.pty_resources.notify(if focused {
                 b"\x1b[I".as_slice()
             } else {
                 b"\x1b[O".as_slice()
@@ -1100,15 +1092,7 @@ impl Terminal {
             .process_info
             .terminate_process_tree(&self.background_executor)
             .context("终止终端进程树失败");
-        let shutdown_result = if self.pty_resources_closed {
-            Ok(())
-        } else {
-            let result = self.pty_tx.shutdown().context("关闭终端事件循环失败");
-            if result.is_ok() {
-                self.pty_resources_closed = true;
-            }
-            result
-        };
+        let shutdown_result = self.pty_resources.release().context("关闭终端事件循环失败");
 
         terminate_result.and(shutdown_result)
     }

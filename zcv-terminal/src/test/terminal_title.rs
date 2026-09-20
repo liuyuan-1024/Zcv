@@ -1,6 +1,7 @@
 use gpui::{AppContext as _, TestAppContext};
 
-use crate::{Terminal, TerminalBuilder};
+use super::support::display_only_terminal;
+use crate::TerminalBuilder;
 
 #[gpui::test]
 fn tab_title_tracks_current_directory_and_keeps_shell_name(cx: &mut TestAppContext) {
@@ -8,7 +9,7 @@ fn tab_title_tracks_current_directory_and_keeps_shell_name(cx: &mut TestAppConte
     let starting_directory = temporary_directory.path().join("starting-directory");
     std::fs::create_dir(&starting_directory).expect("应创建终端启动目录");
     let terminal = cx.new(|cx| {
-        Terminal::new_display_only(
+        display_only_terminal(
             &TerminalBuilder::new().set_cwd(Some(starting_directory)),
             cx,
         )

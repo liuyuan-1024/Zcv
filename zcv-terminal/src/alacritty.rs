@@ -63,38 +63,21 @@ impl EventListener for TerminalListener {
 }
 
 /// 向 alacritty 事件循环线程发送消息的唯一句柄（写输入、调整尺寸、关闭）。
-pub(super) enum PtySender {
-    Live {
-        notifier: Notifier,
-    },
-    #[cfg(all(test, unix))]
-    Inert,
+///
+/// 只有活动终端持有该句柄；终端关闭后对应资源由 `PtyResources` 标记为释放。
+pub(super) struct PtySender {
+    notifier: Notifier,
 }
 
 impl PtySender {
     /// 把输入字节写入 PTY。
     pub(super) fn notify(&self, input: impl Into<Cow<'static, [u8]>>) {
-        match self {
-            Self::Live { notifier } => notifier.notify(input),
-            #[cfg(all(test, unix))]
-            Self::Inert => {}
-        }
+        self.notifier.notify(input);
     }
 
     /// 通知 PTY 调整窗口尺寸（触发 SIGWINCH 与 shell 的 resize 感知）。
     pub(super) fn resize(&self, bounds: &TerminalBounds) -> anyhow::Result<()> {
-        #[cfg(not(all(test, unix)))]
-        let Self::Live { notifier } = self;
-        #[cfg(all(test, unix))]
-        let Some(notifier) = (match self {
-            Self::Live { notifier } => Some(notifier),
-            #[cfg(all(test, unix))]
-            Self::Inert => None,
-        }) else {
-            return Ok(());
-        };
-
-        notifier
+        self.notifier
             .0
             .send(Msg::Resize(window_size_from_bounds(bounds)))
             .map_err(|_| anyhow::anyhow!("终端事件循环已退出"))?;
@@ -103,27 +86,11 @@ impl PtySender {
 
     /// 优雅关闭事件循环线程。
     pub(super) fn shutdown(&self) -> anyhow::Result<()> {
-        #[cfg(not(all(test, unix)))]
-        let Self::Live { notifier } = self;
-        #[cfg(all(test, unix))]
-        let Some(notifier) = (match self {
-            Self::Live { notifier } => Some(notifier),
-            #[cfg(all(test, unix))]
-            Self::Inert => None,
-        }) else {
-            return Ok(());
-        };
-
-        notifier
+        self.notifier
             .0
             .send(Msg::Shutdown)
             .map_err(|_| anyhow::anyhow!("终端事件循环已退出"))?;
         Ok(())
-    }
-
-    #[cfg(all(test, unix))]
-    pub(super) fn inert() -> Self {
-        Self::Inert
     }
 }
 
@@ -183,11 +150,6 @@ pub(super) fn process_id_getter(pty: &tty::Pty) -> ProcessIdGetter {
     ProcessIdGetter::new(pty.file().as_raw_fd(), pty.child().id())
 }
 
-#[cfg(all(test, unix))]
-pub(super) fn process_id_getter_for_test() -> ProcessIdGetter {
-    ProcessIdGetter::new(-1, 0)
-}
-
 #[cfg(windows)]
 pub(super) fn process_id_getter(pty: &tty::Pty) -> ProcessIdGetter {
     let fallback_pid = pty.child_watcher().pid().map(u32::from).unwrap_or_default();
@@ -234,21 +196,13 @@ pub(super) fn spawn_event_loop(
     let pty_tx = event_loop.channel();
     // 线程随 Msg::Shutdown 优雅退出，句柄无需保留。
     let _io_thread = event_loop.spawn();
-    Ok(PtySender::Live {
+    Ok(PtySender {
         notifier: Notifier(pty_tx),
     })
 }
 
 pub(super) fn resize(term: &mut AlacrittyTerm, bounds: &TerminalBounds) {
     term.resize(*bounds);
-}
-
-#[cfg(all(test, unix))]
-pub(super) fn write_output(term: &mut AlacrittyTerm, bytes: &[u8]) {
-    let mut processor = alacritty_terminal::vte::ansi::Processor::<
-        alacritty_terminal::vte::ansi::StdSyncHandler,
-    >::new();
-    processor.advance(term, bytes);
 }
 
 /// 更新既有选择到新位置；没有进行中的选择时返回 false。

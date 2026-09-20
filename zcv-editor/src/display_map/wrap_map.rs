@@ -1372,12 +1372,19 @@ impl WrapMap {
 
     fn set_isomorphic_all(&mut self) -> Vec<WrapEdit> {
         let old_rows = self.snapshot.transforms.summary().output_rows;
-        self.snapshot.transforms = isomorphic_tree(self.snapshot.tab_snapshot.line_count());
+        let new_rows = self.snapshot.tab_snapshot.line_count();
+        let unchanged = !self.snapshot.wrapped && old_rows == new_rows;
+        self.snapshot.transforms = isomorphic_tree(new_rows);
         self.snapshot.wrapped = false;
         self.check_invariants();
+        if unchanged {
+            // 文本内容虽然更新，但逐行到显示行的拓扑保持同构；上层只需替换下层快照，
+            // 不应把它伪装成显示几何编辑并强制重建 diff 装饰。
+            return Vec::new();
+        }
         vec![WrapEdit {
             old: 0..old_rows,
-            new: 0..self.snapshot.transforms.summary().output_rows,
+            new: 0..new_rows,
         }]
     }
 

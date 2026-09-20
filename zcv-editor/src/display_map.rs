@@ -62,7 +62,9 @@ pub(crate) use tab_map::{byte_for_display_column, display_column_for_byte};
 pub(crate) use wrap_map::WrapRowKind;
 use wrap_map::{WrapEdit, WrapMap, WrapSnapshot};
 use zcv_language::HighlightSpan;
-use zcv_multi_buffer::{MultiBuffer, MultiBufferSnapshot, MultiBufferSubscription};
+use zcv_multi_buffer::{
+    DiffDisplaySnapshot, MultiBuffer, MultiBufferSnapshot, MultiBufferSubscription,
+};
 use zcv_text::{
     Line, LineRange, LogicalColumn, MovementDirection, MovementUnit, Position, TextChangeBatch,
     TextResult,
@@ -191,6 +193,8 @@ pub(super) struct DisplaySnapshot {
     crease_snapshot: CreaseSnapshot,
     /// 与本显示版本绑定的显示装饰投影；随快照整体替换、可丢弃。
     decorations: Arc<DisplayDecorations>,
+    /// diff 显示输入归组合文档所有；这里只持有当前显示版本的不可变引用。
+    diff_display: Option<Arc<DiffDisplaySnapshot>>,
 }
 
 impl DisplaySnapshot {
@@ -656,6 +660,17 @@ fn search_input_eq(a: Option<&SearchDecorationInput>, b: Option<&SearchDecoratio
     }
 }
 
+fn same_diff_display(
+    current: Option<&Arc<DiffDisplaySnapshot>>,
+    next: Option<&Arc<DiffDisplaySnapshot>>,
+) -> bool {
+    match (current, next) {
+        (None, None) => true,
+        (Some(current), Some(next)) => Arc::ptr_eq(current, next),
+        _ => false,
+    }
+}
+
 impl DisplayMap {
     pub(crate) fn new(snapshot: impl Into<MultiBufferSnapshot>, cx: &mut Context<Self>) -> Self {
         let snapshot = snapshot.into();
@@ -805,35 +820,53 @@ impl DisplayMap {
         let Some(mut snapshot) = self.snapshot.take() else {
             return;
         };
-        snapshot.decorations = Arc::new(self.build_decorations(&snapshot, cx));
+        snapshot.decorations = Arc::new(self.build_decorations(&snapshot, None, cx));
+        self.snapshot = Some(snapshot);
+        cx.notify();
+    }
+
+    /// 仅 diff 显示输入变化时替换装饰；文本、折叠和换行拓扑保持当前快照。
+    fn refresh_diff_decorations(
+        &mut self,
+        current_snapshot: &MultiBufferSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut snapshot) = self.snapshot.take() else {
+            return;
+        };
+        if same_diff_display(
+            snapshot.diff_display.as_ref(),
+            current_snapshot.diff_display(),
+        ) {
+            self.snapshot = Some(snapshot);
+            return;
+        }
+
+        snapshot.diff_display = current_snapshot.diff_display().cloned();
+        snapshot.decorations = Arc::new(self.build_decorations(&snapshot, None, cx));
         self.snapshot = Some(snapshot);
         cx.notify();
     }
 
     /// 按当前显示拓扑和装饰输入投影出一份完整装饰。
-    fn build_decorations(&self, snapshot: &DisplaySnapshot, cx: &App) -> DisplayDecorations {
-        let (hunks, expanded, old_display_ranges, word_diffs) = match &self.multi_buffer {
-            Some(multi_buffer) => {
-                let multi_buffer = multi_buffer.read(cx);
-                (
-                    multi_buffer.diff_hunks().to_vec(),
-                    multi_buffer.diff_hunk_expanded(),
-                    multi_buffer.diff_hunk_old_ranges().to_vec(),
-                    multi_buffer.diff_hunk_word_diffs().to_vec(),
-                )
-            }
-            None => (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
-        };
+    fn build_decorations(
+        &self,
+        snapshot: &DisplaySnapshot,
+        cached_diff: Option<Arc<DiffDecorationSnapshot>>,
+        _cx: &App,
+    ) -> DisplayDecorations {
+        let diff = snapshot.diff_display.as_deref();
         DisplayDecorations::new(
             snapshot,
             DiffDecorationInput {
-                hunks: &hunks,
-                expanded,
-                old_display_ranges: &old_display_ranges,
-                word_diffs: &word_diffs,
+                hunks: diff.map_or(&[], DiffDisplaySnapshot::hunks),
+                expanded: diff.map_or(&[], DiffDisplaySnapshot::expanded),
+                old_display_ranges: diff.map_or(&[], DiffDisplaySnapshot::old_ranges),
+                word_diffs: diff.map_or(&[], DiffDisplaySnapshot::word_diffs),
             },
             self.search.as_ref(),
             Arc::clone(&self.editor_hunks),
+            cached_diff,
         )
     }
 
@@ -843,8 +876,19 @@ impl DisplayMap {
             block_snapshot,
             crease_snapshot: self.crease_map.snapshot(),
             decorations: Arc::new(DisplayDecorations::empty()),
+            diff_display: wrap_snapshot.buffer_snapshot().diff_display().cloned(),
         };
-        snapshot.decorations = Arc::new(self.build_decorations(&snapshot, cx));
+        let cached_diff = self.snapshot.as_ref().and_then(|previous| {
+            (wrap_edits.is_empty()
+                && self.editor_hunks.is_empty()
+                && previous.tab_width() == wrap_snapshot.tab_snapshot().tab_width()
+                && same_diff_display(
+                    previous.diff_display.as_ref(),
+                    snapshot.diff_display.as_ref(),
+                ))
+            .then(|| previous.decorations.diff())
+        });
+        snapshot.decorations = Arc::new(self.build_decorations(&snapshot, cached_diff, cx));
         self.snapshot = Some(snapshot);
     }
 
@@ -965,6 +1009,7 @@ impl DisplayMap {
             && DisplaySyncInputs::of(&old_snapshot) == DisplaySyncInputs::of(&current_snapshot)
             && !self.wrap_map.read(cx).is_rewrapping()
         {
+            self.refresh_diff_decorations(&current_snapshot, cx);
             return;
         }
         let buffer_edits = buffer_edits_from_batch(&batch, &old_snapshot, &current_snapshot);

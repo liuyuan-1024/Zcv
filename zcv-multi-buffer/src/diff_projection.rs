@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use gpui::{App, Context, Entity, Subscription};
 use sum_tree::SumTree;
@@ -96,18 +97,63 @@ impl DiffState {
 }
 
 /// 一个 MultiBuffer 的 git diff 投影状态。
-#[derive(Default)]
-pub(crate) struct DiffDisplayCache {
+/// 绑定一份组合快照的 diff 显示输入。
+///
+/// 它是由 `MultiBuffer` 权威投影派生出的不可变值：
+/// 显示层只消费该快照，不再把 diff 几何变更混入语言和设置使用的 `metadata_version`。
+#[derive(Clone, Debug, Default)]
+pub struct DiffDisplaySnapshot {
+    version: u64,
     /// 显示坐标 hunks（组合坐标，跨文件展平）。
-    display_hunks: Vec<DisplayHunk>,
+    display_hunks: Arc<[DisplayHunk]>,
     /// 每个 hunk 在组合文档中的旧侧显示行范围；折叠态或 Added hunk 为 None。
-    display_old_ranges: Vec<Option<Range<usize>>>,
+    display_old_ranges: Arc<[Option<Range<usize>>]>,
     /// 显示 hunk 对应的源文件与源 hunk；整文件新增块没有源 hunk。
-    display_sources: Vec<DisplayHunkSource>,
+    display_sources: Arc<[DisplayHunkSource]>,
     /// 与显示 hunk 同序的展开状态。
-    display_expanded: Vec<bool>,
+    display_expanded: Arc<[bool]>,
     /// 与显示 hunk 同序的词级变化片段（组合文档字节范围 + 新增/删除色）。
-    display_word_diffs: Vec<Vec<(DiffHunkKind, Range<usize>)>>,
+    display_word_diffs: Arc<[Vec<(DiffHunkKind, Range<usize>)>]>,
+}
+
+impl DiffDisplaySnapshot {
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    pub fn hunks(&self) -> &[DisplayHunk] {
+        &self.display_hunks
+    }
+
+    pub fn old_ranges(&self) -> &[Option<Range<usize>>] {
+        &self.display_old_ranges
+    }
+
+    pub fn expanded(&self) -> &[bool] {
+        &self.display_expanded
+    }
+
+    pub fn word_diffs(&self) -> &[Vec<(DiffHunkKind, Range<usize>)>] {
+        &self.display_word_diffs
+    }
+
+    fn matches(&self, display: &DiffDisplay) -> bool {
+        self.display_hunks.as_ref() == display.hunks.as_slice()
+            && self.display_old_ranges.as_ref() == display.old_ranges.as_slice()
+            && self.display_sources.as_ref() == display.sources.as_slice()
+            && self.display_expanded.as_ref() == display.expanded.as_slice()
+            && self.display_word_diffs.as_ref() == display.word_diffs.as_slice()
+    }
+
+    fn replace(&mut self, display: DiffDisplay) {
+        debug_assert!(!self.matches(&display));
+        self.version = self.version.wrapping_add(1);
+        self.display_hunks = Arc::from(display.hunks);
+        self.display_old_ranges = Arc::from(display.old_ranges);
+        self.display_sources = Arc::from(display.sources);
+        self.display_expanded = Arc::from(display.expanded);
+        self.display_word_diffs = Arc::from(display.word_diffs);
+    }
 }
 
 /// 一个文件内用户显式切换过展开状态的 hunk。
@@ -131,7 +177,7 @@ pub(crate) struct PendingExpansionMigration {
     old_state: DiffExpansionState,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct DisplayHunkSource {
     /// 稳定文件键：working 源实体，不随组合文档序号变化。
     working: gpui::EntityId,
@@ -485,7 +531,7 @@ impl MultiBuffer {
         }
         let old_files = self.diff.as_mut().map(|_| std::mem::take(&mut self.diffs));
         self.diff
-            .get_or_insert_with(|| Box::new(DiffDisplayCache::default()));
+            .get_or_insert_with(|| Arc::new(DiffDisplaySnapshot::default()));
 
         let mut next_files: Vec<DiffState> = inputs
             .into_iter()
@@ -547,7 +593,7 @@ impl MultiBuffer {
     /// 设置新 hunk 的初始展开策略；用户之后的显式展开/折叠不受投影刷新覆盖。
     pub fn set_diff_hunks_expanded_by_default(&mut self, expanded: bool, cx: &mut Context<Self>) {
         self.diff
-            .get_or_insert_with(|| Box::new(DiffDisplayCache::default()));
+            .get_or_insert_with(|| Arc::new(DiffDisplaySnapshot::default()));
         if self.diff_expanded_by_default == expanded {
             return;
         }
@@ -606,7 +652,7 @@ impl MultiBuffer {
     /// 坐标是当前组合映射下的派生缓存，在所有会改动组合文档的路径上同步刷新；
     /// 单个文件未就绪不会让其他文件的高亮消失。
     pub fn diff_hunks(&self) -> &[DisplayHunk] {
-        self.diff.as_ref().map_or(&[], |diff| &diff.display_hunks)
+        self.diff.as_ref().map_or(&[], |diff| diff.hunks())
     }
 
     /// 已挂接 diff 的显示路径集合（按组合文档顺序）。
@@ -619,23 +665,19 @@ impl MultiBuffer {
 
     /// 每个 hunk 在组合文档中的旧侧显示行范围。
     pub fn diff_hunk_old_ranges(&self) -> &[Option<Range<usize>>] {
-        self.diff
-            .as_ref()
-            .map_or(&[], |diff| &diff.display_old_ranges)
+        self.diff.as_ref().map_or(&[], |diff| diff.old_ranges())
     }
 
     /// 与 MultiBuffer::diff_hunks 平行的词级变化片段（组合文档字节范围 + 新增/删除色）。
     pub fn diff_hunk_word_diffs(&self) -> &[Vec<(DiffHunkKind, Range<usize>)>] {
-        self.diff
-            .as_ref()
-            .map_or(&[], |diff| &diff.display_word_diffs)
+        self.diff.as_ref().map_or(&[], |diff| diff.word_diffs())
     }
 
     /// 与 MultiBuffer::diff_hunks 平行的展开标志（渲染层按显示 hunk 索引查询）。
     pub fn diff_hunk_expanded(&self) -> Vec<bool> {
         self.diff
             .as_ref()
-            .map_or(Vec::new(), |diff| diff.display_expanded.clone())
+            .map_or(Vec::new(), |diff| diff.expanded().to_vec())
     }
 
     /// 显示 hunk 到源定位（hunk 操作与导航用）。
@@ -1192,7 +1234,7 @@ impl MultiBuffer {
         let local = self.derive_diff_display_for_path(path);
         let line_delta = new_summary.lines as isize - old_summary.lines as isize;
         let byte_delta = new_summary.len as isize - old_summary.len as isize;
-        let diff = self.diff.as_mut().expect("已确认 diff 投影存在");
+        let diff = self.diff.as_ref().expect("已确认 diff 投影存在");
         let mut entries = Vec::with_capacity(diff.display_hunks.len() + local.hunks.len());
 
         for index in 0..diff.display_hunks.len() {
@@ -1233,12 +1275,14 @@ impl MultiBuffer {
         );
         entries.sort_by_key(|(hunk, _, _, _, _)| (hunk.range.start, hunk.range.end));
 
-        diff.display_hunks = entries.iter().map(|entry| entry.0.clone()).collect();
-        diff.display_old_ranges = entries.iter().map(|entry| entry.1.clone()).collect();
-        diff.display_sources = entries.iter().map(|entry| entry.2.clone()).collect();
-        diff.display_expanded = entries.iter().map(|entry| entry.3).collect();
-        diff.display_word_diffs = entries.into_iter().map(|entry| entry.4).collect();
-        self.mark_diff_display_changed(cx);
+        let display = DiffDisplay {
+            hunks: entries.iter().map(|entry| entry.0.clone()).collect(),
+            old_ranges: entries.iter().map(|entry| entry.1.clone()).collect(),
+            sources: entries.iter().map(|entry| entry.2.clone()).collect(),
+            expanded: entries.iter().map(|entry| entry.3).collect(),
+            word_diffs: entries.into_iter().map(|entry| entry.4).collect(),
+        };
+        self.replace_diff_display(display, cx);
     }
 
     /// 在低频拓扑或 diff 物化变化后按当前组合映射重算全部显示坐标。
@@ -1249,21 +1293,23 @@ impl MultiBuffer {
             return;
         }
         let display = self.derive_diff_display();
-        let diff = self.diff.as_mut().expect("已确认 diff 投影存在");
-        diff.display_hunks = display.hunks;
-        diff.display_old_ranges = display.old_ranges;
-        diff.display_sources = display.sources;
-        diff.display_expanded = display.expanded;
-        diff.display_word_diffs = display.word_diffs;
-        self.mark_diff_display_changed(cx);
+        self.replace_diff_display(display, cx);
     }
 
-    fn mark_diff_display_changed(&mut self, cx: &mut Context<Self>) {
-        // diff 显示元数据（staging、展开态等）变化时 excerpt 拓扑可能不变；
-        // 显示链的快速路径按文本版本 + 元数据版本判定是否同步，若不推进元数据版本，按旧显示版本键控的装饰就会陈旧。
-        // 元数据版本随快照脏位一同推进，保证再次读取能看到新版本。
+    fn replace_diff_display(&mut self, display: DiffDisplay, cx: &mut Context<Self>) {
+        if self
+            .diff
+            .as_ref()
+            .expect("已确认 diff 投影存在")
+            .matches(&display)
+        {
+            return;
+        }
+        Arc::make_mut(self.diff.as_mut().expect("已确认 diff 投影存在")).replace(display);
+
+        // diff 显示几何是组合投影的局部派生输入，而不是语言／设置元数据。
+        // 快照整体替换使 DisplayMap 能按独立显示版本更新装饰，同时不重建显示拓扑。
         self.snapshot_dirty = true;
-        self.state.metadata_epoch = self.state.metadata_epoch.wrapping_add(1);
         self.notify_if_not_syncing(cx);
     }
 }

@@ -954,6 +954,8 @@ pub(crate) fn chunk_to_run(chunk: &Chunk<'_>, base: gpui::TextRun) -> gpui::Text
 ///
 /// `chunks` 只在回调内有效。
 /// 这样 Block/Fold/Wrap 游标能够直接借用快照中的文本，不需要为了跨 `next` 调用保存而复制成 `String` 或 `Vec`。
+/// 文本 chunk 只包含该显示行的内容，绝不携带 `\r` 或 `\n` 行终止符；
+/// 行终止符仍由下层组合文本保有，用于坐标与行数计算，不能进入 `shape_line` 的单行输入。
 pub(crate) struct DisplayTextRow<'a> {
     pub(crate) row: DisplayRow,
     pub(crate) excerpt: Option<&'a ExcerptSnapshot>,
@@ -969,6 +971,7 @@ pub(crate) struct DisplayTextRow<'a> {
 }
 
 /// 连续显示行事件。文本 chunk 只能在本次回调中被消费，避免在流中保存自引用状态。
+/// `Text` 的 chunk 均是无行终止符的单行内容，布局层可以直接交给单行 shaping。
 pub(crate) enum DisplayRowEvent<'a, 'b> {
     Block {
         row: DisplayRow,
@@ -1031,10 +1034,10 @@ impl<'a, 'b> BlockChunks<'a, 'b> {
         let mut range = byte_range.clone();
         let mut window_start_column = 0;
         let mut window_prefix: Cow<'_, str> = Cow::Borrowed("");
-        let Some(raw_range) = buffer.line_byte_range(stream_line) else {
+        let Some(content_range) = buffer.line_content_byte_range(stream_line) else {
             return;
         };
-        let raw_len = raw_range.end.get() - raw_range.start.get();
+        let content_len = content_range.end.get() - content_range.start.get();
         let projected_len = if let Some(segments) = segments.as_ref() {
             segments
                 .last()
@@ -1042,12 +1045,12 @@ impl<'a, 'b> BlockChunks<'a, 'b> {
                 .merged_range
                 .end
         } else {
-            raw_len
+            content_len
         };
         let source = ChunkSource {
             text: ChunkText::Virtual {
                 snapshot: buffer,
-                range: raw_range,
+                range: content_range,
             },
             projected_len,
             global_byte_start: *global_byte_start,
@@ -1068,7 +1071,7 @@ impl<'a, 'b> BlockChunks<'a, 'b> {
         let budget = MAX_RENDERED_LINE_LEN.saturating_sub(*indent);
         let line_styles = self
             .styles
-            .for_range(*global_byte_start..global_byte_start + raw_len);
+            .for_range(*global_byte_start..*global_byte_start + content_len);
         let mut chunks = WrapChunks::new(source, self.tab_width, line_styles, range, budget);
         on_row(DisplayRowEvent::Text {
             row: DisplayTextRow {

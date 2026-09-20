@@ -124,7 +124,7 @@ impl SearchDecorationInput {
 /// diff 显示装饰输入：MultiBuffer 投影提供的逻辑 hunk 与展开态。
 pub(crate) struct DiffDecorationInput<'a> {
     pub(crate) hunks: &'a [DisplayHunk],
-    pub(crate) expanded: Vec<bool>,
+    pub(crate) expanded: &'a [bool],
     pub(crate) old_display_ranges: &'a [Option<Range<usize>>],
     pub(crate) word_diffs: &'a [Vec<(DiffHunkKind, Range<usize>)>],
 }
@@ -158,15 +158,18 @@ impl DisplayDecorations {
         diff: DiffDecorationInput<'_>,
         search: Option<&SearchDecorationInput>,
         editor_hunks: Arc<[EditorHunk]>,
+        cached_diff: Option<Arc<DiffDecorationSnapshot>>,
     ) -> Self {
-        let diff = Arc::new(DiffDecorationSnapshot::new(
-            snapshot,
-            diff.hunks,
-            diff.expanded,
-            diff.old_display_ranges,
-            diff.word_diffs,
-            &editor_hunks,
-        ));
+        let diff = cached_diff.unwrap_or_else(|| {
+            Arc::new(DiffDecorationSnapshot::new(
+                snapshot,
+                diff.hunks,
+                diff.expanded.to_vec(),
+                diff.old_display_ranges,
+                diff.word_diffs,
+                &editor_hunks,
+            ))
+        });
         let search = search.map(|input| {
             Arc::new(SearchDecorationSnapshot::from_ranges(
                 Arc::clone(&input.ranges),

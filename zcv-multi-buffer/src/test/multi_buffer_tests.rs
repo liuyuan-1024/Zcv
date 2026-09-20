@@ -685,13 +685,9 @@ fn unified_diff_marks_partially_staged_hunk(cx: &mut TestAppContext) {
     );
 }
 
-/// 回归：diff 显示元数据变化必须推进组合快照的元数据版本。
-///
-/// 显示链的快速路径按「文本版本 + 元数据版本」判断是否同步。
-/// `refresh_diff_display` 只重建显示坐标 hunks（staging、展开态等），不改变 excerpt 拓扑；
-/// 若不推进元数据版本，按旧显示版本键控的装饰缓存会被错误复用，staging 变化看起来不会生效。
+/// 回归：不改变 diff 几何的刷新既不推进语言元数据，也不创建新的显示输入。
 #[gpui::test]
-fn diff_display_metadata_change_advances_metadata_version(cx: &mut TestAppContext) {
+fn unchanged_diff_display_does_not_advance_metadata_or_display_version(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "one\nworking\nthree\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -712,16 +708,69 @@ fn diff_display_metadata_change_advances_metadata_version(cx: &mut TestAppContex
     cx.run_until_parked();
 
     let before = cx.update_entity(&combined, |buffer, cx| {
-        buffer.snapshot(cx).metadata_version()
+        let snapshot = buffer.snapshot(cx);
+        (
+            snapshot.metadata_version(),
+            snapshot
+                .diff_display()
+                .expect("已注入 diff 必须携带显示输入")
+                .version(),
+        )
     });
     cx.update_entity(&combined, |buffer, cx| buffer.refresh_diff_display(cx));
     let after = cx.update_entity(&combined, |buffer, cx| {
-        buffer.snapshot(cx).metadata_version()
+        let snapshot = buffer.snapshot(cx);
+        (
+            snapshot.metadata_version(),
+            snapshot
+                .diff_display()
+                .expect("已注入 diff 必须携带显示输入")
+                .version(),
+        )
     });
-    assert!(
-        after > before,
-        "diff 显示元数据变化必须推进元数据版本（before={before}, after={after}）"
+    assert_eq!(
+        after, before,
+        "几何不变的 diff 刷新不能推进元数据或显示版本（before={before:?}, after={after:?}）"
     );
+}
+
+/// 回归：展开状态改变只推进 diff 显示版本，不能污染语法／设置元数据版本。
+#[gpui::test]
+fn diff_display_change_uses_its_own_version(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "one\nworking\nthree\n", cx);
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![test_diff(source, "src/a.rs", "one\nhead\nthree\n")]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    let before = cx.update_entity(&combined, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        (
+            snapshot.metadata_version(),
+            snapshot
+                .diff_display()
+                .expect("已注入 diff 必须携带显示输入")
+                .version(),
+        )
+    });
+    cx.update_entity(&combined, |buffer, cx| buffer.toggle_diff_hunk_at(0, cx));
+    let after = cx.update_entity(&combined, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        (
+            snapshot.metadata_version(),
+            snapshot
+                .diff_display()
+                .expect("已注入 diff 必须携带显示输入")
+                .version(),
+        )
+    });
+
+    assert_eq!(after.0, before.0, "diff 显示变化不能推进语言元数据版本");
+    assert!(after.1 > before.1, "展开状态变化必须推进 diff 显示版本");
 }
 
 fn singleton(path: &str, text: &str, cx: &mut TestAppContext) -> gpui::Entity<LanguageBuffer> {

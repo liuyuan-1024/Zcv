@@ -111,6 +111,54 @@ fn diff_decorations_are_cached_and_consumed_by_viewport(cx: &mut TestAppContext)
     );
 }
 
+/// 回归：同一行内编辑且 diff 几何未变化时，显示链只替换文本快照，
+/// 不重建已投影的 diff 装饰。
+#[gpui::test]
+fn geometry_preserving_diff_edit_reuses_diff_decorations(cx: &mut TestAppContext) {
+    let source = test_buffer(cx, "a\nb\nc\n");
+    let editor = cx.new(|cx| Editor::from_language_buffer(source.clone(), EditorMode::Full, cx));
+    inject_file_diff(&editor, &source, Arc::from("a\nB\nc\n"), cx);
+
+    let before = editor.update(cx, |editor, _| editor.display_snapshot().diff_decorations());
+    let before_input = editor.update(cx, |editor, cx| {
+        editor
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx).diff_display().cloned())
+            .expect("已注入 diff 必须有显示输入")
+    });
+    cx.update_entity(&source, |source, cx| {
+        source
+            .edit(
+                [Edit::replace(
+                    MultiBufferRange::new(MultiBufferOffset::new(2), MultiBufferOffset::new(3))
+                        .expect("测试范围必须有效")
+                        .into(),
+                    "z",
+                )],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("源编辑应成功");
+    });
+    cx.run_until_parked();
+
+    let after = editor.update(cx, |editor, _| editor.display_snapshot().diff_decorations());
+    let after_input = editor.update(cx, |editor, cx| {
+        editor
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx).diff_display().cloned())
+            .expect("已注入 diff 必须有显示输入")
+    });
+    assert!(
+        Arc::ptr_eq(&before_input, &after_input),
+        "同一行内编辑未改变 hunk 几何时不得替换 diff 显示输入"
+    );
+    assert!(
+        Arc::ptr_eq(&before, &after),
+        "同一行内编辑未改变 hunk 几何时不得重建 diff 装饰"
+    );
+}
+
 #[gpui::test]
 fn switching_single_file_diff_after_source_edit_keeps_text_consumer_aligned(
     cx: &mut TestAppContext,
@@ -2237,6 +2285,60 @@ fn plain_editor_expanded_modified_hunk_keeps_old_rows_and_gutter_strip(cx: &mut 
             "点击展开块的 gutter 色带应折叠 hunk"
         );
     });
+}
+
+/// 回归：diff 旧侧 excerpt 展开后又因暂存刷新而移除时，显示行 chunk 始终只携带行内容。
+///
+/// 行终止符属于组合文本的坐标事实；如果它穿透到 `DisplayRowEvent::Text`，单行
+/// shaping 会触发 GPUI 的 `text argument should not contain newlines` 断言。
+#[gpui::test]
+fn diff_refresh_keeps_line_terminators_out_of_renderer_chunks(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "a\r\nnew\r\nc\r\n");
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)
+    });
+    let source = buffer.clone();
+    inject_editor_diff(
+        &editor,
+        &source,
+        Vec::new(),
+        Some(Arc::from("a\r\nold\r\nc\r\n")),
+        cx,
+    );
+    editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
+    cx.run_until_parked();
+
+    // 暂存当前 hunk 后，未暂存视图的 index 基线与工作区一致，旧侧 excerpt 被移除。
+    inject_editor_diff(
+        &editor,
+        &source,
+        Vec::new(),
+        Some(Arc::from("a\r\nnew\r\nc\r\n")),
+        cx,
+    );
+
+    let rendered_rows = cx.read_entity(&editor, |editor, _| {
+        let snapshot = editor.display_snapshot();
+        let mut chunks = snapshot.chunks(
+            DisplayRow::ZERO..DisplayRow::new(snapshot.line_count()),
+            crate::display_map::HighlightStyles::default(),
+            None,
+        );
+        let mut rows = Vec::new();
+        chunks.for_each_row(|event| {
+            if let crate::display_map::DisplayRowEvent::Text { chunks, .. } = event {
+                rows.push(chunks.map(|chunk| chunk.text).collect::<String>());
+            }
+        });
+        rows
+    });
+    assert_eq!(rendered_rows, ["a", "new", "c", ""]);
+    assert!(rendered_rows.iter().all(|row| !row.contains(['\r', '\n'])));
+    cx.refresh().expect("暂存刷新后的 diff 视图应能完成布局");
 }
 
 /// 回归：在只读的 Deleted 旧行上尝试编辑（被拒）后，光标移回工作区仍可正常编辑。

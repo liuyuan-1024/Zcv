@@ -9,7 +9,7 @@ mod diff_projection;
 mod path_key;
 
 use diff_projection::DiffSourceRole;
-pub use diff_projection::{DiffFile, DiffHunkSource, DisplayHunk};
+pub use diff_projection::{DiffDisplaySnapshot, DiffFile, DiffHunkSource, DisplayHunk};
 pub(crate) use path_key::{PathKey, PathKeyIndex};
 
 use std::borrow::Cow;
@@ -1537,6 +1537,8 @@ pub struct MultiBufferSnapshot {
     source_indices: Arc<HashMap<gpui::EntityId, usize>>,
     capture_names: Arc<[Arc<str>]>,
     metadata_version: u64,
+    /// diff 显示输入与文本／语言元数据分离：它只驱动装饰替换，不触发显示拓扑同步。
+    diff_display: Option<Arc<DiffDisplaySnapshot>>,
 }
 
 /// 组合输出位置关联的源快照与坐标映射。
@@ -2268,6 +2270,13 @@ impl MultiBufferSnapshot {
         self.projection_version
     }
 
+    /// 当前组合快照绑定的 diff 显示输入。
+    ///
+    /// `None` 表示普通文档没有 diff 装饰；调用方不得为此建立空的并列缓存。
+    pub fn diff_display(&self) -> Option<&Arc<DiffDisplaySnapshot>> {
+        self.diff_display.as_ref()
+    }
+
     /// 在权威映射树上物化片段快照；输出坐标由累积 Summary 派生。
     ///
     /// 组合坐标查询直接用树游标；本方法只在需要随机访问或移交所有权时调用。
@@ -2987,6 +2996,7 @@ impl From<Snapshot> for MultiBufferSnapshot {
             source_indices: Arc::new(HashMap::new()),
             capture_names,
             metadata_version: 0,
+            diff_display: None,
         }
     }
 }
@@ -3079,8 +3089,9 @@ pub struct MultiBuffer {
     title: Option<String>,
     /// 按显示路径排序的每文件 diff 状态（diff 实体、显示配置与展开覆盖）。
     diffs: Vec<diff_projection::DiffState>,
-    /// git 行级 diff 显示拓扑（hunks、跟踪区间与显示坐标）；`None` = 无 diff 需求。
-    diff: Option<Box<diff_projection::DiffDisplayCache>>,
+    /// git 行级 diff 显示输入（hunks、跟踪区间与显示坐标）；`None` = 无 diff 需求。
+    /// 每次真实几何变化以写时复制替换，已发布快照继续持有旧输入。
+    diff: Option<Arc<DiffDisplaySnapshot>>,
     /// 新 hunk 的初始展开策略；只决定初始状态，不覆盖用户显式切换。
     diff_expanded_by_default: bool,
     /// 已物化进组合文档的前导文件数量（diff 以路径顺序登记，就绪前缀之外的文件尚未物化）。
@@ -4883,6 +4894,7 @@ impl MultiBuffer {
             source_indices,
             capture_names: Arc::clone(&self.state.capture_names),
             metadata_version: self.state.metadata_epoch,
+            diff_display: self.diff.clone(),
         };
         self.snapshot_dirty = false;
     }

@@ -82,7 +82,7 @@ fn focused_read_only_editor_keeps_editor_selection_and_shows_a_steady_caret(
         assert!(!editor.blink_manager.read(cx).enabled());
         let is_focused = window.is_window_active() && editor.focus.is_focused(window);
         assert!(editor.cursor_visible_with_focus(is_focused, cx));
-        assert!(editor.resolved_selections().primary().is_caret());
+        assert!(editor.resolved_selections(cx).primary().is_caret());
     });
 }
 

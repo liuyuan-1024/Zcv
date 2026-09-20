@@ -1,4 +1,5 @@
 use crate::display_map::DiffDecorationSnapshot;
+use zcv_multi_buffer::{ResolvedDiffHunk, WordDiffs};
 
 use super::*;
 
@@ -171,14 +172,17 @@ fn test_hunk_rendering(
     expanded: &[bool],
     old_display_ranges: &[Option<Range<usize>>],
 ) -> DiffDecorationSnapshot {
-    DiffDecorationSnapshot::from_parts(
-        snapshot,
-        hunks,
-        expanded.to_vec(),
-        old_display_ranges,
-        &[],
-        &[],
-    )
+    let resolved: Vec<ResolvedDiffHunk> = hunks
+        .iter()
+        .enumerate()
+        .map(|(index, hunk)| ResolvedDiffHunk {
+            hunk: hunk.clone(),
+            old_range: old_display_ranges.get(index).cloned().flatten(),
+            expanded: expanded.get(index).copied().unwrap_or(false),
+            word_diffs: WordDiffs::default(),
+        })
+        .collect();
+    DiffDecorationSnapshot::from_resolved(snapshot, resolved, &[])
 }
 
 /// 行级标记的显示行区间（测试专用）。

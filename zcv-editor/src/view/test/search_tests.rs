@@ -39,8 +39,8 @@ fn editor_with_text<'a>(
 }
 
 fn editor_text(editor: &Entity<Editor>, cx: &VisualTestContext) -> String {
-    cx.read_entity(editor, |this, _| {
-        String::from_utf8(this.display_snapshot.buffer_snapshot().text_bytes())
+    cx.read_entity(editor, |this, cx| {
+        String::from_utf8(this.display_snapshot(cx).buffer_snapshot().text_bytes())
             .expect("完整测试 Buffer 应可读取")
     })
 }
@@ -63,7 +63,7 @@ fn search_finds_all_matches_and_reports_count(cx: &mut TestAppContext) {
             assert_eq!(editor.search_count(cx), (3, Some(0)));
             let matches = editor.search_highlights().unwrap().0;
             assert_eq!(
-                matches[0].range(),
+                matches[0],
                 MultiBufferRange::new(MultiBufferOffset::new(0), MultiBufferOffset::new(3),)
                     .unwrap()
             );
@@ -177,11 +177,11 @@ fn activate_match_moves_in_direction_and_wraps(cx: &mut TestAppContext) {
             assert_eq!(editor.search_count(cx), (3, Some(2)));
             // 跳转会移动选区到匹配位置（选区 head 指向匹配终点）。
             assert_eq!(
-                editor.selections().primary().head(),
+                editor.selections(cx).primary().head(),
                 MultiBufferOffset::new(11)
             );
             assert_eq!(
-                editor.selections().primary().start(),
+                editor.selections(cx).primary().start(),
                 MultiBufferOffset::new(8)
             );
         });
@@ -356,7 +356,7 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
         editor.update(cx, |editor, cx| {
             editor.search(&query("abc"), window, cx);
         });
-        let engine_snapshot = editor.read(cx).render_snapshot();
+        let engine_snapshot = editor.read(cx).render_snapshot(cx);
         let display = project_display_snapshot(cx, engine_snapshot.clone());
         let mut cursor = display.rows(DisplayRow::new(0), 1);
         let viewport: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
@@ -419,7 +419,7 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
         editor.update(cx, |editor, cx| {
             editor.search(&query("abc"), window, cx);
         });
-        let engine_snapshot = editor.read(cx).render_snapshot();
+        let engine_snapshot = editor.read(cx).render_snapshot(cx);
         let display = project_display_snapshot(cx, engine_snapshot.clone());
         // 渲染全部 4 行，统计带背景的 chunk。
         let search_highlights = editor.read(cx).search_highlights().unwrap();
@@ -515,7 +515,7 @@ zcv final
             editor.search(&query("zcv"), window, cx);
         });
         // 用 zcv-text 快照构造 DisplayMap（与 element 渲染相同路径）。
-        let snapshot = editor.read(cx).render_snapshot();
+        let snapshot = editor.read(cx).render_snapshot(cx);
         let display = project_display_snapshot(cx, snapshot.clone());
         let line_count = display.line_count();
         let search_highlights = editor.read(cx).search_highlights().unwrap();
@@ -594,17 +594,20 @@ fn query_suggestion_seeds_search_from_selection(cx: &mut TestAppContext) {
     let (editor, cx) = editor_with_text(cx, "hello world");
     cx.update(|_window, cx| {
         editor.update(cx, |editor, cx| {
-            editor.set_selections(SelectionSet::new(vec![Selection::new(
-                MultiBufferOffset::new(6),
-                MultiBufferOffset::new(11),
-            )]));
+            editor.set_selections(
+                SelectionSet::new(vec![Selection::new(
+                    MultiBufferOffset::new(6),
+                    MultiBufferOffset::new(11),
+                )]),
+                cx,
+            );
             assert_eq!(
                 editor.query_suggestion(cx),
                 Some("world".to_string()),
                 "非空主选区应返回选中文本"
             );
 
-            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(3)));
+            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(3)), cx);
             assert_eq!(
                 editor.query_suggestion(cx),
                 None,

@@ -828,10 +828,10 @@ impl FoldMapWriter<'_> {
         let indexed_folds = self.0.snapshot.folds.iter().cloned().collect::<Vec<_>>();
         self.0.snapshot.lookup = FoldLookup::from_folds(&indexed_folds);
         self.0.snapshot.fold_metadata_by_id.insert(id, resolved);
-        Ok((
-            self.0.snapshot.clone(),
-            self.fold_topology_edits(range, stream_line_count),
-        ))
+        // 先推进变换树，再克隆对外快照；
+        // 否则返回值仍是旧 transforms，折叠不隐藏任何行。
+        let edits = self.fold_topology_edits(range, stream_line_count);
+        Ok((self.0.snapshot.clone(), edits))
     }
 
     /// 折叠拓扑变更的本层编辑：与文本编辑共用同一套变换树推导。
@@ -883,10 +883,9 @@ impl FoldMapWriter<'_> {
         let indexed_folds = self.0.snapshot.folds.iter().cloned().collect::<Vec<_>>();
         self.0.snapshot.lookup = FoldLookup::from_folds(&indexed_folds);
         self.0.snapshot.fold_metadata_by_id.remove(&id);
-        (
-            self.0.snapshot.clone(),
-            self.fold_topology_edits(range, stream_line_count),
-        )
+        // 先推进变换树，再克隆对外快照；展开与折叠共用同一顺序约束。
+        let edits = self.fold_topology_edits(range, stream_line_count);
+        (self.0.snapshot.clone(), edits)
     }
 }
 
@@ -967,6 +966,9 @@ fn linear_fold_edit(
     let new_rows = new_rows.expect("结构编辑必须至少包含一段文本编辑");
     let old_spanned = projected_rows_for_input_range(old_transforms, &old_rows);
     let new_spanned = projected_rows_for_input_range(new_transforms, &new_rows);
+    // 编辑完全落在折叠段内时投影区间为空，但合并行（anchor 行）承载了变化后的占位/尾段文本，必须把该行一并失效，否则合并行宽度缓存不会重排。
+    let old_spanned = expand_fold_interior(old_spanned, &old_rows);
+    let new_spanned = expand_fold_interior(new_spanned, &new_rows);
     // 行级失效区间无法像 Zed 的偏移编辑那样表达行内变化：必须让本层区间覆盖两侧权威净行数，
     // 否则 Wrap 变换树的输入行数会与 tab 快照失配。这里只做有界补齐，不是整层失效。
     let global_delta = new_transforms.summary().output_rows as isize
@@ -978,6 +980,15 @@ fn linear_fold_edit(
         new: ProjectedLineIndex::new(new_spanned.start)..ProjectedLineIndex::new(new_end),
         changed_lines: Vec::new(),
         structural: true,
+    }
+}
+
+/// 折叠段内部的编辑不产生投影行；把空投影区间吸附到其前方的合并行。
+fn expand_fold_interior(projected: Range<usize>, input: &Range<usize>) -> Range<usize> {
+    if projected.is_empty() && !input.is_empty() && projected.start > 0 {
+        projected.start - 1..projected.start
+    } else {
+        projected
     }
 }
 

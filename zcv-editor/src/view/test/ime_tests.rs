@@ -13,7 +13,7 @@ fn marked_text_updates_buffer_and_unmark_finishes_composition(cx: &mut TestAppCo
         let buffer = buffer.clone();
         move |_, cx| {
             let mut editor = Editor::for_language_buffer(buffer, cx);
-            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(1)));
+            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(1)), cx);
             editor
         }
     });
@@ -47,10 +47,10 @@ fn marked_text_updates_buffer_and_unmark_finishes_composition(cx: &mut TestAppCo
     });
 
     assert_eq!(buffer_text(&buffer, cx), "a中文😀b");
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert!(editor.composition.is_none());
         assert_eq!(
-            editor.selections().primary().head(),
+            editor.selections(cx).primary().head(),
             MultiBufferOffset::new(7)
         );
     });
@@ -62,7 +62,7 @@ fn ime_candidate_updates_merge_into_one_undo_step(cx: &mut TestAppContext) {
         let buffer = buffer.clone();
         move |_, cx| {
             let mut editor = Editor::for_language_buffer(buffer, cx);
-            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(1)));
+            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(1)), cx);
             editor
         }
     });
@@ -79,18 +79,18 @@ fn ime_candidate_updates_merge_into_one_undo_step(cx: &mut TestAppContext) {
 
     cx.update_entity(&editor, |editor, cx| editor.undo(cx));
     assert_eq!(buffer_text(&buffer, cx), "ab");
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::caret(MultiBufferOffset::new(1))
         );
     });
 
     cx.update_entity(&editor, |editor, cx| editor.redo(cx));
     assert_eq!(buffer_text(&buffer, cx), "a中b");
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::caret(MultiBufferOffset::new(4))
         );
     });
@@ -110,7 +110,7 @@ fn ime_updates_every_cursor_and_tracks_the_primary_marked_range(cx: &mut TestApp
         let initial_selections = initial_selections.clone();
         move |_, cx| {
             let mut editor = Editor::for_language_buffer(buffer, cx);
-            editor.set_selections(initial_selections);
+            editor.set_selections(initial_selections, cx);
             editor
         }
     });
@@ -128,8 +128,8 @@ fn ime_updates_every_cursor_and_tracks_the_primary_marked_range(cx: &mut TestApp
     assert_eq!(buffer_text(&buffer, cx), "a文b c文d");
     cx.update_entity(&editor, |editor, cx| editor.undo(cx));
     assert_eq!(buffer_text(&buffer, cx), "ab cd");
-    cx.read_entity(&editor, |editor, _| {
-        assert_eq!(editor.selections(), initial_selections);
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(editor.selections(cx), initial_selections);
     });
 }
 #[gpui::test]
@@ -150,7 +150,7 @@ fn ime_candidate_remains_in_the_syntax_highlight_pipeline(cx: &mut TestAppContex
         let language_buffer = language_buffer.clone();
         move |_, cx| {
             let mut editor = Editor::for_language_buffer(language_buffer, cx);
-            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(insertion)));
+            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(insertion)), cx);
             editor
         }
     });
@@ -163,10 +163,10 @@ fn ime_candidate_remains_in_the_syntax_highlight_pipeline(cx: &mut TestAppContex
     });
     cx.run_until_parked();
 
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         let composition = editor.composition.as_ref().unwrap();
         let marked = composition.ranges[composition.primary_index];
-        let snapshot = editor.display_snapshot().buffer_snapshot().clone();
+        let snapshot = editor.display_snapshot(cx).buffer_snapshot().clone();
         let names = snapshot.capture_names();
         let highlights = snapshot.highlights(0..snapshot.len_bytes().get());
         assert!(highlights.iter().any(|highlight| {
@@ -219,9 +219,9 @@ fn marked_text_can_cancel_and_committed_range_uses_utf16_offsets(cx: &mut TestAp
     });
 
     assert_eq!(buffer_text(&buffer, cx), "a你b");
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections().primary().head(),
+            editor.selections(cx).primary().head(),
             MultiBufferOffset::new(4)
         );
     });
@@ -251,7 +251,7 @@ fn ime_candidate_bounds_survive_composition_and_scroll_layout_invalidation(
                 Some(caret_bounds)
             );
 
-            editor.prepare_scroll_viewport(size(px(100.), px(100.)), px(200.), px(20.), px(0.));
+            editor.prepare_scroll_viewport(size(px(100.), px(100.)), px(200.), px(20.), px(0.), cx);
             assert!(editor.scroll_by(point(px(0.), px(-60.)), cx));
             assert_eq!(
                 editor.bounds_for_range(2..2, element_bounds, window, cx),

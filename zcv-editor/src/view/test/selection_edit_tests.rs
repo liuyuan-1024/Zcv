@@ -31,7 +31,7 @@ fn editor_with_text(
         let language_buffer = language_buffer.clone();
         move |cx| {
             let mut editor = Editor::for_language_buffer(language_buffer, cx);
-            editor.set_selections(selections);
+            editor.set_selections(selections, cx);
             editor
         }
     });
@@ -147,9 +147,9 @@ fn indent_and_outdent_are_editor_owned_selection_edits(cx: &mut TestAppContext) 
 
     cx.update_entity(&editor, |editor, cx| editor.indent(cx));
     assert_eq!(buffer_text(&buffer, cx), "    a\n    b");
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::new(vec![Selection::new(
                 MultiBufferOffset::new(4),
                 MultiBufferOffset::new(11),
@@ -160,9 +160,9 @@ fn indent_and_outdent_are_editor_owned_selection_edits(cx: &mut TestAppContext) 
 
     cx.update_entity(&editor, |editor, cx| editor.outdent(cx));
     assert_eq!(buffer_text(&buffer, cx), "a\nb");
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::new(vec![Selection::new(
                 MultiBufferOffset::ZERO,
                 MultiBufferOffset::new(3)
@@ -180,9 +180,9 @@ fn caret_indent_uses_display_map_tab_column(cx: &mut TestAppContext) {
     cx.update_entity(&editor, |editor, cx| editor.indent(cx));
 
     assert_eq!(buffer_text(&buffer, cx), "\t    x");
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections().primary().head(),
+            editor.selections(cx).primary().head(),
             MultiBufferOffset::new(5)
         );
     });
@@ -221,7 +221,7 @@ fn editing_a_later_composite_excerpt_keeps_following_input_in_that_source(cx: &m
     });
 
     cx.update_entity(&editor, |editor, cx| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(6)));
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(6)), cx);
         editor.replace_text(None, "A", cx);
         editor.replace_text(None, "B", cx);
     });

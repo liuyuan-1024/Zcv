@@ -3392,8 +3392,10 @@ impl MultiBuffer {
                 let old_range = patch_edit.old_range();
                 let excerpt_range = *old_source_range;
                 let overlap = if old_range.is_empty() {
+                    // 零长度 excerpt 没有可容纳插入的可见内容，插入点等于其端点时也必须归它消费；
+                    // 非空 excerpt 的终点插入留给后继片段，避免边界插入重复计入。
                     (old_range.start() >= excerpt_range.start()
-                        && old_range.start() < excerpt_range.end())
+                        && (old_range.start() < excerpt_range.end() || excerpt_range.is_empty()))
                     .then_some(old_range)
                 } else {
                     TextRange::new(

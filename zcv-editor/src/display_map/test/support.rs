@@ -6,9 +6,9 @@ use std::borrow::Cow;
 
 use zcv_text::Line;
 
-pub(crate) use super::super::wrap_map::WrapRowKind;
+pub(crate) use super::wrap_map::WrapRowKind;
 
-use super::super::{DisplaySnapshot, ProjectedLineIndex};
+use super::{DisplaySnapshot, ProjectedLineIndex};
 
 /// 单个投影行的完整文本（折叠合并行含占位符，保留尾部换行）。
 pub(crate) fn projected_line_text(

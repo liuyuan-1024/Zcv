@@ -37,7 +37,7 @@ fn editor_with_rust<'a>(
         let language_buffer = language_buffer.clone();
         move |_, cx| {
             let mut editor = Editor::for_language_buffer(language_buffer, cx);
-            editor.set_selections(selections);
+            editor.set_selections(selections, cx);
             editor
         }
     });
@@ -68,7 +68,7 @@ fn editor_without_language<'a>(
         let language_buffer = language_buffer.clone();
         move |_, cx| {
             let mut editor = Editor::for_language_buffer(language_buffer, cx);
-            editor.set_selections(selections);
+            editor.set_selections(selections, cx);
             editor
         }
     });
@@ -87,7 +87,7 @@ fn buffer_text(buffer: &gpui::Entity<LanguageBuffer>, cx: &VisualTestContext) ->
 }
 
 fn primary_head(editor: &gpui::Entity<Editor>, cx: &VisualTestContext) -> MultiBufferOffset {
-    cx.read_entity(editor, |editor, _| editor.selections().primary().head())
+    cx.read_entity(editor, |editor, cx| editor.selections(cx).primary().head())
 }
 
 fn type_text(editor: &gpui::Entity<Editor>, cx: &mut VisualTestContext, text: &str) {
@@ -151,10 +151,13 @@ fn each_composite_selection_uses_its_source_language_pairs(cx: &mut TestAppConte
         let combined = combined.clone();
         move |_, cx| {
             let mut editor = Editor::for_multi_buffer(combined, cx);
-            editor.set_selections(SelectionSet::new(vec![
-                Selection::caret(MultiBufferOffset::new(1)),
-                Selection::caret(MultiBufferOffset::new(4)),
-            ]));
+            editor.set_selections(
+                SelectionSet::new(vec![
+                    Selection::caret(MultiBufferOffset::new(1)),
+                    Selection::caret(MultiBufferOffset::new(4)),
+                ]),
+                cx,
+            );
             editor
         }
     });
@@ -255,8 +258,8 @@ fn typing_open_bracket_surrounds_selection(cx: &mut TestAppContext) {
     type_text(&editor, cx, "(");
     assert_eq!(buffer_text(&buffer, cx), "(abc)");
     // 编辑后选区覆盖包裹后的文本。
-    cx.read_entity(&editor, |editor, _| {
-        let range = editor.selections().primary().range();
+    cx.read_entity(&editor, |editor, cx| {
+        let range = editor.selections(cx).primary().range();
         assert_eq!(range.start(), MultiBufferOffset::new(1));
         assert_eq!(range.end(), MultiBufferOffset::new(4));
     });
@@ -330,9 +333,9 @@ fn multi_cursor_autocloses_each_selection(cx: &mut TestAppContext) {
 
     type_text(&editor, cx, "(");
     assert_eq!(buffer_text(&buffer, cx), "ab() ()");
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         let heads: Vec<_> = editor
-            .selections()
+            .selections(cx)
             .as_slice()
             .iter()
             .map(|selection| selection.head())

@@ -18,8 +18,8 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
     let second = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
 
     cx.update_entity(&first, |editor, cx| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(1)));
-        let display = editor.display_snapshot();
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(1)), cx);
+        let display = editor.display_snapshot(cx);
         editor.scroll_manager.update_viewport(
             ScrollViewport::new(1, px(100.0), px(40.0), px(200.0), px(20.0), px(0.0)),
             &display,
@@ -59,15 +59,15 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
             Some(buffer.clone())
         );
         assert_eq!(
-            editor.render_snapshot().len_bytes(),
+            editor.render_snapshot(cx).len_bytes(),
             MultiBufferOffset::new(4)
         );
         assert_eq!(
-            editor.render_snapshot().len_bytes(),
+            editor.render_snapshot(cx).len_bytes(),
             MultiBufferOffset::new(4)
         );
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::caret(MultiBufferOffset::ZERO)
         );
         assert_eq!(editor.scroll_manager.anchor(), DisplayPoint::ZERO);
@@ -80,9 +80,9 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
         );
     });
 
-    cx.read_entity(&first, |editor, _| {
+    cx.read_entity(&first, |editor, cx| {
         assert_eq!(editor.scroll_manager.offset().x, px(4.0));
-        let snapshot = editor.display_snapshot().buffer_snapshot().clone();
+        let snapshot = editor.display_snapshot(cx).buffer_snapshot().clone();
         let history = editor
             .selection_history
             .transaction(TransactionId::new(1))
@@ -111,7 +111,7 @@ fn editors_sharing_a_singleton_source_also_share_text_history(cx: &mut TestAppCo
     });
 
     cx.update_entity(&first, |editor, cx| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(3)));
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(3)), cx);
         editor.replace_text(None, "d", cx);
     });
     cx.run_until_parked();
@@ -152,7 +152,7 @@ fn multibuffer_editor_edits_the_underlying_file(cx: &mut TestAppContext) {
     });
 
     cx.update_entity(&editor, |editor, cx| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(3)));
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(3)), cx);
         editor.replace_text(None, "X", cx);
     });
 
@@ -160,7 +160,7 @@ fn multibuffer_editor_edits_the_underlying_file(cx: &mut TestAppContext) {
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(editor.text(cx), "abcX\n");
         assert_eq!(
-            editor.selections().primary().head(),
+            editor.selections(cx).primary().head(),
             MultiBufferOffset::new(4)
         );
     });
@@ -178,12 +178,12 @@ fn navigate_to_line_column_uses_unicode_logical_columns(cx: &mut TestAppContext)
     editor.update(cx, |editor, cx| {
         assert!(editor.navigate_to_line_column(0, 2, cx));
         assert_eq!(
-            editor.selections().primary().head(),
+            editor.selections(cx).primary().head(),
             MultiBufferOffset::new(4)
         );
         assert!(editor.navigate_to_line_column(1, 3, cx));
         assert_eq!(
-            editor.selections().primary().head(),
+            editor.selections(cx).primary().head(),
             MultiBufferOffset::new(12)
         );
         assert!(!editor.navigate_to_line_column(99, 0, cx));
@@ -211,12 +211,12 @@ fn outline_items_filter_and_navigate_using_current_snapshot(cx: &mut TestAppCont
     });
     cx.run_until_parked();
 
-    let build = cx.read_entity(&editor, |editor, _| {
-        let items = editor.outline_items();
+    let build = cx.read_entity(&editor, |editor, cx| {
+        let items = editor.outline_items(cx);
         assert!(items.iter().any(|item| item.name == "数据"));
         assert_eq!(
             editor
-                .outline_items_matching("BUILD")
+                .outline_items_matching("BUILD", cx)
                 .iter()
                 .map(|item| item.name.as_str())
                 .collect::<Vec<_>>(),
@@ -230,7 +230,7 @@ fn outline_items_filter_and_navigate_using_current_snapshot(cx: &mut TestAppCont
     cx.update_entity(&editor, |editor, cx| {
         assert!(editor.navigate_to_outline_item(&build, cx));
         assert_eq!(
-            editor.selections().primary().range(),
+            editor.selections(cx).primary().range(),
             MultiBufferRange::new(
                 MultiBufferOffset::new(build.name_range.start),
                 MultiBufferOffset::new(build.name_range.end)
@@ -247,30 +247,30 @@ fn other_editor_editing_shared_buffer_moves_this_editors_selection(cx: &mut Test
     let second = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
 
     // 两个 Editor 的光标都在偏移 3（"abc" 末尾）。
-    cx.update_entity(&first, |editor, _| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(3)));
+    cx.update_entity(&first, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(3)), cx);
     });
-    cx.update_entity(&second, |editor, _| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(3)));
+    cx.update_entity(&second, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(3)), cx);
     });
 
     // 第一个 Editor 在光标处输入 "d"。
     cx.update_entity(&first, |editor, cx| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(3)));
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(3)), cx);
         editor.replace_text(None, "d", cx);
     });
     cx.run_until_parked();
 
     // 第二个 Editor 的选区端点锚点自动跟随到新文本之后。
-    cx.read_entity(&second, |editor, _| {
+    cx.read_entity(&second, |editor, cx| {
         assert_eq!(
-            editor.selections().primary().head(),
+            editor.selections(cx).primary().head(),
             MultiBufferOffset::new(4)
         );
     });
-    cx.read_entity(&first, |editor, _| {
+    cx.read_entity(&first, |editor, cx| {
         assert_eq!(
-            editor.selections().primary().head(),
+            editor.selections(cx).primary().head(),
             MultiBufferOffset::new(4)
         );
     });
@@ -280,11 +280,12 @@ fn external_reload_moves_selection_through_diff(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "alpha\nbravo\ncharlie");
     let editor = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
     // 光标在 "bravo" 行内 "br" 之后（行内第 2 字节）。
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(8)));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(8)), cx);
     });
 
-    // 外部在行内插入 "x"：diff patch 保留 "br" 与 "avo" 匹配段，端点映射到插入 "x" 之后。
+    // 外部把 "bravo" 改写为 "brxavo"：行内词级 diff 把整个词视为替换，
+    // 落在替换内的光标按 reset 坐标映射吸附到替换段起点。
     cx.update_entity(&buffer, |buffer, cx| {
         buffer
             .reset("alpha\nbrxavo\ncharlie".to_owned(), cx)
@@ -292,10 +293,10 @@ fn external_reload_moves_selection_through_diff(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections().primary().head(),
-            MultiBufferOffset::new(9)
+            editor.selections(cx).primary().head(),
+            MultiBufferOffset::new(6)
         );
     });
 }
@@ -303,8 +304,8 @@ fn external_reload_moves_selection_through_diff(cx: &mut TestAppContext) {
 fn external_reload_collapses_selection_when_text_is_rewritten(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "abc");
     let editor = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(2)));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(2)), cx);
     });
 
     // 完全重写（无公共内容）：diff 回退为整体替换段，光标塌缩到文档开头。
@@ -315,8 +316,8 @@ fn external_reload_collapses_selection_when_text_is_rewritten(cx: &mut TestAppCo
     });
     cx.run_until_parked();
 
-    cx.read_entity(&editor, |editor, _| {
-        assert_eq!(editor.selections(), SelectionSet::default());
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(editor.selections(cx), SelectionSet::default());
     });
 }
 #[gpui::test]
@@ -324,12 +325,12 @@ fn constructors_create_expected_modes_and_independent_scratch_buffers(cx: &mut T
     let single_line = cx.new(Editor::single_line);
     let auto_height = cx.new(|cx| Editor::auto_height(2, Some(6), cx));
 
-    let single_buffer = cx.read_entity(&single_line, |editor, _cx| {
+    let single_buffer = cx.read_entity(&single_line, |editor, cx| {
         assert_eq!(editor.mode, EditorMode::SingleLine);
-        assert_eq!(editor.selections(), SelectionSet::default());
+        assert_eq!(editor.selections(cx), SelectionSet::default());
         assert_eq!(
-            editor.display_snapshot().buffer_snapshot().version(),
-            editor.display_snapshot().buffer_snapshot().version()
+            editor.display_snapshot(cx).buffer_snapshot().version(),
+            editor.display_snapshot(cx).buffer_snapshot().version()
         );
         let _focus = editor.focus_handle();
         editor.multi_buffer().entity_id()
@@ -373,10 +374,10 @@ fn editor_element_renders_multiline_unicode_text(cx: &mut TestAppContext) {
 
     cx.run_until_parked();
     cx.simulate_click(point(px(1000.), px(12.)), gpui::Modifiers::default());
-    cx.read_entity(&editor, |editor, _| {
-        assert_eq!(editor.render_snapshot().line_count(), 2);
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(editor.render_snapshot(cx).line_count(), 2);
         assert_eq!(
-            editor.selections().primary().head(),
+            editor.selections(cx).primary().head(),
             MultiBufferOffset::new(4)
         );
     });
@@ -392,9 +393,9 @@ fn clicking_the_gutter_selects_a_logical_line(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.simulate_click(point(px(4.), px(32.)), gpui::Modifiers::default());
 
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::new(vec![Selection::new(
                 MultiBufferOffset::new(6),
                 MultiBufferOffset::new(13)
@@ -409,9 +410,9 @@ fn clicking_the_gutter_selects_a_logical_line(cx: &mut TestAppContext) {
             ..Default::default()
         },
     );
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::new(vec![Selection::new(
                 MultiBufferOffset::new(6),
                 MultiBufferOffset::new(18)
@@ -431,9 +432,9 @@ fn committed_input_uses_element_input_handler_and_preserves_unicode(cx: &mut Tes
     cx.simulate_input("中😀e\u{301}");
 
     assert_eq!(buffer_text(&buffer, cx), "中😀e\u{301}");
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections().primary().head(),
+            editor.selections(cx).primary().head(),
             MultiBufferOffset::new("中😀e\u{301}".len())
         );
         assert!(editor.composition.is_none());
@@ -450,9 +451,9 @@ fn editor_actions_move_extend_delete_and_restore_unicode_selection(cx: &mut Test
     focus_editor(&editor, cx);
     cx.dispatch_action(MoveRight);
     cx.dispatch_action(SelectRight);
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::new(vec![Selection::new(
                 MultiBufferOffset::new(1),
                 MultiBufferOffset::new(5)
@@ -462,18 +463,18 @@ fn editor_actions_move_extend_delete_and_restore_unicode_selection(cx: &mut Test
 
     cx.dispatch_action(Backspace);
     assert_eq!(buffer_text(&buffer, cx), "ab");
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::caret(MultiBufferOffset::new(1))
         );
     });
 
     cx.dispatch_action(Undo);
     assert_eq!(buffer_text(&buffer, cx), "a😀b");
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::new(vec![Selection::new(
                 MultiBufferOffset::new(1),
                 MultiBufferOffset::new(5)
@@ -483,9 +484,9 @@ fn editor_actions_move_extend_delete_and_restore_unicode_selection(cx: &mut Test
 
     cx.dispatch_action(Redo);
     assert_eq!(buffer_text(&buffer, cx), "ab");
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::caret(MultiBufferOffset::new(1))
         );
     });
@@ -499,19 +500,22 @@ fn deleting_a_reversed_selection_always_leaves_a_caret_at_its_start(cx: &mut Tes
         move |_, cx| Editor::for_language_buffer(buffer, cx)
     });
 
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::new(vec![Selection::new(
-            MultiBufferOffset::new(5),
-            MultiBufferOffset::new(2),
-        )]));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(
+            SelectionSet::new(vec![Selection::new(
+                MultiBufferOffset::new(5),
+                MultiBufferOffset::new(2),
+            )]),
+            cx,
+        );
     });
     focus_editor(&editor, cx);
     cx.dispatch_action(Backspace);
 
     assert_eq!(buffer_text(&buffer, cx), "abf");
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::caret(MultiBufferOffset::new(2))
         );
     });
@@ -523,17 +527,20 @@ fn replacing_a_reversed_selection_places_the_caret_after_inserted_text(cx: &mut 
     let editor = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
 
     cx.update_entity(&editor, |editor, cx| {
-        editor.set_selections(SelectionSet::new(vec![Selection::new(
-            MultiBufferOffset::new(5),
-            MultiBufferOffset::new(2),
-        )]));
+        editor.set_selections(
+            SelectionSet::new(vec![Selection::new(
+                MultiBufferOffset::new(5),
+                MultiBufferOffset::new(2),
+            )]),
+            cx,
+        );
         editor.replace_text(None, "XYZ", cx);
     });
 
     assert_eq!(buffer_text(&buffer, cx), "abXYZf");
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::caret(MultiBufferOffset::new(5))
         );
     });
@@ -560,22 +567,22 @@ fn select_larger_smaller_syntax_node_uses_tree_sitter_ancestors(cx: &mut TestApp
     });
     cx.run_until_parked();
     let value = source.find("value").unwrap();
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(value)));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(value)), cx);
     });
     focus_editor(&editor, cx);
 
     cx.dispatch_action(SelectLargerSyntaxNode);
-    cx.read_entity(&editor, |editor, _| {
-        let selection = editor.selections().primary().range();
+    cx.read_entity(&editor, |editor, cx| {
+        let selection = editor.selections(cx).primary().range();
         assert_eq!(
             &source[selection.start().get()..selection.end().get()],
             "value"
         );
     });
     cx.dispatch_action(SelectLargerSyntaxNode);
-    cx.read_entity(&editor, |editor, _| {
-        let selection = editor.selections().primary().range();
+    cx.read_entity(&editor, |editor, cx| {
+        let selection = editor.selections(cx).primary().range();
         assert_eq!(
             &source[selection.start().get()..selection.end().get()],
             "let value = 1;"
@@ -584,48 +591,48 @@ fn select_larger_smaller_syntax_node_uses_tree_sitter_ancestors(cx: &mut TestApp
     for _ in 0..4 {
         cx.dispatch_action(SelectLargerSyntaxNode);
     }
-    cx.read_entity(&editor, |editor, _| {
-        let selection = editor.selections().primary().range();
+    cx.read_entity(&editor, |editor, cx| {
+        let selection = editor.selections(cx).primary().range();
         assert_eq!(selection.start(), MultiBufferOffset::ZERO);
         assert_eq!(selection.end(), MultiBufferOffset::new(source.len()));
     });
     cx.dispatch_action(SelectSmallerSyntaxNode);
-    cx.read_entity(&editor, |editor, _| {
-        let selection = editor.selections().primary().range();
+    cx.read_entity(&editor, |editor, cx| {
+        let selection = editor.selections(cx).primary().range();
         assert_eq!(
             &source[selection.start().get()..selection.end().get()],
             "fn main() { let value = 1; }"
         );
     });
     cx.dispatch_action(SelectSmallerSyntaxNode);
-    cx.read_entity(&editor, |editor, _| {
-        let selection = editor.selections().primary().range();
+    cx.read_entity(&editor, |editor, cx| {
+        let selection = editor.selections(cx).primary().range();
         assert_eq!(
             &source[selection.start().get()..selection.end().get()],
             "{ let value = 1; }"
         );
     });
     cx.dispatch_action(SelectSmallerSyntaxNode);
-    cx.read_entity(&editor, |editor, _| {
-        let selection = editor.selections().primary().range();
+    cx.read_entity(&editor, |editor, cx| {
+        let selection = editor.selections(cx).primary().range();
         assert_eq!(
             &source[selection.start().get()..selection.end().get()],
             "let value = 1;"
         );
     });
     cx.dispatch_action(SelectSmallerSyntaxNode);
-    cx.read_entity(&editor, |editor, _| {
-        let selection = editor.selections().primary().range();
+    cx.read_entity(&editor, |editor, cx| {
+        let selection = editor.selections(cx).primary().range();
         assert_eq!(
             &source[selection.start().get()..selection.end().get()],
             "value"
         );
     });
     cx.dispatch_action(SelectSmallerSyntaxNode);
-    cx.read_entity(&editor, |editor, _| {
-        assert!(editor.selections().primary().is_caret());
+    cx.read_entity(&editor, |editor, cx| {
+        assert!(editor.selections(cx).primary().is_caret());
         assert_eq!(
-            editor.selections().primary().head(),
+            editor.selections(cx).primary().head(),
             MultiBufferOffset::new(value)
         );
     });
@@ -653,8 +660,8 @@ fn f2_opens_inline_local_rename_and_enter_commits_it(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     let value = source.rfind("value").expect("测试文本应包含局部变量");
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(value)));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(value)), cx);
     });
     cx.update_entity(&editor, |editor, cx| {
         editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx);
@@ -723,17 +730,17 @@ fn select_larger_syntax_node_reaches_file_root_from_rust_imports_and_structures(
     });
     cx.run_until_parked();
     let any_element = source.find("AnyElement").unwrap();
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(any_element)));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(any_element)), cx);
     });
     focus_editor(&editor, cx);
 
     for _ in 0..16 {
         cx.dispatch_action(SelectLargerSyntaxNode);
     }
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections().primary().range(),
+            editor.selections(cx).primary().range(),
             MultiBufferRange::new(
                 MultiBufferOffset::ZERO,
                 MultiBufferOffset::new(source.len())
@@ -764,25 +771,28 @@ fn matching_brackets_come_from_tree_sitter_query(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     let open = source.find("()").unwrap();
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(open + 1)));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(open + 1)), cx);
     });
 
-    cx.update_entity(&editor, |editor, _| {
+    cx.update_entity(&editor, |editor, cx| {
         let pair = editor
-            .matching_bracket_pair()
+            .matching_bracket_pair(cx)
             .expect("光标旁的括号应由 tree-sitter query 匹配");
         assert_eq!(&source[pair.open], "(");
         assert_eq!(&source[pair.close], ")");
     });
 
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::new(vec![
-            Selection::caret(MultiBufferOffset::new(open + 1)),
-            Selection::new(MultiBufferOffset::new(0), MultiBufferOffset::new(2)),
-        ]));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(
+            SelectionSet::new(vec![
+                Selection::caret(MultiBufferOffset::new(open + 1)),
+                Selection::new(MultiBufferOffset::new(0), MultiBufferOffset::new(2)),
+            ]),
+            cx,
+        );
         assert!(
-            editor.matching_bracket_pair().is_none(),
+            editor.matching_bracket_pair(cx).is_none(),
             "任一非空选区都应隐藏括号匹配高亮"
         );
     });
@@ -796,42 +806,48 @@ fn word_and_line_delete_actions_follow_editor_boundaries(cx: &mut TestAppContext
     });
     focus_editor(&editor, cx);
 
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(10)));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(10)), cx);
     });
     cx.dispatch_action(DeleteToPreviousWordStart);
     assert_eq!(buffer_text(&buffer, cx), "alpha  gamma");
 
     cx.update_entity(&editor, |editor, cx| {
         editor.set_text("alpha beta gamma", cx);
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(6)));
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(6)), cx);
     });
     cx.dispatch_action(DeleteToNextWordEnd);
     assert_eq!(buffer_text(&buffer, cx), "alpha  gamma");
 
     cx.update_entity(&editor, |editor, cx| {
         editor.set_text("one two three four", cx);
-        editor.set_selections(SelectionSet::new(vec![Selection::new(
-            MultiBufferOffset::new(4),
-            MultiBufferOffset::new(13),
-        )]));
+        editor.set_selections(
+            SelectionSet::new(vec![Selection::new(
+                MultiBufferOffset::new(4),
+                MultiBufferOffset::new(13),
+            )]),
+            cx,
+        );
     });
     cx.dispatch_action(DeleteToBeginningOfLine);
     assert_eq!(buffer_text(&buffer, cx), " four");
 
     cx.update_entity(&editor, |editor, cx| {
         editor.set_text("one two three four", cx);
-        editor.set_selections(SelectionSet::new(vec![Selection::new(
-            MultiBufferOffset::new(4),
-            MultiBufferOffset::new(13),
-        )]));
+        editor.set_selections(
+            SelectionSet::new(vec![Selection::new(
+                MultiBufferOffset::new(4),
+                MultiBufferOffset::new(13),
+            )]),
+            cx,
+        );
     });
     cx.dispatch_action(DeleteToEndOfLine);
     assert_eq!(buffer_text(&buffer, cx), "one ");
 
     cx.update_entity(&editor, |editor, cx| {
         editor.set_text("one\ntwo", cx);
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(4)));
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(4)), cx);
     });
     cx.dispatch_action(DeleteToBeginningOfLine);
     assert_eq!(buffer_text(&buffer, cx), "onetwo");
@@ -848,37 +864,37 @@ fn document_boundary_actions_move_and_extend_selection(cx: &mut TestAppContext) 
 
     focus_editor(&editor, cx);
     cx.dispatch_action(MoveToEnd);
-    cx.read_entity(&editor, |editor, _| {
-        assert_eq!(editor.selections(), SelectionSet::caret(end));
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(editor.selections(cx), SelectionSet::caret(end));
     });
 
     cx.dispatch_action(MoveToBeginning);
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::caret(MultiBufferOffset::ZERO)
         );
     });
 
     let anchor = MultiBufferOffset::new(2);
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::caret(anchor));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(anchor), cx);
     });
     cx.dispatch_action(SelectToEnd);
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::new(vec![Selection::new(anchor, end)])
         );
     });
 
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::caret(anchor));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(anchor), cx);
     });
     cx.dispatch_action(SelectToBeginning);
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::new(vec![Selection::new(anchor, MultiBufferOffset::ZERO)])
         );
     });
@@ -906,10 +922,10 @@ fn page_actions_move_selection_and_viewport_together(cx: &mut TestAppContext) {
 
     cx.dispatch_action(MovePageDown);
     cx.run_until_parked();
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         let caret_row = editor
-            .render_snapshot()
-            .byte_to_position(editor.selections().primary().head())
+            .render_snapshot(cx)
+            .byte_to_position(editor.selections(cx).primary().head())
             .expect("翻页后的光标应有效")
             .line()
             .get();
@@ -932,10 +948,10 @@ fn page_actions_move_selection_and_viewport_together(cx: &mut TestAppContext) {
 
     cx.dispatch_action(SelectPageDown);
     cx.run_until_parked();
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         // 垂直移动持久保留目标列（从列 0 起始，目标列仍为 0）。
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::new(vec![
                 Selection::new(first_page, second_page).with_goal(Some(0))
             ])
@@ -948,9 +964,9 @@ fn page_actions_move_selection_and_viewport_together(cx: &mut TestAppContext) {
 
     cx.dispatch_action(MovePageUp);
     cx.run_until_parked();
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::new(vec![Selection::caret(first_page).with_goal(Some(0))])
         );
         assert_eq!(
@@ -961,9 +977,9 @@ fn page_actions_move_selection_and_viewport_together(cx: &mut TestAppContext) {
 
     cx.dispatch_action(SelectPageUp);
     cx.run_until_parked();
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::new(vec![
                 Selection::new(first_page, MultiBufferOffset::ZERO).with_goal(Some(0))
             ])
@@ -980,11 +996,14 @@ fn clipboard_actions_edit_selected_text_through_transactions(cx: &mut TestAppCon
     });
 
     focus_editor(&editor, cx);
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::new(vec![Selection::new(
-            MultiBufferOffset::new(1),
-            MultiBufferOffset::new(4),
-        )]));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(
+            SelectionSet::new(vec![Selection::new(
+                MultiBufferOffset::new(1),
+                MultiBufferOffset::new(4),
+            )]),
+            cx,
+        );
     });
     cx.dispatch_action(Copy);
     cx.update(|_, cx| {
@@ -999,8 +1018,8 @@ fn clipboard_actions_edit_selected_text_through_transactions(cx: &mut TestAppCon
     cx.dispatch_action(Undo);
     assert_eq!(buffer_text(&buffer, cx), "hello");
 
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(5)));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(5)), cx);
     });
     cx.dispatch_action(Paste);
     assert_eq!(buffer_text(&buffer, cx), "helloell");
@@ -1017,27 +1036,27 @@ fn move_line_up_and_down_reorders_lines_and_follows_selection(cx: &mut TestAppCo
     focus_editor(&editor, cx);
 
     // 光标在第二行上移：整行移动，光标保持行内相对位置
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(9)));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(9)), cx);
     });
     cx.dispatch_action(MoveLineUp);
     assert_eq!(buffer_text(&buffer, cx), "bravo\nalpha\ncharlie\ndelta");
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections().as_slice()[0].head(),
+            editor.selections(cx).as_slice()[0].head(),
             MultiBufferOffset::new(3)
         );
     });
 
     // 光标在第二行下移：与下一行交换
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(8)));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(8)), cx);
     });
     cx.dispatch_action(MoveLineDown);
     assert_eq!(buffer_text(&buffer, cx), "bravo\ncharlie\nalpha\ndelta");
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections().as_slice()[0].head(),
+            editor.selections(cx).as_slice()[0].head(),
             MultiBufferOffset::new(16)
         );
     });
@@ -1057,25 +1076,28 @@ fn move_line_skips_document_edges_and_moves_multi_line_selection(cx: &mut TestAp
     focus_editor(&editor, cx);
 
     // 首行不能上移：文本不变
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(2)));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(2)), cx);
     });
     cx.dispatch_action(MoveLineUp);
     assert_eq!(buffer_text(&buffer, cx), "alpha\nbravo\ncharlie\ndelta");
 
     // 末行不能下移：文本不变
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(22)));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(22)), cx);
     });
     cx.dispatch_action(MoveLineDown);
     assert_eq!(buffer_text(&buffer, cx), "alpha\nbravo\ncharlie\ndelta");
 
     // 多行选区（bravo + charlie 两行）整体上移
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::new(vec![Selection::new(
-            MultiBufferOffset::new(6),
-            MultiBufferOffset::new(19),
-        )]));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(
+            SelectionSet::new(vec![Selection::new(
+                MultiBufferOffset::new(6),
+                MultiBufferOffset::new(19),
+            )]),
+            cx,
+        );
     });
     cx.dispatch_action(MoveLineUp);
     assert_eq!(buffer_text(&buffer, cx), "bravo\ncharlie\nalpha\ndelta");
@@ -1090,30 +1112,30 @@ fn move_line_keeps_newline_separation_at_document_edge(cx: &mut TestAppContext) 
     focus_editor(&editor, cx);
 
     // 倒数第二行下移到末行：行块与无换行的末行交换，换行必须保持
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(15))); // charlie 行
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(15)), cx); // charlie 行
     });
     cx.dispatch_action(MoveLineDown);
     assert_eq!(buffer_text(&buffer, cx), "alpha\nbravo\ndelta\ncharlie");
 
     // 末行上移到倒数第二行
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(20))); // charlie（末行）
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(20)), cx); // charlie（末行）
     });
     cx.dispatch_action(MoveLineUp);
     assert_eq!(buffer_text(&buffer, cx), "alpha\nbravo\ncharlie\ndelta");
 
     // 从首行连续下移三次，行块沉到文档末尾，光标始终跟随
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(2))); // alpha 行
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(2)), cx); // alpha 行
     });
     for _ in 0..3 {
         cx.dispatch_action(MoveLineDown);
     }
     assert_eq!(buffer_text(&buffer, cx), "bravo\ncharlie\ndelta\nalpha");
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections().as_slice()[0].head(),
+            editor.selections(cx).as_slice()[0].head(),
             MultiBufferOffset::new(22)
         );
     });
@@ -1128,31 +1150,37 @@ fn move_line_moves_rows_of_partial_selection_and_keeps_shape(cx: &mut TestAppCon
     focus_editor(&editor, cx);
 
     // 选中 bravo 行内部分文本（非整行选区）上移：所在行块移动，选区形状保持
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::new(vec![Selection::new(
-            MultiBufferOffset::new(7),
-            MultiBufferOffset::new(9),
-        )]));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(
+            SelectionSet::new(vec![Selection::new(
+                MultiBufferOffset::new(7),
+                MultiBufferOffset::new(9),
+            )]),
+            cx,
+        );
     });
     cx.dispatch_action(MoveLineUp);
     assert_eq!(buffer_text(&buffer, cx), "bravo\nalpha\ncharlie\ndelta");
-    cx.read_entity(&editor, |editor, _| {
-        let selection = editor.selections().as_slice()[0];
+    cx.read_entity(&editor, |editor, cx| {
+        let selection = editor.selections(cx).as_slice()[0];
         assert_eq!(selection.start(), MultiBufferOffset::new(1));
         assert_eq!(selection.end(), MultiBufferOffset::new(3));
     });
 
     // 跨行选区（alpha 行首到 charlie 行内）下移：两个整行块移动，选区形状保持
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::new(vec![Selection::new(
-            MultiBufferOffset::new(6),
-            MultiBufferOffset::new(17),
-        )]));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(
+            SelectionSet::new(vec![Selection::new(
+                MultiBufferOffset::new(6),
+                MultiBufferOffset::new(17),
+            )]),
+            cx,
+        );
     });
     cx.dispatch_action(MoveLineDown);
     assert_eq!(buffer_text(&buffer, cx), "bravo\ndelta\nalpha\ncharlie");
-    cx.read_entity(&editor, |editor, _| {
-        let selection = editor.selections().as_slice()[0];
+    cx.read_entity(&editor, |editor, cx| {
+        let selection = editor.selections(cx).as_slice()[0];
         assert_eq!(selection.start(), MultiBufferOffset::new(12));
         assert_eq!(selection.end(), MultiBufferOffset::new(23));
     });
@@ -1167,57 +1195,69 @@ fn directional_moves_collapse_selection_to_its_edges(cx: &mut TestAppContext) {
     focus_editor(&editor, cx);
 
     // 选区按 ←：光标折叠到选区左端（不移动）
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::new(vec![Selection::new(
-            MultiBufferOffset::new(7),
-            MultiBufferOffset::new(11),
-        )]));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(
+            SelectionSet::new(vec![Selection::new(
+                MultiBufferOffset::new(7),
+                MultiBufferOffset::new(11),
+            )]),
+            cx,
+        );
     });
     cx.dispatch_action(MoveLeft);
-    cx.read_entity(&editor, |editor, _| {
-        let selection = editor.selections().as_slice()[0];
+    cx.read_entity(&editor, |editor, cx| {
+        let selection = editor.selections(cx).as_slice()[0];
         assert!(selection.is_caret());
         assert_eq!(selection.head(), MultiBufferOffset::new(7));
     });
 
     // 选区按 →：光标折叠到选区右端
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::new(vec![Selection::new(
-            MultiBufferOffset::new(7),
-            MultiBufferOffset::new(11),
-        )]));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(
+            SelectionSet::new(vec![Selection::new(
+                MultiBufferOffset::new(7),
+                MultiBufferOffset::new(11),
+            )]),
+            cx,
+        );
     });
     cx.dispatch_action(MoveRight);
-    cx.read_entity(&editor, |editor, _| {
-        let selection = editor.selections().as_slice()[0];
+    cx.read_entity(&editor, |editor, cx| {
+        let selection = editor.selections(cx).as_slice()[0];
         assert!(selection.is_caret());
         assert_eq!(selection.head(), MultiBufferOffset::new(11));
     });
 
     // 跨行选区按 ↑：光标从选区顶端出发向上移动一行
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::new(vec![Selection::new(
-            MultiBufferOffset::new(7),
-            MultiBufferOffset::new(18),
-        )]));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(
+            SelectionSet::new(vec![Selection::new(
+                MultiBufferOffset::new(7),
+                MultiBufferOffset::new(18),
+            )]),
+            cx,
+        );
     });
     cx.dispatch_action(MoveUp);
-    cx.read_entity(&editor, |editor, _| {
-        let selection = editor.selections().as_slice()[0];
+    cx.read_entity(&editor, |editor, cx| {
+        let selection = editor.selections(cx).as_slice()[0];
         assert!(selection.is_caret());
         assert_eq!(selection.head(), MultiBufferOffset::new(1));
     });
 
     // 跨行选区按 ↓：光标从选区底端出发向下移动一行（列越界钳制到行尾）
-    cx.update_entity(&editor, |editor, _| {
-        editor.set_selections(SelectionSet::new(vec![Selection::new(
-            MultiBufferOffset::new(7),
-            MultiBufferOffset::new(18),
-        )]));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(
+            SelectionSet::new(vec![Selection::new(
+                MultiBufferOffset::new(7),
+                MultiBufferOffset::new(18),
+            )]),
+            cx,
+        );
     });
     cx.dispatch_action(MoveDown);
-    cx.read_entity(&editor, |editor, _| {
-        let selection = editor.selections().as_slice()[0];
+    cx.read_entity(&editor, |editor, cx| {
+        let selection = editor.selections(cx).as_slice()[0];
         assert!(selection.is_caret());
         // 列 6 越界钳制到末行行尾（delta 无换行，行尾即文档末尾）。
         assert_eq!(selection.head(), MultiBufferOffset::new(25));
@@ -1230,9 +1270,10 @@ fn word_line_and_vertical_movement_use_engine_boundaries(cx: &mut TestAppContext
         let buffer = buffer.clone();
         move |cx| {
             let mut editor = Editor::for_language_buffer(buffer, cx);
-            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(
-                "alpha 你好".len(),
-            )));
+            editor.set_selections(
+                SelectionSet::caret(MultiBufferOffset::new("alpha 你好".len())),
+                cx,
+            );
             editor
         }
     });
@@ -1240,19 +1281,19 @@ fn word_line_and_vertical_movement_use_engine_boundaries(cx: &mut TestAppContext
     cx.update_entity(&editor, |editor, cx| {
         editor.move_selections(MovementDirection::Previous, MovementUnit::Word, false, cx);
         assert_eq!(
-            editor.selections().primary().head(),
+            editor.selections(cx).primary().head(),
             MultiBufferOffset::new(6)
         );
 
         editor.move_selections(MovementDirection::Next, MovementUnit::LineEdge, false, cx);
         assert_eq!(
-            editor.selections().primary().head(),
+            editor.selections(cx).primary().head(),
             MultiBufferOffset::new("alpha 你好".len())
         );
 
         editor.move_selections(MovementDirection::Next, Motion::LineStep, false, cx);
         assert_eq!(
-            editor.selections().primary().head(),
+            editor.selections(cx).primary().head(),
             MultiBufferOffset::new("alpha 你好\nxy".len())
         );
     });
@@ -1264,7 +1305,7 @@ fn newline_is_a_transaction_and_undo_restores_selection(cx: &mut TestAppContext)
         let buffer = buffer.clone();
         move |cx| {
             let mut editor = Editor::for_language_buffer(buffer, cx);
-            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(1)));
+            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(1)), cx);
             editor
         }
     });
@@ -1272,18 +1313,18 @@ fn newline_is_a_transaction_and_undo_restores_selection(cx: &mut TestAppContext)
     cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
     assert_eq!(buffer_text(&buffer, cx), "a\nb");
     assert!(cx.read_entity(&buffer, |buffer, _| buffer.can_undo()));
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::caret(MultiBufferOffset::new(2))
         );
     });
 
     cx.update_entity(&editor, |editor, cx| editor.undo(cx));
     assert_eq!(buffer_text(&buffer, cx), "ab");
-    cx.read_entity(&editor, |editor, _| {
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
-            editor.selections(),
+            editor.selections(cx),
             SelectionSet::caret(MultiBufferOffset::new(1))
         );
     });
@@ -1308,7 +1349,7 @@ fn newline_uses_tree_sitter_indent_query(cx: &mut TestAppContext) {
         let language_buffer = language_buffer.clone();
         move |cx| {
             let mut editor = Editor::for_language_buffer(language_buffer, cx);
-            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(caret)));
+            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(caret)), cx);
             editor
         }
     });
@@ -1355,7 +1396,7 @@ fn composite_excerpt_uses_its_source_tree_sitter_indent_query(cx: &mut TestAppCo
         let combined = combined.clone();
         move |cx| {
             let mut editor = Editor::for_multi_buffer(combined, cx);
-            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(caret)));
+            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(caret)), cx);
             editor
         }
     });
@@ -1386,7 +1427,7 @@ fn newline_does_not_compound_indent_inside_an_outer_rust_block(cx: &mut TestAppC
         let language_buffer = language_buffer.clone();
         move |cx| {
             let mut editor = Editor::for_language_buffer(language_buffer, cx);
-            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(caret)));
+            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(caret)), cx);
             editor
         }
     });
@@ -1421,7 +1462,7 @@ fn newline_uses_the_nearest_code_line_as_its_indent_basis(cx: &mut TestAppContex
         let language_buffer = language_buffer.clone();
         move |cx| {
             let mut editor = Editor::for_language_buffer(language_buffer, cx);
-            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(caret)));
+            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(caret)), cx);
             editor
         }
     });

@@ -83,8 +83,9 @@ fn folding_a_middle_range_emits_a_localized_structural_edit() {
     assert!(edit.is_structural());
     // 只覆盖被折叠的 tab 行，折叠点前后的可见行保留原变换。
     // 折叠段不产生投影行：被隐藏的两行整段移除，anchor 行不在编辑区间内。
-    assert_eq!(edit.old_rows(), 2..4);
-    assert_eq!(edit.new_rows(), 2..2);
+    // Edit 允许放大到 anchor 行：区间只覆盖被折叠行与其合并行，不是整层失效。
+    assert_eq!(edit.old_rows(), 1..4);
+    assert_eq!(edit.new_rows(), 1..2);
 }
 
 #[test]
@@ -102,8 +103,9 @@ fn unfolding_a_middle_fold_restores_only_its_rows() {
     let edit = &edits[0];
     assert!(edit.is_structural());
     // 折叠段不产生投影行：展开恢复的两行整段插入，anchor 行不在编辑区间内。
-    assert_eq!(edit.old_rows(), 2..2);
-    assert_eq!(edit.new_rows(), 2..4);
+    // Edit 允许放大到 anchor 行：展开只失效被恢复行与其合并行。
+    assert_eq!(edit.old_rows(), 1..2);
+    assert_eq!(edit.new_rows(), 1..4);
 }
 
 #[test]

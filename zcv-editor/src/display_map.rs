@@ -23,11 +23,11 @@ mod tab_map;
 mod wrap_map;
 
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::scrollbar::{ScrollbarMarker, marker_geometry};
 
@@ -181,6 +181,54 @@ impl DisplayRange {
     }
 }
 
+/// 语法折叠候选的按行派生索引；只保留可折叠行，随显示版本整体替换。
+///
+/// 派生集中在消费端首次看到某段视口时发生，之后滚动帧只做区间查表。
+#[derive(Debug, Default)]
+struct SyntaxCreaseIndex {
+    /// 已派生的连续逻辑行区间；`None` 表示尚未派生。
+    covered: Option<Range<Line>>,
+    /// 已派生区间内的可折叠行及其候选。
+    by_line: BTreeMap<Line, Crease>,
+}
+
+impl SyntaxCreaseIndex {
+    /// 补齐 `range` 尚未派生的部分；
+    /// 与已派生区间不相交时重建，避免为巨大间隙派生。
+    fn cover(&mut self, range: Range<Line>, mut crease_at: impl FnMut(Line) -> Option<Crease>) {
+        let Some(covered) = self.covered.clone() else {
+            self.populate(range.clone(), &mut crease_at);
+            self.covered = Some(range);
+            return;
+        };
+        if covered.start <= range.start && range.end <= covered.end {
+            return;
+        }
+        if range.end < covered.start || covered.end < range.start {
+            self.by_line.clear();
+            self.populate(range.clone(), &mut crease_at);
+            self.covered = Some(range);
+            return;
+        }
+        if range.start < covered.start {
+            self.populate(range.start..covered.start, &mut crease_at);
+        }
+        if covered.end < range.end {
+            self.populate(covered.end..range.end, &mut crease_at);
+        }
+        self.covered = Some(covered.start.min(range.start)..covered.end.max(range.end));
+    }
+
+    fn populate(&mut self, range: Range<Line>, crease_at: &mut impl FnMut(Line) -> Option<Crease>) {
+        for index in range.start.get()..range.end.get() {
+            let line = Line::new(index);
+            if let Some(crease) = crease_at(line) {
+                self.by_line.insert(line, crease);
+            }
+        }
+    }
+}
+
 /// 一帧渲染使用的只读显示快照。
 ///
 /// FoldSnapshot、TabSnapshot 与 WrapSnapshot 都是低成本克隆；渲染持有此值时
@@ -195,6 +243,8 @@ pub(super) struct DisplaySnapshot {
     decorations: Arc<DisplayDecorations>,
     /// diff 显示输入归组合文档所有；这里只持有当前显示版本的不可变引用。
     diff_display: Option<Arc<DiffDisplaySnapshot>>,
+    /// 语法折叠候选的区间派生索引：同一显示版本内只对视口区间派生，随快照整体替换。
+    syntax_crease_cache: Arc<Mutex<SyntaxCreaseIndex>>,
 }
 
 impl DisplaySnapshot {
@@ -247,13 +297,34 @@ impl DisplaySnapshot {
 
     /// 返回指定逻辑行的折叠候选。
     ///
-    /// 显式 crease 优先。
-    /// 没有显式范围时，显示层仅查询该行所在源文本，避免把所有源的 Tree-sitter 折叠结果物化进组合快照。
+    /// 显式 crease 始终实时查询（可能被宿主增删）；
+    /// 语法候选按显示版本派生到行索引，同一区间只派生一次，滚动帧只做区间查表，不在渲染路径逐行重跑源投影。
     pub(crate) fn crease_at_line(&self, line: Line) -> Option<Crease> {
         self.crease_snapshot
             .crease_at_line(line, self.buffer_snapshot())
             .cloned()
-            .or_else(|| self.syntax_crease_at_line(line))
+            .or_else(|| self.syntax_crease_at_line_cached(line))
+    }
+
+    /// 视口范围内可折叠的逻辑行；只对视口区间派生一次。
+    pub(super) fn foldable_lines_in_range(&self, range: Range<Line>) -> BTreeSet<Line> {
+        let mut index = self
+            .syntax_crease_cache
+            .lock()
+            .expect("语法折叠候选派生缓存锁不得中毒");
+        index.cover(range.clone(), |line| self.syntax_crease_at_line(line));
+        index.by_line.range(range).map(|(line, _)| *line).collect()
+    }
+
+    fn syntax_crease_at_line_cached(&self, line: Line) -> Option<Crease> {
+        let mut index = self
+            .syntax_crease_cache
+            .lock()
+            .expect("语法折叠候选派生缓存锁不得中毒");
+        index.cover(Line::new(line.get())..Line::new(line.get() + 1), |line| {
+            self.syntax_crease_at_line(line)
+        });
+        index.by_line.get(&line).cloned()
     }
 
     /// 返回包含指定逻辑行的最内层折叠候选，供光标位于折叠体内部时的切换命令使用。
@@ -722,7 +793,7 @@ impl DisplayMap {
     }
 
     /// 读取并推进当前显示快照；组合文本同步、换行与块投影都从这里进入。
-    /// 折叠候选由消费快照的按行查询生成，不参与同步。
+    /// 折叠候选按显示版本在消费端派生缓存，不参与显示拓扑同步。
     pub(crate) fn snapshot(&mut self, cx: &mut Context<Self>) -> DisplaySnapshot {
         let Some(multi_buffer) = self.multi_buffer.clone() else {
             return self.cached_snapshot();
@@ -755,7 +826,7 @@ impl DisplayMap {
             return;
         }
         self.editor_hunks = hunks;
-        self.rebuild_decorations(cx);
+        self.refresh_editor_hunk_decorations(cx);
     }
 
     /// 替换搜索命中的显示输入；范围已由 Editor 解析到组合坐标。
@@ -768,7 +839,7 @@ impl DisplayMap {
             return;
         }
         self.search = search;
-        self.rebuild_decorations(cx);
+        self.refresh_search_decorations(cx);
     }
 
     /// 注入宿主拥有的显式折叠候选，并返回其稳定身份。
@@ -813,14 +884,33 @@ impl DisplayMap {
         cx.notify();
     }
 
-    /// 只替换当前快照的装饰层；显示拓扑与版本保持不变。
-    ///
-    /// 装饰输入（diff、搜索、宿主 hunk）变化走这里，避免无意义地重建 Block 投影。
-    fn rebuild_decorations(&mut self, cx: &mut Context<Self>) {
+    /// 只替换宿主 hunk 影响的 diff 域装饰；搜索域与显示拓扑保持不变。
+    fn refresh_editor_hunk_decorations(&mut self, cx: &mut Context<Self>) {
         let Some(mut snapshot) = self.snapshot.take() else {
             return;
         };
-        snapshot.decorations = Arc::new(self.build_decorations(&snapshot, None, cx));
+        let diff = Arc::new(DiffDecorationSnapshot::new(
+            &snapshot,
+            snapshot.diff_display.as_deref(),
+            &self.editor_hunks,
+        ));
+        snapshot.decorations = Arc::new(snapshot.decorations.with_diff(diff));
+        self.snapshot = Some(snapshot);
+        cx.notify();
+    }
+
+    /// 只替换搜索域装饰；diff 域与显示拓扑保持不变。
+    fn refresh_search_decorations(&mut self, cx: &mut Context<Self>) {
+        let Some(mut snapshot) = self.snapshot.take() else {
+            return;
+        };
+        let search = self.search.as_ref().map(|input| {
+            Arc::new(SearchDecorationSnapshot::from_ranges(
+                Arc::clone(&input.ranges),
+                input.active_index,
+            ))
+        });
+        snapshot.decorations = Arc::new(snapshot.decorations.with_search(search));
         self.snapshot = Some(snapshot);
         cx.notify();
     }
@@ -843,7 +933,12 @@ impl DisplayMap {
         }
 
         snapshot.diff_display = current_snapshot.diff_display().cloned();
-        snapshot.decorations = Arc::new(self.build_decorations(&snapshot, None, cx));
+        let diff = Arc::new(DiffDecorationSnapshot::new(
+            &snapshot,
+            snapshot.diff_display.as_deref(),
+            &self.editor_hunks,
+        ));
+        snapshot.decorations = Arc::new(snapshot.decorations.with_diff(diff));
         self.snapshot = Some(snapshot);
         cx.notify();
     }
@@ -871,6 +966,7 @@ impl DisplayMap {
             crease_snapshot: self.crease_map.snapshot(),
             decorations: Arc::new(DisplayDecorations::empty()),
             diff_display: wrap_snapshot.buffer_snapshot().diff_display().cloned(),
+            syntax_crease_cache: Arc::new(Mutex::new(SyntaxCreaseIndex::default())),
         };
         let cached_diff = self.snapshot.as_ref().and_then(|previous| {
             (wrap_edits.is_empty()

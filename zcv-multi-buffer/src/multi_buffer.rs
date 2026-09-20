@@ -1549,7 +1549,7 @@ pub struct MultiBufferSnapshot {
 /// 组合输出位置关联的源快照与坐标映射。
 ///
 /// `MultiBuffer` 只提供源／组合坐标转换；
-/// Tree-sitter 查询由显示层在需要某一行时执行，不在组合快照中物化或缓存整份源文件的语法派生数据。
+/// Tree-sitter 查询由显示层在需要某一行时执行，结果留在语法快照的派生缓存中，不物化进组合快照。
 pub struct MultiBufferSource<'a> {
     snapshot: &'a MultiBufferSnapshot,
     source_index: usize,

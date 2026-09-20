@@ -20,8 +20,23 @@ pub struct FoldRange {
 }
 
 impl SyntaxSnapshot {
-    /// 查询范围内的折叠区域，并按源文本起点排序。
+    /// 返回起点落在 `range` 内的折叠候选，并按源文本起点排序。
+    ///
+    /// 整源候选按语法版本缓存且已按起点排序；
+    /// 这里二分定位起点区间，不再为每个可见行重跑 Tree-sitter 查询，也不线性扫描整源候选。
     pub fn fold_ranges(&self, range: Range<usize>, text: &Snapshot) -> Vec<FoldRange> {
+        if !self.can_query(&range, text) {
+            return Vec::new();
+        }
+        let folds = self.cached_fold_ranges(text);
+        let start = folds.partition_point(|fold| fold.range.start.offset().get() < range.start);
+        let end = folds.partition_point(|fold| fold.range.start.offset().get() < range.end);
+        folds[start..end].to_vec()
+    }
+
+    /// 查询整源折叠候选，并按源文本起点排序。
+    pub(crate) fn query_fold_ranges(&self, text: &Snapshot) -> Vec<FoldRange> {
+        let range = 0..text.len_bytes().get();
         if !self.can_query(&range, text) {
             return Vec::new();
         }

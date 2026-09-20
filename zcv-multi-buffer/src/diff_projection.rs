@@ -519,7 +519,7 @@ impl MultiBuffer {
             }
             return self.replace_diff_file(index, file, cx);
         }
-        // 新路径按显示路径顺序插入：位于末尾时走增量追加，插到中间时整体重建。
+        // 新路径按显示路径顺序插入：位于末尾走增量追加，插到中间按路径 splice。
         let insert_at = self.diffs.partition_point(|current| {
             current.display_path.as_path() < file.display_path.as_path()
         });
@@ -1437,8 +1437,8 @@ impl MultiBuffer {
             .iter()
             .position(|segment| &segment.path == path)
         else {
-            // 该 path 尚无显示缓存（新出现的 hunk 等）：退化为全量重建。
-            self.refresh_diff_display(cx);
+            // 该 path 没有显示缓存：它不在 excerpt 投影中（如无片段的 base/index 修订源被编辑）。
+            // 显示缓存的增删由 excerpt 物化路径负责，这里没有可增量更新的内容。
             return;
         };
         let line_delta = new_summary.lines as isize - old_summary.lines as isize;

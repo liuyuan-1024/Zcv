@@ -8,6 +8,7 @@ description = "文本存储、快照、坐标、事务与历史内核"
 path = "src/text.rs"
 
 [dependencies]
+imara-diff.workspace = true
 ropey.workspace = true
 thiserror.workspace = true
 unicode-segmentation.workspace = true

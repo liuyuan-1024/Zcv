@@ -1,14 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::{ControlFlow, Range};
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 use tree_sitter::StreamingIterator;
-use zcv_text::{BufferVersion, Snapshot, TextChangeBatch};
+use zcv_text::{BufferGeneration, BufferVersion, Snapshot, TextChangeBatch};
 
 use crate::Language;
 use crate::registry::LanguageRegistry;
+use crate::structure::FoldRange;
 use crate::tree_sitter_utils::{
     IncrementalParser, PARSE_TIME_SLICE, ParseCancellation, QueryCursorHandle,
     SnapshotTextProvider, drop_offloaded, edit_tree, map_range_through_changes, node_text,
@@ -30,13 +31,36 @@ pub(crate) struct SyntaxMap {
     interpolated_snapshot: Snapshot,
 }
 
-#[derive(Clone, Debug, Default)]
+/// 整源折叠候选缓存条目：同时绑定内容代际与语法版本，随语法状态克隆重置。
+#[derive(Debug)]
+struct FoldRangeCacheEntry {
+    generation: BufferGeneration,
+    version: BufferVersion,
+    ranges: Arc<[FoldRange]>,
+}
+
+#[derive(Debug, Default)]
 struct SyntaxState {
     tree: Option<tree_sitter::Tree>,
     injections: Vec<SyntaxLayer>,
     /// 最近一次解析安装的 capture 全局表（见 `SyntaxSnapshot::rebuild_capture_table`）。
     capture_names: Arc<[Arc<str>]>,
     capture_index_by_language: HashMap<&'static str, Arc<[u32]>>,
+    /// 整源折叠候选缓存；渲染路径按范围过滤，不再逐行重跑查询。
+    fold_ranges: Mutex<Option<FoldRangeCacheEntry>>,
+}
+
+impl Clone for SyntaxState {
+    fn clone(&self) -> Self {
+        Self {
+            tree: self.tree.clone(),
+            injections: self.injections.clone(),
+            capture_names: Arc::clone(&self.capture_names),
+            capture_index_by_language: self.capture_index_by_language.clone(),
+            // 派生缓存不随状态克隆复制：克隆意味着语法状态将要变化，旧候选立即失效。
+            fold_ranges: Mutex::new(None),
+        }
+    }
 }
 
 impl SyntaxState {
@@ -274,6 +298,32 @@ impl SyntaxSnapshot {
             && range.end <= text.len_bytes().get()
     }
 
+    /// 返回整源折叠候选，按语法版本缓存。
+    ///
+    /// 候选只依赖当前树与文本版本；
+    /// 同一版本的渲染查询共享同一份结果，消费方按范围过滤即可，避免为每个可见行重跑 Tree-sitter 查询。
+    pub(crate) fn cached_fold_ranges(&self, text: &Snapshot) -> Arc<[FoldRange]> {
+        let mut cache = self
+            .state
+            .fold_ranges
+            .lock()
+            .expect("折叠候选缓存锁不得中毒");
+        let generation = text.generation();
+        if let Some(entry) = cache.as_ref()
+            && entry.generation == generation
+            && entry.version == self.version
+        {
+            return Arc::clone(&entry.ranges);
+        }
+        let ranges: Arc<[FoldRange]> = self.query_fold_ranges(text).into();
+        *cache = Some(FoldRangeCacheEntry {
+            generation,
+            version: self.version,
+            ranges: Arc::clone(&ranges),
+        });
+        ranges
+    }
+
     /// 返回与范围相交的语法层（主语言层 + 注入层），零堆分配。
     ///
     /// 注入层按 (深度, 起点) 有序且同深互不相交（注入内容节点在父树中要么嵌套要么不相交）：
@@ -309,11 +359,14 @@ impl SyntaxSnapshot {
             return None;
         }
         // 编辑区间按上一次真正完成解析的版本推导；调用方不再传递订阅批次。
+        // 编辑日志被裁剪或批次被合并为重置时拿不到精确文本编辑区间；
+        // tree-sitter 的 changed_ranges 对等长替换不可见，因此必须按全文失效，不能当作“没有编辑”。
         let edits = snapshot
             .edits_since(self.parsed_version)
             .ok()
-            .and_then(|batch| edit_ranges(&batch));
-        let edits = edits.as_deref();
+            .and_then(|batch| edit_ranges(&batch))
+            .unwrap_or_else(|| std::iter::once(0..snapshot.len_bytes().get()).collect());
+        let edits = Some(edits.as_slice());
         let Some(language) = self.language.as_ref() else {
             self.state = empty_syntax_state();
             self.version = snapshot.version();

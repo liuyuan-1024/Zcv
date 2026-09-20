@@ -2370,11 +2370,8 @@ fn visible_foldable_lines(
     visible_lines: &Range<Line>,
 ) -> BTreeSet<Line> {
     // 显式 crease 以锚点索引 seek；
-    // 语法 crease 仅查询可见的当前行，不物化所有源的折叠列表。
-    (visible_lines.start.get()..visible_lines.end.get())
-        .map(Line::new)
-        .filter(|line| snapshot.crease_at_line(*line).is_some())
-        .collect()
+    // 语法 crease 按显示版本的区间索引派生，滚动帧只做区间查表，不逐行重跑源投影。
+    snapshot.foldable_lines_in_range(visible_lines.clone())
 }
 
 fn source_line_byte_range(snapshot: &DisplaySnapshot, lines: &Range<Line>) -> Option<Range<usize>> {

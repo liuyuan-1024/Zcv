@@ -4,8 +4,6 @@
 //! 它不订阅 working buffer，也不决定何时重算：宿主在源文本变化时调用 [`BufferDiff::recompute`]，本层只负责后台计算、版本门控与结果发布。
 //! hunk 的暂存语义统一相对 index 参照判定，所有视图共用同一套；展开/折叠、显示路径与上下文裁剪由 `MultiBuffer` 的 diff 投影持有。
 
-mod word_diff;
-
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,7 +13,7 @@ use imara_diff::{Algorithm, Diff, InternedInput};
 use zcv_language::LanguageBuffer;
 use zcv_text::{Anchor, BufferGeneration, BufferVersion, ByteOffset, Line, Snapshot, TextRange};
 
-use crate::word_diff::{MAX_WORD_DIFF_BYTES, MAX_WORD_DIFF_LINES, word_diff_ranges};
+use zcv_text::word_diff::{MAX_WORD_DIFF_BYTES, MAX_WORD_DIFF_LINES, word_diff_ranges};
 
 /// hunk 变化类型（判定规则：旧侧空→Added、新侧空→Deleted）。
 ///

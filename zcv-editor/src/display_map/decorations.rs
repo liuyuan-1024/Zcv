@@ -171,6 +171,22 @@ impl DisplayDecorations {
     pub(crate) fn search(&self) -> Option<Arc<SearchDecorationSnapshot>> {
         self.search.as_ref().map(Arc::clone)
     }
+
+    /// 只替换 diff 域，搜索域保持原快照。
+    pub(crate) fn with_diff(&self, diff: Arc<DiffDecorationSnapshot>) -> Self {
+        Self {
+            diff,
+            search: self.search.clone(),
+        }
+    }
+
+    /// 只替换搜索域，diff 域保持原快照。
+    pub(crate) fn with_search(&self, search: Option<Arc<SearchDecorationSnapshot>>) -> Self {
+        Self {
+            diff: Arc::clone(&self.diff),
+            search,
+        }
+    }
 }
 
 /// hunks 的单遍渲染数据：行标记 / 竖条 / 点击区域共用同一份行区间计算。
@@ -605,7 +621,7 @@ pub(crate) struct SearchDecorationSnapshot {
 }
 
 impl SearchDecorationSnapshot {
-    fn from_ranges(ranges: Arc<[MultiBufferRange]>, active_index: usize) -> Self {
+    pub(crate) fn from_ranges(ranges: Arc<[MultiBufferRange]>, active_index: usize) -> Self {
         Self {
             ranges,
             active_index,

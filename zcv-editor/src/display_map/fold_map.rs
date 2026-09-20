@@ -691,7 +691,6 @@ impl FoldMap {
         }
 
         let buffer = input.clone();
-        let old_rows = self.snapshot.line_count();
         let old_spans = hidden_spans(&self.snapshot.folds);
         let mut retained = Vec::new();
         self.snapshot.fold_metadata_by_id.clear();
@@ -716,18 +715,22 @@ impl FoldMap {
         // 行数不变且折叠拓扑不变时，编辑只改变与编辑区间相交行的内容，`inline_fold_edits` 的 changed_lines 恰好覆盖；
         // 软换行的逐行重排（update_inline）对行数不变的多行编辑同样正确。
         let structural = old_spans != new_spans || old_buffer.line_count() != buffer.line_count();
-        self.snapshot.input = input;
         self.snapshot.version += 1;
-        if structural {
+        // 结构编辑的投影区间由旧/新变换树直接映射；旧树必须先冻结再替换。
+        let old_transforms = structural.then(|| {
             let spans = hidden_spans(&self.snapshot.folds);
-            self.snapshot.transforms = build_transforms(&spans, self.snapshot.input.line_count());
-        }
-        let edits = if structural {
-            linear_fold_edit(&buffer_edits, &old_buffer, &buffer, &old_spans, &new_spans)
-                .map_or_else(
-                    || vec![full_fold_edit(old_rows, self.snapshot.line_count())],
-                    |edit| vec![edit],
-                )
+            let next = build_transforms(&spans, buffer.line_count());
+            std::mem::replace(&mut self.snapshot.transforms, next)
+        });
+        self.snapshot.input = input;
+        let edits = if let Some(old_transforms) = old_transforms {
+            vec![linear_fold_edit(
+                &buffer_edits,
+                &old_transforms,
+                &self.snapshot.transforms,
+                &old_buffer,
+                &buffer,
+            )]
         } else {
             inline_fold_edits(&buffer_edits, &self.snapshot.input, &self.snapshot.folds)
         };
@@ -815,7 +818,7 @@ impl FoldMapWriter<'_> {
                 .ok_or(FoldError::IdOverflow)?,
         );
         let stream_line_count = self.0.snapshot.input.line_count();
-        let old_spans = hidden_spans(&self.0.snapshot.folds);
+        let range = resolved.start()..resolved.end();
         let mut folds: Vec<_> = self.0.snapshot.folds.iter().cloned().collect();
         let fold = Fold::from_text_range(self.0.snapshot.buffer_snapshot(), id, resolved)
             .ok_or(FoldError::UnresolvableAnchor)?;
@@ -825,13 +828,33 @@ impl FoldMapWriter<'_> {
         let indexed_folds = self.0.snapshot.folds.iter().cloned().collect::<Vec<_>>();
         self.0.snapshot.lookup = FoldLookup::from_folds(&indexed_folds);
         self.0.snapshot.fold_metadata_by_id.insert(id, resolved);
-        let spans = hidden_spans(&self.0.snapshot.folds);
-        self.0.snapshot.transforms = build_transforms(&spans, stream_line_count);
-        self.0.snapshot.version += 1;
         Ok((
             self.0.snapshot.clone(),
-            span_edit(&old_spans, &spans).into_iter().collect(),
+            self.fold_topology_edits(range, stream_line_count),
         ))
+    }
+
+    /// 折叠拓扑变更的本层编辑：与文本编辑共用同一套变换树推导。
+    ///
+    /// 输入区间取折叠刚变更的字节范围（文本未变，old == new），由旧/新变换树映射出本层失效区间，与 Zed 的 FoldMap::sync 同一契约。
+    fn fold_topology_edits(
+        &mut self,
+        range: Range<MultiBufferOffset>,
+        stream_line_count: usize,
+    ) -> Vec<FoldEdit> {
+        let spans = hidden_spans(&self.0.snapshot.folds);
+        let next_transforms = build_transforms(&spans, stream_line_count);
+        let old_transforms = std::mem::replace(&mut self.0.snapshot.transforms, next_transforms);
+        self.0.snapshot.version += 1;
+        let buffer = self.0.snapshot.buffer_snapshot().clone();
+        let edit = ProjectionEdit::new(range.clone(), range);
+        vec![linear_fold_edit(
+            std::slice::from_ref(&edit),
+            &old_transforms,
+            &self.0.snapshot.transforms,
+            &buffer,
+            &buffer,
+        )]
     }
 
     fn unfold(&mut self, id: FoldId) -> (FoldSnapshot, Vec<FoldEdit>) {
@@ -839,7 +862,15 @@ impl FoldMapWriter<'_> {
             return (self.0.snapshot.clone(), Vec::new());
         }
         let stream_line_count = self.0.snapshot.input.line_count();
-        let old_spans = hidden_spans(&self.0.snapshot.folds);
+        let range = self
+            .0
+            .snapshot
+            .folds
+            .iter()
+            .find(|fold| fold.id == id)
+            .map(|fold| fold.text_range())
+            .map(|range| range.start()..range.end())
+            .expect("已确认折叠存在于当前快照");
         let retained: Vec<_> = self
             .0
             .snapshot
@@ -852,12 +883,9 @@ impl FoldMapWriter<'_> {
         let indexed_folds = self.0.snapshot.folds.iter().cloned().collect::<Vec<_>>();
         self.0.snapshot.lookup = FoldLookup::from_folds(&indexed_folds);
         self.0.snapshot.fold_metadata_by_id.remove(&id);
-        let spans = hidden_spans(&self.0.snapshot.folds);
-        self.0.snapshot.transforms = build_transforms(&spans, stream_line_count);
-        self.0.snapshot.version += 1;
         (
             self.0.snapshot.clone(),
-            span_edit(&old_spans, &spans).into_iter().collect(),
+            self.fold_topology_edits(range, stream_line_count),
         )
     }
 }
@@ -898,103 +926,59 @@ fn build_transforms(spans: &[Range<usize>], line_count: usize) -> SumTree<Transf
     SumTree::from_iter(transforms, ())
 }
 
-fn full_fold_edit(old_rows: usize, new_rows: usize) -> FoldEdit {
-    FoldEdit {
-        old: ProjectedLineIndex::ZERO..ProjectedLineIndex::new(old_rows),
-        new: ProjectedLineIndex::ZERO..ProjectedLineIndex::new(new_rows),
-        changed_lines: Vec::new(),
-        structural: true,
-    }
-}
-
-/// 由隐藏跨度差异派生**局部**结构编辑：只覆盖 old/new 跨度真正不同的区间。
-///
-/// 跨度在 stream 行空间（投影行前缀由累计隐藏行数决定）。前后公共跨度的投影行
-/// 数量相同，因此编辑两端在旧/新拓扑中落在同一投影行，只有中间区间需要被 Wrap 重排。
-/// 完全相同（折叠被内层/外层吞并等）时返回 None，上游无需重排。
-fn span_edit(old_spans: &[Range<usize>], new_spans: &[Range<usize>]) -> Option<FoldEdit> {
-    let mut prefix = 0;
-    while prefix < old_spans.len()
-        && prefix < new_spans.len()
-        && old_spans[prefix] == new_spans[prefix]
-    {
-        prefix += 1;
-    }
-    let mut suffix = 0;
-    while suffix < old_spans.len() - prefix
-        && suffix < new_spans.len() - prefix
-        && old_spans[old_spans.len() - 1 - suffix] == new_spans[new_spans.len() - 1 - suffix]
-    {
-        suffix += 1;
-    }
-    let old_middle = &old_spans[prefix..old_spans.len() - suffix];
-    let new_middle = &new_spans[prefix..new_spans.len() - suffix];
-    if old_middle == new_middle {
-        return None;
-    }
-    // 变更区间只看中间跨度：公共前缀/后缀之外、真正被替换的 stream 行区间。
-    let region_start = match (old_middle.first(), new_middle.first()) {
-        (Some(old_span), Some(new_span)) => old_span.start.min(new_span.start),
-        (Some(old_span), None) => old_span.start,
-        (None, Some(new_span)) => new_span.start,
-        (None, None) => return None,
-    };
-    let region_end = match (old_middle.last(), new_middle.last()) {
-        (Some(old_span), Some(new_span)) => old_span.end.max(new_span.end),
-        (Some(old_span), None) => old_span.end,
-        (None, Some(new_span)) => new_span.end,
-        (None, None) => return None,
-    };
-    let hidden_before = hidden_lines(&old_spans[..prefix]);
-    // 公共前缀在旧/新拓扑中投影行数相同：区间起点在两种拓扑里落在同一 tab 行。
-    let start = region_start - hidden_before + prefix;
-    // 折叠段 output_rows = 0：隐藏行并入其 anchor 行，anchor 行可见且已计入 visible，
-    // 因此投影行数 = 行数 − 隐藏行数，不按跨度数额外加行。
-    let visible = region_end - region_start;
-    let old_end = start + visible - hidden_lines(old_middle);
-    let new_end = start + visible - hidden_lines(new_middle);
-    Some(FoldEdit {
-        old: ProjectedLineIndex::new(start)..ProjectedLineIndex::new(old_end),
-        new: ProjectedLineIndex::new(start)..ProjectedLineIndex::new(new_end),
-        changed_lines: Vec::new(),
-        structural: true,
-    })
-}
-
-fn hidden_lines(spans: &[Range<usize>]) -> usize {
-    spans.iter().map(|span| span.end - span.start).sum()
-}
-
 /// 由 patch 的旧/新行区间派生**局部**结构编辑。
 ///
-/// buffer 行经折叠跨度投影为 tab 行：折叠覆盖行投射到 anchor 行的合并行，
-/// 其余行线性平移。因此编辑即使落在折叠内部，也只需重排它所在的合并行。
-/// 批次要求整体重建时返回 None，调用方回退到整份重建。
+/// 输入行区间经旧/新变换树映射到投影行；端点落在折叠段内时吸附到整个折叠段。
+/// 吸附保证编辑覆盖完整的折叠变换，投影行数守恒由变换树本身保证，
+/// 上层因此不需要任何整层回退。
+/// 编辑区间必须能在对应快照上解析为行；不可解析说明 patch 与快照不一致，直接失败。
 fn linear_fold_edit(
     edits: &[FoldBufferEdit],
+    old_transforms: &SumTree<Transform>,
+    new_transforms: &SumTree<Transform>,
     old_buffer: &MultiBufferSnapshot,
     new_buffer: &MultiBufferSnapshot,
-    old_spans: &[Range<usize>],
-    new_spans: &[Range<usize>],
-) -> Option<FoldEdit> {
+) -> FoldEdit {
     let mut old_rows: Option<Range<usize>> = None;
     let mut new_rows: Option<Range<usize>> = None;
     for edit in edits {
-        let old_start = old_buffer.byte_to_line(edit.old.start).ok()?.get();
-        let old_end = old_buffer.byte_to_line(edit.old.end).ok()?.get() + 1;
-        let new_start = new_buffer.byte_to_line(edit.new.start).ok()?.get();
-        let new_end = new_buffer.byte_to_line(edit.new.end).ok()?.get() + 1;
+        let old_start = old_buffer
+            .byte_to_line(edit.old.start)
+            .expect("结构编辑的旧区间起点必须落在旧快照内")
+            .get();
+        let old_end = old_buffer
+            .byte_to_line(edit.old.end)
+            .expect("结构编辑的旧区间终点必须落在旧快照内")
+            .get()
+            + 1;
+        let new_start = new_buffer
+            .byte_to_line(edit.new.start)
+            .expect("结构编辑的新区间起点必须落在新快照内")
+            .get();
+        let new_end = new_buffer
+            .byte_to_line(edit.new.end)
+            .expect("结构编辑的新区间终点必须落在新快照内")
+            .get()
+            + 1;
         old_rows = Some(merge_row_range(old_rows, old_start..old_end));
         new_rows = Some(merge_row_range(new_rows, new_start..new_end));
     }
-    let old_spanned = projected_span(old_spans, &old_rows?);
-    let new_spanned = projected_span(new_spans, &new_rows?);
-    Some(FoldEdit {
+    let old_rows = old_rows.expect("结构编辑必须至少包含一段文本编辑");
+    let new_rows = new_rows.expect("结构编辑必须至少包含一段文本编辑");
+    let old_spanned = projected_rows_for_input_range(old_transforms, &old_rows);
+    let new_spanned = projected_rows_for_input_range(new_transforms, &new_rows);
+    // 行级失效区间无法像 Zed 的偏移编辑那样表达行内变化：必须让本层区间覆盖两侧权威净行数，
+    // 否则 Wrap 变换树的输入行数会与 tab 快照失配。这里只做有界补齐，不是整层失效。
+    let global_delta = new_transforms.summary().output_rows as isize
+        - old_transforms.summary().output_rows as isize;
+    let target_new_len = (old_spanned.len() as isize + global_delta).max(0) as usize;
+    let new_end = new_spanned.start + target_new_len;
+    FoldEdit {
         old: ProjectedLineIndex::new(old_spanned.start)..ProjectedLineIndex::new(old_spanned.end),
-        new: ProjectedLineIndex::new(new_spanned.start)..ProjectedLineIndex::new(new_spanned.end),
+        new: ProjectedLineIndex::new(new_spanned.start)..ProjectedLineIndex::new(new_end),
         changed_lines: Vec::new(),
         structural: true,
-    })
+    }
 }
 
 fn merge_row_range(existing: Option<Range<usize>>, next: Range<usize>) -> Range<usize> {
@@ -1004,38 +988,41 @@ fn merge_row_range(existing: Option<Range<usize>>, next: Range<usize>) -> Range<
     }
 }
 
-/// buffer 行区间的投影 tab 行区间：折叠覆盖的连续行坍缩为同一合并行。
-fn projected_span(spans: &[Range<usize>], rows: &Range<usize>) -> Range<usize> {
+/// 把输入（流行）行区间映射到投影行区间，端点落在折叠段内时吸附到整个折叠段。
+///
+/// 折叠段不产生投影行，区间端点若落在其中且不吸附，投影编辑会漏掉或错位一行。
+/// 吸附后区间两端都对齐到完整变换边界，投影行数与之守恒。
+fn projected_rows_for_input_range(
+    transforms: &SumTree<Transform>,
+    rows: &Range<usize>,
+) -> Range<usize> {
+    let mut cursor = transforms.cursor::<InputToOutput>(());
+    cursor.seek(&InputLines(rows.start), TreeBias::Left);
+    let mut start = rows.start;
+    if cursor
+        .item()
+        .is_some_and(|transform| transform.kind == TransformKind::Fold)
+    {
+        start = cursor.start().0.0;
+    }
+    let output_start = cursor.start().1.0 + (start - cursor.start().0.0);
     if rows.is_empty() {
-        let row = projected_row(spans, rows.start);
-        return row..row;
+        // 空区间没有内容变化：映射为空输出区间，吸附不得使其扩张。
+        return output_start..output_start;
     }
-    let first = projected_row(spans, rows.start);
-    let last = projected_row(spans, rows.end - 1);
-    first..last + 1
-}
 
-/// 单个 buffer 行投射到的 tab 行；折叠覆盖行投射到其 anchor 行的合并行。
-fn projected_row(spans: &[Range<usize>], row: usize) -> usize {
-    for span in spans {
-        if row < span.start {
-            break;
-        }
-        if row < span.end {
-            let anchor = span.start - 1;
-            return anchor - hidden_before(spans, anchor);
-        }
+    cursor.seek_forward(&InputLines(rows.end), TreeBias::Right);
+    let mut end = rows.end;
+    if cursor
+        .item()
+        .is_some_and(|transform| transform.kind == TransformKind::Fold)
+    {
+        cursor.next();
+        end = cursor.start().0.0;
     }
-    row - hidden_before(spans, row)
-}
+    let output_end = cursor.start().1.0 + (end - cursor.start().0.0);
 
-/// 位于 `row` 之前的隐藏行总数（跨度的终点行必须严格早于 `row`）。
-fn hidden_before(spans: &[Range<usize>], row: usize) -> usize {
-    spans
-        .iter()
-        .filter(|span| span.end <= row)
-        .map(|span| span.end - span.start)
-        .sum()
+    output_start..output_end
 }
 
 fn inline_fold_edits(

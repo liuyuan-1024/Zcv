@@ -1,28 +1,26 @@
-//! 词级差异：把两段文本按空白 / 单词 / 标点切分，再做 token 级 diff，返回变化片段的字节范围。
+//! token 级差异：按空白 / 单词 / 标点切分 token，再用 imara-diff 做差异。
 //!
-//! 只在行级 hunk 内部、新老行数相同且规模受限时使用；范围相对各自输入文本的起点。
+//! 只服务两个真实消费方：`Buffer::reset` 的净变化编辑，以及 buffer diff 的行内词级范围。
+//! 两者共用同一 token 化与差异原语，避免各自维护一套切分规则。
 
 use std::ops::Range;
 
 use imara_diff::{Algorithm, Diff, InternedInput, Token};
 
 /// 触发词级 diff 的最大单侧字节长度。
-pub(crate) const MAX_WORD_DIFF_BYTES: usize = 512;
+pub const MAX_WORD_DIFF_BYTES: usize = 512;
 /// 触发词级 diff 的最大单侧行数。
-pub(crate) const MAX_WORD_DIFF_LINES: usize = 5;
+pub const MAX_WORD_DIFF_LINES: usize = 8;
 
 /// 计算两段文本的词级变化范围，返回 (旧侧, 新侧)。
-pub(crate) fn word_diff_ranges(
-    old_text: &str,
-    new_text: &str,
-) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
+pub fn word_diff_ranges(old_text: &str, new_text: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
     let mut input: InternedInput<&str> = InternedInput::default();
     input.update_before(tokenize(old_text));
     input.update_after(tokenize(new_text));
 
     let mut old_ranges: Vec<Range<usize>> = Vec::new();
     let mut new_ranges: Vec<Range<usize>> = Vec::new();
-    diff_internal(&input, &mut |old_byte_range, new_byte_range| {
+    for_each_token_change(&input, &mut |old_byte_range, new_byte_range, _, _| {
         if !old_byte_range.is_empty() {
             if let Some(last) = old_ranges.last_mut()
                 && last.end >= old_byte_range.start
@@ -45,9 +43,13 @@ pub(crate) fn word_diff_ranges(
     (old_ranges, new_ranges)
 }
 
-fn diff_internal(
+/// 对已 token 化的输入做 imara-diff，并按变化段回调。
+///
+/// 回调参数为 `(旧字节范围, 新字节范围, 旧 token 范围, 新 token 范围)`；
+/// 行级与词级 diff 共用本函数，保证坐标换算只有一处实现。
+pub(crate) fn for_each_token_change(
     input: &InternedInput<&str>,
-    on_change: &mut dyn FnMut(Range<usize>, Range<usize>),
+    on_change: &mut dyn FnMut(Range<usize>, Range<usize>, Range<u32>, Range<u32>),
 ) {
     let mut old_offset = 0;
     let mut new_offset = 0;
@@ -76,7 +78,7 @@ fn diff_internal(
         new_token_ix = hunk.after.end;
         old_offset = old_byte_range.end;
         new_offset = new_byte_range.end;
-        on_change(old_byte_range, new_byte_range);
+        on_change(old_byte_range, new_byte_range, hunk.before, hunk.after);
     }
 }
 
@@ -87,7 +89,8 @@ fn token_len(input: &InternedInput<&str>, tokens: &[Token]) -> usize {
         .sum()
 }
 
-fn tokenize(text: &str) -> impl Iterator<Item = &str> {
+/// 按空白 / 单词 / 标点切分 token；标点逐字符成组，其余同类合并。
+pub(crate) fn tokenize(text: &str) -> impl Iterator<Item = &str> {
     let mut chars = text.char_indices();
     let mut prev = None;
     let mut start_ix = 0;
@@ -139,7 +142,12 @@ mod tests {
     /// 词级 diff 按空白 / 单词 / 标点切分：只有真正变化的词进入范围，相同文本无范围。
     #[test]
     fn word_diff_ranges_split_words_and_punctuation() {
-        let (old, new) = word_diff_ranges("let x = 1;\n", "let x = 2;\n");
+        let (old, new) = word_diff_ranges(
+            "let x = 1;
+",
+            "let x = 2;
+",
+        );
         assert_eq!(old, vec![8..9], "旧侧只应包含变化的数字");
         assert_eq!(new, vec![8..9], "新侧只应包含变化的数字");
 
@@ -148,7 +156,11 @@ mod tests {
         assert_eq!(new, vec![2..3]);
 
         assert_eq!(
-            word_diff_ranges("same\n", "same\n"),
+            word_diff_ranges(
+                "same
+", "same
+"
+            ),
             (Vec::new(), Vec::new()),
             "相同文本不应产生词级范围"
         );

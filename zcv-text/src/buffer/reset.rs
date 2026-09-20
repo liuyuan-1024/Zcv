@@ -5,9 +5,9 @@
 use super::Buffer;
 use crate::{
     ByteOffset, TextRange, TextResult,
-    diff::diff_patch,
+    diff::diff_edits,
     storage::{RopeyStorage, TextRead},
-    transaction::{Edit, EditList, TransactionSource},
+    transaction::{EditList, TransactionSource},
 };
 
 impl Buffer {
@@ -27,19 +27,9 @@ impl Buffer {
             self.mark_saved();
             return Ok(());
         }
-        let patch = diff_patch(&old_text, &text);
-        let edits = EditList::new(
-            patch
-                .edits()
-                .iter()
-                .map(|edit| {
-                    Edit::replace(
-                        edit.old_range(),
-                        &text[edit.new_range().start().get()..edit.new_range().end().get()],
-                    )
-                })
-                .collect(),
-        )?;
+        // diff 直接产出带替换文本的编辑，切点由生产端保证在 UTF-8 字符边界；
+        // reset 不再用区间去切新文本。
+        let edits = EditList::new(diff_edits(&old_text, &text))?;
         let new_storage = RopeyStorage::new(text);
         let (next_transaction_id, event) = self.prepare_delta_event(
             old_version,

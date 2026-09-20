@@ -332,13 +332,17 @@ enum RowMapping<'a> {
 }
 
 /// 把块锚点从旧换行行坐标平移到新坐标；锚点落入编辑区间时用新换行快照重算。
+///
+/// 块锚点一定位于其 excerpt 输出起点之后，且该起点必须可解析到换行投影；
+/// 两者由物化与换行同步的契约保证。
+/// 失败说明投影不一致，直接失败而不是让整份块投影重建。
 fn relocated_wrap_row(
     old_row: usize,
     excerpt_index: usize,
     wrap_edits: &[WrapEdit],
     wrap_snapshot: &WrapSnapshot,
     excerpts: &[ExcerptSnapshot],
-) -> Option<usize> {
+) -> usize {
     let mut row = old_row as isize;
     for edit in wrap_edits {
         if row < edit.old.start as isize {
@@ -350,11 +354,13 @@ fn relocated_wrap_row(
         } else {
             return wrap_snapshot
                 .offset_to_wrap_point(excerpts[excerpt_index].output_range().start())
-                .ok()
-                .map(|point| point.row().get());
+                .expect("块锚点重定位时 excerpt 输出起点必须可解析到换行投影")
+                .row()
+                .get();
         }
     }
-    (row >= 0).then_some(row as usize)
+    assert!(row >= 0, "块锚点重定位不得落到换行投影起点之前");
+    row as usize
 }
 
 impl BlockSnapshot {
@@ -561,7 +567,7 @@ impl BlockSnapshot {
                 wrap_edits,
                 &wrap_snapshot,
                 &excerpts,
-            )?;
+            );
         }
         specs.sort_by_key(|spec| spec.wrap_row);
         Some(Self::place(

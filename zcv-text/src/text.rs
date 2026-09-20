@@ -17,6 +17,7 @@ mod text_changes;
 mod tracking;
 mod transaction;
 mod types;
+pub mod word_diff;
 
 pub use buffer::{Buffer, HistoryEditOutcome, movement_boundary_in_text};
 pub use config::{BufferConfig, LargeFilePolicy, LargeTransactionPolicy, WordBoundaryPolicy};

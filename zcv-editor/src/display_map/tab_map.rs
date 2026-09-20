@@ -357,18 +357,13 @@ fn tab_edits_from_fold_edits(
         .collect();
     let old_sum: usize = edits.iter().map(|edit| edit.old.len()).sum();
     let new_sum: usize = edits.iter().map(|edit| edit.new.len()).sum();
-    if new_count + old_sum != old_count + new_sum {
-        return if old_count == 0 && new_count == 0 {
-            Vec::new()
-        } else {
-            vec![TabEdit {
-                old: 0..old_count,
-                new: 0..new_count,
-                changed_rows: Vec::new(),
-                structural: true,
-            }]
-        };
-    }
+    // tab 层只改列宽、不增删行，fold 编辑必须守恒 tab 行数。
+    // 不守恒说明 fold 层失效区间没有覆盖权威净行数，必须直接失败而不是静默整层失效。
+    assert_eq!(
+        new_count + old_sum,
+        old_count + new_sum,
+        "fold 编辑必须守恒 tab 行数：旧 {old_count} 新 {new_count}，编辑旧 {old_sum} 新 {new_sum}"
+    );
     edits
 }
 

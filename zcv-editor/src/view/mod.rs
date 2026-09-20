@@ -30,7 +30,7 @@ use zcv_multi_buffer::{
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
     Affinity, Buffer, BufferConfig, BufferVersion, Line, LineRange, LogicalColumn,
-    MovementDirection, MovementUnit, Position, PositionMap, TextError, TextResult, TransactionId,
+    MovementDirection, MovementUnit, Position, TextError, TextResult, TransactionId,
     TransactionMergePolicy, TransactionMetadata, TransactionSource,
 };
 use zcv_theme::{color, typography};
@@ -1728,9 +1728,8 @@ impl Editor {
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut EditPlan<'_>) -> TextResult<EditOutcome>,
     ) -> TextResult<EditOutcome> {
-        let (node_id, before_snapshot, outcome) =
-            self.commit_session(before_selections, metadata, cx, f)?;
-        self.apply_edit_outcome(before_snapshot, node_id, outcome, cx)
+        let (node_id, outcome) = self.commit_session(before_selections, metadata, cx, f)?;
+        self.apply_edit_outcome(node_id, outcome, cx)
     }
 
     /// 编辑后选区由闭包按编辑语义重算的变体（删除、剪切、行移动、输入等特判场景）。
@@ -1741,9 +1740,8 @@ impl Editor {
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut EditPlan<'_>) -> TextResult<(EditOutcome, SelectionSet)>,
     ) -> TextResult<(EditOutcome, SelectionSet)> {
-        let (node_id, before_snapshot, outcome) =
-            self.commit_session(before_selections, metadata, cx, f)?;
-        self.apply_edit_outcome_with_after(before_snapshot, node_id, outcome, cx)
+        let (node_id, outcome) = self.commit_session(before_selections, metadata, cx, f)?;
+        self.apply_edit_outcome_with_after(node_id, outcome, cx)
     }
 
     /// 需要读取提交后投影才能确定选区的编辑变体。
@@ -1758,16 +1756,11 @@ impl Editor {
         plan: impl FnOnce(&mut EditPlan<'_>) -> TextResult<(EditOutcome, P)>,
         after: impl FnOnce(P, &MultiBufferSnapshot) -> TextResult<SelectionSet>,
     ) -> TextResult<(EditOutcome, SelectionSet)> {
-        let (node_id, before_snapshot, (outcome, post_state)) =
+        let (node_id, (outcome, post_state)) =
             self.commit_session(before_selections, metadata, cx, plan)?;
         let snapshot = self.display_snapshot(cx).buffer_snapshot().clone();
         let after_selections = after(post_state, &snapshot)?;
-        self.apply_edit_outcome_with_after(
-            before_snapshot,
-            node_id,
-            (outcome, after_selections),
-            cx,
-        )
+        self.apply_edit_outcome_with_after(node_id, (outcome, after_selections), cx)
     }
 
     /// 会话化编辑的共享骨架：开启会话并记录 undo 选区（事务开始时记录）→ 闭包编辑（统一 Buffer 通知）→ 提交会话，返回 (节点身份, 编辑结果)。
@@ -1780,7 +1773,7 @@ impl Editor {
         metadata: TransactionMetadata,
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut EditPlan<'_>) -> TextResult<T>,
-    ) -> TextResult<(Option<TransactionId>, MultiBufferSnapshot, T)> {
+    ) -> TextResult<(Option<TransactionId>, T)> {
         let operation = metadata.description().unwrap_or("编辑").to_owned();
         // 编辑前快照是本次事务的局部输入，不进入 Editor 长期状态。
         let before_snapshot = self.display_snapshot(cx).buffer_snapshot().clone();
@@ -1815,7 +1808,7 @@ impl Editor {
         if node_id != Some(session_id) {
             self.selection_history.remove_transaction(session_id);
         }
-        Ok((node_id, before_snapshot, outcome))
+        Ok((node_id, outcome))
     }
 
     /// 开启编辑会话并记录 undo 选区。
@@ -1843,19 +1836,10 @@ impl Editor {
     /// 只有 `end_transaction` 返回真实事务身份时才发布 `Edited`；空事务只收尾不发布。
     fn apply_edit_outcome(
         &mut self,
-        before_snapshot: MultiBufferSnapshot,
         transaction_id: Option<TransactionId>,
         outcome: EditOutcome,
         cx: &mut Context<Self>,
     ) -> TextResult<EditOutcome> {
-        if let Some(position_map) = outcome.position_map() {
-            let new_version = self.display_snapshot(cx).buffer_snapshot().version();
-            self.update_autoclose_regions_with(
-                position_map,
-                before_snapshot.version(),
-                new_version,
-            );
-        }
         self.finish_transaction(transaction_id, cx);
         Ok(outcome)
     }
@@ -1863,20 +1847,11 @@ impl Editor {
     /// 行移动等特判场景：编辑后选区由闭包按行语义重算（「编辑后、重建前」投影坐标），直接锚定落位。
     fn apply_edit_outcome_with_after(
         &mut self,
-        before_snapshot: MultiBufferSnapshot,
         transaction_id: Option<TransactionId>,
         outcome: (EditOutcome, SelectionSet),
         cx: &mut Context<Self>,
     ) -> TextResult<(EditOutcome, SelectionSet)> {
         let (outcome, after_selections) = outcome;
-        if let Some(position_map) = outcome.position_map() {
-            let new_version = self.display_snapshot(cx).buffer_snapshot().version();
-            self.update_autoclose_regions_with(
-                position_map,
-                before_snapshot.version(),
-                new_version,
-            );
-        }
         // 编辑后投影坐标直接在当前快照锚定为源锚点；投影重建不改变源，随后解析即忠实落位。
         self.change_selections(after_selections, cx);
         self.finish_transaction(transaction_id, cx);
@@ -1910,39 +1885,6 @@ impl Editor {
             blink.pause_blinking(cx);
         });
         cx.notify();
-    }
-
-    /// 将自动闭合区域随一次文本变更推进到新版本。
-    ///
-    /// 区域版本与变更起点失配时整体清空（说明存在未走编辑入口的文本变更，陈旧区域坐标已不可信，继续保留会误触发跳过/删对）。
-    fn update_autoclose_regions_with(
-        &mut self,
-        position_map: &PositionMap,
-        old_version: BufferVersion,
-        new_version: BufferVersion,
-    ) {
-        let mut kept = Vec::with_capacity(self.autoclose_regions.len());
-        for region in std::mem::take(&mut self.autoclose_regions) {
-            if region.range.start.version() != old_version
-                || region.range.end.version() != old_version
-            {
-                continue;
-            }
-            // 映射结果一律保留（Anchor 语义：删除内容不使锚失效）：
-            // 区域锚在闭合符起点，闭合符是否存活由使用处的文本校验兜底。
-            let range = region
-                .range
-                .start
-                .map_through_position_map(new_version, position_map)
-                .value()
-                ..region
-                    .range
-                    .end
-                    .map_through_position_map(new_version, position_map)
-                    .value();
-            kept.push(AutocloseRegion { range, ..region });
-        }
-        self.autoclose_regions = kept;
     }
 
     fn move_selections(

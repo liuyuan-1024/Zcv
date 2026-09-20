@@ -1,11 +1,11 @@
 use super::*;
 
 impl Editor {
-    pub(crate) fn search_highlights(&self) -> Option<(&[SearchMatchAnchor], usize)> {
+    pub(crate) fn search_highlights(&self) -> Option<(&[MultiBufferRange], usize)> {
         let search = self.search.as_ref()?;
-        if search.len() == 0 {
+        if search.ranges.is_empty() {
             return None;
         }
-        Some((search.matches(), search.active_index.unwrap_or(0)))
+        Some((search.ranges.as_ref(), search.active_index.unwrap_or(0)))
     }
 }

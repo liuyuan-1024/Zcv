@@ -1,12 +1,12 @@
 //! Editor 的文件内搜索：持有搜索结果（绑定 BufferVersion），编辑后自动重搜。
 
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferRange, MultiBufferSnapshot};
 
 use std::ops::Range;
 use std::sync::Arc;
 
 use zcv_project::{RegexSearchResult, SearchQuery, SearchQueryResult, SearchResult};
-use zcv_text::{Affinity, Anchor, BufferGeneration, BufferVersion};
+use zcv_text::{Affinity, BufferVersion};
 use zcv_workspace::{Direction, SearchEvent, SearchableItem};
 
 use crate::display_map::SearchDecorationInput;
@@ -22,29 +22,28 @@ pub(crate) enum SearchResultKind {
     External { version: BufferVersion },
 }
 
-/// 搜索高亮保存稳定锚点；字节范围只在执行搜索时用于生成锚点。
+/// 搜索高亮保存组合文档源锚点；字节范围只在当前快照上按锚点解析。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SearchMatchAnchor {
-    range: Range<Anchor>,
+    range: Range<MultiBufferAnchor>,
 }
 
 impl SearchMatchAnchor {
-    pub(crate) fn from_range(version: BufferVersion, range: MultiBufferRange) -> Self {
+    pub(crate) fn from_range(snapshot: &MultiBufferSnapshot, range: MultiBufferRange) -> Self {
         Self {
             // 匹配边界不吸收恰好发生在边界上的插入。
-            range: Anchor::new(BufferGeneration::INITIAL, version, range.start().into())
-                .with_affinity(Affinity::After)
-                ..Anchor::new(BufferGeneration::INITIAL, version, range.end().into())
-                    .with_affinity(Affinity::Before),
+            range: snapshot.anchor_at(range.start(), Affinity::After)
+                ..snapshot.anchor_at(range.end(), Affinity::Before),
         }
     }
 
-    pub(crate) fn range(&self) -> MultiBufferRange {
+    /// 在当前快照上解析匹配范围；锚点已退出投影或代际失效时显式失败。
+    fn resolve(&self, snapshot: &MultiBufferSnapshot) -> Option<MultiBufferRange> {
         MultiBufferRange::new(
-            MultiBufferOffset::new(self.range.start.offset().get()),
-            MultiBufferOffset::new(self.range.end.offset().get()),
+            snapshot.resolve_anchor(&self.range.start)?,
+            snapshot.resolve_anchor(&self.range.end)?,
         )
-        .expect("搜索匹配锚点范围必须有序")
+        .ok()
     }
 }
 
@@ -64,13 +63,21 @@ impl EditorSearch {
         &self.matches
     }
 
-    /// 在 `matches` 变化后重建字节范围派生缓存。
-    fn rebuild_ranges(&mut self) {
-        self.ranges = self
-            .matches
-            .iter()
-            .map(SearchMatchAnchor::range)
-            .collect::<Arc<[_]>>();
+    /// 在当前快照上把匹配锚点解析为字节范围派生缓存；无法解析的匹配显式丢弃。
+    fn rebuild_ranges(&mut self, snapshot: &MultiBufferSnapshot) {
+        let mut matches = Vec::with_capacity(self.matches.len());
+        let mut ranges = Vec::with_capacity(self.matches.len());
+        for anchor in &self.matches {
+            if let Some(range) = anchor.resolve(snapshot) {
+                matches.push(anchor.clone());
+                ranges.push(range);
+            }
+        }
+        self.matches = matches;
+        self.ranges = ranges.into();
+        self.active_index = self
+            .active_index
+            .filter(|index| *index < self.matches.len());
     }
 
     /// 把当前匹配锚点解析为显示链的搜索装饰输入。
@@ -91,7 +98,7 @@ impl EditorSearch {
     }
 
     fn match_range(&self, index: usize) -> Range<usize> {
-        let range = self.matches()[index].range();
+        let range = self.ranges[index];
         range.start().get()..range.end().get()
     }
 
@@ -285,26 +292,23 @@ impl Editor {
         ranges: Vec<MultiBufferRange>,
         cx: &mut gpui::Context<Self>,
     ) {
-        let version = self
+        let snapshot = self
             .multi_buffer
-            .update(cx, |buffer, cx| buffer.snapshot(cx))
-            .version();
-        let matches = ranges
-            .into_iter()
-            .map(|range| SearchMatchAnchor::from_range(version, range))
-            .collect::<Vec<_>>();
-        let ranges = matches
-            .iter()
-            .map(SearchMatchAnchor::range)
-            .collect::<Arc<[_]>>();
-        let active_index = (!matches.is_empty()).then_some(0);
-        self.search = Some(EditorSearch {
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        let version = snapshot.version();
+        let mut search = EditorSearch {
             query,
             result: Some(SearchResultKind::External { version }),
-            matches,
-            ranges,
-            active_index,
-        });
+            matches: ranges
+                .into_iter()
+                .map(|range| SearchMatchAnchor::from_range(&snapshot, range))
+                .collect(),
+            ranges: Arc::from([]),
+            active_index: None,
+        };
+        search.rebuild_ranges(&snapshot);
+        search.active_index = (!search.matches.is_empty()).then_some(0);
+        self.search = Some(search);
         self.advance_snapshots(cx);
         if let Some(range) = self
             .search
@@ -328,10 +332,10 @@ impl Editor {
         ranges: Vec<MultiBufferRange>,
         cx: &mut gpui::Context<Self>,
     ) {
-        let version = self
+        let snapshot = self
             .multi_buffer
-            .update(cx, |buffer, cx| buffer.snapshot(cx))
-            .version();
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        let version = snapshot.version();
         let can_append = self.search.as_ref().is_some_and(|search| {
             search.query == query
                 && matches!(search.result, Some(SearchResultKind::External { .. }))
@@ -345,19 +349,14 @@ impl Editor {
             .search
             .as_mut()
             .expect("可追加搜索结果时必须存在搜索状态");
-        // 组合文档按批次追加片段时，投影版本会随每次追加递增；
-        // 已有匹配的字节偏移不变，但必须重绑到最新版本，否则下一批会被误判为新搜索。
-        for search_match in &mut search.matches {
-            let range = search_match.range();
-            *search_match = SearchMatchAnchor::from_range(version, range);
-        }
+        // 已有匹配是源锚点：组合文档追加片段后按当前快照重新解析，不需要按偏移重绑。
         search.result = Some(SearchResultKind::External { version });
         search.matches.extend(
             ranges
                 .into_iter()
-                .map(|range| SearchMatchAnchor::from_range(version, range)),
+                .map(|range| SearchMatchAnchor::from_range(&snapshot, range)),
         );
-        search.rebuild_ranges();
+        search.rebuild_ranges(&snapshot);
         self.advance_snapshots(cx);
         cx.notify();
         cx.emit(SearchEvent::MatchesInvalidated);
@@ -386,31 +385,20 @@ impl Editor {
             .matches()
             .iter()
             .map(|search_match| {
-                SearchMatchAnchor::from_range(
-                    virtual_snapshot.version(),
-                    search_match.range().into(),
-                )
+                SearchMatchAnchor::from_range(&virtual_snapshot, search_match.range().into())
             })
-            .collect::<Vec<_>>();
-        let ranges = matches
-            .iter()
-            .map(SearchMatchAnchor::range)
-            .collect::<Arc<[_]>>();
-        let search = EditorSearch {
+            .collect();
+        let mut search = EditorSearch {
             query: query.clone(),
             result: Some(SearchResultKind::Query(result)),
             matches,
-            ranges,
+            ranges: Arc::from([]),
             active_index: None,
         };
-        let search = if search.matches().is_empty() {
-            search
-        } else {
-            EditorSearch {
-                active_index: Some(0),
-                ..search
-            }
-        };
+        search.rebuild_ranges(&virtual_snapshot);
+        if !search.matches.is_empty() {
+            search.active_index = Some(0);
+        }
         Some(search)
     }
 

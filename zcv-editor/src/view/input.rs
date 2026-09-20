@@ -3,7 +3,7 @@
 //! 输入法组合的 marked text 从第一次 preedit 起就走普通文本事务（与键盘输入同管线），组合区域只在语法样式之上叠加下划线；
 //! 这里只维护组合会话身份与候选框定位数据。
 
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferRange};
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use gpui::{
     App, Bounds, Context, EntityInputHandler, Pixels, Point, UTF16Selection, Window, px, size,
 };
 use zcv_multi_buffer::MultiBufferSnapshot;
-use zcv_text::{Anchor, BufferGeneration, TransactionId, Utf16Offset};
+use zcv_text::{Affinity, TransactionId, Utf16Offset};
 
 use super::*;
 use crate::element::EditorInputLayout;
@@ -27,11 +27,11 @@ pub(crate) struct EditorComposition {
 
 /// 自动补全的闭合符标记。
 ///
-/// 零宽 `Range<Anchor>` 锚在自动插入的闭合符起点：
+/// 零宽 `Range<MultiBufferAnchor>` 锚在自动插入的闭合符起点：
 /// 向配对内输入文本时末端锚跟随闭合符右移，输入闭合符且光标紧贴末端时跳过，退格时光标贴着起点时删除整对。
 #[derive(Debug, Clone)]
 pub(crate) struct AutocloseRegion {
-    pub(crate) range: Range<Anchor>,
+    pub(crate) range: Range<MultiBufferAnchor>,
     pub(crate) pair: AutoClosePair,
 }
 
@@ -248,10 +248,11 @@ impl Editor {
                 continue;
             }
             if auto_close_enabled
-                && let Some(region) = self.autoclose_region_at(selection.end(), typed, &snapshot)
+                && let Some((region, close_start)) =
+                    self.autoclose_region_at(selection.end(), typed, &snapshot)
             {
                 after_actions.push(AfterAction::SkipPast {
-                    end: region.range.end.offset().into(),
+                    end: close_start,
                     close_len: region.pair.end.len(),
                 });
                 consumed = true;
@@ -351,20 +352,17 @@ impl Editor {
             Ok((outcome, after))
         });
         if result.is_ok() {
-            let version = self
+            let snapshot = self
                 .multi_buffer
-                .update(cx, |buffer, cx| buffer.snapshot(cx))
-                .version();
+                .update(cx, |buffer, cx| buffer.snapshot(cx));
             self.autoclose_regions
                 .extend(
                     new_regions_after
                         .into_iter()
                         .map(|(range, pair)| AutocloseRegion {
-                            range: Anchor::range_outside(
-                                BufferGeneration::INITIAL,
-                                version,
-                                range.into(),
-                            ),
+                            // 区域锚在闭合符起点：起点贴插入之前、终点贴插入之后，内部新输入继续纳入范围。
+                            range: snapshot.anchor_at(range.start(), Affinity::Before)
+                                ..snapshot.anchor_at(range.end(), Affinity::After),
                             pair,
                         }),
                 );
@@ -390,17 +388,19 @@ impl Editor {
         end: MultiBufferOffset,
         typed: char,
         snapshot: &MultiBufferSnapshot,
-    ) -> Option<AutocloseRegion> {
+    ) -> Option<(AutocloseRegion, MultiBufferOffset)> {
         self.autoclose_regions
             .iter()
-            .filter(|region| {
-                region.range.start.version() == snapshot.version()
-                    && region.range.end.offset() == end.into()
+            .filter_map(|region| {
+                let start = snapshot.resolve_anchor(&region.range.start)?;
+                let end_offset = snapshot.resolve_anchor(&region.range.end)?;
+                (end_offset == end
                     && region.pair.end == typed.to_string()
-                    && text_at(snapshot, end, region.pair.end)
+                    && text_at(snapshot, end, region.pair.end))
+                .then_some((region.clone(), start, end_offset))
             })
-            .max_by_key(|region| region.range.start.offset())
-            .cloned()
+            .max_by_key(|(_, start, _)| *start)
+            .map(|(region, _, end_offset)| (region, end_offset))
     }
 
     /// 光标贴着自动补全闭合符起点时扩展选区覆盖整对，使退格一次删除整对；非空选区或未命中区域时选区不变。
@@ -415,36 +415,31 @@ impl Editor {
                 if !selection.is_caret() {
                     return *selection;
                 }
-                let Some(region) = self
+                let Some((region, open_start)) = self
                     .autoclose_regions
                     .iter()
-                    .filter(|region| {
-                        region.range.start.version() == snapshot.version()
-                            && region.range.start.offset() == selection.end().into()
+                    .filter_map(|region| {
+                        let start = snapshot.resolve_anchor(&region.range.start)?;
+                        (start == selection.end()).then_some((region, start))
                     })
-                    .max_by_key(|region| region.range.start.offset())
-                    .cloned()
+                    .max_by_key(|(_, start)| *start)
                 else {
                     return *selection;
                 };
-                let Some(start) = region
-                    .range
-                    .start
-                    .offset()
-                    .get()
-                    .checked_sub(region.pair.start.len())
-                else {
+                let Some(start) = open_start.get().checked_sub(region.pair.start.len()) else {
                     return *selection;
                 };
                 let start = MultiBufferOffset::new(start);
-                let close_start = region.range.end.offset();
+                let Some(close_start) = snapshot.resolve_anchor(&region.range.end) else {
+                    return *selection;
+                };
                 let Some(end) = close_start.get().checked_add(region.pair.end.len()) else {
                     return *selection;
                 };
                 let end = MultiBufferOffset::new(end);
                 // 校验开合文本确实位于区域两端，再扩展选区覆盖整对。
                 if text_at(&snapshot, start, region.pair.start)
-                    && text_at(&snapshot, close_start.into(), region.pair.end)
+                    && text_at(&snapshot, close_start, region.pair.end)
                 {
                     changed = true;
                     Selection::new(start, end)

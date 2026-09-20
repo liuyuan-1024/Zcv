@@ -396,11 +396,6 @@ impl Editor {
         });
         match outcome {
             Ok(Some(outcome)) => {
-                self.update_autoclose_regions_with(
-                    outcome.position_map(),
-                    outcome.old_version(),
-                    outcome.new_version(),
-                );
                 if let Some(selections) = self
                     .selection_history
                     .transaction(outcome.transaction_id())

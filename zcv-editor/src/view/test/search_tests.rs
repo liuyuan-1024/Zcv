@@ -135,7 +135,7 @@ fn search_regex_matches_pattern(cx: &mut TestAppContext) {
             assert_eq!(editor.search_count(cx), (3, Some(0)));
             let matches = editor.search_highlights().unwrap().0;
             assert_eq!(
-                matches[2].range(),
+                matches[2],
                 MultiBufferRange::new(MultiBufferOffset::new(8), MultiBufferOffset::new(11),)
                     .unwrap()
             );
@@ -368,9 +368,8 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
             .iter()
             .enumerate()
             .map(|(index, m)| {
-                let r = m.range();
                 (
-                    r.start().get()..r.end().get(),
+                    m.start().get()..m.end().get(),
                     if index == search_highlights.1 {
                         colors.search_active_match_background
                     } else {
@@ -432,9 +431,8 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
             .iter()
             .enumerate()
             .map(|(index, m)| {
-                let r = m.range();
                 (
-                    r.start().get()..r.end().get(),
+                    m.start().get()..m.end().get(),
                     if index == search_highlights.1 {
                         colors.search_active_match_background
                     } else {
@@ -536,9 +534,8 @@ zcv final
             .iter()
             .enumerate()
             .map(|(index, m)| {
-                let r = m.range();
                 (
-                    r.start().get()..r.end().get(),
+                    m.start().get()..m.end().get(),
                     if index == search_highlights.1 {
                         colors.search_active_match_background
                     } else {

@@ -171,3 +171,24 @@ fn thumb_geometry_clamps_minimum_thumb_size() {
     let (_, per_pixel) = thumb_geometry(track, px(1_900.), px(1_900.)).unwrap();
     assert_eq!(per_pixel, 1_900. / 175.);
 }
+
+#[test]
+fn stale_marker_result_is_discarded_after_display_version_advances() {
+    let mut state = ScrollbarMarkerState::default();
+    let groups = [
+        Some(Arc::from(vec![ScrollbarMarker {
+            y_range: px(0.)..px(5.),
+            kind: ScrollbarMarkerKind::Search,
+        }])),
+        None,
+    ];
+
+    // 计算版本 1，安装时当前显示版本已推进到 2：过期结果丢弃并保持 dirty。
+    state.finish_refresh(track_bounds(100.).size, 1, 2, groups.clone());
+    assert!(state.marker_groups[0].is_none());
+    assert!(state.dirty);
+
+    // 版本一致时正常安装。
+    state.finish_refresh(track_bounds(100.).size, 2, 2, groups);
+    assert!(state.marker_groups[0].is_some());
+}

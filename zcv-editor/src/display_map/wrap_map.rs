@@ -253,11 +253,6 @@ impl WrapSnapshot {
         self.tab_snapshot.buffer_snapshot()
     }
 
-    #[cfg(test)]
-    pub(super) const fn version(&self) -> u64 {
-        self.version
-    }
-
     pub(super) fn line_count(&self) -> usize {
         self.transforms.summary().output_rows
     }

@@ -243,6 +243,8 @@ pub(super) struct DisplaySnapshot {
     diff_display: Option<Arc<DiffDisplaySnapshot>>,
     /// 语法折叠候选的区间派生索引：同一显示版本内只对视口区间派生，随快照整体替换。
     syntax_crease_cache: Arc<Mutex<SyntaxCreaseIndex>>,
+    /// 显示版本；每次替换当前显示快照都会前进，后台派生结果据此判断是否过期。
+    version: u64,
 }
 
 impl DisplaySnapshot {
@@ -475,9 +477,9 @@ impl DisplaySnapshot {
         syntax::style_table(&self.buffer_snapshot().capture_names(), cx)
     }
 
-    #[cfg(test)]
+    /// 当前显示快照的版本；每次替换显示快照都会前进。
     pub(super) fn version(&self) -> u64 {
-        self.wrap_snapshot().version()
+        self.version
     }
 
     pub(super) fn line_count(&self) -> usize {
@@ -678,10 +680,20 @@ pub(crate) struct DisplayMap {
     search: Option<SearchDecorationInput>,
     /// 宿主注入的显式折叠候选；语法候选由 `DisplaySnapshot` 按行即时查询。
     crease_map: CreaseMap,
+    /// 当前显示快照的版本号；每次替换 `snapshot` 时前进。
+    display_version: u64,
 }
 
 fn default_tab_width() -> NonZeroUsize {
     NonZeroUsize::new(4).expect("默认 tab 宽度必须大于 0")
+}
+
+impl DisplayMap {
+    /// 前进显示版本；任何替换当前显示快照的路径都必须调用它。
+    fn next_display_version(&mut self) -> u64 {
+        self.display_version += 1;
+        self.display_version
+    }
 }
 
 /// 两份搜索装饰输入是否等价：范围句柄相同且活动序号相同。
@@ -726,6 +738,7 @@ impl DisplayMap {
             editor_hunks: Arc::from([]),
             search: None,
             crease_map: CreaseMap::new(&snapshot),
+            display_version: 0,
         };
         this.commit_snapshot(&wrap_snapshot, &[], cx);
         // 换行层自己拥有后台重排；
@@ -836,6 +849,7 @@ impl DisplayMap {
             return;
         };
         snapshot.crease_snapshot = self.crease_map.snapshot();
+        snapshot.version = self.next_display_version();
         self.snapshot = Some(snapshot);
         cx.notify();
     }
@@ -851,6 +865,7 @@ impl DisplayMap {
             &self.editor_hunks,
         ));
         snapshot.decorations = Arc::new(snapshot.decorations.with_diff(diff));
+        snapshot.version = self.next_display_version();
         self.snapshot = Some(snapshot);
         cx.notify();
     }
@@ -867,6 +882,7 @@ impl DisplayMap {
             ))
         });
         snapshot.decorations = Arc::new(snapshot.decorations.with_search(search));
+        snapshot.version = self.next_display_version();
         self.snapshot = Some(snapshot);
         cx.notify();
     }
@@ -889,12 +905,14 @@ impl DisplayMap {
 
     fn commit_snapshot(&mut self, wrap_snapshot: &WrapSnapshot, wrap_edits: &[WrapEdit], cx: &App) {
         let block_snapshot = Arc::new(self.current_block_snapshot(wrap_snapshot, wrap_edits));
+        let version = self.next_display_version();
         let mut snapshot = DisplaySnapshot {
             block_snapshot,
             crease_snapshot: self.crease_map.snapshot(),
             decorations: Arc::new(DisplayDecorations::empty()),
             diff_display: wrap_snapshot.buffer_snapshot().diff_display().cloned(),
             syntax_crease_cache: Arc::new(Mutex::new(SyntaxCreaseIndex::default())),
+            version,
         };
         let cached_diff = self.snapshot.as_ref().and_then(|previous| {
             (wrap_edits.is_empty()

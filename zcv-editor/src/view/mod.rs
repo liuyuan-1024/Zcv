@@ -958,6 +958,8 @@ impl Editor {
             return;
         }
         let is_singleton = self.shows_search_scrollbar_markers(cx);
+        // 后台结果携带计算所用的显示版本；安装前与当前快照比较，过期即丢弃。
+        let version = display_snapshot.version();
         let task = cx.background_spawn(async move {
             display_snapshot.scrollbar_marker_groups(
                 track_bounds,
@@ -969,9 +971,13 @@ impl Editor {
         let handle = cx.spawn(async move |this, cx| {
             let groups = task.await;
             this.update(cx, |editor, cx| {
-                editor
-                    .scrollbar_marker_state
-                    .finish_refresh(track_bounds.size, groups);
+                let current_version = editor.display_snapshot(cx).version();
+                editor.scrollbar_marker_state.finish_refresh(
+                    track_bounds.size,
+                    version,
+                    current_version,
+                    groups,
+                );
                 cx.notify();
             })
             .ok();

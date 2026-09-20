@@ -79,14 +79,22 @@ impl ScrollbarMarkerState {
         self.pending_refresh = Some(task);
     }
 
+    /// 安装后台算出的标记；计算期间显示版本已推进时丢弃过期结果。
     pub(crate) fn finish_refresh(
         &mut self,
         scrollbar_size: Size<Pixels>,
+        version: u64,
+        current_version: u64,
         marker_groups: [Option<Arc<[ScrollbarMarker]>>; 2],
     ) {
+        self.pending_refresh = None;
+        if version != current_version {
+            // 保持 dirty，使下一次布局基于最新显示版本重新计算。
+            self.dirty = true;
+            return;
+        }
         self.scrollbar_size = scrollbar_size;
         self.marker_groups = marker_groups;
-        self.pending_refresh = None;
     }
 }
 

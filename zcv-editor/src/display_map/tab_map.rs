@@ -15,11 +15,56 @@ use zcv_multi_buffer::MultiBufferSnapshot;
 use zcv_text::{CoordinateError, Line};
 
 use super::chunk::{ChunkText, FoldChunks, HighlightStyles, StyledChunks};
-use super::display_width::{DisplayColumn, char_width};
+use super::display_width::char_width;
 use super::{
     error::DisplayMapResult,
-    fold_map::{FoldEdit, FoldSnapshot, ProjectedLineIndex, StreamProjectedKind},
+    fold_map::{
+        FoldEdit, FoldSnapshot, LogicalProjection, ProjectedLineIndex, StreamProjectedKind,
+    },
 };
+
+/// Tab 层的本层列坐标：tab 展开后一行内的视觉列宽。
+///
+/// 与显示列数值等价，但作为 tab 层的坐标独立建模，避免 tab 测量结果与显示层坐标准确性依赖同一个裸类型。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct TabColumn(usize);
+
+impl TabColumn {
+    pub(crate) const fn new(value: usize) -> Self {
+        Self(value)
+    }
+}
+
+/// Tab 层的行编辑：本层 tab 行空间中的待失效区域。
+///
+/// tab 行与 fold 投影行一一对应（tab 只改列宽、不增删行），但本层仍以权威行总数保证覆盖：
+/// Edit 只表达失效区域，Wrap 只消费直接下层编辑（D-2/D-8）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct TabEdit {
+    old: Range<usize>,
+    new: Range<usize>,
+    /// 行内编辑精确失效的 tab 行；结构编辑为空。
+    changed_rows: Vec<usize>,
+    structural: bool,
+}
+
+impl TabEdit {
+    pub(super) fn old_rows(&self) -> Range<usize> {
+        self.old.clone()
+    }
+
+    pub(super) fn new_rows(&self) -> Range<usize> {
+        self.new.clone()
+    }
+
+    pub(super) fn changed_rows(&self) -> &[usize] {
+        &self.changed_rows
+    }
+
+    pub(super) fn is_structural(&self) -> bool {
+        self.structural || self.old != self.new
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct TabSnapshot {
@@ -99,8 +144,8 @@ impl TabSnapshot {
 #[derive(Debug, Clone)]
 pub(super) struct TabMap {
     snapshot: TabSnapshot,
-    measured_line_widths: BTreeMap<Line, DisplayColumn>,
-    longest_measured: Option<(Line, DisplayColumn)>,
+    measured_line_widths: BTreeMap<Line, TabColumn>,
+    longest_measured: Option<(Line, TabColumn)>,
 }
 
 impl TabMap {
@@ -125,7 +170,10 @@ impl TabMap {
         fold_snapshot: FoldSnapshot,
         fold_edits: &[FoldEdit],
         tab_width: NonZeroUsize,
-    ) -> TabSnapshot {
+    ) -> (TabSnapshot, Vec<TabEdit>) {
+        let old_count = self.snapshot.line_count();
+        let new_count = fold_snapshot.line_count();
+        let tab_edits = tab_edits_from_fold_edits(&fold_snapshot, old_count, new_count, fold_edits);
         // 缓存失效只以 tab 宽度变化为键。
         let same_configuration = self.snapshot.tab_width() == tab_width;
         // fold 拓扑（折叠/行内提示变化都会使 fold 版本前进）。
@@ -137,18 +185,17 @@ impl TabMap {
                 version: self.snapshot.version,
                 tab_width,
             };
-            return self.snapshot.clone();
+            return (self.snapshot.clone(), tab_edits);
         }
 
         let new_version = self.snapshot.version + 1;
-        // 结构编辑按 FoldEdit 的旧/新行区间平移宽度缓存；
-        // 行内编辑按 changed_lines 精确失效。
-        let structural = fold_edits.iter().any(FoldEdit::is_structural);
+        // 结构编辑按 tab 行区间平移宽度缓存；行内编辑按 changed_rows 精确失效。
+        let structural = tab_edits.iter().any(TabEdit::is_structural);
         if !same_configuration {
             self.measured_line_widths.clear();
             self.longest_measured = None;
         } else if structural {
-            for edit in fold_edits.iter().filter(|edit| edit.is_structural()) {
+            for edit in tab_edits.iter().filter(|edit| edit.is_structural()) {
                 self.shift_measured_widths(edit.old_rows(), edit.new_rows());
             }
             self.longest_measured = self
@@ -157,15 +204,15 @@ impl TabMap {
                 .max_by_key(|(_, width)| **width)
                 .map(|(line, width)| (*line, *width));
         } else {
-            let mut changed_lines = BTreeSet::new();
-            for edit in fold_edits {
-                changed_lines.extend(edit.changed_lines().iter().copied());
+            let mut changed_rows = BTreeSet::new();
+            for edit in &tab_edits {
+                changed_rows.extend(edit.changed_rows().iter().copied());
             }
             self.measured_line_widths
-                .retain(|line, _| !changed_lines.contains(line));
+                .retain(|line, _| !changed_rows.contains(&line.get()));
             if self
                 .longest_measured
-                .is_some_and(|(line, _)| changed_lines.contains(&line))
+                .is_some_and(|(line, _)| changed_rows.contains(&line.get()))
             {
                 self.longest_measured = self
                     .measured_line_widths
@@ -179,7 +226,7 @@ impl TabMap {
             version: new_version,
             tab_width,
         };
-        self.snapshot.clone()
+        (self.snapshot.clone(), tab_edits)
     }
 
     /// 结构编辑后平移宽度缓存：旧行区间内的键失效，其后的键按行数差整体平移。
@@ -203,7 +250,7 @@ impl TabMap {
         }
     }
 
-    pub(super) fn measure_line(&mut self, line: Line) -> DisplayMapResult<DisplayColumn> {
+    pub(super) fn measure_line(&mut self, line: Line) -> DisplayMapResult<TabColumn> {
         if let Some(width) = self.measured_line_widths.get(&line) {
             return Ok(*width);
         }
@@ -251,7 +298,7 @@ impl TabMap {
                 width = display_width_chunk(width, chunk.text, tab_width);
             }
         }
-        let width = DisplayColumn::new(width);
+        let width = TabColumn::new(width);
         self.measured_line_widths.insert(line, width);
         if self
             .longest_measured
@@ -262,9 +309,67 @@ impl TabMap {
         Ok(width)
     }
 
-    pub(super) fn longest_measured(&self) -> Option<(Line, DisplayColumn)> {
+    pub(super) fn longest_measured(&self) -> Option<(Line, TabColumn)> {
         self.longest_measured
     }
+}
+
+/// 把 Fold 层的失效编辑转成 Tab 层的行编辑。
+///
+/// tab 行与 fold 投影行一一对应，因此行区间沿用；行内编辑把逻辑行映射为 tab 行。
+/// Edit 只表达待失效区域，Tab 层以权威行总数校正覆盖：
+/// 局部编辑的 old/new 行数差必须与全局拓扑差一致，否则 Wrap 变换树的 input 会与下层不一致。
+/// 多段编辑不满足全局守恒时退化为一条整层编辑（允许放大失效区域）。
+fn tab_edits_from_fold_edits(
+    fold_snapshot: &FoldSnapshot,
+    old_count: usize,
+    new_count: usize,
+    fold_edits: &[FoldEdit],
+) -> Vec<TabEdit> {
+    let edits: Vec<TabEdit> = fold_edits
+        .iter()
+        .map(|edit| {
+            let structural = edit.is_structural();
+            let changed_rows = if structural {
+                Vec::new()
+            } else {
+                let mut rows: Vec<usize> = edit
+                    .changed_lines()
+                    .iter()
+                    .filter_map(
+                        |line| match fold_snapshot.logical_to_projected(*line).ok()? {
+                            LogicalProjection::Visible(row) => Some(row.get()),
+                            LogicalProjection::Hidden => None,
+                        },
+                    )
+                    .collect();
+                rows.sort_unstable();
+                rows.dedup();
+                rows
+            };
+            TabEdit {
+                old: edit.old_rows(),
+                new: edit.new_rows(),
+                changed_rows,
+                structural,
+            }
+        })
+        .collect();
+    let old_sum: usize = edits.iter().map(|edit| edit.old.len()).sum();
+    let new_sum: usize = edits.iter().map(|edit| edit.new.len()).sum();
+    if new_count + old_sum != old_count + new_sum {
+        return if old_count == 0 && new_count == 0 {
+            Vec::new()
+        } else {
+            vec![TabEdit {
+                old: 0..old_count,
+                new: 0..new_count,
+                changed_rows: Vec::new(),
+                structural: true,
+            }]
+        };
+    }
+    edits
 }
 
 fn display_width_chunk(column: usize, text: &str, tab_width: usize) -> usize {
@@ -354,7 +459,7 @@ mod test {
     use super::*;
 
     impl TabMap {
-        pub(crate) fn measured_lines(&self) -> impl Iterator<Item = (Line, DisplayColumn)> + '_ {
+        pub(crate) fn measured_lines(&self) -> impl Iterator<Item = (Line, TabColumn)> + '_ {
             self.measured_line_widths
                 .iter()
                 .map(|(line, width)| (*line, *width))

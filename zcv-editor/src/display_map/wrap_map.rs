@@ -25,10 +25,12 @@ use super::chunk::{Chunk, ChunkText, FoldChunks, HighlightStyles, StyledChunks};
 use super::display_width::DisplayColumn;
 use super::error::DisplayMapResult;
 use super::fold_map::{
-    FoldBias, FoldEdit, FoldRowSegment, FoldRowSegmentKind, LogicalPoint, LogicalProjection,
-    LogicalRange, ProjectedLineIndex, ProjectedPoint, ProjectedRange, StreamProjectedKind,
+    FoldBias, FoldRowSegment, FoldRowSegmentKind, LogicalPoint, LogicalRange, ProjectedLineIndex,
+    ProjectedPoint, ProjectedRange, StreamProjectedKind,
 };
-use super::tab_map::{TabSnapshot, advance_display_column, byte_for_display_column, line_content};
+use super::tab_map::{
+    TabEdit, TabSnapshot, advance_display_column, byte_for_display_column, line_content,
+};
 use super::{WrapPoint, WrapRow};
 
 /// 换行点：行内容（已剥 `\r\n`）内的半开字节分界与下一续行的假空格数。
@@ -266,9 +268,9 @@ impl WrapSnapshot {
     fn interpolate(
         &mut self,
         new_tab_snapshot: TabSnapshot,
-        fold_edits: &[FoldEdit],
+        tab_edits: &[TabEdit],
     ) -> Vec<WrapEdit> {
-        let mut structural: Vec<(Range<usize>, Range<usize>)> = fold_edits
+        let mut structural: Vec<(Range<usize>, Range<usize>)> = tab_edits
             .iter()
             .filter(|edit| edit.is_structural())
             .map(|edit| (edit.old_rows(), edit.new_rows()))
@@ -1111,7 +1113,7 @@ pub(super) struct WrapMap {
     /// 换行阶段的整行 shaping 缓存；与文本系统共享字体资源，但独立于窗口布局生命周期。
     window_text_system: Option<Arc<WindowTextSystem>>,
     /// 尚未落地到真实重排的编辑批次（tab 快照 + fold 编辑）。
-    pending_edits: VecDeque<(TabSnapshot, Vec<FoldEdit>)>,
+    pending_edits: VecDeque<(TabSnapshot, Vec<TabEdit>)>,
     /// 后台重排期间为保持渲染最新而急切插入的换行编辑；真实重排落地时先反转再组合。
     interpolated_edits: WrapPatch,
     /// 自上次被消费以来发布给下游的换行编辑。
@@ -1183,11 +1185,11 @@ impl WrapMap {
     pub(super) fn sync(
         &mut self,
         tab_snapshot: TabSnapshot,
-        fold_edits: &[FoldEdit],
+        tab_edits: &[TabEdit],
         cx: &mut Context<Self>,
     ) -> (WrapSnapshot, Vec<WrapEdit>) {
         self.pending_edits
-            .push_back((tab_snapshot, fold_edits.to_vec()));
+            .push_back((tab_snapshot, tab_edits.to_vec()));
         self.flush_edits(cx);
         (
             self.snapshot.clone(),
@@ -1201,7 +1203,7 @@ impl WrapMap {
     }
 
     /// 同步应用一批编辑；返回该批次的换行编辑。
-    fn apply_edits(&mut self, tab_snapshot: TabSnapshot, fold_edits: &[FoldEdit]) -> Vec<WrapEdit> {
+    fn apply_edits(&mut self, tab_snapshot: TabSnapshot, tab_edits: &[TabEdit]) -> Vec<WrapEdit> {
         if tab_snapshot.version() == self.snapshot.tab_snapshot.version() {
             // 换行拓扑未变，但下层可能携带新的文本/元数据快照：采用新快照保持链上版本一致。
             self.snapshot.tab_snapshot = tab_snapshot;
@@ -1209,16 +1211,16 @@ impl WrapMap {
         }
         self.snapshot.tab_snapshot = tab_snapshot;
         let edits = if let Some(wrap_width) = self.wrap_width {
-            // 结构编辑（折叠/展开、行内提示变化）按 FoldEdit 的旧/新输入行区间局部重排；
+            // 结构编辑按 TabEdit 的旧/新输入行区间局部重排；
             // 覆盖全量的结构编辑自然退化为整段重建，不需要单独的“全量”分支。
-            if fold_edits.iter().any(FoldEdit::is_structural) {
-                self.update_structural(fold_edits, wrap_width)
+            if tab_edits.iter().any(TabEdit::is_structural) {
+                self.update_structural(tab_edits, wrap_width)
             } else {
-                let changed_lines: Vec<Line> = fold_edits
+                let changed_rows: Vec<usize> = tab_edits
                     .iter()
-                    .flat_map(|edit| edit.changed_lines().iter().copied())
+                    .flat_map(|edit| edit.changed_rows().iter().copied())
                     .collect();
-                self.update_inline(&changed_lines, wrap_width)
+                self.update_inline(&changed_rows, wrap_width)
             }
         } else {
             self.set_isomorphic_all()
@@ -1273,7 +1275,7 @@ impl WrapMap {
             return;
         }
         if self.background_task.is_none() {
-            let pending: Vec<(TabSnapshot, Vec<FoldEdit>)> =
+            let pending: Vec<(TabSnapshot, Vec<TabEdit>)> =
                 self.pending_edits.iter().cloned().collect();
             let in_flight_versions: Vec<u64> = pending
                 .iter()
@@ -1311,7 +1313,7 @@ impl WrapMap {
             }
         }
         // 后台任务进行中：急切插值 pending，保证渲染使用最新文本；真实换行点由后台补齐。
-        let pending: Vec<(TabSnapshot, Vec<FoldEdit>)> =
+        let pending: Vec<(TabSnapshot, Vec<TabEdit>)> =
             self.pending_edits.iter().cloned().collect();
         for (tab_snapshot, fold_edits) in pending {
             if tab_snapshot.version() <= self.snapshot.tab_snapshot.version() {
@@ -1388,12 +1390,12 @@ impl WrapMap {
         }]
     }
 
-    /// 结构编辑的局部重排：按 FoldEdit 的旧/新输入行区间替换换行变换。
+    /// 结构编辑的局部重排：按 TabEdit 的旧/新输入行区间替换换行变换。
     ///
     /// 未命中的前缀/后缀子树直接复用（Arc 共享）；被替换区间内的行重新测量换行。
     /// 覆盖全量的结构编辑会退化为整段重建，与 [`Self::rewrap_all`] 等价。
-    fn update_structural(&mut self, fold_edits: &[FoldEdit], wrap_width: Pixels) -> Vec<WrapEdit> {
-        let mut edits: Vec<(Range<usize>, Range<usize>)> = fold_edits
+    fn update_structural(&mut self, tab_edits: &[TabEdit], wrap_width: Pixels) -> Vec<WrapEdit> {
+        let mut edits: Vec<(Range<usize>, Range<usize>)> = tab_edits
             .iter()
             .map(|edit| (edit.old_rows(), edit.new_rows()))
             .collect();
@@ -1487,16 +1489,9 @@ impl WrapMap {
         }]
     }
 
-    /// 行级增量：只重排 changed_lines 对应的 tab 行，其余段落原样保留。
-    fn update_inline(&mut self, changed_lines: &[Line], wrap_width: Pixels) -> Vec<WrapEdit> {
-        let fold = self.snapshot.tab_snapshot.fold_snapshot();
-        let mut rows: Vec<usize> = changed_lines
-            .iter()
-            .filter_map(|line| match fold.logical_to_projected(*line).ok()? {
-                LogicalProjection::Visible(row) => Some(row.get()),
-                LogicalProjection::Hidden => None,
-            })
-            .collect();
+    /// 行级增量：只重排 changed_rows 对应的 tab 行，其余段落原样保留。
+    fn update_inline(&mut self, changed_rows: &[usize], wrap_width: Pixels) -> Vec<WrapEdit> {
+        let mut rows: Vec<usize> = changed_rows.to_vec();
         rows.sort_unstable();
         rows.dedup();
         if rows.is_empty() {

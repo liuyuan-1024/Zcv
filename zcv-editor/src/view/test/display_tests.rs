@@ -2341,6 +2341,59 @@ fn diff_refresh_keeps_line_terminators_out_of_renderer_chunks(cx: &mut TestAppCo
     cx.refresh().expect("暂存刷新后的 diff 视图应能完成布局");
 }
 
+/// 回归：软换行开启、暂存 hunk 触发结构变更时，Wrap 变换树输入行数必须等于 tab 行数。
+#[gpui::test]
+fn staging_a_hunk_with_soft_wrap_keeps_wrap_map_invariant(cx: &mut TestAppContext) {
+    let fill = "x".repeat(120);
+    let mut working = String::new();
+    let mut base = String::new();
+    for index in 0..1500 {
+        let (working_marker, base_marker) = if index == 750 {
+            ("new", "old")
+        } else {
+            ("line", "line")
+        };
+        working.push_str(&format!("{working_marker} {index} {fill}\r\n"));
+        base.push_str(&format!("{base_marker} {index} {fill}\r\n"));
+    }
+    let buffer = test_buffer(cx, &working);
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)
+    });
+    cx.run_until_parked();
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx);
+    });
+    cx.run_until_parked();
+    cx.refresh().expect("软换行模式下的首帧应能完成布局");
+    assert!(
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot().is_wrapped()),
+        "软换行模式必须让 WrapMap 进入带测量宽度的同步路径"
+    );
+    let source = buffer.clone();
+    inject_editor_diff(&editor, &source, Vec::new(), Some(Arc::from(base)), cx);
+    editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
+    cx.run_until_parked();
+    cx.refresh().expect("展开 hunk 后的软换行帧应能完成布局");
+    assert!(
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot().is_wrapped()),
+        "展开 hunk 后软换行必须保留"
+    );
+    // 暂存后重新注入：旧侧 excerpt 被移除，工作区与 index 基线一致。
+    inject_editor_diff(&editor, &source, Vec::new(), Some(Arc::from(working)), cx);
+    cx.run_until_parked();
+    cx.refresh()
+        .expect("暂存刷新后的软换行 diff 视图应能完成布局");
+    assert!(
+        cx.read_entity(&editor, |editor, _| editor.display_snapshot().is_wrapped()),
+        "暂存 hunk 后组合文档的软换行必须保留"
+    );
+}
+
 /// 回归：在只读的 Deleted 旧行上尝试编辑（被拒）后，光标移回工作区仍可正常编辑。
 #[gpui::test]
 fn editing_readonly_deleted_row_then_editing_working_text_still_works(cx: &mut TestAppContext) {

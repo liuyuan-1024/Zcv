@@ -42,7 +42,8 @@ fn focused_editor_stops_blinking_when_window_deactivates(cx: &mut TestAppContext
         assert!(!window.is_window_active());
         assert!(editor.read(cx).focus.is_focused(window));
         assert!(!editor.read(cx).blink_manager.read(cx).enabled());
-        assert!(!editor.read(cx).show_cursor(window, cx));
+        let is_focused = window.is_window_active() && editor.read(cx).focus.is_focused(window);
+        assert!(!editor.read(cx).cursor_visible_with_focus(is_focused, cx));
     });
 
     cx.update(|window, _| window.activate_window());
@@ -79,7 +80,8 @@ fn focused_read_only_editor_keeps_editor_selection_and_shows_a_steady_caret(
         assert!(editor.is_read_only(cx));
         assert!(editor.focus.is_focused(window));
         assert!(!editor.blink_manager.read(cx).enabled());
-        assert!(editor.show_cursor(window, cx));
+        let is_focused = window.is_window_active() && editor.focus.is_focused(window);
+        assert!(editor.cursor_visible_with_focus(is_focused, cx));
         assert!(editor.resolved_selections().primary().is_caret());
     });
 }

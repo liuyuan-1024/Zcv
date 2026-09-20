@@ -9,7 +9,7 @@ mod diff_projection;
 mod path_key;
 
 use diff_projection::DiffSourceRole;
-pub use diff_projection::{DiffDisplaySnapshot, DiffFile, DiffHunkSource, DisplayHunk};
+pub use diff_projection::{DiffDisplaySnapshot, DiffFile, DiffHunkSource, DisplayHunk, WordDiffs};
 pub(crate) use path_key::{PathKey, PathKeyIndex};
 
 use std::borrow::Cow;
@@ -1090,26 +1090,29 @@ fn projection_changed_ranges(
     )
 }
 
-/// 在单一路径区间内收集指定源的映射；游标不会扫描其它路径。
-fn mappings_for_path_source(
+/// 在单一路径区间内收集指定源的输出起点与解析后的源范围。
+///
+/// 用轻量记录代替整份 `ExcerptMapping`：源编辑只需要这两项推导输出增量，
+/// 不应为每次编辑克隆片段的 `match_ranges` 与 diff hunk 派生数据。游标不会扫描其它路径。
+fn output_records_for_path_source(
     excerpts: &SumTree<Excerpt>,
     entries: &SumTree<DiffTransform>,
     path: &PathKey,
     source_id: gpui::EntityId,
-) -> Vec<ExcerptMapping> {
+) -> Vec<(usize, TextRange)> {
     let mut cursor = MultiBufferCursor::new(excerpts, entries);
     cursor.seek_path(path, Bias::Left);
-    let mut mappings = Vec::new();
+    let mut records = Vec::new();
     while let Some((excerpt, _)) = cursor.item() {
         if &excerpt.path != path {
             break;
         }
         if excerpt.source_id == Some(source_id) {
-            mappings.push(cursor.mapping().expect("双坐标游标必须有对应映射"));
+            records.push((cursor.start().bytes, excerpt.source_range.range()));
         }
         cursor.next();
     }
-    mappings
+    records
 }
 
 /// 计算单一路径在组合输出中的摘要；游标不会扫描其它路径。
@@ -3326,10 +3329,9 @@ impl MultiBuffer {
     /// excerpt 顺序，按源坐标配对后再计算每个 output 区间。
     fn source_incremental_change(
         &self,
-        source_id: gpui::EntityId,
         source_change: &TextChangeBatch,
-        old_mappings: &[ExcerptMapping],
-        new_mappings: &[ExcerptMapping],
+        old_records: &[(usize, TextRange)],
+        new_records: &[(usize, TextRange)],
     ) -> Option<SourceIncremental> {
         if source_change.requires_reset() {
             return Some(SourceIncremental {
@@ -3339,18 +3341,17 @@ impl MultiBuffer {
         if source_change.patch().is_empty() {
             return None;
         }
-        let old_mappings = old_mappings
-            .iter()
-            .filter(|mapping| mapping.source_id == Some(source_id))
-            .collect::<Vec<_>>();
-        if old_mappings.len() != new_mappings.len() {
+        if old_records.len() != new_records.len() {
             return None;
         }
+        let patch_edits = source_change.patch().edits();
         let mut output_edits = Vec::new();
-        for (old_mapping, new_mapping) in old_mappings.into_iter().zip(new_mappings) {
-            for patch_edit in source_change.patch().edits() {
+        for ((old_output_at, old_source_range), (new_output_at, new_source_range)) in
+            old_records.iter().zip(new_records)
+        {
+            for patch_edit in patch_edits {
                 let old_range = patch_edit.old_range();
-                let excerpt_range = old_mapping.source_range.range();
+                let excerpt_range = *old_source_range;
                 let overlap = if old_range.is_empty() {
                     (old_range.start() >= excerpt_range.start()
                         && old_range.start() < excerpt_range.end())
@@ -3367,11 +3368,10 @@ impl MultiBuffer {
                     continue;
                 };
 
-                let old_output_start = old_mapping.output_range.start().get()
-                    + overlap.start().get()
-                    - excerpt_range.start().get();
-                let old_output_end = old_mapping.output_range.start().get() + overlap.end().get()
-                    - excerpt_range.start().get();
+                let old_output_start =
+                    *old_output_at + overlap.start().get() - excerpt_range.start().get();
+                let old_output_end =
+                    *old_output_at + overlap.end().get() - excerpt_range.start().get();
                 let new_start_source = source_change
                     .position_map()
                     .map_old_position_with_affinity(overlap.start(), Affinity::Before)
@@ -3389,13 +3389,13 @@ impl MultiBuffer {
                     new_end_source =
                         ByteOffset::new(new_end_source.get() + patch_edit.new_range().len());
                 }
-                let new_source_range = new_mapping.source_range.range();
-                let new_output_start = new_mapping.output_range.start().get()
+                let new_source_range = *new_source_range;
+                let new_output_start = *new_output_at
                     + new_start_source
                         .get()
                         .saturating_sub(new_source_range.start().get())
                         .min(new_source_range.len());
-                let new_output_end = new_mapping.output_range.start().get()
+                let new_output_end = *new_output_at
                     + new_end_source
                         .get()
                         .saturating_sub(new_source_range.start().get())
@@ -3436,18 +3436,37 @@ impl MultiBuffer {
                 unique_sources.push(excerpt.source.clone());
             }
         }
-        let next_source_subscriptions = unique_sources
-            .iter()
-            .map(|source| SourceSubscription {
+        // 结构重建只替换拓扑：仍存活的源复用已有连接，不为一次重排重建全部订阅。
+        let mut previous_subscriptions = {
+            let old_subscriptions = std::mem::take(&mut self.state.source_subscriptions);
+            let old_events = std::mem::take(&mut self.state.source_event_subscriptions);
+            old_subscriptions
+                .into_iter()
+                .zip(old_events)
+                .map(|(subscription, event)| {
+                    (subscription.source.entity_id(), (subscription, event))
+                })
+                .collect::<HashMap<_, _>>()
+        };
+        let mut next_source_subscriptions = Vec::with_capacity(unique_sources.len());
+        let mut next_source_event_subscriptions = Vec::with_capacity(unique_sources.len());
+        for source in unique_sources {
+            let source_id = source.entity_id();
+            if let Some((subscription, event)) = previous_subscriptions.remove(&source_id) {
+                // 新 excerpts 已采用当前源快照；丢弃复用订阅里已被快照吸收的待消费编辑，
+                // 否则下一帧会按旧版本重放同一批编辑。
+                subscription.text.consume();
+                next_source_subscriptions.push(subscription);
+                next_source_event_subscriptions.push(event);
+                continue;
+            }
+            next_source_subscriptions.push(SourceSubscription {
                 source: source.clone(),
                 text: source.read(cx).subscribe(),
-            })
-            .collect::<Vec<_>>();
-        let next_source_event_subscriptions = unique_sources
-            .into_iter()
-            .map(|source| {
-                let source_id = source.entity_id();
-                cx.subscribe(&source, move |this, _, event, cx| match event {
+            });
+            next_source_event_subscriptions.push(cx.subscribe(
+                &source,
+                move |this, _, event, cx| match event {
                     LanguageBufferEvent::TextChanged => {
                         this.state
                             .pending_source_syncs
@@ -3474,9 +3493,9 @@ impl MultiBuffer {
                         cx.emit(MultiBufferEvent::MetadataChanged);
                         cx.notify();
                     }
-                })
-            })
-            .collect::<Vec<_>>();
+                },
+            ));
+        }
         // 折叠候选在源级缓存：结构重建时复用同一源已缓存的锚点，只有 reparse 才重算。
         let ExcerptState {
             source_subscriptions,
@@ -4275,7 +4294,7 @@ impl MultiBuffer {
             .map(|source| source.path.clone())
             .expect("源编辑时源必须仍存在于组合文档");
         let old_path_summary = output_summary_for_path(&self.state.diff_transforms, &path);
-        let old_mappings = mappings_for_path_source(
+        let old_records = output_records_for_path_source(
             &self.state.excerpts,
             &self.state.diff_transforms,
             &path,
@@ -4289,14 +4308,13 @@ impl MultiBuffer {
             expanded_excerpts,
             cx,
         );
-        let new_mappings = mappings_for_path_source(
+        let new_records = output_records_for_path_source(
             &self.state.excerpts,
             &self.state.diff_transforms,
             &path,
             source_id,
         );
-        let incremental =
-            self.source_incremental_change(source_id, source_change, &old_mappings, &new_mappings);
+        let incremental = self.source_incremental_change(source_change, &old_records, &new_records);
         let new_path_summary = output_summary_for_path(&self.state.diff_transforms, &path);
         self.refresh_diff_display_for_path(&path, old_path_summary, new_path_summary, cx);
         self.publish_projection_change(incremental);

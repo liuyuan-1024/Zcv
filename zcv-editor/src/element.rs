@@ -377,6 +377,8 @@ pub(super) struct PrepaintState {
     scrollbar: Option<ScrollbarLayout>,
     block_elements: Vec<AnyElement>,
     sticky_buffer_header: Option<AnyElement>,
+    /// 当前帧编辑器聚焦状态（含窗口激活）；绘制阶段据此决定 caret 可见性。
+    is_focused: bool,
 }
 
 /// hunk 色带 hitbox：命中区域 + 点击目标范围 + 类型 + 展开态标志。
@@ -1112,7 +1114,7 @@ impl Element for EditorElement {
         let (mut render_snapshot, presentation, selections) = {
             let editor = self.editor.read(cx);
             (
-                editor.snapshot(cx),
+                editor.snapshot(window, cx),
                 editor.presentation(),
                 editor.selections(),
             )
@@ -1184,7 +1186,7 @@ impl Element for EditorElement {
         // 设置换行宽度（变化才重排），随后从最新渲染快照读取显示拓扑供本帧布局使用。
         let display_snapshot = self.editor.update(cx, |editor, cx| {
             editor.set_wrap_width(wrap_width, font.clone(), font_size, cx);
-            render_snapshot = editor.snapshot(cx);
+            render_snapshot = editor.snapshot(window, cx);
             render_snapshot.display_snapshot().clone()
         });
         // 软换行模式下显示行不再由 TabMap 测量（水平滚动收敛到视口宽度）。
@@ -1215,7 +1217,7 @@ impl Element for EditorElement {
             editor.apply_pending_autoscroll_vertical();
         });
         let (start_row, scroll_offset) = {
-            let render_snapshot = self.editor.read(cx).snapshot(cx);
+            let render_snapshot = self.editor.read(cx).snapshot(window, cx);
             (
                 render_snapshot.scroll_anchor().row(),
                 render_snapshot.scroll_offset(),
@@ -1475,6 +1477,7 @@ impl Element for EditorElement {
             scrollbar,
             block_elements,
             sticky_buffer_header,
+            is_focused: render_snapshot.is_focused(),
         }
     }
 
@@ -1824,7 +1827,10 @@ impl Element for EditorElement {
                 }
             }
         }
-        let show_cursor = self.editor.read(cx).show_cursor(window, cx);
+        let show_cursor = self
+            .editor
+            .read(cx)
+            .cursor_visible_with_focus(prepaint.is_focused, cx);
         // 文件 header 与 excerpt 分隔块使用独立的整编辑器裁剪区，并在 gutter 之后绘制以覆盖行号区域。
         window.with_content_mask(
             Some(ContentMask {

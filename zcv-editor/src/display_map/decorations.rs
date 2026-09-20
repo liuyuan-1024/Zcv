@@ -15,7 +15,7 @@ use std::sync::{Arc, OnceLock};
 
 use gpui::SharedString;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
-use zcv_multi_buffer::DisplayHunk;
+use zcv_multi_buffer::{DisplayHunk, WordDiffs};
 use zcv_text::{ByteOffset, Line, TextRange};
 
 use crate::scrollbar::ScrollbarMarkerKind;
@@ -126,7 +126,7 @@ pub(crate) struct DiffDecorationInput<'a> {
     pub(crate) hunks: &'a [DisplayHunk],
     pub(crate) expanded: &'a [bool],
     pub(crate) old_display_ranges: &'a [Option<Range<usize>>],
-    pub(crate) word_diffs: &'a [Vec<(DiffHunkKind, Range<usize>)>],
+    pub(crate) word_diffs: &'a [WordDiffs],
 }
 
 /// 绑定一条显示快照的全部显示装饰。
@@ -206,7 +206,7 @@ pub(crate) struct HunkRendering {
     /// 展开的 hollow（已暂存）连续块；边框只在块首 / 末行按该行背景色绘制，相邻行之间不画线。
     pub(crate) hollow_blocks: Vec<Range<usize>>,
     /// 展开 hunk 的词级变化片段（组合文档字节范围 + 新增/删除色）。
-    pub(crate) word_diff_highlights: Vec<(DiffHunkKind, Range<usize>)>,
+    pub(crate) word_diff_highlights: WordDiffs,
 }
 
 /// 绑定一条显示快照的 diff 装饰派生状态。
@@ -246,7 +246,7 @@ impl DiffDecorationSnapshot {
         hunks: &[DisplayHunk],
         expanded: Vec<bool>,
         old_display_ranges: &[Option<Range<usize>>],
-        word_diffs: &[Vec<(DiffHunkKind, Range<usize>)>],
+        word_diffs: &[WordDiffs],
         editor_hunks: &[EditorHunk],
     ) -> Self {
         let mut rendering =
@@ -435,7 +435,7 @@ pub(crate) fn hunk_rendering(
     hunks: &[DisplayHunk],
     expanded: &[bool],
     old_display_ranges: &[Option<Range<usize>>],
-    word_diffs: &[Vec<(DiffHunkKind, Range<usize>)>],
+    word_diffs: &[WordDiffs],
 ) -> HunkRendering {
     let mut diff_rows = Vec::new();
     let mut strips = Vec::new();

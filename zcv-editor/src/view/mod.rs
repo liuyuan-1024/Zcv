@@ -22,11 +22,10 @@ use zcv_actions::{
     SelectToEndOfLine, SelectToNextWord, SelectToPreviousWord, SelectUp, ToggleFold, Undo,
     UnfoldAll,
 };
-use zcv_buffer_diff::DiffHunkKind;
 use zcv_language::{AutoClosePair, BracketPair, LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{
     DiffFile, DiffHunkSource, DisplayHunk, ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot,
-    MultiBuffer, MultiBufferAnchor, MultiBufferSnapshot,
+    MultiBuffer, MultiBufferAnchor, MultiBufferSnapshot, WordDiffs,
 };
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
@@ -123,6 +122,7 @@ pub(crate) struct EditorSnapshot {
     preferred_line_length: usize,
     scroll_anchor: DisplayPoint,
     scroll_offset: Point<Pixels>,
+    is_focused: bool,
 }
 
 impl EditorSnapshot {
@@ -156,6 +156,11 @@ impl EditorSnapshot {
 
     pub(crate) fn scroll_offset(&self) -> Point<Pixels> {
         self.scroll_offset
+    }
+
+    /// 当前帧编辑器是否聚焦（含窗口激活）。
+    pub(crate) fn is_focused(&self) -> bool {
+        self.is_focused
     }
 }
 
@@ -339,14 +344,12 @@ impl Editor {
         self.focus.clone()
     }
 
-    /// 本地 caret 是否应当绘制。
+    /// 聚焦状态由渲染快照提供时，按同一语义决定 caret 是否可见。
     ///
     /// 只读 Editor 仍保留稳定可见的 caret，使 MultiBuffer 与普通 Editor 共用同一套定位和选区反馈；
     /// 可编辑 Editor 才由 BlinkManager 控制闪烁。
-    pub(crate) fn show_cursor(&self, window: &Window, cx: &App) -> bool {
-        window.is_window_active()
-            && self.focus.is_focused(window)
-            && (self.is_read_only(cx) || self.blink_manager.read(cx).visible())
+    pub(crate) fn cursor_visible_with_focus(&self, is_focused: bool, cx: &App) -> bool {
+        is_focused && (self.is_read_only(cx) || self.blink_manager.read(cx).visible())
     }
 
     /// 窗口激活与编辑器焦点是两个独立条件，统一在这里决定闪烁生命周期。
@@ -607,10 +610,7 @@ impl Editor {
     }
 
     /// 与 diff_hunks 平行的词级变化片段（组合文档字节范围 + 新增/删除色）。
-    pub fn diff_hunk_word_diffs<'a>(
-        &'a self,
-        cx: &'a App,
-    ) -> &'a [Vec<(DiffHunkKind, Range<usize>)>] {
+    pub fn diff_hunk_word_diffs<'a>(&'a self, cx: &'a App) -> &'a [WordDiffs] {
         self.multi_buffer.read(cx).diff_hunk_word_diffs()
     }
 
@@ -893,9 +893,8 @@ impl Editor {
 
     /// 构造一帧渲染使用的只读快照；渲染层从它读取显示状态与滚动/显示选项。
     ///
-    /// 聚焦状态不进入本快照：光标可见性还与窗口激活、闪烁态共同决定，
-    /// 由 `Editor::show_cursor` 在绘制阶段统一读取。
-    pub(crate) fn snapshot(&self, cx: &App) -> EditorSnapshot {
+    /// 聚焦状态进入快照；光标可见性由渲染层用该状态与闪烁态共同决定。
+    pub(crate) fn snapshot(&self, window: &Window, cx: &App) -> EditorSnapshot {
         EditorSnapshot {
             display_snapshot: self.display_snapshot(),
             placeholder_display_snapshot: self.placeholder_snapshot_if_empty(cx),
@@ -905,6 +904,7 @@ impl Editor {
             preferred_line_length: self.preferred_line_length(),
             scroll_anchor: self.scroll_manager.anchor(),
             scroll_offset: self.scroll_manager.offset(),
+            is_focused: window.is_window_active() && self.focus.is_focused(window),
         }
     }
 
@@ -2082,14 +2082,16 @@ impl Editor {
         self.research_after_edit(cx);
         // 搜索命中是显示装饰输入：
         // 把 Editor 拥有的匹配锚点解析结果交给显示链投影，输入未变化时 DisplayMap 快速返回；
-        // 随后统一拉取被替换的显示快照。
+        // 装饰重建已整体替换显示快照，这里直接读取，不重复拉取组合快照。
         let search = self
             .search
             .as_ref()
             .and_then(EditorSearch::decoration_input);
         self.display_map
             .update(cx, |map, cx| map.set_search_decorations(search, cx));
-        self.display_snapshot = self.display_map.update(cx, |map, cx| map.snapshot(cx));
+        self.display_snapshot = self
+            .display_map
+            .update(cx, |map, _cx| map.cached_snapshot());
         self.scrollbar_marker_state.invalidate();
         self.scroll_manager.refresh(&self.display_snapshot);
     }

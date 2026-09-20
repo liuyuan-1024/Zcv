@@ -898,10 +898,10 @@ impl DisplayMap {
             return;
         }
         let fold_snapshot = self.fold_map.snapshot().clone();
-        let tab_snapshot = self.tab_map.sync(fold_snapshot, &[], tab_width);
+        let (tab_snapshot, tab_edits) = self.tab_map.sync(fold_snapshot, &[], tab_width);
         let (wrap_snapshot, wrap_edits) = self
             .wrap_map
-            .update(cx, |map, cx| map.sync(tab_snapshot, &[], cx));
+            .update(cx, |map, cx| map.sync(tab_snapshot, &tab_edits, cx));
         self.commit_snapshot(&wrap_snapshot, &wrap_edits, cx);
     }
 
@@ -1015,10 +1015,10 @@ impl DisplayMap {
         let buffer_edits = buffer_edits_from_batch(&batch, &old_snapshot, &current_snapshot);
         let (fold_snapshot, fold_edits) = self.fold_map.read(current_snapshot, buffer_edits);
         let tab_width = self.tab_map.snapshot().tab_width();
-        let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits, tab_width);
+        let (tab_snapshot, tab_edits) = self.tab_map.sync(fold_snapshot, &fold_edits, tab_width);
         let (wrap_snapshot, wrap_edits) = self
             .wrap_map
-            .update(cx, |map, cx| map.sync(tab_snapshot, &fold_edits, cx));
+            .update(cx, |map, cx| map.sync(tab_snapshot, &tab_edits, cx));
         self.commit_snapshot(&wrap_snapshot, &wrap_edits, cx);
     }
 
@@ -1032,10 +1032,10 @@ impl DisplayMap {
     ) -> DisplayMapResult<()> {
         let (fold_snapshot, fold_edits) = self.fold_map.write().fold(range)?;
         let tab_width = self.tab_map.snapshot().tab_width();
-        let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits, tab_width);
+        let (tab_snapshot, tab_edits) = self.tab_map.sync(fold_snapshot, &fold_edits, tab_width);
         let (wrap_snapshot, wrap_edits) = self
             .wrap_map
-            .update(cx, |map, cx| map.sync(tab_snapshot, &fold_edits, cx));
+            .update(cx, |map, cx| map.sync(tab_snapshot, &tab_edits, cx));
         self.commit_snapshot(&wrap_snapshot, &wrap_edits, cx);
         Ok(())
     }
@@ -1048,10 +1048,10 @@ impl DisplayMap {
     ) -> DisplayMapResult<()> {
         let (fold_snapshot, fold_edits) = self.fold_map.write().unfold_lines(line_range)?;
         let tab_width = self.tab_map.snapshot().tab_width();
-        let tab_snapshot = self.tab_map.sync(fold_snapshot, &fold_edits, tab_width);
+        let (tab_snapshot, tab_edits) = self.tab_map.sync(fold_snapshot, &fold_edits, tab_width);
         let (wrap_snapshot, wrap_edits) = self
             .wrap_map
-            .update(cx, |map, cx| map.sync(tab_snapshot, &fold_edits, cx));
+            .update(cx, |map, cx| map.sync(tab_snapshot, &tab_edits, cx));
         self.commit_snapshot(&wrap_snapshot, &wrap_edits, cx);
         Ok(())
     }
@@ -1086,6 +1086,7 @@ mod tests {
     use zcv_text::{Affinity, Buffer, BufferConfig, Edit, Line, TransactionMetadata};
     use zcv_theme::ThemeChoice;
 
+    use super::tab_map::TabColumn;
     use super::*;
 
     fn display_snapshot(cx: &mut TestAppContext, map: &Entity<DisplayMap>) -> DisplaySnapshot {
@@ -1099,7 +1100,7 @@ mod tests {
     fn measured_lines(
         cx: &TestAppContext,
         map: &Entity<DisplayMap>,
-    ) -> std::vec::IntoIter<(Line, DisplayColumn)> {
+    ) -> std::vec::IntoIter<(Line, TabColumn)> {
         cx.read_entity(map, |map, _| {
             map.tab_map.measured_lines().collect::<Vec<_>>()
         })
@@ -1544,7 +1545,7 @@ mod tests {
         measure_rows(cx, &map, DisplayRow::ZERO, 1).expect("初始 Tab 行应能测量");
         assert_eq!(
             measured_lines(cx, &map).next().map(|(_, width)| width),
-            Some(DisplayColumn::new(4))
+            Some(TabColumn::new(4))
         );
 
         let before = display_snapshot(cx, &map);
@@ -1560,7 +1561,7 @@ mod tests {
         measure_rows(cx, &map, DisplayRow::ZERO, 1).expect("配置变化后的 Tab 行应能重新测量");
         assert_eq!(
             measured_lines(cx, &map).next().map(|(_, width)| width),
-            Some(DisplayColumn::new(2))
+            Some(TabColumn::new(2))
         );
     }
 

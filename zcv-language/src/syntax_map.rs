@@ -5,15 +5,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 use tree_sitter::StreamingIterator;
-use zcv_text::{BufferGeneration, BufferVersion, Snapshot, TextChangeBatch};
+use zcv_text::{
+    Anchor, BufferGeneration, BufferVersion, ByteOffset, Snapshot, TextChangeBatch, TextRange,
+};
 
 use crate::Language;
 use crate::registry::LanguageRegistry;
 use crate::structure::FoldRange;
 use crate::tree_sitter_utils::{
     IncrementalParser, PARSE_TIME_SLICE, ParseCancellation, QueryCursorHandle,
-    SnapshotTextProvider, drop_offloaded, edit_tree, map_range_through_changes, node_text,
-    parse_tree, ranges_overlap,
+    SnapshotTextProvider, drop_offloaded, edit_tree, node_text, parse_tree, ranges_overlap,
 };
 
 /// 可增量更新的语法状态。
@@ -106,31 +107,79 @@ fn empty_syntax_state() -> Arc<SyntaxState> {
     Arc::clone(EMPTY.get_or_init(|| Arc::new(SyntaxState::default())))
 }
 
+/// 语法层内容：已解析的注入树，或当前注册表无法解析的待处理注入。
 #[derive(Clone, Debug)]
-pub(crate) struct SyntaxLayer {
-    pub(crate) language: Arc<Language>,
-    pub(crate) tree: tree_sitter::Tree,
-    pub(crate) range: Range<usize>,
-    pub(crate) depth: u32,
+pub(crate) enum SyntaxLayerContent {
+    Parsed {
+        language: Arc<Language>,
+        tree: tree_sitter::Tree,
+    },
+    /// 注入查询声明了语言名，但注册表中没有对应语言。
+    ///
+    /// 保留待处理层而不是静默丢弃，使层列表忠实反映注入点；
+    /// 范围仍按锚点跟随编辑。
+    Pending { language_name: Arc<str> },
 }
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug)]
+pub(crate) struct SyntaxLayer {
+    pub(crate) depth: u32,
+    /// 注入内容在文本中的范围；用锚点保存，跨编辑不手工映射。
+    pub(crate) range: Range<Anchor>,
+    pub(crate) content: SyntaxLayerContent,
+}
+
+impl SyntaxLayer {
+    pub(crate) fn language(&self) -> Option<&Arc<Language>> {
+        match &self.content {
+            SyntaxLayerContent::Parsed { language, .. } => Some(language),
+            SyntaxLayerContent::Pending { .. } => None,
+        }
+    }
+
+    pub(crate) fn language_name(&self) -> &str {
+        match &self.content {
+            SyntaxLayerContent::Parsed { language, .. } => language.name(),
+            SyntaxLayerContent::Pending { language_name } => language_name,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct InjectionKey {
     depth: u32,
-    language: &'static str,
+    language: Arc<str>,
     start: usize,
     end: usize,
 }
 
 impl InjectionKey {
-    fn new(depth: u32, language: &Language, range: &Range<usize>) -> Self {
+    fn new(depth: u32, language: &str, range: &Range<usize>) -> Self {
         Self {
             depth,
-            language: language.name(),
+            language: Arc::from(language),
             start: range.start,
             end: range.end,
         }
     }
+}
+
+/// 把当前快照中的字节范围转成吸收边界插入的锚点范围。
+fn anchor_range(snapshot: &Snapshot, range: &Range<usize>) -> Option<Range<Anchor>> {
+    let text_range =
+        TextRange::new(ByteOffset::new(range.start), ByteOffset::new(range.end)).ok()?;
+    Some(Anchor::range_outside(
+        snapshot.generation(),
+        snapshot.version(),
+        text_range,
+    ))
+}
+
+/// 把层的锚点范围解析到当前快照的字节范围；跨代际失效时返回 None。
+fn layer_bytes(snapshot: &Snapshot, layer: &SyntaxLayer) -> Option<Range<usize>> {
+    let start = layer.range.start.resolve_in(snapshot).ok()?;
+    let end = layer.range.end.resolve_in(snapshot).ok()?;
+    Some(start.get()..end.get())
 }
 
 impl SyntaxMap {
@@ -193,7 +242,7 @@ impl SyntaxMap {
     /// 编辑区间由 `interpolated_version` 与当前快照推导；调用方无需携带订阅批次，
     /// 因此快照读取与 observer 唤醒可以各自幂等推进（对齐 Zed `Buffer::snapshot()`）。
     pub(crate) fn interpolate(&mut self, new_snapshot: &Snapshot) {
-        // 同版本重复调用必须保持原树；否则 `edits_since` 的空批次会走整体重置分支。
+        // 同版本重复调用必须保持原树；否则空批次会被当成整体重置。
         if new_snapshot.version() == self.interpolated_version {
             return;
         }
@@ -204,14 +253,9 @@ impl SyntaxMap {
             return;
         }
 
-        let changes = new_snapshot
-            .edits_since(self.interpolated_version)
-            .ok()
-            .filter(|changes| {
-                !changes.requires_reset()
-                    && changes.old_version() == Some(self.interpolated_version)
-                    && changes.new_version() == Some(new_snapshot.version())
-            });
+        // 增量编辑走不衰减坐标索引：带文本 EditLog 被裁剪后仍可用。
+        // 只有跨 reset / 基线替换（跨代际）时拿不到，作为命名清楚的整体重置边界。
+        let changes = new_snapshot.coordinate_edits_since(self.interpolated_version);
 
         let old_snapshot = &self.interpolated_snapshot;
         let state = Arc::make_mut(&mut self.state);
@@ -225,21 +269,30 @@ impl SyntaxMap {
                 drop_offloaded(old_tree);
             }
             let mut invalid_layers = Vec::new();
-            let old_layers = std::mem::take(&mut state.injections);
-            for mut layer in old_layers {
-                if edit_tree(&mut layer.tree, old_snapshot, new_snapshot, changes) {
-                    layer.range = map_range_through_changes(layer.range, changes);
-                    if layer.range.start < layer.range.end {
-                        state.injections.push(layer);
-                        continue;
+            let mut retained = Vec::with_capacity(state.injections.len());
+            for mut layer in std::mem::take(&mut state.injections) {
+                // 锚点自行跟随编辑；范围被删空说明注入点已消失，必须丢弃该层。
+                let non_empty =
+                    layer_bytes(new_snapshot, &layer).is_some_and(|bytes| bytes.start < bytes.end);
+                // 已解析层把增量编辑应用到树上；待处理层没有树。
+                let tree_ok = match &mut layer.content {
+                    SyntaxLayerContent::Parsed { tree, .. } => {
+                        edit_tree(tree, old_snapshot, new_snapshot, changes)
                     }
+                    SyntaxLayerContent::Pending { .. } => true,
+                };
+                if non_empty && tree_ok {
+                    retained.push(layer);
+                } else {
+                    invalid_layers.push(layer);
                 }
-                invalid_layers.push(layer);
             }
+            state.injections = retained;
             if !invalid_layers.is_empty() {
                 drop_offloaded(invalid_layers);
             }
         } else {
+            // reset / 基线替换：旧树坐标属于上一代际，不能再作为增量基准。
             let old_layers = std::mem::take(&mut state.injections);
             if tree.is_some() || !old_layers.is_empty() {
                 drop_offloaded((tree.take(), old_layers));
@@ -324,12 +377,13 @@ impl SyntaxSnapshot {
         ranges
     }
 
-    /// 返回与范围相交的语法层（主语言层 + 注入层），零堆分配。
+    /// 返回与范围相交的语法层（主语言层 + 已解析注入层）。
     ///
-    /// 注入层按 (深度, 起点) 有序且同深互不相交（注入内容节点在父树中要么嵌套要么不相交）：
-    /// 每个深度用二分定位覆盖查询起点的层，再向前游走起点在查询终点之前的层——O(D log N + K)，不再扫描全部注入层。
+    /// 注入层范围用锚点保存，查询时按 `text` 解析成本次查询坐标；
+    /// 未解析的待处理层没有树，不参与查询。
     pub(crate) fn layers_for_range<'a>(
         &'a self,
+        text: &'a Snapshot,
         range: &'a Range<usize>,
     ) -> impl Iterator<Item = SyntaxLayerRef<'a>> + 'a {
         let main = match (&self.language, &self.state.tree) {
@@ -340,8 +394,12 @@ impl SyntaxSnapshot {
             }),
             _ => None,
         };
-        main.into_iter()
-            .chain(LayersInRange::new(&self.state.injections, range))
+        main.into_iter().chain(
+            self.state
+                .injections
+                .iter()
+                .filter_map(|layer| resolved_layer_ref(text, layer, range)),
+        )
     }
 
     /// 同步执行真正的 tree-sitter 增量解析。
@@ -358,15 +416,13 @@ impl SyntaxSnapshot {
         if cancellation.is_cancelled() {
             return None;
         }
-        // 编辑区间按上一次真正完成解析的版本推导；调用方不再传递订阅批次。
-        // 编辑日志被裁剪或批次被合并为重置时拿不到精确文本编辑区间；
-        // tree-sitter 的 changed_ranges 对等长替换不可见，因此必须按全文失效，不能当作“没有编辑”。
-        let edits = snapshot
-            .edits_since(self.parsed_version)
-            .ok()
-            .and_then(|batch| edit_ranges(&batch))
-            .unwrap_or_else(|| std::iter::once(0..snapshot.len_bytes().get()).collect());
-        let edits = Some(edits.as_slice());
+        // 编辑区间按上一次真正完成解析的版本推导，优先走不衰减坐标索引：
+        // 带文本 EditLog 被预算裁剪后仍能给出精确增量，不静默退化为全文。
+        // 只有跨 reset / 基线替换（跨代际）才拿不到，作为命名清楚的整体重置边界。
+        let changes = snapshot.coordinate_edits_since(self.parsed_version);
+        let edit_list: Option<Vec<Range<usize>>> = changes.as_ref().and_then(edit_ranges);
+        let edits = edit_list.as_deref();
+        let reset = changes.is_none();
         let Some(language) = self.language.as_ref() else {
             self.state = empty_syntax_state();
             self.version = snapshot.version();
@@ -375,7 +431,14 @@ impl SyntaxSnapshot {
         };
         {
             let state = Arc::make_mut(&mut self.state);
-            let old_tree = state.tree.take();
+            // reset 边界：旧树坐标属于上一代际，不能作为增量解析基准。
+            let old_tree = match (reset, state.tree.take()) {
+                (true, Some(tree)) => {
+                    drop_offloaded(tree);
+                    None
+                }
+                (_, tree) => tree,
+            };
             // 主树解析按时间片进行：预算用尽中断后保留 parser 状态，下一片从断点恢复（每片 ~3ms，避免大文件解析长期独占后台线程）。
             let new_tree = if language.grammar().is_some() {
                 let mut parser = IncrementalParser::new();
@@ -422,16 +485,27 @@ impl SyntaxSnapshot {
             state.tree = new_tree;
 
             let old_injections = std::mem::take(&mut state.injections);
-            // 范围与任何变化区间相交的旧层进入复用表（供增量解析）；其余原样保留。
+            // 范围与任何变化区间相交的已解析旧层进入复用表（供增量解析）；其余原样保留。
+            // 先把锚点范围解析成当前快照字节；锚点失效（跨代际）的层直接丢弃。
             let mut seen = HashSet::new();
             let mut old_trees = HashMap::new();
             for layer in old_injections {
-                let key = InjectionKey::new(layer.depth, &layer.language, &layer.range);
+                let Some(byte_range) = layer_bytes(snapshot, &layer) else {
+                    drop_offloaded(layer);
+                    continue;
+                };
+                if byte_range.start >= byte_range.end {
+                    drop_offloaded(layer);
+                    continue;
+                }
+                let key = InjectionKey::new(layer.depth, layer.language_name(), &byte_range);
                 if changed
                     .iter()
-                    .any(|range| ranges_overlap(&layer.range, range))
+                    .any(|range| ranges_overlap(&byte_range, range))
                 {
-                    old_trees.insert(key, layer.tree);
+                    if let SyntaxLayerContent::Parsed { tree, .. } = layer.content {
+                        old_trees.insert(key, tree);
+                    }
                 } else {
                     seen.insert(key);
                     state.injections.push(layer);
@@ -459,17 +533,26 @@ impl SyntaxSnapshot {
             // 保留层与重新收集层的同深重叠清理：变化区间边界可能命中同一注入（如围栏行编辑改了注入语言但内容范围未变），此时以新收集为准。
             let mut final_layers = Vec::with_capacity(state.injections.len() + collected.len());
             for layer in std::mem::take(&mut state.injections) {
+                let Some(old_bytes) = layer_bytes(snapshot, &layer) else {
+                    continue;
+                };
                 let replaced = collected.iter().any(|new| {
-                    new.depth == layer.depth && ranges_overlap(&new.range, &layer.range)
+                    new.depth == layer.depth
+                        && layer_bytes(snapshot, new)
+                            .is_some_and(|new_bytes| ranges_overlap(&new_bytes, &old_bytes))
                 });
                 if !replaced {
                     final_layers.push(layer);
                 }
             }
             final_layers.extend(collected);
-            // 按 (深度, 起点) 有序：每深度一段连续切片，供 layers_for_range 二分查询。
-            final_layers
-                .sort_unstable_by_key(|layer| (layer.depth, layer.range.start, layer.range.end));
+            // 按 (深度, 解析后的字节区间) 稳定排序；锚点本身不可比较。
+            final_layers.sort_unstable_by_key(|layer| {
+                (
+                    layer.depth,
+                    layer_bytes(snapshot, layer).map(|bytes| (bytes.start, bytes.end)),
+                )
+            });
             state.injections = final_layers;
         }
         self.version = snapshot.version();
@@ -511,7 +594,9 @@ impl SyntaxSnapshot {
             add_language(language);
         }
         for layer in &self.state.injections {
-            add_language(&layer.language);
+            if let Some(language) = layer.language() {
+                add_language(language);
+            }
         }
         let state = Arc::make_mut(&mut self.state);
         state.capture_names = Arc::from(names);
@@ -521,10 +606,6 @@ impl SyntaxSnapshot {
     /// 语言局部 capture index -> 快照全局 index 的映射（高亮收集用）。
     pub(crate) fn capture_index_table(&self, language: &Language) -> Option<&Arc<[u32]>> {
         self.state.capture_index_by_language.get(language.name())
-    }
-
-    pub(crate) fn injection_layers(&self) -> &[SyntaxLayer] {
-        &self.state.injections
     }
 
     pub(crate) fn root_tree(&self) -> Option<&tree_sitter::Tree> {
@@ -538,80 +619,27 @@ pub(crate) struct SyntaxLayerRef<'a> {
     pub(crate) depth: u32,
 }
 
-/// 按 (深度, 起点) 有序的注入层上的范围查询迭代器。
-///
-/// 逐深度推进：二分定位起点 ≥ 查询起点处的首个层（`index`），先检查其前一层（可能覆盖查询起点的候选），再向前游走起点 < 查询终点的层。
-/// 空查询按"点包含"语义处理（候选覆盖起点，或层恰从起点开始）。
-struct LayersInRange<'a> {
-    injections: &'a [SyntaxLayer],
-    range: &'a Range<usize>,
-    depth: u32,
-    /// 当前深度二分得到的起点（第一个起点 ≥ 查询起点的层）。
-    index: usize,
-    /// 待检查的候选层（`index - 1`，可能覆盖查询起点）。
-    candidate: Option<usize>,
-}
-
-impl<'a> LayersInRange<'a> {
-    fn new(injections: &'a [SyntaxLayer], range: &'a Range<usize>) -> Self {
-        let depth = 1;
-        let index = injections
-            .partition_point(|layer| (layer.depth, layer.range.start) < (depth, range.start));
-        Self {
-            injections,
-            range,
-            depth,
-            index,
-            candidate: index.checked_sub(1),
-        }
-    }
-
-    fn layer_ref(&self, index: usize) -> SyntaxLayerRef<'a> {
-        let layer = &self.injections[index];
-        SyntaxLayerRef {
-            language: layer.language.as_ref(),
-            tree: &layer.tree,
-            depth: layer.depth,
-        }
-    }
-}
-
-impl<'a> Iterator for LayersInRange<'a> {
-    type Item = SyntaxLayerRef<'a>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            // 候选层：起点 < 查询起点且可能覆盖它（即使 index 已越界也必须检查）。
-            if let Some(candidate) = self.candidate.take() {
-                let layer = &self.injections[candidate];
-                if layer.depth == self.depth && layer.range.end > self.range.start {
-                    return Some(self.layer_ref(candidate));
-                }
-            }
-            // 向前游走：同深且起点 < 查询终点（空查询时允许起点恰为查询起点）。
-            if self.index < self.injections.len() {
-                let layer = &self.injections[self.index];
-                if layer.depth == self.depth {
-                    let starts_before_end = layer.range.start < self.range.end
-                        || (self.range.is_empty() && layer.range.start == self.range.start);
-                    if starts_before_end {
-                        self.index += 1;
-                        return Some(self.layer_ref(self.index - 1));
-                    }
-                }
-            }
-            // 进入下一深度；所有深度处理完则结束。
-            let last_depth = self.injections.last()?.depth;
-            if self.depth >= last_depth {
-                return None;
-            }
-            self.depth += 1;
-            self.index = self.injections.partition_point(|layer| {
-                (layer.depth, layer.range.start) < (self.depth, self.range.start)
-            });
-            self.candidate = self.index.checked_sub(1);
-        }
-    }
+/// 把一条注入层解析到当前快照；待处理层或与查询范围不相交时返回 None。
+fn resolved_layer_ref<'a>(
+    text: &'a Snapshot,
+    layer: &'a SyntaxLayer,
+    range: &Range<usize>,
+) -> Option<SyntaxLayerRef<'a>> {
+    let SyntaxLayerContent::Parsed { language, tree } = &layer.content else {
+        return None;
+    };
+    let bytes = layer_bytes(text, layer)?;
+    // 空查询按“点包含”语义：起点恰在查询点的层也算命中。
+    let intersects = if range.is_empty() {
+        bytes.start <= range.start && range.start < bytes.end
+    } else {
+        ranges_overlap(&bytes, range)
+    };
+    intersects.then_some(SyntaxLayerRef {
+        language: language.as_ref(),
+        tree,
+        depth: layer.depth,
+    })
 }
 
 /// 按变化区间收集注入：查询限定在 `range` 内，旧树按注入键复用做增量解析，未变化的嵌套注入通过 `seen`（含全部保留层键）跳过，不重复收集。
@@ -684,21 +712,37 @@ impl InjectionCollector<'_> {
             let Some(language_name) = language_name else {
                 continue;
             };
-            let Some(language) = self.registry.language_for_injection(&language_name) else {
-                continue;
-            };
+            let language = self.registry.language_for_injection(&language_name);
             for range in content_ranges {
                 if range.start >= range.end {
                     continue;
                 }
-                let key = InjectionKey::new(depth, &language, &range);
+                let Some(anchors) = anchor_range(self.snapshot, &range) else {
+                    continue;
+                };
+                let Some(language) = language.as_ref() else {
+                    // 未注册的注入语言：保留待处理层，不再静默丢弃。
+                    let key = InjectionKey::new(depth, &language_name, &range);
+                    if !self.seen.insert(key) {
+                        continue;
+                    }
+                    self.layers.push(SyntaxLayer {
+                        depth,
+                        range: anchors,
+                        content: SyntaxLayerContent::Pending {
+                            language_name: Arc::from(language_name.as_str()),
+                        },
+                    });
+                    continue;
+                };
+                let key = InjectionKey::new(depth, language.name(), &range);
                 // 保留层（`seen` 预置其键）与重复命中的变化区间：同一注入只收集一次。
-                if !self.seen.insert(key) {
+                if !self.seen.insert(key.clone()) {
                     continue;
                 }
                 let old_tree = self.old_trees.remove(&key);
                 let Some(tree) = parse_tree(
-                    &language,
+                    language,
                     self.snapshot,
                     old_tree.as_ref(),
                     Some(range.clone()),
@@ -724,18 +768,20 @@ impl InjectionCollector<'_> {
                         }
                     }
                     for sub_range in merge_changed_ranges(sub_ranges) {
-                        if !self.collect(&language, &tree, sub_range, depth + 1) {
+                        if !self.collect(language.as_ref(), &tree, sub_range, depth + 1) {
                             return false;
                         }
                     }
-                } else if !self.collect(&language, &tree, range.clone(), depth + 1) {
+                } else if !self.collect(language.as_ref(), &tree, range.clone(), depth + 1) {
                     return false;
                 }
                 self.layers.push(SyntaxLayer {
-                    language: language.clone(),
-                    tree,
-                    range,
                     depth,
+                    range: anchors,
+                    content: SyntaxLayerContent::Parsed {
+                        language: language.clone(),
+                        tree,
+                    },
                 });
             }
         }

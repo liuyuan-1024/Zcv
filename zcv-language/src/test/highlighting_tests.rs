@@ -279,8 +279,7 @@ fn markdown_inline_layer_overrides_block_highlights() {
     let syntax = syntax.snapshot();
     assert!(
         syntax
-            .injection_layers()
-            .iter()
+            .layers_for_range(&snapshot, &(0..snapshot.len_bytes().get()))
             .any(|layer| layer.language.name() == "Markdown Inline")
     );
     let names = syntax.capture_names();
@@ -309,14 +308,12 @@ fn html_injects_css_and_javascript_layers() {
     let syntax = syntax.snapshot();
     assert!(
         syntax
-            .injection_layers()
-            .iter()
+            .layers_for_range(&snapshot, &(0..snapshot.len_bytes().get()))
             .any(|layer| layer.language.name() == "CSS")
     );
     assert!(
         syntax
-            .injection_layers()
-            .iter()
+            .layers_for_range(&snapshot, &(0..snapshot.len_bytes().get()))
             .any(|layer| layer.language.name() == "JavaScript")
     );
     let names = syntax.capture_names();
@@ -383,12 +380,12 @@ fn baseline_languages_inject_registered_nested_languages() {
             "C",
         ),
     ] {
-        let (_, syntax) = parsed_syntax(path, source);
+        let (buffer, syntax) = parsed_syntax(path, source);
+        let snapshot = buffer.snapshot();
         assert!(
             syntax
                 .snapshot()
-                .injection_layers()
-                .iter()
+                .layers_for_range(&snapshot, &(0..snapshot.len_bytes().get()))
                 .any(|layer| layer.language.name() == expected),
             "{path} 应注入 {expected}"
         );
@@ -403,8 +400,7 @@ fn javascript_tagged_template_injects_css_highlights() {
     let syntax = syntax.snapshot();
     assert!(
         syntax
-            .injection_layers()
-            .iter()
+            .layers_for_range(&snapshot, &(0..snapshot.len_bytes().get()))
             .any(|layer| layer.language.name() == "CSS")
     );
     let names = syntax.capture_names();

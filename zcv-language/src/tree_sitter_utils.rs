@@ -359,34 +359,6 @@ pub(crate) fn edit_tree(
     true
 }
 
-/// 把范围两端映射过编辑，得到编辑后的新范围。
-pub(crate) fn map_range_through_changes(
-    range: std::ops::Range<usize>,
-    changes: &TextChangeBatch,
-) -> std::ops::Range<usize> {
-    map_offset(range.start, true, changes)..map_offset(range.end, false, changes)
-}
-
-fn map_offset(offset: usize, before: bool, changes: &TextChangeBatch) -> usize {
-    let mut delta = 0isize;
-    for edit in changes.patch().edits() {
-        let old = edit.old_range();
-        let new = edit.new_range();
-        if offset < old.start().get() || (before && offset == old.start().get()) {
-            break;
-        }
-        if offset <= old.end().get() {
-            return if before {
-                new.start().get()
-            } else {
-                new.end().get()
-            };
-        }
-        delta += new.len() as isize - old.len() as isize;
-    }
-    offset.saturating_add_signed(delta)
-}
-
 pub(crate) fn ranges_overlap(
     left: &std::ops::Range<usize>,
     right: &std::ops::Range<usize>,

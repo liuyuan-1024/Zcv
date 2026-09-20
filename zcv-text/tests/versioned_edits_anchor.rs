@@ -80,6 +80,40 @@ fn edits_since_reports_eviction_when_the_version_left_the_log() {
 }
 
 #[test]
+fn coordinate_edits_since_survives_edit_log_eviction() {
+    let mut config = BufferConfig::default();
+    config.large_file.max_edit_history_entries = 1;
+    let mut buffer = Buffer::from_text("abc".to_string(), config).unwrap();
+    let v0 = buffer.version();
+    buffer
+        .edit(
+            [Edit::insert(b(3), "d".to_string()).unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    buffer
+        .edit(
+            [Edit::insert(b(4), "e".to_string()).unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    let current = buffer.version();
+
+    // 带文本编辑日志已被裁剪，edits_since 显式失败。
+    assert!(buffer.snapshot().edits_since(v0).is_err());
+
+    // 坐标索引不衰减：同代际内仍能给出 v0 → current 的坐标编辑。
+    let batch = buffer
+        .snapshot()
+        .coordinate_edits_since(v0)
+        .expect("坐标索引应覆盖被裁剪的版本");
+    assert_eq!(batch.old_version(), Some(v0));
+    assert_eq!(batch.new_version(), Some(current));
+    assert!(!batch.requires_reset());
+    assert!(!batch.patch().edits().is_empty());
+}
+
+#[test]
 fn anchor_still_resolves_after_the_text_edit_log_is_evicted() {
     // 分别以条目数与字节预算逼出带文本 EditLog 的 eviction；坐标索引不衰减。
     for (entries, bytes) in [(1usize, 0usize), (usize::MAX, 1usize)] {

@@ -4,7 +4,7 @@ use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TextRange, TransactionMet
 
 use super::*;
 use crate::highlight_cache::HighlightCache;
-use crate::test::{parsed_syntax, rust_buffer};
+use crate::test::{parsed_syntax, parsed_syntax_with_config, rust_buffer};
 
 /// 测试共用：按给定编辑把语法映射推进到新版本（插值 + 后台解析 + 安装）。
 fn edit_and_reparse(buffer: &mut Buffer, syntax: &mut SyntaxMap, edits: Vec<Edit>) {
@@ -26,8 +26,24 @@ fn edit_and_reparse(buffer: &mut Buffer, syntax: &mut SyntaxMap, edits: Vec<Edit
 fn find_layer<'a>(layers: &'a [SyntaxLayer], depth: u32, language: &str) -> &'a SyntaxLayer {
     layers
         .iter()
-        .find(|layer| layer.depth == depth && layer.language.name() == language)
+        .find(|layer| layer.depth == depth && layer.language_name() == language)
         .unwrap_or_else(|| panic!("缺少 depth {depth} 的注入层 {language}"))
+}
+
+/// 测试共用：层锚点的字节范围。
+///
+/// 层在最新一次解析中创建时锚点 offset 即当前源坐标；
+/// 测试只在重新解析后的层上调用它，因此不需要再解析锚点。
+fn layer_range(layer: &SyntaxLayer) -> Range<usize> {
+    layer.range.start.offset().get()..layer.range.end.offset().get()
+}
+
+/// 测试共用：取已解析层的语法树（待处理层没有树，取用即失败）。
+fn layer_tree(layer: &SyntaxLayer) -> &tree_sitter::Tree {
+    match &layer.content {
+        SyntaxLayerContent::Parsed { tree, .. } => tree,
+        SyntaxLayerContent::Pending { .. } => panic!("待处理层没有语法树"),
+    }
 }
 
 #[test]
@@ -35,9 +51,9 @@ fn go_annotated_string_creates_sql_injection_layer() {
     let source = "package main\nconst query = /* sql */ `SELECT name FROM users`\n";
     let (_, syntax) = parsed_syntax("main.go", source);
     let snapshot = syntax.snapshot();
-    let sql = find_layer(snapshot.injection_layers(), 1, "SQL");
+    let sql = find_layer(&snapshot.state.injections, 1, "SQL");
 
-    assert_eq!(&source[sql.range.clone()], "SELECT name FROM users");
+    assert_eq!(&source[layer_range(sql)], "SELECT name FROM users");
 }
 
 #[test]
@@ -56,7 +72,7 @@ const x = 2;
 ";
     let (mut buffer, mut syntax) = parsed_syntax("README.md", source);
     assert_eq!(
-        syntax.snapshot().injection_layers().len(),
+        syntax.snapshot().state.injections.len(),
         3,
         "三个围栏块各产生一个注入层"
     );
@@ -75,7 +91,7 @@ const x = 2;
     let new_snapshot = buffer.snapshot();
     syntax.interpolate(&new_snapshot);
     // 插值后的层：保留层此刻就是插值树本身（未重新解析）。
-    let interpolated: Vec<SyntaxLayer> = syntax.snapshot().injection_layers().to_vec();
+    let interpolated: Vec<SyntaxLayer> = syntax.snapshot().state.injections.to_vec();
     let parsed = syntax
         .snapshot()
         .reparse(
@@ -87,16 +103,15 @@ const x = 2;
     assert!(syntax.did_parse(parsed));
 
     let snapshot = syntax.snapshot();
-    let layers = snapshot.injection_layers();
+    let layers = snapshot.state.injections.as_slice();
     assert_eq!(layers.len(), 3, "层数量应保持不变");
     // 未受影响的注入层：插值树与最终树结构完全相同（原样保留，未重新解析；
     // 坐标同为编辑后版本，changed_ranges 是有效的结构比较）。
     let python_interpolated = find_layer(&interpolated, 1, "Python");
     let python = find_layer(layers, 1, "Python");
     assert_eq!(
-        python
-            .tree
-            .changed_ranges(&python_interpolated.tree)
+        layer_tree(python)
+            .changed_ranges(layer_tree(python_interpolated))
             .count(),
         0,
         "Python 层不应被重新解析"
@@ -104,9 +119,8 @@ const x = 2;
     let javascript_interpolated = find_layer(&interpolated, 1, "JavaScript");
     let javascript = find_layer(layers, 1, "JavaScript");
     assert_eq!(
-        javascript
-            .tree
-            .changed_ranges(&javascript_interpolated.tree)
+        layer_tree(javascript)
+            .changed_ranges(layer_tree(javascript_interpolated))
             .count(),
         0,
         "JavaScript 层不应被重新解析"
@@ -114,7 +128,11 @@ const x = 2;
     // 受影响的注入层：重新收集后范围跟随编辑后的文本坐标（"1" → "42" 使内容区终点 +1）。
     // 注意：等长或同构内容编辑不改变树结构，`changed_ranges` 对此不可见，用范围坐标断言。
     let rust = find_layer(layers, 1, "Rust");
-    assert_eq!(rust.range, 8..20, "Rust 层范围应映射到编辑后的内容区");
+    assert_eq!(
+        layer_range(rust),
+        8..20,
+        "Rust 层范围应映射到编辑后的内容区"
+    );
 }
 
 #[test]
@@ -185,11 +203,11 @@ fn fence_language_edit_replaces_the_injection_layer_without_duplicates() {
     );
 
     let snapshot = syntax.snapshot();
-    let layers = snapshot.injection_layers();
+    let layers = snapshot.state.injections.as_slice();
     assert_eq!(
         layers
             .iter()
-            .filter(|l| l.language.name() == "Rust")
+            .filter(|l| l.language_name() == "Rust")
             .count(),
         0,
         "围栏语言改为 python 后不应残留 Rust 层"
@@ -197,7 +215,7 @@ fn fence_language_edit_replaces_the_injection_layer_without_duplicates() {
     assert_eq!(
         layers
             .iter()
-            .filter(|l| l.language.name() == "Python")
+            .filter(|l| l.language_name() == "Python")
             .count(),
         2,
         "块 1 改为 python 后应有块 1 与块 2 两个 Python 层"
@@ -210,7 +228,10 @@ fn fence_language_edit_replaces_the_injection_layer_without_duplicates() {
     let content_start = content.as_str().find("let a = 1;").unwrap();
     let covering = layers
         .iter()
-        .filter(|l| l.range.start <= content_start && content_start < l.range.end)
+        .filter(|l| {
+            let range = layer_range(l);
+            range.start <= content_start && content_start < range.end
+        })
         .count();
     assert_eq!(covering, 1, "块 1 内容只应被一个注入层覆盖");
 }
@@ -229,7 +250,7 @@ fn whitespace_fence_edit_keeps_the_layer_without_duplicates() {
         .unwrap();
     let new_snapshot = buffer.snapshot();
     syntax.interpolate(&new_snapshot);
-    let interpolated = syntax.snapshot().injection_layers().to_vec();
+    let interpolated = syntax.snapshot().state.injections.to_vec();
     let parsed = syntax
         .snapshot()
         .reparse(
@@ -241,18 +262,17 @@ fn whitespace_fence_edit_keeps_the_layer_without_duplicates() {
     assert!(syntax.did_parse(parsed));
 
     let snapshot = syntax.snapshot();
-    let layers = snapshot.injection_layers();
+    let layers = snapshot.state.injections.as_slice();
     let rust_layers: Vec<_> = layers
         .iter()
-        .filter(|l| l.language.name() == "Rust")
+        .filter(|l| l.language_name() == "Rust")
         .collect();
     assert_eq!(rust_layers.len(), 1, "语言名未变不应产生重复层");
     // 保留层：插值树与最终树结构完全相同（未重新解析、未重复收集）。
     let interpolated_rust = find_layer(&interpolated, 1, "Rust");
     assert_eq!(
-        rust_layers[0]
-            .tree
-            .changed_ranges(&interpolated_rust.tree)
+        layer_tree(rust_layers[0])
+            .changed_ranges(layer_tree(interpolated_rust))
             .count(),
         0,
         "内容未变时注入树应原样保留"
@@ -272,10 +292,10 @@ fn added_and_removed_fenced_blocks_update_layers_incrementally() {
         vec![Edit::insert(end, "```javascript\nconst x = 2;\n```\n").unwrap()],
     );
     let snapshot = syntax.snapshot();
-    let layers = snapshot.injection_layers();
+    let layers = snapshot.state.injections.as_slice();
     assert_eq!(layers.len(), 3, "追加围栏块后应新增一层");
     assert!(
-        layers.iter().any(|l| l.language.name() == "JavaScript"),
+        layers.iter().any(|l| l.language_name() == "JavaScript"),
         "新增层应为 JavaScript"
     );
 
@@ -295,10 +315,10 @@ fn added_and_removed_fenced_blocks_update_layers_incrementally() {
         )],
     );
     let snapshot = syntax.snapshot();
-    let layers = snapshot.injection_layers();
+    let layers = snapshot.state.injections.as_slice();
     assert_eq!(layers.len(), 2, "删除围栏块后应回到两层");
     assert!(
-        layers.iter().all(|l| l.language.name() != "Python"),
+        layers.iter().all(|l| l.language_name() != "Python"),
         "Python 注入层应随围栏块删除而消失"
     );
 }
@@ -309,7 +329,7 @@ fn nested_injection_recollects_only_within_inner_changed_ranges() {
     // 编辑内层段落，嵌套层经递归按内层树的变化区间重收集，兄弟注入层不受影响。
     let source = "```markdown\nHello *world*\n```\n```rust\nlet a = 1;\n```\n";
     let (mut buffer, mut syntax) = parsed_syntax("README.md", source);
-    let layers_before = syntax.snapshot().injection_layers().to_vec();
+    let layers_before = syntax.snapshot().state.injections.to_vec();
     assert_eq!(
         layers_before.len(),
         3,
@@ -329,7 +349,7 @@ fn nested_injection_recollects_only_within_inner_changed_ranges() {
         .unwrap();
     let new_snapshot = buffer.snapshot();
     syntax.interpolate(&new_snapshot);
-    let interpolated = syntax.snapshot().injection_layers().to_vec();
+    let interpolated = syntax.snapshot().state.injections.to_vec();
     let parsed = syntax
         .snapshot()
         .reparse(
@@ -341,7 +361,7 @@ fn nested_injection_recollects_only_within_inner_changed_ranges() {
     assert!(syntax.did_parse(parsed));
 
     let snapshot = syntax.snapshot();
-    let layers = snapshot.injection_layers();
+    let layers = snapshot.state.injections.as_slice();
     assert_eq!(layers.len(), 3, "层数量应保持不变");
     // 内层 inline 注入重新收集后范围覆盖编辑后的新文本（"world" → "planets" +2 字节）。
     // 内容编辑不改变树结构，`changed_ranges` 对此不可见，用范围坐标断言。
@@ -353,14 +373,17 @@ fn nested_injection_recollects_only_within_inner_changed_ranges() {
         .as_str()
         .find("planets")
         .expect("编辑后的文本应包含 planets");
+    let inline_range = layer_range(inline);
     assert!(
-        inline.range.start <= planets && planets < inline.range.end,
+        inline_range.start <= planets && planets < inline_range.end,
         "内层 inline 注入范围应覆盖编辑后的新文本"
     );
     let rust = find_layer(layers, 1, "Rust");
     let rust_interpolated = find_layer(&interpolated, 1, "Rust");
     assert_eq!(
-        rust.tree.changed_ranges(&rust_interpolated.tree).count(),
+        layer_tree(rust)
+            .changed_ranges(layer_tree(rust_interpolated))
+            .count(),
         0,
         "兄弟注入层应原样保留"
     );
@@ -391,7 +414,7 @@ let b = 2;
 
     // 全文查询：外层 markdown 层 + 内层 inline + 两个 Rust 层全部命中。
     let names: Vec<&str> = syntax
-        .layers_for_range(&full)
+        .layers_for_range(&snapshot, &full)
         .map(|layer| layer.language.name())
         .collect();
     assert!(names.contains(&"Markdown"));
@@ -401,7 +424,7 @@ let b = 2;
     // 空查询（光标点）：命中的层必须包含该点。
     let world = all.as_str().find("*world*").unwrap() + 1;
     let point_hits: Vec<_> = syntax
-        .layers_for_range(&(world..world))
+        .layers_for_range(&snapshot, &(world..world))
         .map(|layer| layer.language.name())
         .collect();
     assert!(point_hits.contains(&"Markdown"), "外层层应包含光标点");
@@ -414,7 +437,7 @@ let b = 2;
     let second_rust = all.as_str().rfind("let b = 2;").unwrap();
     let first_rust = all.as_str().find("let a = 1;").unwrap();
     let rust_hits: Vec<_> = syntax
-        .layers_for_range(&(first_rust..second_rust + 3))
+        .layers_for_range(&snapshot, &(first_rust..second_rust + 3))
         .map(|layer| layer.language.name())
         .collect();
     assert_eq!(
@@ -423,7 +446,7 @@ let b = 2;
         "区间覆盖两个 Rust 块时应都命中"
     );
     let single_rust: Vec<_> = syntax
-        .layers_for_range(&(second_rust..second_rust + 1))
+        .layers_for_range(&snapshot, &(second_rust..second_rust + 1))
         .map(|layer| layer.language.name())
         .collect();
     assert_eq!(
@@ -591,14 +614,16 @@ fn unchanged_injection_reuses_its_tree_across_parent_edits() {
         .unwrap();
     let new_snapshot = buffer.snapshot();
     syntax.interpolate(&new_snapshot);
-    let interpolated_tree = syntax
-        .snapshot()
-        .injection_layers()
-        .iter()
-        .find(|layer| layer.language.name() == "JavaScript")
-        .expect("HTML 应包含 JavaScript 注入层")
-        .tree
-        .clone();
+    let syntax_snapshot = syntax.snapshot();
+    let interpolated_tree = layer_tree(
+        syntax_snapshot
+            .state
+            .injections
+            .iter()
+            .find(|layer| layer.language_name() == "JavaScript")
+            .expect("HTML 应包含 JavaScript 注入层"),
+    )
+    .clone();
     let parsed = syntax
         .snapshot()
         .reparse(
@@ -609,14 +634,16 @@ fn unchanged_injection_reuses_its_tree_across_parent_edits() {
         .expect("测试解析不应取消");
     assert!(syntax.did_parse(parsed));
 
-    let parsed_tree = syntax
-        .snapshot()
-        .injection_layers()
-        .iter()
-        .find(|layer| layer.language.name() == "JavaScript")
-        .expect("编辑 CSS 后 JavaScript 注入层应保留")
-        .tree
-        .clone();
+    let syntax_snapshot = syntax.snapshot();
+    let parsed_tree = layer_tree(
+        syntax_snapshot
+            .state
+            .injections
+            .iter()
+            .find(|layer| layer.language_name() == "JavaScript")
+            .expect("编辑 CSS 后 JavaScript 注入层应保留"),
+    )
+    .clone();
     assert_eq!(interpolated_tree.changed_ranges(&parsed_tree).count(), 0);
 }
 
@@ -736,4 +763,62 @@ fn stale_parse_result_cannot_replace_interpolated_tree() {
         .expect("测试解析不应取消");
     assert!(!syntax.did_parse(stale));
     assert_eq!(syntax.snapshot().version(), new_snapshot.version());
+}
+
+#[test]
+fn unknown_injection_language_is_kept_as_pending_layer() {
+    let source = "```graphql\nquery { user }\n```\n";
+    let (_, syntax) = parsed_syntax("README.md", source);
+    let syntax_snapshot = syntax.snapshot();
+    let layers = syntax_snapshot.state.injections.as_slice();
+    let pending = layers
+        .iter()
+        .find(|layer| layer.language_name().trim() == "graphql")
+        .expect("未注册语言应保留为待处理层而不是被静默丢弃");
+    assert!(pending.language().is_none(), "待处理层不应有语言");
+    assert!(matches!(
+        &pending.content,
+        SyntaxLayerContent::Pending { .. }
+    ));
+    let range = layer_range(pending);
+    assert!(range.start < range.end, "待处理层范围应覆盖注入内容");
+}
+
+#[test]
+fn injection_layers_survive_edit_log_eviction() {
+    let mut config = BufferConfig::default();
+    config.large_file.max_edit_history_entries = 1;
+    let source = "```rust\nlet a = 1;\n```\n```python\nprint(1)\n```\n";
+    let (mut buffer, mut syntax) = parsed_syntax_with_config("README.md", source, config);
+    assert_eq!(syntax.snapshot().state.injections.len(), 2);
+
+    // 尾部插入若干次，把带文本 EditLog 挤出预算；坐标索引不衰减。
+    let v0 = buffer.version();
+    for _ in 0..4 {
+        let end = buffer.len_bytes();
+        buffer
+            .edit(
+                [Edit::insert(end, "\n".to_string()).unwrap()],
+                TransactionMetadata::default(),
+            )
+            .unwrap();
+    }
+    let new_snapshot = buffer.snapshot();
+    assert!(new_snapshot.edits_since(v0).is_err(), "EditLog 应已裁剪");
+
+    syntax.interpolate(&new_snapshot);
+    let syntax_snapshot = syntax.snapshot();
+    let layers = syntax_snapshot.state.injections.as_slice();
+    assert_eq!(layers.len(), 2, "裁剪后注入层不应被整体丢弃");
+
+    // 未受影响层的锚点仍解析到裁剪后的正确坐标。
+    let python = layers
+        .iter()
+        .find(|layer| layer.language_name() == "Python")
+        .expect("Python 层应保留");
+    let bytes = layer_bytes(&new_snapshot, python).expect("锚点应能在裁剪后解析");
+    let content = new_snapshot
+        .slice_byte_range(ByteOffset::new(bytes.start), ByteOffset::new(bytes.end))
+        .unwrap();
+    assert!(content.as_str().contains("print(1)"));
 }

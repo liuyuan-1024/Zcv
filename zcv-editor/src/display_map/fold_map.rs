@@ -977,7 +977,13 @@ fn linear_fold_edit(
     // 编辑完全落在折叠段内时投影区间为空，但合并行（anchor 行）承载了变化后的占位/尾段文本，必须把该行一并失效，否则合并行宽度缓存不会重排。
     let old_spanned = expand_fold_interior(old_spanned, &old_rows);
     let new_spanned = expand_fold_interior(new_spanned, &new_rows);
-    FoldEdit::from_rows(old_spanned, new_spanned)
+    // 本层必须覆盖两侧权威净行数：合并后的行区间在旧/新变换树上分别映射时，
+    // 折叠内部吸附可能让新侧少/多一行。直接在 `new_spanned.end` 截断会使 tab 层行数守恒断言失配（暂存 hunk 这类结构变化会触发）。
+    // 新长度锚定到 `old.len() + 全局投影行数差`，保证单条编辑恰好承载整次投影行数变化。
+    let global_delta = new_transforms.summary().output_rows as isize
+        - old_transforms.summary().output_rows as isize;
+    let new_len = (old_spanned.len() as isize + global_delta).max(0) as usize;
+    FoldEdit::from_rows(old_spanned, new_spanned.start..new_spanned.start + new_len)
 }
 
 /// 折叠段内部的编辑不产生投影行；把空投影区间吸附到其前方的合并行。

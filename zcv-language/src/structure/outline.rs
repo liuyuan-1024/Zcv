@@ -71,7 +71,7 @@ impl SyntaxSnapshot {
 
         let mut candidates = Vec::new();
         let mut annotations = Vec::new();
-        for layer in self.layers_for_range(&range) {
+        for layer in self.layers_for_range(text, &range) {
             let Some(query) = layer.language.outline() else {
                 continue;
             };

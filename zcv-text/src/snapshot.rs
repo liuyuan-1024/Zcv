@@ -109,6 +109,23 @@ impl Snapshot {
         self.edit_log.batch_since(since, self.version)
     }
 
+    /// 自 `since` 版本到本快照版本的坐标编辑批次，不依赖会被预算裁剪的带文本编辑日志。
+    ///
+    /// 同代际内始终可用（坐标索引不衰减）；
+    /// 跨越 reset / 基线替换返回 None，调用方必须按整体重置处理，不能把两代之间的变化当作普通增量。
+    pub fn coordinate_edits_since(&self, since: BufferVersion) -> Option<TextChangeBatch> {
+        if since > self.version || since < self.generation.version() {
+            return None;
+        }
+        let patch = self.coordinate_index.patch_since(since, self.version)?;
+        Some(TextChangeBatch::from_patch(
+            since,
+            self.version,
+            patch,
+            false,
+        ))
+    }
+
     /// 返回自 `since` 版本以来与 `range` 相交的编辑批次。
     pub fn edits_since_in_range(
         &self,

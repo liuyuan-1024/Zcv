@@ -16,9 +16,7 @@ use zcv_text::Snapshot;
 use crate::Language;
 use crate::highlight_cache::HighlightCache;
 use crate::syntax_map::SyntaxSnapshot;
-use crate::tree_sitter_utils::{
-    ParseCancellation, QueryCursorHandle, SnapshotTextProvider, ranges_overlap,
-};
+use crate::tree_sitter_utils::{ParseCancellation, QueryCursorHandle, SnapshotTextProvider};
 
 /// 一个非重叠的 tree-sitter capture 区间。
 ///
@@ -134,10 +132,9 @@ impl SyntaxSnapshot {
             streams.push((0, captures));
         }
         let mut injections: Vec<_> = self
-            .injection_layers()
-            .iter()
-            .filter(|layer| ranges_overlap(&layer.range, &range))
-            .map(|layer| (layer.depth, &layer.language, &layer.tree))
+            .layers_for_range(text, &range)
+            .filter(|layer| layer.depth > 0)
+            .map(|layer| (layer.depth, layer.language, layer.tree))
             .collect();
         injections.sort_unstable_by_key(|(depth, _, _)| *depth);
         for (depth, language, tree) in injections {

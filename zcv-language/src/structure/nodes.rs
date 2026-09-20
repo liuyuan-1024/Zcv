@@ -75,7 +75,7 @@ impl SyntaxSnapshot {
             range.clone()
         };
         let mut best: Option<(u32, Vec<SyntaxNode>)> = None;
-        for layer in self.layers_for_range(&query_range) {
+        for layer in self.layers_for_range(text, &query_range) {
             let Some(mut node) = layer
                 .tree
                 .root_node()

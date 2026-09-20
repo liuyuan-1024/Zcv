@@ -42,7 +42,7 @@ impl SyntaxSnapshot {
         }
         // 折叠查询的约定：@fold 指定语法区域；需要保留闭合符号的区域以 @fold.end 声明其边界。
         let mut nodes = Vec::new();
-        for layer in self.layers_for_range(&range) {
+        for layer in self.layers_for_range(text, &range) {
             let Some(query) = layer.language.folds() else {
                 continue;
             };

@@ -13,7 +13,16 @@ pub(crate) fn rust_buffer(text: &str) -> (Buffer, SyntaxMap) {
 
 /// 按给定路径解析文本，返回 Buffer 与已安装解析结果的语法映射。
 pub(crate) fn parsed_syntax(path: &str, text: &str) -> (Buffer, SyntaxMap) {
-    let buffer = Buffer::from_text(text.to_owned(), BufferConfig::default()).unwrap();
+    parsed_syntax_with_config(path, text, BufferConfig::default())
+}
+
+/// 按给定路径与 Buffer 配置解析文本，返回 Buffer 与已安装解析结果的语法映射。
+pub(crate) fn parsed_syntax_with_config(
+    path: &str,
+    text: &str,
+    config: BufferConfig,
+) -> (Buffer, SyntaxMap) {
+    let buffer = Buffer::from_text(text.to_owned(), config).unwrap();
     let snapshot = buffer.snapshot();
     let registry = Arc::new(LanguageRegistry::new());
     let mut syntax = SyntaxMap::new(Arc::clone(&registry), &snapshot);

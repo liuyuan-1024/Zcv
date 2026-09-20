@@ -25,7 +25,7 @@ impl SyntaxSnapshot {
             return Vec::new();
         }
         let mut pairs = Vec::new();
-        for layer in self.layers_for_range(&range) {
+        for layer in self.layers_for_range(text, &range) {
             let Some(query) = layer.language.brackets() else {
                 continue;
             };

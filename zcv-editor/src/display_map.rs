@@ -55,17 +55,15 @@ use edit::ProjectionEdit;
 use error::DisplayMapResult;
 pub(crate) use fold_map::{FoldBias, FoldRowSegment, ProjectedLineIndex};
 use fold_map::{FoldMap, FoldSnapshot, LogicalProjection};
-use gpui::{App, AppContext as _, Bounds, Context, Entity, EventEmitter, HighlightStyle, Pixels};
+use gpui::{App, AppContext as _, Bounds, Context, Entity, HighlightStyle, Pixels};
 use tab_map::TabMap;
 pub(crate) use tab_map::{byte_for_display_column, display_column_for_byte};
 pub(crate) use wrap_map::WrapRowKind;
 use wrap_map::{WrapEdit, WrapMap, WrapSnapshot};
 use zcv_language::HighlightSpan;
-use zcv_multi_buffer::{
-    MultiBuffer, MultiBufferEvent, MultiBufferSnapshot, MultiBufferSubscription,
-};
+use zcv_multi_buffer::{MultiBuffer, MultiBufferSnapshot, MultiBufferSubscription};
 use zcv_text::{
-    Anchor, Line, LineRange, LogicalColumn, MovementDirection, MovementUnit, Position,
+    BufferVersion, Line, LineRange, LogicalColumn, MovementDirection, MovementUnit, Position,
     TextChangeBatch, TextResult,
 };
 use zcv_theme::syntax;
@@ -472,14 +470,6 @@ impl DisplaySnapshot {
     }
 }
 
-/// DisplayMap 向订阅者广播的显示管线变化。
-#[derive(Clone, Debug)]
-pub(crate) struct DisplayMapEvent {
-    pub(crate) changes: TextChangeBatch,
-}
-
-impl EventEmitter<DisplayMapEvent> for DisplayMap {}
-
 /// 把订阅者独立积累的组合文本批次换算成 Buffer 坐标的投影编辑。
 ///
 /// `DisplayMap` 是唯一文本变更消费者：它把批次换算成组合文本编辑后交给 FoldMap，
@@ -536,8 +526,8 @@ pub(crate) struct DisplayMap {
 /// 一个源在 `CreaseMap` 中已物化的折叠候选。
 #[derive(Debug)]
 struct SourceCreases {
-    /// 该源折叠候选锚点句柄；句柄变化即表示候选集合变化。
-    fold_anchors: Arc<[Range<Anchor>]>,
+    /// 源文本或语法版本变化即表示折叠候选需要重新查询。
+    fold_version: (BufferVersion, BufferVersion, u64),
     ids: Vec<CreaseId>,
 }
 
@@ -565,7 +555,6 @@ impl DisplaySyncInputs {
 #[derive(Clone, Copy)]
 enum CreaseSync {
     All,
-    Source(gpui::EntityId),
     None,
 }
 
@@ -622,19 +611,13 @@ impl DisplayMap {
         this
     }
 
-    /// 绑定组合文档并订阅其变化；此后 DisplayMap 自行消费文本变更并推进显示管线。
+    /// 绑定组合文档；显示投影只在读取快照时消费组合订阅。
     pub(crate) fn set_multi_buffer(
         &mut self,
         multi_buffer: Entity<MultiBuffer>,
         subscription: MultiBufferSubscription,
         cx: &mut Context<Self>,
     ) {
-        cx.subscribe(&multi_buffer, |map, _, event, cx| {
-            let changes = map.sync_from_multi_buffer(Some(*event), cx);
-            cx.emit(DisplayMapEvent { changes });
-            cx.notify();
-        })
-        .detach();
         self.multi_buffer = Some(multi_buffer);
         self.buffer_subscription = Some(subscription);
         // 绑定后重建一次装饰，使 diff 与折叠候选立即可见。
@@ -642,41 +625,36 @@ impl DisplayMap {
         self.commit_snapshot(&wrap_snapshot, &[], CreaseSync::All, cx);
     }
 
-    /// 消费自上次同步以来的组合文本变化，并推进显示管线。
-    ///
-    /// 返回本次消费的文本变化，供 Editor 推进它自己的投影派生状态（搜索锚点等）。
-    /// 文本编辑与纯元数据变化走同一入口：Fold/Tab/Wrap/Block 逐层消费组合文本编辑。
-    pub(crate) fn sync_from_multi_buffer(
-        &mut self,
-        event: Option<MultiBufferEvent>,
-        cx: &mut Context<Self>,
-    ) -> TextChangeBatch {
-        let snapshot = self
-            .multi_buffer
+    /// 读取并推进当前显示快照；组合文本同步、折叠、换行与块投影都从这里进入。
+    pub(crate) fn snapshot(&mut self, cx: &mut Context<Self>) -> DisplaySnapshot {
+        let Some(multi_buffer) = self.multi_buffer.clone() else {
+            return self.cached_snapshot();
+        };
+        let old_metadata_version = self
+            .snapshot
             .as_ref()
-            .expect("DisplayMap 必须绑定组合文档")
-            .read(cx)
-            .snapshot(cx);
+            .map(|snapshot| snapshot.buffer_snapshot().metadata_version());
+        let snapshot = multi_buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
         let changes = self
             .buffer_subscription
             .as_ref()
             .map_or_else(TextChangeBatch::default, |subscription| {
                 subscription.consume()
             });
-        let crease_sync = match event {
-            Some(MultiBufferEvent::Reparsed(source_id)) => CreaseSync::Source(source_id),
-            Some(MultiBufferEvent::ProjectionChanged) => CreaseSync::All,
-            Some(MultiBufferEvent::DiffExpansionChanged) if changes.requires_reset() => {
-                CreaseSync::All
-            }
-            Some(MultiBufferEvent::TextChanged) if changes.requires_reset() => CreaseSync::All,
-            _ => CreaseSync::None,
+        let crease_sync = if old_metadata_version != Some(snapshot.metadata_version()) {
+            CreaseSync::All
+        } else {
+            CreaseSync::None
         };
         self.sync(snapshot, changes.clone(), crease_sync, cx);
-        changes
+        self.snapshot
+            .as_ref()
+            .expect("DisplayMap 同步后必须存在显示快照")
+            .clone()
     }
 
-    pub(super) fn snapshot(&self) -> DisplaySnapshot {
+    /// 返回最近一次已同步的显示快照；不会触发组合文档同步。
+    pub(crate) fn cached_snapshot(&self) -> DisplaySnapshot {
         self.snapshot
             .as_ref()
             .expect("DisplayMap 初始化后必须存在显示快照")
@@ -767,56 +745,20 @@ impl DisplayMap {
 
     /// 按源增量同步折叠候选；普通文本编辑不触碰候选索引。
     fn reconcile_source_creases(&mut self, snapshot: &MultiBufferSnapshot, sync: CreaseSync) {
-        let (CreaseSync::All | CreaseSync::Source(_)) = sync else {
+        let CreaseSync::All = sync else {
             return;
         };
 
-        if let CreaseSync::Source(source_id) = sync {
-            let Some(index) = snapshot.source_index(source_id) else {
-                return;
-            };
-            let Some(fold_anchors) = snapshot.fold_anchors_for_source(index) else {
-                return;
-            };
-            let stale = self
-                .source_creases
-                .get(&Some(source_id))
-                .is_none_or(|state| !Arc::ptr_eq(&state.fold_anchors, fold_anchors));
-            if !stale {
-                return;
-            }
-            let source_id = Some(source_id);
-            let removed_ids = self
-                .source_creases
-                .remove(&source_id)
-                .map_or_else(Vec::new, |state| state.ids);
-            let ranges = snapshot
-                .fold_ranges_for_source(index)
-                .into_iter()
-                .map(Crease::simple)
-                .collect::<Vec<_>>();
-            self.crease_map.remove(removed_ids, snapshot);
-            let ids = self.crease_map.insert(ranges, snapshot);
-            self.source_creases.insert(
-                source_id,
-                SourceCreases {
-                    fold_anchors: Arc::clone(fold_anchors),
-                    ids,
-                },
-            );
-            return;
-        }
-
         let mut changed = Vec::new();
         let mut seen = HashSet::new();
-        for (index, (source_id, fold_anchors)) in snapshot.fold_sources().enumerate() {
+        for (index, (source_id, fold_version)) in snapshot.fold_sources().enumerate() {
             seen.insert(source_id);
             let stale = self
                 .source_creases
                 .get(&source_id)
-                .is_none_or(|state| !Arc::ptr_eq(&state.fold_anchors, fold_anchors));
+                .is_none_or(|state| state.fold_version != fold_version);
             if stale {
-                changed.push((source_id, index, Arc::clone(fold_anchors)));
+                changed.push((source_id, index, fold_version));
             }
         }
 
@@ -834,7 +776,7 @@ impl DisplayMap {
         // 候选集合变化的源：移除旧身份、投影新候选；未变化的源不触碰。
         let mut next_ranges = Vec::new();
         let mut counts = Vec::new();
-        for (source_id, index, fold_anchors) in changed {
+        for (source_id, index, fold_version) in changed {
             if let Some(state) = self.source_creases.remove(&source_id) {
                 removed_ids.extend(state.ids.iter().copied());
             }
@@ -843,16 +785,16 @@ impl DisplayMap {
                 .into_iter()
                 .map(Crease::simple)
                 .collect::<Vec<_>>();
-            counts.push((source_id, fold_anchors, ranges.len()));
+            counts.push((source_id, fold_version, ranges.len()));
             next_ranges.extend(ranges);
         }
         self.crease_map.remove(removed_ids, snapshot);
         let ids = self.crease_map.insert(next_ranges, snapshot);
         let mut ids = ids.into_iter();
-        for (source_id, fold_anchors, count) in counts {
+        for (source_id, fold_version, count) in counts {
             let ids = ids.by_ref().take(count).collect::<Vec<_>>();
             self.source_creases
-                .insert(source_id, SourceCreases { fold_anchors, ids });
+                .insert(source_id, SourceCreases { fold_version, ids });
         }
     }
 
@@ -918,7 +860,7 @@ impl DisplayMap {
         let end = start_row
             .get()
             .saturating_add(line_count)
-            .min(self.snapshot().line_count());
+            .min(self.cached_snapshot().line_count());
         let tab_rows = {
             let block_snapshot = &self
                 .snapshot
@@ -1043,7 +985,7 @@ impl DisplayMap {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, num::NonZeroUsize, path::PathBuf, rc::Rc};
+    use std::{num::NonZeroUsize, path::PathBuf};
 
     use gpui::{AppContext, TestAppContext, font, px};
     use zcv_language::LanguageBuffer;
@@ -1052,8 +994,8 @@ mod tests {
 
     use super::*;
 
-    fn display_snapshot(cx: &TestAppContext, map: &Entity<DisplayMap>) -> DisplaySnapshot {
-        cx.read_entity(map, |map, _| map.snapshot())
+    fn display_snapshot(cx: &mut TestAppContext, map: &Entity<DisplayMap>) -> DisplaySnapshot {
+        cx.update_entity(map, |map, cx| map.snapshot(cx))
     }
 
     fn longest_measured_row(cx: &TestAppContext, map: &Entity<DisplayMap>) -> DisplayRow {
@@ -1098,7 +1040,7 @@ mod tests {
     ) -> DisplayMapResult<()> {
         cx.update_entity(map, |map, cx| {
             let range = {
-                let display = map.snapshot();
+                let display = map.snapshot(cx);
                 let snapshot = display.buffer_snapshot();
                 snapshot.anchor_at(MultiBufferOffset::new(start), Affinity::Before)
                     ..snapshot.anchor_at(MultiBufferOffset::new(end), Affinity::After)
@@ -1196,17 +1138,6 @@ mod tests {
             display.set_multi_buffer(multi_buffer.clone(), projection_subscription, cx);
         });
 
-        let source_subscription = cx.read_entity(&source, |source, _| source.subscribe());
-        let changes = Rc::new(RefCell::new(None));
-        let observed = Rc::clone(&changes);
-        let _display_subscription = cx.update(|cx| {
-            cx.subscribe(&display, move |_, event, _| {
-                if !event.changes.is_empty() {
-                    *observed.borrow_mut() = Some(event.changes.clone());
-                }
-            })
-        });
-
         cx.update_entity(&source, |source, cx| {
             source
                 .edit(
@@ -1218,18 +1149,12 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let source_changes = source_subscription.consume();
-        let display_changes = changes
-            .borrow_mut()
-            .take()
-            .expect("显示管线应收到组合投影变化");
-        assert_eq!(
-            display_changes.transaction_id(),
-            source_changes.transaction_id()
-        );
-        assert_eq!(display_changes.patch(), source_changes.patch());
+        let display_text = |cx: &mut TestAppContext, display: &Entity<DisplayMap>| {
+            String::from_utf8(display_snapshot(cx, display).buffer_snapshot().text_bytes())
+                .expect("显示快照必须是 UTF-8")
+        };
+        assert_eq!(display_text(cx, &display), "fn async main() {}\n");
 
-        let reload_subscription = cx.read_entity(&source, |source, _| source.subscribe());
         cx.update_entity(&source, |source, cx| {
             source
                 .reset("fn replacement() {}\n".to_owned(), cx)
@@ -1237,15 +1162,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let source_reload = reload_subscription.consume();
-        let display_reload = changes.borrow_mut().take().expect("显示管线应收到重载变化");
-        assert!(source_reload.requires_reset());
-        assert!(display_reload.requires_reset());
-        assert_eq!(
-            display_reload.transaction_id(),
-            source_reload.transaction_id(),
-            "reset 经过语言、组合与显示投影后必须保留源事务身份"
-        );
+        assert_eq!(display_text(cx, &display), "fn replacement() {}\n");
     }
 
     #[gpui::test]
@@ -1413,13 +1330,9 @@ mod tests {
         let fold_end = text.find("}\n").expect("折叠范围应有闭合行");
         fold_range(cx, &map, fold_start, fold_end).expect("折叠应成功");
 
-        measure_rows(
-            cx,
-            &map,
-            DisplayRow::ZERO,
-            display_snapshot(cx, &map).line_count(),
-        )
-        .expect("折叠后的每个显示行都应能完成测量");
+        let line_count = display_snapshot(cx, &map).line_count();
+        measure_rows(cx, &map, DisplayRow::ZERO, line_count)
+            .expect("折叠后的每个显示行都应能完成测量");
     }
 
     #[gpui::test]
@@ -1650,7 +1563,7 @@ mod tests {
 
     /// 对每个字符边界做 offset ↔ display point 双向 roundtrip。
     fn assert_offset_roundtrip(map: &DisplayMap) {
-        let snapshot = map.snapshot();
+        let snapshot = map.cached_snapshot();
         let len = snapshot.buffer_snapshot().len_bytes().get();
         let mut offset = 0;
         while offset < len {

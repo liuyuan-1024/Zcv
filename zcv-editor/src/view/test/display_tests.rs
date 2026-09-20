@@ -71,9 +71,8 @@ fn single_file_diff_uses_the_composite_projection_path(cx: &mut TestAppContext) 
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
             editor
-                .multi_buffer()
-                .read(cx)
-                .snapshot(cx)
+                .display_snapshot()
+                .buffer_snapshot()
                 .excerpts()
                 .count(),
             3
@@ -134,8 +133,8 @@ fn switching_single_file_diff_after_source_edit_keeps_text_consumer_aligned(
     editor.update(cx, |editor, cx| editor.clear_diffs(cx));
     cx.run_until_parked();
 
-    cx.read_entity(&editor, |editor, cx| {
-        let snapshot = editor.multi_buffer().read(cx).snapshot(cx);
+    cx.read_entity(&editor, |editor, _cx| {
+        let snapshot = editor.display_snapshot().buffer_snapshot().clone();
         assert_eq!(
             String::from_utf8(snapshot.text_bytes()).expect("编辑器快照必须是 UTF-8"),
             "prefix\na\nworking\nc\n"

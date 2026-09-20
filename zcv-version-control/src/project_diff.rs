@@ -674,13 +674,8 @@ impl ProjectDiffView {
         view
     }
 
-    fn is_empty(&self, cx: &App) -> bool {
-        self.multi_buffer
-            .read(cx)
-            .snapshot(cx)
-            .excerpts()
-            .next()
-            .is_none()
+    fn is_empty(&self, _cx: &App) -> bool {
+        self.files.is_empty()
     }
 
     /// 从 GitStore 权威快照重建文件集合；真实内容始终复用 Project 的文档实体。
@@ -829,8 +824,10 @@ impl ProjectDiffView {
         });
     }
 
-    fn conflict_editor_hunks(&self, cx: &App) -> Vec<EditorHunk> {
-        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
+    fn conflict_editor_hunks(&mut self, cx: &mut Context<Self>) -> Vec<EditorHunk> {
+        let snapshot = self
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
         let mut excerpts = snapshot.excerpts();
         let mut hunks = Vec::new();
         for (buffer, path) in self.multi_buffer.read(cx).file_buffers(cx) {
@@ -1153,7 +1150,9 @@ impl ProjectDiffView {
         let Some(path) = self.pending_path.as_ref() else {
             return;
         };
-        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
+        let snapshot = self
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
         let mut excerpts = snapshot.excerpts();
         let Some(excerpt) = excerpts.find(|excerpt| excerpt.path() == path) else {
             return;
@@ -1602,10 +1601,12 @@ mod tests {
         cx.run_until_parked();
         cx.run_until_parked();
 
-        cx.read_entity(&view, |view, cx| {
+        cx.update_entity(&view, |view, cx| {
             let multi_buffer = view.multi_buffer(cx).expect("项目差异应提供组合文档");
-            let text = String::from_utf8(multi_buffer.read(cx).snapshot(cx).text_bytes())
-                .expect("投影文本应为 UTF-8");
+            let text = String::from_utf8(
+                multi_buffer.update(cx, |buffer, cx| buffer.snapshot(cx).text_bytes()),
+            )
+            .expect("投影文本应为 UTF-8");
             assert_eq!(text, "line1\nline2\n原内容\n新内容\nline4\nline5\n");
         });
     }
@@ -1636,9 +1637,12 @@ mod tests {
         cx.run_until_parked();
 
         // 默认展开（上下文裁剪 ±2 行）：被删行（line 17）显示在 line 16 之后、line 18 之前，即其原始位置，上下文行顺序不重排。
-        cx.read_entity(&view, |view, cx| {
-            let text = String::from_utf8(view.multi_buffer.read(cx).snapshot(cx).text_bytes())
-                .expect("投影应为 UTF-8");
+        cx.update_entity(&view, |view, cx| {
+            let text = String::from_utf8(
+                view.multi_buffer
+                    .update(cx, |buffer, cx| buffer.snapshot(cx).text_bytes()),
+            )
+            .expect("投影应为 UTF-8");
             let text_lines = text.split('\n').collect::<Vec<_>>();
             assert_eq!(
                 text_lines.len(),
@@ -1659,9 +1663,12 @@ mod tests {
             editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
         });
         cx.run_until_parked();
-        cx.read_entity(&view, |view, cx| {
-            let text = String::from_utf8(view.multi_buffer.read(cx).snapshot(cx).text_bytes())
-                .expect("投影应为 UTF-8");
+        cx.update_entity(&view, |view, cx| {
+            let text = String::from_utf8(
+                view.multi_buffer
+                    .update(cx, |buffer, cx| buffer.snapshot(cx).text_bytes()),
+            )
+            .expect("投影应为 UTF-8");
             let text_lines = text.split('\n').collect::<Vec<_>>();
             assert_eq!(
                 text_lines.len(),
@@ -1706,8 +1713,10 @@ mod tests {
         cx.run_until_parked();
         cx.run_until_parked();
 
-        let (paths, text) = cx.read_entity(&view, |view, cx| {
-            let snapshot = view.multi_buffer.read(cx).snapshot(cx);
+        let (paths, text) = cx.update_entity(&view, |view, cx| {
+            let snapshot = view
+                .multi_buffer
+                .update(cx, |buffer, cx| buffer.snapshot(cx));
             let paths = snapshot
                 .excerpts()
                 .filter(|excerpt| excerpt.starts_new_excerpt())
@@ -1767,8 +1776,10 @@ mod tests {
         .expect("测试 Buffer 应能创建")
         .snapshot();
 
-        cx.read_entity(&view, |view, cx| {
-            let snapshot = view.multi_buffer.read(cx).snapshot(cx);
+        cx.update_entity(&view, |view, cx| {
+            let snapshot = view
+                .multi_buffer
+                .update(cx, |buffer, cx| buffer.snapshot(cx));
             let mut excerpts = snapshot.excerpts();
             // 修改行的 Deleted 片段：首行（旧侧 "修改前"）→ 工作区第 5 行（0-based 4）。
             let modified_excerpt = excerpts
@@ -1885,13 +1896,19 @@ mod tests {
         cx.run_until_parked();
         cx.run_until_parked();
 
-        let staged_text = cx.read_entity(&staged_view, |view, cx| {
-            String::from_utf8(view.multi_buffer.read(cx).snapshot(cx).text_bytes())
-                .expect("已暂存投影应为 UTF-8")
+        let staged_text = cx.update_entity(&staged_view, |view, cx| {
+            String::from_utf8(
+                view.multi_buffer
+                    .update(cx, |buffer, cx| buffer.snapshot(cx).text_bytes()),
+            )
+            .expect("已暂存投影应为 UTF-8")
         });
-        let unstaged_text = cx.read_entity(&unstaged_view, |view, cx| {
-            String::from_utf8(view.multi_buffer.read(cx).snapshot(cx).text_bytes())
-                .expect("未暂存投影应为 UTF-8")
+        let unstaged_text = cx.update_entity(&unstaged_view, |view, cx| {
+            String::from_utf8(
+                view.multi_buffer
+                    .update(cx, |buffer, cx| buffer.snapshot(cx).text_bytes()),
+            )
+            .expect("未暂存投影应为 UTF-8")
         });
 
         assert!(staged_text.contains("已暂存内容"));
@@ -1925,7 +1942,7 @@ mod tests {
         run_in(&root, &["git", "config", "user.name", "Test User"]);
         let path = root.join("two-hunks.txt");
         let original = (0..30)
-            .map(|line| format!("line{line}"))
+            .map(|line| format!("line{line} {}", "主".repeat(12)))
             .collect::<Vec<_>>();
         std::fs::write(&path, format!("{}\n", original.join("\n"))).expect("应创建文件");
         run_in(&root, &["git", "add", "two-hunks.txt"]);
@@ -1942,30 +1959,67 @@ mod tests {
         cx.run_until_parked();
         cx.run_until_parked();
 
-        let (hunk_source, initial_version) = cx.read_entity(&view, |view, cx| {
+        let (hunk_source, initial_version) = cx.update_entity(&view, |view, cx| {
             let hunks = view.multi_buffer.read(cx).diff_hunks().to_vec();
             assert_eq!(hunks.len(), 2);
             let hunk_source = view
                 .diff_hunk_source_info(&hunks[0], cx)
                 .expect("第一个 hunk 应有稳定源定位");
-            let version = view.multi_buffer.read(cx).snapshot(cx).version().get();
+            let version = view
+                .multi_buffer
+                .update(cx, |buffer, cx| buffer.snapshot(cx).version().get());
             (hunk_source, version)
         });
         view.update(cx, |view, cx| {
             view.apply_hunk_action(hunk_source, GitHunkOperation::Stage, cx)
                 .expect("第一个变更块应能暂存");
         });
-        cx.run_until_parked();
-        cx.run_until_parked();
-        cx.run_until_parked();
+        cx.update_entity(&view, |view, cx| {
+            let snapshot = view
+                .multi_buffer
+                .update(cx, |buffer, cx| buffer.snapshot(cx));
+            let text = String::from_utf8(snapshot.text_bytes()).expect("投影应为 UTF-8");
+            for offset in 0..text.len() {
+                if text.is_char_boundary(offset) {
+                    snapshot
+                        .chunk_at_byte(ByteOffset::new(offset).into())
+                        .expect("暂存 hunk 后应能读取组合文本块");
+                }
+            }
+        });
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.update_entity(&view, |view, cx| {
+                let snapshot = view
+                    .multi_buffer
+                    .update(cx, |buffer, cx| buffer.snapshot(cx));
+                let text = String::from_utf8(snapshot.text_bytes()).expect("投影应为 UTF-8");
+                for offset in 0..text.len() {
+                    if text.is_char_boundary(offset) {
+                        snapshot
+                            .chunk_at_byte(ByteOffset::new(offset).into())
+                            .expect("暂存 hunk 处理中应能读取组合文本块");
+                    }
+                }
+            });
+        }
 
-        cx.read_entity(&view, |view, cx| {
-            let snapshot = view.multi_buffer.read(cx).snapshot(cx);
+        cx.update_entity(&view, |view, cx| {
+            let snapshot = view
+                .multi_buffer
+                .update(cx, |buffer, cx| buffer.snapshot(cx));
             let text = String::from_utf8(snapshot.text_bytes()).expect("投影应为 UTF-8");
             assert_eq!(snapshot.version().get(), initial_version + 1);
             assert_eq!(view.multi_buffer.read(cx).diff_hunks().len(), 1);
             assert!(!text.contains("第一个变更块"));
             assert!(text.contains("第二个变更块"));
+            for offset in 0..text.len() {
+                if text.is_char_boundary(offset) {
+                    snapshot
+                        .chunk_at_byte(ByteOffset::new(offset).into())
+                        .expect("暂存 hunk 后每个 UTF-8 边界都应能读取组合文本块");
+                }
+            }
         });
     }
 
@@ -1989,7 +2043,7 @@ mod tests {
         cx.run_until_parked();
         cx.run_until_parked();
 
-        cx.read_entity(&view, |view, cx| {
+        cx.update_entity(&view, |view, cx| {
             assert!(
                 view.multi_buffer
                     .read(cx)
@@ -1998,8 +2052,11 @@ mod tests {
                     .all(|&expanded| expanded),
                 "Git hunk 多文件编辑器应默认展开修改块"
             );
-            let text = String::from_utf8(view.multi_buffer.read(cx).snapshot(cx).text_bytes())
-                .expect("投影应为 UTF-8");
+            let text = String::from_utf8(
+                view.multi_buffer
+                    .update(cx, |buffer, cx| buffer.snapshot(cx).text_bytes()),
+            )
+            .expect("投影应为 UTF-8");
             assert!(text.contains("line1"), "默认展开时应包含旧侧文本");
             assert!(text.contains("改过"), "默认展开时应包含新侧文本");
         });
@@ -2025,7 +2082,7 @@ mod tests {
             editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
         });
         cx.run_until_parked();
-        cx.read_entity(&view, |view, cx| {
+        cx.update_entity(&view, |view, cx| {
             assert!(
                 !view
                     .multi_buffer
@@ -2034,8 +2091,11 @@ mod tests {
                     .iter()
                     .any(|&expanded| expanded)
             );
-            let text = String::from_utf8(view.multi_buffer.read(cx).snapshot(cx).text_bytes())
-                .expect("投影应为 UTF-8");
+            let text = String::from_utf8(
+                view.multi_buffer
+                    .update(cx, |buffer, cx| buffer.snapshot(cx).text_bytes()),
+            )
+            .expect("投影应为 UTF-8");
             assert!(!text.contains("line1"), "折叠后旧侧文本应消失");
             assert!(text.contains("改过"), "折叠后新侧文本应保留");
         });

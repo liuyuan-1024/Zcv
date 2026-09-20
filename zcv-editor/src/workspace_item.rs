@@ -88,7 +88,13 @@ impl Item for Editor {
         range: std::ops::Range<usize>,
         cx: &mut Context<Self>,
     ) -> bool {
-        if range.end > self.multi_buffer().read(cx).snapshot(cx).len_bytes().get() {
+        if range.end
+            > self
+                .multi_buffer()
+                .update(cx, |buffer, cx| buffer.snapshot(cx))
+                .len_bytes()
+                .get()
+        {
             return false;
         }
         self.select_byte_range(range, cx);

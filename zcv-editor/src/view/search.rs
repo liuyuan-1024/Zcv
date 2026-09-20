@@ -6,7 +6,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use zcv_project::{RegexSearchResult, SearchQuery, SearchQueryResult, SearchResult};
-use zcv_text::{Affinity, Anchor, BufferGeneration, BufferVersion, PositionMap};
+use zcv_text::{Affinity, Anchor, BufferGeneration, BufferVersion};
 use zcv_workspace::{Direction, SearchEvent, SearchableItem};
 
 use crate::display_map::SearchDecorationInput;
@@ -120,12 +120,12 @@ impl EditorSearch {
 
 impl SearchableItem for Editor {
     /// 主选区文本作为查询建议；空选区（仅光标）不种入。
-    fn query_suggestion(&self, cx: &gpui::App) -> Option<String> {
+    fn query_suggestion(&self, _cx: &gpui::App) -> Option<String> {
         let range = self.resolved_selections().primary().range();
         if range.is_empty() {
             return None;
         }
-        let snapshot = self.multi_buffer.read(cx).snapshot(cx);
+        let snapshot = self.display_snapshot.buffer_snapshot().clone();
         Some(
             snapshot
                 .bytes_in_range(range.start()..range.end())
@@ -156,7 +156,6 @@ impl SearchableItem for Editor {
 
     fn clear_search(&mut self, _window: &mut gpui::Window, cx: &mut gpui::Context<Self>) {
         self.search = None;
-        self.advance_snapshots(cx);
         cx.notify();
         cx.emit(SearchEvent::MatchesInvalidated);
     }
@@ -263,46 +262,14 @@ impl SearchableItem for Editor {
 }
 
 impl Editor {
-    /// 在搜索协调器完成重算前，先让已有高亮随同一批文本变化移动。
-    ///
-    /// 这只维护已有范围的位置；匹配是否仍然存在，仍由随后基于当前快照的重算决定。
-    pub(crate) fn map_search_anchors(
-        &mut self,
-        old_version: BufferVersion,
-        new_version: BufferVersion,
-        position_map: &PositionMap,
-    ) {
-        let Some(search) = &mut self.search else {
-            return;
-        };
-        for search_match in &mut search.matches {
-            if search_match.range.start.version() != old_version
-                || search_match.range.end.version() != old_version
-            {
-                continue;
-            }
-            search_match.range = search_match
-                .range
-                .start
-                .map_through_position_map(new_version, position_map)
-                .value()
-                ..search_match
-                    .range
-                    .end
-                    .map_through_position_map(new_version, position_map)
-                    .value();
-        }
-        search.rebuild_ranges();
-    }
-
     /// 搜索结果是否已偏离当前投影版本（过期校验在搜索绑定的权威文档侧完成）。
     fn search_result_stale(
         &self,
         literal: &Option<SearchResult>,
         regex: &Option<RegexSearchResult>,
-        cx: &gpui::Context<Self>,
+        _cx: &gpui::Context<Self>,
     ) -> bool {
-        let projection_version = self.multi_buffer.read(cx).snapshot(cx).version();
+        let projection_version = self.display_snapshot.buffer_snapshot().version();
         literal
             .as_ref()
             .is_some_and(|result| result.version() != projection_version)
@@ -318,7 +285,10 @@ impl Editor {
         ranges: Vec<MultiBufferRange>,
         cx: &mut gpui::Context<Self>,
     ) {
-        let version = self.multi_buffer.read(cx).snapshot(cx).version();
+        let version = self
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx))
+            .version();
         let matches = ranges
             .into_iter()
             .map(|range| SearchMatchAnchor::from_range(version, range))
@@ -358,7 +328,10 @@ impl Editor {
         ranges: Vec<MultiBufferRange>,
         cx: &mut gpui::Context<Self>,
     ) {
-        let version = self.multi_buffer.read(cx).snapshot(cx).version();
+        let version = self
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx))
+            .version();
         let can_append = self.search.as_ref().is_some_and(|search| {
             search.query == query
                 && matches!(search.result, Some(SearchResultKind::External { .. }))
@@ -399,7 +372,9 @@ impl Editor {
         if query.query.is_empty() {
             return None;
         }
-        let virtual_snapshot = self.multi_buffer.read(cx).snapshot(cx);
+        let virtual_snapshot = self
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
         let result = query
             .search_in(
                 &virtual_snapshot,
@@ -445,7 +420,10 @@ impl Editor {
         if search.query.query.is_empty() {
             return;
         }
-        let version = self.multi_buffer.read(cx).snapshot(cx).version();
+        let version = self
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx))
+            .version();
         if !search.is_stale(version) {
             return;
         }
@@ -458,7 +436,6 @@ impl Editor {
                 .filter(|index| *index < len)
                 .or_else(|| (len > 0).then_some(0));
         }
-        self.advance_snapshots(cx);
         cx.notify();
         cx.emit(SearchEvent::MatchesInvalidated);
     }

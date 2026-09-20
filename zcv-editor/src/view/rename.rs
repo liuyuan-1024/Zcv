@@ -161,7 +161,10 @@ impl Editor {
             )]));
             input
         });
-        let version = self.multi_buffer.read(cx).snapshot(cx).version();
+        let version = self
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx))
+            .version();
         self.local_rename = Some(LocalRenameState {
             offset,
             version,
@@ -197,7 +200,12 @@ impl Editor {
             self.finish_local_rename(window, cx);
             return;
         }
-        if self.multi_buffer.read(cx).snapshot(cx).version() != version {
+        if self
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx))
+            .version()
+            != version
+        {
             self.finish_local_rename(window, cx);
             cx.emit(EditorEvent::Error(format!(
                 "重命名局部绑定失败：{}",

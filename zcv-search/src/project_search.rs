@@ -127,7 +127,8 @@ impl Render for ProjectSearchToolbar {
         let leading = {
             let weak = view.downgrade();
             let results_editor = view.read(cx).results_editor.clone();
-            let snapshot = view.read(cx).excerpts.read(cx).snapshot(cx);
+            let excerpts = view.read(cx).excerpts.clone();
+            let snapshot = excerpts.update(cx, |buffer, cx| buffer.snapshot(cx));
             let expanded = snapshot
                 .excerpts()
                 .any(|excerpt| !results_editor.read(cx).is_buffer_folded(excerpt.path(), cx));
@@ -238,7 +239,8 @@ impl ProjectSearchView {
 
     fn set_all_files_folded(&mut self, folded: bool, cx: &mut Context<Self>) {
         let mut paths = Vec::new();
-        for excerpt in self.excerpts.read(cx).snapshot(cx).excerpts() {
+        let snapshot = self.excerpts.update(cx, |buffer, cx| buffer.snapshot(cx));
+        for excerpt in snapshot.excerpts() {
             if !paths.iter().any(|path| path == excerpt.path()) {
                 paths.push(excerpt.path().to_path_buf());
             }

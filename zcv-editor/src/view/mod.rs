@@ -26,7 +26,7 @@ use zcv_buffer_diff::DiffHunkKind;
 use zcv_language::{AutoClosePair, BracketPair, LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{
     DiffFile, DiffHunkSource, DisplayHunk, ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot,
-    MultiBuffer, MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot,
+    MultiBuffer, MultiBufferAnchor, MultiBufferSnapshot,
 };
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
@@ -743,8 +743,8 @@ impl Editor {
     /// 读取整份组合文本的只读边界；供 Input 契约等外部取回文本使用。
     ///
     /// 会物化整份文本，编辑与显示热路径不得调用；只需判空时用快照的 len_bytes()。
-    pub fn text(&self, cx: &App) -> String {
-        String::from_utf8(self.multi_buffer.read(cx).snapshot(cx).text_bytes())
+    pub fn text(&self, _cx: &App) -> String {
+        String::from_utf8(self.display_snapshot.buffer_snapshot().text_bytes())
             .expect("组合文本必须是合法 UTF-8")
     }
 
@@ -765,8 +765,7 @@ impl Editor {
                 .expect("placeholder Buffer 应能创建");
             let tab_width = self
                 .multi_buffer
-                .read(cx)
-                .snapshot(cx)
+                .update(cx, |buffer, cx| buffer.snapshot(cx))
                 .language_settings()
                 .tab
                 .tab_width;
@@ -787,7 +786,7 @@ impl Editor {
         }
         self.placeholder_display_map
             .as_ref()
-            .map(|map| map.read(cx).snapshot())
+            .map(|map| map.read(cx).cached_snapshot())
     }
 
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
@@ -1031,9 +1030,9 @@ impl Editor {
 
     /// 光标位置的 "行:列" 文本，行和列均从 1 开始计数。
     /// 组合文档（多文件编辑器）按光标所在 excerpt 映射回源文件内的真实行列。
-    pub fn cursor_text(&self, cx: &App) -> String {
+    pub fn cursor_text(&self, _cx: &App) -> String {
         let head = self.resolved_selections().primary().head();
-        let multi_snapshot = self.multi_buffer.read(cx).snapshot(cx);
+        let multi_snapshot = self.display_snapshot.buffer_snapshot().clone();
         // 无片段的空组合文档：光标没有归属的源文件，不显示行列。
         if multi_snapshot.excerpts().next().is_none() {
             return String::new();
@@ -1549,54 +1548,20 @@ impl Editor {
             map.set_tab_width(snapshot.language_settings().tab.tab_width, cx);
             map
         });
-        let display_snapshot = display_map.read(cx).snapshot();
+        let display_snapshot = display_map.update(cx, |map, cx| map.snapshot(cx));
         let initial_selections =
             SelectionSet::default().anchored(display_snapshot.buffer_snapshot());
-        cx.observe(&multi_buffer, |editor, multi_buffer, cx| {
+        cx.subscribe(&multi_buffer, |editor, _, _, cx| {
+            let multi_buffer = editor.multi_buffer.clone();
             let dirty = multi_buffer.read(cx).is_dirty(cx);
             if editor.last_dirty != dirty {
                 editor.last_dirty = dirty;
                 cx.emit(EditorEvent::DirtyChanged);
             }
-            cx.notify();
-        })
-        .detach();
-        cx.subscribe(&multi_buffer, |editor, _, event, cx| {
-            editor.structured_selection_history.clear();
-            // 组合文档事件同样经唯一快照入口刷新；语法/元数据变化随后由 match 分支处理。
-            editor.advance_snapshots(cx);
-            match event {
-                MultiBufferEvent::TextChanged | MultiBufferEvent::ProjectionChanged => {
-                    editor.research_after_edit(cx);
-                }
-                MultiBufferEvent::Reparsed(_) => {
-                    // 括号缓存键含元数据版本，版本推进即自然失效，无需手动清空。
-                }
-                MultiBufferEvent::MetadataChanged => {}
-                MultiBufferEvent::DiffExpansionChanged => {
-                    // 折叠候选归显示链所有，随组合元数据版本在 DisplayMap 内重建。
-                    cx.emit(EditorEvent::DiffHunksExpandedChanged);
-                }
-            }
-            editor.input_layout = None;
-            cx.notify();
-        })
-        .detach();
-        // DisplayMap 订阅是显示投影推进的唯一入口；Editor 在这里同步唯一派生快照，
-        // 并推进投影坐标派生的搜索锚点。文本与选区都从同一份快照读取。
-        cx.subscribe(&display_map, |editor, map, event, cx| {
-            editor.display_snapshot = map.read(cx).snapshot();
-            if let Some(old_version) = event.changes.old_version() {
-                let text_version = editor.display_snapshot.buffer_snapshot().version();
-                let position_map = event.changes.position_map();
-                editor.map_search_anchors(old_version, text_version, &position_map);
-            }
-            // 锚点映射后把搜索装饰输入重新注入显示链，再拉取被替换的装饰。
             editor.advance_snapshots(cx);
             cx.notify();
         })
         .detach();
-
         let blink_manager = cx.new(|_| BlinkManager::new());
         cx.observe(&blink_manager, |_, _, cx| cx.notify()).detach();
 
@@ -2082,21 +2047,14 @@ impl Editor {
     /// 模型事件、编辑提交与结构重建都只经此入口，不再并列刷新组合快照与显示快照；
     /// 选区以源锚点保存，解析时直接读该快照，不需要逐状态重映射。
     fn advance_snapshots(&mut self, cx: &mut Context<Self>) {
-        // Tab 宽度源自从语言设置解析出的显示参数；设置变化经 LanguageBuffer → MultiBuffer 元数据事件到达。
-        let tab_width = self
-            .multi_buffer
-            .read(cx)
-            .snapshot(cx)
-            .language_settings()
-            .tab
-            .tab_width;
-        self.display_map
-            .update(cx, |map, cx| map.set_tab_width(tab_width, cx));
-        // gpui 的 emit 是延迟效应：编辑返回时 DisplayMap 的订阅尚未执行。
-        // 在读取唯一派生快照前先把待处理的组合变更同步进 DisplayMap，
-        // 保证快照内的组合文本与刚提交的事务同版本；后续订阅回调走无变化快速路径。
-        self.display_map
-            .update(cx, |map, cx| map.sync_from_multi_buffer(None, cx));
+        let display_snapshot = self.display_map.update(cx, |map, cx| {
+            let snapshot = map.snapshot(cx);
+            let tab_width = snapshot.buffer_snapshot().language_settings().tab.tab_width;
+            map.set_tab_width(tab_width, cx);
+            map.cached_snapshot()
+        });
+        self.display_snapshot = display_snapshot;
+        self.research_after_edit(cx);
         // 搜索命中是显示装饰输入：
         // 把 Editor 拥有的匹配锚点解析结果交给显示链投影，输入未变化时 DisplayMap 快速返回；
         // 随后统一拉取被替换的显示快照。
@@ -2106,7 +2064,7 @@ impl Editor {
             .and_then(EditorSearch::decoration_input);
         self.display_map
             .update(cx, |map, cx| map.set_search_decorations(search, cx));
-        self.display_snapshot = self.display_map.read(cx).snapshot();
+        self.display_snapshot = self.display_map.update(cx, |map, cx| map.snapshot(cx));
         self.scrollbar_marker_state.invalidate();
         self.scroll_manager.refresh(&self.display_snapshot);
     }

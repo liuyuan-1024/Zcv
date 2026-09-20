@@ -163,10 +163,10 @@ fn ime_candidate_remains_in_the_syntax_highlight_pipeline(cx: &mut TestAppContex
     });
     cx.run_until_parked();
 
-    cx.read_entity(&editor, |editor, cx| {
+    cx.read_entity(&editor, |editor, _| {
         let composition = editor.composition.as_ref().unwrap();
         let marked = composition.ranges[composition.primary_index];
-        let snapshot = editor.multi_buffer.read(cx).snapshot(cx);
+        let snapshot = editor.display_snapshot().buffer_snapshot().clone();
         let names = snapshot.capture_names();
         let highlights = snapshot.highlights(0..snapshot.len_bytes().get());
         assert!(highlights.iter().any(|highlight| {

@@ -65,7 +65,7 @@ fn materialize_excerpts(c: &mut Criterion) {
                                 multi_buffer.set_excerpts_for_path(vec![excerpt], cx);
                             }
                         });
-                        let snapshot = cx.read_entity(&multi_buffer, |multi_buffer, cx| {
+                        let snapshot = cx.update_entity(&multi_buffer, |multi_buffer, cx| {
                             multi_buffer.snapshot(cx)
                         });
                         black_box(snapshot.len_bytes());

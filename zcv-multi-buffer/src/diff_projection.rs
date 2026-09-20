@@ -19,7 +19,8 @@ use zcv_text::{Anchor, ByteOffset, Line, Snapshot};
 
 use crate::{
     DiffTransform, DiffTransformHunkInfo, DiffTransformHunkSide, Excerpt, ExcerptDiffKind,
-    ExcerptRange, MultiBuffer, MultiBufferCursor, MultiBufferEvent, PathKey, mapping_count,
+    ExcerptRange, MBTextSummary, MultiBuffer, MultiBufferCursor, MultiBufferEvent, PathKey,
+    mapping_count,
 };
 use zcv_buffer_diff::{
     BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkKind, DiffHunkStaging, DiffRefresh,
@@ -135,6 +136,8 @@ struct DisplayHunkSource {
     /// 稳定文件键：working 源实体，不随组合文档序号变化。
     working: gpui::EntityId,
     hunk_index: Option<usize>,
+    /// hunk 所属的组合路径，用于源编辑后的局部缓存更新。
+    path: PathKey,
 }
 
 /// 一个 hunk 在显示层需要的行坐标（从 anchor 与旧侧字节范围派生）。
@@ -168,6 +171,7 @@ struct DiffDisplay {
 struct HunkAccum {
     working: gpui::EntityId,
     hunk_index: Option<usize>,
+    path: PathKey,
     kind: DiffHunkKind,
     staging: DiffHunkStaging,
     base_lines: Range<usize>,
@@ -181,10 +185,11 @@ struct HunkAccum {
 }
 
 impl HunkAccum {
-    fn new(info: &DiffTransformHunkInfo) -> Self {
+    fn new(info: &DiffTransformHunkInfo, path: &PathKey) -> Self {
         Self {
             working: info.working,
             hunk_index: info.hunk_index,
+            path: path.clone(),
             kind: info.kind,
             staging: info.staging,
             base_lines: info.base_lines.clone(),
@@ -690,7 +695,7 @@ impl MultiBuffer {
         working_text: &Snapshot,
         cx: &App,
     ) -> Option<(usize, usize)> {
-        let snapshot = self.snapshot(cx);
+        let snapshot = self.snapshot.clone();
         // 仅处理 Deleted 片段：修订文本坐标需换算，其余片段直接可用。
         let in_deleted_excerpt =
             snapshot
@@ -762,6 +767,17 @@ impl MultiBuffer {
         })
     }
 
+    pub(crate) fn diff_source_sync_ready(&self, source_id: gpui::EntityId, cx: &App) -> bool {
+        let Some((diff, _)) = self.diff_source(source_id, cx) else {
+            return true;
+        };
+        let revision = diff.read(cx).revision();
+        diff.read(cx).is_current_version_calculated(cx)
+            && self.diffs.iter().any(|file| {
+                file.diff.entity_id() == diff.entity_id() && file.revision == Some(revision)
+            })
+    }
+
     /// 指定源在 diff 投影中的角色。
     pub(crate) fn diff_source_role(
         &self,
@@ -785,6 +801,15 @@ impl MultiBuffer {
 
     /// BufferDiff 事件入口：只有当前物化结果落后于 diff 版本时才重建。
     fn diff_changed(&mut self, refresh: DiffRefresh, cx: &mut Context<Self>) {
+        // 对齐 Zed 的 buffer_diff_changed：先把待同步的源快照纳入当前帧，
+        // 再更新 diff transform，最后只发布一次组合投影版本。
+        self.begin_projection_sync();
+        self.sync_pending_sources(cx);
+        self.diff_changed_inner(refresh, cx);
+        self.finish_projection_sync(cx);
+    }
+
+    fn diff_changed_inner(&mut self, refresh: DiffRefresh, cx: &mut Context<Self>) {
         {
             let Some(diff) = &self.diff else {
                 return;
@@ -1024,20 +1049,35 @@ impl MultiBuffer {
         // 整体重建会物化全部文件（未就绪文件按空 hunk 投影），因此前缀直接取文件总数。
         self.diff_materialized_files = self.diffs.len();
         self.refresh_diff_display(cx);
-        let new_version = self.snapshot(cx).version();
-        new_version != old_version
+        self.state.projection_version != old_version
     }
 
     /// 单次 cursor 遍历输出变换树，从节点携带的 hunk 身份派生显示坐标。
     ///
     /// 输出范围由游标位置推导，不再为每个 hunk 反查 excerpt，也不保留源坐标副本。
     fn derive_diff_display(&self) -> DiffDisplay {
+        self.derive_diff_display_in_path(None)
+    }
+
+    /// 只遍历一个 path 的输出变换，用于源编辑后的局部显示缓存更新。
+    fn derive_diff_display_for_path(&self, path: &PathKey) -> DiffDisplay {
+        self.derive_diff_display_in_path(Some(path))
+    }
+
+    fn derive_diff_display_in_path(&self, path: Option<&PathKey>) -> DiffDisplay {
         let mut index_of: HashMap<(gpui::EntityId, Option<usize>), usize> = HashMap::new();
         let mut accums: Vec<HunkAccum> = Vec::new();
         let mut cursor = MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
-        // 用 Left 偏置从第一个节点开始遍历：整份删除的零长度边界节点也必须被访问。
-        cursor.seek_output(ByteOffset::ZERO, sum_tree::Bias::Left);
+        // 用 Left 偏置从边界开始遍历：整份删除的零长度边界节点也必须被访问。
+        if let Some(path) = path {
+            cursor.seek_path(path, sum_tree::Bias::Left);
+        } else {
+            cursor.seek_output(ByteOffset::ZERO, sum_tree::Bias::Left);
+        }
         while let Some((excerpt, _)) = cursor.item() {
+            if path.is_some_and(|path| excerpt.path != *path) {
+                break;
+            }
             if !excerpt.diff_hunks.is_empty() {
                 let start = cursor.start().clone();
                 let content_lines = excerpt.text_summary.lines + excerpt.adds_newline as usize;
@@ -1045,7 +1085,7 @@ impl MultiBuffer {
                 for info in &excerpt.diff_hunks {
                     let key = (info.working, info.hunk_index);
                     let index = *index_of.entry(key).or_insert_with(|| {
-                        accums.push(HunkAccum::new(info));
+                        accums.push(HunkAccum::new(info, &excerpt.path));
                         accums.len() - 1
                     });
                     let accum = &mut accums[index];
@@ -1121,6 +1161,7 @@ impl MultiBuffer {
             sources.push(DisplayHunkSource {
                 working: accum.working,
                 hunk_index: accum.hunk_index,
+                path: accum.path,
             });
             expanded.push(accum.expanded);
             word_diffs.push(combined);
@@ -1134,10 +1175,75 @@ impl MultiBuffer {
         }
     }
 
-    /// 编辑后按当前组合映射重算显示坐标，不重新物化 excerpt。
+    /// 源编辑后只替换受影响 path 的 hunk 派生，并平移其后的显示缓存。
     ///
-    /// apply_source_change 增量更新了 excerpt 映射；
-    /// 显示坐标必须同步刷新，否则版本门控会让全部 diff 高亮消失，直到下一次整体重建。
+    /// path 内的变换需要重新读取 hunk 身份与词级范围；其它 path 不重新遍历，
+    /// 仅按该 path 输出摘要的净变化调整组合行/字节坐标。
+    pub(crate) fn refresh_diff_display_for_path(
+        &mut self,
+        path: &PathKey,
+        old_summary: MBTextSummary,
+        new_summary: MBTextSummary,
+        cx: &mut Context<Self>,
+    ) {
+        if self.diff.is_none() {
+            return;
+        }
+        let local = self.derive_diff_display_for_path(path);
+        let line_delta = new_summary.lines as isize - old_summary.lines as isize;
+        let byte_delta = new_summary.len as isize - old_summary.len as isize;
+        let diff = self.diff.as_mut().expect("已确认 diff 投影存在");
+        let mut entries = Vec::with_capacity(diff.display_hunks.len() + local.hunks.len());
+
+        for index in 0..diff.display_hunks.len() {
+            let source = &diff.display_sources[index];
+            if source.path == *path {
+                continue;
+            }
+            let mut hunk = diff.display_hunks[index].clone();
+            let mut old_range = diff.display_old_ranges[index].clone();
+            let mut word_diffs = diff.display_word_diffs[index].clone();
+            if source.path.as_path() > path.as_path() {
+                hunk.range = shift_range(hunk.range, line_delta);
+                old_range = old_range.map(|range| shift_range(range, line_delta));
+                word_diffs = word_diffs
+                    .into_iter()
+                    .map(|(kind, range)| (kind, shift_range(range, byte_delta)))
+                    .collect();
+            }
+            entries.push((
+                hunk,
+                old_range,
+                source.clone(),
+                diff.display_expanded[index],
+                word_diffs,
+            ));
+        }
+        entries.extend(
+            local
+                .hunks
+                .into_iter()
+                .zip(local.old_ranges)
+                .zip(local.sources)
+                .zip(local.expanded)
+                .zip(local.word_diffs)
+                .map(|((((hunk, old_range), source), expanded), word_diffs)| {
+                    (hunk, old_range, source, expanded, word_diffs)
+                }),
+        );
+        entries.sort_by_key(|(hunk, _, _, _, _)| (hunk.range.start, hunk.range.end));
+
+        diff.display_hunks = entries.iter().map(|entry| entry.0.clone()).collect();
+        diff.display_old_ranges = entries.iter().map(|entry| entry.1.clone()).collect();
+        diff.display_sources = entries.iter().map(|entry| entry.2.clone()).collect();
+        diff.display_expanded = entries.iter().map(|entry| entry.3).collect();
+        diff.display_word_diffs = entries.into_iter().map(|entry| entry.4).collect();
+        self.mark_diff_display_changed(cx);
+    }
+
+    /// 在低频拓扑或 diff 物化变化后按当前组合映射重算全部显示坐标。
+    ///
+    /// 普通源编辑使用 `refresh_diff_display_for_path`，不会进入这里。
     pub(crate) fn refresh_diff_display(&mut self, cx: &mut Context<Self>) {
         if self.diff.is_none() {
             return;
@@ -1149,12 +1255,16 @@ impl MultiBuffer {
         diff.display_sources = display.sources;
         diff.display_expanded = display.expanded;
         diff.display_word_diffs = display.word_diffs;
+        self.mark_diff_display_changed(cx);
+    }
+
+    fn mark_diff_display_changed(&mut self, cx: &mut Context<Self>) {
         // diff 显示元数据（staging、展开态等）变化时 excerpt 拓扑可能不变；
         // 显示链的快速路径按文本版本 + 元数据版本判定是否同步，若不推进元数据版本，按旧显示版本键控的装饰就会陈旧。
-        // 元数据版本随快照缓存键（snapshot_epoch）一同推进，保证再次读取能看到新版本。
-        self.snapshot_epoch = self.snapshot_epoch.wrapping_add(1);
+        // 元数据版本随快照脏位一同推进，保证再次读取能看到新版本。
+        self.snapshot_dirty = true;
         self.state.metadata_epoch = self.state.metadata_epoch.wrapping_add(1);
-        cx.notify();
+        self.notify_if_not_syncing(cx);
     }
 }
 
@@ -1171,6 +1281,16 @@ fn resolve_file_hunks(file: &DiffState, cx: &App) -> Vec<ResolvedHunk> {
         .iter()
         .map(|hunk| resolve_hunk(hunk, &working_text, base_text.as_ref()))
         .collect()
+}
+
+fn shift_range(range: Range<usize>, delta: isize) -> Range<usize> {
+    if delta >= 0 {
+        let delta = delta as usize;
+        range.start.saturating_add(delta)..range.end.saturating_add(delta)
+    } else {
+        let delta = delta.unsigned_abs();
+        range.start.saturating_sub(delta)..range.end.saturating_sub(delta)
+    }
 }
 
 /// 把 anchor hunk 展开为显示层需要的行坐标与旧侧字节范围。

@@ -3382,7 +3382,7 @@ mod tests {
         snapshot: impl Into<MultiBufferSnapshot>,
     ) -> DisplaySnapshot {
         let map = new_display_map(cx, snapshot);
-        cx.read_entity(&map, |map, _| map.snapshot())
+        cx.update_entity(&map, |map, cx| map.snapshot(cx))
     }
 
     #[test]
@@ -3572,7 +3572,7 @@ mod tests {
         let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));
         cx.run_until_parked();
         let multi_snapshot =
-            cx.read_entity(&multi_buffer, |multi_buffer, cx| multi_buffer.snapshot(cx));
+            cx.update_entity(&multi_buffer, |multi_buffer, cx| multi_buffer.snapshot(cx));
 
         let ranges = vec![
             MultiBufferRange::new(MultiBufferOffset::new(0), MultiBufferOffset::new(6)).unwrap(),
@@ -3582,7 +3582,7 @@ mod tests {
         window
             .update(cx, |_, window, cx| {
                 let map = new_display_map(cx, multi_snapshot.clone());
-                let display = cx.read_entity(&map, |map, _| map.snapshot());
+                let display = cx.update_entity(&map, |map, cx| map.snapshot(cx));
                 let search_decorations =
                     SearchDecorationSnapshot::for_test(&display, &ranges, 0);
                 // 文本区起点 = 60px（真实编辑器带 gutter 时的典型偏移）。
@@ -3657,7 +3657,7 @@ mod tests {
                         cx,
                     )
                 });
-                let display = cx.read_entity(&map, |map, _| map.snapshot());
+                let display = cx.update_entity(&map, |map, cx| map.snapshot(cx));
                 let dimensions = gutter_dimensions(&display, window);
                 let gutter_bounds =
                     Bounds::new(point(px(0.), px(0.)), size(dimensions.width, px(200.)));
@@ -3756,7 +3756,7 @@ mod tests {
                             em_advance,
                         );
                         cx.update_entity(&map, |map, cx| map.set_wrap_width(wrap_width, font.clone(), font_size, window.text_system(), cx));
-                        let display = cx.read_entity(&map, |map, _| map.snapshot());
+                        let display = cx.update_entity(&map, |map, cx| map.snapshot(cx));
                         let mut cursor = display.rows(DisplayRow::ZERO, display.line_count());
                         let viewport: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
                         if text.starts_with("新增") && quarter_pixels == 720 {
@@ -3857,7 +3857,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let multi_snapshot = cx.read_entity(&combined, |combined, cx| combined.snapshot(cx));
+        let multi_snapshot = cx.update_entity(&combined, |combined, cx| combined.snapshot(cx));
         let text_snapshot = multi_snapshot.clone();
         let display_snapshot = project_display_snapshot(cx, multi_snapshot);
         let window = cx.add_window(|_, _| Empty);
@@ -3953,7 +3953,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let snapshot = cx.read_entity(&combined, |combined, cx| combined.snapshot(cx));
+        let snapshot = cx.update_entity(&combined, |combined, cx| combined.snapshot(cx));
         let display = project_display_snapshot(cx, snapshot);
         let mut cursor = display.rows(DisplayRow::ZERO, display.line_count());
         let rows: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
@@ -4031,7 +4031,7 @@ mod tests {
         let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));
         cx.run_until_parked();
         let multi_snapshot =
-            cx.read_entity(&multi_buffer, |multi_buffer, cx| multi_buffer.snapshot(cx));
+            cx.update_entity(&multi_buffer, |multi_buffer, cx| multi_buffer.snapshot(cx));
         assert!(
             !multi_snapshot.highlights(0..text.len()).is_empty(),
             "组合文档应从源片段查询 Markdown 高亮"
@@ -4052,7 +4052,7 @@ mod tests {
                     cx.update_entity(&map, |map, cx| {
                         map.set_wrap_width(Some(width), font.clone(), font_size, &text_system, cx)
                     });
-                    let display = cx.read_entity(&map, |map, _| map.snapshot());
+                    let display = cx.update_entity(&map, |map, cx| map.snapshot(cx));
                     let mut cursor = display.rows(DisplayRow::ZERO, display.line_count());
                     let viewport: Vec<_> = std::iter::from_fn(|| cursor.next()).collect();
                     offending_row = viewport.iter().find_map(|row| {
@@ -4071,7 +4071,7 @@ mod tests {
                     }
                 }
                 let offending_row = offending_row.expect("测试文本应产生目标 UTF-8 续行");
-                let display = cx.read_entity(&map, |map, _| map.snapshot());
+                let display = cx.update_entity(&map, |map, cx| map.snapshot(cx));
                 let layout = layout_visible_lines(
                     display,
                     None,
@@ -4241,7 +4241,7 @@ mod tests {
                 let map = new_display_map(cx, snapshot.clone());
                 cx.update_entity(&map, |map, cx| {
                     let range = {
-                        let display = map.snapshot();
+                        let display = map.snapshot(cx);
                         let snapshot = display.buffer_snapshot();
                         snapshot.anchor_at(MultiBufferOffset::new(6), zcv_text::Affinity::Before)
                             ..snapshot
@@ -4251,7 +4251,7 @@ mod tests {
                 })
                 .expect("折叠应成功");
                 let layout = layout_visible_lines(
-                    cx.read_entity(&map, |map, _| map.snapshot()),
+                    cx.update_entity(&map, |map, cx| map.snapshot(cx)),
                     None,
                     EditorPresentation::new(&snapshot.clone().into(), None),
                     None,
@@ -4499,7 +4499,7 @@ mod tests {
         });
         cx.run_until_parked();
 
-        let multi_snapshot = cx.read_entity(&combined, |combined, cx| combined.snapshot(cx));
+        let multi_snapshot = cx.update_entity(&combined, |combined, cx| combined.snapshot(cx));
         let multi_text = multi_snapshot.clone();
         let single_text = Buffer::from_text(text.to_owned(), BufferConfig::default())
             .expect("应创建单文件 Buffer");
@@ -4672,7 +4672,7 @@ mod tests {
                     )),
                     "宽行应产生换行"
                 );
-                let snapshot = cx.read_entity(&map, |map, _| map.snapshot());
+                let snapshot = cx.update_entity(&map, |map, cx| map.snapshot(cx));
                 let line_count = snapshot.line_count();
                 assert!(line_count > 2, "宽行应拆成多个显示行");
                 let row_1 = snapshot

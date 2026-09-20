@@ -27,7 +27,7 @@ fn project_display_snapshot(
     snapshot: impl Into<MultiBufferSnapshot>,
 ) -> DisplaySnapshot {
     let map = new_display_map(cx, snapshot);
-    cx.read_entity(&map, |map, _| map.snapshot())
+    cx.update_entity(&map, |map, cx| map.snapshot(cx))
 }
 
 fn editor_with_text<'a>(
@@ -39,9 +39,9 @@ fn editor_with_text<'a>(
 }
 
 fn editor_text(editor: &Entity<Editor>, cx: &VisualTestContext) -> String {
-    cx.read_entity(editor, |this, cx| {
-        let buffer = this.multi_buffer.read(cx).snapshot(cx);
-        String::from_utf8(buffer.text_bytes()).expect("完整测试 Buffer 应可读取")
+    cx.read_entity(editor, |this, _| {
+        String::from_utf8(this.display_snapshot.buffer_snapshot().text_bytes())
+            .expect("完整测试 Buffer 应可读取")
     })
 }
 

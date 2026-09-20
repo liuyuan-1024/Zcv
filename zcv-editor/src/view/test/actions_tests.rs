@@ -80,9 +80,9 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
         );
     });
 
-    cx.read_entity(&first, |editor, cx| {
+    cx.read_entity(&first, |editor, _| {
         assert_eq!(editor.scroll_manager.offset().x, px(4.0));
-        let snapshot = editor.multi_buffer.read(cx).snapshot(cx);
+        let snapshot = editor.display_snapshot().buffer_snapshot().clone();
         let history = editor
             .selection_history
             .transaction(TransactionId::new(1))
@@ -324,12 +324,12 @@ fn constructors_create_expected_modes_and_independent_scratch_buffers(cx: &mut T
     let single_line = cx.new(Editor::single_line);
     let auto_height = cx.new(|cx| Editor::auto_height(2, Some(6), cx));
 
-    let single_buffer = cx.read_entity(&single_line, |editor, cx| {
+    let single_buffer = cx.read_entity(&single_line, |editor, _cx| {
         assert_eq!(editor.mode, EditorMode::SingleLine);
         assert_eq!(editor.selections(), SelectionSet::default());
         assert_eq!(
             editor.display_snapshot().buffer_snapshot().version(),
-            editor.multi_buffer().read(cx).snapshot(cx).version()
+            editor.display_snapshot().buffer_snapshot().version()
         );
         let _focus = editor.focus_handle();
         editor.multi_buffer().entity_id()

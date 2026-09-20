@@ -246,6 +246,9 @@ fn inserting_middle_diff_file_matches_fresh_three_file_build(cx: &mut TestAppCon
     });
     cx.run_until_parked();
 
+    cx.update_entity(&incremental, |buffer, cx| {
+        buffer.snapshot(cx);
+    });
     let incremental_state = cx.read_entity(&incremental, |buffer, _| {
         (
             buffer
@@ -358,10 +361,10 @@ fn removing_last_diff_file_matches_fresh_single_file_build(cx: &mut TestAppConte
     assert!(removed);
     cx.run_until_parked();
 
-    let incremental = cx.read_entity(&two, |buffer, cx| {
+    let incremental = cx.update_entity(&two, |buffer, cx| {
         String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("投影应为 UTF-8")
     });
-    let fresh = cx.read_entity(&one, |buffer, cx| {
+    let fresh = cx.update_entity(&one, |buffer, cx| {
         String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("投影应为 UTF-8")
     });
     assert_eq!(incremental, fresh);
@@ -404,6 +407,9 @@ fn single_file_version_change_matches_fresh_three_file_build(cx: &mut TestAppCon
     });
     cx.run_until_parked();
 
+    cx.update_entity(&incremental, |buffer, cx| {
+        buffer.snapshot(cx);
+    });
     let fresh = cx.new(MultiBuffer::empty);
     fresh.update(cx, |buffer, cx| {
         buffer.inject_diffs(
@@ -417,6 +423,13 @@ fn single_file_version_change_matches_fresh_three_file_build(cx: &mut TestAppCon
     });
     cx.run_until_parked();
 
+    cx.update_entity(&incremental, |buffer, cx| {
+        buffer.snapshot(cx);
+    });
+    cx.run_until_parked();
+    cx.update_entity(&incremental, |buffer, cx| {
+        buffer.snapshot(cx);
+    });
     let incremental_state = cx.read_entity(&incremental, |buffer, _| {
         (
             buffer
@@ -728,11 +741,11 @@ fn diff_display_metadata_change_advances_metadata_version(cx: &mut TestAppContex
     });
     cx.run_until_parked();
 
-    let before = cx.read_entity(&combined, |buffer, cx| {
+    let before = cx.update_entity(&combined, |buffer, cx| {
         buffer.snapshot(cx).metadata_version()
     });
     cx.update_entity(&combined, |buffer, cx| buffer.refresh_diff_display(cx));
-    let after = cx.read_entity(&combined, |buffer, cx| {
+    let after = cx.update_entity(&combined, |buffer, cx| {
         buffer.snapshot(cx).metadata_version()
     });
     assert!(
@@ -764,19 +777,19 @@ fn title_prefers_explicit_value_and_derives_from_path(cx: &mut TestAppContext) {
     );
     let multi_buffer = cx.new(|cx| MultiBuffer::singleton(source, cx));
 
-    cx.read_entity(&multi_buffer, |buffer, cx| {
+    cx.update_entity(&multi_buffer, |buffer, cx| {
         assert_eq!(buffer.title(cx).as_deref(), Some("main.rs"));
     });
     cx.update_entity(&multi_buffer, |buffer, cx| {
         buffer.set_title(Some("变更".to_owned()), cx);
     });
-    cx.read_entity(&multi_buffer, |buffer, cx| {
+    cx.update_entity(&multi_buffer, |buffer, cx| {
         assert_eq!(buffer.title(cx).as_deref(), Some("变更"));
     });
     cx.update_entity(&multi_buffer, |buffer, cx| {
         buffer.set_title(None, cx);
     });
-    cx.read_entity(&multi_buffer, |buffer, cx| {
+    cx.update_entity(&multi_buffer, |buffer, cx| {
         assert_eq!(buffer.title(cx).as_deref(), Some("main.rs"));
     });
 }
@@ -828,7 +841,7 @@ fn excerpt_at_output_offset_uses_the_offset_cursor(cx: &mut TestAppContext) {
         );
     });
 
-    let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    let snapshot = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
     assert_eq!(snapshot.len_bytes(), MultiBufferOffset::new(6));
     assert_eq!(
         snapshot
@@ -869,7 +882,7 @@ fn set_excerpts_for_path_replaces_only_that_path(cx: &mut TestAppContext) {
         )
     });
 
-    let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    let snapshot = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
     assert_eq!(snapshot.excerpts().count(), 3);
     assert_eq!(snapshot.excerpts_for_path(Path::new("src/a.rs")).count(), 2);
     assert_eq!(snapshot.excerpts_for_path(Path::new("src/b.rs")).count(), 1);
@@ -901,7 +914,7 @@ fn excerpt_view_is_derived_and_shared_once_per_snapshot(cx: &mut TestAppContext)
         );
     });
 
-    let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    let snapshot = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
     let view = snapshot.excerpts_arc();
     // 派生视图按快照惰性物化一次；重复读取共用同一份分配，权威树不因此变成第二数据源。
     assert!(Arc::ptr_eq(&view, &snapshot.excerpts_arc()));
@@ -923,7 +936,7 @@ fn remove_excerpts_for_path_drops_only_that_path(cx: &mut TestAppContext) {
         );
     });
 
-    let before = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx).len_bytes());
+    let before = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx).len_bytes());
     assert_eq!(before, MultiBufferOffset::new(3), "a + 合成换行 + b");
 
     let removed = cx.update_entity(&combined, |buffer, cx| {
@@ -931,7 +944,7 @@ fn remove_excerpts_for_path_drops_only_that_path(cx: &mut TestAppContext) {
     });
     assert!(removed);
 
-    let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    let snapshot = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
     assert_eq!(snapshot.excerpts().count(), 1);
     assert_eq!(
         snapshot.excerpts().next().unwrap().path(),
@@ -964,7 +977,7 @@ fn excerpts_for_path_uses_the_path_cursor(cx: &mut TestAppContext) {
         );
     });
 
-    let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    let snapshot = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
     let paths = snapshot
         .excerpts_for_path(Path::new("src/a.rs"))
         .map(|excerpt| excerpt.path().to_path_buf())
@@ -988,7 +1001,7 @@ fn text_chunks_stream_excerpt_sources_and_inserted_boundary(cx: &mut TestAppCont
         );
     });
 
-    let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    let snapshot = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
     let chunks = snapshot
         .bytes_in_range(ByteOffset::ZERO.into()..snapshot.len_bytes())
         .collect::<Vec<_>>();
@@ -1062,7 +1075,7 @@ fn plain_snapshot_streams_its_source_without_materializing() {
 fn composite_snapshot_remains_immutable_until_a_new_frame_is_read(cx: &mut TestAppContext) {
     let source = singleton("src/main.rs", "one\ntwo\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
-    let before = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    let before = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
     cx.update_entity(&source, |source, cx| {
         source
             .edit(
@@ -1074,7 +1087,7 @@ fn composite_snapshot_remains_immutable_until_a_new_frame_is_read(cx: &mut TestA
     });
     cx.run_until_parked();
 
-    let after = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    let after = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
     assert_ne!(before.version(), after.version());
     assert_eq!(before.text_bytes(), b"one\ntwo\n");
     assert_eq!(after.text_bytes(), b"zero\none\ntwo\n");
@@ -1086,7 +1099,7 @@ fn composite_snapshot_remains_immutable_until_a_new_frame_is_read(cx: &mut TestA
 fn singleton_source_updates_the_display_stream_without_reset(cx: &mut TestAppContext) {
     let source = singleton("src/main.rs", "fn main() {}\n", cx);
     let multi_buffer = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
-    cx.read_entity(&multi_buffer, |buffer, cx| {
+    cx.update_entity(&multi_buffer, |buffer, cx| {
         assert_eq!(buffer.file_path(cx), Some(PathBuf::from("src/main.rs")));
         assert!(buffer.singleton_source().is_some(), "应为整文件单 excerpt");
     });
@@ -1106,6 +1119,9 @@ fn singleton_source_updates_the_display_stream_without_reset(cx: &mut TestAppCon
     });
     cx.run_until_parked();
 
+    cx.update_entity(&multi_buffer, |buffer, cx| {
+        buffer.snapshot(cx);
+    });
     let source_changes = source_subscription.consume();
     let projection_changes = subscription.consume();
     assert_eq!(
@@ -1119,7 +1135,7 @@ fn singleton_source_updates_the_display_stream_without_reset(cx: &mut TestAppCon
         "单文件投影必须直接转发源批次的编辑范围"
     );
 
-    let updated = cx.read_entity(&multi_buffer, |buffer, cx| buffer.snapshot(cx));
+    let updated = cx.update_entity(&multi_buffer, |buffer, cx| buffer.snapshot(cx));
     assert_eq!(
         String::from_utf8(updated.text_bytes()).expect("编辑器快照必须是 UTF-8"),
         "fn async main() {}\n"
@@ -1137,7 +1153,7 @@ fn singleton_source_updates_the_display_stream_without_reset(cx: &mut TestAppCon
         buffer.undo(cx).expect("单文件源撤销应成功");
     });
     assert_eq!(
-        cx.read_entity(&multi_buffer, |buffer, cx| {
+        cx.update_entity(&multi_buffer, |buffer, cx| {
             String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("编辑器快照必须是 UTF-8")
         }),
         "fn main() {}\n"
@@ -1176,10 +1192,13 @@ fn source_edit_updates_only_its_composite_excerpt_without_reset(cx: &mut TestApp
     });
     cx.run_until_parked();
 
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.snapshot(cx);
+    });
     let changes = subscription.consume();
     assert!(!changes.requires_reset(), "源编辑不得整体重载组合投影");
     assert_eq!(
-        cx.read_entity(&combined, |buffer, cx| {
+        cx.update_entity(&combined, |buffer, cx| {
             String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("组合文本必须是 UTF-8")
         }),
         "first\nchanged second\n"
@@ -1212,6 +1231,9 @@ fn one_source_edit_updates_all_visible_excerpts_incrementally(cx: &mut TestAppCo
     });
     cx.run_until_parked();
 
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.snapshot(cx);
+    });
     let changes = subscription.consume();
     assert!(
         !changes.requires_reset(),
@@ -1219,7 +1241,7 @@ fn one_source_edit_updates_all_visible_excerpts_incrementally(cx: &mut TestAppCo
     );
     assert_eq!(changes.patch().edits().len(), 2);
     assert_eq!(
-        cx.read_entity(&combined, |buffer, cx| {
+        cx.update_entity(&combined, |buffer, cx| {
             String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("组合文本必须是 UTF-8")
         }),
         "changed line\nchanged line\n"
@@ -1313,7 +1335,7 @@ fn composite_char_and_utf16_coordinates_count_synthetic_newlines(cx: &mut TestAp
     });
 
     // 组合文本为「αβ\nγ\n」：excerpt 间的合成换行同时计入 char 与 UTF-16 坐标。
-    let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    let snapshot = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
     assert_eq!(snapshot.len_bytes(), MultiBufferOffset::new(8));
     for (byte, character) in [(0, 0), (4, 2), (5, 3), (8, 5)] {
         assert_eq!(
@@ -1363,7 +1385,7 @@ fn source_excerpts_and_display_transforms_use_separate_coordinate_trees(cx: &mut
         );
     });
 
-    cx.read_entity(&combined, |buffer, cx| {
+    cx.update_entity(&combined, |buffer, cx| {
         // 删除块只占输出坐标：输入树只含消费输入的工作区片段。
         assert_eq!(buffer.state.excerpts.summary().count, 1);
         assert_eq!(buffer.state.diff_transforms.summary().output.count, 2);
@@ -1438,10 +1460,10 @@ fn singleton_source_preserves_rust_fold_ranges(cx: &mut TestAppContext) {
         let snapshot = buffer.text_snapshot();
         resolve_folds(&source_folds, &snapshot)
     });
-    let projected_folds = cx.read_entity(&combined, |buffer, cx| {
+    let projected_folds = cx.update_entity(&combined, |buffer, cx| {
         projected_fold_ranges(&buffer.snapshot(cx))
     });
-    let projected_offsets = cx.read_entity(&combined, |buffer, cx| {
+    let projected_offsets = cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         projected_folds
             .iter()
@@ -1495,7 +1517,7 @@ fn outline_projects_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
         );
     });
 
-    let items = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx).outline_items());
+    let items = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx).outline_items());
     let function = items
         .iter()
         .find(|item| item.name == "数据")
@@ -1543,7 +1565,7 @@ fn syntax_nodes_project_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
     });
 
     let node = cx
-        .read_entity(&combined, |buffer, cx| {
+        .update_entity(&combined, |buffer, cx| {
             buffer
                 .snapshot(cx)
                 .node_at(ByteOffset::new(source_name_start - function_range.start))
@@ -1588,7 +1610,7 @@ fn excerpt_projects_contained_fold_range_to_output_coordinates(cx: &mut TestAppC
         buffer.set_excerpts(vec![ExcerptRange::line_range(source, 1..4, cx)], cx);
     });
 
-    let projected = cx.read_entity(&combined, |buffer, cx| {
+    let projected = cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         projected_fold_ranges(&snapshot)
             .iter()
@@ -1651,7 +1673,7 @@ fn fold_projection_accounts_for_nonzero_output_start(cx: &mut TestAppContext) {
         );
     });
 
-    let (projected, output_start) = cx.read_entity(&combined, |buffer, cx| {
+    let (projected, output_start) = cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         let output_start = snapshot
             .excerpts()
@@ -1712,7 +1734,7 @@ fn excerpts_preserve_order_and_map_output_to_source(cx: &mut TestAppContext) {
     });
 
     let (text, excerpts, first_location, second_location, match_ranges) =
-        cx.read_entity(&combined, |buffer, cx| {
+        cx.update_entity(&combined, |buffer, cx| {
             let snapshot = buffer.snapshot(cx);
             let text = String::from_utf8(snapshot.text_bytes()).unwrap();
             let first_offset = ByteOffset::new(text.find("one").unwrap());
@@ -1778,7 +1800,7 @@ fn per_path_excerpts_keep_path_order_regardless_of_insertion_order(cx: &mut Test
         );
     });
 
-    cx.read_entity(&combined, |buffer, cx| {
+    cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         assert_eq!(
             String::from_utf8(snapshot.text_bytes()).unwrap(),
@@ -1810,7 +1832,7 @@ fn composite_anchor_resolves_in_the_same_file_after_excerpt_refresh(cx: &mut Tes
             cx,
         );
     });
-    let anchor = cx.read_entity(&combined, |buffer, cx| {
+    let anchor = cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         let excerpt = &snapshot.excerpts().nth(1).unwrap();
         buffer.anchor_at(
@@ -1876,7 +1898,7 @@ fn composite_anchor_falls_forward_when_its_file_leaves_the_diff(cx: &mut TestApp
             cx,
         );
     });
-    let anchor = cx.read_entity(&combined, |buffer, cx| {
+    let anchor = cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         let excerpt = &snapshot.excerpts().next().unwrap();
         buffer.anchor_at(excerpt.output_range().start(), Affinity::After)
@@ -1915,7 +1937,7 @@ fn invalid_source_anchor_does_not_fall_forward_to_another_file(cx: &mut TestAppC
             cx,
         );
     });
-    let valid = cx.read_entity(&combined, |buffer, cx| {
+    let valid = cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         let excerpt = snapshot.excerpts().next().unwrap();
         buffer.anchor_at(excerpt.output_range().start(), Affinity::After)
@@ -1958,7 +1980,7 @@ fn empty_files_keep_distinct_composite_lines_and_locations(cx: &mut TestAppConte
         );
     });
 
-    cx.read_entity(&combined, |buffer, cx| {
+    cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         // 尾换行不变式：非末尾空片段补一个换行占边界行，末尾片段保留原样（文档自身的末尾空行仍为其保留组合行）。
         assert_eq!(String::from_utf8(snapshot.text_bytes()).unwrap(), "\n");
@@ -1986,11 +2008,11 @@ fn source_reparse_does_not_reload_composite_text(cx: &mut TestAppContext) {
             cx,
         );
     });
-    let before = cx.read_entity(&combined, |combined, cx| combined.snapshot(cx).version());
+    let before = cx.update_entity(&combined, |combined, cx| combined.snapshot(cx).version());
 
     cx.run_until_parked();
 
-    let after = cx.read_entity(&combined, |combined, cx| combined.snapshot(cx).version());
+    let after = cx.update_entity(&combined, |combined, cx| combined.snapshot(cx).version());
     assert_eq!(after, before, "语法解析完成不应重载组合投影文本");
 }
 
@@ -2023,7 +2045,7 @@ fn composite_edit_maps_excerpt_source_ranges_exactly_once(cx: &mut TestAppContex
             .unwrap();
     });
     // 同步路径（edit 内手动映射）后的结果。
-    cx.read_entity(&combined, |buffer, cx| {
+    cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         assert_eq!(
             snapshot.excerpts().next().unwrap().source_range(),
@@ -2031,7 +2053,7 @@ fn composite_edit_maps_excerpt_source_ranges_exactly_once(cx: &mut TestAppContex
         );
     });
     cx.run_until_parked();
-    cx.read_entity(&combined, |buffer, cx| {
+    cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         let excerpt = &snapshot.excerpts().next().unwrap();
         // 只映射一次：源 'o'（5..6）替换为 "OO" → 源范围 5..10；二次映射会变成 5..11。
@@ -2084,6 +2106,13 @@ fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.snapshot(cx);
+    });
+    cx.run_until_parked();
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.snapshot(cx);
+    });
     let hunks_after_edit = cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunks().to_vec());
     assert_eq!(
         hunks_after_edit.len(),
@@ -2114,6 +2143,12 @@ fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
         );
     });
     cx.run_until_parked();
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.snapshot(cx);
+    });
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.snapshot(cx);
+    });
     let (hunks, expanded) = cx.read_entity(&combined, |buffer, _cx| {
         (buffer.diff_hunks().to_vec(), buffer.diff_hunk_expanded())
     });
@@ -2162,6 +2197,13 @@ fn diff_expansion_survives_hunk_refresh_and_merge(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.snapshot(cx);
+    });
+    cx.run_until_parked();
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.snapshot(cx);
+    });
     // 模拟 GitStore 刷新期间的加载态，再注入合并后的新结果。
     cx.update_entity(&combined, |buffer, cx| {
         assert!(!buffer.inject_diffs(None, cx));
@@ -2181,6 +2223,13 @@ fn diff_expansion_survives_hunk_refresh_and_merge(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.snapshot(cx);
+    });
+    cx.run_until_parked();
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.snapshot(cx);
+    });
     let (hunks, expanded) = cx.read_entity(&combined, |buffer, _cx| {
         (buffer.diff_hunks().to_vec(), buffer.diff_hunk_expanded())
     });
@@ -2232,7 +2281,7 @@ fn undo_keeps_rust_highlighting_in_diff_projection(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    cx.read_entity(&combined, |buffer, cx| {
+    cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         assert!(
             !snapshot
@@ -2281,7 +2330,7 @@ fn save_after_diff_hunk_edit_keeps_rust_highlighting(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    cx.read_entity(&combined, |buffer, cx| {
+    cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         assert!(
             !snapshot
@@ -2329,7 +2378,7 @@ fn diff_hunk_coordinates_follow_materialized_excerpts_across_files(cx: &mut Test
     });
     cx.run_until_parked();
 
-    cx.read_entity(&combined, |buffer, cx| {
+    cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         assert_eq!(
             String::from_utf8(snapshot.text_bytes()).expect("投影应为 UTF-8"),
@@ -2458,7 +2507,7 @@ fn external_full_replacement_invalidates_stale_diff_hunks(cx: &mut TestAppContex
     });
     cx.run_until_parked();
 
-    cx.read_entity(&combined, |buffer, cx| {
+    cx.update_entity(&combined, |buffer, cx| {
         assert_eq!(
             String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("投影应为 UTF-8"),
             "replacement\n"
@@ -2487,7 +2536,7 @@ fn fully_deleted_file_keeps_boundary_hunk(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    cx.read_entity(&combined, |buffer, cx| {
+    cx.update_entity(&combined, |buffer, cx| {
         assert_eq!(
             buffer.diff_hunks().len(),
             1,
@@ -2602,7 +2651,7 @@ fn dirty_source_keeps_existing_diff_projection_until_saved(cx: &mut TestAppConte
         );
     });
     cx.run_until_parked();
-    let initial_excerpt_count = cx.read_entity(&combined, |buffer, cx| {
+    let initial_excerpt_count = cx.update_entity(&combined, |buffer, cx| {
         buffer.snapshot(cx).excerpts().count()
     });
     assert!(initial_excerpt_count > 0, "初始 hunk 应生成 excerpt");
@@ -2621,7 +2670,7 @@ fn dirty_source_keeps_existing_diff_projection_until_saved(cx: &mut TestAppConte
     });
     cx.run_until_parked();
 
-    cx.read_entity(&combined, |buffer, cx| {
+    cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         assert!(
             buffer.is_diff_file_dirty(Path::new("src/a.rs"), cx),
@@ -2775,7 +2824,7 @@ fn diff_recovers_when_initial_result_is_stale(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     assert!(
-        cx.read_entity(&diff, |diff, cx| diff.is_current_version_calculated(cx)),
+        cx.update_entity(&diff, |diff, cx| diff.is_current_version_calculated(cx)),
         "过期结果被拒后必须补算到当前版本"
     );
 }
@@ -2889,7 +2938,7 @@ fn expanded_modified_hunk_exposes_word_diffs_in_composite_coordinates(cx: &mut T
     });
     cx.run_until_parked();
 
-    let (text, word_diffs) = cx.read_entity(&combined, |buffer, cx| {
+    let (text, word_diffs) = cx.update_entity(&combined, |buffer, cx| {
         let text =
             String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("组合文本必须是 UTF-8");
         (text, buffer.diff_hunk_word_diffs().to_vec())
@@ -2947,11 +2996,11 @@ fn composite_edits_are_applied_to_the_underlying_buffer(cx: &mut TestAppContext)
             .to_owned()
     });
     assert_eq!(source_contents, "zero\nONE\ntwo\n");
-    let projection = cx.read_entity(&combined, |buffer, cx| {
+    let projection = cx.update_entity(&combined, |buffer, cx| {
         String::from_utf8(buffer.snapshot(cx).text_bytes()).unwrap()
     });
     assert_eq!(projection, "ONE\n");
-    cx.read_entity(&combined, |buffer, cx| {
+    cx.update_entity(&combined, |buffer, cx| {
         let files = buffer.file_buffers(cx);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].1, PathBuf::from("src/a.rs"));
@@ -2984,7 +3033,7 @@ fn composite_file_buffers_are_deduplicated_across_excerpts(cx: &mut TestAppConte
         );
     });
 
-    cx.read_entity(&combined, |buffer, cx| {
+    cx.update_entity(&combined, |buffer, cx| {
         assert_eq!(buffer.file_buffers(cx).len(), 1);
     });
 }
@@ -3018,7 +3067,7 @@ fn composite_tracks_edits_made_through_another_editor(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    let projection = cx.read_entity(&combined, |buffer, cx| {
+    let projection = cx.update_entity(&combined, |buffer, cx| {
         String::from_utf8(buffer.snapshot(cx).text_bytes()).unwrap()
     });
     assert_eq!(projection, "ONE\n");
@@ -3114,7 +3163,7 @@ fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &m
         );
     });
 
-    cx.read_entity(&combined, |buffer, cx| {
+    cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         assert_eq!(
             String::from_utf8(snapshot.text_bytes()).unwrap(),
@@ -3169,7 +3218,7 @@ fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &m
             .to_owned()
     });
     assert_eq!(current_text, "上下文\n可写新内容\n之后\n");
-    cx.read_entity(&combined, |buffer, cx| {
+    cx.update_entity(&combined, |buffer, cx| {
         assert_eq!(
             String::from_utf8(buffer.snapshot(cx).text_bytes()).unwrap(),
             "上下文\n旧内容\n可写新内容\n之后\n"
@@ -3189,7 +3238,7 @@ fn zero_length_excerpt_at_document_start_is_visited(cx: &mut TestAppContext) {
         buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(other, 0..1, cx)], cx);
     });
 
-    let snapshot = cx.read_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    let snapshot = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
     let paths = snapshot
         .excerpts()
         .map(|excerpt| excerpt.path().to_path_buf())

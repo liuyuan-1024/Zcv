@@ -347,7 +347,10 @@ impl Editor {
             Ok((outcome, after))
         });
         if result.is_ok() {
-            let version = self.multi_buffer.read(cx).snapshot(cx).version();
+            let version = self
+                .multi_buffer
+                .update(cx, |buffer, cx| buffer.snapshot(cx))
+                .version();
             self.autoclose_regions
                 .extend(
                     new_regions_after

@@ -692,7 +692,7 @@ mod tests {
         snapshot: impl Into<MultiBufferSnapshot>,
     ) -> DisplaySnapshot {
         let map = new_display_map(cx, snapshot);
-        cx.read_entity(&map, |map, _| map.snapshot())
+        cx.update_entity(&map, |map, cx| map.snapshot(cx))
     }
 
     impl SearchDecorationSnapshot {
@@ -753,7 +753,7 @@ mod tests {
                     )),
                     "第 20 行应产生软换行"
                 );
-                let snapshot = cx.read_entity(&map, |map, _| map.snapshot());
+                let snapshot = cx.update_entity(&map, |map, cx| map.snapshot(cx));
                 let start_row = snapshot
                     .line_to_display_row(Line::new(20))
                     .expect("第 20 行应可映射");
@@ -822,7 +822,7 @@ mod tests {
                     )),
                     "第 16 行应产生软换行"
                 );
-                let snapshot = cx.read_entity(&map, |map, _| map.snapshot());
+                let snapshot = cx.update_entity(&map, |map, cx| map.snapshot(cx));
                 let del_start = snapshot
                     .line_to_display_row(Line::new(15))
                     .expect("删除点行应可映射")

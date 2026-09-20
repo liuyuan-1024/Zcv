@@ -254,6 +254,8 @@ pub struct BufferDiff {
     revision: u64,
     /// 最近一次已完成计算对应的 working 版本；None 表示初始计算尚未返回。
     calculated_working_version: Option<BufferVersion>,
+    /// 当前是否有一份包含最新 working/base/index 快照的计算在后台执行。
+    calculation_pending: bool,
 }
 
 impl EventEmitter<BufferDiffEvent> for BufferDiff {}
@@ -274,6 +276,7 @@ impl BufferDiff {
             operations: input.operations,
             revision: 0,
             calculated_working_version: None,
+            calculation_pending: false,
         };
         this.recompute_with_refresh(DiffRefresh::RebuildProjection, cx);
         this
@@ -284,6 +287,7 @@ impl BufferDiff {
     /// 由宿主在创建后与 working 文本变化时调用；本实体不订阅 working buffer。
     /// 结果回到前台后必须再次比对版本，避免较早任务覆盖后续编辑的 hunk。
     pub fn recompute_with_refresh(&mut self, refresh: DiffRefresh, cx: &mut Context<Self>) {
+        self.calculation_pending = true;
         let working = self.working.read(cx).text_snapshot();
         let working_version = working.version();
         // base/index 的权威文档由 GitStore 持有；这里只克隆廉价快照，
@@ -340,6 +344,7 @@ impl BufferDiff {
             self.recompute_with_refresh(refresh, cx);
             return false;
         }
+        self.calculation_pending = false;
         let calculation_was_pending = self.calculated_working_version != Some(working_version);
         self.calculated_working_version = Some(working_version);
         if !calculation_was_pending && hunks_equivalent(&self.snapshot.hunks, &hunks) {
@@ -361,7 +366,9 @@ impl BufferDiff {
 
     /// 当前 working 版本的后台计算是否已经完成。
     pub fn is_current_version_calculated(&self, cx: &App) -> bool {
-        self.calculated_working_version == Some(self.working.read(cx).text_snapshot().version())
+        !self.calculation_pending
+            && self.calculated_working_version
+                == Some(self.working.read(cx).text_snapshot().version())
     }
 
     pub fn snapshot(&self) -> &BufferDiffSnapshot {

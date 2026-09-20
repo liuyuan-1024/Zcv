@@ -158,8 +158,11 @@ impl MarkdownPreviewView {
             cancellation.cancel();
         }
         // 预览渲染需要整份文档文本；这是只读边界，不进入编辑/显示热路径。
-        let text = String::from_utf8(self.multi_buffer.read(cx).snapshot(cx).text_bytes())
-            .expect("编辑器文档应为 UTF-8");
+        let text = String::from_utf8(
+            self.multi_buffer
+                .update(cx, |buffer, cx| buffer.snapshot(cx).text_bytes()),
+        )
+        .expect("编辑器文档应为 UTF-8");
         self.blocks = Arc::new(parse(&text));
         self.math_render_generation = self.math_render_generation.wrapping_add(1);
         self.math_content_size = None;

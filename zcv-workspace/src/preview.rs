@@ -491,17 +491,12 @@ impl Render for PreviewToolbar {
     }
 }
 
-/// 预览切换按钮的当前语义。
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PreviewControl {
-    ShowPreview,
-    ShowSource,
-}
-
-/// 预览能力入口。
+/// 预览能力入口：活动 Item 是尚未进入预览的源码文件时显示「预览」按钮。
+///
+/// 预览视图的「返回源码」由 [`PreviewToolbar`] 承担，本按钮不处理反向切换。
 pub struct PreviewButton {
     pane: WeakEntity<Pane>,
-    control: Option<PreviewControl>,
+    previewable: bool,
     active_item: Option<Box<dyn ItemHandle>>,
     _subscription: Option<Subscription>,
 }
@@ -510,32 +505,31 @@ impl PreviewButton {
     pub fn new(pane: WeakEntity<Pane>) -> Self {
         Self {
             pane,
-            control: None,
+            previewable: false,
             active_item: None,
             _subscription: None,
         }
     }
 
-    fn control_for(item: Option<&dyn ItemHandle>, cx: &App) -> Option<PreviewControl> {
-        if item.is_some_and(|item| item.as_preview_item(cx).is_some()) {
-            Some(PreviewControl::ShowSource)
-        } else if item
-            .and_then(|item| item.item_path(cx))
+    /// 只有尚未进入预览、且路径注册了源码派生预览的源码 Item 才显示入口。
+    fn is_previewable(item: Option<&dyn ItemHandle>, cx: &App) -> bool {
+        let Some(item) = item else {
+            return false;
+        };
+        if item.as_preview_item(cx).is_some() {
+            return false;
+        }
+        item.item_path(cx)
             .as_deref()
             .is_some_and(|path| source_provider_for(path, cx).is_some())
-        {
-            Some(PreviewControl::ShowPreview)
-        } else {
-            None
-        }
     }
 
-    fn refresh_control(&mut self, cx: &mut Context<Self>) {
-        let control = Self::control_for(self.active_item.as_deref(), cx);
-        if control == self.control {
+    fn refresh_previewable(&mut self, cx: &mut Context<Self>) {
+        let previewable = Self::is_previewable(self.active_item.as_deref(), cx);
+        if previewable == self.previewable {
             return;
         }
-        self.control = control;
+        self.previewable = previewable;
         cx.notify();
     }
 }
@@ -549,7 +543,7 @@ impl PreviewButton {
     ) {
         self._subscription = None;
         self.active_item = active_item.map(ItemHandle::boxed_clone);
-        self.control = Self::control_for(active_item, cx);
+        self.previewable = Self::is_previewable(active_item, cx);
 
         if let Some(item) = active_item {
             let this = cx.entity().downgrade();
@@ -559,7 +553,8 @@ impl PreviewButton {
                     if event == ItemEvent::PathChanged {
                         let this = this.clone();
                         cx.defer(move |cx| {
-                            this.update(cx, |this, cx| this.refresh_control(cx)).ok();
+                            this.update(cx, |this, cx| this.refresh_previewable(cx))
+                                .ok();
                         });
                     }
                 }),
@@ -572,14 +567,10 @@ impl PreviewButton {
 impl Render for PreviewButton {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pane = self.pane.clone();
-        div().when_some(self.control, |controls, control| {
-            let (icon, label) = match control {
-                PreviewControl::ShowSource => ("icons/eye_off.svg", "源码"),
-                PreviewControl::ShowPreview => ("icons/eye.svg", "预览"),
-            };
+        div().when(self.previewable, |controls| {
             controls.child(
-                Button::icon("toolbar-preview", icon)
-                    .label(label)
+                Button::icon("toolbar-preview", "icons/eye.svg")
+                    .label("预览")
                     .color(color::current(cx).text_muted)
                     .shortcut(zcv_keymap::display_shortcut(&TogglePreview, cx))
                     .on_click(move |_, window, cx| {

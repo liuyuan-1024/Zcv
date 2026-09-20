@@ -1164,6 +1164,11 @@ impl Item for MarkdownPreviewView {
             .into()
     }
 
+    /// 源码与预览切换由工作区的 `PreviewToolbar` 承担，不使用编辑器通用文档工具栏，避免与预览工具项重复显示面包屑与预览入口。
+    fn uses_editor_document_toolbar(&self, _cx: &App) -> bool {
+        false
+    }
+
     fn to_item_events(event: &Self::Event, emit: &mut dyn FnMut(ItemEvent)) {
         match event {
             MarkdownPreviewEvent::SourceMetadataChanged => {
@@ -1180,16 +1185,6 @@ impl Item for MarkdownPreviewView {
 
     fn item_path(&self, cx: &App) -> Option<PathBuf> {
         self.source_item.item_path(cx)
-    }
-
-    fn breadcrumbs(
-        &self,
-        project_root: Option<&Path>,
-        cx: &App,
-    ) -> Option<(Vec<SharedString>, Option<gpui::Font>)> {
-        let (mut segments, font) = self.source_item.breadcrumbs(project_root, cx)?;
-        segments.push("Preview".into());
-        Some((segments, font))
     }
 
     fn rename_path(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {

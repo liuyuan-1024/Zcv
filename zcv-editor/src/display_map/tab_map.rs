@@ -18,9 +18,7 @@ use super::chunk::{ChunkText, FoldChunks, HighlightStyles, StyledChunks};
 use super::display_width::char_width;
 use super::{
     error::DisplayMapResult,
-    fold_map::{
-        FoldEdit, FoldSnapshot, LogicalProjection, ProjectedLineIndex, StreamProjectedKind,
-    },
+    fold_map::{FoldEdit, FoldSnapshot, ProjectedLineIndex, StreamProjectedKind},
 };
 
 /// Tab 层的本层列坐标：tab 展开后一行内的视觉列宽。
@@ -35,35 +33,61 @@ impl TabColumn {
     }
 }
 
-/// Tab 层的行编辑：本层 tab 行空间中的待失效区域。
+/// Tab 层的本层点：tab 行坐标。
 ///
-/// tab 行与 fold 投影行一一对应（tab 只改列宽、不增删行），但本层仍以权威行总数保证覆盖：
-/// Edit 只表达失效区域，Wrap 只消费直接下层编辑（D-2/D-8）。
+/// 本层按行失效，编辑端点落在行边界。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct TabPoint(Line);
+
+impl TabPoint {
+    pub(super) const fn new(line: Line) -> Self {
+        Self(line)
+    }
+
+    pub(super) const fn line(self) -> Line {
+        self.0
+    }
+}
+
+/// Tab 层的本层编辑：tab 点区间在本层坐标空间中的替换。
+///
+/// tab 行与 fold 投影行一一对应（tab 只改列宽、不增删行）；`old == new` 表示就地失效这些行。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct TabEdit {
-    old: Range<usize>,
-    new: Range<usize>,
-    /// 行内编辑精确失效的 tab 行；结构编辑为空。
-    changed_rows: Vec<usize>,
-    structural: bool,
+    old: Range<TabPoint>,
+    new: Range<TabPoint>,
 }
 
 impl TabEdit {
+    fn from_rows(old: Range<usize>, new: Range<usize>) -> Self {
+        Self {
+            old: tab_point_range(old),
+            new: tab_point_range(new),
+        }
+    }
+
     pub(super) fn old_rows(&self) -> Range<usize> {
-        self.old.clone()
+        self.old.start.line().get()..self.old.end.line().get()
     }
 
     pub(super) fn new_rows(&self) -> Range<usize> {
-        self.new.clone()
+        self.new.start.line().get()..self.new.end.line().get()
     }
 
-    pub(super) fn changed_rows(&self) -> &[usize] {
-        &self.changed_rows
+    /// 行内编辑就地失效的 tab 行；结构编辑由 `old_rows`/`new_rows` 表达。
+    pub(super) fn changed_rows(&self) -> Range<usize> {
+        self.old_rows()
     }
 
     pub(super) fn is_structural(&self) -> bool {
-        self.structural || self.old != self.new
+        self.old != self.new
     }
+}
+
+/// 行区间转成本层点区间；端点为行边界。
+fn tab_point_range(rows: Range<usize>) -> Range<TabPoint> {
+    let point = |row: usize| TabPoint::new(Line::new(row));
+    point(rows.start)..point(rows.end)
 }
 
 #[derive(Debug, Clone)]
@@ -173,7 +197,7 @@ impl TabMap {
     ) -> (TabSnapshot, Vec<TabEdit>) {
         let old_count = self.snapshot.line_count();
         let new_count = fold_snapshot.line_count();
-        let tab_edits = tab_edits_from_fold_edits(&fold_snapshot, old_count, new_count, fold_edits);
+        let tab_edits = tab_edits_from_fold_edits(old_count, new_count, fold_edits);
         // 缓存失效只以 tab 宽度变化为键。
         let same_configuration = self.snapshot.tab_width() == tab_width;
         // fold 拓扑（折叠/行内提示变化都会使 fold 版本前进）。
@@ -206,7 +230,7 @@ impl TabMap {
         } else {
             let mut changed_rows = BTreeSet::new();
             for edit in &tab_edits {
-                changed_rows.extend(edit.changed_rows().iter().copied());
+                changed_rows.extend(edit.changed_rows());
             }
             self.measured_line_widths
                 .retain(|line, _| !changed_rows.contains(&line.get()));
@@ -314,49 +338,21 @@ impl TabMap {
     }
 }
 
-/// 把 Fold 层的失效编辑转成 Tab 层的行编辑。
+/// 把 Fold 层的本层编辑转成 Tab 层的本层编辑。
 ///
-/// tab 行与 fold 投影行一一对应，因此行区间沿用；行内编辑把逻辑行映射为 tab 行。
-/// Edit 只表达待失效区域，Tab 层以权威行总数校正覆盖：
+/// tab 行与 fold 投影行一一对应，行区间沿用，端点取行边界。
 /// 局部编辑的 old/new 行数差必须与全局拓扑差一致，否则 Wrap 变换树的 input 会与下层不一致。
-/// 多段编辑不满足全局守恒时退化为一条整层编辑（允许放大失效区域）。
 fn tab_edits_from_fold_edits(
-    fold_snapshot: &FoldSnapshot,
     old_count: usize,
     new_count: usize,
     fold_edits: &[FoldEdit],
 ) -> Vec<TabEdit> {
     let edits: Vec<TabEdit> = fold_edits
         .iter()
-        .map(|edit| {
-            let structural = edit.is_structural();
-            let changed_rows = if structural {
-                Vec::new()
-            } else {
-                let mut rows: Vec<usize> = edit
-                    .changed_lines()
-                    .iter()
-                    .filter_map(
-                        |line| match fold_snapshot.logical_to_projected(*line).ok()? {
-                            LogicalProjection::Visible(row) => Some(row.get()),
-                            LogicalProjection::Hidden => None,
-                        },
-                    )
-                    .collect();
-                rows.sort_unstable();
-                rows.dedup();
-                rows
-            };
-            TabEdit {
-                old: edit.old_rows(),
-                new: edit.new_rows(),
-                changed_rows,
-                structural,
-            }
-        })
+        .map(|edit| TabEdit::from_rows(edit.old_rows(), edit.new_rows()))
         .collect();
-    let old_sum: usize = edits.iter().map(|edit| edit.old.len()).sum();
-    let new_sum: usize = edits.iter().map(|edit| edit.new.len()).sum();
+    let old_sum: usize = edits.iter().map(|edit| edit.old_rows().len()).sum();
+    let new_sum: usize = edits.iter().map(|edit| edit.new_rows().len()).sum();
     // tab 层只改列宽、不增删行，fold 编辑必须守恒 tab 行数。
     // 不守恒说明 fold 层失效区间没有覆盖权威净行数，必须直接失败而不是静默整层失效。
     assert_eq!(

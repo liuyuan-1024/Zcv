@@ -1213,7 +1213,7 @@ impl WrapMap {
             } else {
                 let changed_rows: Vec<usize> = tab_edits
                     .iter()
-                    .flat_map(|edit| edit.changed_rows().iter().copied())
+                    .flat_map(|edit| edit.changed_rows())
                     .collect();
                 self.update_inline(&changed_rows, wrap_width)
             }

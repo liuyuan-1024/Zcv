@@ -68,7 +68,7 @@ fn fold_snapshot_owns_fold_and_transform_trees_and_keeps_old_snapshots_stable() 
     );
     assert_ne!(before.version(), after.version());
     assert_eq!(after.folds.summary().count, 1);
-    assert!(edits.iter().all(FoldEdit::is_structural));
+    assert!(edits.iter().all(|edit| edit.old_rows() != edit.new_rows()));
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn folding_a_middle_range_emits_a_localized_structural_edit() {
 
     assert_eq!(after.line_count(), 5);
     let edit = &edits[0];
-    assert!(edit.is_structural());
+    assert!(edit.old_rows() != edit.new_rows());
     // 只覆盖被折叠的 tab 行，折叠点前后的可见行保留原变换。
     // 折叠段不产生投影行：被隐藏的两行整段移除，anchor 行不在编辑区间内。
     // Edit 允许放大到 anchor 行：区间只覆盖被折叠行与其合并行，不是整层失效。
@@ -101,7 +101,7 @@ fn unfolding_a_middle_fold_restores_only_its_rows() {
 
     assert_eq!(after.line_count(), 7);
     let edit = &edits[0];
-    assert!(edit.is_structural());
+    assert!(edit.old_rows() != edit.new_rows());
     // 折叠段不产生投影行：展开恢复的两行整段插入，anchor 行不在编辑区间内。
     // Edit 允许放大到 anchor 行：展开只失效被恢复行与其合并行。
     assert_eq!(edit.old_rows(), 1..2);
@@ -141,7 +141,7 @@ fn unfolding_outer_fold_reveals_the_nested_transform() {
     let (snapshot, edits) = map.write().unfold(outer);
     assert_eq!(snapshot.folds.summary().count, 1);
     assert_eq!(snapshot.line_count(), 4);
-    assert!(edits[0].is_structural());
+    assert!(edits[0].old_rows() != edits[0].new_rows());
 }
 
 #[test]
@@ -162,7 +162,7 @@ fn inline_edit_advances_fold_snapshot_without_rebuilding_transforms() {
     let (snapshot, edits) = map.read_test(&buffer, &subscription);
     assert_eq!(snapshot.transforms, transforms);
     assert_eq!(snapshot.folds.summary().count, 1);
-    assert!(edits.iter().all(|edit| !edit.is_structural()));
+    assert!(edits.iter().all(|edit| edit.old_rows() == edit.new_rows()));
 }
 
 #[test]
@@ -180,16 +180,15 @@ fn editing_inside_a_fold_remeasures_only_the_merged_row() {
         .unwrap();
 
     let (snapshot, edits) = map.read_test(&buffer, &subscription);
-    // 折叠内部插入整行：隐藏行数随之变化，tab 行数不变；只有合并行需要重排。
+    // 折叠内部插入整行：隐藏行数随之变化，投影行数不变；只有合并行需要重排，因此本层编辑是 old == new 的就地失效。
     assert_eq!(snapshot.line_count(), 2);
     let edit = &edits[0];
-    assert!(edit.is_structural());
     assert_eq!(edit.old_rows(), 0..1);
     assert_eq!(edit.new_rows(), 0..1);
 }
 
 #[test]
-fn newline_edit_rebuilds_transform_tree_and_emits_structural_fold_edit() {
+fn newline_edit_inside_a_fold_rebuilds_transforms_with_a_local_edit() {
     let mut buffer =
         Buffer::from_text("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
     let (mut map, _) = FoldMap::new(buffer.snapshot().into());
@@ -207,7 +206,10 @@ fn newline_edit_rebuilds_transform_tree_and_emits_structural_fold_edit() {
         snapshot.logical_line_count(),
         buffer.snapshot().line_count()
     );
-    assert!(edits.iter().all(FoldEdit::is_structural));
+    // fold 变换树已重建，但投影行数未变，发出的编辑只覆盖合并行。
+    assert_eq!(snapshot.line_count(), 2);
+    assert_eq!(edits[0].old_rows(), 0..1);
+    assert_eq!(edits[0].new_rows(), 0..1);
 }
 #[test]
 fn newline_edit_outside_folds_emits_a_localized_structural_edit() {
@@ -226,7 +228,7 @@ fn newline_edit_outside_folds_emits_a_localized_structural_edit() {
     let (snapshot, edits) = map.read_test(&buffer, &subscription);
     assert_eq!(snapshot.line_count(), 8);
     let edit = &edits[0];
-    assert!(edit.is_structural());
+    assert!(edit.old_rows() != edit.new_rows());
     assert_eq!(edit.old_rows(), 2..3);
     assert_eq!(edit.new_rows(), 2..4);
 }
@@ -309,7 +311,7 @@ fn edits_on_folded_lines_map_to_anchor_row() {
         Buffer::from_text("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
     let (mut map, _) = FoldMap::new(buffer.snapshot().into());
     map.fold_text_range(6, 13).unwrap();
-    // 编辑落在隐藏行（行 1）与 close 行（行 2）：changed_lines 都映射到 anchor 行（行 0）。
+    // 编辑落在隐藏行（行 1）与 close 行（行 2）：都映射到 anchor 行（行 0）。
     let subscription = buffer.subscribe();
     buffer
         .edit(
@@ -318,7 +320,7 @@ fn edits_on_folded_lines_map_to_anchor_row() {
         )
         .unwrap();
     let (_, edits) = map.read_test(&buffer, &subscription);
-    assert_eq!(edits[0].changed_lines(), &[Line::ZERO]);
+    assert_eq!(edits[0].old_rows(), 0..1);
 }
 
 #[test]

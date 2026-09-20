@@ -2362,16 +2362,11 @@ fn visible_foldable_lines(
     snapshot: &DisplaySnapshot,
     visible_lines: &Range<Line>,
 ) -> BTreeSet<Line> {
-    let buffer = snapshot.buffer_snapshot();
-    // 折叠候选以组合锚点保存在 CreaseMap 中；按可见行范围 seek，
-    // 不遍历整份候选集合（D-7：显示热路径只按可见范围读取）。
-    snapshot
-        .crease_snapshot()
-        .creases_in_range(visible_lines.clone(), buffer)
-        .filter_map(|crease| {
-            let start = buffer.resolve_anchor(&crease.range().start)?;
-            buffer.byte_to_line(start).ok()
-        })
+    // 显式 crease 以锚点索引 seek；
+    // 语法 crease 仅查询可见的当前行，不物化所有源的折叠列表。
+    (visible_lines.start.get()..visible_lines.end.get())
+        .map(Line::new)
+        .filter(|line| snapshot.crease_at_line(*line).is_some())
         .collect()
 }
 

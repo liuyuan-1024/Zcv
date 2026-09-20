@@ -41,8 +41,8 @@ use crate::scrollbar::{ScrollbarMarker, ScrollbarMarkerState};
 
 use super::blink_manager::BlinkManager;
 use super::display_map::{
-    DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot, EditorHunk, FoldBias,
-    HunkControlTarget, WrapRowKind,
+    CreaseId, DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot, EditorHunk,
+    FoldBias, HunkControlTarget, WrapRowKind,
 };
 use super::element::{AUTOSCROLL_INTERVAL, EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollViewport, ScrollbarThumbState};
@@ -232,6 +232,12 @@ impl From<SoftWrapMode> for SoftWrap {
         }
     }
 }
+
+/// 宿主注入的显式折叠候选身份。
+///
+/// 身份只用于移除同一候选；范围本身由显示层以组合锚点保存并随文本演进。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ExplicitCreaseId(CreaseId);
 
 pub struct Editor {
     multi_buffer: Entity<MultiBuffer>,
@@ -641,6 +647,40 @@ impl Editor {
         cx.notify();
     }
 
+    /// 注入宿主拥有的显式折叠候选。
+    ///
+    /// 显式范围优先于同一行的语法折叠建议；语法候选仍由显示层按行即时查询。
+    pub fn insert_creases(
+        &mut self,
+        ranges: impl IntoIterator<Item = Range<MultiBufferAnchor>>,
+        cx: &mut Context<Self>,
+    ) -> Vec<ExplicitCreaseId> {
+        let ids = self
+            .display_map
+            .update(cx, |map, cx| map.insert_creases(ranges, cx));
+        if !ids.is_empty() {
+            self.advance_snapshots(cx);
+            cx.notify();
+        }
+        ids.into_iter().map(ExplicitCreaseId).collect()
+    }
+
+    /// 移除先前注入的显式折叠候选。
+    pub fn remove_creases(
+        &mut self,
+        ids: impl IntoIterator<Item = ExplicitCreaseId>,
+        cx: &mut Context<Self>,
+    ) {
+        let ids = ids.into_iter().map(|id| id.0).collect::<Vec<_>>();
+        if ids.is_empty() {
+            return;
+        }
+        self.display_map
+            .update(cx, |map, cx| map.remove_creases(ids, cx));
+        self.advance_snapshots(cx);
+        cx.notify();
+    }
+
     /// 折叠/展开指定逻辑行（crease 点击与 ToggleFold 命令的共享实现）。
     ///
     /// 该行是折叠入口行则展开覆盖它的折叠；否则若该行是可折叠范围起点则折叠整个范围。
@@ -656,11 +696,8 @@ impl Editor {
                 cx.emit(EditorEvent::Error(format!("展开折叠失败：{error:#}")));
             }
         } else {
-            let snapshot = self.render_snapshot();
-            // 折叠候选以组合锚点保存在 CreaseMap 中；按行 seek 定位入口行。
             let range = display_snapshot
-                .crease_snapshot()
-                .crease_at_line(line, &snapshot)
+                .crease_at_line(line)
                 .map(|crease| crease.range().clone());
             if let Some(range) = range
                 && let Err(error) = self
@@ -714,20 +751,8 @@ impl Editor {
             return;
         };
         let range = display_snapshot
-            .crease_snapshot()
-            .creases()
-            .filter_map(|crease| {
-                let range = crease.range();
-                let start = snapshot
-                    .resolve_anchor(&range.start)
-                    .and_then(|offset| snapshot.byte_to_line(offset).ok())?;
-                let end = snapshot
-                    .resolve_anchor(&range.end)
-                    .and_then(|offset| snapshot.byte_to_line(offset).ok())?;
-                (start <= head_line && head_line <= end).then_some((range, start, end))
-            })
-            .min_by_key(|(_, start, end)| (head_line.get() - start.get(), end.get() - start.get()))
-            .map(|(range, _, _)| range.clone());
+            .crease_containing_line(head_line)
+            .map(|crease| crease.range().clone());
 
         if let Some(range) = range
             && let Err(error) = self

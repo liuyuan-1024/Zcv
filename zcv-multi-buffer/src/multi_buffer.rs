@@ -226,8 +226,6 @@ struct ExcerptSource {
 /// 不可变快照帧中的源状态（不携带实体引用）。
 #[derive(Clone, Debug)]
 struct ExcerptSourceSnapshot {
-    /// 源实体身份：显示层按它增量同步源级派生（折叠候选等）；纯文本派生快照没有实体源。
-    source_id: Option<gpui::EntityId>,
     path: PathKey,
     text: Snapshot,
     syntax: SyntaxSnapshot,
@@ -1541,6 +1539,69 @@ pub struct MultiBufferSnapshot {
     metadata_version: u64,
 }
 
+/// 组合输出位置关联的源快照与坐标映射。
+///
+/// `MultiBuffer` 只提供源／组合坐标转换；
+/// Tree-sitter 查询由显示层在需要某一行时执行，不在组合快照中物化或缓存整份源文件的语法派生数据。
+pub struct MultiBufferSource<'a> {
+    snapshot: &'a MultiBufferSnapshot,
+    source_index: usize,
+    source_offset: ByteOffset,
+}
+
+impl<'a> MultiBufferSource<'a> {
+    pub fn text(&self) -> &'a Snapshot {
+        &self
+            .snapshot
+            .source_snapshot(self.source_index)
+            .expect("源映射必须引用当前快照中的源")
+            .text
+    }
+
+    pub fn syntax(&self) -> &'a SyntaxSnapshot {
+        &self
+            .snapshot
+            .source_snapshot(self.source_index)
+            .expect("源映射必须引用当前快照中的源")
+            .syntax
+    }
+
+    /// 当前组合位置在源文本中的字节偏移。
+    pub fn source_offset(&self) -> ByteOffset {
+        self.source_offset
+    }
+
+    /// 将连续可见的源范围投影为组合锚点范围。
+    ///
+    /// 范围可以跨同一源的连续 excerpt；
+    /// 若中间有未展示的源区间，则不能投影。
+    pub fn project_range(&self, range: Range<ByteOffset>) -> Option<Range<MultiBufferAnchor>> {
+        if range.start >= range.end {
+            return None;
+        }
+        let source = self.snapshot.source_snapshot(self.source_index)?;
+        let (start_mapping, end_mapping) = source_mapping_range(
+            &self.snapshot.excerpts,
+            &self.snapshot.diff_transforms,
+            &source.path,
+            self.source_index,
+            range.start.get(),
+            range.end.get(),
+        )?;
+        let output_start = start_mapping.output_range.start().get() + range.start.get()
+            - start_mapping.source_range.start().get();
+        let output_end = end_mapping.output_range.start().get() + range.end.get()
+            - end_mapping.source_range.start().get();
+        (output_start < output_end).then(|| {
+            self.snapshot
+                .anchor_at(ByteOffset::new(output_start), Affinity::Before)
+                ..self
+                    .snapshot
+                    .anchor_at(ByteOffset::new(output_end), Affinity::After)
+        })
+    }
+}
+
 /// 虚拟组合文本的一段连续借用。
 ///
 /// `text` 永远直接借用某个源 Buffer，或借用 excerpt 间的静态换行边界；
@@ -2342,69 +2403,17 @@ impl MultiBufferSnapshot {
         spans
     }
 
-    /// 返回每个源的折叠查询版本；折叠候选属于显示层的派生数据，不存入组合快照。
-    pub fn fold_sources(
-        &self,
-    ) -> impl Iterator<Item = (Option<gpui::EntityId>, (BufferVersion, BufferVersion, u64))> {
-        self.excerpt_sources.values().map(|source| {
-            (
-                source.source_id,
-                (
-                    source.text.version(),
-                    source.syntax.version(),
-                    self.metadata_version,
-                ),
-            )
+    /// 返回组合输出位置对应的源快照与坐标映射。
+    ///
+    /// 删除 hunk 与 excerpt 间补充换行没有源文本，因而不返回映射。
+    pub fn source_at(&self, offset: impl Into<MultiBufferOffset>) -> Option<MultiBufferSource<'_>> {
+        let (mapping, _, source_offset) =
+            self.source_point(ByteOffset::new(offset.into().get()))?;
+        Some(MultiBufferSource {
+            snapshot: self,
+            source_index: mapping.source_index,
+            source_offset,
         })
-    }
-
-    /// 返回源实体在当前快照源表中的索引。
-    pub fn source_index(&self, source_id: gpui::EntityId) -> Option<usize> {
-        self.source_indices.get(&source_id).copied()
-    }
-
-    /// 单个源的折叠候选（组合坐标，按源内顺序）。
-    pub fn fold_ranges_for_source(&self, source_index: usize) -> Vec<Range<MultiBufferAnchor>> {
-        let Some(source) = self.source_snapshot(source_index) else {
-            return Vec::new();
-        };
-        let mut projected = Vec::new();
-        let folds = source
-            .syntax
-            .fold_ranges(0..source.text.len_bytes().get(), &source.text);
-        for fold in folds {
-            let (Ok(start), Ok(end)) = (
-                fold.range.start.resolve_in(&source.text),
-                fold.range.end.resolve_in(&source.text),
-            ) else {
-                // 折叠候选代际已被 reset / 基线替换淘汰时不再投影。
-                continue;
-            };
-            if start >= end {
-                continue;
-            }
-            let Some((start_mapping, end_mapping)) = source_mapping_range(
-                &self.excerpts,
-                &self.diff_transforms,
-                &source.path,
-                source_index,
-                start.get(),
-                end.get(),
-            ) else {
-                continue;
-            };
-            let output_start = start_mapping.output_range.start().get() + start.get()
-                - start_mapping.source_range.start().get();
-            let output_end = end_mapping.output_range.start().get() + end.get()
-                - end_mapping.source_range.start().get();
-            if output_start < output_end {
-                projected.push(
-                    self.anchor_at(ByteOffset::new(output_start), Affinity::Before)
-                        ..self.anchor_at(ByteOffset::new(output_end), Affinity::After),
-                );
-            }
-        }
-        projected
     }
 
     pub fn bracket_pairs_at(&self, offset: impl Into<MultiBufferOffset>) -> Vec<BracketPair> {
@@ -2966,7 +2975,6 @@ impl From<Snapshot> for MultiBufferSnapshot {
             excerpt_sources: TreeMap::from_ordered_entries([(
                 0,
                 ExcerptSourceSnapshot {
-                    source_id: None,
                     path: PathKey::min(),
                     text,
                     syntax,
@@ -4827,7 +4835,6 @@ impl MultiBuffer {
         // BufferSnapshot。这里必须整帧替换，不能先更新源表、再等待 excerpts
         // 树在下一次读取时补齐，否则一个快照会把旧范围解析到新文本上。
         let source_snapshot = |source: &ExcerptSource| ExcerptSourceSnapshot {
-            source_id: Some(source.entity.entity_id()),
             path: source.path.clone(),
             text: source.text.clone(),
             syntax: source.syntax.clone(),

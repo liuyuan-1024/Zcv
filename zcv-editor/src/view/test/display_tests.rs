@@ -4,7 +4,7 @@ use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 use std::path::PathBuf;
 use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging};
 use zcv_multi_buffer::{DiffFile, DisplayHunk, ExcerptRange, MultiBuffer};
-use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TransactionMetadata};
+use zcv_text::{Affinity, Buffer, BufferConfig, ByteOffset, Edit, Line, TransactionMetadata};
 
 use super::common::{
     buffer_text, focus_editor, inject_editor_diff, inject_file_diff, revision_buffer, test_buffer,
@@ -474,16 +474,19 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
     });
     let editor = cx.new(|cx| Editor::from_language_buffer(buffer.clone(), EditorMode::Full, cx));
     cx.run_until_parked();
-    // 语法解析完成后语言层提供两个折叠范围（fn main 与 fn other 的块体）。
-    let fold_ranges = cx.read_entity(&editor, |editor, _| {
+    // 语法候选不缓存进 CreaseMap，而是在显示层请求入口行时即时生成。
+    assert!(cx.read_entity(&editor, |editor, _| {
         editor
             .display_snapshot()
-            .crease_snapshot()
-            .creases()
-            .map(|crease| crease.range().clone())
-            .collect::<Vec<_>>()
-    });
-    assert_eq!(fold_ranges.len(), 2);
+            .crease_at_line(Line::ZERO)
+            .is_some()
+    }));
+    assert!(cx.read_entity(&editor, |editor, _| {
+        editor
+            .display_snapshot()
+            .crease_at_line(Line::new(3))
+            .is_some()
+    }));
 
     // 折叠 fn main（入口行 0）：隐藏块内 2 行，无占位行，总行数 6 → 4。
     editor.update(cx, |editor, cx| editor.toggle_fold_at_line(Line::ZERO, cx));
@@ -509,6 +512,43 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
             .display_snapshot()
             .fold_anchor_lines()
             .contains(&Line::ZERO)
+    }));
+}
+
+#[gpui::test]
+fn explicit_crease_is_visible_and_removable_by_identity(cx: &mut TestAppContext) {
+    let buffer = Buffer::from_text("heading\nbody\n".to_owned(), BufferConfig::default())
+        .expect("测试 Buffer 应能创建");
+    let buffer = cx.new(|cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(PathBuf::from("notes.txt")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    });
+    let editor = cx.new(|cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx));
+
+    let ids = editor.update(cx, |editor, cx| {
+        let snapshot = editor.display_snapshot().buffer_snapshot().clone();
+        let range = snapshot.anchor_at(MultiBufferOffset::new(0), Affinity::Before)
+            ..snapshot.anchor_at(snapshot.len_bytes(), Affinity::After);
+        editor.insert_creases([range], cx)
+    });
+    assert_eq!(ids.len(), 1, "每个显式范围应获得一个稳定身份");
+    assert!(cx.read_entity(&editor, |editor, _| {
+        editor
+            .display_snapshot()
+            .crease_at_line(Line::ZERO)
+            .is_some()
+    }));
+
+    editor.update(cx, |editor, cx| editor.remove_creases(ids, cx));
+    assert!(cx.read_entity(&editor, |editor, _| {
+        editor
+            .display_snapshot()
+            .crease_at_line(Line::ZERO)
+            .is_none()
     }));
 }
 
@@ -652,30 +692,26 @@ fn expanding_diff_hunk_keeps_crease_of_enclosing_fold(cx: &mut TestAppContext) {
     let source = buffer.clone();
     inject_editor_diff(&editor, &source, Vec::new(), Some(Arc::from(base)), cx);
     cx.run_until_parked();
-    assert_eq!(
-        cx.read_entity(&editor, |editor, _| editor
-            .display_snapshot()
-            .crease_snapshot()
-            .creases()
-            .count()),
-        1,
+    assert!(
+        cx.read_entity(&editor, |editor, _| {
+            editor
+                .display_snapshot()
+                .crease_at_line(Line::ZERO)
+                .is_some()
+        }),
         "fn main 展开前应有折叠范围"
     );
 
     editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
     cx.run_until_parked();
-    let after = cx.read_entity(&editor, |editor, _| {
-        editor
-            .display_snapshot()
-            .crease_snapshot()
-            .creases()
-            .map(|crease| crease.range().clone())
-            .collect::<Vec<_>>()
-    });
-    assert_eq!(
-        after.len(),
-        1,
-        "展开 hunk 后，包含 hunk 的折叠按钮必须保留：{after:?}"
+    assert!(
+        cx.read_entity(&editor, |editor, _| {
+            editor
+                .display_snapshot()
+                .crease_at_line(Line::ZERO)
+                .is_some()
+        }),
+        "展开 hunk 后，包含 hunk 的折叠按钮必须保留"
     );
 }
 
@@ -709,16 +745,25 @@ fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    // 编辑后语言层折叠范围仍可用（插值树版本与 buffer 同步）。
-    let fold_ranges = cx.read_entity(&editor, |editor, _| {
-        editor
-            .display_snapshot()
-            .crease_snapshot()
-            .creases()
-            .map(|crease| crease.range().clone())
-            .collect::<Vec<_>>()
-    });
-    assert_eq!(fold_ranges.len(), 2, "编辑后折叠范围应保持两个");
+    // 编辑后按行查询的语言折叠仍可用（插值树版本与 buffer 同步）。
+    assert!(
+        cx.read_entity(&editor, |editor, _| {
+            editor
+                .display_snapshot()
+                .crease_at_line(Line::new(1))
+                .is_some()
+        }),
+        "编辑后首个函数折叠应保持可用"
+    );
+    assert!(
+        cx.read_entity(&editor, |editor, _| {
+            editor
+                .display_snapshot()
+                .crease_at_line(Line::new(4))
+                .is_some()
+        }),
+        "编辑后第二个函数折叠应保持可用"
+    );
 
     // 注释行插入后 `{` 落到行 1（fold 范围起点行随编辑推进），入口行折叠仍可用。
     editor.update(cx, |editor, cx| {
@@ -920,13 +965,8 @@ fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppCo
         assert_eq!(
             editor.display_snapshot().line_count(),
             4,
-            "编辑后折叠应保持；折叠入口={:?}，折叠范围数={}",
+            "编辑后折叠应保持；折叠入口={:?}",
             editor.display_snapshot().fold_anchor_lines(),
-            editor
-                .display_snapshot()
-                .crease_snapshot()
-                .creases()
-                .count()
         );
     });
 }

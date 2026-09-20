@@ -20,7 +20,7 @@ mod workspace_item;
 
 pub use display_map::{EditorHunk, EditorHunkMarkerKind, EditorHunkPart, HunkControlTarget};
 pub use status_items::install_status_items;
-pub use view::{DiffHunkDelegate, Editor, EditorEvent};
+pub use view::{DiffHunkDelegate, Editor, EditorEvent, ExplicitCreaseId};
 
 pub fn init(cx: &mut App) {
     EDITOR_FACTORY.get_or_init(|| |cx| Arc::new(ErasedEditorHandle(cx.new(Editor::single_line))));

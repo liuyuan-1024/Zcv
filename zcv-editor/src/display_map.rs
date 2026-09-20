@@ -23,7 +23,7 @@ mod tab_map;
 mod wrap_map;
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -42,7 +42,8 @@ pub(crate) use chunk::{
 };
 #[cfg(test)]
 pub(crate) use chunk::{ChunkSource, ChunkText, WrapChunks};
-use crease_map::{Crease, CreaseId, CreaseMap, CreaseSnapshot};
+pub(crate) use crease_map::CreaseId;
+use crease_map::{Crease, CreaseMap, CreaseSnapshot};
 #[cfg(test)]
 pub(crate) use decorations::hunk_rendering;
 pub(crate) use decorations::{
@@ -63,8 +64,8 @@ use wrap_map::{WrapEdit, WrapMap, WrapSnapshot};
 use zcv_language::HighlightSpan;
 use zcv_multi_buffer::{MultiBuffer, MultiBufferSnapshot, MultiBufferSubscription};
 use zcv_text::{
-    BufferVersion, Line, LineRange, LogicalColumn, MovementDirection, MovementUnit, Position,
-    TextChangeBatch, TextResult,
+    Line, LineRange, LogicalColumn, MovementDirection, MovementUnit, Position, TextChangeBatch,
+    TextResult,
 };
 use zcv_theme::syntax;
 
@@ -240,9 +241,106 @@ impl DisplaySnapshot {
         [Some(diff_markers), search_markers]
     }
 
-    /// 折叠候选（crease）索引；随组合元数据版本重建，渲染按可见行范围查询。
-    pub(crate) fn crease_snapshot(&self) -> &CreaseSnapshot {
-        &self.crease_snapshot
+    /// 返回指定逻辑行的折叠候选。
+    ///
+    /// 显式 crease 优先。
+    /// 没有显式范围时，显示层仅查询该行所在源文本，避免把所有源的 Tree-sitter 折叠结果物化进组合快照。
+    pub(crate) fn crease_at_line(&self, line: Line) -> Option<Crease> {
+        self.crease_snapshot
+            .crease_at_line(line, self.buffer_snapshot())
+            .cloned()
+            .or_else(|| self.syntax_crease_at_line(line))
+    }
+
+    /// 返回包含指定逻辑行的最内层折叠候选，供光标位于折叠体内部时的切换命令使用。
+    pub(crate) fn crease_containing_line(&self, line: Line) -> Option<Crease> {
+        self.explicit_crease_containing_line(line)
+            .or_else(|| self.syntax_crease_containing_line(line))
+    }
+
+    fn explicit_crease_containing_line(&self, line: Line) -> Option<Crease> {
+        self.crease_snapshot
+            .creases()
+            .filter_map(|crease| {
+                let range = crease.range();
+                let start = self
+                    .buffer_snapshot()
+                    .resolve_anchor(&range.start)
+                    .and_then(|offset| self.buffer_snapshot().byte_to_line(offset).ok())?;
+                let end = self
+                    .buffer_snapshot()
+                    .resolve_anchor(&range.end)
+                    .and_then(|offset| self.buffer_snapshot().byte_to_line(offset).ok())?;
+                (start <= line && line <= end).then_some((crease, start, end))
+            })
+            .min_by_key(|(_, start, end)| (line.get() - start.get(), end.get() - line.get()))
+            .map(|(crease, _, _)| crease.clone())
+    }
+
+    fn syntax_crease_at_line(&self, line: Line) -> Option<Crease> {
+        let buffer = self.buffer_snapshot();
+        let offset = buffer.line_start_byte(line).ok()?;
+        let source = buffer.source_at(offset)?;
+        let source_text = source.text();
+        let source_line = source_text.byte_to_line(source.source_offset()).ok()?;
+        let source_line_start = source_text.line_start_byte(source_line).ok()?;
+        let source_line_end = if source_line.get() + 1 < source_text.line_count() {
+            source_text
+                .line_start_byte(Line::new(source_line.get() + 1))
+                .ok()?
+        } else {
+            source_text.len_bytes()
+        };
+
+        source
+            .syntax()
+            .fold_ranges(source_line_start.get()..source_line_end.get(), source_text)
+            .into_iter()
+            .filter_map(|fold| {
+                let start = fold.range.start.resolve_in(source_text).ok()?;
+                let end = fold.range.end.resolve_in(source_text).ok()?;
+                source.project_range(start..end)
+            })
+            .filter(|range| {
+                buffer
+                    .resolve_anchor(&range.start)
+                    .and_then(|offset| buffer.byte_to_line(offset).ok())
+                    == Some(line)
+            })
+            .min_by_key(|range| {
+                buffer
+                    .resolve_anchor(&range.end)
+                    .map_or(usize::MAX, |end| end.get())
+            })
+            .map(Crease::simple)
+    }
+
+    fn syntax_crease_containing_line(&self, line: Line) -> Option<Crease> {
+        let buffer = self.buffer_snapshot();
+        let offset = buffer.line_start_byte(line).ok()?;
+        let source = buffer.source_at(offset)?;
+        let source_text = source.text();
+
+        source
+            .syntax()
+            .fold_ranges(0..source_text.len_bytes().get(), source_text)
+            .into_iter()
+            .filter_map(|fold| {
+                let start = fold.range.start.resolve_in(source_text).ok()?;
+                let end = fold.range.end.resolve_in(source_text).ok()?;
+                source.project_range(start..end)
+            })
+            .filter_map(|range| {
+                let start = buffer
+                    .resolve_anchor(&range.start)
+                    .and_then(|offset| buffer.byte_to_line(offset).ok())?;
+                let end = buffer
+                    .resolve_anchor(&range.end)
+                    .and_then(|offset| buffer.byte_to_line(offset).ok())?;
+                (start <= line && line <= end).then_some((range, start, end))
+            })
+            .min_by_key(|(_, start, end)| (line.get() - start.get(), end.get() - line.get()))
+            .map(|(range, _, _)| Crease::simple(range))
     }
 
     pub(super) fn tab_width(&self) -> NonZeroUsize {
@@ -517,24 +615,14 @@ pub(crate) struct DisplayMap {
     editor_hunks: Arc<[EditorHunk]>,
     /// 搜索命中的显示输入（显示装饰领域键之一）。
     search: Option<SearchDecorationInput>,
-    /// 折叠候选（crease）索引；按源增量替换，滚动帧按锚点 seek 查询。
+    /// 宿主注入的显式折叠候选；语法候选由 `DisplaySnapshot` 按行即时查询。
     crease_map: CreaseMap,
-    /// 每个源当前已物化的折叠候选身份；句柄不变即跳过，不做整份重建。
-    source_creases: HashMap<Option<gpui::EntityId>, SourceCreases>,
-}
-
-/// 一个源在 `CreaseMap` 中已物化的折叠候选。
-#[derive(Debug)]
-struct SourceCreases {
-    /// 源文本或语法版本变化即表示折叠候选需要重新查询。
-    fold_version: (BufferVersion, BufferVersion, u64),
-    ids: Vec<CreaseId>,
 }
 
 /// 影响显示快照的全部只读输入摘要。
 ///
 /// 快速路径只比较它：文本版本、元数据版本与 capture 表。
-/// 折叠候选与装饰输入分别由元数据事件和 rebuild_decorations 显式驱动，不进入本摘要。
+/// 折叠候选由 `DisplaySnapshot` 按行即时推导；装饰输入由 `rebuild_decorations` 显式驱动，二者都不进入本摘要。
 #[derive(PartialEq)]
 struct DisplaySyncInputs {
     version: zcv_text::BufferVersion,
@@ -550,12 +638,6 @@ impl DisplaySyncInputs {
             capture_names: snapshot.capture_names(),
         }
     }
-}
-
-#[derive(Clone, Copy)]
-enum CreaseSync {
-    All,
-    None,
 }
 
 fn default_tab_width() -> NonZeroUsize {
@@ -593,9 +675,8 @@ impl DisplayMap {
             editor_hunks: Arc::from([]),
             search: None,
             crease_map: CreaseMap::new(&snapshot),
-            source_creases: HashMap::new(),
         };
-        this.commit_snapshot(&wrap_snapshot, &[], CreaseSync::All, cx);
+        this.commit_snapshot(&wrap_snapshot, &[], cx);
         // 换行层自己拥有后台重排；完成后 DisplayMap 观察并重建 Block 投影。
         cx.observe(&this.wrap_map, |display, _, cx| {
             let wrap_edits = display
@@ -603,7 +684,7 @@ impl DisplayMap {
                 .update(cx, |map, _| map.take_edits_since_sync());
             if !wrap_edits.is_empty() {
                 let wrap_snapshot = display.wrap_map.read(cx).snapshot().clone();
-                display.commit_snapshot(&wrap_snapshot, &wrap_edits, CreaseSync::None, cx);
+                display.commit_snapshot(&wrap_snapshot, &wrap_edits, cx);
             }
             cx.notify();
         })
@@ -620,20 +701,17 @@ impl DisplayMap {
     ) {
         self.multi_buffer = Some(multi_buffer);
         self.buffer_subscription = Some(subscription);
-        // 绑定后重建一次装饰，使 diff 与折叠候选立即可见。
+        // 绑定后重建一次装饰，使 diff 输入立即可见。
         let wrap_snapshot = self.wrap_map.read(cx).snapshot().clone();
-        self.commit_snapshot(&wrap_snapshot, &[], CreaseSync::All, cx);
+        self.commit_snapshot(&wrap_snapshot, &[], cx);
     }
 
-    /// 读取并推进当前显示快照；组合文本同步、折叠、换行与块投影都从这里进入。
+    /// 读取并推进当前显示快照；组合文本同步、换行与块投影都从这里进入。
+    /// 折叠候选由消费快照的按行查询生成，不参与同步。
     pub(crate) fn snapshot(&mut self, cx: &mut Context<Self>) -> DisplaySnapshot {
         let Some(multi_buffer) = self.multi_buffer.clone() else {
             return self.cached_snapshot();
         };
-        let old_metadata_version = self
-            .snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.buffer_snapshot().metadata_version());
         let snapshot = multi_buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
         let changes = self
             .buffer_subscription
@@ -641,12 +719,7 @@ impl DisplayMap {
             .map_or_else(TextChangeBatch::default, |subscription| {
                 subscription.consume()
             });
-        let crease_sync = if old_metadata_version != Some(snapshot.metadata_version()) {
-            CreaseSync::All
-        } else {
-            CreaseSync::None
-        };
-        self.sync(snapshot, changes.clone(), crease_sync, cx);
+        self.sync(snapshot, changes, cx);
         self.snapshot
             .as_ref()
             .expect("DisplayMap 同步后必须存在显示快照")
@@ -681,6 +754,48 @@ impl DisplayMap {
         }
         self.search = search;
         self.rebuild_decorations(cx);
+    }
+
+    /// 注入宿主拥有的显式折叠候选，并返回其稳定身份。
+    ///
+    /// 显式范围通过组合锚点保存，会在后续快照上自行解析；语法折叠不进入本索引。
+    pub(crate) fn insert_creases(
+        &mut self,
+        ranges: impl IntoIterator<Item = Range<MultiBufferAnchor>>,
+        cx: &mut Context<Self>,
+    ) -> Vec<CreaseId> {
+        let buffer_snapshot = self.fold_map.snapshot().buffer_snapshot().clone();
+        let ids = self
+            .crease_map
+            .insert(ranges.into_iter().map(Crease::simple), &buffer_snapshot);
+        if !ids.is_empty() {
+            self.refresh_crease_snapshot(cx);
+        }
+        ids
+    }
+
+    /// 移除由 `insert_creases` 返回身份标识的显式折叠候选。
+    pub(crate) fn remove_creases(
+        &mut self,
+        ids: impl IntoIterator<Item = CreaseId>,
+        cx: &mut Context<Self>,
+    ) {
+        let ids = ids.into_iter().collect::<Vec<_>>();
+        if ids.is_empty() {
+            return;
+        }
+        let buffer_snapshot = self.fold_map.snapshot().buffer_snapshot().clone();
+        self.crease_map.remove(ids, &buffer_snapshot);
+        self.refresh_crease_snapshot(cx);
+    }
+
+    fn refresh_crease_snapshot(&mut self, cx: &mut Context<Self>) {
+        let Some(mut snapshot) = self.snapshot.take() else {
+            return;
+        };
+        snapshot.crease_snapshot = self.crease_map.snapshot();
+        self.snapshot = Some(snapshot);
+        cx.notify();
     }
 
     /// 只替换当前快照的装饰层；显示拓扑与版本保持不变。
@@ -722,18 +837,8 @@ impl DisplayMap {
         )
     }
 
-    fn commit_snapshot(
-        &mut self,
-        wrap_snapshot: &WrapSnapshot,
-        wrap_edits: &[WrapEdit],
-        crease_sync: CreaseSync,
-        cx: &App,
-    ) {
+    fn commit_snapshot(&mut self, wrap_snapshot: &WrapSnapshot, wrap_edits: &[WrapEdit], cx: &App) {
         let block_snapshot = Arc::new(self.current_block_snapshot(wrap_snapshot, wrap_edits));
-        self.reconcile_source_creases(
-            block_snapshot.wrap_snapshot().buffer_snapshot(),
-            crease_sync,
-        );
         let mut snapshot = DisplaySnapshot {
             block_snapshot,
             crease_snapshot: self.crease_map.snapshot(),
@@ -741,61 +846,6 @@ impl DisplayMap {
         };
         snapshot.decorations = Arc::new(self.build_decorations(&snapshot, cx));
         self.snapshot = Some(snapshot);
-    }
-
-    /// 按源增量同步折叠候选；普通文本编辑不触碰候选索引。
-    fn reconcile_source_creases(&mut self, snapshot: &MultiBufferSnapshot, sync: CreaseSync) {
-        let CreaseSync::All = sync else {
-            return;
-        };
-
-        let mut changed = Vec::new();
-        let mut seen = HashSet::new();
-        for (index, (source_id, fold_version)) in snapshot.fold_sources().enumerate() {
-            seen.insert(source_id);
-            let stale = self
-                .source_creases
-                .get(&source_id)
-                .is_none_or(|state| state.fold_version != fold_version);
-            if stale {
-                changed.push((source_id, index, fold_version));
-            }
-        }
-
-        // 退出投影的源：移除其候选身份。
-        let mut removed_ids = Vec::new();
-        self.source_creases.retain(|source_id, state| {
-            if seen.contains(source_id) {
-                true
-            } else {
-                removed_ids.extend(state.ids.iter().copied());
-                false
-            }
-        });
-
-        // 候选集合变化的源：移除旧身份、投影新候选；未变化的源不触碰。
-        let mut next_ranges = Vec::new();
-        let mut counts = Vec::new();
-        for (source_id, index, fold_version) in changed {
-            if let Some(state) = self.source_creases.remove(&source_id) {
-                removed_ids.extend(state.ids.iter().copied());
-            }
-            let ranges = snapshot
-                .fold_ranges_for_source(index)
-                .into_iter()
-                .map(Crease::simple)
-                .collect::<Vec<_>>();
-            counts.push((source_id, fold_version, ranges.len()));
-            next_ranges.extend(ranges);
-        }
-        self.crease_map.remove(removed_ids, snapshot);
-        let ids = self.crease_map.insert(next_ranges, snapshot);
-        let mut ids = ids.into_iter();
-        for (source_id, fold_version, count) in counts {
-            let ids = ids.by_ref().take(count).collect::<Vec<_>>();
-            self.source_creases
-                .insert(source_id, SourceCreases { fold_version, ids });
-        }
     }
 
     /// 设置 tab 视觉列宽；变化时重建 tab 与 wrap 投影并刷新当前显示快照。
@@ -808,7 +858,7 @@ impl DisplayMap {
         let (wrap_snapshot, wrap_edits) = self
             .wrap_map
             .update(cx, |map, cx| map.sync(tab_snapshot, &[], cx));
-        self.commit_snapshot(&wrap_snapshot, &wrap_edits, CreaseSync::None, cx);
+        self.commit_snapshot(&wrap_snapshot, &wrap_edits, cx);
     }
 
     pub(crate) fn is_buffer_folded(&self, path: &Path) -> bool {
@@ -828,7 +878,7 @@ impl DisplayMap {
         };
         if changed {
             let wrap_snapshot = self.wrap_map.read(cx).snapshot().clone();
-            self.commit_snapshot(&wrap_snapshot, &[], CreaseSync::None, cx);
+            self.commit_snapshot(&wrap_snapshot, &[], cx);
         }
     }
 
@@ -846,7 +896,7 @@ impl DisplayMap {
         });
         if changed {
             let wrap_snapshot = self.wrap_map.read(cx).snapshot().clone();
-            self.commit_snapshot(&wrap_snapshot, &wrap_edits, CreaseSync::None, cx);
+            self.commit_snapshot(&wrap_snapshot, &wrap_edits, cx);
         }
         changed
     }
@@ -905,7 +955,6 @@ impl DisplayMap {
         &mut self,
         current_snapshot: impl Into<MultiBufferSnapshot>,
         batch: TextChangeBatch,
-        crease_sync: CreaseSync,
         cx: &mut Context<Self>,
     ) {
         let current_snapshot = current_snapshot.into();
@@ -925,7 +974,7 @@ impl DisplayMap {
         let (wrap_snapshot, wrap_edits) = self
             .wrap_map
             .update(cx, |map, cx| map.sync(tab_snapshot, &fold_edits, cx));
-        self.commit_snapshot(&wrap_snapshot, &wrap_edits, crease_sync, cx);
+        self.commit_snapshot(&wrap_snapshot, &wrap_edits, cx);
     }
 
     /// 折叠组合锚点范围（入口行行尾换行符 → 闭合括号前；闭合括号保留可见）。
@@ -942,7 +991,7 @@ impl DisplayMap {
         let (wrap_snapshot, wrap_edits) = self
             .wrap_map
             .update(cx, |map, cx| map.sync(tab_snapshot, &fold_edits, cx));
-        self.commit_snapshot(&wrap_snapshot, &wrap_edits, CreaseSync::None, cx);
+        self.commit_snapshot(&wrap_snapshot, &wrap_edits, cx);
         Ok(())
     }
 
@@ -958,7 +1007,7 @@ impl DisplayMap {
         let (wrap_snapshot, wrap_edits) = self
             .wrap_map
             .update(cx, |map, cx| map.sync(tab_snapshot, &fold_edits, cx));
-        self.commit_snapshot(&wrap_snapshot, &wrap_edits, CreaseSync::None, cx);
+        self.commit_snapshot(&wrap_snapshot, &wrap_edits, cx);
         Ok(())
     }
 
@@ -1018,9 +1067,7 @@ mod tests {
         snapshot: impl Into<MultiBufferSnapshot>,
         batch: TextChangeBatch,
     ) {
-        cx.update_entity(map, |map, cx| {
-            map.sync(snapshot, batch, CreaseSync::None, cx)
-        });
+        cx.update_entity(map, |map, cx| map.sync(snapshot, batch, cx));
     }
 
     fn measure_rows(
@@ -1546,7 +1593,7 @@ mod tests {
         let updated: MultiBufferSnapshot = buffer.snapshot().into();
         let batch = subscription.consume();
         cx.update_entity(&display, |display_map, cx| {
-            display_map.sync(updated, batch, CreaseSync::None, cx);
+            display_map.sync(updated, batch, cx);
         });
         cx.run_until_parked();
 

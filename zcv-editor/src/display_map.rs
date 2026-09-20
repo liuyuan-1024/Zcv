@@ -680,27 +680,6 @@ pub(crate) struct DisplayMap {
     crease_map: CreaseMap,
 }
 
-/// 影响显示快照的全部只读输入摘要。
-///
-/// 快速路径只比较它：文本版本、元数据版本与 capture 表。
-/// 折叠候选由 `DisplaySnapshot` 按行即时推导；装饰输入由 `rebuild_decorations` 显式驱动，二者都不进入本摘要。
-#[derive(PartialEq)]
-struct DisplaySyncInputs {
-    version: zcv_text::BufferVersion,
-    metadata_version: u64,
-    capture_names: Arc<[Arc<str>]>,
-}
-
-impl DisplaySyncInputs {
-    fn of(snapshot: &MultiBufferSnapshot) -> Self {
-        Self {
-            version: snapshot.version(),
-            metadata_version: snapshot.metadata_version(),
-            capture_names: snapshot.capture_names(),
-        }
-    }
-}
-
 fn default_tab_width() -> NonZeroUsize {
     NonZeroUsize::new(4).expect("默认 tab 宽度必须大于 0")
 }
@@ -749,18 +728,9 @@ impl DisplayMap {
             crease_map: CreaseMap::new(&snapshot),
         };
         this.commit_snapshot(&wrap_snapshot, &[], cx);
-        // 换行层自己拥有后台重排；完成后 DisplayMap 观察并重建 Block 投影。
-        cx.observe(&this.wrap_map, |display, _, cx| {
-            let wrap_edits = display
-                .wrap_map
-                .update(cx, |map, _| map.take_edits_since_sync());
-            if !wrap_edits.is_empty() {
-                let wrap_snapshot = display.wrap_map.read(cx).snapshot().clone();
-                display.commit_snapshot(&wrap_snapshot, &wrap_edits, cx);
-            }
-            cx.notify();
-        })
-        .detach();
+        // 换行层自己拥有后台重排；
+        // 完成后只唤醒统一读取入口，Block 投影推进仍由 DisplayMap::snapshot 的 sync 完成。
+        cx.observe(&this.wrap_map, |_, _, cx| cx.notify()).detach();
         this
     }
 
@@ -897,34 +867,6 @@ impl DisplayMap {
             ))
         });
         snapshot.decorations = Arc::new(snapshot.decorations.with_search(search));
-        self.snapshot = Some(snapshot);
-        cx.notify();
-    }
-
-    /// 仅 diff 显示输入变化时替换装饰；文本、折叠和换行拓扑保持当前快照。
-    fn refresh_diff_decorations(
-        &mut self,
-        current_snapshot: &MultiBufferSnapshot,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(mut snapshot) = self.snapshot.take() else {
-            return;
-        };
-        if same_diff_display(
-            snapshot.diff_display.as_ref(),
-            current_snapshot.diff_display(),
-        ) {
-            self.snapshot = Some(snapshot);
-            return;
-        }
-
-        snapshot.diff_display = current_snapshot.diff_display().cloned();
-        let diff = Arc::new(DiffDecorationSnapshot::new(
-            &snapshot,
-            snapshot.diff_display.as_deref(),
-            &self.editor_hunks,
-        ));
-        snapshot.decorations = Arc::new(snapshot.decorations.with_diff(diff));
         self.snapshot = Some(snapshot);
         cx.notify();
     }
@@ -1078,17 +1020,12 @@ impl DisplayMap {
         cx: &mut Context<Self>,
     ) {
         let current_snapshot = current_snapshot.into();
-        let old_snapshot = self.fold_map.snapshot().buffer_snapshot().clone();
-        // 无文本、无语法、无 capture 变化且没有未落地换行重排时不做推进，避免滚动帧重复重建显示拓扑。
-        // 影响显示快照的只读输入收敛为一个摘要；后续新增输入必须并入 DisplaySyncInputs。
-        if batch.is_empty()
-            && DisplaySyncInputs::of(&old_snapshot) == DisplaySyncInputs::of(&current_snapshot)
-            && !self.wrap_map.read(cx).is_rewrapping()
-        {
-            self.refresh_diff_decorations(&current_snapshot, cx);
-            return;
-        }
-        let buffer_edits = buffer_edits_from_batch(&batch, &old_snapshot, &current_snapshot);
+        // 同步始终逐层推进（对齐 Zed DisplayMap::sync_through_wrap）：
+        // 无变化的批次由 WrapMap 丢弃、Block 层复用变换树，不在这里做提前返回。
+        let buffer_edits = {
+            let old_snapshot = self.fold_map.snapshot().buffer_snapshot().clone();
+            buffer_edits_from_batch(&batch, &old_snapshot, &current_snapshot)
+        };
         let (fold_snapshot, fold_edits) = self.fold_map.read(current_snapshot, buffer_edits);
         let tab_width = self.tab_map.snapshot().tab_width();
         let (tab_snapshot, tab_edits) = self.tab_map.sync(fold_snapshot, &fold_edits, tab_width);
@@ -1138,18 +1075,16 @@ impl DisplayMap {
         wrap_edits: &[WrapEdit],
     ) -> BlockSnapshot {
         let excerpts = self.fold_map.snapshot().buffer_snapshot().excerpts_arc();
-        // 消费换行编辑流：块起始不变时复用或平移块布局，只重排受编辑影响的块。
-        if let Some(previous) = &self.snapshot
-            && let Some(resynced) = previous.block_snapshot.resync(
+        // 消费换行编辑流：块布局未变时复用，几何变化时按显式分支重建。
+        match &self.snapshot {
+            Some(previous) => previous.block_snapshot.sync(
                 wrap_snapshot.clone(),
-                excerpts.clone(),
+                excerpts,
                 &self.folded_buffers,
                 wrap_edits,
-            )
-        {
-            return resynced;
+            ),
+            None => BlockSnapshot::new(wrap_snapshot.clone(), excerpts, &self.folded_buffers),
         }
-        BlockSnapshot::new(wrap_snapshot.clone(), excerpts, &self.folded_buffers)
     }
 }
 

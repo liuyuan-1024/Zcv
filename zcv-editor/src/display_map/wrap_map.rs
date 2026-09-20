@@ -1197,11 +1197,6 @@ impl WrapMap {
         )
     }
 
-    /// 取走自上次消费以来的换行编辑；后台重排完成时由 DisplayMap 观察后调用。
-    pub(super) fn take_edits_since_sync(&mut self) -> Vec<WrapEdit> {
-        mem::take(&mut self.edits_since_sync).into_inner()
-    }
-
     /// 同步应用一批编辑；返回该批次的换行编辑。
     fn apply_edits(&mut self, tab_snapshot: TabSnapshot, tab_edits: &[TabEdit]) -> Vec<WrapEdit> {
         if tab_snapshot.version() == self.snapshot.tab_snapshot.version() {
@@ -1231,11 +1226,6 @@ impl WrapMap {
         edits
     }
 
-    /// 是否有尚未落地的换行重排（pending 或后台任务）。
-    pub(super) fn is_rewrapping(&self) -> bool {
-        !self.pending_edits.is_empty() || self.background_task.is_some()
-    }
-
     /// 后台重排完成：用真实编辑替换急切插值编辑，落地真实快照、处理剩余批次并通知下游观察者。
     fn finish_background_rewrap(
         &mut self,
@@ -1261,6 +1251,29 @@ impl WrapMap {
 
     /// 尝试在时限内同步完成待处理批次；超时则启动后台重排，并急切插值 pending。
     fn flush_edits(&mut self, cx: &mut Context<Self>) {
+        // 丢弃已被当前快照覆盖的批次（对齐 Zed `WrapMap::flush_edits`）：
+        // 它们不应再触发换行重排。
+        // Zcv 的显示链经 wrap → tab → fold → multibuffer 暴露当前快照，
+        // 所以丢弃前要采用其中最靠后的下层快照；否则只更新语法树或元数据、
+        // 文本版本未变的批次会被丢掉，显示链会停留在旧快照。
+        if !self.snapshot.interpolated {
+            let covered = self
+                .pending_edits
+                .iter()
+                .take_while(|(tab_snapshot, _)| {
+                    tab_snapshot.version() <= self.snapshot.tab_snapshot().version()
+                })
+                .count();
+            if covered > 0 {
+                let (tab_snapshot, _) = &self.pending_edits[covered - 1];
+                if tab_snapshot.buffer_snapshot().version()
+                    >= self.snapshot.tab_snapshot().buffer_snapshot().version()
+                {
+                    self.snapshot.tab_snapshot = tab_snapshot.clone();
+                }
+                self.pending_edits.drain(..covered);
+            }
+        }
         if self.pending_edits.is_empty() {
             return;
         }

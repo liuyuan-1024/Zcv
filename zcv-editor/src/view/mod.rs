@@ -1693,12 +1693,9 @@ impl Editor {
             line_width_cache: None,
             scrollbar_marker_state: ScrollbarMarkerState::default(),
         };
-        // DisplayMap 是显示投影的唯一权威：它变化后只重读快照刷新滚动模型并重绘，
-        // Editor 不再持有可独立推进的第二份显示快照。
+        // DisplayMap 是显示投影的唯一权威：它变化后经唯一读取入口推进并刷新滚动模型。
         cx.observe(&this.display_map, |editor, _, cx| {
-            let snapshot = editor.display_snapshot(cx);
-            editor.scroll_manager.refresh(&snapshot);
-            cx.notify();
+            editor.advance_snapshots(cx)
         })
         .detach();
         // 设置变化时自动跟随（覆盖场景除外）；编辑器在测试环境无 SettingsStore 时保持默认。

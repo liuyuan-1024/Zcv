@@ -15,7 +15,7 @@ use std::sync::{Arc, OnceLock};
 
 use gpui::SharedString;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
-use zcv_multi_buffer::{DisplayHunk, WordDiffs};
+use zcv_multi_buffer::{DiffDisplaySnapshot, DisplayHunk, ResolvedDiffHunk, WordDiffs};
 use zcv_text::{ByteOffset, Line, TextRange};
 
 use crate::scrollbar::ScrollbarMarkerKind;
@@ -121,14 +121,6 @@ impl SearchDecorationInput {
     }
 }
 
-/// diff 显示装饰输入：MultiBuffer 投影提供的逻辑 hunk 与展开态。
-pub(crate) struct DiffDecorationInput<'a> {
-    pub(crate) hunks: &'a [DisplayHunk],
-    pub(crate) expanded: &'a [bool],
-    pub(crate) old_display_ranges: &'a [Option<Range<usize>>],
-    pub(crate) word_diffs: &'a [WordDiffs],
-}
-
 /// 绑定一条显示快照的全部显示装饰。
 ///
 /// 随 DisplaySnapshot 整体替换、可丢弃、可重建，不跨显示版本解释旧坐标。
@@ -155,20 +147,13 @@ impl DisplayDecorations {
 
     pub(crate) fn new(
         snapshot: &DisplaySnapshot,
-        diff: DiffDecorationInput<'_>,
+        diff: Option<&DiffDisplaySnapshot>,
         search: Option<&SearchDecorationInput>,
         editor_hunks: Arc<[EditorHunk]>,
         cached_diff: Option<Arc<DiffDecorationSnapshot>>,
     ) -> Self {
         let diff = cached_diff.unwrap_or_else(|| {
-            Arc::new(DiffDecorationSnapshot::new(
-                snapshot,
-                diff.hunks,
-                diff.expanded.to_vec(),
-                diff.old_display_ranges,
-                diff.word_diffs,
-                &editor_hunks,
-            ))
+            Arc::new(DiffDecorationSnapshot::new(snapshot, diff, &editor_hunks))
         });
         let search = search.map(|input| {
             Arc::new(SearchDecorationSnapshot::from_ranges(
@@ -243,14 +228,22 @@ impl DiffDecorationSnapshot {
 
     pub(crate) fn new(
         snapshot: &DisplaySnapshot,
-        hunks: &[DisplayHunk],
-        expanded: Vec<bool>,
-        old_display_ranges: &[Option<Range<usize>>],
-        word_diffs: &[WordDiffs],
+        diff: Option<&DiffDisplaySnapshot>,
         editor_hunks: &[EditorHunk],
     ) -> Self {
-        let mut rendering =
-            hunk_rendering(snapshot, hunks, &expanded, old_display_ranges, word_diffs);
+        let resolved: Vec<ResolvedDiffHunk> =
+            diff.into_iter().flat_map(|diff| diff.resolved()).collect();
+        Self::from_resolved(snapshot, resolved, editor_hunks)
+    }
+
+    /// 由已解析的组合绝对坐标输入构建装饰快照（生产与渲染单元测试共用入口）。
+    pub(crate) fn from_resolved(
+        snapshot: &DisplaySnapshot,
+        resolved: Vec<ResolvedDiffHunk>,
+        editor_hunks: &[EditorHunk],
+    ) -> Self {
+        let expanded: Vec<bool> = resolved.iter().map(|hunk| hunk.expanded).collect();
+        let mut rendering = hunk_rendering(snapshot, resolved.into_iter());
         rendering.editor_hunks = editor_hunk_rendering(snapshot, editor_hunks);
         rendering.controls.extend(
             rendering
@@ -262,7 +255,6 @@ impl DiffDecorationSnapshot {
             .controls
             .sort_by_key(|(rows, _)| (rows.start, rows.end));
         rendering.editor_hunk_parts = editor_hunk_part_rendering(snapshot, editor_hunks);
-
         let projected_word_diff_highlights = rendering
             .word_diff_highlights
             .iter()
@@ -432,10 +424,7 @@ fn visible_triples<T: Clone, U: Clone>(
 /// 映射失败（越界等）跳过该 hunk。
 pub(crate) fn hunk_rendering(
     snapshot: &DisplaySnapshot,
-    hunks: &[DisplayHunk],
-    expanded: &[bool],
-    old_display_ranges: &[Option<Range<usize>>],
-    word_diffs: &[WordDiffs],
+    resolved: impl Iterator<Item = ResolvedDiffHunk>,
 ) -> HunkRendering {
     let mut diff_rows = Vec::new();
     let mut strips = Vec::new();
@@ -444,17 +433,18 @@ pub(crate) fn hunk_rendering(
     let mut expanded_rows = Vec::new();
     let mut hollow_blocks = Vec::new();
     let mut word_diff_highlights = Vec::new();
-    for (index, hunk) in hunks.iter().enumerate() {
-        let is_expanded = expanded.get(index).copied().unwrap_or(false);
+    for (index, resolved) in resolved.enumerate() {
+        let hunk = resolved.hunk;
+        let is_expanded = resolved.expanded;
         let staging = hunk.staging;
         let hollow = is_hollow_hunk(staging);
         // 词级背景只出现在展开态：折叠 hunk 不物化旧侧，也没有可着色的行内文本。
-        if is_expanded && let Some(diffs) = word_diffs.get(index) {
-            word_diff_highlights.extend(diffs.iter().cloned());
+        if is_expanded {
+            word_diff_highlights.extend(resolved.word_diffs.iter().cloned());
         }
-        let old_rows = old_display_ranges
-            .get(index)
-            .and_then(|range| range.as_ref())
+        let old_rows = resolved
+            .old_range
+            .as_ref()
             .and_then(|range| logical_rows(snapshot, range));
         let new_rows = logical_rows(snapshot, &hunk.range);
         match hunk.kind {
@@ -680,8 +670,27 @@ mod tests {
     use super::*;
     use crate::display_map::DisplayMap;
     use gpui::{AppContext, Empty, Entity, TestAppContext, px};
-    use zcv_multi_buffer::MultiBufferSnapshot;
+    use zcv_multi_buffer::{MultiBufferSnapshot, ResolvedDiffHunk};
     use zcv_text::{Buffer, BufferConfig};
+
+    /// 由绝对坐标切片构造按段解析输入，供渲染单元测试调用。
+    fn resolved_hunks(
+        hunks: &[DisplayHunk],
+        expanded: &[bool],
+        old_ranges: &[Option<Range<usize>>],
+        word_diffs: &[WordDiffs],
+    ) -> Vec<ResolvedDiffHunk> {
+        hunks
+            .iter()
+            .enumerate()
+            .map(|(index, hunk)| ResolvedDiffHunk {
+                hunk: hunk.clone(),
+                old_range: old_ranges.get(index).cloned().flatten(),
+                expanded: expanded.get(index).copied().unwrap_or(false),
+                word_diffs: word_diffs.get(index).cloned().unwrap_or_default(),
+            })
+            .collect()
+    }
 
     fn new_display_map(
         cx: &mut impl AppContext,
@@ -776,10 +785,7 @@ mod tests {
                 };
                 let rendered = hunk_rendering(
                     &snapshot,
-                    std::slice::from_ref(&hunk),
-                    &[false],
-                    &[None],
-                    &[],
+                    resolved_hunks(std::slice::from_ref(&hunk), &[false], &[None], &[]).into_iter(),
                 );
                 assert_eq!(
                     rendered.hit_regions,
@@ -849,10 +855,7 @@ mod tests {
                 };
                 let rendered = hunk_rendering(
                     &snapshot,
-                    std::slice::from_ref(&hunk),
-                    &[false],
-                    &[None],
-                    &[],
+                    resolved_hunks(std::slice::from_ref(&hunk), &[false], &[None], &[]).into_iter(),
                 );
                 // 删除点行是单行 [del_start, del_start+1)，三角在该行行尾 = 软换行第一子行行首。
                 assert_eq!(
@@ -921,10 +924,7 @@ mod tests {
 
         let rendered = hunk_rendering(
             &snapshot,
-            &hunks,
-            &[false, false, false],
-            &[None, None, None],
-            &[],
+            resolved_hunks(&hunks, &[false, false, false], &[None, None, None], &[]).into_iter(),
         );
         assert_eq!(
             rendered
@@ -955,7 +955,10 @@ mod tests {
         );
 
         // 差异审阅视图（默认展开）下新增块才整行着色。
-        let expanded_added = hunk_rendering(&snapshot, &hunks[..1], &[true], &[None], &[]);
+        let expanded_added = hunk_rendering(
+            &snapshot,
+            resolved_hunks(&hunks[..1], &[true], &[None], &[]).into_iter(),
+        );
         assert_eq!(expanded_added.expanded_rows, vec![0..1]);
     }
 
@@ -975,10 +978,7 @@ mod tests {
 
         let rendered = hunk_rendering(
             &snapshot,
-            std::slice::from_ref(&hunk),
-            &[true],
-            &old_ranges,
-            &[],
+            resolved_hunks(std::slice::from_ref(&hunk), &[true], &old_ranges, &[]).into_iter(),
         );
 
         assert_eq!(
@@ -1020,13 +1020,19 @@ mod tests {
             (DiffHunkKind::Added, 4..7),
         ]];
 
-        let collapsed = hunk_rendering(&snapshot, &hunks, &[false], &[Some(0..1)], &word_diffs);
+        let collapsed = hunk_rendering(
+            &snapshot,
+            resolved_hunks(&hunks, &[false], &[Some(0..1)], &word_diffs).into_iter(),
+        );
         assert_eq!(
             collapsed.word_diff_highlights,
             Vec::<(DiffHunkKind, Range<usize>)>::new()
         );
 
-        let expanded = hunk_rendering(&snapshot, &hunks, &[true], &[Some(0..1)], &word_diffs);
+        let expanded = hunk_rendering(
+            &snapshot,
+            resolved_hunks(&hunks, &[true], &[Some(0..1)], &word_diffs).into_iter(),
+        );
         assert_eq!(expanded.word_diff_highlights, word_diffs[0]);
     }
 
@@ -1042,7 +1048,10 @@ mod tests {
             kind: DiffHunkKind::Added,
             staging: DiffHunkStaging::Staged,
         };
-        let rendered = hunk_rendering(&snapshot, &[staged], &[true], &[None], &[]);
+        let rendered = hunk_rendering(
+            &snapshot,
+            resolved_hunks(&[staged], &[true], &[None], &[]).into_iter(),
+        );
         assert_eq!(
             rendered.diff_rows,
             vec![(1..3, DiffHunkKind::Added, DiffHunkStaging::Staged)]
@@ -1064,7 +1073,10 @@ mod tests {
             kind: DiffHunkKind::Added,
             staging: DiffHunkStaging::NoStaging,
         };
-        let rendered = hunk_rendering(&snapshot, &[unstaged], &[true], &[None], &[]);
+        let rendered = hunk_rendering(
+            &snapshot,
+            resolved_hunks(&[unstaged], &[true], &[None], &[]).into_iter(),
+        );
         assert!(rendered.hollow_blocks.is_empty());
     }
 
@@ -1085,7 +1097,10 @@ mod tests {
                 kind: DiffHunkKind::Added,
                 staging,
             };
-            let rendered = hunk_rendering(&snapshot, &[hunk], &[true], &[None], &[]);
+            let rendered = hunk_rendering(
+                &snapshot,
+                resolved_hunks(&[hunk], &[true], &[None], &[]).into_iter(),
+            );
             assert_eq!(
                 rendered.hit_regions,
                 vec![(0..1, 0, DiffHunkKind::Added)],

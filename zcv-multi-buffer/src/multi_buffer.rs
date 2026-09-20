@@ -9,7 +9,9 @@ mod diff_projection;
 mod path_key;
 
 use diff_projection::DiffSourceRole;
-pub use diff_projection::{DiffDisplaySnapshot, DiffFile, DiffHunkSource, DisplayHunk, WordDiffs};
+pub use diff_projection::{
+    DiffDisplaySnapshot, DiffFile, DiffHunkSource, DisplayHunk, ResolvedDiffHunk, WordDiffs,
+};
 pub(crate) use path_key::{PathKey, PathKeyIndex};
 
 use std::borrow::Cow;

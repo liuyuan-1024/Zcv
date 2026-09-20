@@ -65,7 +65,7 @@ impl Editor {
         }
 
         let binding = self
-            .local_bindings()
+            .local_bindings(cx)
             .into_iter()
             .find(|binding| binding_contains(binding, offset.get()))
             .ok_or(LocalRenameError::BindingNotFound)?;
@@ -86,7 +86,7 @@ impl Editor {
                 })
                 .collect(),
         );
-        let before_selections = self.resolved_selections();
+        let before_selections = self.resolved_selections(cx);
         let metadata = edit_metadata("重命名局部绑定");
         let replacement = new_name.to_owned();
         self.change_with_after(before_selections, metadata.clone(), cx, move |buffer| {
@@ -111,9 +111,9 @@ impl Editor {
             return;
         }
 
-        let offset = self.resolved_selections().primary().head();
+        let offset = self.resolved_selections(cx).primary().head();
         let Some(binding) = self
-            .local_bindings()
+            .local_bindings(cx)
             .into_iter()
             .find(|binding| binding_contains(binding, offset.get()))
         else {
@@ -155,10 +155,13 @@ impl Editor {
         let input = cx.new(|cx| {
             let mut input = Editor::single_line_with_content_typography(cx);
             input.set_text(&name, cx);
-            input.set_selections(SelectionSet::new(vec![Selection::new(
-                MultiBufferOffset::ZERO,
-                MultiBufferOffset::new(name.len()),
-            )]));
+            input.set_selections(
+                SelectionSet::new(vec![Selection::new(
+                    MultiBufferOffset::ZERO,
+                    MultiBufferOffset::new(name.len()),
+                )]),
+                cx,
+            );
             input
         });
         let version = self

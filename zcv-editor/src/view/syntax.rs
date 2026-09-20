@@ -11,17 +11,17 @@ use zcv_language::{LocalBinding, OutlineItem};
 
 impl Editor {
     /// 返回当前组合文档的文件级语法大纲。
-    pub fn outline_items(&self) -> Vec<OutlineItem> {
-        self.display_snapshot.buffer_snapshot().outline_items()
+    pub fn outline_items(&self, cx: &App) -> Vec<OutlineItem> {
+        self.display_snapshot(cx).buffer_snapshot().outline_items()
     }
 
     /// 按大纲文本过滤当前文件大纲；匹配不改变语法层结果的顺序和层级。
-    pub fn outline_items_matching(&self, query: &str) -> Vec<OutlineItem> {
+    pub fn outline_items_matching(&self, query: &str, cx: &App) -> Vec<OutlineItem> {
         let query = query.trim().to_lowercase();
         if query.is_empty() {
-            return self.outline_items();
+            return self.outline_items(cx);
         }
-        self.outline_items()
+        self.outline_items(cx)
             .into_iter()
             .filter(|item| item.text.to_lowercase().contains(&query))
             .collect()
@@ -39,7 +39,7 @@ impl Editor {
         for part in &item.text_ranges {
             let source_start = part.source_range.start;
             for (range, style) in self
-                .display_snapshot
+                .display_snapshot(cx)
                 .highlights_for_range(part.source_range.clone(), cx)
             {
                 let start = range.start.max(part.source_range.start);
@@ -57,13 +57,13 @@ impl Editor {
     }
 
     /// 返回当前单文件文档中可确定归属的局部绑定。
-    pub fn local_bindings(&self) -> Vec<LocalBinding> {
-        self.display_snapshot.buffer_snapshot().local_bindings()
+    pub fn local_bindings(&self, cx: &App) -> Vec<LocalBinding> {
+        self.display_snapshot(cx).buffer_snapshot().local_bindings()
     }
 
     /// 将大纲项定位到其名称范围，并拒绝异步刷新后已经失效的结果。
     pub fn navigate_to_outline_item(&mut self, item: &OutlineItem, cx: &mut Context<Self>) -> bool {
-        let current = self.outline_items().into_iter().any(|current| {
+        let current = self.outline_items(cx).into_iter().any(|current| {
             current.version == item.version
                 && current.range == item.range
                 && current.name_range == item.name_range
@@ -73,7 +73,7 @@ impl Editor {
             return false;
         }
         self.select_byte_range(item.name_range.clone(), cx);
-        self.request_scroll_to_top(NAVIGATION_TOP_OFFSET);
+        self.request_scroll_to_top(NAVIGATION_TOP_OFFSET, cx);
         true
     }
 }

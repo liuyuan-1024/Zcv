@@ -98,7 +98,7 @@ impl OutlinePanel {
             .as_ref()
             .map(|editor| {
                 let query = self.search_input.read(cx).text(cx);
-                editor.read(cx).outline_items_matching(&query)
+                editor.read(cx).outline_items_matching(&query, cx)
             })
             .unwrap_or_default();
         let current_keys: HashSet<_> = items.iter().map(OutlineItemKey::from_item).collect();

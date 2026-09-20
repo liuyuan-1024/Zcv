@@ -99,7 +99,7 @@ impl Item for Editor {
         }
         self.select_byte_range(range, cx);
         // 导航定位：目标行固定在视口顶部下方，避免落在视口内的随机位置。
-        self.request_scroll_to_top(NAVIGATION_TOP_OFFSET);
+        self.request_scroll_to_top(NAVIGATION_TOP_OFFSET, cx);
         true
     }
 

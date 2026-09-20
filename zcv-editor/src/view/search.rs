@@ -120,12 +120,12 @@ impl EditorSearch {
 
 impl SearchableItem for Editor {
     /// 主选区文本作为查询建议；空选区（仅光标）不种入。
-    fn query_suggestion(&self, _cx: &gpui::App) -> Option<String> {
-        let range = self.resolved_selections().primary().range();
+    fn query_suggestion(&self, cx: &gpui::App) -> Option<String> {
+        let range = self.resolved_selections(cx).primary().range();
         if range.is_empty() {
             return None;
         }
-        let snapshot = self.display_snapshot.buffer_snapshot().clone();
+        let snapshot = self.display_snapshot(cx).buffer_snapshot().clone();
         Some(
             snapshot
                 .bytes_in_range(range.start()..range.end())
@@ -210,7 +210,7 @@ impl SearchableItem for Editor {
         if self.search_result_stale(&literal, &regex, cx) {
             return false;
         }
-        let before = self.resolved_selections();
+        let before = self.resolved_selections(cx);
         let metadata = edit_metadata(if literal.is_some() {
             "替换搜索匹配"
         } else {
@@ -241,7 +241,7 @@ impl SearchableItem for Editor {
         if self.search_result_stale(&literal, &regex, cx) {
             return 0;
         }
-        let before = self.resolved_selections();
+        let before = self.resolved_selections(cx);
         let metadata = edit_metadata(if literal.is_some() {
             "替换全部搜索匹配"
         } else {
@@ -267,9 +267,9 @@ impl Editor {
         &self,
         literal: &Option<SearchResult>,
         regex: &Option<RegexSearchResult>,
-        _cx: &gpui::Context<Self>,
+        cx: &gpui::Context<Self>,
     ) -> bool {
-        let projection_version = self.display_snapshot.buffer_snapshot().version();
+        let projection_version = self.display_snapshot(cx).buffer_snapshot().version();
         literal
             .as_ref()
             .is_some_and(|result| result.version() != projection_version)

@@ -47,8 +47,8 @@ use crease_map::{Crease, CreaseMap, CreaseSnapshot};
 #[cfg(test)]
 pub(crate) use decorations::hunk_rendering;
 pub(crate) use decorations::{
-    DiffDecorationInput, DiffDecorationSnapshot, DisplayDecorations, SearchDecorationInput,
-    SearchDecorationSnapshot, diff_row_for_row, is_hollow_hunk,
+    DiffDecorationSnapshot, DisplayDecorations, SearchDecorationInput, SearchDecorationSnapshot,
+    diff_row_for_row, is_hollow_hunk,
 };
 pub use decorations::{EditorHunk, EditorHunkMarkerKind, EditorHunkPart, HunkControlTarget};
 pub(crate) use display_width::DisplayColumn;
@@ -855,15 +855,9 @@ impl DisplayMap {
         cached_diff: Option<Arc<DiffDecorationSnapshot>>,
         _cx: &App,
     ) -> DisplayDecorations {
-        let diff = snapshot.diff_display.as_deref();
         DisplayDecorations::new(
             snapshot,
-            DiffDecorationInput {
-                hunks: diff.map_or(&[], DiffDisplaySnapshot::hunks),
-                expanded: diff.map_or(&[], DiffDisplaySnapshot::expanded),
-                old_display_ranges: diff.map_or(&[], DiffDisplaySnapshot::old_ranges),
-                word_diffs: diff.map_or(&[], DiffDisplaySnapshot::word_diffs),
-            },
+            snapshot.diff_display.as_deref(),
             self.search.as_ref(),
             Arc::clone(&self.editor_hunks),
             cached_diff,

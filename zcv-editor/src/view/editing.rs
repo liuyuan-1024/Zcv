@@ -26,8 +26,8 @@ impl Editor {
             return;
         }
         self.composition = None;
-        let before_selections = self.resolved_selections();
-        let targets = self.delete_targets(&before_selections, Some((direction, unit)));
+        let before_selections = self.resolved_selections(cx);
+        let targets = self.delete_targets(&before_selections, Some((direction, unit)), cx);
         self.apply_deletion(targets, description, cx);
     }
 
@@ -41,9 +41,10 @@ impl Editor {
             return;
         }
         self.composition = None;
-        let before_selections = self.resolved_selections();
+        let before_selections = self.resolved_selections(cx);
         let targets = {
-            let buffer = self.display_snapshot.buffer_snapshot();
+            let display_snapshot = self.display_snapshot(cx);
+            let buffer = display_snapshot.buffer_snapshot();
             before_selections
                 .as_slice()
                 .iter()
@@ -84,7 +85,7 @@ impl Editor {
         description: &'static str,
         cx: &mut Context<Self>,
     ) {
-        let before_selections = self.resolved_selections();
+        let before_selections = self.resolved_selections(cx);
         let metadata = edit_metadata(description);
         let _ = self.change_with_after(before_selections, metadata.clone(), cx, |buffer| {
             let targets = targets?;
@@ -106,8 +107,10 @@ impl Editor {
         &self,
         selections: &SelectionSet,
         caret_motion: Option<(MovementDirection, MovementUnit)>,
+        cx: &App,
     ) -> TextResult<SelectionSet> {
-        let buffer = self.display_snapshot.buffer_snapshot();
+        let display_snapshot = self.display_snapshot(cx);
+        let buffer = display_snapshot.buffer_snapshot();
         let mut targets = Vec::new();
         for selection in selections.as_slice() {
             if !selection.is_caret() {
@@ -138,8 +141,8 @@ impl Editor {
         if self.is_read_only(cx) || self.propagate_if_single_line(cx) {
             return;
         }
-        let before = self.resolved_selections().normalized();
-        let snapshot = self.text_snapshot();
+        let before = self.resolved_selections(cx).normalized();
+        let snapshot = self.text_snapshot(cx);
         let all_carets = before
             .as_slice()
             .iter()
@@ -150,13 +153,13 @@ impl Editor {
                 .iter()
                 .map(|selection| {
                     let tab = self
-                        .display_snapshot
+                        .display_snapshot(cx)
                         .buffer_snapshot()
                         .language_settings_at(selection.head())
                         .tab;
                     let text: Arc<str> = if tab.insert_spaces {
                         let column = self
-                            .display_snapshot
+                            .display_snapshot(cx)
                             .offset_to_display_point(selection.head())
                             .map_err(|error| TextError::InvariantViolation {
                                 location: "Editor::indent",
@@ -181,7 +184,7 @@ impl Editor {
                             .line_start_byte(line)
                             .expect("已验证逻辑行必须有行首");
                         let tab = self
-                            .display_snapshot
+                            .display_snapshot(cx)
                             .buffer_snapshot()
                             .language_settings_at(offset)
                             .tab;
@@ -211,15 +214,15 @@ impl Editor {
         if self.is_read_only(cx) || self.propagate_if_single_line(cx) {
             return;
         }
-        let before = self.resolved_selections();
-        let snapshot = self.text_snapshot();
+        let before = self.resolved_selections(cx);
+        let snapshot = self.text_snapshot(cx);
         let targets = touched_lines(&snapshot, &before).and_then(|lines| {
             lines
                 .into_iter()
                 .filter_map(|line| {
                     let offset = snapshot.line_start_byte(line).unwrap_or_default();
                     let indent_width = self
-                        .display_snapshot
+                        .display_snapshot(cx)
                         .buffer_snapshot()
                         .language_settings_at(offset)
                         .tab
@@ -250,8 +253,8 @@ impl Editor {
         }
         self.composition = None;
         self.advance_snapshots(cx);
-        let before = self.resolved_selections().normalized();
-        let snapshot = self.display_snapshot.buffer_snapshot().clone();
+        let before = self.resolved_selections(cx).normalized();
+        let snapshot = self.display_snapshot(cx).buffer_snapshot().clone();
         // 逐选区计算插入文本与光标落点：
         // 光标处于声明了 newline 的括号对之间时，闭合符前额外补一个基准缩进空行，与自动缩进共用同一回车路径）。
         let mut trailing_lens = Vec::new();
@@ -261,11 +264,11 @@ impl Editor {
             .map(|selection| {
                 let offset = selection.start();
                 let suggestion = self
-                    .display_snapshot
+                    .display_snapshot(cx)
                     .buffer_snapshot()
                     .suggested_newline_indent(offset)?;
                 let tab = self
-                    .display_snapshot
+                    .display_snapshot(cx)
                     .buffer_snapshot()
                     .language_settings_at(offset)
                     .tab;
@@ -355,10 +358,11 @@ impl Editor {
         })
     }
 
-    fn selected_text(&self) -> Option<String> {
-        let snapshot = self.display_snapshot.buffer_snapshot();
+    fn selected_text(&self, cx: &App) -> Option<String> {
+        let display_snapshot = self.display_snapshot(cx);
+        let snapshot = display_snapshot.buffer_snapshot();
         let mut parts = Vec::new();
-        for selection in self.resolved_selections().as_slice() {
+        for selection in self.resolved_selections(cx).as_slice() {
             if selection.is_caret() {
                 continue;
             }
@@ -427,7 +431,7 @@ impl Editor {
     fn synchronize_after_history_edit(&mut self, cx: &mut Context<Self>) {
         self.composition = None;
         self.advance_snapshots(cx);
-        self.request_autoscroll();
+        self.request_autoscroll(cx);
         self.input_layout = None;
         cx.notify();
     }
@@ -439,7 +443,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         // 光标贴着自动补全的闭合符时先扩展选区覆盖整对，一次退格删除整对。
-        self.select_autoclose_pair();
+        self.select_autoclose_pair(cx);
         self.delete(
             MovementDirection::Previous,
             MovementUnit::Grapheme,
@@ -516,7 +520,7 @@ impl Editor {
     }
 
     pub(crate) fn handle_copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = self.selected_text() {
+        if let Some(text) = self.selected_text(cx) {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }
@@ -525,12 +529,12 @@ impl Editor {
         if self.is_read_only(cx) {
             return;
         }
-        let Some(text) = self.selected_text() else {
+        let Some(text) = self.selected_text(cx) else {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
         self.composition = None;
-        let before_selections = self.resolved_selections();
+        let before_selections = self.resolved_selections(cx);
         let metadata = edit_metadata("剪切");
         let _ = self.change_with_after(before_selections.clone(), metadata.clone(), cx, |buffer| {
             replace_selections(buffer, &before_selections, "")
@@ -585,12 +589,12 @@ impl Editor {
             return;
         }
         self.composition = None;
-        let before = self.resolved_selections();
+        let before = self.resolved_selections(cx);
         let description = match direction {
             MovementDirection::Previous => "移动行到上方",
             MovementDirection::Next => "移动行到下方",
         };
-        let snapshot = self.text_snapshot();
+        let snapshot = self.text_snapshot(cx);
         let metadata = edit_metadata(description);
         let _ = self.change_with_after_post(
             before.clone(),

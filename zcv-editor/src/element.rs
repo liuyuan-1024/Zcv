@@ -1115,8 +1115,8 @@ impl Element for EditorElement {
             let editor = self.editor.read(cx);
             (
                 editor.snapshot(window, cx),
-                editor.presentation(),
-                editor.selections(),
+                editor.presentation(cx),
+                editor.selections(cx),
             )
         };
         let display_snapshot = render_snapshot.display_snapshot().clone();
@@ -1128,7 +1128,7 @@ impl Element for EditorElement {
         // 在 read 块之后执行：缓存写入需要可变借用，read 块内的引用类型已在块内克隆。
         let matching_bracket_pair = self
             .editor
-            .update(cx, |editor, _| editor.matching_bracket_pair());
+            .update(cx, |editor, cx| editor.matching_bracket_pair(cx));
         let gutter_dimensions = shows_gutter.then(|| gutter_dimensions(&display_snapshot, window));
         let gutter_bounds = gutter_dimensions.map(|dimensions| Bounds {
             origin: bounds.origin,
@@ -1200,21 +1200,22 @@ impl Element for EditorElement {
         } else {
             self.editor.update(cx, |editor, cx| {
                 let longest_row = editor.longest_display_row(cx);
-                editor.longest_line_width(longest_row, font.clone(), font_size, window)
+                editor.longest_line_width(longest_row, font.clone(), font_size, window, cx)
             }) + CARET_WIDTH
         };
         let sticky_header_height = display_snapshot
             .sticky_buffer_header(DisplayRow::ZERO)
             .map_or(Pixels::ZERO, |_| line_height * FILE_HEADER_HEIGHT as f32);
-        self.editor.update(cx, |editor, _| {
+        self.editor.update(cx, |editor, cx| {
             editor.prepare_scroll_viewport(
                 text_bounds.size,
                 content_width,
                 line_height,
                 sticky_header_height,
+                cx,
             );
             // 垂直自动滚动在布局前应用：光标行进出视口的锚点修正只依赖行与视口几何，提前消费后首遍布局即为最终布局，光标移动帧不再整帧重排。
-            editor.apply_pending_autoscroll_vertical();
+            editor.apply_pending_autoscroll_vertical(cx);
         });
         let (start_row, scroll_offset) = {
             let render_snapshot = self.editor.read(cx).snapshot(window, cx);
@@ -1257,7 +1258,7 @@ impl Element for EditorElement {
         let active_lines = self
             .editor
             .read(cx)
-            .active_lines_in_range(visible_source_lines.as_ref())
+            .active_lines_in_range(visible_source_lines.as_ref(), cx)
             .into_iter()
             .collect::<BTreeSet<_>>();
         let fold_anchor_lines: BTreeSet<Line> = visible_source_lines
@@ -1566,7 +1567,7 @@ impl Element for EditorElement {
             if let Some(gutter) = &event_layout.gutter {
                 if let Some(line) = gutter.logical_line_for_position(event.position) {
                     editor.update(cx, |editor, cx| {
-                        editor.select_line(line, event.modifiers.shift);
+                        editor.select_line(line, event.modifiers.shift, cx);
                         cx.notify();
                     });
                     window.focus(&mouse_focus, cx);
@@ -3487,7 +3488,7 @@ mod tests {
         expanded: &[bool],
         old_display_ranges: &[Option<Range<usize>>],
     ) -> DiffDecorationSnapshot {
-        DiffDecorationSnapshot::new(
+        DiffDecorationSnapshot::from_parts(
             snapshot,
             hunks,
             expanded.to_vec(),

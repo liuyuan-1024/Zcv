@@ -57,8 +57,9 @@ impl Editor {
         self.input_layout = Some(layout);
     }
 
-    fn selection_for_utf16_range(&self, range: Range<usize>) -> Option<SelectionSet> {
-        let snapshot = self.display_snapshot.buffer_snapshot();
+    fn selection_for_utf16_range(&self, range: Range<usize>, cx: &App) -> Option<SelectionSet> {
+        let display_snapshot = self.display_snapshot(cx);
+        let snapshot = display_snapshot.buffer_snapshot();
         let start = snapshot
             .utf16_cu_to_byte(Utf16Offset::new(range.start))
             .ok()?;
@@ -77,7 +78,7 @@ impl Editor {
         if self.is_read_only(cx) {
             return;
         }
-        let before_selections = self.resolved_selections();
+        let before_selections = self.resolved_selections(cx);
         let composition = self.composition.take();
         // 自动闭合行为只作用于普通单字符输入（IME 组合会话与指定替换范围不进入）。
         if range_utf16.is_none()
@@ -114,7 +115,7 @@ impl Editor {
         description: &'static str,
         cx: &mut Context<Self>,
     ) -> Option<(SelectionSet, String, TransactionMetadata)> {
-        let targets = match self.replacement_targets(composition.as_ref(), range_utf16) {
+        let targets = match self.replacement_targets(composition.as_ref(), range_utf16, cx) {
             Some(targets) => targets,
             None => {
                 self.composition = composition;
@@ -141,6 +142,7 @@ impl Editor {
         &self,
         composition: Option<&EditorComposition>,
         range_utf16: Option<Range<usize>>,
+        cx: &App,
     ) -> Option<SelectionSet> {
         if let Some(composition) = composition {
             let ranges = composition
@@ -149,7 +151,7 @@ impl Editor {
                 .copied()
                 .map(|range| {
                     range_utf16.clone().map_or(Some(range), |relative_range| {
-                        self.relative_utf16_range(range, relative_range)
+                        self.relative_utf16_range(range, relative_range, cx)
                     })
                 })
                 .collect::<Option<Vec<_>>>()?;
@@ -162,17 +164,19 @@ impl Editor {
             ));
         }
         if let Some(range) = range_utf16 {
-            return self.selection_for_utf16_range(range);
+            return self.selection_for_utf16_range(range, cx);
         }
-        Some(self.resolved_selections())
+        Some(self.resolved_selections(cx))
     }
 
     fn relative_utf16_range(
         &self,
         containing_range: MultiBufferRange,
         relative_range: Range<usize>,
+        cx: &App,
     ) -> Option<MultiBufferRange> {
-        let snapshot = self.display_snapshot.buffer_snapshot();
+        let display_snapshot = self.display_snapshot(cx);
+        let snapshot = display_snapshot.buffer_snapshot();
         let text = snapshot.text_for_range(containing_range).ok()?;
         let utf16_len = utf16_len(&text);
         let start = byte_for_utf16_offset(&text, relative_range.start.min(utf16_len))?;
@@ -213,7 +217,7 @@ impl Editor {
             return false;
         }
 
-        let snapshot = self.display_snapshot.buffer_snapshot().clone();
+        let snapshot = self.display_snapshot(cx).buffer_snapshot().clone();
 
         // 逐选区决策，产出目标编辑、编辑后落点与新区域（以编辑前坐标为基准）。
         let mut targets: Vec<(Selection, Arc<str>)> = Vec::new();
@@ -400,9 +404,9 @@ impl Editor {
     }
 
     /// 光标贴着自动补全闭合符起点时扩展选区覆盖整对，使退格一次删除整对；非空选区或未命中区域时选区不变。
-    pub(super) fn select_autoclose_pair(&mut self) {
-        let snapshot = self.display_snapshot.buffer_snapshot().clone();
-        let before = self.resolved_selections();
+    pub(super) fn select_autoclose_pair(&mut self, cx: &App) {
+        let snapshot = self.display_snapshot(cx).buffer_snapshot().clone();
+        let before = self.resolved_selections(cx);
         let mut changed = false;
         let selections: Vec<Selection> = before
             .as_slice()
@@ -453,7 +457,7 @@ impl Editor {
             // 自动闭合配对扩展属于普通选区变更，结束结构化选择扩展链。
             self.structured_selection_history.clear();
             self.selections = SelectionSet::new_with_primary(selections, before.primary_index())
-                .anchored(self.display_snapshot.buffer_snapshot());
+                .anchored(self.display_snapshot(cx).buffer_snapshot());
         }
     }
 }
@@ -527,9 +531,9 @@ impl EntityInputHandler for Editor {
         range_utf16: Range<usize>,
         actual_range: &mut Option<Range<usize>>,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Option<String> {
-        let presentation = self.presentation();
+        let presentation = self.presentation(cx);
         actual_range.replace(range_utf16.clone());
         presentation.text_for_utf16_range(range_utf16)
     }
@@ -538,10 +542,11 @@ impl EntityInputHandler for Editor {
         &mut self,
         _ignore_disabled_input: bool,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        let snapshot = self.display_snapshot.buffer_snapshot();
-        let selection = *self.resolved_selections().primary();
+        let display_snapshot = self.display_snapshot(cx);
+        let snapshot = display_snapshot.buffer_snapshot();
+        let selection = *self.resolved_selections(cx).primary();
         Some(UTF16Selection {
             range: snapshot.byte_to_utf16_cu(selection.start()).ok()?.get()
                 ..snapshot.byte_to_utf16_cu(selection.end()).ok()?.get(),
@@ -552,9 +557,9 @@ impl EntityInputHandler for Editor {
     fn marked_text_range(
         &self,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
-        self.presentation().marked_utf16_range()
+        self.presentation(cx).marked_utf16_range()
     }
 
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -583,7 +588,7 @@ impl EntityInputHandler for Editor {
         cx: &mut Context<Self>,
     ) {
         let previous_composition = self.composition.take();
-        let before_selections = self.resolved_selections();
+        let before_selections = self.resolved_selections(cx);
         let Some((targets, text, metadata)) = self.commit_input_edit(
             previous_composition.clone(),
             range_utf16,
@@ -616,7 +621,7 @@ impl EntityInputHandler for Editor {
             return;
         }
 
-        let inserted_selections = self.resolved_selections();
+        let inserted_selections = self.resolved_selections(cx);
         let marked_ranges = inserted_selections
             .as_slice()
             .iter()
@@ -648,7 +653,7 @@ impl EntityInputHandler for Editor {
                 .collect(),
             inserted_selections.primary_index(),
         )
-        .anchored(self.display_snapshot.buffer_snapshot());
+        .anchored(self.display_snapshot(cx).buffer_snapshot());
         if let Some(transaction_id) = history_transaction_id
             && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
         {
@@ -660,7 +665,7 @@ impl EntityInputHandler for Editor {
             primary_index: inserted_selections.primary_index(),
             history_transaction_id,
         });
-        self.request_autoscroll();
+        self.request_autoscroll(cx);
         self.input_layout = None;
         cx.notify();
     }

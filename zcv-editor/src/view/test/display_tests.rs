@@ -1980,10 +1980,10 @@ fn folded_deleted_hunk_anchor_is_at_the_deletion_row_boundary(cx: &mut TestAppCo
         let snapshot = editor.display_snapshot();
         let rendering = hunk_rendering(
             &snapshot,
-            editor.diff_hunks(cx),
+            &editor.diff_hunks(cx),
             &editor.diff_hunk_expanded(cx),
-            editor.diff_hunk_old_ranges(cx),
-            editor.diff_hunk_word_diffs(cx),
+            &editor.diff_hunk_old_ranges(cx),
+            &editor.diff_hunk_word_diffs(cx),
         );
         assert_eq!(
             rendering.hit_regions,
@@ -2237,10 +2237,10 @@ fn plain_editor_expanded_modified_hunk_keeps_old_rows_and_gutter_strip(cx: &mut 
         let snapshot = editor.display_snapshot();
         let rendering = hunk_rendering(
             &snapshot,
-            editor.diff_hunks(cx),
+            &editor.diff_hunks(cx),
             &editor.diff_hunk_expanded(cx),
-            editor.diff_hunk_old_ranges(cx),
-            editor.diff_hunk_word_diffs(cx),
+            &editor.diff_hunk_old_ranges(cx),
+            &editor.diff_hunk_word_diffs(cx),
         );
         assert_eq!(
             rendering.diff_rows,

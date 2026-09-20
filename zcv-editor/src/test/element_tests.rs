@@ -44,7 +44,8 @@ fn layout_visible_lines(
     )
 }
 
-use crate::display_map::{DisplayMap, DisplaySnapshot, WrapRowKind};
+use crate::display_map::test_support::{WrapRowKind, projected_line_text};
+use crate::display_map::{DisplayMap, DisplaySnapshot};
 use gpui::{AppContext, Empty, TestAppContext};
 
 use std::path::{Path, PathBuf};
@@ -452,8 +453,7 @@ fn editor_width_soft_wrap_keeps_mixed_cjk_inside_text_bounds(cx: &mut TestAppCon
                                     projected_line,
                                     ..
                                 } = row.kind();
-                                display
-                                    .row_text(*projected_line)
+                                projected_line_text(&display, *projected_line)
                                     .expect("显示行文本应可解析")
                                     .as_ref()[byte_range.clone()]
                                     .to_owned()
@@ -474,8 +474,7 @@ fn editor_width_soft_wrap_keeps_mixed_cjk_inside_text_bounds(cx: &mut TestAppCon
                             projected_line,
                             ..
                         } = row.kind();
-                        let row_text = display
-                            .row_text(*projected_line)
+                        let row_text = projected_line_text(&display, *projected_line)
                             .expect("显示行文本应可解析");
                         let row_text = &row_text.as_ref()[byte_range.clone()];
                         let run = TextRun {
@@ -741,9 +740,8 @@ fn wrapped_unicode_markdown_queries_highlights_from_source_chunks(cx: &mut TestA
                         projected_line,
                         ..
                     } = row.kind();
-                    let text = display
-                        .row_text(*projected_line)
-                        .expect("显示行文本应可解析");
+                    let text =
+                        projected_line_text(&display, *projected_line).expect("显示行文本应可解析");
                     (!text.is_char_boundary(byte_range.len())).then_some(row.index())
                 });
                 if offending_row.is_some() {

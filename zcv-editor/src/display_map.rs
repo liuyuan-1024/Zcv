@@ -22,7 +22,6 @@ mod fold_map;
 mod tab_map;
 mod wrap_map;
 
-use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::num::NonZeroUsize;
 use std::ops::Range;
@@ -59,7 +58,6 @@ use fold_map::{FoldMap, FoldSnapshot, LogicalProjection};
 use gpui::{App, AppContext as _, Bounds, Context, Entity, HighlightStyle, Pixels};
 use tab_map::TabMap;
 pub(crate) use tab_map::{byte_for_display_column, display_column_for_byte};
-pub(crate) use wrap_map::WrapRowKind;
 use wrap_map::{WrapEdit, WrapMap, WrapSnapshot};
 use zcv_language::HighlightSpan;
 use zcv_multi_buffer::{
@@ -520,18 +518,6 @@ impl DisplaySnapshot {
 
     pub(crate) fn rows(&self, start_row: DisplayRow, line_count: usize) -> BlockRows<'_> {
         self.block_snapshot.rows(start_row, line_count)
-    }
-
-    pub(crate) fn row_text(&self, projected_line: usize) -> Option<Cow<'_, str>> {
-        let row = ProjectedLineIndex::new(projected_line);
-        let fold = self.fold_snapshot();
-        if fold.is_fold_row(row) {
-            fold.row_text(row)
-        } else {
-            self.wrap_snapshot()
-                .tab_snapshot()
-                .line_text(Line::new(projected_line))
-        }
     }
 
     /// 从显示快照的起点连续消费 Block/Fold/Wrap 产生的 chunk。
@@ -1166,6 +1152,10 @@ impl DisplayMap {
         BlockSnapshot::new(wrap_snapshot.clone(), excerpts, &self.folded_buffers)
     }
 }
+
+#[cfg(test)]
+#[path = "display_map/test/support.rs"]
+pub(crate) mod test_support;
 
 #[cfg(test)]
 #[path = "test/display_map_tests.rs"]

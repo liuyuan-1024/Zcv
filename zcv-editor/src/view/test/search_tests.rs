@@ -10,9 +10,9 @@ use zcv_workspace::{Direction, SearchableItem};
 
 use super::common::test_buffer;
 use super::*;
+use crate::display_map::test_support::{WrapRowKind, projected_line_text};
 use crate::display_map::{
     ChunkSource, ChunkText, DisplayMap, DisplayRow, DisplaySnapshot, HighlightStyles, WrapChunks,
-    WrapRowKind,
 };
 
 fn new_display_map(
@@ -386,9 +386,7 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
             projected_line,
             ..
         } = row.kind();
-        let text = display
-            .row_text(*projected_line)
-            .expect("显示行文本应可解析");
+        let text = projected_line_text(&display, *projected_line).expect("显示行文本应可解析");
         let tab_width = display.tab_width().get();
         let rendered: Vec<_> = WrapChunks::new(
             ChunkSource {
@@ -451,9 +449,7 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
                 projected_line,
                 ..
             } = row.kind();
-            let text = display
-                .row_text(*projected_line)
-                .expect("显示行文本应可解析");
+            let text = projected_line_text(&display, *projected_line).expect("显示行文本应可解析");
             {
                 let tab_width = display.tab_width().get();
                 let rendered: Vec<_> = WrapChunks::new(
@@ -559,9 +555,7 @@ zcv final
                 projected_line,
                 ..
             } = row.kind();
-            let text = display
-                .row_text(*projected_line)
-                .expect("显示行文本应可解析");
+            let text = projected_line_text(&display, *projected_line).expect("显示行文本应可解析");
             {
                 let tab_width = display.tab_width().get();
                 let highlight_styles = display.highlight_styles(cx);

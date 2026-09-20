@@ -6,6 +6,7 @@ use zcv_text::{Affinity, Buffer, BufferConfig, Edit, Line, TransactionMetadata};
 use zcv_theme::ThemeChoice;
 
 use super::tab_map::TabColumn;
+use super::test_support::{WrapRowKind, projected_line_text};
 use super::*;
 
 fn display_snapshot(cx: &mut TestAppContext, map: &Entity<DisplayMap>) -> DisplaySnapshot {
@@ -645,9 +646,7 @@ fn soft_wrap_mixed_commit_message_rows_fit_the_shaped_width(cx: &mut TestAppCont
             projected_line,
             ..
         } = row.kind();
-        let text = snapshot
-            .row_text(*projected_line)
-            .expect("显示行文本应可解析");
+        let text = projected_line_text(&snapshot, *projected_line).expect("显示行文本应可解析");
         let mut rendered = " ".repeat(*indent);
         rendered.push_str(&text.as_ref()[byte_range.clone()]);
         let run = gpui::TextRun {

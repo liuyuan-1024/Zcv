@@ -40,8 +40,8 @@ use crate::scrollbar::{ScrollbarMarker, ScrollbarMarkerState};
 
 use super::blink_manager::BlinkManager;
 use super::display_map::{
-    CreaseId, DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplaySnapshot, EditorHunk,
-    FoldBias, HunkControlTarget, WrapRowKind,
+    CreaseId, DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplayRowEvent,
+    DisplaySnapshot, EditorHunk, FoldBias, HighlightStyles, HunkControlTarget,
 };
 use super::element::{AUTOSCROLL_INTERVAL, EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollViewport, ScrollbarThumbState};
@@ -2523,24 +2523,21 @@ fn layout_line_width(
     font_size: Pixels,
     window: &mut Window,
 ) -> Pixels {
-    let mut rows = display_snapshot.rows(row, 1);
-    let Some(row) = rows.next() else {
-        return Pixels::ZERO;
-    };
-    if row.block().is_some() {
-        return Pixels::ZERO;
-    }
-    let WrapRowKind::Text {
-        byte_range,
-        projected_line,
-        ..
-    } = row.kind();
-    let Some(row_text) = display_snapshot.row_text(*projected_line) else {
-        return Pixels::ZERO;
-    };
-    // 行投影保留行终止符以维持 byte 坐标；文本测量 API 只接受单行内容。
-    let text = &row_text.as_ref()[byte_range.clone()];
-    let text = text.strip_suffix('\n').unwrap_or(text);
+    // 显示 chunk 已是无行终止符的单行内容：
+    // 逐行消费，不再物化整条投影行后由调用方剥离终止符。
+    let mut chunks = display_snapshot.chunks(
+        row..DisplayRow::new(row.get() + 1),
+        HighlightStyles::default(),
+        None,
+    );
+    let mut text = String::new();
+    chunks.for_each_row(|event| {
+        if let DisplayRowEvent::Text { chunks, .. } = event {
+            for chunk in chunks {
+                text.push_str(chunk.text);
+            }
+        }
+    });
     let text_style = window.text_style();
     let run = TextRun {
         len: text.len(),
@@ -2552,7 +2549,7 @@ fn layout_line_width(
     };
     window
         .text_system()
-        .shape_line(text.to_owned().into(), font_size, &[run], None)
+        .shape_line(text.into(), font_size, &[run], None)
         .width
 }
 

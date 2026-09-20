@@ -10,7 +10,8 @@ use super::common::{
     buffer_text, focus_editor, inject_editor_diff, inject_file_diff, revision_buffer, test_buffer,
 };
 use super::*;
-use crate::display_map::{DisplayColumn, DisplayPoint, DisplayRow, WrapRowKind, hunk_rendering};
+use crate::display_map::test_support::{WrapRowKind, projected_line_text};
+use crate::display_map::{DisplayColumn, DisplayPoint, DisplayRow, hunk_rendering};
 
 /// 构造 context_lines=2 的裁剪投影项，供组合文档裁剪测试复用。
 fn clipped_diff_file(
@@ -856,7 +857,9 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
     let row = cursor.next().expect("视口应可读取");
     let WrapRowKind::Text { projected_line, .. } = row.kind();
     assert_eq!(
-        snapshot.row_text(*projected_line).unwrap().as_ref(),
+        projected_line_text(&snapshot, *projected_line)
+            .unwrap()
+            .as_ref(),
         "fn main() {…}\n"
     );
     // 真实 `}` 范围投影到合并行占位符之后的列（anchor 11 字符 + 占位符 1 列 = 12）。

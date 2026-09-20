@@ -455,9 +455,10 @@ impl Editor {
             .collect();
         if changed {
             // 自动闭合配对扩展属于普通选区变更，结束结构化选择扩展链。
-            self.structured_selection_history.clear();
-            self.selections = SelectionSet::new_with_primary(selections, before.primary_index())
-                .anchored(self.display_snapshot(cx).buffer_snapshot());
+            self.set_selections(
+                SelectionSet::new_with_primary(selections, before.primary_index()),
+                cx,
+            );
         }
     }
 }
@@ -641,19 +642,21 @@ impl EntityInputHandler for Editor {
         let selected_end =
             byte_for_utf16_offset(&text, selected_range_utf16.end.min(text_utf16_len))
                 .unwrap_or(text.len());
-        self.selections = SelectionSet::new_with_primary(
-            marked_ranges
-                .iter()
-                .map(|marked_range| {
-                    Selection::new(
-                        MultiBufferOffset::new(marked_range.start().get() + selected_start),
-                        MultiBufferOffset::new(marked_range.start().get() + selected_end),
-                    )
-                })
-                .collect(),
-            inserted_selections.primary_index(),
-        )
-        .anchored(self.display_snapshot(cx).buffer_snapshot());
+        self.change_selections(
+            SelectionSet::new_with_primary(
+                marked_ranges
+                    .iter()
+                    .map(|marked_range| {
+                        Selection::new(
+                            MultiBufferOffset::new(marked_range.start().get() + selected_start),
+                            MultiBufferOffset::new(marked_range.start().get() + selected_end),
+                        )
+                    })
+                    .collect(),
+                inserted_selections.primary_index(),
+            ),
+            cx,
+        );
         if let Some(transaction_id) = history_transaction_id
             && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
         {

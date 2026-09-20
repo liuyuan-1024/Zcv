@@ -203,7 +203,11 @@ fn normalize_selections<T: Copy + Ord + Default>(
             continue;
         };
 
-        if current.end() >= selection.start() {
+        // 重叠、包含或光标贴边才算合并；两个非空选区仅仅首尾相接不合并。
+        let overlaps = current.end() > selection.start();
+        let caret_touches =
+            current.end() == selection.start() && (current.is_caret() || selection.is_caret());
+        if overlaps || caret_touches {
             let start = current.start().min(selection.start());
             let end = current.end().max(selection.end());
             *current = Selection::new(start, end);

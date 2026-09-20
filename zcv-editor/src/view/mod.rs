@@ -1077,6 +1077,34 @@ impl Editor {
         self.selections = selections.anchored(self.display_snapshot(cx).buffer_snapshot());
     }
 
+    /// 用已锚定的选区替换当前选择，并清空结构化选择链；结束鼠标手势。
+    ///
+    /// 供 undo/redo 等持有源锚点选区、又不能从偏移重新锚定的调用方使用。
+    pub(super) fn replace_anchored_selections(
+        &mut self,
+        selections: SelectionSet<MultiBufferAnchor>,
+        cx: &mut Context<Self>,
+    ) {
+        self.structured_selection_history.clear();
+        self.restore_anchored_selections(selections, cx);
+    }
+
+    /// 用已锚定的选区替换当前选择但保留结构化选择链；结束鼠标手势。
+    ///
+    /// 只供结构化选择收缩恢复使用。
+    pub(super) fn restore_anchored_selections(
+        &mut self,
+        selections: SelectionSet<MultiBufferAnchor>,
+        cx: &mut Context<Self>,
+    ) {
+        self.composition = None;
+        self.pending_selection = None;
+        self.selections = selections;
+        self.request_autoscroll(cx);
+        self.input_layout = None;
+        cx.notify();
+    }
+
     /// 按当前派生快照把源锚点选区解析为投影 offset 版选区集合。
     fn resolved_selections(&self, cx: &App) -> SelectionSet {
         self.selections
@@ -1763,7 +1791,7 @@ impl Editor {
             Err(error) => {
                 self.end_transaction(cx);
                 cx.emit(EditorEvent::Error(format!("{operation}失败：{error:#}")));
-                self.selections = before_selections.clone().anchored(&before_snapshot);
+                self.change_selections(before_selections.clone(), cx);
                 return Err(error);
             }
         };
@@ -1780,7 +1808,7 @@ impl Editor {
         if let Err(error) = applied {
             self.end_transaction(cx);
             cx.emit(EditorEvent::Error(format!("{operation}失败：{error:#}")));
-            self.selections = before_selections.clone().anchored(&before_snapshot);
+            self.change_selections(before_selections.clone(), cx);
             return Err(error);
         }
         let node_id = self.end_transaction(cx);
@@ -1850,7 +1878,7 @@ impl Editor {
             );
         }
         // 编辑后投影坐标直接在当前快照锚定为源锚点；投影重建不改变源，随后解析即忠实落位。
-        self.selections = after_selections.anchored(self.display_snapshot(cx).buffer_snapshot());
+        self.change_selections(after_selections, cx);
         self.finish_transaction(transaction_id, cx);
         Ok((outcome, self.resolved_selections(cx)))
     }
@@ -2071,10 +2099,8 @@ impl Editor {
             .map(|selections| SelectionSet::new_with_primary(selections, primary_index));
         match outcome {
             Ok(selections) => {
-                self.composition = None;
                 // 普通光标移动结束结构化选择扩展链，避免下次收缩跳回移动前选区。
-                self.structured_selection_history.clear();
-                self.selections = selections.anchored(self.display_snapshot(cx).buffer_snapshot());
+                self.change_selections(selections, cx);
                 if matches!(motion, Motion::PageStep(_)) {
                     let display_snapshot = self.display_snapshot(cx).clone();
                     self.scroll_manager
@@ -2528,12 +2554,7 @@ impl Editor {
         let Some(previous) = self.structured_selection_history.pop() else {
             return;
         };
-        // 结构化选择恢复是显式入口：直接恢复锚点集合，不经过常规选区清空路径。
-        self.composition = None;
-        self.selections = previous;
-        self.request_autoscroll(cx);
-        self.input_layout = None;
-        cx.notify();
+        self.restore_anchored_selections(previous, cx);
     }
 
     /// 键位上下文：Editor 标识 + mode 标签。

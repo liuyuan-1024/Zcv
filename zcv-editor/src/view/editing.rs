@@ -413,7 +413,7 @@ impl Editor {
                     })
                 {
                     // 历史选区是源锚点：投影是否重建都不影响解析。
-                    self.selections = selections;
+                    self.replace_anchored_selections(selections, cx);
                 }
                 self.synchronize_after_history_edit(cx);
                 // 撤销/重做与普通编辑共用同一事件出口，携带真实事务身份。

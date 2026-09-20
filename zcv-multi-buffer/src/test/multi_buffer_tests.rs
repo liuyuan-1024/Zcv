@@ -1223,6 +1223,102 @@ fn source_edit_updates_only_its_composite_excerpt_without_reset(cx: &mut TestApp
         "first\nchanged second\n"
     );
 }
+#[gpui::test]
+fn multiple_source_edits_before_a_read_compose_into_one_incremental_batch(cx: &mut TestAppContext) {
+    let first = singleton("src/first.rs", "first\n", cx);
+    let second = singleton("src/second.rs", "second\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                ExcerptRange::line_range(first.clone(), 0..1, cx),
+                ExcerptRange::line_range(second.clone(), 0..1, cx),
+            ],
+            cx,
+        );
+    });
+    let subscription =
+        cx.update_entity(&combined, |buffer, cx| buffer.subscribe_and_snapshot(cx).0);
+
+    // 一次读取前两个源各编辑一次：组合层必须组合为一段连续增量，而不是整体重载。
+    cx.update_entity(&first, |source, cx| {
+        source
+            .edit(
+                [Edit::insert(ByteOffset::ZERO, "a ").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("源编辑应成功");
+    });
+    cx.update_entity(&second, |source, cx| {
+        source
+            .edit(
+                [Edit::insert(ByteOffset::ZERO, "b ").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("源编辑应成功");
+    });
+    cx.run_until_parked();
+
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.snapshot(cx);
+    });
+    let changes = subscription.consume();
+    assert!(
+        !changes.requires_reset(),
+        "一次读取前的多次源编辑必须组合为增量批次"
+    );
+    assert_eq!(changes.patch().edits().len(), 2);
+    assert_eq!(
+        cx.update_entity(&combined, |buffer, cx| {
+            String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("组合文本必须是 UTF-8")
+        }),
+        "a first\nb second\n"
+    );
+}
+
+#[gpui::test]
+fn source_edit_outside_excerpts_publishes_an_empty_incremental_batch(cx: &mut TestAppContext) {
+    let source = singleton("src/partial.rs", "shown\nhidden\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(vec![ExcerptRange::line_range(source.clone(), 0..1, cx)], cx);
+    });
+    let subscription =
+        cx.update_entity(&combined, |buffer, cx| buffer.subscribe_and_snapshot(cx).0);
+
+    // 编辑第二行：不在任何 excerpt 内，组合输出几何不变，仍必须发布非 reset 的空批次。
+    cx.update_entity(&source, |source, cx| {
+        source
+            .edit(
+                [Edit::insert(ByteOffset::new(12), "more ").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("源编辑应成功");
+    });
+    cx.run_until_parked();
+
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.snapshot(cx);
+    });
+    let changes = subscription.consume();
+    assert!(
+        !changes.requires_reset(),
+        "未展示区域的源编辑不得整体重载组合投影"
+    );
+    assert!(
+        changes.patch().edits().is_empty(),
+        "未展示区域的源编辑不产生输出编辑"
+    );
+    assert_eq!(
+        cx.update_entity(&combined, |buffer, cx| {
+            String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("组合文本必须是 UTF-8")
+        }),
+        "shown\n"
+    );
+}
 
 #[gpui::test]
 fn one_source_edit_updates_all_visible_excerpts_incrementally(cx: &mut TestAppContext) {

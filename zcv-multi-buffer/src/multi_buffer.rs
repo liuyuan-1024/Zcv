@@ -1683,7 +1683,7 @@ impl ProjectionChangeTopic {
         &self,
         old_version: BufferVersion,
         new_version: BufferVersion,
-        batch: Option<TextChangeBatch>,
+        batch: TextChangeBatch,
     ) {
         self.subscriptions
             .lock()
@@ -1696,11 +1696,16 @@ impl ProjectionChangeTopic {
                     .lock()
                     .expect("组合投影订阅锁不应在持锁期间 panic");
                 if state.pending_old_version.is_none() {
-                    // 首个待消费变化可携带增量批次；多次变化合并为整体重载。
+                    // 首个待消费变化：记录净变化起点并保留其增量批次。
                     state.pending_old_version = Some(old_version);
-                    state.pending_batch = batch.clone();
+                    state.pending_batch = Some(batch.clone());
                 } else {
-                    state.pending_batch = None;
+                    // 同一读取前的多次变化必须组合为一段连续增量；
+                    // 版本不连续说明订阅错过中间提交，只能整体重载，不能猜测坐标。
+                    state.pending_batch = state
+                        .pending_batch
+                        .as_ref()
+                        .and_then(|pending| pending.compose(&batch));
                 }
                 state.current_version = new_version;
                 true
@@ -3206,7 +3211,7 @@ impl MultiBuffer {
     }
 
     /// 推进虚拟组合投影的版本，并唤醒各自独立的显示消费者。
-    fn publish_projection_change(&mut self, incremental: Option<SourceIncremental>) {
+    fn publish_projection_change(&mut self, incremental: SourceIncremental) {
         self.snapshot_dirty = true;
         if let Some(sync) = &mut self.projection_sync {
             sync.changed = true;
@@ -3215,14 +3220,13 @@ impl MultiBuffer {
         self.publish_projection_change_now(incremental);
     }
 
-    fn publish_projection_change_now(&mut self, incremental: Option<SourceIncremental>) {
+    fn publish_projection_change_now(&mut self, incremental: SourceIncremental) {
         let old_version = self.state.projection_version;
         let new_version = old_version
             .next()
             .expect("组合投影版本不应溢出；溢出时必须创建新文档生命周期");
         self.state.projection_version = new_version;
-        let batch =
-            incremental.map(|incremental| incremental.batch.rebased_to(old_version, new_version));
+        let batch = incremental.batch.rebased_to(old_version, new_version);
         self.state
             .projection_changes
             .publish(old_version, new_version, batch);
@@ -3269,7 +3273,7 @@ impl MultiBuffer {
             sync.old_version,
             vec![(old_range, new_range)],
         );
-        self.publish_projection_change_now(Some(SourceIncremental { batch }));
+        self.publish_projection_change_now(SourceIncremental { batch });
         self.emit_projection_changed(cx);
     }
 
@@ -3302,7 +3306,7 @@ impl MultiBuffer {
         let (old_range, new_range) = projection_changed_ranges(before, &after);
         let batch =
             TextChangeBatch::from_edits(old_version, old_version, vec![(old_range, new_range)]);
-        self.publish_projection_change(Some(SourceIncremental { batch }));
+        self.publish_projection_change(SourceIncremental { batch });
     }
 
     pub(crate) fn publish_source_projection_edit(
@@ -3313,7 +3317,7 @@ impl MultiBuffer {
         let after = self.projection_trees();
         let (old_range, new_range) = projection_changed_ranges(before, &after);
         let batch = source_change.projected_from(vec![(old_range, new_range)]);
-        self.publish_projection_change(Some(SourceIncremental { batch }));
+        self.publish_projection_change(SourceIncremental { batch });
     }
 
     /// 冻结当前输入/输出投影树；供结构变化前保存旧坐标、变化后推导增量范围。
@@ -3334,18 +3338,23 @@ impl MultiBuffer {
         source_change: &TextChangeBatch,
         old_records: &[(usize, TextRange)],
         new_records: &[(usize, TextRange)],
-    ) -> Option<SourceIncremental> {
+    ) -> SourceIncremental {
         if source_change.requires_reset() {
-            return Some(SourceIncremental {
+            return SourceIncremental {
                 batch: source_change.projected_from(Vec::new()),
-            });
+            };
         }
         if source_change.patch().is_empty() {
-            return None;
+            // 没有净编辑：投影几何不变，但仍发布空增量批次，让显示层采用新的组合快照，而不是退化为整体重载。
+            return SourceIncremental {
+                batch: source_change.projected_from(Vec::new()),
+            };
         }
-        if old_records.len() != new_records.len() {
-            return None;
-        }
+        assert_eq!(
+            old_records.len(),
+            new_records.len(),
+            "同一源在非 reset 文本编辑前后必须保持相同的 excerpt 记录数"
+        );
         let patch_edits = source_change.patch().edits();
         let mut output_edits = Vec::new();
         for ((old_output_at, old_source_range), (new_output_at, new_source_range)) in
@@ -3407,22 +3416,25 @@ impl MultiBuffer {
                         ByteOffset::new(old_output_start),
                         ByteOffset::new(old_output_end),
                     )
-                    .ok()?,
+                    .expect("源编辑换算出的旧输出范围必须有序"),
                     TextRange::new(
                         ByteOffset::new(new_output_start),
                         ByteOffset::new(new_output_end),
                     )
-                    .ok()?,
+                    .expect("源编辑换算出的新输出范围必须有序"),
                 ));
             }
         }
         if output_edits.is_empty() {
-            return None;
+            // 源编辑完全落在未展示区域：组合输出几何不变，发布空增量批次。
+            return SourceIncremental {
+                batch: source_change.projected_from(Vec::new()),
+            };
         }
         output_edits.sort_by_key(|(old, _)| old.start());
-        Some(SourceIncremental {
+        SourceIncremental {
             batch: source_change.projected_from(output_edits),
-        })
+        }
     }
 
     /// 整篇重建组合文档的内部入口；只供 diff 投影重建与 clear 使用。

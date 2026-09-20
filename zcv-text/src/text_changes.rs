@@ -268,6 +268,24 @@ impl TextChangeBatch {
         }
     }
 
+    /// 把 next（本批次新版本 → 更新版本）组合进本批次（旧版本 → 本批次新版本）。
+    ///
+    /// 两段必须版本连续；
+    /// 不连续返回 None，调用方必须显式处理，不能把不连续静默解释为整体重载。
+    pub fn compose(&self, next: &Self) -> Option<Self> {
+        if self.new_version != next.old_version {
+            return None;
+        }
+        Some(Self {
+            patch: self.patch.compose(&next.patch),
+            old_version: self.old_version,
+            new_version: next.new_version,
+            // 组合多个来源的批次不再对应单一事务身份。
+            transaction_id: None,
+            reset: self.reset || next.reset,
+        })
+    }
+
     pub fn patch(&self) -> &TextPatch {
         &self.patch
     }

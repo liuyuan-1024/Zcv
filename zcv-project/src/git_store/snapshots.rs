@@ -172,7 +172,7 @@ impl GitStore {
                                 &previous,
                                 cx,
                             );
-                            cx.emit(GitStoreEvent::IndexText);
+                            cx.emit(GitStoreEvent::IndexText { path: path.clone() });
                         }
                         // 失败：清除 optimistic 状态并通知显示层恢复真实 diff。
                         diff.update(cx, |diff, cx| diff.clear_pending_hunks(cx));

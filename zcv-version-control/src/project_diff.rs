@@ -612,9 +612,9 @@ impl ProjectDiffView {
             cx.subscribe(&editor, |_, _, event: &EditorEvent, cx| {
                 cx.emit(event.clone());
             }),
-            // 展开状态变化会改变组合片段：由 MultiBuffer 统一重建并通知宿主恢复视口。
-            cx.subscribe(&editor, |view, _, event: &EditorEvent, cx| match event {
-                EditorEvent::DiffHunksExpandedChanged => view.rebuild_projection(cx),
+            // 展开状态变化由 MultiBuffer 自己按文件重物化并推显示链；视图只需跟随重绘，不再整体重建投影。
+            cx.subscribe(&editor, |_view, _, event: &EditorEvent, cx| match event {
+                EditorEvent::DiffHunksExpandedChanged => cx.notify(),
                 EditorEvent::Edited { .. }
                 | EditorEvent::PathChanged
                 | EditorEvent::DirtyChanged
@@ -637,7 +637,7 @@ impl ProjectDiffView {
                     view.rebuild_projection(cx);
                     cx.emit(EditorEvent::Error(format!("变更块操作失败：{message}")));
                 }
-                GitStoreEvent::IndexText => view.rebuild_projection(cx),
+                GitStoreEvent::IndexText { path } => view.refresh_diff_path(path, cx),
                 GitStoreEvent::ActiveRepositoryChanged
                 | GitStoreEvent::JobsUpdated
                 | GitStoreEvent::Uncommitted(_)
@@ -740,6 +740,30 @@ impl ProjectDiffView {
             }
         }
         self.register_ready_files(cx);
+    }
+
+    /// 乐观 index 更新只影响单个路径：只重挂该路径的 diff，其余文件保持不变。
+    ///
+    /// 该路径的共享 diff 已被 GitStore 失效，这里按新 index 文档重新请求 diff 实体；
+    /// 尚未算完时保留旧 excerpts，等 DiffChanged 增量替换。
+    fn refresh_diff_path(&mut self, path: &AbsolutePathBuf, cx: &mut Context<Self>) {
+        let Some(file) = self
+            .files
+            .iter()
+            .find(|file| file.path.as_path() == path.as_path())
+            .cloned()
+        else {
+            return;
+        };
+        let root = self.project.read(cx).root().map(Path::to_path_buf);
+        let Some(diff_file) = self.build_file_input(&file, root.as_deref(), cx) else {
+            return;
+        };
+        self.editor.update(cx, |editor, cx| {
+            editor.add_diff(diff_file, cx);
+        });
+        self.apply_pending_path(cx);
+        cx.notify();
     }
 
     /// 以 hunk 为核心重建已就绪文件的 excerpts；旧侧与新侧都属于同一个 MultiBuffer 坐标空间。

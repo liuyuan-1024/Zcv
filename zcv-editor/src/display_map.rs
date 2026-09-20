@@ -61,7 +61,9 @@ pub(crate) use tab_map::{byte_for_display_column, display_column_for_byte};
 pub(crate) use wrap_map::WrapRowKind;
 use wrap_map::{WrapEdit, WrapMap, WrapSnapshot};
 use zcv_language::HighlightSpan;
-use zcv_multi_buffer::{MultiBuffer, MultiBufferSnapshot, MultiBufferSubscription};
+use zcv_multi_buffer::{
+    MultiBuffer, MultiBufferEvent, MultiBufferSnapshot, MultiBufferSubscription,
+};
 use zcv_text::{
     Anchor, Line, LineRange, LogicalColumn, MovementDirection, MovementUnit, Position,
     TextChangeBatch, TextResult,
@@ -560,6 +562,13 @@ impl DisplaySyncInputs {
     }
 }
 
+#[derive(Clone, Copy)]
+enum CreaseSync {
+    All,
+    Source(gpui::EntityId),
+    None,
+}
+
 fn default_tab_width() -> NonZeroUsize {
     NonZeroUsize::new(4).expect("默认 tab 宽度必须大于 0")
 }
@@ -597,7 +606,7 @@ impl DisplayMap {
             crease_map: CreaseMap::new(&snapshot),
             source_creases: HashMap::new(),
         };
-        this.refresh_snapshot(&wrap_snapshot, &[], cx);
+        this.commit_snapshot(&wrap_snapshot, &[], CreaseSync::All, cx);
         // 换行层自己拥有后台重排；完成后 DisplayMap 观察并重建 Block 投影。
         cx.observe(&this.wrap_map, |display, _, cx| {
             let wrap_edits = display
@@ -605,7 +614,7 @@ impl DisplayMap {
                 .update(cx, |map, _| map.take_edits_since_sync());
             if !wrap_edits.is_empty() {
                 let wrap_snapshot = display.wrap_map.read(cx).snapshot().clone();
-                display.refresh_snapshot(&wrap_snapshot, &wrap_edits, cx);
+                display.commit_snapshot(&wrap_snapshot, &wrap_edits, CreaseSync::None, cx);
             }
             cx.notify();
         })
@@ -620,8 +629,8 @@ impl DisplayMap {
         subscription: MultiBufferSubscription,
         cx: &mut Context<Self>,
     ) {
-        cx.subscribe(&multi_buffer, |map, _, _, cx| {
-            let changes = map.sync_from_multi_buffer(cx);
+        cx.subscribe(&multi_buffer, |map, _, event, cx| {
+            let changes = map.sync_from_multi_buffer(Some(*event), cx);
             cx.emit(DisplayMapEvent { changes });
             cx.notify();
         })
@@ -629,14 +638,19 @@ impl DisplayMap {
         self.multi_buffer = Some(multi_buffer);
         self.buffer_subscription = Some(subscription);
         // 绑定后重建一次装饰，使 diff 与折叠候选立即可见。
-        self.refresh_snapshot_from_current(cx);
+        let wrap_snapshot = self.wrap_map.read(cx).snapshot().clone();
+        self.commit_snapshot(&wrap_snapshot, &[], CreaseSync::All, cx);
     }
 
     /// 消费自上次同步以来的组合文本变化，并推进显示管线。
     ///
     /// 返回本次消费的文本变化，供 Editor 推进它自己的投影派生状态（搜索锚点等）。
     /// 文本编辑与纯元数据变化走同一入口：Fold/Tab/Wrap/Block 逐层消费组合文本编辑。
-    pub(crate) fn sync_from_multi_buffer(&mut self, cx: &mut Context<Self>) -> TextChangeBatch {
+    pub(crate) fn sync_from_multi_buffer(
+        &mut self,
+        event: Option<MultiBufferEvent>,
+        cx: &mut Context<Self>,
+    ) -> TextChangeBatch {
         let snapshot = self
             .multi_buffer
             .as_ref()
@@ -649,7 +663,16 @@ impl DisplayMap {
             .map_or_else(TextChangeBatch::default, |subscription| {
                 subscription.consume()
             });
-        self.sync(snapshot, changes.clone(), cx);
+        let crease_sync = match event {
+            Some(MultiBufferEvent::Reparsed(source_id)) => CreaseSync::Source(source_id),
+            Some(MultiBufferEvent::ProjectionChanged) => CreaseSync::All,
+            Some(MultiBufferEvent::DiffExpansionChanged) if changes.requires_reset() => {
+                CreaseSync::All
+            }
+            Some(MultiBufferEvent::TextChanged) if changes.requires_reset() => CreaseSync::All,
+            _ => CreaseSync::None,
+        };
+        self.sync(snapshot, changes.clone(), crease_sync, cx);
         changes
     }
 
@@ -680,12 +703,6 @@ impl DisplayMap {
         }
         self.search = search;
         self.rebuild_decorations(cx);
-    }
-
-    /// 用当前 wrap 快照重建显示快照与装饰。
-    fn refresh_snapshot_from_current(&mut self, cx: &mut Context<Self>) {
-        let wrap_snapshot = self.wrap_map.read(cx).snapshot().clone();
-        self.refresh_snapshot(&wrap_snapshot, &[], cx);
     }
 
     /// 只替换当前快照的装饰层；显示拓扑与版本保持不变。
@@ -727,15 +744,18 @@ impl DisplayMap {
         )
     }
 
-    fn refresh_snapshot(
+    fn commit_snapshot(
         &mut self,
         wrap_snapshot: &WrapSnapshot,
         wrap_edits: &[WrapEdit],
+        crease_sync: CreaseSync,
         cx: &App,
     ) {
         let block_snapshot = Arc::new(self.current_block_snapshot(wrap_snapshot, wrap_edits));
-        // 折叠候选按源句柄增量同步：未变化的源不重投影；源集合增删由身份差异自然收敛。
-        self.reconcile_source_creases(block_snapshot.wrap_snapshot().buffer_snapshot());
+        self.reconcile_source_creases(
+            block_snapshot.wrap_snapshot().buffer_snapshot(),
+            crease_sync,
+        );
         let mut snapshot = DisplaySnapshot {
             block_snapshot,
             crease_snapshot: self.crease_map.snapshot(),
@@ -745,8 +765,48 @@ impl DisplayMap {
         self.snapshot = Some(snapshot);
     }
 
-    /// 按源增量同步折叠候选：只有候选句柄变化的源重投影并替换其 `CreaseId`，其余源保持不动。
-    fn reconcile_source_creases(&mut self, snapshot: &MultiBufferSnapshot) {
+    /// 按源增量同步折叠候选；普通文本编辑不触碰候选索引。
+    fn reconcile_source_creases(&mut self, snapshot: &MultiBufferSnapshot, sync: CreaseSync) {
+        let (CreaseSync::All | CreaseSync::Source(_)) = sync else {
+            return;
+        };
+
+        if let CreaseSync::Source(source_id) = sync {
+            let Some(index) = snapshot.source_index(source_id) else {
+                return;
+            };
+            let Some(fold_anchors) = snapshot.fold_anchors_for_source(index) else {
+                return;
+            };
+            let stale = self
+                .source_creases
+                .get(&Some(source_id))
+                .is_none_or(|state| !Arc::ptr_eq(&state.fold_anchors, fold_anchors));
+            if !stale {
+                return;
+            }
+            let source_id = Some(source_id);
+            let removed_ids = self
+                .source_creases
+                .remove(&source_id)
+                .map_or_else(Vec::new, |state| state.ids);
+            let ranges = snapshot
+                .fold_ranges_for_source(index)
+                .into_iter()
+                .map(Crease::simple)
+                .collect::<Vec<_>>();
+            self.crease_map.remove(removed_ids, snapshot);
+            let ids = self.crease_map.insert(ranges, snapshot);
+            self.source_creases.insert(
+                source_id,
+                SourceCreases {
+                    fold_anchors: Arc::clone(fold_anchors),
+                    ids,
+                },
+            );
+            return;
+        }
+
         let mut changed = Vec::new();
         let mut seen = HashSet::new();
         for (index, (source_id, fold_anchors)) in snapshot.fold_sources().enumerate() {
@@ -806,7 +866,7 @@ impl DisplayMap {
         let (wrap_snapshot, wrap_edits) = self
             .wrap_map
             .update(cx, |map, cx| map.sync(tab_snapshot, &[], cx));
-        self.refresh_snapshot(&wrap_snapshot, &wrap_edits, cx);
+        self.commit_snapshot(&wrap_snapshot, &wrap_edits, CreaseSync::None, cx);
     }
 
     pub(crate) fn is_buffer_folded(&self, path: &Path) -> bool {
@@ -826,7 +886,7 @@ impl DisplayMap {
         };
         if changed {
             let wrap_snapshot = self.wrap_map.read(cx).snapshot().clone();
-            self.refresh_snapshot(&wrap_snapshot, &[], cx);
+            self.commit_snapshot(&wrap_snapshot, &[], CreaseSync::None, cx);
         }
     }
 
@@ -844,7 +904,7 @@ impl DisplayMap {
         });
         if changed {
             let wrap_snapshot = self.wrap_map.read(cx).snapshot().clone();
-            self.refresh_snapshot(&wrap_snapshot, &wrap_edits, cx);
+            self.commit_snapshot(&wrap_snapshot, &wrap_edits, CreaseSync::None, cx);
         }
         changed
     }
@@ -899,10 +959,11 @@ impl DisplayMap {
     /// 用订阅者独立积累的组合 Patch，把整条显示管线推进到当前 Snapshot。
     ///
     /// 换行层拥有自己的后台重排；这里消费它本次发布的换行编辑并重建 Block 投影。
-    pub(crate) fn sync(
+    fn sync(
         &mut self,
         current_snapshot: impl Into<MultiBufferSnapshot>,
         batch: TextChangeBatch,
+        crease_sync: CreaseSync,
         cx: &mut Context<Self>,
     ) {
         let current_snapshot = current_snapshot.into();
@@ -922,7 +983,7 @@ impl DisplayMap {
         let (wrap_snapshot, wrap_edits) = self
             .wrap_map
             .update(cx, |map, cx| map.sync(tab_snapshot, &fold_edits, cx));
-        self.refresh_snapshot(&wrap_snapshot, &wrap_edits, cx);
+        self.commit_snapshot(&wrap_snapshot, &wrap_edits, crease_sync, cx);
     }
 
     /// 折叠组合锚点范围（入口行行尾换行符 → 闭合括号前；闭合括号保留可见）。
@@ -939,7 +1000,7 @@ impl DisplayMap {
         let (wrap_snapshot, wrap_edits) = self
             .wrap_map
             .update(cx, |map, cx| map.sync(tab_snapshot, &fold_edits, cx));
-        self.refresh_snapshot(&wrap_snapshot, &wrap_edits, cx);
+        self.commit_snapshot(&wrap_snapshot, &wrap_edits, CreaseSync::None, cx);
         Ok(())
     }
 
@@ -955,7 +1016,7 @@ impl DisplayMap {
         let (wrap_snapshot, wrap_edits) = self
             .wrap_map
             .update(cx, |map, cx| map.sync(tab_snapshot, &fold_edits, cx));
-        self.refresh_snapshot(&wrap_snapshot, &wrap_edits, cx);
+        self.commit_snapshot(&wrap_snapshot, &wrap_edits, CreaseSync::None, cx);
         Ok(())
     }
 
@@ -1015,7 +1076,9 @@ mod tests {
         snapshot: impl Into<MultiBufferSnapshot>,
         batch: TextChangeBatch,
     ) {
-        cx.update_entity(map, |map, cx| map.sync(snapshot, batch, cx));
+        cx.update_entity(map, |map, cx| {
+            map.sync(snapshot, batch, CreaseSync::None, cx)
+        });
     }
 
     fn measure_rows(
@@ -1570,7 +1633,7 @@ mod tests {
         let updated: MultiBufferSnapshot = buffer.snapshot().into();
         let batch = subscription.consume();
         cx.update_entity(&display, |display_map, cx| {
-            display_map.sync(updated, batch, cx);
+            display_map.sync(updated, batch, CreaseSync::None, cx);
         });
         cx.run_until_parked();
 

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use sum_tree::{Bias, Item, SeekTarget, SumTree};
-use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferSnapshot};
+use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferSnapshot};
 use zcv_text::{Affinity, Line};
 
 /// 折叠候选在 `CreaseMap` 中的稳定身份。
@@ -239,7 +239,7 @@ fn anchor_cmp(
 
 fn line_start_anchor(snapshot: &MultiBufferSnapshot, line: Line) -> MultiBufferAnchor {
     match snapshot.line_start_byte(line) {
-        Ok(offset) => snapshot.anchor_at(MultiBufferOffset::from(offset), Affinity::Before),
+        Ok(offset) => snapshot.anchor_at(offset, Affinity::Before),
         Err(_) => MultiBufferAnchor::Max,
     }
 }

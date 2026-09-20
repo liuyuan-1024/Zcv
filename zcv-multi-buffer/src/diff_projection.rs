@@ -86,16 +86,6 @@ pub(crate) struct DiffState {
 }
 
 impl DiffState {
-    /// 还原为宿主注入项；按路径替换/移除投影时使用。
-    fn to_input(&self) -> DiffFile {
-        DiffFile {
-            diff: self.diff.clone(),
-            display_path: self.display_path.as_path().to_path_buf(),
-            context_lines: self.context_lines,
-            show_file_header: self.show_file_header,
-        }
-    }
-
     fn subscribe(diff: &Entity<BufferDiff>, cx: &mut Context<MultiBuffer>) -> Subscription {
         cx.subscribe(diff, |this, _, event, cx| {
             let BufferDiffEvent::DiffChanged { refresh } = event;
@@ -289,8 +279,10 @@ pub(crate) enum DiffSourceRole {
 impl MultiBuffer {
     /// 按路径增量挂接一个文件的 diff。
     ///
-    /// 新路径按路径顺序追加；同路径的 diff 变化重建整份投影以迁移展开状态。
-    /// 返回 true 表示组合文档已更新；diff 仍在后台计算时返回 false，结果到达后自动物化。
+    /// 新路径按路径顺序追加；
+    /// 同路径的 diff 变化只替换该文件的 excerpts 并迁移展开状态，不重建整份组合文档。
+    /// 返回 true 表示组合文档已更新；
+    /// diff 仍在后台计算时返回 false，结果到达后自动物化。
     pub fn add_diff(&mut self, file: DiffFile, cx: &mut Context<Self>) -> bool {
         let existing = self.diffs.iter().position(|current| {
             current.display_path.as_path() == file.display_path
@@ -306,13 +298,7 @@ impl MultiBuffer {
             {
                 return false;
             }
-            let mut files = self
-                .diffs
-                .iter()
-                .map(DiffState::to_input)
-                .collect::<Vec<_>>();
-            files[index] = file;
-            return self.set_diff_files(files, cx);
+            return self.replace_diff_file(index, file, cx);
         }
         // 新路径按显示路径顺序插入：位于末尾时走增量追加，插到中间时整体重建。
         let insert_at = self.diffs.partition_point(|current| {
@@ -323,6 +309,53 @@ impl MultiBuffer {
             return self.append_diff_projection(vec![file], cx);
         }
         self.insert_diff_file(insert_at, file, cx)
+    }
+
+    /// 同路径的 diff 实体或显示配置变化：只替换该文件的 excerpts，不重建整份组合文档。
+    ///
+    /// 展开状态按旧/新 hunk 迁移；新 diff 尚未算完时先登记 pending 迁移，
+    /// 保留现有 excerpts，等 DiffChanged 到期后由 diff_changed 增量替换。
+    fn replace_diff_file(&mut self, index: usize, file: DiffFile, cx: &mut Context<Self>) -> bool {
+        let working_id_matches = self.diffs[index].diff.read(cx).working().entity_id()
+            == file.diff.read(cx).working().entity_id();
+        let old_resolved = resolve_file_hunks(&self.diffs[index], cx);
+        let subscription = DiffState::subscribe(&file.diff, cx);
+        let mut next = DiffState {
+            diff: file.diff,
+            display_path: PathKey::new(file.display_path),
+            context_lines: file.context_lines,
+            show_file_header: file.show_file_header,
+            expansion: DiffExpansionState::default(),
+            _subscription: subscription,
+            revision: None,
+            pending_expansion_migration: None,
+        };
+        if working_id_matches {
+            if next.diff.read(cx).is_current_version_calculated(cx) {
+                let new_resolved = resolve_file_hunks(&next, cx);
+                migrate_expansion_state(
+                    &old_resolved,
+                    &self.diffs[index].expansion,
+                    &new_resolved,
+                    &mut next.expansion,
+                );
+            } else {
+                next.pending_expansion_migration = Some(PendingExpansionMigration {
+                    old_hunks: old_resolved,
+                    old_state: self.diffs[index].expansion.clone(),
+                });
+            }
+        }
+        self.diffs[index] = next;
+        if !self.diffs[index]
+            .diff
+            .read(cx)
+            .is_current_version_calculated(cx)
+        {
+            return false;
+        }
+        self.replace_materialized_file(index, cx);
+        true
     }
 
     /// 在 insert_at 处插入一个 diff 文件，只物化该文件的 excerpts 并按路径 splice。

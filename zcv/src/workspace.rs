@@ -742,7 +742,7 @@ fn initialize_workspace(
             GitStoreEvent::Repositories
                 | GitStoreEvent::Statuses
                 | GitStoreEvent::Head
-                | GitStoreEvent::IndexText
+                | GitStoreEvent::IndexText { .. }
         ) {
             zcv_version_control::refresh_pane_git_projection(
                 workspace.pane(),

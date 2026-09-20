@@ -1566,10 +1566,10 @@ impl Editor {
             // 组合文档事件同样经唯一快照入口刷新；语法/元数据变化随后由 match 分支处理。
             editor.advance_snapshots(cx);
             match event {
-                MultiBufferEvent::TextChanged => {
+                MultiBufferEvent::TextChanged | MultiBufferEvent::ProjectionChanged => {
                     editor.research_after_edit(cx);
                 }
-                MultiBufferEvent::Reparsed => {
+                MultiBufferEvent::Reparsed(_) => {
                     // 括号缓存键含元数据版本，版本推进即自然失效，无需手动清空。
                 }
                 MultiBufferEvent::MetadataChanged => {}
@@ -2096,7 +2096,7 @@ impl Editor {
         // 在读取唯一派生快照前先把待处理的组合变更同步进 DisplayMap，
         // 保证快照内的组合文本与刚提交的事务同版本；后续订阅回调走无变化快速路径。
         self.display_map
-            .update(cx, |map, cx| map.sync_from_multi_buffer(cx));
+            .update(cx, |map, cx| map.sync_from_multi_buffer(None, cx));
         // 搜索命中是显示装饰输入：
         // 把 Editor 拥有的匹配锚点解析结果交给显示链投影，输入未变化时 DisplayMap 快速返回；
         // 随后统一拉取被替换的显示快照。

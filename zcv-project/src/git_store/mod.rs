@@ -47,8 +47,9 @@ pub enum GitStoreEvent {
     Repositories,
     /// 文件状态或 diff 统计发生变化。
     Statuses,
-    /// index 文本已在内存中乐观更新或回滚；订阅方重读 `GitRevision::Index`。
-    IndexText,
+    /// 指定路径的 index 文本已在内存中乐观更新或回滚；
+    /// 订阅方只需重读该路径的 `GitRevision::Index` 并重挂该路径的 diff。
+    IndexText { path: AbsolutePathBuf },
     /// 当前分支、HEAD 或分支列表发生变化。
     Head,
     /// 活动仓库变化（跟随焦点文件切换；订阅方重读 `current_branch()`，无需 payload）。
@@ -663,7 +664,7 @@ impl GitStore {
             self.reset_revision_document_text(GitRevision::Index, &path, next_index_text, cx);
             // 乐观 index 更新：本路径的共享 diff 立即失效，视图按 IndexText 事件重新请求。
             self.invalidate_shared_diffs(Some(std::slice::from_ref(&path)));
-            cx.emit(GitStoreEvent::IndexText);
+            cx.emit(GitStoreEvent::IndexText { path: path.clone() });
         }
         diff.update(cx, |diff, cx| diff.set_pending_hunks(pending, cx));
         self.schedule_job(

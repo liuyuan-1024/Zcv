@@ -1502,6 +1502,8 @@ pub struct MultiBufferSnapshot {
     /// `metadata_version` 只随非文本状态（语法安装、元数据变化）推进，
     /// 纯文本编辑由 `projection_version` 表达；显示层据此替换只读附属数据而不重建显示拓扑。
     excerpt_sources: Arc<[ExcerptSourceSnapshot]>,
+    /// 源实体到快照源索引的派生索引，供源级元数据增量直接定位。
+    source_indices: Arc<HashMap<gpui::EntityId, usize>>,
     capture_names: Arc<[Arc<str>]>,
     metadata_version: u64,
 }
@@ -1649,7 +1651,9 @@ struct SourceSubscription {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MultiBufferEvent {
     TextChanged,
-    Reparsed,
+    /// excerpts / 组合变换拓扑发生变化，消费方需要收敛源集合。
+    ProjectionChanged,
+    Reparsed(gpui::EntityId),
     MetadataChanged,
     /// diff 展开/折叠状态变化（宿主按展开状态重建组合片段，如 ProjectDiffView）。
     DiffExpansionChanged,
@@ -2310,6 +2314,18 @@ impl MultiBufferSnapshot {
             .map(|source| (source.source_id, &source.fold_anchors))
     }
 
+    /// 返回源实体在当前快照源表中的索引。
+    pub fn source_index(&self, source_id: gpui::EntityId) -> Option<usize> {
+        self.source_indices.get(&source_id).copied()
+    }
+
+    /// 返回源级折叠候选句柄；调用方已通过源索引定位，不需要扫描其它源。
+    pub fn fold_anchors_for_source(&self, source_index: usize) -> Option<&Arc<[Range<Anchor>]>> {
+        self.excerpt_sources
+            .get(source_index)
+            .map(|source| &source.fold_anchors)
+    }
+
     /// 单个源的折叠候选（组合坐标，按源内顺序）。
     pub fn fold_ranges_for_source(&self, source_index: usize) -> Vec<Range<MultiBufferAnchor>> {
         let Some(source) = self.excerpt_sources.get(source_index) else {
@@ -2918,6 +2934,7 @@ impl From<Snapshot> for MultiBufferSnapshot {
                 fold_anchors: Arc::from([]),
                 capture_map: Arc::from([]),
             }]),
+            source_indices: Arc::new(HashMap::new()),
             capture_names,
             metadata_version: 0,
         }
@@ -3424,7 +3441,7 @@ impl MultiBuffer {
             .map(|(index, source)| (source.entity.entity_id(), index))
             .collect();
         *composite_capture_names = rebuild_capture_table(sources);
-        cx.emit(MultiBufferEvent::TextChanged);
+        cx.emit(MultiBufferEvent::ProjectionChanged);
         cx.notify();
     }
 
@@ -3579,7 +3596,6 @@ impl MultiBuffer {
             }
         }
         self.splice_excerpt_entries(&path, entries);
-        self.rebuild_diff_transforms_from_excerpts();
         self.fix_document_tail_newline();
     }
 
@@ -3605,11 +3621,28 @@ impl MultiBuffer {
                 (),
             );
         }
+        let last_prefix_excerpt = next_tree.iter().last().cloned();
         cursor.seek(path, Bias::Right);
-        next_tree.extend(entries, ());
+        let mut transform_cursor = self
+            .state
+            .diff_transforms
+            .cursor::<DiffTransformSummary>(());
+        let mut next_transforms = transform_cursor.slice(path, Bias::Left);
+        if let Some(last_excerpt) = last_prefix_excerpt.as_ref() {
+            next_transforms.update_last(
+                |transform| *transform = DiffTransform::from_excerpt(last_excerpt),
+                (),
+            );
+        }
+        transform_cursor.seek(path, Bias::Right);
+        next_tree.extend(entries.iter().cloned(), ());
+        next_transforms.extend(entries.iter().map(DiffTransform::from_excerpt), ());
         next_tree.append(cursor.suffix(), ());
+        next_transforms.append(transform_cursor.suffix(), ());
         drop(cursor);
+        drop(transform_cursor);
         self.state.excerpts = next_tree;
+        self.state.diff_transforms = next_transforms;
     }
 
     /// 组合文档末尾的片段不应再有分隔用的合成换行；splice/移除后修正末尾 item。
@@ -3623,7 +3656,13 @@ impl MultiBuffer {
         self.state
             .excerpts
             .update_last(|entry| entry.adds_newline = false, ());
-        self.rebuild_diff_transforms_from_excerpts();
+        let last_excerpt = self.state.excerpts.iter().last().cloned();
+        if let Some(last_excerpt) = last_excerpt.as_ref() {
+            self.state.diff_transforms.update_last(
+                |transform| *transform = DiffTransform::from_excerpt(last_excerpt),
+                (),
+            );
+        }
     }
 
     /// 从输入 excerpts 树重建输出变换树。
@@ -3689,10 +3728,9 @@ impl MultiBuffer {
         let before = self.projection_trees();
         let old_version = self.state.projection_version;
         self.splice_excerpt_entries(&path_key, Vec::new());
-        self.rebuild_diff_transforms_from_excerpts();
         self.fix_document_tail_newline();
         self.publish_projection_edit(&before, old_version);
-        cx.emit(MultiBufferEvent::TextChanged);
+        cx.emit(MultiBufferEvent::ProjectionChanged);
         cx.notify();
         true
     }
@@ -3866,10 +3904,9 @@ impl MultiBuffer {
             output_start += entry.text_summary.len + entry.adds_newline as usize;
         }
         self.splice_excerpt_entries(&path, entries);
-        self.rebuild_diff_transforms_from_excerpts();
         self.fix_document_tail_newline();
         self.publish_projection_edit(&before, old_version);
-        cx.emit(MultiBufferEvent::TextChanged);
+        cx.emit(MultiBufferEvent::ProjectionChanged);
         cx.notify();
         match_ranges
     }
@@ -4098,7 +4135,7 @@ impl MultiBuffer {
         {
             self.refresh_source_capture_map(source_index);
         }
-        cx.emit(MultiBufferEvent::Reparsed);
+        cx.emit(MultiBufferEvent::Reparsed(source_id));
         cx.notify();
     }
 
@@ -4318,7 +4355,7 @@ impl MultiBuffer {
         self.state.excerpts = SumTree::from_iter(entries, ());
         self.rebuild_diff_transforms_from_excerpts();
         self.publish_projection_edit(&before, old_version);
-        cx.emit(MultiBufferEvent::TextChanged);
+        cx.emit(MultiBufferEvent::ProjectionChanged);
         cx.notify();
     }
 
@@ -4637,6 +4674,14 @@ impl MultiBuffer {
                         capture_map: Arc::clone(&source.capture_map),
                     })
                     .collect::<Vec<_>>(),
+            ),
+            source_indices: Arc::new(
+                self.state
+                    .sources
+                    .iter()
+                    .enumerate()
+                    .map(|(index, source)| (source.entity.entity_id(), index))
+                    .collect(),
             ),
             capture_names: Arc::clone(&self.state.capture_names),
             metadata_version: self.state.metadata_epoch,

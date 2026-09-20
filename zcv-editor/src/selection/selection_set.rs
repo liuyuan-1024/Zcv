@@ -154,6 +154,18 @@ impl SelectionSet<MultiBufferAnchor> {
         }
         SelectionSet::from_selections(resolved, self.primary_index)
     }
+
+    /// 外部 reload / 基线替换后把全部端点显式重锚到当前快照；只由 Editor 的 reload 恢复路径使用。
+    pub(crate) fn reattach(&self, snapshot: &MultiBufferSnapshot) -> Self {
+        SelectionSet::from_selections(
+            self.selections
+                .iter()
+                .copied()
+                .map(|selection| selection.reattach(snapshot))
+                .collect(),
+            self.primary_index,
+        )
+    }
 }
 
 impl Default for SelectionSet<MultiBufferOffset> {

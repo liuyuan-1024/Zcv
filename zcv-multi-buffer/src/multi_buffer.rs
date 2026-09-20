@@ -2368,6 +2368,34 @@ impl MultiBufferSnapshot {
         )
         .map(Into::into)
     }
+    /// 显式跨代际重锚：只用于外部 reload / 基线替换后恢复调用方稳定表示。
+    ///
+    /// 普通 `resolve_anchor` 在代际失配时显式失败；
+    /// 本入口允许调用方在明确知道自己正在处理一次 reset 时，用不衰减坐标索引把旧代际源 Anchor 映射到当前代际，并返回绑定当前代际的新锚点。
+    /// 已匹配当前代际的锚点原样返回。
+    pub fn reattach_anchor(&self, anchor: &MultiBufferAnchor) -> Option<MultiBufferAnchor> {
+        let MultiBufferAnchor::Excerpt(excerpt_anchor) = anchor else {
+            return Some(*anchor);
+        };
+        let Some(source_id) = excerpt_anchor.source_id else {
+            // 纯文本派生快照没有源实体，不承载跨代际语义。
+            return Some(*anchor);
+        };
+        let source_index = self.source_indices.get(&source_id).copied()?;
+        let source = self.excerpt_sources.get(&source_index)?;
+        let text_anchor = match excerpt_anchor.text_anchor.resolve_in(&source.text) {
+            Ok(_) => excerpt_anchor.text_anchor,
+            Err(_) => excerpt_anchor
+                .text_anchor
+                .rebase_across_generations(&source.text)
+                .ok()?,
+        };
+        Some(MultiBufferAnchor::Excerpt(ExcerptAnchor {
+            path: excerpt_anchor.path,
+            source_id: Some(source_id),
+            text_anchor,
+        }))
+    }
 
     pub fn capture_names(&self) -> Arc<[Arc<str>]> {
         Arc::clone(&self.capture_names)
@@ -5435,12 +5463,9 @@ fn excerpt_anchor_source_offset<S: SourceTexts + ?Sized>(
             };
             return match anchor.text_anchor.resolve_in(text) {
                 Ok(offset) => SourceAnchorResolution::Mapped(offset),
-                // 显式重锚：锚点代际被 reset / 基线替换淘汰时，按提交时的坐标映射
-                // 推进到当前代际；这是调用方的显式恢复，不是普通版本推进。
-                Err(_) => match anchor.text_anchor.rebase_across_generations(text) {
-                    Ok(reanchored) => SourceAnchorResolution::Mapped(reanchored.offset()),
-                    Err(_) => SourceAnchorResolution::Invalid,
-                },
+                // 普通解析不做跨代际猜测：
+                // 代际失配时显式失败，由调用方决定丢弃或走 `MultiBufferSnapshot::reattach_anchor` 的显式重锚。
+                Err(_) => SourceAnchorResolution::Invalid,
             };
         }
         cursor.next();

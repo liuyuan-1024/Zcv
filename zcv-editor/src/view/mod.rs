@@ -189,6 +189,28 @@ pub(super) enum MouseSelectMode {
     All,
 }
 
+impl MouseSelectMode {
+    /// 外部 reload / 基线替换后把鼠标手势的锚定范围显式重锚到当前快照。
+    fn reattach(self, snapshot: &MultiBufferSnapshot) -> Self {
+        match self {
+            Self::Word(range) => Self::Word(reattach_anchor_range(range, snapshot)),
+            Self::Line(range) => Self::Line(reattach_anchor_range(range, snapshot)),
+            other => other,
+        }
+    }
+}
+
+fn reattach_anchor_range(
+    range: Range<MultiBufferAnchor>,
+    snapshot: &MultiBufferSnapshot,
+) -> Range<MultiBufferAnchor> {
+    let start = snapshot
+        .reattach_anchor(&range.start)
+        .unwrap_or(range.start);
+    let end = snapshot.reattach_anchor(&range.end).unwrap_or(range.end);
+    start..end
+}
+
 /// 拖拽中的选区状态：固定锚点 + 点击时的粒度。
 #[derive(Debug, Clone)]
 struct PendingSelection {
@@ -2112,7 +2134,31 @@ impl Editor {
             .update(cx, |map, cx| map.set_search_decorations(search, cx));
         self.scrollbar_marker_state.invalidate();
         let snapshot = self.display_snapshot(cx);
+        // 外部 reload / 基线替换后，长期锚点必须由调用方显式重锚；
+        // 普通解析遇到旧代际锚点会显式失败，不能让它自己猜测坐标。
+        self.reattach_persistent_anchors(snapshot.buffer_snapshot());
         self.scroll_manager.refresh(&snapshot);
+    }
+
+    /// 外部 reload / 基线替换后，把 Editor 的长期锚点显式重锚到当前快照。
+    ///
+    /// 只处理当前代际之外的锚点；已匹配当前代际的锚点原样保留。
+    /// 普通解析不承担跨代际恢复，本入口是调用方对解析失败的显式“重锚”选择。
+    fn reattach_persistent_anchors(&mut self, snapshot: &MultiBufferSnapshot) {
+        self.selections = self.selections.reattach(snapshot);
+        self.structured_selection_history = self
+            .structured_selection_history
+            .iter()
+            .map(|set| set.reattach(snapshot))
+            .collect();
+        self.pending_selection = self.pending_selection.take().map(|mut pending| {
+            pending.anchor = snapshot
+                .reattach_anchor(&pending.anchor)
+                .unwrap_or(pending.anchor);
+            pending.mode = pending.mode.reattach(snapshot);
+            pending
+        });
+        self.scroll_manager.reattach_anchors(snapshot);
     }
 
     pub(super) fn handle_toggle_fold(

@@ -1897,6 +1897,43 @@ fn invalid_source_anchor_does_not_fall_forward_to_another_file(cx: &mut TestAppC
         );
     });
 }
+/// 外部 reload / 基线替换开启新代际后：
+/// 普通解析必须显式失败，只有显式重锚入口能把旧代际锚点恢复到当前代际。
+#[gpui::test]
+fn cross_generation_anchor_requires_explicit_reattach(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "alpha\ncharlie\n", cx);
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
+    let anchor = cx.update_entity(&combined, |buffer, cx| {
+        buffer.snapshot(cx);
+        // \"charlie\" 行首（源 offset 6）。
+        buffer.anchor_at(ByteOffset::new(6), Affinity::After)
+    });
+
+    // 外部整体替换：在 \"alpha\" 后插入一整行 \"bravo\"，开启新内容代际。
+    cx.update_entity(&source, |source, cx| {
+        source
+            .reset("alpha\nbravo\ncharlie\n".to_owned(), cx)
+            .expect("外部 reload 应成功");
+    });
+    cx.run_until_parked();
+
+    cx.update_entity(&combined, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        assert!(
+            snapshot.resolve_anchor(&anchor).is_none(),
+            "普通解析不得跨代际猜测旧锚点坐标"
+        );
+        let reattached = snapshot
+            .reattach_anchor(&anchor)
+            .expect("显式重锚必须能恢复旧代际锚点");
+        assert_ne!(reattached, anchor, "重锚结果必须绑定当前代际");
+        assert_eq!(
+            snapshot.resolve_anchor(&reattached),
+            Some(MultiBufferOffset::new(12)),
+            "重锚后的锚点应跟随插入行下移"
+        );
+    });
+}
 
 #[gpui::test]
 fn empty_files_keep_distinct_composite_lines_and_locations(cx: &mut TestAppContext) {

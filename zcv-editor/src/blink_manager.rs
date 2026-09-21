@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use gpui::Context;
+use gpui::{Context, Task};
 
 /// 光标闪烁间隔。
 const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
@@ -16,6 +16,8 @@ pub(crate) struct BlinkManager {
     blinking_paused: bool,
     visible: bool,
     enabled: bool,
+    /// 当前在途的暂停 / 闪烁定时任务；替换或禁用时丢弃即取消，与实体同生命周期。
+    timer_task: Option<Task<()>>,
 }
 
 impl Default for BlinkManager {
@@ -32,6 +34,7 @@ impl BlinkManager {
             blinking_paused: false,
             visible: true,
             enabled: false,
+            timer_task: None,
         }
     }
 
@@ -46,11 +49,10 @@ impl BlinkManager {
 
         let epoch = self.next_blink_epoch();
         let interval = Duration::from_millis(500);
-        cx.spawn(async move |this, cx| {
+        self.timer_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(interval).await;
             let _ = this.update(cx, |this, cx| this.resume_cursor_blinking(epoch, cx));
-        })
-        .detach();
+        }));
     }
 
     fn resume_cursor_blinking(&mut self, epoch: usize, cx: &mut Context<Self>) {
@@ -68,11 +70,10 @@ impl BlinkManager {
 
             let epoch = self.next_blink_epoch();
             let interval = self.blink_interval;
-            cx.spawn(async move |this, cx| {
+            self.timer_task = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(interval).await;
                 let _ = this.update(cx, |this, cx| this.blink_cursors(epoch, cx));
-            })
-            .detach();
+            }));
         }
     }
 
@@ -101,6 +102,8 @@ impl BlinkManager {
         let was_visible = self.visible;
         self.visible = false;
         self.enabled = false;
+        // 丢弃任务即取消在途定时器，不再等到下一次回调。
+        self.timer_task = None;
         if was_visible {
             cx.notify();
         }

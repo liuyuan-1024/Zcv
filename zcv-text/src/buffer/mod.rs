@@ -17,6 +17,7 @@ use crate::{
 };
 
 mod coordinates;
+mod derived;
 mod edit_ops;
 mod events;
 mod history;
@@ -31,6 +32,7 @@ mod versioning;
 pub use movement::movement_boundary_in_text;
 pub(crate) use movement::{is_inside_word_in_text, surrounding_word_in_text};
 
+pub use derived::EditedBufferSnapshot;
 pub use history::HistoryEditOutcome;
 
 /// 最小可编辑 Buffer。

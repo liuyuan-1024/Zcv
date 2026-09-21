@@ -11,7 +11,7 @@ fn layout_visible_lines(
     search_decorations: Option<&SearchDecorationSnapshot>,
     params: VisibleLineLayoutParams<'_>,
     window: &mut Window,
-    cx: &App,
+    cx: &mut App,
 ) -> EditorLayout {
     let placeholder_mode = placeholder.is_some();
     let display_snapshot = placeholder.as_ref().unwrap_or(&display_snapshot);
@@ -313,8 +313,8 @@ fn background_fragments_include_line_origin_x(cx: &mut TestAppContext) {
             assert_eq!(fragments.len(), line.background_runs.len());
             for (fragment, (byte_range, _)) in fragments.iter().zip(&line.background_runs) {
                 let expected_start =
-                    line.origin.x + line.shaped.x_for_index(byte_range.start);
-                let expected_end = line.origin.x + line.shaped.x_for_index(byte_range.end);
+                    line.origin.x + line.line.x_for_index(byte_range.start);
+                let expected_end = line.origin.x + line.line.x_for_index(byte_range.end);
                 assert!(
                     (fragment.start_x - expected_start).abs() < px(1.)
                         && (fragment.end_x - expected_end).abs() < px(1.),
@@ -592,7 +592,7 @@ fn multibuffer_header_can_start_above_viewport(cx: &mut TestAppContext) {
             assert_eq!(layout.blocks[0].origin.x, px(0.));
             assert_eq!(layout.blocks[0].origin.y, px(-20.));
             assert_eq!(layout.block_clip_bounds.size.width, px(400.));
-            assert_eq!(layout.lines[0].shaped.text.as_ref(), "引擎");
+            assert_eq!(layout.lines[0].line.text.as_str(), "引擎");
         })
         .expect("测试窗口应保持可用");
 }
@@ -784,7 +784,7 @@ fn wrapped_unicode_markdown_queries_highlights_from_source_chunks(cx: &mut TestA
                 layout.lines.first().map(|line| line.row),
                 Some(offending_row)
             );
-            assert!(!layout.lines[0].shaped.text.is_empty());
+            assert!(!layout.lines[0].line.text.is_empty());
         })
         .expect("测试窗口应保持可用");
 }
@@ -902,28 +902,33 @@ fn gutter_and_text_share_vertical_rows_but_only_text_scrolls_horizontally(cx: &m
 
 #[gpui::test]
 fn folded_projection_rows_drive_layout_and_hit_testing(cx: &mut TestAppContext) {
-    let window = cx.add_window(|_, _| Empty);
-    window
-        .update(cx, |_, window, cx| {
-            let snapshot = Buffer::from_text(
-                "anchor\nhidden one\nhidden two\nafter".to_owned(),
-                BufferConfig::default(),
-            )
-            .expect("测试 Buffer 应能创建")
-            .snapshot();
-            let map = new_display_map(cx, snapshot.clone());
-            cx.update_entity(&map, |map, cx| {
-                let range = {
-                    let display = map.snapshot(cx);
-                    let snapshot = display.buffer_snapshot();
-                    snapshot.anchor_at(MultiBufferOffset::new(6), zcv_text::Affinity::Before)
-                        ..snapshot.anchor_at(MultiBufferOffset::new(28), zcv_text::Affinity::After)
-                };
-                map.fold_range(range, FoldPlaceholder::default(), cx)
-            })
-            .expect("折叠应成功");
+    let snapshot = Buffer::from_text(
+        "anchor\nhidden one\nhidden two\nafter".to_owned(),
+        BufferConfig::default(),
+    )
+    .expect("测试 Buffer 应能创建")
+    .snapshot();
+    let map = new_display_map(cx, snapshot.clone());
+    cx.update_entity(&map, |map, cx| {
+        let range = {
+            let display = map.snapshot(cx);
+            let snapshot = display.buffer_snapshot();
+            snapshot.anchor_at(MultiBufferOffset::new(6), zcv_text::Affinity::Before)
+                ..snapshot.anchor_at(MultiBufferOffset::new(28), zcv_text::Affinity::After)
+        };
+        map.fold_range(range, FoldPlaceholder::default(), cx)
+    })
+    .expect("折叠应成功");
+
+    // 行布局会测量折叠占位符元素，必须发生在真实的 request_layout/prepaint 生命周期内；
+    // 断言在生命周期内完成，避免持有元素超出其 arena 生命周期。
+    let visual = cx.add_empty_window();
+    visual.draw(
+        point(px(0.), px(0.)),
+        size(px(400.), px(100.)),
+        |window, cx| {
             let layout = layout_visible_lines(
-                cx.update_entity(&map, |map, cx| map.snapshot(cx)),
+                map.update(cx, |map, cx| map.snapshot(cx)),
                 None,
                 EditorPresentation::new(&snapshot.clone().into(), None),
                 None,
@@ -951,10 +956,370 @@ fn folded_projection_rows_drive_layout_and_hit_testing(cx: &mut TestAppContext) 
 
             assert_eq!(layout.lines.len(), 2);
             // 折叠合并行：anchor 文本 + 占位符拼成同一显示行。
-            assert_eq!(layout.lines[0].shaped.text.as_ref(), "anchor⋯");
-            assert_eq!(layout.lines[1].shaped.text.as_ref(), "after");
+            assert_eq!(layout.lines[0].line.text.as_str(), "anchor⋯");
+            assert_eq!(layout.lines[1].line.text.as_str(), "after");
+            Empty
+        },
+    );
+}
+
+/// 折叠占位符是真正的行内元素片段：跨片段坐标与命中必须穿过文本→元素→文本，
+/// 落在元素内部的索引吸附到元素起点，元素之后回到元素终点。
+#[gpui::test]
+fn folded_element_participates_in_cross_fragment_coordinates(cx: &mut TestAppContext) {
+    let snapshot = Buffer::from_text(
+        "anchor\nhidden one\nafter".to_owned(),
+        BufferConfig::default(),
+    )
+    .expect("测试 Buffer 应能创建")
+    .snapshot();
+    let map = new_display_map(cx, snapshot.clone());
+    let placeholder = FoldPlaceholder {
+        render: std::sync::Arc::new(|_, _, _| div().w(px(30.)).h(px(10.)).into_any_element()),
+        constrain_width: false,
+        ..FoldPlaceholder::default()
+    };
+    cx.update_entity(&map, |map, cx| {
+        let range = {
+            let display = map.snapshot(cx);
+            let snapshot = display.buffer_snapshot();
+            snapshot.anchor_at(MultiBufferOffset::new(6), zcv_text::Affinity::Before)
+                ..snapshot.anchor_at(MultiBufferOffset::new(17), zcv_text::Affinity::After)
+        };
+        map.fold_range(range, placeholder, cx)
+    })
+    .expect("折叠应成功");
+
+    let visual = cx.add_empty_window();
+    visual.draw(
+        point(px(0.), px(0.)),
+        size(px(400.), px(100.)),
+        |window, cx| {
+            let layout = layout_visible_lines(
+                map.update(cx, |map, cx| map.snapshot(cx)),
+                None,
+                EditorPresentation::new(&snapshot.clone().into(), None),
+                None,
+                VisibleLineLayoutParams {
+                    geometry: EditorGeometry {
+                        text_bounds: Bounds::new(point(px(0.), px(0.)), size(px(400.), px(100.))),
+                        text_clip_bounds: Bounds::new(
+                            point(px(0.), px(0.)),
+                            size(px(400.), px(100.)),
+                        ),
+                        gutter: None,
+                    },
+                    active_lines: &BTreeSet::new(),
+                    foldable_lines: &BTreeSet::new(),
+                    fold_anchor_lines: &BTreeSet::new(),
+                    start_row: DisplayRow::ZERO,
+                    scroll_offset: point(px(0.), px(0.)),
+                    primary_caret_column: None,
+                    line_height: px(20.),
+                    diff_rows: &[],
+                },
+                window,
+                cx,
+            );
+
+            let line = &layout.lines[0].line;
+            assert_eq!(line.text.as_str(), "anchor⋯");
+            assert!(
+                matches!(line.fragments.first(), Some(LineFragment::Text(_))),
+                "折叠行必须以文本片段开头"
+            );
+            let (element_size, element_len) = line
+                .fragments
+                .iter()
+                .find_map(|fragment| match fragment {
+                    LineFragment::Element { size, len, .. } => Some((*size, *len)),
+                    LineFragment::Text(_) => None,
+                })
+                .expect("折叠占位符必须布局成元素片段");
+            assert_eq!(element_len, "⋯".len());
+            assert_eq!(element_size.width, px(30.));
+
+            // 完整行索引空间包含被替换文本：元素起点仍对应折叠范围的起始字节。
+            let element_start = line.x_for_index(6);
+            assert_eq!(
+                line.x_for_index(6 + element_len - 1),
+                element_start,
+                "元素内部索引必须吸附到元素起点"
+            );
+            assert_eq!(
+                line.x_for_index(6 + element_len),
+                element_start + element_size.width,
+                "元素之后必须回到元素终点"
+            );
+            assert_eq!(
+                line.closest_index_for_x(element_start + px(5.)),
+                6,
+                "元素区间命中必须返回元素边界"
+            );
+            for index in 0..6 {
+                assert_eq!(
+                    line.closest_index_for_x(line.x_for_index(index)),
+                    index,
+                    "文本片段内的索引与 x 必须往返一致"
+                );
+            }
+            Empty
+        },
+    );
+}
+
+/// 记录 gpui 布局阶段的可用宽度与 prepaint 原点的测试元素。
+struct RecordingElement {
+    available: std::sync::Arc<std::sync::Mutex<Option<Size<AvailableSpace>>>>,
+    prepaint_origin: std::sync::Arc<std::sync::Mutex<Option<Point<Pixels>>>>,
+}
+
+impl Element for RecordingElement {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        _cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let available = self.available.clone();
+        let layout_id =
+            window.request_measured_layout(Style::default(), move |_known, space, _window, _cx| {
+                *available.lock().expect("可用宽度记录锁不能中毒") = Some(space);
+                size(px(10.), px(10.))
+            });
+        (layout_id, ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {
+        *self
+            .prepaint_origin
+            .lock()
+            .expect("prepaint 原点记录锁不能中毒") = Some(bounds.origin);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        _prepaint: &mut (),
+        _window: &mut Window,
+        _cx: &mut App,
+    ) {
+    }
+}
+
+impl IntoElement for RecordingElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+/// constrain_width 决定元素收到的可用宽度：为真时等于占位符文本塑形宽度，
+/// 为假时按内容测量（MinContent），由渲染层交给元素布局消费。
+#[gpui::test]
+fn constrain_width_bounds_element_fragment(cx: &mut TestAppContext) {
+    let mut available = [None; 2];
+    for (constrain_width, slot) in [(true, 0usize), (false, 1usize)] {
+        let recorded = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let snapshot = Buffer::from_text(
+            "anchor\nhidden one\nafter".to_owned(),
+            BufferConfig::default(),
+        )
+        .expect("测试 Buffer 应能创建")
+        .snapshot();
+        let map = new_display_map(cx, snapshot.clone());
+        let placeholder = FoldPlaceholder {
+            render: {
+                let recorded = recorded.clone();
+                std::sync::Arc::new(move |_, _, _| {
+                    RecordingElement {
+                        available: recorded.clone(),
+                        prepaint_origin: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                    }
+                    .into_any_element()
+                })
+            },
+            constrain_width,
+            ..FoldPlaceholder::default()
+        };
+        cx.update_entity(&map, |map, cx| {
+            let range = {
+                let display = map.snapshot(cx);
+                let snapshot = display.buffer_snapshot();
+                snapshot.anchor_at(MultiBufferOffset::new(6), zcv_text::Affinity::Before)
+                    ..snapshot.anchor_at(MultiBufferOffset::new(17), zcv_text::Affinity::After)
+            };
+            map.fold_range(range, placeholder, cx)
         })
-        .expect("测试窗口应保持可用");
+        .expect("折叠应成功");
+
+        let visual = cx.add_empty_window();
+        visual.draw(
+            point(px(0.), px(0.)),
+            size(px(400.), px(100.)),
+            |window, cx| {
+                layout_visible_lines(
+                    map.update(cx, |map, cx| map.snapshot(cx)),
+                    None,
+                    EditorPresentation::new(&snapshot.clone().into(), None),
+                    None,
+                    VisibleLineLayoutParams {
+                        geometry: EditorGeometry {
+                            text_bounds: Bounds::new(
+                                point(px(0.), px(0.)),
+                                size(px(400.), px(100.)),
+                            ),
+                            text_clip_bounds: Bounds::new(
+                                point(px(0.), px(0.)),
+                                size(px(400.), px(100.)),
+                            ),
+                            gutter: None,
+                        },
+                        active_lines: &BTreeSet::new(),
+                        foldable_lines: &BTreeSet::new(),
+                        fold_anchor_lines: &BTreeSet::new(),
+                        start_row: DisplayRow::ZERO,
+                        scroll_offset: point(px(0.), px(0.)),
+                        primary_caret_column: None,
+                        line_height: px(20.),
+                        diff_rows: &[],
+                    },
+                    window,
+                    cx,
+                );
+                Empty
+            },
+        );
+        available[slot] = recorded.lock().expect("可用宽度记录锁不能中毒").take();
+    }
+
+    assert!(
+        matches!(
+            available[0].expect("元素必须被布局").width,
+            AvailableSpace::Definite(_)
+        ),
+        "constrain_width 为真时必须传入占位符文本塑形宽度"
+    );
+    assert!(
+        matches!(
+            available[1].expect("元素必须被布局").width,
+            AvailableSpace::MinContent
+        ),
+        "constrain_width 为假时必须按内容测量"
+    );
+}
+
+/// 行内元素必须在行原点（含水平自动滚动平移）最终确定后 prepaint，
+/// 平移布局后 prepaint 原点跟随行原点。
+#[gpui::test]
+fn inline_element_prepaints_at_the_final_translated_origin(cx: &mut TestAppContext) {
+    let recorded = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let snapshot = Buffer::from_text(
+        "anchor\nhidden one\nafter".to_owned(),
+        BufferConfig::default(),
+    )
+    .expect("测试 Buffer 应能创建")
+    .snapshot();
+    let map = new_display_map(cx, snapshot.clone());
+    let placeholder = FoldPlaceholder {
+        render: {
+            let recorded = recorded.clone();
+            std::sync::Arc::new(move |_, _, _| {
+                RecordingElement {
+                    available: std::sync::Arc::new(std::sync::Mutex::new(None)),
+                    prepaint_origin: recorded.clone(),
+                }
+                .into_any_element()
+            })
+        },
+        ..FoldPlaceholder::default()
+    };
+    cx.update_entity(&map, |map, cx| {
+        let range = {
+            let display = map.snapshot(cx);
+            let snapshot = display.buffer_snapshot();
+            snapshot.anchor_at(MultiBufferOffset::new(6), zcv_text::Affinity::Before)
+                ..snapshot.anchor_at(MultiBufferOffset::new(17), zcv_text::Affinity::After)
+        };
+        map.fold_range(range, placeholder, cx)
+    })
+    .expect("折叠应成功");
+
+    let mut baseline = None;
+    let visual = cx.add_empty_window();
+    visual.draw(
+        point(px(0.), px(0.)),
+        size(px(400.), px(100.)),
+        |window, cx| {
+            let mut layout = layout_visible_lines(
+                map.update(cx, |map, cx| map.snapshot(cx)),
+                None,
+                EditorPresentation::new(&snapshot.clone().into(), None),
+                None,
+                VisibleLineLayoutParams {
+                    geometry: EditorGeometry {
+                        text_bounds: Bounds::new(point(px(0.), px(0.)), size(px(400.), px(100.))),
+                        text_clip_bounds: Bounds::new(
+                            point(px(0.), px(0.)),
+                            size(px(400.), px(100.)),
+                        ),
+                        gutter: None,
+                    },
+                    active_lines: &BTreeSet::new(),
+                    foldable_lines: &BTreeSet::new(),
+                    fold_anchor_lines: &BTreeSet::new(),
+                    start_row: DisplayRow::ZERO,
+                    scroll_offset: point(px(0.), px(0.)),
+                    primary_caret_column: None,
+                    line_height: px(20.),
+                    diff_rows: &[],
+                },
+                window,
+                cx,
+            );
+            baseline = Some(layout.lines[0].origin.x + layout.lines[0].line.x_for_index(6));
+            let delta = point(px(-40.), Pixels::ZERO);
+            layout.translate(delta);
+            layout.prepaint_line_elements(window, cx);
+            Empty
+        },
+    );
+
+    let baseline = baseline.expect("行布局必须执行");
+    let origin = recorded
+        .lock()
+        .expect("prepaint 原点记录锁不能中毒")
+        .expect("折叠元素必须 prepaint");
+    // 元素起点来自塑形宽度累加，允许亚像素差异。
+    let moved = origin.x - baseline;
+    assert!(
+        moved > px(-41.) && moved < px(-39.),
+        "元素 prepaint 原点必须跟随行原点的水平平移，实际位移 {moved:?}"
+    );
 }
 
 #[gpui::test]
@@ -1016,9 +1381,10 @@ fn multi_line_selection_uses_one_rounded_contour_with_inner_turns(cx: &mut TestA
                 segments[0].end_x > segments[1].end_x && segments[2].end_x > segments[1].end_x,
                 "相邻行宽度收缩与扩张应形成两种圆角转折"
             );
+            let first_line_width = layout.lines[0].line.x_for_index(layout.lines[0].line.len());
             assert_eq!(
                 segments[0].end_x,
-                layout.lines[0].origin.x + layout.lines[0].shaped.width + px(6.),
+                layout.lines[0].origin.x + first_line_width + px(6.),
                 "非末行应延伸两个圆角半径"
             );
         })

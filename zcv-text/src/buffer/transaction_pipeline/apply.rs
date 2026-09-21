@@ -6,9 +6,8 @@ use super::prepared::PreparedTransaction;
 use crate::buffer::{Buffer, history::HistoryEntry};
 use crate::{
     config::LargeTransactionPolicy,
-    errors::{EditError, StorageError, TransactionError},
-    errors::{TextError, TextResult},
-    storage::{RopeyPreparedReplace, RopeyStorage},
+    errors::{EditError, TextError, TextResult, TransactionError},
+    storage::RopeyStorage,
     text_changes::TextPatch,
     transaction::TransactionOutcome,
     transaction::{
@@ -173,16 +172,8 @@ impl Buffer {
         next_transaction_id: crate::TransactionId,
         event: &DeltaEvent,
     ) -> TextResult<()> {
-        let prepared_replaces = self.prepare_storage_replaces(forward)?;
         let mut next_storage = self.storage.clone();
-        for (edit, prepared_replace) in forward
-            .as_slice()
-            .iter()
-            .rev()
-            .zip(prepared_replaces.into_iter().rev())
-        {
-            next_storage.replace_prepared(prepared_replace, edit.replacement());
-        }
+        next_storage.apply_edit_list(forward)?;
 
         // ===== Commit 段：从这里起 Buffer 本体变异不允许失败 =====
         // 文本已经在 clone storage 上完整构造；真正提交只做 move assignment 与订阅发布。
@@ -244,25 +235,6 @@ impl Buffer {
             self.edit_log
                 .appended(event.old_version(), event.new_version(), forward, undo);
         self.commit_delta_event(next_transaction_id, event);
-    }
-
-    fn prepare_storage_replaces(
-        &self,
-        tx_edits: &EditList,
-    ) -> TextResult<Vec<RopeyPreparedReplace>> {
-        let mut prepared_replaces = Vec::new();
-        prepared_replaces
-            .try_reserve(tx_edits.len())
-            .map_err(|_| StorageError::OutOfMemory)?;
-
-        for edit in tx_edits.as_slice() {
-            prepared_replaces.push(
-                self.storage
-                    .prepare_replace(edit.range(), edit.replacement())?,
-            );
-        }
-
-        Ok(prepared_replaces)
     }
 }
 

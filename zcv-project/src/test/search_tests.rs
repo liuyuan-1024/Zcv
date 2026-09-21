@@ -1,9 +1,10 @@
 use crate::Project;
 use crate::search::{FileSearchResult, SearchQuery};
 use crate::test_support::test_project;
-use gpui::{Entity, TestAppContext};
+use gpui::{AppContext as _, Entity, TestAppContext};
 use std::path::PathBuf;
 use std::process::Command;
+use zcv_text::{ByteOffset, TextRange};
 
 /// 收集一次流式搜索的全部命中（直到后台关闭通道）。
 async fn collect_search(
@@ -102,6 +103,48 @@ async fn honors_exclusions_and_reports_invalid_regex(cx: &mut TestAppContext) {
     )
     .await;
     assert!(invalid.is_empty());
+}
+
+/// 回归（E-G）：未被打开的文件先被项目搜索解码时，必须走 Project 文件边界，
+/// 与 `open_buffer` 首次打开一致地剥离 BOM，而不是绕过解码边界保留 U+FEFF。
+#[gpui::test]
+async fn search_decodes_unopened_files_through_the_project_boundary(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let root = directory.path().canonicalize().expect("项目根应可规范化");
+    let path = root.join("bom.txt");
+    std::fs::write(&path, b"\xEF\xBB\xBFneedle\n").expect("应创建带 BOM 的文件");
+
+    let project = test_project(root, cx);
+    // 搜索是该路径的首个物化者：命中范围必须相对剥离 BOM 后的文本。
+    let results = collect_search(
+        &project,
+        SearchQuery {
+            query: "needle".to_string(),
+            ..Default::default()
+        },
+        cx,
+    )
+    .await;
+    assert_eq!(results.len(), 1);
+    let matched = results[0].excerpts[0].matches[0];
+    assert_eq!(
+        (matched.start().get(), matched.end().get()),
+        (0, 6),
+        "搜索必须先剥离 BOM，命中从文本首字符开始"
+    );
+
+    // 权威文档仍由 Project 文件边界创建；内容与搜索使用的文本一致。
+    let buffer = project
+        .update(cx, |project, cx| project.open_buffer(&path, cx))
+        .expect("应打开带 BOM 的文件");
+    let snapshot = cx.read_entity(&buffer, |buffer, _cx| buffer.text_snapshot());
+    let full = TextRange::new(ByteOffset::ZERO, snapshot.len_bytes()).expect("全文范围必须有效");
+    let text = snapshot
+        .slice_text(full)
+        .expect("文本快照必须可切片")
+        .to_string();
+    assert_eq!(text, "needle\n", "权威文档应剥离 BOM 且与搜索视图一致");
+    assert!(!text.starts_with('\u{FEFF}'));
 }
 
 #[gpui::test]

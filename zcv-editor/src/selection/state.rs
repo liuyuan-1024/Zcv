@@ -7,7 +7,7 @@
 
 use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferSnapshot};
@@ -296,13 +296,19 @@ impl TransactionSelections {
     }
 }
 
+/// 选择历史记录只用于撤销 / 重做时恢复选区，是文本历史的派生缓存。
+///
+/// 上限与文本层 Undo 历史预算同量级：超出时从最老事务开始丢弃。
+/// 被丢弃的事务已不可能再被文本历史撤销 / 重做，因此不影响仍可回放的选区恢复。
+const MAX_SELECTION_HISTORY_ENTRIES: usize = 1024;
+
 #[derive(Debug, Default)]
 pub(crate) struct SelectionHistory {
-    selections_by_transaction: HashMap<TransactionId, TransactionSelections>,
+    selections_by_transaction: BTreeMap<TransactionId, TransactionSelections>,
 }
 
 impl SelectionHistory {
-    /// 事务开始时记录 undo 选区（源锚点）。
+    /// 事务开始时记录 undo 选区（源锚点）；超出上限时丢弃最老事务。
     pub(crate) fn insert_transaction(
         &mut self,
         transaction_id: TransactionId,
@@ -311,6 +317,9 @@ impl SelectionHistory {
         self.selections_by_transaction
             .entry(transaction_id)
             .or_insert_with(|| TransactionSelections { undo, redo: None });
+        while self.selections_by_transaction.len() > MAX_SELECTION_HISTORY_ENTRIES {
+            self.selections_by_transaction.pop_first();
+        }
     }
 
     /// 取事务的选区记录，供提交时更新 redo 选区。
@@ -333,3 +342,7 @@ impl SelectionHistory {
         self.selections_by_transaction.get(&transaction_id)
     }
 }
+
+#[cfg(test)]
+#[path = "test/state_tests.rs"]
+mod tests;

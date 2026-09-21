@@ -167,6 +167,13 @@ pub enum TextError {
         earliest: BufferVersion,
     },
 
+    /// 请求版本区间的逆编辑未保留（例如放弃历史的大事务），无法重建该历史版本的文本。
+    #[error("历史文本不可重建：请求版本 {requested:?} 的逆编辑未保留，当前版本 {current:?}")]
+    HistoryTextUnavailable {
+        requested: BufferVersion,
+        current: BufferVersion,
+    },
+
     /// 文本内核内部不变量被违反；这是 bug，不是可恢复的外部错误。
     /// 用 `location` 定位代码点，`detail` 携带最少诊断信息，便于宿主上报。
     #[error("文本内核不变量违反：{location}：{detail}")]

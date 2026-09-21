@@ -900,8 +900,6 @@ fn project_diff_toolbar_follows_active_item(cx: &mut TestAppContext) {
             handle.act_as::<Editor>(cx).is_some(),
             "差异视图应把内层编辑器暴露给 Item 协议"
         );
-        assert!(!handle.uses_editor_document_toolbar(cx));
-        assert!(!handle.receives_git_projection(cx));
 
         let hidden = toolbar.update(cx, |toolbar, cx| {
             toolbar.set_active_pane_item(None, window, cx)

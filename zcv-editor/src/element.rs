@@ -2,8 +2,10 @@
 
 use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -11,8 +13,8 @@ use gpui::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, Context, DispatchPhase, Element,
     ElementId, ElementInputHandler, Entity, GlobalElementId, HitboxBehavior, InspectorElementId,
     InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine, Style, TextRun, Window,
-    div, fill, point, prelude::*, px, relative, size,
+    MouseUpEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine, Size, Style, TextRun,
+    Window, div, fill, point, prelude::*, px, relative, size,
 };
 use zcv_actions::{OpenExcerpts, ToggleFold};
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
@@ -25,11 +27,11 @@ use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon, drag_autoscroll_delta};
 use crate::selection::SelectionSet;
 
 use super::display_map::{
-    DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint, DisplayRange, DisplayRow,
-    DisplayRowEvent, DisplaySnapshot, EditorHunkMarkerKind, FILE_HEADER_HEIGHT, FoldRowSegment,
-    HighlightStyles, HunkControlTarget, RenderedWhitespace, SearchDecorationSnapshot,
-    StickyBufferHeader, WrapRowInfo, byte_for_display_column, chunk_to_run, diff_row_for_row,
-    display_column_for_byte, is_hollow_hunk,
+    ChunkRenderer, DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint, DisplayRange,
+    DisplayRow, DisplayRowEvent, DisplaySnapshot, EditorHunkMarkerKind, FILE_HEADER_HEIGHT,
+    FoldRowSegment, HighlightStyles, HunkControlTarget, RenderedWhitespace,
+    SearchDecorationSnapshot, StickyBufferHeader, WrapRowInfo, byte_for_display_column,
+    chunk_to_run, diff_row_for_row, display_column_for_byte, is_hollow_hunk,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
@@ -106,20 +108,130 @@ impl EditorElement {
     }
 }
 
-#[derive(Clone)]
+/// 显示行的一个片段：普通文本，或折叠占位符替换出的元素。
+///
+/// 元素片段占用占位符文本的字节长度 `len` 与它实际布局出的宽度 `size.width`；
+/// 两者分别参与字节坐标映射与像素布局，和 Zed 的 `LineFragment` 契约一致。
+enum LineFragment {
+    Text(Box<ShapedLine>),
+    Element {
+        element: RefCell<Option<AnyElement>>,
+        size: Size<Pixels>,
+        len: usize,
+        /// 相对行原点的偏移；x 由前序片段宽度累加，y 为行内垂直居中。
+        offset: Point<Pixels>,
+    },
+}
+
+/// 一行的片段序列与完整文本。
+///
+/// `text` 包含元素占用的占位符文本，使字节坐标、选区与命中测试的索引空间连续；
+/// 文本片段各自塑形，元素片段按实际渲染宽度占位。
+struct FragmentedLine {
+    fragments: Vec<LineFragment>,
+    text: String,
+}
+
+impl FragmentedLine {
+    fn len(&self) -> usize {
+        self.text.len()
+    }
+
+    /// 完整行文本内第 `index` 字节的 x 坐标（相对行原点）。
+    ///
+    /// 落在元素内部的索引吸附到元素起点，和 Zed 的 `x_for_index` 一致。
+    fn x_for_index(&self, index: usize) -> Pixels {
+        let mut x = Pixels::ZERO;
+        let mut start = 0usize;
+        for fragment in &self.fragments {
+            match fragment {
+                LineFragment::Text(line) => {
+                    let end = start + line.len();
+                    if index < end {
+                        return x + line.x_for_index(index - start);
+                    }
+                    x += line.width;
+                    start = end;
+                }
+                LineFragment::Element { len, size, .. } => {
+                    let end = start + len;
+                    if index < end {
+                        return x;
+                    }
+                    x += size.width;
+                    start = end;
+                }
+            }
+        }
+        x
+    }
+
+    /// 行内 x 坐标对应的完整行文本字节。
+    ///
+    /// 落在元素内部时返回元素起点字节，和 Zed 的 `index_for_x` 一致。
+    fn closest_index_for_x(&self, x: Pixels) -> usize {
+        let mut start_x = Pixels::ZERO;
+        let mut start = 0usize;
+        for fragment in &self.fragments {
+            match fragment {
+                LineFragment::Text(line) => {
+                    let end_x = start_x + line.width;
+                    if x < end_x {
+                        return start + line.closest_index_for_x(x - start_x);
+                    }
+                    start_x = end_x;
+                    start += line.len();
+                }
+                LineFragment::Element { len, size, .. } => {
+                    let end_x = start_x + size.width;
+                    if x < end_x {
+                        return start;
+                    }
+                    start_x = end_x;
+                    start += len;
+                }
+            }
+        }
+        start
+    }
+}
+
+/// 组装一行时的输入片段：连续文本（含 runs）或折叠占位符元素。
+enum RowPiece {
+    Text {
+        text: String,
+        runs: Vec<TextRun>,
+    },
+    Element {
+        renderer: ChunkRenderer,
+        text: String,
+    },
+}
+
+/// 把累积的连续文本片段推入行片段序列。
+fn flush_text_piece(pieces: &mut Vec<RowPiece>, text: &mut String, runs: &mut Vec<TextRun>) {
+    if text.is_empty() && runs.is_empty() {
+        return;
+    }
+    pieces.push(RowPiece::Text {
+        text: std::mem::take(text),
+        runs: std::mem::take(runs),
+    });
+}
+
 struct LayoutLine {
     row: DisplayRow,
     logical_line: Option<Line>,
     /// 该显示行所属的逻辑行是否包含光标或选区端点。
     active: bool,
     origin: Point<Pixels>,
-    shaped: ShapedLine,
-    /// run 背景源（搜索高亮、语法背景）：shaped 文本内的字节区间 + 颜色，与选区一同进入背景片段合成管线。
+    line: FragmentedLine,
+    /// run 背景源（搜索高亮、语法背景）：完整行文本内的字节区间 + 颜色，与选区一同进入背景片段合成管线。
     background_runs: Vec<(Range<usize>, gpui::Rgba)>,
     whitespaces: Vec<RenderedWhitespace>,
     global_utf16_start: usize,
     wrap_info: Option<WrapRowInfo>,
-    /// shaped 文本起点在完整显示行中的显示列；水平窗口化时用于逆算命中位置。
+    /// 行文本起点在完整显示行中的显示列；水平窗口化时用于逆算命中位置。
     window_start_column: usize,
     /// 折叠合并行的段表（anchor 文本 + 占位符 + 闭合尾段；命中测试与占位符点击用）。
     fold_segments: Option<Vec<FoldRowSegment>>,
@@ -127,6 +239,44 @@ struct LayoutLine {
     git_diff: Option<(DiffHunkKind, DiffHunkStaging)>,
     /// placeholder 提示行：命中测试不映射到 placeholder buffer（空 buffer 唯一合法坐标是 0）。
     is_placeholder: bool,
+}
+
+impl LayoutLine {
+    /// 绘制本行的文本片段与折叠元素。
+    ///
+    /// 文本片段塑形失败只跳过该片段；元素必须在本帧 prepaint 阶段已经 prepaint。
+    fn paint(&self, line_height: Pixels, window: &mut Window, cx: &mut App) -> bool {
+        let origin = self.origin;
+        let mut x = origin.x;
+        let mut painted = true;
+        for fragment in &self.line.fragments {
+            match fragment {
+                LineFragment::Text(line) => {
+                    if line
+                        .paint(
+                            point(x, origin.y),
+                            line_height,
+                            gpui::TextAlign::Left,
+                            None,
+                            window,
+                            cx,
+                        )
+                        .is_err()
+                    {
+                        painted = false;
+                    }
+                    x += line.width;
+                }
+                LineFragment::Element { element, size, .. } => {
+                    if let Some(mut element) = element.borrow_mut().take() {
+                        element.paint(window, cx);
+                    }
+                    x += size.width;
+                }
+            }
+        }
+        painted
+    }
 }
 
 #[derive(Clone)]
@@ -162,6 +312,31 @@ impl EditorLayout {
         if let Some(gutter) = &mut self.gutter {
             for row in &mut gutter.rows {
                 row.origin += delta;
+            }
+        }
+    }
+
+    /// 在行原点最终确定后，把折叠占位符元素 prepaint 到行坐标。
+    ///
+    /// 元素必须在 `translate` 之后 prepaint，才能跟随水平自动滚动的整帧平移。
+    fn prepaint_line_elements(&mut self, window: &mut Window, cx: &mut App) {
+        for line in &mut self.lines {
+            let origin = line.origin;
+            for fragment in &mut line.line.fragments {
+                if let LineFragment::Element {
+                    element, offset, ..
+                } = fragment
+                {
+                    let mut element = element.borrow_mut();
+                    let Some(element) = element.as_mut() else {
+                        continue;
+                    };
+                    let _ = element.prepaint_at(
+                        point(origin.x + offset.x, origin.y + offset.y),
+                        window,
+                        cx,
+                    );
+                }
             }
         }
     }
@@ -261,9 +436,9 @@ impl EditorLayout {
                 .find(|line| position.y < line.origin.y + self.line_height)
                 .unwrap_or(last)
         };
-        let byte_index = line.shaped.closest_index_for_x(position.x - line.origin.x);
+        let byte_index = line.line.closest_index_for_x(position.x - line.origin.x);
         let column = display_column_for_byte(
-            &line.shaped.text,
+            &line.line.text,
             line.window_start_column,
             byte_index,
             self.display_snapshot.tab_width().get(),
@@ -283,13 +458,13 @@ impl EditorLayout {
 /// IME 候选框命中测试：持有一帧布局的 Arc 引用，避免每帧深拷贝整表布局。
 #[derive(Clone)]
 pub(super) struct EditorInputLayout {
-    layout: Arc<EditorLayout>,
+    layout: Rc<EditorLayout>,
 }
 
 impl EditorInputLayout {
-    fn from_layout(layout: &Arc<EditorLayout>) -> Self {
+    fn from_layout(layout: &Rc<EditorLayout>) -> Self {
         Self {
-            layout: Arc::clone(layout),
+            layout: Rc::clone(layout),
         }
     }
 
@@ -310,7 +485,7 @@ impl EditorInputLayout {
         let local_byte =
             local_byte_for_display_point(line, display_point, &self.layout.display_snapshot);
         Some(point(
-            line.origin.x + line.shaped.x_for_index(local_byte) - self.layout.element_origin.x,
+            line.origin.x + line.line.x_for_index(local_byte) - self.layout.element_origin.x,
             line.origin.y - self.layout.element_origin.y,
         ))
     }
@@ -342,13 +517,13 @@ impl EditorInputLayout {
                 .find(|line| point.y < line.origin.y + line_height)
                 .unwrap_or(last)
         };
-        let byte = line.shaped.closest_index_for_x(point.x - line.origin.x);
-        Some(line.global_utf16_start + line.shaped.text[..byte].encode_utf16().count())
+        let byte = line.line.closest_index_for_x(point.x - line.origin.x);
+        Some(line.global_utf16_start + line.line.text[..byte].encode_utf16().count())
     }
 }
 
 pub(super) struct PrepaintState {
-    layout: Arc<EditorLayout>,
+    layout: Rc<EditorLayout>,
     /// 每行一个背景片段表（选区 + run 背景合成，互不重叠，一次绘制）。
     background_fragments: Vec<Vec<BackgroundFragment>>,
     bracket_matches: Vec<PaintQuad>,
@@ -1317,6 +1492,8 @@ impl Element for EditorElement {
             ime_caret_bounds =
                 ime_caret_bounds.map(|bounds| Bounds::new(bounds.origin + delta, bounds.size));
         }
+        // 占位符元素按最终行原点 prepaint，随后由 paint 阶段绘制。
+        layout.prepaint_line_elements(window, cx);
         let sticky_buffer_header = display_snapshot.sticky_buffer_header(start_row);
         let sticky_source_row = sticky_buffer_header
             .as_ref()
@@ -1337,7 +1514,7 @@ impl Element for EditorElement {
         } else {
             None
         };
-        let layout = Arc::new(layout);
+        let layout = Rc::new(layout);
         let selected_whitespace =
             layout_selected_whitespace(&selections, &layout, line_height, window, cx);
         // 背景片段合成：选区与 run 背景逐行合成为互不重叠的片段。
@@ -1401,19 +1578,16 @@ impl Element for EditorElement {
                 // 占位符段 = 合并文本中 anchor 段之后；显示文本 = 假空格 + 合并文本。
                 let start = indent + segments[0].merged_range().end;
                 let end = start + segments[1].merged_range().len();
-                if start >= line.shaped.text.len() {
+                if start >= line.line.text.len() {
                     continue;
                 }
                 hitboxes.push((
                     window.insert_hitbox(
                         Bounds::from_corners(
-                            point(
-                                line.origin.x + line.shaped.x_for_index(start),
-                                line.origin.y,
-                            ),
+                            point(line.origin.x + line.line.x_for_index(start), line.origin.y),
                             point(
                                 line.origin.x
-                                    + line.shaped.x_for_index(end.min(line.shaped.text.len())),
+                                    + line.line.x_for_index(end.min(line.line.text.len())),
                                 line.origin.y + line_height,
                             ),
                         ),
@@ -1492,7 +1666,7 @@ impl Element for EditorElement {
             cx,
         );
         let editor = self.editor.clone();
-        let event_layout = Arc::clone(&prepaint.layout);
+        let event_layout = Rc::clone(&prepaint.layout);
         let hitbox = prepaint.hitbox.clone();
         let deleted_hunk_hitboxes = prepaint.deleted_hunk_hitboxes.clone();
         let placeholder_hitboxes = prepaint.placeholder_hitboxes.clone();
@@ -1587,7 +1761,7 @@ impl Element for EditorElement {
         // 无按键移动时兜底结束拖拽（覆盖"窗口外释放后移回"等漏网场景）。
         // 自动滚动限频：鼠标移动事件频率可远超帧率，若每个事件都滚动，感知速度会随事件频率放大。
         let drag_editor = self.editor.clone();
-        let drag_layout = Arc::clone(&prepaint.layout);
+        let drag_layout = Rc::clone(&prepaint.layout);
         let drag_text_bounds = prepaint.layout.text_clip_bounds;
         let drag_line_height = prepaint.layout.line_height;
         window.on_mouse_event(move |event: &MouseMoveEvent, phase, _window, cx| {
@@ -1938,22 +2112,11 @@ impl Element for EditorElement {
                         fragment.paint(line.origin.y, line_height, corner_radius, window);
                     }
                 }
+                // 文本片段各自绘制，折叠占位符元素在 prepaint 阶段已就位。
+                let line_height = prepaint.layout.line_height;
                 for line in &prepaint.layout.lines {
-                    if line
-                        .shaped
-                        .paint(
-                            line.origin,
-                            prepaint.layout.line_height,
-                            gpui::TextAlign::Left,
-                            None,
-                            window,
-                            cx,
-                        )
-                        .is_err()
-                    {
-                        // 单个字形绘制失败只跳过该行，不能让整个窗口崩溃。
-                        continue;
-                    }
+                    // 单个字形绘制失败只跳过该行，不能让整个窗口崩溃。
+                    let _ = line.paint(line_height, window, cx);
                 }
                 if let Some(markers) = &prepaint.selected_whitespace {
                     markers.paint(window, cx);
@@ -2409,7 +2572,7 @@ fn layout_visible_lines_from_viewport(
     search_decorations: Option<&SearchDecorationSnapshot>,
     params: VisibleLineLayoutParams<'_>,
     window: &mut Window,
-    cx: &App,
+    cx: &mut App,
 ) -> EditorLayout {
     let VisibleViewport {
         display_snapshot,
@@ -2526,30 +2689,80 @@ fn layout_visible_lines_from_viewport(
     } else {
         None
     };
+    // 颜色在本帧取一次，供 push_line 与 for_each_row 共享，避免两个闭包各自借 cx。
+    let colors = *color::current(cx);
     let mut push_line = |row: usize,
                          logical_line: Option<Line>,
                          gutter_line: Option<Line>,
                          gutter_number: Option<usize>,
-                         text: &str,
+                         pieces: Vec<RowPiece>,
+                         text: String,
                          utf16_start: usize,
                          wrap_info: Option<WrapRowInfo>,
                          fold_segments: Option<Vec<FoldRowSegment>>,
                          whitespaces: Vec<RenderedWhitespace>,
                          window_start_column: usize,
-                         window_prefix: &str,
-                         runs: Vec<TextRun>| {
-        let shaped =
-            window
-                .text_system()
-                .shape_line(text.to_owned().into(), font_size, &runs, None);
+                         window_prefix: &str| {
+        let mut fragments = Vec::with_capacity(pieces.len().max(1));
+        let mut width = Pixels::ZERO;
         // 收集 run 背景源（字节区间累计自 runs 的覆盖）；无背景的 run 跳过。
         let mut background_runs = Vec::new();
         let mut byte_offset = 0usize;
-        for run in &runs {
-            if let Some(background) = run.background_color {
-                background_runs.push((byte_offset..byte_offset + run.len, background.into()));
+        for piece in pieces {
+            match piece {
+                RowPiece::Text {
+                    text: piece_text,
+                    runs,
+                } => {
+                    for run in &runs {
+                        if let Some(background) = run.background_color {
+                            background_runs
+                                .push((byte_offset..byte_offset + run.len, background.into()));
+                        }
+                        byte_offset += run.len;
+                    }
+                    let shaped =
+                        window
+                            .text_system()
+                            .shape_line(piece_text.into(), font_size, &runs, None);
+                    width += shaped.width;
+                    fragments.push(LineFragment::Text(Box::new(shaped)));
+                }
+                RowPiece::Element {
+                    renderer,
+                    text: placeholder,
+                } => {
+                    let available_width = if renderer.constrain_width {
+                        let run = TextRun {
+                            len: placeholder.len(),
+                            ..base.clone()
+                        };
+                        AvailableSpace::Definite(
+                            window
+                                .text_system()
+                                .shape_line(placeholder.clone().into(), font_size, &[run], None)
+                                .width,
+                        )
+                    } else {
+                        AvailableSpace::MinContent
+                    };
+                    let mut element = (renderer.render)(cx);
+                    let element_size = element.layout_as_root(
+                        size(available_width, AvailableSpace::Definite(line_height)),
+                        window,
+                        cx,
+                    );
+                    let offset = point(width, (line_height - element_size.height) / 2.0);
+                    width += element_size.width;
+                    byte_offset += placeholder.len();
+                    fragments.push(LineFragment::Element {
+                        element: RefCell::new(Some(element)),
+                        size: element_size,
+                        len: placeholder.len(),
+                        offset,
+                    });
+                }
             }
-            byte_offset += run.len;
         }
         let git_diff = diff_row_for_row(diff_rows, row);
         let window_prefix_width = if window_prefix.is_empty() {
@@ -2574,11 +2787,11 @@ fn layout_visible_lines_from_viewport(
             logical_line,
             active: logical_line.is_some_and(|line| active_lines.contains(&line)),
             origin: point(
-                // 窗口化行：shaped 文本从窗口起点开始，行原点随窗口起点列右移。
+                // 窗口化行：文本从窗口起点开始，行原点随窗口起点列右移。
                 text_bounds.left() - scroll_offset.x + window_prefix_width,
                 text_bounds.top() + line_height * (row - start) - scroll_offset.y,
             ),
-            shaped,
+            line: FragmentedLine { fragments, text },
             background_runs,
             whitespaces,
             global_utf16_start: utf16_start,
@@ -2595,7 +2808,6 @@ fn layout_visible_lines_from_viewport(
                 .unwrap_or_else(|| logical_line.get() + 1)
                 .to_string();
             let active = active_lines.contains(&logical_line);
-            let colors = color::current(cx);
             // 行号按 diff 状态着色（只取行级类型，暂存状态不改变行号色）。
             let number_color = match (active, git_diff.map(|(kind, _)| kind)) {
                 (_, Some(DiffHunkKind::Added)) => colors.version_control_added,
@@ -2667,16 +2879,20 @@ fn layout_visible_lines_from_viewport(
             }
             DisplayRowEvent::Text { row, chunks } => {
                 let mut row_text = String::new();
-                let mut row_runs = Vec::new();
+                let mut pieces: Vec<RowPiece> = Vec::new();
+                let mut pending_text = String::new();
+                let mut pending_runs: Vec<TextRun> = Vec::new();
                 let mut row_whitespaces = Vec::new();
                 if row.indent > 0 {
-                    row_text.push_str(&" ".repeat(row.indent));
-                    row_runs.push(TextRun {
+                    let indent = " ".repeat(row.indent);
+                    row_text.push_str(&indent);
+                    pending_text.push_str(&indent);
+                    pending_runs.push(TextRun {
                         len: row.indent,
                         ..base.clone()
                     });
                 }
-                for text_chunk in chunks.by_ref() {
+                for mut text_chunk in chunks.by_ref() {
                     let display_start = row_text.len();
                     row_text.push_str(text_chunk.text);
                     row_whitespaces.extend(text_chunk.text.char_indices().filter_map(
@@ -2693,12 +2909,22 @@ fn layout_visible_lines_from_viewport(
                                 })
                         },
                     ));
-                    let mut run = chunk_to_run(&text_chunk, base.clone());
-                    if text_chunk.is_placeholder {
-                        run.color = color::current(cx).text_placeholder.into();
+                    if let Some(renderer) = text_chunk.renderer.take() {
+                        flush_text_piece(&mut pieces, &mut pending_text, &mut pending_runs);
+                        pieces.push(RowPiece::Element {
+                            renderer,
+                            text: text_chunk.text.to_owned(),
+                        });
+                    } else {
+                        let mut run = chunk_to_run(&text_chunk, base.clone());
+                        if text_chunk.is_placeholder {
+                            run.color = colors.text_placeholder.into();
+                        }
+                        pending_text.push_str(text_chunk.text);
+                        pending_runs.push(run);
                     }
-                    row_runs.push(run);
                 }
+                flush_text_piece(&mut pieces, &mut pending_text, &mut pending_runs);
                 let gutter_line = (row.fragment_index == 0).then_some(Line::new(row.source_line));
                 let (gutter_line, gutter_number) = match gutter_line {
                     Some(line) => match row.excerpt {
@@ -2715,14 +2941,14 @@ fn layout_visible_lines_from_viewport(
                     Some(Line::new(row.source_line)),
                     gutter_line,
                     gutter_number,
-                    &row_text,
+                    pieces,
+                    row_text,
                     row.utf16_start,
                     (row.fragment_index > 0).then_some(WrapRowInfo { indent: row.indent }),
                     row.fold_segments.map(ToOwned::to_owned),
                     row_whitespaces,
                     row.window_start_column,
                     row.window_prefix.as_ref(),
-                    row_runs,
                 );
             }
         });
@@ -2848,11 +3074,11 @@ fn layout_selected_whitespace(
                 (row > start.row() || (row == start.row() && column >= start.column()))
                     && (row < end.row() || (row == end.row() && column < end.column()))
             });
-            if !selected || whitespace.byte_range.end > line.shaped.text.len() {
+            if !selected || whitespace.byte_range.end > line.line.text.len() {
                 continue;
             }
-            let start_x = line.shaped.x_for_index(whitespace.byte_range.start);
-            let end_x = line.shaped.x_for_index(whitespace.byte_range.end);
+            let start_x = line.line.x_for_index(whitespace.byte_range.start);
+            let end_x = line.line.x_for_index(whitespace.byte_range.end);
             positions.push((
                 point(line.origin.x + start_x, line.origin.y),
                 end_x - start_x,
@@ -2920,7 +3146,7 @@ fn layout_selection_segments(
             continue;
         }
 
-        let line_columns = line.shaped.text.chars().count();
+        let line_columns = line.line.text.chars().count();
         let start_column = if row == start.row() {
             start.column().get().min(line_columns)
         } else {
@@ -2933,12 +3159,12 @@ fn layout_selection_segments(
         };
         let start_x = line.origin.x
             + line
-                .shaped
-                .x_for_index(column_to_byte(&line.shaped.text, start_column));
+                .line
+                .x_for_index(column_to_byte(&line.line.text, start_column));
         let mut end_x = line.origin.x
             + line
-                .shaped
-                .x_for_index(column_to_byte(&line.shaped.text, end_column));
+                .line
+                .x_for_index(column_to_byte(&line.line.text, end_column));
         if row != end.row() {
             end_x += line_end_overshoot;
         }
@@ -2977,7 +3203,7 @@ fn layout_word_diff_fragments(
             if row < projected_range.start().row() || row > projected_range.end().row() {
                 continue;
             }
-            let line_columns = line.shaped.text.chars().count();
+            let line_columns = line.line.text.chars().count();
             let start_column = if row == projected_range.start().row() {
                 projected_range.start().column().get().min(line_columns)
             } else {
@@ -2990,12 +3216,12 @@ fn layout_word_diff_fragments(
             };
             let start_x = line.origin.x
                 + line
-                    .shaped
-                    .x_for_index(column_to_byte(&line.shaped.text, start_column));
+                    .line
+                    .x_for_index(column_to_byte(&line.line.text, start_column));
             let end_x = line.origin.x
                 + line
-                    .shaped
-                    .x_for_index(column_to_byte(&line.shaped.text, end_column));
+                    .line
+                    .x_for_index(column_to_byte(&line.line.text, end_column));
             if end_x <= start_x {
                 continue;
             }
@@ -3041,8 +3267,8 @@ fn layout_line_background_fragments(
     }
     for (byte_range, _) in &line.background_runs {
         // run 背景的字节区间是 shaped 文本内偏移，必须叠加行原点才能与文本/选区同处绝对坐标。
-        boundaries.push(line.origin.x + line.shaped.x_for_index(byte_range.start));
-        boundaries.push(line.origin.x + line.shaped.x_for_index(byte_range.end));
+        boundaries.push(line.origin.x + line.line.x_for_index(byte_range.start));
+        boundaries.push(line.origin.x + line.line.x_for_index(byte_range.end));
     }
     if boundaries.is_empty() {
         return Vec::new();
@@ -3061,8 +3287,8 @@ fn layout_line_background_fragments(
             .iter()
             .find(|segment| segment.start_x <= start_x && end_x <= segment.end_x);
         let run = line.background_runs.iter().find(|(byte_range, _)| {
-            let run_start = line.origin.x + line.shaped.x_for_index(byte_range.start);
-            let run_end = line.origin.x + line.shaped.x_for_index(byte_range.end);
+            let run_start = line.origin.x + line.line.x_for_index(byte_range.start);
+            let run_end = line.origin.x + line.line.x_for_index(byte_range.end);
             run_start <= start_x && end_x <= run_end
         });
         let (color, is_selection, corners) = match (selection, run) {
@@ -3161,7 +3387,7 @@ fn layout_projected_range_quad(
             continue;
         }
 
-        let line_columns = line.shaped.text.chars().count();
+        let line_columns = line.line.text.chars().count();
         let start_column = if row == start.row() {
             start.column().get().min(line_columns)
         } else {
@@ -3173,15 +3399,15 @@ fn layout_projected_range_quad(
             line_columns
         };
         let (local_start, local_end) = if line.logical_line.is_none() {
-            (0, line.shaped.len())
+            (0, line.line.len())
         } else {
             (
-                column_to_byte(&line.shaped.text, start_column),
-                column_to_byte(&line.shaped.text, end_column),
+                column_to_byte(&line.line.text, start_column),
+                column_to_byte(&line.line.text, end_column),
             )
         };
-        let start_x = line.shaped.x_for_index(local_start);
-        let mut end_x = line.shaped.x_for_index(local_end);
+        let start_x = line.line.x_for_index(local_start);
+        let mut end_x = line.line.x_for_index(local_end);
         if end_x <= start_x && row != end.row() {
             end_x = start_x + px(8.);
         }
@@ -3212,7 +3438,7 @@ fn layout_primary_caret(
     let local_byte = local_byte_for_display_point(line, display_point, &layout.display_snapshot);
     Some(Bounds::new(
         point(
-            line.origin.x + line.shaped.x_for_index(local_byte),
+            line.origin.x + line.line.x_for_index(local_byte),
             line.origin.y,
         ),
         size(px(2.), line_height),
@@ -3237,7 +3463,7 @@ fn layout_caret_at_buffer_offset(
     Some(fill(
         Bounds::new(
             point(
-                line.origin.x + line.shaped.x_for_index(local_byte),
+                line.origin.x + line.line.x_for_index(local_byte),
                 line.origin.y,
             ),
             size(px(2.), line_height),
@@ -3254,7 +3480,7 @@ fn local_byte_for_display_point(
     // 最终塑形文本可能包含假缩进、Tab 展开、行内提示、CJK 宽字符和折叠占位符。
     // 因此不能用字符序号反推字节位置，必须沿显示列规则逆算 shaped 文本中的字节边界。
     byte_for_display_column(
-        &line.shaped.text,
+        &line.line.text,
         line.window_start_column,
         point.column().get(),
         display_snapshot.tab_width().get(),

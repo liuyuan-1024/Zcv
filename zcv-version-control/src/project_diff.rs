@@ -1227,16 +1227,6 @@ impl Item for ProjectDiffView {
         Some(self.kind.icon().into())
     }
 
-    /// 差异视图自带 `ProjectDiffToolbar` 承担工具栏与搜索，不再使用编辑器通用文档工具栏。
-    fn uses_editor_document_toolbar(&self, _cx: &App) -> bool {
-        false
-    }
-
-    /// 差异视图自己把 hunk 投影进组合文档，不接收通用的按文件 git 投影。
-    fn receives_git_projection(&self) -> bool {
-        false
-    }
-
     fn to_item_events(event: &Self::Event, emit: &mut dyn FnMut(ItemEvent)) {
         <Editor as Item>::to_item_events(event, emit);
     }

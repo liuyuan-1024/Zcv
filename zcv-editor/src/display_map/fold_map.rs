@@ -16,6 +16,8 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::Arc;
 
+use gpui::prelude::*;
+use gpui::{AnyElement, App, div};
 use sum_tree::{Bias as TreeBias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use zcv_multi_buffer::MBTextSummary;
 use zcv_multi_buffer::MultiBufferSnapshot;
@@ -30,6 +32,41 @@ pub(crate) struct FoldId(u64);
 impl FoldId {
     const INITIAL: Self = Self(1);
 }
+
+/// 渲染替换的稳定身份；折叠是当前唯一来源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum ChunkRendererId {
+    Fold(FoldId),
+}
+
+/// 一段文本被替换为自定义元素时的渲染描述。
+///
+/// 对齐 Zed `ChunkRenderer` 的渲染契约：`render` 产出元素，`constrain_width` 决定它是否按占位符文本的塑形宽度约束。
+#[derive(Clone)]
+pub(crate) struct ChunkRenderer {
+    pub(crate) id: ChunkRendererId,
+    pub(crate) render: Arc<dyn Send + Sync + Fn(&mut App) -> AnyElement>,
+    pub(crate) constrain_width: bool,
+}
+
+impl std::fmt::Debug for ChunkRenderer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChunkRenderer")
+            .field("id", &self.id)
+            .field("constrain_width", &self.constrain_width)
+            .finish()
+    }
+}
+
+impl PartialEq for ChunkRenderer {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.constrain_width == other.constrain_width
+            && Arc::ptr_eq(&self.render, &other.render)
+    }
+}
+
+impl Eq for ChunkRenderer {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Fold {
@@ -161,13 +198,21 @@ pub(crate) enum FoldBias {
 /// 默认折叠占位符文本。
 pub(crate) const FOLD_PLACEHOLDER: &str = "\u{22ef}";
 
-/// 折叠占位符描述，对齐 Zed FoldPlaceholder 的可配置部分。
+/// 折叠占位符描述，对齐 Zed `FoldPlaceholder`。
 ///
-/// collapsed_text 为 None 时使用默认省略号；merge_adjacent 控制相邻折叠是否合并为一段；
-/// constrain_width 记录占位符元素是否按省略号宽度约束（渲染侧消费）；
-/// type_tag 用于按类别移除折叠。
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `render` 由调用方提供，用来把折叠区间渲染成任意元素；
+/// `collapsed_text` 为 None 时使用默认省略号；
+/// `constrain_width` 决定元素是否按占位符文本宽度约束；
+/// `merge_adjacent` 控制相邻折叠是否合并为一段；
+/// `type_tag` 用于按类别移除折叠。
+/// 折叠占位符的渲染回调：按稳定身份与锚点范围产出元素。
+pub(crate) type FoldRenderer =
+    Arc<dyn Send + Sync + Fn(FoldId, Range<MultiBufferAnchor>, &mut App) -> AnyElement>;
+
+#[derive(Clone)]
 pub(crate) struct FoldPlaceholder {
+    /// 把折叠渲染成元素；默认渲染空元素，与 Zed 默认实现一致。
+    pub(crate) render: FoldRenderer,
     pub(crate) collapsed_text: Option<Arc<str>>,
     pub(crate) constrain_width: bool,
     pub(crate) merge_adjacent: bool,
@@ -177,6 +222,7 @@ pub(crate) struct FoldPlaceholder {
 impl Default for FoldPlaceholder {
     fn default() -> Self {
         Self {
+            render: Arc::new(|_, _, _| gpui::Empty.into_any_element()),
             collapsed_text: None,
             constrain_width: true,
             merge_adjacent: true,
@@ -185,18 +231,56 @@ impl Default for FoldPlaceholder {
     }
 }
 
+impl std::fmt::Debug for FoldPlaceholder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FoldPlaceholder")
+            .field("constrain_width", &self.constrain_width)
+            .field("collapsed_text", &self.collapsed_text)
+            .field("merge_adjacent", &self.merge_adjacent)
+            .finish()
+    }
+}
+
+impl PartialEq for FoldPlaceholder {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.render, &other.render)
+            && self.collapsed_text == other.collapsed_text
+            && self.constrain_width == other.constrain_width
+            && self.merge_adjacent == other.merge_adjacent
+            && self.type_tag == other.type_tag
+    }
+}
+
+impl Eq for FoldPlaceholder {}
+
 impl FoldPlaceholder {
     pub(crate) fn text(&self) -> &str {
         self.collapsed_text.as_deref().unwrap_or(FOLD_PLACEHOLDER)
     }
+
+    /// 编辑器默认的可见占位符：把省略号渲染成带占位色的文本元素。
+    ///
+    /// `Default::default()` 与 Zed 一致渲染空元素；
+    /// 需要可见折叠提示的编辑器折叠入口使用本构造。
+    pub(crate) fn ellipsis(cx: &App) -> Self {
+        let text_color = zcv_theme::color::current(cx).text_placeholder;
+        Self {
+            render: Arc::new(move |_, _, _cx: &mut App| {
+                div()
+                    .text_color(text_color)
+                    .child(FOLD_PLACEHOLDER)
+                    .into_any_element()
+            }),
+            ..Self::default()
+        }
+    }
 }
 
-/// 折叠变换树中的占位符：被折区间在输出空间中的替代文本。
+/// 折叠变换树中的占位符：被折区间在输出空间中的替代文本与渲染描述。
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TransformPlaceholder {
     text: Arc<str>,
-    constrain_width: bool,
-    type_tag: Option<TypeId>,
+    renderer: ChunkRenderer,
 }
 
 /// 一段文本变换：输入是组合文本字节，输出是投影字节。
@@ -713,6 +797,7 @@ impl FoldSnapshot {
                             merged_range,
                             kind: FoldRowSegmentKind::Placeholder {
                                 text: placeholder.text.clone(),
+                                renderer: placeholder.renderer.clone(),
                             },
                         });
                     }
@@ -771,7 +856,9 @@ impl FoldSnapshot {
                     .ok()?;
                     text.push_str(&self.input.text_for_range(range).ok()?);
                 }
-                FoldRowSegmentKind::Placeholder { text: placeholder } => text.push_str(placeholder),
+                FoldRowSegmentKind::Placeholder {
+                    text: placeholder, ..
+                } => text.push_str(placeholder),
             }
         }
         Some(Cow::Owned(text))
@@ -807,7 +894,7 @@ impl FoldSnapshot {
                         column += text.chars().count();
                     }
                 }
-                FoldRowSegmentKind::Placeholder { text } => {
+                FoldRowSegmentKind::Placeholder { text, .. } => {
                     column += text
                         .char_indices()
                         .take_while(|(index, _)| *index < prefix)
@@ -1023,6 +1110,8 @@ impl FoldMap {
             {
                 let fold_range = resolved[fold_index].text_range();
                 let placeholder = resolved[fold_index].placeholder.clone();
+                let fold_id = resolved[fold_index].id;
+                let fold_anchor_range = resolved[fold_index].range.clone();
                 fold_index += 1;
                 let sum = new_transforms.summary();
                 assert!(
@@ -1066,8 +1155,16 @@ impl FoldMap {
                             },
                             placeholder: Some(TransformPlaceholder {
                                 text: placeholder_text,
-                                constrain_width: placeholder.constrain_width,
-                                type_tag: placeholder.type_tag,
+                                renderer: ChunkRenderer {
+                                    id: ChunkRendererId::Fold(fold_id),
+                                    render: {
+                                        let render = Arc::clone(&placeholder.render);
+                                        Arc::new(move |cx: &mut App| {
+                                            render(fold_id, fold_anchor_range.clone(), cx)
+                                        })
+                                    },
+                                    constrain_width: placeholder.constrain_width,
+                                },
                             }),
                         },
                         (),
@@ -1502,8 +1599,11 @@ pub(crate) enum FoldRowSegmentKind {
         stream_line: Line,
         projected_range: Range<usize>,
     },
-    /// 折叠占位符段（无源坐标）。
-    Placeholder { text: Arc<str> },
+    /// 折叠占位符段（无源坐标）；`renderer` 描述它在显示层如何被替换为元素。
+    Placeholder {
+        text: Arc<str>,
+        renderer: ChunkRenderer,
+    },
 }
 
 /// 逻辑文档内的有序点对范围。

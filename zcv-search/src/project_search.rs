@@ -298,14 +298,11 @@ impl ProjectSearchView {
                     // 通道关闭：后台扫描结束，装配剩余批次。
                     Err(_) => break,
                 };
-                // Project 已释放或文档注册失败时跳过该文件。
-                let Ok(source) = project.update(cx, |project, cx| {
-                    if let Some(buffer) = item.loaded_buffer {
-                        project.register_loaded_buffer(item.path, buffer, cx)
-                    } else {
-                        project.open_buffer(&item.path, cx)
-                    }
-                }) else {
+                // 权威文档始终由 Project 文件边界按路径打开并复用；
+                // Project 已释放或打开失败时跳过该文件。
+                let Ok(source) =
+                    project.update(cx, |project, cx| project.open_buffer(&item.path, cx))
+                else {
                     continue;
                 };
                 let excerpts = item
@@ -484,16 +481,6 @@ impl Item for ProjectSearchView {
         } else {
             None
         }
-    }
-
-    /// 搜索栏由 `ProjectSearchToolbar` 承担，不使用编辑器通用文档工具栏。
-    fn uses_editor_document_toolbar(&self, _cx: &App) -> bool {
-        false
-    }
-
-    /// 搜索结果由多源派生，通用按文件 git 投影不适用。
-    fn receives_git_projection(&self) -> bool {
-        false
     }
 
     fn can_save(&self, cx: &App) -> bool {

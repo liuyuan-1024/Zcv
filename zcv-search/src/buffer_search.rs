@@ -85,11 +85,12 @@ impl ToolbarItemView for DocumentToolbar {
             .map(|handle| handle.downgrade());
         self.search_bar
             .update(cx, |bar, cx| bar.set_target(target, window, cx));
-        // 编辑器通用文档工具栏只服务使用它的编辑器文档。
-        // 组合文档同样是编辑器；
-        // 差异等注册了自己工具项的 Item 会声明不使用它，避免通用文档工具栏与专用工具项重复显示。
+        // 编辑器通用文档工具栏只服务本身就是编辑器的 Item。
+        // 预览、项目搜索、差异等 Item 只通过 `act_as_type` 暴露内层编辑器，自身不是编辑器实体；
+        // 它们由各自的工具项承担工具区，避免通用文档工具栏与专用工具项重复显示。
         let is_editor_item = item.is_some_and(|item| {
-            item.act_as::<Editor>(cx).is_some() && item.uses_editor_document_toolbar(cx)
+            item.act_as::<Editor>(cx)
+                .is_some_and(|editor| editor.entity_id() == item.item_id())
         });
         if is_editor_item {
             ToolbarItemLocation::Secondary

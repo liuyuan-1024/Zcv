@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use gpui::{App, Context, Entity, Subscription};
 use sum_tree::SumTree;
-use zcv_language::LanguageBuffer;
+use zcv_language::{LanguageBuffer, LanguageBufferEvent};
 use zcv_text::{Anchor, ByteOffset, Line, Snapshot};
 
 use crate::{
@@ -80,6 +80,8 @@ pub(crate) struct DiffState {
     expansion: DiffExpansionState,
     /// BufferDiff 订阅；只作为守卫随 DiffState 生命周期创建销毁，不直接读取。
     _subscription: Subscription,
+    /// diff 基线/参照文本的订阅：它们只是 diff 输入，文本变化只触发 BufferDiff 重算，不进入组合源订阅表，因此不会形成第二个组合投影推进入口。
+    _input_subscriptions: Vec<Subscription>,
     /// 上次物化时该文件的 diff 版本；None 表示尚未物化进组合文档。
     revision: Option<u64>,
     /// 替换 base 后，新 BufferDiff 的首次后台结果返回前暂存的展开状态迁移来源。
@@ -87,11 +89,50 @@ pub(crate) struct DiffState {
 }
 
 impl DiffState {
-    fn subscribe(diff: &Entity<BufferDiff>, cx: &mut Context<MultiBuffer>) -> Subscription {
-        cx.subscribe(diff, |this, _, event, cx| {
+    fn new(
+        diff: Entity<BufferDiff>,
+        display_path: PathKey,
+        context_lines: Option<usize>,
+        cx: &mut Context<MultiBuffer>,
+    ) -> Self {
+        let input_subscriptions = Self::subscribe_inputs(&diff, cx);
+        let subscription = cx.subscribe(&diff, |this, _, event, cx| {
             let BufferDiffEvent::DiffChanged { refresh } = event;
             this.diff_changed(*refresh, cx);
-        })
+        });
+        Self {
+            diff,
+            display_path,
+            context_lines,
+            expansion: DiffExpansionState::default(),
+            _subscription: subscription,
+            _input_subscriptions: input_subscriptions,
+            revision: None,
+            pending_expansion_migration: None,
+        }
+    }
+
+    /// 订阅 diff 的基线/参照文本，文本变化只触发该 diff 重算。
+    fn subscribe_inputs(
+        diff: &Entity<BufferDiff>,
+        cx: &mut Context<MultiBuffer>,
+    ) -> Vec<Subscription> {
+        let inputs = {
+            let diff = diff.read(cx);
+            [diff.base_source().cloned(), diff.index_source().cloned()]
+        };
+        let mut seen = HashSet::new();
+        inputs
+            .into_iter()
+            .flatten()
+            .filter(|source| seen.insert(source.entity_id()))
+            .map(|source| {
+                let source_id = source.entity_id();
+                cx.subscribe(&source, move |this, _, _event: &LanguageBufferEvent, cx| {
+                    this.recompute_diff_for_source(source_id, DiffRefresh::RebuildProjection, cx);
+                })
+            })
+            .collect()
     }
 }
 
@@ -450,9 +491,7 @@ impl ExcerptMaterializer<'_> {
             lines,
             self.display_path,
             self.buffer_id,
-            shape.diff_kind,
-            shape.starts_logical_excerpt,
-            shape.allow_empty,
+            shape,
         ) else {
             return hunks;
         };
@@ -527,16 +566,12 @@ impl MultiBuffer {
         let working_id_matches = self.diffs[index].diff.read(cx).working().entity_id()
             == file.diff.read(cx).working().entity_id();
         let old_resolved = resolve_file_hunks(&self.diffs[index], cx);
-        let subscription = DiffState::subscribe(&file.diff, cx);
-        let mut next = DiffState {
-            diff: file.diff,
-            display_path: PathKey::new(file.display_path),
-            context_lines: file.context_lines,
-            expansion: DiffExpansionState::default(),
-            _subscription: subscription,
-            revision: None,
-            pending_expansion_migration: None,
-        };
+        let mut next = DiffState::new(
+            file.diff,
+            PathKey::new(file.display_path),
+            file.context_lines,
+            cx,
+        );
         if working_id_matches {
             if next.diff.read(cx).is_current_version_calculated(cx) {
                 let new_resolved = resolve_file_hunks(&next, cx);
@@ -572,17 +607,12 @@ impl MultiBuffer {
         file: DiffFile,
         cx: &mut Context<Self>,
     ) -> bool {
-        let diff = file.diff;
-        let subscription = DiffState::subscribe(&diff, cx);
-        let state = DiffState {
-            diff,
-            display_path: PathKey::new(file.display_path),
-            context_lines: file.context_lines,
-            expansion: DiffExpansionState::default(),
-            _subscription: subscription,
-            revision: None,
-            pending_expansion_migration: None,
-        };
+        let state = DiffState::new(
+            file.diff,
+            PathKey::new(file.display_path),
+            file.context_lines,
+            cx,
+        );
         self.diffs.insert(insert_at, state);
 
         let expanded_by_default = self.diff_expanded_by_default;
@@ -687,17 +717,12 @@ impl MultiBuffer {
         let mut next_files: Vec<DiffState> = inputs
             .into_iter()
             .map(|file| {
-                let diff = file.diff;
-                let subscription = DiffState::subscribe(&diff, cx);
-                DiffState {
-                    diff,
-                    display_path: PathKey::new(file.display_path),
-                    context_lines: file.context_lines,
-                    expansion: DiffExpansionState::default(),
-                    _subscription: subscription,
-                    revision: None,
-                    pending_expansion_migration: None,
-                }
+                DiffState::new(
+                    file.diff,
+                    PathKey::new(file.display_path),
+                    file.context_lines,
+                    cx,
+                )
             })
             .collect();
 
@@ -1099,17 +1124,12 @@ impl MultiBuffer {
         let next_files: Vec<DiffState> = files
             .into_iter()
             .map(|file| {
-                let diff = file.diff;
-                let subscription = DiffState::subscribe(&diff, cx);
-                DiffState {
-                    diff,
-                    display_path: PathKey::new(file.display_path),
-                    context_lines: file.context_lines,
-                    expansion: DiffExpansionState::default(),
-                    _subscription: subscription,
-                    revision: None,
-                    pending_expansion_migration: None,
-                }
+                DiffState::new(
+                    file.diff,
+                    PathKey::new(file.display_path),
+                    file.context_lines,
+                    cx,
+                )
             })
             .collect();
         self.diffs.extend(next_files);
@@ -1826,32 +1846,30 @@ fn materialize_file(
     }
 }
 
-/// 构造一个投影片段（空行策略由 allow_empty 控制：占位行允许空源范围）。
+/// 构造一个投影片段（空行策略由 shape.allow_empty 控制：占位行允许空源范围）。
 fn projected_excerpt(
     source: &Entity<LanguageBuffer>,
     text: &Snapshot,
     lines: Range<usize>,
     display_path: &Path,
     buffer_id: zcv_text::BufferId,
-    diff_kind: Option<ExcerptDiffKind>,
-    starts_logical_excerpt: bool,
-    allow_empty: bool,
+    shape: ExcerptShape,
 ) -> Option<ExcerptRange> {
-    if lines.is_empty() && !allow_empty {
+    if lines.is_empty() && !shape.allow_empty {
         return None;
     }
     let mut excerpt = ExcerptRange::line_range_from_text(source.clone(), text, lines);
     // 空源范围的普通片段没有可显示内容：跳过（deleted 文件的占位上下文等）。
     // 整文件显示（allow_empty）保留占位行，diff 片段（旧侧/新增）始终物化。
-    if excerpt.source_range().is_empty() && !allow_empty && diff_kind.is_none() {
+    if excerpt.source_range().is_empty() && !shape.allow_empty && shape.diff_kind.is_none() {
         return None;
     }
     excerpt = excerpt
         .with_display_path(display_path.to_path_buf())
         .with_buffer_id(buffer_id)
-        .with_starts_logical_excerpt(starts_logical_excerpt)
-        .with_editable(diff_kind != Some(ExcerptDiffKind::Deleted));
-    if let Some(diff_kind) = diff_kind {
+        .with_starts_logical_excerpt(shape.starts_logical_excerpt)
+        .with_editable(shape.diff_kind != Some(ExcerptDiffKind::Deleted));
+    if let Some(diff_kind) = shape.diff_kind {
         excerpt = excerpt.with_diff_kind(diff_kind);
     }
     Some(excerpt)

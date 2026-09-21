@@ -10,7 +10,8 @@ use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
 
 use super::TextRead;
 use crate::{
-    errors::{CoordinateError, EditError, TextResult},
+    errors::{CoordinateError, EditError, StorageError, TextResult},
+    transaction::EditList,
     types::{
         ByteOffset, CharOffset, Line, LineEndingStyle, LogicalColumn, Position, TextRange,
         Utf16Offset, Utf16Position,
@@ -220,6 +221,32 @@ impl RopeyStorage {
             self.rope.insert(prepared.start_char, replacement);
         }
     }
+
+    /// 把编辑列表应用到当前存储，坐标以当前文本为基准。
+    ///
+    /// 先完成全部可失败的边界预检与 byte→char 换算，再按旧文本坐标倒序执行替换，
+    /// 与事务提交路径共用同一条 prepared-replace 纪律；提交阶段因此不会出现半提交。
+    pub(crate) fn apply_edit_list(&mut self, edits: &EditList) -> TextResult<()> {
+        let mut prepared = Vec::new();
+        prepared
+            .try_reserve(edits.len())
+            .map_err(|_| StorageError::OutOfMemory)?;
+
+        for edit in edits.as_slice() {
+            prepared.push(self.prepare_replace(edit.range(), edit.replacement())?);
+        }
+
+        for (edit, prepared) in edits
+            .as_slice()
+            .iter()
+            .rev()
+            .zip(prepared.into_iter().rev())
+        {
+            self.replace_prepared(prepared, edit.replacement());
+        }
+
+        Ok(())
+    }
 }
 
 /// Ropey-backed 不可变快照。
@@ -246,6 +273,15 @@ impl RopeySnapshot {
         }
         let (chunk, chunk_start, _, _) = self.rope.chunk_at_byte(byte_offset);
         Ok((chunk, ByteOffset::new(chunk_start)))
+    }
+
+    /// 以当前快照文本创建一个可变异存储副本。
+    ///
+    /// 供后台派生与按旧版本重建文本使用；`Rope::clone()` 是低成本共享，不复制全文。
+    pub(crate) fn to_storage(&self) -> RopeyStorage {
+        RopeyStorage {
+            rope: self.rope.clone(),
+        }
     }
 }
 

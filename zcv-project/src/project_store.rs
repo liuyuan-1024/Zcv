@@ -14,7 +14,7 @@ use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 use zcv_git::{ConflictChoice, FileStatus, parse_conflict_regions, resolve_conflict};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_path::{AbsolutePathBuf, normalize_for_comparison};
-use zcv_text::{Buffer, ByteOffset, Edit, Snapshot, TextRange, TransactionMetadata};
+use zcv_text::{ByteOffset, Edit, Snapshot, TextRange, TransactionMetadata};
 
 use crate::search::SearchQuery;
 
@@ -267,7 +267,10 @@ impl Project {
         self.buffer_store.open_deleted_buffer(path, cx)
     }
 
-    /// 在后台逐文件扫描 worktree 并预加载命中文件，
+    /// 在后台逐文件扫描 worktree 并匹配文本。
+    ///
+    /// 未打开文件只经唯一文件解码入口读取只读文本视图，搜索不登记权威文档；
+    /// 权威文档由调用方按命中路径 `open_buffer` 打开并复用。
     /// 结果经流式通道产出，由 UI 线程按批装配进 MultiBuffer。
     pub fn search(&mut self, query: SearchQuery, cx: &mut Context<Self>) -> SearchResults {
         let Some(worktree) = &self.worktree else {
@@ -290,16 +293,6 @@ impl Project {
             .await;
         });
         SearchResults { task, rx }
-    }
-
-    /// 注册搜索任务在后台加载完成的 Buffer，与已打开文档共享同一缓存。
-    pub fn register_loaded_buffer(
-        &mut self,
-        path: PathBuf,
-        buffer: Buffer,
-        cx: &mut Context<Self>,
-    ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
-        self.buffer_store.register_loaded_buffer(path, buffer, cx)
     }
 
     /// 保存真实源文件的 Buffer；组合投影不会参与落盘。

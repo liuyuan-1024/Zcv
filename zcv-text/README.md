@@ -15,10 +15,23 @@ Zcv 的纯文本内核：文本存储、坐标模型、事务变异、历史系�
 
 `edits_since` 的 `TextError::VersionEvicted` 只表示带文本批次已退出编辑日志窗口，不再影响长期锚点解析。
 
+## 历史可见性与派生快照
+
+`Snapshot` 是唯一读取边界，提供 T-7 要求的版本查询：
+
+- `has_edits_since` / `has_edits_since_in_range`：判断自旧版本以来、或与指定旧区间相交的范围内是否发生过净编辑。
+- `offsets_to_version` / `range_to_version`：通过 `PositionMap` 的反向映射把当前快照坐标映射回旧版本。
+- `text_for_version`：按版本倒序应用编辑日志保留的逆编辑，重建该历史版本的文本。
+
+逆编辑只在事务进入历史时保留；目标版本退出编辑日志窗口返回 `TextError::VersionEvicted`，区间内存在放弃历史的大事务时返回 `TextError::HistoryTextUnavailable`。
+
+T-9 的基线派生入口是 `Buffer::snapshot_with_edits` 与 `Buffer::fast_forward`：前者在快照副本上应用编辑得到 `EditedBufferSnapshot`，不推进主文档；后者在主文档版本仍等于派生基线时通过正常事务路径安装（订阅、编辑日志与历史一致推进），版本已前进则返回 `TransactionError::VersionMismatch`，调用方丢弃过期结果。
+
 ## 关键类型
 
 - `Buffer`：文本内容、版本、保存点、事务管线与历史的唯一可写所有者。
 - `Snapshot`：不可变、可廉价克隆的读取边界，携带版本。
+- `EditedBufferSnapshot`：`snapshot_with_edits` 产生的派生快照，等待 `fast_forward` 版本校验后安装。
 - `Anchor`：绑定版本与吸附方向的稳定位置，不持有 Buffer。
 - `EditLog` / `CoordinateIndex`：带文本编辑事实与不衰减坐标增量，二者在同一次提交追加。
 

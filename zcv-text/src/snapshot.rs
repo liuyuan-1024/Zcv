@@ -102,6 +102,89 @@ impl Snapshot {
             .batch_since_in_range(since, self.version, range)
     }
 
+    /// 自 since 版本到本快照版本是否发生过净文本编辑。
+    ///
+    /// 与 `is_dirty` 同语义：编辑互相抵消（例如插入后撤销）判为无编辑。
+    /// `since` 已退出编辑日志窗口时返回显式错误，调用方必须丢弃而不是猜测。
+    pub fn has_edits_since(&self, since: BufferVersion) -> TextResult<bool> {
+        Ok(!self.edits_since(since)?.patch().is_empty())
+    }
+
+    /// 自 `since` 版本到本快照版本、与 `range` 相交的范围内是否发生过净文本编辑。
+    ///
+    /// `range` 使用旧版本坐标，与 `edits_since_in_range` 的过滤语义一致。
+    pub fn has_edits_since_in_range(
+        &self,
+        since: BufferVersion,
+        range: TextRange,
+    ) -> TextResult<bool> {
+        Ok(!self.edits_since_in_range(since, range)?.patch().is_empty())
+    }
+
+    /// 把本快照（新版本）的字节偏移映射回 `version`（旧版本）坐标。
+    ///
+    /// 沿 `version` → 当前版本的净编辑反向映射：落在插入文本内的坐标吸附到插入点，
+    /// 落在被替换文本内的坐标按 overshoot 收敛到旧区间。`version` 退出编辑日志窗口时显式失败。
+    pub fn offsets_to_version<I>(
+        &self,
+        offsets: I,
+        version: BufferVersion,
+    ) -> TextResult<Vec<ByteOffset>>
+    where
+        I: IntoIterator<Item = ByteOffset>,
+    {
+        let batch = self.edits_since(version)?;
+        let map = PositionMap::from_text_patch(batch.patch());
+        Ok(offsets
+            .into_iter()
+            .map(|offset| map.map_new_position(offset).value())
+            .collect())
+    }
+
+    /// 把本快照（新版本）的文本区间映射回 `version`（旧版本）区间。
+    ///
+    /// 与 `offsets_to_version` 共用同一反向映射；映射保持单调，起点不会越过终点。
+    pub fn range_to_version(
+        &self,
+        range: TextRange,
+        version: BufferVersion,
+    ) -> TextResult<TextRange> {
+        let batch = self.edits_since(version)?;
+        let map = PositionMap::from_text_patch(batch.patch());
+        let start = map.map_new_position(range.start()).value();
+        let end = map.map_new_position(range.end()).value();
+        TextRange::new(start, end).map_err(Into::into)
+    }
+
+    /// 按 `version` 重建当时的历史文本。
+    ///
+    /// 重建沿版本链回退：从当前文本出发，按版本倒序应用编辑日志保留的逆编辑。
+    /// 目标版本晚于本快照返回 `AnchorError::TargetBeforeSource`；
+    /// 目标版本已退出编辑日志窗口返回 `TextError::VersionEvicted`；
+    /// 区间内存在未保留逆编辑的事务（放弃历史的大事务）返回 `TextError::HistoryTextUnavailable`。
+    pub fn text_for_version(&self, version: BufferVersion) -> TextResult<String> {
+        if version > self.version {
+            return Err(AnchorError::TargetBeforeSource {
+                anchor: version,
+                target: self.version,
+            }
+            .into());
+        }
+
+        if version == self.version {
+            return self
+                .storage
+                .slice_to_string(full_text_range(self.storage.len_bytes()));
+        }
+
+        let batches = self.edit_log.reverse_batches(version, self.version)?;
+        let mut storage = self.storage.to_storage();
+        for batch in batches {
+            storage.apply_edit_list(&batch)?;
+        }
+        storage.slice_to_string(full_text_range(storage.len_bytes()))
+    }
+
     /// 在 `offset` 处创建吸附到插入文本之前的锚点。
     pub fn anchor_before(&self, offset: ByteOffset) -> Anchor {
         Anchor::new(self.version, offset).with_affinity(Affinity::Before)
@@ -294,6 +377,11 @@ impl TextRead for Snapshot {
     fn line_ending_style(&self) -> crate::LineEndingStyle {
         self.storage.line_ending_style()
     }
+}
+
+/// 覆盖整段文本的 byte 范围；由调用方给出文本长度。
+fn full_text_range(len: ByteOffset) -> TextRange {
+    TextRange::new(ByteOffset::ZERO, len).expect("全文范围必须满足 start <= end")
 }
 
 #[cfg(test)]

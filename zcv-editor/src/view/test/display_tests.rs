@@ -32,6 +32,42 @@ fn resolved_hunks(
         .collect()
 }
 
+/// D-E：行宽缓存必须按显示版本失效；tab 宽度变化不推进文本版本，却改变实际行宽。
+#[gpui::test]
+fn longest_line_width_cache_invalidates_when_only_the_display_changes(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "\tX\n");
+    let (editor, cx) = cx.add_window_view(move |_, cx| Editor::for_language_buffer(buffer, cx));
+
+    let measure = |cx: &mut gpui::VisualTestContext| {
+        let row = cx.read_entity(&editor, |editor, cx| {
+            editor.display_map.read(cx).longest_unwrapped_row()
+        });
+        cx.update(|window, cx| {
+            let text_style = window.text_style();
+            let font = text_style.font();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            editor.update(cx, |editor, cx| {
+                editor.longest_line_width(row, font, font_size, window, cx)
+            })
+        })
+    };
+
+    let before = measure(cx);
+    editor.update(cx, |editor, cx| {
+        editor.display_map.update(cx, |map, cx| {
+            map.set_tab_width(
+                std::num::NonZeroUsize::new(8).expect("tab 宽度必须大于 0"),
+                cx,
+            )
+        });
+    });
+    let after = measure(cx);
+    assert_ne!(
+        before, after,
+        "仅显示版本变化（tab 宽度）也必须让行宽缓存失效"
+    );
+}
+
 /// 构造 context_lines=2 的裁剪投影项，供组合文档裁剪测试复用。
 fn clipped_diff_file(
     working: Entity<LanguageBuffer>,

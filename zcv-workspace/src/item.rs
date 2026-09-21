@@ -1,6 +1,8 @@
 //! Item 协议：工作区标签页中文档视图的集成能力。
 //!
 //! 定义标签页与 Pane/Workspace 的稳定交互，不依赖具体 Editor、具体预览格式或 Pane 内部实现。
+//! Item 只通过 `show_toolbar` 与面包屑数据参与工具区；
+//! 工具项显隐与 git 投影由装配层按活动 Item 的类型与能力决定，不作为 Item 的能力标志。
 //! 预览视图等可选能力通过 [`Item::as_preview_item`] 桥接获取，不占用 Item 主接口。
 
 use std::any::TypeId;
@@ -45,22 +47,6 @@ pub trait Item: Focusable + EventEmitter<Self::Event> + Render + Sized + 'static
 
     /// 当前 Item 是否允许 Pane 显示工具区；工具项内容由装配层注册，不经过 Item。
     fn show_toolbar(&self) -> bool {
-        true
-    }
-
-    /// 是否使用编辑器通用文档工具栏（面包屑、预览入口与缓冲区搜索）。
-    ///
-    /// 组合文档同样是编辑器；
-    /// 某个文档形态若注册了自己的工具项来承担工具栏与搜索，应覆盖为 `false`，避免通用文档工具栏与它的专用工具项重复显示。
-    fn uses_editor_document_toolbar(&self, _cx: &App) -> bool {
-        true
-    }
-
-    /// 是否接收通用的按文件 git 投影（diff hunk 与冲突标记）。
-    ///
-    /// 普通文件编辑器接收；
-    /// 自带差异投影或由多源派生的组合文档由各自机制承担，覆盖为 `false`，避免通用投影与专用投影重复注入。
-    fn receives_git_projection(&self) -> bool {
         true
     }
 
@@ -174,8 +160,6 @@ pub trait ItemHandle: Send + 'static {
     fn tab_content_text(&self, cx: &App) -> SharedString;
     fn tab_icon(&self, cx: &App) -> Option<SharedString>;
     fn show_toolbar(&self, cx: &App) -> bool;
-    fn uses_editor_document_toolbar(&self, cx: &App) -> bool;
-    fn receives_git_projection(&self, cx: &App) -> bool;
     fn is_dirty(&self, cx: &App) -> bool;
     fn item_path(&self, cx: &App) -> Option<PathBuf>;
     fn serialized_pane_item(&self, cx: &App) -> Option<SerializedPaneItem>;
@@ -242,14 +226,6 @@ impl<T: Item> ItemHandle for Entity<T> {
 
     fn show_toolbar(&self, cx: &App) -> bool {
         self.read(cx).show_toolbar()
-    }
-
-    fn uses_editor_document_toolbar(&self, cx: &App) -> bool {
-        self.read(cx).uses_editor_document_toolbar(cx)
-    }
-
-    fn receives_git_projection(&self, cx: &App) -> bool {
-        self.read(cx).receives_git_projection()
     }
 
     fn is_dirty(&self, cx: &App) -> bool {

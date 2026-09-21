@@ -43,20 +43,21 @@ pub(crate) struct StickyBufferHeader {
     pub(crate) next_buffer_header_row: Option<DisplayRow>,
 }
 
-#[derive(Clone, Debug)]
+/// 块投影中的一个虚拟块。
+///
+/// 显示行由所在变换在输出行空间的位置决定，片段来源由 `excerpt_index` 指向 `BlockSnapshot.excerpts`；
+/// 这里只保存不随片段视图刷新的身份信息，使未受影响的变换子树可以跨快照复用。
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct BlockPlacement {
-    display_row: usize,
     height: usize,
-    block: DisplayBlock,
-    /// 该块来自的片段下标；换行布局未变时据此刷新 `block.excerpt`。
+    kind: DisplayBlockKind,
     excerpt_index: usize,
-    next_buffer_header_row: Option<usize>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum TransformKind {
     Text,
-    Block(usize),
+    Block(Arc<BlockPlacement>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -124,7 +125,7 @@ type InputToOutput = Dimensions<InputRows, OutputRows>;
 type OutputToInput = Dimensions<OutputRows, InputRows>;
 
 /// 块的换行行锚点；与 [`BlockPlacement`] 分离，使换行重排只需平移锚点而无需重算片段分组。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct BlockSpec {
     wrap_row: usize,
     excerpt_index: usize,
@@ -138,7 +139,6 @@ struct BlockSpec {
 pub(super) struct BlockSnapshot {
     wrap_snapshot: WrapSnapshot,
     transforms: SumTree<Transform>,
-    placements: Vec<BlockPlacement>,
     excerpts: Arc<[ExcerptSnapshot]>,
     /// MultiBuffer 提供的逻辑 excerpt 边界签名。
     ///
@@ -146,6 +146,8 @@ pub(super) struct BlockSnapshot {
     excerpt_boundaries: Arc<[(usize, BufferId, bool)]>,
     /// 构建时的整文件折叠集合；变化会使块布局失效。
     folded_buffers: HashSet<BufferId>,
+    /// 构建时的显示策略；变化会改变 header/divider 分类，必须参与失效判断。
+    show_headers: bool,
     /// 块锚点（wrap 行）；换行编辑时按区间平移并重排。
     specs: Arc<[BlockSpec]>,
 }
@@ -282,16 +284,22 @@ impl<'a> BlockRows<'a> {
         }
         let transform = self.block_cursor.item()?;
         let transform_start = *self.block_cursor.start();
-        match transform.kind {
-            TransformKind::Block(placement_index) => {
-                let placement = &self.snapshot.placements[placement_index];
-                self.row = (placement.display_row + placement.height).min(self.end);
+        match &transform.kind {
+            TransformKind::Block(placement) => {
+                let height = placement.height;
+                let kind = placement.kind;
+                let excerpt_index = placement.excerpt_index;
+                let display_row = transform_start.0.0;
+                self.row = (display_row + height).min(self.end);
                 self.block_cursor.next();
                 self.seek_wrap_to_current_transform();
                 Some(BlockRow {
-                    index: DisplayRow::new(placement.display_row),
-                    height: placement.height,
-                    kind: BlockRowKind::Block(placement.block.clone()),
+                    index: DisplayRow::new(display_row),
+                    height,
+                    kind: BlockRowKind::Block(DisplayBlock {
+                        kind,
+                        excerpt: self.snapshot.excerpts[excerpt_index].clone(),
+                    }),
                     excerpt: None,
                 })
             }
@@ -414,22 +422,164 @@ fn spec_hidden_end(specs: &[BlockSpec], index: usize, wrap_line_count: usize) ->
     }
 }
 
-/// 既有块布局中可直接复用的前缀：变换子树、块位置及续排起点。
+/// 既有块布局中可直接复用的前缀：变换子树及续排起点。
 struct BlockLayoutPrefix {
     transforms: SumTree<Transform>,
-    placements: Vec<BlockPlacement>,
     wrap_row: usize,
-    display_row: usize,
 }
 
 impl BlockLayoutPrefix {
     fn empty() -> Self {
         Self {
             transforms: SumTree::new(()),
-            placements: Vec::new(),
             wrap_row: 0,
-            display_row: 0,
         }
+    }
+}
+
+/// 构建块投影所需的输入事实；每次同步由当前换行快照与策略产生。
+struct BlockProjectionInputs {
+    wrap_snapshot: WrapSnapshot,
+    excerpts: Arc<[ExcerptSnapshot]>,
+    excerpt_boundaries: Arc<[(usize, BufferId, bool)]>,
+    folded_buffers: HashSet<BufferId>,
+    show_headers: bool,
+}
+
+/// 从片段边界与折叠策略推导块锚点表；输入或策略变化时整体重算。
+fn compute_specs(
+    wrap_snapshot: &WrapSnapshot,
+    excerpts: &[ExcerptSnapshot],
+    excerpt_boundaries: &[(usize, BufferId, bool)],
+    folded_buffers: &HashSet<BufferId>,
+    show_headers: bool,
+) -> Vec<BlockSpec> {
+    let excerpt_starts = excerpt_boundaries
+        .iter()
+        .enumerate()
+        .filter_map(|(boundary_index, (excerpt_index, _, _))| {
+            wrap_snapshot
+                .offset_to_wrap_point(excerpts[*excerpt_index].output_range().start())
+                .ok()
+                .map(|point| (point.row().get(), boundary_index))
+        })
+        .collect::<Vec<_>>();
+    let mut specs = Vec::new();
+    let mut group_start = 0usize;
+    while group_start < excerpt_starts.len() {
+        let (_, buffer_id, _) = excerpt_boundaries[excerpt_starts[group_start].1];
+        // 逻辑边界只有在 `starts_new_buffer` 处才开启新组；同组的后续边界是同一文件的后续窗口。
+        let mut group_end = group_start + 1;
+        while group_end < excerpt_starts.len() && !excerpt_boundaries[excerpt_starts[group_end].1].2
+        {
+            group_end += 1;
+        }
+        // 相邻逻辑 excerpt 共享 Buffer 身份时只是同一文件的后续窗口，不进入新 Buffer 边界。
+        // 整文件折叠只在显示策略允许 header 时折叠为一整块；否则按普通 divider 序列绘制。
+        if folded_buffers.contains(&buffer_id) && show_headers {
+            let (wrap_row, boundary_index) = excerpt_starts[group_start];
+            specs.push(BlockSpec {
+                wrap_row,
+                excerpt_index: excerpt_boundaries[boundary_index].0,
+                height: FILE_HEADER_HEIGHT,
+                kind: DisplayBlockKind::BufferHeader,
+                folded_group: true,
+            });
+        } else {
+            let is_document_start = group_start == 0;
+            for (index, (wrap_row, boundary_index)) in
+                excerpt_starts[group_start..group_end].iter().enumerate()
+            {
+                let Some(kind) = entry_block_kind(show_headers, is_document_start, index) else {
+                    continue;
+                };
+                specs.push(BlockSpec {
+                    wrap_row: *wrap_row,
+                    excerpt_index: excerpt_boundaries[*boundary_index].0,
+                    height: match kind {
+                        DisplayBlockKind::BufferHeader => FILE_HEADER_HEIGHT,
+                        DisplayBlockKind::ExcerptBoundary => EXCERPT_BOUNDARY_HEIGHT,
+                    },
+                    kind,
+                    folded_group: false,
+                });
+            }
+        }
+        group_start = group_end;
+    }
+    specs.sort_by_key(|spec| spec.wrap_row);
+    specs
+}
+
+/// 比较新旧块锚点表，返回首个变化的下标与尾部可复用的块数量。
+///
+/// 已折叠块吞掉的行区间由后续锚点推出，因此几何比较必须同时覆盖 `hidden_end`。
+fn changed_spec_range(
+    old: &[BlockSpec],
+    new: &[BlockSpec],
+    old_wrap_line_count: usize,
+    new_wrap_line_count: usize,
+) -> (usize, usize) {
+    let mut first = 0;
+    while first < old.len().min(new.len())
+        && specs_equivalent(
+            old,
+            first,
+            old_wrap_line_count,
+            new,
+            first,
+            new_wrap_line_count,
+        )
+    {
+        first += 1;
+    }
+    let mut suffix = 0;
+    while suffix + first < old.len().min(new.len()) {
+        let old_index = old.len() - 1 - suffix;
+        let new_index = new.len() - 1 - suffix;
+        if specs_equivalent(
+            old,
+            old_index,
+            old_wrap_line_count,
+            new,
+            new_index,
+            new_wrap_line_count,
+        ) {
+            suffix += 1;
+        } else {
+            break;
+        }
+    }
+    (first, suffix)
+}
+
+fn specs_equivalent(
+    old: &[BlockSpec],
+    old_index: usize,
+    old_wrap_line_count: usize,
+    new: &[BlockSpec],
+    new_index: usize,
+    new_wrap_line_count: usize,
+) -> bool {
+    old[old_index].wrap_row == new[new_index].wrap_row
+        && old[old_index].excerpt_index == new[new_index].excerpt_index
+        && old[old_index].height == new[new_index].height
+        && old[old_index].kind == new[new_index].kind
+        && old[old_index].folded_group == new[new_index].folded_group
+        && spec_hidden_end(old, old_index, old_wrap_line_count)
+            == spec_hidden_end(new, new_index, new_wrap_line_count)
+}
+
+fn push_text_rows(transforms: &mut SumTree<Transform>, rows: usize) {
+    if rows > 0 {
+        transforms.push(
+            Transform {
+                kind: TransformKind::Text,
+                input_rows: rows,
+                output_rows: rows,
+            },
+            (),
+        );
     }
 }
 
@@ -449,163 +599,107 @@ impl BlockSnapshot {
     ) -> Self {
         let show_headers = wrap_snapshot.buffer_snapshot().show_headers();
         let excerpt_boundaries = excerpt_boundaries(&wrap_snapshot);
-        let excerpt_starts = excerpt_boundaries
-            .iter()
-            .enumerate()
-            .filter_map(|(boundary_index, (excerpt_index, _, _))| {
-                wrap_snapshot
-                    .offset_to_wrap_point(excerpts[*excerpt_index].output_range().start())
-                    .ok()
-                    .map(|point| (point.row().get(), boundary_index))
-            })
-            .collect::<Vec<_>>();
-        let mut specs = Vec::new();
-        let mut group_start = 0usize;
-        while group_start < excerpt_starts.len() {
-            let (_, buffer_id, _) = excerpt_boundaries[excerpt_starts[group_start].1];
-            // 逻辑边界只有在 `starts_new_buffer` 处才开启新组；同组的后续边界是同一文件的后续窗口。
-            let mut group_end = group_start + 1;
-            while group_end < excerpt_starts.len()
-                && !excerpt_boundaries[excerpt_starts[group_end].1].2
-            {
-                group_end += 1;
-            }
-            // 相邻逻辑 excerpt 共享 Buffer 身份时只是同一文件的后续窗口，不进入新 Buffer 边界。
-            // 整文件折叠只在显示策略允许 header 时折叠为一整块；否则按普通 divider 序列绘制。
-            if folded_buffers.contains(&buffer_id) && show_headers {
-                let (wrap_row, boundary_index) = excerpt_starts[group_start];
-                specs.push(BlockSpec {
-                    wrap_row,
-                    excerpt_index: excerpt_boundaries[boundary_index].0,
-                    height: FILE_HEADER_HEIGHT,
-                    kind: DisplayBlockKind::BufferHeader,
-                    folded_group: true,
-                });
-            } else {
-                let is_document_start = group_start == 0;
-                for (index, (wrap_row, boundary_index)) in
-                    excerpt_starts[group_start..group_end].iter().enumerate()
-                {
-                    let kind = entry_block_kind(show_headers, is_document_start, index);
-                    let Some(kind) = kind else {
-                        continue;
-                    };
-                    specs.push(BlockSpec {
-                        wrap_row: *wrap_row,
-                        excerpt_index: excerpt_boundaries[*boundary_index].0,
-                        height: match kind {
-                            DisplayBlockKind::BufferHeader => FILE_HEADER_HEIGHT,
-                            DisplayBlockKind::ExcerptBoundary => EXCERPT_BOUNDARY_HEIGHT,
-                        },
-                        kind,
-                        folded_group: false,
-                    });
-                }
-            }
-            group_start = group_end;
-        }
-
-        specs.sort_by_key(|spec| spec.wrap_row);
-        Self::place_from(
+        let specs: Arc<[BlockSpec]> = compute_specs(
+            &wrap_snapshot,
+            &excerpts,
+            &excerpt_boundaries,
+            folded_buffers,
+            show_headers,
+        )
+        .into();
+        let spec_count = specs.len();
+        Self::rebuild(
             BlockLayoutPrefix::empty(),
-            specs.into(),
+            specs,
             0,
-            wrap_snapshot,
-            excerpts,
-            excerpt_boundaries,
-            folded_buffers.clone(),
+            spec_count,
+            None,
+            BlockProjectionInputs {
+                wrap_snapshot,
+                excerpts,
+                excerpt_boundaries,
+                folded_buffers: folded_buffers.clone(),
+                show_headers,
+            },
         )
     }
 
-    /// 由块锚点表构建 placements 与 WrapRow→BlockRow 变换树。
+    /// 由块锚点表构建 WrapRow→BlockRow 变换树。
     ///
-    /// `spec_start` 之前的前缀由 `prefix` 提供，函数从其后继续排布；放置下标随后缀继续增长。
-    fn place_from(
+    /// `prefix` 提供 `spec_start` 之前可直接复用的变换；`spec_end` 之后若提供 `suffix`，
+    /// 直接追加既有变换子树（仅在输入空间未变时合法）。函数只重建变化区间，不整体重建。
+    fn rebuild(
         mut prefix: BlockLayoutPrefix,
         specs: Arc<[BlockSpec]>,
         spec_start: usize,
-        wrap_snapshot: WrapSnapshot,
-        excerpts: Arc<[ExcerptSnapshot]>,
-        excerpt_boundaries: Arc<[(usize, BufferId, bool)]>,
-        folded_buffers: HashSet<BufferId>,
+        spec_end: usize,
+        suffix: Option<SumTree<Transform>>,
+        inputs: BlockProjectionInputs,
     ) -> Self {
+        let BlockProjectionInputs {
+            wrap_snapshot,
+            excerpts,
+            excerpt_boundaries,
+            folded_buffers,
+            show_headers,
+        } = inputs;
         let wrap_line_count = wrap_snapshot.line_count();
         let mut wrap_row = prefix.wrap_row;
-        let mut display_row = prefix.display_row;
-        for index in spec_start..specs.len() {
+        for index in spec_start..spec_end {
             let spec = &specs[index];
             let spec_wrap_row = spec.wrap_row.min(wrap_line_count);
             if wrap_row < spec_wrap_row {
-                let row_count = spec_wrap_row - wrap_row;
-                prefix.transforms.push(
-                    Transform {
-                        kind: TransformKind::Text,
-                        input_rows: row_count,
-                        output_rows: row_count,
-                    },
-                    (),
-                );
+                push_text_rows(&mut prefix.transforms, spec_wrap_row - wrap_row);
                 wrap_row = spec_wrap_row;
-                display_row += row_count;
             }
-            let placement_index = prefix.placements.len();
-            prefix.placements.push(BlockPlacement {
-                display_row,
-                height: spec.height,
-                block: DisplayBlock {
-                    kind: spec.kind,
-                    excerpt: excerpts[spec.excerpt_index].clone(),
-                },
-                excerpt_index: spec.excerpt_index,
-                next_buffer_header_row: None,
-            });
             let hidden_end = spec_hidden_end(specs.as_ref(), index, wrap_line_count);
             prefix.transforms.push(
                 Transform {
-                    kind: TransformKind::Block(placement_index),
+                    kind: TransformKind::Block(Arc::new(BlockPlacement {
+                        height: spec.height,
+                        kind: spec.kind,
+                        excerpt_index: spec.excerpt_index,
+                    })),
                     input_rows: hidden_end.saturating_sub(wrap_row),
                     output_rows: spec.height,
                 },
                 (),
             );
             wrap_row = hidden_end;
-            display_row += spec.height;
         }
-        if wrap_row < wrap_line_count {
-            let row_count = wrap_line_count - wrap_row;
-            prefix.transforms.push(
-                Transform {
-                    kind: TransformKind::Text,
-                    input_rows: row_count,
-                    output_rows: row_count,
-                },
-                (),
-            );
+        let target_wrap_row = if suffix.is_some() {
+            specs
+                .get(spec_end)
+                .map_or(wrap_line_count, |spec| spec.wrap_row.min(wrap_line_count))
+        } else {
+            wrap_line_count
+        };
+        if wrap_row < target_wrap_row {
+            push_text_rows(&mut prefix.transforms, target_wrap_row - wrap_row);
         }
-
-        let mut next_buffer_header_row = None;
-        for placement in prefix.placements.iter_mut().rev() {
-            placement.next_buffer_header_row = next_buffer_header_row;
-            if placement.block.kind == DisplayBlockKind::BufferHeader {
-                next_buffer_header_row = Some(placement.display_row);
-            }
+        if let Some(suffix) = suffix {
+            prefix.transforms.append(suffix, ());
         }
-
+        debug_assert_eq!(
+            prefix.transforms.summary().input_rows,
+            wrap_line_count,
+            "块投影变换的输入行必须精确覆盖换行投影"
+        );
         Self {
             wrap_snapshot,
             transforms: prefix.transforms,
-            placements: prefix.placements,
             excerpts,
             excerpt_boundaries,
             folded_buffers,
+            show_headers,
             specs,
         }
     }
 
     /// 消费换行编辑流，返回推进后的块投影。
     ///
-    /// 与 Zed `BlockMap::sync` 一致，读取路径总是同步：换行布局未变时复用变换与块位置，
-    /// 只有确实改变几何的分支才整体重建。
+    /// 与 Zed `BlockMap::sync` 一致，读取路径总是同步推进：无结构变化且无换行编辑时复用整棵变换树；
+    /// 换行编辑或折叠策略变化时只重建变化区间，未受影响的变换子树按 Arc 复用，不整体重建。
     pub(super) fn sync(
         &self,
         wrap_snapshot: WrapSnapshot,
@@ -613,82 +707,159 @@ impl BlockSnapshot {
         folded_buffers: &HashSet<BufferId>,
         wrap_edits: &[WrapEdit],
     ) -> BlockSnapshot {
+        let show_headers = wrap_snapshot.buffer_snapshot().show_headers();
         let excerpt_boundaries = excerpt_boundaries(&wrap_snapshot);
+        let old_wrap_line_count = self.wrap_snapshot.line_count();
+        let new_wrap_line_count = wrap_snapshot.line_count();
+        let structural = &self.folded_buffers != folded_buffers
+            || excerpt_boundaries != self.excerpt_boundaries
+            || show_headers != self.show_headers;
+        let inputs = BlockProjectionInputs {
+            wrap_snapshot,
+            excerpts,
+            excerpt_boundaries,
+            folded_buffers: folded_buffers.clone(),
+            show_headers,
+        };
 
-        // 折叠集合或逻辑 excerpt 边界变化会改变块列表本身，几何增量不再适用。
-        // 这里必须比较边界所属路径：同一片段下标从文件 B 变为文件 A 时，header 必须同步重分类为 A 的 excerpt divider，不能复用 B 的旧 header。
-        if &self.folded_buffers != folded_buffers || excerpt_boundaries != self.excerpt_boundaries {
-            return Self::new(wrap_snapshot, excerpts, folded_buffers);
-        }
-
-        // 换行布局未变：复用变换与块位置，只刷新片段视图。
-        if wrap_edits.is_empty() {
-            let mut placements = self.placements.clone();
-            for placement in &mut placements {
-                placement.block.excerpt = excerpts[placement.excerpt_index].clone();
+        if !structural {
+            if wrap_edits.is_empty() {
+                return self.reuse_transforms(inputs);
             }
-            return Self {
-                wrap_snapshot,
-                transforms: self.transforms.clone(),
-                placements,
-                excerpts,
-                excerpt_boundaries,
-                folded_buffers: folded_buffers.clone(),
-                specs: self.specs.clone(),
-            };
+            let specs = self.relocate_specs(&inputs, wrap_edits);
+            return self.rebuild_after_edits(
+                inputs,
+                specs,
+                old_wrap_line_count,
+                new_wrap_line_count,
+            );
         }
 
-        // 换行布局变化：按编辑平移块锚点，落入编辑区间的锚点按新换行快照重算。
+        // 结构变化（折叠集合、显示策略或 excerpt 拓扑）需要重算块分类。
+        let specs: Arc<[BlockSpec]> = compute_specs(
+            &inputs.wrap_snapshot,
+            &inputs.excerpts,
+            &inputs.excerpt_boundaries,
+            &inputs.folded_buffers,
+            inputs.show_headers,
+        )
+        .into();
+
+        if wrap_edits.is_empty() && inputs.excerpt_boundaries == self.excerpt_boundaries {
+            // 输入空间未变：可同时复用变化区间前后的变换子树。
+            let (first, suffix_len) = changed_spec_range(
+                &self.specs,
+                &specs,
+                old_wrap_line_count,
+                new_wrap_line_count,
+            );
+            let new_end = specs.len().saturating_sub(suffix_len);
+            if first >= new_end {
+                return self.reuse_transforms(inputs);
+            }
+            let prefix = self.prefix_before(first, old_wrap_line_count);
+            // 后缀位于旧变换树中，必须用旧规格下标定位；新旧块数量可不同（折叠会合并块）。
+            let old_suffix_index = self.specs.len().saturating_sub(suffix_len);
+            let suffix = (new_end < specs.len())
+                .then(|| self.suffix_from(old_suffix_index, old_wrap_line_count));
+            return Self::rebuild(prefix, specs, first, new_end, suffix, inputs);
+        }
+
+        // excerpt 拓扑变化会平移锚点，只能复用首个变化块之前的前缀。
+        let (first, _) = changed_spec_range(
+            &self.specs,
+            &specs,
+            old_wrap_line_count,
+            new_wrap_line_count,
+        );
+        let prefix = self.prefix_before(first, old_wrap_line_count);
+        if first < specs.len() && specs[first].wrap_row < prefix.wrap_row {
+            let spec_count = specs.len();
+            return Self::rebuild(
+                BlockLayoutPrefix::empty(),
+                specs,
+                0,
+                spec_count,
+                None,
+                inputs,
+            );
+        }
+        let spec_count = specs.len();
+        Self::rebuild(prefix, specs, first, spec_count, None, inputs)
+    }
+
+    /// 复用整棵变换树，只替换片段视图与策略事实。
+    fn reuse_transforms(&self, inputs: BlockProjectionInputs) -> BlockSnapshot {
+        BlockSnapshot {
+            wrap_snapshot: inputs.wrap_snapshot,
+            transforms: self.transforms.clone(),
+            excerpts: inputs.excerpts,
+            excerpt_boundaries: inputs.excerpt_boundaries,
+            folded_buffers: inputs.folded_buffers,
+            show_headers: inputs.show_headers,
+            specs: self.specs.clone(),
+        }
+    }
+
+    fn relocate_specs(
+        &self,
+        inputs: &BlockProjectionInputs,
+        wrap_edits: &[WrapEdit],
+    ) -> Arc<[BlockSpec]> {
         let mut specs = self.specs.to_vec();
         for spec in &mut specs {
             spec.wrap_row = relocated_wrap_row(
                 spec.wrap_row,
                 spec.excerpt_index,
                 wrap_edits,
-                &wrap_snapshot,
-                &excerpts,
+                &inputs.wrap_snapshot,
+                &inputs.excerpts,
             );
         }
-
-        let old_wrap_line_count = self.wrap_snapshot.line_count();
-        let new_wrap_line_count = wrap_snapshot.line_count();
-        // 找到第一个几何发生变化的块：锚点或它吞掉的换行区间任一改变都算。
-        // 此前的块在旧、新布局中完全一致，可以直接复用其变换子树。
-        let first_changed = (0..specs.len())
-            .find(|&index| {
-                self.specs[index].wrap_row != specs[index].wrap_row
-                    || spec_hidden_end(self.specs.as_ref(), index, old_wrap_line_count)
-                        != spec_hidden_end(specs.as_slice(), index, new_wrap_line_count)
-            })
-            .unwrap_or(specs.len());
-        let mut prefix = self.prefix_before(first_changed, old_wrap_line_count);
-        for placement in &mut prefix.placements {
-            placement.block.excerpt = excerpts[placement.excerpt_index].clone();
-        }
-        // 后缀锚点上移会越过复用前缀的终点，前缀几何不再有效，整体重建。
-        if first_changed < specs.len() && specs[first_changed].wrap_row < prefix.wrap_row {
-            return Self::new(wrap_snapshot, excerpts, folded_buffers);
-        }
-
-        Self::place_from(
-            prefix,
-            specs.into(),
-            first_changed,
-            wrap_snapshot,
-            excerpts,
-            excerpt_boundaries,
-            folded_buffers.clone(),
-        )
+        specs.into()
     }
 
-    /// 复用前 `first_changed` 个块之前的变换与放置。
-    ///
-    /// 每个变换的 `output_rows` 都大于零，因此按输出行切片没有零宽边界歧义；
-    /// 用 `Bias::Right` 纳入正好结束于分界处的变换。
-    fn prefix_before(&self, first_changed: usize, wrap_line_count: usize) -> BlockLayoutPrefix {
+    fn rebuild_after_edits(
+        &self,
+        inputs: BlockProjectionInputs,
+        specs: Arc<[BlockSpec]>,
+        old_wrap_line_count: usize,
+        new_wrap_line_count: usize,
+    ) -> BlockSnapshot {
+        let first_changed = (0..specs.len())
+            .find(|&index| {
+                !specs_equivalent(
+                    &self.specs,
+                    index,
+                    old_wrap_line_count,
+                    &specs,
+                    index,
+                    new_wrap_line_count,
+                )
+            })
+            .unwrap_or(specs.len());
+        let prefix = self.prefix_before(first_changed, old_wrap_line_count);
+        // 后缀锚点上移会越过复用前缀的终点，前缀几何不再有效；从投影起点重建。
+        if first_changed < specs.len() && specs[first_changed].wrap_row < prefix.wrap_row {
+            let spec_count = specs.len();
+            return Self::rebuild(
+                BlockLayoutPrefix::empty(),
+                specs,
+                0,
+                spec_count,
+                None,
+                inputs,
+            );
+        }
+        let spec_count = specs.len();
+        Self::rebuild(prefix, specs, first_changed, spec_count, None, inputs)
+    }
+
+    /// 旧布局中前 `spec_count` 个块结束后的续排位置：换行行与显示行。
+    fn layout_before(&self, spec_count: usize, wrap_line_count: usize) -> (usize, usize) {
         let mut wrap_row = 0usize;
         let mut display_row = 0usize;
-        for index in 0..first_changed {
+        for index in 0..spec_count {
             let spec = &self.specs[index];
             if wrap_row < spec.wrap_row {
                 display_row += spec.wrap_row - wrap_row;
@@ -696,12 +867,32 @@ impl BlockSnapshot {
             display_row += spec.height;
             wrap_row = spec_hidden_end(self.specs.as_ref(), index, wrap_line_count);
         }
+        (wrap_row, display_row)
+    }
+
+    /// 从旧变换树中截取 `spec_index` 号块起的后缀子树。
+    ///
+    /// 仅在输入空间未变化时合法：该位置在旧、新布局中对应同一变换边界。
+    /// 块变换的输入行可为零（header/divider 不消耗文本行），因此边界取
+    /// 「前一块末端 + 到该锚点的间隙文本」，而不是换行行本身。
+    fn suffix_from(&self, spec_index: usize, wrap_line_count: usize) -> SumTree<Transform> {
+        let (wrap_row, display_row) = self.layout_before(spec_index, wrap_line_count);
+        let gap = self.specs[spec_index].wrap_row.saturating_sub(wrap_row);
+        let mut cursor = self.transforms.cursor::<OutputToInput>(());
+        cursor.slice(&OutputRows(display_row + gap), Bias::Right);
+        cursor.suffix()
+    }
+
+    /// 复用前 `first_changed` 个块之前的变换。
+    ///
+    /// 每个变换的 `output_rows` 都大于零，因此按输出行切片没有零宽边界歧义；
+    /// 用 `Bias::Right` 纳入正好结束于分界处的变换。
+    fn prefix_before(&self, first_changed: usize, wrap_line_count: usize) -> BlockLayoutPrefix {
+        let (wrap_row, display_row) = self.layout_before(first_changed, wrap_line_count);
         let mut cursor = self.transforms.cursor::<OutputToInput>(());
         BlockLayoutPrefix {
             transforms: cursor.slice(&OutputRows(display_row), Bias::Right),
-            placements: self.placements[..first_changed].to_vec(),
             wrap_row,
-            display_row,
         }
     }
 
@@ -713,29 +904,51 @@ impl BlockSnapshot {
     ///
     /// 同一文件的后续 excerpt 只有分隔块，但它同样会更新标题所代表的 excerpt，使“打开文件”等操作仍以当前可见片段为目标。
     pub(super) fn sticky_buffer_header(&self, top_row: DisplayRow) -> Option<StickyBufferHeader> {
-        let index = self
-            .placements
-            .partition_point(|placement| placement.display_row <= top_row.get())
-            .checked_sub(1)?;
-        let placement = &self.placements[index];
+        let mut cursor = self.transforms.cursor::<OutputToInput>(());
+        cursor.seek(&OutputRows(0), Bias::Left);
+        let mut current: Option<(usize, usize)> = None;
+        let mut next_buffer_header_row: Option<usize> = None;
+        while let Some(transform) = cursor.item() {
+            let display_row = cursor.start().0.0;
+            let block = match &transform.kind {
+                TransformKind::Block(placement) => Some((placement.kind, placement.excerpt_index)),
+                TransformKind::Text => None,
+            };
+            if let Some((kind, excerpt_index)) = block {
+                if display_row <= top_row.get() {
+                    current = Some((display_row, excerpt_index));
+                    next_buffer_header_row = None;
+                } else if current.is_some()
+                    && next_buffer_header_row.is_none()
+                    && kind == DisplayBlockKind::BufferHeader
+                {
+                    next_buffer_header_row = Some(display_row);
+                    break;
+                }
+            }
+            cursor.next();
+        }
+        let (source_row, excerpt_index) = current?;
         Some(StickyBufferHeader {
-            source_row: DisplayRow::new(placement.display_row),
-            excerpt: placement.block.excerpt.clone(),
-            next_buffer_header_row: placement.next_buffer_header_row.map(DisplayRow::new),
+            source_row: DisplayRow::new(source_row),
+            excerpt: self.excerpts[excerpt_index].clone(),
+            next_buffer_header_row: next_buffer_header_row.map(DisplayRow::new),
         })
     }
 
     fn wrap_row_to_display_row(&self, wrap_row: usize) -> usize {
-        if wrap_row >= self.transforms.summary().input_rows {
-            return self.line_count().saturating_sub(1);
-        }
+        assert!(
+            wrap_row < self.transforms.summary().input_rows,
+            "换行行 {wrap_row} 超出块投影输入范围 {}",
+            self.transforms.summary().input_rows
+        );
         let (start, _, transform) =
             self.transforms
                 .find::<InputToOutput, _>((), &InputRows(wrap_row), Bias::Right);
-        match transform.map(|transform| transform.kind) {
+        match transform.map(|transform| &transform.kind) {
             Some(TransformKind::Text) => start.1.0 + wrap_row - start.0.0,
-            Some(TransformKind::Block(placement)) => self.placements[placement].display_row,
-            None => self.line_count().saturating_sub(1),
+            Some(TransformKind::Block(_)) => start.1.0,
+            None => unreachable!("块投影变换必须精确覆盖换行投影的每一行"),
         }
     }
 
@@ -747,12 +960,12 @@ impl BlockSnapshot {
         let (start, _, transform) =
             self.transforms
                 .find::<OutputToInput, _>((), &OutputRows(display_row), Bias::Right);
-        match transform.map(|transform| transform.kind) {
+        match transform.map(|transform| &transform.kind) {
             Some(TransformKind::Text) => RowMapping::Text(WrapRow::new(
                 start.1.0 + display_row.saturating_sub(start.0.0),
             )),
-            Some(TransformKind::Block(placement)) => RowMapping::Block(&self.placements[placement]),
-            None => RowMapping::Text(WrapRow::ZERO),
+            Some(TransformKind::Block(placement)) => RowMapping::Block(placement),
+            None => unreachable!("显示行必须落在块投影变换区间内"),
         }
     }
 
@@ -779,7 +992,9 @@ impl BlockSnapshot {
             RowMapping::Text(row) => self
                 .wrap_snapshot
                 .wrap_point_to_offset_with_bias(WrapPoint::new(row, point.column()), bias),
-            RowMapping::Block(placement) => Ok(placement.block.excerpt.output_range().start()),
+            RowMapping::Block(placement) => Ok(self.excerpts[placement.excerpt_index]
+                .output_range()
+                .start()),
         }
     }
 
@@ -838,3 +1053,7 @@ impl BlockSnapshot {
             .map(DisplayPoint::row)
     }
 }
+
+#[cfg(test)]
+#[path = "test/block_map_tests.rs"]
+mod tests;

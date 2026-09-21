@@ -9,6 +9,6 @@
 mod ropey;
 mod traits;
 
-pub(crate) use ropey::{RopeyPreparedReplace, RopeySnapshot, RopeyStorage};
+pub(crate) use ropey::{RopeySnapshot, RopeyStorage};
 pub use traits::TextRead;
 pub(crate) use traits::text_coordinate_gateway;

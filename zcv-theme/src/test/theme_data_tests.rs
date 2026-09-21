@@ -172,7 +172,8 @@ fn minimal_theme_parses() {
 
 #[test]
 fn parse_theme_rejects_missing_color_key() {
-    let src = minimal_theme().replace("            \"editor.cursor\" = \"#555555ff\"\n", "");
+    // 夹具行带 8 空格缩进；这里按 key 值定位，不绑定具体缩进。
+    let src = minimal_theme().replace("\"editor.cursor\" = \"#555555ff\"\n", "");
     assert!(parse_theme("test", &src).is_none());
 }
 

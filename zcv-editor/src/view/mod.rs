@@ -199,7 +199,8 @@ struct PendingSelection {
 }
 
 struct LineWidthCache {
-    version: BufferVersion,
+    /// 显示版本：文本、折叠、换行、tab 或块拓扑任一变化都会推进它。
+    version: u64,
     row: DisplayRow,
     font_id: gpui::FontId,
     font_size: Pixels,
@@ -696,7 +697,7 @@ impl Editor {
                 .map(|crease| crease.range().clone());
             if let Some(range) = range
                 && let Err(error) = self.display_map.update(cx, |map, cx| {
-                    map.fold_range(range, FoldPlaceholder::default(), cx)
+                    map.fold_range(range, FoldPlaceholder::ellipsis(cx), cx)
                 })
             {
                 cx.emit(EditorEvent::Error(format!("折叠失败：{error:#}")));
@@ -974,7 +975,7 @@ impl Editor {
         let snapshot = self.display_snapshot(cx).clone();
         let font_id = window.text_system().resolve_font(&font);
         if let Some(cache) = &self.line_width_cache
-            && cache.version == snapshot.buffer_snapshot().version()
+            && cache.version == snapshot.version()
             && cache.row == row
             && cache.font_id == font_id
             && cache.font_size == font_size
@@ -983,7 +984,7 @@ impl Editor {
         }
         let width = layout_line_width(&snapshot, row, &font, font_size, window);
         self.line_width_cache = Some(LineWidthCache {
-            version: snapshot.buffer_snapshot().version(),
+            version: snapshot.version(),
             row,
             font_id,
             font_size,
@@ -1751,6 +1752,7 @@ impl Editor {
             Ok(outcome) => outcome,
             Err(error) => {
                 self.end_transaction(cx);
+                self.selection_history.remove_transaction(session_id);
                 cx.emit(EditorEvent::Error(format!("{operation}失败：{error:#}")));
                 self.change_selections(before_selections.clone(), cx);
                 return Err(error);
@@ -1768,6 +1770,7 @@ impl Editor {
         self.advance_snapshots(cx);
         if let Err(error) = applied {
             self.end_transaction(cx);
+            self.selection_history.remove_transaction(session_id);
             cx.emit(EditorEvent::Error(format!("{operation}失败：{error:#}")));
             self.change_selections(before_selections.clone(), cx);
             return Err(error);

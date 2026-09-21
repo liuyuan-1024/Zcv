@@ -132,10 +132,6 @@ impl Item for CompositeItem {
         "组合文档".into()
     }
 
-    fn uses_editor_document_toolbar(&self, _cx: &App) -> bool {
-        false
-    }
-
     fn as_searchable(
         &self,
         _self_handle: &gpui::Entity<Self>,
@@ -253,22 +249,30 @@ fn document_toolbar_is_hidden_for_composite_items_that_expose_an_editor(cx: &mut
     });
 }
 
-/// 项目搜索的结果编辑器同样通过 Item 协议暴露为编辑器。
+/// 项目搜索的结果编辑器同样通过 Item 协议暴露为编辑器；
+/// 通用文档工具栏只服务本身就是编辑器的 Item，因此该视图的工具区由自身承担。
 #[gpui::test]
 fn project_search_view_acts_as_editor_and_owns_its_toolbar(cx: &mut TestAppContext) {
     let project = cx.new(|cx| {
         zcv_project::Project::new(PathBuf::from("."), Arc::new(LanguageRegistry::new()), cx)
     });
     let view = cx.new(|cx| crate::project_search::ProjectSearchView::new(project, cx));
-    cx.add_window_view(|_window, cx| {
+    let bar = document_toolbar(cx);
+    cx.add_window_view(|window, cx| {
         let handle: &dyn ItemHandle = &view;
         assert!(
             handle.act_as::<Editor>(cx).is_some(),
             "搜索结果同样是编辑器，应通过 act_as_type 暴露结果编辑器"
         );
         assert!(handle.as_searchable(cx).is_some());
-        assert!(!handle.uses_editor_document_toolbar(cx));
-        assert!(!handle.receives_git_projection(cx));
+        let location = bar.update(cx, |bar, cx| {
+            bar.set_active_pane_item(Some(handle), window, cx)
+        });
+        assert_eq!(
+            location,
+            ToolbarItemLocation::Hidden,
+            "项目搜索视图自身不是编辑器实体，通用文档工具栏应隐藏"
+        );
         TestView
     });
 }

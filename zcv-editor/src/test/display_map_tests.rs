@@ -264,6 +264,46 @@ fn block_boundaries_reclassify_when_their_file_changes(cx: &mut TestAppContext) 
 ///
 /// Zed 用 BufferId（其本地 Buffer 的 `remote_id`）区分这类来源；
 /// Zcv 用本地 `buffer_id` 承担同一职责，不能把它们归并到空路径并吞掉后一个 header。
+/// 折叠占位符在 chunk 流中携带行内替换描述；普通文本 chunk 不携带。
+#[gpui::test]
+fn fold_placeholder_chunk_carries_inline_renderer(cx: &mut TestAppContext) {
+    let buffer = Buffer::from_text(
+        "anchor\nhidden one\nafter".to_owned(),
+        BufferConfig::default(),
+    )
+    .expect("测试 Buffer 应能创建");
+    let map = cx.new(|cx| DisplayMap::new(buffer.snapshot(), cx));
+    fold_range(cx, &map, 6, 17).expect("折叠应成功");
+
+    let display = display_snapshot(cx, &map);
+    let mut placeholder_seen = false;
+    let mut plain_chunk_seen = false;
+    display
+        .chunks(
+            DisplayRow::ZERO..DisplayRow::new(display.line_count()),
+            HighlightStyles::default(),
+            None,
+        )
+        .for_each_row(|event| {
+            let DisplayRowEvent::Text { chunks, .. } = event else {
+                return;
+            };
+            for chunk in chunks {
+                if chunk.is_placeholder {
+                    placeholder_seen = true;
+                    assert!(
+                        chunk.renderer.is_some(),
+                        "占位符 chunk 必须携带行内替换描述"
+                    );
+                } else if chunk.renderer.is_none() {
+                    plain_chunk_seen = true;
+                }
+            }
+        });
+    assert!(placeholder_seen, "折叠行必须产生占位符 chunk");
+    assert!(plain_chunk_seen, "折叠行仍须有普通文本 chunk");
+}
+
 #[gpui::test]
 fn anonymous_buffers_keep_distinct_header_identities(cx: &mut TestAppContext) {
     let anonymous = |text: &str, cx: &mut TestAppContext| {

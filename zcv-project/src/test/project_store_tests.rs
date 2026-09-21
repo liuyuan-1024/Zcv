@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{AppContext, TestAppContext};
 use zcv_fs_watch::FsEventStream;
-use zcv_text::{BufferConfig, ByteOffset, Edit, TransactionMetadata};
+use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TransactionMetadata};
 
 use super::*;
 use crate::git_store::StatusEntry;

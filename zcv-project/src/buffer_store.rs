@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::translate_path;
@@ -15,6 +15,16 @@ use zcv_text::Snapshot;
 use zcv_text::{Buffer, BufferConfig};
 
 use crate::text_file::{BufferLoadError, EncodingConfig, decode_to_string};
+
+/// 从磁盘读取并解码文件，创建文本 `Buffer`。
+///
+/// 这是文件解码与文本 `Buffer` 创建的唯一入口：
+/// `open_buffer` 与后台搜索都经这里，保证 BOM 剥离（`EncodingConfig::default()` 的 `BomPolicy::Strip`）与非法 UTF-8 策略一致。
+pub(crate) fn load_buffer(path: &Path) -> Result<Buffer, BufferLoadError> {
+    let file = File::open(path)?;
+    let text = decode_to_string(file, &EncodingConfig::default())?;
+    Buffer::from_text(text, BufferConfig::default()).map_err(BufferLoadError::Text)
+}
 
 pub(crate) struct BufferStore {
     opened_buffers: HashMap<AbsolutePathBuf, WeakEntity<LanguageBuffer>>,
@@ -35,15 +45,7 @@ impl BufferStore {
         path: &Path,
         cx: &mut App,
     ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
-        self.get_or_load_buffer(
-            path,
-            || {
-                let file = File::open(path)?;
-                let text = decode_to_string(file, &EncodingConfig::default())?;
-                Buffer::from_text(text, BufferConfig::default()).map_err(BufferLoadError::Text)
-            },
-            cx,
-        )
+        self.get_or_load_buffer(path, || load_buffer(path), cx)
     }
 
     /// 打开工作区侧已经不存在的文件。
@@ -66,17 +68,7 @@ impl BufferStore {
         )
     }
 
-    /// 注册搜索任务在后台加载完成的 Buffer，与 `open_buffer` 共享同一缓存。
-    pub(crate) fn register_loaded_buffer(
-        &mut self,
-        path: PathBuf,
-        buffer: Buffer,
-        cx: &mut App,
-    ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
-        self.get_or_load_buffer(&path, || Ok(buffer), cx)
-    }
-
-    /// 索引命中时不加载内容；磁盘加载与后台结果注册共用同一文档身份入口。
+    /// 索引命中时不加载内容；磁盘加载只经 `load_buffer` 这一文件解码入口。
     fn get_or_load_buffer(
         &mut self,
         path: &Path,

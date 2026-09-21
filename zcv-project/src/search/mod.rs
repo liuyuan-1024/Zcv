@@ -1,6 +1,7 @@
 //! 搜索能力域：查询模型、单 Buffer 匹配/替换与本地项目内容搜索。
 //!
-//! 磁盘遍历、文本匹配与未打开文件的加载全部在后台完成；
+//! 磁盘遍历与文本匹配在后台完成；未打开文件经唯一的文件解码入口读取只读文本视图用于匹配，
+//! 不创建也不登记权威文档实体，权威文档始终由 Project 文件边界按路径打开并复用。
 //! 命中文件随扫描进度逐文件通过通道流出，UI 线程按批装配进 MultiBuffer ordered excerpts。
 //! 接收方放弃通道（新搜索取代或视图关闭）时，后台在下次发送时感知并提前结束扫描。
 
@@ -14,8 +15,9 @@ use gpui::{BackgroundExecutor, Task};
 use zcv_git::GitRepository;
 use zcv_language::LanguageRegistry;
 use zcv_path::AbsolutePathBuf;
-use zcv_text::{Buffer, BufferConfig, ByteOffset, Line, Snapshot, TextRange, WordBoundaryPolicy};
+use zcv_text::{ByteOffset, Line, Snapshot, TextRange, WordBoundaryPolicy};
 
+use crate::buffer_store::load_buffer;
 use crate::worktree::{WorktreeSearchPlan, discover_git_repository};
 
 mod buffer_search;
@@ -35,8 +37,6 @@ pub struct FileSearchResult {
     pub path: PathBuf,
     pub display_path: PathBuf,
     pub excerpts: Vec<ExcerptMatches>,
-    // 未打开文件的预加载内容；命中已打开文件时为空（走 BufferStore 缓存）。
-    pub loaded_buffer: Option<Buffer>,
 }
 
 /// 单个命中在源文件中的上下文块：整块范围与块内全部命中范围。
@@ -161,14 +161,12 @@ fn search_file(
     query: &PreparedSearchQuery,
     language_registry: &Arc<LanguageRegistry>,
 ) -> Option<FileSearchResult> {
-    // 已打开文件用内存快照搜索；
-    // 其余文件在后台读盘并保留 Buffer，避免结果装配阶段在主线程重新读文件。
-    let (snapshot, loaded_buffer) = if let Some(snapshot) = opened_snapshots.get(&path) {
-        (snapshot.clone(), None)
+    // 已打开文件直接搜索其权威快照；
+    // 其余文件经唯一的文件解码入口读取只读文本视图，不创建也不登记权威文档实体。
+    let snapshot = if let Some(snapshot) = opened_snapshots.get(&path) {
+        snapshot.clone()
     } else {
-        let text = std::fs::read_to_string(path.as_path()).ok()?;
-        let buffer = Buffer::from_text(text, BufferConfig::default()).ok()?;
-        (buffer.snapshot(), Some(buffer))
+        load_buffer(path.as_path()).ok()?.snapshot()
     };
     let word_boundary = language_registry
         .language_for_file(path.as_path(), None)
@@ -187,7 +185,6 @@ fn search_file(
             .to_path_buf(),
         path: path.into_path_buf(),
         excerpts: excerpt_matches(&snapshot, &matches),
-        loaded_buffer,
     })
 }
 
@@ -263,7 +260,7 @@ fn git_search_paths(plan: &WorktreeSearchPlan) -> Option<Vec<AbsolutePathBuf>> {
                 let path = AbsolutePathBuf::new(working_directory.as_path().join(relative)).ok()?;
                 // 项目根可能位于外层仓库内：Git 会列出根之外的文件，这里按项目根收敛搜索范围。
                 path.as_path().strip_prefix(plan.root.as_path()).ok()?;
-                // Git 输出的是文件条目；去掉逐文件 metadata 查询，实际读取失败时仍由下方 read_to_string 路径自然跳过。
+                // Git 输出的是文件条目；去掉逐文件 metadata 查询，实际读取失败时仍由下方文件解码路径自然跳过。
                 (!plan.is_excluded(path.as_path())).then_some(path)
             })
             .collect(),

@@ -426,47 +426,68 @@ enum DiffTransform {
         /// 本输出节点承载的 hunk 身份与显示元数据；普通 excerpt 为空。
         hunks: Vec<DiffTransformHunkInfo>,
     },
-    /// 删除块只存在于输出坐标：它不消费输入坐标，但仍通过同序输入 excerpt 读取源内容。
+    /// 删除块只存在于输出坐标：它不消费输入坐标；
+    /// 被删文本由本节点自带的只读描述承载，因此不进入输入 excerpt 树。
     DeletedHunk {
         summary: DiffTransformSummary,
         hunks: Vec<DiffTransformHunkInfo>,
+        /// 被删文本的描述：源是 diff 基线，只用于读取文本与显示坐标，不参与输入坐标。
+        excerpt: Excerpt,
     },
 }
 
+/// 变换节点的输出文本摘要：内容原样，末尾缺换行时按分隔协议补一个合成换行。
+fn diff_output_text(excerpt: &Excerpt) -> MBTextSummary {
+    let mut output_text = excerpt.text_summary;
+    if excerpt.adds_newline {
+        output_text += MBTextSummary::newline();
+    }
+    output_text
+}
+
 impl DiffTransform {
-    /// 从输入侧 excerpt 构造独立的输出变换摘要，并接收本节点的 hunk 身份。
+    /// 从输入侧 excerpt 构造内容变换摘要，并接收本节点的 hunk 身份。
     fn from_excerpt(excerpt: &Excerpt, hunks: Vec<DiffTransformHunkInfo>) -> Self {
-        let mut output_text = excerpt.text_summary;
-        if excerpt.adds_newline {
-            output_text += MBTextSummary::newline();
-        }
+        debug_assert_ne!(
+            excerpt.diff_kind,
+            Some(ExcerptDiffKind::Deleted),
+            "删除 hunk 必须经 deleted_hunk 构造，不能进入输入 excerpt 树"
+        );
+        let summary = excerpt.summary(());
+        let input = ExcerptInputSummary {
+            len: ExcerptOffset::new(summary.text.len),
+            count: summary.count,
+            items: summary.items,
+            path_key: summary.path_key,
+        };
         let output = ExcerptSummary {
-            text: output_text,
+            text: diff_output_text(excerpt),
             count: 1,
             items: 1,
             path_key: excerpt.path.clone(),
         };
-        let input = if excerpt.diff_kind == Some(ExcerptDiffKind::Deleted) {
-            // 删除块不占输入坐标：输入摘要必须为零，否则输入游标会被它推进。
-            ExcerptInputSummary {
-                path_key: excerpt.path.clone(),
-                items: 1,
-                ..ExcerptInputSummary::default()
-            }
-        } else {
-            let summary = excerpt.summary(());
-            ExcerptInputSummary {
-                len: ExcerptOffset::new(summary.text.len),
-                count: summary.count,
-                items: summary.items,
-                path_key: summary.path_key,
-            }
+        Self::BufferContent {
+            summary: DiffTransformSummary { input, output },
+            hunks,
+        }
+    }
+
+    /// 由删除 hunk 的描述构造输出变换：不消费输入坐标，被删文本随节点承载。
+    fn deleted_hunk(excerpt: Excerpt, hunks: Vec<DiffTransformHunkInfo>) -> Self {
+        let output = ExcerptSummary {
+            text: diff_output_text(&excerpt),
+            count: 1,
+            items: 1,
+            path_key: excerpt.path.clone(),
         };
-        let summary = DiffTransformSummary { input, output };
-        if excerpt.diff_kind == Some(ExcerptDiffKind::Deleted) {
-            Self::DeletedHunk { summary, hunks }
-        } else {
-            Self::BufferContent { summary, hunks }
+        let input = ExcerptInputSummary {
+            path_key: excerpt.path.clone(),
+            ..ExcerptInputSummary::default()
+        };
+        Self::DeletedHunk {
+            summary: DiffTransformSummary { input, output },
+            hunks,
+            excerpt,
         }
     }
 
@@ -483,15 +504,13 @@ impl DiffTransform {
         }
     }
 
-    /// 输出侧片段内容；只有 BufferContent 从输入树读取。
+    /// 输出侧片段内容：内容节点从输入树读取，删除 hunk 读取节点自带的描述。
     fn excerpt<'a>(&'a self, input: Option<&'a Excerpt>) -> Option<&'a Excerpt> {
         match self {
             Self::BufferContent { .. } => {
                 input.filter(|excerpt| excerpt.diff_kind != Some(ExcerptDiffKind::Deleted))
             }
-            Self::DeletedHunk { .. } => {
-                input.filter(|excerpt| excerpt.diff_kind == Some(ExcerptDiffKind::Deleted))
-            }
+            Self::DeletedHunk { excerpt, .. } => Some(excerpt),
         }
     }
 }
@@ -599,7 +618,7 @@ fn excerpt_relative(offset: ByteOffset, excerpt_start: ByteOffset) -> ExcerptOff
 struct ExcerptSummary {
     text: MBTextSummary,
     count: usize,
-    /// 输入树中的物理 item 数；删除 excerpt 不贡献输入坐标但仍占一个 item。
+    /// 输入树中的物理 item 数；删除 hunk 不进入输入树，故其输入贡献为零。
     items: usize,
     path_key: PathKey,
 }
@@ -685,22 +704,17 @@ impl Item for Excerpt {
 
     /// 输入 excerpts 树只描述源内容坐标；
     /// 片段间为显示边界补出的合成换行属于输出变换，不在输入摘要中重复计入。
-    /// 删除块只在输出坐标存在，输入贡献为零。
     fn summary(&self, _cx: ()) -> Self::Summary {
-        if self.diff_kind == Some(ExcerptDiffKind::Deleted) {
-            ExcerptSummary {
-                text: MBTextSummary::default(),
-                count: 0,
-                items: 1,
-                path_key: self.path.clone(),
-            }
-        } else {
-            ExcerptSummary {
-                text: self.text_summary,
-                count: 1,
-                items: 1,
-                path_key: self.path.clone(),
-            }
+        debug_assert_ne!(
+            self.diff_kind,
+            Some(ExcerptDiffKind::Deleted),
+            "删除 hunk 只存在于输出变换树，不能进入输入 excerpt 树"
+        );
+        ExcerptSummary {
+            text: self.text_summary,
+            count: 1,
+            items: 1,
+            path_key: self.path.clone(),
         }
     }
 }
@@ -1231,7 +1245,7 @@ impl SeekTarget<'_, ExcerptSummary, ExcerptSummary> for ExcerptIndex {
     }
 }
 
-/// 按输入树的物理 item 序号定位，删除 excerpt 也占一个序号但不占输入坐标。
+/// 按输入树的物理 item 序号定位；删除 hunk 不进入输入树，不占输入序号。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct ExcerptItemIndex(usize);
 
@@ -3616,6 +3630,13 @@ impl MultiBuffer {
                 unique_sources.push(excerpt.source.clone());
             }
         }
+        // diff 基线/参照文本只作为 diff 输入：
+        // 不进入组合源订阅表，其变化只让 BufferDiff 重算，组合投影由 diff 结果单入口推进。
+        let subscribed_sources = excerpts
+            .iter()
+            .filter(|excerpt| excerpt.diff_kind != Some(ExcerptDiffKind::Deleted))
+            .map(|excerpt| excerpt.source.entity_id())
+            .collect::<HashSet<_>>();
         // 结构重建只替换拓扑：仍存活的源复用已有连接，不为一次重排重建全部订阅。
         let mut previous_subscriptions = {
             let old_subscriptions = std::mem::take(&mut self.state.source_subscriptions);
@@ -3632,6 +3653,9 @@ impl MultiBuffer {
         let mut next_source_event_subscriptions = Vec::with_capacity(unique_sources.len());
         for source in unique_sources {
             let source_id = source.entity_id();
+            if !subscribed_sources.contains(&source_id) {
+                continue;
+            }
             if let Some((subscription, event)) = previous_subscriptions.remove(&source_id) {
                 // 新 excerpts 已采用当前源快照；丢弃复用订阅里已被快照吸收的待消费编辑，
                 // 否则下一帧会按旧版本重放同一批编辑。
@@ -3703,7 +3727,7 @@ impl MultiBuffer {
         let mut prepared = Vec::with_capacity(excerpts.len());
         for excerpt in excerpts {
             let source = excerpt.source.read(cx);
-            let path = path_key_for_source(&source);
+            let path = path_key_for_source(source);
             let buffer_id = source.buffer_id();
             let source_id = excerpt.source.entity_id();
             let source_index = match next_source_indices.get(&source_id).copied() {
@@ -3788,8 +3812,13 @@ impl MultiBuffer {
                 starts_logical_excerpt: item.excerpt.starts_logical_excerpt,
                 diff_kind: item.excerpt.diff_kind,
             };
-            next_transforms.push(DiffTransform::from_excerpt(&excerpt, hunks));
-            next_excerpts.push(excerpt);
+            if excerpt.diff_kind == Some(ExcerptDiffKind::Deleted) {
+                // 删除 hunk 只存在于输出变换，不进入输入 excerpt 树。
+                next_transforms.push(DiffTransform::deleted_hunk(excerpt, hunks));
+            } else {
+                next_transforms.push(DiffTransform::from_excerpt(&excerpt, hunks));
+                next_excerpts.push(excerpt);
+            }
         }
 
         *source_subscriptions = next_source_subscriptions;
@@ -3812,7 +3841,7 @@ impl MultiBuffer {
         excerpts: Vec<ExcerptRange>,
         start_index: usize,
         total: usize,
-        _cx: &App,
+        cx: &App,
     ) -> Vec<(Excerpt, Vec<DiffTransformHunkInfo>)> {
         let mut path_keys = std::mem::take(&mut self.state.path_keys);
         let mut path_key_indices = std::mem::take(&mut self.state.path_key_indices);
@@ -3822,6 +3851,22 @@ impl MultiBuffer {
             let Some(&source_index) = self.state.source_indices.get(&source_id) else {
                 continue;
             };
+            // diff 基线/参照源没有组合订阅：
+            // 物化时用实体当前快照刷新源表，否则增量重物化会用旧基线文本计算 summary 与锚点版本。
+            if excerpt.diff_kind == Some(ExcerptDiffKind::Deleted) {
+                let snapshot = excerpt.source.read(cx).snapshot();
+                let word_boundary = snapshot_word_boundary(&snapshot);
+                let settings = snapshot_settings(&snapshot);
+                {
+                    let source = &mut self.state.sources[source_index];
+                    source.text = snapshot.text;
+                    source.syntax = snapshot.syntax;
+                    source.highlight_cache = snapshot.highlight_cache;
+                    source.word_boundary = word_boundary;
+                    source.settings = settings;
+                }
+                self.mark_source_snapshot_changed(source_id);
+            }
             let source = &self.state.sources[source_index];
             let path = source.path.clone();
             let excerpt_buffer_id = excerpt.buffer_id;
@@ -3887,28 +3932,29 @@ impl MultiBuffer {
         else {
             return;
         };
+        // 输出序号含删除 hunk，决定分隔换行；
+        // 删除节点只存在于输出树，不能与输入树同序并行推进。
         let start_index = {
-            let mut cursor = self.state.excerpts.cursor::<ExcerptSummary>(());
-            cursor.seek(&path, Bias::Left);
-            cursor.start().count
-        };
-        let total = self.state.excerpts.summary().count;
-        let mut entries = Vec::new();
-        {
-            let mut cursor = self.state.excerpts.cursor::<ExcerptSummary>(());
-            cursor.seek(&path, Bias::Left);
-            // hunk 元数据归输出节点所有：与输入游标同序推进，从旧变换取回。
-            let mut transform_cursor = self
+            let mut cursor = self
                 .state
                 .diff_transforms
                 .cursor::<DiffTransformSummary>(());
-            transform_cursor.seek(&path, Bias::Left);
+            cursor.seek(&path, Bias::Left);
+            cursor.start().output.count
+        };
+        let total = self.state.diff_transforms.summary().output.count;
+        let mut entries = Vec::new();
+        {
+            let mut cursor =
+                MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
+            cursor.seek_path(&path, Bias::Left);
             let mut local = 0usize;
-            while let Some(entry) = cursor.item() {
-                if entry.path != path {
+            while let Some((output, transform)) = cursor.item() {
+                if output.path != path {
                     break;
                 }
-                let mut entry = entry.clone();
+                let mut entry = output.clone();
+                let hunks = transform.hunks().to_vec();
                 if entry.source_id == Some(source_id) {
                     // outside = 本次编辑落在此 excerpt（直接编辑）；其它 excerpt 不吸收边界插入。
                     let outside = expanded_excerpts
@@ -3939,13 +3985,9 @@ impl MultiBuffer {
                         entry.adds_newline = start_index + local + 1 < total && !ends_with_newline;
                     }
                 }
-                let hunks = transform_cursor
-                    .item()
-                    .map_or_else(Vec::new, |transform| transform.hunks().to_vec());
                 entries.push((entry, hunks));
                 local += 1;
                 cursor.next();
-                transform_cursor.next();
             }
         }
         self.splice_excerpt_entries(&path, entries);
@@ -3961,8 +4003,15 @@ impl MultiBuffer {
         path: &PathKey,
         entries: Vec<(Excerpt, Vec<DiffTransformHunkInfo>)>,
     ) {
-        let mut cursor = self.state.excerpts.cursor::<ExcerptSummary>(());
-        let mut next_tree = cursor.slice(path, Bias::Left);
+        // 输入树只承载工作区内容片段；删除 hunk 只进入输出变换树。
+        let mut excerpt_cursor = self.state.excerpts.cursor::<ExcerptSummary>(());
+        let mut next_tree = excerpt_cursor.slice(path, Bias::Left);
+        let mut transform_cursor = self
+            .state
+            .diff_transforms
+            .cursor::<DiffTransformSummary>(());
+        let mut next_transforms = transform_cursor.slice(path, Bias::Left);
+        // 前缀末片段不再位于文档尾，按自身内容补分隔换行。
         if !next_tree.is_empty() {
             let sources = &self.state.sources;
             next_tree.update_last(
@@ -3979,32 +4028,54 @@ impl MultiBuffer {
             );
         }
         let last_prefix_excerpt = next_tree.iter().last().cloned();
-        cursor.seek(path, Bias::Right);
-        let mut transform_cursor = self
-            .state
-            .diff_transforms
-            .cursor::<DiffTransformSummary>(());
-        let mut next_transforms = transform_cursor.slice(path, Bias::Left);
-        if let Some(last_excerpt) = last_prefix_excerpt.as_ref() {
+        if !next_transforms.is_empty() {
+            let sources = &self.state.sources;
             next_transforms.update_last(
                 |transform| {
                     let hunks = transform.hunks().to_vec();
-                    *transform = DiffTransform::from_excerpt(last_excerpt, hunks);
+                    match transform {
+                        DiffTransform::BufferContent { .. } => {
+                            if let Some(excerpt) = last_prefix_excerpt.as_ref() {
+                                *transform = DiffTransform::from_excerpt(excerpt, hunks);
+                            }
+                        }
+                        DiffTransform::DeletedHunk { excerpt, .. } => {
+                            let ends_with_newline = snapshot_range_summary(
+                                &sources[excerpt.source_index].text,
+                                excerpt.source_range.range(),
+                            )
+                            .is_none_or(|(_, ends_with_newline)| ends_with_newline);
+                            excerpt.adds_newline = !ends_with_newline;
+                            let excerpt = excerpt.clone();
+                            *transform = DiffTransform::deleted_hunk(excerpt, hunks);
+                        }
+                    }
                 },
                 (),
             );
         }
+        excerpt_cursor.seek(path, Bias::Right);
         transform_cursor.seek(path, Bias::Right);
-        next_tree.extend(entries.iter().map(|(entry, _)| entry.clone()), ());
-        next_transforms.extend(
+        next_tree.extend(
             entries
                 .iter()
-                .map(|(entry, hunks)| DiffTransform::from_excerpt(entry, hunks.clone())),
+                .filter(|(entry, _)| entry.diff_kind != Some(ExcerptDiffKind::Deleted))
+                .map(|(entry, _)| entry.clone()),
             (),
         );
-        next_tree.append(cursor.suffix(), ());
+        next_transforms.extend(
+            entries.iter().map(|(entry, hunks)| {
+                if entry.diff_kind == Some(ExcerptDiffKind::Deleted) {
+                    DiffTransform::deleted_hunk(entry.clone(), hunks.clone())
+                } else {
+                    DiffTransform::from_excerpt(entry, hunks.clone())
+                }
+            }),
+            (),
+        );
+        next_tree.append(excerpt_cursor.suffix(), ());
         next_transforms.append(transform_cursor.suffix(), ());
-        drop(cursor);
+        drop(excerpt_cursor);
         drop(transform_cursor);
         self.state.excerpts = next_tree;
         self.state.diff_transforms = next_transforms;
@@ -4014,46 +4085,33 @@ impl MultiBuffer {
     ///
     /// 移除末尾路径时，前一个路径的最后一个 item 会变成文档尾，必须清掉它此前的分隔换行标记。
     fn fix_document_tail_newline(&mut self) {
-        if self.state.excerpts.is_empty() {
-            self.state.diff_transforms = SumTree::new(());
+        if self.state.diff_transforms.is_empty() {
             return;
         }
-        self.state
-            .excerpts
-            .update_last(|entry| entry.adds_newline = false, ());
-        let last_excerpt = self.state.excerpts.iter().last().cloned();
-        if let Some(last_excerpt) = last_excerpt.as_ref() {
-            self.state.diff_transforms.update_last(
-                |transform| {
-                    let hunks = transform.hunks().to_vec();
-                    *transform = DiffTransform::from_excerpt(last_excerpt, hunks);
-                },
-                (),
-            );
+        if !self.state.excerpts.is_empty() {
+            self.state
+                .excerpts
+                .update_last(|entry| entry.adds_newline = false, ());
         }
-    }
-
-    /// 从输入 excerpts 树重建输出变换树。
-    ///
-    /// 输入树是唯一权威数据源；输出树只保存按同一顺序排列的显示变换。
-    fn rebuild_diff_transforms_from_excerpts(&mut self) {
-        // hunk 元数据归输出节点所有；按同序位置从旧变换保留，不依赖输入树。
-        let hunks = self
-            .state
-            .diff_transforms
-            .iter()
-            .map(|transform| transform.hunks().to_vec())
-            .collect::<Vec<_>>();
-        let transforms = self
-            .state
-            .excerpts
-            .iter()
-            .enumerate()
-            .map(|(index, excerpt)| {
-                DiffTransform::from_excerpt(excerpt, hunks.get(index).cloned().unwrap_or_default())
-            })
-            .collect::<Vec<_>>();
-        self.state.diff_transforms = SumTree::from_iter(transforms, ());
+        let last_excerpt = self.state.excerpts.iter().last().cloned();
+        self.state.diff_transforms.update_last(
+            |transform| {
+                let hunks = transform.hunks().to_vec();
+                match transform {
+                    DiffTransform::BufferContent { .. } => {
+                        if let Some(excerpt) = last_excerpt.as_ref() {
+                            *transform = DiffTransform::from_excerpt(excerpt, hunks);
+                        }
+                    }
+                    DiffTransform::DeletedHunk { excerpt, .. } => {
+                        excerpt.adds_newline = false;
+                        let excerpt = excerpt.clone();
+                        *transform = DiffTransform::deleted_hunk(excerpt, hunks);
+                    }
+                }
+            },
+            (),
+        );
     }
 
     /// 从当前映射树派生组合坐标下的搜索匹配范围。
@@ -4116,6 +4174,7 @@ impl MultiBuffer {
     fn register_sources(
         &mut self,
         new_sources: Vec<Entity<LanguageBuffer>>,
+        subscribe_ids: &HashSet<gpui::EntityId>,
         cx: &mut Context<Self>,
     ) -> usize {
         if !new_sources.is_empty() {
@@ -4126,14 +4185,21 @@ impl MultiBuffer {
         if new_sources.is_empty() {
             return first_new_source;
         }
-        let new_source_subscriptions = new_sources
+        // 只订阅组合投影要消费的源；
+        // diff 基线/参照文本由 DiffState 作为 diff 输入订阅，不进入组合源订阅表，因此不会形成第二个组合投影推进入口。
+        let subscribed_new_sources = new_sources
+            .iter()
+            .filter(|source| subscribe_ids.contains(&source.entity_id()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let new_source_subscriptions = subscribed_new_sources
             .iter()
             .map(|source| SourceSubscription {
                 source: source.clone(),
                 text: source.read(cx).subscribe(),
             })
             .collect::<Vec<_>>();
-        let new_source_event_subscriptions = new_sources
+        let new_source_event_subscriptions = subscribed_new_sources
             .iter()
             .map(|source| {
                 let source_id = source.entity_id();
@@ -4170,7 +4236,7 @@ impl MultiBuffer {
         self.state.sources.extend(new_sources.iter().map(|source| {
             let language_buffer = source.read(cx);
             let snapshot = language_buffer.snapshot();
-            let path = path_key_for_source(&language_buffer);
+            let path = path_key_for_source(language_buffer);
             let buffer_id = language_buffer.buffer_id();
             ExcerptSource {
                 entity: source.clone(),
@@ -4236,7 +4302,12 @@ impl MultiBuffer {
                 new_sources.push(excerpt.source.clone());
             }
         }
-        self.register_sources(new_sources, cx);
+        let subscribe_ids = excerpts
+            .iter()
+            .filter(|excerpt| excerpt.diff_kind != Some(ExcerptDiffKind::Deleted))
+            .map(|excerpt| excerpt.source.entity_id())
+            .collect::<HashSet<_>>();
+        self.register_sources(new_sources, &subscribe_ids, cx);
         let path = self.excerpt_path(&excerpts[0], cx);
         debug_assert!(
             excerpts
@@ -4256,16 +4327,25 @@ impl MultiBuffer {
     ) -> Vec<TextRange> {
         let before = self.projection_trees();
         let old_version = self.state.projection_version;
-        // 该路径在树中的起始序号与原有条目数，决定新条目的全局位置与分隔换行标记。
+        // 序号按输出 item 计（含删除 hunk）：决定各片段是否处于文档尾、是否需要补分隔换行。
         let (start_index, old_count) = {
-            let mut start = self.state.excerpts.cursor::<ExcerptSummary>(());
+            let mut start = self
+                .state
+                .diff_transforms
+                .cursor::<DiffTransformSummary>(());
             start.seek(&path, Bias::Left);
-            let start_index = start.start().count;
-            let mut end = self.state.excerpts.cursor::<ExcerptSummary>(());
+            let start_index = start.start().output.count;
+            let mut end = self
+                .state
+                .diff_transforms
+                .cursor::<DiffTransformSummary>(());
             end.seek(&path, Bias::Right);
-            (start_index, end.start().count.saturating_sub(start_index))
+            (
+                start_index,
+                end.start().output.count.saturating_sub(start_index),
+            )
         };
-        let total = self.state.excerpts.summary().count - old_count + excerpts.len();
+        let total = self.state.diff_transforms.summary().output.count - old_count + excerpts.len();
         let entries = self.build_entries_for_excerpts(excerpts, start_index, total, cx);
         // 该路径之前的输出长度；输出坐标已含片段间的合成换行与 diff 变换。
         let mut output_start = {
@@ -4657,31 +4737,50 @@ impl MultiBuffer {
         let old_version = self.state.projection_version;
         let mut path_keys = std::mem::take(&mut self.state.path_keys);
         let mut path_key_indices = std::mem::take(&mut self.state.path_key_indices);
-        let mut entries = self.state.excerpts.iter().cloned().collect::<Vec<_>>();
-        for entry in &mut entries {
-            let source = &mut self.state.sources[entry.source_index];
-            let path = path_key_for_source(&source.entity.read(cx));
+        // 输出树是唯一权威顺序（含删除 hunk）：输入内容节点从其源取路径，删除节点用自带描述。
+        let mut input_entries = self.state.excerpts.iter();
+        let mut nodes = Vec::new();
+        for transform in self.state.diff_transforms.iter() {
+            let mut excerpt = match transform {
+                DiffTransform::BufferContent { .. } => match input_entries.next() {
+                    Some(excerpt) => excerpt.clone(),
+                    None => continue,
+                },
+                DiffTransform::DeletedHunk { excerpt, .. } => excerpt.clone(),
+            };
+            let source = &mut self.state.sources[excerpt.source_index];
+            let path = path_key_for_source(source.entity.read(cx));
             source.path = path.clone();
-            entry.path = path.clone();
-            entry.display_path = path;
-            entry.path_index = intern_path(&mut path_keys, &mut path_key_indices, &entry.path);
+            excerpt.path = path.clone();
+            excerpt.display_path = path.clone();
+            excerpt.path_index = intern_path(&mut path_keys, &mut path_key_indices, &path);
+            nodes.push((excerpt, transform.hunks().to_vec()));
         }
+        drop(input_entries);
         // 路径顺序可能变化；整体重排并按新位置重算分隔标记。
-        entries.sort_by(|a, b| Ord::cmp(&a.path, &b.path));
-        let total = entries.len();
-        for (index, entry) in entries.iter_mut().enumerate() {
-            let source = &self.state.sources[entry.source_index];
+        nodes.sort_by(|(a, _), (b, _)| Ord::cmp(&a.path, &b.path));
+        let total = nodes.len();
+        let mut next_excerpts = Vec::with_capacity(total);
+        let mut next_transforms = Vec::with_capacity(total);
+        for (index, (mut excerpt, hunks)) in nodes.into_iter().enumerate() {
+            let source = &self.state.sources[excerpt.source_index];
             if let Some((text_summary, ends_with_newline)) =
-                snapshot_range_summary(&source.text, entry.source_range.range())
+                snapshot_range_summary(&source.text, excerpt.source_range.range())
             {
-                entry.text_summary = text_summary;
-                entry.adds_newline = index + 1 < total && !ends_with_newline;
+                excerpt.text_summary = text_summary;
+                excerpt.adds_newline = index + 1 < total && !ends_with_newline;
+            }
+            if excerpt.diff_kind == Some(ExcerptDiffKind::Deleted) {
+                next_transforms.push(DiffTransform::deleted_hunk(excerpt, hunks));
+            } else {
+                next_transforms.push(DiffTransform::from_excerpt(&excerpt, hunks));
+                next_excerpts.push(excerpt);
             }
         }
         self.state.path_keys = path_keys;
         self.state.path_key_indices = path_key_indices;
-        self.state.excerpts = SumTree::from_iter(entries, ());
-        self.rebuild_diff_transforms_from_excerpts();
+        self.state.excerpts = SumTree::from_iter(next_excerpts, ());
+        self.state.diff_transforms = SumTree::from_iter(next_transforms, ());
         self.publish_projection_edit(&before, old_version);
         self.emit_projection_changed(cx);
     }
@@ -5545,6 +5644,7 @@ enum SourceAnchorResolution {
 /// 把锚点绑定的源 Anchor 按当前源文本快照推进到源坐标。
 fn excerpt_anchor_source_offset<S: SourceTexts + ?Sized>(
     excerpts: &SumTree<Excerpt>,
+    tree: &SumTree<DiffTransform>,
     path_keys: &[PathKey],
     sources: &S,
     anchor: &ExcerptAnchor,
@@ -5552,9 +5652,10 @@ fn excerpt_anchor_source_offset<S: SourceTexts + ?Sized>(
     let Some(path_key) = path_keys.get(anchor.path.get() as usize) else {
         return SourceAnchorResolution::PathNotProjected;
     };
-    let mut cursor = excerpts.cursor::<ExcerptSummary>(());
-    cursor.seek(path_key, Bias::Left);
-    while let Some(excerpt) = cursor.item() {
+    // 删除 hunk 只存在于输出变换：锚点绑定的旧侧源也必须经输出投影查找。
+    let mut cursor = MultiBufferCursor::new(excerpts, tree);
+    cursor.seek_path(path_key, Bias::Left);
+    while let Some((excerpt, _)) = cursor.item() {
         if &excerpt.path != path_key {
             break;
         }
@@ -5702,7 +5803,7 @@ fn resolve_anchor_in_mappings<S: SourceTexts + ?Sized>(
         }
         MultiBufferAnchor::Excerpt(excerpt_anchor) => excerpt_anchor,
     };
-    match excerpt_anchor_source_offset(excerpts, path_keys, sources, excerpt_anchor) {
+    match excerpt_anchor_source_offset(excerpts, tree, path_keys, sources, excerpt_anchor) {
         SourceAnchorResolution::Mapped(source_offset) => {
             if let Some(offset) = nearest_output_offset_for_source(
                 excerpts,

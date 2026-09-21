@@ -348,6 +348,76 @@ impl PositionMap {
 
         results
     }
+
+    /// new byte position -> old byte position。
+    ///
+    /// map_old_position 的反向：把当前（新）文本坐标映射回旧版本坐标。
+    /// 插入产生的新内容没有唯一旧坐标，返回 Ambiguous 并吸附到插入点；
+    /// 纯删除在新文本里塌缩成一个点，按 Affinity 吸附到旧区间起点或终点。
+    pub fn map_new_position(&self, pos: ByteOffset) -> MappingResult<ByteOffset> {
+        self.map_new_position_with_affinity(pos, Affinity::default())
+    }
+
+    /// new byte position -> old byte position，显式指定纯删除点处的吸附方向。
+    ///
+    /// 旧→新映射在插入点上用 Affinity 消歧，本方法把同一语义补到反向的零宽新区间上，
+    /// 使两个方向在边界点的吸附结果对称。
+    pub fn map_new_position_with_affinity(
+        &self,
+        pos: ByteOffset,
+        affinity: Affinity,
+    ) -> MappingResult<ByteOffset> {
+        let mut shift = OffsetShift::ZERO;
+
+        for edit in &self.edits {
+            let old_start = edit.old.start();
+            let old_end = edit.old.end();
+            let old_len = edit.old.len();
+            let new_len = edit.new_len;
+            let new_start = invariant!(
+                shift.apply_old_to_new(old_start),
+                "new start 反向映射不会发生字节偏移溢出"
+            );
+            let new_end = invariant!(
+                new_start.checked_add(new_len),
+                "new end 计算不会发生字节偏移溢出"
+            );
+
+            if pos < new_start {
+                break;
+            }
+
+            if new_len == 0 {
+                // 纯删除：旧区间在新文本里塌缩成一个点，只能按 affinity 吸附到其一端。
+                if pos == new_start {
+                    return MappingResult::Mapped(match affinity {
+                        Affinity::Before => old_start,
+                        Affinity::After => old_end,
+                    });
+                }
+            } else if pos < new_end {
+                if old_start == old_end {
+                    // 纯插入：新内容没有唯一旧坐标，整体吸附到插入点。
+                    return MappingResult::Ambiguous(old_start);
+                }
+
+                // 替换产生的新内容按 overshoot 映射回旧区间，超出旧长度时收敛到旧终点。
+                let overshoot = pos.get() - new_start.get();
+                let mapped = invariant!(
+                    old_start.checked_add(overshoot),
+                    "反向映射的旧坐标不会发生字节偏移溢出"
+                );
+                return MappingResult::Mapped(mapped.min(old_end));
+            }
+
+            shift = invariant!(shift.after_edit(old_len, new_len), "累计编辑位移不会溢出");
+        }
+
+        MappingResult::Mapped(invariant!(
+            shift.apply_new_to_old(pos),
+            "new position 反向映射不会发生字节偏移溢出"
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -377,6 +447,14 @@ impl OffsetShift {
             .get()
             .checked_sub(self.removed_bytes)?
             .checked_add(self.inserted_bytes)
+            .map(ByteOffset::new)
+    }
+
+    pub(crate) fn apply_new_to_old(self, new_offset: ByteOffset) -> Option<ByteOffset> {
+        new_offset
+            .get()
+            .checked_add(self.removed_bytes)?
+            .checked_sub(self.inserted_bytes)
             .map(ByteOffset::new)
     }
 

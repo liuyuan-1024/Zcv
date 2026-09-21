@@ -23,7 +23,7 @@ use zcv_multi_buffer::MultiBufferSnapshot;
 use zcv_text::Line;
 
 use super::block_map::{BlockRow, BlockRows, DisplayBlock};
-use super::fold_map::{FoldRowSegment, FoldRowSegmentKind, ProjectedLineIndex};
+use super::fold_map::{ChunkRenderer, FoldRowSegment, FoldRowSegmentKind, ProjectedLineIndex};
 use super::tab_map::advance_display_column;
 use super::wrap_map::WrapRowKind;
 use super::{DisplayRow, DisplaySnapshot};
@@ -45,6 +45,8 @@ pub(crate) struct Chunk<'a> {
     pub(crate) is_tab: bool,
     /// 折叠占位符文本（渲染端用占位色绘制）。
     pub(crate) is_placeholder: bool,
+    /// 占位符的渲染描述；Some 时显示层把该段替换为元素而不是绘制文本。
+    pub(crate) renderer: Option<ChunkRenderer>,
     pub(crate) style: Option<HighlightStyle>,
     /// 背景覆盖层命中色（搜索高亮等；优先于 style 的背景）。
     pub(crate) background: Option<gpui::Rgba>,
@@ -575,7 +577,7 @@ pub(crate) struct FoldChunks<'a, 'b> {
     styles: HighlightStyles<'b>,
     fragment_range: Range<usize>,
     segment_index: usize,
-    current: Option<(StyledChunks<'a, 'b>, bool)>,
+    current: Option<(StyledChunks<'a, 'b>, bool, Option<ChunkRenderer>)>,
 }
 
 impl<'a, 'b> FoldChunks<'a, 'b> {
@@ -601,9 +603,10 @@ impl<'a, 'b> Iterator for FoldChunks<'a, 'b> {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if let Some((chunks, is_placeholder)) = self.current.as_mut() {
+            if let Some((chunks, is_placeholder, renderer)) = self.current.as_mut() {
                 if let Some(mut chunk) = chunks.next() {
                     chunk.is_placeholder = *is_placeholder;
+                    chunk.renderer = renderer.clone();
                     return Some(chunk);
                 }
                 self.current = None;
@@ -625,18 +628,24 @@ impl<'a, 'b> Iterator for FoldChunks<'a, 'b> {
                 continue;
             }
 
-            let (chunks, is_placeholder) = match &segment.kind {
-                FoldRowSegmentKind::Placeholder { text } => (
-                    StyledChunks::new(
-                        ChunkText::Borrowed(text.as_ref()),
-                        0,
-                        0,
-                        HighlightStyles::default(),
-                        clipped_start - segment.merged_range.start
-                            ..clipped_end - segment.merged_range.start,
-                    ),
-                    true,
-                ),
+            let (chunks, is_placeholder, renderer) = match &segment.kind {
+                FoldRowSegmentKind::Placeholder { text, renderer } => {
+                    // 占位符被水平窗口裁剪时不再保证元素宽度与文本一致，退回文本绘制。
+                    let unclipped = clipped_start == segment.merged_range.start
+                        && clipped_end == segment.merged_range.end;
+                    (
+                        StyledChunks::new(
+                            ChunkText::Borrowed(text.as_ref()),
+                            0,
+                            0,
+                            HighlightStyles::default(),
+                            clipped_start - segment.merged_range.start
+                                ..clipped_end - segment.merged_range.start,
+                        ),
+                        true,
+                        unclipped.then(|| renderer.clone()),
+                    )
+                }
                 FoldRowSegmentKind::Text {
                     stream_line,
                     projected_range,
@@ -666,10 +675,11 @@ impl<'a, 'b> Iterator for FoldChunks<'a, 'b> {
                             projected_start..projected_end,
                         ),
                         false,
+                        None,
                     )
                 }
             };
-            self.current = Some((chunks, is_placeholder));
+            self.current = Some((chunks, is_placeholder, renderer));
         }
     }
 }

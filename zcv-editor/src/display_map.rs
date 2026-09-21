@@ -52,7 +52,9 @@ pub use decorations::{EditorHunk, EditorHunkMarkerKind, EditorHunkPart, HunkCont
 pub(crate) use display_width::DisplayColumn;
 use edit::ProjectionEdit;
 use error::DisplayMapResult;
-pub(crate) use fold_map::{FoldBias, FoldPlaceholder, FoldRowSegment, ProjectedLineIndex};
+pub(crate) use fold_map::{
+    ChunkRenderer, FoldBias, FoldPlaceholder, FoldRowSegment, ProjectedLineIndex,
+};
 use fold_map::{FoldMap, FoldSnapshot};
 use gpui::{App, AppContext as _, Bounds, Context, Entity, HighlightStyle, Pixels};
 use tab_map::{TabMap, display_width_for_fold_row};
@@ -94,8 +96,6 @@ impl From<ProjectedLineIndex> for DisplayRow {
 pub(crate) struct WrapRow(usize);
 
 impl WrapRow {
-    pub(crate) const ZERO: Self = Self(0);
-
     pub(crate) const fn new(value: usize) -> Self {
         Self(value)
     }

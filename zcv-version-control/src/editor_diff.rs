@@ -21,17 +21,14 @@ use zcv_workspace::Pane;
 /// 不接收 Workspace 实体：
 /// 订阅注册时的初始回调发生在 Workspace 更新期间，读取自身实体会触发 double-lease panic。
 pub fn refresh_pane_git_projection(pane: &Entity<Pane>, project: &Entity<Project>, cx: &mut App) {
-    // 通用按文件 git 投影只服务声明接收它的编辑器文档：
-    // 普通文件编辑器接收，差异视图自带投影、搜索结果由多源派生，都由 Item 显式声明不接收。
-    // 预览等代理 Item 会暴露同一个源编辑器，按编辑器实体去重避免重复注入。
+    // 通用按文件 git 投影只服务能提供单文件身份的编辑器文档：
+    // 预览等代理 Item 暴露同一个源编辑器，按编辑器实体去重避免重复注入；
+    // 项目搜索与项目差异的多源编辑器不提供单文件路径，自然被排除。
     let mut opened = Vec::<(Entity<Editor>, PathBuf)>::new();
     let mut seen = HashSet::new();
     {
         let pane_ref = pane.read(cx);
         for item in pane_ref.tabs() {
-            if !item.receives_git_projection(cx) {
-                continue;
-            }
             let Some(editor) = item.act_as::<Editor>(cx) else {
                 continue;
             };

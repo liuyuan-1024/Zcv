@@ -909,6 +909,28 @@ fn set_excerpts_for_path_replaces_only_that_path(cx: &mut TestAppContext) {
         Path::new("src/b.rs")
     );
 }
+
+/// M-8：excerpt 增删等结构变更必须在文本事务之外，否则组合事务身份与坐标基准会错配。
+#[gpui::test]
+#[should_panic(expected = "set_excerpts_for_path 必须在文本事务之外")]
+fn structural_change_inside_a_transaction_fails(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "a\nb\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(vec![ExcerptRange::line_range(first.clone(), 0..1, cx)], cx);
+    });
+
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer
+            .start_transaction(cx)
+            .expect("空组合文档应能开始事务");
+        buffer.set_excerpts_for_path(
+            vec![ExcerptRange::line_range(first.clone(), 0..1, cx)],
+            cx,
+        );
+    });
+}
+
 #[gpui::test]
 fn excerpt_view_is_derived_and_shared_once_per_snapshot(cx: &mut TestAppContext) {
     let first = singleton("src/a.rs", "a\nb\n", cx);

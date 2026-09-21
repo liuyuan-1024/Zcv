@@ -3602,10 +3602,22 @@ impl MultiBuffer {
         }
     }
 
+    /// 结构变更（excerpt 增删、diff 展开折叠）必须在文本事务之外进行。
+    ///
+    /// 事务期间改变拓扑会让组合事务身份与坐标基准错配（M-8）；
+    /// 这里显式失败，而不是让 end_transaction 在已变化的拓扑上静默收尾。
+    fn assert_no_active_transaction(&self, entry: &'static str) {
+        assert!(
+            self.state.active_transaction.is_none(),
+            "{entry} 必须在文本事务之外调用（M-8）"
+        );
+    }
+
     /// 整篇重建组合文档的内部入口；只供 diff 投影重建与 clear 使用。
     ///
     /// 顺序权威归 MultiBuffer：内部按 PathKey 稳定排序后建树，调用方传入顺序不进入文档语义。
     fn replace_all_excerpts(&mut self, excerpts: Vec<ExcerptRange>, cx: &mut Context<Self>) {
+        self.assert_no_active_transaction("MultiBuffer::replace_all_excerpts");
         self.snapshot_dirty = true;
         self.snapshot_source_updates = None;
         let mut unique_sources = Vec::<Entity<LanguageBuffer>>::new();
@@ -4274,6 +4286,7 @@ impl MultiBuffer {
         excerpts: Vec<ExcerptRange>,
         cx: &mut Context<Self>,
     ) -> Vec<TextRange> {
+        self.assert_no_active_transaction("MultiBuffer::set_excerpts_for_path");
         if excerpts.is_empty() {
             return Vec::new();
         }
@@ -4536,6 +4549,7 @@ impl MultiBuffer {
     }
 
     pub fn clear(&mut self, cx: &mut Context<Self>) {
+        self.assert_no_active_transaction("MultiBuffer::clear");
         let before = self.projection_trees();
         let old_version = self.state.projection_version;
         self.replace_all_excerpts(Vec::new(), cx);

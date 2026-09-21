@@ -1226,6 +1226,7 @@ impl MultiBuffer {
         before: (SumTree<Excerpt>, SumTree<DiffTransform>),
         cx: &mut Context<Self>,
     ) -> bool {
+        self.assert_no_active_transaction("MultiBuffer::rebuild_diff_projection");
         if self.diff.is_none() {
             return false;
         }

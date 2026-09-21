@@ -53,8 +53,8 @@ pub use decorations::{EditorHunk, EditorHunkMarkerKind, EditorHunkPart, HunkCont
 pub(crate) use display_width::DisplayColumn;
 use edit::ProjectionEdit;
 use error::DisplayMapResult;
-pub(crate) use fold_map::{FoldBias, FoldRowSegment, ProjectedLineIndex};
-use fold_map::{FoldMap, FoldPlaceholder, FoldSnapshot, LogicalProjection};
+pub(crate) use fold_map::{FoldBias, FoldPlaceholder, FoldRowSegment, ProjectedLineIndex};
+use fold_map::{FoldMap, FoldSnapshot, LogicalProjection};
 use gpui::{App, AppContext as _, Bounds, Context, Entity, HighlightStyle, Pixels};
 use tab_map::TabMap;
 pub(crate) use tab_map::{byte_for_display_column, display_column_for_byte};
@@ -640,7 +640,8 @@ pub(crate) fn buffer_edits_from_batch(
     old_snapshot: &MultiBufferSnapshot,
     new_snapshot: &MultiBufferSnapshot,
 ) -> Vec<ProjectionEdit<MultiBufferOffset>> {
-    if batch.requires_reset() {
+    if batch.requires_reset() || !batch_edits_cover_version_delta(batch, old_snapshot, new_snapshot)
+    {
         return vec![ProjectionEdit::new(
             MultiBufferOffset::new(0)..old_snapshot.len_bytes(),
             MultiBufferOffset::new(0)..new_snapshot.len_bytes(),
@@ -659,6 +660,35 @@ pub(crate) fn buffer_edits_from_batch(
             )
         })
         .collect()
+}
+
+/// 批次 patch 的删除/插入字节数必须与版本间的文本长度差一致。
+///
+/// 组合投影把结构变化与源文本变化合并时，可能只保留部分区间；这样的 patch 无法作为增量使用，
+/// 必须按整体替换重建，否则显示层会拿不完整的编辑去搬运变换树。
+fn batch_edits_cover_version_delta(
+    batch: &TextChangeBatch,
+    old_snapshot: &MultiBufferSnapshot,
+    new_snapshot: &MultiBufferSnapshot,
+) -> bool {
+    let removed: usize = batch
+        .patch()
+        .edits()
+        .iter()
+        .map(|edit| edit.old_range().end().get() - edit.old_range().start().get())
+        .sum();
+    let inserted: usize = batch
+        .patch()
+        .edits()
+        .iter()
+        .map(|edit| edit.new_range().end().get() - edit.new_range().start().get())
+        .sum();
+    let old_len = old_snapshot.len_bytes().get();
+    let new_len = new_snapshot.len_bytes().get();
+    old_len
+        .checked_sub(removed)
+        .and_then(|len| len.checked_add(inserted))
+        == Some(new_len)
 }
 
 #[derive(Debug)]
@@ -1059,12 +1089,10 @@ impl DisplayMap {
     pub(crate) fn fold_range(
         &mut self,
         range: Range<MultiBufferAnchor>,
+        placeholder: FoldPlaceholder,
         cx: &mut Context<Self>,
     ) -> DisplayMapResult<()> {
-        let (fold_snapshot, fold_edits) = self
-            .fold_map
-            .write()
-            .fold(range, FoldPlaceholder::default())?;
+        let (fold_snapshot, fold_edits) = self.fold_map.write().fold(range, placeholder)?;
         let tab_width = self.tab_map.snapshot().tab_width();
         let (tab_snapshot, tab_edits) = self.tab_map.sync(fold_snapshot, &fold_edits, tab_width);
         let (wrap_snapshot, wrap_edits) = self

@@ -919,7 +919,7 @@ fn folded_projection_rows_drive_layout_and_hit_testing(cx: &mut TestAppContext) 
                     snapshot.anchor_at(MultiBufferOffset::new(6), zcv_text::Affinity::Before)
                         ..snapshot.anchor_at(MultiBufferOffset::new(28), zcv_text::Affinity::After)
                 };
-                map.fold_range(range, cx)
+                map.fold_range(range, FoldPlaceholder::default(), cx)
             })
             .expect("折叠应成功");
             let layout = layout_visible_lines(

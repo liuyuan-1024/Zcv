@@ -58,7 +58,7 @@ fn fold_range(
             snapshot.anchor_at(MultiBufferOffset::new(start), Affinity::Before)
                 ..snapshot.anchor_at(MultiBufferOffset::new(end), Affinity::After)
         };
-        map.fold_range(range, cx)
+        map.fold_range(range, FoldPlaceholder::default(), cx)
     })
 }
 

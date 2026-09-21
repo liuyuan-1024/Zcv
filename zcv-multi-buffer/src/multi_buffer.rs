@@ -3460,19 +3460,28 @@ impl MultiBuffer {
         );
         let patch_edits = source_change.patch().edits();
         let mut output_edits = Vec::new();
+        let record_count = old_records.len();
         for (
-            (old_output_at, _old_input_len, old_source_range),
-            (new_output_at, new_input_len, new_source_range),
-        ) in old_records.iter().zip(new_records)
+            index,
+            (
+                (old_output_at, _old_input_len, old_source_range),
+                (new_output_at, new_input_len, new_source_range),
+            ),
+        ) in old_records.iter().zip(new_records).enumerate()
         {
+            // 末尾 excerpt 没有后继片段可以接收其终点插入，必须由它自己消费。
+            let is_last_record = index + 1 == record_count;
             for patch_edit in patch_edits {
                 let old_range = patch_edit.old_range();
                 let excerpt_range = *old_source_range;
                 let overlap = if old_range.is_empty() {
                     // 零长度 excerpt 没有可容纳插入的可见内容，插入点等于其端点时也必须归它消费；
-                    // 非空 excerpt 的终点插入留给后继片段，避免边界插入重复计入。
+                    // 非空 excerpt 的终点插入留给后继片段，避免边界插入重复计入；
+                    // 末尾 excerpt 没有后继，终点插入归它自己。
                     (old_range.start() >= excerpt_range.start()
-                        && (old_range.start() < excerpt_range.end() || excerpt_range.is_empty()))
+                        && (old_range.start() < excerpt_range.end()
+                            || excerpt_range.is_empty()
+                            || (is_last_record && old_range.start() == excerpt_range.end())))
                     .then_some(old_range)
                 } else {
                     TextRange::new(

@@ -37,6 +37,18 @@ impl FoldMap {
     }
 }
 
+/// 本层字节编辑在旧/新快照上映射出的投影行区间。
+fn edit_row_ranges(
+    edit: &FoldEdit,
+    old: &FoldSnapshot,
+    new: &FoldSnapshot,
+) -> (Range<usize>, Range<usize>) {
+    (
+        edit.old.start.to_point(old).row()..edit.old.end.to_point(old).row(),
+        edit.new.start.to_point(new).row()..edit.new.end.to_point(new).row(),
+    )
+}
+
 #[test]
 fn projected_kind_rejects_the_end_boundary() {
     let buffer = Buffer::from_text("first\nsecond".to_string(), BufferConfig::default())
@@ -68,24 +80,30 @@ fn fold_snapshot_owns_fold_and_transform_trees_and_keeps_old_snapshots_stable() 
     );
     assert_ne!(before.version(), after.version());
     assert_eq!(after.folds.summary().count, 1);
-    assert!(edits.iter().all(|edit| edit.old_rows() != edit.new_rows()));
+    // 变换树输入必须精确覆盖下层文本，同构段不得被折叠变换吞掉。
+    assert_eq!(
+        after.transforms.summary().input.len,
+        after.buffer_snapshot().len_bytes().get()
+    );
+    assert!(!edits.is_empty());
+    let (old_rows, new_rows) = edit_row_ranges(&edits[0], &before, &after);
+    assert_ne!(old_rows, new_rows);
 }
 
 #[test]
 fn folding_a_middle_range_emits_a_localized_structural_edit() {
     let buffer = Buffer::from_text("a\nb\nc\nd\ne\nf\n".to_string(), BufferConfig::default())
         .expect("测试 Buffer 应能创建");
-    let (mut map, _) = FoldMap::new(buffer.snapshot().into());
+    let (mut map, before) = FoldMap::new(buffer.snapshot().into());
     let (after, edits) = map.fold_text_range(2, 7).unwrap();
 
     assert_eq!(after.line_count(), 5);
     let edit = &edits[0];
-    assert!(edit.old_rows() != edit.new_rows());
-    // 只覆盖被折叠的 tab 行，折叠点前后的可见行保留原变换。
-    // 折叠段不产生投影行：被隐藏的两行整段移除，anchor 行不在编辑区间内。
-    // Edit 允许放大到 anchor 行：区间只覆盖被折叠行与其合并行，不是整层失效。
-    assert_eq!(edit.old_rows(), 1..4);
-    assert_eq!(edit.new_rows(), 1..2);
+    let (old_rows, new_rows) = edit_row_ranges(edit, &before, &after);
+    assert_ne!(old_rows, new_rows);
+    // 被折字节区间在旧投影中覆盖 1..3 行，折叠后只产生占位符段所在的合并行。
+    assert_eq!(old_rows, 1..3);
+    assert_eq!(new_rows, 1..1);
 }
 
 #[test]
@@ -94,6 +112,7 @@ fn unfolding_a_middle_fold_restores_only_its_rows() {
         .expect("测试 Buffer 应能创建");
     let (mut map, _) = FoldMap::new(buffer.snapshot().into());
     map.fold_text_range(2, 7).unwrap();
+    let folded = map.snapshot.clone();
     let (after, edits) = map
         .write()
         .unfold_lines(LineRange::new(Line::new(0), Line::new(7)).unwrap())
@@ -101,11 +120,10 @@ fn unfolding_a_middle_fold_restores_only_its_rows() {
 
     assert_eq!(after.line_count(), 7);
     let edit = &edits[0];
-    assert!(edit.old_rows() != edit.new_rows());
-    // 折叠段不产生投影行：展开恢复的两行整段插入，anchor 行不在编辑区间内。
-    // Edit 允许放大到 anchor 行：展开只失效被恢复行与其合并行。
-    assert_eq!(edit.old_rows(), 1..2);
-    assert_eq!(edit.new_rows(), 1..4);
+    let (old_rows, new_rows) = edit_row_ranges(edit, &folded, &after);
+    assert_ne!(old_rows, new_rows);
+    assert_eq!(old_rows, 1..1);
+    assert_eq!(new_rows, 1..3);
 }
 
 #[test]
@@ -141,16 +159,16 @@ fn unfolding_outer_fold_reveals_the_nested_transform() {
     let (snapshot, edits) = map.write().unfold(outer);
     assert_eq!(snapshot.folds.summary().count, 1);
     assert_eq!(snapshot.line_count(), 4);
-    assert!(edits[0].old_rows() != edits[0].new_rows());
+    assert!(!edits.is_empty());
 }
 
 #[test]
-fn inline_edit_advances_fold_snapshot_without_rebuilding_transforms() {
+fn inline_edit_inside_a_fold_keeps_a_local_edit() {
     let mut buffer =
         Buffer::from_text("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
     let (mut map, _) = FoldMap::new(buffer.snapshot().into());
     map.fold_text_range(6, 13).unwrap();
-    let transforms = map.snapshot.transforms.clone();
+    let folded = map.snapshot.clone();
     let subscription = buffer.subscribe();
     buffer
         .edit(
@@ -160,9 +178,13 @@ fn inline_edit_advances_fold_snapshot_without_rebuilding_transforms() {
         .unwrap();
 
     let (snapshot, edits) = map.read_test(&buffer, &subscription);
-    assert_eq!(snapshot.transforms, transforms);
     assert_eq!(snapshot.folds.summary().count, 1);
-    assert!(edits.iter().all(|edit| edit.old_rows() == edit.new_rows()));
+    assert_eq!(snapshot.line_count(), 2);
+    // 折叠内部插入不改变投影行：失效区间新旧相等（合并行就地重排）。
+    assert!(edits.iter().all(|edit| {
+        let (old_rows, new_rows) = edit_row_ranges(edit, &folded, &snapshot);
+        old_rows == new_rows
+    }));
 }
 
 #[test]
@@ -171,6 +193,7 @@ fn editing_inside_a_fold_remeasures_only_the_merged_row() {
         Buffer::from_text("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
     let (mut map, _) = FoldMap::new(buffer.snapshot().into());
     map.fold_text_range(6, 13).unwrap();
+    let folded = map.snapshot.clone();
     let subscription = buffer.subscribe();
     buffer
         .edit(
@@ -180,19 +203,21 @@ fn editing_inside_a_fold_remeasures_only_the_merged_row() {
         .unwrap();
 
     let (snapshot, edits) = map.read_test(&buffer, &subscription);
-    // 折叠内部插入整行：隐藏行数随之变化，投影行数不变；只有合并行需要重排，因此本层编辑是 old == new 的就地失效。
+    // 折叠内部插入整行：隐藏行数随之变化，投影行数不变；只有合并行需要重排。
     assert_eq!(snapshot.line_count(), 2);
-    let edit = &edits[0];
-    assert_eq!(edit.old_rows(), 0..1);
-    assert_eq!(edit.new_rows(), 0..1);
+    // 占位符输出不跨行：字节编辑映射到合并行内的空区间，缓存失效由改变行覆盖。
+    let (old_rows, new_rows) = edit_row_ranges(&edits[0], &folded, &snapshot);
+    assert_eq!(old_rows, 0..0);
+    assert_eq!(new_rows, 0..0);
 }
 
 #[test]
-fn newline_edit_inside_a_fold_rebuilds_transforms_with_a_local_edit() {
+fn newline_edit_inside_a_fold_keeps_logical_lines_consistent() {
     let mut buffer =
         Buffer::from_text("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
     let (mut map, _) = FoldMap::new(buffer.snapshot().into());
     map.fold_text_range(6, 13).unwrap();
+    let folded = map.snapshot.clone();
     let subscription = buffer.subscribe();
     buffer
         .edit(
@@ -208,14 +233,16 @@ fn newline_edit_inside_a_fold_rebuilds_transforms_with_a_local_edit() {
     );
     // fold 变换树已重建，但投影行数未变，发出的编辑只覆盖合并行。
     assert_eq!(snapshot.line_count(), 2);
-    assert_eq!(edits[0].old_rows(), 0..1);
-    assert_eq!(edits[0].new_rows(), 0..1);
+    let (old_rows, new_rows) = edit_row_ranges(&edits[0], &folded, &snapshot);
+    assert_eq!(old_rows, 0..0);
+    assert_eq!(new_rows, 0..0);
 }
+
 #[test]
 fn newline_edit_outside_folds_emits_a_localized_structural_edit() {
     let mut buffer =
         Buffer::from_text("a\nb\nc\nd\ne\nf\n".to_string(), BufferConfig::default()).unwrap();
-    let (mut map, _) = FoldMap::new(buffer.snapshot().into());
+    let (mut map, before) = FoldMap::new(buffer.snapshot().into());
     let subscription = buffer.subscribe();
     // 在未折叠区域插入换行：只应重排该行附近的 tab 行，而不是整份文档。
     buffer
@@ -227,10 +254,10 @@ fn newline_edit_outside_folds_emits_a_localized_structural_edit() {
 
     let (snapshot, edits) = map.read_test(&buffer, &subscription);
     assert_eq!(snapshot.line_count(), 8);
-    let edit = &edits[0];
-    assert!(edit.old_rows() != edit.new_rows());
-    assert_eq!(edit.old_rows(), 2..3);
-    assert_eq!(edit.new_rows(), 2..4);
+    let (old_rows, new_rows) = edit_row_ranges(&edits[0], &before, &snapshot);
+    assert!(old_rows != new_rows);
+    assert_eq!(old_rows, 2..2);
+    assert_eq!(new_rows, 2..3);
 }
 
 #[test]
@@ -257,20 +284,20 @@ fn deleting_folded_text_invalidates_anchor_range() {
 
 #[test]
 fn merged_row_text_joins_anchor_placeholder_and_close_tail() {
-    // 折叠范围 = [anchor 行换行符, 闭合括号前)：anchor 文本、占位符、真实 `}` 拼成同一行。
+    // 折叠范围 = [anchor 行换行符, 闭合括号前)：anchor 文本、占位符、真实 闭合括号 拼成同一行。
     let buffer = Buffer::from_text(
         "fn b() {\n    2\n}\nrest".to_string(),
         BufferConfig::default(),
     )
     .unwrap();
     let (mut map, _) = FoldMap::new(buffer.snapshot().into());
-    // range = [行 0 换行符(8), `}`(15))。
+    // range = [行 0 换行符(8), 闭合括号(15))。
     let (snapshot, _) = map.fold_text_range(8, 15).unwrap();
 
     assert_eq!(snapshot.line_count(), 2);
     let text = snapshot.row_text(ProjectedLineIndex::new(0)).unwrap();
     assert_eq!(text.as_ref(), "fn b() {⋯}\n");
-    // 段表：anchor 文本段 + 占位符段 + 闭合尾段（`}` 是真实字节范围）。
+    // 段表由变换推导：anchor 文本段 + 占位符段 + 闭合行尾段（含行尾换行符）。
     let segments = snapshot
         .fold_row_segments(ProjectedLineIndex::new(0))
         .unwrap();
@@ -311,7 +338,8 @@ fn edits_on_folded_lines_map_to_anchor_row() {
         Buffer::from_text("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
     let (mut map, _) = FoldMap::new(buffer.snapshot().into());
     map.fold_text_range(6, 13).unwrap();
-    // 编辑落在隐藏行（行 1）与 close 行（行 2）：都映射到 anchor 行（行 0）。
+    let folded = map.snapshot.clone();
+    // 编辑落在隐藏行（行 1）：投影失效区间覆盖 anchor 行的合并行（行 0）。
     let subscription = buffer.subscribe();
     buffer
         .edit(
@@ -319,8 +347,10 @@ fn edits_on_folded_lines_map_to_anchor_row() {
             TransactionMetadata::default(),
         )
         .unwrap();
-    let (_, edits) = map.read_test(&buffer, &subscription);
-    assert_eq!(edits[0].old_rows(), 0..1);
+    let (snapshot, edits) = map.read_test(&buffer, &subscription);
+    let (old_rows, new_rows) = edit_row_ranges(&edits[0], &folded, &snapshot);
+    assert_eq!(old_rows, 0..0);
+    assert_eq!(new_rows, 0..0);
 }
 
 #[test]

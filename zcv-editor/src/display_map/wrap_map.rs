@@ -25,8 +25,8 @@ use super::chunk::{Chunk, ChunkText, FoldChunks, HighlightStyles, StyledChunks};
 use super::display_width::DisplayColumn;
 use super::error::DisplayMapResult;
 use super::fold_map::{
-    FoldBias, FoldRowSegment, FoldRowSegmentKind, LogicalPoint, LogicalRange, ProjectedLineIndex,
-    ProjectedPoint, ProjectedRange, StreamProjectedKind,
+    FoldBias, FoldOffset, FoldRowSegment, FoldRowSegmentKind, LogicalPoint, LogicalRange,
+    ProjectedLineIndex, ProjectedPoint, ProjectedRange, StreamProjectedKind,
 };
 use super::tab_map::{
     TabEdit, TabSnapshot, advance_display_column, byte_for_display_column, line_content,
@@ -396,6 +396,7 @@ impl WrapSnapshot {
                         self.tab_snapshot().tab_width().get(),
                     );
                     return self.merged_byte_to_offset(
+                        fragment.tab_row,
                         &segments,
                         fragment.byte_range.start + local,
                         bias,
@@ -417,49 +418,47 @@ impl WrapSnapshot {
 
     /// 折叠合并行内合并字节 → buffer 字节。
     ///
-    /// anchor 段经行内逆投影；占位符吸附折叠起点（右箭头一步跨过折叠，左箭头可回 anchor 行尾）；
-    /// 尾段映射到 close 行的真实字节。
+    /// 文本段按行内逆投影映射；
+    /// 占位符列按选区方向吸附到折叠输入起点或终点，这样拖拽经过折叠时隐藏内容会整体纳入选区。
     fn merged_byte_to_offset(
         &self,
+        tab_row: usize,
         segments: &[FoldRowSegment],
         merged_byte: usize,
         bias: FoldBias,
     ) -> DisplayMapResult<MultiBufferOffset> {
-        let anchor = &segments[0];
-        let placeholder = &segments[1];
-        let tail = &segments[2];
-        if merged_byte < anchor.merged_range.end {
-            let FoldRowSegmentKind::Text { stream_line, .. } = &anchor.kind else {
-                unreachable!("折叠合并行首段必须是 anchor 文本段");
-            };
-            return self.stream_offset(*stream_line, merged_byte);
-        }
-        if merged_byte < placeholder.merged_range.end {
-            // 占位符列按选区方向吸附到折叠起点或终点；这样拖拽经过折叠时，隐藏内容会整体纳入选区。
-            if bias == FoldBias::Right {
-                let FoldRowSegmentKind::Text {
+        let fold = self.tab_snapshot.fold_snapshot();
+        let row_start = fold
+            .row_start_offset(ProjectedLineIndex::new(tab_row))
+            .get();
+        for (index, segment) in segments.iter().enumerate() {
+            let at_last = index + 1 == segments.len();
+            if merged_byte >= segment.merged_range.end && !at_last {
+                continue;
+            }
+            return match &segment.kind {
+                FoldRowSegmentKind::Text {
                     stream_line,
                     projected_range,
-                } = &tail.kind
-                else {
-                    unreachable!("折叠合并行尾段必须是 close 文本段");
-                };
-                return self.stream_offset(*stream_line, projected_range.start);
-            }
-            let FoldRowSegmentKind::Text { stream_line, .. } = &anchor.kind else {
-                unreachable!("折叠合并行首段必须是 anchor 文本段");
+                } => {
+                    let local = merged_byte
+                        .saturating_sub(segment.merged_range.start)
+                        .min(segment.merged_range.len());
+                    self.stream_offset(*stream_line, projected_range.start + local)
+                }
+                FoldRowSegmentKind::Placeholder { .. } => {
+                    let output = FoldOffset::new(MultiBufferOffset::new(
+                        row_start + segment.merged_range.start,
+                    ));
+                    let (start, end) = fold.input_range_at_output(output);
+                    match bias {
+                        FoldBias::Left => Ok(start),
+                        FoldBias::Right => Ok(end),
+                    }
+                }
             };
-            return self.stream_offset(*stream_line, anchor.merged_range.end);
         }
-        let FoldRowSegmentKind::Text {
-            stream_line,
-            projected_range,
-        } = &tail.kind
-        else {
-            unreachable!("折叠合并行尾段必须是 close 文本段");
-        };
-        let tail_projected = projected_range.start + (merged_byte - tail.merged_range.start);
-        self.stream_offset(*stream_line, tail_projected)
+        Err(CoordinateError::LineOutOfBounds(Line::new(tab_row)).into())
     }
 
     fn stream_offset(
@@ -639,6 +638,7 @@ impl WrapSnapshot {
                     fold.fold_row_segments(ProjectedLineIndex::new(fragment.tab_row))
                 {
                     return self.merged_byte_to_offset(
+                        fragment.tab_row,
                         &segments,
                         fragment.byte_range.end,
                         FoldBias::Left,

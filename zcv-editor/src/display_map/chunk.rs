@@ -1054,7 +1054,7 @@ impl<'a, 'b> BlockChunks<'a, 'b> {
             },
             projected_len,
             global_byte_start: *global_byte_start,
-            segments: segments.as_ref().map(|segments| segments.as_slice()),
+            segments: segments.as_deref(),
         };
         if let Some(window) = self.window_columns {
             // 水平窗口的输入是显示列而非字节；沿未展开 tab 的 Fold chunk 游标按显示列累计，
@@ -1083,7 +1083,7 @@ impl<'a, 'b> BlockChunks<'a, 'b> {
                 utf16_start: chunks.utf16_start(),
                 window_start_column,
                 window_prefix,
-                fold_segments: segments.as_ref().map(|segments| segments.as_slice()),
+                fold_segments: segments.as_deref(),
             },
             chunks: &mut chunks,
         });

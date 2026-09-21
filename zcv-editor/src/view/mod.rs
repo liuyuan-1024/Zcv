@@ -41,7 +41,7 @@ use crate::scrollbar::{ScrollbarMarker, ScrollbarMarkerState};
 use super::blink_manager::BlinkManager;
 use super::display_map::{
     CreaseId, DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplayRowEvent,
-    DisplaySnapshot, EditorHunk, FoldBias, HighlightStyles, HunkControlTarget,
+    DisplaySnapshot, EditorHunk, FoldBias, FoldPlaceholder, HighlightStyles, HunkControlTarget,
 };
 use super::element::{AUTOSCROLL_INTERVAL, EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollViewport, ScrollbarThumbState};
@@ -717,9 +717,9 @@ impl Editor {
                 .crease_at_line(line)
                 .map(|crease| crease.range().clone());
             if let Some(range) = range
-                && let Err(error) = self
-                    .display_map
-                    .update(cx, |map, cx| map.fold_range(range, cx))
+                && let Err(error) = self.display_map.update(cx, |map, cx| {
+                    map.fold_range(range, FoldPlaceholder::default(), cx)
+                })
             {
                 cx.emit(EditorEvent::Error(format!("折叠失败：{error:#}")));
             }
@@ -772,9 +772,9 @@ impl Editor {
             .map(|crease| crease.range().clone());
 
         if let Some(range) = range
-            && let Err(error) = self
-                .display_map
-                .update(cx, |map, cx| map.fold_range(range, cx))
+            && let Err(error) = self.display_map.update(cx, |map, cx| {
+                map.fold_range(range, FoldPlaceholder::default(), cx)
+            })
         {
             cx.emit(EditorEvent::Error(format!("折叠失败：{error:#}")));
         }

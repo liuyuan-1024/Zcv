@@ -18,7 +18,7 @@ use super::chunk::{ChunkText, FoldChunks, HighlightStyles, StyledChunks};
 use super::display_width::char_width;
 use super::{
     error::DisplayMapResult,
-    fold_map::{FoldEdit, FoldSnapshot, ProjectedLineIndex, StreamProjectedKind},
+    fold_map::{FoldEdit, FoldOffset, FoldSnapshot, ProjectedLineIndex, StreamProjectedKind},
 };
 
 /// Tab 层的本层列坐标：tab 展开后一行内的视觉列宽。
@@ -195,9 +195,16 @@ impl TabMap {
         fold_edits: &[FoldEdit],
         tab_width: NonZeroUsize,
     ) -> (TabSnapshot, Vec<TabEdit>) {
+        let old_fold_snapshot = self.snapshot.fold_snapshot.clone();
         let old_count = self.snapshot.line_count();
         let new_count = fold_snapshot.line_count();
-        let tab_edits = tab_edits_from_fold_edits(old_count, new_count, fold_edits);
+        let tab_edits = tab_edits_from_fold_edits(
+            old_count,
+            new_count,
+            &old_fold_snapshot,
+            &fold_snapshot,
+            fold_edits,
+        );
         // 缓存失效只以 tab 宽度变化为键。
         let same_configuration = self.snapshot.tab_width() == tab_width;
         // fold 拓扑（折叠/行内提示变化都会使 fold 版本前进）。
@@ -257,11 +264,8 @@ impl TabMap {
     ///
     /// 折叠覆盖行仍映射到其 anchor 行的合并行；被编辑的合并行落在旧行区间内，因而被丢弃。
     fn shift_measured_widths(&mut self, old_rows: Range<usize>, new_rows: Range<usize>) {
-        debug_assert_eq!(
-            old_rows.start, new_rows.start,
-            "结构编辑的旧/新行区间必须共享起点，才能平移未受影响的缓存"
-        );
         let delta = new_rows.len() as isize - old_rows.len() as isize;
+        // 旧行区间内的键失效，其后的键按行数差整体平移。
         let widths = std::mem::take(&mut self.measured_line_widths);
         for (line, width) in widths {
             let row = line.get();
@@ -338,29 +342,47 @@ impl TabMap {
     }
 }
 
-/// 把 Fold 层的本层编辑转成 Tab 层的本层编辑。
+/// 把 Fold 层的字节偏移本层编辑转成 Tab 层的行区间本层编辑。
 ///
-/// tab 行与 fold 投影行一一对应，行区间沿用，端点取行边界。
-/// 局部编辑的 old/new 行数差必须与全局拓扑差一致，否则 Wrap 变换树的 input 会与下层不一致。
+/// fold 编辑的 old 落在旧投影字节空间，new 落在新投影字节空间；
+/// 端点在对应快照上取投影行号（右偏），行区间端点因此落在行边界。
+/// 多条编辑的行数差之和必须与全局投影行数差一致，否则 Wrap 变换树的 input 会与下层不一致。
 fn tab_edits_from_fold_edits(
     old_count: usize,
     new_count: usize,
+    old_fold_snapshot: &FoldSnapshot,
+    new_fold_snapshot: &FoldSnapshot,
     fold_edits: &[FoldEdit],
 ) -> Vec<TabEdit> {
     let edits: Vec<TabEdit> = fold_edits
         .iter()
-        .map(|edit| TabEdit::from_rows(edit.old_rows(), edit.new_rows()))
+        .map(|edit| {
+            TabEdit::from_rows(
+                row_range(old_fold_snapshot, &edit.old),
+                row_range(new_fold_snapshot, &edit.new),
+            )
+        })
         .collect();
     let old_sum: usize = edits.iter().map(|edit| edit.old_rows().len()).sum();
     let new_sum: usize = edits.iter().map(|edit| edit.new_rows().len()).sum();
     // tab 层只改列宽、不增删行，fold 编辑必须守恒 tab 行数。
-    // 不守恒说明 fold 层失效区间没有覆盖权威净行数，必须直接失败而不是静默整层失效。
+    // 不守恒说明下层批次没有覆盖全部行变化（组合投影把多处变化合并时可能丢失区间），
+    // 必须在批次边界按整体替换处理，而不是在这里静默修正。
     assert_eq!(
         new_count + old_sum,
         old_count + new_sum,
         "fold 编辑必须守恒 tab 行数：旧 {old_count} 新 {new_count}，编辑旧 {old_sum} 新 {new_sum}"
     );
     edits
+}
+
+/// 投影字节区间 → 行区间；端点按各自快照取投影行号。
+///
+/// 终点取末字节所在行（右边界），使被编辑行与其后的合并行都纳入失效区间。
+fn row_range(snapshot: &FoldSnapshot, range: &Range<FoldOffset>) -> Range<usize> {
+    let start = range.start.to_point(snapshot).row();
+    let end = range.end.to_point(snapshot).row() + 1;
+    start..end
 }
 
 fn display_width_chunk(column: usize, text: &str, tab_width: usize) -> usize {

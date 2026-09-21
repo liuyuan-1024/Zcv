@@ -1,4 +1,4 @@
-use crate::display_map::DiffDecorationSnapshot;
+use crate::display_map::{DiffDecorationSnapshot, FoldPlaceholder};
 use zcv_multi_buffer::{ResolvedDiffHunk, WordDiffs};
 
 use super::*;

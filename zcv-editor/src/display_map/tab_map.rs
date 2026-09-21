@@ -1,94 +1,60 @@
-//! DisplayMap 的 Tab 展开与 display-column 映射。
+//! DisplayMap 的硬 Tab 展开与 Tab 点坐标。
 //!
-//! `TabMap` 只测量实际进入投影视口的逻辑行，并在同行编辑后精确失效对应缓存。
-//! 初次构建不遍历全文；结构编辑按行区间平移已测量行（被编辑行失效），后续仍按需重新填充。
-
-use zcv_multi_buffer::MultiBufferOffset;
+//! Tab 层不保存逐行宽度或变换树。
+//! 读取 chunk 时由当前行的 Tab 点即时展开，因而同一行中的后续 Tab 总是以其真实的前置显示列计算。
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
 use zcv_multi_buffer::MultiBufferSnapshot;
-use zcv_text::{CoordinateError, Line};
+use zcv_text::Line;
 
 use super::chunk::{ChunkText, FoldChunks, HighlightStyles, StyledChunks};
 use super::display_width::char_width;
-use super::{
-    error::DisplayMapResult,
-    fold_map::{FoldEdit, FoldOffset, FoldSnapshot, ProjectedLineIndex, StreamProjectedKind},
+use super::edit::ProjectionEdit;
+use super::error::DisplayMapResult;
+use super::fold_map::{
+    FoldBias, FoldEdit, FoldPoint, FoldSnapshot, ProjectedLineIndex, StreamProjectedKind,
 };
 
-/// Tab 层的本层列坐标：tab 展开后一行内的视觉列宽。
-///
-/// 与显示列数值等价，但作为 tab 层的坐标独立建模，避免 tab 测量结果与显示层坐标准确性依赖同一个裸类型。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct TabColumn(usize);
-
-impl TabColumn {
-    pub(crate) const fn new(value: usize) -> Self {
-        Self(value)
-    }
+/// Tab 层的本层点。行表示投影行，列表示展开硬 Tab 后的显示列。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct TabPoint {
+    row: usize,
+    column: usize,
 }
-
-/// Tab 层的本层点：tab 行坐标。
-///
-/// 本层按行失效，编辑端点落在行边界。
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct TabPoint(Line);
 
 impl TabPoint {
-    pub(super) const fn new(line: Line) -> Self {
-        Self(line)
+    pub(crate) const fn new(row: usize, column: usize) -> Self {
+        Self { row, column }
     }
 
-    pub(super) const fn line(self) -> Line {
-        self.0
+    pub(crate) const fn zero() -> Self {
+        Self::new(0, 0)
     }
-}
 
-/// Tab 层的本层编辑：tab 点区间在本层坐标空间中的替换。
-///
-/// tab 行与 fold 投影行一一对应（tab 只改列宽、不增删行）；`old == new` 表示就地失效这些行。
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct TabEdit {
-    old: Range<TabPoint>,
-    new: Range<TabPoint>,
-}
+    pub(crate) const fn row(self) -> usize {
+        self.row
+    }
 
-impl TabEdit {
-    fn from_rows(old: Range<usize>, new: Range<usize>) -> Self {
-        Self {
-            old: tab_point_range(old),
-            new: tab_point_range(new),
+    pub(crate) const fn column(self) -> usize {
+        self.column
+    }
+
+    /// 把一段文本摘要（行增量与尾列）推进到下一个点。
+    pub(super) const fn advance(self, summary: Self) -> Self {
+        if summary.row == 0 {
+            Self::new(self.row, self.column + summary.column)
+        } else {
+            Self::new(self.row + summary.row, summary.column)
         }
     }
-
-    pub(super) fn old_rows(&self) -> Range<usize> {
-        self.old.start.line().get()..self.old.end.line().get()
-    }
-
-    pub(super) fn new_rows(&self) -> Range<usize> {
-        self.new.start.line().get()..self.new.end.line().get()
-    }
-
-    /// 行内编辑就地失效的 tab 行；结构编辑由 `old_rows`/`new_rows` 表达。
-    pub(super) fn changed_rows(&self) -> Range<usize> {
-        self.old_rows()
-    }
-
-    pub(super) fn is_structural(&self) -> bool {
-        self.old != self.new
-    }
 }
 
-/// 行区间转成本层点区间；端点为行边界。
-fn tab_point_range(rows: Range<usize>) -> Range<TabPoint> {
-    let point = |row: usize| TabPoint::new(Line::new(row));
-    point(rows.start)..point(rows.end)
-}
+/// Tab 层的本层编辑：旧区间属于旧 Tab 快照，新区间属于新 Tab 快照。
+pub(super) type TabEdit = ProjectionEdit<TabPoint>;
 
 #[derive(Debug, Clone)]
 pub(crate) struct TabSnapshot {
@@ -118,9 +84,23 @@ impl TabSnapshot {
         &self.fold_snapshot
     }
 
-    /// 投影行总数（fold 输出）。
+    /// 投影行总数由下层 Fold 快照定义，不由本层编辑的行差推导。
     pub(super) fn line_count(&self) -> usize {
         self.fold_snapshot.line_count()
+    }
+
+    pub(super) fn max_point(&self) -> TabPoint {
+        self.fold_point_to_tab_point(self.fold_snapshot.max_point())
+    }
+
+    /// 一段 Tab 文本范围的相对终点摘要。它可作为 Wrap 变换树的输入维度。
+    pub(super) fn summary_for_range(&self, range: Range<TabPoint>) -> TabPoint {
+        debug_assert!(range.start <= range.end);
+        if range.start.row == range.end.row {
+            TabPoint::new(0, range.end.column - range.start.column)
+        } else {
+            TabPoint::new(range.end.row - range.start.row, range.end.column)
+        }
     }
 
     /// 投影行 → 对应的 buffer 行来源。
@@ -129,7 +109,7 @@ impl TabSnapshot {
             .projected_kind(ProjectedLineIndex::new(line.get()))
     }
 
-    /// 投影行 → 行文本（经流行解析与行内提示注入；折叠合并行为合成文本）。
+    /// 投影行 → 行文本（经折叠投影；合并行是按段合成的文本）。
     pub(super) fn line_text(&self, line: Line) -> Option<Cow<'_, str>> {
         let fold = self.fold_snapshot();
         let projected = ProjectedLineIndex::new(line.get());
@@ -140,12 +120,14 @@ impl TabSnapshot {
         fold.buffer_snapshot().line_text(stream_line)
     }
 
-    /// 投影行 → 字节范围（折叠合并行为锚定行行首的伪坐标）。
-    pub(super) fn line_byte_range(&self, line: Line) -> Option<Range<MultiBufferOffset>> {
+    /// 投影行 → 字节范围（折叠合并行锚定至其首个源行）。
+    pub(super) fn line_byte_range(
+        &self,
+        line: Line,
+    ) -> Option<Range<zcv_multi_buffer::MultiBufferOffset>> {
         let fold = self.fold_snapshot();
         let projected = ProjectedLineIndex::new(line.get());
         if let Some(anchor_stream) = fold.fold_row_anchor_stream_line(projected) {
-            // 合并行：anchor 行行首的伪坐标，roundtrip 不可逆。
             let start = fold.buffer_snapshot().line_start_byte(anchor_stream).ok()?;
             return Some(start..start);
         }
@@ -163,13 +145,55 @@ impl TabSnapshot {
     pub(super) const fn version(&self) -> u64 {
         self.version
     }
+
+    /// Fold 点转换成 Tab 点。Fold 列是输出字节列，Tab 列是展开后的显示列。
+    pub(crate) fn fold_point_to_tab_point(&self, point: FoldPoint) -> TabPoint {
+        let line = Line::new(point.row());
+        let Some(text) = self.line_text(line) else {
+            // 组合投影的尾部端点没有可读取的行内容，但仍是合法的层间区间端点。
+            // 它没有可展开的 Tab，保留同值列即可。
+            return TabPoint::new(point.row(), point.column());
+        };
+        let content = line_content(text.as_ref());
+        let column = display_column_for_byte(
+            content,
+            0,
+            point.column().min(content.len()),
+            self.tab_width.get(),
+        );
+        let tab_point = TabPoint::new(point.row(), column);
+        debug_assert_eq!(
+            self.tab_point_to_fold_point(tab_point, FoldBias::Left)
+                .row(),
+            point.row(),
+            "Tab/Fold 点转换不得跨投影行"
+        );
+        tab_point
+    }
+
+    /// Tab 点反向转换成 Fold 点。落在 Tab 展开空格中的点按显式 Bias 吸附。
+    pub(crate) fn tab_point_to_fold_point(&self, point: TabPoint, bias: FoldBias) -> FoldPoint {
+        let line = Line::new(point.row());
+        let Some(text) = self.line_text(line) else {
+            return FoldPoint::new(point.row(), point.column());
+        };
+        let content = line_content(text.as_ref());
+        FoldPoint::new(
+            point.row(),
+            byte_for_display_column_with_bias(
+                content,
+                0,
+                point.column(),
+                self.tab_width.get(),
+                bias,
+            ),
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct TabMap {
     snapshot: TabSnapshot,
-    measured_line_widths: BTreeMap<Line, TabColumn>,
-    longest_measured: Option<(Line, TabColumn)>,
 }
 
 impl TabMap {
@@ -178,8 +202,6 @@ impl TabMap {
         (
             Self {
                 snapshot: snapshot.clone(),
-                measured_line_widths: BTreeMap::new(),
-                longest_measured: None,
             },
             snapshot,
         )
@@ -195,200 +217,57 @@ impl TabMap {
         fold_edits: &[FoldEdit],
         tab_width: NonZeroUsize,
     ) -> (TabSnapshot, Vec<TabEdit>) {
-        let old_fold_snapshot = self.snapshot.fold_snapshot.clone();
-        let old_count = self.snapshot.line_count();
-        let new_count = fold_snapshot.line_count();
-        let tab_edits = tab_edits_from_fold_edits(
-            old_count,
-            new_count,
-            &old_fold_snapshot,
-            &fold_snapshot,
-            fold_edits,
-        );
-        // 缓存失效只以 tab 宽度变化为键。
-        let same_configuration = self.snapshot.tab_width() == tab_width;
-        // fold 拓扑（折叠/行内提示变化都会使 fold 版本前进）。
-        let same_fold_version = self.snapshot.fold_snapshot.version() == fold_snapshot.version();
-
-        if same_configuration && same_fold_version {
-            self.snapshot = TabSnapshot {
-                fold_snapshot,
-                version: self.snapshot.version,
-                tab_width,
-            };
-            return (self.snapshot.clone(), tab_edits);
-        }
-
-        let new_version = self.snapshot.version + 1;
-        // 结构编辑按 tab 行区间平移宽度缓存；行内编辑按 changed_rows 精确失效。
-        let structural = tab_edits.iter().any(TabEdit::is_structural);
-        if !same_configuration {
-            self.measured_line_widths.clear();
-            self.longest_measured = None;
-        } else if structural {
-            for edit in tab_edits.iter().filter(|edit| edit.is_structural()) {
-                self.shift_measured_widths(edit.old_rows(), edit.new_rows());
-            }
-            self.longest_measured = self
-                .measured_line_widths
-                .iter()
-                .max_by_key(|(_, width)| **width)
-                .map(|(line, width)| (*line, *width));
-        } else {
-            let mut changed_rows = BTreeSet::new();
-            for edit in &tab_edits {
-                changed_rows.extend(edit.changed_rows());
-            }
-            self.measured_line_widths
-                .retain(|line, _| !changed_rows.contains(&line.get()));
-            if self
-                .longest_measured
-                .is_some_and(|(line, _)| changed_rows.contains(&line.get()))
-            {
-                self.longest_measured = self
-                    .measured_line_widths
-                    .iter()
-                    .max_by_key(|(_, width)| **width)
-                    .map(|(line, width)| (*line, *width));
-            }
-        }
-        self.snapshot = TabSnapshot {
+        let old_snapshot = self.snapshot.clone();
+        let configuration_changed = old_snapshot.tab_width != tab_width;
+        let fold_changed = old_snapshot.fold_snapshot.version() != fold_snapshot.version();
+        let mut next = TabSnapshot {
             fold_snapshot,
-            version: new_version,
+            version: old_snapshot.version + u64::from(configuration_changed || fold_changed),
             tab_width,
         };
-        (self.snapshot.clone(), tab_edits)
-    }
 
-    /// 结构编辑后平移宽度缓存：旧行区间内的键失效，其后的键按行数差整体平移。
-    ///
-    /// 折叠覆盖行仍映射到其 anchor 行的合并行；被编辑的合并行落在旧行区间内，因而被丢弃。
-    fn shift_measured_widths(&mut self, old_rows: Range<usize>, new_rows: Range<usize>) {
-        let delta = new_rows.len() as isize - old_rows.len() as isize;
-        // 旧行区间内的键失效，其后的键按行数差整体平移。
-        let widths = std::mem::take(&mut self.measured_line_widths);
-        for (line, width) in widths {
-            let row = line.get();
-            if row < old_rows.start {
-                self.measured_line_widths.insert(line, width);
-            } else if row >= old_rows.end {
-                self.measured_line_widths
-                    .insert(Line::new((row as isize + delta) as usize), width);
-            }
-        }
-    }
-
-    pub(super) fn measure_line(&mut self, line: Line) -> DisplayMapResult<TabColumn> {
-        if let Some(width) = self.measured_line_widths.get(&line) {
-            return Ok(*width);
-        }
-        let tab_width = self.snapshot.tab_width().get();
-        let fold = self.snapshot.fold_snapshot();
-        let projected = ProjectedLineIndex::new(line.get());
-        let mut width = 0;
-        if let Some(segments) = fold.fold_row_segments(projected) {
-            let content_len = segments
-                .last()
-                .expect("折叠合并行必须至少包含一个段")
-                .merged_range()
-                .end;
-            for chunk in FoldChunks::new(
-                &segments,
-                fold.buffer_snapshot(),
-                HighlightStyles::default(),
-                0..content_len,
-            ) {
-                width = display_width_chunk(width, chunk.text, tab_width);
-            }
+        let edits = if configuration_changed {
+            vec![ProjectionEdit::new(
+                TabPoint::zero()..old_snapshot.max_point(),
+                TabPoint::zero()..next.max_point(),
+            )]
         } else {
-            let stream_line = self
-                .snapshot
-                .stream_line_for_projected(line)
-                .ok_or(CoordinateError::LineOutOfBounds(line))?;
-            let buffer = fold.buffer_snapshot();
-            let range = buffer
-                .line_content_byte_range(stream_line)
-                .ok_or(CoordinateError::LineOutOfBounds(line))?;
-            let content_len = buffer
-                .line_content_metrics(stream_line)
-                .ok_or(CoordinateError::LineOutOfBounds(line))?
-                .0;
-            for chunk in StyledChunks::new(
-                ChunkText::Virtual {
-                    snapshot: buffer,
-                    range: range.clone(),
-                },
-                range.start.get(),
-                0,
-                HighlightStyles::default(),
-                0..content_len,
-            ) {
-                width = display_width_chunk(width, chunk.text, tab_width);
-            }
-        }
-        let width = TabColumn::new(width);
-        self.measured_line_widths.insert(line, width);
-        if self
-            .longest_measured
-            .is_none_or(|(_, longest)| width > longest)
-        {
-            self.longest_measured = Some((line, width));
-        }
-        Ok(width)
-    }
+            tab_edits_from_fold_edits(&old_snapshot, &next, fold_edits)
+        };
 
-    pub(super) fn longest_measured(&self) -> Option<(Line, TabColumn)> {
-        self.longest_measured
+        if !configuration_changed && !fold_changed {
+            next.version = old_snapshot.version;
+        }
+        self.snapshot = next;
+        (self.snapshot.clone(), edits)
     }
 }
 
-/// 把 Fold 层的字节偏移本层编辑转成 Tab 层的行区间本层编辑。
+/// Fold 层的精确字节编辑直接映射为 Tab 层的精确点编辑。
 ///
-/// fold 编辑的 old 落在旧投影字节空间，new 落在新投影字节空间；
-/// 端点在对应快照上取投影行号（右偏），行区间端点因此落在行边界。
-/// 多条编辑的行数差之和必须与全局投影行数差一致，否则 Wrap 变换树的 input 会与下层不一致。
+/// 不再把端点降为行区间，也不以各编辑行数差校验或补偿整个投影。
 fn tab_edits_from_fold_edits(
-    old_count: usize,
-    new_count: usize,
-    old_fold_snapshot: &FoldSnapshot,
-    new_fold_snapshot: &FoldSnapshot,
+    old_snapshot: &TabSnapshot,
+    new_snapshot: &TabSnapshot,
     fold_edits: &[FoldEdit],
 ) -> Vec<TabEdit> {
-    let edits: Vec<TabEdit> = fold_edits
+    fold_edits
         .iter()
         .map(|edit| {
-            TabEdit::from_rows(
-                row_range(old_fold_snapshot, &edit.old),
-                row_range(new_fold_snapshot, &edit.new),
+            ProjectionEdit::new(
+                old_snapshot
+                    .fold_point_to_tab_point(edit.old.start.to_point(old_snapshot.fold_snapshot()))
+                    ..old_snapshot.fold_point_to_tab_point(
+                        edit.old.end.to_point(old_snapshot.fold_snapshot()),
+                    ),
+                new_snapshot
+                    .fold_point_to_tab_point(edit.new.start.to_point(new_snapshot.fold_snapshot()))
+                    ..new_snapshot.fold_point_to_tab_point(
+                        edit.new.end.to_point(new_snapshot.fold_snapshot()),
+                    ),
             )
         })
-        .collect();
-    let old_sum: usize = edits.iter().map(|edit| edit.old_rows().len()).sum();
-    let new_sum: usize = edits.iter().map(|edit| edit.new_rows().len()).sum();
-    // tab 层只改列宽、不增删行，fold 编辑必须守恒 tab 行数。
-    // 不守恒说明下层批次没有覆盖全部行变化（组合投影把多处变化合并时可能丢失区间），
-    // 必须在批次边界按整体替换处理，而不是在这里静默修正。
-    assert_eq!(
-        new_count + old_sum,
-        old_count + new_sum,
-        "fold 编辑必须守恒 tab 行数：旧 {old_count} 新 {new_count}，编辑旧 {old_sum} 新 {new_sum}"
-    );
-    edits
-}
-
-/// 投影字节区间 → 行区间；端点按各自快照取投影行号。
-///
-/// 终点取末字节所在行（右边界），使被编辑行与其后的合并行都纳入失效区间。
-fn row_range(snapshot: &FoldSnapshot, range: &Range<FoldOffset>) -> Range<usize> {
-    let start = range.start.to_point(snapshot).row();
-    let end = range.end.to_point(snapshot).row() + 1;
-    start..end
-}
-
-fn display_width_chunk(column: usize, text: &str, tab_width: usize) -> usize {
-    text.graphemes(true).fold(column, |column, grapheme| {
-        advance_display_column(column, grapheme, tab_width)
-    })
+        .collect()
 }
 
 pub(super) fn line_content(text: &str) -> &str {
@@ -431,14 +310,21 @@ pub(crate) fn display_column_for_byte(
 }
 
 /// 在给定文本内把 display-column 映射回字节位置。
-///
-/// 文本首字符所处的显示列（软换行续行从假空格缩进后的列开始，tab 对齐必须基于行内绝对列而非片段内相对列）。
-/// 目标列落在某个 grapheme 中间时吸附到最近边界（距离相等取前）；超出文本末尾返回 `text.len()`。
 pub(crate) fn byte_for_display_column(
     text: &str,
     start_column: usize,
     target_column: usize,
     tab_width: usize,
+) -> usize {
+    byte_for_display_column_with_bias(text, start_column, target_column, tab_width, FoldBias::Left)
+}
+
+fn byte_for_display_column_with_bias(
+    text: &str,
+    start_column: usize,
+    target_column: usize,
+    tab_width: usize,
+    bias: FoldBias,
 ) -> usize {
     if target_column <= start_column {
         return 0;
@@ -455,10 +341,9 @@ pub(crate) fn byte_for_display_column(
             return next_byte;
         }
         if target_column > display && target_column < next_display {
-            return if target_column - display <= next_display - target_column {
-                byte
-            } else {
-                next_byte
+            return match bias {
+                FoldBias::Left => byte,
+                FoldBias::Right => next_byte,
             };
         }
         display = next_display;
@@ -467,6 +352,56 @@ pub(crate) fn byte_for_display_column(
     text.len()
 }
 
-#[cfg(test)]
-#[path = "test/tab_map_test.rs"]
-mod test;
+/// Tab 读取时才展开硬 Tab 的连续 chunk；不存在逐行宽度缓存。
+pub(super) fn display_width_for_fold_row(
+    snapshot: &TabSnapshot,
+    row: Line,
+) -> DisplayMapResult<usize> {
+    let fold = snapshot.fold_snapshot();
+    let projected = ProjectedLineIndex::new(row.get());
+    let mut width = 0;
+    if let Some(segments) = fold.fold_row_segments(projected) {
+        let content_len = segments
+            .last()
+            .expect("折叠合并行必须至少包含一个段")
+            .merged_range()
+            .end;
+        for chunk in FoldChunks::new(
+            &segments,
+            fold.buffer_snapshot(),
+            HighlightStyles::default(),
+            0..content_len,
+        ) {
+            width = chunk.text.graphemes(true).fold(width, |column, grapheme| {
+                advance_display_column(column, grapheme, snapshot.tab_width().get())
+            });
+        }
+    } else {
+        let stream_line = snapshot
+            .stream_line_for_projected(row)
+            .ok_or(zcv_text::CoordinateError::LineOutOfBounds(row))?;
+        let buffer = fold.buffer_snapshot();
+        let range = buffer
+            .line_content_byte_range(stream_line)
+            .ok_or(zcv_text::CoordinateError::LineOutOfBounds(row))?;
+        let content_len = buffer
+            .line_content_metrics(stream_line)
+            .ok_or(zcv_text::CoordinateError::LineOutOfBounds(row))?
+            .0;
+        for chunk in StyledChunks::new(
+            ChunkText::Virtual {
+                snapshot: buffer,
+                range: range.clone(),
+            },
+            range.start.get(),
+            0,
+            HighlightStyles::default(),
+            0..content_len,
+        ) {
+            width = chunk.text.graphemes(true).fold(width, |column, grapheme| {
+                advance_display_column(column, grapheme, snapshot.tab_width().get())
+            });
+        }
+    }
+    Ok(width)
+}

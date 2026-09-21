@@ -128,11 +128,13 @@ fn long_line_edit(c: &mut Criterion) {
 fn fold_toggle(c: &mut Criterion) {
     let mut group = c.benchmark_group("editor/fold_toggle");
     let mut fixture = fixture(rust_document());
-    let path = PathBuf::from("src/main.rs");
+    let buffer_id = fixture
+        .cx
+        .read_entity(&fixture.source, |source, _| source.buffer_id());
     group.bench_function("whole_file", |b| {
         b.iter(|| {
             fixture.cx.update_entity(&fixture.editor, |editor, cx| {
-                editor.toggle_buffer_fold(path.clone(), cx);
+                editor.toggle_buffer_fold(buffer_id, cx);
             });
             fixture.cx.run_until_parked();
             black_box(fixture.editor.entity_id());

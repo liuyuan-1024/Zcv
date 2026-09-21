@@ -4,7 +4,7 @@
 
 use super::{Buffer, history};
 use crate::{
-    BufferConfig, BufferGeneration, BufferVersion, TextResult, TransactionId,
+    BufferConfig, BufferId, BufferVersion, TextResult, TransactionId,
     storage::{RopeyStorage, TextRead},
     tracking::CoordinateIndex,
 };
@@ -21,11 +21,11 @@ impl Buffer {
     /// Buffer 字段默认值变更只需改这一处。
     fn from_parts(storage: RopeyStorage, config: BufferConfig) -> Self {
         let mut buffer = Self {
+            buffer_id: BufferId::next_local(),
             read_only: false,
             config,
             storage,
             version: BufferVersion::INITIAL,
-            generation: BufferGeneration::INITIAL,
             saved_version: BufferVersion::INITIAL,
             next_transaction_id: TransactionId::INITIAL,
             text_changes: Default::default(),
@@ -72,6 +72,13 @@ impl Buffer {
 
     pub fn version(&self) -> BufferVersion {
         self.version
+    }
+
+    /// 与 Zed `Buffer::remote_id` 对齐的稳定 Buffer 身份。
+    ///
+    /// Zcv 当前不引入协作或远程同步；本地创建时分配进程内唯一 ID，重载文本不会改变它。
+    pub fn buffer_id(&self) -> BufferId {
+        self.buffer_id
     }
 
     pub fn saved_version(&self) -> BufferVersion {

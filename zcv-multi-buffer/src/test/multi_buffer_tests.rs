@@ -93,7 +93,6 @@ struct TestDiff {
     operations: Option<Arc<dyn DiffOperations>>,
     display_path: PathBuf,
     context_lines: Option<usize>,
-    show_file_header: bool,
 }
 
 impl MultiBuffer {
@@ -128,7 +127,6 @@ impl MultiBuffer {
                     }),
                     display_path: file.display_path,
                     context_lines: file.context_lines,
-                    show_file_header: file.show_file_header,
                 }
             })
             .collect();
@@ -146,7 +144,6 @@ fn test_diff(working: gpui::Entity<LanguageBuffer>, path: &str, base: &str) -> T
         operations: None,
         display_path: PathBuf::from(path),
         context_lines: None,
-        show_file_header: false,
     }
 }
 
@@ -174,7 +171,6 @@ fn test_diff_file(
         }),
         display_path: PathBuf::from(path),
         context_lines: None,
-        show_file_header: false,
     }
 }
 
@@ -438,7 +434,6 @@ fn relative_display_paths_stay_consistent_across_middle_edit(cx: &mut TestAppCon
         operations: None,
         display_path: PathBuf::from(display),
         context_lines: None,
-        show_file_header: false,
     };
 
     let three = cx.new(MultiBuffer::empty);
@@ -478,7 +473,6 @@ fn relative_display_paths_stay_consistent_across_middle_edit(cx: &mut TestAppCon
         diff: test_diff_entity(b.clone(), "/repo/src/b.rs", Some("b1\nbX\n"), None, cx),
         display_path: PathBuf::from("src/b.rs"),
         context_lines: None,
-        show_file_header: false,
     };
     three.update(cx, |buffer, cx| {
         assert!(buffer.add_diff(b_diff, cx));
@@ -518,7 +512,6 @@ fn clearing_buffer_diffs_removes_previous_hunks(cx: &mut TestAppContext) {
                 operations: None,
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                show_file_header: false,
             }]),
             cx,
         );
@@ -619,7 +612,6 @@ fn standalone_staged_view_classifies_all_hunks_as_staged(cx: &mut TestAppContext
                 path: PathBuf::from("src/a.rs"),
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                show_file_header: false,
             }]),
             cx,
         );
@@ -700,7 +692,6 @@ fn unchanged_diff_display_does_not_advance_metadata_or_display_version(cx: &mut 
                 path: PathBuf::from("src/a.rs"),
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                show_file_header: false,
             }]),
             cx,
         );
@@ -1115,7 +1106,7 @@ fn composite_snapshot_remains_immutable_until_a_new_frame_is_read(cx: &mut TestA
 }
 
 #[gpui::test]
-fn singleton_source_updates_the_display_stream_without_reset(cx: &mut TestAppContext) {
+fn singleton_source_updates_the_display_stream_incrementally(cx: &mut TestAppContext) {
     let source = singleton("src/main.rs", "fn main() {}\n", cx);
     let multi_buffer = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&multi_buffer, |buffer, cx| {
@@ -1163,10 +1154,6 @@ fn singleton_source_updates_the_display_stream_without_reset(cx: &mut TestAppCon
         updated.metadata_version() > 0,
         "源编辑后的组合快照必须携带新的源元数据版本"
     );
-    assert!(
-        !projection_changes.requires_reset(),
-        "单文件源编辑不应通过投影整体重载"
-    );
 
     cx.update_entity(&multi_buffer, |buffer, cx| {
         buffer.undo(cx).expect("单文件源撤销应成功");
@@ -1177,14 +1164,11 @@ fn singleton_source_updates_the_display_stream_without_reset(cx: &mut TestAppCon
         }),
         "fn main() {}\n"
     );
-    assert!(
-        !subscription.consume().requires_reset(),
-        "单文件源撤销不应通过投影整体重载"
-    );
+    let _ = subscription.consume();
 }
 
 #[gpui::test]
-fn source_edit_updates_only_its_composite_excerpt_without_reset(cx: &mut TestAppContext) {
+fn source_edit_updates_only_its_composite_excerpt(cx: &mut TestAppContext) {
     let first = singleton("src/first.rs", "first\n", cx);
     let second = singleton("src/second.rs", "second\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -1215,7 +1199,7 @@ fn source_edit_updates_only_its_composite_excerpt_without_reset(cx: &mut TestApp
         buffer.snapshot(cx);
     });
     let changes = subscription.consume();
-    assert!(!changes.requires_reset(), "源编辑不得整体重载组合投影");
+    assert!(!changes.patch().is_empty(), "源编辑必须发布组合输出编辑");
     assert_eq!(
         cx.update_entity(&combined, |buffer, cx| {
             String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("组合文本必须是 UTF-8")
@@ -1265,10 +1249,6 @@ fn multiple_source_edits_before_a_read_compose_into_one_incremental_batch(cx: &m
         buffer.snapshot(cx);
     });
     let changes = subscription.consume();
-    assert!(
-        !changes.requires_reset(),
-        "一次读取前的多次源编辑必须组合为增量批次"
-    );
     assert_eq!(changes.patch().edits().len(), 2);
     assert_eq!(
         cx.update_entity(&combined, |buffer, cx| {
@@ -1288,7 +1268,7 @@ fn source_edit_outside_excerpts_publishes_an_empty_incremental_batch(cx: &mut Te
     let subscription =
         cx.update_entity(&combined, |buffer, cx| buffer.subscribe_and_snapshot(cx).0);
 
-    // 编辑第二行：不在任何 excerpt 内，组合输出几何不变，仍必须发布非 reset 的空批次。
+    // 编辑第二行：不在任何 excerpt 内，组合输出几何不变，仍必须发布空批次。
     cx.update_entity(&source, |source, cx| {
         source
             .edit(
@@ -1304,10 +1284,6 @@ fn source_edit_outside_excerpts_publishes_an_empty_incremental_batch(cx: &mut Te
         buffer.snapshot(cx);
     });
     let changes = subscription.consume();
-    assert!(
-        !changes.requires_reset(),
-        "未展示区域的源编辑不得整体重载组合投影"
-    );
     assert!(
         changes.patch().edits().is_empty(),
         "未展示区域的源编辑不产生输出编辑"
@@ -1350,10 +1326,6 @@ fn one_source_edit_updates_all_visible_excerpts_incrementally(cx: &mut TestAppCo
         buffer.snapshot(cx);
     });
     let changes = subscription.consume();
-    assert!(
-        !changes.requires_reset(),
-        "同一源的多个 excerpt 不应整体重载"
-    );
     assert_eq!(changes.patch().edits().len(), 2);
     assert_eq!(
         cx.update_entity(&combined, |buffer, cx| {
@@ -1379,10 +1351,6 @@ fn excerpt_topology_changes_publish_output_edits(cx: &mut TestAppContext) {
     });
 
     let changes = subscription.consume();
-    assert!(
-        !changes.requires_reset(),
-        "组合拓扑变化应沿 output edit 协议发布"
-    );
     assert_eq!(changes.patch().edits().len(), 1);
     assert_eq!(
         changes.patch().edits()[0].old_range(),
@@ -1395,7 +1363,7 @@ fn excerpt_topology_changes_publish_output_edits(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn dropping_a_middle_excerpt_publishes_a_single_output_edit_without_reset(cx: &mut TestAppContext) {
+fn dropping_a_middle_excerpt_publishes_a_single_output_edit(cx: &mut TestAppContext) {
     let first = singleton("src/first.rs", "a\n", cx);
     let second = singleton("src/second.rs", "b\n", cx);
     let third = singleton("src/third.rs", "c\n", cx);
@@ -1419,10 +1387,6 @@ fn dropping_a_middle_excerpt_publishes_a_single_output_edit_without_reset(cx: &m
 
     // 组合拓扑变化必须沿增量 output edit 发布；范围由前后 excerpt 游标推导，不物化组合文本。
     let changes = subscription.consume();
-    assert!(
-        !changes.requires_reset(),
-        "excerpt 顺序变化应沿 output edit 协议发布"
-    );
     assert_eq!(changes.patch().edits().len(), 1);
     assert_eq!(
         changes.patch().edits()[0].old_range(),
@@ -1855,7 +1819,7 @@ fn composite_anchor_falls_forward_when_its_file_leaves_the_diff(cx: &mut TestApp
     });
 }
 
-/// 源锚点版本失效（晚于目标快照或代际被替换）时，禁止落到邻近文件/坐标。
+/// 源锚点版本晚于目标快照时，禁止落到邻近文件/坐标。
 #[gpui::test]
 fn invalid_source_anchor_does_not_fall_forward_to_another_file(cx: &mut TestAppContext) {
     let first = singleton("src/a.rs", "one\n", cx);
@@ -1879,12 +1843,8 @@ fn invalid_source_anchor_does_not_fall_forward_to_another_file(cx: &mut TestAppC
         MultiBufferAnchor::Excerpt(anchor) => MultiBufferAnchor::Excerpt(ExcerptAnchor {
             path: anchor.path,
             source_id: anchor.source_id,
-            text_anchor: Anchor::new(
-                anchor.text_anchor.generation(),
-                BufferVersion::new(u64::MAX),
-                anchor.text_anchor.offset(),
-            )
-            .with_affinity(anchor.text_anchor.affinity()),
+            text_anchor: Anchor::new(BufferVersion::new(u64::MAX), anchor.text_anchor.offset())
+                .with_affinity(anchor.text_anchor.affinity()),
         }),
         other => other,
     };
@@ -1897,10 +1857,9 @@ fn invalid_source_anchor_does_not_fall_forward_to_another_file(cx: &mut TestAppC
         );
     });
 }
-/// 外部 reload / 基线替换开启新代际后：
-/// 普通解析必须显式失败，只有显式重锚入口能把旧代际锚点恢复到当前代际。
+/// 外部文本更新与普通编辑共用版本化坐标链，已有锚点自动跟随差异编辑。
 #[gpui::test]
-fn cross_generation_anchor_requires_explicit_reattach(cx: &mut TestAppContext) {
+fn external_text_update_keeps_existing_anchor_mapped(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "alpha\ncharlie\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     let anchor = cx.update_entity(&combined, |buffer, cx| {
@@ -1909,28 +1868,20 @@ fn cross_generation_anchor_requires_explicit_reattach(cx: &mut TestAppContext) {
         buffer.anchor_at(ByteOffset::new(6), Affinity::After)
     });
 
-    // 外部整体替换：在 \"alpha\" 后插入一整行 \"bravo\"，开启新内容代际。
+    // 外部文本更新：在 \"alpha\" 后插入一整行 \"bravo\"。
     cx.update_entity(&source, |source, cx| {
         source
-            .reset("alpha\nbravo\ncharlie\n".to_owned(), cx)
+            .replace_text("alpha\nbravo\ncharlie\n".to_owned(), cx)
             .expect("外部 reload 应成功");
     });
     cx.run_until_parked();
 
     cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
-        assert!(
-            snapshot.resolve_anchor(&anchor).is_none(),
-            "普通解析不得跨代际猜测旧锚点坐标"
-        );
-        let reattached = snapshot
-            .reattach_anchor(&anchor)
-            .expect("显式重锚必须能恢复旧代际锚点");
-        assert_ne!(reattached, anchor, "重锚结果必须绑定当前代际");
         assert_eq!(
-            snapshot.resolve_anchor(&reattached),
+            snapshot.resolve_anchor(&anchor),
             Some(MultiBufferOffset::new(12)),
-            "重锚后的锚点应跟随插入行下移"
+            "锚点应随插入行下移"
         );
     });
 }
@@ -2050,7 +2001,6 @@ fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
                 path: PathBuf::from("src/a.rs"),
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                show_file_header: false,
             }]),
             cx,
         );
@@ -2107,7 +2057,6 @@ fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
                 path: PathBuf::from("src/a.rs"),
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                show_file_header: false,
             }]),
             cx,
         );
@@ -2148,7 +2097,6 @@ fn diff_expansion_survives_hunk_refresh_and_merge(cx: &mut TestAppContext) {
                 path: PathBuf::from("tracked.txt"),
                 display_path: PathBuf::from("tracked.txt"),
                 context_lines: None,
-                show_file_header: false,
             }]),
             cx,
         );
@@ -2186,7 +2134,6 @@ fn diff_expansion_survives_hunk_refresh_and_merge(cx: &mut TestAppContext) {
                 path: PathBuf::from("tracked.txt"),
                 display_path: PathBuf::from("tracked.txt"),
                 context_lines: None,
-                show_file_header: false,
             }]),
             cx,
         );
@@ -2229,7 +2176,6 @@ fn undo_keeps_rust_highlighting_in_diff_projection(cx: &mut TestAppContext) {
                 path: PathBuf::from("src/window_controls.rs"),
                 display_path: PathBuf::from("src/window_controls.rs"),
                 context_lines: Some(2),
-                show_file_header: false,
             }]),
             cx,
         );
@@ -2280,7 +2226,6 @@ fn save_after_diff_hunk_edit_keeps_rust_highlighting(cx: &mut TestAppContext) {
                 path: PathBuf::from("src/window_controls.rs"),
                 display_path: PathBuf::from("src/window_controls.rs"),
                 context_lines: Some(2),
-                show_file_header: false,
             }]),
             cx,
         );
@@ -2330,7 +2275,6 @@ fn diff_hunk_coordinates_follow_materialized_excerpts_across_files(cx: &mut Test
                     path: PathBuf::from("created.txt"),
                     display_path: PathBuf::from("created.txt"),
                     context_lines: Some(2),
-                    show_file_header: true,
                 },
                 TestDiff {
                     operations: None,
@@ -2340,7 +2284,6 @@ fn diff_hunk_coordinates_follow_materialized_excerpts_across_files(cx: &mut Test
                     path: PathBuf::from("modified.txt"),
                     display_path: PathBuf::from("modified.txt"),
                     context_lines: Some(2),
-                    show_file_header: true,
                 },
             ]),
             cx,
@@ -2416,7 +2359,6 @@ fn diff_expansion_survives_base_change_when_working_text_is_unchanged(cx: &mut T
                 path: PathBuf::from("src/a.rs"),
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                show_file_header: false,
             }]),
             cx,
         );
@@ -2433,7 +2375,6 @@ fn diff_expansion_survives_base_change_when_working_text_is_unchanged(cx: &mut T
                 path: PathBuf::from("src/a.rs"),
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                show_file_header: false,
             }]),
             cx,
         );
@@ -2464,7 +2405,6 @@ fn external_full_replacement_invalidates_stale_diff_hunks(cx: &mut TestAppContex
                 path: PathBuf::from("src/a.rs"),
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                show_file_header: false,
             }]),
             cx,
         );
@@ -2472,7 +2412,7 @@ fn external_full_replacement_invalidates_stale_diff_hunks(cx: &mut TestAppContex
 
     cx.update_entity(&source, |source, cx| {
         source
-            .reset("replacement\n".to_owned(), cx)
+            .replace_text("replacement\n".to_owned(), cx)
             .expect("外部整体替换应成功");
     });
     cx.run_until_parked();
@@ -2540,7 +2480,6 @@ fn host_drives_buffer_diff_recompute_from_source_edits(cx: &mut TestAppContext) 
                 operations: None,
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                show_file_header: false,
             }]),
             cx,
         );
@@ -2587,7 +2526,6 @@ fn host_drives_buffer_diff_recompute_from_source_edits(cx: &mut TestAppContext) 
                 operations: None,
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                show_file_header: false,
             }]),
             cx,
         );
@@ -2615,7 +2553,6 @@ fn dirty_source_keeps_existing_diff_projection_until_saved(cx: &mut TestAppConte
                 operations: None,
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: Some(2),
-                show_file_header: true,
             }]),
             cx,
         );
@@ -2675,7 +2612,6 @@ fn diff_hunks_survive_geometry_preserving_edits(cx: &mut TestAppContext) {
                 operations: None,
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                show_file_header: false,
             }]),
             cx,
         );
@@ -2728,7 +2664,6 @@ fn pending_new_file_does_not_hide_ready_diff_hunks(cx: &mut TestAppContext) {
                 operations: None,
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                show_file_header: false,
             }]),
             cx,
         );
@@ -2752,7 +2687,6 @@ fn pending_new_file_does_not_hide_ready_diff_hunks(cx: &mut TestAppContext) {
                     operations: None,
                     display_path: PathBuf::from("src/a.rs"),
                     context_lines: None,
-                    show_file_header: false,
                 },
                 TestDiff {
                     working: source_c.clone(),
@@ -2762,7 +2696,6 @@ fn pending_new_file_does_not_hide_ready_diff_hunks(cx: &mut TestAppContext) {
                     operations: None,
                     display_path: PathBuf::from("src/c.rs"),
                     context_lines: None,
-                    show_file_header: false,
                 },
             ]),
             cx,
@@ -2814,7 +2747,6 @@ fn diff_hunks_survive_rapid_edits(cx: &mut TestAppContext) {
                 operations: None,
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                show_file_header: false,
             }]),
             cx,
         );
@@ -2860,7 +2792,6 @@ fn added_hunk_background_follows_view_expansion_policy(cx: &mut TestAppContext) 
                 path: PathBuf::from("src/a.rs"),
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                show_file_header: false,
             }]),
             cx,
         );
@@ -2900,7 +2831,6 @@ fn expanded_modified_hunk_exposes_word_diffs_in_composite_coordinates(cx: &mut T
                 path: PathBuf::from("src/a.rs"),
                 display_path: PathBuf::from("src/a.rs"),
                 context_lines: None,
-                show_file_header: false,
             }]),
             cx,
         );
@@ -3122,12 +3052,12 @@ fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &m
                 ExcerptRange::line_range(current.clone(), 0..1, cx),
                 ExcerptRange::line_range(old.clone(), 0..1, cx)
                     .with_editable(false)
-                    .with_starts_new_excerpt(false)
+                    .with_starts_logical_excerpt(false)
                     .with_diff_kind(ExcerptDiffKind::Deleted),
                 ExcerptRange::line_range(current.clone(), 1..2, cx)
-                    .with_starts_new_excerpt(false)
+                    .with_starts_logical_excerpt(false)
                     .with_diff_kind(ExcerptDiffKind::Added),
-                ExcerptRange::line_range(current, 2..3, cx).with_starts_new_excerpt(false),
+                ExcerptRange::line_range(current, 2..3, cx).with_starts_logical_excerpt(false),
             ],
             cx,
         );
@@ -3140,8 +3070,11 @@ fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &m
             "上下文\n旧内容\n新内容\n之后\n"
         );
         assert_eq!(snapshot.excerpts().count(), 4);
-        assert!(snapshot.excerpts().next().unwrap().starts_new_excerpt());
-        assert!(!snapshot.excerpts().nth(1).unwrap().starts_new_excerpt());
+        assert_eq!(
+            snapshot.excerpt_boundaries().count(),
+            1,
+            "同一 diff hunk 的物理片段只能形成一个逻辑 excerpt"
+        );
         assert_eq!(
             snapshot
                 .excerpts()

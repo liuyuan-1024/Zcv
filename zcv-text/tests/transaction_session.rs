@@ -175,9 +175,9 @@ fn skip_history_edit_does_not_report_a_history_identity() {
 }
 
 #[test]
-fn reset_ends_the_active_session_and_replaces_its_history_baseline() {
+fn replace_text_joins_the_active_session_as_a_normal_edit() {
     let mut buffer = buffer("hello");
-    buffer.start_transaction().unwrap().expect("应开启会话");
+    let session_id = buffer.start_transaction().unwrap().expect("应开启会话");
     buffer
         .edit(
             [Edit::insert(b(5), " world".to_string()).unwrap()],
@@ -186,13 +186,15 @@ fn reset_ends_the_active_session_and_replaces_its_history_baseline() {
         .unwrap();
 
     buffer
-        .reset("replacement".to_owned())
+        .replace_text("replacement".to_owned())
         .expect("外部重载应成功");
 
     assert_eq!(buffer_text(&buffer), "replacement");
-    assert_eq!(buffer.end_transaction().unwrap(), None);
-    assert!(!buffer.can_undo());
+    assert_eq!(buffer.end_transaction().unwrap(), Some(session_id));
+    assert!(buffer.can_undo());
     assert!(!buffer.can_redo());
+    buffer.undo().unwrap().expect("会话应可撤销");
+    assert_eq!(buffer_text(&buffer), "hello");
 }
 
 #[test]

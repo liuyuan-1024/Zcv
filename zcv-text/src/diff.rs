@@ -1,6 +1,6 @@
 //! 文本差异：把旧文本变为新文本的最小编辑段（行级 diff + 行内词级细化）。
 //!
-//! `Buffer::reset` 等外部整体重置场景用 diff 生成真实的 old -> new 编辑；
+//! `Buffer::replace_text` 等外部文本更新场景用 diff 生成真实的 old -> new 编辑；
 //! 替换文本与旧区间一起产出，消费方不再用区间切分原文。
 //! 行级与词级 diff 都基于 imara-diff，与 Zed 的 `text_diff` 使用同一套 token 化与差异原语。
 

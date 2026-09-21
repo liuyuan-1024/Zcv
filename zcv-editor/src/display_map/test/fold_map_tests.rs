@@ -30,9 +30,8 @@ impl FoldMap {
         subscription: &TextSubscription,
     ) -> (FoldSnapshot, Vec<FoldEdit>) {
         let new_snapshot: MultiBufferSnapshot = buffer.snapshot().into();
-        let old_snapshot = self.snapshot.buffer_snapshot().clone();
         let batch = subscription.consume();
-        let buffer_edits = buffer_edits_from_batch(&batch, &old_snapshot, &new_snapshot);
+        let buffer_edits = buffer_edits_from_batch(&batch);
         self.read(new_snapshot, buffer_edits)
     }
 }

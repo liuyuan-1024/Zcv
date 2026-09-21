@@ -54,8 +54,6 @@ pub struct DiffFile {
     /// 显示策略：None 显示整个新侧文件（普通编辑器）；
     /// Some(n) 只显示 hunk 周围 n 行上下文（多文件投影）。
     pub context_lines: Option<usize>,
-    /// 该文件的第一个可见片段是否创建文件标题块。
-    pub show_file_header: bool,
 }
 
 /// 显示 hunk 对应的源定位（hunk 操作与导航用）。
@@ -78,8 +76,6 @@ pub(crate) struct DiffState {
     display_path: PathKey,
     /// 显示策略：None 显示整个新侧文件；Some(n) 只显示 hunk 周围 n 行上下文。
     context_lines: Option<usize>,
-    /// 该文件的第一个可见片段是否创建文件标题块。
-    show_file_header: bool,
     /// 显示层拥有的展开/折叠状态，与版本化 diff 结果分离。
     expansion: DiffExpansionState,
     /// BufferDiff 订阅；只作为守卫随 DiffState 生命周期创建销毁，不直接读取。
@@ -423,8 +419,8 @@ impl HunkAccum {
 struct ExcerptShape {
     /// diff 语义；None 表示不标注类型。
     diff_kind: Option<ExcerptDiffKind>,
-    /// 是否作为新 excerpt 的起点（文件头之后的首个片段）。
-    starts_new_excerpt: bool,
+    /// 是否作为逻辑 excerpt 的起点（每个可见窗口的首个物理片段）。
+    starts_logical_excerpt: bool,
     /// 是否允许空片段（空文件占位行、删除点占位行）。
     allow_empty: bool,
 }
@@ -432,6 +428,8 @@ struct ExcerptShape {
 struct ExcerptMaterializer<'a> {
     excerpts: &'a mut Vec<ExcerptRange>,
     display_path: &'a Path,
+    /// 同一 diff 文件的旧/新侧物理来源都属于 working Buffer 的一个逻辑显示实体。
+    buffer_id: zcv_text::BufferId,
 }
 
 impl ExcerptMaterializer<'_> {
@@ -451,8 +449,9 @@ impl ExcerptMaterializer<'_> {
             text,
             lines,
             self.display_path,
+            self.buffer_id,
             shape.diff_kind,
-            shape.starts_new_excerpt,
+            shape.starts_logical_excerpt,
             shape.allow_empty,
         ) else {
             return hunks;
@@ -486,15 +485,6 @@ fn hunk_info(
     }
 }
 
-/// 某个源在 diff 投影中的角色。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum DiffSourceRole {
-    /// 新侧工作区文档：其文本直接构成组合正文。
-    Working,
-    /// 旧侧修订文档（base/index）：内容与 hunk 几何都由 BufferDiff 拥有。
-    Revision,
-}
-
 impl MultiBuffer {
     /// 按路径增量挂接一个文件的 diff。
     ///
@@ -513,7 +503,6 @@ impl MultiBuffer {
             if current.diff.entity_id() == file.diff.entity_id()
                 && current.display_path.as_path() == file.display_path
                 && current.context_lines == file.context_lines
-                && current.show_file_header == file.show_file_header
             {
                 return false;
             }
@@ -543,7 +532,6 @@ impl MultiBuffer {
             diff: file.diff,
             display_path: PathKey::new(file.display_path),
             context_lines: file.context_lines,
-            show_file_header: file.show_file_header,
             expansion: DiffExpansionState::default(),
             _subscription: subscription,
             revision: None,
@@ -590,7 +578,6 @@ impl MultiBuffer {
             diff,
             display_path: PathKey::new(file.display_path),
             context_lines: file.context_lines,
-            show_file_header: file.show_file_header,
             expansion: DiffExpansionState::default(),
             _subscription: subscription,
             revision: None,
@@ -634,14 +621,13 @@ impl MultiBuffer {
         }
 
         // 被移除路径在 excerpt 流中的区间（映射按源路径升序；显示路径可能被裁剪为相对路径）。
-        let source_path = self.diffs[file_index]
-            .diff
-            .read(cx)
-            .working()
-            .read(cx)
-            .file_path()
-            .unwrap_or_default();
-        self.remove_excerpts_for_path(&source_path, cx);
+        // 身份必须与物化时一致：有文件路径按路径，无路径的匿名 Buffer 用 buffer_id。
+        let source_path = {
+            let working = self.diffs[file_index].diff.read(cx).working().clone();
+            let working = working.read(cx);
+            PathKey::for_buffer(working.file_path(), working.buffer_id())
+        };
+        self.remove_excerpts_for_path(source_path.as_path(), cx);
 
         // DiffState 持有自己的订阅，移除即取消订阅；hunk 身份随节点消失，无需下标顺延。
         self.diffs.remove(file_index);
@@ -671,10 +657,7 @@ impl MultiBuffer {
             let line_count = source.read(cx).text_snapshot().line_count();
             self.clear(cx);
             self.set_excerpts_for_path(
-                vec![
-                    ExcerptRange::line_range(source, 0..line_count, cx)
-                        .with_starts_new_excerpt(false),
-                ],
+                vec![ExcerptRange::line_range(source, 0..line_count, cx)],
                 cx,
             );
             return true;
@@ -710,7 +693,6 @@ impl MultiBuffer {
                     diff,
                     display_path: PathKey::new(file.display_path),
                     context_lines: file.context_lines,
-                    show_file_header: file.show_file_header,
                     expansion: DiffExpansionState::default(),
                     _subscription: subscription,
                     revision: None,
@@ -959,20 +941,15 @@ impl MultiBuffer {
         Some((line, column))
     }
 
-    /// 拥有指定源的 diff 及其角色；源不属于任何已挂接 diff 时返回 None。
+    /// 拥有指定源的 diff；源不属于任何已挂接 diff 时返回 None。
     ///
-    /// working、base 与 index 是一个 diff 的全部文本输入，三者的变化都必须回到该 diff，
-    /// 不能按普通组合文档源各自处理。
-    fn diff_source(
-        &self,
-        source_id: gpui::EntityId,
-        cx: &App,
-    ) -> Option<(Entity<BufferDiff>, DiffSourceRole)> {
+    /// working、base 与 index 是一个 diff 的全部文本输入，三者的变化都必须回到该 diff，不能按普通组合文档源各自处理。
+    fn diff_source(&self, source_id: gpui::EntityId, cx: &App) -> Option<Entity<BufferDiff>> {
         self.diff.as_ref()?;
         self.diffs.iter().find_map(|file| {
             let diff = file.diff.read(cx);
             if diff.working().entity_id() == source_id {
-                return Some((file.diff.clone(), DiffSourceRole::Working));
+                return Some(file.diff.clone());
             }
             if diff
                 .base_source()
@@ -981,14 +958,14 @@ impl MultiBuffer {
                     .index_source()
                     .is_some_and(|source| source.entity_id() == source_id)
             {
-                return Some((file.diff.clone(), DiffSourceRole::Revision));
+                return Some(file.diff.clone());
             }
             None
         })
     }
 
     pub(crate) fn diff_source_sync_ready(&self, source_id: gpui::EntityId, cx: &App) -> bool {
-        let Some((diff, _)) = self.diff_source(source_id, cx) else {
+        let Some(diff) = self.diff_source(source_id, cx) else {
             return true;
         };
         let revision = diff.read(cx).revision();
@@ -998,22 +975,13 @@ impl MultiBuffer {
             })
     }
 
-    /// 指定源在 diff 投影中的角色。
-    pub(crate) fn diff_source_role(
-        &self,
-        source_id: gpui::EntityId,
-        cx: &App,
-    ) -> Option<DiffSourceRole> {
-        self.diff_source(source_id, cx).map(|(_, role)| role)
-    }
-
     pub(crate) fn recompute_diff_for_source(
         &mut self,
         source_id: gpui::EntityId,
         refresh: DiffRefresh,
         cx: &mut Context<Self>,
     ) {
-        let diff = self.diff_source(source_id, cx).map(|(diff, _)| diff);
+        let diff = self.diff_source(source_id, cx);
         if let Some(diff) = diff {
             diff.update(cx, |diff, cx| diff.recompute_with_refresh(refresh, cx));
         }
@@ -1137,7 +1105,6 @@ impl MultiBuffer {
                     diff,
                     display_path: PathKey::new(file.display_path),
                     context_lines: file.context_lines,
-                    show_file_header: file.show_file_header,
                     expansion: DiffExpansionState::default(),
                     _subscription: subscription,
                     revision: None,
@@ -1206,15 +1173,12 @@ impl MultiBuffer {
             materialize_file(file, cx, expanded_by_default, &mut excerpts);
         }
         // 映射树按源路径排序，显示路径可能被裁剪为相对路径。
-        let path = PathKey::new(
-            self.diffs[file_index]
-                .diff
-                .read(cx)
-                .working()
-                .read(cx)
-                .file_path()
-                .unwrap_or_default(),
-        );
+        // 身份必须与物化时一致：有文件路径按路径，无路径的匿名 Buffer 用 buffer_id。
+        let path = {
+            let working = self.diffs[file_index].diff.read(cx).working().clone();
+            let working = working.read(cx);
+            PathKey::for_buffer(working.file_path(), working.buffer_id())
+        };
         // 该文件已无可见 hunk（差异被消除等）时必须移除其路径的 excerpts；
         // set_excerpts_for_path 对空片段集合是空操作，无法表达“清空该路径”。
         if excerpts.is_empty() {
@@ -1657,12 +1621,13 @@ fn materialize_file(
     let line_count = working_text.line_count();
     let display_path = file.display_path.clone();
     let context_lines = file.context_lines;
-    let show_file_header = file.show_file_header;
     let working_id = working.entity_id();
+    let working_buffer_id = working.read(cx).buffer_id();
     let expansion = &file.expansion;
     let mut materializer = ExcerptMaterializer {
         excerpts,
         display_path: display_path.as_path(),
+        buffer_id: working_buffer_id,
     };
 
     // 整文件新增：整个新侧文件作为 Added 显示（无旧侧）。
@@ -1673,7 +1638,7 @@ fn materialize_file(
             &working,
             ExcerptShape {
                 diff_kind: Some(ExcerptDiffKind::Added),
-                starts_new_excerpt: show_file_header,
+                starts_logical_excerpt: true,
                 allow_empty: false,
             },
             vec![DiffTransformHunkInfo {
@@ -1700,7 +1665,7 @@ fn materialize_file(
                 &working,
                 ExcerptShape {
                     diff_kind: None,
-                    starts_new_excerpt: show_file_header,
+                    starts_logical_excerpt: true,
                     allow_empty: true,
                 },
                 Vec::new(),
@@ -1715,8 +1680,9 @@ fn materialize_file(
     };
     for context_range in visible {
         let mut current = context_range.start;
-        // 文件标题块只在宿主声明时创建（ProjectDiffView 多文件投影；普通编辑器整文件不创建）。
-        let mut starts_new_excerpt = show_file_header;
+        // 每个可见窗口只由首个物理片段开启一个逻辑 excerpt；窗口内的旧侧/新侧/上下文片段都不再另起边界。
+        // 是否绘制实体 header 由 MultiBufferSnapshot::show_headers 决定，不由物化决定。
+        let mut starts_logical_excerpt = true;
         // 无旧侧物化的纯删除需要一个相邻内容节点承载边界；挂到后继内容起点，无后继时挂到前驱终点。
         let mut pending_boundary: Option<DiffTransformHunkInfo> = None;
         for hunk in resolved
@@ -1731,12 +1697,12 @@ fn materialize_file(
                     &working,
                     ExcerptShape {
                         diff_kind: None,
-                        starts_new_excerpt,
+                        starts_logical_excerpt,
                         allow_empty: false,
                     },
                     boundary,
                 );
-                starts_new_excerpt = false;
+                starts_logical_excerpt = false;
             }
             let expanded = expansion.is_expanded(hunk.kind, &hunk.base_lines, expanded_by_default);
             // 旧侧：展开时物化完整旧行；裁剪模式折叠时用空占位行标记删除点。
@@ -1757,13 +1723,13 @@ fn materialize_file(
                         base,
                         ExcerptShape {
                             diff_kind: Some(ExcerptDiffKind::Deleted),
-                            starts_new_excerpt,
+                            starts_logical_excerpt,
                             allow_empty: false,
                         },
                         hunks,
                     );
                     old_materialized = true;
-                    starts_new_excerpt = false;
+                    starts_logical_excerpt = false;
                 } else if context_lines.is_some() {
                     // 折叠占位行：空 Deleted 片段（组合文档为它保留一个显示行）。
                     let base = base_source.as_ref().expect("删除点占位需要 base 来源");
@@ -1780,13 +1746,13 @@ fn materialize_file(
                         base,
                         ExcerptShape {
                             diff_kind: Some(ExcerptDiffKind::Deleted),
-                            starts_new_excerpt,
+                            starts_logical_excerpt,
                             allow_empty: true,
                         },
                         hunks,
                     );
                     old_materialized = true;
-                    starts_new_excerpt = false;
+                    starts_logical_excerpt = false;
                 }
             }
             // 新侧：可编辑 excerpt；纯删除 hunk 无新侧内容，由旧侧节点或相邻内容节点承载边界。
@@ -1804,12 +1770,12 @@ fn materialize_file(
                     &working,
                     ExcerptShape {
                         diff_kind: Some(ExcerptDiffKind::Added),
-                        starts_new_excerpt,
+                        starts_logical_excerpt,
                         allow_empty: false,
                     },
                     hunks,
                 );
-                starts_new_excerpt = false;
+                starts_logical_excerpt = false;
             } else if !old_materialized {
                 pending_boundary = Some(hunk_info(
                     working_id,
@@ -1827,7 +1793,7 @@ fn materialize_file(
                 &working,
                 ExcerptShape {
                     diff_kind: None,
-                    starts_new_excerpt,
+                    starts_logical_excerpt,
                     allow_empty: false,
                 },
                 pending_boundary.take().into_iter().collect(),
@@ -1847,7 +1813,7 @@ fn materialize_file(
                     &working,
                     ExcerptShape {
                         diff_kind: None,
-                        starts_new_excerpt: show_file_header,
+                        starts_logical_excerpt: true,
                         allow_empty: true,
                     },
                     Vec::new(),
@@ -1866,8 +1832,9 @@ fn projected_excerpt(
     text: &Snapshot,
     lines: Range<usize>,
     display_path: &Path,
+    buffer_id: zcv_text::BufferId,
     diff_kind: Option<ExcerptDiffKind>,
-    starts_new_excerpt: bool,
+    starts_logical_excerpt: bool,
     allow_empty: bool,
 ) -> Option<ExcerptRange> {
     if lines.is_empty() && !allow_empty {
@@ -1881,7 +1848,8 @@ fn projected_excerpt(
     }
     excerpt = excerpt
         .with_display_path(display_path.to_path_buf())
-        .with_starts_new_excerpt(starts_new_excerpt)
+        .with_buffer_id(buffer_id)
+        .with_starts_logical_excerpt(starts_logical_excerpt)
         .with_editable(diff_kind != Some(ExcerptDiffKind::Deleted));
     if let Some(diff_kind) = diff_kind {
         excerpt = excerpt.with_diff_kind(diff_kind);

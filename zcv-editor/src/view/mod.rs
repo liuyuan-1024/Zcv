@@ -29,7 +29,7 @@ use zcv_multi_buffer::{
 };
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
-    Affinity, Buffer, BufferConfig, BufferVersion, Line, LineRange, LogicalColumn,
+    Affinity, Buffer, BufferConfig, BufferId, BufferVersion, Line, LineRange, LogicalColumn,
     MovementDirection, MovementUnit, Position, TextError, TextResult, TransactionId,
     TransactionMergePolicy, TransactionMetadata, TransactionSource,
 };
@@ -187,28 +187,6 @@ pub(super) enum MouseSelectMode {
     Word(Range<MultiBufferAnchor>),
     Line(Range<MultiBufferAnchor>),
     All,
-}
-
-impl MouseSelectMode {
-    /// 外部 reload / 基线替换后把鼠标手势的锚定范围显式重锚到当前快照。
-    fn reattach(self, snapshot: &MultiBufferSnapshot) -> Self {
-        match self {
-            Self::Word(range) => Self::Word(reattach_anchor_range(range, snapshot)),
-            Self::Line(range) => Self::Line(reattach_anchor_range(range, snapshot)),
-            other => other,
-        }
-    }
-}
-
-fn reattach_anchor_range(
-    range: Range<MultiBufferAnchor>,
-    snapshot: &MultiBufferSnapshot,
-) -> Range<MultiBufferAnchor> {
-    let start = snapshot
-        .reattach_anchor(&range.start)
-        .unwrap_or(range.start);
-    let end = snapshot.reattach_anchor(&range.end).unwrap_or(range.end);
-    start..end
 }
 
 /// 拖拽中的选区状态：固定锚点 + 点击时的粒度。
@@ -414,16 +392,16 @@ impl Editor {
         });
     }
 
-    pub fn is_buffer_folded(&self, path: &std::path::Path, cx: &App) -> bool {
-        self.display_map.read(cx).is_buffer_folded(path)
+    pub fn is_buffer_folded(&self, buffer_id: BufferId, cx: &App) -> bool {
+        self.display_map.read(cx).is_buffer_folded(buffer_id)
     }
 
     /// 折叠/展开 MultiBuffer 中一个文件的全部 excerpts。
     /// 这是 BlockMap 变换，不修改组合文本，也不借用语法折叠范围。
-    pub fn toggle_buffer_fold(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
-        let folded = !self.display_map.read(cx).is_buffer_folded(&path);
+    pub fn toggle_buffer_fold(&mut self, buffer_id: BufferId, cx: &mut Context<Self>) {
+        let folded = !self.display_map.read(cx).is_buffer_folded(buffer_id);
         self.display_map
-            .update(cx, |map, cx| map.set_buffer_folded(path, folded, cx));
+            .update(cx, |map, cx| map.set_buffer_folded(buffer_id, folded, cx));
         // 滚动位置是长期组合锚点，显示拓扑重建后按当前快照解析即自动落回原内容位置。
         self.advance_snapshots(cx);
         self.input_layout = None;
@@ -1197,6 +1175,7 @@ impl Editor {
         lines.into_iter().collect()
     }
 
+    #[cfg(test)]
     pub(super) fn scroll_anchor(&self) -> DisplayPoint {
         self.scroll_manager.anchor()
     }
@@ -1206,21 +1185,7 @@ impl Editor {
     }
 
     pub(super) fn longest_display_row(&self, cx: &App) -> DisplayRow {
-        self.display_map.read(cx).longest_measured_row()
-    }
-
-    pub(super) fn measure_display_rows(
-        &mut self,
-        start: DisplayRow,
-        line_count: usize,
-        cx: &mut Context<Self>,
-    ) {
-        if let Err(error) = self
-            .display_map
-            .update(cx, |map, cx| map.measure_rows(start, line_count, cx))
-        {
-            eprintln!("Editor 测量显示行失败：{error}");
-        }
+        self.display_map.read(cx).longest_unwrapped_row()
     }
 
     pub(super) fn select_line(&mut self, line: Line, extend: bool, cx: &App) {
@@ -1397,7 +1362,7 @@ impl Editor {
             return;
         };
         let snapshot = self.display_snapshot(cx).buffer_snapshot().clone();
-        // 拖动端点锚点版本已被 reset / 基线替换淘汰时无法继续拖动，显式放弃本次更新。
+        // 拖动端点锚点版本无法映射到当前快照时，显式放弃本次更新。
         let Some(pending_anchor) = snapshot.resolve_anchor(&pending.anchor) else {
             return;
         };
@@ -2105,31 +2070,7 @@ impl Editor {
             .update(cx, |map, cx| map.set_search_decorations(search, cx));
         self.scrollbar_marker_state.invalidate();
         let snapshot = self.display_snapshot(cx);
-        // 外部 reload / 基线替换后，长期锚点必须由调用方显式重锚；
-        // 普通解析遇到旧代际锚点会显式失败，不能让它自己猜测坐标。
-        self.reattach_persistent_anchors(snapshot.buffer_snapshot());
         self.scroll_manager.refresh(&snapshot);
-    }
-
-    /// 外部 reload / 基线替换后，把 Editor 的长期锚点显式重锚到当前快照。
-    ///
-    /// 只处理当前代际之外的锚点；已匹配当前代际的锚点原样保留。
-    /// 普通解析不承担跨代际恢复，本入口是调用方对解析失败的显式“重锚”选择。
-    fn reattach_persistent_anchors(&mut self, snapshot: &MultiBufferSnapshot) {
-        self.selections = self.selections.reattach(snapshot);
-        self.structured_selection_history = self
-            .structured_selection_history
-            .iter()
-            .map(|set| set.reattach(snapshot))
-            .collect();
-        self.pending_selection = self.pending_selection.take().map(|mut pending| {
-            pending.anchor = snapshot
-                .reattach_anchor(&pending.anchor)
-                .unwrap_or(pending.anchor);
-            pending.mode = pending.mode.reattach(snapshot);
-            pending
-        });
-        self.scroll_manager.reattach_anchors(snapshot);
     }
 
     pub(super) fn handle_toggle_fold(

@@ -140,7 +140,6 @@ pub(super) fn inject_editor_diff(
                 diff,
                 display_path: working_path.clone(),
                 context_lines: None,
-                show_file_header: false,
             }],
             cx,
         );
@@ -180,7 +179,6 @@ pub(super) fn inject_file_diff(
                 diff,
                 display_path: working_path.clone(),
                 context_lines: None,
-                show_file_header: false,
             }],
             cx,
         );

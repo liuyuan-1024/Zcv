@@ -1,6 +1,6 @@
 //! token 级差异：按空白 / 单词 / 标点切分 token，再用 imara-diff 做差异。
 //!
-//! 只服务两个真实消费方：`Buffer::reset` 的净变化编辑，以及 buffer diff 的行内词级范围。
+//! 只服务两个真实消费方：`Buffer::replace_text` 的净变化编辑，以及 buffer diff 的行内词级范围。
 //! 两者共用同一 token 化与差异原语，避免各自维护一套切分规则。
 
 use std::ops::Range;

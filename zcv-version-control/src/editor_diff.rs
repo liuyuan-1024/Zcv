@@ -165,7 +165,6 @@ pub fn inject_editor_diff(
         diff,
         display_path: path.to_path_buf(),
         context_lines: None,
-        show_file_header: false,
     };
     editor.update(cx, |editor, cx| {
         editor.set_diff_files(vec![file], cx);

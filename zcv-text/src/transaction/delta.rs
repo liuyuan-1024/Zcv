@@ -61,10 +61,6 @@ pub struct DeltaEvent {
     changeset: ChangeSet,
     /// old -> new / new -> old 坐标映射器，供 Anchor 和宿主复用。
     position_map: PositionMap,
-    /// 整体基线是否已被替换。
-    ///
-    /// reset 仍然携带精确 Delta 供 Anchor 跟随，但依赖旧文本语义的派生状态必须重建。
-    reset: bool,
 }
 
 impl DeltaEvent {
@@ -74,7 +70,6 @@ impl DeltaEvent {
         delta: Delta,
         changeset: ChangeSet,
         position_map: PositionMap,
-        reset: bool,
     ) -> Self {
         Self {
             transaction_id,
@@ -82,7 +77,6 @@ impl DeltaEvent {
             delta,
             changeset,
             position_map,
-            reset,
         }
     }
 
@@ -112,9 +106,5 @@ impl DeltaEvent {
 
     pub fn position_map(&self) -> &PositionMap {
         &self.position_map
-    }
-
-    pub fn requires_reset(&self) -> bool {
-        self.reset
     }
 }

@@ -8,7 +8,6 @@
 mod diff_projection;
 mod path_key;
 
-use diff_projection::DiffSourceRole;
 pub use diff_projection::{
     DiffDisplaySnapshot, DiffFile, DiffHunkSource, DisplayHunk, ResolvedDiffHunk, WordDiffs,
 };
@@ -31,11 +30,11 @@ use zcv_language::{
     OutlineItem, OutlineTextRange, SyntaxNode, SyntaxSnapshot,
 };
 use zcv_text::{
-    Affinity, Anchor, Buffer, BufferConfig, BufferGeneration, BufferVersion, ByteOffset,
-    CharOffset, CoordinateError, Edit, Line, LineEndingStyle, LogicalColumn, MovementDirection,
-    MovementUnit, Position, PositionMap, Snapshot, Stickiness, StorageError, TextChangeBatch,
-    TextError, TextRange, TextRead, TextResult, TextSubscription, TransactionId,
-    TransactionMetadata, Utf16Offset, Utf16Position, WordBoundaryPolicy,
+    Affinity, Anchor, Buffer, BufferConfig, BufferId, BufferVersion, ByteOffset, CharOffset,
+    CoordinateError, Edit, Line, LineEndingStyle, LogicalColumn, MovementDirection, MovementUnit,
+    Position, PositionMap, Snapshot, Stickiness, StorageError, TextChangeBatch, TextError,
+    TextRange, TextRead, TextResult, TextSubscription, TransactionId, TransactionMetadata,
+    Utf16Offset, Utf16Position, WordBoundaryPolicy,
 };
 
 /// 组合文档中的一个源片段。
@@ -45,8 +44,11 @@ pub struct ExcerptRange {
     source_range: TextRange,
     match_ranges: Vec<TextRange>,
     display_path: Option<PathKey>,
+    /// 该逻辑 excerpt 归属的 Buffer；diff 的旧侧与新侧都由 materializer 指回 working Buffer。
+    /// `None` 时在物化时从源 Buffer 的稳定身份取值。
+    buffer_id: Option<BufferId>,
     editable: bool,
-    starts_new_excerpt: bool,
+    starts_logical_excerpt: bool,
     diff_kind: Option<ExcerptDiffKind>,
     /// diff 投影物化时标注的 hunk 身份；普通 excerpt 为空。
     /// 同一节点可同时承担「前驱纯删除的边界」与「自身内容 hunk」，因此按 hunk 顺序保存。
@@ -71,8 +73,9 @@ impl ExcerptRange {
             source_range,
             match_ranges,
             display_path: None,
+            buffer_id: None,
             editable: true,
-            starts_new_excerpt: true,
+            starts_logical_excerpt: true,
             diff_kind: None,
             diff_hunks: Vec::new(),
         }
@@ -83,15 +86,25 @@ impl ExcerptRange {
         self
     }
 
+    /// 指定该逻辑 excerpt 归属的 Buffer 身份。
+    ///
+    /// diff 的 base/index 文本只是 working Buffer 的旧侧投影，不能因为来自另一份源文本而生成实体 header 或 excerpt divider。
+    pub(crate) fn with_buffer_id(mut self, buffer_id: BufferId) -> Self {
+        self.buffer_id = Some(buffer_id);
+        self
+    }
+
     /// 标记该片段是否接受组合编辑；diff 旧侧片段只参与选择、复制和导航。
     pub fn with_editable(mut self, editable: bool) -> Self {
         self.editable = editable;
         self
     }
 
-    /// 同一可见 excerpt 可由多个连续来源片段构成，只有首片段创建文件标题或 excerpt 分隔块。
-    pub fn with_starts_new_excerpt(mut self, starts_new_excerpt: bool) -> Self {
-        self.starts_new_excerpt = starts_new_excerpt;
+    /// 同一逻辑 excerpt 可由多个连续来源片段构成，只有首片段属于逻辑边界。
+    ///
+    /// 这是 diff 物化的内部协议；显示层只能消费 `MultiBufferSnapshot::excerpt_boundaries`。
+    pub(crate) fn with_starts_logical_excerpt(mut self, starts_logical_excerpt: bool) -> Self {
+        self.starts_logical_excerpt = starts_logical_excerpt;
         self
     }
 
@@ -214,6 +227,8 @@ struct ExcerptSource {
     entity: Entity<LanguageBuffer>,
     /// 源文件路径身份；注册或路径变化时算一次，快照构造不再逐源读实体。
     path: PathKey,
+    /// 源 Buffer 的稳定身份；无文件路径时参与 PathKey 与显示块分类。
+    buffer_id: BufferId,
     text: Snapshot,
     syntax: SyntaxSnapshot,
     /// 派生高亮缓存句柄；随源快照版本变化整体替换。
@@ -223,6 +238,10 @@ struct ExcerptSource {
     /// 源语言解析后的编辑器设置。
     settings: Arc<LanguageSettings>,
     capture_map: Arc<[u32]>,
+}
+
+fn path_key_for_source(source: &LanguageBuffer) -> PathKey {
+    PathKey::for_buffer(source.file_path(), source.buffer_id())
 }
 
 /// 不可变快照帧中的源状态（不携带实体引用）。
@@ -279,6 +298,8 @@ struct Excerpt {
     /// 路径身份索引；锚点解析用它做整数比较。
     path_index: PathKeyIndex,
     display_path: PathKey,
+    /// 实体 header / excerpt divider 归属的逻辑 Buffer。
+    buffer_id: BufferId,
     /// 片段在源文档中的锚点范围；权威是源 Anchor，裸 TextRange 只是当前解析缓存。
     source_range: ExcerptContext,
     source_start_line: usize,
@@ -293,7 +314,7 @@ struct Excerpt {
     /// 该片段所属的工作区源实体；纯文本派生快照没有实体源，因此为 `None`。
     source_id: Option<gpui::EntityId>,
     editable: bool,
-    starts_new_excerpt: bool,
+    starts_logical_excerpt: bool,
     diff_kind: Option<ExcerptDiffKind>,
 }
 
@@ -309,26 +330,17 @@ struct ExcerptContext {
 }
 
 impl ExcerptContext {
-    /// 在指定源快照代际与版本上创建锚点范围；outside 让边界插入纳入范围。
-    fn new(
-        generation: BufferGeneration,
-        version: BufferVersion,
-        range: TextRange,
-        outside: bool,
-    ) -> Self {
+    /// 在指定源快照版本上创建锚点范围；outside 让边界插入纳入范围。
+    fn new(version: BufferVersion, range: TextRange, outside: bool) -> Self {
         let (start_affinity, end_affinity) = if outside {
             (Affinity::Before, Affinity::After)
         } else {
             (Affinity::After, Affinity::Before)
         };
         Self {
-            start: Anchor::new(generation, version, range.start()).with_affinity(start_affinity),
-            end: Anchor::new(generation, version, range.end()).with_affinity(end_affinity),
+            start: Anchor::new(version, range.start()).with_affinity(start_affinity),
+            end: Anchor::new(version, range.end()).with_affinity(end_affinity),
         }
-    }
-
-    fn generation(&self) -> BufferGeneration {
-        self.start.generation()
     }
 
     fn version(&self) -> BufferVersion {
@@ -357,12 +369,11 @@ impl ExcerptContext {
 
     /// 用目标源快照的不衰减坐标索引把锚点范围推进到当前坐标。
     ///
-    /// outside 决定边界插入是否纳入；锚点代际与目标不一致（reset / 基线替换）时显式失败，
-    /// 同一代际内索引永不衰减，不会因编辑日志预算裁剪而失效。
+    /// outside 决定边界插入是否纳入；坐标索引不衰减，不会因编辑日志预算裁剪而失效。
     fn mapped(&self, snapshot: &Snapshot, outside: bool) -> TextResult<Self> {
         let range = self.range();
         // 位置推进必须用“自锚点版本以来的全部坐标增量”：范围之前的编辑同样会平移它。
-        let map = snapshot.position_map_since(self.generation(), self.version())?;
+        let map = snapshot.position_map_since(self.version())?;
         let mapped = map
             .map_old_range_with_stickiness(
                 range,
@@ -373,12 +384,7 @@ impl ExcerptContext {
                 },
             )
             .value();
-        Ok(Self::new(
-            snapshot.generation(),
-            snapshot.version(),
-            mapped,
-            outside,
-        ))
+        Ok(Self::new(snapshot.version(), mapped, outside))
     }
 }
 
@@ -498,6 +504,7 @@ impl Excerpt {
         ExcerptSnapshot {
             path: self.path.clone(),
             display_path: self.display_path.clone(),
+            buffer_id: self.buffer_id,
             output_range: MultiBufferRange::new(
                 MultiBufferOffset::new(at.bytes),
                 MultiBufferOffset::new(at.bytes + len),
@@ -509,7 +516,7 @@ impl Excerpt {
             source_start_line: self.source_start_line,
             source_index: self.source_index,
             editable: self.editable,
-            starts_new_excerpt: self.starts_new_excerpt,
+            starts_logical_excerpt: self.starts_logical_excerpt,
             diff_kind: self.diff_kind,
         }
     }
@@ -1068,6 +1075,7 @@ fn projection_items_equal(
     old_excerpt.path == new_excerpt.path
         && old_excerpt.path_index == new_excerpt.path_index
         && old_excerpt.display_path == new_excerpt.display_path
+        && old_excerpt.buffer_id == new_excerpt.buffer_id
         && old_excerpt.source_range == new_excerpt.source_range
         && old_excerpt.source_start_line == new_excerpt.source_start_line
         && old_excerpt.text_summary == new_excerpt.text_summary
@@ -1075,7 +1083,7 @@ fn projection_items_equal(
         && old_excerpt.match_ranges == new_excerpt.match_ranges
         && old_excerpt.source_id == new_excerpt.source_id
         && old_excerpt.editable == new_excerpt.editable
-        && old_excerpt.starts_new_excerpt == new_excerpt.starts_new_excerpt
+        && old_excerpt.starts_logical_excerpt == new_excerpt.starts_logical_excerpt
         && old_excerpt.diff_kind == new_excerpt.diff_kind
         && old_transform.hunks() == new_transform.hunks()
         && matches!(
@@ -1533,6 +1541,7 @@ struct ProjectionSync {
 pub struct ExcerptSnapshot {
     path: PathKey,
     display_path: PathKey,
+    buffer_id: BufferId,
     output_range: MultiBufferRange,
     source_range: TextRange,
     output_start_line: usize,
@@ -1541,7 +1550,7 @@ pub struct ExcerptSnapshot {
     /// 指向快照 `excerpt_sources` 的索引；内部坐标换算用，不在公开 API 暴露。
     source_index: usize,
     editable: bool,
-    starts_new_excerpt: bool,
+    starts_logical_excerpt: bool,
     diff_kind: Option<ExcerptDiffKind>,
 }
 
@@ -1552,6 +1561,11 @@ impl ExcerptSnapshot {
 
     pub fn display_path(&self) -> &Path {
         self.display_path.as_path()
+    }
+
+    /// 当前逻辑 excerpt 的稳定 Buffer 身份。
+    pub fn buffer_id(&self) -> BufferId {
+        self.buffer_id
     }
 
     pub fn output_range(&self) -> MultiBufferRange {
@@ -1581,10 +1595,6 @@ impl ExcerptSnapshot {
         self.editable
     }
 
-    pub fn starts_new_excerpt(&self) -> bool {
-        self.starts_new_excerpt
-    }
-
     pub fn diff_kind(&self) -> Option<ExcerptDiffKind> {
         self.diff_kind
     }
@@ -1592,6 +1602,42 @@ impl ExcerptSnapshot {
     pub fn source_line_for_output_line(&self, output_line: usize) -> Option<usize> {
         (self.diff_kind != Some(ExcerptDiffKind::Deleted) && output_line >= self.output_start_line)
             .then(|| self.source_start_line + 1 + output_line - self.output_start_line)
+    }
+}
+
+/// 当前组合快照中两个相邻逻辑 excerpt 之间的边界。
+///
+/// 这对应 Zed `MultiBufferSnapshot::excerpt_boundaries_in_range` 提供给 `BlockMap` 的领域事实。
+/// diff 的旧侧、新侧与上下文片段只有 materializer 声明新逻辑 excerpt 时才会出现在这里，显示层不再自行猜测物理片段边界。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExcerptBoundary {
+    previous: Option<ExcerptSnapshot>,
+    next: ExcerptSnapshot,
+    next_index: usize,
+}
+
+impl ExcerptBoundary {
+    pub fn previous(&self) -> Option<&ExcerptSnapshot> {
+        self.previous.as_ref()
+    }
+
+    pub fn next(&self) -> &ExcerptSnapshot {
+        &self.next
+    }
+
+    /// `next` 在当前快照 `excerpts()` 序列中的下标。
+    pub fn next_index(&self) -> usize {
+        self.next_index
+    }
+
+    /// 边界是否进入了一个新的 Buffer。
+    ///
+    /// 这是 Zed `ExcerptBoundary::starts_new_buffer` 的同一语义：只比较相邻逻辑 excerpt 的 Buffer 身份，与显示策略无关。
+    pub fn starts_new_buffer(&self) -> bool {
+        match self.previous.as_ref() {
+            None => true,
+            Some(previous) => previous.buffer_id() != self.next.buffer_id(),
+        }
     }
 }
 
@@ -1619,6 +1665,11 @@ pub struct MultiBufferSnapshot {
     metadata_version: u64,
     /// diff 显示输入与文本／语言元数据分离：它只驱动装饰替换，不触发显示拓扑同步。
     diff_display: Option<Arc<DiffDisplaySnapshot>>,
+    /// 整个组合文档的显示策略：是否为新 Buffer 绘制实体 header。
+    /// 单文件文档（`singleton`）不产生边界；该策略只决定多文件边界画 header 还是 divider。
+    show_headers: bool,
+    /// 单文件组合文档：Zed 语义下不产生任何 excerpt 边界。
+    singleton: bool,
 }
 
 /// 组合输出位置关联的源快照与坐标映射。
@@ -1717,13 +1768,13 @@ impl MultiBufferSubscription {
             .state
             .lock()
             .expect("组合投影订阅锁不应在持锁期间 panic");
-        let Some(old_version) = state.pending_old_version.take() else {
+        let Some(_) = state.pending_old_version.take() else {
             return TextChangeBatch::default();
         };
         state
             .pending_batch
             .take()
-            .unwrap_or_else(|| TextChangeBatch::reset(old_version, state.current_version))
+            .expect("存在待消费投影版本时必须同时存在连续的输出编辑批次")
     }
 }
 
@@ -1731,7 +1782,10 @@ impl MultiBufferSubscription {
 struct ProjectionSubscriptionState {
     current_version: BufferVersion,
     pending_old_version: Option<BufferVersion>,
-    /// 单次源编辑换算到组合坐标后的增量批次；多次变化合并或整体重建时为 None。
+    /// 单次源编辑换算到组合坐标后的增量批次。
+    ///
+    /// Zed 的订阅协议始终保留可组合的输出编辑；
+    /// 版本连续性是本层不变量，不能以缺失批次退化为无坐标的整体替换。
     pending_batch: Option<TextChangeBatch>,
 }
 
@@ -1775,12 +1829,15 @@ impl ProjectionChangeTopic {
                     state.pending_old_version = Some(old_version);
                     state.pending_batch = Some(batch.clone());
                 } else {
-                    // 同一读取前的多次变化必须组合为一段连续增量；
-                    // 版本不连续说明订阅错过中间提交，只能整体重载，不能猜测坐标。
+                    // 同一读取前的多次变化必须组合为一段连续增量。
+                    // 投影版本由本层依次发布，版本不连续说明内部发布协议被破坏。
                     state.pending_batch = state
                         .pending_batch
                         .as_ref()
-                        .and_then(|pending| pending.compose(&batch));
+                        .and_then(|pending| pending.compose(&batch))
+                        .or_else(|| {
+                            panic!("组合投影订阅收到了不连续的版本批次");
+                        });
                 }
                 state.current_version = new_version;
                 true
@@ -2377,6 +2434,38 @@ impl MultiBufferSnapshot {
         })
     }
 
+    /// 整个组合文档的显示策略：新 Buffer 边界绘制实体 header 还是 divider。
+    ///
+    /// 它是快照级策略，不进入任何 excerpt 的身份或边界判定；
+    /// `BlockMap` 是当前唯一消费者。
+    pub fn show_headers(&self) -> bool {
+        self.show_headers
+    }
+
+    /// 按组合顺序遍历逻辑 excerpt 边界。
+    ///
+    /// Header、divider 与整文件折叠都必须消费此边界流；
+    /// 它是 MultiBuffer 对“哪些物理片段共同构成一个可见 excerpt”的唯一解释。
+    /// 单文件文档没有边界，缺口由 `singleton` 直接关闭。
+    pub fn excerpt_boundaries(&self) -> impl Iterator<Item = ExcerptBoundary> + '_ {
+        let singleton = self.singleton;
+        let mut previous = None;
+        self.excerpts()
+            .enumerate()
+            .filter_map(move |(next_index, next)| {
+                if singleton || !next.starts_logical_excerpt {
+                    return None;
+                }
+                let boundary = ExcerptBoundary {
+                    previous: previous.clone(),
+                    next: next.clone(),
+                    next_index,
+                };
+                previous = Some(next);
+                Some(boundary)
+            })
+    }
+
     /// 片段快照的共享句柄；显示层持有派生视图，树仍是唯一权威。
     ///
     /// 派生结果按版本惰性缓存：文本未变时重复的显示刷新不再重新遍历树。
@@ -2443,35 +2532,6 @@ impl MultiBufferSnapshot {
         )
         .map(Into::into)
     }
-    /// 显式跨代际重锚：只用于外部 reload / 基线替换后恢复调用方稳定表示。
-    ///
-    /// 普通 `resolve_anchor` 在代际失配时显式失败；
-    /// 本入口允许调用方在明确知道自己正在处理一次 reset 时，用不衰减坐标索引把旧代际源 Anchor 映射到当前代际，并返回绑定当前代际的新锚点。
-    /// 已匹配当前代际的锚点原样返回。
-    pub fn reattach_anchor(&self, anchor: &MultiBufferAnchor) -> Option<MultiBufferAnchor> {
-        let MultiBufferAnchor::Excerpt(excerpt_anchor) = anchor else {
-            return Some(*anchor);
-        };
-        let Some(source_id) = excerpt_anchor.source_id else {
-            // 纯文本派生快照没有源实体，不承载跨代际语义。
-            return Some(*anchor);
-        };
-        let source_index = self.source_indices.get(&source_id).copied()?;
-        let source = self.excerpt_sources.get(&source_index)?;
-        let text_anchor = match excerpt_anchor.text_anchor.resolve_in(&source.text) {
-            Ok(_) => excerpt_anchor.text_anchor,
-            Err(_) => excerpt_anchor
-                .text_anchor
-                .rebase_across_generations(&source.text)
-                .ok()?,
-        };
-        Some(MultiBufferAnchor::Excerpt(ExcerptAnchor {
-            path: excerpt_anchor.path,
-            source_id: Some(source_id),
-            text_anchor,
-        }))
-    }
-
     pub fn capture_names(&self) -> Arc<[Arc<str>]> {
         Arc::clone(&self.capture_names)
     }
@@ -3075,7 +3135,8 @@ impl From<Snapshot> for MultiBufferSnapshot {
             path: path.clone(),
             path_index: PathKeyIndex::new(0),
             display_path: path,
-            source_range: ExcerptContext::new(text.generation(), text.version(), range, false),
+            buffer_id: BufferId::new(0),
+            source_range: ExcerptContext::new(text.version(), range, false),
             source_start_line: 0,
             text_summary,
             adds_newline: false,
@@ -3083,7 +3144,7 @@ impl From<Snapshot> for MultiBufferSnapshot {
             source_index: 0,
             source_id: None,
             editable: true,
-            starts_new_excerpt: false,
+            starts_logical_excerpt: true,
             diff_kind: None,
         };
         let diff_transforms =
@@ -3110,6 +3171,8 @@ impl From<Snapshot> for MultiBufferSnapshot {
             capture_names,
             metadata_version: 0,
             diff_display: None,
+            show_headers: true,
+            singleton: true,
         }
     }
 }
@@ -3218,6 +3281,9 @@ pub struct MultiBuffer {
     snapshot_source_updates: Option<HashSet<usize>>,
     /// 当前是否处于源与 diff 的同一同步帧；存在时不提前发布投影版本。
     projection_sync: Option<ProjectionSync>,
+    /// 整个组合文档的显示策略：新 Buffer 边界绘制实体 header 还是 divider。
+    /// 它只由构造入口确定，不属于任何单个 diff 文件的物化条件。
+    show_headers: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3251,17 +3317,13 @@ impl MultiBuffer {
     /// 从工作区源构建独立的组合文档（整文件可编辑 excerpt）。
     ///
     /// 普通编辑器的文档统一经此构造：项目共享 LanguageBuffer 只作为工作区源（source），展开 diff hunk 时的 set_excerpts_for_path 只影响本组合文档，不污染项目共享文档。
-    /// 整文件片段不创建文件标题块（单文件文档无多文件边界；
-    /// 标题块由多文件投影与 diff 投影按 `show_file_header` 自行声明）。
+    /// 单文件文档没有多文件边界，快照据此标记 singleton，显示层不绘制 header/divider。
     pub fn singleton(source: Entity<LanguageBuffer>, cx: &mut Context<Self>) -> Self {
         let line_count = source.read(cx).text_snapshot().line_count();
         let mut multi_buffer = Self::empty(cx);
         multi_buffer.singleton_source = Some(source.clone());
         multi_buffer.set_excerpts_for_path(
-            vec![
-                ExcerptRange::line_range(source.clone(), 0..line_count, cx)
-                    .with_starts_new_excerpt(false),
-            ],
+            vec![ExcerptRange::line_range(source.clone(), 0..line_count, cx)],
             cx,
         );
         multi_buffer
@@ -3286,6 +3348,7 @@ impl MultiBuffer {
             snapshot_dirty: true,
             snapshot_source_updates: None,
             projection_sync: None,
+            show_headers: true,
         }
     }
 
@@ -3344,12 +3407,6 @@ impl MultiBuffer {
                 changed: false,
                 waiting_for_diff_sources: HashSet::new(),
             });
-        }
-    }
-
-    pub(crate) fn wait_for_diff_sync(&mut self, source_id: gpui::EntityId) {
-        if let Some(sync) = &mut self.projection_sync {
-            sync.waiting_for_diff_sources.insert(source_id);
         }
     }
 
@@ -3442,11 +3499,6 @@ impl MultiBuffer {
         old_records: &[(MultiBufferOffset, ExcerptOffset, TextRange)],
         new_records: &[(MultiBufferOffset, ExcerptOffset, TextRange)],
     ) -> SourceIncremental {
-        if source_change.requires_reset() {
-            return SourceIncremental {
-                batch: source_change.projected_from(Vec::new()),
-            };
-        }
         if source_change.patch().is_empty() {
             // 没有净编辑：投影几何不变，但仍发布空增量批次，让显示层采用新的组合快照，而不是退化为整体重载。
             return SourceIncremental {
@@ -3456,7 +3508,7 @@ impl MultiBuffer {
         assert_eq!(
             old_records.len(),
             new_records.len(),
-            "同一源在非 reset 文本编辑前后必须保持相同的 excerpt 记录数"
+            "同一源文本编辑前后必须保持相同的 excerpt 记录数"
         );
         let patch_edits = source_change.patch().edits();
         let mut output_edits = Vec::new();
@@ -3651,9 +3703,8 @@ impl MultiBuffer {
         let mut prepared = Vec::with_capacity(excerpts.len());
         for excerpt in excerpts {
             let source = excerpt.source.read(cx);
-            // 无路径的临时 Buffer（单行输入框等）以空路径参与组合；
-            // 路径身份用于文件级折叠、标题与锚点解析。
-            let path = PathKey::new(source.file_path().unwrap_or_default());
+            let path = path_key_for_source(&source);
+            let buffer_id = source.buffer_id();
             let source_id = excerpt.source.entity_id();
             let source_index = match next_source_indices.get(&source_id).copied() {
                 Some(index) => index,
@@ -3662,6 +3713,7 @@ impl MultiBuffer {
                     next_sources.push(ExcerptSource {
                         entity: excerpt.source.clone(),
                         path: path.clone(),
+                        buffer_id,
                         word_boundary: snapshot_word_boundary(&snapshot),
                         settings: snapshot_settings(&snapshot),
                         text: snapshot.text,
@@ -3701,6 +3753,7 @@ impl MultiBuffer {
         let mut next_excerpts = Vec::with_capacity(prepared_count);
         let mut next_transforms = Vec::with_capacity(prepared_count);
         for (position, item) in prepared.into_iter().enumerate() {
+            let excerpt_buffer_id = item.excerpt.buffer_id;
             let display_path = item
                 .excerpt
                 .display_path
@@ -3719,8 +3772,8 @@ impl MultiBuffer {
                 path: item.path,
                 path_index,
                 display_path,
+                buffer_id: excerpt_buffer_id.unwrap_or(next_sources[item.source_index].buffer_id),
                 source_range: ExcerptContext::new(
-                    next_sources[item.source_index].text.generation(),
                     next_sources[item.source_index].text.version(),
                     item.excerpt.source_range,
                     false,
@@ -3732,7 +3785,7 @@ impl MultiBuffer {
                 source_index: item.source_index,
                 source_id: Some(item.source_id),
                 editable: item.excerpt.editable,
-                starts_new_excerpt: item.excerpt.starts_new_excerpt,
+                starts_logical_excerpt: item.excerpt.starts_logical_excerpt,
                 diff_kind: item.excerpt.diff_kind,
             };
             next_transforms.push(DiffTransform::from_excerpt(&excerpt, hunks));
@@ -3759,7 +3812,7 @@ impl MultiBuffer {
         excerpts: Vec<ExcerptRange>,
         start_index: usize,
         total: usize,
-        cx: &App,
+        _cx: &App,
     ) -> Vec<(Excerpt, Vec<DiffTransformHunkInfo>)> {
         let mut path_keys = std::mem::take(&mut self.state.path_keys);
         let mut path_key_indices = std::mem::take(&mut self.state.path_key_indices);
@@ -3770,7 +3823,8 @@ impl MultiBuffer {
                 continue;
             };
             let source = &self.state.sources[source_index];
-            let path = PathKey::new(source.entity.read(cx).file_path().unwrap_or_default());
+            let path = source.path.clone();
+            let excerpt_buffer_id = excerpt.buffer_id;
             let display_path = excerpt.display_path.clone().unwrap_or_else(|| path.clone());
             let Some((text_summary, ends_with_newline)) =
                 snapshot_range_summary(&source.text, excerpt.source_range)
@@ -3789,8 +3843,8 @@ impl MultiBuffer {
                     path,
                     path_index,
                     display_path,
+                    buffer_id: excerpt_buffer_id.unwrap_or(source.buffer_id),
                     source_range: ExcerptContext::new(
-                        source.text.generation(),
                         source.text.version(),
                         excerpt.source_range,
                         false,
@@ -3802,7 +3856,7 @@ impl MultiBuffer {
                     source_index,
                     source_id: Some(source_id),
                     editable: excerpt.editable,
-                    starts_new_excerpt: excerpt.starts_new_excerpt,
+                    starts_logical_excerpt: excerpt.starts_logical_excerpt,
                     diff_kind: excerpt.diff_kind,
                 },
                 hunks,
@@ -3820,17 +3874,16 @@ impl MultiBuffer {
     fn splice_source_path(
         &mut self,
         source_id: gpui::EntityId,
-        reset: bool,
         source_position_map: &PositionMap,
         expanded_excerpts: Option<&HashSet<usize>>,
-        cx: &App,
+        _cx: &App,
     ) {
         let Some(path) = self
             .state
             .sources
             .iter()
             .find(|source| source.entity.entity_id() == source_id)
-            .map(|source| PathKey::new(source.entity.read(cx).file_path().unwrap_or_default()))
+            .map(|source| source.path.clone())
         else {
             return;
         };
@@ -3861,32 +3914,11 @@ impl MultiBuffer {
                     let outside = expanded_excerpts
                         .is_none_or(|expanded| expanded.contains(&(start_index + local)));
                     let source = &self.state.sources[entry.source_index];
-                    if reset {
-                        // 基线替换：显式用本次 reset 的坐标映射把 excerpt 重锚到新代际，
-                        // 不把旧锚点当作普通版本推进继续映射。
-                        entry.source_range = ExcerptContext::new(
-                            source.text.generation(),
-                            source.text.version(),
-                            source_position_map
-                                .map_old_range_with_stickiness(
-                                    entry.source_range.range(),
-                                    if outside {
-                                        Stickiness::Expand
-                                    } else {
-                                        Stickiness::Never
-                                    },
-                                )
-                                .value(),
-                            outside,
-                        );
-                    } else {
-                        // 源范围的权威表示是 Anchor：用不衰减坐标索引推进；
-                        // 同一代际内索引覆盖全部版本，失败即内部状态不一致。
-                        entry.source_range = entry
-                            .source_range
-                            .mapped(&source.text, outside)
-                            .expect("同一代际内的源编辑必须能由不衰减坐标索引解析");
-                    }
+                    // 源范围的权威表示是 Anchor：用不衰减坐标索引推进。
+                    entry.source_range = entry
+                        .source_range
+                        .mapped(&source.text, outside)
+                        .expect("源编辑必须能由不衰减坐标索引解析");
                     entry.match_ranges = entry
                         .match_ranges
                         .iter()
@@ -4136,11 +4168,14 @@ impl MultiBuffer {
             })
             .collect::<Vec<_>>();
         self.state.sources.extend(new_sources.iter().map(|source| {
-            let snapshot = source.read(cx).snapshot();
-            let path = PathKey::new(source.read(cx).file_path().unwrap_or_default());
+            let language_buffer = source.read(cx);
+            let snapshot = language_buffer.snapshot();
+            let path = path_key_for_source(&language_buffer);
+            let buffer_id = language_buffer.buffer_id();
             ExcerptSource {
                 entity: source.clone(),
                 path,
+                buffer_id,
                 word_boundary: snapshot_word_boundary(&snapshot),
                 settings: snapshot_settings(&snapshot),
                 text: snapshot.text,
@@ -4171,15 +4206,9 @@ impl MultiBuffer {
     }
 
     /// 片段源文件路径；源必须已注册。
-    fn excerpt_path(&self, excerpt: &ExcerptRange, cx: &App) -> PathKey {
+    fn excerpt_path(&self, excerpt: &ExcerptRange, _cx: &App) -> PathKey {
         let source_index = self.state.source_indices[&excerpt.source.entity_id()];
-        PathKey::new(
-            self.state.sources[source_index]
-                .entity
-                .read(cx)
-                .file_path()
-                .unwrap_or_default(),
-        )
+        self.state.sources[source_index].path.clone()
     }
 
     /// 用给定 excerpts 替换其源路径现有的全部 excerpts（按路径有序插入）。
@@ -4305,44 +4334,6 @@ impl MultiBuffer {
             "MultiBuffer 必须按自己的源订阅连续消费文本变化"
         );
         let position_map = source_change.position_map();
-        // 外部整体刷新会重建 excerpt 拓扑；文本始终由当前 source 快照按需读取。
-        if source_change.requires_reset() {
-            match self.diff_source_role(source_id, cx) {
-                // working 文档整体替换：组合正文必须立即按新快照重物化。
-                Some(DiffSourceRole::Working) => {
-                    let before = self.projection_trees();
-                    self.refresh_source_snapshot(source_id, cx);
-                    self.rebuild_diff_projection_from(before, Some(&source_change), cx);
-                    return Some(source_change);
-                }
-                // base/index 修订文档整体替换：先按同一份 PositionMap 推进已有
-                // excerpt，再由 BufferDiff 的新结果更新 hunk 拓扑；源文本与组合
-                // 映射在当前读取帧内保持一致，不把新 excerpt 与旧源快照配对。
-                Some(DiffSourceRole::Revision) => {
-                    let own_sync = self.projection_sync.is_none();
-                    if own_sync {
-                        self.begin_projection_sync();
-                    }
-                    self.recompute_diff_for_source(source_id, diff_refresh, cx);
-                    self.apply_source_change(
-                        source_id,
-                        &position_map,
-                        &source_change,
-                        expanded_excerpts,
-                        cx,
-                    );
-                    self.wait_for_diff_sync(source_id);
-                    if refresh_metadata {
-                        self.refresh_source_snapshot(source_id, cx);
-                    }
-                    if own_sync {
-                        self.finish_projection_sync(cx);
-                    }
-                    return Some(source_change);
-                }
-                None => {}
-            }
-        }
         self.recompute_diff_for_source(source_id, diff_refresh, cx);
         // 普通编辑只更新受影响 source 的派生坐标；BufferDiff 仍独立维护 hunk 拓扑。
         self.apply_source_change(
@@ -4465,13 +4456,7 @@ impl MultiBuffer {
             source_id,
         );
         // 绝对输出坐标由树摘要推导：源范围变化只 splice 受影响路径的 item，其余路径不变。
-        self.splice_source_path(
-            source_id,
-            source_change.requires_reset(),
-            source_position_map,
-            expanded_excerpts,
-            cx,
-        );
+        self.splice_source_path(source_id, source_position_map, expanded_excerpts, cx);
         let new_records = output_records_for_path_source(
             &self.state.excerpts,
             &self.state.diff_transforms,
@@ -4674,13 +4659,9 @@ impl MultiBuffer {
         let mut path_key_indices = std::mem::take(&mut self.state.path_key_indices);
         let mut entries = self.state.excerpts.iter().cloned().collect::<Vec<_>>();
         for entry in &mut entries {
-            let path = PathKey::new(
-                self.state.sources[entry.source_index]
-                    .entity
-                    .read(cx)
-                    .file_path()
-                    .unwrap_or_default(),
-            );
+            let source = &mut self.state.sources[entry.source_index];
+            let path = path_key_for_source(&source.entity.read(cx));
+            source.path = path.clone();
             entry.path = path.clone();
             entry.display_path = path;
             entry.path_index = intern_path(&mut path_keys, &mut path_key_indices, &entry.path);
@@ -5077,6 +5058,8 @@ impl MultiBuffer {
             capture_names: Arc::clone(&self.state.capture_names),
             metadata_version: self.state.metadata_epoch,
             diff_display: self.diff.clone(),
+            show_headers: self.show_headers,
+            singleton: self.singleton_source.is_some(),
         };
         self.snapshot_dirty = false;
     }
@@ -5540,12 +5523,8 @@ fn anchor_in_mappings(
         (mapping.source_range.start().get() + offset.get().saturating_sub(at.bytes))
             .min(mapping.source_range.end().get()),
     );
-    let text_anchor = Anchor::new(
-        mapping.source_range.generation(),
-        mapping.source_range.version(),
-        source_offset,
-    )
-    .with_affinity(affinity);
+    let text_anchor =
+        Anchor::new(mapping.source_range.version(), source_offset).with_affinity(affinity);
     Some(MultiBufferAnchor::excerpt(
         mapping.path_index,
         mapping.source_id,
@@ -5559,7 +5538,7 @@ enum SourceAnchorResolution {
     Mapped(ByteOffset),
     /// 锚点绑定的路径或源已退出投影。
     PathNotProjected,
-    /// 锚点版本早于目标快照或代际已被 reset / 基线替换淘汰。
+    /// 锚点版本无法映射到目标快照。
     Invalid,
 }
 
@@ -5585,8 +5564,6 @@ fn excerpt_anchor_source_offset<S: SourceTexts + ?Sized>(
             };
             return match anchor.text_anchor.resolve_in(text) {
                 Ok(offset) => SourceAnchorResolution::Mapped(offset),
-                // 普通解析不做跨代际猜测：
-                // 代际失配时显式失败，由调用方决定丢弃或走 `MultiBufferSnapshot::reattach_anchor` 的显式重锚。
                 Err(_) => SourceAnchorResolution::Invalid,
             };
         }
@@ -5709,7 +5686,7 @@ fn nearest_output_offset_for_source(
 /// 在给定投影→源映射中把源锚点解析回投影偏移。
 ///
 /// 同一文件仍存在时优先落到最接近的源片段；文件退出投影时按当前路径顺序落到最近的后继/前驱。
-/// 锚点版本已被 reset / 基线替换淘汰时返回 None，不进入就近回退。
+/// 锚点版本无法映射时返回 None，不进入就近回退。
 /// [`MultiBuffer::resolve_anchor`]（当前映射）与 [`MultiBufferSnapshot::resolve_anchor`]（快照映射）共用此解析逻辑。
 fn resolve_anchor_in_mappings<S: SourceTexts + ?Sized>(
     excerpts: &SumTree<Excerpt>,
@@ -5754,7 +5731,7 @@ fn resolve_anchor_in_mappings<S: SourceTexts + ?Sized>(
         SourceAnchorResolution::PathNotProjected => {
             nearest_path_output_offset(excerpts, tree, path_keys, excerpt_anchor.path)
         }
-        // 锚点版本失效 / 代际被替换：禁止进入 nearest_path_output_offset 猜测坐标。
+        // 锚点版本无法映射：禁止进入 nearest_path_output_offset 猜测坐标。
         SourceAnchorResolution::Invalid => None,
     }
 }

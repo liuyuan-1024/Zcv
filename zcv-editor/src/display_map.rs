@@ -25,7 +25,6 @@ mod wrap_map;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::num::NonZeroUsize;
 use std::ops::Range;
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::scrollbar::{ScrollbarMarker, marker_geometry};
@@ -54,9 +53,9 @@ pub(crate) use display_width::DisplayColumn;
 use edit::ProjectionEdit;
 use error::DisplayMapResult;
 pub(crate) use fold_map::{FoldBias, FoldPlaceholder, FoldRowSegment, ProjectedLineIndex};
-use fold_map::{FoldMap, FoldSnapshot, LogicalProjection};
+use fold_map::{FoldMap, FoldSnapshot};
 use gpui::{App, AppContext as _, Bounds, Context, Entity, HighlightStyle, Pixels};
-use tab_map::TabMap;
+use tab_map::{TabMap, display_width_for_fold_row};
 pub(crate) use tab_map::{byte_for_display_column, display_column_for_byte};
 use wrap_map::{WrapEdit, WrapMap, WrapSnapshot};
 use zcv_language::HighlightSpan;
@@ -64,8 +63,8 @@ use zcv_multi_buffer::{
     DiffDisplaySnapshot, MultiBuffer, MultiBufferSnapshot, MultiBufferSubscription,
 };
 use zcv_text::{
-    Line, LineRange, LogicalColumn, MovementDirection, MovementUnit, Position, TextChangeBatch,
-    TextResult,
+    BufferId, Line, LineRange, LogicalColumn, MovementDirection, MovementUnit, Position,
+    TextChangeBatch, TextResult,
 };
 use zcv_theme::syntax;
 
@@ -635,18 +634,11 @@ impl DisplaySnapshot {
 ///
 /// `DisplayMap` 是唯一文本变更消费者：它把批次换算成组合文本编辑后交给 FoldMap，
 /// 其后各层只消费上层编辑，不再回读文本层的 PositionMap。
+///
+/// 与 Zed 一样，显示层只按实际 `patch` 编辑同步：重载的文本差异保持增量，真正的整篇替换必须由生产方发布覆盖全文的编辑。
 pub(crate) fn buffer_edits_from_batch(
     batch: &TextChangeBatch,
-    old_snapshot: &MultiBufferSnapshot,
-    new_snapshot: &MultiBufferSnapshot,
 ) -> Vec<ProjectionEdit<MultiBufferOffset>> {
-    if batch.requires_reset() || !batch_edits_cover_version_delta(batch, old_snapshot, new_snapshot)
-    {
-        return vec![ProjectionEdit::new(
-            MultiBufferOffset::new(0)..old_snapshot.len_bytes(),
-            MultiBufferOffset::new(0)..new_snapshot.len_bytes(),
-        )];
-    }
     batch
         .patch()
         .edits()
@@ -662,35 +654,6 @@ pub(crate) fn buffer_edits_from_batch(
         .collect()
 }
 
-/// 批次 patch 的删除/插入字节数必须与版本间的文本长度差一致。
-///
-/// 组合投影把结构变化与源文本变化合并时，可能只保留部分区间；这样的 patch 无法作为增量使用，
-/// 必须按整体替换重建，否则显示层会拿不完整的编辑去搬运变换树。
-fn batch_edits_cover_version_delta(
-    batch: &TextChangeBatch,
-    old_snapshot: &MultiBufferSnapshot,
-    new_snapshot: &MultiBufferSnapshot,
-) -> bool {
-    let removed: usize = batch
-        .patch()
-        .edits()
-        .iter()
-        .map(|edit| edit.old_range().end().get() - edit.old_range().start().get())
-        .sum();
-    let inserted: usize = batch
-        .patch()
-        .edits()
-        .iter()
-        .map(|edit| edit.new_range().end().get() - edit.new_range().start().get())
-        .sum();
-    let old_len = old_snapshot.len_bytes().get();
-    let new_len = new_snapshot.len_bytes().get();
-    old_len
-        .checked_sub(removed)
-        .and_then(|len| len.checked_add(inserted))
-        == Some(new_len)
-}
-
 #[derive(Debug)]
 pub(crate) struct DisplayMap {
     fold_map: FoldMap,
@@ -698,7 +661,7 @@ pub(crate) struct DisplayMap {
     /// 换行层实体：它自己拥有配置、变换树、待处理批次与后台重排任务。
     wrap_map: Entity<WrapMap>,
     /// 由 BufferHeader 控制的整文件折叠；BlockMap 在 WrapMap 之上隐藏对应文本行。
-    folded_buffers: HashSet<PathBuf>,
+    folded_buffers: HashSet<BufferId>,
     /// 当前显示管线的持久派生快照；滚动和普通重绘只克隆快照，不重建 BlockSnapshot。
     snapshot: Option<DisplaySnapshot>,
     /// 组合文本源：DisplayMap 是组合文本变更与同步的唯一持有者。
@@ -971,20 +934,20 @@ impl DisplayMap {
         self.commit_snapshot(&wrap_snapshot, &wrap_edits, cx);
     }
 
-    pub(crate) fn is_buffer_folded(&self, path: &Path) -> bool {
-        self.folded_buffers.contains(path)
+    pub(crate) fn is_buffer_folded(&self, buffer_id: BufferId) -> bool {
+        self.folded_buffers.contains(&buffer_id)
     }
 
     pub(crate) fn set_buffer_folded(
         &mut self,
-        path: PathBuf,
+        buffer_id: BufferId,
         folded: bool,
         cx: &mut Context<Self>,
     ) {
         let changed = if folded {
-            self.folded_buffers.insert(path)
+            self.folded_buffers.insert(buffer_id)
         } else {
-            self.folded_buffers.remove(&path)
+            self.folded_buffers.remove(&buffer_id)
         };
         if changed {
             let wrap_snapshot = self.wrap_map.read(cx).snapshot().clone();
@@ -1011,51 +974,22 @@ impl DisplayMap {
         changed
     }
 
-    pub(crate) fn measure_rows(
-        &mut self,
-        start_row: DisplayRow,
-        line_count: usize,
-        cx: &App,
-    ) -> DisplayMapResult<()> {
-        let end = start_row
-            .get()
-            .saturating_add(line_count)
-            .min(self.cached_snapshot().line_count());
-        let tab_rows = {
-            let block_snapshot = &self
-                .snapshot
-                .as_ref()
-                .expect("DisplayMap 初始化后必须存在显示快照")
-                .block_snapshot;
-            let wrap_snapshot = self.wrap_map.read(cx).snapshot();
-            (start_row.get()..end)
-                .filter_map(|display_row| {
-                    let wrap_row =
-                        block_snapshot.display_row_to_wrap_row(DisplayRow::new(display_row))?;
-                    Some(wrap_snapshot.tab_row_for_wrap_row(wrap_row))
-                })
-                .collect::<Result<Vec<_>, _>>()?
-        };
-        for tab_row in tab_rows {
-            self.tab_map.measure_line(tab_row)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn longest_measured_row(&self) -> DisplayRow {
-        let Some((line, _)) = self.tab_map.longest_measured() else {
-            return DisplayRow::ZERO;
-        };
-        let Some(LogicalProjection::Visible(row)) =
-            self.fold_map.snapshot().logical_to_projected(line).ok()
-        else {
-            return DisplayRow::ZERO;
-        };
+    /// 未开启软换行时按当前 Tab 快照即时计算最长行。
+    ///
+    /// 该计算不在 TabMap 保存逐行宽度缓存；
+    /// Tab 展开仍只在读取当前快照时发生。
+    pub(crate) fn longest_unwrapped_row(&self) -> DisplayRow {
+        let tab_snapshot = self.tab_map.snapshot();
+        let row = (0..tab_snapshot.line_count())
+            .max_by_key(|row| {
+                display_width_for_fold_row(tab_snapshot, Line::new(*row)).unwrap_or_default()
+            })
+            .unwrap_or_default();
         self.snapshot
             .as_ref()
             .expect("DisplayMap 初始化后必须存在显示快照")
             .block_snapshot
-            .projected_wrap_row_to_display_row(row.get())
+            .projected_wrap_row_to_display_row(row)
     }
 
     /// 用订阅者独立积累的组合 Patch，把整条显示管线推进到当前 Snapshot。
@@ -1070,10 +1004,7 @@ impl DisplayMap {
         let current_snapshot = current_snapshot.into();
         // 同步始终逐层推进（对齐 Zed DisplayMap::sync_through_wrap）：
         // 无变化的批次由 WrapMap 丢弃、Block 层复用变换树，不在这里做提前返回。
-        let buffer_edits = {
-            let old_snapshot = self.fold_map.snapshot().buffer_snapshot().clone();
-            buffer_edits_from_batch(&batch, &old_snapshot, &current_snapshot)
-        };
+        let buffer_edits = buffer_edits_from_batch(&batch);
         let (fold_snapshot, fold_edits) = self.fold_map.read(current_snapshot, buffer_edits);
         let tab_width = self.tab_map.snapshot().tab_width();
         let (tab_snapshot, tab_edits) = self.tab_map.sync(fold_snapshot, &fold_edits, tab_width);

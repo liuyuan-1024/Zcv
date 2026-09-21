@@ -64,8 +64,7 @@ fn edit_should_emit_delta_changeset_position_map_and_subscription_patch() {
 #[test]
 fn anchor_follows_continuous_delta_events_without_reinterpreting_coordinates() {
     let mut buffer = buffer("abcd");
-    let mut anchor = Anchor::new(BufferGeneration::INITIAL, buffer.version(), b(2))
-        .with_affinity(Affinity::After);
+    let mut anchor = Anchor::new(buffer.version(), b(2)).with_affinity(Affinity::After);
 
     let first = buffer
         .edit(
@@ -95,14 +94,10 @@ fn anchor_follows_continuous_delta_events_without_reinterpreting_coordinates() {
 fn anchors_map_through_a_multi_edit_transaction_with_their_affinity() {
     let mut buffer = buffer("abcdef");
     let version = buffer.version();
-    let mut before_insert =
-        Anchor::new(BufferGeneration::INITIAL, version, b(1)).with_affinity(Affinity::Before);
-    let mut after_insert =
-        Anchor::new(BufferGeneration::INITIAL, version, b(1)).with_affinity(Affinity::After);
-    let mut before_replace =
-        Anchor::new(BufferGeneration::INITIAL, version, b(3)).with_affinity(Affinity::Before);
-    let mut after_replace =
-        Anchor::new(BufferGeneration::INITIAL, version, b(5)).with_affinity(Affinity::After);
+    let mut before_insert = Anchor::new(version, b(1)).with_affinity(Affinity::Before);
+    let mut after_insert = Anchor::new(version, b(1)).with_affinity(Affinity::After);
+    let mut before_replace = Anchor::new(version, b(3)).with_affinity(Affinity::Before);
+    let mut after_replace = Anchor::new(version, b(5)).with_affinity(Affinity::After);
 
     let outcome = buffer
         .edit(

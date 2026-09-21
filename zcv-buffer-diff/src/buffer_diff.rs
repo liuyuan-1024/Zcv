@@ -11,7 +11,7 @@ use std::sync::Arc;
 use gpui::{App, Context, Entity, EventEmitter};
 use imara_diff::{Algorithm, Diff, InternedInput};
 use zcv_language::LanguageBuffer;
-use zcv_text::{Anchor, BufferGeneration, BufferVersion, ByteOffset, Line, Snapshot, TextRange};
+use zcv_text::{Anchor, BufferVersion, ByteOffset, Line, Snapshot, TextRange};
 
 use zcv_text::word_diff::{MAX_WORD_DIFF_BYTES, MAX_WORD_DIFF_LINES, word_diff_ranges};
 
@@ -465,7 +465,6 @@ fn full_text(working: &Snapshot) -> String {
 /// 二者共同构成后台执行所需的确定编辑依据。暂存语义初值为 NoStaging，由调用方随后标注。
 fn compute_hunks(base_text: Option<&str>, working_str: &str, working: &Snapshot) -> Vec<DiffHunk> {
     let version = working.version();
-    let generation = working.generation();
     // base 不存在即整份工作区文本为新增（新建文件）。
     let Some(base_text) = base_text else {
         return vec![DiffHunk {
@@ -513,7 +512,6 @@ fn compute_hunks(base_text: Option<&str>, working_str: &str, working: &Snapshot)
                     &base_text[diff_base_byte_range.clone()],
                     &working_str[working_byte_range.clone()],
                     working_byte_range.start,
-                    generation,
                     version,
                 )
             } else {
@@ -552,7 +550,6 @@ fn word_diff_anchors(
     base_snippet: &str,
     working_snippet: &str,
     working_offset: usize,
-    generation: BufferGeneration,
     version: BufferVersion,
 ) -> (Vec<Range<usize>>, Vec<Range<Anchor>>) {
     let (base_word_diffs, buffer_word_diffs) = word_diff_ranges(base_snippet, working_snippet);
@@ -560,7 +557,6 @@ fn word_diff_anchors(
         .into_iter()
         .map(|range| {
             Anchor::range_inside(
-                generation,
                 version,
                 TextRange::new(
                     ByteOffset::new(working_offset + range.start),
@@ -613,7 +609,6 @@ fn anchor_line_range(
     let start = line_start_or_end(text, lines.start);
     let end = line_start_or_end(text, lines.end);
     Anchor::range_inside(
-        text.generation(),
         version,
         TextRange::new(start, end).expect("hunk 行范围必须正序"),
     )
@@ -626,7 +621,6 @@ fn line_start_or_end(text: &Snapshot, line: usize) -> ByteOffset {
 
 fn full_buffer_range(text: &Snapshot, version: BufferVersion) -> Range<Anchor> {
     Anchor::range_inside(
-        text.generation(),
         version,
         TextRange::new(ByteOffset::ZERO, text.len_bytes()).expect("全文范围必须有序"),
     )

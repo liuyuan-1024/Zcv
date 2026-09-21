@@ -10,7 +10,7 @@
 //! - `validation`：Buffer 级边界校验
 
 use crate::{
-    BufferConfig, BufferGeneration, BufferVersion, TransactionId,
+    BufferConfig, BufferId, BufferVersion, TransactionId,
     storage::RopeyStorage,
     text_changes::TextChangeTopic,
     tracking::{CoordinateIndex, EditLog},
@@ -22,7 +22,7 @@ mod events;
 mod history;
 mod lifecycle;
 mod movement;
-mod reset;
+mod replace;
 mod slicing;
 mod transaction_pipeline;
 mod validation;
@@ -36,12 +36,12 @@ pub use history::HistoryEditOutcome;
 /// 最小可编辑 Buffer。
 #[derive(Debug)]
 pub struct Buffer {
+    /// Buffer 生命周期内稳定的实体身份；与文本版本无关。
+    buffer_id: BufferId,
     read_only: bool,
     config: BufferConfig,
     storage: RopeyStorage,
     version: BufferVersion,
-    /// 当前内容代际；reset / 基线替换后开启新代际。
-    generation: BufferGeneration,
     saved_version: BufferVersion,
     next_transaction_id: TransactionId,
     text_changes: TextChangeTopic,

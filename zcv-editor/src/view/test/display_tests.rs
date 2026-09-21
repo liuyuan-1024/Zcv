@@ -56,7 +56,6 @@ fn clipped_diff_file(
         diff,
         display_path: PathBuf::from("src/a.rs"),
         context_lines: Some(2),
-        show_file_header: false,
     }
 }
 
@@ -1322,6 +1321,7 @@ fn multibuffer_soft_wrap_uses_the_regular_display_map_pipeline(cx: &mut TestAppC
         source.set_file_path(PathBuf::from("文档/引擎.md"), cx)
     });
     let source_end = cx.read_entity(&source, |source, _| source.len_bytes());
+    let source_buffer_id = cx.read_entity(&source, |source, _| source.buffer_id());
     let source_multi = source.clone();
     let combined = cx.new(MultiBuffer::empty);
     combined.update(cx, |combined, cx| {
@@ -1360,7 +1360,7 @@ fn multibuffer_soft_wrap_uses_the_regular_display_map_pipeline(cx: &mut TestAppC
     );
 
     editor.update(cx, |editor, cx| {
-        editor.toggle_buffer_fold(PathBuf::from("文档/引擎.md"), cx)
+        editor.toggle_buffer_fold(source_buffer_id, cx)
     });
     let folded_rows = cx.read_entity(&editor, |editor, cx| {
         editor.display_snapshot(cx).line_count()
@@ -1368,7 +1368,7 @@ fn multibuffer_soft_wrap_uses_the_regular_display_map_pipeline(cx: &mut TestAppC
     assert_eq!(folded_rows, 2, "整文件折叠后只保留两行高的 BufferHeader");
 
     editor.update(cx, |editor, cx| {
-        editor.toggle_buffer_fold(PathBuf::from("文档/引擎.md"), cx)
+        editor.toggle_buffer_fold(source_buffer_id, cx)
     });
     assert_eq!(
         cx.read_entity(&editor, |editor, cx| editor
@@ -1866,10 +1866,10 @@ fn external_source_edit_moves_combined_diff_cursor_like_plain_editor(cx: &mut Te
         );
     });
 
-    // 外部在 "bravo" 与 "charlie" 之间插入整行 "NEW"：hunk 位置随源下移，组合投影整体重建（reload）。
+    // 外部在 "bravo" 与 "charlie" 之间插入整行 "NEW"：hunk 位置随源下移，组合投影按增量更新。
     cx.update_entity(&buffer, |buffer, cx| {
         buffer
-            .reset("alpha\nbravo\nNEW\ncharlie".to_owned(), cx)
+            .replace_text("alpha\nbravo\nNEW\ncharlie".to_owned(), cx)
             .expect("外部 reload 应成功");
     });
     cx.run_until_parked();
@@ -2410,7 +2410,7 @@ fn diff_refresh_keeps_line_terminators_out_of_renderer_chunks(cx: &mut TestAppCo
     cx.refresh().expect("暂存刷新后的 diff 视图应能完成布局");
 }
 
-/// 回归：软换行开启、暂存 hunk 触发结构变更时，Wrap 变换树输入行数必须等于 tab 行数。
+/// 回归：软换行开启、暂存 hunk 触发结构变更时，Wrap 的 Tab 点输入边界必须保持自洽。
 #[gpui::test]
 fn staging_a_hunk_with_soft_wrap_keeps_wrap_map_invariant(cx: &mut TestAppContext) {
     let fill = "x".repeat(120);

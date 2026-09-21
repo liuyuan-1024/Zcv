@@ -166,7 +166,7 @@ impl GitStore {
                     }
                     Err(error) => {
                         if let Some(previous) = self.optimistic_index_bases.remove(path) {
-                            self.reset_revision_document_text(
+                            self.update_revision_document_text(
                                 GitRevision::Index,
                                 path,
                                 &previous,

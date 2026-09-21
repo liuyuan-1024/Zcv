@@ -23,7 +23,7 @@ use zcv_multi_buffer::{ExcerptLocation, ExcerptRange, MultiBuffer};
 use zcv_path::AbsolutePathBuf;
 use zcv_project::{GitStoreEvent, Project};
 use zcv_search::{SearchBar, SearchBarConfig, SearchBarSlots};
-use zcv_text::{Anchor, ByteOffset, Snapshot, TextRange};
+use zcv_text::{Anchor, BufferId, ByteOffset, Snapshot, TextRange};
 use zcv_theme::{color, space};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, Checkbox, SvgIcon};
 use zcv_workspace::{
@@ -462,11 +462,17 @@ impl Render for ProjectDiffToolbar {
         let leading = {
             let weak = view.downgrade();
             let editor = view.read(cx).editor.clone();
-            let expanded = view
-                .read(cx)
-                .files
+            let multi_buffer = view.read(cx).multi_buffer.clone();
+            let buffer_ids = multi_buffer.update(cx, |buffer, cx| {
+                let snapshot = buffer.snapshot(cx);
+                snapshot
+                    .excerpts()
+                    .map(|excerpt| excerpt.buffer_id())
+                    .collect::<Vec<_>>()
+            });
+            let expanded = buffer_ids
                 .iter()
-                .any(|file| !editor.read(cx).is_buffer_folded(&file.path, cx));
+                .any(|buffer_id| !editor.read(cx).is_buffer_folded(*buffer_id, cx));
             Button::icon(
                 "project-diff-expansion",
                 if expanded {
@@ -536,18 +542,32 @@ impl ProjectDiffView {
     }
 
     fn set_all_files_folded(&mut self, folded: bool, cx: &mut Context<Self>) {
-        let paths = self
-            .files
-            .iter()
-            .map(|file| file.path.clone())
-            .collect::<Vec<_>>();
+        let buffer_ids = self.file_buffer_ids(cx);
         self.editor.update(cx, |editor, cx| {
-            for path in paths {
-                if editor.is_buffer_folded(&path, cx) != folded {
-                    editor.toggle_buffer_fold(path, cx);
+            for buffer_id in buffer_ids {
+                if editor.is_buffer_folded(buffer_id, cx) != folded {
+                    editor.toggle_buffer_fold(buffer_id, cx);
                 }
             }
         });
+    }
+
+    /// 当前投影中每个文件的显示实体身份。
+    ///
+    /// 折叠集合按 BufferId 归属，与 BlockMap 的分类使用同一身份；
+    /// 一个文件的所有 excerpt（含 diff 旧侧）共享同一 id，因此只需要去重后的集合。
+    fn file_buffer_ids(&self, cx: &mut App) -> Vec<BufferId> {
+        let snapshot = self
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        let mut buffer_ids = Vec::new();
+        for excerpt in snapshot.excerpts() {
+            let buffer_id = excerpt.buffer_id();
+            if !buffer_ids.contains(&buffer_id) {
+                buffer_ids.push(buffer_id);
+            }
+        }
+        buffer_ids
     }
 
     /// 重做全部文件：先按文件聚合、解析出全部源 hunk，再逐个文件一次性提交。
@@ -941,7 +961,6 @@ impl ProjectDiffView {
             diff,
             display_path,
             context_lines: Some(DIFF_CONTEXT_LINES),
-            show_file_header: true,
         })
     }
 

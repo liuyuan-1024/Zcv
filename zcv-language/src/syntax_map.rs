@@ -5,9 +5,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 use tree_sitter::StreamingIterator;
-use zcv_text::{
-    Anchor, BufferGeneration, BufferVersion, ByteOffset, Snapshot, TextChangeBatch, TextRange,
-};
+use zcv_text::{Anchor, BufferVersion, ByteOffset, Snapshot, TextChangeBatch, TextRange};
 
 use crate::Language;
 use crate::registry::LanguageRegistry;
@@ -32,10 +30,9 @@ pub(crate) struct SyntaxMap {
     interpolated_snapshot: Snapshot,
 }
 
-/// 整源折叠候选缓存条目：同时绑定内容代际与语法版本，随语法状态克隆重置。
+/// 整源折叠候选缓存条目：绑定语法版本，随语法状态克隆重置。
 #[derive(Debug)]
 struct FoldRangeCacheEntry {
-    generation: BufferGeneration,
     version: BufferVersion,
     ranges: Arc<[FoldRange]>,
 }
@@ -168,14 +165,10 @@ impl InjectionKey {
 fn anchor_range(snapshot: &Snapshot, range: &Range<usize>) -> Option<Range<Anchor>> {
     let text_range =
         TextRange::new(ByteOffset::new(range.start), ByteOffset::new(range.end)).ok()?;
-    Some(Anchor::range_outside(
-        snapshot.generation(),
-        snapshot.version(),
-        text_range,
-    ))
+    Some(Anchor::range_outside(snapshot.version(), text_range))
 }
 
-/// 把层的锚点范围解析到当前快照的字节范围；跨代际失效时返回 None。
+/// 把层的锚点范围解析到当前快照的字节范围。
 fn layer_bytes(snapshot: &Snapshot, layer: &SyntaxLayer) -> Option<Range<usize>> {
     let start = layer.range.start.resolve_in(snapshot).ok()?;
     let end = layer.range.end.resolve_in(snapshot).ok()?;
@@ -254,7 +247,6 @@ impl SyntaxMap {
         }
 
         // 增量编辑走不衰减坐标索引：带文本 EditLog 被裁剪后仍可用。
-        // 只有跨 reset / 基线替换（跨代际）时拿不到，作为命名清楚的整体重置边界。
         let changes = new_snapshot.coordinate_edits_since(self.interpolated_version);
 
         let old_snapshot = &self.interpolated_snapshot;
@@ -292,7 +284,7 @@ impl SyntaxMap {
                 drop_offloaded(invalid_layers);
             }
         } else {
-            // reset / 基线替换：旧树坐标属于上一代际，不能再作为增量基准。
+            // 请求版本不在坐标索引覆盖范围内，旧树不能再作为增量基准。
             let old_layers = std::mem::take(&mut state.injections);
             if tree.is_some() || !old_layers.is_empty() {
                 drop_offloaded((tree.take(), old_layers));
@@ -361,16 +353,13 @@ impl SyntaxSnapshot {
             .fold_ranges
             .lock()
             .expect("折叠候选缓存锁不得中毒");
-        let generation = text.generation();
         if let Some(entry) = cache.as_ref()
-            && entry.generation == generation
             && entry.version == self.version
         {
             return Arc::clone(&entry.ranges);
         }
         let ranges: Arc<[FoldRange]> = self.query_fold_ranges(text).into();
         *cache = Some(FoldRangeCacheEntry {
-            generation,
             version: self.version,
             ranges: Arc::clone(&ranges),
         });
@@ -418,11 +407,9 @@ impl SyntaxSnapshot {
         }
         // 编辑区间按上一次真正完成解析的版本推导，优先走不衰减坐标索引：
         // 带文本 EditLog 被预算裁剪后仍能给出精确增量，不静默退化为全文。
-        // 只有跨 reset / 基线替换（跨代际）才拿不到，作为命名清楚的整体重置边界。
         let changes = snapshot.coordinate_edits_since(self.parsed_version);
-        let edit_list: Option<Vec<Range<usize>>> = changes.as_ref().and_then(edit_ranges);
+        let edit_list = changes.as_ref().map(edit_ranges);
         let edits = edit_list.as_deref();
-        let reset = changes.is_none();
         let Some(language) = self.language.as_ref() else {
             self.state = empty_syntax_state();
             self.version = snapshot.version();
@@ -431,8 +418,8 @@ impl SyntaxSnapshot {
         };
         {
             let state = Arc::make_mut(&mut self.state);
-            // reset 边界：旧树坐标属于上一代际，不能作为增量解析基准。
-            let old_tree = match (reset, state.tree.take()) {
+            // 坐标索引缺失时旧树不能作为增量解析基准。
+            let old_tree = match (changes.is_none(), state.tree.take()) {
                 (true, Some(tree)) => {
                     drop_offloaded(tree);
                     None
@@ -486,7 +473,7 @@ impl SyntaxSnapshot {
 
             let old_injections = std::mem::take(&mut state.injections);
             // 范围与任何变化区间相交的已解析旧层进入复用表（供增量解析）；其余原样保留。
-            // 先把锚点范围解析成当前快照字节；锚点失效（跨代际）的层直接丢弃。
+            // 先把锚点范围解析成当前快照字节；无法解析的层直接丢弃。
             let mut seen = HashSet::new();
             let mut old_trees = HashMap::new();
             for layer in old_injections {
@@ -804,16 +791,14 @@ fn merge_changed_ranges(ranges: impl IntoIterator<Item = Range<usize>>) -> Vec<R
     merged
 }
 
-/// 提取一次文本变更在新坐标下的字节区间（`requires_reset` 时返回 None，调用方按全文处理）。
-pub(crate) fn edit_ranges(changes: &TextChangeBatch) -> Option<Vec<Range<usize>>> {
-    (!changes.requires_reset()).then(|| {
-        changes
-            .patch()
-            .edits()
-            .iter()
-            .map(|edit| edit.new_range().start().get()..edit.new_range().end().get())
-            .collect()
-    })
+/// 提取一次文本变更在新坐标下的字节区间。
+pub(crate) fn edit_ranges(changes: &TextChangeBatch) -> Vec<Range<usize>> {
+    changes
+        .patch()
+        .edits()
+        .iter()
+        .map(|edit| edit.new_range().start().get()..edit.new_range().end().get())
+        .collect()
 }
 
 #[cfg(test)]

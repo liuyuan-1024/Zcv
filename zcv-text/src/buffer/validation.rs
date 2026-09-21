@@ -11,10 +11,6 @@ use crate::{
 };
 
 impl Buffer {
-    pub(in crate::buffer) fn mark_clean_internal(&mut self) {
-        self.saved_version = self.version();
-    }
-
     pub(super) fn ensure_writable(&self) -> TextResult<()> {
         if self.is_read_only() {
             return Err(StorageError::ReadOnly.into());

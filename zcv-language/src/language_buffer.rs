@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 use gpui::{App, AppContext, Context, EventEmitter, Task};
 use zcv_settings::SettingsStore;
 use zcv_text::{
-    Buffer, BufferVersion, ByteOffset, Edit, HistoryEditOutcome, Line, Snapshot, TextResult,
-    TextSubscription, TransactionId, TransactionMetadata, TransactionOutcome,
+    Buffer, BufferId, BufferVersion, ByteOffset, Edit, HistoryEditOutcome, Line, Snapshot,
+    TextResult, TextSubscription, TransactionId, TransactionMetadata, TransactionOutcome,
 };
 
 use crate::Language;
@@ -218,6 +218,13 @@ impl LanguageBuffer {
             .clone()
     }
 
+    /// 底层文本 Buffer 的稳定身份。
+    ///
+    /// 组合文档用它区分没有文件路径的匿名 Buffer；文本重载和文件路径变化不改变该身份。
+    pub fn buffer_id(&self) -> BufferId {
+        self.buffer.buffer_id()
+    }
+
     /// 当前语言引用（编辑器输入行为等消费方取语言配置用，不克隆语法快照）。
     pub fn language(&self) -> Option<Arc<Language>> {
         self.state
@@ -273,10 +280,10 @@ impl LanguageBuffer {
         Ok(outcome)
     }
 
-    /// 用外部文本整体重置文本；文本变化时推进语法与事件，文本相同时只刷新保存点。
-    pub fn reset(&mut self, text: String, cx: &mut Context<Self>) -> TextResult<()> {
+    /// 用外部文本更新文本；文本变化时推进语法与事件，文本相同时只刷新保存点。
+    pub fn replace_text(&mut self, text: String, cx: &mut Context<Self>) -> TextResult<()> {
         let before = self.buffer.version();
-        self.buffer.reset(text)?;
+        self.buffer.replace_text(text)?;
         if self.buffer.version() != before {
             self.did_edit(cx);
         } else {

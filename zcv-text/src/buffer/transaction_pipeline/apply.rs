@@ -14,7 +14,7 @@ use crate::{
     transaction::{
         ChangeSet, Delta, DeltaEvent, EditList, Transaction, TransactionMetadata, TransactionSource,
     },
-    types::{BufferGeneration, BufferVersion},
+    types::BufferVersion,
 };
 
 impl Buffer {
@@ -47,7 +47,7 @@ impl Buffer {
     ) -> TextResult<(PreparedTransaction, crate::TransactionId, DeltaEvent)> {
         let (base_version, edits, metadata) = tx.into_parts();
         let (next_transaction_id, event) =
-            self.prepare_delta_event(base_version, edits.clone(), metadata.source(), false)?;
+            self.prepare_delta_event(base_version, edits.clone(), metadata.source())?;
         let undo_edits = self.build_inverse_edit_list(&edits)?;
 
         Ok((
@@ -160,7 +160,7 @@ impl Buffer {
         self.ensure_writable()?;
 
         let (next_transaction_id, event) =
-            self.prepare_delta_event(base_version, tx_edits.clone(), source, false)?;
+            self.prepare_delta_event(base_version, tx_edits.clone(), source)?;
         self.commit_prepared_edit_list(&tx_edits, None, next_transaction_id, &event)?;
         Ok(event)
     }
@@ -198,13 +198,12 @@ impl Buffer {
 
     /// 为一次已确定的文本变化构造唯一的版本、事务与坐标映射事实。
     ///
-    /// 普通编辑和外部基线重载共用该边界；两者只在历史策略和 reset 语义上不同。
+    /// 普通编辑和外部文本更新共用这一版本化提交边界。
     pub(in crate::buffer) fn prepare_delta_event(
         &self,
         base_version: BufferVersion,
         tx_edits: EditList,
         source: TransactionSource,
-        reset: bool,
     ) -> TextResult<(crate::TransactionId, DeltaEvent)> {
         if base_version != self.version {
             return Err(TransactionError::VersionMismatch {
@@ -220,14 +219,7 @@ impl Buffer {
         let changeset = ChangeSet::from_edit_list(&tx_edits);
         let position_map = changeset.position_map();
         let delta = Delta::new(base_version, new_version, tx_edits);
-        let event = DeltaEvent::new(
-            transaction_id,
-            source,
-            delta,
-            changeset,
-            position_map,
-            reset,
-        );
+        let event = DeltaEvent::new(transaction_id, source, delta, changeset, position_map);
         Ok((next_transaction_id, event))
     }
 
@@ -241,11 +233,6 @@ impl Buffer {
     ) {
         self.storage = next_storage;
         self.version = event.new_version();
-        // reset / 基线替换开启新代际：普通解析拒绝把旧代际锚点当作普通编辑继续映射；
-        // 跨代际映射仍保留在坐标索引中，供调用方显式重锚（例如外部 reload 后的光标恢复）。
-        if event.requires_reset() {
-            self.generation = BufferGeneration::new(event.new_version());
-        }
         // 不衰减坐标索引与带文本 EditLog 一起追加；预算裁剪只作用于后者。
         self.coordinate_index = self.coordinate_index.appended(
             event.old_version(),
@@ -253,13 +240,9 @@ impl Buffer {
             TextPatch::from_delta(event.delta()),
         );
         // 编辑日志是版本化编辑的唯一事实：组合文档增量同步与历史回放都据此重建坐标。
-        self.edit_log = self.edit_log.appended(
-            event.old_version(),
-            event.new_version(),
-            forward,
-            undo,
-            event.requires_reset(),
-        );
+        self.edit_log =
+            self.edit_log
+                .appended(event.old_version(), event.new_version(), forward, undo);
         self.commit_delta_event(next_transaction_id, event);
     }
 

@@ -152,24 +152,9 @@ pub struct TextChangeBatch {
     old_version: Option<BufferVersion>,
     new_version: Option<BufferVersion>,
     transaction_id: Option<TransactionId>,
-    reset: bool,
 }
 
 impl TextChangeBatch {
-    /// 为不拥有物化 Buffer 的派生文本投影创建一次整体拓扑更新。
-    ///
-    /// 这类投影仍然拥有独立版本与订阅边界，但没有单一 Rope 编辑可用于构造精确 patch。
-    /// 消费者必须保留源锚点，并按当前快照重建派生坐标。
-    pub fn reset(old_version: BufferVersion, new_version: BufferVersion) -> Self {
-        Self {
-            patch: TextPatch::default(),
-            old_version: Some(old_version),
-            new_version: Some(new_version),
-            transaction_id: None,
-            reset: true,
-        }
-    }
-
     /// 从一次已提交的文本事件创建显示消费者使用的单事件批次。
     ///
     /// Buffer 事件是唯一的文本变更事实；订阅只是把多个事件组合成消费者自己的批次。
@@ -180,7 +165,6 @@ impl TextChangeBatch {
             old_version: Some(event.old_version()),
             new_version: Some(event.new_version()),
             transaction_id: Some(event.transaction_id()),
-            reset: event.requires_reset(),
         }
     }
 
@@ -204,23 +188,20 @@ impl TextChangeBatch {
             old_version: Some(old_version),
             new_version: Some(new_version),
             transaction_id: None,
-            reset: false,
         }
     }
 
-    /// 从组合后的净变化构造批次；`reset` 表示区间内发生过整体基线替换。
+    /// 从组合后的净变化构造批次。
     pub(crate) fn from_patch(
         old_version: BufferVersion,
         new_version: BufferVersion,
         patch: TextPatch,
-        reset: bool,
     ) -> Self {
         Self {
             patch,
             old_version: Some(old_version),
             new_version: Some(new_version),
             transaction_id: None,
-            reset,
         }
     }
 
@@ -247,7 +228,6 @@ impl TextChangeBatch {
             old_version: self.old_version,
             new_version: self.new_version,
             transaction_id: self.transaction_id,
-            reset: self.reset,
         }
     }
 
@@ -282,7 +262,6 @@ impl TextChangeBatch {
             new_version: next.new_version,
             // 组合多个来源的批次不再对应单一事务身份。
             transaction_id: None,
-            reset: self.reset || next.reset,
         })
     }
 
@@ -303,14 +282,9 @@ impl TextChangeBatch {
         self.transaction_id
     }
 
-    pub fn requires_reset(&self) -> bool {
-        self.reset
-    }
-
     /// 返回本批次从旧版本到新版本的坐标映射。
     ///
     /// 位置型派生状态必须从订阅批次取得映射，不能各自重新解释文本变更。
-    /// 调用方仍需先处理 `requires_reset`，因为整体替换不保留位置跟随语义。
     pub fn position_map(&self) -> PositionMap {
         PositionMap::from_text_patch(&self.patch)
     }
@@ -365,7 +339,6 @@ impl TextChangeTopic {
         old_version: BufferVersion,
         new_version: BufferVersion,
         patch: TextPatch,
-        reset: bool,
         transaction_id: Option<TransactionId>,
     ) {
         let mut subscriptions = self.0.lock().expect("文本变化主题锁不应在持锁期间 panic");
@@ -380,9 +353,10 @@ impl TextChangeTopic {
             if state.pending.old_version.is_none() {
                 state.pending.old_version = Some(old_version);
             }
-            if state.current_version != old_version {
-                state.pending.reset = true;
-            }
+            assert_eq!(
+                state.current_version, old_version,
+                "文本订阅必须按连续版本接收编辑批次"
+            );
             state.pending.patch = state.pending.patch.compose(&patch);
             state.pending.new_version = Some(new_version);
             state.pending.transaction_id = match state.pending.transaction_id {
@@ -390,7 +364,6 @@ impl TextChangeTopic {
                 Some(existing) if Some(existing) == transaction_id => Some(existing),
                 _ => None,
             };
-            state.pending.reset |= reset;
             state.current_version = new_version;
             true
         });

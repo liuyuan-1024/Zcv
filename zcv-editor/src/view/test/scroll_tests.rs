@@ -1,7 +1,5 @@
 use zcv_multi_buffer::MultiBufferOffset;
 
-use std::path::PathBuf;
-
 use gpui::{
     Context, Entity, IntoElement, Modifiers, MouseButton, Pixels, Render, ScrollDelta,
     ScrollWheelEvent, TestAppContext, Window, point, px,
@@ -162,6 +160,7 @@ fn folding_a_later_file_preserves_the_viewport_anchor(cx: &mut TestAppContext) {
         buffer.set_file_path("second.rs".into(), cx)
     });
 
+    let second_buffer_id = cx.read_entity(&second, |buffer, _| buffer.buffer_id());
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(first, 0..120, cx)], cx);
@@ -189,7 +188,7 @@ fn folding_a_later_file_preserves_the_viewport_anchor(cx: &mut TestAppContext) {
     });
 
     cx.update_entity(&editor, |editor, cx| {
-        editor.toggle_buffer_fold(PathBuf::from("second.rs"), cx);
+        editor.toggle_buffer_fold(second_buffer_id, cx);
     });
     cx.run_until_parked();
     cx.refresh().expect("折叠后测试窗口应可刷新");

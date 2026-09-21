@@ -661,7 +661,7 @@ impl GitStore {
         if let (Some(index_text), Some(next_index_text)) = (&index_text, &next_index_text) {
             self.optimistic_index_bases
                 .insert(path.clone(), index_text.clone());
-            self.reset_revision_document_text(GitRevision::Index, &path, next_index_text, cx);
+            self.update_revision_document_text(GitRevision::Index, &path, next_index_text, cx);
             // 乐观 index 更新：本路径的共享 diff 立即失效，视图按 IndexText 事件重新请求。
             self.invalidate_shared_diffs(Some(std::slice::from_ref(&path)));
             cx.emit(GitStoreEvent::IndexText { path: path.clone() });
@@ -1099,7 +1099,7 @@ impl GitStore {
             if snapshot_text(&snapshot) != text {
                 document.update(cx, |document, cx| {
                     document
-                        .reset(text, cx)
+                        .replace_text(text, cx)
                         .expect("修订文档文本必须能原位刷新");
                 });
             }
@@ -1121,7 +1121,7 @@ impl GitStore {
     }
 
     /// 用给定文本原位刷新已加载的修订文档（乐观 index 写入与回滚）。
-    fn reset_revision_document_text(
+    fn update_revision_document_text(
         &mut self,
         revision: GitRevision,
         path: &AbsolutePathBuf,
@@ -1133,7 +1133,7 @@ impl GitStore {
             Some(Some(document)) => {
                 document.update(cx, |document, cx| {
                     document
-                        .reset(text.to_string(), cx)
+                        .replace_text(text.to_string(), cx)
                         .expect("修订文档文本必须能原位刷新");
                 });
             }

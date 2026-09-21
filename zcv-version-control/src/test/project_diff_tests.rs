@@ -137,7 +137,6 @@ fn plain_diff_file(
         diff,
         display_path: path,
         context_lines: None,
-        show_file_header: false,
     }
 }
 
@@ -314,10 +313,10 @@ fn git_status_drives_one_ordered_excerpt_per_changed_file(cx: &mut TestAppContex
             .multi_buffer
             .update(cx, |buffer, cx| buffer.snapshot(cx));
         let paths = snapshot
-            .excerpts()
-            .filter(|excerpt| excerpt.starts_new_excerpt())
-            .map(|excerpt| {
-                excerpt
+            .excerpt_boundaries()
+            .map(|boundary| {
+                boundary
+                    .next()
                     .path()
                     .file_name()
                     .expect("变更应有文件名")
@@ -655,17 +654,32 @@ fn expanding_hunk_then_refreshing_hunks_keeps_mapping_consistent(cx: &mut TestAp
         assert!(text.contains("改过"), "默认展开时应包含新侧文本");
     });
 
+    let modified_buffer_id = cx.update_entity(&view, |view, cx| {
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        snapshot
+            .excerpts_for_path(&modified_path)
+            .next()
+            .expect("修改文件应有 excerpt")
+            .buffer_id()
+    });
     cx.update_entity(&view, |view, cx| view.set_all_files_folded(true, cx));
     cx.read_entity(&view, |view, cx| {
         assert!(
-            view.editor.read(cx).is_buffer_folded(&modified_path, cx),
+            view.editor
+                .read(cx)
+                .is_buffer_folded(modified_buffer_id, cx),
             "折叠全部文件后应折叠文件块"
         );
     });
     cx.update_entity(&view, |view, cx| view.set_all_files_folded(false, cx));
     cx.read_entity(&view, |view, cx| {
         assert!(
-            !view.editor.read(cx).is_buffer_folded(&modified_path, cx),
+            !view
+                .editor
+                .read(cx)
+                .is_buffer_folded(modified_buffer_id, cx),
             "展开全部文件后应展开文件块"
         );
     });

@@ -1,30 +1,19 @@
-use std::{num::NonZeroUsize, path::PathBuf};
+use std::{
+    num::NonZeroUsize,
+    path::{Path, PathBuf},
+};
 
 use gpui::{AppContext, TestAppContext, font, px};
 use zcv_language::LanguageBuffer;
+use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
 use zcv_text::{Affinity, Buffer, BufferConfig, Edit, Line, TransactionMetadata};
 use zcv_theme::ThemeChoice;
 
-use super::tab_map::TabColumn;
 use super::test_support::{WrapRowKind, projected_line_text};
 use super::*;
 
 fn display_snapshot(cx: &mut TestAppContext, map: &Entity<DisplayMap>) -> DisplaySnapshot {
     cx.update_entity(map, |map, cx| map.snapshot(cx))
-}
-
-fn longest_measured_row(cx: &TestAppContext, map: &Entity<DisplayMap>) -> DisplayRow {
-    cx.read_entity(map, |map, _| map.longest_measured_row())
-}
-
-fn measured_lines(
-    cx: &TestAppContext,
-    map: &Entity<DisplayMap>,
-) -> std::vec::IntoIter<(Line, TabColumn)> {
-    cx.read_entity(map, |map, _| {
-        map.tab_map.measured_lines().collect::<Vec<_>>()
-    })
-    .into_iter()
 }
 
 fn sync(
@@ -34,15 +23,6 @@ fn sync(
     batch: TextChangeBatch,
 ) {
     cx.update_entity(map, |map, cx| map.sync(snapshot, batch, cx));
-}
-
-fn measure_rows(
-    cx: &mut TestAppContext,
-    map: &Entity<DisplayMap>,
-    start_row: DisplayRow,
-    line_count: usize,
-) -> DisplayMapResult<()> {
-    cx.update_entity(map, |map, cx| map.measure_rows(start_row, line_count, cx))
 }
 
 fn fold_range(
@@ -172,12 +152,150 @@ fn display_pipeline_receives_the_source_transaction_batch(cx: &mut TestAppContex
 
     cx.update_entity(&source, |source, cx| {
         source
-            .reset("fn replacement() {}\n".to_owned(), cx)
+            .replace_text("fn replacement() {}\n".to_owned(), cx)
             .expect("外部重载应成功");
     });
     cx.run_until_parked();
 
     assert_eq!(display_text(cx, &display), "fn replacement() {}\n");
+}
+
+/// 回归：块分类不能只缓存逻辑边界的下标。
+///
+/// diff 文件集合更新时，某个位置可从文件 B 的首片段变成文件 A 的后续片段，也可反向变化；两种情况下边界下标都不变。
+/// Zed 按当前相邻 excerpt 的 BufferId分类，Zcv 必须据当前路径重建 header/divider，不能把旧实体块留在新拓扑中。
+#[gpui::test]
+fn block_boundaries_reclassify_when_their_file_changes(cx: &mut TestAppContext) {
+    let first = cx.new(|cx| {
+        LanguageBuffer::new(
+            Buffer::from_text("a0\na1\n".to_owned(), BufferConfig::default())
+                .expect("测试 Buffer 应能创建"),
+            Some(PathBuf::from("src/a.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    });
+    let second = cx.new(|cx| {
+        LanguageBuffer::new(
+            Buffer::from_text("b0\n".to_owned(), BufferConfig::default())
+                .expect("测试 Buffer 应能创建"),
+            Some(PathBuf::from("src/b.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    });
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(first.clone(), 0..1, cx)], cx);
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(second.clone(), 0..1, cx)], cx);
+    });
+    let (subscription, snapshot) =
+        cx.update_entity(&combined, |buffer, cx| buffer.subscribe_and_snapshot(cx));
+    let display = cx.new(|cx| DisplayMap::new(snapshot, cx));
+    cx.update_entity(&display, |map, cx| {
+        map.set_multi_buffer(combined.clone(), subscription, cx);
+    });
+    display_snapshot(cx, &display);
+
+    let block_kinds = |cx: &mut TestAppContext| {
+        let snapshot = display_snapshot(cx, &display);
+        let mut rows = snapshot.rows(DisplayRow::ZERO, snapshot.line_count());
+        std::iter::from_fn(|| rows.next())
+            .filter_map(|row| {
+                row.block().map(|block| {
+                    (
+                        block.kind,
+                        block.excerpt.path().to_path_buf(),
+                        block.excerpt.source_start_line(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        block_kinds(cx),
+        vec![
+            (DisplayBlockKind::BufferHeader, PathBuf::from("src/a.rs"), 1),
+            (DisplayBlockKind::BufferHeader, PathBuf::from("src/b.rs"), 1),
+        ]
+    );
+
+    // 两个逻辑边界仍是下标 0、1，但第二个从 B 的首片段变成 A 的后续片段。
+    cx.update_entity(&combined, |buffer, cx| {
+        assert!(buffer.remove_excerpts_for_path(Path::new("src/b.rs"), cx));
+        buffer.set_excerpts_for_path(
+            vec![
+                ExcerptRange::line_range(first.clone(), 0..1, cx),
+                ExcerptRange::line_range(first.clone(), 1..2, cx),
+            ],
+            cx,
+        );
+    });
+    assert_eq!(
+        block_kinds(cx),
+        vec![
+            (DisplayBlockKind::BufferHeader, PathBuf::from("src/a.rs"), 1),
+            (
+                DisplayBlockKind::ExcerptBoundary,
+                PathBuf::from("src/a.rs"),
+                2
+            ),
+        ],
+        "同文件后续逻辑 excerpt 必须是 divider，不能保留已移除文件的 header"
+    );
+
+    // 反向切回 B：同一边界现在必须重新成为 B 的实体 header。
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(first, 0..1, cx)], cx);
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(second, 0..1, cx)], cx);
+    });
+    assert_eq!(
+        block_kinds(cx),
+        vec![
+            (DisplayBlockKind::BufferHeader, PathBuf::from("src/a.rs"), 1),
+            (DisplayBlockKind::BufferHeader, PathBuf::from("src/b.rs"), 1),
+        ],
+        "新文件首片段必须恢复为实体 header，不能遗留同文件 divider"
+    );
+}
+
+/// 匿名 Buffer 没有文件路径时仍是不同的组合实体。
+///
+/// Zed 用 BufferId（其本地 Buffer 的 `remote_id`）区分这类来源；
+/// Zcv 用本地 `buffer_id` 承担同一职责，不能把它们归并到空路径并吞掉后一个 header。
+#[gpui::test]
+fn anonymous_buffers_keep_distinct_header_identities(cx: &mut TestAppContext) {
+    let anonymous = |text: &str, cx: &mut TestAppContext| {
+        cx.new(|cx| {
+            LanguageBuffer::new(
+                Buffer::from_text(text.to_owned(), BufferConfig::default())
+                    .expect("测试 Buffer 应能创建"),
+                None,
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        })
+    };
+    let first = anonymous("first\n", cx);
+    let second = anonymous("second\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(first, 0..1, cx)], cx);
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(second, 0..1, cx)], cx);
+    });
+
+    let snapshot = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    let display = cx.new(|cx| DisplayMap::new(snapshot, cx));
+    let display = display_snapshot(cx, &display);
+    let mut rows = display.rows(DisplayRow::ZERO, display.line_count());
+    let headers = std::iter::from_fn(|| rows.next())
+        .filter_map(|row| row.block().cloned())
+        .filter(|block| block.kind == DisplayBlockKind::BufferHeader)
+        .map(|block| block.excerpt.buffer_id())
+        .collect::<Vec<_>>();
+    assert_eq!(headers.len(), 2, "两个匿名 Buffer 都必须有独立 header");
+    assert_ne!(headers[0], headers[1], "匿名 Buffer 不能共享空路径身份");
 }
 
 #[gpui::test]
@@ -334,7 +452,7 @@ fn folding_changes_display_rows_and_viewport_contents(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn measuring_folded_rows_uses_tab_projection_rows(cx: &mut TestAppContext) {
+fn folded_rows_have_an_immediately_derived_tab_width(cx: &mut TestAppContext) {
     let text = "before\nfn folded() {\n  let value = 1;\n}\nafter\n";
     let buffer =
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
@@ -344,7 +462,8 @@ fn measuring_folded_rows_uses_tab_projection_rows(cx: &mut TestAppContext) {
     fold_range(cx, &map, fold_start, fold_end).expect("折叠应成功");
 
     let line_count = display_snapshot(cx, &map).line_count();
-    measure_rows(cx, &map, DisplayRow::ZERO, line_count).expect("折叠后的每个显示行都应能完成测量");
+    let longest = cx.read_entity(&map, |map, _| map.longest_unwrapped_row());
+    assert!(longest.get() < line_count);
 }
 
 #[gpui::test]
@@ -430,38 +549,15 @@ fn folded_bracket_projects_close_to_merged_row(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn tab_map_invalidates_only_changed_measured_line(cx: &mut TestAppContext) {
-    let mut buffer = Buffer::from_text("short\nlonger".to_string(), BufferConfig::default())
+fn tab_width_change_updates_tab_point_without_a_line_width_cache(cx: &mut TestAppContext) {
+    let buffer = Buffer::from_text("\tx".to_string(), BufferConfig::default())
         .expect("测试 Buffer 应能创建");
     let map = cx.new(|cx| DisplayMap::new(buffer.snapshot(), cx));
-    assert_eq!(measured_lines(cx, &map).count(), 0);
-    measure_rows(cx, &map, DisplayRow::ZERO, 2).expect("测试显示行应能测量");
-    assert_eq!(longest_measured_row(cx, &map), DisplayRow::new(1));
-    let subscription = buffer.subscribe();
-    buffer
-        .edit(
-            [Edit::insert(MultiBufferOffset::new(5).into(), " becomes longest").unwrap()],
-            TransactionMetadata::default(),
-        )
-        .expect("测试编辑应成功");
-    sync(cx, &map, buffer.snapshot(), subscription.consume());
-    assert_eq!(longest_measured_row(cx, &map), DisplayRow::new(1));
-    measure_rows(cx, &map, DisplayRow::ZERO, 1).expect("变更行应能按需重新测量");
-    assert_eq!(longest_measured_row(cx, &map), DisplayRow::ZERO);
-}
-
-#[gpui::test]
-fn tab_snapshot_advances_when_tab_width_changes_without_a_buffer_edit(cx: &mut TestAppContext) {
-    let buffer =
-        Buffer::from_text("\t".to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建");
-    let map = cx.new(|cx| DisplayMap::new(buffer.snapshot(), cx));
-    measure_rows(cx, &map, DisplayRow::ZERO, 1).expect("初始 Tab 行应能测量");
-    assert_eq!(
-        measured_lines(cx, &map).next().map(|(_, width)| width),
-        Some(TabColumn::new(4))
-    );
-
     let before = display_snapshot(cx, &map);
+    let before_point = before
+        .offset_to_display_point(MultiBufferOffset::new(1))
+        .expect("Tab 后的文本必须可映射");
+    assert_eq!(before_point.column().get(), 4);
     set_tab_width(
         cx,
         &map,
@@ -470,11 +566,13 @@ fn tab_snapshot_advances_when_tab_width_changes_without_a_buffer_edit(cx: &mut T
 
     let after = display_snapshot(cx, &map);
     assert_ne!(before.version(), after.version());
-    assert_eq!(measured_lines(cx, &map).count(), 0);
-    measure_rows(cx, &map, DisplayRow::ZERO, 1).expect("配置变化后的 Tab 行应能重新测量");
     assert_eq!(
-        measured_lines(cx, &map).next().map(|(_, width)| width),
-        Some(TabColumn::new(2))
+        after
+            .offset_to_display_point(MultiBufferOffset::new(1))
+            .expect("配置变化后的 Tab 后文本必须可映射")
+            .column()
+            .get(),
+        2
     );
 }
 
@@ -490,28 +588,6 @@ fn rows_consumes_the_requested_rows(cx: &mut TestAppContext) {
         rows.push(row);
     }
     assert_eq!(rows.len(), snapshot.line_count());
-}
-
-#[gpui::test]
-fn structural_edit_shifts_tab_measurements_instead_of_clearing_them(cx: &mut TestAppContext) {
-    let mut buffer = Buffer::from_text("short\nwide".to_string(), BufferConfig::default())
-        .expect("测试 Buffer 应能创建");
-    let map = cx.new(|cx| DisplayMap::new(buffer.snapshot(), cx));
-    measure_rows(cx, &map, DisplayRow::ZERO, 2).expect("测试显示行应能测量");
-    let subscription = buffer.subscribe();
-    buffer
-        .edit(
-            [Edit::insert(MultiBufferOffset::new(5).into(), "\nvery very wide").unwrap()],
-            TransactionMetadata::default(),
-        )
-        .expect("测试编辑应成功");
-
-    sync(cx, &map, buffer.snapshot(), subscription.consume());
-    // 未受影响的已测行（"wide"）从第 1 行平移到第 2 行，缓存保留；
-    // 被编辑的第 0 行失效，重新测量前不参与最长行。
-    assert_eq!(longest_measured_row(cx, &map), DisplayRow::new(2));
-    measure_rows(cx, &map, DisplayRow::new(1), 1).expect("结构编辑后的行应能惰性测量");
-    assert_eq!(longest_measured_row(cx, &map), DisplayRow::new(1));
 }
 
 fn wrap_map(text: &str, width: f32, cx: &mut TestAppContext) -> Entity<DisplayMap> {

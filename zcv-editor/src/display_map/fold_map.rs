@@ -356,6 +356,10 @@ impl FoldPoint {
         self.row
     }
 
+    pub(crate) const fn column(self) -> usize {
+        self.column
+    }
+
     /// 输出点 → 输出字节偏移。
     ///
     /// 行首由可见逻辑行的行首映射确定；行内列按输出字节追加。
@@ -474,8 +478,15 @@ impl FoldSnapshot {
         self.transforms.summary().output.lines + 1
     }
 
+    #[cfg(test)]
     fn logical_line_count(&self) -> usize {
         self.transforms.summary().input.lines + 1
+    }
+
+    /// 折叠输出文本的最后一个点。
+    /// 该点是 Tab 层配置变化时整层失效范围的边界。
+    pub(crate) fn max_point(&self) -> FoldPoint {
+        FoldOffset::new(MultiBufferOffset::new(self.transforms.summary().output.len)).to_point(self)
     }
 
     /// 覆盖该字节偏移的最外层折叠的隐藏范围（入口行换行符到闭合括号前）；无则 None。
@@ -577,29 +588,6 @@ impl FoldSnapshot {
                 start.1.get() + offset.get() - start.0.get(),
             ))
         }
-    }
-
-    /// 逻辑行 → 投影行。
-    pub(super) fn logical_to_projected(&self, line: Line) -> DisplayMapResult<LogicalProjection> {
-        if line.get() >= self.logical_line_count() {
-            return Err(CoordinateError::LineOutOfBounds(line).into());
-        }
-        let line_start = self.input.line_start_byte(line)?;
-        let (start, _, transform) = self
-            .transforms
-            .find::<Dimensions<InputOffset, TransformSummary>, _>(
-                (),
-                &InputOffset(line_start),
-                TreeBias::Right,
-            );
-        // 行首严格落在折叠内部时该行被隐藏；行首恰在折叠端点上行仍可见（闭合行尾段）。
-        // 空末行的行首等于输入末尾，find 返回树尾（transform 为 None），按输出末尾定位。
-        if transform.is_some_and(Transform::is_fold) && line_start.get() > start.0.get() {
-            return Ok(LogicalProjection::Hidden);
-        }
-        let output_offset = start.1.output.len + (line_start.get() - start.0.get());
-        let row = self.row_for_output_offset(MultiBufferOffset::new(output_offset));
-        Ok(LogicalProjection::Visible(ProjectedLineIndex::new(row)))
     }
 
     /// 逻辑点 → 投影点（列在合并行字符空间中）。
@@ -1433,15 +1421,6 @@ impl TextLine {
     pub(crate) fn logical_line(self) -> Line {
         self.logical_line
     }
-}
-
-/// 逻辑行 -> 投影空间的查询结果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum LogicalProjection {
-    /// 逻辑行可见，对应投影行索引。
-    Visible(ProjectedLineIndex),
-    /// 逻辑行被某段 fold 隐藏。
-    Hidden,
 }
 
 /// 逻辑文档内的 (line, column) 点。

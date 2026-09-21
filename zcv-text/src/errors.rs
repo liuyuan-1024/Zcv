@@ -4,9 +4,7 @@
 
 use thiserror::Error;
 
-use crate::types::{
-    BufferGeneration, BufferVersion, ByteOffset, CharOffset, Line, TextRange, Utf16Position,
-};
+use crate::types::{BufferVersion, ByteOffset, CharOffset, Line, TextRange, Utf16Position};
 
 /// 坐标转换、边界校验或越界相关的错误（坐标不合法）。
 ///
@@ -107,14 +105,7 @@ pub enum AnchorError {
         target: BufferVersion,
     },
 
-    /// 锚点属于已被 reset / 基线替换淘汰的内容代际；调用方必须显式重建，不能猜测坐标。
-    #[error("Anchor 内容代际已被替换：锚点代际 {anchor:?}，目标代际 {target:?}")]
-    GenerationMismatch {
-        anchor: BufferGeneration,
-        target: BufferGeneration,
-    },
-
-    /// 同一代际内坐标索引缺少请求版本；不衰减索引本应覆盖全部版本，出现即表示内部状态不一致。
+    /// 坐标索引缺少请求版本；不衰减索引本应覆盖全部版本，出现即表示内部状态不一致。
     #[error("坐标索引缺少版本：请求版本 {requested:?}，当前版本 {current:?}")]
     VersionNotIndexed {
         requested: BufferVersion,

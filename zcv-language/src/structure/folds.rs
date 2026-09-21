@@ -136,8 +136,7 @@ impl SyntaxSnapshot {
                 continue;
             }
             ranges.push(FoldRange {
-                range: Anchor::new(text.generation(), text.version(), start)
-                    ..Anchor::new(text.generation(), text.version(), end),
+                range: Anchor::new(text.version(), start)..Anchor::new(text.version(), end),
             });
         }
         ranges.sort_unstable_by_key(|range| (range.range.start.offset(), range.range.end.offset()));

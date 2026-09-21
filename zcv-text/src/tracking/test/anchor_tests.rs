@@ -25,7 +25,6 @@ fn event_for_edits(
         delta,
         changeset,
         position_map,
-        false,
     )
 }
 
@@ -36,8 +35,7 @@ fn anchor_should_map_through_delta_with_affinity() {
         BufferVersion::new(1),
         vec![Edit::insert(b(2), "XX".to_string()).unwrap()],
     );
-    let anchor = Anchor::new(BufferGeneration::INITIAL, BufferVersion::INITIAL, b(2))
-        .with_affinity(Affinity::Before);
+    let anchor = Anchor::new(BufferVersion::INITIAL, b(2)).with_affinity(Affinity::Before);
 
     assert_eq!(
         anchor
@@ -56,8 +54,7 @@ fn anchor_should_follow_boundary_insertion_according_to_affinity() {
         BufferVersion::new(1),
         vec![Edit::insert(b(2), "XX".to_string()).unwrap()],
     );
-    let after = Anchor::new(BufferGeneration::INITIAL, BufferVersion::INITIAL, b(2))
-        .with_affinity(Affinity::After);
+    let after = Anchor::new(BufferVersion::INITIAL, b(2)).with_affinity(Affinity::After);
 
     assert_eq!(
         after
@@ -79,8 +76,7 @@ fn anchor_inside_deleted_text_reports_deleted_mapping() {
             String::new(),
         )],
     );
-    let anchor = Anchor::new(BufferGeneration::INITIAL, BufferVersion::INITIAL, b(3))
-        .with_affinity(Affinity::After);
+    let anchor = Anchor::new(BufferVersion::INITIAL, b(3)).with_affinity(Affinity::After);
 
     assert!(matches!(
         anchor.map_through_delta_event(&delete_event).unwrap(),
@@ -107,8 +103,8 @@ fn anchor_rejects_a_delta_from_another_snapshot_version() {
 #[test]
 fn anchor_ranges_should_express_boundary_insertion_policy() {
     let range = TextRange::new(b(2), b(5)).unwrap();
-    let inside = Anchor::range_inside(BufferGeneration::INITIAL, BufferVersion::INITIAL, range);
-    let outside = Anchor::range_outside(BufferGeneration::INITIAL, BufferVersion::INITIAL, range);
+    let inside = Anchor::range_inside(BufferVersion::INITIAL, range);
+    let outside = Anchor::range_outside(BufferVersion::INITIAL, range);
 
     assert_eq!(inside.start.affinity(), Affinity::After);
     assert_eq!(inside.end.affinity(), Affinity::Before);

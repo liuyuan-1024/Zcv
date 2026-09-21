@@ -1,12 +1,14 @@
 //! 组合文档内的路径身份。
 //!
-//! 同一路径在文档内共享一份底层 `Path`：克隆只增加引用计数，
-//! 相等、排序与哈希按路径内容计算。PathKey 只承担 excerpt 与 diff 文件的身份，
-//! 不引入第二份显示顺序来源。
+//! 同一路径在文档内共享一份底层 Path：克隆只增加引用计数。
+//! 有文件路径时按路径标识；
+//! 匿名 Buffer 则以稳定 buffer_id 作路径标识，与 Zed 的 PathKey::for_buffer 用 remote_id 承担同一职责。
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use zcv_text::BufferId;
 
 /// excerpt 与 diff 文件在组合文档中的路径身份。
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -15,6 +17,17 @@ pub struct PathKey(Arc<Path>);
 impl PathKey {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self(Arc::from(path.into()))
+    }
+
+    /// 用 Buffer 的路径身份构造排序键。
+    ///
+    /// 有路径的修订/工作区来源共享文件路径；
+    /// 没有文件路径时用 buffer_id 作路径标识，使匿名 Buffer 保持独立的 excerpt、锚点与实体 header 身份。
+    pub fn for_buffer(path: Option<PathBuf>, buffer_id: BufferId) -> Self {
+        match path {
+            Some(path) => Self::new(path),
+            None => Self::new(buffer_id.to_string()),
+        }
     }
 
     /// 全序中的最小路径；用作游标零元与空路径占位。
@@ -57,7 +70,7 @@ impl From<PathBuf> for PathKey {
 
 impl From<&Path> for PathKey {
     fn from(path: &Path) -> Self {
-        Self(Arc::from(path))
+        Self::new(path)
     }
 }
 

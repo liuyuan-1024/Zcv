@@ -124,9 +124,6 @@ impl Selection<MultiBufferOffset> {
 
 impl Selection<MultiBufferAnchor> {
     /// 按当前快照解析为偏移选区。
-    ///
-    /// 端点锚点版本已被 reset / 基线替换淘汰时无法表示，返回 None；
-    /// 调用方必须显式丢弃该选区，不得把端点静默换成组合文首。
     pub(crate) fn resolve(
         self,
         snapshot: &MultiBufferSnapshot,
@@ -137,19 +134,6 @@ impl Selection<MultiBufferAnchor> {
             self.reversed,
             self.goal,
         ))
-    }
-
-    /// 外部 reload / 基线替换后把端点显式重锚到当前快照。
-    ///
-    /// 与 `resolve` 不同，本入口在代际失配时调用 `reattach_anchor` 明确重锚，只由 Editor 的 reload 恢复路径使用；
-    /// 无法重锚的端点保留原锚点，由后续解析显式失败。
-    pub(crate) fn reattach(self, snapshot: &MultiBufferSnapshot) -> Self {
-        Self::from_parts(
-            snapshot.reattach_anchor(&self.start).unwrap_or(self.start),
-            snapshot.reattach_anchor(&self.end).unwrap_or(self.end),
-            self.reversed,
-            self.goal,
-        )
     }
 }
 

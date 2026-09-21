@@ -136,7 +136,7 @@ impl BufferStore {
             if language_buffer.is_dirty() {
                 return;
             }
-            let _ = language_buffer.reset(text, cx);
+            let _ = language_buffer.replace_text(text, cx);
         });
     }
 

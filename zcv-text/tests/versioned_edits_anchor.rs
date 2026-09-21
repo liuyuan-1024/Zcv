@@ -102,14 +102,13 @@ fn coordinate_edits_since_survives_edit_log_eviction() {
     // 带文本编辑日志已被裁剪，edits_since 显式失败。
     assert!(buffer.snapshot().edits_since(v0).is_err());
 
-    // 坐标索引不衰减：同代际内仍能给出 v0 → current 的坐标编辑。
+    // 坐标索引不衰减：仍能给出 v0 → current 的坐标编辑。
     let batch = buffer
         .snapshot()
         .coordinate_edits_since(v0)
         .expect("坐标索引应覆盖被裁剪的版本");
     assert_eq!(batch.old_version(), Some(v0));
     assert_eq!(batch.new_version(), Some(current));
-    assert!(!batch.requires_reset());
     assert!(!batch.patch().edits().is_empty());
 }
 
@@ -143,38 +142,37 @@ fn anchor_still_resolves_after_the_text_edit_log_is_evicted() {
 }
 
 #[test]
-fn reset_replaces_the_baseline_and_invalidates_old_anchors_explicitly() {
+fn replace_text_maps_old_anchors_through_the_same_coordinate_chain() {
     let mut buffer = buffer("abc");
     let anchor = buffer.snapshot().anchor_before(b(2));
 
-    buffer.reset("XYZabc".to_string()).unwrap();
+    buffer.replace_text("XYZ abc".to_string()).unwrap();
 
-    assert!(matches!(
-        anchor.resolve_in(&buffer.snapshot()),
-        Err(TextError::Anchor(AnchorError::GenerationMismatch { .. }))
-    ));
-    // reset 后新代际的锚点仍可正常解析。
-    let fresh = buffer.snapshot().anchor_before(b(0));
-    assert_eq!(fresh.resolve_in(&buffer.snapshot()).unwrap(), b(0));
+    assert_eq!(anchor.resolve_in(&buffer.snapshot()).unwrap(), b(6));
 }
 
 #[test]
-fn explicit_rebase_maps_an_old_anchor_through_a_reset() {
-    let mut buffer = buffer("abc");
-    let anchor = buffer.snapshot().anchor_after(b(2));
+fn replace_text_preserves_anchor_affinity_at_an_actual_insertion() {
+    let mut buffer = buffer("abc xyz");
+    let anchor = buffer.snapshot().anchor_after(b(4));
 
-    buffer.reset("abXc".to_string()).unwrap();
+    buffer.replace_text("abc NEW xyz".to_string()).unwrap();
 
-    assert!(matches!(
-        anchor.resolve_in(&buffer.snapshot()),
-        Err(TextError::Anchor(AnchorError::GenerationMismatch { .. }))
-    ));
-
-    // 显式重锚按 reset 提交时的坐标映射把旧锚点推进到新代际。
     let snapshot = buffer.snapshot();
-    let rebased = anchor.rebase_across_generations(&snapshot).unwrap();
-    assert_eq!(rebased.generation(), snapshot.generation());
-    assert_eq!(rebased.resolve_in(&snapshot).unwrap(), b(3));
+    assert_eq!(anchor.resolve_in(&snapshot).unwrap(), b(8));
+}
+
+#[test]
+fn replace_text_maps_anchor_inside_replaced_token_to_the_replacement_start() {
+    let mut buffer = buffer("abc");
+    let before = buffer.snapshot().anchor_before(b(2));
+    let after = buffer.snapshot().anchor_after(b(2));
+
+    buffer.replace_text("XYZabc".to_string()).unwrap();
+
+    let snapshot = buffer.snapshot();
+    assert_eq!(before.resolve_in(&snapshot).unwrap(), b(0));
+    assert_eq!(after.resolve_in(&snapshot).unwrap(), b(0));
 }
 
 #[test]

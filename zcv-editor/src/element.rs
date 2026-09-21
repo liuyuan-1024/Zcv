@@ -789,8 +789,8 @@ fn buffer_header_element(
         .map(|parent| format!(" {}/", parent.display()));
     let open_excerpt = block.excerpt.clone();
     let open_from_path = block.excerpt.clone();
-    let fold_path = block.excerpt.path().to_path_buf();
-    let folded = editor.read(cx).is_buffer_folded(&fold_path, cx);
+    let fold_buffer_id = block.excerpt.buffer_id();
+    let folded = editor.read(cx).is_buffer_folded(fold_buffer_id, cx);
     let editor_for_button = editor.clone();
     let editor_for_path = editor.clone();
     let editor_for_fold = editor.clone();
@@ -878,7 +878,7 @@ fn buffer_header_element(
                     })
                     .on_click(move |_event, _window, cx| {
                         editor_for_fold.update(cx, |editor, cx| {
-                            editor.toggle_buffer_fold(fold_path.clone(), cx)
+                            editor.toggle_buffer_fold(fold_buffer_id, cx)
                         });
                     }),
                 )
@@ -1105,7 +1105,6 @@ impl Element for EditorElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let line_height = window.line_height();
-        let visible_line_count = (bounds.size.height / line_height).ceil() as usize + 2;
         let text_style = window.text_style();
         let font = text_style.font();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
@@ -1189,12 +1188,6 @@ impl Element for EditorElement {
             render_snapshot = editor.snapshot(window, cx);
             render_snapshot.display_snapshot().clone()
         });
-        // 软换行模式下显示行不再由 TabMap 测量（水平滚动收敛到视口宽度）。
-        if !display_snapshot.is_wrapped() {
-            self.editor.update(cx, |editor, cx| {
-                editor.measure_display_rows(editor.scroll_anchor().row(), visible_line_count, cx);
-            });
-        }
         let content_width = if display_snapshot.is_wrapped() {
             text_bounds.size.width
         } else {

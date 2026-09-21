@@ -150,7 +150,7 @@ fn snapshot_should_remain_version_bound_and_immutable_after_buffer_transition() 
 }
 
 #[test]
-fn reset_should_replace_storage_clear_history_and_leave_view_selection_to_host() {
+fn replace_text_updates_through_the_normal_history_and_anchor_pipeline() {
     let mut buffer = buffer("old");
     buffer
         .edit(
@@ -160,17 +160,17 @@ fn reset_should_replace_storage_clear_history_and_leave_view_selection_to_host()
         .unwrap();
     assert!(buffer.can_undo());
 
-    buffer.reset("new\n".to_string()).unwrap();
+    buffer.replace_text("new\n".to_string()).unwrap();
 
     assert_eq!(buffer_text(&buffer), "new\n");
     assert_eq!(buffer.line_start_char(line(1)).unwrap(), c(4));
-    assert!(!buffer.can_undo());
+    assert!(buffer.can_undo());
     assert!(!buffer.can_redo());
     assert!(!buffer.is_dirty());
 }
 
 #[test]
-fn reset_with_same_text_should_preserve_history_and_refresh_saved_baseline() {
+fn replace_same_text_preserves_history_and_refreshes_saved_baseline() {
     let mut buffer = buffer("old");
     buffer
         .edit(
@@ -182,7 +182,7 @@ fn reset_with_same_text_should_preserve_history_and_refresh_saved_baseline() {
     assert!(buffer.is_dirty());
     assert!(buffer.can_undo());
 
-    buffer.reset("old!".to_string()).unwrap();
+    buffer.replace_text("old!".to_string()).unwrap();
 
     assert_eq!(buffer.version(), version);
     assert!(!buffer.is_dirty());

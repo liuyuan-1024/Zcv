@@ -29,7 +29,7 @@ use super::fold_map::{
     ProjectedLineIndex, ProjectedPoint, ProjectedRange, StreamProjectedKind,
 };
 use super::tab_map::{
-    TabEdit, TabSnapshot, advance_display_column, byte_for_display_column, line_content,
+    TabEdit, TabPoint, TabSnapshot, advance_display_column, byte_for_display_column, line_content,
 };
 use super::{WrapPoint, WrapRow};
 
@@ -56,24 +56,30 @@ enum TransformKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Transform {
     kind: TransformKind,
-    input_lines: usize,
+    /// 变换树的输入维度是 Tab 点，不是独立的行计数。
+    ///
+    /// 当前 Wrap 以完整逻辑行为最小重排单元，所以同构段的列为 0；
+    /// 精确行内端点仍由 `TabEdit` 保留，并在重排边界扩展为完整行。
+    input: TabPoint,
+    output_rows: usize,
     /// 换行点共享存储：克隆 Transform（增量重建时大量发生）只增加引用计数，不深拷贝换行点。
     wrap_points: Arc<[WrapPointInfo]>,
 }
 
 impl Transform {
-    fn isomorphic(input_lines: usize) -> Self {
+    fn isomorphic(input: TabPoint, output_rows: usize) -> Self {
         Self {
             kind: TransformKind::Isomorphic,
-            input_lines,
+            input,
+            output_rows,
             wrap_points: Vec::new().into(),
         }
     }
 
     fn output_rows(&self) -> usize {
         match self.kind {
-            TransformKind::Isomorphic => self.input_lines,
-            TransformKind::Wrap => self.wrap_points.len() + 1,
+            TransformKind::Isomorphic => self.output_rows,
+            TransformKind::Wrap => self.output_rows,
         }
     }
 }
@@ -83,7 +89,7 @@ impl Item for Transform {
 
     fn summary(&self, (): ()) -> Self::Summary {
         TransformSummary {
-            input_lines: self.input_lines,
+            input: self.input,
             output_rows: self.output_rows(),
         }
     }
@@ -91,7 +97,7 @@ impl Item for Transform {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct TransformSummary {
-    input_lines: usize,
+    input: TabPoint,
     output_rows: usize,
 }
 
@@ -101,21 +107,18 @@ impl ContextLessSummary for TransformSummary {
     }
 
     fn add_summary(&mut self, summary: &Self) {
-        self.input_lines += summary.input_lines;
+        self.input = self.input.advance(summary.input);
         self.output_rows += summary.output_rows;
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
-struct InputLines(usize);
-
-impl<'a> Dimension<'a, TransformSummary> for InputLines {
+impl<'a> Dimension<'a, TransformSummary> for TabPoint {
     fn zero((): ()) -> Self {
-        Self(0)
+        Self::zero()
     }
 
     fn add_summary(&mut self, summary: &'a TransformSummary, (): ()) {
-        self.0 += summary.input_lines;
+        *self = self.advance(summary.input);
     }
 }
 
@@ -132,8 +135,8 @@ impl<'a> Dimension<'a, TransformSummary> for OutputRows {
     }
 }
 
-type InputToOutput = Dimensions<InputLines, OutputRows>;
-type OutputToInput = Dimensions<OutputRows, InputLines>;
+type InputToOutput = Dimensions<TabPoint, OutputRows>;
+type OutputToInput = Dimensions<OutputRows, TabPoint>;
 
 /// 显示行对应的行片段信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,11 +268,7 @@ impl WrapSnapshot {
         new_tab_snapshot: TabSnapshot,
         tab_edits: &[TabEdit],
     ) -> Vec<WrapEdit> {
-        let mut structural: Vec<(Range<usize>, Range<usize>)> = tab_edits
-            .iter()
-            .filter(|edit| edit.is_structural())
-            .map(|edit| (edit.old_rows(), edit.new_rows()))
-            .collect();
+        let mut structural = tab_edit_rows(tab_edits);
         if structural.is_empty() {
             self.tab_snapshot = new_tab_snapshot;
             self.interpolated = true;
@@ -280,15 +279,18 @@ impl WrapSnapshot {
 
         let measure = self.transforms.clone();
         let old_transforms = mem::replace(&mut self.transforms, SumTree::new(()));
-        let mut cursor = old_transforms.cursor::<InputLines>(());
+        let mut cursor = old_transforms.cursor::<TabPoint>(());
         let mut new_tree = SumTree::new(());
         let mut buffered = Vec::new();
         let mut old_ranges = Vec::with_capacity(structural.len());
         let mut measured = Vec::with_capacity(structural.len());
         for (old_rows, new_rows) in &structural {
-            new_tree.append(cursor.slice(&InputLines(old_rows.start), Bias::Left), ());
+            new_tree.append(
+                cursor.slice(&TabPoint::new(old_rows.start, 0), Bias::Left),
+                (),
+            );
             if let Some(transform) = cursor.item() {
-                let transform_start = cursor.start().0;
+                let transform_start = cursor.start().row();
                 if transform_start < old_rows.start {
                     push_transform_slice(
                         &mut buffered,
@@ -299,14 +301,17 @@ impl WrapSnapshot {
             }
             let mut tail: Option<Transform> = None;
             while let Some(transform) = cursor.item() {
-                let transform_start = cursor.start().0;
+                let transform_start = cursor.start().row();
                 if transform_start >= old_rows.end {
                     break;
                 }
-                let transform_end = transform_start + transform.input_lines;
+                let transform_end = transform_start + transform.input.row();
                 if transform_end > old_rows.end {
                     tail = Some(if transform.kind == TransformKind::Isomorphic {
-                        Transform::isomorphic(transform_end - old_rows.end)
+                        Transform::isomorphic(
+                            TabPoint::new(transform_end - old_rows.end, 0),
+                            transform_end - old_rows.end,
+                        )
                     } else {
                         transform.clone()
                     });
@@ -331,13 +336,6 @@ impl WrapSnapshot {
         self.interpolated = true;
         self.version += 1;
         wrap_edits(&measure, &old_ranges, &measured)
-    }
-
-    /// 返回 Wrap 投影行对应的 Tab 投影行。
-    ///
-    /// 一个 Tab 投影行可能被软换行拆成多个 Wrap 行，因此调用方不能把 Wrap 行号直接当作 Tab 行号使用。
-    pub(super) fn tab_row_for_wrap_row(&self, row: WrapRow) -> DisplayMapResult<Line> {
-        Ok(Line::new(self.wrap_row_to_fragment(row)?.tab_row))
     }
 
     pub(super) fn is_wrapped(&self) -> bool {
@@ -507,7 +505,7 @@ impl WrapSnapshot {
         row: usize,
     ) -> DisplayMapResult<WrapFragment> {
         let output_start = transform_start.0.0;
-        let input_start = transform_start.1.0;
+        let input_start = transform_start.1.row();
         match transform.kind {
             TransformKind::Isomorphic => {
                 let tab_row = input_start + row - output_start;
@@ -655,7 +653,7 @@ impl WrapSnapshot {
             self.transforms
                 .find::<OutputToInput, _>((), &OutputRows(row.get()), Bias::Right);
         let transform = transform.ok_or(CoordinateError::LineOutOfBounds(Line::new(row.get())))?;
-        let input_start = start.1.0;
+        let input_start = start.1.row();
         let output_start = start.0.0;
         match transform.kind {
             TransformKind::Isomorphic => {
@@ -793,9 +791,9 @@ impl WrapSnapshot {
     ) -> DisplayMapResult<(usize, usize, &Transform)> {
         let (start, _, transform) =
             self.transforms
-                .find::<InputToOutput, _>((), &InputLines(tab_row), Bias::Right);
+                .find::<InputToOutput, _>((), &TabPoint::new(tab_row, 0), Bias::Right);
         let transform = transform.ok_or(CoordinateError::LineOutOfBounds(Line::new(tab_row)))?;
-        Ok((start.0.0, start.1.0, transform))
+        Ok((start.0.row(), start.1.0, transform))
     }
 
     /// 选区起终点（投影点）→ (显示行, 显示行内字符列)；列按字符计数（含假空格），
@@ -880,6 +878,37 @@ fn wrap_edits(
         delta += *new_len as isize - (old_after - old_before) as isize;
     }
     result
+}
+
+/// 把 Tab 层点编辑扩展为需要重新测量的完整逻辑行。
+///
+/// 扩展只发生在 Wrap 的消费边界：Tab 层仍保留精确的列端点；本层按行构建
+/// soft-wrap 变换，故起止行以及它们的片段都必须失效。相邻编辑在这里合并，
+/// 不能再由 TabMap 保存逐行失效集合之类的影子状态。
+fn tab_edit_rows(tab_edits: &[TabEdit]) -> Vec<(Range<usize>, Range<usize>)> {
+    let mut rows: Vec<_> = tab_edits
+        .iter()
+        .map(|edit| {
+            (
+                edit.old.start.row()..edit.old.end.row().saturating_add(1),
+                edit.new.start.row()..edit.new.end.row().saturating_add(1),
+            )
+        })
+        .collect();
+    rows.sort_by_key(|(old, _)| old.start);
+
+    let mut merged: Vec<(Range<usize>, Range<usize>)> = Vec::with_capacity(rows.len());
+    for (old, new) in rows {
+        if let Some((previous_old, previous_new)) = merged.last_mut()
+            && old.start <= previous_old.end
+        {
+            previous_old.end = previous_old.end.max(old.end);
+            previous_new.end = previous_new.end.max(new.end);
+        } else {
+            merged.push((old, new));
+        }
+    }
+    merged
 }
 
 /// 文本中第 `chars` 个字符的字节偏移（超出末尾返回文本长度）。
@@ -1090,13 +1119,13 @@ fn push_wrap_edit(edits: &mut Vec<WrapEdit>, edit: WrapEdit) {
 
 /// 给定输入行之前累计的输出行数（换行树的 InputToOutput 维度）。
 ///
-/// 非零输出行的 item 只有 Wrap（input_lines 恒为 1），因此落在 item 内部的行只可能
+/// 非零输出行的 item 只有 Wrap（输入点恰好跨一行），因此落在 item 内部的行只可能
 /// 属于 Isomorphic 段，其增量与输入行偏移一致；用 `Bias::Right` 让区间终点的边界行落到后继 item。
 fn output_rows_before(tree: &SumTree<Transform>, input_row: usize) -> usize {
     let mut cursor = tree.cursor::<InputToOutput>(());
-    cursor.seek(&InputLines(input_row), Bias::Right);
+    cursor.seek(&TabPoint::new(input_row, 0), Bias::Right);
     let start = cursor.start();
-    start.1.0 + (input_row - start.0.0)
+    start.1.0 + (input_row - start.0.row())
 }
 
 pub(super) struct WrapMap {
@@ -1133,7 +1162,7 @@ impl std::fmt::Debug for WrapMap {
 impl WrapMap {
     /// 创建换行层状态。WrapMap 自己拥有配置、变换树、待处理批次与后台任务句柄。
     pub(super) fn new(tab_snapshot: TabSnapshot) -> Self {
-        let transforms = isomorphic_tree(tab_snapshot.line_count());
+        let transforms = isomorphic_tree(&tab_snapshot);
         WrapMap {
             snapshot: WrapSnapshot {
                 tab_snapshot,
@@ -1201,17 +1230,9 @@ impl WrapMap {
         }
         self.snapshot.tab_snapshot = tab_snapshot;
         let edits = if let Some(wrap_width) = self.wrap_width {
-            // 结构编辑按 TabEdit 的旧/新输入行区间局部重排；
-            // 覆盖全量的结构编辑自然退化为整段重建，不需要单独的“全量”分支。
-            if tab_edits.iter().any(TabEdit::is_structural) {
-                self.update_structural(tab_edits, wrap_width)
-            } else {
-                let changed_rows: Vec<usize> = tab_edits
-                    .iter()
-                    .flat_map(|edit| edit.changed_rows())
-                    .collect();
-                self.update_inline(&changed_rows, wrap_width)
-            }
+            // TabEdit 的端点属于本层点空间。Wrap 由端点扩展到受影响的完整行，
+            // 再在本层重排那些行；不维护行粒度的失效补偿状态。
+            self.update_structural(tab_edits, wrap_width)
         } else {
             self.set_isomorphic_all()
         };
@@ -1384,7 +1405,7 @@ impl WrapMap {
         let old_rows = self.snapshot.transforms.summary().output_rows;
         let new_rows = self.snapshot.tab_snapshot.line_count();
         let unchanged = !self.snapshot.wrapped && old_rows == new_rows;
-        self.snapshot.transforms = isomorphic_tree(new_rows);
+        self.snapshot.transforms = isomorphic_tree(&self.snapshot.tab_snapshot);
         self.snapshot.wrapped = false;
         self.check_invariants();
         if unchanged {
@@ -1403,26 +1424,25 @@ impl WrapMap {
     /// 未命中的前缀/后缀子树直接复用（Arc 共享）；被替换区间内的行重新测量换行。
     /// 覆盖全量的结构编辑会退化为整段重建，与 [`Self::rewrap_all`] 等价。
     fn update_structural(&mut self, tab_edits: &[TabEdit], wrap_width: Pixels) -> Vec<WrapEdit> {
-        let mut edits: Vec<(Range<usize>, Range<usize>)> = tab_edits
-            .iter()
-            .map(|edit| (edit.old_rows(), edit.new_rows()))
-            .collect();
-        edits.sort_by_key(|(old_rows, _)| old_rows.start);
+        let edits = tab_edit_rows(tab_edits);
 
         // 以输入行为维度的游标 splice：未命中的前缀/后缀子树直接复用（Arc 共享），
         // 只有与被替换行相交的边界 item 需要拆分，受影响行重新测量换行。
         let measure = self.snapshot.transforms.clone();
         let old_transforms = std::mem::replace(&mut self.snapshot.transforms, SumTree::new(()));
-        let mut cursor = old_transforms.cursor::<InputLines>(());
+        let mut cursor = old_transforms.cursor::<TabPoint>(());
         let mut new_tree = SumTree::new(());
         let mut buffered = Vec::new();
         let mut measured = Vec::with_capacity(edits.len());
         for (old_rows, new_rows) in &edits {
-            new_tree.append(cursor.slice(&InputLines(old_rows.start), Bias::Left), ());
+            new_tree.append(
+                cursor.slice(&TabPoint::new(old_rows.start, 0), Bias::Left),
+                (),
+            );
 
             // 起始边界：item 若从 old_rows.start 之前开始，保留 [item_start, old_rows.start) 部分。
             if let Some(transform) = cursor.item() {
-                let transform_start = cursor.start().0;
+                let transform_start = cursor.start().row();
                 if transform_start < old_rows.start {
                     push_transform_slice(
                         &mut buffered,
@@ -1435,14 +1455,17 @@ impl WrapMap {
             // 丢弃 [old_rows.start, old_rows.end) 内的 item；跨过 end 的 item 保留尾部。
             let mut tail: Option<Transform> = None;
             while let Some(transform) = cursor.item() {
-                let transform_start = cursor.start().0;
+                let transform_start = cursor.start().row();
                 if transform_start >= old_rows.end {
                     break;
                 }
-                let transform_end = transform_start + transform.input_lines;
+                let transform_end = transform_start + transform.input.row();
                 if transform_end > old_rows.end {
                     tail = Some(if transform.kind == TransformKind::Isomorphic {
-                        Transform::isomorphic(transform_end - old_rows.end)
+                        Transform::isomorphic(
+                            TabPoint::new(transform_end - old_rows.end, 0),
+                            transform_end - old_rows.end,
+                        )
                     } else {
                         transform.clone()
                     });
@@ -1497,77 +1520,6 @@ impl WrapMap {
         }]
     }
 
-    /// 行级增量：只重排 changed_rows 对应的 tab 行，其余段落原样保留。
-    fn update_inline(&mut self, changed_rows: &[usize], wrap_width: Pixels) -> Vec<WrapEdit> {
-        let mut rows: Vec<usize> = changed_rows.to_vec();
-        rows.sort_unstable();
-        rows.dedup();
-        if rows.is_empty() {
-            return Vec::new();
-        }
-        let row_edits = merge_ranges(&rows);
-
-        // 以输入行为维度的游标 splice：未命中的前缀/后缀子树直接复用（Arc 共享），
-        // 只有与被编辑行相交的边界 item 需要拆分，受影响行重新测量换行。
-        let measure = self.snapshot.transforms.clone();
-        let old_transforms = std::mem::replace(&mut self.snapshot.transforms, SumTree::new(()));
-        let mut cursor = old_transforms.cursor::<InputLines>(());
-        let mut new_tree = SumTree::new(());
-        let mut buffered = Vec::new();
-        let mut measured = Vec::with_capacity(row_edits.len());
-        for edit in &row_edits {
-            new_tree.append(cursor.slice(&InputLines(edit.start), Bias::Left), ());
-
-            // 起始边界：item 若从 edit.start 之前开始，保留 [item_start, edit.start) 部分。
-            if let Some(transform) = cursor.item() {
-                let transform_start = cursor.start().0;
-                if transform_start < edit.start {
-                    push_transform_slice(&mut buffered, transform, edit.start - transform_start);
-                }
-            }
-
-            // 丢弃 [edit.start, edit.end) 内的 item；跨过 edit.end 的 item 保留尾部。
-            let mut tail: Option<Transform> = None;
-            while let Some(transform) = cursor.item() {
-                let transform_start = cursor.start().0;
-                if transform_start >= edit.end {
-                    break;
-                }
-                let transform_end = transform_start + transform.input_lines;
-                if transform_end > edit.end {
-                    tail = Some(if transform.kind == TransformKind::Isomorphic {
-                        Transform::isomorphic(transform_end - edit.end)
-                    } else {
-                        transform.clone()
-                    });
-                    cursor.next();
-                    break;
-                }
-                cursor.next();
-            }
-
-            let measured_start = buffered.len();
-            for tab_row in edit.start..edit.end {
-                self.push_wrap_transform(&mut buffered, tab_row, wrap_width);
-            }
-            measured.push(
-                buffered[measured_start..]
-                    .iter()
-                    .map(Transform::output_rows)
-                    .sum::<usize>(),
-            );
-            if let Some(tail) = tail {
-                buffered.push(tail);
-            }
-            new_tree.extend(buffered.drain(..), ());
-        }
-        new_tree.append(cursor.suffix(), ());
-        self.snapshot.transforms = new_tree;
-        self.snapshot.wrapped = true;
-        self.check_invariants();
-        wrap_edits(&measure, &row_edits, &measured)
-    }
-
     /// 计算单个 tab 行的换行变换并压入（相邻 Isomorphic 自动合并）。
     fn push_wrap_transform(
         &self,
@@ -1590,7 +1542,8 @@ impl WrapMap {
         } else {
             transforms.push(Transform {
                 kind: TransformKind::Wrap,
-                input_lines: 1,
+                input: TabPoint::new(1, 0),
+                output_rows: boundaries.len() + 1,
                 wrap_points: boundaries.into(),
             });
         }
@@ -1733,12 +1686,16 @@ impl WrapMap {
         #[cfg(debug_assertions)]
         {
             let tab_rows = self.snapshot.tab_snapshot.line_count();
-            assert_eq!(self.snapshot.transforms.summary().input_lines, tab_rows);
+            assert_eq!(
+                self.snapshot.transforms.summary().input,
+                TabPoint::new(tab_rows, 0),
+                "Wrap 输入点必须由当前 Tab 快照的投影边界确定"
+            );
             for transform in self.snapshot.transforms.iter() {
                 match transform.kind {
-                    TransformKind::Isomorphic => assert!(transform.input_lines > 0),
+                    TransformKind::Isomorphic => assert!(transform.input.row() > 0),
                     TransformKind::Wrap => {
-                        assert_eq!(transform.input_lines, 1);
+                        assert_eq!(transform.input, TabPoint::new(1, 0));
                         assert!(!transform.wrap_points.is_empty());
                     }
                 }
@@ -1876,48 +1833,35 @@ fn push_isomorphic(transforms: &mut Vec<Transform>, lines: usize) {
     if let Some(last) = transforms.last_mut()
         && last.kind == TransformKind::Isomorphic
     {
-        last.input_lines += lines;
+        last.input = last.input.advance(TabPoint::new(lines, 0));
+        last.output_rows += lines;
         return;
     }
-    transforms.push(Transform::isomorphic(lines));
+    transforms.push(Transform::isomorphic(TabPoint::new(lines, 0), lines));
 }
 
 /// 复制旧变换的一段输入行。Isomorphic item 可以合并很多行，不能直接用
 /// SumTree cursor 在 item 中间切片，否则 Bias 会把整个 item 复制到结果中。
-fn push_transform_slice(
-    transforms: &mut Vec<Transform>,
-    transform: &Transform,
-    input_lines: usize,
-) {
-    if input_lines == 0 {
+fn push_transform_slice(transforms: &mut Vec<Transform>, transform: &Transform, row_count: usize) {
+    if row_count == 0 {
         return;
     }
     match transform.kind {
-        TransformKind::Isomorphic => push_isomorphic(transforms, input_lines),
+        TransformKind::Isomorphic => push_isomorphic(transforms, row_count),
         TransformKind::Wrap => {
-            debug_assert_eq!(input_lines, 1);
+            debug_assert_eq!(row_count, 1);
             transforms.push(transform.clone());
         }
     }
 }
 
-/// 相邻 tab 行号合并为不相交区间。
-fn merge_ranges(rows: &[usize]) -> Vec<Range<usize>> {
-    let mut ranges: Vec<Range<usize>> = Vec::new();
-    for row in rows {
-        match ranges.last_mut() {
-            Some(last) if last.end >= *row => last.end = last.end.max(row + 1),
-            _ => ranges.push(*row..row + 1),
-        }
-    }
-    ranges
-}
-
-fn isomorphic_tree(tab_rows: usize) -> SumTree<Transform> {
+fn isomorphic_tree(tab_snapshot: &TabSnapshot) -> SumTree<Transform> {
+    let tab_rows = tab_snapshot.line_count();
     if tab_rows == 0 {
         SumTree::new(())
     } else {
-        SumTree::from_item(Transform::isomorphic(tab_rows), ())
+        let input = tab_snapshot.summary_for_range(TabPoint::zero()..TabPoint::new(tab_rows, 0));
+        SumTree::from_item(Transform::isomorphic(input, tab_rows), ())
     }
 }
 

@@ -1,6 +1,6 @@
 //! Editor 视图滚动状态。
 
-use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferSnapshot};
+use zcv_multi_buffer::MultiBufferAnchor;
 
 use gpui::{Pixels, Point, point, px};
 use zcv_text::Affinity;
@@ -113,28 +113,6 @@ impl ScrollManager {
             self.display_point = point;
         }
     }
-    /// 外部 reload / 基线替换后，把长期滚动锚点与待自动滚动目标显式重锚到当前快照。
-    ///
-    /// 普通 `resolve_anchor` 在代际失配时显式失败；
-    /// 这里是调用方对失败的显式重锚，只由 Editor 的 reload 恢复路径调用。
-    pub(super) fn reattach_anchors(&mut self, snapshot: &MultiBufferSnapshot) {
-        self.anchor.anchor = snapshot
-            .reattach_anchor(&self.anchor.anchor)
-            .unwrap_or(self.anchor.anchor);
-        self.pending_autoscroll = self.pending_autoscroll.map(|pending| match pending {
-            PendingAutoscroll::Fit(anchor) => {
-                PendingAutoscroll::Fit(snapshot.reattach_anchor(&anchor).unwrap_or(anchor))
-            }
-            PendingAutoscroll::TopRelative {
-                anchor,
-                offset_rows,
-            } => PendingAutoscroll::TopRelative {
-                anchor: snapshot.reattach_anchor(&anchor).unwrap_or(anchor),
-                offset_rows,
-            },
-        });
-    }
-
     pub(super) fn update_viewport(
         &mut self,
         viewport: ScrollViewport,

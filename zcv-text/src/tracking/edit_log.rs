@@ -23,8 +23,6 @@ struct VersionedEdit {
     forward: EditList,
     /// 逆编辑，坐标以新文本为基准；仅已记录历史的事务保留，供 undo 使用。
     undo: Option<EditList>,
-    /// 整体基线是否已被替换。
-    reset: bool,
 }
 
 /// 单调版本索引的不可变编辑日志。
@@ -44,7 +42,6 @@ impl EditLog {
         new_version: BufferVersion,
         forward: EditList,
         undo: Option<EditList>,
-        reset: bool,
     ) -> Self {
         let mut entries = Vec::with_capacity(self.entries.len() + 1);
         entries.extend(self.entries.iter().cloned());
@@ -53,7 +50,6 @@ impl EditLog {
             new_version,
             forward,
             undo,
-            reset,
         });
         Self {
             entries: Arc::from(entries),
@@ -119,12 +115,10 @@ impl EditLog {
         let entries = self.entries_for_range(since, current)?;
 
         let mut patch = TextPatch::default();
-        let mut reset = false;
         for entry in entries {
             patch = patch.compose(&TextPatch::from_edit_list(entry.forward.as_slice()));
-            reset |= entry.reset;
         }
-        Ok(TextChangeBatch::from_patch(since, current, patch, reset))
+        Ok(TextChangeBatch::from_patch(since, current, patch))
     }
 
     /// 组合 since 到 current 之间与 range 相交的编辑。

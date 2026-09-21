@@ -129,9 +129,11 @@ impl Render for ProjectSearchToolbar {
             let results_editor = view.read(cx).results_editor.clone();
             let excerpts = view.read(cx).excerpts.clone();
             let snapshot = excerpts.update(cx, |buffer, cx| buffer.snapshot(cx));
-            let expanded = snapshot
-                .excerpts()
-                .any(|excerpt| !results_editor.read(cx).is_buffer_folded(excerpt.path(), cx));
+            let expanded = snapshot.excerpts().any(|excerpt| {
+                !results_editor
+                    .read(cx)
+                    .is_buffer_folded(excerpt.buffer_id(), cx)
+            });
             Button::icon(
                 "project-search-expansion",
                 if expanded {
@@ -238,17 +240,18 @@ impl ProjectSearchView {
     }
 
     fn set_all_files_folded(&mut self, folded: bool, cx: &mut Context<Self>) {
-        let mut paths = Vec::new();
         let snapshot = self.excerpts.update(cx, |buffer, cx| buffer.snapshot(cx));
+        let mut buffer_ids = Vec::new();
         for excerpt in snapshot.excerpts() {
-            if !paths.iter().any(|path| path == excerpt.path()) {
-                paths.push(excerpt.path().to_path_buf());
+            let buffer_id = excerpt.buffer_id();
+            if !buffer_ids.contains(&buffer_id) {
+                buffer_ids.push(buffer_id);
             }
         }
         self.results_editor.update(cx, |editor, cx| {
-            for path in paths {
-                if editor.is_buffer_folded(&path, cx) != folded {
-                    editor.toggle_buffer_fold(path, cx);
+            for buffer_id in buffer_ids {
+                if editor.is_buffer_folded(buffer_id, cx) != folded {
+                    editor.toggle_buffer_fold(buffer_id, cx);
                 }
             }
         });

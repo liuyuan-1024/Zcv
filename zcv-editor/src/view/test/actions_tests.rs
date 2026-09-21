@@ -285,10 +285,10 @@ fn external_reload_moves_selection_through_diff(cx: &mut TestAppContext) {
     });
 
     // 外部把 "bravo" 改写为 "brxavo"：行内词级 diff 把整个词视为替换，
-    // 落在替换内的光标按 reset 坐标映射吸附到替换段起点。
+    // 落在替换内的光标按版本化坐标映射吸附到替换段起点。
     cx.update_entity(&buffer, |buffer, cx| {
         buffer
-            .reset("alpha\nbrxavo\ncharlie".to_owned(), cx)
+            .replace_text("alpha\nbrxavo\ncharlie".to_owned(), cx)
             .expect("外部 reload 应成功");
     });
     cx.run_until_parked();
@@ -311,7 +311,7 @@ fn external_reload_collapses_selection_when_text_is_rewritten(cx: &mut TestAppCo
     // 完全重写（无公共内容）：diff 回退为整体替换段，光标塌缩到文档开头。
     cx.update_entity(&buffer, |buffer, cx| {
         buffer
-            .reset("x".to_owned(), cx)
+            .replace_text("x".to_owned(), cx)
             .expect("外部 reload 应成功");
     });
     cx.run_until_parked();

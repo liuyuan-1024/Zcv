@@ -3,16 +3,14 @@
 //! 本层位于 WrapMap 之上：文本换行坐标保持不变，文件标题和同文件片段分隔线作为不属于文本的虚拟显示块插入。
 //! 这样搜索、diff、诊断等宿主只负责提供 excerpts，滚动、命中测试、选区和通用文件标题都由 Editor 复用同一条管线。
 
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+use zcv_multi_buffer::{ExcerptSnapshot, MultiBufferOffset, MultiBufferRange};
 
 use std::collections::{BTreeSet, HashSet};
 use std::ops::Range;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
-use zcv_multi_buffer::ExcerptSnapshot;
-use zcv_text::{CoordinateError, Line};
+use zcv_text::{BufferId, CoordinateError, Line};
 
 use super::error::DisplayMapResult;
 use super::fold_map::{FoldBias, ProjectedLineIndex};
@@ -142,12 +140,51 @@ pub(super) struct BlockSnapshot {
     transforms: SumTree<Transform>,
     placements: Vec<BlockPlacement>,
     excerpts: Arc<[ExcerptSnapshot]>,
-    /// 块起始片段在 `excerpts` 中的下标；换行布局未变时据此刷新块视图。
-    block_start_indices: Arc<[usize]>,
+    /// MultiBuffer 提供的逻辑 excerpt 边界签名。
+    ///
+    /// 保存下标、Buffer 身份与「是否进入新 Buffer」，避免在文件集合变化而边界数量未变时复用旧块分类。
+    excerpt_boundaries: Arc<[(usize, BufferId, bool)]>,
     /// 构建时的整文件折叠集合；变化会使块布局失效。
-    folded_buffers: HashSet<PathBuf>,
+    folded_buffers: HashSet<BufferId>,
     /// 块锚点（wrap 行）；换行编辑时按区间平移并重排。
     specs: Arc<[BlockSpec]>,
+}
+
+fn excerpt_boundaries(wrap_snapshot: &WrapSnapshot) -> Arc<[(usize, BufferId, bool)]> {
+    wrap_snapshot
+        .buffer_snapshot()
+        .excerpt_boundaries()
+        .map(|boundary| {
+            (
+                boundary.next_index(),
+                boundary.next().buffer_id(),
+                boundary.starts_new_buffer(),
+            )
+        })
+        .collect()
+}
+
+/// 决定一个逻辑 excerpt 边界放置实体 header、divider，还是不放置块。
+///
+/// 对齐 Zed `BlockMap::header_and_footer_blocks` 的分类：
+/// 进入新 Buffer 且显示策略允许时画实体 header；
+/// 否则只有文档首个 excerpt 之后的边界画 divider；
+/// 文档首个 excerpt 在没有 header 策略时不产生块。
+fn entry_block_kind(
+    show_headers: bool,
+    is_document_start: bool,
+    index_in_buffer: usize,
+) -> Option<DisplayBlockKind> {
+    if index_in_buffer > 0 {
+        return Some(DisplayBlockKind::ExcerptBoundary);
+    }
+    if show_headers {
+        Some(DisplayBlockKind::BufferHeader)
+    } else if is_document_start {
+        None
+    } else {
+        Some(DisplayBlockKind::ExcerptBoundary)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -408,52 +445,54 @@ impl BlockSnapshot {
     pub(super) fn new(
         wrap_snapshot: WrapSnapshot,
         excerpts: Arc<[ExcerptSnapshot]>,
-        folded_buffers: &HashSet<PathBuf>,
+        folded_buffers: &HashSet<BufferId>,
     ) -> Self {
-        let excerpt_starts = excerpts
+        let show_headers = wrap_snapshot.buffer_snapshot().show_headers();
+        let excerpt_boundaries = excerpt_boundaries(&wrap_snapshot);
+        let excerpt_starts = excerpt_boundaries
             .iter()
             .enumerate()
-            .filter(|(_, excerpt)| excerpt.starts_new_excerpt())
-            .filter_map(|(index, excerpt)| {
+            .filter_map(|(boundary_index, (excerpt_index, _, _))| {
                 wrap_snapshot
-                    .offset_to_wrap_point(excerpt.output_range().start())
+                    .offset_to_wrap_point(excerpts[*excerpt_index].output_range().start())
                     .ok()
-                    .map(|point| (point.row().get(), index))
+                    .map(|point| (point.row().get(), boundary_index))
             })
             .collect::<Vec<_>>();
-        let block_start_indices: Arc<[usize]> =
-            excerpt_starts.iter().map(|(_, index)| *index).collect();
         let mut specs = Vec::new();
         let mut group_start = 0usize;
         while group_start < excerpt_starts.len() {
-            let path = excerpts[excerpt_starts[group_start].1].path();
+            let (_, buffer_id, _) = excerpt_boundaries[excerpt_starts[group_start].1];
+            // 逻辑边界只有在 `starts_new_buffer` 处才开启新组；同组的后续边界是同一文件的后续窗口。
             let mut group_end = group_start + 1;
             while group_end < excerpt_starts.len()
-                && excerpts[excerpt_starts[group_end].1].path() == path
+                && !excerpt_boundaries[excerpt_starts[group_end].1].2
             {
                 group_end += 1;
             }
-            if folded_buffers.contains(path) {
-                let (wrap_row, excerpt_index) = excerpt_starts[group_start];
+            // 相邻逻辑 excerpt 共享 Buffer 身份时只是同一文件的后续窗口，不进入新 Buffer 边界。
+            // 整文件折叠只在显示策略允许 header 时折叠为一整块；否则按普通 divider 序列绘制。
+            if folded_buffers.contains(&buffer_id) && show_headers {
+                let (wrap_row, boundary_index) = excerpt_starts[group_start];
                 specs.push(BlockSpec {
                     wrap_row,
-                    excerpt_index,
+                    excerpt_index: excerpt_boundaries[boundary_index].0,
                     height: FILE_HEADER_HEIGHT,
                     kind: DisplayBlockKind::BufferHeader,
                     folded_group: true,
                 });
             } else {
-                for (index, (wrap_row, excerpt_index)) in
+                let is_document_start = group_start == 0;
+                for (index, (wrap_row, boundary_index)) in
                     excerpt_starts[group_start..group_end].iter().enumerate()
                 {
-                    let kind = if index == 0 {
-                        DisplayBlockKind::BufferHeader
-                    } else {
-                        DisplayBlockKind::ExcerptBoundary
+                    let kind = entry_block_kind(show_headers, is_document_start, index);
+                    let Some(kind) = kind else {
+                        continue;
                     };
                     specs.push(BlockSpec {
                         wrap_row: *wrap_row,
-                        excerpt_index: *excerpt_index,
+                        excerpt_index: excerpt_boundaries[*boundary_index].0,
                         height: match kind {
                             DisplayBlockKind::BufferHeader => FILE_HEADER_HEIGHT,
                             DisplayBlockKind::ExcerptBoundary => EXCERPT_BOUNDARY_HEIGHT,
@@ -473,7 +512,7 @@ impl BlockSnapshot {
             0,
             wrap_snapshot,
             excerpts,
-            block_start_indices,
+            excerpt_boundaries,
             folded_buffers.clone(),
         )
     }
@@ -487,8 +526,8 @@ impl BlockSnapshot {
         spec_start: usize,
         wrap_snapshot: WrapSnapshot,
         excerpts: Arc<[ExcerptSnapshot]>,
-        block_start_indices: Arc<[usize]>,
-        folded_buffers: HashSet<PathBuf>,
+        excerpt_boundaries: Arc<[(usize, BufferId, bool)]>,
+        folded_buffers: HashSet<BufferId>,
     ) -> Self {
         let wrap_line_count = wrap_snapshot.line_count();
         let mut wrap_row = prefix.wrap_row;
@@ -557,7 +596,7 @@ impl BlockSnapshot {
             transforms: prefix.transforms,
             placements: prefix.placements,
             excerpts,
-            block_start_indices,
+            excerpt_boundaries,
             folded_buffers,
             specs,
         }
@@ -571,19 +610,14 @@ impl BlockSnapshot {
         &self,
         wrap_snapshot: WrapSnapshot,
         excerpts: Arc<[ExcerptSnapshot]>,
-        folded_buffers: &HashSet<PathBuf>,
+        folded_buffers: &HashSet<BufferId>,
         wrap_edits: &[WrapEdit],
     ) -> BlockSnapshot {
-        let block_start_indices: Arc<[usize]> = excerpts
-            .iter()
-            .enumerate()
-            .filter(|(_, excerpt)| excerpt.starts_new_excerpt())
-            .map(|(index, _)| index)
-            .collect();
+        let excerpt_boundaries = excerpt_boundaries(&wrap_snapshot);
 
-        // 折叠集合或 excerpt 起始集合变化会改变块列表本身，几何增量不再适用。
-        if &self.folded_buffers != folded_buffers || block_start_indices != self.block_start_indices
-        {
+        // 折叠集合或逻辑 excerpt 边界变化会改变块列表本身，几何增量不再适用。
+        // 这里必须比较边界所属路径：同一片段下标从文件 B 变为文件 A 时，header 必须同步重分类为 A 的 excerpt divider，不能复用 B 的旧 header。
+        if &self.folded_buffers != folded_buffers || excerpt_boundaries != self.excerpt_boundaries {
             return Self::new(wrap_snapshot, excerpts, folded_buffers);
         }
 
@@ -598,7 +632,7 @@ impl BlockSnapshot {
                 transforms: self.transforms.clone(),
                 placements,
                 excerpts,
-                block_start_indices,
+                excerpt_boundaries,
                 folded_buffers: folded_buffers.clone(),
                 specs: self.specs.clone(),
             };
@@ -642,7 +676,7 @@ impl BlockSnapshot {
             first_changed,
             wrap_snapshot,
             excerpts,
-            block_start_indices,
+            excerpt_boundaries,
             folded_buffers.clone(),
         )
     }
@@ -702,16 +736,6 @@ impl BlockSnapshot {
             Some(TransformKind::Text) => start.1.0 + wrap_row - start.0.0,
             Some(TransformKind::Block(placement)) => self.placements[placement].display_row,
             None => self.line_count().saturating_sub(1),
-        }
-    }
-
-    pub(super) fn display_row_to_wrap_row(&self, display_row: DisplayRow) -> Option<WrapRow> {
-        if display_row.get() >= self.line_count() {
-            return None;
-        }
-        match self.display_row_mapping(display_row.get()) {
-            RowMapping::Text(row) => Some(row),
-            RowMapping::Block(_) => None,
         }
     }
 

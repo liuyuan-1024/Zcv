@@ -150,6 +150,33 @@ fn text_for_version_rebuilds_each_historical_version() {
 }
 
 #[test]
+fn text_for_version_stays_available_after_undo_and_redo() {
+    let mut buffer = buffer("abc");
+    let v0 = buffer.version();
+    buffer
+        .edit(
+            [Edit::insert(b(3), "d".to_string()).unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    let v1 = buffer.version();
+
+    buffer.undo().unwrap().expect("undo 应成功");
+    assert_eq!(buffer_text(&buffer), "abc");
+    assert_eq!(
+        buffer.snapshot().text_for_version(v0).unwrap(),
+        "abc",
+        "undo 后必须能重建历史文本，而不是 HistoryTextUnavailable"
+    );
+    assert_eq!(buffer.snapshot().text_for_version(v1).unwrap(), "abcd");
+
+    buffer.redo().unwrap().expect("redo 应成功");
+    assert_eq!(buffer_text(&buffer), "abcd");
+    assert_eq!(buffer.snapshot().text_for_version(v0).unwrap(), "abc");
+    assert_eq!(buffer.snapshot().text_for_version(v1).unwrap(), "abcd");
+}
+
+#[test]
 fn text_for_version_rejects_versions_newer_than_the_snapshot() {
     let buffer = buffer("abc");
     let future = buffer.version().next().unwrap();

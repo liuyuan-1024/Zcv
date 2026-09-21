@@ -28,6 +28,13 @@ impl HistoryState {
         self.nodes.get(&id)
     }
 
+    /// 当前历史节点的结束版本；无 current 时为 `None`。
+    pub(in crate::buffer) fn current_end_version(&self) -> Option<BufferVersion> {
+        self.current
+            .and_then(|id| self.nodes.get(&id))
+            .map(|node| node.entry.end_version)
+    }
+
     pub(in crate::buffer) fn can_undo(&self) -> bool {
         self.current.is_some()
     }
@@ -85,6 +92,9 @@ impl HistoryState {
     }
 
     /// 把 `entry` 的版本区间合并到当前节点（用于 `MergeWithPrevious`），仅在当前节点没有子节点时允许。
+    ///
+    /// 调用方必须先确认「当前节点终点 → `entry` 起点」之间的编辑日志区间可回放
+    /// （见 `EditLog::range_is_replayable`）；本方法只维护历史图拓扑不变量。
     pub(in crate::buffer) fn merge_into_current(&mut self, entry: HistoryEntry) -> bool {
         let Some(current_id) = self.current else {
             return false;

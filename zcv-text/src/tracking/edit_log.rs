@@ -185,6 +185,18 @@ impl EditLog {
         Ok(entries.iter().map(|entry| entry.forward.clone()).collect())
     }
 
+    /// `[start, end]` 连续版本区间内的每个条目是否都保留了逆编辑。
+    ///
+    /// 空区间恒为 true。区间不连续、已退出日志或存在放弃历史的条目时返回 false，
+    /// 调用方据此拒绝把不可回放的版本区间并入历史节点。
+    pub(crate) fn range_is_replayable(&self, start: BufferVersion, end: BufferVersion) -> bool {
+        if start == end {
+            return true;
+        }
+        self.entries_for_range(start, end)
+            .is_ok_and(|entries| entries.iter().all(|entry| entry.undo.is_some()))
+    }
+
     /// 定位 `[start, end]` 的连续版本区间。
     fn entries_for_range(
         &self,

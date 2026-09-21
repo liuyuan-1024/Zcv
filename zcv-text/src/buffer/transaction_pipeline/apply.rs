@@ -160,7 +160,10 @@ impl Buffer {
 
         let (next_transaction_id, event) =
             self.prepare_delta_event(base_version, tx_edits.clone(), source)?;
-        self.commit_prepared_edit_list(&tx_edits, None, next_transaction_id, &event)?;
+        // 回放（undo/redo）与普通提交一样记录逆编辑：它的逆就是反向回放所需的编辑，
+        // 也使历史节点跨回放区间仍可逐条重建文本。
+        let undo_edits = self.build_inverse_edit_list(&tx_edits)?;
+        self.commit_prepared_edit_list(&tx_edits, Some(undo_edits), next_transaction_id, &event)?;
         Ok(event)
     }
 

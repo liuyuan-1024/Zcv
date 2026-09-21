@@ -258,6 +258,59 @@ fn merged_transaction_undo_publishes_one_composed_change_batch() {
 }
 
 #[test]
+fn merge_with_previous_after_undo_and_redo_replays_the_whole_node() {
+    let mut buffer = buffer("abc");
+    let v0 = buffer.version();
+    buffer
+        .edit([Edit::insert(b(3), "A").unwrap()], metadata("A"))
+        .unwrap();
+    buffer.undo().unwrap().expect("首次撤销应成功");
+    assert_eq!(buffer_text(&buffer), "abc");
+    buffer.redo().unwrap().expect("重做应成功");
+    assert_eq!(buffer_text(&buffer), "abcA");
+
+    // undo/redo 回放产生的编辑日志条目也必须保留逆编辑，才能参与后续合并；
+    // 否则合并节点会跨越没有逆编辑的区间，undo 将在回放时报 InvariantViolation。
+    buffer
+        .edit([Edit::insert(b(4), "B").unwrap()], merge_metadata("B"))
+        .unwrap();
+    assert_eq!(buffer_text(&buffer), "abcAB");
+
+    buffer
+        .undo()
+        .unwrap()
+        .expect("跨越回放区间的合并节点应可撤销");
+    assert_eq!(buffer_text(&buffer), "abc");
+    assert_eq!(buffer.snapshot().text_for_version(v0).unwrap(), "abc");
+}
+
+#[test]
+fn merge_with_previous_does_not_span_a_history_skipping_transaction() {
+    let mut buffer = buffer("abc");
+    buffer
+        .edit([Edit::insert(b(3), "A").unwrap()], metadata("A"))
+        .unwrap();
+    buffer
+        .edit(
+            [Edit::insert(b(4), "B").unwrap()],
+            TransactionMetadata::new(TransactionSource::Programmatic).without_history(),
+        )
+        .unwrap();
+
+    // 放弃历史的事务没有逆编辑；MergeWithPrevious 不能把它卷入历史节点。
+    buffer
+        .edit([Edit::insert(b(5), "C").unwrap()], merge_metadata("C"))
+        .unwrap();
+    assert_eq!(buffer_text(&buffer), "abcABC");
+
+    buffer
+        .undo()
+        .unwrap()
+        .expect("跨放弃历史区间的合并必须被拒绝，undo 只回退 C");
+    assert_eq!(buffer_text(&buffer), "abcAB");
+}
+
+#[test]
 fn default_transactions_should_stay_separate() {
     let mut buffer = buffer("");
     buffer

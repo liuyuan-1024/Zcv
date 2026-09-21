@@ -55,13 +55,20 @@ impl Buffer {
             return Ok(None);
         };
         let target = self.history_target(node_id, ReplayKind::Undo)?;
+        // 先取齐整个版本区间的可回放编辑，再移动历史游标：日志已裁剪或缺少逆编辑时
+        // 不会留下「游标已移动、文本未回退」的半完成状态。
+        let transaction_id = target.transaction_id;
+        let batches = self
+            .edit_log
+            .undo_batches(target.start_version, target.end_version)?;
         self.history
             .step_undo()
             .ok_or_else(|| TextError::InvariantViolation {
                 location: "Buffer::undo",
                 detail: "已验证的当前历史节点无法执行 undo 步进".to_string(),
             })?;
-        self.replay_history_batches(target).map(Some)
+        self.replay_history_batches(target.kind, batches)?;
+        Ok(Some(HistoryEditOutcome::new(transaction_id)))
     }
 
     /// 重做沿默认分支（最近创建子节点链）的下一个节点。
@@ -73,13 +80,19 @@ impl Buffer {
             return Ok(None);
         };
         let target = self.history_target(node_id, ReplayKind::Redo)?;
+        // 与 undo 相同：先取齐编辑日志批次再推进游标。
+        let transaction_id = target.transaction_id;
+        let batches = self
+            .edit_log
+            .redo_batches(target.start_version, target.end_version)?;
         self.history
             .step_redo_into(node_id)
             .ok_or_else(|| TextError::InvariantViolation {
                 location: "Buffer::redo",
                 detail: format!("已验证的 redo 目标节点 {node_id:?} 不是当前历史节点的子节点"),
             })?;
-        self.replay_history_batches(target).map(Some)
+        self.replay_history_batches(target.kind, batches)?;
+        Ok(Some(HistoryEditOutcome::new(transaction_id)))
     }
 
     /// 取历史节点对应的版本区间与事务身份；undo / redo 只差一个回放方向。
@@ -107,25 +120,29 @@ impl Buffer {
         })
     }
 
-    /// 按版本区间从编辑日志取编辑并回放，返回被回放节点的规范事务身份。
-    fn replay_history_batches(&mut self, target: ReplayTarget) -> TextResult<HistoryEditOutcome> {
-        let batches = match target.kind {
-            ReplayKind::Undo => self
-                .edit_log
-                .undo_batches(target.start_version, target.end_version)?,
-            ReplayKind::Redo => self
-                .edit_log
-                .redo_batches(target.start_version, target.end_version)?,
-        };
+    /// 按已取齐的批次回放；调用方已在移动历史游标前完成日志查询。
+    fn replay_history_batches(
+        &mut self,
+        kind: ReplayKind,
+        batches: Vec<EditList>,
+    ) -> TextResult<()> {
         for tx_edits in batches {
-            self.apply_edit_list(
-                self.version,
-                tx_edits, // EditList::clone 是 O(1) Arc 递增
-                target.kind.source(),
-            )?;
+            self.apply_edit_list(self.version, tx_edits, kind.source())?;
         }
         self.truncate_edit_history_to_budget();
-        Ok(HistoryEditOutcome::new(target.transaction_id))
+        Ok(())
+    }
+
+    /// `MergeWithPrevious` 会把「当前节点终点 → 新事务起点」之间的全部编辑日志条目
+    /// 一并并入节点，因此该区间必须逐条保留逆编辑：否则后续 undo 回放到缺失逆编辑的
+    /// 条目会报错。回放（undo/redo）产生的条目与普通提交一样可回放，放弃历史的大事务则不可。
+    fn can_merge_into_current(&self, entry: &HistoryEntry) -> bool {
+        self.history
+            .current_end_version()
+            .is_some_and(|current_end| {
+                self.edit_log
+                    .range_is_replayable(current_end, entry.start_version)
+            })
     }
 
     pub(in crate::buffer) fn push_history(
@@ -134,6 +151,7 @@ impl Buffer {
         metadata: &TransactionMetadata,
     ) -> TextResult<Option<TransactionId>> {
         if metadata.merge_policy() == TransactionMergePolicy::MergeWithPrevious
+            && self.can_merge_into_current(&entry)
             && self.history.merge_into_current(entry.clone())
         {
             return Ok(self.history.current_transaction_id());

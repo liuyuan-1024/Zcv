@@ -8,7 +8,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui::{App, Context, Entity, EventEmitter};
+use gpui::{App, Context, Entity, EventEmitter, Task};
 use imara_diff::{Algorithm, Diff, InternedInput};
 use zcv_language::LanguageBuffer;
 use zcv_text::{Anchor, BufferVersion, ByteOffset, Line, Snapshot, TextRange};
@@ -240,6 +240,17 @@ impl BufferDiffSnapshot {
     }
 }
 
+/// 一次 diff 计算的全部输入版本。
+///
+/// working、base、index 三者任一前进都会使在途结果过期；
+/// 结果安装前必须整体相等，不能只比较 working 文本版本。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DiffInputVersions {
+    working: BufferVersion,
+    base: Option<BufferVersion>,
+    index: Option<BufferVersion>,
+}
+
 /// 单个文件的 diff 状态实体。
 pub struct BufferDiff {
     working: Entity<LanguageBuffer>,
@@ -250,10 +261,10 @@ pub struct BufferDiff {
     operations: Option<Arc<dyn DiffOperations>>,
     /// diff 结果或 pending 的单调版本；显示层据此判断是否需要重新物化。
     revision: u64,
-    /// 最近一次已完成计算对应的 working 版本；None 表示初始计算尚未返回。
-    calculated_working_version: Option<BufferVersion>,
-    /// 当前是否有一份包含最新 working/base/index 快照的计算在后台执行。
-    calculation_pending: bool,
+    /// 最近一次已安装结果对应的全部输入版本；None 表示初始计算尚未返回。
+    calculated_versions: Option<DiffInputVersions>,
+    /// 当前在途的 diff 计算；下一次重算替换此字段并取消上一次，实体销毁时一并取消。
+    calculation_task: Option<Task<()>>,
 }
 
 impl EventEmitter<BufferDiffEvent> for BufferDiff {}
@@ -273,21 +284,20 @@ impl BufferDiff {
             snapshot,
             operations: input.operations,
             revision: 0,
-            calculated_working_version: None,
-            calculation_pending: false,
+            calculated_versions: None,
+            calculation_task: None,
         };
         this.recompute_with_refresh(DiffRefresh::RebuildProjection, cx);
         this
     }
 
-    /// 捕获当前 working 快照，在后台按指定投影策略重算。
+    /// 捕获当前 working/base/index 快照，在后台按指定投影策略重算。
     ///
-    /// 由宿主在创建后与 working 文本变化时调用；本实体不订阅 working buffer。
-    /// 结果回到前台后必须再次比对版本，避免较早任务覆盖后续编辑的 hunk。
+    /// 由宿主在创建后与任一输入变化时调用；本实体不订阅输入 buffer。
+    /// 任务由本实体保存在 `calculation_task` 中：下一次调用替换并取消上一次在途计算，
+    /// 实体销毁时随字段一起取消，不允许调用方 detach。
     pub fn recompute_with_refresh(&mut self, refresh: DiffRefresh, cx: &mut Context<Self>) {
-        self.calculation_pending = true;
         let working = self.working.read(cx).text_snapshot();
-        let working_version = working.version();
         // base/index 的权威文档由 GitStore 持有；这里只克隆廉价快照，
         // 全文物化留在后台，避免 UI 线程因重建修订文档而阻塞。
         let base = self
@@ -298,8 +308,13 @@ impl BufferDiff {
             .index_source
             .as_ref()
             .map(|index| index.read(cx).text_snapshot());
+        let versions = DiffInputVersions {
+            working: working.version(),
+            base: base.as_ref().map(Snapshot::version),
+            index: index.as_ref().map(Snapshot::version),
+        };
         let background = cx.background_executor().clone();
-        cx.spawn(async move |this, cx| {
+        let task = cx.spawn(async move |this, cx| {
             let hunks = background
                 .spawn(async move {
                     // working 全文只物化一次：主 hunk 与 index 参照 hunk 共用同一份文本。
@@ -319,32 +334,33 @@ impl BufferDiff {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.apply_recomputed_hunks(working_version, hunks, refresh, cx);
+                this.apply_recomputed_hunks(versions, hunks, refresh, cx);
             });
-        })
-        .detach();
+        });
+        // 替换字段即 drop 上一次在途任务（取消）；实体销毁时同样随字段取消。
+        self.calculation_task = Some(task);
     }
 
-    /// 接受仍对应当前 working 版本的后台结果。
+    /// 接受仍对应当前 working/base/index 版本的后台结果。
     ///
+    /// 输入任一前进都使结果过期；过期结果丢弃并立即按当前输入补算。
     /// 只有 hunk 几何真正变化时才替换快照、清除 pending 并发出 BufferDiffEvent::DiffChanged；
     /// 行内文本修改等不改变 hunk 定位的编辑不做整体重建。
     fn apply_recomputed_hunks(
         &mut self,
-        working_version: BufferVersion,
+        versions: DiffInputVersions,
         hunks: Vec<DiffHunk>,
         refresh: DiffRefresh,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.working.read(cx).text_snapshot().version() != working_version {
-            // 结果对应的 working 版本已过期：立即按当前版本补算。
+        if self.input_versions(cx) != versions {
+            // 结果对应的输入已过期：立即按当前版本补算。
             // 否则若期间没有新的源事件（例如订阅尚未建立），diff 会永久停留在未计算状态，而显示层要求所有 diff 已计算，整份文档的 git 高亮就会消失。
             self.recompute_with_refresh(refresh, cx);
             return false;
         }
-        self.calculation_pending = false;
-        let calculation_was_pending = self.calculated_working_version != Some(working_version);
-        self.calculated_working_version = Some(working_version);
+        let calculation_was_pending = self.calculated_versions != Some(versions);
+        self.calculated_versions = Some(versions);
         if !calculation_was_pending && hunks_equivalent(&self.snapshot.hunks, &hunks) {
             return false;
         }
@@ -357,16 +373,29 @@ impl BufferDiff {
         true
     }
 
+    /// 当前 working/base/index 版本。
+    fn input_versions(&self, cx: &App) -> DiffInputVersions {
+        DiffInputVersions {
+            working: self.working.read(cx).text_snapshot().version(),
+            base: self
+                .base_source
+                .as_ref()
+                .map(|base| base.read(cx).text_snapshot().version()),
+            index: self
+                .index_source
+                .as_ref()
+                .map(|index| index.read(cx).text_snapshot().version()),
+        }
+    }
+
     /// diff 结果与 pending 的当前版本；变化即表示显示层需要重新物化。
     pub fn revision(&self) -> u64 {
         self.revision
     }
 
-    /// 当前 working 版本的后台计算是否已经完成。
+    /// 当前 working/base/index 输入的后台计算是否已经完成。
     pub fn is_current_version_calculated(&self, cx: &App) -> bool {
-        !self.calculation_pending
-            && self.calculated_working_version
-                == Some(self.working.read(cx).text_snapshot().version())
+        self.calculated_versions == Some(self.input_versions(cx))
     }
 
     pub fn snapshot(&self) -> &BufferDiffSnapshot {
@@ -625,3 +654,7 @@ fn full_buffer_range(text: &Snapshot, version: BufferVersion) -> Range<Anchor> {
         TextRange::new(ByteOffset::ZERO, text.len_bytes()).expect("全文范围必须有序"),
     )
 }
+
+#[cfg(test)]
+#[path = "test/buffer_diff_tests.rs"]
+mod tests;

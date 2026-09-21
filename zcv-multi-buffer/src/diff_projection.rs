@@ -1215,19 +1215,16 @@ impl MultiBuffer {
     /// 返回是否推进了投影版本；选区与滚动位置由源 Anchor 在当前快照上重新解析，不经过重建映射。
     pub(crate) fn rebuild_diff_projection(&mut self, cx: &mut Context<Self>) -> bool {
         let before = self.projection_trees();
-        self.rebuild_diff_projection_from(before, None, cx)
+        self.rebuild_diff_projection_from(before, cx)
     }
 
     /// 按调用方在 hunk 生命周期变更前冻结的投影树重建 diff 投影。
     ///
     /// 冻结旧投影树用于推导本次结构变化的增量范围（对齐 excerpt 边界），不物化旧输出文本。
-    /// 外部整体重载会先替换源快照，再重建 excerpts；
-    /// 旧投影树必须在源快照替换前冻结，不能从更新后的源映射重新拼出旧帧。
     /// 返回是否推进了投影版本。
     pub(crate) fn rebuild_diff_projection_from(
         &mut self,
         before: (SumTree<Excerpt>, SumTree<DiffTransform>),
-        source_change: Option<&zcv_text::TextChangeBatch>,
         cx: &mut Context<Self>,
     ) -> bool {
         if self.diff.is_none() {
@@ -1246,11 +1243,7 @@ impl MultiBuffer {
             expected_excerpt_count,
             "diff 物化生成的 excerpt 必须全部建立组合映射"
         );
-        if let Some(source_change) = source_change {
-            self.publish_source_projection_edit(&before, source_change);
-        } else {
-            self.publish_projection_edit(&before, old_version);
-        }
+        self.publish_projection_edit(&before, old_version);
         for file in &mut self.diffs {
             file.revision = Some(file.diff.read(cx).revision());
         }

@@ -2775,6 +2775,79 @@ fn diff_hunks_survive_rapid_edits(cx: &mut TestAppContext) {
     );
 }
 
+/// 回归（M-D）：diff 同步帧内到达的等长源替换必须发布精确输出增量，
+/// 不能因为前后投影摘要相同而退化为空范围。
+#[gpui::test]
+fn diff_sync_frame_publishes_equal_length_source_replacement(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "a\nb\nc\n", cx);
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![TestDiff {
+                working: source.clone(),
+                base_text: Some(Arc::from("a\nB\nc\n")),
+                index_text: None,
+                path: PathBuf::from("src/a.rs"),
+                operations: None,
+                display_path: PathBuf::from("src/a.rs"),
+                context_lines: None,
+            }]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let subscription =
+        cx.update_entity(&combined, |buffer, cx| buffer.subscribe_and_snapshot(cx).0);
+
+    // 第一次编辑触发后台 diff 计算并立即发布；消费掉，使第二次编辑落在同步帧内。
+    cx.update_entity(&source, |source, cx| {
+        source
+            .edit(
+                [Edit::replace(
+                    TextRange::new(ByteOffset::new(2), ByteOffset::new(3)).unwrap(),
+                    "x",
+                )],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .unwrap();
+    });
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.snapshot(cx);
+    });
+    let first = subscription.consume();
+    assert_eq!(
+        first.patch().edits().len(),
+        1,
+        "帧外源编辑必须立即发布精确输出编辑"
+    );
+
+    // 第二次等长替换：在途 diff 结果先落地，帧内同步该编辑。
+    cx.update_entity(&source, |source, cx| {
+        source
+            .edit(
+                [Edit::replace(
+                    TextRange::new(ByteOffset::new(2), ByteOffset::new(3)).unwrap(),
+                    "y",
+                )],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .unwrap();
+    });
+    cx.run_until_parked();
+
+    let second = subscription.consume();
+    assert_eq!(
+        second.patch().edits().len(),
+        1,
+        "diff 同步帧必须发布精确的等长源替换增量，而不是空范围"
+    );
+    let edit = &second.patch().edits()[0];
+    assert_eq!(edit.old_range().len(), 1, "等长替换的旧输出范围长度为 1");
+    assert_eq!(edit.new_range().len(), 1, "等长替换的新输出范围长度为 1");
+}
+
 /// 新增块没有旧侧内容，不参与展开/折叠：整行背景只由展开策略默认值决定。
 /// 普通文档默认折叠（只保留 gutter 竖条），差异审阅视图默认展开展示背景色。
 #[gpui::test]

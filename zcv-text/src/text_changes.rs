@@ -265,6 +265,21 @@ impl TextChangeBatch {
         })
     }
 
+    /// 累积组合文档同一个同步帧内依次落地的投影编辑。
+    ///
+    /// 帧内每段编辑的旧坐标都基于上一段落地后的状态，因此可以像同一份文本上的连续事务一样顺序组合；
+    /// 与 `compose` 不同，这里不要求版本区间连续：批次版本区间不是本方法的事实，
+    /// 帧末由组合层用投影版本统一重定基。
+    pub fn compose_projection_edits(&self, next: &Self) -> Self {
+        Self {
+            patch: self.patch.compose(&next.patch),
+            old_version: self.old_version.or(next.old_version),
+            new_version: next.new_version.or(self.new_version),
+            // 组合多段投影编辑不再对应单一事务身份。
+            transaction_id: None,
+        }
+    }
+
     pub fn patch(&self) -> &TextPatch {
         &self.patch
     }

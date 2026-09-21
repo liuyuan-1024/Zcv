@@ -13,5 +13,8 @@ imara-diff.workspace = true
 zcv-text.workspace = true
 zcv-language.workspace = true
 
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
 [lints]
 workspace = true

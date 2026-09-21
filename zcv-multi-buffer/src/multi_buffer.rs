@@ -1537,11 +1537,11 @@ struct SourceIncremental {
 /// 一个组合同步帧内的投影事务。
 ///
 /// Zed 在同步源 Buffer 与 diff transform 时只对外提交一帧快照；
-/// 这里用旧投影树和旧版本保存帧起点，内部的多个局部 splice 只标记变化，
-/// 由帧结束时一次性生成对外版本和结构增量。
+/// 这里累积帧内依次落地的精确投影编辑，由帧结束时一次性发布净增量与对外版本。
+/// 结构增删的区间由各结构操作自身的树比较产出并同样进入累积，帧末不再做兜底比较。
 struct ProjectionSync {
-    before: ProjectionTrees,
-    old_version: BufferVersion,
+    /// 帧内依次落地的投影编辑；各段旧坐标基于上一段落地后的状态，按顺序组合。
+    changes: TextChangeBatch,
     changed: bool,
     waiting_for_diff_sources: HashSet<gpui::EntityId>,
 }
@@ -3390,10 +3390,12 @@ impl MultiBuffer {
         }
     }
 
-    /// 推进虚拟组合投影的版本，并唤醒各自独立的显示消费者。
+    /// 登记一段投影变化：同步帧内只累积净编辑，帧末一次性发布；帧外立即发布。
     fn publish_projection_change(&mut self, incremental: SourceIncremental) {
         self.snapshot_dirty = true;
         if let Some(sync) = &mut self.projection_sync {
+            // 累积精确输出增量，帧末统一重定基到投影版本；不以树比较粗范围替代。
+            sync.changes = sync.changes.compose_projection_edits(&incremental.batch);
             sync.changed = true;
             return;
         }
@@ -3416,8 +3418,7 @@ impl MultiBuffer {
     pub(crate) fn begin_projection_sync(&mut self) {
         if self.projection_sync.is_none() {
             self.projection_sync = Some(ProjectionSync {
-                before: self.projection_trees(),
-                old_version: self.state.projection_version,
+                changes: TextChangeBatch::default(),
                 changed: false,
                 waiting_for_diff_sources: HashSet::new(),
             });
@@ -3440,14 +3441,9 @@ impl MultiBuffer {
         if !sync.changed {
             return;
         }
-        let after = self.projection_trees();
-        let (old_range, new_range) = projection_changed_ranges(&sync.before, &after);
-        let batch = TextChangeBatch::from_edits(
-            sync.old_version,
-            sync.old_version,
-            vec![(old_range, new_range)],
-        );
-        self.publish_projection_change_now(SourceIncremental { batch });
+        self.publish_projection_change_now(SourceIncremental {
+            batch: sync.changes,
+        });
         self.emit_projection_changed(cx);
     }
 
@@ -3480,17 +3476,6 @@ impl MultiBuffer {
         let (old_range, new_range) = projection_changed_ranges(before, &after);
         let batch =
             TextChangeBatch::from_edits(old_version, old_version, vec![(old_range, new_range)]);
-        self.publish_projection_change(SourceIncremental { batch });
-    }
-
-    pub(crate) fn publish_source_projection_edit(
-        &mut self,
-        before: &ProjectionTrees,
-        source_change: &TextChangeBatch,
-    ) {
-        let after = self.projection_trees();
-        let (old_range, new_range) = projection_changed_ranges(before, &after);
-        let batch = source_change.projected_from(vec![(old_range, new_range)]);
         self.publish_projection_change(SourceIncremental { batch });
     }
 

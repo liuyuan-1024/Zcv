@@ -36,7 +36,7 @@ pub(crate) use block_map::{
 use chunk::MAX_RENDERED_LINE_LEN;
 pub(crate) use chunk::{
     BlockChunks as DisplayChunks, DisplayRowEvent, HighlightStyles, RenderedWhitespace,
-    WrapRowInfo, chunk_to_run,
+    chunk_to_run,
 };
 #[cfg(test)]
 pub(crate) use chunk::{ChunkSource, ChunkText, WrapChunks};
@@ -53,7 +53,7 @@ pub(crate) use display_width::DisplayColumn;
 use edit::ProjectionEdit;
 use error::DisplayMapResult;
 pub(crate) use fold_map::{
-    ChunkRenderer, FoldBias, FoldPlaceholder, FoldRowSegment, ProjectedLineIndex,
+    ChunkRenderer, ChunkRendererId, FoldBias, FoldPlaceholder, ProjectedLineIndex,
 };
 use fold_map::{FoldMap, FoldSnapshot};
 use gpui::{App, AppContext as _, Bounds, Context, Entity, HighlightStyle, Pixels};
@@ -979,6 +979,28 @@ impl DisplayMap {
             self.commit_snapshot(&wrap_snapshot, &wrap_edits, cx);
         }
         changed
+    }
+
+    /// 回写渲染层实测的元素宽度；宽度变化时经零宽 FoldEdit 逐层推进显示链。
+    ///
+    /// 渲染层是实测宽度的唯一来源，折叠层是回写后的唯一权威；
+    /// 返回是否发生变化，渲染层据此决定是否用新快照重新布局本帧。
+    pub(crate) fn update_fold_widths(
+        &mut self,
+        widths: impl IntoIterator<Item = (ChunkRendererId, Pixels)>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let (fold_snapshot, fold_edits) = self.fold_map.write().update_fold_widths(widths);
+        if fold_edits.is_empty() {
+            return false;
+        }
+        let tab_width = self.tab_map.snapshot().tab_width();
+        let (tab_snapshot, tab_edits) = self.tab_map.sync(fold_snapshot, &fold_edits, tab_width);
+        let (wrap_snapshot, wrap_edits) = self
+            .wrap_map
+            .update(cx, |map, cx| map.sync(tab_snapshot, &tab_edits, cx));
+        self.commit_snapshot(&wrap_snapshot, &wrap_edits, cx);
+        true
     }
 
     /// 未开启软换行时按当前 Tab 快照即时计算最长行。

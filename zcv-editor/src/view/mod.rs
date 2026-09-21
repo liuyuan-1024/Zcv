@@ -40,8 +40,9 @@ use crate::scrollbar::{ScrollbarMarker, ScrollbarMarkerState};
 
 use super::blink_manager::BlinkManager;
 use super::display_map::{
-    CreaseId, DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplayRowEvent,
-    DisplaySnapshot, EditorHunk, FoldBias, FoldPlaceholder, HighlightStyles, HunkControlTarget,
+    ChunkRendererId, CreaseId, DisplayColumn, DisplayMap, DisplayPoint, DisplayRow,
+    DisplayRowEvent, DisplaySnapshot, EditorHunk, FoldBias, FoldPlaceholder, HighlightStyles,
+    HunkControlTarget,
 };
 use super::element::{AUTOSCROLL_INTERVAL, EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollViewport, ScrollbarThumbState};
@@ -472,6 +473,24 @@ impl Editor {
         changed
     }
 
+    /// 回写渲染层实测的行内元素宽度；变化时推进显示投影并刷新滚动几何。
+    ///
+    /// 渲染层是实测宽度的唯一来源，折叠层是回写后的唯一权威；
+    /// 返回是否变化，供渲染层决定是否用新快照重新布局本帧。
+    pub(crate) fn update_renderer_widths(
+        &mut self,
+        widths: impl IntoIterator<Item = (ChunkRendererId, gpui::Pixels)>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let changed = self
+            .display_map
+            .update(cx, |map, cx| map.update_fold_widths(widths, cx));
+        if changed {
+            self.advance_snapshots(cx);
+        }
+        changed
+    }
+
     pub fn file_path(&self, cx: &App) -> Option<PathBuf> {
         self.multi_buffer.read(cx).file_path(cx)
     }
@@ -697,7 +716,7 @@ impl Editor {
                 .map(|crease| crease.range().clone());
             if let Some(range) = range
                 && let Err(error) = self.display_map.update(cx, |map, cx| {
-                    map.fold_range(range, FoldPlaceholder::ellipsis(cx), cx)
+                    map.fold_range(range, FoldPlaceholder::ellipsis(), cx)
                 })
             {
                 cx.emit(EditorEvent::Error(format!("折叠失败：{error:#}")));

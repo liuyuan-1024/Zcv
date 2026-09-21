@@ -17,7 +17,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::prelude::*;
-use gpui::{AnyElement, App, div};
+use gpui::{AnyElement, App, Pixels, div};
 use sum_tree::{Bias as TreeBias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use zcv_multi_buffer::MBTextSummary;
 use zcv_multi_buffer::MultiBufferSnapshot;
@@ -47,6 +47,10 @@ pub(crate) struct ChunkRenderer {
     pub(crate) id: ChunkRendererId,
     pub(crate) render: Arc<dyn Send + Sync + Fn(&mut App) -> AnyElement>,
     pub(crate) constrain_width: bool,
+    /// 上一帧布局实测的元素宽度；渲染层在 prepaint 后按 id 回写，换行层据此度量。
+    ///
+    /// None 表示尚未布局过。权威是折叠层的 fold_metadata_by_id，渲染层不保存第二份。
+    pub(crate) measured_width: Option<Pixels>,
 }
 
 impl std::fmt::Debug for ChunkRenderer {
@@ -54,6 +58,7 @@ impl std::fmt::Debug for ChunkRenderer {
         f.debug_struct("ChunkRenderer")
             .field("id", &self.id)
             .field("constrain_width", &self.constrain_width)
+            .field("measured_width", &self.measured_width)
             .finish()
     }
 }
@@ -63,6 +68,7 @@ impl PartialEq for ChunkRenderer {
         self.id == other.id
             && self.constrain_width == other.constrain_width
             && Arc::ptr_eq(&self.render, &other.render)
+            && self.measured_width == other.measured_width
     }
 }
 
@@ -262,12 +268,11 @@ impl FoldPlaceholder {
     ///
     /// `Default::default()` 与 Zed 一致渲染空元素；
     /// 需要可见折叠提示的编辑器折叠入口使用本构造。
-    pub(crate) fn ellipsis(cx: &App) -> Self {
-        let text_color = zcv_theme::color::current(cx).text_placeholder;
+    pub(crate) fn ellipsis() -> Self {
         Self {
-            render: Arc::new(move |_, _, _cx: &mut App| {
+            render: Arc::new(|_, _, cx: &mut App| {
                 div()
-                    .text_color(text_color)
+                    .text_color(zcv_theme::color::current(cx).text_placeholder)
                     .child(FOLD_PLACEHOLDER)
                     .into_any_element()
             }),
@@ -475,6 +480,13 @@ pub(super) type FoldEdit = ProjectionEdit<FoldOffset>;
 /// 一段组合文本坐标的编辑，供 fold 拓扑定位使用。
 type FoldBufferEdit = ProjectionEdit<MultiBufferOffset>;
 
+/// 折叠的稳定身份对应的范围与实测宽度；宽度由渲染层回写。
+#[derive(Debug, Clone)]
+struct FoldMetadata {
+    range: MultiBufferRange,
+    width: Option<Pixels>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct FoldSnapshot {
     /// 下层组合文本快照：fold 拓扑工作在其上，外部文本可被折叠。
@@ -482,7 +494,7 @@ pub(crate) struct FoldSnapshot {
     folds: SumTree<Fold>,
     lookup: FoldLookup,
     transforms: SumTree<Transform>,
-    fold_metadata_by_id: BTreeMap<FoldId, MultiBufferRange>,
+    fold_metadata_by_id: BTreeMap<FoldId, FoldMetadata>,
     version: u64,
 }
 
@@ -555,6 +567,12 @@ impl FoldSnapshot {
 
     pub(super) const fn version(&self) -> u64 {
         self.version
+    }
+
+    /// 折叠元素上一帧的实测宽度；由渲染层回写。
+    fn fold_width(&self, id: ChunkRendererId) -> Option<Pixels> {
+        let ChunkRendererId::Fold(fold_id) = id;
+        self.fold_metadata_by_id.get(&fold_id)?.width
     }
 
     /// 投影行数；行数是换行数加一，与下层 MultiBufferSnapshot::line_count 同语义。
@@ -1015,7 +1033,7 @@ impl FoldMap {
 
         // 折叠锚点在新快照上重新解析；解析失败的折叠被丢弃。
         let mut resolved = Vec::new();
-        self.snapshot.fold_metadata_by_id.clear();
+        let previous_metadata = std::mem::take(&mut self.snapshot.fold_metadata_by_id);
         for fold in self.snapshot.folds.iter() {
             let Some(fold) = fold.resolve(&input) else {
                 continue;
@@ -1023,9 +1041,18 @@ impl FoldMap {
             if fold.text_range().is_empty() {
                 continue;
             }
-            self.snapshot
-                .fold_metadata_by_id
-                .insert(fold.id, fold.text_range());
+            // FoldId 稳定：文本编辑只更新范围，不丢弃已回写的实测宽度；
+            // 宽度由渲染层下一帧重新测量后经 update_fold_widths 覆盖。
+            let width = previous_metadata
+                .get(&fold.id)
+                .and_then(|metadata| metadata.width);
+            self.snapshot.fold_metadata_by_id.insert(
+                fold.id,
+                FoldMetadata {
+                    range: fold.text_range(),
+                    width,
+                },
+            );
             resolved.push(fold);
         }
         sort_folds(&mut resolved);
@@ -1164,6 +1191,9 @@ impl FoldMap {
                                         })
                                     },
                                     constrain_width: placeholder.constrain_width,
+                                    measured_width: self
+                                        .snapshot
+                                        .fold_width(ChunkRendererId::Fold(fold_id)),
                                 },
                             }),
                         },
@@ -1429,7 +1459,13 @@ impl FoldMapWriter<'_> {
         self.0.snapshot.folds = SumTree::from_iter(folds, ());
         let indexed: Vec<_> = self.0.snapshot.folds.iter().cloned().collect();
         self.0.snapshot.lookup = FoldLookup::from_folds(&indexed);
-        self.0.snapshot.fold_metadata_by_id.insert(id, resolved);
+        self.0.snapshot.fold_metadata_by_id.insert(
+            id,
+            FoldMetadata {
+                range: resolved,
+                width: None,
+            },
+        );
         let input = self.0.snapshot.input.clone();
         let edit = FoldBufferEdit::new(
             resolved.start()..resolved.end(),
@@ -1465,6 +1501,44 @@ impl FoldMapWriter<'_> {
         let input = self.0.snapshot.input.clone();
         let edit = FoldBufferEdit::new(range.start()..range.end(), range.start()..range.end());
         let edits = self.0.sync(input, vec![edit]);
+        (self.0.snapshot.clone(), edits)
+    }
+
+    /// 回写渲染层实测的元素宽度；宽度变化时产生该折叠的零宽编辑并重新同步。
+    ///
+    /// 返回新的折叠快照与传播到上层的 FoldEdit；宽度未变化时不产生编辑，也不推进快照。
+    pub(super) fn update_fold_widths(
+        &mut self,
+        widths: impl IntoIterator<Item = (ChunkRendererId, Pixels)>,
+    ) -> (FoldSnapshot, Vec<FoldEdit>) {
+        let mut edits = Vec::new();
+        for (id, new_width) in widths {
+            let ChunkRendererId::Fold(fold_id) = id;
+            let Some(metadata) = self.0.snapshot.fold_metadata_by_id.get(&fold_id).cloned() else {
+                continue;
+            };
+            if Some(new_width) == metadata.width {
+                continue;
+            }
+            // 折叠内容未变，只有元素像素宽度变化：用零宽输入编辑让该折叠重新走 sync，
+            // 刷新变换树中的 measured_width，并向上层发布该折叠的显示编辑。
+            edits.push(FoldBufferEdit::new(
+                metadata.range.start()..metadata.range.end(),
+                metadata.range.start()..metadata.range.end(),
+            ));
+            self.0.snapshot.fold_metadata_by_id.insert(
+                fold_id,
+                FoldMetadata {
+                    range: metadata.range,
+                    width: Some(new_width),
+                },
+            );
+        }
+        if edits.is_empty() {
+            return (self.0.snapshot.clone(), Vec::new());
+        }
+        let input = self.0.snapshot.input.clone();
+        let edits = self.0.sync(input, edits);
         (self.0.snapshot.clone(), edits)
     }
 }

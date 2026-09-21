@@ -48,6 +48,26 @@ fn edit_row_ranges(
     )
 }
 
+/// 渲染层回写的实测宽度进入渲染描述；相同宽度不产生显示编辑，也不推进快照。
+#[test]
+fn updating_fold_widths_rewrites_renderer_and_skips_unchanged() {
+    let buffer = Buffer::from_text("anchor\nhidden\ntail".to_string(), BufferConfig::default())
+        .expect("测试 Buffer 应能创建");
+    let (mut map, _) = FoldMap::new(buffer.snapshot().into());
+    let (snapshot, edits) = map.fold_text_range(6, 13).expect("折叠应成功");
+    assert!(!edits.is_empty(), "折叠必须产生显示编辑");
+    let id = ChunkRendererId::Fold(snapshot.folds.iter().next().expect("应存在折叠").id);
+    assert_eq!(snapshot.fold_width(id), None, "初始实测宽度必须为空");
+
+    let (snapshot, edits) = map.write().update_fold_widths([(id, gpui::px(40.))]);
+    assert!(!edits.is_empty(), "宽度变化必须产生显示编辑");
+    assert_eq!(snapshot.fold_width(id), Some(gpui::px(40.)));
+
+    let (snapshot, edits) = map.write().update_fold_widths([(id, gpui::px(40.))]);
+    assert!(edits.is_empty(), "相同宽度不应产生显示编辑");
+    assert_eq!(snapshot.fold_width(id), Some(gpui::px(40.)));
+}
+
 #[test]
 fn projected_kind_rejects_the_end_boundary() {
     let buffer = Buffer::from_text("first\nsecond".to_string(), BufferConfig::default())

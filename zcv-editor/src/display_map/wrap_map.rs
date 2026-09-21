@@ -25,8 +25,8 @@ use super::chunk::{Chunk, ChunkText, FoldChunks, HighlightStyles, StyledChunks};
 use super::display_width::DisplayColumn;
 use super::error::DisplayMapResult;
 use super::fold_map::{
-    FoldBias, FoldOffset, FoldRowSegment, FoldRowSegmentKind, LogicalPoint, LogicalRange,
-    ProjectedLineIndex, ProjectedPoint, ProjectedRange, StreamProjectedKind,
+    ChunkRendererId, FoldBias, FoldOffset, FoldRowSegment, FoldRowSegmentKind, LogicalPoint,
+    LogicalRange, ProjectedLineIndex, ProjectedPoint, ProjectedRange, StreamProjectedKind,
 };
 use super::tab_map::{
     TabEdit, TabPoint, TabSnapshot, advance_display_column, byte_for_display_column, line_content,
@@ -1600,7 +1600,10 @@ impl WrapMap {
         ))
     }
 
-    /// 使用最终字形位置计算换行点，避免字符宽度估算与渲染 shaping 使用两套标准。
+    /// 使用最终字形位置与元素实测宽度计算换行点，避免字符宽度估算与渲染 shaping 使用两套标准。
+    ///
+    /// 文本原子宽度来自整行 shaping；带 measured_width 的占位符元素作为单个原子宽度参与判定，
+    /// 元素内部不产生换行点。
     fn wrap_points(&self, prepared: PreparedWrapText, wrap_width: Pixels) -> Vec<WrapPointInfo> {
         let window_text_system = self
             .window_text_system
@@ -1621,36 +1624,62 @@ impl WrapMap {
         let shaped =
             window_text_system.shape_line(prepared.text.clone().into(), *font_size, &[run], None);
 
+        // 归并为换行原子：文本字符各占一个原子，元素占一个原子并携带实测宽度。
+        let mut atoms: Vec<WrapAtom> = Vec::with_capacity(prepared.chars.len());
+        let mut prefix_widths: Vec<Pixels> = Vec::with_capacity(prepared.chars.len() + 1);
+        prefix_widths.push(Pixels::ZERO);
+        let mut char_index = 0usize;
+        while char_index < prepared.chars.len() {
+            let character = &prepared.chars[char_index];
+            let (ch, raw_start, width, next) = match character.element_width {
+                Some(width) => (
+                    character.ch,
+                    character.raw_start,
+                    width,
+                    character.element_chars,
+                ),
+                None => (
+                    character.ch,
+                    character.raw_start,
+                    shaped.x_for_index(character.expanded_end)
+                        - shaped.x_for_index(character.expanded_start),
+                    1,
+                ),
+            };
+            prefix_widths.push(prefix_widths.last().copied().unwrap_or(Pixels::ZERO) + width);
+            atoms.push(WrapAtom { ch, raw_start });
+            char_index += next;
+        }
+
         let mut points = Vec::new();
-        let mut first_non_whitespace = None;
+        let mut first_non_whitespace: Option<usize> = None;
         let mut indent = None;
         let mut indent_width = Pixels::ZERO;
-        let mut last_candidate = None;
+        let mut last_candidate: Option<usize> = None;
         let mut last_wrap = 0usize;
-        let mut line_start = 0usize;
+        let mut line_start_atom = 0usize;
         let mut previous = '\0';
 
-        for character in &prepared.chars {
-            if is_word_char(character.ch) {
-                if previous == ' ' && character.ch != ' ' && first_non_whitespace.is_some() {
-                    last_candidate = Some(character.raw_start);
+        for (atom_index, atom) in atoms.iter().enumerate() {
+            if is_word_char(atom.ch) {
+                if previous == ' ' && atom.ch != ' ' && first_non_whitespace.is_some() {
+                    last_candidate = Some(atom_index);
                 }
-            } else if character.ch != ' ' && first_non_whitespace.is_some() {
-                last_candidate = Some(character.raw_start);
+            } else if atom.ch != ' ' && first_non_whitespace.is_some() {
+                last_candidate = Some(atom_index);
             }
 
-            if character.ch != ' ' && first_non_whitespace.is_none() {
-                first_non_whitespace = Some(character.raw_start);
+            if atom.ch != ' ' && first_non_whitespace.is_none() {
+                first_non_whitespace = Some(atom.raw_start);
             }
 
-            let line_width = shaped.x_for_index(character.expanded_end)
-                - shaped.x_for_index(line_start)
+            let line_width = prefix_widths[atom_index + 1] - prefix_widths[line_start_atom]
                 + if last_wrap > 0 {
                     indent_width
                 } else {
                     Pixels::ZERO
                 };
-            if line_width > wrap_width && character.raw_start > last_wrap {
+            if line_width > wrap_width && atom.raw_start > last_wrap {
                 if indent.is_none()
                     && let Some(first_non_whitespace) = first_non_whitespace
                 {
@@ -1665,18 +1694,18 @@ impl WrapMap {
                         shaped_space_width(window_text_system, font, *font_size, indent_columns);
                 }
 
-                let boundary = last_candidate
-                    .filter(|candidate| *candidate > last_wrap)
-                    .unwrap_or(character.raw_start);
+                let boundary_atom = last_candidate
+                    .filter(|candidate| atoms[*candidate].raw_start > last_wrap)
+                    .unwrap_or(atom_index);
                 points.push(WrapPointInfo {
-                    byte_ix: boundary,
+                    byte_ix: atoms[boundary_atom].raw_start,
                     indent: indent.unwrap_or(0) as u32,
                 });
-                last_wrap = boundary;
-                line_start = prepared.expanded_start(boundary);
+                last_wrap = atoms[boundary_atom].raw_start;
+                line_start_atom = boundary_atom;
                 last_candidate = None;
             }
-            previous = character.ch;
+            previous = atom.ch;
         }
 
         points
@@ -1704,12 +1733,22 @@ impl WrapMap {
     }
 }
 
+/// 换行原子：一个文本字符，或一个带实测宽度的行内元素。
+struct WrapAtom {
+    ch: char,
+    raw_start: usize,
+}
+
 #[derive(Debug)]
 struct PreparedWrapChar {
     ch: char,
     raw_start: usize,
     expanded_start: usize,
     expanded_end: usize,
+    /// 元素首字符携带该元素实测的像素宽度；元素其余字符为 None。
+    element_width: Option<Pixels>,
+    /// 元素覆盖的字符数（仅首字符有效）。
+    element_chars: usize,
 }
 
 /// 把 tab 按渲染端的列规则展开，并保留投影文本到塑形文本的边界映射。
@@ -1722,10 +1761,30 @@ struct PreparedWrapText {
 impl PreparedWrapText {
     fn from_chunks<'a>(chunks: impl IntoIterator<Item = Chunk<'a>>, tab_width: usize) -> Self {
         let mut text = String::new();
-        let mut chars = Vec::new();
+        let mut chars: Vec<PreparedWrapChar> = Vec::new();
         let mut column = 0usize;
         let mut raw_start = 0usize;
+        // 一个元素可能被 128 字节上限切成多个 chunk：按稳定 id 归并，宽度只计一次。
+        let mut current_element_id: Option<ChunkRendererId> = None;
+        let mut current_element: Option<(Pixels, usize)> = None;
         for chunk in chunks {
+            let element = chunk
+                .renderer
+                .as_ref()
+                .and_then(|renderer| renderer.measured_width.map(|width| (renderer.id, width)));
+            if element.map(|(id, _)| id) != current_element_id {
+                if let Some((width, first)) = current_element.take() {
+                    let count = chars.len() - first;
+                    if count > 0 {
+                        chars[first].element_width = Some(width);
+                        chars[first].element_chars = count;
+                    }
+                }
+                current_element_id = element.map(|(id, _)| id);
+                if let Some((_, width)) = element {
+                    current_element = Some((width, chars.len()));
+                }
+            }
             for ch in chunk.text.chars() {
                 if ch == '\n' || ch == '\r' {
                     raw_start += ch.len_utf8();
@@ -1745,18 +1804,20 @@ impl PreparedWrapText {
                     raw_start,
                     expanded_start,
                     expanded_end: text.len(),
+                    element_width: None,
+                    element_chars: 0,
                 });
                 raw_start += ch.len_utf8();
             }
         }
+        if let Some((width, first)) = current_element {
+            let count = chars.len() - first;
+            if count > 0 {
+                chars[first].element_width = Some(width);
+                chars[first].element_chars = count;
+            }
+        }
         Self { text, chars }
-    }
-
-    fn expanded_start(&self, raw_start: usize) -> usize {
-        self.chars
-            .iter()
-            .find(|character| character.raw_start == raw_start)
-            .map_or(self.text.len(), |character| character.expanded_start)
     }
 }
 

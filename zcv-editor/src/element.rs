@@ -27,11 +27,11 @@ use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon, drag_autoscroll_delta};
 use crate::selection::SelectionSet;
 
 use super::display_map::{
-    ChunkRenderer, DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint, DisplayRange,
-    DisplayRow, DisplayRowEvent, DisplaySnapshot, EditorHunkMarkerKind, FILE_HEADER_HEIGHT,
-    FoldRowSegment, HighlightStyles, HunkControlTarget, RenderedWhitespace,
-    SearchDecorationSnapshot, StickyBufferHeader, WrapRowInfo, byte_for_display_column,
-    chunk_to_run, diff_row_for_row, display_column_for_byte, is_hollow_hunk,
+    ChunkRenderer, ChunkRendererId, DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint,
+    DisplayRange, DisplayRow, DisplayRowEvent, DisplaySnapshot, EditorHunkMarkerKind,
+    FILE_HEADER_HEIGHT, HighlightStyles, HunkControlTarget, RenderedWhitespace,
+    SearchDecorationSnapshot, StickyBufferHeader, byte_for_display_column, chunk_to_run,
+    diff_row_for_row, display_column_for_byte, is_hollow_hunk,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
@@ -42,13 +42,25 @@ use super::view::{Editor, EditorMode, EditorPresentation, SoftWrap};
 
 const CARET_WIDTH: Pixels = px(2.);
 
+/// 实测宽度回写后重跑 prepaint 的最大次数。
+///
+/// 元素实测宽度是元素与占位符文本的纯函数，正常一次回写即收敛；
+/// 该上限只保证极端情况下（例如回写同时触发水平自动滚动、改变了裁剪窗口）
+/// 不会无限递归，与 Zed 的 prepaint 深度上限同义。
+const MAX_WIDTH_WRITEBACK_PASSES: usize = 2;
+
 pub(super) struct EditorElement {
     editor: Entity<Editor>,
+    /// 本次元素实例已因实测宽度回写重跑 prepaint 的次数。
+    width_writeback_pass: usize,
 }
 
 impl EditorElement {
     pub(super) fn new(editor: Entity<Editor>) -> Self {
-        Self { editor }
+        Self {
+            editor,
+            width_writeback_pass: 0,
+        }
     }
 
     pub(super) fn register_actions<E: InteractiveElement>(
@@ -115,6 +127,8 @@ impl EditorElement {
 enum LineFragment {
     Text(Box<ShapedLine>),
     Element {
+        /// 稳定身份；渲染层在 prepaint 后按它把实测宽度回写显示层。
+        id: ChunkRendererId,
         element: RefCell<Option<AnyElement>>,
         size: Size<Pixels>,
         len: usize,
@@ -230,11 +244,8 @@ struct LayoutLine {
     background_runs: Vec<(Range<usize>, gpui::Rgba)>,
     whitespaces: Vec<RenderedWhitespace>,
     global_utf16_start: usize,
-    wrap_info: Option<WrapRowInfo>,
     /// 行文本起点在完整显示行中的显示列；水平窗口化时用于逆算命中位置。
     window_start_column: usize,
-    /// 折叠合并行的段表（anchor 文本 + 占位符 + 闭合尾段；命中测试与占位符点击用）。
-    fold_segments: Option<Vec<FoldRowSegment>>,
     /// 该显示行所属的 git diff 类型与暂存语义（内容背景用；wrap 续行同样标注）。
     git_diff: Option<(DiffHunkKind, DiffHunkStaging)>,
     /// placeholder 提示行：命中测试不映射到 placeholder buffer（空 buffer 唯一合法坐标是 0）。
@@ -1494,6 +1505,24 @@ impl Element for EditorElement {
         }
         // 占位符元素按最终行原点 prepaint，随后由 paint 阶段绘制。
         layout.prepaint_line_elements(window, cx);
+        // 行内元素实测宽度回写显示层：渲染层不保存宽度权威，折叠层按 id 持有它。
+        // 宽度变化会改变软换行拓扑，必须用更新后的显示快照重新布局本帧；
+        // 元素实测宽度是元素与占位符文本的纯函数，与换行宽度无关，因此至多重跑一次即收敛。
+        let widths = layout
+            .lines
+            .iter()
+            .flat_map(|line| line.line.fragments.iter())
+            .filter_map(|fragment| match fragment {
+                LineFragment::Element { id, size, .. } => Some((*id, size.width)),
+                LineFragment::Text(_) => None,
+            });
+        let widths_changed = self
+            .editor
+            .update(cx, |editor, cx| editor.update_renderer_widths(widths, cx));
+        if widths_changed && self.width_writeback_pass < MAX_WIDTH_WRITEBACK_PASSES {
+            self.width_writeback_pass += 1;
+            return self.prepaint(None, _inspector_id, bounds, _request_layout, window, cx);
+        }
         let sticky_buffer_header = display_snapshot.sticky_buffer_header(start_row);
         let sticky_source_row = sticky_buffer_header
             .as_ref()
@@ -1567,34 +1596,29 @@ impl Element for EditorElement {
             }
             hitboxes
         });
-        // 折叠占位符点击 hitbox：合并行占位符段区域（点击展开；交互型直接调 Entity 方法）。
+        // 折叠占位符点击 hitbox：直接取占位符元素片段的实测像素范围。
+        // 与元素绘制同源，水平窗口裁剪时不会再用整行合并字节去近似窗口文本。
         let placeholder_hitboxes = {
             let mut hitboxes = Vec::new();
             for line in &layout.lines {
-                let Some(segments) = line.fold_segments.as_ref() else {
-                    continue;
-                };
-                let indent = line.wrap_info.map_or(0, |info| info.indent);
-                // 占位符段 = 合并文本中 anchor 段之后；显示文本 = 假空格 + 合并文本。
-                let start = indent + segments[0].merged_range().end;
-                let end = start + segments[1].merged_range().len();
-                if start >= line.line.text.len() {
-                    continue;
-                }
-                hitboxes.push((
-                    window.insert_hitbox(
-                        Bounds::from_corners(
-                            point(line.origin.x + line.line.x_for_index(start), line.origin.y),
-                            point(
-                                line.origin.x
-                                    + line.line.x_for_index(end.min(line.line.text.len())),
-                                line.origin.y + line_height,
+                for fragment in &line.line.fragments {
+                    let LineFragment::Element { offset, size, .. } = fragment else {
+                        continue;
+                    };
+                    hitboxes.push((
+                        window.insert_hitbox(
+                            Bounds::from_corners(
+                                point(line.origin.x + offset.x, line.origin.y),
+                                point(
+                                    line.origin.x + offset.x + size.width,
+                                    line.origin.y + line_height,
+                                ),
                             ),
+                            HitboxBehavior::BlockMouse,
                         ),
-                        HitboxBehavior::BlockMouse,
-                    ),
-                    line.logical_line.expect("折叠合并行必须携带逻辑行"),
-                ));
+                        line.logical_line.expect("折叠合并行必须携带逻辑行"),
+                    ));
+                }
             }
             Arc::new(hitboxes)
         };
@@ -2698,8 +2722,6 @@ fn layout_visible_lines_from_viewport(
                          pieces: Vec<RowPiece>,
                          text: String,
                          utf16_start: usize,
-                         wrap_info: Option<WrapRowInfo>,
-                         fold_segments: Option<Vec<FoldRowSegment>>,
                          whitespaces: Vec<RenderedWhitespace>,
                          window_start_column: usize,
                          window_prefix: &str| {
@@ -2756,6 +2778,7 @@ fn layout_visible_lines_from_viewport(
                     width += element_size.width;
                     byte_offset += placeholder.len();
                     fragments.push(LineFragment::Element {
+                        id: renderer.id,
                         element: RefCell::new(Some(element)),
                         size: element_size,
                         len: placeholder.len(),
@@ -2795,9 +2818,7 @@ fn layout_visible_lines_from_viewport(
             background_runs,
             whitespaces,
             global_utf16_start: utf16_start,
-            wrap_info,
             window_start_column,
-            fold_segments,
             git_diff,
             is_placeholder: placeholder_mode,
         });
@@ -2944,8 +2965,6 @@ fn layout_visible_lines_from_viewport(
                     pieces,
                     row_text,
                     row.utf16_start,
-                    (row.fragment_index > 0).then_some(WrapRowInfo { indent: row.indent }),
-                    row.fold_segments.map(ToOwned::to_owned),
                     row_whitespaces,
                     row.window_start_column,
                     row.window_prefix.as_ref(),
@@ -3146,25 +3165,19 @@ fn layout_selection_segments(
             continue;
         }
 
-        let line_columns = line.line.text.chars().count();
-        let start_column = if row == start.row() {
-            start.column().get().min(line_columns)
+        let tab_width = layout.display_snapshot.tab_width().get();
+        let start_byte = if row == start.row() {
+            local_byte_for_display_column(line, start.column().get(), tab_width)
         } else {
             0
         };
-        let end_column = if row == end.row() {
-            end.column().get().min(line_columns)
+        let end_byte = if row == end.row() {
+            local_byte_for_display_column(line, end.column().get(), tab_width)
         } else {
-            line_columns
+            line.line.len()
         };
-        let start_x = line.origin.x
-            + line
-                .line
-                .x_for_index(column_to_byte(&line.line.text, start_column));
-        let mut end_x = line.origin.x
-            + line
-                .line
-                .x_for_index(column_to_byte(&line.line.text, end_column));
+        let start_x = line.origin.x + line.line.x_for_index(start_byte);
+        let mut end_x = line.origin.x + line.line.x_for_index(end_byte);
         if row != end.row() {
             end_x += line_end_overshoot;
         }
@@ -3191,6 +3204,7 @@ fn layout_word_diff_fragments(
     cx: &App,
 ) -> Vec<Vec<(Pixels, Pixels, gpui::Rgba)>> {
     let colors = color::current(cx);
+    let tab_width = layout.display_snapshot.tab_width().get();
     let mut per_line = vec![Vec::new(); layout.lines.len()];
     for (kind, projected_range) in highlights {
         let color = match kind {
@@ -3203,25 +3217,22 @@ fn layout_word_diff_fragments(
             if row < projected_range.start().row() || row > projected_range.end().row() {
                 continue;
             }
-            let line_columns = line.line.text.chars().count();
-            let start_column = if row == projected_range.start().row() {
-                projected_range.start().column().get().min(line_columns)
+            let start_byte = if row == projected_range.start().row() {
+                local_byte_for_display_column(
+                    line,
+                    projected_range.start().column().get(),
+                    tab_width,
+                )
             } else {
                 0
             };
-            let end_column = if row == projected_range.end().row() {
-                projected_range.end().column().get().min(line_columns)
+            let end_byte = if row == projected_range.end().row() {
+                local_byte_for_display_column(line, projected_range.end().column().get(), tab_width)
             } else {
-                line_columns
+                line.line.len()
             };
-            let start_x = line.origin.x
-                + line
-                    .line
-                    .x_for_index(column_to_byte(&line.line.text, start_column));
-            let end_x = line.origin.x
-                + line
-                    .line
-                    .x_for_index(column_to_byte(&line.line.text, end_column));
+            let start_x = line.origin.x + line.line.x_for_index(start_byte);
+            let end_x = line.origin.x + line.line.x_for_index(end_byte);
             if end_x <= start_x {
                 continue;
             }
@@ -3387,24 +3398,21 @@ fn layout_projected_range_quad(
             continue;
         }
 
-        let line_columns = line.line.text.chars().count();
-        let start_column = if row == start.row() {
-            start.column().get().min(line_columns)
-        } else {
-            0
-        };
-        let end_column = if row == end.row() {
-            end.column().get().min(line_columns)
-        } else {
-            line_columns
-        };
+        let tab_width = layout.display_snapshot.tab_width().get();
         let (local_start, local_end) = if line.logical_line.is_none() {
             (0, line.line.len())
         } else {
-            (
-                column_to_byte(&line.line.text, start_column),
-                column_to_byte(&line.line.text, end_column),
-            )
+            let start_byte = if row == start.row() {
+                local_byte_for_display_column(line, start.column().get(), tab_width)
+            } else {
+                0
+            };
+            let end_byte = if row == end.row() {
+                local_byte_for_display_column(line, end.column().get(), tab_width)
+            } else {
+                line.line.len()
+            };
+            (start_byte, end_byte)
         };
         let start_x = line.line.x_for_index(local_start);
         let mut end_x = line.line.x_for_index(local_end);
@@ -3477,14 +3485,20 @@ fn local_byte_for_display_point(
     point: DisplayPoint,
     display_snapshot: &DisplaySnapshot,
 ) -> usize {
-    // 最终塑形文本可能包含假缩进、Tab 展开、行内提示、CJK 宽字符和折叠占位符。
-    // 因此不能用字符序号反推字节位置，必须沿显示列规则逆算 shaped 文本中的字节边界。
-    byte_for_display_column(
-        &line.line.text,
-        line.window_start_column,
+    local_byte_for_display_column(
+        line,
         point.column().get(),
         display_snapshot.tab_width().get(),
     )
+}
+
+/// 显示列（完整显示行坐标）→ 布局行片内字节。
+///
+/// line.line.text 可能只是整行的水平窗口（起点列为 line.window_start_column），
+/// 也可能带换行续行的假缩进；这里统一沿显示列规则换算。
+/// 调用方不得再按字符序号近似，否则水平滚动后选区与装饰几何会整体偏移窗口起点。
+fn local_byte_for_display_column(line: &LayoutLine, column: usize, tab_width: usize) -> usize {
+    byte_for_display_column(&line.line.text, line.window_start_column, column, tab_width)
 }
 
 fn line_end_offset(
@@ -3500,12 +3514,6 @@ fn line_end_offset(
     } else {
         Some(MultiBufferOffset::new(snapshot.len_bytes().get()))
     }
-}
-
-fn column_to_byte(text: &str, column: usize) -> usize {
-    text.char_indices()
-        .nth(column)
-        .map_or(text.len(), |(byte, _)| byte)
 }
 
 /// 拖拽选择自动滚动的限频间隔（≈60Hz）。

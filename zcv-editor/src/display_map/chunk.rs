@@ -630,9 +630,8 @@ impl<'a, 'b> Iterator for FoldChunks<'a, 'b> {
 
             let (chunks, is_placeholder, renderer) = match &segment.kind {
                 FoldRowSegmentKind::Placeholder { text, renderer } => {
-                    // 占位符被水平窗口裁剪时不再保证元素宽度与文本一致，退回文本绘制。
-                    let unclipped = clipped_start == segment.merged_range.start
-                        && clipped_end == segment.merged_range.end;
+                    // 占位符段始终携带渲染描述：被水平窗口部分覆盖时仍生成行内元素，
+                    // 可见性由渲染层的 content mask 裁剪，而不是按视口退化为文本。
                     (
                         StyledChunks::new(
                             ChunkText::Borrowed(text.as_ref()),
@@ -643,7 +642,7 @@ impl<'a, 'b> Iterator for FoldChunks<'a, 'b> {
                                 ..clipped_end - segment.merged_range.start,
                         ),
                         true,
-                        unclipped.then(|| renderer.clone()),
+                        Some(renderer.clone()),
                     )
                 }
                 FoldRowSegmentKind::Text {
@@ -910,12 +909,6 @@ fn projected_window_metrics(
     (start_byte.min(end_byte)..end_byte, start_column, prefix)
 }
 
-/// 软换行片段信息：后续 wrap 片段显示为缩进续行。
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct WrapRowInfo {
-    pub(crate) indent: usize,
-}
-
 /// 已进入最终塑形文本的真实空白字符位置。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RenderedWhitespace {
@@ -977,7 +970,6 @@ pub(crate) struct DisplayTextRow<'a> {
     /// 水平窗口之前的投影文本。仅在窗口化时携带，布局层用同一字体测得
     /// 实际像素前缀宽度，不能把 display column 乘拉丁字宽。
     pub(crate) window_prefix: Cow<'a, str>,
-    pub(crate) fold_segments: Option<&'a [FoldRowSegment]>,
 }
 
 /// 连续显示行事件。文本 chunk 只能在本次回调中被消费，避免在流中保存自引用状态。
@@ -1093,7 +1085,6 @@ impl<'a, 'b> BlockChunks<'a, 'b> {
                 utf16_start: chunks.utf16_start(),
                 window_start_column,
                 window_prefix,
-                fold_segments: segments.as_deref(),
             },
             chunks: &mut chunks,
         });

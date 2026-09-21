@@ -227,16 +227,6 @@ fn hunk_hit_regions(
         .hit_regions
 }
 
-#[test]
-fn logical_columns_map_to_utf8_boundaries() {
-    let text = "a你😀";
-    assert_eq!(column_to_byte(text, 0), 0);
-    assert_eq!(column_to_byte(text, 1), 1);
-    assert_eq!(column_to_byte(text, 2), 4);
-    assert_eq!(column_to_byte(text, 3), 8);
-    assert_eq!(column_to_byte(text, 99), 8);
-}
-
 /// 回归：run 背景（搜索高亮等）片段必须叠加行原点 x。
 ///
 /// 背景片段与选区片段同处窗口绝对坐标；
@@ -1859,4 +1849,323 @@ fn modified_hunk_strip_stays_yellow_when_expanded(cx: &mut TestAppContext) {
         hunk_strip_rows(&snapshot, &[hunk], &[true], &[Some(1..2)]),
         vec![(1..3, DiffHunkKind::Modified)]
     );
+}
+
+/// 从显示行 chunk 流取折叠占位符的渲染描述。
+fn placeholder_renderer(display: &DisplaySnapshot) -> ChunkRenderer {
+    let mut renderer = None;
+    let mut chunks = display.chunks(
+        DisplayRow::ZERO..DisplayRow::new(display.line_count()),
+        HighlightStyles::default(),
+        None,
+    );
+    chunks.for_each_row(|event| {
+        if let DisplayRowEvent::Text { chunks, .. } = event {
+            for chunk in chunks {
+                if let Some(current) = &chunk.renderer {
+                    renderer = Some(current.clone());
+                }
+            }
+        }
+    });
+    renderer.expect("折叠占位符必须携带渲染描述")
+}
+
+/// 折叠元素实测宽度回写折叠层后，软换行必须按该像素宽度切分折叠合并行；
+/// 相同宽度不产生显示编辑。
+#[gpui::test]
+fn measured_element_width_drives_soft_wrap(cx: &mut TestAppContext) {
+    let window = cx.add_window(|_, _| Empty);
+    window
+        .update(cx, |_, window, cx| {
+            let snapshot = Buffer::from_text(
+                "anchor\nhidden one\ntail".to_owned(),
+                BufferConfig::default(),
+            )
+            .expect("测试 Buffer 应能创建")
+            .snapshot();
+            let map = new_display_map(cx, snapshot.clone());
+            cx.update_entity(&map, |map, cx| {
+                let range = {
+                    let display = map.snapshot(cx);
+                    let snapshot = display.buffer_snapshot();
+                    snapshot.anchor_at(MultiBufferOffset::new(6), zcv_text::Affinity::Before)
+                        ..snapshot.anchor_at(MultiBufferOffset::new(17), zcv_text::Affinity::After)
+                };
+                map.fold_range(range, FoldPlaceholder::default(), cx)
+            })
+            .expect("折叠应成功");
+
+            let renderer_id =
+                cx.update_entity(&map, |map, cx| placeholder_renderer(&map.snapshot(cx)).id);
+
+            let text_style = window.text_style();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            cx.update_entity(&map, |map, cx| {
+                map.set_wrap_width(
+                    Some(px(120.)),
+                    text_style.font(),
+                    font_size,
+                    window.text_system(),
+                    cx,
+                )
+            });
+            let before = cx.update_entity(&map, |map, cx| map.snapshot(cx).line_count());
+
+            let changed = cx.update_entity(&map, |map, cx| {
+                map.update_fold_widths([(renderer_id, px(400.))], cx)
+            });
+            assert!(changed, "宽度变化必须推进显示链");
+            let after = cx.update_entity(&map, |map, cx| map.snapshot(cx).line_count());
+            assert!(
+                after > before,
+                "实测元素宽度必须参与软换行：before={before}, after={after}"
+            );
+
+            let changed = cx.update_entity(&map, |map, cx| {
+                map.update_fold_widths([(renderer_id, px(400.))], cx)
+            });
+            assert!(!changed, "相同实测宽度不应产生显示编辑");
+        })
+        .expect("测试窗口应保持可用");
+}
+
+/// 水平窗口部分覆盖折叠占位符时，chunk 仍携带渲染描述，布局仍生成元素片段。
+#[gpui::test]
+fn windowed_placeholder_chunk_keeps_renderer_and_element(cx: &mut TestAppContext) {
+    let snapshot = Buffer::from_text(
+        format!("{}\nhidden\ntail", "a".repeat(200)),
+        BufferConfig::default(),
+    )
+    .expect("测试 Buffer 应能创建")
+    .snapshot();
+    let map = new_display_map(cx, snapshot.clone());
+    let placeholder = FoldPlaceholder {
+        collapsed_text: Some("....".into()),
+        ..FoldPlaceholder::default()
+    };
+    cx.update_entity(&map, |map, cx| {
+        let range = {
+            let display = map.snapshot(cx);
+            let snapshot = display.buffer_snapshot();
+            snapshot.anchor_at(MultiBufferOffset::new(200), zcv_text::Affinity::Before)
+                ..snapshot.anchor_at(MultiBufferOffset::new(207), zcv_text::Affinity::After)
+        };
+        map.fold_range(range, placeholder, cx)
+    })
+    .expect("折叠应成功");
+
+    // chunk 层：窗口起点落在占位符内部（列 200..204），仍必须携带渲染描述。
+    let display = cx.update_entity(&map, |map, cx| map.snapshot(cx));
+    let mut clipped_has_renderer = None;
+    let mut chunks = display.chunks(
+        DisplayRow::ZERO..DisplayRow::new(1),
+        HighlightStyles::default(),
+        Some((202, 400)),
+    );
+    chunks.for_each_row(|event| {
+        if let DisplayRowEvent::Text { chunks, .. } = event {
+            for chunk in chunks {
+                if chunk.is_placeholder {
+                    clipped_has_renderer = Some(chunk.renderer.is_some());
+                }
+            }
+        }
+    });
+    assert_eq!(
+        clipped_has_renderer,
+        Some(true),
+        "被水平窗口裁剪的占位符 chunk 仍必须携带渲染描述"
+    );
+
+    // 布局层：同一窗口下仍必须生成占位符元素片段。
+    let visual = cx.add_empty_window();
+    visual.draw(
+        point(px(0.), px(0.)),
+        size(px(400.), px(100.)),
+        |window, cx| {
+            let text_style = window.text_style();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            let em_advance = window
+                .text_system()
+                .em_advance(
+                    window.text_system().resolve_font(&text_style.font()),
+                    font_size,
+                )
+                .expect("测试字体必须包含拉丁字形");
+            let layout = layout_visible_lines(
+                map.update(cx, |map, cx| map.snapshot(cx)),
+                None,
+                EditorPresentation::new(&snapshot.clone().into(), None),
+                None,
+                VisibleLineLayoutParams {
+                    geometry: EditorGeometry {
+                        text_bounds: Bounds::new(point(px(0.), px(0.)), size(px(300.), px(40.))),
+                        text_clip_bounds: Bounds::new(
+                            point(px(0.), px(0.)),
+                            size(px(300.), px(40.)),
+                        ),
+                        gutter: None,
+                    },
+                    active_lines: &BTreeSet::new(),
+                    foldable_lines: &BTreeSet::new(),
+                    fold_anchor_lines: &BTreeSet::new(),
+                    start_row: DisplayRow::ZERO,
+                    scroll_offset: point(em_advance * 266., px(0.)),
+                    primary_caret_column: None,
+                    line_height: px(20.),
+                    diff_rows: &[],
+                },
+                window,
+                cx,
+            );
+            assert!(
+                layout.lines.iter().any(|line| line
+                    .line
+                    .fragments
+                    .iter()
+                    .any(|fragment| matches!(fragment, LineFragment::Element { .. }))),
+                "被窗口裁剪的占位符仍必须生成元素片段"
+            );
+            Empty
+        },
+    );
+}
+
+/// 水平滚动把整行窗口化后，选区与括号背景必须与光标走同一条
+/// 「整行显示列 → 窗口内偏移」换算，不能把整行列直接作用于窗口文本。
+#[gpui::test]
+fn windowed_selection_geometry_matches_caret(cx: &mut TestAppContext) {
+    let window = cx.add_window(|_, _| Empty);
+    window
+        .update(cx, |_, window, cx| {
+            let snapshot =
+                Buffer::from_text(format!("{}\n", "a".repeat(400)), BufferConfig::default())
+                    .expect("测试 Buffer 应能创建")
+                    .snapshot();
+            let text_style = window.text_style();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            let em_advance = window
+                .text_system()
+                .em_advance(
+                    window.text_system().resolve_font(&text_style.font()),
+                    font_size,
+                )
+                .expect("测试字体必须包含拉丁字形");
+            let layout = layout_visible_lines(
+                project_display_snapshot(cx, snapshot.clone()),
+                None,
+                EditorPresentation::new(&snapshot.clone().into(), None),
+                None,
+                VisibleLineLayoutParams {
+                    geometry: EditorGeometry {
+                        text_bounds: Bounds::new(point(px(0.), px(0.)), size(px(300.), px(40.))),
+                        text_clip_bounds: Bounds::new(
+                            point(px(0.), px(0.)),
+                            size(px(300.), px(40.)),
+                        ),
+                        gutter: None,
+                    },
+                    active_lines: &BTreeSet::new(),
+                    foldable_lines: &BTreeSet::new(),
+                    fold_anchor_lines: &BTreeSet::new(),
+                    start_row: DisplayRow::ZERO,
+                    scroll_offset: point(em_advance * 150., px(0.)),
+                    primary_caret_column: None,
+                    line_height: px(20.),
+                    diff_rows: &[],
+                },
+                window,
+                cx,
+            );
+            assert!(
+                layout.lines[0].window_start_column > 0,
+                "测试必须真正进入水平窗口化"
+            );
+
+            let selections = SelectionSet::new(vec![crate::selection::Selection::new(
+                MultiBufferOffset::new(150),
+                MultiBufferOffset::new(200),
+            )]);
+            let (segments, carets) = layout_selections(&selections, &layout, px(20.), cx);
+            assert_eq!(carets.len(), 1, "选区活动端必须绘制光标");
+            let segment = segments[0].first().expect("选区必须生成行片段");
+            let caret = carets[0].bounds.left();
+            assert!(
+                (segment.end_x - caret).abs() < px(1.),
+                "窗口化后选区终点必须与光标 x 一致：segment={:?}, caret={caret:?}",
+                segment.end_x,
+            );
+
+            let mut quads = Vec::new();
+            layout_bracket_pair(
+                BracketPair {
+                    open: 150..151,
+                    close: 151..152,
+                },
+                &layout,
+                px(20.),
+                &mut quads,
+                cx,
+            );
+            assert_eq!(quads.len(), 2, "括号两端各生成一个背景矩形");
+            let open_caret =
+                layout_caret_at_buffer_offset(MultiBufferOffset::new(150), &layout, px(20.), cx)
+                    .expect("括号起点光标必须可见");
+            assert!(
+                (quads[0].bounds.left() - open_caret.bounds.left()).abs() < px(1.),
+                "窗口化后括号背景必须与光标 x 一致：quad={:?}, caret={:?}",
+                quads[0].bounds.left(),
+                open_caret.bounds.left(),
+            );
+        })
+        .expect("测试窗口应保持可用");
+}
+
+/// 折叠占位符的渲染色只在 render 调用时读取：切换主题后仍能产出元素。
+///
+/// gpui 的 AnyElement 不暴露子元素的文字颜色，无法直接断言像素色；
+/// 这里验证 render 闭包在主题切换后仍产出 Div 元素，颜色读取时机由构造签名与实现保证。
+#[gpui::test]
+fn ellipsis_render_reads_theme_at_call_time(cx: &mut TestAppContext) {
+    let window = cx.add_window(|_, _| Empty);
+    window
+        .update(cx, |_, window, cx| {
+            let snapshot = Buffer::from_text(
+                "anchor\nhidden one\ntail".to_owned(),
+                BufferConfig::default(),
+            )
+            .expect("测试 Buffer 应能创建")
+            .snapshot();
+            let map = new_display_map(cx, snapshot.clone());
+            cx.update_entity(&map, |map, cx| {
+                let range = {
+                    let display = map.snapshot(cx);
+                    let snapshot = display.buffer_snapshot();
+                    snapshot.anchor_at(MultiBufferOffset::new(6), zcv_text::Affinity::Before)
+                        ..snapshot.anchor_at(MultiBufferOffset::new(17), zcv_text::Affinity::After)
+                };
+                map.fold_range(range, FoldPlaceholder::ellipsis(), cx)
+            })
+            .expect("折叠应成功");
+            let renderer =
+                cx.update_entity(&map, |map, cx| placeholder_renderer(&map.snapshot(cx)));
+
+            let mut dark_color = None;
+            let mut light_color = None;
+            for (choice, slot) in [
+                (zcv_theme::ThemeChoice::Named("dark"), &mut dark_color),
+                (zcv_theme::ThemeChoice::Named("light"), &mut light_color),
+            ] {
+                choice.apply(cx, Some(window));
+                *slot = Some(zcv_theme::color::current(cx).text_placeholder);
+                let mut element = (renderer.render)(cx);
+                assert!(
+                    element.downcast_mut::<gpui::Div>().is_some(),
+                    "省略号占位符必须渲染成 Div"
+                );
+            }
+            assert_ne!(dark_color, light_color, "测试主题必须提供不同的占位符颜色");
+        })
+        .expect("测试窗口应保持可用");
 }

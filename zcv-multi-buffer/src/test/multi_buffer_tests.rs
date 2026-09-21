@@ -1504,7 +1504,7 @@ fn source_excerpts_and_display_transforms_use_separate_coordinate_trees(cx: &mut
         // 删除块只占输出坐标：输入树只含消费输入的工作区片段。
         assert_eq!(buffer.state.excerpts.summary().count, 1);
         assert_eq!(buffer.state.diff_transforms.summary().output.count, 2);
-        assert_eq!(buffer.state.diff_transforms.summary().input.text.len, 7);
+        assert_eq!(buffer.state.diff_transforms.summary().input.len.get(), 7);
         assert_eq!(buffer.state.diff_transforms.summary().output.text.len, 15);
 
         let snapshot = buffer.snapshot(cx);

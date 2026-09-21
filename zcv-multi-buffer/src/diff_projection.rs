@@ -349,7 +349,8 @@ pub(crate) struct PendingExpansionMigration {
 struct DisplayHunkSource {
     /// 稳定文件键：working 源实体，不随组合文档序号变化。
     working: gpui::EntityId,
-    hunk_index: Option<usize>,
+    /// hunk 起点的工作区 Anchor；无 hunk 身份的合成节点为 None。
+    hunk_start: Option<Anchor>,
     /// hunk 所属的组合路径，用于源编辑后的局部缓存更新。
     path: PathKey,
 }
@@ -384,7 +385,7 @@ struct DiffDisplay {
 /// 单次游标遍历中按 hunk 身份聚合的输出范围与词级片段。
 struct HunkAccum {
     working: gpui::EntityId,
-    hunk_index: Option<usize>,
+    hunk_start: Option<Anchor>,
     path: PathKey,
     kind: DiffHunkKind,
     staging: DiffHunkStaging,
@@ -402,7 +403,7 @@ impl HunkAccum {
     fn new(info: &DiffTransformHunkInfo, path: &PathKey) -> Self {
         Self {
             working: info.working,
-            hunk_index: info.hunk_index,
+            hunk_start: info.hunk_start,
             path: path.clone(),
             kind: info.kind,
             staging: info.staging,
@@ -467,14 +468,13 @@ impl ExcerptMaterializer<'_> {
 /// 一个 hunk 节点携带的身份与显示元数据。
 fn hunk_info(
     working: gpui::EntityId,
-    hunk_index: usize,
     side: DiffTransformHunkSide,
     hunk: &ResolvedHunk,
     expanded: bool,
 ) -> DiffTransformHunkInfo {
     DiffTransformHunkInfo {
         working,
-        hunk_index: Some(hunk_index),
+        hunk_start: Some(hunk.buffer_range.start),
         side,
         kind: hunk.kind,
         staging: hunk.staging,
@@ -873,12 +873,16 @@ impl MultiBuffer {
                 range: None,
             });
         }
-        let range = source.hunk_index.and_then(|index| {
+        let range = source.hunk_start.and_then(|start| {
+            let working = entity.read(cx).working();
+            let working_text = working.read(cx).text_snapshot();
+            let target = start.resolve_in(&working_text).ok()?;
             entity
                 .read(cx)
                 .snapshot()
                 .visible_hunks()
-                .get(index)
+                .iter()
+                .find(|hunk| hunk.buffer_range.start.resolve_in(&working_text).ok() == Some(target))
                 .map(|hunk| hunk.buffer_range.clone())
         });
         Some(DiffHunkSource {
@@ -1312,21 +1316,21 @@ impl MultiBuffer {
 
     /// 只遍历一个 path 的输出变换，用于源编辑后的局部显示缓存更新。
     fn derive_diff_display_for_path(&self, path: &PathKey) -> DiffDisplay {
-        let mut index_of: HashMap<(gpui::EntityId, Option<usize>), usize> = HashMap::new();
+        let mut index_of: HashMap<(gpui::EntityId, Option<Anchor>), usize> = HashMap::new();
         let mut accums: Vec<HunkAccum> = Vec::new();
         let mut cursor = MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
         // 用 Left 偏置从边界开始遍历：整份删除的零长度边界节点也必须被访问。
         cursor.seek_path(path, sum_tree::Bias::Left);
-        while let Some((excerpt, _)) = cursor.item() {
+        while let Some((excerpt, transform)) = cursor.item() {
             if &excerpt.path != path {
                 break;
             }
-            if !excerpt.diff_hunks.is_empty() {
+            if !transform.hunks().is_empty() {
                 let start = cursor.start().clone();
                 let content_lines = excerpt.text_summary.lines + excerpt.adds_newline as usize;
                 let range = start.lines..(start.lines + content_lines).max(start.lines + 1);
-                for info in &excerpt.diff_hunks {
-                    let key = (info.working, info.hunk_index);
+                for info in transform.hunks() {
+                    let key = (info.working, info.hunk_start);
                     let index = *index_of.entry(key).or_insert_with(|| {
                         accums.push(HunkAccum::new(info, &excerpt.path));
                         accums.len() - 1
@@ -1403,7 +1407,7 @@ impl MultiBuffer {
             old_ranges.push(accum.old_range);
             sources.push(DisplayHunkSource {
                 working: accum.working,
-                hunk_index: accum.hunk_index,
+                hunk_start: accum.hunk_start,
                 path: accum.path,
             });
             expanded.push(accum.expanded);
@@ -1674,7 +1678,7 @@ fn materialize_file(
             },
             vec![DiffTransformHunkInfo {
                 working: working_id,
-                hunk_index: None,
+                hunk_start: None,
                 side: DiffTransformHunkSide::Content,
                 kind: DiffHunkKind::Added,
                 staging: DiffHunkStaging::NoStaging,
@@ -1715,10 +1719,9 @@ fn materialize_file(
         let mut starts_new_excerpt = show_file_header;
         // 无旧侧物化的纯删除需要一个相邻内容节点承载边界；挂到后继内容起点，无后继时挂到前驱终点。
         let mut pending_boundary: Option<DiffTransformHunkInfo> = None;
-        for (hunk_index, hunk) in resolved
+        for hunk in resolved
             .iter()
-            .enumerate()
-            .filter(|(_, hunk)| hunk_is_inside_excerpt(hunk, &context_range))
+            .filter(|hunk| hunk_is_inside_excerpt(hunk, &context_range))
         {
             if current < hunk.buffer_lines.start {
                 let boundary = pending_boundary.take().into_iter().collect();
@@ -1744,7 +1747,6 @@ fn materialize_file(
                     // 边界标记的是 working 侧位置：旧侧是 base 坐标，不承载待挂载边界。
                     let hunks = vec![hunk_info(
                         working_id,
-                        hunk_index,
                         DiffTransformHunkSide::Old,
                         hunk,
                         expanded,
@@ -1768,7 +1770,6 @@ fn materialize_file(
                     let base_text = base.read(cx).text_snapshot();
                     let hunks = vec![hunk_info(
                         working_id,
-                        hunk_index,
                         DiffTransformHunkSide::Old,
                         hunk,
                         false,
@@ -1793,7 +1794,6 @@ fn materialize_file(
                 let mut hunks = pending_boundary.take().into_iter().collect::<Vec<_>>();
                 hunks.push(hunk_info(
                     working_id,
-                    hunk_index,
                     DiffTransformHunkSide::Content,
                     hunk,
                     expanded,
@@ -1813,7 +1813,6 @@ fn materialize_file(
             } else if !old_materialized {
                 pending_boundary = Some(hunk_info(
                     working_id,
-                    hunk_index,
                     DiffTransformHunkSide::BoundaryStart,
                     hunk,
                     expanded,

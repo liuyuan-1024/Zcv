@@ -23,7 +23,7 @@ use zcv_multi_buffer::MultiBufferSnapshot;
 use zcv_text::Line;
 
 use super::block_map::{BlockRow, BlockRows, DisplayBlock};
-use super::fold_map::{FOLD_PLACEHOLDER, FoldRowSegment, FoldRowSegmentKind, ProjectedLineIndex};
+use super::fold_map::{FoldRowSegment, FoldRowSegmentKind, ProjectedLineIndex};
 use super::tab_map::advance_display_column;
 use super::wrap_map::WrapRowKind;
 use super::{DisplayRow, DisplaySnapshot};
@@ -626,9 +626,9 @@ impl<'a, 'b> Iterator for FoldChunks<'a, 'b> {
             }
 
             let (chunks, is_placeholder) = match &segment.kind {
-                FoldRowSegmentKind::Placeholder => (
+                FoldRowSegmentKind::Placeholder { text } => (
                     StyledChunks::new(
-                        ChunkText::Borrowed(FOLD_PLACEHOLDER),
+                        ChunkText::Borrowed(text.as_ref()),
                         0,
                         0,
                         HighlightStyles::default(),

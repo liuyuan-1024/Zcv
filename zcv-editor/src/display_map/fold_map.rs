@@ -7,7 +7,7 @@
 
 use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferRange};
 
-use std::{borrow::Cow, cmp::Reverse, collections::BTreeMap, ops::Range};
+use std::{borrow::Cow, cmp::Reverse, collections::BTreeMap, ops::Range, sync::Arc};
 
 use sum_tree::{Bias as TreeBias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use zcv_multi_buffer::MultiBufferSnapshot;
@@ -32,6 +32,8 @@ struct Fold {
     /// 当前快照下解析出的组合字节范围（派生缓存，随同步刷新）；折叠查询与拓扑索引都读它。
     text_range: MultiBufferRange,
     line_span: (Line, Line),
+    /// 折叠占位符描述；折叠创建时给定，跨重解析保留。
+    placeholder: FoldPlaceholder,
 }
 
 impl Fold {
@@ -40,6 +42,7 @@ impl Fold {
         snapshot: &MultiBufferSnapshot,
         id: FoldId,
         range: MultiBufferRange,
+        placeholder: FoldPlaceholder,
     ) -> Option<Self> {
         let line_span = fold_line_span(snapshot, range).ok()?;
         Some(Self {
@@ -49,6 +52,7 @@ impl Fold {
                 ..snapshot.anchor_at(range.end(), Affinity::Before),
             text_range: range,
             line_span,
+            placeholder,
         })
     }
 
@@ -63,6 +67,7 @@ impl Fold {
             range: self.range.clone(),
             text_range: range,
             line_span,
+            placeholder: self.placeholder.clone(),
         })
     }
 
@@ -146,11 +151,40 @@ pub(crate) enum FoldBias {
     Right,
 }
 
-/// 折叠占位符文本：折叠后拼在 anchor 行文本之后，与闭合行尾段处于同一显示行。
-pub(crate) const FOLD_PLACEHOLDER: &str = "…";
+/// 默认折叠占位符文本（对齐 Zed 的 `⋯`）：折叠后拼在 anchor 行文本之后，与闭合行尾段处于同一显示行。
+pub(crate) const FOLD_PLACEHOLDER: &str = "⋯";
 
-/// 占位符字符数（列换算用，占一列）。
-const FOLD_PLACEHOLDER_CHARS: usize = 1;
+/// 折叠占位符描述，对齐 Zed `FoldPlaceholder` 的可配置部分。
+///
+/// `collapsed_text` 为 None 时使用默认 `⋯`；`merge_adjacent` 控制相邻折叠是否合并为一段；
+/// `constrain_width` 记录占位符元素是否按省略号宽度约束（渲染侧消费）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FoldPlaceholder {
+    pub(crate) collapsed_text: Option<Arc<str>>,
+    pub(crate) constrain_width: bool,
+    pub(crate) merge_adjacent: bool,
+}
+
+impl Default for FoldPlaceholder {
+    fn default() -> Self {
+        Self {
+            collapsed_text: None,
+            constrain_width: true,
+            merge_adjacent: true,
+        }
+    }
+}
+
+impl FoldPlaceholder {
+    pub(crate) fn text(&self) -> &str {
+        self.collapsed_text.as_deref().unwrap_or(FOLD_PLACEHOLDER)
+    }
+
+    /// 占位符字符数（列换算用）。
+    fn chars(&self) -> usize {
+        self.text().chars().count()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TransformKind {
@@ -484,7 +518,7 @@ impl FoldSnapshot {
             let close_line = fold.line_span.1;
             if point.line() == close_line && point.column().get() >= geometry.tail_start_col {
                 let column = geometry.anchor_chars
-                    + FOLD_PLACEHOLDER_CHARS
+                    + fold.placeholder.chars()
                     + self.tail_projected_column(&geometry, point.column().get())?;
                 return Ok(ProjectedPoint::new(
                     geometry.row,
@@ -493,7 +527,7 @@ impl FoldSnapshot {
             }
             let column = match bias {
                 FoldBias::Left => geometry.anchor_chars,
-                FoldBias::Right => geometry.anchor_chars + FOLD_PLACEHOLDER_CHARS,
+                FoldBias::Right => geometry.anchor_chars + fold.placeholder.chars(),
             };
             return Ok(ProjectedPoint::new(
                 geometry.row,
@@ -566,7 +600,7 @@ impl FoldSnapshot {
         let fold = self.fold_for_row(row)?;
         let geometry = self.fold_merged_geometry(fold).ok()?;
         let tail_len = geometry.content_end_projected - geometry.tail_projected;
-        let tail_start = geometry.anchor_len + FOLD_PLACEHOLDER.len();
+        let tail_start = geometry.anchor_len + fold.placeholder.text().len();
         Some([
             FoldRowSegment {
                 merged_range: 0..geometry.anchor_len,
@@ -577,7 +611,9 @@ impl FoldSnapshot {
             },
             FoldRowSegment {
                 merged_range: geometry.anchor_len..tail_start,
-                kind: FoldRowSegmentKind::Placeholder,
+                kind: FoldRowSegmentKind::Placeholder {
+                    text: Arc::from(fold.placeholder.text()),
+                },
             },
             FoldRowSegment {
                 merged_range: tail_start..tail_start + tail_len,
@@ -597,14 +633,14 @@ impl FoldSnapshot {
             let close = self.input.line_text(geometry.close_stream)?;
             let mut text = String::with_capacity(
                 geometry.anchor_len
-                    + FOLD_PLACEHOLDER.len()
+                    + fold.placeholder.text().len()
                     + geometry
                         .content_end_projected
                         .saturating_sub(geometry.tail_projected)
                     + 1,
             );
             text.push_str(line_content(anchor.as_ref()));
-            text.push_str(FOLD_PLACEHOLDER);
+            text.push_str(fold.placeholder.text());
             text.push_str(&close.as_ref()[geometry.tail_projected..geometry.content_end_projected]);
             text.push('\n');
             return Some(Cow::Owned(text));
@@ -785,6 +821,7 @@ impl FoldMapWriter<'_> {
     pub(super) fn fold(
         &mut self,
         range: Range<MultiBufferAnchor>,
+        placeholder: FoldPlaceholder,
     ) -> DisplayMapResult<(FoldSnapshot, Vec<FoldEdit>)> {
         let resolved = {
             let snapshot = self.0.snapshot.buffer_snapshot();
@@ -828,8 +865,9 @@ impl FoldMapWriter<'_> {
         let stream_line_count = self.0.snapshot.input.line_count();
         let range = resolved.start()..resolved.end();
         let mut folds: Vec<_> = self.0.snapshot.folds.iter().cloned().collect();
-        let fold = Fold::from_text_range(self.0.snapshot.buffer_snapshot(), id, resolved)
-            .ok_or(FoldError::UnresolvableAnchor)?;
+        let fold =
+            Fold::from_text_range(self.0.snapshot.buffer_snapshot(), id, resolved, placeholder)
+                .ok_or(FoldError::UnresolvableAnchor)?;
         folds.push(fold);
         sort_folds(&mut folds);
         self.0.snapshot.folds = SumTree::from_iter(folds, ());
@@ -1225,7 +1263,8 @@ pub(crate) enum FoldRowSegmentKind {
         projected_range: Range<usize>,
     },
     /// 折叠占位符段（无源坐标）。
-    Placeholder,
+    /// 折叠占位符：携带该折叠实际使用的占位符文本。
+    Placeholder { text: Arc<str> },
 }
 
 /// 折叠合并行（anchor 行文本 + 占位符 + 闭合行尾段）的投影几何。

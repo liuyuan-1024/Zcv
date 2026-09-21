@@ -909,7 +909,7 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
         projected_line_text(&snapshot, *projected_line)
             .unwrap()
             .as_ref(),
-        "fn main() {…}\n"
+        "fn main() {⋯}\n"
     );
     // 真实 `}` 范围投影到合并行占位符之后的列（anchor 11 字符 + 占位符 1 列 = 12）。
     let projected = snapshot

@@ -20,7 +20,7 @@ impl FoldMap {
             snapshot.anchor_at(MultiBufferOffset::new(start), Affinity::Before)
                 ..snapshot.anchor_at(MultiBufferOffset::new(end), Affinity::After)
         };
-        self.write().fold(range)
+        self.write().fold(range, FoldPlaceholder::default())
     }
 
     /// 测试辅助：把订阅者批次换算成组合文本编辑，再推进 fold 层。
@@ -269,7 +269,7 @@ fn merged_row_text_joins_anchor_placeholder_and_close_tail() {
 
     assert_eq!(snapshot.line_count(), 2);
     let text = snapshot.row_text(ProjectedLineIndex::new(0)).unwrap();
-    assert_eq!(text.as_ref(), "fn b() {…}\n");
+    assert_eq!(text.as_ref(), "fn b() {⋯}\n");
     // 段表：anchor 文本段 + 占位符段 + 闭合尾段（`}` 是真实字节范围）。
     let segments = snapshot
         .fold_row_segments(ProjectedLineIndex::new(0))
@@ -302,7 +302,7 @@ fn fold_boundary_insertions_remain_visible() {
     let moved = snapshot.folds.iter().next().unwrap().text_range();
     assert_eq!(moved.start().get(), 7);
     let text = snapshot.row_text(ProjectedLineIndex::new(0)).unwrap();
-    assert_eq!(text.as_ref(), "anchorX…\n");
+    assert_eq!(text.as_ref(), "anchorX⋯\n");
 }
 
 #[test]

@@ -951,7 +951,7 @@ fn folded_projection_rows_drive_layout_and_hit_testing(cx: &mut TestAppContext) 
 
             assert_eq!(layout.lines.len(), 2);
             // 折叠合并行：anchor 文本 + 占位符拼成同一显示行。
-            assert_eq!(layout.lines[0].shaped.text.as_ref(), "anchor…");
+            assert_eq!(layout.lines[0].shaped.text.as_ref(), "anchor⋯");
             assert_eq!(layout.lines[1].shaped.text.as_ref(), "after");
         })
         .expect("测试窗口应保持可用");

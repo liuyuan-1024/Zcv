@@ -54,7 +54,7 @@ pub(crate) use display_width::DisplayColumn;
 use edit::ProjectionEdit;
 use error::DisplayMapResult;
 pub(crate) use fold_map::{FoldBias, FoldRowSegment, ProjectedLineIndex};
-use fold_map::{FoldMap, FoldSnapshot, LogicalProjection};
+use fold_map::{FoldMap, FoldPlaceholder, FoldSnapshot, LogicalProjection};
 use gpui::{App, AppContext as _, Bounds, Context, Entity, HighlightStyle, Pixels};
 use tab_map::TabMap;
 pub(crate) use tab_map::{byte_for_display_column, display_column_for_byte};
@@ -1061,7 +1061,10 @@ impl DisplayMap {
         range: Range<MultiBufferAnchor>,
         cx: &mut Context<Self>,
     ) -> DisplayMapResult<()> {
-        let (fold_snapshot, fold_edits) = self.fold_map.write().fold(range)?;
+        let (fold_snapshot, fold_edits) = self
+            .fold_map
+            .write()
+            .fold(range, FoldPlaceholder::default())?;
         let tab_width = self.tab_map.snapshot().tab_width();
         let (tab_snapshot, tab_edits) = self.tab_map.sync(fold_snapshot, &fold_edits, tab_width);
         let (wrap_snapshot, wrap_edits) = self

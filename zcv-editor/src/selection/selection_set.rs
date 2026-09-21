@@ -136,20 +136,35 @@ impl SelectionSet<MultiBufferOffset> {
 }
 
 impl SelectionSet<MultiBufferAnchor> {
-    /// 按当前快照把源锚点集合解析为偏移集合；顺序与 primary 保持不变。
+    /// 按当前快照把源锚点集合解析为偏移集合。
+    ///
+    /// 不可解析的选区被显式丢弃并保留其余；全部无法解析时返回 `None`，
+    /// 绝不静默兜底为文首 caret（T-8：目标更旧或端点退出投影时显式失败）。
+    /// 丢弃 primary 选区时，primary 归到其之前最近的存活选区，否则取第一个。
     pub(crate) fn resolve(
         &self,
         snapshot: &MultiBufferSnapshot,
-    ) -> SelectionSet<MultiBufferOffset> {
-        let resolved: Vec<_> = self
-            .selections
-            .iter()
-            .filter_map(|selection| selection.resolve(snapshot))
-            .collect();
-        if resolved.is_empty() {
-            return SelectionSet::default();
+    ) -> Option<SelectionSet<MultiBufferOffset>> {
+        let mut resolved = Vec::with_capacity(self.selections.len());
+        let mut primary = None;
+        let mut nearest_before = None;
+        for (index, selection) in self.selections.iter().enumerate() {
+            let Some(selection) = selection.resolve(snapshot) else {
+                continue;
+            };
+            let resolved_index = resolved.len();
+            if index == self.primary_index {
+                primary = Some(resolved_index);
+            } else if index < self.primary_index {
+                nearest_before = Some(resolved_index);
+            }
+            resolved.push(selection);
         }
-        SelectionSet::from_selections(resolved, self.primary_index)
+        if resolved.is_empty() {
+            return None;
+        }
+        let primary = primary.or(nearest_before).unwrap_or(0);
+        Some(SelectionSet::from_selections(resolved, primary))
     }
 }
 

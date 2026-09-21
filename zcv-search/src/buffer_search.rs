@@ -5,9 +5,11 @@
 //! 本模块只负责工具项位置、活动 Item 的目标解析，以及面包屑与预览入口。
 //! 面包屑与搜索栏是两个独立的工具项元素，搜索栏独立渲染。
 
+use std::sync::Arc;
+
 use gpui::{Context, Entity, EventEmitter, ParentElement, Render, Styled, Window, div, prelude::*};
 use zcv_actions::{ClearSearch, DeployBufferSearch};
-use zcv_editor::Editor;
+use zcv_editor::{Editor, LanguageRegistry};
 use zcv_theme::{color, space};
 use zcv_ui::Button;
 use zcv_workspace::{
@@ -27,9 +29,10 @@ impl DocumentToolbar {
     pub(super) fn new(
         preview_button: Entity<PreviewButton>,
         breadcrumbs: Entity<Breadcrumbs>,
+        language_registry: Arc<LanguageRegistry>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let search_bar = cx.new(|cx| {
+        let search_bar = cx.new(move |cx| {
             SearchBar::new(
                 SearchBarConfig {
                     id_prefix: "buffer-search",
@@ -39,6 +42,7 @@ impl DocumentToolbar {
                     replace_placeholder: "替换为...",
                     dismissible: true,
                 },
+                language_registry,
                 cx,
             )
         });
@@ -170,7 +174,8 @@ pub(super) fn install(
     cx: &mut Context<Workspace>,
 ) -> Entity<DocumentToolbar> {
     let pane = workspace.pane().clone();
+    let language_registry = workspace.project().read(cx).language_registry();
     let preview_button = cx.new(|_| PreviewButton::new(pane.downgrade()));
     let breadcrumbs = cx.new(|_| Breadcrumbs::new(workspace.project().clone()));
-    cx.new(|cx| DocumentToolbar::new(preview_button, breadcrumbs, cx))
+    cx.new(|cx| DocumentToolbar::new(preview_button, breadcrumbs, language_registry, cx))
 }

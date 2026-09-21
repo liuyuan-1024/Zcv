@@ -14,7 +14,7 @@ fn test_languages() -> Arc<LanguageRegistry> {
 fn empty_workspace_installs_all_panels(cx: &mut TestAppContext) {
     cx.update(|cx| {
         zcv_settings::init(cx);
-        zcv_editor::init(cx);
+        zcv_editor::init(cx, test_languages());
     });
     let (workspace, cx) =
         cx.add_window_view(|window, cx| build_workspace(&None, test_languages(), window, cx));
@@ -38,7 +38,7 @@ fn empty_workspace_installs_all_panels(cx: &mut TestAppContext) {
 fn switching_replaces_root_in_same_window(cx: &mut TestAppContext) {
     cx.update(|cx| {
         zcv_settings::init(cx);
-        zcv_editor::init(cx);
+        zcv_editor::init(cx, test_languages());
     });
     let (old_workspace, cx) =
         cx.add_window_view(|window, cx| build_workspace(&None, test_languages(), window, cx));

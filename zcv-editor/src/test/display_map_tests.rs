@@ -1014,3 +1014,30 @@ fn soft_wrap_row_boundaries_follow_fragments(cx: &mut TestAppContext) {
         continuation_offset
     );
 }
+
+#[gpui::test]
+fn projected_range_columns_use_display_width_for_cjk(cx: &mut TestAppContext) {
+    // 全角字符占两个显示列；投影范围列必须与渲染端 window_start_column 同处显示列空间，
+    // 否则含 CJK 时选区/词级 diff/括号几何会把显示列当字符列换算，落到错误字节。
+    let buffer = Buffer::from_text("你a\n".to_string(), BufferConfig::default())
+        .expect("测试 Buffer 应能创建");
+    let map = cx.new(|cx| DisplayMap::new(buffer.snapshot(), cx));
+    let snapshot = display_snapshot(cx, &map);
+
+    let projected = snapshot
+        .project_text_range(
+            MultiBufferRange::new(MultiBufferOffset::new(3), MultiBufferOffset::new(4))
+                .expect("a 范围应合法"),
+        )
+        .expect("投影应成功");
+    assert_eq!(projected.len(), 1);
+    assert_eq!(
+        projected[0].start(),
+        DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(2)),
+        "全角字符之后的起始列应为显示列 2，而不是字符计数 1"
+    );
+    assert_eq!(
+        projected[0].end(),
+        DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(3))
+    );
+}

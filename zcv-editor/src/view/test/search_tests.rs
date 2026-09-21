@@ -616,3 +616,66 @@ fn query_suggestion_seeds_search_from_selection(cx: &mut TestAppContext) {
         });
     });
 }
+
+#[gpui::test]
+fn activating_a_match_after_an_external_edit_stays_in_bounds(cx: &mut TestAppContext) {
+    // 同一共享文本的另一个编辑者先缩短文档；第一个 Editor 的搜索结果在推进前是过期的。
+    // 激活必须先推进快照再取当次范围，不能把旧范围交给 select_byte_range。
+    let buffer = test_buffer(cx, "abc abc abc");
+    let (first, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
+    });
+    let second = cx.new({
+        let buffer = buffer.clone();
+        move |cx| Editor::for_language_buffer(buffer, cx)
+    });
+    cx.update(|window, cx| {
+        first.update(cx, |editor, cx| {
+            editor.search(&query("abc"), window, cx);
+            assert_eq!(editor.search_count(cx), (3, Some(0)));
+            // 移到最后一个匹配，使旧范围临近文档末尾。
+            editor.activate_match_in_direction(Direction::Next, 2, window, cx);
+            assert_eq!(editor.search_count(cx), (3, Some(2)));
+        });
+    });
+    second.update(cx, |editor, cx| editor.set_text("abc", cx));
+    cx.update(|window, cx| {
+        first.update(cx, |editor, cx| {
+            editor.activate_match_in_direction(Direction::Next, 2, window, cx);
+        });
+    });
+    cx.read_entity(&first, |editor, cx| {
+        let len = editor.display_snapshot(cx).buffer_snapshot().len_bytes();
+        let head = editor.selections(cx).primary().head();
+        assert!(head <= len, "激活后的选区必须落在当前文档范围内");
+    });
+}
+
+#[gpui::test]
+fn editing_external_search_results_keeps_them_external(cx: &mut TestAppContext) {
+    let (editor, cx) = editor_with_text(cx, "abc xyz abc");
+    cx.update(|_window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.set_search_ranges(
+                query("abc"),
+                vec![
+                    MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(3))
+                        .expect("范围应合法"),
+                    MultiBufferRange::new(MultiBufferOffset::new(8), MultiBufferOffset::new(11))
+                        .expect("范围应合法"),
+                ],
+                cx,
+            );
+            assert!(editor.search_result_is_external());
+        });
+    });
+    // 结果编辑器内编辑：外部派生结果集由所有者拥有，不得被改写成当前文档上的 Query 重搜。
+    cx.update_entity(&editor, |editor, cx| editor.set_text("abc xyz abc abc", cx));
+    cx.read_entity(&editor, |editor, _| {
+        assert!(
+            editor.search_result_is_external(),
+            "外部搜索结果在编辑后必须保持 External"
+        );
+    });
+}

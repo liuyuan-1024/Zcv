@@ -4,13 +4,14 @@
 //! 语法数据由 `zcv-editor` 提供，行的通用树几何由 `zcv-ui` 提供。
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use gpui::{
     App, Context, Entity, FocusHandle, Render, UniformListScrollHandle, Window, div, prelude::*,
     uniform_list,
 };
 use zcv_editor::{Editor, EditorEvent};
-use zcv_language::OutlineItem;
+use zcv_language::{LanguageRegistry, OutlineItem};
 use zcv_theme::{color, space};
 use zcv_ui::{Scrollbar, SearchInput};
 use zcv_workspace::{Pane, PaneEvent, Panel, PanelEvent};
@@ -34,8 +35,12 @@ pub struct OutlinePanel {
 }
 
 impl OutlinePanel {
-    pub fn new(pane: Entity<Pane>, cx: &mut Context<Self>) -> Self {
-        let search_input = cx.new(Editor::single_line);
+    pub fn new(
+        pane: Entity<Pane>,
+        language_registry: Arc<LanguageRegistry>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let search_input = cx.new(move |cx| Editor::single_line(language_registry, cx));
         search_input.update(cx, |editor, cx| {
             editor.set_placeholder_text("筛选大纲…", cx);
         });

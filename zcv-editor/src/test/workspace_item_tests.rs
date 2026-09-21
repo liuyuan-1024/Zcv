@@ -34,7 +34,7 @@ fn item_events_preserve_distinct_semantics() {
 
 #[gpui::test]
 fn breadcrumbs_use_the_supplied_project_root(cx: &mut TestAppContext) {
-    let editor = cx.new(Editor::single_line);
+    let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     cx.update_entity(&editor, |editor, cx| {
         editor.set_file_path(PathBuf::from("/project/src/main.rs"), cx);
     });
@@ -48,7 +48,7 @@ fn breadcrumbs_use_the_supplied_project_root(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn editor_emits_dirty_changes_after_edit_and_save(cx: &mut TestAppContext) {
-    let editor = cx.new(Editor::single_line);
+    let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     let events = Rc::new(RefCell::new(Vec::new()));
     let observed = Rc::clone(&events);
     let _subscription = cx.update(|cx| {

@@ -24,7 +24,9 @@ fn zooming_out_keeps_the_base_raster_resolution() {
 
 #[gpui::test]
 fn preview_starts_loading_and_installs_background_result(cx: &mut TestAppContext) {
-    let editor = cx.new(Editor::single_line);
+    let editor = cx.new(|cx| {
+        Editor::single_line(std::sync::Arc::new(zcv_editor::LanguageRegistry::new()), cx)
+    });
     editor.update(cx, |editor, cx| {
         editor.set_text(
             r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="8"/>"#,
@@ -61,7 +63,9 @@ fn preview_starts_loading_and_installs_background_result(cx: &mut TestAppContext
 /// 工具项注册方据此隐藏通用文档工具栏，两行工具区不会重复显示。
 #[gpui::test]
 fn preview_exposes_the_source_editor_as_a_proxy(cx: &mut TestAppContext) {
-    let editor = cx.new(Editor::single_line);
+    let editor = cx.new(|cx| {
+        Editor::single_line(std::sync::Arc::new(zcv_editor::LanguageRegistry::new()), cx)
+    });
     editor.update(cx, |editor, cx| {
         editor.set_text(
             r#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="8"/>"#,

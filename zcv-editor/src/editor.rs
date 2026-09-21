@@ -21,9 +21,18 @@ mod workspace_item;
 pub use display_map::{EditorHunk, EditorHunkMarkerKind, EditorHunkPart, HunkControlTarget};
 pub use status_items::install_status_items;
 pub use view::{DiffHunkDelegate, Editor, EditorEvent, ExplicitCreaseId};
+pub use zcv_language::LanguageRegistry;
 
-pub fn init(cx: &mut App) {
-    EDITOR_FACTORY.get_or_init(|| |cx| Arc::new(ErasedEditorHandle(cx.new(Editor::single_line))));
+/// 应用启动时由装配层注入唯一的语言注册表，编辑器的内嵌输入控件共享同一份。
+pub fn init(cx: &mut App, language_registry: Arc<LanguageRegistry>) {
+    EDITOR_FACTORY.get_or_init(|| {
+        Box::new(move |cx: &mut App| {
+            let language_registry = Arc::clone(&language_registry);
+            Arc::new(ErasedEditorHandle(
+                cx.new(|cx| Editor::single_line(language_registry, cx)),
+            ))
+        })
+    });
     item_provider::init(cx);
 }
 

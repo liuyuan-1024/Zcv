@@ -3,15 +3,15 @@
 //! Tree-sitter 绑定解析由 `zcv-language` 提供；
 //! 本模块拥有重命名会话、事务入口和输入框定位，让语法查询、编辑状态与界面绘制保持各自的职责边界。
 
-use zcv_multi_buffer::MultiBufferOffset;
+use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferSnapshot};
 
 use std::ops::Range;
 use std::sync::Arc;
 
-use gpui::{AppContext, Context, Entity, Focusable, Pixels, Point, point, px};
+use gpui::{App, AppContext, Context, Entity, Focusable, Pixels, Point, point, px};
 use zcv_actions::{CancelLocalRename, ConfirmLocalRename, RenameLocal};
 use zcv_language::LocalBinding;
-use zcv_text::BufferVersion;
+use zcv_text::Affinity;
 
 use super::{Editor, EditorEvent, EditorMode, edit_metadata};
 use crate::element::EditorInputLayout;
@@ -22,12 +22,14 @@ use crate::selection::{Selection, SelectionSet, replace_selections};
 /// 输入框是独立的单行 Editor；
 /// 源文档仍由外层 Editor 的 MultiBuffer 持有，提交时重新通过当前语法快照解析绑定，避免把输入框文本变成第二份文档状态。
 pub(super) struct LocalRenameState {
-    pub(super) offset: MultiBufferOffset,
-    pub(super) version: BufferVersion,
+    /// 会话锚点：提交与淡化都按当前快照解析，外部编辑期间不落错位。
+    pub(super) offset: MultiBufferAnchor,
     pub(super) name: String,
     pub(super) input: Entity<Editor>,
-    pub(super) range: Range<usize>,
-    pub(super) ranges: Arc<[Range<usize>]>,
+    /// 定义范围（源锚点），供输入框几何定位与淡化。
+    pub(super) range: Range<MultiBufferAnchor>,
+    /// 全部绑定范围（源锚点），供淡化。
+    pub(super) ranges: Arc<[Range<MultiBufferAnchor>]>,
     pub(super) position: Point<Pixels>,
     pub(super) width: Pixels,
     pub(super) line_height: Pixels,
@@ -152,29 +154,41 @@ impl Editor {
         let width = (text_width + px(8.)).max(px(56.));
 
         let name = binding.name.clone();
-        let input = cx.new(|cx| {
-            let mut input = Editor::single_line_with_content_typography(cx);
-            input.set_text(&name, cx);
+        let Some(language_registry) = self.multi_buffer.read(cx).language_registry(cx) else {
+            cx.emit(EditorEvent::Error(
+                "重命名局部绑定失败：当前文档没有语言注册表".into(),
+            ));
+            return;
+        };
+        let input_name = name.clone();
+        let input = cx.new(move |cx| {
+            let mut input = Editor::single_line_with_content_typography(language_registry, cx);
+            input.set_text(&input_name, cx);
             input.set_selections(
                 SelectionSet::new(vec![Selection::new(
                     MultiBufferOffset::ZERO,
-                    MultiBufferOffset::new(name.len()),
+                    MultiBufferOffset::new(input_name.len()),
                 )]),
                 cx,
             );
             input
         });
-        let version = self
+        // 会话位置在建立时一次性锚定；之后每帧/提交都按当前快照解析，外部编辑不会让输入框或淡化范围错位。
+        let snapshot = self
             .multi_buffer
-            .update(cx, |buffer, cx| buffer.snapshot(cx))
-            .version();
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        let offset = snapshot.anchor_at(offset, Affinity::After);
+        let range = anchor_range(&snapshot, &rename_range);
+        let ranges = rename_ranges
+            .iter()
+            .map(|range| anchor_range(&snapshot, range))
+            .collect::<Arc<[_]>>();
         self.local_rename = Some(LocalRenameState {
             offset,
-            version,
             name,
             input: input.clone(),
-            range: rename_range,
-            ranges: rename_ranges.into(),
+            range,
+            ranges,
             position,
             width,
             line_height,
@@ -197,25 +211,24 @@ impl Editor {
         let new_name = state.input.read(cx).text(cx);
         let old_name = state.name.clone();
         let offset = state.offset;
-        let version = state.version;
 
         if new_name.trim().is_empty() || new_name == old_name {
             self.finish_local_rename(window, cx);
             return;
         }
-        if self
+        // 会话锚点在提交时按当前快照解析：外部编辑造成位置漂移或锚点失效都会显式失败，
+        // 不再以「版本相等」作为唯一判据。
+        let snapshot = self
             .multi_buffer
-            .update(cx, |buffer, cx| buffer.snapshot(cx))
-            .version()
-            != version
-        {
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        let Some(offset) = snapshot.resolve_anchor(&offset) else {
             self.finish_local_rename(window, cx);
             cx.emit(EditorEvent::Error(format!(
                 "重命名局部绑定失败：{}",
                 LocalRenameError::StaleDocument
             )));
             return;
-        }
+        };
 
         match self.rename_local_at(offset, &new_name, cx) {
             Ok(()) => self.finish_local_rename(window, cx),
@@ -258,11 +271,13 @@ impl Editor {
 
     /// 在新一帧布局完成后更新重命名输入框的容器内坐标。
     pub(crate) fn update_local_rename_geometry(&mut self, cx: &mut Context<Self>) {
-        let geometry = self.local_rename.as_ref().and_then(|state| {
-            self.input_layout
-                .as_ref()
-                .and_then(|layout| local_rename_geometry_for_layout(layout, &state.range))
-        });
+        let Some(range) = self.local_rename_range(cx) else {
+            return;
+        };
+        let geometry = self
+            .input_layout
+            .as_ref()
+            .and_then(|layout| local_rename_geometry_for_layout(layout, &range));
         let Some((position, width)) = geometry else {
             return;
         };
@@ -281,29 +296,59 @@ impl Editor {
 
     pub(crate) fn local_rename_overlay(
         &self,
+        cx: &App,
     ) -> Option<(Entity<Editor>, Point<Pixels>, Pixels, Pixels)> {
         let state = self.local_rename.as_ref()?;
-        let (position, width) = self.local_rename_geometry(state);
+        let (position, width) = self.local_rename_geometry(state, cx);
         Some((state.input.clone(), position, width, state.line_height))
     }
 
-    fn local_rename_geometry(&self, state: &LocalRenameState) -> (Point<Pixels>, Pixels) {
-        self.input_layout
-            .as_ref()
-            .and_then(|layout| local_rename_geometry_for_layout(layout, &state.range))
+    fn local_rename_geometry(&self, state: &LocalRenameState, cx: &App) -> (Point<Pixels>, Pixels) {
+        let geometry = resolve_range(self.display_snapshot(cx).buffer_snapshot(), &state.range)
+            .and_then(|range| {
+                self.input_layout
+                    .as_ref()
+                    .and_then(|layout| local_rename_geometry_for_layout(layout, &range))
+            });
+        geometry
             .map(|(position, text_width)| (position, (text_width + px(8.)).max(px(56.))))
             .unwrap_or((state.position, state.width))
     }
 
-    pub(crate) fn local_rename_range(&self) -> Option<Range<usize>> {
-        self.local_rename.as_ref().map(|state| state.range.clone())
+    /// 当前快照上重命名定义范围的字节区间；锚点无法解析时返回 None。
+    pub(crate) fn local_rename_range(&self, cx: &App) -> Option<Range<usize>> {
+        let state = self.local_rename.as_ref()?;
+        resolve_range(self.display_snapshot(cx).buffer_snapshot(), &state.range)
     }
 
-    pub(crate) fn local_rename_ranges(&self) -> Arc<[Range<usize>]> {
-        self.local_rename
-            .as_ref()
-            .map_or_else(|| Arc::from([]), |state| state.ranges.clone())
+    /// 当前快照上全部绑定范围的字节区间（淡化输入），不可解析的项显式丢弃。
+    pub(crate) fn local_rename_ranges(
+        &self,
+        snapshot: &MultiBufferSnapshot,
+    ) -> Arc<[Range<usize>]> {
+        let Some(state) = self.local_rename.as_ref() else {
+            return Arc::from([]);
+        };
+        state
+            .ranges
+            .iter()
+            .filter_map(|range| resolve_range(snapshot, range))
+            .collect::<Arc<[_]>>()
     }
+}
+
+/// 把会话建立时的字节范围锚定为源锚点：边界插入不吸收。
+fn anchor_range(snapshot: &MultiBufferSnapshot, range: &Range<usize>) -> Range<MultiBufferAnchor> {
+    snapshot.anchor_at(MultiBufferOffset::new(range.start), Affinity::After)
+        ..snapshot.anchor_at(MultiBufferOffset::new(range.end), Affinity::Before)
+}
+
+/// 按当前快照把源锚点范围解析回字节区间；任一端不可解析即整体丢弃。
+fn resolve_range(
+    snapshot: &MultiBufferSnapshot,
+    range: &Range<MultiBufferAnchor>,
+) -> Option<Range<usize>> {
+    Some(snapshot.resolve_anchor(&range.start)?.get()..snapshot.resolve_anchor(&range.end)?.get())
 }
 
 fn local_rename_geometry_for_layout(

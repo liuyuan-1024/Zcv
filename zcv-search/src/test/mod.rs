@@ -162,8 +162,9 @@ fn document_toolbar(cx: &mut TestAppContext) -> gpui::Entity<DocumentToolbar> {
     let project = cx.new(|cx| {
         zcv_project::Project::new(PathBuf::from("."), Arc::new(LanguageRegistry::new()), cx)
     });
+    let language_registry = cx.read_entity(&project, |project, _| project.language_registry());
     let breadcrumbs = cx.new(|_| Breadcrumbs::new(project));
-    cx.new(|cx| DocumentToolbar::new(preview_button, breadcrumbs, cx))
+    cx.new(|cx| DocumentToolbar::new(preview_button, breadcrumbs, language_registry, cx))
 }
 
 #[gpui::test]
@@ -207,7 +208,12 @@ fn buffer_search_does_not_use_a_path_as_search_capability(cx: &mut TestAppContex
 fn document_toolbar_is_visible_for_editor_and_hidden_for_other_items(cx: &mut TestAppContext) {
     let bar = document_toolbar(cx);
     cx.add_window_view(|window, cx| {
-        let editor = cx.new(Editor::single_line);
+        let editor = cx.new(|cx| {
+            Editor::single_line(
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        });
         let editor_location = bar.update(cx, |bar, cx| {
             bar.set_active_pane_item(Some(&editor as &dyn ItemHandle), window, cx)
         });
@@ -232,7 +238,12 @@ fn document_toolbar_is_visible_for_editor_and_hidden_for_other_items(cx: &mut Te
 fn document_toolbar_is_hidden_for_composite_items_that_expose_an_editor(cx: &mut TestAppContext) {
     let bar = document_toolbar(cx);
     cx.add_window_view(|window, cx| {
-        let inner_editor = cx.new(Editor::single_line);
+        let inner_editor = cx.new(|cx| {
+            Editor::single_line(
+                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                cx,
+            )
+        });
         let composite = cx.new(|cx| CompositeItem {
             focus: cx.focus_handle(),
             inner_editor,

@@ -688,8 +688,12 @@ fn toggle_fold_action_uses_the_cursor_block_and_the_whole_folded_row(cx: &mut Te
             cx,
         )
     });
-    let editor = cx.new(|cx| Editor::from_language_buffer(language_buffer, EditorMode::Full, cx));
+    let (editor, cx) = cx.add_window_view({
+        let language_buffer = language_buffer.clone();
+        move |_, cx| Editor::from_language_buffer(language_buffer, EditorMode::Full, cx)
+    });
     cx.run_until_parked();
+    focus_editor(&editor, cx);
 
     // 光标在 if 块内部时，折叠包含它的最内层范围，而不要求位于 crease 所在行。
     editor.update(cx, |editor, cx| {
@@ -699,8 +703,8 @@ fn toggle_fold_action_uses_the_cursor_block_and_the_whole_folded_row(cx: &mut Te
             )),
             cx,
         );
-        editor.toggle_fold_at_cursor(cx);
     });
+    cx.dispatch_action(ToggleFold);
     assert_eq!(
         cx.read_entity(&editor, |editor, cx| editor
             .display_snapshot(cx)
@@ -717,8 +721,8 @@ fn toggle_fold_action_uses_the_cursor_block_and_the_whole_folded_row(cx: &mut Te
             )),
             cx,
         );
-        editor.toggle_fold_at_cursor(cx);
     });
+    cx.dispatch_action(ToggleFold);
     assert_eq!(
         cx.read_entity(&editor, |editor, cx| editor
             .display_snapshot(cx)
@@ -726,6 +730,82 @@ fn toggle_fold_action_uses_the_cursor_block_and_the_whole_folded_row(cx: &mut Te
         6,
         "折叠合并行任意位置都应能展开"
     );
+}
+
+/// 折叠占位符的渲染描述：取首个占位符 chunk 的 renderer。
+fn first_placeholder_renderer(
+    display: &DisplaySnapshot,
+) -> Option<crate::display_map::ChunkRenderer> {
+    let mut renderer = None;
+    display
+        .chunks(
+            DisplayRow::ZERO..DisplayRow::new(display.line_count()),
+            HighlightStyles::default(),
+            None,
+        )
+        .for_each_row(|event| {
+            if let DisplayRowEvent::Text { chunks, .. } = event {
+                for chunk in chunks {
+                    if chunk.is_placeholder && renderer.is_none() {
+                        renderer = chunk.renderer.clone();
+                    }
+                }
+            }
+        });
+    renderer
+}
+
+#[gpui::test]
+fn toggle_fold_command_and_crease_share_the_ellipsis_element(cx: &mut TestAppContext) {
+    let text = "fn main() {\n    let x = 1;\n}\n";
+    let buffer =
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
+    let language_buffer = cx.new(|cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(PathBuf::from("main.rs")),
+            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            cx,
+        )
+    });
+    let (editor, cx) = cx.add_window_view({
+        let language_buffer = language_buffer.clone();
+        move |_, cx| Editor::from_language_buffer(language_buffer, EditorMode::Full, cx)
+    });
+    cx.run_until_parked();
+    focus_editor(&editor, cx);
+
+    editor.update(cx, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(3)), cx);
+    });
+    cx.dispatch_action(ToggleFold);
+    let command_renderer = cx.read_entity(&editor, |editor, cx| {
+        first_placeholder_renderer(&editor.display_snapshot(cx))
+    });
+    let command_renderer = command_renderer.expect("命令折叠必须产生占位符元素片段");
+    let command_is_ellipsis = cx.update(|_window, cx| {
+        (command_renderer.render)(cx)
+            .downcast_mut::<gpui::Div>()
+            .is_some()
+    });
+    assert!(
+        command_is_ellipsis,
+        "ToggleFold 命令必须渲染省略号元素，而不是默认空元素"
+    );
+
+    // 展开后改用 crease 点击路径（toggle_fold_at_line）折叠同一入口行，二者呈现必须一致。
+    cx.dispatch_action(ToggleFold);
+    editor.update(cx, |editor, cx| editor.toggle_fold_at_line(Line::ZERO, cx));
+    let crease_renderer = cx.read_entity(&editor, |editor, cx| {
+        first_placeholder_renderer(&editor.display_snapshot(cx))
+    });
+    let crease_renderer = crease_renderer.expect("crease 折叠必须产生占位符元素片段");
+    let crease_is_ellipsis = cx.update(|_window, cx| {
+        (crease_renderer.render)(cx)
+            .downcast_mut::<gpui::Div>()
+            .is_some()
+    });
+    assert!(crease_is_ellipsis, "crease 折叠同样渲染省略号元素");
 }
 
 #[gpui::test]
@@ -1322,7 +1402,7 @@ impl Render for NarrowSingleLineHost {
 
 #[gpui::test]
 fn single_line_editor_never_wraps_and_follows_caret_horizontally(cx: &mut TestAppContext) {
-    let editor = cx.new(Editor::single_line);
+    let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     let (_host, cx) = cx.add_window_view({
         let editor = editor.clone();
         |_, _| NarrowSingleLineHost { editor }
@@ -2640,7 +2720,7 @@ fn external_source_change_advances_selection_source_anchor(cx: &mut TestAppConte
 /// 只有空文本且设置了 placeholder 时才返回提示快照；判空走当前快照，不在渲染帧物化整份文本。
 #[gpui::test]
 fn placeholder_snapshot_requires_empty_text(cx: &mut TestAppContext) {
-    let editor = cx.new(Editor::single_line);
+    let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     cx.update_entity(&editor, |editor, cx| {
         editor.set_placeholder_text("输入内容", cx);
     });
@@ -2693,5 +2773,50 @@ fn folding_a_section_with_soft_wrap_enabled_keeps_wrap_map_invariant(cx: &mut Te
             .fold_anchor_lines()
             .contains(&Line::ZERO)),
         "折叠入口行应保持折叠"
+    );
+}
+
+#[gpui::test]
+fn toggling_a_diff_hunk_emits_expansion_changed_once(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "a\nb\nc");
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)
+    });
+    let source = buffer.clone();
+    cx.run_until_parked();
+
+    let events = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let observed = std::rc::Rc::clone(&events);
+    let _subscription = cx.update(|_window, cx| {
+        cx.subscribe(&editor, move |_, event: &EditorEvent, _| {
+            if matches!(event, EditorEvent::DiffHunksExpandedChanged) {
+                observed.set(observed.get() + 1);
+            }
+        })
+    });
+
+    inject_editor_diff(
+        &editor,
+        &source,
+        vec![DisplayHunk {
+            range: 1..1,
+            old_range: 1..3,
+            kind: DiffHunkKind::Deleted,
+            staging: DiffHunkStaging::NoStaging,
+        }],
+        Some(Arc::from("a\nold1\nold2\nb\nc")),
+        cx,
+    );
+    assert_eq!(events.get(), 0, "注入 diff 本身不应发布展开变化事件");
+
+    editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
+    assert_eq!(
+        events.get(),
+        1,
+        "切换一个 hunk 展开应恰好发布一次展开变化事件"
     );
 }

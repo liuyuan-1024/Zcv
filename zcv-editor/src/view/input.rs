@@ -352,22 +352,33 @@ impl Editor {
             Ok((outcome, after))
         });
         if result.is_ok() {
-            let snapshot = self
-                .multi_buffer
-                .update(cx, |buffer, cx| buffer.snapshot(cx));
-            self.autoclose_regions
-                .extend(
-                    new_regions_after
-                        .into_iter()
-                        .map(|(range, pair)| AutocloseRegion {
-                            // 区域锚在闭合符起点：起点贴插入之前、终点贴插入之后，内部新输入继续纳入范围。
-                            range: snapshot.anchor_at(range.start(), Affinity::Before)
-                                ..snapshot.anchor_at(range.end(), Affinity::After),
-                            pair,
-                        }),
-                );
+            self.record_autoclose_regions(new_regions_after, cx);
         }
         true
+    }
+
+    /// 注册新产生的自动闭合区域：先清理失效区域，再按编辑后快照锚定新区。
+    ///
+    /// 这是自动闭合区域唯一的变更入口；纯追加会让失效区域无界累积，
+    /// 每次输入都要对整段历史做线性扫描。
+    fn record_autoclose_regions(
+        &mut self,
+        new_regions: impl IntoIterator<Item = (MultiBufferRange, AutoClosePair)>,
+        cx: &App,
+    ) {
+        self.invalidate_autoclose_regions(cx);
+        let snapshot = self.display_snapshot(cx).buffer_snapshot().clone();
+        self.autoclose_regions
+            .extend(
+                new_regions
+                    .into_iter()
+                    .map(|(range, pair)| AutocloseRegion {
+                        // 区域锚在闭合符起点：起点贴插入之前、终点贴插入之后，内部新输入继续纳入范围。
+                        range: snapshot.anchor_at(range.start(), Affinity::Before)
+                            ..snapshot.anchor_at(range.end(), Affinity::After),
+                        pair,
+                    }),
+            );
     }
 
     /// `offset` 处所在源语言的自动闭合配对表。
@@ -401,6 +412,32 @@ impl Editor {
             })
             .max_by_key(|(_, start, _)| *start)
             .map(|(region, _, end_offset)| (region, end_offset))
+    }
+
+    /// 自动闭合区域的失效清理：只保留锚点可解析、闭合符仍在、且仍与当前选择相交的区域。
+    ///
+    /// 对齐 Zed `invalidate_autoclose_regions`：区域是随选择存在的编辑辅助状态，
+    /// 存在性判据集中在这里，选择/编辑落地统一调用，避免只增不减的无界累积。
+    pub(super) fn invalidate_autoclose_regions(&mut self, cx: &App) {
+        if self.autoclose_regions.is_empty() {
+            return;
+        }
+        let snapshot = self.display_snapshot(cx).buffer_snapshot().clone();
+        let selections = self.resolved_selections(cx);
+        self.autoclose_regions.retain(|region| {
+            let (Some(start), Some(end)) = (
+                snapshot.resolve_anchor(&region.range.start),
+                snapshot.resolve_anchor(&region.range.end),
+            ) else {
+                return false;
+            };
+            // 已闭合或被删除的配对不再保留其关闭文本；不再与任何选择相交的区域同理失效。
+            text_at(&snapshot, end, region.pair.end)
+                && selections
+                    .as_slice()
+                    .iter()
+                    .any(|selection| selection.start() <= end && start <= selection.end())
+        });
     }
 
     /// 光标贴着自动补全闭合符起点时扩展选区覆盖整对，使退格一次删除整对；非空选区或未命中区域时选区不变。

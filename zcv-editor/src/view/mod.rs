@@ -25,7 +25,7 @@ use zcv_actions::{
 use zcv_language::{AutoClosePair, BracketPair, LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{
     DiffFile, DiffHunkSource, DisplayHunk, ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot,
-    MultiBuffer, MultiBufferAnchor, MultiBufferSnapshot, WordDiffs,
+    MultiBuffer, MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot, WordDiffs,
 };
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
@@ -301,28 +301,34 @@ pub struct Editor {
 }
 
 impl Editor {
-    pub fn single_line(cx: &mut Context<Self>) -> Self {
+    /// 由装配层注入语言注册表：单行输入编辑器不携带文件路径，但注册表必须只有一个可写所有者。
+    pub fn single_line(language_registry: Arc<LanguageRegistry>, cx: &mut Context<Self>) -> Self {
         let buffer = Buffer::from_text(String::new(), BufferConfig::default())
             .expect("新建空白 Buffer 不应失败");
-        // 单行输入编辑器不携带文件路径，语言状态不会启用；独立注册表避免共享可变单例。
-        let language_buffer =
-            cx.new(|cx| LanguageBuffer::new(buffer, None, Arc::new(LanguageRegistry::new()), cx));
+        let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, None, language_registry, cx));
         Self::from_language_buffer(language_buffer, EditorMode::SingleLine, cx)
     }
 
     /// 创建使用内容排版的单行编辑器；用于嵌入代码编辑器的单行编辑场景。
-    pub(crate) fn single_line_with_content_typography(cx: &mut Context<Self>) -> Self {
-        let mut editor = Self::single_line(cx);
+    pub(crate) fn single_line_with_content_typography(
+        language_registry: Arc<LanguageRegistry>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut editor = Self::single_line(language_registry, cx);
         editor.content_typography = true;
         editor
     }
 
-    pub fn auto_height(min_lines: usize, max_lines: Option<usize>, cx: &mut Context<Self>) -> Self {
+    /// 由装配层注入语言注册表；语义与 [`Editor::single_line`] 相同。
+    pub fn auto_height(
+        min_lines: usize,
+        max_lines: Option<usize>,
+        language_registry: Arc<LanguageRegistry>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let buffer = Buffer::from_text(String::new(), BufferConfig::default())
             .expect("新建空白 Buffer 不应失败");
-        // 单行输入编辑器不携带文件路径，语言状态不会启用；独立注册表避免共享可变单例。
-        let language_buffer =
-            cx.new(|cx| LanguageBuffer::new(buffer, None, Arc::new(LanguageRegistry::new()), cx));
+        let language_buffer = cx.new(|cx| LanguageBuffer::new(buffer, None, language_registry, cx));
         Self::from_language_buffer(
             language_buffer,
             EditorMode::AutoHeight {
@@ -698,12 +704,13 @@ impl Editor {
 
     /// 折叠/展开指定逻辑行（crease 点击与 ToggleFold 命令的共享实现）。
     ///
-    /// 该行是折叠入口行则展开覆盖它的折叠；否则若该行是可折叠范围起点则折叠整个范围。
+    /// 该行是折叠入口行则展开覆盖它的折叠；否则折叠包含该行的最内层候选范围，
+    /// 因此光标停在折叠体内部时也能折叠包含它的块，不要求正处于 crease 所在行。
     pub(crate) fn toggle_fold_at_line(&mut self, line: Line, cx: &mut Context<Self>) {
         let display_snapshot = self.display_snapshot(cx).clone();
         if display_snapshot.fold_anchor_lines().contains(&line) {
             let line_range =
-                LineRange::new(line, Line::new(line.get() + 1)).expect("光标行 +1 应合法");
+                LineRange::new(line, Line::new(line.get() + 1)).expect("折叠入口行 +1 应合法");
             if let Err(error) = self
                 .display_map
                 .update(cx, |map, cx| map.unfold_lines(line_range, cx))
@@ -711,8 +718,10 @@ impl Editor {
                 cx.emit(EditorEvent::Error(format!("展开折叠失败：{error:#}")));
             }
         } else {
+            // 入口行优先走派生缓存快路径；光标位于折叠体内部时退回包含该行的最内层候选。
             let range = display_snapshot
                 .crease_at_line(line)
+                .or_else(|| display_snapshot.crease_containing_line(line))
                 .map(|crease| crease.range().clone());
             if let Some(range) = range
                 && let Err(error) = self.display_map.update(cx, |map, cx| {
@@ -721,60 +730,6 @@ impl Editor {
             {
                 cx.emit(EditorEvent::Error(format!("折叠失败：{error:#}")));
             }
-        }
-        self.advance_snapshots(cx);
-        cx.notify();
-    }
-
-    /// 按当前光标所在显示行切换折叠。
-    ///
-    /// 已折叠时，入口文本、占位符与闭合尾段属于同一显示行，从其中任意位置触发都展开该行的折叠；
-    /// 未折叠时，折叠包含光标逻辑行的最内层范围。
-    fn toggle_fold_at_cursor(&mut self, cx: &mut Context<Self>) {
-        let head = self.resolved_selections(cx).primary().head();
-        let display_snapshot = self.display_snapshot(cx).clone();
-        let Ok(display_row) = display_snapshot
-            .offset_to_display_point(head)
-            .map(DisplayPoint::row)
-        else {
-            return;
-        };
-        let folded_anchor_lines = display_snapshot
-            .fold_anchor_lines()
-            .into_iter()
-            .filter(|line| display_snapshot.line_to_display_row(*line) == Some(display_row))
-            .collect::<Vec<_>>();
-
-        if !folded_anchor_lines.is_empty() {
-            for line in folded_anchor_lines {
-                let line_range =
-                    LineRange::new(line, Line::new(line.get() + 1)).expect("折叠入口行 +1 应合法");
-                if let Err(error) = self
-                    .display_map
-                    .update(cx, |map, cx| map.unfold_lines(line_range, cx))
-                {
-                    cx.emit(EditorEvent::Error(format!("展开折叠失败：{error:#}")));
-                }
-            }
-            self.advance_snapshots(cx);
-            cx.notify();
-            return;
-        }
-
-        let snapshot = self.render_snapshot(cx);
-        let Ok(head_line) = snapshot.byte_to_line(head) else {
-            return;
-        };
-        let range = display_snapshot
-            .crease_containing_line(head_line)
-            .map(|crease| crease.range().clone());
-
-        if let Some(range) = range
-            && let Err(error) = self.display_map.update(cx, |map, cx| {
-                map.fold_range(range, FoldPlaceholder::default(), cx)
-            })
-        {
-            cx.emit(EditorEvent::Error(format!("折叠失败：{error:#}")));
         }
         self.advance_snapshots(cx);
         cx.notify();
@@ -1079,6 +1034,8 @@ impl Editor {
     /// 只有 begin/update selection 可以调用这个入口。
     fn set_pending_selection(&mut self, selections: SelectionSet, cx: &App) {
         self.selections = selections.anchored(self.display_snapshot(cx).buffer_snapshot());
+        // 所有偏移态选择/编辑落地都经这里：自动闭合区域在此按新选择收敛，不另设清理入口。
+        self.invalidate_autoclose_regions(cx);
     }
 
     /// 用已锚定的选区替换当前选择，并清空结构化选择链；结束鼠标手势。
@@ -1104,15 +1061,20 @@ impl Editor {
         self.composition = None;
         self.pending_selection = None;
         self.selections = selections;
+        // undo/redo 与结构化收缩同样属于选择落地：按当前快照收敛自动闭合区域。
+        self.invalidate_autoclose_regions(cx);
         self.request_autoscroll(cx);
         self.input_layout = None;
         cx.notify();
     }
 
     /// 按当前派生快照把源锚点选区解析为投影 offset 版选区集合。
+    ///
+    /// 锚点全部无法映射是编辑器不变量破坏：显式失败，绝不用文首 caret 静默兜底。
     fn resolved_selections(&self, cx: &App) -> SelectionSet {
         self.selections
             .resolve(self.display_snapshot(cx).buffer_snapshot())
+            .expect("选区锚点必须在当前显示快照上可解析")
     }
 
     /// 光标位置的 "行:列" 文本，行和列均从 1 开始计数。
@@ -1150,11 +1112,10 @@ impl Editor {
     }
 
     pub(super) fn presentation(&self, cx: &App) -> EditorPresentation {
-        EditorPresentation::new(
-            self.display_snapshot(cx).buffer_snapshot(),
-            self.composition.as_ref(),
-        )
-        .with_dimmed_ranges(self.local_rename_ranges())
+        let display_snapshot = self.display_snapshot(cx);
+        let snapshot = display_snapshot.buffer_snapshot();
+        EditorPresentation::new(snapshot, self.composition.as_ref())
+            .with_dimmed_ranges(self.local_rename_ranges(snapshot))
     }
 
     pub(super) fn shows_gutter(&self) -> bool {
@@ -1217,10 +1178,7 @@ impl Editor {
             .line_start_byte(Line::new(line.get() + 1))
             .unwrap_or_else(|_| snapshot.len_bytes());
         let selection = if extend {
-            let current = *self
-                .selections
-                .resolve(self.display_snapshot(cx).buffer_snapshot())
-                .primary();
+            let current = *self.resolved_selections(cx).primary();
             if end <= current.start() {
                 Selection::new(current.end(), start)
             } else if start >= current.end() {
@@ -1631,16 +1589,23 @@ impl Editor {
         let display_snapshot = display_map.update(cx, |map, cx| map.snapshot(cx));
         let initial_selections =
             SelectionSet::default().anchored(display_snapshot.buffer_snapshot());
-        cx.subscribe(&multi_buffer, |editor, _, _, cx| {
-            let multi_buffer = editor.multi_buffer.clone();
-            let dirty = multi_buffer.read(cx).is_dirty(cx);
-            if editor.last_dirty != dirty {
-                editor.last_dirty = dirty;
-                cx.emit(EditorEvent::DirtyChanged);
-            }
-            editor.advance_snapshots(cx);
-            cx.notify();
-        })
+        cx.subscribe(
+            &multi_buffer,
+            |editor, _: Entity<MultiBuffer>, event: &MultiBufferEvent, cx| {
+                let multi_buffer = editor.multi_buffer.clone();
+                let dirty = multi_buffer.read(cx).is_dirty(cx);
+                if editor.last_dirty != dirty {
+                    editor.last_dirty = dirty;
+                    cx.emit(EditorEvent::DirtyChanged);
+                }
+                // diff 展开/折叠的唯一重建信号由组合文档发布，Editor 只翻译为领域事件，不另设生产者。
+                if matches!(event, MultiBufferEvent::DiffExpansionChanged) {
+                    cx.emit(EditorEvent::DiffHunksExpandedChanged);
+                }
+                editor.advance_snapshots(cx);
+                cx.notify();
+            },
+        )
         .detach();
         let blink_manager = cx.new(|_| BlinkManager::new());
         cx.observe(&blink_manager, |_, _, cx| cx.notify()).detach();
@@ -1801,6 +1766,24 @@ impl Editor {
         Ok((node_id, outcome))
     }
 
+    /// 选择历史预算由文本层编辑日志窗口派生，二者同宽才能保证撤销/重做时文本与选区一起恢复。
+    ///
+    /// 组合文档取首个源缓冲区的配置；无单源（纯组合）时用文本层默认预算。
+    fn selection_history_budget(&self, cx: &App) -> usize {
+        self.multi_buffer
+            .read(cx)
+            .singleton_source()
+            .map(|source| {
+                source
+                    .read(cx)
+                    .text_snapshot()
+                    .config()
+                    .large_file
+                    .max_edit_history_entries
+            })
+            .unwrap_or_else(|| BufferConfig::default().large_file.max_edit_history_entries)
+    }
+
     /// 开启编辑会话并记录 undo 选区。
     ///
     /// Editor 不嵌套会话：zcv-text 会话已开启时视为内部错误。
@@ -1809,8 +1792,12 @@ impl Editor {
             .multi_buffer
             .update(cx, |buffer, cx| buffer.start_transaction(cx))?;
         // 历史记录存源锚点：撤销/重做后 diff 投影可异步重建，选区不依赖重建时机。
-        self.selection_history
-            .insert_transaction(transaction_id, self.selections.clone());
+        let max_entries = self.selection_history_budget(cx);
+        self.selection_history.insert_transaction(
+            transaction_id,
+            self.selections.clone(),
+            max_entries,
+        );
         Ok(transaction_id)
     }
 
@@ -2101,7 +2088,25 @@ impl Editor {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.toggle_fold_at_cursor(cx);
+        // 光标落在折叠合并行内时，先在该显示行内解析折叠入口行（保持展开语义）；
+        // 否则用光标逻辑行，由共享的 toggle_fold_at_line 决定折叠最内层范围。
+        let head = self.resolved_selections(cx).primary().head();
+        let display_snapshot = self.display_snapshot(cx);
+        let display_row = display_snapshot
+            .offset_to_display_point(head)
+            .map(DisplayPoint::row)
+            .ok();
+        let anchor_line = display_row.and_then(|display_row| {
+            display_snapshot
+                .fold_anchor_lines()
+                .into_iter()
+                .find(|line| display_snapshot.line_to_display_row(*line) == Some(display_row))
+        });
+        let target_line =
+            anchor_line.or_else(|| display_snapshot.buffer_snapshot().byte_to_line(head).ok());
+        if let Some(line) = target_line {
+            self.toggle_fold_at_line(line, cx);
+        }
     }
 
     pub(super) fn handle_unfold_all(
@@ -2578,7 +2583,7 @@ impl Render for Editor {
             EditorMode::Full => None,
         };
 
-        let local_rename = self.local_rename_overlay();
+        let local_rename = self.local_rename_overlay(cx);
         let colors = *color::current(cx);
         EditorElement::register_actions(
             div()

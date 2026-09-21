@@ -197,6 +197,8 @@ impl SerializedItemProvider for ProjectSearchSerializedItemProvider {
 
 impl ProjectSearchView {
     pub(crate) fn new(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
+        // 搜索输入框共享 Project 持有的唯一语言注册表，不自建。
+        let language_registry = project.read(cx).language_registry();
         let excerpts = cx.new(MultiBuffer::empty);
         let results_editor = cx.new(|cx| Editor::for_multi_buffer(excerpts.clone(), cx));
         let subscriptions = vec![
@@ -222,7 +224,7 @@ impl ProjectSearchView {
             search_generation: 0,
             debounce_task: None,
             pending_search: None,
-            search_bar: cx.new(|cx| {
+            search_bar: cx.new(move |cx| {
                 SearchBar::new(
                     SearchBarConfig {
                         id_prefix: "project-search",
@@ -232,6 +234,7 @@ impl ProjectSearchView {
                         replace_placeholder: "替换为...",
                         dismissible: true,
                     },
+                    language_registry,
                     cx,
                 )
             }),

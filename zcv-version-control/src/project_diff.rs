@@ -664,6 +664,7 @@ impl ProjectDiffView {
                 | GitStoreEvent::UncommitFailed(_) => {}
             }),
         ];
+        let language_registry = project.read(cx).language_registry();
         let mut view = Self {
             kind,
             project,
@@ -674,7 +675,7 @@ impl ProjectDiffView {
             rebase_projection: false,
             pending_path: None,
             loading_revision_text: Default::default(),
-            search_bar: cx.new(|cx| {
+            search_bar: cx.new(move |cx| {
                 SearchBar::new(
                     SearchBarConfig {
                         id_prefix: "project-diff",
@@ -685,6 +686,7 @@ impl ProjectDiffView {
                         replace_placeholder: "替换为...",
                         dismissible: false,
                     },
+                    language_registry,
                     cx,
                 )
             }),

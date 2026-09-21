@@ -186,7 +186,8 @@ impl GitGraphView {
         let scroll_handle = UniformListScrollHandle::default();
         let scrollbar = Scrollbar::vertical(scroll_handle.clone());
         let git_store = project.read(cx).git_store();
-        let search_bar = cx.new(|cx| {
+        let language_registry = project.read(cx).language_registry();
+        let search_bar = cx.new(move |cx| {
             SearchBar::new(
                 SearchBarConfig {
                     id_prefix: "git-graph",
@@ -196,6 +197,7 @@ impl GitGraphView {
                     replace_placeholder: "替换为…",
                     dismissible: false,
                 },
+                language_registry,
                 cx,
             )
         });

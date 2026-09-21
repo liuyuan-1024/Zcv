@@ -47,7 +47,7 @@ fn main() {
             let languages = Arc::new(LanguageRegistry::new());
             zcv_preview_markdown::init(Arc::clone(&languages), cx);
             zcv_preview_svg::init(cx);
-            zcv_editor::init(cx);
+            zcv_editor::init(cx, Arc::clone(&languages));
             zcv_preview_image::init(cx);
             zcv_search::init(cx);
             zcv_version_control::init(cx);

@@ -30,6 +30,7 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
         editor.selection_history.insert_transaction(
             TransactionId::new(1),
             SelectionSet::caret(MultiBufferOffset::ZERO).anchored(display.buffer_snapshot()),
+            16,
         );
         let redo =
             SelectionSet::caret(MultiBufferOffset::new(1)).anchored(display.buffer_snapshot());
@@ -88,11 +89,14 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
             .transaction(TransactionId::new(1))
             .expect("第一个 Editor 应保存自己的选区历史");
         assert_eq!(
-            history.undo().resolve(&snapshot),
+            history
+                .undo()
+                .resolve(&snapshot)
+                .expect("undo 选区应可解析"),
             SelectionSet::caret(MultiBufferOffset::ZERO)
         );
         assert_eq!(
-            history.redo().map(|redo| redo.resolve(&snapshot)),
+            history.redo().and_then(|redo| redo.resolve(&snapshot)),
             Some(SelectionSet::caret(MultiBufferOffset::new(1)))
         );
     });
@@ -322,8 +326,9 @@ fn external_reload_collapses_selection_when_text_is_rewritten(cx: &mut TestAppCo
 }
 #[gpui::test]
 fn constructors_create_expected_modes_and_independent_scratch_buffers(cx: &mut TestAppContext) {
-    let single_line = cx.new(Editor::single_line);
-    let auto_height = cx.new(|cx| Editor::auto_height(2, Some(6), cx));
+    let single_line = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
+    let auto_height =
+        cx.new(|cx| Editor::auto_height(2, Some(6), Arc::new(LanguageRegistry::new()), cx));
 
     let single_buffer = cx.read_entity(&single_line, |editor, cx| {
         assert_eq!(editor.mode, EditorMode::SingleLine);
@@ -350,8 +355,9 @@ fn constructors_create_expected_modes_and_independent_scratch_buffers(cx: &mut T
 }
 #[gpui::test]
 fn auto_height_keeps_newlines_single_line_strips(cx: &mut TestAppContext) {
-    let single_line = cx.new(Editor::single_line);
-    let auto_height = cx.new(|cx| Editor::auto_height(1, Some(4), cx));
+    let single_line = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
+    let auto_height =
+        cx.new(|cx| Editor::auto_height(1, Some(4), Arc::new(LanguageRegistry::new()), cx));
 
     cx.update_entity(&single_line, |editor, cx| editor.set_text("a\nb", cx));
     cx.update_entity(&auto_height, |editor, cx| editor.set_text("a\nb", cx));

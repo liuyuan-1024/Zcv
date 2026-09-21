@@ -125,7 +125,9 @@ pub struct ProjectTreePanel {
 impl ProjectTreePanel {
     pub fn new(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
-        let entry_name_editor = cx.new(Editor::single_line);
+        // 复用 Project 持有的唯一语言注册表，编辑内嵌输入框不自建。
+        let language_registry = project.read(cx).language_registry();
+        let entry_name_editor = cx.new(move |cx| Editor::single_line(language_registry, cx));
         cx.observe(&entry_name_editor, |_, _, cx| cx.notify())
             .detach();
         let exclusions = SettingsStore::file_scan_exclusions(cx);

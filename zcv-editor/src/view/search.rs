@@ -193,8 +193,16 @@ impl SearchableItem for Editor {
             Direction::Prev => (current + len - count % len) % len,
         };
         search.active_index = Some(next);
-        let range = search.match_range(next);
+        // 先完成本命令的快照推进（可能重建搜索结果），再取推进后的当次结果；
+        // 不得把推进前的旧范围交给 select_byte_range，否则会越界或落到错误匹配。
         self.advance_snapshots(cx);
+        let Some(range) = self
+            .search
+            .as_ref()
+            .and_then(|search| search.active_index.map(|index| search.match_range(index)))
+        else {
+            return;
+        };
         self.select_byte_range(range, cx);
         cx.emit(SearchEvent::ActiveMatchChanged);
     }
@@ -402,21 +410,35 @@ impl Editor {
         Some(search)
     }
 
-    /// 编辑事务后调用：搜索结果过期时用保存的 query 重搜，活动匹配保持原序号。
+    /// 编辑事务后调用：本地搜索结果过期时用保存的 query 重搜，活动匹配保持原序号。
+    ///
+    /// 外部派生结果集（项目搜索结果）由结果所有者拥有，Editor 不把它改写成当前文档上的 Query 重搜；
+    /// 只按当前快照重投影已有锚点范围，保持 `External` 语义不变。
     pub(crate) fn research_after_edit(&mut self, cx: &mut gpui::Context<Self>) {
         let Some(search) = &self.search else { return };
         if search.query.query.is_empty() {
             return;
         }
-        let version = self
+        let snapshot = self
             .multi_buffer
-            .update(cx, |buffer, cx| buffer.snapshot(cx))
-            .version();
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        let version = snapshot.version();
         if !search.is_stale(version) {
             return;
         }
+        let is_external = matches!(search.result, Some(SearchResultKind::External { .. }));
         let query = search.query.clone();
         let active = search.active_index;
+        if is_external {
+            let Some(search) = self.search.as_mut() else {
+                return;
+            };
+            search.result = Some(SearchResultKind::External { version });
+            search.rebuild_ranges(&snapshot);
+            cx.notify();
+            cx.emit(SearchEvent::MatchesInvalidated);
+            return;
+        }
         self.search = self.execute_search(&query, cx);
         if let Some(search) = &mut self.search {
             let len = search.len();

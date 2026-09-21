@@ -269,7 +269,13 @@ fn initialize_common_workspace(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    let outline = cx.new(|cx| OutlinePanel::new(workspace.pane().clone(), cx));
+    let outline = cx.new(|cx| {
+        OutlinePanel::new(
+            workspace.pane().clone(),
+            workspace.project().read(cx).language_registry(),
+            cx,
+        )
+    });
     let terminal_project = workspace.project().clone();
     let terminal = cx.new(|cx| TerminalPanel::new(terminal_project, cx));
 

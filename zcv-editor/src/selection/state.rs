@@ -298,26 +298,26 @@ impl TransactionSelections {
 
 /// 选择历史记录只用于撤销 / 重做时恢复选区，是文本历史的派生缓存。
 ///
-/// 上限与文本层 Undo 历史预算同量级：超出时从最老事务开始丢弃。
-/// 被丢弃的事务已不可能再被文本历史撤销 / 重做，因此不影响仍可回放的选区恢复。
-const MAX_SELECTION_HISTORY_ENTRIES: usize = 1024;
-
+/// 上限由调用方从文本历史窗口（`max_edit_history_entries`）派生并传入：
+/// 超出时从最老事务开始丢弃。被丢弃的事务已不可能再被文本历史撤销 / 重做，
+/// 因此不影响仍可回放的选区恢复，也不会出现「只恢复文本、丢选择」的预算错位。
 #[derive(Debug, Default)]
 pub(crate) struct SelectionHistory {
     selections_by_transaction: BTreeMap<TransactionId, TransactionSelections>,
 }
 
 impl SelectionHistory {
-    /// 事务开始时记录 undo 选区（源锚点）；超出上限时丢弃最老事务。
+    /// 事务开始时记录 undo 选区（源锚点）；超出调用方给出的预算时丢弃最老事务。
     pub(crate) fn insert_transaction(
         &mut self,
         transaction_id: TransactionId,
         undo: SelectionSet<MultiBufferAnchor>,
+        max_entries: usize,
     ) {
         self.selections_by_transaction
             .entry(transaction_id)
             .or_insert_with(|| TransactionSelections { undo, redo: None });
-        while self.selections_by_transaction.len() > MAX_SELECTION_HISTORY_ENTRIES {
+        while self.selections_by_transaction.len() > max_entries {
             self.selections_by_transaction.pop_first();
         }
     }

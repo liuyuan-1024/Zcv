@@ -1483,7 +1483,7 @@ impl Element for EditorElement {
             window,
             cx,
         );
-        if let Some(range) = self.editor.read(cx).local_rename_range() {
+        if let Some(range) = self.editor.read(cx).local_rename_range(cx) {
             layout.insert_local_rename_row(&range);
         }
         let mut ime_caret_bounds = layout_primary_caret(&selections, &layout, line_height);

@@ -14,7 +14,7 @@ use zcv_actions::{
     Backtab, ClearSearch, FindNext, FindPrevious, ReplaceAll, ReplaceNext, SelectAll, Tab,
     ToggleCaseSensitive, ToggleRegex, ToggleReplace, ToggleWholeWord,
 };
-use zcv_editor::{Editor, EditorEvent};
+use zcv_editor::{Editor, EditorEvent, LanguageRegistry};
 use zcv_project::SearchQuery;
 use zcv_theme::{color, space};
 use zcv_ui::{Button, MatchOption, MatchOptions, ReplaceInput, SearchInput};
@@ -65,9 +65,16 @@ pub struct SearchBar {
 }
 
 impl SearchBar {
-    pub fn new(config: SearchBarConfig, cx: &mut Context<Self>) -> Self {
-        let query_input = cx.new(|cx| Editor::auto_height(1, Some(4), cx));
-        let replace_input = cx.new(|cx| Editor::auto_height(1, Some(4), cx));
+    /// `language_registry` 由装配层注入：搜索输入框不自建注册表。
+    pub fn new(
+        config: SearchBarConfig,
+        language_registry: std::sync::Arc<LanguageRegistry>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let query_registry = std::sync::Arc::clone(&language_registry);
+        let query_input = cx.new(move |cx| Editor::auto_height(1, Some(4), query_registry, cx));
+        let replace_input =
+            cx.new(move |cx| Editor::auto_height(1, Some(4), language_registry, cx));
         query_input.update(cx, |editor, cx| {
             editor.set_placeholder_text(config.query_placeholder, cx)
         });

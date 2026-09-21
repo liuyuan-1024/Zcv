@@ -386,3 +386,47 @@ fn newline_inside_handwritten_pair_adds_extra_line(cx: &mut TestAppContext) {
     assert_eq!(buffer_text(&buffer, cx), "ab{\n    \n}");
     assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(8));
 }
+#[gpui::test]
+fn autoclose_regions_stay_bounded_and_drop_invalid_entries(cx: &mut TestAppContext) {
+    let (buffer, editor, cx) =
+        editor_with_rust(cx, "ab", SelectionSet::caret(MultiBufferOffset::new(2)));
+
+    // 连续打开 4 层嵌套：每层一个存活区域，全部与光标相交。
+    for _ in 0..4 {
+        type_text(&editor, cx, "(");
+    }
+    assert_eq!(buffer_text(&buffer, cx), "ab(((())))");
+    cx.read_entity(&editor, |editor, _| {
+        assert_eq!(
+            editor.autoclose_regions.len(),
+            4,
+            "每层未闭合配对都应保留一个存活区域"
+        );
+    });
+
+    // 逐层闭合：每闭合一层，最内层区域立即失效并被移除，剩余区域保留。
+    for expected in (0..4).rev() {
+        type_text(&editor, cx, ")");
+        cx.read_entity(&editor, |editor, _| {
+            assert_eq!(
+                editor.autoclose_regions.len(),
+                expected,
+                "闭合后自动闭合区域数量必须收敛到 {expected}"
+            );
+        });
+    }
+    assert_eq!(buffer_text(&buffer, cx), "ab(((())))");
+
+    // 继续输入多对括号，区域数保持有界而不是只增不减。
+    for _ in 0..16 {
+        type_text(&editor, cx, "(");
+        type_text(&editor, cx, ")");
+    }
+    cx.read_entity(&editor, |editor, _| {
+        assert!(
+            editor.autoclose_regions.len() <= 1,
+            "全部闭合后自动闭合区域必须有界，实际 {}",
+            editor.autoclose_regions.len()
+        );
+    });
+}

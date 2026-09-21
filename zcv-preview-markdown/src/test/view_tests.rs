@@ -257,7 +257,7 @@ fn applies_language_highlights_to_fenced_code_blocks() {
 
 #[gpui::test]
 fn preview_rebuilds_when_source_document_changes(cx: &mut TestAppContext) {
-    let editor = cx.new(Editor::single_line);
+    let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     editor.update(cx, |editor, cx| {
         editor.set_text("# 初始标题", cx);
         editor.set_file_path(PathBuf::from("README.md"), cx);
@@ -298,7 +298,7 @@ fn preview_rebuilds_when_source_document_changes(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn preview_coalesces_rapid_document_changes(cx: &mut TestAppContext) {
-    let editor = cx.new(Editor::single_line);
+    let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     editor.update(cx, |editor, cx| {
         editor.set_text("初始正文", cx);
         editor.set_file_path(PathBuf::from("README.md"), cx);
@@ -341,7 +341,7 @@ fn preview_coalesces_rapid_document_changes(cx: &mut TestAppContext) {
 /// 工具项注册方据此隐藏通用文档工具栏，两行工具区不会重复显示。
 #[gpui::test]
 fn preview_exposes_the_source_editor_as_a_proxy(cx: &mut TestAppContext) {
-    let editor = cx.new(Editor::single_line);
+    let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
     editor.update(cx, |editor, cx| {
         editor.set_text("# 标题", cx);
         editor.set_file_path(PathBuf::from("README.md"), cx);

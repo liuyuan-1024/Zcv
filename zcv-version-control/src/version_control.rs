@@ -346,8 +346,10 @@ impl VersionControlPanel {
     pub fn new(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         let git_store = project.read(cx).git_store();
-        let commit_editor = cx.new(|cx| {
-            let mut editor = Editor::auto_height(7, Some(7), cx);
+        // 注册表由装配层（Project 持有的唯一语言注册表）注入，编辑器不再自建。
+        let language_registry = project.read(cx).language_registry();
+        let commit_editor = cx.new(move |cx| {
+            let mut editor = Editor::auto_height(7, Some(7), language_registry, cx);
             editor.set_placeholder_text("输入提交信息…", cx);
             editor
         });

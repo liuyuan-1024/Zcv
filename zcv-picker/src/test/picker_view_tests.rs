@@ -11,7 +11,8 @@ use zcv_actions::Newline;
 use zcv_ui::ListItem;
 
 fn init(cx: &mut TestAppContext) {
-    cx.update(zcv_editor::init);
+    let languages = std::sync::Arc::new(zcv_editor::LanguageRegistry::new());
+    cx.update(move |cx| zcv_editor::init(cx, languages));
 }
 
 /// 行内含超长文本（换行后行高很大），用于验证列表高度受容器约束。

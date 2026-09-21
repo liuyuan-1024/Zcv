@@ -796,59 +796,16 @@ impl WrapSnapshot {
         Ok((start.0.row(), start.1.0, transform))
     }
 
-    /// 选区起终点（投影点）→ (显示行, 显示行内字符列)；列按字符计数（含假空格），
-    /// 与渲染端 `column_to_byte` 的语义一致。
+    /// 选区起终点（投影点）→ (显示行, 显示行内显示列)。
+    ///
+    /// 与 `projected_point_to_wrap_point` 共用同一套显示列语义（Tab 对齐、CJK 宽字符、折叠合并行）；
+    /// 渲染端按 `window_start_column` 把显示列换算回行内字节，两者必须同处一个坐标空间。
     fn projected_point_to_range_point(
         &self,
         point: ProjectedPoint,
     ) -> DisplayMapResult<(WrapRow, usize)> {
-        let tab_row = point.line().get();
-        let line = Line::new(tab_row);
-        let buffer = self.tab_snapshot.buffer_snapshot();
-        let fold = self.tab_snapshot.fold_snapshot();
-        let merged = fold.is_fold_row(ProjectedLineIndex::new(tab_row));
-        let target_projected = self.projected_column_to_byte(line, point.column())?;
-        let (input_start, output_start, transform) = self.transform_for_tab_row(tab_row)?;
-        let (fragment_index, fragment_start, indent) = match transform.kind {
-            TransformKind::Isomorphic => (tab_row - input_start, 0, 0),
-            TransformKind::Wrap => {
-                let fragment_index =
-                    fragment_index_for_byte(&transform.wrap_points, target_projected);
-                (
-                    fragment_index,
-                    fragment_index
-                        .checked_sub(1)
-                        .map_or(0, |i| transform.wrap_points[i].byte_ix),
-                    fragment_index
-                        .checked_sub(1)
-                        .map_or(0, |i| transform.wrap_points[i].indent as usize),
-                )
-            }
-        };
-        // 片段起点列：合并行按合并文本字符数；普通行逆投影回原始字节 → 起始逻辑列。
-        let column_base = if merged {
-            let text = self
-                .tab_snapshot
-                .line_text(line)
-                .ok_or(CoordinateError::LineOutOfBounds(line))?;
-            line_content(text.as_ref())[..fragment_start]
-                .chars()
-                .count()
-        } else {
-            let line_start = self
-                .tab_snapshot
-                .line_byte_range(line)
-                .ok_or(CoordinateError::LineOutOfBounds(line))?
-                .start
-                .get();
-            buffer
-                .byte_to_position(MultiBufferOffset::new(line_start + fragment_start))
-                .map_or(0, |position| position.column().get())
-        };
-        Ok((
-            WrapRow::new(output_start + fragment_index),
-            indent + (point.column().get() - column_base),
-        ))
+        let point = self.projected_point_to_wrap_point(point)?;
+        Ok((point.row(), point.column().get()))
     }
 }
 

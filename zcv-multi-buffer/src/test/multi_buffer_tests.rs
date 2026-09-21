@@ -777,6 +777,31 @@ fn singleton(path: &str, text: &str, cx: &mut TestAppContext) -> gpui::Entity<La
     })
 }
 
+/// 测试辅助：在小阈值大文件策略下构造自动只读的源，用于多源编辑预检。
+fn read_only_singleton(
+    path: &str,
+    text: &str,
+    cx: &mut TestAppContext,
+) -> gpui::Entity<LanguageBuffer> {
+    let config = BufferConfig {
+        large_file: zcv_text::LargeFilePolicy {
+            large_file_threshold_bytes: 1,
+            auto_read_only_on_large_file: true,
+            ..zcv_text::LargeFilePolicy::default()
+        },
+    };
+    let buffer = Buffer::from_text(text.to_owned(), config).expect("应创建测试 Buffer");
+    assert!(buffer.is_read_only(), "超过 1 字节的文本必须自动切只读");
+    cx.new(|cx| {
+        LanguageBuffer::new(
+            buffer,
+            Some(PathBuf::from(path)),
+            Arc::new(LanguageRegistry::new()),
+            cx,
+        )
+    })
+}
+
 #[gpui::test]
 fn title_prefers_explicit_value_and_derives_from_path(cx: &mut TestAppContext) {
     let source = singleton(
@@ -924,10 +949,7 @@ fn structural_change_inside_a_transaction_fails(cx: &mut TestAppContext) {
         buffer
             .start_transaction(cx)
             .expect("空组合文档应能开始事务");
-        buffer.set_excerpts_for_path(
-            vec![ExcerptRange::line_range(first.clone(), 0..1, cx)],
-            cx,
-        );
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(first.clone(), 0..1, cx)], cx);
     });
 }
 
@@ -3245,6 +3267,66 @@ fn multi_source_edit_does_not_partially_commit_when_a_source_advanced(cx: &mut T
         "预检失败不得让第一源留下部分提交文本"
     );
     assert_eq!(read(&second, cx), "");
+}
+
+/// 回归：多源编辑中任一源只读时，整体失败且不得部分提交其它源。
+///
+/// 只读拒绝与版本失配一样必须在任何源提交前一次性判定。
+#[gpui::test]
+fn multi_source_edit_does_not_partially_commit_when_a_source_is_read_only(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "one\n", cx);
+    let second = read_only_singleton("src/b.rs", "two\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                ExcerptRange::new(
+                    first.clone(),
+                    TextRange::new(ByteOffset::ZERO, ByteOffset::new(4)).unwrap(),
+                    Vec::new(),
+                ),
+                ExcerptRange::new(
+                    second.clone(),
+                    TextRange::new(ByteOffset::ZERO, ByteOffset::new(4)).unwrap(),
+                    Vec::new(),
+                ),
+            ],
+            cx,
+        );
+    });
+
+    let error = cx
+        .update_entity(&combined, |buffer, cx| {
+            buffer.edit(
+                vec![Edit::replace(
+                    TextRange::new(ByteOffset::new(1), ByteOffset::new(6)).unwrap(),
+                    "X",
+                )],
+                TransactionMetadata::default(),
+                cx,
+            )
+        })
+        .expect_err("存在只读源时多源编辑必须整体失败");
+    assert!(
+        matches!(error, TextError::Storage(StorageError::ReadOnly)),
+        "失败必须是只读拒绝，而不是第一源提交后第二源才失败：{error:?}"
+    );
+
+    let read = |buffer: &gpui::Entity<LanguageBuffer>, cx: &TestAppContext| {
+        cx.read_entity(buffer, |buffer, _| {
+            let snapshot = buffer.text_snapshot();
+            snapshot
+                .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+                .unwrap()
+                .as_str()
+                .to_owned()
+        })
+    };
+    assert_eq!(
+        read(&first, cx),
+        "one\n",
+        "只读预检失败不得让第一源留下部分提交文本"
+    );
 }
 
 #[gpui::test]

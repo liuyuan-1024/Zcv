@@ -4725,6 +4725,10 @@ impl MultiBuffer {
                 }
                 .into());
             }
+            // 只读源同样必须在任何源提交前拒绝，否则先提交的源会留下部分提交文本。
+            if source.read(cx).is_read_only() {
+                return Err(StorageError::ReadOnly.into());
+            }
         }
 
         let mut edited_source_ids = Vec::with_capacity(grouped.len());

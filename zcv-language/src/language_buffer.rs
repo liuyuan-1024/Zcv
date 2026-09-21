@@ -187,6 +187,11 @@ impl LanguageBuffer {
         self.buffer.version()
     }
 
+    /// 底层文本是否为只读；组合文档在多源编辑提交前据此一次性拒绝，避免跨源部分提交。
+    pub fn is_read_only(&self) -> bool {
+        self.buffer.is_read_only()
+    }
+
     /// 当前文本字节长度。
     pub fn len_bytes(&self) -> ByteOffset {
         self.buffer.len_bytes()

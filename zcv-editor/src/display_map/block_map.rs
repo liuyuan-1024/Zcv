@@ -140,16 +140,14 @@ pub(super) struct BlockSnapshot {
     wrap_snapshot: WrapSnapshot,
     transforms: SumTree<Transform>,
     excerpts: Arc<[ExcerptSnapshot]>,
-    /// MultiBuffer 提供的逻辑 excerpt 边界签名。
-    ///
-    /// 保存下标、Buffer 身份与「是否进入新 Buffer」，避免在文件集合变化而边界数量未变时复用旧块分类。
-    excerpt_boundaries: Arc<[(usize, BufferId, bool)]>,
     /// 构建时的整文件折叠集合；变化会使块布局失效。
     folded_buffers: HashSet<BufferId>,
     /// 构建时的显示策略；变化会改变 header/divider 分类，必须参与失效判断。
     show_headers: bool,
     /// 块锚点（wrap 行）；换行编辑时按区间平移并重排。
     specs: Arc<[BlockSpec]>,
+    /// 块几何代际：只有变换树真正重建/重定位时推进，供依赖显示几何的缓存精确失效。
+    geometry_epoch: u64,
 }
 
 fn excerpt_boundaries(wrap_snapshot: &WrapSnapshot) -> Arc<[(usize, BufferId, bool)]> {
@@ -441,7 +439,6 @@ impl BlockLayoutPrefix {
 struct BlockProjectionInputs {
     wrap_snapshot: WrapSnapshot,
     excerpts: Arc<[ExcerptSnapshot]>,
-    excerpt_boundaries: Arc<[(usize, BufferId, bool)]>,
     folded_buffers: HashSet<BufferId>,
     show_headers: bool,
 }
@@ -588,6 +585,11 @@ impl BlockSnapshot {
         &self.wrap_snapshot
     }
 
+    /// 块几何代际；变换树整棵复用时保持不变。
+    pub(super) fn geometry_epoch(&self) -> u64 {
+        self.geometry_epoch
+    }
+
     pub(crate) fn rows(&self, start_row: DisplayRow, line_count: usize) -> BlockRows<'_> {
         BlockRows::new(self, start_row, line_count)
     }
@@ -598,11 +600,10 @@ impl BlockSnapshot {
         folded_buffers: &HashSet<BufferId>,
     ) -> Self {
         let show_headers = wrap_snapshot.buffer_snapshot().show_headers();
-        let excerpt_boundaries = excerpt_boundaries(&wrap_snapshot);
         let specs: Arc<[BlockSpec]> = compute_specs(
             &wrap_snapshot,
             &excerpts,
-            &excerpt_boundaries,
+            &excerpt_boundaries(&wrap_snapshot),
             folded_buffers,
             show_headers,
         )
@@ -614,10 +615,10 @@ impl BlockSnapshot {
             0,
             spec_count,
             None,
+            0,
             BlockProjectionInputs {
                 wrap_snapshot,
                 excerpts,
-                excerpt_boundaries,
                 folded_buffers: folded_buffers.clone(),
                 show_headers,
             },
@@ -634,12 +635,12 @@ impl BlockSnapshot {
         spec_start: usize,
         spec_end: usize,
         suffix: Option<SumTree<Transform>>,
+        geometry_epoch: u64,
         inputs: BlockProjectionInputs,
     ) -> Self {
         let BlockProjectionInputs {
             wrap_snapshot,
             excerpts,
-            excerpt_boundaries,
             folded_buffers,
             show_headers,
         } = inputs;
@@ -689,10 +690,10 @@ impl BlockSnapshot {
             wrap_snapshot,
             transforms: prefix.transforms,
             excerpts,
-            excerpt_boundaries,
             folded_buffers,
             show_headers,
             specs,
+            geometry_epoch,
         }
     }
 
@@ -708,84 +709,95 @@ impl BlockSnapshot {
         wrap_edits: &[WrapEdit],
     ) -> BlockSnapshot {
         let show_headers = wrap_snapshot.buffer_snapshot().show_headers();
-        let excerpt_boundaries = excerpt_boundaries(&wrap_snapshot);
         let old_wrap_line_count = self.wrap_snapshot.line_count();
         let new_wrap_line_count = wrap_snapshot.line_count();
-        let structural = &self.folded_buffers != folded_buffers
-            || excerpt_boundaries != self.excerpt_boundaries
+        // 块结构只在组合投影真正变化或折叠/显示策略变化时重算。
+        // 组合投影版本是权威信号：异步换行重排不改变投影版本，只需按换行编辑重定位锚点，不能用手写的边界签名代理结构变化。
+        let structural = self.wrap_snapshot.buffer_snapshot().version()
+            != wrap_snapshot.buffer_snapshot().version()
+            || &self.folded_buffers != folded_buffers
             || show_headers != self.show_headers;
         let inputs = BlockProjectionInputs {
             wrap_snapshot,
             excerpts,
-            excerpt_boundaries,
             folded_buffers: folded_buffers.clone(),
             show_headers,
         };
 
-        if !structural {
-            if wrap_edits.is_empty() {
-                return self.reuse_transforms(inputs);
-            }
-            let specs = self.relocate_specs(&inputs, wrap_edits);
-            return self.rebuild_after_edits(
-                inputs,
-                specs,
-                old_wrap_line_count,
-                new_wrap_line_count,
-            );
-        }
+        // 折叠集合、显示策略或 excerpt 拓扑变化必须重算块分类；
+        // 纯换行编辑只在旧锚点表上重定位。两条路径都只重建受影响区间。
+        let specs: Arc<[BlockSpec]> = if structural {
+            compute_specs(
+                &inputs.wrap_snapshot,
+                &inputs.excerpts,
+                &excerpt_boundaries(&inputs.wrap_snapshot),
+                &inputs.folded_buffers,
+                inputs.show_headers,
+            )
+            .into()
+        } else if wrap_edits.is_empty() {
+            return self.reuse_transforms(inputs);
+        } else {
+            self.relocate_specs(&inputs, wrap_edits)
+        };
 
-        // 结构变化（折叠集合、显示策略或 excerpt 拓扑）需要重算块分类。
-        let specs: Arc<[BlockSpec]> = compute_specs(
-            &inputs.wrap_snapshot,
-            &inputs.excerpts,
-            &inputs.excerpt_boundaries,
-            &inputs.folded_buffers,
-            inputs.show_headers,
-        )
-        .into();
-
-        if wrap_edits.is_empty() && inputs.excerpt_boundaries == self.excerpt_boundaries {
-            // 输入空间未变：可同时复用变化区间前后的变换子树。
+        // 前缀是两棵锚点表的公共前缀；后缀直接追加旧变换子树，不再整份重建。
+        // 结构变化按锚点表末尾的结构等价性定位后缀；
+        // 换行重排取所有编辑之后的尾部，该尾部整体平移，块序列与相对间距不变。
+        let (first_changed, new_end, old_suffix_index) = if structural {
             let (first, suffix_len) = changed_spec_range(
                 &self.specs,
                 &specs,
                 old_wrap_line_count,
                 new_wrap_line_count,
             );
-            let new_end = specs.len().saturating_sub(suffix_len);
-            if first >= new_end {
-                return self.reuse_transforms(inputs);
-            }
-            let prefix = self.prefix_before(first, old_wrap_line_count);
             // 后缀位于旧变换树中，必须用旧规格下标定位；新旧块数量可不同（折叠会合并块）。
-            let old_suffix_index = self.specs.len().saturating_sub(suffix_len);
-            let suffix = (new_end < specs.len())
-                .then(|| self.suffix_from(old_suffix_index, old_wrap_line_count));
-            return Self::rebuild(prefix, specs, first, new_end, suffix, inputs);
+            (
+                first,
+                specs.len().saturating_sub(suffix_len),
+                self.specs.len().saturating_sub(suffix_len),
+            )
+        } else {
+            let (first, _) = changed_spec_range(
+                &self.specs,
+                &specs,
+                old_wrap_line_count,
+                new_wrap_line_count,
+            );
+            let suffix_start = self.suffix_start_after_edits(wrap_edits).max(first);
+            (first, suffix_start, suffix_start)
+        };
+
+        // 锚点表与换行行数都未变时块几何未变：整棵树复用，几何代际不推进。
+        if specs.len() == self.specs.len()
+            && first_changed >= new_end
+            && old_wrap_line_count == new_wrap_line_count
+        {
+            return self.reuse_transforms(inputs);
         }
 
-        // excerpt 拓扑变化会平移锚点，只能复用首个变化块之前的前缀。
-        let (first, _) = changed_spec_range(
-            &self.specs,
-            &specs,
-            old_wrap_line_count,
-            new_wrap_line_count,
-        );
-        let prefix = self.prefix_before(first, old_wrap_line_count);
-        if first < specs.len() && specs[first].wrap_row < prefix.wrap_row {
-            let spec_count = specs.len();
-            return Self::rebuild(
-                BlockLayoutPrefix::empty(),
-                specs,
-                0,
-                spec_count,
-                None,
-                inputs,
-            );
+        // 块锚点重定位可能越过前一个块的结束（整文件折叠吞行、删除段把锚点拉回 excerpt 起点），此时旧前缀已经包含了属于重建区间的文本行。
+        // 逐步回退前缀边界，直到它不再越过新块起点；回退只影响复用粒度，不会重建整份投影。
+        let mut first_changed = first_changed;
+        let mut prefix = self.prefix_before(first_changed, old_wrap_line_count);
+        while first_changed > 0
+            && first_changed < specs.len()
+            && specs[first_changed].wrap_row < prefix.wrap_row
+        {
+            first_changed -= 1;
+            prefix = self.prefix_before(first_changed, old_wrap_line_count);
         }
-        let spec_count = specs.len();
-        Self::rebuild(prefix, specs, first, spec_count, None, inputs)
+        let suffix = (new_end < specs.len())
+            .then(|| self.suffix_from(old_suffix_index, old_wrap_line_count));
+        Self::rebuild(
+            prefix,
+            specs,
+            first_changed,
+            new_end,
+            suffix,
+            self.geometry_epoch + 1,
+            inputs,
+        )
     }
 
     /// 复用整棵变换树，只替换片段视图与策略事实。
@@ -794,10 +806,10 @@ impl BlockSnapshot {
             wrap_snapshot: inputs.wrap_snapshot,
             transforms: self.transforms.clone(),
             excerpts: inputs.excerpts,
-            excerpt_boundaries: inputs.excerpt_boundaries,
             folded_buffers: inputs.folded_buffers,
             show_headers: inputs.show_headers,
             specs: self.specs.clone(),
+            geometry_epoch: self.geometry_epoch,
         }
     }
 
@@ -819,40 +831,17 @@ impl BlockSnapshot {
         specs.into()
     }
 
-    fn rebuild_after_edits(
-        &self,
-        inputs: BlockProjectionInputs,
-        specs: Arc<[BlockSpec]>,
-        old_wrap_line_count: usize,
-        new_wrap_line_count: usize,
-    ) -> BlockSnapshot {
-        let first_changed = (0..specs.len())
-            .find(|&index| {
-                !specs_equivalent(
-                    &self.specs,
-                    index,
-                    old_wrap_line_count,
-                    &specs,
-                    index,
-                    new_wrap_line_count,
-                )
-            })
-            .unwrap_or(specs.len());
-        let prefix = self.prefix_before(first_changed, old_wrap_line_count);
-        // 后缀锚点上移会越过复用前缀的终点，前缀几何不再有效；从投影起点重建。
-        if first_changed < specs.len() && specs[first_changed].wrap_row < prefix.wrap_row {
-            let spec_count = specs.len();
-            return Self::rebuild(
-                BlockLayoutPrefix::empty(),
-                specs,
-                0,
-                spec_count,
-                None,
-                inputs,
-            );
-        }
-        let spec_count = specs.len();
-        Self::rebuild(prefix, specs, first_changed, spec_count, None, inputs)
+    /// 所有换行编辑之后的第一个块锚点。
+    ///
+    /// 该尾部在换行重排下整体平移、块序列与相对间距不变，因此可整段追加旧变换子树。
+    fn suffix_start_after_edits(&self, wrap_edits: &[WrapEdit]) -> usize {
+        let max_old_end = wrap_edits
+            .iter()
+            .map(|edit| edit.old.end)
+            .max()
+            .unwrap_or(0);
+        self.specs
+            .partition_point(|spec| spec.wrap_row < max_old_end)
     }
 
     /// 旧布局中前 `spec_count` 个块结束后的续排位置：换行行与显示行。

@@ -175,6 +175,18 @@ fn layer_bytes(snapshot: &Snapshot, layer: &SyntaxLayer) -> Option<Range<usize>>
     Some(start.get()..end.get())
 }
 
+/// 取同一 Buffer 生命周期内的坐标编辑批次。
+///
+/// 坐标索引不衰减，插值/解析版本始终落在其覆盖范围内；
+/// `None` 说明调用方把别的 Buffer 的快照传了进来，属于不变量破坏，必须显式失败而不是丢弃全部层做全文重跑。
+fn coordinate_edits_or_fail(snapshot: &Snapshot, since: BufferVersion) -> TextChangeBatch {
+    snapshot.coordinate_edits_since(since).unwrap_or_else(|| {
+        panic!(
+            "语法快照版本 {since:?} 不在当前 Buffer 的坐标索引覆盖范围内；插值与解析只能在同一个 Buffer 生命周期内推进"
+        )
+    })
+}
+
 impl SyntaxMap {
     pub(crate) fn language(&self) -> Option<&Language> {
         self.language.as_deref()
@@ -247,48 +259,42 @@ impl SyntaxMap {
         }
 
         // 增量编辑走不衰减坐标索引：带文本 EditLog 被裁剪后仍可用。
-        let changes = new_snapshot.coordinate_edits_since(self.interpolated_version);
+        // 插值版本始终属于当前 Buffer 生命周期，坐标索引必然覆盖；
+        // 缺失即不变量失败，不得回退为丢弃全部语法状态并全文重跑。
+        let changes = coordinate_edits_or_fail(new_snapshot, self.interpolated_version);
 
         let old_snapshot = &self.interpolated_snapshot;
         let state = Arc::make_mut(&mut self.state);
         let mut tree = state.tree.take();
-        if let Some(changes) = changes.as_ref() {
-            if tree
-                .as_mut()
-                .is_some_and(|tree| !edit_tree(tree, old_snapshot, new_snapshot, changes))
-                && let Some(old_tree) = tree.take()
-            {
-                drop_offloaded(old_tree);
-            }
-            let mut invalid_layers = Vec::new();
-            let mut retained = Vec::with_capacity(state.injections.len());
-            for mut layer in std::mem::take(&mut state.injections) {
-                // 锚点自行跟随编辑；范围被删空说明注入点已消失，必须丢弃该层。
-                let non_empty =
-                    layer_bytes(new_snapshot, &layer).is_some_and(|bytes| bytes.start < bytes.end);
-                // 已解析层把增量编辑应用到树上；待处理层没有树。
-                let tree_ok = match &mut layer.content {
-                    SyntaxLayerContent::Parsed { tree, .. } => {
-                        edit_tree(tree, old_snapshot, new_snapshot, changes)
-                    }
-                    SyntaxLayerContent::Pending { .. } => true,
-                };
-                if non_empty && tree_ok {
-                    retained.push(layer);
-                } else {
-                    invalid_layers.push(layer);
+        if tree
+            .as_mut()
+            .is_some_and(|tree| !edit_tree(tree, old_snapshot, new_snapshot, &changes))
+            && let Some(old_tree) = tree.take()
+        {
+            drop_offloaded(old_tree);
+        }
+        let mut invalid_layers = Vec::new();
+        let mut retained = Vec::with_capacity(state.injections.len());
+        for mut layer in std::mem::take(&mut state.injections) {
+            // 锚点自行跟随编辑；范围被删空说明注入点已消失，必须丢弃该层。
+            let non_empty =
+                layer_bytes(new_snapshot, &layer).is_some_and(|bytes| bytes.start < bytes.end);
+            // 已解析层把增量编辑应用到树上；待处理层没有树。
+            let tree_ok = match &mut layer.content {
+                SyntaxLayerContent::Parsed { tree, .. } => {
+                    edit_tree(tree, old_snapshot, new_snapshot, &changes)
                 }
+                SyntaxLayerContent::Pending { .. } => true,
+            };
+            if non_empty && tree_ok {
+                retained.push(layer);
+            } else {
+                invalid_layers.push(layer);
             }
-            state.injections = retained;
-            if !invalid_layers.is_empty() {
-                drop_offloaded(invalid_layers);
-            }
-        } else {
-            // 请求版本不在坐标索引覆盖范围内，旧树不能再作为增量基准。
-            let old_layers = std::mem::take(&mut state.injections);
-            if tree.is_some() || !old_layers.is_empty() {
-                drop_offloaded((tree.take(), old_layers));
-            }
+        }
+        state.injections = retained;
+        if !invalid_layers.is_empty() {
+            drop_offloaded(invalid_layers);
         }
 
         state.tree = tree;
@@ -407,9 +413,9 @@ impl SyntaxSnapshot {
         }
         // 编辑区间按上一次真正完成解析的版本推导，优先走不衰减坐标索引：
         // 带文本 EditLog 被预算裁剪后仍能给出精确增量，不静默退化为全文。
-        let changes = snapshot.coordinate_edits_since(self.parsed_version);
-        let edit_list = changes.as_ref().map(edit_ranges);
-        let edits = edit_list.as_deref();
+        let changes = coordinate_edits_or_fail(snapshot, self.parsed_version);
+        let edit_list = edit_ranges(&changes);
+        let edits = Some(edit_list.as_slice());
         let Some(language) = self.language.as_ref() else {
             self.state = empty_syntax_state();
             self.version = snapshot.version();
@@ -418,14 +424,7 @@ impl SyntaxSnapshot {
         };
         {
             let state = Arc::make_mut(&mut self.state);
-            // 坐标索引缺失时旧树不能作为增量解析基准。
-            let old_tree = match (changes.is_none(), state.tree.take()) {
-                (true, Some(tree)) => {
-                    drop_offloaded(tree);
-                    None
-                }
-                (_, tree) => tree,
-            };
+            let old_tree = state.tree.take();
             // 主树解析按时间片进行：预算用尽中断后保留 parser 状态，下一片从断点恢复（每片 ~3ms，避免大文件解析长期独占后台线程）。
             let new_tree = if language.grammar().is_some() {
                 let mut parser = IncrementalParser::new();
@@ -466,7 +465,7 @@ impl SyntaxSnapshot {
                     }
                     merge_changed_ranges(ranges)
                 }
-                // 首次解析或插值被整体重置：无旧树可比，全文收集。
+                // 首次解析或语言切换：无旧树可比，全文收集（显式边界，不来自增量失败）。
                 _ => std::iter::once(0..snapshot.len_bytes().get()).collect(),
             };
             state.tree = new_tree;

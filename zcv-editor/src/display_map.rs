@@ -907,8 +907,13 @@ impl DisplayMap {
             syntax_crease_cache: Arc::new(Mutex::new(SyntaxCreaseIndex::default())),
             version,
         };
+        // 复用已投影的 diff 装饰要求显示几何未变：块几何代际是唯一判据。
+        // 不能拿「是否有换行重排」代理——折叠、显示策略或 excerpt 拓扑变化同样改变显示行。
+        let geometry_unchanged = self.snapshot.as_ref().is_some_and(|previous| {
+            previous.block_snapshot.geometry_epoch() == snapshot.block_snapshot.geometry_epoch()
+        });
         let cached_diff = self.snapshot.as_ref().and_then(|previous| {
-            (wrap_edits.is_empty()
+            (geometry_unchanged
                 && self.editor_hunks.is_empty()
                 && previous.tab_width() == wrap_snapshot.tab_snapshot().tab_width()
                 && same_diff_display(
@@ -950,6 +955,8 @@ impl DisplayMap {
             self.folded_buffers.remove(&buffer_id)
         };
         if changed {
+            // 折叠是块层策略变化，不是换行重排：不
+            // 合成 WrapEdit，由 BlockSnapshot::sync 依据 folded_buffers 重算并推进块几何代际。
             let wrap_snapshot = self.wrap_map.read(cx).snapshot().clone();
             self.commit_snapshot(&wrap_snapshot, &[], cx);
         }

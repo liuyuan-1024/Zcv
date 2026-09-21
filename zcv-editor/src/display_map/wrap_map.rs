@@ -919,8 +919,8 @@ fn byte_after_chars(text: &str, chars: usize) -> usize {
 }
 /// 一次换行重排影响的显示行区间（换行输出行空间）。
 ///
-/// 无重排时列表为空，因此「空」精确表示显示行布局未变；有重排时才记录旧/新区间，
-/// 供 BlockMap 判断块位置是否需要重建。
+/// 无重排时列表为空，因此「空」精确表示显示行布局未变；
+/// 有重排时才记录旧/新区间，供 BlockMap 判断块位置是否需要重建。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct WrapEdit {
     pub(super) old: Range<usize>,

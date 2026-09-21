@@ -169,3 +169,60 @@ fn out_of_range_wrap_row_fails_explicitly(cx: &mut TestAppContext) {
         "越界换行行必须显式失败，而不是静默夹取到末行"
     );
 }
+
+/// 回归：组合文档中折叠某个文件后再编辑源文本，块锚点在前缀与后缀之间重定位，
+/// 块投影的输入行必须始终精确覆盖换行投影。
+#[gpui::test]
+fn editing_a_folded_composite_document_keeps_block_input_coverage(cx: &mut TestAppContext) {
+    let first = language_buffer("src/a.rs", "a0\na1\na2\na3\n", cx);
+    let middle = language_buffer("src/b.rs", "b0\nb1\nb2\nb3\nb4\n", cx);
+    let last = language_buffer("src/c.rs", "c0\nc1\nc2\nc3\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(first, 0..4, cx)], cx);
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(middle.clone(), 0..5, cx)], cx);
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(last.clone(), 0..4, cx)], cx);
+    });
+    let (subscription, snapshot) =
+        cx.update_entity(&combined, |buffer, cx| buffer.subscribe_and_snapshot(cx));
+    let display = cx.new(|cx| DisplayMap::new(snapshot, cx));
+    display.update(cx, |map, cx| {
+        map.set_multi_buffer(combined.clone(), subscription, cx)
+    });
+    let _ = display.update(cx, |map, cx| map.snapshot(cx));
+    let middle_id = cx.update_entity(&middle, |buffer, _| buffer.buffer_id());
+
+    display.update(cx, |map, cx| map.set_buffer_folded(middle_id, true, cx));
+    let _ = display.update(cx, |map, cx| map.snapshot(cx));
+
+    for text in ["b0\nb1\nb2\nb3\nb4\nbX\n", "b0\nb2\n", "b0\nb1\nb2\nb3\n"] {
+        cx.update_entity(&middle, |buffer, cx| {
+            buffer
+                .replace_text(text.to_owned(), cx)
+                .expect("外部更新应成功");
+        });
+        cx.run_until_parked();
+        let snapshot = display.update(cx, |map, cx| map.snapshot(cx));
+        assert_eq!(
+            snapshot.block_snapshot.transforms.summary().input_rows,
+            snapshot.wrap_snapshot().line_count(),
+            "折叠后编辑必须保持块投影输入覆盖"
+        );
+    }
+
+    display.update(cx, |map, cx| map.set_buffer_folded(middle_id, false, cx));
+    let _ = display.update(cx, |map, cx| map.snapshot(cx));
+
+    cx.update_entity(&last, |buffer, cx| {
+        buffer
+            .replace_text("c0\nc1\nc2\nc3\nc4\n".to_owned(), cx)
+            .expect("外部更新应成功");
+    });
+    cx.run_until_parked();
+    let snapshot = display.update(cx, |map, cx| map.snapshot(cx));
+    assert_eq!(
+        snapshot.block_snapshot.transforms.summary().input_rows,
+        snapshot.wrap_snapshot().line_count(),
+        "展开后编辑后续文件必须保持块投影输入覆盖"
+    );
+}

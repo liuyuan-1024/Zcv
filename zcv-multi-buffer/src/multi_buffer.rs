@@ -33,8 +33,8 @@ use zcv_text::{
     Affinity, Anchor, Buffer, BufferConfig, BufferId, BufferVersion, ByteOffset, CharOffset,
     CoordinateError, Edit, Line, LineEndingStyle, LogicalColumn, MovementDirection, MovementUnit,
     Position, PositionMap, Snapshot, Stickiness, StorageError, TextChangeBatch, TextError,
-    TextRange, TextRead, TextResult, TextSubscription, TransactionId, TransactionMetadata,
-    Utf16Offset, Utf16Position, WordBoundaryPolicy,
+    TextRange, TextRead, TextResult, TextSubscription, TransactionError, TransactionId,
+    TransactionMetadata, Utf16Offset, Utf16Position, WordBoundaryPolicy,
 };
 
 /// 组合文档中的一个源片段。
@@ -4566,25 +4566,36 @@ impl MultiBuffer {
             .iter()
             .map(|source| source.entity.clone())
             .collect::<Vec<_>>();
+        // 映射的源范围只在建立映射的那份源快照上有效；提交前用它校验源没有被并发推进。
+        let source_versions = self
+            .state
+            .sources
+            .iter()
+            .map(|source| source.text.version())
+            .collect::<Vec<_>>();
 
-        let mut grouped: Vec<(Entity<LanguageBuffer>, Vec<Edit>)> = Vec::new();
+        let mut grouped: Vec<(Entity<LanguageBuffer>, BufferVersion, Vec<Edit>)> = Vec::new();
         let mut edited_excerpts = HashSet::new();
         let push_source_edit =
             |mapping: &ExcerptMapping,
              source_range: TextRange,
              replacement: String,
-             grouped: &mut Vec<(Entity<LanguageBuffer>, Vec<Edit>)>,
+             grouped: &mut Vec<(Entity<LanguageBuffer>, BufferVersion, Vec<Edit>)>,
              edited_excerpts: &mut HashSet<usize>| {
                 edited_excerpts.insert(mapping.excerpt_index);
                 let source = source_entities[mapping.source_index].clone();
                 let source_edit = Edit::replace(source_range, replacement);
-                if let Some((_, source_edits)) = grouped
+                if let Some((_, _, source_edits)) = grouped
                     .iter_mut()
-                    .find(|(candidate, _)| candidate.entity_id() == source.entity_id())
+                    .find(|(candidate, _, _)| candidate.entity_id() == source.entity_id())
                 {
                     source_edits.push(source_edit);
                 } else {
-                    grouped.push((source, vec![source_edit]));
+                    grouped.push((
+                        source,
+                        source_versions[mapping.source_index],
+                        vec![source_edit],
+                    ));
                 }
             };
         for edit in edits {
@@ -4688,8 +4699,22 @@ impl MultiBuffer {
             }
         }
 
+        // 预检：任一源在映射建立后推进过版本，就说明源范围不再对应当前文本。
+        // 必须在任何源提交前一次性判定，否则先提交的源会留下部分提交文本
+        // （单个源 Buffer 的提交是原子的，跨源提交不是）。
+        for (source, base_version, _) in &grouped {
+            let actual = source.read(cx).version();
+            if actual != *base_version {
+                return Err(TransactionError::VersionMismatch {
+                    expected: *base_version,
+                    actual,
+                }
+                .into());
+            }
+        }
+
         let mut edited_source_ids = Vec::with_capacity(grouped.len());
-        for (source, source_edits) in grouped {
+        for (source, _, source_edits) in grouped {
             source.update(cx, |source, cx| {
                 source.edit(source_edits, metadata.clone(), cx)
             })?;

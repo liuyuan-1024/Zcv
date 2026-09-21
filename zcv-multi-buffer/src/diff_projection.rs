@@ -84,8 +84,8 @@ pub(crate) struct DiffState {
     _input_subscriptions: Vec<Subscription>,
     /// 上次物化时该文件的 diff 版本；None 表示尚未物化进组合文档。
     revision: Option<u64>,
-    /// 替换 base 后，新 BufferDiff 的首次后台结果返回前暂存的展开状态迁移来源。
-    pending_expansion_migration: Option<PendingExpansionMigration>,
+    /// 替换 diff 实体后，新 BufferDiff 的首次后台结果返回前暂存的展开状态。
+    pending_expansion_state: Option<DiffExpansionState>,
 }
 
 impl DiffState {
@@ -108,7 +108,7 @@ impl DiffState {
             _subscription: subscription,
             _input_subscriptions: input_subscriptions,
             revision: None,
-            pending_expansion_migration: None,
+            pending_expansion_state: None,
         }
     }
 
@@ -363,7 +363,7 @@ fn shift_offset(value: usize, delta: isize) -> usize {
 
 /// 一个文件内用户显式切换过展开状态的 hunk。
 ///
-/// 只保存与展开策略默认值不同的显式覆盖，按 (变化类型, 旧侧行范围) 标识；
+/// 只保存与展开策略默认值不同的显式覆盖，按「变化类型 + hunk 起点工作区 Anchor」标识；
 /// 未覆盖的 hunk 一律采用默认值。新增/修改/删除共用同一份状态，不为类型建立平行集合。
 #[derive(Default, Clone)]
 struct DiffExpansionState {
@@ -373,13 +373,12 @@ struct DiffExpansionState {
 #[derive(Clone)]
 struct HunkExpansionOverride {
     kind: DiffHunkKind,
-    old_range: Range<usize>,
+    /// hunk 身份：与输出变换节点承载的 hunk 相同的工作区 Anchor。
+    ///
+    /// 只保存 Anchor，不保存裸偏移；working 版本推进后在当前工作区快照上重新解析再比较，
+    /// 同一 hunk 不因工作区编辑而丢失展开状态。
+    hunk_start: Anchor,
     expanded: bool,
-}
-
-pub(crate) struct PendingExpansionMigration {
-    old_hunks: Vec<ResolvedHunk>,
-    old_state: DiffExpansionState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -398,7 +397,7 @@ struct ResolvedHunk {
     buffer_range: Range<Anchor>,
     /// working 源行范围。
     buffer_lines: Range<usize>,
-    /// base 文本行范围（展开状态身份与旧侧物化）。
+    /// base 文本行范围（旧侧物化；不再作为展开状态身份）。
     base_lines: Range<usize>,
     kind: DiffHunkKind,
     staging: DiffHunkStaging,
@@ -565,7 +564,6 @@ impl MultiBuffer {
     fn replace_diff_file(&mut self, index: usize, file: DiffFile, cx: &mut Context<Self>) -> bool {
         let working_id_matches = self.diffs[index].diff.read(cx).working().entity_id()
             == file.diff.read(cx).working().entity_id();
-        let old_resolved = resolve_file_hunks(&self.diffs[index], cx);
         let mut next = DiffState::new(
             file.diff,
             PathKey::new(file.display_path),
@@ -575,17 +573,15 @@ impl MultiBuffer {
         if working_id_matches {
             if next.diff.read(cx).is_current_version_calculated(cx) {
                 let new_resolved = resolve_file_hunks(&next, cx);
+                let working_text = working_snapshot_for(&next, cx);
                 migrate_expansion_state(
-                    &old_resolved,
                     &self.diffs[index].expansion,
                     &new_resolved,
+                    &working_text,
                     &mut next.expansion,
                 );
             } else {
-                next.pending_expansion_migration = Some(PendingExpansionMigration {
-                    old_hunks: old_resolved,
-                    old_state: self.diffs[index].expansion.clone(),
-                });
+                next.pending_expansion_state = Some(self.diffs[index].expansion.clone());
             }
         }
         self.diffs[index] = next;
@@ -734,23 +730,20 @@ impl MultiBuffer {
                         == file.diff.read(cx).working().entity_id()
                 })
             {
-                let old_resolved = resolve_file_hunks(old_file, cx);
                 if file.diff.read(cx).is_current_version_calculated(cx) {
                     let new_resolved = resolve_file_hunks(file, cx);
+                    let working_text = working_snapshot_for(file, cx);
                     migrate_expansion_state(
-                        &old_resolved,
                         &old_file.expansion,
                         &new_resolved,
+                        &working_text,
                         &mut file.expansion,
                     );
                 } else {
-                    pending_migration = Some(PendingExpansionMigration {
-                        old_hunks: old_resolved,
-                        old_state: old_file.expansion.clone(),
-                    });
+                    pending_migration = Some(old_file.expansion.clone());
                 }
             }
-            file.pending_expansion_migration = pending_migration;
+            file.pending_expansion_state = pending_migration;
         }
         self.diffs = next_files;
         // 新文件的 hunk 尚未算完时，保留已物化投影，避免先清空再展示结果导致一次
@@ -786,10 +779,10 @@ impl MultiBuffer {
     /// 折叠/展开不改变源，编辑器源锚点选区自然存活，无需返回投影重映射。
     pub fn toggle_diff_hunk_at(&mut self, display_index: usize, cx: &mut Context<Self>) {
         let expanded_by_default = self.diff_expanded_by_default;
-        let Some((working, kind, old_range)) = self.diff.as_ref().and_then(|diff| {
+        let Some((working, kind, hunk_start)) = self.diff.as_ref().and_then(|diff| {
             let source = diff.source_at(display_index)?;
             let hunk = diff.hunk_at(display_index)?;
-            Some((source.working, hunk.kind, hunk.old_range.clone()))
+            Some((source.working, hunk.kind, source.hunk_start?))
         }) else {
             return;
         };
@@ -800,9 +793,13 @@ impl MultiBuffer {
         else {
             return;
         };
-        self.diffs[file_index]
-            .expansion
-            .toggle(kind, &old_range, expanded_by_default);
+        let working_text = working_snapshot_for(&self.diffs[file_index], cx);
+        self.diffs[file_index].expansion.toggle(
+            kind,
+            &hunk_start,
+            &working_text,
+            expanded_by_default,
+        );
         // 只重物化该文件所在路径；其余文件及其组合坐标保持不变。
         self.replace_materialized_file(file_index, cx);
         cx.emit(MultiBufferEvent::DiffExpansionChanged);
@@ -1046,7 +1043,7 @@ impl MultiBuffer {
             }
         }
         for index in 0..self.diffs.len() {
-            if self.diffs[index].pending_expansion_migration.is_none()
+            if self.diffs[index].pending_expansion_state.is_none()
                 || !self.diffs[index]
                     .diff
                     .read(cx)
@@ -1054,15 +1051,16 @@ impl MultiBuffer {
             {
                 continue;
             }
-            let pending = self.diffs[index]
-                .pending_expansion_migration
+            let old_state = self.diffs[index]
+                .pending_expansion_state
                 .take()
-                .expect("已检查 pending expansion migration 存在");
+                .expect("已检查 pending expansion state 存在");
             let new_hunks = resolve_file_hunks(&self.diffs[index], cx);
+            let working_text = working_snapshot_for(&self.diffs[index], cx);
             migrate_expansion_state(
-                &pending.old_hunks,
-                &pending.old_state,
+                &old_state,
                 &new_hunks,
+                &working_text,
                 &mut self.diffs[index].expansion,
             );
         }
@@ -1182,9 +1180,10 @@ impl MultiBuffer {
     /// 先按当前 hunk 收敛该文件的展开覆盖，再物化该文件，最后只重算显示坐标。
     fn replace_materialized_file(&mut self, file_index: usize, cx: &mut Context<Self>) {
         let resolved = resolve_file_hunks(&self.diffs[file_index], cx);
+        let working_text = working_snapshot_for(&self.diffs[file_index], cx);
         self.diffs[file_index]
             .expansion
-            .retain_for_current_hunks(&resolved);
+            .retain_for_current_hunks(&resolved, &working_text);
 
         let expanded_by_default = self.diff_expanded_by_default;
         let mut excerpts = Vec::new();
@@ -1494,6 +1493,14 @@ fn resolve_file_hunks(file: &DiffState, cx: &App) -> Vec<ResolvedHunk> {
         .collect()
 }
 
+/// 该文件 working 源当前的文本快照。
+///
+/// hunk 起点 Anchor 与展开覆盖身份都在这份快照上重新解析；它始终是工作区源的最新快照，
+/// 因此不早于任何由该源派生的 Anchor 版本。
+fn working_snapshot_for(file: &DiffState, cx: &App) -> Snapshot {
+    file.diff.read(cx).working().read(cx).text_snapshot()
+}
+
 /// 把 anchor hunk 展开为显示层需要的行坐标与旧侧字节范围。
 fn resolve_hunk(hunk: &DiffHunk, working: &Snapshot, base: Option<&Snapshot>) -> ResolvedHunk {
     let buffer_lines = line_at_or_end(working, hunk.buffer_range.start.offset())
@@ -1524,25 +1531,32 @@ impl DiffExpansionState {
     fn is_expanded(
         &self,
         kind: DiffHunkKind,
-        old_range: &Range<usize>,
+        hunk_start: &Anchor,
+        working: &Snapshot,
         expanded_by_default: bool,
     ) -> bool {
-        self.override_for(kind, old_range)
+        self.override_for(kind, hunk_start, working)
             .map_or(expanded_by_default, |over| over.expanded)
     }
 
-    /// 切换展开/折叠；结果作为显式覆盖记录，后续刷新按锚点迁移。
-    fn toggle(&mut self, kind: DiffHunkKind, old_range: &Range<usize>, expanded_by_default: bool) {
-        let expanded = !self.is_expanded(kind, old_range, expanded_by_default);
+    /// 切换展开/折叠；结果作为显式覆盖记录，后续刷新按工作区 Anchor 迁移。
+    fn toggle(
+        &mut self,
+        kind: DiffHunkKind,
+        hunk_start: &Anchor,
+        working: &Snapshot,
+        expanded_by_default: bool,
+    ) {
+        let expanded = !self.is_expanded(kind, hunk_start, working, expanded_by_default);
         match self
             .overrides
             .iter_mut()
-            .find(|over| over.kind == kind && over.old_range == *old_range)
+            .find(|over| over.kind == kind && anchor_matches(&over.hunk_start, hunk_start, working))
         {
             Some(over) => over.expanded = expanded,
             None => self.overrides.push(HunkExpansionOverride {
                 kind,
-                old_range: old_range.clone(),
+                hunk_start: *hunk_start,
                 expanded,
             }),
         }
@@ -1551,33 +1565,33 @@ impl DiffExpansionState {
     fn override_for(
         &self,
         kind: DiffHunkKind,
-        old_range: &Range<usize>,
+        hunk_start: &Anchor,
+        working: &Snapshot,
     ) -> Option<&HunkExpansionOverride> {
         self.overrides
             .iter()
-            .find(|over| over.kind == kind && over.old_range == *old_range)
+            .find(|over| over.kind == kind && anchor_matches(&over.hunk_start, hunk_start, working))
     }
 
     /// 只保留仍能对应到当前 hunk 的显式覆盖。
-    fn retain_for_current_hunks(&mut self, hunks: &[ResolvedHunk]) {
+    fn retain_for_current_hunks(&mut self, hunks: &[ResolvedHunk], working: &Snapshot) {
         self.overrides.retain(|over| {
             hunks.iter().any(|hunk| {
-                hunk.kind == over.kind && base_ranges_correspond(&hunk.base_lines, &over.old_range)
+                hunk.kind == over.kind
+                    && anchor_matches(&over.hunk_start, &hunk.buffer_range.start, working)
             })
         });
     }
 }
 
-/// 两个旧侧行范围是否指向同一个 hunk。
+/// 两个 hunk 起点 Anchor 是否指向同一工作区位置。
 ///
-/// 新增块的位置是空范围（插入点），按点包含匹配；删除/修改按区间相交匹配。
-fn base_ranges_correspond(a: &Range<usize>, b: &Range<usize>) -> bool {
-    if a.is_empty() || b.is_empty() {
-        let point = if a.is_empty() { a.start } else { b.start };
-        let range = if a.is_empty() { b } else { a };
-        range.start <= point && point <= range.end
-    } else {
-        a.start < b.end && b.start < a.end
+/// 两个 Anchor 可能来自不同的 working 版本，必须在同一份工作区快照上重新解析后比较；
+/// 直接比较版本与偏移会在 working 推进后让同一 hunk 失去身份。任一端无法解析都判为不匹配。
+fn anchor_matches(a: &Anchor, b: &Anchor, working: &Snapshot) -> bool {
+    match (a.resolve_in(working), b.resolve_in(working)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
     }
 }
 
@@ -1585,32 +1599,20 @@ fn base_ranges_correspond(a: &Range<usize>, b: &Range<usize>) -> bool {
 ///
 /// 显式覆盖只在对应到同一 hunk 时随位置迁移；hunk 身份变化时回落到展开策略默认值。
 fn migrate_expansion_state(
-    old: &[ResolvedHunk],
     old_expansion: &DiffExpansionState,
     new: &[ResolvedHunk],
+    working: &Snapshot,
     expansion: &mut DiffExpansionState,
 ) {
-    let use_anchors = !old.is_empty() && !new.is_empty();
-    let corresponds = |old_hunk: &ResolvedHunk, new_hunk: &ResolvedHunk| {
-        if use_anchors {
-            old_hunk.buffer_range.start.version() == new_hunk.buffer_range.start.version()
-                && old_hunk.buffer_range.start.offset() == new_hunk.buffer_range.start.offset()
-        } else {
-            old_hunk.kind == new_hunk.kind
-                && old_hunk.base_lines.start < new_hunk.base_lines.end
-                && new_hunk.base_lines.start < old_hunk.base_lines.end
-        }
-    };
     for new_hunk in new {
-        let Some(old_hunk) = old.iter().find(|old_hunk| corresponds(old_hunk, new_hunk)) else {
-            continue;
-        };
-        let Some(over) = old_expansion.override_for(old_hunk.kind, &old_hunk.base_lines) else {
+        let Some(over) =
+            old_expansion.override_for(new_hunk.kind, &new_hunk.buffer_range.start, working)
+        else {
             continue;
         };
         expansion.overrides.push(HunkExpansionOverride {
             kind: new_hunk.kind,
-            old_range: new_hunk.base_lines.clone(),
+            hunk_start: new_hunk.buffer_range.start,
             expanded: over.expanded,
         });
     }
@@ -1717,7 +1719,12 @@ fn materialize_file(
                 );
                 starts_logical_excerpt = false;
             }
-            let expanded = expansion.is_expanded(hunk.kind, &hunk.base_lines, expanded_by_default);
+            let expanded = expansion.is_expanded(
+                hunk.kind,
+                &hunk.buffer_range.start,
+                &working_text,
+                expanded_by_default,
+            );
             // 旧侧：展开时物化完整旧行；裁剪模式折叠时用空占位行标记删除点。
             let mut old_materialized = false;
             if !hunk.base_lines.is_empty() {

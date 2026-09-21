@@ -2158,6 +2158,70 @@ fn diff_expansion_survives_hunk_refresh_and_merge(cx: &mut TestAppContext) {
     );
 }
 
+/// 回归：working 版本推进、旧 DiffState 尚未重算时重新注入等价 hunk，展开状态必须保留。
+///
+/// 旧实现按 working Anchor 的版本与偏移比较 hunk 身份，旧 diff 锚点停留在编辑前版本时
+/// 迁移会丢失显式展开。身份改为在当前工作区快照上重新解析后，同一 hunk 不因版本推进而失效。
+#[gpui::test]
+fn diff_expansion_survives_working_version_advance_with_stale_old_diff(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "zero\nworking\ntwo\n", cx);
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![test_diff(
+                source.clone(),
+                "src/a.rs",
+                "zero\nbase\ntwo\n",
+            )]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    cx.update_entity(&combined, |buffer, cx| buffer.toggle_diff_hunk_at(0, cx));
+    assert!(
+        cx.read_entity(&combined, |buffer, _cx| {
+            buffer.diff_hunk_expanded().iter().all(|&expanded| expanded)
+        }),
+        "展开后应记录展开状态"
+    );
+
+    // 编辑工作区源后立即重新注入，不等待旧 DiffState 重算：
+    // 旧 diff 的 hunk Anchor 仍停留在编辑前版本，新 diff 已从推进后的 working 计算。
+    cx.update_entity(&source, |source, cx| {
+        source
+            .edit(
+                vec![Edit::insert(ByteOffset::ZERO, "pre\n").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .unwrap();
+    });
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![test_diff(
+                source.clone(),
+                "src/a.rs",
+                "pre\nzero\nbase\ntwo\n",
+            )]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.snapshot(cx);
+    });
+    cx.run_until_parked();
+
+    let (hunks, expanded) = cx.read_entity(&combined, |buffer, _cx| {
+        (buffer.diff_hunks().to_vec(), buffer.diff_hunk_expanded())
+    });
+    assert_eq!(hunks.len(), 1, "重新注入后应显示推进坐标后的等价 hunk");
+    assert!(
+        expanded.iter().all(|&expanded| expanded),
+        "working 版本推进但 hunk 等价时必须保留显式展开状态"
+    );
+}
+
 #[gpui::test]
 fn undo_keeps_rust_highlighting_in_diff_projection(cx: &mut TestAppContext) {
     let source = singleton(
@@ -3093,6 +3157,72 @@ fn composite_splits_cross_excerpt_edits_across_source_buffers(cx: &mut TestAppCo
     };
     assert_eq!(read(&first, cx), "oX");
     assert_eq!(read(&second, cx), "o\n");
+}
+
+/// 回归：多源编辑中任一源在映射建立后推进版本时，整体失败且不得部分提交其它源。
+///
+/// 映射的源范围只在建立映射的那份源快照上有效；提交前必须一次性校验全部源。
+#[gpui::test]
+fn multi_source_edit_does_not_partially_commit_when_a_source_advanced(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "one\n", cx);
+    let second = singleton("src/b.rs", "two\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                ExcerptRange::new(
+                    first.clone(),
+                    TextRange::new(ByteOffset::ZERO, ByteOffset::new(4)).unwrap(),
+                    Vec::new(),
+                ),
+                ExcerptRange::new(
+                    second.clone(),
+                    TextRange::new(ByteOffset::ZERO, ByteOffset::new(4)).unwrap(),
+                    Vec::new(),
+                ),
+            ],
+            cx,
+        );
+    });
+
+    // 第二源在映射建立后推进版本，旧范围对新文本不再有效。
+    cx.update_entity(&second, |second, cx| {
+        second.replace_text(String::new(), cx).expect("清空第二源");
+    });
+
+    let error = cx
+        .update_entity(&combined, |buffer, cx| {
+            buffer.edit(
+                vec![Edit::replace(
+                    TextRange::new(ByteOffset::new(1), ByteOffset::new(6)).unwrap(),
+                    "X",
+                )],
+                TransactionMetadata::default(),
+                cx,
+            )
+        })
+        .expect_err("第二源版本已推进时多源编辑必须整体失败");
+    assert!(
+        matches!(error, TextError::Transaction(_)),
+        "失败必须是版本不匹配，而不是第一源提交后第二源越界：{error:?}"
+    );
+
+    let read = |buffer: &gpui::Entity<LanguageBuffer>, cx: &TestAppContext| {
+        cx.read_entity(buffer, |buffer, _| {
+            let snapshot = buffer.text_snapshot();
+            snapshot
+                .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
+                .unwrap()
+                .as_str()
+                .to_owned()
+        })
+    };
+    assert_eq!(
+        read(&first, cx),
+        "one\n",
+        "预检失败不得让第一源留下部分提交文本"
+    );
+    assert_eq!(read(&second, cx), "");
 }
 
 #[gpui::test]

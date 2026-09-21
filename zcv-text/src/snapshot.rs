@@ -104,7 +104,15 @@ impl Snapshot {
 
     /// 自 since 版本到本快照版本是否发生过净文本编辑。
     ///
-    /// 与 `is_dirty` 同语义：编辑互相抵消（例如插入后撤销）判为无编辑。
+    /// 当前实现取编辑日志组合后的净 Patch 判空：插入后删除、插入后撤销等互相抵消的序列判为无编辑；
+    /// 同文本替换仍判为有编辑（净 Patch 保留替换区间）。
+    ///
+    /// 这不是 Zed `BufferSnapshot::has_edits_since` 的 fragment 可见性语义：
+    /// Zed 逐个 fragment 比较「在 since 时是否可见」与「现在是否可见」，
+    /// 因此「删除后用 undo 原位还原同一文本」判为无编辑，而这里因净 Patch 是替换区间判为有编辑。
+    /// Zcv 的 rope + 版本化编辑日志不保存 fragment 身份，精确对齐需要文本内核记录片段身份与 undo 可见性。
+    /// 该偏离已登记在 `docs/编辑器架构.md` §18.2；登记消除前，本方法保持上述净 Patch 语义。
+    ///
     /// `since` 已退出编辑日志窗口时返回显式错误，调用方必须丢弃而不是猜测。
     pub fn has_edits_since(&self, since: BufferVersion) -> TextResult<bool> {
         Ok(!self.edits_since(since)?.patch().is_empty())
@@ -112,7 +120,8 @@ impl Snapshot {
 
     /// 自 `since` 版本到本快照版本、与 `range` 相交的范围内是否发生过净文本编辑。
     ///
-    /// `range` 使用旧版本坐标，与 `edits_since_in_range` 的过滤语义一致。
+    /// `range` 使用旧版本坐标，与 `edits_since_in_range` 的过滤语义一致；
+    /// Zed 对应方法收 `Range<Anchor>`。本方法沿用旧坐标 `TextRange` 是 §18.2 同一偏离的一部分。
     pub fn has_edits_since_in_range(
         &self,
         since: BufferVersion,

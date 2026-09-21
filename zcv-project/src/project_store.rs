@@ -592,11 +592,17 @@ impl Project {
         }
 
         for event in &events {
-            if matches!(
-                event.kind,
-                Some(PathEventKind::Changed | PathEventKind::Created)
-            ) {
-                self.buffer_store.reload_buffer_for_path(&event.path, cx);
+            match event.kind {
+                Some(PathEventKind::Changed | PathEventKind::Created) => {
+                    self.buffer_store.reload_buffer_for_path(&event.path, cx);
+                }
+                // 源文件消失：路径索引必须失效，后续 open_buffer 不得复用已删除内容。
+                // 原子替换会以 Removed + Created 到达；路径已重建时保留存活文档，交由 Created 重载。
+                Some(PathEventKind::Removed) if !event.path.exists() => {
+                    self.buffer_store.remove_path(&event.path);
+                }
+                // Removed 但路径已重建，或 Rescan：索引保持不变；Created 分支负责重载内容。
+                Some(PathEventKind::Removed | PathEventKind::Rescan) | None => {}
             }
         }
 

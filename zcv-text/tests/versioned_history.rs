@@ -46,6 +46,44 @@ fn has_edits_since_tracks_net_edits_between_versions() {
 }
 
 #[test]
+fn has_edits_since_reports_a_real_reinsert_after_delete() {
+    // 删除一段文本后把同样文本原位插回：Zed 判定旧 fragment 被删除、新 fragment 插入，属于有编辑；
+    // Zcv 的净 Patch 是替换区间，同样判为有编辑。
+    let mut buffer = buffer("abc");
+    let v0 = buffer.version();
+    buffer
+        .edit([Edit::delete(range(1, 2))], TransactionMetadata::default())
+        .unwrap();
+    buffer
+        .edit(
+            [Edit::insert(b(1), "b".to_string()).unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+
+    assert_eq!(buffer_text(&buffer), "abc");
+    assert!(buffer.snapshot().has_edits_since(v0).unwrap());
+}
+
+#[test]
+fn has_edits_since_after_delete_then_undo_documents_the_zed_divergence() {
+    // 登记 docs/编辑器架构.md §18.2：Zed 的 fragment 可见性语义把「删除后用 undo 原位还原同一文本」
+    // 判为无编辑（fragment 恢复可见），Zcv 当前净 Patch 实现把 delete + undo 组合成同文本替换，仍判为有编辑。
+    let mut buffer = buffer("abc");
+    let v0 = buffer.version();
+    buffer
+        .edit([Edit::delete(range(1, 2))], TransactionMetadata::default())
+        .unwrap();
+    buffer.undo().unwrap().expect("undo 应成功");
+
+    assert_eq!(buffer_text(&buffer), "abc");
+    assert!(
+        buffer.snapshot().has_edits_since(v0).unwrap(),
+        "当前为净 Patch 语义（有编辑）；对齐 Zed 后此断言应改为 false"
+    );
+}
+
+#[test]
 fn has_edits_since_in_range_checks_only_the_requested_old_range() {
     let mut buffer = buffer("abcdef");
     let v0 = buffer.version();

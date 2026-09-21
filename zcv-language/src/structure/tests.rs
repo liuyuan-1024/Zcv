@@ -4,7 +4,7 @@
 
 use super::NewlineIndent;
 use crate::test::{parsed_syntax, rust_buffer};
-use zcv_text::{ByteOffset, Edit, TransactionMetadata};
+use zcv_text::{Affinity, ByteOffset, Edit, TransactionMetadata};
 
 /// 测试辅助：把折叠锚点按快照解析为字节范围，便于直接按文本切片断言。
 struct ResolvedFold {
@@ -709,4 +709,36 @@ fn multi_line_macro_invocation_folds_but_single_line_does_not() {
     assert!(texts.contains(&"\n        editor,\n        [\n            MoveLeft,\n            MoveRight,\n        ],\n    "));
     assert!(!texts.contains(&"println!(\"ok\")"));
     assert!(!texts.contains(&"format!(\"{}: {}\", 1, 2)"));
+}
+
+#[test]
+fn fold_end_uses_inside_affinity_and_does_not_expand_on_boundary_insert() {
+    let source = "fn main() {\n    let value = 1;\n}\n";
+    let (mut buffer, syntax) = rust_buffer(source);
+    let snapshot = buffer.snapshot();
+    let folds = syntax
+        .snapshot()
+        .fold_ranges(0..snapshot.len_bytes().get(), &snapshot);
+    let fold = folds
+        .iter()
+        .find(|fold| fold.range.end.offset().get() == source.rfind('}').unwrap())
+        .expect("main 函数体应产生终点在闭合括号前的折叠范围");
+
+    assert_eq!(fold.range.start.affinity(), Affinity::After);
+    assert_eq!(fold.range.end.affinity(), Affinity::Before);
+
+    // 在折叠终点边界插入文本：inside 终点贴在插入内容之前，终点不上扩。
+    let end_offset = fold.range.end.offset();
+    buffer
+        .edit(
+            [Edit::insert(end_offset, "// 注释\n".to_string()).unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    let new_snapshot = buffer.snapshot();
+    assert_eq!(
+        fold.range.end.resolve_in(&new_snapshot).unwrap(),
+        end_offset,
+        "折叠终点在边界插入后不得后移"
+    );
 }

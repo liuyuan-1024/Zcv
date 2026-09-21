@@ -6,7 +6,7 @@
 use std::ops::Range;
 
 use tree_sitter::StreamingIterator;
-use zcv_text::{Anchor, ByteOffset, Line, Snapshot};
+use zcv_text::{Anchor, ByteOffset, Line, Snapshot, TextRange};
 
 use crate::syntax_map::SyntaxSnapshot;
 use crate::tree_sitter_utils::{QueryCursorHandle, SnapshotTextProvider};
@@ -135,8 +135,11 @@ impl SyntaxSnapshot {
             if start >= end || text.byte_to_line(end).is_ok_and(|line| line <= anchor_line) {
                 continue;
             }
+            // 折叠「inside」语义：终点贴在边界插入之前，插入不使折叠上扩。
+            let folded =
+                TextRange::new(start, end).expect("折叠范围已在上面校验为非空有序字节区间");
             ranges.push(FoldRange {
-                range: Anchor::new(text.version(), start)..Anchor::new(text.version(), end),
+                range: Anchor::range_inside(text.version(), folded),
             });
         }
         ranges.sort_unstable_by_key(|range| (range.range.start.offset(), range.range.end.offset()));

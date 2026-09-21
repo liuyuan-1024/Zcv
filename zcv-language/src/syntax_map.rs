@@ -11,7 +11,7 @@ use crate::Language;
 use crate::registry::LanguageRegistry;
 use crate::structure::FoldRange;
 use crate::tree_sitter_utils::{
-    IncrementalParser, PARSE_TIME_SLICE, ParseCancellation, QueryCursorHandle,
+    IncrementalParser, PARSE_TIME_SLICE, ParseCancellation, ParseError, QueryCursorHandle,
     SnapshotTextProvider, drop_offloaded, edit_tree, node_text, parse_tree, ranges_overlap,
 };
 
@@ -400,6 +400,8 @@ impl SyntaxSnapshot {
     /// 同步执行真正的 tree-sitter 增量解析。
     /// 调用方必须把该方法放到后台，再通过 `SyntaxMap::did_parse` 安装结果。
     ///
+    /// 返回 `None` 表示本次没有可安装的结果：解析被取消，或语言／范围设置失败（后者继续重试也不会成功）。
+    ///
     /// `edits` 是本次编辑在新坐标下的字节区间：tree-sitter 的 `changed_ranges` 对等长替换（parser 直接复用旧叶子）不可见，必须用文本编辑区间兜底。
     /// 变化区间 = 编辑区间 ∪ 树变化区间，两者都不覆盖的区域注入层原样保留。
     pub(crate) fn reparse(
@@ -429,22 +431,21 @@ impl SyntaxSnapshot {
             let new_tree = if language.grammar().is_some() {
                 let mut parser = IncrementalParser::new();
                 loop {
-                    let tree = parser.parse_slice(
+                    match parser.parse_slice(
                         language,
                         snapshot,
                         old_tree.as_ref(),
                         None,
                         cancellation,
                         PARSE_TIME_SLICE,
-                    );
-                    if cancellation.is_cancelled() {
-                        return None;
+                    ) {
+                        Ok(tree) => break Some(tree),
+                        // 预算用尽：让出后台线程，下一片继续。
+                        Err(ParseError::BudgetExhausted) => thread::yield_now(),
+                        Err(ParseError::Cancelled) => return None,
+                        // 语言或范围设置失败：继续重试不会成功，必须终止本次解析，不安装任何部分结果。
+                        Err(ParseError::Setup(_) | ParseError::Failed) => return None,
                     }
-                    if let Some(tree) = tree {
-                        break Some(tree);
-                    }
-                    // 预算用尽：让出后台线程，下一片继续。
-                    thread::yield_now();
                 }
             } else {
                 // 无语法树语言（纯文本兜底）：主树保持为空。
@@ -727,17 +728,21 @@ impl InjectionCollector<'_> {
                     continue;
                 }
                 let old_tree = self.old_trees.remove(&key);
-                let Some(tree) = parse_tree(
+                let tree = match parse_tree(
                     language,
                     self.snapshot,
                     old_tree.as_ref(),
                     Some(range.clone()),
                     self.cancellation,
-                ) else {
-                    if self.cancellation.is_cancelled() {
-                        return false;
+                ) {
+                    Ok(tree) => tree,
+                    Err(ParseError::Cancelled) => return false,
+                    // 注入解析没有时间片预算；设置失败或 tree-sitter 拒绝解析时跳过该层，不安装部分树。
+                    Err(
+                        ParseError::Setup(_) | ParseError::Failed | ParseError::BudgetExhausted,
+                    ) => {
+                        continue;
                     }
-                    continue;
                 };
                 // 嵌套注入只在其树变化的区间内递归（含编辑区间按层范围裁剪），其余复用保留层。
                 if let Some(old_tree) = old_tree {

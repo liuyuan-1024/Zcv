@@ -160,11 +160,26 @@ fn reopening_live_buffer_does_not_load_changed_disk_contents(cx: &mut TestAppCon
     fs::write(&path, [0xff, 0xfe, 0xff]).expect("应替换为非 UTF-8 内容");
     let second = cx.update(|cx| store.open_buffer(&path, cx).expect("存活文档应直接复用"));
     assert_eq!(first, second);
+}
+
+#[gpui::test]
+fn removed_index_is_not_reused_when_the_source_file_is_gone(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let path = directory.path().join("removed.txt");
+    fs::write(&path, "旧内容").expect("应写入文件");
+    let mut store = BufferStore::new(Arc::new(LanguageRegistry::new()));
+    let first = cx.update(|cx| store.open_buffer(&path, cx).expect("首次打开应成功"));
+
+    // 外部删除事件在 Project 层经 remove_path 清索引。
+    // 即使旧文档仍被强引用持有，索引失效后也不得复用旧内容。
     fs::remove_file(&path).expect("应删除磁盘文件");
-    let third = cx.update(|cx| {
-        store
-            .open_buffer(&path, cx)
-            .expect("磁盘删除不应阻止复用文档")
+    store.remove_path(&path);
+    let reopened = cx.update(|cx| store.open_buffer(&path, cx));
+    assert!(reopened.is_err(), "已删除文件的索引失效后不得复用旧文档");
+    cx.read_entity(&first, |language_buffer, _| {
+        let snapshot = language_buffer.text_snapshot();
+        let range = zcv_text::TextRange::new(zcv_text::ByteOffset::ZERO, snapshot.len_bytes())
+            .expect("全文范围应有效");
+        assert_eq!(snapshot.slice_text(range).unwrap().as_str(), "旧内容");
     });
-    assert_eq!(first, third);
 }

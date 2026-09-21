@@ -531,11 +531,9 @@ fn time_sliced_parse_resumes_and_matches_single_pass_result() {
             &cancellation,
             Duration::from_nanos(1),
         ) {
-            Some(tree) => break tree,
-            None => {
-                assert!(!cancellation.is_cancelled());
-                continue;
-            }
+            Ok(tree) => break tree,
+            Err(ParseError::BudgetExhausted) => continue,
+            Err(error) => panic!("分片解析意外失败：{error:?}"),
         }
     };
     assert!(slices > 1, "1ns 预算应产生多次分片，实际 {slices} 片");
@@ -566,18 +564,44 @@ fn time_sliced_parse_aborts_on_cancellation() {
         Duration::from_nanos(1),
     );
     cancellation.cancel();
-    assert!(
-        parser
-            .parse_slice(
-                &language,
-                &snapshot,
-                None,
-                None,
-                &cancellation,
-                Duration::from_nanos(1),
-            )
-            .is_none()
-    );
+    assert!(matches!(
+        parser.parse_slice(
+            &language,
+            &snapshot,
+            None,
+            None,
+            &cancellation,
+            Duration::from_nanos(1),
+        ),
+        Err(ParseError::Cancelled)
+    ));
+}
+
+#[test]
+fn parse_slice_reports_setup_failure_instead_of_budget_exhaustion() {
+    let source = "fn main() {}\n";
+    let buffer = Buffer::from_text(source.to_owned(), BufferConfig::default()).unwrap();
+    let snapshot = buffer.snapshot();
+    let language = Arc::new(LanguageRegistry::new())
+        .language_for_file(Path::new("main.rs"), None)
+        .expect("Rust 语言应可加载");
+    let cancellation = ParseCancellation::default();
+    let mut parser = IncrementalParser::new();
+
+    // 范围端点超出快照：范围换算失败属于不可恢复的 setup 失败，
+    // 必须显式报错，而不是被当成预算用尽让调用方反复恢复。
+    let out_of_bounds = 0..snapshot.len_bytes().get() + 1;
+    match parser.parse_slice(
+        &language,
+        &snapshot,
+        None,
+        Some(out_of_bounds),
+        &cancellation,
+        Duration::from_secs(1),
+    ) {
+        Err(ParseError::Setup(_)) => {}
+        other => panic!("应显式报告 setup 失败而非预算用尽，实际 {other:?}"),
+    }
 }
 
 #[test]

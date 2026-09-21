@@ -616,6 +616,43 @@ fn fs_removal_events_trigger_full_rescan(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
+fn external_removal_event_invalidates_open_buffer_index(cx: &mut gpui::TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let root = directory.path().to_path_buf();
+    let project = test_project(root.clone(), cx);
+    let file = root.join("open.txt");
+    fs::write(&file, "打开内容\n").expect("应写入文件");
+
+    let opened = project.update(cx, |project, cx| {
+        project.open_buffer(&file, cx).expect("应打开文件")
+    });
+    cx.read_entity(&opened, |language_buffer, _| {
+        let snapshot = language_buffer.text_snapshot();
+        let range = TextRange::new(ByteOffset::ZERO, snapshot.len_bytes()).expect("全文范围应有效");
+        assert_eq!(snapshot.slice_text(range).unwrap().as_str(), "打开内容\n");
+    });
+
+    // 外部删除文件 → Removed 事件：BufferStore 路径索引必须失效。
+    fs::remove_file(&file).expect("应删除文件");
+    project.update(cx, |project, cx| {
+        project.process_fs_events(
+            vec![
+                PathEvent::new(file.clone(), Some(PathEventKind::Removed))
+                    .expect("测试事件路径应为绝对路径"),
+            ],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    let reopened = project.update(cx, |project, cx| project.open_buffer(&file, cx));
+    assert!(
+        reopened.is_err(),
+        "外部删除事件后，再次 open_buffer 不得复用已删除文件的旧内容"
+    );
+}
+
+#[gpui::test]
 fn fs_rescan_events_discover_unreported_file(cx: &mut gpui::TestAppContext) {
     let (root, _temp) = test_git_repo();
     let project = test_project(root.clone(), cx);

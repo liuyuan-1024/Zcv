@@ -9,12 +9,62 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use tree_sitter::{InputEdit, Parser, Point, QueryCursor};
-use zcv_text::{ByteOffset, Snapshot, TextChangeBatch, TextResult};
+use zcv_text::{ByteOffset, Snapshot, TextChangeBatch, TextError, TextResult};
 
 use crate::Language;
 
 /// 单次解析允许占用的后台时间片（约 3ms）。
 pub(crate) const PARSE_TIME_SLICE: Duration = Duration::from_millis(3);
+
+/// 解析开始前的语言或范围设置失败。
+///
+/// 与预算用尽不同：这些失败继续重试也不会成功，调用方必须显式终止。
+#[derive(Debug)]
+pub(crate) enum ParseSetupError {
+    /// 该语言没有可解析的语法（纯文本兜底）。
+    NoGrammar,
+    /// `Parser::set_language` 失败（通常是 grammar ABI 与 tree-sitter 不兼容）。
+    Language(tree_sitter::LanguageError),
+    /// `Parser::set_included_ranges` 失败（范围重叠或非法）。
+    IncludedRanges(tree_sitter::IncludedRangesError),
+    /// 注入范围端点无法换算为 tree-sitter 行列坐标。
+    IncludedRangePoint(TextError),
+}
+
+/// 一次 tree-sitter 解析无法完成的原因。
+#[derive(Debug)]
+pub(crate) enum ParseError {
+    /// 时间片预算用尽：parser 保留断点，调用方应在下一片继续恢复。
+    BudgetExhausted,
+    /// 协作取消：调用方必须放弃本次解析。
+    Cancelled,
+    /// 语言或范围设置失败：继续重试不会成功。
+    Setup(ParseSetupError),
+    /// tree-sitter 在未取消、未超预算的情况下拒绝解析。
+    Failed,
+}
+
+impl std::fmt::Display for ParseSetupError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoGrammar => write!(formatter, "语言没有可解析的语法"),
+            Self::Language(error) => write!(formatter, "无法设置解析语言：{error}"),
+            Self::IncludedRanges(error) => write!(formatter, "无法设置解析范围：{error}"),
+            Self::IncludedRangePoint(error) => write!(formatter, "无法换算解析范围端点：{error}"),
+        }
+    }
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BudgetExhausted => write!(formatter, "解析时间片预算用尽"),
+            Self::Cancelled => write!(formatter, "解析已取消"),
+            Self::Setup(error) => write!(formatter, "解析设置失败：{error}"),
+            Self::Failed => write!(formatter, "tree-sitter 拒绝解析"),
+        }
+    }
+}
 
 /// 一次语法解析的协作取消标记。
 ///
@@ -69,9 +119,10 @@ impl IncrementalParser {
         }
     }
 
-    /// 解析一个时间片；预算用尽（未取消）返回 None，调用方应在下一片继续调用恢复。
+    /// 解析一个时间片。
     ///
-    /// 语言无语法树或范围换算失败也返回 None——调用方需先用 `language.grammar()` 排除"不可解析"路径，避免与预算用尽混淆。
+    /// 预算用尽返回 `Err(ParseError::BudgetExhausted)`，parser 保留断点，调用方应在下一片继续恢复；
+    /// 语言或范围设置失败返回 `Err(ParseError::Setup)`，调用方必须终止而不是重试。
     pub(crate) fn parse_slice(
         &mut self,
         language: &Language,
@@ -80,18 +131,30 @@ impl IncrementalParser {
         included_range: Option<Range<usize>>,
         cancellation: &ParseCancellation,
         budget: Duration,
-    ) -> Option<tree_sitter::Tree> {
+    ) -> Result<tree_sitter::Tree, ParseError> {
         if cancellation.is_cancelled() {
-            return None;
+            return Err(ParseError::Cancelled);
         }
-        let parser = self.handle.0.as_mut()?;
-        let grammar = language.grammar()?;
+        let parser = self
+            .handle
+            .0
+            .as_mut()
+            .expect("IncrementalParser 始终持有池化 parser");
+        let Some(grammar) = language.grammar() else {
+            return Err(ParseError::Setup(ParseSetupError::NoGrammar));
+        };
         if !self.started {
             // 语言与范围限制只在首片设置：`set_language` 会 reset parser 并清掉 outstanding 状态，恢复片再调用会摧毁断点。
-            parser.set_language(grammar).ok()?;
+            parser
+                .set_language(grammar)
+                .map_err(|error| ParseError::Setup(ParseSetupError::Language(error)))?;
             if let Some(range) = included_range {
-                let start = point_at(snapshot, ByteOffset::new(range.start)).ok()?;
-                let end = point_at(snapshot, ByteOffset::new(range.end)).ok()?;
+                let start = point_at(snapshot, ByteOffset::new(range.start)).map_err(|error| {
+                    ParseError::Setup(ParseSetupError::IncludedRangePoint(error))
+                })?;
+                let end = point_at(snapshot, ByteOffset::new(range.end)).map_err(|error| {
+                    ParseError::Setup(ParseSetupError::IncludedRangePoint(error))
+                })?;
                 parser
                     .set_included_ranges(&[tree_sitter::Range {
                         start_byte: range.start,
@@ -99,10 +162,12 @@ impl IncrementalParser {
                         start_point: start,
                         end_point: end,
                     }])
-                    .ok()?;
+                    .map_err(|error| ParseError::Setup(ParseSetupError::IncludedRanges(error)))?;
             } else {
                 // 首片必须显式清空池中解析器可能残留的范围限制。
-                parser.set_included_ranges(&[]).ok()?;
+                parser
+                    .set_included_ranges(&[])
+                    .map_err(|error| ParseError::Setup(ParseSetupError::IncludedRanges(error)))?;
             }
         }
         let deadline = Instant::now() + budget;
@@ -122,7 +187,12 @@ impl IncrementalParser {
             Some(options),
         );
         self.started = true;
-        tree
+        match tree {
+            Some(tree) => Ok(tree),
+            None if cancellation.is_cancelled() => Err(ParseError::Cancelled),
+            // 进度回调因预算中断：parser 保留断点，调用方继续下一片。
+            None => Err(ParseError::BudgetExhausted),
+        }
     }
 }
 
@@ -159,24 +229,31 @@ fn parser_pool() -> &'static Mutex<Vec<Parser>> {
 }
 
 /// 用池化解析器解析文本（增量复用 `old_tree`；`included_range` 用于注入层解析）。
+///
+/// 与 `parse_slice` 共用 `ParseError`，但一次性解析没有时间片预算，因此不会返回 `BudgetExhausted`。
 pub(crate) fn parse_tree(
     language: &Language,
     snapshot: &Snapshot,
     old_tree: Option<&tree_sitter::Tree>,
     included_range: Option<Range<usize>>,
     cancellation: &ParseCancellation,
-) -> Option<tree_sitter::Tree> {
+) -> Result<tree_sitter::Tree, ParseError> {
     if cancellation.is_cancelled() {
-        return None;
+        return Err(ParseError::Cancelled);
     }
     let mut handle = ParserHandle::new();
-    let parser = handle.0.as_mut()?;
-    // 无语法树的语言无法解析，视为无语法树。
-    let grammar = language.grammar()?;
-    parser.set_language(grammar).ok()?;
+    let parser = handle.0.as_mut().expect("ParserHandle 始终持有池化 parser");
+    let Some(grammar) = language.grammar() else {
+        return Err(ParseError::Setup(ParseSetupError::NoGrammar));
+    };
+    parser
+        .set_language(grammar)
+        .map_err(|error| ParseError::Setup(ParseSetupError::Language(error)))?;
     if let Some(range) = included_range {
-        let start = point_at(snapshot, ByteOffset::new(range.start)).ok()?;
-        let end = point_at(snapshot, ByteOffset::new(range.end)).ok()?;
+        let start = point_at(snapshot, ByteOffset::new(range.start))
+            .map_err(|error| ParseError::Setup(ParseSetupError::IncludedRangePoint(error)))?;
+        let end = point_at(snapshot, ByteOffset::new(range.end))
+            .map_err(|error| ParseError::Setup(ParseSetupError::IncludedRangePoint(error)))?;
         parser
             .set_included_ranges(&[tree_sitter::Range {
                 start_byte: range.start,
@@ -184,10 +261,12 @@ pub(crate) fn parse_tree(
                 start_point: start,
                 end_point: end,
             }])
-            .ok()?;
+            .map_err(|error| ParseError::Setup(ParseSetupError::IncludedRanges(error)))?;
     } else {
         // 池化后必须显式清空上一次注入解析留下的范围限制，否则主树解析会被裁剪。
-        parser.set_included_ranges(&[]).ok()?;
+        parser
+            .set_included_ranges(&[])
+            .map_err(|error| ParseError::Setup(ParseSetupError::IncludedRanges(error)))?;
     }
     let mut progress = |_: &tree_sitter::ParseState| {
         if cancellation.is_cancelled() {
@@ -197,11 +276,15 @@ pub(crate) fn parse_tree(
         }
     };
     let options = tree_sitter::ParseOptions::new().progress_callback(&mut progress);
-    parser.parse_with_options(
+    match parser.parse_with_options(
         &mut |offset, _| chunk_from(snapshot, offset),
         old_tree,
         Some(options),
-    )
+    ) {
+        Some(tree) => Ok(tree),
+        None if cancellation.is_cancelled() => Err(ParseError::Cancelled),
+        None => Err(ParseError::Failed),
+    }
 }
 
 /// 池化 tree-sitter 查询游标。

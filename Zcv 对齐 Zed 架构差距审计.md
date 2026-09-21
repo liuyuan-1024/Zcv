@@ -32,9 +32,17 @@
 > §5 线索 7 升级为 T-C；线索 6、C-E 与若干新线索继续保留。本轮为只读审计，新增差距均未做运行时复现，验证见第 9 节。
 >
 > **对齐落地（D-A、L-B，本轮）**：两条已按 Zed 实现彻底对齐。
-> D-A：`BlockSnapshot::sync` 统一为「公共前缀 + 受影响区间 + 公共后缀」——结构变化按锚点表等价性定位后缀，纯换行编辑取所有编辑之后的尾部（整体平移、块序列与相对间距不变）直接追加旧变换子树；删除 `None` suffix 与两处从投影起点重建；锚点重定位使旧前缀越过新块起点时只回退前缀边界，不整份重建。折叠不合成 `WrapEdit`：它是块层策略变化，由 `BlockSnapshot::sync` 依据 `folded_buffers` 重算并推进独立的块几何代际；diff 装饰缓存改为按块几何代际判据复用，不再用 `wrap_edits.is_empty()` 代理显示几何（同时彻底修正 D-H）。块结构变化的权威信号是组合投影版本 `MultiBufferSnapshot::version()`，删除了手写的 excerpt 边界签名代理：此前 diff 编辑改变了 excerpt 范围但边界签名不变时，块层会复用过期锚点，使分隔线落到错误位置——这与「折叠伪装成换行编辑」是同一类「用派生代理代替下层权威信号」的偏差。
+> D-A：`BlockSnapshot::sync` 统一为「公共前缀 + 受影响区间 + 公共后缀」——结构变化改由组合投影版本 `MultiBufferSnapshot::version()` 驱动后由 `changed_spec_range` 定位前后缀，纯换行编辑取所有编辑之后的尾部（整体平移、块序列与相对间距不变）直接追加旧变换子树；删除 `None` suffix 与两处从投影起点重建；锚点重定位使旧前缀越过新块起点时只回退前缀边界，不整份重建。折叠不合成 `WrapEdit`：它是块层策略变化，由 `BlockSnapshot::sync` 依据 `folded_buffers` 重算并推进独立的块几何代际；diff 装饰缓存改为按块几何代际判据复用，不再用 `wrap_edits.is_empty()` 代理显示几何（同时彻底修正 D-H）。块结构变化的权威信号是组合投影版本 `MultiBufferSnapshot::version()`，删除了手写的 excerpt 边界签名代理：此前 diff 编辑改变了 excerpt 范围但边界签名不变时，块层会复用过期锚点，使分隔线落到错误位置——这与「折叠伪装成换行编辑」是同一类「用派生代理代替下层权威信号」的偏差。
 > L-B：`interpolate`/`reparse` 删除 `coordinate_edits_since` 为 `None` 时丢弃全部语法状态并全文重跑的分支，改由 `coordinate_edits_or_fail` 在不变量破坏时显式失败；首次解析与语言切换仍按显式边界做全文收集。
-> 验证：`cargo check -p zcv-editor -p zcv-language --all-targets` 与 `cargo check --workspace --all-targets` 通过；`cargo test -p zcv-editor --lib` 296/296、`zcv-language --lib` 82/82、`zcv-multi-buffer --lib` 68/68、`zcv-version-control --lib` 55/55；`cargo fmt --all -- --check` 与 `cargo clippy -p zcv-editor -p zcv-language --all-targets --no-deps -- -D warnings` 干净。
+> 验证：`cargo check -p zcv-editor -p zcv-language --all-targets` 与 `cargo check --workspace --all-targets` 通过；`cargo test -p zcv-editor --lib` 297/297（含新增 `editing_a_folded_composite_document_keeps_block_input_coverage` 与 `geometry_preserving_diff_edit_reuses_diff_decorations`）、`zcv-language --lib` 82/82、`zcv-multi-buffer --lib` 68/68、`zcv-version-control --lib` 55/55；`cargo fmt --all -- --check` 与 `cargo clippy -p zcv-editor -p zcv-language --all-targets --no-deps -- -D warnings` 干净。
+>
+> **闭环记录（本轮，HEAD `a408a466`）**：按 `docs/编辑器架构.md` 目标边界闭环全部剩余 ⬜ 与契约层 H-2…H-5，并逐条定向验证 §5 线索第 6、8、11–33 条。
+> 渲染层：R-E（元素实测宽度回写、`WrapMap` 按实测宽度换行）、R-F（窗口化几何统一走 `byte_for_display_column`）、R-G（裁剪占位符仍携带 `ChunkRenderer`）、R-H（`ellipsis` 调用时读取主题）。
+> 交互层：E-I（命令与 crease 共用 `toggle_fold_at_line`）、E-J（`autoclose_regions` 生命周期清理）、E-K（`MultiBufferEvent::DiffExpansionChanged` → `EditorEvent::DiffHunksExpandedChanged`）。
+> 文本层：T-C（回放记录逆编辑 + `range_is_replayable` 合并守卫）、T-D（回放条目可逆，`text_for_version` 在 undo/redo 后可用）。
+> 组合/diff 层：M-E（单一在途 `Task`，替换即取消）、M-F（安装校验 working/base/index）、M-D（同步帧累积精确 `TextChangeBatch`）。
+> §5 线索：6、8、12、13、14、15、18、19、20、21、22、24、25、26、28 已修正或按目标显式登记；16、17、23、27、29、30、31、32、33 经复核关闭，见 §5。
+> 验证：`cargo check --workspace --all-targets`、`cargo test -p zcv-editor --lib` 309、`zcv-multi-buffer --lib` 73、`zcv-language --lib` 84、`zcv-text --lib` 35、`zcv-search --lib` 9、`zcv-project` 定向、`cargo fmt --all -- --check` 与定向 `cargo clippy -D warnings` 均通过；真实 UI/平台运行时未执行。
 
 ---
 
@@ -68,7 +76,7 @@ Project / GitStore / Workspace / Item
 - 依赖方向与 Zed 一致：`zcv-text ← zcv-language / zcv-buffer-diff ← zcv-multi-buffer ← zcv-editor ← zcv-project / zcv-workspace`；`zcv-project` 不依赖 `zcv-multi-buffer`、`zcv-editor`、`zcv-workspace`（与 Zed `crates/project` 相同）。
 - 第 18.2 节「复刻偏离」曾登记为空这一事实无法维持：本次确认存在若干复刻偏离，集中在组合文档增量回退、跨代际锚点解析、显示层 block 增量协议、显示热路径物化、选择唯一入口、语言注入待解析层、组合坐标类型误用、项目搜索旁路物化，以及渲染层的行片段模型缺失与行内替换描述缺失（R-A…R-D）。上述条目已在本轮按目标全部修正，18.2 节随之清空；本轮渲染层复审新增 R-E，18.2 节重新登记该条。
 - 其余差异属于两类允许偏离：已声明裁剪（协作/远程/LSP 生产者；InlayMap 只裁剪 inlay 生产者，其共享的行内替换渲染底座已纳入对齐）或语义一致的实现技术差异；已登记暂不处理项（A11、C6、F-14、R5）仍然存在但不改变数据流与所有权。
-- 对齐进度：第 2.2 节原有 25 条已确认差距已全部闭环（本轮修正 E-G、E-H、D-A 保留项、D-F、D-G、R-A…R-D、E-D、E-E、T-A、T-B；1 条登记为产品裁剪 L-A）。本轮复审新增两条：渲染层 R-E（待处理），以及组合文档层 M-C（删除 hunk 双推进入口，已按单入口修正，并进一步使删除 hunk 只驻输出变换树）。已落地状态见第 2.2 节「状态」列与第 4 节各条状态行。
+- 对齐进度：第 2.2 节原有 25 条已确认差距已全部闭环（E-G、E-H、D-A 保留项、D-F、D-G、R-A…R-D、E-D、E-E、T-A、T-B；1 条登记为产品裁剪 L-A）。后续复审新增的组合文档层 M-C 与渲染层 R-E，以及 T-C、T-D、M-D、M-E、M-F、D-H、E-I、E-J、E-K、R-F、R-G、R-H 已在本轮全部闭环；契约层 H-2…H-5 同步完成。已落地状态见第 2.2 节「状态」列与第 4 节各条状态行。
 - 本轮复审新增 D-F、D-G 两条低严重度保留项与契约层条目 H-1；H-1 已按 Zed 原型在架构文档 §4.2/T-8 修正（见第 2.5、4.7 节）。
 - 渲染层补审（本轮，架构文档新增 §10.2/§10.4 目标后）：对齐目标此前只覆盖「渲染不越权」（R-1..R-4），未覆盖行布局内部模型；新增 R-A…R-D 四条渲染层差距，见第 3.5、4.8 节。
 - 渲染层目标确认（前轮复审）：架构文档 §10.1 明确 `EditorElement` 按 Zed `crates/editor/src/element.rs` 复刻。R-A…R-D 已闭环；新增 R-E（元素实测宽度未回写显示层），并登记两项尚未复刻的通用渲染能力与一项裁剪，见第 4.8 节与架构文档 §18.1/§17。
@@ -86,7 +94,7 @@ Project / GitStore / Workspace / Item
 | M-B | 高 | 组合文档 | 通用 `resolve_anchor` 在代际失配时静默 `rebase_across_generations` | T-8、4.2、M-4 | ✅ `a034e79b` 显式化；`660fca54` 删除代际机制，单一版本化坐标链 |
 | M-C | 中 | 组合文档 | 展开删除 hunk 以基线修订 Buffer 为 excerpt 源，基线文本变化与 diff 结果构成两个推进入口 | M-2、8.4、D-5、7.5 | ✅（本轮）基线文本只喂 diff；删除 hunk 改为输出 `DiffTransform::DeletedHunk` 自带基线文本，输入 excerpt 树只含工作区文档 |
 | D-C | 中 | 显示投影 | Fold/Tab 层 Edit 不是本层坐标类型，靠全局 delta 与裸区间兜底 | D-2、4.1 | ✅（本轮） |
-| D-A | 中 | 显示投影 | Block 层无本层 edit 协议，wrap 编辑时整体 `place()`，结构变化全量重建 | D-2、D-5、D-8 | ✅（本轮）公共前缀 + 受影响区间 + 公共后缀；结构变化按锚点表等价性、换行编辑取编辑之后尾部复用旧子树；删除 `None` suffix 与从起点重建 |
+| D-A | 中 | 显示投影 | Block 层无本层 edit 协议，wrap 编辑时整体 `place()`，结构变化全量重建 | D-2、D-5、D-8 | ✅（本轮）公共前缀 + 受影响区间 + 公共后缀；结构变化改由组合投影版本 `MultiBufferSnapshot::version()` 驱动，换行重排取编辑之后尾部复用旧子树；`geometry_epoch` 只在块几何真变时推进；删除 `None` suffix 与从起点重建 |
 | D-B | 中 | 显示投影 | 布局热路径 `row_text` 物化整行，调用方自行剥离 `\n` | D-7、8.2 | ✅ `bd371e8b` |
 | D-D | 中 | 显示投影 | 异步 wrap 完成由 observe 回调直接推进快照，与 `snapshot→sync` 双路径 | D-5、13.2 | ✅ `9bb9587d` |
 | E-A | 中 | 交互 | 选择变更存在多个直接写点，未统一入口；相邻选择被错误合并 | E-8、9.3 | ✅ `4b377820` |
@@ -108,21 +116,21 @@ Project / GitStore / Workspace / Item
 | R-B | 中 | 渲染 | chunk 流没有行内替换描述与渲染描述 | R-6、R-9 | ✅（本轮）`Chunk.renderer` 携带行内替换描述 |
 | R-C | 中 | 渲染 | 折叠占位符没有 `render` 回调，`constrain_width` 未被消费 | R-6 | ✅（本轮）`FoldPlaceholder.render` 注入元素，`constrain_width` 决定可用宽度 |
 | R-D | 低 | 渲染 | 行布局可脱离 Element 生命周期计算，元素生命周期契约不存在 | R-7 | ✅（本轮）元素在 `request_layout`/`prepaint` 内测量，行原点确定后 prepaint |
-| R-E | 低中 | 渲染 | 行内元素实测宽度未回写显示层，`ChunkRendererId` 从渲染片段丢失 | R-9 | ⬜ |
-| T-C | 中 | 文本事实 | `MergeWithPrevious` 可跨 `undo: None` 日志条目合并历史节点，undo 报 `InvariantViolation` 且历史与文本分叉 | T-7、5.2、5.3 | ⬜（本轮新增） |
-| T-D | 中 | 文本事实 | undo/redo 回放条目以 `undo: None` 落盘，`text_for_version` 在任意撤销/重做后返回 `HistoryTextUnavailable` | T-7 | ⬜（本轮新增） |
-| M-D | 中 | 组合文档 | 投影同步帧丢弃精确源增量，改用树比较推导粗范围；等长替换可能漏更新 | 2.2、7.5、M-A 目标 | ⬜（本轮新增） |
-| M-E | 中 | 组合文档 | `BufferDiff` 后台 diff 任务 `detach`、不可取消、无在途去重 | 13.3 | ⬜（本轮新增） |
-| M-F | 低 | 组合文档 | diff 结果安装只校验 working 版本，未校验 base/index | 13.3、4.3 | ⬜（本轮新增） |
+| R-E | 低中 | 渲染 | 行内元素实测宽度未回写显示层，`ChunkRendererId` 从渲染片段丢失 | R-9 | ✅（本轮）`ChunkRenderer` 增 `measured_width`、`LineFragment::Element` 带 `ChunkRendererId`、prepaint 回写折叠层并再次 prepaint；`WrapMap` 以元素实测宽度参与换行 |
+| T-C | 中 | 文本事实 | `MergeWithPrevious` 可跨 `undo: None` 日志条目合并历史节点，undo 报 `InvariantViolation` 且历史与文本分叉 | T-7、5.2、5.3 | ✅（本轮）回放路径记录逆编辑；`merge_into_current` 增加版本区间可回放守卫，不可回放区间分裂为新节点 |
+| T-D | 中 | 文本事实 | undo/redo 回放条目以 `undo: None` 落盘，`text_for_version` 在任意撤销/重做后返回 `HistoryTextUnavailable` | T-7 | ✅（本轮）回放条目记录逆编辑，`text_for_version` 在 undo/redo 后可用；仅 `SkipHistory` 与预算裁剪仍显式不可用 |
+| M-D | 中 | 组合文档 | 投影同步帧丢弃精确源增量，改用树比较推导粗范围；等长替换可能漏更新 | 2.2、7.5、M-A 目标 | ✅（本轮）`ProjectionSync` 累积精确 `TextChangeBatch` 并在帧末重定基发布；树比较只服务拓扑结构操作 |
+| M-E | 中 | 组合文档 | `BufferDiff` 后台 diff 任务 `detach`、不可取消、无在途去重 | 13.3 | ✅（本轮）`BufferDiff` 持有单一在途 `Task`，下次调用替换即取消，实体销毁随字段取消；无 `detach` |
+| M-F | 低 | 组合文档 | diff 结果安装只校验 working 版本，未校验 base/index | 13.3、4.3 | ✅（本轮）安装前校验 working/base/index 全部输入版本（`DiffInputVersions`），过期结果丢弃并补算 |
 | D-H | 高 | 显示投影 | diff 装饰缓存键以 `wrap_edits.is_empty()` 冒充显示几何未变；折叠全部文件后装饰沿用旧显示行 | D-4、D-5、8.5 | ✅（本轮）改为按 `BlockSnapshot` 的块几何代际（`geometry_epoch`）失效 |
-| E-I | 中 | 交互 | `ToggleFold` 命令使用空 `render` 的默认占位符，折叠区无可见元素；与 crease 点击路径不一致 | R-6、10.2 | ⬜（本轮新增） |
-| E-J | 中 | 交互 | `autoclose_regions` 只增不减，输入路径线性扫描无界历史区域 | 9.1、13.2 | ⬜（本轮新增） |
-| E-K | 低 | 交互 | `EditorEvent::DiffHunksExpandedChanged` 已声明且被订阅但无生产者 | 9.7、7.4 | ⬜（本轮新增） |
-| R-F | 中 | 渲染 | 水平窗口化行的选区/装饰几何把整行列用于窗口内文本，高亮整体偏移 | R-8、10.2、4.1 | ⬜（本轮新增） |
-| R-G | 中 | 渲染 | 水平窗口裁剪折叠占位符时静默丢弃 `ChunkRenderer`，回退文本绘制 | R-6、10.2 | ⬜（本轮新增） |
-| R-H | 低 | 渲染 | `FoldPlaceholder::ellipsis` 构造时捕获主题色，主题切换后陈旧 | 10.2 | ⬜（本轮新增） |
+| E-I | 中 | 交互 | `ToggleFold` 命令使用空 `render` 的默认占位符，折叠区无可见元素；与 crease 点击路径不一致 | R-6、10.2 | ✅（本轮）删除 `toggle_fold_at_cursor`；命令与 crease 共用 `toggle_fold_at_line` + `FoldPlaceholder::ellipsis` |
+| E-J | 中 | 交互 | `autoclose_regions` 只增不减，输入路径线性扫描无界历史区域 | 9.1、13.2 | ✅（本轮）`record_autoclose_regions` 先按当前选择清理失效区域再锚定；选择/编辑落地统一收敛，区域有界 |
+| E-K | 低 | 交互 | `EditorEvent::DiffHunksExpandedChanged` 已声明且被订阅但无生产者 | 9.7、7.4 | ✅（本轮）Editor 订阅 `MultiBufferEvent::DiffExpansionChanged` 并发布 `EditorEvent::DiffHunksExpandedChanged` |
+| R-F | 中 | 渲染 | 水平窗口化行的选区/装饰几何把整行列用于窗口内文本，高亮整体偏移 | R-8、10.2、4.1 | ✅（本轮）新增 `local_byte_for_display_column`，选区/词级 diff/括号背景与占位符 hitbox 统一按显示列换算 |
+| R-G | 中 | 渲染 | 水平窗口裁剪折叠占位符时静默丢弃 `ChunkRenderer`，回退文本绘制 | R-6、10.2 | ✅（本轮）占位符段始终携带 `ChunkRenderer`，可见性交给 content mask |
+| R-H | 低 | 渲染 | `FoldPlaceholder::ellipsis` 构造时捕获主题色，主题切换后陈旧 | 10.2 | ✅（本轮）`ellipsis` render 闭包调用时读取当前主题色 |
 
-> 说明：前 25 条已为重点条目补齐回归测试（见第 9 节）；`D-F`、`R-D` 的运行时用户可见程度有限，真实 UI 交互仍由开发者手动验证。R-E 为渲染层目标确认后新增的复刻缺口；本轮新增的 T-C、T-D、M-D、M-E、M-F、D-H、E-I、E-J、E-K、R-F、R-G、R-H 均为只读静态审计结论，未做运行时复现（见第 9 节）。`font_id_for_index` 与 invisible/whitespace 完整策略登记为架构文档 §18.1「尚未复刻」，不计入本表已确认差距。
+> 说明：前 25 条已为重点条目补齐回归测试（见第 9 节）；`D-F`、`R-D` 的运行时用户可见程度有限，真实 UI 交互仍由开发者手动验证。R-E 与 T-C、T-D、M-D、M-E、M-F、D-H、E-I、E-J、E-K、R-F、R-G、R-H 已在本轮闭环并补齐定向回归（见第 9 节）。`font_id_for_index` 与 invisible/whitespace 完整策略登记为架构文档 §18.1「尚未复刻」，不计入本表已确认差距。
 
 ### 2.3 已登记暂不处理项（复核仍存在）
 
@@ -139,6 +147,8 @@ Project / GitStore / Workspace / Item
 - H-3：架构文档 §14.1 的依赖箭头图与 §2.1 分层未反映 `zcv-editor → zcv-project`/`zcv-workspace` 的实际依赖（与 Zed `crates/editor` 一致）；第 8 节回写建议尚未落地。见第 4.7 节。
 - H-4：架构文档 §18.1 与 §18.2 重复登记「行内元素实测宽度回写」（R-E），且 §18.2 保留「已按目标落地」的历史说明，违反 §19.2「差距消除后删除」。见第 4.7 节。
 - H-5：架构文档 §8.2 与 §15 D-8 写作「同构段不得被合并」，而 Zcv 与 Zed 都要求合并相邻同构变换（不得存在相邻同构变换）；措辞与实现相反。见第 4.7 节。
+
+> H-2…H-5 已在本轮闭环（提交 `a3a00a59`）：H-2 在 §18.3 登记裁剪并同步 §6.3/§6.6；H-3 修正 §14.1 依赖箭头；H-4 去重并删除历史说明；H-5 改述为「相邻同构变换必须合并为规范形」。
 
 ---
 
@@ -182,7 +192,7 @@ Project / GitStore / Workspace / Item
 - 坐标与 Bias：`ProjectedLineIndex/ProjectedPoint`、`WrapRow/WrapPoint`、`DisplayPoint/DisplayRow`、`TabColumn`、`FoldBias` 等逐层 newtype 与显式 Bias 广泛存在（`display_map.rs:74-161`，`display_map/tab_map.rs:30`，`display_map/fold_map.rs:144`）。D-11 成立。
 - 异步：只有 wrap 层是 `Entity`，自持 `background_task`/`pending_edits`/`interpolated_edits`，落地时先反转插值再叠加真实编辑（`display_map/wrap_map.rs:1114-1125, 1240-1260`）。8.4/D-12 方向成立。
 - 折叠候选：`CreaseMap` 只存宿主显式注入锚点，语法候选由 `DisplaySnapshot` 按可见逻辑行即时查询并带视口缓存（`display_map/crease_map.rs:46-88`，`display_map.rs:302-391`）。8.5 方向成立，且已无组合层全源 fold list（`fold_anchors`/`fold_sources` 搜索为 0）。
-- 缺口：Block 层增量协议（D-A 部分修正：wrap 编辑与 excerpt 边界变化分支只复用前缀，仍保留两处条件性从投影起点重建）、热路径物化整行（D-B，已修正）、Fold/Tab Edit 坐标类型（D-C，已修正）、observe 与 snapshot 双路径（D-D，已修正）。
+- 缺口：Block 层增量协议（D-A 已修正：结构变化改由组合投影版本驱动，公共前缀 + 受影响区间 + 公共后缀；块几何代际只在几何真变时推进）、热路径物化整行（D-B，已修正）、Fold/Tab Edit 坐标类型（D-C，已修正）、observe 与 snapshot 双路径（D-D，已修正）。
 - 前轮新增：`show_headers` 纳入 Block 快速路径失效键（D-F）、Block 层补 input 覆盖与越界断言（D-G）；D-13 分类已与 Zed 对齐。
 - 本轮新增：diff 装饰快照缓存键用 `wrap_edits.is_empty()` 冒充显示几何未变（D-H，高）；折叠全部文件后 gutter/hunk/滚动条装饰沿用旧显示行。
 
@@ -306,7 +316,7 @@ Project / GitStore / Workspace / Item
 
 #### M-D（中）组合投影同步帧丢弃精确源增量，改用树比较推导范围
 
-> 状态：待处理（本轮新增）。
+> 状态：已修正（本轮）。`ProjectionSync` 累积精确 `TextChangeBatch`，帧末重定基发布；`projection_changed_ranges` 只由结构操作使用。
 
 - 位置：`zcv-multi-buffer/src/multi_buffer.rs:1537-1547`（`ProjectionSync` 只有 `changed: bool`）、`multi_buffer.rs:3393-3401`（`publish_projection_change` 丢弃 `incremental`）、`multi_buffer.rs:3428-3452` 与 `multi_buffer.rs:1119-1186`（帧末从前后投影树比较出单一范围）、`multi_buffer.rs:391-395` 与 `1093`（`ExcerptContext::eq` 只比解析偏移、忽略 Anchor 版本）。
 - 证据：`diff_changed` 开始同步帧后，`sync_pending_sources` 经 `apply_source_change` 产出的 `SourceIncremental` 在 `publish_projection_change` 中被 `sync.changed = true; return` 丢弃；帧结束 `finish_projection_sync` 用 `projection_changed_ranges` 比较 excerpt 摘要/结构，得到单一 `(old_range, new_range)` 批次，等长替换时该范围为空。Zed `sync_from_buffer_changes` 累积 `edits_since_in_range` 并把精确 excerpt edits 交给 `sync_diff_transforms`（`crates/multi_buffer/src/multi_buffer.rs:2540-2699`）。
@@ -317,7 +327,7 @@ Project / GitStore / Workspace / Item
 
 #### M-E（中）BufferDiff 后台 diff 任务不可取消、无在途去重
 
-> 状态：待处理（本轮新增）。
+> 状态：已修正（本轮）。`BufferDiff` 持有单一在途 `Task`（`calculation_task`），下次 `recompute_with_refresh` 替换即取消，实体销毁随字段取消；无 `detach`。按 Zcv 既有 `ParseTask` 模式由实体保存任务并返回 `()`，可取消、单在途、随实体销毁取消三个可观察契约成立。
 
 - 位置：`zcv-buffer-diff/src/buffer_diff.rs:287-326`（无条件 `cx.spawn(...).detach()`）、`buffer_diff.rs:244-257`（结构体无 `Task` 字段）、`buffer_diff.rs:332-344`（过期即再 spawn）；调用方 `zcv-multi-buffer/src/diff_projection.rs:1003-1013`、`multi_buffer.rs:4417`。
 - 证据：working 源每次文本变化与 base/index 每个事件都会调用 `recompute_with_refresh`，每次新起一个后台全文 diff 任务且互不取消；`calculation_pending` 只是布尔标志，调用前不检查。Zed `crates/buffer_diff/src/buffer_diff.rs:2219-2231` 以「drop 返回的 Task 取消上一次更新」为契约。
@@ -328,7 +338,7 @@ Project / GitStore / Workspace / Item
 
 #### M-F（低）diff 结果安装只校验 working 版本
 
-> 状态：待处理（本轮新增）。
+> 状态：已修正（本轮）。`DiffInputVersions { working, base, index }` 在捕获与安装两端比较，任一前进即丢弃并补算。
 
 - 位置：`zcv-buffer-diff/src/buffer_diff.rs:339-347`；捕获端 `buffer_diff.rs:293-300`；base/index 原位刷新 `zcv-project/src/git_store/mod.rs:1124-1138`。
 - 证据：`apply_recomputed_hunks` 只比较 working 文本版本；base/index 快照没有版本门控，working 未变而 base/index 前进时旧结果仍被安装。
@@ -496,7 +506,7 @@ Project / GitStore / Workspace / Item
 
 #### E-I（中）`ToggleFold` 命令使用空 `render` 的默认折叠占位符
 
-> 状态：待处理（本轮新增）。
+> 状态：已修正（本轮）。删除 `toggle_fold_at_cursor`；`handle_toggle_fold` 解析光标显示行内的折叠入口行（否则用逻辑行）后调用共享的 `toggle_fold_at_line`，折叠用 `FoldPlaceholder::ellipsis()`。
 
 - 位置：`zcv-editor/src/view/mod.rs:714-762`（`toggle_fold_at_cursor`，`:755` 用 `FoldPlaceholder::default()`）、`view/mod.rs:680-708`（`toggle_fold_at_line`，`:700` 用 `FoldPlaceholder::ellipsis(cx)`）、`view/mod.rs:2081-2086`（`handle_toggle_fold` → `toggle_fold_at_cursor`）、`display_map/fold_map.rs:222-232`（`default` 渲染 `gpui::Empty`）。
 - 证据：命令入口 `ToggleFold` 走 `toggle_fold_at_cursor`，其 `fold_range` 传入 `FoldPlaceholder::default()`，render 产出 `gpui::Empty`；`element.rs:2912-2925` 对带 `renderer` 的 chunk 走元素路径、不再绘制文本，因此折叠区没有可见占位符。crease 点击走的 `toggle_fold_at_line` 使用 `ellipsis`；`view/mod.rs:680` 注释声称二者共享实现，实际并未共享。
@@ -507,7 +517,7 @@ Project / GitStore / Workspace / Item
 
 #### E-J（中）`autoclose_regions` 无生命周期清理
 
-> 状态：待处理（本轮新增）。
+> 状态：已修正（本轮）。新增 `invalidate_autoclose_regions`，`record_autoclose_regions` 先清后锚；`set_pending_selection` 与 `restore_anchored_selections` 两个选择落地统一收敛。
 
 - 位置：`zcv-editor/src/view/mod.rs:293-295`（字段）、`view/input.rs:354-369`（只 `extend`）、`input.rs:392-404` 与 `418-426`（每次输入全量扫描）。
 - 证据：`autoclose_regions: Vec<AutocloseRegion>` 只在自动配对成功后 `extend`，全仓无 `retain`/`clear`/`remove`；失效区域仅因 `resolve_anchor` 返回 `None` 被跳过，条目永久保留；`finish_edit` 只清结构化历史与 pending。Zed 在选区变化/编辑后调用 `invalidate_autoclose_regions` 只保留存活区域（`crates/editor/src/input.rs:2098-2126`）。
@@ -518,7 +528,7 @@ Project / GitStore / Workspace / Item
 
 #### E-K（低）`EditorEvent::DiffHunksExpandedChanged` 无生产者
 
-> 状态：待处理（本轮新增）。
+> 状态：已修正（本轮）。Editor 的 MultiBuffer 订阅在收到 `MultiBufferEvent::DiffExpansionChanged` 时发布 `EditorEvent::DiffHunksExpandedChanged`，不新增生产者。
 
 - 位置：`zcv-editor/src/view/mod.rs:78-79`；消费方 `zcv-version-control/src/project_diff.rs:637`、`zcv-search/src/project_search.rs:213`、`zcv-editor/src/workspace_item.rs:32`。
 - 证据：全仓无 `emit(EditorEvent::DiffHunksExpandedChanged)`；展开状态变化只经 `advance_snapshots`/`cx.notify`。§9.7 把「diff 展开状态变化」列为领域事件。
@@ -590,7 +600,7 @@ Project / GitStore / Workspace / Item
 
 #### T-C（中）`MergeWithPrevious` 可跨 `undo: None` 日志条目合并历史节点
 
-> 状态：待处理（本轮新增，由第 5 节线索 7 升级）。
+> 状态：已修正（本轮）。`apply_edit_list` 回放时记录逆编辑；`push_history` 经 `range_is_replayable(current_end, entry.start_version)` 守卫，不可回放区间分裂为新节点；undo/redo 先取齐批次再推进游标。
 
 - 位置：`zcv-text/src/buffer/history/state.rs:88-101`（`merge_into_current` 只要求当前节点无子节点）、`buffer/history/api.rs:136-140`（无条件 merge）、`tracking/edit_log.rs:136-153`（遇 `undo: None` 返回 `InvariantViolation`）、`buffer/transaction_pipeline/apply.rs:152-165`（回放以 `None` 提交逆编辑）、`buffer/history/api.rs:57-64, 75-83`（先动游标后回放，失败不回滚）。
 - 证据：`edit(A) → undo（回放条目 undo:None）→ redo（回放条目 undo:None）→ edit(B, MergeWithPrevious)` 时 `merge` 把节点区间扩到包含回放条目，再次 `undo` 在 `undo_batches` 命中 `undo: None` 报 `InvariantViolation`，且游标已前移、文本未回退。超过默认 16MiB 的 `SkipHistory` 事务后接 `MergeWithPrevious` 同理（`config/large_file.rs:45-46`）。生产 `MergeWithPrevious` 仅 IME 组合路径（`zcv-editor/src/view/input.rs:130-137, 715-723`）。
@@ -601,7 +611,7 @@ Project / GitStore / Workspace / Item
 
 #### T-D（中）回放条目 `undo: None` 使 `text_for_version` 在任意 undo/redo 后失效
 
-> 状态：待处理（本轮新增）。
+> 状态：已修正（本轮）。回放条目记录逆编辑（回放的逆即反向回放），`reverse_batches` 不再遇 `undo: None`；仅 `SkipHistory` 大事务与预算裁剪仍显式返回 `HistoryTextUnavailable`。
 
 - 位置：`zcv-text/src/tracking/edit_log.rs:159-176`（`reverse_batches` 要求全部条目有 undo）、`zcv-text/src/snapshot.rs:159-186`（`text_for_version` 除当前版本外都走 `reverse_batches`）、`buffer/transaction_pipeline/apply.rs:152-165` 与 `buffer/history/api.rs:120-126`（回放无逆编辑）。
 - 证据：`edit(A) → undo` 后文本恰为 v0，但 `text_for_version(v0)` 的区间包含回放条目 [v1,v2]（`undo: None`）→ `HistoryTextUnavailable`；`text_for_version(v1)` 同样失败。第 4.5 节 T-A、`zcv-text/README.md:26`、架构文档 §18.4 只把该错误归因于 `SkipHistory` 大事务。
@@ -653,7 +663,7 @@ Project / GitStore / Workspace / Item
 
 #### H-2（中）架构文档 §6.3/§6.6 的注册表版本补解析与 L-A 裁剪冲突
 
-> 状态：待处理（本轮新增）。
+> 状态：已修正（本轮）。§6.3/§6.6 改为「构造期静态装配、无运行期注册入口、不引入注册表版本补解析，Pending 层即将来接入点」；§18.3 唯一权威登记该裁剪。
 
 - 位置：`docs/编辑器架构.md:316`（§6.3）、`:332`（§6.6）与 `:986-993`（§18.3）、`:954-962`（§17）；`zcv-language/src/registry.rs:196-199`（无版本字段/访问器）。
 - 证据：§6.3/§6.6 明确要求「注册表版本变化驱动注入层补解析」，而 Zcv 注册表由 `builtin_languages()` 静态装配、无运行期注册入口；第 7.1 节已把该能力登记为产品裁剪，但 §17/§18.3 未登记，§15 L-8 也只保留「Pending 不静默丢弃」。
@@ -664,7 +674,7 @@ Project / GitStore / Workspace / Item
 
 #### H-3（低）架构文档 §14.1 依赖箭头未反映实际依赖
 
-> 状态：待处理（本轮新增）。
+> 状态：已修正（本轮）。§14.1 箭头改为「A → B 即 A 依赖 B」，补 `zcv-editor → zcv-project/zcv-workspace`（只经 Item/Provider 协议），与 Cargo.toml 一致。
 
 - 位置：`docs/编辑器架构.md:812-825`；`zcv-editor/Cargo.toml:27, 31`；`zcv-project/Cargo.toml:9-25`。
 - 证据：§14.1 箭头图把 `zcv-project / zcv-workspace` 画在 `zcv-editor` 之上，实际是 `zcv-editor` 依赖 `zcv-project`/`zcv-workspace`（与 Zed `crates/editor` 一致）；第 7.2 节已登记为实现差异、第 8 节建议对齐，但文档未改。
@@ -674,7 +684,7 @@ Project / GitStore / Workspace / Item
 
 #### H-4（低）架构文档 §18.1 与 §18.2 重复登记 R-E
 
-> 状态：待处理（本轮新增）。
+> 状态：已修正（本轮）。§18.1 只保留 `font_id_for_index` 与 invisible/whitespace；§18.2 曾只登记 R-E，R-E 随后消除并从 §18.2 删除；删除历史说明。
 
 - 位置：`docs/编辑器架构.md:975`（§18.1 行内元素实测宽度回写）与 `:982`（§18.2 R-E）；`:984`（§18.2 历史说明）。
 - 证据：同一「实测宽度回写」同时登记在「尚未复刻」与「复刻偏离」；§18.2 还保留「此前登记……均已按目标落地」的历史说明，违反 §19.2。
@@ -684,7 +694,7 @@ Project / GitStore / Workspace / Item
 
 #### H-5（低）架构文档 D-8/§8.2「同构段不得被合并」与实现相反
 
-> 状态：待处理（本轮新增）。
+> 状态：已修正（本轮）。§8.2 与 §15 D-8 改述为「相邻同构变换必须合并为规范形（不得存在相邻同构变换）；input 必须精确覆盖下层」。
 
 - 位置：`docs/编辑器架构.md:525`（§8.2）、`:889`（§15 D-8）；`zcv-editor/src/display_map/fold_map.rs:1300-1324`、`block_map.rs:573-584`；Zed `crates/editor/src/display_map/fold_map.rs:413-431, 1073`。
 - 证据：Zcv 与 Zed 都显式合并相邻同构变换；Zed 的实际不变量是「不得存在相邻同构变换」。
@@ -748,7 +758,7 @@ Project / GitStore / Workspace / Item
 
 #### R-E（低中）行内元素实测宽度未回写显示层，`ChunkRendererId` 从渲染片段丢失
 
-> 状态：待处理（渲染层目标确认为 Zed 架构后新增，本轮）。
+> 状态：已修正（本轮）。`ChunkRenderer` 增 `measured_width`，`LineFragment::Element` 带 `ChunkRendererId`；prepaint 收集并回写折叠层，宽度变化经显示版本推进并再次 prepaint；`WrapMap` 按元素实测宽度参与换行；折叠层是宽度唯一权威。
 
 - 位置：`zcv-editor/src/element.rs`（`LineFragment::Element` 无 `id`；`EditorElement::prepaint` 末无宽度回写）、`zcv-editor/src/display_map/fold_map.rs`（`ChunkRenderer` 无 `measured_width`）、`zcv-editor/src/display_map.rs`。
 - 证据：Zcv 只在当前行内按 `size.width` 累加 x；`ChunkRenderer` 只有 `id`/`render`/`constrain_width`，`id` 在构造渲染片段时被丢弃，全仓无 `update_renderer_widths`/`update_fold_widths`/`measured_width`。
@@ -763,7 +773,7 @@ Project / GitStore / Workspace / Item
 
 #### R-F（中）水平窗口化行的选区/装饰几何把整行列用于窗口内文本
 
-> 状态：待处理（本轮新增）。
+> 状态：已修正（本轮）。新增 `local_byte_for_display_column`（复用 `byte_for_display_column(..., window_start_column, ...)`），选区、词级 diff、括号背景与折叠占位符 hitbox 统一换算。
 
 - 位置：`zcv-editor/src/element.rs:3149, 3163, 3167`（选区）、`:3206, 3220, 3224`（词级 diff）、`:3390, 3405, 3406`（括号背景）、`:1579-1590`（折叠占位符 hitbox）、`:3505-3509`（`column_to_byte`）。
 - 证据：未换行时渲染层按水平滚动建立列窗口，`row_text` 只含窗口内 chunk，`window_start_column` 只用于命中/光标/UTF-16/空白的显式补偿（`:439-445, 3482-3487, 520-521, 2904, 3077-3081`）；但选区/词级 diff/括号背景直接以整行列 `column_to_byte(&line.line.text, column)` 取窗口文本，折叠 hitbox 也以整行合并字节对窗口文本取 `x_for_index`。
@@ -774,7 +784,7 @@ Project / GitStore / Workspace / Item
 
 #### R-G（中）水平窗口裁剪折叠占位符时静默丢弃 `ChunkRenderer`
 
-> 状态：待处理（本轮新增）。
+> 状态：已修正（本轮）。占位符段无论是否被水平窗口裁剪都携带 `ChunkRenderer`，元素可见性交给 content mask；删除按视口退化文本的分支。
 
 - 位置：`zcv-editor/src/display_map/chunk.rs:631-647`（`unclipped.then(|| renderer.clone())`）；消费 `element.rs:2912-2925`。
 - 证据：占位符段被窗口部分覆盖时 `renderer: None`（`chunk.rs:646`），渲染层当普通文本绘制并只染占位色；同一折叠的渲染方式取决于水平视口。
@@ -785,7 +795,7 @@ Project / GitStore / Workspace / Item
 
 #### R-H（低）`FoldPlaceholder::ellipsis` 构造时捕获主题色
 
-> 状态：待处理（本轮新增）。
+> 状态：已修正（本轮）。`ellipsis()` 不再捕获构造时主题色，render 闭包在调用时读取 `zcv_theme::color::current`。
 
 - 位置：`zcv-editor/src/display_map/fold_map.rs:265-276`；调用方 `zcv-editor/src/view/mod.rs:700`；折叠变换跨同步克隆 `fold_map.rs:104-116`；主题观察者 `view/mod.rs:1674-1684`。
 - 证据：`text_color` 在 `ellipsis(cx)` 构造时被闭包捕获，主题切换后已有折叠仍用旧色，直到重新折叠。
@@ -798,6 +808,36 @@ Project / GitStore / Workspace / Item
 ## 5. 待验证线索
 
 以下条目有代码证据但未能证明实际用户影响或可达性，不作为已确认差距；需定向测试或运行时复现后再决定是否登记。
+
+> **本轮定向验证结论（第 6、8、11–33 条）**：
+>
+> | 线索 | 结论 | 处置 |
+> | --- | --- | --- |
+> | 6 | 成立（注释与实现不符） | 改注释为「空编辑由 Transaction 拒绝；同文本替换仍推进版本与历史」；版本推进与 Zed 一致，非架构差距 |
+> | 8 | 成立（M-8 守卫缺失） | 结构变更入口加显式断言 `assert_no_active_transaction` + 回归测试；提交 `af8f67cb` |
+> | 11 | 不成立（关闭） | T-A/T-B 能力已落地且有测试；Git 修订唯一实体、全文物化 diff 属 §18.4 已登记实现差异 |
+> | 12 | 成立（T-7 语义偏离） | 按「代价/风险过大」显式登记 §18.2，注释 + 对照用例固定分歧；未改语义 |
+> | 13 | 成立（T-8/E-4） | `SelectionSet::resolve` 改 `Option`，部分失败保留其余、全失败显式 `None`；已修正 |
+> | 14 | 成立（E-9/§9.2） | `activate_match_in_direction` 先推进快照再取当次 range；已修正 |
+> | 15 | 成立（E-4/T-8） | `LocalRenameState` 改 `MultiBufferAnchor`；已修正 |
+> | 16 | 不成立（关闭） | 悬停下标每帧按鼠标位置重判，非长期位置 |
+> | 17 | 不成立（关闭） | `display_point` 是可丢弃派生缓存，权威是 `Anchor`；失败保留稳定表示符合 T-8 |
+> | 18 | 成立（E-5） | 选择历史预算由 `max_edit_history_entries` 派生；已修正 |
+> | 19 | 成立（§9.2/E-2） | `research_after_edit` 保持 `External`，只重投影锚点；已修正 |
+> | 20 | 成立（§11.1/P-1） | `Removed` 事件清理 BufferStore 索引；已修正，提交 `8e87d556` |
+> | 21 | 成立（M-4/D-6） | 展开覆盖身份改工作区 hunk `Anchor`；已修正，提交 `3e558dd2` |
+> | 22 | 成立（T-2/M-6） | `MultiBuffer::edit` 入口预检全部源版本与只读；已修正，提交 `3e558dd2`/`fee657e0` |
+> | 23 | 不成立（关闭） | 元数据事件多触发一次 diff 重算不改权威；性能候选 |
+> | 24 | 成立（L-2） | `parse_slice` 返回 `Result<_, ParseError>`，区分预算/取消/设置失败；已修正 |
+> | 25 | 成立（§4.2/D-9） | 折叠候选改用 `Anchor::range_inside`；已修正 |
+> | 26 | 成立（§6.6） | 内嵌编辑器共享装配层注入的 `LanguageRegistry`；已修正 |
+> | 27 | 不成立（关闭） | §14.2 允许几何缓存；`AnyElement` paint 时 `take` |
+> | 28 | 成立（§4.1/D-11） | `projected_point_to_range_point` 统一显示列语义；已修正 |
+> | 29 | 不成立（关闭） | 剥离行终止符正是 D-7 要求的 shaping 输入语义 |
+> | 30 | 不成立（关闭） | Fold 缺断言只是验证缺口，未构造 D-8 破坏路径 |
+> | 31 | 不成立（关闭） | 显示版本是派生缓存失效键，§8.4 未要求空同步不变 |
+> | 32 | 不成立（关闭） | 行扫描是性能候选，无性能不变量与实测 |
+> | 33 | 不成立（关闭） | §14.2 允许同 crate 互相引用且只传 track 几何 |
 
 1. ~~`SelectionHistory` 只增不减与失败会话孤儿（E-D）~~ **本轮已确认并修正**：记录有界化，失败会话结束即删除自身记录；回归测试见第 4.3 节 E-D。
 2. ~~`BlinkManager` detach 任务（E-E）~~ **本轮已确认并修正**：持有在途 `Task`，禁用即取消；回归测试见第 4.3 节 E-E。
@@ -880,6 +920,8 @@ Project / GitStore / Workspace / Item
 5. 第 18.1 节登记两项尚未复刻的通用渲染能力：`font_id_for_index` 与 invisible/whitespace 完整策略；第 18.3 节登记「渲染层不实现 LSP 诊断绘制」。
 6. 消除第 6 节 A11/C6/F-14/R5 中的任一项后，同步更新决策记录，而不是只改本审计。
 
+> 上述回写建议已在本轮随代码与架构文档同一阶段落地：§18.2 的 R-E 随 R-E 消除删除，H-2…H-5 已修正；新增且未解决的差距只保留 §18.2 的 `has_edits_since`（线索 12）与 §18.1 的 `font_id_for_index`、invisible/whitespace 两项尚未复刻能力。
+
 ---
 
 ## 9. 验证状态与未覆盖边界
@@ -900,3 +942,4 @@ Project / GitStore / Workspace / Item
 - 本轮独立复审（HEAD `0cb6630f`，工作树干净）：六个分层子审计逐层取证并复核第 2.2 节全部条目与第 5 节线索。可执行证据：`cargo test -p zcv-editor --lib` 296/296、`cargo test -p zcv-multi-buffer --lib` 68/68、`cargo test -p zcv-language --lib` 82/82、`cargo test -p zcv-text --lib` 35/35、`cargo check --workspace --all-targets` exit 0（仅依赖 `block v0.1.6` 的既有 future-incompat）。结论：记录条目的落地在代码层面成立；D-A、L-B 降为部分修正；新增代码差距 T-C、T-D、M-D、M-E、M-F、D-H、E-I、E-J、E-K、R-F、R-G、R-H 与契约条目 H-2…H-5。
 - 本轮新增差距均为静态审计结论，未做运行时复现（除 R-E 此前亦未复现）：D-H 的缓存命中路径有既有回归 `geometry_preserving_diff_edit_reuses_diff_decorations` 佐证复用成立，但「折叠后装饰错位」未实测；T-C/T-D 的触发路径为静态推演；M-D/M-E/M-F 的并发与等长替换影响未实测；E-I/E-J/E-K、R-F/R-G/R-H 为代码级确认、UI 表现未实测。真实 UI/平台运行时仍由开发者手动验证。
 - D-A/L-B 对齐落地验证：`cargo check -p zcv-editor -p zcv-language --all-targets` 与 `cargo check --workspace --all-targets` 通过；`cargo test -p zcv-editor --lib` 297/297（含新增折叠后编辑组合文档的输入覆盖回归 `editing_a_folded_composite_document_keeps_block_input_coverage`）、`zcv-language --lib` 82/82、`zcv-multi-buffer --lib` 68/68、`zcv-version-control --lib` 55/55；`cargo fmt --all -- --check` 与 `cargo clippy -p zcv-editor -p zcv-language --all-targets --no-deps -- -D warnings` 干净。diff 装饰缓存改为按块几何代际复用（D-H），由既有 `geometry_preserving_diff_edit_reuses_diff_decorations`（几何不变时复用）与折叠失效路径共同覆盖。未新增「换行编辑复用尾部变换」的 `Arc::ptr_eq` 断言回归（受 `WrapEdit` 生成路径与白盒访问限制）；该路径由既有组合编辑/折叠回归与 `rebuild` 的输入覆盖 debug 断言间接覆盖，真实 UI 行为仍由开发者手动验证。
+- 本轮（剩余 ⬜ 与 H-2…H-5 闭环）已执行：`cargo check --workspace --all-targets` exit 0；`cargo test -p zcv-editor --lib` 309/309、`zcv-multi-buffer --lib` 73/73、`zcv-language --lib` 84/84、`zcv-text --lib` 35/35、`zcv-text --test versioned_history` 11/11、`zcv-search --lib` 9/9、`zcv-project` 定向（`buffer_store`/`external_removal`/`search`）通过；`cargo fmt --all -- --check` 干净；定向 `cargo clippy ... -- -D warnings`（editor/search/version-control/language/multi-buffer/text/buffer-diff）干净。真实 UI/平台运行时未执行；R-H 主题色像素相等、宽度回写递归收敛上限、`set_language` ABI 失败路径、FSEvents 真实 `Removed` 到达仍未做运行时复现。

@@ -8,10 +8,13 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui::{App, Context, Entity, EventEmitter, Task};
+use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Task};
 use imara_diff::{Algorithm, Diff, InternedInput};
-use zcv_language::LanguageBuffer;
-use zcv_text::{Anchor, BufferVersion, ByteOffset, Line, Snapshot, TextRange};
+use zcv_language::{LanguageBuffer, LanguageRegistry};
+use zcv_text::{
+    Anchor, Buffer as TextBuffer, BufferConfig, BufferVersion, ByteOffset, Line, Snapshot,
+    TextRange,
+};
 
 use zcv_text::word_diff::{MAX_WORD_DIFF_BYTES, MAX_WORD_DIFF_LINES, word_diff_ranges};
 
@@ -48,19 +51,23 @@ pub enum BufferDiffEvent {
 /// 只包含 diff 状态（working、base 与操作）；显示配置由注入项 `DiffFile` 提供。
 #[derive(Clone)]
 pub struct BufferDiffInput {
-    /// 新侧源（工作区文件或修订文本的语言 Buffer 实体）。
+    /// 新侧源（工作区文件的语言 Buffer 实体）。
     pub working: Entity<LanguageBuffer>,
     /// 新侧源文件路径（绝对；hunk 操作与导航定位用）。
     pub path: PathBuf,
-    /// 旧侧（base 修订）文档；None 表示没有旧侧（如整体新增文件）。
-    pub base: Option<Entity<LanguageBuffer>>,
-    /// index 参照文档；hunk 的暂存语义统一相对它判定。
+    /// 旧侧（base 修订）文本；None 表示没有旧侧（如整体新增文件）。
+    pub base_text: Option<String>,
+    /// index 参照文本；hunk 的暂存语义统一相对它判定。
     ///
     /// - 未提交视图（如普通编辑器 gutter）：HEAD 为 base、工作区为 working，真实 index 用于逐 hunk 判定；
     /// - 已暂存视图：working 本身就是 index，分类自然得到全部 Staged；
     /// - 未暂存视图：base 本身就是 index，分类自然得到全部 Unstaged；
     /// - None：index 尚未加载或无暂存语境，暂按 NoStaging（实心）渲染。
-    pub index: Option<Entity<LanguageBuffer>>,
+    pub index_text: Option<String>,
+    /// 创建 base/index 语言缓冲所用注册表；由宿主装配层注入。
+    pub language_registry: Arc<LanguageRegistry>,
+    /// 调用方给出的稳定共享键（例如由 base/index 修订身份派生）；同一键复用同一 diff 实体。
+    pub key: u64,
     /// 由宿主注入的 diff 操作实现；无操作能力（普通编辑器 gutter）时为 None。
     pub operations: Option<Arc<dyn DiffOperations>>,
 }
@@ -257,6 +264,8 @@ pub struct BufferDiff {
     base_source: Option<Entity<LanguageBuffer>>,
     index_source: Option<Entity<LanguageBuffer>>,
     path: PathBuf,
+    /// 新建 base/index 缓冲用的注册表，与宿主装配层共用同一份。
+    language_registry: Arc<LanguageRegistry>,
     snapshot: BufferDiffSnapshot,
     operations: Option<Arc<dyn DiffOperations>>,
     /// diff 结果或 pending 的单调版本；显示层据此判断是否需要重新物化。
@@ -267,28 +276,125 @@ pub struct BufferDiff {
     calculation_task: Option<Task<()>>,
 }
 
+/// base / index 两个修订侧。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Revision {
+    Base,
+    Index,
+}
+
+/// 由修订文本创建语言缓冲；None 表示该侧不存在。
+fn revision_buffer(
+    text: Option<String>,
+    path: &std::path::Path,
+    registry: &Arc<LanguageRegistry>,
+    cx: &mut Context<BufferDiff>,
+) -> Option<Entity<LanguageBuffer>> {
+    let text = text?;
+    let buffer =
+        TextBuffer::from_text(text, BufferConfig::default()).expect("修订文本必须能创建 Buffer");
+    Some(
+        cx.new(|cx| {
+            LanguageBuffer::new(buffer, Some(path.to_path_buf()), Arc::clone(registry), cx)
+        }),
+    )
+}
+
 impl EventEmitter<BufferDiffEvent> for BufferDiff {}
 
 impl BufferDiff {
-    /// 依据 base/working 快照建立 diff 状态。
+    /// 依据 base/index 文本与 working 实体建立 diff 状态。
+    ///
+    /// base/index 语言缓冲由本实体创建并持有，后续变化经 [`BufferDiff::set_base_text`] /
+    /// [`BufferDiff::set_index_text`] 增量安装，不再由宿主各自物化。
     pub fn new(input: BufferDiffInput, cx: &mut Context<Self>) -> Self {
+        let BufferDiffInput {
+            working,
+            path,
+            base_text,
+            index_text,
+            language_registry,
+            key: _,
+            operations,
+        } = input;
         let snapshot = BufferDiffSnapshot {
             hunks: Vec::new(),
             pending_hunks: Vec::new(),
         };
+        let base_source = revision_buffer(base_text, &path, &language_registry, cx);
+        let index_source = revision_buffer(index_text, &path, &language_registry, cx);
         let mut this = Self {
-            working: input.working,
-            base_source: input.base,
-            index_source: input.index,
-            path: input.path,
+            working,
+            base_source,
+            index_source,
+            path,
+            language_registry,
             snapshot,
-            operations: input.operations,
+            operations,
             revision: 0,
             calculated_versions: None,
             calculation_task: None,
         };
         this.recompute_with_refresh(DiffRefresh::RebuildProjection, cx);
         this
+    }
+
+    /// 设置 base 旧侧文本：已有缓冲经 T-9 增量安装，缺失时新建，None 表示旧侧消失。
+    ///
+    /// 返回安装任务；本实体不 `detach` 任务，由调用方决定是否等待。
+    pub fn set_base_text(&mut self, text: Option<String>, cx: &mut Context<Self>) -> Task<()> {
+        self.set_revision_text(Revision::Base, text, cx)
+    }
+
+    /// 设置 index 参照文本；语义与 [`BufferDiff::set_base_text`] 一致。
+    pub fn set_index_text(&mut self, text: Option<String>, cx: &mut Context<Self>) -> Task<()> {
+        self.set_revision_text(Revision::Index, text, cx)
+    }
+
+    fn set_revision_text(
+        &mut self,
+        revision: Revision,
+        text: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        let existing = match revision {
+            Revision::Base => self.base_source.clone(),
+            Revision::Index => self.index_source.clone(),
+        };
+        match (existing, text) {
+            (Some(existing), Some(text)) => {
+                let task = existing.update(cx, |buffer, cx| buffer.snapshot_with_text(text, cx));
+                cx.spawn(async move |this, cx| {
+                    let Ok(edited) = task.await else {
+                        return;
+                    };
+                    existing.update(cx, |buffer, cx| {
+                        let _ = buffer.fast_forward(edited, cx);
+                    });
+                    let _ = this.update(cx, |this, cx| {
+                        this.recompute_with_refresh(DiffRefresh::RebuildProjection, cx)
+                    });
+                })
+            }
+            (Some(_), None) => {
+                match revision {
+                    Revision::Base => self.base_source = None,
+                    Revision::Index => self.index_source = None,
+                }
+                self.recompute_with_refresh(DiffRefresh::RebuildProjection, cx);
+                Task::ready(())
+            }
+            (None, Some(text)) => {
+                let created = revision_buffer(Some(text), &self.path, &self.language_registry, cx);
+                match revision {
+                    Revision::Base => self.base_source = created,
+                    Revision::Index => self.index_source = created,
+                }
+                self.recompute_with_refresh(DiffRefresh::RebuildProjection, cx);
+                Task::ready(())
+            }
+            (None, None) => Task::ready(()),
+        }
     }
 
     /// 捕获当前 working/base/index 快照，在后台按指定投影策略重算。

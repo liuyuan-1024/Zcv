@@ -2,11 +2,13 @@
 //!
 //! 本文件只管理历史图的 cursor 移动与回放编排；可重放编辑来自 `EditLog` 的版本区间。
 
-use super::{HistoryEntry, HistoryNodeId};
+use super::{HistoryEntry, HistoryNodeId, HistoryState};
 use crate::{
     TextError, TextRange, TextResult, TransactionId, TransactionSource,
     buffer::Buffer,
+    config::LargeFilePolicy,
     position_map::{Affinity, PositionMap},
+    tracking::EditLog,
     transaction::{Edit, EditList, TransactionMergePolicy, TransactionMetadata},
 };
 
@@ -136,29 +138,12 @@ impl Buffer {
     /// `MergeWithPrevious` 会把「当前节点终点 → 新事务起点」之间的全部编辑日志条目
     /// 一并并入节点，因此该区间必须逐条保留逆编辑：否则后续 undo 回放到缺失逆编辑的
     /// 条目会报错。回放（undo/redo）产生的条目与普通提交一样可回放，放弃历史的大事务则不可。
-    fn can_merge_into_current(&self, entry: &HistoryEntry) -> bool {
-        self.history
-            .current_end_version()
-            .is_some_and(|current_end| {
-                self.edit_log
-                    .range_is_replayable(current_end, entry.start_version)
-            })
-    }
-
     pub(in crate::buffer) fn push_history(
         &mut self,
         entry: HistoryEntry,
         metadata: &TransactionMetadata,
     ) -> TextResult<Option<TransactionId>> {
-        if metadata.merge_policy() == TransactionMergePolicy::MergeWithPrevious
-            && self.can_merge_into_current(&entry)
-            && self.history.merge_into_current(entry.clone())
-        {
-            return Ok(self.history.current_transaction_id());
-        }
-
-        self.history.push_child(entry)?;
-        Ok(self.history.current_transaction_id())
+        push_history_into(&mut self.history, &self.edit_log, entry, metadata)
     }
 
     /// 当 `record_history=false` 提交后清掉当前节点下的所有 redo 分支：
@@ -169,15 +154,11 @@ impl Buffer {
 
     /// 按编辑历史预算裁剪日志，并同步丢弃超出保留窗口的历史节点。
     pub(in crate::buffer) fn truncate_edit_history_to_budget(&mut self) {
-        let policy = &self.config.large_file;
-        self.edit_log = self.edit_log.truncated(
-            policy.max_edit_history_entries,
-            policy.max_edit_history_bytes,
+        truncate_edit_history(
+            &mut self.edit_log,
+            &mut self.history,
+            &self.config.large_file,
         );
-        self.history
-            .retain_versions_since(self.edit_log.earliest_version());
-        self.history
-            .truncate_to_node_budget(policy.max_undo_history);
     }
 
     /// 构造 `edits` 的逆操作 `EditList`，用于 Undo 回放。
@@ -217,6 +198,42 @@ impl Buffer {
 
         Ok(EditList::new(inverse)?)
     }
+}
+
+/// 把 `entry` 作为当前节点的新子节点入图；`MergeWithPrevious` 且区间可回放时并入当前节点。
+///
+/// 供提交管线在克隆的 `HistoryState` 上做计划，调用方负责最终安装。
+pub(in crate::buffer) fn push_history_into(
+    history: &mut HistoryState,
+    edit_log: &EditLog,
+    entry: HistoryEntry,
+    metadata: &TransactionMetadata,
+) -> TextResult<Option<TransactionId>> {
+    if metadata.merge_policy() == TransactionMergePolicy::MergeWithPrevious
+        && history.current_end_version().is_some_and(|current_end| {
+            edit_log.range_is_replayable(current_end, entry.start_version)
+        })
+        && history.merge_into_current(entry.clone())
+    {
+        return Ok(history.current_transaction_id());
+    }
+
+    history.push_child(entry)?;
+    Ok(history.current_transaction_id())
+}
+
+/// 按编辑历史预算裁剪日志，并同步丢弃超出保留窗口的历史节点。
+pub(in crate::buffer) fn truncate_edit_history(
+    edit_log: &mut EditLog,
+    history: &mut HistoryState,
+    policy: &LargeFilePolicy,
+) {
+    *edit_log = edit_log.truncated(
+        policy.max_edit_history_entries,
+        policy.max_edit_history_bytes,
+    );
+    history.retain_versions_since(edit_log.earliest_version());
+    history.truncate_to_node_budget(policy.max_undo_history);
 }
 
 /// undo / redo 回放方向。

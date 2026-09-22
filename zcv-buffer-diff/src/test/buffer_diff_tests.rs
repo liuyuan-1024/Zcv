@@ -22,17 +22,19 @@ fn language_buffer(
     cx.new(|cx| LanguageBuffer::new(buffer, Some(path), registry, cx))
 }
 
-/// 建立只含 working 与 base 的 diff 输入。
+/// 建立只含 working 与 base 文本的 diff 输入。
 fn buffer_diff_input(
     working: Entity<LanguageBuffer>,
-    base: Entity<LanguageBuffer>,
+    base_text: Option<&str>,
     path: &str,
 ) -> BufferDiffInput {
     BufferDiffInput {
         working,
         path: PathBuf::from(path),
-        base: Some(base),
-        index: None,
+        base_text: base_text.map(str::to_owned),
+        index_text: None,
+        language_registry: Arc::new(LanguageRegistry::new()),
+        key: 0,
         operations: None,
     }
 }
@@ -41,8 +43,12 @@ fn buffer_diff_input(
 #[gpui::test]
 fn rapid_recomputes_replace_the_single_owned_task(cx: &mut TestAppContext) {
     let working = language_buffer("a\nb\nc\n", "src/a.rs", cx);
-    let base = language_buffer("a\nB\nc\n", "src/a.rs", cx);
-    let diff = cx.new(|cx| BufferDiff::new(buffer_diff_input(working, base, "src/a.rs"), cx));
+    let diff = cx.new(|cx| {
+        BufferDiff::new(
+            buffer_diff_input(working, Some("a\nB\nc\n"), "src/a.rs"),
+            cx,
+        )
+    });
 
     // 创建即拥有一个在途任务；每次重算都替换同一字段，而不是堆积多个任务。
     for _ in 0..8 {
@@ -72,18 +78,16 @@ fn rapid_recomputes_replace_the_single_owned_task(cx: &mut TestAppContext) {
 #[gpui::test]
 fn base_version_change_discards_stale_hunks(cx: &mut TestAppContext) {
     let working = language_buffer("a\nb\nc\n", "src/a.rs", cx);
-    let base = language_buffer("a\nX\nc\n", "src/a.rs", cx);
-    let diff =
-        cx.new(|cx| BufferDiff::new(buffer_diff_input(working, base.clone(), "src/a.rs"), cx));
-
-    // 初始结果落地前连续原位刷新 base；working 版本保持不变。
-    cx.update_entity(&base, |base, cx| {
-        base.replace_text("a\nLONG\nc\n".to_string(), cx)
-            .expect("修订文档必须能原位刷新");
+    let diff = cx.new(|cx| {
+        BufferDiff::new(
+            buffer_diff_input(working, Some("a\nX\nc\n"), "src/a.rs"),
+            cx,
+        )
     });
-    cx.update_entity(&base, |base, cx| {
-        base.replace_text("a\nLONGER\nc\n".to_string(), cx)
-            .expect("修订文档必须能原位刷新");
+
+    // 初始 diff 在途时刷新 base；working 版本保持不变。
+    let _task = cx.update_entity(&diff, |diff, cx| {
+        diff.set_base_text(Some("a\nLONGER\nc\n".to_string()), cx)
     });
     cx.run_until_parked();
 

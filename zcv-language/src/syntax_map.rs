@@ -179,6 +179,68 @@ fn layer_bytes(snapshot: &Snapshot, layer: &SyntaxLayer) -> Option<Range<usize>>
 ///
 /// 坐标索引不衰减，插值/解析版本始终落在其覆盖范围内；
 /// `None` 说明调用方把别的 Buffer 的快照传了进来，属于不变量破坏，必须显式失败而不是丢弃全部层做全文重跑。
+/// 把语法状态（主树与注入层）的坐标从 `old_snapshot` 推进到 `new_snapshot`。
+///
+/// 返回 `(parsed_version, interpolated_version)`：`SyntaxMap` 与 `SyntaxSnapshot` 共用同一套插值语义，
+/// 分别在自己的版本字段上落地。只做 `InputEdit`，不执行真正解析。
+fn interpolate_state(
+    language: &Option<Arc<Language>>,
+    state: &mut Arc<SyntaxState>,
+    parsed_version: BufferVersion,
+    interpolated_version: BufferVersion,
+    old_snapshot: &Snapshot,
+    new_snapshot: &Snapshot,
+) -> (BufferVersion, BufferVersion) {
+    // 同版本重复调用必须保持原树；否则空批次会被当成整体重置。
+    if new_snapshot.version() == interpolated_version {
+        return (parsed_version, interpolated_version);
+    }
+    if language.is_none() {
+        return (new_snapshot.version(), new_snapshot.version());
+    }
+
+    // 增量编辑走不衰减坐标索引：带文本 EditLog 被裁剪后仍可用。
+    // 插值版本始终属于当前 Buffer 生命周期，坐标索引必然覆盖；
+    // 缺失即不变量失败，不得回退为丢弃全部语法状态并全文重跑。
+    let changes = coordinate_edits_or_fail(new_snapshot, interpolated_version);
+
+    let state = Arc::make_mut(state);
+    let mut tree = state.tree.take();
+    if tree
+        .as_mut()
+        .is_some_and(|tree| !edit_tree(tree, old_snapshot, new_snapshot, &changes))
+        && let Some(old_tree) = tree.take()
+    {
+        drop_offloaded(old_tree);
+    }
+    let mut invalid_layers = Vec::new();
+    let mut retained = Vec::with_capacity(state.injections.len());
+    for mut layer in std::mem::take(&mut state.injections) {
+        // 锚点自行跟随编辑；范围被删空说明注入点已消失，必须丢弃该层。
+        let non_empty =
+            layer_bytes(new_snapshot, &layer).is_some_and(|bytes| bytes.start < bytes.end);
+        // 已解析层把增量编辑应用到树上；待处理层没有树。
+        let tree_ok = match &mut layer.content {
+            SyntaxLayerContent::Parsed { tree, .. } => {
+                edit_tree(tree, old_snapshot, new_snapshot, &changes)
+            }
+            SyntaxLayerContent::Pending { .. } => true,
+        };
+        if non_empty && tree_ok {
+            retained.push(layer);
+        } else {
+            invalid_layers.push(layer);
+        }
+    }
+    state.injections = retained;
+    if !invalid_layers.is_empty() {
+        drop_offloaded(invalid_layers);
+    }
+
+    state.tree = tree;
+    (parsed_version, new_snapshot.version())
+}
+
 fn coordinate_edits_or_fail(snapshot: &Snapshot, since: BufferVersion) -> TextChangeBatch {
     snapshot.coordinate_edits_since(since).unwrap_or_else(|| {
         panic!(
@@ -247,58 +309,16 @@ impl SyntaxMap {
     /// 编辑区间由 `interpolated_version` 与当前快照推导；调用方无需携带订阅批次，
     /// 因此快照读取与 observer 唤醒可以各自幂等推进（对齐 Zed `Buffer::snapshot()`）。
     pub(crate) fn interpolate(&mut self, new_snapshot: &Snapshot) {
-        // 同版本重复调用必须保持原树；否则空批次会被当成整体重置。
-        if new_snapshot.version() == self.interpolated_version {
-            return;
-        }
-        if self.language.is_none() {
-            self.parsed_version = new_snapshot.version();
-            self.interpolated_version = new_snapshot.version();
-            self.interpolated_snapshot = new_snapshot.clone();
-            return;
-        }
-
-        // 增量编辑走不衰减坐标索引：带文本 EditLog 被裁剪后仍可用。
-        // 插值版本始终属于当前 Buffer 生命周期，坐标索引必然覆盖；
-        // 缺失即不变量失败，不得回退为丢弃全部语法状态并全文重跑。
-        let changes = coordinate_edits_or_fail(new_snapshot, self.interpolated_version);
-
-        let old_snapshot = &self.interpolated_snapshot;
-        let state = Arc::make_mut(&mut self.state);
-        let mut tree = state.tree.take();
-        if tree
-            .as_mut()
-            .is_some_and(|tree| !edit_tree(tree, old_snapshot, new_snapshot, &changes))
-            && let Some(old_tree) = tree.take()
-        {
-            drop_offloaded(old_tree);
-        }
-        let mut invalid_layers = Vec::new();
-        let mut retained = Vec::with_capacity(state.injections.len());
-        for mut layer in std::mem::take(&mut state.injections) {
-            // 锚点自行跟随编辑；范围被删空说明注入点已消失，必须丢弃该层。
-            let non_empty =
-                layer_bytes(new_snapshot, &layer).is_some_and(|bytes| bytes.start < bytes.end);
-            // 已解析层把增量编辑应用到树上；待处理层没有树。
-            let tree_ok = match &mut layer.content {
-                SyntaxLayerContent::Parsed { tree, .. } => {
-                    edit_tree(tree, old_snapshot, new_snapshot, &changes)
-                }
-                SyntaxLayerContent::Pending { .. } => true,
-            };
-            if non_empty && tree_ok {
-                retained.push(layer);
-            } else {
-                invalid_layers.push(layer);
-            }
-        }
-        state.injections = retained;
-        if !invalid_layers.is_empty() {
-            drop_offloaded(invalid_layers);
-        }
-
-        state.tree = tree;
-        self.interpolated_version = new_snapshot.version();
+        let (parsed_version, interpolated_version) = interpolate_state(
+            &self.language,
+            &mut self.state,
+            self.parsed_version,
+            self.interpolated_version,
+            &self.interpolated_snapshot,
+            new_snapshot,
+        );
+        self.parsed_version = parsed_version;
+        self.interpolated_version = interpolated_version;
         self.interpolated_snapshot = new_snapshot.clone();
     }
 
@@ -309,6 +329,27 @@ impl SyntaxMap {
             parsed_version: self.parsed_version,
             version: self.interpolated_version,
         }
+    }
+
+    /// 安装一份在别处完整派生（已插值 + 已解析）的语法快照。
+    ///
+    /// 版本或语言与当前文本不一致时拒绝；调用方据此走常规重解析路径。
+    pub(crate) fn install_snapshot(&mut self, mut syntax: SyntaxSnapshot, text: &Snapshot) -> bool {
+        let same_language = match (&syntax.language, &self.language) {
+            (Some(next), Some(current)) => Arc::ptr_eq(next, current),
+            (None, None) => true,
+            _ => false,
+        };
+        if syntax.version != text.version() || !same_language {
+            return false;
+        }
+        let parsed_state = std::mem::replace(&mut syntax.state, empty_syntax_state());
+        let old_state = std::mem::replace(&mut self.state, parsed_state);
+        offload_state_if_last(old_state);
+        self.parsed_version = syntax.parsed_version;
+        self.interpolated_version = syntax.version;
+        self.interpolated_snapshot = text.clone();
+        true
     }
 
     pub(crate) fn did_parse(&mut self, mut parsed: SyntaxSnapshot) -> bool {
@@ -341,6 +382,22 @@ impl SyntaxSnapshot {
 
     pub fn version(&self) -> BufferVersion {
         self.version
+    }
+
+    /// 在快照副本上把语法树坐标推进到 `new_snapshot`，不执行真正解析。
+    ///
+    /// 供后台派生快照使用：调用方随后对本快照调用 `reparse` 安装真实解析结果。
+    pub(crate) fn interpolate(&mut self, old_snapshot: &Snapshot, new_snapshot: &Snapshot) {
+        let (parsed_version, version) = interpolate_state(
+            &self.language,
+            &mut self.state,
+            self.parsed_version,
+            self.version,
+            old_snapshot,
+            new_snapshot,
+        );
+        self.parsed_version = parsed_version;
+        self.version = version;
     }
 
     pub(crate) fn can_query(&self, range: &Range<usize>, text: &Snapshot) -> bool {

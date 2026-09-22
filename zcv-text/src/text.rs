@@ -21,6 +21,7 @@ pub mod word_diff;
 
 pub use buffer::{Buffer, EditedBufferSnapshot, HistoryEditOutcome, movement_boundary_in_text};
 pub use config::{BufferConfig, LargeFilePolicy, LargeTransactionPolicy, WordBoundaryPolicy};
+pub use diff::diff_edits;
 pub use errors::{
     AnchorError, CoordinateError, EditError, StorageError, TextError, TextResult, TransactionError,
 };

@@ -1,14 +1,18 @@
-//! 事务应用管线：从 Transaction 校验、准备、提交到 history 收尾的一站式执行路径。
+//! 事务应用管线：把 Transaction 规划为完整派生状态，再原子安装。
 //!
-//! 本文件守住失败原子性和版本推进边界；EditList 归一化、存储实现和 public edit 入口不在这里定义。
+//! 规划阶段只读取 Buffer，并在克隆的存储、日志、坐标索引、历史上完成全部可失败步骤；
+//! 安装阶段只做 move 换入与订阅发布。EditList 归一化、存储实现和 public edit 入口不在这里定义。
 
-use super::prepared::PreparedTransaction;
-use crate::buffer::{Buffer, history::HistoryEntry};
+use super::prepared::{DerivedBufferState, PreparedTransaction};
+use crate::buffer::Buffer;
+use crate::buffer::history::{
+    HistoryEntry, HistoryState, TransactionSession, push_history_into, truncate_edit_history,
+};
 use crate::{
     config::LargeTransactionPolicy,
     errors::{EditError, TextError, TextResult, TransactionError},
-    storage::RopeyStorage,
     text_changes::TextPatch,
+    tracking::EditLog,
     transaction::TransactionOutcome,
     transaction::{
         ChangeSet, Delta, DeltaEvent, EditList, Transaction, TransactionMetadata, TransactionSource,
@@ -18,26 +22,31 @@ use crate::{
 
 impl Buffer {
     /// 提交并应用事务。
-    ///
-    /// 成功返回事务身份、历史归属和增量事实，并按事务元数据记录 Undo 历史。
     pub(crate) fn apply_transaction(&mut self, tx: Transaction) -> TextResult<TransactionOutcome> {
+        let derived = self.plan_transaction(tx)?;
+        let (history_transaction_id, event) = self.install(derived);
+        Ok(TransactionOutcome::new(history_transaction_id, event))
+    }
+
+    /// 计算事务的完整派生状态；只读取 Buffer，不产生任何变异。
+    pub(in crate::buffer) fn plan_transaction(
+        &self,
+        tx: Transaction,
+    ) -> TextResult<DerivedBufferState> {
         self.ensure_writable()?;
         let (mut prepared, next_transaction_id, event) = self.prepare_transaction(tx)?;
         self.apply_large_transaction_policy(&mut prepared)?;
 
-        // 进入历史的事务才保存逆编辑；SkipHistory 大事务不白存被删文本。
         let undo_edits = self
             .records_history(&prepared.metadata)
             .then(|| prepared.undo_edits.clone());
-        self.commit_prepared_edit_list(&prepared.edits, undo_edits, next_transaction_id, &event)?;
-
-        let history_transaction_id = self.finish_transaction(
-            prepared,
-            event.transaction_id(),
-            event.old_version(),
-            event.new_version(),
-        )?;
-        Ok(TransactionOutcome::new(history_transaction_id, event))
+        self.plan_edit_list_state(
+            &prepared.edits,
+            undo_edits,
+            next_transaction_id,
+            event,
+            Some(&prepared.metadata),
+        )
     }
 
     fn prepare_transaction(
@@ -71,48 +80,10 @@ impl Buffer {
         }
     }
 
-    fn finish_transaction(
-        &mut self,
-        prepared: PreparedTransaction,
-        transaction_id: crate::TransactionId,
-        old_version: BufferVersion,
-        new_version: BufferVersion,
-    ) -> TextResult<Option<crate::TransactionId>> {
-        let records_history = self.records_history(&prepared.metadata);
-        if let Some(session) = &mut self.session {
-            // 会话内：历史写入推迟到 `end_transaction`，这里只延续/放弃会话记录。
-            // 不在会话内裁剪日志，否则会丢掉本会话更早版本、导致 `end_transaction` 后无法回放。
-            if records_history {
-                session.record_edit(&prepared.metadata);
-            } else {
-                // 超大事务放弃历史（SkipHistory）：整个会话的历史作废，否则 undo 回放会漏掉会话内的这些文本变化。
-                session.discard_history();
-            }
-            return Ok(session.history_transaction_id());
-        }
-
-        if prepared.metadata.record_history() {
-            // Arc::clone：description 字符串只在历史节点持有一份共享
-            let description = prepared.metadata.description_arc().cloned();
-            let entry = HistoryEntry::new(transaction_id, old_version, new_version, description);
-            self.push_history(entry, &prepared.metadata)?;
-            self.truncate_edit_history_to_budget();
-            return Ok(self.history.current_transaction_id());
-        }
-
-        // record_history=false 提交后，当前节点下的 redo 分支已经基于过期文本，
-        // 整体丢弃以避免后续 redo 走到不一致状态；undo 路径保持不变。
-        self.drop_unrecorded_redo_branches();
-        self.truncate_edit_history_to_budget();
-        Ok(None)
-    }
-
-    /// 在 prepare 之后、commit 之前，按 `LargeFilePolicy` 处理超大事务。
+    /// 在 prepare 之后、计划落地之前，按 LargeFilePolicy 处理超大事务。
     ///
-    /// `Reject`：原子拒绝事务，文本 / 版本 / 历史完全不变。
-    /// `SkipHistory`：把 metadata 的 `record_history` 关掉，复用既有
-    /// `records_history` 中 `record_history=false` 路径，文本前进但不入历史
-    /// 且丢弃当前节点子树。
+    /// Reject：原子拒绝事务，文本 / 版本 / 历史完全不变。
+    /// SkipHistory：把 metadata 的 record_history 关掉，文本前进但不入历史且丢弃当前节点子树。
     fn apply_large_transaction_policy(&self, prepared: &mut PreparedTransaction) -> TextResult<()> {
         let threshold = self.config.large_file.large_transaction_threshold_bytes;
         if threshold == 0 {
@@ -138,61 +109,192 @@ impl Buffer {
         }
     }
 
-    /// 把已校验的 `EditList` 落地到 Buffer。
+    /// 在克隆状态上构造派生状态：存储、编辑日志、坐标索引、历史与会话收尾。
     ///
-    /// **半提交修复**：在 Buffer 本体变异**之前**完成所有可失败步骤（version 检查、
-    /// validate、事务 id 溢出检查、`version.next()` 算溢出、prepared replace 容量预约、
-    /// 后端边界预检与坐标换算、Delta/ChangeSet/Patch 构造）。
-    /// 文本内容先在 cloned storage 上完整构造；真正提交时只做 move assignment、
-    /// 标量状态推进和订阅发布，事务管线不再允许
-    /// "Buffer 文本已经改了一半才返回 Result" 的状态机形态。
-    ///
-    /// `RopeyStorage::clone()` 是低成本共享底层结构；这里把它作为两阶段提交的
-    /// prepared storage，而不是失败后的回滚补丁。
+    /// `metadata` 为 None 表示回放路径（undo/redo），不改变历史图。
+    fn plan_edit_list_state(
+        &self,
+        forward: &EditList,
+        undo: Option<EditList>,
+        next_transaction_id: crate::TransactionId,
+        event: DeltaEvent,
+        metadata: Option<&TransactionMetadata>,
+    ) -> TextResult<DerivedBufferState> {
+        let mut next_storage = self.storage.clone();
+        next_storage.apply_edit_list(forward)?;
+
+        let mut next_edit_log = self.edit_log.appended(
+            event.old_version(),
+            event.new_version(),
+            forward.clone(),
+            undo,
+        );
+        let next_coordinate_index = self.coordinate_index.appended(
+            event.old_version(),
+            event.new_version(),
+            TextPatch::from_delta(event.delta()),
+        );
+
+        let mut next_history = self.history.clone();
+        let mut next_session = self.session.clone();
+        let history_transaction_id = match metadata {
+            Some(metadata) => self.plan_finish_transaction(
+                metadata,
+                event.transaction_id(),
+                event.old_version(),
+                event.new_version(),
+                &mut next_edit_log,
+                &mut next_history,
+                &mut next_session,
+            )?,
+            None => None,
+        };
+
+        Ok(DerivedBufferState {
+            storage: next_storage,
+            version: event.new_version(),
+            edit_log: next_edit_log,
+            coordinate_index: next_coordinate_index,
+            history: next_history,
+            session: next_session,
+            next_transaction_id,
+            event,
+            history_transaction_id,
+        })
+    }
+
+    /// 历史 / 会话收尾的计划版本：只作用于传入的克隆状态。
+    fn plan_finish_transaction(
+        &self,
+        metadata: &TransactionMetadata,
+        transaction_id: crate::TransactionId,
+        old_version: BufferVersion,
+        new_version: BufferVersion,
+        edit_log: &mut EditLog,
+        history: &mut HistoryState,
+        session: &mut Option<TransactionSession>,
+    ) -> TextResult<Option<crate::TransactionId>> {
+        let records_history = self.records_history(metadata);
+        if let Some(active) = session {
+            // 会话内：历史写入推迟到 end_transaction，这里只延续/放弃会话记录。
+            // 不在会话内裁剪日志，否则会丢掉本会话更早版本、导致 end_transaction 后无法回放。
+            if records_history {
+                active.record_edit(metadata);
+            } else {
+                active.discard_history();
+            }
+            return Ok(active.history_transaction_id());
+        }
+
+        if metadata.record_history() {
+            let description = metadata.description_arc().cloned();
+            let entry = HistoryEntry::new(transaction_id, old_version, new_version, description);
+            push_history_into(history, edit_log, entry, metadata)?;
+            truncate_edit_history(edit_log, history, &self.config.large_file);
+            return Ok(history.current_transaction_id());
+        }
+
+        // record_history=false 后，当前节点下的 redo 分支已基于过期文本，整体丢弃。
+        history.drop_children_of_current();
+        truncate_edit_history(edit_log, history, &self.config.large_file);
+        Ok(None)
+    }
+
+    /// 安装派生状态：整体换入并发布订阅批次；返回历史事务身份与事件。
+    pub(in crate::buffer) fn install(
+        &mut self,
+        derived: DerivedBufferState,
+    ) -> (Option<crate::TransactionId>, DeltaEvent) {
+        let DerivedBufferState {
+            storage,
+            version,
+            edit_log,
+            coordinate_index,
+            history,
+            session,
+            next_transaction_id,
+            event,
+            history_transaction_id,
+        } = derived;
+
+        self.storage = storage;
+        self.version = version;
+        self.edit_log = edit_log;
+        self.coordinate_index = coordinate_index;
+        self.history = history;
+        self.session = session;
+        self.commit_delta_event(next_transaction_id, &event);
+        (history_transaction_id, event)
+    }
+
+    /// 回放（undo/redo）路径：把已校验的 EditList 规划并安装，不改变历史图。
     pub(in crate::buffer) fn apply_edit_list(
         &mut self,
         base_version: BufferVersion,
         tx_edits: EditList,
         source: TransactionSource,
     ) -> TextResult<DeltaEvent> {
-        // ===== Fallible 段：在 Buffer 本体变异前完成全部可失败检查 =====
-        self.ensure_writable()?;
-
-        let (next_transaction_id, event) =
-            self.prepare_delta_event(base_version, tx_edits.clone(), source)?;
-        // 回放（undo/redo）与普通提交一样记录逆编辑：它的逆就是反向回放所需的编辑，
-        // 也使历史节点跨回放区间仍可逐条重建文本。
-        let undo_edits = self.build_inverse_edit_list(&tx_edits)?;
-        self.commit_prepared_edit_list(&tx_edits, Some(undo_edits), next_transaction_id, &event)?;
+        let derived = self.plan_edit_list(base_version, tx_edits, source)?;
+        let (_, event) = self.install(derived);
         Ok(event)
     }
 
-    /// 将已验证并已绑定事务身份的编辑落到克隆存储，再原子替换 Buffer 状态。
-    fn commit_prepared_edit_list(
-        &mut self,
-        forward: &EditList,
-        undo: Option<EditList>,
-        next_transaction_id: crate::TransactionId,
-        event: &DeltaEvent,
-    ) -> TextResult<()> {
-        let mut next_storage = self.storage.clone();
-        next_storage.apply_edit_list(forward)?;
-
-        // ===== Commit 段：从这里起 Buffer 本体变异不允许失败 =====
-        // 文本已经在 clone storage 上完整构造；真正提交只做 move assignment 与订阅发布。
-        self.commit_prepared_text_change(
-            next_storage,
-            forward.clone(),
-            undo,
+    fn plan_edit_list(
+        &self,
+        base_version: BufferVersion,
+        tx_edits: EditList,
+        source: TransactionSource,
+    ) -> TextResult<DerivedBufferState> {
+        self.ensure_writable()?;
+        let (next_transaction_id, event) =
+            self.prepare_delta_event(base_version, tx_edits.clone(), source)?;
+        // 回放与普通提交一样记录逆编辑：它的逆就是反向回放所需的编辑。
+        let undo_edits = self.build_inverse_edit_list(&tx_edits)?;
+        self.plan_edit_list_state(
+            &tx_edits,
+            Some(undo_edits),
             next_transaction_id,
             event,
-        );
-        Ok(())
+            None,
+        )
+    }
+
+    /// 按给定元数据规划一次编辑列表：应用大事务策略并记录历史，但不安装。
+    ///
+    /// `snapshot_with_edits` 与外部文本更新共用此入口；安装由 `fast_forward` 或 `install` 完成。
+    pub(in crate::buffer) fn plan_edit_list_with_metadata(
+        &self,
+        base_version: BufferVersion,
+        edits: EditList,
+        metadata: TransactionMetadata,
+    ) -> TextResult<DerivedBufferState> {
+        self.ensure_writable()?;
+        let undo_edits = self.build_inverse_edit_list(&edits)?;
+        let mut prepared = PreparedTransaction {
+            edits,
+            metadata,
+            undo_edits,
+        };
+        self.apply_large_transaction_policy(&mut prepared)?;
+
+        let (next_transaction_id, event) = self.prepare_delta_event(
+            base_version,
+            prepared.edits.clone(),
+            prepared.metadata.source(),
+        )?;
+        let undo_edits = self
+            .records_history(&prepared.metadata)
+            .then(|| prepared.undo_edits.clone());
+        self.plan_edit_list_state(
+            &prepared.edits,
+            undo_edits,
+            next_transaction_id,
+            event,
+            Some(&prepared.metadata),
+        )
     }
 
     /// 为一次已确定的文本变化构造唯一的版本、事务与坐标映射事实。
-    ///
-    /// 普通编辑和外部文本更新共用这一版本化提交边界。
     pub(in crate::buffer) fn prepare_delta_event(
         &self,
         base_version: BufferVersion,
@@ -215,29 +317,6 @@ impl Buffer {
         let delta = Delta::new(base_version, new_version, tx_edits);
         let event = DeltaEvent::new(transaction_id, source, delta, changeset, position_map);
         Ok((next_transaction_id, event))
-    }
-
-    pub(in crate::buffer) fn commit_prepared_text_change(
-        &mut self,
-        next_storage: RopeyStorage,
-        forward: EditList,
-        undo: Option<EditList>,
-        next_transaction_id: crate::TransactionId,
-        event: &DeltaEvent,
-    ) {
-        self.storage = next_storage;
-        self.version = event.new_version();
-        // 不衰减坐标索引与带文本 EditLog 一起追加；预算裁剪只作用于后者。
-        self.coordinate_index = self.coordinate_index.appended(
-            event.old_version(),
-            event.new_version(),
-            TextPatch::from_delta(event.delta()),
-        );
-        // 编辑日志是版本化编辑的唯一事实：组合文档增量同步与历史回放都据此重建坐标。
-        self.edit_log =
-            self.edit_log
-                .appended(event.old_version(), event.new_version(), forward, undo);
-        self.commit_delta_event(next_transaction_id, event);
     }
 }
 

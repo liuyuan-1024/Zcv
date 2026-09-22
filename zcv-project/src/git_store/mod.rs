@@ -241,13 +241,8 @@ fn repository_working_directory(repository: &dyn GitRepository) -> AbsolutePathB
         .expect("Git 仓库工作目录必须是绝对路径")
 }
 
-/// 共享 diff 缓存的键：路径、working 实体、base 文档、index 文档。
-type SharedDiffKey = (
-    AbsolutePathBuf,
-    gpui::EntityId,
-    Option<gpui::EntityId>,
-    Option<gpui::EntityId>,
-);
+/// 共享 diff 缓存的键：路径、working 实体、调用方给出的 base/index 修订身份。
+type SharedDiffKey = (AbsolutePathBuf, gpui::EntityId, u64);
 
 pub struct GitStore {
     /// 项目根目录；无 worktree 的空项目为 None，此时所有 job 与仓库查询为空操作。
@@ -512,12 +507,7 @@ impl GitStore {
         cx: &mut Context<Self>,
     ) -> Entity<BufferDiff> {
         let path = canonicalize_path(&input.path).expect("diff 输入路径必须可归一化");
-        let key = (
-            path,
-            input.working.entity_id(),
-            input.base.as_ref().map(Entity::entity_id),
-            input.index.as_ref().map(Entity::entity_id),
-        );
+        let key = (path, input.working.entity_id(), input.key);
         if let Some(entity) = self.shared_diffs.get(&key) {
             return entity.clone();
         }
@@ -1053,6 +1043,47 @@ impl GitStore {
         let language_registry = Arc::clone(&self.language_registry);
         cx.spawn(async move |cx| {
             let text = loaded.await;
+
+            // 已有修订文档且文本变化：经语言层派生快照（后台语法）在版本校验后整体安装；
+            // 文本缺失或尚无文档时仍走同步建文档路径。
+            if let Some(new_text) = text.clone() {
+                let existing = this
+                    .update(cx, |store, _| {
+                        if store.revision_generations.get(&revision).copied() != Some(generation) {
+                            return None;
+                        }
+                        store
+                            .revision_documents
+                            .get(&(revision, path.clone()))
+                            .cloned()
+                            .flatten()
+                    })
+                    .ok()
+                    .flatten();
+                if let Some(document) = existing {
+                    let current =
+                        document.update(cx, |document, _| snapshot_text(&document.text_snapshot()));
+                    if current != new_text {
+                        let fallback = new_text.clone();
+                        let task = document
+                            .update(cx, |document, cx| document.snapshot_with_text(new_text, cx));
+                        match task.await {
+                            Ok(edited) => {
+                                document.update(cx, |document, cx| {
+                                    let _ = document.fast_forward(edited, cx);
+                                });
+                            }
+                            Err(_) => {
+                                document.update(cx, |document, cx| {
+                                    let _ = document.replace_text(fallback, cx);
+                                });
+                            }
+                        }
+                    }
+                    return Some(document);
+                }
+            }
+
             this.update(cx, |store, cx| {
                 if store.revision_generations.get(&revision).copied() != Some(generation) {
                     return None;
@@ -1170,6 +1201,17 @@ impl GitStore {
         self.revision_documents
             .get(&(revision, canonicalize_path(path).ok()?))
             .and_then(|document| document.clone())
+    }
+
+    /// 修订文档的完整文本；文档尚未加载时返回 None。
+    pub fn revision_text(&self, revision: GitRevision, path: &Path, cx: &App) -> Option<String> {
+        let document = self.revision_document(revision, path)?;
+        Some(snapshot_text(&document.read(cx).text_snapshot()))
+    }
+
+    /// 创建 diff 语言缓冲时复用的语言注册表。
+    pub fn language_registry(&self) -> Arc<LanguageRegistry> {
+        Arc::clone(&self.language_registry)
     }
 
     /// 该修订文档是否已经完成一次加载（缺失也算已加载）。

@@ -7,7 +7,7 @@ use super::HistoryEntry;
 use crate::{Buffer, BufferVersion, TextResult, TransactionId, transaction::TransactionMetadata};
 
 /// 进行中的编辑会话。
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(in crate::buffer) struct TransactionSession {
     /// 会话历史节点的事务身份（`start_transaction` 时从 id 序列分配）。
     pub(in crate::buffer) transaction_id: TransactionId,

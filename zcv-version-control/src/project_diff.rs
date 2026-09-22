@@ -931,15 +931,15 @@ impl ProjectDiffView {
                 source
             }
         };
-        // base / index 参照都由 GitStore 持有的修订文档提供：
+        // base / index 文本由 GitStore 的修订文档提供；BufferDiff 自持其语言缓冲。
         // 已暂存视图 base=HEAD、index=Index；未暂存视图 base=index=Index；冲突视图不建立 diff。
-        let (base, index) = if self.kind == ProjectDiffKind::Conflict {
+        let (base_text, index_text) = if self.kind == ProjectDiffKind::Conflict {
             (None, None)
         } else {
             let store = git_store.read(cx);
             (
-                store.revision_document(self.kind.base_revision(), &file.path),
-                store.revision_document(GitRevision::Index, &file.path),
+                store.revision_text(self.kind.base_revision(), &file.path, cx),
+                store.revision_text(GitRevision::Index, &file.path, cx),
             )
         };
         let display_path = root
@@ -948,9 +948,11 @@ impl ProjectDiffView {
             .to_path_buf();
         let input = BufferDiffInput {
             working,
-            base,
-            index,
+            base_text,
+            index_text,
             path: file.path.clone(),
+            language_registry: git_store.read(cx).language_registry(),
+            key: self.kind as u64,
             operations: (self.kind != ProjectDiffKind::Conflict).then(|| {
                 git_store
                     .read(cx)

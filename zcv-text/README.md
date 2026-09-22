@@ -25,13 +25,13 @@ Zcv 的纯文本内核：文本存储、坐标模型、事务变异、历史系�
 
 逆编辑在进入历史的事务与 undo/redo 回放中保留，放弃历史的事务不保留；目标版本退出编辑日志窗口返回 `TextError::VersionEvicted`，区间内存在放弃历史的大事务时返回 `TextError::HistoryTextUnavailable`。
 
-T-9 的基线派生入口是 `Buffer::snapshot_with_edits` 与 `Buffer::fast_forward`：前者在快照副本上应用编辑得到 `EditedBufferSnapshot`，不推进主文档；后者在主文档版本仍等于派生基线时通过正常事务路径安装（订阅、编辑日志与历史一致推进），版本已前进则返回 `TransactionError::VersionMismatch`，调用方丢弃过期结果。
+T-9 的基线派生入口是 `Buffer::snapshot_with_edits` 与 `Buffer::fast_forward`：前者在只读基线上规划出完整派生状态（存储、编辑日志、坐标索引、历史与会话）并返回 `EditedBufferSnapshot`，不推进主文档；后者在主文档版本仍等于派生基线时整体换入该状态并发布订阅批次，版本已前进则返回 `TransactionError::VersionMismatch`，调用方丢弃过期结果。外部文本更新（`replace_text`）与 Git 修订刷新都经这条路径。
 
 ## 关键类型
 
 - `Buffer`：文本内容、版本、保存点、事务管线与历史的唯一可写所有者。
 - `Snapshot`：不可变、可廉价克隆的读取边界，携带版本。
-- `EditedBufferSnapshot`：`snapshot_with_edits` 产生的派生快照，等待 `fast_forward` 版本校验后安装。
+- `EditedBufferSnapshot`：`snapshot_with_edits` 规划的完整派生状态，等待 `fast_forward` 版本校验后整体换入。
 - `Anchor`：绑定版本与吸附方向的稳定位置，不持有 Buffer。
 - `EditLog` / `CoordinateIndex`：带文本编辑事实与不衰减坐标增量，二者在同一次提交追加。
 

@@ -14,6 +14,7 @@ mod state;
 pub(in crate::buffer) use session::TransactionSession;
 
 pub use api::HistoryEditOutcome;
+pub(in crate::buffer) use api::{push_history_into, truncate_edit_history};
 
 pub(in crate::buffer) use entry::HistoryEntry;
 pub(in crate::buffer) use node::{HistoryNode, HistoryNodeId};

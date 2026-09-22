@@ -41,24 +41,6 @@ fn group_excerpts_by_path(excerpts: Vec<ExcerptRange>, cx: &App) -> Vec<Vec<Exce
     groups.into_iter().map(|(_, group)| group).collect()
 }
 
-/// 测试辅助：按文本与路径建立修订文档（diff 的 base/index 侧）。
-fn revision_document(
-    text: &str,
-    path: &Path,
-    cx: &mut impl gpui::AppContext,
-) -> gpui::Entity<LanguageBuffer> {
-    let buffer = Buffer::from_text(text.to_string(), BufferConfig::default())
-        .expect("测试文本必须能创建 Buffer");
-    cx.new(|cx| {
-        LanguageBuffer::new(
-            buffer,
-            Some(path.to_path_buf()),
-            Arc::new(LanguageRegistry::new()),
-            cx,
-        )
-    })
-}
-
 /// 测试辅助：按可选 base/index 文本建立独立 diff 实体（供直接读取快照的测试使用）。
 fn test_diff_entity(
     working: gpui::Entity<LanguageBuffer>,
@@ -68,15 +50,15 @@ fn test_diff_entity(
     cx: &mut impl gpui::AppContext,
 ) -> gpui::Entity<BufferDiff> {
     let native_path = PathBuf::from(path);
-    let base = base.map(|text| revision_document(text, &native_path, cx));
-    let index = index.map(|text| revision_document(text, &native_path, cx));
     cx.new(|cx| {
         BufferDiff::new(
             BufferDiffInput {
                 working,
                 path: native_path,
-                base,
-                index,
+                base_text: base.map(str::to_owned),
+                index_text: index.map(str::to_owned),
+                language_registry: Arc::new(LanguageRegistry::new()),
+                key: 0,
                 operations: None,
             },
             cx,
@@ -103,31 +85,23 @@ impl MultiBuffer {
         };
         let files = files
             .into_iter()
-            .map(|file| {
-                let base = file
-                    .base_text
-                    .as_deref()
-                    .map(|text| revision_document(text, &file.path, cx));
-                let index = file
-                    .index_text
-                    .as_deref()
-                    .map(|text| revision_document(text, &file.path, cx));
-                DiffFile {
-                    diff: cx.new(|cx| {
-                        BufferDiff::new(
-                            BufferDiffInput {
-                                working: file.working,
-                                path: file.path,
-                                base,
-                                index,
-                                operations: file.operations,
-                            },
-                            cx,
-                        )
-                    }),
-                    display_path: file.display_path,
-                    context_lines: file.context_lines,
-                }
+            .map(|file| DiffFile {
+                diff: cx.new(|cx| {
+                    BufferDiff::new(
+                        BufferDiffInput {
+                            working: file.working,
+                            path: file.path,
+                            base_text: file.base_text.as_deref().map(str::to_owned),
+                            index_text: file.index_text.as_deref().map(str::to_owned),
+                            language_registry: Arc::new(LanguageRegistry::new()),
+                            key: 0,
+                            operations: file.operations,
+                        },
+                        cx,
+                    )
+                }),
+                display_path: file.display_path,
+                context_lines: file.context_lines,
             })
             .collect();
         self.set_diff_files(files, cx)
@@ -155,15 +129,16 @@ fn test_diff_file(
     cx: &mut gpui::Context<MultiBuffer>,
 ) -> DiffFile {
     let native_path = PathBuf::from(path);
-    let base_document = revision_document(base, &native_path, cx);
     DiffFile {
         diff: cx.new(|cx| {
             BufferDiff::new(
                 BufferDiffInput {
                     working,
                     path: native_path,
-                    base: Some(base_document),
-                    index: None,
+                    base_text: Some(base.to_owned()),
+                    index_text: None,
+                    language_registry: Arc::new(LanguageRegistry::new()),
+                    key: 0,
                     operations: None,
                 },
                 cx,

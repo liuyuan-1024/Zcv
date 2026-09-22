@@ -142,17 +142,19 @@ pub fn inject_editor_diff(
     {
         return;
     }
-    let base = store.read(cx).revision_document(GitRevision::Head, path);
+    let base_text = store.read(cx).revision_text(GitRevision::Head, path, cx);
     // index 参照：未提交视图（HEAD↔工作区）用它逐 hunk 判定已暂存 / 未暂存。
-    let index = store.read(cx).revision_document(GitRevision::Index, path);
+    let index_text = store.read(cx).revision_text(GitRevision::Index, path, cx);
     let Some(working) = editor.read(cx).multi_buffer().read(cx).singleton_source() else {
         return;
     };
     let input = BufferDiffInput {
         working,
-        base,
-        index,
+        base_text,
+        index_text,
         path: path.to_path_buf(),
+        language_registry: store.read(cx).language_registry(),
+        key: 0,
         // 普通编辑器只显示 gutter 差异，不提供变更块操作。
         operations: None,
     };

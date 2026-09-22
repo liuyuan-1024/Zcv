@@ -48,24 +48,6 @@ pub(super) fn test_buffer(
     })
 }
 
-/// 以指定文本和路径创建测试用修订文档（diff 的 base/index 侧）。
-pub(super) fn revision_buffer(
-    text: &str,
-    path: &std::path::Path,
-    cx: &mut impl gpui::AppContext,
-) -> Entity<LanguageBuffer> {
-    let buffer =
-        Buffer::from_text(text.to_string(), BufferConfig::default()).expect("测试 Buffer 应能创建");
-    cx.new(|cx| {
-        LanguageBuffer::new(
-            buffer,
-            Some(path.to_path_buf()),
-            std::sync::Arc::new(LanguageRegistry::new()),
-            cx,
-        )
-    })
-}
-
 pub(super) fn focus_editor(editor: &Entity<Editor>, cx: &mut VisualTestContext) {
     cx.update(|window, cx| {
         let focus = editor.read(cx).focus_handle();
@@ -120,19 +102,17 @@ pub(super) fn inject_editor_diff(
             .map_or_else(|| PathBuf::from("src/a.rs"), |path| path.to_path_buf());
         // 旧测试会用 None 表示“整份文本均为新增”。现在仍由一对真实文档快照
         // 派生该 Added hunk，而不是注入 hunk。
-        let base = Some(revision_buffer(
-            base_text.as_deref().unwrap_or_default(),
-            &working_path,
-            cx,
-        ));
+        let language_registry = source.read(cx).language_registry();
         let diff = cx.new(|cx| {
             BufferDiff::new(
                 BufferDiffInput {
                     operations: None,
                     working: source.clone(),
-                    base,
-                    index: None,
+                    base_text: Some(base_text.as_deref().unwrap_or_default().to_owned()),
+                    index_text: None,
                     path: working_path.clone(),
+                    language_registry,
+                    key: 0,
                 },
                 cx,
             )
@@ -163,15 +143,17 @@ pub(super) fn inject_file_diff(
             .read(cx)
             .file_path()
             .map_or_else(|| PathBuf::from("src/a.rs"), |path| path.to_path_buf());
-        let base = Some(revision_buffer(&base_text, &working_path, cx));
+        let language_registry = source.read(cx).language_registry();
         let diff = cx.new(|cx| {
             BufferDiff::new(
                 BufferDiffInput {
                     operations: None,
                     working: source.clone(),
-                    base,
-                    index: None,
+                    base_text: Some(base_text.to_string()),
+                    index_text: None,
                     path: working_path.clone(),
+                    language_registry,
+                    key: 0,
                 },
                 cx,
             )

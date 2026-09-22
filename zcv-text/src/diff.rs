@@ -18,7 +18,7 @@ use crate::{
 ///
 /// 先做行级 diff，再对规模受限且两侧都非空的替换块做行内词级 diff（对齐 Zed `text_diff`）。
 /// 契约：产出的每个编辑区间都落在旧文本的 UTF-8 字符边界上，替换文本由本函数切片。
-pub(crate) fn diff_edits(old: &str, new: &str) -> Vec<Edit> {
+pub fn diff_edits(old: &str, new: &str) -> Vec<Edit> {
     let mut edits = Vec::new();
     let mut hunk_input = InternedInput::default();
     let input = InternedInput::new(lines(old), lines(new));

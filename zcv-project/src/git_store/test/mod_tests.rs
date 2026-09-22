@@ -12,17 +12,6 @@ fn test_registry() -> Arc<LanguageRegistry> {
     Arc::new(LanguageRegistry::new())
 }
 
-/// 测试用修订文档；用于构造 diff 的 base/index 侧。
-fn test_language_buffer(
-    text: &str,
-    path: &Path,
-    cx: &mut impl gpui::AppContext,
-) -> Entity<LanguageBuffer> {
-    let buffer = Buffer::from_text(text.to_string(), BufferConfig::default())
-        .expect("测试文本必须能创建 Buffer");
-    cx.new(|cx| LanguageBuffer::new(buffer, Some(path.to_path_buf()), test_registry(), cx))
-}
-
 use gpui::AppContext;
 use zcv_buffer_diff::BufferDiffInput;
 use zcv_git::StatusCode;
@@ -852,19 +841,21 @@ fn file_diff_is_shared_by_working_base_and_index(cx: &mut gpui::TestAppContext) 
             )
         })
     });
-    let spec = |store: &GitStore| BufferDiffInput {
+    let spec = |store: &GitStore, cx: &gpui::App| BufferDiffInput {
         working: working.clone(),
         path: native_path.clone(),
-        base: store.revision_document(GitRevision::Head, &path),
-        index: store.revision_document(GitRevision::Index, &path),
+        base_text: store.revision_text(GitRevision::Head, &path, cx),
+        index_text: store.revision_text(GitRevision::Index, &path, cx),
+        language_registry: store.language_registry(),
+        key: 0,
         operations: None,
     };
     let first = git_store.update(cx, |store, cx| {
-        let input = spec(store);
+        let input = spec(store, cx);
         store.file_diff(&input, cx)
     });
     let second = git_store.update(cx, |store, cx| {
-        let input = spec(store);
+        let input = spec(store, cx);
         store.file_diff(&input, cx)
     });
     assert_eq!(
@@ -877,7 +868,7 @@ fn file_diff_is_shared_by_working_base_and_index(cx: &mut gpui::TestAppContext) 
         store.invalidate_shared_diffs(Some(std::slice::from_ref(&path)));
     });
     let third = git_store.update(cx, |store, cx| {
-        let input = spec(store);
+        let input = spec(store, cx);
         store.file_diff(&input, cx)
     });
     assert_ne!(
@@ -918,15 +909,16 @@ fn diff_operations_stage_hunk_writes_index_and_keeps_pending(cx: &mut gpui::Test
         })
     });
     let operations = git_store.read_with(cx, |store, _| store.diff_operations(GitRevision::Index));
-    let base = test_language_buffer("第一行\n第二行\n", &native_path, cx);
     let diff = cx.update(|cx| {
         cx.new(|cx| {
             BufferDiff::new(
                 BufferDiffInput {
                     working: working.clone(),
                     path: native_path.clone(),
-                    base: Some(base),
-                    index: None,
+                    base_text: Some("第一行\n第二行\n".to_owned()),
+                    index_text: None,
+                    language_registry: Arc::new(LanguageRegistry::new()),
+                    key: 0,
                     operations: Some(operations),
                 },
                 cx,
@@ -1012,15 +1004,16 @@ fn diff_operations_failure_clears_pending(cx: &mut gpui::TestAppContext) {
     });
     let operations = git_store.read_with(cx, |store, _| store.diff_operations(GitRevision::Index));
     // base 文本与真实 index 不一致，后台校验必然失败。
-    let base = test_language_buffer("第一行\n不存在的原始行\n", &native_path, cx);
     let diff = cx.update(|cx| {
         cx.new(|cx| {
             BufferDiff::new(
                 BufferDiffInput {
                     working: working.clone(),
                     path: native_path.clone(),
-                    base: Some(base),
-                    index: None,
+                    base_text: Some("第一行\n不存在的原始行\n".to_owned()),
+                    index_text: None,
+                    language_registry: Arc::new(LanguageRegistry::new()),
+                    key: 0,
                     operations: Some(operations),
                 },
                 cx,

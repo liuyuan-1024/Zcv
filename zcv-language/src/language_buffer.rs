@@ -5,8 +5,9 @@ use std::time::{Duration, Instant};
 use gpui::{App, AppContext, Context, EventEmitter, Task};
 use zcv_settings::SettingsStore;
 use zcv_text::{
-    Buffer, BufferId, BufferVersion, ByteOffset, Edit, HistoryEditOutcome, Line, Snapshot,
-    TextResult, TextSubscription, TransactionId, TransactionMetadata, TransactionOutcome,
+    Buffer, BufferId, BufferVersion, ByteOffset, Edit, EditedBufferSnapshot, HistoryEditOutcome,
+    Line, Snapshot, TextRange, TextResult, TextSubscription, TransactionId, TransactionMetadata,
+    TransactionOutcome,
 };
 
 use crate::Language;
@@ -86,6 +87,16 @@ pub struct LanguageBufferSnapshot {
     pub settings: Arc<LanguageSettings>,
     pub file_path: Option<PathBuf>,
     pub highlight_cache: Arc<HighlightCache>,
+}
+
+/// 在只读基线上派生（文本 + 语法）快照，等待版本校验后安装。
+///
+/// `syntax` 为 None 表示后台无法提供预计算语法（被取消或语言设置失败），
+/// 安装时回退到常规重解析路径。
+pub struct EditedLanguageBufferSnapshot {
+    text: EditedBufferSnapshot,
+    syntax: Option<SyntaxSnapshot>,
+    did_edit: bool,
 }
 
 /// 受同一把锁保护的派生语言状态。
@@ -294,6 +305,151 @@ impl LanguageBuffer {
         } else {
             cx.emit(LanguageBufferEvent::MetadataChanged);
             cx.notify();
+        }
+        Ok(())
+    }
+
+    /// 在只读基线上派生文本与语法快照：文本在主线程规划，语法在后台插值并解析。
+    ///
+    /// 规划不推进主文档；安装由 [`LanguageBuffer::fast_forward`] 在版本校验后完成。
+    pub fn snapshot_with_edits<I>(
+        &self,
+        edits: I,
+        cx: &mut Context<Self>,
+    ) -> Task<TextResult<EditedLanguageBufferSnapshot>>
+    where
+        I: IntoIterator<Item = Edit>,
+    {
+        let old_text = self.buffer.snapshot();
+        let edited_text = match self.buffer.snapshot_with_edits(edits) {
+            Ok(edited) => edited,
+            Err(error) => return Task::ready(Err(error)),
+        };
+        if !edited_text.did_edit() {
+            return Task::ready(Ok(EditedLanguageBufferSnapshot {
+                text: edited_text,
+                syntax: None,
+                did_edit: false,
+            }));
+        }
+
+        let derived_text = edited_text.snapshot().clone();
+        let (mut syntax, registry) = {
+            let state = self.state.lock().expect("语言 Buffer 状态锁不应中毒");
+            (state.syntax_map.snapshot(), state.syntax_map.registry())
+        };
+        cx.background_spawn(async move {
+            syntax.interpolate(&old_text, &derived_text);
+            let cancellation = ParseCancellation::default();
+            let syntax = syntax.reparse(&derived_text, &registry, &cancellation);
+            Ok(EditedLanguageBufferSnapshot {
+                text: edited_text,
+                syntax,
+                did_edit: true,
+            })
+        })
+    }
+
+    /// 用外部新文本派生（文本 + 语法）快照；差异计算在后台执行。
+    ///
+    /// 与 [`LanguageBuffer::snapshot_with_edits`] 一样只规划、不安装；
+    /// 安装由 [`LanguageBuffer::fast_forward`] 在版本校验后完成。
+    pub fn snapshot_with_text(
+        &self,
+        text: String,
+        cx: &mut Context<Self>,
+    ) -> Task<TextResult<EditedLanguageBufferSnapshot>> {
+        let old_text = {
+            let snapshot = self.buffer.snapshot();
+            let range = TextRange::new(ByteOffset::ZERO, snapshot.len_bytes())
+                .expect("全文范围必须满足 start <= end");
+            match snapshot.slice_text(range) {
+                Ok(slice) => slice.as_str().to_owned(),
+                Err(error) => return Task::ready(Err(error)),
+            }
+        };
+        if old_text == text {
+            let edited = match self.buffer.snapshot_with_edits(Vec::<Edit>::new()) {
+                Ok(edited) => edited,
+                Err(error) => return Task::ready(Err(error)),
+            };
+            return Task::ready(Ok(EditedLanguageBufferSnapshot {
+                text: edited,
+                syntax: None,
+                did_edit: false,
+            }));
+        }
+
+        let entity = cx.entity();
+        cx.spawn(async move |_this, cx| {
+            // 行级 + 词级 diff 在后台计算，避免大文件外部更新阻塞主线程。
+            let edits = cx
+                .background_spawn(async move { zcv_text::diff_edits(&old_text, &text) })
+                .await;
+            entity
+                .update(cx, |entity, cx| entity.snapshot_with_edits(edits, cx))
+                .await
+        })
+    }
+
+    /// 主文档版本仍等于派生基线时，整体安装派生文本与预计算语法。
+    ///
+    /// 语言因首行变化而改变、或预计算语法缺失／版本不匹配时，回退到常规重解析路径。
+    pub fn fast_forward(
+        &mut self,
+        edited: EditedLanguageBufferSnapshot,
+        cx: &mut Context<Self>,
+    ) -> TextResult<()> {
+        let before = self.buffer.version();
+        self.buffer.fast_forward(edited.text)?;
+        if !edited.did_edit || self.buffer.version() == before {
+            return Ok(());
+        }
+
+        let text = self.buffer.snapshot();
+        // 首行变化可能改变语言：此时预计算语法基于旧语言，必须让常规路径重新装配。
+        let language_changed = {
+            let mut state = self.state.lock().expect("语言 Buffer 状态锁不应中毒");
+            let next_first_line = first_line(&text);
+            if next_first_line == state.detection_first_line {
+                false
+            } else {
+                state.detection_first_line = next_first_line.clone();
+                let changed = state.file_path.clone().is_some_and(|path| {
+                    state
+                        .syntax_map
+                        .set_language_for_file(&path, Some(&next_first_line), &text)
+                });
+                if changed {
+                    state.settings = resolve_settings(&state.syntax_map, cx);
+                }
+                changed
+            }
+        };
+        if language_changed {
+            self.did_edit(cx);
+            return Ok(());
+        }
+
+        let installed = match edited.syntax {
+            Some(syntax) => {
+                let mut state = self.state.lock().expect("语言 Buffer 状态锁不应中毒");
+                let installed = state.syntax_map.install_snapshot(syntax, &text);
+                if installed {
+                    // 插值树被真实派生语法替换：派生高亮整体失效。
+                    state.highlight_cache = Arc::new(HighlightCache::new());
+                }
+                installed
+            }
+            None => false,
+        };
+        if installed {
+            // 预计算语法已安装：丢弃旧版本的在途解析任务并唤醒消费者。
+            self.parse_task = None;
+            cx.emit(LanguageBufferEvent::TextChanged);
+            cx.notify();
+        } else {
+            self.did_edit(cx);
         }
         Ok(())
     }

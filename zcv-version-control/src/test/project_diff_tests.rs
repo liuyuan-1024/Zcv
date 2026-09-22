@@ -118,16 +118,15 @@ fn plain_diff_file(
     cx: &mut Context<Editor>,
 ) -> DiffFile {
     let registry = working.read(cx).language_registry();
-    let base_buffer = Buffer::from_text(base_text.to_string(), BufferConfig::default())
-        .expect("测试 base 文本必须能创建 Buffer");
-    let base = cx.new(|cx| LanguageBuffer::new(base_buffer, Some(path.clone()), registry, cx));
     let diff = cx.new(|cx| {
         BufferDiff::new(
             BufferDiffInput {
                 working,
-                base: Some(base),
-                index: None,
+                base_text: Some(base_text.to_owned()),
+                index_text: None,
                 path: path.clone(),
+                language_registry: registry,
+                key: 0,
                 operations: None,
             },
             cx,

@@ -589,7 +589,7 @@ Project / GitStore / Workspace / Item
 
 #### T-B（中）无 T-9「基线派生快照 + 版本校验后原子安装」的文本层入口
 
-> 状态：已修正（本轮，`zcv-text`）。新增 `EditedBufferSnapshot` / `Buffer::snapshot_with_edits` / `Buffer::fast_forward`：派生在快照副本上完成，安装前校验 `base_version`，过期结果返回 `VersionMismatch`，安装经唯一事务路径落地。
+> 状态：已修正，并已接入生产消费方。文本层由 `DerivedBufferState` 规划完整派生状态，`fast_forward` 版本校验后整体换入；`Buffer::replace_text` 与 Git 修订刷新经此路径安装；语言层另有异步 `snapshot_with_text`/`fast_forward` 预计算语法。
 
 - 位置：`zcv-text/src/snapshot.rs:35-224`（`Snapshot` 只读、无派生/安装接口）。
 - 证据：全仓无 `snapshot_with_edits`/`fast_forward`/`EditedBufferSnapshot` 等价能力。Zed 对应 `Buffer::snapshot_with_edits`、`Buffer::fast_forward`、`EditedBufferSnapshot`。
@@ -849,7 +849,7 @@ Project / GitStore / Workspace / Item
 8. 结构变更入口未断言文本事务之外（C-E）；未找到实际在事务内触发的调用方。
 9. 注入层裸偏移 + 手工映射（D-C/L-B）：范围已改 `Range<Anchor>`、增量走 `coordinate_edits_since`、`map_range_through_changes` 已删除，「裸偏移手工映射」已消除；D-C 已改为字节偏移变换。但 `coordinate_edits_since` 为 `None` 时的整层丢弃/全文重跑分支仍在（L-B 部分修正），按坐标索引语义当前不可达。
 10. `LineWithInvisibles` 中与行内元素无关的其余渲染能力，已在「渲染层目标确认为 Zed 架构」后重新分类：元素实测宽度回写是已确认差距 **R-E**（违反 R-9，见 §4.8）；`font_id_for_index` 与 invisible/whitespace 完整策略登记为架构文档 §18.1「尚未复刻」；诊断下划线 handler、point diagnostics 由 LSP 诊断驱动，随 LSP 裁剪（架构文档 §17）。原「当前阶段不实现」的结论已不再适用。
-11. T-A/T-B 新增能力目前只有测试消费者：`Snapshot::text_for_version`/`offsets_to_version`/`range_to_version`、`snapshot_with_edits`/`fast_forward`/`EditedBufferSnapshot` 全仓非测试调用为 0；Git 修订仍以 `Buffer::from_text` 建独立实体（`zcv-project/src/git_store/mod.rs:1102-1142`），diff 仍全文物化（`zcv-buffer-diff/src/buffer_diff.rs:289-300, 451`）。是否算差距取决于是否按 §5.3 迁移消费者。
+11. T-A/T-B 能力已接入生产消费方：`Buffer::is_dirty` 走 `has_edits_since`；`Buffer::replace_text` 经 `snapshot_with_edits`/`fast_forward` 安装外部文本更新；Git 修订刷新（`zcv-project/src/git_store/mod.rs` 的 `load_revision_document`）经 `LanguageBuffer::snapshot_with_text`/`fast_forward` 后台派生文本与语法后安装。`Snapshot::text_for_version`/`offsets_to_version`/`range_to_version` 仍无生产消费方，按 §18.2 登记。
 12. `Snapshot::has_edits_since(_in_range)` 用「净 Patch 是否为空」实现（`zcv-text/src/snapshot.rs:109-122`），不是 Zed 的 fragment 可见性语义（`crates/text/src/text.rs:2781-2822`），`has_edits_since_in_range` 取旧坐标 `TextRange` 而非 `Range<Anchor>`；「删除后又原位插回同一文本」等序列可能给出不同答案，因无生产消费者未确认。
 13. `SelectionSet<MultiBufferAnchor>::resolve` 对不可解析锚点 `filter_map` 丢弃，全部失败时静默返回 caret 于 ZERO（`zcv-editor/src/selection/selection_set.rs:140-153`），与 T-8/E-4 的显式失败要求相悖；`resolve_anchor_in_mappings` 仅在锚点版本完全无法映射时返回 `None`，可达性罕见。
 14. `EditorSearch::activate_match_in_direction` 先从旧 `ranges` 缓存取 `range`，再 `advance_snapshots`（可能重建 `self.search`），然后把旧 `range` 交给 `select_byte_range`（`zcv-editor/src/view/search.rs:186-198`），属同一命令混用新旧快照（§9.2），越界会触发 `select_byte_range` 的 `assert!`；未证版本在期间变化。
@@ -914,7 +914,7 @@ Project / GitStore / Workspace / Item
 ## 8. 与架构文档第 18 节的回写建议
 
 1. 第 18.2 节「复刻偏离」当前只登记 R-E；本轮已确认的代码偏离应一并登记并按消除状态删除：D-H、T-C、T-D、M-D、M-E、M-F、E-I、E-J、E-K、R-E、R-F、R-G、R-H。D-A 与 L-B 已在本轮彻底对齐（见顶部「对齐落地」记录），不再需要登记。原「此前登记……已按目标落地」的历史说明按 §19.2 删除。
-2. 第 18.1 节不得把 T-A/T-B 登记为「尚未复刻」：`Snapshot` 已提供 T-7 能力，`EditedBufferSnapshot`/`fast_forward` 已提供 T-9 入口。第 18.4 节的实现差异须补正：`text_for_version` 不仅跨 `SkipHistory` 失败，任何一次 undo/redo 回放后也返回 `HistoryTextUnavailable`（T-D）；`fast_forward` 经版本校验后以正常事务路径重放派生编辑，而非直接置换 storage。
+2. 第 18.1 节不得把 T-A/T-B 登记为「尚未复刻」：`Snapshot` 已提供 T-7 能力，`EditedBufferSnapshot`/`fast_forward` 已提供 T-9 入口。第 18.4 节的实现差异须补正：`text_for_version` 不仅跨 `SkipHistory` 失败，任何一次 undo/redo 回放后也返回 `HistoryTextUnavailable`（T-D）；`fast_forward` 在版本校验后整体换入派生状态并发布订阅批次。
 3. 第 18.4 节保留「Editor 持有第二个 placeholder DisplayMap」与「`show_headers` 无 `without_headers` / `buffers_with_disabled_headers` 生产方，属裁剪」；并按 H-3 把 §14.1 依赖箭头与实际依赖（editor → project/workspace）对齐说明。
 4. 契约层 H-2…H-5 按各自目标边界修正文档：H-2 在 §18.3/§17 登记语言注册表版本补解析裁剪并同步 §6.3/§6.6；H-3 修正 §14.1 依赖图；H-4 去重 §18.1/§18.2 的 R-E 登记；H-5 改述 D-8/§8.2 的「同构段不得被合并」。
 5. 第 18.1 节登记两项尚未复刻的通用渲染能力：`font_id_for_index` 与 invisible/whitespace 完整策略；第 18.3 节登记「渲染层不实现 LSP 诊断绘制」。

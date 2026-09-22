@@ -9,9 +9,7 @@ use zcv_text::{
     Affinity, Buffer, BufferConfig, ByteOffset, Edit, Line, TextRange, TransactionMetadata,
 };
 
-use super::common::{
-    buffer_text, focus_editor, inject_editor_diff, inject_file_diff, revision_buffer, test_buffer,
-};
+use super::common::{buffer_text, focus_editor, inject_editor_diff, inject_file_diff, test_buffer};
 use super::*;
 use crate::display_map::test_support::{WrapRowKind, projected_line_text};
 use crate::display_map::{DisplayColumn, DisplayPoint, DisplayRow, hunk_rendering};
@@ -78,15 +76,17 @@ fn clipped_diff_file(
     cx: &mut gpui::Context<MultiBuffer>,
 ) -> DiffFile {
     let path = PathBuf::from("src/a.rs");
-    let base = revision_buffer(base_text, &path, cx);
+    let language_registry = working.read(cx).language_registry();
     let diff = cx.new(|cx| {
         BufferDiff::new(
             BufferDiffInput {
                 operations: None,
                 working,
-                base: Some(base),
-                index: None,
+                base_text: Some(base_text.to_owned()),
+                index_text: None,
                 path,
+                language_registry,
+                key: 0,
             },
             cx,
         )

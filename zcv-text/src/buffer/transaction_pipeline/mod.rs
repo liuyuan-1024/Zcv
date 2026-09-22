@@ -7,4 +7,4 @@
 //! - 事务结果返回 PositionMap 等事实，视图状态由宿主据此更新。
 
 mod apply;
-mod prepared;
+pub(in crate::buffer) mod prepared;

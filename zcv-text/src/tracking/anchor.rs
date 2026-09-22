@@ -92,15 +92,6 @@ impl Anchor {
         Ok(self.advance(event.new_version(), event.position_map()))
     }
 
-    pub fn update_through_delta_event(
-        &mut self,
-        event: &DeltaEvent,
-    ) -> Result<MappingResult<Self>, AnchorError> {
-        let mapped = self.map_through_delta_event(event)?;
-        *self = mapped.value();
-        Ok(mapped)
-    }
-
     fn advance(
         self,
         new_version: BufferVersion,

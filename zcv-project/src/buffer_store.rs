@@ -14,15 +14,15 @@ use zcv_path::{AbsolutePathBuf, normalize_for_comparison};
 use zcv_text::Snapshot;
 use zcv_text::{Buffer, BufferConfig};
 
-use crate::text_file::{BufferLoadError, EncodingConfig, decode_to_string};
+use crate::text_file::{BufferLoadError, decode_to_string};
 
 /// 从磁盘读取并解码文件，创建文本 `Buffer`。
 ///
 /// 这是文件解码与文本 `Buffer` 创建的唯一入口：
-/// `open_buffer` 与后台搜索都经这里，保证 BOM 剥离（`EncodingConfig::default()` 的 `BomPolicy::Strip`）与非法 UTF-8 策略一致。
+/// `open_buffer` 与后台搜索都经这里，保证 BOM 剥离与非法 UTF-8 拒绝策略一致。
 pub(crate) fn load_buffer(path: &Path) -> Result<Buffer, BufferLoadError> {
     let file = File::open(path)?;
-    let text = decode_to_string(file, &EncodingConfig::default())?;
+    let text = decode_to_string(file)?;
     Buffer::from_text(text, BufferConfig::default()).map_err(BufferLoadError::Text)
 }
 
@@ -119,7 +119,7 @@ impl BufferStore {
         let Ok(file) = File::open(canonical.as_path()) else {
             return;
         };
-        let Ok(text) = decode_to_string(file, &EncodingConfig::default()) else {
+        let Ok(text) = decode_to_string(file) else {
             return;
         };
         language_buffer.update(cx, |language_buffer, cx| {

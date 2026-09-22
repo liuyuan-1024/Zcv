@@ -57,7 +57,7 @@ pub(crate) use fold_map::{
 };
 use fold_map::{FoldMap, FoldSnapshot};
 use gpui::{App, AppContext as _, Bounds, Context, Entity, HighlightStyle, Pixels};
-use tab_map::{TabMap, display_width_for_fold_row};
+use tab_map::TabMap;
 pub(crate) use tab_map::{byte_for_display_column, display_column_for_byte};
 use wrap_map::{WrapEdit, WrapMap, WrapSnapshot};
 use zcv_language::HighlightSpan;
@@ -1003,20 +1003,17 @@ impl DisplayMap {
         true
     }
 
-    /// 未开启软换行时按当前 Tab 快照即时计算最长行。
+    /// 未开启软换行时读取 Wrap 层 summary 中的最长行。
     ///
-    /// 该计算不在 TabMap 保存逐行宽度缓存；
-    /// Tab 展开仍只在读取当前快照时发生。
+    /// 最长行是显示投影的派生维度，由 `isomorphic_tree` 构建 summary 时测量一次；
+    /// 这里只做 O(1) 读取与 wrap 行 → 显示行换算，不在每帧扫描全部行。
     pub(crate) fn longest_unwrapped_row(&self) -> DisplayRow {
-        let tab_snapshot = self.tab_map.snapshot();
-        let row = (0..tab_snapshot.line_count())
-            .max_by_key(|row| {
-                display_width_for_fold_row(tab_snapshot, Line::new(*row)).unwrap_or_default()
-            })
-            .unwrap_or_default();
-        self.snapshot
+        let snapshot = self
+            .snapshot
             .as_ref()
-            .expect("DisplayMap 初始化后必须存在显示快照")
+            .expect("DisplayMap 初始化后必须存在显示快照");
+        let row = snapshot.block_snapshot.wrap_snapshot().longest_row();
+        snapshot
             .block_snapshot
             .projected_wrap_row_to_display_row(row)
     }

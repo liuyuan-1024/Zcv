@@ -10,6 +10,7 @@ use std::sync::Arc;
 use gpui::{Context, Entity, EventEmitter, ParentElement, Render, Styled, Window, div, prelude::*};
 use zcv_actions::{ClearSearch, DeployBufferSearch};
 use zcv_editor::{Editor, LanguageRegistry};
+use zcv_keymap::display_shortcut;
 use zcv_theme::{color, space};
 use zcv_ui::Button;
 use zcv_workspace::{
@@ -136,9 +137,9 @@ impl Render for DocumentToolbar {
                             }
                         });
                 if visible {
-                    search_toggle.shortcut(zcv_keymap::display_shortcut(&ClearSearch, cx))
+                    search_toggle.shortcut(display_shortcut(&ClearSearch, cx))
                 } else {
-                    search_toggle.shortcut(zcv_keymap::display_shortcut(&DeployBufferSearch, cx))
+                    search_toggle.shortcut(display_shortcut(&DeployBufferSearch, cx))
                 }
             })
             .into_any_element();

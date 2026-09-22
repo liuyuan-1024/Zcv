@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use gpui::{AppContext, TestAppContext, VisualTestContext};
 use zcv_actions::Backspace;
-use zcv_language::LanguageBuffer;
+use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
 use zcv_text::{Buffer, BufferConfig};
 
@@ -29,7 +29,7 @@ fn editor_with_rust<'a>(
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("test.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -60,7 +60,7 @@ fn editor_without_language<'a>(
         LanguageBuffer::new(
             buffer,
             None,
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -111,7 +111,7 @@ fn each_composite_selection_uses_its_source_language_pairs(cx: &mut TestAppConte
             Buffer::from_text("x ".to_owned(), BufferConfig::default())
                 .expect("测试 Buffer 应能创建"),
             None,
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -120,7 +120,7 @@ fn each_composite_selection_uses_its_source_language_pairs(cx: &mut TestAppConte
             Buffer::from_text("y ".to_owned(), BufferConfig::default())
                 .expect("测试 Buffer 应能创建"),
             Some(PathBuf::from("test.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });

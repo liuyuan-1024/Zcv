@@ -19,6 +19,7 @@ use semver::Version;
 use sha2::{Digest as _, Sha256};
 use smol::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use zcv_actions::RestartToUpdate;
+use zcv_settings::config_dir;
 use zcv_ui::Button;
 use zcv_update::{
     SelectedRelease, UpdateInstallation, UpdateResult, UpdateResultStatus, UpdateTransaction,
@@ -96,7 +97,7 @@ pub(crate) fn init(cx: &mut App) {
 }
 
 fn updates_dir() -> PathBuf {
-    zcv_settings::config_dir().join("updates")
+    config_dir().join("updates")
 }
 
 /// 读取并消费上次更新的落盘结果。
@@ -158,7 +159,7 @@ impl UpdateConfig {
             manifest_url: MANIFEST_URL.to_owned(),
             public_key: UPDATE_PUBLIC_KEY,
             installation,
-            updates_dir: zcv_settings::config_dir().join("updates"),
+            updates_dir: config_dir().join("updates"),
         })
     }
 }

@@ -1,4 +1,5 @@
 use zcv_multi_buffer::MultiBufferRange;
+use zcv_text::{Buffer, BufferConfig, Edit, TransactionMetadata};
 
 use super::*;
 
@@ -50,17 +51,13 @@ fn adjacent_non_empty_selections_do_not_merge_but_caret_touching_does() {
 /// 锚点全部无法映射到目标快照时必须显式返回 None，不得静默兜底为文首 caret。
 #[test]
 fn resolve_returns_none_instead_of_zero_when_no_anchor_maps() {
-    let mut buffer =
-        zcv_text::Buffer::from_text("hello".to_owned(), zcv_text::BufferConfig::default())
-            .expect("测试 Buffer 应能创建");
+    let mut buffer = Buffer::from_text("hello".to_owned(), BufferConfig::default())
+        .expect("测试 Buffer 应能创建");
     let old = MultiBufferSnapshot::from(buffer.snapshot());
     buffer
         .edit(
-            [
-                zcv_text::Edit::insert(MultiBufferOffset::new(5).into(), "!")
-                    .expect("插入编辑应合法"),
-            ],
-            zcv_text::TransactionMetadata::default(),
+            [Edit::insert(MultiBufferOffset::new(5).into(), "!").expect("插入编辑应合法")],
+            TransactionMetadata::default(),
         )
         .expect("测试编辑应成功");
     let new = MultiBufferSnapshot::from(buffer.snapshot());
@@ -75,17 +72,13 @@ fn resolve_returns_none_instead_of_zero_when_no_anchor_maps() {
 /// 部分锚点不可解析时丢弃它们并保留其余，primary 归到存活选区。
 #[test]
 fn resolve_keeps_resolvable_anchors_when_some_fail() {
-    let mut buffer =
-        zcv_text::Buffer::from_text("hello".to_owned(), zcv_text::BufferConfig::default())
-            .expect("测试 Buffer 应能创建");
+    let mut buffer = Buffer::from_text("hello".to_owned(), BufferConfig::default())
+        .expect("测试 Buffer 应能创建");
     let old = MultiBufferSnapshot::from(buffer.snapshot());
     buffer
         .edit(
-            [
-                zcv_text::Edit::insert(MultiBufferOffset::new(5).into(), "!")
-                    .expect("插入编辑应合法"),
-            ],
-            zcv_text::TransactionMetadata::default(),
+            [Edit::insert(MultiBufferOffset::new(5).into(), "!").expect("插入编辑应合法")],
+            TransactionMetadata::default(),
         )
         .expect("测试编辑应成功");
     let new = MultiBufferSnapshot::from(buffer.snapshot());

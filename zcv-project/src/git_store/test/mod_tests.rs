@@ -1281,7 +1281,7 @@ fn checkout_branch_switches_and_refreshes(cx: &mut gpui::TestAppContext) {
 
     // 选择器确认切换到 master：job 完成后自动重扫，Head 事件驱动 UI 刷新。
     cx.update_entity(&git_store, |store, cx| {
-        store.checkout_branch("master".into(), cx);
+        let _task = store.checkout_branch_with_result("master".into(), cx);
     });
     cx.run_until_parked();
     cx.run_until_parked(); // 等 checkout 完成后触发的重新扫描落地。
@@ -1362,7 +1362,7 @@ fn branch_ops_skip_when_no_repository(cx: &mut gpui::TestAppContext) {
         cx.new(|cx| GitStore::new(Some(temp_dir.path().to_path_buf()), test_registry(), cx))
     });
     cx.update_entity(&git_store, |store, cx| {
-        store.checkout_branch("master".into(), cx);
+        let _task = store.checkout_branch_with_result("master".into(), cx);
         store.create_branch("feature".into(), cx);
     });
     cx.run_until_parked();

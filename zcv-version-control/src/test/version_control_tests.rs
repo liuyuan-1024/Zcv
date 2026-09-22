@@ -7,6 +7,7 @@ use tempfile::TempDir;
 
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 use zcv_git::StatusCode;
+use zcv_keymap::init;
 use zcv_language::LanguageRegistry;
 use zcv_project::{Project, StatusEntry};
 use zcv_ui::tree_row_height;
@@ -25,7 +26,8 @@ fn snapshot(entries: &[(&str, FileStatus)]) -> RepositorySnapshot {
             .iter()
             .map(|(path, status)| {
                 (
-                    RelativePathBuf::from_unix_str(path).expect("测试路径应为有效的仓库相对路径"),
+                    RelativePathBuf::from_path(std::path::Path::new(path))
+                        .expect("测试路径应为有效的仓库相对路径"),
                     StatusEntry {
                         status: *status,
                         diff_stat: DiffStat {
@@ -63,7 +65,7 @@ fn absolute(path: PathBuf) -> AbsolutePathBuf {
 }
 
 fn relative(path: &str) -> RelativePathBuf {
-    RelativePathBuf::from_unix_str(path).expect("测试路径应为有效的仓库相对路径")
+    RelativePathBuf::from_path(std::path::Path::new(path)).expect("测试路径应为有效的仓库相对路径")
 }
 
 fn build_rows(root: &Path, repos: &[(&Path, &RepositorySnapshot)]) -> Vec<GitRow> {
@@ -797,7 +799,7 @@ fn space_in_commit_editor_inserts_text_without_toggling_staging(cx: &mut TestApp
     let project_root = root.clone();
     let project = test_project(project_root, cx);
     let (panel, cx) = cx.add_window_view(move |_, cx| {
-        zcv_keymap::init(cx).expect("应注册内置快捷键");
+        init(cx).expect("应注册内置快捷键");
         VersionControlPanel::new(project, cx)
     });
     cx.run_until_parked();
@@ -1226,7 +1228,7 @@ fn commit_shortcut_submits_staged_changes_from_editor(cx: &mut TestAppContext) {
     let project_root = root.clone();
     let project = test_project(project_root.clone(), cx);
     let (panel, cx) = cx.add_window_view(move |_, cx| {
-        zcv_keymap::init(cx).expect("应注册内置快捷键");
+        init(cx).expect("应注册内置快捷键");
         VersionControlPanel::new(project, cx)
     });
     cx.run_until_parked();

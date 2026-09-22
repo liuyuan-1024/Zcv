@@ -1605,10 +1605,6 @@ impl ExcerptSnapshot {
         self.source_start_line + 1
     }
 
-    pub fn is_editable(&self) -> bool {
-        self.editable
-    }
-
     pub fn diff_kind(&self) -> Option<ExcerptDiffKind> {
         self.diff_kind
     }
@@ -1929,7 +1925,7 @@ impl MultiBufferSnapshot {
     }
 
     /// 指定组合偏移所属源语言的词边界策略。
-    pub fn word_boundary_at(&self, offset: MultiBufferOffset) -> WordBoundaryPolicy {
+    fn word_boundary_at(&self, offset: MultiBufferOffset) -> WordBoundaryPolicy {
         self.source_point(offset.into())
             .map_or_else(WordBoundaryPolicy::default, |(_, source, _)| {
                 source.word_boundary

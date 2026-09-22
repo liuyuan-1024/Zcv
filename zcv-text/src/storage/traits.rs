@@ -294,14 +294,6 @@ macro_rules! text_coordinate_gateway {
             self.storage.utf16_cu_to_byte(offset)
         }
 
-        /// 判断 ByteOffset 是否处在合法 grapheme cluster 边界。
-        pub fn is_grapheme_boundary_byte(
-            &self,
-            offset: $crate::ByteOffset,
-        ) -> $crate::TextResult<bool> {
-            self.storage.is_grapheme_boundary(offset)
-        }
-
         /// 判断 CharOffset 是否处在合法 grapheme cluster 边界。
         pub fn is_grapheme_boundary(&self, offset: $crate::CharOffset) -> $crate::TextResult<bool> {
             self.storage.is_grapheme_boundary_char(offset)

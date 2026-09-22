@@ -537,7 +537,7 @@ impl Pane {
     }
 
     /// 切换到下一个 tab，并滚入视图。
-    pub fn next_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn next_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.tabs.is_empty() {
             return;
         }
@@ -555,7 +555,7 @@ impl Pane {
     }
 
     /// 切换到上一个 tab，并滚入视图。
-    pub fn prev_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn prev_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.tabs.is_empty() {
             return;
         }

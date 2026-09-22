@@ -53,11 +53,6 @@ fn edit_should_emit_delta_changeset_position_map_and_subscription_patch() {
     assert_eq!(event.position_map().map_old_position(b(7)).value(), b(8));
     assert_eq!(changes.old_version(), Some(base));
     assert_eq!(changes.new_version(), Some(buffer.version()));
-    let event_changes = TextChangeBatch::from_event(event);
-    assert_eq!(event_changes.old_version(), changes.old_version());
-    assert_eq!(event_changes.new_version(), changes.new_version());
-    assert_eq!(event_changes.transaction_id(), changes.transaction_id());
-    assert_eq!(event_changes.patch(), changes.patch());
     assert_eq!(changes.patch().edits().len(), 2);
 }
 
@@ -72,9 +67,10 @@ fn anchor_follows_continuous_delta_events_without_reinterpreting_coordinates() {
             TransactionMetadata::default(),
         )
         .unwrap();
-    anchor
-        .update_through_delta_event(first.event())
-        .expect("连续事件的首个版本应匹配");
+    anchor = anchor
+        .map_through_delta_event(first.event())
+        .expect("连续事件的首个版本应匹配")
+        .value();
     assert_eq!(anchor.offset(), b(4));
 
     let second = buffer
@@ -83,9 +79,10 @@ fn anchor_follows_continuous_delta_events_without_reinterpreting_coordinates() {
             TransactionMetadata::default(),
         )
         .unwrap();
-    anchor
-        .update_through_delta_event(second.event())
-        .expect("连续事件的后续版本应匹配");
+    anchor = anchor
+        .map_through_delta_event(second.event())
+        .expect("连续事件的后续版本应匹配")
+        .value();
     assert_eq!(anchor.version(), buffer.version());
     assert_eq!(anchor.offset(), b(5));
 }
@@ -115,9 +112,10 @@ fn anchors_map_through_a_multi_edit_transaction_with_their_affinity() {
         &mut before_replace,
         &mut after_replace,
     ] {
-        anchor
-            .update_through_delta_event(outcome.event())
-            .expect("同一事务的所有锚点版本必须一致");
+        *anchor = (*anchor)
+            .map_through_delta_event(outcome.event())
+            .expect("同一事务的所有锚点版本必须一致")
+            .value();
         assert_eq!(anchor.version(), buffer.version());
     }
 
@@ -331,24 +329,6 @@ fn default_transactions_should_stay_separate() {
 
     buffer.undo().unwrap().unwrap();
     assert_eq!(buffer_text(&buffer), "");
-}
-
-#[test]
-fn set_config_should_apply_the_new_history_budget_immediately() {
-    let mut buffer = buffer("");
-    buffer
-        .edit(
-            [Edit::insert(ByteOffset::ZERO, "a").unwrap()],
-            metadata("insert"),
-        )
-        .unwrap();
-    assert!(buffer.can_undo());
-
-    let mut config = buffer.config().clone();
-    config.large_file.max_undo_history = 0;
-    buffer.set_config(config);
-
-    assert!(!buffer.can_undo());
 }
 
 #[test]

@@ -155,10 +155,6 @@ impl RelativePathBuf {
         Self::from_str_with_style(text, style)
     }
 
-    pub fn from_unix_str(text: &str) -> io::Result<Self> {
-        Self::from_str_with_style(text, PathStyle::Unix)
-    }
-
     fn from_str_with_style(text: &str, style: PathStyle) -> io::Result<Self> {
         let separators: &[char] = match style {
             PathStyle::Unix => &['/'],

@@ -254,6 +254,7 @@ impl Dock {
     }
 
     /// 注入待恢复状态；panel 尚未注册时保留快照，后续 add_panel 会继续恢复。
+    #[cfg(test)]
     pub fn set_serialized_state(
         &mut self,
         state: DockData,

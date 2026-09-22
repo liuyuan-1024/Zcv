@@ -118,7 +118,7 @@ pub async fn extract_archive(archive: &Path, destination: &Path, _bytes: Vec<u8>
     Ok(())
 }
 
-pub fn is_translocated_path(path: &Path) -> bool {
+fn is_translocated_path(path: &Path) -> bool {
     path.components()
         .any(|component| component.as_os_str() == "AppTranslocation")
 }

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use gpui::{App, Context, Entity, Subscription};
 use sum_tree::SumTree;
 use zcv_language::{LanguageBuffer, LanguageBufferEvent};
-use zcv_text::{Anchor, ByteOffset, Line, Snapshot};
+use zcv_text::{Anchor, BufferId, ByteOffset, Line, Snapshot};
 
 use crate::{
     DiffTransform, DiffTransformHunkInfo, DiffTransformHunkSide, Excerpt, ExcerptDiffKind,
@@ -208,7 +208,7 @@ impl PathDiffDisplay {
 /// 一个 path 的 diff 显示分段视图；坐标相对该 path 的输出起点。
 ///
 /// 消费方按段遍历并叠加 output_start_*，不整体展平，也不缓存扁平副本。
-pub struct DiffSegment<'a> {
+struct DiffSegment<'a> {
     pub output_start_line: usize,
     pub output_start_byte: usize,
     pub hunks: &'a [DisplayHunk],
@@ -250,7 +250,7 @@ impl DiffDisplaySnapshot {
     }
 
     /// 按 path 顺序遍历分段；坐标为相对该 path 输出起点的值。
-    pub fn segments(&self) -> impl Iterator<Item = DiffSegment<'_>> + '_ {
+    fn segments(&self) -> impl Iterator<Item = DiffSegment<'_>> + '_ {
         self.segments.iter().map(|segment| DiffSegment {
             output_start_line: segment.output_start_line,
             output_start_byte: segment.output_start_byte,
@@ -273,7 +273,7 @@ impl DiffDisplaySnapshot {
     }
 
     /// 按扁平显示 hunk 序号取绝对坐标 hunk。
-    pub fn hunk_at(&self, index: usize) -> Option<DisplayHunk> {
+    fn hunk_at(&self, index: usize) -> Option<DisplayHunk> {
         let (segment, local) = self.locate(index)?;
         let hunk = &segment.hunks[local];
         Some(DisplayHunk {
@@ -291,22 +291,22 @@ impl DiffDisplaySnapshot {
     }
 
     /// 扁平展开标志（不携带坐标，直接拼接）。
-    pub fn expanded_flags(&self) -> Vec<bool> {
+    fn expanded_flags(&self) -> Vec<bool> {
         self.resolved().map(|hunk| hunk.expanded).collect()
     }
 
     /// 扁平绝对坐标 hunk 列表（按需查询，不缓存）。
-    pub fn hunks_absolute(&self) -> Vec<DisplayHunk> {
+    fn hunks_absolute(&self) -> Vec<DisplayHunk> {
         self.resolved().map(|hunk| hunk.hunk).collect()
     }
 
     /// 扁平旧侧显示行范围（按需查询，不缓存）。
-    pub fn old_ranges_absolute(&self) -> Vec<Option<Range<usize>>> {
+    fn old_ranges_absolute(&self) -> Vec<Option<Range<usize>>> {
         self.resolved().map(|hunk| hunk.old_range).collect()
     }
 
     /// 扁平词级变化片段（绝对字节范围，按需查询，不缓存）。
-    pub fn word_diffs_absolute(&self) -> Vec<WordDiffs> {
+    fn word_diffs_absolute(&self) -> Vec<WordDiffs> {
         self.resolved().map(|hunk| hunk.word_diffs).collect()
     }
 
@@ -469,7 +469,7 @@ struct ExcerptMaterializer<'a> {
     excerpts: &'a mut Vec<ExcerptRange>,
     display_path: &'a Path,
     /// 同一 diff 文件的旧/新侧物理来源都属于 working Buffer 的一个逻辑显示实体。
-    buffer_id: zcv_text::BufferId,
+    buffer_id: BufferId,
 }
 
 impl ExcerptMaterializer<'_> {
@@ -1112,7 +1112,7 @@ impl MultiBuffer {
     /// 按路径顺序登记追加的 diff 文件，并物化其中已计算完成的前缀。
     ///
     /// 尚未计算完成的文件只登记订阅；结果到达后由 diff_changed 增量物化。
-    pub fn append_diff_projection(&mut self, files: Vec<DiffFile>, cx: &mut Context<Self>) -> bool {
+    fn append_diff_projection(&mut self, files: Vec<DiffFile>, cx: &mut Context<Self>) -> bool {
         if files.is_empty() {
             return false;
         }
@@ -1853,7 +1853,7 @@ fn projected_excerpt(
     text: &Snapshot,
     lines: Range<usize>,
     display_path: &Path,
-    buffer_id: zcv_text::BufferId,
+    buffer_id: BufferId,
     shape: ExcerptShape,
 ) -> Option<ExcerptRange> {
     if lines.is_empty() && !shape.allow_empty {

@@ -1,7 +1,7 @@
 //! 文件文本边界：UTF-8/BOM 解码、换行规范化与 Buffer 的加载 / 保存。
 //!
 //! `zcv-text` 只接收已解码的 `String` 并暴露检测到的换行风格；
-//! 文件 IO、编码恢复与保存策略都由本模块拥有。
+//! 文件 IO、BOM 剥离与保存时的 LF 规范化都由本模块拥有。
 
 use std::io::{self, Write};
 
@@ -14,62 +14,6 @@ const READ_BUFFER_SIZE: usize = 64 * 1024;
 
 /// UTF-8 BOM 字节序列。
 const UTF8_BOM: &[u8; 3] = b"\xEF\xBB\xBF";
-
-/// UTF-8 BOM 进入 Buffer 文本时的处理策略。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum BomPolicy {
-    /// 识别并移除 UTF-8 BOM。
-    #[default]
-    Strip,
-    /// 把 BOM 作为 U+FEFF 保留在 Buffer 文本中。
-    Preserve,
-}
-
-/// 非法 UTF-8 字节的处理策略。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum InvalidUtf8Policy {
-    /// 遇到非法 UTF-8 直接返回错误。
-    #[default]
-    Reject,
-    /// 使用 Unicode replacement character 恢复为可编辑文本。
-    Replace,
-}
-
-/// 文件加载时的编码恢复策略。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EncodingConfig {
-    pub bom: BomPolicy,
-    pub invalid_utf8: InvalidUtf8Policy,
-}
-
-impl EncodingConfig {
-    pub const fn new(bom: BomPolicy, invalid_utf8: InvalidUtf8Policy) -> Self {
-        Self { bom, invalid_utf8 }
-    }
-}
-
-impl Default for EncodingConfig {
-    fn default() -> Self {
-        Self {
-            bom: BomPolicy::Strip,
-            invalid_utf8: InvalidUtf8Policy::Reject,
-        }
-    }
-}
-
-/// 保存文本时采用的换行策略。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LineEndingConfig {
-    /// 强制写成 LF。
-    Lf,
-    /// 强制写成 CRLF。
-    Crlf,
-    /// 保留 Buffer 中的原始换行。
-    #[default]
-    Preserve,
-    /// 使用当前平台的原生换行。
-    Native,
-}
 
 /// 文件加载失败的统一错误类型。
 #[derive(Debug)]
@@ -160,13 +104,7 @@ impl std::error::Error for BufferSaveError {
 /// 流式解码 `reader` 为 UTF-8 文本，按 `config` 应用 BOM / 非法 UTF-8 策略。
 ///
 /// 不完整 UTF-8 codepoint（最多 3 字节）保留在读缓冲首端，下一轮拼接。
-pub fn decode_to_string<R: io::Read>(
-    mut reader: R,
-    config: &EncodingConfig,
-) -> Result<String, BufferLoadError> {
-    let bom_policy = config.bom;
-    let invalid_policy = config.invalid_utf8;
-
+pub fn decode_to_string<R: io::Read>(mut reader: R) -> Result<String, BufferLoadError> {
     let mut output = String::new();
     let mut buffer = vec![0u8; READ_BUFFER_SIZE];
     let mut fill_idx = 0usize;
@@ -183,7 +121,7 @@ pub fn decode_to_string<R: io::Read>(
         // 因为 BOM 本身是合法 UTF-8（U+FEFF），不剥离会让它落进文本首字符。
         if pending_bom_check {
             if fill_idx >= UTF8_BOM.len() {
-                if buffer.starts_with(UTF8_BOM) && bom_policy == BomPolicy::Strip {
+                if buffer.starts_with(UTF8_BOM) {
                     buffer.copy_within(UTF8_BOM.len()..fill_idx, 0);
                     fill_idx -= UTF8_BOM.len();
                 }
@@ -211,40 +149,21 @@ pub fn decode_to_string<R: io::Read>(
                 }
                 fill_idx = remaining;
             }
-            TailKind::InvalidBytes(bad_len) => match invalid_policy {
-                InvalidUtf8Policy::Reject => {
-                    return Err(BufferLoadError::InvalidUtf8 {
-                        valid_up_to: consumed_bytes,
-                        error_len: Some(bad_len),
-                    });
-                }
-                InvalidUtf8Policy::Replace => {
-                    const REPLACEMENT: char = '\u{FFFD}';
-                    output.push(REPLACEMENT);
-                    consumed_bytes += REPLACEMENT.len_utf8();
-
-                    let skip_to = valid.valid_count + bad_len;
-                    let remaining = fill_idx - skip_to;
-                    if remaining > 0 {
-                        buffer.copy_within(skip_to..fill_idx, 0);
-                    }
-                    fill_idx = remaining;
-                }
-            },
+            TailKind::InvalidBytes(bad_len) => {
+                return Err(BufferLoadError::InvalidUtf8 {
+                    valid_up_to: consumed_bytes,
+                    error_len: Some(bad_len),
+                });
+            }
         }
 
         if eof {
             if fill_idx > 0 {
                 // 最后一段 incomplete codepoint 没有续命机会了。
-                match invalid_policy {
-                    InvalidUtf8Policy::Reject => {
-                        return Err(BufferLoadError::InvalidUtf8 {
-                            valid_up_to: consumed_bytes,
-                            error_len: None,
-                        });
-                    }
-                    InvalidUtf8Policy::Replace => output.push('\u{FFFD}'),
-                }
+                return Err(BufferLoadError::InvalidUtf8 {
+                    valid_up_to: consumed_bytes,
+                    error_len: None,
+                });
             }
             break;
         }
@@ -261,14 +180,13 @@ pub fn decode_to_string<R: io::Read>(
     Ok(output)
 }
 
-/// 把文本快照写入 `writer`，先校验调用方持有的版本仍然新鲜。
+/// 把文本快照写入 `writer`（换行统一为 LF），先校验调用方持有的版本仍然新鲜。
 ///
 /// 只消费只读快照；宿主完成真实写盘后由文档实体标记保存点。
 pub fn write_buffer_to<W: Write>(
     snapshot: &Snapshot,
     expected_version: BufferVersion,
     writer: &mut W,
-    line_ending: LineEndingConfig,
 ) -> Result<(), BufferSaveError> {
     if expected_version != snapshot.version() {
         return Err(BufferSaveError::Text(TextError::Transaction(
@@ -281,26 +199,8 @@ pub fn write_buffer_to<W: Write>(
 
     let range = TextRange::new(ByteOffset::ZERO, snapshot.len_bytes()).map_err(TextError::from)?;
     let chunks = snapshot.chunks(range)?;
-    match line_ending {
-        LineEndingConfig::Preserve => write_preserved_line_endings(writer, chunks)?,
-        LineEndingConfig::Lf => write_normalized_line_endings(writer, chunks, "\n")?,
-        LineEndingConfig::Crlf => write_normalized_line_endings(writer, chunks, "\r\n")?,
-        LineEndingConfig::Native => {
-            write_normalized_line_endings(writer, chunks, native_line_ending())?
-        }
-    }
+    write_normalized_line_endings(writer, chunks, "\n")?;
     writer.flush()?;
-    Ok(())
-}
-
-fn write_preserved_line_endings<'a, W, I>(writer: &mut W, chunks: I) -> io::Result<()>
-where
-    W: Write,
-    I: IntoIterator<Item = &'a str>,
-{
-    for chunk in chunks {
-        writer.write_all(chunk.as_bytes())?;
-    }
     Ok(())
 }
 
@@ -367,18 +267,6 @@ where
         writer.write_all(target)?;
     }
     Ok(())
-}
-
-fn native_line_ending() -> &'static str {
-    #[cfg(windows)]
-    {
-        "\r\n"
-    }
-
-    #[cfg(not(windows))]
-    {
-        "\n"
-    }
 }
 
 struct ValidPrefix {

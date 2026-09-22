@@ -263,11 +263,6 @@ impl RegexSearchOptions {
         self.with_case_sensitive(false)
     }
 
-    pub const fn with_multi_line(mut self, multi_line: bool) -> Self {
-        self.multi_line = multi_line;
-        self
-    }
-
     pub const fn with_dot_matches_new_line(mut self, dot_matches_new_line: bool) -> Self {
         self.dot_matches_new_line = dot_matches_new_line;
         self

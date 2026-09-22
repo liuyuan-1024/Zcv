@@ -29,7 +29,8 @@ use super::fold_map::{
     LogicalRange, ProjectedLineIndex, ProjectedPoint, ProjectedRange, StreamProjectedKind,
 };
 use super::tab_map::{
-    TabEdit, TabPoint, TabSnapshot, advance_display_column, byte_for_display_column, line_content,
+    TabEdit, TabPoint, TabSnapshot, advance_display_column, byte_for_display_column,
+    display_width_for_fold_row, line_content,
 };
 use super::{WrapPoint, WrapRow};
 
@@ -62,6 +63,12 @@ struct Transform {
     /// 精确行内端点仍由 `TabEdit` 保留，并在重排边界扩展为完整行。
     input: TabPoint,
     output_rows: usize,
+    /// 本变换输出区间内最长行的相对行号与显示宽度字符数。
+    ///
+    /// 只在透传（未换行）变换树上维护，作为 `WrapSnapshot` summary 的派生维度；
+    /// 查询端按 O(1) 读取，不按帧扫描全部行。
+    longest_row: usize,
+    longest_row_chars: usize,
     /// 换行点共享存储：克隆 Transform（增量重建时大量发生）只增加引用计数，不深拷贝换行点。
     wrap_points: Arc<[WrapPointInfo]>,
 }
@@ -72,6 +79,8 @@ impl Transform {
             kind: TransformKind::Isomorphic,
             input,
             output_rows,
+            longest_row: 0,
+            longest_row_chars: 0,
             wrap_points: Vec::new().into(),
         }
     }
@@ -91,6 +100,8 @@ impl Item for Transform {
         TransformSummary {
             input: self.input,
             output_rows: self.output_rows(),
+            longest_row: self.longest_row,
+            longest_row_chars: self.longest_row_chars,
         }
     }
 }
@@ -99,6 +110,9 @@ impl Item for Transform {
 struct TransformSummary {
     input: TabPoint,
     output_rows: usize,
+    /// 输出区间内最长行的相对行号与字符数；对齐 Zed `TextSummary` 的 `longest_row` 维度。
+    longest_row: usize,
+    longest_row_chars: usize,
 }
 
 impl ContextLessSummary for TransformSummary {
@@ -107,8 +121,13 @@ impl ContextLessSummary for TransformSummary {
     }
 
     fn add_summary(&mut self, summary: &Self) {
+        let output_rows_before = self.output_rows;
         self.input = self.input.advance(summary.input);
         self.output_rows += summary.output_rows;
+        if summary.longest_row_chars > self.longest_row_chars {
+            self.longest_row = output_rows_before + summary.longest_row;
+            self.longest_row_chars = summary.longest_row_chars;
+        }
     }
 }
 
@@ -258,6 +277,14 @@ impl WrapSnapshot {
 
     pub(super) fn line_count(&self) -> usize {
         self.transforms.summary().output_rows
+    }
+
+    /// 透传（未换行）模式下的最长行（wrap 行号）。
+    ///
+    /// 值来自变换树 summary，查询 O(1)；软换行模式下该维度不维护，调用方必须先确认未换行。
+    pub(super) fn longest_row(&self) -> usize {
+        debug_assert!(!self.wrapped, "最长行 summary 只在透传（未换行）模式下维护");
+        self.transforms.summary().longest_row
     }
 
     /// 按编辑急切插值：结构编辑区间用 isomorphic 段占位，不重新 shaping。
@@ -1501,6 +1528,8 @@ impl WrapMap {
                 kind: TransformKind::Wrap,
                 input: TabPoint::new(1, 0),
                 output_rows: boundaries.len() + 1,
+                longest_row: 0,
+                longest_row_chars: 0,
                 wrap_points: boundaries.into(),
             });
         }
@@ -1879,7 +1908,17 @@ fn isomorphic_tree(tab_snapshot: &TabSnapshot) -> SumTree<Transform> {
         SumTree::new(())
     } else {
         let input = tab_snapshot.summary_for_range(TabPoint::zero()..TabPoint::new(tab_rows, 0));
-        SumTree::from_item(Transform::isomorphic(input, tab_rows), ())
+        // 透传模式下最长行是显示宽度的派生事实：
+        // 构建 summary 时测量一次，查询端按 O(1) 读取，不在每帧重新扫描全部行（对齐 Zed `WrapSummary::longest_row`）。
+        let (longest_row, longest_row_chars) = (0..tab_rows)
+            .map(|row| display_width_for_fold_row(tab_snapshot, Line::new(row)).unwrap_or_default())
+            .enumerate()
+            .max_by_key(|(_, width)| *width)
+            .unwrap_or((0, 0));
+        let mut transform = Transform::isomorphic(input, tab_rows);
+        transform.longest_row = longest_row;
+        transform.longest_row_chars = longest_row_chars;
+        SumTree::from_item(transform, ())
     }
 }
 

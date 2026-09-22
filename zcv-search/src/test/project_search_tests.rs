@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use gpui::{AppContext as _, Context, TestAppContext, VisualTestContext, Window};
+use zcv_editor::init;
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 use zcv_language::LanguageRegistry;
 use zcv_path::AbsolutePathBuf;
@@ -64,12 +65,7 @@ async fn restored_project_search_tab_opens_excerpt_files(cx: &mut TestAppContext
     let file = root.join("needle.txt");
     std::fs::write(&file, "needle").expect("应创建测试文件");
     // 打开文件经 ItemProvider 注册表分发，测试同样需要文本 Provider。
-    cx.update(|cx| {
-        zcv_editor::init(
-            cx,
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
-        )
-    });
+    cx.update(|cx| init(cx, std::sync::Arc::new(LanguageRegistry::new())));
 
     let provider = ProjectSearchSerializedItemProvider;
     let (workspace, cx) = cx.add_window_view({
@@ -194,12 +190,7 @@ fn project_search_view_and_search_bar_release_together(cx: &mut TestAppContext) 
 async fn deploying_project_search_focuses_query_input(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let root = directory.path().canonicalize().expect("项目根应可规范化");
-    cx.update(|cx| {
-        zcv_editor::init(
-            cx,
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
-        )
-    });
+    cx.update(|cx| init(cx, std::sync::Arc::new(LanguageRegistry::new())));
 
     let (workspace, cx) = cx.add_window_view({
         let root = root.clone();

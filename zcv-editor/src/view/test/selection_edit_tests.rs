@@ -5,7 +5,7 @@ use zcv_multi_buffer::MultiBufferOffset;
 use std::path::PathBuf;
 
 use gpui::{AppContext, TestAppContext};
-use zcv_language::LanguageBuffer;
+use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
 use zcv_text::{Buffer, BufferConfig};
 
@@ -23,7 +23,7 @@ fn editor_with_text(
         LanguageBuffer::new(
             buffer,
             None,
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -58,7 +58,7 @@ fn rename_local_at_replaces_only_the_resolved_binding(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("rename.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -90,7 +90,7 @@ fn rename_local_at_rejects_ambiguous_binding(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("ambiguous.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -118,7 +118,7 @@ fn rename_local_at_rejects_unresolved_reference(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("unresolved.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -198,7 +198,7 @@ fn editing_a_later_composite_excerpt_keeps_following_input_in_that_source(cx: &m
         LanguageBuffer::new(
             first,
             Some(std::path::PathBuf::from("src/first.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -206,7 +206,7 @@ fn editing_a_later_composite_excerpt_keeps_following_input_in_that_source(cx: &m
         LanguageBuffer::new(
             second,
             Some(std::path::PathBuf::from("src/second.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });

@@ -14,7 +14,7 @@ use gpui::{
     prelude::*,
 };
 use zcv_actions::{DeleteRecentProject, OpenLocalProject, ToggleProjectPicker};
-use zcv_keymap::KeyBindings;
+use zcv_keymap::{KeyBindings, display_shortcut};
 use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, PickerHost, picker_divider};
 use zcv_theme::color;
 use zcv_ui::Button;
@@ -170,7 +170,7 @@ impl PickerDelegate for ProjectPickerDelegate {
                 Button::icon(("delete-project", index), "icons/trash.svg")
                     .color(icon_color)
                     .label("移除")
-                    .shortcut(zcv_keymap::display_shortcut(&DeleteRecentProject, cx))
+                    .shortcut(display_shortcut(&DeleteRecentProject, cx))
                     .on_click(remove),
             )
             .into_any_element()
@@ -413,7 +413,7 @@ impl Render for ProjectPicker {
 
         let button = Button::text("project-picker", button_text.to_string())
             .label("项目选择器")
-            .shortcut(zcv_keymap::display_shortcut(&ToggleProjectPicker, cx))
+            .shortcut(display_shortcut(&ToggleProjectPicker, cx))
             .color(color_value)
             .on_click(cx.listener(|picker, _, window, cx| picker.toggle(window, cx)));
 

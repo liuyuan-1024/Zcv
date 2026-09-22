@@ -15,7 +15,7 @@ fn relative_paths_use_unix_separators() {
 
 #[test]
 fn relative_paths_reject_absolute_paths() {
-    assert!(RelativePathBuf::from_unix_str("/tmp/file").is_err());
+    assert!(RelativePathBuf::from_path(Path::new("/tmp/file")).is_err());
     assert!(
         RelativePathBuf::from_path_with_style(Path::new(r"C:\\tmp\\file"), PathStyle::Windows,)
             .is_err()
@@ -37,7 +37,7 @@ fn absolute_path_relativizes_against_a_known_root() {
     let file = root.as_path().join("src/main.rs");
     assert_eq!(
         root.relative_path(&file),
-        Some(RelativePathBuf::from_unix_str("src/main.rs").unwrap())
+        Some(RelativePathBuf::from_path(Path::new("src/main.rs")).unwrap())
     );
     let outside = root.as_path().parent().unwrap().join("other/file.rs");
     assert_eq!(root.relative_path(&outside), None);

@@ -116,5 +116,4 @@ impl BlinkManager {
 }
 
 #[cfg(test)]
-#[path = "blink_manager/test.rs"]
 mod test;

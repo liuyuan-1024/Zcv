@@ -3,8 +3,11 @@ use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
 use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 use std::path::PathBuf;
 use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging};
+use zcv_language::LanguageRegistry;
 use zcv_multi_buffer::{DiffFile, DisplayHunk, ExcerptRange, MultiBuffer, ResolvedDiffHunk};
-use zcv_text::{Affinity, Buffer, BufferConfig, ByteOffset, Edit, Line, TransactionMetadata};
+use zcv_text::{
+    Affinity, Buffer, BufferConfig, ByteOffset, Edit, Line, TextRange, TransactionMetadata,
+};
 
 use super::common::{
     buffer_text, focus_editor, inject_editor_diff, inject_file_diff, revision_buffer, test_buffer,
@@ -263,7 +266,7 @@ fn clicking_deep_after_fold_preserves_the_visual_column(cx: &mut TestAppContext)
         LanguageBuffer::new(
             raw_buffer,
             Some(PathBuf::from("default-macos.json")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -587,7 +590,7 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -646,7 +649,7 @@ fn explicit_crease_is_visible_and_removable_by_identity(cx: &mut TestAppContext)
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("notes.txt")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -684,7 +687,7 @@ fn toggle_fold_action_uses_the_cursor_block_and_the_whole_folded_row(cx: &mut Te
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -764,7 +767,7 @@ fn toggle_fold_command_and_crease_share_the_ellipsis_element(cx: &mut TestAppCon
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -817,7 +820,7 @@ fn clicking_the_crease_toggles_fold_without_selecting_the_line(cx: &mut TestAppC
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -938,7 +941,7 @@ fn fold_ranges_survive_edits_and_folded_state_follows(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -999,7 +1002,7 @@ fn folded_bracket_highlight_lands_on_merged_row(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -1057,7 +1060,7 @@ fn horizontal_movement_jumps_over_folded_content(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -1121,7 +1124,7 @@ fn folded_rows_keep_the_following_line_clickable_and_editable(cx: &mut TestAppCo
         LanguageBuffer::new(
             raw_buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -1195,7 +1198,7 @@ fn unfold_all_expands_every_fold(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -1687,7 +1690,7 @@ fn long_line_highlight_query_is_clipped_to_render_budget(cx: &mut TestAppContext
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -1723,7 +1726,7 @@ fn horizontal_windowing_clips_wide_rows_to_the_visible_window(cx: &mut TestAppCo
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -2636,14 +2639,14 @@ fn test_file_buffer(cx: &mut TestAppContext, path: &str, text: &str) -> Entity<L
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from(path)),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     })
 }
 
 /// 读取主光标所在投影偏移对应的源位置。
-fn caret_source_range(editor: &Entity<Editor>, cx: &TestAppContext) -> zcv_text::TextRange {
+fn caret_source_range(editor: &Entity<Editor>, cx: &TestAppContext) -> TextRange {
     cx.read_entity(editor, |editor, cx| {
         let caret = editor.selections(cx).primary().head();
         editor
@@ -2694,7 +2697,7 @@ fn external_source_change_advances_selection_source_anchor(cx: &mut TestAppConte
     });
     assert_eq!(
         caret_source_range(&editor, cx),
-        zcv_text::TextRange::new(ByteOffset::new(2), ByteOffset::new(2)).unwrap()
+        TextRange::new(ByteOffset::new(2), ByteOffset::new(2)).unwrap()
     );
 
     // 外部（未经本编辑器）在源开头插入 "prefix\n"，光标源位置应随源变更右移 7 字节。
@@ -2712,7 +2715,7 @@ fn external_source_change_advances_selection_source_anchor(cx: &mut TestAppConte
 
     assert_eq!(
         caret_source_range(&editor, cx),
-        zcv_text::TextRange::new(ByteOffset::new(9), ByteOffset::new(9)).unwrap(),
+        TextRange::new(ByteOffset::new(9), ByteOffset::new(9)).unwrap(),
         "外部源变更后选区源 Anchor 应按当前快照解析到同一逻辑位置"
     );
 }
@@ -2750,7 +2753,7 @@ fn folding_a_section_with_soft_wrap_enabled_keeps_wrap_map_invariant(cx: &mut Te
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("docs/架构决策记录.md")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });

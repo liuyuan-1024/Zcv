@@ -135,7 +135,10 @@ fn regex_search_should_respect_options_and_reject_invalid_patterns() {
     let buffer = buffer("a1\nb22\nc333");
     let snapshot = buffer.snapshot();
     let pattern = r"(?m)^[a-z]\d+";
-    let options = RegexSearchOptions::new().with_multi_line(true);
+    let options = RegexSearchOptions {
+        multi_line: true,
+        ..RegexSearchOptions::new()
+    };
     let regex = build_regex_automata(pattern, options).unwrap();
     let result =
         search_regex_streaming_with_regex(&snapshot, snapshot.version(), pattern, &regex, options)

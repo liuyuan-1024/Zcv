@@ -9,7 +9,7 @@ use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
 use zcv_multi_buffer::MultiBufferSnapshot;
-use zcv_text::Line;
+use zcv_text::{CoordinateError, Line};
 
 use super::chunk::{ChunkText, FoldChunks, HighlightStyles, StyledChunks};
 use super::display_width::char_width;
@@ -379,14 +379,14 @@ pub(super) fn display_width_for_fold_row(
     } else {
         let stream_line = snapshot
             .stream_line_for_projected(row)
-            .ok_or(zcv_text::CoordinateError::LineOutOfBounds(row))?;
+            .ok_or(CoordinateError::LineOutOfBounds(row))?;
         let buffer = fold.buffer_snapshot();
         let range = buffer
             .line_content_byte_range(stream_line)
-            .ok_or(zcv_text::CoordinateError::LineOutOfBounds(row))?;
+            .ok_or(CoordinateError::LineOutOfBounds(row))?;
         let content_len = buffer
             .line_content_metrics(stream_line)
-            .ok_or(zcv_text::CoordinateError::LineOutOfBounds(row))?
+            .ok_or(CoordinateError::LineOutOfBounds(row))?
             .0;
         for chunk in StyledChunks::new(
             ChunkText::Virtual {

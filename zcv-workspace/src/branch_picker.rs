@@ -11,6 +11,7 @@ use std::rc::Rc;
 use gpui::{App, Context, Entity, Render, Subscription, Window, div, prelude::*};
 use zcv_actions::{DeleteGitBranch, SelectGitBranch};
 use zcv_git::Branch;
+use zcv_keymap::display_shortcut;
 use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, PickerHost};
 use zcv_project::{GitStore, GitStoreEvent};
 use zcv_theme::color;
@@ -164,7 +165,7 @@ impl PickerDelegate for BranchPickerDelegate {
             Button::icon(("delete-branch", index), "icons/trash.svg")
                 .color(color::current(cx).icon_muted)
                 .label("删除分支")
-                .shortcut(zcv_keymap::display_shortcut(&DeleteGitBranch, cx))
+                .shortcut(display_shortcut(&DeleteGitBranch, cx))
                 .on_click(move |_, window, cx| {
                     on_delete(GitBranchAction::Delete(branch_name.clone()), window, cx);
                 }),
@@ -312,7 +313,7 @@ impl Render for BranchPicker {
         // 空仓库没有当前分支或 HEAD，直接不渲染选择器。
         let button = Button::icon_text("top-bar.branch", "icons/git_branch.svg", display_name)
             .label("分支")
-            .shortcut(zcv_keymap::display_shortcut(&SelectGitBranch, cx))
+            .shortcut(display_shortcut(&SelectGitBranch, cx))
             .color(color_value)
             .on_click(cx.listener(|picker, _, window, cx| picker.toggle(window, cx)));
 

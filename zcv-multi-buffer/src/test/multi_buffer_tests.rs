@@ -7,8 +7,8 @@ use crate::{DiffFile, DisplayHunk};
 use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging, DiffOperations};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_text::{
-    Buffer, BufferConfig, ByteOffset, CharOffset, Edit, Line, StorageError, TextError, TextRange,
-    TransactionMetadata, Utf16Offset,
+    Buffer, BufferConfig, ByteOffset, CharOffset, Edit, LargeFilePolicy, Line, StorageError,
+    TextError, TextRange, TransactionMetadata, Utf16Offset,
 };
 
 use super::*;
@@ -784,10 +784,10 @@ fn read_only_singleton(
     cx: &mut TestAppContext,
 ) -> gpui::Entity<LanguageBuffer> {
     let config = BufferConfig {
-        large_file: zcv_text::LargeFilePolicy {
+        large_file: LargeFilePolicy {
             large_file_threshold_bytes: 1,
             auto_read_only_on_large_file: true,
-            ..zcv_text::LargeFilePolicy::default()
+            ..LargeFilePolicy::default()
         },
     };
     let buffer = Buffer::from_text(text.to_owned(), config).expect("应创建测试 Buffer");

@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{AppContext, TestAppContext};
+use zcv_text::ByteOffset;
 
 use super::*;
 
@@ -129,7 +130,7 @@ fn released_buffer_is_loaded_again(cx: &mut TestAppContext) {
         let snapshot = language_buffer.text_snapshot();
         assert_eq!(
             snapshot
-                .slice_byte_range(zcv_text::ByteOffset::ZERO, snapshot.len_bytes())
+                .slice_byte_range(ByteOffset::ZERO, snapshot.len_bytes())
                 .expect("完整文本应可读取")
                 .as_str(),
             "第二次"
@@ -178,7 +179,7 @@ fn removed_index_is_not_reused_when_the_source_file_is_gone(cx: &mut TestAppCont
     assert!(reopened.is_err(), "已删除文件的索引失效后不得复用旧文档");
     cx.read_entity(&first, |language_buffer, _| {
         let snapshot = language_buffer.text_snapshot();
-        let range = zcv_text::TextRange::new(zcv_text::ByteOffset::ZERO, snapshot.len_bytes())
+        let range = zcv_text::TextRange::new(ByteOffset::ZERO, snapshot.len_bytes())
             .expect("全文范围应有效");
         assert_eq!(snapshot.slice_text(range).unwrap().as_str(), "旧内容");
     });

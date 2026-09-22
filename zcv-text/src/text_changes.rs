@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use crate::{
     position_map::PositionMap,
-    transaction::{Delta, DeltaEvent},
+    transaction::Delta,
     types::{BufferVersion, ByteOffset, TextRange, TransactionId},
 };
 
@@ -121,28 +121,6 @@ impl TextPatch {
     pub(crate) fn from_edits(edits: Vec<PatchEdit>) -> Self {
         Self { edits }
     }
-
-    /// 把所有编辑的旧/新坐标整体平移；用于把某个源片段的变化换算到组合坐标。
-    pub fn shifted_by(&self, shift: usize) -> Self {
-        Self {
-            edits: self
-                .edits
-                .iter()
-                .map(|edit| PatchEdit {
-                    old: shift_range(edit.old, shift),
-                    new: shift_range(edit.new, shift),
-                })
-                .collect(),
-        }
-    }
-}
-
-fn shift_range(range: TextRange, shift: usize) -> TextRange {
-    TextRange::new(
-        ByteOffset::new(range.start().get() + shift),
-        ByteOffset::new(range.end().get() + shift),
-    )
-    .expect("整体平移后的文本范围必须有序")
 }
 
 /// 一个订阅者从上次消费到当前版本积累的组合文本变化。
@@ -155,19 +133,6 @@ pub struct TextChangeBatch {
 }
 
 impl TextChangeBatch {
-    /// 从一次已提交的文本事件创建显示消费者使用的单事件批次。
-    ///
-    /// Buffer 事件是唯一的文本变更事实；订阅只是把多个事件组合成消费者自己的批次。
-    /// 需要同步显示层的直接调用方可以复用同一事件，不必再创建第二个源订阅来猜测变更范围。
-    pub fn from_event(event: &DeltaEvent) -> Self {
-        Self {
-            patch: TextPatch::from_delta(event.delta()),
-            old_version: Some(event.old_version()),
-            new_version: Some(event.new_version()),
-            transaction_id: Some(event.transaction_id()),
-        }
-    }
-
     /// 从一个源变更在输出坐标中投影出的编辑创建增量批次。
     ///
     /// 组合文档没有单一可变 Rope；
@@ -228,14 +193,6 @@ impl TextChangeBatch {
             old_version: self.old_version,
             new_version: self.new_version,
             transaction_id: self.transaction_id,
-        }
-    }
-
-    /// 把所有编辑坐标整体平移；用于把源片段变化换算到组合坐标。
-    pub fn shifted_by(&self, shift: usize) -> Self {
-        Self {
-            patch: self.patch.shifted_by(shift),
-            ..self.clone()
         }
     }
 

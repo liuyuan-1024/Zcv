@@ -4,7 +4,7 @@ use std::{
 };
 
 use gpui::{AppContext, TestAppContext, font, px};
-use zcv_language::LanguageBuffer;
+use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
 use zcv_text::{Affinity, Buffer, BufferConfig, Edit, Line, TransactionMetadata};
 use zcv_theme::ThemeChoice;
@@ -72,7 +72,7 @@ fn display_snapshot_resolves_syntax_styles_from_current_theme(cx: &mut TestAppCo
         LanguageBuffer::new(
             source_buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -119,7 +119,7 @@ fn display_pipeline_receives_the_source_transaction_batch(cx: &mut TestAppContex
         LanguageBuffer::new(
             source_buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -171,7 +171,7 @@ fn block_boundaries_reclassify_when_their_file_changes(cx: &mut TestAppContext) 
             Buffer::from_text("a0\na1\n".to_owned(), BufferConfig::default())
                 .expect("测试 Buffer 应能创建"),
             Some(PathBuf::from("src/a.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -180,7 +180,7 @@ fn block_boundaries_reclassify_when_their_file_changes(cx: &mut TestAppContext) 
             Buffer::from_text("b0\n".to_owned(), BufferConfig::default())
                 .expect("测试 Buffer 应能创建"),
             Some(PathBuf::from("src/b.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -312,7 +312,7 @@ fn anonymous_buffers_keep_distinct_header_identities(cx: &mut TestAppContext) {
                 Buffer::from_text(text.to_owned(), BufferConfig::default())
                     .expect("测试 Buffer 应能创建"),
                 None,
-                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                std::sync::Arc::new(LanguageRegistry::new()),
                 cx,
             )
         })
@@ -1040,4 +1040,36 @@ fn projected_range_columns_use_display_width_for_cjk(cx: &mut TestAppContext) {
         projected[0].end(),
         DisplayPoint::new(DisplayRow::ZERO, DisplayColumn::new(3))
     );
+}
+
+/// 性能测量入口：未换行模式下 `longest_unwrapped_row` 的单次成本随文档行数的变化。
+///
+/// 仅测试使用，不改变生产可见性。用
+/// `cargo test -p zcv-editor --lib measure_longest_unwrapped_row_scaling -- --nocapture` 查看输出。
+#[gpui::test]
+fn measure_longest_unwrapped_row_scaling(cx: &mut TestAppContext) {
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    for lines in [1_000usize, 8_000, 32_000] {
+        let text: String = (0..lines)
+            .map(|index| format!("fn line_{index}() {{ let value = {index}; }}\n"))
+            .collect();
+        let buffer =
+            Buffer::from_text(text, BufferConfig::default()).expect("测量 Buffer 应能创建");
+        let map = cx.new(|cx| DisplayMap::new(buffer.snapshot(), cx));
+
+        // 预热，排除首次分配与惰性初始化。
+        black_box(cx.read_entity(&map, |map, _| map.longest_unwrapped_row()));
+
+        const ITERATIONS: u32 = 50;
+        let start = Instant::now();
+        for _ in 0..ITERATIONS {
+            black_box(cx.read_entity(&map, |map, _| map.longest_unwrapped_row()));
+        }
+        println!(
+            "longest_unwrapped_row lines={lines} per_call={:?}",
+            start.elapsed() / ITERATIONS
+        );
+    }
 }

@@ -706,21 +706,6 @@ impl GitStore {
         self.schedule_job(GitJob::Uncommit, cx);
     }
 
-    /// 切换活动仓库到指定本地分支（分支选择器确认触发），完成后自动重扫。
-    pub fn checkout_branch(&mut self, name: String, cx: &mut Context<Self>) {
-        if self.repositories.is_empty() {
-            self.schedule_scan(cx);
-            return;
-        }
-        self.schedule_job(
-            GitJob::CheckoutBranch {
-                name,
-                on_done: None,
-            },
-            cx,
-        );
-    }
-
     pub fn checkout_branch_with_result(
         &mut self,
         name: String,

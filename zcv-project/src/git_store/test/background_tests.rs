@@ -8,7 +8,7 @@ use crate::git_store::{RepositorySnapshot, StatusEntry};
 use crate::test_support::{run_git, test_git_repo};
 
 fn relative(path: &str) -> RelativePathBuf {
-    RelativePathBuf::from_unix_str(path).expect("测试路径应为有效的仓库相对路径")
+    RelativePathBuf::from_path(std::path::Path::new(path)).expect("测试路径应为有效的仓库相对路径")
 }
 
 #[test]

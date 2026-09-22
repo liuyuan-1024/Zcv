@@ -3,6 +3,7 @@
 use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot};
 
 use gpui::{AppContext, TestAppContext, VisualTestContext};
+use zcv_language::LanguageRegistry;
 use zcv_project::SearchQuery;
 use zcv_text::Buffer;
 use zcv_theme::color;
@@ -321,7 +322,7 @@ fn replace_keeps_syntax_snapshot_in_sync(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -503,7 +504,7 @@ zcv final
         LanguageBuffer::new(
             buffer,
             Some(std::path::PathBuf::from("search_fixture.md")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });

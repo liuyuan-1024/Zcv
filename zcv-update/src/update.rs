@@ -23,7 +23,7 @@ pub use helper::run_helper;
 pub use platform::{UpdateInstallation, prepare_helper, verify_app};
 
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
-pub const TRANSACTION_SCHEMA_VERSION: u32 = 2;
+const TRANSACTION_SCHEMA_VERSION: u32 = 2;
 pub const STABLE_CHANNEL: &str = "stable";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -339,7 +339,7 @@ pub fn write_acknowledgement(
 }
 
 /// 上一次更新结果的文件名（与事务确认文件同目录）。
-pub const UPDATE_RESULT_FILE: &str = "last-result.json";
+const UPDATE_RESULT_FILE: &str = "last-result.json";
 
 pub fn update_result_path(updates_dir: &Path) -> PathBuf {
     updates_dir.join(UPDATE_RESULT_FILE)

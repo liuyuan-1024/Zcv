@@ -345,7 +345,7 @@ impl Workspace {
     }
 
     /// 节流调度一次布局保存（宿主装配层响应面板事件时调用）。
-    pub fn schedule_layout_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn schedule_layout_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self._layout_save_task.is_some() {
             return;
         }

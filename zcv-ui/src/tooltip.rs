@@ -56,7 +56,7 @@ impl TooltipSpec {
     }
 
     /// 是否包含任何提示内容（无内容时不挂 tooltip）。
-    pub fn has_content(&self) -> bool {
+    fn has_content(&self) -> bool {
         !self.lines.is_empty() || self.shortcut.is_some()
     }
 

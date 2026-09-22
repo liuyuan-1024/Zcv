@@ -23,7 +23,7 @@ mod platform;
 use super::buffer_store::BufferStore;
 use super::git_store::{GitStatusSnapshot, GitStore};
 use super::search::{self, SearchResults};
-use super::text_file::{BufferLoadError, BufferSaveError, LineEndingConfig, write_buffer_to};
+use super::text_file::{BufferLoadError, BufferSaveError, write_buffer_to};
 use super::worktree::{Worktree, WorktreeEntry, collect_visible_entries};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -662,7 +662,7 @@ fn keep_git_state_event(path: &Path) -> bool {
 fn write_buffer_to_path(snapshot: &Snapshot, path: &Path) -> Result<(), BufferSaveError> {
     let version = snapshot.version();
     let mut file = File::create(path)?;
-    write_buffer_to(snapshot, version, &mut file, LineEndingConfig::Preserve)?;
+    write_buffer_to(snapshot, version, &mut file)?;
     file.sync_all()?;
     Ok(())
 }

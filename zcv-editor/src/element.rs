@@ -18,6 +18,7 @@ use gpui::{
 };
 use zcv_actions::{OpenExcerpts, ToggleFold};
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
+use zcv_keymap::display_shortcut;
 use zcv_language::BracketPair;
 use zcv_multi_buffer::MultiBufferSnapshot;
 use zcv_text::Line;
@@ -860,7 +861,7 @@ fn build_crease_toggles(
         let focus = editor.read(cx).focus_handle();
         let mut toggle = Button::icon(("gutter_crease", line.get()), path)
             .label(if folded { "展开" } else { "折叠" })
-            .shortcut(zcv_keymap::display_shortcut(&ToggleFold, cx))
+            .shortcut(display_shortcut(&ToggleFold, cx))
             .on_click(move |_event, window, cx| {
                 window.focus(&focus, cx);
                 editor.update(cx, |editor, cx| editor.toggle_fold_at_line(line, cx));
@@ -1110,7 +1111,7 @@ fn buffer_header_element(
                         .style(ButtonStyle::Solid)
                         .size(ButtonSize::Loose)
                         .label("打开文件并跳转到指定位置")
-                        .shortcut(zcv_keymap::display_shortcut(&OpenExcerpts, cx))
+                        .shortcut(display_shortcut(&OpenExcerpts, cx))
                         .on_click(move |_event, _window, cx| {
                             editor_for_button.update(cx, |editor, cx| {
                                 editor.open_excerpt(&open_excerpt, false, cx)

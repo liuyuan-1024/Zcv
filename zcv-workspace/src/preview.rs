@@ -129,14 +129,6 @@ impl PreviewViewport {
         }
         .into_any_element()
     }
-
-    pub fn vertical_scroll_handle(&self) -> &ScrollHandle {
-        &self.vertical_scroll_handle
-    }
-
-    pub fn horizontal_scroll_handle(&self) -> &ScrollHandle {
-        &self.horizontal_scroll_handle
-    }
 }
 
 type PreviewContent = Box<dyn FnOnce(Option<Size<Pixels>>) -> AnyElement>;

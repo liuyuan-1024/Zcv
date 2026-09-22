@@ -55,7 +55,8 @@ impl Buffer {
         &self.config
     }
 
-    pub fn set_config(&mut self, config: BufferConfig) {
+    #[cfg(test)]
+    pub(crate) fn set_config(&mut self, config: BufferConfig) {
         self.config = config;
         self.truncate_edit_history_to_budget();
     }
@@ -95,13 +96,38 @@ impl Buffer {
             return false;
         }
 
-        match self.edit_log.batch_since(self.saved_version, self.version) {
-            Ok(batch) => !batch.patch().is_empty(),
-            Err(_) => true,
-        }
+        // 保存点版本不可得时无法比较净值，按 dirty 处理，避免误报 clean。
+        self.snapshot()
+            .has_edits_since(self.saved_version)
+            .unwrap_or(true)
     }
 
     pub fn mark_saved(&mut self) {
         self.saved_version = self.version;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ByteOffset, Edit, TransactionMetadata, TransactionSource};
+
+    #[test]
+    fn set_config_applies_the_new_history_budget_immediately() {
+        let mut buffer =
+            Buffer::from_text(String::new(), BufferConfig::default()).expect("空 Buffer 应能创建");
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::ZERO, "a").expect("插入编辑必须合法")],
+                TransactionMetadata::new(TransactionSource::Programmatic),
+            )
+            .expect("编辑应成功");
+        assert!(buffer.can_undo());
+
+        let mut config = buffer.config().clone();
+        config.large_file.max_undo_history = 0;
+        buffer.set_config(config);
+
+        assert!(!buffer.can_undo());
     }
 }

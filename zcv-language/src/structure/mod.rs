@@ -18,4 +18,4 @@ pub use nodes::SyntaxNode;
 pub use outline::{OutlineItem, OutlineTextRange};
 
 #[cfg(test)]
-mod tests;
+mod test;

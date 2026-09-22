@@ -15,6 +15,7 @@ use zcv_actions::{
     ToggleCaseSensitive, ToggleRegex, ToggleReplace, ToggleWholeWord,
 };
 use zcv_editor::{Editor, EditorEvent, LanguageRegistry};
+use zcv_keymap::display_shortcut;
 use zcv_project::SearchQuery;
 use zcv_theme::{color, space};
 use zcv_ui::{Button, MatchOption, MatchOptions, ReplaceInput, SearchInput};
@@ -402,7 +403,7 @@ impl SearchBar {
             self.config.id_prefix,
             self.query_input.clone().into_any_element(),
         )
-        .shortcut_resolver(zcv_keymap::display_shortcut)
+        .shortcut_resolver(display_shortcut)
         .options(self.options)
         .on_toggle(on_toggle)
         .count(active_match_index, match_count)
@@ -415,7 +416,7 @@ impl SearchBar {
                     "icons/replace.svg",
                 )
                 .label("替换")
-                .shortcut(zcv_keymap::display_shortcut(&ToggleReplace, cx))
+                .shortcut(display_shortcut(&ToggleReplace, cx))
                 .color(if self.show_replace {
                     colors.icon_accent
                 } else {
@@ -440,7 +441,7 @@ impl SearchBar {
                 format!("{}-replace", self.config.id_prefix),
                 self.replace_input.clone().into_any_element(),
             )
-            .shortcut_resolver(zcv_keymap::display_shortcut)
+            .shortcut_resolver(display_shortcut)
             .on_replace(on_replace)
             .on_replace_all(on_replace_all)
             .into_any_element()

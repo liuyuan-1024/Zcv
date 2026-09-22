@@ -45,7 +45,7 @@ pub(crate) fn application_executable_path(app: &Path) -> PathBuf {
     app.join(platform::APP_EXECUTABLE_RELATIVE_PATH)
 }
 
-pub fn update_helper_path(app: &Path) -> PathBuf {
+fn update_helper_path(app: &Path) -> PathBuf {
     app.join(platform::HELPER_RELATIVE_PATH)
 }
 

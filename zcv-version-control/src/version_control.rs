@@ -21,6 +21,7 @@ use zcv_actions::{
 };
 use zcv_editor::Editor;
 use zcv_git::{DiffStat, FileStatus};
+use zcv_keymap::display_shortcut;
 use zcv_path::{AbsolutePathBuf, RelativePathBuf};
 use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, space};
@@ -979,7 +980,7 @@ fn render_row(
                     } else {
                         "暂存"
                     })
-                    .shortcut(zcv_keymap::display_shortcut(&ToggleStaged, cx))
+                    .shortcut(display_shortcut(&ToggleStaged, cx))
                     .on_click({
                         let weak = render_context.weak.clone();
                         let path = path.clone();
@@ -1100,7 +1101,7 @@ fn render_commit_footer(
                                         .style(ButtonStyle::Solid)
                                         .disabled(!has_staged_changes)
                                         .label("提交当前暂存")
-                                        .shortcut(zcv_keymap::display_shortcut(&Commit, cx))
+                                        .shortcut(display_shortcut(&Commit, cx))
                                         .color(if message.trim().is_empty() {
                                             colors.text_muted
                                         } else {

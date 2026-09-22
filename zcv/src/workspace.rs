@@ -40,7 +40,7 @@ use zcv_project_tree::{OnCreate, OnMove, OnOpenFile, OnRename, OnTrash, ProjectT
 use zcv_terminal::TerminalPanel;
 use zcv_version_control::{
     OnOpenGitDiff, OnOpenGitGraph, VersionControlPanel, deploy_git_graph, deploy_project_diff,
-    install as install_version_control,
+    install as install_version_control, refresh_pane_git_projection,
 };
 
 /// 构造打开文件回调（两个面板共用同一契约）。
@@ -750,11 +750,7 @@ fn initialize_workspace(
                 | GitStoreEvent::Head
                 | GitStoreEvent::IndexText { .. }
         ) {
-            zcv_version_control::refresh_pane_git_projection(
-                workspace.pane(),
-                workspace.project(),
-                cx,
-            );
+            refresh_pane_git_projection(workspace.pane(), workspace.project(), cx);
         }
     });
 
@@ -799,7 +795,7 @@ fn initialize_workspace(
             subscribe_to_editor_events(workspace, editor, cx);
         }
         // 打开/激活编辑器时推送 git diff hunks（打开即有快照里的现成数据）。
-        zcv_version_control::refresh_pane_git_projection(workspace.pane(), workspace.project(), cx);
+        refresh_pane_git_projection(workspace.pane(), workspace.project(), cx);
     });
 
     // 项目事件订阅：根重命名与文件树变化驱动项目树刷新。
@@ -902,7 +898,7 @@ fn initialize_workspace(
     for editor in editors {
         subscribe_to_editor_events(&mut *workspace, editor, cx);
     }
-    zcv_version_control::refresh_pane_git_projection(&pane, workspace.project(), cx);
+    refresh_pane_git_projection(&pane, workspace.project(), cx);
 }
 
 /// 将设置层的文本主题 id 解析并应用为主题运行时状态。

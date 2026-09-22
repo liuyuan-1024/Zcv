@@ -51,10 +51,10 @@ use gpui::{AppContext, Empty, TestAppContext};
 
 use std::path::{Path, PathBuf};
 use zcv_buffer_diff::DiffHunkStaging;
-use zcv_language::LanguageBuffer;
+use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{DisplayHunk, ExcerptRange, MultiBuffer};
-use zcv_text::{Buffer, BufferConfig, Line};
-use zcv_theme::typography;
+use zcv_text::{Affinity, Buffer, BufferConfig, Line};
+use zcv_theme::{ThemeChoice, typography};
 
 fn new_display_map(
     cx: &mut impl AppContext,
@@ -115,7 +115,7 @@ fn search_scrollbar_markers_only_render_for_singleton_documents(cx: &mut TestApp
         LanguageBuffer::new(
             buffer,
             None,
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -128,7 +128,7 @@ fn search_scrollbar_markers_only_render_for_singleton_documents(cx: &mut TestApp
         LanguageBuffer::new(
             buffer,
             None,
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -240,7 +240,7 @@ fn background_fragments_include_line_origin_x(cx: &mut TestAppContext) {
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("README.md")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -508,7 +508,7 @@ fn multibuffer_header_can_start_above_viewport(cx: &mut TestAppContext) {
             LanguageBuffer::new(
                 source_text,
                 Some(PathBuf::from("文档/引擎.md")),
-                std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                std::sync::Arc::new(LanguageRegistry::new()),
                 cx,
             )
         }
@@ -596,7 +596,7 @@ fn sticky_buffer_header_follows_excerpts_and_points_to_the_next_file(cx: &mut Te
         LanguageBuffer::new(
             first_buffer,
             Some(PathBuf::from("src/a.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -608,7 +608,7 @@ fn sticky_buffer_header_follows_excerpts_and_points_to_the_next_file(cx: &mut Te
         LanguageBuffer::new(
             second_buffer,
             Some(PathBuf::from("src/b.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -693,7 +693,7 @@ fn wrapped_unicode_markdown_queries_highlights_from_source_chunks(cx: &mut TestA
         LanguageBuffer::new(
             buffer,
             Some(PathBuf::from("README.md")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -903,8 +903,8 @@ fn folded_projection_rows_drive_layout_and_hit_testing(cx: &mut TestAppContext) 
         let range = {
             let display = map.snapshot(cx);
             let snapshot = display.buffer_snapshot();
-            snapshot.anchor_at(MultiBufferOffset::new(6), zcv_text::Affinity::Before)
-                ..snapshot.anchor_at(MultiBufferOffset::new(28), zcv_text::Affinity::After)
+            snapshot.anchor_at(MultiBufferOffset::new(6), Affinity::Before)
+                ..snapshot.anchor_at(MultiBufferOffset::new(28), Affinity::After)
         };
         map.fold_range(range, FoldPlaceholder::default(), cx)
     })
@@ -973,8 +973,8 @@ fn folded_element_participates_in_cross_fragment_coordinates(cx: &mut TestAppCon
         let range = {
             let display = map.snapshot(cx);
             let snapshot = display.buffer_snapshot();
-            snapshot.anchor_at(MultiBufferOffset::new(6), zcv_text::Affinity::Before)
-                ..snapshot.anchor_at(MultiBufferOffset::new(17), zcv_text::Affinity::After)
+            snapshot.anchor_at(MultiBufferOffset::new(6), Affinity::Before)
+                ..snapshot.anchor_at(MultiBufferOffset::new(17), Affinity::After)
         };
         map.fold_range(range, placeholder, cx)
     })
@@ -1160,8 +1160,8 @@ fn constrain_width_bounds_element_fragment(cx: &mut TestAppContext) {
             let range = {
                 let display = map.snapshot(cx);
                 let snapshot = display.buffer_snapshot();
-                snapshot.anchor_at(MultiBufferOffset::new(6), zcv_text::Affinity::Before)
-                    ..snapshot.anchor_at(MultiBufferOffset::new(17), zcv_text::Affinity::After)
+                snapshot.anchor_at(MultiBufferOffset::new(6), Affinity::Before)
+                    ..snapshot.anchor_at(MultiBufferOffset::new(17), Affinity::After)
             };
             map.fold_range(range, placeholder, cx)
         })
@@ -1252,8 +1252,8 @@ fn inline_element_prepaints_at_the_final_translated_origin(cx: &mut TestAppConte
         let range = {
             let display = map.snapshot(cx);
             let snapshot = display.buffer_snapshot();
-            snapshot.anchor_at(MultiBufferOffset::new(6), zcv_text::Affinity::Before)
-                ..snapshot.anchor_at(MultiBufferOffset::new(17), zcv_text::Affinity::After)
+            snapshot.anchor_at(MultiBufferOffset::new(6), Affinity::Before)
+                ..snapshot.anchor_at(MultiBufferOffset::new(17), Affinity::After)
         };
         map.fold_range(range, placeholder, cx)
     })
@@ -1502,7 +1502,7 @@ fn multibuffer_excerpt_uses_the_same_text_selection_geometry_as_a_single_buffer(
         LanguageBuffer::new(
             source_buffer,
             Some(PathBuf::from("src/example.rs")),
-            std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+            std::sync::Arc::new(LanguageRegistry::new()),
             cx,
         )
     });
@@ -1889,8 +1889,8 @@ fn measured_element_width_drives_soft_wrap(cx: &mut TestAppContext) {
                 let range = {
                     let display = map.snapshot(cx);
                     let snapshot = display.buffer_snapshot();
-                    snapshot.anchor_at(MultiBufferOffset::new(6), zcv_text::Affinity::Before)
-                        ..snapshot.anchor_at(MultiBufferOffset::new(17), zcv_text::Affinity::After)
+                    snapshot.anchor_at(MultiBufferOffset::new(6), Affinity::Before)
+                        ..snapshot.anchor_at(MultiBufferOffset::new(17), Affinity::After)
                 };
                 map.fold_range(range, FoldPlaceholder::default(), cx)
             })
@@ -1948,8 +1948,8 @@ fn windowed_placeholder_chunk_keeps_renderer_and_element(cx: &mut TestAppContext
         let range = {
             let display = map.snapshot(cx);
             let snapshot = display.buffer_snapshot();
-            snapshot.anchor_at(MultiBufferOffset::new(200), zcv_text::Affinity::Before)
-                ..snapshot.anchor_at(MultiBufferOffset::new(207), zcv_text::Affinity::After)
+            snapshot.anchor_at(MultiBufferOffset::new(200), Affinity::Before)
+                ..snapshot.anchor_at(MultiBufferOffset::new(207), Affinity::After)
         };
         map.fold_range(range, placeholder, cx)
     })
@@ -2142,8 +2142,8 @@ fn ellipsis_render_reads_theme_at_call_time(cx: &mut TestAppContext) {
                 let range = {
                     let display = map.snapshot(cx);
                     let snapshot = display.buffer_snapshot();
-                    snapshot.anchor_at(MultiBufferOffset::new(6), zcv_text::Affinity::Before)
-                        ..snapshot.anchor_at(MultiBufferOffset::new(17), zcv_text::Affinity::After)
+                    snapshot.anchor_at(MultiBufferOffset::new(6), Affinity::Before)
+                        ..snapshot.anchor_at(MultiBufferOffset::new(17), Affinity::After)
                 };
                 map.fold_range(range, FoldPlaceholder::ellipsis(), cx)
             })
@@ -2154,8 +2154,8 @@ fn ellipsis_render_reads_theme_at_call_time(cx: &mut TestAppContext) {
             let mut dark_color = None;
             let mut light_color = None;
             for (choice, slot) in [
-                (zcv_theme::ThemeChoice::Named("dark"), &mut dark_color),
-                (zcv_theme::ThemeChoice::Named("light"), &mut light_color),
+                (ThemeChoice::Named("dark"), &mut dark_color),
+                (ThemeChoice::Named("light"), &mut light_color),
             ] {
                 choice.apply(cx, Some(window));
                 *slot = Some(zcv_theme::color::current(cx).text_placeholder);

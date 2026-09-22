@@ -22,5 +22,4 @@ pub use search::{
     RegexSearchResult, SearchQuery, SearchQueryResult, SearchResult, regex_replacement_for_match,
     regex_replacements_in_text,
 };
-pub use text_file::{BomPolicy, EncodingConfig, InvalidUtf8Policy, LineEndingConfig};
 pub use worktree::{WorktreeEntry, new_entry_destination, rename_destination, translate_path};

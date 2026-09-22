@@ -271,8 +271,6 @@ pub struct Editor {
     blink_manager_initialized: bool,
     /// 全局设置驱动的换行模式（SettingsStore 变化时自动跟随）。
     soft_wrap: SoftWrap,
-    /// 换行模式覆盖（`None` 恢复设置值）。
-    soft_wrap_override: Option<SoftWrap>,
     preferred_line_length: usize,
     diff_hunk_delegate: Option<Arc<dyn DiffHunkDelegate>>,
     hovered_diff_hunk: Option<usize>,
@@ -450,7 +448,7 @@ impl Editor {
         if self.mode == EditorMode::SingleLine {
             return SoftWrap::None;
         }
-        self.soft_wrap_override.unwrap_or(self.soft_wrap)
+        self.soft_wrap
     }
 
     pub(crate) fn preferred_line_length(&self) -> usize {
@@ -1610,8 +1608,7 @@ impl Editor {
         let blink_manager = cx.new(|_| BlinkManager::new());
         cx.observe(&blink_manager, |_, _, cx| cx.notify()).detach();
 
-        // 换行模式默认来自全局设置，与编辑器模式无关；
-        // UI 场景可用 set_soft_wrap_mode 覆盖（覆盖存在时设置变化不生效）。
+        // 换行模式默认来自全局设置，与编辑器模式无关。
         let settings = SettingsStore::try_get(cx);
         let this = Self {
             multi_buffer,
@@ -1639,7 +1636,6 @@ impl Editor {
             soft_wrap: settings
                 .as_ref()
                 .map_or(SoftWrap::default(), |settings| settings.soft_wrap.into()),
-            soft_wrap_override: None,
             preferred_line_length: settings.map_or(80, |settings| settings.preferred_line_length),
             hovered_diff_hunk: None,
             mouse_select_mode: MouseSelectMode::Character,
@@ -1654,15 +1650,13 @@ impl Editor {
             editor.advance_snapshots(cx)
         })
         .detach();
-        // 设置变化时自动跟随（覆盖场景除外）；编辑器在测试环境无 SettingsStore 时保持默认。
+        // 设置变化时自动跟随；编辑器在测试环境无 SettingsStore 时保持默认。
         cx.observe_global::<SettingsStore>(|editor, cx| {
             let Some(settings) = SettingsStore::try_get(cx) else {
                 return;
             };
-            if editor.soft_wrap_override.is_none() {
-                editor.soft_wrap = settings.soft_wrap.into();
-                editor.preferred_line_length = settings.preferred_line_length;
-            }
+            editor.soft_wrap = settings.soft_wrap.into();
+            editor.preferred_line_length = settings.preferred_line_length;
             cx.notify();
         })
         .detach();

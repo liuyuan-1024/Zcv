@@ -39,24 +39,19 @@ pub enum GitHunkOperation {
     Restore,
 }
 
-/// 一次 hunk 操作确定的一段字节替换。
+/// 一次已经确定的字节替换。
 ///
-/// 范围和 `original` 都属于目标文本坐标系（暂存/取消暂存为 index 文本，还原为工作区文本）；
-/// 后台应用前会校验目标文本在该范围仍是 `original`，旧版本操作因此不会改写已经变化的文本。
+/// 范围与 `replacement` 都属于目标文本坐标系（暂存/取消暂存为 index 文本，还原为工作区文本）。
+/// 调用方保证编辑相对同一基准文本、范围互不重叠且落在文本边界内；本类型只表达结果，不携带旧文本。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HunkEdit {
     pub range: Range<usize>,
-    pub original: Arc<str>,
     pub replacement: Arc<str>,
 }
 
 impl HunkEdit {
-    pub fn new(range: Range<usize>, original: Arc<str>, replacement: Arc<str>) -> Self {
-        Self {
-            range,
-            original,
-            replacement,
-        }
+    pub fn new(range: Range<usize>, replacement: Arc<str>) -> Self {
+        Self { range, replacement }
     }
 }
 
@@ -209,13 +204,11 @@ pub trait GitRepository: Send + Sync {
     /// 查询 diff 行数统计：`staged` 为 index↔HEAD（`--cached`），否则为 worktree↔index。
     fn diff_stat(&self, staged: bool, paths: &[PathBuf]) -> Result<HashMap<PathBuf, DiffStat>>;
 
-    /// 应用 DiffOperations 已经确定的字节替换。
+    /// 用捕获的工作区文本应用确定的字节替换并写回工作区文件（还原变更块）。
     ///
-    /// Stage/Unstage 把编辑应用到 index 文本并写回 index；Restore 把编辑应用到捕获的
-    /// 工作区文本并写回工作区文件。后台执行阶段不再重新执行磁盘 diff 定位变更块。
-    fn apply_hunk_edits(
+    /// 后台执行阶段不再重新执行磁盘 diff 定位变更块；暂存/取消暂存走 set_index_text。
+    fn restore_worktree(
         &self,
-        operation: GitHunkOperation,
         path: &Path,
         edits: &[HunkEdit],
         working_snapshot: &WorkingCopySnapshot,
@@ -539,28 +532,21 @@ fn parse_entry_mode(output: &[u8]) -> Option<String> {
 
 /// 把一组确定的字节替换应用到目标文本。
 ///
-/// 编辑按范围起点排序且不得重叠；每个范围在应用前的文本必须仍等于 `original`，
-/// 否则返回错误而不是在已经变化的文本上写入。
-pub fn apply_hunk_edits_to_text(target: &str, edits: &[HunkEdit]) -> Result<String> {
+/// 编辑相对同一基准文本，按范围起点排序后互不重叠（相邻允许）；结果与传入顺序无关。
+pub fn apply_hunk_edits_to_text(target: &str, edits: &[HunkEdit]) -> String {
     let mut ordered = edits.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|edit| edit.range.start);
-    for pair in ordered.windows(2) {
-        if pair[0].range.end > pair[1].range.start {
-            bail!("hunk 编辑范围重叠");
-        }
-    }
+    debug_assert!(
+        ordered
+            .windows(2)
+            .all(|pair| pair[0].range.end <= pair[1].range.start),
+        "hunk 编辑范围不得重叠"
+    );
     let mut result = target.to_owned();
     for edit in ordered.into_iter().rev() {
-        let range = edit.range.clone();
-        if range.start > range.end || range.end > result.len() {
-            bail!("hunk 目标范围已超出当前文本");
-        }
-        if result.get(range.clone()) != Some(edit.original.as_ref()) {
-            bail!("hunk 目标文本已变化");
-        }
-        result.replace_range(range, &edit.replacement);
+        result.replace_range(edit.range.clone(), &edit.replacement);
     }
-    Ok(result)
+    result
 }
 
 impl GitRepository for RealGitRepository {
@@ -644,36 +630,21 @@ impl GitRepository for RealGitRepository {
         Ok(parse_numstat(&output.stdout))
     }
 
-    fn apply_hunk_edits(
+    fn restore_worktree(
         &self,
-        operation: GitHunkOperation,
         path: &Path,
         edits: &[HunkEdit],
         working_snapshot: &WorkingCopySnapshot,
     ) -> Result<()> {
         let relative_path = revision_path(&self.working_directory, path)?;
-        let relative_path_buf = relative_path.as_path();
-        match operation {
-            GitHunkOperation::Stage | GitHunkOperation::Unstage => {
-                let index_spec = format!(":{relative_path}");
-                let index_text = self
-                    .load_revisions(&[&index_spec])?
-                    .into_iter()
-                    .next()
-                    .flatten()
-                    .unwrap_or_default();
-                let index_text = String::from_utf8_lossy(&index_text);
-                let next_index = apply_hunk_edits_to_text(&index_text, edits)?;
-                self.write_index_text(relative_path_buf, Some(next_index.as_bytes()))
-            }
-            GitHunkOperation::Restore => {
-                let current = working_snapshot.bytes().to_vec();
-                let current = String::from_utf8_lossy(&current);
-                let restored = apply_hunk_edits_to_text(&current, edits)?;
-                std::fs::write(self.working_directory.join(relative_path_buf), restored)
-                    .with_context(|| format!("写入还原后的工作区文件失败：{relative_path}"))
-            }
-        }
+        let current = working_snapshot.bytes().to_vec();
+        let current = String::from_utf8_lossy(&current);
+        let restored = apply_hunk_edits_to_text(&current, edits);
+        std::fs::write(
+            self.working_directory.join(relative_path.as_path()),
+            restored,
+        )
+        .with_context(|| format!("写入还原后的工作区文件失败：{relative_path}"))
     }
 
     fn set_index_text(&self, path: &Path, content: &str) -> Result<()> {

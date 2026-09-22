@@ -7,6 +7,9 @@
 //! - 全量（`ReloadGitState`）：仓库发现 + 每个仓库 head/status/双 diff_stat 全扫；
 //! - 增量（`RefreshStatuses`）：只对变更路径重查，合并进旧快照；仅当批次含 `.git` 路径时才顺带重读head/branch（外部 checkout 只触发 fs 事件走增量路径，不重读会滞后；纯文件变化走快路径不重读）。
 //!
+//! 变更块操作：界面线程在当前 working 快照上解析 Anchor，把编辑合并进该路径的乐观 index 批次，由批次基准派生完整 index 文本交后台写入；
+//! 权威 index 文本安装新值时清除批次，不需要在途互斥，也不存在让用户刷新的"基准过期"错误。
+//!
 //! 同 key 的排队 job 直接丢弃。
 
 mod background;
@@ -47,9 +50,6 @@ pub enum GitStoreEvent {
     Repositories,
     /// 文件状态或 diff 统计发生变化。
     Statuses,
-    /// 指定路径的 index 文本已在内存中乐观更新或回滚；
-    /// 订阅方只需重读该路径的 `GitRevision::Index` 并重挂该路径的 diff。
-    IndexText { path: AbsolutePathBuf },
     /// 当前分支、HEAD 或分支列表发生变化。
     Head,
     /// 活动仓库变化（跟随焦点文件切换；订阅方重读 `current_branch()`，无需 payload）。
@@ -244,6 +244,32 @@ fn repository_working_directory(repository: &dyn GitRepository) -> AbsolutePathB
 /// 共享 diff 缓存的键：路径、working 实体、调用方给出的 base/index 修订身份。
 type SharedDiffKey = (AbsolutePathBuf, gpui::EntityId, u64);
 
+/// 一个共享 diff 实体及其 base/index 文本来自哪个 Git 修订。
+///
+/// 修订文本变化时，GitStore 按这里记录的角色把新文本经 set_base_text/set_index_text 增量安装进同一个 BufferDiff，不丢弃实体；
+/// 弱引用保证没有视图持有时缓存随之释放。
+struct SharedDiff {
+    entity: WeakEntity<BufferDiff>,
+    base_revision: GitRevision,
+    index_revision: GitRevision,
+}
+
+/// 一个路径尚未被权威 index 文本确认的乐观编辑批次。
+///
+/// `base` 是批次内全部编辑共同参照的 index 文本（权威 index 修订文档的当前文本）；
+/// 权威文本刷新前它保持不变，因此同路径的后续 hunk 操作可以直接合并，不需要在途互斥。
+struct PendingIndex {
+    base: Arc<str>,
+    edits: Vec<HunkEdit>,
+}
+
+impl PendingIndex {
+    /// 派生批次目标文本：基准文本 + 全部不重叠编辑。
+    fn target_text(&self) -> Arc<str> {
+        Arc::from(apply_hunk_edits_to_text(&self.base, &self.edits))
+    }
+}
+
 pub struct GitStore {
     /// 项目根目录；无 worktree 的空项目为 None，此时所有 job 与仓库查询为空操作。
     root: Option<AbsolutePathBuf>,
@@ -256,17 +282,20 @@ pub struct GitStore {
     /// 活动仓库（按 working_directory 标识）：分支显示与 fetch/pull/push 等 git 操作的目标。
     /// 用 working_directory 而非索引：全量扫描重建 Vec，索引不稳定。
     active_repo_workdir: Option<AbsolutePathBuf>,
-    /// HEAD/index 修订文档缓存；状态或 HEAD 变化时失效。
+    /// HEAD/index 修订文档缓存；按 (revision, path) 唯一，内容变化时就地刷新，实体身份保持稳定。
     /// 值 `None` 表示该修订中文件不存在（已加载但缺失），键存在即表示已加载完成。
     /// 修订文档是 HEAD/index 的唯一权威实例，工作区视图与 diff 都从这里取用。
     revision_documents: HashMap<(GitRevision, AbsolutePathBuf), Option<Entity<LanguageBuffer>>>,
-    /// 分修订递增的缓存版本；失效前启动的后台读取不得回填新缓存。
+    /// 分修订递增的缓存版本；刷新前启动的后台读取不得回填新文本。
     revision_generations: HashMap<GitRevision, u64>,
-    /// 已写入内存、尚待后台落盘确认的 index 文本的原始值；同一路径同时只允许一个写入，失败时据此回滚。
-    optimistic_index_bases: HashMap<AbsolutePathBuf, Arc<str>>,
-    /// 按 (路径, working 实体, base 文档, index 文档) 共享的 diff 实体；
-    /// 同一份 diff 跨编辑器 / 面板视图复用，head/index 变化时按路径失效。
-    shared_diffs: HashMap<SharedDiffKey, Entity<BufferDiff>>,
+    /// 每个路径的乐观 index 编辑批次：所有编辑相对同一稳定基准文本，用于派生写盘文本。
+    ///
+    /// 批次在权威 index 修订文档安装新文本时清除；
+    /// 期间后续 hunk 操作继续合并进同一批次，因此不需要在途互斥，也不存在"基准分叉就报错"的路径。
+    pending_index: HashMap<AbsolutePathBuf, PendingIndex>,
+    /// 按 (路径, working 实体, 调用方键) 共享的 diff 实体；
+    /// 同一份 diff 跨编辑器 / 面板视图复用，修订文本变化时就地增量安装，不替换实体。
+    shared_diffs: HashMap<SharedDiffKey, SharedDiff>,
     /// 项目唯一的语言注册表；修订文档与工作区文档共用。
     language_registry: Arc<LanguageRegistry>,
     background: BackgroundExecutor,
@@ -393,7 +422,7 @@ impl GitStore {
             active_repo_workdir: None,
             revision_documents: HashMap::new(),
             revision_generations: HashMap::from([(GitRevision::Head, 1), (GitRevision::Index, 1)]),
-            optimistic_index_bases: HashMap::new(),
+            pending_index: HashMap::new(),
             shared_diffs: HashMap::new(),
             language_registry,
             background,
@@ -497,165 +526,196 @@ impl GitStore {
         })
     }
 
-    /// 按 (路径, working 实体, base 文档, index 文档) 共享单个文件的 diff 实体。
+    /// 按 (路径, working 实体, 调用方键) 共享单个文件的 diff 实体。
     ///
     /// 同一份 diff 跨编辑器与面板视图复用；
-    /// head/index 文档变化时由失效逻辑丢弃缓存，下一次请求会用新文档重建实体。
+    /// base/index 文本变化由 GitStore 经 set_base_text/set_index_text 就地安装，缓存按弱引用在无视图持有时释放。
     pub fn file_diff(
         &mut self,
         input: &BufferDiffInput,
+        base_revision: GitRevision,
+        index_revision: GitRevision,
         cx: &mut Context<Self>,
     ) -> Entity<BufferDiff> {
         let path = canonicalize_path(&input.path).expect("diff 输入路径必须可归一化");
         let key = (path, input.working.entity_id(), input.key);
-        if let Some(entity) = self.shared_diffs.get(&key) {
-            return entity.clone();
+        if let Some(diff) = self.shared_diffs.get(&key)
+            && let Some(entity) = diff.entity.upgrade()
+        {
+            return entity;
         }
         let entity = cx.new(|cx| BufferDiff::new(input.clone(), cx));
-        self.shared_diffs.insert(key, entity.clone());
+        self.shared_diffs.insert(
+            key,
+            SharedDiff {
+                entity: entity.downgrade(),
+                base_revision,
+                index_revision,
+            },
+        );
         entity
     }
 
-    /// 丢弃共享 diff 缓存：None 清空全部，Some 只清指定路径。
-    fn invalidate_shared_diffs(&mut self, paths: Option<&[AbsolutePathBuf]>) {
-        match paths {
-            None => self.shared_diffs.clear(),
-            Some(paths) => {
-                self.shared_diffs
-                    .retain(|key, _| !paths.iter().any(|path| &key.0 == path));
+    /// 把某个修订的新文本增量安装到引用它的共享 diff。
+    ///
+    /// 只更新角色匹配的 base/index 一侧；文本未变时 BufferDiff 自身短路，不触发重算。
+    fn push_revision_text_to_diffs(
+        &mut self,
+        revision: GitRevision,
+        path: &AbsolutePathBuf,
+        text: Option<Arc<str>>,
+        cx: &mut Context<Self>,
+    ) {
+        let keys: Vec<SharedDiffKey> = self
+            .shared_diffs
+            .iter()
+            .filter(|(key, diff)| {
+                &key.0 == path
+                    && (diff.base_revision == revision || diff.index_revision == revision)
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in keys {
+            let Some(diff) = self.shared_diffs.get(&key) else {
+                continue;
+            };
+            let update_base = diff.base_revision == revision;
+            let update_index = diff.index_revision == revision;
+            let Some(entity) = diff.entity.upgrade() else {
+                self.shared_diffs.remove(&key);
+                continue;
+            };
+            let text = text.as_ref().map(|text| text.to_string());
+            if update_base {
+                let text = text.clone();
+                entity.update(cx, |diff, cx| {
+                    diff.set_base_text(text, cx).detach();
+                });
+            }
+            if update_index {
+                entity.update(cx, |diff, cx| {
+                    diff.set_index_text(text, cx).detach();
+                });
             }
         }
     }
 
-    /// 基于当前 diff 快照生成确定的编辑，先写入 optimistic pending，再交后台执行。
+    /// 把当前 diff 快照中与操作范围相交的 hunk 转成确定的字节替换并交后台执行。
     ///
-    /// 后台只把已经确定的字节编辑应用到 index 或工作区文本，不再重新执行磁盘 diff 定位变更块。
+    /// 操作范围是 `Anchor`：落后于最新工作区版本的锚点在当前快照上重新定位，不因版本不相等而丢弃。
+    /// Stage/Unstage 的编辑合并进该路径的乐观 index 批次，再派生完整 index 文本写盘；Restore 把编辑应用到捕获的工作区文本。
+    /// 这里没有"基准分叉就报错让用户刷新"的路径：对当前快照已无相交 hunk 时是静默空操作，由权威刷新收敛投影。
     fn apply_hunk_edits(
         &mut self,
         operation: GitHunkOperation,
         diff: Entity<BufferDiff>,
         ranges: Vec<Range<Anchor>>,
         cx: &mut Context<Self>,
-    ) -> Result<(), String> {
-        let (path, edits, pending, working_snapshot, index_text) = {
+    ) {
+        let (path, index_base, edits, pending, working_snapshot) = {
             let diff_ref = diff.read(cx);
             let working = diff_ref.working().clone();
             let working_text = working.read(cx).text_snapshot();
             let base_text = diff_ref
                 .base_source()
                 .map(|base| Arc::<str>::from(snapshot_text(&base.read(cx).text_snapshot())));
-            let mut edits = Vec::new();
-            let mut pending = Vec::new();
+            // 传入范围与候选 hunk 都在当前工作区快照上解析；
+            // 使用未过滤 pending 的原始 hunk，重复暂存同一块仍能找到它。
+            let mut hunks = Vec::new();
             for range in &ranges {
-                // 操作范围必须绑定当前工作区版本，旧版本锚点不得修改新版本 buffer。
-                if range.start.version() != working_text.version()
-                    || range.end.version() != working_text.version()
-                {
+                let (Ok(start), Ok(end)) = (
+                    range.start.resolve_in(&working_text),
+                    range.end.resolve_in(&working_text),
+                ) else {
                     continue;
-                }
-                for hunk in diff_ref.snapshot().hunks().iter().filter(|hunk| {
-                    hunk.buffer_range.start.offset() <= range.end.offset()
-                        && range.start.offset() <= hunk.buffer_range.end.offset()
-                }) {
-                    let working_range = hunk.buffer_range.start.offset().get()
-                        ..hunk.buffer_range.end.offset().get();
-                    let working_slice = working_text
-                        .slice_text(
-                            TextRange::new(
-                                hunk.buffer_range.start.offset(),
-                                hunk.buffer_range.end.offset(),
-                            )
-                            .expect("hunk 新侧范围必须有序"),
-                        )
-                        .expect("hunk 新侧范围必须有效")
-                        .as_str()
-                        .to_owned();
-                    let base_slice = base_text
-                        .as_deref()
-                        .and_then(|base| base.get(hunk.diff_base_byte_range.clone()))
-                        .unwrap_or_default()
-                        .to_owned();
-                    let (range, original, replacement) = match operation {
-                        GitHunkOperation::Stage => {
-                            (hunk.diff_base_byte_range.clone(), base_slice, working_slice)
-                        }
-                        GitHunkOperation::Unstage | GitHunkOperation::Restore => {
-                            (working_range, working_slice, base_slice)
-                        }
+                };
+                for hunk in diff_ref.snapshot().hunks() {
+                    let (Ok(hunk_start), Ok(hunk_end)) = (
+                        hunk.buffer_range.start.resolve_in(&working_text),
+                        hunk.buffer_range.end.resolve_in(&working_text),
+                    ) else {
+                        continue;
                     };
-                    edits.push(HunkEdit::new(
-                        range,
-                        Arc::from(original),
-                        Arc::from(replacement),
-                    ));
-                    pending.push(PendingHunk::suppress(hunk, working_text.version()));
+                    if hunk_start.get() <= end.get() && start.get() <= hunk_end.get() {
+                        hunks.push(hunk.clone());
+                    }
                 }
             }
-            let working_snapshot = working_text
-                .slice_text(
-                    TextRange::new(ByteOffset::ZERO, working_text.len_bytes())
-                        .expect("工作区全文范围必须有序"),
-                )
-                .expect("工作区全文范围必须有效")
-                .as_str()
-                .to_owned();
-            let index_text = match operation {
-                GitHunkOperation::Stage => base_text,
-                GitHunkOperation::Unstage => Some(Arc::from(working_snapshot.as_str())),
+            hunks.sort_by_key(|hunk| hunk.buffer_range.start.offset());
+            hunks.dedup_by(|a, b| a.buffer_range.start.offset() == b.buffer_range.start.offset());
+
+            let mut edits = Vec::new();
+            let mut pending = Vec::new();
+            for hunk in &hunks {
+                let start = hunk
+                    .buffer_range
+                    .start
+                    .resolve_in(&working_text)
+                    .expect("hunk 起点必须能在当前快照解析");
+                let end = hunk
+                    .buffer_range
+                    .end
+                    .resolve_in(&working_text)
+                    .expect("hunk 终点必须能在当前快照解析");
+                let working_range = start.get()..end.get();
+                let working_slice = working_text
+                    .slice_text(TextRange::new(start, end).expect("hunk 新侧范围必须有序"))
+                    .expect("hunk 新侧范围必须有效")
+                    .as_str()
+                    .to_owned();
+                let base_slice = base_text
+                    .as_deref()
+                    .and_then(|base| base.get(hunk.diff_base_byte_range.clone()))
+                    .unwrap_or_default()
+                    .to_owned();
+                let (range, replacement) = match operation {
+                    GitHunkOperation::Stage => (hunk.diff_base_byte_range.clone(), working_slice),
+                    GitHunkOperation::Unstage | GitHunkOperation::Restore => {
+                        (working_range, base_slice)
+                    }
+                };
+                edits.push(HunkEdit::new(range, Arc::from(replacement)));
+                pending.push(PendingHunk::suppress(hunk, working_text.version()));
+            }
+            let index_base = match operation {
+                GitHunkOperation::Stage => Some(base_text.clone().unwrap_or_else(|| Arc::from(""))),
+                GitHunkOperation::Unstage => Some(Arc::from(snapshot_text(&working_text).as_str())),
                 GitHunkOperation::Restore => None,
             };
-            (
-                diff_ref.path().clone(),
-                edits,
-                pending,
-                working_snapshot.into_bytes(),
-                index_text,
-            )
+            // 只有还原需要捕获工作区全文；Stage/Unstage 写的是派生 index 文本。
+            let working_snapshot = match operation {
+                GitHunkOperation::Restore => Some(
+                    working_text
+                        .slice_text(
+                            TextRange::new(ByteOffset::ZERO, working_text.len_bytes())
+                                .expect("工作区全文范围必须有序"),
+                        )
+                        .expect("工作区全文范围必须有效")
+                        .as_str()
+                        .to_owned()
+                        .into_bytes(),
+                ),
+                GitHunkOperation::Stage | GitHunkOperation::Unstage => None,
+            };
+            let path = canonicalize_path(diff_ref.path()).expect("diff 路径必须可归一化");
+            (path, index_base, edits, pending, working_snapshot)
         };
         if edits.is_empty() {
-            return Err("变更块已过期，请刷新后重试".into());
+            return;
         }
-        let path = canonicalize_path(&path).map_err(|error| format!("路径归一化失败：{error}"))?;
-        if let Some(index_text) = &index_text
-            && self
-                .revision_document_text(GitRevision::Index, &path, cx)
-                .as_deref()
-                != Some(index_text)
-        {
-            return Err("暂存区内容已变化，请刷新后重试".into());
-        }
-        // index 编辑以当前缓存文本为基准；
-        // 同一路径的上一笔写入未确认前不再接受新 hunk，否则失败回滚会让后续编辑失去确定的基准文本。
-        if self.optimistic_index_bases.contains_key(&path) {
-            return Err("该文件的上一项变更块操作尚未完成".into());
-        }
-        let next_index_text = match index_text
-            .as_deref()
-            .map(|index_text| apply_hunk_edits_to_text(index_text, &edits))
-            .transpose()
-        {
-            Ok(text) => text,
-            // `edits` 来源于同一 BufferDiff 快照；
-            // 若此处不再匹配，说明 index 缓存与快照已经分叉。
-            // 不向后台提交不确定写入，后续状态刷新会重新建立权威 diff。
-            Err(_) => return Err("变更块已被其他编辑改动，请刷新后重试".into()),
+        let next_index_text = match index_base {
+            Some(base) => {
+                self.merge_pending_index(&path, base, &edits);
+                Some(
+                    self.pending_index
+                        .get(&path)
+                        .expect("刚合并的乐观批次必须存在")
+                        .target_text(),
+                )
+            }
+            None => None,
         };
-        if matches!(
-            operation,
-            GitHunkOperation::Stage | GitHunkOperation::Unstage
-        ) && next_index_text.is_none()
-        {
-            return Err("当前操作无法生成有效的暂存区内容".into());
-        }
-        let next_index_text = next_index_text.map(Arc::<str>::from);
-        if let (Some(index_text), Some(next_index_text)) = (&index_text, &next_index_text) {
-            self.optimistic_index_bases
-                .insert(path.clone(), index_text.clone());
-            self.update_revision_document_text(GitRevision::Index, &path, next_index_text, cx);
-            // 乐观 index 更新：本路径的共享 diff 立即失效，视图按 IndexText 事件重新请求。
-            self.invalidate_shared_diffs(Some(std::slice::from_ref(&path)));
-            cx.emit(GitStoreEvent::IndexText { path: path.clone() });
-        }
+        let working_snapshot = working_snapshot.map(WorkingCopySnapshot::from_editor_text);
         diff.update(cx, |diff, cx| diff.set_pending_hunks(pending, cx));
         self.schedule_job(
             GitJob::ApplyHunkEdits {
@@ -663,12 +723,38 @@ impl GitStore {
                 path,
                 edits,
                 next_index_text,
-                working_snapshot: WorkingCopySnapshot::from_editor_text(working_snapshot),
+                working_snapshot,
                 diff,
             },
             cx,
         );
-        Ok(())
+    }
+
+    /// 把一次操作的 index 编辑合并进该路径的乐观批次。
+    ///
+    /// 同批次共享同一基准文本；新编辑按范围驱逐与之重叠的旧编辑，保证批次内编辑始终不重叠。
+    /// 基准变化（权威 index 文本已前进）时以新基准重建批次，旧批次已被权威文本取代。
+    fn merge_pending_index(&mut self, path: &AbsolutePathBuf, base: Arc<str>, edits: &[HunkEdit]) {
+        let batch = self
+            .pending_index
+            .entry(path.clone())
+            .or_insert_with(|| PendingIndex {
+                base: Arc::clone(&base),
+                edits: Vec::new(),
+            });
+        if batch.base != base {
+            batch.base = base;
+            batch.edits.clear();
+        }
+        for edit in edits {
+            batch.edits.retain(|existing| {
+                existing.range.end <= edit.range.start || edit.range.end <= existing.range.start
+            });
+            let position = batch
+                .edits
+                .partition_point(|existing| existing.range.start < edit.range.start);
+            batch.edits.insert(position, edit.clone());
+        }
     }
 
     /// 提交暂存内容（消息来自面板提交信息编辑器）。
@@ -1004,7 +1090,7 @@ impl GitStore {
 
     /// 读取 HEAD 或 index 中 `path` 的文本，建立/原位刷新修订文档并回填缓存。
     ///
-    /// 缓存生命周期全部由 GitStore 管理：加载即回填，HEAD/index 变化时 commit_job 清空。
+    /// 缓存生命周期全部由 GitStore 管理：加载即回填；HEAD/index 变化时就地重读并把新文本推送给共享 diff。
     /// 返回 `None` 表示该修订中文件不存在（同样写入缓存，避免调用方反复重试）。
     pub fn load_revision_document(
         &self,
@@ -1064,6 +1150,7 @@ impl GitStore {
                     let current =
                         document.update(cx, |document, _| snapshot_text(&document.text_snapshot()));
                     if current != new_text {
+                        let new_text_arc: Arc<str> = Arc::from(new_text.as_str());
                         let fallback = new_text.clone();
                         let task = document
                             .update(cx, |document, cx| document.snapshot_with_text(new_text, cx));
@@ -1079,6 +1166,19 @@ impl GitStore {
                                 });
                             }
                         }
+                        // 修订文本前进：清除以旧 index 基准派生的乐观批次，并把新文本增量安装进引用该修订的共享 diff（同一实体，不重建）。
+                        this.update(cx, |store, cx| {
+                            if revision == GitRevision::Index {
+                                store.pending_index.remove(&path);
+                            }
+                            store.push_revision_text_to_diffs(
+                                revision,
+                                &path,
+                                Some(Arc::clone(&new_text_arc)),
+                                cx,
+                            );
+                        })
+                        .ok();
                     }
                     return Some(document);
                 }
@@ -1105,71 +1205,53 @@ impl GitStore {
         cx: &mut Context<Self>,
     ) -> Option<Entity<LanguageBuffer>> {
         let key = (revision, path.clone());
-        let Some(text) = text else {
-            // 缺失也要写入缓存：键存在表示“已加载”，避免调用方反复重试。
-            self.revision_documents.insert(key, None);
-            return None;
+        let (document, text_arc) = match text {
+            None => {
+                // 缺失也要写入缓存：键存在表示“已加载”，避免调用方反复重试。
+                if revision == GitRevision::Index {
+                    self.pending_index.remove(&path);
+                }
+                self.revision_documents.insert(key, None);
+                (None, None)
+            }
+            Some(text) => {
+                let text_arc: Arc<str> = Arc::from(text.as_str());
+                if let Some(Some(document)) = self.revision_documents.get(&key).cloned() {
+                    if snapshot_text(&document.read(cx).text_snapshot()) != text {
+                        // 权威 index 文本前进：以旧基准派生的乐观批次已被取代。
+                        if revision == GitRevision::Index {
+                            self.pending_index.remove(&path);
+                        }
+                        document.update(cx, |document, cx| {
+                            document
+                                .replace_text(text, cx)
+                                .expect("修订文档文本必须能原位刷新");
+                        });
+                    }
+                    (Some(document), Some(text_arc))
+                } else {
+                    if revision == GitRevision::Index {
+                        self.pending_index.remove(&path);
+                    }
+                    let buffer = Buffer::from_text(text, BufferConfig::default())
+                        .expect("修订文档文本必须能创建 Buffer");
+                    // 修订源的文件路径必须与工作区源一致（绝对），excerpt 定位、语言解析与导航按源路径匹配。
+                    let document = cx.new(|cx| {
+                        LanguageBuffer::new(
+                            buffer,
+                            Some(path.as_path().to_path_buf()),
+                            Arc::clone(language_registry),
+                            cx,
+                        )
+                    });
+                    self.revision_documents.insert(key, Some(document.clone()));
+                    (Some(document), Some(text_arc))
+                }
+            }
         };
-        if let Some(Some(document)) = self.revision_documents.get(&key).cloned() {
-            let snapshot = document.read(cx).text_snapshot();
-            if snapshot_text(&snapshot) != text {
-                document.update(cx, |document, cx| {
-                    document
-                        .replace_text(text, cx)
-                        .expect("修订文档文本必须能原位刷新");
-                });
-            }
-            return Some(document);
-        }
-        let buffer = Buffer::from_text(text, BufferConfig::default())
-            .expect("修订文档文本必须能创建 Buffer");
-        // 修订源的文件路径必须与工作区源一致（绝对），excerpt 定位、语言解析与导航按源路径匹配。
-        let document = cx.new(|cx| {
-            LanguageBuffer::new(
-                buffer,
-                Some(path.as_path().to_path_buf()),
-                Arc::clone(language_registry),
-                cx,
-            )
-        });
-        self.revision_documents.insert(key, Some(document.clone()));
-        Some(document)
-    }
-
-    /// 用给定文本原位刷新已加载的修订文档（乐观 index 写入与回滚）。
-    fn update_revision_document_text(
-        &mut self,
-        revision: GitRevision,
-        path: &AbsolutePathBuf,
-        text: &str,
-        cx: &mut Context<Self>,
-    ) {
-        let key = (revision, path.clone());
-        match self.revision_documents.get(&key).cloned() {
-            Some(Some(document)) => {
-                document.update(cx, |document, cx| {
-                    document
-                        .replace_text(text.to_string(), cx)
-                        .expect("修订文档文本必须能原位刷新");
-                });
-            }
-            // 缓存尚未建立时按乐观文本直接建立，语义与旧文本缓存一致。
-            _ => {
-                let buffer = Buffer::from_text(text.to_string(), BufferConfig::default())
-                    .expect("修订文档文本必须能创建 Buffer");
-                let document = cx.new(|cx| {
-                    LanguageBuffer::new(
-                        buffer,
-                        Some(path.as_path().to_path_buf()),
-                        Arc::clone(&self.language_registry),
-                        cx,
-                    )
-                });
-                self.revision_documents.insert(key, Some(document));
-            }
-        }
-        let generation = self.revision_generations.entry(revision).or_insert(0);
-        *generation = generation.wrapping_add(1).max(1);
+        // 修订文本前进：增量安装进引用该修订的共享 diff（同一实体，不重建）。
+        self.push_revision_text_to_diffs(revision, &path, text_arc, cx);
+        document
     }
 
     /// 后台加载活动仓库的提交图数据（一次性读，不进 job 队列、不维护快照状态）。
@@ -1222,50 +1304,62 @@ impl GitStore {
         self.revision_documents.contains_key(&(revision, path))
     }
 
-    /// 读取缓存修订文档的全文；派生值，用于乐观写入的基准校验。
-    fn revision_document_text(
-        &self,
-        revision: GitRevision,
-        path: &Path,
-        cx: &App,
-    ) -> Option<Arc<str>> {
-        let document = self.revision_document(revision, path)?;
-        Some(Arc::from(
-            snapshot_text(&document.read(cx).text_snapshot()).as_str(),
-        ))
-    }
-
-    fn invalidate_revision_documents(&mut self, revision: GitRevision) {
-        self.revision_documents
-            .retain(|(cached_revision, path), _| {
-                *cached_revision != revision
-                    || (revision == GitRevision::Index
-                        && self.optimistic_index_bases.contains_key(path))
-            });
-        let generation = self.revision_generations.entry(revision).or_insert(0);
-        *generation = generation.wrapping_add(1).max(1);
-        // head/index 文档变了：基于旧文档的共享 diff 全部失效。
-        self.invalidate_shared_diffs(None);
-    }
-
-    fn invalidate_revision_documents_for_paths(
+    /// 修订内容可能变化：对已加载或被共享 diff 引用的路径就地重新读取。
+    ///
+    /// 未加载且无引用的路径直接跳过——首次读取时拿到的就是当前文本。
+    /// 安装时把新文本经 push_revision_text_to_diffs 增量推入同一 diff 实体。
+    fn refresh_revision_documents(
         &mut self,
         revision: GitRevision,
         paths: &[AbsolutePathBuf],
+        cx: &mut Context<Self>,
     ) {
-        let changed_paths = paths.to_vec();
-        self.revision_documents
-            .retain(|(cached_revision, path), _| {
-                *cached_revision != revision
-                    || (revision == GitRevision::Index
-                        && self.optimistic_index_bases.contains_key(path))
-                    || !changed_paths
-                        .iter()
-                        .any(|changed_path| path.starts_with(changed_path))
+        if paths.is_empty() {
+            return;
+        }
+        let mut targets = std::collections::BTreeSet::new();
+        for path in paths {
+            let loaded = self
+                .revision_documents
+                .contains_key(&(revision, path.clone()));
+            let referenced = self.shared_diffs.iter().any(|(key, diff)| {
+                &key.0 == path
+                    && (diff.base_revision == revision || diff.index_revision == revision)
             });
+            if loaded || referenced {
+                targets.insert(path.clone());
+            }
+        }
+        if targets.is_empty() {
+            return;
+        }
+        // 刷新前推进版本：此前启动的后台读取不得再安装旧文本。
         let generation = self.revision_generations.entry(revision).or_insert(0);
         *generation = generation.wrapping_add(1).max(1);
-        self.invalidate_shared_diffs(Some(paths));
+        for path in targets {
+            self.load_revision_document(revision, path.as_path(), cx)
+                .detach();
+        }
+    }
+
+    /// 刷新某修订下所有已加载或被引用的路径（HEAD 整体改写时使用）。
+    fn refresh_all_revision_documents(&mut self, revision: GitRevision, cx: &mut Context<Self>) {
+        let mut paths: std::collections::BTreeSet<AbsolutePathBuf> = self
+            .revision_documents
+            .keys()
+            .filter(|(cached, _)| *cached == revision)
+            .map(|(_, path)| path.clone())
+            .collect();
+        paths.extend(
+            self.shared_diffs
+                .iter()
+                .filter(|(_, diff)| {
+                    diff.base_revision == revision || diff.index_revision == revision
+                })
+                .map(|(key, _)| key.0.clone()),
+        );
+        let paths: Vec<AbsolutePathBuf> = paths.into_iter().collect();
+        self.refresh_revision_documents(revision, &paths, cx);
     }
 
     /// UI 线程：取出 job 需要的共享数据（后台线程不能访问 Entity 状态）。
@@ -1445,9 +1539,7 @@ impl DiffOperations for GitDiffOperations {
             return;
         };
         store.update(cx, |store, cx| {
-            if let Err(error) = store.apply_hunk_edits(GitHunkOperation::Stage, diff, ranges, cx) {
-                cx.emit(GitStoreEvent::HunkOperationFailed(error));
-            }
+            store.apply_hunk_edits(GitHunkOperation::Stage, diff, ranges, cx);
         });
     }
 
@@ -1456,10 +1548,7 @@ impl DiffOperations for GitDiffOperations {
             return;
         };
         store.update(cx, |store, cx| {
-            if let Err(error) = store.apply_hunk_edits(GitHunkOperation::Unstage, diff, ranges, cx)
-            {
-                cx.emit(GitStoreEvent::HunkOperationFailed(error));
-            }
+            store.apply_hunk_edits(GitHunkOperation::Unstage, diff, ranges, cx);
         });
     }
 
@@ -1468,10 +1557,7 @@ impl DiffOperations for GitDiffOperations {
             return;
         };
         store.update(cx, |store, cx| {
-            if let Err(error) = store.apply_hunk_edits(GitHunkOperation::Restore, diff, ranges, cx)
-            {
-                cx.emit(GitStoreEvent::HunkOperationFailed(error));
-            }
+            store.apply_hunk_edits(GitHunkOperation::Restore, diff, ranges, cx);
         });
     }
 }

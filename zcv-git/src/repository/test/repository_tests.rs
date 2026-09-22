@@ -572,118 +572,39 @@ fn status_reports_branch_tracking() {
     assert_eq!((branch.ahead, branch.behind), (0, 0));
 }
 
-/// 暂存/取消暂存把确定的字节编辑应用到 index，坐标由调用方给出，与工作区行号无关。
+/// set_index_text 原样写入调用方已经确定的完整 index 文本。
 #[test]
-fn hunk_edits_apply_to_index_byte_ranges() {
+fn set_index_text_writes_exact_content() {
     let (root, _temp) = test_repo();
     let repository = open_repo(&root);
-    let tracked = PathBuf::from("offset.txt");
-    let original = (0..220)
-        .map(|line| format!("line{line}"))
-        .collect::<Vec<_>>();
-    fs::write(root.join(&tracked), format!("{}\n", original.join("\n"))).expect("应写入基准文件");
-    run_in(&root, &["git", "add", "offset.txt"]);
-    run_in(&root, &["git", "commit", "-q", "-m", "baseline"]);
-
-    // 工作区在文件头部插入了 120 行未暂存内容；只暂存后面那一行时，
-    // index 坐标必须落在原 index 的第 150 行，不能沿用工作区的行号。
-    let mut expected_index = original.clone();
-    expected_index.insert(150, "只暂存这一行".into());
-    let index_start = original[..150]
-        .iter()
-        .map(|line| line.len() + 1)
-        .sum::<usize>();
+    let tracked = PathBuf::from("tracked.txt");
     repository
-        .apply_hunk_edits(
-            GitHunkOperation::Stage,
-            &tracked,
-            &[HunkEdit::new(
-                index_start..index_start,
-                std::sync::Arc::from(""),
-                std::sync::Arc::from("只暂存这一行\n"),
-            )],
-            &WorkingCopySnapshot::from_editor_text(
-                fs::read(root.join(&tracked)).expect("应读取工作区文本"),
-            ),
-        )
-        .expect("应只暂存后一个变更块");
-
+        .set_index_text(&tracked, "第一行\n只暂存这一行\n")
+        .expect("应写入 index 文本");
     let index_text = repository
-        .load_revisions(&[":offset.txt"])
+        .load_revisions(&[":tracked.txt"])
         .expect("应读取 index 文本")
         .pop()
         .flatten()
         .expect("index 应包含文件");
     assert_eq!(
         String::from_utf8(index_text).expect("index 应为 UTF-8"),
-        format!("{}\n", expected_index.join("\n"))
+        "第一行\n只暂存这一行\n"
     );
 }
 
-/// 取消暂存把 index 范围替换回 HEAD 文本。
+/// 还原用捕获的工作区文本应用确定的编辑并写回工作区文件。
 #[test]
-fn unstage_edits_replace_index_range_with_head_text() {
-    let (root, _temp) = test_repo();
-    let repository = open_repo(&root);
-    let tracked = PathBuf::from("tracked.txt");
-    // 已暂存第二行修改：index 文本为「改了」，HEAD 文本为「第二行」。
-    fs::write(root.join("tracked.txt"), "第一行\n改了\n").expect("应写入已暂存版本");
-    run_in(&root, &["git", "add", "tracked.txt"]);
-
-    let index_text = String::from_utf8(
-        repository
-            .load_revisions(&[":tracked.txt"])
-            .expect("应读取 index")
-            .pop()
-            .flatten()
-            .expect("index 应包含文件"),
-    )
-    .expect("index 应为 UTF-8");
-    let index_start = index_text.find("改了").expect("index 应包含已暂存内容");
-    repository
-        .apply_hunk_edits(
-            GitHunkOperation::Unstage,
-            &tracked,
-            &[HunkEdit::new(
-                index_start..index_start + "改了".len(),
-                std::sync::Arc::from("改了"),
-                std::sync::Arc::from("第二行"),
-            )],
-            &WorkingCopySnapshot::from_editor_text(
-                fs::read(root.join(&tracked)).expect("应读取工作区文本"),
-            ),
-        )
-        .expect("应取消暂存该变更块");
-
-    let index_text = repository
-        .load_revisions(&[":tracked.txt"])
-        .expect("应重新读取 index")
-        .pop()
-        .flatten()
-        .expect("index 应包含文件");
-    assert_eq!(
-        String::from_utf8(index_text).expect("index 应为 UTF-8"),
-        "第一行\n第二行\n"
-    );
-}
-
-/// 还原用捕获的工作区文本把 index 内容写回工作区。
-#[test]
-fn restore_edits_write_captured_worktree_text() {
+fn restore_worktree_writes_edited_captured_text() {
     let (root, _temp) = test_repo();
     let repository = open_repo(&root);
     let tracked = PathBuf::from("tracked.txt");
     let working = "改了\n第二行\n";
     fs::write(root.join("tracked.txt"), working).expect("应写入工作区");
     repository
-        .apply_hunk_edits(
-            GitHunkOperation::Restore,
+        .restore_worktree(
             &tracked,
-            &[HunkEdit::new(
-                0..6,
-                std::sync::Arc::from("改了"),
-                std::sync::Arc::from("第一行"),
-            )],
+            &[HunkEdit::new(0..6, std::sync::Arc::from("第一行"))],
             &WorkingCopySnapshot::from_editor_text(working.as_bytes().to_vec()),
         )
         .expect("应还原工作区文本");
@@ -693,43 +614,15 @@ fn restore_edits_write_captured_worktree_text() {
     );
 }
 
-/// 目标文本已变化时拒绝应用，旧版本操作不会改写新文本。
+/// 纯函数：编辑与传入顺序无关。
 #[test]
-fn stale_hunk_edits_are_rejected() {
-    let (root, _temp) = test_repo();
-    let repository = open_repo(&root);
-    let result = repository.apply_hunk_edits(
-        GitHunkOperation::Stage,
-        &PathBuf::from("tracked.txt"),
-        &[HunkEdit::new(
-            0..9,
-            std::sync::Arc::from("已经不存在"),
-            std::sync::Arc::from("改"),
-        )],
-        &WorkingCopySnapshot::from_editor_text(
-            fs::read(root.join("tracked.txt")).expect("应读取工作区文本"),
-        ),
-    );
-    assert!(result.is_err(), "目标文本变化后必须拒绝写入");
-}
-
-/// 纯函数：编辑与传入顺序无关，并拒绝重叠范围。
-#[test]
-fn hunk_edit_application_is_order_independent_and_rejects_overlap() {
+fn hunk_edit_application_is_order_independent() {
     let target = "abcdef";
     let edits = vec![
-        HunkEdit::new(4..6, std::sync::Arc::from("ef"), std::sync::Arc::from("EF")),
-        HunkEdit::new(0..2, std::sync::Arc::from("ab"), std::sync::Arc::from("AB")),
+        HunkEdit::new(4..6, std::sync::Arc::from("EF")),
+        HunkEdit::new(0..2, std::sync::Arc::from("AB")),
     ];
-    assert_eq!(
-        apply_hunk_edits_to_text(target, &edits).expect("不相交编辑应成功"),
-        "ABcdEF"
-    );
-    let overlap = vec![
-        HunkEdit::new(0..3, std::sync::Arc::from("abc"), std::sync::Arc::from("x")),
-        HunkEdit::new(2..4, std::sync::Arc::from("cd"), std::sync::Arc::from("y")),
-    ];
-    assert!(apply_hunk_edits_to_text(target, &overlap).is_err());
+    assert_eq!(apply_hunk_edits_to_text(target, &edits), "ABcdEF");
 }
 
 /// 提取 FileStatus 的 index 状态（非 Tracked 视为 Unmodified）。

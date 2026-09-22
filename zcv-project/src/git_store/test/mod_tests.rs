@@ -203,7 +203,7 @@ fn load_revision_text_returns_head_content(cx: &mut gpui::TestAppContext) {
     cx.run_until_parked();
     // 加载结果已由 GitStore 自行回填缓存。
     let text = cx.read_entity(&git_store, |store, cx| {
-        store.revision_document_text(GitRevision::Head, &path, cx)
+        store.revision_text(GitRevision::Head, &path, cx)
     });
     assert_eq!(text.as_deref(), Some("第一行\n第二行\n"));
 }
@@ -235,11 +235,11 @@ fn load_revision_text_returns_index_content(cx: &mut gpui::TestAppContext) {
     cx.run_until_parked();
 
     let text = cx.read_entity(&git_store, |store, cx| {
-        store.revision_document_text(GitRevision::Index, &path, cx)
+        store.revision_text(GitRevision::Index, &path, cx)
     });
     assert_eq!(text.as_deref(), Some("已暂存内容\n"));
 
-    // 状态类型与增删行统计保持不变时，index 内容变化仍必须使缓存失效。
+    // 状态类型与增删行统计保持不变时，index 内容变化仍必须被就地重读。
     fs::write(&path, "第二版暂存\n").expect("应更新暂存版本");
     run_git(&root, &["add", "tracked.txt"]);
     fs::write(&path, "第二版工作区\n").expect("应更新工作区版本");
@@ -247,22 +247,24 @@ fn load_revision_text_returns_index_content(cx: &mut gpui::TestAppContext) {
         store.refresh_statuses_for_paths(std::slice::from_ref(&path), cx)
     });
     cx.run_until_parked();
-    assert!(
-        cx.read_entity(&git_store, |store, cx| store.revision_document_text(
+    assert_eq!(
+        cx.read_entity(&git_store, |store, cx| store.revision_text(
             GitRevision::Index,
             &path,
             cx
         ))
-        .is_none(),
-        "即使状态枚举与行数未变，刷新路径也必须使旧 index 文本失效"
+        .as_deref(),
+        Some("第二版暂存\n"),
+        "即使状态枚举与行数未变，刷新路径也必须就地重读 index 文本"
     );
     assert_eq!(
-        cx.read_entity(&git_store, |store, cx| store.revision_document_text(
+        cx.read_entity(&git_store, |store, cx| store.revision_text(
             GitRevision::Index,
             &unchanged_path,
             cx
-        )),
-        Some(Arc::from("未变更内容\n")),
+        ))
+        .as_deref(),
+        Some("未变更内容\n"),
         "单路径刷新不应使其他文件的 index 文本失效"
     );
 
@@ -272,7 +274,7 @@ fn load_revision_text_returns_index_content(cx: &mut gpui::TestAppContext) {
     .detach();
     cx.run_until_parked();
     let text = cx.read_entity(&git_store, |store, cx| {
-        store.revision_document_text(GitRevision::Index, &path, cx)
+        store.revision_text(GitRevision::Index, &path, cx)
     });
     assert_eq!(text.as_deref(), Some("第二版暂存\n"));
 }
@@ -852,35 +854,165 @@ fn file_diff_is_shared_by_working_base_and_index(cx: &mut gpui::TestAppContext) 
     };
     let first = git_store.update(cx, |store, cx| {
         let input = spec(store, cx);
-        store.file_diff(&input, cx)
+        store.file_diff(&input, GitRevision::Head, GitRevision::Index, cx)
     });
     let second = git_store.update(cx, |store, cx| {
         let input = spec(store, cx);
-        store.file_diff(&input, cx)
+        store.file_diff(&input, GitRevision::Head, GitRevision::Index, cx)
     });
     assert_eq!(
         first.entity_id(),
         second.entity_id(),
         "同一 (working, base, index) 应复用同一 diff 实体"
     );
-    // 模拟 head/index 变化后的失效：下一次请求应重建。
-    git_store.update(cx, |store, _| {
-        store.invalidate_shared_diffs(Some(std::slice::from_ref(&path)));
+
+    // index 文本变化：必须在同一实体上增量安装，而不是丢弃缓存另建实体。
+    run_git(&root, &["add", "tracked.txt"]);
+    cx.update_entity(&git_store, |store, cx| {
+        store.refresh_statuses_for_paths(std::slice::from_ref(&native_path), cx)
     });
+    cx.run_until_parked();
     let third = git_store.update(cx, |store, cx| {
         let input = spec(store, cx);
-        store.file_diff(&input, cx)
+        store.file_diff(&input, GitRevision::Head, GitRevision::Index, cx)
     });
-    assert_ne!(
+    assert_eq!(
         first.entity_id(),
         third.entity_id(),
-        "缓存失效后应重建 diff 实体"
+        "修订文本变化必须复用同一 diff 实体"
+    );
+    assert_eq!(
+        first.read_with(cx, |diff, cx| {
+            diff.index_source()
+                .map(|source| snapshot_text(&source.read(cx).text_snapshot()))
+        }),
+        Some("第一行\n已修改\n".to_owned()),
+        "index 参照文本必须就地在原实体上推进"
     );
 }
 
 /// 变更块操作：界面线程从 diff 快照生成确定编辑并立即写入 optimistic pending，后台只应用该编辑写入 index。
 #[gpui::test]
 fn diff_operations_stage_hunk_writes_index_and_keeps_pending(cx: &mut gpui::TestAppContext) {
+    let (root, _temp) = test_git_repo();
+    fs::write(root.join("tracked.txt"), "第一行\n已修改\n").expect("应修改工作区文件");
+    // 无关文件用于验证：暂存一个路径不得让其他路径的 index 文本整体失效。
+    fs::write(root.join("other.txt"), "无关文件\n").expect("应写入无关文件");
+    run_git(&root, &["add", "other.txt"]);
+    run_git(&root, &["commit", "-q", "-m", "add other"]);
+
+    let git_store =
+        cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
+    cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
+    cx.run_until_parked();
+
+    let path = canonicalize_path(&root.join("tracked.txt")).expect("测试路径必须可归一化");
+    let native_path = path.clone().into_path_buf();
+    let other_path = canonicalize_path(&root.join("other.txt")).expect("测试路径必须可归一化");
+    cx.read_entity(&git_store, |store, cx| {
+        store.load_revision_document(GitRevision::Index, &path, cx)
+    })
+    .detach();
+    cx.read_entity(&git_store, |store, cx| {
+        store.load_revision_document(GitRevision::Index, &other_path, cx)
+    })
+    .detach();
+    cx.run_until_parked();
+    let working = cx.update(|cx| {
+        let buffer = Buffer::from_text("第一行\n已修改\n".to_owned(), BufferConfig::default())
+            .expect("应创建 Buffer");
+        cx.new(|cx| {
+            LanguageBuffer::new(
+                buffer,
+                Some(native_path.clone()),
+                Arc::new(LanguageRegistry::new()),
+                cx,
+            )
+        })
+    });
+    let operations = git_store.read_with(cx, |store, _| store.diff_operations(GitRevision::Index));
+    let diff = cx.update(|cx| {
+        cx.new(|cx| {
+            BufferDiff::new(
+                BufferDiffInput {
+                    working: working.clone(),
+                    path: native_path.clone(),
+                    base_text: Some("第一行\n第二行\n".to_owned()),
+                    index_text: None,
+                    language_registry: Arc::new(LanguageRegistry::new()),
+                    key: 0,
+                    operations: Some(operations),
+                },
+                cx,
+            )
+        })
+    });
+    cx.run_until_parked();
+
+    let range = diff.read_with(cx, |diff, _| {
+        assert_eq!(diff.snapshot().hunks().len(), 1);
+        diff.snapshot().hunks()[0].buffer_range.clone()
+    });
+
+    // 操作发起后立即抑制该 hunk；乐观 index 批次只在后台写入并经权威扫描确认后前进。
+    cx.update(|cx| {
+        let operations = diff.read(cx).operations().expect("应有操作实现");
+        operations.stage(diff.clone(), vec![range], cx);
+    });
+    diff.read_with(cx, |diff, _| {
+        assert!(
+            diff.snapshot().visible_hunks().is_empty(),
+            "pending 应立即抑制 hunk"
+        );
+        assert_eq!(diff.snapshot().pending_hunks().len(), 1);
+    });
+    assert_eq!(
+        cx.read_entity(&git_store, |store, cx| {
+            store.revision_text(GitRevision::Index, &path, cx)
+        })
+        .as_deref(),
+        Some("第一行\n第二行\n"),
+        "暂存结果只在权威扫描确认后前进，不提前改写 index 文本"
+    );
+
+    cx.run_until_parked();
+    // 权威扫描就地重读 index 文本；写入结果不提前，也不靠丢弃文档来触发重载。
+    diff.read_with(cx, |diff, _| {
+        assert_eq!(diff.snapshot().pending_hunks().len(), 1);
+    });
+    assert_eq!(
+        cx.read_entity(&git_store, |store, cx| store.revision_text(
+            GitRevision::Index,
+            &path,
+            cx
+        ))
+        .as_deref(),
+        Some("第一行\n已修改\n"),
+        "权威扫描必须就地刷新 index 文本"
+    );
+    let repository = zcv_git::RealGitRepository::open(&root.join(".git")).expect("应打开工作仓库");
+    let index = repository
+        .load_revisions(&[":tracked.txt"])
+        .expect("应读取 index")
+        .pop()
+        .flatten()
+        .expect("index 应包含文件");
+    assert_eq!(
+        String::from_utf8(index).expect("index 应为 UTF-8"),
+        "第一行\n已修改\n",
+        "后台必须应用确定的编辑结果"
+    );
+    assert!(
+        cx.read_entity(&git_store, |store, _| store
+            .revision_document_loaded(GitRevision::Index, &other_path)),
+        "未变化路径的 index 文本不得因另一路径暂存而被整体失效"
+    );
+}
+
+/// 工作区版本在 diff 快照之后前进时，操作锚点必须在当前快照上重新解析，
+/// 而不是因版本不相等丢弃并提示用户刷新。
+#[gpui::test]
+fn staging_resolves_hunk_anchors_on_the_current_working_snapshot(cx: &mut gpui::TestAppContext) {
     let (root, _temp) = test_git_repo();
     fs::write(root.join("tracked.txt"), "第一行\n已修改\n").expect("应修改工作区文件");
 
@@ -926,38 +1058,35 @@ fn diff_operations_stage_hunk_writes_index_and_keeps_pending(cx: &mut gpui::Test
         })
     });
     cx.run_until_parked();
-
     let range = diff.read_with(cx, |diff, _| {
         assert_eq!(diff.snapshot().hunks().len(), 1);
         diff.snapshot().hunks()[0].buffer_range.clone()
     });
 
-    // 操作发起后立即写入 pending，显示层不再看到该 hunk。
+    // 快照之后工作区版本前进：hunk 之后追加一行。
+    working.update(cx, |working, cx| {
+        working
+            .replace_text("第一行\n已修改\n新增行\n".to_owned(), cx)
+            .expect("应推进工作区文本版本");
+    });
+    let working_version = working.read_with(cx, |working, _| working.text_snapshot().version());
+    assert_ne!(
+        range.start.version(),
+        working_version,
+        "测试前提：操作锚点版本已落后于工作区"
+    );
     cx.update(|cx| {
         let operations = diff.read(cx).operations().expect("应有操作实现");
         operations.stage(diff.clone(), vec![range], cx);
     });
     diff.read_with(cx, |diff, _| {
-        assert!(
-            diff.snapshot().visible_hunks().is_empty(),
-            "pending 应立即抑制 hunk"
+        assert_eq!(
+            diff.snapshot().pending_hunks().len(),
+            1,
+            "锚点落后必须在当前快照重新解析，不得丢弃操作"
         );
-        assert_eq!(diff.snapshot().pending_hunks().len(), 1);
     });
-    assert_eq!(
-        cx.read_entity(&git_store, |store, cx| {
-            store.revision_document_text(GitRevision::Index, &path, cx)
-        })
-        .as_deref(),
-        Some("第一行\n已修改\n"),
-        "后台写入前 index 缓存必须已反映暂存结果"
-    );
-
     cx.run_until_parked();
-    // 成功不立即清除：由随后权威扫描替换该 diff，避免中途回闪。
-    diff.read_with(cx, |diff, _| {
-        assert_eq!(diff.snapshot().pending_hunks().len(), 1);
-    });
     let repository = zcv_git::RealGitRepository::open(&root.join(".git")).expect("应打开工作仓库");
     let index = repository
         .load_revisions(&[":tracked.txt"])
@@ -968,22 +1097,26 @@ fn diff_operations_stage_hunk_writes_index_and_keeps_pending(cx: &mut gpui::Test
     assert_eq!(
         String::from_utf8(index).expect("index 应为 UTF-8"),
         "第一行\n已修改\n",
-        "后台必须应用确定的编辑结果"
+        "落后锚点必须按当前快照生成编辑"
     );
 }
 
-/// hunk 快照与 GitStore 持有的 index 文本不一致时，拒绝不确定的 optimistic 写入。
+/// 同文件连续暂存两个 hunk：不等待后台写入完成，编辑必须合并进同一乐观批次，
+/// 而不是被在途互斥拒绝。
 #[gpui::test]
-fn diff_operations_failure_clears_pending(cx: &mut gpui::TestAppContext) {
+fn staging_two_hunks_without_waiting_merges_pending_edits(cx: &mut gpui::TestAppContext) {
     let (root, _temp) = test_git_repo();
-    fs::write(root.join("tracked.txt"), "第一行\n已修改\n").expect("应修改工作区文件");
+    fs::write(root.join("two.txt"), "a0\na1\na2\na3\na4\na5\n").expect("应写入初始文件");
+    run_git(&root, &["add", "two.txt"]);
+    run_git(&root, &["commit", "-q", "-m", "two"]);
+    fs::write(root.join("two.txt"), "A0\na1\na2\na3\nA4\na5\n").expect("应修改两处");
 
     let git_store =
         cx.update(|cx| cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx)));
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
 
-    let path = canonicalize_path(&root.join("tracked.txt")).expect("测试路径必须可归一化");
+    let path = canonicalize_path(&root.join("two.txt")).expect("测试路径必须可归一化");
     let native_path = path.clone().into_path_buf();
     cx.read_entity(&git_store, |store, cx| {
         store.load_revision_document(GitRevision::Index, &path, cx)
@@ -991,8 +1124,11 @@ fn diff_operations_failure_clears_pending(cx: &mut gpui::TestAppContext) {
     .detach();
     cx.run_until_parked();
     let working = cx.update(|cx| {
-        let buffer = Buffer::from_text("第一行\n已修改\n".to_owned(), BufferConfig::default())
-            .expect("应创建 Buffer");
+        let buffer = Buffer::from_text(
+            "A0\na1\na2\na3\nA4\na5\n".to_owned(),
+            BufferConfig::default(),
+        )
+        .expect("应创建 Buffer");
         cx.new(|cx| {
             LanguageBuffer::new(
                 buffer,
@@ -1003,14 +1139,13 @@ fn diff_operations_failure_clears_pending(cx: &mut gpui::TestAppContext) {
         })
     });
     let operations = git_store.read_with(cx, |store, _| store.diff_operations(GitRevision::Index));
-    // base 文本与真实 index 不一致，后台校验必然失败。
     let diff = cx.update(|cx| {
         cx.new(|cx| {
             BufferDiff::new(
                 BufferDiffInput {
                     working: working.clone(),
                     path: native_path.clone(),
-                    base_text: Some("第一行\n不存在的原始行\n".to_owned()),
+                    base_text: Some("a0\na1\na2\na3\na4\na5\n".to_owned()),
                     index_text: None,
                     language_registry: Arc::new(LanguageRegistry::new()),
                     key: 0,
@@ -1021,19 +1156,41 @@ fn diff_operations_failure_clears_pending(cx: &mut gpui::TestAppContext) {
         })
     });
     cx.run_until_parked();
-    let range = diff.read_with(cx, |diff, _| {
-        diff.snapshot().hunks()[0].buffer_range.clone()
+    let ranges = diff.read_with(cx, |diff, _| {
+        let hunks = diff.snapshot().hunks().to_vec();
+        assert_eq!(hunks.len(), 2, "应有两个 hunk");
+        hunks
+            .iter()
+            .map(|hunk| hunk.buffer_range.clone())
+            .collect::<Vec<_>>()
     });
+
+    // 两笔连续发起，不等待第一笔后台写入。
     cx.update(|cx| {
         let operations = diff.read(cx).operations().expect("应有操作实现");
-        operations.stage(diff.clone(), vec![range], cx);
+        operations.stage(diff.clone(), vec![ranges[0].clone()], cx);
+        operations.stage(diff.clone(), vec![ranges[1].clone()], cx);
     });
     diff.read_with(cx, |diff, _| {
-        assert!(
-            diff.snapshot().pending_hunks().is_empty(),
-            "index 基准已分叉时不得写入 pending"
+        assert_eq!(
+            diff.snapshot().pending_hunks().len(),
+            2,
+            "同文件两笔操作都必须写入 pending，不因在途而被拒绝"
         );
     });
+    cx.run_until_parked();
+    let repository = zcv_git::RealGitRepository::open(&root.join(".git")).expect("应打开工作仓库");
+    let index = repository
+        .load_revisions(&[":two.txt"])
+        .expect("应读取 index")
+        .pop()
+        .flatten()
+        .expect("index 应包含文件");
+    assert_eq!(
+        String::from_utf8(index).expect("index 应为 UTF-8"),
+        "A0\na1\na2\na3\nA4\na5\n",
+        "两笔编辑必须合并落盘"
+    );
 }
 
 #[gpui::test]

@@ -683,6 +683,234 @@ fn async_rewrap_settles_after_background_task(cx: &mut TestAppContext) {
     });
 }
 
+/// 回归：非换行短行会合并成一个同构变换；同一批次两个编辑都落在该变换内时，
+/// 增量 splice 的游标不得越过第二个编辑的起点（cannot seek backward）。
+#[gpui::test]
+fn two_edits_inside_one_isomorphic_run_keep_wrap_forward(cx: &mut TestAppContext) {
+    let text: String = (0..20).map(|row| format!("line{row:02}\n")).collect();
+    let mut buffer =
+        Buffer::from_text(text, BufferConfig::default()).expect("测试 Buffer 应能创建");
+    let snapshot: MultiBufferSnapshot = buffer.snapshot().into();
+    let display = cx.new(|cx| {
+        let mut display_map = DisplayMap::new(snapshot.clone(), cx);
+        display_map.set_wrap_width(
+            Some(px(200.)),
+            font("Helvetica"),
+            px(16.),
+            &cx.text_system().clone(),
+            cx,
+        );
+        display_map
+    });
+    let subscription = buffer.subscribe();
+    // 固定 7 字节行："lineNN\n"；在第 5、15 行行首各插入一行。
+    buffer
+        .edit(
+            [
+                Edit::insert(MultiBufferOffset::new(5 * 7).into(), "new05\n").unwrap(),
+                Edit::insert(MultiBufferOffset::new(15 * 7).into(), "new15\n").unwrap(),
+            ],
+            TransactionMetadata::default(),
+        )
+        .expect("测试编辑应成功");
+    let updated: MultiBufferSnapshot = buffer.snapshot().into();
+    let batch = subscription.consume();
+    cx.update_entity(&display, |display_map, cx| {
+        display_map.sync(updated, batch, cx);
+    });
+    cx.run_until_parked();
+    cx.read_entity(&display, |display_map, _| {
+        assert_offset_roundtrip(display_map);
+    });
+}
+
+/// 回归：只有下层版本推进、没有 Tab 结构编辑时（元数据/语法变化），Wrap 变换树必须保留，
+/// 不能被重建为空树（否则 check_invariants 会看到输入点 0 ≠ Tab 行数）。
+#[gpui::test]
+fn metadata_only_tab_change_keeps_wrap_transform_tree(cx: &mut TestAppContext) {
+    let old_text: String = (0..200).map(|row| format!("aaa{row:03}\n")).collect();
+    let old_snapshot: MultiBufferSnapshot = Buffer::from_text(old_text, BufferConfig::default())
+        .expect("测试 Buffer 应能创建")
+        .snapshot()
+        .into();
+    let display = cx.new(|cx| {
+        let mut display_map = DisplayMap::new(old_snapshot.clone(), cx);
+        display_map.set_wrap_width(
+            Some(px(200.)),
+            font("Helvetica"),
+            px(16.),
+            &cx.text_system().clone(),
+            cx,
+        );
+        display_map
+    });
+    // 另一个同行的快照：模拟"下层版本/元数据前进、批次里没有文本编辑"。
+    let new_text: String = (0..200).map(|row| format!("bbb{row:03}\n")).collect();
+    let mut new_buffer =
+        Buffer::from_text(new_text, BufferConfig::default()).expect("测试 Buffer 应能创建");
+    new_buffer
+        .edit(
+            [Edit::replace(
+                zcv_text::TextRange::new(
+                    MultiBufferOffset::new(0).into(),
+                    MultiBufferOffset::new(3).into(),
+                )
+                .unwrap(),
+                "zzz",
+            )],
+            TransactionMetadata::default(),
+        )
+        .expect("测试编辑应成功");
+    let new_snapshot: MultiBufferSnapshot = new_buffer.snapshot().into();
+    cx.update_entity(&display, |display_map, cx| {
+        display_map.sync(new_snapshot, TextChangeBatch::default(), cx);
+    });
+    cx.run_until_parked();
+    cx.read_entity(&display, |display_map, _| {
+        assert_offset_roundtrip(display_map);
+    });
+}
+
+/// 回归：同一未换行同构段内的多处编辑混合插入与删除时，重排后的变换输入
+/// 必须仍精确覆盖 Tab 行数（不能多也不能少）。
+#[gpui::test]
+fn mixed_insert_delete_in_one_isomorphic_run_keeps_wrap_input_aligned(cx: &mut TestAppContext) {
+    let text: String = (0..20).map(|row| format!("line{row:02}\n")).collect();
+    let mut buffer =
+        Buffer::from_text(text, BufferConfig::default()).expect("测试 Buffer 应能创建");
+    let snapshot: MultiBufferSnapshot = buffer.snapshot().into();
+    let display = cx.new(|cx| {
+        let mut display_map = DisplayMap::new(snapshot.clone(), cx);
+        display_map.set_wrap_width(
+            Some(px(200.)),
+            font("Helvetica"),
+            px(16.),
+            &cx.text_system().clone(),
+            cx,
+        );
+        display_map
+    });
+    let subscription = buffer.subscribe();
+    // 固定 7 字节行；同一批在第 5 行插入、删除第 10 行、在第 15 行插入。
+    buffer
+        .edit(
+            [
+                Edit::insert(MultiBufferOffset::new(5 * 7).into(), "new05\n").unwrap(),
+                Edit::delete(
+                    zcv_text::TextRange::new(
+                        MultiBufferOffset::new(10 * 7).into(),
+                        MultiBufferOffset::new(11 * 7).into(),
+                    )
+                    .unwrap(),
+                ),
+                Edit::insert(MultiBufferOffset::new(15 * 7).into(), "new15\n").unwrap(),
+            ],
+            TransactionMetadata::default(),
+        )
+        .expect("测试编辑应成功");
+    let updated: MultiBufferSnapshot = buffer.snapshot().into();
+    let batch = subscription.consume();
+    cx.update_entity(&display, |display_map, cx| {
+        display_map.sync(updated, batch, cx);
+    });
+    cx.run_until_parked();
+    cx.read_entity(&display, |display_map, _| {
+        assert_offset_roundtrip(display_map);
+    });
+}
+
+/// 压力回归：随机多编辑批次在软换行下重排后，Wrap 变换输入必须精确等于 Tab 行数。
+#[gpui::test]
+fn random_multi_edit_wrap_sync_keeps_input_coverage(cx: &mut TestAppContext) {
+    fn next(state: &mut u64) -> u64 {
+        *state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *state >> 33
+    }
+
+    let mut text = String::new();
+    for row in 0..2400 {
+        if row % 3 == 0 {
+            text.push_str(&format!("long {row} {}\n", "x".repeat(150)));
+        } else {
+            text.push_str(&format!("s{row}\n"));
+        }
+    }
+    let mut buffer =
+        Buffer::from_text(text.clone(), BufferConfig::default()).expect("测试 Buffer 应能创建");
+    let snapshot: MultiBufferSnapshot = buffer.snapshot().into();
+    let display = cx.new(|cx| {
+        let mut display_map = DisplayMap::new(snapshot.clone(), cx);
+        display_map.set_wrap_width(
+            Some(px(200.)),
+            font("Helvetica"),
+            px(16.),
+            &cx.text_system().clone(),
+            cx,
+        );
+        display_map
+    });
+    let subscription = buffer.subscribe();
+    let mut mirror = text;
+    let mut state = 0x9e37_79b9_7f4a_7c15u64;
+    for round in 0..400 {
+        let len = mirror.len();
+        if len < 60 {
+            break;
+        }
+        let count = 1 + (next(&mut state) as usize % 4);
+        let mut edits = Vec::new();
+        let mut replacements = Vec::new();
+        let mut position = 2 + (next(&mut state) as usize % 8);
+        for index in 0..count {
+            if position + 6 >= len {
+                break;
+            }
+            let available = len - position - 2;
+            let span = 1 + (next(&mut state) as usize % available.min(12));
+            let end = position + span;
+            let replacement = if next(&mut state).is_multiple_of(3) {
+                format!("R{index}\n")
+            } else {
+                format!("r{index}")
+            };
+            edits.push(Edit::replace(
+                zcv_text::TextRange::new(
+                    MultiBufferOffset::new(position).into(),
+                    MultiBufferOffset::new(end).into(),
+                )
+                .unwrap(),
+                replacement.clone(),
+            ));
+            replacements.push((position..end, replacement));
+            position = end + 2 + (next(&mut state) as usize % 7);
+        }
+        if edits.is_empty() {
+            continue;
+        }
+        for (range, replacement) in replacements.iter().rev() {
+            mirror.replace_range(range.clone(), replacement);
+        }
+        buffer
+            .edit(edits, TransactionMetadata::default())
+            .expect("测试编辑应成功");
+        let updated: MultiBufferSnapshot = buffer.snapshot().into();
+        let batch = subscription.consume();
+        cx.update_entity(&display, |display_map, cx| {
+            display_map.sync(updated, batch, cx);
+        });
+        // 连续编辑不等待：覆盖后台重排 + 急切插值同时有 pending 批次的路径。
+        if round % 4 == 3 {
+            cx.run_until_parked();
+        }
+    }
+    cx.run_until_parked();
+    cx.read_entity(&display, |display_map, _| {
+        assert_offset_roundtrip(display_map);
+    });
+}
+
 /// 对每个字符边界做 offset ↔ display point 双向 roundtrip。
 fn assert_offset_roundtrip(map: &DisplayMap) {
     let snapshot = map.cached_snapshot();

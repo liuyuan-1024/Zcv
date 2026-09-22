@@ -363,6 +363,10 @@ impl BufferDiff {
         };
         match (existing, text) {
             (Some(existing), Some(text)) => {
+                // 文本未变：保持当前快照，不重算（修订刷新会对同一文本重复安装）。
+                if full_text(&existing.read(cx).text_snapshot()) == text {
+                    return Task::ready(());
+                }
                 let task = existing.update(cx, |buffer, cx| buffer.snapshot_with_text(text, cx));
                 cx.spawn(async move |this, cx| {
                     let Ok(edited) = task.await else {
@@ -534,12 +538,27 @@ impl BufferDiff {
         self.operations.clone()
     }
 
-    /// 替换 optimistic pending hunks，并通知显示层重新物化。
+    /// 把新的 optimistic pending hunks 合并进当前集合，并通知显示层重新物化。
+    ///
+    /// 与既有 pending 按 working 偏移合并：新 hunk 重叠的旧 pending 被替换，其余保留。
+    /// 这样同一文件连续多次操作不会让先前被抑制的 hunk 重新出现（对齐 Zed 的 set_pending_hunks）。
     pub fn set_pending_hunks(&mut self, hunks: Vec<PendingHunk>, cx: &mut Context<Self>) {
         if hunks.is_empty() {
             return;
         }
-        self.snapshot.pending_hunks = hunks;
+        let mut pending = std::mem::take(&mut self.snapshot.pending_hunks);
+        for hunk in hunks {
+            pending.retain(|existing| {
+                existing.buffer_range.end.offset().get() <= hunk.buffer_range.start.offset().get()
+                    || hunk.buffer_range.end.offset().get()
+                        <= existing.buffer_range.start.offset().get()
+            });
+            let position = pending.partition_point(|existing| {
+                existing.buffer_range.start.offset().get() < hunk.buffer_range.start.offset().get()
+            });
+            pending.insert(position, hunk);
+        }
+        self.snapshot.pending_hunks = pending;
         self.revision = self.revision.wrapping_add(1).max(1);
         cx.emit(BufferDiffEvent::DiffChanged {
             refresh: DiffRefresh::RebuildProjection,

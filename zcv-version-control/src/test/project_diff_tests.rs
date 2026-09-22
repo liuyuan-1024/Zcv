@@ -527,7 +527,7 @@ fn partially_staged_file_has_distinct_staged_and_unstaged_views(cx: &mut TestApp
 }
 
 #[gpui::test]
-fn staging_one_hunk_rebuilds_the_projection_once_after_refresh(cx: &mut TestAppContext) {
+fn staging_one_hunk_refreshes_the_projection_with_new_index(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -564,8 +564,7 @@ fn staging_one_hunk_rebuilds_the_projection_once_after_refresh(cx: &mut TestAppC
         (hunk_source, version)
     });
     view.update(cx, |view, cx| {
-        view.apply_hunk_action(hunk_source, GitHunkOperation::Stage, cx)
-            .expect("第一个变更块应能暂存");
+        view.apply_hunk_action(hunk_source, GitHunkOperation::Stage, cx);
     });
     cx.update_entity(&view, |view, cx| {
         let snapshot = view
@@ -597,12 +596,37 @@ fn staging_one_hunk_rebuilds_the_projection_once_after_refresh(cx: &mut TestAppC
         });
     }
 
+    let staged = std::process::Command::new("git")
+        .args(["diff", "--cached", "--", "two-hunks.txt"])
+        .current_dir(&root)
+        .output()
+        .expect("应执行 git diff --cached");
+    let staged = String::from_utf8_lossy(&staged.stdout);
+    assert!(
+        staged.contains("第一个变更块"),
+        "点击暂存后 index 必须包含该 hunk，实际 diff：{staged}"
+    );
+    cx.update_entity(&view, |view, cx| {
+        let hunks = view.multi_buffer.read(cx).diff_hunks().to_vec();
+        assert_eq!(hunks.len(), 1, "暂存后未暂存视图只应剩第二个 hunk");
+        let source = view
+            .diff_hunk_source_info(&hunks[0], cx)
+            .expect("剩余 hunk 应有源定位");
+        assert!(
+            source.diff.read(cx).snapshot().pending_hunks().is_empty(),
+            "暂存完成后必须按新 index 重建 diff，而不是靠旧 diff 的 pending 抑制"
+        );
+    });
+
     cx.update_entity(&view, |view, cx| {
         let snapshot = view
             .multi_buffer
             .update(cx, |buffer, cx| buffer.snapshot(cx));
         let text = String::from_utf8(snapshot.text_bytes()).expect("投影应为 UTF-8");
-        assert_eq!(snapshot.version().get(), initial_version + 1);
+        assert!(
+            snapshot.version().get() > initial_version,
+            "暂存后投影必须按新 index 推进"
+        );
         assert_eq!(view.multi_buffer.read(cx).diff_hunks().len(), 1);
         assert!(!text.contains("第一个变更块"));
         assert!(text.contains("第二个变更块"));

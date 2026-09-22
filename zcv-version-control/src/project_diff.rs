@@ -222,13 +222,11 @@ impl ProjectDiffHunkDelegate {
                             .label("暂存此变更块")
                             .on_click(move |_event, _window, cx| {
                                 let _ = stage_view.update(cx, |view, cx| {
-                                    if let Err(error) = view.apply_hunk_action(
+                                    view.apply_hunk_action(
                                         stage_hunk.clone(),
                                         GitHunkOperation::Stage,
                                         cx,
-                                    ) {
-                                        cx.emit(EditorEvent::Error(error));
-                                    }
+                                    );
                                 });
                             }),
                     )
@@ -243,13 +241,11 @@ impl ProjectDiffHunkDelegate {
                             .disabled(is_created_file)
                             .on_click(move |_event, _window, cx| {
                                 let _ = restore_view.update(cx, |view, cx| {
-                                    if let Err(error) = view.apply_hunk_action(
+                                    view.apply_hunk_action(
                                         restore_hunk.clone(),
                                         GitHunkOperation::Restore,
                                         cx,
-                                    ) {
-                                        cx.emit(EditorEvent::Error(error));
-                                    }
+                                    );
                                 });
                             }),
                     )
@@ -265,13 +261,11 @@ impl ProjectDiffHunkDelegate {
                             .label("取消暂存此变更块")
                             .on_click(move |_event, _window, cx| {
                                 let _ = unstage_view.update(cx, |view, cx| {
-                                    if let Err(error) = view.apply_hunk_action(
+                                    view.apply_hunk_action(
                                         unstage_hunk.clone(),
                                         GitHunkOperation::Unstage,
                                         cx,
-                                    ) {
-                                        cx.emit(EditorEvent::Error(error));
-                                    }
+                                    );
                                 });
                             }),
                     )
@@ -657,7 +651,6 @@ impl ProjectDiffView {
                     view.rebuild_projection(cx);
                     cx.emit(EditorEvent::Error(format!("变更块操作失败：{message}")));
                 }
-                GitStoreEvent::IndexText { path } => view.refresh_diff_path(path, cx),
                 GitStoreEvent::ActiveRepositoryChanged
                 | GitStoreEvent::JobsUpdated
                 | GitStoreEvent::Uncommitted(_)
@@ -757,30 +750,6 @@ impl ProjectDiffView {
             }
         }
         self.register_ready_files(cx);
-    }
-
-    /// 乐观 index 更新只影响单个路径：只重挂该路径的 diff，其余文件保持不变。
-    ///
-    /// 该路径的共享 diff 已被 GitStore 失效，这里按新 index 文档重新请求 diff 实体；
-    /// 尚未算完时保留旧 excerpts，等 DiffChanged 增量替换。
-    fn refresh_diff_path(&mut self, path: &AbsolutePathBuf, cx: &mut Context<Self>) {
-        let Some(file) = self
-            .files
-            .iter()
-            .find(|file| file.path.as_path() == path.as_path())
-            .cloned()
-        else {
-            return;
-        };
-        let root = self.project.read(cx).root().map(Path::to_path_buf);
-        let Some(diff_file) = self.build_file_input(&file, root.as_deref(), cx) else {
-            return;
-        };
-        self.editor.update(cx, |editor, cx| {
-            editor.add_diff(diff_file, cx);
-        });
-        self.apply_pending_path(cx);
-        cx.notify();
     }
 
     /// 以 hunk 为核心重建已就绪文件的 excerpts；旧侧与新侧都属于同一个 MultiBuffer 坐标空间。
@@ -960,7 +929,10 @@ impl ProjectDiffView {
             }),
         };
         // GitStore 预创建并按 (working, base, index) 共享；同一文件跨视图复用 diff 实体。
-        let diff = git_store.update(cx, |store, cx| store.file_diff(&input, cx));
+        let base_revision = self.kind.base_revision();
+        let diff = git_store.update(cx, |store, cx| {
+            store.file_diff(&input, base_revision, GitRevision::Index, cx)
+        });
         Some(DiffFile {
             diff,
             display_path,
@@ -1010,40 +982,33 @@ impl ProjectDiffView {
         });
     }
 
+    /// 执行一个变更块操作。
+    ///
+    /// 能力由视图在构造与渲染时决定（按钮只在支持该操作的 diff kind 上出现）；
+    /// 这里不再把"能力缺失"或"锚点过期"转成要求用户刷新的错误。
+    /// 锚点落后由 GitStore 在当前快照上重新解析；对当前快照已无对象的操作是静默空操作。
     fn apply_hunk_action(
         &mut self,
         info: DiffHunkSource,
         operation: GitHunkOperation,
         cx: &mut Context<Self>,
-    ) -> Result<(), String> {
-        let is_created_file = info.diff.read(cx).is_created();
-        let allowed = matches!(
-            (self.kind, operation),
-            (ProjectDiffKind::Unstaged, GitHunkOperation::Stage)
-                | (ProjectDiffKind::Unstaged, GitHunkOperation::Restore)
-                | (ProjectDiffKind::Staged, GitHunkOperation::Unstage)
-        );
-        if !allowed || (operation == GitHunkOperation::Restore && is_created_file) {
-            return Err("当前变更块不支持此操作".into());
-        }
-
+    ) {
         if let Some(range) = info.range {
             let diff = info.diff.clone();
-            let Some(operations) = diff.read(cx).operations() else {
-                return Err("变更块操作已失效，请刷新后重试".into());
-            };
-            match operation {
-                GitHunkOperation::Stage if operations.supports_staging() => {
-                    operations.stage(diff, vec![range], cx)
-                }
-                GitHunkOperation::Unstage if operations.supports_unstaging() => {
-                    operations.unstage(diff, vec![range], cx)
-                }
-                GitHunkOperation::Restore if operations.supports_restore() => {
-                    operations.restore(diff, vec![range], cx)
-                }
-                GitHunkOperation::Stage | GitHunkOperation::Unstage | GitHunkOperation::Restore => {
-                    return Err("当前 diff 不支持此变更块操作".into());
+            if let Some(operations) = diff.read(cx).operations() {
+                match operation {
+                    GitHunkOperation::Stage if operations.supports_staging() => {
+                        operations.stage(diff, vec![range], cx)
+                    }
+                    GitHunkOperation::Unstage if operations.supports_unstaging() => {
+                        operations.unstage(diff, vec![range], cx)
+                    }
+                    GitHunkOperation::Restore if operations.supports_restore() => {
+                        operations.restore(diff, vec![range], cx)
+                    }
+                    GitHunkOperation::Stage
+                    | GitHunkOperation::Unstage
+                    | GitHunkOperation::Restore => {}
                 }
             }
         } else {
@@ -1056,9 +1021,8 @@ impl ProjectDiffView {
                 GitHunkOperation::Restore => {}
             });
         }
-        // 行级操作写入 optimistic pending 后由 BufferDiffEvent::DiffChanged 驱动物化；
+        // 行级操作写入 pending 后由 BufferDiffEvent::DiffChanged 驱动物化；
         // 整文件路径操作由 GitStore 状态事件刷新。
-        Ok(())
     }
 
     fn revision_requirements_ready(&self, file: &GitChangeFile, cx: &App) -> bool {

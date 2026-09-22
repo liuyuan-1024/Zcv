@@ -159,7 +159,9 @@ pub fn inject_editor_diff(
         operations: None,
     };
     // GitStore 预创建并按 (working, base, index) 共享同一 diff 实体。
-    let diff = store.update(cx, |store, cx| store.file_diff(&input, cx));
+    let diff = store.update(cx, |store, cx| {
+        store.file_diff(&input, GitRevision::Head, GitRevision::Index, cx)
+    });
     let file = DiffFile {
         diff,
         display_path: path.to_path_buf(),

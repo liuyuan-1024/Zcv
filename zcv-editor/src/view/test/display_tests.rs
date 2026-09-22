@@ -1292,6 +1292,61 @@ fn diff_hunks_follow_buffer_edits_without_losing_highlight(cx: &mut TestAppConte
     });
 }
 
+/// 压力回归：软换行 + Git diff 投影反复重建时，Wrap 变换输入必须始终等于 Tab 行数。
+///
+/// 每次工作区编辑都会触发 BufferDiff 重算与 diff 投影重建，产生一批结构编辑；
+/// 这正是应用里"编辑带 diff 的文件"反复触发 canary 断言的路径。
+#[gpui::test]
+fn soft_wrap_diff_rebuild_keeps_wrap_input_coverage(cx: &mut TestAppContext) {
+    let text: String = (0..200).map(|row| format!("s{row:03}\n")).collect();
+    let buffer = test_buffer(cx, &text);
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let editor = cx.new(|cx| Editor::for_language_buffer(buffer.clone(), cx));
+    let source = buffer.clone();
+    editor.update(cx, |editor, cx| {
+        editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx)
+    });
+    // base 与 working 在多处不同，产生多个 hunk，覆盖 diff 投影的结构增删。
+    let base: String = (0..200)
+        .map(|row| {
+            if row % 13 == 0 {
+                format!("b{row:03}\n")
+            } else {
+                format!("s{row:03}\n")
+            }
+        })
+        .collect();
+    inject_editor_diff(
+        &editor,
+        &source,
+        Vec::new(),
+        Some(Arc::from(base.as_str())),
+        cx,
+    );
+    cx.run_until_parked();
+
+    let mut len = text.len();
+    for round in 0..200usize {
+        let offset = (round * 13) % len.max(1);
+        editor.update(cx, |editor, cx| {
+            editor.multi_buffer.update(cx, |buffer, cx| {
+                buffer
+                    .edit(
+                        vec![Edit::insert(MultiBufferOffset::new(offset).into(), "n\n").unwrap()],
+                        TransactionMetadata::default(),
+                        cx,
+                    )
+                    .expect("测试编辑应成功");
+            });
+        });
+        len += 2;
+        cx.run_until_parked();
+    }
+    cx.refresh().expect("压力编辑后的软换行帧应能完成布局");
+}
+
 #[gpui::test]
 fn external_reparse_refreshes_added_diff_syntax_highlights(cx: &mut TestAppContext) {
     let source = test_buffer(cx, "fn main() {\n    let value = 1;\n}\n");
@@ -2586,6 +2641,52 @@ fn staging_a_hunk_with_soft_wrap_keeps_wrap_map_invariant(cx: &mut TestAppContex
             .is_wrapped()),
         "暂存 hunk 后组合文档的软换行必须保留"
     );
+}
+
+/// 回归：暂存"删除型" hunk 会移除旧侧 excerpt、让组合文档行数减少，
+/// 软换行下的 Wrap 变换树必须跟着收缩，不能保留旧覆盖。
+#[gpui::test]
+fn staging_a_deleted_hunk_with_soft_wrap_keeps_wrap_map_invariant(cx: &mut TestAppContext) {
+    let fill = "x".repeat(120);
+    let mut working = String::new();
+    let mut base = String::new();
+    for index in 0..1500 {
+        if index == 750 {
+            // 只有 base / index 有这一行；工作区删除了它。
+            base.push_str(&format!("deleted {index} {fill}\r\n"));
+        } else {
+            working.push_str(&format!("line {index} {fill}\r\n"));
+            base.push_str(&format!("line {index} {fill}\r\n"));
+        }
+    }
+    let buffer = test_buffer(cx, &working);
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)
+    });
+    cx.run_until_parked();
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx);
+    });
+    cx.run_until_parked();
+    cx.refresh().expect("软换行模式下的首帧应能完成布局");
+    let source = buffer.clone();
+    inject_editor_diff(&editor, &source, Vec::new(), Some(Arc::from(base)), cx);
+    assert!(
+        cx.read_entity(&editor, |editor, cx| !editor.diff_hunks(cx).is_empty()),
+        "必须先出现删除型 hunk"
+    );
+    editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
+    cx.run_until_parked();
+    cx.refresh().expect("展开 hunk 后的软换行帧应能完成布局");
+    // 暂存：旧侧 excerpt 被移除，组合文档行数减少 1。
+    inject_editor_diff(&editor, &source, Vec::new(), Some(Arc::from(working)), cx);
+    cx.run_until_parked();
+    cx.refresh()
+        .expect("暂存删除型 hunk 后的软换行 diff 视图应能完成布局");
 }
 
 /// 回归：在只读的 Deleted 旧行上尝试编辑（被拒）后，光标移回工作区仍可正常编辑。

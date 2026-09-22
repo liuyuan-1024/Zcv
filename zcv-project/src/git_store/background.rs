@@ -203,7 +203,6 @@ pub(super) async fn execute_job(
             JobResult::GitOperation(result)
         }
         GitJob::ApplyHunkEdits {
-            operation,
             edits,
             next_index_text,
             working_snapshot,
@@ -213,18 +212,20 @@ pub(super) async fn execute_job(
                 .into_iter()
                 .enumerate()
                 .find_map(|(index, repository)| {
-                    grouped_paths[index].first().map(|path| {
-                        if let Some(index_text) = &next_index_text {
-                            repository.set_index_text(path.as_path(), index_text)
-                        } else {
-                            repository.apply_hunk_edits(
-                                operation,
+                    grouped_paths[index]
+                        .first()
+                        .map(|path| match &next_index_text {
+                            Some(index_text) => {
+                                repository.set_index_text(path.as_path(), index_text)
+                            }
+                            None => repository.restore_worktree(
                                 path.as_path(),
                                 &edits,
-                                &working_snapshot,
-                            )
-                        }
-                    })
+                                working_snapshot
+                                    .as_ref()
+                                    .expect("Restore 必须携带工作区文本快照"),
+                            ),
+                        })
                 })
                 .unwrap_or_else(|| Err(anyhow::anyhow!("hunk 所属仓库已不可用")));
             JobResult::GitOperation(result)

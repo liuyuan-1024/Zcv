@@ -3,6 +3,7 @@
 //! 本文件保证后台读取可脱离可变 Buffer；它不提交编辑、不维护历史，也不暴露 Ropey 内部类型。
 
 use std::borrow::Cow;
+use std::cmp::Ordering;
 
 use crate::{
     Affinity, Anchor, BufferConfig, BufferVersion, ByteOffset, CharOffset, Line, LineRange,
@@ -16,7 +17,7 @@ use crate::{
         text_range_for_line_range,
     },
     storage::{RopeySnapshot, TextRead, text_coordinate_gateway},
-    tracking::{CoordinateIndex, EditLog},
+    tracking::{CoordinateIndex, EditLog, InsertionIndex},
 };
 
 /// 不可变文本快照。
@@ -29,6 +30,8 @@ pub struct Snapshot {
     edit_log: EditLog,
     /// 不随编辑日志预算衰减的版本坐标索引，供 Anchor 与跨版本坐标解析。
     coordinate_index: CoordinateIndex,
+    /// 稳定插入身份索引：Anchor 的文档序排序依据。
+    insertions: InsertionIndex,
 }
 
 impl Snapshot {
@@ -38,6 +41,7 @@ impl Snapshot {
         config: BufferConfig,
         edit_log: EditLog,
         coordinate_index: CoordinateIndex,
+        insertions: InsertionIndex,
     ) -> Self {
         Self {
             storage,
@@ -45,6 +49,7 @@ impl Snapshot {
             config,
             edit_log,
             coordinate_index,
+            insertions,
         }
     }
 
@@ -102,20 +107,23 @@ impl Snapshot {
             .batch_since_in_range(since, self.version, range)
     }
 
-    /// 自 since 版本到本快照版本是否发生过净文本编辑。
+    /// 自 `since` 版本到本快照版本，可见片段集合是否发生变化。
     ///
-    /// 当前实现取编辑日志组合后的净 Patch 判空：插入后删除、插入后撤销等互相抵消的序列判为无编辑；
-    /// 同文本替换仍判为有编辑（净 Patch 保留替换区间）。
+    /// 对齐 Zed `BufferSnapshot::has_edits_since` 的 fragment 可见性语义：
+    /// 逐个片段比较「在 since 时是否可见」与「现在是否可见」，因此「插入后删除」判为无编辑。
+    /// 「删除后用 undo 原位还原同一文本」需要 undo map 恢复片段身份，当前仍判为有编辑；
+    /// 该更窄的偏离登记在 `docs/编辑器架构.md` §18.2。
     ///
-    /// 这不是 Zed `BufferSnapshot::has_edits_since` 的 fragment 可见性语义：
-    /// Zed 逐个 fragment 比较「在 since 时是否可见」与「现在是否可见」，
-    /// 因此「删除后用 undo 原位还原同一文本」判为无编辑，而这里因净 Patch 是替换区间判为有编辑。
-    /// Zcv 的 rope + 版本化编辑日志不保存 fragment 身份，精确对齐需要文本内核记录片段身份与 undo 可见性。
-    /// 该偏离已登记在 `docs/编辑器架构.md` §18.2；登记消除前，本方法保持上述净 Patch 语义。
-    ///
-    /// `since` 已退出编辑日志窗口时返回显式错误，调用方必须丢弃而不是猜测。
+    /// `since` 晚于当前版本时显式失败。片段可见性不随编辑日志预算衰减，因此不要求 `since` 在编辑日志窗口内。
     pub fn has_edits_since(&self, since: BufferVersion) -> TextResult<bool> {
-        Ok(!self.edits_since(since)?.patch().is_empty())
+        if since > self.version {
+            return Err(AnchorError::TargetBeforeSource {
+                anchor: since,
+                target: self.version,
+            }
+            .into());
+        }
+        Ok(self.insertions.has_edits_since(since))
     }
 
     /// 自 `since` 版本到本快照版本、与 `range` 相交的范围内是否发生过净文本编辑。
@@ -196,12 +204,47 @@ impl Snapshot {
 
     /// 在 `offset` 处创建吸附到插入文本之前的锚点。
     pub fn anchor_before(&self, offset: ByteOffset) -> Anchor {
-        Anchor::new(self.version, offset).with_affinity(Affinity::Before)
+        self.anchor_with_affinity(offset, Affinity::Before)
     }
 
     /// 在 `offset` 处创建吸附到插入文本之后的锚点。
     pub fn anchor_after(&self, offset: ByteOffset) -> Anchor {
-        Anchor::new(self.version, offset).with_affinity(Affinity::After)
+        self.anchor_with_affinity(offset, Affinity::After)
+    }
+
+    pub fn anchor_with_affinity(&self, offset: ByteOffset, affinity: Affinity) -> Anchor {
+        let anchor = Anchor::new(self.version, offset).with_affinity(affinity);
+        self.attach_insertion(anchor, offset)
+    }
+
+    /// 给锚点绑定 `offset` 处的稳定插入身份；空文档保持未绑定。
+    pub fn attach_insertion(&self, anchor: Anchor, offset: ByteOffset) -> Anchor {
+        match self.insertions.position_at(offset.get()) {
+            Some(position) => anchor.with_insertion(position.id, position.offset),
+            None => anchor,
+        }
+    }
+
+    /// 按稳定插入身份比较锚点的文档序；不解析文本坐标。
+    pub fn stable_anchor_cmp(&self, left: &Anchor, right: &Anchor) -> Ordering {
+        let left_locator = self
+            .insertions
+            .locator_of(left.insertion(), left.insertion_offset());
+        let right_locator = self
+            .insertions
+            .locator_of(right.insertion(), right.insertion_offset());
+        match (left_locator, right_locator) {
+            (Some(a), Some(b)) => a
+                .cmp(b)
+                .then_with(|| left.insertion_offset().cmp(&right.insertion_offset()))
+                .then_with(|| left.affinity().cmp(&right.affinity())),
+            (None, Some(_)) => Ordering::Less,
+            (Some(_), None) => Ordering::Greater,
+            (None, None) => left
+                .insertion()
+                .cmp(&right.insertion())
+                .then_with(|| left.affinity().cmp(&right.affinity())),
+        }
     }
 
     pub fn config(&self) -> &BufferConfig {

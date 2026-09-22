@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferSnapshot};
-use zcv_text::{Affinity, ByteOffset, PositionMap};
+use zcv_text::{Affinity, ByteOffset, PositionMap, TextResult};
 
 use super::Selection;
 
@@ -138,33 +138,19 @@ impl SelectionSet<MultiBufferOffset> {
 impl SelectionSet<MultiBufferAnchor> {
     /// 按当前快照把源锚点集合解析为偏移集合。
     ///
-    /// 不可解析的选区被显式丢弃并保留其余；全部无法解析时返回 `None`，
-    /// 绝不静默兜底为文首 caret（T-8：目标更旧或端点退出投影时显式失败）。
-    /// 丢弃 primary 选区时，primary 归到其之前最近的存活选区，否则取第一个。
+    /// 选区和滚动属于位置状态：源退出投影时由组合层定位到结构边界，不能丢弃某个选区或临时造一个文首 caret。
+    /// 源 Anchor 版本链失效时返回错误，由 Editor 的唯一选区同步边界显式报告。
     pub(crate) fn resolve(
         &self,
         snapshot: &MultiBufferSnapshot,
-    ) -> Option<SelectionSet<MultiBufferOffset>> {
-        let mut resolved = Vec::with_capacity(self.selections.len());
-        let mut primary = None;
-        let mut nearest_before = None;
-        for (index, selection) in self.selections.iter().enumerate() {
-            let Some(selection) = selection.resolve(snapshot) else {
-                continue;
-            };
-            let resolved_index = resolved.len();
-            if index == self.primary_index {
-                primary = Some(resolved_index);
-            } else if index < self.primary_index {
-                nearest_before = Some(resolved_index);
-            }
-            resolved.push(selection);
-        }
-        if resolved.is_empty() {
-            return None;
-        }
-        let primary = primary.or(nearest_before).unwrap_or(0);
-        Some(SelectionSet::from_selections(resolved, primary))
+    ) -> TextResult<SelectionSet<MultiBufferOffset>> {
+        let resolved = self
+            .selections
+            .iter()
+            .copied()
+            .map(|selection| selection.resolve(snapshot))
+            .collect::<TextResult<Vec<_>>>()?;
+        Ok(SelectionSet::from_selections(resolved, self.primary_index))
     }
 }
 

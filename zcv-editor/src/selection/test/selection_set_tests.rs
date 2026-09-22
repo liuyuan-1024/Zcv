@@ -48,9 +48,9 @@ fn adjacent_non_empty_selections_do_not_merge_but_caret_touching_does() {
     assert_eq!(overlapping.primary().range(), range(0, 10));
 }
 
-/// 锚点全部无法映射到目标快照时必须显式返回 None，不得静默兜底为文首 caret。
+/// 源 Anchor 不能推进到目标快照时，选区解析必须显式失败。
 #[test]
-fn resolve_returns_none_instead_of_zero_when_no_anchor_maps() {
+fn resolve_reports_anchor_version_failure() {
     let mut buffer = Buffer::from_text("hello".to_owned(), BufferConfig::default())
         .expect("测试 Buffer 应能创建");
     let old = MultiBufferSnapshot::from(buffer.snapshot());
@@ -64,14 +64,14 @@ fn resolve_returns_none_instead_of_zero_when_no_anchor_maps() {
     // 锚点来自更新版本，解析到更旧快照显式失败。
     let anchor = new.anchor_at(MultiBufferOffset::new(3), Affinity::After);
     assert!(
-        SelectionSet::caret(anchor).resolve(&old).is_none(),
-        "不可解析锚点必须显式失败，不能返回 caret(ZERO)"
+        SelectionSet::caret(anchor).resolve(&old).is_err(),
+        "不可解析锚点必须作为版本错误上报，不能返回 caret(ZERO)"
     );
 }
 
-/// 部分锚点不可解析时丢弃它们并保留其余，primary 归到存活选区。
+/// 选区集合是 Editor 的完整交互状态；一个端点版本失效时不能静默丢弃部分选区。
 #[test]
-fn resolve_keeps_resolvable_anchors_when_some_fail() {
+fn resolve_does_not_drop_partially_invalid_selections() {
     let mut buffer = Buffer::from_text("hello".to_owned(), BufferConfig::default())
         .expect("测试 Buffer 应能创建");
     let old = MultiBufferSnapshot::from(buffer.snapshot());
@@ -88,7 +88,8 @@ fn resolve_keeps_resolvable_anchors_when_some_fail() {
         vec![Selection::caret(unresolvable), Selection::caret(resolvable)],
         0,
     );
-    let resolved = set.resolve(&old).expect("仍有可解析锚点时必须保留");
-    assert_eq!(resolved.as_slice().len(), 1);
-    assert_eq!(resolved.primary().head(), MultiBufferOffset::new(1));
+    assert!(
+        set.resolve(&old).is_err(),
+        "选区版本失效必须上报，不能借由丢弃 primary 修复状态"
+    );
 }

@@ -40,8 +40,14 @@ impl SearchMatchAnchor {
     /// 在当前快照上解析匹配范围；锚点已退出投影或版本无法映射时显式失败。
     fn resolve(&self, snapshot: &MultiBufferSnapshot) -> Option<MultiBufferRange> {
         MultiBufferRange::new(
-            snapshot.resolve_anchor(&self.range.start)?,
-            snapshot.resolve_anchor(&self.range.end)?,
+            snapshot
+                .projected_anchor_offset(&self.range.start)
+                .ok()
+                .flatten()?,
+            snapshot
+                .projected_anchor_offset(&self.range.end)
+                .ok()
+                .flatten()?,
         )
         .ok()
     }

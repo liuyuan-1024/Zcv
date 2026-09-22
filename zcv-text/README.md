@@ -10,6 +10,7 @@ Zcv 的纯文本内核：文本存储、坐标模型、事务变异、历史系�
 
 - **编辑日志（`EditLog`）**：保存带文本的净编辑，供 `edits_since` 增量同步与 undo/redo 回放使用；受 `max_edit_history_entries` / `max_edit_history_bytes` 从最老端裁剪。
 - **坐标索引（`CoordinateIndex`）**：只保存 old range 与 replacement 长度等坐标增量，不复制替换文本，永不裁剪。`Anchor::resolve_in` 通过它把任意仍存在的旧版本坐标映射到当前版本。
+- **插入索引（`InsertionIndex`）**：为每个插入分配稳定 `Locator`，并记录每个片段的插入/删除操作与撤销计数；片段可见性由此推导，供 `Anchor` 稳定文档序比较与 `has_edits_since` 的 fragment 可见性语义使用，永不裁剪。
 
 外部文本更新先计算旧、新文本的差异，再作为普通事务提交；只有差异本身覆盖全文时，订阅才收到全文替换编辑。不存在独立的 `reset`、内容代际或重锚路径。`Anchor::resolve_in` 始终沿坐标索引映射到目标版本；目标快照比锚点更旧，或坐标索引无法覆盖锚点版本时，返回显式错误（`AnchorError::TargetBeforeSource` / `AnchorError::VersionNotIndexed`）。
 
@@ -19,7 +20,8 @@ Zcv 的纯文本内核：文本存储、坐标模型、事务变异、历史系�
 
 `Snapshot` 是唯一读取边界，提供 T-7 要求的版本查询：
 
-- `has_edits_since` / `has_edits_since_in_range`：判断自旧版本以来、或与指定旧区间相交的范围内是否发生过净编辑。
+- `has_edits_since`：按 fragment 可见性语义判断自旧版本以来可见片段集合是否变化（插入后删除判为无编辑）。
+- `has_edits_since_in_range`：判断与指定旧区间相交的范围内是否发生过净编辑。
 - `offsets_to_version` / `range_to_version`：通过 `PositionMap` 的反向映射把当前快照坐标映射回旧版本。
 - `text_for_version`：按版本倒序应用编辑日志保留的逆编辑，重建该历史版本的文本。
 
@@ -32,8 +34,8 @@ T-9 的基线派生入口是 `Buffer::snapshot_with_edits` 与 `Buffer::fast_for
 - `Buffer`：文本内容、版本、保存点、事务管线与历史的唯一可写所有者。
 - `Snapshot`：不可变、可廉价克隆的读取边界，携带版本。
 - `EditedBufferSnapshot`：`snapshot_with_edits` 规划的完整派生状态，等待 `fast_forward` 版本校验后整体换入。
-- `Anchor`：绑定版本与吸附方向的稳定位置，不持有 Buffer。
-- `EditLog` / `CoordinateIndex`：带文本编辑事实与不衰减坐标增量，二者在同一次提交追加。
+- `Anchor`：绑定版本、吸附方向与稳定插入身份的稳定位置，不持有 Buffer；插入身份用于不解析文本坐标的文档序比较。
+- `EditLog` / `CoordinateIndex` / `InsertionIndex`：带文本编辑事实、不衰减坐标增量与稳定插入身份，在同一次提交追加。
 
 ## 验证
 

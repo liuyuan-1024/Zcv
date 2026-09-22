@@ -10,7 +10,7 @@
 - 未删除拼接偏移（组合层内部 `ExcerptOffset`）：各 excerpt 可见内容拼接后的偏移，不含展开的删除段。
 - `MultiBufferOffset` / `MultiBufferPoint` / `MultiBufferRow`：最终组合文档偏移，含展开的删除段。
 
-excerpt 结构由 `SumTree` 承载，查询通过 summary 与连续 cursor 推进，不构造扁平数组后二分。`MultiBufferAnchor` 是长期位置；excerpt 的完整路径身份由 `PathKey` 表达，锚点只携带快照内的紧凑序号。
+excerpt 结构由 `SumTree` 承载，查询通过 summary 与连续 cursor 推进，不构造扁平数组后二分。`MultiBufferAnchor` 是长期位置；excerpt 的完整路径身份由 `PathKey` 表达，锚点只携带快照内的紧凑序号。`anchor_offset` 为选择、滚动等位置状态提供总坐标解析：路径或片段退出投影时按当前结构落到相邻边界，空投影落到文首。`projected_anchor_offset` 只返回仍属于当前源片段的位置，供折叠、搜索等附属状态在源退出投影时失效；源 Anchor 的版本错误不会被转换成边界坐标。
 
 ## 权威与订阅
 

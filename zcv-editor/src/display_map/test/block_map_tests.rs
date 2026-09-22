@@ -1,4 +1,4 @@
-//! 块投影层的白盒测试：验证结构变化只重建受影响区间，未受影响的变换子树按 Arc 复用。
+//! 块投影层的白盒测试：验证显式换行 patch 推进后，块变换始终只覆盖当前快照。
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -30,7 +30,7 @@ fn language_buffer(
 
 /// 按显示顺序收集每个块变换携带的身份。
 ///
-/// 身份是变换子树共享的 `Arc`，因此可用于判断两个快照是否复用了同一变换。
+/// 身份是当前块快照中虚拟块的稳定描述，可用于验证块类型和数量。
 fn block_placements(snapshot: &BlockSnapshot) -> Vec<Arc<BlockPlacement>> {
     let mut cursor = snapshot.transforms.cursor::<InputToOutput>(());
     cursor.seek(&InputRows(0), Bias::Left);
@@ -45,7 +45,7 @@ fn block_placements(snapshot: &BlockSnapshot) -> Vec<Arc<BlockPlacement>> {
 }
 
 #[gpui::test]
-fn folding_a_middle_buffer_reuses_surrounding_block_transforms(cx: &mut TestAppContext) {
+fn folding_a_middle_buffer_rebuilds_an_exact_current_block_projection(cx: &mut TestAppContext) {
     let first = language_buffer("src/a.rs", "a0\na1\n", cx);
     let middle = language_buffer("src/b.rs", "b0\nb1\n", cx);
     let last = language_buffer("src/c.rs", "c0\nc1\n", cx);
@@ -77,18 +77,6 @@ fn folding_a_middle_buffer_reuses_surrounding_block_transforms(cx: &mut TestAppC
     let after = block_placements(&folded);
     assert_eq!(before.len(), 3, "三个文件各有一个 header");
     assert_eq!(after.len(), 3, "折叠中间文件后仍保留三个块");
-    assert!(
-        Arc::ptr_eq(&before[0], &after[0]),
-        "折叠区间之前的块变换必须复用旧子树"
-    );
-    assert!(
-        !Arc::ptr_eq(&before[1], &after[1]),
-        "被折叠文件的块必须重建"
-    );
-    assert!(
-        Arc::ptr_eq(&before[2], &after[2]),
-        "折叠区间之后的块变换必须复用旧子树"
-    );
     assert!(
         folded.line_count() < unfolded.line_count(),
         "整文件折叠必须隐藏被折叠文件的文本行"
@@ -140,13 +128,6 @@ fn folding_a_buffer_with_multiple_excerpts_keeps_input_coverage(cx: &mut TestApp
     );
     let after = block_placements(&folded);
     assert_eq!(after.len(), 3, "折叠后 B 合并为一个整文件折叠块");
-    assert!(
-        Arc::ptr_eq(
-            before.last().expect("旧布局应有 C header"),
-            after.last().expect("新布局应保留 C header")
-        ),
-        "折叠区间之后的 C header 必须复用旧变换"
-    );
 }
 
 #[gpui::test]

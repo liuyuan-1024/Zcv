@@ -11,7 +11,7 @@ use crate::{
 };
 
 /// 同点插入时旧位置吸附到插入文本前还是插入文本后。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum Affinity {
     /// 吸附到插入文本之前。
     Before,

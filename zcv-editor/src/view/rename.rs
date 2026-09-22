@@ -221,7 +221,7 @@ impl Editor {
         let snapshot = self
             .multi_buffer
             .update(cx, |buffer, cx| buffer.snapshot(cx));
-        let Some(offset) = snapshot.resolve_anchor(&offset) else {
+        let Some(offset) = snapshot.projected_anchor_offset(&offset).ok().flatten() else {
             self.finish_local_rename(window, cx);
             cx.emit(EditorEvent::Error(format!(
                 "重命名局部绑定失败：{}",
@@ -348,7 +348,18 @@ fn resolve_range(
     snapshot: &MultiBufferSnapshot,
     range: &Range<MultiBufferAnchor>,
 ) -> Option<Range<usize>> {
-    Some(snapshot.resolve_anchor(&range.start)?.get()..snapshot.resolve_anchor(&range.end)?.get())
+    Some(
+        snapshot
+            .projected_anchor_offset(&range.start)
+            .ok()
+            .flatten()?
+            .get()
+            ..snapshot
+                .projected_anchor_offset(&range.end)
+                .ok()
+                .flatten()?
+                .get(),
+    )
 }
 
 fn local_rename_geometry_for_layout(

@@ -10,6 +10,7 @@ path = "src/text.rs"
 [dependencies]
 imara-diff.workspace = true
 ropey.workspace = true
+sum-tree.workspace = true
 thiserror.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true

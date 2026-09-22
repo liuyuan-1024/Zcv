@@ -13,7 +13,7 @@ use crate::{
     BufferConfig, BufferId, BufferVersion, TransactionId,
     storage::RopeyStorage,
     text_changes::TextChangeTopic,
-    tracking::{CoordinateIndex, EditLog},
+    tracking::{CoordinateIndex, EditLog, InsertionIndex},
 };
 
 mod coordinates;
@@ -51,6 +51,8 @@ pub struct Buffer {
     edit_log: EditLog,
     /// 不随编辑日志预算裁剪的版本坐标索引：Anchor 解析与跨版本坐标映射的唯一事实。
     coordinate_index: CoordinateIndex,
+    /// 不随编辑日志预算裁剪的稳定插入身份索引：Anchor 文档序排序的唯一事实。
+    insertions: InsertionIndex,
     history: history::HistoryState,
     /// 进行中的编辑会话（`start_transaction` 开启，`end_transaction` 提交）。
     session: Option<history::TransactionSession>,

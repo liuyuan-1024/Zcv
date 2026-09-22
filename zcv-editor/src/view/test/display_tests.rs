@@ -2685,6 +2685,38 @@ fn diff_expansion_preserves_selection_source_anchor(cx: &mut TestAppContext) {
     );
 }
 
+/// 回归：提交暂存内容后 ProjectDiff 的 diff 输入会变为空，但 Editor 仍沿同一条
+/// 选区与渲染管线读取空投影，不能因原 source Anchor 已退出投影而崩溃。
+#[gpui::test]
+fn empty_diff_projection_keeps_selection_at_the_structural_boundary(cx: &mut TestAppContext) {
+    let source = test_file_buffer(cx, "src/a.rs", "a\nworking\nc\n");
+    let combined = cx.new(MultiBuffer::empty_read_only);
+    let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
+    inject_file_diff(&editor, &source, Arc::from("a\nold\nc\n"), cx);
+
+    editor.update(cx, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(2)), cx);
+        editor.set_diff_files(Vec::new(), cx);
+    });
+
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(
+            editor.display_snapshot(cx).buffer_snapshot().len_bytes(),
+            MultiBufferOffset::ZERO,
+            "提交后没有剩余 diff 时组合投影必须为空"
+        );
+        assert_eq!(
+            editor.selections(cx),
+            SelectionSet::caret(MultiBufferOffset::ZERO),
+            "退出投影的选区必须定位到空投影的唯一结构边界"
+        );
+        assert!(
+            editor.render_snapshot(cx).len_bytes() == MultiBufferOffset::ZERO,
+            "渲染读取空投影时不得再触发选区 Anchor panic"
+        );
+    });
+}
+
 /// 回归：外部源变更后选区源 Anchor 按当前快照解析，重建投影后仍落在同一逻辑源位置。
 #[gpui::test]
 fn external_source_change_advances_selection_source_anchor(cx: &mut TestAppContext) {

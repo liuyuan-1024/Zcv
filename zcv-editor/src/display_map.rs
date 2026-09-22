@@ -339,11 +339,15 @@ impl DisplaySnapshot {
                 let range = crease.range();
                 let start = self
                     .buffer_snapshot()
-                    .resolve_anchor(&range.start)
+                    .projected_anchor_offset(&range.start)
+                    .ok()
+                    .flatten()
                     .and_then(|offset| self.buffer_snapshot().byte_to_line(offset).ok())?;
                 let end = self
                     .buffer_snapshot()
-                    .resolve_anchor(&range.end)
+                    .projected_anchor_offset(&range.end)
+                    .ok()
+                    .flatten()
                     .and_then(|offset| self.buffer_snapshot().byte_to_line(offset).ok())?;
                 (start <= line && line <= end).then_some((crease, start, end))
             })
@@ -377,13 +381,17 @@ impl DisplaySnapshot {
             })
             .filter(|range| {
                 buffer
-                    .resolve_anchor(&range.start)
+                    .projected_anchor_offset(&range.start)
+                    .ok()
+                    .flatten()
                     .and_then(|offset| buffer.byte_to_line(offset).ok())
                     == Some(line)
             })
             .min_by_key(|range| {
                 buffer
-                    .resolve_anchor(&range.end)
+                    .projected_anchor_offset(&range.end)
+                    .ok()
+                    .flatten()
                     .map_or(usize::MAX, |end| end.get())
             })
             .map(Crease::simple)
@@ -406,10 +414,14 @@ impl DisplaySnapshot {
             })
             .filter_map(|range| {
                 let start = buffer
-                    .resolve_anchor(&range.start)
+                    .projected_anchor_offset(&range.start)
+                    .ok()
+                    .flatten()
                     .and_then(|offset| buffer.byte_to_line(offset).ok())?;
                 let end = buffer
-                    .resolve_anchor(&range.end)
+                    .projected_anchor_offset(&range.end)
+                    .ok()
+                    .flatten()
                     .and_then(|offset| buffer.byte_to_line(offset).ok())?;
                 (start <= line && line <= end).then_some((range, start, end))
             })
@@ -955,10 +967,14 @@ impl DisplayMap {
             self.folded_buffers.remove(&buffer_id)
         };
         if changed {
-            // 折叠是块层策略变化，不是换行重排：不
-            // 合成 WrapEdit，由 BlockSnapshot::sync 依据 folded_buffers 重算并推进块几何代际。
-            let wrap_snapshot = self.wrap_map.read(cx).snapshot().clone();
-            self.commit_snapshot(&wrap_snapshot, &[], cx);
+            // 折叠策略本身不产生换行编辑，但不能绕过 WrapMap 直接读取当前快照。
+            // 后台重排可能已在此之前完成；
+            // 必须从唯一同步入口取走其显式 WrapEdit，再与本次块策略变化一起提交，不能把“新快照 + 空 patch”交给 BlockMap。
+            let tab_snapshot = self.tab_map.snapshot().clone();
+            let (wrap_snapshot, wrap_edits) = self
+                .wrap_map
+                .update(cx, |map, cx| map.sync(tab_snapshot, &[], cx));
+            self.commit_snapshot(&wrap_snapshot, &wrap_edits, cx);
         }
     }
 
@@ -1080,7 +1096,10 @@ impl DisplayMap {
         wrap_snapshot: &WrapSnapshot,
         wrap_edits: &[WrapEdit],
     ) -> BlockSnapshot {
-        let excerpts = self.fold_map.snapshot().buffer_snapshot().excerpts_arc();
+        // BlockMap 只能消费同一条下层快照链中的事实。
+        // 换行层可能仍处于上一帧的急切插值快照；
+        // 此时从当前 FoldMap 另取 excerpts 会把两个版本混进同一次块投影同步，导致块锚点和变换输入空间不再对应。
+        let excerpts = wrap_snapshot.buffer_snapshot().excerpts_arc();
         // 消费换行编辑流：块布局未变时复用，几何变化时按显式分支重建。
         match &self.snapshot {
             Some(previous) => previous.block_snapshot.sync(

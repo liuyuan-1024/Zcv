@@ -67,6 +67,7 @@ impl Buffer {
             self.config().clone(),
             state.edit_log.clone(),
             state.coordinate_index.clone(),
+            state.insertions.clone(),
         );
         Ok(EditedBufferSnapshot {
             base_version,

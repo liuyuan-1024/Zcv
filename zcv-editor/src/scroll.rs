@@ -377,6 +377,6 @@ fn resolve_display_point(
     snapshot: &DisplaySnapshot,
     anchor: &MultiBufferAnchor,
 ) -> Option<DisplayPoint> {
-    let offset = snapshot.buffer_snapshot().resolve_anchor(anchor)?;
+    let offset = snapshot.buffer_snapshot().anchor_offset(anchor).ok()?;
     snapshot.offset_to_display_point(offset).ok()
 }

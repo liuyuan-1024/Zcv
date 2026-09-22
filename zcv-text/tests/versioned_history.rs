@@ -47,8 +47,8 @@ fn has_edits_since_tracks_net_edits_between_versions() {
 
 #[test]
 fn has_edits_since_reports_a_real_reinsert_after_delete() {
-    // 删除一段文本后把同样文本原位插回：Zed 判定旧 fragment 被删除、新 fragment 插入，属于有编辑；
-    // Zcv 的净 Patch 是替换区间，同样判为有编辑。
+    // 删除一段文本后把同样文本原位插回：旧 fragment 被删除、新 fragment 插入，属于有编辑。
+    // 这里不是 undo 恢复，而是新插入，因此不共享原片段身份。
     let mut buffer = buffer("abc");
     let v0 = buffer.version();
     buffer
@@ -66,20 +66,27 @@ fn has_edits_since_reports_a_real_reinsert_after_delete() {
 }
 
 #[test]
-fn has_edits_since_after_delete_then_undo_documents_the_zed_divergence() {
-    // 登记 docs/编辑器架构.md §18.2：Zed 的 fragment 可见性语义把「删除后用 undo 原位还原同一文本」
-    // 判为无编辑（fragment 恢复可见），Zcv 当前净 Patch 实现把 delete + undo 组合成同文本替换，仍判为有编辑。
+fn has_edits_since_after_delete_then_undo_matches_zed() {
+    // 对齐 docs/编辑器架构.md §18.2：undo 回放按被回退的版本区间恢复原片段可见性，等价 Zed 的 undo map，
+    // 因此「删除后用 undo 原位还原同一文本」判为无编辑。
     let mut buffer = buffer("abc");
     let v0 = buffer.version();
     buffer
         .edit([Edit::delete(range(1, 2))], TransactionMetadata::default())
         .unwrap();
+    let v1 = buffer.version();
     buffer.undo().unwrap().expect("undo 应成功");
 
     assert_eq!(buffer_text(&buffer), "abc");
+    // 相对删除前：片段可见性恢复原状，判为无编辑。
     assert!(
-        buffer.snapshot().has_edits_since(v0).unwrap(),
-        "当前为净 Patch 语义（有编辑）；对齐 Zed 后此断言应改为 false"
+        !buffer.snapshot().has_edits_since(v0).unwrap(),
+        "undo 恢复原片段可见性后应判为无编辑"
+    );
+    // 相对删除后：该片段当时不可见、现在可见，属于有编辑。可见性不能因 undo 被重写掉。
+    assert!(
+        buffer.snapshot().has_edits_since(v1).unwrap(),
+        "删除后的历史版本上片段曾不可见，应判为有编辑"
     );
 }
 

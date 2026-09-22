@@ -1319,14 +1319,20 @@ impl MultiBuffer {
                             accum.content_range = Some(range.clone());
                             let output_start = start.bytes;
                             let source_start = excerpt.source_range.start().get();
+                            // 词级范围是源 Anchor；
+                            // 源编辑后它可能落后于当前 working 快照，必须按目标快照解析，不能把创建偏移当作当前坐标。
+                            let source_text = &self.state.sources[excerpt.source_index].text;
                             accum.new_word_diffs = info
                                 .buffer_word_diffs
                                 .iter()
-                                .map(|diff| {
-                                    let start =
-                                        output_start + diff.start.offset().get() - source_start;
-                                    let end = output_start + diff.end.offset().get() - source_start;
-                                    (DiffHunkKind::Added, start..end)
+                                .filter_map(|diff| {
+                                    let start = output_start
+                                        + diff.start.resolve_in(source_text).ok()?.get()
+                                        - source_start;
+                                    let end = output_start
+                                        + diff.end.resolve_in(source_text).ok()?.get()
+                                        - source_start;
+                                    Some((DiffHunkKind::Added, start..end))
                                 })
                                 .collect();
                         }
@@ -1504,8 +1510,19 @@ fn working_snapshot_for(file: &DiffState, cx: &App) -> Snapshot {
 
 /// 把 anchor hunk 展开为显示层需要的行坐标与旧侧字节范围。
 fn resolve_hunk(hunk: &DiffHunk, working: &Snapshot, base: Option<&Snapshot>) -> ResolvedHunk {
-    let buffer_lines = line_at_or_end(working, hunk.buffer_range.start.offset())
-        ..line_at_or_end(working, hunk.buffer_range.end.offset());
+    // hunk 定位是工作区 Anchor：
+    // 后台 diff 尚未按最新文本重算时它可能落后于当前快照，必须解析到目标快照，不能把创建偏移当作当前行坐标。
+    let buffer_start = hunk
+        .buffer_range
+        .start
+        .resolve_in(working)
+        .unwrap_or_else(|_| hunk.buffer_range.start.offset());
+    let buffer_end = hunk
+        .buffer_range
+        .end
+        .resolve_in(working)
+        .unwrap_or_else(|_| hunk.buffer_range.end.offset());
+    let buffer_lines = line_at_or_end(working, buffer_start)..line_at_or_end(working, buffer_end);
     let base_lines = base.map_or(0..0, |base| {
         line_at_or_end(base, ByteOffset::new(hunk.diff_base_byte_range.start))
             ..line_at_or_end(base, ByteOffset::new(hunk.diff_base_byte_range.end))

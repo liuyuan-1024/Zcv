@@ -6,7 +6,7 @@
 use zcv_multi_buffer::{
     MultiBufferAnchor, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot,
 };
-use zcv_text::Affinity;
+use zcv_text::{Affinity, TextResult};
 
 /// 一个选区，使用有序端点 + 方向模型。
 ///
@@ -127,10 +127,10 @@ impl Selection<MultiBufferAnchor> {
     pub(crate) fn resolve(
         self,
         snapshot: &MultiBufferSnapshot,
-    ) -> Option<Selection<MultiBufferOffset>> {
-        Some(Selection::from_parts(
-            snapshot.resolve_anchor(&self.start)?,
-            snapshot.resolve_anchor(&self.end)?,
+    ) -> TextResult<Selection<MultiBufferOffset>> {
+        Ok(Selection::from_parts(
+            snapshot.anchor_offset(&self.start)?,
+            snapshot.anchor_offset(&self.end)?,
             self.reversed,
             self.goal,
         ))

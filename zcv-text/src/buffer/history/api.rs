@@ -4,7 +4,7 @@
 
 use super::{HistoryEntry, HistoryNodeId, HistoryState};
 use crate::{
-    TextError, TextRange, TextResult, TransactionId, TransactionSource,
+    BufferVersion, TextError, TextRange, TextResult, TransactionId, TransactionSource,
     buffer::Buffer,
     config::LargeFilePolicy,
     position_map::{Affinity, PositionMap},
@@ -126,10 +126,16 @@ impl Buffer {
     fn replay_history_batches(
         &mut self,
         kind: ReplayKind,
-        batches: Vec<EditList>,
+        batches: Vec<(BufferVersion, BufferVersion, EditList)>,
     ) -> TextResult<()> {
-        for tx_edits in batches {
-            self.apply_edit_list(self.version, tx_edits, kind.source())?;
+        for (start_version, end_version, tx_edits) in batches {
+            // undo / redo 都按撤销操作切换片段可见性；正向文本由存储应用，索引不重写片段状态。
+            self.apply_edit_list(
+                self.version,
+                tx_edits,
+                kind.source(),
+                Some((start_version, end_version)),
+            )?;
         }
         self.truncate_edit_history_to_budget();
         Ok(())

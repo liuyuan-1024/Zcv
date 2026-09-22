@@ -828,12 +828,46 @@ fn anchor_resolves_to_neighbor_path_after_removal(cx: &mut TestAppContext) {
         buffer.remove_excerpts_for_path(Path::new("src/b.rs"), cx)
     });
 
-    let resolved = cx.read_entity(&combined, |buffer, _| buffer.resolve_anchor(&anchor));
+    let resolved = cx.read_entity(&combined, |buffer, _| {
+        buffer
+            .anchor_offset(&anchor)
+            .expect("移除路径后的组合 Anchor 必须能定位到结构边界")
+    });
     assert_eq!(
         resolved,
-        Some(Into::into(ByteOffset::new(2))),
+        Into::into(ByteOffset::new(2)),
         "b.rs 消失后应回退到前驱 a.rs 的末尾"
     );
+}
+
+/// 结构性投影可以变为空；位置状态仍必须有确定的组合坐标。
+#[gpui::test]
+fn anchor_resolves_to_document_start_when_projection_becomes_empty(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "甲乙\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(vec![ExcerptRange::line_range(source, 0..1, cx)], cx);
+    });
+    let anchor = cx.read_entity(&combined, |buffer, _| {
+        buffer.anchor_at(ByteOffset::new("甲".len()), Affinity::After)
+    });
+
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.remove_excerpts_for_path(Path::new("src/a.rs"), cx);
+        assert_eq!(
+            buffer
+                .anchor_offset(&anchor)
+                .expect("空投影仍必须有文首结构边界"),
+            MultiBufferOffset::ZERO
+        );
+        assert_eq!(
+            buffer
+                .projected_anchor_offset(&anchor)
+                .expect("退出投影不是 Anchor 版本错误"),
+            None,
+            "附属状态不能迁移到空投影的文首"
+        );
+    });
 }
 
 #[gpui::test]
@@ -1760,7 +1794,7 @@ fn composite_anchor_resolves_in_the_same_file_after_excerpt_refresh(cx: &mut Tes
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(vec![ExcerptRange::line_range(first, 0..2, cx)], cx);
         let offset = buffer
-            .resolve_anchor(&anchor)
+            .anchor_offset(&anchor)
             .expect("同一文件仍有 excerpt 时应解析到最近位置");
         assert_eq!(
             offset,
@@ -1791,8 +1825,8 @@ fn source_anchor_at_excerpt_boundary_resolves_to_following_excerpt(cx: &mut Test
         let boundary = snapshot.excerpts().nth(1).unwrap().output_range().start();
         let anchor = buffer.anchor_at(boundary, Affinity::After);
         assert_eq!(
-            buffer.resolve_anchor(&anchor),
-            Some(boundary),
+            buffer.anchor_offset(&anchor).expect("共享源边界必须能解析"),
+            boundary,
             "共享源边界必须归属后续 excerpt"
         );
     });
@@ -1823,7 +1857,7 @@ fn composite_anchor_falls_forward_when_its_file_leaves_the_diff(cx: &mut TestApp
     cx.update_entity(&combined, |buffer, cx| {
         buffer.set_excerpts(vec![ExcerptRange::line_range(third, 0..1, cx)], cx);
         let offset = buffer
-            .resolve_anchor(&anchor)
+            .anchor_offset(&anchor)
             .expect("原文件消失后应解析到仍存在的后继文件");
         assert_eq!(
             offset,
@@ -1869,9 +1903,9 @@ fn invalid_source_anchor_does_not_fall_forward_to_another_file(cx: &mut TestAppC
     };
 
     cx.read_entity(&combined, |buffer, _| {
-        assert!(buffer.resolve_anchor(&valid).is_some());
+        assert!(buffer.anchor_offset(&valid).is_ok());
         assert!(
-            buffer.resolve_anchor(&invalid).is_none(),
+            buffer.anchor_offset(&invalid).is_err(),
             "版本失效的源锚点不得落到邻近文件/坐标"
         );
     });
@@ -1898,8 +1932,8 @@ fn external_text_update_keeps_existing_anchor_mapped(cx: &mut TestAppContext) {
     cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         assert_eq!(
-            snapshot.resolve_anchor(&anchor),
-            Some(MultiBufferOffset::new(12)),
+            snapshot.anchor_offset(&anchor).expect("锚点应随源编辑推进"),
+            MultiBufferOffset::new(12),
             "锚点应随插入行下移"
         );
     });
@@ -3017,6 +3051,48 @@ fn expanded_modified_hunk_exposes_word_diffs_in_composite_coordinates(cx: &mut T
 }
 
 #[gpui::test]
+fn word_diffs_track_the_working_source_before_the_diff_recompute(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "let x = 2;\n", cx);
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![test_diff(source.clone(), "src/a.rs", "let x = 1;\n")]),
+            cx,
+        );
+        buffer.set_diff_hunks_expanded_by_default(true, cx);
+    });
+    cx.run_until_parked();
+
+    // 在词级范围之前插入文本：hunk 定位与几何不变，但 working 偏移整体右移。
+    // 后台 diff 尚未重算时，词级 Anchor 已落后于当前源快照。
+    cx.update_entity(&source, |source, cx| {
+        source
+            .edit(
+                [Edit::insert(MultiBufferOffset::new(0).into(), "AB").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("源编辑应成功");
+    });
+
+    let (text, word_diffs) = cx.update_entity(&combined, |buffer, cx| {
+        let text =
+            String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("组合文本必须是 UTF-8");
+        (text, buffer.diff_hunk_word_diffs().to_vec())
+    });
+    let added = word_diffs
+        .iter()
+        .flatten()
+        .find(|(kind, _)| *kind == DiffHunkKind::Added)
+        .expect("应有新增词级范围");
+    assert_eq!(
+        &text[added.1.clone()],
+        "2",
+        "词级范围必须按当前 working 快照解析，不能停留在创建偏移"
+    );
+}
+
+#[gpui::test]
 fn composite_edits_are_applied_to_the_underlying_buffer(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "zero\none\ntwo\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -3370,8 +3446,10 @@ fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &m
         let old_offset = "上下文\n".len() + 1;
         let old_anchor = buffer.anchor_at(ByteOffset::new(old_offset), Affinity::After);
         assert_eq!(
-            buffer.resolve_anchor(&old_anchor),
-            Some(Into::into(ByteOffset::new(old_offset)))
+            buffer
+                .anchor_offset(&old_anchor)
+                .expect("旧侧锚点应能在当前投影中解析"),
+            Into::into(ByteOffset::new(old_offset))
         );
     });
 

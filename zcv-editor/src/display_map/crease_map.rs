@@ -148,7 +148,11 @@ impl CreaseSnapshot {
         std::iter::from_fn(move || {
             while let Some(item) = cursor.item() {
                 cursor.next();
-                let Some(offset) = snapshot.resolve_anchor(&item.crease.range.start) else {
+                let Some(offset) = snapshot
+                    .projected_anchor_offset(&item.crease.range.start)
+                    .ok()
+                    .flatten()
+                else {
                     continue;
                 };
                 let Ok(line) = snapshot.byte_to_line(offset) else {
@@ -226,8 +230,8 @@ fn anchor_cmp(
     snapshot: &MultiBufferSnapshot,
 ) -> Ordering {
     match (
-        snapshot.resolve_anchor(left),
-        snapshot.resolve_anchor(right),
+        snapshot.projected_anchor_offset(left).ok().flatten(),
+        snapshot.projected_anchor_offset(right).ok().flatten(),
     ) {
         (Some(left), Some(right)) => Ord::cmp(&left.get(), &right.get()),
         // 无法解析的锚点不参与定位：把它们排在两端之外，游标查询会再按行过滤。

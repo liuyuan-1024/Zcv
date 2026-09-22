@@ -11,9 +11,9 @@ use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferRange};
 
 use std::any::TypeId;
 use std::borrow::Cow;
-use std::cmp::Reverse;
-use std::collections::BTreeMap;
-use std::ops::Range;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet};
+use std::ops::{Deref, DerefMut, Range};
 use std::sync::Arc;
 
 use gpui::prelude::*;
@@ -78,10 +78,7 @@ impl Eq for ChunkRenderer {}
 struct Fold {
     id: FoldId,
     /// 折叠端点的长期表示：组合锚点，跨文本编辑与投影重建由当前快照解析。
-    range: Range<MultiBufferAnchor>,
-    /// 当前快照下解析出的组合字节范围（派生缓存，随同步刷新）；折叠查询与拓扑索引都读它。
-    text_range: MultiBufferRange,
-    line_span: (Line, Line),
+    range: FoldRange,
     /// 折叠占位符描述；折叠创建时给定，跨重解析保留。
     placeholder: FoldPlaceholder,
 }
@@ -93,105 +90,167 @@ impl Fold {
         id: FoldId,
         range: MultiBufferRange,
         placeholder: FoldPlaceholder,
-    ) -> Option<Self> {
-        let line_span = fold_line_span(snapshot, range).ok()?;
-        Some(Self {
+    ) -> Self {
+        Self {
             id,
             // range_inside 语义：起点贴插入之后、终点贴插入之前，折叠不吸收边界插入。
-            range: snapshot.anchor_at(range.start(), Affinity::After)
-                ..snapshot.anchor_at(range.end(), Affinity::Before),
-            text_range: range,
-            line_span,
+            range: FoldRange(
+                snapshot.anchor_at(range.start(), Affinity::After)
+                    ..snapshot.anchor_at(range.end(), Affinity::Before),
+            ),
             placeholder,
-        })
+        }
     }
 
     /// 用新快照按锚点重新解析折叠范围；锚点已退出投影或范围退化时返回 None。
-    fn resolve(&self, snapshot: &MultiBufferSnapshot) -> Option<Self> {
-        let start = snapshot.resolve_anchor(&self.range.start)?;
-        let end = snapshot.resolve_anchor(&self.range.end)?;
-        let range = MultiBufferRange::new(start, end).ok()?;
+    fn resolve(&self, snapshot: &MultiBufferSnapshot) -> Option<ResolvedFold> {
+        let range = resolve_fold_range(snapshot, &self.range)?;
         let line_span = fold_line_span(snapshot, range).ok()?;
-        Some(Self {
-            id: self.id,
-            range: self.range.clone(),
+        Some(ResolvedFold {
+            fold: self.clone(),
             text_range: range,
             line_span,
-            placeholder: self.placeholder.clone(),
         })
     }
+}
 
-    fn text_range(&self) -> MultiBufferRange {
-        self.text_range
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedFold {
+    fold: Fold,
+    text_range: MultiBufferRange,
+    line_span: (Line, Line),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FoldRange(Range<MultiBufferAnchor>);
+
+impl Deref for FoldRange {
+    type Target = Range<MultiBufferAnchor>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for FoldRange {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Default for FoldRange {
+    fn default() -> Self {
+        Self(MultiBufferAnchor::Min..MultiBufferAnchor::Max)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FoldSummary {
+    start: MultiBufferAnchor,
+    end: MultiBufferAnchor,
+    min_start: MultiBufferAnchor,
+    max_end: MultiBufferAnchor,
+    count: usize,
+}
+
+impl Default for FoldSummary {
+    fn default() -> Self {
+        Self {
+            start: MultiBufferAnchor::Min,
+            end: MultiBufferAnchor::Max,
+            min_start: MultiBufferAnchor::Max,
+            max_end: MultiBufferAnchor::Min,
+            count: 0,
+        }
+    }
+}
+
+impl sum_tree::Summary for FoldSummary {
+    type Context<'a> = &'a MultiBufferSnapshot;
+
+    fn zero<'a>(_snapshot: Self::Context<'a>) -> Self {
+        Self::default()
+    }
+
+    fn add_summary<'a>(&mut self, summary: &Self, snapshot: Self::Context<'a>) {
+        if anchor_cmp(&summary.min_start, &self.min_start, snapshot) == Ordering::Less {
+            self.min_start = summary.min_start;
+        }
+        if anchor_cmp(&summary.max_end, &self.max_end, snapshot) == Ordering::Greater {
+            self.max_end = summary.max_end;
+        }
+        #[cfg(debug_assertions)]
+        {
+            let start_comparison = anchor_cmp(&self.start, &summary.start, snapshot);
+            assert!(
+                start_comparison <= Ordering::Equal,
+                "折叠锚点表必须按起点升序汇总"
+            );
+            if start_comparison == Ordering::Equal {
+                assert!(
+                    anchor_cmp(&self.end, &summary.end, snapshot) >= Ordering::Equal,
+                    "同起点的折叠必须按终点降序汇总"
+                );
+            }
+        }
+        self.count += summary.count;
+        self.start = summary.start;
+        self.end = summary.end;
     }
 }
 
 impl Item for Fold {
     type Summary = FoldSummary;
 
-    fn summary(&self, (): ()) -> Self::Summary {
+    fn summary(&self, _snapshot: &MultiBufferSnapshot) -> Self::Summary {
         FoldSummary {
+            start: self.range.start,
+            end: self.range.end,
+            min_start: self.range.start,
+            max_end: self.range.end,
             count: 1,
-            last_order: FoldOrder::for_fold(self),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct FoldSummary {
-    count: usize,
-    last_order: FoldOrder,
-}
+impl<'a> Dimension<'a, FoldSummary> for FoldRange {
+    fn zero(_snapshot: &MultiBufferSnapshot) -> Self {
+        Self(MultiBufferAnchor::Min..MultiBufferAnchor::Max)
+    }
 
-impl Default for FoldSummary {
-    fn default() -> Self {
-        Self {
-            count: 0,
-            last_order: FoldOrder::zero(()),
-        }
+    fn add_summary(&mut self, summary: &'a FoldSummary, _snapshot: &MultiBufferSnapshot) {
+        self.0.start = summary.start;
+        self.0.end = summary.end;
     }
 }
 
-impl ContextLessSummary for FoldSummary {
-    fn zero() -> Self {
-        Self::default()
-    }
-
-    fn add_summary(&mut self, summary: &Self) {
-        self.count += summary.count;
-        self.last_order = summary.last_order;
+impl<'a> sum_tree::SeekTarget<'a, FoldSummary, FoldRange> for FoldRange {
+    fn cmp(&self, cursor_location: &FoldRange, snapshot: &MultiBufferSnapshot) -> Ordering {
+        anchor_cmp(&self.start, &cursor_location.start, snapshot)
+            .then_with(|| anchor_cmp(&cursor_location.end, &self.end, snapshot))
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct FoldOrder {
-    start: usize,
-    end_descending: Reverse<usize>,
-    id: FoldId,
-}
+/// 折叠树按 Anchor 顺序的项目索引；只用于批量 splice，不是折叠的第二份状态。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct FoldIndex(usize);
 
-impl FoldOrder {
-    fn for_fold(fold: &Fold) -> Self {
-        Self {
-            start: fold.text_range().start().get(),
-            end_descending: Reverse(fold.text_range().end().get()),
-            id: fold.id,
-        }
+impl<'a> Dimension<'a, FoldSummary> for FoldIndex {
+    fn zero(_snapshot: &MultiBufferSnapshot) -> Self {
+        Self(0)
+    }
+
+    fn add_summary(&mut self, summary: &'a FoldSummary, _snapshot: &MultiBufferSnapshot) {
+        self.0 += summary.count;
     }
 }
 
-impl<'a> Dimension<'a, FoldSummary> for FoldOrder {
-    fn zero((): ()) -> Self {
-        Self {
-            start: 0,
-            end_descending: Reverse(usize::MAX),
-            id: FoldId(0),
-        }
-    }
-
-    fn add_summary(&mut self, summary: &'a FoldSummary, (): ()) {
-        *self = summary.last_order;
-    }
+fn anchor_cmp(
+    left: &MultiBufferAnchor,
+    right: &MultiBufferAnchor,
+    snapshot: &MultiBufferSnapshot,
+) -> Ordering {
+    left.cmp(right, snapshot)
 }
 
 /// 隐藏点投影的 bias 约定：Left 吸附折叠起点列，Right 吸附折叠终点列。
@@ -483,7 +542,7 @@ type FoldBufferEdit = ProjectionEdit<MultiBufferOffset>;
 /// 折叠的稳定身份对应的范围与实测宽度；宽度由渲染层回写。
 #[derive(Debug, Clone)]
 struct FoldMetadata {
-    range: MultiBufferRange,
+    range: FoldRange,
     width: Option<Pixels>,
 }
 
@@ -492,72 +551,9 @@ pub(crate) struct FoldSnapshot {
     /// 下层组合文本快照：fold 拓扑工作在其上，外部文本可被折叠。
     input: MultiBufferSnapshot,
     folds: SumTree<Fold>,
-    lookup: FoldLookup,
     transforms: SumTree<Transform>,
     fold_metadata_by_id: BTreeMap<FoldId, FoldMetadata>,
     version: u64,
-}
-
-/// 折叠查询索引。
-/// by_start 按起点排序，前缀最大终点允许覆盖查询二分定位；
-/// anchor_by_line 只保存未被外层折叠遮蔽的可见入口行。
-#[derive(Debug, Clone, Default)]
-struct FoldLookup {
-    by_start: Vec<Fold>,
-    prefix_max_end: Vec<usize>,
-    prefix_fold_index: Vec<usize>,
-    anchor_by_line: BTreeMap<Line, Fold>,
-}
-
-impl FoldLookup {
-    fn from_folds(folds: &[Fold]) -> Self {
-        let mut by_start = folds.to_vec();
-        by_start.sort_by_key(FoldOrder::for_fold);
-        let mut prefix_max_end = Vec::with_capacity(by_start.len());
-        let mut prefix_fold_index = Vec::with_capacity(by_start.len());
-        let mut max_end = 0;
-        let mut max_index = 0;
-        let mut active_ends = Vec::new();
-        let mut anchor_by_line = BTreeMap::new();
-        for (index, fold) in by_start.iter().enumerate() {
-            let range = fold.text_range();
-            let start = range.start().get();
-            let end = range.end().get();
-            if end > max_end {
-                max_end = end;
-                max_index = index;
-            }
-            prefix_max_end.push(max_end);
-            prefix_fold_index.push(max_index);
-
-            active_ends.retain(|active_end| *active_end >= start);
-            if fold.line_span.0 < fold.line_span.1 && active_ends.is_empty() {
-                anchor_by_line
-                    .entry(fold.line_span.0)
-                    .or_insert_with(|| fold.clone());
-            }
-            active_ends.push(end);
-        }
-        Self {
-            by_start,
-            prefix_max_end,
-            prefix_fold_index,
-            anchor_by_line,
-        }
-    }
-
-    fn covering_offset(&self, offset: MultiBufferOffset) -> Option<&Fold> {
-        let upper = self
-            .by_start
-            .partition_point(|fold| fold.text_range().start() <= offset);
-        if upper == 0 {
-            return None;
-        }
-        let index = self.prefix_max_end[..upper].partition_point(|end| *end <= offset.get());
-        self.prefix_fold_index
-            .get(index)
-            .and_then(|fold_index| self.by_start.get(*fold_index))
-    }
 }
 
 impl FoldSnapshot {
@@ -591,34 +587,80 @@ impl FoldSnapshot {
         FoldOffset::new(MultiBufferOffset::new(self.transforms.summary().output.len)).to_point(self)
     }
 
+    /// 按当前输入快照解析所有仍有效的折叠（跳过锚点退出投影或范围退化的项）。
+    ///
+    /// 与 Zed 相同：折叠树跨文本编辑保持权威，不在同步时重建；解析结果随查询即时得出。
+    fn resolved_folds(&self) -> impl Iterator<Item = ResolvedFold> + '_ {
+        self.folds.iter().filter_map(|fold| {
+            let folded = fold.resolve(&self.input)?;
+            (!folded.text_range.is_empty()).then_some(folded)
+        })
+    }
+
+    /// 覆盖该字节偏移的最外层折叠变换及其占位符字符数。
+    ///
+    /// 与 Zed FoldSnapshot::placeholder_range_at 相同，直接查询变换树，不维护跨快照的解析缓存。
+    fn covering_fold(
+        &self,
+        offset: MultiBufferOffset,
+    ) -> Option<(MultiBufferOffset, MultiBufferOffset, usize)> {
+        let (start, _, item) = self
+            .transforms
+            .find::<Dimensions<InputOffset, FoldOffset>, _>(
+                (),
+                &InputOffset(offset),
+                TreeBias::Right,
+            );
+        let transform = item?;
+        let placeholder = transform.placeholder.as_ref()?;
+        Some((
+            start.0.0,
+            MultiBufferOffset::new(start.0.get() + transform.summary.input.len),
+            placeholder.text.chars().count(),
+        ))
+    }
+
     /// 覆盖该字节偏移的最外层折叠的隐藏范围（入口行换行符到闭合括号前）；无则 None。
     pub(crate) fn fold_range_covering_offset(
         &self,
         offset: MultiBufferOffset,
     ) -> Option<(MultiBufferOffset, MultiBufferOffset)> {
-        self.lookup.covering_offset(offset).map(|fold| {
-            let range = fold.text_range();
-            (range.start(), range.end())
-        })
+        self.covering_fold(offset)
+            .map(|(start, end, _)| (start, end))
     }
 
     /// 折叠入口行（合并行占位符的挂靠行；无隐藏行的 fold 不计）。
     pub(crate) fn fold_anchor_lines(&self) -> Vec<Line> {
-        self.folds
-            .iter()
-            .filter_map(|fold| {
-                let (start, end) = fold.line_span;
-                (start < end).then_some(start)
-            })
+        self.resolved_folds()
+            .filter_map(|fold| (fold.line_span.0 < fold.line_span.1).then_some(fold.line_span.0))
             .collect()
     }
 
+    /// 指定源行范围内的折叠入口行。
+    ///
+    /// 只保留未被外层折叠遮蔽的入口行；直接按当前快照解析权威折叠树，不维护行索引缓存。
     pub(super) fn fold_anchor_lines_in_range(&self, line_range: Range<Line>) -> Vec<Line> {
-        self.lookup
-            .anchor_by_line
-            .range(line_range)
-            .map(|(line, _)| *line)
-            .collect()
+        let mut active_ends: Vec<usize> = Vec::new();
+        let mut lines = Vec::new();
+        for fold in self.folds.iter() {
+            let Some(fold) = fold.resolve(&self.input) else {
+                continue;
+            };
+            if fold.text_range.is_empty() {
+                continue;
+            }
+            let start = fold.text_range.start().get();
+            let end = fold.text_range.end().get();
+            active_ends.retain(|active_end| *active_end >= start);
+            if fold.line_span.0 < fold.line_span.1
+                && active_ends.is_empty()
+                && line_range.contains(&fold.line_span.0)
+            {
+                lines.push(fold.line_span.0);
+            }
+            active_ends.push(end);
+        }
+        lines
     }
 
     /// 输出行 → 行首输出偏移。
@@ -699,22 +741,22 @@ impl FoldSnapshot {
         bias: FoldBias,
     ) -> DisplayMapResult<ProjectedPoint> {
         let input_offset = self.input.position_to_byte(point.into_position())?;
-        if let Some(fold) = self.lookup.covering_offset(input_offset) {
-            let range = fold.text_range();
-            if input_offset > range.start() && input_offset < range.end() {
-                let output_offset = self.input_to_output_offset(range.start());
-                let row = self.row_for_output_offset(output_offset.0);
-                let projected_row = ProjectedLineIndex::new(row);
-                let base = self.char_column_in_row(projected_row, output_offset.get());
-                let column = match bias {
-                    FoldBias::Left => base,
-                    FoldBias::Right => base + fold.placeholder.text().chars().count(),
-                };
-                return Ok(ProjectedPoint::new(
-                    projected_row,
-                    LogicalColumn::new(column),
-                ));
-            }
+        if let Some((start, end, placeholder_chars)) = self.covering_fold(input_offset)
+            && input_offset > start
+            && input_offset < end
+        {
+            let output_offset = self.input_to_output_offset(start);
+            let row = self.row_for_output_offset(output_offset.0);
+            let projected_row = ProjectedLineIndex::new(row);
+            let base = self.char_column_in_row(projected_row, output_offset.get());
+            let column = match bias {
+                FoldBias::Left => base,
+                FoldBias::Right => base + placeholder_chars,
+            };
+            return Ok(ProjectedPoint::new(
+                projected_row,
+                LogicalColumn::new(column),
+            ));
         }
         let output_offset = self.input_to_output_offset(input_offset);
         let row = self.row_for_output_offset(output_offset.0);
@@ -980,10 +1022,10 @@ impl FoldMap {
             }],
             (),
         );
+        let folds = SumTree::new(&input);
         let snapshot = FoldSnapshot {
             input,
-            folds: SumTree::new(()),
-            lookup: FoldLookup::default(),
+            folds,
             transforms,
             fold_metadata_by_id: BTreeMap::new(),
             version: 0,
@@ -1028,45 +1070,20 @@ impl FoldMap {
                 self.snapshot.version += 1;
             }
             self.snapshot.input = input;
+            self.check_invariants();
             return Vec::new();
         }
 
-        // 折叠锚点在新快照上重新解析；解析失败的折叠被丢弃。
-        let mut resolved = Vec::new();
-        let previous_metadata = std::mem::take(&mut self.snapshot.fold_metadata_by_id);
-        for fold in self.snapshot.folds.iter() {
-            let Some(fold) = fold.resolve(&input) else {
-                continue;
-            };
-            if fold.text_range().is_empty() {
-                continue;
-            }
-            // FoldId 稳定：文本编辑只更新范围，不丢弃已回写的实测宽度；
-            // 宽度由渲染层下一帧重新测量后经 update_fold_widths 覆盖。
-            let width = previous_metadata
-                .get(&fold.id)
-                .and_then(|metadata| metadata.width);
-            self.snapshot.fold_metadata_by_id.insert(
-                fold.id,
-                FoldMetadata {
-                    range: fold.text_range(),
-                    width,
-                },
-            );
-            resolved.push(fold);
-        }
-        sort_folds(&mut resolved);
-        self.snapshot.lookup = FoldLookup::from_folds(&resolved);
-        self.snapshot.folds = SumTree::from_iter(resolved.iter().cloned(), ());
-
+        // 文本编辑可能让既有折叠的端点退出可见投影；
+        // 先移除失效折叠，保持树的稳定身份顺序。
+        self.drop_unresolvable_folds(&input);
         let old_transforms = std::mem::take(&mut self.snapshot.transforms);
         let mut new_transforms = SumTree::<Transform>::default();
         let mut cursor = old_transforms.cursor::<InputOffset>(());
         cursor.seek(&InputOffset(MultiBufferOffset::ZERO), TreeBias::Right);
 
         let mut edits_iter = buffer_edits.iter().cloned().peekable();
-        let mut fold_index = 0usize;
-        while let Some(edit) = edits_iter.next() {
+        while let Some(mut edit) = edits_iter.next() {
             if let Some(item) = cursor.item()
                 && !item.is_fold()
             {
@@ -1086,15 +1103,16 @@ impl FoldMap {
                 cursor.slice(&InputOffset(edit.old.start), TreeBias::Left),
                 (),
             );
-            let snapped_old_start = cursor.start().0.get();
-            let snap = edit.old.start.get() - snapped_old_start;
-            let new_start = MultiBufferOffset::new(
+            let snapped_old_start = cursor.start().0;
+            let snap = edit.old.start.get() - snapped_old_start.get();
+            edit.new.start = MultiBufferOffset::new(
                 edit.new
                     .start
                     .get()
                     .checked_sub(snap)
                     .expect("fold 编辑映射不应下溢"),
             );
+            edit.old.start = snapped_old_start;
 
             cursor.seek(&InputOffset(edit.old.end), TreeBias::Right);
             cursor.next();
@@ -1102,62 +1120,111 @@ impl FoldMap {
             let mut delta = edit.new.end.get() as isize
                 - edit.new.start.get() as isize
                 - (edit.old.end.get() as isize - edit.old.start.get() as isize);
-            let old_end;
             loop {
-                let candidate = cursor.start().0.get();
+                edit.old.end = cursor.start().0;
                 let Some(next_edit) = edits_iter.peek() else {
-                    old_end = candidate;
                     break;
                 };
-                if next_edit.old.start.get() > candidate {
-                    old_end = candidate;
+                if next_edit.old.start > edit.old.end {
                     break;
                 }
                 let next_edit = edits_iter.next().unwrap();
                 delta += (next_edit.new.end.get() as isize - next_edit.new.start.get() as isize)
                     - (next_edit.old.end.get() as isize - next_edit.old.start.get() as isize);
-                if next_edit.old.end.get() >= candidate {
+                if next_edit.old.end >= edit.old.end {
+                    edit.old.end = next_edit.old.end;
                     cursor.seek(&InputOffset(next_edit.old.end), TreeBias::Right);
                     cursor.next();
                 }
             }
-            let old_len = old_end - snapped_old_start;
-            let new_end = MultiBufferOffset::new(
-                ((new_start.get() + old_len) as isize + delta).max(0) as usize,
+            let old_len = edit.old.end.get() - edit.old.start.get();
+            edit.new.end = MultiBufferOffset::new(
+                ((edit.new.start.get() + old_len) as isize + delta).max(0) as usize,
             );
 
-            // 复制前缀已经消费了终点不超过 new_start 的折叠。
-            while fold_index < resolved.len()
-                && resolved[fold_index].text_range().end() <= new_start
-            {
-                fold_index += 1;
-            }
+            let start_anchor = input.anchor_at(edit.new.start, Affinity::Before);
+            let mut folds_cursor = self.snapshot.folds.cursor::<FoldRange>(&input);
+            folds_cursor.seek(
+                &FoldRange(start_anchor..MultiBufferAnchor::Max),
+                TreeBias::Left,
+            );
+            let mut folds = std::iter::from_fn(|| {
+                loop {
+                    let fold = folds_cursor.item().cloned()?;
+                    folds_cursor.next();
+                    let Some(fold) = fold.resolve(&input) else {
+                        continue;
+                    };
+                    let range = fold.text_range;
+                    if !range.is_empty() {
+                        return Some((fold, range));
+                    }
+                }
+            })
+            .peekable();
 
-            while fold_index < resolved.len() && resolved[fold_index].text_range().start() < new_end
+            while folds
+                .peek()
+                .is_some_and(|(_, fold_range)| fold_range.start() < edit.new.end)
             {
-                let fold_range = resolved[fold_index].text_range();
-                let placeholder = resolved[fold_index].placeholder.clone();
-                let fold_id = resolved[fold_index].id;
-                let fold_anchor_range = resolved[fold_index].range.clone();
-                fold_index += 1;
+                let (fold, fold_range) = folds.next().expect("peek 后必须存在折叠");
                 let sum = new_transforms.summary();
-                assert!(
-                    fold_range.start().get() >= sum.input.len,
-                    "折叠必须从新变换树当前输入末尾之后开始"
-                );
+                if fold_range.start().get() < sum.input.len {
+                    // 起点锚点已删除或收敛到前缀内：该折叠的变换已由前缀保留，跳过重建。
+                    continue;
+                }
                 let mut merge_end = fold_range.end();
-                while fold_index < resolved.len() {
-                    let next = &resolved[fold_index];
-                    let next_range = next.text_range();
+                while let Some((next, next_range)) = folds.peek() {
                     let can_merge = next_range.start() < merge_end
                         || (next_range.start() == merge_end
-                            && placeholder.merge_adjacent
-                            && next.placeholder.merge_adjacent);
+                            && fold.fold.placeholder.merge_adjacent
+                            && next.fold.placeholder.merge_adjacent);
                     if !can_merge {
                         break;
                     }
                     merge_end = merge_end.max(next_range.end());
-                    fold_index += 1;
+                    folds.next();
+                }
+
+                if merge_end > edit.new.end {
+                    // 折叠合并的重建前沿属于本次编辑的失效区间：
+                    // 让旧变换游标和新输入前沿一起越过它，保证 suffix 从重建区之后开始，而不是从 edit.old.end 的旧边界开始。
+                    let old_merge_end = MultiBufferOffset::new(
+                        edit.old.end.get() + (merge_end.get() - edit.new.end.get()),
+                    );
+                    cursor.seek(&InputOffset(old_merge_end), TreeBias::Right);
+                    // 只在 old_merge_end 落在旧变换内部时才越过它；
+                    // 正好落在边界时 suffix 就从这里开始。
+                    if cursor.start().0 < old_merge_end {
+                        cursor.next();
+                    }
+                    let mut advanced_old_end = cursor.start().0;
+                    // 本次重建区已覆盖的后续编辑：其变化已由当前快照物化，直接消费，避免游标被越过后再回退；
+                    // 同时累计它们的净编辑长度，把重建前沿在新坐标中一起推进。
+                    let mut consumed_delta = 0isize;
+                    while edits_iter
+                        .peek()
+                        .is_some_and(|next| next.old.start < advanced_old_end)
+                    {
+                        let next = edits_iter.next().unwrap();
+                        consumed_delta += (next.new.end.get() as isize
+                            - next.new.start.get() as isize)
+                            - (next.old.end.get() as isize - next.old.start.get() as isize);
+                        if next.old.end > advanced_old_end {
+                            let target = next.old.end;
+                            cursor.seek(&InputOffset(target), TreeBias::Right);
+                            if cursor.start().0 < target {
+                                cursor.next();
+                            }
+                            advanced_old_end = cursor.start().0;
+                        }
+                    }
+                    let old_extension = advanced_old_end.get() - edit.old.end.get();
+                    edit.old.end = advanced_old_end;
+                    edit.new.end = MultiBufferOffset::new(
+                        (edit.new.end.get() as isize + old_extension as isize + consumed_delta)
+                            .max(0) as usize,
+                    );
                 }
 
                 let sum = new_transforms.summary();
@@ -1170,7 +1237,7 @@ impl FoldMap {
                     push_isomorphic(&mut new_transforms, text_summary);
                 }
                 if merge_end > fold_range.start() {
-                    let placeholder_text: Arc<str> = Arc::from(placeholder.text());
+                    let placeholder_text: Arc<str> = Arc::from(fold.fold.placeholder.text());
                     let input_summary =
                         text_summary_for_range(&input, fold_range.start(), merge_end);
                     let output_summary = text_summary_of_str(&placeholder_text);
@@ -1183,17 +1250,19 @@ impl FoldMap {
                             placeholder: Some(TransformPlaceholder {
                                 text: placeholder_text,
                                 renderer: ChunkRenderer {
-                                    id: ChunkRendererId::Fold(fold_id),
+                                    id: ChunkRendererId::Fold(fold.fold.id),
                                     render: {
-                                        let render = Arc::clone(&placeholder.render);
+                                        let render = Arc::clone(&fold.fold.placeholder.render);
+                                        let fold_id = fold.fold.id;
+                                        let fold_anchor_range = fold.fold.range.0.clone();
                                         Arc::new(move |cx: &mut App| {
                                             render(fold_id, fold_anchor_range.clone(), cx)
                                         })
                                     },
-                                    constrain_width: placeholder.constrain_width,
+                                    constrain_width: fold.fold.placeholder.constrain_width,
                                     measured_width: self
                                         .snapshot
-                                        .fold_width(ChunkRendererId::Fold(fold_id)),
+                                        .fold_width(ChunkRendererId::Fold(fold.fold.id)),
                                 },
                             }),
                         },
@@ -1203,19 +1272,31 @@ impl FoldMap {
             }
 
             let sum = new_transforms.summary();
-            if MultiBufferOffset::new(sum.input.len) < new_end {
-                let text_summary =
-                    text_summary_for_range(&input, MultiBufferOffset::new(sum.input.len), new_end);
+            if MultiBufferOffset::new(sum.input.len) < edit.new.end {
+                let text_summary = text_summary_for_range(
+                    &input,
+                    MultiBufferOffset::new(sum.input.len),
+                    edit.new.end,
+                );
                 push_isomorphic(&mut new_transforms, text_summary);
             }
         }
 
-        new_transforms.append(cursor.suffix(), ());
+        let suffix = cursor.suffix();
+        for transform in suffix.iter() {
+            if transform.is_fold() {
+                new_transforms.push(transform.clone(), ());
+            } else {
+                push_isomorphic(&mut new_transforms, transform.summary.input);
+            }
+        }
         if new_transforms.is_empty() {
             let summary =
                 text_summary_for_range(&input, MultiBufferOffset::ZERO, input.len_bytes());
             push_isomorphic(&mut new_transforms, summary);
         }
+
+        drop(cursor);
 
         let fold_edits = {
             let mut old_transforms =
@@ -1244,7 +1325,65 @@ impl FoldMap {
         self.snapshot.transforms = new_transforms;
         self.snapshot.input = input;
         self.snapshot.version += 1;
+        self.check_invariants();
         fold_edits
+    }
+
+    /// 文本编辑后移除已失效的折叠身份：端点退出可见投影或范围退化。
+    ///
+    /// 折叠身份跨编辑保留；稳定 Anchor 顺序由 `MultiBufferAnchor::cmp` 保证，这里只删除失效项，不重排树序。
+    /// 没有折叠或全部仍有效时不做工作。
+    fn drop_unresolvable_folds(&mut self, input: &MultiBufferSnapshot) {
+        let total = self.snapshot.folds.summary().count;
+        if total == 0 {
+            return;
+        }
+        let mut resolved: Vec<Fold> = Vec::with_capacity(total);
+        for fold in self.snapshot.folds.iter() {
+            let Some(folded) = fold.resolve(input) else {
+                continue;
+            };
+            if folded.text_range.is_empty() {
+                continue;
+            }
+            let start_is_projected = matches!(
+                input.projected_anchor_offset(&fold.range.start),
+                Ok(Some(_))
+            );
+            let end_is_projected =
+                matches!(input.projected_anchor_offset(&fold.range.end), Ok(Some(_)));
+            if start_is_projected && end_is_projected {
+                resolved.push(folded.fold);
+            }
+        }
+        if resolved.len() == total {
+            return;
+        }
+        let live: BTreeSet<FoldId> = resolved.iter().map(|fold| fold.id).collect();
+        self.snapshot
+            .fold_metadata_by_id
+            .retain(|id, _| live.contains(id));
+        self.snapshot.folds = SumTree::from_iter(resolved, input);
+    }
+
+    fn check_invariants(&self) {
+        #[cfg(test)]
+        {
+            assert_eq!(
+                self.snapshot.transforms.summary().input.len,
+                self.snapshot.input.len_bytes().get(),
+                "折叠变换树输入必须精确覆盖下层快照"
+            );
+
+            let mut previous_isomorphic = false;
+            for transform in self.snapshot.transforms.iter() {
+                assert!(
+                    transform.is_fold() || !previous_isomorphic,
+                    "折叠变换树不得包含相邻同构段"
+                );
+                previous_isomorphic = !transform.is_fold();
+            }
+        }
     }
 }
 
@@ -1374,6 +1513,27 @@ fn consolidate_fold_edits(mut edits: Vec<FoldEdit>) -> Vec<FoldEdit> {
     merged
 }
 
+fn consolidate_fold_buffer_edits(mut edits: Vec<FoldBufferEdit>) -> Vec<FoldBufferEdit> {
+    edits.sort_unstable_by(|a, b| {
+        a.old
+            .start
+            .cmp(&b.old.start)
+            .then_with(|| b.old.end.cmp(&a.old.end))
+    });
+    let mut merged: Vec<FoldBufferEdit> = Vec::with_capacity(edits.len());
+    for edit in edits {
+        match merged.last_mut() {
+            Some(prev) if prev.old.end >= edit.old.start => {
+                prev.old.end = prev.old.end.max(edit.old.end);
+                prev.new.start = prev.new.start.min(edit.new.start);
+                prev.new.end = prev.new.end.max(edit.new.end);
+            }
+            _ => merged.push(edit),
+        }
+    }
+    merged
+}
+
 pub(super) struct FoldMapWriter<'a>(&'a mut FoldMap);
 
 impl FoldMapWriter<'_> {
@@ -1382,28 +1542,20 @@ impl FoldMapWriter<'_> {
         &mut self,
         line_range: LineRange,
     ) -> DisplayMapResult<(FoldSnapshot, Vec<FoldEdit>)> {
-        let ids: Vec<_> = self
+        let snapshot = self.0.snapshot.buffer_snapshot();
+        let ids: BTreeSet<_> = self
             .0
             .snapshot
             .folds
             .iter()
-            .filter(|fold| {
-                let (start, end) = fold.line_span;
-                start.get() < line_range.end().get() && end.get() >= line_range.start().get()
+            .filter_map(|fold| {
+                let folded = fold.resolve(snapshot)?;
+                (folded.line_span.0.get() < line_range.end().get()
+                    && folded.line_span.1.get() >= line_range.start().get())
+                .then_some(fold.id)
             })
-            .map(|fold| fold.id)
             .collect();
-        if ids.is_empty() {
-            return Ok((self.0.snapshot.clone(), Vec::new()));
-        }
-        let mut snapshot = self.0.snapshot.clone();
-        let mut edits = Vec::new();
-        for id in ids {
-            let (next, edit) = self.unfold(id);
-            snapshot = next;
-            edits.extend(edit);
-        }
-        Ok((snapshot, edits))
+        Ok(self.unfold_ids(ids))
     }
 
     pub(super) fn fold(
@@ -1414,29 +1566,32 @@ impl FoldMapWriter<'_> {
         let resolved = {
             let snapshot = self.0.snapshot.buffer_snapshot();
             let start = snapshot
-                .resolve_anchor(&range.start)
+                .projected_anchor_offset(&range.start)
+                .map_err(|_| FoldError::UnresolvableAnchor)?
                 .ok_or(FoldError::UnresolvableAnchor)?;
             let end = snapshot
-                .resolve_anchor(&range.end)
+                .projected_anchor_offset(&range.end)
+                .map_err(|_| FoldError::UnresolvableAnchor)?
                 .ok_or(FoldError::UnresolvableAnchor)?;
             MultiBufferRange::new(start, end)?
         };
         if resolved.is_empty() {
             return Err(FoldError::EmptyRange { range: resolved }.into());
         }
-        if self
-            .0
-            .snapshot
-            .folds
-            .iter()
-            .any(|fold| fold.text_range() == resolved)
-        {
+        let current_snapshot = self.0.snapshot.buffer_snapshot().clone();
+        if self.0.snapshot.folds.iter().any(|fold| {
+            fold.resolve(&current_snapshot)
+                .is_some_and(|fold| fold.text_range == resolved)
+        }) {
             return Ok((self.0.snapshot.clone(), Vec::new()));
         }
         for fold in self.0.snapshot.folds.iter() {
-            if !ranges_disjoint_or_nested(fold.text_range(), resolved) {
+            let Some(existing) = fold.resolve(&current_snapshot) else {
+                continue;
+            };
+            if !ranges_disjoint_or_nested(existing.text_range, resolved) {
                 return Err(FoldError::OverlapWithoutNesting {
-                    existing: fold.text_range(),
+                    existing: existing.text_range,
                     candidate: resolved,
                 }
                 .into());
@@ -1450,19 +1605,24 @@ impl FoldMapWriter<'_> {
                 .checked_add(1)
                 .ok_or(FoldError::IdOverflow)?,
         );
-        let mut folds: Vec<_> = self.0.snapshot.folds.iter().cloned().collect();
         let fold =
-            Fold::from_text_range(self.0.snapshot.buffer_snapshot(), id, resolved, placeholder)
-                .ok_or(FoldError::UnresolvableAnchor)?;
-        folds.push(fold);
-        sort_folds(&mut folds);
-        self.0.snapshot.folds = SumTree::from_iter(folds, ());
-        let indexed: Vec<_> = self.0.snapshot.folds.iter().cloned().collect();
-        self.0.snapshot.lookup = FoldLookup::from_folds(&indexed);
+            Fold::from_text_range(self.0.snapshot.buffer_snapshot(), id, resolved, placeholder);
+        let old_folds =
+            std::mem::replace(&mut self.0.snapshot.folds, SumTree::new(&current_snapshot));
+        let mut cursor = old_folds.cursor::<FoldRange>(&current_snapshot);
+        let mut folds = SumTree::new(&current_snapshot);
+        folds.append(
+            cursor.slice(&fold.range, TreeBias::Right),
+            &current_snapshot,
+        );
+        folds.push(fold.clone(), &current_snapshot);
+        folds.append(cursor.suffix(), &current_snapshot);
+        drop(cursor);
+        self.0.snapshot.folds = folds;
         self.0.snapshot.fold_metadata_by_id.insert(
             id,
             FoldMetadata {
-                range: resolved,
+                range: fold.range.clone(),
                 width: None,
             },
         );
@@ -1475,32 +1635,69 @@ impl FoldMapWriter<'_> {
         Ok((self.0.snapshot.clone(), edits))
     }
 
-    fn unfold(&mut self, id: FoldId) -> (FoldSnapshot, Vec<FoldEdit>) {
-        let Some(range) = self
-            .0
-            .snapshot
-            .folds
-            .iter()
-            .find(|fold| fold.id == id)
-            .map(Fold::text_range)
-        else {
+    fn unfold_ids(
+        &mut self,
+        ids: impl IntoIterator<Item = FoldId>,
+    ) -> (FoldSnapshot, Vec<FoldEdit>) {
+        let ids: BTreeSet<_> = ids.into_iter().collect();
+        if ids.is_empty() {
             return (self.0.snapshot.clone(), Vec::new());
-        };
-        let retained: Vec<_> = self
+        }
+
+        let current_snapshot = self.0.snapshot.buffer_snapshot().clone();
+        let selected: Vec<_> = self
             .0
             .snapshot
             .folds
             .iter()
-            .filter(|fold| fold.id != id)
-            .cloned()
+            .filter_map(|fold| {
+                let folded = fold.resolve(&current_snapshot)?;
+                ids.contains(&fold.id).then_some(folded)
+            })
             .collect();
-        self.0.snapshot.folds = SumTree::from_iter(retained, ());
-        let indexed: Vec<_> = self.0.snapshot.folds.iter().cloned().collect();
-        self.0.snapshot.lookup = FoldLookup::from_folds(&indexed);
-        self.0.snapshot.fold_metadata_by_id.remove(&id);
+        if selected.is_empty() {
+            return (self.0.snapshot.clone(), Vec::new());
+        }
+
+        let edits = selected
+            .iter()
+            .map(|fold| {
+                FoldBufferEdit::new(
+                    fold.text_range.start()..fold.text_range.end(),
+                    fold.text_range.start()..fold.text_range.end(),
+                )
+            })
+            .collect();
+        let indices: Vec<_> = self
+            .0
+            .snapshot
+            .folds
+            .iter()
+            .enumerate()
+            .filter_map(|(index, fold)| ids.contains(&fold.id).then_some(index))
+            .collect();
+
+        let old_folds =
+            std::mem::replace(&mut self.0.snapshot.folds, SumTree::new(&current_snapshot));
+        let mut cursor = old_folds.cursor::<FoldIndex>(&current_snapshot);
+        cursor.seek(&FoldIndex(0), TreeBias::Right);
+        let mut folds = SumTree::new(&current_snapshot);
+        for index in indices {
+            folds.append(
+                cursor.slice(&FoldIndex(index), TreeBias::Right),
+                &current_snapshot,
+            );
+            cursor.next();
+        }
+        folds.append(cursor.suffix(), &current_snapshot);
+        drop(cursor);
+        self.0.snapshot.folds = folds;
+        for fold in &selected {
+            self.0.snapshot.fold_metadata_by_id.remove(&fold.fold.id);
+        }
+
         let input = self.0.snapshot.input.clone();
-        let edit = FoldBufferEdit::new(range.start()..range.end(), range.start()..range.end());
-        let edits = self.0.sync(input, vec![edit]);
+        let edits = self.0.sync(input, consolidate_fold_buffer_edits(edits));
         (self.0.snapshot.clone(), edits)
     }
 
@@ -1520,11 +1717,16 @@ impl FoldMapWriter<'_> {
             if Some(new_width) == metadata.width {
                 continue;
             }
-            // 折叠内容未变，只有元素像素宽度变化：用零宽输入编辑让该折叠重新走 sync，
-            // 刷新变换树中的 measured_width，并向上层发布该折叠的显示编辑。
+            let Some(range) =
+                resolve_fold_range(self.0.snapshot.buffer_snapshot(), &metadata.range)
+            else {
+                continue;
+            };
+            // 折叠内容未变，只有元素像素宽度变化：
+            // 用零宽输入编辑让该折叠重新走 sync，刷新变换树中的 measured_width，并向上层发布该折叠的显示编辑。
             edits.push(FoldBufferEdit::new(
-                metadata.range.start()..metadata.range.end(),
-                metadata.range.start()..metadata.range.end(),
+                range.start()..range.end(),
+                range.start()..range.end(),
             ));
             self.0.snapshot.fold_metadata_by_id.insert(
                 fold_id,
@@ -1543,8 +1745,13 @@ impl FoldMapWriter<'_> {
     }
 }
 
-fn sort_folds(folds: &mut [Fold]) {
-    folds.sort_by_key(FoldOrder::for_fold);
+fn resolve_fold_range(
+    snapshot: &MultiBufferSnapshot,
+    range: &FoldRange,
+) -> Option<MultiBufferRange> {
+    let start = snapshot.projected_anchor_offset(&range.start).ok()??;
+    let end = snapshot.projected_anchor_offset(&range.end).ok()??;
+    MultiBufferRange::new(start, end).ok()
 }
 
 /// 折叠范围的逻辑行跨度：起点行（anchor）与终点所在行（close）。

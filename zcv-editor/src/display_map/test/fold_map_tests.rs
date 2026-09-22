@@ -36,6 +36,15 @@ impl FoldMap {
     }
 }
 
+/// 测试辅助：按锚点顺序解析当前快照下的第一个折叠。
+fn first_fold(snapshot: &FoldSnapshot) -> ResolvedFold {
+    snapshot
+        .folds
+        .iter()
+        .find_map(|fold| fold.resolve(&snapshot.input))
+        .expect("应存在可解析的折叠")
+}
+
 /// 本层字节编辑在旧/新快照上映射出的投影行区间。
 fn edit_row_ranges(
     edit: &FoldEdit,
@@ -166,16 +175,10 @@ fn unfolding_outer_fold_reveals_the_nested_transform() {
     let (mut map, _) = FoldMap::new(buffer.snapshot().into());
     map.fold_text_range(1, 7).unwrap();
     map.fold_text_range(3, 5).unwrap();
-    let outer = map
-        .snapshot
-        .folds
-        .iter()
-        .min_by_key(|fold| fold.text_range().start())
-        .unwrap()
-        .id;
+    let outer = first_fold(&map.snapshot).fold.id;
 
     assert_eq!(map.snapshot.line_count(), 2);
-    let (snapshot, edits) = map.write().unfold(outer);
+    let (snapshot, edits) = map.write().unfold_ids([outer]);
     assert_eq!(snapshot.folds.summary().count, 1);
     assert_eq!(snapshot.line_count(), 4);
     assert!(!edits.is_empty());
@@ -258,6 +261,117 @@ fn newline_edit_inside_a_fold_keeps_logical_lines_consistent() {
 }
 
 #[test]
+fn multibyte_adjacent_folds_remain_aligned_after_merge_and_followup_edits() {
+    let mut buffer = Buffer::from_text("前甲中乙后".to_string(), BufferConfig::default()).unwrap();
+    let (mut map, _) = FoldMap::new(buffer.snapshot().into());
+
+    let prefix_len = "前".len();
+    let first_fold_end = "前甲".len();
+    let second_fold_start = "前甲中".len();
+    let second_fold_end = "前甲中乙".len();
+    map.fold_text_range(prefix_len, first_fold_end).unwrap();
+    let (before, _) = map
+        .fold_text_range(second_fold_start, second_fold_end)
+        .unwrap();
+    let subscription = buffer.subscribe();
+
+    // 删除两个三字节中文折叠之间的文本，使它们在新快照中相邻并合并。
+    buffer
+        .edit(
+            [Edit::delete(
+                text_range(first_fold_end, second_fold_start).into(),
+            )],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    let (merged, _) = map.read_test(&buffer, &subscription);
+    assert_eq!(
+        merged.row_text(ProjectedLineIndex::new(0)).unwrap(),
+        "前⋯后"
+    );
+    assert_eq!(
+        merged.transforms.summary().input.len,
+        merged.buffer_snapshot().len_bytes().get(),
+        "合并折叠后变换树输入必须仍精确覆盖中文快照"
+    );
+
+    let fold_id = ChunkRendererId::Fold(
+        merged
+            .folds
+            .iter()
+            .next()
+            .expect("合并后仍应保留折叠身份")
+            .id,
+    );
+    let (resized, _) = map.write().update_fold_widths([(fold_id, gpui::px(32.))]);
+    assert_eq!(
+        resized.transforms.summary().input.len,
+        resized.buffer_snapshot().len_bytes().get(),
+        "宽度回写不得改变变换树与快照的输入边界"
+    );
+
+    buffer
+        .edit(
+            [Edit::insert(MultiBufferOffset::new(first_fold_end).into(), "界").unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    let (after, _) = map.read_test(&buffer, &subscription);
+    assert_eq!(
+        after.row_text(ProjectedLineIndex::new(0)).unwrap(),
+        "前⋯界⋯后"
+    );
+    assert_eq!(
+        after.transforms.summary().input.len,
+        after.buffer_snapshot().len_bytes().get(),
+        "后续中文编辑不得让 suffix 与折叠重建区重叠"
+    );
+    assert_ne!(before.version(), after.version());
+}
+
+#[test]
+fn random_multibyte_fold_edit_stress_keeps_transforms_aligned() {
+    let mut buffer =
+        Buffer::from_text("甲乙丙丁戊己庚辛壬癸".repeat(20), BufferConfig::default()).unwrap();
+    let (mut map, _) = FoldMap::new(buffer.snapshot().into());
+    let subscription = buffer.subscribe();
+    let mut state = 0x9e37_79b9_u64;
+    for _ in 0..4000 {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        let char_count = buffer.snapshot().len_bytes().get() / 3;
+        if char_count > 2 && state.is_multiple_of(5) {
+            let start = (state as usize % (char_count - 1)) * 3;
+            let end =
+                start + ((state.rotate_left(17) as usize % (char_count - start / 3 - 1)) + 1) * 3;
+            let _ = map.fold_text_range(start, end);
+        } else if char_count > 1 && state.is_multiple_of(3) {
+            let start_char = state as usize % (char_count - 1);
+            let delete_chars = (state.rotate_left(11) as usize % (char_count - start_char)).max(1);
+            let start = start_char * 3;
+            let end = (start_char + delete_chars).min(char_count) * 3;
+            buffer
+                .edit(
+                    [Edit::delete(text_range(start, end).into())],
+                    TransactionMetadata::default(),
+                )
+                .unwrap();
+            let _ = map.read_test(&buffer, &subscription);
+        } else {
+            let start = (state as usize % (char_count + 1)) * 3;
+            buffer
+                .edit(
+                    [Edit::insert(MultiBufferOffset::new(start).into(), "界").unwrap()],
+                    TransactionMetadata::default(),
+                )
+                .unwrap();
+            let _ = map.read_test(&buffer, &subscription);
+        }
+    }
+}
+
+#[test]
 fn newline_edit_outside_folds_emits_a_localized_structural_edit() {
     let mut buffer =
         Buffer::from_text("a\nb\nc\nd\ne\nf\n".to_string(), BufferConfig::default()).unwrap();
@@ -294,6 +408,7 @@ fn deleting_folded_text_invalidates_anchor_range() {
         .unwrap();
 
     let (snapshot, _) = map.read_test(&buffer, &subscription);
+    // 文本编辑让折叠 Anchor 退化为空范围后，该折叠身份不再有显示意义，随规范化移除。
     assert_eq!(snapshot.folds.summary().count, 0);
     assert_eq!(
         snapshot.line_count(),
@@ -333,7 +448,7 @@ fn fold_boundary_insertions_remain_visible() {
         Buffer::from_text("anchor\nhidden\nafter".to_string(), BufferConfig::default()).unwrap();
     let (mut map, _) = FoldMap::new(buffer.snapshot().into());
     map.fold_text_range(6, 13).unwrap();
-    let fold_range = map.snapshot.folds.iter().next().unwrap().text_range();
+    let fold_range = first_fold(&map.snapshot).text_range;
     // 折叠起点 = anchor 行换行符位置（6）。
     assert_eq!(fold_range.start().get(), 6);
     let subscription = buffer.subscribe();
@@ -345,7 +460,7 @@ fn fold_boundary_insertions_remain_visible() {
         .unwrap();
     let (snapshot, _) = map.read_test(&buffer, &subscription);
     // 起点插入在折叠外：折叠范围随插入右移，anchor 行文本变为 "anchorX"。
-    let moved = snapshot.folds.iter().next().unwrap().text_range();
+    let moved = first_fold(&snapshot).text_range;
     assert_eq!(moved.start().get(), 7);
     let text = snapshot.row_text(ProjectedLineIndex::new(0)).unwrap();
     assert_eq!(text.as_ref(), "anchorX⋯\n");

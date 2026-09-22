@@ -6,7 +6,7 @@ use super::{Buffer, history};
 use crate::{
     BufferConfig, BufferId, BufferVersion, TextResult, TransactionId,
     storage::{RopeyStorage, TextRead},
-    tracking::CoordinateIndex,
+    tracking::{CoordinateIndex, InsertionIndex},
 };
 
 impl Buffer {
@@ -20,6 +20,7 @@ impl Buffer {
     ///
     /// Buffer 字段默认值变更只需改这一处。
     fn from_parts(storage: RopeyStorage, config: BufferConfig) -> Self {
+        let insertions = InsertionIndex::with_text(storage.len_bytes().get());
         let mut buffer = Self {
             buffer_id: BufferId::next_local(),
             read_only: false,
@@ -31,6 +32,7 @@ impl Buffer {
             text_changes: Default::default(),
             edit_log: Default::default(),
             coordinate_index: CoordinateIndex::default(),
+            insertions,
             history: history::HistoryState::new(),
             session: None,
         };
@@ -110,7 +112,7 @@ impl Buffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ByteOffset, Edit, TransactionMetadata, TransactionSource};
+    use crate::{ByteOffset, Edit, TextRange, TransactionMetadata, TransactionSource};
 
     #[test]
     fn set_config_applies_the_new_history_budget_immediately() {
@@ -129,5 +131,52 @@ mod tests {
         buffer.set_config(config);
 
         assert!(!buffer.can_undo());
+    }
+
+    #[test]
+    fn is_dirty_ignores_edits_that_restore_the_visible_fragments() {
+        let mut buffer = Buffer::from_text("hello".to_string(), BufferConfig::default())
+            .expect("Buffer 应能创建");
+        buffer.mark_saved();
+
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::new(5), "!").expect("插入编辑必须合法")],
+                TransactionMetadata::new(TransactionSource::Programmatic),
+            )
+            .expect("编辑应成功");
+        assert!(buffer.is_dirty());
+
+        buffer
+            .edit(
+                [Edit::delete(
+                    TextRange::new(ByteOffset::new(5), ByteOffset::new(6))
+                        .expect("删除范围必须合法"),
+                )],
+                TransactionMetadata::new(TransactionSource::Programmatic),
+            )
+            .expect("编辑应成功");
+        assert!(!buffer.is_dirty());
+    }
+
+    #[test]
+    fn is_dirty_is_clean_after_undoing_a_deletion() {
+        let mut buffer = Buffer::from_text("hello".to_string(), BufferConfig::default())
+            .expect("Buffer 应能创建");
+        buffer.mark_saved();
+
+        buffer
+            .edit(
+                [Edit::delete(
+                    TextRange::new(ByteOffset::new(1), ByteOffset::new(3))
+                        .expect("删除范围必须合法"),
+                )],
+                TransactionMetadata::new(TransactionSource::Programmatic),
+            )
+            .expect("编辑应成功");
+        assert!(buffer.is_dirty());
+
+        buffer.undo().expect("撤销应成功");
+        assert!(!buffer.is_dirty());
     }
 }

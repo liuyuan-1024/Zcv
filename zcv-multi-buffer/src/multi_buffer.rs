@@ -217,6 +217,25 @@ impl MultiBufferAnchor {
             Self::Max
         }
     }
+
+    /// 按稳定身份比较组合 Anchor，不解析文本坐标。
+    ///
+    /// 对齐 Zed 的 `ExcerptAnchor::cmp`：先按路径顺序，再按源身份，最后按源内插入身份的稳定文档序。
+    /// `Min`/`Max` 边界位于所有源锚点两侧。折叠树据此保持稳定顺序，编辑后无需按解析结果重排。
+    pub fn cmp(&self, other: &Self, snapshot: &MultiBufferSnapshot) -> Ordering {
+        match (self, other) {
+            (Self::Min, Self::Min) | (Self::Max, Self::Max) => Ordering::Equal,
+            (Self::Min, _) => Ordering::Less,
+            (_, Self::Min) => Ordering::Greater,
+            (Self::Max, _) => Ordering::Greater,
+            (_, Self::Max) => Ordering::Less,
+            (Self::Excerpt(left), Self::Excerpt(right)) => left
+                .path
+                .cmp(&right.path)
+                .then_with(|| left.source_id.cmp(&right.source_id))
+                .then_with(|| stable_excerpt_text_cmp(snapshot, left, right)),
+        }
+    }
 }
 
 /// 一个源文档的去重共享状态：文本、语法与 capture 映射各保存一份，
@@ -2523,16 +2542,19 @@ impl MultiBufferSnapshot {
         anchor_in_mappings(
             &self.excerpts,
             &self.diff_transforms,
+            &self.excerpt_sources,
             offset.into(),
             affinity,
         )
         .unwrap_or_else(|| MultiBufferAnchor::boundary(offset))
     }
 
-    /// 把源锚点解析回快照内的组合偏移（Editor 源锚点选区：源→投影）。
+    /// 把稳定锚点定位到当前组合坐标。
     ///
-    /// 源锚点选区按需解析：投影重建不改变源，选区无需重映射，用重建后快照直接解析即得当前投影偏移。
-    pub fn resolve_anchor(&self, anchor: &MultiBufferAnchor) -> Option<MultiBufferOffset> {
+    /// 这是位置状态（选择、滚动）的总解析：
+    /// 源或 excerpt 退出当前投影时，按路径顺序定位到重建后结构中的相邻边界；空投影则落在文首。
+    /// 源 Anchor 版本无法推进到当前源快照仍是版本链错误，必须显式处理。
+    pub fn anchor_offset(&self, anchor: &MultiBufferAnchor) -> TextResult<MultiBufferOffset> {
         resolve_anchor_in_mappings(
             &self.excerpts,
             &self.diff_transforms,
@@ -2540,7 +2562,24 @@ impl MultiBufferSnapshot {
             &self.excerpt_sources,
             anchor,
         )
-        .map(Into::into)
+        .map(|resolution| resolution.offset().into())
+    }
+
+    /// 只在锚点仍属于当前可见源片段时返回组合坐标。
+    ///
+    /// 折叠、搜索命中和自动闭合等附属状态不能在源退出投影后迁移到相邻文件，因此与位置状态使用不同的解析语义。
+    pub fn projected_anchor_offset(
+        &self,
+        anchor: &MultiBufferAnchor,
+    ) -> TextResult<Option<MultiBufferOffset>> {
+        resolve_anchor_in_mappings(
+            &self.excerpts,
+            &self.diff_transforms,
+            &self.path_keys,
+            &self.excerpt_sources,
+            anchor,
+        )
+        .map(|resolution| resolution.projected_offset().map(Into::into))
     }
     pub fn capture_names(&self) -> Arc<[Arc<str>]> {
         Arc::clone(&self.capture_names)
@@ -5328,14 +5367,18 @@ impl MultiBuffer {
         anchor_in_mappings(
             &self.state.excerpts,
             &self.state.diff_transforms,
+            self.state.sources.as_slice(),
             offset.into(),
             affinity,
         )
         .unwrap_or_else(|| MultiBufferAnchor::boundary(offset))
     }
 
-    /// 在当前 excerpts 中解析稳定位置；同一文件仍存在时优先落到最接近的源片段。
-    pub fn resolve_anchor(&self, anchor: &MultiBufferAnchor) -> Option<MultiBufferOffset> {
+    /// 把稳定锚点定位到当前组合坐标。
+    ///
+    /// 源或 excerpt 退出当前投影时按路径顺序定位到相邻结构边界；
+    /// 空投影定位到文首。源 Anchor 的版本链无法推进时返回错误。
+    pub fn anchor_offset(&self, anchor: &MultiBufferAnchor) -> TextResult<MultiBufferOffset> {
         resolve_anchor_in_mappings(
             &self.state.excerpts,
             &self.state.diff_transforms,
@@ -5343,7 +5386,22 @@ impl MultiBuffer {
             self.state.sources.as_slice(),
             anchor,
         )
-        .map(Into::into)
+        .map(|resolution| resolution.offset().into())
+    }
+
+    /// 只在锚点仍属于当前可见源片段时返回组合坐标。
+    pub fn projected_anchor_offset(
+        &self,
+        anchor: &MultiBufferAnchor,
+    ) -> TextResult<Option<MultiBufferOffset>> {
+        resolve_anchor_in_mappings(
+            &self.state.excerpts,
+            &self.state.diff_transforms,
+            &self.state.path_keys,
+            self.state.sources.as_slice(),
+            anchor,
+        )
+        .map(|resolution| resolution.projected_offset().map(Into::into))
     }
 
     /// 把组合文档中的选区映射回同一个源片段；跨片段选区没有单一源位置。
@@ -5635,9 +5693,10 @@ impl SourceTexts for TreeMap<usize, ExcerptSourceSnapshot> {
 /// 在给定投影→源映射中把投影偏移锚定到源坐标。
 ///
 /// 供 [`MultiBuffer::anchor_at`] 与 [`MultiBufferSnapshot::anchor_at`] 共用。
-fn anchor_in_mappings(
+fn anchor_in_mappings<S: SourceTexts + ?Sized>(
     excerpts: &SumTree<Excerpt>,
     tree: &SumTree<DiffTransform>,
+    sources: &S,
     offset: ByteOffset,
     affinity: Affinity,
 ) -> Option<MultiBufferAnchor> {
@@ -5646,8 +5705,11 @@ fn anchor_in_mappings(
         (mapping.source_range.start().get() + offset.get().saturating_sub(at.bytes))
             .min(mapping.source_range.end().get()),
     );
-    let text_anchor =
-        Anchor::new(mapping.source_range.version(), source_offset).with_affinity(affinity);
+    let anchor = Anchor::new(mapping.source_range.version(), source_offset).with_affinity(affinity);
+    let text_anchor = match sources.source_text(mapping.source_index) {
+        Some(text) => text.attach_insertion(anchor, source_offset),
+        None => anchor,
+    };
     Some(MultiBufferAnchor::excerpt(
         mapping.path_index,
         mapping.source_id,
@@ -5655,14 +5717,38 @@ fn anchor_in_mappings(
     ))
 }
 
-/// 源锚点解析结果：区分“路径退出投影”（允许就近回退）与“锚点版本失效”（禁止猜测坐标）。
+/// 稳定锚点在当前投影中的解析结果。
+///
+/// `Detached` 是一次结构变化后的正常状态：位置仍有明确的组合文档边界，但不再属于可见源片段。
+/// `Invalid` 则是源 Anchor 版本链损坏，不能猜测坐标。
+enum AnchorResolution {
+    Projected(ByteOffset),
+    Detached(ByteOffset),
+}
+
+impl AnchorResolution {
+    fn offset(self) -> ByteOffset {
+        match self {
+            Self::Projected(offset) | Self::Detached(offset) => offset,
+        }
+    }
+
+    fn projected_offset(self) -> Option<ByteOffset> {
+        match self {
+            Self::Projected(offset) => Some(offset),
+            Self::Detached(_) => None,
+        }
+    }
+}
+
+/// 源锚点解析结果：区分“路径退出投影”（允许定位结构边界）与“锚点版本失效”（禁止猜测坐标）。
 enum SourceAnchorResolution {
     /// 锚点仍绑定在投影中的源上，已解析到源偏移。
     Mapped(ByteOffset),
     /// 锚点绑定的路径或源已退出投影。
     PathNotProjected,
     /// 锚点版本无法映射到目标快照。
-    Invalid,
+    Invalid(TextError),
 }
 
 /// 把锚点绑定的源 Anchor 按当前源文本快照推进到源坐标。
@@ -5689,7 +5775,7 @@ fn excerpt_anchor_source_offset<S: SourceTexts + ?Sized>(
             };
             return match anchor.text_anchor.resolve_in(text) {
                 Ok(offset) => SourceAnchorResolution::Mapped(offset),
-                Err(_) => SourceAnchorResolution::Invalid,
+                Err(error) => SourceAnchorResolution::Invalid(error),
             };
         }
         cursor.next();
@@ -5697,14 +5783,76 @@ fn excerpt_anchor_source_offset<S: SourceTexts + ?Sized>(
     SourceAnchorResolution::PathNotProjected
 }
 
-/// 锚点绑定路径退出投影后，按当前路径顺序解析到最近的后继/前驱片段。
-fn nearest_path_output_offset(
+/// 找出锚点所属的源文本快照；路径或源已退出投影时返回 None。
+fn source_snapshot_for_anchor<'a, S: SourceTexts + ?Sized>(
+    excerpts: &SumTree<Excerpt>,
+    tree: &SumTree<DiffTransform>,
+    path_keys: &[PathKey],
+    sources: &'a S,
+    anchor: &ExcerptAnchor,
+) -> Option<&'a Snapshot> {
+    let path_key = path_keys.get(anchor.path.get() as usize)?;
+    let mut cursor = MultiBufferCursor::new(excerpts, tree);
+    cursor.seek_path(path_key, Bias::Left);
+    while let Some((excerpt, _)) = cursor.item() {
+        if &excerpt.path != path_key {
+            break;
+        }
+        if excerpt.source_id == anchor.source_id {
+            return sources.source_text(excerpt.source_index);
+        }
+        cursor.next();
+    }
+    None
+}
+/// 用源文本的稳定插入身份比较同路径同源的锚点。
+///
+/// 源已退出当前投影时回退到版本 + 偏移 + affinity 的稳定身份，仍然不解析组合坐标。
+fn stable_excerpt_text_cmp(
+    snapshot: &MultiBufferSnapshot,
+    left: &ExcerptAnchor,
+    right: &ExcerptAnchor,
+) -> Ordering {
+    // 调用方已保证 path 与 source_id 相同，因此两个锚点必属同一源快照。
+    let source = source_snapshot_for_anchor(
+        &snapshot.excerpts,
+        &snapshot.diff_transforms,
+        &snapshot.path_keys,
+        &snapshot.excerpt_sources,
+        left,
+    );
+    match source {
+        Some(source) => source.stable_anchor_cmp(&left.text_anchor, &right.text_anchor),
+        None => left
+            .text_anchor
+            .version()
+            .cmp(&right.text_anchor.version())
+            .then_with(|| left.text_anchor.offset().cmp(&right.text_anchor.offset()))
+            .then_with(|| {
+                left.text_anchor
+                    .affinity()
+                    .cmp(&right.text_anchor.affinity())
+            }),
+    }
+}
+
+/// 锚点绑定路径退出投影后，按当前路径顺序定位到相邻结构边界。
+///
+/// 实现 Zed `summary_for_anchor` 的 `Missing` 语义：
+/// 没有后继则取前驱末尾；整个投影为空时，组合文档唯一的稳定边界就是文首。
+fn structural_offset_for_detached_anchor(
     excerpts: &SumTree<Excerpt>,
     tree: &SumTree<DiffTransform>,
     path_keys: &[PathKey],
     path: PathKeyIndex,
-) -> Option<ByteOffset> {
-    let anchor_key = path_keys.get(path.get() as usize)?;
+) -> TextResult<ByteOffset> {
+    let anchor_key =
+        path_keys
+            .get(path.get() as usize)
+            .ok_or_else(|| TextError::InvariantViolation {
+                location: "MultiBuffer::anchor_offset",
+                detail: "组合 Anchor 的路径索引不属于当前 MultiBuffer".to_string(),
+            })?;
     let mut following: Option<&PathKey> = None;
     let mut preceding: Option<&PathKey> = None;
     for key in path_keys {
@@ -5722,14 +5870,60 @@ fn nearest_path_output_offset(
     if let Some(path_key) = following
         && let Some((output_start, _)) = first_mapping_for_path(excerpts, tree, path_key)
     {
-        return Some(ByteOffset::new(output_start));
+        return Ok(ByteOffset::new(output_start));
     }
     if let Some(path_key) = preceding
         && let Some((output_end, _)) = last_mapping_for_path(excerpts, tree, path_key)
     {
-        return Some(ByteOffset::new(output_end));
+        return Ok(ByteOffset::new(output_end));
     }
-    None
+    Ok(ByteOffset::ZERO)
+}
+
+/// 源坐标仍位于当前可见片段时，把它投影为组合输出偏移。
+///
+/// 半开区间的边界归后一个片段；最后一个片段的末尾仍归它自身。
+fn projected_output_offset_for_source(
+    excerpts: &SumTree<Excerpt>,
+    tree: &SumTree<DiffTransform>,
+    path_keys: &[PathKey],
+    path: PathKeyIndex,
+    source_id: Option<gpui::EntityId>,
+    source_offset: ByteOffset,
+) -> Option<ByteOffset> {
+    let path_key = path_keys.get(path.get() as usize)?;
+    let mut cursor = MultiBufferCursor::new(excerpts, tree);
+    cursor.seek_path(path_key, Bias::Left);
+    let mut last_matching = None;
+    while let Some((excerpt, _)) = cursor.item() {
+        if &excerpt.path != path_key {
+            break;
+        }
+        if source_id.is_none_or(|source_id| excerpt.source_id == Some(source_id)) {
+            let mapping = cursor.mapping().expect("双坐标游标必须有对应映射");
+            if mapping.source_range.start() <= source_offset
+                && source_offset < mapping.source_range.end()
+            {
+                return Some(ByteOffset::new(
+                    cursor.start().bytes
+                        + source_offset
+                            .get()
+                            .saturating_sub(mapping.source_range.start().get()),
+                ));
+            }
+            last_matching = Some((cursor.start().bytes, mapping));
+        }
+        cursor.next();
+    }
+    let (output_start, mapping) = last_matching?;
+    (mapping.source_range.end() == source_offset).then(|| {
+        ByteOffset::new(
+            output_start
+                + source_offset
+                    .get()
+                    .saturating_sub(mapping.source_range.start().get()),
+        )
+    })
 }
 
 fn nearest_output_offset_for_source(
@@ -5810,25 +6004,38 @@ fn nearest_output_offset_for_source(
 
 /// 在给定投影→源映射中把源锚点解析回投影偏移。
 ///
-/// 同一文件仍存在时优先落到最接近的源片段；文件退出投影时按当前路径顺序落到最近的后继/前驱。
-/// 锚点版本无法映射时返回 None，不进入就近回退。
-/// [`MultiBuffer::resolve_anchor`]（当前映射）与 [`MultiBufferSnapshot::resolve_anchor`]（快照映射）共用此解析逻辑。
+/// 同一文件仍存在时优先解析到源位置；
+/// 源位置已离开可见 excerpt 或路径退出投影时，按当前结构定位相邻边界。
+/// 源 Anchor 版本无法映射时显式失败，不进入结构定位。
+/// [`MultiBuffer::anchor_offset`]（当前映射）与 [`MultiBufferSnapshot::anchor_offset`]（快照映射）共用此解析逻辑。
 fn resolve_anchor_in_mappings<S: SourceTexts + ?Sized>(
     excerpts: &SumTree<Excerpt>,
     tree: &SumTree<DiffTransform>,
     path_keys: &[PathKey],
     sources: &S,
     anchor: &MultiBufferAnchor,
-) -> Option<ByteOffset> {
+) -> TextResult<AnchorResolution> {
     let excerpt_anchor = match anchor {
-        MultiBufferAnchor::Min => return Some(ByteOffset::ZERO),
+        MultiBufferAnchor::Min => return Ok(AnchorResolution::Projected(ByteOffset::ZERO)),
         MultiBufferAnchor::Max => {
-            return Some(ByteOffset::new(tree.summary().output.text.len));
+            return Ok(AnchorResolution::Projected(ByteOffset::new(
+                tree.summary().output.text.len,
+            )));
         }
         MultiBufferAnchor::Excerpt(excerpt_anchor) => excerpt_anchor,
     };
     match excerpt_anchor_source_offset(excerpts, tree, path_keys, sources, excerpt_anchor) {
         SourceAnchorResolution::Mapped(source_offset) => {
+            if let Some(offset) = projected_output_offset_for_source(
+                excerpts,
+                tree,
+                path_keys,
+                excerpt_anchor.path,
+                excerpt_anchor.source_id,
+                source_offset,
+            ) {
+                return Ok(AnchorResolution::Projected(offset));
+            }
             if let Some(offset) = nearest_output_offset_for_source(
                 excerpts,
                 tree,
@@ -5837,7 +6044,7 @@ fn resolve_anchor_in_mappings<S: SourceTexts + ?Sized>(
                 excerpt_anchor.source_id,
                 source_offset,
             ) {
-                return Some(offset);
+                return Ok(AnchorResolution::Detached(offset));
             }
             if let Some(offset) = nearest_output_offset_for_source(
                 excerpts,
@@ -5847,17 +6054,18 @@ fn resolve_anchor_in_mappings<S: SourceTexts + ?Sized>(
                 None,
                 source_offset,
             ) {
-                return Some(offset);
+                return Ok(AnchorResolution::Detached(offset));
             }
-            // 源路径仍在投影中，只是该源没有可命中片段：允许路径级就近回退。
-            nearest_path_output_offset(excerpts, tree, path_keys, excerpt_anchor.path)
+            structural_offset_for_detached_anchor(excerpts, tree, path_keys, excerpt_anchor.path)
+                .map(AnchorResolution::Detached)
         }
-        // 路径退出投影：允许按当前路径顺序就近回退。
+        // 路径退出投影：按当前路径顺序定位结构边界。
         SourceAnchorResolution::PathNotProjected => {
-            nearest_path_output_offset(excerpts, tree, path_keys, excerpt_anchor.path)
+            structural_offset_for_detached_anchor(excerpts, tree, path_keys, excerpt_anchor.path)
+                .map(AnchorResolution::Detached)
         }
-        // 锚点版本无法映射：禁止进入 nearest_path_output_offset 猜测坐标。
-        SourceAnchorResolution::Invalid => None,
+        // 锚点版本无法映射：禁止进入结构定位猜测坐标。
+        SourceAnchorResolution::Invalid(error) => Err(error),
     }
 }
 

@@ -132,12 +132,14 @@ impl EditLog {
         Ok(batch.filtered_to_old_range(range))
     }
 
-    /// 取 `[start, end]` 版本区间的逆编辑，按 undo 回放顺序（版本倒序）返回。
+    /// 取 `[start, end]` 版本区间的逆编辑与原始版本区间，按 undo 回放顺序（版本倒序）返回。
+    ///
+    /// 原始版本区间供插入索引回退片段可见性，对齐 Zed 的 undo map。
     pub(crate) fn undo_batches(
         &self,
         start: BufferVersion,
         end: BufferVersion,
-    ) -> TextResult<Vec<EditList>> {
+    ) -> TextResult<Vec<(BufferVersion, BufferVersion, EditList)>> {
         let entries = self.entries_for_range(start, end)?;
         let mut batches = Vec::with_capacity(entries.len());
         for entry in entries.iter().rev() {
@@ -147,7 +149,7 @@ impl EditLog {
                     detail: "历史节点引用了未保留逆编辑的版本".to_string(),
                 });
             };
-            batches.push(undo.clone());
+            batches.push((entry.old_version, entry.new_version, undo.clone()));
         }
         Ok(batches)
     }
@@ -175,14 +177,17 @@ impl EditLog {
         Ok(batches)
     }
 
-    /// 取 `[start, end]` 版本区间的向前编辑，按 redo 回放顺序（版本正序）返回。
+    /// 取 `[start, end]` 版本区间的向前编辑与原始版本区间，按 redo 回放顺序（版本正序）返回。
     pub(crate) fn redo_batches(
         &self,
         start: BufferVersion,
         end: BufferVersion,
-    ) -> TextResult<Vec<EditList>> {
+    ) -> TextResult<Vec<(BufferVersion, BufferVersion, EditList)>> {
         let entries = self.entries_for_range(start, end)?;
-        Ok(entries.iter().map(|entry| entry.forward.clone()).collect())
+        Ok(entries
+            .iter()
+            .map(|entry| (entry.old_version, entry.new_version, entry.forward.clone()))
+            .collect())
     }
 
     /// `[start, end]` 连续版本区间内的每个条目是否都保留了逆编辑。

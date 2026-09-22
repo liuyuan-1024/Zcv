@@ -403,8 +403,14 @@ impl Editor {
         self.autoclose_regions
             .iter()
             .filter_map(|region| {
-                let start = snapshot.resolve_anchor(&region.range.start)?;
-                let end_offset = snapshot.resolve_anchor(&region.range.end)?;
+                let start = snapshot
+                    .projected_anchor_offset(&region.range.start)
+                    .ok()
+                    .flatten()?;
+                let end_offset = snapshot
+                    .projected_anchor_offset(&region.range.end)
+                    .ok()
+                    .flatten()?;
                 (end_offset == end
                     && region.pair.end == typed.to_string()
                     && text_at(snapshot, end, region.pair.end))
@@ -426,8 +432,14 @@ impl Editor {
         let selections = self.resolved_selections(cx);
         self.autoclose_regions.retain(|region| {
             let (Some(start), Some(end)) = (
-                snapshot.resolve_anchor(&region.range.start),
-                snapshot.resolve_anchor(&region.range.end),
+                snapshot
+                    .projected_anchor_offset(&region.range.start)
+                    .ok()
+                    .flatten(),
+                snapshot
+                    .projected_anchor_offset(&region.range.end)
+                    .ok()
+                    .flatten(),
             ) else {
                 return false;
             };
@@ -456,7 +468,10 @@ impl Editor {
                     .autoclose_regions
                     .iter()
                     .filter_map(|region| {
-                        let start = snapshot.resolve_anchor(&region.range.start)?;
+                        let start = snapshot
+                            .projected_anchor_offset(&region.range.start)
+                            .ok()
+                            .flatten()?;
                         (start == selection.end()).then_some((region, start))
                     })
                     .max_by_key(|(_, start)| *start)
@@ -467,7 +482,11 @@ impl Editor {
                     return *selection;
                 };
                 let start = MultiBufferOffset::new(start);
-                let Some(close_start) = snapshot.resolve_anchor(&region.range.end) else {
+                let Some(close_start) = snapshot
+                    .projected_anchor_offset(&region.range.end)
+                    .ok()
+                    .flatten()
+                else {
                     return *selection;
                 };
                 let Some(end) = close_start.get().checked_add(region.pair.end.len()) else {

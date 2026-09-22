@@ -516,7 +516,8 @@ impl Editor {
     /// `None` 是加载态（新 diff 尚未算完）：保留现有 hunks 与用户展开状态，不再被中间空列表清空；展开状态按工作区文本跟踪区间跨刷新迁移。
     /// diff 状态与 excerpts projection 归属当前编辑器的 MultiBuffer 文档模型；
     /// 本方法只负责把外部 Git 基准更新提交给该模型并同步视图层状态。
-    /// 返回 `true` 表示组合文档被重建；选区仍由源锚点解析，不随投影替换移动。
+    /// 返回 `true` 表示组合文档被重建；
+    /// 选区按当前组合结构重新解析，源退出投影时落到结构边界，不在 Editor 中保存补偿坐标。
     /// 用给定文件列表整体替换 diff 投影；刷新等结构性变化的入口。
     pub fn set_diff_files(&mut self, files: Vec<DiffFile>, cx: &mut Context<Self>) -> bool {
         let rebuilt = self
@@ -650,8 +651,8 @@ impl Editor {
 
     /// 宿主注入/刷新整份 diff 投影后同步视图层状态。
     ///
-    /// 选区由源锚点拥有，组合 excerpts 重建不会改变其源位置；
-    /// 这里只同步显示快照，不得把选区重置到组合文档起点。
+    /// 选区由源锚点拥有，组合 excerpts 重建后按当前结构重新解析；
+    /// 这里只同步显示快照，不得在 Editor 中手动重置或补偿选区。
     fn reset_after_diff_injection(&mut self, rebuilt: bool, cx: &mut Context<Self>) {
         if rebuilt {
             self.advance_snapshots(cx);
@@ -660,7 +661,9 @@ impl Editor {
     }
 
     /// diff 展开/折叠重建后同步视图层状态：
-    /// 结构刷新不改变源，源锚点选区自然存活——同步 DisplayMap 后按重建后快照解析即落到同一逻辑源位置，光标不会被重置到开头（与普通编辑器折叠不移动光标一致）。
+    /// 结构刷新后由组合层按当前快照重新解析位置：
+    /// 源仍可见时保持源位置，源已退出投影时落到确定的结构边界；
+    /// Editor 不维护第二套补偿坐标。
     fn after_diff_expansion(&mut self, cx: &mut Context<Self>) {
         self.advance_snapshots(cx);
         cx.notify();
@@ -1068,11 +1071,12 @@ impl Editor {
 
     /// 按当前派生快照把源锚点选区解析为投影 offset 版选区集合。
     ///
-    /// 锚点全部无法映射是编辑器不变量破坏：显式失败，绝不用文首 caret 静默兜底。
+    /// 结构重建导致源退出投影时，组合层会把位置解析到确定的结构边界。
+    /// 只有源 Anchor 的版本链损坏才是编辑器不变量破坏。
     fn resolved_selections(&self, cx: &App) -> SelectionSet {
         self.selections
             .resolve(self.display_snapshot(cx).buffer_snapshot())
-            .expect("选区锚点必须在当前显示快照上可解析")
+            .expect("选区锚点版本必须能推进到当前显示快照")
     }
 
     /// 光标位置的 "行:列" 文本，行和列均从 1 开始计数。
@@ -1338,14 +1342,25 @@ impl Editor {
             return;
         };
         let snapshot = self.display_snapshot(cx).buffer_snapshot().clone();
-        // 拖动端点锚点版本无法映射到当前快照时，显式放弃本次更新。
-        let Some(pending_anchor) = snapshot.resolve_anchor(&pending.anchor) else {
+        // 拖动手势必须停留在其原始可见源片段中；
+        // 结构重建移除该片段时结束本次更新。
+        let Some(pending_anchor) = snapshot
+            .projected_anchor_offset(&pending.anchor)
+            .ok()
+            .flatten()
+        else {
             return;
         };
         let resolve_original = |range: &Range<MultiBufferAnchor>| {
             Some((
-                snapshot.resolve_anchor(&range.start)?,
-                snapshot.resolve_anchor(&range.end)?,
+                snapshot
+                    .projected_anchor_offset(&range.start)
+                    .ok()
+                    .flatten()?,
+                snapshot
+                    .projected_anchor_offset(&range.end)
+                    .ok()
+                    .flatten()?,
             ))
         };
         let Ok(left_offset) = self

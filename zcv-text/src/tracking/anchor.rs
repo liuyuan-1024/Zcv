@@ -3,8 +3,10 @@
 //! 所有文本更新都沿同一版本化坐标链推进；
 //! `resolve_in` 通过 Buffer 的不衰减坐标索引重新定位，不依赖会被预算裁剪的带文本编辑日志。
 
+use std::cmp::Ordering;
 use std::ops::Range;
 
+use super::insertion_index::InsertionId;
 use crate::{
     errors::AnchorError,
     position_map::{Affinity, MappingResult, PositionMap},
@@ -18,6 +20,10 @@ pub struct Anchor {
     version: BufferVersion,
     offset: ByteOffset,
     affinity: Affinity,
+    /// 稳定插入身份；空文档或未绑定时为 NONE。
+    insertion: InsertionId,
+    /// 插入内偏移；同一插入内用它区分顺序。
+    insertion_offset: u32,
 }
 
 impl Anchor {
@@ -26,7 +32,29 @@ impl Anchor {
             version,
             offset,
             affinity: Affinity::default(),
+            insertion: InsertionId::NONE,
+            insertion_offset: 0,
         }
+    }
+
+    /// 绑定稳定插入身份；由快照在创建锚点时填入。
+    pub(crate) fn with_insertion(mut self, insertion: InsertionId, insertion_offset: u32) -> Self {
+        self.insertion = insertion;
+        self.insertion_offset = insertion_offset;
+        self
+    }
+
+    pub(crate) fn insertion(self) -> InsertionId {
+        self.insertion
+    }
+
+    pub(crate) fn insertion_offset(self) -> u32 {
+        self.insertion_offset
+    }
+
+    /// 按稳定插入身份比较两个锚点的文档序，不解析文本坐标。
+    pub fn stable_cmp(self, other: &Self, snapshot: &crate::Snapshot) -> Ordering {
+        snapshot.stable_anchor_cmp(&self, other)
     }
 
     pub fn with_affinity(mut self, affinity: Affinity) -> Self {
@@ -99,7 +127,11 @@ impl Anchor {
     ) -> MappingResult<Self> {
         position_map
             .map_old_position_with_affinity(self.offset, self.affinity)
-            .map(|offset| Anchor::new(new_version, offset).with_affinity(self.affinity))
+            .map(|offset| {
+                Anchor::new(new_version, offset)
+                    .with_affinity(self.affinity)
+                    .with_insertion(self.insertion, self.insertion_offset)
+            })
     }
 
     fn verify_event_version(self, event: &DeltaEvent) -> Result<(), AnchorError> {

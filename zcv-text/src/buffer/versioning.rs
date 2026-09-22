@@ -17,6 +17,7 @@ impl Buffer {
             self.config.clone(),
             self.edit_log.clone(),
             self.coordinate_index.clone(),
+            self.insertions.clone(),
         )
     }
 }

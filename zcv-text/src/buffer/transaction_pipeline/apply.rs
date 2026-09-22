@@ -20,6 +20,17 @@ use crate::{
     types::BufferVersion,
 };
 
+/// 历史和会话收尾所需的事务事实及其派生状态。
+///
+/// 这些引用共同表示一次事务规划的收尾边界，避免让收尾函数逐项接收互相关联的状态。
+struct TransactionFinalization<'a> {
+    metadata: &'a TransactionMetadata,
+    event: &'a DeltaEvent,
+    edit_log: &'a mut EditLog,
+    history: &'a mut HistoryState,
+    session: &'a mut Option<TransactionSession>,
+}
+
 impl Buffer {
     /// 提交并应用事务。
     pub(crate) fn apply_transaction(&mut self, tx: Transaction) -> TextResult<TransactionOutcome> {
@@ -46,6 +57,7 @@ impl Buffer {
             next_transaction_id,
             event,
             Some(&prepared.metadata),
+            None,
         )
     }
 
@@ -119,9 +131,14 @@ impl Buffer {
         next_transaction_id: crate::TransactionId,
         event: DeltaEvent,
         metadata: Option<&TransactionMetadata>,
+        revert: Option<(BufferVersion, BufferVersion)>,
     ) -> TextResult<DerivedBufferState> {
         let mut next_storage = self.storage.clone();
         next_storage.apply_edit_list(forward)?;
+        let next_insertions = match revert {
+            Some((start, end)) => self.insertions.undone(start, end, event.new_version()),
+            None => self.insertions.with_edits(forward, event.new_version()),
+        };
 
         let mut next_edit_log = self.edit_log.appended(
             event.old_version(),
@@ -138,15 +155,13 @@ impl Buffer {
         let mut next_history = self.history.clone();
         let mut next_session = self.session.clone();
         let history_transaction_id = match metadata {
-            Some(metadata) => self.plan_finish_transaction(
+            Some(metadata) => self.plan_finish_transaction(TransactionFinalization {
                 metadata,
-                event.transaction_id(),
-                event.old_version(),
-                event.new_version(),
-                &mut next_edit_log,
-                &mut next_history,
-                &mut next_session,
-            )?,
+                event: &event,
+                edit_log: &mut next_edit_log,
+                history: &mut next_history,
+                session: &mut next_session,
+            })?,
             None => None,
         };
 
@@ -155,6 +170,7 @@ impl Buffer {
             version: event.new_version(),
             edit_log: next_edit_log,
             coordinate_index: next_coordinate_index,
+            insertions: next_insertions,
             history: next_history,
             session: next_session,
             next_transaction_id,
@@ -166,14 +182,15 @@ impl Buffer {
     /// 历史 / 会话收尾的计划版本：只作用于传入的克隆状态。
     fn plan_finish_transaction(
         &self,
-        metadata: &TransactionMetadata,
-        transaction_id: crate::TransactionId,
-        old_version: BufferVersion,
-        new_version: BufferVersion,
-        edit_log: &mut EditLog,
-        history: &mut HistoryState,
-        session: &mut Option<TransactionSession>,
+        finalization: TransactionFinalization<'_>,
     ) -> TextResult<Option<crate::TransactionId>> {
+        let TransactionFinalization {
+            metadata,
+            event,
+            edit_log,
+            history,
+            session,
+        } = finalization;
         let records_history = self.records_history(metadata);
         if let Some(active) = session {
             // 会话内：历史写入推迟到 end_transaction，这里只延续/放弃会话记录。
@@ -188,7 +205,12 @@ impl Buffer {
 
         if metadata.record_history() {
             let description = metadata.description_arc().cloned();
-            let entry = HistoryEntry::new(transaction_id, old_version, new_version, description);
+            let entry = HistoryEntry::new(
+                event.transaction_id(),
+                event.old_version(),
+                event.new_version(),
+                description,
+            );
             push_history_into(history, edit_log, entry, metadata)?;
             truncate_edit_history(edit_log, history, &self.config.large_file);
             return Ok(history.current_transaction_id());
@@ -210,6 +232,7 @@ impl Buffer {
             version,
             edit_log,
             coordinate_index,
+            insertions,
             history,
             session,
             next_transaction_id,
@@ -221,6 +244,7 @@ impl Buffer {
         self.version = version;
         self.edit_log = edit_log;
         self.coordinate_index = coordinate_index;
+        self.insertions = insertions;
         self.history = history;
         self.session = session;
         self.commit_delta_event(next_transaction_id, &event);
@@ -233,8 +257,9 @@ impl Buffer {
         base_version: BufferVersion,
         tx_edits: EditList,
         source: TransactionSource,
+        revert: Option<(BufferVersion, BufferVersion)>,
     ) -> TextResult<DeltaEvent> {
-        let derived = self.plan_edit_list(base_version, tx_edits, source)?;
+        let derived = self.plan_edit_list(base_version, tx_edits, source, revert)?;
         let (_, event) = self.install(derived);
         Ok(event)
     }
@@ -244,6 +269,7 @@ impl Buffer {
         base_version: BufferVersion,
         tx_edits: EditList,
         source: TransactionSource,
+        revert: Option<(BufferVersion, BufferVersion)>,
     ) -> TextResult<DerivedBufferState> {
         self.ensure_writable()?;
         let (next_transaction_id, event) =
@@ -256,6 +282,7 @@ impl Buffer {
             next_transaction_id,
             event,
             None,
+            revert,
         )
     }
 
@@ -291,6 +318,7 @@ impl Buffer {
             next_transaction_id,
             event,
             Some(&prepared.metadata),
+            None,
         )
     }
 

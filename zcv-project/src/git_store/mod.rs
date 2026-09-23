@@ -270,6 +270,24 @@ impl PendingIndex {
     }
 }
 
+#[derive(Clone)]
+enum RevisionDocument {
+    Present(Entity<LanguageBuffer>),
+    Missing {
+        /// 缺失修订在 diff 新侧需要一个稳定的空文档实体；普通修订读取仍保持缺失语义。
+        empty_diff_source: Option<Entity<LanguageBuffer>>,
+    },
+}
+
+impl RevisionDocument {
+    fn present(&self) -> Option<Entity<LanguageBuffer>> {
+        match self {
+            Self::Present(document) => Some(document.clone()),
+            Self::Missing { .. } => None,
+        }
+    }
+}
+
 pub struct GitStore {
     /// 项目根目录；无 worktree 的空项目为 None，此时所有 job 与仓库查询为空操作。
     root: Option<AbsolutePathBuf>,
@@ -282,10 +300,10 @@ pub struct GitStore {
     /// 活动仓库（按 working_directory 标识）：分支显示与 fetch/pull/push 等 git 操作的目标。
     /// 用 working_directory 而非索引：全量扫描重建 Vec，索引不稳定。
     active_repo_workdir: Option<AbsolutePathBuf>,
-    /// HEAD/index 修订文档缓存；按 (revision, path) 唯一，内容变化时就地刷新，实体身份保持稳定。
-    /// 值 `None` 表示该修订中文件不存在（已加载但缺失），键存在即表示已加载完成。
+    /// HEAD/index 修订状态缓存；按 (revision, path) 唯一，内容变化时就地刷新，实体身份保持稳定。
+    /// Missing 保留修订缺失事实，并按需持有 diff 新侧所需的空文档。
     /// 修订文档是 HEAD/index 的唯一权威实例，工作区视图与 diff 都从这里取用。
-    revision_documents: HashMap<(GitRevision, AbsolutePathBuf), Option<Entity<LanguageBuffer>>>,
+    revision_documents: HashMap<(GitRevision, AbsolutePathBuf), RevisionDocument>,
     /// 分修订递增的缓存版本；刷新前启动的后台读取不得回填新文本。
     revision_generations: HashMap<GitRevision, u64>,
     /// 每个路径的乐观 index 编辑批次：所有编辑相对同一稳定基准文本，用于派生写盘文本。
@@ -1141,8 +1159,7 @@ impl GitStore {
                         store
                             .revision_documents
                             .get(&(revision, path.clone()))
-                            .cloned()
-                            .flatten()
+                            .and_then(RevisionDocument::present)
                     })
                     .ok()
                     .flatten();
@@ -1211,12 +1228,21 @@ impl GitStore {
                 if revision == GitRevision::Index {
                     self.pending_index.remove(&path);
                 }
-                self.revision_documents.insert(key, None);
+                let empty_diff_source = match self.revision_documents.get(&key) {
+                    Some(RevisionDocument::Missing { empty_diff_source }) => {
+                        empty_diff_source.clone()
+                    }
+                    _ => None,
+                };
+                self.revision_documents
+                    .insert(key, RevisionDocument::Missing { empty_diff_source });
                 (None, None)
             }
             Some(text) => {
                 let text_arc: Arc<str> = Arc::from(text.as_str());
-                if let Some(Some(document)) = self.revision_documents.get(&key).cloned() {
+                if let Some(RevisionDocument::Present(document)) =
+                    self.revision_documents.get(&key).cloned()
+                {
                     if snapshot_text(&document.read(cx).text_snapshot()) != text {
                         // 权威 index 文本前进：以旧基准派生的乐观批次已被取代。
                         if revision == GitRevision::Index {
@@ -1244,7 +1270,8 @@ impl GitStore {
                             cx,
                         )
                     });
-                    self.revision_documents.insert(key, Some(document.clone()));
+                    self.revision_documents
+                        .insert(key, RevisionDocument::Present(document.clone()));
                     (Some(document), Some(text_arc))
                 }
             }
@@ -1272,7 +1299,7 @@ impl GitStore {
         background.spawn(async move { repository.commit_graph(offset, limit) })
     }
 
-    /// 读取缓存的修订文档；`None` 表示文件在该修订中缺失或尚未加载。
+    /// 读取缓存中的实际修订文档；`None` 表示文件在该修订中缺失或尚未加载。
     ///
     /// 与 [`GitStore::revision_document_loaded`] 搭配区分“未加载”和“确实不存在”。
     pub fn revision_document(
@@ -1282,10 +1309,39 @@ impl GitStore {
     ) -> Option<Entity<LanguageBuffer>> {
         self.revision_documents
             .get(&(revision, canonicalize_path(path).ok()?))
-            .and_then(|document| document.clone())
+            .and_then(RevisionDocument::present)
     }
 
-    /// 修订文档的完整文本；文档尚未加载时返回 None。
+    /// 修订文档的 diff 新侧；修订缺失时返回 GitStore 拥有的稳定空语言文档。
+    ///
+    /// 空侧与工作区 Buffer 身份分离，因此 index 缺失时不会误用同路径的磁盘文件。
+    pub fn revision_diff_document(
+        &mut self,
+        revision: GitRevision,
+        path: &Path,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<LanguageBuffer>> {
+        let key = (revision, canonicalize_path(path).ok()?);
+        let language_registry = Arc::clone(&self.language_registry);
+        let absolute_path = key.1.as_path().to_path_buf();
+        match self.revision_documents.get_mut(&key)? {
+            RevisionDocument::Present(document) => Some(document.clone()),
+            RevisionDocument::Missing { empty_diff_source } => {
+                if let Some(document) = empty_diff_source {
+                    return Some(document.clone());
+                }
+                let buffer = Buffer::from_text(String::new(), BufferConfig::default())
+                    .expect("缺失修订的 diff 空侧必须能创建 Buffer");
+                let document = cx.new(|cx| {
+                    LanguageBuffer::new(buffer, Some(absolute_path), language_registry, cx)
+                });
+                *empty_diff_source = Some(document.clone());
+                Some(document)
+            }
+        }
+    }
+
+    /// 修订文档的完整文本；修订尚未加载或文件缺失时返回 None。
     pub fn revision_text(&self, revision: GitRevision, path: &Path, cx: &App) -> Option<String> {
         let document = self.revision_document(revision, path)?;
         Some(snapshot_text(&document.read(cx).text_snapshot()))

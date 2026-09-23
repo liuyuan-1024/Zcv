@@ -1182,6 +1182,13 @@ fn build_sticky_buffer_header(
 ) -> AnyElement {
     let width = layout.block_clip_bounds.size.width;
     let height = layout.line_height * FILE_HEADER_HEIGHT as f32;
+    // 下一个文件标题来自当前帧的可见块：
+    // 只有它能进入把悬浮标题顶出的那一段几何，因而不需要回读投影树，悬浮查询保持 O(log) 而不向前扫描。
+    let next_buffer_header_row = layout
+        .blocks
+        .iter()
+        .find(|block| block.row > start_row && block.block.kind == DisplayBlockKind::BufferHeader)
+        .map(|block| block.row);
     let origin = point(
         layout.block_clip_bounds.left(),
         sticky_buffer_header_origin_y(
@@ -1189,7 +1196,7 @@ fn build_sticky_buffer_header(
             layout.line_height,
             start_row,
             scroll_offset.y,
-            sticky.next_buffer_header_row,
+            next_buffer_header_row,
         ),
     );
     let block = DisplayBlock {
@@ -1457,7 +1464,7 @@ impl Element for EditorElement {
                 .unwrap_or_default()
         };
         // diff 与搜索装饰由显示链按显示版本投影；本帧只取当前视口的行范围。
-        let diff_decorations = display_snapshot.diff_decorations();
+        let diff_decorations = display_snapshot.diff_decorations_for_viewport(visible_rows.clone());
         let search_decorations = display_snapshot.search_decorations();
         let hunk_render = diff_decorations.rendering_for_viewport(visible_rows.clone());
         let diff_rows = &hunk_render.diff_rows;

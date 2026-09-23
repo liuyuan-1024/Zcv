@@ -383,7 +383,7 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
         let row = viewport.first().expect("未找到文本行");
         let WrapRowKind::Text {
             byte_range,
-            global_byte_start,
+            content_range,
             projected_line,
             ..
         } = row.kind();
@@ -393,7 +393,7 @@ fn element_style_pipeline_backgrounds_all_matches(cx: &mut TestAppContext) {
             ChunkSource {
                 text: ChunkText::Borrowed(text.as_ref()),
                 projected_len: text.len(),
-                global_byte_start: *global_byte_start,
+                global_byte_start: content_range.start.get(),
                 segments: None,
             },
             tab_width,
@@ -446,7 +446,7 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
         for row in &viewport {
             let WrapRowKind::Text {
                 byte_range,
-                global_byte_start,
+                content_range,
                 projected_line,
                 ..
             } = row.kind();
@@ -457,7 +457,7 @@ fn backgrounds_render_across_multiple_lines(cx: &mut TestAppContext) {
                     ChunkSource {
                         text: ChunkText::Borrowed(text.as_ref()),
                         projected_len: text.len(),
-                        global_byte_start: *global_byte_start,
+                        global_byte_start: content_range.start.get(),
                         segments: None,
                     },
                     tab_width,
@@ -552,7 +552,7 @@ zcv final
         for row in &viewport {
             let WrapRowKind::Text {
                 byte_range,
-                global_byte_start,
+                content_range,
                 projected_line,
                 ..
             } = row.kind();
@@ -564,7 +564,7 @@ zcv final
                     ChunkSource {
                         text: ChunkText::Borrowed(text.as_ref()),
                         projected_len: text.len(),
-                        global_byte_start: *global_byte_start,
+                        global_byte_start: content_range.start.get(),
                         segments: None,
                     },
                     tab_width,

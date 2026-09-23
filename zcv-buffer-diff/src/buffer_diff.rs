@@ -2,7 +2,7 @@
 //!
 //! `BufferDiff` 是单个文件 diff 结果的权威状态：base/index/working 来源、版本绑定的 `BufferDiffSnapshot`、pending 操作与 `DiffOperations` 都由它持有。
 //! 它不订阅 working buffer，也不决定何时重算：宿主在源文本变化时调用 [`BufferDiff::recompute`]，本层只负责后台计算、版本门控与结果发布。
-//! hunk 的暂存语义统一相对 index 参照判定，所有视图共用同一套；展开/折叠、显示路径与上下文裁剪由 `MultiBuffer` 的 diff 投影持有。
+//! hunk 的暂存语义统一相对 index 参照判定，所有视图共用同一套；展开/折叠与显示路径由 `MultiBuffer` 的 diff 投影持有。
 
 use std::ops::Range;
 use std::path::PathBuf;
@@ -40,10 +40,13 @@ pub enum DiffRefresh {
     RebuildProjection,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BufferDiffEvent {
-    /// diff 结果或 pending 状态变化；`refresh` 决定订阅方是否重建组合投影。
-    DiffChanged { refresh: DiffRefresh },
+    /// diff 结果或 pending 状态变化；范围位于当前 working 快照，None 表示本次不做范围同步。
+    DiffChanged {
+        refresh: DiffRefresh,
+        changed_range: Option<Range<Anchor>>,
+    },
 }
 
 /// 单个文件的 diff 创建输入。
@@ -211,7 +214,7 @@ impl PendingHunk {
 /// 某个明确版本下的不可变 diff 结果。
 ///
 /// 只表达 diff 本身：anchor hunk 与 pending 的 optimistic 结果；
-/// 展开/折叠、显示坐标与上下文裁剪由显示层派生。
+/// 展开/折叠与显示坐标由显示层派生。
 #[derive(Clone)]
 pub struct BufferDiffSnapshot {
     hunks: Vec<DiffHunk>,
@@ -470,6 +473,18 @@ impl BufferDiff {
             return false;
         }
         let calculation_was_pending = self.calculated_versions != Some(versions);
+        let working = self.working.read(cx).text_snapshot();
+        let mut changed_range = changed_hunk_range(&self.snapshot.hunks, &hunks, &working);
+        if calculation_was_pending {
+            let pending_range = anchor_ranges_union(
+                self.snapshot
+                    .pending_hunks
+                    .iter()
+                    .map(|pending| pending.buffer_range.clone()),
+                &working,
+            );
+            changed_range = union_anchor_ranges(changed_range, pending_range, &working);
+        }
         self.calculated_versions = Some(versions);
         if !calculation_was_pending && hunks_equivalent(&self.snapshot.hunks, &hunks) {
             return false;
@@ -479,7 +494,10 @@ impl BufferDiff {
             pending_hunks: Vec::new(),
         };
         self.revision = self.revision.wrapping_add(1).max(1);
-        cx.emit(BufferDiffEvent::DiffChanged { refresh });
+        cx.emit(BufferDiffEvent::DiffChanged {
+            refresh,
+            changed_range,
+        });
         true
     }
 
@@ -547,6 +565,14 @@ impl BufferDiff {
             return;
         }
         let mut pending = std::mem::take(&mut self.snapshot.pending_hunks);
+        let working = self.working.read(cx).text_snapshot();
+        let changed_range = anchor_ranges_union(
+            pending
+                .iter()
+                .map(|pending| pending.buffer_range.clone())
+                .chain(hunks.iter().map(|hunk| hunk.buffer_range.clone())),
+            &working,
+        );
         for hunk in hunks {
             pending.retain(|existing| {
                 existing.buffer_range.end.offset().get() <= hunk.buffer_range.start.offset().get()
@@ -562,6 +588,7 @@ impl BufferDiff {
         self.revision = self.revision.wrapping_add(1).max(1);
         cx.emit(BufferDiffEvent::DiffChanged {
             refresh: DiffRefresh::RebuildProjection,
+            changed_range,
         });
     }
 
@@ -570,10 +597,19 @@ impl BufferDiff {
         if self.snapshot.pending_hunks.is_empty() {
             return;
         }
+        let working = self.working.read(cx).text_snapshot();
+        let changed_range = anchor_ranges_union(
+            self.snapshot
+                .pending_hunks
+                .iter()
+                .map(|pending| pending.buffer_range.clone()),
+            &working,
+        );
         self.snapshot.pending_hunks.clear();
         self.revision = self.revision.wrapping_add(1).max(1);
         cx.emit(BufferDiffEvent::DiffChanged {
             refresh: DiffRefresh::RebuildProjection,
+            changed_range,
         });
     }
 }
@@ -741,6 +777,83 @@ fn hunks_equivalent(a: &[DiffHunk], b: &[DiffHunk]) -> bool {
                         a.start.offset() == b.start.offset() && a.end.offset() == b.end.offset()
                     })
         })
+}
+
+/// 找出新旧 hunk 序列中最小的连续变化范围，并将其锚定到当前 working 快照。
+fn changed_hunk_range(
+    old: &[DiffHunk],
+    new: &[DiffHunk],
+    working: &Snapshot,
+) -> Option<Range<Anchor>> {
+    let prefix = old
+        .iter()
+        .zip(new)
+        .take_while(|(old, new)| diff_hunks_equal_in(old, new, working))
+        .count();
+    let mut suffix = 0;
+    while prefix + suffix < old.len().min(new.len())
+        && diff_hunks_equal_in(
+            &old[old.len() - suffix - 1],
+            &new[new.len() - suffix - 1],
+            working,
+        )
+    {
+        suffix += 1;
+    }
+
+    let old_end = old.len() - suffix;
+    let new_end = new.len() - suffix;
+    anchor_ranges_union(
+        old[prefix..old_end]
+            .iter()
+            .chain(&new[prefix..new_end])
+            .map(|hunk| hunk.buffer_range.clone()),
+        working,
+    )
+}
+
+fn diff_hunks_equal_in(old: &DiffHunk, new: &DiffHunk, working: &Snapshot) -> bool {
+    let resolve = |anchor: &Anchor| anchor.resolve_in(working).ok();
+    resolve(&old.buffer_range.start) == resolve(&new.buffer_range.start)
+        && resolve(&old.buffer_range.end) == resolve(&new.buffer_range.end)
+        && old.diff_base_byte_range == new.diff_base_byte_range
+        && old.kind == new.kind
+        && old.staging == new.staging
+        && old.base_word_diffs == new.base_word_diffs
+        && old.buffer_word_diffs.len() == new.buffer_word_diffs.len()
+        && old
+            .buffer_word_diffs
+            .iter()
+            .zip(&new.buffer_word_diffs)
+            .all(|(old, new)| {
+                resolve(&old.start) == resolve(&new.start) && resolve(&old.end) == resolve(&new.end)
+            })
+}
+
+fn anchor_ranges_union(
+    ranges: impl IntoIterator<Item = Range<Anchor>>,
+    working: &Snapshot,
+) -> Option<Range<Anchor>> {
+    let mut bounds: Option<(ByteOffset, ByteOffset)> = None;
+    for range in ranges {
+        let start = range.start.resolve_in(working).ok()?;
+        let end = range.end.resolve_in(working).ok()?;
+        bounds = Some(match bounds {
+            Some((current_start, current_end)) => (current_start.min(start), current_end.max(end)),
+            None => (start, end),
+        });
+    }
+    let (start, end) = bounds?;
+    let range = TextRange::new(start, end).ok()?;
+    Some(Anchor::range_outside(working.version(), range))
+}
+
+fn union_anchor_ranges(
+    first: Option<Range<Anchor>>,
+    second: Option<Range<Anchor>>,
+    working: &Snapshot,
+) -> Option<Range<Anchor>> {
+    anchor_ranges_union(first.into_iter().chain(second), working)
 }
 
 /// 文本每一行起始字节偏移；末尾追加文本总长，便于把行范围右端映射为字节偏移。

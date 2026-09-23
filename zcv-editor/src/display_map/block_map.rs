@@ -3,7 +3,7 @@
 //! 本层位于 WrapMap 之上：文本换行坐标保持不变，文件标题和同文件片段分隔线作为不属于文本的虚拟显示块插入。
 //! 这样搜索、diff、诊断等宿主只负责提供 excerpts，滚动、命中测试、选区和通用文件标题都由 Editor 复用同一条管线。
 
-use zcv_multi_buffer::{ExcerptSnapshot, MultiBufferOffset, MultiBufferRange};
+use zcv_multi_buffer::{ExcerptSnapshot, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot};
 
 use std::collections::{BTreeSet, HashSet};
 use std::ops::Range;
@@ -34,19 +34,17 @@ pub(crate) struct DisplayBlock {
 
 /// 由当前滚动位置派生的悬浮文件标题。
 ///
-/// `source_row` 标识它对应的真实边界块；`next_buffer_header_row` 用于在下一个文件到达时把当前标题向上顶出。
-/// 该结构只是一帧投影，不保存当前文件状态。
+/// `source_row` 标识它对应的真实边界块；结构只是一帧投影，不保存当前文件状态。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StickyBufferHeader {
     pub(crate) source_row: DisplayRow,
     pub(crate) excerpt: ExcerptSnapshot,
-    pub(crate) next_buffer_header_row: Option<DisplayRow>,
 }
 
 /// 块投影中的一个虚拟块。
 ///
-/// 显示行由所在变换在输出行空间的位置决定，片段来源由 `excerpt_index` 指向 `BlockSnapshot.excerpts`；
-/// 这里只保存不随片段视图刷新的身份信息，使未受影响的变换子树可以跨快照复用。
+/// 显示行由所在变换在输出行空间的位置决定；片段身份使用组合树中的稳定序号。
+/// 当前片段元数据在消费时从对应快照解析，不把整份 excerpt 表复制进块投影。
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BlockPlacement {
     height: usize,
@@ -139,28 +137,16 @@ struct BlockSpec {
 pub(super) struct BlockSnapshot {
     wrap_snapshot: WrapSnapshot,
     transforms: SumTree<Transform>,
-    excerpts: Arc<[ExcerptSnapshot]>,
     /// 当前快照的块锚点表（经换行行定位的派生布局）。
     ///
     /// 它不承担跨快照的拼接身份，只用于判断显示几何是否变化：
     /// 锚点表与换行行数都不变时，新的块变换树与旧树逐节点等价，可整棵复用。
     specs: Arc<[BlockSpec]>,
+    topology_version: u64,
+    folded_buffers: Arc<HashSet<BufferId>>,
+    show_headers: bool,
     /// 块几何代际：只有显示几何真正变化时推进，供依赖显示几何的缓存精确失效。
     geometry_epoch: u64,
-}
-
-fn excerpt_boundaries(wrap_snapshot: &WrapSnapshot) -> Arc<[(usize, BufferId, bool)]> {
-    wrap_snapshot
-        .buffer_snapshot()
-        .excerpt_boundaries()
-        .map(|boundary| {
-            (
-                boundary.next_index(),
-                boundary.next().buffer_id(),
-                boundary.starts_new_buffer(),
-            )
-        })
-        .collect()
 }
 
 /// 决定一个逻辑 excerpt 边界放置实体 header、divider，还是不放置块。
@@ -240,7 +226,6 @@ pub(crate) struct BlockRows<'a> {
     wrap_rows: WrapRows<'a>,
     row: usize,
     end: usize,
-    excerpt_index: Option<usize>,
 }
 
 impl<'a> BlockRows<'a> {
@@ -253,16 +238,27 @@ impl<'a> BlockRows<'a> {
         let end = start.saturating_add(line_count).min(snapshot.line_count());
         let mut block_cursor = snapshot.transforms.cursor::<OutputToInput>(());
         block_cursor.seek(&OutputRows(start), Bias::Right);
+        let wrap_start = block_cursor
+            .item()
+            .map(|transform| {
+                let transform_start = *block_cursor.start();
+                match &transform.kind {
+                    TransformKind::Text => {
+                        transform_start.1.0 + start.saturating_sub(transform_start.0.0)
+                    }
+                    TransformKind::Block(_) => transform_start.1.0,
+                }
+            })
+            .unwrap_or(snapshot.wrap_snapshot.line_count());
         let wrap_rows = snapshot
             .wrap_snapshot
-            .rows(0, snapshot.wrap_snapshot.line_count());
+            .rows(wrap_start, snapshot.wrap_snapshot.line_count());
         let mut this = Self {
             snapshot,
             block_cursor,
             wrap_rows,
             row: start,
             end,
-            excerpt_index: None,
         };
         this.seek_wrap_to_current_transform();
         this
@@ -270,9 +266,20 @@ impl<'a> BlockRows<'a> {
 
     fn seek_wrap_to_current_transform(&mut self) {
         if self.block_cursor.item().is_some() {
-            let start = *self.block_cursor.start();
-            self.wrap_rows.seek_forward(start.1.0);
+            let wrap_row = self.current_wrap_row();
+            if let Some(wrap_row) = wrap_row {
+                self.wrap_rows.seek_forward(wrap_row);
+            }
         }
+    }
+
+    fn current_wrap_row(&self) -> Option<usize> {
+        let transform = self.block_cursor.item()?;
+        let start = *self.block_cursor.start();
+        Some(match &transform.kind {
+            TransformKind::Text => start.1.0 + self.row.saturating_sub(start.0.0),
+            TransformKind::Block(_) => start.1.0,
+        })
     }
 
     pub(crate) fn next(&mut self) -> Option<BlockRow> {
@@ -295,7 +302,11 @@ impl<'a> BlockRows<'a> {
                     height,
                     kind: BlockRowKind::Block(DisplayBlock {
                         kind,
-                        excerpt: self.snapshot.excerpts[excerpt_index].clone(),
+                        excerpt: self
+                            .snapshot
+                            .wrap_snapshot
+                            .buffer_snapshot()
+                            .excerpt_at_index(excerpt_index)?,
                     }),
                     excerpt: None,
                 })
@@ -304,12 +315,7 @@ impl<'a> BlockRows<'a> {
                 let wrap_row = transform_start.1.0 + self.row - transform_start.0.0;
                 self.wrap_rows.seek_forward(wrap_row);
                 let wrap = self.wrap_rows.next()?;
-                let excerpt = match &wrap {
-                    WrapRowKind::Text { source, .. } => self
-                        .snapshot
-                        .excerpt_for_line(source.get(), &mut self.excerpt_index)
-                        .cloned(),
-                };
+                let excerpt = self.wrap_rows.current_excerpt();
                 let row = BlockRow {
                     index: DisplayRow::new(self.row),
                     height: 1,
@@ -390,95 +396,68 @@ fn spec_hidden_end(specs: &[BlockSpec], index: usize, wrap_line_count: usize) ->
 /// 构建块投影所需的输入事实；每次同步由当前换行快照与策略产生。
 struct BlockProjectionInputs {
     wrap_snapshot: WrapSnapshot,
-    excerpts: Arc<[ExcerptSnapshot]>,
     specs: Arc<[BlockSpec]>,
-}
-
-/// BlockMap 消费的下层换行 patch。
-///
-/// `WrapMap` 正常路径已经提供逐区间编辑；
-/// 块策略或组合投影结构变化没有可复用的行级身份，因此明确表示为一次覆盖全范围的替换。
-/// 这样 BlockMap 不再从块规格的下标猜测同步范围，所有变换树重建都以旧/新 Wrap 输入空间的显式 patch 为边界。
-#[derive(Clone, Debug, Default)]
-struct BlockPatch {
-    edits: Vec<WrapEdit>,
-}
-
-impl BlockPatch {
-    fn from_wrap_edits(
-        wrap_edits: &[WrapEdit],
-        old_line_count: usize,
-        new_line_count: usize,
-        structural: bool,
-    ) -> Self {
-        if structural {
-            return Self {
-                edits: vec![WrapEdit {
-                    old: 0..old_line_count,
-                    new: 0..new_line_count,
-                }],
-            };
-        }
-        Self {
-            edits: wrap_edits.to_vec(),
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.edits.is_empty()
-    }
+    topology_version: u64,
+    folded_buffers: Arc<HashSet<BufferId>>,
+    show_headers: bool,
 }
 
 /// 从片段边界与折叠策略推导块锚点表；输入或策略变化时整体重算。
 fn compute_specs(
     wrap_snapshot: &WrapSnapshot,
-    excerpts: &[ExcerptSnapshot],
-    excerpt_boundaries: &[(usize, BufferId, bool)],
+    buffer: &MultiBufferSnapshot,
     folded_buffers: &HashSet<BufferId>,
     show_headers: bool,
 ) -> Vec<BlockSpec> {
-    let excerpt_starts = excerpt_boundaries
-        .iter()
-        .enumerate()
-        .filter_map(|(boundary_index, (excerpt_index, _, _))| {
+    let excerpt_starts = buffer
+        .excerpt_boundaries()
+        .filter_map(|boundary| {
             wrap_snapshot
-                .offset_to_wrap_point(excerpts[*excerpt_index].output_range().start())
+                .offset_to_wrap_point(boundary.next().output_range().start())
                 .ok()
-                .map(|point| (point.row().get(), boundary_index))
+                .map(|point| {
+                    (
+                        point.row().get(),
+                        boundary.next_index(),
+                        boundary.next().buffer_id(),
+                        boundary.starts_new_buffer(),
+                    )
+                })
         })
         .collect::<Vec<_>>();
     let mut specs = Vec::new();
     let mut group_start = 0usize;
     while group_start < excerpt_starts.len() {
-        let (_, buffer_id, _) = excerpt_boundaries[excerpt_starts[group_start].1];
+        let buffer_id = excerpt_starts[group_start].2;
         // 逻辑边界只有在 `starts_new_buffer` 处才开启新组；同组的后续边界是同一文件的后续窗口。
         let mut group_end = group_start + 1;
-        while group_end < excerpt_starts.len() && !excerpt_boundaries[excerpt_starts[group_end].1].2
-        {
+        while group_end < excerpt_starts.len() && !excerpt_starts[group_end].3 {
             group_end += 1;
         }
         // 相邻逻辑 excerpt 共享 Buffer 身份时只是同一文件的后续窗口，不进入新 Buffer 边界。
         // 整文件折叠只在显示策略允许 header 时折叠为一整块；否则按普通 divider 序列绘制。
         if folded_buffers.contains(&buffer_id) && show_headers {
-            let (wrap_row, boundary_index) = excerpt_starts[group_start];
+            let (wrap_row, excerpt_index, _, _) = excerpt_starts[group_start];
             specs.push(BlockSpec {
                 wrap_row,
-                excerpt_index: excerpt_boundaries[boundary_index].0,
+                excerpt_index,
                 height: FILE_HEADER_HEIGHT,
                 kind: DisplayBlockKind::BufferHeader,
                 folded_group: true,
             });
         } else {
             let is_document_start = group_start == 0;
-            for (index, (wrap_row, boundary_index)) in
-                excerpt_starts[group_start..group_end].iter().enumerate()
+            for (index, (wrap_row, excerpt_index)) in excerpt_starts[group_start..group_end]
+                .iter()
+                .map(|(row, index, _, _)| (*row, *index))
+                .enumerate()
             {
                 let Some(kind) = entry_block_kind(show_headers, is_document_start, index) else {
                     continue;
                 };
                 specs.push(BlockSpec {
-                    wrap_row: *wrap_row,
-                    excerpt_index: excerpt_boundaries[*boundary_index].0,
+                    wrap_row,
+                    excerpt_index,
                     height: match kind {
                         DisplayBlockKind::BufferHeader => FILE_HEADER_HEIGHT,
                         DisplayBlockKind::ExcerptBoundary => EXCERPT_BOUNDARY_HEIGHT,
@@ -497,18 +476,26 @@ fn compute_specs(
 /// 从当前换行快照与块策略派生整份块锚点表。
 fn derive_specs(
     wrap_snapshot: &WrapSnapshot,
-    excerpts: &[ExcerptSnapshot],
     folded_buffers: &HashSet<BufferId>,
     show_headers: bool,
 ) -> Arc<[BlockSpec]> {
     compute_specs(
         wrap_snapshot,
-        excerpts,
-        &excerpt_boundaries(wrap_snapshot),
+        wrap_snapshot.buffer_snapshot(),
         folded_buffers,
         show_headers,
     )
     .into()
+}
+
+/// 同长度换行编辑只改变行内容；只有块锚点落在编辑区间内部时才可能移动。
+fn specs_intersect_wrap_edits(specs: &[BlockSpec], edits: &[WrapEdit]) -> bool {
+    edits.iter().any(|edit| {
+        edit.old.len() != edit.new.len()
+            || specs
+                .iter()
+                .any(|spec| edit.old.start < spec.wrap_row && spec.wrap_row < edit.old.end)
+    })
 }
 
 fn push_text_rows(transforms: &mut SumTree<Transform>, rows: usize) {
@@ -538,33 +525,32 @@ impl BlockSnapshot {
         BlockRows::new(self, start_row, line_count)
     }
 
-    pub(super) fn new(
-        wrap_snapshot: WrapSnapshot,
-        excerpts: Arc<[ExcerptSnapshot]>,
-        folded_buffers: &HashSet<BufferId>,
-    ) -> Self {
+    pub(super) fn new(wrap_snapshot: WrapSnapshot, folded_buffers: &HashSet<BufferId>) -> Self {
         let show_headers = wrap_snapshot.buffer_snapshot().show_headers();
-        let specs = derive_specs(&wrap_snapshot, &excerpts, folded_buffers, show_headers);
+        let topology_version = wrap_snapshot.buffer_snapshot().topology_version();
+        let specs = derive_specs(&wrap_snapshot, folded_buffers, show_headers);
         Self::rebuild_from_snapshot(
             0,
             BlockProjectionInputs {
                 wrap_snapshot,
-                excerpts,
                 specs,
+                topology_version,
+                folded_buffers: Arc::new(folded_buffers.clone()),
+                show_headers,
             },
         )
     }
 
     /// 根据当前 WrapSnapshot 的权威边界事实完整物化块变换树。
     ///
-    /// BlockSpec 是当前快照的局部派生，不承担跨快照同步身份；
-    /// 跨快照的变化范围由 [`BlockPatch`] 表达。
-    /// 这样不会把旧规格下标或旧变换树片段混入新快照。
+    /// BlockSpec 是当前快照的局部派生，不承担跨快照同步身份。
     fn rebuild_from_snapshot(geometry_epoch: u64, inputs: BlockProjectionInputs) -> Self {
         let BlockProjectionInputs {
             wrap_snapshot,
-            excerpts,
             specs,
+            topology_version,
+            folded_buffers,
+            show_headers,
         } = inputs;
         let wrap_line_count = wrap_snapshot.line_count();
         let mut transforms = SumTree::new(());
@@ -597,53 +583,57 @@ impl BlockSnapshot {
         let snapshot = Self {
             wrap_snapshot,
             transforms,
-            excerpts,
             specs,
+            topology_version,
+            folded_buffers,
+            show_headers,
             geometry_epoch,
         };
         snapshot.check_invariants();
         snapshot
     }
 
-    /// 消费显式 Wrap patch，返回推进后的块投影。
-    ///
-    /// 与 Zed `BlockMap::sync` 相同，BlockMap 只从下层 patch 判断是否需要推进；不再以 `BlockSpec` 下标推断旧树的拼接区间。
-    /// Zcv 当前的块种类都由当前excerpt 边界派生，因此一个非空 patch 直接物化当前快照的完整块变换树，让块的输入空间始终只属于这一份 WrapSnapshot。
+    /// 消费下层 Wrap 编辑，并只在块几何变化时重建显示变换树。
     pub(super) fn sync(
         &self,
         wrap_snapshot: WrapSnapshot,
-        excerpts: Arc<[ExcerptSnapshot]>,
         folded_buffers: &HashSet<BufferId>,
         wrap_edits: &[WrapEdit],
     ) -> BlockSnapshot {
         let show_headers = wrap_snapshot.buffer_snapshot().show_headers();
         let old_wrap_line_count = self.wrap_snapshot.line_count();
         let new_wrap_line_count = wrap_snapshot.line_count();
-        let specs = derive_specs(&wrap_snapshot, &excerpts, folded_buffers, show_headers);
+        let topology_version = wrap_snapshot.buffer_snapshot().topology_version();
+        let layout_policy_changed =
+            self.folded_buffers.as_ref() != folded_buffers || self.show_headers != show_headers;
+        let specs_changed = topology_version != self.topology_version
+            || layout_policy_changed
+            || specs_intersect_wrap_edits(&self.specs, wrap_edits);
+        let specs = if !specs_changed {
+            Arc::clone(&self.specs)
+        } else {
+            derive_specs(&wrap_snapshot, folded_buffers, show_headers)
+        };
+        let folded_buffers = if layout_policy_changed {
+            Arc::new(folded_buffers.clone())
+        } else {
+            Arc::clone(&self.folded_buffers)
+        };
         // 显示几何只由块锚点表与换行行数决定：
         // 两者都未变时新树与旧树逐节点等价，不得推进几何代际，否则同一行内编辑会错误地使 diff 装饰等依赖显示几何的缓存失效。
         let geometry_changed =
             specs.as_ref() != self.specs.as_ref() || old_wrap_line_count != new_wrap_line_count;
         let inputs = BlockProjectionInputs {
             wrap_snapshot,
-            excerpts,
             specs,
+            topology_version,
+            folded_buffers,
+            show_headers,
         };
-        let patch = BlockPatch::from_wrap_edits(
-            wrap_edits,
-            old_wrap_line_count,
-            new_wrap_line_count,
-            geometry_changed,
-        );
-        if patch.is_empty() {
+        if !geometry_changed {
             return self.reuse_transforms(inputs);
         }
-        let geometry_epoch = if geometry_changed {
-            self.geometry_epoch + 1
-        } else {
-            self.geometry_epoch
-        };
-        Self::rebuild_from_snapshot(geometry_epoch, inputs)
+        Self::rebuild_from_snapshot(self.geometry_epoch + 1, inputs)
     }
 
     /// 复用整棵变换树，只替换片段视图与策略事实。
@@ -651,8 +641,10 @@ impl BlockSnapshot {
         let snapshot = BlockSnapshot {
             wrap_snapshot: inputs.wrap_snapshot,
             transforms: self.transforms.clone(),
-            excerpts: inputs.excerpts,
             specs: inputs.specs,
+            topology_version: inputs.topology_version,
+            folded_buffers: inputs.folded_buffers,
+            show_headers: inputs.show_headers,
             geometry_epoch: self.geometry_epoch,
         };
         snapshot.check_invariants();
@@ -675,40 +667,39 @@ impl BlockSnapshot {
         );
     }
 
-    /// 返回视口顶部所在 excerpt 的文件标题，以及下一个文件标题的位置。
+    /// 返回视口顶部所在 excerpt 的文件标题。
     ///
     /// 同一文件的后续 excerpt 只有分隔块，但它同样会更新标题所代表的 excerpt，使“打开文件”等操作仍以当前可见片段为目标。
+    ///
+    /// 与 Zed `BlockSnapshot::sticky_header_excerpt` 相同：以视口顶行为 key 在块变换树上 seek，再回退到最近的块边界，
+    /// 成本是 O(log 变换数 + 相邻块数)，不随组合文档规模增长。
+    /// 下一个文件标题属于当前帧的可见布局，由渲染层从可见块派生，本查询不向前扫描。
     pub(super) fn sticky_buffer_header(&self, top_row: DisplayRow) -> Option<StickyBufferHeader> {
         let mut cursor = self.transforms.cursor::<OutputToInput>(());
-        cursor.seek(&OutputRows(0), Bias::Left);
-        let mut current: Option<(usize, usize)> = None;
-        let mut next_buffer_header_row: Option<usize> = None;
-        while let Some(transform) = cursor.item() {
-            let display_row = cursor.start().0.0;
-            let block = match &transform.kind {
-                TransformKind::Block(placement) => Some((placement.kind, placement.excerpt_index)),
-                TransformKind::Text => None,
-            };
-            if let Some((kind, excerpt_index)) = block {
-                if display_row <= top_row.get() {
-                    current = Some((display_row, excerpt_index));
-                    next_buffer_header_row = None;
-                } else if current.is_some()
-                    && next_buffer_header_row.is_none()
-                    && kind == DisplayBlockKind::BufferHeader
-                {
-                    next_buffer_header_row = Some(display_row);
-                    break;
-                }
-            }
-            cursor.next();
+        cursor.seek(&OutputRows(top_row.get()), Bias::Right);
+        if cursor.item().is_none() {
+            // 视口顶行落在投影末尾之后：从最后一个变换回退。
+            cursor.prev();
         }
-        let (source_row, excerpt_index) = current?;
-        Some(StickyBufferHeader {
-            source_row: DisplayRow::new(source_row),
-            excerpt: self.excerpts[excerpt_index].clone(),
-            next_buffer_header_row: next_buffer_header_row.map(DisplayRow::new),
-        })
+        loop {
+            let transform = cursor.item()?;
+            let start_row = cursor.start().0.0;
+            if start_row <= top_row.get()
+                && let TransformKind::Block(placement) = &transform.kind
+            {
+                return Some(StickyBufferHeader {
+                    source_row: DisplayRow::new(start_row),
+                    excerpt: self
+                        .wrap_snapshot
+                        .buffer_snapshot()
+                        .excerpt_at_index(placement.excerpt_index)?,
+                });
+            }
+            if start_row == 0 {
+                return None;
+            }
+            cursor.prev();
+        }
     }
 
     fn wrap_row_to_display_row(&self, wrap_row: usize) -> usize {
@@ -767,9 +758,14 @@ impl BlockSnapshot {
             RowMapping::Text(row) => self
                 .wrap_snapshot
                 .wrap_point_to_offset_with_bias(WrapPoint::new(row, point.column()), bias),
-            RowMapping::Block(placement) => Ok(self.excerpts[placement.excerpt_index]
-                .output_range()
-                .start()),
+            RowMapping::Block(placement) => self
+                .wrap_snapshot
+                .buffer_snapshot()
+                .excerpt_at_index(placement.excerpt_index)
+                .map(|excerpt| excerpt.output_range().start())
+                .ok_or_else(|| {
+                    CoordinateError::LineOutOfBounds(Line::new(point.row().get())).into()
+                }),
         }
     }
 
@@ -803,23 +799,6 @@ impl BlockSnapshot {
                 )
             })
             .collect())
-    }
-
-    fn excerpt_for_line<'a>(
-        &'a self,
-        line: usize,
-        excerpt_index: &mut Option<usize>,
-    ) -> Option<&'a ExcerptSnapshot> {
-        let index = excerpt_index.get_or_insert_with(|| {
-            self.excerpts
-                .partition_point(|excerpt| excerpt.output_end_line() <= line)
-        });
-        while *index < self.excerpts.len() && self.excerpts[*index].output_end_line() <= line {
-            *index += 1;
-        }
-        self.excerpts.get(*index).filter(|excerpt| {
-            excerpt.output_start_line() <= line && line < excerpt.output_end_line()
-        })
     }
 
     pub(super) fn line_to_display_row(&self, offset: MultiBufferOffset) -> Option<DisplayRow> {

@@ -11,7 +11,7 @@ diff 的显示拓扑（git hunk、展开／折叠、跟踪区间与显示坐标�
 - `BufferDiff` 是实体，拥有唯一在途计算任务；下次重算替换即取消，实体销毁随字段取消，不 `detach`。
 - 工作区、base 与 index 任一来源前进都会使在途结果过期；安装前比较三者的输入版本，过期结果丢弃并补算。
 - base/index 语言缓冲由 `BufferDiff` 创建并持有，更新经 `LanguageBuffer::snapshot_with_text`/`fast_forward` 在版本校验后整体安装。
-- 只发布 `BufferDiffEvent::DiffChanged { refresh }`；`refresh` 决定订阅方是否重建组合投影。
+- 发布 `BufferDiffEvent::DiffChanged { refresh, changed_range }`；范围在当前 working 快照中。Git diff 视图负责按 hunks 装配可见 excerpts，组合投影只同步事件范围覆盖的 excerpts。范围缺失时不做 diff transform 范围同步，不转为整文件重建。
 
 ## 关键类型
 

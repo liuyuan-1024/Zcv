@@ -69,13 +69,14 @@ fn longest_line_width_cache_invalidates_when_only_the_display_changes(cx: &mut T
     );
 }
 
-/// 构造 context_lines=2 的裁剪投影项，供组合文档裁剪测试复用。
-fn clipped_diff_file(
+/// 构造组合文档的文件差异项。
+fn diff_file(
     working: Entity<LanguageBuffer>,
     base_text: &str,
     cx: &mut gpui::Context<MultiBuffer>,
 ) -> DiffFile {
     let path = PathBuf::from("src/a.rs");
+    let line_count = working.read(cx).text_snapshot().line_count();
     let language_registry = working.read(cx).language_registry();
     let diff = cx.new(|cx| {
         BufferDiff::new(
@@ -94,7 +95,7 @@ fn clipped_diff_file(
     DiffFile {
         diff,
         display_path: PathBuf::from("src/a.rs"),
-        context_lines: Some(2),
+        excerpt_ranges: vec![0..line_count],
     }
 }
 
@@ -1912,54 +1913,50 @@ fn materialized_deleted_excerpt_keeps_editing_and_cursor(cx: &mut TestAppContext
     assert_eq!(buffer_text(&work, cx), "a\nB\nc");
 }
 
-/// 回归：组合文档（git hunk 上下文裁剪）未保存删除整行后，保留既有 excerpt 与源光标。
-///
-/// 删除顶部上下文行会移动裁剪窗口（新行从顶部进入），投影被整体重建（reload）；
-/// 编辑器若把编辑后裸偏移直接重锚到重建后的投影版本，光标会跳到错误行。
+/// 回归：组合文档删除整行后，完整文档投影与源光标保持一致。
 #[gpui::test]
-fn combined_diff_dirty_edit_keeps_existing_excerpt_and_cursor(cx: &mut TestAppContext) {
+fn combined_diff_dirty_edit_keeps_document_and_cursor(cx: &mut TestAppContext) {
     let working_text = "L0\nL1\nL2\nL3\nADDED\nL5\nL6\nL7\nL8\n";
     let head_text = "L0\nL1\nL2\nL3\nL5\nL6\nL7\nL8\n";
 
-    // 组合文档：Added hunk 在源第 4 行，context_lines=2 → 初始只显示源行 [2..7)。
+    // 普通组合文档的范围由文档构造方提供；Git 项目视图另在视图装配处传入裁剪范围。
     let source = test_buffer(cx, working_text);
     source.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
     });
     let combined_source = source.clone();
-    let combined = cx.new(MultiBuffer::empty);
+    let combined = cx.new(|cx| MultiBuffer::singleton(combined_source.clone(), cx));
     combined.update(cx, |combined, cx| {
-        combined.set_diff_files(vec![clipped_diff_file(combined_source, head_text, cx)], cx);
+        combined.set_diff_files(vec![diff_file(combined_source, head_text, cx)], cx);
     });
     // diff 后台计算完成后投影才可用；组合文档断言前等待落定。
     cx.run_until_parked();
     let editor = cx.new(move |cx| Editor::for_multi_buffer(combined, cx));
 
-    // 初始投影：源行 [2..7) = "L2 L3 ADDED L5 L6"。
+    // 普通组合文档仍展示完整工作区文本。
     cx.read_entity(&editor, |editor, cx| {
-        assert_eq!(editor.text(cx), "L2\nL3\nADDED\nL5\nL6\n");
+        assert_eq!(editor.text(cx), working_text);
     });
 
-    // 删除首个可见行 "L2\n"（投影 offset 0..3 → 源 offset 6..9）。
+    // 删除工作区中的 L2 行。
     editor.update(cx, |editor, cx| {
-        editor.select_byte_range(0..3, cx);
+        editor.select_byte_range(6..9, cx);
         editor.replace_text(None, "", cx);
     });
-    // dirty source 只更新既有 excerpt 的文本，不重新计算上下文窗口；断言前等待落定。
+    // dirty source 的文本增量先更新投影；等待 diff 结果到达后再检查光标。
     cx.run_until_parked();
 
-    // 源被正确编辑；既有源范围 [2..7) 现在显示为 L3/ADDED/L5/L6。
     assert_eq!(
         buffer_text(&source, cx),
         "L0\nL1\nL3\nADDED\nL5\nL6\nL7\nL8\n"
     );
     cx.read_entity(&editor, |editor, cx| {
-        assert_eq!(editor.text(cx), "L3\nADDED\nL5\nL6\n");
-        // 光标仍绑定删除后的源位置；既有 excerpt 的显示起点现在是 offset 0。
+        assert_eq!(editor.text(cx), "L0\nL1\nL3\nADDED\nL5\nL6\nL7\nL8\n");
+        // 光标仍绑定删除后的源位置。
         let selections = editor.selections(cx);
         let caret = selections.primary();
         assert!(caret.is_caret(), "删除后应为单光标");
-        assert_eq!(caret.head(), MultiBufferOffset::ZERO);
+        assert_eq!(caret.head(), MultiBufferOffset::new(6));
     });
 }
 
@@ -2058,7 +2055,7 @@ fn external_source_edit_moves_combined_diff_cursor_like_plain_editor(cx: &mut Te
     });
 }
 
-/// 回归：组合文档删除可见行触发裁剪窗口移动 + 投影重建后，undo/redo 必须把光标恢复到编辑前/后的同一逻辑位置，而不是被重建重置——与普通编辑器 undo/redo 光标行为一致。
+/// 回归：组合文档局部删除后，undo/redo 恢复全文与同一源位置的选择。
 #[gpui::test]
 fn combined_diff_undo_redo_restores_cursor_parity_with_plain_editor(cx: &mut TestAppContext) {
     let working_text = "L0\nL1\nL2\nL3\nADDED\nL5\nL6\nL7\nL8\n";
@@ -2068,49 +2065,49 @@ fn combined_diff_undo_redo_restores_cursor_parity_with_plain_editor(cx: &mut Tes
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
     });
     let combined_source = source.clone();
-    let combined = cx.new(MultiBuffer::empty);
+    let combined = cx.new(|cx| MultiBuffer::singleton(combined_source.clone(), cx));
     combined.update(cx, |combined, cx| {
-        combined.set_diff_files(vec![clipped_diff_file(combined_source, head_text, cx)], cx);
+        combined.set_diff_files(vec![diff_file(combined_source, head_text, cx)], cx);
     });
     // diff 后台计算完成后投影才可用；组合文档断言前等待落定。
     cx.run_until_parked();
     let editor = cx.new(move |cx| Editor::for_multi_buffer(combined, cx));
 
-    // 删除首个可见行 "L2\n"（投影 0..3）：裁剪窗口上移、投影整体重建，光标落在新投影 offset 3。
+    // 删除 L2 行，全文投影中的位置与工作区源一致。
     editor.update(cx, |editor, cx| {
-        editor.select_byte_range(0..3, cx);
+        editor.select_byte_range(6..9, cx);
         editor.replace_text(None, "", cx);
     });
-    // 编辑后 diff 在后台重算并重新裁剪上下文窗口；断言前等待落定。
+    // 等待后台 diff 结果到达。
     cx.run_until_parked();
     cx.read_entity(&editor, |editor, cx| {
-        assert_eq!(editor.text(cx), "L3\nADDED\nL5\nL6\n");
+        assert_eq!(editor.text(cx), "L0\nL1\nL3\nADDED\nL5\nL6\nL7\nL8\n");
         assert_eq!(
             editor.selections(cx).primary().head(),
-            MultiBufferOffset::ZERO
+            MultiBufferOffset::new(6)
         );
     });
 
-    // undo：源与裁剪窗口都回到编辑前，光标恢复为编辑前选区（投影 0..3），而不是被重建重置到开头。
+    // undo 恢复源文本和原选择。
     cx.update_entity(&editor, |editor, cx| editor.undo(cx));
     cx.run_until_parked();
     assert_eq!(buffer_text(&source, cx), working_text);
     cx.read_entity(&editor, |editor, cx| {
-        assert_eq!(editor.text(cx), "L2\nL3\nADDED\nL5\nL6\n");
+        assert_eq!(editor.text(cx), working_text);
         let selections = editor.selections(cx);
-        assert_eq!(selections.primary().tail(), MultiBufferOffset::new(0));
-        assert_eq!(selections.primary().head(), MultiBufferOffset::new(3));
+        assert_eq!(selections.primary().tail(), MultiBufferOffset::new(6));
+        assert_eq!(selections.primary().head(), MultiBufferOffset::new(9));
     });
 
-    // redo：再次删除；脏文档保留当前投影，光标回到投影起点。
+    // redo 再次删除并恢复删除落点。
     cx.update_entity(&editor, |editor, cx| editor.redo(cx));
     cx.run_until_parked();
     cx.read_entity(&editor, |editor, cx| {
-        assert_eq!(editor.text(cx), "L3\nADDED\nL5\nL6\n");
+        assert_eq!(editor.text(cx), "L0\nL1\nL3\nADDED\nL5\nL6\nL7\nL8\n");
         let selections = editor.selections(cx);
         let caret = selections.primary();
         assert!(caret.is_caret(), "redo 后应为删除落点的单光标");
-        assert_eq!(caret.head(), MultiBufferOffset::ZERO);
+        assert_eq!(caret.head(), MultiBufferOffset::new(6));
     });
 }
 
@@ -2641,6 +2638,58 @@ fn staging_a_hunk_with_soft_wrap_keeps_wrap_map_invariant(cx: &mut TestAppContex
             .is_wrapped()),
         "暂存 hunk 后组合文档的软换行必须保留"
     );
+}
+
+/// 回归：中文 CRLF 软换行 diff 在切换 hunk 后，显示坐标换算必须落在行内容内。
+///
+/// 定位在 CRLF 的 \n 上时，投影列会超出行内容字符数；换行层必须在内容末端钳制，
+/// 不能在行内容之外切片。
+#[gpui::test]
+fn soft_wrap_cjk_crlf_offset_conversion_stays_inside_line_content(cx: &mut TestAppContext) {
+    let fill = "中文注释内容".repeat(160);
+    let mut working = String::new();
+    let mut base = String::new();
+    for index in 0..60 {
+        if index == 30 {
+            working.push_str("新增\t中文交内容\r\n");
+            base.push_str("旧\t中文交内容\r\n");
+        } else {
+            working.push_str(&format!("行 {index} {fill}\r\n"));
+            base.push_str(&format!("行 {index} {fill}\r\n"));
+        }
+    }
+    let buffer = test_buffer(cx, &working);
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
+    });
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx)
+    });
+    cx.run_until_parked();
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx);
+    });
+    cx.run_until_parked();
+    cx.refresh().expect("首帧");
+    let source = buffer.clone();
+    inject_editor_diff(&editor, &source, Vec::new(), Some(Arc::from(base)), cx);
+    editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
+    cx.run_until_parked();
+    cx.refresh().expect("展开 hunk 后");
+    cx.read_entity(&editor, |editor, cx| {
+        let display = editor.display_snapshot(cx);
+        let len = display.buffer_snapshot().len_bytes().get();
+        for offset in 0..len {
+            let _ = display.offset_to_display_point(MultiBufferOffset::new(offset));
+            if let Ok(range) = MultiBufferRange::new(
+                MultiBufferOffset::new(offset),
+                MultiBufferOffset::new((offset + 1).min(len)),
+            ) {
+                let _ = display.project_text_range(range);
+            }
+        }
+    });
 }
 
 /// 回归：暂存"删除型" hunk 会移除旧侧 excerpt、让组合文档行数减少，

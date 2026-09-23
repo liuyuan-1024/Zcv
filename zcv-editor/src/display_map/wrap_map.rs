@@ -18,15 +18,16 @@ use std::time::Duration;
 use gpui::{AppContext as _, Context, Font, Pixels, Task, TextRun, TextSystem, WindowTextSystem};
 use sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use unicode_segmentation::UnicodeSegmentation;
-use zcv_multi_buffer::MultiBufferSnapshot;
-use zcv_text::{CoordinateError, Line, LogicalColumn, Position};
+use zcv_multi_buffer::{ExcerptSnapshot, MultiBufferLineCursor, MultiBufferSnapshot};
+use zcv_text::{CoordinateError, Line, LogicalColumn};
 
 use super::chunk::{Chunk, ChunkText, FoldChunks, HighlightStyles, StyledChunks};
 use super::display_width::DisplayColumn;
 use super::error::DisplayMapResult;
 use super::fold_map::{
-    ChunkRendererId, FoldBias, FoldOffset, FoldRowSegment, FoldRowSegmentKind, LogicalPoint,
-    LogicalRange, ProjectedLineIndex, ProjectedPoint, ProjectedRange, StreamProjectedKind,
+    ChunkRendererId, FoldBias, FoldOffset, FoldRowSegment, FoldRowSegmentKind, FoldRows,
+    LogicalPoint, LogicalRange, ProjectedLineIndex, ProjectedPoint, ProjectedRange,
+    StreamProjectedKind,
 };
 use super::tab_map::{
     TabEdit, TabPoint, TabSnapshot, advance_display_column, byte_for_display_column,
@@ -164,6 +165,8 @@ pub(super) struct WrapFragment {
     pub(super) kind: WrapFragmentKind,
     /// 行内容（已剥 `\r\n`）内的半开字节区间。
     pub(super) byte_range: Range<usize>,
+    /// 锚点行在组合文档中的内容字节范围（合并行为入口行内容）。
+    pub(super) content_range: Range<MultiBufferOffset>,
     /// 该显示行开头的假空格数（逻辑行首显示行为 0）。
     pub(super) indent: usize,
     /// 该显示行在所属逻辑行内的序号（0 = 逻辑行首显示行，gutter 行号在此）。
@@ -186,7 +189,8 @@ pub(crate) enum WrapRowKind {
         source: Line,
         projected_line: usize,
         byte_range: Range<usize>,
-        global_byte_start: usize,
+        /// 锚点行在组合文档中的内容字节范围；下游按它读取行文本，不再逐行回查组合坐标。
+        content_range: Range<MultiBufferOffset>,
         fragment_index: usize,
         indent: usize,
     },
@@ -201,6 +205,12 @@ pub(super) struct WrapRows<'a> {
     cursor: sum_tree::Cursor<'a, 'static, Transform, OutputToInput>,
     row: usize,
     end: usize,
+    /// 逐行推进的组合行内容游标；一次定位后不再逐行对映射树整树 seek。
+    line_cursor: Option<MultiBufferLineCursor<'a>>,
+    /// Fold 行游标把投影行连续映射回组合文档行。
+    fold_rows: FoldRows<'a>,
+    /// 同一逻辑行的软换行片段共享组合范围和 shaping 长度。
+    current_tab_row_content: Option<(usize, Range<MultiBufferOffset>, usize)>,
 }
 
 impl<'a> WrapRows<'a> {
@@ -208,11 +218,16 @@ impl<'a> WrapRows<'a> {
         let end = end.min(snapshot.transforms.summary().output_rows);
         let mut cursor = snapshot.transforms.cursor::<OutputToInput>(());
         cursor.seek(&OutputRows(start), Bias::Right);
+        let tab_row = cursor.start().1.row();
+        let fold_rows = snapshot.tab_snapshot.fold_snapshot().rows(tab_row);
         Self {
             snapshot,
             cursor,
             row: start,
             end,
+            line_cursor: None,
+            fold_rows,
+            current_tab_row_content: None,
         }
     }
 
@@ -237,7 +252,14 @@ impl<'a> WrapRows<'a> {
         let transform_start = *self.cursor.start();
         let Some(fragment) = self
             .snapshot
-            .fragment_in_transform(transform, transform_start, self.row)
+            .fragment_in_transform(
+                transform,
+                transform_start,
+                self.row,
+                &mut self.fold_rows,
+                &mut self.line_cursor,
+                &mut self.current_tab_row_content,
+            )
             .ok()
         else {
             self.row += 1;
@@ -252,6 +274,13 @@ impl<'a> WrapRows<'a> {
             self.cursor.next();
         }
         Some(row)
+    }
+
+    /// 当前文本行所属的 excerpt；沿用行内容游标，避免为每个可见行重新定位组合树。
+    pub(super) fn current_excerpt(&self) -> Option<ExcerptSnapshot> {
+        self.line_cursor
+            .as_ref()
+            .and_then(MultiBufferLineCursor::excerpt_snapshot)
     }
 }
 
@@ -338,7 +367,7 @@ impl WrapSnapshot {
             new_tree.extend(buffered.drain(..), ());
 
             // 旧游标只向前推进到编辑终点，不越过包含它的旧变换。
-            cursor.seek_forward(&TabPoint::new(old_rows.end, 0), Bias::Left);
+            cursor.seek_forward(&TabPoint::new(old_rows.end, 0), Bias::Right);
             let trailing = if let Some((next_old, _)) = edits.peek() {
                 if next_old.start > cursor.end().row() {
                     // 当前旧变换整体落在两编辑之间：尾部以同构占位，随后搬运整段旧变换。
@@ -516,51 +545,100 @@ impl WrapSnapshot {
         WrapRows::new(self, start, end.min(self.line_count()))
     }
 
-    /// Tab 投影行的内容长度，不读取或拼接投影整行。
-    fn content_len_for_tab_row(&self, tab_row: usize) -> DisplayMapResult<usize> {
+    /// 折叠合并行的 shaping 行长度（各段之和）；非合并行返回 None。
+    fn fold_row_len(&self, tab_row: usize) -> Option<usize> {
+        self.tab_snapshot
+            .fold_snapshot()
+            .fold_row_segments(ProjectedLineIndex::new(tab_row))
+            .map(|segments| {
+                segments
+                    .last()
+                    .expect("折叠合并行必须至少包含一个段")
+                    .merged_range()
+                    .end
+            })
+    }
+
+    /// 锚点行的内容范围与 shaping 行长度；行内容经前向游标推进，不逐行整树 seek。
+    fn cursor_tab_row_content<'a>(
+        &'a self,
+        tab_row: usize,
+        stream_line: Line,
+        line_cursor: &mut Option<MultiBufferLineCursor<'a>>,
+    ) -> DisplayMapResult<(Range<MultiBufferOffset>, usize)> {
         let line = Line::new(tab_row);
         let fold = self.tab_snapshot.fold_snapshot();
-        if let Some(segments) = fold.fold_row_segments(ProjectedLineIndex::new(tab_row)) {
-            return Ok(segments
-                .last()
-                .expect("折叠合并行必须至少包含一个段")
-                .merged_range()
-                .end);
+        if line_cursor.is_none() {
+            *line_cursor = MultiBufferLineCursor::new(fold.buffer_snapshot(), stream_line);
         }
+        let cursor = line_cursor
+            .as_mut()
+            .ok_or(CoordinateError::LineOutOfBounds(line))?;
+        if !cursor.seek(stream_line) {
+            return Err(CoordinateError::LineOutOfBounds(line).into());
+        }
+        let (start, len) = cursor
+            .line_content_range()
+            .ok_or(CoordinateError::LineOutOfBounds(line))?;
+        let content_range = MultiBufferOffset::new(start)..MultiBufferOffset::new(start + len);
+        Ok((content_range, self.fold_row_len(tab_row).unwrap_or(len)))
+    }
+
+    /// 无状态版本：命令路径按单行点查询求锚点行内容范围。
+    fn tab_row_content(
+        &self,
+        tab_row: usize,
+    ) -> DisplayMapResult<(Range<MultiBufferOffset>, usize)> {
+        let line = Line::new(tab_row);
+        let fold = self.tab_snapshot.fold_snapshot();
         let stream_line = self
             .tab_snapshot
             .stream_line_for_projected(line)
             .ok_or(CoordinateError::LineOutOfBounds(line))?;
-        fold.buffer_snapshot()
-            .line_content_metrics(stream_line)
-            .map(|metrics| metrics.0)
-            .ok_or_else(|| CoordinateError::LineOutOfBounds(line).into())
+        let content_range = fold
+            .buffer_snapshot()
+            .line_content_byte_range(stream_line)
+            .ok_or(CoordinateError::LineOutOfBounds(line))?;
+        let len = content_range.end.get() - content_range.start.get();
+        Ok((content_range, self.fold_row_len(tab_row).unwrap_or(len)))
     }
 
-    fn fragment_in_transform(
-        &self,
+    fn fragment_in_transform<'a>(
+        &'a self,
         transform: &Transform,
         transform_start: OutputToInput,
         row: usize,
+        fold_rows: &mut FoldRows<'a>,
+        line_cursor: &mut Option<MultiBufferLineCursor<'a>>,
+        current_tab_row_content: &mut Option<(usize, Range<MultiBufferOffset>, usize)>,
     ) -> DisplayMapResult<WrapFragment> {
         let output_start = transform_start.0.0;
         let input_start = transform_start.1.row();
         match transform.kind {
             TransformKind::Isomorphic => {
                 let tab_row = input_start + row - output_start;
-                let kind = self.projected_kind(tab_row)?;
-                let content_len = self.content_len_for_tab_row(tab_row)?;
+                let (kind, content_range, content_len) = self.cursor_tab_row_content_cached(
+                    tab_row,
+                    fold_rows,
+                    line_cursor,
+                    current_tab_row_content,
+                )?;
                 Ok(WrapFragment {
                     tab_row,
                     kind,
                     byte_range: 0..content_len,
+                    content_range,
                     indent: 0,
                     fragment_index: 0,
                 })
             }
             TransformKind::Wrap => {
-                let kind = self.projected_kind(input_start)?;
-                let content_len = self.content_len_for_tab_row(input_start)?;
+                let (kind, content_range, content_len) = self.cursor_tab_row_content_cached(
+                    input_start,
+                    fold_rows,
+                    line_cursor,
+                    current_tab_row_content,
+                )?;
                 let fragment_index = row - output_start;
                 Ok(WrapFragment {
                     tab_row: input_start,
@@ -570,6 +648,7 @@ impl WrapSnapshot {
                         fragment_index,
                         content_len,
                     ),
+                    content_range,
                     indent: fragment_index
                         .checked_sub(1)
                         .map_or(0, |index| transform.wrap_points[index].indent as usize),
@@ -579,23 +658,39 @@ impl WrapSnapshot {
         }
     }
 
+    fn cursor_tab_row_content_cached<'a>(
+        &'a self,
+        tab_row: usize,
+        fold_rows: &mut FoldRows<'a>,
+        line_cursor: &mut Option<MultiBufferLineCursor<'a>>,
+        cached: &mut Option<(usize, Range<MultiBufferOffset>, usize)>,
+    ) -> DisplayMapResult<(WrapFragmentKind, Range<MultiBufferOffset>, usize)> {
+        if let Some((cached_row, range, len)) = cached
+            && *cached_row == tab_row
+        {
+            let stream_line = fold_rows
+                .line(tab_row, self.tab_snapshot.line_count())
+                .ok_or(CoordinateError::LineOutOfBounds(Line::new(tab_row)))?;
+            return Ok((WrapFragmentKind::Text(stream_line), range.clone(), *len));
+        }
+        let stream_line = fold_rows
+            .line(tab_row, self.tab_snapshot.line_count())
+            .ok_or(CoordinateError::LineOutOfBounds(Line::new(tab_row)))?;
+        let (range, len) = self.cursor_tab_row_content(tab_row, stream_line, line_cursor)?;
+        *cached = Some((tab_row, range.clone(), len));
+        Ok((WrapFragmentKind::Text(stream_line), range, len))
+    }
+
     fn row_kind(&self, fragment: WrapFragment) -> DisplayMapResult<WrapRowKind> {
         match fragment.kind {
-            WrapFragmentKind::Text(source) => {
-                let tab_row = Line::new(fragment.tab_row);
-                let line_range = self
-                    .tab_snapshot
-                    .line_byte_range(tab_row)
-                    .ok_or(CoordinateError::LineOutOfBounds(tab_row))?;
-                Ok(WrapRowKind::Text {
-                    source,
-                    projected_line: fragment.tab_row,
-                    byte_range: fragment.byte_range,
-                    global_byte_start: line_range.start.get(),
-                    fragment_index: fragment.fragment_index,
-                    indent: fragment.indent,
-                })
-            }
+            WrapFragmentKind::Text(source) => Ok(WrapRowKind::Text {
+                source,
+                projected_line: fragment.tab_row,
+                byte_range: fragment.byte_range,
+                content_range: fragment.content_range,
+                fragment_index: fragment.fragment_index,
+                indent: fragment.indent,
+            }),
         }
     }
 
@@ -698,18 +793,19 @@ impl WrapSnapshot {
             TransformKind::Isomorphic => {
                 let tab_row = input_start + (row.get() - output_start);
                 let kind = self.projected_kind(tab_row)?;
-                let content_len = self.content_len_for_tab_row(tab_row)?;
+                let (content_range, content_len) = self.tab_row_content(tab_row)?;
                 Ok(WrapFragment {
                     tab_row,
                     kind,
                     byte_range: 0..content_len,
+                    content_range,
                     indent: 0,
                     fragment_index: 0,
                 })
             }
             TransformKind::Wrap => {
                 let kind = self.projected_kind(input_start)?;
-                let content_len = self.content_len_for_tab_row(input_start)?;
+                let (content_range, content_len) = self.tab_row_content(input_start)?;
                 let fragment_index = row.get() - output_start;
                 Ok(WrapFragment {
                     tab_row: input_start,
@@ -719,6 +815,7 @@ impl WrapSnapshot {
                         fragment_index,
                         content_len,
                     ),
+                    content_range,
                     indent: fragment_index
                         .checked_sub(1)
                         .map_or(0, |i| transform.wrap_points[i].indent as usize),
@@ -748,41 +845,22 @@ impl WrapSnapshot {
         self.projected_point_to_wrap_point(point)
     }
 
-    /// 投影点（tab 行 + 逻辑列）→ 显示点。
-    /// 投影点列 → 行内投影字节。
+    /// 投影点列 → 行内容字节偏移。
     ///
-    /// 折叠合并行按合并文本字符列换算（anchor/占位符/尾段都在行文本内）；
-    /// 普通行经原始字节逆投影（含行内提示注入前缀）。
+    /// 折叠合并行与普通行的行文本都由 `line_text` 给出，列是行内字符列；
+    /// 换算必须留在「行内容（已剥行终止符）」这一坐标空间内。
+    /// 不能经缓冲区 `Position` 往返：
+    /// 位置落在 CRLF 的 `\n` 等终止符上时，缓冲区列会越过内容末端，往返会得到行内容之外的字节。
     fn projected_column_to_byte(
         &self,
         line: Line,
         column: LogicalColumn,
     ) -> DisplayMapResult<usize> {
-        let fold = self.tab_snapshot.fold_snapshot();
         let text = self
             .tab_snapshot
             .line_text(line)
             .ok_or(CoordinateError::LineOutOfBounds(line))?;
-        let content = line_content(text.as_ref());
-        if fold.is_fold_row(ProjectedLineIndex::new(line.get())) {
-            return Ok(byte_after_chars(content, column.get()));
-        }
-        let buffer = self.tab_snapshot.buffer_snapshot();
-        let line_start = self
-            .tab_snapshot
-            .line_byte_range(line)
-            .ok_or(CoordinateError::LineOutOfBounds(line))?
-            .start
-            .get();
-        let stream_line = self
-            .tab_snapshot
-            .stream_line_for_projected(line)
-            .ok_or(CoordinateError::LineOutOfBounds(line))?;
-        let target_byte = buffer
-            .position_to_byte(Position::new(stream_line, column))?
-            .get()
-            - line_start;
-        Ok(target_byte)
+        Ok(byte_after_chars(line_content(text.as_ref()), column.get()))
     }
 
     fn projected_point_to_wrap_point(&self, point: ProjectedPoint) -> DisplayMapResult<WrapPoint> {
@@ -812,6 +890,11 @@ impl WrapSnapshot {
                 )
             }
         };
+        debug_assert!(
+            content.is_char_boundary(fragment_start) && content.is_char_boundary(target_projected),
+            "换行坐标必须落在行内容的字符边界上：fragment_start={fragment_start} target={target_projected} content_len={}",
+            content.len()
+        );
         // 片段内的显示列从缩进后的列开始累加，tab 对齐基于显示行内列。
         let column = content[fragment_start..target_projected]
             .graphemes(true)
@@ -1140,8 +1223,8 @@ pub(super) struct WrapMap {
     edits_since_sync: WrapPatch,
     /// 正在进行的后台重排任务。
     background_task: Option<Task<()>>,
-    /// 后台任务已经覆盖的 tab 版本，完成后据此从 pending 中移除。
-    in_flight_versions: Vec<u64>,
+    /// 后台任务启动时已复制的队列前缀长度，完成后只消费这一段。
+    in_flight_edit_count: usize,
 }
 
 impl std::fmt::Debug for WrapMap {
@@ -1175,7 +1258,7 @@ impl WrapMap {
             interpolated_edits: WrapPatch::default(),
             edits_since_sync: WrapPatch::default(),
             background_task: None,
-            in_flight_versions: Vec::new(),
+            in_flight_edit_count: 0,
         }
     }
 
@@ -1191,7 +1274,7 @@ impl WrapMap {
             interpolated_edits: WrapPatch::default(),
             edits_since_sync: WrapPatch::default(),
             background_task: None,
-            in_flight_versions: Vec::new(),
+            in_flight_edit_count: 0,
         }
     }
 
@@ -1253,9 +1336,8 @@ impl WrapMap {
             .edits_since_sync
             .compose(interpolated.invert().iter().cloned())
             .compose(edits.into_inner());
-        let in_flight = mem::take(&mut self.in_flight_versions);
-        self.pending_edits
-            .retain(|(tab_snapshot, _)| !in_flight.contains(&tab_snapshot.version()));
+        let in_flight_edit_count = mem::take(&mut self.in_flight_edit_count);
+        self.pending_edits.drain(..in_flight_edit_count);
         self.background_task = None;
         self.flush_edits(cx);
         cx.notify();
@@ -1302,10 +1384,7 @@ impl WrapMap {
         if self.background_task.is_none() {
             let pending: Vec<(TabSnapshot, Vec<TabEdit>)> =
                 self.pending_edits.iter().cloned().collect();
-            let in_flight_versions: Vec<u64> = pending
-                .iter()
-                .map(|(tab_snapshot, _)| tab_snapshot.version())
-                .collect();
+            let in_flight_edit_count = pending.len();
             let mut worker = self.worker_clone();
             let task = cx.background_spawn(async move {
                 let mut edits = WrapPatch::default();
@@ -1326,7 +1405,7 @@ impl WrapMap {
                     return;
                 }
                 Err(task) => {
-                    self.in_flight_versions = in_flight_versions;
+                    self.in_flight_edit_count = in_flight_edit_count;
                     self.background_task = Some(cx.spawn(async move |this, cx| {
                         let (snapshot, edits) = task.await;
                         this.update(cx, |map, cx| {
@@ -1387,7 +1466,7 @@ impl WrapMap {
         self.interpolated_edits.clear();
         self.edits_since_sync.clear();
         self.background_task = None;
-        self.in_flight_versions.clear();
+        self.in_flight_edit_count = 0;
         let edits = match wrap_width {
             None => self.set_isomorphic_all(),
             Some(width) => self.rewrap_all(width),
@@ -1466,7 +1545,7 @@ impl WrapMap {
             new_tree.extend(buffered.drain(..), ());
 
             // 旧游标只向前推进到编辑终点，不越过包含它的旧变换。
-            cursor.seek_forward(&TabPoint::new(old_rows.end, 0), Bias::Left);
+            cursor.seek_forward(&TabPoint::new(old_rows.end, 0), Bias::Right);
             let trailing = if let Some((next_old, _)) = edits_iter.peek() {
                 if next_old.start > cursor.end().row() {
                     // 当前旧变换整体落在两编辑之间：尾部以同构占位，随后搬运整段旧变换。

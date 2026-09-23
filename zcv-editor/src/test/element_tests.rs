@@ -151,13 +151,13 @@ fn search_scrollbar_markers_only_render_for_singleton_documents(cx: &mut TestApp
 
     assert!(
         cx.read_entity(&singleton_editor, |editor, cx| {
-            editor.shows_search_scrollbar_markers(cx)
+            editor.is_singleton_document(cx)
         }),
         "单文档编辑器应渲染搜索 marker"
     );
     assert!(
         !cx.read_entity(&combined_editor, |editor, cx| {
-            editor.shows_search_scrollbar_markers(cx)
+            editor.is_singleton_document(cx)
         }),
         "组合文档不应投影搜索 marker"
     );
@@ -588,7 +588,7 @@ fn multibuffer_header_can_start_above_viewport(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn sticky_buffer_header_follows_excerpts_and_points_to_the_next_file(cx: &mut TestAppContext) {
+fn sticky_buffer_header_follows_visible_excerpts(cx: &mut TestAppContext) {
     let first_text = "a0\na1\na2\na3\na4\na5\na6\na7\n";
     let first_buffer = Buffer::from_text(first_text.to_owned(), BufferConfig::default())
         .expect("应创建第一个源 Buffer");
@@ -657,13 +657,11 @@ fn sticky_buffer_header_follows_excerpts_and_points_to_the_next_file(cx: &mut Te
         .expect("同文件后续 excerpt 应更新悬浮标题目标");
     assert_eq!(later_excerpt.excerpt.path(), Path::new("src/a.rs"));
     assert_eq!(later_excerpt.excerpt.source_start_line(), 6);
-    assert_eq!(later_excerpt.next_buffer_header_row, Some(blocks[2].0));
 
     let second_header = display
         .sticky_buffer_header(blocks[2].0)
         .expect("到达下一个文件后应切换悬浮标题");
     assert_eq!(second_header.excerpt.path(), Path::new("src/b.rs"));
-    assert_eq!(second_header.next_buffer_header_row, None);
 }
 
 #[test]
@@ -2168,4 +2166,38 @@ fn ellipsis_render_reads_theme_at_call_time(cx: &mut TestAppContext) {
             assert_ne!(dark_color, light_color, "测试主题必须提供不同的占位符颜色");
         })
         .expect("测试窗口应保持可用");
+}
+
+/// diff 滚动条标记只服务单文档编辑器：组合文档不投影随 hunk 数增长的标记。
+#[gpui::test]
+fn scrollbar_markers_are_projected_only_for_singleton_documents(cx: &mut TestAppContext) {
+    let snapshot: MultiBufferSnapshot = Buffer::from_text(
+        "line0\nline1\nline2\nline3\n".to_owned(),
+        BufferConfig::default(),
+    )
+    .expect("测试 Buffer 应能创建")
+    .snapshot()
+    .into();
+    let map = new_display_map(cx, snapshot);
+    let hunk = crate::display_map::EditorHunk::conflict("marker-test", 6..12, 9, |offset| offset)
+        .expect("冲突 hunk 范围应有效");
+    cx.update_entity(&map, |map, cx| {
+        map.set_editor_hunks(Arc::from(vec![hunk]), cx)
+    });
+    let display = cx.update_entity(&map, |map, cx| map.snapshot(cx));
+    let track = Bounds::new(point(px(0.), px(0.)), size(px(15.), px(200.)));
+    assert!(
+        display
+            .scrollbar_marker_groups(track, 1.0, px(20.), false)
+            .iter()
+            .all(Option::is_none),
+        "组合文档不应投影 diff 或搜索滚动条标记"
+    );
+    let singleton_groups = display.scrollbar_marker_groups(track, 1.0, px(20.), true);
+    assert!(
+        singleton_groups[0]
+            .as_ref()
+            .is_some_and(|markers| !markers.is_empty()),
+        "单文档编辑器必须投影注入 hunk 的滚动条标记"
+    );
 }

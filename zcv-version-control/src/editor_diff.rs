@@ -162,10 +162,16 @@ pub fn inject_editor_diff(
     let diff = store.update(cx, |store, cx| {
         store.file_diff(&input, GitRevision::Head, GitRevision::Index, cx)
     });
+    let line_count = diff
+        .read(cx)
+        .working()
+        .read(cx)
+        .text_snapshot()
+        .line_count();
     let file = DiffFile {
         diff,
         display_path: path.to_path_buf(),
-        context_lines: None,
+        excerpt_ranges: std::iter::once(0..line_count).collect(),
     };
     editor.update(cx, |editor, cx| {
         editor.set_diff_files(vec![file], cx);

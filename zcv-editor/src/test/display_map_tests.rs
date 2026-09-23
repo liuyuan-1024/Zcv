@@ -1,11 +1,13 @@
 use std::{
     num::NonZeroUsize,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use gpui::{AppContext, TestAppContext, font, px};
+use zcv_buffer_diff::{BufferDiff, BufferDiffInput};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
-use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
+use zcv_multi_buffer::{DiffFile, ExcerptRange, MultiBuffer, MultiBufferOffset};
 use zcv_text::{Affinity, Buffer, BufferConfig, Edit, Line, TransactionMetadata};
 use zcv_theme::ThemeChoice;
 
@@ -1154,6 +1156,90 @@ fn soft_wrap_equal_row_multi_line_edit_stays_incremental(cx: &mut TestAppContext
     assert!(
         display_snapshot(cx, &map).line_count() > expected_rows,
         "变长内容应产生更多显示行"
+    );
+}
+
+#[gpui::test]
+fn soft_wrap_stays_active_after_editing_an_expanded_diff_excerpt(cx: &mut TestAppContext) {
+    let path = PathBuf::from("src/a.rs");
+    let prefix = "let before = ".repeat(12);
+    let suffix = "; let after = value;\n".repeat(8);
+    let working_text = format!("{prefix}fresh_marker{suffix}");
+    let base_text = format!("{prefix}base_marker{suffix}");
+    let registry = Arc::new(LanguageRegistry::new());
+    let source = cx.new(|cx| {
+        LanguageBuffer::new(
+            Buffer::from_text(working_text, BufferConfig::default()).expect("测试 Buffer 应能创建"),
+            Some(path.clone()),
+            Arc::clone(&registry),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+
+    let diff = cx.new(|cx| {
+        BufferDiff::new(
+            BufferDiffInput {
+                working: source.clone(),
+                path: path.clone(),
+                base_text: Some(base_text),
+                index_text: None,
+                language_registry: registry,
+                key: 0,
+                operations: None,
+            },
+            cx,
+        )
+    });
+    cx.run_until_parked();
+
+    let combined = cx.new(MultiBuffer::empty);
+    let line_count = cx.read_entity(&source, |source, _cx| source.text_snapshot().line_count());
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.add_diff(
+            DiffFile {
+                diff,
+                display_path: path.clone(),
+                excerpt_ranges: vec![0..line_count],
+            },
+            cx,
+        );
+        buffer.set_diff_hunks_expanded_by_default(true, cx);
+    });
+    cx.run_until_parked();
+
+    let (subscription, snapshot) =
+        cx.update_entity(&combined, |buffer, cx| buffer.subscribe_and_snapshot(cx));
+    let display = cx.new(|cx| DisplayMap::new(snapshot, cx));
+    display.update(cx, |map, cx| {
+        map.set_multi_buffer(combined.clone(), subscription, cx);
+    });
+    set_wrap_width(cx, &display, Some(px(120.)), font("Helvetica"), px(16.));
+    let before = display_snapshot(cx, &display);
+    assert!(before.is_wrapped());
+    assert!(before.line_count() > before.buffer_snapshot().line_count());
+
+    let composite = String::from_utf8(before.buffer_snapshot().text_bytes())
+        .expect("diff 组合文本必须是 UTF-8");
+    let current_marker = composite
+        .rfind("fresh_marker")
+        .expect("展开 diff 必须包含可编辑的新侧文本");
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer
+            .edit(
+                vec![Edit::insert(MultiBufferOffset::new(current_marker + 2).into(), "x").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("新侧 diff excerpt 应接受编辑");
+    });
+    cx.run_until_parked();
+
+    let after = display_snapshot(cx, &display);
+    assert!(after.is_wrapped(), "diff 重算不能关闭软换行");
+    assert!(
+        after.line_count() > after.buffer_snapshot().line_count(),
+        "diff 元数据刷新后软换行投影仍应包含续行"
     );
 }
 

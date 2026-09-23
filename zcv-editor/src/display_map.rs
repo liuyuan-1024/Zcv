@@ -249,7 +249,15 @@ pub(super) struct DisplaySnapshot {
 impl DisplaySnapshot {
     /// diff hunk 装饰的视口投影。
     pub(crate) fn diff_decorations(&self) -> Arc<DiffDecorationSnapshot> {
-        self.decorations.diff()
+        self.decorations.diff(self)
+    }
+
+    /// 只投影与当前显示视口相交的 diff hunk。
+    pub(crate) fn diff_decorations_for_viewport(
+        &self,
+        viewport: Range<usize>,
+    ) -> Arc<DiffDecorationSnapshot> {
+        self.decorations.diff_for_viewport(self, viewport)
     }
 
     /// 搜索命中装饰；无搜索时为空。
@@ -259,7 +267,8 @@ impl DisplaySnapshot {
 
     /// 滚动条慢标记的轨道几何；由 Editor 在后台按显示版本计算并缓存。
     ///
-    /// 组合文档只计算 diff 标记，搜索命中标记仅单文档编辑器计算（对齐 Zed）。
+    /// 与 Zed 一致，diff 与搜索标记都只服务单文档编辑器：
+    /// 组合文档可能有数千个 hunk，逐帧绘制全部标记会让滚动随文档规模退化，因此组合文档两条标记链都不投影（Zed 的多文件 diff 同样不启用 git diff 标记）。
     pub(crate) fn scrollbar_marker_groups(
         &self,
         track_bounds: Bounds<Pixels>,
@@ -267,15 +276,17 @@ impl DisplaySnapshot {
         line_height: Pixels,
         is_singleton: bool,
     ) -> [Option<Arc<[ScrollbarMarker]>>; 2] {
-        let diff_markers = Arc::from(
-            marker_geometry(
-                self.diff_decorations().scrollbar_marker_ranges(),
-                track_bounds,
-                scroll_per_pixel,
-                line_height,
+        let diff_markers = is_singleton.then(|| {
+            Arc::from(
+                marker_geometry(
+                    self.diff_decorations().scrollbar_marker_ranges(),
+                    track_bounds,
+                    scroll_per_pixel,
+                    line_height,
+                )
+                .into_boxed_slice(),
             )
-            .into_boxed_slice(),
-        );
+        });
         let search_markers = is_singleton
             .then(|| {
                 self.search_decorations().map(|search| {
@@ -291,7 +302,7 @@ impl DisplaySnapshot {
                 })
             })
             .flatten();
-        [Some(diff_markers), search_markers]
+        [diff_markers, search_markers]
     }
 
     /// 返回指定逻辑行的折叠候选。
@@ -497,13 +508,20 @@ impl DisplaySnapshot {
         self.block_snapshot.line_count()
     }
 
-    /// 折叠入口行集合（crease 折叠态与占位符命中判断）。
-    pub(super) fn fold_anchor_lines(&self) -> Vec<Line> {
-        self.fold_snapshot().fold_anchor_lines()
+    /// 指定逻辑行是否为折叠入口行（命令路径的点查询，不遍历全部折叠）。
+    pub(super) fn is_fold_anchor_line(&self, line: Line) -> bool {
+        self.fold_snapshot().is_fold_anchor_line(line)
     }
 
     pub(super) fn fold_anchor_lines_in_range(&self, line_range: Range<Line>) -> Vec<Line> {
         self.fold_snapshot().fold_anchor_lines_in_range(line_range)
+    }
+
+    /// 测试辅助：整份文档范围内的折叠入口行；生产路径只用按行/范围的点查询。
+    #[cfg(test)]
+    pub(super) fn fold_anchor_lines(&self) -> Vec<Line> {
+        self.fold_snapshot()
+            .fold_anchor_lines_in_range(Line::ZERO..Line::new(self.buffer_snapshot().line_count()))
     }
 
     /// 覆盖该字节偏移的最外层折叠的隐藏范围（水平移动跨折叠吸附用）。
@@ -523,6 +541,25 @@ impl DisplaySnapshot {
             .position_to_byte(Position::new(line, LogicalColumn::ZERO))
             .ok()?;
         self.block_snapshot.line_to_display_row(offset)
+    }
+
+    /// 将当前显示视口映射为覆盖其文本行的组合逻辑行范围。
+    pub(super) fn logical_lines_for_display_rows(&self, rows: Range<usize>) -> Range<usize> {
+        let buffer = self.buffer_snapshot();
+        if rows.is_empty() {
+            return 0..0;
+        }
+        let logical_line_at = |row| {
+            let point = DisplayPoint::new(DisplayRow::new(row), DisplayColumn::ZERO);
+            let offset = self
+                .display_point_to_offset_with_bias(point, FoldBias::Left)
+                .ok()?;
+            buffer.byte_to_line(offset).ok().map(Line::get)
+        };
+        let start = logical_line_at(rows.start).unwrap_or(0);
+        let end = logical_line_at(rows.end - 1)
+            .map_or(buffer.line_count(), |line| line.saturating_add(1));
+        start.min(end)..end.min(buffer.line_count())
     }
 
     pub(super) fn is_wrapped(&self) -> bool {
@@ -864,12 +901,11 @@ impl DisplayMap {
         let Some(mut snapshot) = self.snapshot.take() else {
             return;
         };
-        let diff = Arc::new(DiffDecorationSnapshot::new(
-            &snapshot,
-            snapshot.diff_display.as_deref(),
-            &self.editor_hunks,
-        ));
-        snapshot.decorations = Arc::new(snapshot.decorations.with_diff(diff));
+        snapshot.decorations = Arc::new(
+            snapshot
+                .decorations
+                .with_diff_inputs(Arc::clone(&self.editor_hunks)),
+        );
         snapshot.version = self.next_display_version();
         self.snapshot = Some(snapshot);
         cx.notify();
@@ -895,13 +931,10 @@ impl DisplayMap {
     /// 按当前显示拓扑和装饰输入投影出一份完整装饰。
     fn build_decorations(
         &self,
-        snapshot: &DisplaySnapshot,
         cached_diff: Option<Arc<DiffDecorationSnapshot>>,
         _cx: &App,
     ) -> DisplayDecorations {
         DisplayDecorations::new(
-            snapshot,
-            snapshot.diff_display.as_deref(),
             self.search.as_ref(),
             Arc::clone(&self.editor_hunks),
             cached_diff,
@@ -932,9 +965,10 @@ impl DisplayMap {
                     previous.diff_display.as_ref(),
                     snapshot.diff_display.as_ref(),
                 ))
-            .then(|| previous.decorations.diff())
+            .then(|| previous.decorations.cached_diff())
+            .flatten()
         });
-        snapshot.decorations = Arc::new(self.build_decorations(&snapshot, cached_diff, cx));
+        snapshot.decorations = Arc::new(self.build_decorations(cached_diff, cx));
         self.snapshot = Some(snapshot);
     }
 
@@ -1099,16 +1133,14 @@ impl DisplayMap {
         // BlockMap 只能消费同一条下层快照链中的事实。
         // 换行层可能仍处于上一帧的急切插值快照；
         // 此时从当前 FoldMap 另取 excerpts 会把两个版本混进同一次块投影同步，导致块锚点和变换输入空间不再对应。
-        let excerpts = wrap_snapshot.buffer_snapshot().excerpts_arc();
         // 消费换行编辑流：块布局未变时复用，几何变化时按显式分支重建。
         match &self.snapshot {
             Some(previous) => previous.block_snapshot.sync(
                 wrap_snapshot.clone(),
-                excerpts,
                 &self.folded_buffers,
                 wrap_edits,
             ),
-            None => BlockSnapshot::new(wrap_snapshot.clone(), excerpts, &self.folded_buffers),
+            None => BlockSnapshot::new(wrap_snapshot.clone(), &self.folded_buffers),
         }
     }
 }

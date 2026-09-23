@@ -4,7 +4,8 @@
 //! 点击版本管理条目时按分组复用对应 Item 并定位文件，不为 Git 状态建立界面侧副本。
 
 use std::any::TypeId;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -13,7 +14,7 @@ use gpui::{
     ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity, Window, div,
     prelude::*,
 };
-use zcv_buffer_diff::{BufferDiff, BufferDiffInput};
+use zcv_buffer_diff::{BufferDiff, BufferDiffEvent, BufferDiffInput};
 use zcv_editor::{DiffHunkDelegate, Editor, EditorEvent, EditorHunk, HunkControlTarget};
 use zcv_git::{
     ConflictChoice, FileStatus, GitHunkOperation, GitRevision, StatusCode, parse_conflict_regions,
@@ -30,13 +31,18 @@ use zcv_workspace::{
     Item, ItemEvent, ItemHandle, SearchableItemHandle, SerializedItemProvider, SerializedPaneItem,
     ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView, Workspace,
 };
-
 const PROJECT_DIFF_SERIALIZED_KIND: &str = "project-diff";
+const DIFF_CONTEXT_LINES: usize = 2;
 
 #[derive(Clone)]
 struct GitChangeFile {
     path: PathBuf,
     status: FileStatus,
+}
+
+struct DiffFileSubscription {
+    diff: Entity<BufferDiff>,
+    _subscription: Subscription,
 }
 
 struct ProjectDiffHunkDelegate {
@@ -374,9 +380,6 @@ impl ProjectDiffKind {
     }
 }
 
-/// 每个 Git 变更块（hunk）上下各保留多少行未修改的上下文。
-const DIFF_CONTEXT_LINES: usize = 2;
-
 pub struct ProjectDiffView {
     kind: ProjectDiffKind,
     project: Entity<Project>,
@@ -388,6 +391,7 @@ pub struct ProjectDiffView {
     rebase_projection: bool,
     pending_path: Option<PathBuf>,
     loading_revision_text: HashSet<(GitRevision, PathBuf)>,
+    diff_subscriptions: HashMap<PathBuf, DiffFileSubscription>,
     /// 共享搜索栏会话：查询、匹配选项、可见性与替换开关由它唯一持有。
     search_bar: Entity<SearchBar>,
     _subscriptions: Vec<Subscription>,
@@ -668,6 +672,7 @@ impl ProjectDiffView {
             rebase_projection: false,
             pending_path: None,
             loading_revision_text: Default::default(),
+            diff_subscriptions: HashMap::default(),
             search_bar: cx.new(move |cx| {
                 SearchBar::new(
                     SearchBarConfig {
@@ -716,6 +721,13 @@ impl ProjectDiffView {
         };
 
         self.files = changed;
+        let visible_source_paths = self
+            .files
+            .iter()
+            .map(|file| file.path.clone())
+            .collect::<HashSet<_>>();
+        self.diff_subscriptions
+            .retain(|path, _| visible_source_paths.contains(path));
 
         if self.kind == ProjectDiffKind::Conflict || std::mem::take(&mut self.rebase_projection) {
             // 冲突视图与 base 变更需要整体重建；普通状态刷新只做路径增量。
@@ -866,9 +878,9 @@ impl ProjectDiffView {
     ) -> Option<DiffFile> {
         let git_store = self.project.read(cx).git_store();
         let working = match self.kind {
-            ProjectDiffKind::Staged => git_store
-                .read(cx)
-                .revision_document(GitRevision::Index, &file.path)?,
+            ProjectDiffKind::Staged => git_store.update(cx, |store, cx| {
+                store.revision_diff_document(GitRevision::Index, &file.path, cx)
+            })?,
             ProjectDiffKind::Unstaged => {
                 let opened = self.project.update(cx, |project, cx| {
                     if self.kind.is_deleted(file.status) && !file.path.exists() {
@@ -906,9 +918,16 @@ impl ProjectDiffView {
             (None, None)
         } else {
             let store = git_store.read(cx);
+            let index_text = store
+                .revision_text(GitRevision::Index, &file.path, cx)
+                .or_else(|| {
+                    (self.kind == ProjectDiffKind::Staged
+                        && store.revision_document_loaded(GitRevision::Index, &file.path))
+                    .then(String::new)
+                });
             (
                 store.revision_text(self.kind.base_revision(), &file.path, cx),
-                store.revision_text(GitRevision::Index, &file.path, cx),
+                index_text,
             )
         };
         let display_path = root
@@ -933,11 +952,67 @@ impl ProjectDiffView {
         let diff = git_store.update(cx, |store, cx| {
             store.file_diff(&input, base_revision, GitRevision::Index, cx)
         });
+        self.subscribe_to_diff_ranges(&file.path, &diff, cx);
+        let excerpt_ranges = project_diff_excerpt_ranges(&diff, DIFF_CONTEXT_LINES, cx);
         Some(DiffFile {
             diff,
             display_path,
-            context_lines: Some(DIFF_CONTEXT_LINES),
+            excerpt_ranges,
         })
+    }
+
+    /// Git diff 视图拥有可见 hunk 范围，并在 BufferDiff 变化时先更新 excerpts；
+    /// MultiBuffer 随后仅按同一事件的受影响范围同步 diff transform。
+    fn subscribe_to_diff_ranges(
+        &mut self,
+        source_path: &Path,
+        diff: &Entity<BufferDiff>,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .diff_subscriptions
+            .get(source_path)
+            .is_some_and(|subscription| subscription.diff.entity_id() == diff.entity_id())
+        {
+            return;
+        }
+        let source_path = source_path.to_path_buf();
+        let event_path = source_path.clone();
+        let subscription = cx.subscribe(diff, move |view, diff, event, cx| {
+            let BufferDiffEvent::DiffChanged {
+                refresh,
+                changed_range: Some(changed_range),
+            } = event
+            else {
+                return;
+            };
+            if !view.files.iter().any(|file| file.path == event_path) {
+                return;
+            }
+            let root = view.project.read(cx).root().map(Path::to_path_buf);
+            let display_path = root
+                .as_deref()
+                .and_then(|root| event_path.strip_prefix(root).ok())
+                .unwrap_or(&event_path)
+                .to_path_buf();
+            let excerpt_ranges = project_diff_excerpt_ranges(&diff, DIFF_CONTEXT_LINES, cx);
+            view.editor.update(cx, |editor, cx| {
+                editor.update_diff_excerpt_ranges(
+                    &display_path,
+                    excerpt_ranges,
+                    *refresh,
+                    changed_range.clone(),
+                    cx,
+                );
+            });
+        });
+        self.diff_subscriptions.insert(
+            source_path,
+            DiffFileSubscription {
+                diff: diff.clone(),
+                _subscription: subscription,
+            },
+        );
     }
 
     /// 显示 hunk 的源定位（hunk 操作与导航用）：按显示坐标反查源文件与源 hunk。
@@ -1304,6 +1379,66 @@ fn project_diff_state(
         .and_then(serde_json::Value::as_str)
         .map(PathBuf::from);
     Ok((kind, active_path))
+}
+
+/// Git diff 视图把可见 hunk 扩展为配置上下文行，并合并相交或相邻的窗口。
+fn project_diff_excerpt_ranges(
+    diff: &Entity<BufferDiff>,
+    context_lines: usize,
+    cx: &App,
+) -> Vec<Range<usize>> {
+    let diff = diff.read(cx);
+    let working = diff.working().clone();
+    let working_text = working.read(cx).text_snapshot();
+    let line_count = working_text.line_count();
+    if diff.is_created() && !diff.is_current_version_calculated(cx) {
+        return std::iter::once(0..line_count).collect();
+    }
+    if !diff.is_current_version_calculated(cx) {
+        return Vec::new();
+    }
+    let hunks = diff.snapshot().visible_hunks();
+    if hunks.is_empty() {
+        return if diff.is_created() {
+            std::iter::once(0..line_count).collect()
+        } else {
+            Vec::new()
+        };
+    }
+
+    let mut ranges = Vec::<Range<usize>>::with_capacity(hunks.len());
+    for hunk in hunks {
+        let start = hunk
+            .buffer_range
+            .start
+            .resolve_in(&working_text)
+            .expect("当前 BufferDiff hunk 必须能映射到 working 快照");
+        let end = hunk
+            .buffer_range
+            .end
+            .resolve_in(&working_text)
+            .expect("当前 BufferDiff hunk 必须能映射到 working 快照");
+        let start = line_at_or_end(&working_text, start)
+            .min(line_count)
+            .saturating_sub(context_lines);
+        let end = line_at_or_end(&working_text, end)
+            .min(line_count)
+            .saturating_add(context_lines)
+            .min(line_count);
+        if let Some(previous) = ranges.last_mut()
+            && start <= previous.end
+        {
+            previous.end = previous.end.max(end);
+        } else {
+            ranges.push(start..end);
+        }
+    }
+    ranges
+}
+
+fn line_at_or_end(text: &Snapshot, offset: ByteOffset) -> usize {
+    text.byte_to_line(offset)
+        .map_or_else(|_| text.line_count(), |line| line.get())
 }
 
 fn subscribe_to_open_excerpts(

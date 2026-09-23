@@ -59,13 +59,12 @@ fn folding_a_middle_buffer_rebuilds_an_exact_current_block_projection(cx: &mut T
     let display = cx.new(|cx| DisplayMap::new(snapshot, cx));
     let display_snapshot = cx.update_entity(&display, |map, cx| map.snapshot(cx));
     let wrap_snapshot = display_snapshot.wrap_snapshot().clone();
-    let excerpts = display_snapshot.buffer_snapshot().excerpts_arc();
     let middle_id = cx.update_entity(&middle, |buffer, _cx| buffer.buffer_id());
 
-    let unfolded = BlockSnapshot::new(wrap_snapshot.clone(), excerpts.clone(), &HashSet::new());
+    let unfolded = BlockSnapshot::new(wrap_snapshot.clone(), &HashSet::new());
     let mut folded_buffers = HashSet::new();
     folded_buffers.insert(middle_id);
-    let folded = unfolded.sync(wrap_snapshot.clone(), excerpts, &folded_buffers, &[]);
+    let folded = unfolded.sync(wrap_snapshot.clone(), &folded_buffers, &[]);
 
     assert_eq!(
         folded.transforms.summary().input_rows,
@@ -106,10 +105,9 @@ fn folding_a_buffer_with_multiple_excerpts_keeps_input_coverage(cx: &mut TestApp
     let display = cx.new(|cx| DisplayMap::new(snapshot, cx));
     let display_snapshot = cx.update_entity(&display, |map, cx| map.snapshot(cx));
     let wrap_snapshot = display_snapshot.wrap_snapshot().clone();
-    let excerpts = display_snapshot.buffer_snapshot().excerpts_arc();
     let middle_id = cx.update_entity(&middle, |buffer, _cx| buffer.buffer_id());
 
-    let unfolded = BlockSnapshot::new(wrap_snapshot.clone(), excerpts.clone(), &HashSet::new());
+    let unfolded = BlockSnapshot::new(wrap_snapshot.clone(), &HashSet::new());
     let before = block_placements(&unfolded);
     assert_eq!(
         before.len(),
@@ -119,7 +117,7 @@ fn folding_a_buffer_with_multiple_excerpts_keeps_input_coverage(cx: &mut TestApp
 
     let mut folded_buffers = HashSet::new();
     folded_buffers.insert(middle_id);
-    let folded = unfolded.sync(wrap_snapshot.clone(), excerpts, &folded_buffers, &[]);
+    let folded = unfolded.sync(wrap_snapshot.clone(), &folded_buffers, &[]);
 
     assert_eq!(
         folded.transforms.summary().input_rows,
@@ -138,8 +136,7 @@ fn out_of_range_wrap_row_fails_explicitly(cx: &mut TestAppContext) {
     let display = cx.new(|cx| DisplayMap::new(snapshot, cx));
     let display_snapshot = cx.update_entity(&display, |map, cx| map.snapshot(cx));
     let wrap_snapshot = display_snapshot.wrap_snapshot().clone();
-    let excerpts = display_snapshot.buffer_snapshot().excerpts_arc();
-    let block = BlockSnapshot::new(wrap_snapshot.clone(), excerpts, &HashSet::new());
+    let block = BlockSnapshot::new(wrap_snapshot.clone(), &HashSet::new());
 
     let out_of_range = wrap_snapshot.line_count();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

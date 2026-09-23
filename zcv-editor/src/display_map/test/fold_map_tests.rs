@@ -523,3 +523,55 @@ fn folded_points_map_through_anchor_in_both_directions() {
         .unwrap();
     assert_eq!(text.logical_line(), Line::new(3));
 }
+
+/// 折叠入口行查询只解析与请求行范围相交的折叠；滚动帧不随折叠总数增长。
+#[test]
+fn fold_anchor_lines_in_range_reports_only_intersecting_entry_lines() {
+    let text = (0..12)
+        .map(|index| format!("line {index}\n"))
+        .collect::<String>();
+    let buffer = Buffer::from_text(text, BufferConfig::default()).expect("测试 Buffer 应能创建");
+    let (mut map, _) = FoldMap::new(buffer.snapshot().into());
+    let starts = (0..12)
+        .map(|line| {
+            map.snapshot
+                .buffer_snapshot()
+                .line_start_byte(Line::new(line))
+                .map(|offset| offset.get())
+                .unwrap_or_else(|_| map.snapshot.buffer_snapshot().len_bytes().get())
+        })
+        .collect::<Vec<_>>();
+    map.fold_text_range(starts[2], starts[4]).unwrap();
+    map.fold_text_range(starts[8], starts[10]).unwrap();
+
+    let snapshot = map.snapshot.clone();
+    // 只返回入口行落在请求范围内的折叠。
+    assert_eq!(
+        snapshot.fold_anchor_lines_in_range(Line::new(1)..Line::new(5)),
+        vec![Line::new(2)]
+    );
+    assert_eq!(
+        snapshot.fold_anchor_lines_in_range(Line::new(7)..Line::new(10)),
+        vec![Line::new(8)]
+    );
+    assert!(
+        snapshot
+            .fold_anchor_lines_in_range(Line::new(4)..Line::new(7))
+            .is_empty()
+    );
+
+    // 外层折叠覆盖内层入口行时，内层不再作为独立候选返回。
+    let nested_buffer =
+        Buffer::from_text("a\nb\nc\nd\ne\nf\ng\n".to_string(), BufferConfig::default())
+            .expect("嵌套折叠测试 Buffer 应能创建");
+    let (mut nested_map, _) = FoldMap::new(nested_buffer.snapshot().into());
+    nested_map.fold_text_range(2, 11).unwrap();
+    nested_map.fold_text_range(4, 7).unwrap();
+    let nested = nested_map.snapshot.clone();
+    assert!(
+        nested
+            .fold_anchor_lines_in_range(Line::new(2)..Line::new(3))
+            .is_empty(),
+        "外层折叠已覆盖的行不应再作为独立入口行"
+    );
+}

@@ -103,6 +103,7 @@ pub(super) fn inject_editor_diff(
         // 旧测试会用 None 表示“整份文本均为新增”。现在仍由一对真实文档快照
         // 派生该 Added hunk，而不是注入 hunk。
         let language_registry = source.read(cx).language_registry();
+        let line_count = source.read(cx).text_snapshot().line_count();
         let diff = cx.new(|cx| {
             BufferDiff::new(
                 BufferDiffInput {
@@ -121,7 +122,7 @@ pub(super) fn inject_editor_diff(
             vec![DiffFile {
                 diff,
                 display_path: working_path.clone(),
-                context_lines: None,
+                excerpt_ranges: vec![0..line_count],
             }],
             cx,
         );
@@ -144,6 +145,7 @@ pub(super) fn inject_file_diff(
             .file_path()
             .map_or_else(|| PathBuf::from("src/a.rs"), |path| path.to_path_buf());
         let language_registry = source.read(cx).language_registry();
+        let line_count = source.read(cx).text_snapshot().line_count();
         let diff = cx.new(|cx| {
             BufferDiff::new(
                 BufferDiffInput {
@@ -162,7 +164,7 @@ pub(super) fn inject_file_diff(
             vec![DiffFile {
                 diff,
                 display_path: working_path.clone(),
-                context_lines: None,
+                excerpt_ranges: vec![0..line_count],
             }],
             cx,
         );

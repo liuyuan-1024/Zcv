@@ -7,7 +7,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
-use gpui::{AppContext as _, Entity, TestAppContext, TestDispatcher};
+use gpui::{
+    AppContext as _, AvailableSpace, Entity, IntoElement as _, ScrollDelta, ScrollWheelEvent,
+    TestAppContext, TestDispatcher, point, px, size,
+};
 mod common;
 
 use common::cached_rust_document;
@@ -202,6 +205,64 @@ fn multi_excerpt_edit_only(c: &mut Criterion) {
     group.finish();
 }
 
+/// 只推进 MultiBuffer，不创建 Editor 和显示投影，用于隔离组合模型同步成本。
+fn multi_excerpt_model_edit_only(c: &mut Criterion) {
+    let mut group = c.benchmark_group("editor/multi_excerpt_model_edit_only");
+    for excerpt_count in MULTI_EXCERPT_COUNTS {
+        let mut cx = TestAppContext::build(TestDispatcher::new(1), None);
+        let sources = (0..excerpt_count)
+            .map(|index| {
+                let buffer = Buffer::from_text(
+                    cached_rust_document(EXCERPT_DOC_BYTES).to_string(),
+                    BufferConfig::default(),
+                )
+                .expect("基准文档应能创建 Buffer");
+                cx.new(|cx| {
+                    LanguageBuffer::new(
+                        buffer,
+                        Some(PathBuf::from(format!("src/f{index}.rs"))),
+                        Arc::new(LanguageRegistry::new()),
+                        cx,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let source = sources[0].clone();
+        let multi_buffer = cx.new(MultiBuffer::empty);
+        cx.update_entity(&multi_buffer, |buffer, cx| {
+            for source in sources {
+                let line_count = source.read(cx).text_snapshot().line_count();
+                buffer.set_excerpts_for_path(
+                    vec![ExcerptRange::line_range(source, 0..line_count, cx)],
+                    cx,
+                );
+            }
+        });
+        cx.run_until_parked();
+        cx.update_entity(&multi_buffer, |buffer, cx| {
+            let _ = buffer.snapshot(cx);
+        });
+        group.bench_function(format!("{excerpt_count}"), |b| {
+            b.iter(|| {
+                cx.update_entity(&source, |source, cx| {
+                    source
+                        .edit(
+                            [Edit::insert(ByteOffset::ZERO, "x").expect("插入编辑必须合法")],
+                            TransactionMetadata::default(),
+                            cx,
+                        )
+                        .expect("组合文档源编辑应成功");
+                });
+                cx.run_until_parked();
+                cx.update_entity(&multi_buffer, |buffer, cx| {
+                    black_box(buffer.snapshot(cx));
+                });
+            });
+        });
+    }
+    group.finish();
+}
+
 /// 不编辑，只整帧刷新：隔离渲染帧成本。
 fn multi_excerpt_idle_frame(c: &mut Criterion) {
     let mut group = c.benchmark_group("editor/multi_excerpt_idle_frame");
@@ -243,6 +304,66 @@ fn multi_excerpt_idle_frame(c: &mut Criterion) {
         group.bench_function(format!("{excerpt_count}"), |b| {
             b.iter(|| {
                 cx.refresh().expect("组合文档空闲帧应可刷新");
+                black_box(editor.entity_id());
+            });
+        });
+    }
+    group.finish();
+}
+
+/// 多 excerpt 组合文档的滚动帧：走真实的 layout→prepaint→paint。
+///
+/// 锁定「滚动帧成本不随组合文档规模增长」：滚动只改变滚动位置，
+/// 悬浮标题、折叠入口与滚动条标记都必须按视口求解，而不是随文件 / hunk 数遍历。
+fn multi_excerpt_scroll_frame(c: &mut Criterion) {
+    let mut group = c.benchmark_group("editor/multi_excerpt_scroll_frame");
+    for excerpt_count in MULTI_EXCERPT_COUNTS {
+        let mut cx = TestAppContext::build(TestDispatcher::new(1), None);
+        let sources = (0..excerpt_count)
+            .map(|index| {
+                let buffer = Buffer::from_text(
+                    cached_rust_document(EXCERPT_DOC_BYTES).to_string(),
+                    BufferConfig::default(),
+                )
+                .expect("基准文档应能创建 Buffer");
+                cx.new(|cx| {
+                    LanguageBuffer::new(
+                        buffer,
+                        Some(PathBuf::from(format!("src/f{index}.rs"))),
+                        Arc::new(LanguageRegistry::new()),
+                        cx,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let multi_buffer = cx.new(MultiBuffer::empty);
+        cx.update_entity(&multi_buffer, |buffer, cx| {
+            for source in sources {
+                let line_count = source.read(cx).text_snapshot().line_count();
+                buffer.set_excerpts_for_path(
+                    vec![ExcerptRange::line_range(source, 0..line_count, cx)],
+                    cx,
+                );
+            }
+        });
+        let (editor, cx) =
+            cx.add_window_view(move |_, cx| Editor::for_multi_buffer(multi_buffer, cx));
+        cx.run_until_parked();
+        let origin = point(px(0.), px(0.));
+        let space = size(
+            AvailableSpace::Definite(px(1200.)),
+            AvailableSpace::Definite(px(800.)),
+        );
+        cx.draw(origin, space, |_, _cx| editor.clone().into_any_element());
+        // 先滚到底部：滚动帧在组合文档底部最容易暴露随位置或总规模增长的视口查询。
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(600.), px(400.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-10_000_000.))),
+            ..Default::default()
+        });
+        group.bench_function(format!("{excerpt_count}"), |b| {
+            b.iter(|| {
+                cx.draw(origin, space, |_, _cx| editor.clone().into_any_element());
                 black_box(editor.entity_id());
             });
         });
@@ -313,7 +434,9 @@ criterion_group!(
     long_line_edit,
     fold_toggle,
     multi_excerpt_edit_only,
+    multi_excerpt_model_edit_only,
     multi_excerpt_idle_frame,
+    multi_excerpt_scroll_frame,
     multi_excerpt_edit_frame
 );
 criterion_main!(editor_display_benches);

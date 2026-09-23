@@ -15,7 +15,7 @@ use std::sync::{Arc, OnceLock};
 
 use gpui::SharedString;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
-use zcv_multi_buffer::{DiffDisplaySnapshot, DisplayHunk, ResolvedDiffHunk, WordDiffs};
+use zcv_multi_buffer::{DisplayHunk, ResolvedDiffHunk, WordDiffs};
 use zcv_text::{ByteOffset, Line, TextRange};
 
 use crate::scrollbar::ScrollbarMarkerKind;
@@ -126,7 +126,8 @@ impl SearchDecorationInput {
 /// 随 DisplaySnapshot 整体替换、可丢弃、可重建，不跨显示版本解释旧坐标。
 #[derive(Clone)]
 pub(crate) struct DisplayDecorations {
-    diff: Arc<DiffDecorationSnapshot>,
+    editor_hunks: Arc<[EditorHunk]>,
+    diff_cache: Arc<OnceLock<Arc<DiffDecorationSnapshot>>>,
     search: Option<Arc<SearchDecorationSnapshot>>,
 }
 
@@ -140,32 +141,61 @@ impl DisplayDecorations {
     /// 无任何装饰的占位值；用于构造投影装饰前的基线显示快照。
     pub(crate) fn empty() -> Self {
         Self {
-            diff: Arc::new(DiffDecorationSnapshot::empty()),
+            editor_hunks: Arc::from([]),
+            diff_cache: Arc::new(OnceLock::new()),
             search: None,
         }
     }
 
     pub(crate) fn new(
-        snapshot: &DisplaySnapshot,
-        diff: Option<&DiffDisplaySnapshot>,
         search: Option<&SearchDecorationInput>,
         editor_hunks: Arc<[EditorHunk]>,
         cached_diff: Option<Arc<DiffDecorationSnapshot>>,
     ) -> Self {
-        let diff = cached_diff.unwrap_or_else(|| {
-            Arc::new(DiffDecorationSnapshot::new(snapshot, diff, &editor_hunks))
-        });
+        let diff_cache = Arc::new(OnceLock::new());
+        if let Some(cached_diff) = cached_diff {
+            let _ = diff_cache.set(cached_diff);
+        }
         let search = search.map(|input| {
             Arc::new(SearchDecorationSnapshot::from_ranges(
                 Arc::clone(&input.ranges),
                 input.active_index,
             ))
         });
-        Self { diff, search }
+        Self {
+            editor_hunks,
+            diff_cache,
+            search,
+        }
     }
 
-    pub(crate) fn diff(&self) -> Arc<DiffDecorationSnapshot> {
-        Arc::clone(&self.diff)
+    pub(crate) fn diff(&self, snapshot: &DisplaySnapshot) -> Arc<DiffDecorationSnapshot> {
+        Arc::clone(
+            self.diff_cache.get_or_init(|| {
+                Arc::new(DiffDecorationSnapshot::new(snapshot, &self.editor_hunks))
+            }),
+        )
+    }
+
+    pub(crate) fn cached_diff(&self) -> Option<Arc<DiffDecorationSnapshot>> {
+        self.diff_cache.get().cloned()
+    }
+
+    pub(crate) fn diff_for_viewport(
+        &self,
+        snapshot: &DisplaySnapshot,
+        viewport: Range<usize>,
+    ) -> Arc<DiffDecorationSnapshot> {
+        let lines = snapshot.logical_lines_for_display_rows(viewport);
+        let buffer = snapshot.buffer_snapshot();
+        let hunk_count = buffer.diff_hunk_count();
+        let resolved = buffer.diff_hunks_in_lines(lines);
+        Arc::new(DiffDecorationSnapshot::from_indexed_resolved(
+            snapshot,
+            resolved,
+            &self.editor_hunks,
+            hunk_count,
+        ))
     }
 
     pub(crate) fn search(&self) -> Option<Arc<SearchDecorationSnapshot>> {
@@ -173,9 +203,10 @@ impl DisplayDecorations {
     }
 
     /// 只替换 diff 域，搜索域保持原快照。
-    pub(crate) fn with_diff(&self, diff: Arc<DiffDecorationSnapshot>) -> Self {
+    pub(crate) fn with_diff_inputs(&self, editor_hunks: Arc<[EditorHunk]>) -> Self {
         Self {
-            diff,
+            editor_hunks,
+            diff_cache: Arc::new(OnceLock::new()),
             search: self.search.clone(),
         }
     }
@@ -183,7 +214,8 @@ impl DisplayDecorations {
     /// 只替换搜索域，diff 域保持原快照。
     pub(crate) fn with_search(&self, search: Option<Arc<SearchDecorationSnapshot>>) -> Self {
         Self {
-            diff: Arc::clone(&self.diff),
+            editor_hunks: Arc::clone(&self.editor_hunks),
+            diff_cache: Arc::clone(&self.diff_cache),
             search,
         }
     }
@@ -199,6 +231,8 @@ pub(crate) struct HunkRendering {
     pub(crate) hit_regions: Vec<(Range<usize>, usize, DiffHunkKind)>,
     /// hunk 操作栏的锚定显示范围；控件取范围起点作为右上角所在行。
     pub(crate) controls: Vec<(Range<usize>, HunkControlTarget)>,
+    /// 与 controls 同序的稳定组合 hunk 序号。
+    control_indices: Vec<usize>,
     /// 宿主注入的 hunk 行范围与视觉语义。
     pub(crate) editor_hunks: Vec<(Range<usize>, EditorHunk)>,
     pub(crate) editor_hunk_parts: Vec<(Range<usize>, DiffHunkKind, EditorHunkMarkerKind)>,
@@ -217,59 +251,67 @@ pub(crate) struct HunkRendering {
 #[derive(Clone)]
 pub(crate) struct DiffDecorationSnapshot {
     rendering: HunkRendering,
-    expanded: Vec<bool>,
+    expanded: Vec<(usize, bool)>,
     projected_word_diff_highlights: Vec<(DiffHunkKind, DisplayRange)>,
     scrollbar_diff_markers: Vec<(Range<usize>, DiffHunkKind)>,
 }
 
 impl DiffDecorationSnapshot {
-    fn empty() -> Self {
-        Self {
-            rendering: HunkRendering {
-                diff_rows: Vec::new(),
-                strips: Vec::new(),
-                hit_regions: Vec::new(),
-                controls: Vec::new(),
-                editor_hunks: Vec::new(),
-                editor_hunk_parts: Vec::new(),
-                expanded_rows: Vec::new(),
-                hollow_blocks: Vec::new(),
-                word_diff_highlights: Vec::new(),
-            },
-            expanded: Vec::new(),
-            projected_word_diff_highlights: Vec::new(),
-            scrollbar_diff_markers: Vec::new(),
-        }
-    }
-
-    pub(crate) fn new(
-        snapshot: &DisplaySnapshot,
-        diff: Option<&DiffDisplaySnapshot>,
-        editor_hunks: &[EditorHunk],
-    ) -> Self {
-        let resolved: Vec<ResolvedDiffHunk> =
-            diff.into_iter().flat_map(|diff| diff.resolved()).collect();
-        Self::from_resolved(snapshot, resolved, editor_hunks)
+    pub(crate) fn new(snapshot: &DisplaySnapshot, editor_hunks: &[EditorHunk]) -> Self {
+        let buffer = snapshot.buffer_snapshot();
+        Self::from_indexed_resolved(
+            snapshot,
+            buffer.resolved_diff_hunks(),
+            editor_hunks,
+            buffer.diff_hunk_count(),
+        )
     }
 
     /// 由已解析的组合绝对坐标输入构建装饰快照（生产与渲染单元测试共用入口）。
+    #[cfg(test)]
     pub(crate) fn from_resolved(
         snapshot: &DisplaySnapshot,
         resolved: Vec<ResolvedDiffHunk>,
         editor_hunks: &[EditorHunk],
     ) -> Self {
-        let expanded: Vec<bool> = resolved.iter().map(|hunk| hunk.expanded).collect();
-        let mut rendering = hunk_rendering(snapshot, resolved.into_iter());
+        let hunk_count = resolved.len();
+        Self::from_indexed_resolved(
+            snapshot,
+            resolved.into_iter().enumerate().collect(),
+            editor_hunks,
+            hunk_count,
+        )
+    }
+
+    fn from_indexed_resolved(
+        snapshot: &DisplaySnapshot,
+        resolved: Vec<(usize, ResolvedDiffHunk)>,
+        editor_hunks: &[EditorHunk],
+        hunk_count: usize,
+    ) -> Self {
+        let expanded = resolved
+            .iter()
+            .map(|(index, hunk)| (*index, hunk.expanded))
+            .collect::<Vec<_>>();
+        let mut rendering = hunk_rendering_indexed(snapshot, resolved.into_iter());
         rendering.editor_hunks = editor_hunk_rendering(snapshot, editor_hunks);
-        rendering.controls.extend(
-            rendering
-                .editor_hunks
-                .iter()
-                .map(|(rows, hunk)| (rows.clone(), HunkControlTarget::Editor(hunk.clone()))),
-        );
-        rendering
-            .controls
-            .sort_by_key(|(rows, _)| (rows.start, rows.end));
+        let editor_controls = rendering
+            .editor_hunks
+            .iter()
+            .enumerate()
+            .map(|(index, (rows, hunk))| {
+                (
+                    rows.clone(),
+                    HunkControlTarget::Editor(hunk.clone()),
+                    hunk_count + index,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (range, target, index) in editor_controls {
+            rendering.control_indices.push(index);
+            rendering.controls.push((range, target));
+        }
+        sort_controls(&mut rendering);
         rendering.editor_hunk_parts = editor_hunk_part_rendering(snapshot, editor_hunks);
         let projected_word_diff_highlights = rendering
             .word_diff_highlights
@@ -297,7 +339,12 @@ impl DiffDecorationSnapshot {
             .map(|(rows, kind, _)| (rows.clone(), *kind))
             .collect::<Vec<_>>();
         for (rows, index, kind) in &rendering.hit_regions {
-            if *kind == DiffHunkKind::Deleted && !expanded.get(*index).copied().unwrap_or(false) {
+            if *kind == DiffHunkKind::Deleted
+                && !expanded
+                    .binary_search_by_key(index, |(expanded_index, _)| *expanded_index)
+                    .ok()
+                    .is_some_and(|offset| expanded[offset].1)
+            {
                 scrollbar_diff_markers.push((rows.clone(), DiffHunkKind::Deleted));
             }
         }
@@ -316,6 +363,7 @@ impl DiffDecorationSnapshot {
             strips: visible_triples(&self.rendering.strips, &viewport),
             hit_regions: visible_triples(&self.rendering.hit_regions, &viewport),
             controls: Vec::new(),
+            control_indices: Vec::new(),
             editor_hunks: visible_pairs(&self.rendering.editor_hunks, &viewport),
             editor_hunk_parts: visible_triples(&self.rendering.editor_hunk_parts, &viewport),
             expanded_rows: visible_ranges(&self.rendering.expanded_rows, &viewport),
@@ -337,7 +385,13 @@ impl DiffDecorationSnapshot {
             .enumerate()
             .take_while(|(_, (rows, _))| rows.start < viewport.end)
             .filter(|(_, (rows, _))| ranges_overlap(rows, viewport))
-            .map(|(index, (rows, target))| (start + index, rows.clone(), target.clone()))
+            .map(|(index, (rows, target))| {
+                (
+                    self.rendering.control_indices[start + index],
+                    rows.clone(),
+                    target.clone(),
+                )
+            })
             .collect()
     }
 
@@ -362,7 +416,10 @@ impl DiffDecorationSnapshot {
     }
 
     pub(crate) fn is_expanded(&self, index: usize) -> bool {
-        self.expanded.get(index).copied().unwrap_or(false)
+        self.expanded
+            .binary_search_by_key(&index, |(expanded_index, _)| *expanded_index)
+            .ok()
+            .is_some_and(|offset| self.expanded[offset].1)
     }
 
     /// 滚动条 diff 标记的显示行范围；几何换算由 Editor 的后台任务完成。
@@ -438,18 +495,27 @@ fn visible_triples<T: Clone, U: Clone>(
 /// 纯删除 hunk（空范围）：折叠时行内不做标记（gutter 红色三角提示），展开后标记物化的旧侧行；
 /// 修改 hunk 展开后：旧侧行按删除色、修改行按新增色（base 旧行红、新行绿）。
 /// 映射失败（越界等）跳过该 hunk。
+#[cfg(test)]
 pub(crate) fn hunk_rendering(
     snapshot: &DisplaySnapshot,
     resolved: impl Iterator<Item = ResolvedDiffHunk>,
+) -> HunkRendering {
+    hunk_rendering_indexed(snapshot, resolved.enumerate())
+}
+
+fn hunk_rendering_indexed(
+    snapshot: &DisplaySnapshot,
+    resolved: impl Iterator<Item = (usize, ResolvedDiffHunk)>,
 ) -> HunkRendering {
     let mut diff_rows = Vec::new();
     let mut strips = Vec::new();
     let mut hit_regions = Vec::new();
     let mut controls = Vec::new();
+    let mut control_indices = Vec::new();
     let mut expanded_rows = Vec::new();
     let mut hollow_blocks = Vec::new();
     let mut word_diff_highlights = Vec::new();
-    for (index, resolved) in resolved.enumerate() {
+    for (index, resolved) in resolved {
         let hunk = resolved.hunk;
         let is_expanded = resolved.expanded;
         let staging = hunk.staging;
@@ -476,6 +542,7 @@ pub(crate) fn hunk_rendering(
                         }
                     }
                     controls.push((rows, HunkControlTarget::Diff(hunk.clone())));
+                    control_indices.push(index);
                 }
             }
             DiffHunkKind::Deleted => {
@@ -488,11 +555,13 @@ pub(crate) fn hunk_rendering(
                     }
                     hit_regions.push((rows.clone(), index, DiffHunkKind::Deleted));
                     controls.push((rows, HunkControlTarget::Diff(hunk.clone())));
+                    control_indices.push(index);
                 } else if let Some(rows) =
                     old_rows.or_else(|| logical_anchor_rows(snapshot, hunk.range.start))
                 {
                     hit_regions.push((rows.clone(), index, DiffHunkKind::Deleted));
                     controls.push((rows, HunkControlTarget::Diff(hunk.clone())));
+                    control_indices.push(index);
                 }
             }
             DiffHunkKind::Modified => {
@@ -508,25 +577,43 @@ pub(crate) fn hunk_rendering(
                     }
                     hit_regions.push((rows.clone(), index, DiffHunkKind::Modified));
                     controls.push((rows, HunkControlTarget::Diff(hunk.clone())));
+                    control_indices.push(index);
                 } else if let Some(rows) = new_rows {
                     diff_rows.push((rows.clone(), DiffHunkKind::Modified, staging));
                     strips.push((rows.clone(), DiffHunkKind::Modified, staging));
                     hit_regions.push((rows.clone(), index, DiffHunkKind::Modified));
                     controls.push((rows, HunkControlTarget::Diff(hunk.clone())));
+                    control_indices.push(index);
                 }
             }
         }
     }
-    HunkRendering {
+    let mut rendering = HunkRendering {
         diff_rows,
         strips,
         hit_regions,
         controls,
+        control_indices,
         expanded_rows,
         hollow_blocks,
         word_diff_highlights,
         editor_hunks: Vec::new(),
         editor_hunk_parts: Vec::new(),
+    };
+    sort_controls(&mut rendering);
+    rendering
+}
+
+fn sort_controls(rendering: &mut HunkRendering) {
+    let mut controls = rendering
+        .controls
+        .drain(..)
+        .zip(rendering.control_indices.drain(..))
+        .collect::<Vec<_>>();
+    controls.sort_by_key(|((rows, _), _)| (rows.start, rows.end));
+    for ((rows, target), index) in controls {
+        rendering.controls.push((rows, target));
+        rendering.control_indices.push(index);
     }
 }
 

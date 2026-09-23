@@ -118,6 +118,7 @@ fn plain_diff_file(
     cx: &mut Context<Editor>,
 ) -> DiffFile {
     let registry = working.read(cx).language_registry();
+    let line_count = working.read(cx).text_snapshot().line_count();
     let diff = cx.new(|cx| {
         BufferDiff::new(
             BufferDiffInput {
@@ -135,7 +136,7 @@ fn plain_diff_file(
     DiffFile {
         diff,
         display_path: path,
-        context_lines: None,
+        excerpt_ranges: vec![0..line_count],
     }
 }
 
@@ -201,11 +202,14 @@ fn project_diff_keeps_hunk_interest_while_its_multibuffer_is_empty(cx: &mut Test
             multi_buffer.update(cx, |buffer, cx| buffer.snapshot(cx).text_bytes()),
         )
         .expect("投影文本应为 UTF-8");
-        assert_eq!(text, "line1\nline2\n原内容\n新内容\nline4\nline5\n");
+        assert_eq!(
+            text,
+            "line0\nline1\nline2\n原内容\n新内容\nline4\nline5\nline6\n"
+        );
     });
 }
 
-/// 端到端：git 删除文件中间一行（第 17 行，1-based）后，展开的被删行必须投影到其原始位置（组合第 17 行），上下文行顺序不重排。
+/// 端到端：git 删除文件中间一行后，展开的旧侧行保持原始位置；折叠时只移除旧侧内容。
 #[gpui::test]
 fn deleted_middle_row_projects_to_its_original_position(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时仓库");
@@ -230,7 +234,7 @@ fn deleted_middle_row_projects_to_its_original_position(cx: &mut TestAppContext)
     cx.run_until_parked();
     cx.run_until_parked();
 
-    // 默认展开（上下文裁剪 ±2 行）：被删行（line 17）显示在 line 16 之后、line 18 之前，即其原始位置，上下文行顺序不重排。
+    // 默认只显示 hunk 上下各两行上下文，并将被删旧侧行放回原始位置。
     cx.update_entity(&view, |view, cx| {
         let text = String::from_utf8(
             view.multi_buffer
@@ -238,20 +242,18 @@ fn deleted_middle_row_projects_to_its_original_position(cx: &mut TestAppContext)
         )
         .expect("投影应为 UTF-8");
         let text_lines = text.split('\n').collect::<Vec<_>>();
-        assert_eq!(
-            text_lines.len(),
-            6,
-            "展开后应显示 hunk 上下文（±2 行）+ 旧侧行"
-        );
-        assert_eq!(text_lines[1], "line 16", "上下文第 16 行顺序保持");
+        assert_eq!(text_lines.len(), 5, "展开后只显示 hunk 与两行上下文");
+        assert_eq!(text_lines[0], "line 15", "上下文从 hunk 前两行开始");
+        assert_eq!(text_lines[1], "line 16", "第 16 行顺序保持");
         assert_eq!(
             text_lines[2], "line 17",
             "被删行应投影到 line 16 之后（原始位置）"
         );
         assert_eq!(text_lines[3], "line 18", "被删行后的行顺序保持");
+        assert_eq!(text_lines[4], "line 19", "上下文包含 hunk 后两行");
     });
 
-    // 折叠删除块：删除点锚定在 0-based 16 行（组合 16/17 行边界，line 18 行首）。
+    // 折叠删除块时旧侧内容消失，不在人为插入占位行。
     cx.update_entity(&view, |view, cx| {
         let editor = view.editor.clone();
         editor.update(cx, |editor, cx| editor.toggle_diff_hunk_at(0, cx));
@@ -264,15 +266,12 @@ fn deleted_middle_row_projects_to_its_original_position(cx: &mut TestAppContext)
         )
         .expect("投影应为 UTF-8");
         let text_lines = text.split('\n').collect::<Vec<_>>();
-        assert_eq!(
-            text_lines.len(),
-            6,
-            "折叠后应显示 hunk 上下文（±2 行）+ 删除点占位行：{text:?}"
-        );
+        assert_eq!(text_lines.len(), 4, "折叠后仍只显示 hunk 上下文：{text:?}");
         assert!(!text_lines.contains(&"line 17"), "折叠后旧侧行应消失");
+        assert_eq!(text_lines[0], "line 15", "折叠后仍从两行上下文开始");
         assert_eq!(text_lines[1], "line 16", "折叠后第 16 行保持");
-        assert_eq!(text_lines[2], "", "折叠后删除点占位行（原 line 17 位置）");
-        assert_eq!(text_lines[3], "line 18", "折叠后原第 18 行紧跟删除点占位行");
+        assert_eq!(text_lines[2], "line 18", "折叠后原第 18 行紧随第 16 行");
+        assert_eq!(text_lines[3], "line 19", "折叠后保留 hunk 后两行上下文");
         // 折叠删除块保留一个 hunk（显示坐标为组合坐标，不在此断言源行号）。
         let hunks = view.multi_buffer.read(cx).diff_hunks().to_vec();
         assert_eq!(hunks.len(), 1, "应保留一个删除 hunk");

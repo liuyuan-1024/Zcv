@@ -1022,7 +1022,7 @@ impl<'a, 'b> BlockChunks<'a, 'b> {
     ) {
         let WrapRowKind::Text {
             byte_range,
-            global_byte_start,
+            content_range,
             source,
             fragment_index,
             indent,
@@ -1036,9 +1036,6 @@ impl<'a, 'b> BlockChunks<'a, 'b> {
         let mut range = byte_range.clone();
         let mut window_start_column = 0;
         let mut window_prefix: Cow<'_, str> = Cow::Borrowed("");
-        let Some(content_range) = buffer.line_content_byte_range(stream_line) else {
-            return;
-        };
         let content_len = content_range.end.get() - content_range.start.get();
         let projected_len = if let Some(segments) = segments.as_ref() {
             segments
@@ -1052,10 +1049,10 @@ impl<'a, 'b> BlockChunks<'a, 'b> {
         let source = ChunkSource {
             text: ChunkText::Virtual {
                 snapshot: buffer,
-                range: content_range,
+                range: content_range.clone(),
             },
             projected_len,
-            global_byte_start: *global_byte_start,
+            global_byte_start: content_range.start.get(),
             segments: segments.as_deref(),
         };
         if let Some(window) = self.window_columns {
@@ -1073,7 +1070,7 @@ impl<'a, 'b> BlockChunks<'a, 'b> {
         let budget = MAX_RENDERED_LINE_LEN.saturating_sub(*indent);
         let line_styles = self
             .styles
-            .for_range(*global_byte_start..*global_byte_start + content_len);
+            .for_range(content_range.start.get()..content_range.end.get());
         let mut chunks = WrapChunks::new(source, self.tab_width, line_styles, range, budget);
         on_row(DisplayRowEvent::Text {
             row: DisplayTextRow {

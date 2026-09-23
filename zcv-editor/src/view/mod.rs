@@ -536,6 +536,28 @@ impl Editor {
         rebuilt
     }
 
+    /// 应用 Git diff 视图装配的新 excerpts，并按事件提供的工作区范围局部同步。
+    pub fn update_diff_excerpt_ranges(
+        &mut self,
+        display_path: &std::path::Path,
+        excerpt_ranges: Vec<Range<usize>>,
+        refresh: zcv_buffer_diff::DiffRefresh,
+        changed_range: Range<zcv_text::Anchor>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let updated = self.multi_buffer.update(cx, |buffer, cx| {
+            buffer.update_diff_excerpt_ranges(
+                display_path,
+                excerpt_ranges,
+                refresh,
+                changed_range,
+                cx,
+            )
+        });
+        self.reset_after_diff_injection(updated, cx);
+        updated
+    }
+
     /// 移除指定显示路径的 diff。
     pub fn remove_diff(&mut self, path: &std::path::Path, cx: &mut Context<Self>) -> bool {
         let rebuilt = self
@@ -709,7 +731,7 @@ impl Editor {
     /// 因此光标停在折叠体内部时也能折叠包含它的块，不要求正处于 crease 所在行。
     pub(crate) fn toggle_fold_at_line(&mut self, line: Line, cx: &mut Context<Self>) {
         let display_snapshot = self.display_snapshot(cx).clone();
-        if display_snapshot.fold_anchor_lines().contains(&line) {
+        if display_snapshot.is_fold_anchor_line(line) {
             let line_range =
                 LineRange::new(line, Line::new(line.get() + 1)).expect("折叠入口行 +1 应合法");
             if let Err(error) = self
@@ -886,8 +908,8 @@ impl Editor {
         }
     }
 
-    /// 搜索命中的滚动条标记是否可见；与 Zed 一致，仅单文档编辑器消费。
-    pub(crate) fn shows_search_scrollbar_markers(&self, cx: &App) -> bool {
+    /// 当前编辑器是否为单文档编辑器；与 Zed 一致，diff 与搜索的滚动条标记都只服务单文档编辑器。
+    pub(crate) fn is_singleton_document(&self, cx: &App) -> bool {
         self.multi_buffer.read(cx).singleton_source().is_some()
     }
 
@@ -911,7 +933,7 @@ impl Editor {
         {
             return;
         }
-        let is_singleton = self.shows_search_scrollbar_markers(cx);
+        let is_singleton = self.is_singleton_document(cx);
         // 后台结果携带计算所用的显示版本；安装前与当前快照比较，过期即丢弃。
         let version = display_snapshot.version();
         let task = cx.background_spawn(async move {
@@ -2105,15 +2127,16 @@ impl Editor {
             .offset_to_display_point(head)
             .map(DisplayPoint::row)
             .ok();
-        let anchor_line = display_row.and_then(|display_row| {
-            display_snapshot
-                .fold_anchor_lines()
-                .into_iter()
-                .find(|line| display_snapshot.line_to_display_row(*line) == Some(display_row))
-        });
-        let target_line =
-            anchor_line.or_else(|| display_snapshot.buffer_snapshot().byte_to_line(head).ok());
-        if let Some(line) = target_line {
+        // 光标所在显示行的行首就是该显示行（含折叠合并行）的入口逻辑行：
+        // 用显示坐标 → 组合偏移的点查询解析，不遍历全部折叠入口。
+        let offset = display_row
+            .and_then(|display_row| {
+                display_snapshot
+                    .display_point_to_offset(DisplayPoint::new(display_row, DisplayColumn::ZERO))
+                    .ok()
+            })
+            .unwrap_or(head);
+        if let Ok(line) = display_snapshot.buffer_snapshot().byte_to_line(offset) {
             self.toggle_fold_at_line(line, cx);
         }
     }

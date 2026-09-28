@@ -267,7 +267,6 @@ fn path_key_for_source(source: &LanguageBuffer) -> PathKey {
 /// 不可变快照帧中的源状态（不携带实体引用）。
 #[derive(Clone, Debug)]
 struct ExcerptSourceSnapshot {
-    path: PathKey,
     text: Snapshot,
     syntax: SyntaxSnapshot,
     highlight_cache: Arc<HighlightCache>,
@@ -1348,7 +1347,7 @@ impl<'a> MultiBufferCursor<'a> {
 
     fn next(&mut self) {
         self.diff_transforms.next();
-        self.sync_excerpts();
+        self.sync_excerpts_forward();
     }
 
     fn prev(&mut self) {
@@ -1530,6 +1529,20 @@ impl<'a> MultiBufferLineCursor<'a> {
     pub fn excerpt_snapshot(&self) -> Option<ExcerptSnapshot> {
         let (excerpt, _) = self.cursor.item()?;
         Some(excerpt.to_snapshot(self.cursor.start().clone()))
+    }
+
+    /// 当前行内容起点的源映射；复用行游标的位置，不重新定位组合树。
+    pub fn source(&self) -> Option<MultiBufferSource<'a>> {
+        let (output_start, _) = self.line_content_range()?;
+        let mapping = self.cursor.mapping()?;
+        let source_offset = ByteOffset::new(
+            mapping.source_range.start().get() + output_start - mapping.output_range.start().get(),
+        );
+        Some(MultiBufferSource {
+            snapshot: self.snapshot,
+            mapping,
+            source_offset,
+        })
     }
 
     fn refresh(&mut self) -> bool {
@@ -1897,7 +1910,7 @@ pub struct MultiBufferSnapshot {
 /// Tree-sitter 查询由显示层在需要某一行时执行，结果留在语法快照的派生缓存中，不物化进组合快照。
 pub struct MultiBufferSource<'a> {
     snapshot: &'a MultiBufferSnapshot,
-    source_index: usize,
+    mapping: ExcerptMapping,
     source_offset: ByteOffset,
 }
 
@@ -1905,7 +1918,7 @@ impl<'a> MultiBufferSource<'a> {
     pub fn text(&self) -> &'a Snapshot {
         &self
             .snapshot
-            .source_snapshot(self.source_index)
+            .source_snapshot(self.mapping.source_index)
             .expect("源映射必须引用当前快照中的源")
             .text
     }
@@ -1913,7 +1926,7 @@ impl<'a> MultiBufferSource<'a> {
     pub fn syntax(&self) -> &'a SyntaxSnapshot {
         &self
             .snapshot
-            .source_snapshot(self.source_index)
+            .source_snapshot(self.mapping.source_index)
             .expect("源映射必须引用当前快照中的源")
             .syntax
     }
@@ -1923,34 +1936,22 @@ impl<'a> MultiBufferSource<'a> {
         self.source_offset
     }
 
-    /// 将连续可见的源范围投影为组合锚点范围。
+    /// 将连续可见的工作区源范围投影为当前快照的组合坐标范围。
     ///
     /// 范围可以跨同一源的连续 excerpt；
-    /// 若中间有未展示的源区间，则不能投影。
-    pub fn project_range(&self, range: Range<ByteOffset>) -> Option<Range<MultiBufferAnchor>> {
+    /// 若中间有未展示的源区间，则不能投影。范围只在本快照内有效；
+    /// 需要长期保存的位置由消费方显式创建组合 Anchor。
+    pub fn project_range(&self, range: Range<ByteOffset>) -> Option<Range<MultiBufferOffset>> {
         if range.start >= range.end {
             return None;
         }
-        let source = self.snapshot.source_snapshot(self.source_index)?;
-        let (start_mapping, end_mapping) = source_mapping_range(
+        source_mapping_range(
             &self.snapshot.excerpts,
             &self.snapshot.diff_transforms,
-            &source.path,
-            self.source_index,
+            &self.mapping,
             range.start.get(),
             range.end.get(),
-        )?;
-        let output_start = start_mapping.output_range.start().get() + range.start.get()
-            - start_mapping.source_range.start().get();
-        let output_end = end_mapping.output_range.start().get() + range.end.get()
-            - end_mapping.source_range.start().get();
-        (output_start < output_end).then(|| {
-            self.snapshot
-                .anchor_at(ByteOffset::new(output_start), Affinity::Before)
-                ..self
-                    .snapshot
-                    .anchor_at(ByteOffset::new(output_end), Affinity::After)
-        })
+        )
     }
 }
 
@@ -2913,13 +2914,13 @@ impl MultiBufferSnapshot {
 
     /// 返回组合输出位置对应的源快照与坐标映射。
     ///
-    /// 删除 hunk 与 excerpt 间补充换行没有源文本，因而不返回映射。
+    /// 删除 hunk 对应只读基线源；excerpt 间补充换行按边界规则关联相邻源。
     pub fn source_at(&self, offset: impl Into<MultiBufferOffset>) -> Option<MultiBufferSource<'_>> {
         let (mapping, _, source_offset) =
             self.source_point(ByteOffset::new(offset.into().get()))?;
         Some(MultiBufferSource {
             snapshot: self,
-            source_index: mapping.source_index,
+            mapping,
             source_offset,
         })
     }
@@ -3484,7 +3485,6 @@ impl From<Snapshot> for MultiBufferSnapshot {
             excerpt_sources: TreeMap::from_ordered_entries([(
                 0,
                 ExcerptSourceSnapshot {
-                    path: PathKey::min(),
                     text,
                     syntax,
                     highlight_cache: Arc::new(HighlightCache::new()),
@@ -5483,7 +5483,6 @@ impl MultiBuffer {
         // BufferSnapshot。这里必须整帧替换，不能先更新源表、再等待 excerpts
         // 树在下一次读取时补齐，否则一个快照会把旧范围解析到新文本上。
         let source_snapshot = |source: &ExcerptSource| ExcerptSourceSnapshot {
-            path: source.path.clone(),
             text: source.text.clone(),
             syntax: source.syntax.clone(),
             highlight_cache: Arc::clone(&source.highlight_cache),
@@ -5875,84 +5874,81 @@ fn mapping_at_output_line(
         .and_then(|_| cursor.mapping().map(|mapping| (mapping, at)))
 }
 
-/// 在权威映射树中寻找同一源的连续 excerpt 覆盖范围。
+/// 从查询位置所属的映射出发，投影同一源的连续工作区内容。
 ///
-/// 这是折叠投影的查询入口：只保留起止两个映射，不把整棵树展平成数组。
+/// 仅遍历候选实际跨越的片段；删除节点不消费工作区源坐标。
 fn source_mapping_range(
     excerpts: &SumTree<Excerpt>,
     tree: &SumTree<DiffTransform>,
-    path: &PathKey,
-    source_index: usize,
+    origin: &ExcerptMapping,
     source_start: usize,
     source_end: usize,
-) -> Option<(ExcerptMapping, ExcerptMapping)> {
-    let mut input_cursor = excerpts.cursor::<ExcerptSummary>(());
-    input_cursor.seek(path, Bias::Left);
-    let mut input_previous_end = None;
-    let mut input_visible = false;
-    while let Some(entry) = input_cursor.item() {
-        if entry.path != *path {
-            break;
-        }
-        if entry.source_index == source_index {
-            if input_previous_end.is_none()
-                && entry.source_range.start().get() <= source_start
-                && source_start < entry.source_range.end().get()
-            {
-                input_previous_end = Some(entry.source_range.end().get());
-                input_visible = source_end <= entry.source_range.end().get();
-            } else if let Some(previous_end) = input_previous_end {
-                if previous_end != entry.source_range.start().get() {
-                    break;
-                }
-                input_previous_end = Some(entry.source_range.end().get());
-                input_visible = source_end <= entry.source_range.end().get();
-            }
-            if input_visible {
-                break;
-            }
-        }
-        input_cursor.next();
-    }
-    if !input_visible {
+) -> Option<Range<MultiBufferOffset>> {
+    // 基线删除片段不属于可折叠的工作区源覆盖范围。
+    if origin.diff_kind == Some(ExcerptDiffKind::Deleted) {
         return None;
+    }
+    if origin.source_range.start().get() <= source_start
+        && source_end <= origin.source_range.end().get()
+    {
+        let output_start = origin.output_range.start().get();
+        let source_offset = origin.source_range.start().get();
+        return Some(
+            MultiBufferOffset::new(output_start + source_start - source_offset)
+                ..MultiBufferOffset::new(output_start + source_end - source_offset),
+        );
     }
 
     let mut cursor = MultiBufferCursor::new(excerpts, tree);
-    cursor.seek_output(ByteOffset::ZERO, Bias::Right);
-    let mut start_mapping = None;
-    let mut previous_end = None;
-    while let Some((excerpt, _)) = cursor.item() {
-        if excerpt.source_index == source_index {
-            let mapping = cursor.mapping().expect("双坐标游标必须有对应映射");
-            if start_mapping.is_none() {
-                if mapping.source_range.start().get() <= source_start
-                    && source_start < mapping.source_range.end().get()
-                {
-                    if source_end <= mapping.source_range.end().get() {
-                        return Some((mapping.clone(), mapping));
-                    }
-                    previous_end = Some(mapping.source_range.end());
-                    start_mapping = Some(mapping);
-                }
-            } else {
-                if previous_end != Some(mapping.source_range.start()) {
-                    return None;
-                }
-                if mapping.source_range.start().get() < source_end
-                    && source_end <= mapping.source_range.end().get()
-                {
-                    return Some((
-                        start_mapping.take().expect("起始 excerpt 必须存在"),
-                        mapping,
-                    ));
-                }
-                previous_end = Some(mapping.source_range.end());
-            }
+    cursor.seek_excerpt_index(origin.excerpt_index);
+    while source_start < cursor.item()?.0.source_range.start().get() {
+        let next_start = cursor.item()?.0.source_range.start();
+        source_content_neighbor(&mut cursor, origin, false)?;
+        if cursor.item()?.0.source_range.end() != next_start {
+            return None;
         }
-        cursor.next();
     }
-    None
+    while source_start >= cursor.item()?.0.source_range.end().get() {
+        let previous_end = cursor.item()?.0.source_range.end();
+        source_content_neighbor(&mut cursor, origin, true)?;
+        if cursor.item()?.0.source_range.start() != previous_end {
+            return None;
+        }
+    }
+    let output_start =
+        cursor.start().bytes + source_start - cursor.item()?.0.source_range.start().get();
+    while source_end > cursor.item()?.0.source_range.end().get() {
+        let previous_end = cursor.item()?.0.source_range.end();
+        source_content_neighbor(&mut cursor, origin, true)?;
+        if cursor.item()?.0.source_range.start() != previous_end {
+            return None;
+        }
+    }
+    let output_end =
+        cursor.start().bytes + source_end - cursor.item()?.0.source_range.start().get();
+    Some(MultiBufferOffset::new(output_start)..MultiBufferOffset::new(output_end))
+}
+
+fn source_content_neighbor(
+    cursor: &mut MultiBufferCursor<'_>,
+    origin: &ExcerptMapping,
+    forward: bool,
+) -> Option<()> {
+    loop {
+        if forward {
+            cursor.next();
+        } else {
+            cursor.prev();
+        }
+        let (excerpt, transform) = cursor.item()?;
+        if excerpt.path != origin.path {
+            return None;
+        }
+        if matches!(transform, DiffTransform::DeletedHunk { .. }) {
+            continue;
+        }
+        return (excerpt.source_index == origin.source_index).then_some(());
+    }
 }
 
 /// 解析组合锚点时读取源文本快照的统一入口。

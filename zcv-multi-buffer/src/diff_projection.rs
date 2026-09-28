@@ -378,35 +378,70 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
                                 .expect("diff excerpt 必须引用当前源快照");
                             let output_start = at.bytes;
                             let source_start = excerpt.source_range.start().get();
-                            accum
-                                .new_word_diffs
-                                .extend(info.buffer_word_diffs.iter().filter_map(|diff| {
-                                    let start = output_start
-                                        + diff.start.resolve_in(source_text).ok()?.get()
-                                        - source_start;
-                                    let end = output_start
-                                        + diff.end.resolve_in(source_text).ok()?.get()
-                                        - source_start;
-                                    (start < word_diff_range.end && word_diff_range.start < end)
-                                        .then_some((DiffHunkKind::Added, start..end))
-                                }));
+                            if let Some(visible) =
+                                visible_source_bytes(excerpt, output_start, &word_diff_range)
+                            {
+                                // 词级范围由 BufferDiff 按源文档顺序生成；源编辑保持锚点顺序。
+                                let first = info.buffer_word_diffs.partition_point(|diff| {
+                                    diff.end
+                                        .resolve_in(source_text)
+                                        .expect("词级 diff 锚点必须属于当前工作区版本链")
+                                        .get()
+                                        <= visible.start
+                                });
+                                for diff in &info.buffer_word_diffs[first..] {
+                                    let start = diff
+                                        .start
+                                        .resolve_in(source_text)
+                                        .expect("词级 diff 锚点必须属于当前工作区版本链")
+                                        .get();
+                                    if start >= visible.end {
+                                        break;
+                                    }
+                                    let end = diff
+                                        .end
+                                        .resolve_in(source_text)
+                                        .expect("词级 diff 锚点必须属于当前工作区版本链")
+                                        .get();
+                                    let start = start.max(source_start);
+                                    let end = end.min(excerpt.source_range.end().get());
+                                    if start < end {
+                                        accum.new_word_diffs.push((
+                                            DiffHunkKind::Added,
+                                            (output_start + start - source_start)
+                                                ..(output_start + end - source_start),
+                                        ));
+                                    }
+                                }
+                            }
                         }
                         DiffTransformHunkSide::Old => {
                             accum.old_range = Some(content_range);
-                            if info.expanded {
-                                let output_start = at.bytes;
+                            let output_start = at.bytes;
+                            if info.expanded
+                                && let Some(visible) =
+                                    visible_source_bytes(excerpt, output_start, &word_diff_range)
+                            {
                                 let source_start = excerpt.source_range.start().get();
-                                accum.old_word_diffs.extend(
-                                    info.base_word_diffs.iter().filter_map(|diff| {
-                                        let start =
-                                            output_start + info.base_byte_start + diff.start
-                                                - source_start;
-                                        let end = output_start + info.base_byte_start + diff.end
-                                            - source_start;
-                                        (start < word_diff_range.end && word_diff_range.start < end)
-                                            .then_some((DiffHunkKind::Deleted, start..end))
-                                    }),
-                                );
+                                let first = info.base_word_diffs.partition_point(|diff| {
+                                    info.base_byte_start + diff.end <= visible.start
+                                });
+                                for diff in &info.base_word_diffs[first..] {
+                                    let start = info.base_byte_start + diff.start;
+                                    if start >= visible.end {
+                                        break;
+                                    }
+                                    let start = start.max(source_start);
+                                    let end = (info.base_byte_start + diff.end)
+                                        .min(excerpt.source_range.end().get());
+                                    if start < end {
+                                        accum.old_word_diffs.push((
+                                            DiffHunkKind::Deleted,
+                                            (output_start + start - source_start)
+                                                ..(output_start + end - source_start),
+                                        ));
+                                    }
+                                }
                             }
                         }
                         DiffTransformHunkSide::BoundaryStart => {
@@ -451,6 +486,20 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
     }
     resolved.sort_by_key(|(index, _)| *index);
     resolved
+}
+
+/// 先将视口与当前投影片段相交，再换算为该片段的源字节范围。
+fn visible_source_bytes(
+    excerpt: &Excerpt,
+    output_start: usize,
+    visible_output: &Range<usize>,
+) -> Option<Range<usize>> {
+    let start = output_start.max(visible_output.start);
+    let end = (output_start + excerpt.source_range.len()).min(visible_output.end);
+    (start < end).then(|| {
+        let source_start = excerpt.source_range.start().get();
+        (source_start + start - output_start)..(source_start + end - output_start)
+    })
 }
 
 /// 一个文件内用户显式切换过展开状态的 hunk。

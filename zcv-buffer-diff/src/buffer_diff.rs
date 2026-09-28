@@ -109,9 +109,9 @@ pub struct DiffHunk {
     /// 相对 index 参照的暂存语义；
     /// 由 snapshot 统一算好，显示层不再二次判定。
     pub staging: DiffHunkStaging,
-    /// 新侧词级变化片段（working 锚点）；无词级结果时为空。
+    /// 新侧词级变化片段（working 锚点），按源顺序排列且互不重叠；无词级结果时为空。
     pub buffer_word_diffs: Vec<Range<Anchor>>,
-    /// 旧侧词级变化片段（相对 `diff_base_byte_range.start` 的字节偏移）。
+    /// 旧侧词级变化片段（相对 `diff_base_byte_range.start` 的字节偏移），按源顺序排列且互不重叠。
     pub base_word_diffs: Vec<Range<usize>>,
 }
 

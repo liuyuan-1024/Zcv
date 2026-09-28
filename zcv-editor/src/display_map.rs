@@ -64,10 +64,11 @@ pub(crate) use tab_map::{byte_for_display_column, display_column_for_byte};
 use wrap_map::{WrapEdit, WrapMap, WrapPointCursor, WrapSnapshot};
 use zcv_language::HighlightSpan;
 use zcv_multi_buffer::{
-    DiffDisplaySnapshot, ExcerptSnapshot, MultiBuffer, MultiBufferSnapshot, MultiBufferSubscription,
+    DiffDisplaySnapshot, ExcerptSnapshot, MultiBuffer, MultiBufferSnapshot, MultiBufferSource,
+    MultiBufferSubscription,
 };
 use zcv_text::{
-    BufferId, Line, LineRange, LogicalColumn, MovementDirection, MovementUnit, Position,
+    Affinity, BufferId, Line, LineRange, LogicalColumn, MovementDirection, MovementUnit, Position,
     TextChangeBatch, TextResult,
 };
 use zcv_theme::syntax;
@@ -344,8 +345,7 @@ impl DisplaySnapshot {
         let buffer = self.buffer_snapshot();
         let cursor = buffer.line_cursor(line)?;
         let excerpt = cursor.excerpt_snapshot()?;
-        let (output_offset, _) = cursor.line_content_range()?;
-        let source = buffer.source_at(MultiBufferOffset::new(output_offset))?;
+        let source = cursor.source()?;
         let source_text = source.text();
         let source_line = source_text.byte_to_line(source.source_offset()).ok()?;
         let source_line_start = source_text.line_start_byte(source_line).ok()?.get();
@@ -372,15 +372,11 @@ impl DisplaySnapshot {
                 let start = fold.range.start.resolve_in(source_text).ok()?;
                 let end = fold.range.end.resolve_in(source_text).ok()?;
                 let range = source.project_range(start..end)?;
-                let projected_start = buffer.projected_anchor_offset(&range.start).ok()??;
-                let projected_line = buffer.byte_to_line(projected_start).ok()?;
+                let projected_line = buffer.byte_to_line(range.start).ok()?;
                 (projected_line == line).then(|| {
-                    let projected_end = buffer
-                        .projected_anchor_offset(&range.end)
-                        .ok()
-                        .flatten()
-                        .unwrap_or(projected_start);
-                    (projected_end, Crease::simple(range))
+                    let anchors = buffer.anchor_at(range.start, Affinity::Before)
+                        ..buffer.anchor_at(range.end, Affinity::After);
+                    (range.end, Crease::simple(anchors))
                 })
             })
             .min_by_key(|(end, _)| *end)
@@ -404,11 +400,7 @@ impl DisplaySnapshot {
                 Self::flush_syntax_fold_range(buffer, source_range.take(), &range, &mut candidates);
                 continue;
             };
-            let Some((output_offset, _)) = cursor.line_content_range() else {
-                Self::flush_syntax_fold_range(buffer, source_range.take(), &range, &mut candidates);
-                continue;
-            };
-            let Some(source) = buffer.source_at(MultiBufferOffset::new(output_offset)) else {
+            let Some(source) = cursor.source() else {
                 Self::flush_syntax_fold_range(buffer, source_range.take(), &range, &mut candidates);
                 continue;
             };
@@ -436,7 +428,7 @@ impl DisplaySnapshot {
                         excerpt,
                         output_line..Line::new(row + 1),
                         source_line.get()..source_range_end,
-                        output_offset,
+                        source,
                     ));
                 }
             }
@@ -451,14 +443,16 @@ impl DisplaySnapshot {
 
     fn flush_syntax_fold_range(
         buffer: &MultiBufferSnapshot,
-        source_range: Option<(ExcerptSnapshot, Range<Line>, Range<usize>, usize)>,
+        source_range: Option<(
+            ExcerptSnapshot,
+            Range<Line>,
+            Range<usize>,
+            MultiBufferSource<'_>,
+        )>,
         visible_lines: &Range<Line>,
         candidates: &mut BTreeMap<Line, (usize, Crease)>,
     ) {
-        let Some((excerpt, output_lines, source_lines, output_offset)) = source_range else {
-            return;
-        };
-        let Some(source) = buffer.source_at(MultiBufferOffset::new(output_offset)) else {
+        let Some((excerpt, output_lines, source_lines, source)) = source_range else {
             return;
         };
         let source_text = source.text();
@@ -498,19 +492,17 @@ impl DisplaySnapshot {
             else {
                 continue;
             };
-            let Some(start) = buffer.projected_anchor_offset(&range.start).ok().flatten() else {
-                continue;
-            };
-            let Ok(line) = buffer.byte_to_line(start) else {
+            let Ok(line) = buffer.byte_to_line(range.start) else {
                 continue;
             };
             if !output_lines.contains(&line) || !visible_lines.contains(&line) {
                 continue;
             }
-            let Some(end) = buffer.projected_anchor_offset(&range.end).ok().flatten() else {
-                continue;
-            };
-            let crease = Crease::simple(range);
+            let end = range.end;
+            let crease = Crease::simple(
+                buffer.anchor_at(range.start, Affinity::Before)
+                    ..buffer.anchor_at(range.end, Affinity::After),
+            );
             candidates
                 .entry(line)
                 .and_modify(|(current_end, current)| {
@@ -568,20 +560,17 @@ impl DisplaySnapshot {
                 source.project_range(start..end)
             })
             .filter_map(|range| {
-                let start = buffer
-                    .projected_anchor_offset(&range.start)
-                    .ok()
-                    .flatten()
-                    .and_then(|offset| buffer.byte_to_line(offset).ok())?;
-                let end = buffer
-                    .projected_anchor_offset(&range.end)
-                    .ok()
-                    .flatten()
-                    .and_then(|offset| buffer.byte_to_line(offset).ok())?;
+                let start = buffer.byte_to_line(range.start).ok()?;
+                let end = buffer.byte_to_line(range.end).ok()?;
                 (start <= line && line <= end).then_some((range, start, end))
             })
             .min_by_key(|(_, start, end)| (line.get() - start.get(), end.get() - line.get()))
-            .map(|(range, _, _)| Crease::simple(range))
+            .map(|(range, _, _)| {
+                Crease::simple(
+                    buffer.anchor_at(range.start, Affinity::Before)
+                        ..buffer.anchor_at(range.end, Affinity::After),
+                )
+            })
     }
 
     pub(super) fn tab_width(&self) -> NonZeroUsize {

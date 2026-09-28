@@ -830,6 +830,114 @@ fn singleton(path: &str, text: &str, cx: &mut TestAppContext) -> gpui::Entity<La
     })
 }
 
+/// 范围查询返回当前快照的组合坐标；行游标与按字节查询共享源映射语义。
+#[gpui::test]
+fn source_range_projection_follows_the_queried_excerpt(cx: &mut TestAppContext) {
+    let source = singleton("src/fragmented.rs", "a\nb\nc\nd\n", cx);
+    let prefix = singleton("src/first.rs", "prefix\n", cx);
+    let buffer = cx.new(MultiBuffer::empty);
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(prefix, 0..1, cx)], cx);
+        buffer.set_excerpts_for_path(
+            vec![
+                ExcerptRange::line_range(source.clone(), 0..2, cx),
+                ExcerptRange::line_range(source, 2..4, cx),
+            ],
+            cx,
+        );
+    });
+    let snapshot = buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
+    let source = snapshot.source_at(ByteOffset::new(11)).unwrap();
+    let range = source
+        .project_range(ByteOffset::new(4)..ByteOffset::new(8))
+        .unwrap();
+    assert_eq!(
+        range,
+        MultiBufferOffset::new(11)..MultiBufferOffset::new(15)
+    );
+    let cursor = snapshot.line_cursor(Line::new(3)).unwrap();
+    let at_line = cursor.source().unwrap();
+    assert_eq!(at_line.source_offset(), source.source_offset());
+    assert_eq!(
+        at_line.project_range(ByteOffset::new(4)..ByteOffset::new(8)),
+        Some(range)
+    );
+}
+
+/// 连续片段可以跨越删除投影；未展示的源文本不能被折叠范围跨过。
+#[gpui::test]
+fn source_range_projection_requires_contiguous_content(cx: &mut TestAppContext) {
+    let working = singleton("src/fragmented.rs", "a\nb\nc\nd\n", cx);
+    let base = singleton("src/fragmented.rs", "old\n", cx);
+    let buffer = cx.new(MultiBuffer::empty);
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_excerpts_for_path(
+            vec![
+                ExcerptRange::line_range(working.clone(), 0..1, cx),
+                ExcerptRange::line_range(base, 0..1, cx)
+                    .with_diff_kind(ExcerptDiffKind::Deleted)
+                    .with_editable(false),
+                ExcerptRange::line_range(working.clone(), 1..2, cx),
+                ExcerptRange::line_range(working, 3..4, cx),
+            ],
+            cx,
+        );
+    });
+    let snapshot = buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
+    let source = snapshot.source_at(ByteOffset::new(6)).unwrap();
+    let range = source
+        .project_range(ByteOffset::new(0)..ByteOffset::new(4))
+        .unwrap();
+    assert_eq!(range, MultiBufferOffset::new(0)..MultiBufferOffset::new(8));
+    let first = snapshot.source_at(ByteOffset::ZERO).unwrap();
+    assert_eq!(
+        first.project_range(ByteOffset::new(0)..ByteOffset::new(4)),
+        Some(range)
+    );
+    assert!(
+        source
+            .project_range(ByteOffset::new(0)..ByteOffset::new(8))
+            .is_none()
+    );
+    assert!(
+        source
+            .project_range(ByteOffset::new(2)..ByteOffset::new(2))
+            .is_none()
+    );
+}
+
+/// 源坐标和组合坐标只属于各自快照；后续编辑不能改变已持有快照的投影结果。
+#[gpui::test]
+fn source_range_projection_uses_its_snapshot_after_source_edits(cx: &mut TestAppContext) {
+    let source = singleton("src/edited.rs", "a\nb\nc\n", cx);
+    let buffer = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
+    let before = buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
+    source.update(cx, |source, cx| {
+        source
+            .edit(
+                [Edit::insert(ByteOffset::ZERO, "前\n").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .unwrap();
+    });
+    let after = buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
+    assert_eq!(
+        before
+            .source_at(ByteOffset::new(2))
+            .unwrap()
+            .project_range(ByteOffset::new(2)..ByteOffset::new(4)),
+        Some(MultiBufferOffset::new(2)..MultiBufferOffset::new(4)),
+    );
+    let cursor = after.line_cursor(Line::new(2)).unwrap();
+    let source = cursor.source().unwrap();
+    assert_eq!(source.source_offset(), ByteOffset::new(6));
+    assert_eq!(
+        source.project_range(ByteOffset::new(6)..ByteOffset::new(8)),
+        Some(MultiBufferOffset::new(6)..MultiBufferOffset::new(8)),
+    );
+}
+
 /// 测试辅助：在小阈值大文件策略下构造自动只读的源，用于多源编辑预检。
 fn read_only_singleton(
     path: &str,
@@ -3382,6 +3490,99 @@ fn word_diffs_track_the_working_source_before_the_diff_recompute(cx: &mut TestAp
         "2",
         "词级范围必须按当前 working 快照解析，不能停留在创建偏移"
     );
+}
+
+/// 逐行视口只返回相交的词级范围；展开状态和源版本推进不改变筛选语义。
+#[gpui::test]
+fn visible_word_diffs_match_the_current_full_projection(cx: &mut TestAppContext) {
+    let base = (0..8)
+        .map(|line| format!("let item_{line} = 100 + 300;\n"))
+        .collect::<String>();
+    let working = base.replace("100", "101").replace("300", "301");
+    let source = singleton("src/words.rs", &working, cx);
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![test_diff(source.clone(), "src/words.rs", &base)]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    for expanded in [false, true] {
+        combined.update(cx, |buffer, cx| {
+            buffer.set_diff_hunks_expanded_by_default(expanded, cx)
+        });
+        for edited in [false, true] {
+            if edited {
+                source.update(cx, |source, cx| {
+                    source
+                        .edit(
+                            [Edit::insert(ByteOffset::ZERO, "前 ").unwrap()],
+                            TransactionMetadata::default(),
+                            cx,
+                        )
+                        .unwrap();
+                });
+            }
+            let snapshot = combined.update(cx, |buffer, cx| buffer.snapshot(cx));
+            let full = snapshot.resolved_diff_hunks();
+            assert_eq!(full.len(), 1);
+            assert_eq!(full[0].1.word_diffs.len(), 16 * (1 + usize::from(expanded)));
+            for line in 0..snapshot.line_count() {
+                let start = snapshot.line_start_byte(Line::new(line)).unwrap().get();
+                let end = if line + 1 < snapshot.line_count() {
+                    snapshot.line_start_byte(Line::new(line + 1)).unwrap().get()
+                } else {
+                    snapshot.len_bytes().get()
+                };
+                let expected = full[0]
+                    .1
+                    .word_diffs
+                    .iter()
+                    .filter(|(_, range)| range.start < end && start < range.end)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let visible = snapshot.diff_hunks_in_lines(line..line + 1);
+                let actual = visible
+                    .iter()
+                    .flat_map(|(_, hunk)| hunk.word_diffs.clone())
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    actual, expected,
+                    "展开={expanded}，源编辑={edited}，视口行={line}"
+                );
+                for (_, hunk) in visible {
+                    assert_eq!(hunk.source, full[0].1.source);
+                }
+            }
+        }
+    }
+
+    // 删除一个旧词级范围后，尚未重算的锚点会退化为空；它不能进入可见高亮。
+    let first_word = 2 * "前 ".len() + "let item_0 = ".len();
+    source.update(cx, |source, cx| {
+        source
+            .edit(
+                [Edit::replace(
+                    TextRange::new(ByteOffset::new(first_word), ByteOffset::new(first_word + 3))
+                        .unwrap(),
+                    "",
+                )],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .unwrap();
+    });
+    let snapshot = combined.update(cx, |buffer, cx| buffer.snapshot(cx));
+    let full = snapshot.resolved_diff_hunks();
+    assert_eq!(full[0].1.word_diffs.len(), 31);
+    let first_line = full[0].1.hunk.range.start;
+    let visible = snapshot.diff_hunks_in_lines(first_line..first_line + 1);
+    let words = &visible[0].1.word_diffs;
+    assert_eq!(words.len(), 1);
+    assert_eq!(words[0].0, DiffHunkKind::Added);
+    assert_eq!(&snapshot.text_bytes()[words[0].1.clone()], b"301");
 }
 
 #[gpui::test]

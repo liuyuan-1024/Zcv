@@ -94,6 +94,80 @@ fn display_snapshot_resolves_syntax_styles_from_current_theme(cx: &mut TestAppCo
     assert_ne!(light, dark, "同一 DisplayMap 应按当前主题重新派生语法颜色");
 }
 
+/// 语法折叠跨 working 片段投影，展开的基线文本不改变源覆盖连续性。
+#[gpui::test]
+fn syntax_fold_candidates_project_across_diff_fragments(cx: &mut TestAppContext) {
+    let base = "fn first() {\n    let a = 1;\n    let b = 3;\n}\nfn second() {\n    let c = 1;\n    let d = 3;\n}\n";
+    let working = base.replace("= 1", "= 2");
+    let registry = Arc::new(LanguageRegistry::new());
+    let source = cx.new(|cx| {
+        LanguageBuffer::new(
+            Buffer::from_text(working, BufferConfig::default()).unwrap(),
+            Some(PathBuf::from("folds.rs")),
+            registry.clone(),
+            cx,
+        )
+    });
+    let diff = cx.new(|cx| {
+        BufferDiff::new(
+            BufferDiffInput {
+                working: source,
+                path: PathBuf::from("folds.rs"),
+                base_text: Some(base.to_owned()),
+                index_text: None,
+                language_registry: registry,
+                key: 0,
+                operations: None,
+            },
+            cx,
+        )
+    });
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |buffer, cx| {
+        buffer.set_diff_files(
+            vec![DiffFile {
+                diff,
+                display_path: PathBuf::from("folds.rs"),
+                excerpt_ranges: DiffExcerptRanges::FullFile,
+            }],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    for expanded in [false, true] {
+        let snapshot = combined.update(cx, |buffer, cx| {
+            buffer.set_diff_hunks_expanded_by_default(expanded, cx);
+            buffer.snapshot(cx)
+        });
+        let map = cx.new(|cx| DisplayMap::new(snapshot, cx));
+        let display = display_snapshot(cx, &map);
+        let buffer = display.buffer_snapshot();
+        let lines = display.foldable_lines_in_range(Line::ZERO..Line::new(buffer.line_count()));
+        assert_eq!(lines.len(), 2, "展开={expanded} 时两个工作区函数都应可折叠");
+        for line in lines {
+            let crease = display.crease_at_line(line).unwrap();
+            let start = buffer
+                .projected_anchor_offset(&crease.range().start)
+                .unwrap()
+                .unwrap();
+            let end = buffer
+                .projected_anchor_offset(&crease.range().end)
+                .unwrap()
+                .unwrap();
+            assert_eq!(buffer.byte_to_line(start).unwrap(), line);
+            assert!(buffer.byte_to_line(end).unwrap() > line);
+            let inside = Line::new(line.get() + 1 + usize::from(expanded));
+            assert!(display.crease_containing_line(inside).is_some());
+            assert!(
+                display
+                    .foldable_lines_in_range(line..Line::new(line.get() + 1))
+                    .contains(&line)
+            );
+        }
+    }
+}
+
 #[gpui::test]
 fn no_op_sync_keeps_the_display_projection_stable(cx: &mut TestAppContext) {
     let buffer = Buffer::from_text("paragraph".to_string(), BufferConfig::default())

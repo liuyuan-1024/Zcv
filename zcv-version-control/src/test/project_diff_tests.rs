@@ -139,6 +139,369 @@ fn plain_diff_file(
     }
 }
 
+/// 单独测量真实宿主委托的控件构建与控件绘制，排除文档文本布局。
+/// 固定每文件 1536 行、48 个修改块，30 组预热后的样本；耗时只用于人工比较。
+#[gpui::test]
+#[ignore]
+fn project_diff_control_render_cost(cx: &mut TestAppContext) {
+    use std::time::Instant;
+
+    struct ControlProbe {
+        delegate: ProjectDiffHunkDelegate,
+        target: HunkControlTarget,
+        editor: Entity<Editor>,
+    }
+
+    impl Render for ControlProbe {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.delegate
+                .render_hunk_controls(&self.target, 0, &self.editor, window, cx)
+                .expect("应绘制 hunk 控件")
+        }
+    }
+
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let root = canonical_root(directory.path());
+    for kind in [ProjectDiffKind::Staged, ProjectDiffKind::Unstaged] {
+        for file_count in [2, 16] {
+            let project = test_project(root.clone(), cx);
+            let view = cx.new(|cx| DiffView::new(kind, project, cx));
+            cx.run_until_parked();
+            let registry = Arc::new(LanguageRegistry::new());
+            let base = (0..1536)
+                .map(|line| format!("let line_{line} = original_value;\n"))
+                .collect::<String>();
+            let working = (0..1536)
+                .map(|line| {
+                    if line % 32 < 8 {
+                        format!("let line_{line} = changed_value;\n")
+                    } else {
+                        format!("let line_{line} = original_value;\n")
+                    }
+                })
+                .collect::<String>();
+            let mut files = Vec::new();
+            for index in 0..file_count {
+                let path = root.join(format!("file_{index:02}.rs"));
+                let source = cx.new(|cx| {
+                    LanguageBuffer::new(
+                        Buffer::from_text(working.clone(), BufferConfig::default()).unwrap(),
+                        Some(path.clone()),
+                        registry.clone(),
+                        cx,
+                    )
+                });
+                let diff = cx.new(|cx| {
+                    BufferDiff::new(
+                        BufferDiffInput {
+                            working: source,
+                            base_text: Some(base.clone()),
+                            index_text: Some(if kind == ProjectDiffKind::Staged {
+                                working.clone()
+                            } else {
+                                base.clone()
+                            }),
+                            path: path.clone(),
+                            language_registry: registry.clone(),
+                            key: index,
+                            operations: None,
+                        },
+                        cx,
+                    )
+                });
+                view.update(cx, |view, cx| {
+                    view.files.push(GitChangeFile {
+                        path: path.clone(),
+                        status: FileStatus::Tracked {
+                            index_status: StatusCode::Modified,
+                            worktree_status: StatusCode::Modified,
+                        },
+                    });
+                    view.subscribe_to_diff_ranges(&diff, cx);
+                });
+                files.push(DiffFile {
+                    diff,
+                    display_path: path,
+                    excerpt_ranges: DiffExcerptRanges::Windows(
+                        (0..1536).step_by(32).map(|line| line..line + 10).collect(),
+                    ),
+                });
+            }
+            view.update(cx, |view, cx| {
+                view.editor
+                    .update(cx, |editor, cx| editor.set_diff_files(files, cx));
+            });
+            cx.run_until_parked();
+            let hunk = cx.update_entity(&view, |view, cx| {
+                let snapshot = view
+                    .multi_buffer
+                    .update(cx, |buffer, cx| buffer.snapshot(cx));
+                snapshot
+                    .diff_hunks_in_lines(
+                        snapshot.line_count().saturating_sub(20)..snapshot.line_count(),
+                    )
+                    .pop()
+                    .expect("应有可见 hunk")
+                    .1
+                    .source
+            });
+            let editor = cx.read_entity(&view, |view, _| view.editor.clone());
+            let (probe, visual) = cx.add_window_view(|_, _| ControlProbe {
+                delegate: ProjectDiffHunkDelegate {
+                    view: view.downgrade(),
+                },
+                target: HunkControlTarget::Diff(hunk),
+                editor,
+            });
+            let mut render = || {
+                visual.draw(
+                    gpui::point(gpui::px(0.), gpui::px(0.)),
+                    gpui::size(
+                        gpui::AvailableSpace::MinContent,
+                        gpui::AvailableSpace::MinContent,
+                    ),
+                    |_, _| probe.clone().into_any_element(),
+                );
+            };
+            for _ in 0..10 {
+                render();
+            }
+            let mut samples = Vec::new();
+            for _ in 0..30 {
+                let start = Instant::now();
+                for _ in 0..10 {
+                    render();
+                }
+                samples.push(start.elapsed().as_secs_f64() * 1000.0 / 10.0);
+            }
+            samples.sort_by(f64::total_cmp);
+            println!(
+                "宿主控件 {kind:?}/{file_count} 文件：中位数 {:.6} ms，范围 {:.6}..{:.6} ms",
+                samples[15], samples[0], samples[29]
+            );
+        }
+    }
+}
+
+#[gpui::test]
+fn hunk_actions_keep_the_source_after_display_indices_change(cx: &mut TestAppContext) {
+    use std::sync::Mutex;
+    use zcv_buffer_diff::DiffOperations;
+    use zcv_text::Anchor;
+
+    struct RecordedAction {
+        operation: GitHunkOperation,
+        buffer_id: BufferId,
+        ranges: Vec<Range<Anchor>>,
+    }
+    #[derive(Default)]
+    struct Operations(Mutex<Vec<RecordedAction>>);
+    impl Operations {
+        fn record(
+            &self,
+            operation: GitHunkOperation,
+            diff: Entity<BufferDiff>,
+            ranges: Vec<Range<Anchor>>,
+            cx: &App,
+        ) {
+            self.0.lock().unwrap().push(RecordedAction {
+                operation,
+                buffer_id: diff.read(cx).working().read(cx).buffer_id(),
+                ranges,
+            });
+        }
+    }
+    impl DiffOperations for Operations {
+        fn supports_staging(&self) -> bool {
+            true
+        }
+        fn supports_unstaging(&self) -> bool {
+            true
+        }
+        fn supports_restore(&self) -> bool {
+            true
+        }
+        fn stage(&self, diff: Entity<BufferDiff>, ranges: Vec<Range<Anchor>>, cx: &mut App) {
+            self.record(GitHunkOperation::Stage, diff, ranges, cx);
+        }
+        fn unstage(&self, diff: Entity<BufferDiff>, ranges: Vec<Range<Anchor>>, cx: &mut App) {
+            self.record(GitHunkOperation::Unstage, diff, ranges, cx);
+        }
+        fn restore(&self, diff: Entity<BufferDiff>, ranges: Vec<Range<Anchor>>, cx: &mut App) {
+            self.record(GitHunkOperation::Restore, diff, ranges, cx);
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let root = canonical_root(directory.path());
+    let project = test_project(root.clone(), cx);
+    let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project, cx));
+    cx.run_until_parked();
+    let operations = Arc::new(Operations::default());
+    let registry = Arc::new(LanguageRegistry::new());
+    let mut files = Vec::new();
+    for name in ["a.rs", "b.rs"] {
+        let path = root.join(name);
+        let working = cx.new(|cx| {
+            LanguageBuffer::new(
+                Buffer::from_text("before\nnew\nafter\n".into(), BufferConfig::default()).unwrap(),
+                Some(path.clone()),
+                registry.clone(),
+                cx,
+            )
+        });
+        let diff = cx.new(|cx| {
+            BufferDiff::new(
+                BufferDiffInput {
+                    working,
+                    base_text: Some("before\nold\nafter\n".into()),
+                    index_text: None,
+                    path: path.clone(),
+                    language_registry: registry.clone(),
+                    key: 0,
+                    operations: Some(operations.clone()),
+                },
+                cx,
+            )
+        });
+        view.update(cx, |view, cx| view.subscribe_to_diff_ranges(&diff, cx));
+        files.push(DiffFile {
+            diff,
+            display_path: path,
+            excerpt_ranges: DiffExcerptRanges::FullFile,
+        });
+    }
+    view.update(cx, |view, cx| {
+        view.editor
+            .update(cx, |editor, cx| editor.set_diff_files(files, cx));
+    });
+    cx.run_until_parked();
+    let target = cx.update_entity(&view, |view, cx| {
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        let hunks = snapshot.resolved_diff_hunks();
+        assert_eq!(hunks.len(), 2);
+        hunks[1].1.source.clone()
+    });
+    view.update(cx, |view, cx| {
+        view.editor.update(cx, |editor, cx| {
+            editor.remove_diff(&root.join("a.rs"), cx);
+        });
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        assert_eq!(snapshot.resolved_diff_hunks()[0].1.source, target);
+        for operation in [
+            GitHunkOperation::Stage,
+            GitHunkOperation::Unstage,
+            GitHunkOperation::Restore,
+        ] {
+            view.apply_hunk_action(target.clone(), operation, cx);
+        }
+        view.restore_all(cx);
+    });
+    let recorded = operations.0.lock().unwrap();
+    for (action, operation) in recorded.iter().zip([
+        GitHunkOperation::Stage,
+        GitHunkOperation::Unstage,
+        GitHunkOperation::Restore,
+    ]) {
+        assert_eq!(action.operation, operation);
+        assert_eq!(action.buffer_id, target.buffer_id);
+        assert_eq!(action.ranges, vec![target.range.clone().unwrap()]);
+    }
+    assert_eq!(
+        recorded.len(),
+        5,
+        "重做全部应读取两个源 diff，单块操作不依赖显示序号"
+    );
+    assert!(
+        recorded[3..]
+            .iter()
+            .all(|action| action.operation == GitHunkOperation::Restore)
+    );
+}
+
+#[gpui::test]
+fn created_file_and_pure_deletion_targets_stage_and_unstage_without_display_lookup(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().expect("应创建临时仓库");
+    let root = canonical_root(directory.path());
+    run_in(&root, &["git", "init", "-q", "-b", "master"]);
+    run_in(&root, &["git", "config", "user.email", "test@example.com"]);
+    run_in(&root, &["git", "config", "user.name", "Test User"]);
+    let deleted_path = root.join("deleted.txt");
+    std::fs::write(&deleted_path, "removed\n").unwrap();
+    run_in(&root, &["git", "add", "."]);
+    run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
+    std::fs::write(&deleted_path, "").unwrap();
+    std::fs::write(root.join("created.txt"), "created\n").unwrap();
+
+    let project = test_project(root.clone(), cx);
+    for (kind, operation) in [
+        (ProjectDiffKind::Unstaged, GitHunkOperation::Stage),
+        (ProjectDiffKind::Staged, GitHunkOperation::Unstage),
+    ] {
+        let view = cx.new(|cx| DiffView::new(kind, project.clone(), cx));
+        for _ in 0..3 {
+            cx.run_until_parked();
+        }
+        let targets = cx.update_entity(&view, |view, cx| {
+            let snapshot = view
+                .multi_buffer
+                .update(cx, |buffer, cx| buffer.snapshot(cx));
+            let hunks = snapshot.resolved_diff_hunks();
+            assert_eq!(hunks.len(), 2);
+            let targets = hunks
+                .into_iter()
+                .map(|(_, hunk)| hunk.source)
+                .collect::<Vec<_>>();
+            assert!(targets[0].range.is_none(), "新增文件必须走整文件路径操作");
+            let deletion = targets[1]
+                .range
+                .as_ref()
+                .expect("纯删除必须保留行级源 hunk");
+            let diff = &view
+                .diff_subscriptions
+                .get(&targets[1].buffer_id)
+                .unwrap()
+                .diff;
+            let text = diff.read(cx).working().read(cx).text_snapshot();
+            assert_eq!(
+                deletion.start.resolve_in(&text).unwrap(),
+                deletion.end.resolve_in(&text).unwrap()
+            );
+            targets
+        });
+        for target in targets {
+            view.update(cx, |view, cx| view.apply_hunk_action(target, operation, cx));
+            for _ in 0..3 {
+                cx.run_until_parked();
+            }
+        }
+        let output = Command::new("git")
+            .args(["diff", "--cached", "--name-status"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let status = String::from_utf8(output.stdout).unwrap();
+        if kind == ProjectDiffKind::Unstaged {
+            assert!(
+                status.contains("A\tcreated.txt"),
+                "新增块应完成整文件暂存：{status}"
+            );
+            assert!(
+                status.contains("M\tdeleted.txt"),
+                "纯删除块应完成行级暂存：{status}"
+            );
+        } else {
+            assert!(status.is_empty(), "两个源目标都应取消暂存：{status}");
+        }
+    }
+}
+
 #[gpui::test]
 fn empty_project_diff_renders_blank_focusable_view(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
@@ -274,7 +637,10 @@ fn deleted_middle_row_projects_to_its_original_position(cx: &mut TestAppContext)
         assert_eq!(text_lines[2], "line 18", "折叠后原第 18 行紧随第 16 行");
         assert_eq!(text_lines[3], "line 19", "折叠后保留 hunk 后两行上下文");
         // 折叠删除块保留一个 hunk（显示坐标为组合坐标，不在此断言源行号）。
-        let hunks = view.multi_buffer.read(cx).diff_hunks().to_vec();
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        let hunks = snapshot.resolved_diff_hunks();
         assert_eq!(hunks.len(), 1, "应保留一个删除 hunk");
     });
 }
@@ -552,11 +918,12 @@ fn staging_one_hunk_refreshes_the_projection_with_new_index(cx: &mut TestAppCont
     cx.run_until_parked();
 
     let (hunk_source, initial_version) = cx.update_entity(&view, |view, cx| {
-        let hunks = view.multi_buffer.read(cx).diff_hunks().to_vec();
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        let hunks = snapshot.resolved_diff_hunks();
         assert_eq!(hunks.len(), 2);
-        let hunk_source = view
-            .diff_hunk_source_info(&hunks[0], cx)
-            .expect("第一个 hunk 应有稳定源定位");
+        let hunk_source = hunks[0].1.source.clone();
         let version = view
             .multi_buffer
             .update(cx, |buffer, cx| buffer.snapshot(cx).version().get());
@@ -606,13 +973,19 @@ fn staging_one_hunk_refreshes_the_projection_with_new_index(cx: &mut TestAppCont
         "点击暂存后 index 必须包含该 hunk，实际 diff：{staged}"
     );
     cx.update_entity(&view, |view, cx| {
-        let hunks = view.multi_buffer.read(cx).diff_hunks().to_vec();
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        let hunks = snapshot.resolved_diff_hunks();
         assert_eq!(hunks.len(), 1, "暂存后未暂存视图只应剩第二个 hunk");
-        let source = view
-            .diff_hunk_source_info(&hunks[0], cx)
-            .expect("剩余 hunk 应有源定位");
+        let source = &hunks[0].1.source;
+        let diff = &view
+            .diff_subscriptions
+            .get(&source.buffer_id)
+            .expect("源 diff 应保留订阅")
+            .diff;
         assert!(
-            source.diff.read(cx).snapshot().pending_hunks().is_empty(),
+            diff.read(cx).snapshot().pending_hunks().is_empty(),
             "暂存完成后必须按新 index 重建 diff，而不是靠旧 diff 的 pending 抑制"
         );
     });

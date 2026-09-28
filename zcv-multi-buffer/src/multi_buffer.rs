@@ -279,12 +279,14 @@ struct ExcerptSourceSnapshot {
 /// 输出变换节点携带的 diff hunk 身份与显示元数据。
 ///
 /// 身份绑定 working 源与 hunk 起点的工作区 Anchor，不随组合文档序号、`visible_hunks` 下标或源范围变化。
-/// 输出行/字节范围由 `derive_diff_display` 的游标推导；节点不保存绝对输出坐标，也不保存源坐标副本。
+/// 输出行/字节范围由游标推导；源操作范围是 BufferDiff 快照的只读派生数据。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DiffTransformHunkInfo {
     working: gpui::EntityId,
-    /// hunk 起点的工作区 Anchor；整文件新增等无 hunk 身份的合成节点为 None。
-    hunk_start: Option<Anchor>,
+    /// 完整工作区 Anchor 范围；整文件新增等无源 hunk 的合成节点为 None。
+    buffer_range: Option<Range<Anchor>>,
+    /// 源文件无 base 时，Git 操作以整文件为单位；hunk 范围仍服务展开身份。
+    is_created: bool,
     side: DiffTransformHunkSide,
     kind: DiffHunkKind,
     staging: DiffHunkStaging,
@@ -293,6 +295,12 @@ pub(crate) struct DiffTransformHunkInfo {
     buffer_word_diffs: Vec<Range<Anchor>>,
     base_word_diffs: Vec<Range<usize>>,
     expanded: bool,
+}
+
+impl DiffTransformHunkInfo {
+    fn hunk_start(&self) -> Option<Anchor> {
+        self.buffer_range.as_ref().map(|range| range.start)
+    }
 }
 
 /// 一个 hunk 在输出变换树中的节点角色。

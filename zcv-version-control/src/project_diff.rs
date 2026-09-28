@@ -19,12 +19,12 @@ use zcv_editor::{DiffHunkDelegate, Editor, EditorEvent, EditorHunk, HunkControlT
 use zcv_git::{
     ConflictChoice, FileStatus, GitHunkOperation, GitRevision, StatusCode, parse_conflict_regions,
 };
-use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, DiffHunkSource, DisplayHunk};
+use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, DiffHunkSource};
 use zcv_multi_buffer::{ExcerptLocation, ExcerptRange, MultiBuffer};
 use zcv_path::AbsolutePathBuf;
 use zcv_project::{GitStoreEvent, Project};
 use zcv_search::{SearchBar, SearchBarConfig, SearchBarSlots};
-use zcv_text::{Anchor, BufferId, ByteOffset, Snapshot, TextRange};
+use zcv_text::{BufferId, ByteOffset, Snapshot, TextRange};
 use zcv_theme::{color, space};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, Checkbox, SvgIcon};
 use zcv_workspace::{
@@ -125,7 +125,7 @@ impl DiffHunkDelegate for ProjectDiffHunkDelegate {
 
     fn render_buffer_header_controls(
         &self,
-        path: &Path,
+        buffer_id: BufferId,
         sticky: bool,
         row: usize,
         _editor: &Entity<Editor>,
@@ -133,12 +133,13 @@ impl DiffHunkDelegate for ProjectDiffHunkDelegate {
         cx: &mut App,
     ) -> Option<AnyElement> {
         let view = self.view.upgrade()?;
-        let (kind, is_dirty) = {
+        let (kind, is_dirty, path) = {
             let view = view.read(cx);
-            view.files.iter().find(|file| file.path == path)?;
+            let diff = view.diff_subscriptions.get(&buffer_id)?.diff.read(cx);
             (
                 view.kind,
-                view.multi_buffer.read(cx).is_diff_file_dirty(path, cx),
+                diff.working().read(cx).is_dirty(),
+                diff.path().clone(),
             )
         };
         if is_dirty {
@@ -154,7 +155,6 @@ impl DiffHunkDelegate for ProjectDiffHunkDelegate {
         }
         let checked = kind == ProjectDiffKind::Staged;
         let view_for_click = self.view.clone();
-        let path = path.to_path_buf();
         Some(
             Checkbox::new(
                 format!(
@@ -185,23 +185,18 @@ impl ProjectDiffHunkDelegate {
     fn render_diff_hunk_controls(
         &self,
         row: usize,
-        hunk: &DisplayHunk,
+        hunk_source: &DiffHunkSource,
         cx: &mut App,
     ) -> AnyElement {
         let Some(view) = self.view.upgrade() else {
             return div().into_any_element();
         };
-        let (kind, hunk_source, is_created_file) = {
+        let (kind, is_created_file) = {
             let view = view.read(cx);
-            let Some(info) = view.diff_hunk_source_info(hunk, cx) else {
+            let Some(subscription) = view.diff_subscriptions.get(&hunk_source.buffer_id) else {
                 return div().into_any_element();
             };
-            let is_created = view
-                .files
-                .iter()
-                .find(|file| file.path == info.path)
-                .is_some_and(|file| view.kind.is_created(file.status));
-            (view.kind, info, is_created)
+            (view.kind, subscription.diff.read(cx).is_created())
         };
         let colors = *color::current(cx);
         let controls = div()
@@ -220,7 +215,7 @@ impl ProjectDiffHunkDelegate {
                 let stage_view = self.view.clone();
                 let stage_hunk = hunk_source.clone();
                 let restore_view = self.view.clone();
-                let restore_hunk = hunk_source;
+                let restore_hunk = hunk_source.clone();
                 controls
                     .child(
                         Button::text(("stage-hunk", row), "暂存")
@@ -259,7 +254,7 @@ impl ProjectDiffHunkDelegate {
             }
             ProjectDiffKind::Staged => {
                 let unstage_view = self.view.clone();
-                let unstage_hunk = hunk_source;
+                let unstage_hunk = hunk_source.clone();
                 controls
                     .child(
                         Button::text(("unstage-hunk", row), "取消暂存")
@@ -304,27 +299,6 @@ impl ProjectDiffKind {
             Self::Unstaged => status.has_unstaged(),
             Self::Conflict => matches!(status, FileStatus::Unmerged),
         }
-    }
-
-    fn is_created(self, status: FileStatus) -> bool {
-        matches!(
-            (self, status),
-            (Self::Unstaged, FileStatus::Untracked)
-                | (
-                    Self::Staged,
-                    FileStatus::Tracked {
-                        index_status: StatusCode::Added,
-                        ..
-                    },
-                )
-                | (
-                    Self::Unstaged,
-                    FileStatus::Tracked {
-                        worktree_status: StatusCode::Added,
-                        ..
-                    },
-                )
-        )
     }
 
     fn is_deleted(self, status: FileStatus) -> bool {
@@ -391,7 +365,8 @@ pub struct DiffView {
     rebase_projection: bool,
     pending_path: Option<PathBuf>,
     loading_revision_text: HashSet<(GitRevision, PathBuf)>,
-    diff_subscriptions: HashMap<PathBuf, DiffFileSubscription>,
+    /// 按工作区 Buffer 身份拥有 diff 订阅，控件与文件头共享此领域入口。
+    diff_subscriptions: HashMap<BufferId, DiffFileSubscription>,
     /// 共享搜索栏会话：查询、匹配选项、可见性与替换开关由它唯一持有。
     search_bar: Entity<SearchBar>,
     _subscriptions: Vec<Subscription>,
@@ -572,26 +547,24 @@ impl DiffView {
     ///
     /// 逐个 hunk 应用会因投影重建让后续 hunk 的显示坐标失配，且同一文件的 pending 会互相覆盖，结果只重做了第一个文件的一部分。
     fn restore_all(&mut self, cx: &mut Context<Self>) {
-        let mut grouped: Vec<(Entity<BufferDiff>, Vec<std::ops::Range<Anchor>>)> = Vec::new();
-        for hunk in self.editor.read(cx).diff_hunks(cx).to_vec() {
-            let Some(info) = self.diff_hunk_source_info(&hunk, cx) else {
-                continue;
-            };
-            // 新增文件没有可还原的旧侧内容，重做会清空文件。
-            if info.diff.read(cx).is_created() {
-                continue;
-            }
-            let Some(range) = info.range else {
-                continue;
-            };
-            match grouped
-                .iter_mut()
-                .find(|(diff, _)| diff.entity_id() == info.diff.entity_id())
-            {
-                Some((_, ranges)) => ranges.push(range),
-                None => grouped.push((info.diff, vec![range])),
-            }
-        }
+        let grouped = self
+            .diff_subscriptions
+            .values()
+            .filter_map(|subscription| {
+                let diff = subscription.diff.read(cx);
+                // 新增文件没有可还原的旧侧内容，重做会清空文件。
+                if diff.is_created() {
+                    return None;
+                }
+                let ranges = diff
+                    .snapshot()
+                    .visible_hunks()
+                    .iter()
+                    .map(|hunk| hunk.buffer_range.clone())
+                    .collect::<Vec<_>>();
+                Some((subscription.diff.clone(), ranges))
+            })
+            .collect::<Vec<_>>();
         for (diff, ranges) in grouped {
             let Some(operations) = diff.read(cx).operations() else {
                 continue;
@@ -726,8 +699,9 @@ impl DiffView {
             .iter()
             .map(|file| file.path.clone())
             .collect::<HashSet<_>>();
-        self.diff_subscriptions
-            .retain(|path, _| visible_source_paths.contains(path));
+        self.diff_subscriptions.retain(|_, subscription| {
+            visible_source_paths.contains(subscription.diff.read(cx).path())
+        });
 
         if self.kind == ProjectDiffKind::Conflict || std::mem::take(&mut self.rebase_projection) {
             // 冲突视图与 base 变更需要整体重建；普通状态刷新只做路径增量。
@@ -952,7 +926,7 @@ impl DiffView {
         let diff = git_store.update(cx, |store, cx| {
             store.file_diff(&input, base_revision, GitRevision::Index, cx)
         });
-        self.subscribe_to_diff_ranges(&file.path, &diff, cx);
+        self.subscribe_to_diff_ranges(&diff, cx);
         let excerpt_ranges = project_diff_excerpt_ranges(&diff, DIFF_CONTEXT_LINES, cx);
         Some(DiffFile {
             diff,
@@ -963,21 +937,16 @@ impl DiffView {
 
     /// Git diff 视图拥有可见 hunk 范围，并在 BufferDiff 变化时先更新 excerpts；
     /// MultiBuffer 随后仅按同一事件的受影响范围同步 diff transform。
-    fn subscribe_to_diff_ranges(
-        &mut self,
-        source_path: &Path,
-        diff: &Entity<BufferDiff>,
-        cx: &mut Context<Self>,
-    ) {
+    fn subscribe_to_diff_ranges(&mut self, diff: &Entity<BufferDiff>, cx: &mut Context<Self>) {
+        let buffer_id = diff.read(cx).working().read(cx).buffer_id();
         if self
             .diff_subscriptions
-            .get(source_path)
+            .get(&buffer_id)
             .is_some_and(|subscription| subscription.diff.entity_id() == diff.entity_id())
         {
             return;
         }
-        let source_path = source_path.to_path_buf();
-        let event_path = source_path.clone();
+        let event_path = diff.read(cx).path().clone();
         let subscription = cx.subscribe(diff, move |view, diff, event, cx| {
             let BufferDiffEvent::DiffChanged {
                 refresh,
@@ -1007,23 +976,12 @@ impl DiffView {
             });
         });
         self.diff_subscriptions.insert(
-            source_path,
+            buffer_id,
             DiffFileSubscription {
                 diff: diff.clone(),
                 _subscription: subscription,
             },
         );
-    }
-
-    /// 显示 hunk 的源定位（hunk 操作与导航用）：按显示坐标反查源文件与源 hunk。
-    fn diff_hunk_source_info(&self, displayed: &DisplayHunk, cx: &App) -> Option<DiffHunkSource> {
-        let index = self
-            .multi_buffer
-            .read(cx)
-            .diff_hunks()
-            .iter()
-            .position(|hunk| hunk == displayed)?;
-        self.multi_buffer.read(cx).buffer_diff_hunk_at(index, cx)
     }
 
     /// 把打开请求中的 Deleted 片段换算为工作区文件中的合法定位行列（0-based）。
@@ -1068,8 +1026,11 @@ impl DiffView {
         operation: GitHunkOperation,
         cx: &mut Context<Self>,
     ) {
+        let Some(subscription) = self.diff_subscriptions.get(&info.buffer_id) else {
+            return;
+        };
+        let diff = subscription.diff.clone();
         if let Some(range) = info.range {
-            let diff = info.diff.clone();
             if let Some(operations) = diff.read(cx).operations() {
                 match operation {
                     GitHunkOperation::Stage if operations.supports_staging() => {
@@ -1089,7 +1050,8 @@ impl DiffView {
         } else {
             // 整文件新增块没有行级 hunk：按路径整体暂存/取消暂存。
             let git_store = self.project.read(cx).git_store();
-            let path = AbsolutePathBuf::new(info.path.clone()).expect("Git 变更路径必须是绝对路径");
+            let path = AbsolutePathBuf::new(diff.read(cx).path().clone())
+                .expect("Git 变更路径必须是绝对路径");
             git_store.update(cx, |store, cx| match operation {
                 GitHunkOperation::Stage => store.stage_paths(vec![path.clone()], cx),
                 GitHunkOperation::Unstage => store.unstage_paths(vec![path], cx),

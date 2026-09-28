@@ -23,6 +23,8 @@ excerpt 结构由 `SumTree` 承载，查询通过 summary 与连续 cursor 推�
 
 diff 显示拓扑由 `diff_projection` 持有：`DiffFile`、`DiffDisplaySnapshot`、`DisplayHunk`、`ResolvedDiffHunk`、`WordDiffs`。唯一 diff 事实来自 `zcv-buffer-diff`，组合层只把它叠加为投影，不把 diff 视图做成另一种文档类型。
 
+`MultiBufferSnapshot::diff_hunks_in_lines` 按可见范围查询，同时提供显示几何和 `DiffHunkSource`（工作区 `BufferId`、完整源 `Anchor` 范围）。源范围随变换节点保存为不可变派生数据，旧侧片段仍携带工作区身份；视口裁剪、展开旧侧和组合顺序变化不改变操作来源。纯删除的操作范围为空范围，整文件新增的范围为 `None`。宿主按源身份查找领域操作，不能用显示几何或显示序号反查源 hunk。
+
 ## 边界
 
 - 不做语法解析（属于 `zcv-language`）、不做显示行与软换行（属于 `zcv-editor::DisplayMap`）、不持有选择与滚动（属于 `Editor`）。

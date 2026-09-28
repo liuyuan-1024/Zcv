@@ -86,14 +86,13 @@ impl DiffExcerptRanges {
     }
 }
 
-/// 显示 hunk 对应的源定位（hunk 操作与导航用）。
-#[derive(Clone)]
+/// 随可见 hunk 传递的源身份与操作范围，不依赖组合文档中的位置或序号。
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiffHunkSource {
-    /// 权威 diff 实体（操作实现与快照来源）。
-    pub diff: Entity<BufferDiff>,
-    /// 新侧源文件路径（绝对）。
-    pub path: PathBuf,
-    /// 当前工作区快照中的稳定操作范围；整文件新增块没有源 hunk。
+    /// 工作区 Buffer 身份；旧侧和新侧片段共用此身份。
+    pub buffer_id: BufferId,
+    /// 源 diff 快照提供的 Anchor 范围；整文件新增块显式以整文件为操作目标。
+    /// 消费方在执行操作时于当前工作区快照解析，不把显示几何当作操作坐标。
     pub range: Option<Range<Anchor>>,
 }
 
@@ -182,6 +181,7 @@ struct PathDiffDisplay {
 /// 一条已解析为组合绝对坐标的 diff 显示输入。
 pub struct ResolvedDiffHunk {
     pub hunk: DisplayHunk,
+    pub source: DiffHunkSource,
     pub old_range: Option<Range<usize>>,
     pub expanded: bool,
     pub word_diffs: WordDiffs,
@@ -331,7 +331,7 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
         if item_end > lines.start {
             for info in transform.hunks() {
                 candidates
-                    .entry((info.working, info.hunk_start))
+                    .entry((info.working, info.hunk_start()))
                     .or_default()
                     .push(cursor.start().index);
             }
@@ -361,9 +361,10 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
                 for info in transform
                     .hunks()
                     .iter()
-                    .filter(|info| (info.working, info.hunk_start) == key)
+                    .filter(|info| (info.working, info.hunk_start()) == key)
                 {
-                    let accum = accum.get_or_insert_with(|| HunkAccum::new(info));
+                    let accum =
+                        accum.get_or_insert_with(|| HunkAccum::new(info, excerpt.buffer_id));
                     accum.expanded = info.expanded;
                     let at = cursor.start();
                     let content_lines =
@@ -435,6 +436,7 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
         resolved.push((
             index,
             ResolvedDiffHunk {
+                source: accum.source,
                 hunk: DisplayHunk {
                     range,
                     old_range: accum.base_lines,
@@ -506,6 +508,7 @@ struct ExistingExcerptGroup {
 
 /// 单次游标遍历中按 hunk 身份聚合的输出范围与词级片段。
 struct HunkAccum {
+    source: DiffHunkSource,
     kind: DiffHunkKind,
     staging: DiffHunkStaging,
     base_lines: Range<usize>,
@@ -519,8 +522,16 @@ struct HunkAccum {
 }
 
 impl HunkAccum {
-    fn new(info: &DiffTransformHunkInfo) -> Self {
+    fn new(info: &DiffTransformHunkInfo, buffer_id: BufferId) -> Self {
         Self {
+            source: DiffHunkSource {
+                buffer_id,
+                range: if info.is_created {
+                    None
+                } else {
+                    info.buffer_range.clone()
+                },
+            },
             kind: info.kind,
             staging: info.staging,
             base_lines: info.base_lines.clone(),
@@ -588,10 +599,12 @@ fn hunk_info(
     side: DiffTransformHunkSide,
     hunk: &ResolvedHunk,
     expanded: bool,
+    is_created: bool,
 ) -> DiffTransformHunkInfo {
     DiffTransformHunkInfo {
         working,
-        hunk_start: Some(hunk.buffer_range.start),
+        buffer_range: Some(hunk.buffer_range.clone()),
+        is_created,
         side,
         kind: hunk.kind,
         staging: hunk.staging,
@@ -937,8 +950,7 @@ impl MultiBuffer {
 
     /// 显示坐标 hunks（组合坐标，跨文件展平）。
     ///
-    /// 坐标是当前组合映射下的派生缓存，在所有会改动组合文档的路径上同步刷新；
-    /// 单个文件未就绪不会让其他文件的高亮消失。
+    /// 从当前变换树全量派生，仅供低频调用；帧路径使用快照的可见范围查询。
     pub fn diff_hunks(&self) -> Vec<DisplayHunk> {
         self.current_resolved_diff_hunks()
             .into_iter()
@@ -998,56 +1010,6 @@ impl MultiBuffer {
             0..end,
             0..self.state.diff_transforms.summary().output.text.len,
         )
-    }
-
-    /// 显示 hunk 到源定位（hunk 操作与导航用）。
-    pub fn buffer_diff_hunk_at(&self, display_index: usize, cx: &App) -> Option<DiffHunkSource> {
-        let diff = self.diff.as_ref()?;
-        let source = diff.source_at(display_index)?;
-        let file = self
-            .diffs
-            .iter()
-            .find(|file| file.diff.read(cx).working().entity_id() == source.working)?;
-        let entity = file.diff.clone();
-        let is_created = entity.read(cx).is_created();
-        let path = entity.read(cx).path().clone();
-        if is_created {
-            // 整文件新增块没有可供 Git 操作重解析的 hunk。
-            return Some(DiffHunkSource {
-                diff: entity,
-                path,
-                range: None,
-            });
-        }
-        let range = source.hunk_start.and_then(|start| {
-            let working = entity.read(cx).working();
-            let working_text = working.read(cx).text_snapshot();
-            let target = start.resolve_in(&working_text).ok()?;
-            entity
-                .read(cx)
-                .snapshot()
-                .visible_hunks()
-                .iter()
-                .find(|hunk| hunk.buffer_range.start.resolve_in(&working_text).ok() == Some(target))
-                .map(|hunk| hunk.buffer_range.clone())
-        });
-        Some(DiffHunkSource {
-            diff: entity,
-            path,
-            range,
-        })
-    }
-
-    /// 查询指定 diff 文件的 working source 是否有未保存修改。
-    ///
-    /// dirty 状态由源 Buffer 唯一拥有；组合文档只读取该状态，用于文件级提示。
-    pub fn is_diff_file_dirty(&self, path: &Path, cx: &App) -> bool {
-        self.diff.as_ref().is_some_and(|_| {
-            self.diffs.iter().any(|file| {
-                file.diff.read(cx).path() == path
-                    && file.diff.read(cx).working().read(cx).is_dirty()
-            })
-        })
     }
 
     /// 把打开请求中的 Deleted 片段换算为工作区文件中的合法定位行列（0-based）。
@@ -1505,7 +1467,7 @@ impl MultiBuffer {
             if !intersects {
                 intersects = transform.hunks().iter().any(|hunk| {
                     hunk.working == working_id
-                        && hunk.hunk_start.is_some_and(|start| {
+                        && hunk.hunk_start().is_some_and(|start| {
                             start
                                 .resolve_in(&working_text)
                                 .is_ok_and(|offset| change_start <= offset && offset <= change_end)
@@ -1702,7 +1664,7 @@ impl MultiBuffer {
                 .iter()
                 .filter(|hunk| hunk.working == working_id)
             {
-                if let Some(start) = hunk.hunk_start {
+                if let Some(start) = hunk.hunk_start() {
                     let Ok(offset) = start.resolve_in(&working_text) else {
                         return false;
                     };
@@ -2026,10 +1988,10 @@ impl MultiBuffer {
                 break;
             }
             for info in transform.hunks() {
-                if seen.insert((info.working, info.hunk_start)) {
+                if seen.insert((info.working, info.hunk_start())) {
                     sources.push(DisplayHunkSource {
                         working: info.working,
-                        hunk_start: info.hunk_start,
+                        hunk_start: info.hunk_start(),
                         kind: info.kind,
                     });
                 }
@@ -2263,7 +2225,7 @@ fn excerpt_slice_outside_range(
     };
     for hunk in hunks.iter().filter(|hunk| {
         hunk.working == working_id
-            && hunk.hunk_start.is_some_and(|anchor| {
+            && hunk.hunk_start().is_some_and(|anchor| {
                 anchor.resolve_in(working_text).is_ok_and(|offset| {
                     if prefix {
                         offset < boundary_offset
@@ -2475,7 +2437,8 @@ fn materialize_file_in_range(
             },
             vec![DiffTransformHunkInfo {
                 working: working_id,
-                hunk_start: None,
+                buffer_range: None,
+                is_created: true,
                 side: DiffTransformHunkSide::Content,
                 kind: DiffHunkKind::Added,
                 staging: DiffHunkStaging::NoStaging,
@@ -2537,6 +2500,7 @@ fn materialize_file_in_range(
                     DiffTransformHunkSide::Old,
                     hunk,
                     expanded,
+                    is_created,
                 )];
                 materializer.push(
                     hunk.base_lines.clone(),
@@ -2560,6 +2524,7 @@ fn materialize_file_in_range(
                     DiffTransformHunkSide::Content,
                     hunk,
                     expanded,
+                    is_created,
                 ));
                 materializer.push(
                     hunk.buffer_lines.clone(),
@@ -2579,6 +2544,7 @@ fn materialize_file_in_range(
                     DiffTransformHunkSide::BoundaryStart,
                     hunk,
                     expanded,
+                    is_created,
                 ));
             }
             current = hunk.buffer_lines.end;

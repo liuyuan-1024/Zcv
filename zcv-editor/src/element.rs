@@ -981,7 +981,7 @@ fn buffer_header_element(
     let editor_for_fold = editor.clone();
     let header_controls = editor.read(cx).diff_hunk_delegate().and_then(|delegate| {
         delegate.render_buffer_header_controls(
-            block.excerpt.path(),
+            block.excerpt.buffer_id(),
             sticky,
             row.get(),
             editor,

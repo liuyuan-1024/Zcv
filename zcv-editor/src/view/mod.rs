@@ -24,8 +24,8 @@ use zcv_actions::{
 };
 use zcv_language::{AutoClosePair, BracketPair, LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{
-    DiffFile, DiffHunkSource, DisplayHunk, ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot,
-    MultiBuffer, MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot, WordDiffs,
+    DiffFile, DisplayHunk, ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot, MultiBuffer,
+    MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot, WordDiffs,
 };
 use zcv_settings::{SettingsStore, SoftWrapMode};
 use zcv_text::{
@@ -95,9 +95,10 @@ pub trait DiffHunkDelegate {
         None
     }
 
+    /// 文件头使用工作区 Buffer 身份；diff 旧侧与新侧共用此身份。
     fn render_buffer_header_controls(
         &self,
-        _path: &std::path::Path,
+        _buffer_id: BufferId,
         _sticky: bool,
         _row: usize,
         _editor: &Entity<Editor>,
@@ -671,13 +672,6 @@ impl Editor {
             buffer.toggle_diff_hunk_at(display_index, cx)
         });
         self.after_diff_expansion(cx);
-    }
-
-    /// 显示 hunk 到源定位（hunk 操作与导航用）。
-    pub fn buffer_diff_hunk_at(&self, display_index: usize, cx: &App) -> Option<DiffHunkSource> {
-        self.multi_buffer
-            .read(cx)
-            .buffer_diff_hunk_at(display_index, cx)
     }
 
     /// 宿主注入/刷新整份 diff 投影后同步视图层状态。

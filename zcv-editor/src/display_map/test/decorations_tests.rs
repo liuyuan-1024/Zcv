@@ -1,7 +1,7 @@
 use super::*;
 use crate::display_map::DisplayMap;
 use gpui::{AppContext, Empty, Entity, TestAppContext, px};
-use zcv_multi_buffer::{MultiBufferSnapshot, ResolvedDiffHunk};
+use zcv_multi_buffer::{DisplayHunk, MultiBufferSnapshot, ResolvedDiffHunk};
 use zcv_text::{Buffer, BufferConfig};
 
 /// 由绝对坐标切片构造按段解析输入，供渲染单元测试调用。
@@ -15,6 +15,10 @@ fn resolved_hunks(
         .iter()
         .enumerate()
         .map(|(index, hunk)| ResolvedDiffHunk {
+            source: zcv_multi_buffer::DiffHunkSource {
+                buffer_id: zcv_text::BufferId::new(index as u64),
+                range: None,
+            },
             hunk: hunk.clone(),
             old_range: old_ranges.get(index).cloned().flatten(),
             expanded: expanded.get(index).copied().unwrap_or(false),
@@ -263,13 +267,13 @@ fn every_diff_hunk_exposes_a_control_anchor(cx: &mut TestAppContext) {
                 let HunkControlTarget::Diff(hunk) = hunk else {
                     unreachable!("普通 diff 渲染不应产生自定义 hunk")
                 };
-                (rows.start, hunk.kind)
+                (rows.start, hunk.buffer_id)
             })
             .collect::<Vec<_>>(),
         vec![
-            (0, DiffHunkKind::Added),
-            (2, DiffHunkKind::Modified),
-            (4, DiffHunkKind::Deleted),
+            (0, zcv_text::BufferId::new(0)),
+            (2, zcv_text::BufferId::new(1)),
+            (4, zcv_text::BufferId::new(2)),
         ]
     );
     // 新增块默认折叠：只保留 gutter 竖条，不整行着色。
@@ -322,7 +326,13 @@ fn materialized_modified_hunk_uses_real_old_and_new_document_rows(cx: &mut TestA
     );
     assert_eq!(
         rendered.controls,
-        vec![(1..3, HunkControlTarget::Diff(hunk))]
+        vec![(
+            1..3,
+            HunkControlTarget::Diff(zcv_multi_buffer::DiffHunkSource {
+                buffer_id: zcv_text::BufferId::new(0),
+                range: None,
+            })
+        )]
     );
     assert_eq!(
         rendered.hit_regions,

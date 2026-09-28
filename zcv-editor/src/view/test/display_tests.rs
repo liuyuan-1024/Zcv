@@ -27,6 +27,10 @@ fn resolved_hunks(
         .into_iter()
         .enumerate()
         .map(|(index, hunk)| ResolvedDiffHunk {
+            source: zcv_multi_buffer::DiffHunkSource {
+                buffer_id: zcv_text::BufferId::new(index as u64),
+                range: None,
+            },
             hunk,
             old_range: old_ranges.get(index).cloned().flatten(),
             expanded: expanded.get(index).copied().unwrap_or(false),
@@ -145,6 +149,52 @@ fn single_file_diff_uses_the_composite_projection_path(cx: &mut TestAppContext) 
     editor.update(cx, |editor, cx| editor.clear_diffs(cx));
     assert_eq!(buffer_text(&source, cx), "a\nworking\nc\n");
     assert!(cx.read_entity(&editor, |editor, cx| editor.diff_hunks(cx).is_empty()));
+}
+
+#[gpui::test]
+fn viewport_controls_carry_the_working_source_range(cx: &mut TestAppContext) {
+    let source = test_buffer(cx, "before\nnew one\nnew two\nnew three\nafter\n");
+    let editor = cx.new(|cx| Editor::for_language_buffer(source.clone(), cx));
+    inject_file_diff(
+        &editor,
+        &source,
+        Arc::from("before\nold one\nold two\nold three\nafter\n"),
+        cx,
+    );
+    cx.run_until_parked();
+    editor.update(cx, |editor, cx| {
+        editor.set_diff_hunks_expanded_by_default(true, cx)
+    });
+    cx.read_entity(&editor, |editor, cx| {
+        let display = editor.display_snapshot(cx);
+        let hunks = display.buffer_snapshot().resolved_diff_hunks();
+        let hunk = &hunks[0].1;
+        let expected = hunk.source.clone();
+        assert!(hunk.hunk.range.len() >= 3);
+        let middle = display
+            .line_to_display_row(Line::new(hunk.hunk.range.start + 1))
+            .expect("新侧块内部必须有显示行")
+            .get();
+        let viewport = middle..middle + 1;
+        let decorations = display.diff_decorations_for_viewport(viewport.clone());
+        let controls = decorations.visible_controls(&viewport);
+        assert_eq!(controls.len(), 1, "视口在块内部时也必须保留操作栏目标");
+        assert_eq!(controls[0].2, HunkControlTarget::Diff(expected));
+        let HunkControlTarget::Diff(target) = &controls[0].2 else {
+            panic!("应提供源 diff 目标");
+        };
+        assert_eq!(target.buffer_id, source.read(cx).buffer_id());
+        let text = source.read(cx).text_snapshot();
+        let range = target.range.as_ref().expect("应携带完整工作区范围");
+        assert_eq!(
+            range.start.resolve_in(&text).unwrap().get(),
+            "before\n".len()
+        );
+        assert_eq!(
+            range.end.resolve_in(&text).unwrap().get(),
+            "before\nnew one\nnew two\nnew three\n".len()
+        );
+    });
 }
 
 #[gpui::test]

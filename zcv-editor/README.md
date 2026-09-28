@@ -32,6 +32,7 @@ EditorElement
 - `view/input.rs` 负责输入法组合与输入编辑；`view/presentation.rs` 负责把输入法标记和重命名淡化范围组合成布局层消费的展示快照。
 - `DisplayMap` 从当前文档快照与编辑器配置派生可见行、折叠、软换行和装饰投影；搜索命中、diff hunk、宿主 hunk 与折叠候选由显示链按显示版本投影，`Editor` 只注入领域锚点，`EditorElement` 只从显示快照按视口读取；折叠状态只属于显示层，不参与文本编辑，也不是第二份文本模型。
 - `EditorElement` 连接每帧布局、绘制和输入命中，不长期持有文档事实。
+- diff 操作栏的 `HunkControlTarget::Diff` 携带工作区 `BufferId` 与源 `Anchor` 范围，文件头委托也接收该 `BufferId`；两者都由宿主按身份查询领域状态，不从显示行或完整 hunk 列表恢复来源。
 
 状态应由最接近其生命周期的层维护。不要在 UI、显示投影或调用方中复制可写的文本、选择或滚动状态。
 

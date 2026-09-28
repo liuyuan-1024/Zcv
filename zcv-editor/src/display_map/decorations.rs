@@ -15,7 +15,7 @@ use std::sync::{Arc, OnceLock};
 
 use gpui::SharedString;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
-use zcv_multi_buffer::{DisplayHunk, ResolvedDiffHunk, WordDiffs};
+use zcv_multi_buffer::{DiffHunkSource, ResolvedDiffHunk, WordDiffs};
 use zcv_text::{ByteOffset, Line, TextRange};
 
 use crate::scrollbar::ScrollbarMarkerKind;
@@ -98,7 +98,7 @@ pub enum EditorHunkMarkerKind {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum HunkControlTarget {
-    Diff(DisplayHunk),
+    Diff(DiffHunkSource),
     Editor(EditorHunk),
 }
 
@@ -544,7 +544,7 @@ fn hunk_rendering_indexed(
                             hollow_blocks.push(rows.clone());
                         }
                     }
-                    controls.push((rows, HunkControlTarget::Diff(hunk.clone())));
+                    controls.push((rows, HunkControlTarget::Diff(resolved.source)));
                     control_indices.push(index);
                 }
             }
@@ -557,13 +557,13 @@ fn hunk_rendering_indexed(
                         hollow_blocks.push(rows.clone());
                     }
                     hit_regions.push((rows.clone(), index, DiffHunkKind::Deleted));
-                    controls.push((rows, HunkControlTarget::Diff(hunk.clone())));
+                    controls.push((rows, HunkControlTarget::Diff(resolved.source)));
                     control_indices.push(index);
                 } else if let Some(rows) =
                     old_rows.or_else(|| logical_anchor_rows(snapshot, hunk.range.start))
                 {
                     hit_regions.push((rows.clone(), index, DiffHunkKind::Deleted));
-                    controls.push((rows, HunkControlTarget::Diff(hunk.clone())));
+                    controls.push((rows, HunkControlTarget::Diff(resolved.source)));
                     control_indices.push(index);
                 }
             }
@@ -579,13 +579,13 @@ fn hunk_rendering_indexed(
                         hollow_blocks.push(rows.clone());
                     }
                     hit_regions.push((rows.clone(), index, DiffHunkKind::Modified));
-                    controls.push((rows, HunkControlTarget::Diff(hunk.clone())));
+                    controls.push((rows, HunkControlTarget::Diff(resolved.source)));
                     control_indices.push(index);
                 } else if let Some(rows) = new_rows {
                     diff_rows.push((rows.clone(), DiffHunkKind::Modified, staging));
                     strips.push((rows.clone(), DiffHunkKind::Modified, staging));
                     hit_regions.push((rows.clone(), index, DiffHunkKind::Modified));
-                    controls.push((rows, HunkControlTarget::Diff(hunk.clone())));
+                    controls.push((rows, HunkControlTarget::Diff(resolved.source)));
                     control_indices.push(index);
                 }
             }

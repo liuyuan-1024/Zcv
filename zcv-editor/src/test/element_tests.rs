@@ -176,6 +176,10 @@ fn test_hunk_rendering(
         .iter()
         .enumerate()
         .map(|(index, hunk)| ResolvedDiffHunk {
+            source: zcv_multi_buffer::DiffHunkSource {
+                buffer_id: zcv_text::BufferId::new(index as u64),
+                range: None,
+            },
             hunk: hunk.clone(),
             old_range: old_display_ranges.get(index).cloned().flatten(),
             expanded: expanded.get(index).copied().unwrap_or(false),

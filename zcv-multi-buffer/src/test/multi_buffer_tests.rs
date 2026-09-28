@@ -2514,22 +2514,93 @@ fn diff_hunk_coordinates_follow_materialized_excerpts_across_files(cx: &mut Test
             "展开状态必须与物化后的显示 hunk 同序，不能遗漏整文件新增块"
         );
         assert!(
-            buffer
-                .buffer_diff_hunk_at(0, cx)
-                .expect("整文件新增块应有显示来源")
-                .range
-                .is_none(),
+            snapshot.resolved_diff_hunks()[0].1.source.range.is_none(),
             "整文件新增块不应伪造源 hunk"
         );
         assert!(
-            buffer
-                .buffer_diff_hunk_at(1, cx)
-                .expect("修改 hunk 应有显示来源")
-                .range
-                .is_some(),
+            snapshot.resolved_diff_hunks()[1].1.source.range.is_some(),
             "修改 hunk 应有可重解析的源范围"
         );
     });
+}
+
+#[gpui::test]
+fn visible_diff_hunks_keep_full_source_range_when_projection_moves(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "heading\nbefore\nnew\nafter\nlast\n", cx);
+    let working = "before\nnew one\nnew two\nnew three\nafter\n";
+    let second = singleton("src/b.rs", working, cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.inject_diffs(
+            Some(vec![
+                test_diff(first, "src/a.rs", "heading\nbefore\nold\nafter\nlast\n"),
+                test_diff(
+                    second.clone(),
+                    "src/b.rs",
+                    "before\nold one\nold two\nold three\nafter\n",
+                ),
+            ]),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let before = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    let hunks = before.resolved_diff_hunks();
+    let displayed = &hunks[1].1.hunk;
+    let visible = before.diff_hunks_in_lines(displayed.range.start + 1..displayed.range.start + 2);
+    assert_eq!(visible.len(), 1);
+    let source = visible[0].1.source.clone();
+    assert_eq!(
+        source.buffer_id,
+        cx.read_entity(&second, |buffer, _| buffer.buffer_id())
+    );
+    let range = source.range.as_ref().expect("修改块必须提供源范围");
+    let text = cx.read_entity(&second, |buffer, _| buffer.text_snapshot());
+    assert_eq!(
+        range.start.resolve_in(&text).unwrap().get(),
+        "before\n".len()
+    );
+    assert_eq!(
+        range.end.resolve_in(&text).unwrap().get(),
+        working.len() - "after\n".len()
+    );
+
+    let after = cx.update_entity(&combined, |buffer, cx| {
+        buffer.remove_diff(Path::new("src/a.rs"), cx);
+        buffer.set_diff_hunks_expanded_by_default(true, cx);
+        buffer.snapshot(cx)
+    });
+    let current = after.resolved_diff_hunks();
+    assert_eq!(current[0].0, 0, "前一文件移除后显示序号必须改变");
+    assert_ne!(current[0].1.hunk.range, displayed.range);
+    assert_eq!(
+        current[0].1.source, source,
+        "展开旧侧与路径移除不能改变操作来源"
+    );
+    assert_eq!(
+        before.resolved_diff_hunks()[1].1.source,
+        source,
+        "旧快照的操作来源必须保持不可变"
+    );
+
+    cx.update_entity(&second, |buffer, cx| {
+        buffer
+            .edit(
+                [Edit::insert(ByteOffset::ZERO, "prefix\n").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .unwrap();
+    });
+    let current_text = cx.read_entity(&second, |buffer, _| buffer.text_snapshot());
+    assert_eq!(
+        range.start.resolve_in(&current_text).unwrap().get(),
+        "prefix\nbefore\n".len()
+    );
+    assert_eq!(
+        range.end.resolve_in(&current_text).unwrap().get(),
+        "prefix\n".len() + working.len() - "after\n".len()
+    );
 }
 
 /// base 版本变化时，新的文本对重新定义 hunk 身份；旧 base 的展开状态不得迁移。
@@ -2608,11 +2679,12 @@ fn external_full_replacement_invalidates_stale_diff_hunks(cx: &mut TestAppContex
             "replacement\n"
         );
         assert_eq!(buffer.diff_hunks().len(), 1, "新快照应生成新的显示 hunk");
-        assert!(buffer.buffer_diff_hunk_at(0, cx).is_some());
         assert!(
-            buffer
-                .buffer_diff_hunk_at(0, cx)
-                .is_some_and(|source| source.range.is_some()),
+            buffer.snapshot(cx).resolved_diff_hunks()[0]
+                .1
+                .source
+                .range
+                .is_some(),
             "新显示 hunk 必须暴露当前工作区锚点范围"
         );
     });
@@ -2644,7 +2716,11 @@ fn fully_deleted_file_keeps_boundary_hunk(cx: &mut TestAppContext) {
             "整文件模式折叠态不物化旧侧"
         );
         assert!(
-            buffer.buffer_diff_hunk_at(0, cx).is_some(),
+            buffer.snapshot(cx).resolved_diff_hunks()[0]
+                .1
+                .source
+                .range
+                .is_some(),
             "纯删除 hunk 必须能定位到源"
         );
     });
@@ -2762,8 +2838,8 @@ fn dirty_source_keeps_existing_diff_projection_until_saved(cx: &mut TestAppConte
     cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
         assert!(
-            buffer.is_diff_file_dirty(Path::new("src/a.rs"), cx),
-            "组合文档应能读取文件 working source 的 dirty 状态"
+            source.read(cx).is_dirty(),
+            "未保存状态由 working source 提供"
         );
         assert_eq!(
             snapshot.excerpts().count(),

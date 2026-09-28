@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ops::{ControlFlow, Range};
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::thread;
 
 use tree_sitter::StreamingIterator;
@@ -9,7 +9,6 @@ use zcv_text::{Anchor, BufferVersion, ByteOffset, Snapshot, TextChangeBatch, Tex
 
 use crate::Language;
 use crate::registry::LanguageRegistry;
-use crate::structure::FoldRange;
 use crate::tree_sitter_utils::{
     IncrementalParser, PARSE_TIME_SLICE, ParseCancellation, ParseError, QueryCursorHandle,
     SnapshotTextProvider, drop_offloaded, edit_tree, node_text, parse_tree, ranges_overlap,
@@ -30,13 +29,6 @@ pub(crate) struct SyntaxMap {
     interpolated_snapshot: Snapshot,
 }
 
-/// 整源折叠候选缓存条目：绑定语法版本，随语法状态克隆重置。
-#[derive(Debug)]
-struct FoldRangeCacheEntry {
-    version: BufferVersion,
-    ranges: Arc<[FoldRange]>,
-}
-
 #[derive(Debug, Default)]
 struct SyntaxState {
     tree: Option<tree_sitter::Tree>,
@@ -44,8 +36,6 @@ struct SyntaxState {
     /// 最近一次解析安装的 capture 全局表（见 `SyntaxSnapshot::rebuild_capture_table`）。
     capture_names: Arc<[Arc<str>]>,
     capture_index_by_language: HashMap<&'static str, Arc<[u32]>>,
-    /// 整源折叠候选缓存；渲染路径按范围过滤，不再逐行重跑查询。
-    fold_ranges: Mutex<Option<FoldRangeCacheEntry>>,
 }
 
 impl Clone for SyntaxState {
@@ -55,8 +45,6 @@ impl Clone for SyntaxState {
             injections: self.injections.clone(),
             capture_names: Arc::clone(&self.capture_names),
             capture_index_by_language: self.capture_index_by_language.clone(),
-            // 派生缓存不随状态克隆复制：克隆意味着语法状态将要变化，旧候选立即失效。
-            fold_ranges: Mutex::new(None),
         }
     }
 }
@@ -404,29 +392,6 @@ impl SyntaxSnapshot {
         text.version() == self.version
             && range.start <= range.end
             && range.end <= text.len_bytes().get()
-    }
-
-    /// 返回整源折叠候选，按语法版本缓存。
-    ///
-    /// 候选只依赖当前树与文本版本；
-    /// 同一版本的渲染查询共享同一份结果，消费方按范围过滤即可，避免为每个可见行重跑 Tree-sitter 查询。
-    pub(crate) fn cached_fold_ranges(&self, text: &Snapshot) -> Arc<[FoldRange]> {
-        let mut cache = self
-            .state
-            .fold_ranges
-            .lock()
-            .expect("折叠候选缓存锁不得中毒");
-        if let Some(entry) = cache.as_ref()
-            && entry.version == self.version
-        {
-            return Arc::clone(&entry.ranges);
-        }
-        let ranges: Arc<[FoldRange]> = self.query_fold_ranges(text).into();
-        *cache = Some(FoldRangeCacheEntry {
-            version: self.version,
-            ranges: Arc::clone(&ranges),
-        });
-        ranges
     }
 
     /// 返回与范围相交的语法层（主语言层 + 已解析注入层）。

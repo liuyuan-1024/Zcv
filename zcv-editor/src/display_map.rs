@@ -9,7 +9,9 @@
 //! 每一层都持有自己的 Map 和不可变 Snapshot；
 //! 上一层 Snapshot 固化下一层 Snapshot，从而让一次渲染只能看到一条内部一致的显示状态。
 
-use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferOffset, MultiBufferRange};
+use zcv_multi_buffer::{
+    MultiBufferAnchor, MultiBufferOffset, MultiBufferPositionCursor, MultiBufferRange,
+};
 
 mod block_map;
 mod chunk;
@@ -29,7 +31,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::scrollbar::{ScrollbarMarker, marker_geometry};
 
-use block_map::BlockSnapshot;
+use block_map::{BlockPointCursor, BlockSnapshot};
 pub(crate) use block_map::{
     BlockRows, DisplayBlock, DisplayBlockKind, FILE_HEADER_HEIGHT, StickyBufferHeader,
 };
@@ -55,14 +57,14 @@ use error::DisplayMapResult;
 pub(crate) use fold_map::{
     ChunkRenderer, ChunkRendererId, FoldBias, FoldPlaceholder, ProjectedLineIndex,
 };
-use fold_map::{FoldMap, FoldSnapshot};
+use fold_map::{FoldMap, FoldPointCursor, FoldSnapshot};
 use gpui::{App, AppContext as _, Bounds, Context, Entity, HighlightStyle, Pixels};
-use tab_map::TabMap;
+use tab_map::{TabMap, TabPointCursor};
 pub(crate) use tab_map::{byte_for_display_column, display_column_for_byte};
-use wrap_map::{WrapEdit, WrapMap, WrapSnapshot};
+use wrap_map::{WrapEdit, WrapMap, WrapPointCursor, WrapSnapshot};
 use zcv_language::HighlightSpan;
 use zcv_multi_buffer::{
-    DiffDisplaySnapshot, MultiBuffer, MultiBufferSnapshot, MultiBufferSubscription,
+    DiffDisplaySnapshot, ExcerptSnapshot, MultiBuffer, MultiBufferSnapshot, MultiBufferSubscription,
 };
 use zcv_text::{
     BufferId, Line, LineRange, LogicalColumn, MovementDirection, MovementUnit, Position,
@@ -178,51 +180,50 @@ impl DisplayRange {
     }
 }
 
-/// 语法折叠候选的按行派生索引；只保留可折叠行，随显示版本整体替换。
+/// 只缓存最近一次被 gutter 悬停请求的逻辑行范围。
 ///
-/// 派生集中在消费端首次看到某段视口时发生，之后滚动帧只做区间查表。
+/// 视口移动时保留重叠行的候选，只查询新进入范围的行，避免滚动遍历 Tree-sitter 全可见行；
+/// 缓存随显示快照替换，并在每次查询后裁剪到当前范围，空间占用不会随滚动距离增长。
 #[derive(Debug, Default)]
 struct SyntaxCreaseIndex {
-    /// 已派生的连续逻辑行区间；`None` 表示尚未派生。
     covered: Option<Range<Line>>,
-    /// 已派生区间内的可折叠行及其候选。
     by_line: BTreeMap<Line, Crease>,
 }
 
 impl SyntaxCreaseIndex {
-    /// 补齐 `range` 尚未派生的部分；
-    /// 与已派生区间不相交时重建，避免为巨大间隙派生。
-    fn cover(&mut self, range: Range<Line>, mut crease_at: impl FnMut(Line) -> Option<Crease>) {
+    fn cover(
+        &mut self,
+        range: Range<Line>,
+        mut creases_in: impl FnMut(Range<Line>) -> BTreeMap<Line, Crease>,
+    ) {
         let Some(covered) = self.covered.clone() else {
-            self.populate(range.clone(), &mut crease_at);
+            self.by_line.extend(creases_in(range.clone()));
             self.covered = Some(range);
             return;
         };
-        if covered.start <= range.start && range.end <= covered.end {
-            return;
-        }
+
         if range.end < covered.start || covered.end < range.start {
             self.by_line.clear();
-            self.populate(range.clone(), &mut crease_at);
+            self.by_line.extend(creases_in(range.clone()));
             self.covered = Some(range);
             return;
         }
-        if range.start < covered.start {
-            self.populate(range.start..covered.start, &mut crease_at);
-        }
-        if covered.end < range.end {
-            self.populate(covered.end..range.end, &mut crease_at);
-        }
-        self.covered = Some(covered.start.min(range.start)..covered.end.max(range.end));
-    }
 
-    fn populate(&mut self, range: Range<Line>, crease_at: &mut impl FnMut(Line) -> Option<Crease>) {
-        for index in range.start.get()..range.end.get() {
-            let line = Line::new(index);
-            if let Some(crease) = crease_at(line) {
-                self.by_line.insert(line, crease);
+        if range.start < covered.start {
+            let missing_end = covered.start.min(range.end);
+            if range.start < missing_end {
+                self.by_line.extend(creases_in(range.start..missing_end));
             }
         }
+        if covered.end < range.end {
+            let missing_start = covered.end.max(range.start);
+            if missing_start < range.end {
+                self.by_line.extend(creases_in(missing_start..range.end));
+            }
+        }
+
+        self.by_line.retain(|line, _| range.contains(line));
+        self.covered = Some(range);
     }
 }
 
@@ -240,7 +241,7 @@ pub(super) struct DisplaySnapshot {
     decorations: Arc<DisplayDecorations>,
     /// diff 显示输入归组合文档所有；这里只持有当前显示版本的不可变引用。
     diff_display: Option<Arc<DiffDisplaySnapshot>>,
-    /// 语法折叠候选的区间派生索引：同一显示版本内只对视口区间派生，随快照整体替换。
+    /// 仅在 gutter 悬停时填充，复用可见区间重叠部分的语法折叠候选。
     syntax_crease_cache: Arc<Mutex<SyntaxCreaseIndex>>,
     /// 显示版本；每次替换当前显示快照都会前进，后台派生结果据此判断是否过期。
     version: u64,
@@ -307,34 +308,219 @@ impl DisplaySnapshot {
 
     /// 返回指定逻辑行的折叠候选。
     ///
-    /// 显式 crease 始终实时查询（可能被宿主增删）；
-    /// 语法候选按显示版本派生到行索引，同一区间只派生一次，滚动帧只做区间查表，不在渲染路径逐行重跑源投影。
+    /// 显式 crease 始终实时查询（可能被宿主增删）；语法候选只在该行成为交互目标时查询。
     pub(crate) fn crease_at_line(&self, line: Line) -> Option<Crease> {
         self.crease_snapshot
             .crease_at_line(line, self.buffer_snapshot())
             .cloned()
-            .or_else(|| self.syntax_crease_at_line_cached(line))
+            .or_else(|| self.syntax_crease_at_line(line))
     }
 
-    /// 视口范围内可折叠的逻辑行；只对视口区间派生一次。
+    /// 只查询光标等交互目标行，不为整个可见视口生成语法折叠范围。
+    pub(super) fn foldable_lines_at_lines(
+        &self,
+        lines: impl IntoIterator<Item = Line>,
+    ) -> BTreeSet<Line> {
+        lines
+            .into_iter()
+            .filter(|line| self.syntax_crease_at_line(*line).is_some())
+            .collect()
+    }
+
+    /// gutter 悬停时查询视口内折叠行，并复用与上次视口相交的候选。
     pub(super) fn foldable_lines_in_range(&self, range: Range<Line>) -> BTreeSet<Line> {
+        if range.is_empty() {
+            return BTreeSet::new();
+        }
         let mut index = self
             .syntax_crease_cache
             .lock()
-            .expect("语法折叠候选派生缓存锁不得中毒");
-        index.cover(range.clone(), |line| self.syntax_crease_at_line(line));
+            .expect("语法折叠候选缓存锁不得中毒");
+        index.cover(range.clone(), |range| self.syntax_creases_in_range(range));
         index.by_line.range(range).map(|(line, _)| *line).collect()
     }
 
-    fn syntax_crease_at_line_cached(&self, line: Line) -> Option<Crease> {
-        let mut index = self
-            .syntax_crease_cache
-            .lock()
-            .expect("语法折叠候选派生缓存锁不得中毒");
-        index.cover(Line::new(line.get())..Line::new(line.get() + 1), |line| {
-            self.syntax_crease_at_line(line)
-        });
-        index.by_line.get(&line).cloned()
+    fn syntax_crease_at_line(&self, line: Line) -> Option<Crease> {
+        let buffer = self.buffer_snapshot();
+        let cursor = buffer.line_cursor(line)?;
+        let excerpt = cursor.excerpt_snapshot()?;
+        let (output_offset, _) = cursor.line_content_range()?;
+        let source = buffer.source_at(MultiBufferOffset::new(output_offset))?;
+        let source_text = source.text();
+        let source_line = source_text.byte_to_line(source.source_offset()).ok()?;
+        let source_line_start = source_text.line_start_byte(source_line).ok()?.get();
+        let source_line_end = if source_line.get() + 1 < source_text.line_count() {
+            source_text
+                .line_start_byte(Line::new(source_line.get() + 1))
+                .ok()?
+                .get()
+        } else {
+            source_text.len_bytes().get()
+        };
+        let source_range = excerpt.source_range();
+        let source_start = source_line_start.max(source_range.start().get());
+        let source_end = source_line_end.min(source_range.end().get());
+        if source_start >= source_end {
+            return None;
+        }
+
+        source
+            .syntax()
+            .fold_ranges(source_start..source_end, source_text)
+            .into_iter()
+            .filter_map(|fold| {
+                let start = fold.range.start.resolve_in(source_text).ok()?;
+                let end = fold.range.end.resolve_in(source_text).ok()?;
+                let range = source.project_range(start..end)?;
+                let projected_start = buffer.projected_anchor_offset(&range.start).ok()??;
+                let projected_line = buffer.byte_to_line(projected_start).ok()?;
+                (projected_line == line).then(|| {
+                    let projected_end = buffer
+                        .projected_anchor_offset(&range.end)
+                        .ok()
+                        .flatten()
+                        .unwrap_or(projected_start);
+                    (projected_end, Crease::simple(range))
+                })
+            })
+            .min_by_key(|(end, _)| *end)
+            .map(|(_, crease)| crease)
+    }
+
+    fn syntax_creases_in_range(&self, range: Range<Line>) -> BTreeMap<Line, Crease> {
+        let buffer = self.buffer_snapshot();
+        let Some(mut cursor) = buffer.line_cursor(range.start) else {
+            return BTreeMap::new();
+        };
+        let mut candidates: BTreeMap<Line, (usize, Crease)> = BTreeMap::new();
+        let mut source_range = None;
+
+        for row in range.start.get()..range.end.get() {
+            let output_line = Line::new(row);
+            if row > range.start.get() && !cursor.seek(output_line) {
+                break;
+            }
+            let Some(excerpt) = cursor.excerpt_snapshot() else {
+                Self::flush_syntax_fold_range(buffer, source_range.take(), &range, &mut candidates);
+                continue;
+            };
+            let Some((output_offset, _)) = cursor.line_content_range() else {
+                Self::flush_syntax_fold_range(buffer, source_range.take(), &range, &mut candidates);
+                continue;
+            };
+            let Some(source) = buffer.source_at(MultiBufferOffset::new(output_offset)) else {
+                Self::flush_syntax_fold_range(buffer, source_range.take(), &range, &mut candidates);
+                continue;
+            };
+            let Ok(source_line) = source.text().byte_to_line(source.source_offset()) else {
+                Self::flush_syntax_fold_range(buffer, source_range.take(), &range, &mut candidates);
+                continue;
+            };
+            let source_range_end = source_line.get() + 1;
+
+            match source_range.as_mut() {
+                Some((current_excerpt, output_lines, source_lines, _))
+                    if *current_excerpt == excerpt && source_lines.end == source_line.get() =>
+                {
+                    output_lines.end = Line::new(row + 1);
+                    source_lines.end = source_range_end;
+                }
+                _ => {
+                    Self::flush_syntax_fold_range(
+                        buffer,
+                        source_range.take(),
+                        &range,
+                        &mut candidates,
+                    );
+                    source_range = Some((
+                        excerpt,
+                        output_line..Line::new(row + 1),
+                        source_line.get()..source_range_end,
+                        output_offset,
+                    ));
+                }
+            }
+        }
+
+        Self::flush_syntax_fold_range(buffer, source_range, &range, &mut candidates);
+        candidates
+            .into_iter()
+            .map(|(line, (_, crease))| (line, crease))
+            .collect()
+    }
+
+    fn flush_syntax_fold_range(
+        buffer: &MultiBufferSnapshot,
+        source_range: Option<(ExcerptSnapshot, Range<Line>, Range<usize>, usize)>,
+        visible_lines: &Range<Line>,
+        candidates: &mut BTreeMap<Line, (usize, Crease)>,
+    ) {
+        let Some((excerpt, output_lines, source_lines, output_offset)) = source_range else {
+            return;
+        };
+        let Some(source) = buffer.source_at(MultiBufferOffset::new(output_offset)) else {
+            return;
+        };
+        let source_text = source.text();
+        let Ok(source_line_start) = source_text.line_start_byte(Line::new(source_lines.start))
+        else {
+            return;
+        };
+        let source_start = source_line_start
+            .get()
+            .max(excerpt.source_range().start().get());
+        let source_end = if source_lines.end < source_text.line_count() {
+            let Ok(source_line_end) = source_text.line_start_byte(Line::new(source_lines.end))
+            else {
+                return;
+            };
+            source_line_end
+                .get()
+                .min(excerpt.source_range().end().get())
+        } else {
+            excerpt.source_range().end().get()
+        };
+        if source_start >= source_end {
+            return;
+        }
+
+        for fold in source
+            .syntax()
+            .fold_ranges(source_start..source_end, source_text)
+        {
+            let Some(range) = fold
+                .range
+                .start
+                .resolve_in(source_text)
+                .ok()
+                .zip(fold.range.end.resolve_in(source_text).ok())
+                .and_then(|(start, end)| source.project_range(start..end))
+            else {
+                continue;
+            };
+            let Some(start) = buffer.projected_anchor_offset(&range.start).ok().flatten() else {
+                continue;
+            };
+            let Ok(line) = buffer.byte_to_line(start) else {
+                continue;
+            };
+            if !output_lines.contains(&line) || !visible_lines.contains(&line) {
+                continue;
+            }
+            let Some(end) = buffer.projected_anchor_offset(&range.end).ok().flatten() else {
+                continue;
+            };
+            let crease = Crease::simple(range);
+            candidates
+                .entry(line)
+                .and_modify(|(current_end, current)| {
+                    if end.get() < *current_end {
+                        *current_end = end.get();
+                        *current = crease.clone();
+                    }
+                })
+                .or_insert((end.get(), crease));
+        }
     }
 
     /// 返回包含指定逻辑行的最内层折叠候选，供光标位于折叠体内部时的切换命令使用。
@@ -364,48 +550,6 @@ impl DisplaySnapshot {
             })
             .min_by_key(|(_, start, end)| (line.get() - start.get(), end.get() - line.get()))
             .map(|(crease, _, _)| crease.clone())
-    }
-
-    fn syntax_crease_at_line(&self, line: Line) -> Option<Crease> {
-        let buffer = self.buffer_snapshot();
-        let offset = buffer.line_start_byte(line).ok()?;
-        let source = buffer.source_at(offset)?;
-        let source_text = source.text();
-        let source_line = source_text.byte_to_line(source.source_offset()).ok()?;
-        let source_line_start = source_text.line_start_byte(source_line).ok()?;
-        let source_line_end = if source_line.get() + 1 < source_text.line_count() {
-            source_text
-                .line_start_byte(Line::new(source_line.get() + 1))
-                .ok()?
-        } else {
-            source_text.len_bytes()
-        };
-
-        source
-            .syntax()
-            .fold_ranges(source_line_start.get()..source_line_end.get(), source_text)
-            .into_iter()
-            .filter_map(|fold| {
-                let start = fold.range.start.resolve_in(source_text).ok()?;
-                let end = fold.range.end.resolve_in(source_text).ok()?;
-                source.project_range(start..end)
-            })
-            .filter(|range| {
-                buffer
-                    .projected_anchor_offset(&range.start)
-                    .ok()
-                    .flatten()
-                    .and_then(|offset| buffer.byte_to_line(offset).ok())
-                    == Some(line)
-            })
-            .min_by_key(|range| {
-                buffer
-                    .projected_anchor_offset(&range.end)
-                    .ok()
-                    .flatten()
-                    .map_or(usize::MAX, |end| end.get())
-            })
-            .map(Crease::simple)
     }
 
     fn syntax_crease_containing_line(&self, line: Line) -> Option<Crease> {
@@ -590,6 +734,10 @@ impl DisplaySnapshot {
         self.block_snapshot.project_text_range(range)
     }
 
+    pub(crate) fn display_point_converter(&self) -> DisplayPointConverter<'_> {
+        DisplayPointConverter::new(self)
+    }
+
     pub(super) fn offset_to_display_point(
         &self,
         offset: MultiBufferOffset,
@@ -676,6 +824,71 @@ impl DisplaySnapshot {
         offset: MultiBufferOffset,
     ) -> DisplayMapResult<MultiBufferOffset> {
         self.wrap_snapshot().end_of_row(offset)
+    }
+}
+
+/// 按非递减组合偏移把范围逐层投影到显示坐标；每层游标跨范围复用 SumTree 定位。
+pub(crate) struct DisplayPointConverter<'a> {
+    buffer: MultiBufferPositionCursor<'a>,
+    fold: FoldPointCursor<'a>,
+    tab: TabPointCursor<'a>,
+    wrap: WrapPointCursor<'a>,
+    block: BlockPointCursor<'a>,
+    previous_end: Option<MultiBufferOffset>,
+}
+
+impl<'a> DisplayPointConverter<'a> {
+    fn new(snapshot: &'a DisplaySnapshot) -> Self {
+        let block_snapshot = snapshot.block_snapshot.as_ref();
+        let wrap_snapshot = block_snapshot.wrap_snapshot();
+        let tab_snapshot = wrap_snapshot.tab_snapshot();
+        let fold_snapshot = tab_snapshot.fold_snapshot();
+        Self {
+            buffer: MultiBufferPositionCursor::new(fold_snapshot.buffer_snapshot()),
+            fold: fold_snapshot.point_cursor(),
+            tab: tab_snapshot.point_cursor(),
+            wrap: wrap_snapshot.point_cursor(),
+            block: block_snapshot.point_cursor(),
+            previous_end: None,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.buffer.reset();
+        self.fold.reset();
+        self.wrap.reset();
+        self.block.reset();
+        self.previous_end = None;
+    }
+
+    pub fn map(&mut self, range: MultiBufferRange) -> DisplayMapResult<Option<DisplayRange>> {
+        if self
+            .previous_end
+            .is_some_and(|previous_end| range.start() < previous_end)
+        {
+            self.reset();
+        }
+        self.previous_end = Some(range.end());
+        if range.start() == range.end() {
+            return Ok(None);
+        }
+
+        let start_position = self.buffer.byte_to_position(range.start())?;
+        let end_position = self.buffer.byte_to_position(range.end())?;
+        let start_fold = self.fold.map(start_position.into(), FoldBias::Left)?;
+        let end_fold = self.fold.map(end_position.into(), FoldBias::Right)?;
+        let start_tab = self.tab.map(start_fold);
+        let end_tab = self.tab.map(end_fold);
+        let start_wrap = self.wrap.map(start_tab);
+        let end_wrap = self.wrap.map(end_tab);
+        let start = self.block.map(start_wrap);
+        let end = self.block.map(end_wrap);
+        let ordered =
+            start.row() < end.row() || (start.row() == end.row() && start.column() < end.column());
+        if !ordered {
+            return Ok(None);
+        }
+        Ok(Some(DisplayRange::new(start, end)))
     }
 }
 
@@ -804,7 +1017,7 @@ impl DisplayMap {
     }
 
     /// 读取并推进当前显示快照；组合文本同步、换行与块投影都从这里进入。
-    /// 折叠候选按显示版本在消费端派生缓存，不参与显示拓扑同步。
+    /// 语法折叠候选不参与显示拓扑同步，只在交互需要时从当前快照查询。
     pub(crate) fn snapshot(&mut self, cx: &mut Context<Self>) -> DisplaySnapshot {
         let Some(multi_buffer) = self.multi_buffer.clone() else {
             return self.cached_snapshot();

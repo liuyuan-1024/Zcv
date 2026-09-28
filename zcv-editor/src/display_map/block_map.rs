@@ -525,6 +525,13 @@ impl BlockSnapshot {
         BlockRows::new(self, start_row, line_count)
     }
 
+    pub(super) fn point_cursor(&self) -> BlockPointCursor<'_> {
+        BlockPointCursor {
+            snapshot: self,
+            cursor: self.transforms.cursor::<InputToOutput>(()),
+        }
+    }
+
     pub(super) fn new(wrap_snapshot: WrapSnapshot, folded_buffers: &HashSet<BufferId>) -> Self {
         let show_headers = wrap_snapshot.buffer_snapshot().show_headers();
         let topology_version = wrap_snapshot.buffer_snapshot().topology_version();
@@ -805,6 +812,39 @@ impl BlockSnapshot {
         self.offset_to_display_point(offset)
             .ok()
             .map(DisplayPoint::row)
+    }
+}
+
+/// 按 Wrap 点顺序映射显示点，复用块插入变换树位置。
+pub(crate) struct BlockPointCursor<'a> {
+    snapshot: &'a BlockSnapshot,
+    cursor: sum_tree::Cursor<'a, 'static, Transform, InputToOutput>,
+}
+
+impl BlockPointCursor<'_> {
+    pub fn reset(&mut self) {
+        self.cursor.reset();
+    }
+
+    pub fn map(&mut self, point: WrapPoint) -> DisplayPoint {
+        let input_row = point.row().get();
+        if self.cursor.did_seek() && input_row >= self.cursor.start().0.0 {
+            self.cursor.seek_forward(&InputRows(input_row), Bias::Right);
+        } else {
+            self.cursor.seek(&InputRows(input_row), Bias::Right);
+        }
+
+        let Some(transform) = self.cursor.item() else {
+            return DisplayPoint::new(DisplayRow::new(self.snapshot.line_count()), point.column());
+        };
+        let (output_row, column) = match transform.kind {
+            TransformKind::Text => (
+                self.cursor.start().1.0 + input_row - self.cursor.start().0.0,
+                point.column(),
+            ),
+            TransformKind::Block(_) => (self.cursor.start().1.0, DisplayColumn::ZERO),
+        };
+        DisplayPoint::new(DisplayRow::new(output_row), column)
     }
 }
 

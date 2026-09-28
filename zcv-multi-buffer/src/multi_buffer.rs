@@ -1305,6 +1305,12 @@ impl<'a> MultiBufferCursor<'a> {
         self.sync_excerpts();
     }
 
+    fn seek_output_forward(&mut self, offset: ByteOffset, bias: Bias) {
+        self.diff_transforms
+            .seek_forward(&MultiBufferOffset(offset.get()), bias);
+        self.sync_excerpts_forward();
+    }
+
     fn seek_output_line(&mut self, line: usize, bias: Bias) {
         self.diff_transforms.seek(&MultiBufferRow(line), bias);
         self.sync_excerpts();
@@ -1374,6 +1380,43 @@ impl<'a> MultiBufferCursor<'a> {
             &ExcerptItemIndex(self.diff_transforms.start().input_item_index),
             Bias::Right,
         );
+    }
+}
+
+/// 按非递减组合字节偏移转换逻辑位置，并复用 excerpt 与 diff 变换树游标。
+pub struct MultiBufferPositionCursor<'a> {
+    snapshot: &'a MultiBufferSnapshot,
+    cursor: MultiBufferCursor<'a>,
+    last_offset: Option<MultiBufferOffset>,
+}
+
+impl<'a> MultiBufferPositionCursor<'a> {
+    pub fn new(snapshot: &'a MultiBufferSnapshot) -> Self {
+        Self {
+            snapshot,
+            cursor: MultiBufferCursor::new(&snapshot.excerpts, &snapshot.diff_transforms),
+            last_offset: None,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.cursor =
+            MultiBufferCursor::new(&self.snapshot.excerpts, &self.snapshot.diff_transforms);
+        self.last_offset = None;
+    }
+
+    pub fn byte_to_position(&mut self, offset: MultiBufferOffset) -> TextResult<Position> {
+        if self.last_offset.is_some_and(|last| offset < last) {
+            self.reset();
+        }
+        if self.last_offset.is_some() {
+            self.cursor.seek_output_forward(offset.into(), Bias::Right);
+        } else {
+            self.cursor.seek_output(offset.into(), Bias::Right);
+        }
+        self.last_offset = Some(offset);
+        self.snapshot
+            .byte_to_position_with_cursor(&mut self.cursor, offset)
     }
 }
 
@@ -2264,10 +2307,20 @@ impl MultiBufferSnapshot {
 
     /// 把组合字节偏移转换为按 Unicode scalar value 计数的逻辑位置。
     pub fn byte_to_position(&self, offset: MultiBufferOffset) -> TextResult<Position> {
+        let mut cursor = MultiBufferCursor::new(&self.excerpts, &self.diff_transforms);
+        cursor.seek_output(offset.into(), Bias::Right);
+        self.byte_to_position_with_cursor(&mut cursor, offset)
+    }
+
+    fn byte_to_position_with_cursor(
+        &self,
+        cursor: &mut MultiBufferCursor<'_>,
+        offset: MultiBufferOffset,
+    ) -> TextResult<Position> {
         if offset == self.len_bytes() && self.excerpts.is_empty() {
             return Ok(Position::new(Line::ZERO, LogicalColumn::ZERO));
         }
-        let (entry, at, source, source_offset) = self.source_point_at_byte(offset)?;
+        let (entry, at, source, source_offset) = self.source_point_at_cursor(cursor, offset)?;
         let source_start = source.text.byte_to_position(entry.source_range.start())?;
         let source_position = source.text.byte_to_position(source_offset)?;
         let row_delta = source_position.line().get() - entry.source_start_line;
@@ -2592,6 +2645,22 @@ impl MultiBufferSnapshot {
         }
         let mut cursor = MultiBufferCursor::new(&self.excerpts, &self.diff_transforms);
         cursor.seek_output(offset.into(), Bias::Right);
+        self.source_point_at_cursor(&mut cursor, offset)
+    }
+
+    fn source_point_at_cursor(
+        &self,
+        cursor: &mut MultiBufferCursor<'_>,
+        offset: MultiBufferOffset,
+    ) -> TextResult<(
+        ExcerptCoordinates,
+        MappingPosition,
+        &ExcerptSourceSnapshot,
+        ByteOffset,
+    )> {
+        if offset > self.len_bytes() {
+            return Err(CoordinateError::OutOfBounds(offset.into()).into());
+        }
         if cursor.item().is_none() {
             cursor.prev();
         }

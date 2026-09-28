@@ -604,6 +604,15 @@ impl FoldSnapshot {
         &self.input
     }
 
+    pub(super) fn point_cursor(&self) -> FoldPointCursor<'_> {
+        FoldPointCursor {
+            snapshot: self,
+            cursor: self
+                .transforms
+                .cursor::<Dimensions<InputLines, OutputRows>>(()),
+        }
+    }
+
     pub(super) const fn version(&self) -> u64 {
         self.version
     }
@@ -1048,6 +1057,42 @@ impl FoldSnapshot {
     ) -> Option<StreamProjectedKind> {
         let text = self.projected_line_kind(projected)?;
         Some(StreamProjectedKind::Text(text.logical_line()))
+    }
+}
+
+/// 按逻辑行顺序映射 Fold 点，连续文本段复用折叠树位置。
+pub(crate) struct FoldPointCursor<'a> {
+    snapshot: &'a FoldSnapshot,
+    cursor: Cursor<'a, 'static, Transform, Dimensions<InputLines, OutputRows>>,
+}
+
+impl FoldPointCursor<'_> {
+    pub fn reset(&mut self) {
+        self.cursor.reset();
+    }
+
+    pub fn map(&mut self, point: LogicalPoint, bias: FoldBias) -> DisplayMapResult<ProjectedPoint> {
+        let input_row = point.line.get();
+        if self.cursor.did_seek() {
+            self.cursor
+                .seek_forward(&InputLines(input_row), TreeBias::Right);
+        } else {
+            self.cursor.seek(&InputLines(input_row), TreeBias::Right);
+        }
+
+        let Some(transform) = self.cursor.item() else {
+            return self.snapshot.logical_to_projected_point(point, bias);
+        };
+        if transform.is_fold() {
+            return self.snapshot.logical_to_projected_point(point, bias);
+        }
+
+        let input_start = self.cursor.start().0.0;
+        let output_start = self.cursor.start().1.0;
+        Ok(ProjectedPoint::new(
+            ProjectedLineIndex::new(output_start + input_row.saturating_sub(input_start)),
+            point.column(),
+        ))
     }
 }
 

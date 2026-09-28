@@ -9,6 +9,7 @@
 
 use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::mem;
 use std::ops::Range;
@@ -30,8 +31,8 @@ use super::fold_map::{
     StreamProjectedKind,
 };
 use super::tab_map::{
-    TabEdit, TabPoint, TabSnapshot, advance_display_column, byte_for_display_column,
-    display_width_for_fold_row, line_content,
+    TabEdit, TabPoint, TabPointMapping, TabSnapshot, advance_display_column, byte_after_chars,
+    byte_for_display_column, display_width_for_fold_row, line_content,
 };
 use super::{WrapPoint, WrapRow};
 
@@ -298,6 +299,15 @@ pub(crate) struct WrapSnapshot {
 impl WrapSnapshot {
     pub(crate) fn tab_snapshot(&self) -> &TabSnapshot {
         &self.tab_snapshot
+    }
+
+    pub(super) fn point_cursor(&self) -> WrapPointCursor<'_> {
+        WrapPointCursor {
+            snapshot: self,
+            cursor: self.transforms.cursor::<InputToOutput>(()),
+            tab_row: None,
+            line_text: None,
+        }
     }
 
     pub(super) fn buffer_snapshot(&self) -> &MultiBufferSnapshot {
@@ -991,11 +1001,6 @@ fn tab_edit_rows(tab_edits: &[TabEdit]) -> Vec<(Range<usize>, Range<usize>)> {
 }
 
 /// 文本中第 `chars` 个字符的字节偏移（超出末尾返回文本长度）。
-fn byte_after_chars(text: &str, chars: usize) -> usize {
-    text.char_indices()
-        .nth(chars)
-        .map_or(text.len(), |(byte, _)| byte)
-}
 /// 一次换行重排影响的显示行区间（换行输出行空间）。
 ///
 /// 无重排时列表为空，因此「空」精确表示显示行布局未变；
@@ -1205,6 +1210,80 @@ fn output_rows_before(tree: &SumTree<Transform>, input_row: usize) -> usize {
     cursor.seek(&TabPoint::new(input_row, 0), Bias::Right);
     let start = cursor.start();
     start.1.0 + (input_row - start.0.row())
+}
+
+/// 按 Tab 点顺序映射 Wrap 点，并复用换行树位置与当前行文本。
+pub(crate) struct WrapPointCursor<'a> {
+    snapshot: &'a WrapSnapshot,
+    cursor: sum_tree::Cursor<'a, 'static, Transform, InputToOutput>,
+    tab_row: Option<usize>,
+    line_text: Option<Cow<'a, str>>,
+}
+
+impl WrapPointCursor<'_> {
+    pub fn reset(&mut self) {
+        self.cursor.reset();
+        self.tab_row = None;
+        self.line_text = None;
+    }
+
+    pub fn map(&mut self, point: TabPointMapping) -> WrapPoint {
+        let tab_point = point.point();
+        if self.cursor.did_seek() && tab_point >= self.cursor.start().0 {
+            self.cursor.seek_forward(&tab_point, Bias::Right);
+        } else {
+            self.cursor.seek(&tab_point, Bias::Right);
+        }
+
+        let Some(transform) = self.cursor.item() else {
+            return WrapPoint::new(
+                WrapRow::new(self.snapshot.line_count()),
+                DisplayColumn::new(tab_point.column()),
+            );
+        };
+        let output_start = self.cursor.start().1.0;
+        if matches!(transform.kind, TransformKind::Isomorphic) {
+            return WrapPoint::new(
+                WrapRow::new(output_start + tab_point.row().saturating_sub(transform.input.row())),
+                DisplayColumn::new(tab_point.column()),
+            );
+        }
+
+        let row = tab_point.row();
+        if self.tab_row != Some(row) {
+            self.tab_row = Some(row);
+            self.line_text = self.snapshot.tab_snapshot.line_text(Line::new(row));
+        }
+        let Some(text) = self.line_text.as_deref() else {
+            return WrapPoint::new(
+                WrapRow::new(output_start),
+                DisplayColumn::new(tab_point.column()),
+            );
+        };
+        let content = line_content(text);
+        let target_byte = point.fold_byte_column().min(content.len());
+        let fragment_index = fragment_index_for_byte(&transform.wrap_points, target_byte);
+        let fragment_start = fragment_index
+            .checked_sub(1)
+            .map_or(0, |index| transform.wrap_points[index].byte_ix);
+        let indent = fragment_index
+            .checked_sub(1)
+            .map_or(0, |index| transform.wrap_points[index].indent as usize);
+        let column = content[fragment_start..target_byte].graphemes(true).fold(
+            indent,
+            |column, grapheme| {
+                advance_display_column(
+                    column,
+                    grapheme,
+                    self.snapshot.tab_snapshot.tab_width().get(),
+                )
+            },
+        );
+        WrapPoint::new(
+            WrapRow::new(output_start + fragment_index),
+            DisplayColumn::new(column),
+        )
+    }
 }
 
 pub(super) struct WrapMap {

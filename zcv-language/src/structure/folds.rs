@@ -22,21 +22,15 @@ pub struct FoldRange {
 impl SyntaxSnapshot {
     /// 返回起点落在 `range` 内的折叠候选，并按源文本起点排序。
     ///
-    /// 整源候选按语法版本缓存且已按起点排序；
-    /// 这里二分定位起点区间，不再为每个可见行重跑 Tree-sitter 查询，也不线性扫描整源候选。
+    /// 查询只遍历与范围相交的语法层和 Tree-sitter 节点。
     pub fn fold_ranges(&self, range: Range<usize>, text: &Snapshot) -> Vec<FoldRange> {
         if !self.can_query(&range, text) {
             return Vec::new();
         }
-        let folds = self.cached_fold_ranges(text);
-        let start = folds.partition_point(|fold| fold.range.start.offset().get() < range.start);
-        let end = folds.partition_point(|fold| fold.range.start.offset().get() < range.end);
-        folds[start..end].to_vec()
+        self.query_fold_ranges(range, text)
     }
 
-    /// 查询整源折叠候选，并按源文本起点排序。
-    pub(crate) fn query_fold_ranges(&self, text: &Snapshot) -> Vec<FoldRange> {
-        let range = 0..text.len_bytes().get();
+    fn query_fold_ranges(&self, range: Range<usize>, text: &Snapshot) -> Vec<FoldRange> {
         if !self.can_query(&range, text) {
             return Vec::new();
         }
@@ -98,7 +92,7 @@ impl SyntaxSnapshot {
             }
         }
 
-        // 定界符：把折叠范围重塑为 [入口行行尾换行符, 闭合符号前)，闭合符号保留可见。
+        // 配对查询也限制在候选起点所在的可见范围；Tree-sitter 仍返回跨出范围的完整配对。
         let pairs = self.bracket_pairs(range.clone(), text);
         let mut ranges = Vec::new();
         for (byte_range, _, _, explicit_end) in nodes {
@@ -106,6 +100,9 @@ impl SyntaxSnapshot {
                 continue;
             };
             let start = line_newline_position(text, anchor_line);
+            if start.get() < range.start || start.get() >= range.end {
+                continue;
+            }
             let delimiter_end = pairs
                 .iter()
                 .filter(|pair| pair.open.start == byte_range.start)

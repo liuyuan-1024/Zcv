@@ -16,7 +16,8 @@ use super::display_width::char_width;
 use super::edit::ProjectionEdit;
 use super::error::DisplayMapResult;
 use super::fold_map::{
-    FoldBias, FoldEdit, FoldPoint, FoldSnapshot, ProjectedLineIndex, StreamProjectedKind,
+    FoldBias, FoldEdit, FoldPoint, FoldSnapshot, ProjectedLineIndex, ProjectedPoint,
+    StreamProjectedKind,
 };
 
 /// Tab 层的本层点。行表示投影行，列表示展开硬 Tab 后的显示列。
@@ -24,6 +25,22 @@ use super::fold_map::{
 pub(crate) struct TabPoint {
     row: usize,
     column: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TabPointMapping {
+    point: TabPoint,
+    fold_byte_column: usize,
+}
+
+impl TabPointMapping {
+    pub(crate) const fn point(self) -> TabPoint {
+        self.point
+    }
+
+    pub(crate) const fn fold_byte_column(self) -> usize {
+        self.fold_byte_column
+    }
 }
 
 impl TabPoint {
@@ -82,6 +99,10 @@ impl TabSnapshot {
 
     pub(crate) fn fold_snapshot(&self) -> &FoldSnapshot {
         &self.fold_snapshot
+    }
+
+    pub(super) fn point_cursor(&self) -> TabPointCursor<'_> {
+        TabPointCursor { snapshot: self }
     }
 
     /// 投影行总数由下层 Fold 快照定义，不由本层编辑的行差推导。
@@ -191,6 +212,37 @@ impl TabSnapshot {
     }
 }
 
+/// 把 Fold 投影字符列转换为字节列与展开后的显示列。
+pub(crate) struct TabPointCursor<'a> {
+    snapshot: &'a TabSnapshot,
+}
+
+impl TabPointCursor<'_> {
+    pub fn map(&mut self, point: ProjectedPoint) -> TabPointMapping {
+        let row = point.line().get();
+        let Some(text) = self.snapshot.line_text(Line::new(row)) else {
+            return TabPointMapping {
+                point: TabPoint::new(row, point.column().get()),
+                fold_byte_column: point.column().get(),
+            };
+        };
+        let content = line_content(text.as_ref());
+        let fold_byte_column = byte_after_chars(content, point.column().get());
+        TabPointMapping {
+            point: TabPoint::new(
+                row,
+                display_column_for_byte(
+                    content,
+                    0,
+                    fold_byte_column,
+                    self.snapshot.tab_width.get(),
+                ),
+            ),
+            fold_byte_column,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct TabMap {
     snapshot: TabSnapshot,
@@ -274,6 +326,12 @@ pub(super) fn line_content(text: &str) -> &str {
     text.strip_suffix("\r\n")
         .or_else(|| text.strip_suffix('\n'))
         .unwrap_or(text)
+}
+
+pub(super) fn byte_after_chars(text: &str, chars: usize) -> usize {
+    text.char_indices()
+        .nth(chars)
+        .map_or(text.len(), |(byte, _)| byte)
 }
 
 pub(crate) fn advance_display_column(column: usize, grapheme: &str, tab_width: usize) -> usize {

@@ -246,8 +246,7 @@ pub(crate) struct HunkRendering {
 
 /// 绑定一条显示快照的 diff 装饰派生状态。
 ///
-/// 逻辑 hunk 只在显示映射版本变化时投影一次。
-/// 滚动帧通过 `viewport` 和 `visible_word_diff_highlights` 消费已有的显示行数据，不重新访问逻辑 hunk 或重新执行逻辑坐标到显示坐标的转换。
+/// 逻辑 hunk 按视口解析；词级范围按偏移顺序经前向游标投影，再按显示行排序供视口查询。
 #[derive(Clone)]
 pub(crate) struct DiffDecorationSnapshot {
     rendering: HunkRendering,
@@ -313,25 +312,29 @@ impl DiffDecorationSnapshot {
         }
         sort_controls(&mut rendering);
         rendering.editor_hunk_parts = editor_hunk_part_rendering(snapshot, editor_hunks);
-        let projected_word_diff_highlights = rendering
-            .word_diff_highlights
-            .iter()
-            .filter_map(|(kind, range)| {
-                let text_range = MultiBufferRange::new(
-                    MultiBufferOffset::new(range.start),
-                    MultiBufferOffset::new(range.end),
-                )
-                .ok()?;
-                Some(
-                    snapshot
-                        .project_text_range(text_range)
-                        .ok()?
-                        .into_iter()
-                        .map(|range| (*kind, range)),
-                )
-            })
-            .flatten()
-            .collect();
+        let mut word_diff_highlights = rendering.word_diff_highlights.clone();
+        word_diff_highlights.sort_unstable_by_key(|(_, range)| (range.start, range.end));
+        let mut point_converter = snapshot.display_point_converter();
+        let mut projected_word_diff_highlights = Vec::new();
+        for (kind, range) in word_diff_highlights {
+            let Ok(text_range) = MultiBufferRange::new(
+                MultiBufferOffset::new(range.start),
+                MultiBufferOffset::new(range.end),
+            ) else {
+                continue;
+            };
+            if let Ok(Some(projected)) = point_converter.map(text_range) {
+                projected_word_diff_highlights.push((kind, projected));
+            }
+        }
+        projected_word_diff_highlights.sort_unstable_by_key(|(_, range)| {
+            (
+                range.start().row().get(),
+                range.start().column().get(),
+                range.end().row().get(),
+                range.end().column().get(),
+            )
+        });
 
         let mut scrollbar_diff_markers = rendering
             .diff_rows

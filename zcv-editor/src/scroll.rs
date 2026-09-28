@@ -2,7 +2,7 @@
 
 use zcv_multi_buffer::MultiBufferAnchor;
 
-use gpui::{Pixels, Point, point, px};
+use gpui::{OngoingScroll, Pixels, Point, TouchPhase, point, px};
 use zcv_text::Affinity;
 
 use super::display_map::{DisplayColumn, DisplayPoint, DisplayRow, DisplaySnapshot};
@@ -62,7 +62,7 @@ enum PendingAutoscroll {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy)]
 pub(super) struct ScrollManager {
     /// 权威长期位置。
     anchor: ScrollAnchor,
@@ -73,6 +73,8 @@ pub(super) struct ScrollManager {
     /// 本次自动滚动请求的水平部分待布局后钳制（垂直部分已在布局前应用）。
     pending_horizontal_autoscroll: bool,
     thumb_state: ScrollbarThumbState,
+    /// 同一触控板手势锁定主轴，避免轻微横向噪声反复改变文本塑形窗口。
+    ongoing_scroll: OngoingScroll,
 }
 
 impl ScrollViewport {
@@ -140,6 +142,16 @@ impl ScrollManager {
         self.set_scroll_top(self.scroll_top() - delta.y, snapshot);
 
         self.anchor != old_anchor || self.display_point != old_point
+    }
+
+    pub(super) fn scroll_by_gesture(
+        &mut self,
+        mut delta: Point<Pixels>,
+        touch_phase: TouchPhase,
+        snapshot: &DisplaySnapshot,
+    ) -> bool {
+        self.ongoing_scroll.filter(&mut delta, touch_phase);
+        self.scroll_by(delta, snapshot)
     }
 
     pub(super) fn request_autoscroll(&mut self, anchor: MultiBufferAnchor) {
@@ -368,6 +380,7 @@ impl Default for ScrollManager {
             pending_autoscroll: None,
             pending_horizontal_autoscroll: false,
             thumb_state: ScrollbarThumbState::Idle,
+            ongoing_scroll: OngoingScroll::default(),
         }
     }
 }

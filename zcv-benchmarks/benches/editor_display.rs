@@ -3,20 +3,23 @@
 //! 覆盖连续输入、长行编辑与整文件折叠切换：这些都是显示投影必须增量推进的场景，
 //! 用于观察整段物化或全量重建是否重新出现。
 
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use criterion::{Criterion, Throughput, black_box, criterion_group, criterion_main};
 use gpui::{
-    AppContext as _, AvailableSpace, Entity, IntoElement as _, ScrollDelta, ScrollWheelEvent,
-    TestAppContext, TestDispatcher, point, px, size,
+    AppContext as _, AvailableSpace, Entity, IntoElement as _, MouseMoveEvent, ScrollDelta,
+    ScrollWheelEvent, TestAppContext, TestDispatcher, point, px, size,
 };
 mod common;
 
 use common::cached_rust_document;
+use zcv_buffer_diff::{BufferDiff, BufferDiffInput};
 use zcv_editor::Editor;
 use zcv_language::{LanguageBuffer, LanguageRegistry};
-use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
+use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, ExcerptRange, MultiBuffer};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TransactionMetadata};
 
 const DOC_BYTES: usize = 256 * 1024;
@@ -24,6 +27,17 @@ const EXCERPT_DOC_BYTES: usize = 16 * 1024;
 const MULTI_EXCERPT_COUNTS: [usize; 3] = [2, 32, 256];
 const LONG_LINE_ROWS: usize = 2_000;
 const LONG_LINE_COLUMNS: usize = 400;
+const DIFF_SCROLL_FILE_COUNTS: [usize; 2] = [2, 16];
+const DIFF_SCROLL_LINES_PER_FILE: usize = 1_536;
+const DIFF_SCROLL_ADDED_LINES: usize = 640;
+const DIFF_SCROLL_SCENARIOS: [(&str, usize, usize); 2] =
+    [("word_diff", 8, 32), ("hunk_dense", 1, 8)];
+const LARGE_ADDITION_SCENARIO: (&str, usize, usize) = (
+    "large_addition",
+    DIFF_SCROLL_ADDED_LINES,
+    DIFF_SCROLL_LINES_PER_FILE,
+);
+const LARGE_ADDITION_FILE_COUNTS: [usize; 2] = [16, 64];
 
 fn rust_document() -> String {
     cached_rust_document(DOC_BYTES).to_string()
@@ -316,7 +330,10 @@ fn multi_excerpt_idle_frame(c: &mut Criterion) {
 /// 锁定「滚动帧成本不随组合文档规模增长」：滚动只改变滚动位置，
 /// 悬浮标题、折叠入口与滚动条标记都必须按视口求解，而不是随文件 / hunk 数遍历。
 fn multi_excerpt_scroll_frame(c: &mut Criterion) {
-    let mut group = c.benchmark_group("editor/multi_excerpt_scroll_frame");
+    let mut group = c.benchmark_group("editor/multi_excerpt_scroll_render_frame");
+    group.sample_size(30);
+    group.measurement_time(Duration::from_secs(2));
+    group.warm_up_time(Duration::from_secs(1));
     for excerpt_count in MULTI_EXCERPT_COUNTS {
         let mut cx = TestAppContext::build(TestDispatcher::new(1), None);
         let sources = (0..excerpt_count)
@@ -361,13 +378,311 @@ fn multi_excerpt_scroll_frame(c: &mut Criterion) {
             delta: ScrollDelta::Pixels(point(px(0.), px(-10_000_000.))),
             ..Default::default()
         });
+        cx.run_until_parked();
         group.bench_function(format!("{excerpt_count}"), |b| {
-            b.iter(|| {
-                cx.draw(origin, space, |_, _cx| editor.clone().into_any_element());
-                black_box(editor.entity_id());
+            b.iter_custom(|iterations| {
+                let mut elapsed = Duration::ZERO;
+                for _ in 0..iterations {
+                    cx.simulate_event(ScrollWheelEvent {
+                        position: point(px(600.), px(400.)),
+                        delta: ScrollDelta::Pixels(point(px(0.), px(24.))),
+                        ..Default::default()
+                    });
+                    let started = std::time::Instant::now();
+                    cx.draw(origin, space, |_, _cx| editor.clone().into_any_element());
+                    elapsed += started.elapsed();
+                    black_box(editor.entity_id());
+                }
+                elapsed
             });
         });
     }
+    group.finish();
+}
+
+fn diff_scroll_documents(
+    changed_lines: usize,
+    block_spacing: usize,
+) -> (String, String, Vec<Range<usize>>) {
+    let mut base = String::new();
+    let mut working = String::new();
+    let mut windows = Vec::new();
+    for line in 0..DIFF_SCROLL_LINES_PER_FILE {
+        let changed_line = line % block_spacing < changed_lines;
+        if changed_line {
+            base.push_str(&format!("let old_{line:05} = aa + bb + cc + dd + ee;\n"));
+            working.push_str(&format!("let new_{line:05} = uu + vv + ww + xx + yy;\n"));
+        } else {
+            let text = format!("let value_{line:05} = 0;\n");
+            base.push_str(&text);
+            working.push_str(&text);
+        }
+
+        if line % block_spacing == changed_lines - 1 {
+            let block_start = line + 1 - changed_lines;
+            windows.push(block_start.saturating_sub(3)..(line + 4).min(DIFF_SCROLL_LINES_PER_FILE));
+        }
+    }
+    (base, working, windows)
+}
+
+fn diff_scroll_addition_documents() -> (String, String, Vec<Range<usize>>) {
+    let insertion_row = DIFF_SCROLL_LINES_PER_FILE / 2;
+    let mut base = String::new();
+    let mut working = String::new();
+    let windows =
+        vec![insertion_row.saturating_sub(3)..(insertion_row + DIFF_SCROLL_ADDED_LINES + 3)];
+    for line in 0..DIFF_SCROLL_LINES_PER_FILE {
+        if line == insertion_row {
+            for added_line in 0..DIFF_SCROLL_ADDED_LINES {
+                working.push_str(&format!(
+                    "let added_{added_line:05} = value_{added_line:05} + 1;\n"
+                ));
+            }
+        }
+        let text = format!("let value_{line:05} = 0;\n");
+        base.push_str(&text);
+        working.push_str(&text);
+    }
+    (base, working, windows)
+}
+
+/// 暂存与未暂存多文件 diff 组合文档的 Editor 滚动绘制耗时。
+///
+/// 覆盖分散小 hunk、密集 hunk 与单个 640 行新增块，并分别观察绘制与滚轮输入到绘制的耗时。
+fn diff_scroll_frame(c: &mut Criterion) {
+    diff_scroll_frame_scenarios(c, &DIFF_SCROLL_SCENARIOS, &DIFF_SCROLL_FILE_COUNTS);
+}
+
+fn diff_scroll_large_addition_frame(c: &mut Criterion) {
+    diff_scroll_frame_scenarios(
+        c,
+        std::slice::from_ref(&LARGE_ADDITION_SCENARIO),
+        &LARGE_ADDITION_FILE_COUNTS,
+    );
+}
+
+fn diff_scroll_frame_scenarios(
+    c: &mut Criterion,
+    scenarios: &[(&str, usize, usize)],
+    file_counts: &[usize],
+) {
+    let mut group = c.benchmark_group("editor/diff_scroll_render_frame");
+    group.sample_size(30);
+    group.measurement_time(Duration::from_secs(2));
+    group.warm_up_time(Duration::from_secs(1));
+
+    for (scenario, changed_lines, block_spacing) in scenarios.iter().copied() {
+        let large_file_documents = if scenario == "large_addition" {
+            diff_scroll_addition_documents()
+        } else {
+            diff_scroll_documents(changed_lines, block_spacing)
+        };
+        let small_file_documents =
+            (scenario == "large_addition").then(|| diff_scroll_documents(8, 32));
+        for (staging, staged) in [("staged", true), ("unstaged", false)] {
+            for file_count in file_counts.iter().copied() {
+                let mut cx = TestAppContext::build(TestDispatcher::new(1), None);
+                let language_registry = Arc::new(LanguageRegistry::new());
+                let files = (0..file_count)
+                    .map(|index| {
+                        let (base_text, working_text, windows) = small_file_documents
+                            .as_ref()
+                            .filter(|_| index + 1 != file_count)
+                            .unwrap_or(&large_file_documents);
+                        let index_text = if staged { working_text } else { base_text };
+                        let path = PathBuf::from(format!("src/file_{index}.rs"));
+                        let source = cx.new(|cx| {
+                            let buffer =
+                                Buffer::from_text(working_text.clone(), BufferConfig::default())
+                                    .expect("基准工作区文本应能创建 Buffer");
+                            LanguageBuffer::new(
+                                buffer,
+                                Some(path.clone()),
+                                Arc::clone(&language_registry),
+                                cx,
+                            )
+                        });
+                        let diff = cx.new(|cx| {
+                            BufferDiff::new(
+                                BufferDiffInput {
+                                    working: source,
+                                    path: path.clone(),
+                                    base_text: Some(base_text.clone()),
+                                    index_text: Some(index_text.clone()),
+                                    language_registry: Arc::clone(&language_registry),
+                                    key: index as u64,
+                                    operations: None,
+                                },
+                                cx,
+                            )
+                        });
+                        DiffFile {
+                            diff,
+                            display_path: path,
+                            excerpt_ranges: DiffExcerptRanges::Windows(windows.clone()),
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let multi_buffer = cx.new(MultiBuffer::empty);
+                cx.update_entity(&multi_buffer, |buffer, cx| {
+                    buffer.set_diff_files(files, cx);
+                    buffer.set_diff_hunks_expanded_by_default(true, cx);
+                });
+                cx.run_until_parked();
+                let large_addition_row = if scenario == "large_addition" {
+                    let path = PathBuf::from(format!("src/file_{}.rs", file_count - 1));
+                    let snapshot =
+                        cx.update_entity(&multi_buffer, |buffer, cx| buffer.snapshot(cx));
+                    let insertion_row = DIFF_SCROLL_LINES_PER_FILE / 2;
+                    let source_row = insertion_row + DIFF_SCROLL_ADDED_LINES / 2;
+                    snapshot
+                        .excerpts_for_path(&path)
+                        .find(|excerpt| {
+                            let source_start = excerpt.source_start_line().saturating_sub(1);
+                            let source_end = excerpt
+                                .source_line_for_output_line(
+                                    excerpt.output_end_line().saturating_sub(1),
+                                )
+                                .map_or(source_start, |line| line.saturating_sub(1));
+                            source_start <= source_row && source_row <= source_end
+                        })
+                        .map(|excerpt| {
+                            excerpt.output_start_line()
+                                + source_row
+                                    .saturating_sub(excerpt.source_start_line().saturating_sub(1))
+                        })
+                } else {
+                    None
+                };
+                let (editor, cx) =
+                    cx.add_window_view(move |_, cx| Editor::for_multi_buffer(multi_buffer, cx));
+                cx.run_until_parked();
+
+                let origin = point(px(0.), px(0.));
+                let space = size(
+                    AvailableSpace::Definite(px(1200.)),
+                    AvailableSpace::Definite(px(800.)),
+                );
+                cx.draw(origin, space, |_, _cx| editor.clone().into_any_element());
+                cx.simulate_event(ScrollWheelEvent {
+                    position: point(px(600.), px(400.)),
+                    delta: large_addition_row.map_or_else(
+                        || ScrollDelta::Pixels(point(px(0.), px(-10_000_000.))),
+                        |row| ScrollDelta::Lines(point(0., -(row as f32))),
+                    ),
+                    ..Default::default()
+                });
+                cx.run_until_parked();
+                if large_addition_row.is_some() {
+                    cx.draw(origin, space, |_, _cx| editor.clone().into_any_element());
+                }
+                group.bench_function(
+                    format!("{scenario}/{staging}/{file_count}/render_only"),
+                    |b| {
+                        b.iter_custom(|iterations| {
+                            let mut elapsed = Duration::ZERO;
+                            for _ in 0..iterations {
+                                cx.simulate_event(ScrollWheelEvent {
+                                    position: point(px(600.), px(400.)),
+                                    delta: ScrollDelta::Pixels(point(px(0.), px(24.))),
+                                    ..Default::default()
+                                });
+                                let started = std::time::Instant::now();
+                                cx.draw(origin, space, |_, _cx| editor.clone().into_any_element());
+                                elapsed += started.elapsed();
+                                black_box(editor.entity_id());
+                            }
+                            elapsed
+                        });
+                    },
+                );
+                group.bench_function(
+                    format!("{scenario}/{staging}/{file_count}/input_to_frame"),
+                    |b| {
+                        b.iter_custom(|iterations| {
+                            let mut elapsed = Duration::ZERO;
+                            for _ in 0..iterations {
+                                let started = std::time::Instant::now();
+                                cx.simulate_event(ScrollWheelEvent {
+                                    position: point(px(600.), px(400.)),
+                                    delta: ScrollDelta::Pixels(point(px(0.), px(24.))),
+                                    ..Default::default()
+                                });
+                                cx.draw(origin, space, |_, _cx| editor.clone().into_any_element());
+                                elapsed += started.elapsed();
+                                black_box(editor.entity_id());
+                            }
+                            elapsed
+                        });
+                    },
+                );
+                if let Some(target_row) = large_addition_row {
+                    group.bench_function(
+                        format!("{scenario}/{staging}/{file_count}/cold_first_entry"),
+                        |b| {
+                            b.iter_custom(|iterations| {
+                                let mut elapsed = Duration::ZERO;
+                                for _ in 0..iterations {
+                                    cx.simulate_event(ScrollWheelEvent {
+                                        position: point(px(600.), px(400.)),
+                                        delta: ScrollDelta::Lines(point(0., 1_000_000.)),
+                                        ..Default::default()
+                                    });
+                                    cx.draw(origin, space, |_, _cx| {
+                                        editor.clone().into_any_element()
+                                    });
+                                    let started = std::time::Instant::now();
+                                    cx.simulate_event(ScrollWheelEvent {
+                                        position: point(px(600.), px(400.)),
+                                        delta: ScrollDelta::Lines(point(0., -(target_row as f32))),
+                                        ..Default::default()
+                                    });
+                                    cx.draw(origin, space, |_, _cx| {
+                                        editor.clone().into_any_element()
+                                    });
+                                    elapsed += started.elapsed();
+                                    black_box((editor.entity_id(), target_row));
+                                }
+                                elapsed
+                            });
+                        },
+                    );
+
+                    let gutter_position = point(px(20.), px(400.));
+                    cx.simulate_event(MouseMoveEvent {
+                        position: gutter_position,
+                        ..Default::default()
+                    });
+                    cx.run_until_parked();
+                    cx.draw(origin, space, |_, _cx| editor.clone().into_any_element());
+                    group.bench_function(
+                        format!("{scenario}/{staging}/{file_count}/gutter_hover_scroll"),
+                        |b| {
+                            b.iter_custom(|iterations| {
+                                let mut elapsed = Duration::ZERO;
+                                for _ in 0..iterations {
+                                    let started = std::time::Instant::now();
+                                    cx.simulate_event(ScrollWheelEvent {
+                                        position: gutter_position,
+                                        delta: ScrollDelta::Pixels(point(px(0.), px(24.))),
+                                        ..Default::default()
+                                    });
+                                    cx.draw(origin, space, |_, _cx| {
+                                        editor.clone().into_any_element()
+                                    });
+                                    elapsed += started.elapsed();
+                                    black_box(editor.entity_id());
+                                }
+                                elapsed
+                            });
+                        },
+                    );
+                }
+            }
+        }
+    }
+
     group.finish();
 }
 
@@ -437,6 +752,8 @@ criterion_group!(
     multi_excerpt_model_edit_only,
     multi_excerpt_idle_frame,
     multi_excerpt_scroll_frame,
+    diff_scroll_frame,
+    diff_scroll_large_addition_frame,
     multi_excerpt_edit_frame
 );
 criterion_main!(editor_display_benches);

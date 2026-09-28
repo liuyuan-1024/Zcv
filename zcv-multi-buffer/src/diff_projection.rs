@@ -262,18 +262,33 @@ impl DiffDisplaySnapshot {
     }
 }
 impl MultiBufferSnapshot {
-    /// 当前组合映射内与逻辑行范围相交的 hunk；只查询视口变换节点及其相邻 hunk 侧。
+    /// 当前组合映射内与逻辑行范围相交的 hunk；词级差异也裁剪到该范围。
     pub fn diff_hunks_in_lines(&self, lines: Range<usize>) -> Vec<(usize, ResolvedDiffHunk)> {
         let Some(diff_display) = self.diff_display.as_deref() else {
             return Vec::new();
         };
+        let word_diff_range = self.byte_range_for_lines(lines.clone());
         resolved_diff_hunks_in_lines(
             &self.excerpts,
             &self.diff_transforms,
             &self.excerpt_sources,
             diff_display,
             lines,
+            word_diff_range,
         )
+    }
+
+    fn byte_range_for_lines(&self, lines: Range<usize>) -> Range<usize> {
+        let line_count = self.line_count();
+        let byte_at = |line: usize| {
+            if line >= line_count {
+                self.len_bytes().get()
+            } else {
+                self.line_start_byte(Line::new(line))
+                    .map_or_else(|_| self.len_bytes().get(), |offset| offset.get())
+            }
+        };
+        byte_at(lines.start)..byte_at(lines.end)
     }
 
     /// 组合文档完整显示 hunk 数；序号只在当前 diff 投影快照内稳定。
@@ -295,6 +310,7 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
     sources: &S,
     diff_display: &DiffDisplaySnapshot,
     lines: Range<usize>,
+    word_diff_range: Range<usize>,
 ) -> Vec<(usize, ResolvedDiffHunk)> {
     if lines.is_empty() {
         return Vec::new();
@@ -370,7 +386,8 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
                                     let end = output_start
                                         + diff.end.resolve_in(source_text).ok()?.get()
                                         - source_start;
-                                    Some((DiffHunkKind::Added, start..end))
+                                    (start < word_diff_range.end && word_diff_range.start < end)
+                                        .then_some((DiffHunkKind::Added, start..end))
                                 }));
                         }
                         DiffTransformHunkSide::Old => {
@@ -378,16 +395,17 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
                             if info.expanded {
                                 let output_start = at.bytes;
                                 let source_start = excerpt.source_range.start().get();
-                                accum.old_word_diffs.extend(info.base_word_diffs.iter().map(
-                                    |diff| {
+                                accum.old_word_diffs.extend(
+                                    info.base_word_diffs.iter().filter_map(|diff| {
                                         let start =
                                             output_start + info.base_byte_start + diff.start
                                                 - source_start;
                                         let end = output_start + info.base_byte_start + diff.end
                                             - source_start;
-                                        (DiffHunkKind::Deleted, start..end)
-                                    },
-                                ));
+                                        (start < word_diff_range.end && word_diff_range.start < end)
+                                            .then_some((DiffHunkKind::Deleted, start..end))
+                                    }),
+                                );
                             }
                         }
                         DiffTransformHunkSide::BoundaryStart => {
@@ -978,6 +996,7 @@ impl MultiBuffer {
             self.state.sources.as_slice(),
             diff_display,
             0..end,
+            0..self.state.diff_transforms.summary().output.text.len,
         )
     }
 

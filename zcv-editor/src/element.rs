@@ -13,8 +13,8 @@ use gpui::{
     AnyElement, App, AvailableSpace, Bounds, ContentMask, Context, DispatchPhase, Element,
     ElementId, ElementInputHandler, Entity, GlobalElementId, HitboxBehavior, InspectorElementId,
     InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PaintQuad, Pixels, Point, ScrollWheelEvent, ShapedLine, Size, Style, TextRun,
-    Window, div, fill, point, prelude::*, px, relative, size,
+    MouseUpEvent, PaintQuad, Pixels, Point, ScrollDelta, ScrollWheelEvent, ShapedLine, Size, Style,
+    TextRun, Window, div, fill, point, prelude::*, px, relative, size,
 };
 use zcv_actions::{OpenExcerpts, ToggleFold};
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
@@ -415,8 +415,6 @@ pub(super) struct EditorGeometry {
 pub(super) struct VisibleLineLayoutParams<'a> {
     pub(super) geometry: EditorGeometry,
     pub(super) active_lines: &'a BTreeSet<Line>,
-    /// 可折叠行集合（crease 显示判断；prepaint 从语言层折叠范围计算）。
-    pub(super) foldable_lines: &'a BTreeSet<Line>,
     /// 折叠入口行集合（crease 折叠态判断：已折叠 anchor 行显示展开箭头）。
     pub(super) fold_anchor_lines: &'a BTreeSet<Line>,
     pub(super) start_row: DisplayRow,
@@ -1457,17 +1455,12 @@ impl Element for EditorElement {
                     .collect()
             })
             .unwrap_or_default();
-        let foldable_lines: BTreeSet<Line> = {
-            visible_source_lines
-                .as_ref()
-                .map(|range| visible_foldable_lines(&display_snapshot, range))
-                .unwrap_or_default()
-        };
         // diff 与搜索装饰由显示链按显示版本投影；本帧只取当前视口的行范围。
         let diff_decorations = display_snapshot.diff_decorations_for_viewport(visible_rows.clone());
         let search_decorations = display_snapshot.search_decorations();
         let hunk_render = diff_decorations.rendering_for_viewport(visible_rows.clone());
         let diff_rows = &hunk_render.diff_rows;
+        let fold_query_range = visible_source_lines.clone();
         let mut layout = layout_visible_lines_from_viewport(
             VisibleViewport {
                 display_snapshot: layout_snapshot,
@@ -1480,7 +1473,6 @@ impl Element for EditorElement {
             VisibleLineLayoutParams {
                 geometry,
                 active_lines: &active_lines,
-                foldable_lines: &foldable_lines,
                 fold_anchor_lines: &fold_anchor_lines,
                 start_row,
                 scroll_offset,
@@ -1491,6 +1483,33 @@ impl Element for EditorElement {
             window,
             cx,
         );
+        let cursor_line = layout_snapshot
+            .buffer_snapshot()
+            .byte_to_line(selections.primary().head())
+            .ok();
+        let gutter_hovered = layout
+            .gutter
+            .as_ref()
+            .is_some_and(|gutter| gutter.bounds.contains(&window.mouse_position()));
+        let foldable_lines = if gutter_hovered {
+            fold_query_range.map_or_else(BTreeSet::new, |range| {
+                display_snapshot.foldable_lines_in_range(range)
+            })
+        } else {
+            display_snapshot.foldable_lines_at_lines(cursor_line.into_iter().filter(|line| {
+                layout
+                    .gutter
+                    .as_ref()
+                    .is_some_and(|gutter| gutter.rows.iter().any(|row| row.logical_line == *line))
+            }))
+        };
+        if let Some(gutter) = &mut layout.gutter {
+            for row in &mut gutter.rows {
+                if row.crease != Some(true) {
+                    row.crease = foldable_lines.contains(&row.logical_line).then_some(false);
+                }
+            }
+        }
         if let Some(range) = self.editor.read(cx).local_rename_range(cx) {
             layout.insert_local_rename_row(&range);
         }
@@ -1704,6 +1723,7 @@ impl Element for EditorElement {
         let placeholder_hitboxes = prepaint.placeholder_hitboxes.clone();
         let mouse_focus = focus.clone();
         let hunk_hover_editor = self.editor.clone();
+        let fold_hover_layout = Rc::clone(&event_layout);
         let hunk_hover_regions = Arc::new(
             prepaint
                 .diff_hunk_controls
@@ -1727,8 +1747,13 @@ impl Element for EditorElement {
                         .then_some(*hunk_index)
                     },
                 );
+                let gutter_hovered = fold_hover_layout
+                    .gutter
+                    .as_ref()
+                    .is_some_and(|gutter| gutter.bounds.contains(&event.position));
                 hunk_hover_editor.update(cx, |editor, cx| {
                     editor.set_hovered_diff_hunk(hovered_hunk, cx);
+                    editor.set_gutter_hovered(gutter_hovered, cx);
                 });
             }
         });
@@ -1841,8 +1866,15 @@ impl Element for EditorElement {
             if phase != DispatchPhase::Bubble || !scroll_hitbox.should_handle_scroll(window) {
                 return;
             }
-            let delta = event.delta.pixel_delta(scroll_line_height);
-            let handled = scroll_editor.update(cx, |editor, cx| editor.scroll_by(delta, cx));
+            let handled = scroll_editor.update(cx, |editor, cx| match event.delta {
+                ScrollDelta::Pixels(delta) => {
+                    editor.scroll_by_gesture(delta, event.touch_phase, cx)
+                }
+                ScrollDelta::Lines(delta) => editor.scroll_by(
+                    point(scroll_line_height * delta.x, scroll_line_height * delta.y),
+                    cx,
+                ),
+            });
             if handled {
                 cx.stop_propagation();
             }
@@ -2553,15 +2585,6 @@ fn visible_display_row_range(
     start..(start + count).min(line_count)
 }
 
-fn visible_foldable_lines(
-    snapshot: &DisplaySnapshot,
-    visible_lines: &Range<Line>,
-) -> BTreeSet<Line> {
-    // 显式 crease 以锚点索引 seek；
-    // 语法 crease 按显示版本的区间索引派生，滚动帧只做区间查表，不逐行重跑源投影。
-    snapshot.foldable_lines_in_range(visible_lines.clone())
-}
-
 fn source_line_byte_range(snapshot: &DisplaySnapshot, lines: &Range<Line>) -> Option<Range<usize>> {
     let buffer = snapshot.buffer_snapshot();
     let start = buffer.line_start_byte(lines.start).ok()?.get();
@@ -2620,7 +2643,6 @@ fn layout_visible_lines_from_viewport(
                 gutter: gutter_geometry,
             },
         active_lines,
-        foldable_lines,
         fold_anchor_lines,
         start_row,
         scroll_offset,
@@ -2857,14 +2879,8 @@ fn layout_visible_lines_from_viewport(
                 window
                     .text_system()
                     .shape_line(number.into(), font_size, &[run], None);
-            // 折叠指示：折叠入口行已折叠常显，可折叠行常显（不依赖光标位置）。
-            let crease = if fold_anchor_lines.contains(&logical_line) {
-                Some(true)
-            } else if foldable_lines.contains(&logical_line) {
-                Some(false)
-            } else {
-                None
-            };
+            // 折叠入口行始终显示展开指示；其余折叠按钮来自光标行或悬停视口查询。
+            let crease = fold_anchor_lines.contains(&logical_line).then_some(true);
             gutter_rows.push(GutterRow {
                 logical_line,
                 origin: point(
@@ -3220,11 +3236,13 @@ fn layout_word_diff_fragments(
             DiffHunkKind::Deleted => colors.version_control_word_deleted,
             DiffHunkKind::Modified => continue,
         };
-        for (ix, line) in layout.lines.iter().enumerate() {
+        let start_row = projected_range.start().row();
+        let end_row = projected_range.end().row();
+        let start_ix = layout.lines.partition_point(|line| line.row < start_row);
+        let end_ix = layout.lines.partition_point(|line| line.row <= end_row);
+        for (ix, line) in layout.lines[start_ix..end_ix].iter().enumerate() {
+            let ix = start_ix + ix;
             let row = line.row;
-            if row < projected_range.start().row() || row > projected_range.end().row() {
-                continue;
-            }
             let start_byte = if row == projected_range.start().row() {
                 local_byte_for_display_column(
                     line,

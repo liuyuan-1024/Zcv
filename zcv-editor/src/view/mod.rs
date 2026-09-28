@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, App, Bounds, Context, CursorStyle, Entity, EventEmitter, FocusHandle, IntoElement,
-    KeyContext, Pixels, Point, Render, Styled, TextRun, Window, div, point, prelude::*,
+    KeyContext, Pixels, Point, Render, Styled, TextRun, TouchPhase, Window, div, point, prelude::*,
 };
 use zcv_actions::{
     Backspace, Copy, Cut, Delete, DeleteToBeginningOfLine, DeleteToEndOfLine, DeleteToNextWordEnd,
@@ -274,6 +274,8 @@ pub struct Editor {
     preferred_line_length: usize,
     diff_hunk_delegate: Option<Arc<dyn DiffHunkDelegate>>,
     hovered_diff_hunk: Option<usize>,
+    /// 鼠标是否位于 gutter 内；只有进入或离开时需要刷新折叠指示。
+    gutter_hovered: bool,
     /// 拖拽选择自动滚动的限频时间戳（跨帧持久；事件频率可远超帧率，滚动频率需封顶）。
     pub(crate) last_drag_autoscroll: Cell<Instant>,
     /// 文件内搜索状态（搜索条执行过一次搜索后存在，编辑后自动重搜）。
@@ -596,6 +598,13 @@ impl Editor {
     pub(crate) fn set_hovered_diff_hunk(&mut self, hunk: Option<usize>, cx: &mut Context<Self>) {
         if self.hovered_diff_hunk != hunk {
             self.hovered_diff_hunk = hunk;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn set_gutter_hovered(&mut self, hovered: bool, cx: &mut Context<Self>) {
+        if self.gutter_hovered != hovered {
+            self.gutter_hovered = hovered;
             cx.notify();
         }
     }
@@ -1533,6 +1542,25 @@ impl Editor {
         }
     }
 
+    pub(super) fn scroll_by_gesture(
+        &mut self,
+        delta: Point<Pixels>,
+        touch_phase: TouchPhase,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let display_snapshot = self.display_snapshot(cx).clone();
+        if self
+            .scroll_manager
+            .scroll_by_gesture(delta, touch_phase, &display_snapshot)
+        {
+            self.input_layout = None;
+            cx.notify();
+            true
+        } else {
+            false
+        }
+    }
+
     /// 布局前消费待自动滚动点并应用垂直部分（见 `ScrollManager::apply_pending_autoscroll_vertical`）。
     ///
     /// 目标显示点按当前布局快照解析：软换行宽度在此帧已确定，行号与最终布局一致，避免导航请求在换行重排前固化错误的目标行。
@@ -1675,6 +1703,7 @@ impl Editor {
                 .map_or(SoftWrap::default(), |settings| settings.soft_wrap.into()),
             preferred_line_length: settings.map_or(80, |settings| settings.preferred_line_length),
             hovered_diff_hunk: None,
+            gutter_hovered: false,
             mouse_select_mode: MouseSelectMode::Character,
             pending_selection: None,
             local_rename: None,

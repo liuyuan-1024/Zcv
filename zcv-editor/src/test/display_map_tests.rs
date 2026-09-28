@@ -693,6 +693,50 @@ fn tab_width_change_updates_tab_point_without_a_line_width_cache(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn point_converter_preserves_tabs_unicode_and_wrap_across_repeated_ranges(cx: &mut TestAppContext) {
+    let text = "\t中文 e\u{301} 👩‍💻 alpha\tbeta\tgamma\n\t第二行 delta\tepsilon\n";
+    let map = wrap_map(text, 70., cx);
+    cx.run_until_parked();
+    let snapshot = display_snapshot(cx, &map);
+    let boundaries = text
+        .char_indices()
+        .map(|(offset, _)| offset)
+        .chain(std::iter::once(text.len()))
+        .collect::<Vec<_>>();
+    let mut ranges = boundaries
+        .windows(2)
+        .map(|pair| pair[0]..pair[1])
+        .collect::<Vec<_>>();
+    // 跨行和交叠查询要求游标重新定位，不能复用另一行或另一列的状态。
+    ranges.extend([0..text.len(), 0..1, 1..text.len(), 0..text.len()]);
+    let mut converter = snapshot.display_point_converter();
+    let mut full_range_result = None;
+    for range in ranges {
+        let text_range = MultiBufferRange::new(
+            MultiBufferOffset::new(range.start),
+            MultiBufferOffset::new(range.end),
+        )
+        .expect("字符边界范围必须有效");
+        let projected = converter.map(text_range).expect("范围应能连续投影");
+        if let Some(projected) = projected {
+            let start = projected.start();
+            let end = projected.end();
+            assert!(
+                (start.row().get(), start.column().get()) <= (end.row().get(), end.column().get()),
+                "范围 {range:?} 的投影必须有序"
+            );
+        }
+        if range.start == 0 && range.end == text.len() {
+            if let Some(previous) = full_range_result {
+                assert_eq!(projected, previous, "重复查询同一完整范围必须稳定");
+            } else {
+                full_range_result = Some(projected);
+            }
+        }
+    }
+}
+
+#[gpui::test]
 fn rows_consumes_the_requested_rows(cx: &mut TestAppContext) {
     let buffer = Buffer::from_text("a\nb\nc".to_string(), BufferConfig::default())
         .expect("测试 Buffer 应能创建");

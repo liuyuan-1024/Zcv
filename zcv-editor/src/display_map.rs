@@ -845,6 +845,7 @@ impl<'a> DisplayPointConverter<'a> {
     pub fn reset(&mut self) {
         self.buffer.reset();
         self.fold.reset();
+        self.tab.reset();
         self.wrap.reset();
         self.block.reset();
         self.previous_end = None;

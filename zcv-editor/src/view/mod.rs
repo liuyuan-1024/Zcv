@@ -930,13 +930,17 @@ impl Editor {
         line_height: Pixels,
         cx: &mut Context<Self>,
     ) {
+        let is_singleton = self.is_singleton_document(cx);
+        if !is_singleton {
+            self.scrollbar_marker_state = ScrollbarMarkerState::default();
+            return;
+        }
         if !self
             .scrollbar_marker_state
             .should_refresh(track_bounds.size)
         {
             return;
         }
-        let is_singleton = self.is_singleton_document(cx);
         // 后台结果携带计算所用的显示版本；安装前与当前快照比较，过期即丢弃。
         let version = display_snapshot.version();
         let task = cx.background_spawn(async move {

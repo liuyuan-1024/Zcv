@@ -27,6 +27,37 @@ use crate::scrollbar::{ScrollbarMarkerKind, marker_geometry};
 use crate::selection::SelectionSet;
 
 #[gpui::test]
+fn composite_scrollbar_refresh_cancels_tasks_and_releases_retained_inputs(cx: &mut TestAppContext) {
+    let source = test_buffer(cx, scrolling_text());
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(source, 0..40, cx)], cx);
+    });
+    let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
+    let track = Bounds::new(point(px(0.), px(0.)), gpui::size(px(15.), px(200.)));
+    let retained = Arc::new(());
+    let weak = Arc::downgrade(&retained);
+    cx.update_entity(&editor, |editor, cx| {
+        let snapshot = editor.display_snapshot(cx);
+        let pending = cx.spawn(async move |_, _| {
+            futures_lite::future::pending::<()>().await;
+            drop(retained);
+        });
+        editor.scrollbar_marker_state.begin_refresh(pending);
+        for _ in 0..3 {
+            editor.refresh_scrollbar_markers(snapshot.clone(), track, 1., px(20.), cx);
+            assert!(
+                editor.scrollbar_marker_state.pending_refresh.is_none(),
+                "组合文档应取消并停止排队滚动条标记任务"
+            );
+            assert!(editor.scrollbar_marker_groups().iter().all(Option::is_none));
+        }
+    });
+    cx.run_until_parked();
+    assert!(weak.upgrade().is_none(), "被取消的任务必须释放其持有的输入");
+}
+
+#[gpui::test]
 fn composite_refresh_restores_scroll_from_source_anchor(cx: &mut TestAppContext) {
     let first = test_buffer(
         cx,

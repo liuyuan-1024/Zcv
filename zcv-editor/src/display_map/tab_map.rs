@@ -102,7 +102,11 @@ impl TabSnapshot {
     }
 
     pub(super) fn point_cursor(&self) -> TabPointCursor<'_> {
-        TabPointCursor { snapshot: self }
+        TabPointCursor {
+            snapshot: self,
+            row: None,
+            line_text: None,
+        }
     }
 
     /// 投影行总数由下层 Fold 快照定义，不由本层编辑的行差推导。
@@ -212,21 +216,38 @@ impl TabSnapshot {
     }
 }
 
-/// 把 Fold 投影字符列转换为字节列与展开后的显示列。
+/// 把 Fold 投影字符列转换为字节列与展开后的显示列；同一查询内只保留当前行文本。
 pub(crate) struct TabPointCursor<'a> {
     snapshot: &'a TabSnapshot,
+    row: Option<usize>,
+    line_text: Option<Cow<'a, str>>,
 }
 
 impl TabPointCursor<'_> {
+    pub fn reset(&mut self) {
+        self.row = None;
+        self.line_text = None;
+    }
+
     pub fn map(&mut self, point: ProjectedPoint) -> TabPointMapping {
         let row = point.line().get();
-        let Some(text) = self.snapshot.line_text(Line::new(row)) else {
+        if point.column().get() == 0 {
+            return TabPointMapping {
+                point: TabPoint::new(row, 0),
+                fold_byte_column: 0,
+            };
+        }
+        if self.row != Some(row) {
+            self.row = Some(row);
+            self.line_text = self.snapshot.line_text(Line::new(row));
+        }
+        let Some(text) = self.line_text.as_deref() else {
             return TabPointMapping {
                 point: TabPoint::new(row, point.column().get()),
                 fold_byte_column: point.column().get(),
             };
         };
-        let content = line_content(text.as_ref());
+        let content = line_content(text);
         let fold_byte_column = byte_after_chars(content, point.column().get());
         TabPointMapping {
             point: TabPoint::new(

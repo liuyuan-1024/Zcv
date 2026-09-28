@@ -39,7 +39,7 @@ impl ItemProvider for TextFileProvider {
             Err(error) => return Task::ready(Err(anyhow::anyhow!("{error}"))),
         };
         // 普通编辑器统一经 `singleton` 构建独立组合文档（整文件可编辑 excerpt）：
-        // 项目共享 LanguageBuffer 只作为工作区源，展开 diff hunk 时的 set_excerpts 只影响本组合文档，不污染项目共享文档（ProjectDiffView 等仍引用同一 LanguageBuffer）。
+        // 项目共享 LanguageBuffer 只作为工作区源，展开 diff hunk 时的 set_excerpts 只影响本组合文档，不污染项目共享文档（DiffView 等仍引用同一 LanguageBuffer）。
         let multi_buffer = cx.new(|cx| MultiBuffer::singleton(language_buffer, cx));
         let editor = cx.new(|cx| Editor::for_multi_buffer(multi_buffer, cx));
         Task::ready(Ok(Box::new(editor) as Box<dyn ItemHandle>))

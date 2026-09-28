@@ -11,8 +11,7 @@ use zcv_workspace::Workspace;
 
 pub use git_graph::{GitGraphSerializedItemProvider, deploy_at as deploy_git_graph};
 pub use project_diff::{
-    ProjectDiffKind, ProjectDiffSerializedItemProvider, ProjectDiffView,
-    deploy_at as deploy_project_diff,
+    DiffView, ProjectDiffKind, ProjectDiffSerializedItemProvider, deploy_at as deploy_project_diff,
 };
 pub use version_control::{OnOpenGitDiff, OnOpenGitGraph, VersionControlPanel};
 

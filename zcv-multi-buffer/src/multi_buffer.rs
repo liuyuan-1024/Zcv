@@ -2053,7 +2053,7 @@ pub enum MultiBufferEvent {
     ProjectionChanged,
     Reparsed(gpui::EntityId),
     MetadataChanged,
-    /// diff 展开/折叠状态变化（宿主按展开状态重建组合片段，如 ProjectDiffView）。
+    /// diff 展开/折叠状态变化（宿主按展开状态重建组合片段，如 DiffView）。
     DiffExpansionChanged,
 }
 
@@ -5513,7 +5513,7 @@ impl MultiBuffer {
 
     pub fn file_path(&self, cx: &App) -> Option<PathBuf> {
         // 普通编辑器：从工作区源推导文件路径；
-        // 无工作区源时退回第一个可编辑片段（ProjectDiffView 等组合视图）。
+        // 无工作区源时退回第一个可编辑片段（DiffView 等组合视图）。
         self.singleton_source
             .as_ref()
             .and_then(|source| source.read(cx).file_path())

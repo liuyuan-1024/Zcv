@@ -396,7 +396,7 @@ fn single_file_version_change_matches_fresh_three_file_build(cx: &mut TestAppCon
     assert_eq!(incremental_state, fresh_state);
 }
 
-/// ProjectDiffView 形态：源路径为绝对路径、显示路径为相对路径。
+/// DiffView 形态：源路径为绝对路径、显示路径为相对路径。
 /// 组合映射树按源路径排序，中间插入与按显示路径移除都必须与之对齐。
 #[gpui::test]
 fn relative_display_paths_stay_consistent_across_middle_edit(cx: &mut TestAppContext) {

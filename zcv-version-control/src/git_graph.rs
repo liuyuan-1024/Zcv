@@ -2,7 +2,7 @@
 //!
 //! 数据来自 GitStore 的后台分批加载（`load_commit_graph`），lane 布局由 `crate::graph::GraphLayoutState` 逐行计算；
 //! 视图侧只负责用 `gpui::canvas` 把每行的绘制指令画成圆点与连线，并渲染提交文本。
-//! 与 `ProjectDiffView` 一致，通过 `deploy_at` 在 pane 中打开/复用，不做序列化持久化。
+//! 与 `DiffView` 一致，通过 `deploy_at` 在 pane 中打开/复用，不做序列化持久化。
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -554,13 +554,13 @@ impl Render for GitGraphView {
                 })
                 .collect()
         })
-        .w(content_width)
         .flex_1()
         .min_h_0()
         .track_scroll(&self.scroll_handle);
 
         let content = div()
             .w(content_width)
+            .min_w_full()
             .flex_none()
             .h_full()
             .min_h_0()
@@ -1208,6 +1208,9 @@ fn render_graph_header(
             .relative()
             .px(space::S6)
             .child(label);
+        if index == 1 {
+            cell = cell.flex_1().min_w_0();
+        }
 
         if index + 1 < COLUMN_COUNT {
             let resize_weak = weak.clone();
@@ -1257,6 +1260,7 @@ fn render_commit_column(
 ) -> gpui::Div {
     let subject = commit.subject.clone();
     let mut column = graph_column(width, colors, true)
+        .flex_1()
         .min_w_0()
         .gap(space::S8)
         .pl(space::S6)

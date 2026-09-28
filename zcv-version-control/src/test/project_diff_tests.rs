@@ -145,7 +145,7 @@ fn empty_project_diff_renders_blank_focusable_view(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project = test_project(directory.path().to_path_buf(), cx);
     let (view, cx) =
-        cx.add_window_view(move |_, cx| ProjectDiffView::new(ProjectDiffKind::Staged, project, cx));
+        cx.add_window_view(move |_, cx| DiffView::new(ProjectDiffKind::Staged, project, cx));
     cx.run_until_parked();
     let _ = cx.refresh();
     cx.update(|_, _| {});
@@ -190,9 +190,9 @@ fn project_diff_keeps_hunk_interest_while_its_multibuffer_is_empty(cx: &mut Test
         .expect("应修改文件");
 
     let project = test_project(root.clone(), cx);
-    let view = cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project, cx));
+    let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project, cx));
 
-    // ProjectDiffView 创建时 MultiBuffer 仍为空，但应立即向 GitStore 声明文件 hunk 需求。
+    // DiffView 创建时 MultiBuffer 仍为空，但应立即向 GitStore 声明文件 hunk 需求。
     cx.run_until_parked();
     cx.run_until_parked();
 
@@ -230,7 +230,7 @@ fn deleted_middle_row_projects_to_its_original_position(cx: &mut TestAppContext)
     std::fs::write(&path, changed.join("\n")).expect("应写入删除后的文件");
 
     let project = test_project(root.clone(), cx);
-    let view = cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project, cx));
+    let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project, cx));
     cx.run_until_parked();
     cx.run_until_parked();
 
@@ -302,7 +302,7 @@ fn git_status_drives_one_ordered_excerpt_per_changed_file(cx: &mut TestAppContex
     std::fs::write(root.join("untracked.txt"), "新增\n").expect("应创建未跟踪文件");
 
     let project = test_project(root.clone(), cx);
-    let view = cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project, cx));
+    let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project, cx));
     cx.run_until_parked();
     cx.run_until_parked();
 
@@ -357,7 +357,7 @@ fn deleted_excerpt_maps_to_working_tree_hunk_position(cx: &mut TestAppContext) {
     std::fs::remove_file(root.join("removed.txt")).expect("应删除文件");
 
     let project = test_project(root.clone(), cx);
-    let view = cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project, cx));
+    let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project, cx));
     cx.run_until_parked();
     cx.run_until_parked();
 
@@ -481,9 +481,8 @@ fn partially_staged_file_has_distinct_staged_and_unstaged_views(cx: &mut TestApp
     std::fs::write(&path, format!("{}\n", worktree.join("\n"))).expect("应写入工作区版本");
 
     let project = test_project(root.clone(), cx);
-    let staged_view =
-        cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Staged, project.clone(), cx));
-    let unstaged_view = cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project, cx));
+    let staged_view = cx.new(|cx| DiffView::new(ProjectDiffKind::Staged, project.clone(), cx));
+    let unstaged_view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project, cx));
     cx.run_until_parked();
     cx.run_until_parked();
     cx.run_until_parked();
@@ -546,7 +545,7 @@ fn staging_one_hunk_refreshes_the_projection_with_new_index(cx: &mut TestAppCont
     std::fs::write(&path, format!("{}\n", changed.join("\n"))).expect("应修改文件");
 
     let project = test_project(root.clone(), cx);
-    let view = cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project, cx));
+    let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project, cx));
     cx.run_until_parked();
     cx.run_until_parked();
     cx.run_until_parked();
@@ -654,7 +653,7 @@ fn expanding_hunk_then_refreshing_hunks_keeps_mapping_consistent(cx: &mut TestAp
     std::fs::write(&modified_path, "line0\n改过\nline2\nline3\nline4").expect("应修改文件");
 
     let project = test_project(root.clone(), cx);
-    let view = cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project.clone(), cx));
+    let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project.clone(), cx));
     cx.run_until_parked();
     cx.run_until_parked();
 
@@ -756,7 +755,7 @@ fn expanding_hunk_then_refreshing_hunks_keeps_mapping_consistent(cx: &mut TestAp
     });
 }
 
-/// 复现：普通编辑器展开 hunk（singleton → excerpts）后触发 git hunks 刷新，与 ProjectDiffView 共享仓库时不应让统一投影重建 panic。
+/// 复现：普通编辑器展开 hunk（singleton → excerpts）后触发 git hunks 刷新，与 DiffView 共享仓库时不应让统一投影重建 panic。
 #[gpui::test]
 fn plain_editor_expansion_then_git_refresh_keeps_diff_view_consistent(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时仓库");
@@ -790,8 +789,8 @@ fn plain_editor_expansion_then_git_refresh_keeps_diff_view_consistent(cx: &mut T
         );
         editor.toggle_diff_hunk_at(0, cx);
     });
-    // ProjectDiffView：同一仓库。
-    let view = cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project.clone(), cx));
+    // DiffView：同一仓库。
+    let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project.clone(), cx));
     cx.run_until_parked();
     cx.run_until_parked();
 
@@ -813,7 +812,7 @@ fn plain_editor_expansion_then_git_refresh_keeps_diff_view_consistent(cx: &mut T
 }
 
 /// 复现：普通编辑器展开 hunk 后编辑工作区（行数变化）再触发 git hunks 刷新，
-/// ProjectDiffView 的片段映射不应 panic。
+/// DiffView 的片段映射不应 panic。
 #[gpui::test]
 fn expansion_edit_then_refresh_keeps_diff_view_consistent(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时仓库");
@@ -855,8 +854,8 @@ fn expansion_edit_then_refresh_keeps_diff_view_consistent(cx: &mut TestAppContex
         );
         editor.toggle_diff_hunk_at(0, cx);
     });
-    // ProjectDiffView：同一仓库。
-    let view = cx.new(|cx| ProjectDiffView::new(ProjectDiffKind::Unstaged, project.clone(), cx));
+    // DiffView：同一仓库。
+    let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project.clone(), cx));
     cx.run_until_parked();
     cx.run_until_parked();
 
@@ -910,7 +909,7 @@ fn project_diff_toolbar_follows_active_item(cx: &mut TestAppContext) {
     let project = test_project(directory.path().to_path_buf(), cx);
     let toolbar = cx.new(|_| ProjectDiffToolbar::new());
     let (view, cx) =
-        cx.add_window_view(move |_, cx| ProjectDiffView::new(ProjectDiffKind::Staged, project, cx));
+        cx.add_window_view(move |_, cx| DiffView::new(ProjectDiffKind::Staged, project, cx));
     cx.update(|window, cx| {
         let location = toolbar.update(cx, |toolbar, cx| {
             toolbar.set_active_pane_item(Some(&view as &dyn ItemHandle), window, cx)

@@ -46,7 +46,7 @@ struct DiffFileSubscription {
 }
 
 struct ProjectDiffHunkDelegate {
-    view: WeakEntity<ProjectDiffView>,
+    view: WeakEntity<DiffView>,
 }
 
 impl ProjectDiffHunkDelegate {
@@ -380,7 +380,7 @@ impl ProjectDiffKind {
     }
 }
 
-pub struct ProjectDiffView {
+pub struct DiffView {
     kind: ProjectDiffKind,
     project: Entity<Project>,
     empty_focus: FocusHandle,
@@ -402,7 +402,7 @@ pub struct ProjectDiffView {
 /// 作为 Pane 工具项存在：活动 Item 是本差异视图时显示搜索栏，否则隐藏；
 /// 搜索目标解析为差异视图暴露的内层编辑器。
 pub(crate) struct ProjectDiffToolbar {
-    active_view: Option<Entity<ProjectDiffView>>,
+    active_view: Option<Entity<DiffView>>,
     search_bar: Option<Entity<SearchBar>>,
 }
 
@@ -424,7 +424,7 @@ impl ToolbarItemView for ProjectDiffToolbar {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> ToolbarItemLocation {
-        self.active_view = item.and_then(|item| item.act_as::<ProjectDiffView>(cx));
+        self.active_view = item.and_then(|item| item.act_as::<DiffView>(cx));
         let Some(view) = self.active_view.clone() else {
             if let Some(bar) = self.search_bar.take() {
                 bar.update(cx, |bar, cx| bar.set_target(None, window, cx));
@@ -520,7 +520,7 @@ impl Render for ProjectDiffToolbar {
     }
 }
 
-impl ProjectDiffView {
+impl DiffView {
     fn resolve_conflict_for_path(
         &mut self,
         path: &Path,
@@ -1228,9 +1228,9 @@ impl ProjectDiffView {
         }
     }
 }
-impl EventEmitter<EditorEvent> for ProjectDiffView {}
+impl EventEmitter<EditorEvent> for DiffView {}
 
-impl Focusable for ProjectDiffView {
+impl Focusable for DiffView {
     fn focus_handle(&self, cx: &App) -> FocusHandle {
         if self.is_empty(cx) {
             self.empty_focus.clone()
@@ -1240,7 +1240,7 @@ impl Focusable for ProjectDiffView {
     }
 }
 
-impl Render for ProjectDiffView {
+impl Render for DiffView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let is_empty = self.is_empty(cx);
         div()
@@ -1252,14 +1252,14 @@ impl Render for ProjectDiffView {
                 }
             })
             .track_focus(&self.empty_focus)
-            .key_context("ProjectDiffView")
+            .key_context("DiffView")
             .size_full()
             .bg(color::current(cx).editor_background)
             .when(!is_empty, |view| view.child(self.editor.clone()))
     }
 }
 
-impl Item for ProjectDiffView {
+impl Item for DiffView {
     type Event = EditorEvent;
 
     fn tab_content_text(&self, _cx: &App) -> SharedString {
@@ -1355,7 +1355,7 @@ impl SerializedItemProvider for ProjectDiffSerializedItemProvider {
         cx: &mut Context<Workspace>,
     ) -> Task<anyhow::Result<Box<dyn ItemHandle>>> {
         let result = project_diff_state(&state).map(|(kind, active_path)| {
-            let view = cx.new(|cx| ProjectDiffView::new(kind, project, cx));
+            let view = cx.new(|cx| DiffView::new(kind, project, cx));
             if let Some(path) = active_path {
                 view.update(cx, |view, cx| view.move_to_path(path, cx));
             }
@@ -1442,7 +1442,7 @@ fn line_at_or_end(text: &Snapshot, offset: ByteOffset) -> usize {
 }
 
 fn subscribe_to_open_excerpts(
-    view: &Entity<ProjectDiffView>,
+    view: &Entity<DiffView>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
@@ -1488,7 +1488,7 @@ pub fn deploy_at(
 ) {
     let pane = workspace.pane().clone();
     if let Some(existing) = pane.read(cx).tabs().iter().find_map(|item| {
-        item.act_as::<ProjectDiffView>(cx)
+        item.act_as::<DiffView>(cx)
             .filter(|view| view.read(cx).kind == kind)
     }) {
         let item_id = existing.entity_id();
@@ -1501,7 +1501,7 @@ pub fn deploy_at(
     }
 
     let project = workspace.project().clone();
-    let view = cx.new(|cx| ProjectDiffView::new(kind, project, cx));
+    let view = cx.new(|cx| DiffView::new(kind, project, cx));
     view.update(cx, |view, cx| view.move_to_path(path, cx));
     subscribe_to_open_excerpts(&view, window, cx);
     let focus = pane.update(cx, |pane, cx| {

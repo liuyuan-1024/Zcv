@@ -1174,7 +1174,10 @@ impl GitStore {
                         match task.await {
                             Ok(edited) => {
                                 document.update(cx, |document, cx| {
-                                    let _ = document.fast_forward(edited, cx);
+                                    if document.fast_forward(edited, cx).is_ok() {
+                                        // 修订文档反映 Git HEAD/index 的权威内容，不代表用户编辑。
+                                        document.mark_saved(cx);
+                                    }
                                 });
                             }
                             Err(_) => {

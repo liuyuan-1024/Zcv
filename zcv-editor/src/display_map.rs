@@ -1009,6 +1009,11 @@ impl DisplayMap {
     /// 语法折叠候选不参与显示拓扑同步，只在交互需要时从当前快照查询。
     pub(crate) fn snapshot(&mut self, cx: &mut Context<Self>) -> DisplaySnapshot {
         let Some(multi_buffer) = self.multi_buffer.clone() else {
+            let tab_snapshot = self.tab_map.snapshot().clone();
+            let (wrap_snapshot, wrap_edits) = self
+                .wrap_map
+                .update(cx, |map, cx| map.sync(tab_snapshot, &[], cx));
+            self.commit_snapshot(&wrap_snapshot, &wrap_edits, cx);
             return self.cached_snapshot();
         };
         let snapshot = multi_buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
@@ -1214,7 +1219,7 @@ impl DisplayMap {
         }
     }
 
-    /// 设置软换行宽度与字体；宽度/字体变化时内部重建，返回是否发生变化。
+    /// 设置软换行宽度与字体；变化时启动预算内重排，经同步入口消费净编辑。
     pub(crate) fn set_wrap_width(
         &mut self,
         wrap_width: Option<gpui::Pixels>,
@@ -1223,11 +1228,14 @@ impl DisplayMap {
         text_system: &std::sync::Arc<gpui::TextSystem>,
         cx: &mut Context<Self>,
     ) -> bool {
-        let (changed, wrap_edits) = self.wrap_map.update(cx, |map, _cx| {
-            map.set_wrap_width(wrap_width, font, font_size, text_system.clone())
+        let changed = self.wrap_map.update(cx, |map, cx| {
+            map.set_wrap_width(wrap_width, font, font_size, text_system.clone(), cx)
         });
         if changed {
-            let wrap_snapshot = self.wrap_map.read(cx).snapshot().clone();
+            let tab_snapshot = self.tab_map.snapshot().clone();
+            let (wrap_snapshot, wrap_edits) = self
+                .wrap_map
+                .update(cx, |map, cx| map.sync(tab_snapshot, &[], cx));
             self.commit_snapshot(&wrap_snapshot, &wrap_edits, cx);
         }
         changed

@@ -12,6 +12,7 @@ doctest = false
 
 [dependencies]
 anyhow.workspace = true
+futures-lite.workspace = true
 gpui.workspace = true
 sum-tree.workspace = true
 thiserror.workspace = true

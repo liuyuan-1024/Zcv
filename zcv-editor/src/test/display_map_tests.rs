@@ -759,6 +759,78 @@ fn async_rewrap_settles_after_background_task(cx: &mut TestAppContext) {
     });
 }
 
+/// 固定组合规模与调度条件，只测配置重排的前台返回和最终收敛，不包含夹具构造。
+#[gpui::test]
+#[ignore = "手动测量软换行重排的前台延迟"]
+fn soft_wrap_reflow_latency_probe(cx: &mut TestAppContext) {
+    use std::time::Instant;
+
+    cx.background_executor.set_block_on_ticks(0..=0);
+    for file_count in [2, 16, 64] {
+        let multi = cx.new(MultiBuffer::empty);
+        for file in 0..file_count {
+            let text = (0..128)
+                .map(|row| {
+                    format!(
+                        "文件 {file} 第 {row} 行 {}\n",
+                        "长行文本 abcdefghij ".repeat(12)
+                    )
+                })
+                .collect();
+            let source = cx.new(|cx| {
+                LanguageBuffer::new(
+                    Buffer::from_text(text, BufferConfig::default()).unwrap(),
+                    None,
+                    Arc::new(LanguageRegistry::new()),
+                    cx,
+                )
+            });
+            multi.update(cx, |multi, cx| {
+                multi.set_excerpts_for_path(vec![ExcerptRange::line_range(source, 0..128, cx)], cx);
+            });
+        }
+        let (subscription, snapshot) = multi.update(cx, MultiBuffer::subscribe_and_snapshot);
+        let display = cx.new(|cx| {
+            let mut map = DisplayMap::new(snapshot, cx);
+            map.set_multi_buffer(multi, subscription, cx);
+            map
+        });
+        set_wrap_width(cx, &display, Some(px(160.)), font("Helvetica"), px(16.));
+        cx.run_until_parked();
+        let mut foreground = Vec::new();
+        let mut settled = Vec::new();
+        for iteration in 0..9 {
+            let started = Instant::now();
+            set_wrap_width(
+                cx,
+                &display,
+                Some(px(if iteration % 2 == 0 { 240. } else { 160. })),
+                font("Helvetica"),
+                px(16.),
+            );
+            foreground.push(started.elapsed().as_secs_f64() * 1_000.);
+            cx.run_until_parked();
+            let snapshot = display_snapshot(cx, &display);
+            settled.push(started.elapsed().as_secs_f64() * 1_000.);
+            assert!(snapshot.line_count() > file_count * 128);
+            for row in [0, file_count * 64, file_count * 128 - 1] {
+                let offset = snapshot
+                    .buffer_snapshot()
+                    .line_start_byte(Line::new(row))
+                    .unwrap();
+                let point = snapshot.offset_to_display_point(offset).unwrap();
+                assert_eq!(snapshot.display_point_to_offset(point).unwrap(), offset);
+            }
+        }
+        foreground.sort_by(f64::total_cmp);
+        settled.sort_by(f64::total_cmp);
+        println!(
+            "软换行重排：文件={file_count}，前台毫秒 中位数={:.3} 范围={:.3}..{:.3}；收敛毫秒 中位数={:.3} 范围={:.3}..{:.3}",
+            foreground[4], foreground[0], foreground[8], settled[4], settled[0], settled[8]
+        );
+    }
+}
+
 /// 回归：非换行短行会合并成一个同构变换；同一批次两个编辑都落在该变换内时，
 /// 增量 splice 的游标不得越过第二个编辑的起点（cannot seek backward）。
 #[gpui::test]

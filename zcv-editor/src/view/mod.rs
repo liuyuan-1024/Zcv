@@ -462,7 +462,7 @@ impl Editor {
         &self.mode
     }
 
-    /// 由渲染层每帧调用：把文本区宽度与当前字体交给 DisplayMap，变化时重建换行点。
+    /// 由渲染层每帧调用：把文本区宽度与当前字体交给 DisplayMap，变化时启动预算内重排。
     pub(crate) fn set_wrap_width(
         &mut self,
         wrap_width: Option<gpui::Pixels>,

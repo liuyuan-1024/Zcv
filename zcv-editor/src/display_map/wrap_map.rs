@@ -16,6 +16,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures_lite::future::yield_now;
 use gpui::{AppContext as _, Context, Font, Pixels, Task, TextRun, TextSystem, WindowTextSystem};
 use sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use unicode_segmentation::UnicodeSegmentation;
@@ -35,6 +36,10 @@ use super::tab_map::{
     byte_for_display_column, display_width_for_fold_row, line_content,
 };
 use super::{WrapPoint, WrapRow};
+
+const WRAP_YIELD_ROW_INTERVAL: usize = 100;
+const FULL_REWRAP_BUDGET: Duration = Duration::from_millis(5);
+const INCREMENTAL_REWRAP_BUDGET: Duration = Duration::from_millis(1);
 
 /// 换行点：行内容（已剥 `\r\n`）内的半开字节分界与下一续行的假空格数。
 ///
@@ -297,6 +302,27 @@ pub(crate) struct WrapSnapshot {
 }
 
 impl WrapSnapshot {
+    fn check_invariants(&self) {
+        #[cfg(debug_assertions)]
+        {
+            let tab_rows = self.tab_snapshot.line_count();
+            assert_eq!(
+                self.transforms.summary().input,
+                TabPoint::new(tab_rows, 0),
+                "Wrap 输入点必须由当前 Tab 快照的投影边界确定"
+            );
+            for transform in self.transforms.iter() {
+                match transform.kind {
+                    TransformKind::Isomorphic => assert!(transform.input.row() > 0),
+                    TransformKind::Wrap => {
+                        assert_eq!(transform.input, TabPoint::new(1, 0));
+                        assert!(!transform.wrap_points.is_empty());
+                    }
+                }
+            }
+        }
+    }
+
     pub(crate) fn tab_snapshot(&self) -> &TabSnapshot {
         &self.tab_snapshot
     }
@@ -1032,10 +1058,6 @@ struct WrapPatch {
 }
 
 impl WrapPatch {
-    fn new(edits: Vec<WrapEdit>) -> Self {
-        Self { edits }
-    }
-
     fn iter(&self) -> std::slice::Iter<'_, WrapEdit> {
         self.edits.iter()
     }
@@ -1292,9 +1314,7 @@ pub(super) struct WrapMap {
     font_with_size: Option<(Font, Pixels)>,
     /// 由 `set_wrap_width` 缓存；重排时使用同一个 text system 做整行 shaping。
     text_system: Option<Arc<TextSystem>>,
-    /// 换行阶段的整行 shaping 缓存；与文本系统共享字体资源，但独立于窗口布局生命周期。
-    window_text_system: Option<Arc<WindowTextSystem>>,
-    /// 尚未落地到真实重排的编辑批次（tab 快照 + fold 编辑）。
+    /// 尚未落地到真实重排的编辑批次（Tab 快照 + Tab 编辑）。
     pending_edits: VecDeque<(TabSnapshot, Vec<TabEdit>)>,
     /// 后台重排期间为保持渲染最新而急切插入的换行编辑；真实重排落地时先反转再组合。
     interpolated_edits: WrapPatch,
@@ -1302,8 +1322,8 @@ pub(super) struct WrapMap {
     edits_since_sync: WrapPatch,
     /// 正在进行的后台重排任务。
     background_task: Option<Task<()>>,
-    /// 后台任务启动时已复制的队列前缀长度，完成后只消费这一段。
-    in_flight_edit_count: usize,
+    /// 重排配置／任务的代次；旧任务结果只能安装到启动它的代次。
+    rewrap_generation: u64,
 }
 
 impl std::fmt::Debug for WrapMap {
@@ -1332,28 +1352,27 @@ impl WrapMap {
             wrap_width: None,
             font_with_size: None,
             text_system: None,
-            window_text_system: None,
             pending_edits: VecDeque::new(),
             interpolated_edits: WrapPatch::default(),
             edits_since_sync: WrapPatch::default(),
             background_task: None,
-            in_flight_edit_count: 0,
+            rewrap_generation: 0,
         }
     }
 
-    /// 供后台任务使用的配置+快照副本；不带队列与任务句柄。
-    fn worker_clone(&self) -> WrapMap {
-        WrapMap {
+    fn worker(&self) -> WrapWorker {
+        let text_system = self
+            .text_system
+            .as_ref()
+            .expect("换行配置必须携带文本系统")
+            .clone();
+        WrapWorker {
             snapshot: self.snapshot.clone(),
-            wrap_width: self.wrap_width,
-            font_with_size: self.font_with_size.clone(),
-            text_system: self.text_system.clone(),
-            window_text_system: self.window_text_system.clone(),
-            pending_edits: VecDeque::new(),
-            interpolated_edits: WrapPatch::default(),
-            edits_since_sync: WrapPatch::default(),
-            background_task: None,
-            in_flight_edit_count: 0,
+            wrap_width: self.wrap_width.expect("只有开启换行才创建重排任务"),
+            font_with_size: self.font_with_size.clone().expect("换行配置必须携带字体"),
+            window_text_system: WindowTextSystem::new(text_system.clone()),
+            text_system,
+            rows_since_yield: 0,
         }
     }
 
@@ -1370,189 +1389,186 @@ impl WrapMap {
         tab_edits: &[TabEdit],
         cx: &mut Context<Self>,
     ) -> (WrapSnapshot, Vec<WrapEdit>) {
-        self.pending_edits
-            .push_back((tab_snapshot, tab_edits.to_vec()));
-        self.flush_edits(cx);
+        if self.wrap_width.is_none() {
+            let old_version = self.snapshot.tab_snapshot.version();
+            self.snapshot.tab_snapshot = tab_snapshot;
+            if self.snapshot.tab_snapshot.version() != old_version {
+                let edits = self.set_isomorphic_all();
+                self.edits_since_sync = self.edits_since_sync.compose(edits);
+                self.snapshot.version += 1;
+            }
+        } else {
+            // 一个 Tab 版本只保留一份批次；空帧仍采用最新元数据快照。
+            if let Some((last_snapshot, _)) = self.pending_edits.back_mut()
+                && last_snapshot.version() == tab_snapshot.version()
+            {
+                debug_assert!(tab_edits.is_empty());
+                *last_snapshot = tab_snapshot;
+            } else {
+                self.pending_edits
+                    .push_back((tab_snapshot, tab_edits.to_vec()));
+            }
+            self.flush_edits(cx);
+        }
+        debug_assert!(
+            self.background_task.is_some()
+                || self.wrap_width.is_none()
+                || !self.snapshot.interpolated,
+            "插值态必须由正在执行的重排任务推进到真实快照"
+        );
         (
             self.snapshot.clone(),
             mem::take(&mut self.edits_since_sync).into_inner(),
         )
     }
 
-    /// 同步应用一批编辑；返回该批次的换行编辑。
-    fn apply_edits(&mut self, tab_snapshot: TabSnapshot, tab_edits: &[TabEdit]) -> Vec<WrapEdit> {
-        if tab_snapshot.version() == self.snapshot.tab_snapshot.version() {
-            // 换行拓扑未变，但下层可能携带新的文本/元数据快照：采用新快照保持链上版本一致。
-            self.snapshot.tab_snapshot = tab_snapshot;
-            return Vec::new();
+    /// 同一安装入口处理前台完成与后台完成；只发布相对上次消费的净编辑。
+    fn install_rewrap(&mut self, mut snapshot: WrapSnapshot, edits: WrapPatch, covered: usize) {
+        if covered > 0 {
+            let (latest_tab, _) = &self.pending_edits[covered - 1];
+            debug_assert_eq!(snapshot.tab_snapshot.version(), latest_tab.version());
+            snapshot.tab_snapshot = latest_tab.clone();
         }
-        self.snapshot.tab_snapshot = tab_snapshot;
-        let edits = if let Some(wrap_width) = self.wrap_width {
-            // TabEdit 的端点属于本层点空间。Wrap 由端点扩展到受影响的完整行，
-            // 再在本层重排那些行；不维护行粒度的失效补偿状态。
-            self.update_structural(tab_edits, wrap_width)
-        } else {
-            self.set_isomorphic_all()
-        };
-        self.snapshot.interpolated = false;
-        self.check_invariants();
-        self.snapshot.version += 1;
-        edits
-    }
-
-    /// 后台重排完成：用真实编辑替换急切插值编辑，落地真实快照、处理剩余批次并通知下游观察者。
-    fn finish_background_rewrap(
-        &mut self,
-        snapshot: WrapSnapshot,
-        edits: WrapPatch,
-        cx: &mut Context<Self>,
-    ) {
+        snapshot.version = self.snapshot.version + 1;
         self.snapshot = snapshot;
-        self.snapshot.version += 1;
-        // 先反转急切插值编辑，再用真实重排编辑组合，得到「上次对外快照 → 真实快照」的净编辑。
         let mut interpolated = mem::take(&mut self.interpolated_edits);
         self.edits_since_sync = self
             .edits_since_sync
             .compose(interpolated.invert().iter().cloned())
             .compose(edits.into_inner());
-        let in_flight_edit_count = mem::take(&mut self.in_flight_edit_count);
-        self.pending_edits.drain(..in_flight_edit_count);
+        self.pending_edits.drain(..covered);
         self.background_task = None;
-        self.flush_edits(cx);
-        cx.notify();
     }
 
-    /// 尝试在时限内同步完成待处理批次；超时则启动后台重排，并急切插值 pending。
+    fn start_rewrap(
+        &mut self,
+        pending: Vec<(TabSnapshot, Vec<TabEdit>)>,
+        covered: usize,
+        budget: Duration,
+        cx: &mut Context<Self>,
+    ) {
+        self.rewrap_generation += 1;
+        let generation = self.rewrap_generation;
+        let mut worker = self.worker();
+        let task = cx.background_spawn(async move {
+            let mut edits = WrapPatch::default();
+            let mut pending = pending.into_iter().peekable();
+            while let Some((tab_snapshot, tab_edits)) = pending.next() {
+                edits = edits.compose(worker.apply_edits(tab_snapshot, &tab_edits).await);
+                if pending.peek().is_some() {
+                    yield_now().await;
+                }
+            }
+            (worker.snapshot, edits)
+        });
+        match cx.foreground_executor().block_with_timeout(budget, task) {
+            Ok((snapshot, edits)) => self.install_rewrap(snapshot, edits, covered),
+            Err(task) => {
+                self.snapshot.interpolated = true;
+                self.background_task = Some(cx.spawn(async move |this, cx| {
+                    let (snapshot, edits) = task.await;
+                    this.update(cx, |map, cx| {
+                        if generation != map.rewrap_generation {
+                            return;
+                        }
+                        map.install_rewrap(snapshot, edits, covered);
+                        map.flush_edits(cx);
+                        cx.notify();
+                    })
+                    .ok();
+                }));
+            }
+        }
+    }
+
     fn flush_edits(&mut self, cx: &mut Context<Self>) {
-        // 丢弃已被当前快照覆盖的批次（对齐 Zed `WrapMap::flush_edits`）：
-        // 它们不应再触发换行重排。
-        // Zcv 的显示链经 wrap → tab → fold → multibuffer 暴露当前快照，
-        // 所以丢弃前要采用其中最靠后的下层快照；否则只更新语法树或元数据、
-        // 文本版本未变的批次会被丢掉，显示链会停留在旧快照。
         if !self.snapshot.interpolated {
             let covered = self
                 .pending_edits
                 .iter()
-                .take_while(|(tab_snapshot, _)| {
-                    tab_snapshot.version() <= self.snapshot.tab_snapshot().version()
+                .take_while(|(snapshot, _)| {
+                    snapshot.version() <= self.snapshot.tab_snapshot.version()
                 })
                 .count();
             if covered > 0 {
-                let (tab_snapshot, _) = &self.pending_edits[covered - 1];
-                if tab_snapshot.buffer_snapshot().version()
-                    >= self.snapshot.tab_snapshot().buffer_snapshot().version()
-                {
-                    self.snapshot.tab_snapshot = tab_snapshot.clone();
-                }
+                self.snapshot.tab_snapshot = self.pending_edits[covered - 1].0.clone();
                 self.pending_edits.drain(..covered);
             }
         }
         if self.pending_edits.is_empty() {
             return;
         }
-        if self.wrap_width.is_none() {
-            // 未开启软换行：透传投影无测量成本，直接同步处理。
-            let pending: Vec<_> = self.pending_edits.drain(..).collect();
-            let mut real_edits = WrapPatch::default();
-            for (tab_snapshot, fold_edits) in pending {
-                real_edits = real_edits.compose(self.apply_edits(tab_snapshot, &fold_edits));
-            }
-            self.edits_since_sync = self.edits_since_sync.compose(real_edits.into_inner());
-            return;
-        }
         if self.background_task.is_none() {
-            let pending: Vec<(TabSnapshot, Vec<TabEdit>)> =
-                self.pending_edits.iter().cloned().collect();
-            let in_flight_edit_count = pending.len();
-            let mut worker = self.worker_clone();
-            let task = cx.background_spawn(async move {
-                let mut edits = WrapPatch::default();
-                for (tab_snapshot, fold_edits) in &pending {
-                    edits = edits.compose(worker.apply_edits(tab_snapshot.clone(), fold_edits));
-                }
-                (worker.snapshot.clone(), edits)
-            });
-            match cx
-                .foreground_executor()
-                .block_with_timeout(Duration::from_millis(3), task)
-            {
-                Ok((snapshot, edits)) => {
-                    self.snapshot = snapshot;
-                    self.snapshot.version += 1;
-                    self.edits_since_sync = self.edits_since_sync.compose(edits.into_inner());
-                    self.pending_edits.clear();
-                    return;
-                }
-                Err(task) => {
-                    self.in_flight_edit_count = in_flight_edit_count;
-                    self.background_task = Some(cx.spawn(async move |this, cx| {
-                        let (snapshot, edits) = task.await;
-                        this.update(cx, |map, cx| {
-                            map.finish_background_rewrap(snapshot, edits, cx);
-                        })
-                        .ok();
-                    }));
-                }
-            }
+            let pending = self.pending_edits.iter().cloned().collect();
+            self.start_rewrap(
+                pending,
+                self.pending_edits.len(),
+                INCREMENTAL_REWRAP_BUDGET,
+                cx,
+            );
         }
-        // 后台任务进行中：急切插值 pending，保证渲染使用最新文本；真实换行点由后台补齐。
-        let pending: Vec<(TabSnapshot, Vec<TabEdit>)> =
-            self.pending_edits.iter().cloned().collect();
-        for (tab_snapshot, fold_edits) in pending {
+        for (tab_snapshot, tab_edits) in &self.pending_edits {
             if tab_snapshot.version() <= self.snapshot.tab_snapshot.version() {
+                // 同版本批次可能推进纯元数据；不能在后台落地时恢复旧下层快照。
+                if tab_snapshot.version() == self.snapshot.tab_snapshot.version() {
+                    self.snapshot.tab_snapshot = tab_snapshot.clone();
+                }
                 continue;
             }
-            let interpolated = WrapPatch::new(self.snapshot.interpolate(tab_snapshot, &fold_edits));
-            self.edits_since_sync = self.edits_since_sync.compose(interpolated.iter().cloned());
-            self.interpolated_edits = self.interpolated_edits.compose(interpolated.into_inner());
+            let edits = self.snapshot.interpolate(tab_snapshot.clone(), tab_edits);
+            self.edits_since_sync = self.edits_since_sync.compose(edits.iter().cloned());
+            self.interpolated_edits = self.interpolated_edits.compose(edits);
         }
     }
 
-    /// 设置换行宽度与字体。只有 (宽度, 字体, 字号) 任一变化时才重建；
-    /// 返回是否发生了变化。
+    /// 配置变化取消旧任务，以当前已发布拓扑为基准重排；待消费的净编辑继续累积。
     pub(super) fn set_wrap_width(
         &mut self,
         wrap_width: Option<Pixels>,
         font: Font,
         font_size: Pixels,
         text_system: Arc<TextSystem>,
-    ) -> (bool, Vec<WrapEdit>) {
-        let width_changed = wrap_width != self.wrap_width;
-        let font_changed =
-            self.font_with_size
-                .as_ref()
-                .is_some_and(|(cached_font, cached_size)| {
-                    *cached_font != font || *cached_size != font_size
-                });
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let font_changed = self.font_with_size.as_ref() != Some(&(font.clone(), font_size));
         let text_system_changed = self
             .text_system
             .as_ref()
             .is_none_or(|cached| !Arc::ptr_eq(cached, &text_system));
-        let needs_rewrap = width_changed
-            || (font_changed && wrap_width.is_some())
-            || (text_system_changed && wrap_width.is_some());
-        if text_system_changed {
-            self.window_text_system = Some(Arc::new(WindowTextSystem::new(text_system.clone())));
-        }
+        let changed = wrap_width != self.wrap_width
+            || (wrap_width.is_some() && (font_changed || text_system_changed));
+        self.font_with_size = Some((font, font_size));
         self.text_system = Some(text_system);
-        if !needs_rewrap {
-            return (false, Vec::new());
+        if !changed {
+            return false;
         }
         self.wrap_width = wrap_width;
-        self.font_with_size = Some((font, font_size));
-        // 全量重排取代所有未落地的局部批次，取消在途任务。
+        self.rewrap_generation += 1;
+        self.background_task = None;
         self.pending_edits.clear();
         self.interpolated_edits.clear();
-        self.edits_since_sync.clear();
-        self.background_task = None;
-        self.in_flight_edit_count = 0;
-        let edits = match wrap_width {
-            None => self.set_isomorphic_all(),
-            Some(width) => self.rewrap_all(width),
-        };
-        self.snapshot.interpolated = false;
-        self.snapshot.version += 1;
-        (true, edits)
+        if wrap_width.is_some() {
+            let tab_snapshot = self.snapshot.tab_snapshot.clone();
+            let range = TabPoint::zero()..tab_snapshot.max_point();
+            self.start_rewrap(
+                vec![(
+                    tab_snapshot,
+                    vec![TabEdit {
+                        old: range.clone(),
+                        new: range,
+                    }],
+                )],
+                0,
+                FULL_REWRAP_BUDGET,
+                cx,
+            );
+        } else {
+            let edits = self.set_isomorphic_all();
+            self.edits_since_sync = self.edits_since_sync.compose(edits);
+            self.snapshot.interpolated = false;
+            self.snapshot.version += 1;
+        }
+        true
     }
 
     fn set_isomorphic_all(&mut self) -> Vec<WrapEdit> {
@@ -1561,7 +1577,7 @@ impl WrapMap {
         let unchanged = !self.snapshot.wrapped && old_rows == new_rows;
         self.snapshot.transforms = isomorphic_tree(&self.snapshot.tab_snapshot);
         self.snapshot.wrapped = false;
-        self.check_invariants();
+        self.snapshot.check_invariants();
         if unchanged {
             // 文本内容虽然更新，但逐行到显示行的拓扑保持同构；上层只需替换下层快照，
             // 不应把它伪装成显示几何编辑并强制重建 diff 装饰。
@@ -1572,12 +1588,36 @@ impl WrapMap {
             new: 0..new_rows,
         }]
     }
+}
+
+/// 重排任务的工作集；不持有实体、队列或通知句柄，测量缓存最多覆盖一个让出批次。
+struct WrapWorker {
+    snapshot: WrapSnapshot,
+    wrap_width: Pixels,
+    font_with_size: (Font, Pixels),
+    text_system: Arc<TextSystem>,
+    window_text_system: WindowTextSystem,
+    rows_since_yield: usize,
+}
+
+impl WrapWorker {
+    async fn apply_edits(
+        &mut self,
+        tab_snapshot: TabSnapshot,
+        tab_edits: &[TabEdit],
+    ) -> Vec<WrapEdit> {
+        self.snapshot.tab_snapshot = tab_snapshot;
+        let edits = self.update_structural(tab_edits).await;
+        self.snapshot.interpolated = false;
+        self.snapshot.check_invariants();
+        self.snapshot.version += 1;
+        edits
+    }
 
     /// 结构编辑的局部重排：按 TabEdit 的旧/新输入行区间替换换行变换。
     ///
     /// 未命中的前缀/后缀子树直接复用（Arc 共享）；被替换区间内的行重新测量换行。
-    /// 覆盖全量的结构编辑会退化为整段重建，与 [`Self::rewrap_all`] 等价。
-    fn update_structural(&mut self, tab_edits: &[TabEdit], wrap_width: Pixels) -> Vec<WrapEdit> {
+    async fn update_structural(&mut self, tab_edits: &[TabEdit]) -> Vec<WrapEdit> {
         let edits = tab_edit_rows(tab_edits);
         if edits.is_empty() {
             // Tab 行拓扑未变（例如只有元数据/语法推进版本）：
@@ -1593,6 +1633,9 @@ impl WrapMap {
         // 以输入行为维度的单向前进 splice：
         // 未命中的前缀/后缀子树直接复用（Arc 共享），编辑行重新测量；落
         // 在两编辑之间的旧同构段尾部以同构占位，游标绝不回退。
+        let tab_snapshot = self.snapshot.tab_snapshot.clone();
+        let mut fold_rows = tab_snapshot.fold_snapshot().rows(edits[0].1.start);
+        let mut line_cursor = None;
         let measure = self.snapshot.transforms.clone();
         let old_transforms = std::mem::replace(&mut self.snapshot.transforms, SumTree::new(()));
         let mut cursor = old_transforms.cursor::<TabPoint>(());
@@ -1618,7 +1661,21 @@ impl WrapMap {
             }
             let mut output_rows = 0;
             for tab_row in new_rows.clone() {
-                output_rows += self.push_wrap_transform(&mut buffered, tab_row, wrap_width);
+                let prepared = Self::prepared_wrap_text(
+                    &tab_snapshot,
+                    tab_row,
+                    &mut fold_rows,
+                    &mut line_cursor,
+                )
+                .expect("已投影的文本行必须能建立塑形输入");
+                output_rows += self.push_wrap_transform(&mut buffered, prepared);
+                self.rows_since_yield += 1;
+                if self.rows_since_yield == WRAP_YIELD_ROW_INTERVAL {
+                    // 任务没有窗口帧结束回调；分批释放 shaping 布局，并提供取消检查点。
+                    self.window_text_system = WindowTextSystem::new(self.text_system.clone());
+                    self.rows_since_yield = 0;
+                    yield_now().await;
+                }
             }
             measured.push(output_rows);
             new_tree.extend(buffered.drain(..), ());
@@ -1649,6 +1706,9 @@ impl WrapMap {
             if let Some(trailing) = trailing {
                 new_tree.append(trailing, ());
             }
+            if edits_iter.peek().is_some() {
+                yield_now().await;
+            }
         }
         debug_assert_eq!(
             new_tree.summary().input.row(),
@@ -1657,7 +1717,7 @@ impl WrapMap {
         );
         self.snapshot.transforms = new_tree;
         self.snapshot.wrapped = true;
-        self.check_invariants();
+        self.snapshot.check_invariants();
         wrap_edits(
             &measure,
             &edits
@@ -1668,22 +1728,6 @@ impl WrapMap {
         )
     }
 
-    /// 全量重建：对每个 tab 行重新计算换行点。
-    fn rewrap_all(&mut self, wrap_width: Pixels) -> Vec<WrapEdit> {
-        let old_rows = self.snapshot.transforms.summary().output_rows;
-        let mut transforms = Vec::new();
-        for tab_row in 0..self.snapshot.tab_snapshot.line_count() {
-            self.push_wrap_transform(&mut transforms, tab_row, wrap_width);
-        }
-        self.snapshot.transforms = SumTree::from_iter(transforms, ());
-        self.snapshot.wrapped = true;
-        self.check_invariants();
-        vec![WrapEdit {
-            old: 0..old_rows,
-            new: 0..self.snapshot.transforms.summary().output_rows,
-        }]
-    }
-
     /// 计算单个 tab 行的换行变换并压入（相邻 Isomorphic 自动合并）。
     ///
     /// 返回该行贡献的输出显示行数：
@@ -1691,18 +1735,9 @@ impl WrapMap {
     fn push_wrap_transform(
         &self,
         transforms: &mut Vec<Transform>,
-        tab_row: usize,
-        wrap_width: Pixels,
+        prepared: PreparedWrapText,
     ) -> usize {
-        // 调用点保证 tab_row 落在当前 tab 行数内；越界说明换行层与 fold/tab 快照不一致，应直接暴露。
-        let WrapFragmentKind::Text(_) = self
-            .snapshot
-            .projected_kind(tab_row)
-            .expect("换行变换只能作用于已投影的文本行");
-        let prepared = self
-            .prepared_wrap_text(tab_row)
-            .expect("已投影的文本行必须能建立塑形输入");
-        let boundaries = self.wrap_points(prepared, wrap_width);
+        let boundaries = self.wrap_points(prepared, self.wrap_width);
         if boundaries.is_empty() {
             // 无需软换行：一个输入行对应一个输出行。
             push_isomorphic(transforms, 1);
@@ -1725,8 +1760,12 @@ impl WrapMap {
     ///
     /// 软换行必须把当前行交给文字系统塑形；
     /// 这里直接消费 Fold 连续 chunk，只保留塑形所需的一份临时文本，不先生成另一份投影整行。
-    fn prepared_wrap_text(&self, tab_row: usize) -> DisplayMapResult<PreparedWrapText> {
-        let tab = &self.snapshot.tab_snapshot;
+    fn prepared_wrap_text<'a>(
+        tab: &'a TabSnapshot,
+        tab_row: usize,
+        fold_rows: &mut FoldRows<'a>,
+        line_cursor: &mut Option<MultiBufferLineCursor<'a>>,
+    ) -> DisplayMapResult<PreparedWrapText> {
         let fold = tab.fold_snapshot();
         let tab_width = tab.tab_width().get();
         if let Some(segments) = fold.fold_row_segments(ProjectedLineIndex::new(tab_row)) {
@@ -1746,17 +1785,23 @@ impl WrapMap {
             ));
         }
         let line = Line::new(tab_row);
-        let stream_line = tab
-            .stream_line_for_projected(line)
+        let stream_line = fold_rows
+            .line(tab_row, tab.line_count())
             .ok_or(CoordinateError::LineOutOfBounds(line))?;
         let buffer = fold.buffer_snapshot();
-        let range = buffer
-            .line_content_byte_range(stream_line)
+        if line_cursor.is_none() {
+            *line_cursor = MultiBufferLineCursor::new(buffer, stream_line);
+        }
+        let cursor = line_cursor
+            .as_mut()
             .ok_or(CoordinateError::LineOutOfBounds(line))?;
-        let content_len = buffer
-            .line_content_metrics(stream_line)
-            .ok_or(CoordinateError::LineOutOfBounds(line))?
-            .0;
+        if !cursor.seek(stream_line) {
+            return Err(CoordinateError::LineOutOfBounds(line).into());
+        }
+        let (start, content_len) = cursor
+            .line_content_range()
+            .ok_or(CoordinateError::LineOutOfBounds(line))?;
+        let range = MultiBufferOffset::new(start)..MultiBufferOffset::new(start + content_len);
         Ok(PreparedWrapText::from_chunks(
             StyledChunks::new(
                 ChunkText::Virtual {
@@ -1777,14 +1822,8 @@ impl WrapMap {
     /// 文本原子宽度来自整行 shaping；带 measured_width 的占位符元素作为单个原子宽度参与判定，
     /// 元素内部不产生换行点。
     fn wrap_points(&self, prepared: PreparedWrapText, wrap_width: Pixels) -> Vec<WrapPointInfo> {
-        let window_text_system = self
-            .window_text_system
-            .as_ref()
-            .expect("换行开启时必须先通过 set_wrap_width 缓存 shaping 系统");
-        let (font, font_size) = self
-            .font_with_size
-            .as_ref()
-            .expect("换行开启时必须先通过 set_wrap_width 缓存字体");
+        let window_text_system = &self.window_text_system;
+        let (font, font_size) = &self.font_with_size;
         if prepared.chars.is_empty() {
             return Vec::new();
         }
@@ -1881,27 +1920,6 @@ impl WrapMap {
         }
 
         points
-    }
-
-    fn check_invariants(&self) {
-        #[cfg(debug_assertions)]
-        {
-            let tab_rows = self.snapshot.tab_snapshot.line_count();
-            assert_eq!(
-                self.snapshot.transforms.summary().input,
-                TabPoint::new(tab_rows, 0),
-                "Wrap 输入点必须由当前 Tab 快照的投影边界确定"
-            );
-            for transform in self.snapshot.transforms.iter() {
-                match transform.kind {
-                    TransformKind::Isomorphic => assert!(transform.input.row() > 0),
-                    TransformKind::Wrap => {
-                        assert_eq!(transform.input, TabPoint::new(1, 0));
-                        assert!(!transform.wrap_points.is_empty());
-                    }
-                }
-            }
-        }
     }
 }
 

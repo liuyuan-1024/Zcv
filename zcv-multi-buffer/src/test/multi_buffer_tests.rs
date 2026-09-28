@@ -737,6 +737,25 @@ fn diff_display_change_uses_its_own_version(cx: &mut TestAppContext) {
 ///
 /// 显示层逐行读取组合行内容时依赖它，任何片段的截断/合成换行都必须保持一致。
 #[gpui::test]
+fn line_cursor_reads_empty_composite_row(cx: &mut TestAppContext) {
+    let buffer = cx.new(MultiBuffer::empty);
+    let snapshot = cx.update_entity(&buffer, |buffer, cx| buffer.snapshot(cx));
+    assert_eq!(snapshot.line_count(), 1);
+    assert_eq!(
+        snapshot.line_content_byte_range(Line::ZERO),
+        Some(MultiBufferOffset::ZERO..MultiBufferOffset::ZERO)
+    );
+    let mut cursor = snapshot
+        .line_cursor(Line::ZERO)
+        .expect("空组合文档仍有第 0 行");
+    assert_eq!(cursor.line_content_range(), Some((0, 0)));
+    assert!(cursor.seek(Line::ZERO));
+    assert!(!cursor.seek(Line::new(1)));
+    assert!(cursor.source().is_none());
+    assert!(cursor.excerpt_snapshot().is_none());
+}
+
+#[gpui::test]
 fn line_cursor_matches_stateless_line_queries(cx: &mut TestAppContext) {
     let first = singleton("src/a.rs", "甲乙\nsecond\r\n\r\nthird", cx);
     let second = singleton("src/b.rs", "无尾换行中文", cx);

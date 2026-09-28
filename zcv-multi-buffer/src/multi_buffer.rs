@@ -1443,7 +1443,7 @@ pub struct MultiBufferLineCursor<'a> {
     source_range_start: usize,
     source_range_end: usize,
     source_start_line: usize,
-    source: &'a ExcerptSourceSnapshot,
+    source: Option<&'a ExcerptSourceSnapshot>,
 }
 
 impl<'a> MultiBufferLineCursor<'a> {
@@ -1467,7 +1467,7 @@ impl<'a> MultiBufferLineCursor<'a> {
             source_range_start: 0,
             source_range_end: 0,
             source_start_line: 0,
-            source: snapshot.first_source_snapshot()?,
+            source: None,
         };
         if !this.refresh() {
             return None;
@@ -1509,9 +1509,13 @@ impl<'a> MultiBufferLineCursor<'a> {
     ///
     /// 与 MultiBufferSnapshot::line_content_byte_range 同语义：片段截断行时按片段源范围裁剪。
     pub fn line_content_range(&self) -> Option<(usize, usize)> {
+        // 没有 excerpt 的组合文档仍有一行；它没有源映射，内容范围为空。
+        let Some(source) = self.source else {
+            return Some((0, 0));
+        };
         let offset = self.line.get().checked_sub(self.at_lines)?;
         let source_line = Line::new(self.source_start_line + offset);
-        let Some(content) = self.source.text.line_content(source_line, None).ok() else {
+        let Some(content) = source.text.line_content(source_line, None).ok() else {
             return (self.line.get() + 1 == self.snapshot.line_count())
                 .then_some((self.snapshot.len_bytes().get(), 0));
         };
@@ -1548,7 +1552,7 @@ impl<'a> MultiBufferLineCursor<'a> {
     fn refresh(&mut self) -> bool {
         let (source_index, at_bytes, at_lines, span, range_start, range_end, source_start_line) = {
             let Some((excerpt, _)) = self.cursor.item() else {
-                return false;
+                return self.snapshot.len_bytes() == MultiBufferOffset::ZERO;
             };
             let at = self.cursor.start();
             let range = excerpt.source_range.range();
@@ -1571,7 +1575,7 @@ impl<'a> MultiBufferLineCursor<'a> {
         self.source_range_start = range_start;
         self.source_range_end = range_end;
         self.source_start_line = source_start_line;
-        self.source = source;
+        self.source = Some(source);
         true
     }
 }

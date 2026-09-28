@@ -40,7 +40,7 @@ members = [
 ]
 resolver = "3"
 [workspace.package]
-version = "0.9.86"
+version = "0.9.87"
 edition = "2024"
 
 [workspace.lints.clippy]
@@ -129,6 +129,7 @@ ring = "0.17.14"
 
 # ---- 桌面 UI ----
 futures = "0.3.34"
+futures-lite = "2.6.1"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "7cda6f0523f008aa4b3b4be700a6660923f9283c" }
 gpui_util = { git = "https://github.com/zed-industries/zed", rev = "7cda6f0523f008aa4b3b4be700a6660923f9283c" }
 gpui-platform = { package = "gpui_platform", git = "https://github.com/zed-industries/zed", rev = "7cda6f0523f008aa4b3b4be700a6660923f9283c", features = ["font-kit"] }

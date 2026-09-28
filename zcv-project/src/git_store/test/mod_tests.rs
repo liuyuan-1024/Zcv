@@ -950,8 +950,9 @@ fn diff_operations_stage_hunk_writes_index_and_keeps_pending(cx: &mut gpui::Test
     cx.run_until_parked();
 
     let range = diff.read_with(cx, |diff, _| {
-        assert_eq!(diff.snapshot().hunks().len(), 1);
-        diff.snapshot().hunks()[0].buffer_range.clone()
+        let hunk = diff.snapshot().hunks().next().expect("必须有一个 hunk");
+        assert_eq!(diff.snapshot().hunk_count(), 1);
+        hunk.buffer_range.clone()
     });
 
     // 操作发起后立即抑制该 hunk；乐观 index 批次只在后台写入并经权威扫描确认后前进。
@@ -1059,8 +1060,9 @@ fn staging_resolves_hunk_anchors_on_the_current_working_snapshot(cx: &mut gpui::
     });
     cx.run_until_parked();
     let range = diff.read_with(cx, |diff, _| {
-        assert_eq!(diff.snapshot().hunks().len(), 1);
-        diff.snapshot().hunks()[0].buffer_range.clone()
+        let hunk = diff.snapshot().hunks().next().expect("必须有一个 hunk");
+        assert_eq!(diff.snapshot().hunk_count(), 1);
+        hunk.buffer_range.clone()
     });
 
     // 快照之后工作区版本前进：hunk 之后追加一行。
@@ -1157,7 +1159,7 @@ fn staging_two_hunks_without_waiting_merges_pending_edits(cx: &mut gpui::TestApp
     });
     cx.run_until_parked();
     let ranges = diff.read_with(cx, |diff, _| {
-        let hunks = diff.snapshot().hunks().to_vec();
+        let hunks = diff.snapshot().hunks().cloned().collect::<Vec<_>>();
         assert_eq!(hunks.len(), 2, "应有两个 hunk");
         hunks
             .iter()

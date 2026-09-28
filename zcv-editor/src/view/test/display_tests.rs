@@ -4,7 +4,9 @@ use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 use std::path::PathBuf;
 use zcv_buffer_diff::{BufferDiff, BufferDiffInput, DiffHunkKind, DiffHunkStaging};
 use zcv_language::LanguageRegistry;
-use zcv_multi_buffer::{DiffFile, DisplayHunk, ExcerptRange, MultiBuffer, ResolvedDiffHunk};
+use zcv_multi_buffer::{
+    DiffExcerptRanges, DiffFile, DisplayHunk, ExcerptRange, MultiBuffer, ResolvedDiffHunk,
+};
 use zcv_text::{
     Affinity, Buffer, BufferConfig, ByteOffset, Edit, Line, TextRange, TransactionMetadata,
 };
@@ -76,7 +78,6 @@ fn diff_file(
     cx: &mut gpui::Context<MultiBuffer>,
 ) -> DiffFile {
     let path = PathBuf::from("src/a.rs");
-    let line_count = working.read(cx).text_snapshot().line_count();
     let language_registry = working.read(cx).language_registry();
     let diff = cx.new(|cx| {
         BufferDiff::new(
@@ -95,7 +96,7 @@ fn diff_file(
     DiffFile {
         diff,
         display_path: PathBuf::from("src/a.rs"),
-        excerpt_ranges: vec![0..line_count],
+        excerpt_ranges: DiffExcerptRanges::FullFile,
     }
 }
 
@@ -2194,8 +2195,9 @@ fn folded_deleted_hunk_anchor_is_at_the_deletion_row_boundary(cx: &mut TestAppCo
         .collect::<Vec<_>>()
         .join("\n");
     let base_text = (1..=20)
-        .map(|line| format!("line {line}\n"))
-        .collect::<String>();
+        .map(|line| format!("line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let buffer = test_buffer(cx, working_text.clone());
     buffer.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)

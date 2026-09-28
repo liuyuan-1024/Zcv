@@ -7,7 +7,26 @@ use gpui::{AppContext as _, Entity, Task, TestAppContext};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_text::{Buffer, BufferConfig};
 
-use crate::{BufferDiff, BufferDiffInput, DiffRefresh};
+use crate::{BufferDiff, BufferDiffInput, DiffRefresh, diff_line_boundary};
+
+#[test]
+fn diff_line_boundary_excludes_only_the_terminal_empty_line() {
+    let trailing_newline = Buffer::from_text("a\nb\n".to_owned(), BufferConfig::default())
+        .expect("带末尾换行的测试文本必须能创建")
+        .snapshot();
+    let no_trailing_newline = Buffer::from_text("a\nb".to_owned(), BufferConfig::default())
+        .expect("无末尾换行的测试文本必须能创建")
+        .snapshot();
+
+    assert_eq!(
+        diff_line_boundary(&trailing_newline, trailing_newline.len_bytes()),
+        trailing_newline.line_count() - 1
+    );
+    assert_eq!(
+        diff_line_boundary(&no_trailing_newline, no_trailing_newline.len_bytes()),
+        no_trailing_newline.line_count()
+    );
+}
 
 /// 建立一个指定文本与路径的语言 Buffer（diff 输入源）。
 fn language_buffer(
@@ -91,7 +110,9 @@ fn base_version_change_discards_stale_hunks(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    let hunks = cx.read_entity(&diff, |diff, _| diff.snapshot().hunks().to_vec());
+    let hunks = cx.read_entity(&diff, |diff, _| {
+        diff.snapshot().hunks().cloned().collect::<Vec<_>>()
+    });
     assert_eq!(hunks.len(), 1, "base 变化后必须重算出唯一修改块");
     assert_eq!(
         hunks[0].diff_base_byte_range,

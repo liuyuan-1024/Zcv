@@ -7,7 +7,7 @@ use std::{
 use gpui::{AppContext, TestAppContext, font, px};
 use zcv_buffer_diff::{BufferDiff, BufferDiffInput};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
-use zcv_multi_buffer::{DiffFile, ExcerptRange, MultiBuffer, MultiBufferOffset};
+use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, ExcerptRange, MultiBuffer, MultiBufferOffset};
 use zcv_text::{Affinity, Buffer, BufferConfig, Edit, Line, TransactionMetadata};
 use zcv_theme::ThemeChoice;
 
@@ -1194,13 +1194,12 @@ fn soft_wrap_stays_active_after_editing_an_expanded_diff_excerpt(cx: &mut TestAp
     cx.run_until_parked();
 
     let combined = cx.new(MultiBuffer::empty);
-    let line_count = cx.read_entity(&source, |source, _cx| source.text_snapshot().line_count());
     cx.update_entity(&combined, |buffer, cx| {
         buffer.add_diff(
             DiffFile {
                 diff,
                 display_path: path.clone(),
-                excerpt_ranges: vec![0..line_count],
+                excerpt_ranges: DiffExcerptRanges::FullFile,
             },
             cx,
         );

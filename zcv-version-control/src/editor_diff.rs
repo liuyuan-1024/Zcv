@@ -11,7 +11,7 @@ use gpui::{App, Entity};
 use zcv_buffer_diff::BufferDiffInput;
 use zcv_editor::{Editor, EditorHunk};
 use zcv_git::{FileStatus, GitRevision, parse_conflict_regions};
-use zcv_multi_buffer::DiffFile;
+use zcv_multi_buffer::{DiffExcerptRanges, DiffFile};
 use zcv_project::Project;
 use zcv_text::{ByteOffset, TextRange};
 use zcv_workspace::Pane;
@@ -162,16 +162,10 @@ pub fn inject_editor_diff(
     let diff = store.update(cx, |store, cx| {
         store.file_diff(&input, GitRevision::Head, GitRevision::Index, cx)
     });
-    let line_count = diff
-        .read(cx)
-        .working()
-        .read(cx)
-        .text_snapshot()
-        .line_count();
     let file = DiffFile {
         diff,
         display_path: path.to_path_buf(),
-        excerpt_ranges: std::iter::once(0..line_count).collect(),
+        excerpt_ranges: DiffExcerptRanges::FullFile,
     };
     editor.update(cx, |editor, cx| {
         editor.set_diff_files(vec![file], cx);

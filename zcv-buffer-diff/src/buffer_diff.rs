@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Task};
 use imara_diff::{Algorithm, Diff, InternedInput};
+use sum_tree::{Item, SumTree};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_text::{
     Anchor, Buffer as TextBuffer, BufferConfig, BufferVersion, ByteOffset, Line, Snapshot,
@@ -112,6 +113,23 @@ pub struct DiffHunk {
     pub buffer_word_diffs: Vec<Range<Anchor>>,
     /// 旧侧词级变化片段（相对 `diff_base_byte_range.start` 的字节偏移）。
     pub base_word_diffs: Vec<Range<usize>>,
+}
+
+/// 将行级 diff 的字节边界转换为文本行边界。
+///
+/// 终止换行后的 EOF 对应新增的空编辑器行，但不属于行级 diff 的内容范围；
+/// 没有终止换行时，EOF 则是最后一行之后的半开范围端点。
+pub fn diff_line_boundary(text: &Snapshot, offset: ByteOffset) -> usize {
+    let line_count = text.line_count();
+    if offset == text.len_bytes() {
+        let last_line = Line::new(line_count.saturating_sub(1));
+        if text.line_start_byte(last_line) == Ok(offset) {
+            return last_line.get();
+        }
+        return line_count;
+    }
+    text.byte_to_line(offset)
+        .map_or(line_count, |line| line.get())
 }
 
 /// pending 操作希望在 diff 结果中表达的效果。
@@ -217,14 +235,41 @@ impl PendingHunk {
 /// 展开/折叠与显示坐标由显示层派生。
 #[derive(Clone)]
 pub struct BufferDiffSnapshot {
-    hunks: Vec<DiffHunk>,
+    hunks: SumTree<DiffHunk>,
     pending_hunks: Vec<PendingHunk>,
 }
 
 impl BufferDiffSnapshot {
     /// 原始 hunks（忽略 pending 抑制）；生成编辑与跨 diff 关联时使用。
-    pub fn hunks(&self) -> &[DiffHunk] {
-        &self.hunks
+    pub fn hunks(&self) -> impl Iterator<Item = &DiffHunk> {
+        self.hunks.iter()
+    }
+
+    pub fn hunk_count(&self) -> usize {
+        self.hunks.summary().count
+    }
+
+    /// 查询与当前 working 字节范围相交的 hunks。
+    ///
+    /// 锚点范围保存在树摘要中，查询时解析到同一份 working 快照；树只下探到相交分支。
+    pub fn hunks_intersecting_working_range<'a>(
+        &'a self,
+        range: Range<ByteOffset>,
+        working: &'a Snapshot,
+    ) -> impl 'a + Iterator<Item = &'a DiffHunk> {
+        self.hunks
+            .filter::<_, DiffHunkSummary>(working, move |summary| {
+                let Some(summary_range) = &summary.range else {
+                    return false;
+                };
+                let Some(summary_start) = summary_range.start.resolve_in(working).ok() else {
+                    return true;
+                };
+                let Some(summary_end) = summary_range.end.resolve_in(working).ok() else {
+                    return true;
+                };
+                summary_start <= range.end && summary_end >= range.start
+            })
     }
 
     /// pending 抑制后应当显示的 hunks（已带暂存语义）。
@@ -247,6 +292,45 @@ impl BufferDiffSnapshot {
                 && pending.buffer_range.start.offset() == hunk.buffer_range.start.offset()
                 && pending.diff_base_byte_range == hunk.diff_base_byte_range
         })
+    }
+}
+
+#[derive(Clone, Debug)]
+/// SumTree 中 hunk 工作区锚点范围与数量的聚合摘要。
+pub struct DiffHunkSummary {
+    range: Option<Range<Anchor>>,
+    count: usize,
+}
+
+impl sum_tree::Summary for DiffHunkSummary {
+    type Context<'a> = &'a Snapshot;
+
+    fn zero<'a>(_working: Self::Context<'a>) -> Self {
+        Self {
+            range: None,
+            count: 0,
+        }
+    }
+
+    fn add_summary<'a>(&mut self, other: &Self, _working: Self::Context<'a>) {
+        self.count += other.count;
+        match (&mut self.range, &other.range) {
+            // Diff hunks 按 working 文档顺序生成，合并后保留首尾锚点即可表示子树覆盖范围。
+            (Some(current), Some(other)) => current.end = other.end,
+            (None, Some(other)) => self.range = Some(other.clone()),
+            (_, None) => {}
+        }
+    }
+}
+
+impl Item for DiffHunk {
+    type Summary = DiffHunkSummary;
+
+    fn summary(&self, _working: &Snapshot) -> Self::Summary {
+        DiffHunkSummary {
+            range: Some(self.buffer_range.clone()),
+            count: 1,
+        }
     }
 }
 
@@ -320,8 +404,9 @@ impl BufferDiff {
             key: _,
             operations,
         } = input;
+        let working_snapshot = working.read(cx).text_snapshot();
         let snapshot = BufferDiffSnapshot {
-            hunks: Vec::new(),
+            hunks: SumTree::new(&working_snapshot),
             pending_hunks: Vec::new(),
         };
         let base_source = revision_buffer(base_text, &path, &language_registry, cx);
@@ -474,7 +559,8 @@ impl BufferDiff {
         }
         let calculation_was_pending = self.calculated_versions != Some(versions);
         let working = self.working.read(cx).text_snapshot();
-        let mut changed_range = changed_hunk_range(&self.snapshot.hunks, &hunks, &working);
+        let previous_hunks = self.snapshot.hunks.iter().cloned().collect::<Vec<_>>();
+        let mut changed_range = changed_hunk_range(&previous_hunks, &hunks, &working);
         if calculation_was_pending {
             let pending_range = anchor_ranges_union(
                 self.snapshot
@@ -486,11 +572,11 @@ impl BufferDiff {
             changed_range = union_anchor_ranges(changed_range, pending_range, &working);
         }
         self.calculated_versions = Some(versions);
-        if !calculation_was_pending && hunks_equivalent(&self.snapshot.hunks, &hunks) {
+        if !calculation_was_pending && hunks_equivalent(&previous_hunks, &hunks) {
             return false;
         }
         self.snapshot = BufferDiffSnapshot {
-            hunks,
+            hunks: SumTree::from_iter(hunks, &working),
             pending_hunks: Vec::new(),
         };
         self.revision = self.revision.wrapping_add(1).max(1);

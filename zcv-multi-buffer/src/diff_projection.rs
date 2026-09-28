@@ -26,6 +26,7 @@ use crate::{
 };
 use zcv_buffer_diff::{
     BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkKind, DiffHunkStaging, DiffRefresh,
+    diff_line_boundary,
 };
 
 /// 单个 hunk 的词级变化片段集合：组合文档字节范围 + 新增/删除色。
@@ -52,8 +53,37 @@ pub struct DiffFile {
     pub diff: Entity<BufferDiff>,
     /// 组合文档中的显示路径（文件标题与导航定位）。
     pub display_path: PathBuf,
-    /// 由文档视图装配的 working 行范围；本层只在这些范围内物化 diff 变换。
-    pub excerpt_ranges: Vec<Range<usize>>,
+    /// 由文档视图装配的 working 范围；整文件范围会随源快照增长而保持整文件语义。
+    pub excerpt_ranges: DiffExcerptRanges,
+}
+
+/// diff 文档的 working 可见范围。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiffExcerptRanges {
+    /// 普通编辑器显示完整工作区源文件。
+    FullFile,
+    /// 组合 Git diff 视图装配的可见行窗口。
+    Windows(Vec<Range<usize>>),
+}
+
+impl DiffExcerptRanges {
+    fn iter(&self, line_count: usize) -> impl Iterator<Item = Range<usize>> + '_ {
+        let windows = match self {
+            Self::FullFile => &[][..],
+            Self::Windows(ranges) => ranges.as_slice(),
+        };
+        matches!(self, Self::FullFile)
+            .then_some(0..line_count)
+            .into_iter()
+            .chain(windows.iter().cloned())
+    }
+
+    fn range_count(&self) -> usize {
+        match self {
+            Self::FullFile => 1,
+            Self::Windows(ranges) => ranges.len(),
+        }
+    }
 }
 
 /// 显示 hunk 对应的源定位（hunk 操作与导航用）。
@@ -74,8 +104,8 @@ pub(crate) struct DiffState {
     diff: Entity<BufferDiff>,
     /// 组合文档中的显示路径（文件标题与导航定位）。
     display_path: PathKey,
-    /// 调用方装配的 working 行范围；MultiBuffer 不决定 diff 视图的裁剪策略。
-    excerpt_ranges: Vec<Range<usize>>,
+    /// 调用方装配的 working 范围；MultiBuffer 不决定 diff 视图的裁剪策略。
+    excerpt_ranges: DiffExcerptRanges,
     /// 显示层拥有的展开/折叠状态，与版本化 diff 结果分离。
     expansion: DiffExpansionState,
     /// BufferDiff 订阅；只作为守卫随 DiffState 生命周期创建销毁，不直接读取。
@@ -92,7 +122,7 @@ impl DiffState {
     fn new(
         diff: Entity<BufferDiff>,
         display_path: PathKey,
-        excerpt_ranges: Vec<Range<usize>>,
+        excerpt_ranges: DiffExcerptRanges,
         cx: &mut Context<MultiBuffer>,
     ) -> Self {
         let input_subscriptions = Self::subscribe_inputs(&diff, cx);
@@ -162,7 +192,7 @@ pub struct ResolvedDiffHunk {
 /// 坐标和装饰数据直接从不可变组合快照的输出变换树按需读取，不在这里复制第二份几何状态。
 #[derive(Clone, Debug)]
 pub struct DiffDisplaySnapshot {
-    /// hunk 身份集合变化时递增；普通文本编辑只改变坐标，不改变此索引。
+    /// hunk 身份或显示状态变化时递增；纯坐标变化复用当前索引版本。
     version: u64,
     segments: Arc<[PathDiffDisplay]>,
     hunk_indices: Arc<HashMap<(gpui::EntityId, Option<Anchor>), usize>>,
@@ -196,6 +226,14 @@ impl DiffDisplaySnapshot {
             version,
             segments: Arc::from(segments),
             hunk_indices: Arc::new(hunk_indices),
+        }
+    }
+
+    fn with_version(&self, version: u64) -> Self {
+        Self {
+            version,
+            segments: Arc::clone(&self.segments),
+            hunk_indices: Arc::clone(&self.hunk_indices),
         }
     }
 
@@ -585,7 +623,7 @@ impl MultiBuffer {
     pub fn update_diff_excerpt_ranges(
         &mut self,
         display_path: &Path,
-        excerpt_ranges: Vec<Range<usize>>,
+        excerpt_ranges: DiffExcerptRanges,
         refresh: DiffRefresh,
         changed_range: Range<Anchor>,
         cx: &mut Context<Self>,
@@ -629,11 +667,11 @@ impl MultiBuffer {
         );
         if working_id_matches {
             if next.diff.read(cx).is_current_version_calculated(cx) {
-                let new_resolved = resolve_file_hunks(&next, cx);
                 let working_text = working_snapshot_for(&next, cx);
+                let new_hunks = next.diff.read(cx).snapshot().hunks().collect::<Vec<_>>();
                 migrate_expansion_state(
                     &self.diffs[index].expansion,
-                    &new_resolved,
+                    &new_hunks,
                     &working_text,
                     &mut next.expansion,
                 );
@@ -792,11 +830,11 @@ impl MultiBuffer {
                 })
             {
                 if file.diff.read(cx).is_current_version_calculated(cx) {
-                    let new_resolved = resolve_file_hunks(file, cx);
                     let working_text = working_snapshot_for(file, cx);
+                    let new_hunks = file.diff.read(cx).snapshot().hunks().collect::<Vec<_>>();
                     migrate_expansion_state(
                         &old_file.expansion,
-                        &new_resolved,
+                        &new_hunks,
                         &working_text,
                         &mut file.expansion,
                     );
@@ -1142,8 +1180,13 @@ impl MultiBuffer {
                 .pending_expansion_state
                 .take()
                 .expect("已检查 pending expansion state 存在");
-            let new_hunks = resolve_file_hunks(&self.diffs[index], cx);
             let working_text = working_snapshot_for(&self.diffs[index], cx);
+            let new_hunks = self.diffs[index]
+                .diff
+                .read(cx)
+                .snapshot()
+                .hunks()
+                .collect::<Vec<_>>();
             migrate_expansion_state(
                 &old_state,
                 &new_hunks,
@@ -1250,11 +1293,16 @@ impl MultiBuffer {
     /// 用于某个文件的 diff 结果发生版本或身份变化时避免整份组合文档重建：
     /// 先按当前 hunk 收敛该文件的展开覆盖，再物化该文件，最后只重算显示坐标。
     fn replace_materialized_file(&mut self, file_index: usize, cx: &mut Context<Self>) {
-        let resolved = resolve_file_hunks(&self.diffs[file_index], cx);
         let working_text = working_snapshot_for(&self.diffs[file_index], cx);
+        let hunks = self.diffs[file_index]
+            .diff
+            .read(cx)
+            .snapshot()
+            .hunks()
+            .collect::<Vec<_>>();
         self.diffs[file_index]
             .expansion
-            .retain_for_current_hunks(&resolved, &working_text);
+            .retain_for_current_hunks(&hunks, &working_text);
 
         let expanded_by_default = self.diff_expanded_by_default;
         let mut excerpts = Vec::new();
@@ -1356,7 +1404,7 @@ impl MultiBuffer {
         }
         self.diffs[file_index].revision = Some(self.diffs[file_index].diff.read(cx).revision());
         if !topology_unchanged {
-            self.refresh_diff_display(cx);
+            self.refresh_diff_display_after_hunk_update(cx);
         }
     }
 
@@ -1409,6 +1457,12 @@ impl MultiBuffer {
         } else if line_start == line_end && line_start > 0 {
             line_start -= 1;
         }
+        let working_range = working_byte_range_for_lines(&working_text, line_start..line_end);
+        let resolved =
+            resolve_file_hunks_in_working_range(&self.diffs[file_index], working_range.clone(), cx);
+        self.diffs[file_index]
+            .expansion
+            .retain_for_current_hunks_in_range(&resolved, &working_text, working_range);
 
         let mut path_entries = Vec::new();
         let mut cursor = MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
@@ -1479,10 +1533,6 @@ impl MultiBuffer {
             line_end,
             false,
         );
-        let resolved = resolve_file_hunks(&self.diffs[file_index], cx);
-        self.diffs[file_index]
-            .expansion
-            .retain_for_current_hunks(&resolved, &working_text);
         let expanded_by_default = self.diff_expanded_by_default;
         let mut excerpts = Vec::new();
         if let Some(prefix) = prefix {
@@ -1555,7 +1605,7 @@ impl MultiBuffer {
         &mut self,
         file_index: usize,
         changed_range: &Range<Anchor>,
-        new_ranges: &[Range<usize>],
+        new_ranges: &DiffExcerptRanges,
         cx: &mut Context<Self>,
     ) -> bool {
         let file = &self.diffs[file_index];
@@ -1573,7 +1623,6 @@ impl MultiBuffer {
             PathKey::for_buffer(working.file_path(), working.buffer_id())
         };
         let line_count = working_text.line_count();
-        let resolved = resolve_file_hunks(&self.diffs[file_index], cx);
         let mut line_start = line_at_or_end(&working_text, change_start).min(line_count);
         let mut line_end = line_at_or_end(&working_text, change_end).min(line_count);
         if line_start == line_end && line_start < line_count {
@@ -1645,7 +1694,7 @@ impl MultiBuffer {
         }
 
         let mut selected_groups = vec![false; groups.len()];
-        let mut selected_ranges = vec![false; new_ranges.len()];
+        let mut selected_ranges = vec![false; new_ranges.range_count()];
         loop {
             let mut changed = false;
             for (index, group) in groups.iter().enumerate() {
@@ -1664,8 +1713,8 @@ impl MultiBuffer {
                 }
                 changed = true;
             }
-            for (index, lines) in new_ranges.iter().enumerate() {
-                if selected_ranges[index] || !line_ranges_intersect(lines, &affected_lines) {
+            for (index, lines) in new_ranges.iter(line_count).enumerate() {
+                if selected_ranges[index] || !line_ranges_intersect(&lines, &affected_lines) {
                     continue;
                 }
                 selected_ranges[index] = true;
@@ -1709,19 +1758,22 @@ impl MultiBuffer {
                 (insertion_index, insertion_index)
             };
 
+        let working_range = working_byte_range_for_lines(&working_text, affected_lines);
+        let resolved =
+            resolve_file_hunks_in_working_range(&self.diffs[file_index], working_range.clone(), cx);
         self.diffs[file_index]
             .expansion
-            .retain_for_current_hunks(&resolved, &working_text);
+            .retain_for_current_hunks_in_range(&resolved, &working_text, working_range);
         let expanded_by_default = self.diff_expanded_by_default;
         let mut excerpts = Vec::new();
-        for (index, lines) in new_ranges.iter().enumerate() {
+        for (index, lines) in new_ranges.iter(line_count).enumerate() {
             if selected_ranges[index] {
                 materialize_file_in_range(
                     &self.diffs[file_index],
                     &resolved,
                     cx,
                     expanded_by_default,
-                    lines.clone(),
+                    lines,
                     true,
                     &mut excerpts,
                 );
@@ -1916,7 +1968,7 @@ impl MultiBuffer {
         }
         // 未就绪文件也有当前 excerpts，但保留 None 版本，结果到达后按单文件替换其投影。
         self.diff_materialized_files = self.diffs.len();
-        self.refresh_diff_display(cx);
+        self.refresh_diff_display_after_hunk_update(cx);
         self.state.projection_version != old_version
     }
 
@@ -1971,7 +2023,7 @@ impl MultiBuffer {
         }
     }
 
-    /// diff hunk 身份变化时只替换对应 path 的序号索引；坐标由变换树独立派生。
+    /// 刷新已变化路径的 diff 显示输入；hunk 元数据变化也推进专属版本。
     pub(crate) fn refresh_diff_display_for_path(&mut self, path: &PathKey, cx: &mut Context<Self>) {
         let Some(current) = self.diff.as_ref() else {
             return;
@@ -1986,18 +2038,14 @@ impl MultiBuffer {
             return;
         };
         let segment = self.derive_diff_display_for_path(path);
-        if current.segments[index] == segment {
-            self.snapshot_dirty = true;
-            self.notify_if_not_syncing(cx);
-            return;
-        }
         let version = current.version.wrapping_add(1);
-        let mut segments = current.segments.to_vec();
-        segments[index] = segment;
-        // hunk 身份索引是投影拓扑的派生输入；显示几何由权威变换树按需读取。
-        self.diff = Some(Arc::new(DiffDisplaySnapshot::from_segments(
-            version, segments,
-        )));
+        self.diff = Some(if current.segments[index] == segment {
+            Arc::new(current.with_version(version))
+        } else {
+            let mut segments = current.segments.to_vec();
+            segments[index] = segment;
+            Arc::new(DiffDisplaySnapshot::from_segments(version, segments))
+        });
         self.snapshot_dirty = true;
         self.notify_if_not_syncing(cx);
     }
@@ -2006,19 +2054,30 @@ impl MultiBuffer {
     ///
     /// 普通源编辑复用身份索引，不进入这里。
     pub(crate) fn refresh_diff_display(&mut self, cx: &mut Context<Self>) {
+        self.refresh_diff_display_inner(false, cx);
+    }
+
+    fn refresh_diff_display_after_hunk_update(&mut self, cx: &mut Context<Self>) {
+        self.refresh_diff_display_inner(true, cx);
+    }
+
+    fn refresh_diff_display_inner(&mut self, hunk_display_changed: bool, cx: &mut Context<Self>) {
         let Some(current) = self.diff.as_ref() else {
             return;
         };
         let segments = self.derive_diff_display_segments();
-        if current.segments.as_ref() == segments.as_slice() {
+        let identities_unchanged = current.segments.as_ref() == segments.as_slice();
+        if identities_unchanged && !hunk_display_changed {
             self.snapshot_dirty = true;
             self.notify_if_not_syncing(cx);
             return;
         }
         let version = current.version.wrapping_add(1);
-        self.diff = Some(Arc::new(DiffDisplaySnapshot::from_segments(
-            version, segments,
-        )));
+        self.diff = Some(if identities_unchanged {
+            Arc::new(current.with_version(version))
+        } else {
+            Arc::new(DiffDisplaySnapshot::from_segments(version, segments))
+        });
         self.snapshot_dirty = true;
         self.notify_if_not_syncing(cx);
     }
@@ -2034,13 +2093,41 @@ fn resolve_file_hunks(file: &DiffState, cx: &App) -> Vec<ResolvedHunk> {
         let diff = entity.read(cx);
         let working_text = diff.working().read(cx).text_snapshot();
         let base_text = diff.base_source().map(|base| base.read(cx).text_snapshot());
-        let hunks = diff.snapshot().hunks().to_vec();
+        let hunks = diff.snapshot().hunks().collect::<Vec<_>>();
         (working_text, base_text, hunks)
     };
     hunks
         .iter()
         .map(|hunk| resolve_hunk(hunk, &working_text, base_text.as_ref()))
         .collect()
+}
+
+fn resolve_file_hunks_in_working_range(
+    file: &DiffState,
+    range: Range<ByteOffset>,
+    cx: &App,
+) -> Vec<ResolvedHunk> {
+    let diff = file.diff.read(cx);
+    let working_text = diff.working().read(cx).text_snapshot();
+    let base_text = diff.base_source().map(|base| base.read(cx).text_snapshot());
+    diff.snapshot()
+        .hunks_intersecting_working_range(range, &working_text)
+        .map(|hunk| resolve_hunk(hunk, &working_text, base_text.as_ref()))
+        .collect()
+}
+
+fn working_byte_range_for_lines(working: &Snapshot, lines: Range<usize>) -> Range<ByteOffset> {
+    let line_count = working.line_count();
+    let line_start = |line| {
+        if line >= line_count {
+            working.len_bytes()
+        } else {
+            working
+                .line_start_byte(Line::new(line))
+                .unwrap_or(working.len_bytes())
+        }
+    };
+    line_start(lines.start)..line_start(lines.end)
 }
 
 /// 该文件 working 源当前的文本快照。
@@ -2065,10 +2152,11 @@ fn resolve_hunk(hunk: &DiffHunk, working: &Snapshot, base: Option<&Snapshot>) ->
         .end
         .resolve_in(working)
         .unwrap_or_else(|_| hunk.buffer_range.end.offset());
-    let buffer_lines = line_at_or_end(working, buffer_start)..line_at_or_end(working, buffer_end);
+    let buffer_lines =
+        diff_line_boundary(working, buffer_start)..diff_line_boundary(working, buffer_end);
     let base_lines = base.map_or(0..0, |base| {
-        line_at_or_end(base, ByteOffset::new(hunk.diff_base_byte_range.start))
-            ..line_at_or_end(base, ByteOffset::new(hunk.diff_base_byte_range.end))
+        diff_line_boundary(base, ByteOffset::new(hunk.diff_base_byte_range.start))
+            ..diff_line_boundary(base, ByteOffset::new(hunk.diff_base_byte_range.end))
     });
     ResolvedHunk {
         buffer_range: hunk.buffer_range.clone(),
@@ -2084,6 +2172,9 @@ fn resolve_hunk(hunk: &DiffHunk, working: &Snapshot, base: Option<&Snapshot>) ->
 
 /// 字节偏移所在行；偏移等于文本末尾（或多字节边界之外）时取 line_count。
 fn line_at_or_end(text: &Snapshot, offset: ByteOffset) -> usize {
+    if offset == text.len_bytes() {
+        return text.line_count();
+    }
     text.byte_to_line(offset)
         .map_or_else(|_| text.line_count(), |line| line.get())
 }
@@ -2215,8 +2306,29 @@ impl DiffExpansionState {
     }
 
     /// 只保留仍能对应到当前 hunk 的显式覆盖。
-    fn retain_for_current_hunks(&mut self, hunks: &[ResolvedHunk], working: &Snapshot) {
+    fn retain_for_current_hunks(&mut self, hunks: &[&DiffHunk], working: &Snapshot) {
         self.overrides.retain(|over| {
+            hunks.iter().any(|hunk| {
+                hunk.kind == over.kind
+                    && anchor_matches(&over.hunk_start, &hunk.buffer_range.start, working)
+            })
+        });
+    }
+
+    /// 只校验本次局部投影更新覆盖到的展开状态。
+    fn retain_for_current_hunks_in_range(
+        &mut self,
+        hunks: &[ResolvedHunk],
+        working: &Snapshot,
+        range: Range<ByteOffset>,
+    ) {
+        self.overrides.retain(|over| {
+            let Ok(offset) = over.hunk_start.resolve_in(working) else {
+                return false;
+            };
+            if offset < range.start || offset > range.end {
+                return true;
+            }
             hunks.iter().any(|hunk| {
                 hunk.kind == over.kind
                     && anchor_matches(&over.hunk_start, &hunk.buffer_range.start, working)
@@ -2241,7 +2353,7 @@ fn anchor_matches(a: &Anchor, b: &Anchor, working: &Snapshot) -> bool {
 /// 显式覆盖只在对应到同一 hunk 时随位置迁移；hunk 身份变化时回落到展开策略默认值。
 fn migrate_expansion_state(
     old_expansion: &DiffExpansionState,
-    new: &[ResolvedHunk],
+    new: &[&DiffHunk],
     working: &Snapshot,
     expansion: &mut DiffExpansionState,
 ) {
@@ -2269,8 +2381,15 @@ fn materialize_file(
     expanded_by_default: bool,
     excerpts: &mut Vec<ExcerptRange>,
 ) {
-    let resolved = resolve_file_hunks(file, cx);
-    for range in file.excerpt_ranges.iter().cloned() {
+    let working = file.diff.read(cx).working().clone();
+    let working_text = working.read(cx).text_snapshot();
+    let line_count = working_text.line_count();
+    for range in file.excerpt_ranges.iter(line_count) {
+        let resolved = resolve_file_hunks_in_working_range(
+            file,
+            working_byte_range_for_lines(&working_text, range.clone()),
+            cx,
+        );
         materialize_file_in_range(
             file,
             &resolved,

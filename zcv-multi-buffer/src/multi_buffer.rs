@@ -9,7 +9,8 @@ mod diff_projection;
 mod path_key;
 
 pub use diff_projection::{
-    DiffDisplaySnapshot, DiffFile, DiffHunkSource, DisplayHunk, ResolvedDiffHunk, WordDiffs,
+    DiffDisplaySnapshot, DiffExcerptRanges, DiffFile, DiffHunkSource, DisplayHunk,
+    ResolvedDiffHunk, WordDiffs,
 };
 pub(crate) use path_key::{PathKey, PathKeyIndex};
 
@@ -388,22 +389,32 @@ impl ExcerptContext {
 
     /// 用目标源快照的不衰减坐标索引把锚点范围推进到当前坐标。
     ///
-    /// outside 决定边界插入是否纳入；坐标索引不衰减，不会因编辑日志预算裁剪而失效。
-    fn mapped(&self, snapshot: &Snapshot, outside: bool) -> TextResult<Self> {
+    /// 起止 affinity 分别决定边界处的插入归属；坐标索引不衰减，不会因编辑日志预算裁剪而失效。
+    fn mapped(
+        &self,
+        snapshot: &Snapshot,
+        start_affinity: Affinity,
+        end_affinity: Affinity,
+    ) -> TextResult<Self> {
         let range = self.range();
         // 位置推进必须用“自锚点版本以来的全部坐标增量”：范围之前的编辑同样会平移它。
         let map = snapshot.position_map_since(self.version())?;
-        let mapped = map
-            .map_old_range_with_stickiness(
-                range,
-                if outside {
-                    Stickiness::Expand
-                } else {
-                    Stickiness::Never
-                },
-            )
+        let mapped_start = map
+            .map_old_position_with_affinity(range.start(), start_affinity)
             .value();
-        Ok(Self::new(snapshot.version(), mapped, outside))
+        let mapped_end = map
+            .map_old_position_with_affinity(range.end(), end_affinity)
+            .value();
+        let mapped = if mapped_start <= mapped_end {
+            TextRange::new(mapped_start, mapped_end)
+        } else {
+            TextRange::new(mapped_end, mapped_end)
+        }
+        .expect("映射后的 excerpt 范围必须有序");
+        Ok(Self {
+            start: Anchor::new(snapshot.version(), mapped.start()).with_affinity(start_affinity),
+            end: Anchor::new(snapshot.version(), mapped.end()).with_affinity(end_affinity),
+        })
     }
 }
 
@@ -4173,11 +4184,26 @@ impl MultiBuffer {
         let total = self.state.diff_transforms.summary().output.count;
         let mut entries = Vec::new();
         let mut records = SourceEditRecords::default();
+        let source_excerpt_count = {
+            let mut cursor =
+                MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
+            cursor.seek_path(&path, Bias::Left);
+            let mut count = 0;
+            while let Some((excerpt, _)) = cursor.item() {
+                if excerpt.path != path {
+                    break;
+                }
+                count += usize::from(excerpt.source_id == Some(source_id));
+                cursor.next();
+            }
+            count
+        };
         {
             let mut cursor =
                 MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
             cursor.seek_path(&path, Bias::Left);
             let mut local = 0usize;
+            let mut source_excerpt_index = 0usize;
             let mut output_byte = path_output_start;
             while let Some((output, transform)) = cursor.item() {
                 if output.path != path {
@@ -4191,14 +4217,33 @@ impl MultiBuffer {
                         excerpt_len: ExcerptOffset::new(entry.text_summary.len),
                         source_range: entry.source_range.range(),
                     });
-                    // outside = 本次编辑落在此 excerpt（直接编辑）；其它 excerpt 不吸收边界插入。
-                    let outside = expanded_excerpts
-                        .is_none_or(|expanded| expanded.contains(&(start_index + local)));
                     let source = &self.state.sources[entry.source_index];
                     // 源范围的权威表示是 Anchor：用不衰减坐标索引推进。
+                    let (start_affinity, end_affinity) = if expanded_excerpts.is_none() {
+                        // 外部插入落在相邻 excerpt 的公共边界时，归后继 excerpt；
+                        // 空 excerpt 与最后一个 excerpt 都接收其边界处的插入。
+                        source_excerpt_index += 1;
+                        let excerpt_range = entry.source_range.range();
+                        (
+                            Affinity::Before,
+                            if excerpt_range.is_empty()
+                                || source_excerpt_index == source_excerpt_count
+                            {
+                                Affinity::After
+                            } else {
+                                Affinity::Before
+                            },
+                        )
+                    } else if expanded_excerpts
+                        .is_some_and(|expanded| expanded.contains(&(start_index + local)))
+                    {
+                        (Affinity::Before, Affinity::After)
+                    } else {
+                        (Affinity::After, Affinity::Before)
+                    };
                     entry.source_range = entry
                         .source_range
-                        .mapped(&source.text, outside)
+                        .mapped(&source.text, start_affinity, end_affinity)
                         .expect("源编辑必须能由不衰减坐标索引解析");
                     entry.match_ranges = entry
                         .match_ranges

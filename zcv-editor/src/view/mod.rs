@@ -1,6 +1,6 @@
 //! Editor View 的跨帧状态与交互。
 
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+use zcv_multi_buffer::{DiffExcerptRanges, MultiBufferOffset, MultiBufferRange};
 
 use std::cell::Cell;
 use std::ops::Range;
@@ -540,7 +540,7 @@ impl Editor {
     pub fn update_diff_excerpt_ranges(
         &mut self,
         display_path: &std::path::Path,
-        excerpt_ranges: Vec<Range<usize>>,
+        excerpt_ranges: DiffExcerptRanges,
         refresh: zcv_buffer_diff::DiffRefresh,
         changed_range: Range<zcv_text::Anchor>,
         cx: &mut Context<Self>,

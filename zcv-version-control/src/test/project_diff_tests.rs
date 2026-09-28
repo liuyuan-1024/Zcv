@@ -6,7 +6,7 @@ use gpui::{AppContext as _, TestAppContext};
 
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
-use zcv_multi_buffer::ExcerptDiffKind;
+use zcv_multi_buffer::{DiffExcerptRanges, ExcerptDiffKind};
 use zcv_text::{Buffer, BufferConfig, Edit, Line, TransactionMetadata};
 
 #[test]
@@ -118,7 +118,6 @@ fn plain_diff_file(
     cx: &mut Context<Editor>,
 ) -> DiffFile {
     let registry = working.read(cx).language_registry();
-    let line_count = working.read(cx).text_snapshot().line_count();
     let diff = cx.new(|cx| {
         BufferDiff::new(
             BufferDiffInput {
@@ -136,7 +135,7 @@ fn plain_diff_file(
     DiffFile {
         diff,
         display_path: path,
-        excerpt_ranges: vec![0..line_count],
+        excerpt_ranges: DiffExcerptRanges::FullFile,
     }
 }
 
@@ -202,9 +201,11 @@ fn project_diff_keeps_hunk_interest_while_its_multibuffer_is_empty(cx: &mut Test
             multi_buffer.update(cx, |buffer, cx| buffer.snapshot(cx).text_bytes()),
         )
         .expect("投影文本应为 UTF-8");
+        assert_eq!(text, "line1\nline2\n原内容\n新内容\nline4\nline5\n");
         assert_eq!(
-            text,
-            "line0\nline1\nline2\n原内容\n新内容\nline4\nline5\nline6\n"
+            multi_buffer.read(cx).diff_hunks().len(),
+            1,
+            "组合文档最初为空时，GitStore 的 hunk 请求仍应产出可见 hunk"
         );
     });
 }
@@ -241,7 +242,7 @@ fn deleted_middle_row_projects_to_its_original_position(cx: &mut TestAppContext)
                 .update(cx, |buffer, cx| buffer.snapshot(cx).text_bytes()),
         )
         .expect("投影应为 UTF-8");
-        let text_lines = text.split('\n').collect::<Vec<_>>();
+        let text_lines = text.lines().collect::<Vec<_>>();
         assert_eq!(text_lines.len(), 5, "展开后只显示 hunk 与两行上下文");
         assert_eq!(text_lines[0], "line 15", "上下文从 hunk 前两行开始");
         assert_eq!(text_lines[1], "line 16", "第 16 行顺序保持");
@@ -265,7 +266,7 @@ fn deleted_middle_row_projects_to_its_original_position(cx: &mut TestAppContext)
                 .update(cx, |buffer, cx| buffer.snapshot(cx).text_bytes()),
         )
         .expect("投影应为 UTF-8");
-        let text_lines = text.split('\n').collect::<Vec<_>>();
+        let text_lines = text.lines().collect::<Vec<_>>();
         assert_eq!(text_lines.len(), 4, "折叠后仍只显示 hunk 上下文：{text:?}");
         assert!(!text_lines.contains(&"line 17"), "折叠后旧侧行应消失");
         assert_eq!(text_lines[0], "line 15", "折叠后仍从两行上下文开始");

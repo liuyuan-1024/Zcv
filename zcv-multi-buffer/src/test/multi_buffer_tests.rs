@@ -84,26 +84,23 @@ impl MultiBuffer {
         };
         let files = files
             .into_iter()
-            .map(|file| {
-                let line_count = file.working.read(cx).text_snapshot().line_count();
-                DiffFile {
-                    diff: cx.new(|cx| {
-                        BufferDiff::new(
-                            BufferDiffInput {
-                                working: file.working,
-                                path: file.path,
-                                base_text: file.base_text.as_deref().map(str::to_owned),
-                                index_text: file.index_text.as_deref().map(str::to_owned),
-                                language_registry: Arc::new(LanguageRegistry::new()),
-                                key: 0,
-                                operations: file.operations,
-                            },
-                            cx,
-                        )
-                    }),
-                    display_path: file.display_path,
-                    excerpt_ranges: vec![0..line_count],
-                }
+            .map(|file| DiffFile {
+                diff: cx.new(|cx| {
+                    BufferDiff::new(
+                        BufferDiffInput {
+                            working: file.working,
+                            path: file.path,
+                            base_text: file.base_text.as_deref().map(str::to_owned),
+                            index_text: file.index_text.as_deref().map(str::to_owned),
+                            language_registry: Arc::new(LanguageRegistry::new()),
+                            key: 0,
+                            operations: file.operations,
+                        },
+                        cx,
+                    )
+                }),
+                display_path: file.display_path,
+                excerpt_ranges: DiffExcerptRanges::FullFile,
             })
             .collect();
         self.set_diff_files(files, cx)
@@ -130,7 +127,6 @@ fn test_diff_file(
     cx: &mut gpui::Context<MultiBuffer>,
 ) -> DiffFile {
     let native_path = PathBuf::from(path);
-    let line_count = working.read(cx).text_snapshot().line_count();
     DiffFile {
         diff: cx.new(|cx| {
             BufferDiff::new(
@@ -147,7 +143,7 @@ fn test_diff_file(
             )
         }),
         display_path: PathBuf::from(path),
-        excerpt_ranges: vec![0..line_count],
+        excerpt_ranges: DiffExcerptRanges::FullFile,
     }
 }
 
@@ -448,7 +444,7 @@ fn relative_display_paths_stay_consistent_across_middle_edit(cx: &mut TestAppCon
     let b_diff = DiffFile {
         diff: test_diff_entity(b.clone(), "/repo/src/b.rs", Some("b1\nbX\n"), None, cx),
         display_path: PathBuf::from("src/b.rs"),
-        excerpt_ranges: vec![0..2],
+        excerpt_ranges: DiffExcerptRanges::Windows(vec![0..2]),
     };
     three.update(cx, |buffer, cx| {
         assert!(buffer.add_diff(b_diff, cx));
@@ -2863,7 +2859,7 @@ fn diff_projection_materializes_only_caller_supplied_excerpt_ranges(cx: &mut Tes
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         let mut file = test_diff_file(source, path, &base_text, cx);
-        file.excerpt_ranges = vec![19..22];
+        file.excerpt_ranges = DiffExcerptRanges::Windows(vec![19..22]);
         buffer.add_diff(file, cx);
     });
     cx.run_until_parked();

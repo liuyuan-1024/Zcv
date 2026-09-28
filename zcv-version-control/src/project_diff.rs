@@ -14,12 +14,12 @@ use gpui::{
     ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity, Window, div,
     prelude::*,
 };
-use zcv_buffer_diff::{BufferDiff, BufferDiffEvent, BufferDiffInput};
+use zcv_buffer_diff::{BufferDiff, BufferDiffEvent, BufferDiffInput, diff_line_boundary};
 use zcv_editor::{DiffHunkDelegate, Editor, EditorEvent, EditorHunk, HunkControlTarget};
 use zcv_git::{
     ConflictChoice, FileStatus, GitHunkOperation, GitRevision, StatusCode, parse_conflict_regions,
 };
-use zcv_multi_buffer::{DiffFile, DiffHunkSource, DisplayHunk};
+use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, DiffHunkSource, DisplayHunk};
 use zcv_multi_buffer::{ExcerptLocation, ExcerptRange, MultiBuffer};
 use zcv_path::AbsolutePathBuf;
 use zcv_project::{GitStoreEvent, Project};
@@ -1386,23 +1386,23 @@ fn project_diff_excerpt_ranges(
     diff: &Entity<BufferDiff>,
     context_lines: usize,
     cx: &App,
-) -> Vec<Range<usize>> {
+) -> DiffExcerptRanges {
     let diff = diff.read(cx);
     let working = diff.working().clone();
     let working_text = working.read(cx).text_snapshot();
     let line_count = working_text.line_count();
     if diff.is_created() && !diff.is_current_version_calculated(cx) {
-        return std::iter::once(0..line_count).collect();
+        return DiffExcerptRanges::FullFile;
     }
     if !diff.is_current_version_calculated(cx) {
-        return Vec::new();
+        return DiffExcerptRanges::Windows(Vec::new());
     }
     let hunks = diff.snapshot().visible_hunks();
     if hunks.is_empty() {
         return if diff.is_created() {
-            std::iter::once(0..line_count).collect()
+            DiffExcerptRanges::FullFile
         } else {
-            Vec::new()
+            DiffExcerptRanges::Windows(Vec::new())
         };
     }
 
@@ -1418,10 +1418,10 @@ fn project_diff_excerpt_ranges(
             .end
             .resolve_in(&working_text)
             .expect("当前 BufferDiff hunk 必须能映射到 working 快照");
-        let start = line_at_or_end(&working_text, start)
+        let start = diff_line_boundary(&working_text, start)
             .min(line_count)
             .saturating_sub(context_lines);
-        let end = line_at_or_end(&working_text, end)
+        let end = diff_line_boundary(&working_text, end)
             .min(line_count)
             .saturating_add(context_lines)
             .min(line_count);
@@ -1433,12 +1433,7 @@ fn project_diff_excerpt_ranges(
             ranges.push(start..end);
         }
     }
-    ranges
-}
-
-fn line_at_or_end(text: &Snapshot, offset: ByteOffset) -> usize {
-    text.byte_to_line(offset)
-        .map_or_else(|_| text.line_count(), |line| line.get())
+    DiffExcerptRanges::Windows(ranges)
 }
 
 fn subscribe_to_open_excerpts(

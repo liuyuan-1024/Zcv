@@ -647,16 +647,11 @@ impl GitStore {
                 ) else {
                     continue;
                 };
-                for hunk in diff_ref.snapshot().hunks() {
-                    let (Ok(hunk_start), Ok(hunk_end)) = (
-                        hunk.buffer_range.start.resolve_in(&working_text),
-                        hunk.buffer_range.end.resolve_in(&working_text),
-                    ) else {
-                        continue;
-                    };
-                    if hunk_start.get() <= end.get() && start.get() <= hunk_end.get() {
-                        hunks.push(hunk.clone());
-                    }
+                for hunk in diff_ref
+                    .snapshot()
+                    .hunks_intersecting_working_range(start..end, &working_text)
+                {
+                    hunks.push(hunk.clone());
                 }
             }
             hunks.sort_by_key(|hunk| hunk.buffer_range.start.offset());

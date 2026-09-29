@@ -44,6 +44,223 @@ fn block_placements(snapshot: &BlockSnapshot) -> Vec<Arc<BlockPlacement>> {
     placements
 }
 
+fn assert_current_projection(snapshot: &BlockSnapshot) {
+    let fresh = BlockSnapshot::new(snapshot.wrap_snapshot.clone(), &snapshot.folded_buffers);
+    let rows = |snapshot: &BlockSnapshot| {
+        let mut cursor = snapshot.rows(DisplayRow::ZERO, snapshot.line_count());
+        std::iter::from_fn(|| cursor.next()).collect::<Vec<_>>()
+    };
+    assert_eq!(rows(snapshot), rows(&fresh), "增量显示行必须与当前快照一致");
+    let buffer = snapshot.wrap_snapshot.buffer_snapshot();
+    for row in 0..buffer.line_count() {
+        let offset = buffer.line_start_byte(Line::new(row)).unwrap();
+        let point = snapshot.offset_to_display_point(offset).unwrap();
+        assert_eq!(
+            point,
+            fresh.offset_to_display_point(offset).unwrap(),
+            "源行到显示点的映射必须与当前快照一致"
+        );
+        assert_eq!(
+            snapshot.display_point_to_offset(point).unwrap(),
+            fresh.display_point_to_offset(point).unwrap(),
+            "显示点到源位置的映射必须与当前快照一致"
+        );
+    }
+}
+
+#[gpui::test]
+fn disjoint_line_deletions_in_one_text_transform_keep_paired_endpoints(cx: &mut TestAppContext) {
+    use zcv_text::{ByteOffset, Edit, TextRange, TransactionMetadata};
+
+    let text = (0..4680).map(|row| format!("{row}\n")).collect::<String>();
+    let text = text.trim_end_matches('\n');
+    let mut buffer = Buffer::from_text(text.to_owned(), BufferConfig::default()).unwrap();
+    let changes = buffer.subscribe();
+    let display = cx.new(|cx| DisplayMap::new(buffer.snapshot(), cx));
+    let newline_offsets = text
+        .match_indices('\n')
+        .map(|(offset, _)| offset)
+        .collect::<Vec<_>>();
+    let edits = [newline_offsets[1], newline_offsets[3000]].map(|offset| {
+        Edit::delete(TextRange::new(ByteOffset::new(offset), ByteOffset::new(offset + 1)).unwrap())
+    });
+    buffer.edit(edits, TransactionMetadata::default()).unwrap();
+    display.update(cx, |map, cx| {
+        map.sync(buffer.snapshot(), changes.consume(), cx)
+    });
+    let snapshot = display.update(cx, |map, cx| map.snapshot(cx));
+    assert_eq!(snapshot.line_count(), 4678, "两处删除换行必须同时生效");
+    assert_current_projection(&snapshot.block_snapshot);
+}
+
+#[gpui::test]
+fn disjoint_line_deletions_before_a_header_keep_exact_input_coverage(cx: &mut TestAppContext) {
+    use zcv_text::{ByteOffset, Edit, TextRange, TransactionMetadata};
+
+    let text = (0..4000).map(|row| format!("{row}\n")).collect::<String>();
+    let text = text.trim_end_matches('\n');
+    let first = language_buffer("src/first.txt", text, cx);
+    let last_text = (0..680)
+        .map(|row| format!("tail {row}\n"))
+        .collect::<String>();
+    let last = language_buffer("src/last.txt", last_text.trim_end_matches('\n'), cx);
+    let multi = cx.new(MultiBuffer::empty);
+    multi.update(cx, |buffer, cx| {
+        buffer.set_excerpts_for_path(
+            vec![ExcerptRange::line_range(first.clone(), 0..4000, cx)],
+            cx,
+        );
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(last, 0..680, cx)], cx);
+    });
+    let (subscription, snapshot) = multi.update(cx, MultiBuffer::subscribe_and_snapshot);
+    let display = cx.new(|cx| {
+        let mut map = DisplayMap::new(snapshot, cx);
+        map.set_multi_buffer(multi.clone(), subscription, cx);
+        map
+    });
+    let before = display.update(cx, |map, cx| map.snapshot(cx));
+    assert_eq!(before.wrap_snapshot().line_count(), 4680);
+    let last_header = block_placements(&before.block_snapshot)
+        .last()
+        .unwrap()
+        .clone();
+    let newline_offsets = text
+        .match_indices('\n')
+        .map(|(offset, _)| offset)
+        .collect::<Vec<_>>();
+    first.update(cx, |source, cx| {
+        source
+            .edit(
+                [newline_offsets[1], newline_offsets[3000]].map(|offset| {
+                    Edit::delete(
+                        TextRange::new(ByteOffset::new(offset), ByteOffset::new(offset + 1))
+                            .unwrap(),
+                    )
+                }),
+                TransactionMetadata::default(),
+                cx,
+            )
+            .unwrap();
+    });
+    let after = display.update(cx, |map, cx| map.snapshot(cx));
+    assert_eq!(after.wrap_snapshot().line_count(), 4678);
+    assert_current_projection(&after.block_snapshot);
+    assert!(
+        Arc::ptr_eq(
+            &last_header,
+            block_placements(&after.block_snapshot).last().unwrap()
+        ),
+        "未受影响的后缀文件标题必须共享原有身份"
+    );
+}
+
+#[gpui::test]
+fn coalesced_edits_keep_text_folded_blocks_and_async_wraps_consistent(cx: &mut TestAppContext) {
+    use zcv_text::{ByteOffset, Edit, TextRange, TransactionMetadata};
+
+    cx.background_executor.set_block_on_ticks(0..=0);
+    for soft_wrap in [false, true] {
+        for folded in [false, true] {
+            for replacements in [
+                ["", "", ""],
+                ["\n新增\n", "\n新增\n", "\n新增\n"],
+                ["", "\n新增\n", ""],
+                ["\n新增\n", "", "\n新增\n"],
+            ] {
+                let text = (0..24)
+                    .map(|row| format!("第 {row} 行\t{}\n", "中文 abc ".repeat(8)))
+                    .collect::<String>();
+                let first = language_buffer("src/a.txt", "before\nunchanged", cx);
+                let middle = language_buffer("src/b.txt", &text, cx);
+                let last = language_buffer("src/c.txt", "after\nunchanged", cx);
+                let middle_id = cx.read_entity(&middle, |source, _| source.buffer_id());
+                let multi = cx.new(MultiBuffer::empty);
+                multi.update(cx, |buffer, cx| {
+                    for (source, lines) in [(first, 0..2), (middle.clone(), 0..24), (last, 0..2)] {
+                        buffer.set_excerpts_for_path(
+                            vec![ExcerptRange::line_range(source, lines, cx)],
+                            cx,
+                        );
+                    }
+                });
+                let (subscription, snapshot) =
+                    multi.update(cx, MultiBuffer::subscribe_and_snapshot);
+                let display = cx.new(|cx| {
+                    let mut map = DisplayMap::new(snapshot, cx);
+                    map.set_multi_buffer(multi.clone(), subscription, cx);
+                    map
+                });
+                if soft_wrap {
+                    display.update(cx, |map, cx| {
+                        map.set_wrap_width(
+                            Some(gpui::px(120.)),
+                            gpui::font("Helvetica"),
+                            gpui::px(16.),
+                            &cx.text_system().clone(),
+                            cx,
+                        );
+                    });
+                    cx.run_until_parked();
+                }
+                display.update(cx, |map, cx| {
+                    map.set_buffers_folded([middle_id], folded, cx)
+                });
+                let before = display.update(cx, |map, cx| map.snapshot(cx));
+                let last_header = block_placements(&before.block_snapshot)
+                    .last()
+                    .unwrap()
+                    .clone();
+                let newline_offsets = text
+                    .match_indices('\n')
+                    .map(|(offset, _)| offset)
+                    .collect::<Vec<_>>();
+                middle.update(cx, |source, cx| {
+                    let edits =
+                        [1, 9, 17]
+                            .into_iter()
+                            .zip(replacements)
+                            .map(|(row, replacement)| {
+                                let offset = newline_offsets[row];
+                                Edit::replace(
+                                    TextRange::new(
+                                        ByteOffset::new(offset),
+                                        ByteOffset::new(offset + 1),
+                                    )
+                                    .unwrap(),
+                                    replacement,
+                                )
+                            });
+                    source
+                        .edit(edits, TransactionMetadata::default(), cx)
+                        .unwrap();
+                });
+                let intermediate = display.update(cx, |map, cx| map.snapshot(cx));
+                assert_current_projection(&intermediate.block_snapshot);
+                cx.run_until_parked();
+                let settled = display.update(cx, |map, cx| map.snapshot(cx));
+                assert_current_projection(&settled.block_snapshot);
+                assert!(
+                    Arc::ptr_eq(
+                        &last_header,
+                        block_placements(&settled.block_snapshot).last().unwrap()
+                    ),
+                    "多段编辑、折叠块与后台换行不得重建未受影响的后缀文件标题；soft_wrap={soft_wrap} folded={folded} replacements={replacements:?}"
+                );
+                if folded {
+                    assert_eq!(
+                        before.line_count(),
+                        settled.line_count(),
+                        "折叠文件内编辑不改变可见行数"
+                    );
+                    display.update(cx, |map, cx| map.set_buffers_folded([middle_id], false, cx));
+                    let expanded = display.update(cx, |map, cx| map.snapshot(cx));
+                    assert_current_projection(&expanded.block_snapshot);
+                }
+            }
+        }
+    }
+}
+
 #[gpui::test]
 fn folding_a_middle_buffer_rebuilds_an_exact_current_block_projection(cx: &mut TestAppContext) {
     let first = language_buffer("src/a.rs", "a0\na1\n", cx);

@@ -671,10 +671,8 @@ impl BlockSnapshot {
             if let Some(last) = merged.last_mut()
                 && edit.old.start <= last.old.end
             {
-                if edit.old.end >= last.old.end {
-                    last.old.end = edit.old.end;
-                    last.new.end = last.new.end.max(edit.new.end);
-                }
+                last.old.end = last.old.end.max(edit.old.end);
+                last.new.end = last.new.end.max(edit.new.end);
                 last.new.start = last.new.start.min(edit.new.start);
             } else {
                 merged.push(edit);
@@ -726,17 +724,19 @@ impl BlockSnapshot {
                 if cursor.item().is_some() {
                     cursor.next();
                 }
+                if let Some(next) = edits.peek()
+                    && next.old.start <= cursor.start().0
+                {
+                    let next = edits.next().expect("后续 patch 必须存在");
+                    // 扩展范围内的后续编辑也会改变行数；
+                    // 先采用最后一段编辑的配对终点，再扩展相同的未变化尾部，不能沿用此前推算的新终点。
+                    old_end = next.old.end;
+                    new_end = next.new.end;
+                    continue;
+                }
                 let extra = cursor.start().0 - old_end;
                 old_end += extra;
                 new_end += extra;
-                if let Some(next) = edits.peek()
-                    && next.old.start <= old_end
-                {
-                    let next = edits.next().expect("后续 patch 必须存在");
-                    old_end = next.old.end.max(old_end);
-                    new_end = next.new.end.max(new_end);
-                    continue;
-                }
                 break;
             }
             let rebuilt = materialize_range(&wrap_snapshot, folded_buffers, new_start..new_end);

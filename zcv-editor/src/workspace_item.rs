@@ -15,12 +15,8 @@ impl Item for Editor {
     type Event = EditorEvent;
 
     fn tab_content_text(&self, cx: &App) -> SharedString {
-        // 标题归文档模型所有：显式标题优先，否则按文档身份派生。
-        self.multi_buffer()
-            .read(cx)
-            .title(cx)
-            .unwrap_or_default()
-            .into()
+        // 标题归文档模型所有：显式标题 → 文件路径 → 内容首行 → DEFAULT_TITLE。
+        self.multi_buffer().read(cx).title(cx).to_string().into()
     }
 
     fn to_item_events(event: &Self::Event, emit: &mut dyn FnMut(ItemEvent)) {

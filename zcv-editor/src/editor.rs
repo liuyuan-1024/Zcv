@@ -18,9 +18,9 @@ mod status_items;
 mod view;
 mod workspace_item;
 
-pub use display_map::{EditorHunk, EditorHunkMarkerKind, EditorHunkPart, HunkControlTarget};
+pub use display_map::{EditorHunk, EditorHunkPart, HunkControlTarget};
 pub use status_items::install_status_items;
-pub use view::{DiffHunkDelegate, Editor, EditorEvent, ExplicitCreaseId};
+pub use view::{DiffHunkDelegate, Editor, EditorEvent};
 pub use zcv_language::LanguageRegistry;
 
 /// 应用启动时由装配层注入唯一的语言注册表，编辑器的内嵌输入控件共享同一份。

@@ -160,11 +160,6 @@ fn subtract_text(total: MBTextSummary, prefix: MBTextSummary) -> MBTextSummary {
         } else {
             total.last_line_chars
         },
-        last_line_len_utf16: if total.lines == prefix.lines {
-            total.len_utf16 - prefix.len_utf16
-        } else {
-            total.last_line_len_utf16
-        },
     }
 }
 

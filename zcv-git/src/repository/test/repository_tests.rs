@@ -87,12 +87,10 @@ fn status_reports_all_states() {
             .expect("应有 tracked.txt")
             .is_modified()
     );
-    assert!(
-        by_path
-            .get(Path::new("new.txt"))
-            .expect("应有 new.txt")
-            .is_untracked()
-    );
+    assert!(matches!(
+        by_path.get(Path::new("new.txt")).expect("应有 new.txt"),
+        FileStatus::Untracked
+    ));
 }
 
 #[test]
@@ -271,12 +269,12 @@ fn status_reports_ignored_entries_with_ignored_matching() {
             .expect("忽略文件应有条目")
             .is_ignored()
     );
-    assert!(
+    assert!(matches!(
         by_path
             .get(Path::new("new.txt"))
-            .expect("未跟踪文件应有条目")
-            .is_untracked()
-    );
+            .expect("未跟踪文件应有条目"),
+        FileStatus::Untracked
+    ));
     assert!(
         by_path
             .get(Path::new("tracked.txt"))
@@ -653,7 +651,7 @@ fn stage_and_unstage_paths_move_index_state() {
         .collect();
     assert_eq!(index_status(by_path[tracked]), StatusCode::Unmodified);
     assert!(by_path[tracked].is_modified());
-    assert!(by_path[new_file].is_untracked());
+    assert!(matches!(by_path[new_file], FileStatus::Untracked));
 
     // 暂存两个路径 → index 出现对应状态（修改 + 新增）。
     repository
@@ -679,7 +677,7 @@ fn stage_and_unstage_paths_move_index_state() {
         .map(|(path, status)| (path.as_path(), status))
         .collect();
     assert_eq!(index_status(by_path[tracked]), StatusCode::Unmodified);
-    assert!(by_path[new_file].is_untracked());
+    assert!(matches!(by_path[new_file], FileStatus::Untracked));
 }
 
 #[test]
@@ -831,7 +829,10 @@ fn uncommit_root_commit_preserves_staged_work_and_unborn_branch() {
         .map(|(_, status)| *status)
         .expect("撤销后应保留文件状态");
     assert!(entry.is_created(), "撤销根提交后文件应继续处于新增状态");
-    assert!(!entry.is_untracked(), "撤销根提交后文件应继续保留在暂存区");
+    assert!(
+        !matches!(entry, FileStatus::Untracked),
+        "撤销根提交后文件应继续保留在暂存区"
+    );
 
     let head = run_in(root, &["git", "symbolic-ref", "--short", "HEAD"]);
     assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "main");

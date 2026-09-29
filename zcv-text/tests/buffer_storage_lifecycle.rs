@@ -39,7 +39,12 @@ fn create_edit_delete_replace_should_update_text_version_dirty_and_line_index() 
 
     assert_eq!(buffer_text(&buffer), "helloRust");
     assert_eq!(buffer.version(), BufferVersion::new(3));
-    assert!(buffer.is_dirty());
+    assert!(
+        buffer
+            .snapshot()
+            .has_edits_since(BufferVersion::INITIAL)
+            .unwrap()
+    );
     assert_eq!(buffer.line_count(), 1);
     assert_eq!(buffer.len_bytes(), b(9));
     assert_eq!(buffer.len_chars(), c(9));
@@ -71,7 +76,7 @@ fn apply_edit_at_invalid_utf8_boundary_should_fail_atomically() {
     );
     assert_eq!(buffer_text(&buffer), before_text);
     assert_eq!(buffer.version(), before_version);
-    assert!(!buffer.is_dirty());
+    assert!(!buffer.snapshot().has_edits_since(before_version).unwrap());
 }
 
 #[test]
@@ -114,10 +119,11 @@ fn read_only_state_should_reject_all_text_mutations_without_state_transition() {
 }
 
 #[test]
-fn saved_version_should_track_the_clean_baseline() {
+fn edits_since_a_saved_version_track_the_clean_baseline() {
     let mut buffer = buffer("abc");
+    let saved_version = buffer.version();
 
-    assert!(!buffer.is_dirty());
+    assert!(!buffer.snapshot().has_edits_since(saved_version).unwrap());
 
     buffer
         .edit(
@@ -125,11 +131,11 @@ fn saved_version_should_track_the_clean_baseline() {
             TransactionMetadata::default(),
         )
         .unwrap();
-    assert!(buffer.is_dirty());
+    assert!(buffer.snapshot().has_edits_since(saved_version).unwrap());
 
-    buffer.mark_saved();
-    assert!(!buffer.is_dirty());
-    assert_eq!(buffer.saved_version(), buffer.version());
+    // 保存点推进后再比较：当前版本即干净基线。
+    let saved_version = buffer.version();
+    assert!(!buffer.snapshot().has_edits_since(saved_version).unwrap());
 }
 
 #[test]
@@ -166,11 +172,11 @@ fn replace_text_updates_through_the_normal_history_and_anchor_pipeline() {
     assert_eq!(buffer.line_start_char(line(1)).unwrap(), c(4));
     assert!(buffer.can_undo());
     assert!(!buffer.can_redo());
-    assert!(!buffer.is_dirty());
+    assert!(!buffer.snapshot().has_edits_since(buffer.version()).unwrap());
 }
 
 #[test]
-fn replace_same_text_preserves_history_and_refreshes_saved_baseline() {
+fn replace_same_text_keeps_version_and_history() {
     let mut buffer = buffer("old");
     buffer
         .edit(
@@ -179,17 +185,21 @@ fn replace_same_text_preserves_history_and_refreshes_saved_baseline() {
         )
         .unwrap();
     let version = buffer.version();
-    assert!(buffer.is_dirty());
+    assert!(
+        buffer
+            .snapshot()
+            .has_edits_since(BufferVersion::INITIAL)
+            .unwrap()
+    );
     assert!(buffer.can_undo());
 
+    // 文本相同：不产生新版本，也不改变历史。
     buffer.replace_text("old!".to_string()).unwrap();
 
     assert_eq!(buffer.version(), version);
-    assert!(!buffer.is_dirty());
     assert!(buffer.can_undo());
     buffer.undo().unwrap().unwrap();
     assert_eq!(buffer_text(&buffer), "old");
-    assert!(buffer.is_dirty());
 }
 
 #[test]

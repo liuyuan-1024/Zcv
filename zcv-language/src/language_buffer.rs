@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -7,7 +8,6 @@ use zcv_settings::SettingsStore;
 use zcv_text::{
     Buffer, BufferId, BufferVersion, ByteOffset, Edit, EditedBufferSnapshot, HistoryEditOutcome,
     Line, Snapshot, TextRange, TextResult, TextSubscription, TransactionId, TransactionMetadata,
-    TransactionOutcome,
 };
 
 use crate::Language;
@@ -100,6 +100,13 @@ pub struct EditedLanguageBufferSnapshot {
     did_edit: bool,
 }
 
+impl EditedLanguageBufferSnapshot {
+    /// 派生文本所基于的主文档版本；安装前调用方据此丢弃过期结果。
+    pub fn base_version(&self) -> BufferVersion {
+        self.text.base_version()
+    }
+}
+
 /// 受同一把锁保护的派生语言状态。
 struct LanguageState {
     syntax_map: SyntaxMap,
@@ -118,6 +125,10 @@ pub struct LanguageBuffer {
     buffer: Buffer,
     state: Mutex<LanguageState>,
     parse_task: Option<ParseTask>,
+    /// 最近一次保存或从磁盘重载时的文本版本。
+    saved_version: BufferVersion,
+    /// 记忆化 `has_edits_since(saved_version)`：内容为 (版本, 是否有未保存编辑)。
+    has_unsaved_edits: Cell<(BufferVersion, bool)>,
 }
 
 impl LanguageBuffer {
@@ -153,6 +164,8 @@ impl LanguageBuffer {
                 highlight_cache: Arc::new(HighlightCache::new()),
             }),
             parse_task: None,
+            saved_version: BufferVersion::INITIAL,
+            has_unsaved_edits: Cell::new((BufferVersion::INITIAL, false)),
         };
         this.start_reparse(cx);
         this
@@ -179,7 +192,7 @@ impl LanguageBuffer {
             settings: Arc::clone(&state.settings),
             file_path: state.file_path.clone(),
             highlight_cache: Arc::clone(&state.highlight_cache),
-            is_dirty: self.buffer.is_dirty(),
+            is_dirty: self.has_unsaved_edits(),
         }
     }
 
@@ -210,9 +223,33 @@ impl LanguageBuffer {
         self.buffer.len_bytes()
     }
 
+    /// 最近一次保存或重载时的文本版本。
+    pub fn saved_version(&self) -> BufferVersion {
+        self.saved_version
+    }
+
+    /// 自保存点以来是否存在结构性文本编辑（含未保存编辑的记忆化）。
+    pub fn has_unsaved_edits(&self) -> bool {
+        let (last_version, has_unsaved_edits) = self.has_unsaved_edits.take();
+        let version = self.buffer.version();
+        if last_version == version {
+            self.has_unsaved_edits
+                .set((last_version, has_unsaved_edits));
+            return has_unsaved_edits;
+        }
+
+        let has_edits = self
+            .buffer
+            .snapshot()
+            .has_edits_since(self.saved_version)
+            .unwrap_or(true);
+        self.has_unsaved_edits.set((version, has_edits));
+        has_edits
+    }
+
     /// 自保存点以来是否存在结构性文本编辑。
     pub fn is_dirty(&self) -> bool {
-        self.buffer.is_dirty()
+        self.has_unsaved_edits()
     }
 
     /// 当前历史节点的事务身份；无历史时为 None。
@@ -289,25 +326,24 @@ impl LanguageBuffer {
         edits: impl IntoIterator<Item = Edit>,
         metadata: TransactionMetadata,
         cx: &mut Context<Self>,
-    ) -> TextResult<TransactionOutcome> {
+    ) -> TextResult<()> {
         let before = self.buffer.version();
-        let outcome = self.buffer.edit(edits, metadata)?;
+        self.buffer.edit(edits, metadata)?;
         if self.buffer.version() != before {
             self.did_edit(cx);
         }
-        Ok(outcome)
+        Ok(())
     }
 
-    /// 用外部文本更新文本；文本变化时推进语法与事件，文本相同时只刷新保存点。
+    /// 用外部文本重载：文本变化时推进语法，随后把新版本标记为保存点。
     pub fn replace_text(&mut self, text: String, cx: &mut Context<Self>) -> TextResult<()> {
         let before = self.buffer.version();
         self.buffer.replace_text(text)?;
         if self.buffer.version() != before {
             self.did_edit(cx);
-        } else {
-            cx.emit(LanguageBufferEvent::MetadataChanged);
-            cx.notify();
         }
+        let version = self.buffer.version();
+        self.did_save(version, cx);
         Ok(())
     }
 
@@ -480,9 +516,12 @@ impl LanguageBuffer {
         self.buffer.end_transaction()
     }
 
-    /// 标记当前版本为保存点；保存点是元数据变化，不推进语法。
-    pub fn mark_saved(&mut self, cx: &mut Context<Self>) {
-        self.buffer.mark_saved();
+    /// 标记给定版本为保存点；保存点是元数据变化，不推进语法。
+    ///
+    /// `version` 是实际写入磁盘的那个版本，由文件边界在写成功后传入。
+    pub fn did_save(&mut self, version: BufferVersion, cx: &mut Context<Self>) {
+        self.saved_version = version;
+        self.has_unsaved_edits.set((version, false));
         cx.emit(LanguageBufferEvent::MetadataChanged);
         cx.notify();
     }

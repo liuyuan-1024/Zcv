@@ -1,8 +1,6 @@
-//! 二维位置强类型：表达逻辑行列与 UTF-16 行列坐标。
+//! 二维位置强类型：表达逻辑行列坐标。
 //!
 //! 本文件只定义坐标载体；具体转换依赖 Buffer/Snapshot 的文本内容和配置策略。
-
-use super::Utf16Offset;
 
 /// 逻辑行号，0-indexed。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -63,36 +61,5 @@ impl Position {
 
     pub const fn column(self) -> LogicalColumn {
         self.column
-    }
-}
-
-/// UTF-16 行列位置。
-///
-/// 用于使用 UTF-16 code unit 作为行内坐标的外部协议（例如 LSP）。
-/// 逻辑行号保持 0-indexed，行内偏移以 UTF-16 code unit 计量。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub struct Utf16Position {
-    /// 0-indexed 逻辑行号。
-    pub line: Line,
-    /// 行内 UTF-16 code unit 偏移。
-    pub character: Utf16Offset,
-}
-
-impl Utf16Position {
-    pub const ZERO: Self = Self {
-        line: Line::ZERO,
-        character: Utf16Offset::ZERO,
-    };
-
-    pub const fn new(line: Line, character: Utf16Offset) -> Self {
-        Self { line, character }
-    }
-
-    pub const fn line(self) -> Line {
-        self.line
-    }
-
-    pub const fn character(self) -> Utf16Offset {
-        self.character
     }
 }

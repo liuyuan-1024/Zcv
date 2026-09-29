@@ -54,9 +54,8 @@ impl core::fmt::Display for ByteOffset {
 
 /// 字符偏移量 —— 边界投影类型。
 ///
-/// 按 Unicode Scalar Value 计数。**仅在公共 API 边界**（如 LSP、外部协议、UI）
-/// 使用；文本内核内部不以 `CharOffset` 为位置坐标，必须经存储后端的字节↔字符
-/// 投影函数转换。
+/// 按 Unicode Scalar Value 计数。仅作为边界投影类型使用（移动、折叠结构查询、公共 API）；
+/// 文本内核内部不以 `CharOffset` 为位置坐标，必须经存储后端的字节↔字符投影函数转换。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct CharOffset(usize);
 
@@ -88,7 +87,8 @@ impl core::fmt::Display for CharOffset {
 
 /// UTF-16 偏移量 —— 边界投影类型。
 ///
-/// 用于外部协议交互（例如 LSP）。文本内核内部不以 `Utf16Offset` 为位置坐标。
+/// 用于系统 IME 的扁平 UTF-16 code unit 偏移（以及 UTF-16 行列投影的行内分量）。
+/// 文本内核内部不以 `Utf16Offset` 为位置坐标。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Utf16Offset(usize);
 

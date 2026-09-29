@@ -6,16 +6,13 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 
 use crate::{
-    Affinity, Anchor, BufferConfig, BufferVersion, ByteOffset, CharOffset, Line, LineRange,
-    MovementDirection, MovementUnit, Position, TextChangeBatch, TextRange, TextResult, Utf16Offset,
-    Utf16Position, WordBoundaryPolicy,
+    Affinity, Anchor, BufferConfig, BufferVersion, ByteOffset, CharOffset, Line, MovementDirection,
+    MovementUnit, Position, TextChangeBatch, TextRange, TextResult, Utf16Offset,
+    WordBoundaryPolicy,
     errors::AnchorError,
     position_map::PositionMap,
     slicing::{LineContent, LineSlice, TextSlice},
-    slicing::{
-        line_content_for_text, text_range_for_byte_range, text_range_for_line,
-        text_range_for_line_range,
-    },
+    slicing::{line_content_for_text, text_range_for_byte_range, text_range_for_line},
     storage::{RopeySnapshot, TextRead, text_coordinate_gateway},
     tracking::{CoordinateIndex, EditLog, InsertionIndex},
 };
@@ -207,11 +204,6 @@ impl Snapshot {
         self.anchor_with_affinity(offset, Affinity::Before)
     }
 
-    /// 在 `offset` 处创建吸附到插入文本之后的锚点。
-    pub fn anchor_after(&self, offset: ByteOffset) -> Anchor {
-        self.anchor_with_affinity(offset, Affinity::After)
-    }
-
     pub fn anchor_with_affinity(&self, offset: ByteOffset, affinity: Affinity) -> Anchor {
         let anchor = Anchor::new(self.version, offset).with_affinity(affinity);
         if (offset == ByteOffset::ZERO && affinity == Affinity::Before)
@@ -335,12 +327,6 @@ impl Snapshot {
         Ok(LineSlice::new(line, self.slice_text(range)?))
     }
 
-    /// 按半开逻辑行区间读取快照文本。
-    pub fn slice_line_range(&self, line_range: LineRange) -> TextResult<TextSlice<'_>> {
-        let range = text_range_for_line_range(&self.storage, line_range)?;
-        self.slice_text(range)
-    }
-
     /// 读取快照中的单行文本内容（剥掉行尾换行符，可按 `max_line_chars` 截断）。
     ///
     /// 供软换行片段切分等读取行内容的场景使用；`None` 表示不截断。
@@ -408,14 +394,6 @@ impl TextRead for Snapshot {
 
     fn byte_to_char(&self, offset: ByteOffset) -> TextResult<CharOffset> {
         self.storage.byte_to_char(offset)
-    }
-
-    fn byte_to_utf16_position(&self, offset: ByteOffset) -> TextResult<Utf16Position> {
-        self.storage.byte_to_utf16_position(offset)
-    }
-
-    fn utf16_position_to_byte(&self, position: Utf16Position) -> TextResult<ByteOffset> {
-        self.storage.utf16_position_to_byte(position)
     }
 
     fn byte_to_utf16_cu(&self, offset: ByteOffset) -> TextResult<Utf16Offset> {

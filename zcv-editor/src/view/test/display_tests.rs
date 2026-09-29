@@ -7,9 +7,7 @@ use zcv_language::LanguageRegistry;
 use zcv_multi_buffer::{
     DiffExcerptRanges, DiffFile, DisplayHunk, ExcerptRange, MultiBuffer, ResolvedDiffHunk,
 };
-use zcv_text::{
-    Affinity, Buffer, BufferConfig, ByteOffset, Edit, Line, TextRange, TransactionMetadata,
-};
+use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TextRange, TransactionMetadata};
 
 use super::common::{buffer_text, focus_editor, inject_editor_diff, inject_file_diff, test_buffer};
 use super::*;
@@ -648,7 +646,7 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
     });
     let editor = cx.new(|cx| Editor::from_language_buffer(buffer.clone(), EditorMode::Full, cx));
     cx.run_until_parked();
-    // 语法候选不缓存进 CreaseMap，而是在显示层请求入口行时即时生成。
+    // 语法候选不做持久缓存，而是在显示层请求入口行时即时生成。
     assert!(cx.read_entity(&editor, |editor, cx| {
         editor
             .display_snapshot(cx)
@@ -690,43 +688,6 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
             .display_snapshot(cx)
             .fold_anchor_lines()
             .contains(&Line::ZERO)
-    }));
-}
-
-#[gpui::test]
-fn explicit_crease_is_visible_and_removable_by_identity(cx: &mut TestAppContext) {
-    let buffer = Buffer::from_text("heading\nbody\n".to_owned(), BufferConfig::default())
-        .expect("测试 Buffer 应能创建");
-    let buffer = cx.new(|cx| {
-        LanguageBuffer::new(
-            buffer,
-            Some(PathBuf::from("notes.txt")),
-            std::sync::Arc::new(LanguageRegistry::new()),
-            cx,
-        )
-    });
-    let editor = cx.new(|cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx));
-
-    let ids = editor.update(cx, |editor, cx| {
-        let snapshot = editor.display_snapshot(cx).buffer_snapshot().clone();
-        let range = snapshot.anchor_at(MultiBufferOffset::new(0), Affinity::Before)
-            ..snapshot.anchor_at(snapshot.len_bytes(), Affinity::After);
-        editor.insert_creases([range], cx)
-    });
-    assert_eq!(ids.len(), 1, "每个显式范围应获得一个稳定身份");
-    assert!(cx.read_entity(&editor, |editor, cx| {
-        editor
-            .display_snapshot(cx)
-            .crease_at_line(Line::ZERO)
-            .is_some()
-    }));
-
-    editor.update(cx, |editor, cx| editor.remove_creases(ids, cx));
-    assert!(cx.read_entity(&editor, |editor, cx| {
-        editor
-            .display_snapshot(cx)
-            .crease_at_line(Line::ZERO)
-            .is_none()
     }));
 }
 

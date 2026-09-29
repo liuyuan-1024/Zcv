@@ -15,7 +15,6 @@ use zcv_multi_buffer::{
 
 mod block_map;
 mod chunk;
-mod crease_map;
 mod decorations;
 mod display_width;
 mod edit;
@@ -42,8 +41,6 @@ pub(crate) use chunk::{
 };
 #[cfg(test)]
 pub(crate) use chunk::{ChunkSource, ChunkText, WrapChunks};
-pub(crate) use crease_map::CreaseId;
-use crease_map::{Crease, CreaseMap, CreaseSnapshot};
 #[cfg(test)]
 pub(crate) use decorations::hunk_rendering;
 pub(crate) use decorations::{
@@ -181,6 +178,22 @@ impl DisplayRange {
     }
 }
 
+/// 一个折叠候选：组合文档中的稳定锚点范围。
+#[derive(Clone, Debug)]
+pub(crate) struct Crease {
+    range: Range<MultiBufferAnchor>,
+}
+
+impl Crease {
+    pub(crate) fn simple(range: Range<MultiBufferAnchor>) -> Self {
+        Self { range }
+    }
+
+    pub(crate) fn range(&self) -> &Range<MultiBufferAnchor> {
+        &self.range
+    }
+}
+
 /// 只缓存最近一次被 gutter 悬停请求的逻辑行范围。
 ///
 /// 视口移动时保留重叠行的候选，只查询新进入范围的行，避免滚动遍历 Tree-sitter 全可见行；
@@ -236,8 +249,6 @@ impl SyntaxCreaseIndex {
 pub(super) struct DisplaySnapshot {
     /// 唯一的显示拓扑权威；链叶即唯一的 MultiBufferSnapshot。
     block_snapshot: Arc<BlockSnapshot>,
-    /// 与本显示版本绑定的折叠候选索引；随快照整体替换、可丢弃。
-    crease_snapshot: CreaseSnapshot,
     /// 与本显示版本绑定的显示装饰投影；随快照整体替换、可丢弃。
     decorations: Arc<DisplayDecorations>,
     /// diff 显示输入归组合文档所有；这里只持有当前显示版本的不可变引用。
@@ -309,12 +320,9 @@ impl DisplaySnapshot {
 
     /// 返回指定逻辑行的折叠候选。
     ///
-    /// 显式 crease 始终实时查询（可能被宿主增删）；语法候选只在该行成为交互目标时查询。
+    /// 折叠候选只来自语法折叠范围，且只在该行成为交互目标时查询。
     pub(crate) fn crease_at_line(&self, line: Line) -> Option<Crease> {
-        self.crease_snapshot
-            .crease_at_line(line, self.buffer_snapshot())
-            .cloned()
-            .or_else(|| self.syntax_crease_at_line(line))
+        self.syntax_crease_at_line(line)
     }
 
     /// 只查询光标等交互目标行，不为整个可见视口生成语法折叠范围。
@@ -517,31 +525,7 @@ impl DisplaySnapshot {
 
     /// 返回包含指定逻辑行的最内层折叠候选，供光标位于折叠体内部时的切换命令使用。
     pub(crate) fn crease_containing_line(&self, line: Line) -> Option<Crease> {
-        self.explicit_crease_containing_line(line)
-            .or_else(|| self.syntax_crease_containing_line(line))
-    }
-
-    fn explicit_crease_containing_line(&self, line: Line) -> Option<Crease> {
-        self.crease_snapshot
-            .creases()
-            .filter_map(|crease| {
-                let range = crease.range();
-                let start = self
-                    .buffer_snapshot()
-                    .projected_anchor_offset(&range.start)
-                    .ok()
-                    .flatten()
-                    .and_then(|offset| self.buffer_snapshot().byte_to_line(offset).ok())?;
-                let end = self
-                    .buffer_snapshot()
-                    .projected_anchor_offset(&range.end)
-                    .ok()
-                    .flatten()
-                    .and_then(|offset| self.buffer_snapshot().byte_to_line(offset).ok())?;
-                (start <= line && line <= end).then_some((crease, start, end))
-            })
-            .min_by_key(|(_, start, end)| (line.get() - start.get(), end.get() - line.get()))
-            .map(|(crease, _, _)| crease.clone())
+        self.syntax_crease_containing_line(line)
     }
 
     fn syntax_crease_containing_line(&self, line: Line) -> Option<Crease> {
@@ -928,7 +912,7 @@ pub(crate) struct DisplayMap {
     /// 搜索命中的显示输入（显示装饰领域键之一）。
     search: Option<SearchDecorationInput>,
     /// 宿主注入的显式折叠候选；语法候选由 `DisplaySnapshot` 按行即时查询。
-    crease_map: CreaseMap,
+
     /// 当前显示快照的版本号；每次替换 `snapshot` 时前进。
     display_version: u64,
 }
@@ -986,7 +970,7 @@ impl DisplayMap {
             buffer_subscription: None,
             editor_hunks: Arc::from([]),
             search: None,
-            crease_map: CreaseMap::new(&snapshot),
+
             display_version: 0,
         };
         this.commit_snapshot(&wrap_snapshot, &[], cx);
@@ -1065,49 +1049,6 @@ impl DisplayMap {
         self.refresh_search_decorations(cx);
     }
 
-    /// 注入宿主拥有的显式折叠候选，并返回其稳定身份。
-    ///
-    /// 显式范围通过组合锚点保存，会在后续快照上自行解析；语法折叠不进入本索引。
-    pub(crate) fn insert_creases(
-        &mut self,
-        ranges: impl IntoIterator<Item = Range<MultiBufferAnchor>>,
-        cx: &mut Context<Self>,
-    ) -> Vec<CreaseId> {
-        let buffer_snapshot = self.fold_map.snapshot().buffer_snapshot().clone();
-        let ids = self
-            .crease_map
-            .insert(ranges.into_iter().map(Crease::simple), &buffer_snapshot);
-        if !ids.is_empty() {
-            self.refresh_crease_snapshot(cx);
-        }
-        ids
-    }
-
-    /// 移除由 `insert_creases` 返回身份标识的显式折叠候选。
-    pub(crate) fn remove_creases(
-        &mut self,
-        ids: impl IntoIterator<Item = CreaseId>,
-        cx: &mut Context<Self>,
-    ) {
-        let ids = ids.into_iter().collect::<Vec<_>>();
-        if ids.is_empty() {
-            return;
-        }
-        let buffer_snapshot = self.fold_map.snapshot().buffer_snapshot().clone();
-        self.crease_map.remove(ids, &buffer_snapshot);
-        self.refresh_crease_snapshot(cx);
-    }
-
-    fn refresh_crease_snapshot(&mut self, cx: &mut Context<Self>) {
-        let Some(mut snapshot) = self.snapshot.take() else {
-            return;
-        };
-        snapshot.crease_snapshot = self.crease_map.snapshot();
-        snapshot.version = self.next_display_version();
-        self.snapshot = Some(snapshot);
-        cx.notify();
-    }
-
     /// 只替换宿主 hunk 影响的 diff 域装饰；搜索域与显示拓扑保持不变。
     fn refresh_editor_hunk_decorations(&mut self, cx: &mut Context<Self>) {
         let Some(mut snapshot) = self.snapshot.take() else {
@@ -1176,7 +1117,6 @@ impl DisplayMap {
         let version = self.next_display_version();
         let mut snapshot = DisplaySnapshot {
             block_snapshot,
-            crease_snapshot: self.crease_map.snapshot(),
             decorations: Arc::new(DisplayDecorations::empty()),
             diff_display: wrap_snapshot.buffer_snapshot().diff_display().cloned(),
             syntax_crease_cache: Arc::new(Mutex::new(SyntaxCreaseIndex::default())),

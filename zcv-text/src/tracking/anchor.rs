@@ -3,14 +3,11 @@
 //! 所有文本更新都沿同一版本化坐标链推进；
 //! `resolve_in` 通过 Buffer 的不衰减坐标索引重新定位，不依赖会被预算裁剪的带文本编辑日志。
 
-use std::cmp::Ordering;
 use std::ops::Range;
 
 use super::insertion_index::InsertionId;
 use crate::{
-    errors::AnchorError,
-    position_map::{Affinity, MappingResult, PositionMap},
-    transaction::DeltaEvent,
+    position_map::Affinity,
     types::{BufferVersion, ByteOffset, TextRange},
 };
 
@@ -50,11 +47,6 @@ impl Anchor {
 
     pub(crate) fn insertion_offset(self) -> u32 {
         self.insertion_offset
-    }
-
-    /// 按稳定插入身份比较两个锚点的文档序，不解析文本坐标。
-    pub fn stable_cmp(self, other: &Self, snapshot: &crate::Snapshot) -> Ordering {
-        snapshot.stable_anchor_cmp(&self, other)
     }
 
     pub fn with_affinity(mut self, affinity: Affinity) -> Self {
@@ -101,48 +93,6 @@ impl Anchor {
         Ok(map
             .map_old_position_with_affinity(self.offset, self.affinity)
             .value())
-    }
-
-    /// 用一次显式增量把锚点推进到新版本。
-    pub fn map_through_position_map(
-        self,
-        new_version: BufferVersion,
-        position_map: &PositionMap,
-    ) -> MappingResult<Self> {
-        self.advance(new_version, position_map)
-    }
-
-    pub fn map_through_delta_event(
-        self,
-        event: &DeltaEvent,
-    ) -> Result<MappingResult<Self>, AnchorError> {
-        self.verify_event_version(event)?;
-        Ok(self.advance(event.new_version(), event.position_map()))
-    }
-
-    fn advance(
-        self,
-        new_version: BufferVersion,
-        position_map: &PositionMap,
-    ) -> MappingResult<Self> {
-        position_map
-            .map_old_position_with_affinity(self.offset, self.affinity)
-            .map(|offset| {
-                Anchor::new(new_version, offset)
-                    .with_affinity(self.affinity)
-                    .with_insertion(self.insertion, self.insertion_offset)
-            })
-    }
-
-    fn verify_event_version(self, event: &DeltaEvent) -> Result<(), AnchorError> {
-        if self.version != event.old_version() {
-            return Err(AnchorError::VersionMismatch {
-                expected: event.old_version(),
-                actual: self.version,
-            });
-        }
-
-        Ok(())
     }
 }
 

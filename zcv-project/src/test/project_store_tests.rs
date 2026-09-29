@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui::{AppContext, TestAppContext};
 use zcv_fs_watch::FsEventStream;
+use zcv_language::LanguageBuffer;
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TransactionMetadata};
 
 use super::*;
@@ -83,44 +84,66 @@ fn initial_file_watcher_error_is_buffered_until_workspace_subscribes(
     );
 }
 
-#[test]
-fn saving_buffer_writes_current_version_and_marks_it_clean() {
+#[gpui::test]
+fn saving_buffer_writes_current_version_and_marks_it_clean(cx: &mut TestAppContext) {
     let path = test_file_path();
-    let mut buffer =
-        Buffer::from_text("旧内容".to_owned(), BufferConfig::default()).expect("应创建 Buffer");
-    buffer
-        .edit(
-            [Edit::insert(buffer.len_bytes(), " + 新内容").unwrap()],
-            TransactionMetadata::default(),
-        )
-        .expect("测试编辑应成功");
-    assert!(buffer.is_dirty());
+    let language_buffer = cx.new(|cx| {
+        let buffer =
+            Buffer::from_text("旧内容".to_owned(), BufferConfig::default()).expect("应创建 Buffer");
+        LanguageBuffer::new(buffer, None, test_languages(), cx)
+    });
+    language_buffer.update(cx, |language_buffer, cx| {
+        let len = language_buffer.len_bytes();
+        language_buffer
+            .edit(
+                [Edit::insert(len, " + 新内容").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("测试编辑应成功");
+    });
+    assert!(language_buffer.read_with(cx, |language_buffer, _| language_buffer.is_dirty()));
 
-    write_buffer_to_path(&buffer.snapshot(), &path).expect("保存应成功");
-    buffer.mark_saved();
+    language_buffer.update(cx, |language_buffer, cx| {
+        write_buffer_to_path(&language_buffer.text_snapshot(), &path).expect("保存应成功");
+        let version = language_buffer.version();
+        language_buffer.did_save(version, cx);
+    });
 
     assert_eq!(
         fs::read_to_string(&path).expect("应读回文件"),
         "旧内容 + 新内容"
     );
-    assert!(!buffer.is_dirty());
+    assert!(!language_buffer.read_with(cx, |language_buffer, _| language_buffer.is_dirty()));
     fs::remove_file(path).expect("测试文件应可删除");
 }
 
-#[test]
-fn failed_save_keeps_buffer_dirty() {
+#[gpui::test]
+fn failed_save_keeps_buffer_dirty(cx: &mut TestAppContext) {
     let path = test_file_path().join("missing.txt");
-    let mut buffer =
-        Buffer::from_text("内容".to_owned(), BufferConfig::default()).expect("应创建 Buffer");
-    buffer
-        .edit(
-            [Edit::insert(ByteOffset::ZERO, "未保存").unwrap()],
-            TransactionMetadata::default(),
-        )
-        .expect("测试编辑应成功");
+    let language_buffer = cx.new(|cx| {
+        let buffer =
+            Buffer::from_text("内容".to_owned(), BufferConfig::default()).expect("应创建 Buffer");
+        LanguageBuffer::new(buffer, None, test_languages(), cx)
+    });
+    language_buffer.update(cx, |language_buffer, cx| {
+        language_buffer
+            .edit(
+                [Edit::insert(ByteOffset::ZERO, "未保存").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("测试编辑应成功");
+    });
 
-    assert!(write_buffer_to_path(&buffer.snapshot(), &path).is_err());
-    assert!(buffer.is_dirty());
+    assert!(
+        write_buffer_to_path(
+            &language_buffer.read_with(cx, |language_buffer, _| language_buffer.text_snapshot()),
+            &path
+        )
+        .is_err()
+    );
+    assert!(language_buffer.read_with(cx, |language_buffer, _| language_buffer.is_dirty()));
 }
 
 #[gpui::test]

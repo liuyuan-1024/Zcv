@@ -662,7 +662,7 @@ fn expanding_directory_fills_git_status_for_new_rows(cx: &mut TestAppContext) {
             .and_then(|row| row.git_status)
     });
     assert!(
-        status.is_some_and(|status| status.is_untracked()),
+        status.is_some_and(|status| matches!(status, zcv_git::FileStatus::Untracked)),
         "展开后新出现的文件行应补齐 git 状态"
     );
 }
@@ -701,7 +701,7 @@ fn activating_directory_fills_git_status_for_new_rows(cx: &mut TestAppContext) {
             .and_then(|row| row.git_status)
     });
     assert!(
-        status.is_some_and(|status| status.is_untracked()),
+        status.is_some_and(|status| matches!(status, zcv_git::FileStatus::Untracked)),
         "激活展开后新出现的文件行应补齐 git 状态"
     );
 }

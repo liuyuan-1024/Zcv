@@ -14,7 +14,7 @@ use crate::{
     transaction::EditList,
     types::{
         ByteOffset, CharOffset, Line, LineEndingStyle, LogicalColumn, Position, TextRange,
-        Utf16Offset, Utf16Position,
+        Utf16Offset,
     },
 };
 
@@ -143,16 +143,6 @@ impl TextRead for RopeyStorage {
 
     fn char_to_byte(&self, offset: CharOffset) -> TextResult<ByteOffset> {
         char_to_byte_in_rope(&self.rope, offset)
-    }
-
-    fn byte_to_utf16_position(&self, offset: ByteOffset) -> TextResult<Utf16Position> {
-        let char_offset = byte_to_char_in_rope(&self.rope, offset)?;
-        char_to_utf16_position_in_rope(&self.rope, char_offset)
-    }
-
-    fn utf16_position_to_byte(&self, position: Utf16Position) -> TextResult<ByteOffset> {
-        let char_offset = utf16_position_to_char_in_rope(&self.rope, position)?;
-        char_to_byte_in_rope(&self.rope, char_offset)
     }
 
     fn byte_to_utf16_cu(&self, offset: ByteOffset) -> TextResult<Utf16Offset> {
@@ -355,16 +345,6 @@ impl TextRead for RopeySnapshot {
         char_to_byte_in_rope(&self.rope, offset)
     }
 
-    fn byte_to_utf16_position(&self, offset: ByteOffset) -> TextResult<Utf16Position> {
-        let char_offset = byte_to_char_in_rope(&self.rope, offset)?;
-        char_to_utf16_position_in_rope(&self.rope, char_offset)
-    }
-
-    fn utf16_position_to_byte(&self, position: Utf16Position) -> TextResult<ByteOffset> {
-        let char_offset = utf16_position_to_char_in_rope(&self.rope, position)?;
-        char_to_byte_in_rope(&self.rope, char_offset)
-    }
-
     fn byte_to_utf16_cu(&self, offset: ByteOffset) -> TextResult<Utf16Offset> {
         byte_to_utf16_cu_in_rope(&self.rope, offset)
     }
@@ -476,77 +456,6 @@ fn position_to_char_in_rope(rope: &Rope, position: Position) -> TextResult<CharO
 // UTF-8 / UTF-16 / Char 投影
 // ============================================================
 
-fn char_to_utf16_position_in_rope(rope: &Rope, offset: CharOffset) -> TextResult<Utf16Position> {
-    let offset_value = offset.get();
-
-    if offset_value > rope.len_chars() {
-        return Err(CoordinateError::CharOutOfBounds(offset).into());
-    }
-
-    if is_crlf_middle(rope, offset_value) {
-        return Err(CoordinateError::CharOutOfBounds(offset).into());
-    }
-
-    let line_idx = rope.char_to_line(offset_value);
-    let line_start = rope.line_to_char(line_idx);
-    let utf16_units = rope
-        .slice(line_start..offset_value)
-        .chars()
-        .map(char::len_utf16)
-        .sum();
-
-    Ok(Utf16Position::new(
-        Line::new(line_idx),
-        Utf16Offset::new(utf16_units),
-    ))
-}
-
-fn utf16_position_to_char_in_rope(rope: &Rope, position: Utf16Position) -> TextResult<CharOffset> {
-    let line = position.line();
-
-    if line.get() >= rope.len_lines() {
-        return Err(CoordinateError::LineOutOfBounds(line).into());
-    }
-
-    let line_start = rope.line_to_char(line.get());
-    let next_line_start = if line.get() + 1 < rope.len_lines() {
-        rope.line_to_char(line.get() + 1)
-    } else {
-        rope.len_chars()
-    };
-    let line_content_end = line_content_end(rope, line_start, next_line_start);
-    let target = position.character().get();
-
-    let mut utf16_units = 0usize;
-    let mut char_count = 0usize;
-
-    if target == 0 {
-        return Ok(CharOffset::new(line_start));
-    }
-
-    for ch in rope.slice(line_start..line_content_end).chars() {
-        let next_utf16_units = utf16_units + ch.len_utf16();
-        let next_char_count = char_count + 1;
-
-        if target == next_utf16_units {
-            return Ok(CharOffset::new(line_start + next_char_count));
-        }
-
-        if target < next_utf16_units {
-            return Err(CoordinateError::InvalidUtf16Boundary(position).into());
-        }
-
-        utf16_units = next_utf16_units;
-        char_count = next_char_count;
-    }
-
-    if target == utf16_units {
-        return Ok(CharOffset::new(line_start + char_count));
-    }
-
-    Err(CoordinateError::Utf16PositionOutOfBounds(position).into())
-}
-
 /// Byte 偏移 → 全文累计 UTF-16 code unit 数。
 ///
 /// O(log n)：先 byte→char（rope 原生），再走 rope 的 `char_to_utf16_cu`
@@ -566,17 +475,12 @@ fn byte_to_utf16_cu_in_rope(rope: &Rope, offset: ByteOffset) -> TextResult<Utf16
 fn utf16_cu_to_byte_in_rope(rope: &Rope, offset: Utf16Offset) -> TextResult<ByteOffset> {
     let target = offset.get();
     if target > rope.len_utf16_cu() {
-        return Err(
-            CoordinateError::Utf16PositionOutOfBounds(Utf16Position::new(Line::ZERO, offset))
-                .into(),
-        );
+        return Err(CoordinateError::Utf16OffsetOutOfBounds(offset).into());
     }
     let char_idx = rope.utf16_cu_to_char(target);
     let roundtrip = rope.char_to_utf16_cu(char_idx);
     if roundtrip != target {
-        return Err(
-            CoordinateError::InvalidUtf16Boundary(Utf16Position::new(Line::ZERO, offset)).into(),
-        );
+        return Err(CoordinateError::InvalidUtf16Boundary(offset).into());
     }
     Ok(ByteOffset::new(rope.char_to_byte(char_idx)))
 }

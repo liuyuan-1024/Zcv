@@ -88,7 +88,7 @@ fn parses_all_status_code_combinations() {
     assert!(by_path["added.txt"].is_created());
     assert!(by_path["deleted.txt"].is_deleted());
     assert!(by_path["index_deleted.txt"].is_deleted());
-    assert!(by_path["untracked.txt"].is_untracked());
+    assert!(matches!(by_path["untracked.txt"], FileStatus::Untracked));
     assert!(by_path["ignored.log"].is_ignored());
 }
 
@@ -141,7 +141,7 @@ fn keeps_ignored_directories_without_trailing_slash() {
     assert_eq!(statuses[1].0, PathBuf::from("node_modules"));
     assert!(statuses[1].1.is_ignored());
     assert_eq!(statuses[2].0, PathBuf::from("src/new.rs"));
-    assert!(statuses[2].1.is_untracked());
+    assert!(matches!(statuses[2].1, FileStatus::Untracked));
 }
 
 #[test]

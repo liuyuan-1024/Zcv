@@ -4,7 +4,7 @@ use std::{ops::Range, sync::Arc};
 use gpui::{AppContext as _, Entity, TestAppContext, font, px};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
-use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TransactionMetadata};
+use zcv_text::{Affinity, Buffer, BufferConfig, ByteOffset, Edit, TransactionMetadata};
 
 use super::super::DisplayMap;
 use super::{MultiBufferOffset, WrapMap};
@@ -145,7 +145,9 @@ fn async_rewrap_preserves_edits_and_anchors_through_width_replacement(cx: &mut T
     cx.background_executor.set_block_on_ticks(0..=0);
     let (mut buffer, display, wrap) = reflow_fixture(cx);
     let changes = buffer.subscribe();
-    let anchor = buffer.snapshot().anchor_after(ByteOffset::new(10));
+    let anchor = buffer
+        .snapshot()
+        .anchor_with_affinity(ByteOffset::new(10), Affinity::After);
     configure(cx, &display, Some(120.));
     for text in ["前缀\n", "又一行\n"] {
         buffer

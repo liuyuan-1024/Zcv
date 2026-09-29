@@ -26,7 +26,7 @@ fn line_range(start: usize, end: usize) -> LineRange {
 }
 
 #[test]
-fn byte_char_position_utf16_roundtrip_should_preserve_explicit_coordinate_domains() {
+fn byte_char_and_position_projection_should_preserve_explicit_coordinate_domains() {
     let buffer = buffer("a你\n😀z");
 
     assert_eq!(buffer.char_to_byte(c(0)).unwrap(), b(0));
@@ -40,16 +40,6 @@ fn byte_char_position_utf16_roundtrip_should_preserve_explicit_coordinate_domain
     assert_eq!(
         buffer
             .position_to_byte(Position::new(line(1), col(1)))
-            .unwrap(),
-        b(9)
-    );
-    assert_eq!(
-        buffer.char_to_utf16_position(c(4)).unwrap(),
-        Utf16Position::new(line(1), Utf16Offset::new(2))
-    );
-    assert_eq!(
-        buffer
-            .utf16_position_to_byte(Utf16Position::new(line(1), Utf16Offset::new(2)))
             .unwrap(),
         b(9)
     );
@@ -87,10 +77,10 @@ fn flat_utf16_cu_should_roundtrip_against_byte_offsets_across_planes_and_newline
         TextError::Coordinate(CoordinateError::InvalidUtf16Boundary(_))
     ));
 
-    // 越界 → Utf16PositionOutOfBounds。
+    // 越界 → Utf16OffsetOutOfBounds。
     assert!(matches!(
         buffer.utf16_cu_to_byte(Utf16Offset::new(999)).unwrap_err(),
-        TextError::Coordinate(CoordinateError::Utf16PositionOutOfBounds(_))
+        TextError::Coordinate(CoordinateError::Utf16OffsetOutOfBounds(_))
     ));
 }
 
@@ -155,12 +145,6 @@ fn trailing_empty_line_position_should_project_to_document_end() {
     assert_eq!(
         buffer
             .position_to_char(Position::new(line(1), col(0)))
-            .unwrap(),
-        c(3)
-    );
-    assert_eq!(
-        buffer
-            .utf16_position_to_char(Utf16Position::new(line(1), Utf16Offset::new(0)))
             .unwrap(),
         c(3)
     );

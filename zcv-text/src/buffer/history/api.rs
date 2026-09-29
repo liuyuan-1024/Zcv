@@ -185,7 +185,7 @@ impl Buffer {
             // 取出删除掉的旧文本（用作 Undo 时的回填内容）
             let deleted_text = self.slice_text(edit.range())?.to_string();
 
-            // 旧位置 → 新位置（与 ChangeSet::changed_ranges 用同一算法）。
+            // 旧位置 → 新位置（与事务提交时构造 PositionMap 的算法一致）。
             // 单点映射在事务 edit 数很小时比批量映射更快（零临时分配）。
             let new_start = position_map
                 .map_old_position_with_affinity(edit.range().start(), Affinity::Before)

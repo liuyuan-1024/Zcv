@@ -396,11 +396,15 @@ struct PreparedRevision {
 impl PreparedRevision {
     fn install(self, cx: &mut Context<BufferDiff>) -> Entity<LanguageBuffer> {
         if let Some(edited) = self.edited {
-            self.source.update(cx, |source, cx| {
-                source
-                    .fast_forward(edited, cx)
-                    .expect("diff 修订只由唯一计算任务安装");
-            });
+            let source_version = self.source.read(cx).text_snapshot().version();
+            // 派生期间主文档已前进：丢弃过期修订，不安装、不改变当前状态。
+            if edited.base_version() == source_version {
+                self.source.update(cx, |source, cx| {
+                    source
+                        .fast_forward(edited, cx)
+                        .expect("版本比对通过后派生状态必须能安装");
+                });
+            }
         }
         self.source
     }

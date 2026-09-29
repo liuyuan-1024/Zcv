@@ -20,11 +20,11 @@ fn merge_metadata(description: &str) -> TransactionMetadata {
 }
 
 #[test]
-fn edit_should_emit_delta_changeset_position_map_and_subscription_patch() {
+fn edit_should_publish_position_map_and_subscription_patch() {
     let mut buffer = buffer("abc def");
     let subscription = buffer.subscribe();
     let base = buffer.version();
-    let outcome = buffer
+    buffer
         .edit(
             [
                 Edit::insert(b(3), "!".to_string()).unwrap(),
@@ -33,58 +33,46 @@ fn edit_should_emit_delta_changeset_position_map_and_subscription_patch() {
             TransactionMetadata::default(),
         )
         .unwrap();
-    let event = outcome.event();
-    let delta = event.delta();
-    let changeset = event.changeset();
     let changes = subscription.consume();
 
     assert_eq!(buffer_text(&buffer), "abc! XYZ");
-    assert_eq!(delta.old_version(), base);
-    assert_eq!(delta.new_version(), buffer.version());
-    assert_eq!(delta.edits().len(), 2);
-    assert_eq!(
-        changeset.changed_ranges().unwrap(),
-        vec![range(3, 4), range(5, 8)]
-    );
-    assert_eq!(event.position_map().map_old_position(b(7)).value(), b(8));
-    assert_eq!(event.old_version(), base);
-    assert_eq!(event.new_version(), buffer.version());
-    assert_eq!(event.source(), TransactionSource::Programmatic);
-    assert_eq!(event.position_map().map_old_position(b(7)).value(), b(8));
     assert_eq!(changes.old_version(), Some(base));
     assert_eq!(changes.new_version(), Some(buffer.version()));
     assert_eq!(changes.patch().edits().len(), 2);
+    assert_eq!(changes.patch().edits()[0].old_range(), range(3, 3));
+    assert_eq!(changes.patch().edits()[0].new_range(), range(3, 4));
+    assert_eq!(changes.patch().edits()[1].old_range(), range(4, 7));
+    assert_eq!(changes.patch().edits()[1].new_range(), range(5, 8));
 }
 
 #[test]
-fn anchor_follows_continuous_delta_events_without_reinterpreting_coordinates() {
+fn anchor_follows_continuous_edits_without_reinterpreting_coordinates() {
     let mut buffer = buffer("abcd");
     let mut anchor = Anchor::new(buffer.version(), b(2)).with_affinity(Affinity::After);
 
-    let first = buffer
+    buffer
         .edit(
             [Edit::insert(b(2), "XY".to_string()).unwrap()],
             TransactionMetadata::default(),
         )
         .unwrap();
-    anchor = anchor
-        .map_through_delta_event(first.event())
-        .expect("连续事件的首个版本应匹配")
-        .value();
+    anchor = Anchor::new(
+        buffer.version(),
+        anchor.resolve_in(&buffer.snapshot()).unwrap(),
+    )
+    .with_affinity(Affinity::After);
     assert_eq!(anchor.offset(), b(4));
 
-    let second = buffer
+    buffer
         .edit(
             [Edit::insert(b(4), "!".to_string()).unwrap()],
             TransactionMetadata::default(),
         )
         .unwrap();
-    anchor = anchor
-        .map_through_delta_event(second.event())
-        .expect("连续事件的后续版本应匹配")
-        .value();
-    assert_eq!(anchor.version(), buffer.version());
-    assert_eq!(anchor.offset(), b(5));
+    let resolved = anchor.resolve_in(&buffer.snapshot()).unwrap();
+    assert_eq!(resolved, b(5));
+    assert_eq!(buffer.version(), buffer.snapshot().version());
+    assert_eq!(buffer_text(&buffer), "abXY!cd");
 }
 
 #[test]
@@ -96,7 +84,7 @@ fn anchors_map_through_a_multi_edit_transaction_with_their_affinity() {
     let mut before_replace = Anchor::new(version, b(3)).with_affinity(Affinity::Before);
     let mut after_replace = Anchor::new(version, b(5)).with_affinity(Affinity::After);
 
-    let outcome = buffer
+    buffer
         .edit(
             [
                 Edit::insert(b(1), "XY".to_string()).unwrap(),
@@ -105,6 +93,7 @@ fn anchors_map_through_a_multi_edit_transaction_with_their_affinity() {
             TransactionMetadata::default(),
         )
         .unwrap();
+    let snapshot = buffer.snapshot();
 
     for anchor in [
         &mut before_insert,
@@ -112,11 +101,9 @@ fn anchors_map_through_a_multi_edit_transaction_with_their_affinity() {
         &mut before_replace,
         &mut after_replace,
     ] {
-        *anchor = (*anchor)
-            .map_through_delta_event(outcome.event())
-            .expect("同一事务的所有锚点版本必须一致")
-            .value();
-        assert_eq!(anchor.version(), buffer.version());
+        *anchor = Anchor::new(snapshot.version(), anchor.resolve_in(&snapshot).unwrap())
+            .with_affinity(anchor.affinity());
+        assert_eq!(anchor.version(), snapshot.version());
     }
 
     assert_eq!(buffer_text(&buffer), "aXYbcZf");
@@ -160,11 +147,13 @@ fn failed_multi_edit_boundary_should_keep_transaction_atomic() {
 #[test]
 fn undo_redo_should_restore_text_and_dirty_state_and_return_history_identity() {
     let mut buffer = buffer("abc");
-    let outcome = buffer
+    buffer
         .edit([Edit::insert(b(1), "X").unwrap()], metadata("insert"))
         .unwrap();
-    let selection_transaction_id = outcome.history_transaction_id().unwrap();
-    buffer.mark_saved();
+    let selection_transaction_id = buffer
+        .current_history_transaction_id()
+        .expect("记录历史的事务应返回当前历史事务身份");
+    let saved_version = buffer.version();
     buffer
         .edit(
             [Edit::insert(b(4), "!").unwrap()],
@@ -173,17 +162,17 @@ fn undo_redo_should_restore_text_and_dirty_state_and_return_history_identity() {
         .unwrap();
 
     assert_eq!(buffer_text(&buffer), "aXbc!");
-    assert!(buffer.is_dirty());
+    assert!(buffer.snapshot().has_edits_since(saved_version).unwrap());
     assert!(buffer.can_undo());
 
     let undo = buffer.undo().unwrap().unwrap();
     assert_eq!(buffer_text(&buffer), "aXbc");
-    assert!(!buffer.is_dirty());
+    assert!(!buffer.snapshot().has_edits_since(saved_version).unwrap());
     assert_ne!(undo.transaction_id(), selection_transaction_id);
 
     let redo = buffer.redo().unwrap().unwrap();
     assert_eq!(buffer_text(&buffer), "aXbc!");
-    assert!(buffer.is_dirty());
+    assert!(buffer.snapshot().has_edits_since(saved_version).unwrap());
     assert_eq!(redo.transaction_id(), undo.transaction_id());
 }
 
@@ -198,10 +187,12 @@ fn explicit_history_merge_should_return_one_canonical_identity_for_editor_select
         } else {
             merge_metadata("insert")
         };
-        let outcome = buffer
+        buffer
             .edit([Edit::insert(buffer.len_bytes(), text).unwrap()], metadata)
             .unwrap();
-        let history_transaction_id = outcome.history_transaction_id().unwrap();
+        let history_transaction_id = buffer
+            .current_history_transaction_id()
+            .expect("记录历史的事务应返回当前历史事务身份");
         if let Some(expected) = canonical_transaction_id {
             assert_eq!(history_transaction_id, expected);
         } else {
@@ -344,15 +335,14 @@ fn transaction_should_not_report_history_identity_when_history_is_disabled() {
     )
     .unwrap();
 
-    let outcome = buffer
+    buffer
         .edit(
             [Edit::insert(ByteOffset::ZERO, "a").unwrap()],
             metadata("insert"),
         )
         .unwrap();
 
-    assert_eq!(outcome.event().transaction_id(), TransactionId::INITIAL);
-    assert!(outcome.history_transaction_id().is_none());
+    assert!(buffer.current_history_transaction_id().is_none());
     assert!(!buffer.can_undo());
 }
 

@@ -432,8 +432,11 @@ fn diff_scroll_addition_documents() -> (String, String, Vec<Range<usize>>) {
     let insertion_row = DIFF_SCROLL_LINES_PER_FILE / 2;
     let mut base = String::new();
     let mut working = String::new();
-    let windows =
-        vec![insertion_row.saturating_sub(3)..(insertion_row + DIFF_SCROLL_ADDED_LINES + 3)];
+    // 单个新增窗口；用 once 显式构造单元素 Vec，避免单元素 vec! 触发 clippy 误报。
+    let windows = std::iter::once(
+        insertion_row.saturating_sub(3)..(insertion_row + DIFF_SCROLL_ADDED_LINES + 3),
+    )
+    .collect();
     for line in 0..DIFF_SCROLL_LINES_PER_FILE {
         if line == insertion_row {
             for added_line in 0..DIFF_SCROLL_ADDED_LINES {
@@ -539,7 +542,8 @@ fn diff_scroll_frame_scenarios(
                     let insertion_row = DIFF_SCROLL_LINES_PER_FILE / 2;
                     let source_row = insertion_row + DIFF_SCROLL_ADDED_LINES / 2;
                     snapshot
-                        .excerpts_for_path(&path)
+                        .excerpts()
+                        .filter(|excerpt| excerpt.path() == path)
                         .find(|excerpt| {
                             let source_start = excerpt.source_start_line().saturating_sub(1);
                             let source_end = excerpt

@@ -1135,8 +1135,8 @@ fn expanding_hunk_then_refreshing_hunks_keeps_mapping_consistent(cx: &mut TestAp
             .multi_buffer
             .update(cx, |buffer, cx| buffer.snapshot(cx));
         snapshot
-            .excerpts_for_path(&modified_path)
-            .next()
+            .excerpts()
+            .find(|excerpt| excerpt.path() == modified_path)
             .expect("修改文件应有 excerpt")
             .buffer_id()
     });

@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
 
+use crate::paths;
+
 /// 单项的索引（index）/工作区（worktree）状态码，对应 porcelain 输出中的单个字符。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum StatusCode {
@@ -106,10 +108,6 @@ impl FileStatus {
             }
             _ => false,
         }
-    }
-
-    pub fn is_untracked(self) -> bool {
-        matches!(self, FileStatus::Untracked)
     }
 
     pub fn is_ignored(self) -> bool {
@@ -296,7 +294,7 @@ impl GitStatus {
                 path = &path[..path.len() - 1];
             }
             let status = FileStatus::from_bytes([entry[0], entry[1]])?;
-            statuses.push((crate::path_from_git_bytes(path), status));
+            statuses.push((paths::path_from_git_bytes(path), status));
         }
         statuses.sort_by(|(a, _), (b, _)| a.cmp(b));
         let mut merged: Vec<(PathBuf, FileStatus)> = Vec::with_capacity(statuses.len());
@@ -364,7 +362,7 @@ pub(crate) fn parse_numstat(output: &[u8]) -> HashMap<PathBuf, DiffStat> {
             continue;
         };
         entries.insert(
-            crate::path_from_git_bytes(path),
+            paths::path_from_git_bytes(path),
             DiffStat { added, deleted },
         );
     }

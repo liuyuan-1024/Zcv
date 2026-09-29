@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use crate::{
     position_map::PositionMap,
-    transaction::Delta,
+    transaction::EditOperation,
     types::{BufferVersion, ByteOffset, TextRange, TransactionId},
 };
 
@@ -63,8 +63,8 @@ impl TextPatch {
         }
     }
 
-    pub(crate) fn from_delta(delta: &Delta) -> Self {
-        Self::from_edit_list(delta.edits())
+    pub(crate) fn from_operation(operation: &EditOperation) -> Self {
+        Self::from_edit_list(operation.edits())
     }
 
     /// 从一次事务的向前编辑构造净变化（坐标以旧文本为基准）。

@@ -321,7 +321,7 @@ fn status_for_directory_aggregates_children(cx: &mut gpui::TestAppContext) {
     let docs = cx.read_entity(&git_store, |store, _| {
         store.status_for_directory(&root.join("docs"))
     });
-    assert!(docs.is_some_and(|status| status.is_untracked()));
+    assert!(docs.is_some_and(|status| matches!(status, zcv_git::FileStatus::Untracked)));
     // 同一目录下 modified 与 untracked 并存：modified 优先（优先级更高）。
     fs::write(root.join("src/scratch.rs"), "x\n").expect("应创建文件");
     cx.update_entity(&git_store, |store, cx| {
@@ -684,7 +684,7 @@ fn ignored_directory_status_propagates_to_descendants(cx: &mut gpui::TestAppCont
                 .status_for_path(&root.join("scratch.txt"))
                 .map(|entry| entry.status)
         })
-        .is_some_and(|status| status.is_untracked())
+        .is_some_and(|status| matches!(status, zcv_git::FileStatus::Untracked))
     );
 }
 

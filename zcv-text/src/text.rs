@@ -33,10 +33,9 @@ pub use storage::TextRead;
 pub use text_changes::{PatchEdit, TextChangeBatch, TextPatch, TextSubscription};
 pub use tracking::Anchor;
 pub use transaction::{
-    ChangeSet, Delta, DeltaEvent, Edit, TransactionMergePolicy, TransactionMetadata,
-    TransactionOutcome, TransactionSource,
+    Edit, EditOperation, TransactionMergePolicy, TransactionMetadata, TransactionSource,
 };
 pub use types::{
     BufferId, BufferVersion, ByteOffset, CharOffset, Line, LineEndingStyle, LineRange,
-    LogicalColumn, Position, TextRange, TransactionId, Utf16Offset, Utf16Position,
+    LogicalColumn, Position, TextRange, TransactionId, Utf16Offset,
 };

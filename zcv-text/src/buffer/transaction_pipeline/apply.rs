@@ -13,9 +13,8 @@ use crate::{
     errors::{EditError, TextError, TextResult, TransactionError},
     text_changes::TextPatch,
     tracking::EditLog,
-    transaction::TransactionOutcome,
     transaction::{
-        ChangeSet, Delta, DeltaEvent, EditList, Transaction, TransactionMetadata, TransactionSource,
+        EditEvent, EditList, EditOperation, Transaction, TransactionMetadata, TransactionSource,
     },
     types::BufferVersion,
 };
@@ -25,18 +24,18 @@ use crate::{
 /// 这些引用共同表示一次事务规划的收尾边界，避免让收尾函数逐项接收互相关联的状态。
 struct TransactionFinalization<'a> {
     metadata: &'a TransactionMetadata,
-    event: &'a DeltaEvent,
+    event: &'a EditEvent,
     edit_log: &'a mut EditLog,
     history: &'a mut HistoryState,
     session: &'a mut Option<TransactionSession>,
 }
 
 impl Buffer {
-    /// 提交并应用事务。
-    pub(crate) fn apply_transaction(&mut self, tx: Transaction) -> TextResult<TransactionOutcome> {
+    /// 提交并应用事务；结果事实由订阅批次发布，调用方不需要接收返回值。
+    pub(crate) fn apply_transaction(&mut self, tx: Transaction) -> TextResult<()> {
         let derived = self.plan_transaction(tx)?;
-        let (history_transaction_id, event) = self.install(derived);
-        Ok(TransactionOutcome::new(history_transaction_id, event))
+        self.install(derived);
+        Ok(())
     }
 
     /// 计算事务的完整派生状态；只读取 Buffer，不产生任何变异。
@@ -64,10 +63,10 @@ impl Buffer {
     fn prepare_transaction(
         &self,
         tx: Transaction,
-    ) -> TextResult<(PreparedTransaction, crate::TransactionId, DeltaEvent)> {
+    ) -> TextResult<(PreparedTransaction, crate::TransactionId, EditEvent)> {
         let (base_version, edits, metadata) = tx.into_parts();
         let (next_transaction_id, event) =
-            self.prepare_delta_event(base_version, edits.clone(), metadata.source())?;
+            self.prepare_edit_event(base_version, edits.clone(), metadata.source())?;
         let undo_edits = self.build_inverse_edit_list(&edits)?;
 
         Ok((
@@ -129,7 +128,7 @@ impl Buffer {
         forward: &EditList,
         undo: Option<EditList>,
         next_transaction_id: crate::TransactionId,
-        event: DeltaEvent,
+        event: EditEvent,
         metadata: Option<&TransactionMetadata>,
         revert: Option<(BufferVersion, BufferVersion)>,
     ) -> TextResult<DerivedBufferState> {
@@ -149,21 +148,20 @@ impl Buffer {
         let next_coordinate_index = self.coordinate_index.appended(
             event.old_version(),
             event.new_version(),
-            TextPatch::from_delta(event.delta()),
+            TextPatch::from_operation(event.operation()),
         );
 
         let mut next_history = self.history.clone();
         let mut next_session = self.session.clone();
-        let history_transaction_id = match metadata {
-            Some(metadata) => self.plan_finish_transaction(TransactionFinalization {
+        if let Some(metadata) = metadata {
+            self.plan_finish_transaction(TransactionFinalization {
                 metadata,
                 event: &event,
                 edit_log: &mut next_edit_log,
                 history: &mut next_history,
                 session: &mut next_session,
-            })?,
-            None => None,
-        };
+            })?;
+        }
 
         Ok(DerivedBufferState {
             storage: next_storage,
@@ -175,15 +173,11 @@ impl Buffer {
             session: next_session,
             next_transaction_id,
             event,
-            history_transaction_id,
         })
     }
 
     /// 历史 / 会话收尾的计划版本：只作用于传入的克隆状态。
-    fn plan_finish_transaction(
-        &self,
-        finalization: TransactionFinalization<'_>,
-    ) -> TextResult<Option<crate::TransactionId>> {
+    fn plan_finish_transaction(&self, finalization: TransactionFinalization<'_>) -> TextResult<()> {
         let TransactionFinalization {
             metadata,
             event,
@@ -200,7 +194,7 @@ impl Buffer {
             } else {
                 active.discard_history();
             }
-            return Ok(active.history_transaction_id());
+            return Ok(());
         }
 
         if metadata.record_history() {
@@ -213,20 +207,18 @@ impl Buffer {
             );
             push_history_into(history, edit_log, entry, metadata)?;
             truncate_edit_history(edit_log, history, &self.config.large_file);
-            return Ok(history.current_transaction_id());
+            return Ok(());
         }
 
         // record_history=false 后，当前节点下的 redo 分支已基于过期文本，整体丢弃。
         history.drop_children_of_current();
         truncate_edit_history(edit_log, history, &self.config.large_file);
-        Ok(None)
+        Ok(())
     }
 
-    /// 安装派生状态：整体换入并发布订阅批次；返回历史事务身份与事件。
-    pub(in crate::buffer) fn install(
-        &mut self,
-        derived: DerivedBufferState,
-    ) -> (Option<crate::TransactionId>, DeltaEvent) {
+    /// 安装派生状态：整体换入并发布订阅批次；
+    /// 返回本次提交事实供内部断言使用。
+    pub(in crate::buffer) fn install(&mut self, derived: DerivedBufferState) -> EditEvent {
         let DerivedBufferState {
             storage,
             version,
@@ -237,7 +229,6 @@ impl Buffer {
             session,
             next_transaction_id,
             event,
-            history_transaction_id,
         } = derived;
 
         self.storage = storage;
@@ -247,8 +238,8 @@ impl Buffer {
         self.insertions = insertions;
         self.history = history;
         self.session = session;
-        self.commit_delta_event(next_transaction_id, &event);
-        (history_transaction_id, event)
+        self.commit_edit_event(next_transaction_id, &event);
+        event
     }
 
     /// 回放（undo/redo）路径：把已校验的 EditList 规划并安装，不改变历史图。
@@ -258,10 +249,9 @@ impl Buffer {
         tx_edits: EditList,
         source: TransactionSource,
         revert: Option<(BufferVersion, BufferVersion)>,
-    ) -> TextResult<DeltaEvent> {
+    ) -> TextResult<EditEvent> {
         let derived = self.plan_edit_list(base_version, tx_edits, source, revert)?;
-        let (_, event) = self.install(derived);
-        Ok(event)
+        Ok(self.install(derived))
     }
 
     fn plan_edit_list(
@@ -273,7 +263,7 @@ impl Buffer {
     ) -> TextResult<DerivedBufferState> {
         self.ensure_writable()?;
         let (next_transaction_id, event) =
-            self.prepare_delta_event(base_version, tx_edits.clone(), source)?;
+            self.prepare_edit_event(base_version, tx_edits.clone(), source)?;
         // 回放与普通提交一样记录逆编辑：它的逆就是反向回放所需的编辑。
         let undo_edits = self.build_inverse_edit_list(&tx_edits)?;
         self.plan_edit_list_state(
@@ -304,7 +294,7 @@ impl Buffer {
         };
         self.apply_large_transaction_policy(&mut prepared)?;
 
-        let (next_transaction_id, event) = self.prepare_delta_event(
+        let (next_transaction_id, event) = self.prepare_edit_event(
             base_version,
             prepared.edits.clone(),
             prepared.metadata.source(),
@@ -323,12 +313,12 @@ impl Buffer {
     }
 
     /// 为一次已确定的文本变化构造唯一的版本、事务与坐标映射事实。
-    pub(in crate::buffer) fn prepare_delta_event(
+    pub(in crate::buffer) fn prepare_edit_event(
         &self,
         base_version: BufferVersion,
         tx_edits: EditList,
         source: TransactionSource,
-    ) -> TextResult<(crate::TransactionId, DeltaEvent)> {
+    ) -> TextResult<(crate::TransactionId, EditEvent)> {
         if base_version != self.version {
             return Err(TransactionError::VersionMismatch {
                 expected: self.version,
@@ -340,10 +330,8 @@ impl Buffer {
         self.validate_edit_list(&tx_edits)?;
         let (transaction_id, next_transaction_id) = self.prepare_transaction_id()?;
         let new_version = base_version.next().ok_or(TextError::VersionOverflow)?;
-        let changeset = ChangeSet::from_edit_list(&tx_edits);
-        let position_map = changeset.position_map();
-        let delta = Delta::new(base_version, new_version, tx_edits);
-        let event = DeltaEvent::new(transaction_id, source, delta, changeset, position_map);
+        let operation = EditOperation::new(base_version, new_version, tx_edits);
+        let event = EditEvent::new(transaction_id, source, operation);
         Ok((next_transaction_id, event))
     }
 }

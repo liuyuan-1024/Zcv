@@ -10,6 +10,6 @@ mod versions;
 
 pub use line_endings::LineEndingStyle;
 pub use offsets::{ByteOffset, CharOffset, Utf16Offset};
-pub use positions::{Line, LogicalColumn, Position, Utf16Position};
+pub use positions::{Line, LogicalColumn, Position};
 pub use ranges::{LineRange, TextRange};
 pub use versions::{BufferId, BufferVersion, TransactionId};

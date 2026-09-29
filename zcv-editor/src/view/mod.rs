@@ -40,9 +40,8 @@ use crate::scrollbar::{ScrollbarMarker, ScrollbarMarkerState};
 
 use super::blink_manager::BlinkManager;
 use super::display_map::{
-    ChunkRendererId, CreaseId, DisplayColumn, DisplayMap, DisplayPoint, DisplayRow,
-    DisplayRowEvent, DisplaySnapshot, EditorHunk, FoldBias, FoldPlaceholder, HighlightStyles,
-    HunkControlTarget,
+    ChunkRendererId, DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplayRowEvent,
+    DisplaySnapshot, EditorHunk, FoldBias, FoldPlaceholder, HighlightStyles, HunkControlTarget,
 };
 use super::element::{AUTOSCROLL_INTERVAL, EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollViewport, ScrollbarThumbState};
@@ -242,12 +241,6 @@ impl From<SoftWrapMode> for SoftWrap {
         }
     }
 }
-
-/// 宿主注入的显式折叠候选身份。
-///
-/// 身份只用于移除同一候选；范围本身由显示层以组合锚点保存并随文本演进。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ExplicitCreaseId(CreaseId);
 
 pub struct Editor {
     multi_buffer: Entity<MultiBuffer>,
@@ -711,40 +704,6 @@ impl Editor {
     /// 源仍可见时保持源位置，源已退出投影时落到确定的结构边界；
     /// Editor 不维护第二套补偿坐标。
     fn after_diff_expansion(&mut self, cx: &mut Context<Self>) {
-        self.advance_snapshots(cx);
-        cx.notify();
-    }
-
-    /// 注入宿主拥有的显式折叠候选。
-    ///
-    /// 显式范围优先于同一行的语法折叠建议；语法候选仍由显示层按行即时查询。
-    pub fn insert_creases(
-        &mut self,
-        ranges: impl IntoIterator<Item = Range<MultiBufferAnchor>>,
-        cx: &mut Context<Self>,
-    ) -> Vec<ExplicitCreaseId> {
-        let ids = self
-            .display_map
-            .update(cx, |map, cx| map.insert_creases(ranges, cx));
-        if !ids.is_empty() {
-            self.advance_snapshots(cx);
-            cx.notify();
-        }
-        ids.into_iter().map(ExplicitCreaseId).collect()
-    }
-
-    /// 移除先前注入的显式折叠候选。
-    pub fn remove_creases(
-        &mut self,
-        ids: impl IntoIterator<Item = ExplicitCreaseId>,
-        cx: &mut Context<Self>,
-    ) {
-        let ids = ids.into_iter().map(|id| id.0).collect::<Vec<_>>();
-        if ids.is_empty() {
-            return;
-        }
-        self.display_map
-            .update(cx, |map, cx| map.remove_creases(ids, cx));
         self.advance_snapshots(cx);
         cx.notify();
     }

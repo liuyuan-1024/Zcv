@@ -4,7 +4,7 @@
 //! - diff hunk 与词级变化由 MultiBuffer 的投影提供；
 //! - 搜索命中与宿主 hunk 由 Editor 注入锚点范围。
 //!
-//! 折叠候选是独立的 `CreaseMap` 快照，不经过本模块。
+//! 折叠候选由 `DisplaySnapshot` 按需查询语法折叠范围，不经过本模块。
 //! DisplayMap 在同一显示版本上把输入投影为显示行坐标并随快照保存；
 //! EditorElement 只从 DisplaySnapshot 按视口消费，不持有显示坐标副本。
 

@@ -1253,11 +1253,12 @@ impl GitStore {
                     }
                     // 版本检查覆盖读取、文本差异计算和语法解析，安装与 diff 推送在同一轮更新中完成。
                     if let (Some(source), Some(edited)) = (&source, edited) {
+                        let saved_version = edited.base_version();
                         source.update(cx, |source, cx| {
                             source
                                 .fast_forward(edited, cx)
                                 .expect("修订文档只由当前 GitStore 加载代次修改");
-                            source.mark_saved(cx);
+                            source.did_save(saved_version, cx);
                         });
                     }
                     let document = store.store_revision_document(revision, path, text, source, cx);

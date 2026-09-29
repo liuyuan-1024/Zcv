@@ -72,7 +72,7 @@ fn editor_emits_dirty_changes_after_edit_and_save(cx: &mut TestAppContext) {
             .expect("单行编辑器的整文件源应可取回")
     });
     cx.update_entity(&language_buffer, |language_buffer, cx| {
-        language_buffer.mark_saved(cx);
+        language_buffer.did_save(language_buffer.version(), cx);
     });
     cx.run_until_parked();
     assert!(events.borrow().contains(&EditorEvent::DirtyChanged));

@@ -70,7 +70,7 @@ fn snapshot_remains_immutable_when_buffer_advances() {
 fn stable_anchor_order_includes_document_end() {
     let mut buffer = Buffer::from_text("中文 abc".to_owned(), BufferConfig::default()).unwrap();
     let before = buffer.snapshot();
-    let interior = before.anchor_after(ByteOffset::new("中文 ".len()));
+    let interior = before.anchor_with_affinity(ByteOffset::new("中文 ".len()), Affinity::After);
     let end = before.anchor_before(before.len_bytes());
     assert_eq!(before.stable_anchor_cmp(&interior, &end), Ordering::Less);
     buffer
@@ -93,7 +93,7 @@ fn stable_anchor_order_preserves_empty_document_boundaries() {
     let mut buffer = Buffer::from_text(String::new(), BufferConfig::default()).unwrap();
     let empty = buffer.snapshot();
     let start = empty.anchor_before(ByteOffset::ZERO);
-    let end = empty.anchor_after(ByteOffset::ZERO);
+    let end = empty.anchor_with_affinity(ByteOffset::ZERO, Affinity::After);
     buffer
         .edit(
             [Edit::insert(ByteOffset::ZERO, "one\ntwo\n").unwrap()],
@@ -101,7 +101,7 @@ fn stable_anchor_order_preserves_empty_document_boundaries() {
         )
         .unwrap();
     let snapshot = buffer.snapshot();
-    let middle = snapshot.anchor_after(ByteOffset::new(4));
+    let middle = snapshot.anchor_with_affinity(ByteOffset::new(4), Affinity::After);
     assert_eq!(snapshot.stable_anchor_cmp(&start, &middle), Ordering::Less);
     assert_eq!(snapshot.stable_anchor_cmp(&middle, &end), Ordering::Less);
     assert_eq!(start.resolve_in(&snapshot).unwrap(), ByteOffset::ZERO);
@@ -113,7 +113,7 @@ fn stable_anchor_order_keeps_terminal_boundaries_after_prefix_and_suffix_inserti
     let mut buffer = Buffer::from_text("original\n".to_owned(), BufferConfig::default()).unwrap();
     let before = buffer.snapshot();
     let start = before.anchor_before(ByteOffset::ZERO);
-    let end = before.anchor_after(before.len_bytes());
+    let end = before.anchor_with_affinity(before.len_bytes(), Affinity::After);
     buffer
         .edit(
             [
@@ -125,7 +125,7 @@ fn stable_anchor_order_keeps_terminal_boundaries_after_prefix_and_suffix_inserti
         .unwrap();
     let after = buffer.snapshot();
     for offset in [ByteOffset::new(1), ByteOffset::new(18)] {
-        let inserted = after.anchor_after(offset);
+        let inserted = after.anchor_with_affinity(offset, Affinity::After);
         assert_eq!(after.stable_anchor_cmp(&start, &inserted), Ordering::Less);
         assert_eq!(after.stable_anchor_cmp(&inserted, &end), Ordering::Less);
     }

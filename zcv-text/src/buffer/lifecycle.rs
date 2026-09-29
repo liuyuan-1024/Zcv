@@ -27,7 +27,6 @@ impl Buffer {
             config,
             storage,
             version: BufferVersion::INITIAL,
-            saved_version: BufferVersion::INITIAL,
             next_transaction_id: TransactionId::INITIAL,
             text_changes: Default::default(),
             edit_log: Default::default(),
@@ -83,36 +82,12 @@ impl Buffer {
     pub fn buffer_id(&self) -> BufferId {
         self.buffer_id
     }
-
-    pub fn saved_version(&self) -> BufferVersion {
-        self.saved_version
-    }
-
-    /// 自保存点以来是否存在结构性文本编辑。
-    ///
-    /// 直接由 `edits_since(saved_version)` 派生，不再长期保留保存点全文快照或指纹。
-    /// 与 Zed 的 `has_edits_since` 同语义：编辑互相抵消（如插入后撤销）为 clean，
-    /// 替换后又替换回原文仍计为 dirty；保存点已退出编辑日志时保守判 dirty。
-    pub fn is_dirty(&self) -> bool {
-        if self.version == self.saved_version {
-            return false;
-        }
-
-        // 保存点版本不可得时无法比较净值，按 dirty 处理，避免误报 clean。
-        self.snapshot()
-            .has_edits_since(self.saved_version)
-            .unwrap_or(true)
-    }
-
-    pub fn mark_saved(&mut self) {
-        self.saved_version = self.version;
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ByteOffset, Edit, TextRange, TransactionMetadata, TransactionSource};
+    use crate::{ByteOffset, Edit, TransactionMetadata, TransactionSource};
 
     #[test]
     fn set_config_applies_the_new_history_budget_immediately() {
@@ -131,52 +106,5 @@ mod tests {
         buffer.set_config(config);
 
         assert!(!buffer.can_undo());
-    }
-
-    #[test]
-    fn is_dirty_ignores_edits_that_restore_the_visible_fragments() {
-        let mut buffer = Buffer::from_text("hello".to_string(), BufferConfig::default())
-            .expect("Buffer 应能创建");
-        buffer.mark_saved();
-
-        buffer
-            .edit(
-                [Edit::insert(ByteOffset::new(5), "!").expect("插入编辑必须合法")],
-                TransactionMetadata::new(TransactionSource::Programmatic),
-            )
-            .expect("编辑应成功");
-        assert!(buffer.is_dirty());
-
-        buffer
-            .edit(
-                [Edit::delete(
-                    TextRange::new(ByteOffset::new(5), ByteOffset::new(6))
-                        .expect("删除范围必须合法"),
-                )],
-                TransactionMetadata::new(TransactionSource::Programmatic),
-            )
-            .expect("编辑应成功");
-        assert!(!buffer.is_dirty());
-    }
-
-    #[test]
-    fn is_dirty_is_clean_after_undoing_a_deletion() {
-        let mut buffer = Buffer::from_text("hello".to_string(), BufferConfig::default())
-            .expect("Buffer 应能创建");
-        buffer.mark_saved();
-
-        buffer
-            .edit(
-                [Edit::delete(
-                    TextRange::new(ByteOffset::new(1), ByteOffset::new(3))
-                        .expect("删除范围必须合法"),
-                )],
-                TransactionMetadata::new(TransactionSource::Programmatic),
-            )
-            .expect("编辑应成功");
-        assert!(buffer.is_dirty());
-
-        buffer.undo().expect("撤销应成功");
-        assert!(!buffer.is_dirty());
     }
 }

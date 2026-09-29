@@ -1650,13 +1650,6 @@ fn text_summary_of_str(text: &str) -> MBTextSummary {
             .expect("文本至少有一个逻辑行")
             .chars()
             .count(),
-        last_line_len_utf16: text
-            .rsplit('\n')
-            .next()
-            .expect("文本至少有一个逻辑行")
-            .chars()
-            .map(char::len_utf16)
-            .sum(),
     }
 }
 

@@ -18,7 +18,7 @@ use zcv_path::AbsolutePathBuf;
 
 mod platform;
 
-use crate::paths::revision_path;
+use crate::paths::{self, revision_path};
 use crate::status::{DiffStat, GitStatus, parse_numstat};
 
 /// 可作为差异文本来源的 Git 修订。
@@ -567,7 +567,7 @@ impl GitRepository for RealGitRepository {
             .stdout
             .split(|byte| *byte == 0)
             .filter(|path| !path.is_empty())
-            .map(crate::path_from_git_bytes)
+            .map(paths::path_from_git_bytes)
             .collect())
     }
 

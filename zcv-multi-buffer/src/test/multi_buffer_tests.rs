@@ -456,7 +456,7 @@ fn single_file_version_change_matches_fresh_three_file_build(cx: &mut TestAppCon
                 cx,
             )
             .unwrap();
-        source.mark_saved(cx);
+        source.did_save(source.version(), cx);
     });
     cx.run_until_parked();
 
@@ -1111,29 +1111,45 @@ fn read_only_singleton(
 }
 
 #[gpui::test]
-fn title_prefers_explicit_value_and_derives_from_path(cx: &mut TestAppContext) {
-    let source = singleton(
-        "src/main.rs",
-        "fn main() {}
-",
-        cx,
-    );
+fn title_prefers_explicit_then_path_then_content_then_default(cx: &mut TestAppContext) {
+    // 有文件路径的单例：标题取文件名。
+    let source = singleton("src/main.rs", "fn main() {}\n", cx);
     let multi_buffer = cx.new(|cx| MultiBuffer::singleton(source, cx));
+    cx.update_entity(&multi_buffer, |buffer, cx| {
+        assert_eq!(buffer.title(cx), "main.rs");
+        assert!(buffer.explicit_title().is_none());
+    });
 
+    // 显式标题优先于路径派生。
     cx.update_entity(&multi_buffer, |buffer, cx| {
-        assert_eq!(buffer.title(cx).as_deref(), Some("main.rs"));
+        buffer.set_title("变更".to_owned(), cx);
     });
     cx.update_entity(&multi_buffer, |buffer, cx| {
-        buffer.set_title(Some("变更".to_owned()), cx);
+        assert_eq!(buffer.title(cx), "变更");
+        assert_eq!(buffer.explicit_title(), Some("变更"));
     });
+
+    // 无文件路径的单例：标题取内容首行（折叠连续空白、去尾部空白）。
+    let buffer = Buffer::from_text(
+        "   hello   world\nsecond".to_owned(),
+        BufferConfig::default(),
+    )
+    .expect("应创建测试 Buffer");
+    let source =
+        cx.new(|cx| LanguageBuffer::new(buffer, None, Arc::new(LanguageRegistry::new()), cx));
+    let multi_buffer = cx.new(|cx| MultiBuffer::singleton(source, cx));
     cx.update_entity(&multi_buffer, |buffer, cx| {
-        assert_eq!(buffer.title(cx).as_deref(), Some("变更"));
+        assert_eq!(buffer.title(cx), "hello world");
     });
+
+    // 无路径且内容为空：回落到 DEFAULT_TITLE。
+    let buffer =
+        Buffer::from_text(String::new(), BufferConfig::default()).expect("应创建测试 Buffer");
+    let source =
+        cx.new(|cx| LanguageBuffer::new(buffer, None, Arc::new(LanguageRegistry::new()), cx));
+    let multi_buffer = cx.new(|cx| MultiBuffer::singleton(source, cx));
     cx.update_entity(&multi_buffer, |buffer, cx| {
-        buffer.set_title(None, cx);
-    });
-    cx.update_entity(&multi_buffer, |buffer, cx| {
-        assert_eq!(buffer.title(cx).as_deref(), Some("main.rs"));
+        assert_eq!(buffer.title(cx), MultiBuffer::DEFAULT_TITLE);
     });
 }
 
@@ -1204,37 +1220,6 @@ fn anchor_resolves_to_document_start_when_projection_becomes_empty(cx: &mut Test
 }
 
 #[gpui::test]
-fn excerpt_at_output_offset_uses_the_offset_cursor(cx: &mut TestAppContext) {
-    let first = singleton("src/a.rs", "a\nb\n", cx);
-    let second = singleton("src/b.rs", "c\n", cx);
-    let combined = cx.new(MultiBuffer::empty);
-    cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(
-            vec![
-                ExcerptRange::line_range(first, 0..2, cx),
-                ExcerptRange::line_range(second, 0..1, cx),
-            ],
-            cx,
-        );
-    });
-
-    let snapshot = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
-    assert_eq!(snapshot.len_bytes(), MultiBufferOffset::new(7));
-    assert_eq!(
-        snapshot
-            .region_at_output_offset(ByteOffset::new(0).into())
-            .map(|excerpt| excerpt.path().to_path_buf()),
-        Some(PathBuf::from("src/a.rs"))
-    );
-    assert_eq!(
-        snapshot
-            .region_at_output_offset(ByteOffset::new(5).into())
-            .map(|excerpt| excerpt.path().to_path_buf()),
-        Some(PathBuf::from("src/b.rs"))
-    );
-}
-
-#[gpui::test]
 fn set_excerpts_for_path_replaces_only_that_path(cx: &mut TestAppContext) {
     let first = singleton("src/a.rs", "a\nb\n", cx);
     let second = singleton("src/b.rs", "c\n", cx);
@@ -1261,8 +1246,20 @@ fn set_excerpts_for_path_replaces_only_that_path(cx: &mut TestAppContext) {
 
     let snapshot = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
     assert_eq!(snapshot.excerpts().count(), 3);
-    assert_eq!(snapshot.excerpts_for_path(Path::new("src/a.rs")).count(), 2);
-    assert_eq!(snapshot.excerpts_for_path(Path::new("src/b.rs")).count(), 1);
+    assert_eq!(
+        snapshot
+            .excerpts()
+            .filter(|excerpt| excerpt.path() == Path::new("src/a.rs"))
+            .count(),
+        2
+    );
+    assert_eq!(
+        snapshot
+            .excerpts()
+            .filter(|excerpt| excerpt.path() == Path::new("src/b.rs"))
+            .count(),
+        1
+    );
     assert_eq!(
         snapshot.excerpts().next().unwrap().path(),
         Path::new("src/a.rs")
@@ -1363,7 +1360,7 @@ fn remove_excerpts_for_path_drops_only_that_path(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn excerpts_for_path_uses_the_path_cursor(cx: &mut TestAppContext) {
+fn excerpts_by_path_uses_the_path_cursor(cx: &mut TestAppContext) {
     let first = singleton("src/a.rs", "a\n", cx);
     let second = singleton("src/b.rs", "b\n", cx);
     let combined = cx.new(MultiBuffer::empty);
@@ -1379,11 +1376,18 @@ fn excerpts_for_path_uses_the_path_cursor(cx: &mut TestAppContext) {
 
     let snapshot = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
     let paths = snapshot
-        .excerpts_for_path(Path::new("src/a.rs"))
+        .excerpts()
+        .filter(|excerpt| excerpt.path() == Path::new("src/a.rs"))
         .map(|excerpt| excerpt.path().to_path_buf())
         .collect::<Vec<_>>();
     assert_eq!(paths, vec![PathBuf::from("src/a.rs")]);
-    assert_eq!(snapshot.excerpts_for_path(Path::new("src/c.rs")).count(), 0);
+    assert_eq!(
+        snapshot
+            .excerpts()
+            .filter(|excerpt| excerpt.path() == Path::new("src/c.rs"))
+            .count(),
+        0
+    );
 }
 
 #[gpui::test]
@@ -1793,17 +1797,6 @@ fn assert_output_coordinates(snapshot: &MultiBufferSnapshot) {
             snapshot.byte_to_utf16_cu(output_byte).ok(),
             reference.byte_to_utf16_cu(source_byte).ok()
         );
-        let expected_utf16 = reference.byte_to_utf16_position(source_byte).ok();
-        assert_eq!(
-            TextRead::byte_to_utf16_position(snapshot, source_byte).ok(),
-            expected_utf16
-        );
-        if let Some(position) = expected_utf16 {
-            assert_eq!(
-                TextRead::utf16_position_to_byte(snapshot, position).unwrap(),
-                source_byte
-            );
-        }
         if let Some(position) = expected {
             assert_eq!(
                 snapshot.position_to_byte(position).unwrap(),
@@ -3283,7 +3276,7 @@ fn save_after_diff_hunk_edit_keeps_rust_highlighting(cx: &mut TestAppContext) {
             .expect("hunk 编辑应成功");
     });
     cx.update_entity(&source, |source, cx| {
-        source.mark_saved(cx);
+        source.did_save(source.version(), cx);
     });
     cx.run_until_parked();
 
@@ -4903,14 +4896,14 @@ fn dirty_summary_tracks_unique_sources_save_and_removal(cx: &mut TestAppContext)
     });
     cx.run_until_parked();
     assert!(combined.update(cx, |buffer, cx| buffer.snapshot(cx).is_dirty()));
-    first.update(cx, |source, cx| source.mark_saved(cx));
+    first.update(cx, |source, cx| source.did_save(source.version(), cx));
     cx.run_until_parked();
     assert!(
         combined.update(cx, |buffer, cx| buffer.snapshot(cx).is_dirty()),
         "保存一个源不能清除另一个源的未保存状态"
     );
     let before = combined.update(cx, |buffer, cx| buffer.snapshot(cx));
-    second.update(cx, |source, cx| source.mark_saved(cx));
+    second.update(cx, |source, cx| source.did_save(source.version(), cx));
     cx.run_until_parked();
     let saved = combined.update(cx, |buffer, cx| buffer.snapshot(cx));
     assert!(!saved.is_dirty());

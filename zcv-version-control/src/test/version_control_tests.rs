@@ -1313,7 +1313,7 @@ fn commit_without_staged_changes_is_ignored(cx: &mut TestAppContext) {
             snapshot
                 .statuses_by_path
                 .get(&relative("untracked.txt"))
-                .is_some_and(|entry| entry.status.is_untracked()),
+                .is_some_and(|entry| matches!(entry.status, zcv_git::FileStatus::Untracked)),
             "未跟踪文件应保持未暂存"
         );
     });

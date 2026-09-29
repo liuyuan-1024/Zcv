@@ -37,14 +37,6 @@ impl<'a> TextSlice<'a> {
     pub fn len_chars(&self) -> usize {
         self.text.chars().count()
     }
-
-    pub fn len_bytes(&self) -> usize {
-        self.text.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.text.is_empty()
-    }
 }
 
 impl AsRef<str> for TextSlice<'_> {
@@ -73,32 +65,12 @@ impl<'a> LineSlice<'a> {
         Self { line, text }
     }
 
-    pub fn line(&self) -> Line {
-        self.line
-    }
-
     pub fn range(&self) -> TextRange {
         self.text.range()
     }
 
     pub fn as_str(&self) -> &str {
         self.text.as_str()
-    }
-
-    pub fn into_text(self) -> Cow<'a, str> {
-        self.text.into_text()
-    }
-
-    pub fn len_chars(&self) -> usize {
-        self.text.len_chars()
-    }
-
-    pub fn len_bytes(&self) -> usize {
-        self.text.len_bytes()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.text.is_empty()
     }
 }
 
@@ -134,10 +106,6 @@ impl<'a> LineContent<'a> {
         }
     }
 
-    pub fn line(&self) -> Line {
-        self.line
-    }
-
     pub fn full_range(&self) -> TextRange {
         self.full_range
     }
@@ -152,10 +120,6 @@ impl<'a> LineContent<'a> {
 
     pub fn len_chars(&self) -> usize {
         self.text.len_chars()
-    }
-
-    pub fn len_bytes(&self) -> usize {
-        self.text.len_bytes()
     }
 }
 

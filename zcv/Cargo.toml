@@ -12,18 +12,14 @@ gpui_util.workspace = true
 gpui-platform.workspace = true
 reqwest.workspace = true
 semver.workspace = true
-serde_json.workspace = true
 sha2.workspace = true
 smol.workspace = true
 tokio.workspace = true
 zcv-actions.workspace = true
 zcv-assets.workspace = true
-zcv-buffer-diff.workspace = true
 zcv-editor.workspace = true
-zcv-git.workspace = true
 zcv-keymap.workspace = true
 zcv-language.workspace = true
-zcv-multi-buffer.workspace = true
 zcv-outline.workspace = true
 zcv-preview-markdown.workspace = true
 zcv-preview-image.workspace = true
@@ -35,7 +31,6 @@ zcv-search.workspace = true
 zcv-settings.workspace = true
 zcv-terminal.workspace = true
 zcv-theme.workspace = true
-zcv-text.workspace = true
 zcv-ui.workspace = true
 zcv-update.workspace = true
 zcv-version-control.workspace = true
@@ -43,6 +38,7 @@ zcv-workspace.workspace = true
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -4,7 +4,7 @@
 
 use thiserror::Error;
 
-use crate::types::{BufferVersion, ByteOffset, CharOffset, Line, TextRange, Utf16Position};
+use crate::types::{BufferVersion, ByteOffset, CharOffset, Line, TextRange, Utf16Offset};
 
 /// 坐标转换、边界校验或越界相关的错误（坐标不合法）。
 ///
@@ -24,13 +24,13 @@ pub enum CoordinateError {
     #[error("字符偏移量越界：{0}")]
     CharOutOfBounds(CharOffset),
 
-    /// UTF-16 行列位置超出当前文本的行数或行内 code unit 范围。
-    #[error("UTF-16 位置越界：{0:?}")]
-    Utf16PositionOutOfBounds(Utf16Position),
+    /// 扁平 UTF-16 code unit 偏移超出当前文本的 code unit 总数。
+    #[error("UTF-16 code unit 偏移越界：{0}")]
+    Utf16OffsetOutOfBounds(Utf16Offset),
 
-    /// UTF-16 位置切进 surrogate pair 中间，不能表示为文本内核的 byte 坐标。
-    #[error("UTF-16 位置落在代理对中间：{0:?}")]
-    InvalidUtf16Boundary(Utf16Position),
+    /// 扁平 UTF-16 code unit 偏移切进 surrogate pair 中间，不能表示为字节坐标。
+    #[error("UTF-16 code unit 偏移落在代理对中间：{0}")]
+    InvalidUtf16Boundary(Utf16Offset),
 
     /// 逻辑行号不存在；是否允许等于 line_count 由具体 API 的半开边界语义决定。
     #[error("行索引越界：{0:?}")]
@@ -91,7 +91,7 @@ pub enum TransactionError {
 /// Anchor / Mark 版本推进相关错误。
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum AnchorError {
-    /// Anchor / Mark 只能通过连续 DeltaEvent 推进，不能跳过或重复应用版本。
+    /// Anchor / Mark 只能通过连续 EditEvent 推进，不能跳过或重复应用版本。
     #[error("Anchor 版本不匹配：预期版本 {expected:?}，实际版本 {actual:?}")]
     VersionMismatch {
         expected: BufferVersion,

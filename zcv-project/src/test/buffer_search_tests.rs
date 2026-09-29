@@ -109,7 +109,7 @@ fn whole_word_search_should_not_match_inside_identifier() {
 }
 
 #[test]
-fn search_result_should_remap_forward_and_drop_deleted_matches() {
+fn search_after_an_edit_reports_matches_in_the_new_version() {
     let mut buffer = buffer("aa bb aa");
     let snapshot = buffer.snapshot();
     let result = search_in_text(
@@ -120,14 +120,28 @@ fn search_result_should_remap_forward_and_drop_deleted_matches() {
         SearchOptions::new(),
     )
     .unwrap();
+    assert_eq!(
+        result.ranges().collect::<Vec<_>>(),
+        vec![range(0, 2), range(6, 8)]
+    );
 
-    let outcome = buffer
+    // 编辑后旧结果已过期；重新搜索得到新版本坐标。
+    buffer
         .edit([Edit::delete(range(0, 2))], TransactionMetadata::default())
         .unwrap();
-    let remapped = result.try_remap(outcome.event()).unwrap();
+    let snapshot = buffer.snapshot();
+    assert!(result.is_stale(snapshot.version()));
+    let refreshed = search_in_text(
+        &snapshot,
+        snapshot.version(),
+        WordBoundaryPolicy::default(),
+        "aa",
+        SearchOptions::new(),
+    )
+    .unwrap();
 
-    assert_eq!(remapped.version(), buffer.version());
-    assert_eq!(remapped.ranges().collect::<Vec<_>>(), vec![range(4, 6)]);
+    assert_eq!(refreshed.version(), buffer.version());
+    assert_eq!(refreshed.ranges().collect::<Vec<_>>(), vec![range(4, 6)]);
 }
 
 #[test]

@@ -1,16 +1,15 @@
 //! 存储 trait 边界：定义 Buffer/Snapshot 需要的只读与可变文本能力。
 //!
 //! **坐标系唯一真理**：trait 内部以 `ByteOffset` / 字节区间 `TextRange` 为核心；
-//! `CharOffset` / `Utf16Position` 是边界投影方法，仅用于公共 API / 外部协议转换。
+//! `CharOffset` 与 `Utf16Offset` 只是边界投影类型，不作为内核位置坐标；
+//! 其中 `Utf16Offset` 承载系统 IME 需要的扁平 UTF-16 code unit 偏移。
+//! Zcv 不接入 LSP 行/列协议。
 
 use std::borrow::Cow;
 
 use crate::{
     errors::TextResult,
-    types::{
-        ByteOffset, CharOffset, Line, LineEndingStyle, Position, TextRange, Utf16Offset,
-        Utf16Position,
-    },
+    types::{ByteOffset, CharOffset, Line, LineEndingStyle, Position, TextRange, Utf16Offset},
 };
 
 /// 只读文本视图。
@@ -86,16 +85,6 @@ pub trait TextRead {
     /// 边界投影：line / logical column -> CharOffset。仅公共 API / 外部协议使用。
     fn position_to_char(&self, position: Position) -> TextResult<CharOffset>;
 
-    /// 边界投影：CharOffset -> UTF-16 行列。仅 LSP 等外部协议。
-    fn char_to_utf16_position(&self, offset: CharOffset) -> TextResult<Utf16Position> {
-        self.byte_to_utf16_position(self.char_to_byte(offset)?)
-    }
-
-    /// 边界投影：UTF-16 行列 -> CharOffset。仅 LSP 等外部协议。
-    fn utf16_position_to_char(&self, position: Utf16Position) -> TextResult<CharOffset> {
-        self.byte_to_char(self.utf16_position_to_byte(position)?)
-    }
-
     /// 边界投影：判断 CharOffset 是否处在合法 grapheme cluster 边界。
     fn is_grapheme_boundary_char(&self, offset: CharOffset) -> TextResult<bool> {
         let byte = self.char_to_byte(offset)?;
@@ -128,18 +117,10 @@ pub trait TextRead {
     /// 边界投影：ByteOffset -> CharOffset。
     fn byte_to_char(&self, offset: ByteOffset) -> TextResult<CharOffset>;
 
-    /// 边界投影：ByteOffset -> UTF-16 行列。
-    fn byte_to_utf16_position(&self, offset: ByteOffset) -> TextResult<Utf16Position>;
-
-    /// 边界投影：UTF-16 行列 -> ByteOffset。
-    fn utf16_position_to_byte(&self, position: Utf16Position) -> TextResult<ByteOffset>;
-
     /// 边界投影：ByteOffset -> 全文 flat UTF-16 code unit 偏移。
     ///
-    /// 与 `byte_to_utf16_position` 的区别：本方法返回从文本起点起的累计 UTF-16
-    /// code unit 数，对应 NSTextInputClient / Win32 TSF 等系统 IME 的「flat
-    /// utf-16 offset」语义。端点必须落在 UTF-8 字符边界，否则返回
-    /// `CoordinateError::InvalidByteBoundary`。
+    /// 返回从文本起点起的累计 UTF-16 code unit 数，对应 NSTextInputClient / Win32 TSF 等系统 IME 的「flat utf-16 offset」语义。
+    /// 端点必须落在 UTF-8 字符边界，否则返回 `CoordinateError::InvalidByteBoundary`。
     fn byte_to_utf16_cu(&self, offset: ByteOffset) -> TextResult<Utf16Offset>;
 
     /// 边界投影：全文 flat UTF-16 code unit 偏移 -> ByteOffset。
@@ -243,42 +224,7 @@ macro_rules! text_coordinate_gateway {
             self.storage.byte_to_char(offset)
         }
 
-        /// CharOffset -> UTF-16 行列（LSP 等外部协议）。
-        pub fn char_to_utf16_position(
-            &self,
-            offset: $crate::CharOffset,
-        ) -> $crate::TextResult<$crate::Utf16Position> {
-            self.storage.char_to_utf16_position(offset)
-        }
-
-        /// UTF-16 行列 -> CharOffset（LSP 等外部协议）。
-        pub fn utf16_position_to_char(
-            &self,
-            position: $crate::Utf16Position,
-        ) -> $crate::TextResult<$crate::CharOffset> {
-            self.storage.utf16_position_to_char(position)
-        }
-
-        /// ByteOffset -> UTF-16 行列（LSP 等外部协议）。
-        pub fn byte_to_utf16_position(
-            &self,
-            offset: $crate::ByteOffset,
-        ) -> $crate::TextResult<$crate::Utf16Position> {
-            self.storage.byte_to_utf16_position(offset)
-        }
-
-        /// UTF-16 行列 -> ByteOffset（LSP 等外部协议）。
-        pub fn utf16_position_to_byte(
-            &self,
-            position: $crate::Utf16Position,
-        ) -> $crate::TextResult<$crate::ByteOffset> {
-            self.storage.utf16_position_to_byte(position)
-        }
-
-        /// 全文 flat UTF-16 code unit 偏移：byte → utf16 cu。
-        ///
-        /// 给系统 IME 的扁平 UTF-16 offset 语义用，不要走 `byte_to_utf16_position`
-        /// （那是 LSP 协议的行/列）。
+        /// 全文 flat UTF-16 code unit 偏移：byte → utf16 cu（系统 IME 语义）。
         pub fn byte_to_utf16_cu(
             &self,
             offset: $crate::ByteOffset,

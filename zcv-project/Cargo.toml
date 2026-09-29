@@ -12,7 +12,6 @@ async-channel.workspace = true
 globset.workspace = true
 gpui.workspace = true
 futures.workspace = true
-gpui_util.workspace = true
 regex.workspace = true
 regex-automata.workspace = true
 thiserror.workspace = true

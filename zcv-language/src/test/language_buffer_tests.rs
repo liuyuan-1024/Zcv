@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui::TestAppContext;
-use zcv_text::{BufferConfig, Edit, TransactionMetadata};
+use zcv_text::{BufferConfig, ByteOffset, Edit, TextRange, TransactionMetadata};
 
 use super::*;
 
@@ -147,7 +147,8 @@ fn distinguishes_text_parse_and_metadata_events(cx: &mut TestAppContext) {
 
     events.borrow_mut().clear();
     language_buffer.update(cx, |language_buffer, cx| {
-        language_buffer.mark_saved(cx);
+        let version = language_buffer.version();
+        language_buffer.did_save(version, cx);
     });
     cx.run_until_parked();
     assert_eq!(events.borrow().as_slice(), ["metadata"]);
@@ -315,4 +316,68 @@ fn versioned_incremental_batch_is_still_available(cx: &mut TestAppContext) {
     assert!(!changes.is_empty(), "应能拉取到版本化增量");
     assert_eq!(changes.old_version(), Some(old_version));
     assert!(changes.new_version().is_some());
+}
+
+#[gpui::test]
+fn is_dirty_ignores_edits_that_restore_the_visible_fragments(cx: &mut TestAppContext) {
+    let language_buffer =
+        cx.new(|cx| LanguageBuffer::new(test_buffer("hello"), None, test_registry(), cx));
+    language_buffer.update(cx, |language_buffer, cx| {
+        let version = language_buffer.version();
+        language_buffer.did_save(version, cx);
+    });
+
+    language_buffer.update(cx, |language_buffer, cx| {
+        language_buffer
+            .edit(
+                [Edit::insert(ByteOffset::new(5), "!").expect("插入编辑必须合法")],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("编辑应成功");
+    });
+    assert!(language_buffer.read_with(cx, |language_buffer, _| language_buffer.is_dirty()));
+
+    language_buffer.update(cx, |language_buffer, cx| {
+        language_buffer
+            .edit(
+                [Edit::delete(
+                    TextRange::new(ByteOffset::new(5), ByteOffset::new(6))
+                        .expect("删除范围必须合法"),
+                )],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("编辑应成功");
+    });
+    assert!(!language_buffer.read_with(cx, |language_buffer, _| language_buffer.is_dirty()));
+}
+
+#[gpui::test]
+fn is_dirty_is_clean_after_undoing_a_deletion(cx: &mut TestAppContext) {
+    let language_buffer =
+        cx.new(|cx| LanguageBuffer::new(test_buffer("hello"), None, test_registry(), cx));
+    language_buffer.update(cx, |language_buffer, cx| {
+        let version = language_buffer.version();
+        language_buffer.did_save(version, cx);
+    });
+
+    language_buffer.update(cx, |language_buffer, cx| {
+        language_buffer
+            .edit(
+                [Edit::delete(
+                    TextRange::new(ByteOffset::new(1), ByteOffset::new(3))
+                        .expect("删除范围必须合法"),
+                )],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("编辑应成功");
+    });
+    assert!(language_buffer.read_with(cx, |language_buffer, _| language_buffer.is_dirty()));
+
+    language_buffer.update(cx, |language_buffer, cx| {
+        language_buffer.undo(cx).expect("撤销应成功");
+    });
+    assert!(!language_buffer.read_with(cx, |language_buffer, _| language_buffer.is_dirty()));
 }

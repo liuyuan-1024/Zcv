@@ -154,7 +154,9 @@ fn replace_text_maps_old_anchors_through_the_same_coordinate_chain() {
 #[test]
 fn replace_text_preserves_anchor_affinity_at_an_actual_insertion() {
     let mut buffer = buffer("abc xyz");
-    let anchor = buffer.snapshot().anchor_after(b(4));
+    let anchor = buffer
+        .snapshot()
+        .anchor_with_affinity(b(4), Affinity::After);
 
     buffer.replace_text("abc NEW xyz".to_string()).unwrap();
 
@@ -166,7 +168,9 @@ fn replace_text_preserves_anchor_affinity_at_an_actual_insertion() {
 fn replace_text_maps_anchor_inside_replaced_token_to_the_replacement_start() {
     let mut buffer = buffer("abc");
     let before = buffer.snapshot().anchor_before(b(2));
-    let after = buffer.snapshot().anchor_after(b(2));
+    let after = buffer
+        .snapshot()
+        .anchor_with_affinity(b(2), Affinity::After);
 
     buffer.replace_text("XYZabc".to_string()).unwrap();
 
@@ -202,7 +206,10 @@ fn anchor_resolves_across_versions_with_affinity() {
     let mut buffer = buffer("abc");
     let (before, after) = {
         let snapshot = buffer.snapshot();
-        (snapshot.anchor_before(b(1)), snapshot.anchor_after(b(1)))
+        (
+            snapshot.anchor_before(b(1)),
+            snapshot.anchor_with_affinity(b(1), Affinity::After),
+        )
     };
     buffer
         .edit(
@@ -226,7 +233,9 @@ fn anchor_does_not_resolve_into_an_older_snapshot() {
             TransactionMetadata::default(),
         )
         .unwrap();
-    let newer_anchor = buffer.snapshot().anchor_after(b(0));
+    let newer_anchor = buffer
+        .snapshot()
+        .anchor_with_affinity(b(0), Affinity::After);
     assert!(matches!(
         newer_anchor.resolve_in(&older),
         Err(TextError::Anchor(AnchorError::TargetBeforeSource { .. }))

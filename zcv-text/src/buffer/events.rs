@@ -4,7 +4,7 @@ use super::Buffer;
 use crate::{
     errors::{TextError, TextResult},
     text_changes::{TextPatch, TextSubscription},
-    transaction::DeltaEvent,
+    transaction::EditEvent,
     types::TransactionId,
 };
 
@@ -23,13 +23,13 @@ impl Buffer {
         Ok((transaction_id, next_transaction_id))
     }
 
-    pub(in crate::buffer) fn commit_delta_event(
+    pub(in crate::buffer) fn commit_edit_event(
         &mut self,
         next_transaction_id: TransactionId,
-        event: &DeltaEvent,
+        event: &EditEvent,
     ) {
         self.next_transaction_id = next_transaction_id;
-        let patch = TextPatch::from_delta(event.delta());
+        let patch = TextPatch::from_operation(event.operation());
         self.text_changes.publish(
             event.old_version(),
             event.new_version(),

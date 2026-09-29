@@ -6,7 +6,7 @@ use crate::{
     buffer::history::{HistoryState, TransactionSession},
     storage::RopeyStorage,
     tracking::{CoordinateIndex, EditLog, InsertionIndex},
-    transaction::{DeltaEvent, EditList, TransactionMetadata},
+    transaction::{EditEvent, EditList, TransactionMetadata},
     types::{BufferVersion, TransactionId},
 };
 
@@ -30,6 +30,5 @@ pub(in crate::buffer) struct DerivedBufferState {
     pub(in crate::buffer) history: HistoryState,
     pub(in crate::buffer) session: Option<TransactionSession>,
     pub(in crate::buffer) next_transaction_id: TransactionId,
-    pub(in crate::buffer) event: DeltaEvent,
-    pub(in crate::buffer) history_transaction_id: Option<TransactionId>,
+    pub(in crate::buffer) event: EditEvent,
 }

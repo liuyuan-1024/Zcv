@@ -324,8 +324,11 @@ impl Project {
                     );
                 }
             }
+            let saved_version = snapshot.version();
             write_buffer_to_path(&snapshot, &path)?;
-            language_buffer.update(cx, |language_buffer, cx| language_buffer.mark_saved(cx));
+            language_buffer.update(cx, |language_buffer, cx| {
+                language_buffer.did_save(saved_version, cx);
+            });
             saved_paths.push(path);
         }
         // 保存成功后立即刷新 git 状态（快路径，不等 fs 事件；

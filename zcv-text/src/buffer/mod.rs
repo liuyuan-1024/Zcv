@@ -44,7 +44,6 @@ pub struct Buffer {
     config: BufferConfig,
     storage: RopeyStorage,
     version: BufferVersion,
-    saved_version: BufferVersion,
     next_transaction_id: TransactionId,
     text_changes: TextChangeTopic,
     /// 唯一的版本化编辑事实：Snapshot 据此重建净编辑，History 据此回放 undo/redo。

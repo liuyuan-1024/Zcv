@@ -36,7 +36,7 @@ use zcv_text::{
     CoordinateError, Edit, Line, LineEndingStyle, LogicalColumn, MovementDirection, MovementUnit,
     Position, PositionMap, Snapshot, Stickiness, StorageError, TextChangeBatch, TextError,
     TextRange, TextRead, TextResult, TextSubscription, TransactionError, TransactionId,
-    TransactionMetadata, Utf16Offset, Utf16Position, WordBoundaryPolicy,
+    TransactionMetadata, Utf16Offset, WordBoundaryPolicy,
 };
 
 /// 组合文档中的一个源片段。
@@ -73,12 +73,6 @@ impl ExcerptRange {
 
     pub fn with_display_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.display_path = Some(PathKey::new(path.into()));
-        self
-    }
-
-    /// 标记该源片段是否接受组合编辑。
-    pub fn with_editable(mut self, editable: bool) -> Self {
-        self.editable = editable;
         self
     }
 
@@ -653,8 +647,6 @@ pub struct MBTextSummary {
     pub last_line_len: usize,
     /// 最后一行的 Unicode scalar 列。
     pub last_line_chars: usize,
-    /// 最后一行的 UTF-16 code unit 列。
-    pub last_line_len_utf16: usize,
 }
 
 impl MBTextSummary {
@@ -666,7 +658,6 @@ impl MBTextSummary {
             lines: 1,
             last_line_len: 0,
             last_line_chars: 0,
-            last_line_len_utf16: 0,
         }
     }
 }
@@ -679,11 +670,9 @@ impl std::ops::AddAssign for MBTextSummary {
         if other.lines > 0 {
             self.last_line_len = other.last_line_len;
             self.last_line_chars = other.last_line_chars;
-            self.last_line_len_utf16 = other.last_line_len_utf16;
         } else {
             self.last_line_len += other.last_line_len;
             self.last_line_chars += other.last_line_chars;
-            self.last_line_len_utf16 += other.last_line_len_utf16;
         }
         self.lines += other.lines;
     }
@@ -1007,7 +996,6 @@ struct MappingPosition {
     lines: usize,
     column_bytes: usize,
     column_chars: usize,
-    column_utf16: usize,
     index: usize,
     input_item_index: usize,
     input_offset: ExcerptOffset,
@@ -1027,11 +1015,9 @@ impl Dimension<'_, DiffTransformSummary> for MappingPosition {
         if summary.output.lines > 0 {
             self.column_bytes = summary.output.last_line_len;
             self.column_chars = summary.output.last_line_chars;
-            self.column_utf16 = summary.output.last_line_len_utf16;
         } else {
             self.column_bytes += summary.output.last_line_len;
             self.column_chars += summary.output.last_line_chars;
-            self.column_utf16 += summary.output.last_line_len_utf16;
         }
         self.lines += summary.output.lines;
         self.index += summary.count;
@@ -1089,11 +1075,6 @@ fn summary_between(start: MBTextSummary, end: MBTextSummary) -> MBTextSummary {
             end.last_line_chars - start.last_line_chars
         } else {
             end.last_line_chars
-        },
-        last_line_len_utf16: if end.lines == start.lines {
-            end.last_line_len_utf16 - start.last_line_len_utf16
-        } else {
-            end.last_line_len_utf16
         },
     }
 }
@@ -1554,11 +1535,9 @@ impl<'a> MultiBufferCursor<'a> {
             if prefix.lines > 0 {
                 at.column_bytes = prefix.last_line_len;
                 at.column_chars = prefix.last_line_chars;
-                at.column_utf16 = prefix.last_line_len_utf16;
             } else {
                 at.column_bytes += prefix.last_line_len;
                 at.column_chars += prefix.last_line_chars;
-                at.column_utf16 += prefix.last_line_len_utf16;
             }
             at.lines += prefix.lines;
             at.input_text += prefix;
@@ -1881,14 +1860,6 @@ fn snapshot_range_summary(text: &Snapshot, range: TextRange) -> Option<(MBTextSu
                 chars
             } else {
                 text.byte_to_position(range.end()).ok()?.column().get()
-            },
-            last_line_len_utf16: if lines == 0 {
-                utf16
-            } else {
-                text.byte_to_utf16_position(range.end())
-                    .ok()?
-                    .character()
-                    .get()
             },
         },
         ends_with_newline,
@@ -2615,13 +2586,6 @@ impl MultiBufferSnapshot {
             } else {
                 self.byte_to_position(range.end())?.column().get()
             },
-            last_line_len_utf16: if lines == 0 {
-                len_utf16
-            } else {
-                TextRead::byte_to_utf16_position(self, range.end().into())?
-                    .character()
-                    .get()
-            },
         })
     }
 
@@ -2819,10 +2783,7 @@ impl MultiBufferSnapshot {
     pub fn utf16_cu_to_byte(&self, target: Utf16Offset) -> TextResult<MultiBufferOffset> {
         let total = self.diff_transforms.summary().output.len_utf16;
         if target.get() > total {
-            return Err(
-                CoordinateError::Utf16PositionOutOfBounds(Utf16Position::new(Line::ZERO, target))
-                    .into(),
-            );
+            return Err(CoordinateError::Utf16OffsetOutOfBounds(target).into());
         }
         if target.get() == total {
             return Ok(self.len_bytes());
@@ -2831,23 +2792,18 @@ impl MultiBufferSnapshot {
         cursor.seek_output_utf16(target, Bias::Right);
         let (excerpt, _) = cursor
             .item()
-            .ok_or(CoordinateError::Utf16PositionOutOfBounds(
-                Utf16Position::new(Line::ZERO, target),
-            ))?;
+            .ok_or(CoordinateError::Utf16OffsetOutOfBounds(target))?;
         let at = cursor.start();
-        let source = self.source_snapshot(excerpt.source_index).ok_or(
-            CoordinateError::Utf16PositionOutOfBounds(Utf16Position::new(Line::ZERO, target)),
-        )?;
+        let source = self
+            .source_snapshot(excerpt.source_index)
+            .ok_or(CoordinateError::Utf16OffsetOutOfBounds(target))?;
         let source_start = source.text.byte_to_utf16_cu(excerpt.source_range.start())?;
         let source_units = source_start.get() + target.get() - at.utf16;
         let source_offset = source
             .text
             .utf16_cu_to_byte(Utf16Offset::new(source_units))?;
         if source_offset > excerpt.source_range.end() {
-            return Err(
-                CoordinateError::Utf16PositionOutOfBounds(Utf16Position::new(Line::ZERO, target))
-                    .into(),
-            );
+            return Err(CoordinateError::Utf16OffsetOutOfBounds(target).into());
         }
         Ok(
             ByteOffset::new(at.bytes + source_offset.get() - excerpt.source_range.start().get())
@@ -3208,37 +3164,6 @@ impl MultiBufferSnapshot {
             cursor.next();
         }
         snapshots.into_iter()
-    }
-
-    /// 按路径定位逻辑窗口，不扫描其它文件。
-    pub fn excerpts_for_path(&self, path: &Path) -> impl Iterator<Item = ExcerptSnapshot> {
-        let path = PathKey::new(path);
-        let mut cursor = self.excerpts.cursor::<ExcerptSummary>(());
-        cursor.seek(&path, Bias::Left);
-        let mut snapshots = Vec::new();
-        while let Some(excerpt) = cursor.item() {
-            if excerpt.path != path {
-                break;
-            }
-            snapshots.push(self.logical_excerpt_snapshot(excerpt, cursor.start().text.len));
-            cursor.next();
-        }
-        snapshots.into_iter()
-    }
-
-    pub fn excerpt_at_index(&self, index: usize) -> Option<ExcerptSnapshot> {
-        let mut cursor = self.excerpts.cursor::<ExcerptSummary>(());
-        cursor.seek(&ExcerptIndex(index), Bias::Right);
-        let excerpt = cursor.item()?;
-        Some(self.logical_excerpt_snapshot(excerpt, cursor.start().text.len))
-    }
-
-    /// 组合输出偏移所在的 excerpt（用累积输出字节的偏移游标在路径有序树上定位）。
-    pub fn region_at_output_offset(&self, offset: MultiBufferOffset) -> Option<ExcerptSnapshot> {
-        let mut cursor = MultiBufferCursor::new(&self.excerpts, &self.diff_transforms);
-        cursor.seek_output(offset.into(), Bias::Right);
-        let (excerpt, _) = cursor.item()?;
-        Some(excerpt.to_snapshot(cursor.start().clone()))
     }
 
     /// 把快照内的组合偏移锚定到底层源坐标（Editor 源锚点选区：投影→源）。
@@ -3632,42 +3557,6 @@ impl TextRead for MultiBufferSnapshot {
         self.char_to_byte(offset).map(Into::into)
     }
 
-    fn byte_to_utf16_position(&self, offset: ByteOffset) -> TextResult<Utf16Position> {
-        if offset == self.len_bytes().into() {
-            let text = self.diff_transforms.summary().output;
-            return Ok(Utf16Position::new(
-                Line::new(text.lines),
-                Utf16Offset::new(text.last_line_len_utf16),
-            ));
-        }
-        let (entry, at, source, source_offset) = self.source_point_at_byte(offset.into())?;
-        let start = source
-            .text
-            .byte_to_utf16_position(entry.source_range.start())?;
-        let position = source.text.byte_to_utf16_position(source_offset)?;
-        let rows = position.line().get() - entry.source_start_line;
-        let column = if rows == 0 {
-            at.column_utf16 + position.character().get() - start.character().get()
-        } else {
-            position.character().get()
-        };
-        Ok(Utf16Position::new(
-            Line::new(at.lines + rows),
-            Utf16Offset::new(column),
-        ))
-    }
-
-    fn utf16_position_to_byte(&self, position: Utf16Position) -> TextResult<ByteOffset> {
-        let start = self.line_start_byte(position.line())?;
-        let units = self.byte_to_utf16_cu(start)?.get() + position.character().get();
-        let offset = self.utf16_cu_to_byte(Utf16Offset::new(units))?;
-        if TextRead::byte_to_utf16_position(self, offset.into())? == position {
-            Ok(offset.into())
-        } else {
-            Err(CoordinateError::Utf16PositionOutOfBounds(position).into())
-        }
-    }
-
     fn byte_to_utf16_cu(&self, offset: ByteOffset) -> TextResult<Utf16Offset> {
         self.byte_to_utf16_cu(offset.into())
     }
@@ -4028,7 +3917,7 @@ pub struct MultiBuffer {
     /// 历史、配置、重命名与保存等文件级事实按本字段委托给底层 LanguageBuffer。
     /// `None` 表示真正的多来源组合文档。
     singleton_source: Option<Entity<LanguageBuffer>>,
-    /// 显式标题；`None` 时由文档身份派生（当前文件路径的文件名）。
+    /// 显式标题；`None` 时由文件路径或内容首行派生。非文件文档（REPL/git 输出等）用它命名。
     title: Option<String>,
     /// 按显示路径排序的每文件 diff 状态（diff 实体、显示配置与展开覆盖）。
     diffs: Vec<diff_projection::DiffState>,
@@ -5810,26 +5699,85 @@ impl MultiBuffer {
         (subscription, snapshot)
     }
 
-    /// 组合文档标题。
-    ///
-    /// 显式标题优先；未设置时由文档身份派生（当前文件路径的文件名）。
-    /// 标题归文档模型所有，展示层直接消费。
-    pub fn title(&self, cx: &App) -> Option<String> {
-        self.title.clone().or_else(|| {
-            self.file_path(cx).and_then(|path| {
-                path.file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-            })
-        })
+    /// 显式标题；`None` 时由文件路径或内容首行派生。
+    pub fn explicit_title(&self) -> Option<&str> {
+        self.title.as_deref()
     }
 
-    /// 设置显式标题；`None` 恢复按文档身份派生。
-    pub fn set_title(&mut self, title: Option<String>, cx: &mut Context<Self>) {
-        if self.title == title {
-            return;
+    /// 无文件路径、无显式标题、内容也取不到标题时的回落文案。
+    pub const DEFAULT_TITLE: &str = "untitled";
+
+    /// 组合文档标题：显式标题 → 单例文件路径文件名 → 内容首行 → [`Self::DEFAULT_TITLE`]。
+    ///
+    /// 标题归文档模型所有，展示层直接消费；返回值永不为空。
+    pub fn title(&self, cx: &App) -> Cow<'_, str> {
+        if let Some(title) = self.title.as_ref() {
+            return title.into();
         }
-        self.title = title;
+
+        if let Some(path) = self.file_path(cx)
+            && let Some(name) = path.file_name()
+        {
+            return name.to_string_lossy().into_owned().into();
+        }
+
+        if self.singleton_source.is_some()
+            && let Some(title) = self.buffer_content_title(cx)
+        {
+            return title.into();
+        }
+
+        Self::DEFAULT_TITLE.into()
+    }
+
+    /// 设置显式标题；非文件文档（REPL/git 输出等）据此命名。
+    pub fn set_title(&mut self, title: String, cx: &mut Context<Self>) {
+        self.title = Some(title);
         cx.notify();
+    }
+
+    /// 从单例文档内容取标题：首行、折叠连续空白、最多 40 个字符、去尾部空白。
+    ///
+    /// 对齐 Zed `MultiBuffer::buffer_content_title`；只在无文件路径时作为兜底。
+    fn buffer_content_title(&self, cx: &App) -> Option<String> {
+        let source = self.singleton_source.as_ref()?;
+        let snapshot = source.read(cx).text_snapshot();
+        let line = snapshot.slice_line(Line::ZERO).ok()?;
+
+        let mut is_leading_whitespace = true;
+        let mut count = 0;
+        let mut prev_was_space = false;
+        let mut title = String::new();
+
+        for ch in line.as_str().chars() {
+            if is_leading_whitespace && ch.is_whitespace() {
+                continue;
+            }
+
+            is_leading_whitespace = false;
+
+            if ch == '\n' || count >= 40 {
+                break;
+            }
+
+            if ch.is_whitespace() {
+                if !prev_was_space {
+                    title.push(' ');
+                    count += 1;
+                    prev_was_space = true;
+                }
+            } else {
+                title.push(ch);
+                count += 1;
+                prev_was_space = false;
+            }
+        }
+
+        let title = title.trim_end().to_string();
+        if title.is_empty() {
+            return None;
+        }
+        Some(title)
     }
 
     pub fn file_path(&self, cx: &App) -> Option<PathBuf> {
@@ -6018,7 +5966,6 @@ fn mapping_at_tree(
             lines: output.lines,
             column_bytes: output.last_line_len,
             column_chars: output.last_line_chars,
-            column_utf16: output.last_line_len_utf16,
             input_item_index: cursor.start().count,
             input_text: excerpts.summary().text,
             input_offset: ExcerptOffset::new(excerpts.summary().text.len),

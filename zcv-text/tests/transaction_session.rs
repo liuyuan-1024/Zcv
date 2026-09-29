@@ -40,20 +40,18 @@ fn session_groups_multiple_edits_into_one_undo_step() {
 fn session_edits_share_the_session_transaction_id() {
     let mut buffer = buffer("hello");
     let session_id = buffer.start_transaction().unwrap().expect("应开启会话");
-    let first = buffer
+    buffer
         .edit(
             [Edit::insert(b(0), "A".to_string()).unwrap()],
             TransactionMetadata::default(),
         )
         .unwrap();
-    let second = buffer
+    buffer
         .edit(
             [Edit::insert(b(1), "B".to_string()).unwrap()],
             TransactionMetadata::default(),
         )
         .unwrap();
-    assert_eq!(first.history_transaction_id(), Some(session_id));
-    assert_eq!(second.history_transaction_id(), Some(session_id));
     let ended = buffer.end_transaction().unwrap().expect("会话应提交");
     assert_eq!(ended, session_id, "会话节点沿用开启时分配的事务身份");
 
@@ -143,35 +141,34 @@ fn skip_history_edit_discards_whole_session_history() {
 }
 
 #[test]
-fn skip_history_edit_does_not_report_a_history_identity() {
+fn session_with_a_skipped_history_edit_produces_no_history_node() {
     let mut buffer = buffer("hello");
-    let session_id = buffer.start_transaction().unwrap().expect("应开启会话");
+    buffer.start_transaction().unwrap().expect("应开启会话");
 
-    let recorded = buffer
+    buffer
         .edit(
             [Edit::insert(b(5), " world".to_string()).unwrap()],
             TransactionMetadata::default(),
         )
         .unwrap();
-    assert_eq!(recorded.history_transaction_id(), Some(session_id));
 
-    let skipped = buffer
+    // 会话内出现放弃历史的编辑：整个会话不产生历史节点。
+    buffer
         .edit(
             [Edit::insert(b(11), "!".to_string()).unwrap()],
             TransactionMetadata::new(TransactionSource::Programmatic).without_history(),
         )
         .unwrap();
-    assert!(skipped.history_transaction_id().is_none());
-
-    let later = buffer
+    buffer
         .edit(
             [Edit::insert(b(12), "?".to_string()).unwrap()],
             TransactionMetadata::default(),
         )
         .unwrap();
-    assert!(later.history_transaction_id().is_none());
+
     assert_eq!(buffer.end_transaction().unwrap(), None);
     assert!(!buffer.can_undo());
+    assert_eq!(buffer_text(&buffer), "hello world!?");
 }
 
 #[test]

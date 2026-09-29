@@ -6,8 +6,8 @@ use regex::{Regex, RegexBuilder};
 use regex_automata::meta;
 
 use zcv_text::{
-    BufferVersion, ByteOffset, CoordinateError, DeltaEvent, MappingResult, PositionMap, Snapshot,
-    Stickiness, TextError, TextRange, TextRead, WordBoundaryPolicy,
+    BufferVersion, ByteOffset, CoordinateError, Snapshot, TextError, TextRange, TextRead,
+    WordBoundaryPolicy,
 };
 
 use super::error::{SearchError, SearchTextResult};
@@ -180,11 +180,6 @@ impl SearchOptions {
         self
     }
 
-    pub const fn without_range(mut self) -> Self {
-        self.range = None;
-        self
-    }
-
     pub const fn with_case_sensitive(mut self, case_sensitive: bool) -> Self {
         self.case_sensitive = case_sensitive;
         self
@@ -249,11 +244,6 @@ impl RegexSearchOptions {
         self
     }
 
-    pub const fn without_range(mut self) -> Self {
-        self.range = None;
-        self
-    }
-
     pub const fn with_case_sensitive(mut self, case_sensitive: bool) -> Self {
         self.case_sensitive = case_sensitive;
         self
@@ -261,21 +251,6 @@ impl RegexSearchOptions {
 
     pub const fn case_insensitive(self) -> Self {
         self.with_case_sensitive(false)
-    }
-
-    pub const fn with_dot_matches_new_line(mut self, dot_matches_new_line: bool) -> Self {
-        self.dot_matches_new_line = dot_matches_new_line;
-        self
-    }
-
-    pub const fn with_size_limit(mut self, size_limit: usize) -> Self {
-        self.size_limit = size_limit;
-        self
-    }
-
-    pub const fn with_dfa_size_limit(mut self, dfa_size_limit: usize) -> Self {
-        self.dfa_size_limit = dfa_size_limit;
-        self
     }
 
     pub const fn range(self) -> Option<TextRange> {
@@ -399,45 +374,6 @@ impl<O: Copy> SearchResultSet<O> {
     pub fn is_stale(&self, current_version: BufferVersion) -> bool {
         self.matches.is_stale(current_version)
     }
-
-    /// 通过一次 `DeltaEvent` 把搜索结果推进到新版本。
-    ///
-    /// `event.old_version()` 必须与当前结果版本一致，否则原子拒绝；
-    /// 命中映射 `Mapped` 的匹配按新坐标保留并连续重排 ordinal，
-    /// `Deleted` / `Collapsed` 的匹配（被删除或塌缩为零宽）整条丢弃。
-    /// query / options 由调用方自行决定是否需要在新版本上重新搜索；
-    /// regex 替换 / capture 展开必须基于同版本上的新结果，不应基于 remap 后的结果。
-    pub fn try_remap(self, event: &DeltaEvent) -> SearchTextResult<Self> {
-        let Self {
-            matches,
-            query,
-            options,
-        } = self;
-        let matches = matches.try_remap(event, |old_matches, position_map| {
-            Ok(remap_search_matches(old_matches, position_map))
-        })?;
-        Ok(Self {
-            matches,
-            query,
-            options,
-        })
-    }
-}
-
-/// 把搜索匹配按 `PositionMap::map_old_range_with_stickiness(Stickiness::Never)`
-/// 推进到新坐标；只保留 `Mapped` 的匹配，`Deleted` / `Collapsed` / `Ambiguous`
-/// 一律丢弃。保留下来的匹配按出现顺序连续重排 ordinal 从 0 开始，与原始
-/// 搜索结果构造时的 ordinal 约定保持一致。
-fn remap_search_matches(matches: Vec<SearchMatch>, position_map: &PositionMap) -> Vec<SearchMatch> {
-    let mut remapped = Vec::with_capacity(matches.len());
-    for search_match in matches {
-        if let MappingResult::Mapped(new_range) =
-            position_map.map_old_range_with_stickiness(search_match.range(), Stickiness::Never)
-        {
-            remapped.push(SearchMatch::new(remapped.len(), new_range));
-        }
-    }
-    remapped
 }
 
 pub(crate) fn search_in_text<T: TextRead>(

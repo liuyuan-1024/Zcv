@@ -186,6 +186,8 @@ impl SearchableItem for Editor {
         _window: &mut gpui::Window,
         cx: &mut gpui::Context<Self>,
     ) {
+        self.advance_snapshots(cx);
+        let selection = *self.resolved_selections(cx).primary();
         let Some(search) = &mut self.search else {
             return;
         };
@@ -194,21 +196,38 @@ impl SearchableItem for Editor {
             return;
         }
         let current = search.active_index.unwrap_or(0);
-        let next = match direction {
-            Direction::Next => (current + count) % len,
-            Direction::Prev => (current + len - count % len) % len,
+        let next = if count == 0 {
+            current
+        } else {
+            // 重搜会改变匹配序号；导航以当前快照解析出的光标位置为准。
+            // 相邻匹配可以从光标处开始或结束，但已选中的匹配不能再次激活。
+            let steps = (count - 1) % len;
+            match direction {
+                Direction::Next => {
+                    let first = search
+                        .ranges
+                        .iter()
+                        .position(|range| {
+                            range.start() >= selection.head() && *range != selection.range()
+                        })
+                        .unwrap_or(0);
+                    (first + steps) % len
+                }
+                Direction::Prev => {
+                    let first = search
+                        .ranges
+                        .iter()
+                        .rposition(|range| {
+                            range.end() <= selection.head() && *range != selection.range()
+                        })
+                        .unwrap_or(len - 1);
+                    (first + len - steps) % len
+                }
+            }
         };
         search.active_index = Some(next);
-        // 先完成本命令的快照推进（可能重建搜索结果），再取推进后的当次结果；
-        // 不得把推进前的旧范围交给 select_byte_range，否则会越界或落到错误匹配。
+        let range = search.match_range(next);
         self.advance_snapshots(cx);
-        let Some(range) = self
-            .search
-            .as_ref()
-            .and_then(|search| search.active_index.map(|index| search.match_range(index)))
-        else {
-            return;
-        };
         self.select_byte_range(range, cx);
         cx.emit(SearchEvent::ActiveMatchChanged);
     }

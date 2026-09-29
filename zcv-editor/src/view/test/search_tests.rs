@@ -190,6 +190,61 @@ fn activate_match_moves_in_direction_and_wraps(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn activate_match_uses_the_cursor_after_manual_navigation(cx: &mut TestAppContext) {
+    let (editor, cx) = editor_with_text(cx, "abc abc abc");
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.search(&query("abc"), window, cx);
+            editor.select_byte_range(7..7, cx);
+            editor.activate_match_in_direction(Direction::Next, 1, window, cx);
+            assert_eq!(editor.search_count(cx), (3, Some(2)));
+            assert_eq!(
+                editor.selections(cx).primary().range(),
+                (MultiBufferOffset::new(8)..MultiBufferOffset::new(11)).into()
+            );
+
+            editor.select_byte_range(4..7, cx);
+            editor.activate_match_in_direction(Direction::Prev, 1, window, cx);
+            assert_eq!(editor.search_count(cx), (3, Some(0)));
+            assert_eq!(
+                editor.selections(cx).primary().range(),
+                (MultiBufferOffset::ZERO..MultiBufferOffset::new(3)).into()
+            );
+        });
+    });
+}
+
+#[gpui::test]
+fn activate_match_handles_adjacent_and_zero_width_matches(cx: &mut TestAppContext) {
+    for (text, pattern, regex) in [("abcabcabc", "abc", false), ("a\nb\nc", "(?m)$", true)] {
+        let (editor, cx) = editor_with_text(cx, text);
+        cx.update(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                let mut query = query(pattern);
+                query.regex = regex;
+                editor.search(&query, window, cx);
+                for (direction, count, expected_index) in [
+                    (Direction::Next, 1, 1),
+                    (Direction::Next, 1, 2),
+                    (Direction::Prev, 1, 1),
+                    (Direction::Prev, 1, 0),
+                    (Direction::Prev, 1, 2),
+                    (Direction::Prev, 2, 0),
+                    (Direction::Next, 0, 0),
+                ] {
+                    editor.activate_match_in_direction(direction, count, window, cx);
+                    assert_eq!(editor.search_count(cx), (3, Some(expected_index)));
+                    assert_eq!(
+                        editor.selections(cx).primary().range(),
+                        editor.search_highlights().unwrap().0[expected_index]
+                    );
+                }
+            });
+        });
+    }
+}
+
+#[gpui::test]
 fn replace_current_replaces_active_match_only(cx: &mut TestAppContext) {
     let (editor, cx) = editor_with_text(cx, "abc abc abc");
     cx.update(|window, cx| {

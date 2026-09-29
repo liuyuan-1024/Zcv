@@ -51,7 +51,8 @@ pub trait SearchableItem: Item + EventEmitter<SearchEvent> {
     /// 当前匹配总数与活动匹配序号（搜索条计数 "n/m" 用）。
     fn search_count(&self, cx: &App) -> (usize, Option<usize>);
 
-    /// 按方向从活动匹配移动 `count` 步（循环），并激活目标匹配。
+    /// 按方向从当前光标位置查找 `count` 个匹配（循环），并激活目标匹配。
+    /// 实现方先同步结果，再定位目标；已经选中的匹配不计入下一步。
     fn activate_match_in_direction(
         &mut self,
         direction: Direction,

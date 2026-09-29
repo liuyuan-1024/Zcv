@@ -294,7 +294,7 @@ impl SearchBar {
         if let Some(target) = self.search_target()
             && target.replace_current(&replacement, window, cx)
         {
-            // 替换触发编辑 → 目标侧重搜并 emit；这里跟随活动匹配前移一位。
+            // 替换后目标已重搜；从编辑后的光标位置查找下一个匹配。
             self.move_active(Direction::Next, window, cx);
         }
     }
@@ -591,3 +591,7 @@ impl SearchBar {
         self.cycle_focus(Direction::Prev, window, cx);
     }
 }
+
+#[cfg(test)]
+#[path = "test/search_bar_tests.rs"]
+mod tests;

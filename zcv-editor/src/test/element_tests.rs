@@ -3,6 +3,67 @@ use zcv_multi_buffer::{ResolvedDiffHunk, WordDiffs};
 
 use super::*;
 
+#[path = "ligature_text_system.rs"]
+mod ligature_text_system;
+
+#[test]
+fn word_diff_background_has_character_geometry_inside_a_ligature() {
+    let text_system = gpui::WindowTextSystem::new(Arc::new(gpui::TextSystem::new(Arc::new(
+        ligature_text_system::LigatureTextSystem,
+    ))));
+    let text = "条件 <= limit";
+    let start = text.find('=').unwrap();
+    let run = TextRun {
+        len: text.len(),
+        font: typography::content_font(),
+        color: gpui::rgba(0x44ccccff).into(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let unsplit = text_system.shape_line(text.into(), px(16.), std::slice::from_ref(&run), None);
+    assert_eq!(
+        unsplit.x_for_index(start),
+        unsplit.x_for_index(start + 1),
+        "字体必须能复现连字内的字符边界丢失"
+    );
+    let symbol = text_system.shape_line(
+        "=".into(),
+        px(16.),
+        &[TextRun {
+            len: 1,
+            ..run.clone()
+        }],
+        None,
+    );
+    let backgrounds = LineBackgrounds {
+        diffs: vec![(start..start + 1, gpui::rgba(0x22aa4444))],
+        runs: Vec::new(),
+    };
+    let line = FragmentedLine {
+        fragments: shape_text_piece(text.into(), &[run], 0, &backgrounds, px(16.), &text_system)
+            .into_iter()
+            .map(|line| LineFragment::Text(Box::new(line)))
+            .collect(),
+        text: text.into(),
+    };
+    let symbol_x = line.x_for_index(start);
+    assert!(
+        (line.x_for_index(start + 1) - symbol_x - symbol.width).abs() < px(0.01),
+        "新增背景必须覆盖等号的实际字形宽度"
+    );
+    assert_eq!(
+        line.closest_index_for_x(symbol_x + symbol.width * 0.2),
+        start,
+        "高亮内的命中必须返回新增字符"
+    );
+    assert_eq!(
+        line.len(),
+        text.len(),
+        "塑形不能改变源文本或 UTF-8 字节索引"
+    );
+}
+
 #[cfg(test)]
 fn layout_visible_lines(
     display_snapshot: DisplaySnapshot,
@@ -30,9 +91,13 @@ fn layout_visible_lines(
         )
         .source_line_ranges();
     let visible_source_lines = source_ranges_bounds(&visible_source_ranges);
+    let diff_decorations = display_snapshot.diff_decorations_for_viewport(
+        start..start + visible_count.min(line_count.saturating_sub(start)),
+    );
     layout_visible_lines_from_viewport(
         VisibleViewport {
             display_snapshot,
+            diff_decorations: &diff_decorations,
             placeholder_mode,
             visible_source_ranges,
             visible_source_lines,
@@ -55,6 +120,203 @@ use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{DisplayHunk, ExcerptRange, MultiBuffer};
 use zcv_text::{Affinity, Buffer, BufferConfig, Line};
 use zcv_theme::{ThemeChoice, typography};
+
+fn expanded_diff_snapshot(old: &str, new: &str, cx: &mut TestAppContext) -> MultiBufferSnapshot {
+    use zcv_buffer_diff::{BufferDiff, BufferDiffInput};
+    use zcv_multi_buffer::{DiffExcerptRanges, DiffFile};
+
+    let registry = Arc::new(LanguageRegistry::new());
+    let working = cx.new(|cx| {
+        LanguageBuffer::new(
+            Buffer::from_text(new.into(), BufferConfig::default()).unwrap(),
+            Some(PathBuf::from("src/example.rs")),
+            registry.clone(),
+            cx,
+        )
+    });
+    let diff = cx.new(|cx| {
+        BufferDiff::new(
+            BufferDiffInput {
+                working: working.clone(),
+                path: PathBuf::from("src/example.rs"),
+                base_text: Some(old.into()),
+                index_text: None,
+                language_registry: registry,
+                key: 0,
+                operations: None,
+            },
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    let combined = cx.new(|cx| MultiBuffer::singleton(working, cx));
+    combined.update(cx, |buffer, cx| {
+        buffer.add_diff(
+            DiffFile {
+                diff,
+                display_path: PathBuf::from("src/example.rs"),
+                excerpt_ranges: DiffExcerptRanges::FullFile,
+            },
+            cx,
+        );
+        buffer.set_diff_hunks_expanded_by_default(true, cx);
+    });
+    cx.run_until_parked();
+    combined.update(cx, |buffer, cx| buffer.snapshot(cx))
+}
+
+#[gpui::test]
+fn word_diff_background_keeps_changed_operator_out_of_adjacent_ligatures(cx: &mut TestAppContext) {
+    for (prefix, wrap, scroll_columns, deleted) in [
+        (String::new(), false, 0., false),
+        ("\t条件 ".into(), false, 0., false),
+        ("prefix_".repeat(18), false, 100., false),
+        ("\t条件 ".into(), true, 0., false),
+        (String::new(), false, 0., true),
+    ] {
+        let old = format!("{prefix}(offset < piece.base + piece.len).then_some(&piece.locator)\n");
+        let new = format!("{prefix}(offset <= piece.base + piece.len).then_some(&piece.locator)\n");
+        let snapshot = if deleted {
+            expanded_diff_snapshot(&new, &old, cx)
+        } else {
+            expanded_diff_snapshot(&old, &new, cx)
+        };
+        let map = new_display_map(cx, snapshot.clone());
+        let window = cx.add_window(|_, _| Empty);
+        let scroll_x = window
+            .update(cx, |_, window, cx| {
+                let font = window.text_style().font();
+                let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+                if wrap {
+                    map.update(cx, |map, cx| {
+                        map.set_wrap_width(
+                            Some(px(130.)),
+                            font.clone(),
+                            font_size,
+                            window.text_system(),
+                            cx,
+                        );
+                    });
+                }
+                window
+                    .text_system()
+                    .em_advance(window.text_system().resolve_font(&font), font_size)
+                    .unwrap()
+                    * scroll_columns
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |_, window, cx| {
+                let display = map.update(cx, |map, cx| map.snapshot(cx));
+                let layout = layout_visible_lines(
+                    display.clone(),
+                    None,
+                    EditorPresentation::new(&snapshot, None),
+                    None,
+                    VisibleLineLayoutParams {
+                        geometry: EditorGeometry {
+                            text_bounds: Bounds::new(
+                                point(px(60.), px(0.)),
+                                size(px(320.), px(600.)),
+                            ),
+                            text_clip_bounds: Bounds::new(
+                                point(px(60.), px(0.)),
+                                size(px(320.), px(600.)),
+                            ),
+                            gutter: None,
+                        },
+                        active_lines: &BTreeSet::new(),
+                        fold_anchor_lines: &BTreeSet::new(),
+                        start_row: DisplayRow::ZERO,
+                        scroll_offset: point(scroll_x, px(0.)),
+                        primary_caret_column: None,
+                        line_height: px(20.),
+                        diff_rows: &[],
+                    },
+                    window,
+                    cx,
+                );
+                let decorations = display.diff_decorations_for_viewport(0..display.line_count());
+                let highlights = decorations
+                    .visible_word_diff_highlights(&(0..display.line_count()))
+                    .collect::<Vec<_>>();
+                assert_eq!(highlights.len(), 1, "只有等号发生变化");
+                let (kind, range) = highlights[0];
+                assert_eq!(
+                    kind,
+                    if deleted {
+                        DiffHunkKind::Deleted
+                    } else {
+                        DiffHunkKind::Added
+                    }
+                );
+                let line = layout
+                    .lines
+                    .iter()
+                    .find(|line| line.row == range.start().row())
+                    .unwrap();
+                let start = local_byte_for_display_column(
+                    line,
+                    range.start().column().get(),
+                    display.tab_width().get(),
+                );
+                let end = local_byte_for_display_column(
+                    line,
+                    range.end().column().get(),
+                    display.tab_width().get(),
+                );
+                assert_eq!(&line.line.text[start..end], "=");
+                if scroll_columns > 0. {
+                    assert!(line.window_start_column > 0, "必须实际覆盖水平窗口化的布局");
+                }
+                let selection_color = gpui::rgba(0x334477ff);
+                let backgrounds = layout_line_background_fragments(line, &[], selection_color);
+                assert_eq!(backgrounds.len(), 1, "词级背景应进入统一合成管线");
+                let expected_color = if deleted {
+                    color::current(cx).version_control_word_deleted
+                } else {
+                    color::current(cx).version_control_word_added
+                };
+                assert_eq!(backgrounds[0].color, expected_color);
+                assert_eq!(
+                    backgrounds[0].start_x,
+                    line.origin.x + line.line.x_for_index(start)
+                );
+                assert_eq!(
+                    backgrounds[0].end_x,
+                    line.origin.x + line.line.x_for_index(end)
+                );
+                let selected = layout_line_background_fragments(
+                    line,
+                    &[SelectionLineSegment {
+                        start_x: backgrounds[0].start_x,
+                        end_x: backgrounds[0].end_x,
+                        corners: ALL_STRAIGHT,
+                    }],
+                    selection_color,
+                );
+                assert_eq!(selected[0].color, selection_color, "选区继续覆盖词级背景");
+                let mut byte = 0;
+                for fragment in &line.line.fragments {
+                    let len = match fragment {
+                        LineFragment::Text(shaped) => {
+                            assert!(
+                                !(byte < start && start < byte + shaped.len())
+                                    && !(byte < end && end < byte + shaped.len()),
+                                "词级背景边界必须成为塑形边界，避免未变化的字符与等号形成连字"
+                            );
+                            shaped.len()
+                        }
+                        LineFragment::Element { len, .. } => *len,
+                    };
+                    byte += len;
+                }
+                assert_eq!(byte, line.line.len(), "片段不能改变文本索引空间");
+            })
+            .unwrap();
+    }
+}
 
 fn new_display_map(
     cx: &mut impl AppContext,
@@ -300,11 +562,11 @@ fn background_fragments_include_line_origin_x(cx: &mut TestAppContext) {
             );
             assert_eq!(layout.lines[0].row, DisplayRow::new(0));
             let line = &layout.lines[0];
-            assert_eq!(line.background_runs.len(), 2, "两个匹配都应进入背景层");
+            assert_eq!(line.backgrounds.runs.len(), 2, "两个匹配都应进入背景层");
             // 每个 run 背景的片段像素区间必须与“行原点 + 字形偏移”一致。
             let fragments = layout_line_background_fragments(line, &[], gpui::rgba(0xff0000ff));
-            assert_eq!(fragments.len(), line.background_runs.len());
-            for (fragment, (byte_range, _)) in fragments.iter().zip(&line.background_runs) {
+            assert_eq!(fragments.len(), line.backgrounds.runs.len());
+            for (fragment, (byte_range, _)) in fragments.iter().zip(&line.backgrounds.runs) {
                 let expected_start =
                     line.origin.x + line.line.x_for_index(byte_range.start);
                 let expected_end = line.origin.x + line.line.x_for_index(byte_range.end);

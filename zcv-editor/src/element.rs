@@ -28,11 +28,11 @@ use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon, drag_autoscroll_delta};
 use crate::selection::SelectionSet;
 
 use super::display_map::{
-    ChunkRenderer, ChunkRendererId, DisplayBlock, DisplayBlockKind, DisplayColumn, DisplayPoint,
-    DisplayRange, DisplayRow, DisplayRowEvent, DisplaySnapshot, EditorHunkMarkerKind,
-    FILE_HEADER_HEIGHT, HighlightStyles, HunkControlTarget, RenderedWhitespace,
-    SearchDecorationSnapshot, StickyBufferHeader, byte_for_display_column, chunk_to_run,
-    diff_row_for_row, display_column_for_byte, is_hollow_hunk,
+    ChunkRenderer, ChunkRendererId, DiffDecorationSnapshot, DisplayBlock, DisplayBlockKind,
+    DisplayColumn, DisplayPoint, DisplayRange, DisplayRow, DisplayRowEvent, DisplaySnapshot,
+    EditorHunkMarkerKind, FILE_HEADER_HEIGHT, HighlightStyles, HunkControlTarget,
+    RenderedWhitespace, SearchDecorationSnapshot, StickyBufferHeader, byte_for_display_column,
+    chunk_to_run, diff_row_for_row, display_column_for_byte, is_hollow_hunk,
 };
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
@@ -241,8 +241,7 @@ struct LayoutLine {
     active: bool,
     origin: Point<Pixels>,
     line: FragmentedLine,
-    /// run 背景源（搜索高亮、语法背景）：完整行文本内的字节区间 + 颜色，与选区一同进入背景片段合成管线。
-    background_runs: Vec<(Range<usize>, gpui::Rgba)>,
+    backgrounds: LineBackgrounds,
     whitespaces: Vec<RenderedWhitespace>,
     global_utf16_start: usize,
     /// 行文本起点在完整显示行中的显示列；水平窗口化时用于逆算命中位置。
@@ -251,6 +250,71 @@ struct LayoutLine {
     git_diff: Option<(DiffHunkKind, DiffHunkStaging)>,
     /// placeholder 提示行：命中测试不映射到 placeholder buffer（空 buffer 唯一合法坐标是 0）。
     is_placeholder: bool,
+}
+
+/// 当前行索引空间中的背景范围；层级为词级差异 → 选区 → 文本样式。
+#[derive(Default)]
+struct LineBackgrounds {
+    diffs: Vec<(Range<usize>, gpui::Rgba)>,
+    runs: Vec<(Range<usize>, gpui::Rgba)>,
+}
+
+impl LineBackgrounds {
+    fn ranges(&self) -> impl Iterator<Item = &(Range<usize>, gpui::Rgba)> {
+        self.diffs.iter().chain(&self.runs)
+    }
+}
+
+/// 背景边界同时约束塑形，字形不能跨越需要独立着色的文本范围。
+fn shape_text_piece(
+    text: String,
+    runs: &[TextRun],
+    start: usize,
+    backgrounds: &LineBackgrounds,
+    font_size: Pixels,
+    text_system: &gpui::WindowTextSystem,
+) -> Vec<ShapedLine> {
+    let mut boundaries = vec![0, text.len()];
+    for (range, _) in backgrounds.ranges() {
+        if range.start < start + text.len() && range.end > start {
+            boundaries.push(range.start.saturating_sub(start));
+            boundaries.push((range.end - start).min(text.len()));
+        }
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    if boundaries.len() == 2 {
+        return vec![text_system.shape_line(text.into(), font_size, runs, None)];
+    }
+    let mut fragments = Vec::with_capacity(boundaries.len().saturating_sub(1));
+    let mut run_index = 0;
+    let mut run_start = 0;
+    for boundary in boundaries.windows(2) {
+        let range = boundary[0]..boundary[1];
+        let mut piece_runs = Vec::new();
+        let mut byte = range.start;
+        while byte < range.end {
+            let run = &runs[run_index];
+            let run_end = run_start + run.len;
+            let end = run_end.min(range.end);
+            piece_runs.push(TextRun {
+                len: end - byte,
+                ..run.clone()
+            });
+            byte = end;
+            if byte == run_end {
+                run_start = run_end;
+                run_index += 1;
+            }
+        }
+        fragments.push(text_system.shape_line(
+            text[range].to_owned().into(),
+            font_size,
+            &piece_runs,
+            None,
+        ));
+    }
+    fragments
 }
 
 impl LayoutLine {
@@ -557,8 +621,6 @@ pub(super) struct PrepaintState {
     /// 展开的未暂存（hollow）连续块：边框按块边界合并绘制，颜色取块首 / 末行的行背景色。
     hollow_blocks: Arc<Vec<Range<usize>>>,
     editor_hunk_parts: Arc<Vec<(Range<usize>, DiffHunkKind, EditorHunkMarkerKind)>>,
-    /// 展开 hunk 的词级背景片段：每显示行一组（窗口绝对 x 范围 + 颜色）。
-    word_diff_fragments: Vec<Vec<(Pixels, Pixels, gpui::Rgba)>>,
     scrollbar: Option<ScrollbarLayout>,
     block_elements: Vec<AnyElement>,
     sticky_buffer_header: Option<AnyElement>,
@@ -631,7 +693,7 @@ struct BackgroundFragment {
     start_x: Pixels,
     end_x: Pixels,
     color: gpui::Rgba,
-    /// 是否选区源（混合层级与绘制顺序：选区片段在下、run 片段在上）。
+    /// 是否选区源；其余片段可由词级差异或文本样式背景产生。
     selection: bool,
     corners: [Corner; 4],
 }
@@ -1464,6 +1526,7 @@ impl Element for EditorElement {
         let mut layout = layout_visible_lines_from_viewport(
             VisibleViewport {
                 display_snapshot: layout_snapshot,
+                diff_decorations: &diff_decorations,
                 placeholder_mode: placeholder.is_some(),
                 visible_source_ranges,
                 visible_source_lines,
@@ -1573,14 +1636,9 @@ impl Element for EditorElement {
         let layout = Rc::new(layout);
         let selected_whitespace =
             layout_selected_whitespace(&selections, &layout, line_height, window, cx);
-        // 背景片段合成：选区与 run 背景逐行合成为互不重叠的片段。
+        // 所有背景源逐行合成为互不重叠的片段。
         let (selection_segments, carets) = layout_selections(&selections, &layout, line_height, cx);
         let background_fragments = layout_background_fragments(&layout, &selection_segments, cx);
-        let word_diff_fragments = layout_word_diff_fragments(
-            diff_decorations.visible_word_diff_highlights(&visible_rows),
-            &layout,
-            cx,
-        );
         let mut bracket_matches = Vec::new();
         if let Some(pair) = matching_bracket_pair {
             layout_bracket_pair(pair, &layout, line_height, &mut bracket_matches, cx);
@@ -1692,7 +1750,6 @@ impl Element for EditorElement {
             expanded_rows,
             hollow_blocks,
             editor_hunk_parts: Arc::new(hunk_render.editor_hunk_parts.clone()),
-            word_diff_fragments,
             scrollbar,
             block_elements,
             sticky_buffer_header,
@@ -2140,21 +2197,8 @@ impl Element for EditorElement {
                         diff_colors,
                     );
                 }
-                // 词级差异背景叠在行背景之上、选区之下：只覆盖真正变化的词/片段。
-                for (ix, fragments) in prepaint.word_diff_fragments.iter().enumerate() {
-                    let line = &prepaint.layout.lines[ix];
-                    for (start_x, end_x, color) in fragments {
-                        window.paint_quad(fill(
-                            Bounds::from_corners(
-                                point(*start_x, line.origin.y),
-                                point(*end_x, line.origin.y + prepaint.layout.line_height),
-                            ),
-                            *color,
-                        ));
-                    }
-                }
-                // 背景片段合成管线：选区与 run 背景逐行合成为互不重叠的片段，一次绘制。
-                // 选区片段在前、run 片段在后（与既有层级一致：run 背景覆盖选区之上、文本之下）。
+                // 词级差异、选区与 run 背景共用行片段几何，逐段合成后绘制。
+                // 选区片段在前、其余背景在后，维持原有绘制层级。
                 let line_height = prepaint.layout.line_height;
                 let corner_radius = line_height * 0.15;
                 for (ix, line) in prepaint.layout.lines.iter().enumerate() {
@@ -2616,6 +2660,7 @@ fn source_ranges_bounds(ranges: &[Range<Line>]) -> Option<Range<Line>> {
 
 struct VisibleViewport<'a> {
     display_snapshot: &'a DisplaySnapshot,
+    diff_decorations: &'a DiffDecorationSnapshot,
     placeholder_mode: bool,
     visible_source_ranges: Vec<Range<Line>>,
     visible_source_lines: Option<Range<Line>>,
@@ -2631,6 +2676,7 @@ fn layout_visible_lines_from_viewport(
 ) -> EditorLayout {
     let VisibleViewport {
         display_snapshot,
+        diff_decorations,
         placeholder_mode,
         visible_source_ranges,
         visible_source_lines,
@@ -2655,6 +2701,23 @@ fn layout_visible_lines_from_viewport(
     let visible_count =
         ((text_bounds.size.height + scroll_offset.y) / line_height).ceil() as usize + 1;
     let end = (start + visible_count).min(line_count);
+    let mut word_diff_rows = vec![Vec::new(); end.saturating_sub(start)];
+    let colors = *color::current(cx);
+    for (kind, range) in diff_decorations.visible_word_diff_highlights(&(start..end)) {
+        let background = match kind {
+            DiffHunkKind::Added => colors.version_control_word_added,
+            DiffHunkKind::Deleted => colors.version_control_word_deleted,
+            DiffHunkKind::Modified => continue,
+        };
+        let row_end = if range.end().column().get() == 0 {
+            range.end().row().get()
+        } else {
+            range.end().row().get() + 1
+        };
+        for row in range.start().row().get().max(start)..row_end.min(end) {
+            word_diff_rows[row - start].push((range, background));
+        }
+    }
     let text_style = window.text_style();
     let font_size = text_style.font_size.to_pixels(window.rem_size());
     let mut lines = Vec::with_capacity(end.saturating_sub(start));
@@ -2757,8 +2820,48 @@ fn layout_visible_lines_from_viewport(
                          window_prefix: &str| {
         let mut fragments = Vec::with_capacity(pieces.len().max(1));
         let mut width = Pixels::ZERO;
-        // 收集 run 背景源（字节区间累计自 runs 的覆盖）；无背景的 run 跳过。
-        let mut background_runs = Vec::new();
+        let mut backgrounds = LineBackgrounds::default();
+        for (range, background) in &word_diff_rows[row - start] {
+            let start_byte = if row == range.start().row().get() {
+                byte_for_display_column(
+                    &text,
+                    window_start_column,
+                    range.start().column().get(),
+                    display_snapshot.tab_width().get(),
+                )
+            } else {
+                0
+            };
+            let end_byte = if row == range.end().row().get() {
+                byte_for_display_column(
+                    &text,
+                    window_start_column,
+                    range.end().column().get(),
+                    display_snapshot.tab_width().get(),
+                )
+            } else {
+                text.len()
+            };
+            if start_byte < end_byte {
+                backgrounds.diffs.push((start_byte..end_byte, *background));
+            }
+        }
+        let mut byte_offset = 0usize;
+        for piece in &pieces {
+            match piece {
+                RowPiece::Text { runs, .. } => {
+                    for run in runs {
+                        if let Some(background) = run.background_color {
+                            backgrounds
+                                .runs
+                                .push((byte_offset..byte_offset + run.len, background.into()));
+                        }
+                        byte_offset += run.len;
+                    }
+                }
+                RowPiece::Element { text, .. } => byte_offset += text.len(),
+            }
+        }
         let mut byte_offset = 0usize;
         for piece in pieces {
             match piece {
@@ -2766,19 +2869,19 @@ fn layout_visible_lines_from_viewport(
                     text: piece_text,
                     runs,
                 } => {
-                    for run in &runs {
-                        if let Some(background) = run.background_color {
-                            background_runs
-                                .push((byte_offset..byte_offset + run.len, background.into()));
-                        }
-                        byte_offset += run.len;
+                    let len = piece_text.len();
+                    for shaped in shape_text_piece(
+                        piece_text,
+                        &runs,
+                        byte_offset,
+                        &backgrounds,
+                        font_size,
+                        window.text_system(),
+                    ) {
+                        width += shaped.width;
+                        fragments.push(LineFragment::Text(Box::new(shaped)));
                     }
-                    let shaped =
-                        window
-                            .text_system()
-                            .shape_line(piece_text.into(), font_size, &runs, None);
-                    width += shaped.width;
-                    fragments.push(LineFragment::Text(Box::new(shaped)));
+                    byte_offset += len;
                 }
                 RowPiece::Element {
                     renderer,
@@ -2845,7 +2948,7 @@ fn layout_visible_lines_from_viewport(
                 text_bounds.top() + line_height * (row - start) - scroll_offset.y,
             ),
             line: FragmentedLine { fragments, text },
-            background_runs,
+            backgrounds,
             whitespaces,
             global_utf16_start: utf16_start,
             window_start_column,
@@ -3218,58 +3321,7 @@ fn layout_selection_segments(
     finish_selection_contour(&contour, corner_radius, per_line);
 }
 
-/// 展开 hunk 的词级变化片段 → 每显示行的窗口绝对 x 范围与颜色。
-///
-/// 输入是组合文档字节范围；经显示投影换算到显示行与行内字符列，
-/// 再复用与选区一致的 `x_for_index` 映射（含 wrap 续行片段起点列）。
-fn layout_word_diff_fragments(
-    highlights: impl IntoIterator<Item = (DiffHunkKind, DisplayRange)>,
-    layout: &EditorLayout,
-    cx: &App,
-) -> Vec<Vec<(Pixels, Pixels, gpui::Rgba)>> {
-    let colors = color::current(cx);
-    let tab_width = layout.display_snapshot.tab_width().get();
-    let mut per_line = vec![Vec::new(); layout.lines.len()];
-    for (kind, projected_range) in highlights {
-        let color = match kind {
-            DiffHunkKind::Added => colors.version_control_word_added,
-            DiffHunkKind::Deleted => colors.version_control_word_deleted,
-            DiffHunkKind::Modified => continue,
-        };
-        let start_row = projected_range.start().row();
-        let end_row = projected_range.end().row();
-        let start_ix = layout.lines.partition_point(|line| line.row < start_row);
-        let end_ix = layout.lines.partition_point(|line| line.row <= end_row);
-        for (ix, line) in layout.lines[start_ix..end_ix].iter().enumerate() {
-            let ix = start_ix + ix;
-            let row = line.row;
-            let start_byte = if row == projected_range.start().row() {
-                local_byte_for_display_column(
-                    line,
-                    projected_range.start().column().get(),
-                    tab_width,
-                )
-            } else {
-                0
-            };
-            let end_byte = if row == projected_range.end().row() {
-                local_byte_for_display_column(line, projected_range.end().column().get(), tab_width)
-            } else {
-                line.line.len()
-            };
-            let start_x = line.origin.x + line.line.x_for_index(start_byte);
-            let end_x = line.origin.x + line.line.x_for_index(end_byte);
-            if end_x <= start_x {
-                continue;
-            }
-            per_line[ix].push((start_x, end_x, color));
-        }
-    }
-    per_line
-}
-
-/// 背景片段合成：逐行把选区与 run 背景（搜索高亮、语法背景）合成为互不重叠的片段。
-/// 混合顺序 base → 选区 → run，与既有视觉层级一致（run 背景覆盖选区之上、文本之下）。
+/// 背景片段合成：词级差异、选区与文本样式共用当前行的片段几何。
 fn layout_background_fragments(
     layout: &EditorLayout,
     selection_segments: &[Vec<SelectionLineSegment>],
@@ -3295,15 +3347,17 @@ fn layout_line_background_fragments(
     selection_segments: &[SelectionLineSegment],
     selection_background: gpui::Rgba,
 ) -> Vec<BackgroundFragment> {
-    // 收集所有源的 x 边界（选区 + run 背景），按边界切分后逐段着色，再合并相邻同色段。
-    let mut boundaries =
-        Vec::with_capacity(selection_segments.len() * 2 + line.background_runs.len() * 2);
+    // 按所有背景源的边界切分，再合并相邻同色段。
+    let mut boundaries = Vec::with_capacity(
+        selection_segments.len() * 2
+            + (line.backgrounds.diffs.len() + line.backgrounds.runs.len()) * 2,
+    );
     for segment in selection_segments {
         boundaries.push(segment.start_x);
         boundaries.push(segment.end_x);
     }
-    for (byte_range, _) in &line.background_runs {
-        // run 背景的字节区间是 shaped 文本内偏移，必须叠加行原点才能与文本/选区同处绝对坐标。
+    for (byte_range, _) in line.backgrounds.ranges() {
+        // 背景字节区间属于完整行索引空间，须叠加行原点才能与选区同处绝对坐标。
         boundaries.push(line.origin.x + line.line.x_for_index(byte_range.start));
         boundaries.push(line.origin.x + line.line.x_for_index(byte_range.end));
     }
@@ -3323,11 +3377,13 @@ fn layout_line_background_fragments(
         let selection = selection_segments
             .iter()
             .find(|segment| segment.start_x <= start_x && end_x <= segment.end_x);
-        let run = line.background_runs.iter().find(|(byte_range, _)| {
+        let covers = |(byte_range, _): &(Range<usize>, gpui::Rgba)| {
             let run_start = line.origin.x + line.line.x_for_index(byte_range.start);
             let run_end = line.origin.x + line.line.x_for_index(byte_range.end);
             run_start <= start_x && end_x <= run_end
-        });
+        };
+        let diff = line.backgrounds.diffs.iter().find(|range| covers(range));
+        let run = line.backgrounds.runs.iter().find(|range| covers(range));
         let (color, is_selection, corners) = match (selection, run) {
             (Some(segment), Some((_, run_color))) => (
                 selection_background.blend(*run_color),
@@ -3339,8 +3395,15 @@ fn layout_line_background_fragments(
                 true,
                 segment_corners(segment, start_x, end_x),
             ),
-            (None, Some((_, run_color))) => (*run_color, false, ALL_STRAIGHT),
-            (None, None) => continue,
+            (None, Some((_, run_color))) => (
+                diff.map_or(*run_color, |(_, color)| color.blend(*run_color)),
+                false,
+                ALL_STRAIGHT,
+            ),
+            (None, None) => match diff {
+                Some((_, color)) => (*color, false, ALL_STRAIGHT),
+                None => continue,
+            },
         };
         // 相邻片段同色且接缝两侧无角样式时合并，保持片段数最小。
         if let Some(last) = fragments.last_mut()

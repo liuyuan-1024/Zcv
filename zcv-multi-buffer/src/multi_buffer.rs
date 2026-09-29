@@ -3850,8 +3850,6 @@ pub struct MultiBuffer {
     diff: Option<Arc<DiffDisplaySnapshot>>,
     /// 新 hunk 的初始展开策略；只决定初始状态，不覆盖用户显式切换。
     diff_expanded_by_default: bool,
-    /// 已物化进组合文档的前导文件数量（diff 以路径顺序登记，就绪前缀之外的文件尚未物化）。
-    diff_materialized_files: usize,
     /// 当前一致的组合快照；只由 MultiBuffer 的同步入口替换。
     snapshot: MultiBufferSnapshot,
     /// 当前快照是否需要从可变组合状态重新对齐。
@@ -3923,7 +3921,6 @@ impl MultiBuffer {
             diffs: Vec::new(),
             diff: None,
             diff_expanded_by_default: false,
-            diff_materialized_files: 0,
             snapshot: MultiBufferSnapshot::empty(),
             snapshot_dirty: true,
             snapshot_source_updates: None,

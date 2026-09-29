@@ -1399,6 +1399,113 @@ fn soft_wrap_diff_rebuild_keeps_wrap_input_coverage(cx: &mut TestAppContext) {
     cx.refresh().expect("压力编辑后的软换行帧应能完成布局");
 }
 
+/// 普通文件不设置代码折叠；连续源事务、直接编辑和重载都必须提供同一帧的文本与显示坐标。
+#[gpui::test]
+fn plain_editor_batched_edits_and_reload_keep_display_aligned(cx: &mut TestAppContext) {
+    for with_diff in [false, true] {
+        let initial = "fn main() {\n    let name = \"中文🙂\";\n}\n";
+        let source = test_buffer(cx, initial);
+        source.update(cx, |source, cx| {
+            source.set_file_path(PathBuf::from("src/main.rs"), cx);
+        });
+        let editor = cx.new(|cx| Editor::for_language_buffer(source.clone(), cx));
+        if with_diff {
+            inject_file_diff(&editor, &source, Arc::from(initial), cx);
+        }
+        cx.run_until_parked();
+
+        let mut expected = initial.to_owned();
+        let mut state = 0x9e37_79b9_u64;
+        for round in 0..128 {
+            cx.update(|cx| {
+                for transaction in 0..3 {
+                    state = state
+                        .wrapping_mul(6_364_136_223_846_793_005)
+                        .wrapping_add(1);
+                    let boundaries: Vec<_> = expected
+                        .char_indices()
+                        .map(|(offset, _)| offset)
+                        .chain(std::iter::once(expected.len()))
+                        .collect();
+                    let start_index = state as usize % boundaries.len();
+                    let end_index = start_index
+                        + state.rotate_left(17) as usize % (boundaries.len() - start_index);
+                    let start = boundaries[start_index];
+                    let end = boundaries[end_index];
+                    let replacement = match (round + transaction) % 5 {
+                        0 => "",
+                        1 => "a",
+                        2 => "中🙂",
+                        3 => "\n\tline\n",
+                        _ => "fn next() {}\n",
+                    };
+                    let edit = Edit::replace(
+                        TextRange::new(ByteOffset::new(start), ByteOffset::new(end)).unwrap(),
+                        replacement,
+                    );
+                    if transaction == 0 {
+                        editor.update(cx, |editor, cx| {
+                            editor.multi_buffer.update(cx, |buffer, cx| {
+                                buffer
+                                    .edit(vec![edit], TransactionMetadata::default(), cx)
+                                    .expect("普通文件编辑应成功");
+                            });
+                        });
+                    } else {
+                        source.update(cx, |source, cx| {
+                            source
+                                .edit([edit], TransactionMetadata::default(), cx)
+                                .expect("连续源事务应成功");
+                        });
+                    }
+                    expected.replace_range(start..end, replacement);
+                }
+                if round % 7 == 0 {
+                    expected = format!("// 重载 {round}\n{expected}尾🙂\n");
+                    source.update(cx, |source, cx| {
+                        source
+                            .replace_text(expected.clone(), cx)
+                            .expect("文件重载应成功");
+                    });
+                }
+            });
+            cx.run_until_parked();
+            assert_eq!(buffer_text(&source, cx), expected);
+            editor.update(cx, |editor, cx| {
+                editor.advance_snapshots(cx);
+                let display = editor.display_snapshot(cx);
+                assert_eq!(
+                    display.buffer_snapshot().text_bytes(),
+                    expected.as_bytes(),
+                    "第 {round} 轮文本必须一致，Git 装饰：{with_diff}"
+                );
+                let line_count = expected.bytes().filter(|byte| *byte == b'\n').count() + 1;
+                assert_eq!(display.line_count(), line_count);
+                let mut row = 0;
+                for (offset, character) in expected.char_indices() {
+                    assert_eq!(
+                        display
+                            .offset_to_display_point(MultiBufferOffset::new(offset))
+                            .expect("字符边界应能映射到显示坐标")
+                            .row()
+                            .get(),
+                        row
+                    );
+                    row += usize::from(character == '\n');
+                }
+                assert_eq!(
+                    display
+                        .offset_to_display_point(MultiBufferOffset::new(expected.len()))
+                        .expect("文末应能映射到显示坐标")
+                        .row()
+                        .get(),
+                    row
+                );
+            });
+        }
+    }
+}
+
 #[gpui::test]
 fn external_reparse_refreshes_added_diff_syntax_highlights(cx: &mut TestAppContext) {
     let source = test_buffer(cx, "fn main() {\n    let value = 1;\n}\n");

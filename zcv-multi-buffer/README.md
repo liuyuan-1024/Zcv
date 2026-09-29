@@ -26,6 +26,8 @@ excerpt 结构由 `SumTree` 承载，查询通过 summary 与连续 cursor 推�
 
 diff 显示拓扑由 `diff_projection` 持有：`DiffFile`、`DiffDisplaySnapshot`、`DisplayHunk`、`ResolvedDiffHunk`、`WordDiffs`。唯一 diff 事实来自 `zcv-buffer-diff`，组合层只把它叠加为投影，不把 diff 视图做成另一种文档类型。
 
+每个文件独立记录已采用后台 hunk 结果的版本。excerpt 物化对齐 Zed 的 `update_excerpts_for_path`：`add_diff` 按调用方给出的可见范围同步建立该路径的 excerpts，后台 diff 结果只补充旧侧行与词级范围，不决定文件能否进入投影；结果就绪后只替换该源路径的全部 excerpts，新增路径也走同一入口。`set_excerpts_for_path` 保持替换语义，不能把它当作无条件追加。整体替换列表时移除退出列表的路径，仍在计算的文件保留已有映射；文件移除时取消其 diff 订阅，后续结果不再进入投影。
+
 用户选择的展开／折叠状态按 working 源与区块起点 `Anchor` 保存，在当前源快照上匹配；差异类型不参与身份判断。同一区块在删除与修改之间转换，或起点插入文本后重算，保留已有选择。
 
 `MultiBufferSnapshot::diff_hunks_in_lines` 按可见范围查询，同时提供显示几何和 `DiffHunkSource`（工作区 `BufferId`、完整源 `Anchor` 范围）。源范围随变换节点保存为不可变派生数据，旧侧片段仍携带工作区身份；视口裁剪、展开旧侧和组合顺序变化不改变操作来源。纯删除的操作范围为空范围，整文件新增的范围为 `None`。宿主按源身份查找领域操作，不能用显示几何或显示序号反查源 hunk。

@@ -601,11 +601,16 @@ fn hunk_info(
 impl MultiBuffer {
     /// 按路径增量挂接一个文件的 diff。
     ///
-    /// 新路径按路径顺序追加；
+    /// 新路径按路径顺序插入；
     /// 同路径的 diff 变化只替换该文件的 excerpts 并迁移展开状态，不重建整份组合文档。
-    /// 返回 true 表示组合文档已更新；
-    /// diff 仍在后台计算时返回 false，结果到达后自动物化。
+    /// excerpts 按调用方给出的可见范围同步物化，后台 diff 结果只补充输出变换（旧侧行与词级范围），不决定该文件能否进入投影。
+    /// 返回 true 表示这次调用新增或替换了该路径的登记；完全相同的登记返回 false。
     pub fn add_diff(&mut self, file: DiffFile, cx: &mut Context<Self>) -> bool {
+        if self.diff.is_none() {
+            // 空投影下等价于首次建立：先初始化显示快照并登记该文件。
+            self.set_diff_files(vec![file], cx);
+            return true;
+        }
         let existing = self.diffs.iter().position(|current| {
             current.display_path.as_path() == file.display_path
                 || current.diff.read(cx).working().entity_id()
@@ -619,17 +624,14 @@ impl MultiBuffer {
             {
                 return false;
             }
-            return self.replace_diff_file(index, file, cx);
+            self.replace_diff_file(index, file, cx);
+            return true;
         }
-        // 新路径按显示路径顺序插入：位于末尾走增量追加，插到中间按路径 splice。
         let insert_at = self.diffs.partition_point(|current| {
             current.display_path.as_path() < file.display_path.as_path()
         });
-        let len = self.diffs.len();
-        if insert_at == len {
-            return self.append_diff_projection(vec![file], cx);
-        }
-        self.insert_diff_file(insert_at, file, cx)
+        self.insert_diff_file(insert_at, file, cx);
+        true
     }
 
     /// 更新 Git diff 视图装配的 excerpt 范围，并按 BufferDiff 事件范围同步投影。
@@ -674,8 +676,8 @@ impl MultiBuffer {
     /// 同路径的 diff 实体或视图范围变化：只替换该文件的 excerpts，不重建整份组合文档。
     ///
     /// 展开状态按旧/新 hunk 迁移；新 diff 尚未算完时先登记 pending 迁移，
-    /// 保留现有 excerpts，等 DiffChanged 到期后由 diff_changed 增量替换。
-    fn replace_diff_file(&mut self, index: usize, file: DiffFile, cx: &mut Context<Self>) -> bool {
+    /// 但 excerpts 仍按本次调用给出的可见范围同步替换，等 DiffChanged 到期后再补充输出变换。
+    fn replace_diff_file(&mut self, index: usize, file: DiffFile, cx: &mut Context<Self>) {
         let working_id_matches = self.diffs[index].diff.read(cx).working().entity_id()
             == file.diff.read(cx).working().entity_id();
         let mut next = DiffState::new(
@@ -699,24 +701,14 @@ impl MultiBuffer {
             }
         }
         self.diffs[index] = next;
-        if !self.diffs[index]
-            .diff
-            .read(cx)
-            .is_current_version_calculated(cx)
-        {
-            return false;
-        }
         self.replace_materialized_file(index, cx);
-        true
     }
 
-    /// 在 insert_at 处插入一个 diff 文件，只物化该文件的 excerpts 并按路径 splice。
-    fn insert_diff_file(
-        &mut self,
-        insert_at: usize,
-        file: DiffFile,
-        cx: &mut Context<Self>,
-    ) -> bool {
+    /// 在 insert_at 处登记一个 diff 文件，并按其可见范围同步建立该路径的 excerpts。
+    ///
+    /// 后台结果就绪前 excerpts 只包含可见工作区文本（没有旧侧行）；
+    /// 结果到达后由 diff_changed 复用同一路径替换，不需要第二次结构登记。
+    fn insert_diff_file(&mut self, insert_at: usize, file: DiffFile, cx: &mut Context<Self>) {
         let state = DiffState::new(
             file.diff,
             PathKey::new(file.display_path),
@@ -724,22 +716,7 @@ impl MultiBuffer {
             cx,
         );
         self.diffs.insert(insert_at, state);
-
-        let mut excerpts = Vec::new();
-        {
-            let file = &self.diffs[insert_at];
-            materialize_file(file, cx, &mut excerpts);
-        }
-        self.set_excerpts_for_path(excerpts, cx);
-        let diff = self.diffs[insert_at].diff.read(cx);
-        self.diffs[insert_at].revision = diff
-            .is_current_version_calculated(cx)
-            .then_some(diff.revision());
-        if insert_at < self.diff_materialized_files {
-            self.diff_materialized_files += 1;
-        }
-        self.refresh_diff_display(cx);
-        true
+        self.replace_materialized_file(insert_at, cx);
     }
 
     /// 移除指定显示路径的 diff；用于 Git 状态中不再存在的文件。
@@ -774,7 +751,6 @@ impl MultiBuffer {
         // DiffState 持有自己的订阅，移除即取消订阅；hunk 身份随节点消失，无需下标顺延。
         self.diffs.remove(file_index);
         self.refresh_diff_display(cx);
-        self.diff_materialized_files = self.diffs.len();
         cx.notify();
         true
     }
@@ -820,8 +796,11 @@ impl MultiBuffer {
             .then_some(old_len)
         });
         if let Some(old_len) = append_from {
-            let appended = inputs[old_len..].to_vec();
-            return self.append_diff_projection(appended, cx);
+            let old_version = self.state.projection_version;
+            for file in inputs.into_iter().skip(old_len) {
+                self.insert_diff_file(self.diffs.len(), file, cx);
+            }
+            return self.state.projection_version != old_version;
         }
         let old_files = self.diff.as_mut().map(|_| std::mem::take(&mut self.diffs));
         self.diff
@@ -870,6 +849,32 @@ impl MultiBuffer {
             .iter()
             .any(|file| !file.diff.read(cx).is_current_version_calculated(cx))
         {
+            let paths = self
+                .diffs
+                .iter()
+                .map(|file| {
+                    let working = file.diff.read(cx).working().read(cx);
+                    crate::path_key_for_source(working)
+                })
+                .collect::<HashSet<_>>();
+            let removed_paths = self
+                .diff_display_paths()
+                .into_iter()
+                .filter(|path| !paths.contains(path))
+                .collect::<Vec<_>>();
+            for path in removed_paths {
+                self.remove_excerpts_for_path(path.as_path(), cx);
+            }
+            for index in 0..self.diffs.len() {
+                if self.diffs[index]
+                    .diff
+                    .read(cx)
+                    .is_current_version_calculated(cx)
+                {
+                    self.replace_materialized_file(index, cx);
+                }
+            }
+            self.refresh_diff_display(cx);
             return false;
         }
         self.rebuild_diff_projection(cx)
@@ -1161,22 +1166,7 @@ impl MultiBuffer {
         }
 
         if self.diffs[index].revision.is_none() {
-            // 新文件或显式替换的 diff 尚未进入投影时，按正常构造/替换生命周期物化。
-            if self.diff_materialized_files == 0 {
-                self.rebuild_diff_projection(cx);
-            } else if index < self.diff_materialized_files {
-                self.replace_materialized_file(index, cx);
-            } else {
-                let calculated_prefix = self
-                    .diffs
-                    .iter()
-                    .take_while(|file| file.diff.read(cx).is_current_version_calculated(cx))
-                    .count();
-                let from = self.diff_materialized_files.min(self.diffs.len());
-                if calculated_prefix > from {
-                    self.append_materialized_files(from, calculated_prefix, cx);
-                }
-            }
+            self.replace_materialized_file(index, cx);
             return;
         }
 
@@ -1214,70 +1204,6 @@ impl MultiBuffer {
         self.diffs[index].revision = Some(revision);
     }
 
-    /// 按路径顺序登记追加的 diff 文件，并物化其中已计算完成的前缀。
-    ///
-    /// 尚未计算完成的文件只登记订阅；结果到达后由 diff_changed 增量物化。
-    fn append_diff_projection(&mut self, files: Vec<DiffFile>, cx: &mut Context<Self>) -> bool {
-        if files.is_empty() {
-            return false;
-        }
-        if self.diff.is_none() {
-            return self.set_diff_files(files, cx);
-        }
-        let next_files: Vec<DiffState> = files
-            .into_iter()
-            .map(|file| {
-                DiffState::new(
-                    file.diff,
-                    PathKey::new(file.display_path),
-                    file.excerpt_ranges,
-                    cx,
-                )
-            })
-            .collect();
-        self.diffs.extend(next_files);
-        let (from, to) = {
-            let from = self.diff_materialized_files;
-            let to = self
-                .diffs
-                .iter()
-                .take_while(|file| file.diff.read(cx).is_current_version_calculated(cx))
-                .count();
-            (from, to)
-        };
-        if to > from {
-            self.append_materialized_files(from, to, cx);
-        }
-        to == self.diffs.len()
-    }
-
-    /// 追加指定范围文件的物化结果，按路径插入组合映射，不重建已有片段。
-    fn append_materialized_files(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
-        let base_excerpt_count = self.state.excerpts.summary().count;
-        let mut expected_excerpt_count = 0;
-        for index in from..to {
-            let mut excerpts = Vec::new();
-            {
-                let file = &self.diffs[index];
-                materialize_file(file, cx, &mut excerpts);
-            }
-            expected_excerpt_count += excerpts.len();
-            if !excerpts.is_empty() {
-                self.set_excerpts_for_path(excerpts, cx);
-            }
-        }
-        assert_eq!(
-            self.state.excerpts.summary().count,
-            base_excerpt_count + expected_excerpt_count,
-            "追加 diff 物化必须全部建立组合映射"
-        );
-        for index in from..to {
-            self.diffs[index].revision = Some(self.diffs[index].diff.read(cx).revision());
-        }
-        self.diff_materialized_files = to;
-        self.refresh_diff_display(cx);
-    }
-
     /// 显式替换 diff 实体或可见窗口时，重建该路径的逻辑 excerpts。
     fn replace_materialized_file(&mut self, file_index: usize, cx: &mut Context<Self>) {
         let mut excerpts = Vec::new();
@@ -1290,7 +1216,14 @@ impl MultiBuffer {
         } else {
             self.set_excerpts_for_path(excerpts, cx);
         }
-        self.diffs[file_index].revision = Some(self.diffs[file_index].diff.read(cx).revision());
+        // revision 只标记已采用后台 hunk 结果的物化；
+        // 调用方给的范围先行建立 excerpts 时保持 None，等 DiffChanged 到期后由 diff_changed 复用同一路径重建输出变换。
+        let calculated = self.diffs[file_index]
+            .diff
+            .read(cx)
+            .is_current_version_calculated(cx);
+        let revision = self.diffs[file_index].diff.read(cx).revision();
+        self.diffs[file_index].revision = calculated.then_some(revision);
         self.refresh_diff_display_after_hunk_update(cx);
     }
 
@@ -1584,8 +1517,6 @@ impl MultiBuffer {
                 .is_current_version_calculated(cx)
                 .then_some(diff.revision());
         }
-        // 未就绪文件也有当前 excerpts，但保留 None 版本，结果到达后按单文件替换其投影。
-        self.diff_materialized_files = self.diffs.len();
         self.refresh_diff_display_after_hunk_update(cx);
         self.state.projection_version != old_version
     }

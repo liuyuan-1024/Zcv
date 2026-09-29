@@ -148,7 +148,120 @@ fn test_diff_file(
     }
 }
 
-/// 清空 Git 状态后，组合文档必须移除旧的 diff 投影，而不是保留过期 hunk。
+/// 文件插入顺序与后台结果就绪顺序独立；就绪文件不能被重复计作新增映射。
+#[gpui::test]
+fn diff_materialization_handles_insertion_before_a_pending_file(cx: &mut TestAppContext) {
+    let a = singleton("src/a.rs", "a1\na2\n", cx);
+    let c = singleton("src/c.rs", "c1\nc2\n", cx);
+    let d = singleton("src/d.rs", "d1\nd2\n", cx);
+    let ready_a = test_diff_entity(a, "src/a.rs", Some("a1\naX\n"), None, cx);
+    let ready_d = test_diff_entity(d, "src/d.rs", Some("d1\ndX\n"), None, cx);
+    cx.run_until_parked();
+
+    let pending_c = test_diff_entity(c, "src/c.rs", Some("c1\ncX\n"), None, cx);
+    let combined = cx.new(MultiBuffer::empty);
+    let (subscription, before) =
+        combined.update(cx, |buffer, cx| buffer.subscribe_and_snapshot(cx));
+    combined.update(cx, |buffer, cx| {
+        for (diff, path) in [
+            (pending_c, "src/c.rs"),
+            (ready_a, "src/a.rs"),
+            (ready_d, "src/d.rs"),
+        ] {
+            buffer.add_diff(
+                DiffFile {
+                    diff,
+                    display_path: PathBuf::from(path),
+                    excerpt_ranges: DiffExcerptRanges::FullFile,
+                },
+                cx,
+            );
+        }
+        let snapshot = buffer.snapshot(cx);
+        assert_eq!(
+            String::from_utf8(snapshot.text_bytes()).unwrap(),
+            "a1\na2\n\nd1\nd2\n",
+            "后面的就绪文件不应等待前面的后台计算"
+        );
+    });
+    cx.run_until_parked();
+
+    combined.update(cx, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        assert_eq!(
+            String::from_utf8(snapshot.text_bytes()).unwrap(),
+            "a1\na2\n\nc1\nc2\n\nd1\nd2\n",
+            "插入和异步物化应各保留一份文件映射"
+        );
+        assert_eq!(snapshot.excerpts().count(), 3);
+        assert_eq!(snapshot.resolved_diff_hunks().len(), 3);
+        assert_output_coordinates(&snapshot);
+        assert_projection_patch_replays_snapshot(&before, &snapshot, &subscription.consume());
+    });
+}
+
+/// 整体替换时保留仍有效的就绪映射；移除尚未就绪的文件后，其结果不能重新进入投影。
+#[gpui::test]
+fn diff_materialization_tracks_pending_replacement_and_removal(cx: &mut TestAppContext) {
+    for remove_pending in [false, true] {
+        let a = singleton("src/a.rs", "a1\na2\n", cx);
+        let b = singleton("src/b.rs", "b1\nb2\n", cx);
+        let c = singleton("src/c.rs", "c1\nc2\n", cx);
+        let d = singleton("src/d.rs", "d1\nd2\n", cx);
+        let ready = [
+            (a, "src/a.rs", "a1\naX\n"),
+            (b, "src/b.rs", "b1\nbX\n"),
+            (d, "src/d.rs", "d1\ndX\n"),
+        ]
+        .map(|(source, path, base)| DiffFile {
+            diff: test_diff_entity(source, path, Some(base), None, cx),
+            display_path: PathBuf::from(path),
+            excerpt_ranges: DiffExcerptRanges::FullFile,
+        });
+        cx.run_until_parked();
+        let combined = cx.new(MultiBuffer::empty);
+        combined.update(cx, |buffer, cx| {
+            assert!(buffer.set_diff_files(vec![ready[0].clone(), ready[1].clone()], cx));
+        });
+        let (subscription, before) =
+            combined.update(cx, |buffer, cx| buffer.subscribe_and_snapshot(cx));
+        let anchor = before.anchor_at(ByteOffset::new(1), Affinity::Before);
+        let pending_c = DiffFile {
+            diff: test_diff_entity(c, "src/c.rs", Some("c1\ncX\n"), None, cx),
+            display_path: PathBuf::from("src/c.rs"),
+            excerpt_ranges: DiffExcerptRanges::FullFile,
+        };
+        let immediate = combined.update(cx, |buffer, cx| {
+            assert!(!buffer.set_diff_files(vec![ready[0].clone(), pending_c], cx));
+            assert_eq!(buffer.snapshot(cx).text_bytes(), b"a1\na2\n");
+            if remove_pending {
+                assert!(buffer.remove_diff(Path::new("src/c.rs"), cx));
+                assert!(buffer.add_diff(ready[2].clone(), cx));
+            }
+            buffer.snapshot(cx)
+        });
+        assert_projection_patch_replays_snapshot(&before, &immediate, &subscription.consume());
+        cx.run_until_parked();
+        let after = combined.update(cx, |buffer, cx| buffer.snapshot(cx));
+        assert_eq!(
+            after.text_bytes(),
+            if remove_pending {
+                b"a1\na2\n\nd1\nd2\n"
+            } else {
+                b"a1\na2\n\nc1\nc2\n"
+            }
+        );
+        assert_eq!(after.excerpts().count(), 2);
+        assert_eq!(after.resolved_diff_hunks().len(), 2);
+        assert_eq!(
+            after.anchor_offset(&anchor).unwrap(),
+            MultiBufferOffset::new(1)
+        );
+        assert_projection_patch_replays_snapshot(&immediate, &after, &subscription.consume());
+        assert_output_coordinates(&after);
+    }
+}
+
 /// 移除中间文件后的投影必须与"从一开始就没有该文件"完全一致（含增量下标顺延）。
 /// 中段插入文件后的投影必须与"一开始就包含该文件"完全一致（含增量下标顺延）。
 #[gpui::test]

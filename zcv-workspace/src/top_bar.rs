@@ -7,7 +7,9 @@ use gpui::{
     div, prelude::*,
 };
 use zcv_actions::OpenSettings;
-use zcv_project::{GitJobPhase, GitOperationKind, GitStore, GitStoreEvent, RemoteOperationState};
+use zcv_project::{
+    GitJobPhase, GitOperationKind, GitStore, GitStoreEvent, Project, RemoteOperationState,
+};
 use zcv_theme::{color, space};
 use zcv_ui::Button;
 
@@ -45,14 +47,15 @@ impl TopBar {
     pub fn new(
         on_selected: OnProjectSelected,
         workspace: WeakEntity<Workspace>,
-        git_store: Entity<GitStore>,
+        project: Entity<Project>,
         on_branch: OnBranchSelected,
         callbacks: TopBarCallbacks,
         window: &mut Window,
         cx: &mut gpui::Context<Self>,
     ) -> Self {
+        let git_store = project.read(cx).git_store();
         let project_picker =
-            cx.new(|cx| ProjectPicker::new(on_selected, workspace.clone(), window, cx));
+            cx.new(|cx| ProjectPicker::new(on_selected, project, workspace.clone(), window, cx));
         let branch_picker =
             cx.new(|cx| BranchPicker::new(git_store.clone(), on_branch, window, cx));
         let git_subscription = cx.subscribe(&git_store, |_, _, _: &GitStoreEvent, cx| cx.notify());

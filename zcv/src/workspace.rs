@@ -584,7 +584,6 @@ fn initialize_workspace(
         }
     });
 
-    let git_store = workspace.project().read(cx).git_store();
     let top_bar = cx.new(|cx| {
         let on_git_fetch = {
             let workspace = weak_self.clone();
@@ -619,7 +618,7 @@ fn initialize_workspace(
         TopBar::new(
             switch_project_callback(languages),
             weak_self.clone(),
-            git_store.clone(),
+            workspace.project().clone(),
             on_branch,
             TopBarCallbacks {
                 on_git_fetch,
@@ -635,17 +634,6 @@ fn initialize_workspace(
     top_bar.update(cx, |bar, cx| {
         bar.set_update_control(update_button.into(), cx);
     });
-    if let Some(root) = workspace.project().read(cx).root() {
-        let label = root
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        top_bar.update(cx, |bar, cx| {
-            bar.project_picker.update(cx, |picker, _| {
-                picker.set_current_label(label);
-            });
-        });
-    }
     workspace.set_titlebar(top_bar.clone().into(), cx);
     // TopBar 组件不在主焦点链上：把选择器的命令 handler 注册到 Workspace 根节点，全局可达。
     let project_picker = top_bar.read(cx).project_picker.clone();

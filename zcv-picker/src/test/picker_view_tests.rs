@@ -1,14 +1,15 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use crate::PickerHost;
 use gpui::{
-    AppContext, Entity, FocusHandle, KeyBinding, TestAppContext, actions, anchored, deferred,
-    point, px, size,
+    AppContext, Entity, FocusHandle, KeyBinding, ScrollDelta, ScrollWheelEvent, TestAppContext,
+    actions, anchored, deferred, point, px, size,
 };
 
 use super::*;
 use zcv_actions::Newline;
-use zcv_ui::ListItem;
+use zcv_ui::{Button, ListItem};
 
 fn init(cx: &mut TestAppContext) {
     let languages = std::sync::Arc::new(zcv_editor::LanguageRegistry::new());
@@ -320,6 +321,257 @@ fn picker_list_has_visible_height(cx: &mut TestAppContext) {
         list_bounds.size.height > px(0.0),
         "列表高度应大于 0，实际 {list_bounds:?}"
     );
+}
+
+struct ScrollDelegate {
+    selected_index: Rc<Cell<usize>>,
+}
+
+impl PickerDelegate for ScrollDelegate {
+    fn match_count(&self) -> usize {
+        30
+    }
+
+    fn selected_index(&self) -> usize {
+        self.selected_index.get()
+    }
+
+    fn set_selected_index(&mut self, ix: usize) {
+        self.selected_index.set(ix);
+    }
+
+    fn update_matches(&mut self, _: String) {}
+
+    fn confirm(&mut self, _: &mut Window, _: &mut App) {}
+
+    fn dismissed(&mut self) {}
+
+    fn render_match(
+        &self,
+        index: usize,
+        selected: bool,
+        _: &mut Context<Picker<Self>>,
+    ) -> AnyElement {
+        ListItem::new(index)
+            .toggle_state(selected)
+            .child(format!("项目 {index}"))
+            .subtitle(format!(
+                "/Users/liuyuan/projects/project-{index}/very-long-project-path-name"
+            ))
+            .end_slot(
+                div()
+                    .debug_selector(move || format!("picker-action-{index}"))
+                    .child(Button::icon(("scroll-action", index), "icons/trash.svg")),
+            )
+            .into_any_element()
+    }
+
+    fn render_footer(&self, _: &mut Window, _: &mut App) -> Option<AnyElement> {
+        Some(
+            div()
+                .h(px(30.0))
+                .debug_selector(|| "picker-footer".into())
+                .child("打开本地项目")
+                .into_any_element(),
+        )
+    }
+}
+
+#[gpui::test]
+fn picker_list_scrolls_with_mouse_wheel(cx: &mut TestAppContext) {
+    init(cx);
+    let (picker, cx) = cx.add_window_view(|window, cx| {
+        Picker::new(
+            ScrollDelegate {
+                selected_index: Rc::new(Cell::new(0)),
+            },
+            px(300.0),
+            window,
+            cx,
+        )
+    });
+    cx.simulate_window_resize(cx.windows()[0], size(px(500.0), px(500.0)));
+
+    let list_bounds = cx.debug_bounds("picker-list").expect("列表容器应参与布局");
+    let list_state = cx.read_entity(&picker, |picker, _| picker.list_state.clone());
+    assert_eq!(
+        list_state.viewport_bounds(),
+        list_bounds,
+        "列表自身视口必须与可见区域一致"
+    );
+    assert_eq!(list_state.logical_scroll_top().item_ix, 0);
+
+    assert!(
+        list_state.max_offset_for_scrollbar().y > px(0.0),
+        "列表内容应超过视口，实际最大滚动偏移 {:?}",
+        list_state.max_offset_for_scrollbar()
+    );
+    let button_position = cx
+        .debug_bounds("picker-action-0")
+        .expect("第一行按钮应可见")
+        .center();
+    cx.simulate_event(ScrollWheelEvent {
+        position: button_position,
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-500.0))),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+
+    let offset = list_state.logical_scroll_top();
+    assert!(
+        offset.item_ix > 0 || offset.offset_in_item > px(0.0),
+        "列表滚轮事件应改变滚动位置，实际 {offset:?}"
+    );
+    let first_visible = list_state.logical_scroll_top().item_ix;
+    let visible_row = list_state
+        .bounds_for_item(first_visible)
+        .expect("滚动后应绘制新的可见行");
+    assert!(visible_row.top() < list_bounds.bottom() && visible_row.bottom() > list_bounds.top());
+    for _ in 0..20 {
+        cx.simulate_event(ScrollWheelEvent {
+            position: button_position,
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-200.0))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+    }
+    let last = cx.debug_bounds("picker-match-29").unwrap_or_else(|| {
+        panic!(
+            "最后一项应被渲染；逻辑偏移 {:?}，视口 {:?}，最大偏移 {:?}，鼠标 {:?}",
+            list_state.logical_scroll_top(),
+            list_state.viewport_bounds(),
+            list_state.max_offset_for_scrollbar(),
+            button_position
+        )
+    });
+    assert!(
+        last.top() >= list_bounds.top() && last.bottom() <= list_bounds.bottom(),
+        "应能滚动到最后一项，实际 {last:?}，视口 {list_bounds:?}"
+    );
+    let offset = list_state.logical_scroll_top();
+    picker.update(cx, |picker, cx| picker.matches_updated(cx));
+    cx.refresh().expect("数据源更新后应完成重绘");
+    let refreshed = list_state.logical_scroll_top();
+    assert_eq!(
+        refreshed.item_ix, offset.item_ix,
+        "刷新数据时不能跳回第一项"
+    );
+    assert_eq!(refreshed.offset_in_item, offset.offset_in_item);
+}
+
+struct HostPopoverWrapper {
+    host: PickerHost,
+    picker: Entity<Picker<ScrollDelegate>>,
+}
+
+impl Render for HostPopoverWrapper {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.host.is_open(cx) {
+            div().child(self.host.overlay(window, cx, &self.picker))
+        } else {
+            div()
+        }
+    }
+}
+
+#[gpui::test]
+fn picker_list_scrolls_inside_host_overlay(cx: &mut TestAppContext) {
+    init(cx);
+    let (wrapper, cx) = cx.add_window_view(|window, cx| {
+        let picker = cx.new(|cx| {
+            Picker::new(
+                ScrollDelegate {
+                    selected_index: Rc::new(Cell::new(0)),
+                },
+                px(300.0),
+                window,
+                cx,
+            )
+        });
+        let mut host = PickerHost::new(cx.focus_handle());
+        host.toggle(&picker, window, cx);
+        HostPopoverWrapper { host, picker }
+    });
+    cx.simulate_window_resize(cx.windows()[0], size(px(500.0), px(300.0)));
+
+    let picker = cx.read_entity(&wrapper, |wrapper, _| wrapper.picker.clone());
+    let list_bounds = cx.debug_bounds("picker-list").expect("列表容器应参与布局");
+    let list_state = cx.read_entity(&picker, |picker, _| picker.list_state.clone());
+    assert_eq!(list_state.viewport_bounds(), list_bounds);
+    let footer = cx
+        .debug_bounds("picker-footer")
+        .expect("小窗口内 footer 应可见");
+    assert!(
+        footer.bottom() <= px(300.0),
+        "浮层不能超出小窗口：{footer:?}"
+    );
+
+    cx.simulate_event(ScrollWheelEvent {
+        position: point(list_bounds.left() + px(10.0), list_bounds.top() + px(10.0)),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-500.0))),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+
+    let offset = list_state.logical_scroll_top();
+    assert!(
+        offset.item_ix > 0 || offset.offset_in_item > px(0.0),
+        "浮层内列表滚轮事件应改变滚动位置，实际 {offset:?}"
+    );
+    let top = offset.item_ix;
+    let visible = list_state
+        .bounds_for_item(top)
+        .expect("浮层内滚动后应绘制新行");
+    assert!(visible.top() < list_bounds.bottom() && visible.bottom() > list_bounds.top());
+    assert_eq!(
+        cx.debug_bounds("picker-footer")
+            .expect("滚动后 footer 仍可见"),
+        footer
+    );
+}
+
+#[gpui::test]
+fn selected_item_beyond_first_viewport_is_visible_on_open_and_query_reset(cx: &mut TestAppContext) {
+    init(cx);
+    let (picker, cx) = cx.add_window_view(|window, cx| {
+        Picker::new(
+            ScrollDelegate {
+                selected_index: Rc::new(Cell::new(29)),
+            },
+            px(300.0),
+            window,
+            cx,
+        )
+    });
+    cx.simulate_window_resize(cx.windows()[0], size(px(500.0), px(500.0)));
+    let viewport = cx.debug_bounds("picker-list").expect("结果视口应可见");
+    let selected = cx
+        .debug_bounds("picker-match-29")
+        .expect("打开时选中项应被渲染");
+    assert!(
+        selected.top() >= viewport.top() && selected.bottom() <= viewport.bottom(),
+        "打开时应定位到选中项：{selected:?}，视口 {viewport:?}"
+    );
+    cx.simulate_event(ScrollWheelEvent {
+        position: viewport.center(),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(10000.0))),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+    let state = cx.read_entity(&picker, |picker, _| picker.list_state.clone());
+    assert_eq!(
+        state.logical_scroll_top().item_ix,
+        0,
+        "鼠标 {:?}，真实视口 {:?}，最大偏移 {:?}",
+        viewport.center(),
+        state.viewport_bounds(),
+        state.max_offset_for_scrollbar()
+    );
+    picker.update(cx, |picker, cx| picker.set_query("", cx));
+    let selected = cx
+        .debug_bounds("picker-match-29")
+        .expect("重开查询后选中项应被渲染");
+    assert!(selected.top() >= viewport.top() && selected.bottom() <= viewport.bottom());
 }
 
 /// 焦点在搜索框（Editor context）时，同一按键在 Editor 的绑定

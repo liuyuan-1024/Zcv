@@ -227,6 +227,9 @@ impl PickerHost {
                                 })
                                 .child(
                                     div()
+                                        .flex()
+                                        .flex_col()
+                                        .max_h(win_size.height - space::S6 * 2.0)
                                         .bg(color::current(cx).elevated_surface_background)
                                         .border_l_3()
                                         .border_color(color::current(cx).border_focused)

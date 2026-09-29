@@ -1,4 +1,7 @@
 use gpui::{Context, Render, TestAppContext};
+use gpui::{ScrollDelta, ScrollHandle, ScrollWheelEvent, point, px};
+use std::cell::Cell;
+use std::rc::Rc;
 
 use super::*;
 
@@ -127,4 +130,69 @@ fn loose_size_scales_height_and_padding(cx: &mut TestAppContext) {
         icon.size.height,
         compact_height + space::S6 * 2.0 - space::S2 * 2.0
     );
+}
+
+struct ScrollButtonHost {
+    scroll: ScrollHandle,
+    button_clicks: Rc<Cell<usize>>,
+    row_clicks: Rc<Cell<usize>>,
+}
+
+impl Render for ScrollButtonHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let button_clicks = self.button_clicks.clone();
+        let row_clicks = self.row_clicks.clone();
+        div()
+            .id("scroll-button-host")
+            .w(px(200.0))
+            .h(px(100.0))
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+            .child(
+                div()
+                    .id("button-row")
+                    .on_click(move |_, _, _| row_clicks.set(row_clicks.get() + 1))
+                    .child(
+                        div().debug_selector(|| "scrollable-button".into()).child(
+                            Button::text("scrollable-button", "移除").on_click(move |_, _, _| {
+                                button_clicks.set(button_clicks.get() + 1)
+                            }),
+                        ),
+                    ),
+            )
+            .child(div().h(px(1000.0)).child("列表内容"))
+    }
+}
+
+#[gpui::test]
+fn button_keeps_click_isolation_but_allows_parent_scrolling(cx: &mut TestAppContext) {
+    let button_clicks = Rc::new(Cell::new(0));
+    let row_clicks = Rc::new(Cell::new(0));
+    let scroll = ScrollHandle::new();
+    let (_, cx) = cx.add_window_view(|_, _| ScrollButtonHost {
+        scroll: scroll.clone(),
+        button_clicks: button_clicks.clone(),
+        row_clicks: row_clicks.clone(),
+    });
+    let button = cx
+        .debug_bounds("scrollable-button")
+        .expect("按钮应参与布局");
+    cx.simulate_click(button.center(), gpui::Modifiers::default());
+    assert_eq!(button_clicks.get(), 1);
+    assert_eq!(row_clicks.get(), 0, "行内按钮不能触发所在行的点击");
+    cx.simulate_event(ScrollWheelEvent {
+        position: button.center(),
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-20.0))),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+    assert!(
+        scroll.offset().y < Pixels::ZERO,
+        "按钮不能遮蔽父容器的滚轮事件"
+    );
+    let moved = cx
+        .debug_bounds("scrollable-button")
+        .expect("滚动后仍应测量按钮");
+    assert!(moved.top() < button.top(), "滚动后按钮实际位置应上移");
+    assert_eq!(button_clicks.get(), 1, "滚动不能触发按钮点击");
 }

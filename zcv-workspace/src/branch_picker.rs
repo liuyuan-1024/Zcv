@@ -226,8 +226,9 @@ impl BranchPicker {
                         .active_branch_list()
                         .map(<[Branch]>::to_vec)
                         .unwrap_or_default();
-                    picker.picker.update(cx, |picker, _| {
+                    picker.picker.update(cx, |picker, cx| {
                         picker.delegate_mut().reload(branches);
+                        picker.matches_updated(cx);
                     });
                 }
                 cx.notify();
@@ -265,8 +266,7 @@ impl BranchPicker {
                 .unwrap_or_default();
             self.picker.update(cx, |picker, cx| {
                 picker.delegate_mut().reload(branches);
-                picker.search_input().set_text("", cx);
-                cx.notify();
+                picker.set_query("", cx);
             });
         }
         self.host.toggle(&self.picker, window, cx);

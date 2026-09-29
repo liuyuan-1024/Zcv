@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, Context, FocusHandle, ListAlignment, ListSizingBehavior, ListState, Pixels,
-    Render, SharedString, Window, div, list, prelude::*, px,
+    AnyElement, App, Context, FocusHandle, ListAlignment, ListOffset, ListSizingBehavior,
+    ListState, Pixels, Render, SharedString, Window, div, list, prelude::*, px,
 };
 use zcv_actions::{
     MoveDown, MoveUp, PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev,
@@ -83,6 +83,8 @@ impl<D: PickerDelegate> Picker<D> {
             .expect("Picker 需要 zcv_editor::init 注入编辑器工厂");
         let search_input = factory(cx);
         search_input.set_placeholder_text(&placeholder, cx);
+        // 离屏行也建立真实高度索引，确保多行结果能滚到首尾，并从默认选中项向上滚动。
+        let list_state = ListState::new(match_count, ListAlignment::Top, px(100.0)).measure_all();
 
         let picker = Self {
             delegate,
@@ -91,8 +93,9 @@ impl<D: PickerDelegate> Picker<D> {
             width,
             query: String::new(),
             on_dismiss: None,
-            list_state: ListState::new(match_count, ListAlignment::Top, px(100.0)),
+            list_state,
         };
+        picker.scroll_to_selection();
         {
             let weak = cx.weak_entity();
             picker
@@ -104,8 +107,8 @@ impl<D: PickerDelegate> Picker<D> {
                             if picker.query != query {
                                 picker.query = query.clone();
                                 picker.delegate.update_matches(query);
-                                picker.list_state.reset(picker.delegate.match_count());
-                                cx.notify();
+                                picker.matches_updated(cx);
+                                picker.scroll_to_selection();
                             }
                         })
                         .ok();
@@ -133,6 +136,31 @@ impl<D: PickerDelegate> Picker<D> {
 
     pub fn search_input(&self) -> &Arc<dyn ErasedEditor> {
         &self.search_input
+    }
+
+    /// 同步设置查询、重建匹配结果并定位选中项；打开浮层时也使用此入口。
+    pub fn set_query(&mut self, query: &str, cx: &mut Context<Self>) {
+        self.search_input.set_text(query, cx);
+        self.query = query.to_owned();
+        self.delegate.update_matches(self.query.clone());
+        self.matches_updated(cx);
+        self.scroll_to_selection();
+    }
+
+    /// 数据源更新后重建行测量并保留滚动位置，包括行数不变的更新。
+    pub fn matches_updated(&mut self, cx: &mut Context<Self>) {
+        let offset = self.list_state.logical_scroll_top();
+        self.list_state.reset(self.delegate.match_count());
+        self.list_state.scroll_to(offset);
+        cx.notify();
+    }
+
+    fn scroll_to_selection(&self) {
+        // 重建后的行尚未测量，直接使用逻辑行偏移，不能用缓存高度推算选中项的位置。
+        self.list_state.scroll_to(ListOffset {
+            item_ix: self.delegate.selected_index(),
+            offset_in_item: Pixels::ZERO,
+        });
     }
 
     // ══ 内部：action handler ════════════════════════════════════
@@ -188,12 +216,8 @@ impl<D: PickerDelegate> Picker<D> {
 }
 
 impl<D: PickerDelegate> Render for Picker<D> {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.delegate.match_count();
-        if self.list_state.item_count() != count {
-            self.list_state.reset(count);
-        }
-
         // 无匹配提示
         let no_match = (count == 0)
             .then(|| self.delegate.no_matches_text())
@@ -206,14 +230,17 @@ impl<D: PickerDelegate> Render for Picker<D> {
             });
 
         // 列表项允许多行，使用可变行高虚拟列表；ListState 按需测量并缓存每行高度。
-        // flex_grow 吸收剩余空间；min_h(0) 允许收缩——否则 flex item 的 min-height:auto 会把 footer 挤出可视区。
+        // 结果视口负责裁剪内容，ListState 只负责虚拟化和滚动状态。
         let entity = cx.entity();
+        let width = self.width;
         let list = list(
             self.list_state.clone(),
             cx.processor(move |picker, index, _window, cx| {
                 let entity = entity.clone();
                 div()
                     .id(("picker-match", index))
+                    // Infer 首次测量尚无视口宽度；换行必须使用与最终布局相同的选择器宽度。
+                    .w(width)
                     .debug_selector(move || format!("picker-match-{index}"))
                     .on_click(move |_, window, cx| {
                         entity.update(cx, |picker, cx| {
@@ -233,11 +260,18 @@ impl<D: PickerDelegate> Render for Picker<D> {
         .with_sizing_behavior(ListSizingBehavior::Infer)
         .flex_grow(1.0)
         .min_h_0();
-        let items = div()
-            .id("picker-items")
+        let results = div()
+            .id("picker-results")
+            .relative()
+            .flex()
+            .flex_col()
             .flex_grow(1.0)
             .min_h_0()
-            // test cfg 下注册 debug bounds，供布局断言使用。
+            .max_h(PICKER_MAX_HEIGHT)
+            .overflow_hidden()
+            .when_some(self.delegate.render_header(), |el, h| {
+                el.child(div().flex_none().child(h))
+            })
             .debug_selector(|| "picker-list".into())
             .child(list);
 
@@ -246,7 +280,8 @@ impl<D: PickerDelegate> Render for Picker<D> {
             .track_focus(&self.focus_handle)
             .key_context("Picker")
             .w(self.width)
-            .max_h(PICKER_MAX_HEIGHT)
+            .min_h_0()
+            .max_h(PICKER_MAX_HEIGHT.min(window.viewport_size().height))
             .flex()
             .flex_col()
             .overflow_hidden()
@@ -258,11 +293,10 @@ impl<D: PickerDelegate> Render for Picker<D> {
             .on_action(cx.listener(Self::cancel));
 
         root.child(picker_search_box(self.search_input.render(), cx))
-            .when_some(self.delegate.render_header(), |el, h| el.child(h))
             .when_some(no_match, |el, n| el.child(n))
-            .child(items)
-            .when_some(self.delegate.render_footer(_window, cx), |el, f| {
-                el.child(f)
+            .child(results)
+            .when_some(self.delegate.render_footer(window, cx), |el, f| {
+                el.child(div().flex_none().child(f))
             })
     }
 }

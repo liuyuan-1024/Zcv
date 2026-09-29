@@ -88,7 +88,7 @@ pub struct Button {
     tooltip: TooltipSpec,
     on_click: Option<ClickHandler>,
     disabled: bool,
-    /// hitbox 是否遮蔽下层元素（浮层内按钮关闭遮蔽，避免打断外层 hover 追踪）。
+    /// 是否遮蔽下层元素的非滚动交互；滚轮始终交给所在的滚动容器。
     occlude: bool,
 }
 
@@ -217,7 +217,7 @@ impl RenderOnce for Button {
                 .font(typography::ui_font())
                 .text_size(ui_size)
                 .line_height(ui_line)
-                .when(self.occlude, |element| element.occlude()),
+                .when(self.occlude, |element| element.block_mouse_except_scroll()),
         );
         if self.style == ButtonStyle::Solid {
             element = element

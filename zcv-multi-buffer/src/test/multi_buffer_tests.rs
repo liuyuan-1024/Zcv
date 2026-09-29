@@ -3603,6 +3603,37 @@ fn created_and_pure_deleted_hunks_keep_distinct_source_targets(cx: &mut TestAppC
 }
 
 #[gpui::test]
+fn expanded_deleted_hunk_boundary_keeps_selection_in_working_text(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "a\nb\nc", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |buffer, cx| {
+        let file = test_diff_file(source, "src/a.rs", "a\nold1\nold2\nb\nc", cx);
+        buffer.set_diff_hunks_expanded_by_default(true, cx);
+        buffer.set_diff_files(vec![file], cx);
+    });
+    cx.run_until_parked();
+    combined.update(cx, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        assert_eq!(snapshot.text_bytes(), b"a\nold1\nold2\nb\nc");
+        let deleted = snapshot.anchor_at(MultiBufferOffset::new(2), Affinity::After);
+        let start = snapshot.anchor_at(MultiBufferOffset::new(12), Affinity::Before);
+        let end = snapshot.anchor_at(MultiBufferOffset::new(13), Affinity::After);
+        assert_eq!(
+            snapshot.anchor_offset(&deleted).unwrap(),
+            MultiBufferOffset::new(2)
+        );
+        assert_eq!(
+            snapshot.anchor_offset(&start).unwrap(),
+            MultiBufferOffset::new(12)
+        );
+        assert_eq!(
+            snapshot.anchor_offset(&end).unwrap(),
+            MultiBufferOffset::new(13)
+        );
+    });
+}
+
+#[gpui::test]
 fn expanded_deleted_output_keeps_the_working_source_end_editable(cx: &mut TestAppContext) {
     let source = singleton("src/gone.rs", "", cx);
     let combined = cx.new(MultiBuffer::empty);

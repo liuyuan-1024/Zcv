@@ -6156,7 +6156,33 @@ fn anchor_in_mappings<S: SourceTexts + ?Sized>(
     offset: ByteOffset,
     affinity: Affinity,
 ) -> Option<MultiBufferAnchor> {
-    let (mapping, at) = mapping_at_tree(excerpts, tree, offset)?;
+    // 左吸附在删除段末端属于旧侧末端，需保留基线 Anchor；
+    // 若只锚到同点的工作区起点，解析时会按左吸附落到删除段起点，扩大后续编辑的选区。
+    let mut cursor = MultiBufferCursor::new(excerpts, tree);
+    cursor.seek_output(offset, Bias::Right);
+    let deleted_end = if affinity == Affinity::Before && cursor.start().bytes == offset.get() {
+        let mut previous = cursor.clone();
+        previous.prev();
+        if matches!(
+            previous.item(),
+            Some((_, DiffTransform::DeletedHunk { .. }))
+        ) && previous
+            .mapping()
+            .is_some_and(|mapping| mapping.output_range.end().get() == offset.get())
+        {
+            cursor = previous;
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    let (mapping, at) = if deleted_end {
+        (cursor.mapping()?, cursor.start().clone())
+    } else {
+        mapping_at_tree(excerpts, tree, offset)?
+    };
     let source_offset = ByteOffset::new(
         (mapping.source_range.start().get() + offset.get().saturating_sub(at.bytes))
             .min(mapping.source_range.end().get()),
@@ -6166,8 +6192,9 @@ fn anchor_in_mappings<S: SourceTexts + ?Sized>(
         None => Anchor::new(mapping.source_range.version(), source_offset).with_affinity(affinity),
     };
     if mapping.diff_kind == Some(ExcerptDiffKind::Deleted) {
-        let mut cursor = MultiBufferCursor::new(excerpts, tree);
-        cursor.seek_output(offset, Bias::Right);
+        if !deleted_end {
+            cursor.seek_output(offset, Bias::Right);
+        }
         let (_, transform) = cursor.item()?;
         let logical = cursor.excerpts.item()?;
         let working_text = sources.source_text(logical.source_index)?;

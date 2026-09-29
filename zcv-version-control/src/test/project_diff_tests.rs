@@ -452,7 +452,13 @@ fn created_file_and_pure_deletion_targets_stage_and_unstage_without_display_look
                 .multi_buffer
                 .update(cx, |buffer, cx| buffer.snapshot(cx));
             let hunks = snapshot.resolved_diff_hunks();
-            assert_eq!(hunks.len(), 2);
+            assert_eq!(
+                hunks.len(),
+                2,
+                "分组={kind:?}，显示索引={:?}，输出区域={:?}",
+                snapshot.diff_display(),
+                snapshot.regions().collect::<Vec<_>>()
+            );
             let targets = hunks
                 .into_iter()
                 .map(|(_, hunk)| hunk.source)
@@ -694,13 +700,13 @@ fn git_status_drives_one_ordered_excerpt_per_changed_file(cx: &mut TestAppContex
     assert_eq!(paths, vec!["deleted.txt", "modified.txt", "untracked.txt"]);
     assert_eq!(
         text,
-        "将被删除\nline2\nline3\n修改前\n修改后\nline5\nline6\n新增\n"
+        "将被删除\n\nline2\nline3\n修改前\n修改后\nline5\nline6\n\n新增\n"
     );
 }
 
-/// 回归：从 Deleted 片段打开文件时，必须换算到工作区文件中的真实行列，而不是把 Git 修订文本的坐标直接套到工作区文件上。
+/// 从删除输出区域打开文件时，换算到工作区文件中的真实行列。
 #[gpui::test]
-fn deleted_excerpt_maps_to_working_tree_hunk_position(cx: &mut TestAppContext) {
+fn deleted_output_region_maps_to_working_tree_hunk_position(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
     run_in(&root, &["git", "init", "-q", "-b", "master"]);
@@ -740,17 +746,17 @@ fn deleted_excerpt_maps_to_working_tree_hunk_position(cx: &mut TestAppContext) {
         let snapshot = view
             .multi_buffer
             .update(cx, |buffer, cx| buffer.snapshot(cx));
-        let mut excerpts = snapshot.excerpts();
-        // 修改行的 Deleted 片段：首行（旧侧 "修改前"）→ 工作区第 5 行（0-based 4）。
-        let modified_excerpt = excerpts
-            .find(|excerpt| {
-                excerpt.path() == modified_path
-                    && excerpt.diff_kind() == Some(ExcerptDiffKind::Deleted)
+        let mut regions = snapshot.regions();
+        // 删除区域首行（旧侧 "修改前"）→ 工作区第 5 行（0-based 4）。
+        let modified_region = regions
+            .find(|region| {
+                region.path() == modified_path
+                    && region.diff_kind() == Some(ExcerptDiffKind::Deleted)
             })
-            .expect("修改行应有 Deleted 片段");
+            .expect("修改行应有删除输出区域");
         let location = ExcerptLocation {
             path: modified_path.clone(),
-            source_range: modified_excerpt.source_range(),
+            source_range: modified_region.source_range(),
         };
         let target = view
             .deleted_navigation_target(&location, &working_text, cx)
@@ -773,20 +779,20 @@ fn deleted_excerpt_maps_to_working_tree_hunk_position(cx: &mut TestAppContext) {
             "修订行内列应映射到工作区同列"
         );
         assert_eq!(
-            modified_excerpt.source_range(),
+            modified_region.source_range(),
             TextRange::new(ByteOffset::new(24), ByteOffset::new(34),).expect("旧侧第 5 行范围"),
-            "夹具应让 Deleted 片段正好覆盖被修改的旧行（含行尾换行）"
+            "删除输出区域应覆盖被修改的旧行（含行尾换行）"
         );
         // 整文件删除：纯删除 hunk 的 range 为空，锚定到变更块起点（0-based 0）。
-        let removed_excerpt = excerpts
-            .find(|excerpt| {
-                excerpt.path().file_name().and_then(|name| name.to_str()) == Some("removed.txt")
-                    && excerpt.diff_kind() == Some(ExcerptDiffKind::Deleted)
+        let removed_region = regions
+            .find(|region| {
+                region.path().file_name().and_then(|name| name.to_str()) == Some("removed.txt")
+                    && region.diff_kind() == Some(ExcerptDiffKind::Deleted)
             })
-            .expect("删除文件应有 Deleted 片段");
+            .expect("删除文件应有删除输出区域");
         let removed_location = ExcerptLocation {
-            path: removed_excerpt.path().to_path_buf(),
-            source_range: removed_excerpt.source_range(),
+            path: removed_region.path().to_path_buf(),
+            source_range: removed_region.source_range(),
         };
         // 已删除文件的工作区文本为空。
         let empty_text = Buffer::from_text(String::new(), BufferConfig::default())

@@ -528,7 +528,7 @@ impl DiffView {
     /// 当前投影中每个文件的显示实体身份。
     ///
     /// 折叠集合按 BufferId 归属，与 BlockMap 的分类使用同一身份；
-    /// 一个文件的所有 excerpt（含 diff 旧侧）共享同一 id，因此只需要去重后的集合。
+    /// 文件身份来自逻辑窗口，删除输出区域沿用所属窗口的 BufferId，因此只需要去重后的集合。
     fn file_buffer_ids(&self, cx: &mut App) -> Vec<BufferId> {
         let snapshot = self
             .multi_buffer

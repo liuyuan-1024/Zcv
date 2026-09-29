@@ -139,7 +139,7 @@ fn single_file_diff_uses_the_composite_projection_path(cx: &mut TestAppContext) 
                 .buffer_snapshot()
                 .excerpts()
                 .count(),
-            3
+            1
         );
         assert_eq!(editor.diff_hunks(cx).len(), 1);
         assert_eq!(editor.diff_hunk_old_ranges(cx), &[None]);
@@ -1756,7 +1756,7 @@ fn wrapped_multibuffer_relocates_blocks_when_wrap_rows_change(cx: &mut TestAppCo
     });
     assert_eq!(
         before,
-        vec![(0, PathBuf::from("a.rs")), (4, PathBuf::from("b.rs"))]
+        vec![(0, PathBuf::from("a.rs")), (5, PathBuf::from("b.rs"))]
     );
 
     // 在第一个文件首行后插入换行：a.rs 标题不动，b.rs 标题整体后移一行。
@@ -1784,7 +1784,7 @@ fn wrapped_multibuffer_relocates_blocks_when_wrap_rows_change(cx: &mut TestAppCo
     });
     assert_eq!(
         after,
-        vec![(0, PathBuf::from("a.rs")), (5, PathBuf::from("b.rs"))]
+        vec![(0, PathBuf::from("a.rs")), (6, PathBuf::from("b.rs"))]
     );
 }
 
@@ -1920,28 +1920,13 @@ fn materialized_deleted_excerpt_keeps_editing_and_cursor(cx: &mut TestAppContext
     work.update(cx, |buffer, cx| {
         buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
     });
-    let head = test_buffer(cx, "a\nold1\nold2\nc");
-    head.update(cx, |buffer, cx| {
-        buffer.set_file_path(PathBuf::from("src/a.rs"), cx)
-    });
-    let work_multi = work.clone();
-    let head_multi = head.clone();
     let combined = cx.new(MultiBuffer::empty);
-
-    // Deleted hunk：新侧行 1 处删除 HEAD 的 1..3 行。
-    // 组合 = [工作区 0..1] + [HEAD 1..3（只读红色行）] + [工作区 1..3]。
     combined.update(cx, |combined, cx| {
-        combined.set_excerpts_for_path(
-            vec![
-                ExcerptRange::line_range(work_multi.clone(), 0..1, cx),
-                ExcerptRange::line_range(head_multi, 1..3, cx)
-                    .with_diff_kind(ExcerptDiffKind::Deleted)
-                    .with_editable(false),
-                ExcerptRange::line_range(work_multi, 1..3, cx),
-            ],
-            cx,
-        );
+        let file = diff_file(work.clone(), "a\nold1\nold2\nb\nc", cx);
+        combined.set_diff_hunks_expanded_by_default(true, cx);
+        combined.set_diff_files(vec![file], cx);
     });
+    cx.run_until_parked();
     let editor = cx.new(move |cx| Editor::for_multi_buffer(combined, cx));
 
     // 组合文本：HEAD 旧行插在删除点；普通 excerpt 保留源文本原样（末尾无多余换行）。

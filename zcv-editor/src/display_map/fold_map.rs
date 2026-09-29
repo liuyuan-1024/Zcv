@@ -1639,6 +1639,24 @@ fn text_summary_of_str(text: &str) -> MBTextSummary {
         chars: text.chars().count(),
         len_utf16: text.chars().map(char::len_utf16).sum(),
         lines: text.bytes().filter(|byte| *byte == b'\n').count(),
+        last_line_len: text
+            .rsplit('\n')
+            .next()
+            .expect("文本至少有一个逻辑行")
+            .len(),
+        last_line_chars: text
+            .rsplit('\n')
+            .next()
+            .expect("文本至少有一个逻辑行")
+            .chars()
+            .count(),
+        last_line_len_utf16: text
+            .rsplit('\n')
+            .next()
+            .expect("文本至少有一个逻辑行")
+            .chars()
+            .map(char::len_utf16)
+            .sum(),
     }
 }
 

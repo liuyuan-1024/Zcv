@@ -1,11 +1,11 @@
-//! MultiBuffer 的 git diff 投影：把版本化的 BufferDiff 结果物化为 excerpts 与显示坐标。
+//! MultiBuffer 的 git diff 投影：把版本化的 BufferDiff 结果投影为输出变换与显示坐标。
 //!
 //! 普通编辑器与多文件投影（Git 差异视图）共用同一套物化：
 //! 宿主注入同一工作区源快照对应的 BufferDiff 和已装配的可见 working 行范围；
-//! 本层只消费其 BufferDiffSnapshot，按展开状态把旧侧行物化为只读 excerpt，并派生组合坐标显示 hunks。
+//! 本层只消费其 BufferDiffSnapshot，按展开状态把旧侧行插入只读删除变换，并派生组合坐标显示 hunks。
 //!
 //! diff 状态（base/working、版本、hunk、pending、操作）全部归 BufferDiff 所有；
-//! hunk 身份随输出变换节点（Excerpt）承载，输出坐标由游标推导；
+//! hunk 身份随输出变换节点承载，输出坐标由游标推导；
 //! 展开/折叠与显示路径归本层所有，不进入 diff 快照。
 
 use std::collections::{HashMap, HashSet};
@@ -15,14 +15,13 @@ use std::sync::Arc;
 
 use gpui::{App, Context, Entity, Subscription};
 use sum_tree::{Bias, SumTree};
-use zcv_language::LanguageBuffer;
-use zcv_text::{Anchor, BufferId, ByteOffset, Line, Snapshot, TextRange};
+use zcv_text::{Anchor, BufferId, ByteOffset, Line, Snapshot, TextChangeBatch, TextRange};
 
 use crate::{
-    DiffTransform, DiffTransformHunkInfo, DiffTransformHunkSide, DiffTransformSummary, Excerpt,
-    ExcerptDiffKind, ExcerptIndex, ExcerptItemIndex, ExcerptRange, ExcerptSummary, MappingPosition,
-    MultiBuffer, MultiBufferCursor, MultiBufferEvent, MultiBufferSnapshot, PathKey, SourceTexts,
-    mapping_count, projection_item_topology_equal, snapshot_range_summary,
+    DeletedHunkRegion, DiffTransform, DiffTransformHunkInfo, DiffTransformHunkSide, Excerpt,
+    ExcerptContext, ExcerptDiffKind, ExcerptRange, ExcerptSummary, MBTextSummary, MultiBuffer,
+    MultiBufferCursor, MultiBufferEvent, MultiBufferSnapshot, OutputRegion, PathKey,
+    SourceIncremental, SourceTexts, diff_output_text, snapshot_range_summary,
 };
 use zcv_buffer_diff::{
     BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkKind, DiffHunkStaging, diff_line_boundary,
@@ -76,13 +75,6 @@ impl DiffExcerptRanges {
             .into_iter()
             .chain(windows.iter().cloned())
     }
-
-    fn range_count(&self) -> usize {
-        match self {
-            Self::FullFile => 1,
-            Self::Windows(ranges) => ranges.len(),
-        }
-    }
 }
 
 /// 随可见 hunk 传递的源身份与操作范围，不依赖组合文档中的位置或序号。
@@ -99,7 +91,7 @@ pub struct DiffHunkSource {
 ///
 /// diff 结果由 BufferDiff 持有；本结构只持有显示层状态，随文件在 MultiBuffer 中增删而创建销毁。
 pub(crate) struct DiffState {
-    diff: Entity<BufferDiff>,
+    pub(super) diff: Entity<BufferDiff>,
     /// 组合文档中的显示路径（文件标题与导航定位）。
     display_path: PathKey,
     /// 调用方装配的 working 范围；MultiBuffer 不决定 diff 视图的裁剪策略。
@@ -296,7 +288,7 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
         if item_start >= lines.end {
             break;
         }
-        let item_end = item_start + transform.transform_summary().output.text.lines.max(1);
+        let item_end = item_start + transform.transform_summary().output.lines.max(1);
         if item_end > lines.start {
             for info in transform.hunks() {
                 candidates
@@ -316,17 +308,34 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
         let mut accum = None;
         let mut inspected = HashSet::new();
         for item_index in item_indices {
-            let first = item_index.saturating_sub(1);
-            let last = item_index.saturating_add(1);
-            for neighbor in first..=last {
-                if !inspected.insert(neighbor) {
+            let mut cursor = MultiBufferCursor::new(excerpts, transforms);
+            cursor.seek_transform_index(item_index);
+            loop {
+                let mut previous = cursor.clone();
+                previous.prev();
+                if previous.item().is_none_or(|(_, transform)| {
+                    !transform
+                        .hunks()
+                        .iter()
+                        .any(|info| (info.working, info.hunk_start()) == key)
+                }) {
+                    break;
+                }
+                cursor = previous;
+            }
+            while let Some((excerpt, transform)) = cursor.item() {
+                if !transform
+                    .hunks()
+                    .iter()
+                    .any(|info| (info.working, info.hunk_start()) == key)
+                {
+                    break;
+                }
+                let at = cursor.start();
+                if !inspected.insert((at.index, at.input_item_index)) {
+                    cursor.next();
                     continue;
                 }
-                let mut cursor = MultiBufferCursor::new(excerpts, transforms);
-                cursor.seek_excerpt_index(neighbor);
-                let Some((excerpt, transform)) = cursor.item() else {
-                    continue;
-                };
                 for info in transform
                     .hunks()
                     .iter()
@@ -336,19 +345,27 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
                         accum.get_or_insert_with(|| HunkAccum::new(info, excerpt.buffer_id));
                     accum.expanded = info.expanded;
                     let at = cursor.start();
-                    let content_lines =
-                        excerpt.text_summary.lines + usize::from(excerpt.adds_newline);
+                    let content_lines = excerpt.text_summary.lines
+                        + usize::from(
+                            excerpt.adds_newline && info.side == DiffTransformHunkSide::Old,
+                        );
                     let content_range = at.lines..(at.lines + content_lines).max(at.lines + 1);
                     match info.side {
                         DiffTransformHunkSide::Content => {
-                            accum.content_range = Some(content_range);
+                            accum.content_range = Some(match accum.content_range.take() {
+                                Some(previous) => {
+                                    previous.start.min(content_range.start)
+                                        ..previous.end.max(content_range.end)
+                                }
+                                None => content_range,
+                            });
                             let source_text = sources
                                 .source_text(excerpt.source_index)
                                 .expect("diff excerpt 必须引用当前源快照");
                             let output_start = at.bytes;
                             let source_start = excerpt.source_range.start().get();
                             if let Some(visible) =
-                                visible_source_bytes(excerpt, output_start, &word_diff_range)
+                                visible_source_bytes(&excerpt, output_start, &word_diff_range)
                             {
                                 // 词级范围由 BufferDiff 按源文档顺序生成；源编辑保持锚点顺序。
                                 let first = info.buffer_word_diffs.partition_point(|diff| {
@@ -385,11 +402,17 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
                             }
                         }
                         DiffTransformHunkSide::Old => {
-                            accum.old_range = Some(content_range);
+                            accum.old_range = Some(match accum.old_range.take() {
+                                Some(previous) => {
+                                    previous.start.min(content_range.start)
+                                        ..previous.end.max(content_range.end)
+                                }
+                                None => content_range,
+                            });
                             let output_start = at.bytes;
                             if info.expanded
                                 && let Some(visible) =
-                                    visible_source_bytes(excerpt, output_start, &word_diff_range)
+                                    visible_source_bytes(&excerpt, output_start, &word_diff_range)
                             {
                                 let source_start = excerpt.source_range.start().get();
                                 let first = info.base_word_diffs.partition_point(|diff| {
@@ -416,11 +439,9 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
                         DiffTransformHunkSide::BoundaryStart => {
                             accum.boundary_start = Some(at.lines);
                         }
-                        DiffTransformHunkSide::BoundaryEnd => {
-                            accum.boundary_end = Some(at.lines + content_lines);
-                        }
                     }
                 }
+                cursor.next();
             }
         }
 
@@ -431,7 +452,6 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
             .content_range
             .or_else(|| accum.old_range.as_ref().map(|range| range.end..range.end))
             .or_else(|| accum.boundary_start.map(|line| line..line))
-            .or_else(|| accum.boundary_end.map(|line| line..line))
         else {
             continue;
         };
@@ -459,7 +479,7 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
 
 /// 先将视口与当前投影片段相交，再换算为该片段的源字节范围。
 fn visible_source_bytes(
-    excerpt: &Excerpt,
+    excerpt: &OutputRegion,
     output_start: usize,
     visible_output: &Range<usize>,
 ) -> Option<Range<usize>> {
@@ -517,12 +537,6 @@ struct ResolvedHunk {
     base_word_diffs: Vec<Range<usize>>,
 }
 
-struct ExistingExcerptGroup {
-    start_index: usize,
-    end_index: usize,
-    lines: Option<Range<usize>>,
-}
-
 /// 单次游标遍历中按 hunk 身份聚合的输出范围与词级片段。
 struct HunkAccum {
     source: DiffHunkSource,
@@ -533,7 +547,6 @@ struct HunkAccum {
     content_range: Option<Range<usize>>,
     old_range: Option<Range<usize>>,
     boundary_start: Option<usize>,
-    boundary_end: Option<usize>,
     old_word_diffs: WordDiffs,
     new_word_diffs: WordDiffs,
 }
@@ -556,57 +569,9 @@ impl HunkAccum {
             content_range: None,
             old_range: None,
             boundary_start: None,
-            boundary_end: None,
             old_word_diffs: Vec::new(),
             new_word_diffs: Vec::new(),
         }
-    }
-}
-
-/// 一个投影片段的裁剪与标注选项。
-struct ExcerptShape {
-    /// diff 语义；None 表示不标注类型。
-    diff_kind: Option<ExcerptDiffKind>,
-    /// 是否作为逻辑 excerpt 的起点（每个可见窗口的首个物理片段）。
-    starts_logical_excerpt: bool,
-    /// 是否允许空片段（空文件占位行、删除点占位行）。
-    allow_empty: bool,
-}
-
-struct ExcerptMaterializer<'a> {
-    excerpts: &'a mut Vec<ExcerptRange>,
-    display_path: &'a Path,
-    /// 同一 diff 文件的旧/新侧物理来源都属于 working Buffer 的一个逻辑显示实体。
-    buffer_id: BufferId,
-}
-
-impl ExcerptMaterializer<'_> {
-    /// 构造并推入一个投影片段，并标注它承担的 hunk 身份。
-    ///
-    /// 返回未挂载的 hunk 身份：片段被空行策略跳过时，调用方据此恢复待挂载状态（通常是纯删除边界）。
-    fn push(
-        &mut self,
-        lines: Range<usize>,
-        text: &Snapshot,
-        source: &Entity<LanguageBuffer>,
-        shape: ExcerptShape,
-        hunks: Vec<DiffTransformHunkInfo>,
-    ) -> Vec<DiffTransformHunkInfo> {
-        let Some(mut excerpt) = projected_excerpt(
-            source,
-            text,
-            lines,
-            self.display_path,
-            self.buffer_id,
-            shape,
-        ) else {
-            return hunks;
-        };
-        for hunk in hunks {
-            excerpt = excerpt.with_diff_hunk(hunk);
-        }
-        self.excerpts.push(excerpt);
-        Vec::new()
     }
 }
 
@@ -684,6 +649,13 @@ impl MultiBuffer {
         };
         let ranges_changed = self.diffs[index].excerpt_ranges != excerpt_ranges;
         self.diffs[index].excerpt_ranges = excerpt_ranges;
+        if ranges_changed {
+            self.begin_projection_sync();
+            self.sync_pending_sources(cx);
+            self.replace_materialized_file(index, cx);
+            self.finish_projection_sync(cx);
+            return true;
+        }
         let diff = self.diffs[index].diff.clone();
         if self.diffs[index].revision == Some(diff.read(cx).revision()) {
             if !ranges_changed {
@@ -753,11 +725,10 @@ impl MultiBuffer {
         );
         self.diffs.insert(insert_at, state);
 
-        let expanded_by_default = self.diff_expanded_by_default;
         let mut excerpts = Vec::new();
         {
             let file = &self.diffs[insert_at];
-            materialize_file(file, cx, expanded_by_default, &mut excerpts);
+            materialize_file(file, cx, &mut excerpts);
         }
         self.set_excerpts_for_path(excerpts, cx);
         let diff = self.diffs[insert_at].diff.read(cx);
@@ -916,7 +887,7 @@ impl MultiBuffer {
         for file in &mut self.diffs {
             file.expansion = DiffExpansionState::default();
         }
-        self.rebuild_diff_projection(cx);
+        self.rebuild_diff_transforms_for_expansion(cx);
         cx.emit(MultiBufferEvent::DiffExpansionChanged);
     }
 
@@ -942,8 +913,16 @@ impl MultiBuffer {
         self.diffs[file_index]
             .expansion
             .toggle(&hunk_start, &working_text, expanded_by_default);
-        // 只重物化该文件所在路径；其余文件及其组合坐标保持不变。
-        self.replace_materialized_file(file_index, cx);
+        let range = self.diffs[file_index]
+            .diff
+            .read(cx)
+            .snapshot()
+            .hunks()
+            .find(|hunk| anchor_matches(&hunk.buffer_range.start, &hunk_start, &working_text))
+            .expect("显示 hunk 必须属于当前 diff")
+            .buffer_range
+            .clone();
+        self.sync_diff_range(file_index, &range, cx);
         cx.emit(MultiBufferEvent::DiffExpansionChanged);
     }
 
@@ -957,8 +936,19 @@ impl MultiBuffer {
         for file in &mut self.diffs {
             file.expansion = DiffExpansionState::default();
         }
-        self.rebuild_diff_projection(cx);
+        self.rebuild_diff_transforms_for_expansion(cx);
         cx.emit(MultiBufferEvent::DiffExpansionChanged);
+    }
+
+    /// 展开策略切换只重建输出变换，不改变源窗口、Anchor 或源订阅。
+    fn rebuild_diff_transforms_for_expansion(&mut self, cx: &mut Context<Self>) {
+        self.assert_no_active_transaction("MultiBuffer::rebuild_diff_transforms_for_expansion");
+        let before = self.projection_trees();
+        let old_version = self.state.projection_version;
+        self.prepare_diff_sources(cx);
+        self.rebuild_all_diff_transforms(cx);
+        self.publish_projection_edit(&before, old_version);
+        self.refresh_diff_display_after_hunk_update(cx);
     }
 
     /// 显示坐标 hunks（组合坐标，跨文件展平）。
@@ -1012,7 +1002,6 @@ impl MultiBuffer {
             .diff_transforms
             .summary()
             .output
-            .text
             .lines
             .saturating_add(1);
         resolved_diff_hunks_in_lines(
@@ -1021,7 +1010,7 @@ impl MultiBuffer {
             self.state.sources.as_slice(),
             diff_display,
             0..end,
-            0..self.state.diff_transforms.summary().output.text.len,
+            0..self.state.diff_transforms.summary().output.len,
         )
     }
 
@@ -1040,7 +1029,7 @@ impl MultiBuffer {
         // 仅处理 Deleted 片段：修订文本坐标需换算，其余片段直接可用。
         let in_deleted_excerpt =
             snapshot
-                .excerpts_for_path(location.path.as_path())
+                .regions_for_path(location.path.as_path())
                 .any(|excerpt| {
                     excerpt.diff_kind() == Some(ExcerptDiffKind::Deleted)
                         && excerpt.source_range().start() <= location.source_range.start()
@@ -1192,6 +1181,32 @@ impl MultiBuffer {
         }
 
         if let Some(changed_range) = changed_range {
+            let working = working_snapshot_for(&self.diffs[index], cx);
+            let start = changed_range
+                .start
+                .resolve_in(&working)
+                .expect("diff 变化起点必须属于工作区版本链");
+            let end = changed_range
+                .end
+                .resolve_in(&working)
+                .expect("diff 变化终点必须属于工作区版本链");
+            let current_starts = diff
+                .read(cx)
+                .snapshot()
+                .hunks_intersecting_working_range(start..end, &working)
+                .map(|hunk| hunk.buffer_range.start)
+                .collect::<Vec<_>>();
+            self.diffs[index].expansion.overrides.retain(|over| {
+                let offset = over
+                    .hunk_start
+                    .resolve_in(&working)
+                    .expect("展开状态必须属于工作区版本链");
+                offset < start
+                    || offset > end
+                    || current_starts
+                        .iter()
+                        .any(|current| anchor_matches(&over.hunk_start, current, &working))
+            });
             self.sync_diff_range(index, &changed_range, cx);
         }
         // 缺少范围时只接受 BufferDiff 状态，不同步 diff 投影，也不触发整文件重建。
@@ -1238,14 +1253,13 @@ impl MultiBuffer {
 
     /// 追加指定范围文件的物化结果，按路径插入组合映射，不重建已有片段。
     fn append_materialized_files(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
-        let base_excerpt_count = mapping_count(&self.state.diff_transforms);
-        let expanded_by_default = self.diff_expanded_by_default;
+        let base_excerpt_count = self.state.excerpts.summary().count;
         let mut expected_excerpt_count = 0;
         for index in from..to {
             let mut excerpts = Vec::new();
             {
                 let file = &self.diffs[index];
-                materialize_file(file, cx, expanded_by_default, &mut excerpts);
+                materialize_file(file, cx, &mut excerpts);
             }
             expected_excerpt_count += excerpts.len();
             if !excerpts.is_empty() {
@@ -1253,7 +1267,7 @@ impl MultiBuffer {
             }
         }
         assert_eq!(
-            mapping_count(&self.state.diff_transforms),
+            self.state.excerpts.summary().count,
             base_excerpt_count + expected_excerpt_count,
             "追加 diff 物化必须全部建立组合映射"
         );
@@ -1264,642 +1278,273 @@ impl MultiBuffer {
         self.refresh_diff_display(cx);
     }
 
-    /// 原地重物化单个文件，只替换其路径的 excerpts，其余路径保持不变。
-    ///
-    /// 用于某个文件的 diff 结果发生版本或身份变化时避免整份组合文档重建：
-    /// 先按当前 hunk 收敛该文件的展开覆盖，再物化该文件，最后只重算显示坐标。
+    /// 显式替换 diff 实体或可见窗口时，重建该路径的逻辑 excerpts。
     fn replace_materialized_file(&mut self, file_index: usize, cx: &mut Context<Self>) {
-        let working_text = working_snapshot_for(&self.diffs[file_index], cx);
-        let hunks = self.diffs[file_index]
-            .diff
-            .read(cx)
-            .snapshot()
-            .hunks()
-            .collect::<Vec<_>>();
-        self.diffs[file_index]
-            .expansion
-            .retain_for_current_hunks(&hunks, &working_text);
-
-        let expanded_by_default = self.diff_expanded_by_default;
         let mut excerpts = Vec::new();
-        {
-            let file = &self.diffs[file_index];
-            materialize_file(file, cx, expanded_by_default, &mut excerpts);
-        }
-        // 映射树按源路径排序，显示路径可能被裁剪为相对路径。
-        // 身份必须与物化时一致：有文件路径按路径，无路径的匿名 Buffer 用 buffer_id。
-        let path = {
-            let working = self.diffs[file_index].diff.read(cx).working().clone();
-            let working = working.read(cx);
-            PathKey::for_buffer(working.file_path(), working.buffer_id())
-        };
-
-        let mut new_sources = Vec::new();
-        let mut seen_source_ids = HashSet::new();
-        for excerpt in &excerpts {
-            let source_id = excerpt.source.entity_id();
-            if !self.state.source_indices.contains_key(&source_id)
-                && seen_source_ids.insert(source_id)
-            {
-                new_sources.push(excerpt.source.clone());
-            }
-        }
-        let subscribe_ids = excerpts
-            .iter()
-            .filter(|excerpt| excerpt.diff_kind != Some(ExcerptDiffKind::Deleted))
-            .map(|excerpt| excerpt.source.entity_id())
-            .collect::<HashSet<_>>();
-        self.register_sources(new_sources, &subscribe_ids, cx);
-
-        let start_index = {
-            let mut cursor = self
-                .state
-                .diff_transforms
-                .cursor::<DiffTransformSummary>(());
-            cursor.seek(&path, Bias::Left);
-            cursor.start().output.count
-        };
-        let old_count = {
-            let mut cursor = self
-                .state
-                .diff_transforms
-                .cursor::<DiffTransformSummary>(());
-            cursor.seek(&path, Bias::Right);
-            cursor.start().output.count.saturating_sub(start_index)
-        };
-        let total = self.state.diff_transforms.summary().output.count - old_count + excerpts.len();
-        let entries = self.build_entries_for_excerpts(excerpts, start_index, total, cx);
-
-        // Diff 的新快照也可能只更新 hunk 锚点、暂存状态或词级差异。
-        // 这些元数据要进入唯一的输出变换树，但不改变 excerpt 布局或显示行拓扑。
-        let topology_unchanged = if entries.len() == old_count {
-            let mut cursor =
-                MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
-            cursor.seek_path(&path, Bias::Left);
-            entries.iter().all(|(new_excerpt, _)| {
-                let Some((old_excerpt, old_transform)) = cursor.item() else {
-                    return false;
-                };
-                let matches = old_excerpt.path == path
-                    && projection_item_topology_equal(
-                        old_excerpt,
-                        old_transform,
-                        new_excerpt,
-                        new_excerpt.diff_kind == Some(ExcerptDiffKind::Deleted),
-                    );
-                cursor.next();
-                matches
-            }) && cursor
-                .item()
-                .is_none_or(|(excerpt, _)| excerpt.path != path)
-        } else {
-            false
-        };
-        if topology_unchanged {
-            if old_count > 0 {
-                let old_display_version = self.diff.as_ref().map(|display| display.version);
-                self.splice_excerpt_entries(&path, entries);
-                self.snapshot_dirty = true;
-                self.refresh_diff_display_for_path(&path, cx);
-                if self.diff.as_ref().map(|display| display.version) == old_display_version {
-                    self.notify_if_not_syncing(cx);
-                }
-            }
-        } else if entries.is_empty() {
-            // 该文件已无可见 hunk（差异被消除等）时必须移除其路径的 excerpts；
-            // set_excerpts_for_path 对空片段集合是空操作，无法表达“清空该路径”。
+        materialize_file(&self.diffs[file_index], cx, &mut excerpts);
+        let working = self.diffs[file_index].diff.read(cx).working().clone();
+        let path = crate::path_key_for_source(working.read(cx));
+        self.prepare_diff_sources(cx);
+        if excerpts.is_empty() {
             self.remove_excerpts_for_path(path.as_path(), cx);
         } else {
-            let before = self.projection_trees();
-            let old_version = self.state.projection_version;
-            self.state.topology_version = self.state.topology_version.wrapping_add(1);
-            self.splice_excerpt_entries(&path, entries);
-            self.fix_document_tail_newline();
-            self.publish_projection_edit(&before, old_version);
-            self.emit_projection_changed(cx);
+            self.set_excerpts_for_path(excerpts, cx);
         }
         self.diffs[file_index].revision = Some(self.diffs[file_index].diff.read(cx).revision());
-        if !topology_unchanged {
-            self.refresh_diff_display_after_hunk_update(cx);
-        }
+        self.refresh_diff_display_after_hunk_update(cx);
     }
 
-    /// 按文档投影语义同步 BufferDiff 的受影响范围。
+    /// hunk 更新只重算相交的输出变换，不修改逻辑窗口。
     fn sync_diff_range(
         &mut self,
         file_index: usize,
         changed_range: &Range<Anchor>,
         cx: &mut Context<Self>,
     ) -> bool {
-        if matches!(
-            self.diffs[file_index].excerpt_ranges,
-            DiffExcerptRanges::FullFile
-        ) {
-            self.sync_full_file_diff_range(file_index, changed_range, cx)
-        } else {
-            let excerpt_ranges = self.diffs[file_index].excerpt_ranges.clone();
-            self.sync_excerpt_ranges(file_index, changed_range, &excerpt_ranges, cx)
-        }
-    }
-
-    /// 完整文件范围维持既有 excerpt，只替换变更范围内的 diff transforms。
-    fn sync_full_file_diff_range(
-        &mut self,
-        file_index: usize,
-        changed_range: &Range<Anchor>,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let file = &self.diffs[file_index];
-        let working = file.diff.read(cx).working().clone();
-        let working_id = working.entity_id();
-        let working_text = working.read(cx).text_snapshot();
-        let Some(change_start) = changed_range.start.resolve_in(&working_text).ok() else {
-            return false;
-        };
-        let Some(change_end) = changed_range.end.resolve_in(&working_text).ok() else {
-            return false;
-        };
-        let path = {
-            let working = working.read(cx);
-            PathKey::for_buffer(working.file_path(), working.buffer_id())
-        };
-        let line_count = working_text.line_count();
-        let mut line_start = line_at_or_end(&working_text, change_start).min(line_count);
-        let mut line_end = line_at_or_end(&working_text, change_end).min(line_count);
-        if line_start == line_end && line_start < line_count {
-            line_end += 1;
-        } else if line_start == line_end && line_start > 0 {
-            line_start -= 1;
-        }
-        let working_range = working_byte_range_for_lines(&working_text, line_start..line_end);
-        let resolved =
-            resolve_file_hunks_in_working_range(&self.diffs[file_index], working_range.clone(), cx);
-        self.diffs[file_index]
-            .expansion
-            .retain_for_current_hunks_in_range(&resolved, &working_text, working_range);
-
-        let mut path_entries = Vec::new();
-        let mut cursor = MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
-        cursor.seek_path(&path, Bias::Left);
-        while let Some((excerpt, transform)) = cursor.item() {
+        self.prepare_diff_sources(cx);
+        let working = self.diffs[file_index].diff.read(cx).working().clone();
+        let source_id = working.entity_id();
+        let text = &self.state.sources[self.state.source_indices[&source_id]].text;
+        let start = changed_range
+            .start
+            .resolve_in(text)
+            .expect("diff 增量起点必须属于工作区版本链");
+        let end = changed_range
+            .end
+            .resolve_in(text)
+            .expect("diff 增量终点必须属于工作区版本链");
+        let path = crate::path_key_for_source(working.read(cx));
+        let mut cursor = self.state.excerpts.cursor::<ExcerptSummary>(());
+        cursor.seek(&path, Bias::Left);
+        let mut edits = Vec::new();
+        while let Some(excerpt) = cursor.item() {
             if excerpt.path != path {
                 break;
             }
-            let mut intersects = false;
-            if excerpt.source_id == Some(working_id) {
-                let Some(source_start) = excerpt.source_range.start.resolve_in(&working_text).ok()
-                else {
-                    return false;
-                };
-                let Some(source_end) = excerpt.source_range.end.resolve_in(&working_text).ok()
-                else {
-                    return false;
-                };
-                intersects = source_start <= change_end && source_end >= change_start;
+            let from = start.max(excerpt.source_range.start());
+            let to = end.min(excerpt.source_range.end());
+            if from <= to {
+                let offset = cursor.start().text.len;
+                let from = offset + from.get() - excerpt.source_range.start().get();
+                let mut to = offset + to.get() - excerpt.source_range.start().get();
+                if to == offset + excerpt.text_summary.len {
+                    to += usize::from(excerpt.adds_newline);
+                }
+                edits.push(crate::diff_transform_sync::InputEdit::new(
+                    from..to,
+                    from..to,
+                ));
             }
-            if !intersects {
-                intersects = transform.hunks().iter().any(|hunk| {
-                    hunk.working == working_id
-                        && hunk.hunk_start().is_some_and(|start| {
-                            start
-                                .resolve_in(&working_text)
-                                .is_ok_and(|offset| change_start <= offset && offset <= change_end)
-                        })
-                });
-            }
-            path_entries.push((
-                cursor.start().index,
-                excerpt.clone(),
-                transform.clone(),
-                intersects,
-            ));
             cursor.next();
         }
         drop(cursor);
-
-        let Some(first) = path_entries.iter().position(|entry| entry.3) else {
-            return false;
-        };
-        let last = path_entries.iter().rposition(|entry| entry.3).unwrap();
-        let start_index = path_entries[first].0;
-        let end_index = path_entries[last].0 + 1;
-        let old_entries = path_entries[first..=last]
-            .iter()
-            .map(|(_, excerpt, transform, _)| (excerpt.clone(), transform.clone()))
-            .collect::<Vec<_>>();
-        let first_excerpt = &old_entries[0].0;
-        let last_excerpt = &old_entries.last().expect("受影响 excerpt 非空").0;
-        let prefix = excerpt_slice_outside_range(
-            first_excerpt,
-            old_entries[0].1.hunks(),
-            &self.state.sources[first_excerpt.source_index],
-            working_id,
-            &working_text,
-            line_start,
-            true,
-        );
-        let suffix = excerpt_slice_outside_range(
-            last_excerpt,
-            old_entries.last().expect("excerpt 存在").1.hunks(),
-            &self.state.sources[last_excerpt.source_index],
-            working_id,
-            &working_text,
-            line_end,
-            false,
-        );
-        let expanded_by_default = self.diff_expanded_by_default;
-        let mut excerpts = Vec::new();
-        if let Some(prefix) = prefix {
-            excerpts.push(prefix);
+        let before = self.projection_trees();
+        let old_version = self.state.projection_version;
+        let output = self.sync_diff_transforms(&before, edits, None, cx);
+        if !output.is_empty() {
+            self.publish_projection_change(SourceIncremental {
+                batch: TextChangeBatch::from_edits(old_version, old_version, output),
+            });
+            self.emit_projection_changed(cx);
         }
-        materialize_file_in_range(
-            &self.diffs[file_index],
-            &resolved,
+        self.refresh_diff_display_for_path(&path, cx);
+        self.state.projection_version != old_version
+    }
+
+    /// 旧侧源由 BufferDiff 唯一拥有；本层只固定用于读取的快照，不订阅其文本编辑。
+    pub(super) fn prepare_diff_sources(&mut self, cx: &mut Context<Self>) {
+        let bases = self
+            .diffs
+            .iter()
+            .filter_map(|file| file.diff.read(cx).base_source().cloned())
+            .collect::<Vec<_>>();
+        let new = bases
+            .iter()
+            .filter(|source| !self.state.source_indices.contains_key(&source.entity_id()))
+            .cloned()
+            .collect();
+        self.register_sources(new, &HashSet::new(), cx);
+        for source in bases {
+            let index = self.state.source_indices[&source.entity_id()];
+            if self.state.sources[index].text.version() != source.read(cx).version() {
+                self.install_source_snapshot(source.entity_id(), source.read(cx).snapshot());
+            }
+        }
+    }
+
+    /// 从逻辑 excerpt 的输入子区间派生内容与旧侧变换。
+    /// 输入摘要包含稳定分隔符；旧侧摘要的输入恒为零。
+    pub(super) fn diff_transforms_for_excerpt(
+        &self,
+        excerpt: &Excerpt,
+        range: Range<usize>,
+        cx: &App,
+    ) -> Vec<DiffTransform> {
+        let source = &self.state.sources[excerpt.source_index];
+        let text = &source.text;
+        let start = excerpt.source_range.start().get() + range.start.min(excerpt.text_summary.len);
+        let end = excerpt.source_range.start().get() + range.end.min(excerpt.text_summary.len);
+        let completes = range.end == diff_output_text(excerpt).len;
+        let content_summary = |start: usize, end: usize| {
+            snapshot_range_summary(
+                text,
+                TextRange::new(ByteOffset::new(start), ByteOffset::new(end))
+                    .expect("变换源范围必须正序"),
+            )
+            .expect("变换源范围必须属于 excerpt 快照")
+            .0
+        };
+        let Some(file) = self
+            .diffs
+            .iter()
+            .find(|file| file.diff.read(cx).working().entity_id() == source.entity.entity_id())
+        else {
+            return vec![DiffTransform::buffer_content(
+                excerpt,
+                content_summary(start, end),
+                completes,
+                Vec::new(),
+            )];
+        };
+        let diff = file.diff.read(cx);
+        let created = diff.is_created();
+        let resolved = resolve_file_hunks_in_working_range(
+            file,
+            ByteOffset::new(start)..ByteOffset::new(end),
             cx,
-            expanded_by_default,
-            line_start..line_end,
-            excerpts.is_empty(),
-            &mut excerpts,
         );
-        if let Some(suffix) = suffix {
-            excerpts.push(suffix);
+        let working_id = source.entity.entity_id();
+        if created && resolved.is_empty() {
+            return vec![DiffTransform::buffer_content(
+                excerpt,
+                content_summary(start, end),
+                completes,
+                vec![DiffTransformHunkInfo {
+                    working: working_id,
+                    buffer_range: None,
+                    is_created: true,
+                    side: DiffTransformHunkSide::Content,
+                    kind: DiffHunkKind::Added,
+                    staging: DiffHunkStaging::NoStaging,
+                    base_lines: 0..0,
+                    base_byte_start: 0,
+                    buffer_word_diffs: Vec::new(),
+                    base_word_diffs: Vec::new(),
+                    expanded: true,
+                }],
+            )];
         }
-        let mut new_sources = Vec::new();
-        let mut seen_source_ids = HashSet::new();
-        for excerpt in &excerpts {
-            let source_id = excerpt.source.entity_id();
-            if !self.state.source_indices.contains_key(&source_id)
-                && seen_source_ids.insert(source_id)
-            {
-                new_sources.push(excerpt.source.clone());
+        let mut transforms = Vec::new();
+        let mut current = start;
+        for hunk in &resolved {
+            let hunk_start = hunk
+                .buffer_range
+                .start
+                .resolve_in(text)
+                .expect("hunk 起点必须属于工作区版本链")
+                .get();
+            let hunk_end = hunk
+                .buffer_range
+                .end
+                .resolve_in(text)
+                .expect("hunk 终点必须属于工作区版本链")
+                .get();
+            if hunk_start > end || hunk_end < start {
+                continue;
             }
-        }
-        let subscribe_ids = excerpts
-            .iter()
-            .filter(|excerpt| excerpt.diff_kind != Some(ExcerptDiffKind::Deleted))
-            .map(|excerpt| excerpt.source.entity_id())
-            .collect::<HashSet<_>>();
-        self.register_sources(new_sources, &subscribe_ids, cx);
-        let total = self.state.diff_transforms.summary().output.count - (end_index - start_index)
-            + excerpts.len();
-        let entries = self.build_entries_for_excerpts(excerpts, start_index, total, cx);
-        let topology_unchanged = old_entries.len() == entries.len()
-            && old_entries.iter().zip(&entries).all(
-                |((old_excerpt, old_transform), (new_excerpt, _))| {
-                    projection_item_topology_equal(
-                        old_excerpt,
-                        old_transform,
-                        new_excerpt,
-                        new_excerpt.diff_kind == Some(ExcerptDiffKind::Deleted),
-                    )
-                },
+            let from = hunk_start.max(start).min(end);
+            let to = hunk_end.min(end).max(from);
+            if current < from {
+                transforms.push(DiffTransform::buffer_content(
+                    excerpt,
+                    content_summary(current, from),
+                    false,
+                    Vec::new(),
+                ));
+            }
+            let expanded = file.expansion.is_expanded(
+                &hunk.buffer_range.start,
+                text,
+                self.diff_expanded_by_default,
             );
-        let old_version = self.state.projection_version;
-        let before = self.projection_trees();
-        if !topology_unchanged {
-            self.state.topology_version = self.state.topology_version.wrapping_add(1);
+            let owns_boundary = hunk_start >= start
+                && (hunk_start < end || (hunk_start == end && (completes || range.is_empty())));
+            let mut old_visible = false;
+            if owns_boundary
+                && expanded
+                && !hunk.base_lines.is_empty()
+                && let Some(base) = diff.base_source()
+            {
+                let base_index = self.state.source_indices[&base.entity_id()];
+                let base_text = &self.state.sources[base_index].text;
+                let bytes = working_byte_range_for_lines(base_text, hunk.base_lines.clone());
+                let base_range = TextRange::new(bytes.start, bytes.end).expect("旧侧范围必须正序");
+                let (summary, ends_newline) = snapshot_range_summary(base_text, base_range)
+                    .expect("旧侧范围必须属于基线快照");
+                let deleted = DeletedHunkRegion {
+                    source_index: base_index,
+                    source_id: base.entity_id(),
+                    source_range: ExcerptContext::new(base_text.version(), base_range, false),
+                    source_start_line: base_text
+                        .byte_to_line(bytes.start)
+                        .expect("旧侧起点必须有效")
+                        .get(),
+                    text_summary: summary,
+                    adds_newline: !ends_newline,
+                };
+                transforms.push(DiffTransform::deleted_hunk(
+                    deleted,
+                    vec![hunk_info(
+                        working_id,
+                        DiffTransformHunkSide::Old,
+                        hunk,
+                        expanded,
+                        created,
+                    )],
+                ));
+                old_visible = true;
+            }
+            if from < to {
+                transforms.push(DiffTransform::buffer_content(
+                    excerpt,
+                    content_summary(from, to),
+                    false,
+                    vec![hunk_info(
+                        working_id,
+                        DiffTransformHunkSide::Content,
+                        hunk,
+                        expanded,
+                        created,
+                    )],
+                ));
+            } else if owns_boundary && !old_visible {
+                transforms.push(DiffTransform::buffer_content(
+                    excerpt,
+                    MBTextSummary::default(),
+                    false,
+                    vec![hunk_info(
+                        working_id,
+                        DiffTransformHunkSide::BoundaryStart,
+                        hunk,
+                        expanded,
+                        created,
+                    )],
+                ));
+            }
+            current = to;
         }
-        self.splice_excerpt_entries_range(start_index, end_index, entries);
-        self.fix_document_tail_newline();
-        self.diffs[file_index].revision = Some(self.diffs[file_index].diff.read(cx).revision());
-        if topology_unchanged {
-            self.snapshot_dirty = true;
-            self.refresh_diff_display_for_path(&path, cx);
-            self.notify_if_not_syncing(cx);
-        } else {
-            self.publish_projection_edit(&before, old_version);
-            self.emit_projection_changed(cx);
-            self.refresh_diff_display_for_path(&path, cx);
+        if current < end || (completes && excerpt.adds_newline) || transforms.is_empty() {
+            transforms.push(DiffTransform::buffer_content(
+                excerpt,
+                content_summary(current, end),
+                completes,
+                Vec::new(),
+            ));
         }
-        true
+        transforms
     }
 
-    /// 只替换受影响的 Git diff excerpt 窗口；窗口范围由 Git diff 视图装配。
-    fn sync_excerpt_ranges(
-        &mut self,
-        file_index: usize,
-        changed_range: &Range<Anchor>,
-        new_ranges: &DiffExcerptRanges,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let file = &self.diffs[file_index];
-        let working = file.diff.read(cx).working().clone();
-        let working_id = working.entity_id();
-        let working_text = working.read(cx).text_snapshot();
-        let Some(change_start) = changed_range.start.resolve_in(&working_text).ok() else {
-            return false;
-        };
-        let Some(change_end) = changed_range.end.resolve_in(&working_text).ok() else {
-            return false;
-        };
-        let path = {
-            let working = working.read(cx);
-            PathKey::for_buffer(working.file_path(), working.buffer_id())
-        };
-        let line_count = working_text.line_count();
-        let mut line_start = line_at_or_end(&working_text, change_start).min(line_count);
-        let mut line_end = line_at_or_end(&working_text, change_end).min(line_count);
-        if line_start == line_end && line_start < line_count {
-            line_end += 1;
-        } else if line_start == line_end && line_start > 0 {
-            line_start -= 1;
-        }
-        let mut affected_lines = line_start..line_end;
-
-        let mut path_entries = Vec::new();
-        let mut cursor = MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
-        cursor.seek_path(&path, Bias::Left);
-        while let Some((excerpt, transform)) = cursor.item() {
-            if excerpt.path != path {
-                break;
-            }
-            path_entries.push((cursor.start().index, excerpt.clone(), transform.clone()));
-            cursor.next();
-        }
-        drop(cursor);
-
-        let mut groups = Vec::<ExistingExcerptGroup>::new();
-        for (index, excerpt, transform) in &path_entries {
-            if groups.is_empty() || excerpt.starts_logical_excerpt {
-                groups.push(ExistingExcerptGroup {
-                    start_index: *index,
-                    end_index: *index + 1,
-                    lines: None,
-                });
-            }
-            let group = groups.last_mut().expect("excerpt group was created");
-            group.end_index = *index + 1;
-
-            let mut include_lines = |range: Range<usize>| {
-                if let Some(lines) = &mut group.lines {
-                    lines.start = lines.start.min(range.start);
-                    lines.end = lines.end.max(range.end);
-                } else {
-                    group.lines = Some(range);
-                }
-            };
-            if excerpt.source_id == Some(working_id) {
-                let Some(source_start) = excerpt.source_range.start.resolve_in(&working_text).ok()
-                else {
-                    return false;
-                };
-                let Some(source_end) = excerpt.source_range.end.resolve_in(&working_text).ok()
-                else {
-                    return false;
-                };
-                include_lines(
-                    line_at_or_end(&working_text, source_start).min(line_count)
-                        ..line_at_or_end(&working_text, source_end).min(line_count),
-                );
-            }
-            for hunk in transform
-                .hunks()
-                .iter()
-                .filter(|hunk| hunk.working == working_id)
-            {
-                if let Some(start) = hunk.hunk_start() {
-                    let Ok(offset) = start.resolve_in(&working_text) else {
-                        return false;
-                    };
-                    let line = line_at_or_end(&working_text, offset).min(line_count);
-                    include_lines(line..line);
-                }
-            }
-        }
-
-        let mut selected_groups = vec![false; groups.len()];
-        let mut selected_ranges = vec![false; new_ranges.range_count()];
-        loop {
-            let mut changed = false;
-            for (index, group) in groups.iter().enumerate() {
-                if selected_groups[index]
-                    || group
-                        .lines
-                        .as_ref()
-                        .is_none_or(|lines| !line_ranges_intersect(lines, &affected_lines))
-                {
-                    continue;
-                }
-                selected_groups[index] = true;
-                if let Some(lines) = &group.lines {
-                    affected_lines.start = affected_lines.start.min(lines.start);
-                    affected_lines.end = affected_lines.end.max(lines.end);
-                }
-                changed = true;
-            }
-            for (index, lines) in new_ranges.iter(line_count).enumerate() {
-                if selected_ranges[index] || !line_ranges_intersect(&lines, &affected_lines) {
-                    continue;
-                }
-                selected_ranges[index] = true;
-                affected_lines.start = affected_lines.start.min(lines.start);
-                affected_lines.end = affected_lines.end.max(lines.end);
-                changed = true;
-            }
-            if !changed {
-                break;
-            }
-        }
-
-        let (start_index, end_index) =
-            if let Some(first_group) = selected_groups.iter().position(|selected| *selected) {
-                let last_group = selected_groups
-                    .iter()
-                    .rposition(|selected| *selected)
-                    .expect("first selected group must have a last group");
-                (
-                    groups[first_group].start_index,
-                    groups[last_group].end_index,
-                )
-            } else {
-                let mut insertion_index = {
-                    let mut cursor =
-                        MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
-                    cursor.seek_path(&path, Bias::Left);
-                    cursor.start().index
-                };
-                for group in &groups {
-                    if group
-                        .lines
-                        .as_ref()
-                        .is_some_and(|lines| lines.start >= affected_lines.start)
-                    {
-                        insertion_index = group.start_index;
-                        break;
-                    }
-                    insertion_index = group.end_index;
-                }
-                (insertion_index, insertion_index)
-            };
-
-        let working_range = working_byte_range_for_lines(&working_text, affected_lines);
-        let resolved =
-            resolve_file_hunks_in_working_range(&self.diffs[file_index], working_range.clone(), cx);
-        self.diffs[file_index]
-            .expansion
-            .retain_for_current_hunks_in_range(&resolved, &working_text, working_range);
-        let expanded_by_default = self.diff_expanded_by_default;
-        let mut excerpts = Vec::new();
-        for (index, lines) in new_ranges.iter(line_count).enumerate() {
-            if selected_ranges[index] {
-                materialize_file_in_range(
-                    &self.diffs[file_index],
-                    &resolved,
-                    cx,
-                    expanded_by_default,
-                    lines,
-                    true,
-                    &mut excerpts,
-                );
-            }
-        }
-
-        let mut new_sources = Vec::new();
-        let mut seen_source_ids = HashSet::new();
-        for excerpt in &excerpts {
-            let source_id = excerpt.source.entity_id();
-            if !self.state.source_indices.contains_key(&source_id)
-                && seen_source_ids.insert(source_id)
-            {
-                new_sources.push(excerpt.source.clone());
-            }
-        }
-        let subscribe_ids = excerpts
-            .iter()
-            .filter(|excerpt| excerpt.diff_kind != Some(ExcerptDiffKind::Deleted))
-            .map(|excerpt| excerpt.source.entity_id())
-            .collect::<HashSet<_>>();
-        self.register_sources(new_sources, &subscribe_ids, cx);
-
-        let old_entries = path_entries
-            .into_iter()
-            .filter(|(index, _, _)| *index >= start_index && *index < end_index)
-            .map(|(_, excerpt, transform)| (excerpt, transform))
-            .collect::<Vec<_>>();
-        let total = self.state.diff_transforms.summary().output.count - (end_index - start_index)
-            + excerpts.len();
-        let entries = self.build_entries_for_excerpts(excerpts, start_index, total, cx);
-        let topology_unchanged = old_entries.len() == entries.len()
-            && old_entries.iter().zip(&entries).all(
-                |((old_excerpt, old_transform), (new_excerpt, _))| {
-                    projection_item_topology_equal(
-                        old_excerpt,
-                        old_transform,
-                        new_excerpt,
-                        new_excerpt.diff_kind == Some(ExcerptDiffKind::Deleted),
-                    )
-                },
-            );
-        let old_version = self.state.projection_version;
-        let before = self.projection_trees();
-        if !topology_unchanged {
-            self.state.topology_version = self.state.topology_version.wrapping_add(1);
-        }
-        self.splice_excerpt_entries_range(start_index, end_index, entries);
-        self.fix_document_tail_newline();
-        self.diffs[file_index].revision = Some(self.diffs[file_index].diff.read(cx).revision());
-        if topology_unchanged {
-            self.snapshot_dirty = true;
-            self.refresh_diff_display_for_path(&path, cx);
-            self.notify_if_not_syncing(cx);
-        } else {
-            self.publish_projection_edit(&before, old_version);
-            self.emit_projection_changed(cx);
-            self.refresh_diff_display_for_path(&path, cx);
-        }
-        true
-    }
-
-    /// 只替换输出变换序号区间，并同步其对应的输入 excerpts 区间。
-    fn splice_excerpt_entries_range(
-        &mut self,
-        start_index: usize,
-        end_index: usize,
-        entries: Vec<(Excerpt, Vec<DiffTransformHunkInfo>)>,
-    ) {
-        let mut transform_cursor = self.state.diff_transforms.cursor::<MappingPosition>(());
-        let mut next_transforms = transform_cursor.slice(&ExcerptIndex(start_index), Bias::Right);
-        let start_input_index = transform_cursor.start().input_item_index;
-        let _replaced_transforms = transform_cursor.slice(&ExcerptIndex(end_index), Bias::Right);
-        let end_input_index = transform_cursor.start().input_item_index;
-        let transform_suffix = transform_cursor.suffix();
-
-        let mut excerpt_cursor = self.state.excerpts.cursor::<ExcerptSummary>(());
-        let mut next_excerpts =
-            excerpt_cursor.slice(&ExcerptItemIndex(start_input_index), Bias::Right);
-        let _replaced_excerpts =
-            excerpt_cursor.slice(&ExcerptItemIndex(end_input_index), Bias::Right);
-        let excerpt_suffix = excerpt_cursor.suffix();
-        drop(excerpt_cursor);
-        drop(transform_cursor);
-
-        if !next_excerpts.is_empty() {
-            let sources = &self.state.sources;
-            next_excerpts.update_last(
-                |entry| {
-                    let Some((_, ends_with_newline)) = snapshot_range_summary(
-                        &sources[entry.source_index].text,
-                        entry.source_range.range(),
-                    ) else {
-                        return;
-                    };
-                    entry.adds_newline = !ends_with_newline;
-                },
-                (),
-            );
-        }
-        let last_prefix_excerpt = next_excerpts.iter().last().cloned();
-        if !next_transforms.is_empty() {
-            let sources = &self.state.sources;
-            next_transforms.update_last(
-                |transform| {
-                    let hunks = transform.hunks().to_vec();
-                    match transform {
-                        DiffTransform::BufferContent { .. } => {
-                            if let Some(excerpt) = last_prefix_excerpt.as_ref() {
-                                *transform = DiffTransform::from_excerpt(excerpt, hunks);
-                            }
-                        }
-                        DiffTransform::DeletedHunk { excerpt, .. } => {
-                            let ends_with_newline = snapshot_range_summary(
-                                &sources[excerpt.source_index].text,
-                                excerpt.source_range.range(),
-                            )
-                            .is_none_or(|(_, ends_with_newline)| ends_with_newline);
-                            excerpt.adds_newline = !ends_with_newline;
-                            let excerpt = excerpt.clone();
-                            *transform = DiffTransform::deleted_hunk(excerpt, hunks);
-                        }
-                    }
-                },
-                (),
-            );
-        }
-
-        next_excerpts.extend(
-            entries
-                .iter()
-                .filter(|(excerpt, _)| excerpt.diff_kind != Some(ExcerptDiffKind::Deleted))
-                .map(|(excerpt, _)| excerpt.clone()),
-            (),
-        );
-        next_transforms.extend(
-            entries.iter().map(|(excerpt, hunks)| {
-                if excerpt.diff_kind == Some(ExcerptDiffKind::Deleted) {
-                    DiffTransform::deleted_hunk(excerpt.clone(), hunks.clone())
-                } else {
-                    DiffTransform::from_excerpt(excerpt, hunks.clone())
-                }
-            }),
-            (),
-        );
-        next_excerpts.append(excerpt_suffix, ());
-        next_transforms.append(transform_suffix, ());
-        self.state.excerpts = next_excerpts;
-        self.state.diff_transforms = next_transforms;
-    }
-
-    /// 按展开状态重建 excerpts，并派生显示坐标 hunks。
+    /// 显式重建 diff 文档的逻辑窗口与输出变换，并派生显示坐标 hunks。
     ///
     /// 返回是否推进了投影版本；选区与滚动位置由源 Anchor 在当前快照上重新解析，不经过重建映射。
     pub(crate) fn rebuild_diff_projection(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1921,15 +1566,14 @@ impl MultiBuffer {
             return false;
         }
         let old_version = self.state.projection_version;
-        let expanded_by_default = self.diff_expanded_by_default;
         let mut excerpts = Vec::new();
         for file in &self.diffs {
-            materialize_file(file, cx, expanded_by_default, &mut excerpts);
+            materialize_file(file, cx, &mut excerpts);
         }
         let expected_excerpt_count = excerpts.len();
         self.replace_all_excerpts(excerpts, cx);
         assert_eq!(
-            mapping_count(&self.state.diff_transforms),
+            self.state.excerpts.summary().count,
             expected_excerpt_count,
             "diff 物化生成的 excerpt 必须全部建立组合映射"
         );
@@ -2120,12 +1764,12 @@ fn resolve_hunk(hunk: &DiffHunk, working: &Snapshot, base: Option<&Snapshot>) ->
         .buffer_range
         .start
         .resolve_in(working)
-        .unwrap_or_else(|_| hunk.buffer_range.start.offset());
+        .expect("hunk 起点必须属于工作区版本链");
     let buffer_end = hunk
         .buffer_range
         .end
         .resolve_in(working)
-        .unwrap_or_else(|_| hunk.buffer_range.end.offset());
+        .expect("hunk 终点必须属于工作区版本链");
     let buffer_lines =
         diff_line_boundary(working, buffer_start)..diff_line_boundary(working, buffer_end);
     let base_lines = base.map_or(0..0, |base| {
@@ -2142,95 +1786,6 @@ fn resolve_hunk(hunk: &DiffHunk, working: &Snapshot, base: Option<&Snapshot>) ->
         buffer_word_diffs: hunk.buffer_word_diffs.clone(),
         base_word_diffs: hunk.base_word_diffs.clone(),
     }
-}
-
-/// 字节偏移所在行；偏移等于文本末尾（或多字节边界之外）时取 line_count。
-fn line_at_or_end(text: &Snapshot, offset: ByteOffset) -> usize {
-    if offset == text.len_bytes() {
-        return text.line_count();
-    }
-    text.byte_to_line(offset)
-        .map_or_else(|_| text.line_count(), |line| line.get())
-}
-
-fn line_ranges_intersect(left: &Range<usize>, right: &Range<usize>) -> bool {
-    left.start <= right.end && right.start <= left.end
-}
-
-fn excerpt_slice_outside_range(
-    entry: &Excerpt,
-    hunks: &[DiffTransformHunkInfo],
-    source: &crate::ExcerptSource,
-    working_id: gpui::EntityId,
-    working_text: &Snapshot,
-    boundary_line: usize,
-    prefix: bool,
-) -> Option<ExcerptRange> {
-    if entry.source_id != Some(working_id) || entry.diff_kind == Some(ExcerptDiffKind::Deleted) {
-        return None;
-    }
-
-    let source_start = entry.source_range.start.resolve_in(working_text).ok()?;
-    let source_end = entry.source_range.end.resolve_in(working_text).ok()?;
-    let source_start_line = line_at_or_end(working_text, source_start);
-    let source_end_line = line_at_or_end(working_text, source_end);
-    let boundary_line = boundary_line.min(working_text.line_count());
-    let lines = if prefix {
-        source_start_line..source_end_line.min(boundary_line)
-    } else {
-        source_start_line.max(boundary_line)..source_end_line
-    };
-    if lines.is_empty() {
-        return None;
-    }
-
-    let start = working_text.line_start_byte(Line::new(lines.start)).ok()?;
-    let end = if lines.end == working_text.line_count() {
-        working_text.len_bytes()
-    } else {
-        working_text.line_start_byte(Line::new(lines.end)).ok()?
-    };
-    let source_range = TextRange::new(start, end).ok()?;
-    let match_ranges = entry
-        .match_ranges
-        .iter()
-        .filter_map(|range| {
-            let start = range.start().max(source_range.start());
-            let end = range.end().min(source_range.end());
-            (start < end).then(|| TextRange::new(start, end).expect("裁剪后的匹配范围有效"))
-        })
-        .collect();
-    let mut excerpt = ExcerptRange::new(source.entity.clone(), source_range, match_ranges)
-        .with_display_path(entry.display_path.as_path().to_path_buf())
-        .with_buffer_id(entry.buffer_id)
-        .with_editable(entry.editable)
-        .with_starts_logical_excerpt(prefix && entry.starts_logical_excerpt);
-    if let Some(diff_kind) = entry.diff_kind {
-        excerpt = excerpt.with_diff_kind(diff_kind);
-    }
-
-    let boundary_offset = if boundary_line == working_text.line_count() {
-        working_text.len_bytes()
-    } else {
-        working_text
-            .line_start_byte(Line::new(boundary_line))
-            .ok()?
-    };
-    for hunk in hunks.iter().filter(|hunk| {
-        hunk.working == working_id
-            && hunk.hunk_start().is_some_and(|anchor| {
-                anchor.resolve_in(working_text).is_ok_and(|offset| {
-                    if prefix {
-                        offset < boundary_offset
-                    } else {
-                        offset >= boundary_offset
-                    }
-                })
-            })
-    }) {
-        excerpt = excerpt.with_diff_hunk(hunk.clone());
-    }
-    Some(excerpt)
 }
 
 impl DiffExpansionState {
@@ -2269,35 +1824,6 @@ impl DiffExpansionState {
             .iter()
             .find(|over| anchor_matches(&over.hunk_start, hunk_start, working))
     }
-
-    /// 只保留仍能对应到当前 hunk 的显式覆盖。
-    fn retain_for_current_hunks(&mut self, hunks: &[&DiffHunk], working: &Snapshot) {
-        self.overrides.retain(|over| {
-            hunks
-                .iter()
-                .any(|hunk| anchor_matches(&over.hunk_start, &hunk.buffer_range.start, working))
-        });
-    }
-
-    /// 只校验本次局部投影更新覆盖到的展开状态。
-    fn retain_for_current_hunks_in_range(
-        &mut self,
-        hunks: &[ResolvedHunk],
-        working: &Snapshot,
-        range: Range<ByteOffset>,
-    ) {
-        self.overrides.retain(|over| {
-            let Ok(offset) = over.hunk_start.resolve_in(working) else {
-                return false;
-            };
-            if offset < range.start || offset > range.end {
-                return true;
-            }
-            hunks
-                .iter()
-                .any(|hunk| anchor_matches(&over.hunk_start, &hunk.buffer_range.start, working))
-        });
-    }
 }
 
 /// 两个 hunk 起点 Anchor 是否指向同一工作区位置。
@@ -2331,275 +1857,15 @@ fn migrate_expansion_state(
     }
 }
 
-/// 把单个文件的可见行物化为 excerpts，并在 excerpt 上标注 hunk 身份。
-///
-/// hunk 身份随 excerpt 进入输入树、再派生到输出变换树；输出行范围因此无需在物化期存储，
-/// 也无需在源编辑后手工推进第二份源坐标。
-fn materialize_file(
-    file: &DiffState,
-    cx: &App,
-    expanded_by_default: bool,
-    excerpts: &mut Vec<ExcerptRange>,
-) {
+/// 一个可见窗口对应一个稳定 working excerpt，hunk 拆分只由输出变换承担。
+fn materialize_file(file: &DiffState, cx: &App, excerpts: &mut Vec<ExcerptRange>) {
     let working = file.diff.read(cx).working().clone();
-    let working_text = working.read(cx).text_snapshot();
-    let line_count = working_text.line_count();
-    for range in file.excerpt_ranges.iter(line_count) {
-        let resolved = resolve_file_hunks_in_working_range(
-            file,
-            working_byte_range_for_lines(&working_text, range.clone()),
-            cx,
+    let text = working.read(cx).text_snapshot();
+    for range in file.excerpt_ranges.iter(text.line_count()) {
+        excerpts.push(
+            ExcerptRange::line_range_from_text(working.clone(), &text, range)
+                .with_display_path(file.display_path.as_path().to_path_buf()),
         );
-        materialize_file_in_range(
-            file,
-            &resolved,
-            cx,
-            expanded_by_default,
-            range,
-            true,
-            excerpts,
-        );
-    }
-}
-
-/// 只物化受影响的 working 行范围；hunk 快照仍由 BufferDiff 唯一持有。
-fn materialize_file_in_range(
-    file: &DiffState,
-    resolved: &[ResolvedHunk],
-    cx: &App,
-    expanded_by_default: bool,
-    lines: Range<usize>,
-    starts_logical_excerpt: bool,
-    excerpts: &mut Vec<ExcerptRange>,
-) {
-    let working = file.diff.read(cx).working().clone();
-    let base_source = file.diff.read(cx).base_source().cloned();
-    let is_created = file.diff.read(cx).is_created();
-    let working_text = working.read(cx).text_snapshot();
-    let line_count = working_text.line_count();
-    let display_path = file.display_path.clone();
-    let working_id = working.entity_id();
-    let working_buffer_id = working.read(cx).buffer_id();
-    let expansion = &file.expansion;
-    let mut materializer = ExcerptMaterializer {
-        excerpts,
-        display_path: display_path.as_path(),
-        buffer_id: working_buffer_id,
-    };
-
-    // 无文本差异时仍物化调用方明确提供的文档范围；普通编辑器传入其完整 source excerpt，
-    // Git diff 视图在无可见 hunk 时传入空范围。
-    if resolved.is_empty() && !is_created {
-        materializer.push(
-            lines,
-            &working_text,
-            &working,
-            ExcerptShape {
-                diff_kind: None,
-                starts_logical_excerpt,
-                allow_empty: true,
-            },
-            Vec::new(),
-        );
-        return;
-    }
-    // Git diff 视图中的整文件新增没有旧侧 hunk，整份新增内容本身就是差异窗口。
-    if is_created && resolved.is_empty() {
-        materializer.push(
-            lines,
-            &working_text,
-            &working,
-            ExcerptShape {
-                diff_kind: Some(ExcerptDiffKind::Added),
-                starts_logical_excerpt,
-                allow_empty: false,
-            },
-            vec![DiffTransformHunkInfo {
-                working: working_id,
-                buffer_range: None,
-                is_created: true,
-                side: DiffTransformHunkSide::Content,
-                kind: DiffHunkKind::Added,
-                staging: DiffHunkStaging::NoStaging,
-                base_lines: 0..0,
-                base_byte_start: 0,
-                buffer_word_diffs: Vec::new(),
-                base_word_diffs: Vec::new(),
-                expanded: true,
-            }],
-        );
-        return;
-    }
-    if resolved.is_empty() {
-        return;
-    }
-
-    {
-        let mut current = lines.start;
-        // 每个可见窗口只由首个物理片段开启一个逻辑 excerpt；窗口内的旧侧/新侧/上下文片段都不再另起边界。
-        // 是否绘制实体 header 由 MultiBufferSnapshot::show_headers 决定，不由物化决定。
-        let mut starts_logical_excerpt = starts_logical_excerpt;
-        // 无旧侧物化的纯删除需要一个相邻内容节点承载边界；挂到后继内容起点，无后继时挂到前驱终点。
-        let mut pending_boundary: Option<DiffTransformHunkInfo> = None;
-        for hunk in resolved
-            .iter()
-            .filter(|hunk| hunk_is_inside_excerpt(hunk, &lines, line_count))
-        {
-            if current < hunk.buffer_lines.start {
-                let boundary = pending_boundary.take().into_iter().collect();
-                materializer.push(
-                    current..hunk.buffer_lines.start,
-                    &working_text,
-                    &working,
-                    ExcerptShape {
-                        diff_kind: None,
-                        starts_logical_excerpt,
-                        allow_empty: false,
-                    },
-                    boundary,
-                );
-                starts_logical_excerpt = false;
-            }
-            let expanded =
-                expansion.is_expanded(&hunk.buffer_range.start, &working_text, expanded_by_default);
-            // 旧侧只在展开时物化完整旧行；折叠的纯删除挂到相邻新侧变换边界。
-            let mut old_materialized = false;
-            if !hunk.base_lines.is_empty()
-                && expanded
-                && let Some(base) = base_source.as_ref()
-            {
-                let base_text = base.read(cx).text_snapshot();
-                // 边界标记的是 working 侧位置：旧侧是 base 坐标，不承载待挂载边界。
-                let hunks = vec![hunk_info(
-                    working_id,
-                    DiffTransformHunkSide::Old,
-                    hunk,
-                    expanded,
-                    is_created,
-                )];
-                materializer.push(
-                    hunk.base_lines.clone(),
-                    &base_text,
-                    base,
-                    ExcerptShape {
-                        diff_kind: Some(ExcerptDiffKind::Deleted),
-                        starts_logical_excerpt,
-                        allow_empty: false,
-                    },
-                    hunks,
-                );
-                old_materialized = true;
-                starts_logical_excerpt = false;
-            }
-            // 新侧：可编辑 excerpt；纯删除 hunk 无新侧内容，由旧侧节点或相邻内容节点承载边界。
-            if !hunk.buffer_lines.is_empty() {
-                let mut hunks = pending_boundary.take().into_iter().collect::<Vec<_>>();
-                hunks.push(hunk_info(
-                    working_id,
-                    DiffTransformHunkSide::Content,
-                    hunk,
-                    expanded,
-                    is_created,
-                ));
-                materializer.push(
-                    hunk.buffer_lines.clone(),
-                    &working_text,
-                    &working,
-                    ExcerptShape {
-                        diff_kind: Some(ExcerptDiffKind::Added),
-                        starts_logical_excerpt,
-                        allow_empty: false,
-                    },
-                    hunks,
-                );
-                starts_logical_excerpt = false;
-            } else if !old_materialized {
-                pending_boundary = Some(hunk_info(
-                    working_id,
-                    DiffTransformHunkSide::BoundaryStart,
-                    hunk,
-                    expanded,
-                    is_created,
-                ));
-            }
-            current = hunk.buffer_lines.end;
-        }
-        if current < lines.end {
-            let leftover = materializer.push(
-                current..lines.end,
-                &working_text,
-                &working,
-                ExcerptShape {
-                    diff_kind: None,
-                    starts_logical_excerpt,
-                    allow_empty: false,
-                },
-                pending_boundary.take().into_iter().collect(),
-            );
-            // 片段被空行策略跳过时恢复边界，交给收尾逻辑挂到零长度节点。
-            pending_boundary = leftover.into_iter().next();
-        }
-        if let Some(mut info) = pending_boundary.take() {
-            // 文档末尾（或本投影范围末尾）的纯删除没有后继内容：挂到前驱内容节点的终点。
-            info.side = DiffTransformHunkSide::BoundaryEnd;
-            if materializer.excerpts.is_empty() {
-                // 整份工作区为空且没有任何内容节点：保留一个零长度工作区节点承载边界，
-                // 与无差异空文件的占位行语义一致；它不产生输出行，只为 hunk 提供节点。
-                materializer.push(
-                    lines.start..lines.end.max(lines.start + 1).min(line_count),
-                    &working_text,
-                    &working,
-                    ExcerptShape {
-                        diff_kind: None,
-                        starts_logical_excerpt: true,
-                        allow_empty: true,
-                    },
-                    Vec::new(),
-                );
-            }
-            if let Some(last) = materializer.excerpts.last_mut() {
-                last.diff_hunks.push(info);
-            }
-        }
-    }
-}
-
-/// 构造一个投影片段（空行策略由 shape.allow_empty 控制：占位行允许空源范围）。
-fn projected_excerpt(
-    source: &Entity<LanguageBuffer>,
-    text: &Snapshot,
-    lines: Range<usize>,
-    display_path: &Path,
-    buffer_id: BufferId,
-    shape: ExcerptShape,
-) -> Option<ExcerptRange> {
-    if lines.is_empty() && !shape.allow_empty {
-        return None;
-    }
-    let mut excerpt = ExcerptRange::line_range_from_text(source.clone(), text, lines);
-    // 空源范围的普通片段没有可显示内容：跳过（deleted 文件的占位上下文等）。
-    // 普通文档构造方允许空范围占位；diff 片段（旧侧/新增）始终物化。
-    if excerpt.source_range().is_empty() && !shape.allow_empty && shape.diff_kind.is_none() {
-        return None;
-    }
-    excerpt = excerpt
-        .with_display_path(display_path.to_path_buf())
-        .with_buffer_id(buffer_id)
-        .with_starts_logical_excerpt(shape.starts_logical_excerpt)
-        .with_editable(shape.diff_kind != Some(ExcerptDiffKind::Deleted));
-    if let Some(diff_kind) = shape.diff_kind {
-        excerpt = excerpt.with_diff_kind(diff_kind);
-    }
-    Some(excerpt)
-}
-
-fn hunk_is_inside_excerpt(hunk: &ResolvedHunk, excerpt: &Range<usize>, line_count: usize) -> bool {
-    if hunk.buffer_lines.is_empty() {
-        excerpt.start <= hunk.buffer_lines.start
-            && (hunk.buffer_lines.start < excerpt.end
-                || (hunk.buffer_lines.start == line_count && excerpt.end == line_count))
-    } else {
-        hunk.buffer_lines.start >= excerpt.start && hunk.buffer_lines.end <= excerpt.end
     }
 }
 

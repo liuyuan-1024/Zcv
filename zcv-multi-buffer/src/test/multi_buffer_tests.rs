@@ -867,15 +867,15 @@ fn source_range_projection_follows_the_queried_excerpt(cx: &mut TestAppContext) 
         );
     });
     let snapshot = buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
-    let source = snapshot.source_at(ByteOffset::new(11)).unwrap();
+    let source = snapshot.source_at(ByteOffset::new(13)).unwrap();
     let range = source
         .project_range(ByteOffset::new(4)..ByteOffset::new(8))
         .unwrap();
     assert_eq!(
         range,
-        MultiBufferOffset::new(11)..MultiBufferOffset::new(15)
+        MultiBufferOffset::new(13)..MultiBufferOffset::new(17)
     );
-    let cursor = snapshot.line_cursor(Line::new(3)).unwrap();
+    let cursor = snapshot.line_cursor(Line::new(5)).unwrap();
     let at_line = cursor.source().unwrap();
     assert_eq!(at_line.source_offset(), source.source_offset());
     assert_eq!(
@@ -888,21 +888,14 @@ fn source_range_projection_follows_the_queried_excerpt(cx: &mut TestAppContext) 
 #[gpui::test]
 fn source_range_projection_requires_contiguous_content(cx: &mut TestAppContext) {
     let working = singleton("src/fragmented.rs", "a\nb\nc\nd\n", cx);
-    let base = singleton("src/fragmented.rs", "old\n", cx);
     let buffer = cx.new(MultiBuffer::empty);
     buffer.update(cx, |buffer, cx| {
-        buffer.set_excerpts_for_path(
-            vec![
-                ExcerptRange::line_range(working.clone(), 0..1, cx),
-                ExcerptRange::line_range(base, 0..1, cx)
-                    .with_diff_kind(ExcerptDiffKind::Deleted)
-                    .with_editable(false),
-                ExcerptRange::line_range(working.clone(), 1..2, cx),
-                ExcerptRange::line_range(working, 3..4, cx),
-            ],
-            cx,
-        );
+        let mut file = test_diff_file(working, "src/fragmented.rs", "a\nold\nb\nc\nd\n", cx);
+        file.excerpt_ranges = DiffExcerptRanges::Windows(vec![0..2, 3..4]);
+        buffer.set_diff_hunks_expanded_by_default(true, cx);
+        buffer.set_diff_files(vec![file], cx);
     });
+    cx.run_until_parked();
     let snapshot = buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
     let source = snapshot.source_at(ByteOffset::new(6)).unwrap();
     let range = source
@@ -924,6 +917,27 @@ fn source_range_projection_requires_contiguous_content(cx: &mut TestAppContext) 
             .project_range(ByteOffset::new(2)..ByteOffset::new(2))
             .is_none()
     );
+}
+
+#[gpui::test]
+fn source_range_projection_keeps_logical_identity_across_diff_windows(cx: &mut TestAppContext) {
+    let working = singleton("src/windows.rs", "a\ngap1\ngap2\np\nnew\nq\n", cx);
+    let buffer = cx.new(MultiBuffer::empty);
+    buffer.update(cx, |buffer, cx| {
+        let mut file = test_diff_file(working, "src/windows.rs", "A\ngap1\ngap2\np\nold\nq\n", cx);
+        file.excerpt_ranges = DiffExcerptRanges::Windows(vec![0..1, 3..6]);
+        buffer.set_diff_hunks_expanded_by_default(true, cx);
+        buffer.set_diff_files(vec![file], cx);
+    });
+    cx.run_until_parked();
+    let snapshot = buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
+    assert_eq!(snapshot.text_bytes(), b"A\na\n\np\nold\nnew\nq\n");
+    let source = snapshot.source_at(ByteOffset::new(11)).unwrap();
+    assert_eq!(
+        source.project_range(ByteOffset::new(12)..ByteOffset::new(20)),
+        Some(MultiBufferOffset::new(5)..MultiBufferOffset::new(17))
+    );
+    assert_output_coordinates(&snapshot);
 }
 
 /// 源坐标和组合坐标只属于各自快照；后续编辑不能改变已持有快照的投影结果。
@@ -1092,16 +1106,16 @@ fn excerpt_at_output_offset_uses_the_offset_cursor(cx: &mut TestAppContext) {
     });
 
     let snapshot = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
-    assert_eq!(snapshot.len_bytes(), MultiBufferOffset::new(6));
+    assert_eq!(snapshot.len_bytes(), MultiBufferOffset::new(7));
     assert_eq!(
         snapshot
-            .excerpt_at_output_offset(ByteOffset::new(0).into())
+            .region_at_output_offset(ByteOffset::new(0).into())
             .map(|excerpt| excerpt.path().to_path_buf()),
         Some(PathBuf::from("src/a.rs"))
     );
     assert_eq!(
         snapshot
-            .excerpt_at_output_offset(ByteOffset::new(4).into())
+            .region_at_output_offset(ByteOffset::new(5).into())
             .map(|excerpt| excerpt.path().to_path_buf()),
         Some(PathBuf::from("src/b.rs"))
     );
@@ -1467,7 +1481,7 @@ fn source_edit_updates_only_its_composite_excerpt(cx: &mut TestAppContext) {
         cx.update_entity(&combined, |buffer, cx| {
             String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("组合文本必须是 UTF-8")
         }),
-        "first\nchanged second\n"
+        "first\n\nchanged second\n"
     );
 }
 #[gpui::test]
@@ -1517,7 +1531,7 @@ fn multiple_source_edits_before_a_read_compose_into_one_incremental_batch(cx: &m
         cx.update_entity(&combined, |buffer, cx| {
             String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("组合文本必须是 UTF-8")
         }),
-        "a first\nb second\n"
+        "a first\n\nb second\n"
     );
 }
 
@@ -1594,7 +1608,7 @@ fn one_source_edit_updates_all_visible_excerpts_incrementally(cx: &mut TestAppCo
         cx.update_entity(&combined, |buffer, cx| {
             String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("组合文本必须是 UTF-8")
         }),
-        "changed line\nchanged line\n"
+        "changed line\n\nchanged line\n"
     );
 }
 
@@ -1619,6 +1633,252 @@ fn assert_projection_patch_replays_snapshot(
         );
     }
     assert_eq!(replayed, updated, "组合增量必须能够把旧输出推进到新输出");
+}
+
+/// 用单 Buffer 的文本坐标作为独立参照，同时验证渲染使用的前向行游标。
+fn assert_output_coordinates(snapshot: &MultiBufferSnapshot) {
+    let text = String::from_utf8(snapshot.text_bytes()).unwrap();
+    let reference = Buffer::from_text(text.clone(), BufferConfig::default())
+        .unwrap()
+        .snapshot();
+    assert_eq!(snapshot.line_count(), reference.line_count());
+    let mut window_end = MultiBufferOffset::ZERO;
+    for excerpt in snapshot.excerpts() {
+        assert_eq!(excerpt.output_range().start(), window_end);
+        window_end = excerpt.output_range().end();
+    }
+    assert_eq!(window_end, snapshot.len_bytes(), "逻辑窗口必须覆盖完整输出");
+    let mut positions = MultiBufferPositionCursor::new(snapshot);
+    for byte in text
+        .char_indices()
+        .map(|(byte, _)| byte)
+        .chain(iter::once(text.len()))
+    {
+        let source_byte = ByteOffset::new(byte);
+        let output_byte = MultiBufferOffset::new(byte);
+        let expected = reference.byte_to_position(source_byte).ok();
+        assert_eq!(
+            snapshot.byte_to_position(output_byte).ok(),
+            expected,
+            "字节 {byte} 的行列"
+        );
+        assert_eq!(
+            positions.byte_to_position(output_byte).ok(),
+            expected,
+            "字节 {byte} 的连续坐标游标"
+        );
+        assert_eq!(
+            snapshot.byte_to_point(output_byte).ok(),
+            reference.byte_to_point(source_byte).ok(),
+            "字节 {byte} 的字节列"
+        );
+        assert_eq!(
+            snapshot.byte_to_char(output_byte).ok(),
+            reference.byte_to_char(source_byte).ok()
+        );
+        assert_eq!(
+            snapshot.byte_to_utf16_cu(output_byte).ok(),
+            reference.byte_to_utf16_cu(source_byte).ok()
+        );
+        let expected_utf16 = reference.byte_to_utf16_position(source_byte).ok();
+        assert_eq!(
+            TextRead::byte_to_utf16_position(snapshot, source_byte).ok(),
+            expected_utf16
+        );
+        if let Some(position) = expected_utf16 {
+            assert_eq!(
+                TextRead::utf16_position_to_byte(snapshot, position).unwrap(),
+                source_byte
+            );
+        }
+        if let Some(position) = expected {
+            assert_eq!(
+                snapshot.position_to_byte(position).unwrap(),
+                output_byte,
+                "位置 {position:?} 的反向转换"
+            );
+        }
+        if let Ok(character) = reference.byte_to_char(source_byte) {
+            assert_eq!(snapshot.char_to_byte(character).unwrap(), output_byte);
+        }
+        if let Ok(units) = reference.byte_to_utf16_cu(source_byte) {
+            assert_eq!(snapshot.utf16_cu_to_byte(units).unwrap(), output_byte);
+        }
+    }
+    let mut lines = snapshot.line_cursor(Line::ZERO).unwrap();
+    for row in 0..reference.line_count() {
+        let line = Line::new(row);
+        assert!(lines.seek(line));
+        let content = reference.line_content(line, None).unwrap().text_range();
+        assert_eq!(
+            lines.line_content_range(),
+            Some((content.start().get(), content.len())),
+            "第 {row} 行的渲染读取范围"
+        );
+        assert_eq!(
+            snapshot.line_content_byte_range(line),
+            Some(content.start().into()..content.end().into())
+        );
+    }
+}
+
+#[gpui::test]
+fn output_coordinates_follow_content_across_logical_excerpts(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "前缀甲🙂尾\n跳过\n乙e\u{301}z\r\n最后", cx);
+    let empty = singleton("src/b.rs", "", cx);
+    let tail = singleton("src/c.rs", "尾🙂\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                ExcerptRange::new(
+                    first.clone(),
+                    TextRange::new(
+                        ByteOffset::new("前缀".len()),
+                        ByteOffset::new("前缀甲🙂".len()),
+                    )
+                    .unwrap(),
+                    Vec::new(),
+                ),
+                ExcerptRange::line_range(first, 2..4, cx),
+                ExcerptRange::line_range(empty, 0..1, cx),
+                ExcerptRange::line_range(tail, 0..2, cx),
+            ],
+            cx,
+        );
+    });
+    let snapshot = combined.update(cx, |buffer, cx| buffer.snapshot(cx));
+    assert_eq!(
+        snapshot.text_bytes(),
+        "甲🙂\n乙e\u{301}z\r\n最后\n\n尾🙂\n".as_bytes()
+    );
+    assert_eq!(snapshot.excerpts().count(), 4);
+    assert_output_coordinates(&snapshot);
+}
+
+#[gpui::test]
+fn diff_incremental_edits_keep_output_coordinates_and_patch_replay(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "甲🙂\nworking\r\n尾", cx);
+    let tail = singleton("src/b.rs", "下一文件🙂", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |buffer, cx| {
+        buffer.set_diff_hunks_expanded_by_default(true, cx);
+        let first = test_diff_file(source.clone(), "src/a.rs", "甲🙂\nold\r\n尾", cx);
+        let second = test_diff_file(tail, "src/b.rs", "下一文件🙂", cx);
+        buffer.set_diff_files(vec![first, second], cx);
+    });
+    cx.run_until_parked();
+    let (subscription, mut before) =
+        combined.update(cx, |buffer, cx| buffer.subscribe_and_snapshot(cx));
+    let frozen = before.clone();
+    let frozen_text = before.text_bytes();
+    let mut seed = 0x3bc8_4291u64;
+    let replacements = ["界", "🙂", "x", "", "\n", "e\u{301}", "\r\n", "\t"];
+    for step in 0..160 {
+        let source_text = source.read_with(cx, |source, _| {
+            source
+                .text_snapshot()
+                .slice_to_string(
+                    TextRange::new(ByteOffset::ZERO, source.text_snapshot().len_bytes()).unwrap(),
+                )
+                .unwrap()
+        });
+        let boundaries = source_text
+            .char_indices()
+            .map(|(byte, _)| byte)
+            .chain(iter::once(source_text.len()))
+            .filter(|byte| {
+                *byte == 0
+                    || *byte == source_text.len()
+                    || &source_text.as_bytes()[byte - 1..=(*byte)] != b"\r\n"
+            })
+            .collect::<Vec<_>>();
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let start = seed as usize % boundaries.len();
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let end = (start + (seed as usize % 4)).min(boundaries.len() - 1);
+        let replacement = replacements[(seed >> 32) as usize % replacements.len()];
+        source.update(cx, |source, cx| {
+            source
+                .edit(
+                    [Edit::replace(
+                        TextRange::new(
+                            ByteOffset::new(boundaries[start]),
+                            ByteOffset::new(boundaries[end]),
+                        )
+                        .unwrap(),
+                        replacement,
+                    )],
+                    TransactionMetadata::default(),
+                    cx,
+                )
+                .unwrap()
+        });
+        let immediate = combined.update(cx, |buffer, cx| buffer.snapshot(cx));
+        assert_projection_patch_replays_snapshot(&before, &immediate, &subscription.consume());
+        assert_output_coordinates(&immediate);
+        cx.run_until_parked();
+        let calculated = combined.update(cx, |buffer, cx| buffer.snapshot(cx));
+        assert_projection_patch_replays_snapshot(&immediate, &calculated, &subscription.consume());
+        assert_output_coordinates(&calculated);
+        before = calculated;
+        if step % 19 == 0 {
+            for redo in [false, true] {
+                source.update(cx, |source, cx| {
+                    if redo {
+                        source.redo(cx).unwrap()
+                    } else {
+                        source.undo(cx).unwrap()
+                    }
+                });
+                cx.run_until_parked();
+                let after = combined.update(cx, |buffer, cx| buffer.snapshot(cx));
+                assert_projection_patch_replays_snapshot(&before, &after, &subscription.consume());
+                assert_output_coordinates(&after);
+                before = after;
+            }
+        }
+        if step % 13 == 0 {
+            let after = combined.update(cx, |buffer, cx| {
+                buffer.set_diff_hunks_expanded_by_default(step % 26 == 0, cx);
+                buffer.snapshot(cx)
+            });
+            assert_projection_patch_replays_snapshot(&before, &after, &subscription.consume());
+            assert_output_coordinates(&after);
+            before = after;
+        }
+        assert_eq!(before.excerpts().count(), 2);
+        assert_eq!(frozen.text_bytes(), frozen_text, "旧快照必须保持不可变");
+    }
+}
+
+#[gpui::test]
+fn excerpt_matches_use_updated_output_coordinates_after_path_insertion(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "甲", cx);
+    let second = singleton("src/b.rs", "🙂乙", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    let (subscription, before) = combined.update(cx, |buffer, cx| {
+        buffer.set_excerpts(vec![ExcerptRange::line_range(first, 0..1, cx)], cx);
+        buffer.subscribe_and_snapshot(cx)
+    });
+    let (matches, after) = combined.update(cx, |buffer, cx| {
+        let matches = buffer.set_excerpts_for_path(
+            vec![ExcerptRange::new(
+                second,
+                TextRange::new(ByteOffset::ZERO, ByteOffset::new(7)).unwrap(),
+                vec![TextRange::new(ByteOffset::new(4), ByteOffset::new(7)).unwrap()],
+            )],
+            cx,
+        );
+        (matches, buffer.snapshot(cx))
+    });
+    assert_eq!(
+        matches,
+        vec![TextRange::new(ByteOffset::new(8), ByteOffset::new(11)).unwrap()]
+    );
+    assert_eq!(after.text_bytes(), "甲\n🙂乙".as_bytes());
+    assert_projection_patch_replays_snapshot(&before, &after, &subscription.consume());
+    assert_output_coordinates(&after);
 }
 
 /// 源末尾换行与合成分隔换行共用组合增量协议，普通编辑与历史回放都必须覆盖完整输出。
@@ -1671,7 +1931,7 @@ fn source_edits_project_excerpt_separator_changes(cx: &mut TestAppContext) {
         });
         cx.run_until_parked();
         let after = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
-        let separator = if expected.ends_with('\n') { "" } else { "\n" };
+        let separator = "\n";
         assert_eq!(
             after.text_bytes(),
             format!("{expected}{separator}尾").as_bytes()
@@ -1785,7 +2045,7 @@ fn excerpt_topology_changes_publish_output_edits(cx: &mut TestAppContext) {
     );
     assert_eq!(
         changes.patch().edits()[0].new_range(),
-        TextRange::new(ByteOffset::new(6), ByteOffset::new(13)).unwrap()
+        TextRange::new(ByteOffset::new(6), ByteOffset::new(14)).unwrap()
     );
 }
 
@@ -1817,11 +2077,11 @@ fn dropping_a_middle_excerpt_publishes_a_single_output_edit(cx: &mut TestAppCont
     assert_eq!(changes.patch().edits().len(), 1);
     assert_eq!(
         changes.patch().edits()[0].old_range(),
-        TextRange::new(ByteOffset::new(2), ByteOffset::new(4)).unwrap()
+        TextRange::new(ByteOffset::new(3), ByteOffset::new(6)).unwrap()
     );
     assert_eq!(
         changes.patch().edits()[0].new_range(),
-        TextRange::new(ByteOffset::new(2), ByteOffset::new(2)).unwrap()
+        TextRange::new(ByteOffset::new(3), ByteOffset::new(3)).unwrap()
     );
 }
 
@@ -1869,42 +2129,32 @@ fn composite_char_and_utf16_coordinates_count_synthetic_newlines(cx: &mut TestAp
 
 #[gpui::test]
 fn source_excerpts_and_display_transforms_use_separate_coordinate_trees(cx: &mut TestAppContext) {
-    let source = singleton("src/diff.rs", "working\nremoved", cx);
+    let source = singleton("src/diff.rs", "a\nnew\nz", cx);
     let combined = cx.new(MultiBuffer::empty);
-    cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(
-            vec![
-                ExcerptRange::new(
-                    source.clone(),
-                    TextRange::new(ByteOffset::new(0), ByteOffset::new(7)).unwrap(),
-                    Vec::new(),
-                ),
-                ExcerptRange::new(
-                    source,
-                    TextRange::new(ByteOffset::new(8), ByteOffset::new(15)).unwrap(),
-                    Vec::new(),
-                )
-                .with_diff_kind(ExcerptDiffKind::Deleted)
-                .with_editable(false),
-            ],
-            cx,
-        );
+    combined.update(cx, |buffer, cx| {
+        let file = test_diff_file(source.clone(), "src/diff.rs", "a\nold\nz", cx);
+        buffer.set_diff_hunks_expanded_by_default(true, cx);
+        buffer.set_diff_files(vec![file], cx);
     });
-
-    cx.update_entity(&combined, |buffer, cx| {
-        // 删除块只占输出坐标：输入树只含消费输入的工作区片段。
-        assert_eq!(buffer.state.excerpts.summary().count, 1);
-        assert_eq!(buffer.state.diff_transforms.summary().output.count, 2);
-        assert_eq!(buffer.state.diff_transforms.summary().input.len.get(), 7);
-        assert_eq!(buffer.state.diff_transforms.summary().output.text.len, 15);
-
+    cx.run_until_parked();
+    combined.update(cx, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
-        assert_eq!(snapshot.excerpts.summary().count, 1);
-        assert_eq!(snapshot.diff_transforms.summary().output.count, 2);
-        assert_eq!(snapshot.excerpts().count(), 2);
+        assert_eq!(snapshot.excerpts().count(), 1);
+        assert_eq!(snapshot.excerpts().next().unwrap().source_range().len(), 7);
+        assert_eq!(snapshot.text_bytes(), b"a\nold\nnew\nz");
+        assert!(
+            snapshot
+                .regions()
+                .any(|region| region.diff_kind() == Some(ExcerptDiffKind::Deleted))
+        );
+        buffer.toggle_diff_hunk_at(0, cx);
+        let collapsed = buffer.snapshot(cx);
+        assert_eq!(collapsed.excerpts().count(), 1);
+        assert_eq!(collapsed.text_bytes(), b"a\nnew\nz");
         assert_eq!(
-            snapshot.excerpts().nth(1).unwrap().diff_kind(),
-            Some(crate::ExcerptDiffKind::Deleted)
+            snapshot.text_bytes(),
+            b"a\nold\nnew\nz",
+            "展开前的快照必须保持不可变"
         );
     });
 }
@@ -2060,6 +2310,7 @@ fn excerpts_preserve_order_and_map_output_to_source(cx: &mut TestAppContext) {
     let (text, excerpts, first_location, second_location, match_ranges) =
         cx.update_entity(&combined, |buffer, cx| {
             let snapshot = buffer.snapshot(cx);
+            assert_output_coordinates(&snapshot);
             let text = String::from_utf8(snapshot.text_bytes()).unwrap();
             let first_offset = ByteOffset::new(text.find("one").unwrap());
             let second_offset = ByteOffset::new(text.find("beta").unwrap());
@@ -2078,12 +2329,18 @@ fn excerpts_preserve_order_and_map_output_to_source(cx: &mut TestAppContext) {
             )
         });
 
-    assert_eq!(text, "one\nbeta\n");
+    assert_eq!(text, "one\n\nbeta\n");
     assert_eq!(excerpts.len(), 2);
     assert_eq!(excerpts[0].display_path(), Path::new("src/a.rs"));
     assert_eq!(excerpts[1].display_path(), Path::new("src/b.rs"));
     assert_eq!(excerpts[0].source_start_line(), 2);
     assert_eq!(excerpts[1].source_start_line(), 2);
+    assert_eq!(excerpts[0].output_start_line(), 0);
+    assert_eq!(excerpts[1].output_start_line(), 2);
+    assert_eq!(
+        excerpts[1].output_range().start(),
+        MultiBufferOffset::new(5)
+    );
     assert_eq!(first_location.path, PathBuf::from("src/a.rs"));
     assert_eq!(
         first_location.source_range,
@@ -2170,15 +2427,11 @@ fn composite_anchor_resolves_in_the_same_file_after_excerpt_refresh(cx: &mut Tes
         let offset = buffer
             .anchor_offset(&anchor)
             .expect("同一文件仍有 excerpt 时应解析到最近位置");
+        let snapshot = buffer.snapshot(cx);
+        let excerpt = snapshot.excerpts().next().unwrap();
         assert_eq!(
-            offset,
-            buffer
-                .snapshot(cx)
-                .excerpts()
-                .next()
-                .unwrap()
-                .output_range()
-                .end()
+            offset.get(),
+            excerpt.output_range().start().get() + excerpt.source_range().len()
         );
     });
 }
@@ -2841,11 +3094,11 @@ fn diff_hunk_coordinates_follow_materialized_excerpts_across_files(cx: &mut Test
         let snapshot = buffer.snapshot(cx);
         assert_eq!(
             String::from_utf8(snapshot.text_bytes()).expect("投影应为 UTF-8"),
-            "created\nbefore\nold\nnew\nafter\n"
+            "created\n\nbefore\nold\nnew\nafter\n"
         );
         assert_eq!(
             buffer.diff_hunk_old_ranges(),
-            &[None, Some(2..3)],
+            &[None, Some(3..4)],
             "旧侧范围应落在实际物化的 old 行"
         );
         assert_eq!(
@@ -2858,7 +3111,7 @@ fn diff_hunk_coordinates_follow_materialized_excerpts_across_files(cx: &mut Test
                     staging: DiffHunkStaging::NoStaging,
                 },
                 DisplayHunk {
-                    range: 3..4,
+                    range: 4..5,
                     old_range: 1..2,
                     kind: DiffHunkKind::Modified,
                     staging: DiffHunkStaging::NoStaging,
@@ -3046,6 +3299,151 @@ fn external_full_replacement_invalidates_stale_diff_hunks(cx: &mut TestAppContex
             "新显示 hunk 必须暴露当前工作区锚点范围"
         );
     });
+}
+
+#[gpui::test]
+fn created_and_pure_deleted_hunks_keep_distinct_source_targets(cx: &mut TestAppContext) {
+    for (expanded, append) in [(false, false), (false, true), (true, false), (true, true)] {
+        let created = singleton("src/created.rs", "created\n", cx);
+        let deleted = singleton("src/deleted.rs", "", cx);
+        let created_diff = test_diff_entity(created.clone(), "src/created.rs", None, None, cx);
+        let deleted_diff = test_diff_entity(
+            deleted.clone(),
+            "src/deleted.rs",
+            Some("removed\n"),
+            None,
+            cx,
+        );
+        let files = vec![
+            DiffFile {
+                diff: created_diff,
+                display_path: PathBuf::from("src/created.rs"),
+                excerpt_ranges: DiffExcerptRanges::FullFile,
+            },
+            DiffFile {
+                diff: deleted_diff,
+                display_path: PathBuf::from("src/deleted.rs"),
+                excerpt_ranges: DiffExcerptRanges::FullFile,
+            },
+        ];
+        let combined = cx.new(MultiBuffer::empty);
+        combined.update(cx, |buffer, cx| {
+            buffer.set_diff_hunks_expanded_by_default(expanded, cx);
+            buffer.set_diff_files(
+                if append {
+                    vec![files[0].clone()]
+                } else {
+                    files.clone()
+                },
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        if append {
+            combined.update(cx, |buffer, cx| buffer.add_diff(files[1].clone(), cx));
+        }
+        let snapshot = combined.update(cx, |buffer, cx| buffer.snapshot(cx));
+        let hunks = snapshot.resolved_diff_hunks();
+        assert_eq!(
+            hunks.len(),
+            2,
+            "展开={expanded}，追加={append}，显示索引={:?}，输出区域={:?}",
+            snapshot.diff_display(),
+            snapshot.regions().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            hunks[0].1.source.buffer_id,
+            created.read_with(cx, |source, _| source.buffer_id())
+        );
+        assert!(hunks[0].1.source.range.is_none());
+        assert_eq!(
+            hunks[1].1.source.buffer_id,
+            deleted.read_with(cx, |source, _| source.buffer_id())
+        );
+        let range = hunks[1].1.source.range.as_ref().unwrap();
+        let working = deleted.read_with(cx, |source, _| source.text_snapshot());
+        assert_eq!(range.start.resolve_in(&working).unwrap(), ByteOffset::ZERO);
+        assert_eq!(range.end.resolve_in(&working).unwrap(), ByteOffset::ZERO);
+        assert_output_coordinates(&snapshot);
+    }
+}
+
+#[gpui::test]
+fn expanded_deleted_output_keeps_the_working_source_end_editable(cx: &mut TestAppContext) {
+    let source = singleton("src/gone.rs", "", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |buffer, cx| {
+        let file = test_diff_file(source.clone(), "src/gone.rs", "已删除🙂", cx);
+        buffer.set_diff_hunks_expanded_by_default(true, cx);
+        buffer.set_diff_files(vec![file], cx);
+    });
+    cx.run_until_parked();
+    let (subscription, before) =
+        combined.update(cx, |buffer, cx| buffer.subscribe_and_snapshot(cx));
+    assert_eq!(before.text_bytes(), "已删除🙂\n".as_bytes());
+    assert_output_coordinates(&before);
+    combined.update(cx, |buffer, cx| {
+        assert_eq!(
+            buffer.file_buffers(cx).len(),
+            1,
+            "可保存源来自逻辑窗口，与旧侧是否可见无关"
+        );
+        buffer
+            .edit(
+                vec![Edit::insert(before.len_bytes().into(), "新内容").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .unwrap();
+        assert!(buffer.is_dirty(cx));
+    });
+    let after = combined.update(cx, |buffer, cx| buffer.snapshot(cx));
+    assert_projection_patch_replays_snapshot(&before, &after, &subscription.consume());
+    assert_output_coordinates(&after);
+    assert_eq!(
+        source.read_with(cx, |source, _| source.text_snapshot().len_bytes().get()),
+        "新内容".len()
+    );
+}
+
+#[gpui::test]
+fn diff_expansion_is_discarded_when_a_hunk_disappears(cx: &mut TestAppContext) {
+    let source = singleton("src/lifecycle.rs", "a\nnew\nz", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |buffer, cx| {
+        let file = test_diff_file(source.clone(), "src/lifecycle.rs", "a\nold\nz", cx);
+        buffer.set_diff_files(vec![file], cx);
+    });
+    cx.run_until_parked();
+    combined.update(cx, |buffer, cx| buffer.toggle_diff_hunk_at(0, cx));
+    for replacement in ["old", "next"] {
+        source.update(cx, |source, cx| {
+            source
+                .edit(
+                    [Edit::replace(
+                        TextRange::new(ByteOffset::new(2), ByteOffset::new(5)).unwrap(),
+                        replacement,
+                    )],
+                    TransactionMetadata::default(),
+                    cx,
+                )
+                .unwrap()
+        });
+        cx.run_until_parked();
+        combined.update(cx, |buffer, cx| {
+            let snapshot = buffer.snapshot(cx);
+            assert_output_coordinates(&snapshot);
+            assert_eq!(
+                buffer.diff_hunk_expanded(),
+                if replacement == "old" {
+                    Vec::new()
+                } else {
+                    vec![false]
+                },
+                "已消失 hunk 的展开状态不能被相同位置的新 hunk 继承"
+            );
+        });
+    }
 }
 
 /// 回归：工作区整份被删除且没有内容节点时，纯删除 hunk 仍必须挂到输出变换树并可见。
@@ -3284,7 +3682,7 @@ fn diff_projection_materializes_only_caller_supplied_excerpt_ranges(cx: &mut Tes
         let text =
             String::from_utf8(buffer.snapshot(cx).text_bytes()).expect("组合文本必须是 UTF-8");
         assert_eq!(text, "row 19\nworking row 20\nrow 21\n");
-        assert_eq!(buffer.snapshot(cx).excerpts().count(), 3);
+        assert_eq!(buffer.snapshot(cx).excerpts().count(), 1);
     });
 }
 
@@ -3955,7 +4353,7 @@ fn composite_splits_cross_excerpt_edits_across_source_buffers(cx: &mut TestAppCo
         buffer
             .edit(
                 vec![Edit::replace(
-                    TextRange::new(ByteOffset::new(1), ByteOffset::new(6)).unwrap(),
+                    TextRange::new(ByteOffset::new(1), ByteOffset::new(7)).unwrap(),
                     "X",
                 )],
                 TransactionMetadata::default(),
@@ -4125,26 +4523,15 @@ fn read_only_composite_rejects_edits(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &mut TestAppContext) {
-    let old = singleton("src/a.rs", "旧内容\n", cx);
     let current = singleton("src/a.rs", "上下文\n新内容\n之后\n", cx);
     let current_buffer = current.clone();
     let combined = cx.new(MultiBuffer::empty);
-    cx.update_entity(&combined, |buffer, cx| {
-        buffer.set_excerpts(
-            vec![
-                ExcerptRange::line_range(current.clone(), 0..1, cx),
-                ExcerptRange::line_range(old.clone(), 0..1, cx)
-                    .with_editable(false)
-                    .with_starts_logical_excerpt(false)
-                    .with_diff_kind(ExcerptDiffKind::Deleted),
-                ExcerptRange::line_range(current.clone(), 1..2, cx)
-                    .with_starts_logical_excerpt(false)
-                    .with_diff_kind(ExcerptDiffKind::Added),
-                ExcerptRange::line_range(current, 2..3, cx).with_starts_logical_excerpt(false),
-            ],
-            cx,
-        );
+    combined.update(cx, |buffer, cx| {
+        let file = test_diff_file(current, "src/a.rs", "上下文\n旧内容\n之后\n", cx);
+        buffer.set_diff_hunks_expanded_by_default(true, cx);
+        buffer.set_diff_files(vec![file], cx);
     });
+    cx.run_until_parked();
 
     cx.update_entity(&combined, |buffer, cx| {
         let snapshot = buffer.snapshot(cx);
@@ -4152,7 +4539,7 @@ fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &m
             String::from_utf8(snapshot.text_bytes()).unwrap(),
             "上下文\n旧内容\n新内容\n之后\n"
         );
-        assert_eq!(snapshot.excerpts().count(), 4);
+        assert_eq!(snapshot.excerpts().count(), 1);
         assert_eq!(
             snapshot.excerpt_boundaries().count(),
             1,
@@ -4160,8 +4547,8 @@ fn materialized_diff_old_side_is_selectable_but_only_new_side_is_editable(cx: &m
         );
         assert_eq!(
             snapshot
-                .excerpts()
-                .nth(1)
+                .regions()
+                .find(|region| region.diff_kind() == Some(ExcerptDiffKind::Deleted))
                 .unwrap()
                 .source_line_for_output_line(1),
             None

@@ -1,20 +1,23 @@
 //! 单个文件的版本化 diff 状态实体。
 //!
 //! `BufferDiff` 是单个文件 diff 结果的权威状态：base/index/working 来源、版本绑定的 `BufferDiffSnapshot`、pending 操作与 `DiffOperations` 都由它持有。
-//! 它不订阅 working buffer，也不决定何时重算：宿主在源文本变化时调用 [`BufferDiff::recompute`]，本层只负责后台计算、版本门控与结果发布。
+//! 源文本变化与修订输入提交共用唯一计算任务；修订快照和 hunk 结果在版本校验后整体安装，投影层只消费结果。
 //! hunk 的暂存语义统一相对 index 参照判定，所有视图共用同一套；展开/折叠与显示路径由 `MultiBuffer` 的 diff 投影持有。
 
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Task};
+use futures::join;
+use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Subscription, Task};
 use imara_diff::{Algorithm, Diff, InternedInput};
 use sum_tree::{Item, SumTree};
-use zcv_language::{LanguageBuffer, LanguageRegistry};
+use zcv_language::{
+    EditedLanguageBufferSnapshot, LanguageBuffer, LanguageBufferEvent, LanguageRegistry,
+};
 use zcv_text::{
     Anchor, Buffer as TextBuffer, BufferConfig, BufferVersion, ByteOffset, Line, Snapshot,
-    TextRange,
+    TextRange, TextResult,
 };
 
 use zcv_text::word_diff::{MAX_WORD_DIFF_BYTES, MAX_WORD_DIFF_LINES, word_diff_ranges};
@@ -32,20 +35,10 @@ pub enum DiffHunkKind {
     Deleted,
 }
 
-/// BufferDiff 变更事件。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DiffRefresh {
-    /// 只更新 hunk 状态，保留当前组合文档投影。
-    PreserveProjection,
-    /// hunk 结果变化后重建组合文档投影。
-    RebuildProjection,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BufferDiffEvent {
     /// diff 结果或 pending 状态变化；范围位于当前 working 快照，None 表示本次不做范围同步。
     DiffChanged {
-        refresh: DiffRefresh,
         changed_range: Option<Range<Anchor>>,
     },
 }
@@ -101,7 +94,7 @@ pub trait DiffOperations: Send + Sync {
 /// 前者随 buffer 编辑推进，后者是旧侧文本中的字节范围，直接用于生成确定的编辑。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiffHunk {
-    /// working buffer 中的源文本锚点范围（Deleted 时为空范围，锚定删除点）。
+    /// working buffer 中的半开源范围；两端均吸附到边界插入之前，Deleted 时为空范围。
     pub buffer_range: Range<Anchor>,
     /// base 文本中的字节范围。
     pub diff_base_byte_range: Range<usize>,
@@ -357,17 +350,87 @@ pub struct BufferDiff {
     operations: Option<Arc<dyn DiffOperations>>,
     /// diff 结果或 pending 的单调版本；显示层据此判断是否需要重新物化。
     revision: u64,
-    /// 最近一次已安装结果对应的全部输入版本；None 表示初始计算尚未返回。
-    calculated_versions: Option<DiffInputVersions>,
-    /// 当前在途的 diff 计算；下一次重算替换此字段并取消上一次，实体销毁时一并取消。
+    /// 最近一次已发布结果的输入；同时作为未变修订语言快照的复用依据。
+    calculated_inputs: Option<CalculatedDiffInputs>,
+    /// 修订准备和 diff 计算共用此任务；替换即取消，实体销毁时随之取消。
     calculation_task: Option<Task<()>>,
+    /// 宿主提交的不可变修订输入；语言缓冲与 hunks 都是它和 working 快照的派生结果。
+    revision_texts: RevisionTexts,
+    _working_subscription: Subscription,
 }
 
-/// base / index 两个修订侧。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Revision {
-    Base,
-    Index,
+#[derive(Clone, PartialEq, Eq)]
+struct RevisionTexts {
+    base: Option<Arc<str>>,
+    index: Option<Arc<str>>,
+}
+
+struct CalculatedDiffInputs {
+    versions: DiffInputVersions,
+    revisions: RevisionTexts,
+}
+
+struct RevisionPreparation {
+    source: Entity<LanguageBuffer>,
+    edited: Option<Task<TextResult<EditedLanguageBufferSnapshot>>>,
+}
+
+impl RevisionPreparation {
+    async fn finish(self) -> PreparedRevision {
+        let edited = match self.edited {
+            Some(task) => Some(task.await.expect("diff 修订文本必须能派生语言快照")),
+            None => None,
+        };
+        PreparedRevision {
+            source: self.source,
+            edited,
+        }
+    }
+}
+
+struct PreparedRevision {
+    source: Entity<LanguageBuffer>,
+    edited: Option<EditedLanguageBufferSnapshot>,
+}
+
+impl PreparedRevision {
+    fn install(self, cx: &mut Context<BufferDiff>) -> Entity<LanguageBuffer> {
+        if let Some(edited) = self.edited {
+            self.source.update(cx, |source, cx| {
+                source
+                    .fast_forward(edited, cx)
+                    .expect("diff 修订只由唯一计算任务安装");
+            });
+        }
+        self.source
+    }
+}
+
+/// 准备修订派生快照；源编辑时直接复用未变化的修订，不重新物化全文或解析语法。
+fn prepare_revision(
+    source: Option<Entity<LanguageBuffer>>,
+    text: Option<Arc<str>>,
+    unchanged: bool,
+    path: &std::path::Path,
+    registry: &Arc<LanguageRegistry>,
+    cx: &mut Context<BufferDiff>,
+) -> Option<RevisionPreparation> {
+    let text = text?;
+    if unchanged {
+        return Some(RevisionPreparation {
+            source: source.expect("已发布的存在修订必须有语言缓冲"),
+            edited: None,
+        });
+    }
+    let source =
+        source.unwrap_or_else(|| revision_buffer(Some(String::new()), path, registry, cx).unwrap());
+    let edited = source.update(cx, |source, cx| {
+        source.snapshot_with_text(text.to_string(), cx)
+    });
+    Some(RevisionPreparation {
+        source,
+        edited: Some(edited),
+    })
 }
 
 /// 由修订文本创建语言缓冲；None 表示该侧不存在。
@@ -392,8 +455,7 @@ impl EventEmitter<BufferDiffEvent> for BufferDiff {}
 impl BufferDiff {
     /// 依据 base/index 文本与 working 实体建立 diff 状态。
     ///
-    /// base/index 语言缓冲由本实体创建并持有，后续变化经 [`BufferDiff::set_base_text`] /
-    /// [`BufferDiff::set_index_text`] 增量安装，不再由宿主各自物化。
+    /// base/index 语言缓冲由本实体创建并持有，修订更新与源文本变化共用同一个后台任务。
     pub fn new(input: BufferDiffInput, cx: &mut Context<Self>) -> Self {
         let BufferDiffInput {
             working,
@@ -409,8 +471,13 @@ impl BufferDiff {
             hunks: SumTree::new(&working_snapshot),
             pending_hunks: Vec::new(),
         };
-        let base_source = revision_buffer(base_text, &path, &language_registry, cx);
-        let index_source = revision_buffer(index_text, &path, &language_registry, cx);
+        let base_source = revision_buffer(base_text.clone(), &path, &language_registry, cx);
+        let index_source = revision_buffer(index_text.clone(), &path, &language_registry, cx);
+        let subscription = cx.subscribe(&working, |this, _, event, cx| {
+            if *event == LanguageBufferEvent::TextChanged {
+                this.recompute(cx);
+            }
+        });
         let mut this = Self {
             working,
             base_source,
@@ -420,109 +487,80 @@ impl BufferDiff {
             snapshot,
             operations,
             revision: 0,
-            calculated_versions: None,
+            calculated_inputs: None,
             calculation_task: None,
+            revision_texts: RevisionTexts {
+                base: base_text.map(Arc::from),
+                index: index_text.map(Arc::from),
+            },
+            _working_subscription: subscription,
         };
-        this.recompute_with_refresh(DiffRefresh::RebuildProjection, cx);
+        this.recompute(cx);
         this
     }
 
-    /// 设置 base 旧侧文本：已有缓冲经 T-9 增量安装，缺失时新建，None 表示旧侧消失。
-    ///
-    /// 返回安装任务；本实体不 `detach` 任务，由调用方决定是否等待。
-    pub fn set_base_text(&mut self, text: Option<String>, cx: &mut Context<Self>) -> Task<()> {
-        self.set_revision_text(Revision::Base, text, cx)
-    }
-
-    /// 设置 index 参照文本；语义与 [`BufferDiff::set_base_text`] 一致。
-    pub fn set_index_text(&mut self, text: Option<String>, cx: &mut Context<Self>) -> Task<()> {
-        self.set_revision_text(Revision::Index, text, cx)
-    }
-
-    fn set_revision_text(
+    /// 一次提交完整的修订输入；同一个任务准备语言快照、计算 hunks 并整体安装。
+    pub fn set_revisions(
         &mut self,
-        revision: Revision,
-        text: Option<String>,
+        base_text: Option<Arc<str>>,
+        index_text: Option<Arc<str>>,
         cx: &mut Context<Self>,
-    ) -> Task<()> {
-        let existing = match revision {
-            Revision::Base => self.base_source.clone(),
-            Revision::Index => self.index_source.clone(),
+    ) {
+        let revisions = RevisionTexts {
+            base: base_text,
+            index: index_text,
         };
-        match (existing, text) {
-            (Some(existing), Some(text)) => {
-                // 文本未变：保持当前快照，不重算（修订刷新会对同一文本重复安装）。
-                if full_text(&existing.read(cx).text_snapshot()) == text {
-                    return Task::ready(());
-                }
-                let task = existing.update(cx, |buffer, cx| buffer.snapshot_with_text(text, cx));
-                cx.spawn(async move |this, cx| {
-                    let Ok(edited) = task.await else {
-                        return;
-                    };
-                    existing.update(cx, |buffer, cx| {
-                        let _ = buffer.fast_forward(edited, cx);
-                    });
-                    let _ = this.update(cx, |this, cx| {
-                        this.recompute_with_refresh(DiffRefresh::RebuildProjection, cx)
-                    });
-                })
-            }
-            (Some(_), None) => {
-                match revision {
-                    Revision::Base => self.base_source = None,
-                    Revision::Index => self.index_source = None,
-                }
-                self.recompute_with_refresh(DiffRefresh::RebuildProjection, cx);
-                Task::ready(())
-            }
-            (None, Some(text)) => {
-                let created = revision_buffer(Some(text), &self.path, &self.language_registry, cx);
-                match revision {
-                    Revision::Base => self.base_source = created,
-                    Revision::Index => self.index_source = created,
-                }
-                self.recompute_with_refresh(DiffRefresh::RebuildProjection, cx);
-                Task::ready(())
-            }
-            (None, None) => Task::ready(()),
+        if self.revision_texts == revisions {
+            return;
         }
+        self.revision_texts = revisions;
+        self.recompute(cx);
     }
 
-    /// 捕获当前 working/base/index 快照，在后台按指定投影策略重算。
-    ///
-    /// 由宿主在创建后与任一输入变化时调用；本实体不订阅输入 buffer。
-    /// 任务由本实体保存在 `calculation_task` 中：下一次调用替换并取消上一次在途计算，
-    /// 实体销毁时随字段一起取消，不允许调用方 detach。
-    pub fn recompute_with_refresh(&mut self, refresh: DiffRefresh, cx: &mut Context<Self>) {
+    /// 源变化与修订变化共用唯一计算任务；投影层只消费结果，不参与任务调度。
+    fn recompute(&mut self, cx: &mut Context<Self>) {
         let working = self.working.read(cx).text_snapshot();
-        // base/index 的权威文档由 GitStore 持有；这里只克隆廉价快照，
-        // 全文物化留在后台，避免 UI 线程因重建修订文档而阻塞。
-        let base = self
-            .base_source
+        let before = self.input_versions(cx);
+        let revisions = self.revision_texts.clone();
+        let base_unchanged = self
+            .calculated_inputs
             .as_ref()
-            .map(|base| base.read(cx).text_snapshot());
-        let index = self
-            .index_source
+            .is_some_and(|inputs| inputs.revisions.base == revisions.base);
+        let index_unchanged = self
+            .calculated_inputs
             .as_ref()
-            .map(|index| index.read(cx).text_snapshot());
-        let versions = DiffInputVersions {
-            working: working.version(),
-            base: base.as_ref().map(Snapshot::version),
-            index: index.as_ref().map(Snapshot::version),
-        };
+            .is_some_and(|inputs| inputs.revisions.index == revisions.index);
+        let base = prepare_revision(
+            self.base_source.clone(),
+            revisions.base.clone(),
+            base_unchanged,
+            &self.path,
+            &self.language_registry,
+            cx,
+        );
+        let index = prepare_revision(
+            self.index_source.clone(),
+            revisions.index.clone(),
+            index_unchanged,
+            &self.path,
+            &self.language_registry,
+            cx,
+        );
         let background = cx.background_executor().clone();
         let task = cx.spawn(async move |this, cx| {
+            let prepare = async |revision: Option<RevisionPreparation>| match revision {
+                Some(revision) => Some(revision.finish().await),
+                None => None,
+            };
+            let (base, index) = join!(prepare(base), prepare(index));
             let hunks = background
                 .spawn(async move {
-                    // working 全文只物化一次：主 hunk 与 index 参照 hunk 共用同一份文本。
                     let working_text = full_text(&working);
-                    let base_text = base.as_ref().map(full_text);
-                    let index_text = index.as_ref().map(full_text);
-                    let mut hunks = compute_hunks(base_text.as_deref(), &working_text, &working);
+                    let mut hunks =
+                        compute_hunks(revisions.base.as_deref(), &working_text, &working);
                     let index_hunks = index_reference_hunks(
-                        base_text.as_deref(),
-                        index_text.as_deref(),
+                        revisions.base.as_deref(),
+                        revisions.index.as_deref(),
                         &working_text,
                         &working,
                         &hunks,
@@ -532,32 +570,36 @@ impl BufferDiff {
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                this.apply_recomputed_hunks(versions, hunks, refresh, cx);
+                if this.input_versions(cx) != before {
+                    this.recompute(cx);
+                    return;
+                }
+                // base/index 与 hunks 属于同一批输入；消费者不会看到半安装的修订结果。
+                this.base_source = base.map(|revision| revision.install(cx));
+                this.index_source = index.map(|revision| revision.install(cx));
+                let versions = this.input_versions(cx);
+                this.apply_recomputed_hunks(versions, hunks, cx);
             });
         });
-        // 替换字段即 drop 上一次在途任务（取消）；实体销毁时同样随字段取消。
         self.calculation_task = Some(task);
     }
 
     /// 接受仍对应当前 working/base/index 版本的后台结果。
     ///
-    /// 输入任一前进都使结果过期；过期结果丢弃并立即按当前输入补算。
+    /// 计算任务已在安装入口校验输入版本，修订快照与本结果在同一轮更新中发布。
     /// 只有 hunk 几何真正变化时才替换快照、清除 pending 并发出 BufferDiffEvent::DiffChanged；
     /// 行内文本修改等不改变 hunk 定位的编辑不做整体重建。
     fn apply_recomputed_hunks(
         &mut self,
         versions: DiffInputVersions,
         hunks: Vec<DiffHunk>,
-        refresh: DiffRefresh,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.input_versions(cx) != versions {
-            // 结果对应的输入已过期：立即按当前版本补算。
-            // 否则若期间没有新的源事件（例如订阅尚未建立），diff 会永久停留在未计算状态，而显示层要求所有 diff 已计算，整份文档的 git 高亮就会消失。
-            self.recompute_with_refresh(refresh, cx);
-            return false;
-        }
-        let calculation_was_pending = self.calculated_versions != Some(versions);
+        let calculation_was_pending = self
+            .calculated_inputs
+            .as_ref()
+            .map(|inputs| inputs.versions)
+            != Some(versions);
         let working = self.working.read(cx).text_snapshot();
         let previous_hunks = self.snapshot.hunks.iter().cloned().collect::<Vec<_>>();
         let mut changed_range = changed_hunk_range(&previous_hunks, &hunks, &working);
@@ -571,7 +613,10 @@ impl BufferDiff {
             );
             changed_range = union_anchor_ranges(changed_range, pending_range, &working);
         }
-        self.calculated_versions = Some(versions);
+        self.calculated_inputs = Some(CalculatedDiffInputs {
+            versions,
+            revisions: self.revision_texts.clone(),
+        });
         if !calculation_was_pending && hunks_equivalent(&previous_hunks, &hunks) {
             return false;
         }
@@ -580,10 +625,7 @@ impl BufferDiff {
             pending_hunks: Vec::new(),
         };
         self.revision = self.revision.wrapping_add(1).max(1);
-        cx.emit(BufferDiffEvent::DiffChanged {
-            refresh,
-            changed_range,
-        });
+        cx.emit(BufferDiffEvent::DiffChanged { changed_range });
         true
     }
 
@@ -609,7 +651,10 @@ impl BufferDiff {
 
     /// 当前 working/base/index 输入的后台计算是否已经完成。
     pub fn is_current_version_calculated(&self, cx: &App) -> bool {
-        self.calculated_versions == Some(self.input_versions(cx))
+        self.calculated_inputs
+            .as_ref()
+            .map(|inputs| inputs.versions)
+            == Some(self.input_versions(cx))
     }
 
     pub fn snapshot(&self) -> &BufferDiffSnapshot {
@@ -672,10 +717,7 @@ impl BufferDiff {
         }
         self.snapshot.pending_hunks = pending;
         self.revision = self.revision.wrapping_add(1).max(1);
-        cx.emit(BufferDiffEvent::DiffChanged {
-            refresh: DiffRefresh::RebuildProjection,
-            changed_range,
-        });
+        cx.emit(BufferDiffEvent::DiffChanged { changed_range });
     }
 
     /// 清除全部 pending hunks（后台操作完成或失败后由宿主调用）。
@@ -693,10 +735,7 @@ impl BufferDiff {
         );
         self.snapshot.pending_hunks.clear();
         self.revision = self.revision.wrapping_add(1).max(1);
-        cx.emit(BufferDiffEvent::DiffChanged {
-            refresh: DiffRefresh::RebuildProjection,
-            changed_range,
-        });
+        cx.emit(BufferDiffEvent::DiffChanged { changed_range });
     }
 }
 
@@ -744,7 +783,8 @@ fn compute_hunks(base_text: Option<&str>, working_str: &str, working: &Snapshot)
     // base 不存在即整份工作区文本为新增（新建文件）。
     let Some(base_text) = base_text else {
         return vec![DiffHunk {
-            buffer_range: full_buffer_range(working, version),
+            buffer_range: working.anchor_before(ByteOffset::ZERO)
+                ..working.anchor_before(working.len_bytes()),
             diff_base_byte_range: 0..0,
             kind: DiffHunkKind::Added,
             staging: DiffHunkStaging::NoStaging,
@@ -760,11 +800,8 @@ fn compute_hunks(base_text: Option<&str>, working_str: &str, working: &Snapshot)
         .map(|hunk| {
             let diff_base_byte_range =
                 old_offsets[hunk.before.start as usize]..old_offsets[hunk.before.end as usize];
-            let buffer_range = anchor_line_range(
-                working,
-                version,
-                hunk.after.start as usize..hunk.after.end as usize,
-            );
+            let buffer_range =
+                anchor_line_range(working, hunk.after.start as usize..hunk.after.end as usize);
             let kind = if diff_base_byte_range.is_empty() {
                 DiffHunkKind::Added
             } else if hunk.after.is_empty() {
@@ -953,30 +990,18 @@ fn line_offsets(text: &str) -> Vec<usize> {
     offsets
 }
 
-/// 行范围 → 锚点范围（行号右端等于 line_count 时取文本末尾）。
-fn anchor_line_range(
-    text: &Snapshot,
-    version: BufferVersion,
-    lines: Range<usize>,
-) -> Range<Anchor> {
+/// 行范围 → 半开锚点范围（行号右端等于 line_count 时取文本末尾）。
+///
+/// 起点是区块身份，边界插入后仍位于新文本之前；两端采用相同吸附方向，纯删除保持空范围。
+fn anchor_line_range(text: &Snapshot, lines: Range<usize>) -> Range<Anchor> {
     let start = line_start_or_end(text, lines.start);
     let end = line_start_or_end(text, lines.end);
-    Anchor::range_inside(
-        version,
-        TextRange::new(start, end).expect("hunk 行范围必须正序"),
-    )
+    text.anchor_before(start)..text.anchor_before(end)
 }
 
 fn line_start_or_end(text: &Snapshot, line: usize) -> ByteOffset {
     text.line_start_byte(Line::new(line))
         .unwrap_or(text.len_bytes())
-}
-
-fn full_buffer_range(text: &Snapshot, version: BufferVersion) -> Range<Anchor> {
-    Anchor::range_inside(
-        version,
-        TextRange::new(ByteOffset::ZERO, text.len_bytes()).expect("全文范围必须有序"),
-    )
 }
 
 #[cfg(test)]

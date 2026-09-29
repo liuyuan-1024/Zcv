@@ -42,9 +42,6 @@ impl GitStore {
 
                 let mut head_changed = false;
                 let mut statuses_changed = false;
-                // 只有状态真正变化的路径才需要失效 index 文本；
-                // 整体失效会让所有已加载文件重新读取并重挂 diff，产生一次全量投影抖动。
-                let mut changed_index_paths = Vec::new();
                 for scan in &scans {
                     let prev = self.repositories.iter().find(|repository| {
                         super::repository_working_directory(repository.repository.as_ref())
@@ -60,28 +57,20 @@ impl GitStore {
                     let Some(prev) = prev else {
                         // 新发现的仓库没有旧快照可比：该仓库当前所有路径都按变化处理。
                         statuses_changed = true;
-                        changed_index_paths.extend(
-                            scan.snapshot
-                                .statuses_by_path
-                                .keys()
-                                .map(|path| scan.working_directory.join_relative(path)),
-                        );
                         continue;
                     };
                     let previous = &prev.snapshot.statuses_by_path;
                     let current = &scan.snapshot.statuses_by_path;
                     statuses_changed |= previous != current;
-                    for (path, entry) in current {
-                        if previous.get(path) != Some(entry) {
-                            changed_index_paths.push(scan.working_directory.join_relative(path));
-                        }
-                    }
-                    for path in previous.keys() {
-                        if !current.contains_key(path) {
-                            changed_index_paths.push(scan.working_directory.join_relative(path));
-                        }
-                    }
                 }
+
+                self.repositories = scans
+                    .into_iter()
+                    .map(|scan| Repository {
+                        repository: scan.repository,
+                        snapshot: scan.snapshot,
+                    })
+                    .collect();
 
                 if old_work_dirs != new_work_dirs {
                     cx.emit(GitStoreEvent::Repositories);
@@ -91,26 +80,11 @@ impl GitStore {
                     self.refresh_all_revision_documents(GitRevision::Head, cx);
                     cx.emit(GitStoreEvent::Head);
                 }
+                // 状态枚举和行数不能标识 index 内容；扫描确认所有已消费修订，文本未变时保持投影。
+                self.refresh_all_revision_documents(GitRevision::Index, cx);
                 if statuses_changed {
-                    // HEAD 变化（checkout/commit）会让 index 整体改写，且干净文件的 status 条目前后一致，无法用路径差识别，必须整体刷新。
-                    if head_changed {
-                        self.refresh_all_revision_documents(GitRevision::Index, cx);
-                    } else {
-                        self.refresh_revision_documents(
-                            GitRevision::Index,
-                            &changed_index_paths,
-                            cx,
-                        );
-                    }
                     cx.emit(GitStoreEvent::Statuses);
                 }
-                self.repositories = scans
-                    .into_iter()
-                    .map(|scan| Repository {
-                        repository: scan.repository,
-                        snapshot: scan.snapshot,
-                    })
-                    .collect();
                 self.repository_scan_ready = true;
                 if !was_repository_scan_ready {
                     cx.emit(GitStoreEvent::Repositories);

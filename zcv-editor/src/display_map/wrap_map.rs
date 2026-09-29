@@ -32,7 +32,7 @@ use super::fold_map::{
     StreamProjectedKind,
 };
 use super::tab_map::{
-    TabEdit, TabPoint, TabPointMapping, TabSnapshot, advance_display_column, byte_after_chars,
+    TabEdit, TabPoint, TabPointMapping, TabSnapshot, advance_display_column,
     byte_for_display_column, display_width_for_fold_row, line_content,
 };
 use super::{WrapPoint, WrapRow};
@@ -881,77 +881,9 @@ impl WrapSnapshot {
         self.projected_point_to_wrap_point(point)
     }
 
-    /// 投影点列 → 行内容字节偏移。
-    ///
-    /// 折叠合并行与普通行的行文本都由 `line_text` 给出，列是行内字符列；
-    /// 换算必须留在「行内容（已剥行终止符）」这一坐标空间内。
-    /// 不能经缓冲区 `Position` 往返：
-    /// 位置落在 CRLF 的 `\n` 等终止符上时，缓冲区列会越过内容末端，往返会得到行内容之外的字节。
-    fn projected_column_to_byte(
-        &self,
-        line: Line,
-        column: LogicalColumn,
-    ) -> DisplayMapResult<usize> {
-        let text = self
-            .tab_snapshot
-            .line_text(line)
-            .ok_or(CoordinateError::LineOutOfBounds(line))?;
-        Ok(byte_after_chars(line_content(text.as_ref()), column.get()))
-    }
-
     fn projected_point_to_wrap_point(&self, point: ProjectedPoint) -> DisplayMapResult<WrapPoint> {
-        let tab_row = point.line().get();
-        let line = Line::new(tab_row);
-        // 投影文本（含行内提示注入）；目标列 → 行内投影字节。
-        let text = self
-            .tab_snapshot
-            .line_text(line)
-            .ok_or(CoordinateError::LineOutOfBounds(line))?;
-        let content = line_content(text.as_ref());
-        let target_projected = self.projected_column_to_byte(line, point.column())?;
-        let (input_start, output_start, transform) = self.transform_for_tab_row(tab_row)?;
-        let (fragment_index, fragment_start, indent) = match transform.kind {
-            TransformKind::Isomorphic => (tab_row - input_start, 0, 0),
-            TransformKind::Wrap => {
-                let fragment_index =
-                    fragment_index_for_byte(&transform.wrap_points, target_projected);
-                (
-                    fragment_index,
-                    fragment_index
-                        .checked_sub(1)
-                        .map_or(0, |i| transform.wrap_points[i].byte_ix),
-                    fragment_index
-                        .checked_sub(1)
-                        .map_or(0, |i| transform.wrap_points[i].indent as usize),
-                )
-            }
-        };
-        debug_assert!(
-            content.is_char_boundary(fragment_start) && content.is_char_boundary(target_projected),
-            "换行坐标必须落在行内容的字符边界上：fragment_start={fragment_start} target={target_projected} content_len={}",
-            content.len()
-        );
-        // 片段内的显示列从缩进后的列开始累加，tab 对齐基于显示行内列。
-        let column = content[fragment_start..target_projected]
-            .graphemes(true)
-            .fold(indent, |column, grapheme| {
-                advance_display_column(column, grapheme, self.tab_snapshot().tab_width().get())
-            });
-        Ok(WrapPoint::new(
-            WrapRow::new(output_start + fragment_index),
-            DisplayColumn::new(column),
-        ))
-    }
-
-    fn transform_for_tab_row(
-        &self,
-        tab_row: usize,
-    ) -> DisplayMapResult<(usize, usize, &Transform)> {
-        let (start, _, transform) =
-            self.transforms
-                .find::<InputToOutput, _>((), &TabPoint::new(tab_row, 0), Bias::Right);
-        let transform = transform.ok_or(CoordinateError::LineOutOfBounds(Line::new(tab_row)))?;
-        Ok((start.0.row(), start.1.0, transform))
+        let tab_point = self.tab_snapshot.point_cursor().map(point);
+        self.point_cursor().map(tab_point)
     }
 
     /// 选区起终点（投影点）→ (显示行, 显示行内显示列)。
@@ -1249,7 +1181,7 @@ impl WrapPointCursor<'_> {
         self.line_text = None;
     }
 
-    pub fn map(&mut self, point: TabPointMapping) -> WrapPoint {
+    pub fn map(&mut self, point: TabPointMapping) -> DisplayMapResult<WrapPoint> {
         let tab_point = point.point();
         if self.cursor.did_seek() && tab_point >= self.cursor.start().0 {
             self.cursor.seek_forward(&tab_point, Bias::Right);
@@ -1257,18 +1189,16 @@ impl WrapPointCursor<'_> {
             self.cursor.seek(&tab_point, Bias::Right);
         }
 
-        let Some(transform) = self.cursor.item() else {
-            return WrapPoint::new(
-                WrapRow::new(self.snapshot.line_count()),
-                DisplayColumn::new(tab_point.column()),
-            );
-        };
+        let transform = self
+            .cursor
+            .item()
+            .ok_or(CoordinateError::LineOutOfBounds(Line::new(tab_point.row())))?;
         let output_start = self.cursor.start().1.0;
         if matches!(transform.kind, TransformKind::Isomorphic) {
-            return WrapPoint::new(
-                WrapRow::new(output_start + tab_point.row().saturating_sub(transform.input.row())),
+            return Ok(WrapPoint::new(
+                WrapRow::new(output_start + tab_point.row() - self.cursor.start().0.row()),
                 DisplayColumn::new(tab_point.column()),
-            );
+            ));
         }
 
         let row = tab_point.row();
@@ -1276,14 +1206,12 @@ impl WrapPointCursor<'_> {
             self.tab_row = Some(row);
             self.line_text = self.snapshot.tab_snapshot.line_text(Line::new(row));
         }
-        let Some(text) = self.line_text.as_deref() else {
-            return WrapPoint::new(
-                WrapRow::new(output_start),
-                DisplayColumn::new(tab_point.column()),
-            );
-        };
+        let text = self
+            .line_text
+            .as_deref()
+            .ok_or(CoordinateError::LineOutOfBounds(Line::new(row)))?;
         let content = line_content(text);
-        let target_byte = point.fold_byte_column().min(content.len());
+        let target_byte = point.fold_byte_column();
         let fragment_index = fragment_index_for_byte(&transform.wrap_points, target_byte);
         let fragment_start = fragment_index
             .checked_sub(1)
@@ -1301,10 +1229,10 @@ impl WrapPointCursor<'_> {
                 )
             },
         );
-        WrapPoint::new(
+        Ok(WrapPoint::new(
             WrapRow::new(output_start + fragment_index),
             DisplayColumn::new(column),
-        )
+        ))
     }
 }
 

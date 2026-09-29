@@ -15,7 +15,7 @@ mod worktree;
 
 pub use git_store::{
     GitJobPhase, GitJobStatus, GitOperationKind, GitOperationOutcome, GitStore, GitStoreEvent,
-    RemoteOperationState, RepositorySnapshot, StatusEntry,
+    RemoteOperationState, RepositorySnapshot, RevisionLoadResult, StatusEntry,
 };
 pub use project_store::{FileWatcherError, FileWatcherOperation, Project, ProjectEvent};
 pub use search::{

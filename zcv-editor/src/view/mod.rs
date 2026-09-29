@@ -544,18 +544,11 @@ impl Editor {
         &mut self,
         display_path: &std::path::Path,
         excerpt_ranges: DiffExcerptRanges,
-        refresh: zcv_buffer_diff::DiffRefresh,
         changed_range: Range<zcv_text::Anchor>,
         cx: &mut Context<Self>,
     ) -> bool {
         let updated = self.multi_buffer.update(cx, |buffer, cx| {
-            buffer.update_diff_excerpt_ranges(
-                display_path,
-                excerpt_ranges,
-                refresh,
-                changed_range,
-                cx,
-            )
+            buffer.update_diff_excerpt_ranges(display_path, excerpt_ranges, changed_range, cx)
         });
         self.reset_after_diff_injection(updated, cx);
         updated

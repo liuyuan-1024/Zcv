@@ -631,7 +631,8 @@ impl DiffView {
                 GitStoreEvent::ActiveRepositoryChanged
                 | GitStoreEvent::JobsUpdated
                 | GitStoreEvent::Uncommitted(_)
-                | GitStoreEvent::UncommitFailed(_) => {}
+                | GitStoreEvent::UncommitFailed(_)
+                | GitStoreEvent::RevisionLoadFailed(_) => {}
             }),
         ];
         let language_registry = project.read(cx).language_registry();
@@ -949,7 +950,6 @@ impl DiffView {
         let event_path = diff.read(cx).path().clone();
         let subscription = cx.subscribe(diff, move |view, diff, event, cx| {
             let BufferDiffEvent::DiffChanged {
-                refresh,
                 changed_range: Some(changed_range),
             } = event
             else {
@@ -969,7 +969,6 @@ impl DiffView {
                 editor.update_diff_excerpt_ranges(
                     &display_path,
                     excerpt_ranges,
-                    *refresh,
                     changed_range.clone(),
                     cx,
                 );
@@ -1098,9 +1097,9 @@ impl DiffView {
                 }
                 let path = file.path.clone();
                 let revision = *revision;
-                let load = git_store
-                    .read(cx)
-                    .load_revision_document(revision, &path, cx);
+                let load = git_store.update(cx, |store, cx| {
+                    store.load_revision_document(revision, &path, cx)
+                });
                 cx.spawn(async move |this, cx| {
                     let _ = load.await;
                     this.update(cx, |view, cx| {

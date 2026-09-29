@@ -1,3 +1,4 @@
+use std::iter;
 use std::path::{Path, PathBuf};
 
 use gpui::{AppContext as _, TestAppContext};
@@ -444,7 +445,7 @@ fn relative_display_paths_stay_consistent_across_middle_edit(cx: &mut TestAppCon
     let b_diff = DiffFile {
         diff: test_diff_entity(b.clone(), "/repo/src/b.rs", Some("b1\nbX\n"), None, cx),
         display_path: PathBuf::from("src/b.rs"),
-        excerpt_ranges: DiffExcerptRanges::Windows(vec![0..2]),
+        excerpt_ranges: DiffExcerptRanges::Windows(iter::once(0..2).collect()),
     };
     three.update(cx, |buffer, cx| {
         assert!(buffer.add_diff(b_diff, cx));
@@ -1597,6 +1598,170 @@ fn one_source_edit_updates_all_visible_excerpts_incrementally(cx: &mut TestAppCo
     );
 }
 
+fn assert_projection_patch_replays_snapshot(
+    before: &MultiBufferSnapshot,
+    after: &MultiBufferSnapshot,
+    changes: &TextChangeBatch,
+) {
+    let mut replayed = before.text_bytes();
+    let updated = after.text_bytes();
+    let edits = changes.patch().edits();
+    for pair in edits.windows(2) {
+        assert!(pair[0].old_range().end() <= pair[1].old_range().start());
+        assert!(pair[0].new_range().end() <= pair[1].new_range().start());
+    }
+    for edit in edits.iter().rev() {
+        let old = edit.old_range();
+        let new = edit.new_range();
+        replayed.splice(
+            old.start().get()..old.end().get(),
+            updated[new.start().get()..new.end().get()].iter().copied(),
+        );
+    }
+    assert_eq!(replayed, updated, "组合增量必须能够把旧输出推进到新输出");
+}
+
+/// 源末尾换行与合成分隔换行共用组合增量协议，普通编辑与历史回放都必须覆盖完整输出。
+#[gpui::test]
+fn source_edits_project_excerpt_separator_changes(cx: &mut TestAppContext) {
+    let cases = [
+        ("甲\n", vec![(3..4, "")], "甲"),
+        ("甲", vec![(3..3, "\n")], "甲\n"),
+        ("甲\n", vec![(0..4, "")], ""),
+        ("", vec![(0..0, "甲\n")], "甲\n"),
+        ("甲\n乙\n", vec![(0..3, "丙丁"), (7..8, "")], "丙丁\n乙"),
+        ("甲", vec![(0..3, "乙")], "乙"),
+    ];
+    for (original, edits, expected) in cases {
+        let source = singleton("src/first.rs", original, cx);
+        let tail = singleton("src/tail.rs", "尾", cx);
+        let combined = cx.new(MultiBuffer::empty);
+        cx.update_entity(&combined, |buffer, cx| {
+            buffer.set_excerpts(
+                vec![
+                    ExcerptRange::new(
+                        source.clone(),
+                        TextRange::new(ByteOffset::ZERO, ByteOffset::new(original.len())).unwrap(),
+                        Vec::new(),
+                    ),
+                    ExcerptRange::line_range(tail, 0..1, cx),
+                ],
+                cx,
+            );
+        });
+        let (subscription, before) =
+            cx.update_entity(&combined, |buffer, cx| buffer.subscribe_and_snapshot(cx));
+        cx.update_entity(&source, |source, cx| {
+            source
+                .edit(
+                    edits.into_iter().map(|(range, replacement)| {
+                        Edit::replace(
+                            TextRange::new(
+                                ByteOffset::new(range.start),
+                                ByteOffset::new(range.end),
+                            )
+                            .unwrap(),
+                            replacement,
+                        )
+                    }),
+                    TransactionMetadata::default(),
+                    cx,
+                )
+                .expect("源编辑应成功");
+        });
+        cx.run_until_parked();
+        let after = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+        let separator = if expected.ends_with('\n') { "" } else { "\n" };
+        assert_eq!(
+            after.text_bytes(),
+            format!("{expected}{separator}尾").as_bytes()
+        );
+        assert_projection_patch_replays_snapshot(&before, &after, &subscription.consume());
+
+        cx.update_entity(&source, |source, cx| source.undo(cx).expect("源撤销应成功"));
+        cx.run_until_parked();
+        let undone = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+        assert_eq!(undone.text_bytes(), before.text_bytes());
+        assert_projection_patch_replays_snapshot(&after, &undone, &subscription.consume());
+
+        cx.update_entity(&source, |source, cx| source.redo(cx).expect("源重做应成功"));
+        cx.run_until_parked();
+        let redone = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+        assert_eq!(redone.text_bytes(), after.text_bytes());
+        assert_projection_patch_replays_snapshot(&undone, &redone, &subscription.consume());
+    }
+}
+
+#[gpui::test]
+fn source_edits_project_separators_for_all_visible_excerpts(cx: &mut TestAppContext) {
+    let source = singleton("src/first.rs", "甲\n乙\n丙\n", cx);
+    let tail = singleton("src/tail.rs", "尾", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                ExcerptRange::line_range(source.clone(), 0..1, cx),
+                ExcerptRange::line_range(source.clone(), 2..3, cx),
+                ExcerptRange::line_range(tail, 0..1, cx),
+            ],
+            cx,
+        );
+    });
+    let (subscription, before) =
+        cx.update_entity(&combined, |buffer, cx| buffer.subscribe_and_snapshot(cx));
+    cx.update_entity(&source, |source, cx| {
+        source
+            .edit(
+                [
+                    Edit::delete(TextRange::new(ByteOffset::new(3), ByteOffset::new(4)).unwrap()),
+                    Edit::delete(TextRange::new(ByteOffset::new(11), ByteOffset::new(12)).unwrap()),
+                ],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("跨片段源编辑应成功");
+    });
+    cx.run_until_parked();
+    let after = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    assert_eq!(after.text_bytes(), "甲\n丙\n尾".as_bytes());
+    let changes = subscription.consume();
+    assert_eq!(
+        changes.patch().edits().len(),
+        2,
+        "不可合并未展示的中间源区间"
+    );
+    assert_projection_patch_replays_snapshot(&before, &after, &changes);
+}
+
+#[gpui::test]
+fn source_edits_keep_document_tail_free_of_synthetic_newlines(cx: &mut TestAppContext) {
+    let source = singleton("src/tail.rs", "甲\n", cx);
+    let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
+    let (subscription, before) =
+        cx.update_entity(&combined, |buffer, cx| buffer.subscribe_and_snapshot(cx));
+    cx.update_entity(&source, |source, cx| {
+        source
+            .edit(
+                [Edit::delete(
+                    TextRange::new(ByteOffset::new(3), ByteOffset::new(4)).unwrap(),
+                )],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("文末源编辑应成功");
+    });
+    cx.run_until_parked();
+    let after = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    assert_eq!(after.text_bytes(), "甲".as_bytes());
+    assert_projection_patch_replays_snapshot(&before, &after, &subscription.consume());
+
+    cx.update_entity(&source, |source, cx| source.undo(cx).expect("源撤销应成功"));
+    cx.run_until_parked();
+    let undone = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    assert_eq!(undone.text_bytes(), before.text_bytes());
+    assert_projection_patch_replays_snapshot(&after, &undone, &subscription.consume());
+}
+
 #[gpui::test]
 fn excerpt_topology_changes_publish_output_edits(cx: &mut TestAppContext) {
     let first = singleton("src/first.rs", "first\n", cx);
@@ -2337,7 +2502,73 @@ fn diff_hunks_follow_external_source_edits(cx: &mut TestAppContext) {
     );
 }
 
-/// 文本对改变后，合并出的新 hunk 不继承旧 hunk 的展开状态。
+#[gpui::test]
+fn diff_expansion_survives_hunk_kind_changes(cx: &mut TestAppContext) {
+    for expanded_by_default in [false, true] {
+        let source = singleton("src/a.rs", "a\nb\nc", cx);
+        let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
+        cx.update_entity(&combined, |buffer, cx| {
+            buffer.set_diff_hunks_expanded_by_default(expanded_by_default, cx);
+            buffer.inject_diffs(
+                Some(vec![test_diff(
+                    source.clone(),
+                    "src/a.rs",
+                    "a\nold1\nold2\nb\nc",
+                )]),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        cx.update_entity(&combined, |buffer, cx| buffer.toggle_diff_hunk_at(0, cx));
+        let expanded = !expanded_by_default;
+
+        for (edit, kind, working_text) in [
+            (
+                Edit::insert(ByteOffset::new(2), "edited\n").unwrap(),
+                DiffHunkKind::Modified,
+                "a\nedited\nb\nc",
+            ),
+            (
+                Edit::insert(ByteOffset::new(2), "more\n").unwrap(),
+                DiffHunkKind::Modified,
+                "a\nmore\nedited\nb\nc",
+            ),
+            (
+                Edit::delete(TextRange::new(ByteOffset::new(2), ByteOffset::new(14)).unwrap()),
+                DiffHunkKind::Deleted,
+                "a\nb\nc",
+            ),
+        ] {
+            source.update(cx, |source, cx| {
+                source
+                    .edit([edit], TransactionMetadata::default(), cx)
+                    .unwrap();
+            });
+            cx.run_until_parked();
+            cx.update_entity(&combined, |buffer, cx| {
+                let snapshot = buffer.snapshot(cx);
+                assert_eq!(buffer.diff_hunks().len(), 1);
+                assert_eq!(buffer.diff_hunks()[0].kind, kind);
+                assert_eq!(
+                    buffer.diff_hunk_expanded(),
+                    vec![expanded],
+                    "区块类型或起点文本变化后应保留用户选择的展开状态"
+                );
+                let expected_text = if expanded {
+                    working_text.replacen("a\n", "a\nold1\nold2\n", 1)
+                } else {
+                    working_text.to_owned()
+                };
+                assert_eq!(
+                    String::from_utf8(snapshot.text_bytes()).unwrap(),
+                    expected_text
+                );
+            });
+        }
+    }
+}
+
+/// 同一起点的差异区块在刷新、合并后保留显式展开状态。
 #[gpui::test]
 fn diff_expansion_survives_hunk_refresh_and_merge(cx: &mut TestAppContext) {
     let source = singleton("tracked.txt", "line0\n改过\nline2\nline3\n", cx);
@@ -2853,9 +3084,9 @@ fn fully_deleted_file_keeps_boundary_hunk(cx: &mut TestAppContext) {
     });
 }
 
-/// BufferDiff 不自行订阅源：working 文本变化由宿主（组合文档投影）驱动重算。
+/// 组合文档只消费差异结果；未保存源文本也能直接消除已不存在的 hunk。
 #[gpui::test]
-fn host_drives_buffer_diff_recompute_from_source_edits(cx: &mut TestAppContext) {
+fn projection_consumes_source_diff_changes_without_save_or_reinjection(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "a\nb\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -2878,7 +3109,7 @@ fn host_drives_buffer_diff_recompute_from_source_edits(cx: &mut TestAppContext) 
         "初始应有一个新增 hunk"
     );
 
-    // 直接编辑 working buffer，不经过任何显示层调用；宿主订阅到变化后驱动重算。
+    // 直接编辑 working buffer；差异实体自行推进，组合文档只消费结果。
     cx.update_entity(&source, |source, cx| {
         source
             .edit(
@@ -2893,40 +3124,22 @@ fn host_drives_buffer_diff_recompute_from_source_edits(cx: &mut TestAppContext) 
     });
     cx.run_until_parked();
 
-    assert_eq!(
-        cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunks().len()),
-        1,
-        "未保存期间应保留原有组合 hunk"
-    );
-
-    // 保存后由宿主重新注入 diff，才提交新的 hunk 投影。
-    cx.update_entity(&source, |source, cx| {
-        source.mark_saved(cx);
-    });
     cx.update_entity(&combined, |buffer, cx| {
-        buffer.inject_diffs(
-            Some(vec![TestDiff {
-                working: source.clone(),
-                base_text: Some(Arc::from("a\n")),
-                index_text: None,
-                path: PathBuf::from("src/a.rs"),
-                operations: None,
-                display_path: PathBuf::from("src/a.rs"),
-            }]),
-            cx,
+        assert!(source.read(cx).is_dirty());
+        assert!(
+            buffer.diff_hunks().is_empty(),
+            "源文本已无差异时，不应等待保存或再次注入"
+        );
+        assert_eq!(
+            String::from_utf8(buffer.snapshot(cx).text_bytes()).unwrap(),
+            "a\n"
         );
     });
-    cx.run_until_parked();
-    assert_eq!(
-        cx.read_entity(&combined, |buffer, _cx| buffer.diff_hunks().len()),
-        0,
-        "保存后重新注入才应移除已无差异的 hunk"
-    );
 }
 
-/// dirty working source 的 hunk 变化不能提前删除组合文档中的既有 excerpt。
+/// 完整文件 excerpt 由文档构造方拥有，最后一个 hunk 消失不能移除文件内容。
 #[gpui::test]
-fn dirty_source_keeps_existing_diff_projection_until_saved(cx: &mut TestAppContext) {
+fn full_file_excerpt_survives_removing_the_last_diff_hunk(cx: &mut TestAppContext) {
     let source = singleton("src/a.rs", "a\nb\n", cx);
     let combined = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
     cx.update_entity(&combined, |buffer, cx| {
@@ -2971,7 +3184,7 @@ fn dirty_source_keeps_existing_diff_projection_until_saved(cx: &mut TestAppConte
         assert_eq!(
             snapshot.excerpts().count(),
             initial_excerpt_count,
-            "未保存期间不能因 hunk 为空而移除既有 excerpt"
+            "hunk 为空不能移除完整文件 excerpt"
         );
         assert!(
             snapshot
@@ -3062,7 +3275,7 @@ fn diff_projection_materializes_only_caller_supplied_excerpt_ranges(cx: &mut Tes
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
         let mut file = test_diff_file(source, path, &base_text, cx);
-        file.excerpt_ranges = DiffExcerptRanges::Windows(vec![19..22]);
+        file.excerpt_ranges = DiffExcerptRanges::Windows(iter::once(19..22).collect());
         buffer.add_diff(file, cx);
     });
     cx.run_until_parked();

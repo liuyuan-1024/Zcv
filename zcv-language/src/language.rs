@@ -18,7 +18,9 @@ mod test;
 
 pub use highlight_cache::HighlightCache;
 pub use highlighting::HighlightSpan;
-pub use language_buffer::{LanguageBuffer, LanguageBufferEvent, LanguageBufferSnapshot};
+pub use language_buffer::{
+    EditedLanguageBufferSnapshot, LanguageBuffer, LanguageBufferEvent, LanguageBufferSnapshot,
+};
 pub use language_settings::LanguageSettings;
 pub use registry::{Language, LanguageRegistry};
 pub use snippet::{

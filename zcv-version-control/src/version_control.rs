@@ -383,7 +383,8 @@ impl VersionControlPanel {
                 // 变更块操作失败由项目差异视图负责提示与恢复。
                 GitStoreEvent::JobsUpdated
                 | GitStoreEvent::HunkOperationFailed(_)
-                | GitStoreEvent::UncommitFailed(_) => {}
+                | GitStoreEvent::UncommitFailed(_)
+                | GitStoreEvent::RevisionLoadFailed(_) => {}
             }
         })
         .detach();

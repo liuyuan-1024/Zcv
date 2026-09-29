@@ -1012,6 +1012,81 @@ fn staging_one_hunk_refreshes_the_projection_with_new_index(cx: &mut TestAppCont
     });
 }
 
+#[gpui::test]
+fn staged_projection_refreshes_without_status_change_or_restart(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时仓库");
+    let root = canonical_root(directory.path());
+    run_in(&root, &["git", "init", "-q", "-b", "master"]);
+    run_in(&root, &["git", "config", "user.email", "test@example.com"]);
+    run_in(&root, &["git", "config", "user.name", "Test User"]);
+    let path = root.join("staged.txt");
+    std::fs::write(&path, "原始内容\n").unwrap();
+    run_in(&root, &["git", "add", "staged.txt"]);
+    run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
+    std::fs::write(&path, "暂存甲\n").unwrap();
+    run_in(&root, &["git", "add", "staged.txt"]);
+    let project = test_project(root.clone(), cx);
+    let store = project.read_with(cx, |project, _| project.git_store());
+    let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Staged, project, cx));
+    cx.run_until_parked();
+    let initial_status = store.read_with(cx, |store, _| store.status_for_path(&path).cloned());
+    let source_id = view.update(cx, |view, cx| {
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        assert!(!snapshot.resolved_diff_hunks().is_empty());
+        snapshot.excerpts().next().unwrap().buffer_id()
+    });
+
+    // 不打开工作区文件，只接收 index 的文件监听事件；删除／恢复也沿同一条源链推进。
+    for expected in [Some("暂存乙\n"), None, Some("暂存丙\n")] {
+        match expected {
+            Some(text) => {
+                std::fs::write(&path, text).unwrap();
+                run_in(&root, &["git", "add", "staged.txt"]);
+            }
+            None => run_in(&root, &["git", "rm", "-q", "--cached", "staged.txt"]),
+        }
+        store.update(cx, |store, cx| {
+            store.refresh_statuses_for_paths(&[root.join(".git/index")], cx)
+        });
+        cx.run_until_parked();
+        if expected.is_some() {
+            assert_eq!(
+                store.read_with(cx, |store, _| store.status_for_path(&path).cloned()),
+                initial_status
+            );
+        }
+        view.update(cx, |view, cx| {
+            let snapshot = view
+                .multi_buffer
+                .update(cx, |buffer, cx| buffer.snapshot(cx));
+            let text = String::from_utf8(snapshot.text_bytes()).unwrap();
+            assert!(
+                text.contains(expected.unwrap_or("原始内容\n")),
+                "index 内容必须直接推进已打开的组合文档：{text}"
+            );
+            assert!(!text.contains("暂存甲"));
+            assert_eq!(snapshot.excerpts().next().unwrap().buffer_id(), source_id);
+            let hunks = snapshot.resolved_diff_hunks();
+            assert!(!hunks.is_empty(), "刷新后必须保留 Git 差异高亮来源");
+            assert!(
+                hunks
+                    .iter()
+                    .all(|(_, hunk)| hunk.hunk.staging == zcv_buffer_diff::DiffHunkStaging::Staged)
+            );
+            assert!(
+                view.diff_subscriptions
+                    .values()
+                    .all(|subscription| subscription
+                        .diff
+                        .read(cx)
+                        .is_current_version_calculated(cx))
+            );
+        });
+    }
+}
+
 /// Git hunk 多文件编辑器默认展开；用户折叠后刷新仍保持折叠，且映射保持一致。
 #[gpui::test]
 fn expanding_hunk_then_refreshing_hunks_keeps_mapping_consistent(cx: &mut TestAppContext) {

@@ -375,6 +375,71 @@ fn word_diff_highlights_only_render_for_expanded_hunks(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
+fn word_diff_highlights_stay_on_their_side_across_soft_wraps(cx: &mut TestAppContext) {
+    let text = "context\n    old_alpha beta gamma delta epsilon zeta eta theta\nold_tail\n    new_alpha beta gamma delta epsilon zeta eta theta\nnew_tail\ncontext_after\n";
+    let buffer = Buffer::from_text(text.into(), BufferConfig::default()).unwrap();
+    let map = new_display_map(cx, buffer.snapshot());
+    map.update(cx, |map, cx| {
+        map.set_wrap_width(
+            Some(px(100.)),
+            gpui::font("Helvetica"),
+            px(16.),
+            &cx.text_system().clone(),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let snapshot = map.update(cx, |map, cx| map.snapshot(cx));
+    let old = text.find("old_alpha").unwrap()..text.find("old_tail").unwrap() + "old_tail".len();
+    let new = text.find("new_alpha").unwrap()..text.find("new_tail").unwrap() + "new_tail".len();
+    let highlights = vec![(DiffHunkKind::Deleted, old), (DiffHunkKind::Added, new)];
+    let hunk = DisplayHunk {
+        range: 3..5,
+        old_range: 1..3,
+        kind: DiffHunkKind::Modified,
+        staging: DiffHunkStaging::Staged,
+    };
+    let decorations = DiffDecorationSnapshot::from_resolved(
+        &snapshot,
+        resolved_hunks(
+            &[hunk],
+            &[true],
+            &[Some(1..3)],
+            std::slice::from_ref(&highlights),
+        ),
+        &[],
+    );
+    let actual = decorations
+        .visible_word_diff_highlights(&(0..snapshot.line_count()))
+        .collect::<Vec<_>>();
+    let expected = highlights
+        .iter()
+        .map(|(kind, range)| {
+            (
+                *kind,
+                DisplayRange::new(
+                    snapshot
+                        .offset_to_display_point(MultiBufferOffset::new(range.start))
+                        .unwrap(),
+                    snapshot
+                        .offset_to_display_point(MultiBufferOffset::new(range.end))
+                        .unwrap(),
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected, "词级范围不能延伸到另一侧或上下文行");
+    let context_row = snapshot.line_to_display_row(Line::new(5)).unwrap().get();
+    assert_eq!(
+        decorations
+            .visible_word_diff_highlights(&(context_row..snapshot.line_count()))
+            .count(),
+        0,
+        "上下文行不能继承旧侧的词级删除背景"
+    );
+}
+
+#[gpui::test]
 fn staging_drives_hollow_blocks(cx: &mut TestAppContext) {
     // hunk_rendering 把暂存语义透传到行标记与 gutter 竖条，渲染端据此选空心 / 实心。
     let buffer =

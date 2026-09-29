@@ -93,6 +93,35 @@ fn parses_all_status_code_combinations() {
 }
 
 #[test]
+fn index_deletion_and_untracked_path_form_one_two_sided_status() {
+    for records in [
+        ["D  同一路径.txt", "?? 同一路径.txt"],
+        ["?? 同一路径.txt", "D  同一路径.txt"],
+    ] {
+        let statuses = parse(&records.join("\0"));
+        assert_eq!(statuses.len(), 1, "同一路径必须只有一份完整状态");
+        let status = statuses[0].1;
+        assert_eq!(
+            status,
+            Tracked {
+                index_status: StatusCode::Deleted,
+                worktree_status: StatusCode::Added,
+            }
+        );
+        assert!(status.has_staged());
+        assert!(status.has_unstaged());
+        assert!(status.is_created());
+        assert!(!status.is_deleted(), "磁盘文件仍存在，不能归类为整体删除");
+        assert_eq!(status.priority(), 2, "目录按工作区仍存在的新增文件聚合");
+    }
+}
+
+#[test]
+fn conflicting_duplicate_status_records_return_an_error() {
+    assert!(GitStatus::from_bytes(b"M  file.txt\0?? file.txt\0").is_err());
+}
+
+#[test]
 fn skips_untracked_directories() {
     let output = ["?? new-dir/", "?? dir/file.txt"].join("\0");
     let statuses = parse(&output);

@@ -196,7 +196,7 @@ fn load_revision_text_returns_head_content(cx: &mut gpui::TestAppContext) {
     fs::write(root.join("tracked.txt"), "已修改\n").expect("应修改文件");
     let path = root.join("tracked.txt");
     // 前台任务由测试调度器驱动（block 只跑后台任务，无法推进）。
-    cx.read_entity(&git_store, |store, cx| {
+    cx.update_entity(&git_store, |store, cx| {
         store.load_revision_document(GitRevision::Head, &path, cx)
     })
     .detach();
@@ -224,11 +224,11 @@ fn load_revision_text_returns_index_content(cx: &mut gpui::TestAppContext) {
     cx.update_entity(&git_store, |store, cx| store.schedule_scan(cx));
     cx.run_until_parked();
     let path = root.join("tracked.txt");
-    cx.read_entity(&git_store, |store, cx| {
+    cx.update_entity(&git_store, |store, cx| {
         store.load_revision_document(GitRevision::Index, &path, cx)
     })
     .detach();
-    cx.read_entity(&git_store, |store, cx| {
+    cx.update_entity(&git_store, |store, cx| {
         store.load_revision_document(GitRevision::Index, &unchanged_path, cx)
     })
     .detach();
@@ -268,7 +268,7 @@ fn load_revision_text_returns_index_content(cx: &mut gpui::TestAppContext) {
         "单路径刷新不应使其他文件的 index 文本失效"
     );
 
-    cx.read_entity(&git_store, |store, cx| {
+    cx.update_entity(&git_store, |store, cx| {
         store.load_revision_document(GitRevision::Index, &path, cx)
     })
     .detach();
@@ -335,6 +335,249 @@ fn status_for_directory_aggregates_children(cx: &mut gpui::TestAppContext) {
         src.is_some_and(|status| status.is_modified()),
         "modified 应优先于 untracked"
     );
+}
+
+#[gpui::test]
+fn revision_refresh_covers_git_metadata_and_same_status_rescan(cx: &mut gpui::TestAppContext) {
+    let (root, _temp) = test_git_repo();
+    let path = root.join("tracked.txt");
+    fs::write(&path, "第一行\n暂存甲\n").unwrap();
+    run_git(&root, &["add", "tracked.txt"]);
+    let store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
+    store.update(cx, |store, cx| store.schedule_scan(cx));
+    cx.run_until_parked();
+    store
+        .update(cx, |store, cx| {
+            store.load_revision_document(GitRevision::Index, &path, cx)
+        })
+        .detach();
+    cx.run_until_parked();
+    let initial_status = store.read_with(cx, |store, _| store.status_for_path(&path).cloned());
+    let document = store.read_with(cx, |store, _| {
+        store.revision_document(GitRevision::Index, &path).unwrap()
+    });
+
+    for (text, metadata_event) in [("第一行\n暂存乙\n", true), ("第一行\n暂存丙\n", false)]
+    {
+        fs::write(&path, text).unwrap();
+        run_git(&root, &["add", "tracked.txt"]);
+        store.update(cx, |store, cx| {
+            if metadata_event {
+                store.refresh_statuses_for_paths(&[root.join(".git/index")], cx);
+            } else {
+                store.schedule_scan(cx);
+            }
+        });
+        cx.run_until_parked();
+        store.read_with(cx, |store, cx| {
+            assert_eq!(
+                store.status_for_path(&path),
+                initial_status.as_ref(),
+                "用例必须保持状态和行数不变"
+            );
+            assert_eq!(
+                store
+                    .revision_text(GitRevision::Index, &path, cx)
+                    .as_deref(),
+                Some(text),
+                "修订刷新不能依赖状态枚举或行数变化"
+            );
+            assert_eq!(
+                store
+                    .revision_document(GitRevision::Index, &path)
+                    .unwrap()
+                    .entity_id(),
+                document.entity_id()
+            );
+        });
+    }
+}
+
+#[gpui::test]
+fn refreshing_one_revision_path_does_not_discard_another_initial_load(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (root, _temp) = test_git_repo();
+    let path = root.join("tracked.txt");
+    let other = root.join("other.txt");
+    fs::write(&other, "另一文件\n").unwrap();
+    run_git(&root, &["add", "other.txt"]);
+    let store = cx.new(|cx| GitStore::new(Some(root), test_registry(), cx));
+    store.update(cx, |store, cx| store.schedule_scan(cx));
+    cx.run_until_parked();
+    store
+        .update(cx, |store, cx| {
+            store.load_revision_document(GitRevision::Index, &path, cx)
+        })
+        .detach();
+    cx.run_until_parked();
+    store
+        .update(cx, |store, cx| {
+            store.load_revision_document(GitRevision::Index, &other, cx)
+        })
+        .detach();
+    store.update(cx, |store, cx| {
+        store.refresh_revision_documents(GitRevision::Index, &[absolute(path)], cx);
+    });
+    cx.run_until_parked();
+    store.read_with(cx, |store, cx| {
+        assert!(
+            store.revision_document_loaded(GitRevision::Index, &other),
+            "无关文件刷新不能让首次加载永久丢失"
+        );
+        assert_eq!(
+            store
+                .revision_text(GitRevision::Index, &other, cx)
+                .as_deref(),
+            Some("另一文件\n")
+        );
+    });
+}
+
+#[gpui::test]
+fn superseded_initial_revision_load_waits_for_the_current_read(cx: &mut gpui::TestAppContext) {
+    let (root, _temp) = test_git_repo();
+    let path = root.join("tracked.txt");
+    let store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
+    store.update(cx, |store, cx| store.schedule_scan(cx));
+    cx.run_until_parked();
+    let load = store.update(cx, |store, cx| {
+        store.load_revision_document(GitRevision::Index, &path, cx)
+    });
+    fs::write(&path, "最新暂存\n").unwrap();
+    run_git(&root, &["add", "tracked.txt"]);
+    store.update(cx, |store, cx| {
+        store.refresh_revision_documents(GitRevision::Index, &[absolute(path)], cx)
+    });
+    let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = completed.clone();
+    cx.spawn(async move |cx| {
+        let document = load
+            .await
+            .expect("修订读取应成功")
+            .expect("首次加载被刷新取代时仍须等待当前文档就绪");
+        cx.update(|cx| {
+            assert_eq!(
+                snapshot_text(&document.read(cx).text_snapshot()),
+                "最新暂存\n"
+            )
+        });
+        observed.store(true, std::sync::atomic::Ordering::SeqCst);
+    })
+    .detach();
+    cx.run_until_parked();
+    assert!(completed.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[gpui::test]
+fn failed_revision_read_preserves_cached_text_and_does_not_cache_missing(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (root, _temp) = test_git_repo();
+    let path = root.join("tracked.txt");
+    let store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
+    store.update(cx, |store, cx| store.schedule_scan(cx));
+    cx.run_until_parked();
+    store
+        .update(cx, |store, cx| {
+            store.load_revision_document(GitRevision::Index, &path, cx)
+        })
+        .detach();
+    cx.run_until_parked();
+    let original = store.read_with(cx, |store, cx| {
+        store.revision_text(GitRevision::Index, &path, cx)
+    });
+    fs::rename(root.join(".git"), root.join("unavailable-git")).unwrap();
+    for revision in [GitRevision::Index, GitRevision::Head] {
+        let load = store.update(cx, |store, cx| {
+            store.load_revision_document(revision, &path, cx)
+        });
+        cx.spawn(async move |_| {
+            assert!(load.await.is_err(), "Git 读取错误必须与修订缺失明确区分");
+        })
+        .detach();
+    }
+    cx.run_until_parked();
+    store.read_with(cx, |store, cx| {
+        assert_eq!(
+            store.revision_text(GitRevision::Index, &path, cx),
+            original,
+            "读取失败保留上一批已确认文本"
+        );
+        assert!(
+            !store.revision_document_loaded(GitRevision::Head, &path),
+            "首次读取失败不能永久缓存为修订缺失"
+        );
+    });
+    fs::rename(root.join("unavailable-git"), root.join(".git")).unwrap();
+    for revision in [GitRevision::Index, GitRevision::Head] {
+        store
+            .update(cx, |store, cx| {
+                store.load_revision_document(revision, &path, cx)
+            })
+            .detach();
+    }
+    cx.run_until_parked();
+    store.read_with(cx, |store, cx| {
+        assert_eq!(
+            store.revision_text(GitRevision::Head, &path, cx),
+            original,
+            "下一次显式读取应能恢复"
+        );
+    });
+}
+
+#[gpui::test]
+fn revision_diff_source_survives_missing_and_present_transitions(cx: &mut gpui::TestAppContext) {
+    let (root, _temp) = test_git_repo();
+    let path = root.join("tracked.txt");
+    let store = cx.new(|cx| GitStore::new(Some(root.clone()), test_registry(), cx));
+    store.update(cx, |store, cx| store.schedule_scan(cx));
+    cx.run_until_parked();
+    store
+        .update(cx, |store, cx| {
+            store.load_revision_document(GitRevision::Index, &path, cx)
+        })
+        .detach();
+    cx.run_until_parked();
+    let source = store.update(cx, |store, cx| {
+        store
+            .revision_diff_document(GitRevision::Index, &path, cx)
+            .unwrap()
+    });
+    for text in [None, Some("重新暂存\n")] {
+        match text {
+            None => run_git(&root, &["rm", "-q", "--cached", "tracked.txt"]),
+            Some(text) => {
+                fs::write(&path, text).unwrap();
+                run_git(&root, &["add", "tracked.txt"]);
+            }
+        }
+        store.update(cx, |store, cx| {
+            store.refresh_statuses_for_paths(std::slice::from_ref(&path), cx)
+        });
+        cx.run_until_parked();
+        store.update(cx, |store, cx| {
+            assert_eq!(
+                store
+                    .revision_text(GitRevision::Index, &path, cx)
+                    .as_deref(),
+                text
+            );
+            assert_eq!(
+                store
+                    .revision_diff_document(GitRevision::Index, &path, cx)
+                    .unwrap()
+                    .entity_id(),
+                source.entity_id(),
+                "缺失状态变化必须复用已被组合文档引用的源"
+            );
+            assert_eq!(
+                snapshot_text(&source.read(cx).text_snapshot()),
+                text.unwrap_or_default()
+            );
+        });
+    }
 }
 
 #[gpui::test]
@@ -825,7 +1068,7 @@ fn file_diff_is_shared_by_working_base_and_index(cx: &mut gpui::TestAppContext) 
     let path = canonicalize_path(&root.join("tracked.txt")).expect("测试路径必须可归一化");
     let native_path = path.clone().into_path_buf();
     for revision in [GitRevision::Head, GitRevision::Index] {
-        cx.read_entity(&git_store, |store, cx| {
+        cx.update_entity(&git_store, |store, cx| {
             store.load_revision_document(revision, &path, cx)
         })
         .detach();
@@ -909,11 +1152,11 @@ fn diff_operations_stage_hunk_writes_index_and_keeps_pending(cx: &mut gpui::Test
     let path = canonicalize_path(&root.join("tracked.txt")).expect("测试路径必须可归一化");
     let native_path = path.clone().into_path_buf();
     let other_path = canonicalize_path(&root.join("other.txt")).expect("测试路径必须可归一化");
-    cx.read_entity(&git_store, |store, cx| {
+    cx.update_entity(&git_store, |store, cx| {
         store.load_revision_document(GitRevision::Index, &path, cx)
     })
     .detach();
-    cx.read_entity(&git_store, |store, cx| {
+    cx.update_entity(&git_store, |store, cx| {
         store.load_revision_document(GitRevision::Index, &other_path, cx)
     })
     .detach();
@@ -1024,7 +1267,7 @@ fn staging_resolves_hunk_anchors_on_the_current_working_snapshot(cx: &mut gpui::
 
     let path = canonicalize_path(&root.join("tracked.txt")).expect("测试路径必须可归一化");
     let native_path = path.clone().into_path_buf();
-    cx.read_entity(&git_store, |store, cx| {
+    cx.update_entity(&git_store, |store, cx| {
         store.load_revision_document(GitRevision::Index, &path, cx)
     })
     .detach();
@@ -1120,7 +1363,7 @@ fn staging_two_hunks_without_waiting_merges_pending_edits(cx: &mut gpui::TestApp
 
     let path = canonicalize_path(&root.join("two.txt")).expect("测试路径必须可归一化");
     let native_path = path.clone().into_path_buf();
-    cx.read_entity(&git_store, |store, cx| {
+    cx.update_entity(&git_store, |store, cx| {
         store.load_revision_document(GitRevision::Index, &path, cx)
     })
     .detach();

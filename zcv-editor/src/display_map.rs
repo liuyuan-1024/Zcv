@@ -869,8 +869,8 @@ impl<'a> DisplayPointConverter<'a> {
         let end_fold = self.fold.map(end_position.into(), FoldBias::Right)?;
         let start_tab = self.tab.map(start_fold);
         let end_tab = self.tab.map(end_fold);
-        let start_wrap = self.wrap.map(start_tab);
-        let end_wrap = self.wrap.map(end_tab);
+        let start_wrap = self.wrap.map(start_tab)?;
+        let end_wrap = self.wrap.map(end_tab)?;
         let start = self.block.map(start_wrap);
         let end = self.block.map(end_wrap);
         let ordered =

@@ -77,7 +77,7 @@ impl Anchor {
     /// 创建一个不吸收边界插入的锚点范围。
     ///
     /// 起点贴在插入内容之后，终点贴在插入内容之前；
-    /// 适合折叠、diff hunk 等只跟随原有文本而不扩张的范围。
+    /// 适合折叠等只跟随原有文本而不扩张的范围。
     pub fn range_inside(version: BufferVersion, range: TextRange) -> Range<Self> {
         Self::new(version, range.start()).with_affinity(Affinity::After)
             ..Self::new(version, range.end()).with_affinity(Affinity::Before)

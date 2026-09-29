@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex, Weak};
 use gpui::{App, Context, Entity, EventEmitter, Subscription};
 use sum_tree::{Bias, ContextLessSummary, Cursor, Dimension, Item, SeekTarget, SumTree, TreeMap};
 use unicode_segmentation::UnicodeSegmentation;
-use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging, DiffRefresh};
+use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
 use zcv_language::{
     AutoClosePair, BracketPair, HighlightCache, HighlightSpan, LanguageBuffer, LanguageBufferEvent,
     LanguageBufferSnapshot, LanguageRegistry, LanguageSettings, LocalBinding, NewlineIndent,
@@ -1158,90 +1158,143 @@ fn projection_item_topology_equal(
         )
 }
 
-fn projection_items_equal(
-    old_excerpt: &Excerpt,
-    old_transform: &DiffTransform,
-    new_excerpt: &Excerpt,
-    new_transform: &DiffTransform,
-) -> bool {
-    projection_item_topology_equal(
-        old_excerpt,
-        old_transform,
-        new_excerpt,
-        matches!(new_transform, DiffTransform::DeletedHunk { .. }),
-    )
+/// 比较源文本片段而非物理节点边界：hunk 装饰拆分内容节点不产生文本编辑。
+fn matching_projection_text(
+    old: &Excerpt,
+    old_offset: usize,
+    new: &Excerpt,
+    new_offset: usize,
+    reverse: bool,
+) -> usize {
+    if old.path != new.path || old.buffer_id != new.buffer_id {
+        return 0;
+    }
+    let old_len = old.text_summary.len;
+    let new_len = new.text_summary.len;
+    let old_newline = if reverse {
+        old_offset > old_len
+    } else {
+        old_offset == old_len
+    };
+    let new_newline = if reverse {
+        new_offset > new_len
+    } else {
+        new_offset == new_len
+    };
+    if old_newline || new_newline {
+        return usize::from(old_newline && new_newline && old.adds_newline && new.adds_newline);
+    }
+    if old.source_id != new.source_id
+        || old.source_range.start.version() != new.source_range.start.version()
+        || old.source_range.start().get() + old_offset
+            != new.source_range.start().get() + new_offset
+    {
+        return 0;
+    }
+    if reverse {
+        old_offset.min(new_offset)
+    } else {
+        (old_len - old_offset).min(new_len - new_offset)
+    }
 }
 
-/// 通过前后两棵投影树的公共前缀/后缀推导结构编辑范围。
-///
-/// 比较只沿 transform 游标前后移动，不物化全文或扁平映射数组；返回范围始终对齐
-/// excerpt 边界。源文本内部的精确编辑仍由 `TextChangeBatch` 单独投影。
+/// 沿变换树比较同版本源片段的公共文本前后缀，不物化全文。
+/// 源内部编辑由 TextChangeBatch 投影；结构同步只发布实际插入／移除的文本。
 fn projection_changed_ranges(
     before: &ProjectionTrees,
     after: &ProjectionTrees,
 ) -> (TextRange, TextRange) {
-    let old_count = mapping_count(&before.1);
-    let new_count = mapping_count(&after.1);
-    let common_limit = old_count.min(new_count);
-    let mut common_prefix = 0usize;
-    let mut old_start = 0usize;
-    let mut new_start = 0usize;
+    let old_len = before.1.summary().output.text.len;
+    let new_len = after.1.summary().output.text.len;
+    let limit = old_len.min(new_len);
     let mut old_cursor = MultiBufferCursor::new(&before.0, &before.1);
     let mut new_cursor = MultiBufferCursor::new(&after.0, &after.1);
     old_cursor.seek_excerpt_index(0);
     new_cursor.seek_excerpt_index(0);
-    while common_prefix < common_limit {
-        let Some((old_excerpt, old_transform)) = old_cursor.item() else {
+    let mut prefix = 0;
+    let mut old_offset = 0;
+    let mut new_offset = 0;
+    while prefix < limit {
+        let Some((old, _)) = old_cursor.item() else {
             break;
         };
-        let Some((new_excerpt, new_transform)) = new_cursor.item() else {
+        let Some((new, _)) = new_cursor.item() else {
             break;
         };
-        if !projection_items_equal(old_excerpt, old_transform, new_excerpt, new_transform) {
+        if old_offset == old.text_summary.len + usize::from(old.adds_newline) {
+            old_cursor.next();
+            old_offset = 0;
+            continue;
+        }
+        if new_offset == new.text_summary.len + usize::from(new.adds_newline) {
+            new_cursor.next();
+            new_offset = 0;
+            continue;
+        }
+        let matched =
+            matching_projection_text(old, old_offset, new, new_offset, false).min(limit - prefix);
+        if matched == 0 {
             break;
         }
-        common_prefix += 1;
-        old_cursor.next();
-        new_cursor.next();
-        old_start = old_cursor.start().bytes;
-        new_start = new_cursor.start().bytes;
+        prefix += matched;
+        old_offset += matched;
+        new_offset += matched;
     }
 
-    let mut common_suffix = 0usize;
-    while common_prefix + common_suffix < common_limit {
-        let old_index = old_count - common_suffix - 1;
-        let new_index = new_count - common_suffix - 1;
-        old_cursor.seek_excerpt_index(old_index);
-        new_cursor.seek_excerpt_index(new_index);
-        let Some((old_excerpt, old_transform)) = old_cursor.item() else {
+    let mut old_index = mapping_count(&before.1);
+    let mut new_index = mapping_count(&after.1);
+    let mut old_remaining = 0;
+    let mut new_remaining = 0;
+    let mut suffix = 0;
+    while prefix + suffix < limit {
+        if old_remaining == 0 {
+            let Some(index) = old_index.checked_sub(1) else {
+                break;
+            };
+            old_index = index;
+            old_cursor.seek_excerpt_index(index);
+            let Some((old, _)) = old_cursor.item() else {
+                break;
+            };
+            old_remaining = old.text_summary.len + usize::from(old.adds_newline);
+            if old_remaining == 0 {
+                continue;
+            }
+        }
+        if new_remaining == 0 {
+            let Some(index) = new_index.checked_sub(1) else {
+                break;
+            };
+            new_index = index;
+            new_cursor.seek_excerpt_index(index);
+            let Some((new, _)) = new_cursor.item() else {
+                break;
+            };
+            new_remaining = new.text_summary.len + usize::from(new.adds_newline);
+            if new_remaining == 0 {
+                continue;
+            }
+        }
+        let Some((old, _)) = old_cursor.item() else {
             break;
         };
-        let Some((new_excerpt, new_transform)) = new_cursor.item() else {
+        let Some((new, _)) = new_cursor.item() else {
             break;
         };
-        if !projection_items_equal(old_excerpt, old_transform, new_excerpt, new_transform) {
+        let matched = matching_projection_text(old, old_remaining, new, new_remaining, true)
+            .min(limit - prefix - suffix);
+        if matched == 0 {
             break;
         }
-        common_suffix += 1;
+        suffix += matched;
+        old_remaining -= matched;
+        new_remaining -= matched;
     }
-
-    let old_end = if common_suffix == 0 {
-        before.1.summary().output.text.len
-    } else {
-        old_cursor.seek_excerpt_index(old_count - common_suffix);
-        old_cursor.start().bytes
-    };
-    let new_end = if common_suffix == 0 {
-        after.1.summary().output.text.len
-    } else {
-        new_cursor.seek_excerpt_index(new_count - common_suffix);
-        new_cursor.start().bytes
-    };
     (
-        TextRange::new(ByteOffset::new(old_start), ByteOffset::new(old_end))
-            .expect("旧投影结构编辑范围必须正序"),
-        TextRange::new(ByteOffset::new(new_start), ByteOffset::new(new_end))
-            .expect("新投影结构编辑范围必须正序"),
+        TextRange::new(ByteOffset::new(prefix), ByteOffset::new(old_len - suffix))
+            .expect("旧投影文本范围必须正序"),
+        TextRange::new(ByteOffset::new(prefix), ByteOffset::new(new_len - suffix))
+            .expect("新投影文本范围必须正序"),
     )
 }
 
@@ -1749,6 +1802,9 @@ struct SourceIncremental {
 struct SourceExcerptRecord {
     output_offset: MultiBufferOffset,
     excerpt_len: ExcerptOffset,
+    /// 该片段在输出末尾补出的分隔换行；
+    /// 与 excerpt_len 分开，因为源编辑可能只改变分隔换行，而不改变片段内容长度。
+    adds_newline: bool,
     source_range: TextRange,
 }
 
@@ -3791,8 +3847,8 @@ impl MultiBuffer {
 
     /// 用编辑前冻结的投影树与当前投影树按游标推导结构变化范围，并发布增量批次。
     ///
-    /// 结构变化不物化组合文本：前后两棵树按 excerpt item 游标比对公共前后缀，
-    /// 变化范围始终对齐 excerpt 边界。源文本内部的精确编辑仍由 TextChangeBatch 单独投影。
+    /// 结构变化不物化组合文本：前后两棵树按同版本源片段比对公共前后缀，
+    /// 不把 hunk 装饰造成的节点拆分当成文本编辑。源内部编辑由 TextChangeBatch 单独投影。
     fn publish_projection_edit(&mut self, before: &ProjectionTrees, old_version: BufferVersion) {
         let after = self.projection_trees();
         let (old_range, new_range) = projection_changed_ranges(before, &after);
@@ -3812,8 +3868,8 @@ impl MultiBuffer {
     /// 把一次源编辑换算到所有受影响 excerpt 的组合坐标。
     ///
     /// Zed 的 `sync_from_buffer_changes` 不要求一个源只能对应一个 excerpt；
-    /// 同一源的多个可见区间会分别生成 output edit。这里保留旧、当前两帧的
-    /// excerpt 顺序，按源坐标配对后再计算每个 output 区间。
+    /// 同一源的多个可见区间会分别生成 output edit。这里保留旧、当前两帧的 excerpt 顺序，按源坐标配对后再计算每个 output 区间。
+    /// 片段输出由源内容和合成分隔换行共同组成，两者的变化必须进入同一批次。
     fn source_incremental_change(
         &self,
         source_change: &TextChangeBatch,
@@ -3902,6 +3958,22 @@ impl MultiBuffer {
                     .expect("源编辑换算出的新输出范围必须有序"),
                 ));
             }
+            if old.adds_newline != new.adds_newline {
+                let old_content_end = old.output_offset.get() + old.excerpt_len.get();
+                let new_content_end = new.output_offset.get() + new.excerpt_len.get();
+                output_edits.push((
+                    TextRange::new(
+                        ByteOffset::new(old_content_end),
+                        ByteOffset::new(old_content_end + usize::from(old.adds_newline)),
+                    )
+                    .expect("旧片段分隔换行范围必须有序"),
+                    TextRange::new(
+                        ByteOffset::new(new_content_end),
+                        ByteOffset::new(new_content_end + usize::from(new.adds_newline)),
+                    )
+                    .expect("新片段分隔换行范围必须有序"),
+                ));
+            }
         }
         if output_edits.is_empty() {
             // 源编辑完全落在未展示区域：组合输出几何不变，发布空增量批次。
@@ -3909,9 +3981,26 @@ impl MultiBuffer {
                 batch: source_change.projected_from(Vec::new()),
             };
         }
-        output_edits.sort_by_key(|(old, _)| old.start());
+        output_edits.sort_by_key(|(old, new)| (old.start(), new.start()));
+        // 内容编辑与分隔换行可能在旧或新坐标中相邻；
+        // 合并为同一个失效区域，让上层只消费有序、不重叠且覆盖完整输出的增量。
+        let mut merged_edits: Vec<(TextRange, TextRange)> = Vec::with_capacity(output_edits.len());
+        for (old, new) in output_edits {
+            if let Some((previous_old, previous_new)) = merged_edits.last_mut()
+                && (previous_old.end() >= old.start() || previous_new.end() >= new.start())
+            {
+                *previous_old =
+                    TextRange::new(previous_old.start(), previous_old.end().max(old.end()))
+                        .expect("合并后的旧输出范围必须有序");
+                *previous_new =
+                    TextRange::new(previous_new.start(), previous_new.end().max(new.end()))
+                        .expect("合并后的新输出范围必须有序");
+            } else {
+                merged_edits.push((old, new));
+            }
+        }
         SourceIncremental {
-            batch: source_change.projected_from(output_edits),
+            batch: source_change.projected_from(merged_edits),
         }
     }
 
@@ -4296,6 +4385,7 @@ impl MultiBuffer {
                     records.old.push(SourceExcerptRecord {
                         output_offset: MultiBufferOffset::new(cursor.start().bytes),
                         excerpt_len: ExcerptOffset::new(entry.text_summary.len),
+                        adds_newline: entry.adds_newline,
                         source_range: entry.source_range.range(),
                     });
                     let source = &self.state.sources[entry.source_index];
@@ -4348,6 +4438,7 @@ impl MultiBuffer {
                     records.new.push(SourceExcerptRecord {
                         output_offset: MultiBufferOffset::new(output_byte),
                         excerpt_len: ExcerptOffset::new(entry.text_summary.len),
+                        adds_newline: entry.adds_newline,
                         source_range: entry.source_range.range(),
                     });
                 }
@@ -4717,7 +4808,6 @@ impl MultiBuffer {
     fn synchronize_source_change(
         &mut self,
         source_id: gpui::EntityId,
-        diff_refresh: DiffRefresh,
         expanded_excerpts: Option<&HashSet<usize>>,
         refresh_metadata: bool,
         cx: &mut Context<Self>,
@@ -4758,7 +4848,6 @@ impl MultiBuffer {
             "MultiBuffer 必须按自己的源订阅连续消费文本变化"
         );
         let position_map = source_change.position_map();
-        self.recompute_diff_for_source(source_id, diff_refresh, cx);
         // 普通编辑只更新受影响 source 的派生坐标；BufferDiff 仍独立维护 hunk 拓扑。
         self.apply_source_change(
             source_id,
@@ -5095,17 +5184,11 @@ impl MultiBuffer {
         // hunk 变化由 BufferDiffEvent::DiffChanged 异步驱动物化；
         // 本轮回传的映射即编辑后、重物化前的坐标系，选区落位不依赖 diff 重建时机。
         for source_id in edited_source_ids {
-            self.synchronize_source_change(
-                source_id,
-                DiffRefresh::PreserveProjection,
-                Some(&edited_excerpts),
-                false,
-                cx,
-            )
-            .ok_or_else(|| TextError::InvariantViolation {
-                location: "MultiBuffer::edit",
-                detail: "源 Buffer 已提交编辑但 MultiBuffer 订阅未收到变化".to_string(),
-            })?;
+            self.synchronize_source_change(source_id, Some(&edited_excerpts), false, cx)
+                .ok_or_else(|| TextError::InvariantViolation {
+                    location: "MultiBuffer::edit",
+                    detail: "源 Buffer 已提交编辑但 MultiBuffer 订阅未收到变化".to_string(),
+                })?;
         }
         Ok(())
     }
@@ -5333,13 +5416,7 @@ impl MultiBuffer {
                 return Ok(None);
             };
             let source_change = self
-                .synchronize_source_change(
-                    source.entity_id(),
-                    DiffRefresh::PreserveProjection,
-                    None,
-                    false,
-                    cx,
-                )
+                .synchronize_source_change(source.entity_id(), None, false, cx)
                 .ok_or_else(|| TextError::InvariantViolation {
                     location: "MultiBuffer::replay_history",
                     detail: "源 Buffer 已回放历史但 MultiBuffer 订阅未收到变化".to_string(),
@@ -5422,17 +5499,11 @@ impl MultiBuffer {
             replayed_source_ids.push(source_id);
         }
         for source_id in replayed_source_ids {
-            self.synchronize_source_change(
-                source_id,
-                DiffRefresh::PreserveProjection,
-                None,
-                false,
-                cx,
-            )
-            .ok_or_else(|| TextError::InvariantViolation {
-                location: "MultiBuffer::replay_history",
-                detail: "源 Buffer 已回放历史但 MultiBuffer 订阅未收到变化".to_string(),
-            })?;
+            self.synchronize_source_change(source_id, None, false, cx)
+                .ok_or_else(|| TextError::InvariantViolation {
+                    location: "MultiBuffer::replay_history",
+                    detail: "源 Buffer 已回放历史但 MultiBuffer 订阅未收到变化".to_string(),
+                })?;
         }
         let position_map = PositionMap::default();
         let new_version = self.snapshot(cx).version();
@@ -5468,13 +5539,7 @@ impl MultiBuffer {
         }
         let source_syncs = std::mem::take(&mut self.state.pending_source_syncs);
         for (source_id, sync) in source_syncs {
-            self.synchronize_source_change(
-                source_id,
-                DiffRefresh::RebuildProjection,
-                None,
-                sync.refresh_metadata,
-                cx,
-            );
+            self.synchronize_source_change(source_id, None, sync.refresh_metadata, cx);
         }
     }
 

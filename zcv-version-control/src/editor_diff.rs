@@ -125,12 +125,16 @@ pub fn inject_editor_diff(
         if store.read(cx).revision_document_loaded(revision, path) {
             continue;
         }
-        let task = store.read(cx).load_revision_document(revision, path, cx);
+        let task = store.update(cx, |store, cx| {
+            store.load_revision_document(revision, path, cx)
+        });
         let project = project.clone();
         let editor = editor.clone();
         let path = path.to_path_buf();
         cx.spawn(async move |cx| {
-            let _ = task.await;
+            if task.await.is_err() {
+                return;
+            }
             cx.update(|app| inject_editor_diff(&editor, &path, &project, app));
         })
         .detach();

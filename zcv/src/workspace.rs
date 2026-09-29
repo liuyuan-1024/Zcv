@@ -720,10 +720,15 @@ fn initialize_workspace(
 
     let git_store = project.read(cx).git_store();
     let git_subscription = cx.subscribe(&git_store, move |workspace, _store, event, cx| {
-        if let GitStoreEvent::UncommitFailed(error) = event {
+        let read_error = match event {
+            GitStoreEvent::UncommitFailed(error) => Some(format!("撤销提交失败：{error}")),
+            GitStoreEvent::RevisionLoadFailed(error) => Some(error.clone()),
+            _ => None,
+        };
+        if let Some(error) = read_error {
             workspace.show_toast(
                 ToastKind::Error,
-                format!("撤销提交失败：{error}"),
+                error,
                 None,
                 Some(Duration::from_secs(5)),
                 cx,

@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use background::{JobResult, execute_job};
+use futures::{FutureExt as _, future::Shared};
 use gpui::{
     App, AppContext as _, AsyncApp, BackgroundExecutor, Context, Entity, EventEmitter, Task,
     WeakEntity,
@@ -62,6 +63,8 @@ pub enum GitStoreEvent {
     UncommitFailed(String),
     /// 变更块操作失败：携带错误信息（面板提示错误并恢复被 optimistic 抑制的 hunk）。
     HunkOperationFailed(String),
+    /// 修订读取失败；缓存保持原内容，由工作区统一提示。
+    RevisionLoadFailed(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -246,12 +249,14 @@ type SharedDiffKey = (AbsolutePathBuf, gpui::EntityId, u64);
 
 /// 一个共享 diff 实体及其 base/index 文本来自哪个 Git 修订。
 ///
-/// 修订文本变化时，GitStore 按这里记录的角色把新文本经 set_base_text/set_index_text 增量安装进同一个 BufferDiff，不丢弃实体；
+/// 修订文本变化时，GitStore 按这里记录的角色把新文本经 set_revisions 整体提交进同一个 BufferDiff，不丢弃实体；
 /// 弱引用保证没有视图持有时缓存随之释放。
 struct SharedDiff {
     entity: WeakEntity<BufferDiff>,
     base_revision: GitRevision,
     index_revision: GitRevision,
+    /// 已暂存视图的新侧就是 index；缺失修订仍以空文本参与暂存状态判定。
+    index_is_working: bool,
 }
 
 /// 一个路径尚未被权威 index 文本确认的乐观编辑批次。
@@ -286,6 +291,42 @@ impl RevisionDocument {
             Self::Missing { .. } => None,
         }
     }
+
+    fn source(&self) -> Option<Entity<LanguageBuffer>> {
+        match self {
+            Self::Present(document) => Some(document.clone()),
+            Self::Missing { empty_diff_source } => empty_diff_source.clone(),
+        }
+    }
+}
+
+type RevisionKey = (GitRevision, AbsolutePathBuf);
+pub type RevisionLoadResult = Result<Option<Entity<LanguageBuffer>>, Arc<anyhow::Error>>;
+type RevisionLoad = Shared<Task<RevisionLoadResult>>;
+
+#[derive(Default)]
+enum RevisionLoading {
+    #[default]
+    Idle,
+    Loading(RevisionLoad),
+    Failed(Arc<anyhow::Error>),
+}
+
+impl RevisionLoading {
+    fn active(&self) -> Option<RevisionLoad> {
+        match self {
+            Self::Loading(load) => Some(load.clone()),
+            Self::Idle | Self::Failed(_) => None,
+        }
+    }
+}
+
+/// 同一路径／修订的文档、加载代次与在途任务由 GitStore 一起管理。
+#[derive(Default)]
+struct RevisionState {
+    document: Option<RevisionDocument>,
+    generation: u64,
+    loading: RevisionLoading,
 }
 
 pub struct GitStore {
@@ -303,9 +344,7 @@ pub struct GitStore {
     /// HEAD/index 修订状态缓存；按 (revision, path) 唯一，内容变化时就地刷新，实体身份保持稳定。
     /// Missing 保留修订缺失事实，并按需持有 diff 新侧所需的空文档。
     /// 修订文档是 HEAD/index 的唯一权威实例，工作区视图与 diff 都从这里取用。
-    revision_documents: HashMap<(GitRevision, AbsolutePathBuf), RevisionDocument>,
-    /// 分修订递增的缓存版本；刷新前启动的后台读取不得回填新文本。
-    revision_generations: HashMap<GitRevision, u64>,
+    revision_documents: HashMap<RevisionKey, RevisionState>,
     /// 每个路径的乐观 index 编辑批次：所有编辑相对同一稳定基准文本，用于派生写盘文本。
     ///
     /// 批次在权威 index 修订文档安装新文本时清除；
@@ -439,7 +478,6 @@ impl GitStore {
             status_index: Arc::new(GitStatusSnapshot::default()),
             active_repo_workdir: None,
             revision_documents: HashMap::new(),
-            revision_generations: HashMap::from([(GitRevision::Head, 1), (GitRevision::Index, 1)]),
             pending_index: HashMap::new(),
             shared_diffs: HashMap::new(),
             language_registry,
@@ -547,7 +585,7 @@ impl GitStore {
     /// 按 (路径, working 实体, 调用方键) 共享单个文件的 diff 实体。
     ///
     /// 同一份 diff 跨编辑器与面板视图复用；
-    /// base/index 文本变化由 GitStore 经 set_base_text/set_index_text 就地安装，缓存按弱引用在无视图持有时释放。
+    /// base/index 文本变化由 GitStore 经 set_revisions 整体提交，缓存按弱引用在无视图持有时释放。
     pub fn file_diff(
         &mut self,
         input: &BufferDiffInput,
@@ -563,12 +601,19 @@ impl GitStore {
             return entity;
         }
         let entity = cx.new(|cx| BufferDiff::new(input.clone(), cx));
+        let index_is_working = self
+            .revision_documents
+            .get(&(index_revision, key.0.clone()))
+            .and_then(|state| state.document.as_ref())
+            .and_then(RevisionDocument::source)
+            .is_some_and(|source| source.entity_id() == input.working.entity_id());
         self.shared_diffs.insert(
             key,
             SharedDiff {
                 entity: entity.downgrade(),
                 base_revision,
                 index_revision,
+                index_is_working,
             },
         );
         entity
@@ -576,7 +621,7 @@ impl GitStore {
 
     /// 把某个修订的新文本增量安装到引用它的共享 diff。
     ///
-    /// 只更新角色匹配的 base/index 一侧；文本未变时 BufferDiff 自身短路，不触发重算。
+    /// 读取同一批已安装修订并提交完整 base/index 输入；文本未变时 BufferDiff 保持当前任务与结果。
     fn push_revision_text_to_diffs(
         &mut self,
         revision: GitRevision,
@@ -597,24 +642,26 @@ impl GitStore {
             let Some(diff) = self.shared_diffs.get(&key) else {
                 continue;
             };
-            let update_base = diff.base_revision == revision;
-            let update_index = diff.index_revision == revision;
             let Some(entity) = diff.entity.upgrade() else {
                 self.shared_diffs.remove(&key);
                 continue;
             };
-            let text = text.as_ref().map(|text| text.to_string());
-            if update_base {
-                let text = text.clone();
-                entity.update(cx, |diff, cx| {
-                    diff.set_base_text(text, cx).detach();
-                });
+            let base_text = if diff.base_revision == revision {
+                text.clone()
+            } else {
+                self.revision_text(diff.base_revision, path.as_path(), cx)
+                    .map(Arc::from)
+            };
+            let mut index_text = if diff.index_revision == revision {
+                text.clone()
+            } else {
+                self.revision_text(diff.index_revision, path.as_path(), cx)
+                    .map(Arc::from)
+            };
+            if diff.index_is_working && index_text.is_none() {
+                index_text = Some(Arc::from(""));
             }
-            if update_index {
-                entity.update(cx, |diff, cx| {
-                    diff.set_index_text(text, cx).detach();
-                });
-            }
+            entity.update(cx, |diff, cx| diff.set_revisions(base_text, index_text, cx));
         }
     }
 
@@ -1101,182 +1148,170 @@ impl GitStore {
         self.repository_scan_ready
     }
 
-    /// 读取 HEAD 或 index 中 `path` 的文本，建立/原位刷新修订文档并回填缓存。
+    /// 读取 HEAD 或 index 文本；同一路径的调用共享在途加载。
     ///
-    /// 缓存生命周期全部由 GitStore 管理：加载即回填；HEAD/index 变化时就地重读并把新文本推送给共享 diff。
-    /// 返回 `None` 表示该修订中文件不存在（同样写入缓存，避免调用方反复重试）。
+    /// 刷新替换该路径的加载代次。旧调用等待新任务，只有最新代次可以安装文档与 diff 输入。
     pub fn load_revision_document(
-        &self,
+        &mut self,
         revision: GitRevision,
         path: &Path,
-        cx: &App,
-    ) -> Task<Option<Entity<LanguageBuffer>>> {
-        let background = self.background.clone();
-        let Ok(path) = canonicalize_path(path) else {
-            return background.spawn(async { None });
+        cx: &mut Context<Self>,
+    ) -> Task<RevisionLoadResult> {
+        let path = match canonicalize_path(path) {
+            Ok(path) => path,
+            Err(error) => return Task::ready(Err(Arc::new(error.into()))),
         };
-        let Some(repository) = self.repo_for_path(path.as_path()) else {
-            return background.spawn(async { None });
-        };
-        let repository = repository.repository.clone();
-        let generation = self
-            .revision_generations
-            .get(&revision)
-            .copied()
-            .unwrap_or_default();
-        let Some(relative) =
-            repository_working_directory(repository.as_ref()).relative_path(path.as_path())
-        else {
-            return background.spawn(async { None });
-        };
+        let key = (revision, path);
+        let load = self
+            .revision_documents
+            .get(&key)
+            .and_then(|state| state.loading.active())
+            .or_else(|| self.start_revision_load(key, cx));
+        match load {
+            Some(load) => cx.spawn(async move |_, _| load.await),
+            None => Task::ready(Err(Arc::new(anyhow::anyhow!(
+                "文件不属于已加载的 Git 仓库"
+            )))),
+        }
+    }
+
+    fn start_revision_load(
+        &mut self,
+        key: RevisionKey,
+        cx: &mut Context<Self>,
+    ) -> Option<RevisionLoad> {
+        let (revision, path) = key.clone();
+        let repository = self.repo_for_path(path.as_path())?.repository.clone();
+        let relative =
+            repository_working_directory(repository.as_ref()).relative_path(path.as_path())?;
         let revision_spec = match revision {
             GitRevision::Head => format!("HEAD:{relative}"),
             GitRevision::Index => format!(":{relative}"),
         };
-        let loaded = background.spawn(async move {
-            let contents = repository.load_revisions(&[&revision_spec]).ok()?;
-            let content = contents.into_iter().next()??;
-            Some(String::from_utf8_lossy(&content).into_owned())
+        let state = self.revision_documents.entry(key.clone()).or_default();
+        state.generation = state.generation.wrapping_add(1).max(1);
+        let generation = state.generation;
+        let loaded = self.background.spawn(async move {
+            let contents = repository.load_revisions(&[&revision_spec])?;
+            Ok::<_, anyhow::Error>(
+                contents
+                    .into_iter()
+                    .next()
+                    .flatten()
+                    .map(|content| String::from_utf8_lossy(&content).into_owned()),
+            )
         });
-        let this = self.self_handle.clone();
-        let language_registry = Arc::clone(&self.language_registry);
-        cx.spawn(async move |cx| {
-            let text = loaded.await;
-
-            // 已有修订文档且文本变化：经语言层派生快照（后台语法）在版本校验后整体安装；
-            // 文本缺失或尚无文档时仍走同步建文档路径。
-            if let Some(new_text) = text.clone() {
-                let existing = this
+        let task_key = key.clone();
+        let task = cx
+            .spawn(async move |this, cx| {
+                let loaded = loaded.await.map_err(Arc::new);
+                let text = loaded.as_ref().ok().and_then(Clone::clone);
+                let source = this
                     .update(cx, |store, _| {
-                        if store.revision_generations.get(&revision).copied() != Some(generation) {
-                            return None;
-                        }
-                        store
-                            .revision_documents
-                            .get(&(revision, path.clone()))
-                            .and_then(RevisionDocument::present)
+                        let state = store.revision_documents.get(&key)?;
+                        (state.generation == generation && loaded.is_ok())
+                            .then(|| state.document.as_ref().and_then(RevisionDocument::source))
+                            .flatten()
                     })
                     .ok()
                     .flatten();
-                if let Some(document) = existing {
-                    let current =
-                        document.update(cx, |document, _| snapshot_text(&document.text_snapshot()));
-                    if current != new_text {
-                        let new_text_arc: Arc<str> = Arc::from(new_text.as_str());
-                        let fallback = new_text.clone();
-                        let task = document
-                            .update(cx, |document, cx| document.snapshot_with_text(new_text, cx));
-                        match task.await {
-                            Ok(edited) => {
-                                document.update(cx, |document, cx| {
-                                    if document.fast_forward(edited, cx).is_ok() {
-                                        // 修订文档反映 Git HEAD/index 的权威内容，不代表用户编辑。
-                                        document.mark_saved(cx);
-                                    }
-                                });
-                            }
-                            Err(_) => {
-                                document.update(cx, |document, cx| {
-                                    let _ = document.replace_text(fallback, cx);
-                                });
-                            }
-                        }
-                        // 修订文本前进：清除以旧 index 基准派生的乐观批次，并把新文本增量安装进引用该修订的共享 diff（同一实体，不重建）。
-                        this.update(cx, |store, cx| {
-                            if revision == GitRevision::Index {
-                                store.pending_index.remove(&path);
-                            }
-                            store.push_revision_text_to_diffs(
-                                revision,
-                                &path,
-                                Some(Arc::clone(&new_text_arc)),
-                                cx,
-                            );
-                        })
-                        .ok();
+                let edited = if let Some(source) = &source {
+                    Some(
+                        source
+                            .update(cx, |source, cx| {
+                                source.snapshot_with_text(text.clone().unwrap_or_default(), cx)
+                            })
+                            .await
+                            .expect("Git 修订文本必须能派生语言快照"),
+                    )
+                } else {
+                    None
+                };
+                let installed = this.update(cx, |store, cx| {
+                    let state = store
+                        .revision_documents
+                        .get(&key)
+                        .expect("加载任务必须有修订状态");
+                    if state.generation != generation {
+                        return match &state.loading {
+                            RevisionLoading::Loading(current) => Err(current.clone()),
+                            RevisionLoading::Failed(error) => Ok(Err(error.clone())),
+                            RevisionLoading::Idle => Ok(Ok(state
+                                .document
+                                .as_ref()
+                                .and_then(RevisionDocument::present))),
+                        };
                     }
-                    return Some(document);
+                    if let Err(error) = loaded {
+                        store.revision_documents.get_mut(&key).unwrap().loading =
+                            RevisionLoading::Failed(error.clone());
+                        cx.emit(GitStoreEvent::RevisionLoadFailed(format!(
+                            "读取 Git 修订失败（{}，{revision:?}）：{error:#}",
+                            path.display()
+                        )));
+                        return Ok(Err(error));
+                    }
+                    // 版本检查覆盖读取、文本差异计算和语法解析，安装与 diff 推送在同一轮更新中完成。
+                    if let (Some(source), Some(edited)) = (&source, edited) {
+                        source.update(cx, |source, cx| {
+                            source
+                                .fast_forward(edited, cx)
+                                .expect("修订文档只由当前 GitStore 加载代次修改");
+                            source.mark_saved(cx);
+                        });
+                    }
+                    let document = store.store_revision_document(revision, path, text, source, cx);
+                    store.revision_documents.get_mut(&key).unwrap().loading = RevisionLoading::Idle;
+                    Ok(Ok(document))
+                });
+                match installed {
+                    Ok(Ok(document)) => document,
+                    Ok(Err(current)) => current.await,
+                    Err(error) => Err(Arc::new(error)),
                 }
-            }
-
-            this.update(cx, |store, cx| {
-                if store.revision_generations.get(&revision).copied() != Some(generation) {
-                    return None;
-                }
-                store.store_revision_document(revision, path, text, &language_registry, cx)
             })
-            .ok()
-            .flatten()
-        })
+            .shared();
+        self.revision_documents.get_mut(&task_key).unwrap().loading =
+            RevisionLoading::Loading(task.clone());
+        Some(task)
     }
 
-    /// 建立或原位刷新修订文档；`text` 为 None 表示该修订中文件不存在。
+    /// 安装修订存在性与文本。文件删除／恢复时仍保留被 diff 引用的同一个源实体。
     fn store_revision_document(
         &mut self,
         revision: GitRevision,
         path: AbsolutePathBuf,
         text: Option<String>,
-        language_registry: &Arc<LanguageRegistry>,
+        source: Option<Entity<LanguageBuffer>>,
         cx: &mut Context<Self>,
     ) -> Option<Entity<LanguageBuffer>> {
         let key = (revision, path.clone());
-        let (document, text_arc) = match text {
-            None => {
-                // 缺失也要写入缓存：键存在表示“已加载”，避免调用方反复重试。
-                if revision == GitRevision::Index {
-                    self.pending_index.remove(&path);
-                }
-                let empty_diff_source = match self.revision_documents.get(&key) {
-                    Some(RevisionDocument::Missing { empty_diff_source }) => {
-                        empty_diff_source.clone()
-                    }
-                    _ => None,
-                };
-                self.revision_documents
-                    .insert(key, RevisionDocument::Missing { empty_diff_source });
-                (None, None)
-            }
-            Some(text) => {
-                let text_arc: Arc<str> = Arc::from(text.as_str());
-                if let Some(RevisionDocument::Present(document)) =
-                    self.revision_documents.get(&key).cloned()
-                {
-                    if snapshot_text(&document.read(cx).text_snapshot()) != text {
-                        // 权威 index 文本前进：以旧基准派生的乐观批次已被取代。
-                        if revision == GitRevision::Index {
-                            self.pending_index.remove(&path);
-                        }
-                        document.update(cx, |document, cx| {
-                            document
-                                .replace_text(text, cx)
-                                .expect("修订文档文本必须能原位刷新");
-                        });
-                    }
-                    (Some(document), Some(text_arc))
-                } else {
-                    if revision == GitRevision::Index {
-                        self.pending_index.remove(&path);
-                    }
-                    let buffer = Buffer::from_text(text, BufferConfig::default())
-                        .expect("修订文档文本必须能创建 Buffer");
-                    // 修订源的文件路径必须与工作区源一致（绝对），excerpt 定位、语言解析与导航按源路径匹配。
-                    let document = cx.new(|cx| {
-                        LanguageBuffer::new(
-                            buffer,
-                            Some(path.as_path().to_path_buf()),
-                            Arc::clone(language_registry),
-                            cx,
-                        )
-                    });
-                    self.revision_documents
-                        .insert(key, RevisionDocument::Present(document.clone()));
-                    (Some(document), Some(text_arc))
-                }
-            }
+        let text_arc: Option<Arc<str>> = text.as_deref().map(Arc::from);
+        let document = match text {
+            None => RevisionDocument::Missing {
+                empty_diff_source: source,
+            },
+            Some(text) => RevisionDocument::Present(source.unwrap_or_else(|| {
+                let buffer = Buffer::from_text(text, BufferConfig::default())
+                    .expect("修订文本必须能创建 Buffer");
+                let registry = Arc::clone(&self.language_registry);
+                cx.new(|cx| {
+                    LanguageBuffer::new(buffer, Some(path.as_path().to_path_buf()), registry, cx)
+                })
+            })),
         };
-        // 修订文本前进：增量安装进引用该修订的共享 diff（同一实体，不重建）。
+        let present = document.present();
+        self.revision_documents.get_mut(&key).unwrap().document = Some(document);
+        if revision == GitRevision::Index
+            && self
+                .pending_index
+                .get(&path)
+                .is_some_and(|pending| Some(pending.base.as_ref()) != text_arc.as_deref())
+        {
+            self.pending_index.remove(&path);
+        }
         self.push_revision_text_to_diffs(revision, &path, text_arc, cx);
-        document
+        present
     }
 
     /// 后台加载活动仓库的提交图数据（一次性读，不进 job 队列、不维护快照状态）。
@@ -1307,6 +1342,7 @@ impl GitStore {
     ) -> Option<Entity<LanguageBuffer>> {
         self.revision_documents
             .get(&(revision, canonicalize_path(path).ok()?))
+            .and_then(|state| state.document.as_ref())
             .and_then(RevisionDocument::present)
     }
 
@@ -1322,7 +1358,7 @@ impl GitStore {
         let key = (revision, canonicalize_path(path).ok()?);
         let language_registry = Arc::clone(&self.language_registry);
         let absolute_path = key.1.as_path().to_path_buf();
-        match self.revision_documents.get_mut(&key)? {
+        match self.revision_documents.get_mut(&key)?.document.as_mut()? {
             RevisionDocument::Present(document) => Some(document.clone()),
             RevisionDocument::Missing { empty_diff_source } => {
                 if let Some(document) = empty_diff_source {
@@ -1355,7 +1391,9 @@ impl GitStore {
         let Ok(path) = canonicalize_path(path) else {
             return false;
         };
-        self.revision_documents.contains_key(&(revision, path))
+        self.revision_documents
+            .get(&(revision, path))
+            .is_some_and(|state| state.document.is_some())
     }
 
     /// 修订内容可能变化：对已加载或被共享 diff 引用的路径就地重新读取。
@@ -1371,28 +1409,31 @@ impl GitStore {
         if paths.is_empty() {
             return;
         }
-        let mut targets = std::collections::BTreeSet::new();
-        for path in paths {
-            let loaded = self
-                .revision_documents
-                .contains_key(&(revision, path.clone()));
-            let referenced = self.shared_diffs.iter().any(|(key, diff)| {
-                &key.0 == path
-                    && (diff.base_revision == revision || diff.index_revision == revision)
-            });
-            if loaded || referenced {
-                targets.insert(path.clone());
-            }
-        }
-        if targets.is_empty() {
-            return;
-        }
-        // 刷新前推进版本：此前启动的后台读取不得再安装旧文本。
-        let generation = self.revision_generations.entry(revision).or_insert(0);
-        *generation = generation.wrapping_add(1).max(1);
+        // 目录／仓库元数据事件覆盖其下已加载、正在加载或被 diff 引用的文件。
+        let mut targets: BTreeSet<AbsolutePathBuf> = self
+            .revision_documents
+            .keys()
+            .filter(|(cached, path)| {
+                *cached == revision
+                    && paths
+                        .iter()
+                        .any(|changed| path.starts_with(changed.as_path()))
+            })
+            .map(|(_, path)| path.clone())
+            .collect();
+        targets.extend(
+            self.shared_diffs
+                .iter()
+                .filter(|(key, diff)| {
+                    (diff.base_revision == revision || diff.index_revision == revision)
+                        && paths
+                            .iter()
+                            .any(|changed| key.0.starts_with(changed.as_path()))
+                })
+                .map(|(key, _)| key.0.clone()),
+        );
         for path in targets {
-            self.load_revision_document(revision, path.as_path(), cx)
-                .detach();
+            self.start_revision_load((revision, path), cx);
         }
     }
 

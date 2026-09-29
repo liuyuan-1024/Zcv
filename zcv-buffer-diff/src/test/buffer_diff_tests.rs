@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use gpui::{AppContext as _, Entity, Task, TestAppContext};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
-use zcv_text::{Buffer, BufferConfig};
+use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TransactionMetadata};
 
-use crate::{BufferDiff, BufferDiffInput, DiffRefresh, diff_line_boundary};
+use crate::{BufferDiff, BufferDiffInput, diff_line_boundary};
 
 #[test]
 fn diff_line_boundary_excludes_only_the_terminal_empty_line() {
@@ -76,7 +76,7 @@ fn rapid_recomputes_replace_the_single_owned_task(cx: &mut TestAppContext) {
             "实体必须拥有在途任务"
         );
         cx.update_entity(&diff, |diff, cx| {
-            diff.recompute_with_refresh(DiffRefresh::RebuildProjection, cx);
+            diff.recompute(cx);
         });
     }
     cx.run_until_parked();
@@ -105,8 +105,8 @@ fn base_version_change_discards_stale_hunks(cx: &mut TestAppContext) {
     });
 
     // 初始 diff 在途时刷新 base；working 版本保持不变。
-    let _task = cx.update_entity(&diff, |diff, cx| {
-        diff.set_base_text(Some("a\nLONGER\nc\n".to_string()), cx)
+    cx.update_entity(&diff, |diff, cx| {
+        diff.set_revisions(Some(Arc::from("a\nLONGER\nc\n")), None, cx)
     });
     cx.run_until_parked();
 
@@ -122,5 +122,182 @@ fn base_version_change_discards_stale_hunks(cx: &mut TestAppContext) {
     assert!(
         cx.update_entity(&diff, |diff, cx| diff.is_current_version_calculated(cx)),
         "base 前进后必须补算到当前输入版本"
+    );
+}
+
+#[gpui::test]
+fn latest_revision_text_supersedes_an_in_flight_change(cx: &mut TestAppContext) {
+    let working = language_buffer("原始\n", "src/a.rs", cx);
+    let diff = cx.new(|cx| {
+        let mut input = buffer_diff_input(working, Some("原始\n"), "src/a.rs");
+        input.index_text = Some("原始\n".into());
+        BufferDiff::new(input, cx)
+    });
+    cx.run_until_parked();
+    for base in [true, false] {
+        diff.update(cx, |diff, cx| {
+            if base {
+                diff.set_revisions(Some(Arc::from("过期\n")), Some(Arc::from("原始\n")), cx);
+                diff.set_revisions(Some(Arc::from("原始\n")), Some(Arc::from("原始\n")), cx);
+            } else {
+                diff.set_revisions(Some(Arc::from("原始\n")), Some(Arc::from("过期\n")), cx);
+                diff.set_revisions(Some(Arc::from("原始\n")), Some(Arc::from("原始\n")), cx);
+            }
+        });
+        cx.run_until_parked();
+        diff.read_with(cx, |diff, cx| {
+            let source = if base {
+                diff.base_source()
+            } else {
+                diff.index_source()
+            }
+            .unwrap();
+            assert_eq!(
+                super::full_text(&source.read(cx).text_snapshot()),
+                "原始\n",
+                "最新文本与当前相同时也必须淘汰旧安装任务"
+            );
+            assert!(diff.is_current_version_calculated(cx));
+            assert_eq!(diff.snapshot().hunk_count(), 0);
+        });
+    }
+}
+
+#[gpui::test]
+fn source_edits_recalculate_without_a_projection_consumer(cx: &mut TestAppContext) {
+    let working = language_buffer("原始\n", "src/a.rs", cx);
+    let diff = cx.new(|cx| {
+        BufferDiff::new(
+            buffer_diff_input(working.clone(), Some("原始\n"), "src/a.rs"),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    for (text, count) in [("变更\n", 1), ("原始\n", 0)] {
+        working.update(cx, |working, cx| {
+            working.replace_text(text.into(), cx).unwrap()
+        });
+        cx.run_until_parked();
+        diff.read_with(cx, |diff, cx| {
+            assert!(diff.is_current_version_calculated(cx));
+            assert_eq!(
+                diff.snapshot().hunk_count(),
+                count,
+                "没有挂接组合文档时，源编辑也必须推进差异结果"
+            );
+        });
+    }
+}
+
+#[gpui::test]
+fn hunk_boundaries_remain_ordered_during_source_edits(cx: &mut TestAppContext) {
+    for (text, end) in [("a\nb\nc", 2), ("a\nedited\nb\nc", 9)] {
+        let working = language_buffer(text, "src/a.rs", cx);
+        let diff = cx.new(|cx| {
+            BufferDiff::new(
+                buffer_diff_input(working.clone(), Some("a\nold1\nold2\nb\nc"), "src/a.rs"),
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        let hunk = diff.read_with(cx, |diff, _| {
+            assert_eq!(diff.snapshot().hunk_count(), 1);
+            diff.snapshot().hunks().next().unwrap().clone()
+        });
+
+        working.update(cx, |working, cx| {
+            working
+                .edit(
+                    [Edit::insert(ByteOffset::new(2), "more\n").unwrap()],
+                    TransactionMetadata::default(),
+                    cx,
+                )
+                .unwrap();
+            let snapshot = working.text_snapshot();
+            assert_eq!(
+                hunk.buffer_range.start.resolve_in(&snapshot).unwrap(),
+                ByteOffset::new(2),
+                "起点插入不能把已有区块身份推到插入内容之后"
+            );
+            assert_eq!(
+                hunk.buffer_range.end.resolve_in(&snapshot).unwrap(),
+                ByteOffset::new(if end == 2 { 2 } else { end + 5 }),
+                "纯删除区块在后台重算前仍须保持空范围"
+            );
+        });
+        cx.run_until_parked();
+        let hunk = diff.read_with(cx, |diff, _| {
+            diff.snapshot().hunks().next().unwrap().clone()
+        });
+        working.update(cx, |working, cx| {
+            let end = hunk
+                .buffer_range
+                .end
+                .resolve_in(&working.text_snapshot())
+                .unwrap();
+            working
+                .edit(
+                    [Edit::insert(end, "after\n").unwrap()],
+                    TransactionMetadata::default(),
+                    cx,
+                )
+                .unwrap();
+            assert_eq!(
+                hunk.buffer_range
+                    .end
+                    .resolve_in(&working.text_snapshot())
+                    .unwrap(),
+                end,
+                "半开区块范围不吸收终点插入"
+            );
+        });
+        cx.run_until_parked();
+    }
+}
+
+#[gpui::test]
+fn revision_inputs_and_hunks_are_published_together(cx: &mut TestAppContext) {
+    let working = language_buffer("工作区\n", "src/a.rs", cx);
+    let diff =
+        cx.new(|cx| BufferDiff::new(buffer_diff_input(working, Some("旧基线\n"), "src/a.rs"), cx));
+    cx.run_until_parked();
+    let published = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = published.clone();
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&diff, move |diff, _, cx| {
+            observed.store(true, std::sync::atomic::Ordering::SeqCst);
+            diff.read_with(cx, |diff, cx| {
+                assert_eq!(
+                    super::full_text(&diff.base_source().unwrap().read(cx).text_snapshot()),
+                    "新基线\n"
+                );
+                assert_eq!(
+                    super::full_text(&diff.index_source().unwrap().read(cx).text_snapshot()),
+                    "工作区\n"
+                );
+                assert!(diff.is_current_version_calculated(cx));
+                assert!(
+                    diff.snapshot()
+                        .hunks()
+                        .all(|hunk| hunk.staging == crate::DiffHunkStaging::Staged)
+                );
+            });
+        })
+    });
+    diff.update(cx, |diff, cx| {
+        diff.set_revisions(Some(Arc::from("新基线\n")), Some(Arc::from("工作区\n")), cx)
+    });
+    diff.read_with(cx, |diff, cx| {
+        assert_eq!(
+            super::full_text(&diff.base_source().unwrap().read(cx).text_snapshot()),
+            "旧基线\n",
+            "在途计算保留上一批完整输入"
+        );
+        assert!(diff.index_source().is_none());
+    });
+    cx.run_until_parked();
+    assert!(
+        published.load(std::sync::atomic::Ordering::SeqCst),
+        "必须发布新的差异结果"
     );
 }

@@ -737,6 +737,47 @@ fn point_converter_preserves_tabs_unicode_and_wrap_across_repeated_ranges(cx: &m
 }
 
 #[gpui::test]
+fn point_converter_preserves_rows_across_wrapped_and_unwrapped_spans(cx: &mut TestAppContext) {
+    let text = "\t很长的一行 alpha beta gamma delta epsilon\nold\nnew\ncontext\n\t另一长行 alpha beta gamma delta\nafter\n";
+    let map = wrap_map(text, 90., cx);
+    cx.run_until_parked();
+    let snapshot = display_snapshot(cx, &map);
+    let boundaries = text
+        .char_indices()
+        .map(|(offset, _)| offset)
+        .chain(std::iter::once(text.len()))
+        .collect::<Vec<_>>();
+    let mut ranges = boundaries
+        .windows(2)
+        .map(|pair| pair[0]..pair[1])
+        .collect::<Vec<_>>();
+    ranges.extend([0..text.len(), 0..1, 1..text.len(), 0..text.len()]);
+    let mut converter = snapshot.display_point_converter();
+    for range in ranges {
+        let start = MultiBufferOffset::new(range.start);
+        let end = MultiBufferOffset::new(range.end);
+        let expected_start = snapshot.offset_to_display_point(start).unwrap();
+        let expected_end = snapshot.offset_to_display_point(end).unwrap();
+        let projected = converter
+            .map(MultiBufferRange::new(start, end).unwrap())
+            .unwrap();
+        let expected = (expected_start != expected_end)
+            .then(|| DisplayRange::new(expected_start, expected_end));
+        assert_eq!(projected, expected, "范围 {range:?} 必须保持真实显示行");
+        if let Some(projected) = projected {
+            assert_eq!(
+                snapshot.display_point_to_offset(projected.start()).unwrap(),
+                start
+            );
+            assert_eq!(
+                snapshot.display_point_to_offset(projected.end()).unwrap(),
+                end
+            );
+        }
+    }
+}
+
+#[gpui::test]
 fn rows_consumes_the_requested_rows(cx: &mut TestAppContext) {
     let buffer = Buffer::from_text("a\nb\nc".to_string(), BufferConfig::default())
         .expect("测试 Buffer 应能创建");

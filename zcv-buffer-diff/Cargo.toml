@@ -8,6 +8,7 @@ description = "单文件版本化 diff 状态"
 path = "src/buffer_diff.rs"
 
 [dependencies]
+futures.workspace = true
 gpui.workspace = true
 imara-diff.workspace = true
 zcv-text.workspace = true

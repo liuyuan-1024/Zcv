@@ -101,8 +101,8 @@ impl FileStatus {
                 index_status,
                 worktree_status,
             } => {
-                matches!(index_status, StatusCode::Deleted)
-                    || matches!(worktree_status, StatusCode::Deleted)
+                (index_status == StatusCode::Deleted && worktree_status != StatusCode::Added)
+                    || worktree_status == StatusCode::Deleted
             }
             _ => false,
         }
@@ -148,8 +148,7 @@ impl FileStatus {
                 index_status,
                 worktree_status,
             } => {
-                let deleted = matches!(index_status, StatusCode::Deleted)
-                    || matches!(worktree_status, StatusCode::Deleted);
+                let deleted = self.is_deleted();
                 let modified =
                     matches!(index_status, StatusCode::Modified | StatusCode::TypeChanged)
                         || matches!(
@@ -192,7 +191,9 @@ pub struct BranchStatus {
 
 /// `git status --porcelain=v1 -z` 的解析结果。
 ///
-/// 路径按仓库根的相对路径存储（unix 分隔符），由调用方拼接工作目录转绝对路径。
+/// 路径按仓库根的相对路径存储（unix 分隔符），排序且唯一；
+/// 每项保留完整的索引与工作区状态。
+/// 调用方拼接工作目录转绝对路径。
 #[derive(Debug, Default)]
 pub struct GitStatus {
     pub statuses: Vec<(PathBuf, FileStatus)>,
@@ -298,7 +299,36 @@ impl GitStatus {
             statuses.push((crate::path_from_git_bytes(path), status));
         }
         statuses.sort_by(|(a, _), (b, _)| a.cmp(b));
-        Ok(Self { statuses, branch })
+        let mut merged: Vec<(PathBuf, FileStatus)> = Vec::with_capacity(statuses.len());
+        for (path, status) in statuses {
+            if let Some((previous_path, previous)) = merged.last_mut()
+                && *previous_path == path
+            {
+                const INDEX_DELETED: FileStatus = FileStatus::Tracked {
+                    index_status: StatusCode::Deleted,
+                    worktree_status: StatusCode::Unmodified,
+                };
+                // index 删除但磁盘文件仍存在时，Git 将同一路径分成 D 与 ?? 两条记录。
+                *previous = match (*previous, status) {
+                    (INDEX_DELETED, FileStatus::Untracked)
+                    | (FileStatus::Untracked, INDEX_DELETED) => FileStatus::Tracked {
+                        index_status: StatusCode::Deleted,
+                        worktree_status: StatusCode::Added,
+                    },
+                    (a, b) if a == b => a,
+                    _ => anyhow::bail!(
+                        "同一路径存在互相冲突的 Git 状态：{}（{previous:?}、{status:?}）",
+                        path.display()
+                    ),
+                };
+            } else {
+                merged.push((path, status));
+            }
+        }
+        Ok(Self {
+            statuses: merged,
+            branch,
+        })
     }
 }
 

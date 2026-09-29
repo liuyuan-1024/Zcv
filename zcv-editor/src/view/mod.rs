@@ -1704,7 +1704,8 @@ impl Editor {
         };
         // DisplayMap 是显示投影的唯一权威：它变化后经唯一读取入口推进并刷新滚动模型。
         cx.observe(&this.display_map, |editor, _, cx| {
-            editor.advance_snapshots(cx)
+            editor.advance_snapshots(cx);
+            cx.notify();
         })
         .detach();
         // 设置变化时自动跟随；编辑器在测试环境无 SettingsStore 时保持默认。

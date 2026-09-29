@@ -388,8 +388,7 @@ impl WrapSnapshot {
             );
         }
         while let Some((old_rows, new_rows)) = edits.next() {
-            // 用新快照补齐「已发出新行 → 编辑新起点」的保留行；
-            // 这段只能是旧同构变换内尚未覆盖的行，按同构占位。
+            // 用新快照补齐「已发出新行 → 编辑新起点」的保留行。
             let gap = new_rows
                 .start
                 .saturating_sub(new_tree.summary().input.row());
@@ -404,9 +403,20 @@ impl WrapSnapshot {
 
             // 旧游标只向前推进到编辑终点，不越过包含它的旧变换。
             cursor.seek_forward(&TabPoint::new(old_rows.end, 0), Bias::Right);
-            let trailing = if let Some((next_old, _)) = edits.peek() {
+            // 编辑终点恰好落在未编辑 Wrap 行的行首时，保留这条完整变换。
+            // 其他情况沿用同构段尾部占位，避免从旧变换内部复制已编辑范围。
+            let trailing = if cursor.start().row() == old_rows.end
+                && cursor
+                    .item()
+                    .is_some_and(|transform| transform.kind == TransformKind::Wrap)
+            {
+                if let Some((next_old, _)) = edits.peek() {
+                    Some(cursor.slice(&TabPoint::new(next_old.start, 0), Bias::Right))
+                } else {
+                    Some(cursor.suffix())
+                }
+            } else if let Some((next_old, _)) = edits.peek() {
                 if next_old.start > cursor.end().row() {
-                    // 当前旧变换整体落在两编辑之间：尾部以同构占位，随后搬运整段旧变换。
                     if cursor.end().row() > old_rows.end {
                         push_isomorphic(&mut buffered, cursor.end().row() - old_rows.end);
                         new_tree.extend(buffered.drain(..), ());
@@ -414,7 +424,6 @@ impl WrapSnapshot {
                     cursor.next();
                     Some(cursor.slice(&TabPoint::new(next_old.start, 0), Bias::Right))
                 } else {
-                    // 下一编辑仍在当前旧变换内：其间的同构行由下一轮 gap 补齐。
                     None
                 }
             } else {
@@ -1579,8 +1588,7 @@ impl WrapWorker {
             );
         }
         while let Some((old_rows, new_rows)) = edits_iter.next() {
-            // 用新快照补齐「已发出新行 → 编辑新起点」的保留行；
-            // 这段只能是旧同构变换内尚未覆盖的行，按同构占位。
+            // 用新快照补齐「已发出新行 → 编辑新起点」的保留行。
             let gap = new_rows
                 .start
                 .saturating_sub(new_tree.summary().input.row());
@@ -1610,9 +1618,20 @@ impl WrapWorker {
 
             // 旧游标只向前推进到编辑终点，不越过包含它的旧变换。
             cursor.seek_forward(&TabPoint::new(old_rows.end, 0), Bias::Right);
-            let trailing = if let Some((next_old, _)) = edits_iter.peek() {
+            // 编辑终点恰好落在未编辑 Wrap 行的行首时，保留这条完整变换。
+            // 其他情况沿用同构段尾部占位，避免从旧变换内部复制已编辑范围。
+            let trailing = if cursor.start().row() == old_rows.end
+                && cursor
+                    .item()
+                    .is_some_and(|transform| transform.kind == TransformKind::Wrap)
+            {
+                if let Some((next_old, _)) = edits_iter.peek() {
+                    Some(cursor.slice(&TabPoint::new(next_old.start, 0), Bias::Right))
+                } else {
+                    Some(cursor.suffix())
+                }
+            } else if let Some((next_old, _)) = edits_iter.peek() {
                 if next_old.start > cursor.end().row() {
-                    // 当前旧变换整体落在两编辑之间：尾部以同构占位，随后搬运整段旧变换。
                     if cursor.end().row() > old_rows.end {
                         push_isomorphic(&mut buffered, cursor.end().row() - old_rows.end);
                         new_tree.extend(buffered.drain(..), ());
@@ -1620,7 +1639,6 @@ impl WrapWorker {
                     cursor.next();
                     Some(cursor.slice(&TabPoint::new(next_old.start, 0), Bias::Right))
                 } else {
-                    // 下一编辑仍在当前旧变换内：其间的同构行由下一轮 gap 补齐。
                     None
                 }
             } else {

@@ -577,6 +577,10 @@ impl DisplaySnapshot {
         self.wrap_snapshot().tab_snapshot().tab_width()
     }
 
+    pub(super) fn has_expanded_buffers(&self) -> bool {
+        self.block_snapshot.has_expanded_buffers()
+    }
+
     pub(super) fn wrap_snapshot(&self) -> &WrapSnapshot {
         self.block_snapshot.wrap_snapshot()
     }
@@ -913,7 +917,7 @@ pub(crate) struct DisplayMap {
     /// 换行层实体：它自己拥有配置、变换树、待处理批次与后台重排任务。
     wrap_map: Entity<WrapMap>,
     /// 由 BufferHeader 控制的整文件折叠；BlockMap 在 WrapMap 之上隐藏对应文本行。
-    folded_buffers: HashSet<BufferId>,
+    folded_buffers: Arc<HashSet<BufferId>>,
     /// 当前显示管线的持久派生快照；滚动和普通重绘只克隆快照，不重建 BlockSnapshot。
     snapshot: Option<DisplaySnapshot>,
     /// 组合文本源：DisplayMap 是组合文本变更与同步的唯一持有者。
@@ -976,7 +980,7 @@ impl DisplayMap {
             fold_map,
             tab_map,
             wrap_map,
-            folded_buffers: HashSet::new(),
+            folded_buffers: Arc::new(HashSet::new()),
             snapshot: None,
             multi_buffer: None,
             buffer_subscription: None,
@@ -1150,6 +1154,24 @@ impl DisplayMap {
     }
 
     fn commit_snapshot(&mut self, wrap_snapshot: &WrapSnapshot, wrap_edits: &[WrapEdit], cx: &App) {
+        if wrap_edits.is_empty()
+            && self.snapshot.as_ref().is_some_and(|previous| {
+                let old = previous.wrap_snapshot();
+                let old_buffer = old.buffer_snapshot();
+                let new_buffer = wrap_snapshot.buffer_snapshot();
+                old.version() == wrap_snapshot.version()
+                    && old.tab_snapshot().version() == wrap_snapshot.tab_snapshot().version()
+                    && old_buffer.version() == new_buffer.version()
+                    && old_buffer.metadata_version() == new_buffer.metadata_version()
+                    && old_buffer.topology_version() == new_buffer.topology_version()
+                    && same_diff_display(old_buffer.diff_display(), new_buffer.diff_display())
+                    && previous
+                        .block_snapshot
+                        .folded_buffers_match(&self.folded_buffers)
+            })
+        {
+            return;
+        }
         let block_snapshot = Arc::new(self.current_block_snapshot(wrap_snapshot, wrap_edits));
         let version = self.next_display_version();
         let mut snapshot = DisplaySnapshot {
@@ -1197,27 +1219,32 @@ impl DisplayMap {
         self.folded_buffers.contains(&buffer_id)
     }
 
-    pub(crate) fn set_buffer_folded(
+    pub(crate) fn set_buffers_folded(
         &mut self,
-        buffer_id: BufferId,
+        ids: impl IntoIterator<Item = BufferId>,
         folded: bool,
         cx: &mut Context<Self>,
-    ) {
-        let changed = if folded {
-            self.folded_buffers.insert(buffer_id)
-        } else {
-            self.folded_buffers.remove(&buffer_id)
-        };
+    ) -> bool {
+        let mut changed = false;
+        for id in ids {
+            if self.folded_buffers.contains(&id) != folded {
+                changed = true;
+                let buffers = Arc::make_mut(&mut self.folded_buffers);
+                if folded {
+                    buffers.insert(id);
+                } else {
+                    buffers.remove(&id);
+                }
+            }
+        }
         if changed {
-            // 折叠策略本身不产生换行编辑，但不能绕过 WrapMap 直接读取当前快照。
-            // 后台重排可能已在此之前完成；
-            // 必须从唯一同步入口取走其显式 WrapEdit，再与本次块策略变化一起提交，不能把“新快照 + 空 patch”交给 BlockMap。
             let tab_snapshot = self.tab_map.snapshot().clone();
             let (wrap_snapshot, wrap_edits) = self
                 .wrap_map
                 .update(cx, |map, cx| map.sync(tab_snapshot, &[], cx));
             self.commit_snapshot(&wrap_snapshot, &wrap_edits, cx);
         }
+        changed
     }
 
     /// 设置软换行宽度与字体；变化时启动预算内重排，经同步入口消费净编辑。

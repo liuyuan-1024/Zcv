@@ -2638,6 +2638,7 @@ fn invalid_source_anchor_does_not_fall_forward_to_another_file(cx: &mut TestAppC
             source_id: anchor.source_id,
             text_anchor: Anchor::new(BufferVersion::new(u64::MAX), anchor.text_anchor.offset())
                 .with_affinity(anchor.text_anchor.affinity()),
+            ..anchor
         }),
         other => other,
     };
@@ -2703,6 +2704,133 @@ fn empty_files_keep_distinct_composite_lines_and_locations(cx: &mut TestAppConte
         assert_eq!(
             buffer.location_for_offset(ByteOffset::new(1)).unwrap().path,
             PathBuf::from("deleted/b.rs")
+        );
+    });
+}
+
+#[gpui::test]
+fn bounded_logical_boundaries_include_empty_file_at_document_end(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "", cx);
+    let middle = singleton("src/b.rs", "one\ntwo\nthree\n", cx);
+    let last = singleton("src/c.rs", "", cx);
+    let last_id = cx.read_entity(&last, |buffer, _| buffer.buffer_id());
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                ExcerptRange::line_range(first, 0..1, cx),
+                ExcerptRange::line_range(middle.clone(), 0..1, cx),
+                ExcerptRange::line_range(middle, 2..3, cx),
+                ExcerptRange::line_range(last, 0..1, cx),
+            ],
+            cx,
+        );
+        let snapshot = buffer.snapshot(cx);
+        assert_eq!(snapshot.excerpt_boundaries().count(), 4);
+        let at_start: Vec<_> = snapshot
+            .excerpt_boundaries_in_range(MultiBufferOffset::ZERO..=MultiBufferOffset::ZERO)
+            .collect();
+        assert_eq!(at_start.len(), 1);
+        assert_eq!(at_start[0].next().path(), Path::new("src/a.rs"));
+        let at_end: Vec<_> = snapshot
+            .excerpt_boundaries_in_range(snapshot.len_bytes()..=snapshot.len_bytes())
+            .collect();
+        assert_eq!(at_end.len(), 1);
+        assert_eq!(at_end[0].next().path(), Path::new("src/c.rs"));
+        assert_eq!(at_end[0].previous().unwrap().path(), Path::new("src/b.rs"));
+        assert_eq!(
+            snapshot
+                .logical_excerpt_at_output_offset(snapshot.len_bytes())
+                .unwrap()
+                .path(),
+            Path::new("src/c.rs")
+        );
+        let range = snapshot.buffer_range(last_id).unwrap();
+        assert_eq!(range.start(), snapshot.len_bytes());
+        assert_eq!(range.end(), snapshot.len_bytes());
+    });
+}
+
+#[gpui::test]
+fn anchor_from_empty_source_follows_the_end_after_window_refresh(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    let anchor = combined.update(cx, |buffer, cx| {
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(source.clone(), 0..1, cx)], cx);
+        buffer
+            .snapshot(cx)
+            .anchor_at(MultiBufferOffset::ZERO, Affinity::After)
+    });
+    source.update(cx, |source, cx| {
+        source.replace_text("one\ntwo\nthree\n".into(), cx).unwrap()
+    });
+    cx.run_until_parked();
+    combined.update(cx, |buffer, cx| {
+        buffer.set_excerpts_for_path(
+            vec![
+                ExcerptRange::line_range(source.clone(), 0..1, cx),
+                ExcerptRange::line_range(source, 2..4, cx),
+            ],
+            cx,
+        );
+        let snapshot = buffer.snapshot(cx);
+        assert_eq!(
+            snapshot.anchor_offset(&anchor).unwrap(),
+            snapshot.len_bytes()
+        );
+        assert_eq!(
+            snapshot.projected_anchor_offset(&anchor).unwrap(),
+            Some(snapshot.len_bytes())
+        );
+    });
+}
+
+#[gpui::test]
+fn terminal_source_anchors_follow_prefix_and_suffix_after_window_refresh(cx: &mut TestAppContext) {
+    let source = singleton("src/a.rs", "one\ntwo\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    let (start, end) = combined.update(cx, |buffer, cx| {
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(source.clone(), 0..3, cx)], cx);
+        let snapshot = buffer.snapshot(cx);
+        (
+            snapshot.anchor_at(MultiBufferOffset::ZERO, Affinity::Before),
+            snapshot.anchor_at(snapshot.len_bytes(), Affinity::After),
+        )
+    });
+    source.update(cx, |source, cx| {
+        let snapshot = source.text_snapshot();
+        source
+            .edit(
+                [
+                    Edit::insert(ByteOffset::ZERO, "prefix\n").unwrap(),
+                    Edit::insert(snapshot.len_bytes(), "suffix\n").unwrap(),
+                ],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .unwrap();
+    });
+    combined.update(cx, |buffer, cx| {
+        buffer.set_excerpts_for_path(
+            vec![
+                ExcerptRange::line_range(source.clone(), 0..1, cx),
+                ExcerptRange::line_range(source, 3..5, cx),
+            ],
+            cx,
+        );
+        let snapshot = buffer.snapshot(cx);
+        assert_eq!(
+            snapshot.anchor_offset(&start).unwrap(),
+            MultiBufferOffset::ZERO
+        );
+        assert_eq!(
+            snapshot.projected_anchor_offset(&start).unwrap(),
+            Some(MultiBufferOffset::ZERO)
+        );
+        assert_eq!(snapshot.anchor_offset(&end).unwrap(), snapshot.len_bytes());
+        assert_eq!(
+            snapshot.projected_anchor_offset(&end).unwrap(),
+            Some(snapshot.len_bytes())
         );
     });
 }
@@ -4737,4 +4865,133 @@ fn zero_length_excerpt_at_document_start_is_visited(cx: &mut TestAppContext) {
         "零长度 excerpt 位于文档起点时不能被跳过"
     );
     assert_eq!(snapshot.excerpts().count(), 2);
+}
+
+#[gpui::test]
+fn dirty_summary_tracks_unique_sources_save_and_removal(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "one\ntwo\nthree\n", cx);
+    let second = singleton("src/b.rs", "other\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |buffer, cx| {
+        buffer.set_excerpts_for_path(
+            vec![
+                ExcerptRange::line_range(first.clone(), 0..1, cx),
+                ExcerptRange::line_range(first.clone(), 1..3, cx),
+            ],
+            cx,
+        );
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(second.clone(), 0..1, cx)], cx);
+        assert_eq!(buffer.snapshot(cx).file_buffer_ids().count(), 2);
+    });
+    first.update(cx, |source, cx| {
+        source
+            .edit(
+                [Edit::insert(ByteOffset::new(1), "X").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .unwrap()
+    });
+    second.update(cx, |source, cx| {
+        source
+            .edit(
+                [Edit::insert(ByteOffset::new(1), "Y").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .unwrap()
+    });
+    cx.run_until_parked();
+    assert!(combined.update(cx, |buffer, cx| buffer.snapshot(cx).is_dirty()));
+    first.update(cx, |source, cx| source.mark_saved(cx));
+    cx.run_until_parked();
+    assert!(
+        combined.update(cx, |buffer, cx| buffer.snapshot(cx).is_dirty()),
+        "保存一个源不能清除另一个源的未保存状态"
+    );
+    let before = combined.update(cx, |buffer, cx| buffer.snapshot(cx));
+    second.update(cx, |source, cx| source.mark_saved(cx));
+    cx.run_until_parked();
+    let saved = combined.update(cx, |buffer, cx| buffer.snapshot(cx));
+    assert!(!saved.is_dirty());
+    assert_eq!(before.version(), saved.version(), "保存只推进元数据");
+    assert!(saved.metadata_version() > before.metadata_version());
+    second.update(cx, |source, cx| {
+        source
+            .edit(
+                [Edit::insert(ByteOffset::new(1), "Z").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .unwrap()
+    });
+    cx.run_until_parked();
+    combined.update(cx, |buffer, cx| {
+        buffer.remove_excerpts_for_path(Path::new("src/b.rs"), cx);
+        let snapshot = buffer.snapshot(cx);
+        assert!(!snapshot.is_dirty(), "退出逻辑窗口的源不得进入文档保存状态");
+        assert_eq!(snapshot.file_buffer_ids().count(), 1);
+        buffer
+            .edit(
+                vec![Edit::insert(ByteOffset::ZERO, "立即修改").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .unwrap();
+        assert!(
+            buffer.snapshot(cx).is_dirty(),
+            "文本同步必须同时发布源的保存状态"
+        );
+    });
+}
+
+#[gpui::test]
+fn deleted_side_anchors_keep_order_and_detach_when_collapsed(cx: &mut TestAppContext) {
+    let working = singleton("src/a.rs", "before\nnew\nafter\n", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    combined.update(cx, |buffer, cx| {
+        buffer.set_diff_hunks_expanded_by_default(true, cx);
+        buffer.set_diff_files(
+            vec![test_diff_file(
+                working,
+                "src/a.rs",
+                "before\nold\nafter\n",
+                cx,
+            )],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    let (first, second) = combined.update(cx, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        let first = snapshot.anchor_at("before\n".len(), Affinity::After);
+        let second = snapshot.anchor_at("before\nol".len(), Affinity::After);
+        assert_eq!(first.cmp(&second, &snapshot), Ordering::Less);
+        assert_eq!(
+            snapshot.anchor_offset(&second).unwrap().get(),
+            "before\nol".len()
+        );
+        let MultiBufferAnchor::Excerpt(mut invalid) = second else {
+            panic!("删除侧必须生成源 Anchor")
+        };
+        let base = invalid.diff_base_anchor.as_mut().unwrap();
+        base.text_anchor = Anchor::new(BufferVersion::new(u64::MAX), base.text_anchor.offset());
+        assert!(
+            snapshot
+                .anchor_offset(&MultiBufferAnchor::Excerpt(invalid))
+                .is_err(),
+            "基线版本错误不能降级为脱离投影"
+        );
+        (first, second)
+    });
+    combined.update(cx, |buffer, cx| {
+        buffer.set_diff_hunks_expanded_by_default(false, cx);
+        let snapshot = buffer.snapshot(cx);
+        assert!(snapshot.projected_anchor_offset(&first).unwrap().is_none());
+        assert!(snapshot.projected_anchor_offset(&second).unwrap().is_none());
+        assert_eq!(
+            snapshot.anchor_offset(&first).unwrap(),
+            snapshot.anchor_offset(&second).unwrap()
+        );
+    });
 }

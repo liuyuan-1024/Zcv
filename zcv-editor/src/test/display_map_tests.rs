@@ -180,6 +180,11 @@ fn no_op_sync_keeps_the_display_projection_stable(cx: &mut TestAppContext) {
 
     // 统一读取入口总是逐层同步，但无输入变化的同步不得改变可观察的显示投影。
     let after = display_snapshot(cx, &map);
+    assert_eq!(
+        after.version(),
+        before.version(),
+        "无变化同步不得推进显示版本"
+    );
     assert_eq!(after.line_count(), before.line_count());
     assert_eq!(
         after.buffer_snapshot().version(),

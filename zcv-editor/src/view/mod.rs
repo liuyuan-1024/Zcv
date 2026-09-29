@@ -78,6 +78,8 @@ pub enum EditorEvent {
     },
     /// 删除/修改块的展开折叠状态变化（宿主按展开状态重建组合文档内容）。
     DiffHunksExpandedChanged,
+    /// 文件标题的整文件折叠策略变化。
+    BufferFoldChanged,
     /// 用户主动操作失败，由宿主工作区负责展示。
     Error(String),
 }
@@ -251,6 +253,8 @@ pub struct Editor {
     multi_buffer: Entity<MultiBuffer>,
     last_dirty: bool,
     display_map: Entity<DisplayMap>,
+    /// 本消费方已经处理的显示版本；显示命令可能在进入消费入口前提交新快照。
+    processed_display_version: u64,
     mode: EditorMode,
     /// 单行嵌入编辑器是否跟随代码编辑器的内容排版。
     content_typography: bool,
@@ -409,12 +413,36 @@ impl Editor {
     /// 这是 BlockMap 变换，不修改组合文本，也不借用语法折叠范围。
     pub fn toggle_buffer_fold(&mut self, buffer_id: BufferId, cx: &mut Context<Self>) {
         let folded = !self.display_map.read(cx).is_buffer_folded(buffer_id);
-        self.display_map
-            .update(cx, |map, cx| map.set_buffer_folded(buffer_id, folded, cx));
-        // 滚动位置是长期组合锚点，显示拓扑重建后按当前快照解析即自动落回原内容位置。
-        self.advance_snapshots(cx);
-        self.input_layout = None;
-        cx.notify();
+        self.set_buffers_folded([buffer_id], folded, cx);
+    }
+
+    pub fn has_expanded_buffers(&self, cx: &App) -> bool {
+        self.display_snapshot(cx).has_expanded_buffers()
+    }
+
+    pub fn file_buffer_ids(&self, cx: &App) -> Vec<BufferId> {
+        self.display_snapshot(cx)
+            .buffer_snapshot()
+            .file_buffer_ids()
+            .collect()
+    }
+
+    /// 一次提交整组文件折叠策略，共用同一条显示同步路径。
+    pub fn set_buffers_folded(
+        &mut self,
+        ids: impl IntoIterator<Item = BufferId>,
+        folded: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let changed = self
+            .display_map
+            .update(cx, |map, cx| map.set_buffers_folded(ids, folded, cx));
+        if changed {
+            self.advance_snapshots(cx);
+            self.input_layout = None;
+            cx.emit(EditorEvent::BufferFoldChanged);
+            cx.notify();
+        }
     }
 
     pub(super) fn handle_open_excerpts(
@@ -763,7 +791,7 @@ impl Editor {
     }
 
     pub fn is_dirty(&self, cx: &App) -> bool {
-        self.multi_buffer.read(cx).is_dirty(cx)
+        self.display_snapshot(cx).buffer_snapshot().is_dirty()
     }
 
     /// 设置空 buffer 时显示的提示文本。
@@ -1632,7 +1660,7 @@ impl Editor {
         // 在一次底层 Buffer 更新中建立订阅并取得同版本组合快照，关闭初始化期间的漏读窗口。
         let (multi_buffer_subscription, snapshot) =
             multi_buffer.update(cx, |buffer, cx| buffer.subscribe_and_snapshot(cx));
-        let last_dirty = multi_buffer.read(cx).is_dirty(cx);
+        let last_dirty = snapshot.is_dirty();
         let display_map = cx.new(|cx| {
             let mut map = DisplayMap::new(snapshot.clone(), cx);
             map.set_multi_buffer(multi_buffer.clone(), multi_buffer_subscription, cx);
@@ -1646,8 +1674,8 @@ impl Editor {
         cx.subscribe(
             &multi_buffer,
             |editor, _: Entity<MultiBuffer>, event: &MultiBufferEvent, cx| {
-                let multi_buffer = editor.multi_buffer.clone();
-                let dirty = multi_buffer.read(cx).is_dirty(cx);
+                editor.advance_snapshots(cx);
+                let dirty = editor.is_dirty(cx);
                 if editor.last_dirty != dirty {
                     editor.last_dirty = dirty;
                     cx.emit(EditorEvent::DirtyChanged);
@@ -1656,7 +1684,6 @@ impl Editor {
                 if matches!(event, MultiBufferEvent::DiffExpansionChanged) {
                     cx.emit(EditorEvent::DiffHunksExpandedChanged);
                 }
-                editor.advance_snapshots(cx);
                 cx.notify();
             },
         )
@@ -1670,6 +1697,7 @@ impl Editor {
             multi_buffer,
             last_dirty,
             display_map,
+            processed_display_version: display_snapshot.version(),
             mode,
             content_typography: false,
             placeholder_display_map: None,
@@ -2120,6 +2148,10 @@ impl Editor {
             let tab_width = snapshot.buffer_snapshot().language_settings().tab.tab_width;
             map.set_tab_width(tab_width, cx);
         });
+        let snapshot = self.display_snapshot(cx);
+        if snapshot.version() == self.processed_display_version {
+            return;
+        }
         self.research_after_edit(cx);
         // 搜索命中是显示装饰输入：
         // 把 Editor 拥有的匹配锚点解析结果交给显示链投影，输入未变化时 DisplayMap 快速返回。
@@ -2132,6 +2164,7 @@ impl Editor {
         self.scrollbar_marker_state.invalidate();
         let snapshot = self.display_snapshot(cx);
         self.scroll_manager.refresh(&snapshot);
+        self.processed_display_version = snapshot.version();
     }
 
     pub(super) fn handle_toggle_fold(

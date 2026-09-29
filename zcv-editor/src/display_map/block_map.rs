@@ -3,14 +3,14 @@
 //! 本层位于 WrapMap 之上：文本换行坐标保持不变，文件标题和同文件片段分隔线作为不属于文本的虚拟显示块插入。
 //! 这样搜索、diff、诊断等宿主只负责提供 excerpts，滚动、命中测试、选区和通用文件标题都由 Editor 复用同一条管线。
 
-use zcv_multi_buffer::{ExcerptSnapshot, MultiBufferOffset, MultiBufferRange, MultiBufferSnapshot};
+use zcv_multi_buffer::{ExcerptSnapshot, MultiBufferAnchor, MultiBufferOffset, MultiBufferRange};
 
 use std::collections::{BTreeSet, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
 
 use sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
-use zcv_text::{BufferId, CoordinateError, Line};
+use zcv_text::{Affinity, BufferId, CoordinateError, Line};
 
 use super::error::DisplayMapResult;
 use super::fold_map::{FoldBias, ProjectedLineIndex};
@@ -43,13 +43,14 @@ pub(crate) struct StickyBufferHeader {
 
 /// 块投影中的一个虚拟块。
 ///
-/// 显示行由所在变换在输出行空间的位置决定；片段身份使用组合树中的稳定序号。
+/// 显示行由所在变换在输出行空间的位置决定；片段身份使用源 Anchor。
 /// 当前片段元数据在消费时从对应快照解析，不把整份 excerpt 表复制进块投影。
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct BlockPlacement {
     height: usize,
     kind: DisplayBlockKind,
-    excerpt_index: usize,
+    anchor: MultiBufferAnchor,
+    folded: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +73,9 @@ impl Item for Transform {
         TransformSummary {
             input_rows: self.input_rows,
             output_rows: self.output_rows,
+            expanded_headers: usize::from(
+                matches!(&self.kind, TransformKind::Block(block) if block.kind == DisplayBlockKind::BufferHeader && !block.folded),
+            ),
         }
     }
 }
@@ -80,6 +84,7 @@ impl Item for Transform {
 struct TransformSummary {
     input_rows: usize,
     output_rows: usize,
+    expanded_headers: usize,
 }
 
 impl ContextLessSummary for TransformSummary {
@@ -90,6 +95,7 @@ impl ContextLessSummary for TransformSummary {
     fn add_summary(&mut self, summary: &Self) {
         self.input_rows += summary.input_rows;
         self.output_rows += summary.output_rows;
+        self.expanded_headers += summary.expanded_headers;
     }
 }
 
@@ -122,30 +128,19 @@ impl<'a> Dimension<'a, TransformSummary> for OutputRows {
 type InputToOutput = Dimensions<InputRows, OutputRows>;
 type OutputToInput = Dimensions<OutputRows, InputRows>;
 
-/// 块的换行行锚点；与 [`BlockPlacement`] 分离，使换行重排只需平移锚点而无需重算片段分组。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 当前受影响范围内的块规格，不作为跨快照状态保存。
 struct BlockSpec {
     wrap_row: usize,
-    excerpt_index: usize,
-    height: usize,
-    kind: DisplayBlockKind,
-    /// 整文件折叠组：该块吞掉到下一个块之前的全部换行行。
-    folded_group: bool,
+    hidden_end: usize,
+    placement: Arc<BlockPlacement>,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct BlockSnapshot {
     wrap_snapshot: WrapSnapshot,
     transforms: SumTree<Transform>,
-    /// 当前快照的块锚点表（经换行行定位的派生布局）。
-    ///
-    /// 它不承担跨快照的拼接身份，只用于判断显示几何是否变化：
-    /// 锚点表与换行行数都不变时，新的块变换树与旧树逐节点等价，可整棵复用。
-    specs: Arc<[BlockSpec]>,
-    topology_version: u64,
     folded_buffers: Arc<HashSet<BufferId>>,
     show_headers: bool,
-    /// 块几何代际：只有显示几何真正变化时推进，供依赖显示几何的缓存精确失效。
     geometry_epoch: u64,
 }
 
@@ -292,7 +287,7 @@ impl<'a> BlockRows<'a> {
             TransformKind::Block(placement) => {
                 let height = placement.height;
                 let kind = placement.kind;
-                let excerpt_index = placement.excerpt_index;
+                let excerpt = self.snapshot.excerpt_for_placement(placement)?;
                 let display_row = transform_start.0.0;
                 self.row = (display_row + height).min(self.end);
                 self.block_cursor.next();
@@ -300,14 +295,7 @@ impl<'a> BlockRows<'a> {
                 Some(BlockRow {
                     index: DisplayRow::new(display_row),
                     height,
-                    kind: BlockRowKind::Block(DisplayBlock {
-                        kind,
-                        excerpt: self
-                            .snapshot
-                            .wrap_snapshot
-                            .buffer_snapshot()
-                            .excerpt_at_index(excerpt_index)?,
-                    }),
+                    kind: BlockRowKind::Block(DisplayBlock { kind, excerpt }),
                     excerpt: None,
                 })
             }
@@ -382,124 +370,114 @@ enum RowMapping<'a> {
 /// 块在换行投影中吞掉的行区间终点。
 ///
 /// 整文件折叠块延续到下一个块（或投影末尾），普通块不隐藏任何换行行。
-fn spec_hidden_end(specs: &[BlockSpec], index: usize, wrap_line_count: usize) -> usize {
-    let spec = &specs[index];
-    if spec.folded_group {
-        specs
-            .get(index + 1)
-            .map_or(wrap_line_count, |next| next.wrap_row.min(wrap_line_count))
+fn wrap_span(snapshot: &WrapSnapshot, range: MultiBufferRange) -> Range<usize> {
+    let start = snapshot
+        .offset_to_wrap_point(range.start())
+        .expect("窗口起点必须属于换行快照")
+        .row()
+        .get();
+    let end = if range.end() == snapshot.buffer_snapshot().len_bytes() {
+        snapshot.line_count()
     } else {
-        spec.wrap_row
-    }
+        snapshot
+            .offset_to_wrap_point(range.end())
+            .expect("窗口终点必须属于换行快照")
+            .row()
+            .get()
+    };
+    start..end
 }
 
-/// 构建块投影所需的输入事实；每次同步由当前换行快照与策略产生。
-struct BlockProjectionInputs {
-    wrap_snapshot: WrapSnapshot,
-    specs: Arc<[BlockSpec]>,
-    topology_version: u64,
-    folded_buffers: Arc<HashSet<BufferId>>,
-    show_headers: bool,
-}
-
-/// 从片段边界与折叠策略推导块锚点表；输入或策略变化时整体重算。
-fn compute_specs(
-    wrap_snapshot: &WrapSnapshot,
-    buffer: &MultiBufferSnapshot,
+/// 只读取变化范围内的逻辑边界；未变化的块描述保留在变换树中。
+fn compute_specs_in_range(
+    snapshot: &WrapSnapshot,
     folded_buffers: &HashSet<BufferId>,
-    show_headers: bool,
+    rows: Range<usize>,
 ) -> Vec<BlockSpec> {
-    let excerpt_starts = buffer
-        .excerpt_boundaries()
-        .filter_map(|boundary| {
-            wrap_snapshot
-                .offset_to_wrap_point(boundary.next().output_range().start())
-                .ok()
-                .map(|point| {
-                    (
-                        point.row().get(),
-                        boundary.next_index(),
-                        boundary.next().buffer_id(),
-                        boundary.starts_new_buffer(),
-                    )
-                })
-        })
-        .collect::<Vec<_>>();
+    let buffer = snapshot.buffer_snapshot();
+    let start = snapshot
+        .wrap_point_to_offset_with_bias(
+            WrapPoint::new(WrapRow::new(rows.start), DisplayColumn::ZERO),
+            FoldBias::Left,
+        )
+        .expect("块 patch 起点必须属于换行快照");
+    let end = if rows.end == snapshot.line_count() {
+        buffer.len_bytes()
+    } else {
+        snapshot
+            .wrap_point_to_offset_with_bias(
+                WrapPoint::new(WrapRow::new(rows.end), DisplayColumn::ZERO),
+                FoldBias::Left,
+            )
+            .expect("块 patch 终点必须属于换行快照")
+    };
     let mut specs = Vec::new();
-    let mut group_start = 0usize;
-    while group_start < excerpt_starts.len() {
-        let buffer_id = excerpt_starts[group_start].2;
-        // 逻辑边界只有在 `starts_new_buffer` 处才开启新组；同组的后续边界是同一文件的后续窗口。
-        let mut group_end = group_start + 1;
-        while group_end < excerpt_starts.len() && !excerpt_starts[group_end].3 {
-            group_end += 1;
+    for boundary in buffer.excerpt_boundaries_in_range(start..=end) {
+        let excerpt = boundary.next();
+        let row = snapshot
+            .offset_to_wrap_point(excerpt.output_range().start())
+            .expect("逻辑边界必须属于换行快照")
+            .row()
+            .get();
+        if row < rows.start || row >= rows.end {
+            continue;
         }
-        // 相邻逻辑 excerpt 共享 Buffer 身份时只是同一文件的后续窗口，不进入新 Buffer 边界。
-        // 整文件折叠只在显示策略允许 header 时折叠为一整块；否则按普通 divider 序列绘制。
-        if folded_buffers.contains(&buffer_id) && show_headers {
-            let (wrap_row, excerpt_index, _, _) = excerpt_starts[group_start];
-            specs.push(BlockSpec {
-                wrap_row,
-                excerpt_index,
-                height: FILE_HEADER_HEIGHT,
-                kind: DisplayBlockKind::BufferHeader,
-                folded_group: true,
-            });
+        let folded = buffer.show_headers() && folded_buffers.contains(&excerpt.buffer_id());
+        if folded && !boundary.starts_new_buffer() {
+            continue;
+        }
+        let Some(kind) = entry_block_kind(
+            buffer.show_headers(),
+            boundary.next_index() == 0,
+            usize::from(!boundary.starts_new_buffer()),
+        ) else {
+            continue;
+        };
+        let hidden_end = if folded {
+            wrap_span(
+                snapshot,
+                buffer
+                    .buffer_range(excerpt.buffer_id())
+                    .expect("边界必须属于当前文件索引"),
+            )
+            .end
         } else {
-            let is_document_start = group_start == 0;
-            for (index, (wrap_row, excerpt_index)) in excerpt_starts[group_start..group_end]
-                .iter()
-                .map(|(row, index, _, _)| (*row, *index))
-                .enumerate()
-            {
-                let Some(kind) = entry_block_kind(show_headers, is_document_start, index) else {
-                    continue;
-                };
-                specs.push(BlockSpec {
-                    wrap_row,
-                    excerpt_index,
-                    height: match kind {
-                        DisplayBlockKind::BufferHeader => FILE_HEADER_HEIGHT,
-                        DisplayBlockKind::ExcerptBoundary => EXCERPT_BOUNDARY_HEIGHT,
-                    },
-                    kind,
-                    folded_group: false,
-                });
-            }
-        }
-        group_start = group_end;
+            row
+        };
+        specs.push(BlockSpec {
+            wrap_row: row,
+            hidden_end,
+            placement: Arc::new(BlockPlacement {
+                anchor: buffer.anchor_at(excerpt.output_range().start(), Affinity::Before),
+                folded,
+                height: if kind == DisplayBlockKind::BufferHeader {
+                    FILE_HEADER_HEIGHT
+                } else {
+                    EXCERPT_BOUNDARY_HEIGHT
+                },
+                kind,
+            }),
+        });
     }
-    specs.sort_by_key(|spec| spec.wrap_row);
     specs
 }
 
-/// 从当前换行快照与块策略派生整份块锚点表。
-fn derive_specs(
-    wrap_snapshot: &WrapSnapshot,
-    folded_buffers: &HashSet<BufferId>,
-    show_headers: bool,
-) -> Arc<[BlockSpec]> {
-    compute_specs(
-        wrap_snapshot,
-        wrap_snapshot.buffer_snapshot(),
-        folded_buffers,
-        show_headers,
-    )
-    .into()
-}
-
-/// 同长度换行编辑只改变行内容；只有块锚点落在编辑区间内部时才可能移动。
-fn specs_intersect_wrap_edits(specs: &[BlockSpec], edits: &[WrapEdit]) -> bool {
-    edits.iter().any(|edit| {
-        edit.old.len() != edit.new.len()
-            || specs
-                .iter()
-                .any(|spec| edit.old.start < spec.wrap_row && spec.wrap_row < edit.old.end)
-    })
-}
-
 fn push_text_rows(transforms: &mut SumTree<Transform>, rows: usize) {
-    if rows > 0 {
+    if rows == 0 {
+        return;
+    }
+    if transforms
+        .last()
+        .is_some_and(|last| last.kind == TransformKind::Text)
+    {
+        transforms.update_last(
+            |last| {
+                last.input_rows += rows;
+                last.output_rows += rows;
+            },
+            (),
+        );
+    } else {
         transforms.push(
             Transform {
                 kind: TransformKind::Text,
@@ -511,12 +489,92 @@ fn push_text_rows(transforms: &mut SumTree<Transform>, rows: usize) {
     }
 }
 
+fn append_transforms(transforms: &mut SumTree<Transform>, mut suffix: SumTree<Transform>) {
+    if transforms
+        .last()
+        .is_some_and(|last| last.kind == TransformKind::Text)
+        && let Some(first) = suffix
+            .first()
+            .filter(|first| first.kind == TransformKind::Text)
+    {
+        let rows = first.input_rows;
+        let mut cursor = suffix.cursor::<InputRows>(());
+        cursor.next();
+        cursor.next();
+        let remaining = cursor.suffix();
+        drop(cursor);
+        suffix = remaining;
+        push_text_rows(transforms, rows);
+    }
+    transforms.append(suffix, ());
+}
+
+fn materialize_range(
+    snapshot: &WrapSnapshot,
+    folded: &HashSet<BufferId>,
+    rows: Range<usize>,
+) -> SumTree<Transform> {
+    let mut transforms = SumTree::new(());
+    let mut row = rows.start;
+    for spec in compute_specs_in_range(snapshot, folded, rows.clone()) {
+        assert!(
+            spec.wrap_row >= row && spec.hidden_end <= rows.end,
+            "块 patch 必须完整覆盖替换块"
+        );
+        push_text_rows(&mut transforms, spec.wrap_row - row);
+        let height = spec.placement.height;
+        transforms.push(
+            Transform {
+                kind: TransformKind::Block(spec.placement),
+                input_rows: spec.hidden_end - spec.wrap_row,
+                output_rows: height,
+            },
+            (),
+        );
+        row = spec.hidden_end;
+    }
+    push_text_rows(&mut transforms, rows.end - row);
+    transforms
+}
+
+fn geometry_in_range(
+    tree: &SumTree<Transform>,
+    rows: Range<usize>,
+) -> Vec<(Option<DisplayBlockKind>, usize, usize)> {
+    let mut cursor = tree.cursor::<InputRows>(());
+    cursor.seek(&InputRows(rows.start), Bias::Left);
+    let mut geometry = Vec::new();
+    while let Some(transform) = cursor.item() {
+        let start = cursor.start().0;
+        let end = cursor.end().0;
+        if start >= rows.end {
+            break;
+        }
+        match &transform.kind {
+            TransformKind::Text => {
+                let count = end.min(rows.end).saturating_sub(start.max(rows.start));
+                if count > 0 {
+                    geometry.push((None, count, count));
+                }
+            }
+            TransformKind::Block(block) if start >= rows.start => geometry.push((
+                Some(block.kind),
+                transform.input_rows,
+                transform.output_rows,
+            )),
+            TransformKind::Block(_) => {}
+        }
+        cursor.next();
+    }
+    geometry
+}
+
 impl BlockSnapshot {
     pub(super) fn wrap_snapshot(&self) -> &WrapSnapshot {
         &self.wrap_snapshot
     }
 
-    /// 块几何代际；变换树整棵复用时保持不变。
+    /// 源到显示行的几何代际；换行断点或逻辑窗口映射变化都必须推进。
     pub(super) fn geometry_epoch(&self) -> u64 {
         self.geometry_epoch
     }
@@ -532,127 +590,167 @@ impl BlockSnapshot {
         }
     }
 
-    pub(super) fn new(wrap_snapshot: WrapSnapshot, folded_buffers: &HashSet<BufferId>) -> Self {
-        let show_headers = wrap_snapshot.buffer_snapshot().show_headers();
-        let topology_version = wrap_snapshot.buffer_snapshot().topology_version();
-        let specs = derive_specs(&wrap_snapshot, folded_buffers, show_headers);
-        Self::rebuild_from_snapshot(
-            0,
-            BlockProjectionInputs {
-                wrap_snapshot,
-                specs,
-                topology_version,
-                folded_buffers: Arc::new(folded_buffers.clone()),
-                show_headers,
-            },
-        )
-    }
-
-    /// 根据当前 WrapSnapshot 的权威边界事实完整物化块变换树。
-    ///
-    /// BlockSpec 是当前快照的局部派生，不承担跨快照同步身份。
-    fn rebuild_from_snapshot(geometry_epoch: u64, inputs: BlockProjectionInputs) -> Self {
-        let BlockProjectionInputs {
-            wrap_snapshot,
-            specs,
-            topology_version,
+    pub(super) fn new(
+        wrap_snapshot: WrapSnapshot,
+        folded_buffers: &Arc<HashSet<BufferId>>,
+    ) -> Self {
+        let transforms = materialize_range(
+            &wrap_snapshot,
             folded_buffers,
-            show_headers,
-        } = inputs;
-        let wrap_line_count = wrap_snapshot.line_count();
-        let mut transforms = SumTree::new(());
-        let mut wrap_row = 0usize;
-        for index in 0..specs.len() {
-            let spec = &specs[index];
-            let spec_wrap_row = spec.wrap_row.min(wrap_line_count);
-            if wrap_row < spec_wrap_row {
-                push_text_rows(&mut transforms, spec_wrap_row - wrap_row);
-                wrap_row = spec_wrap_row;
-            }
-            let hidden_end = spec_hidden_end(&specs, index, wrap_line_count);
-            transforms.push(
-                Transform {
-                    kind: TransformKind::Block(Arc::new(BlockPlacement {
-                        height: spec.height,
-                        kind: spec.kind,
-                        excerpt_index: spec.excerpt_index,
-                    })),
-                    input_rows: hidden_end.saturating_sub(wrap_row),
-                    output_rows: spec.height,
-                },
-                (),
-            );
-            wrap_row = hidden_end;
-        }
-        if wrap_row < wrap_line_count {
-            push_text_rows(&mut transforms, wrap_line_count - wrap_row);
-        }
+            0..wrap_snapshot.line_count(),
+        );
+        let show_headers = wrap_snapshot.buffer_snapshot().show_headers();
         let snapshot = Self {
             wrap_snapshot,
             transforms,
-            specs,
-            topology_version,
-            folded_buffers,
+            folded_buffers: folded_buffers.clone(),
             show_headers,
-            geometry_epoch,
+            geometry_epoch: 0,
         };
         snapshot.check_invariants();
         snapshot
     }
 
-    /// 消费下层 Wrap 编辑，并只在块几何变化时重建显示变换树。
+    pub(super) fn folded_buffers_match(&self, folded: &Arc<HashSet<BufferId>>) -> bool {
+        Arc::ptr_eq(&self.folded_buffers, folded)
+    }
+
+    pub(super) fn has_expanded_buffers(&self) -> bool {
+        self.transforms.summary().expanded_headers > 0
+    }
+
+    fn excerpt_for_placement(&self, placement: &BlockPlacement) -> Option<ExcerptSnapshot> {
+        let buffer = self.wrap_snapshot.buffer_snapshot();
+        let offset = buffer
+            .anchor_offset(&placement.anchor)
+            .expect("块 Anchor 必须在当前快照上有效");
+        buffer.logical_excerpt_at_output_offset(offset)
+    }
+
+    /// WrapEdit 与逻辑边界／策略变化合并成同一份块 patch；沿旧树拼接未变化的部分。
     pub(super) fn sync(
         &self,
         wrap_snapshot: WrapSnapshot,
-        folded_buffers: &HashSet<BufferId>,
+        folded_buffers: &Arc<HashSet<BufferId>>,
         wrap_edits: &[WrapEdit],
-    ) -> BlockSnapshot {
+    ) -> Self {
         let show_headers = wrap_snapshot.buffer_snapshot().show_headers();
-        let old_wrap_line_count = self.wrap_snapshot.line_count();
-        let new_wrap_line_count = wrap_snapshot.line_count();
-        let topology_version = wrap_snapshot.buffer_snapshot().topology_version();
-        let layout_policy_changed =
-            self.folded_buffers.as_ref() != folded_buffers || self.show_headers != show_headers;
-        let specs_changed = topology_version != self.topology_version
-            || layout_policy_changed
-            || specs_intersect_wrap_edits(&self.specs, wrap_edits);
-        let specs = if !specs_changed {
-            Arc::clone(&self.specs)
-        } else {
-            derive_specs(&wrap_snapshot, folded_buffers, show_headers)
-        };
-        let folded_buffers = if layout_policy_changed {
-            Arc::new(folded_buffers.clone())
-        } else {
-            Arc::clone(&self.folded_buffers)
-        };
-        // 显示几何只由块锚点表与换行行数决定：
-        // 两者都未变时新树与旧树逐节点等价，不得推进几何代际，否则同一行内编辑会错误地使 diff 装饰等依赖显示几何的缓存失效。
-        let geometry_changed =
-            specs.as_ref() != self.specs.as_ref() || old_wrap_line_count != new_wrap_line_count;
-        let inputs = BlockProjectionInputs {
-            wrap_snapshot,
-            specs,
-            topology_version,
-            folded_buffers,
-            show_headers,
-        };
-        if !geometry_changed {
-            return self.reuse_transforms(inputs);
+        let mut edits = wrap_edits.to_vec();
+        let boundary_change = wrap_snapshot
+            .buffer_snapshot()
+            .excerpt_boundary_change(self.wrap_snapshot.buffer_snapshot());
+        let mut geometry_changed = !wrap_edits.is_empty() || boundary_change.is_some();
+        if let Some((old, new)) = boundary_change {
+            edits.push(WrapEdit {
+                old: wrap_span(&self.wrap_snapshot, old),
+                new: wrap_span(&wrap_snapshot, new),
+            });
         }
-        Self::rebuild_from_snapshot(self.geometry_epoch + 1, inputs)
-    }
-
-    /// 复用整棵变换树，只替换片段视图与策略事实。
-    fn reuse_transforms(&self, inputs: BlockProjectionInputs) -> BlockSnapshot {
-        let snapshot = BlockSnapshot {
-            wrap_snapshot: inputs.wrap_snapshot,
-            transforms: self.transforms.clone(),
-            specs: inputs.specs,
-            topology_version: inputs.topology_version,
-            folded_buffers: inputs.folded_buffers,
-            show_headers: inputs.show_headers,
-            geometry_epoch: self.geometry_epoch,
+        if !Arc::ptr_eq(&self.folded_buffers, folded_buffers) {
+            for id in self.folded_buffers.symmetric_difference(folded_buffers) {
+                if let (Some(old), Some(new)) = (
+                    self.wrap_snapshot.buffer_snapshot().buffer_range(*id),
+                    wrap_snapshot.buffer_snapshot().buffer_range(*id),
+                ) {
+                    edits.push(WrapEdit {
+                        old: wrap_span(&self.wrap_snapshot, old),
+                        new: wrap_span(&wrap_snapshot, new),
+                    });
+                }
+            }
+        }
+        if show_headers != self.show_headers {
+            edits.push(WrapEdit {
+                old: 0..self.wrap_snapshot.line_count(),
+                new: 0..wrap_snapshot.line_count(),
+            });
+        }
+        edits.sort_by_key(|edit| edit.old.start);
+        let mut merged: Vec<WrapEdit> = Vec::new();
+        for edit in edits {
+            if let Some(last) = merged.last_mut()
+                && edit.old.start <= last.old.end
+            {
+                if edit.old.end >= last.old.end {
+                    last.old.end = edit.old.end;
+                    last.new.end = last.new.end.max(edit.new.end);
+                }
+                last.new.start = last.new.start.min(edit.new.start);
+            } else {
+                merged.push(edit);
+            }
+        }
+        if merged.is_empty() {
+            let snapshot = Self {
+                wrap_snapshot,
+                transforms: self.transforms.clone(),
+                folded_buffers: folded_buffers.clone(),
+                show_headers,
+                geometry_epoch: self.geometry_epoch,
+            };
+            snapshot.check_invariants();
+            return snapshot;
+        }
+        let mut transforms = SumTree::new(());
+        let mut cursor = self.transforms.cursor::<InputRows>(());
+        let mut edits = merged.into_iter().peekable();
+        while let Some(edit) = edits.next() {
+            let mut old_start = edit.old.start;
+            let mut new_start = edit.new.start;
+            append_transforms(
+                &mut transforms,
+                cursor.slice(&InputRows(old_start), Bias::Left),
+            );
+            if cursor.item().is_some_and(|transform| {
+                transform.kind == TransformKind::Text && cursor.end().0 == old_start
+            }) {
+                push_text_rows(
+                    &mut transforms,
+                    cursor.item().expect("文本变换必须存在").input_rows,
+                );
+                cursor.next();
+            }
+            if let Some(transform) = cursor.item() {
+                let prefix = old_start - cursor.start().0;
+                if transform.kind == TransformKind::Text {
+                    push_text_rows(&mut transforms, prefix);
+                } else if prefix > 0 {
+                    old_start -= prefix;
+                    new_start -= prefix;
+                }
+            }
+            let mut old_end = edit.old.end;
+            let mut new_end = edit.new.end;
+            loop {
+                cursor.seek(&InputRows(old_end), Bias::Left);
+                if cursor.item().is_some() {
+                    cursor.next();
+                }
+                let extra = cursor.start().0 - old_end;
+                old_end += extra;
+                new_end += extra;
+                if let Some(next) = edits.peek()
+                    && next.old.start <= old_end
+                {
+                    let next = edits.next().expect("后续 patch 必须存在");
+                    old_end = next.old.end.max(old_end);
+                    new_end = next.new.end.max(new_end);
+                    continue;
+                }
+                break;
+            }
+            let rebuilt = materialize_range(&wrap_snapshot, folded_buffers, new_start..new_end);
+            geometry_changed |= geometry_in_range(&self.transforms, old_start..old_end)
+                != geometry_in_range(&rebuilt, 0..new_end - new_start);
+            append_transforms(&mut transforms, rebuilt);
+        }
+        append_transforms(&mut transforms, cursor.suffix());
+        let snapshot = Self {
+            wrap_snapshot,
+            transforms,
+            folded_buffers: folded_buffers.clone(),
+            show_headers,
+            geometry_epoch: self.geometry_epoch + u64::from(geometry_changed),
         };
         snapshot.check_invariants();
         snapshot
@@ -696,10 +794,7 @@ impl BlockSnapshot {
             {
                 return Some(StickyBufferHeader {
                     source_row: DisplayRow::new(start_row),
-                    excerpt: self
-                        .wrap_snapshot
-                        .buffer_snapshot()
-                        .excerpt_at_index(placement.excerpt_index)?,
+                    excerpt: self.excerpt_for_placement(placement)?,
                 });
             }
             if start_row == 0 {
@@ -766,9 +861,7 @@ impl BlockSnapshot {
                 .wrap_snapshot
                 .wrap_point_to_offset_with_bias(WrapPoint::new(row, point.column()), bias),
             RowMapping::Block(placement) => self
-                .wrap_snapshot
-                .buffer_snapshot()
-                .excerpt_at_index(placement.excerpt_index)
+                .excerpt_for_placement(placement)
                 .map(|excerpt| excerpt.output_range().start())
                 .ok_or_else(|| {
                     CoordinateError::LineOutOfBounds(Line::new(point.row().get())).into()

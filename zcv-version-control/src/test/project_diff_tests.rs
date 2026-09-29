@@ -1383,3 +1383,62 @@ fn project_diff_toolbar_follows_active_item(cx: &mut TestAppContext) {
         assert_eq!(hidden, ToolbarItemLocation::Hidden);
     });
 }
+
+#[gpui::test]
+fn diff_view_scroll_keeps_host_quiet_and_folding_notifies(cx: &mut TestAppContext) {
+    use gpui::{ScrollDelta, ScrollWheelEvent, point, px};
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use zcv_multi_buffer::ExcerptRange;
+
+    let directory = tempfile::tempdir().unwrap();
+    let project = test_project(directory.path().to_path_buf(), cx);
+    let (view, visual) =
+        cx.add_window_view(move |_, cx| DiffView::new(ProjectDiffKind::Staged, project, cx));
+    visual.run_until_parked();
+    view.update(&mut *visual, |view, cx| {
+        for file in 0..2 {
+            let path = directory.path().join(format!("{file}.rs"));
+            let source = cx.new(|cx| {
+                LanguageBuffer::new(
+                    Buffer::from_text("line\n".repeat(100), BufferConfig::default()).unwrap(),
+                    Some(path.clone()),
+                    Arc::new(LanguageRegistry::new()),
+                    cx,
+                )
+            });
+            view.files.push(GitChangeFile {
+                path,
+                status: FileStatus::Tracked {
+                    index_status: StatusCode::Modified,
+                    worktree_status: StatusCode::Unmodified,
+                },
+            });
+            view.multi_buffer.update(cx, |buffer, cx| {
+                buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(source, 0..100, cx)], cx)
+            });
+        }
+    });
+    visual.run_until_parked();
+    visual.refresh().unwrap();
+    let notifications = Rc::new(Cell::new(0));
+    let observed = notifications.clone();
+    let _subscription =
+        visual.update(|_, cx| cx.observe(&view, move |_, _| observed.set(observed.get() + 1)));
+    for delta in [-120., -1_000., 120., 1_000.] {
+        visual.simulate_event(ScrollWheelEvent {
+            position: point(px(300.), px(300.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+            ..Default::default()
+        });
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+    }
+    assert_eq!(notifications.get(), 0, "滚动重绘不得通知宿主重建工具栏");
+    view.update(&mut *visual, |view, cx| view.set_all_files_folded(true, cx));
+    visual.run_until_parked();
+    assert!(notifications.get() > 0, "文件折叠语义变化必须刷新宿主");
+    assert!(!visual.read_entity(&view, |view, cx| {
+        view.editor.read(cx).has_expanded_buffers(cx)
+    }));
+}

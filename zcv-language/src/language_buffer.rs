@@ -87,6 +87,7 @@ pub struct LanguageBufferSnapshot {
     pub settings: Arc<LanguageSettings>,
     pub file_path: Option<PathBuf>,
     pub highlight_cache: Arc<HighlightCache>,
+    pub is_dirty: bool,
 }
 
 /// 在只读基线上派生（文本 + 语法）快照，等待版本校验后安装。
@@ -178,6 +179,7 @@ impl LanguageBuffer {
             settings: Arc::clone(&state.settings),
             file_path: state.file_path.clone(),
             highlight_cache: Arc::clone(&state.highlight_cache),
+            is_dirty: self.buffer.is_dirty(),
         }
     }
 

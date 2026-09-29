@@ -212,7 +212,7 @@ impl ProjectSearchView {
                         cx.emit(ProjectSearchEvent::OpenExcerptsRequested(locations.clone()));
                     }
                     EditorEvent::PathChanged => {}
-                    EditorEvent::DiffHunksExpandedChanged => {}
+                    EditorEvent::DiffHunksExpandedChanged | EditorEvent::BufferFoldChanged => {}
                     EditorEvent::Error(_) => {}
                 },
             ),

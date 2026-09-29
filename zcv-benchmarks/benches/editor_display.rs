@@ -2,6 +2,8 @@
 //!
 //! 覆盖连续输入、长行编辑与整文件折叠切换：这些都是显示投影必须增量推进的场景，
 //! 用于观察整段物化或全量重建是否重新出现。
+//! diff 滚动基准使用 GPUI 测试文本系统，默认关闭软换行；
+//! 输入到绘制不包含系统输入队列或 GPU 呈现。软换行测量见本 crate 的 README。
 
 use std::ops::Range;
 use std::path::PathBuf;
@@ -582,10 +584,13 @@ fn diff_scroll_frame_scenarios(
                     |b| {
                         b.iter_custom(|iterations| {
                             let mut elapsed = Duration::ZERO;
-                            for _ in 0..iterations {
+                            for frame in 0..iterations {
                                 cx.simulate_event(ScrollWheelEvent {
                                     position: point(px(600.), px(400.)),
-                                    delta: ScrollDelta::Pixels(point(px(0.), px(24.))),
+                                    delta: ScrollDelta::Pixels(point(
+                                        px(0.),
+                                        px(if frame % 2 == 0 { -24. } else { 24. }),
+                                    )),
                                     ..Default::default()
                                 });
                                 let started = std::time::Instant::now();
@@ -602,11 +607,14 @@ fn diff_scroll_frame_scenarios(
                     |b| {
                         b.iter_custom(|iterations| {
                             let mut elapsed = Duration::ZERO;
-                            for _ in 0..iterations {
+                            for frame in 0..iterations {
                                 let started = std::time::Instant::now();
                                 cx.simulate_event(ScrollWheelEvent {
                                     position: point(px(600.), px(400.)),
-                                    delta: ScrollDelta::Pixels(point(px(0.), px(24.))),
+                                    delta: ScrollDelta::Pixels(point(
+                                        px(0.),
+                                        px(if frame % 2 == 0 { -24. } else { 24. }),
+                                    )),
                                     ..Default::default()
                                 });
                                 cx.draw(origin, space, |_, _cx| editor.clone().into_any_element());
@@ -619,7 +627,7 @@ fn diff_scroll_frame_scenarios(
                 );
                 if let Some(target_row) = large_addition_row {
                     group.bench_function(
-                        format!("{scenario}/{staging}/{file_count}/cold_first_entry"),
+                        format!("{scenario}/{staging}/{file_count}/jump_to_warmed_region"),
                         |b| {
                             b.iter_custom(|iterations| {
                                 let mut elapsed = Duration::ZERO;
@@ -661,11 +669,14 @@ fn diff_scroll_frame_scenarios(
                         |b| {
                             b.iter_custom(|iterations| {
                                 let mut elapsed = Duration::ZERO;
-                                for _ in 0..iterations {
+                                for frame in 0..iterations {
                                     let started = std::time::Instant::now();
                                     cx.simulate_event(ScrollWheelEvent {
                                         position: gutter_position,
-                                        delta: ScrollDelta::Pixels(point(px(0.), px(24.))),
+                                        delta: ScrollDelta::Pixels(point(
+                                            px(0.),
+                                            px(if frame % 2 == 0 { -24. } else { 24. }),
+                                        )),
                                         ..Default::default()
                                     });
                                     cx.draw(origin, space, |_, _cx| {

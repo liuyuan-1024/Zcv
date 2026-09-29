@@ -43,3 +43,26 @@ fn oversized_chunk_is_not_cached() {
     cache.insert(0, spans(oversized));
     assert!(cache.get(0).is_none());
 }
+
+#[test]
+fn empty_chunks_participate_in_eviction() {
+    let cache = HighlightCache::new();
+    let count = (MAX_HIGHLIGHT_CACHE_BYTES - ENTRY_OVERHEAD_BYTES) / size_of::<HighlightSpan>();
+    cache.insert(0, spans(count));
+    for chunk in 1..=3 {
+        cache.insert(chunk * 4096, Arc::from([]));
+    }
+    assert!(cache.get(0).is_none(), "空高亮条目也必须消耗缓存预算");
+    assert_eq!(cache.get(4096).unwrap().len(), 0);
+}
+
+#[test]
+fn replacing_chunk_releases_previous_cost() {
+    let cache = HighlightCache::new();
+    let count = MAX_HIGHLIGHT_CACHE_BYTES / 2 / size_of::<HighlightSpan>();
+    cache.insert(0, spans(count));
+    cache.insert(0, Arc::from([]));
+    cache.insert(4096, spans(count));
+    assert!(cache.get(0).is_some(), "替换后旧跨度成本必须释放");
+    assert!(cache.get(4096).is_some());
+}

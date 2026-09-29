@@ -65,3 +65,68 @@ fn snapshot_remains_immutable_when_buffer_advances() {
         "ab"
     );
 }
+
+#[test]
+fn stable_anchor_order_includes_document_end() {
+    let mut buffer = Buffer::from_text("中文 abc".to_owned(), BufferConfig::default()).unwrap();
+    let before = buffer.snapshot();
+    let interior = before.anchor_after(ByteOffset::new("中文 ".len()));
+    let end = before.anchor_before(before.len_bytes());
+    assert_eq!(before.stable_anchor_cmp(&interior, &end), Ordering::Less);
+    buffer
+        .edit(
+            [Edit::insert(before.len_bytes(), " appended").unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    let after = buffer.snapshot();
+    assert_eq!(after.stable_anchor_cmp(&interior, &end), Ordering::Less);
+    assert_eq!(
+        after.stable_anchor_cmp(&end, &after.anchor_before(after.len_bytes())),
+        Ordering::Less
+    );
+    assert_eq!(end.resolve_in(&after).unwrap(), before.len_bytes());
+}
+
+#[test]
+fn stable_anchor_order_preserves_empty_document_boundaries() {
+    let mut buffer = Buffer::from_text(String::new(), BufferConfig::default()).unwrap();
+    let empty = buffer.snapshot();
+    let start = empty.anchor_before(ByteOffset::ZERO);
+    let end = empty.anchor_after(ByteOffset::ZERO);
+    buffer
+        .edit(
+            [Edit::insert(ByteOffset::ZERO, "one\ntwo\n").unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    let snapshot = buffer.snapshot();
+    let middle = snapshot.anchor_after(ByteOffset::new(4));
+    assert_eq!(snapshot.stable_anchor_cmp(&start, &middle), Ordering::Less);
+    assert_eq!(snapshot.stable_anchor_cmp(&middle, &end), Ordering::Less);
+    assert_eq!(start.resolve_in(&snapshot).unwrap(), ByteOffset::ZERO);
+    assert_eq!(end.resolve_in(&snapshot).unwrap(), snapshot.len_bytes());
+}
+
+#[test]
+fn stable_anchor_order_keeps_terminal_boundaries_after_prefix_and_suffix_insertions() {
+    let mut buffer = Buffer::from_text("original\n".to_owned(), BufferConfig::default()).unwrap();
+    let before = buffer.snapshot();
+    let start = before.anchor_before(ByteOffset::ZERO);
+    let end = before.anchor_after(before.len_bytes());
+    buffer
+        .edit(
+            [
+                Edit::insert(ByteOffset::ZERO, "prefix\n").unwrap(),
+                Edit::insert(before.len_bytes(), "suffix\n").unwrap(),
+            ],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    let after = buffer.snapshot();
+    for offset in [ByteOffset::new(1), ByteOffset::new(18)] {
+        let inserted = after.anchor_after(offset);
+        assert_eq!(after.stable_anchor_cmp(&start, &inserted), Ordering::Less);
+        assert_eq!(after.stable_anchor_cmp(&inserted, &end), Ordering::Less);
+    }
+}

@@ -651,3 +651,245 @@ fn hovering_thumb_cycles_three_states(cx: &mut TestAppContext) {
         assert_eq!(editor.scrollbar_thumb_state(), ScrollbarThumbState::Hovered);
     });
 }
+
+#[gpui::test]
+fn composite_scroll_and_redraw_leave_content_snapshots_unchanged(cx: &mut TestAppContext) {
+    let combined = cx.new(MultiBuffer::empty);
+    for file in 0..10 {
+        let source = test_buffer(
+            cx,
+            (0..50)
+                .map(|row| format!("{file}:{row} 中文\t{}\n", "long words ".repeat(20)))
+                .collect::<String>(),
+        );
+        source.update(cx, |buffer, cx| {
+            buffer.set_file_path(format!("src/file_{file:02}.rs").into(), cx)
+        });
+        combined.update(cx, |buffer, cx| {
+            buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(source, 0..50, cx)], cx)
+        });
+    }
+    let (editor, cx) = cx.add_window_view(move |_, cx| Editor::for_multi_buffer(combined, cx));
+    editor.update(cx, |editor, cx| {
+        editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx)
+    });
+    cx.run_until_parked();
+    cx.refresh().unwrap();
+    cx.run_until_parked();
+    cx.refresh().unwrap();
+    let before = cx.read_entity(&editor, |editor, cx| editor.display_snapshot(cx));
+    assert!(
+        before.line_count() > before.buffer_snapshot().line_count(),
+        "夹具必须实际启用软换行"
+    );
+    for delta in [-120., -8_000., 4_000., -1_000_000., 1_000_000., -240.] {
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(100.), px(100.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+            ..Default::default()
+        });
+        cx.refresh().unwrap();
+        cx.run_until_parked();
+        cx.read_entity(&editor, |editor, cx| {
+            let after = editor.display_snapshot(cx);
+            assert_eq!(
+                after.version(),
+                before.version(),
+                "滚动与绘制不得推进显示投影"
+            );
+            assert_eq!(
+                after.buffer_snapshot().version(),
+                before.buffer_snapshot().version()
+            );
+            assert_eq!(
+                after.buffer_snapshot().metadata_version(),
+                before.buffer_snapshot().metadata_version()
+            );
+            assert_eq!(editor.file_buffer_ids(cx).len(), 10);
+            assert!(editor.has_expanded_buffers(cx));
+            assert!(!editor.is_dirty(cx));
+        });
+    }
+}
+
+#[gpui::test]
+#[ignore = "手动测量软换行 diff 的滚轮输入到绘制耗时"]
+fn composite_soft_wrap_scroll_frame_latency_probe(cx: &mut TestAppContext) {
+    use std::time::Instant;
+    use zcv_buffer_diff::{BufferDiff, BufferDiffInput};
+    use zcv_language::LanguageRegistry;
+    use zcv_multi_buffer::{DiffExcerptRanges, DiffFile};
+    for (file_count, staged) in [(10, true), (10, false), (100, true), (100, false)] {
+        let multi = cx.new(if staged {
+            MultiBuffer::empty_read_only
+        } else {
+            MultiBuffer::empty
+        });
+        let registry = Arc::new(LanguageRegistry::new());
+        let base = (0..50)
+            .map(|row| format!("old\t{row} {}\n", "中文 abcdefghij ".repeat(20)))
+            .collect::<String>();
+        let working = base.replace("old", "new");
+        let files = (0..file_count)
+            .map(|file| {
+                let path = std::path::PathBuf::from(format!("src/file_{file:03}.rs"));
+                let source = test_buffer(cx, working.clone());
+                source.update(cx, |source, cx| source.set_file_path(path.clone(), cx));
+                let diff = cx.new(|cx| {
+                    BufferDiff::new(
+                        BufferDiffInput {
+                            working: source,
+                            path: path.clone(),
+                            base_text: Some(base.clone()),
+                            index_text: Some(if staged {
+                                working.clone()
+                            } else {
+                                base.clone()
+                            }),
+                            language_registry: registry.clone(),
+                            key: file as u64,
+                            operations: None,
+                        },
+                        cx,
+                    )
+                });
+                DiffFile {
+                    diff,
+                    display_path: path,
+                    excerpt_ranges: DiffExcerptRanges::FullFile,
+                }
+            })
+            .collect();
+        multi.update(cx, |buffer, cx| {
+            buffer.set_diff_hunks_expanded_by_default(true, cx);
+            buffer.set_diff_files(files, cx);
+        });
+        cx.run_until_parked();
+        let (editor, visual) = cx.add_window_view(move |_, cx| Editor::for_multi_buffer(multi, cx));
+        editor.update(&mut *visual, |editor, cx| {
+            editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx)
+        });
+        visual.refresh().unwrap();
+        visual.run_until_parked();
+        visual.refresh().unwrap();
+        let version = visual.read_entity(&editor, |editor, cx| {
+            let snapshot = editor.display_snapshot(cx);
+            assert!(snapshot.line_count() > snapshot.buffer_snapshot().line_count());
+            snapshot.version()
+        });
+        let mut samples = Vec::new();
+        for frame in 0..240 {
+            let delta = [-120., -1_200., 120., 1_200.][frame % 4];
+            let started = Instant::now();
+            visual.simulate_event(ScrollWheelEvent {
+                position: point(px(300.), px(300.)),
+                delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+                ..Default::default()
+            });
+            visual.refresh().unwrap();
+            samples.push(started.elapsed().as_secs_f64() * 1_000.);
+        }
+        assert_eq!(
+            version,
+            visual.read_entity(&editor, |editor, cx| editor.display_snapshot(cx).version())
+        );
+        samples.sort_by(f64::total_cmp);
+        println!(
+            "软换行 diff，暂存={staged}，文件={file_count}，变更行={}；输入到绘制毫秒：中位数={:.3}，P95={:.3}，范围={:.3}..{:.3}（GPUI 测试文本系统，后台任务已收敛）",
+            file_count * 50,
+            samples[120],
+            samples[228],
+            samples[0],
+            samples[239]
+        );
+    }
+}
+
+#[gpui::test]
+fn batch_file_folding_publishes_one_semantic_change(cx: &mut TestAppContext) {
+    let combined = cx.new(MultiBuffer::empty);
+    for file in 0..10 {
+        let source = test_buffer(cx, "one\ntwo\n".to_owned());
+        source.update(cx, |source, cx| {
+            source.set_file_path(format!("src/{file}.rs").into(), cx)
+        });
+        combined.update(cx, |buffer, cx| {
+            buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(source, 0..2, cx)], cx)
+        });
+    }
+    let editor = cx.new(|cx| Editor::for_multi_buffer(combined, cx));
+    let events = std::rc::Rc::new(std::cell::Cell::new(0));
+    cx.run_until_parked();
+    let observed = events.clone();
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&editor, move |_, event: &EditorEvent, _| {
+            if matches!(event, EditorEvent::BufferFoldChanged) {
+                observed.set(observed.get() + 1);
+            }
+        })
+    });
+    let ids = cx.read_entity(&editor, |editor, cx| editor.file_buffer_ids(cx));
+    let before = cx.read_entity(&editor, |editor, cx| editor.display_snapshot(cx));
+    editor.update(cx, |editor, cx| {
+        editor.set_buffers_folded(ids.clone(), true, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(events.get(), 1);
+    let folded = cx.read_entity(&editor, |editor, cx| editor.display_snapshot(cx));
+    assert_eq!(folded.version(), before.version() + 1);
+    assert_eq!(
+        folded.buffer_snapshot().version(),
+        before.buffer_snapshot().version()
+    );
+    assert!(!cx.read_entity(&editor, |editor, cx| editor.has_expanded_buffers(cx)));
+    assert!(
+        cx.read_entity(&editor, |editor, _| editor
+            .scrollbar_marker_state
+            .should_refresh(Default::default())),
+        "显示配置提交后必须失效滚动条几何"
+    );
+    editor.update(cx, |editor, cx| {
+        editor.set_buffers_folded(ids.clone(), true, cx)
+    });
+    cx.run_until_parked();
+    assert_eq!(events.get(), 1, "未变化策略不得重复发布");
+    assert_eq!(
+        cx.read_entity(&editor, |editor, cx| editor.display_snapshot(cx).version()),
+        folded.version()
+    );
+    editor.update(cx, |editor, cx| editor.set_buffers_folded(ids, false, cx));
+    cx.run_until_parked();
+    assert_eq!(events.get(), 2);
+    assert!(cx.read_entity(&editor, |editor, cx| editor.has_expanded_buffers(cx)));
+}
+
+#[gpui::test]
+fn removing_then_unfolding_a_file_keeps_empty_frames_stable(cx: &mut TestAppContext) {
+    let source = test_buffer(cx, "line\n".to_owned());
+    source.update(cx, |source, cx| source.set_file_path("src/a.rs".into(), cx));
+    let multi = cx.new(MultiBuffer::empty);
+    multi.update(cx, |buffer, cx| {
+        buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(source, 0..1, cx)], cx)
+    });
+    let editor = cx.new(|cx| Editor::for_multi_buffer(multi.clone(), cx));
+    cx.run_until_parked();
+    let ids = cx.read_entity(&editor, |editor, cx| editor.file_buffer_ids(cx));
+    editor.update(cx, |editor, cx| {
+        editor.set_buffers_folded(ids.clone(), true, cx)
+    });
+    multi.update(cx, |buffer, cx| {
+        buffer.remove_excerpts_for_path(std::path::Path::new("src/a.rs"), cx)
+    });
+    cx.run_until_parked();
+    editor.update(cx, |editor, cx| editor.set_buffers_folded(ids, false, cx));
+    cx.run_until_parked();
+    let version = cx.read_entity(&editor, |editor, cx| editor.display_snapshot(cx).version());
+    for _ in 0..10 {
+        editor.update(cx, |editor, cx| editor.advance_snapshots(cx));
+        assert_eq!(
+            cx.read_entity(&editor, |editor, cx| editor.display_snapshot(cx).version()),
+            version,
+            "不可见文件的策略更新后空帧必须收敛"
+        );
+    }
+}

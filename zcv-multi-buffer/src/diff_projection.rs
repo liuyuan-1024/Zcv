@@ -1417,7 +1417,7 @@ impl MultiBuffer {
                 let deleted = DeletedHunkRegion {
                     source_index: base_index,
                     source_id: base.entity_id(),
-                    source_range: ExcerptContext::new(base_text.version(), base_range, false),
+                    source_range: ExcerptContext::new(base_text, base_range, false),
                     source_start_line: base_text
                         .byte_to_line(bytes.start)
                         .expect("旧侧起点必须有效")

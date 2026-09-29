@@ -214,6 +214,11 @@ impl Snapshot {
 
     pub fn anchor_with_affinity(&self, offset: ByteOffset, affinity: Affinity) -> Anchor {
         let anchor = Anchor::new(self.version, offset).with_affinity(affinity);
+        if (offset == ByteOffset::ZERO && affinity == Affinity::Before)
+            || (offset == self.len_bytes() && affinity == Affinity::After)
+        {
+            return anchor;
+        }
         self.attach_insertion(anchor, offset)
     }
 
@@ -238,8 +243,15 @@ impl Snapshot {
                 .cmp(b)
                 .then_with(|| left.insertion_offset().cmp(&right.insertion_offset()))
                 .then_with(|| left.affinity().cmp(&right.affinity())),
-            (None, Some(_)) => Ordering::Less,
-            (Some(_), None) => Ordering::Greater,
+            // 文档终端边界没有插入身份：Before/After 分别保持源文首／文尾的稳定边界序。
+            (None, Some(_)) => match left.affinity() {
+                Affinity::Before => Ordering::Less,
+                Affinity::After => Ordering::Greater,
+            },
+            (Some(_), None) => match right.affinity() {
+                Affinity::Before => Ordering::Greater,
+                Affinity::After => Ordering::Less,
+            },
             (None, None) => left
                 .insertion()
                 .cmp(&right.insertion())

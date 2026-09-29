@@ -55,6 +55,48 @@ fn async_rewrap_empty_composite_keeps_one_text_row(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn soft_wrap_equal_total_rows_still_invalidates_decoration_geometry(cx: &mut TestAppContext) {
+    let mut buffer = Buffer::from_text(
+        format!("{}\n{}\n", "a".repeat(40), "b".repeat(20)),
+        BufferConfig::default(),
+    )
+    .unwrap();
+    let changes = buffer.subscribe();
+    let display = cx.new(|cx| DisplayMap::new(buffer.snapshot(), cx));
+    configure(cx, &display, Some(120.));
+    cx.run_until_parked();
+    let before = display.update(cx, |map, cx| map.snapshot(cx));
+    let before_second_row = before.line_to_display_row(zcv_text::Line::new(1)).unwrap();
+    let cached = before.diff_decorations();
+    buffer
+        .edit(
+            [
+                Edit::delete(
+                    zcv_text::TextRange::new(ByteOffset::ZERO, ByteOffset::new(20)).unwrap(),
+                ),
+                Edit::insert(ByteOffset::new(61), "b".repeat(20)).unwrap(),
+            ],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    display.update(cx, |map, cx| {
+        map.sync(buffer.snapshot(), changes.consume(), cx)
+    });
+    cx.run_until_parked();
+    let after = display.update(cx, |map, cx| map.snapshot(cx));
+    assert_eq!(before.line_count(), after.line_count());
+    assert_ne!(
+        before_second_row,
+        after.line_to_display_row(zcv_text::Line::new(1)).unwrap(),
+        "行数不变但源行映射已变化"
+    );
+    assert!(
+        !Arc::ptr_eq(&cached, &after.diff_decorations()),
+        "源行映射改变必须失效装饰几何"
+    );
+}
+
+#[gpui::test]
 fn async_rewrap_startup_loads_multibyte_excerpts_before_empty_task_finishes(
     cx: &mut TestAppContext,
 ) {
@@ -190,7 +232,6 @@ fn async_rewrap_empty_frames_keep_one_pending_snapshot(cx: &mut TestAppContext) 
 fn async_rewrap_cancellation_and_close_release_measurement_resources(cx: &mut TestAppContext) {
     cx.background_executor.set_block_on_ticks(0..=0);
     let text_system = cx.update(|app| app.text_system().clone());
-    let baseline = Arc::strong_count(&text_system);
     let (_, display, wrap) = reflow_fixture(cx);
     for width in [120., 180., 90., 210.] {
         configure(cx, &display, Some(width));
@@ -207,10 +248,17 @@ fn async_rewrap_cancellation_and_close_release_measurement_resources(cx: &mut Te
         assert!(map.background_task.is_none());
         assert!(map.pending_edits.is_empty());
     });
+    // GPUI 按字体复用 LineWrapper；取消任务会把测量器归还池，保留字符宽度缓存。
+    let pooled_baseline = Arc::strong_count(&text_system);
+    for width in [120., 180., 90., 210.] {
+        configure(cx, &display, Some(width));
+    }
+    configure(cx, &display, None);
+    cx.run_until_parked();
     assert_eq!(
         Arc::strong_count(&text_system),
-        baseline + 1,
-        "取消后只由换行配置保留文本系统"
+        pooled_baseline,
+        "重复取消后测量器池必须稳定"
     );
     configure(cx, &display, Some(120.));
     cx.run_until_parked();
@@ -233,8 +281,8 @@ fn async_rewrap_cancellation_and_close_release_measurement_resources(cx: &mut Te
     drop(update);
     assert_eq!(
         Arc::strong_count(&text_system),
-        baseline + 1,
-        "让出执行权后取消任务必须释放测量工作集"
+        pooled_baseline,
+        "取消后测量器必须归还 GPUI 池，不保留额外任务句柄"
     );
     configure(cx, &display, Some(90.));
     let weak = wrap.downgrade();
@@ -246,8 +294,8 @@ fn async_rewrap_cancellation_and_close_release_measurement_resources(cx: &mut Te
     assert!(weak.upgrade().is_none());
     assert_eq!(
         Arc::strong_count(&text_system),
-        baseline,
-        "关闭视图后重排工作集必须释放"
+        pooled_baseline - 1,
+        "关闭视图后必须释放换行配置，测量器由 GPUI 按字体复用"
     );
 }
 

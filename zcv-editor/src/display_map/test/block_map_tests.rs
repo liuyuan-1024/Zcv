@@ -61,10 +61,10 @@ fn folding_a_middle_buffer_rebuilds_an_exact_current_block_projection(cx: &mut T
     let wrap_snapshot = display_snapshot.wrap_snapshot().clone();
     let middle_id = cx.update_entity(&middle, |buffer, _cx| buffer.buffer_id());
 
-    let unfolded = BlockSnapshot::new(wrap_snapshot.clone(), &HashSet::new());
+    let unfolded = BlockSnapshot::new(wrap_snapshot.clone(), &Arc::new(HashSet::new()));
     let mut folded_buffers = HashSet::new();
     folded_buffers.insert(middle_id);
-    let folded = unfolded.sync(wrap_snapshot.clone(), &folded_buffers, &[]);
+    let folded = unfolded.sync(wrap_snapshot.clone(), &Arc::new(folded_buffers), &[]);
 
     assert_eq!(
         folded.transforms.summary().input_rows,
@@ -107,7 +107,7 @@ fn folding_a_buffer_with_multiple_excerpts_keeps_input_coverage(cx: &mut TestApp
     let wrap_snapshot = display_snapshot.wrap_snapshot().clone();
     let middle_id = cx.update_entity(&middle, |buffer, _cx| buffer.buffer_id());
 
-    let unfolded = BlockSnapshot::new(wrap_snapshot.clone(), &HashSet::new());
+    let unfolded = BlockSnapshot::new(wrap_snapshot.clone(), &Arc::new(HashSet::new()));
     let before = block_placements(&unfolded);
     assert_eq!(
         before.len(),
@@ -117,7 +117,7 @@ fn folding_a_buffer_with_multiple_excerpts_keeps_input_coverage(cx: &mut TestApp
 
     let mut folded_buffers = HashSet::new();
     folded_buffers.insert(middle_id);
-    let folded = unfolded.sync(wrap_snapshot.clone(), &folded_buffers, &[]);
+    let folded = unfolded.sync(wrap_snapshot.clone(), &Arc::new(folded_buffers), &[]);
 
     assert_eq!(
         folded.transforms.summary().input_rows,
@@ -136,7 +136,7 @@ fn out_of_range_wrap_row_fails_explicitly(cx: &mut TestAppContext) {
     let display = cx.new(|cx| DisplayMap::new(snapshot, cx));
     let display_snapshot = cx.update_entity(&display, |map, cx| map.snapshot(cx));
     let wrap_snapshot = display_snapshot.wrap_snapshot().clone();
-    let block = BlockSnapshot::new(wrap_snapshot.clone(), &HashSet::new());
+    let block = BlockSnapshot::new(wrap_snapshot.clone(), &Arc::new(HashSet::new()));
 
     let out_of_range = wrap_snapshot.line_count();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -170,7 +170,7 @@ fn editing_a_folded_composite_document_keeps_block_input_coverage(cx: &mut TestA
     let _ = display.update(cx, |map, cx| map.snapshot(cx));
     let middle_id = cx.update_entity(&middle, |buffer, _| buffer.buffer_id());
 
-    display.update(cx, |map, cx| map.set_buffer_folded(middle_id, true, cx));
+    display.update(cx, |map, cx| map.set_buffers_folded([middle_id], true, cx));
     let _ = display.update(cx, |map, cx| map.snapshot(cx));
 
     for text in ["b0\nb1\nb2\nb3\nb4\nbX\n", "b0\nb2\n", "b0\nb1\nb2\nb3\n"] {
@@ -188,7 +188,7 @@ fn editing_a_folded_composite_document_keeps_block_input_coverage(cx: &mut TestA
         );
     }
 
-    display.update(cx, |map, cx| map.set_buffer_folded(middle_id, false, cx));
+    display.update(cx, |map, cx| map.set_buffers_folded([middle_id], false, cx));
     let _ = display.update(cx, |map, cx| map.snapshot(cx));
 
     cx.update_entity(&last, |buffer, cx| {
@@ -203,4 +203,190 @@ fn editing_a_folded_composite_document_keeps_block_input_coverage(cx: &mut TestA
         snapshot.wrap_snapshot().line_count(),
         "展开后编辑后续文件必须保持块投影输入覆盖"
     );
+}
+
+#[gpui::test]
+fn block_patch_preserves_unaffected_headers_after_edit_and_removal(cx: &mut TestAppContext) {
+    use zcv_text::{ByteOffset, Edit, TransactionMetadata};
+    let first = language_buffer("src/a.rs", "a0\na1\n", cx);
+    let middle = language_buffer("src/b.rs", "b0\nb1\n", cx);
+    let last = language_buffer("src/c.rs", "c0\nc1\n", cx);
+    let multi = cx.new(MultiBuffer::empty);
+    multi.update(cx, |buffer, cx| {
+        for source in [first, middle.clone(), last] {
+            buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(source, 0..2, cx)], cx);
+        }
+    });
+    let (subscription, snapshot) = multi.update(cx, MultiBuffer::subscribe_and_snapshot);
+    let display = cx.new(|cx| {
+        let mut map = DisplayMap::new(snapshot, cx);
+        map.set_multi_buffer(multi.clone(), subscription, cx);
+        map
+    });
+    let before = display.update(cx, |map, cx| map.snapshot(cx));
+    let last_header = block_placements(&before.block_snapshot)
+        .last()
+        .unwrap()
+        .clone();
+    middle.update(cx, |source, cx| {
+        source
+            .edit(
+                [Edit::insert(ByteOffset::new(1), "\ninserted\n").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .unwrap()
+    });
+    cx.run_until_parked();
+    let edited = display.update(cx, |map, cx| map.snapshot(cx));
+    let edited_header = block_placements(&edited.block_snapshot)
+        .last()
+        .unwrap()
+        .clone();
+    assert!(
+        Arc::ptr_eq(&last_header, &edited_header),
+        "局部源编辑必须保留未变化的后缀块"
+    );
+    multi.update(cx, |buffer, cx| {
+        buffer.remove_excerpts_for_path(std::path::Path::new("src/a.rs"), cx)
+    });
+    let removed = display.update(cx, |map, cx| map.snapshot(cx));
+    let removed_header = block_placements(&removed.block_snapshot)
+        .last()
+        .unwrap()
+        .clone();
+    assert!(
+        Arc::ptr_eq(&last_header, &removed_header),
+        "删除前面的文件不得重建后缀块身份"
+    );
+    assert_eq!(
+        removed
+            .block_snapshot
+            .excerpt_for_placement(&removed_header)
+            .unwrap()
+            .path(),
+        std::path::Path::new("src/c.rs"),
+        "稳定块 Anchor 必须解析到原来的文件"
+    );
+    let fresh = BlockSnapshot::new(removed.wrap_snapshot().clone(), &Arc::new(HashSet::new()));
+    let rows = |snapshot: &BlockSnapshot| {
+        let mut cursor = snapshot.rows(DisplayRow::ZERO, snapshot.line_count());
+        std::iter::from_fn(|| cursor.next()).collect::<Vec<_>>()
+    };
+    assert_eq!(
+        rows(&removed.block_snapshot),
+        rows(&fresh),
+        "增量投影必须与当前快照的完整构造相同"
+    );
+}
+
+#[gpui::test]
+fn block_patches_cover_disjoint_edits_wraps_and_window_changes(cx: &mut TestAppContext) {
+    use zcv_text::{ByteOffset, Edit, TransactionMetadata};
+    let sources: Vec<_> = (0..4)
+        .map(|file| {
+            language_buffer(
+                &format!("src/{file}.rs"),
+                &(0..40)
+                    .map(|row| format!("{file}:{row}\t{}\n", "中文 abc ".repeat(8)))
+                    .collect::<String>(),
+                cx,
+            )
+        })
+        .collect();
+    let multi = cx.new(MultiBuffer::empty);
+    multi.update(cx, |buffer, cx| {
+        for source in &sources {
+            buffer.set_excerpts_for_path(
+                vec![
+                    ExcerptRange::line_range(source.clone(), 0..10, cx),
+                    ExcerptRange::line_range(source.clone(), 28..35, cx),
+                ],
+                cx,
+            );
+        }
+    });
+    let (subscription, snapshot) = multi.update(cx, MultiBuffer::subscribe_and_snapshot);
+    let display = cx.new(|cx| {
+        let mut map = DisplayMap::new(snapshot, cx);
+        map.set_multi_buffer(multi.clone(), subscription, cx);
+        map
+    });
+    cx.background_executor.set_block_on_ticks(0..=0);
+    display.update(cx, |map, cx| {
+        map.set_wrap_width(
+            Some(gpui::px(120.)),
+            gpui::font("Helvetica"),
+            gpui::px(16.),
+            &cx.text_system().clone(),
+            cx,
+        );
+    });
+    let check = |cx: &mut TestAppContext| {
+        cx.run_until_parked();
+        let snapshot = display.update(cx, |map, cx| map.snapshot(cx));
+        let current = &snapshot.block_snapshot;
+        let fresh = BlockSnapshot::new(snapshot.wrap_snapshot().clone(), &current.folded_buffers);
+        let rows = |snapshot: &BlockSnapshot| {
+            let mut cursor = snapshot.rows(DisplayRow::ZERO, snapshot.line_count());
+            std::iter::from_fn(|| cursor.next()).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            rows(current),
+            rows(&fresh),
+            "显示行和块来源必须与当前窗口一致"
+        );
+        assert_eq!(
+            current.transforms.summary().input_rows,
+            snapshot.wrap_snapshot().line_count()
+        );
+    };
+    check(cx);
+    for source in [&sources[0], &sources[2]] {
+        source.update(cx, |source, cx| {
+            source
+                .edit(
+                    [Edit::insert(ByteOffset::new(3), "\n插入的长行 abc def ghi\n").unwrap()],
+                    TransactionMetadata::default(),
+                    cx,
+                )
+                .unwrap();
+        });
+    }
+    check(cx);
+    let folded = [
+        cx.read_entity(&sources[0], |source, _| source.buffer_id()),
+        cx.read_entity(&sources[2], |source, _| source.buffer_id()),
+    ];
+    display.update(cx, |map, cx| map.set_buffers_folded(folded, true, cx));
+    check(cx);
+    for source in [&sources[2], &sources[3]] {
+        source.update(cx, |source, cx| {
+            source
+                .edit(
+                    [Edit::insert(ByteOffset::new(1), "\n再次插入\n").unwrap()],
+                    TransactionMetadata::default(),
+                    cx,
+                )
+                .unwrap();
+        });
+    }
+    check(cx);
+    multi.update(cx, |buffer, cx| {
+        buffer.remove_excerpts_for_path(std::path::Path::new("src/0.rs"), cx);
+        buffer.set_excerpts_for_path(
+            vec![ExcerptRange::line_range(sources[1].clone(), 3..12, cx)],
+            cx,
+        );
+    });
+    check(cx);
+    multi.update(cx, |buffer, cx| {
+        buffer.set_excerpts_for_path(
+            vec![ExcerptRange::line_range(sources[0].clone(), 0..8, cx)],
+            cx,
+        );
+    });
+    check(cx);
+    display.update(cx, |map, cx| map.set_buffers_folded(folded, false, cx));
+    check(cx);
 }

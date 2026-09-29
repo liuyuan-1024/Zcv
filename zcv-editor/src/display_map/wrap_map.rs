@@ -1,7 +1,7 @@
 //! DisplayMap 的软换行（soft wrap）层。
 //!
 //! WrapMap 在 TabMap 之上，把超过指定像素宽度的逻辑行拆成多个显示行。
-//! 换行点由文本系统对展开后的整行文本进行 shaping，再按词边界优先、长词硬断和首行缩进继承规则计算。
+//! 换行点由 GPUI LineWrapper 顺序消费 Tab 展开的文本与实测元素片段，按词边界、长词硬断和续行缩进规则计算。
 //! 续行的视觉缩进是一段"假空格"，作为显示文本的前缀参与布局、命中测试与坐标换算，因此渲染端无需为续行做任何特殊定位。
 //!
 //! 与 FoldMap 一样，WrapMap 用 `SumTree<Transform>` 维护"输入 tab 行 → 输出显示行"的拓扑：Isomorphic 段把连续不换行行合并，Wrap 段把单个宽行拆成 `wrap_points.len() + 1` 个显示行。
@@ -17,7 +17,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_lite::future::yield_now;
-use gpui::{AppContext as _, Context, Font, Pixels, Task, TextRun, TextSystem, WindowTextSystem};
+use gpui::{
+    AppContext as _, Context, Font, LineFragment, LineWrapperHandle, Pixels, Task, TextSystem,
+};
 use sum_tree::{Bias, ContextLessSummary, Dimension, Dimensions, Item, SumTree};
 use unicode_segmentation::UnicodeSegmentation;
 use zcv_multi_buffer::{ExcerptSnapshot, MultiBufferLineCursor, MultiBufferSnapshot};
@@ -296,7 +298,7 @@ pub(crate) struct WrapSnapshot {
     transforms: SumTree<Transform>,
     /// 是否处于软换行模式（false = 透传，显示行 == tab 行）。
     wrapped: bool,
-    /// 是否只是按编辑急切插值、尚未经过真实 shaping 重排（由后台任务补齐）。
+    /// 是否只是按编辑急切插值、尚未经过真实换行测量（由后台任务补齐）。
     interpolated: bool,
     version: u64,
 }
@@ -321,6 +323,10 @@ impl WrapSnapshot {
                 }
             }
         }
+    }
+
+    pub(super) fn version(&self) -> u64 {
+        self.version
     }
 
     pub(crate) fn tab_snapshot(&self) -> &TabSnapshot {
@@ -352,7 +358,7 @@ impl WrapSnapshot {
         self.transforms.summary().longest_row
     }
 
-    /// 按编辑急切插值：结构编辑区间用 isomorphic 段占位，不重新 shaping。
+    /// 按编辑急切插值：结构编辑区间用 isomorphic 段占位，不重新测量换行。
     ///
     /// 后台重排完成前，变换树仍与新的 tab 行数保持一致；interpolated 标记它尚未真实测量。
     fn interpolate(
@@ -923,14 +929,12 @@ fn wrap_edits(
         let old_before = output_rows_before(measure, old_rows.start);
         let old_after = output_rows_before(measure, old_rows.end);
         let start = (old_before as isize + delta) as usize;
-        let old_range = start..start + (old_after - old_before);
+        let old_range = old_before..old_after;
         let new_range = start..start + new_len;
-        if old_range != new_range {
-            result.push(WrapEdit {
-                old: old_range,
-                new: new_range,
-            });
-        }
+        result.push(WrapEdit {
+            old: old_range,
+            new: new_range,
+        });
         delta += *new_len as isize - (old_after - old_before) as isize;
     }
     result
@@ -967,7 +971,6 @@ fn tab_edit_rows(tab_edits: &[TabEdit]) -> Vec<(Range<usize>, Range<usize>)> {
     merged
 }
 
-/// 文本中第 `chars` 个字符的字节偏移（超出末尾返回文本长度）。
 /// 一次换行重排影响的显示行区间（换行输出行空间）。
 ///
 /// 无重排时列表为空，因此「空」精确表示显示行布局未变；
@@ -1249,7 +1252,7 @@ pub(super) struct WrapMap {
     snapshot: WrapSnapshot,
     wrap_width: Option<Pixels>,
     font_with_size: Option<(Font, Pixels)>,
-    /// 由 `set_wrap_width` 缓存；重排时使用同一个 text system 做整行 shaping。
+    /// 由换行配置持有；重排任务从同一文本系统借用字体换行器。
     text_system: Option<Arc<TextSystem>>,
     /// 尚未落地到真实重排的编辑批次（Tab 快照 + Tab 编辑）。
     pending_edits: VecDeque<(TabSnapshot, Vec<TabEdit>)>,
@@ -1306,9 +1309,10 @@ impl WrapMap {
         WrapWorker {
             snapshot: self.snapshot.clone(),
             wrap_width: self.wrap_width.expect("只有开启换行才创建重排任务"),
-            font_with_size: self.font_with_size.clone().expect("换行配置必须携带字体"),
-            window_text_system: WindowTextSystem::new(text_system.clone()),
-            text_system,
+            line_wrapper: {
+                let (font, font_size) = self.font_with_size.clone().expect("换行配置必须携带字体");
+                text_system.line_wrapper(font, font_size)
+            },
             rows_since_yield: 0,
         }
     }
@@ -1330,7 +1334,26 @@ impl WrapMap {
             let old_version = self.snapshot.tab_snapshot.version();
             self.snapshot.tab_snapshot = tab_snapshot;
             if self.snapshot.tab_snapshot.version() != old_version {
-                let edits = self.set_isomorphic_all();
+                let row_edits: Vec<_> = tab_edits
+                    .iter()
+                    .filter(|edit| {
+                        edit.old.start.row() != edit.old.end.row()
+                            || edit.new.start.row() != edit.new.end.row()
+                    })
+                    .cloned()
+                    .collect();
+                let edits = tab_edit_rows(&row_edits)
+                    .into_iter()
+                    .map(|(old, new)| WrapEdit { old, new })
+                    .collect::<Vec<_>>();
+                debug_assert!(
+                    !edits.is_empty()
+                        || self.snapshot.transforms.summary().output_rows
+                            == self.snapshot.tab_snapshot.line_count(),
+                    "Tab 行数变化必须携带结构编辑"
+                );
+                self.snapshot.transforms = isomorphic_tree(&self.snapshot.tab_snapshot);
+                self.snapshot.check_invariants();
                 self.edits_since_sync = self.edits_since_sync.compose(edits);
                 self.snapshot.version += 1;
             }
@@ -1527,13 +1550,11 @@ impl WrapMap {
     }
 }
 
-/// 重排任务的工作集；不持有实体、队列或通知句柄，测量缓存最多覆盖一个让出批次。
+/// 重排任务独占从文本系统借用的换行器；完成或取消时归还字体宽度缓存，不保留整行塑形结果。
 struct WrapWorker {
     snapshot: WrapSnapshot,
     wrap_width: Pixels,
-    font_with_size: (Font, Pixels),
-    text_system: Arc<TextSystem>,
-    window_text_system: WindowTextSystem,
+    line_wrapper: LineWrapperHandle,
     rows_since_yield: usize,
 }
 
@@ -1607,8 +1628,7 @@ impl WrapWorker {
                 output_rows += self.push_wrap_transform(&mut buffered, prepared);
                 self.rows_since_yield += 1;
                 if self.rows_since_yield == WRAP_YIELD_ROW_INTERVAL {
-                    // 任务没有窗口帧结束回调；分批释放 shaping 布局，并提供取消检查点。
-                    self.window_text_system = WindowTextSystem::new(self.text_system.clone());
+                    // 分批让出执行权，使任务替换与实体销毁能够及时取消重排。
                     self.rows_since_yield = 0;
                     yield_now().await;
                 }
@@ -1679,7 +1699,7 @@ impl WrapWorker {
     /// 返回该行贡献的输出显示行数：
     /// 即使它与前一个同构变换合并，调用方仍能按行累计测量值，不依赖压入后的缓冲区切分。
     fn push_wrap_transform(
-        &self,
+        &mut self,
         transforms: &mut Vec<Transform>,
         prepared: PreparedWrapText,
     ) -> usize {
@@ -1702,10 +1722,7 @@ impl WrapWorker {
         }
     }
 
-    /// 为单个投影行建立文字塑形输入。
-    ///
-    /// 软换行必须把当前行交给文字系统塑形；
-    /// 这里直接消费 Fold 连续 chunk，只保留塑形所需的一份临时文本，不先生成另一份投影整行。
+    /// 从 Fold 连续 chunk 建立一行的换行片段，保留 Tab 展开与源字节边界的映射。
     fn prepared_wrap_text<'a>(
         tab: &'a TabSnapshot,
         tab_row: usize,
@@ -1763,121 +1780,62 @@ impl WrapWorker {
         ))
     }
 
-    /// 使用最终字形位置与元素实测宽度计算换行点，避免字符宽度估算与渲染 shaping 使用两套标准。
-    ///
-    /// 文本原子宽度来自整行 shaping；带 measured_width 的占位符元素作为单个原子宽度参与判定，
-    /// 元素内部不产生换行点。
-    fn wrap_points(&self, prepared: PreparedWrapText, wrap_width: Pixels) -> Vec<WrapPointInfo> {
-        let window_text_system = &self.window_text_system;
-        let (font, font_size) = &self.font_with_size;
-        if prepared.chars.is_empty() {
-            return Vec::new();
-        }
-        let run = TextRun {
-            len: prepared.text.len(),
-            font: font.clone(),
-            ..Default::default()
-        };
-        let shaped =
-            window_text_system.shape_line(prepared.text.clone().into(), *font_size, &[run], None);
-
-        // 归并为换行原子：文本字符各占一个原子，元素占一个原子并携带实测宽度。
-        let mut atoms: Vec<WrapAtom> = Vec::with_capacity(prepared.chars.len());
-        let mut prefix_widths: Vec<Pixels> = Vec::with_capacity(prepared.chars.len() + 1);
-        prefix_widths.push(Pixels::ZERO);
-        let mut char_index = 0usize;
-        while char_index < prepared.chars.len() {
-            let character = &prepared.chars[char_index];
-            let (ch, raw_start, width, next) = match character.element_width {
-                Some(width) => (
-                    character.ch,
-                    character.raw_start,
-                    width,
-                    character.element_chars,
-                ),
-                None => (
-                    character.ch,
-                    character.raw_start,
-                    shaped.x_for_index(character.expanded_end)
-                        - shaped.x_for_index(character.expanded_start),
-                    1,
-                ),
-            };
-            prefix_widths.push(prefix_widths.last().copied().unwrap_or(Pixels::ZERO) + width);
-            atoms.push(WrapAtom { ch, raw_start });
-            char_index += next;
-        }
-
-        let mut points = Vec::new();
-        let mut first_non_whitespace: Option<usize> = None;
-        let mut indent = None;
-        let mut indent_width = Pixels::ZERO;
-        let mut last_candidate: Option<usize> = None;
-        let mut last_wrap = 0usize;
-        let mut line_start_atom = 0usize;
-        let mut previous = '\0';
-
-        for (atom_index, atom) in atoms.iter().enumerate() {
-            if is_word_char(atom.ch) {
-                if previous == ' ' && atom.ch != ' ' && first_non_whitespace.is_some() {
-                    last_candidate = Some(atom_index);
+    /// GPUI 负责顺序测量、断词与缩进；本层只把其字节边界转换回 Fold 行的源字节空间。
+    fn wrap_points(
+        &mut self,
+        prepared: PreparedWrapText,
+        wrap_width: Pixels,
+    ) -> Vec<WrapPointInfo> {
+        let mut fragments = Vec::new();
+        let mut text_start = 0;
+        let mut index = 0;
+        while index < prepared.chars.len() {
+            let character = &prepared.chars[index];
+            if let Some(width) = character.element_width {
+                if text_start < character.expanded_start {
+                    fragments.push(LineFragment::text(
+                        &prepared.text[text_start..character.expanded_start],
+                    ));
                 }
-            } else if atom.ch != ' ' && first_non_whitespace.is_some() {
-                last_candidate = Some(atom_index);
+                let end = prepared.chars[index + character.element_chars - 1].expanded_end;
+                fragments.push(LineFragment::element(width, end - character.expanded_start));
+                text_start = end;
+                index += character.element_chars;
+            } else {
+                index += 1;
             }
-
-            if atom.ch != ' ' && first_non_whitespace.is_none() {
-                first_non_whitespace = Some(atom.raw_start);
+        }
+        if text_start < prepared.text.len() {
+            fragments.push(LineFragment::text(&prepared.text[text_start..]));
+        }
+        let mut points: Vec<WrapPointInfo> = Vec::new();
+        let mut character_index = 0;
+        for boundary in self.line_wrapper.wrap_line(&fragments, wrap_width) {
+            while character_index < prepared.chars.len()
+                && prepared.chars[character_index].expanded_start < boundary.ix
+            {
+                character_index += 1;
             }
-
-            let line_width = prefix_widths[atom_index + 1] - prefix_widths[line_start_atom]
-                + if last_wrap > 0 {
-                    indent_width
-                } else {
-                    Pixels::ZERO
-                };
-            if line_width > wrap_width && atom.raw_start > last_wrap {
-                if indent.is_none()
-                    && let Some(first_non_whitespace) = first_non_whitespace
-                {
-                    let indent_columns = prepared
-                        .chars
-                        .iter()
-                        .take_while(|character| character.raw_start < first_non_whitespace)
-                        .count()
-                        .min(gpui::LineWrapper::MAX_INDENT as usize);
-                    indent = Some(indent_columns);
-                    indent_width =
-                        shaped_space_width(window_text_system, font, *font_size, indent_columns);
-                }
-
-                let boundary_atom = last_candidate
-                    .filter(|candidate| atoms[*candidate].raw_start > last_wrap)
-                    .unwrap_or(atom_index);
+            let byte_ix = prepared
+                .chars
+                .get(character_index)
+                .map_or(prepared.raw_len, |character| character.raw_start);
+            // Tab 的多个展开字节属于同一个源字符；向右吸附后只保留非空源片段边界。
+            if byte_ix < prepared.raw_len
+                && byte_ix > points.last().map_or(0, |point| point.byte_ix)
+            {
                 points.push(WrapPointInfo {
-                    byte_ix: atoms[boundary_atom].raw_start,
-                    indent: indent.unwrap_or(0) as u32,
+                    byte_ix,
+                    indent: boundary.next_indent,
                 });
-                last_wrap = atoms[boundary_atom].raw_start;
-                line_start_atom = boundary_atom;
-                last_candidate = None;
             }
-            previous = atom.ch;
         }
-
         points
     }
 }
 
-/// 换行原子：一个文本字符，或一个带实测宽度的行内元素。
-struct WrapAtom {
-    ch: char,
-    raw_start: usize,
-}
-
 #[derive(Debug)]
 struct PreparedWrapChar {
-    ch: char,
     raw_start: usize,
     expanded_start: usize,
     expanded_end: usize,
@@ -1887,11 +1845,12 @@ struct PreparedWrapChar {
     element_chars: usize,
 }
 
-/// 把 tab 按渲染端的列规则展开，并保留投影文本到塑形文本的边界映射。
+/// 把 Tab 按下层列规则展开，保留换行文本到源字节的边界映射与实测元素。
 #[derive(Debug)]
 struct PreparedWrapText {
     text: String,
     chars: Vec<PreparedWrapChar>,
+    raw_len: usize,
 }
 
 impl PreparedWrapText {
@@ -1936,7 +1895,6 @@ impl PreparedWrapText {
                     column += 1;
                 }
                 chars.push(PreparedWrapChar {
-                    ch,
                     raw_start,
                     expanded_start,
                     expanded_end: text.len(),
@@ -1953,61 +1911,12 @@ impl PreparedWrapText {
                 chars[first].element_chars = count;
             }
         }
-        Self { text, chars }
+        Self {
+            text,
+            chars,
+            raw_len: raw_start,
+        }
     }
-}
-
-fn shaped_space_width(
-    text_system: &WindowTextSystem,
-    font: &Font,
-    font_size: Pixels,
-    count: usize,
-) -> Pixels {
-    if count == 0 {
-        return Pixels::ZERO;
-    }
-    let text = " ".repeat(count);
-    let run = TextRun {
-        len: text.len(),
-        font: font.clone(),
-        ..Default::default()
-    };
-    text_system
-        .shape_line(text.into(), font_size, &[run], None)
-        .width()
-}
-
-/// 与 GPUI LineWrapper 保持一致的断词分类；宽度判断由本模块的整行 shaping 提供。
-fn is_word_char(ch: char) -> bool {
-    ch.is_ascii_alphanumeric()
-        || matches!(ch, '\u{00C0}'..='\u{00FF}')
-        || matches!(ch, '\u{0100}'..='\u{017F}')
-        || matches!(ch, '\u{0180}'..='\u{024F}')
-        || matches!(ch, '\u{0400}'..='\u{04FF}')
-        || matches!(ch, '\u{1E00}'..='\u{1EFF}')
-        || matches!(ch, '\u{0300}'..='\u{036F}')
-        || matches!(ch, '\u{0980}'..='\u{09FF}')
-        || matches!(
-            ch,
-            '-' | '_'
-                | '.'
-                | '\''
-                | '’'
-                | '‘'
-                | '$'
-                | '%'
-                | '@'
-                | '#'
-                | '^'
-                | '~'
-                | ','
-                | '='
-                | ':'
-                | ';'
-        )
-        || matches!(ch, '!' | ')' | ']' | '}' | '"' | '”' | '»' | '…')
-        || matches!(ch, '⋯')
-        || matches!(ch, '\u{202F}' | '\u{00A0}' | '\u{2011}')
 }
 
 /// 片段 k 的行内容字节区间；行内容总长剥掉 `\r\n`。

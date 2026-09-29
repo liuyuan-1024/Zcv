@@ -9,6 +9,7 @@ path = "src/language.rs"
 
 [dependencies]
 gpui.workspace = true
+lru.workspace = true
 regex.workspace = true
 tree-sitter.workspace = true
 tree-sitter-bash.workspace = true

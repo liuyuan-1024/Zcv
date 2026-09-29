@@ -4,7 +4,7 @@
 //! 缓存由拥有语言状态的 Buffer 持有，随文本版本变化或解析安装整体替换，不进入不可变的 `SyntaxSnapshot`。
 //! 容量以条目字节成本为预算，超出后按最近最少使用淘汰（对齐 Zed `ChunkHighlightCache`）。
 
-use std::collections::{HashMap, VecDeque};
+use lru::LruCache;
 use std::sync::{Arc, Mutex};
 
 use crate::HighlightSpan;
@@ -18,8 +18,7 @@ pub struct HighlightCache {
 }
 
 struct Inner {
-    entries: HashMap<usize, CacheEntry>,
-    order: VecDeque<usize>,
+    entries: LruCache<usize, CacheEntry>,
     total_bytes: usize,
 }
 
@@ -28,12 +27,15 @@ struct CacheEntry {
     bytes: usize,
 }
 
+// 包含键、值及链表节点的估算成本，使空结果也受同一字节预算约束。
+const ENTRY_OVERHEAD_BYTES: usize =
+    size_of::<usize>() + size_of::<CacheEntry>() + 4 * size_of::<usize>();
+
 impl HighlightCache {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(Inner {
-                entries: HashMap::new(),
-                order: VecDeque::new(),
+                entries: LruCache::unbounded(),
                 total_bytes: 0,
             }),
         }
@@ -41,39 +43,23 @@ impl HighlightCache {
 
     pub(crate) fn get(&self, chunk_start: usize) -> Option<Arc<[HighlightSpan]>> {
         let mut inner = self.inner.lock().expect("高亮缓存锁不应中毒");
-        let spans = inner.entries.get(&chunk_start)?.spans.clone();
-        if let Some(index) = inner.order.iter().position(|key| *key == chunk_start) {
-            inner.order.remove(index);
-        }
-        inner.order.push_back(chunk_start);
-        Some(spans)
+        Some(Arc::clone(&inner.entries.get(&chunk_start)?.spans))
     }
 
     pub(crate) fn insert(&self, chunk_start: usize, spans: Arc<[HighlightSpan]>) {
-        let bytes = spans.len() * size_of::<HighlightSpan>();
+        let bytes = spans.len() * size_of::<HighlightSpan>() + ENTRY_OVERHEAD_BYTES;
         // 单个 chunk 就超过总预算时不缓存，避免一次插入把全部历史条目挤空。
         if bytes > MAX_HIGHLIGHT_CACHE_BYTES {
             return;
         }
         let mut inner = self.inner.lock().expect("高亮缓存锁不应中毒");
-        if let Some(previous) = inner
-            .entries
-            .insert(chunk_start, CacheEntry { spans, bytes })
-        {
-            inner.total_bytes = inner.total_bytes.saturating_sub(previous.bytes);
-            if let Some(index) = inner.order.iter().position(|key| *key == chunk_start) {
-                inner.order.remove(index);
-            }
+        if let Some(previous) = inner.entries.put(chunk_start, CacheEntry { spans, bytes }) {
+            inner.total_bytes -= previous.bytes;
         }
-        inner.order.push_back(chunk_start);
         inner.total_bytes += bytes;
         while inner.total_bytes > MAX_HIGHLIGHT_CACHE_BYTES {
-            let Some(evicted) = inner.order.pop_front() else {
-                break;
-            };
-            if let Some(entry) = inner.entries.remove(&evicted) {
-                inner.total_bytes = inner.total_bytes.saturating_sub(entry.bytes);
-            }
+            let (_, entry) = inner.entries.pop_lru().expect("超出预算的缓存必须包含条目");
+            inner.total_bytes -= entry.bytes;
         }
     }
 }

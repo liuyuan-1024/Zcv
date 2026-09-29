@@ -435,17 +435,7 @@ impl Render for ProjectDiffToolbar {
         let leading = {
             let weak = view.downgrade();
             let editor = view.read(cx).editor.clone();
-            let multi_buffer = view.read(cx).multi_buffer.clone();
-            let buffer_ids = multi_buffer.update(cx, |buffer, cx| {
-                let snapshot = buffer.snapshot(cx);
-                snapshot
-                    .excerpts()
-                    .map(|excerpt| excerpt.buffer_id())
-                    .collect::<Vec<_>>()
-            });
-            let expanded = buffer_ids
-                .iter()
-                .any(|buffer_id| !editor.read(cx).is_buffer_folded(*buffer_id, cx));
+            let expanded = editor.read(cx).has_expanded_buffers(cx);
             Button::icon(
                 "project-diff-expansion",
                 if expanded {
@@ -517,30 +507,12 @@ impl DiffView {
     fn set_all_files_folded(&mut self, folded: bool, cx: &mut Context<Self>) {
         let buffer_ids = self.file_buffer_ids(cx);
         self.editor.update(cx, |editor, cx| {
-            for buffer_id in buffer_ids {
-                if editor.is_buffer_folded(buffer_id, cx) != folded {
-                    editor.toggle_buffer_fold(buffer_id, cx);
-                }
-            }
+            editor.set_buffers_folded(buffer_ids, folded, cx)
         });
     }
 
-    /// 当前投影中每个文件的显示实体身份。
-    ///
-    /// 折叠集合按 BufferId 归属，与 BlockMap 的分类使用同一身份；
-    /// 文件身份来自逻辑窗口，删除输出区域沿用所属窗口的 BufferId，因此只需要去重后的集合。
-    fn file_buffer_ids(&self, cx: &mut App) -> Vec<BufferId> {
-        let snapshot = self
-            .multi_buffer
-            .update(cx, |buffer, cx| buffer.snapshot(cx));
-        let mut buffer_ids = Vec::new();
-        for excerpt in snapshot.excerpts() {
-            let buffer_id = excerpt.buffer_id();
-            if !buffer_ids.contains(&buffer_id) {
-                buffer_ids.push(buffer_id);
-            }
-        }
-        buffer_ids
+    fn file_buffer_ids(&self, cx: &App) -> Vec<BufferId> {
+        self.editor.read(cx).file_buffer_ids(cx)
     }
 
     /// 重做全部文件：先按文件聚合、解析出全部源 hunk，再逐个文件一次性提交。
@@ -596,7 +568,6 @@ impl DiffView {
         });
         let git_store = project.read(cx).git_store();
         let subscriptions = vec![
-            cx.observe(&editor, |_, _, cx| cx.notify()),
             // diff hunk 在后台完成后由 MultiBuffer 重新物化 excerpts；
             // 此时重试待定位路径，避免首次点击只能停在默认的第一个文件，第二次点击才生效。
             cx.observe(&multi_buffer, |view, _, cx| view.apply_pending_path(cx)),
@@ -605,7 +576,9 @@ impl DiffView {
             }),
             // 展开状态变化由 MultiBuffer 自己按文件重物化并推显示链；视图只需跟随重绘，不再整体重建投影。
             cx.subscribe(&editor, |_view, _, event: &EditorEvent, cx| match event {
-                EditorEvent::DiffHunksExpandedChanged => cx.notify(),
+                EditorEvent::DiffHunksExpandedChanged | EditorEvent::BufferFoldChanged => {
+                    cx.notify()
+                }
                 EditorEvent::Edited { .. }
                 | EditorEvent::PathChanged
                 | EditorEvent::DirtyChanged

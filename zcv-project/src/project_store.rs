@@ -20,7 +20,7 @@ use crate::search::SearchQuery;
 
 mod platform;
 
-use super::buffer_store::BufferStore;
+use super::buffer_store::{BufferStore, load_buffer};
 use super::git_store::{GitStatusSnapshot, GitStore};
 use super::search::{self, SearchResults};
 use super::text_file::{BufferLoadError, BufferSaveError, write_buffer_to};
@@ -221,6 +221,32 @@ impl Project {
         cx: &mut Context<Self>,
     ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
         self.buffer_store.open_buffer(path, cx)
+    }
+
+    /// 在后台读取文件，在 Project 的文档索引中安装并复用唯一的源文档。
+    pub fn open_buffer_async(
+        &mut self,
+        path: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Entity<LanguageBuffer>, BufferLoadError>> {
+        match self.buffer_store.opened_buffer(&path) {
+            Ok(Some(buffer)) => return Task::ready(Ok(buffer)),
+            Err(error) => return Task::ready(Err(error)),
+            Ok(None) => {}
+        }
+        let load_path = path.clone();
+        let loaded = cx
+            .background_executor()
+            .spawn(async move { load_buffer(&load_path) });
+        cx.spawn(async move |this, cx| {
+            let buffer = loaded.await?;
+            this.update(cx, |project, cx| {
+                project
+                    .buffer_store
+                    .install_loaded_buffer(&path, buffer, cx)
+            })
+            .expect("文件加载任务运行期间 Project 必须存活")
+        })
     }
 
     /// 解决工作区文件中的一个 Git 冲突，并把结果保存回文件。

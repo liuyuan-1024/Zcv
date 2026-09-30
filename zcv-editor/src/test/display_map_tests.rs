@@ -113,7 +113,7 @@ fn syntax_fold_candidates_project_across_diff_fragments(cx: &mut TestAppContext)
             BufferDiffInput {
                 working: source,
                 path: PathBuf::from("folds.rs"),
-                base_text: Some(base.to_owned()),
+                base_text: Some(Arc::from(base)),
                 index_text: None,
                 language_registry: registry,
                 key: 0,
@@ -1418,7 +1418,7 @@ fn soft_wrap_stays_active_after_editing_an_expanded_diff_excerpt(cx: &mut TestAp
             BufferDiffInput {
                 working: source.clone(),
                 path: path.clone(),
-                base_text: Some(base_text),
+                base_text: Some(Arc::from(base_text)),
                 index_text: None,
                 language_registry: registry,
                 key: 0,

@@ -12,7 +12,7 @@ hunk 的 working 半开范围两端均使用 `anchor_before`：起点在边界�
 
 - `BufferDiff` 是实体，拥有唯一在途计算任务；下次重算替换即取消，实体销毁随字段取消，不 `detach`。
 - 工作区、base 与 index 任一来源前进都会使在途结果过期；安装前比较三者的输入版本，过期结果丢弃并补算。
-- base/index 语言缓冲由 `BufferDiff` 创建并持有；修订准备、hunk 计算与发布属于同一个任务，更新经 `LanguageBuffer::snapshot_with_text`/`fast_forward` 在版本校验后整体安装。源编辑复用未变化的修订快照。
+- base/index 语言缓冲由 `BufferDiff` 创建并持有；首次构造只登记输入，不在前台从完整修订文本创建 Buffer。修订准备、hunk 计算与发布属于同一个任务，更新经 `LanguageBuffer::snapshot_with_text`/`fast_forward` 在版本校验后整体安装。源编辑复用未变化的修订快照。
 - 发布 `BufferDiffEvent::DiffChanged { changed_range }`；范围在当前 working 快照中。Git diff 视图负责按 hunks 装配可见 excerpts，组合投影只同步事件范围覆盖的 excerpts。范围缺失时不做 diff transform 范围同步，不转为整文件重建。
 
 ## 关键类型

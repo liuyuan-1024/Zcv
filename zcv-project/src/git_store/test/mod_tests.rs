@@ -1089,8 +1089,12 @@ fn file_diff_is_shared_by_working_base_and_index(cx: &mut gpui::TestAppContext) 
     let spec = |store: &GitStore, cx: &gpui::App| BufferDiffInput {
         working: working.clone(),
         path: native_path.clone(),
-        base_text: store.revision_text(GitRevision::Head, &path, cx),
-        index_text: store.revision_text(GitRevision::Index, &path, cx),
+        base_text: store
+            .revision_text(GitRevision::Head, &path, cx)
+            .map(Arc::from),
+        index_text: store
+            .revision_text(GitRevision::Index, &path, cx)
+            .map(Arc::from),
         language_registry: store.language_registry(),
         key: 0,
         operations: None,
@@ -1180,7 +1184,7 @@ fn diff_operations_stage_hunk_writes_index_and_keeps_pending(cx: &mut gpui::Test
                 BufferDiffInput {
                     working: working.clone(),
                     path: native_path.clone(),
-                    base_text: Some("第一行\n第二行\n".to_owned()),
+                    base_text: Some(Arc::from("第一行\n第二行\n")),
                     index_text: None,
                     language_registry: Arc::new(LanguageRegistry::new()),
                     key: 0,
@@ -1291,7 +1295,7 @@ fn staging_resolves_hunk_anchors_on_the_current_working_snapshot(cx: &mut gpui::
                 BufferDiffInput {
                     working: working.clone(),
                     path: native_path.clone(),
-                    base_text: Some("第一行\n第二行\n".to_owned()),
+                    base_text: Some(Arc::from("第一行\n第二行\n")),
                     index_text: None,
                     language_registry: Arc::new(LanguageRegistry::new()),
                     key: 0,
@@ -1390,7 +1394,7 @@ fn staging_two_hunks_without_waiting_merges_pending_edits(cx: &mut gpui::TestApp
                 BufferDiffInput {
                     working: working.clone(),
                     path: native_path.clone(),
-                    base_text: Some("a0\na1\na2\na3\na4\na5\n".to_owned()),
+                    base_text: Some(Arc::from("a0\na1\na2\na3\na4\na5\n")),
                     index_text: None,
                     language_registry: Arc::new(LanguageRegistry::new()),
                     key: 0,

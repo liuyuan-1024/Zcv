@@ -25,6 +25,36 @@ fn empty_project_has_no_worktree_or_project_services(cx: &mut TestAppContext) {
     });
 }
 
+#[gpui::test]
+async fn background_file_load_installs_one_shared_document(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let first_path = directory.path().join("first.txt");
+    let second_path = directory.path().join("second.txt");
+    fs::write(&first_path, "后台读取\n").expect("应写入文件");
+    fs::write(&second_path, "同一路径\n").expect("应写入文件");
+    let project = test_project(directory.path().to_path_buf(), cx);
+
+    let first = project
+        .update(cx, |project, cx| {
+            project.open_buffer_async(first_path.clone(), cx)
+        })
+        .await
+        .expect("后台打开应成功");
+    let reopened = project.update(cx, |project, cx| project.open_buffer(&first_path, cx));
+    assert_eq!(first, reopened.expect("已打开的文件应复用"));
+    let snapshot = cx.read_entity(&first, |buffer, _| buffer.text_snapshot());
+    let range = TextRange::new(ByteOffset::ZERO, snapshot.len_bytes()).expect("全文范围应有效");
+    assert_eq!(snapshot.slice_text(range).unwrap().as_str(), "后台读取\n");
+
+    let loading = project.update(cx, |project, cx| {
+        project.open_buffer_async(second_path.clone(), cx)
+    });
+    let opened = project
+        .update(cx, |project, cx| project.open_buffer(&second_path, cx))
+        .expect("同步打开应成功");
+    assert_eq!(loading.await.expect("后台打开应复用已存在文档"), opened);
+}
+
 struct FailingWatcher {
     watcher: FsWatcher,
 }

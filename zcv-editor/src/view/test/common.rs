@@ -108,7 +108,7 @@ pub(super) fn inject_editor_diff(
                 BufferDiffInput {
                     operations: None,
                     working: source.clone(),
-                    base_text: Some(base_text.as_deref().unwrap_or_default().to_owned()),
+                    base_text: Some(Arc::from(base_text.as_deref().unwrap_or_default())),
                     index_text: None,
                     path: working_path.clone(),
                     language_registry,
@@ -149,7 +149,7 @@ pub(super) fn inject_file_diff(
                 BufferDiffInput {
                     operations: None,
                     working: source.clone(),
-                    base_text: Some(base_text.to_string()),
+                    base_text: Some(base_text),
                     index_text: None,
                     path: working_path.clone(),
                     language_registry,

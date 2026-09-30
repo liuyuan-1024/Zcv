@@ -4794,7 +4794,6 @@ impl MultiBuffer {
                 .all(|excerpt| self.excerpt_path(excerpt, cx) == path),
             "set_excerpts_for_path 的片段必须属于同一路径"
         );
-        self.prepare_diff_sources(cx);
         self.apply_excerpts_for_path(path, excerpts, cx)
     }
 

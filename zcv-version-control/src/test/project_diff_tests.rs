@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use gpui::{AppContext as _, TestAppContext};
 
+use zcv_buffer_diff::PendingHunk;
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{DiffExcerptRanges, ExcerptDiffKind};
@@ -122,7 +123,7 @@ fn plain_diff_file(
         BufferDiff::new(
             BufferDiffInput {
                 working,
-                base_text: Some(base_text.to_owned()),
+                base_text: Some(Arc::from(base_text)),
                 index_text: None,
                 path: path.clone(),
                 language_registry: registry,
@@ -195,12 +196,12 @@ fn project_diff_control_render_cost(cx: &mut TestAppContext) {
                     BufferDiff::new(
                         BufferDiffInput {
                             working: source,
-                            base_text: Some(base.clone()),
-                            index_text: Some(if kind == ProjectDiffKind::Staged {
+                            base_text: Some(Arc::from(base.clone())),
+                            index_text: Some(Arc::from(if kind == ProjectDiffKind::Staged {
                                 working.clone()
                             } else {
                                 base.clone()
-                            }),
+                            })),
                             path: path.clone(),
                             language_registry: registry.clone(),
                             key: index,
@@ -1091,6 +1092,110 @@ fn staged_projection_refreshes_without_status_change_or_restart(cx: &mut TestApp
             );
         });
     }
+}
+
+#[gpui::test]
+fn head_change_updates_staged_projection_without_rebuilding_file_list(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时仓库");
+    let root = canonical_root(directory.path());
+    run_in(&root, &["git", "init", "-q", "-b", "master"]);
+    run_in(&root, &["git", "config", "user.email", "test@example.com"]);
+    run_in(&root, &["git", "config", "user.name", "Test User"]);
+    let path = root.join("staged.txt");
+    std::fs::write(&path, "首次提交\n").unwrap();
+    run_in(&root, &["git", "add", "staged.txt"]);
+    run_in(&root, &["git", "commit", "-q", "-m", "first"]);
+    std::fs::write(&path, "第二次提交\n").unwrap();
+    run_in(&root, &["git", "add", "staged.txt"]);
+    run_in(&root, &["git", "commit", "-q", "-m", "second"]);
+    std::fs::write(&path, "当前暂存\n").unwrap();
+    run_in(&root, &["git", "add", "staged.txt"]);
+
+    let project = test_project(root.clone(), cx);
+    let store = project.read_with(cx, |project, _| project.git_store());
+    let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Staged, project, cx));
+    cx.run_until_parked();
+    let (source_id, before) = view.update(cx, |view, cx| {
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        (
+            snapshot.excerpts().next().unwrap().buffer_id(),
+            String::from_utf8(snapshot.text_bytes()).unwrap(),
+        )
+    });
+    assert!(before.contains("第二次提交"));
+    assert!(before.contains("当前暂存"));
+
+    run_in(&root, &["git", "reset", "--soft", "HEAD~1"]);
+    store.update(cx, |store, cx| {
+        store.refresh_statuses_for_paths(&[root.join(".git/HEAD")], cx)
+    });
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        let text = String::from_utf8(snapshot.text_bytes()).unwrap();
+        assert!(text.contains("首次提交"));
+        assert!(text.contains("当前暂存"));
+        assert!(!text.contains("第二次提交"));
+        assert_eq!(snapshot.excerpts().next().unwrap().buffer_id(), source_id);
+    });
+}
+
+#[gpui::test]
+fn clearing_pending_hunk_restores_projection_without_rebuilding_files(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时仓库");
+    let root = canonical_root(directory.path());
+    run_in(&root, &["git", "init", "-q", "-b", "master"]);
+    run_in(&root, &["git", "config", "user.email", "test@example.com"]);
+    run_in(&root, &["git", "config", "user.name", "Test User"]);
+    let path = root.join("pending.txt");
+    std::fs::write(&path, "原始内容\n").unwrap();
+    run_in(&root, &["git", "add", "pending.txt"]);
+    run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
+    std::fs::write(&path, "修改内容\n").unwrap();
+
+    let project = test_project(root, cx);
+    let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project, cx));
+    cx.run_until_parked();
+    let (diff, source_id) = view.update(cx, |view, cx| {
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        assert_eq!(snapshot.diff_hunk_count(), 1);
+        let source_id = snapshot.excerpts().next().unwrap().buffer_id();
+        let diff = view
+            .diff_subscriptions
+            .get(&source_id)
+            .unwrap()
+            .diff
+            .clone();
+        (diff, source_id)
+    });
+    diff.update(cx, |diff, cx| {
+        let hunk = diff.snapshot().hunks().next().unwrap().clone();
+        let version = hunk.buffer_range.start.version();
+        diff.set_pending_hunks(vec![PendingHunk::suppress(&hunk, version)], cx);
+    });
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        assert_eq!(snapshot.diff_hunk_count(), 0);
+    });
+
+    diff.update(cx, |diff, cx| diff.clear_pending_hunks(cx));
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        assert_eq!(snapshot.diff_hunk_count(), 1);
+        assert_eq!(snapshot.excerpts().next().unwrap().buffer_id(), source_id);
+    });
 }
 
 /// Git hunk 多文件编辑器默认展开；用户折叠后刷新仍保持折叠，且映射保持一致。

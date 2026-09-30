@@ -53,14 +53,14 @@ pub struct BufferDiffInput {
     /// 新侧源文件路径（绝对；hunk 操作与导航定位用）。
     pub path: PathBuf,
     /// 旧侧（base 修订）文本；None 表示没有旧侧（如整体新增文件）。
-    pub base_text: Option<String>,
+    pub base_text: Option<Arc<str>>,
     /// index 参照文本；hunk 的暂存语义统一相对它判定。
     ///
     /// - 未提交视图（如普通编辑器 gutter）：HEAD 为 base、工作区为 working，真实 index 用于逐 hunk 判定；
     /// - 已暂存视图：working 本身就是 index，分类自然得到全部 Staged；
     /// - 未暂存视图：base 本身就是 index，分类自然得到全部 Unstaged；
     /// - None：index 尚未加载或无暂存语境，暂按 NoStaging（实心）渲染。
-    pub index_text: Option<String>,
+    pub index_text: Option<Arc<str>>,
     /// 创建 base/index 语言缓冲所用注册表；由宿主装配层注入。
     pub language_registry: Arc<LanguageRegistry>,
     /// 调用方给出的稳定共享键（例如由 base/index 修订身份派生）；同一键复用同一 diff 实体。
@@ -426,10 +426,14 @@ fn prepare_revision(
             edited: None,
         });
     }
-    let source =
-        source.unwrap_or_else(|| revision_buffer(Some(String::new()), path, registry, cx).unwrap());
-    let edited = source.update(cx, |source, cx| {
-        source.snapshot_with_text(text.to_string(), cx)
+    let source = source.unwrap_or_else(|| empty_revision_buffer(path, registry, cx));
+    let background = cx.background_executor().clone();
+    let target = source.clone();
+    let edited = cx.spawn(async move |_, cx| {
+        let text = background.spawn(async move { text.to_string() }).await;
+        target
+            .update(cx, |source, cx| source.snapshot_with_text(text, cx))
+            .await
     });
     Some(RevisionPreparation {
         source,
@@ -438,20 +442,14 @@ fn prepare_revision(
 }
 
 /// 由修订文本创建语言缓冲；None 表示该侧不存在。
-fn revision_buffer(
-    text: Option<String>,
+fn empty_revision_buffer(
     path: &std::path::Path,
     registry: &Arc<LanguageRegistry>,
     cx: &mut Context<BufferDiff>,
-) -> Option<Entity<LanguageBuffer>> {
-    let text = text?;
-    let buffer =
-        TextBuffer::from_text(text, BufferConfig::default()).expect("修订文本必须能创建 Buffer");
-    Some(
-        cx.new(|cx| {
-            LanguageBuffer::new(buffer, Some(path.to_path_buf()), Arc::clone(registry), cx)
-        }),
-    )
+) -> Entity<LanguageBuffer> {
+    let buffer = TextBuffer::from_text(String::new(), BufferConfig::default())
+        .expect("空修订文本必须能创建 Buffer");
+    cx.new(|cx| LanguageBuffer::new(buffer, Some(path.to_path_buf()), Arc::clone(registry), cx))
 }
 
 impl EventEmitter<BufferDiffEvent> for BufferDiff {}
@@ -475,8 +473,6 @@ impl BufferDiff {
             hunks: SumTree::new(&working_snapshot),
             pending_hunks: Vec::new(),
         };
-        let base_source = revision_buffer(base_text.clone(), &path, &language_registry, cx);
-        let index_source = revision_buffer(index_text.clone(), &path, &language_registry, cx);
         let subscription = cx.subscribe(&working, |this, _, event, cx| {
             if *event == LanguageBufferEvent::TextChanged {
                 this.recompute(cx);
@@ -484,8 +480,8 @@ impl BufferDiff {
         });
         let mut this = Self {
             working,
-            base_source,
-            index_source,
+            base_source: None,
+            index_source: None,
             path,
             language_registry,
             snapshot,
@@ -494,8 +490,8 @@ impl BufferDiff {
             calculated_inputs: None,
             calculation_task: None,
             revision_texts: RevisionTexts {
-                base: base_text.map(Arc::from),
-                index: index_text.map(Arc::from),
+                base: base_text,
+                index: index_text,
             },
             _working_subscription: subscription,
         };

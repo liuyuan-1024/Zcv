@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{App, Context, Entity, Subscription};
-use sum_tree::{Bias, SumTree};
+use sum_tree::{Bias, ContextLessSummary, Dimension, Item, KeyedItem, SumTree};
 use zcv_text::{Anchor, BufferId, ByteOffset, Line, Snapshot, TextChangeBatch, TextRange};
 
 use crate::{
@@ -137,6 +137,69 @@ impl DiffState {
 struct PathDiffDisplay {
     path: PathKey,
     sources: Arc<[DisplayHunkSource]>,
+    source_indices: Arc<HashMap<DiffHunkKey, usize>>,
+}
+
+#[derive(Clone, Debug)]
+struct PathDiffSummary {
+    path: PathKey,
+    hunk_count: usize,
+}
+
+impl ContextLessSummary for PathDiffSummary {
+    fn zero() -> Self {
+        Self {
+            path: PathKey::min(),
+            hunk_count: 0,
+        }
+    }
+
+    fn add_summary(&mut self, summary: &Self) {
+        self.path = summary.path.clone();
+        self.hunk_count += summary.hunk_count;
+    }
+}
+
+impl Item for PathDiffDisplay {
+    type Summary = PathDiffSummary;
+
+    fn summary(&self, _: ()) -> Self::Summary {
+        PathDiffSummary {
+            path: self.path.clone(),
+            hunk_count: self.sources.len(),
+        }
+    }
+}
+
+impl KeyedItem for PathDiffDisplay {
+    type Key = PathKey;
+
+    fn key(&self) -> Self::Key {
+        self.path.clone()
+    }
+}
+
+impl Dimension<'_, PathDiffSummary> for PathKey {
+    fn zero(_: ()) -> Self {
+        Self::min()
+    }
+
+    fn add_summary(&mut self, summary: &PathDiffSummary, _: ()) {
+        *self = summary.path.clone();
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct HunkCount(usize);
+
+impl Dimension<'_, PathDiffSummary> for HunkCount {
+    fn zero(_: ()) -> Self {
+        Self(0)
+    }
+
+    fn add_summary(&mut self, summary: &PathDiffSummary, _: ()) {
+        self.0 += summary.hunk_count;
+    }
 }
 
 /// 一条已解析为组合绝对坐标的 diff 显示输入。
@@ -155,16 +218,14 @@ pub struct ResolvedDiffHunk {
 pub struct DiffDisplaySnapshot {
     /// hunk 身份或显示状态变化时递增；纯坐标变化复用当前索引版本。
     version: u64,
-    segments: Arc<[PathDiffDisplay]>,
-    hunk_indices: Arc<HashMap<(gpui::EntityId, Option<Anchor>), usize>>,
+    segments: SumTree<PathDiffDisplay>,
 }
 
 impl Default for DiffDisplaySnapshot {
     fn default() -> Self {
         Self {
             version: 0,
-            segments: Arc::from(Vec::<PathDiffDisplay>::new()),
-            hunk_indices: Arc::new(HashMap::new()),
+            segments: SumTree::new(()),
         }
     }
 }
@@ -175,35 +236,36 @@ impl DiffDisplaySnapshot {
     }
 
     fn from_segments(version: u64, segments: Vec<PathDiffDisplay>) -> Self {
-        let mut hunk_indices = HashMap::new();
-        let mut index = 0;
-        for segment in &segments {
-            for source in segment.sources.iter() {
-                hunk_indices.insert((source.working, source.hunk_start), index);
-                index += 1;
-            }
-        }
         Self {
             version,
-            segments: Arc::from(segments),
-            hunk_indices: Arc::new(hunk_indices),
+            segments: SumTree::from_iter(segments, ()),
         }
     }
 
     fn with_version(&self, version: u64) -> Self {
         Self {
             version,
-            segments: Arc::clone(&self.segments),
-            hunk_indices: Arc::clone(&self.hunk_indices),
+            segments: self.segments.clone(),
         }
     }
 
-    fn index_of(&self, working: gpui::EntityId, hunk_start: Option<Anchor>) -> Option<usize> {
-        self.hunk_indices.get(&(working, hunk_start)).copied()
+    fn index_of(
+        &self,
+        path: &PathKey,
+        working: gpui::EntityId,
+        hunk_start: Option<Anchor>,
+    ) -> Option<usize> {
+        let mut cursor = self.segments.cursor::<PathKey>(());
+        let prefix: HunkCount = cursor.summary(path, Bias::Left);
+        let segment = cursor.item().filter(|segment| &segment.path == path)?;
+        segment
+            .source_indices
+            .get(&(working, hunk_start))
+            .map(|index| prefix.0 + index)
     }
 
     pub fn len(&self) -> usize {
-        self.hunk_indices.len()
+        self.segments.summary().hunk_count
     }
 
     pub fn is_empty(&self) -> bool {
@@ -212,14 +274,16 @@ impl DiffDisplaySnapshot {
 
     /// 按扁平显示 hunk 序号取源定位。
     fn source_at(&self, index: usize) -> Option<DisplayHunkSource> {
-        let mut remaining = index;
-        for segment in self.segments.iter() {
-            if remaining < segment.sources.len() {
-                return Some(segment.sources[remaining].clone());
-            }
-            remaining -= segment.sources.len();
+        if index >= self.len() {
+            return None;
         }
-        None
+        let mut cursor = self.segments.cursor::<HunkCount>(());
+        cursor.seek(&HunkCount(index), Bias::Right);
+        cursor
+            .item()?
+            .sources
+            .get(index - cursor.start().0)
+            .cloned()
     }
 }
 impl MultiBufferSnapshot {
@@ -277,13 +341,13 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
         return Vec::new();
     }
 
-    let mut candidates = HashMap::<DiffHunkKey, Vec<usize>>::new();
+    let mut candidates = HashMap::<(PathKey, gpui::EntityId, Option<Anchor>), Vec<usize>>::new();
     let mut cursor = MultiBufferCursor::new(excerpts, transforms);
     cursor.seek_output_line(lines.start, Bias::Left);
     if cursor.item().is_none() {
         cursor.prev();
     }
-    while let Some((_excerpt, transform)) = cursor.item() {
+    while let Some((excerpt, transform)) = cursor.item() {
         let item_start = cursor.start().lines;
         if item_start >= lines.end {
             break;
@@ -292,7 +356,7 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
         if item_end > lines.start {
             for info in transform.hunks() {
                 candidates
-                    .entry((info.working, info.hunk_start()))
+                    .entry((excerpt.path.clone(), info.working, info.hunk_start()))
                     .or_default()
                     .push(cursor.start().index);
             }
@@ -302,7 +366,7 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
 
     let mut resolved = Vec::with_capacity(candidates.len());
     for (key, item_indices) in candidates {
-        let Some(index) = diff_display.index_of(key.0, key.1) else {
+        let Some(index) = diff_display.index_of(&key.0, key.1, key.2) else {
             continue;
         };
         let mut accum = None;
@@ -317,7 +381,7 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
                     !transform
                         .hunks()
                         .iter()
-                        .any(|info| (info.working, info.hunk_start()) == key)
+                        .any(|info| (info.working, info.hunk_start()) == (key.1, key.2))
                 }) {
                     break;
                 }
@@ -327,7 +391,7 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
                 if !transform
                     .hunks()
                     .iter()
-                    .any(|info| (info.working, info.hunk_start()) == key)
+                    .any(|info| (info.working, info.hunk_start()) == (key.1, key.2))
                 {
                     break;
                 }
@@ -339,7 +403,7 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
                 for info in transform
                     .hunks()
                     .iter()
-                    .filter(|info| (info.working, info.hunk_start()) == key)
+                    .filter(|info| (info.working, info.hunk_start()) == (key.1, key.2))
                 {
                     let accum =
                         accum.get_or_insert_with(|| HunkAccum::new(info, excerpt.buffer_id));
@@ -750,7 +814,7 @@ impl MultiBuffer {
 
         // DiffState 持有自己的订阅，移除即取消订阅；hunk 身份随节点消失，无需下标顺延。
         self.diffs.remove(file_index);
-        self.refresh_diff_display(cx);
+        self.remove_diff_display_for_path(&source_path, cx);
         cx.notify();
         true
     }
@@ -1210,7 +1274,7 @@ impl MultiBuffer {
         materialize_file(&self.diffs[file_index], cx, &mut excerpts);
         let working = self.diffs[file_index].diff.read(cx).working().clone();
         let path = crate::path_key_for_source(working.read(cx));
-        self.prepare_diff_sources(cx);
+        self.prepare_diff_source_for_file(file_index, cx);
         if excerpts.is_empty() {
             self.remove_excerpts_for_path(path.as_path(), cx);
         } else {
@@ -1224,7 +1288,7 @@ impl MultiBuffer {
             .is_current_version_calculated(cx);
         let revision = self.diffs[file_index].diff.read(cx).revision();
         self.diffs[file_index].revision = calculated.then_some(revision);
-        self.refresh_diff_display_after_hunk_update(cx);
+        self.refresh_diff_display_for_path(&path, cx);
     }
 
     /// hunk 更新只重算相交的输出变换，不修改逻辑窗口。
@@ -1234,7 +1298,7 @@ impl MultiBuffer {
         changed_range: &Range<Anchor>,
         cx: &mut Context<Self>,
     ) -> bool {
-        self.prepare_diff_sources(cx);
+        self.prepare_diff_source_for_file(file_index, cx);
         let working = self.diffs[file_index].diff.read(cx).working().clone();
         let source_id = working.entity_id();
         let text = &self.state.sources[self.state.source_indices[&source_id]].text;
@@ -1302,6 +1366,19 @@ impl MultiBuffer {
             if self.state.sources[index].text.version() != source.read(cx).version() {
                 self.install_source_snapshot(source.entity_id(), source.read(cx).snapshot());
             }
+        }
+    }
+
+    fn prepare_diff_source_for_file(&mut self, file_index: usize, cx: &mut Context<Self>) {
+        let Some(source) = self.diffs[file_index].diff.read(cx).base_source().cloned() else {
+            return;
+        };
+        if !self.state.source_indices.contains_key(&source.entity_id()) {
+            self.register_sources(vec![source.clone()], &HashSet::new(), cx);
+        }
+        let index = self.state.source_indices[&source.entity_id()];
+        if self.state.sources[index].text.version() != source.read(cx).version() {
+            self.install_source_snapshot(source.entity_id(), source.read(cx).snapshot());
         }
     }
 
@@ -1566,9 +1643,15 @@ impl MultiBuffer {
             }
             cursor.next();
         }
+        let source_indices = sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| ((source.working, source.hunk_start), index))
+            .collect();
         PathDiffDisplay {
             path: path.clone(),
             sources: Arc::from(sources),
+            source_indices: Arc::new(source_indices),
         }
     }
 
@@ -1577,24 +1660,32 @@ impl MultiBuffer {
         let Some(current) = self.diff.as_ref() else {
             return;
         };
-        let Some(index) = current
-            .segments
-            .iter()
-            .position(|segment| &segment.path == path)
-        else {
-            // 该 path 不在 excerpt 投影中（如无片段的 base/index 修订源被编辑）。
-            // 路径身份索引的增删由 excerpt 物化路径负责。
+        let mut cursor = self.state.excerpts.cursor::<ExcerptSummary>(());
+        cursor.seek(path, Bias::Left);
+        let visible = cursor.item().is_some_and(|excerpt| &excerpt.path == path);
+        drop(cursor);
+        if !visible {
+            self.remove_diff_display_for_path(path, cx);
             return;
-        };
+        }
         let segment = self.derive_diff_display_for_path(path);
         let version = current.version.wrapping_add(1);
-        self.diff = Some(if current.segments[index] == segment {
-            Arc::new(current.with_version(version))
-        } else {
-            let mut segments = current.segments.to_vec();
-            segments[index] = segment;
-            Arc::new(DiffDisplaySnapshot::from_segments(version, segments))
-        });
+        let mut next = current.with_version(version);
+        next.segments.insert_or_replace(segment, ());
+        self.diff = Some(Arc::new(next));
+        self.snapshot_dirty = true;
+        self.notify_if_not_syncing(cx);
+    }
+
+    fn remove_diff_display_for_path(&mut self, path: &PathKey, cx: &mut Context<Self>) {
+        let Some(current) = self.diff.as_ref() else {
+            return;
+        };
+        let mut next = current.with_version(current.version.wrapping_add(1));
+        if next.segments.remove(path, ()).is_none() {
+            return;
+        }
+        self.diff = Some(Arc::new(next));
         self.snapshot_dirty = true;
         self.notify_if_not_syncing(cx);
     }
@@ -1615,7 +1706,7 @@ impl MultiBuffer {
             return;
         };
         let segments = self.derive_diff_display_segments();
-        let identities_unchanged = current.segments.as_ref() == segments.as_slice();
+        let identities_unchanged = current.segments.iter().eq(segments.iter());
         if identities_unchanged && !hunk_display_changed {
             self.snapshot_dirty = true;
             self.notify_if_not_syncing(cx);

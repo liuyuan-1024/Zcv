@@ -86,7 +86,7 @@ fn diff_file(
             BufferDiffInput {
                 operations: None,
                 working,
-                base_text: Some(base_text.to_owned()),
+                base_text: Some(Arc::from(base_text)),
                 index_text: None,
                 path,
                 language_registry,

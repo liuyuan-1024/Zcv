@@ -50,7 +50,7 @@ fn buffer_diff_input(
     BufferDiffInput {
         working,
         path: PathBuf::from(path),
-        base_text: base_text.map(str::to_owned),
+        base_text: base_text.map(Arc::from),
         index_text: None,
         language_registry: Arc::new(LanguageRegistry::new()),
         key: 0,

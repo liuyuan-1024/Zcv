@@ -48,6 +48,23 @@ impl BufferStore {
         self.get_or_load_buffer(path, || load_buffer(path), cx)
     }
 
+    pub(crate) fn opened_buffer(
+        &self,
+        path: &Path,
+    ) -> Result<Option<Entity<LanguageBuffer>>, BufferLoadError> {
+        let path = index_path(path).map_err(BufferLoadError::Io)?;
+        Ok(self.opened_buffers.get(&path).and_then(WeakEntity::upgrade))
+    }
+
+    pub(crate) fn install_loaded_buffer(
+        &mut self,
+        path: &Path,
+        buffer: Buffer,
+        cx: &mut App,
+    ) -> Result<Entity<LanguageBuffer>, BufferLoadError> {
+        self.get_or_load_buffer(path, || Ok(buffer), cx)
+    }
+
     /// 打开工作区侧已经不存在的文件。
     ///
     /// 删除状态的 Git 变更仍需要一个空的工作区 Buffer 作为可编辑侧；

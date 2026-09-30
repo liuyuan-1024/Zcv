@@ -9,6 +9,8 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use futures::{StreamExt, stream};
+use futures_lite::future::yield_now;
 use gpui::{
     AnyElement, AnyEntity, App, Context, Entity, EventEmitter, FocusHandle, Focusable,
     ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity, Window, div,
@@ -19,6 +21,7 @@ use zcv_editor::{DiffHunkDelegate, Editor, EditorEvent, EditorHunk, HunkControlT
 use zcv_git::{
     ConflictChoice, FileStatus, GitHunkOperation, GitRevision, StatusCode, parse_conflict_regions,
 };
+use zcv_language::LanguageBuffer;
 use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, DiffHunkSource};
 use zcv_multi_buffer::{ExcerptLocation, ExcerptRange, MultiBuffer};
 use zcv_path::AbsolutePathBuf;
@@ -33,6 +36,7 @@ use zcv_workspace::{
 };
 const PROJECT_DIFF_SERIALIZED_KIND: &str = "project-diff";
 const DIFF_CONTEXT_LINES: usize = 2;
+const MAX_CONCURRENT_BUFFER_LOADS: usize = 16;
 
 #[derive(Clone)]
 struct GitChangeFile {
@@ -361,10 +365,8 @@ pub struct DiffView {
     editor: Entity<Editor>,
     multi_buffer: Entity<MultiBuffer>,
     files: Vec<GitChangeFile>,
-    /// base 变更（HEAD 变化）后需要整体重建投影。
-    rebase_projection: bool,
     pending_path: Option<PathBuf>,
-    loading_revision_text: HashSet<(GitRevision, PathBuf)>,
+    revision_load_task: Option<Task<()>>,
     /// 按工作区 Buffer 身份拥有 diff 订阅，控件与文件头共享此领域入口。
     diff_subscriptions: HashMap<BufferId, DiffFileSubscription>,
     /// 共享搜索栏会话：查询、匹配选项、可见性与替换开关由它唯一持有。
@@ -588,8 +590,6 @@ impl DiffView {
             cx.subscribe(&git_store, |view, _, event, cx| match event {
                 GitStoreEvent::Repositories | GitStoreEvent::Statuses | GitStoreEvent::Head => {
                     if matches!(event, GitStoreEvent::Head) {
-                        view.loading_revision_text.clear();
-                        view.rebase_projection = true;
                         // HEAD 变化后旧 hunk 的旧侧坐标空间失效：按默认策略重置展开状态，避免新 diff 按失效的行号误迁移状态。
                         view.editor
                             .update(cx, |editor, cx| editor.reset_diff_hunk_expansion_state(cx));
@@ -597,8 +597,6 @@ impl DiffView {
                     view.refresh_files(cx);
                 }
                 GitStoreEvent::HunkOperationFailed(message) => {
-                    // 失败：GitStore 已清除 optimistic 状态，这里重建以恢复 hunk 并把错误交给宿主提示。
-                    view.rebuild_projection(cx);
                     cx.emit(EditorEvent::Error(format!("变更块操作失败：{message}")));
                 }
                 GitStoreEvent::ActiveRepositoryChanged
@@ -616,9 +614,8 @@ impl DiffView {
             editor,
             multi_buffer,
             files: Vec::new(),
-            rebase_projection: false,
             pending_path: None,
-            loading_revision_text: Default::default(),
+            revision_load_task: None,
             diff_subscriptions: HashMap::default(),
             search_bar: cx.new(move |cx| {
                 SearchBar::new(
@@ -677,18 +674,17 @@ impl DiffView {
             visible_source_paths.contains(subscription.diff.read(cx).path())
         });
 
-        if self.kind == ProjectDiffKind::Conflict || std::mem::take(&mut self.rebase_projection) {
-            // 冲突视图与 base 变更需要整体重建；普通状态刷新只做路径增量。
-            self.rebuild_projection(cx);
+        if self.kind == ProjectDiffKind::Conflict {
+            self.rebuild_conflict_projection(cx);
+            self.apply_pending_path(cx);
+            cx.notify();
         } else {
             self.sync_projection_paths(cx);
         }
-        self.load_all_revision_text(cx);
+        self.load_revision_text_in_order(cx);
     }
 
-    /// 状态刷新时按路径增量同步投影：
-    /// 移除消失文件、追加未挂接的就绪文件；
-    /// 未变化的 diff 不重建，按路径更新。
+    /// 状态刷新时移除消失的文件；未挂接文件由有界加载任务按路径加入。
     fn sync_projection_paths(&mut self, cx: &mut Context<Self>) {
         let root = self.project.read(cx).root().map(Path::to_path_buf);
         let visible = self
@@ -709,36 +705,6 @@ impl DiffView {
                 });
             }
         }
-        self.register_ready_files(cx);
-    }
-
-    /// 以 hunk 为核心重建已就绪文件的 excerpts；旧侧与新侧都属于同一个 MultiBuffer 坐标空间。
-    /// 修订读取由文件游标推进，已加载文件先进入统一投影，避免把整个暂存区一次性物化。
-    fn rebuild_projection(&mut self, cx: &mut Context<Self>) {
-        if self.kind == ProjectDiffKind::Conflict {
-            self.rebuild_conflict_projection(cx);
-            self.apply_pending_path(cx);
-            cx.notify();
-            return;
-        }
-        let root = self.project.read(cx).root().map(Path::to_path_buf);
-        let mut diff_files = Vec::new();
-        let files = self.files.clone();
-        for file in &files {
-            if !self.revision_requirements_ready(file, cx) {
-                continue;
-            }
-            let Some(diff_file) = self.build_file_input(file, root.as_deref(), cx) else {
-                continue;
-            };
-            diff_files.push(diff_file);
-        }
-        self.editor.update(cx, |editor, cx| {
-            editor.set_editor_hunks(Vec::new(), cx);
-            editor.set_diff_files(diff_files, cx)
-        });
-        self.apply_pending_path(cx);
-        cx.notify();
     }
 
     /// 冲突视图使用完整工作区文本，不创建 BufferDiff；
@@ -821,63 +787,13 @@ impl DiffView {
     fn build_file_input(
         &mut self,
         file: &GitChangeFile,
+        working: Entity<LanguageBuffer>,
+        revisions: (Option<Arc<str>>, Option<Arc<str>>),
         root: Option<&Path>,
         cx: &mut Context<Self>,
     ) -> Option<DiffFile> {
         let git_store = self.project.read(cx).git_store();
-        let working = match self.kind {
-            ProjectDiffKind::Staged => git_store.update(cx, |store, cx| {
-                store.revision_diff_document(GitRevision::Index, &file.path, cx)
-            })?,
-            ProjectDiffKind::Unstaged => {
-                let opened = self.project.update(cx, |project, cx| {
-                    if self.kind.is_deleted(file.status) && !file.path.exists() {
-                        project.open_deleted_buffer(&file.path, cx)
-                    } else {
-                        project.open_buffer(&file.path, cx)
-                    }
-                });
-                let Ok(source) = opened else {
-                    cx.emit(EditorEvent::Error(format!(
-                        "无法把 Git 变更文件加入多文件编辑器：{}",
-                        file.path.display()
-                    )));
-                    return None;
-                };
-                source
-            }
-            ProjectDiffKind::Conflict => {
-                let opened = self
-                    .project
-                    .update(cx, |project, cx| project.open_buffer(&file.path, cx));
-                let Ok(source) = opened else {
-                    cx.emit(EditorEvent::Error(format!(
-                        "无法打开冲突文件：{}",
-                        file.path.display()
-                    )));
-                    return None;
-                };
-                source
-            }
-        };
-        // base / index 文本由 GitStore 的修订文档提供；BufferDiff 自持其语言缓冲。
-        // 已暂存视图 base=HEAD、index=Index；未暂存视图 base=index=Index；冲突视图不建立 diff。
-        let (base_text, index_text) = if self.kind == ProjectDiffKind::Conflict {
-            (None, None)
-        } else {
-            let store = git_store.read(cx);
-            let index_text = store
-                .revision_text(GitRevision::Index, &file.path, cx)
-                .or_else(|| {
-                    (self.kind == ProjectDiffKind::Staged
-                        && store.revision_document_loaded(GitRevision::Index, &file.path))
-                    .then(String::new)
-                });
-            (
-                store.revision_text(self.kind.base_revision(), &file.path, cx),
-                index_text,
-            )
-        };
+        let (base_text, index_text) = revisions;
         let display_path = root
             .and_then(|root| file.path.strip_prefix(root).ok())
             .unwrap_or(&file.path)
@@ -1043,98 +959,158 @@ impl DiffView {
                 || store.revision_document_loaded(GitRevision::Index, &file.path))
     }
 
-    /// 一次性为全部变更文件发起修订读取（同一文件的 base/index 并行）。
-    ///
-    /// 读取结果按路径顺序增量登记，不再依赖视口逐个推进；
-    /// 首屏不会被逐文件等待拖长。
-    fn load_all_revision_text(&mut self, cx: &mut Context<Self>) {
+    /// 按路径顺序读取并挂接变更文件，同一文件的修订可以并行读取。
+    /// 加载任务由视图持有；状态刷新或视图关闭时取消旧任务。
+    fn load_revision_text_in_order(&mut self, cx: &mut Context<Self>) {
         if self.kind == ProjectDiffKind::Conflict {
             return;
         }
         let git_store = self.project.read(cx).git_store();
+        let project = self.project.clone();
+        let kind = self.kind;
         let mut revisions = vec![self.kind.base_revision()];
         if self.kind == ProjectDiffKind::Staged {
             revisions.push(GitRevision::Index);
         }
-        let files = self.files.clone();
-        for file in &files {
-            for revision in &revisions {
-                if git_store
-                    .read(cx)
-                    .revision_document_loaded(*revision, &file.path)
-                    || !self
-                        .loading_revision_text
-                        .insert((*revision, file.path.clone()))
-                {
-                    continue;
-                }
-                let path = file.path.clone();
-                let revision = *revision;
-                let load = git_store.update(cx, |store, cx| {
-                    store.load_revision_document(revision, &path, cx)
-                });
-                cx.spawn(async move |this, cx| {
-                    let _ = load.await;
-                    this.update(cx, |view, cx| {
-                        view.loading_revision_text.remove(&(revision, path.clone()));
-                        if view
-                            .loading_revision_text
-                            .iter()
-                            .any(|(_, loading_path)| loading_path == &path)
-                        {
-                            return;
-                        }
-                        view.register_ready_files(cx);
-                    })
-                    .ok();
-                })
-                .detach();
-            }
-        }
-    }
-
-    /// 按路径顺序把已就绪文件增量追加进投影；
-    /// 遇到未就绪文件即停止，等待后续读取或 diff 结果事件。
-    fn register_ready_files(&mut self, cx: &mut Context<Self>) {
-        if self.kind == ProjectDiffKind::Conflict {
-            return;
-        }
         let root = self.project.read(cx).root().map(Path::to_path_buf);
+        let background = cx.background_executor().clone();
         let attached = self
             .editor
             .read(cx)
             .diff_paths(cx)
             .into_iter()
             .collect::<HashSet<_>>();
-        let files = self.files.clone();
-        let mut appended = Vec::new();
-        for file in &files {
-            let display_path = root
-                .as_deref()
-                .and_then(|root| file.path.strip_prefix(root).ok())
-                .unwrap_or(&file.path)
-                .to_path_buf();
-            if attached.contains(&display_path) {
-                continue;
-            }
-            if !self.revision_requirements_ready(file, cx) {
-                break;
-            }
-            let Some(diff_file) = self.build_file_input(file, root.as_deref(), cx) else {
-                continue;
-            };
-            appended.push(diff_file);
-        }
-        if appended.is_empty() {
+        let files = self
+            .files
+            .iter()
+            .filter(|file| {
+                let display_path = root
+                    .as_deref()
+                    .and_then(|root| file.path.strip_prefix(root).ok())
+                    .unwrap_or(&file.path);
+                !attached.contains(display_path)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if files.is_empty() {
+            self.revision_load_task = None;
             return;
         }
-        self.editor.update(cx, |editor, cx| {
-            let mut rebuilt = false;
-            for file in appended {
-                rebuilt |= editor.add_diff(file, cx);
+        self.revision_load_task = Some(cx.spawn(async move |this, cx| {
+            let async_cx = cx.clone();
+            let mut loads = stream::iter(files.into_iter().map(move |file| {
+                let git_store = git_store.clone();
+                let project = project.clone();
+                let revisions = revisions.clone();
+                let background = background.clone();
+                let mut cx = async_cx.clone();
+                async move {
+                    let source_load = (kind == ProjectDiffKind::Unstaged).then(|| {
+                        project.update(&mut cx, |project, cx| {
+                            if kind.is_deleted(file.status) && !file.path.exists() {
+                                Task::ready(project.open_deleted_buffer(&file.path, cx))
+                            } else {
+                                project.open_buffer_async(file.path.clone(), cx)
+                            }
+                        })
+                    });
+                    let tasks = git_store.update(&mut cx, |store, cx| {
+                        let mut tasks = Vec::new();
+                        for revision in revisions {
+                            if !store.revision_document_loaded(revision, &file.path) {
+                                tasks.push(store.load_revision_document(revision, &file.path, cx));
+                            }
+                        }
+                        tasks
+                    });
+                    let mut error = None;
+                    for task in tasks {
+                        if let Err(failure) = task.await {
+                            error = Some(format!("{failure:#}"));
+                        }
+                    }
+                    let working = if let Some(source_load) = source_load {
+                        match source_load.await {
+                            Ok(source) => Some(source),
+                            Err(failure) => {
+                                error = Some(format!("{failure:#}"));
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    let revision_texts = if error.is_none() {
+                        let (base, index) = git_store.update(&mut cx, |store, cx| {
+                            let base = store
+                                .revision_document(kind.base_revision(), &file.path)
+                                .map(|source| source.read(cx).text_snapshot());
+                            let index = (kind == ProjectDiffKind::Staged)
+                                .then(|| store.revision_document(GitRevision::Index, &file.path))
+                                .flatten()
+                                .map(|source| source.read(cx).text_snapshot());
+                            (base, index)
+                        });
+                        background
+                            .spawn(async move {
+                                let base = base.map(revision_snapshot_text);
+                                let index = if kind == ProjectDiffKind::Staged {
+                                    Some(
+                                        index
+                                            .map(revision_snapshot_text)
+                                            .unwrap_or_else(|| Arc::from("")),
+                                    )
+                                } else {
+                                    base.clone()
+                                };
+                                (base, index)
+                            })
+                            .await
+                    } else {
+                        (None, None)
+                    };
+                    (file, working, revision_texts, error)
+                }
+            }))
+            .buffered(MAX_CONCURRENT_BUFFER_LOADS);
+
+            while let Some((file, working, revisions, error)) = loads.next().await {
+                yield_now().await;
+                if let Some(error) = error {
+                    this.update(cx, |_, cx| {
+                        cx.emit(EditorEvent::Error(format!(
+                            "读取变更文件失败（{}）：{error}",
+                            file.path.display()
+                        )));
+                    })
+                    .ok();
+                    continue;
+                }
+                this.update(cx, |view, cx| {
+                    if view.files.iter().any(|current| current.path == file.path)
+                        && view.revision_requirements_ready(&file, cx)
+                    {
+                        let source = if kind == ProjectDiffKind::Staged {
+                            let git_store = view.project.read(cx).git_store();
+                            git_store.update(cx, |store, cx| {
+                                store.revision_diff_document(GitRevision::Index, &file.path, cx)
+                            })
+                        } else {
+                            working
+                        };
+                        if let Some(source) = source
+                            && let Some(diff_file) =
+                                view.build_file_input(&file, source, revisions, root.as_deref(), cx)
+                        {
+                            view.editor.update(cx, |editor, cx| {
+                                editor.add_diff(diff_file, cx);
+                            });
+                        }
+                    }
+                })
+                .ok();
             }
-            rebuilt
-        });
+        }));
     }
 
     fn move_to_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -1316,6 +1292,17 @@ fn project_diff_state(
 }
 
 /// Git diff 视图把可见 hunk 扩展为配置上下文行，并合并相交或相邻的窗口。
+fn revision_snapshot_text(snapshot: Snapshot) -> Arc<str> {
+    let range =
+        TextRange::new(ByteOffset::ZERO, snapshot.len_bytes()).expect("修订全文范围必须有效");
+    Arc::from(
+        snapshot
+            .slice_text(range)
+            .expect("修订全文必须可读")
+            .as_str(),
+    )
+}
+
 fn project_diff_excerpt_ranges(
     diff: &Entity<BufferDiff>,
     context_lines: usize,

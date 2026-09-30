@@ -9,12 +9,15 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow.workspace = true
+futures.workspace = true
+futures-lite.workspace = true
 gpui.workspace = true
 regex.workspace = true
 serde_json.workspace = true
 zcv-actions.workspace = true
 zcv-editor.workspace = true
 zcv-keymap.workspace = true
+zcv-language.workspace = true
 zcv-git.workspace = true
 zcv-buffer-diff.workspace = true
 zcv-multi-buffer.workspace = true
@@ -30,7 +33,6 @@ zcv-workspace.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 zcv-fs-watch.workspace = true
-zcv-language.workspace = true
 
 [lints]
 workspace = true

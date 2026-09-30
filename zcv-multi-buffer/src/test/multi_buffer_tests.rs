@@ -56,8 +56,8 @@ fn test_diff_entity(
             BufferDiffInput {
                 working,
                 path: native_path,
-                base_text: base.map(str::to_owned),
-                index_text: index.map(str::to_owned),
+                base_text: base.map(Arc::from),
+                index_text: index.map(Arc::from),
                 language_registry: Arc::new(LanguageRegistry::new()),
                 key: 0,
                 operations: None,
@@ -91,8 +91,8 @@ impl MultiBuffer {
                         BufferDiffInput {
                             working: file.working,
                             path: file.path,
-                            base_text: file.base_text.as_deref().map(str::to_owned),
-                            index_text: file.index_text.as_deref().map(str::to_owned),
+                            base_text: file.base_text,
+                            index_text: file.index_text,
                             language_registry: Arc::new(LanguageRegistry::new()),
                             key: 0,
                             operations: file.operations,
@@ -134,7 +134,7 @@ fn test_diff_file(
                 BufferDiffInput {
                     working,
                     path: native_path,
-                    base_text: Some(base.to_owned()),
+                    base_text: Some(Arc::from(base)),
                     index_text: None,
                     language_registry: Arc::new(LanguageRegistry::new()),
                     key: 0,
@@ -323,6 +323,17 @@ fn inserting_middle_diff_file_matches_fresh_three_file_build(cx: &mut TestAppCon
         )
     });
     assert_eq!(incremental_state, fresh_state);
+
+    let before_toggle = incremental.update(cx, |buffer, cx| buffer.snapshot(cx).text_bytes());
+    incremental.update(cx, |buffer, cx| buffer.toggle_diff_hunk_at(1, cx));
+    fresh.update(cx, |buffer, cx| buffer.toggle_diff_hunk_at(1, cx));
+    let incremental_text = incremental.update(cx, |buffer, cx| buffer.snapshot(cx).text_bytes());
+    let fresh_text = fresh.update(cx, |buffer, cx| buffer.snapshot(cx).text_bytes());
+    assert_ne!(incremental_text, before_toggle, "应确实切换中段变更块");
+    assert_eq!(
+        incremental_text, fresh_text,
+        "中段插入后序号 1 必须指向同一变更块"
+    );
 }
 
 #[gpui::test]
@@ -382,6 +393,17 @@ fn removing_middle_diff_file_matches_fresh_two_file_build(cx: &mut TestAppContex
         )
     });
     assert_eq!(incremental, fresh);
+
+    let before_toggle = three.update(cx, |buffer, cx| buffer.snapshot(cx).text_bytes());
+    three.update(cx, |buffer, cx| buffer.toggle_diff_hunk_at(1, cx));
+    two.update(cx, |buffer, cx| buffer.toggle_diff_hunk_at(1, cx));
+    let incremental_text = three.update(cx, |buffer, cx| buffer.snapshot(cx).text_bytes());
+    let fresh_text = two.update(cx, |buffer, cx| buffer.snapshot(cx).text_bytes());
+    assert_ne!(incremental_text, before_toggle, "应确实切换剩余变更块");
+    assert_eq!(
+        incremental_text, fresh_text,
+        "移除中段后序号 1 必须指向同一变更块"
+    );
 }
 
 /// 移除路径顺序末尾的文件后，前一个文件不再需要分隔合成换行，投影必须与全新单文件构建一致。

@@ -513,8 +513,8 @@ fn diff_scroll_frame_scenarios(
                                 BufferDiffInput {
                                     working: source,
                                     path: path.clone(),
-                                    base_text: Some(base_text.clone()),
-                                    index_text: Some(index_text.clone()),
+                                    base_text: Some(Arc::from(base_text.clone())),
+                                    index_text: Some(Arc::from(index_text.clone())),
                                     language_registry: Arc::clone(&language_registry),
                                     key: index as u64,
                                     operations: None,

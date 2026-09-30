@@ -1189,23 +1189,39 @@ impl GitStore {
             GitRevision::Index => format!(":{relative}"),
         };
         let state = self.revision_documents.entry(key.clone()).or_default();
+        let needs_buffer = state
+            .document
+            .as_ref()
+            .and_then(RevisionDocument::source)
+            .is_none();
         state.generation = state.generation.wrapping_add(1).max(1);
         let generation = state.generation;
         let loaded = self.background.spawn(async move {
             let contents = repository.load_revisions(&[&revision_spec])?;
-            Ok::<_, anyhow::Error>(
-                contents
-                    .into_iter()
-                    .next()
-                    .flatten()
-                    .map(|content| String::from_utf8_lossy(&content).into_owned()),
-            )
+            let text = contents
+                .into_iter()
+                .next()
+                .flatten()
+                .map(|content| String::from_utf8_lossy(&content).into_owned());
+            let text_arc = text.as_deref().map(Arc::from);
+            let buffer = if needs_buffer {
+                text.as_ref()
+                    .map(|text| Buffer::from_text(text.clone(), BufferConfig::default()))
+                    .transpose()?
+            } else {
+                None
+            };
+            Ok::<_, anyhow::Error>((text, text_arc, buffer))
         });
         let task_key = key.clone();
         let task = cx
             .spawn(async move |this, cx| {
-                let loaded = loaded.await.map_err(Arc::new);
-                let text = loaded.as_ref().ok().and_then(Clone::clone);
+                let mut loaded = loaded.await.map_err(Arc::new);
+                let edit_text = loaded
+                    .as_mut()
+                    .ok()
+                    .and_then(|(text, _, _)| text.take())
+                    .unwrap_or_default();
                 let source = this
                     .update(cx, |store, _| {
                         let state = store.revision_documents.get(&key)?;
@@ -1218,9 +1234,7 @@ impl GitStore {
                 let edited = if let Some(source) = &source {
                     Some(
                         source
-                            .update(cx, |source, cx| {
-                                source.snapshot_with_text(text.clone().unwrap_or_default(), cx)
-                            })
+                            .update(cx, |source, cx| source.snapshot_with_text(edit_text, cx))
                             .await
                             .expect("Git 修订文本必须能派生语言快照"),
                     )
@@ -1251,6 +1265,7 @@ impl GitStore {
                         )));
                         return Ok(Err(error));
                     }
+                    let (_, text_arc, buffer) = loaded.expect("读取失败已提前返回");
                     // 版本检查覆盖读取、文本差异计算和语法解析，安装与 diff 推送在同一轮更新中完成。
                     if let (Some(source), Some(edited)) = (&source, edited) {
                         let saved_version = edited.base_version();
@@ -1261,7 +1276,8 @@ impl GitStore {
                             source.did_save(saved_version, cx);
                         });
                     }
-                    let document = store.store_revision_document(revision, path, text, source, cx);
+                    let document =
+                        store.store_revision_document(revision, path, text_arc, source, buffer, cx);
                     store.revision_documents.get_mut(&key).unwrap().loading = RevisionLoading::Idle;
                     Ok(Ok(document))
                 });
@@ -1282,19 +1298,18 @@ impl GitStore {
         &mut self,
         revision: GitRevision,
         path: AbsolutePathBuf,
-        text: Option<String>,
+        text_arc: Option<Arc<str>>,
         source: Option<Entity<LanguageBuffer>>,
+        buffer: Option<Buffer>,
         cx: &mut Context<Self>,
     ) -> Option<Entity<LanguageBuffer>> {
         let key = (revision, path.clone());
-        let text_arc: Option<Arc<str>> = text.as_deref().map(Arc::from);
-        let document = match text {
+        let document = match &text_arc {
             None => RevisionDocument::Missing {
                 empty_diff_source: source,
             },
-            Some(text) => RevisionDocument::Present(source.unwrap_or_else(|| {
-                let buffer = Buffer::from_text(text, BufferConfig::default())
-                    .expect("修订文本必须能创建 Buffer");
+            Some(_) => RevisionDocument::Present(source.unwrap_or_else(|| {
+                let buffer = buffer.expect("新修订文档必须由后台准备文本 Buffer");
                 let registry = Arc::clone(&self.language_registry);
                 cx.new(|cx| {
                     LanguageBuffer::new(buffer, Some(path.as_path().to_path_buf()), registry, cx)

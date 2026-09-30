@@ -713,13 +713,20 @@ fn composite_scroll_and_redraw_leave_content_snapshots_unchanged(cx: &mut TestAp
 }
 
 #[gpui::test]
-#[ignore = "手动测量软换行 diff 的滚轮输入到绘制耗时"]
-fn composite_soft_wrap_scroll_frame_latency_probe(cx: &mut TestAppContext) {
+#[ignore = "手动测量滚轮输入到组合文档窗口绘制完成的耗时"]
+fn composite_scroll_input_to_painted_content_latency_probe(cx: &mut TestAppContext) {
     use std::time::Instant;
     use zcv_buffer_diff::{BufferDiff, BufferDiffInput};
     use zcv_language::LanguageRegistry;
     use zcv_multi_buffer::{DiffExcerptRanges, DiffFile};
-    for (file_count, staged) in [(10, true), (10, false), (100, true), (100, false)] {
+    for (file_count, staged) in [
+        (10, true),
+        (10, false),
+        (100, true),
+        (100, false),
+        (300, true),
+        (300, false),
+    ] {
         let multi = cx.new(if staged {
             MultiBuffer::empty_read_only
         } else {
@@ -740,12 +747,12 @@ fn composite_soft_wrap_scroll_frame_latency_probe(cx: &mut TestAppContext) {
                         BufferDiffInput {
                             working: source,
                             path: path.clone(),
-                            base_text: Some(base.clone()),
-                            index_text: Some(if staged {
+                            base_text: Some(Arc::from(base.clone())),
+                            index_text: Some(Arc::from(if staged {
                                 working.clone()
                             } else {
                                 base.clone()
-                            }),
+                            })),
                             language_registry: registry.clone(),
                             key: file as u64,
                             operations: None,
@@ -769,34 +776,85 @@ fn composite_soft_wrap_scroll_frame_latency_probe(cx: &mut TestAppContext) {
         editor.update(&mut *visual, |editor, cx| {
             editor.set_soft_wrap_mode(Some(SoftWrap::EditorWidth), cx)
         });
-        visual.refresh().unwrap();
-        visual.run_until_parked();
-        visual.refresh().unwrap();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
         let version = visual.read_entity(&editor, |editor, cx| {
             let snapshot = editor.display_snapshot(cx);
             assert!(snapshot.line_count() > snapshot.buffer_snapshot().line_count());
             snapshot.version()
         });
+        let direct_started = Instant::now();
+        editor.update(&mut *visual, |editor, cx| {
+            assert!(editor.scroll_by(point(px(0.), px(-8_000.)), cx));
+        });
+        let direct_command_ms = direct_started.elapsed().as_secs_f64() * 1_000.;
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        let direct_ms = direct_started.elapsed().as_secs_f64() * 1_000.;
+        visual.read_entity(&editor, |editor, _| {
+            assert!(editor.scroll_top() > Pixels::ZERO, "直接滚动必须改变位置");
+            assert!(editor.input_layout.is_some(), "直接滚动必须完成文本绘制");
+        });
+        editor.update(&mut *visual, |editor, cx| {
+            editor.scroll_to(Pixels::ZERO, cx);
+        });
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        let before_top = visual.read_entity(&editor, |editor, _| editor.scroll_top());
+        let first_started = Instant::now();
+        visual.simulate_event(ScrollWheelEvent {
+            position: point(px(300.), px(300.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(-8_000.))),
+            ..Default::default()
+        });
+        let first_event_ms = first_started.elapsed().as_secs_f64() * 1_000.;
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        let first_ms = first_started.elapsed().as_secs_f64() * 1_000.;
+        visual.read_entity(&editor, |editor, _| {
+            assert_ne!(editor.scroll_top(), before_top, "首次滚动必须改变位置");
+            assert!(editor.input_layout.is_some(), "首次滚动必须完成文本绘制");
+        });
+        editor.update(&mut *visual, |editor, cx| {
+            editor.scroll_to(Pixels::ZERO, cx);
+        });
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
         let mut samples = Vec::new();
         for frame in 0..240 {
             let delta = [-120., -1_200., 120., 1_200.][frame % 4];
+            let before_top = visual.read_entity(&editor, |editor, _| editor.scroll_top());
             let started = Instant::now();
             visual.simulate_event(ScrollWheelEvent {
                 position: point(px(300.), px(300.)),
                 delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
                 ..Default::default()
             });
-            visual.refresh().unwrap();
+            visual.update(|window, cx| {
+                window.draw(cx).clear(cx);
+            });
             samples.push(started.elapsed().as_secs_f64() * 1_000.);
+            visual.read_entity(&editor, |editor, _| {
+                assert_ne!(
+                    editor.scroll_top(),
+                    before_top,
+                    "第 {frame} 次滚动没有改变位置，滚动量={delta}"
+                );
+                assert!(editor.input_layout.is_some(), "滚动后必须完成文本绘制");
+            });
         }
-        assert_eq!(
-            version,
-            visual.read_entity(&editor, |editor, cx| editor.display_snapshot(cx).version())
-        );
+        let final_version =
+            visual.read_entity(&editor, |editor, cx| editor.display_snapshot(cx).version());
         samples.sort_by(f64::total_cmp);
         println!(
-            "软换行 diff，暂存={staged}，文件={file_count}，变更行={}；输入到绘制毫秒：中位数={:.3}，P95={:.3}，范围={:.3}..{:.3}（GPUI 测试文本系统，后台任务已收敛）",
+            "软换行 diff，暂存={staged}，文件={file_count}，变更行={}；直接命令到绘制={direct_ms:.3} 毫秒（命令={direct_command_ms:.3}），模拟事件到绘制={first_ms:.3} 毫秒（派发及任务排空={first_event_ms:.3}，显式绘制={:.3}）；后续中位数={:.3}，P95={:.3}，范围={:.3}..{:.3}；显示投影版本={version}→{final_version}（GPUI 测试文本系统）",
             file_count * 50,
+            first_ms - first_event_ms,
             samples[120],
             samples[228],
             samples[0],

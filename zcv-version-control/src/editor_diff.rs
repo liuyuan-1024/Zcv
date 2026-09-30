@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use gpui::{App, Entity};
 use zcv_buffer_diff::BufferDiffInput;
@@ -146,9 +147,15 @@ pub fn inject_editor_diff(
     {
         return;
     }
-    let base_text = store.read(cx).revision_text(GitRevision::Head, path, cx);
+    let base_text = store
+        .read(cx)
+        .revision_text(GitRevision::Head, path, cx)
+        .map(Arc::from);
     // index 参照：未提交视图（HEAD↔工作区）用它逐 hunk 判定已暂存 / 未暂存。
-    let index_text = store.read(cx).revision_text(GitRevision::Index, path, cx);
+    let index_text = store
+        .read(cx)
+        .revision_text(GitRevision::Index, path, cx)
+        .map(Arc::from);
     let Some(working) = editor.read(cx).multi_buffer().read(cx).singleton_source() else {
         return;
     };

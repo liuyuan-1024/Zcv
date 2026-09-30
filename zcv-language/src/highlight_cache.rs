@@ -12,7 +12,7 @@ use crate::HighlightSpan;
 /// 高亮缓存总字节预算。
 const MAX_HIGHLIGHT_CACHE_BYTES: usize = 10 * 1024 * 1024;
 
-/// 按 chunk 键控的有界高亮结果缓存。
+/// 按行块编号键控的有界高亮结果缓存。
 pub struct HighlightCache {
     inner: Mutex<Inner>,
 }

@@ -95,6 +95,83 @@ fn highlights_rust_captures_in_unicode_text() {
 }
 
 #[test]
+fn markdown_heading_at_fixed_byte_boundary_keeps_utf8_highlights() {
+    let source = format!("{}\n## 测试\n", "x".repeat(4091));
+    let heading = source.find("测试").unwrap();
+    assert_eq!(heading, 4095);
+    let (buffer, syntax) = parsed_syntax("README.md", &source);
+    let snapshot = buffer.snapshot();
+    let syntax = syntax.snapshot();
+    let cache = HighlightCache::new();
+    let item = syntax
+        .outline(0..snapshot.len_bytes().get(), &snapshot)
+        .into_iter()
+        .find(|item| item.name == "测试")
+        .expect("跨字节边界的标题应进入大纲");
+
+    for _ in 0..2 {
+        let spans = syntax.highlights(heading..heading + "测试".len(), &snapshot, &cache);
+        assert!(!spans.is_empty());
+        for span in spans {
+            assert!(source.is_char_boundary(span.range.start), "{span:?}");
+            assert!(source.is_char_boundary(span.range.end), "{span:?}");
+        }
+        for part in &item.text_ranges {
+            for span in syntax.highlights(part.source_range.clone(), &snapshot, &cache) {
+                let start = part.text_range.start + span.range.start - part.source_range.start;
+                let end = part.text_range.start + span.range.end - part.source_range.start;
+                assert!(item.text.is_char_boundary(start), "{span:?}");
+                assert!(item.text.is_char_boundary(end), "{span:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn highlights_span_adjacent_row_chunks() {
+    let source = format!("{}## 甲\n## 乙\n", "x\n".repeat(49));
+    let first = source.find('甲').unwrap();
+    let second = source.find('乙').unwrap();
+    let (buffer, syntax) = parsed_syntax("README.md", &source);
+    let snapshot = buffer.snapshot();
+    let spans = syntax.snapshot().highlights(
+        first..second + '乙'.len_utf8(),
+        &snapshot,
+        &HighlightCache::new(),
+    );
+
+    for name in [first, second] {
+        assert!(
+            spans
+                .iter()
+                .any(|span| span.range.start <= name && name < span.range.end),
+            "跨行块查询应保留两侧标题的高亮"
+        );
+    }
+    for span in spans {
+        assert!(source.is_char_boundary(span.range.start));
+        assert!(source.is_char_boundary(span.range.end));
+    }
+}
+
+#[test]
+fn long_row_chunk_highlights_requested_rust_symbol() {
+    let source = format!("// {}\nfn 测试() {{}}\n", "x".repeat(70 * 1024));
+    let name = source.find("测试").unwrap();
+    let (buffer, syntax) = rust_buffer(&source);
+    let snapshot = buffer.snapshot();
+    let spans =
+        syntax
+            .snapshot()
+            .highlights(name..name + "测试".len(), &snapshot, &HighlightCache::new());
+
+    assert!(spans.iter().any(|span| span.range.start == name));
+    assert!(spans.iter().all(|span| {
+        source.is_char_boundary(span.range.start) && source.is_char_boundary(span.range.end)
+    }));
+}
+
+#[test]
 fn project_queries_highlight_representative_language_constructs() {
     let cases: &[(&str, &str, &[&str])] = &[
         (

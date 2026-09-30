@@ -25,15 +25,12 @@ fn cache_is_bounded_by_byte_budget() {
     // 每个条目约占三分之一预算：插入第三个时只淘汰最久未使用的一个。
     let per_entry = MAX_HIGHLIGHT_CACHE_BYTES / 3 / size_of::<HighlightSpan>() + 1;
     cache.insert(0, spans(per_entry));
-    cache.insert(4096, spans(per_entry));
+    cache.insert(1, spans(per_entry));
     assert!(cache.get(0).is_some(), "两个条目应在预算内");
-    cache.insert(8192, spans(per_entry));
-    assert!(
-        cache.get(4096).is_none(),
-        "超出预算时应淘汰最久未使用的条目"
-    );
+    cache.insert(2, spans(per_entry));
+    assert!(cache.get(1).is_none(), "超出预算时应淘汰最久未使用的条目");
     assert!(cache.get(0).is_some(), "刚访问过的条目应保留");
-    assert!(cache.get(8192).is_some());
+    assert!(cache.get(2).is_some());
 }
 
 #[test]
@@ -50,10 +47,10 @@ fn empty_chunks_participate_in_eviction() {
     let count = (MAX_HIGHLIGHT_CACHE_BYTES - ENTRY_OVERHEAD_BYTES) / size_of::<HighlightSpan>();
     cache.insert(0, spans(count));
     for chunk in 1..=3 {
-        cache.insert(chunk * 4096, Arc::from([]));
+        cache.insert(chunk, Arc::from([]));
     }
     assert!(cache.get(0).is_none(), "空高亮条目也必须消耗缓存预算");
-    assert_eq!(cache.get(4096).unwrap().len(), 0);
+    assert_eq!(cache.get(1).unwrap().len(), 0);
 }
 
 #[test]
@@ -62,7 +59,7 @@ fn replacing_chunk_releases_previous_cost() {
     let count = MAX_HIGHLIGHT_CACHE_BYTES / 2 / size_of::<HighlightSpan>();
     cache.insert(0, spans(count));
     cache.insert(0, Arc::from([]));
-    cache.insert(4096, spans(count));
+    cache.insert(1, spans(count));
     assert!(cache.get(0).is_some(), "替换后旧跨度成本必须释放");
-    assert!(cache.get(4096).is_some());
+    assert!(cache.get(1).is_some());
 }

@@ -11,7 +11,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use tree_sitter::StreamingIterator;
-use zcv_text::Snapshot;
+use zcv_text::{ByteOffset, Line, Snapshot};
 
 use crate::Language;
 use crate::highlight_cache::HighlightCache;
@@ -58,6 +58,7 @@ impl QueueKey {
 impl SyntaxSnapshot {
     /// 查询指定字节范围，并让更内层、后出现的 capture 覆盖外层。
     ///
+    /// 缓存以文本行块为单位，块边界始终是 UTF-8 字符边界；超大行块只查询所需范围。
     /// 每层一个 capture 流（文档序），k 路归并后以全局活动栈直接产出 spans：
     /// 树中节点要么嵌套要么不相交，注入层 capture 又受其内容节点约束，因此全局栈的 LIFO 顺序就是覆盖顺序，栈顶即当前最内层。
     pub fn highlights(
@@ -69,31 +70,63 @@ impl SyntaxSnapshot {
         if range.start >= range.end || text.version() != self.version {
             return Vec::new();
         }
-        const CACHE_CHUNK_BYTES: usize = 4096;
-        let first = range.start / CACHE_CHUNK_BYTES * CACHE_CHUNK_BYTES;
+        const CACHE_CHUNK_ROWS: usize = 50;
+        const MAX_CACHED_CHUNK_BYTES: usize = 64 * 1024;
         let end = range.end.min(text.len_bytes().get());
+        if range.start >= end {
+            return Vec::new();
+        }
+        let first_row = text
+            .byte_to_line(ByteOffset::new(range.start))
+            .expect("高亮查询起点必须位于 UTF-8 字符边界")
+            .get();
         let mut spans = Vec::new();
-        let mut chunk_start = first;
-        while chunk_start < end {
-            let chunk_end = (chunk_start + CACHE_CHUNK_BYTES).min(text.len_bytes().get());
-            let cached = cache.get(chunk_start).unwrap_or_else(|| {
+        let line_count = text.line_count();
+        for chunk_id in first_row / CACHE_CHUNK_ROWS..line_count.div_ceil(CACHE_CHUNK_ROWS) {
+            let first_line = chunk_id * CACHE_CHUNK_ROWS;
+            let next_line = ((chunk_id + 1) * CACHE_CHUNK_ROWS).min(line_count);
+            let chunk_start = text
+                .line_start_byte(Line::new(first_line))
+                .expect("高亮分块起始行必须存在")
+                .get();
+            if chunk_start >= end {
+                break;
+            }
+            let chunk_end = if next_line == line_count {
+                text.len_bytes().get()
+            } else {
+                text.line_start_byte(Line::new(next_line))
+                    .expect("高亮分块结束行必须存在")
+                    .get()
+            };
+            if chunk_end - chunk_start > MAX_CACHED_CHUNK_BYTES {
+                spans.extend(
+                    self.highlights_impl(
+                        range.start.max(chunk_start)..end.min(chunk_end),
+                        text,
+                        None,
+                    )
+                    .expect("未启用取消的高亮查询必须返回结果"),
+                );
+                continue;
+            }
+            let cached = cache.get(chunk_id).unwrap_or_else(|| {
                 let computed = Arc::from(
                     self.highlights_impl(chunk_start..chunk_end, text, None)
-                        .unwrap_or_default()
+                        .expect("未启用取消的高亮查询必须返回结果")
                         .into_boxed_slice(),
                 );
-                cache.insert(chunk_start, Arc::clone(&computed));
+                cache.insert(chunk_id, Arc::clone(&computed));
                 computed
             });
             spans.extend(cached.iter().filter_map(|span| {
                 let start = span.range.start.max(range.start);
-                let end = span.range.end.min(range.end);
-                (start < end).then_some(HighlightSpan {
-                    range: start..end,
+                let span_end = span.range.end.min(end);
+                (start < span_end).then_some(HighlightSpan {
+                    range: start..span_end,
                     capture: span.capture,
                 })
             }));
-            chunk_start = chunk_end;
         }
         spans
     }

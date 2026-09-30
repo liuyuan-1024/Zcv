@@ -15,7 +15,7 @@ use zcv_actions::{
     MoveDown, MoveUp, PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev,
 };
 use zcv_theme::{color, space};
-use zcv_ui::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent};
+use zcv_ui::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent, search_box};
 
 use super::PICKER_MAX_HEIGHT;
 
@@ -292,27 +292,13 @@ impl<D: PickerDelegate> Render for Picker<D> {
             .on_action(cx.listener(Self::confirm))
             .on_action(cx.listener(Self::cancel));
 
-        root.child(picker_search_box(self.search_input.render(), cx))
+        root.child(search_box(self.search_input.render(), cx))
             .when_some(no_match, |el, n| el.child(n))
             .child(results)
             .when_some(self.delegate.render_footer(window, cx), |el, f| {
                 el.child(div().flex_none().child(f))
             })
     }
-}
-
-/// 搜索框容器：带回顶部边框和间距。
-fn picker_search_box(content: impl IntoElement, cx: &App) -> impl IntoElement {
-    div()
-        .w_full()
-        .flex()
-        .flex_none()
-        .items_center()
-        .overflow_hidden()
-        .p(space::S6)
-        .border_b_1()
-        .border_color(color::current(cx).border_variant)
-        .child(content)
 }
 
 /// 分隔线。

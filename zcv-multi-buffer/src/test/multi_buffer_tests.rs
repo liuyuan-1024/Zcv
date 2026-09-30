@@ -2384,6 +2384,62 @@ fn outline_projects_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn outline_entries_carry_display_paths_for_multiple_files(cx: &mut TestAppContext) {
+    let first = singleton(
+        "src/a.rs",
+        "fn 甲() {}
+",
+        cx,
+    );
+    let second = singleton(
+        "src/b.rs",
+        "fn 乙() {}
+",
+        cx,
+    );
+    cx.run_until_parked();
+    let first_len = cx.read_entity(&first, |source, _| source.text_snapshot().len_bytes());
+    let second_len = cx.read_entity(&second, |source, _| source.text_snapshot().len_bytes());
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                ExcerptRange::new(
+                    first,
+                    TextRange::new(ByteOffset::ZERO, first_len).expect("整文件范围必须有效"),
+                    Vec::new(),
+                ),
+                ExcerptRange::new(
+                    second,
+                    TextRange::new(ByteOffset::ZERO, second_len).expect("整文件范围必须有效"),
+                    Vec::new(),
+                ),
+            ],
+            cx,
+        );
+    });
+
+    let entries = cx.update_entity(&combined, |buffer, cx| {
+        buffer.snapshot(cx).outline_entries()
+    });
+    let mut paths: Vec<String> = entries
+        .iter()
+        .map(|entry| entry.display_path.display().to_string())
+        .collect();
+    paths.sort();
+    paths.dedup();
+    assert_eq!(paths, vec!["src/a.rs", "src/b.rs"]);
+    let path_of = |name: &str| {
+        entries
+            .iter()
+            .find(|entry| entry.item.name == name)
+            .map(|entry| entry.display_path.display().to_string())
+    };
+    assert_eq!(path_of("甲").as_deref(), Some("src/a.rs"));
+    assert_eq!(path_of("乙").as_deref(), Some("src/b.rs"));
+}
+
+#[gpui::test]
 fn syntax_nodes_project_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
     let source = singleton("src/main.rs", "// 前置\nfn 数据() {}\n// 后置\n", cx);
     cx.run_until_parked();

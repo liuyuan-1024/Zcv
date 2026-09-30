@@ -10,7 +10,7 @@ use gpui::{
     Action, AnyElement, App, IntoElement, ParentElement, SharedString, Window, div, prelude::*,
 };
 use zcv_actions::{FindNext, FindPrevious, ToggleCaseSensitive, ToggleRegex, ToggleWholeWord};
-use zcv_theme::color;
+use zcv_theme::{color, space};
 
 use crate::button::Button;
 use crate::input_shell::InputShell;
@@ -249,4 +249,21 @@ impl RenderOnce for SearchInput {
         }
         shell
     }
+}
+
+/// 面板顶部搜索行：原始输入内容 + 底部分隔线，不套 [`InputShell`] 的输入框边框。
+///
+/// 选择器浮层与大纲面板用它保持轻量一致的搜索外观；
+/// 需要匹配选项、命中计数与导航按钮时使用 [`SearchInput`]。
+pub fn search_box(content: impl IntoElement, cx: &App) -> impl IntoElement {
+    div()
+        .w_full()
+        .flex()
+        .flex_none()
+        .items_center()
+        .overflow_hidden()
+        .p(space::S6)
+        .border_b_1()
+        .border_color(color::current(cx).border_variant)
+        .child(content)
 }

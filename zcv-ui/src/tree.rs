@@ -182,6 +182,37 @@ impl TreeNodeRow {
     }
 }
 
+// ── 目录链自动折叠 ──────────────────────────────────────────────────
+
+/// 单子目录链自动折叠所需的节点视图。
+///
+/// 调用方只描述「这个目录叫什么、它唯一的子目录是谁」；
+/// 是否继续折叠由 [`auto_fold_dirs`] 结合展开状态统一决定。
+pub trait AutoFoldDir {
+    /// 目录的单个路径分量名。
+    fn dir_name(&self) -> &str;
+    /// 唯一的子目录；没有子项、有多个子项或子项不是目录时返回 `None`。
+    fn single_dir_child(&self) -> Option<&Self>;
+}
+
+/// 把连续的单子目录合并为一行显示名（如 `a/b/c`）。
+///
+/// 只有当目录本身处于展开状态时才继续折叠，避免吞掉用户明确折叠的边界；
+/// 展开状态由调用方提供，因为不同面板的展开集合所有权不同。
+pub fn auto_fold_dirs<N: AutoFoldDir>(node: &N, expanded: impl Fn(&N) -> bool) -> (&N, String) {
+    let mut deepest = node;
+    let mut name = node.dir_name().to_owned();
+    while expanded(deepest) {
+        let Some(child) = deepest.single_dir_child() else {
+            break;
+        };
+        name.push('/');
+        name.push_str(child.dir_name());
+        deepest = child;
+    }
+    (deepest, name)
+}
+
 /// 树行行高（= 空白行基座高度）：滚动计算、命中测试坐标等需要行高数值的场景读取。
 pub fn tree_row_height(window: &Window, cx: &App) -> gpui::Pixels {
     metrics(window.rem_size(), cx).row_height

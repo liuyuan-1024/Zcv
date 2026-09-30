@@ -332,3 +332,65 @@ fn effective_selection_falls_back_to_cursor_when_set_empty() {
     assert!(state.is_in_selection_set(&3));
     assert!(state.is_in_selection_set(&2));
 }
+
+/// 自动折叠测试节点：`has_file` 模拟该目录还含文件，从而不再是单目录链。
+struct FoldDir {
+    name: &'static str,
+    has_file: bool,
+    expanded: bool,
+    child: Option<Box<FoldDir>>,
+}
+
+impl AutoFoldDir for FoldDir {
+    fn dir_name(&self) -> &str {
+        self.name
+    }
+
+    fn single_dir_child(&self) -> Option<&Self> {
+        if self.has_file {
+            None
+        } else {
+            self.child.as_deref()
+        }
+    }
+}
+
+fn dir(name: &'static str, expanded: bool, has_file: bool, child: Option<Box<FoldDir>>) -> FoldDir {
+    FoldDir {
+        name,
+        has_file,
+        expanded,
+        child,
+    }
+}
+
+#[test]
+fn auto_fold_merges_single_dir_chain_until_file_or_child_dir() {
+    let node = dir(
+        "a",
+        true,
+        false,
+        Some(Box::new(dir(
+            "b",
+            true,
+            false,
+            Some(Box::new(dir("c", true, true, None))),
+        ))),
+    );
+    let (deepest, name) = auto_fold_dirs(&node, |node| node.expanded);
+    assert_eq!(name, "a/b/c", "连续单子目录应合并为一行显示名");
+    assert_eq!(deepest.dir_name(), "c", "最深节点应是链条末端目录");
+}
+
+#[test]
+fn auto_fold_stops_at_collapsed_directory() {
+    let node = dir(
+        "a",
+        false,
+        false,
+        Some(Box::new(dir("b", true, true, None))),
+    );
+    let (deepest, name) = auto_fold_dirs(&node, |node| node.expanded);
+    assert_eq!(name, "a", "已折叠目录是折叠边界，不再向下合并");
+    assert_eq!(deepest.dir_name(), "a");
+}

@@ -55,6 +55,7 @@ mod search;
 mod syntax;
 
 pub use syntax::{OutlineSource, OutlineVersion};
+pub use zcv_multi_buffer::OutlineEntry;
 
 use rename::LocalRenameState;
 

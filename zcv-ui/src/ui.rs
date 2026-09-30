@@ -27,10 +27,10 @@ pub use input::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent};
 pub use list_item::ListItem;
 pub use replace_input::ReplaceInput;
 pub use scrollbar::{ScrollableHandle, Scrollbar, thumb_geometry};
-pub use search_input::{MatchOption, MatchOptions, SearchInput};
+pub use search_input::{MatchOption, MatchOptions, SearchInput, search_box};
 pub use tab::Tab;
 pub use tooltip::{ShortcutResolver, TooltipSpec};
 pub use tree::{
-    RowClickAction, TreeNodeRow, TreeRow, TreeRowFrame, TreeState, row_click_action,
-    selection_border, tree_row_height, tree_row_label,
+    AutoFoldDir, RowClickAction, TreeNodeRow, TreeRow, TreeRowFrame, TreeState, auto_fold_dirs,
+    row_click_action, selection_border, tree_row_height, tree_row_label,
 };

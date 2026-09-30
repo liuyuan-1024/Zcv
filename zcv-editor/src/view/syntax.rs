@@ -8,7 +8,7 @@ use std::ops::Range;
 use super::{Editor, NAVIGATION_TOP_OFFSET};
 use gpui::{App, Context, HighlightStyle};
 use zcv_language::{LocalBinding, OutlineItem};
-use zcv_multi_buffer::MultiBufferSnapshot;
+use zcv_multi_buffer::{MultiBufferSnapshot, OutlineEntry};
 use zcv_text::BufferVersion;
 
 /// 大纲失效键：组合文本/拓扑版本与源元数据版本。
@@ -45,9 +45,9 @@ impl OutlineSource {
         OutlineVersion::of(&self.snapshot)
     }
 
-    /// 在当前版本上计算大纲项；不访问界面状态，可在后台线程调用。
-    pub fn items(&self) -> Vec<OutlineItem> {
-        self.snapshot.outline_items()
+    /// 在当前版本上计算带文件身份的大纲条目；不访问界面状态，可在后台线程调用。
+    pub fn entries(&self) -> Vec<OutlineEntry> {
+        self.snapshot.outline_entries()
     }
 }
 
@@ -55,6 +55,13 @@ impl Editor {
     /// 返回当前组合文档的文件级语法大纲。
     pub fn outline_items(&self, cx: &App) -> Vec<OutlineItem> {
         self.display_snapshot(cx).buffer_snapshot().outline_items()
+    }
+
+    /// 返回当前组合文档的大纲条目，含每条符号的文件身份。
+    pub fn outline_entries(&self, cx: &App) -> Vec<OutlineEntry> {
+        self.display_snapshot(cx)
+            .buffer_snapshot()
+            .outline_entries()
     }
 
     /// 当前大纲失效键；O(1)，不触发语法查询。

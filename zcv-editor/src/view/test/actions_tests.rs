@@ -6,7 +6,7 @@ use zcv_actions::{ConfirmLocalRename, RenameLocal};
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
 use zcv_text::{Edit, TransactionId, TransactionMetadata};
 
-use super::common::{buffer_text, focus_editor, test_buffer};
+use super::common::{buffer_text, focus_editor, inject_file_diff, test_buffer};
 use super::*;
 use crate::display_map::{DisplayPoint, DisplayRow};
 use crate::scroll::ScrollViewport;
@@ -237,6 +237,59 @@ fn outline_items_filter_and_navigate_using_current_snapshot(cx: &mut TestAppCont
             .unwrap()
         );
     });
+}
+
+/// Markdown section 的范围从标题延伸到文件末尾；diff hunk 会把工作区源切成多段。
+/// 单文件大纲必须来自源的完整语法快照，不能按 diff 片段裁剪，否则跨段定义会丢失。
+#[gpui::test]
+fn diff_injection_keeps_outline_items_spanning_hunks(cx: &mut TestAppContext) {
+    let text = "# 一级\n\n正文\n\n## 二级\n\n正文\n\n### 三级\n\n正文\n\n## 二级乙\n\n正文\n";
+    let raw_buffer = Buffer::from_text(text.to_owned(), BufferConfig::default())
+        .expect("Markdown 测试 Buffer 应能创建");
+    let language_buffer = cx.new({
+        move |cx| {
+            LanguageBuffer::new(
+                raw_buffer,
+                Some(PathBuf::from("README.md")),
+                std::sync::Arc::new(LanguageRegistry::new()),
+                cx,
+            )
+        }
+    });
+    let editor = cx.new({
+        let language_buffer = language_buffer.clone();
+        move |cx| Editor::for_language_buffer(language_buffer, cx)
+    });
+    cx.run_until_parked();
+
+    let names = |cx: &mut TestAppContext, editor: &Entity<Editor>| {
+        cx.read_entity(editor, |editor, cx| {
+            editor
+                .outline_items(cx)
+                .into_iter()
+                .map(|item| item.name.clone())
+                .collect::<Vec<_>>()
+        })
+    };
+    let before = names(cx, &editor);
+    assert_eq!(
+        before,
+        vec!["一级", "二级", "三级", "二级乙"],
+        "Markdown 标题应完整出现在大纲中"
+    );
+
+    // 在“三级”段内制造 diff hunk：工作区源被切成多段，跨段的 section 不能因此丢失。
+    let base = text.replace("### 三级\n\n正文", "### 三级\n\n修改正文");
+    inject_file_diff(
+        &editor,
+        &language_buffer,
+        std::sync::Arc::from(base.as_str()),
+        cx,
+    );
+    cx.run_until_parked();
+
+    let after = names(cx, &editor);
+    assert_eq!(after, before, "diff 注入不得丢失跨 hunk 的大纲条目");
 }
 
 #[gpui::test]

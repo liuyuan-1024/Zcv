@@ -26,9 +26,9 @@ use zcv_path::{AbsolutePathBuf, RelativePathBuf};
 use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, space};
 use zcv_ui::{
-    Button, ButtonLike, ButtonSize, ButtonStyle, Checkbox, RowClickAction, Scrollbar, SvgIcon,
-    TooltipSpec, TreeNodeRow, TreeRow, TreeRowFrame, TreeState, row_click_action, selection_border,
-    tree_row_label,
+    AutoFoldDir, Button, ButtonLike, ButtonSize, ButtonStyle, Checkbox, RowClickAction, Scrollbar,
+    SvgIcon, TooltipSpec, TreeNodeRow, TreeRow, TreeRowFrame, TreeState, auto_fold_dirs,
+    row_click_action, selection_border, tree_row_label,
 };
 use zcv_workspace::{Panel, PanelEvent, git_status_color};
 
@@ -261,20 +261,14 @@ fn flatten_nodes(
     expanded: &HashSet<(GitSection, AbsolutePathBuf)>,
 ) {
     for node in nodes {
-        let mut folded_name = node.name.clone();
-        let mut visible_node = node;
-        // 变更树只包含有变更的路径，因此连续的单子目录可以在行模型中压缩。
-        // 只有子目录本身处于展开状态时才继续压缩，避免吞掉用户明确折叠的边界。
-        while visible_node.is_dir
-            && expanded.contains(&(section, visible_node.path.clone()))
-            && visible_node.children.len() == 1
-            && visible_node.children[0].is_dir
-        {
-            let child = &visible_node.children[0];
-            folded_name.push('/');
-            folded_name.push_str(&child.name);
-            visible_node = child;
-        }
+        // 变更树只包含有变更的路径，因此连续的单子目录可以在行模型中压成一行。
+        let (visible_node, folded_name) = if node.is_dir {
+            auto_fold_dirs(node, |candidate| {
+                expanded.contains(&(section, candidate.path.clone()))
+            })
+        } else {
+            (node, node.name.clone())
+        };
 
         let is_expanded =
             visible_node.is_dir && expanded.contains(&(section, visible_node.path.clone()));
@@ -1314,6 +1308,16 @@ struct GitTreeNode {
     status: Option<FileStatus>,
     diff_stat: DiffStat,
     children: Vec<GitTreeNode>,
+}
+
+impl AutoFoldDir for GitTreeNode {
+    fn dir_name(&self) -> &str {
+        &self.name
+    }
+
+    fn single_dir_child(&self) -> Option<&Self> {
+        (self.children.len() == 1 && self.children[0].is_dir).then(|| &self.children[0])
+    }
 }
 
 impl TreeRow for GitRow {

@@ -11,14 +11,15 @@ use gpui::{
     App, Context, Entity, FocusHandle, Render, Task, UniformListScrollHandle, Window, div,
     prelude::*, uniform_list,
 };
-use zcv_editor::{Editor, EditorEvent, OutlineVersion};
-use zcv_language::{LanguageRegistry, OutlineItem};
-use zcv_theme::{color, space};
-use zcv_ui::{Scrollbar, SearchInput};
+use zcv_editor::{Editor, EditorEvent, OutlineEntry, OutlineVersion};
+use zcv_language::LanguageRegistry;
+use zcv_theme::color;
+use zcv_ui::{Scrollbar, search_box};
 use zcv_workspace::{Pane, PaneEvent, Panel, PanelEvent};
 
 mod outline_item;
-use outline_item::OutlineItemKey;
+mod outline_tree;
+use outline_tree::{OutlineRow, OutlineRowKey, OutlineRowKind, has_multiple_files, outline_rows};
 
 /// 当前活动编辑器的大纲面板。
 pub struct OutlinePanel {
@@ -29,17 +30,17 @@ pub struct OutlinePanel {
     search_input: Entity<Editor>,
     _search_subscription: gpui::Subscription,
     _pane_subscription: gpui::Subscription,
-    /// 当前查询筛选后的可见大纲项。
-    items: Vec<OutlineItem>,
-    /// 已安装版本上的未过滤大纲项；查询变化只在其上重筛。
-    source_items: Vec<OutlineItem>,
-    /// 已安装 source_items 对应的失效键；None 表示尚无有效大纲。
+    /// 当前查询筛选后的可见大纲行。
+    rows: Vec<OutlineRow>,
+    /// 已安装版本上的未过滤条目；查询变化只在其上重建行。
+    source_entries: Vec<OutlineEntry>,
+    /// 已安装 source_entries 对应的失效键；None 表示尚无有效大纲。
     outline_version: Option<OutlineVersion>,
     /// 防抖后的后台重算任务；替换或清空即取消旧任务。
     refresh_task: Option<Task<()>>,
     /// 面板是否可见且被 Dock 激活；不可见时不计算。
     active: bool,
-    collapsed_items: HashSet<OutlineItemKey>,
+    collapsed_rows: HashSet<OutlineRowKey>,
     scroll_handle: UniformListScrollHandle,
     scrollbar: Scrollbar<UniformListScrollHandle>,
 }
@@ -52,20 +53,6 @@ const OUTLINE_REFRESH_DEBOUNCE: Duration = Duration::from_millis(50);
 /// 滚动、绘制与选择变化只唤醒订阅，不改变版本，因此这里稳定返回 false。
 fn outline_refresh_needed(active: bool, version_changed: bool) -> bool {
     active && version_changed
-}
-
-/// 按大纲文本过滤；匹配不改变语法层结果的顺序和层级。
-///
-/// 查询已在调用方规范化为小写。
-fn filter_outline_items(source: &[OutlineItem], query: &str) -> Vec<OutlineItem> {
-    if query.is_empty() {
-        return source.to_vec();
-    }
-    source
-        .iter()
-        .filter(|item| item.text.to_lowercase().contains(query))
-        .cloned()
-        .collect()
 }
 
 impl OutlinePanel {
@@ -104,12 +91,12 @@ impl OutlinePanel {
             search_input,
             _search_subscription: search_subscription,
             _pane_subscription: pane_subscription,
-            items: Vec::new(),
-            source_items: Vec::new(),
+            rows: Vec::new(),
+            source_entries: Vec::new(),
             outline_version: None,
             refresh_task: None,
             active: false,
-            collapsed_items: HashSet::new(),
+            collapsed_rows: HashSet::new(),
             scrollbar: Scrollbar::vertical(scroll_handle.clone()),
             scroll_handle,
         };
@@ -135,7 +122,7 @@ impl OutlinePanel {
                 })
             });
             self.active_editor = next_editor;
-            self.source_items.clear();
+            self.source_entries.clear();
             self.outline_version = None;
             self.apply_filter(cx);
         }
@@ -145,8 +132,8 @@ impl OutlinePanel {
     /// 订阅唤醒入口：面板可见且失效键变化时，启动一次防抖后台重算。
     fn invalidate_outline(&mut self, cx: &mut Context<Self>) {
         let Some(editor) = self.active_editor.clone() else {
-            if !self.source_items.is_empty() || self.outline_version.is_some() {
-                self.source_items.clear();
+            if !self.source_entries.is_empty() || self.outline_version.is_some() {
+                self.source_entries.clear();
                 self.outline_version = None;
                 self.apply_filter(cx);
             }
@@ -163,24 +150,24 @@ impl OutlinePanel {
             cx.background_executor()
                 .timer(OUTLINE_REFRESH_DEBOUNCE)
                 .await;
-            let items = cx
+            let entries = cx
                 .background_executor()
-                .spawn(async move { source.items() })
+                .spawn(async move { source.entries() })
                 .await;
             panel
                 .update(cx, |panel, cx| {
-                    panel.install_source_items(editor_id, version, items, cx);
+                    panel.install_source_entries(editor_id, version, entries, cx);
                 })
                 .ok();
         }));
     }
 
     /// 安装后台重算结果；编辑器已切换或版本已过期时丢弃。
-    fn install_source_items(
+    fn install_source_entries(
         &mut self,
         editor_id: gpui::EntityId,
         version: OutlineVersion,
-        items: Vec<OutlineItem>,
+        entries: Vec<OutlineEntry>,
         cx: &mut Context<Self>,
     ) {
         let same_editor = self
@@ -196,56 +183,33 @@ impl OutlinePanel {
         {
             return;
         }
-        self.source_items = items;
+        self.source_entries = entries;
         self.outline_version = Some(version);
         self.apply_filter(cx);
     }
 
-    /// 按当前查询在缓存项上重筛并刷新折叠集合；不访问语法层。
+    /// 按当前查询在缓存条目上重建行并刷新折叠集合；不访问语法层。
     fn apply_filter(&mut self, cx: &mut Context<Self>) {
         let query = self.search_input.read(cx).text(cx).trim().to_lowercase();
-        let items = filter_outline_items(&self.source_items, &query);
-        let current_keys: HashSet<_> = items.iter().map(OutlineItemKey::from_item).collect();
-        self.collapsed_items
-            .retain(|key| current_keys.contains(key));
-        self.items = items;
+        let tree = has_multiple_files(&self.source_entries);
+        let rows = outline_rows(&self.source_entries, tree, &query, &self.collapsed_rows);
+        let current_keys: HashSet<_> = rows.iter().map(OutlineRow::key).collect();
+        self.collapsed_rows.retain(|key| current_keys.contains(key));
+        self.rows = rows;
         cx.notify();
     }
 
-    fn toggle_item(&mut self, key: OutlineItemKey, cx: &mut Context<Self>) {
-        if !self.collapsed_items.remove(&key) {
-            self.collapsed_items.insert(key);
+    fn toggle_row(&mut self, key: OutlineRowKey, cx: &mut Context<Self>) {
+        if !self.collapsed_rows.remove(&key) {
+            self.collapsed_rows.insert(key);
         }
-        cx.notify();
+        // 展开状态参与目录链自动折叠，折叠后必须重建行而不是只重绘。
+        self.apply_filter(cx);
     }
 
-    fn visible_items(&self) -> Vec<(OutlineItem, bool, bool)> {
-        visible_items(&self.items, &self.collapsed_items)
+    fn visible_rows(&self) -> Vec<(OutlineRow, bool, bool)> {
+        outline_tree::visible_rows(&self.rows, &self.collapsed_rows)
     }
-}
-
-/// 从大纲项与折叠集合推导可见行：折叠项隐藏其后所有更深层级的后代，但不影响同层兄弟。
-fn visible_items(
-    items: &[OutlineItem],
-    collapsed_items: &HashSet<OutlineItemKey>,
-) -> Vec<(OutlineItem, bool, bool)> {
-    let mut visible = Vec::new();
-    let mut collapsed_depth = None;
-    for (index, item) in items.iter().enumerate() {
-        if collapsed_depth.is_some_and(|depth| item.depth > depth) {
-            continue;
-        }
-        collapsed_depth = None;
-        let has_children = items
-            .get(index + 1)
-            .is_some_and(|next| next.depth > item.depth);
-        let collapsed = has_children && collapsed_items.contains(&OutlineItemKey::from_item(item));
-        visible.push((item.clone(), has_children, collapsed));
-        if collapsed {
-            collapsed_depth = Some(item.depth);
-        }
-    }
-    visible
 }
 
 impl gpui::EventEmitter<PanelEvent> for OutlinePanel {}
@@ -281,24 +245,29 @@ impl Panel for OutlinePanel {
 impl Render for OutlinePanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = *color::current(cx);
-        let search = SearchInput::new("outline", self.search_input.clone().into_any_element());
-        let visible_items = self.visible_items();
-        let items_len = visible_items.len();
+        let search = search_box(self.search_input.clone().into_any_element(), cx);
+        let visible_rows = self.visible_rows();
+        let rows_len = visible_rows.len();
         let active_editor = self.active_editor.clone();
         let weak_panel = cx.weak_entity();
         let weak_panel_for_toggle = weak_panel.clone();
-        let list = uniform_list("outline-items", items_len, move |range, window, cx| {
+        let list = uniform_list("outline-items", rows_len, move |range, window, cx| {
             range
                 .map(|index| {
-                    let (item, has_children, collapsed) = visible_items[index].clone();
+                    let (row, has_children, collapsed) = visible_rows[index].clone();
                     let editor = active_editor.clone();
-                    let highlights = editor
-                        .as_ref()
-                        .map(|editor| editor.read(cx).outline_item_highlights(&item, cx))
-                        .unwrap_or_default();
+                    let highlights = match &row.kind {
+                        OutlineRowKind::Symbol(entry) => editor
+                            .as_ref()
+                            .map(|editor| editor.read(cx).outline_item_highlights(&entry.item, cx))
+                            .unwrap_or_default(),
+                        OutlineRowKind::Directory { .. } | OutlineRowKind::File { .. } => {
+                            Vec::new()
+                        }
+                    };
                     let panel = weak_panel_for_toggle.clone();
                     outline_item::render(
-                        item,
+                        row,
                         outline_item::OutlineItemFold {
                             has_children,
                             collapsed,
@@ -308,13 +277,13 @@ impl Render for OutlinePanel {
                         cx,
                         move |key, cx| {
                             if let Some(panel) = panel.upgrade() {
-                                panel.update(cx, |panel, cx| panel.toggle_item(key, cx));
+                                panel.update(cx, |panel, cx| panel.toggle_row(key, cx));
                             }
                         },
-                        move |item, window, cx| {
+                        move |entry, window, cx| {
                             if let Some(editor) = editor.clone() {
                                 editor.update(cx, |editor, cx| {
-                                    if editor.navigate_to_outline_item(&item, cx) {
+                                    if editor.navigate_to_outline_item(&entry.item, cx) {
                                         window.focus(&editor.focus_handle(), cx);
                                     }
                                 });
@@ -328,7 +297,7 @@ impl Render for OutlinePanel {
         .track_scroll(&self.scroll_handle)
         .with_decoration(self.scrollbar.clone());
 
-        let content = if items_len == 0 {
+        let content = if rows_len == 0 {
             let message = if self.active_editor.is_some() {
                 "当前文件没有可用的大纲"
             } else {
@@ -353,7 +322,7 @@ impl Render for OutlinePanel {
             .track_focus(&self.focus)
             .key_context("outline")
             .text_color(colors.text)
-            .child(div().w_full().p(space::S4).child(search))
+            .child(search)
             .child(content)
     }
 }

@@ -2081,6 +2081,18 @@ impl ExcerptBoundary {
     }
 }
 
+/// 组合文档中的一条大纲条目：符号所属文件身份 + 符号本体。
+///
+/// 单文件文档只有一个文件身份；组合文档按 `display_path` 区分文件，
+/// 供大纲面板构建「目录 → 文件 → 符号」树。
+#[derive(Clone, Debug)]
+pub struct OutlineEntry {
+    /// 组合文档中的显示路径（文件身份）。
+    pub display_path: PathBuf,
+    /// 输出坐标中的符号。
+    pub item: OutlineItem,
+}
+
 /// 一帧组合文档的不可变快照。
 #[derive(Clone, Debug)]
 pub struct MultiBufferSnapshot {
@@ -2111,6 +2123,10 @@ pub struct MultiBufferSnapshot {
     show_headers: bool,
     /// 单文件组合文档：Zed 语义下不产生任何 excerpt 边界。
     singleton: bool,
+    /// 单文件文档的权威工作区源索引；`None` 表示真正的多来源组合文档。
+    ///
+    /// 单文件大纲必须来自该源的完整语法快照，不能按 excerpt/diff 片段裁剪。
+    singleton_source_index: Option<usize>,
 }
 
 /// 当前逻辑窗口引用的去重文件源；只在窗口拓扑变化时重建。
@@ -3399,11 +3415,73 @@ impl MultiBufferSnapshot {
         project_range(ancestor, mapping.source_range.range(), mapping.output_range)
     }
 
-    /// 返回当前组合文档中可见源范围内的文件大纲项。
+    /// 返回当前组合文档中的大纲条目，含符号所属文件身份。
     ///
-    /// 大纲先从每个源的 `SyntaxSnapshot` 计算，再只投影完整落在 excerpt 内的定义；
-    /// 这样不会把跨未展示内容的语法节点误投影到差异或搜索组合文档中。
+    /// 单文件文档直接取工作区源的完整语法大纲；组合文档只投影完整落在 excerpt 内的定义。
+    /// 结果按显示路径与输出范围排序，供大纲面板构建「目录 → 文件 → 符号」树。
+    pub fn outline_entries(&self) -> Vec<OutlineEntry> {
+        let mut entries = match self.singleton_source_index {
+            Some(source_index) => self.singleton_outline_entries(source_index),
+            None => self.composite_outline_entries(),
+        };
+        entries.sort_unstable_by(|left, right| {
+            left.display_path.cmp(&right.display_path).then_with(|| {
+                (left.item.range.start, left.item.range.end)
+                    .cmp(&(right.item.range.start, right.item.range.end))
+            })
+        });
+        entries.dedup_by(|left, right| {
+            left.display_path == right.display_path
+                && left.item.range == right.item.range
+                && left.item.name_range == right.item.name_range
+                && left.item.name == right.item.name
+                && left.item.language == right.item.language
+        });
+        entries
+    }
+
+    /// 只取符号本体的便捷入口；导航与既有消费方使用。
     pub fn outline_items(&self) -> Vec<OutlineItem> {
+        self.outline_entries()
+            .into_iter()
+            .map(|entry| entry.item)
+            .collect()
+    }
+
+    /// 单文件文档的大纲条目：直接取工作区源的完整语法大纲。
+    ///
+    /// 单文件不按 excerpt/diff 片段裁剪，源坐标只做单调映射到组合输出坐标，
+    /// 因此 diff 注入不会丢失跨 hunk 的定义。
+    fn singleton_outline_entries(&self, source_index: usize) -> Vec<OutlineEntry> {
+        let Some(source) = self.excerpt_sources.get(&source_index) else {
+            return Vec::new();
+        };
+        let Some(display_path) = self.source_file_identity(source_index) else {
+            return Vec::new();
+        };
+        let outlines = source
+            .syntax
+            .outline(0..source.text.len_bytes().get(), &source.text);
+        let segments = self.outline_segments(source_index);
+        if segments.is_empty() {
+            return Vec::new();
+        }
+        outlines
+            .iter()
+            .filter_map(|item| {
+                project_outline_item_monotonic(item, &segments).map(|item| OutlineEntry {
+                    display_path: display_path.clone(),
+                    item,
+                })
+            })
+            .collect()
+    }
+
+    /// 组合文档的大纲条目：只投影完整落在某个可见 excerpt 内的定义。
+    ///
+    /// 搜索与项目差异使用窗口 excerpt，跨窗口的定义不展示；
+    /// 窗口内定义仍按片段投影，并携带该片段的文件身份。
+    fn composite_outline_entries(&self) -> Vec<OutlineEntry> {
         let source_outlines = self
             .excerpt_sources
             .values()
@@ -3413,28 +3491,54 @@ impl MultiBufferSnapshot {
                     .outline(0..source.text.len_bytes().get(), &source.text)
             })
             .collect::<Vec<_>>();
-        let mut projected = Vec::new();
+        let mut entries = Vec::new();
         let mut cursor = MultiBufferCursor::new(&self.excerpts, &self.diff_transforms);
         cursor.seek(ByteOffset::ZERO, Bias::Right);
         while let Some((excerpt, _)) = cursor.item() {
             let mapping = excerpt.to_mapping(cursor.start());
+            let display_path = excerpt.display_path.as_path().to_path_buf();
             if let Some(outlines) = source_outlines.get(mapping.source_index) {
                 for item in outlines.iter().filter_map(|item| {
                     project_outline_item(item, mapping.source_range.range(), mapping.output_range)
                 }) {
-                    projected.push(item);
+                    entries.push(OutlineEntry {
+                        display_path: display_path.clone(),
+                        item,
+                    });
                 }
             }
             cursor.next();
         }
-        projected.sort_unstable_by_key(|item| (item.range.start, item.range.end));
-        projected.dedup_by(|left, right| {
-            left.range == right.range
-                && left.name_range == right.name_range
-                && left.name == right.name
-                && left.language == right.language
-        });
-        projected
+        entries
+    }
+
+    /// 指定源在组合文档中的显示路径。
+    fn source_file_identity(&self, source_index: usize) -> Option<PathBuf> {
+        let mut cursor = MultiBufferCursor::new(&self.excerpts, &self.diff_transforms);
+        cursor.seek(ByteOffset::ZERO, Bias::Right);
+        while let Some((excerpt, _)) = cursor.item() {
+            let mapping = excerpt.to_mapping(cursor.start());
+            if mapping.source_index == source_index {
+                return Some(excerpt.display_path.as_path().to_path_buf());
+            }
+            cursor.next();
+        }
+        None
+    }
+
+    /// 指定源在组合文档中的可见片段（源坐标 -> 输出坐标），按输出顺序排列。
+    fn outline_segments(&self, source_index: usize) -> Vec<(TextRange, MultiBufferRange)> {
+        let mut segments = Vec::new();
+        let mut cursor = MultiBufferCursor::new(&self.excerpts, &self.diff_transforms);
+        cursor.seek(ByteOffset::ZERO, Bias::Right);
+        while let Some((excerpt, _)) = cursor.item() {
+            let mapping = excerpt.to_mapping(cursor.start());
+            if mapping.source_index == source_index {
+                segments.push((mapping.source_range.range(), mapping.output_range));
+            }
+            cursor.next();
+        }
+        segments
     }
 
     /// 返回普通单文件组合文档中的局部绑定。
@@ -3764,6 +3868,82 @@ fn project_outline_item(
     })
 }
 
+/// 单文件大纲的坐标映射：优先要求范围完整落在同一可见片段内；跨片段时按首尾片段单调映射。
+///
+/// 单文件文档的 excerpt 恒为整文件，diff 只是把工作区源切成多个连续片段，
+/// 因此名称与文本片段跨片段时仍能给出有效输出坐标，条目不会因跨界而丢失。
+fn project_outline_item_monotonic(
+    item: &OutlineItem,
+    segments: &[(TextRange, MultiBufferRange)],
+) -> Option<OutlineItem> {
+    let project = |range: &std::ops::Range<usize>| {
+        project_range_contained(segments, range).or_else(|| project_range_spanning(segments, range))
+    };
+    Some(OutlineItem {
+        version: item.version,
+        range: project(&item.range)?,
+        name_range: project(&item.name_range)?,
+        name: item.name.clone(),
+        text: item.text.clone(),
+        text_ranges: item
+            .text_ranges
+            .iter()
+            .map(|part| {
+                Some(OutlineTextRange {
+                    text_range: part.text_range.clone(),
+                    source_range: project(&part.source_range)?,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?,
+        kind: item.kind.clone(),
+        depth: item.depth,
+        language: item.language,
+        language_depth: item.language_depth,
+        body_range: item.body_range.as_ref().and_then(project),
+        annotation_range: item.annotation_range.as_ref().and_then(project),
+    })
+}
+
+fn project_range_contained(
+    segments: &[(TextRange, MultiBufferRange)],
+    range: &std::ops::Range<usize>,
+) -> Option<std::ops::Range<usize>> {
+    segments.iter().find_map(|(source, output)| {
+        let source_start = source.start().get();
+        let source_end = source.end().get();
+        (source_start <= range.start && range.end <= source_end).then(|| {
+            let output_start = output.start().get();
+            (output_start + range.start - source_start)..(output_start + range.end - source_start)
+        })
+    })
+}
+
+fn project_range_spanning(
+    segments: &[(TextRange, MultiBufferRange)],
+    range: &std::ops::Range<usize>,
+) -> Option<std::ops::Range<usize>> {
+    let start = map_source_offset(segments, range.start, false)?;
+    let end = map_source_offset(segments, range.end, true)?;
+    (start <= end).then_some(start..end)
+}
+
+fn map_source_offset(
+    segments: &[(TextRange, MultiBufferRange)],
+    offset: usize,
+    include_segment_end: bool,
+) -> Option<usize> {
+    for (source, output) in segments {
+        let source_start = source.start().get();
+        let source_end = source.end().get();
+        if offset >= source_start
+            && (offset < source_end || (include_segment_end && offset == source_end))
+        {
+            return Some(output.start().get() + (offset - source_start));
+        }
+    }
+    None
+}
+
 fn project_syntax_node(
     node: &SyntaxNode,
     source_range: TextRange,
@@ -3848,6 +4028,7 @@ impl From<Snapshot> for MultiBufferSnapshot {
             diff_display: None,
             show_headers: true,
             singleton: true,
+            singleton_source_index: Some(0),
         }
     }
 }
@@ -3863,6 +4044,7 @@ impl MultiBufferSnapshot {
         snapshot.path_keys = Arc::from([]);
         snapshot.excerpt_sources = TreeMap::default();
         snapshot.singleton = false;
+        snapshot.singleton_source_index = None;
         snapshot
     }
 }
@@ -5649,6 +5831,11 @@ impl MultiBuffer {
                 (excerpt_sources, Arc::clone(&self.snapshot.source_indices))
             }
         };
+        // 在移动 source_indices 前解析单文件源索引。
+        let singleton_source_index = self
+            .singleton_source
+            .as_ref()
+            .and_then(|source| source_indices.get(&source.entity_id()).copied());
         self.snapshot = MultiBufferSnapshot {
             projection_version: self.state.projection_version,
             topology_version: self.state.topology_version,
@@ -5668,6 +5855,7 @@ impl MultiBuffer {
             diff_display: self.diff.clone(),
             show_headers: self.show_headers,
             singleton: self.singleton_source.is_some(),
+            singleton_source_index,
         };
         self.snapshot_dirty = false;
         self.snapshot_source_updates = Some(HashSet::new());

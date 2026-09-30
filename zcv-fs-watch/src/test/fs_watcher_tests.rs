@@ -174,9 +174,73 @@ fn test_fs_watcher_pending_path() {
 #[test]
 fn test_fs_watcher_closes_event_stream_on_drop() {
     let watcher = FsWatcher::new();
-    let events = watcher.events();
+    let mut events = watcher.watch(Duration::ZERO);
 
     drop(watcher);
 
-    assert!(events.rx.is_closed());
+    assert!(smol::block_on(events.next()).is_none());
+}
+
+/// latency 窗口内到达的事件因缓冲非空不再发信号，应合并为同一批次。
+#[test]
+fn watch_stream_coalesces_events_within_latency() {
+    let watcher = FsWatcher::new();
+    let mut events = watcher.watch(Duration::from_millis(10));
+
+    enqueue_path_events(
+        &watcher.signal_tx,
+        &watcher.pending_path_events,
+        vec![changed("/root/a.json")],
+    );
+    enqueue_path_events(
+        &watcher.signal_tx,
+        &watcher.pending_path_events,
+        vec![changed("/root/b.json")],
+    );
+
+    assert_eq!(
+        smol::block_on(events.next()),
+        Some(vec![changed("/root/a.json"), changed("/root/b.json")])
+    );
+}
+
+/// 事件入队后，订阅应立即交付包含该事件的批次（latency 为零表示不合并）。
+#[test]
+fn watch_stream_delivers_enqueued_batch() {
+    let watcher = FsWatcher::new();
+    let mut events = watcher.watch(Duration::ZERO);
+
+    enqueue_path_events(
+        &watcher.signal_tx,
+        &watcher.pending_path_events,
+        vec![changed("/root/settings.json")],
+    );
+
+    assert_eq!(
+        smol::block_on(events.next()),
+        Some(vec![changed("/root/settings.json")])
+    );
+}
+
+/// 注册路径必须规范化，否则 macOS 等后端返回的规范化事件路径无法通过前缀过滤。
+#[test]
+fn add_registers_canonical_watch_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let watcher = FsWatcher::new();
+    watcher.add(temp.path()).unwrap();
+
+    let canonical = canonical_watch_path(temp.path());
+    let (has_canonical, has_original) = {
+        let registrations = watcher.registrations.lock().unwrap();
+        (
+            registrations.contains_key(&WatchKey::exact(&canonical))
+                || registrations.contains_key(&WatchKey::folded(&canonical)),
+            registrations.contains_key(&WatchKey::exact(temp.path()))
+                || registrations.contains_key(&WatchKey::folded(temp.path())),
+        )
+    };
+    assert!(has_canonical);
+    if canonical != temp.path() {
+        assert!(!has_original, "非规范路径不应成为注册键");
+    }
 }

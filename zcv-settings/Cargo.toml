@@ -9,6 +9,7 @@ path = "src/settings.rs"
 
 [dependencies]
 anyhow.workspace = true
+futures.workspace = true
 gpui.workspace = true
 serde.workspace = true
 serde_json_lenient.workspace = true

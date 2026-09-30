@@ -76,8 +76,8 @@ impl Watcher for FailingWatcher {
         Err(anyhow::anyhow!("测试停止监听失败"))
     }
 
-    fn events(&self) -> FsEventStream {
-        self.watcher.events()
+    fn watch(&self, latency: std::time::Duration) -> FsEventStream {
+        self.watcher.watch(latency)
     }
 }
 

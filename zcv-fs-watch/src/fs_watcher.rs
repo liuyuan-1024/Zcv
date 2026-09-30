@@ -5,15 +5,18 @@
 //! 1. `notify` crate —— 底层 OS 文件系统事件（FSEvents / inotify / ReadDirectoryChanges）
 //! 2. `GlobalWatcher` 单例 —— 管理原生和轮询两个后端，专用线程批量调度事件
 //! 3. `FsWatcher` 实例 —— 每项目根一个实例，包装 GlobalWatcher，提供 `Watcher` trait
-//! 4. 调用方通过 async-channel 接收事件并触发界面刷新
+//! 4. Watcher::watch 返回按 latency 合并的事件批次流，调用方 await 并触发界面刷新
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::Duration;
 
 use crossbeam_channel::Sender as CbSender;
+use futures::StreamExt as _;
+use futures::stream::Stream;
 use notify::{Event, EventKind, RecursiveMode, Watcher as NotifyWatcher};
 use zcv_path::AbsolutePathBuf;
 
@@ -53,11 +56,23 @@ fn absolute_event_path(path: PathBuf) -> AbsolutePathBuf {
     AbsolutePathBuf::new(path).expect("文件监听事件路径必须是绝对路径")
 }
 
+/// 监听器的事件批次流：每个元素是一批已按 latency 合并的路径事件。
+/// 仅由防抖计时触发、但没有实际事件的空唤醒不会产生元素。
+///
+/// 对齐 Zed 的 Fs::watch 返回流；Zcv 没有 Fs 门面，因此订阅入口挂在 Watcher 上。
+pub type FsEventStream = Pin<Box<dyn Stream<Item = Vec<PathEvent>> + Send>>;
+
 /// 文件监听器：路径注册与事件订阅属于同一个来源，避免注册和消费落在不同实例。
+///
+/// 注册（add/remove）与订阅（watch）分离：
+/// 路径注册的错误由调用方负责上报，事件流只负责在延迟窗口内合并事件并交付批次。
 pub trait Watcher: Send + Sync {
     fn add(&self, path: &Path) -> anyhow::Result<()>;
     fn remove(&self, path: &Path) -> anyhow::Result<()>;
-    fn events(&self) -> FsEventStream;
+    /// 订阅防抖事件批次流；latency 是事件合并窗口，Duration::ZERO 表示不合并。
+    ///
+    /// 同一 Watcher 上应只建立一个订阅：所有注册路径共享同一事件缓冲与信号。
+    fn watch(&self, latency: Duration) -> FsEventStream;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -561,10 +576,10 @@ fn global_watcher() -> &'static GlobalWatcher {
 
 /// 调用方实例的文件系统监听器。
 ///
-/// 包装 `GlobalWatcher` 单例，提供路径级 add/remove。
-/// 事件通道与缓冲由实例自管：事件入队时发送信号，消费方经 [`FsWatcher::events`] 取得订阅对象，只写"等待并处理批次"的处理逻辑，不再自建 channel 与缓冲。
+/// 包装 GlobalWatcher 单例，提供路径级 add/remove 与 watch 订阅。
+/// 事件通道与缓冲由实例自管：事件入队时发送信号，watch 返回的流负责在 latency 窗口内合并并交付批次。
 pub struct FsWatcher {
-    /// 信号通道：事件入队时发送 `()`，消费方（gpui 前台 task）等待此信号。
+    /// 信号通道：事件入队时发送 `()`，watch 返回的订阅流等待此信号。
     signal_tx: async_channel::Sender<()>,
     /// 信号接收端（订阅对象经它等待批次）。
     signal_rx: async_channel::Receiver<()>,
@@ -590,25 +605,6 @@ struct PendingRegistrationState {
     query_error_notified: bool,
 }
 
-/// 事件批次订阅：`next_batch` 等待信号并取走全部缓冲（信号合并），`has_more` 非阻塞检查是否仍有未处理的信号（防抖循环用）。
-pub struct FsEventStream {
-    rx: async_channel::Receiver<()>,
-    pending: Arc<Mutex<Vec<PathEvent>>>,
-}
-
-impl FsEventStream {
-    /// 等待下一批事件；监听器已释放（通道关闭）时返回 None。
-    pub async fn next_batch(&self) -> Option<Vec<PathEvent>> {
-        self.rx.recv().await.ok()?;
-        Some(std::mem::take(&mut *self.pending.lock().unwrap()))
-    }
-
-    /// 是否还有未消费的信号（事件在等待处理期间再次入队）。
-    pub fn has_more(&self) -> bool {
-        self.rx.try_recv().is_ok()
-    }
-}
-
 impl Default for FsWatcher {
     fn default() -> Self {
         Self::new()
@@ -632,12 +628,24 @@ impl FsWatcher {
         watcher
     }
 
-    /// 取得事件批次订阅（可多次调用；各订阅共享同一事件流）。
-    pub fn events(&self) -> FsEventStream {
-        FsEventStream {
-            rx: self.signal_rx.clone(),
-            pending: self.pending_path_events.clone(),
-        }
+    /// 订阅防抖事件批次流。同一 Watcher 只应建立一个订阅：各订阅共享同一信号通道与
+    /// 事件缓冲，重复订阅会互相抢夺批次。
+    ///
+    /// 每个唤醒等待一个 latency 窗口再取走全部缓冲：窗口内到达的事件因为缓冲非空
+    /// 不会再发信号，因此自然合并进同一批次；空批次不产生元素。
+    pub fn watch(&self, latency: Duration) -> FsEventStream {
+        let rx = self.signal_rx.clone();
+        let pending = self.pending_path_events.clone();
+        Box::pin(rx.filter_map(move |_| {
+            let pending = pending.clone();
+            async move {
+                if !latency.is_zero() {
+                    smol::Timer::after(latency).await;
+                }
+                let events = std::mem::take(&mut *pending.lock().unwrap());
+                (!events.is_empty()).then_some(events)
+            }
+        }))
     }
 
     /// 共享轮询线程：统一等待所有 pending 路径出现后注册。
@@ -754,7 +762,7 @@ impl FsWatcher {
 
 impl Watcher for FsWatcher {
     fn add(&self, path: &Path) -> anyhow::Result<()> {
-        let path: Arc<Path> = path.into();
+        let path: Arc<Path> = canonical_watch_path(path).into();
 
         // 检查是否已被已有递归注册覆盖
         {
@@ -792,13 +800,24 @@ impl Watcher for FsWatcher {
     }
 
     fn remove(&self, path: &Path) -> anyhow::Result<()> {
-        self.pending_registrations.lock().unwrap().remove(path);
+        let canonical = canonical_watch_path(path);
+        {
+            let mut pending = self.pending_registrations.lock().unwrap();
+            // add 只在路径存在时规范化；两条键都尝试，覆盖“先 pending 后创建”的注册。
+            pending.remove(canonical.as_path());
+            pending.remove(path);
+        }
 
         let registration = {
             let mut registrations = self.registrations.lock().unwrap();
-            [WatchKey::exact(path), WatchKey::folded(path)]
+            [WatchKey::exact(&canonical), WatchKey::folded(&canonical)]
                 .into_iter()
                 .find_map(|key| registrations.remove(&key))
+                .or_else(|| {
+                    [WatchKey::exact(path), WatchKey::folded(path)]
+                        .into_iter()
+                        .find_map(|key| registrations.remove(&key))
+                })
         };
         if let Some(reg) = registration {
             global_watcher().remove(reg.id);
@@ -806,8 +825,8 @@ impl Watcher for FsWatcher {
         Ok(())
     }
 
-    fn events(&self) -> FsEventStream {
-        FsWatcher::events(self)
+    fn watch(&self, latency: Duration) -> FsEventStream {
+        FsWatcher::watch(self, latency)
     }
 }
 
@@ -834,6 +853,15 @@ impl Drop for FsWatcher {
 // ═══════════════════════════════════════════════════════════════════
 // 辅助函数
 // ═══════════════════════════════════════════════════════════════════
+
+/// 监听注册使用的规范化路径。
+///
+/// notify 后端（macOS FSEvents 等）返回的是规范化事件路径；只有注册根同样规范化，
+/// 事件前缀过滤（path_relative_to_root）才能命中，符号链接和相对路径才不会丢事件。
+/// 路径尚不存在时保留原路径，由 pending 轮询等待其出现。
+fn canonical_watch_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
 
 /// 向 GlobalWatcher 注册一条已存在的路径。
 fn register_existing_path(

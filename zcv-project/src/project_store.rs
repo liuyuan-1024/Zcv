@@ -7,8 +7,10 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context as _;
+use futures::StreamExt as _;
 use gpui::{App, AppContext, AsyncApp, Context, Entity, EventEmitter, Task, WeakEntity};
 use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 use zcv_git::{ConflictChoice, FileStatus, parse_conflict_regions, resolve_conflict};
@@ -25,6 +27,9 @@ use super::git_store::{GitStatusSnapshot, GitStore};
 use super::search::{self, SearchResults};
 use super::text_file::{BufferLoadError, BufferSaveError, write_buffer_to};
 use super::worktree::{Worktree, WorktreeEntry, collect_visible_entries};
+
+/// 项目文件监听的合并窗口；对齐 Zed worktree 的 FS_WATCH_LATENCY。
+const FS_WATCH_LATENCY: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileWatcherOperation {
@@ -87,7 +92,7 @@ impl Project {
         // Project 只能由已确认存在的目录构造，失败应在装配阶段暴露，而不是在各消费者中分别回退。
         let root =
             AbsolutePathBuf::canonicalize(&root).expect("Project 根目录必须是可规范化的已存在目录");
-        let fs_events = fs_watcher.events();
+        let mut fs_events = fs_watcher.watch(FS_WATCH_LATENCY);
 
         let pending_file_watcher_errors = match fs_watcher.add(root.as_path()) {
             Ok(()) => Vec::new(),
@@ -101,7 +106,7 @@ impl Project {
         let fs_task = cx.spawn(|project: WeakEntity<Project>, asynccx: &mut AsyncApp| {
             let mut cx = asynccx.clone();
             async move {
-                while let Some(events) = fs_events.next_batch().await {
+                while let Some(events) = fs_events.next().await {
                     let _ = project.update(&mut cx, |project, cx| {
                         project.process_fs_events(events, cx);
                     });

@@ -1,13 +1,17 @@
 //! 设置初始化与文件监听重载。
 //!
-//! 防抖合并连续文件事件，重试非原子写入窗口，解析结果写入 `SettingsStore` global。
+//! 事件流在 SETTINGS_RELOAD_DEBOUNCE 窗口内合并 notify 事件；
+//! 批次命中 settings.json 或配置目录 Rescan 时读取文件并写入 SettingsStore global。
+//! 订阅与读取都使用规范化路径，避免 macOS 等后端返回的规范化事件路径无法与前缀匹配。
 
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::StreamExt as _;
 use gpui::{App, AppContext as _};
-use zcv_fs_watch::{FsWatcher, Watcher};
+use zcv_fs_watch::{FsWatcher, PathEvent, PathEventKind, Watcher};
 
 use super::config_dir;
 use super::file::{ensure_user_settings_file, settings_file};
@@ -16,7 +20,6 @@ use super::schema::parse_user_settings;
 use super::store::{GlobalSettingsErrorReporter, SettingsErrorReporter, SettingsStore};
 
 const SETTINGS_RELOAD_DEBOUNCE: Duration = Duration::from_millis(75);
-const SETTINGS_RELOAD_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 pub fn init(cx: &mut App) {
     let error_reporter = cx.new(|_| SettingsErrorReporter::new());
@@ -63,9 +66,8 @@ pub fn init(cx: &mut App) {
             }
         }
     }
-    let watcher = Arc::new(FsWatcher::new());
-    let fs_events = watcher.events();
-    let watcher: Arc<dyn Watcher> = watcher;
+
+    let watcher: Arc<dyn Watcher> = Arc::new(FsWatcher::new());
     if let Err(error) = watcher.add(config_dir()) {
         error_reporter.update(cx, |reporter, cx| {
             reporter.report(
@@ -75,73 +77,46 @@ pub fn init(cx: &mut App) {
         });
     }
 
+    // 事件路径由 notify 规范化，过滤与读取基准必须同样规范化。
+    let watched_dir = canonical_or_original(config_dir());
+    let watched_settings = canonical_or_original(settings_file());
+    let mut fs_events = watcher.watch(SETTINGS_RELOAD_DEBOUNCE);
+
     let watch_task = cx.spawn(async move |cx| {
-        while fs_events.next_batch().await.is_some() {
-            // 编辑器保存文件时通常会产生一组连续事件。
-            // 等待事件安静下来再读取，避免在 truncate/write 或临时文件替换的中间状态解析设置。
-            loop {
-                cx.background_executor()
-                    .timer(SETTINGS_RELOAD_DEBOUNCE)
-                    .await;
-                if !fs_events.has_more() {
-                    break;
-                }
+        while let Some(batch) = fs_events.next().await {
+            if !batch
+                .iter()
+                .any(|event| is_settings_event(event, &watched_settings, &watched_dir))
+            {
+                continue;
             }
 
-            let settings_path = settings_file();
-            let content = match fs::read_to_string(settings_path) {
+            let content = match fs::read_to_string(&watched_settings) {
                 Ok(content) => content,
-                Err(first_error) => {
-                    cx.background_executor()
-                        .timer(SETTINGS_RELOAD_RETRY_DELAY)
-                        .await;
-                    match fs::read_to_string(settings_path) {
-                        Ok(content) => content,
-                        Err(error) => {
-                            let message = format!(
-                                "读取设置文件失败（{}）：{error:#}（首次读取错误：{first_error:#}）",
-                                settings_path.display()
-                            );
-                            error_reporter.update(cx, |reporter, cx| reporter.report(message, cx));
-                            continue;
-                        }
-                    }
+                Err(error) => {
+                    error_reporter.update(cx, |reporter, cx| {
+                        reporter.report(
+                            format!(
+                                "读取设置文件失败（{}）：{error:#}",
+                                watched_settings.display()
+                            ),
+                            cx,
+                        )
+                    });
+                    continue;
                 }
             };
 
-            let mut result =
-                cx.update_global::<SettingsStore, _>(|store, _| store.set_user_settings(&content));
-            if matches!(result, Ok(false)) {
-                // 防抖后仍可能撞上非原子写入的极短窗口，再读取一次；真正的配置
-                // 错误只在第二次解析仍失败时报告。
-                cx.background_executor()
-                    .timer(SETTINGS_RELOAD_RETRY_DELAY)
-                    .await;
-                match fs::read_to_string(settings_path) {
-                    Ok(content) => {
-                        result = cx.update_global::<SettingsStore, _>(|store, _| {
-                            store.set_user_settings(&content)
-                        });
-                    }
-                    Err(error) => {
-                        let message = format!(
-                            "读取设置文件失败（{}）：{error:#}",
-                            settings_path.display()
-                        );
-                        error_reporter.update(cx, |reporter, cx| reporter.report(message, cx));
-                        continue;
-                    }
-                }
-            }
-
-            match result {
+            match cx.update_global::<SettingsStore, _>(|store, _| store.set_user_settings(&content))
+            {
                 Ok(true) => {
                     cx.update(|cx| cx.refresh_windows());
                 }
                 Ok(false) => {}
                 Err(error) => {
-                    let message = format!("更新设置失败：{error:#}");
-                    error_reporter.update(cx, |reporter, cx| reporter.report(message, cx));
+                    error_reporter.update(cx, |reporter, cx| {
+                        reporter.report(format!("更新设置失败：{error:#}"), cx)
+                    });
                 }
             }
         }
@@ -154,3 +129,20 @@ pub fn init(cx: &mut App) {
         _watch_task: watch_task,
     });
 }
+
+fn canonical_or_original(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// 只有设置文件本身的变更，或配置目录的 Rescan，才需要重读设置。
+///
+/// 配置目录同时承载窗口尺寸、工作区布局与更新暂存文件；
+/// 不按路径过滤会让这些高频写入反复触发设置解析。
+fn is_settings_event(event: &PathEvent, settings_path: &Path, config_dir: &Path) -> bool {
+    event.path.as_path() == settings_path
+        || (matches!(event.kind, Some(PathEventKind::Rescan)) && event.path.as_path() == config_dir)
+}
+
+#[cfg(test)]
+#[path = "test/reload_tests.rs"]
+mod tests;

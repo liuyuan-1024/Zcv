@@ -32,8 +32,8 @@ impl Watcher for PassiveWatcher {
         Ok(())
     }
 
-    fn events(&self) -> FsEventStream {
-        self.watcher.events()
+    fn watch(&self, latency: std::time::Duration) -> FsEventStream {
+        self.watcher.watch(latency)
     }
 }
 

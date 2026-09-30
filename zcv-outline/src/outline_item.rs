@@ -1,13 +1,16 @@
 //! 大纲面板的树行视图：目录、文件与符号行。
 
+use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::path::Path;
+use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, HighlightStyle, IntoElement, MouseButton, StyledText, Window, prelude::*,
 };
 use zcv_editor::OutlineEntry;
 use zcv_language::OutlineItem;
+use zcv_multi_buffer::MultiBufferAnchor;
 use zcv_theme::{FileIcons, typography};
 use zcv_ui::{SvgIcon, TreeDisclosure, TreeRowFrame, tree_row_label};
 
@@ -16,27 +19,28 @@ use crate::outline_tree::{OutlineRow, OutlineRowKey, OutlineRowKind};
 /// 大纲项在当前编辑器中的稳定身份。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct OutlineItemKey {
-    start: usize,
-    end: usize,
+    start: MultiBufferAnchor,
+    end: MultiBufferAnchor,
+    name: String,
     language: &'static str,
     language_depth: u32,
 }
 
 impl OutlineItemKey {
-    pub(crate) fn from_item(item: &OutlineItem) -> Self {
+    pub(crate) fn from_item(item: &OutlineItem<MultiBufferAnchor>) -> Self {
         Self {
             start: item.range.start,
             end: item.range.end,
+            name: item.name.clone(),
             language: item.language,
             language_depth: item.language_depth,
         }
     }
 
     pub(crate) fn element_id(&self, role: &str) -> String {
-        format!(
-            "outline-{role}-{}-{}-{}-{}",
-            self.start, self.end, self.language, self.language_depth
-        )
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.hash(&mut hasher);
+        format!("outline-{role}-{}", hasher.finish())
     }
 }
 
@@ -65,7 +69,7 @@ pub(crate) fn render(
     window: &Window,
     cx: &App,
     on_toggle: impl Fn(OutlineRowKey, &mut App) + 'static,
-    on_navigate: impl Fn(OutlineEntry, &mut Window, &mut App) + 'static,
+    on_navigate: impl Fn(Arc<OutlineEntry>, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let context = RowContext { window, cx };
     match row.kind {
@@ -88,13 +92,13 @@ pub(crate) fn render(
 }
 
 fn render_symbol(
-    entry: OutlineEntry,
+    entry: Arc<OutlineEntry>,
     depth: usize,
     fold: OutlineItemFold,
     highlights: Vec<(Range<usize>, HighlightStyle)>,
     context: RowContext<'_>,
     on_toggle: impl Fn(OutlineRowKey, &mut App) + 'static,
-    on_navigate: impl Fn(OutlineEntry, &mut Window, &mut App) + 'static,
+    on_navigate: impl Fn(Arc<OutlineEntry>, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let key = OutlineRowKey::Symbol(OutlineItemKey::from_item(&entry.item));
     let label = StyledText::new(entry.item.text.clone()).with_highlights(highlights);

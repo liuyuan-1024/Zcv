@@ -4,7 +4,7 @@
 
 `LanguageBuffer` 直接持有文本 `Buffer` 与语法状态；`LanguageBuffer::snapshot()` 是文本与语法的一致读取边界：返回前先把语法插值到文本版本，并同时给出按语言解析的 `LanguageSettings` 与派生高亮缓存句柄；消费方不再调用任何手动同步协议，也不通过第二个实体读取文本。同源的 `text_snapshot()` 只读取同一份权威文本，不构成第二数据源。语言注册表 `LanguageRegistry` 由应用装配层创建并以 `Arc` 显式注入，`zcv-language` 不提供全局单例。
 
-文件级符号使用各语言自己的 `queries/<language>/outline.scm`。查询结果由 `SyntaxSnapshot::outline` 产生，携带文本版本、源文件字节范围、名称范围、语法层和父子层级；没有该查询的语言明确返回空结果。`MultiBuffer` 只负责把完整落在 excerpt 内的结果映射到组合文档，`Editor` 提供当前大纲、名称过滤和名称定位入口。
+文件级符号使用各语言自己的 `queries/<language>/outline.scm`。`SyntaxSnapshot::outline` 在同一份源快照中使用共享高亮缓存生成标签文本、标签相对高亮和源 `Anchor` 范围，并记录语法层与父子层级；没有该查询的语言明确返回空结果。`MultiBuffer` 把完整落在 excerpt 内的结果映射为组合 `Anchor`，`Editor` 在导航时按当前快照解析锚点。面板刷新期间可以继续绘制旧标签，无需用旧字节范围查询当前文本；捕获名称按当前主题解析样式。
 
 节点导航使用 `SyntaxSnapshot::node_at` 和 `SyntaxSnapshot::node_ancestors`，返回带版本、UTF-8 字节范围、节点种类和语法层的不可变节点摘要。
 注入层优先于宿主层，祖先链不跨层；空白没有独立 Tree-sitter 节点时归属于语法根，文件末尾光标按前一个字节查询。

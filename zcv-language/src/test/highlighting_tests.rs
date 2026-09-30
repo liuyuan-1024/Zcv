@@ -104,7 +104,7 @@ fn markdown_heading_at_fixed_byte_boundary_keeps_utf8_highlights() {
     let syntax = syntax.snapshot();
     let cache = HighlightCache::new();
     let item = syntax
-        .outline(0..snapshot.len_bytes().get(), &snapshot)
+        .outline(0..snapshot.len_bytes().get(), &snapshot, &cache)
         .into_iter()
         .find(|item| item.name == "测试")
         .expect("跨字节边界的标题应进入大纲");
@@ -116,13 +116,9 @@ fn markdown_heading_at_fixed_byte_boundary_keeps_utf8_highlights() {
             assert!(source.is_char_boundary(span.range.start), "{span:?}");
             assert!(source.is_char_boundary(span.range.end), "{span:?}");
         }
-        for part in &item.text_ranges {
-            for span in syntax.highlights(part.source_range.clone(), &snapshot, &cache) {
-                let start = part.text_range.start + span.range.start - part.source_range.start;
-                let end = part.text_range.start + span.range.end - part.source_range.start;
-                assert!(item.text.is_char_boundary(start), "{span:?}");
-                assert!(item.text.is_char_boundary(end), "{span:?}");
-            }
+        for (range, _) in &item.highlight_ranges {
+            assert!(item.text.is_char_boundary(range.start), "{range:?}");
+            assert!(item.text.is_char_boundary(range.end), "{range:?}");
         }
     }
 }

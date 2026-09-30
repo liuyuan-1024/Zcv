@@ -29,7 +29,7 @@ use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
 use zcv_language::{
     AutoClosePair, BracketPair, HighlightCache, HighlightSpan, LanguageBuffer, LanguageBufferEvent,
     LanguageBufferSnapshot, LanguageRegistry, LanguageSettings, LocalBinding, NewlineIndent,
-    OutlineItem, OutlineTextRange, SyntaxNode, SyntaxSnapshot,
+    OutlineItem, SyntaxNode, SyntaxSnapshot,
 };
 use zcv_text::{
     Affinity, Anchor, Buffer, BufferConfig, BufferId, BufferVersion, ByteOffset, CharOffset,
@@ -2090,7 +2090,7 @@ pub struct OutlineEntry {
     /// 组合文档中的显示路径（文件身份）。
     pub display_path: PathBuf,
     /// 输出坐标中的符号。
-    pub item: OutlineItem,
+    pub item: OutlineItem<MultiBufferAnchor>,
 }
 
 /// 一帧组合文档的不可变快照。
@@ -3426,8 +3426,18 @@ impl MultiBufferSnapshot {
         };
         entries.sort_unstable_by(|left, right| {
             left.display_path.cmp(&right.display_path).then_with(|| {
-                (left.item.range.start, left.item.range.end)
-                    .cmp(&(right.item.range.start, right.item.range.end))
+                (
+                    self.anchor_offset(&left.item.range.start)
+                        .expect("大纲锚点来自当前快照"),
+                    self.anchor_offset(&left.item.range.end)
+                        .expect("大纲锚点来自当前快照"),
+                )
+                    .cmp(&(
+                        self.anchor_offset(&right.item.range.start)
+                            .expect("大纲锚点来自当前快照"),
+                        self.anchor_offset(&right.item.range.end)
+                            .expect("大纲锚点来自当前快照"),
+                    ))
             })
         });
         entries.dedup_by(|left, right| {
@@ -3441,7 +3451,7 @@ impl MultiBufferSnapshot {
     }
 
     /// 只取符号本体的便捷入口；导航与既有消费方使用。
-    pub fn outline_items(&self) -> Vec<OutlineItem> {
+    pub fn outline_items(&self) -> Vec<OutlineItem<MultiBufferAnchor>> {
         self.outline_entries()
             .into_iter()
             .map(|entry| entry.item)
@@ -3456,12 +3466,16 @@ impl MultiBufferSnapshot {
         let Some(source) = self.excerpt_sources.get(&source_index) else {
             return Vec::new();
         };
-        let Some(display_path) = self.source_file_identity(source_index) else {
+        let Some((display_path, path_index, source_id)) =
+            self.source_outline_identity(source_index)
+        else {
             return Vec::new();
         };
-        let outlines = source
-            .syntax
-            .outline(0..source.text.len_bytes().get(), &source.text);
+        let outlines = source.syntax.outline(
+            0..source.text.len_bytes().get(),
+            &source.text,
+            &source.highlight_cache,
+        );
         let segments = self.outline_segments(source_index);
         if segments.is_empty() {
             return Vec::new();
@@ -3469,10 +3483,13 @@ impl MultiBufferSnapshot {
         outlines
             .iter()
             .filter_map(|item| {
-                project_outline_item_monotonic(item, &segments).map(|item| OutlineEntry {
-                    display_path: display_path.clone(),
-                    item,
-                })
+                let range = resolve_outline_range(&item.range, &source.text)?;
+                project_range_contained(&segments, &range)
+                    .or_else(|| project_range_spanning(&segments, &range))
+                    .map(|_| OutlineEntry {
+                        display_path: display_path.clone(),
+                        item: self.anchor_source_outline_item(item, path_index, source_id),
+                    })
             })
             .collect()
     }
@@ -3486,9 +3503,11 @@ impl MultiBufferSnapshot {
             .excerpt_sources
             .values()
             .map(|source| {
-                source
-                    .syntax
-                    .outline(0..source.text.len_bytes().get(), &source.text)
+                source.syntax.outline(
+                    0..source.text.len_bytes().get(),
+                    &source.text,
+                    &source.highlight_cache,
+                )
             })
             .collect::<Vec<_>>();
         let mut entries = Vec::new();
@@ -3497,13 +3516,35 @@ impl MultiBufferSnapshot {
         while let Some((excerpt, _)) = cursor.item() {
             let mapping = excerpt.to_mapping(cursor.start());
             let display_path = excerpt.display_path.as_path().to_path_buf();
-            if let Some(outlines) = source_outlines.get(mapping.source_index) {
-                for item in outlines.iter().filter_map(|item| {
-                    project_outline_item(item, mapping.source_range.range(), mapping.output_range)
-                }) {
+            if let (Some(outlines), Some(source)) = (
+                source_outlines.get(mapping.source_index),
+                self.excerpt_sources.get(&mapping.source_index),
+            ) {
+                for item in outlines {
+                    let anchored = if mapping.diff_kind == Some(ExcerptDiffKind::Deleted) {
+                        let Some(projected) = project_outline_item(
+                            item,
+                            mapping.source_range.range(),
+                            mapping.output_range,
+                            &source.text,
+                        ) else {
+                            continue;
+                        };
+                        self.anchor_projected_outline_item(projected)
+                    } else {
+                        let Some(range) = resolve_outline_range(&item.range, &source.text) else {
+                            continue;
+                        };
+                        if range.start < mapping.source_range.start().get()
+                            || range.end > mapping.source_range.end().get()
+                        {
+                            continue;
+                        }
+                        self.anchor_source_outline_item(item, mapping.path_index, mapping.source_id)
+                    };
                     entries.push(OutlineEntry {
                         display_path: display_path.clone(),
-                        item,
+                        item: anchored,
                     });
                 }
             }
@@ -3512,14 +3553,73 @@ impl MultiBufferSnapshot {
         entries
     }
 
+    /// 工作区源符号直接保留源 Anchor 与片段身份，不从输出边界反推来源。
+    fn anchor_source_outline_item(
+        &self,
+        item: &OutlineItem,
+        path_index: PathKeyIndex,
+        source_id: Option<gpui::EntityId>,
+    ) -> OutlineItem<MultiBufferAnchor> {
+        let wrap = |anchor: Anchor| MultiBufferAnchor::excerpt(path_index, source_id, anchor);
+        let wrap_range = |range: &Range<Anchor>| wrap(range.start)..wrap(range.end);
+        OutlineItem {
+            range: wrap_range(&item.range),
+            name_range: wrap_range(&item.name_range),
+            source_range_for_text: wrap_range(&item.source_range_for_text),
+            name: item.name.clone(),
+            text: item.text.clone(),
+            highlight_ranges: item.highlight_ranges.clone(),
+            name_ranges: item.name_ranges.clone(),
+            kind: item.kind.clone(),
+            depth: item.depth,
+            language: item.language,
+            language_depth: item.language_depth,
+            body_range: item.body_range.as_ref().map(wrap_range),
+            annotation_range: item.annotation_range.as_ref().map(wrap_range),
+        }
+    }
+
+    /// 删除侧需要同时保存工作区 hunk 身份和基线 Anchor，由投影入口构造该组合身份。
+    fn anchor_projected_outline_item(
+        &self,
+        item: OutlineItem<usize>,
+    ) -> OutlineItem<MultiBufferAnchor> {
+        let anchor_range = |range: Range<usize>| {
+            self.anchor_at(range.start, Affinity::After)
+                ..self.anchor_at(range.end, Affinity::Before)
+        };
+        OutlineItem {
+            range: anchor_range(item.range),
+            name_range: anchor_range(item.name_range),
+            source_range_for_text: anchor_range(item.source_range_for_text),
+            name: item.name,
+            text: item.text,
+            highlight_ranges: item.highlight_ranges,
+            name_ranges: item.name_ranges,
+            kind: item.kind,
+            depth: item.depth,
+            language: item.language,
+            language_depth: item.language_depth,
+            body_range: item.body_range.map(anchor_range),
+            annotation_range: item.annotation_range.map(anchor_range),
+        }
+    }
+
     /// 指定源在组合文档中的显示路径。
-    fn source_file_identity(&self, source_index: usize) -> Option<PathBuf> {
+    fn source_outline_identity(
+        &self,
+        source_index: usize,
+    ) -> Option<(PathBuf, PathKeyIndex, Option<gpui::EntityId>)> {
         let mut cursor = MultiBufferCursor::new(&self.excerpts, &self.diff_transforms);
         cursor.seek(ByteOffset::ZERO, Bias::Right);
         while let Some((excerpt, _)) = cursor.item() {
             let mapping = excerpt.to_mapping(cursor.start());
             if mapping.source_index == source_index {
-                return Some(excerpt.display_path.as_path().to_path_buf());
+                return Some((
+                    excerpt.display_path.as_path().to_path_buf(),
+                    mapping.path_index,
+                    mapping.source_id,
+                ));
             }
             cursor.next();
         }
@@ -3832,8 +3932,10 @@ fn project_outline_item(
     item: &OutlineItem,
     source_range: TextRange,
     output_range: MultiBufferRange,
-) -> Option<OutlineItem> {
-    let project = |range: &std::ops::Range<usize>| {
+    source_text: &Snapshot,
+) -> Option<OutlineItem<usize>> {
+    let project = |range: &Range<Anchor>| {
+        let range = resolve_outline_range(range, source_text)?;
         (source_range.start().get() <= range.start && range.end <= source_range.end().get()).then(
             || {
                 let source_start = source_range.start().get();
@@ -3844,21 +3946,13 @@ fn project_outline_item(
         )
     };
     Some(OutlineItem {
-        version: item.version,
         range: project(&item.range)?,
         name_range: project(&item.name_range)?,
+        source_range_for_text: project(&item.source_range_for_text)?,
         name: item.name.clone(),
         text: item.text.clone(),
-        text_ranges: item
-            .text_ranges
-            .iter()
-            .map(|part| {
-                Some(OutlineTextRange {
-                    text_range: part.text_range.clone(),
-                    source_range: project(&part.source_range)?,
-                })
-            })
-            .collect::<Option<Vec<_>>>()?,
+        highlight_ranges: item.highlight_ranges.clone(),
+        name_ranges: item.name_ranges.clone(),
         kind: item.kind.clone(),
         depth: item.depth,
         language: item.language,
@@ -3868,40 +3962,11 @@ fn project_outline_item(
     })
 }
 
-/// 单文件大纲的坐标映射：优先要求范围完整落在同一可见片段内；跨片段时按首尾片段单调映射。
-///
-/// 单文件文档的 excerpt 恒为整文件，diff 只是把工作区源切成多个连续片段，
-/// 因此名称与文本片段跨片段时仍能给出有效输出坐标，条目不会因跨界而丢失。
-fn project_outline_item_monotonic(
-    item: &OutlineItem,
-    segments: &[(TextRange, MultiBufferRange)],
-) -> Option<OutlineItem> {
-    let project = |range: &std::ops::Range<usize>| {
-        project_range_contained(segments, range).or_else(|| project_range_spanning(segments, range))
-    };
-    Some(OutlineItem {
-        version: item.version,
-        range: project(&item.range)?,
-        name_range: project(&item.name_range)?,
-        name: item.name.clone(),
-        text: item.text.clone(),
-        text_ranges: item
-            .text_ranges
-            .iter()
-            .map(|part| {
-                Some(OutlineTextRange {
-                    text_range: part.text_range.clone(),
-                    source_range: project(&part.source_range)?,
-                })
-            })
-            .collect::<Option<Vec<_>>>()?,
-        kind: item.kind.clone(),
-        depth: item.depth,
-        language: item.language,
-        language_depth: item.language_depth,
-        body_range: item.body_range.as_ref().and_then(project),
-        annotation_range: item.annotation_range.as_ref().and_then(project),
-    })
+fn resolve_outline_range(range: &Range<Anchor>, source_text: &Snapshot) -> Option<Range<usize>> {
+    Some(
+        range.start.resolve_in(source_text).ok()?.get()
+            ..range.end.resolve_in(source_text).ok()?.get(),
+    )
 }
 
 fn project_range_contained(

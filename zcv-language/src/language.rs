@@ -26,9 +26,7 @@ pub use registry::{Language, LanguageRegistry};
 pub use snippet::{
     SnippetHighlightCancellation, SnippetHighlights, highlight_snippet_with_cancellation,
 };
-pub use structure::{
-    BracketPair, FoldRange, LocalBinding, NewlineIndent, OutlineItem, OutlineTextRange, SyntaxNode,
-};
+pub use structure::{BracketPair, FoldRange, LocalBinding, NewlineIndent, OutlineItem, SyntaxNode};
 pub use syntax_map::SyntaxSnapshot;
 
 /// 输入级自动闭合配对。

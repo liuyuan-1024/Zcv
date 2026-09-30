@@ -1,14 +1,17 @@
 use super::*;
+use std::sync::Arc;
 use zcv_language::OutlineItem;
+use zcv_multi_buffer::MultiBufferAnchor;
 
-fn item(text: &str, depth: usize, start: usize) -> OutlineItem {
+fn item(text: &str, depth: usize) -> OutlineItem<MultiBufferAnchor> {
     OutlineItem {
-        version: Default::default(),
-        range: start..start + 1,
-        name_range: start..start + 1,
+        range: MultiBufferAnchor::Min..MultiBufferAnchor::Max,
+        name_range: MultiBufferAnchor::Min..MultiBufferAnchor::Max,
+        source_range_for_text: MultiBufferAnchor::Min..MultiBufferAnchor::Max,
         name: text.to_string(),
         text: text.to_string(),
-        text_ranges: Vec::new(),
+        highlight_ranges: Vec::new(),
+        name_ranges: Vec::new(),
         kind: "function".to_string(),
         depth,
         language: "Rust",
@@ -18,11 +21,11 @@ fn item(text: &str, depth: usize, start: usize) -> OutlineItem {
     }
 }
 
-fn entry(path: &str, text: &str, depth: usize, start: usize) -> OutlineEntry {
-    OutlineEntry {
+fn entry(path: &str, text: &str, depth: usize) -> Arc<OutlineEntry> {
+    Arc::new(OutlineEntry {
         display_path: std::path::PathBuf::from(path),
-        item: item(text, depth, start),
-    }
+        item: item(text, depth),
+    })
 }
 
 fn texts(rows: &[OutlineRow]) -> Vec<&str> {
@@ -47,10 +50,10 @@ fn visible_texts(visible: &[(OutlineRow, bool, bool)]) -> Vec<&str> {
 #[test]
 fn collapsed_parent_hides_descendants_but_not_siblings() {
     let entries = vec![
-        entry("src/a.rs", "mod", 0, 0),
-        entry("src/a.rs", "fn", 1, 1),
-        entry("src/a.rs", "fn2", 1, 2),
-        entry("src/a.rs", "other", 0, 3),
+        entry("src/a.rs", "mod", 0),
+        entry("src/a.rs", "fn", 1),
+        entry("src/a.rs", "fn2", 1),
+        entry("src/a.rs", "other", 0),
     ];
     let rows = outline_rows(&entries, false, "", &HashSet::new());
     let collapsed: HashSet<_> = [rows[0].key()].into_iter().collect();
@@ -73,8 +76,8 @@ fn outline_refresh_requires_visible_panel_and_changed_version() {
 #[test]
 fn outline_filter_matches_text_case_insensitively() {
     let entries = vec![
-        entry("src/a.rs", "fn build() {}", 0, 0),
-        entry("src/a.rs", "struct 数据", 0, 1),
+        entry("src/a.rs", "fn build() {}", 0),
+        entry("src/a.rs", "struct 数据", 0),
     ];
     let filtered = outline_rows(&entries, false, "build", &HashSet::new());
     assert_eq!(texts(&filtered), vec!["fn build() {}"]);
@@ -88,9 +91,9 @@ fn outline_filter_matches_text_case_insensitively() {
 #[test]
 fn has_children_follows_next_item_depth() {
     let entries = vec![
-        entry("src/a.rs", "a", 0, 0),
-        entry("src/a.rs", "b", 1, 1),
-        entry("src/a.rs", "c", 0, 2),
+        entry("src/a.rs", "a", 0),
+        entry("src/a.rs", "b", 1),
+        entry("src/a.rs", "c", 0),
     ];
     let rows = outline_rows(&entries, false, "", &HashSet::new());
     let visible = outline_tree::visible_rows(&rows, &HashSet::new());
@@ -104,8 +107,8 @@ fn has_children_follows_next_item_depth() {
 #[test]
 fn multiple_files_build_directory_file_symbol_tree() {
     let entries = vec![
-        entry("src/a.rs", "fn a", 0, 0),
-        entry("src/nested/b.rs", "fn b", 0, 1),
+        entry("src/a.rs", "fn a", 0),
+        entry("src/nested/b.rs", "fn b", 0),
     ];
     let rows = outline_rows(&entries, true, "", &HashSet::new());
     let structure: Vec<_> = rows
@@ -158,7 +161,7 @@ fn multiple_files_build_directory_file_symbol_tree() {
 
 #[test]
 fn auto_fold_compresses_single_child_directory_chains() {
-    let entries = vec![entry("a/b/c/file.rs", "fn x", 0, 0)];
+    let entries = vec![entry("a/b/c/file.rs", "fn x", 0)];
     let rows = outline_rows(&entries, true, "", &HashSet::new());
     let structure: Vec<_> = rows
         .iter()
@@ -183,8 +186,8 @@ fn auto_fold_compresses_single_child_directory_chains() {
 
 #[test]
 fn has_multiple_files_distinguishes_single_file_documents() {
-    let single = vec![entry("src/a.rs", "a", 0, 0), entry("src/a.rs", "b", 1, 1)];
+    let single = vec![entry("src/a.rs", "a", 0), entry("src/a.rs", "b", 1)];
     assert!(!has_multiple_files(&single), "同一文件不构成文件树");
-    let multiple = vec![entry("src/a.rs", "a", 0, 0), entry("src/b.rs", "b", 0, 1)];
+    let multiple = vec![entry("src/a.rs", "a", 0), entry("src/b.rs", "b", 0)];
     assert!(has_multiple_files(&multiple), "不同文件构成文件树");
 }

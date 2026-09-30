@@ -3,6 +3,7 @@
 //! 测试通过公开的 `SyntaxSnapshot` 查询验证坐标、注入层、作用域和折叠边界，不依赖各模块的内部实现细节。
 
 use super::NewlineIndent;
+use crate::HighlightCache;
 use crate::test::{parsed_syntax, rust_buffer};
 use zcv_text::{Affinity, ByteOffset, Edit, TransactionMetadata};
 
@@ -55,9 +56,11 @@ fn outline_preserves_nested_same_named_unicode_definitions() {
     let (buffer, syntax) = parsed_syntax("outline.rs", source);
     let snapshot = buffer.snapshot();
     let item_start = source.find("Item").unwrap();
-    let items = syntax
-        .snapshot()
-        .outline(0..snapshot.len_bytes().get(), &snapshot);
+    let items = syntax.snapshot().outline(
+        0..snapshot.len_bytes().get(),
+        &snapshot,
+        &HighlightCache::new(),
+    );
 
     let names: Vec<&str> = items.iter().map(|item| item.name.as_str()).collect();
     assert!(names.contains(&"数据"));
@@ -65,33 +68,45 @@ fn outline_preserves_nested_same_named_unicode_definitions() {
     assert!(items.iter().any(|item| {
         item.name == "Item"
             && item.depth > 0
-            && item.name_range == (item_start..item_start + "Item".len())
+            && item.name_range.start.offset().get() == item_start
+            && item.name_range.end.offset().get() == item_start + "Item".len()
     }));
-    assert!(items.iter().all(|item| item.version == snapshot.version()));
+    assert!(
+        items
+            .iter()
+            .all(|item| { item.name_range.start.version() == snapshot.version() })
+    );
 }
 
 #[test]
-fn outline_text_preserves_source_ranges_for_context_and_name() {
+fn outline_text_captures_relative_name_and_highlights() {
     let source = "pub struct DockData {\n    pub visible: bool,\n}\n";
     let (buffer, syntax) = parsed_syntax("outline.rs", source);
     let snapshot = buffer.snapshot();
     let item = syntax
         .snapshot()
-        .outline(0..snapshot.len_bytes().get(), &snapshot)
+        .outline(
+            0..snapshot.len_bytes().get(),
+            &snapshot,
+            &HighlightCache::new(),
+        )
         .into_iter()
         .find(|item| item.name == "DockData")
         .expect("结构体应出现在大纲中");
 
     assert!(item.text.contains("DockData"));
     assert!(
-        item.text_ranges.iter().any(|part| {
-            item.text[part.text_range.clone()] == source[part.source_range.clone()]
-        })
+        item.name_ranges
+            .iter()
+            .any(|range| &item.text[range.clone()] == "DockData")
     );
-    assert!(item.text_ranges.iter().any(|part| {
-        &item.text[part.text_range.clone()] == "DockData"
-            && &source[part.source_range.clone()] == "DockData"
+    assert!(item.highlight_ranges.iter().all(|(range, _)| {
+        item.text.is_char_boundary(range.start) && item.text.is_char_boundary(range.end)
     }));
+    assert_eq!(
+        &source[item.name_range.start.offset().get()..item.name_range.end.offset().get()],
+        "DockData"
+    );
 }
 
 #[test]
@@ -99,9 +114,11 @@ fn outline_covers_markdown_and_html_injection_layers_in_source_coordinates() {
     let markdown = "# 文档\n\n```rust\nfn 初始化() {}\n```\n\n## 子节\n";
     let (buffer, syntax) = parsed_syntax("README.md", markdown);
     let snapshot = buffer.snapshot();
-    let items = syntax
-        .snapshot()
-        .outline(0..snapshot.len_bytes().get(), &snapshot);
+    let items = syntax.snapshot().outline(
+        0..snapshot.len_bytes().get(),
+        &snapshot,
+        &HighlightCache::new(),
+    );
     assert!(
         items
             .iter()
@@ -113,20 +130,25 @@ fn outline_covers_markdown_and_html_injection_layers_in_source_coordinates() {
         .find(|item| item.name == "初始化")
         .expect("围栏内 Rust 函数应出现在大纲中");
     assert_eq!(function.language, "Rust");
-    assert_eq!(function.name_range.start, function_start);
+    assert_eq!(function.name_range.start.offset().get(), function_start);
     assert!(function.depth > 0);
 
     let html = "<main><section><h1>标题</h1></section></main>";
     let (buffer, syntax) = parsed_syntax("index.html", html);
     let snapshot = buffer.snapshot();
-    let items = syntax
-        .snapshot()
-        .outline(0..snapshot.len_bytes().get(), &snapshot);
+    let items = syntax.snapshot().outline(
+        0..snapshot.len_bytes().get(),
+        &snapshot,
+        &HighlightCache::new(),
+    );
     let section = items
         .iter()
         .find(|item| item.name == "section")
         .expect("HTML 元素应出现在大纲中");
-    assert_eq!(&html[section.name_range.clone()], "section");
+    assert_eq!(
+        &html[section.name_range.start.offset().get()..section.name_range.end.offset().get()],
+        "section"
+    );
     assert!(
         items
             .iter()
@@ -141,7 +163,11 @@ fn outline_is_empty_without_declared_query() {
     assert!(
         syntax
             .snapshot()
-            .outline(0..snapshot.len_bytes().get(), &snapshot)
+            .outline(
+                0..snapshot.len_bytes().get(),
+                &snapshot,
+                &HighlightCache::new()
+            )
             .is_empty()
     );
 }

@@ -228,14 +228,67 @@ fn outline_items_filter_and_navigate_using_current_snapshot(cx: &mut TestAppCont
     });
     cx.update_entity(&editor, |editor, cx| {
         assert!(editor.navigate_to_outline_item(&build, cx));
+        let snapshot = editor.display_snapshot(cx);
+        let buffer = snapshot.buffer_snapshot();
         assert_eq!(
             editor.selections(cx).primary().range(),
             MultiBufferRange::new(
-                MultiBufferOffset::new(build.name_range.start),
-                MultiBufferOffset::new(build.name_range.end)
+                buffer.anchor_offset(&build.name_range.start).unwrap(),
+                buffer.anchor_offset(&build.name_range.end).unwrap()
             )
             .unwrap()
         );
+    });
+}
+
+#[gpui::test]
+fn stale_outline_label_survives_utf8_shift_and_navigates_by_anchor(cx: &mut TestAppContext) {
+    let raw_buffer = Buffer::from_text("fn 数据() {}\n".to_owned(), BufferConfig::default())
+        .expect("Rust 测试 Buffer 应能创建");
+    let language_buffer = cx.new(move |cx| {
+        LanguageBuffer::new(
+            raw_buffer,
+            Some(PathBuf::from("main.rs")),
+            std::sync::Arc::new(LanguageRegistry::new()),
+            cx,
+        )
+    });
+    let editor = cx.new(move |cx| Editor::for_language_buffer(language_buffer, cx));
+    cx.run_until_parked();
+
+    let (stale_item, old_name_start) = cx.read_entity(&editor, |editor, cx| {
+        let item = editor
+            .outline_items(cx)
+            .into_iter()
+            .find(|item| item.name == "数据")
+            .expect("函数应出现在大纲中");
+        let old_start = editor
+            .display_snapshot(cx)
+            .buffer_snapshot()
+            .anchor_offset(&item.name_range.start)
+            .unwrap()
+            .get();
+        (item, old_start)
+    });
+    assert!(!stale_item.highlight_ranges.is_empty());
+
+    editor.update(cx, |editor, cx| {
+        editor.select_byte_range(0..0, cx);
+        editor.replace_text(None, "😀", cx);
+    });
+    cx.run_until_parked();
+
+    editor.update(cx, |editor, cx| {
+        let current = editor.text(cx);
+        assert!(!current.is_char_boundary(old_name_start));
+        let highlights = Editor::outline_item_highlights(&stale_item, cx);
+        assert!(!highlights.is_empty());
+        assert!(highlights.iter().all(|(range, _)| {
+            stale_item.text.is_char_boundary(range.start)
+                && stale_item.text.is_char_boundary(range.end)
+        }));
+        assert!(editor.navigate_to_outline_item(&stale_item, cx));
+        assert_eq!(editor.selections(cx).primary().range().start().get(), 7);
     });
 }
 
@@ -272,6 +325,13 @@ fn diff_injection_keeps_outline_items_spanning_hunks(cx: &mut TestAppContext) {
         })
     };
     let before = names(cx, &editor);
+    let stale = cx.read_entity(&editor, |editor, cx| {
+        editor
+            .outline_items(cx)
+            .into_iter()
+            .find(|item| item.name == "二级乙")
+            .expect("跨 hunk 的标题应存在")
+    });
     assert_eq!(
         before,
         vec!["一级", "二级", "三级", "二级乙"],
@@ -290,6 +350,20 @@ fn diff_injection_keeps_outline_items_spanning_hunks(cx: &mut TestAppContext) {
 
     let after = names(cx, &editor);
     assert_eq!(after, before, "diff 注入不得丢失跨 hunk 的大纲条目");
+    editor.update(cx, |editor, cx| {
+        let highlights = Editor::outline_item_highlights(&stale, cx);
+        assert!(highlights.iter().all(|(range, _)| {
+            stale.text.is_char_boundary(range.start) && stale.text.is_char_boundary(range.end)
+        }));
+        assert!(editor.navigate_to_outline_item(&stale, cx));
+        let snapshot = editor.display_snapshot(cx);
+        let expected = snapshot
+            .buffer_snapshot()
+            .projected_anchor_offset(&stale.name_range.start)
+            .unwrap()
+            .expect("标题仍在当前投影中");
+        assert_eq!(editor.selections(cx).primary().range().start(), expected);
+    });
 }
 
 #[gpui::test]

@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use zcv_editor::OutlineEntry;
 use zcv_ui::{AutoFoldDir, auto_fold_dirs};
@@ -26,7 +27,7 @@ pub(crate) struct OutlineRow {
 pub(crate) enum OutlineRowKind {
     Directory { path: PathBuf, name: String },
     File { path: PathBuf, name: String },
-    Symbol(OutlineEntry),
+    Symbol(Arc<OutlineEntry>),
 }
 
 /// 行的折叠身份：目录与文件按路径，符号按输出范围。
@@ -50,7 +51,7 @@ impl OutlineRow {
 }
 
 /// 文档是否包含两个及以上不同文件；决定是否构建文件树。
-pub(crate) fn has_multiple_files(entries: &[OutlineEntry]) -> bool {
+pub(crate) fn has_multiple_files(entries: &[Arc<OutlineEntry>]) -> bool {
     let mut first: Option<&Path> = None;
     for entry in entries {
         match first {
@@ -66,7 +67,7 @@ pub(crate) fn has_multiple_files(entries: &[OutlineEntry]) -> bool {
 ///
 /// 目录链的自动折叠需要当前展开状态：折叠集里已显式折叠的目录是折叠边界。
 pub(crate) fn outline_rows(
-    entries: &[OutlineEntry],
+    entries: &[Arc<OutlineEntry>],
     tree: bool,
     query: &str,
     collapsed: &HashSet<OutlineRowKey>,
@@ -93,7 +94,7 @@ pub(crate) fn outline_rows(
 }
 
 /// 单文件文档：符号直接按源内 depth 排列，子项仍按相邻 depth 推断。
-fn flat_symbol_rows(entries: &[OutlineEntry]) -> Vec<OutlineRow> {
+fn flat_symbol_rows(entries: &[Arc<OutlineEntry>]) -> Vec<OutlineRow> {
     entries
         .iter()
         .enumerate()
@@ -134,11 +135,11 @@ struct OutlineDir {
     path: PathBuf,
     name: String,
     dirs: BTreeMap<String, OutlineDir>,
-    files: BTreeMap<PathBuf, Vec<OutlineEntry>>,
+    files: BTreeMap<PathBuf, Vec<Arc<OutlineEntry>>>,
 }
 
 impl OutlineDir {
-    fn insert(&mut self, entry: OutlineEntry) {
+    fn insert(&mut self, entry: Arc<OutlineEntry>) {
         let path = entry.display_path.clone();
         let mut node = self;
         let mut accumulated = PathBuf::new();

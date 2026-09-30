@@ -750,25 +750,6 @@ impl DisplaySnapshot {
         self.buffer_snapshot().expand_selection_range(range)
     }
 
-    /// 查询指定组合文档范围的语法高亮，并解析为当前编辑器主题样式。
-    pub(super) fn highlights_for_range(
-        &self,
-        range: Range<usize>,
-        cx: &App,
-    ) -> Vec<(Range<usize>, HighlightStyle)> {
-        let highlight_styles = syntax::style_table(&self.buffer_snapshot().capture_names(), cx);
-        self.buffer_snapshot()
-            .highlights(range)
-            .into_iter()
-            .filter_map(|span| {
-                highlight_styles
-                    .get(span.capture as usize)
-                    .cloned()
-                    .map(|style| (span.range, style))
-            })
-            .collect()
-    }
-
     /// 按文本移动粒度计算水平目标，并由显示层跨过占位符。
     pub(super) fn move_offset(
         &self,

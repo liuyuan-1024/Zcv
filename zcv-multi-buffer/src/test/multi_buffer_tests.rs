@@ -2349,11 +2349,18 @@ fn outline_projects_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
         let snapshot = source.snapshot();
         let item = snapshot
             .syntax
-            .outline(0..snapshot.text.len_bytes().get(), &snapshot.text)
+            .outline(
+                0..snapshot.text.len_bytes().get(),
+                &snapshot.text,
+                &snapshot.highlight_cache,
+            )
             .into_iter()
             .find(|item| item.name == "数据")
             .expect("Rust 函数应出现在源大纲中");
-        (item.range, item.name_range.start)
+        (
+            item.range.start.offset().get()..item.range.end.offset().get(),
+            item.name_range.start.offset().get(),
+        )
     });
     let combined = cx.new(MultiBuffer::empty);
     cx.update_entity(&combined, |buffer, cx| {
@@ -2371,16 +2378,25 @@ fn outline_projects_source_ranges_into_an_excerpt(cx: &mut TestAppContext) {
         );
     });
 
-    let items = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx).outline_items());
-    let function = items
-        .iter()
-        .find(|item| item.name == "数据")
-        .expect("excerpt 内函数应保留在组合大纲中");
-    assert_eq!(function.range.start, 0);
-    assert_eq!(
-        function.name_range.start,
-        source_name_start - function_range.start
-    );
+    cx.update_entity(&combined, |buffer, cx| {
+        let snapshot = buffer.snapshot(cx);
+        let items = snapshot.outline_items();
+        let function = items
+            .iter()
+            .find(|item| item.name == "数据")
+            .expect("excerpt 内函数应保留在组合大纲中");
+        assert_eq!(
+            snapshot.anchor_offset(&function.range.start).unwrap().get(),
+            0
+        );
+        assert_eq!(
+            snapshot
+                .anchor_offset(&function.name_range.start)
+                .unwrap()
+                .get(),
+            source_name_start - function_range.start
+        );
+    });
 }
 
 #[gpui::test]

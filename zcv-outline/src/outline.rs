@@ -33,7 +33,7 @@ pub struct OutlinePanel {
     /// 当前查询筛选后的可见大纲行。
     rows: Vec<OutlineRow>,
     /// 已安装版本上的未过滤条目；查询变化只在其上重建行。
-    source_entries: Vec<OutlineEntry>,
+    source_entries: Vec<Arc<OutlineEntry>>,
     /// 已安装 source_entries 对应的失效键；None 表示尚无有效大纲。
     outline_version: Option<OutlineVersion>,
     /// 防抖后的后台重算任务；替换或清空即取消旧任务。
@@ -183,7 +183,7 @@ impl OutlinePanel {
         {
             return;
         }
-        self.source_entries = entries;
+        self.source_entries = entries.into_iter().map(Arc::new).collect();
         self.outline_version = Some(version);
         self.apply_filter(cx);
     }
@@ -259,10 +259,9 @@ impl Render for OutlinePanel {
                     let (row, has_children, collapsed) = visible_rows[index].clone();
                     let editor = active_editor.clone();
                     let highlights = match &row.kind {
-                        OutlineRowKind::Symbol(entry) => editor
-                            .as_ref()
-                            .map(|editor| editor.read(cx).outline_item_highlights(&entry.item, cx))
-                            .unwrap_or_default(),
+                        OutlineRowKind::Symbol(entry) => {
+                            Editor::outline_item_highlights(&entry.item, cx)
+                        }
                         OutlineRowKind::Directory { .. } | OutlineRowKind::File { .. } => {
                             Vec::new()
                         }

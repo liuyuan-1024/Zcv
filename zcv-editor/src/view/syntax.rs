@@ -4,12 +4,14 @@
 //! 本模块只把这些结果转换为编辑器级的筛选、导航和编辑操作。
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use super::{Editor, NAVIGATION_TOP_OFFSET};
 use gpui::{App, Context, HighlightStyle};
 use zcv_language::{LocalBinding, OutlineItem};
-use zcv_multi_buffer::{MultiBufferSnapshot, OutlineEntry};
+use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferSnapshot, OutlineEntry};
 use zcv_text::BufferVersion;
+use zcv_theme::syntax;
 
 /// 大纲失效键：组合文本/拓扑版本与源元数据版本。
 ///
@@ -53,7 +55,7 @@ impl OutlineSource {
 
 impl Editor {
     /// 返回当前组合文档的文件级语法大纲。
-    pub fn outline_items(&self, cx: &App) -> Vec<OutlineItem> {
+    pub fn outline_items(&self, cx: &App) -> Vec<OutlineItem<MultiBufferAnchor>> {
         self.display_snapshot(cx).buffer_snapshot().outline_items()
     }
 
@@ -75,33 +77,21 @@ impl Editor {
             snapshot: self.display_snapshot(cx).buffer_snapshot().clone(),
         }
     }
-    /// 返回大纲标签的已解析语法样式。
-    ///
-    /// 语法查询和 capture 到主题样式的映射均由 DisplayMap 完成，大纲面板只负责展示结果。
+    /// 按当前主题解析生成时固定在标签内的 capture；不再查询当前文档。
     pub fn outline_item_highlights(
-        &self,
-        item: &OutlineItem,
+        item: &OutlineItem<MultiBufferAnchor>,
         cx: &App,
     ) -> Vec<(Range<usize>, HighlightStyle)> {
-        let mut highlights = Vec::new();
-        for part in &item.text_ranges {
-            let source_start = part.source_range.start;
-            for (range, style) in self
-                .display_snapshot(cx)
-                .highlights_for_range(part.source_range.clone(), cx)
-            {
-                let start = range.start.max(part.source_range.start);
-                let end = range.end.min(part.source_range.end);
-                if start < end {
-                    highlights.push((
-                        (part.text_range.start + start - source_start)
-                            ..(part.text_range.start + end - source_start),
-                        style,
-                    ));
-                }
-            }
-        }
-        highlights
+        let names: Vec<Arc<str>> = item
+            .highlight_ranges
+            .iter()
+            .map(|(_, name)| Arc::clone(name))
+            .collect();
+        item.highlight_ranges
+            .iter()
+            .map(|(range, _)| range.clone())
+            .zip(syntax::style_table(&names, cx))
+            .collect()
     }
 
     /// 返回当前单文件文档中可确定归属的局部绑定。
@@ -109,18 +99,24 @@ impl Editor {
         self.display_snapshot(cx).buffer_snapshot().local_bindings()
     }
 
-    /// 将大纲项定位到其名称范围，并拒绝异步刷新后已经失效的结果。
-    pub fn navigate_to_outline_item(&mut self, item: &OutlineItem, cx: &mut Context<Self>) -> bool {
-        let current = self.outline_items(cx).into_iter().any(|current| {
-            current.version == item.version
-                && current.range == item.range
-                && current.name_range == item.name_range
-                && current.name == item.name
-        });
-        if !current {
+    /// 将大纲项的稳定名称锚点解析到当前组合快照后定位。
+    pub fn navigate_to_outline_item(
+        &mut self,
+        item: &OutlineItem<MultiBufferAnchor>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let snapshot = self.display_snapshot(cx);
+        let buffer = snapshot.buffer_snapshot();
+        let (Ok(Some(start)), Ok(Some(end))) = (
+            buffer.projected_anchor_offset(&item.name_range.start),
+            buffer.projected_anchor_offset(&item.name_range.end),
+        ) else {
+            return false;
+        };
+        if start > end {
             return false;
         }
-        self.select_byte_range(item.name_range.clone(), cx);
+        self.select_byte_range(start.get()..end.get(), cx);
         self.request_scroll_to_top(NAVIGATION_TOP_OFFSET, cx);
         true
     }

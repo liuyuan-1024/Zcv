@@ -11,6 +11,7 @@ path = "src/outline.rs"
 gpui.workspace = true
 zcv-editor.workspace = true
 zcv-language.workspace = true
+zcv-multi-buffer.workspace = true
 zcv-theme.workspace = true
 zcv-ui.workspace = true
 zcv-workspace.workspace = true

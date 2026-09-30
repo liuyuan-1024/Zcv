@@ -15,7 +15,7 @@ pub use folds::FoldRange;
 pub use indent::NewlineIndent;
 pub use locals::LocalBinding;
 pub use nodes::SyntaxNode;
-pub use outline::{OutlineItem, OutlineTextRange};
+pub use outline::OutlineItem;
 
 #[cfg(test)]
 mod test;

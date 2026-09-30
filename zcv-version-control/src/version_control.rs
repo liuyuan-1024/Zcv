@@ -27,8 +27,8 @@ use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
 use zcv_theme::{color, scale};
 use zcv_ui::{
     AutoFoldDir, Button, ButtonLike, ButtonSize, ButtonStyle, Checkbox, RowClickAction, Scrollbar,
-    SvgIcon, TooltipSpec, TreeNodeRow, TreeRow, TreeRowFrame, TreeState, auto_fold_dirs,
-    row_click_action, selection_border, tree_row_label,
+    SvgIcon, TooltipSpec, TreeDisclosure, TreeNodeRow, TreeRow, TreeRowFrame, TreeState,
+    auto_fold_dirs, row_click_action, selection_border, tree_row_label,
 };
 use zcv_workspace::{Panel, PanelEvent, git_status_color};
 
@@ -875,21 +875,21 @@ fn render_row(
             let weak = render_context.weak.clone();
             let section = *section;
             let checkbox_weak = weak.clone();
+            let disclosure_weak = weak.clone();
             let section_has_entries = section != GitSection::Conflict
                 && render_context.non_empty_sections.contains(&section);
             let mut frame = TreeRowFrame::default()
-                .leading(
-                    SvgIcon::new(if is_collapsed {
-                        "icons/chevron_right.svg"
-                    } else {
-                        "icons/chevron_down.svg"
-                    })
-                    .id(ElementId::Name(
-                        format!("version-control-section-{section:?}").into(),
-                    ))
-                    .label("折叠或展开分区")
-                    .color(color::current(cx).icon_muted),
-                )
+                .leading(TreeDisclosure::new(
+                    ElementId::Name(format!("version-control-section-{section:?}").into()),
+                    !is_collapsed,
+                    move |cx| {
+                        if let Some(panel) = disclosure_weak.upgrade() {
+                            panel.update(cx, |panel, cx| {
+                                panel.toggle_section_collapsed(section, cx);
+                            });
+                        }
+                    },
+                ))
                 .content(section.label());
             if section_has_entries {
                 // 已暂存组显示勾选（点击 = 全部取消暂存）、未暂存组显示未勾选（点击 = 全部暂存）。

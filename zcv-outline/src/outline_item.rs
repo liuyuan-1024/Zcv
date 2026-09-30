@@ -4,13 +4,12 @@ use std::ops::Range;
 use std::path::Path;
 
 use gpui::{
-    AnyElement, App, HighlightStyle, IntoElement, MouseButton, StyledText, Window, div, prelude::*,
-    px,
+    AnyElement, App, HighlightStyle, IntoElement, MouseButton, StyledText, Window, prelude::*,
 };
 use zcv_editor::OutlineEntry;
 use zcv_language::OutlineItem;
 use zcv_theme::{FileIcons, typography};
-use zcv_ui::{ButtonLike, SvgIcon, TooltipSpec, TreeRowFrame, tree_row_label};
+use zcv_ui::{SvgIcon, TreeDisclosure, TreeRowFrame, tree_row_label};
 
 use crate::outline_tree::{OutlineRow, OutlineRowKey, OutlineRowKind};
 
@@ -99,10 +98,17 @@ fn render_symbol(
 ) -> AnyElement {
     let key = OutlineRowKey::Symbol(OutlineItemKey::from_item(&entry.item));
     let label = StyledText::new(entry.item.text.clone()).with_highlights(highlights);
-    let row = TreeRowFrame::default()
+    let mut row = TreeRowFrame::default()
         .tree_depth(depth, context.window, context.cx)
-        .leading(fold_toggle(&key, fold, context.cx, on_toggle))
         .content(tree_row_label(label).text_size(typography::ui_size(context.cx)));
+    if fold.has_children {
+        let arrow_key = key.clone();
+        row = row.leading(TreeDisclosure::new(
+            row_element_id(&key, "toggle"),
+            !fold.collapsed,
+            move |cx| on_toggle(arrow_key.clone(), cx),
+        ));
+    }
     row.interactive(row_element_id(&key, "row"), context.window, context.cx)
         .on_mouse_down(MouseButton::Left, move |_event, window, cx| {
             on_navigate(entry.clone(), window, cx);
@@ -133,7 +139,7 @@ fn render_node(
     // 目录/文件行不画折叠箭头：文件夹图标本身表达开合，整行负责切换。
     let row = TreeRowFrame::default()
         .tree_depth(depth, context.window, context.cx)
-        .content(SvgIcon::new(icon).size(typography::ui_size(context.cx)))
+        .leading(SvgIcon::new(icon).size(typography::ui_size(context.cx)))
         .content(
             tree_row_label(StyledText::new(name.to_owned()))
                 .text_size(typography::ui_size(context.cx)),
@@ -145,37 +151,6 @@ fn render_node(
             cx.stop_propagation();
         })
         .into_any_element()
-}
-
-/// 可点击的折叠箭头：符号行使用。
-fn fold_toggle(
-    key: &OutlineRowKey,
-    fold: OutlineItemFold,
-    cx: &App,
-    on_toggle: impl Fn(OutlineRowKey, &mut App) + 'static,
-) -> AnyElement {
-    if fold.has_children {
-        let arrow_key = key.clone();
-        ButtonLike::new(row_element_id(key, "toggle"))
-            .padding(px(0.))
-            .tooltip(TooltipSpec::from_lines([if fold.collapsed {
-                "展开"
-            } else {
-                "折叠"
-            }]))
-            .on_click(move |_, _, cx| on_toggle(arrow_key.clone(), cx))
-            .child(
-                SvgIcon::new(if fold.collapsed {
-                    "icons/chevron_right.svg"
-                } else {
-                    "icons/chevron_down.svg"
-                })
-                .size(typography::ui_size(cx)),
-            )
-            .into_any_element()
-    } else {
-        div().w(typography::ui_size(cx)).into_any_element()
-    }
 }
 
 fn row_element_id(key: &OutlineRowKey, role: &str) -> String {

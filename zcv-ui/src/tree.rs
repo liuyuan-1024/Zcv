@@ -10,22 +10,25 @@ use crate::SvgIcon;
 
 /// 通用树列表行框架。
 ///
-/// 只负责所有行共有的几何：行高、内容槽、行尾槽位和两侧内边距。
+/// 只负责所有行共有的几何：行高、层级缩进、行首列、内容槽与行尾槽。
 /// 它不假设当前行是文件、目录、分组标题还是提示文本。
 pub struct TreeRowFrame {
     left_padding: DefiniteLength,
     content: Vec<AnyElement>,
-    leading: Vec<AnyElement>,
+    leading: Option<AnyElement>,
+    tree_gutter: bool,
     decorations: Vec<AnyElement>,
     trailing: Vec<AnyElement>,
 }
 
 impl TreeRowFrame {
-    /// 按树深度设置缩进，并添加与项目树一致的层级引导线。
+    /// 按树深度设置缩进、行首列，并添加层级引导线。
     ///
-    /// 深度只描述几何，不决定行首图标或点击行为，因此文件树、大纲等不同树形视图可以共享。
+    /// 树形行始终保留一个图标宽的行首列，同层级标题不因折叠控件有无而移动。
+    /// 深度只描述几何，不决定行首图标或点击行为。
     pub fn tree_depth(mut self, depth: usize, window: &Window, cx: &App) -> Self {
         self.left_padding = metrics(window, cx).indent_left(depth).into();
+        self.tree_gutter = true;
         self.decorations.extend(
             guide_lines(depth, window, cx)
                 .into_iter()
@@ -42,7 +45,7 @@ impl TreeRowFrame {
 
     /// 添加行首插槽；树节点、分组标题等行可在这里放置各自的前缀控件。
     pub fn leading(mut self, element: impl IntoElement) -> Self {
-        self.leading.push(element.into_any_element());
+        self.leading = Some(element.into_any_element());
         self
     }
 
@@ -74,18 +77,25 @@ impl TreeRowFrame {
             .pl(self.left_padding)
             .pr(metrics(window, cx).padding)
             .flex_row()
-            .gap(scale::S6)
+            .gap(if self.tree_gutter {
+                scale::S2
+            } else {
+                scale::S6
+            })
             .children(self.decorations);
 
-        if !self.leading.is_empty() {
+        if self.tree_gutter {
             row = row.child(
                 div()
+                    .w(metrics(window, cx).icon_size)
                     .flex_shrink_0()
                     .flex()
                     .items_center()
-                    .gap(scale::S6)
-                    .children(self.leading),
+                    .justify_center()
+                    .when_some(self.leading, |slot, leading| slot.child(leading)),
             );
+        } else if let Some(leading) = self.leading {
+            row = row.child(div().flex_shrink_0().flex().items_center().child(leading));
         }
 
         row = row.child(
@@ -128,7 +138,8 @@ impl Default for TreeRowFrame {
         Self {
             left_padding: scale::S6,
             content: Vec::new(),
-            leading: Vec::new(),
+            leading: None,
+            tree_gutter: false,
             decorations: Vec::new(),
             trailing: Vec::new(),
         }

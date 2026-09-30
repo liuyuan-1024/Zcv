@@ -16,6 +16,7 @@ mod search_input;
 mod tab;
 mod tooltip;
 mod tree;
+mod tree_disclosure;
 
 pub use autoscroll::drag_autoscroll_delta;
 pub use button::{Button, ButtonSize, ButtonStyle};
@@ -34,3 +35,4 @@ pub use tree::{
     AutoFoldDir, RowClickAction, TreeNodeRow, TreeRow, TreeRowFrame, TreeState, auto_fold_dirs,
     row_click_action, selection_border, tree_row_height, tree_row_label,
 };
+pub use tree_disclosure::TreeDisclosure;

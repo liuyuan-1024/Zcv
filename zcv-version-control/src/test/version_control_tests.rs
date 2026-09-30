@@ -649,17 +649,36 @@ fn section_header_collapse_hides_entries_and_expand_restores(cx: &mut TestAppCon
     let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
     assert!(entries.contains(&(GitSection::Unstaged, "tracked.txt".into())));
 
-    // 折叠未暂存分区：条目不渲染，标题行保留。
-    cx.update_entity(&panel, |panel, cx| {
-        panel.toggle_section_collapsed(GitSection::Unstaged, cx);
+    let header_index = cx.read_entity(&panel, |panel, _| {
+        panel
+            .state
+            .borrow()
+            .rows
+            .iter()
+            .position(|row| matches!(row, GitRow::Header(GitSection::Unstaged)))
+            .expect("未暂存分区标题应存在")
     });
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
+    let click_disclosure = |cx: &mut VisualTestContext| {
+        cx.simulate_click(
+            point(
+                px(14.),
+                px(f32::from(row_height) * (header_index as f32 + 1.5)),
+            ),
+            gpui::Modifiers::default(),
+        );
+        cx.run_until_parked();
+    };
+    let _ = cx.refresh();
+    cx.update(|_, _| {});
+    cx.run_until_parked();
+
+    // 点击行首折叠控件只能切换一次；若事件冒泡到整行，会立即切回展开。
+    click_disclosure(cx);
     let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
     assert!(entries.is_empty(), "折叠后该分区条目应隐藏（仅剩标题行）");
 
-    // 再展开：条目恢复。
-    cx.update_entity(&panel, |panel, cx| {
-        panel.toggle_section_collapsed(GitSection::Unstaged, cx);
-    });
+    click_disclosure(cx);
     let entries = cx.read_entity(&panel, |panel, _| section_entries(panel));
     assert!(entries.contains(&(GitSection::Unstaged, "tracked.txt".into())));
 }

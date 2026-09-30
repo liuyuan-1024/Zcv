@@ -1,4 +1,86 @@
 use super::*;
+use gpui::{Context, MouseButton, Render, TestAppContext};
+use std::cell::Cell;
+use std::rc::Rc;
+
+struct TreeRowHost {
+    toggles: Rc<Cell<usize>>,
+    row_clicks: Rc<Cell<usize>>,
+}
+
+impl Render for TreeRowHost {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let toggles = self.toggles.clone();
+        let row_clicks = self.row_clicks.clone();
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                TreeRowFrame::default()
+                    .tree_depth(0, window, cx)
+                    .leading(div().debug_selector(|| "disclosure".into()).child(
+                        crate::TreeDisclosure::new("tree-disclosure", true, move |_| {
+                            toggles.set(toggles.get() + 1);
+                        }),
+                    ))
+                    .content(tree_row_label(
+                        div()
+                            .debug_selector(|| "branch-label".into())
+                            .child("父节点"),
+                    ))
+                    .interactive("branch-row", window, cx)
+                    .on_mouse_down(MouseButton::Left, move |_, _, _| {
+                        row_clicks.set(row_clicks.get() + 1);
+                    }),
+            )
+            .child(
+                TreeRowFrame::default()
+                    .tree_depth(0, window, cx)
+                    .content(tree_row_label(
+                        div().debug_selector(|| "leaf-label".into()).child("叶子"),
+                    ))
+                    .render(window, cx),
+            )
+            .child(
+                TreeRowFrame::default()
+                    .tree_depth(1, window, cx)
+                    .content(tree_row_label(
+                        div()
+                            .debug_selector(|| "child-label".into())
+                            .child("子节点"),
+                    ))
+                    .render(window, cx),
+            )
+    }
+}
+
+#[gpui::test]
+fn tree_rows_align_labels_and_isolate_disclosure_clicks(cx: &mut TestAppContext) {
+    let toggles = Rc::new(Cell::new(0));
+    let row_clicks = Rc::new(Cell::new(0));
+    let (_, cx) = cx.add_window_view(|_, _| TreeRowHost {
+        toggles: toggles.clone(),
+        row_clicks: row_clicks.clone(),
+    });
+
+    let branch = cx
+        .debug_bounds("branch-label")
+        .expect("父节点标题应参与布局");
+    let leaf = cx.debug_bounds("leaf-label").expect("叶子标题应参与布局");
+    let child = cx
+        .debug_bounds("child-label")
+        .expect("子节点标题应参与布局");
+    assert_eq!(branch.left(), leaf.left(), "同层级标题不受折叠控件影响");
+    assert!(child.left() > branch.left(), "子节点标题应进一步缩进");
+
+    let disclosure = cx.debug_bounds("disclosure").expect("折叠控件应参与布局");
+    cx.simulate_click(disclosure.center(), gpui::Modifiers::default());
+    assert_eq!(toggles.get(), 1);
+    assert_eq!(row_clicks.get(), 0, "点击折叠控件不能触发行导航");
+
+    cx.simulate_click(branch.center(), gpui::Modifiers::default());
+    assert_eq!(row_clicks.get(), 1);
+}
 
 /// 测试行模型：key 唯一；selectable=false 模拟不可选行（如分组头）。
 #[derive(Clone)]

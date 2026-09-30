@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use gpui::{App, Context, Div, FontWeight, Window, div, prelude::*, px};
 use zcv_path::AbsolutePathBuf;
-use zcv_theme::{FileIcons, color, space, typography};
+use zcv_theme::{FileIcons, color, scale, typography};
 use zcv_ui::SvgIcon;
 use zcv_workspace::typography_for_window;
 
@@ -89,7 +89,7 @@ impl Render for DraggedEntryView {
             stack = stack.child(
                 entry_card(cx)
                     .border_1()
-                    .border_color(theme.border_variant)
+                    .border_color(theme.border)
                     .absolute()
                     .top(px(LAYER_OFFSET_Y * depth))
                     .left(px(LAYER_OFFSET_X * depth))
@@ -101,7 +101,7 @@ impl Render for DraggedEntryView {
         stack.child(
             entry_card(cx)
                 .border_1()
-                .border_color(theme.border_variant)
+                .border_color(theme.border)
                 .shadow_sm()
                 .child(SvgIcon::new(entry_icon(active)).size(typography.ui_size()))
                 .child(self.drag.preview_name.clone())
@@ -111,9 +111,9 @@ impl Render for DraggedEntryView {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .h(space::S16)
-                        .min_w(space::S16)
-                        .px(space::S2)
+                        .h(scale::S16)
+                        .min_w(scale::S16)
+                        .px(scale::S2)
                         .rounded_full()
                         .bg(theme.text)
                         .text_color(theme.background)
@@ -130,8 +130,8 @@ fn entry_card(cx: &App) -> Div {
         .flex()
         .flex_row()
         .items_center()
-        .gap(space::S6)
-        .px(space::S6)
+        .gap(scale::S6)
+        .px(scale::S6)
         .h(typography::ui_line(cx))
         .rounded_xs()
         .bg(color::current(cx).element_selected)

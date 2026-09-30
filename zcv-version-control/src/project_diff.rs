@@ -28,7 +28,7 @@ use zcv_path::AbsolutePathBuf;
 use zcv_project::{GitStoreEvent, Project};
 use zcv_search::{SearchBar, SearchBarConfig, SearchBarSlots};
 use zcv_text::{BufferId, ByteOffset, Snapshot, TextRange};
-use zcv_theme::{color, space};
+use zcv_theme::{color, scale};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, Checkbox, SvgIcon};
 use zcv_workspace::{
     Item, ItemEvent, ItemHandle, SearchableItemHandle, SerializedItemProvider, SerializedPaneItem,
@@ -67,11 +67,11 @@ impl ProjectDiffHunkDelegate {
         let controls = div()
             .flex()
             .items_center()
-            .gap(space::S2)
+            .gap(scale::S2)
             .rounded_md()
             .overflow_hidden()
             .border_1()
-            .border_color(colors.border_variant)
+            .border_color(colors.border)
             .bg(colors.editor_background);
         let make_button = |id: String, label: &'static str, choice: ConflictChoice| {
             let view_for_click = self.view.clone();
@@ -206,11 +206,11 @@ impl ProjectDiffHunkDelegate {
         let controls = div()
             .flex()
             .items_center()
-            .gap(space::S2)
+            .gap(scale::S2)
             .rounded_md()
             .overflow_hidden()
             .border_1()
-            .border_color(colors.border_variant)
+            .border_color(colors.border)
             .bg(colors.editor_background);
 
         match kind {

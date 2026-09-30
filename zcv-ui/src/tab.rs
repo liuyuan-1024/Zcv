@@ -4,10 +4,10 @@
 //! 通过 builder 设置图标、关闭按钮、选中状态，调用方通过 [`InteractiveElement`] 方法挂载事件（点击、拖拽等）。
 
 use gpui::{
-    AnyElement, App, Div, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
-    Stateful, StatefulInteractiveElement, ViewElement, Window, div, prelude::*,
+    AnyElement, App, Div, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels,
+    RenderOnce, Stateful, StatefulInteractiveElement, ViewElement, Window, div, prelude::*,
 };
-use zcv_theme::{color, space};
+use zcv_theme::{color, scale, typography};
 
 /// 标签页组件。
 pub struct Tab {
@@ -29,6 +29,17 @@ impl Tab {
             end_slot: None,
             children: Vec::new(),
         }
+    }
+
+    /// 标签容器高度：标签栏与各面板首行共用的显式高度基准。
+    ///
+    /// 由窗口 UI 行高与结构内边距派生，改字号时一起缩放；
+    /// 行内图标/按钮不参与撑高，保证标签栏与面板首行的底部分隔线对齐。
+    pub fn container_height(window: &Window, cx: &App) -> Pixels {
+        let ui_line = typography::ui_line_at(window.rem_size(), cx);
+        ui_line
+            + scale::to_pixels(scale::S2, window) * 2.0
+            + scale::to_pixels(scale::S6, window) * 2.0
     }
 
     /// 设置选中状态。
@@ -78,7 +89,7 @@ impl ParentElement for Tab {
 }
 
 impl RenderOnce for Tab {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let text_color = if self.selected {
             color::current(cx).text
         } else {
@@ -97,8 +108,9 @@ impl RenderOnce for Tab {
             .flex()
             .flex_row()
             .items_center()
-            .gap(space::S6)
-            .p(space::S6)
+            .gap(scale::S6)
+            .p(scale::S6)
+            .h(Self::container_height(window, cx))
             .cursor_pointer()
             .text_color(text_color)
             .bg(bg)

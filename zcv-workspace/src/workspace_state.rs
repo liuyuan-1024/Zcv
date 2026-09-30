@@ -1087,7 +1087,7 @@ impl Render for Workspace {
                 DockPosition::Bottom => &bottom_dock_entity,
             };
             dock.update(cx, |dock, cx| {
-                dock.resize_to(event.event.position, event.bounds, cx);
+                dock.resize_to(event.event.position, event.bounds, window, cx);
             });
             window.refresh();
         })

@@ -59,3 +59,13 @@ fn shaped_ink(cx: &App, font: Font, font_size: Pixels, probe: &str) -> Pixels {
         WindowTextSystem::new(cx.text_system().clone()).shape_line(text, font_size, &[run], None);
     shaped.ascent + shaped.descent.abs()
 }
+
+/// 结构刻度的基准字号由 build.rs 从内置设置生成，必须与运行时解析结果一致。
+#[test]
+fn default_ui_size_matches_settings_file() {
+    assert_eq!(
+        crate::scale::DEFAULT_UI_SIZE,
+        defaults().ui_size,
+        "构建期生成的默认字号必须与设置文件解析结果一致"
+    );
+}

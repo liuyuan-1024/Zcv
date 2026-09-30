@@ -18,7 +18,7 @@ use crate::{
 use zcv_actions::{
     Clear, Copy, DecreaseFontSize, IncreaseFontSize, Interrupt, Paste, ResetFontSize,
 };
-use zcv_theme::{color, space};
+use zcv_theme::{color, scale};
 use zcv_ui::Scrollbar;
 use zcv_workspace::{Item, ItemEvent};
 
@@ -411,7 +411,7 @@ impl Render for TerminalView {
             .size_full()
             .overflow_hidden()
             .bg(color::current(cx).editor_background)
-            .p(space::S4)
+            .p(scale::S4)
             .on_key_down(cx.listener(Self::handle_key_down))
             .on_action(cx.listener(Self::handle_copy))
             .on_action(cx.listener(Self::handle_paste))

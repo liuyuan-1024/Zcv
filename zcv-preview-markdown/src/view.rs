@@ -22,7 +22,7 @@ use zcv_language::{
 };
 use zcv_multi_buffer::{MultiBuffer, MultiBufferEvent};
 use zcv_project::Project;
-use zcv_theme::{color, space, syntax, typography};
+use zcv_theme::{color, fixed, scale, syntax, typography};
 use zcv_ui::Scrollbar;
 use zcv_workspace::{
     Item, ItemEvent, ItemHandle, OpenPathCallback, PreviewDocument, PreviewItem, PreviewItemHandle,
@@ -32,7 +32,6 @@ use zcv_workspace::{
 use crate::document::{Block, Inline, parse};
 
 const MARKDOWN_REPARSE_DEBOUNCE: Duration = Duration::from_millis(200);
-const INLINE_CODE_CHIP_HORIZONTAL_OUTSET: Pixels = space::S2;
 const INLINE_CODE_CHIP_VERTICAL_INSET: f32 = 0.1;
 const INLINE_CODE_CHIP_CORNER_RADIUS: Pixels = px(4.);
 
@@ -306,7 +305,7 @@ impl Render for MarkdownPreviewView {
                     .size_full()
                     .overflow_y_scroll()
                     .track_scroll(&self.scroll_handle)
-                    .p(space::S6)
+                    .p(scale::S6)
                     .text_color(color::current(cx).text)
                     .text_size(type_scale.content_size())
                     .line_height(type_scale.content_line())
@@ -315,7 +314,7 @@ impl Render for MarkdownPreviewView {
                             .w_full()
                             .flex()
                             .flex_col()
-                            .gap(space::S16)
+                            .gap(scale::S16)
                             .children(content),
                     ),
             )
@@ -358,7 +357,7 @@ fn render_block(
             let mut code = div()
                 .rounded_md()
                 .bg(color::current(cx).panel_background)
-                .p(space::S12)
+                .p(scale::S12)
                 .font(typography::content_font())
                 .text_size(type_scale.content_size())
                 .flex()
@@ -366,7 +365,7 @@ fn render_block(
             if let Some(language) = language {
                 code = code.child(
                     div()
-                        .mb(space::S8)
+                        .mb(scale::S8)
                         .text_size(type_scale.content_size() * 0.85)
                         .text_color(color::current(cx).text_muted)
                         .child(language.clone()),
@@ -397,11 +396,11 @@ fn render_block(
                 .collect::<Vec<_>>();
             div()
                 .border_l_2()
-                .border_color(color::current(cx).border_variant)
-                .pl(space::S12)
+                .border_color(color::current(cx).border)
+                .pl(scale::S12)
                 .flex()
                 .flex_col()
-                .gap(space::S16)
+                .gap(scale::S16)
                 .text_color(color::current(cx).text_muted)
                 .children(children)
                 .into_any_element()
@@ -433,12 +432,12 @@ fn render_block(
                             .text_color(color::current(cx).text_muted)
                             .child(marker_text.clone())
                     };
-                    let mut content = div().flex().flex_col().gap(space::S4);
+                    let mut content = div().flex().flex_col().gap(scale::S4);
                     if let Some(first_child) = item_children.next() {
                         content = content.child(
                             div()
                                 .flex()
-                                .gap(space::S2)
+                                .gap(scale::S2)
                                 .line_height(type_scale.content_line())
                                 .child(marker())
                                 .child(div().flex_1().min_w_0().child(first_child)),
@@ -450,10 +449,10 @@ fn render_block(
                 })
                 .collect::<Vec<_>>();
             div()
-                .when(list_depth > 0, |list| list.pl(space::S16))
+                .when(list_depth > 0, |list| list.pl(scale::S16))
                 .flex()
                 .flex_col()
-                .gap(space::S4)
+                .gap(scale::S4)
                 .children(children)
                 .into_any_element()
         }
@@ -471,7 +470,7 @@ fn render_block(
                 .overflow_x_scroll()
                 .rounded_md()
                 .border_1()
-                .border_color(color::current(cx).border_variant)
+                .border_color(color::current(cx).border)
                 .flex()
                 .flex_col();
             if !header.is_empty() {
@@ -499,9 +498,9 @@ fn render_block(
             render_math_block(source, *display, key, math_images, cx)
         }
         Block::Rule => div()
-            .h(px(1.))
+            .h(fixed::HAIRLINE)
             .w_full()
-            .bg(color::current(cx).border_variant)
+            .bg(color::current(cx).border)
             .into_any_element(),
     }
 }
@@ -573,17 +572,15 @@ fn render_table_row(
         .flex()
         .w_full()
         .when(!is_header, |row| {
-            row.border_t_1()
-                .border_color(color::current(cx).border_variant)
+            row.border_t_1().border_color(color::current(cx).border)
         })
         .children(cells.iter().enumerate().map(|(cell_index, cell_content)| {
             let cell = div()
                 .flex_1()
-                .min_w(space::S32)
-                .p(space::S2)
+                .min_w(scale::S32)
+                .p(scale::S2)
                 .when(cell_index > 0, |cell| {
-                    cell.border_l_1()
-                        .border_color(color::current(cx).border_variant)
+                    cell.border_l_1().border_color(color::current(cx).border)
                 })
                 .when(is_header, |cell| cell.font_weight(FontWeight::SEMIBOLD));
             let cell = match alignments
@@ -877,17 +874,12 @@ fn paint_inline_code_chips(
                 };
                 let top = row_top + line_height * INLINE_CODE_CHIP_VERTICAL_INSET;
                 let bottom = row_top + line_height * (1. - INLINE_CODE_CHIP_VERTICAL_INSET);
+                let chip_outset = scale::to_pixels(scale::S2, window);
                 window.paint_quad(
                     fill(
                         Bounds::from_corners(
-                            point(
-                                x_for_index(selection_start) - INLINE_CODE_CHIP_HORIZONTAL_OUTSET,
-                                top,
-                            ),
-                            point(
-                                x_for_index(selection_end) + INLINE_CODE_CHIP_HORIZONTAL_OUTSET,
-                                bottom,
-                            ),
+                            point(x_for_index(selection_start) - chip_outset, top),
+                            point(x_for_index(selection_end) + chip_outset, bottom),
                         ),
                         color,
                     )

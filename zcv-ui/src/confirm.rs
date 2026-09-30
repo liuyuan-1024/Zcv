@@ -8,7 +8,7 @@ use gpui::{
     App, ElementId, Hsla, IntoElement, Pixels, RenderOnce, SharedString, ViewElement, Window, div,
     prelude::*, px,
 };
-use zcv_theme::{color, space};
+use zcv_theme::{color, scale};
 
 use crate::{Button, ButtonStyle};
 
@@ -131,9 +131,9 @@ impl RenderOnce for ConfirmOverlay {
         let card = div()
             .flex()
             .flex_col()
-            .gap(space::S6)
+            .gap(scale::S6)
             .max_w(CARD_MAX_WIDTH)
-            .p(space::S12)
+            .p(scale::S12)
             .rounded_md()
             .border_1()
             .border_color(colors.border)
@@ -156,7 +156,7 @@ impl RenderOnce for ConfirmOverlay {
                     .flex_row()
                     .items_center()
                     .justify_end()
-                    .gap(space::S6)
+                    .gap(scale::S6)
                     .child(confirm)
                     .child(skip)
                     .child(cancel),

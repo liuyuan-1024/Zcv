@@ -8,7 +8,7 @@ use gpui::{
     Animation, AnimationExt, Entity, MouseButton, Render, Subscription, Window, div, prelude::*,
 };
 use zcv_project::{GitJobPhase, GitJobStatus, GitStore, GitStoreEvent};
-use zcv_theme::{color, space};
+use zcv_theme::{color, scale};
 use zcv_ui::TooltipSpec;
 
 use crate::{ItemHandle, StatusItemView};
@@ -47,7 +47,7 @@ impl Render for ActivityIndicator {
             .id("activity-indicator")
             .flex()
             .items_center()
-            .gap(space::S6)
+            .gap(scale::S6)
             .text_color(color::current(cx).text_muted)
             .child(animated_task(task.clone()));
         if let Some(build) = TooltipSpec::from_lines([match task.phase {
@@ -83,7 +83,7 @@ fn animated_task(task: GitJobStatus) -> impl gpui::IntoElement {
             let frame = (delta * SPINNER_FRAMES.len() as f32) as usize % SPINNER_FRAMES.len();
             row.flex()
                 .items_center()
-                .gap(space::S6)
+                .gap(scale::S6)
                 .child(SPINNER_FRAMES[frame])
                 .child(task_message(&task))
         },

@@ -1,7 +1,7 @@
 //! 通用输入框外壳。
 
 use gpui::{AnyElement, App, IntoElement, ParentElement, RenderOnce, Window, div, prelude::*};
-use zcv_theme::{color, space, typography};
+use zcv_theme::{color, scale, typography};
 
 /// 一行 = 一个带边框的输入容器 + 若干个外部插槽(输入容器右侧按钮区);
 /// 输入容器内提供文本输入位 + 若干个内部插槽(边框内右缘)。
@@ -49,15 +49,15 @@ impl RenderOnce for InputShell {
             .w_full()
             .flex()
             .items_center()
-            .gap(space::S6)
+            .gap(scale::S6)
             .child(
                 div()
                     .flex_1()
                     .flex()
                     .items_center()
                     // 外壳高度由输入框自身行数决定(auto_height 可随多行文本增高),与插槽内容无关。
-                    .p(space::S6)
-                    .gap(space::S6)
+                    .p(scale::S6)
+                    .gap(scale::S6)
                     .rounded_sm()
                     .border_1()
                     .border_color(colors.border)
@@ -71,7 +71,7 @@ impl RenderOnce for InputShell {
                                 .flex()
                                 .items_center()
                                 .h(typography::ui_line_at(window.rem_size(), cx))
-                                .gap(space::S6)
+                                .gap(scale::S6)
                                 .children(self.internal),
                         )
                     }),

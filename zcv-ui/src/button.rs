@@ -6,10 +6,10 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, ClickEvent, CursorStyle, ElementId, IntoElement, MouseButton, Pixels, RenderOnce,
-    ViewElement, Window, div, prelude::*,
+    App, ClickEvent, CursorStyle, DefiniteLength, ElementId, IntoElement, MouseButton, Pixels,
+    RenderOnce, ViewElement, Window, div, prelude::*,
 };
-use zcv_theme::{color, space, typography};
+use zcv_theme::{color, scale, typography};
 
 use crate::{SvgIcon, TooltipSpec};
 
@@ -47,18 +47,18 @@ pub enum ButtonSize {
 }
 
 impl ButtonSize {
-    /// 内边距：紧凑 S2，中等 S4，宽松 S6。
-    fn padding(self) -> Pixels {
+    /// 内边距：紧凑 scale::S2，中等 scale::S4，宽松 scale::S6。
+    fn padding(self) -> DefiniteLength {
         match self {
-            ButtonSize::Compact => space::S2,
-            ButtonSize::Medium => space::S4,
-            ButtonSize::Loose => space::S6,
+            ButtonSize::Compact => scale::S2,
+            ButtonSize::Medium => scale::S4,
+            ButtonSize::Loose => scale::S6,
         }
     }
 
     /// 按当前窗口的 UI 行高计算整体按钮高度。
-    fn height_at(self, ui_line: Pixels) -> Pixels {
-        ui_line + self.padding() * 2.0
+    fn height_at(self, ui_line: Pixels, window: &Window) -> Pixels {
+        ui_line + scale::to_pixels(self.padding(), window) * 2.0
     }
 
     /// 按档位施加内边距与圆角（紧凑小圆角，宽松大圆角）。
@@ -204,7 +204,7 @@ impl RenderOnce for Button {
         let icon_only = matches!(&self.content, ButtonContent::Icon(_));
 
         // 基础容器：尺寸档位决定高度、内边距与圆角。
-        let height = self.size.height_at(ui_line);
+        let height = self.size.height_at(ui_line, window);
         let mut element = self.size.shell(
             div()
                 .id(self.id)
@@ -222,7 +222,7 @@ impl RenderOnce for Button {
         if self.style == ButtonStyle::Solid {
             element = element
                 .border_1()
-                .border_color(colors.border_variant)
+                .border_color(colors.border)
                 .bg(colors.panel_background);
         }
 
@@ -262,7 +262,7 @@ impl RenderOnce for Button {
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(space::S2)
+                .gap(scale::S2)
                 .child(SvgIcon::new(path).size(ui_size).color(color))
                 .child(div().text_color(color).child(text))
                 .into_any_element(),

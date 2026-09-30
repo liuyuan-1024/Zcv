@@ -24,7 +24,7 @@ use zcv_project::SearchQuery;
 use zcv_project::{GitStoreEvent, Project};
 use zcv_search::{SearchBar, SearchBarConfig, SearchBarSlots};
 use zcv_theme::color::{self, ThemeColors};
-use zcv_theme::{space, typography};
+use zcv_theme::{fixed, scale, typography};
 use zcv_ui::{ButtonLike, Scrollbar, TooltipSpec};
 use zcv_workspace::{
     Direction, Item, ItemHandle, SearchEvent, SearchableItem, SerializedItemProvider,
@@ -41,8 +41,9 @@ const CIRCLE_RADIUS: Pixels = px(3.5);
 /// 连线线宽。
 const LINE_WIDTH: Pixels = px(1.5);
 const COLUMN_COUNT: usize = 5;
-const COLUMN_RESIZE_HANDLE_WIDTH: Pixels = space::S6;
-const COLUMN_MIN_WIDTH: Pixels = space::S16;
+// Git 图形列布局是测量驱动的像素布局，以下为图内局部常量，不属于 UI 结构间距刻度。
+const COLUMN_RESIZE_HANDLE_WIDTH: Pixels = px(6.0);
+const COLUMN_MIN_WIDTH: Pixels = px(16.0);
 const COLUMN_RESIZE_MAX_WIDTHS: [Pixels; COLUMN_COUNT] =
     [px(320.0), px(800.0), px(256.0), px(224.0), px(160.0)];
 const COLUMN_CONTENT_MAX_WIDTHS: [Pixels; COLUMN_COUNT] =
@@ -381,7 +382,7 @@ impl Render for GitGraphView {
         let colors = *color::current(cx);
         let palette = lane_palette(&colors);
         let type_scale = typography_for_window(window, cx);
-        let row_height = row_height(type_scale.content_line());
+        let row_height = row_height(type_scale.content_line(), window.rem_size());
         // 视图体聚焦时仍走 GitGraphSearchBar 键位上下文：
         // 提交图自身没有按键处理，搜索 action 一律转发给它持有的 SearchBar。
         // 转发用弱句柄而非 cx.listener，后者会在回调期间租借视图，而 SearchBar 的导航/选项操作又要回写本视图，造成同一实体二次租借。
@@ -876,8 +877,8 @@ pub fn deploy_at(workspace: &mut Workspace, window: &mut Window, cx: &mut Contex
 
 /// 单行高度：由内容行高派生（+ 少量竖直留白），随内容字号缩放。
 /// uniform_list 要求所有行等高，故集中在此计算。
-fn row_height(line_height: Pixels) -> Pixels {
-    line_height + space::S4
+fn row_height(line_height: Pixels, rem_size: Pixels) -> Pixels {
+    line_height + scale::to_pixels_at(scale::S4, rem_size)
 }
 
 /// 分支配色板：取主题终端 ANSI 色，随主题切换（无独立 accent 序列，故复用这组区分度高的色）。
@@ -982,7 +983,7 @@ fn draw_commit_circle(center_x: Pixels, center_y: Pixels, color: Rgba, window: &
 fn graph_column(width: Pixels, colors: &ThemeColors, with_right_border: bool) -> gpui::Div {
     let mut column = div().w(width).h_full().flex().items_center().flex_none();
     if with_right_border {
-        column = column.border_r_1().border_color(colors.border_variant);
+        column = column.border_r_1().border_color(colors.border);
     }
     column
 }
@@ -1082,8 +1083,8 @@ fn content_fit_column_widths(
     let ui_font = typography::ui_font();
     let content_font = typography::content_font();
     let font_size = typography_for_window(window, cx).content_size();
-    let cell_padding = space::S2 * 2.0 + space::S1;
-    let header_padding = space::S6 * 2.0 + space::S1;
+    let cell_padding = scale::to_pixels(scale::S2, window) * 2.0 + fixed::HAIRLINE;
+    let header_padding = scale::to_pixels(scale::S6, window) * 2.0 + fixed::HAIRLINE;
     let labels = ["图形", "提交信息", "作者", "时间", "哈希"];
     let mut widths = labels.map(|label| {
         measure_text_width(window, label, ui_font.clone(), font_size) + header_padding
@@ -1096,12 +1097,11 @@ fn content_fit_column_widths(
             .iter()
             .map(|reference| {
                 measure_text_width(window, &reference.label, ui_font.clone(), font_size)
-                    + space::S2 * 2.0
-                    + space::S2
+                    + scale::to_pixels(scale::S2, window) * 3.0
             })
             .sum();
-        let ref_gaps = space::S8 * refs.len() as f32;
-        let commit_width = space::S6
+        let ref_gaps = scale::to_pixels(scale::S8, window) * refs.len() as f32;
+        let commit_width = scale::to_pixels(scale::S6, window)
             + refs_width
             + ref_gaps
             + measure_text_width(window, &row.commit.subject, ui_font.clone(), font_size)
@@ -1201,12 +1201,12 @@ fn render_graph_header(
         .bg(colors.editor_background)
         .text_color(colors.text_placeholder)
         .border_b_1()
-        .border_color(colors.border_variant);
+        .border_color(colors.border);
 
     for (index, label) in labels.into_iter().enumerate() {
         let mut cell = graph_column(column_widths[index], &colors, index + 1 < COLUMN_COUNT)
             .relative()
-            .px(space::S6)
+            .px(scale::S6)
             .child(label);
         if index == 1 {
             cell = cell.flex_1().min_w_0();
@@ -1262,11 +1262,11 @@ fn render_commit_column(
     let mut column = graph_column(width, colors, true)
         .flex_1()
         .min_w_0()
-        .gap(space::S8)
-        .pl(space::S6)
+        .gap(scale::S8)
+        .pl(scale::S6)
         .overflow_hidden()
         .border_r_1()
-        .border_color(colors.border_variant);
+        .border_color(colors.border);
 
     for reference in parse_refs(&commit.refs) {
         column = column.child(render_ref_chip(&reference, accent));
@@ -1275,7 +1275,7 @@ fn render_commit_column(
     column.child(
         ButtonLike::new(format!("git-graph-subject-{}", commit.oid))
             .flex_grow()
-            .padding(space::S2)
+            .padding(scale::S2)
             .tooltip(column_tooltip(&subject))
             .on_right_click(move |_, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(subject.clone()));
@@ -1298,10 +1298,10 @@ fn render_author_column(author: &str, oid: &str, colors: &ThemeColors, width: Pi
         .min_w_0()
         .overflow_hidden()
         .border_r_1()
-        .border_color(colors.border_variant)
+        .border_color(colors.border)
         .child(
             ButtonLike::new(format!("git-graph-author-{oid}"))
-                .padding(space::S2)
+                .padding(scale::S2)
                 .tooltip(column_tooltip(&author))
                 .on_right_click({
                     let author = author.clone();
@@ -1326,10 +1326,10 @@ fn render_time_column(timestamp: i64, oid: &str, colors: &ThemeColors, width: Pi
         .min_w_0()
         .overflow_hidden()
         .border_r_1()
-        .border_color(colors.border_variant)
+        .border_color(colors.border)
         .child(
             ButtonLike::new(format!("git-graph-time-{oid}"))
-                .padding(space::S2)
+                .padding(scale::S2)
                 .tooltip(column_tooltip(&time))
                 .on_right_click({
                     let time = time.clone();
@@ -1356,7 +1356,7 @@ fn render_sha_column(oid: &str, colors: &ThemeColors, width: Pixels) -> gpui::Di
         .overflow_hidden()
         .child(
             ButtonLike::new(format!("git-graph-sha-{oid}"))
-                .padding(space::S2)
+                .padding(scale::S2)
                 .tooltip(column_tooltip(&oid))
                 .on_right_click({
                     let oid = oid.clone();
@@ -1435,7 +1435,7 @@ fn render_ref_chip(reference: &CommitRef, accent: Rgba) -> gpui::Div {
     };
     div()
         .flex_none()
-        .p(space::S2)
+        .p(scale::S2)
         .rounded_sm()
         .border_1()
         .bg(accent.opacity(bg_alpha))

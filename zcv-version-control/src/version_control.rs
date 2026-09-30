@@ -24,7 +24,7 @@ use zcv_git::{DiffStat, FileStatus};
 use zcv_keymap::display_shortcut;
 use zcv_path::{AbsolutePathBuf, RelativePathBuf};
 use zcv_project::{GitStoreEvent, Project, RepositorySnapshot};
-use zcv_theme::{color, space};
+use zcv_theme::{color, scale};
 use zcv_ui::{
     AutoFoldDir, Button, ButtonLike, ButtonSize, ButtonStyle, Checkbox, RowClickAction, Scrollbar,
     SvgIcon, TooltipSpec, TreeNodeRow, TreeRow, TreeRowFrame, TreeState, auto_fold_dirs,
@@ -1078,12 +1078,12 @@ fn render_commit_footer(
                 .bg(colors.editor_background)
                 .flex()
                 .flex_col()
-                .child(div().pt(space::S6).px(space::S6).child(editor.clone()))
+                .child(div().pt(scale::S6).px(scale::S6).child(editor.clone()))
                 // 容器内底部 commit-footer：提交按钮（空消息时淡显，点击由 handler 兜底聚焦回编辑器）。
                 .child(
                     div()
                         .id("version-control-commit-footer")
-                        .p(space::S6)
+                        .p(scale::S6)
                         .flex()
                         .justify_end()
                         .child(
@@ -1119,11 +1119,11 @@ fn render_commit_footer(
         .child(
             div()
                 .border_t_1()
-                .border_color(colors.border_variant)
-                .p(space::S6)
+                .border_color(colors.border)
+                .p(scale::S6)
                 .flex()
                 .items_center()
-                .gap(space::S6)
+                .gap(scale::S6)
                 .child(
                     ButtonLike::new("version-control-last-commit")
                         .flex_grow()
@@ -1196,17 +1196,17 @@ fn render_empty_state(panel: WeakEntity<VersionControlPanel>, cx: &App) -> Div {
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(space::S6)
+        .gap(scale::S6)
         .text_color(colors.text_placeholder)
         .child("没有 Git 仓库")
         .child(
             div()
                 .id("version-control-init")
                 .debug_selector(|| "version-control-init".into())
-                .p(space::S6)
+                .p(scale::S6)
                 .rounded_md()
                 .border_1()
-                .border_color(colors.border_variant)
+                .border_color(colors.border)
                 .bg(colors.panel_background)
                 .text_color(colors.text)
                 .cursor_pointer()

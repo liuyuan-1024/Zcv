@@ -17,7 +17,7 @@ use zcv_actions::{
 use zcv_editor::{Editor, EditorEvent, LanguageRegistry};
 use zcv_keymap::display_shortcut;
 use zcv_project::SearchQuery;
-use zcv_theme::{color, space};
+use zcv_theme::{color, scale};
 use zcv_ui::{Button, MatchOption, MatchOptions, ReplaceInput, SearchInput};
 use zcv_workspace::{Direction, SearchableItemHandle, WeakSearchableItemHandle};
 
@@ -432,7 +432,7 @@ impl SearchBar {
             .w_full()
             .flex()
             .items_center()
-            .gap(space::S6)
+            .gap(scale::S6)
             .when_some(leading, |row, leading| row.child(leading))
             .child(div().flex_1().min_w_0().child(search_input));
 
@@ -464,7 +464,7 @@ impl SearchBar {
             .key_context(key_context)
             .flex()
             .flex_col()
-            .gap(space::S6)
+            .gap(scale::S6)
             .on_action(cx.listener(Self::handle_find_next))
             .on_action(cx.listener(Self::handle_find_previous))
             .on_action(cx.listener(Self::handle_toggle_replace))

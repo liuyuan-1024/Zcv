@@ -18,7 +18,7 @@ use zcv_actions::{DeleteRecentProject, OpenLocalProject, ToggleProjectPicker};
 use zcv_keymap::{KeyBindings, display_shortcut};
 use zcv_picker::{PICKER_WIDTH, Picker, PickerDelegate, PickerHost, picker_divider};
 use zcv_project::Project;
-use zcv_theme::{color, space};
+use zcv_theme::{color, scale};
 use zcv_ui::{Button, ListItem, SvgIcon};
 
 use crate::recent_projects::{self, ProjectEntry};
@@ -198,7 +198,7 @@ impl PickerDelegate for ProjectPickerDelegate {
                 div()
                     .flex()
                     .items_center()
-                    .gap(space::S6)
+                    .gap(scale::S6)
                     .text_color(color::current(cx).text)
                     .child(
                         div()

@@ -11,7 +11,7 @@ use gpui::{
     Anchor, App, Entity, FocusHandle, Global, MouseButton, Pixels, Window, anchored, deferred, div,
     point, prelude::*,
 };
-use zcv_theme::{color, space};
+use zcv_theme::{color, scale};
 
 use crate::picker_view::OnDismiss;
 use crate::{Picker, PickerDelegate};
@@ -218,7 +218,7 @@ impl PickerHost {
                         .anchor(Anchor::TopLeft)
                         .position(point(Pixels::ZERO, Pixels::ZERO))
                         .position_mode(gpui::AnchoredPositionMode::Local)
-                        .snap_to_window_with_margin(space::S6)
+                        .snap_to_window_with_margin(scale::to_pixels(scale::S6, window))
                         .child(
                             div()
                                 .occlude()
@@ -229,12 +229,15 @@ impl PickerHost {
                                     div()
                                         .flex()
                                         .flex_col()
-                                        .max_h(win_size.height - space::S6 * 2.0)
+                                        .max_h(
+                                            win_size.height
+                                                - scale::to_pixels(scale::S6, window) * 2.0,
+                                        )
                                         .bg(color::current(cx).elevated_surface_background)
                                         .border_l_3()
                                         .border_color(color::current(cx).border_focused)
                                         .border_1()
-                                        .border_color(color::current(cx).border_variant)
+                                        .border_color(color::current(cx).border)
                                         .rounded_lg()
                                         .overflow_hidden()
                                         .child(picker.clone()),

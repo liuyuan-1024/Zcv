@@ -5,8 +5,9 @@
 //! 主题数据（语义色 + 语法高亮）由 `theme_data` 注册表统一持有，新增主题只需添加 TOML 文件并在注册表登记，无需改动本模块逻辑。
 
 pub mod color;
+pub mod fixed;
 mod icon_theme;
-pub mod space;
+pub mod scale;
 pub mod syntax;
 mod theme_data;
 pub mod typography;

@@ -5,10 +5,10 @@
 use std::rc::Rc;
 
 use gpui::{
-    App, ClickEvent, ElementId, IntoElement, MouseButton, MouseUpEvent, ParentElement, Pixels,
-    RenderOnce, ViewElement, Window, div, prelude::*,
+    App, ClickEvent, DefiniteLength, ElementId, IntoElement, MouseButton, MouseUpEvent,
+    ParentElement, RenderOnce, ViewElement, Window, div, prelude::*,
 };
-use zcv_theme::{color, space};
+use zcv_theme::{color, scale};
 
 use crate::TooltipSpec;
 
@@ -19,7 +19,7 @@ type RightClickHandler = Rc<dyn Fn(&MouseUpEvent, &mut Window, &mut App)>;
 pub struct ButtonLike {
     id: ElementId,
     flex_grow: bool,
-    padding: Pixels,
+    padding: DefiniteLength,
     tooltip: TooltipSpec,
     on_click: Option<ClickHandler>,
     on_right_click: Option<RightClickHandler>,
@@ -31,7 +31,7 @@ impl ButtonLike {
         Self {
             id: id.into(),
             flex_grow: false,
-            padding: space::S4,
+            padding: scale::S4,
             tooltip: TooltipSpec::default(),
             on_click: None,
             on_right_click: None,
@@ -45,8 +45,8 @@ impl ButtonLike {
         self
     }
 
-    pub fn padding(mut self, padding: Pixels) -> Self {
-        self.padding = padding;
+    pub fn padding(mut self, padding: impl Into<DefiniteLength>) -> Self {
+        self.padding = padding.into();
         self
     }
 

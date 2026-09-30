@@ -36,3 +36,18 @@ fn system_theme_matches_window_appearance(cx: &mut TestAppContext) {
         "System 主题应匹配窗口外观 {appearance:?}"
     );
 }
+
+/// 结构刻度的基准是固定设计基准：用户改字号时 token 必须随之同比缩放，不能重新锚定。
+#[test]
+fn structural_tokens_scale_with_rem_size() {
+    let at_default = scale::to_pixels_at(scale::S6, gpui::px(scale::DEFAULT_UI_SIZE));
+    let doubled = scale::to_pixels_at(scale::S6, gpui::px(scale::DEFAULT_UI_SIZE * 2.0));
+    assert!(
+        (f32::from(at_default) - 6.0).abs() < 0.001,
+        "在设计基准字号下 S6 应为 6px，实际 {at_default:?}"
+    );
+    assert!(
+        (f32::from(doubled) - 12.0).abs() < 0.001,
+        "字号翻倍时 S6 应同比翻倍，实际 {doubled:?}"
+    );
+}

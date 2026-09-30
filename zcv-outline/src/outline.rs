@@ -14,7 +14,7 @@ use gpui::{
 use zcv_editor::{Editor, EditorEvent, OutlineEntry, OutlineVersion};
 use zcv_language::LanguageRegistry;
 use zcv_theme::color;
-use zcv_ui::{Scrollbar, search_box};
+use zcv_ui::{Scrollbar, Tab, search_box};
 use zcv_workspace::{Pane, PaneEvent, Panel, PanelEvent};
 
 mod outline_item;
@@ -243,9 +243,11 @@ impl Panel for OutlinePanel {
 }
 
 impl Render for OutlinePanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = *color::current(cx);
-        let search = search_box(self.search_input.clone().into_any_element(), cx);
+        // 与标签栏共用同一容器高度，保证底部分隔线对齐。
+        let search = search_box(self.search_input.clone().into_any_element(), cx)
+            .h(Tab::container_height(window, cx));
         let visible_rows = self.visible_rows();
         let rows_len = visible_rows.len();
         let active_editor = self.active_editor.clone();

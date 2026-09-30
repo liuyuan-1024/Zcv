@@ -1,7 +1,7 @@
 //! 窗口控制 —— 自绘 macOS 风格三色圆点。
 
 use gpui::{Window, div, prelude::*, px, rgb, svg};
-use zcv_theme::space;
+use zcv_theme::scale;
 
 use crate::Workspace;
 
@@ -19,7 +19,7 @@ pub(super) fn render(
         .flex()
         .flex_row()
         .items_center()
-        .gap(space::S8)
+        .gap(scale::S8)
         .occlude()
         .child(pip(Pip::Close, active).on_click({
             let workspace = workspace.clone();

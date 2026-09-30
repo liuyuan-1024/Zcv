@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use gpui::{AnyElement, App, ElementId, Pixels, Window, div, prelude::*};
-use zcv_theme::{FileIcons, color, space, typography};
+use gpui::{AnyElement, App, DefiniteLength, ElementId, Pixels, Window, div, prelude::*};
+use zcv_theme::{FileIcons, color, fixed, scale, typography};
 
 use crate::SvgIcon;
 
@@ -13,7 +13,7 @@ use crate::SvgIcon;
 /// 只负责所有行共有的几何：行高、内容槽、行尾槽位和两侧内边距。
 /// 它不假设当前行是文件、目录、分组标题还是提示文本。
 pub struct TreeRowFrame {
-    left_padding: Pixels,
+    left_padding: DefiniteLength,
     content: Vec<AnyElement>,
     leading: Vec<AnyElement>,
     decorations: Vec<AnyElement>,
@@ -25,7 +25,7 @@ impl TreeRowFrame {
     ///
     /// 深度只描述几何，不决定行首图标或点击行为，因此文件树、大纲等不同树形视图可以共享。
     pub fn tree_depth(mut self, depth: usize, window: &Window, cx: &App) -> Self {
-        self.left_padding = metrics(window.rem_size(), cx).indent_left(depth);
+        self.left_padding = metrics(window, cx).indent_left(depth).into();
         self.decorations.extend(
             guide_lines(depth, window, cx)
                 .into_iter()
@@ -72,9 +72,9 @@ impl TreeRowFrame {
         let mut row = blank_row(window, cx)
             .relative()
             .pl(self.left_padding)
-            .pr(metrics(window.rem_size(), cx).padding)
+            .pr(metrics(window, cx).padding)
             .flex_row()
-            .gap(space::S6)
+            .gap(scale::S6)
             .children(self.decorations);
 
         if !self.leading.is_empty() {
@@ -83,7 +83,7 @@ impl TreeRowFrame {
                     .flex_shrink_0()
                     .flex()
                     .items_center()
-                    .gap(space::S6)
+                    .gap(scale::S6)
                     .children(self.leading),
             );
         }
@@ -96,7 +96,7 @@ impl TreeRowFrame {
                 .whitespace_nowrap()
                 .flex()
                 .items_center()
-                .gap(space::S6)
+                .gap(scale::S6)
                 .children(self.content),
         );
 
@@ -106,7 +106,7 @@ impl TreeRowFrame {
                     .flex_shrink_0()
                     .flex()
                     .items_center()
-                    .gap(space::S6)
+                    .gap(scale::S6)
                     .children(self.trailing),
             );
         }
@@ -126,7 +126,7 @@ pub fn tree_row_label(element: impl IntoElement) -> gpui::Div {
 impl Default for TreeRowFrame {
     fn default() -> Self {
         Self {
-            left_padding: space::S6,
+            left_padding: scale::S6,
             content: Vec::new(),
             leading: Vec::new(),
             decorations: Vec::new(),
@@ -215,12 +215,12 @@ pub fn auto_fold_dirs<N: AutoFoldDir>(node: &N, expanded: impl Fn(&N) -> bool) -
 
 /// 树行行高（= 空白行基座高度）：滚动计算、命中测试坐标等需要行高数值的场景读取。
 pub fn tree_row_height(window: &Window, cx: &App) -> gpui::Pixels {
-    metrics(window.rem_size(), cx).row_height
+    metrics(window, cx).row_height
 }
 
 /// 选中框——absolute 覆盖整行，不参与行布局。
 pub fn selection_border(window: &Window, cx: &App) -> gpui::Div {
-    let m = metrics(window.rem_size(), cx);
+    let m = metrics(window, cx);
     div()
         .absolute()
         .top(Pixels::ZERO)
@@ -268,14 +268,14 @@ fn blank_row(window: &Window, cx: &App) -> gpui::Div {
         .w_full()
         .flex()
         .items_center()
-        .h(metrics(window.rem_size(), cx).row_height)
+        .h(metrics(window, cx).row_height)
 }
 
 /// 渲染缩进竖线——每条线直接 absolute 定位在行上。
 fn guide_lines(depth: usize, window: &Window, cx: &App) -> Vec<gpui::Div> {
-    let m = metrics(window.rem_size(), cx);
-    let line_color = color::current(cx).border_variant;
-    let line_w = space::S1;
+    let m = metrics(window, cx);
+    let line_color = color::current(cx).border;
+    let line_w = fixed::HAIRLINE;
 
     (0..depth)
         .map(|k| {
@@ -293,7 +293,7 @@ fn guide_lines(depth: usize, window: &Window, cx: &App) -> Vec<gpui::Div> {
 
 /// 根据条目类型和展开/折叠状态返回对应的图标元素。
 fn icon(path: &Path, is_dir: bool, expanded: bool, window: &Window, cx: &App) -> impl IntoElement {
-    let m = metrics(window.rem_size(), cx);
+    let m = metrics(window, cx);
     let path = if is_dir {
         FileIcons::get_folder_icon(expanded, path)
     } else {
@@ -628,11 +628,13 @@ struct TreeMetrics {
     icon_size: gpui::Pixels,
 }
 
-fn metrics(ui_size: Pixels, cx: &App) -> TreeMetrics {
+fn metrics(window: &Window, cx: &App) -> TreeMetrics {
+    let ui_size = window.rem_size();
+    let padding = scale::to_pixels(scale::S6, window);
     TreeMetrics {
-        row_height: typography::ui_line_at(ui_size, cx) + space::S6,
+        row_height: typography::ui_line_at(ui_size, cx) + padding,
         indent: ui_size,
-        padding: space::S6,
+        padding,
         icon_size: ui_size,
     }
 }

@@ -5,8 +5,9 @@
 
 use std::rc::Rc;
 
-use gpui::{AnyElement, App, Div, ScrollHandle, div, prelude::*};
-use zcv_theme::{color, space};
+use gpui::{AnyElement, App, Div, ScrollHandle, Window, div, prelude::*};
+use zcv_theme::{color, scale};
+use zcv_ui::Tab;
 
 /// 标签栏右侧功能插槽的构建器：每次渲染时调用生成插槽元素。
 /// 元素不可复制（ArenaBox 独占所有权），无法缓存实例，只能以构建器形式保存。
@@ -43,19 +44,23 @@ impl TabBar {
     pub(crate) fn with_bar(
         self,
         cx: &gpui::App,
+        window: &Window,
         f: impl FnOnce(Div) -> Div,
         children: impl IntoIterator<Item = AnyElement>,
     ) -> impl gpui::IntoElement {
         let border_color = color::current(cx).border;
         let trailing = self.trailing;
-        let outer = f(div()).relative().child(
-            // 先绘制底线，活动标签的实色背景会覆盖对应区域。
-            div()
-                .absolute()
-                .inset_0()
-                .border_b_1()
-                .border_color(border_color),
-        );
+        let outer = f(div())
+            .relative()
+            .h(Tab::container_height(window, cx))
+            .child(
+                // 先绘制底线，活动标签的实色背景会覆盖对应区域。
+                div()
+                    .absolute()
+                    .inset_0()
+                    .border_b_1()
+                    .border_color(border_color),
+            );
 
         let mut bar = outer.child(
             div()
@@ -82,7 +87,7 @@ impl TabBar {
                     .flex_shrink_0()
                     .flex()
                     .items_center()
-                    .px(space::S6)
+                    .px(scale::S6)
                     .child(build(cx)),
             );
         }

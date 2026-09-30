@@ -10,10 +10,10 @@ use super::*;
 fn row_height_follows_content_font_size(cx: &mut gpui::TestAppContext) {
     cx.update(|cx| {
         let original = f32::from(typography::content_size(cx));
-        let baseline = row_height(typography::content_line(cx));
+        let baseline = row_height(typography::content_line(cx), typography::ui_size(cx));
 
         typography::set_base_typography(cx, Some(original + 4.), None, None);
-        let enlarged = row_height(typography::content_line(cx));
+        let enlarged = row_height(typography::content_line(cx), typography::ui_size(cx));
         // 临时调整基础字号，验证行高随字号变化；测试结束后立即还原。
         typography::set_base_typography(cx, Some(original), None, None);
 
@@ -23,7 +23,7 @@ fn row_height_follows_content_font_size(cx: &mut gpui::TestAppContext) {
             original + 4.
         );
         assert_eq!(
-            row_height(typography::content_line(cx)),
+            row_height(typography::content_line(cx), typography::ui_size(cx)),
             baseline,
             "还原内容字号后行高应回到原值（字号以 f32 存储，往返无损）"
         );

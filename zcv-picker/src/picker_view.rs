@@ -14,7 +14,7 @@ use gpui::{
 use zcv_actions::{
     MoveDown, MoveUp, PickerCancel, PickerConfirm, PickerSelectNext, PickerSelectPrev,
 };
-use zcv_theme::{color, space};
+use zcv_theme::{color, fixed};
 use zcv_ui::{EDITOR_FACTORY, ErasedEditor, ErasedEditorEvent, search_box};
 
 use super::PICKER_MAX_HEIGHT;
@@ -305,8 +305,8 @@ impl<D: PickerDelegate> Render for Picker<D> {
 pub fn picker_divider(cx: &App) -> impl IntoElement {
     div()
         .w_full()
-        .h(space::S1)
-        .bg(color::current(cx).border_variant)
+        .h(fixed::HAIRLINE)
+        .bg(color::current(cx).border)
 }
 
 #[cfg(test)]

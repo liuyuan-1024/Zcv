@@ -11,7 +11,7 @@ use gpui::{Context, Entity, EventEmitter, ParentElement, Render, Styled, Window,
 use zcv_actions::{ClearSearch, DeployBufferSearch};
 use zcv_editor::{Editor, LanguageRegistry};
 use zcv_keymap::display_shortcut;
-use zcv_theme::{color, space};
+use zcv_theme::{color, scale};
 use zcv_ui::Button;
 use zcv_workspace::{
     Breadcrumbs, ItemHandle, PreviewButton, ToolbarItemEvent, ToolbarItemLocation, ToolbarItemView,
@@ -116,7 +116,7 @@ impl Render for DocumentToolbar {
             .w_full()
             .flex()
             .items_center()
-            .gap(space::S6)
+            .gap(scale::S6)
             .on_action(cx.listener(Self::handle_deploy))
             .child(div().flex_1().min_w_0().child(self.breadcrumbs.clone()))
             .child(self.preview_button.clone())
@@ -147,7 +147,7 @@ impl Render for DocumentToolbar {
             .w_full()
             .flex()
             .flex_col()
-            .gap(space::S6)
+            .gap(scale::S6)
             .child(breadcrumbs_line);
         if !visible {
             return container.into_any_element();

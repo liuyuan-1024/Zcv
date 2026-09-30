@@ -17,7 +17,7 @@ use gpui::{
 };
 use zcv_actions::TogglePreview;
 use zcv_multi_buffer::MultiBuffer;
-use zcv_theme::{color, space};
+use zcv_theme::{color, scale};
 use zcv_ui::Button;
 
 use crate::breadcrumbs::Breadcrumbs;
@@ -465,7 +465,7 @@ impl Render for PreviewToolbar {
             .w_full()
             .flex()
             .items_center()
-            .gap(space::S6)
+            .gap(scale::S6)
             .child(div().flex_1().min_w_0().child(self.breadcrumbs.clone()))
             .child(
                 Button::icon("preview-toolbar-source", "icons/eye_off.svg")

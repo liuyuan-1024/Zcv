@@ -4,7 +4,7 @@
 //! 每个 item 自行订阅 Item 变化。
 
 use gpui::{AnyElement, App, Context, Div, Entity, Render, Subscription, Window, div, prelude::*};
-use zcv_theme::{color, space};
+use zcv_theme::{color, scale};
 
 use crate::ItemHandle;
 use crate::pane::Pane;
@@ -112,8 +112,8 @@ fn bar_frame(cx: &App) -> Div {
         .flex_row()
         .items_center()
         .w_full()
-        .p(space::S6)
-        .gap(space::S6)
+        .p(scale::S6)
+        .gap(scale::S6)
         .bg(color::current(cx).status_bar_background)
         .text_color(color::current(cx).text)
         .border_t_1()
@@ -122,7 +122,7 @@ fn bar_frame(cx: &App) -> Div {
 
 /// 渲染一侧的 item 序列；无内容时 item 自己渲染空元素，分隔线由 item 自己绘制。
 fn region(items: Vec<&dyn StatusItemViewHandle>, justify_start: bool) -> Div {
-    let wrapper = div().flex_1().flex().items_center().gap(space::S6);
+    let wrapper = div().flex_1().flex().items_center().gap(scale::S6);
     let wrapper = if justify_start {
         wrapper.justify_start()
     } else {

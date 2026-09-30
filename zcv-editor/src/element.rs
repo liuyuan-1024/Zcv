@@ -22,7 +22,7 @@ use zcv_keymap::display_shortcut;
 use zcv_language::BracketPair;
 use zcv_multi_buffer::MultiBufferSnapshot;
 use zcv_text::Line;
-use zcv_theme::{color, space};
+use zcv_theme::{color, fixed, scale};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon, drag_autoscroll_delta};
 
 use crate::selection::SelectionSet;
@@ -1095,7 +1095,7 @@ fn buffer_header_element(
                     cx.stop_propagation()
                 })
         })
-        .p(space::S2)
+        .p(scale::S2)
         .child(
             div()
                 .id(header_id)
@@ -1103,8 +1103,8 @@ fn buffer_header_element(
                 .flex()
                 .items_center()
                 .justify_between()
-                .gap(space::S6)
-                .px(space::S6)
+                .gap(scale::S6)
+                .px(scale::S6)
                 .rounded_sm()
                 .border_1()
                 .border_color(colors.border)
@@ -1139,7 +1139,7 @@ fn buffer_header_element(
                         .flex_1()
                         .flex()
                         .items_center()
-                        .gap(space::S2)
+                        .gap(scale::S2)
                         .cursor_pointer()
                         .hover(move |style| style.bg(colors.element_hover))
                         .on_click(move |_event, _window, cx| {
@@ -1210,8 +1210,8 @@ fn build_block_elements(
                 .h_full()
                 .flex()
                 .items_center()
-                .px(space::S6)
-                .child(div().w_full().h(space::S1).bg(colors.border_variant))
+                .px(scale::S6)
+                .child(div().w_full().h(fixed::HAIRLINE).bg(colors.border))
                 .into_any_element(),
             DisplayBlockKind::BufferHeader => {
                 buffer_header_element(&block.block, block.row, false, editor, window, cx)

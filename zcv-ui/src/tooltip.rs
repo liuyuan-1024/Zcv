@@ -5,7 +5,7 @@
 //! 悬停延迟与触发由 gpui 的 `div.tooltip()` 机制承担，这里只负责气泡视觉。
 
 use gpui::{Action, AnyView, App, Context, Render, Window, div, prelude::*, px};
-use zcv_theme::{color, space, typography};
+use zcv_theme::{color, scale, typography};
 
 /// 把 action 解析为快捷键显示文本；由拥有 keymap 的调用方注入。
 ///
@@ -79,7 +79,7 @@ struct TooltipView {
 
 impl Render for TooltipView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut content = div().flex().flex_col().items_start().gap(space::S2);
+        let mut content = div().flex().flex_col().items_start().gap(scale::S2);
         for line in &self.lines {
             content = content.child(
                 div()
@@ -94,15 +94,15 @@ impl Render for TooltipView {
         let mut popup = div()
             .flex()
             .items_center()
-            .gap(space::S6)
-            .p(space::S6)
+            .gap(scale::S6)
+            .p(scale::S6)
             // 浮动层挂在 window 层，不在根元素树内：
             // 字号经 window rem 基准自动正确；字体需显式设置；行高 = ui_line()（墨迹高度，与根元素同源 token）。
             .font(typography::ui_font())
             .line_height(typography::ui_line_at(window.rem_size(), cx))
             .bg(color::current(cx).elevated_surface_background)
             .border_1()
-            .border_color(color::current(cx).border_variant)
+            .border_color(color::current(cx).border)
             .rounded_sm()
             // test cfg 下注册 debug bounds，供 hover 测试断言气泡出现。
             .debug_selector(|| "tooltip-view".into());
@@ -118,7 +118,7 @@ impl Render for TooltipView {
         }
 
         // 外层 div(.p) 提供与光标之间的间距，防止气泡被鼠标遮挡。
-        div().p(space::S6).child(popup)
+        div().p(scale::S6).child(popup)
     }
 }
 

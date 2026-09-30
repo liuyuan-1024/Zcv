@@ -12,7 +12,7 @@ use gpui::{
     Subscription, WeakEntity, Window, deferred, div, prelude::*, px,
 };
 use serde::{Deserialize, Serialize};
-use zcv_theme::{color, space};
+use zcv_theme::{color, scale};
 
 use crate::pane::Pane;
 use crate::panel::PanelHandle;
@@ -68,8 +68,10 @@ impl DockPosition {
     }
 }
 
-/// dock 和编辑区的最小尺寸，防止 dock 拖拽完全挤占编辑区。
-const MIN_SIZE: Pixels = space::S16;
+/// dock 和编辑区的最小尺寸，防止 dock 拖拽完全挤占编辑区；随窗口 UI 字号缩放。
+fn min_size(window: &Window) -> Pixels {
+    scale::to_pixels(scale::S16, window)
+}
 
 /// 拖拽调整尺寸的浮层实体；gpui 拖拽系统经它携带 dock 位置信息，
 /// Workspace 根节点在 `on_drag_move` 中按位置驱动对应 dock 的尺寸。
@@ -270,14 +272,15 @@ impl Dock {
         let Some(state) = self.serialized_dock.clone() else {
             return false;
         };
+        let min_size = min_size(window);
         if let Some(size) = state.size.filter(|size| size.is_finite() && *size > 0.0) {
             let window_size = window.bounds().size;
             let max_size = match self.position {
-                DockPosition::Left | DockPosition::Right => window_size.width - MIN_SIZE,
-                DockPosition::Bottom => window_size.height - MIN_SIZE,
+                DockPosition::Left | DockPosition::Right => window_size.width - min_size,
+                DockPosition::Bottom => window_size.height - min_size,
             }
-            .max(MIN_SIZE);
-            self.size = px(size).clamp(MIN_SIZE, max_size);
+            .max(min_size);
+            self.size = px(size).clamp(min_size, max_size);
         }
 
         let restored_index = state.active_panel.as_deref().and_then(|name| {
@@ -336,18 +339,20 @@ impl Dock {
         &mut self,
         cursor: Point<Pixels>,
         bounds: gpui::Bounds<Pixels>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) {
+        let min_size = min_size(window);
         let raw = match self.position {
             DockPosition::Left => cursor.x - bounds.left(),
             DockPosition::Right => bounds.right() - cursor.x,
             DockPosition::Bottom => bounds.bottom() - cursor.y,
         };
         let max_size = match self.position {
-            DockPosition::Left | DockPosition::Right => bounds.size.width - MIN_SIZE - MIN_SIZE,
-            DockPosition::Bottom => bounds.size.height - MIN_SIZE,
+            DockPosition::Left | DockPosition::Right => bounds.size.width - min_size - min_size,
+            DockPosition::Bottom => bounds.size.height - min_size,
         };
-        let new_size = raw.clamp(MIN_SIZE, max_size);
+        let new_size = raw.clamp(min_size, max_size);
         self.size = new_size;
 
         // 左右 dock 耦合：调整 sibling 的尺寸
@@ -355,9 +360,9 @@ impl Dock {
             && let Some(sibling) = self.sibling.as_ref().and_then(|s| s.upgrade())
         {
             sibling.update(cx, |sib, _| {
-                let other_max = bounds.size.width - new_size - MIN_SIZE;
+                let other_max = bounds.size.width - new_size - min_size;
                 if sib.size > other_max {
-                    sib.size = other_max.max(MIN_SIZE);
+                    sib.size = other_max.max(min_size);
                 }
             });
         }
@@ -367,13 +372,19 @@ impl Dock {
     }
 
     /// 重置为默认尺寸。
-    pub fn reset_size(&mut self, window_size: gpui::Size<Pixels>, cx: &mut Context<Self>) {
+    pub fn reset_size(
+        &mut self,
+        window_size: gpui::Size<Pixels>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        let min_size = min_size(window);
         let default = self.position.default_size();
         let max_size = match self.position {
-            DockPosition::Left | DockPosition::Right => window_size.width - MIN_SIZE,
-            DockPosition::Bottom => window_size.height - MIN_SIZE,
+            DockPosition::Left | DockPosition::Right => window_size.width - min_size,
+            DockPosition::Bottom => window_size.height - min_size,
         };
-        self.size = default.clamp(MIN_SIZE, max_size);
+        self.size = default.clamp(min_size, max_size);
         cx.emit(DockEvent::SizeChanged);
         cx.notify();
     }
@@ -442,7 +453,7 @@ impl Render for Dock {
                 move |event, window, cx| {
                     if event.click_count >= 2 {
                         let win_size = window.bounds().size;
-                        dock_entity.update(cx, |d, cx| d.reset_size(win_size, cx));
+                        dock_entity.update(cx, |d, cx| d.reset_size(win_size, window, cx));
                         window.refresh();
                     }
                     cx.stop_propagation();
@@ -510,8 +521,8 @@ pub(crate) fn render_body(
         .size_full()
         .overflow_hidden()
         .relative()
-        .min_w(space::S16);
-    center_col = center_col.child(div().flex_1().min_h(space::S16).child(center.clone()));
+        .min_w(scale::S16);
+    center_col = center_col.child(div().flex_1().min_h(scale::S16).child(center.clone()));
 
     center_col = center_col.child(bottom_dock);
     row = row.child(center_col);

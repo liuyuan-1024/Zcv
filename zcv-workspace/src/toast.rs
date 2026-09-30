@@ -11,7 +11,7 @@ use gpui::{
     App, AsyncApp, BoxShadow, ClipboardItem, Context, Render, SharedString, Task, WeakEntity,
     Window, div, hsla, point, prelude::*, px, relative,
 };
-use zcv_theme::{color, space};
+use zcv_theme::{color, scale};
 use zcv_ui::{Button, ButtonStyle, SvgIcon};
 
 use crate::typography_for_window;
@@ -229,8 +229,8 @@ impl Render for ToastLayer {
             .flex()
             .flex_col()
             .flex_shrink_0()
-            .gap(space::S8)
-            .p(space::S10)
+            .gap(scale::S8)
+            .p(scale::S10)
             .w_full()
             .max_w(px(TOAST_MAX_WIDTH))
             .max_h(relative(1.0))
@@ -238,7 +238,7 @@ impl Render for ToastLayer {
             .rounded_lg()
             .bg(color::current(cx).surface_background)
             .border_1()
-            .border_color(color::current(cx).border_variant)
+            .border_color(color::current(cx).border)
             // 鼠标悬浮时暂停自动消失计时（toast 常显），离开后按剩余时长恢复。
             .on_hover(cx.listener(|this, hovered: &bool, _window, cx| {
                 if *hovered {
@@ -296,7 +296,7 @@ impl Render for ToastLayer {
                         div()
                             .flex()
                             .flex_row()
-                            .gap(space::S6)
+                            .gap(scale::S6)
                             .child(copy_button)
                             .child(close_button),
                     ),
@@ -337,8 +337,8 @@ impl Render for ToastLayer {
             .flex()
             .items_end()
             .justify_end()
-            .pb(space::S8)
-            .pr(space::S8)
+            .pb(scale::S8)
+            .pr(scale::S8)
             .child(bubble)
             .into_any_element()
     }

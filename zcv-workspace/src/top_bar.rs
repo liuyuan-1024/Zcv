@@ -10,7 +10,7 @@ use zcv_actions::OpenSettings;
 use zcv_project::{
     GitJobPhase, GitOperationKind, GitStore, GitStoreEvent, Project, RemoteOperationState,
 };
-use zcv_theme::{color, space};
+use zcv_theme::{color, scale};
 use zcv_ui::Button;
 
 use crate::branch_picker::{BranchPicker, OnBranchSelected};
@@ -101,8 +101,8 @@ fn bar_frame(cx: &gpui::App) -> Div {
         .flex_row()
         .items_center()
         .w_full()
-        .p(space::S6)
-        .gap(space::S6)
+        .p(scale::S6)
+        .gap(scale::S6)
         .bg(color::current(cx).title_bar_background)
         .text_color(color::current(cx).text)
         .border_b_1()

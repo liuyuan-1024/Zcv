@@ -7,7 +7,7 @@
 use gpui::{
     AnyView, App, Context, Entity, EntityId, EventEmitter, Render, Window, div, prelude::*,
 };
-use zcv_theme::{color, space};
+use zcv_theme::{color, scale};
 
 use crate::ItemHandle;
 
@@ -159,12 +159,12 @@ impl Render for Toolbar {
         let colors = color::current(cx);
         let mut container = div()
             .w_full()
-            .p(space::S6)
+            .p(scale::S6)
             .border_b_1()
             .border_color(colors.border)
             .flex()
             .flex_col()
-            .gap(space::S6);
+            .gap(scale::S6);
 
         let has_left = !left.is_empty();
         let has_right = !right.is_empty();
@@ -174,13 +174,13 @@ impl Render for Toolbar {
                 .flex()
                 .items_center()
                 .justify_between()
-                .gap(space::S6);
+                .gap(scale::S6);
             if has_left {
                 row = row.child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(space::S6)
+                        .gap(scale::S6)
                         .min_w_0()
                         .flex_1()
                         .children(left),
@@ -191,7 +191,7 @@ impl Render for Toolbar {
                     div()
                         .flex()
                         .items_center()
-                        .gap(space::S6)
+                        .gap(scale::S6)
                         .justify_end()
                         .when(has_left, |this| this.flex_none())
                         .when(!has_left, |this| this.flex_1())

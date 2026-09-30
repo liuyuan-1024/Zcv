@@ -829,6 +829,7 @@ fn render_tab_bar(
 
     let tab_bar = tab_bar.with_bar(
         cx,
+        window,
         |bar| {
             bar.flex()
                 .flex_row()

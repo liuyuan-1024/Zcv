@@ -4,6 +4,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use super::*;
+use zcv_theme::scale;
 
 #[test]
 fn disabled_state_uses_not_allowed_cursor() {
@@ -26,8 +27,16 @@ fn enabled_state_preserves_existing_interaction() {
     assert_eq!(cursor_for_state(false, false), None);
 }
 
-fn expected_height(ui_line: Pixels, size: ButtonSize) -> Pixels {
-    ui_line + size.padding() * 2.0
+fn expected_height(ui_line: Pixels, size: ButtonSize, window: &Window) -> Pixels {
+    ui_line + scale::to_pixels(size.padding(), window) * 2.0
+}
+
+/// 结构尺寸是 rem 派生的分数值，布局会取整到像素；断言留半像素容差。
+fn assert_close(actual: Pixels, expected: Pixels, what: &str) {
+    assert!(
+        (f32::from(actual) - f32::from(expected)).abs() < 0.5,
+        "{what} 应在布局取整容差内：实际 {actual:?}，期望 {expected:?}"
+    );
 }
 
 struct ButtonHeightHost {
@@ -63,6 +72,7 @@ fn content_and_visual_style_share_the_default_height(cx: &mut TestAppContext) {
         compact_height: expected_height(
             typography::ui_line_at(window.rem_size(), cx),
             ButtonSize::Compact,
+            window,
         ),
     });
     let icon = cx.debug_bounds("icon-button").expect("图标按钮应参与布局");
@@ -74,7 +84,7 @@ fn content_and_visual_style_share_the_default_height(cx: &mut TestAppContext) {
 
     assert_eq!(icon.size.height, text.size.height);
     assert_eq!(text.size.height, icon_text.size.height);
-    assert_eq!(icon.size.height, compact_height);
+    assert_close(icon.size.height, compact_height, "按钮高度");
 }
 
 struct LooseButtonHost {
@@ -104,15 +114,21 @@ impl Render for LooseButtonHost {
 
 #[gpui::test]
 fn loose_size_scales_height_and_padding(cx: &mut TestAppContext) {
-    let (host, cx) = cx.add_window_view(|window, cx| LooseButtonHost {
-        compact_height: expected_height(
-            typography::ui_line_at(window.rem_size(), cx),
-            ButtonSize::Compact,
-        ),
-        loose_height: expected_height(
-            typography::ui_line_at(window.rem_size(), cx),
-            ButtonSize::Loose,
-        ),
+    let mut rem_size = Pixels::ZERO;
+    let (host, cx) = cx.add_window_view(|window, cx| {
+        rem_size = window.rem_size();
+        LooseButtonHost {
+            compact_height: expected_height(
+                typography::ui_line_at(window.rem_size(), cx),
+                ButtonSize::Compact,
+                window,
+            ),
+            loose_height: expected_height(
+                typography::ui_line_at(window.rem_size(), cx),
+                ButtonSize::Loose,
+                window,
+            ),
+        }
     });
     let icon = cx
         .debug_bounds("loose-icon")
@@ -121,14 +137,16 @@ fn loose_size_scales_height_and_padding(cx: &mut TestAppContext) {
         .debug_bounds("loose-text")
         .expect("宽松文字按钮应参与布局");
 
-    // 宽松高度 = 字号 + S6×2，与紧凑档位差 2×(S6−S2)。
+    // 宽松高度 = 字号 + scale::S6×2，与紧凑档位差 2×(scale::S6−scale::S2)。
     let (compact_height, expected) =
         cx.read_entity(&host, |host, _| (host.compact_height, host.loose_height));
-    assert_eq!(icon.size.height, expected);
-    assert_eq!(text.size.height, expected);
-    assert_eq!(
+    assert_close(icon.size.height, expected, "宽松图标按钮高度");
+    assert_close(text.size.height, expected, "宽松文字按钮高度");
+    assert_close(
         icon.size.height,
-        compact_height + space::S6 * 2.0 - space::S2 * 2.0
+        compact_height + scale::to_pixels_at(scale::S6, rem_size) * 2.0
+            - scale::to_pixels_at(scale::S2, rem_size) * 2.0,
+        "宽松与紧凑档位的差值",
     );
 }
 

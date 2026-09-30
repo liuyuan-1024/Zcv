@@ -184,7 +184,12 @@ fn dock_resize_and_reset_save_layout(cx: &mut TestAppContext) {
     workspace.update_in(cx, |workspace, window, cx| {
         let bounds = window.bounds();
         workspace.bottom_dock.update(cx, |dock, cx| {
-            dock.resize_to(gpui::point(bounds.size.width / 2.0, px(0.0)), bounds, cx);
+            dock.resize_to(
+                gpui::point(bounds.size.width / 2.0, px(0.0)),
+                bounds,
+                window,
+                cx,
+            );
         });
     });
     cx.executor().advance_clock(LAYOUT_SAVE_THROTTLE);
@@ -196,7 +201,7 @@ fn dock_resize_and_reset_save_layout(cx: &mut TestAppContext) {
     // 双击重置：恢复默认尺寸并同样落盘。
     workspace.update_in(cx, |workspace, window, cx| {
         workspace.bottom_dock.update(cx, |dock, cx| {
-            dock.reset_size(window.bounds().size, cx);
+            dock.reset_size(window.bounds().size, window, cx);
         });
     });
     cx.executor().advance_clock(LAYOUT_SAVE_THROTTLE);

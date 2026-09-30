@@ -5,7 +5,7 @@
 use gpui::{
     AnyElement, App, ElementId, IntoElement, RenderOnce, ViewElement, Window, div, prelude::*,
 };
-use zcv_theme::{color, space, typography};
+use zcv_theme::{color, scale, typography};
 
 /// 通用列表项。
 pub struct ListItem {
@@ -81,8 +81,8 @@ impl RenderOnce for ListItem {
             .flex_row()
             .items_center()
             .justify_between()
-            .gap(space::S6)
-            .p(space::S6)
+            .gap(scale::S6)
+            .p(scale::S6)
             .cursor_pointer()
             // test cfg 下注册 debug bounds，供行高断言使用。
             .debug_selector(|| "list-item".into())

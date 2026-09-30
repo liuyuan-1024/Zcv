@@ -1205,8 +1205,8 @@ fn projection_changed_ranges(
         new_offset += matched;
     }
 
-    old_cursor.seek_output(ByteOffset::new(old_len), Bias::Left);
-    new_cursor.seek_output(ByteOffset::new(new_len), Bias::Left);
+    old_cursor.seek(ByteOffset::new(old_len), Bias::Left);
+    new_cursor.seek(ByteOffset::new(new_len), Bias::Left);
     let mut old_remaining = old_cursor.item().map_or(0, |(region, _)| {
         region.text_summary.len + usize::from(region.adds_newline)
     });
@@ -1273,7 +1273,7 @@ impl SeekTarget<'_, ExcerptSummary, ExcerptSummary> for ExcerptIndex {
 ///
 /// 输出游标负责组合文档坐标；
 /// 输入游标始终跟随当前 transform 指向其权威源 excerpt。
-/// 读取路径通过此类型完成坐标联合，避免每次查询重新从 transform 序号创建输入树游标。
+/// 连续输出定位同时向前推进两棵树，不逐点重新定位源 excerpt。
 #[derive(Clone)]
 struct MultiBufferCursor<'a> {
     excerpts: Cursor<'a, 'static, Excerpt, ExcerptSummary>,
@@ -1295,10 +1295,9 @@ impl<'a> MultiBufferCursor<'a> {
         }
     }
 
-    fn sync_output_offset(&mut self, offset: ByteOffset, bias: Bias) {
+    fn input_offset_at_output(&self, offset: ByteOffset) -> ExcerptOffset {
         let Some(transform) = self.diff_transforms.item() else {
-            self.sync_excerpts_at_input(self.diff_transforms.start().input_offset, bias);
-            return;
+            return self.diff_transforms.start().input_offset;
         };
         let at = self.diff_transforms.start();
         let input = at.input_offset.get()
@@ -1308,19 +1307,23 @@ impl<'a> MultiBufferCursor<'a> {
                 }
                 DiffTransform::DeletedHunk { .. } => 0,
             };
-        self.sync_excerpts_at_input(ExcerptOffset::new(input), bias);
+        ExcerptOffset::new(input)
     }
 
-    fn seek_output(&mut self, offset: ByteOffset, bias: Bias) {
+    fn seek(&mut self, offset: ByteOffset, bias: Bias) {
         self.diff_transforms
             .seek(&MultiBufferOffset(offset.get()), bias);
-        self.sync_output_offset(offset, bias);
+        self.sync_excerpts_at_input(self.input_offset_at_output(offset), bias);
     }
 
-    fn seek_output_forward(&mut self, offset: ByteOffset, bias: Bias) {
+    fn seek_forward(&mut self, offset: ByteOffset, bias: Bias) {
         self.diff_transforms
             .seek_forward(&MultiBufferOffset(offset.get()), bias);
-        self.sync_output_offset(offset, bias);
+        let input = self.input_offset_at_output(offset);
+        self.excerpts.seek_forward(&input, bias);
+        if self.excerpts.item().is_none() {
+            self.excerpts.prev();
+        }
     }
 
     fn sync_output_position(&mut self, position: Position, bias: Bias) {
@@ -1555,7 +1558,29 @@ impl<'a> MultiBufferCursor<'a> {
     fn seek_output_line_forward(&mut self, line: usize, bias: Bias) {
         let position = Position::new(Line::new(line), LogicalColumn::ZERO);
         self.diff_transforms.seek_forward(&position, bias);
-        self.sync_output_position(position, bias);
+        let Some(transform) = self.diff_transforms.item() else {
+            return;
+        };
+        let at = self.diff_transforms.start();
+        if matches!(transform, DiffTransform::DeletedHunk { .. }) {
+            self.excerpts.seek_forward(&at.input_offset, Bias::Right);
+        } else {
+            let rows = position.line().get().saturating_sub(at.lines);
+            let column = if rows == 0 {
+                at.input_text.last_line_chars
+                    + position.column().get().saturating_sub(at.column_chars)
+            } else {
+                position.column().get()
+            };
+            let input = Position::new(
+                Line::new(at.input_text.lines + rows),
+                LogicalColumn::new(column),
+            );
+            self.excerpts.seek_forward(&input, bias);
+        }
+        if self.excerpts.item().is_none() {
+            self.excerpts.prev();
+        }
     }
 }
 
@@ -1586,9 +1611,9 @@ impl<'a> MultiBufferPositionCursor<'a> {
             self.reset();
         }
         if self.last_offset.is_some() {
-            self.cursor.seek_output_forward(offset.into(), Bias::Right);
+            self.cursor.seek_forward(offset.into(), Bias::Right);
         } else {
-            self.cursor.seek_output(offset.into(), Bias::Right);
+            self.cursor.seek(offset.into(), Bias::Right);
         }
         self.last_offset = Some(offset);
         self.snapshot
@@ -1780,7 +1805,7 @@ fn mappings_in_output_range(
     end: ByteOffset,
 ) -> Vec<ExcerptMapping> {
     let mut cursor = MultiBufferCursor::new(excerpts, tree);
-    cursor.seek_output(
+    cursor.seek(
         ByteOffset::new(start.output_range.start().get()),
         Bias::Right,
     );
@@ -2509,7 +2534,7 @@ impl MultiBufferSnapshot {
     /// 把组合字节偏移转换为按 Unicode scalar value 计数的逻辑位置。
     pub fn byte_to_position(&self, offset: MultiBufferOffset) -> TextResult<Position> {
         let mut cursor = MultiBufferCursor::new(&self.excerpts, &self.diff_transforms);
-        cursor.seek_output(offset.into(), Bias::Right);
+        cursor.seek(offset.into(), Bias::Right);
         self.byte_to_position_with_cursor(&mut cursor, offset)
     }
 
@@ -2820,7 +2845,7 @@ impl MultiBufferSnapshot {
         let end = range.end.min(self.len_bytes());
         let start = range.start.min(end);
         let mut cursor = MultiBufferCursor::new(&self.excerpts, &self.diff_transforms);
-        cursor.seek_output(start.into(), Bias::Right);
+        cursor.seek(start.into(), Bias::Right);
         MultiBufferBytes {
             snapshot: self,
             range: start.into()..end.into(),
@@ -2842,7 +2867,7 @@ impl MultiBufferSnapshot {
             return Err(CoordinateError::OutOfBounds(offset.into()).into());
         }
         let mut cursor = MultiBufferCursor::new(&self.excerpts, &self.diff_transforms);
-        cursor.seek_output(offset.into(), Bias::Right);
+        cursor.seek(offset.into(), Bias::Right);
         self.source_point_at_cursor(&mut cursor, offset)
     }
 
@@ -2954,7 +2979,7 @@ impl MultiBufferSnapshot {
     pub fn regions(&self) -> impl Iterator<Item = ExcerptSnapshot> + '_ {
         let mut cursor = MultiBufferCursor::new(&self.excerpts, &self.diff_transforms);
         // 用 Left 偏置从零长度边界节点开始遍历：空文件的零长度 excerpt 不能被跳过。
-        cursor.seek_output(ByteOffset::ZERO, Bias::Left);
+        cursor.seek(ByteOffset::ZERO, Bias::Left);
         std::iter::from_fn(move || {
             let (excerpt, _) = cursor.item()?;
             let snapshot = excerpt.to_snapshot(cursor.start().clone());
@@ -3031,7 +3056,7 @@ impl MultiBufferSnapshot {
         range: std::ops::RangeInclusive<MultiBufferOffset>,
     ) -> impl Iterator<Item = ExcerptBoundary> + '_ {
         let mut output = MultiBufferCursor::new(&self.excerpts, &self.diff_transforms);
-        output.seek_output((*range.start()).into(), Bias::Left);
+        output.seek((*range.start()).into(), Bias::Left);
         let mut cursor = output.excerpts;
         let mut previous_cursor = cursor.clone();
         previous_cursor.prev();
@@ -3069,7 +3094,7 @@ impl MultiBufferSnapshot {
         offset: MultiBufferOffset,
     ) -> Option<ExcerptSnapshot> {
         let mut cursor = MultiBufferCursor::new(&self.excerpts, &self.diff_transforms);
-        cursor.seek_output(offset.into(), Bias::Right);
+        cursor.seek(offset.into(), Bias::Right);
         let excerpt = cursor.excerpts.item()?;
         Some(self.logical_excerpt_snapshot(excerpt, cursor.excerpts.start().text.len))
     }
@@ -3228,7 +3253,7 @@ impl MultiBufferSnapshot {
         // 片段按输出顺序排列，内容结束位置单调递增；
         // 先用输出字节游标定位第一个可能重叠的片段，避免每个视口范围都扫描整份多文件结果。
         let mut cursor = MultiBufferCursor::new(&self.excerpts, &self.diff_transforms);
-        cursor.seek_output(ByteOffset::new(range.start), Bias::Right);
+        cursor.seek(ByteOffset::new(range.start), Bias::Right);
         while let Some((excerpt, _)) = cursor.item() {
             let output_start = cursor.start().bytes;
             if output_start >= range.end {
@@ -3390,7 +3415,7 @@ impl MultiBufferSnapshot {
             .collect::<Vec<_>>();
         let mut projected = Vec::new();
         let mut cursor = MultiBufferCursor::new(&self.excerpts, &self.diff_transforms);
-        cursor.seek_output(ByteOffset::ZERO, Bias::Right);
+        cursor.seek(ByteOffset::ZERO, Bias::Right);
         while let Some((excerpt, _)) = cursor.item() {
             let mapping = excerpt.to_mapping(cursor.start());
             if let Some(outlines) = source_outlines.get(mapping.source_index) {
@@ -4633,7 +4658,7 @@ impl MultiBuffer {
         if let Some(path) = path {
             cursor.seek_path(path, Bias::Left);
         } else {
-            cursor.seek_output(ByteOffset::ZERO, Bias::Right);
+            cursor.seek(ByteOffset::ZERO, Bias::Right);
         }
         while let Some((excerpt, _)) = cursor.item() {
             if path.is_some_and(|path| excerpt.path != *path) {
@@ -5250,7 +5275,7 @@ impl MultiBuffer {
         let sources = {
             let mut cursor =
                 MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
-            cursor.seek_output(ByteOffset::ZERO, Bias::Right);
+            cursor.seek(ByteOffset::ZERO, Bias::Right);
             let mut sources = Vec::new();
             while let Some((excerpt, _)) = cursor.item() {
                 if excerpt.editable {
@@ -5449,7 +5474,7 @@ impl MultiBuffer {
             }
             let mut cursor =
                 MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
-            cursor.seek_output(ByteOffset::ZERO, Bias::Right);
+            cursor.seek(ByteOffset::ZERO, Bias::Right);
             let source = loop {
                 let Some((excerpt, _)) = cursor.item() else {
                     break None;
@@ -5981,12 +6006,12 @@ fn mapping_at_tree(
         return Some((region.to_mapping(at.clone()), at));
     }
     let mut cursor = MultiBufferCursor::new(excerpts, tree);
-    cursor.seek_output(offset, Bias::Right);
+    cursor.seek(offset, Bias::Right);
     if cursor.item().is_none() {
         // 偏移在文档末尾（或之后）：命中最后一个映射。
         let mut last = MultiBufferCursor::new(excerpts, tree);
         // Right bias 保留末尾零长度 excerpt；它们仍然拥有自己的文件身份和边界行。
-        last.seek_output(ByteOffset::new(tree.summary().output.len), Bias::Right);
+        last.seek(ByteOffset::new(tree.summary().output.len), Bias::Right);
         if last.item().is_none() {
             last.prev();
         }
@@ -6012,7 +6037,7 @@ fn mapping_at_tree(
         return cursor.mapping().map(|mapping| (mapping, at));
     }
     let mut last = MultiBufferCursor::new(excerpts, tree);
-    last.seek_output(ByteOffset::new(tree.summary().output.len), Bias::Right);
+    last.seek(ByteOffset::new(tree.summary().output.len), Bias::Right);
     if last.item().is_none() {
         last.prev();
     }
@@ -6069,7 +6094,7 @@ fn source_mapping_range(
     }
 
     let mut cursor = MultiBufferCursor::new(excerpts, tree);
-    cursor.seek_output(origin.output_range.start().into(), Bias::Right);
+    cursor.seek(origin.output_range.start().into(), Bias::Right);
     if cursor.item().is_none() {
         cursor.prev();
     }
@@ -6158,7 +6183,7 @@ fn anchor_in_mappings<S: SourceTexts + ?Sized>(
     // 左吸附在删除段末端属于旧侧末端，需保留基线 Anchor；
     // 若只锚到同点的工作区起点，解析时会按左吸附落到删除段起点，扩大后续编辑的选区。
     let mut cursor = MultiBufferCursor::new(excerpts, tree);
-    cursor.seek_output(offset, Bias::Right);
+    cursor.seek(offset, Bias::Right);
     let deleted_end = if affinity == Affinity::Before && cursor.start().bytes == offset.get() {
         let mut previous = cursor.clone();
         previous.prev();
@@ -6192,7 +6217,7 @@ fn anchor_in_mappings<S: SourceTexts + ?Sized>(
     };
     if mapping.diff_kind == Some(ExcerptDiffKind::Deleted) {
         if !deleted_end {
-            cursor.seek_output(offset, Bias::Right);
+            cursor.seek(offset, Bias::Right);
         }
         let (_, transform) = cursor.item()?;
         let logical = cursor.excerpts.item()?;

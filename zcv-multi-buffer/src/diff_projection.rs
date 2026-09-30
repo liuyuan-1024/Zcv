@@ -1603,7 +1603,7 @@ impl MultiBuffer {
         let mut paths = Vec::new();
         let mut seen = HashSet::new();
         let mut cursor = MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
-        cursor.seek_output(ByteOffset::ZERO, sum_tree::Bias::Left);
+        cursor.seek(ByteOffset::ZERO, sum_tree::Bias::Left);
         while let Some((excerpt, _)) = cursor.item() {
             if seen.insert(excerpt.path.clone()) {
                 paths.push(excerpt.path.clone());

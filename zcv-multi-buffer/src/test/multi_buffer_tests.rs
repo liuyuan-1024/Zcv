@@ -1833,6 +1833,14 @@ fn assert_output_coordinates(snapshot: &MultiBufferSnapshot) {
             assert_eq!(snapshot.utf16_cu_to_byte(units).unwrap(), output_byte);
         }
     }
+    let end = snapshot.len_bytes();
+    for offset in [end, MultiBufferOffset::ZERO, end] {
+        assert_eq!(
+            positions.byte_to_position(offset),
+            snapshot.byte_to_position(offset),
+            "重复定位、回退及再次前进必须与随机定位一致"
+        );
+    }
     let mut lines = snapshot.line_cursor(Line::ZERO).unwrap();
     for row in 0..reference.line_count() {
         let line = Line::new(row);
@@ -1846,6 +1854,16 @@ fn assert_output_coordinates(snapshot: &MultiBufferSnapshot) {
         assert_eq!(
             snapshot.line_content_byte_range(line),
             Some(content.start().into()..content.end().into())
+        );
+    }
+    let last_line = Line::new(reference.line_count() - 1);
+    for line in [last_line, Line::ZERO, last_line] {
+        assert!(lines.seek(line));
+        let content = reference.line_content(line, None).unwrap().text_range();
+        assert_eq!(
+            lines.line_content_range(),
+            Some((content.start().get(), content.len())),
+            "行游标重复定位、回退及再次前进必须与随机定位一致"
         );
     }
 }

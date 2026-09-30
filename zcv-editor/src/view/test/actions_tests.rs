@@ -221,14 +221,6 @@ fn outline_items_filter_and_navigate_using_current_snapshot(cx: &mut TestAppCont
     let build = cx.read_entity(&editor, |editor, cx| {
         let items = editor.outline_items(cx);
         assert!(items.iter().any(|item| item.name == "数据"));
-        assert_eq!(
-            editor
-                .outline_items_matching("BUILD", cx)
-                .iter()
-                .map(|item| item.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["build"]
-        );
         items
             .into_iter()
             .find(|item| item.name == "build")

@@ -54,6 +54,8 @@ mod rename;
 mod search;
 mod syntax;
 
+pub use syntax::{OutlineSource, OutlineVersion};
+
 use rename::LocalRenameState;
 
 pub(crate) use search::EditorSearch;
@@ -68,6 +70,11 @@ pub enum EditorEvent {
     PathChanged,
     /// 文档内容被编辑；只在真实事务提交时发布。
     Edited { transaction_id: TransactionId },
+    /// 文档内容、组合投影或源语法元数据推进；由组合文档事件翻译而来。
+    ///
+    /// 派生视图（如大纲）据此按版本重取，不监听通用重绘通知；
+    /// 滚动、绘制与选择变化不发布本事件。
+    DocumentChanged,
     /// 文档是否包含未保存修改发生变化。
     DirtyChanged,
     /// 复合文档请求宿主打开底层文件。
@@ -1639,9 +1646,19 @@ impl Editor {
                     editor.last_dirty = dirty;
                     cx.emit(EditorEvent::DirtyChanged);
                 }
-                // diff 展开/折叠的唯一重建信号由组合文档发布，Editor 只翻译为领域事件，不另设生产者。
-                if matches!(event, MultiBufferEvent::DiffExpansionChanged) {
-                    cx.emit(EditorEvent::DiffHunksExpandedChanged);
+                // 组合文档事实统一翻译为编辑器领域事件，消费方不监听通用重绘通知。
+                match event {
+                    // diff 展开/折叠的唯一重建信号由组合文档发布，Editor 只翻译，不另设生产者。
+                    MultiBufferEvent::DiffExpansionChanged => {
+                        cx.emit(EditorEvent::DiffHunksExpandedChanged);
+                        cx.emit(EditorEvent::DocumentChanged);
+                    }
+                    MultiBufferEvent::TextChanged
+                    | MultiBufferEvent::ProjectionChanged
+                    | MultiBufferEvent::Reparsed(_)
+                    | MultiBufferEvent::MetadataChanged => {
+                        cx.emit(EditorEvent::DocumentChanged);
+                    }
                 }
                 cx.notify();
             },

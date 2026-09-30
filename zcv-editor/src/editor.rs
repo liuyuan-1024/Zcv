@@ -20,7 +20,7 @@ mod workspace_item;
 
 pub use display_map::{EditorHunk, EditorHunkPart, HunkControlTarget};
 pub use status_items::install_status_items;
-pub use view::{DiffHunkDelegate, Editor, EditorEvent};
+pub use view::{DiffHunkDelegate, Editor, EditorEvent, OutlineSource, OutlineVersion};
 pub use zcv_language::LanguageRegistry;
 
 /// 应用启动时由装配层注入唯一的语言注册表，编辑器的内嵌输入控件共享同一份。

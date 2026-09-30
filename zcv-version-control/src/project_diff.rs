@@ -581,7 +581,8 @@ impl DiffView {
                 EditorEvent::DiffHunksExpandedChanged | EditorEvent::BufferFoldChanged => {
                     cx.notify()
                 }
-                EditorEvent::Edited { .. }
+                EditorEvent::DocumentChanged
+                | EditorEvent::Edited { .. }
                 | EditorEvent::PathChanged
                 | EditorEvent::DirtyChanged
                 | EditorEvent::OpenExcerptsRequested { .. }

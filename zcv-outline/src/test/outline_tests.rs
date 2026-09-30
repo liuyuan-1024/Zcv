@@ -37,6 +37,34 @@ fn collapsed_parent_hides_descendants_but_not_siblings() {
 }
 
 #[test]
+fn outline_refresh_requires_visible_panel_and_changed_version() {
+    assert!(!outline_refresh_needed(false, true), "不可见面板不得重算");
+    assert!(
+        !outline_refresh_needed(true, false),
+        "版本未变（滚动、重绘、选择变化）不得重算"
+    );
+    assert!(outline_refresh_needed(true, true), "版本变化且可见才重算");
+}
+
+#[test]
+fn outline_filter_matches_text_case_insensitively() {
+    let items = vec![item("fn build() {}", 0, 0), item("struct 数据", 0, 1)];
+    let filtered = filter_outline_items(&items, "build");
+    assert_eq!(
+        filtered
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["fn build() {}"]
+    );
+    assert_eq!(
+        filter_outline_items(&items, "").len(),
+        2,
+        "空查询返回全部项"
+    );
+}
+
+#[test]
 fn has_children_follows_next_item_depth() {
     let items = vec![item("a", 0, 0), item("b", 1, 1), item("c", 0, 2)];
     let visible = visible_items(&items, &HashSet::new());

@@ -951,3 +951,47 @@ fn removing_then_unfolding_a_file_keeps_empty_frames_stable(cx: &mut TestAppCont
         );
     }
 }
+
+#[gpui::test]
+fn scrolling_does_not_invalidate_outline_but_editing_does(cx: &mut TestAppContext) {
+    let text = (0..120)
+        .map(|row| format!("fn item_{row}() {{}}\n"))
+        .collect::<String>();
+    let source = test_buffer(cx, text);
+    let (editor, cx) = cx.add_window_view(move |_, cx| Editor::for_language_buffer(source, cx));
+    cx.run_until_parked();
+    cx.refresh().expect("测试窗口应可刷新");
+
+    let document_changes = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let observed = document_changes.clone();
+    let _document_subscription = cx.cx.update(|cx| {
+        cx.subscribe(&editor, move |_, event: &EditorEvent, _| {
+            if matches!(event, EditorEvent::DocumentChanged) {
+                observed.set(observed.get() + 1);
+            }
+        })
+    });
+    document_changes.set(0);
+
+    let before = cx.read_entity(&editor, |editor, cx| editor.outline_version(cx));
+    for delta in [-120., -8_000., 4_000., -1_000_000.] {
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(100.), px(100.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+            ..Default::default()
+        });
+        cx.refresh().expect("测试窗口应可刷新");
+        cx.run_until_parked();
+        let after = cx.read_entity(&editor, |editor, cx| editor.outline_version(cx));
+        assert_eq!(after, before, "滚动不得改变大纲失效键");
+    }
+    assert_eq!(document_changes.get(), 0, "滚动不得发布文档推进事件");
+
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_text("fn replaced() {}\n", cx);
+    });
+    cx.run_until_parked();
+    let edited = cx.read_entity(&editor, |editor, cx| editor.outline_version(cx));
+    assert_ne!(edited, before, "编辑必须推进大纲失效键");
+    assert!(document_changes.get() >= 1, "编辑必须发布文档推进事件");
+}

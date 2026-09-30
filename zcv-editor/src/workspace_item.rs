@@ -25,7 +25,9 @@ impl Item for Editor {
             EditorEvent::DirtyChanged => emit(ItemEvent::UpdateTab),
             EditorEvent::Edited { .. } => emit(ItemEvent::Edit),
             EditorEvent::OpenExcerptsRequested { .. } => {}
-            EditorEvent::DiffHunksExpandedChanged | EditorEvent::BufferFoldChanged => {}
+            EditorEvent::DocumentChanged
+            | EditorEvent::DiffHunksExpandedChanged
+            | EditorEvent::BufferFoldChanged => {}
             EditorEvent::Error(message) => emit(ItemEvent::Error(message.clone())),
         }
     }

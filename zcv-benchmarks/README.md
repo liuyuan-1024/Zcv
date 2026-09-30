@@ -21,6 +21,21 @@ cargo test --offline --release -p zcv-editor soft_wrap_reflow_latency_probe --li
 
 测试文本系统与真实字体塑形、系统输入队列和 GPU 呈现不同；上述测量也未包含整个 DiffView 的宿主控件。原生 release 验收需使用同一组文件、窗口宽度与字体，分别检查连续滚动、快速大跳转、编辑后滚动和调整窗口宽度，并用主线程采样与帧时间确认。
 
+### 真实 dispatcher 原生探针
+
+native_dispatcher_scroll_probe 用 Application::with_platform(current_platform(false)) 打开真实窗口，前后台任务由平台真实执行器调度，因此不会把测试调度器在 simulate_event 里排空后台重排的耗时误算成滚轮处理延迟。它分别报告注册下一帧回调、window.dispatch_event(ScrollWheel)、派发到绘制、测量到绘制的分布，并用一个只计数的滚动监听确认编辑器实际消费了滚动事件。
+
+```bash
+cargo bench --offline -p zcv-benchmarks --bench native_dispatcher_scroll_probe
+ZCV_PROBE_FILES=300 ZCV_PROBE_INITIAL=10 cargo bench --offline -p zcv-benchmarks --bench native_dispatcher_scroll_probe
+```
+
+- ZCV_PROBE_FILES：组合文档文件数，默认 300。
+- ZCV_PROBE_INITIAL：窗口打开时先挂载的文件数；其余文件在窗口打开后逐个 add_diff，用于复现边加载边滚动，默认等于 FILES（全部预置）。
+- ZCV_PROBE_STAGED：true/1 使用只读暂存组合文档。
+
+该探针把 dispatch_event 与真实帧回调分开计时，是判断「滚轮事件里是否发生重排」的准入门槛；它不覆盖 DiffView 宿主控件、Git 修订加载与语法高亮，完整产品链路仍需主线程采样确认。
+
 ## 正确性与生命周期
 
 定向回归分别验证稳定 Anchor、局部块拼接、关闭软换行的行 patch、异步重排取消、滚动快照复用、批量折叠事件及高亮缓存的预算淘汰。换行器归还 GPUI 池后，字体宽度缓存由文本系统保留；释放检查应验证反复取消后池规模稳定、文档和任务输入释放，不能要求文本系统的引用计数恢复到创建池之前。

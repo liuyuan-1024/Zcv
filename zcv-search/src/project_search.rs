@@ -211,7 +211,7 @@ impl ProjectSearchView {
                     EditorEvent::OpenExcerptsRequested { locations, .. } => {
                         cx.emit(ProjectSearchEvent::OpenExcerptsRequested(locations.clone()));
                     }
-                    EditorEvent::PathChanged => {}
+                    EditorEvent::PathChanged | EditorEvent::DocumentChanged => {}
                     EditorEvent::DiffHunksExpandedChanged | EditorEvent::BufferFoldChanged => {}
                     EditorEvent::Error(_) => {}
                 },

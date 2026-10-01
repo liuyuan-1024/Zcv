@@ -1202,15 +1202,18 @@ fn diff_operations_stage_hunk_writes_index_and_keeps_pending(cx: &mut gpui::Test
         hunk.buffer_range.clone()
     });
 
-    // 操作发起后立即抑制该 hunk；乐观 index 批次只在后台写入并经权威扫描确认后前进。
+    // 操作发起后保留该 hunk 并叠加暂存中状态；index 只在权威扫描确认后前进。
     cx.update(|cx| {
         let operations = diff.read(cx).operations().expect("应有操作实现");
         operations.stage(diff.clone(), vec![range], cx);
     });
-    diff.read_with(cx, |diff, _| {
-        assert!(
-            diff.snapshot().visible_hunks().is_empty(),
-            "pending 应立即抑制 hunk"
+    diff.read_with(cx, |diff, cx| {
+        let working = diff.working().read(cx).text_snapshot();
+        let hunks = diff.snapshot().visible_hunks(&working);
+        assert_eq!(hunks.len(), 1, "暂存期间仍须保留 hunk");
+        assert_eq!(
+            hunks[0].staging,
+            zcv_buffer_diff::DiffHunkStaging::StagingPending
         );
         assert_eq!(diff.snapshot().pending_hunks().len(), 1);
     });

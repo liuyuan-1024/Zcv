@@ -735,7 +735,17 @@ impl GitStore {
                     }
                 };
                 edits.push(HunkEdit::new(range, Arc::from(replacement)));
-                pending.push(PendingHunk::suppress(hunk, working_text.version()));
+                pending.push(match operation {
+                    GitHunkOperation::Stage => {
+                        PendingHunk::set_staging(hunk, working_text.version(), true)
+                    }
+                    GitHunkOperation::Unstage => {
+                        PendingHunk::set_staging(hunk, working_text.version(), false)
+                    }
+                    GitHunkOperation::Restore => {
+                        PendingHunk::suppress(hunk, working_text.version())
+                    }
+                });
             }
             let index_base = match operation {
                 GitHunkOperation::Stage => Some(base_text.clone().unwrap_or_else(|| Arc::from(""))),

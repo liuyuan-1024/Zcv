@@ -1725,15 +1725,14 @@ impl MultiBuffer {
 
 /// 解析一个文件的当前 hunk 为显示行坐标。
 ///
-/// 用完整 hunks，不用 pending 抑制后的集合：pending 只表达"正在后台暂存"，
-/// 改变的是 hunk 的状态标记，不应改变 excerpt 结构（对齐 Zed 的 hunks_intersecting_range：遍历完整 hunks，pending 只贡献 has_pending）。
+/// 使用与视图窗口相同的可见 hunk 查询：暂存中的块保留，正在还原的块临时抑制。
 fn resolve_file_hunks(file: &DiffState, cx: &App) -> Vec<ResolvedHunk> {
     let entity = file.diff.clone();
     let (working_text, base_text, hunks) = {
         let diff = entity.read(cx);
         let working_text = diff.working().read(cx).text_snapshot();
         let base_text = diff.base_source().map(|base| base.read(cx).text_snapshot());
-        let hunks = diff.snapshot().hunks().collect::<Vec<_>>();
+        let hunks = diff.snapshot().visible_hunks(&working_text);
         (working_text, base_text, hunks)
     };
     hunks
@@ -1751,7 +1750,8 @@ fn resolve_file_hunks_in_working_range(
     let working_text = diff.working().read(cx).text_snapshot();
     let base_text = diff.base_source().map(|base| base.read(cx).text_snapshot());
     diff.snapshot()
-        .hunks_intersecting_working_range(range, &working_text)
+        .visible_hunks_intersecting_working_range(range, &working_text)
+        .iter()
         .map(|hunk| resolve_hunk(hunk, &working_text, base_text.as_ref()))
         .collect()
 }

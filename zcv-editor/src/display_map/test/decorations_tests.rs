@@ -469,6 +469,17 @@ fn staging_drives_hollow_blocks(cx: &mut TestAppContext) {
         vec![1..3],
         "多行已暂存 hunk 应合并为单个 hollow 块"
     );
+    let staging = DisplayHunk {
+        range: 1..3,
+        old_range: 1..3,
+        kind: DiffHunkKind::Added,
+        staging: DiffHunkStaging::StagingPending,
+    };
+    let rendered = hunk_rendering(
+        &snapshot,
+        resolved_hunks(&[staging], &[true], &[None], &[]).into_iter(),
+    );
+    assert_eq!(rendered.hollow_blocks, vec![1..3]);
     // 实心（未暂存）不产生任何 hollow 块。
     let unstaged = DisplayHunk {
         range: 1..3,

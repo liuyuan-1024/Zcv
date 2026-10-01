@@ -692,11 +692,14 @@ pub(crate) fn diff_row_for_row(
         .map(|(_, kind, staging)| (*kind, *staging))
 }
 
-/// 该 hunk 是否用空心色条 + 透明行背景（已暂存）。
+/// 该 hunk 是否用空心色条 + 透明行背景。
 ///
-/// 只有完全进入 index 的 hunk 是空心；未暂存 / 部分暂存 / 无 index 参照一律实心。
+/// 已暂存与暂存中的 hunk 为空心；其余状态为实心。
 pub(crate) fn is_hollow_hunk(staging: DiffHunkStaging) -> bool {
-    matches!(staging, DiffHunkStaging::Staged)
+    matches!(
+        staging,
+        DiffHunkStaging::Staged | DiffHunkStaging::StagingPending
+    )
 }
 
 /// 绑定搜索状态与显示拓扑版本的不可变装饰快照。

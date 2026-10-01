@@ -650,8 +650,7 @@ fn unified_diff_marks_staged_and_unstaged_hunks(cx: &mut TestAppContext) {
     assert_eq!(
         cx.read_entity(&diff, |diff, _| {
             diff.snapshot()
-                .visible_hunks()
-                .into_iter()
+                .hunks()
                 .map(|hunk| hunk.staging)
                 .collect::<Vec<_>>()
         }),
@@ -670,8 +669,7 @@ fn unified_diff_marks_staged_and_unstaged_hunks(cx: &mut TestAppContext) {
     assert_eq!(
         cx.read_entity(&staged_diff, |diff, _| {
             diff.snapshot()
-                .visible_hunks()
-                .into_iter()
+                .hunks()
                 .map(|hunk| hunk.staging)
                 .collect::<Vec<_>>()
         }),
@@ -694,8 +692,7 @@ fn unified_diff_marks_mixed_staged_and_unstaged_hunks(cx: &mut TestAppContext) {
     assert_eq!(
         cx.read_entity(&diff, |diff, _| {
             diff.snapshot()
-                .visible_hunks()
-                .into_iter()
+                .hunks()
                 .map(|hunk| hunk.staging)
                 .collect::<Vec<_>>()
         }),
@@ -751,8 +748,7 @@ fn staged_hunk_with_partial_unstaged_edit_is_partially_staged(cx: &mut TestAppCo
     cx.run_until_parked();
     let stagings = cx.read_entity(&diff, |diff, _| {
         diff.snapshot()
-            .visible_hunks()
-            .into_iter()
+            .hunks()
             .map(|hunk| hunk.staging)
             .collect::<Vec<_>>()
     });
@@ -774,8 +770,7 @@ fn unified_diff_marks_partially_staged_hunk(cx: &mut TestAppContext) {
     assert_eq!(
         cx.read_entity(&diff, |diff, _| {
             diff.snapshot()
-                .visible_hunks()
-                .into_iter()
+                .hunks()
                 .map(|hunk| hunk.staging)
                 .collect::<Vec<_>>()
         }),

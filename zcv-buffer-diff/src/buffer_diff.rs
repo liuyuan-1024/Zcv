@@ -128,7 +128,9 @@ pub fn diff_line_boundary(text: &Snapshot, offset: ByteOffset) -> usize {
 /// pending 操作希望在 diff 结果中表达的效果。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PendingSense {
-    /// 抑制该 hunk（apply/reject 后立即从当前 diff 中消失）。
+    /// 暂存或取消暂存期间保留 hunk，只更新它相对 index 的显示状态。
+    SetStagingStatus { stage: bool },
+    /// 还原工作区内容期间临时抑制将消失的 hunk。
     Suppress,
 }
 
@@ -136,10 +138,8 @@ pub enum PendingSense {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingHunk {
     pub buffer_range: Range<Anchor>,
-    pub diff_base_byte_range: Range<usize>,
-    pub kind: DiffHunkKind,
     /// 发起操作时的 working buffer 版本；
-    /// 旧版本 pending 不得抑制新版本 hunk。
+    /// 仅当该范围内没有后续文本编辑时，pending 才作用于当前 hunk。
     pub buffer_version: BufferVersion,
     pub sense: PendingSense,
 }
@@ -153,6 +153,10 @@ pub enum DiffHunkStaging {
     PartiallyStaged,
     /// index→working 无重叠：内容已在 index 中。
     Staged,
+    /// 暂存操作正在写入 index；hunk 在权威修订更新前保持可见。
+    StagingPending,
+    /// 取消暂存操作正在写入 index；hunk 在权威修订更新前保持可见。
+    UnstagingPending,
     /// 没有 index 参照（index 尚未加载或无暂存语境），不参与暂存渲染。
     NoStaging,
 }
@@ -211,11 +215,17 @@ fn staging_against(hunk: &DiffHunk, index_hunks: &[DiffHunk]) -> DiffHunkStaging
 }
 
 impl PendingHunk {
+    pub fn set_staging(hunk: &DiffHunk, buffer_version: BufferVersion, stage: bool) -> Self {
+        Self {
+            buffer_range: hunk.buffer_range.clone(),
+            buffer_version,
+            sense: PendingSense::SetStagingStatus { stage },
+        }
+    }
+
     pub fn suppress(hunk: &DiffHunk, buffer_version: BufferVersion) -> Self {
         Self {
             buffer_range: hunk.buffer_range.clone(),
-            diff_base_byte_range: hunk.diff_base_byte_range.clone(),
-            kind: hunk.kind,
             buffer_version,
             sense: PendingSense::Suppress,
         }
@@ -265,12 +275,22 @@ impl BufferDiffSnapshot {
             })
     }
 
-    /// pending 抑制后应当显示的 hunks（已带暂存语义）。
-    pub fn visible_hunks(&self) -> Vec<DiffHunk> {
+    /// 当前 working 快照中的可见 hunks；暂存只叠加状态，还原才抑制。
+    pub fn visible_hunks(&self, working: &Snapshot) -> Vec<DiffHunk> {
         self.hunks
             .iter()
-            .filter(|hunk| !self.is_suppressed(hunk))
-            .cloned()
+            .filter_map(|hunk| self.present_hunk(hunk, working))
+            .collect()
+    }
+
+    /// 只查询与 working 范围相交的可见 hunks，供组合投影增量同步使用。
+    pub fn visible_hunks_intersecting_working_range(
+        &self,
+        range: Range<ByteOffset>,
+        working: &Snapshot,
+    ) -> Vec<DiffHunk> {
+        self.hunks_intersecting_working_range(range, working)
+            .filter_map(|hunk| self.present_hunk(hunk, working))
             .collect()
     }
 
@@ -278,13 +298,47 @@ impl BufferDiffSnapshot {
         &self.pending_hunks
     }
 
-    fn is_suppressed(&self, hunk: &DiffHunk) -> bool {
-        self.pending_hunks.iter().any(|pending| {
-            pending.sense == PendingSense::Suppress
-                && pending.buffer_version == hunk.buffer_range.start.version()
-                && pending.buffer_range.start.offset() == hunk.buffer_range.start.offset()
-                && pending.diff_base_byte_range == hunk.diff_base_byte_range
-        })
+    fn present_hunk(&self, hunk: &DiffHunk, working: &Snapshot) -> Option<DiffHunk> {
+        let mut shown = hunk.clone();
+        if let Some(pending) = self
+            .pending_hunks
+            .iter()
+            .find(|pending| pending.matches(hunk, working))
+        {
+            shown.staging = match pending.sense {
+                PendingSense::SetStagingStatus { stage: true } => DiffHunkStaging::StagingPending,
+                PendingSense::SetStagingStatus { stage: false } => {
+                    DiffHunkStaging::UnstagingPending
+                }
+                PendingSense::Suppress => return None,
+            };
+        }
+        Some(shown)
+    }
+}
+
+impl PendingHunk {
+    fn matches(&self, hunk: &DiffHunk, working: &Snapshot) -> bool {
+        let (Ok(start), Ok(end), Ok(hunk_start), Ok(hunk_end)) = (
+            self.buffer_range.start.resolve_in(working),
+            self.buffer_range.end.resolve_in(working),
+            hunk.buffer_range.start.resolve_in(working),
+            hunk.buffer_range.end.resolve_in(working),
+        ) else {
+            return false;
+        };
+        if start != hunk_start || end != hunk_end {
+            return false;
+        }
+        let Ok(previous) = working.offsets_to_version([start, end], self.buffer_version) else {
+            return false;
+        };
+        let Ok(range) = TextRange::new(previous[0], previous[1]) else {
+            return false;
+        };
+        working
+            .has_edits_since_in_range(self.buffer_version, range)
+            .is_ok_and(|edited| !edited)
     }
 }
 
@@ -587,7 +641,7 @@ impl BufferDiff {
     /// 接受仍对应当前 working/base/index 版本的后台结果。
     ///
     /// 计算任务已在安装入口校验输入版本，修订快照与本结果在同一轮更新中发布。
-    /// 只有 hunk 几何真正变化时才替换快照、清除 pending 并发出 BufferDiffEvent::DiffChanged；
+    /// 工作区编辑重算保留 pending；修订基准前进时，权威结果取代 pending。
     /// 行内文本修改等不改变 hunk 定位的编辑不做整体重建。
     fn apply_recomputed_hunks(
         &mut self,
@@ -600,10 +654,25 @@ impl BufferDiff {
             .as_ref()
             .map(|inputs| inputs.versions)
             != Some(versions);
+        let revisions_changed = self
+            .calculated_inputs
+            .as_ref()
+            .is_none_or(|inputs| inputs.revisions != self.revision_texts);
         let working = self.working.read(cx).text_snapshot();
         let previous_hunks = self.snapshot.hunks.iter().cloned().collect::<Vec<_>>();
         let mut changed_range = changed_hunk_range(&previous_hunks, &hunks, &working);
-        if calculation_was_pending {
+        let pending_hunks = if revisions_changed {
+            Vec::new()
+        } else {
+            self.snapshot
+                .pending_hunks
+                .iter()
+                .filter(|pending| hunks.iter().any(|hunk| pending.matches(hunk, &working)))
+                .cloned()
+                .collect()
+        };
+        let pending_changed = self.snapshot.pending_hunks != pending_hunks;
+        if pending_changed {
             let pending_range = anchor_ranges_union(
                 self.snapshot
                     .pending_hunks
@@ -617,12 +686,13 @@ impl BufferDiff {
             versions,
             revisions: self.revision_texts.clone(),
         });
-        if !calculation_was_pending && hunks_equivalent(&previous_hunks, &hunks) {
+        if !calculation_was_pending && !pending_changed && hunks_equivalent(&previous_hunks, &hunks)
+        {
             return false;
         }
         self.snapshot = BufferDiffSnapshot {
             hunks: SumTree::from_iter(hunks, &working),
-            pending_hunks: Vec::new(),
+            pending_hunks,
         };
         self.revision = self.revision.wrapping_add(1).max(1);
         cx.emit(BufferDiffEvent::DiffChanged { changed_range });
@@ -689,8 +759,8 @@ impl BufferDiff {
 
     /// 把新的 optimistic pending hunks 合并进当前集合，并通知显示层重新物化。
     ///
-    /// 与既有 pending 按 working 偏移合并：新 hunk 重叠的旧 pending 被替换，其余保留。
-    /// 这样同一文件连续多次操作不会让先前被抑制的 hunk 重新出现（对齐 Zed 的 set_pending_hunks）。
+    /// 与既有 pending 按 working 偏移合并：新 hunk 重叠或相邻的旧 pending 被替换，其余保留。
+    /// 这样同一文件连续多次操作时，新状态覆盖旧状态（对齐 Zed 的 set_pending_hunks）。
     pub fn set_pending_hunks(&mut self, hunks: Vec<PendingHunk>, cx: &mut Context<Self>) {
         if hunks.is_empty() {
             return;
@@ -706,9 +776,9 @@ impl BufferDiff {
         );
         for hunk in hunks {
             pending.retain(|existing| {
-                existing.buffer_range.end.offset().get() <= hunk.buffer_range.start.offset().get()
+                existing.buffer_range.end.offset().get() < hunk.buffer_range.start.offset().get()
                     || hunk.buffer_range.end.offset().get()
-                        <= existing.buffer_range.start.offset().get()
+                        < existing.buffer_range.start.offset().get()
             });
             let position = pending.partition_point(|existing| {
                 existing.buffer_range.start.offset().get() < hunk.buffer_range.start.offset().get()

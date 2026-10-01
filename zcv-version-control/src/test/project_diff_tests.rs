@@ -1020,6 +1020,113 @@ fn staging_one_hunk_refreshes_the_projection_with_new_index(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+fn staging_first_hunk_keeps_last_deletion_visible_after_reopening(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时仓库");
+    let root = canonical_root(directory.path());
+    run_in(&root, &["git", "init", "-q", "-b", "master"]);
+    run_in(&root, &["git", "config", "user.email", "test@example.com"]);
+    run_in(&root, &["git", "config", "user.name", "Test User"]);
+    let path = root.join("last-deletion.txt");
+    let original = (0..30)
+        .map(|line| format!("line{line}"))
+        .collect::<Vec<_>>();
+    std::fs::write(&path, format!("{}\n", original.join("\n"))).expect("应创建文件");
+    run_in(&root, &["git", "add", "last-deletion.txt"]);
+    run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
+
+    let mut changed = original;
+    changed[3] = "已修改的第一个块".into();
+    changed.remove(29);
+    std::fs::write(&path, format!("{}\n", changed.join("\n"))).expect("应修改文件");
+
+    let project = test_project(root.clone(), cx);
+    let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project.clone(), cx));
+    for _ in 0..3 {
+        cx.run_until_parked();
+    }
+    let first = view.update(cx, |view, cx| {
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        let hunks = snapshot.resolved_diff_hunks();
+        assert_eq!(hunks.len(), 2);
+        assert_eq!(hunks[1].1.hunk.kind, zcv_buffer_diff::DiffHunkKind::Deleted);
+        hunks[0].1.source.clone()
+    });
+    view.update(cx, |view, cx| {
+        view.apply_hunk_action(first, GitHunkOperation::Stage, cx);
+    });
+    for _ in 0..3 {
+        cx.run_until_parked();
+    }
+
+    let assert_last_deletion = |view: &Entity<DiffView>, cx: &mut TestAppContext| {
+        view.update(cx, |view, cx| {
+            let snapshot = view
+                .multi_buffer
+                .update(cx, |buffer, cx| buffer.snapshot(cx));
+            let hunks = snapshot.resolved_diff_hunks();
+            assert_eq!(hunks.len(), 1, "暂存首块后必须保留最后的删除块");
+            assert_eq!(hunks[0].1.hunk.kind, zcv_buffer_diff::DiffHunkKind::Deleted);
+            assert_eq!(
+                hunks[0].1.hunk.staging,
+                zcv_buffer_diff::DiffHunkStaging::Unstaged
+            );
+            assert!(hunks[0].1.old_range.is_some(), "删除块的旧侧必须可见");
+            let text = String::from_utf8(snapshot.text_bytes()).expect("投影应为 UTF-8");
+            assert!(text.contains("line29"), "末行删除内容必须显示：{text:?}");
+        });
+    };
+    assert_last_deletion(&view, cx);
+    let reopened = cx.new(|cx| DiffView::new(ProjectDiffKind::Unstaged, project, cx));
+    for _ in 0..3 {
+        cx.run_until_parked();
+    }
+    assert_last_deletion(&reopened, cx);
+}
+
+#[gpui::test]
+fn initially_staged_deleted_file_displays_old_side(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时仓库");
+    let root = canonical_root(directory.path());
+    run_in(&root, &["git", "init", "-q", "-b", "master"]);
+    run_in(&root, &["git", "config", "user.email", "test@example.com"]);
+    run_in(&root, &["git", "config", "user.name", "Test User"]);
+    let path = root.join("deleted.txt");
+    let original = (0..98)
+        .map(|line| format!("删除前的内容 {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&path, format!("{original}\n")).expect("应创建文件");
+    run_in(&root, &["git", "add", "deleted.txt"]);
+    run_in(&root, &["git", "commit", "-q", "-m", "initial"]);
+    run_in(&root, &["git", "rm", "-q", "deleted.txt"]);
+
+    let project = test_project(root, cx);
+    let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Staged, project, cx));
+    for _ in 0..3 {
+        cx.run_until_parked();
+    }
+    view.update(cx, |view, cx| {
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        let hunks = snapshot.resolved_diff_hunks();
+        assert_eq!(hunks.len(), 1, "已暂存删除文件必须保留删除块");
+        assert_eq!(hunks[0].1.hunk.kind, zcv_buffer_diff::DiffHunkKind::Deleted);
+        let text = String::from_utf8(snapshot.text_bytes()).expect("投影应为 UTF-8");
+        assert!(
+            text.contains("删除前的内容 0"),
+            "旧侧首行必须显示：{text:?}"
+        );
+        assert!(
+            text.contains("删除前的内容 97"),
+            "旧侧末行必须显示：{text:?}"
+        );
+    });
+}
+
+#[gpui::test]
 fn staged_projection_refreshes_without_status_change_or_restart(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时仓库");
     let root = canonical_root(directory.path());
@@ -1173,6 +1280,25 @@ fn clearing_pending_hunk_restores_projection_without_rebuilding_files(cx: &mut T
             .diff
             .clone();
         (diff, source_id)
+    });
+    diff.update(cx, |diff, cx| {
+        let hunk = diff.snapshot().hunks().next().unwrap().clone();
+        let version = diff.working().read(cx).text_snapshot().version();
+        diff.set_pending_hunks(vec![PendingHunk::set_staging(&hunk, version, true)], cx);
+    });
+    cx.run_until_parked();
+    view.update(cx, |view, cx| {
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        let hunks = snapshot.resolved_diff_hunks();
+        assert_eq!(hunks.len(), 1, "暂存中的块仍须参与组合投影");
+        assert_eq!(
+            hunks[0].1.hunk.staging,
+            zcv_buffer_diff::DiffHunkStaging::StagingPending
+        );
+        let text = String::from_utf8(snapshot.text_bytes()).expect("投影应为 UTF-8");
+        assert!(text.contains("原始内容"), "暂存中的旧侧文本必须保留");
     });
     diff.update(cx, |diff, cx| {
         let hunk = diff.snapshot().hunks().next().unwrap().clone();

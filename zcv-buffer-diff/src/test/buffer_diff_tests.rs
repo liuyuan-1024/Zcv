@@ -7,7 +7,7 @@ use gpui::{AppContext as _, Entity, Task, TestAppContext};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, TransactionMetadata};
 
-use crate::{BufferDiff, BufferDiffInput, diff_line_boundary};
+use crate::{BufferDiff, BufferDiffInput, DiffHunkStaging, PendingHunk, diff_line_boundary};
 
 #[test]
 fn diff_line_boundary_excludes_only_the_terminal_empty_line() {
@@ -187,6 +187,127 @@ fn source_edits_recalculate_without_a_projection_consumer(cx: &mut TestAppContex
             );
         });
     }
+}
+
+#[gpui::test]
+fn pending_stage_survives_unrelated_working_edits_until_revision_changes(cx: &mut TestAppContext) {
+    let working = language_buffer("a\nchanged\nz\n", "src/a.rs", cx);
+    let diff = cx.new(|cx| {
+        BufferDiff::new(
+            buffer_diff_input(working.clone(), Some("a\nold\nz\n"), "src/a.rs"),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    diff.update(cx, |diff, cx| {
+        let hunk = diff
+            .snapshot()
+            .hunks()
+            .next()
+            .expect("必须有变更块")
+            .clone();
+        let version = diff.working().read(cx).text_snapshot().version();
+        diff.set_pending_hunks(vec![PendingHunk::set_staging(&hunk, version, true)], cx);
+    });
+    working.update(cx, |working, cx| {
+        let end = working.text_snapshot().len_bytes();
+        working
+            .edit(
+                [Edit::insert(end, "tail\n").expect("末尾插入有效")],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("应编辑工作区");
+    });
+    cx.run_until_parked();
+    diff.read_with(cx, |diff, cx| {
+        let working = diff.working().read(cx).text_snapshot();
+        assert_eq!(diff.snapshot().pending_hunks().len(), 1);
+        assert_eq!(
+            diff.snapshot().visible_hunks(&working)[0].staging,
+            DiffHunkStaging::StagingPending,
+            "无关源编辑不应提前清除暂存状态"
+        );
+    });
+    diff.update(cx, |diff, cx| {
+        diff.set_revisions(
+            Some(Arc::from("a\nold\nz\n")),
+            Some(Arc::from("a\nchanged\nz\n")),
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    diff.read_with(cx, |diff, _| {
+        assert!(diff.snapshot().pending_hunks().is_empty());
+    });
+}
+
+#[gpui::test]
+fn pending_restore_expires_after_editing_its_working_range(cx: &mut TestAppContext) {
+    let working = language_buffer("a\nchanged\nz\n", "src/a.rs", cx);
+    let diff = cx.new(|cx| {
+        BufferDiff::new(
+            buffer_diff_input(working.clone(), Some("a\nold\nz\n"), "src/a.rs"),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    diff.update(cx, |diff, cx| {
+        let hunk = diff
+            .snapshot()
+            .hunks()
+            .next()
+            .expect("必须有变更块")
+            .clone();
+        let version = diff.working().read(cx).text_snapshot().version();
+        diff.set_pending_hunks(vec![PendingHunk::suppress(&hunk, version)], cx);
+    });
+    working.update(cx, |working, cx| {
+        working
+            .edit(
+                [Edit::insert(ByteOffset::new(3), "x").expect("块内插入有效")],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("应编辑工作区");
+    });
+    cx.run_until_parked();
+    diff.read_with(cx, |diff, cx| {
+        let working = diff.working().read(cx).text_snapshot();
+        assert!(diff.snapshot().pending_hunks().is_empty());
+        assert_eq!(diff.snapshot().visible_hunks(&working).len(), 1);
+    });
+}
+
+#[gpui::test]
+fn repeated_pending_on_pure_deletion_replaces_the_previous_state(cx: &mut TestAppContext) {
+    let working = language_buffer("a\nc\n", "src/a.rs", cx);
+    let diff = cx.new(|cx| {
+        BufferDiff::new(
+            buffer_diff_input(working, Some("a\nb\nc\n"), "src/a.rs"),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    diff.update(cx, |diff, cx| {
+        let hunk = diff
+            .snapshot()
+            .hunks()
+            .next()
+            .expect("必须有删除块")
+            .clone();
+        let version = diff.working().read(cx).text_snapshot().version();
+        diff.set_pending_hunks(vec![PendingHunk::set_staging(&hunk, version, true)], cx);
+        diff.set_pending_hunks(vec![PendingHunk::set_staging(&hunk, version, false)], cx);
+    });
+    diff.read_with(cx, |diff, cx| {
+        let working = diff.working().read(cx).text_snapshot();
+        assert_eq!(diff.snapshot().pending_hunks().len(), 1);
+        assert_eq!(
+            diff.snapshot().visible_hunks(&working)[0].staging,
+            DiffHunkStaging::UnstagingPending
+        );
+    });
 }
 
 #[gpui::test]

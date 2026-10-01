@@ -532,7 +532,7 @@ impl DiffView {
                 }
                 let ranges = diff
                     .snapshot()
-                    .visible_hunks()
+                    .visible_hunks(&diff.working().read(cx).text_snapshot())
                     .iter()
                     .map(|hunk| hunk.buffer_range.clone())
                     .collect::<Vec<_>>();
@@ -1319,7 +1319,7 @@ fn project_diff_excerpt_ranges(
     if !diff.is_current_version_calculated(cx) {
         return DiffExcerptRanges::Windows(Vec::new());
     }
-    let hunks = diff.snapshot().visible_hunks();
+    let hunks = diff.snapshot().visible_hunks(&working_text);
     if hunks.is_empty() {
         return if diff.is_created() {
             DiffExcerptRanges::FullFile

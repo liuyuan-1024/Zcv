@@ -10,16 +10,9 @@
 cargo bench --offline -p zcv-benchmarks --bench editor_display -- 'editor/diff_scroll_render_frame/word_diff/unstaged/16/input_to_frame' --quick
 ```
 
-软换行场景使用 Editor 模块内的手动探针。夹具分别建立暂存只读和未暂存可编辑的真实 diff，展开删除侧；每个文件 50 行变更，包含长行、中文与 Tab，覆盖 10 和 100 个文件。固定窗口宽度，先让后台重排收敛，再测量 240 帧交替滚动；测量同时验证滚动不推进显示版本。
+滚动和重排的正确性由 `zcv-editor` 的行为测试验证；耗时测量使用下面的真实执行器探针。耗时受机器负载影响，应在没有并行构建时重复运行，按相同构建、缓存状态和场景比较。
 
-```bash
-cargo test --offline --release -p zcv-editor composite_soft_wrap_scroll_frame_latency_probe --lib -- --ignored --nocapture
-cargo test --offline --release -p zcv-editor soft_wrap_reflow_latency_probe --lib -- --ignored --nocapture
-```
-
-第一项报告滚轮输入到测试绘制的中位数、P95 与范围；第二项单独报告宽度变化后的前台返回与重排收敛耗时。两者不能混合成一个“滚动耗时”。耗时受机器负载影响，应在没有并行构建时重复运行，按相同构建、缓存状态和场景比较。
-
-测试文本系统与真实字体塑形、系统输入队列和 GPU 呈现不同；上述测量也未包含整个 DiffView 的宿主控件。原生 release 验收需使用同一组文件、窗口宽度与字体，分别检查连续滚动、快速大跳转、编辑后滚动和调整窗口宽度，并用主线程采样与帧时间确认。
+原生 release 验收需使用同一组文件、窗口宽度与字体，分别检查连续滚动、快速大跳转、编辑后滚动和调整窗口宽度，并用主线程采样与帧时间确认。
 
 ### 真实 dispatcher 原生探针
 

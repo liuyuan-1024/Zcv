@@ -140,31 +140,7 @@ pub(super) struct BlockSnapshot {
     wrap_snapshot: WrapSnapshot,
     transforms: SumTree<Transform>,
     folded_buffers: Arc<HashSet<BufferId>>,
-    show_headers: bool,
     geometry_epoch: u64,
-}
-
-/// 决定一个逻辑 excerpt 边界放置实体 header、divider，还是不放置块。
-///
-/// 对齐 Zed `BlockMap::header_and_footer_blocks` 的分类：
-/// 进入新 Buffer 且显示策略允许时画实体 header；
-/// 否则只有文档首个 excerpt 之后的边界画 divider；
-/// 文档首个 excerpt 在没有 header 策略时不产生块。
-fn entry_block_kind(
-    show_headers: bool,
-    is_document_start: bool,
-    index_in_buffer: usize,
-) -> Option<DisplayBlockKind> {
-    if index_in_buffer > 0 {
-        return Some(DisplayBlockKind::ExcerptBoundary);
-    }
-    if show_headers {
-        Some(DisplayBlockKind::BufferHeader)
-    } else if is_document_start {
-        None
-    } else {
-        Some(DisplayBlockKind::ExcerptBoundary)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -422,16 +398,14 @@ fn compute_specs_in_range(
         if row < rows.start || row >= rows.end {
             continue;
         }
-        let folded = buffer.show_headers() && folded_buffers.contains(&excerpt.buffer_id());
+        let folded = folded_buffers.contains(&excerpt.buffer_id());
         if folded && !boundary.starts_new_buffer() {
             continue;
         }
-        let Some(kind) = entry_block_kind(
-            buffer.show_headers(),
-            boundary.next_index() == 0,
-            usize::from(!boundary.starts_new_buffer()),
-        ) else {
-            continue;
+        let kind = if boundary.starts_new_buffer() {
+            DisplayBlockKind::BufferHeader
+        } else {
+            DisplayBlockKind::ExcerptBoundary
         };
         let hidden_end = if folded {
             wrap_span(
@@ -599,12 +573,10 @@ impl BlockSnapshot {
             folded_buffers,
             0..wrap_snapshot.line_count(),
         );
-        let show_headers = wrap_snapshot.buffer_snapshot().show_headers();
         let snapshot = Self {
             wrap_snapshot,
             transforms,
             folded_buffers: folded_buffers.clone(),
-            show_headers,
             geometry_epoch: 0,
         };
         snapshot.check_invariants();
@@ -634,7 +606,6 @@ impl BlockSnapshot {
         folded_buffers: &Arc<HashSet<BufferId>>,
         wrap_edits: &[WrapEdit],
     ) -> Self {
-        let show_headers = wrap_snapshot.buffer_snapshot().show_headers();
         let mut edits = wrap_edits.to_vec();
         let boundary_change = wrap_snapshot
             .buffer_snapshot()
@@ -659,12 +630,6 @@ impl BlockSnapshot {
                 }
             }
         }
-        if show_headers != self.show_headers {
-            edits.push(WrapEdit {
-                old: 0..self.wrap_snapshot.line_count(),
-                new: 0..wrap_snapshot.line_count(),
-            });
-        }
         edits.sort_by_key(|edit| edit.old.start);
         let mut merged: Vec<WrapEdit> = Vec::new();
         for edit in edits {
@@ -683,7 +648,6 @@ impl BlockSnapshot {
                 wrap_snapshot,
                 transforms: self.transforms.clone(),
                 folded_buffers: folded_buffers.clone(),
-                show_headers,
                 geometry_epoch: self.geometry_epoch,
             };
             snapshot.check_invariants();
@@ -749,7 +713,6 @@ impl BlockSnapshot {
             wrap_snapshot,
             transforms,
             folded_buffers: folded_buffers.clone(),
-            show_headers,
             geometry_epoch: self.geometry_epoch + u64::from(geometry_changed),
         };
         snapshot.check_invariants();

@@ -1,8 +1,6 @@
 //! 原生窗口 + 真实 dispatcher 的组合文档滚动探针。
 //!
-//! 与 native_scroll_probe（VisualTestAppContext + TestDispatcher）不同，这里使用
-//! Application::with_platform(gpui_platform::current_platform(false))，前后台任务由平台
-//! 真实执行器调度。这样可以把「测试调度器在事件里排空后台任务」的耗时与产品行为分开。
+//! 使用 Application::with_platform(gpui_platform::current_platform(false))，前后台任务由平台真实执行器调度，避免把测试调度器在事件里排空后台任务的耗时误算成滚轮处理延迟。
 //!
 //! 运行：
 //!   cargo bench --offline -p zcv-benchmarks --bench native_dispatcher_scroll_probe

@@ -2053,7 +2053,6 @@ impl ExcerptSnapshot {
 pub struct ExcerptBoundary {
     previous: Option<ExcerptSnapshot>,
     next: ExcerptSnapshot,
-    next_index: usize,
 }
 
 impl ExcerptBoundary {
@@ -2063,11 +2062,6 @@ impl ExcerptBoundary {
 
     pub fn next(&self) -> &ExcerptSnapshot {
         &self.next
-    }
-
-    /// `next` 在当前快照 `excerpts()` 序列中的下标。
-    pub fn next_index(&self) -> usize {
-        self.next_index
     }
 
     /// 边界是否进入了一个新的 Buffer。
@@ -2118,9 +2112,6 @@ pub struct MultiBufferSnapshot {
     metadata_version: u64,
     /// diff 显示输入与文本／语言元数据分离：它只驱动装饰替换，不触发显示拓扑同步。
     diff_display: Option<Arc<DiffDisplaySnapshot>>,
-    /// 整个组合文档的显示策略：是否为新 Buffer 绘制实体 header。
-    /// 单文件文档（`singleton`）不产生边界；该策略只决定多文件边界画 header 还是 divider。
-    show_headers: bool,
     /// 单文件组合文档：Zed 语义下不产生任何 excerpt 边界。
     singleton: bool,
     /// 单文件文档的权威工作区源索引；`None` 表示真正的多来源组合文档。
@@ -3049,14 +3040,6 @@ impl MultiBufferSnapshot {
         snapshot
     }
 
-    /// 整个组合文档的显示策略：新 Buffer 边界绘制实体 header 还是 divider。
-    ///
-    /// 它是快照级策略，不进入任何 excerpt 的身份或边界判定；
-    /// `BlockMap` 是当前唯一消费者。
-    pub fn show_headers(&self) -> bool {
-        self.show_headers
-    }
-
     /// 按组合顺序遍历逻辑 excerpt 边界。
     ///
     /// Header、divider 与整文件折叠都必须消费此边界流；
@@ -3085,7 +3068,6 @@ impl MultiBufferSnapshot {
             }
             loop {
                 let excerpt = cursor.item()?;
-                let next_index = cursor.start().count;
                 let next = self.logical_excerpt_snapshot(excerpt, cursor.start().text.len);
                 cursor.next();
                 if next.output_range.start() > *range.end() {
@@ -3094,7 +3076,6 @@ impl MultiBufferSnapshot {
                 let boundary = ExcerptBoundary {
                     previous: previous.clone(),
                     next: next.clone(),
-                    next_index,
                 };
                 previous = Some(next);
                 if boundary.next.output_range.start() >= *range.start() {
@@ -4091,7 +4072,6 @@ impl From<Snapshot> for MultiBufferSnapshot {
             capture_names,
             metadata_version: 0,
             diff_display: None,
-            show_headers: true,
             singleton: true,
             singleton_source_index: Some(0),
         }
@@ -4207,9 +4187,6 @@ pub struct MultiBuffer {
     snapshot_source_updates: Option<HashSet<usize>>,
     /// 当前是否处于源与 diff 的同一同步帧；存在时不提前发布投影版本。
     projection_sync: Option<ProjectionSync>,
-    /// 整个组合文档的显示策略：新 Buffer 边界绘制实体 header 还是 divider。
-    /// 它只由构造入口确定，不属于任何单个 diff 文件的物化条件。
-    show_headers: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -4273,7 +4250,6 @@ impl MultiBuffer {
             snapshot_dirty: true,
             snapshot_source_updates: None,
             projection_sync: None,
-            show_headers: true,
         }
     }
 
@@ -5918,7 +5894,6 @@ impl MultiBuffer {
             capture_names: Arc::clone(&self.state.capture_names),
             metadata_version: self.state.metadata_epoch,
             diff_display: self.diff.clone(),
-            show_headers: self.show_headers,
             singleton: self.singleton_source.is_some(),
             singleton_source_index,
         };

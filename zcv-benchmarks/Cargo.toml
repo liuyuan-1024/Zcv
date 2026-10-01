@@ -41,10 +41,6 @@ name = "editor_display"
 harness = false
 
 [[bench]]
-name = "native_scroll_probe"
-harness = false
-
-[[bench]]
 name = "native_dispatcher_scroll_probe"
 harness = false
 

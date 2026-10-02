@@ -164,11 +164,10 @@ fn per_language_overrides_replace_global_tab_fields() {
     let settings = UserSettings::merge(
         parse_user_settings(
             r#"{
-                "tab_width": 4,
-                "indent_width": 4,
+                "tab_size": 4,
                 "insert_spaces": true,
                 "languages": {
-                    "Rust": { "tab_width": 2 },
+                    "Rust": { "tab_size": 2 },
                     "Go": { "insert_spaces": false }
                 }
             }"#,
@@ -176,12 +175,33 @@ fn per_language_overrides_replace_global_tab_fields() {
         .unwrap(),
     );
 
-    assert_eq!(settings.tab_for_language(Some("Rust")).tab_width(), 2);
-    assert_eq!(settings.tab_for_language(Some("Rust")).indent_width(), 4);
+    assert_eq!(settings.tab_for_language(Some("Rust")).tab_size(), 2);
     assert!(settings.tab_for_language(Some("Rust")).insert_spaces);
     assert!(!settings.tab_for_language(Some("Go")).insert_spaces);
-    assert_eq!(settings.tab_for_language(Some("Unknown")).tab_width(), 4);
-    assert_eq!(settings.tab_for_language(None).tab_width(), 4);
+    assert_eq!(settings.tab_for_language(Some("Unknown")).tab_size(), 4);
+    assert_eq!(settings.tab_for_language(None).tab_size(), 4);
+}
+
+#[test]
+fn indent_guide_settings_merge_per_language() {
+    let settings = UserSettings::merge(
+        parse_user_settings(
+            r#"{
+                "indent_guides": { "line_width": 2 },
+                "languages": {
+                    "Rust": { "tab_size": 2, "indent_guides": { "line_width": 3 } }
+                }
+            }"#,
+        )
+        .unwrap(),
+    );
+    let rust = settings.indent_guides_for_language(Some("Rust"));
+    assert_eq!(settings.tab_for_language(Some("Rust")).tab_size(), 2);
+    assert_eq!(rust.line_width, 3);
+    assert_eq!(
+        settings.indent_guides_for_language(Some("Go")).line_width,
+        2
+    );
 }
 
 #[test]

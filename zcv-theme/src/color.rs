@@ -1,6 +1,6 @@
 //! 组件消费的语义颜色。
 //!
-//! 语义色由主题文件 `[colors]` 段直接定义，业务组件只通过本模块表达颜色的界面职责。
+//! 语义色由主题文件 `[colors]` 段定义；业务组件只通过本模块读取。
 //!
 //! **缓存语义**：当前主题语义色由 gpui global 承载，主题切换时构建一次并整体替换；
 //! `current(cx)` 返回借引用，每帧每元素零拷贝、零原子操作。
@@ -87,6 +87,10 @@ pub struct ThemeColors {
     pub editor_subheader_background: Rgba,
     /// 编辑器活动行背景。
     pub editor_active_line_background: Rgba,
+    /// 普通缩进引导线。
+    pub editor_indent_guide: Rgba,
+    /// 光标所在缩进层级的引导线。
+    pub editor_indent_guide_active: Rgba,
     /// 编辑器普通行号颜色。
     pub editor_line_number: Rgba,
     /// 编辑器活动行号颜色。

@@ -1,6 +1,6 @@
 //! Editor 的逐帧文本布局、绘制与像素命中测试。
 
-use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
+use zcv_multi_buffer::{IndentGuide, MultiBufferOffset, MultiBufferRange};
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -21,6 +21,7 @@ use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
 use zcv_keymap::display_shortcut;
 use zcv_language::BracketPair;
 use zcv_multi_buffer::MultiBufferSnapshot;
+use zcv_settings::IndentGuideSettings;
 use zcv_text::Line;
 use zcv_theme::{color, fixed, scale};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon, drag_autoscroll_delta};
@@ -116,6 +117,7 @@ impl EditorElement {
             .on_action(cx.listener(Editor::handle_move_line_up))
             .on_action(cx.listener(Editor::handle_move_line_down))
             .on_action(cx.listener(Editor::handle_toggle_fold))
+            .on_action(cx.listener(Editor::toggle_indent_guides))
             .on_action(cx.listener(Editor::handle_unfold_all))
             .on_action(cx.listener(Editor::handle_open_excerpts))
     }
@@ -363,11 +365,20 @@ struct LayoutBlock {
     block: DisplayBlock,
 }
 
+#[derive(Clone)]
+struct IndentGuideLayout {
+    origin: Point<Pixels>,
+    length: Pixels,
+    active: bool,
+    settings: IndentGuideSettings,
+}
+
 struct EditorLayout {
     /// 编辑器元素在窗口中的原点；布局行使用窗口坐标，绝对定位的子元素使用元素内坐标。
     element_origin: Point<Pixels>,
     lines: Vec<LayoutLine>,
     blocks: Vec<LayoutBlock>,
+    indent_guides: Vec<IndentGuideLayout>,
     gutter: Option<GutterLayout>,
     /// 文件标题和 excerpt 分界块覆盖 gutter；正文仍裁剪在 text_clip_bounds 内。
     block_clip_bounds: Bounds<Pixels>,
@@ -1523,6 +1534,7 @@ impl Element for EditorElement {
         let hunk_render = diff_decorations.rendering_for_viewport(visible_rows.clone());
         let diff_rows = &hunk_render.diff_rows;
         let fold_query_range = visible_source_lines.clone();
+        let guide_query_range = visible_source_lines.clone();
         let mut layout = layout_visible_lines_from_viewport(
             VisibleViewport {
                 display_snapshot: layout_snapshot,
@@ -1633,6 +1645,24 @@ impl Element for EditorElement {
         } else {
             None
         };
+        if placeholder.is_none() {
+            let guides = guide_query_range
+                .clone()
+                .map(|rows| self.editor.read(cx).indent_guides(rows, cx))
+                .unwrap_or_default();
+            let active_indices = self.editor.update(cx, |editor, cx| {
+                editor.active_indent_guide_indices(&guides, cx)
+            });
+            let scroll_x = self.editor.read(cx).scroll_offset().x;
+            layout.indent_guides = layout_indent_guides(
+                &layout,
+                &guides,
+                &active_indices,
+                text_bounds.left() - scroll_x,
+                text_bounds.left(),
+                em_advance,
+            );
+        }
         let layout = Rc::new(layout);
         let selected_whitespace =
             layout_selected_whitespace(&selections, &layout, line_height, window, cx);
@@ -2198,6 +2228,7 @@ impl Element for EditorElement {
                     );
                 }
                 // 词级差异、选区与 run 背景共用行片段几何，逐段合成后绘制。
+                paint_indent_guides(&prepaint.layout.indent_guides, window, cx);
                 // 选区片段在前、其余背景在后，维持原有绘制层级。
                 let line_height = prepaint.layout.line_height;
                 let corner_radius = line_height * 0.15;
@@ -3109,6 +3140,7 @@ fn layout_visible_lines_from_viewport(
         ),
         lines,
         blocks,
+        indent_guides: Vec::new(),
         gutter: gutter_geometry.map(|(bounds, dimensions)| GutterLayout {
             bounds,
             line_height,
@@ -3120,6 +3152,70 @@ fn layout_visible_lines_from_viewport(
         line_height,
         // 命中测试用真实 buffer 的快照（placeholder 行的映射已单独拦截）。
         display_snapshot: display_snapshot.clone(),
+    }
+}
+
+fn layout_indent_guides(
+    layout: &EditorLayout,
+    guides: &[IndentGuide],
+    active_indices: &[usize],
+    content_left: Pixels,
+    text_left: Pixels,
+    em_advance: Pixels,
+) -> Vec<IndentGuideLayout> {
+    let mut result = Vec::new();
+    for (index, guide) in guides.iter().enumerate() {
+        let x = content_left + em_advance * (guide.depth * guide.tab_size) as f32;
+        if x < text_left || x >= layout.text_clip_bounds.right() {
+            continue;
+        }
+        let mut segment: Option<IndentGuideLayout> = None;
+        for line in &layout.lines {
+            if !line
+                .logical_line
+                .is_some_and(|row| guide.start_row <= row && row <= guide.end_row)
+            {
+                if let Some(ended) = segment.take() {
+                    result.push(ended);
+                }
+                continue;
+            }
+            if let Some(current) = segment.as_mut()
+                && line.origin.y == current.origin.y + current.length
+            {
+                current.length += layout.line_height;
+                continue;
+            }
+            if let Some(ended) = segment.take() {
+                result.push(ended);
+            }
+            segment = Some(IndentGuideLayout {
+                origin: point(x, line.origin.y),
+                length: layout.line_height,
+                active: active_indices.contains(&index),
+                settings: guide.settings,
+            });
+        }
+        if let Some(ended) = segment {
+            result.push(ended);
+        }
+    }
+    result
+}
+
+fn paint_indent_guides(guides: &[IndentGuideLayout], window: &mut Window, cx: &App) {
+    let colors = color::current(cx);
+    for guide in guides {
+        let line_color = if guide.active {
+            colors.editor_indent_guide_active
+        } else {
+            colors.editor_indent_guide
+        };
+        let line_width = px(guide.settings.line_width as f32);
+        window.paint_quad(fill(
+            window.pixel_snap_bounds(Bounds::new(guide.origin, size(line_width, guide.length))),
+            line_color,
+        ));
     }
 }
 

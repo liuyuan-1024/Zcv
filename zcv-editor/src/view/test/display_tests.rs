@@ -692,6 +692,40 @@ fn toggle_fold_collapses_and_expands_the_cursor_block(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn indent_guides_follow_the_editor_fold_projection(cx: &mut TestAppContext) {
+    let text = "fn main() {\n    if true {\n        let x = 1;\n    }\n}\n";
+    let raw =
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
+    let buffer = cx.new(|cx| {
+        LanguageBuffer::new(
+            raw,
+            Some(PathBuf::from("main.rs")),
+            Arc::new(LanguageRegistry::new()),
+            cx,
+        )
+    });
+    let editor = cx.new(|cx| Editor::from_language_buffer(buffer, EditorMode::Full, cx));
+    cx.run_until_parked();
+
+    let guides = cx.read_entity(&editor, |editor, cx| {
+        editor.indent_guides(Line::ZERO..Line::new(6), cx)
+    });
+    assert_eq!(guides.len(), 2);
+    assert!(guides.iter().any(|guide| guide.depth == 1));
+
+    editor.update(cx, |editor, cx| editor.toggle_fold_at_line(Line::ZERO, cx));
+    cx.read_entity(&editor, |editor, cx| {
+        let snapshot = editor.display_snapshot(cx);
+        let guides = editor.indent_guides(Line::ZERO..Line::new(6), cx);
+        assert!(snapshot.line_count() < 6, "折叠必须改变显示行数");
+        assert!(
+            guides.iter().all(|guide| guide.depth == 0),
+            "折叠后引导线：{guides:?}"
+        );
+    });
+}
+
+#[gpui::test]
 fn toggle_fold_action_uses_the_cursor_block_and_the_whole_folded_row(cx: &mut TestAppContext) {
     let text = "fn main() {\n    if true {\n        let x = 1;\n    }\n}\nfn other() {}";
     let buffer =

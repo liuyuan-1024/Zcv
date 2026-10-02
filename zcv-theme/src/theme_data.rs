@@ -75,7 +75,7 @@ fn parse_appearance(root: &toml::Table) -> Option<WindowAppearance> {
     }
 }
 
-/// 解析 `[colors]` 段：主题文件直接定义的语义色。
+/// 解析 `[colors]` 语义色。
 /// 全量必填：任一 key 缺失或色值非法即解析失败。
 fn parse_colors(colors: &toml::Table) -> Option<ThemeColors> {
     let parse = |key: &str| -> Option<gpui::Rgba> {
@@ -117,6 +117,8 @@ fn parse_colors(colors: &toml::Table) -> Option<ThemeColors> {
         editor_background: parse("editor.background")?,
         editor_subheader_background: parse("editor.subheader.background")?,
         editor_active_line_background: parse("editor.active_line.background")?,
+        editor_indent_guide: parse("editor.indent_guide")?,
+        editor_indent_guide_active: parse("editor.indent_guide.active")?,
         editor_line_number: parse("editor.line_number")?,
         editor_active_line_number: parse("editor.active_line_number")?,
         editor_selection_background: parse("editor.selection.background")?,

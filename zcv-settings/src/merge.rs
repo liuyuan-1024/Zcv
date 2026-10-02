@@ -6,7 +6,9 @@ use std::collections::HashMap;
 use std::num::NonZeroUsize;
 
 use super::INITIAL_USER_SETTINGS;
-use super::schema::{SoftWrapMode, TabConfig, TabOverride, UserSettingsContent};
+use super::schema::{
+    IndentGuideSettings, LanguageOverride, SoftWrapMode, TabConfig, UserSettingsContent,
+};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct UserSettings {
@@ -21,7 +23,8 @@ pub struct UserSettings {
     /// Tab 展示宽度与缩进输入策略。
     pub tab: TabConfig,
     /// 按语言覆盖的 Tab / 缩进策略；键为语言展示名。
-    pub languages: HashMap<String, TabOverride>,
+    pub languages: HashMap<String, LanguageOverride>,
+    pub indent_guides: IndentGuideSettings,
     pub soft_wrap: SoftWrapMode,
     /// 软换行的目标行宽（列数）；仅在 `soft_wrap = "bounded"` 时生效。
     pub preferred_line_length: usize,
@@ -65,17 +68,25 @@ impl UserSettings {
     pub fn tab_for_language(&self, language_name: Option<&str>) -> TabConfig {
         let mut tab = self.tab;
         if let Some(over) = language_name.and_then(|name| self.languages.get(name)) {
-            if let Some(value) = over.tab_width {
-                tab.tab_width = value;
-            }
-            if let Some(value) = over.indent_width {
-                tab.indent_width = value;
+            if let Some(value) = over.tab_size {
+                tab.tab_size = value;
             }
             if let Some(value) = over.insert_spaces {
                 tab.insert_spaces = value;
             }
         }
         tab
+    }
+
+    /// 引导线设置按语言逐字段覆盖全局值。
+    pub fn indent_guides_for_language(&self, language_name: Option<&str>) -> IndentGuideSettings {
+        let mut settings = self.indent_guides;
+        if let Some(overrides) = language_name.and_then(|name| self.languages.get(name))
+            && let Some(content) = overrides.indent_guides
+        {
+            content.apply(&mut settings);
+        }
+        settings
     }
 
     /// 将用户配置合并到内置默认层：用户显式配置的字段覆盖默认，未配置的字段（`None`）回退到内置初始设置。
@@ -98,16 +109,11 @@ impl UserSettings {
                 .or(defaults.content_line_height)
                 .expect("内置默认应存在"),
             tab: TabConfig {
-                tab_width: content
-                    .tab_width
-                    .or(defaults.tab_width)
+                tab_size: content
+                    .tab_size
+                    .or(defaults.tab_size)
                     .and_then(NonZeroUsize::new)
-                    .unwrap_or(default_tab.tab_width),
-                indent_width: content
-                    .indent_width
-                    .or(defaults.indent_width)
-                    .and_then(NonZeroUsize::new)
-                    .unwrap_or(default_tab.indent_width),
+                    .unwrap_or(default_tab.tab_size),
                 insert_spaces: content
                     .insert_spaces
                     .or(defaults.insert_spaces)
@@ -120,14 +126,25 @@ impl UserSettings {
                 .map(|(language, content)| {
                     (
                         language,
-                        TabOverride {
-                            tab_width: content.tab_width.and_then(NonZeroUsize::new),
-                            indent_width: content.indent_width.and_then(NonZeroUsize::new),
+                        LanguageOverride {
+                            tab_size: content.tab_size.and_then(NonZeroUsize::new),
                             insert_spaces: content.insert_spaces,
+                            indent_guides: content.indent_guides,
                         },
                     )
                 })
                 .collect(),
+            indent_guides: {
+                let mut settings = IndentGuideSettings::default();
+                defaults
+                    .indent_guides
+                    .expect("内置引导线设置应存在")
+                    .apply(&mut settings);
+                if let Some(content) = content.indent_guides {
+                    content.apply(&mut settings);
+                }
+                settings
+            },
             soft_wrap: content
                 .soft_wrap
                 .or(defaults.soft_wrap)

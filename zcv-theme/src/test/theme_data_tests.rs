@@ -22,6 +22,8 @@ fn dark_theme_colors_match_migrated_values() {
     assert_eq!(colors.panel_background, gpui::rgba(0x2f343eff));
     assert_eq!(colors.editor_background, gpui::rgba(0x282c33ff));
     assert_eq!(colors.editor_subheader_background, gpui::rgba(0x2f343eff));
+    assert_eq!(colors.editor_indent_guide, gpui::rgba(0x4e5a5f80));
+    assert_eq!(colors.editor_indent_guide_active, gpui::rgba(0xa9afbcaa));
     assert_eq!(colors.text, gpui::rgba(0xdce0e5ff));
     assert_eq!(colors.editor_selection_background, gpui::rgba(0x74ade83d));
     assert_eq!(colors.editor_invisible, gpui::rgba(0x4e5a5fff));
@@ -56,6 +58,8 @@ fn light_theme_colors_match_migrated_values() {
     assert_eq!(colors.status_bar_background, gpui::rgba(0xdcdcddff));
     assert_eq!(colors.editor_background, gpui::rgba(0xfafafaff));
     assert_eq!(colors.editor_subheader_background, gpui::rgba(0xebebecff));
+    assert_eq!(colors.editor_indent_guide, gpui::rgba(0xb4b4bb80));
+    assert_eq!(colors.editor_indent_guide_active, gpui::rgba(0x58585aaa));
     assert_eq!(colors.text, gpui::rgba(0x242529ff));
     assert_eq!(colors.editor_selection_background, gpui::rgba(0x5c78e23d));
     assert_eq!(colors.editor_invisible, gpui::rgba(0xb4b4bbff));
@@ -120,6 +124,8 @@ fn minimal_theme() -> String {
         "editor.background" = "#333333ff"
         "editor.subheader.background" = "#292929ff"
         "editor.active_line.background" = "#33333380"
+        "editor.indent_guide" = "#55555580"
+        "editor.indent_guide.active" = "#777777aa"
         "editor.line_number" = "#888888ff"
         "editor.active_line_number" = "#666666ff"
         "editor.selection.background" = "#5555553d"

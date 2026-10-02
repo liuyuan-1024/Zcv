@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use gpui::App;
+pub use zcv_settings::IndentGuideSettings;
 use zcv_settings::{SettingsStore, TabConfig};
 
 /// 一门语言解析后的编辑器设置。
@@ -13,14 +14,21 @@ use zcv_settings::{SettingsStore, TabConfig};
 pub struct LanguageSettings {
     /// Tab 展示宽度与缩进输入策略。
     pub tab: TabConfig,
+    pub indent_guides: IndentGuideSettings,
 }
 
 impl LanguageSettings {
     /// 按语言解析设置；`SettingsStore` 未注册（如单元测试）时回退内置默认。
     pub fn resolve(language_name: Option<&str>, cx: &App) -> Arc<Self> {
-        let tab = SettingsStore::try_get(cx).map_or_else(TabConfig::default, |settings| {
-            settings.tab_for_language(language_name)
-        });
-        Arc::new(Self { tab })
+        let (tab, indent_guides) = SettingsStore::try_get(cx).map_or_else(
+            || (TabConfig::default(), IndentGuideSettings::default()),
+            |settings| {
+                (
+                    settings.tab_for_language(language_name),
+                    settings.indent_guides_for_language(language_name),
+                )
+            },
+        );
+        Arc::new(Self { tab, indent_guides })
     }
 }

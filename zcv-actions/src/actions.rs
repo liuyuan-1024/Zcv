@@ -74,6 +74,7 @@ actions!(
         Indent,
         Outdent,
         ToggleFold,
+        ToggleIndentGuides,
         UnfoldAll,
         OpenExcerpts,
     ]

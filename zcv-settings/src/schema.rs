@@ -24,29 +24,22 @@ pub enum SoftWrapMode {
 /// Tab 展示宽度与缩进输入策略。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TabConfig {
-    /// 制表符的视觉列宽，必须大于 0。
-    pub tab_width: NonZeroUsize,
-    /// 自动缩进的宽度，必须大于 0。
-    pub indent_width: NonZeroUsize,
+    /// 制表符的视觉列宽与一级缩进宽度，必须大于 0。
+    pub tab_size: NonZeroUsize,
     /// 缩进时是否使用空格替代真实的 '\t'。
     pub insert_spaces: bool,
 }
 
 impl TabConfig {
-    pub fn tab_width(self) -> usize {
-        self.tab_width.get()
-    }
-
-    pub fn indent_width(self) -> usize {
-        self.indent_width.get()
+    pub fn tab_size(self) -> usize {
+        self.tab_size.get()
     }
 }
 
 impl Default for TabConfig {
     fn default() -> Self {
         Self {
-            tab_width: NonZeroUsize::new(4).expect("默认 tab 宽度必须大于 0"),
-            indent_width: NonZeroUsize::new(4).expect("默认缩进宽度必须大于 0"),
+            tab_size: NonZeroUsize::new(4).expect("默认 tab 大小必须大于 0"),
             insert_spaces: true,
         }
     }
@@ -55,21 +48,57 @@ impl Default for TabConfig {
 /// 按语言覆盖的 Tab / 缩进策略；字段为 `None` 时沿用全局默认。
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(default)]
-pub(crate) struct LanguageTabOverrideContent {
+pub(crate) struct LanguageOverrideContent {
     #[serde(deserialize_with = "fallible")]
-    pub(crate) tab_width: Option<usize>,
-    #[serde(deserialize_with = "fallible")]
-    pub(crate) indent_width: Option<usize>,
+    pub(crate) tab_size: Option<usize>,
     #[serde(deserialize_with = "fallible")]
     pub(crate) insert_spaces: Option<bool>,
+    #[serde(deserialize_with = "fallible")]
+    pub(crate) indent_guides: Option<IndentGuideSettingsContent>,
 }
 
 /// 一门语言的 Tab / 缩进覆盖值。
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TabOverride {
-    pub tab_width: Option<NonZeroUsize>,
-    pub indent_width: Option<NonZeroUsize>,
+pub struct LanguageOverride {
+    pub tab_size: Option<NonZeroUsize>,
     pub insert_spaces: Option<bool>,
+    pub(crate) indent_guides: Option<IndentGuideSettingsContent>,
+}
+
+/// 按语言解析后的引导线策略。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndentGuideSettings {
+    pub enabled: bool,
+    pub line_width: u32,
+}
+
+impl Default for IndentGuideSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            line_width: 1,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub(crate) struct IndentGuideSettingsContent {
+    #[serde(deserialize_with = "fallible")]
+    pub(crate) enabled: Option<bool>,
+    #[serde(deserialize_with = "fallible")]
+    pub(crate) line_width: Option<u32>,
+}
+
+impl IndentGuideSettingsContent {
+    pub(crate) fn apply(self, settings: &mut IndentGuideSettings) {
+        if let Some(value) = self.enabled {
+            settings.enabled = value;
+        }
+        if let Some(value) = self.line_width {
+            settings.line_width = value.clamp(1, 10);
+        }
+    }
 }
 
 /// 字段级容错：该字段值非法时解析为「未配置」（`None`），由 merge 层用内置默认补齐，不影响其他字段。
@@ -98,11 +127,11 @@ pub(crate) struct UserSettingsContent {
     #[serde(deserialize_with = "fallible")]
     pub(crate) content_line_height: Option<f32>,
     #[serde(deserialize_with = "fallible")]
-    pub(crate) tab_width: Option<usize>,
-    #[serde(deserialize_with = "fallible")]
-    pub(crate) indent_width: Option<usize>,
+    pub(crate) tab_size: Option<usize>,
     #[serde(deserialize_with = "fallible")]
     pub(crate) insert_spaces: Option<bool>,
+    #[serde(deserialize_with = "fallible")]
+    pub(crate) indent_guides: Option<IndentGuideSettingsContent>,
     #[serde(deserialize_with = "fallible")]
     pub(crate) soft_wrap: Option<SoftWrapMode>,
     #[serde(deserialize_with = "fallible")]
@@ -129,7 +158,7 @@ pub(crate) struct UserSettingsContent {
     pub(crate) terminal_shell: Option<String>,
     /// 按语言覆盖的 Tab / 缩进策略；键为语言展示名。
     #[serde(deserialize_with = "fallible")]
-    pub(crate) languages: Option<HashMap<String, LanguageTabOverrideContent>>,
+    pub(crate) languages: Option<HashMap<String, LanguageOverrideContent>>,
 }
 
 pub(crate) fn parse_user_settings(content: &str) -> Result<UserSettingsContent> {

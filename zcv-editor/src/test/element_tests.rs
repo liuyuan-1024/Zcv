@@ -1149,6 +1149,68 @@ fn gutter_and_text_share_vertical_rows_but_only_text_scrolls_horizontally(cx: &m
 }
 
 #[gpui::test]
+fn indent_guide_columns_use_the_same_tab_size_as_text(cx: &mut TestAppContext) {
+    let window = cx.add_window(|_, _| Empty);
+    window
+        .update(cx, |_, window, cx| {
+            let text = Buffer::from_text(
+                "root\n    outer\n        inner\nend".to_owned(),
+                BufferConfig::default(),
+            )
+            .expect("测试 Buffer 应能创建")
+            .snapshot();
+            let display = project_display_snapshot(cx, text.clone());
+            let guides = display
+                .buffer_snapshot()
+                .indent_guides_in_range(Line::ZERO..Line::new(4), false);
+            let layout = layout_visible_lines(
+                display,
+                None,
+                EditorPresentation::new(&text.into(), None),
+                None,
+                VisibleLineLayoutParams {
+                    geometry: EditorGeometry {
+                        text_bounds: Bounds::new(point(px(60.), px(0.)), size(px(320.), px(100.))),
+                        text_clip_bounds: Bounds::new(
+                            point(px(60.), px(0.)),
+                            size(px(320.), px(100.)),
+                        ),
+                        gutter: None,
+                    },
+                    active_lines: &BTreeSet::new(),
+                    fold_anchor_lines: &BTreeSet::new(),
+                    start_row: DisplayRow::ZERO,
+                    scroll_offset: point(px(0.), px(0.)),
+                    primary_caret_column: None,
+                    line_height: px(20.),
+                    diff_rows: &[],
+                },
+                window,
+                cx,
+            );
+            let active_index = guides
+                .iter()
+                .position(|guide| guide.depth == 1)
+                .expect("应有第二级缩进");
+            let projected =
+                layout_indent_guides(&layout, &guides, &[active_index], px(60.), px(60.), px(10.));
+            assert_eq!(projected.len(), 2);
+            let outer = projected
+                .iter()
+                .find(|guide| guide.origin.x == px(60.))
+                .expect("应有第一级缩进");
+            let inner = projected
+                .iter()
+                .find(|guide| guide.origin.x == px(100.))
+                .expect("应有第二级缩进");
+            assert_eq!(outer.length, px(40.));
+            assert!(!outer.active);
+            assert!(inner.active);
+        })
+        .expect("测试窗口应保持可用");
+}
+
+#[gpui::test]
 fn folded_projection_rows_drive_layout_and_hit_testing(cx: &mut TestAppContext) {
     let snapshot = Buffer::from_text(
         "anchor\nhidden one\nhidden two\nafter".to_owned(),

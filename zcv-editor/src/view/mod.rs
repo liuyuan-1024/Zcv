@@ -3,6 +3,7 @@
 use zcv_multi_buffer::{DiffExcerptRanges, MultiBufferOffset, MultiBufferRange};
 
 use std::cell::Cell;
+use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,7 +28,7 @@ use zcv_multi_buffer::{
     DiffFile, DisplayHunk, ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot, MultiBuffer,
     MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot, WordDiffs,
 };
-use zcv_settings::{SettingsStore, SoftWrapMode};
+use zcv_settings::{SettingsStore, SoftWrapMode, TabConfig};
 use zcv_text::{
     Affinity, Buffer, BufferConfig, BufferId, BufferVersion, Line, LineRange, LogicalColumn,
     MovementDirection, MovementUnit, Position, TextError, TextResult, TransactionId,
@@ -49,6 +50,7 @@ use super::selection::{
     EditOutcome, EditPlan, Selection, SelectionHistory, SelectionSet, replace_selections,
 };
 
+mod indent_guides;
 mod presentation;
 mod rename;
 mod search;
@@ -257,6 +259,8 @@ pub struct Editor {
     /// 本消费方已经处理的显示版本；显示命令可能在进入消费入口前提交新快照。
     processed_display_version: u64,
     mode: EditorMode,
+    show_indent_guides: Option<bool>,
+    active_indent_guides: indent_guides::ActiveIndentGuidesState,
     /// 单行嵌入编辑器是否跟随代码编辑器的内容排版。
     content_typography: bool,
     /// 空 buffer 时显示的提示文本（如提交信息编辑器的"输入提交信息…"）。
@@ -772,12 +776,10 @@ impl Editor {
         } else {
             let buffer = Buffer::from_text(text, BufferConfig::default())
                 .expect("placeholder Buffer 应能创建");
-            let tab_width = self
+            let snapshot = self
                 .multi_buffer
-                .update(cx, |buffer, cx| buffer.snapshot(cx))
-                .language_settings()
-                .tab
-                .tab_width;
+                .update(cx, |buffer, cx| buffer.snapshot(cx));
+            let tab_width = Self::display_tab_size(&snapshot, cx);
             Some(cx.new(|cx| {
                 let mut map = DisplayMap::new(buffer.snapshot(), cx);
                 map.set_tab_width(tab_width, cx);
@@ -1623,6 +1625,17 @@ impl Editor {
         Self::new(multi_buffer, mode, cx)
     }
 
+    fn display_tab_size(snapshot: &MultiBufferSnapshot, cx: &App) -> NonZeroUsize {
+        if snapshot.is_singleton() {
+            snapshot.language_settings().tab.tab_size
+        } else {
+            SettingsStore::try_get(cx).map_or_else(
+                || TabConfig::default().tab_size,
+                |settings| settings.tab.tab_size,
+            )
+        }
+    }
+
     fn new(multi_buffer: Entity<MultiBuffer>, mode: EditorMode, cx: &mut Context<Self>) -> Self {
         // 在一次底层 Buffer 更新中建立订阅并取得同版本组合快照，关闭初始化期间的漏读窗口。
         let (multi_buffer_subscription, snapshot) =
@@ -1631,8 +1644,7 @@ impl Editor {
         let display_map = cx.new(|cx| {
             let mut map = DisplayMap::new(snapshot.clone(), cx);
             map.set_multi_buffer(multi_buffer.clone(), multi_buffer_subscription, cx);
-            // Tab 宽度按 buffer/language 解析（对齐 Zed LanguageSettings），不再读全局设置。
-            map.set_tab_width(snapshot.language_settings().tab.tab_width, cx);
+            map.set_tab_width(Self::display_tab_size(&snapshot, cx), cx);
             map
         });
         let display_snapshot = display_map.update(cx, |map, cx| map.snapshot(cx));
@@ -1670,12 +1682,15 @@ impl Editor {
 
         // 换行模式默认来自全局设置，与编辑器模式无关。
         let settings = SettingsStore::try_get(cx);
+        let show_indent_guides = (mode == EditorMode::SingleLine).then_some(false);
         let this = Self {
             multi_buffer,
             last_dirty,
             display_map,
             processed_display_version: display_snapshot.version(),
             mode,
+            show_indent_guides,
+            active_indent_guides: indent_guides::ActiveIndentGuidesState::default(),
             content_typography: false,
             placeholder_display_map: None,
             selections: initial_selections,
@@ -1720,6 +1735,7 @@ impl Editor {
             };
             editor.soft_wrap = settings.soft_wrap.into();
             editor.preferred_line_length = settings.preferred_line_length;
+            editor.advance_snapshots(cx);
             cx.notify();
         })
         .detach();
@@ -2119,10 +2135,10 @@ impl Editor {
     /// 模型事件、编辑提交与结构重建都只经此入口；
     /// 选区以源锚点保存，解析时直接读 DisplayMap 持有的快照，不需要逐状态重映射。
     fn advance_snapshots(&mut self, cx: &mut Context<Self>) {
-        // 同步组合文本并按当前语言设置刷新 tab 宽度；快照整体由 DisplayMap 持有。
+        // 单文件用该语言的 tab_size，组合文档用全局 tab_size；与 Zed 的显示投影一致。
         self.display_map.update(cx, |map, cx| {
             let snapshot = map.snapshot(cx);
-            let tab_width = snapshot.buffer_snapshot().language_settings().tab.tab_width;
+            let tab_width = Self::display_tab_size(snapshot.buffer_snapshot(), cx);
             map.set_tab_width(tab_width, cx);
         });
         let snapshot = self.display_snapshot(cx);

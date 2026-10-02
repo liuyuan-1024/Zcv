@@ -167,7 +167,7 @@ impl Editor {
                             })?
                             .column()
                             .get();
-                        let width = tab.indent_width();
+                        let width = tab.tab_size();
                         Arc::from(" ".repeat(width - column % width))
                     } else {
                         Arc::from("\t")
@@ -189,7 +189,7 @@ impl Editor {
                             .language_settings_at(offset)
                             .tab;
                         let text: Arc<str> = if tab.insert_spaces {
-                            Arc::from(" ".repeat(tab.indent_width()))
+                            Arc::from(" ".repeat(tab.tab_size()))
                         } else {
                             Arc::from("\t")
                         };
@@ -221,13 +221,13 @@ impl Editor {
                 .into_iter()
                 .filter_map(|line| {
                     let offset = snapshot.line_start_byte(line).unwrap_or_default();
-                    let indent_width = self
+                    let tab_size = self
                         .display_snapshot(cx)
                         .buffer_snapshot()
                         .language_settings_at(offset)
                         .tab
-                        .indent_width();
-                    match leading_indent_range(&snapshot, line, indent_width) {
+                        .tab_size();
+                    match leading_indent_range(&snapshot, line, tab_size) {
                         Ok(Some(selection)) => Some(Ok((selection, Arc::from("")))),
                         Ok(None) => None,
                         Err(error) => Some(Err(error)),
@@ -274,7 +274,7 @@ impl Editor {
                     .tab;
                 let indent = if suggestion.additional_levels > 0 {
                     if tab.insert_spaces {
-                        " ".repeat(tab.indent_width() * suggestion.additional_levels)
+                        " ".repeat(tab.tab_size() * suggestion.additional_levels)
                     } else {
                         "\t".repeat(suggestion.additional_levels)
                     }
@@ -791,7 +791,7 @@ pub(super) fn touched_lines(
 fn leading_indent_range(
     snapshot: &MultiBufferSnapshot,
     line: Line,
-    indent_width: usize,
+    tab_size: usize,
 ) -> TextResult<Option<Selection>> {
     let start = snapshot.line_start_byte(line)?;
     let end = line_block_end(snapshot, line.get())?;
@@ -802,7 +802,7 @@ fn leading_indent_range(
     } else {
         let spaces = content
             .bytes()
-            .take(indent_width)
+            .take(tab_size)
             .take_while(|byte| *byte == b' ')
             .count();
         start.checked_add(spaces)

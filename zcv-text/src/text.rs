@@ -8,6 +8,7 @@ mod buffer;
 mod config;
 mod diff;
 mod errors;
+mod indent;
 mod movement;
 mod position_map;
 mod slicing;
@@ -25,6 +26,7 @@ pub use diff::diff_edits;
 pub use errors::{
     AnchorError, CoordinateError, EditError, StorageError, TextError, TextResult, TransactionError,
 };
+pub use indent::LineIndent;
 pub use movement::{MovementDirection, MovementUnit};
 pub use position_map::{Affinity, MappingResult, PositionMap, Stickiness};
 pub use slicing::{LineContent, LineSlice, TextSlice};

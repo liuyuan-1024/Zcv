@@ -21,7 +21,7 @@ pub use highlighting::HighlightSpan;
 pub use language_buffer::{
     EditedLanguageBufferSnapshot, LanguageBuffer, LanguageBufferEvent, LanguageBufferSnapshot,
 };
-pub use language_settings::LanguageSettings;
+pub use language_settings::{IndentGuideSettings, LanguageSettings};
 pub use registry::{Language, LanguageRegistry};
 pub use snippet::{
     SnippetHighlightCancellation, SnippetHighlights, highlight_snippet_with_cancellation,

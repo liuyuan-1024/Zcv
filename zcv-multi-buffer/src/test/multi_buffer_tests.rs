@@ -980,6 +980,97 @@ fn singleton(path: &str, text: &str, cx: &mut TestAppContext) -> gpui::Entity<La
     })
 }
 
+#[gpui::test]
+fn indent_guides_follow_nested_indentation_and_blank_lines(cx: &mut TestAppContext) {
+    let source = singleton(
+        "src/indent.rs",
+        "root\n    outer\n\n        inner\n    outer\nend",
+        cx,
+    );
+    let buffer = cx.new(|cx| MultiBuffer::singleton(source, cx));
+    let snapshot = buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
+    let mut guides = snapshot.indent_guides_in_range(Line::ZERO..Line::new(6), false);
+    guides.sort_by_key(|guide| (guide.depth, guide.start_row));
+    assert_eq!(
+        guides
+            .iter()
+            .map(|guide| (guide.start_row.get(), guide.end_row.get(), guide.depth))
+            .collect::<Vec<_>>(),
+        vec![(1, 4, 0), (2, 3, 1)]
+    );
+    assert!(guides.iter().all(|guide| guide.tab_size == 4));
+}
+
+#[gpui::test]
+fn enclosing_indent_selects_the_opening_and_blank_line_block(cx: &mut TestAppContext) {
+    let source = singleton(
+        "src/indent.rs",
+        "root\n    outer\n\n        inner\n    tail\nend",
+        cx,
+    );
+    let buffer = cx.new(|cx| MultiBuffer::singleton(source, cx));
+    let snapshot = buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
+    let guides = snapshot.indent_guides_in_range(Line::ZERO..Line::new(6), false);
+
+    let active_depths = |cursor_row: usize| {
+        let (range, indent) = snapshot
+            .enclosing_indent(Line::new(cursor_row))
+            .expect("缩进块应有外层边界");
+        guides
+            .iter()
+            .filter(|guide| {
+                guide.indent_level() == indent.len(guide.tab_size)
+                    && range.start <= guide.end_row
+                    && guide.start_row <= range.end
+            })
+            .map(|guide| guide.depth)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(active_depths(0), vec![0]);
+    assert_eq!(active_depths(1), vec![0]);
+    assert_eq!(active_depths(2), vec![1]);
+    assert_eq!(active_depths(3), vec![1]);
+    assert_eq!(active_depths(4), vec![0]);
+    assert!(snapshot.enclosing_indent(Line::new(5)).is_none());
+}
+
+#[gpui::test]
+fn indent_guides_treat_a_tab_as_one_tab_size_of_spaces(cx: &mut TestAppContext) {
+    let source = singleton("src/tabs.rs", "root\n\twith_tab\n    with_spaces\nend", cx);
+    let buffer = cx.new(|cx| MultiBuffer::singleton(source, cx));
+    let snapshot = buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
+    let guides = snapshot.indent_guides_in_range(Line::ZERO..Line::new(4), false);
+    assert_eq!(guides.len(), 1);
+    assert_eq!(guides[0].tab_size, 4);
+    assert_eq!(guides[0].depth, 0);
+    assert_eq!(
+        (guides[0].start_row, guides[0].end_row),
+        (Line::new(1), Line::new(2))
+    );
+}
+
+#[gpui::test]
+fn indent_guides_end_when_the_next_excerpt_dedents(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "root\n    a\n", cx);
+    let second = singleton("src/b.rs", "root\n    b\n", cx);
+    let buffer = cx.new(MultiBuffer::empty);
+    buffer.update(cx, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                ExcerptRange::line_range(first.clone(), 0..2, cx),
+                ExcerptRange::line_range(second.clone(), 0..2, cx),
+            ],
+            cx,
+        );
+    });
+    let snapshot = buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
+    let guides =
+        snapshot.indent_guides_in_range(Line::ZERO..Line::new(snapshot.line_count()), false);
+    assert_eq!(guides.len(), 2);
+    assert_ne!(guides[0].buffer_id, guides[1].buffer_id);
+    assert!(guides[0].end_row < guides[1].start_row);
+}
+
 /// 范围查询返回当前快照的组合坐标；行游标与按字节查询共享源映射语义。
 #[gpui::test]
 fn source_range_projection_follows_the_queried_excerpt(cx: &mut TestAppContext) {

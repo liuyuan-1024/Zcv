@@ -3,9 +3,12 @@
   "content_font_size": 16,
   "ui_font_size": 13,
   "content_line_height": 1.618,
-  "tab_width": 4,
-  "indent_width": 4,
+  "tab_size": 4,
   "insert_spaces": true,
+  "indent_guides": {
+    "enabled": true,
+    "line_width": 1
+  },
   "soft_wrap": "editor-width",
   "preferred_line_length": 80,
   "use_autoclose": true,

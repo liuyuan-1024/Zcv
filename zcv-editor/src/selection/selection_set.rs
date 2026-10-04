@@ -13,7 +13,7 @@ use zcv_text::{Affinity, ByteOffset, PositionMap, TextResult};
 use super::Selection;
 
 /// 归一化后的多选区 / 多光标集合。
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SelectionSet<T = MultiBufferOffset> {
     selections: Arc<[Selection<T>]>,
     primary_index: usize,

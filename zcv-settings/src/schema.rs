@@ -3,9 +3,9 @@
 //! 只描述 JSON 层可表达的内容与解析规则；默认值合并与运行时表示由 `merge` 层负责。
 
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, ensure};
 use serde::Deserialize;
 
 /// 软换行模式的设置值。
@@ -21,6 +21,82 @@ pub enum SoftWrapMode {
     Bounded,
 }
 
+/// 编辑器光标形状。
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CursorShape {
+    #[default]
+    Bar,
+    Block,
+    Underline,
+    Hollow,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub(crate) struct CursorAnimationSettingsContent {
+    #[serde(deserialize_with = "fallible")]
+    pub(crate) enabled: Option<bool>,
+}
+
+/// 内置默认层由项目维护，缺少任一配置项都属于开发错误。
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BuiltinSettingsContent {
+    pub(crate) theme: String,
+    pub(crate) content_font_size: f32,
+    pub(crate) ui_font_size: f32,
+    pub(crate) content_line_height: f32,
+    pub(crate) tab_size: NonZeroUsize,
+    pub(crate) insert_spaces: bool,
+    pub(crate) indent_guides: BuiltinIndentGuideSettings,
+    pub(crate) soft_wrap: SoftWrapMode,
+    pub(crate) cursor_shape: CursorShape,
+    pub(crate) cursor_blink: bool,
+    pub(crate) cursor_animation: BuiltinCursorAnimationSettings,
+    pub(crate) preferred_line_length: usize,
+    pub(crate) file_scan_exclusions: Vec<String>,
+    pub(crate) use_autoclose: bool,
+    pub(crate) use_auto_surround: bool,
+    pub(crate) terminal_font_size: f32,
+    pub(crate) terminal_line_height: f32,
+    pub(crate) terminal_max_scroll_history_lines: usize,
+    pub(crate) terminal_cursor_shape: String,
+    pub(crate) terminal_alternate_scroll: bool,
+    pub(crate) terminal_option_as_meta: bool,
+    pub(crate) terminal_shell: TerminalShellSetting,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BuiltinIndentGuideSettings {
+    pub(crate) enabled: bool,
+    pub(crate) line_width: NonZeroU32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BuiltinCursorAnimationSettings {
+    pub(crate) enabled: bool,
+}
+
+/// `null` 明确表示使用系统默认 shell；缺少用户配置键则表示不覆盖内置值。
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub(crate) enum TerminalShellSetting {
+    System,
+    Program(String),
+}
+
+impl TerminalShellSetting {
+    pub(crate) fn into_runtime(self) -> Option<String> {
+        match self {
+            Self::System => None,
+            Self::Program(shell) => Some(shell),
+        }
+    }
+}
+
 /// Tab 展示宽度与缩进输入策略。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TabConfig {
@@ -33,15 +109,6 @@ pub struct TabConfig {
 impl TabConfig {
     pub fn tab_size(self) -> usize {
         self.tab_size.get()
-    }
-}
-
-impl Default for TabConfig {
-    fn default() -> Self {
-        Self {
-            tab_size: NonZeroUsize::new(4).expect("默认 tab 大小必须大于 0"),
-            insert_spaces: true,
-        }
     }
 }
 
@@ -70,15 +137,6 @@ pub struct LanguageOverride {
 pub struct IndentGuideSettings {
     pub enabled: bool,
     pub line_width: u32,
-}
-
-impl Default for IndentGuideSettings {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            line_width: 1,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -135,6 +193,12 @@ pub(crate) struct UserSettingsContent {
     #[serde(deserialize_with = "fallible")]
     pub(crate) soft_wrap: Option<SoftWrapMode>,
     #[serde(deserialize_with = "fallible")]
+    pub(crate) cursor_shape: Option<CursorShape>,
+    #[serde(deserialize_with = "fallible")]
+    pub(crate) cursor_blink: Option<bool>,
+    #[serde(deserialize_with = "fallible")]
+    pub(crate) cursor_animation: Option<CursorAnimationSettingsContent>,
+    #[serde(deserialize_with = "fallible")]
     pub(crate) preferred_line_length: Option<usize>,
     #[serde(deserialize_with = "fallible")]
     pub(crate) file_scan_exclusions: Option<Vec<String>>,
@@ -155,7 +219,7 @@ pub(crate) struct UserSettingsContent {
     #[serde(deserialize_with = "fallible")]
     pub(crate) terminal_option_as_meta: Option<bool>,
     #[serde(deserialize_with = "fallible")]
-    pub(crate) terminal_shell: Option<String>,
+    pub(crate) terminal_shell: Option<TerminalShellSetting>,
     /// 按语言覆盖的 Tab / 缩进策略；键为语言展示名。
     #[serde(deserialize_with = "fallible")]
     pub(crate) languages: Option<HashMap<String, LanguageOverrideContent>>,
@@ -165,5 +229,15 @@ pub(crate) fn parse_user_settings(content: &str) -> Result<UserSettingsContent> 
     if content.trim().is_empty() {
         return Ok(UserSettingsContent::default());
     }
-    serde_json_lenient::from_str(content).context("不是合法的 settings JSON")
+    serde_json_lenient::from_str(content).context("不是合法的 settings JSONC")
+}
+
+pub(crate) fn parse_builtin_settings(content: &str) -> Result<BuiltinSettingsContent> {
+    let settings: BuiltinSettingsContent =
+        serde_json_lenient::from_str(content).context("内置初始设置不是合法的 settings JSONC")?;
+    ensure!(
+        settings.indent_guides.line_width.get() <= 10,
+        "内置引导线宽度必须在 1 到 10 之间"
+    );
+    Ok(settings)
 }

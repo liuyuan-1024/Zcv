@@ -2,7 +2,7 @@ use std::fs;
 
 use super::*;
 use crate::file::ensure_settings_file;
-use crate::schema::parse_user_settings;
+use crate::schema::{TerminalShellSetting, parse_builtin_settings, parse_user_settings};
 
 #[test]
 fn missing_user_settings_file_is_created_from_builtin_content() {
@@ -35,15 +35,47 @@ fn existing_user_settings_file_is_not_overwritten() {
 fn missing_fields_use_defaults() {
     let content = parse_user_settings(r#"{"theme":"one-light"}"#).unwrap();
     let settings = UserSettings::merge(content);
-    assert_eq!(settings.theme, "one-light");
-    assert_eq!(settings.soft_wrap, SoftWrapMode::EditorWidth);
-    assert_eq!(settings.preferred_line_length, 80);
-    assert!(
-        settings
-            .file_scan_exclusions
-            .iter()
-            .any(|glob| glob == "**/.git"),
-        "默认排除名单应包含 VCS 目录"
+    let mut expected = UserSettings::default();
+    assert_ne!(expected.theme, "one-light");
+    expected.theme = "one-light".to_string();
+    assert_eq!(settings, expected);
+}
+
+#[test]
+fn cursor_shape_setting_supports_all_zed_shapes() {
+    for (name, shape) in [
+        ("bar", CursorShape::Bar),
+        ("block", CursorShape::Block),
+        ("underline", CursorShape::Underline),
+        ("hollow", CursorShape::Hollow),
+    ] {
+        let content = parse_user_settings(&format!(r#"{{"cursor_shape":"{name}"}}"#)).unwrap();
+        assert_eq!(UserSettings::merge(content).cursor_shape, shape);
+    }
+}
+
+#[test]
+fn cursor_blink_and_animation_settings_are_independent() {
+    let defaults = UserSettings::default();
+    let blink_disabled =
+        UserSettings::merge(parse_user_settings(r#"{"cursor_blink":false}"#).unwrap());
+    assert!(!blink_disabled.cursor_blink);
+    assert_eq!(
+        blink_disabled.cursor_animation_enabled,
+        defaults.cursor_animation_enabled
+    );
+
+    let animation_disabled = UserSettings::merge(
+        parse_user_settings(r#"{"cursor_animation":{"enabled":false}}"#).unwrap(),
+    );
+    assert_eq!(animation_disabled.cursor_blink, defaults.cursor_blink);
+    assert!(!animation_disabled.cursor_animation_enabled);
+
+    let nested_field_missing =
+        UserSettings::merge(parse_user_settings(r#"{"cursor_animation":{}}"#).unwrap());
+    assert_eq!(
+        nested_field_missing.cursor_animation_enabled,
+        defaults.cursor_animation_enabled
     );
 }
 
@@ -206,8 +238,66 @@ fn indent_guide_settings_merge_per_language() {
 
 #[test]
 fn bundled_initial_settings_are_valid() {
-    let content = parse_user_settings(&INITIAL_USER_SETTINGS).unwrap();
-    assert_eq!(UserSettings::merge(content), UserSettings::default());
+    let content = parse_builtin_settings(&INITIAL_USER_SETTINGS).unwrap();
+    let defaults = UserSettings::default();
+    assert_eq!(content.tab_size.get(), 4);
+    assert!(defaults.cursor_animation_enabled);
+    assert_eq!(defaults.tab, TabConfig::default());
+    assert_eq!(defaults.indent_guides, IndentGuideSettings::default());
+}
+
+#[test]
+fn builtin_settings_require_every_field_including_nested_and_nullable_fields() {
+    let original: serde_json_lenient::Value =
+        serde_json_lenient::from_str(&INITIAL_USER_SETTINGS).unwrap();
+    for path in original.as_object().unwrap().keys() {
+        let mut value = original.clone();
+        value.as_object_mut().unwrap().remove(path);
+        let content = serde_json_lenient::to_string(&value).unwrap();
+        assert!(
+            parse_builtin_settings(&content).is_err(),
+            "缺少 {path} 应报错"
+        );
+    }
+    for parent in ["indent_guides", "cursor_animation"] {
+        for field in original[parent].as_object().unwrap().keys() {
+            let mut value = original.clone();
+            value[parent].as_object_mut().unwrap().remove(field);
+            let content = serde_json_lenient::to_string(&value).unwrap();
+            assert!(
+                parse_builtin_settings(&content).is_err(),
+                "缺少 {parent}.{field} 应报错"
+            );
+        }
+    }
+}
+
+#[test]
+fn invalid_builtin_values_fail_instead_of_falling_back() {
+    let mut value: serde_json_lenient::Value =
+        serde_json_lenient::from_str(&INITIAL_USER_SETTINGS).unwrap();
+    value["tab_size"] = 0.into();
+    assert!(parse_builtin_settings(&serde_json_lenient::to_string(&value).unwrap()).is_err());
+    value["tab_size"] = 4.into();
+    value["indent_guides"]["line_width"] = 11.into();
+    assert!(parse_builtin_settings(&serde_json_lenient::to_string(&value).unwrap()).is_err());
+}
+
+#[test]
+fn user_shell_absence_and_explicit_null_are_distinct() {
+    assert_eq!(parse_user_settings("{}").unwrap().terminal_shell, None);
+    assert_eq!(
+        parse_user_settings(r#"{"terminal_shell":null}"#)
+            .unwrap()
+            .terminal_shell,
+        Some(TerminalShellSetting::System)
+    );
+    assert_eq!(
+        parse_user_settings(r#"{"terminal_shell":"/bin/zsh"}"#)
+            .unwrap()
+            .terminal_shell,
+        Some(TerminalShellSetting::Program("/bin/zsh".to_owned()))
+    );
 }
 
 #[test]

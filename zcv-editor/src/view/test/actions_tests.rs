@@ -1027,6 +1027,7 @@ fn document_boundary_actions_move_and_extend_selection(cx: &mut TestAppContext) 
         );
     });
 }
+
 #[gpui::test]
 fn page_actions_move_selection_and_viewport_together(cx: &mut TestAppContext) {
     let text = (0..40).map(|row| format!("{row}\n")).collect::<String>();
@@ -1077,11 +1078,11 @@ fn page_actions_move_selection_and_viewport_together(cx: &mut TestAppContext) {
     cx.dispatch_action(SelectPageDown);
     cx.run_until_parked();
     cx.read_entity(&editor, |editor, cx| {
-        // 垂直移动持久保留目标列（从列 0 起始，目标列仍为 0）。
+        // 垂直移动持久保留像素目标（从行首起始，目标 x 仍为 0）。
         assert_eq!(
             editor.selections(cx),
             SelectionSet::new(vec![
-                Selection::new(first_page, second_page).with_goal(Some(0))
+                Selection::new(first_page, second_page).with_goal(Some(0.0))
             ])
         );
         assert_eq!(
@@ -1095,7 +1096,7 @@ fn page_actions_move_selection_and_viewport_together(cx: &mut TestAppContext) {
     cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
             editor.selections(cx),
-            SelectionSet::new(vec![Selection::caret(first_page).with_goal(Some(0))])
+            SelectionSet::new(vec![Selection::caret(first_page).with_goal(Some(0.0))])
         );
         assert_eq!(
             editor.scroll_manager.anchor().row(),
@@ -1109,7 +1110,7 @@ fn page_actions_move_selection_and_viewport_together(cx: &mut TestAppContext) {
         assert_eq!(
             editor.selections(cx),
             SelectionSet::new(vec![
-                Selection::new(first_page, MultiBufferOffset::ZERO).with_goal(Some(0))
+                Selection::new(first_page, MultiBufferOffset::ZERO).with_goal(Some(0.0))
             ])
         );
         assert_eq!(editor.scroll_manager.anchor().row(), DisplayRow::ZERO);
@@ -1394,9 +1395,9 @@ fn directional_moves_collapse_selection_to_its_edges(cx: &mut TestAppContext) {
 #[gpui::test]
 fn word_line_and_vertical_movement_use_engine_boundaries(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "alpha 你好\nxy");
-    let editor = cx.new({
+    let (editor, cx) = cx.add_window_view({
         let buffer = buffer.clone();
-        move |cx| {
+        move |_, cx| {
             let mut editor = Editor::for_language_buffer(buffer, cx);
             editor.set_selections(
                 SelectionSet::caret(MultiBufferOffset::new("alpha 你好".len())),
@@ -1406,20 +1407,25 @@ fn word_line_and_vertical_movement_use_engine_boundaries(cx: &mut TestAppContext
         }
     });
 
-    cx.update_entity(&editor, |editor, cx| {
-        editor.move_selections(MovementDirection::Previous, MovementUnit::Word, false, cx);
+    focus_editor(&editor, cx);
+    cx.dispatch_action(MoveToPreviousWord);
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
             editor.selections(cx).primary().head(),
             MultiBufferOffset::new(6)
         );
+    });
 
-        editor.move_selections(MovementDirection::Next, MovementUnit::LineEdge, false, cx);
+    cx.dispatch_action(MoveToEndOfLine);
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
             editor.selections(cx).primary().head(),
             MultiBufferOffset::new("alpha 你好".len())
         );
+    });
 
-        editor.move_selections(MovementDirection::Next, Motion::LineStep, false, cx);
+    cx.dispatch_action(MoveDown);
+    cx.read_entity(&editor, |editor, cx| {
         assert_eq!(
             editor.selections(cx).primary().head(),
             MultiBufferOffset::new("alpha 你好\nxy".len())

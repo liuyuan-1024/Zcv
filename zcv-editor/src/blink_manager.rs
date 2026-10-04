@@ -16,24 +16,26 @@ pub(crate) struct BlinkManager {
     blinking_paused: bool,
     visible: bool,
     enabled: bool,
+    blink_enabled: bool,
     /// 当前在途的暂停 / 闪烁定时任务；替换或禁用时丢弃即取消，与实体同生命周期。
     timer_task: Option<Task<()>>,
 }
 
 impl Default for BlinkManager {
     fn default() -> Self {
-        Self::new()
+        Self::new(true)
     }
 }
 
 impl BlinkManager {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(blink_enabled: bool) -> Self {
         Self {
             blink_interval: CURSOR_BLINK_INTERVAL,
             blink_epoch: 0,
             blinking_paused: false,
             visible: true,
             enabled: false,
+            blink_enabled,
             timer_task: None,
         }
     }
@@ -64,7 +66,8 @@ impl BlinkManager {
 
     /// 递归闪烁：翻转 visible → 触发重新渲染 → 间隔后再次调用。
     fn blink_cursors(&mut self, epoch: usize, cx: &mut Context<Self>) {
-        if epoch == self.blink_epoch && self.enabled && !self.blinking_paused {
+        if epoch == self.blink_epoch && self.enabled && self.blink_enabled && !self.blinking_paused
+        {
             self.visible = !self.visible;
             cx.notify();
 
@@ -91,10 +94,29 @@ impl BlinkManager {
             return;
         }
         self.enabled = true;
+        if !self.blink_enabled {
+            self.show_cursor(cx);
+            return;
+        }
         // 先设为不可见，blink_cursors 会立刻翻转为 true，
         // 这样下一帧渲染时光标就是可见的。
         self.visible = false;
         self.blink_cursors(self.blink_epoch, cx);
+    }
+
+    pub(crate) fn set_blink_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.blink_enabled == enabled {
+            return;
+        }
+        self.blink_enabled = enabled;
+        self.timer_task = None;
+        self.next_blink_epoch();
+        if enabled && self.enabled {
+            self.visible = false;
+            self.blink_cursors(self.blink_epoch, cx);
+        } else {
+            self.show_cursor(cx);
+        }
     }
 
     /// 禁用闪烁（编辑器失去焦点时调用）。

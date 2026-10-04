@@ -10,23 +10,26 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, AvailableSpace, Bounds, ContentMask, Context, DispatchPhase, Element,
-    ElementId, ElementInputHandler, Entity, GlobalElementId, HitboxBehavior, InspectorElementId,
-    InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, PaintQuad, Pixels, Point, ScrollDelta, ScrollWheelEvent, ShapedLine, Size, Style,
-    TextRun, Window, div, fill, point, prelude::*, px, relative, size,
+    AnyElement, App, AvailableSpace, BorderStyle, Bounds, ContentMask, Context, DispatchPhase,
+    Element, ElementId, ElementInputHandler, Entity, GlobalElementId, HitboxBehavior,
+    InspectorElementId, InteractiveElement, IntoElement, LayoutId, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, ScrollDelta, ScrollWheelEvent,
+    ShapedLine, Size, Style, TextRun, Window, div, fill, outline, point, prelude::*, px, relative,
+    size,
 };
 use zcv_actions::{OpenExcerpts, ToggleFold};
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
 use zcv_keymap::display_shortcut;
 use zcv_language::BracketPair;
 use zcv_multi_buffer::MultiBufferSnapshot;
-use zcv_settings::IndentGuideSettings;
+use zcv_settings::{CursorShape, IndentGuideSettings};
 use zcv_text::Line;
 use zcv_theme::{color, fixed, scale};
 use zcv_ui::{Button, ButtonSize, ButtonStyle, SvgIcon, drag_autoscroll_delta};
 
+use crate::cursor_animation::CursorViewport;
 use crate::selection::SelectionSet;
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::display_map::{
     ChunkRenderer, ChunkRendererId, DiffDecorationSnapshot, DisplayBlock, DisplayBlockKind,
@@ -152,6 +155,23 @@ struct FragmentedLine {
 impl FragmentedLine {
     fn len(&self) -> usize {
         self.text.len()
+    }
+
+    fn font_id_for_index(&self, index: usize) -> Option<gpui::FontId> {
+        let mut start = 0;
+        for fragment in &self.fragments {
+            match fragment {
+                LineFragment::Text(line) => {
+                    let end = start + line.len();
+                    if index < end {
+                        return line.font_id_for_index(index - start);
+                    }
+                    start = end;
+                }
+                LineFragment::Element { len, .. } => start += len,
+            }
+        }
+        None
     }
 
     /// 完整行文本内第 `index` 字节的 x 坐标（相对行原点）。
@@ -607,13 +627,27 @@ impl EditorInputLayout {
     }
 }
 
+#[derive(Clone, Copy)]
+struct CursorLayoutParams {
+    line_height: Pixels,
+    em_advance: Pixels,
+    font_size: Pixels,
+    shape: CursorShape,
+}
+
+struct CursorPaint {
+    quad: PaintQuad,
+    block_text: Option<(ShapedLine, Point<Pixels>)>,
+    animated_bounds: Option<Bounds<Pixels>>,
+}
+
 pub(super) struct PrepaintState {
     layout: Rc<EditorLayout>,
     /// 每行一个背景片段表（选区 + run 背景合成，互不重叠，一次绘制）。
     background_fragments: Vec<Vec<BackgroundFragment>>,
     bracket_matches: Vec<PaintQuad>,
     selected_whitespace: Option<SelectedWhitespaceMarkers>,
-    carets: Vec<PaintQuad>,
+    carets: Vec<CursorPaint>,
     ime_caret_bounds: Option<Bounds<Pixels>>,
     hitbox: gpui::Hitbox,
     gutter_hitbox: Option<gpui::Hitbox>,
@@ -1588,7 +1622,14 @@ impl Element for EditorElement {
         if let Some(range) = self.editor.read(cx).local_rename_range(cx) {
             layout.insert_local_rename_row(&range);
         }
-        let mut ime_caret_bounds = layout_primary_caret(&selections, &layout, line_height);
+        let cursor_shape = self.editor.read(cx).cursor_shape();
+        let cursor_params = CursorLayoutParams {
+            line_height,
+            em_advance,
+            font_size,
+            shape: cursor_shape,
+        };
+        let mut ime_caret_bounds = layout_primary_caret(&selections, &layout, cursor_params);
         // 水平自动滚动：光标 x 进出视口时只平移本帧布局（水平滚动是均匀平移），不再整帧重排。
         let scrolled_horizontal = self.editor.update(cx, |editor, _| {
             let scroll_offset = editor.scroll_offset();
@@ -1667,7 +1708,30 @@ impl Element for EditorElement {
         let selected_whitespace =
             layout_selected_whitespace(&selections, &layout, line_height, window, cx);
         // 所有背景源逐行合成为互不重叠的片段。
-        let (selection_segments, carets) = layout_selections(&selections, &layout, line_height, cx);
+        let (selection_segments, mut carets) =
+            layout_selections(&selections, &layout, cursor_params, window, cx);
+        let animate_caret = selections.len() == 1
+            && carets.len() == 1
+            && matches!(cursor_shape, CursorShape::Bar | CursorShape::Block)
+            && self.editor.read(cx).cursor_animation_enabled();
+        if animate_caret {
+            let offset = selections.primary().head();
+            let bounds = carets[0].quad.bounds;
+            let viewport_bounds = layout.text_clip_bounds;
+            carets[0].animated_bounds = self.editor.update(cx, |editor, _| {
+                let viewport = CursorViewport {
+                    bounds: viewport_bounds,
+                    scroll: editor.scroll_offset(),
+                };
+                editor.update_cursor_animation(offset, bounds, viewport, Instant::now())
+            });
+            if carets[0].animated_bounds.is_some() {
+                window.request_animation_frame();
+            }
+        } else {
+            self.editor
+                .update(cx, |editor, _| editor.clear_cursor_animation());
+        }
         let background_fragments = layout_background_fragments(&layout, &selection_segments, cx);
         let mut bracket_matches = Vec::new();
         if let Some(pair) = matching_bracket_pair {
@@ -2262,7 +2326,27 @@ impl Element for EditorElement {
                 }
                 if show_cursor {
                     for caret in prepaint.carets.drain(..) {
-                        window.paint_quad(caret);
+                        let target_origin = caret.quad.bounds.origin;
+                        let mut quad = caret.quad;
+                        if let Some(bounds) = caret.animated_bounds {
+                            quad.bounds = bounds;
+                        }
+                        let delta = point(
+                            quad.bounds.origin.x - target_origin.x,
+                            quad.bounds.origin.y - target_origin.y,
+                        );
+                        window.paint_quad(quad);
+                        if let Some((text, origin)) = caret.block_text {
+                            let origin = point(origin.x + delta.x, origin.y + delta.y);
+                            let _ = text.paint(
+                                origin,
+                                line_height,
+                                gpui::TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            );
+                        }
                     }
                 }
                 for controls in &mut prepaint.diff_hunk_controls {
@@ -3248,15 +3332,16 @@ pub(crate) fn gutter_dimensions(
 fn layout_selections(
     selections: &SelectionSet,
     layout: &EditorLayout,
-    line_height: Pixels,
+    cursor: CursorLayoutParams,
+    window: &mut Window,
     cx: &App,
-) -> (Vec<Vec<SelectionLineSegment>>, Vec<PaintQuad>) {
+) -> (Vec<Vec<SelectionLineSegment>>, Vec<CursorPaint>) {
     let mut per_line_segments = vec![Vec::new(); layout.lines.len()];
     let mut caret_quads = Vec::new();
 
     for selection in selections.as_slice().iter().copied() {
         // 选区存在时也在 head（活动端）绘制光标，表示输入插入点。
-        let caret = layout_caret_at_buffer_offset(selection.head(), layout, line_height, cx);
+        let caret = layout_caret_at_buffer_offset(selection.head(), layout, cursor, window, cx);
         if selection.is_caret() {
             if let Some(caret) = caret {
                 caret_quads.push(caret);
@@ -3268,7 +3353,12 @@ fn layout_selections(
             .project_text_range(selection.range())
         {
             for range in ranges {
-                layout_selection_segments(range, layout, line_height, &mut per_line_segments);
+                layout_selection_segments(
+                    range,
+                    layout,
+                    cursor.line_height,
+                    &mut per_line_segments,
+                );
             }
             if let Some(caret) = caret {
                 caret_quads.push(caret);
@@ -3620,7 +3710,7 @@ fn layout_projected_range_quad(
 fn layout_primary_caret(
     selections: &SelectionSet,
     layout: &EditorLayout,
-    line_height: Pixels,
+    cursor: CursorLayoutParams,
 ) -> Option<Bounds<Pixels>> {
     let head = selections.primary().head();
     let display_point = layout.display_snapshot.offset_to_display_point(head).ok()?;
@@ -3629,21 +3719,26 @@ fn layout_primary_caret(
         .iter()
         .find(|line| line.row == display_point.row())?;
     let local_byte = local_byte_for_display_point(line, display_point, &layout.display_snapshot);
-    Some(Bounds::new(
-        point(
-            line.origin.x + line.line.x_for_index(local_byte),
-            line.origin.y,
-        ),
-        size(px(2.), line_height),
+    let origin = point(
+        line.origin.x + line.line.x_for_index(local_byte),
+        line.origin.y,
+    );
+    let width = caret_character_width(line, local_byte, cursor.em_advance);
+    Some(cursor_bounds(
+        cursor.shape,
+        origin,
+        width,
+        cursor.line_height,
     ))
 }
 
 fn layout_caret_at_buffer_offset(
     offset: MultiBufferOffset,
     layout: &EditorLayout,
-    line_height: Pixels,
+    cursor: CursorLayoutParams,
+    window: &mut Window,
     cx: &App,
-) -> Option<PaintQuad> {
+) -> Option<CursorPaint> {
     let display_point = layout
         .display_snapshot
         .offset_to_display_point(offset)
@@ -3653,16 +3748,89 @@ fn layout_caret_at_buffer_offset(
         .iter()
         .find(|line| line.row == display_point.row())?;
     let local_byte = local_byte_for_display_point(line, display_point, &layout.display_snapshot);
-    Some(fill(
-        Bounds::new(
-            point(
-                line.origin.x + line.line.x_for_index(local_byte),
-                line.origin.y,
-            ),
-            size(px(2.), line_height),
+    let origin = point(
+        line.origin.x + line.line.x_for_index(local_byte),
+        line.origin.y,
+    );
+    let mut width = caret_character_width(line, local_byte, cursor.em_advance);
+    let colors = color::current(cx);
+    let block_text = if cursor.shape == CursorShape::Block {
+        line.line.text.get(local_byte..).and_then(|remaining| {
+            let grapheme = remaining.graphemes(true).next()?;
+            if grapheme == "\n" || grapheme.is_empty() {
+                return None;
+            }
+            let font = line
+                .line
+                .font_id_for_index(local_byte)
+                .and_then(|id| window.text_system().get_font_for_id(id))
+                .unwrap_or_else(|| window.text_style().font());
+            let run = TextRun {
+                len: grapheme.len(),
+                font,
+                color: colors.editor_background.into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let text = window.text_system().shape_line(
+                grapheme.to_owned().into(),
+                cursor.font_size,
+                &[run],
+                None,
+            );
+            if !grapheme
+                .chars()
+                .all(|character| character.is_ascii_whitespace())
+            {
+                width = width.max(text.width);
+            }
+            Some((text, origin))
+        })
+    } else {
+        None
+    };
+    let bounds = cursor_bounds(cursor.shape, origin, width, cursor.line_height);
+    let quad = if cursor.shape == CursorShape::Hollow {
+        outline(bounds, colors.editor_cursor, BorderStyle::Solid)
+    } else {
+        fill(bounds, colors.editor_cursor)
+    };
+    Some(CursorPaint {
+        quad,
+        block_text,
+        animated_bounds: None,
+    })
+}
+
+fn caret_character_width(line: &LayoutLine, local_byte: usize, em_advance: Pixels) -> Pixels {
+    let end = line
+        .line
+        .text
+        .get(local_byte..)
+        .and_then(|remaining| remaining.graphemes(true).next())
+        .map(|grapheme| local_byte + grapheme.len());
+    end.map(|end| line.line.x_for_index(end) - line.line.x_for_index(local_byte))
+        .filter(|width| *width > Pixels::ZERO)
+        .unwrap_or(em_advance)
+}
+
+fn cursor_bounds(
+    shape: CursorShape,
+    origin: Point<Pixels>,
+    character_width: Pixels,
+    line_height: Pixels,
+) -> Bounds<Pixels> {
+    match shape {
+        CursorShape::Bar => Bounds::new(origin, size(CARET_WIDTH, line_height)),
+        CursorShape::Block | CursorShape::Hollow => {
+            Bounds::new(origin, size(character_width, line_height))
+        }
+        CursorShape::Underline => Bounds::new(
+            point(origin.x, origin.y + line_height - CARET_WIDTH),
+            size(character_width, CARET_WIDTH),
         ),
-        color::current(cx).editor_cursor,
-    ))
+    }
 }
 
 fn local_byte_for_display_point(

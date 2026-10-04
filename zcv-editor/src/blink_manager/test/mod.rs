@@ -13,7 +13,7 @@ impl BlinkManager {
 /// 禁用必须显式取消在途定时器，而不是等它在下次回调时自行失效。
 #[gpui::test]
 fn disable_cancels_the_in_flight_blink_timer(cx: &mut TestAppContext) {
-    let manager = cx.new(|_| BlinkManager::new());
+    let manager = cx.new(|_| BlinkManager::new(true));
     manager.update(cx, |manager, cx| manager.enable(cx));
     assert!(
         cx.read_entity(&manager, |manager, _| manager.timer_task.is_some()),
@@ -33,4 +33,26 @@ fn disable_cancels_the_in_flight_blink_timer(cx: &mut TestAppContext) {
         cx.read_entity(&manager, |manager, _| !manager.visible()),
         "取消后不得再继续闪烁"
     );
+}
+
+#[gpui::test]
+fn disabled_blink_setting_keeps_focused_cursor_visible(cx: &mut TestAppContext) {
+    let manager = cx.new(|_| BlinkManager::new(false));
+    manager.update(cx, |manager, cx| manager.enable(cx));
+    cx.read_entity(&manager, |manager, _| {
+        assert!(manager.visible());
+        assert!(manager.timer_task.is_none());
+    });
+
+    manager.update(cx, |manager, cx| manager.set_blink_enabled(true, cx));
+    cx.read_entity(&manager, |manager, _| {
+        assert!(manager.visible());
+        assert!(manager.timer_task.is_some());
+    });
+
+    manager.update(cx, |manager, cx| manager.set_blink_enabled(false, cx));
+    cx.read_entity(&manager, |manager, _| {
+        assert!(manager.visible());
+        assert!(manager.timer_task.is_none());
+    });
 }

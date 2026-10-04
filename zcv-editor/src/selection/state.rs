@@ -275,7 +275,7 @@ fn validate_selection(
 /// 一个事务的选区快照；redo 在事务提交时才填入。
 ///
 /// 存源锚点而非投影坐标：撤销/重做后 diff 投影可能异步重建，源锚点不依赖重建时机即可解析。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct TransactionSelections {
     undo: SelectionSet<MultiBufferAnchor>,
     redo: Option<SelectionSet<MultiBufferAnchor>>,
@@ -296,7 +296,7 @@ impl TransactionSelections {
     }
 }
 
-/// 选择历史记录只用于撤销 / 重做时恢复选区，是文本历史的派生缓存。
+/// 文本事务的选区快照，在撤销 / 重做文本时恢复选区。
 ///
 /// 上限由调用方从文本历史窗口（`max_edit_history_entries`）派生并传入：
 /// 超出时从最老事务开始丢弃。被丢弃的事务已不可能再被文本历史撤销 / 重做，

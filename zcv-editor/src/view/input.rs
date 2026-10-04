@@ -693,7 +693,7 @@ impl EntityInputHandler for Editor {
         let selected_end =
             byte_for_utf16_offset(&text, selected_range_utf16.end.min(text_utf16_len))
                 .unwrap_or(text.len());
-        self.change_selections(
+        self.apply_selection_change(
             SelectionSet::new_with_primary(
                 marked_ranges
                     .iter()
@@ -708,11 +708,12 @@ impl EntityInputHandler for Editor {
             ),
             cx,
         );
+        let redo_selections = self.anchored_selections();
         if let Some(transaction_id) = history_transaction_id
             && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
         {
             // IME 组合期间同一事务的 redo 选区随候选更新推进（源锚点）。
-            transaction.set_redo(self.selections.clone());
+            transaction.set_redo(redo_selections);
         }
         self.composition = Some(EditorComposition {
             ranges: marked_ranges.into(),

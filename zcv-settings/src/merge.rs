@@ -4,10 +4,12 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::sync::LazyLock;
 
 use super::INITIAL_USER_SETTINGS;
 use super::schema::{
-    IndentGuideSettings, LanguageOverride, SoftWrapMode, TabConfig, UserSettingsContent,
+    BuiltinSettingsContent, CursorShape, IndentGuideSettings, LanguageOverride, SoftWrapMode,
+    TabConfig, UserSettingsContent, parse_builtin_settings,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -26,6 +28,12 @@ pub struct UserSettings {
     pub languages: HashMap<String, LanguageOverride>,
     pub indent_guides: IndentGuideSettings,
     pub soft_wrap: SoftWrapMode,
+    /// 编辑器光标形状。
+    pub cursor_shape: CursorShape,
+    /// 聚焦时编辑器光标是否闪烁。
+    pub cursor_blink: bool,
+    /// 是否在光标移动时播放动画。
+    pub cursor_animation_enabled: bool,
     /// 软换行的目标行宽（列数）；仅在 `soft_wrap = "bounded"` 时生效。
     pub preferred_line_length: usize,
     /// 项目树扫描时完全排除的 glob 名单。
@@ -50,9 +58,32 @@ pub struct UserSettings {
     pub terminal_shell: Option<String>,
 }
 
-/// 解析内置初始设置作为默认层，保证默认值只有一个数据源。
-fn default_content() -> UserSettingsContent {
-    serde_json_lenient::from_str(&INITIAL_USER_SETTINGS).expect("内置初始设置应合法")
+/// 内置配置缺项或非法时立即失败，用户配置只负责逐字段覆盖。
+fn default_content() -> &'static BuiltinSettingsContent {
+    static DEFAULTS: LazyLock<BuiltinSettingsContent> = LazyLock::new(|| {
+        parse_builtin_settings(&INITIAL_USER_SETTINGS).expect("内置初始设置必须完整且合法")
+    });
+    &DEFAULTS
+}
+
+impl Default for TabConfig {
+    fn default() -> Self {
+        let defaults = default_content();
+        Self {
+            tab_size: defaults.tab_size,
+            insert_spaces: defaults.insert_spaces,
+        }
+    }
+}
+
+impl Default for IndentGuideSettings {
+    fn default() -> Self {
+        let defaults = default_content();
+        Self {
+            enabled: defaults.indent_guides.enabled,
+            line_width: defaults.indent_guides.line_width.get(),
+        }
+    }
 }
 
 impl Default for UserSettings {
@@ -89,35 +120,24 @@ impl UserSettings {
         settings
     }
 
-    /// 将用户配置合并到内置默认层：用户显式配置的字段覆盖默认，未配置的字段（`None`）回退到内置初始设置。
+    /// 将用户配置合并到内置默认层：用户显式配置的字段覆盖默认，未配置字段由内置初始设置补齐。
     pub(crate) fn merge(content: UserSettingsContent) -> Self {
         let defaults = default_content();
-        let default_tab = TabConfig::default();
-        // 默认值唯一数据源是内置 initial_user_settings.json。
         Self {
-            theme: content.theme.or(defaults.theme).expect("内置默认应存在"),
+            theme: content.theme.unwrap_or_else(|| defaults.theme.clone()),
             content_font_size: content
                 .content_font_size
-                .or(defaults.content_font_size)
-                .expect("内置默认应存在"),
-            ui_font_size: content
-                .ui_font_size
-                .or(defaults.ui_font_size)
-                .expect("内置默认应存在"),
+                .unwrap_or(defaults.content_font_size),
+            ui_font_size: content.ui_font_size.unwrap_or(defaults.ui_font_size),
             content_line_height: content
                 .content_line_height
-                .or(defaults.content_line_height)
-                .expect("内置默认应存在"),
+                .unwrap_or(defaults.content_line_height),
             tab: TabConfig {
                 tab_size: content
                     .tab_size
-                    .or(defaults.tab_size)
                     .and_then(NonZeroUsize::new)
-                    .unwrap_or(default_tab.tab_size),
-                insert_spaces: content
-                    .insert_spaces
-                    .or(defaults.insert_spaces)
-                    .unwrap_or(default_tab.insert_spaces),
+                    .unwrap_or(defaults.tab_size),
+                insert_spaces: content.insert_spaces.unwrap_or(defaults.insert_spaces),
             },
             languages: content
                 .languages
@@ -135,61 +155,54 @@ impl UserSettings {
                 })
                 .collect(),
             indent_guides: {
-                let mut settings = IndentGuideSettings::default();
-                defaults
-                    .indent_guides
-                    .expect("内置引导线设置应存在")
-                    .apply(&mut settings);
+                let mut settings = IndentGuideSettings {
+                    enabled: defaults.indent_guides.enabled,
+                    line_width: defaults.indent_guides.line_width.get(),
+                };
                 if let Some(content) = content.indent_guides {
                     content.apply(&mut settings);
                 }
                 settings
             },
-            soft_wrap: content
-                .soft_wrap
-                .or(defaults.soft_wrap)
-                .expect("内置默认应存在"),
+            soft_wrap: content.soft_wrap.unwrap_or(defaults.soft_wrap),
+            cursor_shape: content.cursor_shape.unwrap_or(defaults.cursor_shape),
+            cursor_blink: content.cursor_blink.unwrap_or(defaults.cursor_blink),
+            cursor_animation_enabled: content
+                .cursor_animation
+                .and_then(|animation| animation.enabled)
+                .unwrap_or(defaults.cursor_animation.enabled),
             preferred_line_length: content
                 .preferred_line_length
-                .or(defaults.preferred_line_length)
-                .expect("内置默认应存在"),
+                .unwrap_or(defaults.preferred_line_length),
             file_scan_exclusions: content
                 .file_scan_exclusions
-                .or(defaults.file_scan_exclusions)
-                .expect("内置默认应存在"),
-            use_autoclose: content
-                .use_autoclose
-                .or(defaults.use_autoclose)
-                .expect("内置默认应存在"),
+                .unwrap_or_else(|| defaults.file_scan_exclusions.clone()),
+            use_autoclose: content.use_autoclose.unwrap_or(defaults.use_autoclose),
             use_auto_surround: content
                 .use_auto_surround
-                .or(defaults.use_auto_surround)
-                .expect("内置默认应存在"),
+                .unwrap_or(defaults.use_auto_surround),
             terminal_font_size: content
                 .terminal_font_size
-                .or(defaults.terminal_font_size)
-                .expect("内置默认应存在"),
+                .unwrap_or(defaults.terminal_font_size),
             terminal_line_height: content
                 .terminal_line_height
-                .or(defaults.terminal_line_height)
-                .expect("内置默认应存在"),
+                .unwrap_or(defaults.terminal_line_height),
             terminal_max_scroll_history_lines: content
                 .terminal_max_scroll_history_lines
-                .or(defaults.terminal_max_scroll_history_lines)
-                .expect("内置默认应存在"),
+                .unwrap_or(defaults.terminal_max_scroll_history_lines),
             terminal_cursor_shape: content
                 .terminal_cursor_shape
-                .or(defaults.terminal_cursor_shape)
-                .expect("内置默认应存在"),
+                .unwrap_or_else(|| defaults.terminal_cursor_shape.clone()),
             terminal_alternate_scroll: content
                 .terminal_alternate_scroll
-                .or(defaults.terminal_alternate_scroll)
-                .expect("内置默认应存在"),
+                .unwrap_or(defaults.terminal_alternate_scroll),
             terminal_option_as_meta: content
                 .terminal_option_as_meta
-                .or(defaults.terminal_option_as_meta)
-                .expect("内置默认应存在"),
-            terminal_shell: content.terminal_shell.or(defaults.terminal_shell),
+                .unwrap_or(defaults.terminal_option_as_meta),
+            terminal_shell: content
+                .terminal_shell
+                .unwrap_or_else(|| defaults.terminal_shell.clone())
+                .into_runtime(),
         }
     }
 }

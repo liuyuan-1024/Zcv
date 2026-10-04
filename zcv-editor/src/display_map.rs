@@ -55,7 +55,10 @@ pub(crate) use fold_map::{
     ChunkRenderer, ChunkRendererId, FoldBias, FoldPlaceholder, ProjectedLineIndex,
 };
 use fold_map::{FoldMap, FoldPointCursor, FoldSnapshot};
-use gpui::{App, AppContext as _, Bounds, Context, Entity, HighlightStyle, Pixels};
+use gpui::{
+    App, AppContext as _, Bounds, Context, Entity, HighlightStyle, Pixels, ShapedLine, TextRun,
+    WindowTextSystem,
+};
 use tab_map::{TabMap, TabPointCursor};
 pub(crate) use tab_map::{byte_for_display_column, display_column_for_byte};
 use wrap_map::{WrapEdit, WrapMap, WrapPointCursor, WrapSnapshot};
@@ -702,6 +705,131 @@ impl DisplaySnapshot {
         window_columns: Option<(usize, usize)>,
     ) -> DisplayChunks<'_, 'a> {
         DisplayChunks::new(self, display_rows, styles, window_columns)
+    }
+
+    /// 垂直移动与可见行共用窗口化 chunk 和字体测量，只塑形目标附近的文本。
+    fn layout_row_for_movement(
+        &self,
+        row: DisplayRow,
+        window_columns: (usize, usize),
+        text_system: &WindowTextSystem,
+        font_size: Pixels,
+        base: &TextRun,
+        cx: &App,
+    ) -> Option<(usize, Pixels, String, ShapedLine)> {
+        if row.get() >= self.line_count() {
+            return None;
+        }
+        let range = row..DisplayRow::new(row.get() + 1);
+        let source_ranges = self
+            .chunks(range.clone(), HighlightStyles::default(), None)
+            .source_line_ranges();
+        let spans = self.highlighted_spans_for_source_ranges(source_ranges);
+        let styles = self.highlight_styles(cx);
+        let mut text = String::new();
+        let mut runs = Vec::new();
+        let mut start_column = 0;
+        let mut prefix_width = Pixels::ZERO;
+        self.chunks(
+            range,
+            HighlightStyles {
+                spans: &spans,
+                styles: &styles,
+                ..Default::default()
+            },
+            Some(window_columns),
+        )
+        .for_each_row(|event| {
+            if let DisplayRowEvent::Text { row, chunks } = event {
+                start_column = row.window_start_column;
+                if !row.window_prefix.is_empty() {
+                    prefix_width = text_system
+                        .shape_line(
+                            row.window_prefix.to_string().into(),
+                            font_size,
+                            &[TextRun {
+                                len: row.window_prefix.len(),
+                                ..base.clone()
+                            }],
+                            None,
+                        )
+                        .width;
+                }
+                if row.indent > 0 {
+                    text.push_str(&" ".repeat(row.indent));
+                    runs.push(TextRun {
+                        len: row.indent,
+                        ..base.clone()
+                    });
+                }
+                for chunk in chunks {
+                    text.push_str(chunk.text);
+                    runs.push(chunk_to_run(&chunk, base.clone()));
+                }
+            }
+        });
+        let layout = text_system.shape_line(text.clone().into(), font_size, &runs, None);
+        Some((start_column, prefix_width, text, layout))
+    }
+
+    pub(crate) fn x_for_display_point(
+        &self,
+        point: DisplayPoint,
+        text_system: &WindowTextSystem,
+        font_size: Pixels,
+        base: &TextRun,
+        cx: &App,
+    ) -> Option<Pixels> {
+        let column = point.column().get();
+        let (start_column, prefix_width, text, layout) = self.layout_row_for_movement(
+            point.row(),
+            (column.saturating_sub(32), column.saturating_add(32)),
+            text_system,
+            font_size,
+            base,
+            cx,
+        )?;
+        let byte = byte_for_display_column(&text, start_column, column, self.tab_width().get());
+        Some(prefix_width + layout.x_for_index(byte))
+    }
+
+    pub(crate) fn display_column_for_x(
+        &self,
+        row: DisplayRow,
+        x: Pixels,
+        text_system: &WindowTextSystem,
+        font_size: Pixels,
+        base: &TextRun,
+        cx: &App,
+    ) -> Option<DisplayColumn> {
+        let font_id = text_system.resolve_font(&base.font);
+        let em_advance = text_system.em_advance(font_id, font_size).ok()?;
+        let mut start = ((x / em_advance).floor() as usize).saturating_sub(32);
+        loop {
+            let end = start.saturating_add(256);
+            let (start_column, prefix_width, text, layout) =
+                self.layout_row_for_movement(row, (start, end), text_system, font_size, base, cx)?;
+            if x < prefix_width && start > 0 {
+                start /= 2;
+                continue;
+            }
+            let end_column =
+                display_column_for_byte(&text, start_column, text.len(), self.tab_width().get());
+            if x > prefix_width + layout.width
+                && !text.is_empty()
+                && (end_column >= end || text.len() >= MAX_RENDERED_LINE_LEN)
+            {
+                start = end_column.saturating_sub(16).max(start.saturating_add(1));
+                continue;
+            }
+            let byte = layout.closest_index_for_x(x - prefix_width);
+            return Some(DisplayColumn::new(display_column_for_byte(
+                &text,
+                start_column,
+                byte,
+                self.tab_width().get(),
+            )));
+        }
     }
 
     pub(super) fn project_text_range(

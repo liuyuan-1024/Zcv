@@ -16,15 +16,18 @@ use gpui::{
     App, Font, FontFallbacks, Global, Pixels, SharedString, TextRun, WindowTextSystem, black, font,
     px,
 };
+use serde::Deserialize;
 
 /// 编译期嵌入的内置设置文件（与 zcv-assets 运行时嵌入为同一文件）：
 /// 排版默认值（字号/行高倍数）的唯一数据源，不重复硬编码。
 const INITIAL_SETTINGS: &str = include_str!("../../assets/settings/initial_user_settings.json");
 
 /// 内置设置文件的排版默认值；命名字段杜绝位置索引取错。
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Deserialize)]
 struct Defaults {
+    #[serde(rename = "ui_font_size")]
     ui_size: f32,
+    #[serde(rename = "content_font_size")]
     content_size: f32,
     /// 内容行高倍数（相对字号）。
     content_line_height: f32,
@@ -34,14 +37,7 @@ struct Defaults {
 fn defaults() -> Defaults {
     static DEFAULTS: OnceLock<Defaults> = OnceLock::new();
     *DEFAULTS.get_or_init(|| {
-        let value: serde_json::Value =
-            serde_json::from_str(INITIAL_SETTINGS).expect("内置设置文件应合法");
-        let get = |key: &str| value[key].as_f64().expect("内置默认应存在") as f32;
-        Defaults {
-            ui_size: get("ui_font_size"),
-            content_size: get("content_font_size"),
-            content_line_height: get("content_line_height"),
-        }
+        serde_json_lenient::from_str(INITIAL_SETTINGS).expect("内置排版设置应完整且合法")
     })
 }
 

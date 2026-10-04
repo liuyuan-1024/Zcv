@@ -396,6 +396,8 @@ impl Editor {
         });
         match outcome {
             Ok(Some(outcome)) => {
+                self.composition = None;
+                self.advance_snapshots(cx);
                 if let Some(selections) = self
                     .selection_history
                     .transaction(outcome.transaction_id())
@@ -409,8 +411,11 @@ impl Editor {
                 {
                     // 历史选区是源锚点：投影是否重建都不影响解析。
                     self.replace_anchored_selections(selections, cx);
+                } else {
+                    self.request_autoscroll(cx);
+                    self.input_layout = None;
+                    cx.notify();
                 }
-                self.synchronize_after_history_edit(cx);
                 // 撤销/重做与普通编辑共用同一事件出口，携带真实事务身份。
                 cx.emit(EditorEvent::Edited {
                     transaction_id: outcome.transaction_id(),
@@ -421,14 +426,6 @@ impl Editor {
                 "编辑动作 {action} 失败：{error:#}"
             ))),
         }
-    }
-
-    fn synchronize_after_history_edit(&mut self, cx: &mut Context<Self>) {
-        self.composition = None;
-        self.advance_snapshots(cx);
-        self.request_autoscroll(cx);
-        self.input_layout = None;
-        cx.notify();
     }
 
     pub(crate) fn handle_backspace(

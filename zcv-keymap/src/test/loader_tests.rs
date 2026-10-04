@@ -81,28 +81,26 @@ fn composite_context_parses() {
     .expect("搜索条复合 context 必须可解析");
 }
 
-/// 读取内置 keymap 并按 JSONC 语义解析（支持 `//` 行注释）。
+/// 读取内置 keymap 并按 JSONC 语义解析。
 fn parse_builtin_keymap(source: &str) -> Vec<RawBindingGroup> {
     let json = zcv_assets::text(&format!("keymaps/{source}"))
         .unwrap_or_else(|_| panic!("缺少内置快捷键 {source}"));
-    serde_json::from_str(&strip_line_comments(&json)).expect("keymap 必须是合法 JSON")
+    serde_json_lenient::from_str(&json).expect("keymap 必须是合法 JSONC")
 }
 
-/// 行注释在解析前被剔除；字符串内的 `//` 与转义引号不受影响。
+/// 注释和尾逗号由统一的 JSONC 解析器处理，字符串内容保持原样。
 #[test]
-fn line_comments_are_stripped_before_parsing() {
-    let stripped = strip_line_comments(
+fn jsonc_comments_and_trailing_comma_parse() {
+    let parsed: Value = serde_json_lenient::from_str(
         r#"// 头部注释
 {
 "url": "https://example.com", // 行尾注释
-"escaped": "a\"b // 不是注释"
+"escaped": "a\"b // 不是注释",
 }"#,
-    );
-    assert!(stripped.contains("https://example.com"));
-    assert!(stripped.contains("a\\\"b // 不是注释"));
-    assert!(!stripped.contains("头部注释"));
-    assert!(!stripped.contains("行尾注释"));
-    serde_json::from_str::<Value>(&stripped).expect("剥离后应为合法 JSON");
+    )
+    .expect("带注释和尾逗号的 keymap 应可解析");
+    assert_eq!(parsed["url"], "https://example.com");
+    assert_eq!(parsed["escaped"], "a\"b // 不是注释");
 }
 
 /// 内置 keymap 的所有 chord 段必须能被 gpui 解析，否则加载时会失败。

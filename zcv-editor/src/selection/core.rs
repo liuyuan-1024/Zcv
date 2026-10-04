@@ -12,13 +12,13 @@ use zcv_text::{Affinity, TextResult};
 ///
 /// start <= end 始终成立；reversed 表示活动端在 start 侧。
 /// 两端相等时表示 caret。
-/// 垂直移动时持久保留的目标显示列：目标行比目标列短时光标被钳制到行尾，但目标列保留，下一次垂直移动仍回到原目标列。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+/// 垂直移动时持久保留的目标像素横坐标：短行可钳制光标，但下一次垂直移动仍沿原横坐标定位。
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Selection<T = MultiBufferOffset> {
     start: T,
     end: T,
     reversed: bool,
-    goal: Option<usize>,
+    goal: Option<f64>,
 }
 
 impl<T: Copy> Selection<T> {
@@ -40,7 +40,7 @@ impl<T: Copy> Selection<T> {
     }
 
     /// 由已排序端点与方向直接构造；跨坐标空间转换时保留方向语义。
-    pub(crate) const fn from_parts(start: T, end: T, reversed: bool, goal: Option<usize>) -> Self {
+    pub(crate) const fn from_parts(start: T, end: T, reversed: bool, goal: Option<f64>) -> Self {
         Self {
             start,
             end,
@@ -78,14 +78,14 @@ impl<T: Copy> Selection<T> {
         self.start == self.end
     }
 
-    /// 设置垂直移动持久保留的目标显示列数值；None 表示从当前位置推导。
-    pub const fn with_goal(mut self, goal: Option<usize>) -> Self {
+    /// 设置垂直移动持久保留的目标像素横坐标；None 表示从当前位置推导。
+    pub const fn with_goal(mut self, goal: Option<f64>) -> Self {
         self.goal = goal;
         self
     }
 
-    /// 垂直移动持久保留的目标显示列数值；None 表示未设置。
-    pub const fn goal(self) -> Option<usize> {
+    /// 垂直移动持久保留的目标像素横坐标；None 表示未设置。
+    pub const fn goal(self) -> Option<f64> {
         self.goal
     }
 }
@@ -106,12 +106,12 @@ impl Selection<MultiBufferOffset> {
 
     /// 把偏移选区锚定为源锚点选区。
     ///
-    /// caret 两端吸附插入文本之后；非空选区左端吸附插入之前、右端之后，边界插入不撑大选区。
+    /// caret 两端吸附插入文本之后；非空选区左端吸附插入之后、右端之前，边界插入不撑大选区。
     pub(crate) fn anchored(self, snapshot: &MultiBufferSnapshot) -> Selection<MultiBufferAnchor> {
         let (start_affinity, end_affinity) = if self.is_caret() {
             (Affinity::After, Affinity::After)
         } else {
-            (Affinity::Before, Affinity::After)
+            (Affinity::After, Affinity::Before)
         };
         Selection::from_parts(
             snapshot.anchor_at(self.start, start_affinity),

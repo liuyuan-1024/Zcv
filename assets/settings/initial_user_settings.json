@@ -1,18 +1,55 @@
 {
+  // 可用值："system"（跟随系统）、"dark"、"light"；未知主题名会回退到 "system"。
   "theme": "system",
+
+  // 数字，单位为像素；字号应大于 0（当前只校验数字类型）。
   "content_font_size": 16,
+
+  // 数字，单位为像素；字号应大于 0（当前只校验数字类型）。
   "ui_font_size": 13,
+
+  // 数字，表示内容字号的行高倍数；应大于 0（当前只校验数字类型）。
   "content_line_height": 1.618,
+
+  // 大于 0 的整数：Tab 的视觉列宽，也是一级缩进宽度。
   "tab_size": 4,
+
+  // true 使用空格缩进；false 插入真实的 Tab 字符。
   "insert_spaces": true,
+
+  // 缩进引导线设置对象；必须包含 enabled 和 line_width。
   "indent_guides": {
+    // true 显示缩进引导线；false 隐藏。
     "enabled": true,
+    // 1 到 10 的整数，单位为像素。
     "line_width": 1
   },
+
+  // 可用值："none"（不换行）、"editor-width"（按编辑器宽度）、"bounded"（按目标行宽与编辑器宽度的较小值）。
   "soft_wrap": "editor-width",
+
+  // 可用值："bar"（竖线）、"block"（方块）、"underline"（下划线）、"hollow"（空心方块）。
+  "cursor_shape": "bar",
+
+  // true 在编辑器聚焦时闪烁光标；false 不闪烁。
+  "cursor_blink": true,
+
+  // 光标移动动画设置对象；必须包含 enabled。
+  "cursor_animation": {
+    // true 播放 VS Code 式 80ms ease 光标移动动画；false 直接显示在新位置。
+    "enabled": true
+  },
+
+  // 非负整数，单位为列；仅在 soft_wrap 为 "bounded" 时生效，0 会使目标换行宽度为 0。
   "preferred_line_length": 80,
+
+  // true 自动补全配对的闭合字符；false 不自动补全。
   "use_autoclose": true,
+
+  // true 在已选中文本外输入配对起始字符时包裹选区；false 不包裹。
   "use_auto_surround": true,
+
+  // 字符串数组；每项须为 globset 可解析的 glob，[] 表示不排除。无法解析的 glob 当前会被忽略。
   "file_scan_exclusions": [
     "**/.git",
     "**/.svn",
@@ -26,11 +63,25 @@
     "**/.classpath",
     "**/.settings"
   ],
+
+  // 数字，单位为像素；字号应大于 0（当前只校验数字类型）。
   "terminal_font_size": 16,
+
+  // 数字，表示终端字号的行高倍数；应大于 0（当前只校验数字类型）。
   "terminal_line_height": 1.618,
+
+  // 非负整数，表示终端滚动回看最多保留的行数；0 不保留历史行。
   "terminal_max_scroll_history_lines": 10000,
+
+  // 可用值："block"（方块）、"underline"（下划线）、"bar"（竖线）、"hollow"（空心方块）；其他字符串会显示为 "block"。
   "terminal_cursor_shape": "block",
+
+  // true 在备用屏幕下将滚轮转为方向键；false 不转换。
   "terminal_alternate_scroll": true,
+
+  // true 将 Option 键作为 Meta 键；false 保留普通 Option 键行为。
   "terminal_option_as_meta": false,
+
+  // null 使用系统默认 shell；也可填非空的 shell 程序名或路径字符串，不支持附带命令行参数。
   "terminal_shell": null
 }

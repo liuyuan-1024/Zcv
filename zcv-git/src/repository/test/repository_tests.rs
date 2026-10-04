@@ -2,10 +2,6 @@ use super::*;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
-#[cfg(unix)]
-use std::sync::Arc;
-#[cfg(unix)]
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
@@ -425,7 +421,7 @@ fn cancelling_push_terminates_git_and_hook_process_tree() {
 
     let pid_path = root.join("hook-child.pid");
     let hook_path = root.join(".git/hooks/pre-push");
-    // 进度行必须先于 PID 文件写入：取消线程见到 PID 文件即触发 SIGINT，若进度行在其后书写，高负载下钩子可能在两行之间被抢占，导致进度丢失。
+    // 进度行必须先于 PID 文件写入：见到 PID 文件即触发 SIGINT，若进度行在其后书写，高负载下钩子可能在两行之间被抢占，导致进度丢失。
     fs::write(
         &hook_path,
         format!(
@@ -439,29 +435,39 @@ fn cancelling_push_terminates_git_and_hook_process_tree() {
         .permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&hook_path, permissions).expect("应设置钩子可执行权限");
+    run_in(
+        &root,
+        &[
+            "git",
+            "config",
+            "core.hooksPath",
+            hook_path.parent().unwrap().to_str().unwrap(),
+        ],
+    );
 
     let cancellation = GitCancellation::new();
-    let cancel_from_thread = cancellation.clone();
-    let child_pid = Arc::new(AtomicU32::new(0));
-    let child_pid_from_thread = Arc::clone(&child_pid);
-    let pid_path_from_thread = pid_path.clone();
-    let cancel_thread = std::thread::spawn(move || {
-        for _ in 0..200 {
-            if let Ok(pid) = fs::read_to_string(&pid_path_from_thread)
-                && let Ok(pid) = pid.trim().parse::<u32>()
-            {
-                child_pid_from_thread.store(pid, Ordering::Release);
-                cancel_from_thread.cancel();
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        panic!("pre-push 子进程未在时限内启动");
-    });
+    let push_cancellation = cancellation.clone();
+    let push_root = root.clone();
+    let push_thread =
+        std::thread::spawn(move || open_repo(&push_root).push_cancellable(&push_cancellation));
 
+    let pid = loop {
+        if let Ok(pid) = fs::read_to_string(&pid_path)
+            && let Ok(pid) = pid.trim().parse::<u32>()
+        {
+            break pid;
+        }
+        if push_thread.is_finished() {
+            let result = push_thread.join().expect("推送线程不应异常");
+            panic!("pre-push 子进程尚未启动，push 已结束：{result:#?}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+
+    // 只计量取消阶段；hook 启动耗时不属于进程树终止契约。
     let started = Instant::now();
-    let result = open_repo(&root).push_cancellable(&cancellation);
-    cancel_thread.join().expect("取消线程不应异常");
+    cancellation.cancel();
+    let result = push_thread.join().expect("推送线程不应异常");
     assert!(result.is_err(), "取消后的 push 应返回错误");
     assert!(
         started.elapsed() < Duration::from_secs(5),
@@ -474,7 +480,6 @@ fn cancelling_push_terminates_git_and_hook_process_tree() {
         "应保留 git 最近一行进度"
     );
 
-    let pid = child_pid.load(Ordering::Acquire);
     for _ in 0..100 {
         let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
         if !alive {
@@ -500,24 +505,34 @@ fn cancelling_push_terminates_git_and_hook_process() {
         "#!/bin/sh\necho started > hook-started\nping 127.0.0.1 -n 31 > /dev/null\n",
     )
     .expect("应写入 Windows pre-push 钩子");
+    run_in(
+        &root,
+        &[
+            "git",
+            "config",
+            "core.hooksPath",
+            hook_path.parent().unwrap().to_str().unwrap(),
+        ],
+    );
 
     let cancellation = GitCancellation::new();
-    let cancel_from_thread = cancellation.clone();
-    let hook_started_from_thread = hook_started_path.clone();
-    let cancel_thread = std::thread::spawn(move || {
-        for _ in 0..500 {
-            if hook_started_from_thread.exists() {
-                cancel_from_thread.cancel();
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        panic!("Windows pre-push 钩子未在时限内启动");
-    });
+    let push_cancellation = cancellation.clone();
+    let push_root = root.clone();
+    let push_thread =
+        std::thread::spawn(move || open_repo(&push_root).push_cancellable(&push_cancellation));
 
+    while !hook_started_path.exists() {
+        if push_thread.is_finished() {
+            let result = push_thread.join().expect("推送线程不应异常");
+            panic!("Windows pre-push 钩子尚未启动，push 已结束：{result:#?}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    // 只计量取消阶段；hook 启动耗时不属于进程树终止契约。
     let started = Instant::now();
-    let result = open_repo(&root).push_cancellable(&cancellation);
-    cancel_thread.join().expect("取消线程不应异常");
+    cancellation.cancel();
+    let result = push_thread.join().expect("推送线程不应异常");
     assert!(result.is_err(), "取消后的 push 应返回错误");
     assert!(
         started.elapsed() < Duration::from_secs(5),

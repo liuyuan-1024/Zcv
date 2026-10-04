@@ -6,6 +6,36 @@ use super::*;
 #[path = "ligature_text_system.rs"]
 mod ligature_text_system;
 
+fn cursor_params(shape: CursorShape) -> CursorLayoutParams {
+    CursorLayoutParams {
+        line_height: px(20.),
+        em_advance: px(8.),
+        font_size: px(16.),
+        shape,
+    }
+}
+
+#[test]
+fn cursor_shapes_use_character_width_and_row_height() {
+    let origin = point(px(10.), px(20.));
+    let width = px(12.);
+    let height = px(24.);
+    assert_eq!(
+        cursor_bounds(CursorShape::Bar, origin, width, height),
+        Bounds::new(origin, size(px(2.), height))
+    );
+    for shape in [CursorShape::Block, CursorShape::Hollow] {
+        assert_eq!(
+            cursor_bounds(shape, origin, width, height),
+            Bounds::new(origin, size(width, height))
+        );
+    }
+    assert_eq!(
+        cursor_bounds(CursorShape::Underline, origin, width, height),
+        Bounds::new(point(px(10.), px(42.)), size(width, px(2.)))
+    );
+}
+
 #[test]
 fn word_diff_background_has_character_geometry_inside_a_ligature() {
     let text_system = gpui::WindowTextSystem::new(Arc::new(gpui::TextSystem::new(Arc::new(
@@ -1666,7 +1696,13 @@ fn multi_line_selection_uses_one_rounded_contour_with_inner_turns(cx: &mut TestA
                 MultiBufferOffset::new(2),
                 MultiBufferOffset::new(12),
             )]);
-            let (segments, _) = layout_selections(&selections, &layout, px(20.), cx);
+            let (segments, _) = layout_selections(
+                &selections,
+                &layout,
+                cursor_params(CursorShape::Bar),
+                window,
+                cx,
+            );
             let segments = segments
                 .into_iter()
                 .filter(|line| !line.is_empty())
@@ -1795,7 +1831,8 @@ fn caret_outside_visible_rows_is_not_painted_on_viewport_edge(cx: &mut TestAppCo
             let (_, carets) = layout_selections(
                 &SelectionSet::caret(MultiBufferOffset::ZERO),
                 &layout,
-                px(20.),
+                cursor_params(CursorShape::Bar),
+                window,
                 cx,
             );
 
@@ -1874,10 +1911,20 @@ fn multibuffer_excerpt_uses_the_same_text_selection_geometry_as_a_single_buffer(
                 cx,
             );
 
-            let (single_segments, single_carets) =
-                layout_selections(&selection, &single_layout, px(20.), cx);
-            let (multi_segments, multi_carets) =
-                layout_selections(&selection, &multi_layout, px(20.), cx);
+            let (single_segments, single_carets) = layout_selections(
+                &selection,
+                &single_layout,
+                cursor_params(CursorShape::Bar),
+                window,
+                cx,
+            );
+            let (multi_segments, multi_carets) = layout_selections(
+                &selection,
+                &multi_layout,
+                cursor_params(CursorShape::Bar),
+                window,
+                cx,
+            );
             let single_fragments =
                 layout_background_fragments(&single_layout, &single_segments, cx);
             let multi_fragments = layout_background_fragments(&multi_layout, &multi_segments, cx);
@@ -2396,10 +2443,16 @@ fn windowed_selection_geometry_matches_caret(cx: &mut TestAppContext) {
                 MultiBufferOffset::new(150),
                 MultiBufferOffset::new(200),
             )]);
-            let (segments, carets) = layout_selections(&selections, &layout, px(20.), cx);
+            let (segments, carets) = layout_selections(
+                &selections,
+                &layout,
+                cursor_params(CursorShape::Bar),
+                window,
+                cx,
+            );
             assert_eq!(carets.len(), 1, "选区活动端必须绘制光标");
             let segment = segments[0].first().expect("选区必须生成行片段");
-            let caret = carets[0].bounds.left();
+            let caret = carets[0].quad.bounds.left();
             assert!(
                 (segment.end_x - caret).abs() < px(1.),
                 "窗口化后选区终点必须与光标 x 一致：segment={:?}, caret={caret:?}",
@@ -2418,15 +2471,30 @@ fn windowed_selection_geometry_matches_caret(cx: &mut TestAppContext) {
                 cx,
             );
             assert_eq!(quads.len(), 2, "括号两端各生成一个背景矩形");
-            let open_caret =
-                layout_caret_at_buffer_offset(MultiBufferOffset::new(150), &layout, px(20.), cx)
-                    .expect("括号起点光标必须可见");
+            let open_caret = layout_caret_at_buffer_offset(
+                MultiBufferOffset::new(150),
+                &layout,
+                cursor_params(CursorShape::Bar),
+                window,
+                cx,
+            )
+            .expect("括号起点光标必须可见");
             assert!(
-                (quads[0].bounds.left() - open_caret.bounds.left()).abs() < px(1.),
+                (quads[0].bounds.left() - open_caret.quad.bounds.left()).abs() < px(1.),
                 "窗口化后括号背景必须与光标 x 一致：quad={:?}, caret={:?}",
                 quads[0].bounds.left(),
-                open_caret.bounds.left(),
+                open_caret.quad.bounds.left(),
             );
+            let block_caret = layout_caret_at_buffer_offset(
+                MultiBufferOffset::new(150),
+                &layout,
+                cursor_params(CursorShape::Block),
+                window,
+                cx,
+            )
+            .expect("块光标应与普通光标共用显示定位");
+            assert!(block_caret.quad.bounds.size.width > CARET_WIDTH);
+            assert!(block_caret.block_text.is_some(), "块光标应重绘被覆盖的字形");
         })
         .expect("测试窗口应保持可用");
 }

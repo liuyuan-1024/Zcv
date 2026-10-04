@@ -1,9 +1,8 @@
 //! 快捷键加载与解析。
 //!
 //! 内置平台快捷键经 GPUI action registry 解析为 [`KeyBindings`]，供应用注册和 UI 反向查询。
-//! keymap 文件支持 JSONC 风格的 `//` 行注释。
+//! keymap 文件按 JSONC 解析。
 
-use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
@@ -74,8 +73,8 @@ fn load(cx: &App) -> Result<KeyBindings> {
 }
 
 pub(crate) fn load_json(source: &str, json: &str, cx: &App) -> Result<KeyBindings> {
-    let groups: Vec<RawBindingGroup> = serde_json::from_str(&strip_line_comments(json))
-        .with_context(|| format!("{source} 不是合法的 keymap JSON"))?;
+    let groups: Vec<RawBindingGroup> = serde_json_lenient::from_str(json)
+        .with_context(|| format!("{source} 不是合法的 keymap JSONC"))?;
 
     detect_conflicts(&groups);
 
@@ -130,54 +129,6 @@ pub(crate) fn load_json(source: &str, json: &str, cx: &App) -> Result<KeyBinding
 }
 
 // ── 私有辅助函数 ─────────────────────────────────────────────────────
-
-/// 去除 JSONC 风格的 `//` 行注释，字符串内的 `//`（如 URL）不受影响。
-fn strip_line_comments(json: &str) -> Cow<'_, str> {
-    if !json.contains("//") {
-        return Cow::Borrowed(json);
-    }
-
-    let mut result = String::with_capacity(json.len());
-    let mut chars = json.chars().peekable();
-    let mut in_string = false;
-
-    while let Some(ch) = chars.next() {
-        if in_string {
-            result.push(ch);
-            match ch {
-                '\\' => {
-                    // 转义字符与下一个字符一并保留，避免误判 \" 为字符串结束。
-                    if let Some(&escaped) = chars.peek() {
-                        chars.next();
-                        result.push(escaped);
-                    }
-                }
-                '"' => in_string = false,
-                _ => {}
-            }
-            continue;
-        }
-
-        match ch {
-            '"' => {
-                in_string = true;
-                result.push(ch);
-            }
-            '/' if chars.peek() == Some(&'/') => {
-                // 丢弃注释直到行尾，保留换行符以维持行号。
-                for skipped in chars.by_ref() {
-                    if skipped == '\n' {
-                        result.push('\n');
-                        break;
-                    }
-                }
-            }
-            _ => result.push(ch),
-        }
-    }
-
-    Cow::Owned(result)
-}
 
 /// JSON 文件的顶层结构：一组快捷键分组。
 #[derive(Deserialize)]

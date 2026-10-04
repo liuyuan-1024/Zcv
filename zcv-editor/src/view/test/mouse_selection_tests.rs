@@ -70,6 +70,38 @@ fn single_click_places_a_caret(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn pending_selection_commits_only_when_mouse_gesture_ends(cx: &mut TestAppContext) {
+    let buffer = test_buffer(cx, "abcdef");
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
+    });
+    begin_selection_at_offset(&editor, b(2), 1, false, cx);
+    update_selection_at_offset(&editor, b(5), cx);
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(
+            editor.selections(cx),
+            selections(Selection::new(b(2), b(5)))
+        );
+        assert_eq!(
+            editor
+                .selections
+                .resolve(editor.display_snapshot(cx).buffer_snapshot())
+                .unwrap(),
+            SelectionSet::default(),
+        );
+    });
+    editor.update(cx, |editor, _| editor.end_selection());
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(
+            editor.selections(cx),
+            selections(Selection::new(b(2), b(5)))
+        );
+        assert!(!editor.has_pending_selection());
+    });
+}
+
+#[gpui::test]
 fn double_click_selects_the_whole_word(cx: &mut TestAppContext) {
     let buffer = test_buffer(cx, "foo_bar baz\n");
     let (editor, cx) = cx.add_window_view({

@@ -28,7 +28,7 @@ use zcv_multi_buffer::{
     DiffFile, DisplayHunk, ExcerptDiffKind, ExcerptLocation, ExcerptSnapshot, MultiBuffer,
     MultiBufferAnchor, MultiBufferEvent, MultiBufferSnapshot, WordDiffs,
 };
-use zcv_settings::{SettingsStore, SoftWrapMode, TabConfig};
+use zcv_settings::{CursorShape, SettingsStore, SoftWrapMode, TabConfig};
 use zcv_text::{
     Affinity, Buffer, BufferConfig, BufferId, BufferVersion, Line, LineRange, LogicalColumn,
     MovementDirection, MovementUnit, Position, TextError, TextResult, TransactionId,
@@ -40,6 +40,7 @@ use zcv_workspace::typography_for_window;
 use crate::scrollbar::{ScrollbarMarker, ScrollbarMarkerState};
 
 use super::blink_manager::BlinkManager;
+use super::cursor_animation::{CursorAnimation, CursorViewport};
 use super::display_map::{
     ChunkRendererId, DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplayRowEvent,
     DisplaySnapshot, EditorHunk, FoldBias, FoldPlaceholder, HighlightStyles, HunkControlTarget,
@@ -205,6 +206,8 @@ pub(super) enum MouseSelectMode {
 /// 拖拽中的选区状态：固定锚点 + 点击时的粒度。
 #[derive(Debug, Clone)]
 struct PendingSelection {
+    /// 本次手势当前展示的锚定选区；松开时才提交到已确定选区。
+    selection: SelectionSet<MultiBufferAnchor>,
     /// 按下点源锚点，字符粒度拖拽的固定端。
     anchor: MultiBufferAnchor,
     /// 点击时的粒度与锚定范围。
@@ -266,6 +269,7 @@ pub struct Editor {
     /// 空 buffer 时显示的提示文本（如提交信息编辑器的"输入提交信息…"）。
     /// 独立 DisplayMap 承载（placeholder 走真实渲染管线，折行/行高一致）。
     placeholder_display_map: Option<Entity<DisplayMap>>,
+    /// 已确定的选区；鼠标手势期间不被临时选区覆盖。
     selections: SelectionSet<MultiBufferAnchor>,
     selection_history: SelectionHistory,
     /// 结构化选择扩展链；普通选区变更或文本编辑后失效。
@@ -279,8 +283,11 @@ pub struct Editor {
     focus: FocusHandle,
     blink_manager: Entity<BlinkManager>,
     blink_manager_initialized: bool,
+    cursor_animation: CursorAnimation,
+    cursor_animation_enabled: bool,
     /// 全局设置驱动的换行模式（SettingsStore 变化时自动跟随）。
     soft_wrap: SoftWrap,
+    cursor_shape: CursorShape,
     preferred_line_length: usize,
     diff_hunk_delegate: Option<Arc<dyn DiffHunkDelegate>>,
     hovered_diff_hunk: Option<usize>,
@@ -485,6 +492,28 @@ impl Editor {
             return SoftWrap::None;
         }
         self.soft_wrap
+    }
+
+    pub(crate) fn cursor_shape(&self) -> CursorShape {
+        self.cursor_shape
+    }
+
+    pub(crate) fn cursor_animation_enabled(&self) -> bool {
+        self.cursor_animation_enabled
+    }
+
+    pub(crate) fn update_cursor_animation(
+        &mut self,
+        offset: MultiBufferOffset,
+        bounds: Bounds<Pixels>,
+        viewport: CursorViewport,
+        now: Instant,
+    ) -> Option<Bounds<Pixels>> {
+        self.cursor_animation.update(offset, bounds, viewport, now)
+    }
+
+    pub(crate) fn clear_cursor_animation(&mut self) {
+        self.cursor_animation.clear();
     }
 
     pub(crate) fn preferred_line_length(&self) -> usize {
@@ -1047,12 +1076,10 @@ impl Editor {
     ) {
         // 任何普通选区替换都会终止 pending selection，避免旧鼠标锚点在之后复活。
         self.pending_selection = None;
-        self.set_pending_selection(selections, cx);
+        self.set_committed_selections(selections, cx);
     }
 
-    /// 更新 pending selection 显示出的当前选区。
-    /// 只有 begin/update selection 可以调用这个入口。
-    fn set_pending_selection(&mut self, selections: SelectionSet, cx: &App) {
+    fn set_committed_selections(&mut self, selections: SelectionSet, cx: &App) {
         self.selections = selections.anchored(self.display_snapshot(cx).buffer_snapshot());
         // 所有偏移态选择/编辑落地都经这里：自动闭合区域在此按新选择收敛，不另设清理入口。
         self.invalidate_autoclose_regions(cx);
@@ -1093,9 +1120,16 @@ impl Editor {
     /// 结构重建导致源退出投影时，组合层会把位置解析到确定的结构边界。
     /// 只有源 Anchor 的版本链损坏才是编辑器不变量破坏。
     fn resolved_selections(&self, cx: &App) -> SelectionSet {
-        self.selections
+        self.anchored_selections()
             .resolve(self.display_snapshot(cx).buffer_snapshot())
             .expect("选区锚点版本必须能推进到当前显示快照")
+    }
+
+    fn anchored_selections(&self) -> SelectionSet<MultiBufferAnchor> {
+        self.pending_selection
+            .as_ref()
+            .map(|pending| pending.selection.clone())
+            .unwrap_or_else(|| self.selections.clone())
     }
 
     /// 光标位置的 "行:列" 文本，行和列均从 1 开始计数。
@@ -1343,13 +1377,14 @@ impl Editor {
         };
 
         self.composition = None;
-        self.set_pending_selection(SelectionSet::new(vec![selection]), cx);
-        self.request_autoscroll(cx);
-        self.input_layout = None;
         self.pending_selection = Some(PendingSelection {
+            selection: SelectionSet::new(vec![selection]).anchored(&snapshot),
             anchor: snapshot.anchor_at(offset, Affinity::After),
             mode,
         });
+        self.invalidate_autoclose_regions(cx);
+        self.request_autoscroll(cx);
+        self.input_layout = None;
         cx.notify();
     }
 
@@ -1466,14 +1501,20 @@ impl Editor {
             MouseSelectMode::All => return,
         };
         self.composition = None;
-        self.set_pending_selection(SelectionSet::new(vec![Selection::new(tail, head)]), cx);
+        self.pending_selection
+            .as_mut()
+            .expect("拖拽选区必须存在进行中的手势")
+            .selection = SelectionSet::new(vec![Selection::new(tail, head)]).anchored(&snapshot);
+        self.invalidate_autoclose_regions(cx);
         self.input_layout = None;
         cx.notify();
     }
 
-    /// 鼠标松开：结束选区手势，选区已随拖动落定。
+    /// 鼠标松开：把临时选区提交到已确定集合。
     pub(super) fn end_selection(&mut self) {
-        self.pending_selection = None;
+        if let Some(pending) = self.pending_selection.take() {
+            self.selections = pending.selection;
+        }
     }
 
     /// 编辑器自身是否正在拖拽选区手势（拖拽滚动的生效守卫：`dragging` 事件是窗口级的，其他面板（如终端）拖拽时编辑器不应滚动）。
@@ -1677,7 +1718,8 @@ impl Editor {
             },
         )
         .detach();
-        let blink_manager = cx.new(|_| BlinkManager::new());
+        let cursor_blink = SettingsStore::try_get(cx).is_none_or(|settings| settings.cursor_blink);
+        let blink_manager = cx.new(|_| BlinkManager::new(cursor_blink));
         cx.observe(&blink_manager, |_, _, cx| cx.notify()).detach();
 
         // 换行模式默认来自全局设置，与编辑器模式无关。
@@ -1709,9 +1751,16 @@ impl Editor {
             focus: cx.focus_handle(),
             blink_manager,
             blink_manager_initialized: false,
+            cursor_animation: CursorAnimation::default(),
+            cursor_animation_enabled: settings
+                .as_ref()
+                .is_some_and(|settings| settings.cursor_animation_enabled),
             soft_wrap: settings
                 .as_ref()
                 .map_or(SoftWrap::default(), |settings| settings.soft_wrap.into()),
+            cursor_shape: settings
+                .as_ref()
+                .map_or(CursorShape::Bar, |settings| settings.cursor_shape),
             preferred_line_length: settings.map_or(80, |settings| settings.preferred_line_length),
             hovered_diff_hunk: None,
             gutter_hovered: false,
@@ -1734,6 +1783,14 @@ impl Editor {
                 return;
             };
             editor.soft_wrap = settings.soft_wrap.into();
+            editor.cursor_shape = settings.cursor_shape;
+            editor.cursor_animation_enabled = settings.cursor_animation_enabled;
+            if !editor.cursor_animation_enabled {
+                editor.cursor_animation.clear();
+            }
+            editor.blink_manager.update(cx, |manager, cx| {
+                manager.set_blink_enabled(settings.cursor_blink, cx)
+            });
             editor.preferred_line_length = settings.preferred_line_length;
             editor.advance_snapshots(cx);
             cx.notify();
@@ -1811,7 +1868,7 @@ impl Editor {
                 self.end_transaction(cx);
                 self.selection_history.remove_transaction(session_id);
                 cx.emit(EditorEvent::Error(format!("{operation}失败：{error:#}")));
-                self.change_selections(before_selections.clone(), cx);
+                self.apply_selection_change(before_selections.clone(), cx);
                 return Err(error);
             }
         };
@@ -1829,7 +1886,7 @@ impl Editor {
             self.end_transaction(cx);
             self.selection_history.remove_transaction(session_id);
             cx.emit(EditorEvent::Error(format!("{operation}失败：{error:#}")));
-            self.change_selections(before_selections.clone(), cx);
+            self.apply_selection_change(before_selections.clone(), cx);
             return Err(error);
         }
         let node_id = self.end_transaction(cx);
@@ -1868,7 +1925,7 @@ impl Editor {
         let max_entries = self.selection_history_budget(cx);
         self.selection_history.insert_transaction(
             transaction_id,
-            self.selections.clone(),
+            self.anchored_selections(),
             max_entries,
         );
         Ok(transaction_id)
@@ -1903,7 +1960,7 @@ impl Editor {
     ) -> TextResult<(EditOutcome, SelectionSet)> {
         let (outcome, after_selections) = outcome;
         // 编辑后投影坐标直接在当前快照锚定为源锚点；投影重建不改变源，随后解析即忠实落位。
-        self.change_selections(after_selections, cx);
+        self.apply_selection_change(after_selections, cx);
         self.finish_transaction(transaction_id, cx);
         Ok((outcome, self.resolved_selections(cx)))
     }
@@ -1914,11 +1971,12 @@ impl Editor {
         transaction_id: Option<TransactionId>,
         cx: &mut Context<Self>,
     ) {
+        let redo_selections = self.anchored_selections();
         if let Some(transaction_id) = transaction_id
             && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
         {
             // 事务结束时记录 redo 选区（源锚点）。
-            transaction.set_redo(self.selections.clone());
+            transaction.set_redo(redo_selections);
         }
         self.finish_edit(cx);
         if let Some(transaction_id) = transaction_id {
@@ -1942,10 +2000,22 @@ impl Editor {
         direction: MovementDirection,
         motion: impl Into<Motion>,
         extend: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let motion = motion.into();
         let selections = self.resolved_selections(cx);
+        let display_snapshot = self.display_snapshot(cx);
+        let text_style = window.text_style();
+        let font_size = text_style.font_size.to_pixels(window.rem_size());
+        let base_run = TextRun {
+            len: 0,
+            font: text_style.font(),
+            color: text_style.color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
         let primary_index = selections.primary_index();
         let outcome = selections
             .as_slice()
@@ -1970,8 +2040,8 @@ impl Editor {
                         _ => selection.head(),
                     }
                 };
-                // 垂直移动本次使用的目标列；移动后持久化到选区。
-                let mut vertical_goal: Option<DisplayColumn> = None;
+                // 垂直移动本次使用的目标像素横坐标；移动后持久化到选区。
+                let mut vertical_goal: Option<f64> = None;
                 let new_head = match motion {
                     Motion::ByUnit(unit) => {
                         // 左右方向键（grapheme 级）移动非空选区：折叠到选区端，不移动。
@@ -1999,7 +2069,7 @@ impl Editor {
                                     }),
                             }
                             .map(|new_head| {
-                                // 行内水平移动清除垂直移动遗留的目标列。
+                                // 行内水平移动清除垂直移动遗留的像素目标。
                                 (if extend {
                                     selection.with_head(new_head)
                                 } else {
@@ -2016,38 +2086,49 @@ impl Editor {
                             Motion::PageStep(row_step) => row_step,
                             _ => 1,
                         };
-                        let point = self
-                            .display_snapshot(cx)
-                            .offset_to_display_point(base)
-                            .map_err(|error| TextError::InvariantViolation {
-                                location: "Editor::move_selections",
-                                detail: error.to_string(),
-                            })?;
-                        // 目标列：优先使用持久化的 goal，否则从当前位置推导。
-                        let goal = selection
-                            .goal()
-                            .map(DisplayColumn::new)
-                            .unwrap_or(point.column());
+                        let point =
+                            display_snapshot
+                                .offset_to_display_point(base)
+                                .map_err(|error| TextError::InvariantViolation {
+                                    location: "Editor::move_selections",
+                                    detail: error.to_string(),
+                                })?;
+                        // 持久目标是塑形后的像素 x，而非显示列。
+                        let goal_x = match selection.goal() {
+                            Some(x) => gpui::px(x as f32),
+                            None => display_snapshot
+                                .x_for_display_point(
+                                    point,
+                                    window.text_system(),
+                                    font_size,
+                                    &base_run,
+                                    cx,
+                                )
+                                .ok_or_else(|| TextError::InvariantViolation {
+                                    location: "Editor::move_selections",
+                                    detail: "无法测量当前显示行".into(),
+                                })?,
+                        };
+                        let goal = f64::from(f32::from(goal_x));
                         vertical_goal = Some(goal);
-                        let last_row = self.display_snapshot(cx).line_count().saturating_sub(1);
+                        let last_row = display_snapshot.line_count().saturating_sub(1);
                         if direction == MovementDirection::Previous
                             && point.row() == DisplayRow::ZERO
                         {
                             return Ok(if extend {
                                 selection
                                     .with_head(MultiBufferOffset::ZERO)
-                                    .with_goal(Some(goal.get()))
+                                    .with_goal(Some(goal))
                             } else {
-                                Selection::caret(MultiBufferOffset::ZERO)
-                                    .with_goal(Some(goal.get()))
+                                Selection::caret(MultiBufferOffset::ZERO).with_goal(Some(goal))
                             });
                         }
                         if direction == MovementDirection::Next && point.row().get() >= last_row {
                             let new_head = self.display_snapshot(cx).buffer_snapshot().len_bytes();
                             return Ok(if extend {
-                                selection.with_head(new_head).with_goal(Some(goal.get()))
+                                selection.with_head(new_head).with_goal(Some(goal))
                             } else {
-                                Selection::caret(new_head).with_goal(Some(goal.get()))
+                                Selection::caret(new_head).with_goal(Some(goal))
                             });
                         }
                         let target_row = match direction {
@@ -2062,9 +2143,23 @@ impl Editor {
                             MovementDirection::Previous => FoldBias::Left,
                             MovementDirection::Next => FoldBias::Right,
                         };
-                        self.display_snapshot(cx)
+                        let target_row = DisplayRow::new(target_row);
+                        let target_column = display_snapshot
+                            .display_column_for_x(
+                                target_row,
+                                goal_x,
+                                window.text_system(),
+                                font_size,
+                                &base_run,
+                                cx,
+                            )
+                            .ok_or_else(|| TextError::InvariantViolation {
+                                location: "Editor::move_selections",
+                                detail: "无法测量目标显示行".into(),
+                            })?;
+                        display_snapshot
                             .display_point_to_offset_with_bias(
-                                DisplayPoint::new(DisplayRow::new(target_row), goal),
+                                DisplayPoint::new(target_row, target_column),
                                 fold_bias,
                             )
                             .map_err(|error| TextError::InvariantViolation {
@@ -2079,13 +2174,13 @@ impl Editor {
                         }
                     },
                 };
-                // 垂直移动持久保留本次使用的目标列（即使被行尾钳制）；其余移动清除 goal。
+                // 垂直移动保留目标像素 x（即使被行尾钳制）；其余移动清除 goal。
                 Ok((if extend {
                     selection.with_head(new_head)
                 } else {
                     Selection::caret(new_head)
                 })
-                .with_goal(vertical_goal.map(DisplayColumn::get)))
+                .with_goal(vertical_goal))
             })
             .collect::<TextResult<Vec<_>>>()
             .map(|selections| SelectionSet::new_with_primary(selections, primary_index));
@@ -2214,13 +2309,14 @@ impl Editor {
     pub(super) fn handle_move_left(
         &mut self,
         _: &MoveLeft,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.move_selections(
             MovementDirection::Previous,
             MovementUnit::Grapheme,
             false,
+            window,
             cx,
         );
     }
@@ -2228,59 +2324,89 @@ impl Editor {
     pub(super) fn handle_move_right(
         &mut self,
         _: &MoveRight,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.move_selections(MovementDirection::Next, MovementUnit::Grapheme, false, cx);
+        self.move_selections(
+            MovementDirection::Next,
+            MovementUnit::Grapheme,
+            false,
+            window,
+            cx,
+        );
     }
 
-    pub(super) fn handle_move_up(&mut self, _: &MoveUp, _: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn handle_move_up(
+        &mut self,
+        _: &MoveUp,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.propagate_if_single_line(cx) {
             return;
         }
-        self.move_selections(MovementDirection::Previous, Motion::LineStep, false, cx);
+        self.move_selections(
+            MovementDirection::Previous,
+            Motion::LineStep,
+            false,
+            window,
+            cx,
+        );
     }
 
     pub(super) fn handle_move_down(
         &mut self,
         _: &MoveDown,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.propagate_if_single_line(cx) {
             return;
         }
-        self.move_selections(MovementDirection::Next, Motion::LineStep, false, cx);
+        self.move_selections(MovementDirection::Next, Motion::LineStep, false, window, cx);
     }
 
     pub(super) fn handle_move_to_previous_word(
         &mut self,
         _: &MoveToPreviousWord,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.move_selections(MovementDirection::Previous, MovementUnit::Word, false, cx);
+        self.move_selections(
+            MovementDirection::Previous,
+            MovementUnit::Word,
+            false,
+            window,
+            cx,
+        );
     }
 
     pub(super) fn handle_move_to_next_word(
         &mut self,
         _: &MoveToNextWord,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.move_selections(MovementDirection::Next, MovementUnit::Word, false, cx);
+        self.move_selections(
+            MovementDirection::Next,
+            MovementUnit::Word,
+            false,
+            window,
+            cx,
+        );
     }
 
     pub(super) fn handle_move_to_beginning_of_line(
         &mut self,
         _: &MoveToBeginningOfLine,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.move_selections(
             MovementDirection::Previous,
             MovementUnit::LineEdge,
             false,
+            window,
             cx,
         );
     }
@@ -2288,40 +2414,58 @@ impl Editor {
     pub(super) fn handle_move_to_end_of_line(
         &mut self,
         _: &MoveToEndOfLine,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.move_selections(MovementDirection::Next, MovementUnit::LineEdge, false, cx);
+        self.move_selections(
+            MovementDirection::Next,
+            MovementUnit::LineEdge,
+            false,
+            window,
+            cx,
+        );
     }
 
     pub(super) fn handle_move_to_beginning(
         &mut self,
         _: &MoveToBeginning,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.propagate_if_single_line(cx) {
             return;
         }
-        self.move_selections(MovementDirection::Previous, Motion::DocumentEdge, false, cx);
+        self.move_selections(
+            MovementDirection::Previous,
+            Motion::DocumentEdge,
+            false,
+            window,
+            cx,
+        );
     }
 
     pub(super) fn handle_move_to_end(
         &mut self,
         _: &MoveToEnd,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.propagate_if_single_line(cx) {
             return;
         }
-        self.move_selections(MovementDirection::Next, Motion::DocumentEdge, false, cx);
+        self.move_selections(
+            MovementDirection::Next,
+            Motion::DocumentEdge,
+            false,
+            window,
+            cx,
+        );
     }
 
     pub(super) fn handle_move_page_up(
         &mut self,
         _: &MovePageUp,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.propagate_if_single_line(cx) {
@@ -2334,6 +2478,7 @@ impl Editor {
             MovementDirection::Previous,
             Motion::PageStep(row_count),
             false,
+            window,
             cx,
         );
     }
@@ -2341,7 +2486,7 @@ impl Editor {
     pub(super) fn handle_move_page_down(
         &mut self,
         _: &MovePageDown,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.propagate_if_single_line(cx) {
@@ -2354,6 +2499,7 @@ impl Editor {
             MovementDirection::Next,
             Motion::PageStep(row_count),
             false,
+            window,
             cx,
         );
     }
@@ -2361,13 +2507,14 @@ impl Editor {
     pub(super) fn handle_select_left(
         &mut self,
         _: &SelectLeft,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.move_selections(
             MovementDirection::Previous,
             MovementUnit::Grapheme,
             true,
+            window,
             cx,
         );
     }
@@ -2375,58 +2522,83 @@ impl Editor {
     pub(super) fn handle_select_right(
         &mut self,
         _: &SelectRight,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.move_selections(MovementDirection::Next, MovementUnit::Grapheme, true, cx);
+        self.move_selections(
+            MovementDirection::Next,
+            MovementUnit::Grapheme,
+            true,
+            window,
+            cx,
+        );
     }
 
     pub(super) fn handle_select_up(
         &mut self,
         _: &SelectUp,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.move_selections(MovementDirection::Previous, Motion::LineStep, true, cx);
+        self.move_selections(
+            MovementDirection::Previous,
+            Motion::LineStep,
+            true,
+            window,
+            cx,
+        );
     }
 
     pub(super) fn handle_select_down(
         &mut self,
         _: &SelectDown,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.move_selections(MovementDirection::Next, Motion::LineStep, true, cx);
+        self.move_selections(MovementDirection::Next, Motion::LineStep, true, window, cx);
     }
 
     pub(super) fn handle_select_to_previous_word(
         &mut self,
         _: &SelectToPreviousWord,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.move_selections(MovementDirection::Previous, MovementUnit::Word, true, cx);
+        self.move_selections(
+            MovementDirection::Previous,
+            MovementUnit::Word,
+            true,
+            window,
+            cx,
+        );
     }
 
     pub(super) fn handle_select_to_next_word(
         &mut self,
         _: &SelectToNextWord,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.move_selections(MovementDirection::Next, MovementUnit::Word, true, cx);
+        self.move_selections(
+            MovementDirection::Next,
+            MovementUnit::Word,
+            true,
+            window,
+            cx,
+        );
     }
 
     pub(super) fn handle_select_to_beginning_of_line(
         &mut self,
         _: &SelectToBeginningOfLine,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.move_selections(
             MovementDirection::Previous,
             MovementUnit::LineEdge,
             true,
+            window,
             cx,
         );
     }
@@ -2434,34 +2606,52 @@ impl Editor {
     pub(super) fn handle_select_to_end_of_line(
         &mut self,
         _: &SelectToEndOfLine,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.move_selections(MovementDirection::Next, MovementUnit::LineEdge, true, cx);
+        self.move_selections(
+            MovementDirection::Next,
+            MovementUnit::LineEdge,
+            true,
+            window,
+            cx,
+        );
     }
 
     pub(super) fn handle_select_to_beginning(
         &mut self,
         _: &SelectToBeginning,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.move_selections(MovementDirection::Previous, Motion::DocumentEdge, true, cx);
+        self.move_selections(
+            MovementDirection::Previous,
+            Motion::DocumentEdge,
+            true,
+            window,
+            cx,
+        );
     }
 
     pub(super) fn handle_select_to_end(
         &mut self,
         _: &SelectToEnd,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.move_selections(MovementDirection::Next, Motion::DocumentEdge, true, cx);
+        self.move_selections(
+            MovementDirection::Next,
+            Motion::DocumentEdge,
+            true,
+            window,
+            cx,
+        );
     }
 
     pub(super) fn handle_select_page_up(
         &mut self,
         _: &SelectPageUp,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(row_count) = self.scroll_manager.page_row_count() else {
@@ -2471,6 +2661,7 @@ impl Editor {
             MovementDirection::Previous,
             Motion::PageStep(row_count),
             true,
+            window,
             cx,
         );
     }
@@ -2478,7 +2669,7 @@ impl Editor {
     pub(super) fn handle_select_page_down(
         &mut self,
         _: &SelectPageDown,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(row_count) = self.scroll_manager.page_row_count() else {
@@ -2488,6 +2679,7 @@ impl Editor {
             MovementDirection::Next,
             Motion::PageStep(row_count),
             true,
+            window,
             cx,
         );
     }
@@ -2533,7 +2725,7 @@ impl Editor {
             return;
         }
         self.structured_selection_history
-            .push(self.selections.clone());
+            .push(self.anchored_selections());
         self.apply_selection_change(expanded, cx);
     }
 

@@ -285,7 +285,7 @@ fn vertical_movement_preserves_goal_column_across_short_rows(cx: &mut TestAppCon
     }
     cx.run_until_parked();
 
-    // 垂直移动到短行：列被钳制到行尾，但 goal 保留 10。
+    // 垂直移动到短行：列被钳制到行尾，但像素目标保持不变。
     cx.dispatch_action(MoveDown);
     cx.run_until_parked();
     let (short_row_column, goal) = cx.read_entity(&editor, |editor, cx| {
@@ -299,9 +299,9 @@ fn vertical_movement_preserves_goal_column_across_short_rows(cx: &mut TestAppCon
         )
     });
     assert_eq!(short_row_column, "short".len());
-    assert_eq!(goal, Some(10));
+    assert!(goal.is_some_and(|x| x > 0.0));
 
-    // 再垂直移动到长行：光标回到持久化的目标列 10。
+    // 再垂直移动到长行：光标回到持久化的像素位置。
     cx.dispatch_action(MoveDown);
     cx.run_until_parked();
     cx.read_entity(&editor, |editor, cx| {
@@ -310,6 +310,35 @@ fn vertical_movement_preserves_goal_column_across_short_rows(cx: &mut TestAppCon
             .byte_to_position(editor.selections(cx).primary().head())
             .expect("caret 应有效");
         assert_eq!(position.column().get(), 10);
+    });
+}
+
+#[gpui::test]
+fn vertical_movement_keeps_pixel_goal_beyond_render_window(cx: &mut TestAppContext) {
+    let line = "a".repeat(1500);
+    let buffer = test_buffer(cx, format!("{line}\n{line}"));
+    let (editor, cx) = cx.add_window_view({
+        let buffer = buffer.clone();
+        move |_, cx| Editor::for_language_buffer(buffer, cx)
+    });
+    focus_editor(&editor, cx);
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(1400)), cx);
+    });
+
+    cx.dispatch_action(MoveDown);
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(
+            editor.selections(cx).primary().head(),
+            MultiBufferOffset::new(1501 + 1400)
+        );
+    });
+    cx.dispatch_action(MoveUp);
+    cx.read_entity(&editor, |editor, cx| {
+        assert_eq!(
+            editor.selections(cx).primary().head(),
+            MultiBufferOffset::new(1400)
+        );
     });
 }
 

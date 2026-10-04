@@ -4,10 +4,11 @@ use std::sync::Arc;
 use gpui::{AppContext as _, Context, TestAppContext, VisualTestContext, Window};
 use zcv_editor::init;
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
-use zcv_language::LanguageRegistry;
+use zcv_language::{LanguageBuffer, LanguageRegistry};
+use zcv_multi_buffer::ExcerptRange;
 use zcv_path::AbsolutePathBuf;
 use zcv_project::Project;
-use zcv_text::{ByteOffset, TextRange};
+use zcv_text::{Buffer, BufferConfig, ByteOffset, TextRange};
 
 use super::*;
 
@@ -51,6 +52,70 @@ fn test_workspace(
         )
     });
     Workspace::new_with_project(project, window, cx)
+}
+
+#[gpui::test]
+fn project_search_folds_all_files_in_one_display_update(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let registry = Arc::new(LanguageRegistry::new());
+    let project = cx.new(|cx| {
+        Project::new_with_watcher(
+            directory.path().to_path_buf(),
+            Arc::new(PassiveWatcher::new()),
+            registry.clone(),
+            cx,
+        )
+    });
+    let view = cx.new(|cx| ProjectSearchView::new(project, cx));
+    let source = |path: &str, text: &str, cx: &mut TestAppContext| {
+        let buffer = Buffer::from_text(text.into(), BufferConfig::default()).unwrap();
+        cx.new(|cx| LanguageBuffer::new(buffer, Some(path.into()), registry.clone(), cx))
+    };
+    let first = source("src/first.rs", "a\nb\nc\nd\n", cx);
+    let second = source("src/second.rs", "x\ny\n", cx);
+    view.update(cx, |view, cx| {
+        view.excerpts.update(cx, |buffer, cx| {
+            buffer.set_excerpts_for_path(
+                vec![
+                    ExcerptRange::line_range(first.clone(), 0..1, cx),
+                    ExcerptRange::line_range(first, 2..3, cx),
+                ],
+                cx,
+            );
+            buffer.set_excerpts_for_path(vec![ExcerptRange::line_range(second, 0..1, cx)], cx);
+        });
+    });
+    cx.run_until_parked();
+
+    let editor = cx.read_entity(&view, |view, _| view.results_editor.clone());
+    let ids = cx.read_entity(&editor, |editor, cx| editor.file_buffer_ids(cx));
+    assert_eq!(ids.len(), 2, "同一文件的多个结果窗口只计一次");
+    let events = std::rc::Rc::new(std::cell::Cell::new(0));
+    let observed = events.clone();
+    let _subscription = cx.update(|cx| {
+        cx.subscribe(&editor, move |_, event: &EditorEvent, _| {
+            if matches!(event, EditorEvent::BufferFoldChanged) {
+                observed.set(observed.get() + 1);
+            }
+        })
+    });
+    view.update(cx, |view, cx| view.set_all_files_folded(true, cx));
+    cx.run_until_parked();
+    assert_eq!(events.get(), 1, "折叠全部文件只发布一次事件");
+    cx.read_entity(&editor, |editor, cx| {
+        assert!(ids.iter().all(|id| editor.is_buffer_folded(*id, cx)));
+    });
+
+    view.update(cx, |view, cx| view.set_all_files_folded(true, cx));
+    cx.run_until_parked();
+    assert_eq!(events.get(), 1, "重复折叠不产生事件");
+
+    view.update(cx, |view, cx| view.set_all_files_folded(false, cx));
+    cx.run_until_parked();
+    assert_eq!(events.get(), 2, "展开全部文件也只发布一次事件");
+    cx.read_entity(&editor, |editor, cx| {
+        assert!(ids.iter().all(|id| !editor.is_buffer_folded(*id, cx)));
+    });
 }
 
 /// 回归：布局恢复出的项目搜索标签必须与 deploy 新建的一样接上工作区的打开订阅。

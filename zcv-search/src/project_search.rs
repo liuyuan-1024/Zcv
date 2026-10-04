@@ -243,20 +243,11 @@ impl ProjectSearchView {
     }
 
     fn set_all_files_folded(&mut self, folded: bool, cx: &mut Context<Self>) {
-        let snapshot = self.excerpts.update(cx, |buffer, cx| buffer.snapshot(cx));
-        let mut buffer_ids = Vec::new();
-        for excerpt in snapshot.excerpts() {
-            let buffer_id = excerpt.buffer_id();
-            if !buffer_ids.contains(&buffer_id) {
-                buffer_ids.push(buffer_id);
-            }
-        }
+        let buffer_ids = self.excerpts.update(cx, |buffer, cx| {
+            buffer.snapshot(cx).file_buffer_ids().collect::<Vec<_>>()
+        });
         self.results_editor.update(cx, |editor, cx| {
-            for buffer_id in buffer_ids {
-                if editor.is_buffer_folded(buffer_id, cx) != folded {
-                    editor.toggle_buffer_fold(buffer_id, cx);
-                }
-            }
+            editor.set_buffers_folded(buffer_ids, folded, cx);
         });
     }
 

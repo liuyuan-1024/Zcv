@@ -502,7 +502,7 @@ impl DiffView {
             cx.emit(EditorEvent::Error(format!("保存冲突解决结果失败：{error}")));
             return;
         }
-        self.rebuild_conflict_projection(cx);
+        self.sync_conflict_projection(cx);
         cx.notify();
     }
 
@@ -676,7 +676,7 @@ impl DiffView {
         });
 
         if self.kind == ProjectDiffKind::Conflict {
-            self.rebuild_conflict_projection(cx);
+            self.sync_conflict_projection(cx);
             self.apply_pending_path(cx);
             cx.notify();
         } else {
@@ -708,12 +708,37 @@ impl DiffView {
         }
     }
 
-    /// 冲突视图使用完整工作区文本，不创建 BufferDiff；
-    /// 冲突块和区域装饰由同一份解析结果注入 Editor。
-    fn rebuild_conflict_projection(&mut self, cx: &mut Context<Self>) {
-        // 每个文件是一个路径批次：按路径写入，文档顺序由 MultiBuffer 维护。
-        let mut groups: Vec<Vec<ExcerptRange>> = Vec::new();
+    /// 冲突视图按 Git 文件集合增删完整工作区文档；保留文件由 MultiBuffer 的源订阅同步文本。
+    fn sync_conflict_projection(&mut self, cx: &mut Context<Self>) {
+        // Git 展示路径用于比较成员；移除 excerpt 必须使用源文档的规范化路径键。
+        let attached = self.multi_buffer.update(cx, |buffer, cx| {
+            buffer
+                .snapshot(cx)
+                .excerpts()
+                .map(|excerpt| {
+                    (
+                        excerpt.display_path().to_path_buf(),
+                        excerpt.path().to_path_buf(),
+                    )
+                })
+                .collect::<HashMap<_, _>>()
+        });
+        let visible = self
+            .files
+            .iter()
+            .map(|file| file.path.clone())
+            .collect::<HashSet<_>>();
+        for (display_path, source_path) in &attached {
+            if !visible.contains(display_path) {
+                self.multi_buffer.update(cx, |buffer, cx| {
+                    buffer.remove_excerpts_for_path(source_path, cx);
+                });
+            }
+        }
         for file in &self.files {
+            if attached.contains_key(&file.path) {
+                continue;
+            }
             let Ok(source) = self
                 .project
                 .update(cx, |project, cx| project.open_buffer(&file.path, cx))
@@ -724,18 +749,16 @@ impl DiffView {
             let Ok(source_range) = TextRange::new(ByteOffset::ZERO, source_len) else {
                 continue;
             };
-            groups.push(vec![
-                ExcerptRange::new(source, source_range, Vec::new())
-                    .with_display_path(file.path.clone()),
-            ]);
+            self.multi_buffer.update(cx, |buffer, cx| {
+                buffer.set_excerpts_for_path(
+                    vec![
+                        ExcerptRange::new(source, source_range, Vec::new())
+                            .with_display_path(file.path.clone()),
+                    ],
+                    cx,
+                );
+            });
         }
-        self.multi_buffer.update(cx, |buffer, cx| {
-            buffer.clear_diffs(cx);
-            buffer.clear(cx);
-            for group in groups {
-                buffer.set_excerpts_for_path(group, cx);
-            }
-        });
         let hunks = self.conflict_editor_hunks(cx);
         self.editor.update(cx, |editor, cx| {
             editor.set_editor_hunks(hunks, cx);

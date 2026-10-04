@@ -8,7 +8,7 @@ use zcv_buffer_diff::PendingHunk;
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{DiffExcerptRanges, ExcerptDiffKind};
-use zcv_text::{Buffer, BufferConfig, Edit, Line, TransactionMetadata};
+use zcv_text::{Buffer, BufferConfig, ByteOffset, Edit, Line, TextRange, TransactionMetadata};
 
 #[test]
 fn includes_matches_section_membership_for_every_status() {
@@ -109,6 +109,139 @@ fn canonical_root(path: &Path) -> PathBuf {
     AbsolutePathBuf::canonicalize(path)
         .expect("应规范化仓库路径")
         .into_path_buf()
+}
+
+#[gpui::test]
+fn conflict_projection_refresh_preserves_unchanged_files(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let root = canonical_root(directory.path());
+    let first = root.join("first.rs");
+    let second = root.join("second.rs");
+    let third = root.join("third.rs");
+    std::fs::create_dir(root.join("sub")).expect("应创建路径归一化测试目录");
+    let second_display = root.join("sub").join("..").join("second.rs");
+    assert_ne!(second_display, second);
+    let conflict = "<<<<<<< ours\nours\n=======\ntheirs\n>>>>>>> theirs\n";
+    for path in [&first, &second, &third] {
+        std::fs::write(path, conflict).expect("应写入冲突文件");
+    }
+    let project = test_project(root, cx);
+    let view = cx.new(|cx| DiffView::new(ProjectDiffKind::Conflict, project, cx));
+    let project_file = |path: PathBuf| GitChangeFile {
+        path,
+        status: FileStatus::Unmerged,
+    };
+
+    view.update(cx, |view, cx| {
+        view.files = vec![
+            project_file(first.clone()),
+            project_file(second_display.clone()),
+        ];
+        view.sync_conflict_projection(cx);
+    });
+    let (topology, source_ids) = cx.update_entity(&view, |view, cx| {
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        let source_ids = view
+            .multi_buffer
+            .read(cx)
+            .file_buffers(cx)
+            .into_iter()
+            .map(|(source, path)| (path, source.entity_id()))
+            .collect::<HashMap<_, _>>();
+        (snapshot.topology_version(), source_ids)
+    });
+    assert_eq!(source_ids.len(), 2);
+
+    view.update(cx, |view, cx| view.sync_conflict_projection(cx));
+    let refreshed = cx.update_entity(&view, |view, cx| {
+        view.multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx))
+    });
+    assert_eq!(refreshed.topology_version(), topology);
+
+    view.update(cx, |view, cx| {
+        view.files = vec![
+            project_file(second_display.clone()),
+            project_file(third.clone()),
+        ];
+        view.sync_conflict_projection(cx);
+    });
+    let (paths, remaining_ids, hunks, topology_after_paths) =
+        cx.update_entity(&view, |view, cx| {
+            let snapshot = view
+                .multi_buffer
+                .update(cx, |buffer, cx| buffer.snapshot(cx));
+            let paths = snapshot
+                .excerpts()
+                .map(|excerpt| excerpt.path().to_path_buf())
+                .collect::<Vec<_>>();
+            let ids = view
+                .multi_buffer
+                .read(cx)
+                .file_buffers(cx)
+                .into_iter()
+                .map(|(source, path)| (path, source.entity_id()))
+                .collect::<HashMap<_, _>>();
+            (
+                paths,
+                ids,
+                view.conflict_editor_hunks(cx),
+                snapshot.topology_version(),
+            )
+        });
+    assert_eq!(paths, vec![second.clone(), third.clone()]);
+    assert_eq!(remaining_ids[&second], source_ids[&second]);
+    assert!(!remaining_ids.contains_key(&first));
+    assert_eq!(hunks.len(), 2);
+
+    let second_source = cx.read_entity(&view, |view, cx| {
+        view.multi_buffer
+            .read(cx)
+            .file_buffers(cx)
+            .into_iter()
+            .find(|(_, path)| path == &second)
+            .expect("保留的冲突文件应仍在投影中")
+            .0
+    });
+    second_source.update(cx, |source, cx| {
+        let range = TextRange::new(ByteOffset::ZERO, source.text_snapshot().len_bytes()).unwrap();
+        source
+            .edit(
+                [Edit::replace(range, "resolved\n")],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .unwrap();
+    });
+    view.update(cx, |view, cx| view.sync_conflict_projection(cx));
+    let (updated, hunks) = cx.update_entity(&view, |view, cx| {
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        (snapshot.clone(), view.conflict_editor_hunks(cx))
+    });
+    let second_buffer_id = cx.read_entity(&second_source, |source, _| source.buffer_id());
+    let second_text = updated
+        .text_for_range(updated.buffer_range(second_buffer_id).unwrap())
+        .unwrap();
+    assert!(second_text.starts_with("resolved\n"));
+    assert!(!second_text.contains("<<<<<<<"));
+    assert_eq!(updated.topology_version(), topology_after_paths);
+    assert_eq!(hunks.len(), 1, "源文本解决冲突后仅保留其他文件的装饰");
+
+    view.update(cx, |view, cx| {
+        view.files.clear();
+        view.sync_conflict_projection(cx);
+    });
+    cx.update_entity(&view, |view, cx| {
+        let snapshot = view
+            .multi_buffer
+            .update(cx, |buffer, cx| buffer.snapshot(cx));
+        assert_eq!(snapshot.excerpts().count(), 0);
+        assert!(view.conflict_editor_hunks(cx).is_empty());
+    });
 }
 
 /// 测试辅助：按工作区源与 base 全文预创建普通编辑器 diff 注入项。

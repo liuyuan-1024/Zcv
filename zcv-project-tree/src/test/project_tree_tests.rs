@@ -87,6 +87,64 @@ fn focus_tree(tree: &gpui::Entity<ProjectTreePanel>, cx: &mut VisualTestContext)
     });
 }
 
+#[gpui::test]
+#[ignore]
+fn project_tree_visible_render_cost(cx: &mut TestAppContext) {
+    use std::time::Instant;
+
+    let directory = tempfile::tempdir().expect("应创建临时项目目录");
+    let root = abs(directory.path()).into_path_buf();
+    let project = test_project(root.clone(), cx);
+    let (tree, visual) = cx.add_window_view(move |_, cx| ProjectTreePanel::new(project, cx));
+    visual.run_until_parked();
+    tree.update(&mut *visual, |tree, cx| {
+        let rows = (0..8_192)
+            .map(|index| ProjectTreeRow {
+                path: abs(root.join(format!("file_{index:05}.rs"))),
+                name: format!("file_{index:05}.rs"),
+                depth: 1,
+                is_dir: false,
+                expanded: false,
+                is_new: false,
+                git_status: None,
+            })
+            .collect::<Vec<_>>();
+        let mut state = tree.state.borrow_mut();
+        state.replace_rows(rows);
+        let selected = (0..8_192)
+            .step_by(1_024)
+            .map(|index| state.rows[index].path.clone())
+            .collect();
+        state.set_selected_set(selected);
+        tree.row_snapshot = state.rows.clone().into();
+        cx.notify();
+    });
+    let mut render = || {
+        visual.draw(
+            point(px(0.), px(0.)),
+            gpui::size(
+                gpui::AvailableSpace::Definite(px(400.)),
+                gpui::AvailableSpace::Definite(px(600.)),
+            ),
+            |_, _| tree.clone().into_any_element(),
+        );
+    };
+    for _ in 0..5 {
+        render();
+    }
+    let mut samples = Vec::new();
+    for _ in 0..30 {
+        let start = Instant::now();
+        render();
+        samples.push(start.elapsed().as_secs_f64() * 1_000.);
+    }
+    samples.sort_by(f64::total_cmp);
+    println!(
+        "项目树 8192 行 / 8 个标记，刷新中位数 {:.3} ms，范围 {:.3}..{:.3} ms",
+        samples[15], samples[0], samples[29]
+    );
+}
+
 #[test]
 fn rows_are_cached_until_rebuild_reinjects_them() {
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
@@ -897,8 +955,8 @@ fn shift_click_extends_selection_range(cx: &mut TestAppContext) {
         let state = tree.state.borrow();
         assert_eq!(state.selected.as_deref(), Some(file_c.as_path()));
         assert_eq!(
-            state.selected_set,
-            HashSet::from([
+            state.selected_set(),
+            &HashSet::from([
                 abs(file_a.clone()),
                 abs(file_b.clone()),
                 abs(file_c.clone())
@@ -946,8 +1004,8 @@ fn secondary_click_toggles_selection_membership(cx: &mut TestAppContext) {
         let state = tree.state.borrow();
         assert_eq!(state.selected.as_deref(), Some(file_c.as_path()));
         assert_eq!(
-            state.selected_set,
-            HashSet::from([
+            state.selected_set(),
+            &HashSet::from([
                 abs(file_a.clone()),
                 abs(file_b.clone()),
                 abs(file_c.clone())
@@ -970,8 +1028,8 @@ fn secondary_click_toggles_selection_membership(cx: &mut TestAppContext) {
     cx.read_entity(&tree, |tree, _| {
         let state = tree.state.borrow();
         assert_eq!(
-            state.selected_set,
-            HashSet::from([abs(file_a.clone()), abs(file_b.clone())])
+            state.selected_set(),
+            &HashSet::from([abs(file_a.clone()), abs(file_b.clone())])
         );
         assert_eq!(state.selected.as_deref(), Some(file_c.as_path()));
     });
@@ -1007,8 +1065,8 @@ fn shift_down_keystroke_extends_selection_to_next_row(cx: &mut TestAppContext) {
         let state = tree.state.borrow();
         assert_eq!(state.selected.as_deref(), Some(file_b.as_path()));
         assert_eq!(
-            state.selected_set,
-            HashSet::from([abs(file_a.clone()), abs(file_b.clone())]),
+            state.selected_set(),
+            &HashSet::from([abs(file_a.clone()), abs(file_b.clone())]),
             "shift-down 应把锚点到新游标的区间收入集合"
         );
         assert_eq!(state.anchor.as_deref(), Some(file_a.as_path()));
@@ -1185,7 +1243,7 @@ fn copy_paste_duplicates_files_into_selected_directory(cx: &mut TestAppContext) 
             "粘贴完成后应选中首个成功目标"
         );
         assert!(
-            tree.state.borrow().selected_set.is_empty(),
+            tree.state.borrow().selected_set().is_empty(),
             "粘贴完成后应回到单选态"
         );
         assert!(tree.active_transfer.is_none(), "复制完成后进度应清零");
@@ -1671,7 +1729,7 @@ fn cut_marks_clipboard_paths_for_dimming(cx: &mut TestAppContext) {
             other => panic!("cut 后剪贴板应为 Cut，实际 {other:?}"),
         }
         assert_eq!(
-            tree.state.borrow().selected_set.len(),
+            tree.state.borrow().selected_set().len(),
             2,
             "cut 应保持选中集作淡显视觉基础"
         );
@@ -2076,6 +2134,43 @@ fn drag_after_cmd_click_multi_selection_moves_all_items(cx: &mut TestAppContext)
     );
 }
 
+#[gpui::test]
+fn drag_uses_updated_selection_with_same_item_count(cx: &mut TestAppContext) {
+    let (_temp, project, _root, file_a, file_b, file_c, target) = drag_project(cx);
+    let project_for_move = project.clone();
+    let (tree, cx) = cx.add_window_view(move |_, cx| {
+        let mut tree = ProjectTreePanel::new(project.clone(), cx);
+        tree.set_on_move(Rc::new(
+            move |from: PathBuf, to: PathBuf, overwrite: bool, cx: &mut gpui::App| {
+                project_for_move.update(cx, |project, cx| {
+                    project.move_path(&from, &to, overwrite, cx)
+                })
+            },
+        ));
+        tree
+    });
+    cx.run_until_parked();
+    focus_tree(&tree, cx);
+
+    let row_height = cx.update(|window, cx| tree_row_height(window, cx));
+    let row_y = |row: usize| px(f32::from(row_height) * row as f32 + 1.);
+    cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::default());
+    cx.simulate_click(point(px(10.), row_y(3)), gpui::Modifiers::secondary_key());
+    cx.run_until_parked();
+
+    cx.simulate_click(point(px(10.), row_y(2)), gpui::Modifiers::secondary_key());
+    cx.simulate_click(point(px(10.), row_y(4)), gpui::Modifiers::secondary_key());
+    cx.run_until_parked();
+    simulate_drag(cx, 3, 1);
+
+    assert!(file_a.is_file(), "移出选区的文件不应被移动");
+    assert!(!file_b.exists() && !file_c.exists(), "当前选区应随拖拽移动");
+    assert!(
+        target.join("b.txt").is_file() && target.join("c.txt").is_file(),
+        "同数量的新选区应取代旧拖拽载荷"
+    );
+}
+
 /// 缺陷回归：放下信任发起时冻结的载荷，拖拽期间选区如何变化都不影响移动清单。
 ///
 /// 缺陷机理（用户可感知）：「选区还在、拖拽却只移动一项」的根因之一是旧实现放下时实时读 selected_set——拖拽期间集合被清空/剪枝后，被拖行不在集合内即退化为单项；
@@ -2108,7 +2203,7 @@ fn drop_trusts_snapshot_frozen_at_drag_start(cx: &mut TestAppContext) {
     cx.run_until_parked();
     cx.read_entity(&tree, |tree, _| {
         assert_eq!(
-            tree.state.borrow().selected_set.len(),
+            tree.state.borrow().selected_set().len(),
             2,
             "预置：多选 {{a, b}}"
         );
@@ -2137,7 +2232,7 @@ fn drop_trusts_snapshot_frozen_at_drag_start(cx: &mut TestAppContext) {
         let mut state = tree.state.borrow_mut();
         state.toggle_selection(&abs(file_a.clone()));
         state.toggle_selection(&abs(file_b.clone()));
-        assert!(state.selected_set.is_empty(), "预置：拖拽中集合被清空");
+        assert!(state.selected_set().is_empty(), "预置：拖拽中集合被清空");
     });
 
     cx.simulate_mouse_up(
@@ -2446,7 +2541,7 @@ fn clicking_blank_area_below_rows_keeps_selection_and_focuses_panel(cx: &mut Tes
     // 记录点击空白前的选中快照（含多选集合）。
     let (selected_before, set_before) = cx.read_entity(&tree, |tree, _| {
         let state = tree.state.borrow();
-        (state.selected.clone(), state.selected_set.clone())
+        (state.selected.clone(), state.selected_set().clone())
     });
 
     // 点击行区域以下的空白：y 明显大于 行数(2) × 行高，x 在面板内。
@@ -2466,7 +2561,11 @@ fn clicking_blank_area_below_rows_keeps_selection_and_focuses_panel(cx: &mut Tes
             Some(file.as_path()),
             "选中应仍停留在显式点击过的那行"
         );
-        assert_eq!(state.selected_set, set_before, "空白点击不应改写多选集合");
+        assert_eq!(
+            state.selected_set(),
+            &set_before,
+            "空白点击不应改写多选集合"
+        );
     });
 }
 
@@ -2560,7 +2659,7 @@ fn clicking_blank_area_without_prior_row_click_keeps_fallback_selection(cx: &mut
             Some(root.as_path()),
             "预置：无点击历史时选中应为渲染兜底的首行（根行）"
         );
-        (state.selected.clone(), state.selected_set.clone())
+        (state.selected.clone(), state.selected_set().clone())
     });
 
     // 点击行区域以下的空白。
@@ -2572,7 +2671,11 @@ fn clicking_blank_area_without_prior_row_click_keeps_fallback_selection(cx: &mut
     cx.read_entity(&tree, |tree, _| {
         let state = tree.state.borrow();
         assert_eq!(state.selected, selected_before, "空白点击不应写入新的选中");
-        assert_eq!(state.selected_set, set_before, "空白点击不应写入多选集合");
-        assert!(state.selected_set.is_empty(), "全程不应出现多选标记");
+        assert_eq!(
+            state.selected_set(),
+            &set_before,
+            "空白点击不应写入多选集合"
+        );
+        assert!(state.selected_set().is_empty(), "全程不应出现多选标记");
     });
 }

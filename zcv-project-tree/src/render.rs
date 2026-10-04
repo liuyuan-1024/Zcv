@@ -21,6 +21,22 @@ use super::editing::{EditOperation, EditState};
 use super::{ProjectTreePanel, ProjectTreeRow};
 
 impl ProjectTreePanel {
+    pub(super) fn drag_marked_snapshot(&mut self) -> Rc<[AbsolutePathBuf]> {
+        let state = self.state.borrow();
+        let generation = state.selection_generation();
+        if self.drag_marked_generation != Some(generation) {
+            self.drag_marked = self
+                .row_snapshot
+                .iter()
+                .filter(|row| state.is_in_selection_set(&row.path))
+                .map(|row| row.path.clone())
+                .collect::<Vec<_>>()
+                .into();
+            self.drag_marked_generation = Some(generation);
+        }
+        Rc::clone(&self.drag_marked)
+    }
+
     pub(super) fn display_rows(&self, cx: &gpui::App) -> Rc<[ProjectTreeRow]> {
         let Some(EditState {
             operation: EditOperation::Create { parent },
@@ -75,15 +91,9 @@ pub(super) fn render_list(
     let handle = scroll_handle.clone();
 
     uniform_list("project-tree-list", len, move |range, window, cx| {
-        let mut render_context = render_context.clone();
+        let render_context = render_context.clone();
         let state = render_context.state.borrow();
         let rows = &render_context.rows;
-        // 拖拽载荷的多选标记快照：每帧按可见行序展开一次，所有行共享同一份。
-        render_context.drag_marked = rows
-            .iter()
-            .filter(|row| state.is_in_selection_set(&row.path))
-            .map(|row| row.path.clone())
-            .collect();
         range
             .filter_map(|i| rows.get(i))
             .map(|row| {

@@ -306,11 +306,11 @@ fn extend_to_recomputes_range_from_immutable_anchor() {
     let mut state = test_state(vec![row(1, true), row(2, true), row(3, true), row(4, true)]);
     state.select(1);
     state.extend_to(&3);
-    assert_eq!(state.selected_set, HashSet::from([1, 2, 3]));
+    assert_eq!(state.selected_set(), &HashSet::from([1, 2, 3]));
     assert_eq!(state.selected, Some(3));
     // 再扩展到 2：区间按锚点 1 整体重算为 {1, 2}，锚点不动。
     state.extend_to(&2);
-    assert_eq!(state.selected_set, HashSet::from([1, 2]));
+    assert_eq!(state.selected_set(), &HashSet::from([1, 2]));
     assert_eq!(state.selected, Some(2));
     assert_eq!(state.anchor, Some(1));
 }
@@ -320,7 +320,7 @@ fn extend_to_supports_backward_range() {
     let mut state = test_state(vec![row(1, true), row(2, true), row(3, true)]);
     state.select(3);
     state.extend_to(&1);
-    assert_eq!(state.selected_set, HashSet::from([1, 2, 3]));
+    assert_eq!(state.selected_set(), &HashSet::from([1, 2, 3]));
     assert_eq!(state.selected, Some(1));
     assert_eq!(state.anchor, Some(3));
 }
@@ -330,12 +330,12 @@ fn extend_down_then_extend_up_shrinks_range() {
     let mut state = test_state(vec![row(1, true), row(2, true), row(3, true)]);
     state.select(1);
     assert!(state.extend_down());
-    assert_eq!(state.selected_set, HashSet::from([1, 2]));
+    assert_eq!(state.selected_set(), &HashSet::from([1, 2]));
     assert!(state.extend_down());
-    assert_eq!(state.selected_set, HashSet::from([1, 2, 3]));
+    assert_eq!(state.selected_set(), &HashSet::from([1, 2, 3]));
     // 上移一步：区间收缩回 {1, 2}，锚点仍为 1。
     assert!(state.extend_up());
-    assert_eq!(state.selected_set, HashSet::from([1, 2]));
+    assert_eq!(state.selected_set(), &HashSet::from([1, 2]));
     assert_eq!(state.selected, Some(2));
     assert_eq!(state.anchor, Some(1));
 }
@@ -345,11 +345,11 @@ fn extend_up_at_first_row_keeps_cursor_and_range() {
     let mut state = test_state(vec![row(1, true), row(2, true), row(3, true)]);
     state.select(2);
     state.extend_up();
-    assert_eq!(state.selected_set, HashSet::from([1, 2]));
+    assert_eq!(state.selected_set(), &HashSet::from([1, 2]));
     // 游标已在首行：上移返回 false，游标与集合均保持不变。
     assert!(!state.extend_up());
     assert_eq!(state.selected, Some(1));
-    assert_eq!(state.selected_set, HashSet::from([1, 2]));
+    assert_eq!(state.selected_set(), &HashSet::from([1, 2]));
 }
 
 #[test]
@@ -359,12 +359,12 @@ fn toggle_selection_adds_then_removes_and_keeps_cursor_on_row() {
     state.toggle_selection(&3);
     // 首次打标记把当前游标行（1）一并入集合：多选集与实际选中感知一致，
     // 从首项发起多选拖拽/批量操作才不会退化为单项。
-    assert_eq!(state.selected_set, HashSet::from([1, 3]));
+    assert_eq!(state.selected_set(), &HashSet::from([1, 3]));
     assert_eq!(state.selected, Some(3));
     state.toggle_selection(&3);
     assert_eq!(
-        state.selected_set,
-        HashSet::from([1]),
+        state.selected_set(),
+        &HashSet::from([1]),
         "再次 toggle 应仅移除目标行标记，并入的游标行保留"
     );
     assert_eq!(state.selected, Some(3), "toggle 移除后游标仍在该行");
@@ -376,15 +376,15 @@ fn select_and_navigation_reset_anchor_and_selection_set() {
     let mut state = test_state(vec![row(1, true), row(2, true), row(3, true)]);
     state.select(1);
     state.extend_to(&3);
-    assert!(!state.selected_set.is_empty());
+    assert!(!state.selected_set().is_empty());
     state.select_up();
-    assert!(state.selected_set.is_empty(), "普通导航应清空多选集合");
+    assert!(state.selected_set().is_empty(), "普通导航应清空多选集合");
     assert_eq!(state.anchor, state.selected, "锚点应重置为游标");
 
     // toggle 后再 select：同样重置为单选态。
     state.toggle_selection(&1);
     state.select(2);
-    assert!(state.selected_set.is_empty());
+    assert!(state.selected_set().is_empty());
     assert_eq!(state.anchor, Some(2));
 }
 
@@ -395,8 +395,8 @@ fn replace_rows_prunes_selection_set_and_anchor() {
     state.extend_to(&3);
     state.replace_rows(vec![row(2, true), row(3, true)]);
     assert_eq!(
-        state.selected_set,
-        HashSet::from([2, 3]),
+        state.selected_set(),
+        &HashSet::from([2, 3]),
         "消失键应剔除、幸存键应保留"
     );
     assert_eq!(state.anchor, None, "锚点消失应置空");

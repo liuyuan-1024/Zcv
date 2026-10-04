@@ -391,6 +391,9 @@ fn picker_list_scrolls_with_mouse_wheel(cx: &mut TestAppContext) {
         )
     });
     cx.simulate_window_resize(cx.windows()[0], size(px(500.0), px(500.0)));
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+    });
 
     let list_bounds = cx.debug_bounds("picker-list").expect("列表容器应参与布局");
     let list_state = cx.read_entity(&picker, |picker, _| picker.list_state.clone());
@@ -544,6 +547,9 @@ fn selected_item_beyond_first_viewport_is_visible_on_open_and_query_reset(cx: &m
         )
     });
     cx.simulate_window_resize(cx.windows()[0], size(px(500.0), px(500.0)));
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+    });
     let viewport = cx.debug_bounds("picker-list").expect("结果视口应可见");
     let selected = cx
         .debug_bounds("picker-match-29")
@@ -572,6 +578,92 @@ fn selected_item_beyond_first_viewport_is_visible_on_open_and_query_reset(cx: &m
         .debug_bounds("picker-match-29")
         .expect("重开查询后选中项应被渲染");
     assert!(selected.top() >= viewport.top() && selected.bottom() <= viewport.bottom());
+}
+
+struct LargeDelegate {
+    rendered: Rc<Cell<usize>>,
+}
+
+impl PickerDelegate for LargeDelegate {
+    fn match_count(&self) -> usize {
+        8_192
+    }
+
+    fn selected_index(&self) -> usize {
+        0
+    }
+
+    fn set_selected_index(&mut self, _: usize) {}
+
+    fn update_matches(&mut self, _: String) {}
+
+    fn confirm(&mut self, _: &mut Window, _: &mut App) {}
+
+    fn dismissed(&mut self) {}
+
+    fn render_match(&self, index: usize, _: bool, _: &mut Context<Picker<Self>>) -> AnyElement {
+        self.rendered.set(self.rendered.get() + 1);
+        div()
+            .h(px(28.0))
+            .child(format!("项目 {index}"))
+            .into_any_element()
+    }
+}
+
+#[gpui::test]
+fn match_reset_only_renders_visible_rows(cx: &mut TestAppContext) {
+    init(cx);
+    let rendered = Rc::new(Cell::new(0));
+    let (picker, cx) = cx.add_window_view({
+        let rendered = rendered.clone();
+        move |window, cx| Picker::new(LargeDelegate { rendered }, px(300.0), window, cx)
+    });
+    cx.simulate_window_resize(cx.windows()[0], size(px(500.0), px(500.0)));
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+    });
+
+    rendered.set(0);
+    picker.update(cx, |picker, cx| picker.matches_updated(cx));
+    cx.refresh().expect("匹配结果更新后应完成重绘");
+    assert!(
+        rendered.get() < 256,
+        "8192 行重置后只应测量可见行，实际渲染 {} 行",
+        rendered.get()
+    );
+}
+
+#[gpui::test]
+#[ignore]
+fn picker_match_reset_cost(cx: &mut TestAppContext) {
+    use std::time::Instant;
+
+    init(cx);
+    let rendered = Rc::new(Cell::new(0));
+    let (picker, cx) = cx.add_window_view({
+        let rendered = rendered.clone();
+        move |window, cx| Picker::new(LargeDelegate { rendered }, px(300.0), window, cx)
+    });
+    cx.simulate_window_resize(cx.windows()[0], size(px(500.0), px(500.0)));
+    cx.update(|window, cx| {
+        window.simulate_next_frame(cx);
+    });
+
+    let mut samples = Vec::new();
+    let mut rendered_per_reset = Vec::new();
+    for _ in 0..5 {
+        rendered.set(0);
+        let start = Instant::now();
+        picker.update(cx, |picker, cx| picker.matches_updated(cx));
+        cx.refresh().expect("匹配结果更新后应完成重绘");
+        samples.push(start.elapsed().as_secs_f64() * 1_000.0);
+        rendered_per_reset.push(rendered.get());
+    }
+    samples.sort_by(f64::total_cmp);
+    println!(
+        "Picker 8192 行重置，耗时中位数 {:.3} ms，范围 {:.3}..{:.3} ms；每次渲染行数 {rendered_per_reset:?}",
+        samples[2], samples[0], samples[4]
+    );
 }
 
 /// 焦点在搜索框（Editor context）时，同一按键在 Editor 的绑定

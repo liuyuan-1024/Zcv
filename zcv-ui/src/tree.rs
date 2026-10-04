@@ -332,7 +332,9 @@ pub struct TreeState<K, Row> {
     pub expanded: HashSet<K>,
     pub selected: Option<K>,
     /// 多选标记集（空 = 纯单选模式）。
-    pub selected_set: HashSet<K>,
+    selected_set: HashSet<K>,
+    /// 可见行替换或多选标记变化时递增，供行序相关的派生快照判断失效。
+    selection_generation: u64,
     /// shift 区间扩展锚点；行消失时置空。
     pub anchor: Option<K>,
     pub rows: Vec<Row>,
@@ -345,6 +347,7 @@ impl<K: Eq + std::hash::Hash + Clone, Row: TreeRow> TreeState<K, Row> {
             expanded: HashSet::new(),
             selected: None,
             selected_set: HashSet::new(),
+            selection_generation: 0,
             anchor: None,
             rows: Vec::new(),
             key_of,
@@ -353,6 +356,26 @@ impl<K: Eq + std::hash::Hash + Clone, Row: TreeRow> TreeState<K, Row> {
 
     pub fn rows(&self) -> &[Row] {
         &self.rows
+    }
+
+    pub fn selected_set(&self) -> &HashSet<K> {
+        &self.selected_set
+    }
+
+    pub fn selection_generation(&self) -> u64 {
+        self.selection_generation
+    }
+
+    pub fn set_selected_set(&mut self, selected_set: HashSet<K>) {
+        self.selected_set = selected_set;
+        self.selection_generation = self.selection_generation.wrapping_add(1);
+    }
+
+    pub fn clear_selected_set(&mut self) {
+        if !self.selected_set.is_empty() {
+            self.selected_set.clear();
+            self.selection_generation = self.selection_generation.wrapping_add(1);
+        }
     }
 
     /// 替换可见行；选中行消失时迁移到相邻可选行，多选集与锚点同步剪枝。
@@ -398,6 +421,7 @@ impl<K: Eq + std::hash::Hash + Clone, Row: TreeRow> TreeState<K, Row> {
                 });
         }
         self.selected_set.retain(|key| alive_keys.contains(key));
+        self.selection_generation = self.selection_generation.wrapping_add(1);
         if self
             .anchor
             .as_ref()
@@ -421,7 +445,7 @@ impl<K: Eq + std::hash::Hash + Clone, Row: TreeRow> TreeState<K, Row> {
     pub fn select(&mut self, key: K) {
         self.selected = Some(key.clone());
         self.anchor = Some(key);
-        self.selected_set.clear();
+        self.clear_selected_set();
     }
 
     /// 当前选中行在可见行中的位置。
@@ -438,7 +462,7 @@ impl<K: Eq + std::hash::Hash + Clone, Row: TreeRow> TreeState<K, Row> {
             self.selected = Some(key);
         }
         self.anchor = self.selected.clone();
-        self.selected_set.clear();
+        self.clear_selected_set();
     }
 
     /// 下移选中；无选中时选中第一个可选行；普通导航重置为单选态。
@@ -447,7 +471,7 @@ impl<K: Eq + std::hash::Hash + Clone, Row: TreeRow> TreeState<K, Row> {
             self.selected = Some(key);
         }
         self.anchor = self.selected.clone();
-        self.selected_set.clear();
+        self.clear_selected_set();
     }
 
     /// 折叠选中行；返回 true 表示行模型需要重建（展开的目录被折叠）。
@@ -517,7 +541,7 @@ impl<K: Eq + std::hash::Hash + Clone, Row: TreeRow> TreeState<K, Row> {
             .clone()
             .or_else(|| self.selected.clone())
             .unwrap_or_else(|| target.clone());
-        self.selected_set = self.range_keys(&anchor, target);
+        self.set_selected_set(self.range_keys(&anchor, target));
         self.anchor = Some(anchor);
         self.selected = Some(target.clone());
     }
@@ -555,6 +579,7 @@ impl<K: Eq + std::hash::Hash + Clone, Row: TreeRow> TreeState<K, Row> {
         if !self.selected_set.remove(key) {
             self.selected_set.insert(key.clone());
         }
+        self.selection_generation = self.selection_generation.wrapping_add(1);
         self.selected = Some(key.clone());
     }
 

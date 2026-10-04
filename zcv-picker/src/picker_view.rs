@@ -70,6 +70,8 @@ pub struct Picker<D: PickerDelegate> {
     query: String,
     on_dismiss: Option<OnDismiss>,
     list_state: ListState,
+    item_height_hint: Option<Pixels>,
+    height_hint_pending: bool,
 }
 
 impl<D: PickerDelegate> Picker<D> {
@@ -83,8 +85,7 @@ impl<D: PickerDelegate> Picker<D> {
             .expect("Picker 需要 zcv_editor::init 注入编辑器工厂");
         let search_input = factory(cx);
         search_input.set_placeholder_text(&placeholder, cx);
-        // 离屏行也建立真实高度索引，确保多行结果能滚到首尾，并从默认选中项向上滚动。
-        let list_state = ListState::new(match_count, ListAlignment::Top, px(100.0)).measure_all();
+        let list_state = ListState::new(match_count, ListAlignment::Top, px(100.0));
 
         let picker = Self {
             delegate,
@@ -94,6 +95,8 @@ impl<D: PickerDelegate> Picker<D> {
             query: String::new(),
             on_dismiss: None,
             list_state,
+            item_height_hint: None,
+            height_hint_pending: false,
         };
         picker.scroll_to_selection();
         {
@@ -150,7 +153,12 @@ impl<D: PickerDelegate> Picker<D> {
     /// 数据源更新后重建行测量并保留滚动位置，包括行数不变的更新。
     pub fn matches_updated(&mut self, cx: &mut Context<Self>) {
         let offset = self.list_state.logical_scroll_top();
-        self.list_state.reset(self.delegate.match_count());
+        if let Some(height) = self.item_height_hint {
+            self.list_state
+                .reset_with_uniform_height(self.delegate.match_count(), height);
+        } else {
+            self.list_state.reset(self.delegate.match_count());
+        }
         self.list_state.scroll_to(offset);
         cx.notify();
     }
@@ -218,6 +226,21 @@ impl<D: PickerDelegate> Picker<D> {
 impl<D: PickerDelegate> Render for Picker<D> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.delegate.match_count();
+        if count > 0 && self.item_height_hint.is_none() && !self.height_hint_pending {
+            self.height_hint_pending = true;
+            // GPUI 首次确定列表宽度时会清除预填高度；
+            // 首帧布局完成后再用实测行高估计离屏项。
+            cx.on_next_frame(window, |picker, _, cx| {
+                picker.height_hint_pending = false;
+                let index = picker.list_state.logical_scroll_top().item_ix;
+                if let Some(bounds) = picker.list_state.bounds_for_item(index) {
+                    let height = bounds.size.height;
+                    picker.list_state.clone().with_uniform_item_height(height);
+                    picker.item_height_hint = Some(height);
+                    cx.notify();
+                }
+            });
+        }
         // 无匹配提示
         let no_match = (count == 0)
             .then(|| self.delegate.no_matches_text())
@@ -229,7 +252,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
                     .child(text)
             });
 
-        // 列表项允许多行，使用可变行高虚拟列表；ListState 按需测量并缓存每行高度。
+        // 列表项允许多行，使用可变行高虚拟列表；ListState 按需测量并缓存可见行高度。
         // 结果视口负责裁剪内容，ListState 只负责虚拟化和滚动状态。
         let entity = cx.entity();
         let width = self.width;

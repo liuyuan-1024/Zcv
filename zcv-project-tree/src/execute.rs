@@ -319,7 +319,7 @@ impl ProjectTreePanel {
             if !selected_in_moved && let Some((_, first_dest)) = moved.first() {
                 state.selected = Some(first_dest.clone());
             }
-            state.selected_set.clear();
+            state.clear_selected_set();
             state.anchor = state.selected.clone();
         }
         cx.notify();

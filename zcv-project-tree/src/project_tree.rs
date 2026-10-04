@@ -115,6 +115,9 @@ pub struct ProjectTreePanel {
     pending_reveal: Option<AbsolutePathBuf>,
     /// 行快照缓存：replace_rows / 行内容变更时重建，渲染每帧只做 Rc 克隆（不深拷贝）。
     row_snapshot: Rc<[ProjectTreeRow]>,
+    /// 拖拽多选载荷是选中集按可见行序派生的快照；行模型替换或选中集变化时重建。
+    drag_marked: Rc<[AbsolutePathBuf]>,
+    drag_marked_generation: Option<u64>,
     /// 拖拽悬停展开计时：悬停折叠目录行约 500ms 自动展开；
     /// 悬停目标变化/放下/取消时 take 置空（Task drop 即取消）。
     hover_expand_task: Option<Task<()>>,
@@ -178,6 +181,8 @@ impl ProjectTreePanel {
             pending_status_refresh: None,
             pending_reveal: None,
             row_snapshot: Vec::new().into(),
+            drag_marked: Vec::new().into(),
+            drag_marked_generation: None,
             hover_expand_task: None,
             drag_hover_path: None,
         };
@@ -327,14 +332,15 @@ impl ProjectTreePanel {
             absolute_for_comparison(&translate_path(&path, from, to))
                 .expect("重命名后的选中路径必须是绝对路径")
         });
-        state.selected_set = state
-            .selected_set
-            .drain()
+        let selected_set = state
+            .selected_set()
+            .iter()
             .map(|path| {
-                absolute_for_comparison(&translate_path(&path, from, to))
+                absolute_for_comparison(&translate_path(path, from, to))
                     .expect("重命名后的选区路径必须是绝对路径")
             })
             .collect();
+        state.set_selected_set(selected_set);
         state.anchor = state.anchor.take().map(|path| {
             absolute_for_comparison(&translate_path(&path, from, to))
                 .expect("重命名后的锚点路径必须是绝对路径")
@@ -415,7 +421,7 @@ impl ProjectTreePanel {
         state.expanded.clear();
         state.expanded.insert(root);
         state.selected = None;
-        state.selected_set.clear();
+        state.clear_selected_set();
         state.anchor = None;
         self.active_path = None;
         drop(state);
@@ -578,6 +584,7 @@ impl gpui::Render for ProjectTreePanel {
         let content = if self.root.is_none() {
             render_empty_state(cx).into_any_element()
         } else {
+            let drag_marked = self.drag_marked_snapshot();
             let display_rows = self.display_rows(cx);
             let len = display_rows.len();
             let is_focused = self.focus.contains_focused(window, cx);
@@ -595,8 +602,7 @@ impl gpui::Render for ProjectTreePanel {
                 entry_name_editor: self.entry_name_editor.clone(),
                 active_path: self.active_path.clone(),
                 clipboard_cut,
-                // 渲染期由 render_list 按行序重建（多选标记快照）。
-                drag_marked: Vec::new().into(),
+                drag_marked,
                 drag_blocked: self.edit_state.is_some() || self.conflict.is_some(),
             };
             render_list(

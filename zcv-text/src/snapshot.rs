@@ -107,9 +107,8 @@ impl Snapshot {
     /// 自 `since` 版本到本快照版本，可见片段集合是否发生变化。
     ///
     /// 对齐 Zed `BufferSnapshot::has_edits_since` 的 fragment 可见性语义：
-    /// 逐个片段比较「在 since 时是否可见」与「现在是否可见」，因此「插入后删除」判为无编辑。
-    /// 「删除后用 undo 原位还原同一文本」需要 undo map 恢复片段身份，当前仍判为有编辑；
-    /// 该更窄的偏离登记在 `docs/编辑器架构.md` §18.2。
+    /// 逐个片段比较「在 since 时是否可见」与「现在是否可见」，因此「插入后删除」以及
+    /// 「删除后用 undo 原位还原同一文本」都判为无编辑。
     ///
     /// `since` 晚于当前版本时显式失败。片段可见性不随编辑日志预算衰减，因此不要求 `since` 在编辑日志窗口内。
     pub fn has_edits_since(&self, since: BufferVersion) -> TextResult<bool> {

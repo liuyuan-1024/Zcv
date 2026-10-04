@@ -93,3 +93,51 @@ fn visibility_changes_match_fragment_semantics() {
     let deleted = apply(base, vec![replace(0..1, "")], 3);
     assert!(deleted.has_edits_since(BufferVersion::INITIAL));
 }
+
+#[test]
+fn shared_index_keeps_older_versions_immutable_after_splits_and_undo() {
+    let original = InsertionIndex::with_text(6);
+    let original_position = position(&original, 2);
+    let original_locator = original
+        .locator_of(original_position.id, original_position.offset)
+        .cloned();
+
+    let inserted = apply(original.clone(), vec![replace(3..3, "X")], 1);
+    let deleted = apply(inserted.clone(), vec![replace(1..2, "")], 2);
+    let restored = deleted.undone(
+        BufferVersion::new(1),
+        BufferVersion::new(2),
+        BufferVersion::new(3),
+    );
+
+    assert!(original.position_at(6).is_some());
+    assert!(original.position_at(7).is_none());
+    assert_eq!(
+        original.locator_of(original_position.id, original_position.offset),
+        original_locator.as_ref()
+    );
+    assert_ne!(
+        inserted.locator_of(original_position.id, original_position.offset),
+        original_locator.as_ref()
+    );
+    assert!(inserted.position_at(7).is_some());
+    assert!(deleted.position_at(7).is_none());
+    assert!(restored.position_at(7).is_some());
+    assert!(!restored.has_edits_since(BufferVersion::new(1)));
+}
+
+#[test]
+fn repeated_splits_keep_every_offset_of_the_original_insertion_addressable() {
+    let mut index = InsertionIndex::with_text(8);
+    let id = position(&index, 0).id;
+    index = apply(index, vec![replace(2..2, "X")], 1);
+    index = apply(index, vec![replace(5..5, "Y")], 2);
+    index = apply(index, vec![replace(7..8, "")], 3);
+
+    for offset in 0..=8 {
+        assert!(index.locator_of(id, offset).is_some());
+    }
+    assert!(index.position_at(9).is_some());
+    assert!(index.position_at(10).is_none());
+    assert!(index.locator_of(InsertionId(99), 0).is_none());
+}

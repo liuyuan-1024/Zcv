@@ -5,9 +5,9 @@
 //! 片段可见性由每个片段的插入/删除操作与撤销计数推导，undo/redo 只切换撤销计数，不重写片段状态。
 //! 因此以 (插入身份, 插入内偏移) 表示的 Anchor 顺序在编辑前后保持稳定，比较不再需要解析文本坐标。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
-use sum_tree::{Bias, ContextLessSummary, Dimension, Item, SumTree};
+use sum_tree::{Bias, ContextLessSummary, Dimension, Item, SumTree, TreeMap};
 
 use super::locator::Locator;
 use crate::transaction::EditList;
@@ -19,10 +19,6 @@ pub(crate) struct InsertionId(u64);
 
 impl InsertionId {
     pub(crate) const NONE: Self = Self(0);
-
-    pub(crate) const fn get(self) -> u64 {
-        self.0
-    }
 }
 
 /// 插入内的一段；切分后同一插入会有多段。
@@ -31,11 +27,17 @@ impl InsertionId {
 /// 片段可见性由二者与 `undos` 推导，undo 不重写片段状态（对齐 Zed 的 Fragment + UndoMap）。
 #[derive(Clone, Debug)]
 struct Piece {
-    base: u32,
     len: u32,
     locator: Locator,
     inserted_at: BufferVersion,
     deletions: Vec<BufferVersion>,
+}
+
+/// 同一次插入被切分后的段内起点；与插入身份共同确定一个片段。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct PieceKey {
+    id: InsertionId,
+    base: u32,
 }
 
 /// 按位置排序的可见插入段。
@@ -93,11 +95,11 @@ impl<'a> Dimension<'a, RunSummary> for RunLen {
 /// 文本的稳定插入身份索引。
 #[derive(Clone, Debug, Default)]
 pub(crate) struct InsertionIndex {
-    insertions: BTreeMap<u64, Vec<Piece>>,
+    pieces: TreeMap<PieceKey, Piece>,
     runs: SumTree<Run>,
     next_id: u64,
     /// 每个操作版本的撤销次数记录；奇偶决定该操作是否被撤销（对齐 Zed 的 UndoMap）。
-    undos: BTreeMap<BufferVersion, Vec<BufferVersion>>,
+    undos: TreeMap<BufferVersion, Vec<BufferVersion>>,
 }
 
 /// 一个位置解析出的稳定身份。
@@ -147,12 +149,8 @@ impl InsertionIndex {
 
     /// 稳定身份对应的 Locator；身份已不存在时返回 None。
     pub(crate) fn locator_of(&self, id: InsertionId, offset: u32) -> Option<&Locator> {
-        let pieces = self.insertions.get(&id.get())?;
-        let index = pieces
-            .partition_point(|piece| piece.base <= offset)
-            .checked_sub(1)?;
-        let piece = pieces.get(index)?;
-        (offset <= piece.base + piece.len).then_some(&piece.locator)
+        let (key, piece) = self.pieces.closest(&PieceKey { id, base: offset })?;
+        (key.id == id && offset <= key.base + piece.len).then_some(&piece.locator)
     }
 
     /// 应用一次编辑列表，返回推进后的索引。
@@ -181,7 +179,7 @@ impl InsertionIndex {
     ) -> Self {
         let mut next = self.clone();
         let mut toggled: BTreeSet<BufferVersion> = BTreeSet::new();
-        for piece in next.insertions.values().flatten() {
+        for piece in next.pieces.values() {
             if piece.inserted_at > start && piece.inserted_at <= end {
                 toggled.insert(piece.inserted_at);
             }
@@ -192,7 +190,13 @@ impl InsertionIndex {
             }
         }
         for edit in toggled {
-            next.undos.entry(edit).or_default().push(version);
+            if next
+                .undos
+                .update(&edit, |undos| undos.push(version))
+                .is_none()
+            {
+                next.undos.insert(edit, vec![version]);
+            }
         }
         next.rebuild_runs();
         next
@@ -234,16 +238,14 @@ impl InsertionIndex {
     /// 由全部片段重建按位置排序的可见段索引。
     fn rebuild_runs(&mut self) {
         let mut visible: Vec<Run> = Vec::new();
-        for (id, pieces) in &self.insertions {
-            for piece in pieces {
-                if self.piece_is_visible(piece) {
-                    visible.push(Run {
-                        id: InsertionId(*id),
-                        base: piece.base,
-                        len: piece.len,
-                        locator: piece.locator.clone(),
-                    });
-                }
+        for (key, piece) in self.pieces.iter() {
+            if self.piece_is_visible(piece) {
+                visible.push(Run {
+                    id: key.id,
+                    base: key.base,
+                    len: piece.len,
+                    locator: piece.locator.clone(),
+                });
             }
         }
         visible.sort_by(|left, right| {
@@ -258,9 +260,8 @@ impl InsertionIndex {
     ///
     /// 对齐 Zed 的 `BufferSnapshot::has_edits_since`：逐片段比较「在 since 时是否可见」与「现在是否可见」。
     pub(crate) fn has_edits_since(&self, since: BufferVersion) -> bool {
-        self.insertions
+        self.pieces
             .values()
-            .flatten()
             .any(|piece| self.piece_was_visible(piece, since) != self.piece_is_visible(piece))
     }
 
@@ -309,15 +310,14 @@ impl InsertionIndex {
             self.next_id += 1;
             let id = InsertionId(self.next_id);
             let locator = Locator::between(&left_locator, &right_locator);
-            self.insertions.insert(
-                id.get(),
-                vec![Piece {
-                    base: 0,
+            self.pieces.insert(
+                PieceKey { id, base: 0 },
+                Piece {
                     len: replacement_len,
                     locator: locator.clone(),
                     inserted_at: version,
                     deletions: Vec::new(),
-                }],
+                },
             );
             new_runs.push(
                 Run {
@@ -380,21 +380,14 @@ impl InsertionIndex {
 
     /// 把插入的一段按 left_len 切成「重新编号的左半 + 保留 Locator 的右半」。
     fn split_piece(&mut self, id: InsertionId, base: u32, len: u32, left_len: u32, left: Locator) {
-        let Some(pieces) = self.insertions.get_mut(&id.get()) else {
-            return;
-        };
-        let Some(index) = pieces
-            .iter()
-            .position(|piece| piece.base == base && piece.len == len)
-        else {
-            return;
-        };
-        let original = pieces.remove(index);
+        let key = PieceKey { id, base };
+        let original = self.pieces.get(&key).expect("可见段必须对应插入片段");
+        assert_eq!(original.len, len, "可见段长度必须与插入片段一致");
+        let original = original.clone();
         let right_len = len - left_len;
-        pieces.insert(
-            index,
+        self.pieces.insert(
+            key,
             Piece {
-                base,
                 len: left_len,
                 locator: left,
                 inserted_at: original.inserted_at,
@@ -402,10 +395,12 @@ impl InsertionIndex {
             },
         );
         if right_len > 0 {
-            pieces.insert(
-                index + 1,
-                Piece {
+            self.pieces.insert(
+                PieceKey {
+                    id,
                     base: base + left_len,
+                },
+                Piece {
                     len: right_len,
                     locator: original.locator,
                     inserted_at: original.inserted_at,
@@ -417,48 +412,62 @@ impl InsertionIndex {
 
     /// 把 [base, base+len) 记为在 `version` 删除；跨边界的片段按需切分，只标记相交部分。
     fn mark_deleted(&mut self, id: InsertionId, base: u32, len: u32, version: BufferVersion) {
-        let Some(pieces) = self.insertions.get_mut(&id.get()) else {
-            return;
-        };
+        let (key, piece) = self
+            .pieces
+            .closest(&PieceKey { id, base })
+            .expect("可见段必须对应插入片段");
+        let key = *key;
+        assert_eq!(key.id, id, "可见段必须属于同一次插入");
         let deleted_end = base + len;
-        let mut split = Vec::with_capacity(pieces.len() + 2);
-        for piece in pieces.drain(..) {
-            let piece_end = piece.base + piece.len;
-            if piece_end <= base || piece.base >= deleted_end {
-                split.push(piece);
-                continue;
-            }
-            let overlap_start = piece.base.max(base);
-            let overlap_end = piece_end.min(deleted_end);
-            if piece.base < overlap_start {
-                split.push(Piece {
-                    base: piece.base,
-                    len: overlap_start - piece.base,
-                    locator: piece.locator.clone(),
-                    inserted_at: piece.inserted_at,
-                    deletions: piece.deletions.clone(),
-                });
-            }
-            let mut deletions = piece.deletions.clone();
-            deletions.push(version);
-            split.push(Piece {
-                base: overlap_start,
-                len: overlap_end - overlap_start,
-                locator: piece.locator.clone(),
-                inserted_at: piece.inserted_at,
-                deletions,
-            });
-            if overlap_end < piece_end {
-                split.push(Piece {
-                    base: overlap_end,
-                    len: piece_end - overlap_end,
-                    locator: piece.locator,
-                    inserted_at: piece.inserted_at,
-                    deletions: piece.deletions,
-                });
-            }
+        let piece_end = key.base + piece.len;
+        assert!(
+            key.base <= base && deleted_end <= piece_end,
+            "删除范围必须位于对应插入片段内"
+        );
+        if key.base == base && piece_end == deleted_end {
+            self.pieces
+                .update(&key, |piece| piece.deletions.push(version))
+                .expect("可见段必须对应插入片段");
+            return;
         }
-        *pieces = split;
+
+        let original = piece.clone();
+        if key.base < base {
+            self.pieces.insert(
+                key,
+                Piece {
+                    len: base - key.base,
+                    locator: original.locator.clone(),
+                    inserted_at: original.inserted_at,
+                    deletions: original.deletions.clone(),
+                },
+            );
+        }
+        let mut deletions = original.deletions.clone();
+        deletions.push(version);
+        self.pieces.insert(
+            PieceKey { id, base },
+            Piece {
+                len,
+                locator: original.locator.clone(),
+                inserted_at: original.inserted_at,
+                deletions,
+            },
+        );
+        if deleted_end < piece_end {
+            self.pieces.insert(
+                PieceKey {
+                    id,
+                    base: deleted_end,
+                },
+                Piece {
+                    len: piece_end - deleted_end,
+                    locator: original.locator,
+                    inserted_at: original.inserted_at,
+                    deletions: original.deletions,
+                },
+            );
+        }
     }
 }
 

@@ -15,5 +15,16 @@ thiserror.workspace = true
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
 
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "insertion_index"
+harness = false
+
+[[bench]]
+name = "insertion_index_allocations"
+harness = false
+
 [lints]
 workspace = true

@@ -330,14 +330,8 @@ impl PendingHunk {
         if start != hunk_start || end != hunk_end {
             return false;
         }
-        let Ok(previous) = working.offsets_to_version([start, end], self.buffer_version) else {
-            return false;
-        };
-        let Ok(range) = TextRange::new(previous[0], previous[1]) else {
-            return false;
-        };
         working
-            .has_edits_since_in_range(self.buffer_version, range)
+            .has_edits_since_in_range(self.buffer_version, self.buffer_range.clone())
             .is_ok_and(|edited| !edited)
     }
 }
@@ -759,7 +753,7 @@ impl BufferDiff {
 
     /// 把新的 optimistic pending hunks 合并进当前集合，并通知显示层重新物化。
     ///
-    /// 与既有 pending 按 working 偏移合并：新 hunk 重叠或相邻的旧 pending 被替换，其余保留。
+    /// 与既有 pending 按 working 锚点顺序合并：新 hunk 重叠或相邻的旧 pending 被替换，其余保留。
     /// 这样同一文件连续多次操作时，新状态覆盖旧状态（对齐 Zed 的 set_pending_hunks）。
     pub fn set_pending_hunks(&mut self, hunks: Vec<PendingHunk>, cx: &mut Context<Self>) {
         if hunks.is_empty() {
@@ -776,12 +770,17 @@ impl BufferDiff {
         );
         for hunk in hunks {
             pending.retain(|existing| {
-                existing.buffer_range.end.offset().get() < hunk.buffer_range.start.offset().get()
-                    || hunk.buffer_range.end.offset().get()
-                        < existing.buffer_range.start.offset().get()
+                working
+                    .stable_anchor_cmp(&existing.buffer_range.end, &hunk.buffer_range.start)
+                    .is_lt()
+                    || working
+                        .stable_anchor_cmp(&hunk.buffer_range.end, &existing.buffer_range.start)
+                        .is_lt()
             });
             let position = pending.partition_point(|existing| {
-                existing.buffer_range.start.offset().get() < hunk.buffer_range.start.offset().get()
+                working
+                    .stable_anchor_cmp(&existing.buffer_range.start, &hunk.buffer_range.start)
+                    .is_lt()
             });
             pending.insert(position, hunk);
         }

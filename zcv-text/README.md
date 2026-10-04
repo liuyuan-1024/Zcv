@@ -10,7 +10,7 @@ Zcv 的纯文本内核：文本存储、坐标模型、事务变异、历史系�
 
 - **编辑日志（`EditLog`）**：以持久树保存带文本的净编辑，供 `edits_since` 增量同步与 undo/redo 回放使用；受 `max_edit_history_entries` / `max_edit_history_bytes` 从最老端裁剪。追加与裁剪共享未变化的旧节点。
 - **坐标索引（`CoordinateIndex`）**：以持久树保存 old range 与 replacement 长度等坐标增量，不复制替换文本，永不裁剪；追加只更新树的末端。`Anchor::resolve_in` 通过它把任意仍存在的旧版本坐标映射到当前版本。
-- **插入索引（`InsertionIndex`）**：为每个插入分配稳定 `Locator`，并记录每个片段的插入/删除操作与撤销计数；片段可见性由此推导，供 `Anchor` 稳定文档序比较与 `has_edits_since` 的 fragment 可见性语义使用，永不裁剪。片段与撤销记录由可共享的持久树承载，快照共享旧节点，普通编辑只更新相交片段。
+- **插入索引（`InsertionIndex`）**：为每个插入分配稳定 `Locator`，并记录每个片段的插入/删除操作与撤销计数；片段可见性由此推导，供 `Anchor` 稳定文档序比较及全局、锚点范围的 `has_edits_since` 查询使用，永不裁剪。片段与撤销记录由可共享的持久树承载，快照共享旧节点，普通编辑只更新相交片段。
 
 外部文本更新先计算旧、新文本的差异，再作为普通事务提交；只有差异本身覆盖全文时，订阅才收到全文替换编辑。不存在独立的 `reset`、内容代际或重锚路径。`Anchor::resolve_in` 始终沿坐标索引映射到目标版本；目标快照比锚点更旧，或坐标索引无法覆盖锚点版本时，返回显式错误（`AnchorError::TargetBeforeSource` / `AnchorError::VersionNotIndexed`）。
 
@@ -21,7 +21,7 @@ Zcv 的纯文本内核：文本存储、坐标模型、事务变异、历史系�
 `Snapshot` 是唯一读取边界，提供 T-7 要求的版本查询：
 
 - `has_edits_since`：按 fragment 可见性语义判断自旧版本以来可见片段集合是否变化（插入后删除判为无编辑）。
-- `has_edits_since_in_range`：判断与指定旧区间相交的范围内是否发生过净编辑。
+- `has_edits_since_in_range`：按源 `Anchor` 范围判断片段可见性是否变化，不依赖带文本编辑日志的保留窗口。
 - `offsets_to_version` / `range_to_version`：通过 `PositionMap` 的反向映射把当前快照坐标映射回旧版本。
 - `text_for_version`：按版本倒序应用编辑日志保留的逆编辑，重建该历史版本的文本。
 

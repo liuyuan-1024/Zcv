@@ -14,7 +14,7 @@ hunk 的 working 半开范围两端均使用 `anchor_before`：起点在边界�
 - 工作区、base 与 index 任一来源前进都会使在途结果过期；安装前比较三者的输入版本，过期结果丢弃并补算。
 - base/index 语言缓冲由 `BufferDiff` 创建并持有；首次构造只登记输入，不在前台从完整修订文本创建 Buffer。修订准备、hunk 计算与发布属于同一个任务，更新经 `LanguageBuffer::snapshot_with_text`/`fast_forward` 在版本校验后整体安装。源编辑复用未变化的修订快照。
 - 发布 `BufferDiffEvent::DiffChanged { changed_range }`；范围在当前 working 快照中。Git diff 视图负责按 hunks 装配可见 excerpts，组合投影只同步事件范围覆盖的 excerpts。范围缺失时不做 diff transform 范围同步，不转为整文件重建。
-- `BufferDiffSnapshot` 的可见 hunk 查询是窗口装配与组合投影的共同输入。暂存／取消暂存的 pending 保留 hunk 并叠加显示状态；还原工作区的 pending 才临时抑制 hunk。权威修订安装后清除 pending，重新计算暂存状态。
+- `BufferDiffSnapshot` 的可见 hunk 查询是窗口装配与组合投影的共同输入。暂存／取消暂存的 pending 保留 hunk 并叠加显示状态；还原工作区的 pending 才临时抑制 hunk。pending 使用 working 锚点范围与文本层的片段可见性查询判断是否仍有效，不依赖可裁剪的编辑日志。权威修订安装后清除 pending，重新计算暂存状态。
 
 ## 关键类型
 

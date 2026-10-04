@@ -4,12 +4,13 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::ops::Range;
 
 use crate::{
     Affinity, Anchor, BufferConfig, BufferVersion, ByteOffset, CharOffset, Line, MovementDirection,
     MovementUnit, Position, TextChangeBatch, TextRange, TextResult, Utf16Offset,
     WordBoundaryPolicy,
-    errors::AnchorError,
+    errors::{AnchorError, TextError},
     position_map::PositionMap,
     slicing::{LineContent, LineSlice, TextSlice},
     slicing::{line_content_for_text, text_range_for_byte_range, text_range_for_line},
@@ -107,8 +108,7 @@ impl Snapshot {
     /// 自 `since` 版本到本快照版本，可见片段集合是否发生变化。
     ///
     /// 对齐 Zed `BufferSnapshot::has_edits_since` 的 fragment 可见性语义：
-    /// 逐个片段比较「在 since 时是否可见」与「现在是否可见」，因此「插入后删除」以及
-    /// 「删除后用 undo 原位还原同一文本」都判为无编辑。
+    /// 逐个片段比较「在 since 时是否可见」与「现在是否可见」，因此「插入后删除」以及「删除后用 undo 原位还原同一文本」都判为无编辑。
     ///
     /// `since` 晚于当前版本时显式失败。片段可见性不随编辑日志预算衰减，因此不要求 `since` 在编辑日志窗口内。
     pub fn has_edits_since(&self, since: BufferVersion) -> TextResult<bool> {
@@ -122,16 +122,44 @@ impl Snapshot {
         Ok(self.insertions.has_edits_since(since))
     }
 
-    /// 自 `since` 版本到本快照版本、与 `range` 相交的范围内是否发生过净文本编辑。
+    /// 自 `since` 版本到本快照版本，锚点范围内片段可见性是否发生变化。
     ///
-    /// `range` 使用旧版本坐标，与 `edits_since_in_range` 的过滤语义一致；
-    /// Zed 对应方法收 `Range<Anchor>`。本方法沿用旧坐标 `TextRange` 是 §18.2 同一偏离的一部分。
+    /// 范围端点必须由所属文本快照创建；查询不依赖可裁剪的带文本编辑日志。
     pub fn has_edits_since_in_range(
         &self,
         since: BufferVersion,
-        range: TextRange,
+        range: Range<Anchor>,
     ) -> TextResult<bool> {
-        Ok(!self.edits_since_in_range(since, range)?.patch().is_empty())
+        if since > self.version {
+            return Err(AnchorError::TargetBeforeSource {
+                anchor: since,
+                target: self.version,
+            }
+            .into());
+        }
+        for anchor in [range.start, range.end] {
+            if anchor.version() > self.version {
+                return Err(AnchorError::TargetBeforeSource {
+                    anchor: anchor.version(),
+                    target: self.version,
+                }
+                .into());
+            }
+            if anchor.insertion() == Default::default() {
+                let offset = anchor.resolve_in(self)?;
+                let is_boundary = match anchor.affinity() {
+                    Affinity::Before => offset == ByteOffset::ZERO,
+                    Affinity::After => offset == self.len_bytes(),
+                };
+                if !is_boundary {
+                    return Err(TextError::InvariantViolation {
+                        location: "Snapshot::has_edits_since_in_range",
+                        detail: "范围端点必须是快照创建的稳定锚点".into(),
+                    });
+                }
+            }
+        }
+        Ok(self.insertions.has_edits_since_in_range(since, range))
     }
 
     /// 把本快照（新版本）的字节偏移映射回 `version`（旧版本）坐标。
@@ -223,12 +251,8 @@ impl Snapshot {
 
     /// 按稳定插入身份比较锚点的文档序；不解析文本坐标。
     pub fn stable_anchor_cmp(&self, left: &Anchor, right: &Anchor) -> Ordering {
-        let left_locator = self
-            .insertions
-            .locator_of(left.insertion(), left.insertion_offset());
-        let right_locator = self
-            .insertions
-            .locator_of(right.insertion(), right.insertion_offset());
+        let left_locator = self.insertions.locator_for_anchor(*left);
+        let right_locator = self.insertions.locator_for_anchor(*right);
         match (left_locator, right_locator) {
             (Some(a), Some(b)) => a
                 .cmp(b)

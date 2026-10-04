@@ -91,9 +91,10 @@ fn has_edits_since_after_delete_then_undo_matches_zed() {
 }
 
 #[test]
-fn has_edits_since_in_range_checks_only_the_requested_old_range() {
+fn has_edits_since_in_range_checks_only_the_requested_anchor_range() {
     let mut buffer = buffer("abcdef");
     let v0 = buffer.version();
+    let before = buffer.snapshot();
     buffer
         .edit(
             [
@@ -105,10 +106,105 @@ fn has_edits_since_in_range_checks_only_the_requested_old_range() {
         .unwrap();
 
     let snapshot = buffer.snapshot();
-    assert!(snapshot.has_edits_since_in_range(v0, range(0, 1)).unwrap());
-    assert!(snapshot.has_edits_since_in_range(v0, range(4, 6)).unwrap());
-    assert!(!snapshot.has_edits_since_in_range(v0, range(1, 4)).unwrap());
-    assert!(!snapshot.has_edits_since_in_range(v0, range(1, 1)).unwrap());
+    let anchors = |start, end| before.anchor_before(b(start))..before.anchor_before(b(end));
+    assert!(
+        snapshot
+            .has_edits_since_in_range(v0, anchors(0, 1))
+            .unwrap()
+    );
+    assert!(
+        snapshot
+            .has_edits_since_in_range(v0, anchors(4, 6))
+            .unwrap()
+    );
+    assert!(
+        !snapshot
+            .has_edits_since_in_range(v0, anchors(1, 4))
+            .unwrap()
+    );
+    assert!(
+        !snapshot
+            .has_edits_since_in_range(v0, anchors(1, 1))
+            .unwrap()
+    );
+}
+
+#[test]
+fn anchor_range_visibility_survives_edit_log_eviction_and_detects_deleted_text() {
+    let mut config = BufferConfig::default();
+    config.large_file.max_edit_history_entries = 1;
+    let mut buffer = Buffer::from_text("abcdef".into(), config).unwrap();
+    let before = buffer.snapshot();
+    let version = before.version();
+    let changed = before.anchor_before(b(2))..before.anchor_before(b(4));
+    let unchanged = before.anchor_before(b(0))..before.anchor_before(b(2));
+
+    buffer
+        .edit([Edit::delete(range(2, 4))], TransactionMetadata::default())
+        .unwrap();
+    for _ in 0..3 {
+        let end = buffer.snapshot().len_bytes();
+        buffer
+            .edit(
+                [Edit::insert(end, "x").unwrap()],
+                TransactionMetadata::default(),
+            )
+            .unwrap();
+    }
+
+    let snapshot = buffer.snapshot();
+    assert!(snapshot.edits_since(version).is_err());
+    assert!(
+        snapshot.has_edits_since_in_range(version, changed).unwrap(),
+        "范围端点收敛到同一当前坐标后，仍应发现已删除的旧片段"
+    );
+    assert!(
+        !snapshot
+            .has_edits_since_in_range(version, unchanged)
+            .unwrap()
+    );
+}
+
+#[test]
+fn anchor_range_respects_boundary_insertions_and_undo_visibility() {
+    let mut buffer = buffer("abcdef");
+    let before = buffer.snapshot();
+    let version = before.version();
+    let selected = before.anchor_before(b(2))..before.anchor_before(b(4));
+
+    buffer
+        .edit(
+            [Edit::insert(b(4), "!").unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    assert!(
+        !buffer
+            .snapshot()
+            .has_edits_since_in_range(version, selected.clone())
+            .unwrap()
+    );
+
+    buffer
+        .edit(
+            [Edit::insert(b(2), "?").unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    assert!(
+        buffer
+            .snapshot()
+            .has_edits_since_in_range(version, selected.clone())
+            .unwrap()
+    );
+
+    buffer.undo().unwrap().expect("撤销区块起点插入");
+    assert!(
+        !buffer
+            .snapshot()
+            .has_edits_since_in_range(version, selected)
+            .unwrap()
+    );
 }
 
 #[test]

@@ -9,7 +9,9 @@ use std::collections::BTreeSet;
 
 use sum_tree::{Bias, ContextLessSummary, Dimension, Item, SumTree, TreeMap};
 
+use super::anchor::Anchor;
 use super::locator::Locator;
+use crate::position_map::Affinity;
 use crate::transaction::EditList;
 use crate::types::BufferVersion;
 
@@ -153,6 +155,17 @@ impl InsertionIndex {
         (key.id == id && offset <= key.base + piece.len).then_some(&piece.locator)
     }
 
+    /// `Before` 边界恰好落在切分点时属于左侧片段，保证边界处的新插入位于其后。
+    pub(crate) fn locator_for_anchor(&self, anchor: Anchor) -> Option<&Locator> {
+        let offset = anchor.insertion_offset();
+        let lookup = if anchor.affinity() == Affinity::Before && offset > 0 {
+            offset - 1
+        } else {
+            offset
+        };
+        self.locator_of(anchor.insertion(), lookup)
+    }
+
     /// 应用一次编辑列表，返回推进后的索引。
     pub(crate) fn with_edits(&self, edits: &EditList, version: BufferVersion) -> Self {
         let mut next = self.clone();
@@ -263,6 +276,37 @@ impl InsertionIndex {
         self.pieces
             .values()
             .any(|piece| self.piece_was_visible(piece, since) != self.piece_is_visible(piece))
+    }
+
+    /// 在稳定插入顺序的锚点范围内比较历史与当前片段可见性。
+    pub(crate) fn has_edits_since_in_range(
+        &self,
+        since: BufferVersion,
+        range: std::ops::Range<Anchor>,
+    ) -> bool {
+        let position = |anchor: Anchor| {
+            let locator = if anchor.insertion() == InsertionId::NONE {
+                match anchor.affinity() {
+                    Affinity::Before => Locator::min(),
+                    Affinity::After => Locator::max(),
+                }
+            } else {
+                self.locator_for_anchor(anchor)
+                    .expect("范围锚点必须属于当前插入索引")
+                    .clone()
+            };
+            (locator, anchor.insertion_offset())
+        };
+        let start = position(range.start);
+        let end = position(range.end);
+        if start >= end {
+            return false;
+        }
+        self.pieces.iter().any(|(key, piece)| {
+            self.piece_was_visible(piece, since) != self.piece_is_visible(piece)
+                && (&piece.locator, key.base + piece.len) > (&start.0, start.1)
+                && (&piece.locator, key.base) < (&end.0, end.1)
+        })
     }
 
     fn apply_edit(

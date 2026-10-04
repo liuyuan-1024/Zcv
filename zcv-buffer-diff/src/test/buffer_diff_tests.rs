@@ -243,6 +243,51 @@ fn pending_stage_survives_unrelated_working_edits_until_revision_changes(cx: &mu
 }
 
 #[gpui::test]
+fn pending_stage_survives_edit_log_eviction_after_unrelated_edits(cx: &mut TestAppContext) {
+    let mut config = BufferConfig::default();
+    config.large_file.max_edit_history_entries = 1;
+    let buffer = Buffer::from_text("a\nchanged\nz\n".into(), config).unwrap();
+    let registry = Arc::new(LanguageRegistry::new());
+    let working =
+        cx.new(|cx| LanguageBuffer::new(buffer, Some(PathBuf::from("src/a.rs")), registry, cx));
+    let diff = cx.new(|cx| {
+        BufferDiff::new(
+            buffer_diff_input(working.clone(), Some("a\nold\nz\n"), "src/a.rs"),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    diff.update(cx, |diff, cx| {
+        let hunk = diff.snapshot().hunks().next().unwrap().clone();
+        let version = diff.working().read(cx).text_snapshot().version();
+        diff.set_pending_hunks(vec![PendingHunk::set_staging(&hunk, version, true)], cx);
+    });
+
+    for _ in 0..3 {
+        working.update(cx, |working, cx| {
+            let end = working.text_snapshot().len_bytes();
+            working
+                .edit(
+                    [Edit::insert(end, "tail\n").unwrap()],
+                    TransactionMetadata::default(),
+                    cx,
+                )
+                .unwrap();
+        });
+        cx.run_until_parked();
+    }
+    diff.read_with(cx, |diff, cx| {
+        let working = diff.working().read(cx).text_snapshot();
+        assert_eq!(diff.snapshot().pending_hunks().len(), 1);
+        assert_eq!(
+            diff.snapshot().visible_hunks(&working)[0].staging,
+            DiffHunkStaging::StagingPending,
+            "编辑日志裁剪后，未触及的 hunk 仍应保持 pending 状态"
+        );
+    });
+}
+
+#[gpui::test]
 fn pending_restore_expires_after_editing_its_working_range(cx: &mut TestAppContext) {
     let working = language_buffer("a\nchanged\nz\n", "src/a.rs", cx);
     let diff = cx.new(|cx| {
@@ -307,6 +352,66 @@ fn repeated_pending_on_pure_deletion_replaces_the_previous_state(cx: &mut TestAp
             diff.snapshot().visible_hunks(&working)[0].staging,
             DiffHunkStaging::UnstagingPending
         );
+    });
+}
+
+#[gpui::test]
+fn pending_hunks_sort_by_current_anchors_after_prefix_edit(cx: &mut TestAppContext) {
+    let working = language_buffer("a\nchanged-one\nmiddle\nchanged-two\nz\n", "src/a.rs", cx);
+    let diff = cx.new(|cx| {
+        BufferDiff::new(
+            buffer_diff_input(
+                working.clone(),
+                Some("a\nold-one\nmiddle\nold-two\nz\n"),
+                "src/a.rs",
+            ),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    let (first, second) = diff.read_with(cx, |diff, _| {
+        let hunks = diff.snapshot().hunks().cloned().collect::<Vec<_>>();
+        assert_eq!(hunks.len(), 2);
+        (hunks[0].clone(), hunks[1].clone())
+    });
+    diff.update(cx, |diff, cx| {
+        let version = diff.working().read(cx).text_snapshot().version();
+        diff.set_pending_hunks(vec![PendingHunk::set_staging(&second, version, true)], cx);
+    });
+
+    working.update(cx, |working, cx| {
+        working
+            .edit(
+                [Edit::insert(ByteOffset::ZERO, "long-prefix-before-both-hunks\n").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .unwrap();
+    });
+    let current = cx.read_entity(&working, |working, _| working.text_snapshot());
+    let mut fresh_first = first;
+    fresh_first.buffer_range = current
+        .anchor_before(fresh_first.buffer_range.start.resolve_in(&current).unwrap())
+        ..current.anchor_before(fresh_first.buffer_range.end.resolve_in(&current).unwrap());
+    diff.update(cx, |diff, cx| {
+        diff.set_pending_hunks(
+            vec![PendingHunk::set_staging(
+                &fresh_first,
+                current.version(),
+                true,
+            )],
+            cx,
+        );
+    });
+
+    diff.read_with(cx, |diff, _| {
+        let pending = diff.snapshot().pending_hunks();
+        assert_eq!(pending.len(), 2);
+        let starts = pending
+            .iter()
+            .map(|hunk| hunk.buffer_range.start.resolve_in(&current).unwrap())
+            .collect::<Vec<_>>();
+        assert!(starts[0] < starts[1], "pending 必须按当前锚点顺序排列");
     });
 }
 

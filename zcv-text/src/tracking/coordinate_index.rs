@@ -7,15 +7,9 @@
 //!
 //! 外部文本更新也作为普通版本推进追加到本索引，所有锚点统一沿同一坐标链映射。
 
-use std::sync::Arc;
+use sum_tree::{Bias, ContextLessSummary, Item, SumTree};
 
 use crate::{text_changes::TextPatch, types::BufferVersion};
-
-/// 单个块的坐标增量数。
-///
-/// 块式持久结构把“追加一次复制整条索引”降为“只复制当前块与块指针数组”，
-/// 使不衰减索引的追加代价远低于每提交 O(版本数)。
-const CHUNK: usize = 128;
 
 /// 一次版本推进的纯坐标增量。
 #[derive(Debug, Clone)]
@@ -26,25 +20,31 @@ struct CoordinateStep {
     patch: TextPatch,
 }
 
-/// 版本到坐标增量的不衰减索引。
-#[derive(Debug, Clone)]
-pub(crate) struct CoordinateIndex {
-    /// 已追加的块；除最后一块外都恰好 `CHUNK` 条。
-    chunks: Arc<[Arc<[CoordinateStep]>]>,
-    /// 已索引的步数。
-    len: usize,
-    /// 最早被索引的版本；`len == 0` 时无意义。
-    first_version: BufferVersion,
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct StepCount(usize);
+
+impl ContextLessSummary for StepCount {
+    fn zero() -> Self {
+        Self(0)
+    }
+
+    fn add_summary(&mut self, other: &Self) {
+        self.0 += other.0;
+    }
 }
 
-impl Default for CoordinateIndex {
-    fn default() -> Self {
-        Self {
-            chunks: Arc::from(Vec::new()),
-            len: 0,
-            first_version: BufferVersion::INITIAL,
-        }
+impl Item for CoordinateStep {
+    type Summary = StepCount;
+
+    fn summary(&self, (): ()) -> Self::Summary {
+        StepCount(1)
     }
+}
+
+/// 版本到坐标增量的不衰减索引；追加时共享既有树节点。
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CoordinateIndex {
+    steps: SumTree<CoordinateStep>,
 }
 
 impl CoordinateIndex {
@@ -57,33 +57,20 @@ impl CoordinateIndex {
         new_version: BufferVersion,
         patch: TextPatch,
     ) -> Self {
-        let step = CoordinateStep {
-            old_version,
-            new_version,
-            patch,
-        };
-        let first_version = if self.len == 0 {
-            old_version
-        } else {
-            self.first_version
-        };
-
-        let mut chunks: Vec<Arc<[CoordinateStep]>> = self.chunks.to_vec();
-        match chunks.last_mut() {
-            Some(tail) if tail.len() < CHUNK => {
-                let mut grown = Vec::with_capacity(tail.len() + 1);
-                grown.extend_from_slice(tail);
-                grown.push(step);
-                *tail = Arc::from(grown);
-            }
-            _ => chunks.push(Arc::from([step])),
+        let mut next = self.clone();
+        if let Some(last) = next.steps.last() {
+            assert_eq!(last.new_version, old_version, "坐标索引版本必须连续");
         }
-
-        Self {
-            chunks: Arc::from(chunks),
-            len: self.len + 1,
-            first_version,
-        }
+        assert_eq!(old_version.next(), Some(new_version), "版本必须推进一步");
+        next.steps.push(
+            CoordinateStep {
+                old_version,
+                new_version,
+                patch,
+            },
+            (),
+        );
+        next
     }
 
     /// 组合 `since` 到 `current` 的连续坐标增量。
@@ -97,18 +84,20 @@ impl CoordinateIndex {
         if since == current {
             return Some(TextPatch::default());
         }
-        if self.len == 0 || since < self.first_version {
+        let first_version = self.steps.first()?.old_version;
+        if since < first_version {
             return None;
         }
-        let start = (since.get() - self.first_version.get()) as usize;
-        if start >= self.len {
+        let start = usize::try_from(since.get() - first_version.get()).ok()?;
+        if start >= self.steps.summary().0 {
             return None;
         }
 
         let mut patch = TextPatch::default();
         let mut version = since;
-        for index in start..self.len {
-            let step = self.step_at(index);
+        let mut cursor = self.steps.cursor::<StepCount>(());
+        cursor.seek(&StepCount(start), Bias::Right);
+        while let Some(step) = cursor.item() {
             if step.old_version != version {
                 return None;
             }
@@ -117,13 +106,9 @@ impl CoordinateIndex {
             if version == current {
                 return Some(patch);
             }
+            cursor.next();
         }
         None
-    }
-
-    fn step_at(&self, index: usize) -> &CoordinateStep {
-        let (chunk, offset) = (index / CHUNK, index % CHUNK);
-        &self.chunks[chunk][offset]
     }
 }
 

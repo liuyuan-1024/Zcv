@@ -6,7 +6,9 @@
 //!
 //! 历史图只引用版本区间，不再复制 `EditList`。
 
-use std::sync::Arc;
+use std::ops::Range;
+
+use sum_tree::{Bias, ContextLessSummary, Dimension, Item, SumTree};
 
 use crate::{
     BufferVersion, TextError, TextRange, TextResult,
@@ -25,13 +27,60 @@ struct VersionedEdit {
     undo: Option<EditList>,
 }
 
+impl VersionedEdit {
+    fn replacement_bytes(&self) -> usize {
+        self.forward.replacement_bytes() + self.undo.as_ref().map_or(0, EditList::replacement_bytes)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct EditSummary {
+    count: usize,
+    replacement_bytes: usize,
+}
+
+impl ContextLessSummary for EditSummary {
+    fn zero() -> Self {
+        Self::default()
+    }
+
+    fn add_summary(&mut self, other: &Self) {
+        self.count += other.count;
+        self.replacement_bytes += other.replacement_bytes;
+    }
+}
+
+impl Item for VersionedEdit {
+    type Summary = EditSummary;
+
+    fn summary(&self, (): ()) -> Self::Summary {
+        EditSummary {
+            count: 1,
+            replacement_bytes: self.replacement_bytes(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct EntryCount(usize);
+
+impl<'a> Dimension<'a, EditSummary> for EntryCount {
+    fn zero((): ()) -> Self {
+        Self(0)
+    }
+
+    fn add_summary(&mut self, summary: &'a EditSummary, (): ()) {
+        self.0 += summary.count;
+    }
+}
+
 /// 单调版本索引的不可变编辑日志。
 ///
-/// 每次提交生成包含新条目的新日志，旧 Snapshot 继续看到自己的版本区间；
-/// 超出编辑历史预算的条目从最老端裁剪，无法再解析的 Anchor 由调用方回退。
+/// 每次提交只追加新条目并共享旧树节点，旧 Snapshot 继续看到自己的版本区间；
+/// 超出编辑历史预算的条目从最老端裁剪，不影响独立的长期锚点坐标索引。
 #[derive(Debug, Clone, Default)]
 pub(crate) struct EditLog {
-    entries: Arc<[VersionedEdit]>,
+    entries: SumTree<VersionedEdit>,
 }
 
 impl EditLog {
@@ -43,17 +92,21 @@ impl EditLog {
         forward: EditList,
         undo: Option<EditList>,
     ) -> Self {
-        let mut entries = Vec::with_capacity(self.entries.len() + 1);
-        entries.extend(self.entries.iter().cloned());
-        entries.push(VersionedEdit {
-            old_version,
-            new_version,
-            forward,
-            undo,
-        });
-        Self {
-            entries: Arc::from(entries),
+        let mut next = self.clone();
+        if let Some(last) = next.entries.last() {
+            assert_eq!(last.new_version, old_version, "编辑日志版本必须连续");
         }
+        assert_eq!(old_version.next(), Some(new_version), "版本必须推进一步");
+        next.entries.push(
+            VersionedEdit {
+                old_version,
+                new_version,
+                forward,
+                undo,
+            },
+            (),
+        );
+        next
     }
 
     /// 最早保留版本的起点偏移；空日志返回 None。
@@ -69,34 +122,28 @@ impl EditLog {
         if max_entries == 0 {
             return Self::default();
         }
-        let total = self.entries.len();
-        let mut keep_from = total.saturating_sub(max_entries);
-
-        if max_bytes != 0 {
-            let mut bytes = 0usize;
-            let mut start = total;
-            while start > keep_from {
-                let entry = &self.entries[start - 1];
-                let entry_bytes = entry.forward.replacement_bytes()
-                    + entry
-                        .undo
-                        .as_ref()
-                        .map_or(0, |undo| undo.replacement_bytes());
-                // 最新条目无条件保留，避免预算小于单事务时同步窗口为空。
-                if start < total && bytes + entry_bytes > max_bytes {
-                    break;
-                }
-                bytes += entry_bytes;
-                start -= 1;
-            }
-            keep_from = keep_from.max(start);
-        }
-
-        if keep_from == 0 {
+        let summary = self.entries.summary();
+        if summary.count <= 1
+            || (summary.count <= max_entries
+                && (max_bytes == 0 || summary.replacement_bytes <= max_bytes))
+        {
             return self.clone();
         }
+
+        let mut remaining_count = summary.count;
+        let mut remaining_bytes = summary.replacement_bytes;
+        let mut cursor = self.entries.cursor::<EntryCount>(());
+        cursor.next();
+        while remaining_count > 1
+            && (remaining_count > max_entries || (max_bytes != 0 && remaining_bytes > max_bytes))
+        {
+            let entry = cursor.item().expect("裁剪时必须存在最老条目");
+            remaining_count -= 1;
+            remaining_bytes -= entry.replacement_bytes();
+            cursor.next();
+        }
         Self {
-            entries: Arc::from(self.entries[keep_from..].to_vec()),
+            entries: cursor.suffix(),
         }
     }
 
@@ -112,10 +159,10 @@ impl EditLog {
         if since == current {
             return Ok(TextChangeBatch::default());
         }
-        let entries = self.entries_for_range(since, current)?;
+        let range = self.entries_for_range(since, current)?;
 
         let mut patch = TextPatch::default();
-        for entry in entries {
+        for entry in self.iter_range(range) {
             patch = patch.compose(&TextPatch::from_edit_list(entry.forward.as_slice()));
         }
         Ok(TextChangeBatch::from_patch(since, current, patch))
@@ -140,9 +187,13 @@ impl EditLog {
         start: BufferVersion,
         end: BufferVersion,
     ) -> TextResult<Vec<(BufferVersion, BufferVersion, EditList)>> {
-        let entries = self.entries_for_range(start, end)?;
-        let mut batches = Vec::with_capacity(entries.len());
-        for entry in entries.iter().rev() {
+        let range = self.entries_for_range(start, end)?;
+        let mut batches = Vec::with_capacity(range.len());
+        let mut cursor = self.entries.cursor::<EntryCount>(());
+        cursor.seek(&EntryCount(range.end), Bias::Right);
+        cursor.prev();
+        for _ in range {
+            let entry = cursor.item().expect("回放区间必须存在编辑条目");
             let Some(undo) = &entry.undo else {
                 return Err(TextError::InvariantViolation {
                     location: "EditLog::undo_batches",
@@ -150,6 +201,7 @@ impl EditLog {
                 });
             };
             batches.push((entry.old_version, entry.new_version, undo.clone()));
+            cursor.prev();
         }
         Ok(batches)
     }
@@ -163,9 +215,13 @@ impl EditLog {
         start: BufferVersion,
         end: BufferVersion,
     ) -> TextResult<Vec<EditList>> {
-        let entries = self.entries_for_range(start, end)?;
-        let mut batches = Vec::with_capacity(entries.len());
-        for entry in entries.iter().rev() {
+        let range = self.entries_for_range(start, end)?;
+        let mut batches = Vec::with_capacity(range.len());
+        let mut cursor = self.entries.cursor::<EntryCount>(());
+        cursor.seek(&EntryCount(range.end), Bias::Right);
+        cursor.prev();
+        for _ in range {
+            let entry = cursor.item().expect("历史区间必须存在编辑条目");
             let Some(undo) = &entry.undo else {
                 return Err(TextError::HistoryTextUnavailable {
                     requested: start,
@@ -173,6 +229,7 @@ impl EditLog {
                 });
             };
             batches.push(undo.clone());
+            cursor.prev();
         }
         Ok(batches)
     }
@@ -183,9 +240,9 @@ impl EditLog {
         start: BufferVersion,
         end: BufferVersion,
     ) -> TextResult<Vec<(BufferVersion, BufferVersion, EditList)>> {
-        let entries = self.entries_for_range(start, end)?;
-        Ok(entries
-            .iter()
+        let range = self.entries_for_range(start, end)?;
+        Ok(self
+            .iter_range(range)
             .map(|entry| (entry.old_version, entry.new_version, entry.forward.clone()))
             .collect())
     }
@@ -199,7 +256,7 @@ impl EditLog {
             return true;
         }
         self.entries_for_range(start, end)
-            .is_ok_and(|entries| entries.iter().all(|entry| entry.undo.is_some()))
+            .is_ok_and(|range| self.iter_range(range).all(|entry| entry.undo.is_some()))
     }
 
     /// 定位 `[start, end]` 的连续版本区间。
@@ -207,32 +264,28 @@ impl EditLog {
         &self,
         start: BufferVersion,
         end: BufferVersion,
-    ) -> TextResult<&[VersionedEdit]> {
-        let Some(start_index) = self
-            .entries
-            .iter()
-            .position(|entry| entry.old_version == start)
-        else {
+    ) -> TextResult<Range<usize>> {
+        let Some(first) = self.entries.first() else {
             return Err(self.evicted(start, end));
         };
-
-        let mut index = start_index;
-        let mut version = start;
-        while index < self.entries.len() {
-            let entry = &self.entries[index];
-            if entry.old_version != version {
-                break;
-            }
-            version = entry.new_version;
-            index += 1;
-            if version == end {
-                break;
-            }
-        }
-        if version != end {
+        let last = self.entries.last().expect("非空日志必须有最后条目");
+        if start < first.old_version || end > last.new_version || start >= end {
             return Err(self.evicted(start, end));
         }
-        Ok(&self.entries[start_index..index])
+        let start_index = usize::try_from(start.get() - first.old_version.get())
+            .map_err(|_| self.evicted(start, end))?;
+        let end_index = usize::try_from(end.get() - first.old_version.get())
+            .map_err(|_| self.evicted(start, end))?;
+        if end_index > self.entries.summary().count {
+            return Err(self.evicted(start, end));
+        }
+        Ok(start_index..end_index)
+    }
+
+    fn iter_range(&self, range: Range<usize>) -> impl Iterator<Item = &VersionedEdit> + '_ {
+        let mut cursor = self.entries.cursor::<EntryCount>(());
+        cursor.seek(&EntryCount(range.start), Bias::Right);
+        cursor.take(range.len())
     }
 
     fn evicted(&self, requested: BufferVersion, current: BufferVersion) -> TextError {
@@ -245,3 +298,7 @@ impl EditLog {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "test/edit_log_tests.rs"]
+mod tests;

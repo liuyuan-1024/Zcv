@@ -26,5 +26,13 @@ harness = false
 name = "insertion_index_allocations"
 harness = false
 
+[[bench]]
+name = "history_index"
+harness = false
+
+[[bench]]
+name = "history_index_allocations"
+harness = false
+
 [lints]
 workspace = true

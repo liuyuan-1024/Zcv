@@ -15,9 +15,9 @@ fn patch(old: TextRange, new_len: usize) -> TextPatch {
 }
 
 #[test]
-fn coordinate_index_composes_across_chunk_boundaries() {
+fn coordinate_index_composes_many_versions() {
     let mut index = CoordinateIndex::default();
-    let total = CHUNK * 2 + 3;
+    let total = 259;
     let mut version = BufferVersion::INITIAL;
     for _ in 0..total {
         let next = version.next().unwrap();
@@ -49,4 +49,18 @@ fn coordinate_index_maps_a_middle_version() {
         from_v1.edits()[0].old_range(),
         TextRange::new(b(2), b(2)).unwrap()
     );
+}
+
+#[test]
+fn older_coordinate_index_stays_at_its_version_after_append() {
+    let v0 = BufferVersion::INITIAL;
+    let v1 = v0.next().unwrap();
+    let v2 = v1.next().unwrap();
+    let old =
+        CoordinateIndex::default().appended(v0, v1, patch(TextRange::new(b(0), b(0)).unwrap(), 1));
+    let new = old.appended(v1, v2, patch(TextRange::new(b(1), b(1)).unwrap(), 1));
+
+    assert!(old.patch_since(v0, v1).is_some());
+    assert!(old.patch_since(v0, v2).is_none());
+    assert!(new.patch_since(v0, v2).is_some());
 }

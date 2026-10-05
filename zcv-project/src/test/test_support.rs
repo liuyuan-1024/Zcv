@@ -44,7 +44,10 @@ pub(crate) fn test_languages() -> Arc<LanguageRegistry> {
 }
 
 pub(crate) fn test_project(root: PathBuf, cx: &mut TestAppContext) -> Entity<Project> {
-    cx.new(|cx| Project::new_with_watcher(root, Arc::new(TestWatcher::new()), test_languages(), cx))
+    cx.new(|cx| {
+        Project::new_with_watcher(root, Arc::new(TestWatcher::new()), test_languages(), cx)
+            .expect("测试项目根目录应可规范化")
+    })
 }
 
 /// 创建带一个初始提交的临时 git 仓库，返回 (仓库根, 目录句柄)。

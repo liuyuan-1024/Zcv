@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use gpui::{AppContext, Context, TestAppContext, div, prelude::*, px, size};
 use zcv_language::LanguageRegistry;
+use zcv_path::AbsolutePathBuf;
 
 use super::*;
 
@@ -99,7 +100,9 @@ fn current_project_is_selected_by_path_and_check_stays_after_its_name(cx: &mut T
     let languages = Arc::new(LanguageRegistry::new());
     cx.update(|cx| zcv_editor::init(cx, languages.clone()));
     let (picker, cx) = cx.add_window_view(|window, cx| {
-        let project = cx.new(|cx| Project::new(directory.path().to_owned(), languages, cx));
+        let root =
+            AbsolutePathBuf::canonicalize(directory.path()).expect("测试项目根目录应可规范化");
+        let project = cx.new(|cx| Project::new(root, languages, cx));
         let root = project
             .read(cx)
             .root()
@@ -177,7 +180,9 @@ fn reopening_selects_current_project_and_clears_previous_search(cx: &mut TestApp
     cx.update(|cx| zcv_editor::init(cx, languages.clone()));
     let (selector, cx) = cx.add_window_view(|window, cx| {
         let workspace = cx.new(|cx| Workspace::new_empty(languages.clone(), window, cx));
-        let project = cx.new(|cx| Project::new(directory.path().to_owned(), languages, cx));
+        let root =
+            AbsolutePathBuf::canonicalize(directory.path()).expect("测试项目根目录应可规范化");
+        let project = cx.new(|cx| Project::new(root, languages, cx));
         ProjectPicker::new(
             Rc::new(|_, _, _| {}),
             project,

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use gpui::{AppContext as _, Empty, TestAppContext};
 use zcv_language::LanguageRegistry;
 use zcv_multi_buffer::ExcerptRange;
+use zcv_path::AbsolutePathBuf;
 
 use zcv_workspace::ItemHandle;
 
@@ -84,7 +85,8 @@ fn composite_editor_saves_dirty_source_files(cx: &mut TestAppContext) {
     let root = directory.path().canonicalize().expect("临时目录应可规范化");
     let path = root.join("source.txt");
     std::fs::write(&path, "旧内容\n").expect("应创建源文件");
-    let project = cx.new(|cx| Project::new(root, Arc::new(LanguageRegistry::new()), cx));
+    let project_root = AbsolutePathBuf::new(root).expect("测试项目根目录应为绝对路径");
+    let project = cx.new(|cx| Project::new(project_root, Arc::new(LanguageRegistry::new()), cx));
     let source = project.update(cx, |project, cx| {
         project.open_buffer(&path, cx).expect("应打开源文件")
     });
@@ -131,7 +133,8 @@ fn rename_then_save_writes_to_new_path(cx: &mut TestAppContext) {
     let new_path = root.join("bar.rs");
     fs::write(&old_path, "旧内容").expect("应创建测试文件");
 
-    let project = cx.new(|cx| Project::new(root, Arc::new(LanguageRegistry::new()), cx));
+    let project_root = AbsolutePathBuf::new(root).expect("测试项目根目录应为绝对路径");
+    let project = cx.new(|cx| Project::new(project_root, Arc::new(LanguageRegistry::new()), cx));
     // open_buffer 返回已承载规范路径的 LanguageBuffer（与 item_provider 同路径包装成组合文档）。
     let language_buffer = project.update(cx, |project, cx| {
         project.open_buffer(&old_path, cx).expect("应打开测试文件")

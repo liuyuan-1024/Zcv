@@ -2,15 +2,17 @@
 //!
 //! 面板复用编辑区的 Pane，多终端标签栏、tab 切换、关闭与编辑区同构。
 
+use std::time::Duration;
+
 use gpui::{
-    App, ClickEvent, Context, Entity, EntityId, EventEmitter, FocusHandle, Subscription, Window,
-    prelude::*,
+    App, ClickEvent, Context, Entity, EntityId, EventEmitter, FocusHandle, Subscription,
+    WeakEntity, Window, prelude::*,
 };
 use serde::{Deserialize, Serialize};
 use zcv_actions::NewTerminal;
 use zcv_project::Project;
 use zcv_ui::Button;
-use zcv_workspace::{Pane, PaneEvent, Panel, PanelEvent};
+use zcv_workspace::{Pane, PaneEvent, Panel, PanelEvent, ToastKind, Workspace};
 
 /// 终端会话快照：重建 PTY 所需的最小信息。
 #[derive(Debug, Serialize, Deserialize)]
@@ -23,6 +25,7 @@ use crate::{TerminalBuilder, TerminalView};
 
 pub struct TerminalPanel {
     project: Entity<Project>,
+    workspace: WeakEntity<Workspace>,
     pane: Entity<Pane>,
     _subscriptions: Vec<Subscription>,
     /// 首次渲染时注册带 window 的订阅（构造函数中没有 Window）。
@@ -34,7 +37,11 @@ pub struct TerminalPanel {
 impl EventEmitter<PanelEvent> for TerminalPanel {}
 
 impl TerminalPanel {
-    pub fn new(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        project: Entity<Project>,
+        workspace: WeakEntity<Workspace>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let pane = cx.new(Pane::new);
         let weak = cx.weak_entity();
         let pane_for_button = pane.clone();
@@ -56,6 +63,7 @@ impl TerminalPanel {
         });
         TerminalPanel {
             project,
+            workspace,
             pane: pane_for_button,
             _subscriptions: Vec::new(),
             initialized: false,
@@ -65,9 +73,15 @@ impl TerminalPanel {
 
     /// 创建终端：工作目录取所属 Project 的当前根，shell 取用户设置。
     /// 面板激活懒创建与外部新建终端命令共用。
-    pub fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let cwd = project_terminal_cwd(self.project.read(cx));
-        self.new_terminal_with_cwd(cwd, window, cx);
+        match self.new_terminal_with_cwd(cwd, window, cx) {
+            Ok(()) => true,
+            Err(error) => {
+                self.report_error(format!("创建终端失败：{error:#}"), cx);
+                false
+            }
+        }
     }
 
     /// 以指定工作目录创建终端（恢复会话时沿用保存的 cwd）。
@@ -76,20 +90,34 @@ impl TerminalPanel {
         cwd: Option<std::path::PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        // PTY 创建失败（fork/exec 异常）属于严重错误，直接终止应用并给出原因。
-        let terminal = cx.new(|cx| {
-            TerminalBuilder::new()
-                .set_cwd(cwd)
-                .build(cx)
-                .unwrap_or_else(|error| panic!("创建终端失败：{error}"))
-        });
+    ) -> anyhow::Result<()> {
+        let terminal = TerminalBuilder::new().set_cwd(cwd).build(cx)?;
+        let terminal = cx.new(|cx| terminal.activate(cx));
         let view = cx.new(|cx| TerminalView::new(terminal, cx));
         // 终端作为 Item 打开进 Pane，焦点直接落在终端视图上。
         let focus = self.pane.update(cx, |pane, cx| {
             pane.open_item(Box::new(view), false, window, cx)
         });
         window.focus(&focus, cx);
+        Ok(())
+    }
+
+    fn report_error(&self, message: String, cx: &mut Context<Self>) {
+        let workspace = self.workspace.clone();
+        // 面板可能由 Workspace 命令或 Dock 激活回调调用，须等当前实体借用结束后展示。
+        cx.defer(move |cx| {
+            workspace
+                .update(cx, |workspace, cx| {
+                    workspace.show_toast(
+                        ToastKind::Error,
+                        message,
+                        None,
+                        Some(Duration::from_secs(5)),
+                        cx,
+                    );
+                })
+                .ok();
+        });
     }
 }
 
@@ -176,14 +204,29 @@ impl Panel for TerminalPanel {
             .iter()
             .map(|item| item.item_id())
             .collect();
+        let was_empty = items.is_empty();
+        let mut restored = 0;
+        let mut first_error = None;
+        let mut failures = 0;
         for item in items {
-            self.new_terminal_with_cwd(item.cwd, window, cx);
+            match self.new_terminal_with_cwd(item.cwd, window, cx) {
+                Ok(()) => restored += 1,
+                Err(error) => {
+                    failures += 1;
+                    first_error.get_or_insert(error);
+                }
+            }
         }
-        for id in preexisting {
-            self.pane
-                .update(cx, |pane, cx| pane.close_tab(id, window, cx));
+        if restored > 0 || was_empty {
+            for id in preexisting {
+                self.pane
+                    .update(cx, |pane, cx| pane.close_tab(id, window, cx));
+            }
         }
         self.restoring = false;
+        if let Some(error) = first_error {
+            self.report_error(format!("恢复 {failures} 个终端会话失败：{error:#}"), cx);
+        }
     }
 }
 

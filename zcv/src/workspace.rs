@@ -141,10 +141,9 @@ fn switch_project_callback(languages: Arc<LanguageRegistry>) -> OnProjectSelecte
 }
 
 /// 规范化项目路径：相对路径（如 `zcv .`）归一为绝对路径，无效路径返回错误。
-fn canonical_project_root(root: PathBuf) -> anyhow::Result<PathBuf> {
+fn canonical_project_root(root: PathBuf) -> anyhow::Result<AbsolutePathBuf> {
     let root = AbsolutePathBuf::canonicalize(&root)
-        .with_context(|| format!("无法规范化项目路径：{}", root.display()))?
-        .into_path_buf();
+        .with_context(|| format!("无法规范化项目路径：{}", root.display()))?;
     if root.is_dir() && root.file_name().is_some() {
         Ok(root)
     } else {
@@ -183,7 +182,7 @@ pub(crate) fn open_empty_workspace_with_error(
 
 /// 项目与空工作区共用同一条窗口创建路径；差异只在 Project 是否含 worktree。
 fn open_workspace_window(
-    root: Option<PathBuf>,
+    root: Option<AbsolutePathBuf>,
     languages: Arc<LanguageRegistry>,
     startup_error: Option<String>,
     cx: &mut App,
@@ -229,7 +228,7 @@ fn open_workspace_window(
 
 /// 在给定窗口内创建并装配工作区；窗口创建与「切换项目」的根替换共用（须在 cx.new 闭包内调用）。
 fn build_workspace(
-    root: &Option<PathBuf>,
+    root: &Option<AbsolutePathBuf>,
     languages: Arc<LanguageRegistry>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
@@ -277,7 +276,8 @@ fn initialize_common_workspace(
         )
     });
     let terminal_project = workspace.project().clone();
-    let terminal = cx.new(|cx| TerminalPanel::new(terminal_project, cx));
+    let workspace_handle = cx.weak_entity();
+    let terminal = cx.new(|cx| TerminalPanel::new(terminal_project, workspace_handle, cx));
 
     let terminal_for_new = terminal.clone();
     workspace.register_panel(outline.clone(), DockPosition::Left, window, cx);
@@ -285,9 +285,10 @@ fn initialize_common_workspace(
 
     // 新建终端：先创建再确保面板可见，避免面板激活时的懒创建重复生成终端。
     workspace.register_action(move |workspace, _: &NewTerminal, window, cx| {
-        terminal_for_new.update(cx, |panel, cx| {
-            panel.new_terminal(window, cx);
-        });
+        let created = terminal_for_new.update(cx, |panel, cx| panel.new_terminal(window, cx));
+        if !created {
+            return;
+        }
         let bottom_dock = workspace.dock(DockPosition::Bottom).clone();
         bottom_dock.update(cx, |dock, cx| {
             let Some(index) = dock.panel_index_for_persistent_name("terminal") else {
@@ -442,12 +443,7 @@ fn run_git_operation(
         let mut cx = asynccx.clone();
         async move {
             let result = task.await;
-            let failure = match &result {
-                Ok(GitOperationOutcome::Failed(error)) => Some(error.clone()),
-                Err(error) => Some(format!("{error:#}")),
-                _ => None,
-            };
-            let (kind, message, action) = if let Some(error) = failure {
+            let failed = |error: String| {
                 // 失败提示带重试按钮：点击重新执行同一操作（弱引用，不持有 Workspace）。
                 let weak = this.clone();
                 (
@@ -462,24 +458,24 @@ fn run_git_operation(
                         }
                     })),
                 )
-            } else {
-                match result.expect("失败分支已在上方处理") {
-                    GitOperationOutcome::Completed => {
-                        (ToastKind::Success, format!("{name}完成"), None)
-                    }
-                    GitOperationOutcome::Cancelled => {
-                        (ToastKind::Info, format!("{name}已取消"), None)
-                    }
-                    GitOperationOutcome::CompletedBeforeCancellation => {
-                        (ToastKind::Success, format!("{name}已在取消前完成"), None)
-                    }
-                    GitOperationOutcome::CancellationUnconfirmed(detail) => (
-                        ToastKind::Error,
-                        format!("{name}已停止，但暂时无法确认远端状态：{detail}"),
-                        None,
-                    ),
-                    GitOperationOutcome::Failed(_) => unreachable!(),
+            };
+            let (kind, message, action) = match result {
+                Ok(GitOperationOutcome::Completed) => {
+                    (ToastKind::Success, format!("{name}完成"), None)
                 }
+                Ok(GitOperationOutcome::Cancelled) => {
+                    (ToastKind::Info, format!("{name}已取消"), None)
+                }
+                Ok(GitOperationOutcome::CompletedBeforeCancellation) => {
+                    (ToastKind::Success, format!("{name}已在取消前完成"), None)
+                }
+                Ok(GitOperationOutcome::CancellationUnconfirmed(detail)) => (
+                    ToastKind::Error,
+                    format!("{name}已停止，但暂时无法确认远端状态：{detail}"),
+                    None,
+                ),
+                Ok(GitOperationOutcome::Failed(error)) => failed(error),
+                Err(error) => failed(format!("{error:#}")),
             };
             if let Some(this) = this.upgrade() {
                 this.update(&mut cx, |workspace, cx| {

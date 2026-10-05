@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use zcv_language::LanguageRegistry;
+use zcv_path::AbsolutePathBuf;
 
 use super::*;
 
@@ -111,7 +112,7 @@ fn git_graph_view_and_search_bar_release_together(cx: &mut gpui::TestAppContext)
     let directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project = cx.new(|cx| {
         Project::new(
-            directory.path().to_path_buf(),
+            AbsolutePathBuf::canonicalize(directory.path()).expect("测试项目根目录应可规范化"),
             Arc::new(LanguageRegistry::new()),
             cx,
         )

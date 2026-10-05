@@ -74,8 +74,12 @@ impl Project {
     /// 使用默认文件监听后端创建项目。
     ///
     /// 语言注册表由应用装配层创建并显式注入，项目只持有同一份 Arc，不在内部新建。
-    pub fn new(root: PathBuf, languages: Arc<LanguageRegistry>, cx: &mut Context<Self>) -> Self {
-        Self::new_with_watcher(root, Arc::new(FsWatcher::new()), languages, cx)
+    pub fn new(
+        root: AbsolutePathBuf,
+        languages: Arc<LanguageRegistry>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::new_with_normalized_root(root, Arc::new(FsWatcher::new()), languages, cx)
     }
 
     /// 使用指定的文件监听后端创建项目。
@@ -87,11 +91,21 @@ impl Project {
         fs_watcher: Arc<dyn Watcher>,
         languages: Arc<LanguageRegistry>,
         cx: &mut Context<Self>,
+    ) -> anyhow::Result<Self> {
+        let root = AbsolutePathBuf::canonicalize(&root)
+            .with_context(|| format!("无法规范化项目根目录：{}", root.display()))?;
+        Ok(Self::new_with_normalized_root(
+            root, fs_watcher, languages, cx,
+        ))
+    }
+
+    fn new_with_normalized_root(
+        root: AbsolutePathBuf,
+        fs_watcher: Arc<dyn Watcher>,
+        languages: Arc<LanguageRegistry>,
+        cx: &mut Context<Self>,
     ) -> Self {
-        // ProjectWorktree、文件监听器和 GitStore 共用同一个已规范化根路径。
-        // Project 只能由已确认存在的目录构造，失败应在装配阶段暴露，而不是在各消费者中分别回退。
-        let root =
-            AbsolutePathBuf::canonicalize(&root).expect("Project 根目录必须是可规范化的已存在目录");
+        // ProjectWorktree、文件监听器和 GitStore 共用装配入口提供的绝对根路径。
         let mut fs_events = fs_watcher.watch(FS_WATCH_LATENCY);
 
         let pending_file_watcher_errors = match fs_watcher.add(root.as_path()) {

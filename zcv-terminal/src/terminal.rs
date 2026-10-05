@@ -493,12 +493,82 @@ impl TerminalBuilder {
         self
     }
 
-    pub fn build(&self, cx: &mut Context<Terminal>) -> Result<Terminal> {
-        Terminal::new(self, cx)
+    pub fn build(&self, cx: &App) -> Result<PreparedTerminal> {
+        if let Some(cwd) = &self.cwd {
+            // Alacritty 的 Unix 后端会忽略子进程切换工作目录时的错误。
+            let metadata = std::fs::metadata(cwd)
+                .with_context(|| format!("无法访问终端工作目录：{}", cwd.display()))?;
+            anyhow::ensure!(metadata.is_dir(), "终端工作目录不是目录：{}", cwd.display());
+        }
+
+        let settings = TerminalSettings::load(cx, None);
+        let bounds = TerminalBounds::default();
+        let shell_name = configured_shell_name(settings.shell.as_deref());
+
+        // 注入终端环境变量，保证 shell 以终端语义启动。
+        let env = HashMap::from([
+            ("TERM".into(), "xterm-256color".into()),
+            ("COLORTERM".into(), "truecolor".into()),
+        ]);
+
+        // 解析 shell 程序：用户显式配置时原样启动。
+        // 无配置时不传 shell，alacritty 在 macOS 上会经 `/usr/bin/login` 启动登录 shell（打印 "Last login"、argv[0] 前缀 `-` 触发登录模式，读取 /etc/zprofile 的path_helper 重建 PATH），nvm/Homebrew 安装的命令才可用；
+        let shell = settings
+            .shell
+            .as_deref()
+            .map(|program| (program.to_string(), Vec::new()));
+
+        let config =
+            alacritty::pty_term_config(settings.max_scroll_history_lines, settings.cursor_shape);
+        let (events_tx, events_rx) = unbounded();
+        let term = alacritty::new_term(&config, &bounds, &events_tx, settings.alternate_scroll);
+        let pty = alacritty::open_pty(
+            &alacritty::pty_options(shell, self.cwd.clone(), env),
+            &bounds,
+            DUMMY_WINDOW_ID,
+        )
+        .context("无法创建 PTY")?;
+        let process_id_getter = alacritty::process_id_getter(&pty);
+        let process_info = Arc::new(PtyProcessInfo::new(process_id_getter));
+        let pty_tx = alacritty::spawn_event_loop(term.clone(), &events_tx, pty, true)
+            .context("无法启动 PTY 事件循环")?;
+        let background_executor = cx.background_executor().clone();
+        let initial_content = alacritty::make_content(&term.lock(), None);
+
+        Ok(PreparedTerminal(Terminal {
+            term,
+            pty_resources: PtyResources::Active(pty_tx),
+            events: Default::default(),
+            events_rx: Some(events_rx),
+            event_loop_task: None,
+            last_content: initial_content,
+            title: None,
+            shell_name,
+            scroll_px: Pixels::ZERO,
+            process_info,
+            background_executor,
+            lifecycle: TerminalLifecycle::Running,
+            cwd: self.cwd.clone(),
+            font_size_override: None,
+            mouse_gesture: None,
+            selection_drag: None,
+            selection_autoscroll_scheduled: false,
+        }))
     }
 }
 
 // ─── 终端 ─────────────────────────────────────────────────────────
+
+/// PTY 已创建、等待绑定到 GPUI Entity 的终端。
+struct PreparedTerminal(Terminal);
+
+impl PreparedTerminal {
+    fn activate(self, cx: &mut Context<Terminal>) -> Terminal {
+        let mut terminal = self.0;
+        terminal.start(cx);
+        terminal
+    }
+}
 
 /// 终端持有的 PTY 运行资源：活动时是事件循环发送句柄，关闭后释放。
 ///
@@ -559,64 +629,10 @@ pub(crate) struct Terminal {
 }
 
 impl Terminal {
-    pub fn new(builder: &TerminalBuilder, cx: &mut Context<Self>) -> Result<Terminal> {
-        let settings = TerminalSettings::load(cx, None);
-        let bounds = TerminalBounds::default();
-        let shell_name = configured_shell_name(settings.shell.as_deref());
-
-        // 注入终端环境变量，保证 shell 以终端语义启动。
-        let env = HashMap::from([
-            ("TERM".into(), "xterm-256color".into()),
-            ("COLORTERM".into(), "truecolor".into()),
-        ]);
-
-        // 解析 shell 程序：用户显式配置时原样启动。
-        // 无配置时不传 shell，alacritty 在 macOS 上会经 `/usr/bin/login` 启动登录 shell（打印 "Last login"、argv[0] 前缀 `-` 触发登录模式，读取 /etc/zprofile 的path_helper 重建 PATH），nvm/Homebrew 安装的命令才可用；
-        let shell = settings
-            .shell
-            .as_deref()
-            .map(|program| (program.to_string(), Vec::new()));
-
-        let config =
-            alacritty::pty_term_config(settings.max_scroll_history_lines, settings.cursor_shape);
-        let (events_tx, events_rx) = unbounded();
-        let term = alacritty::new_term(&config, &bounds, &events_tx, settings.alternate_scroll);
-        let pty = alacritty::open_pty(
-            &alacritty::pty_options(shell, builder.cwd.clone(), env),
-            &bounds,
-            DUMMY_WINDOW_ID,
-        )
-        .context("启动终端失败：无法创建 PTY")?;
-        let process_id_getter = alacritty::process_id_getter(&pty);
-        let process_info = Arc::new(PtyProcessInfo::new(process_id_getter));
-        let pty_tx = alacritty::spawn_event_loop(term.clone(), &events_tx, pty, true)?;
-        let background_executor = cx.background_executor().clone();
-        let initial_content = alacritty::make_content(&term.lock(), None);
-
-        let mut terminal = Terminal {
-            term,
-            pty_resources: PtyResources::Active(pty_tx),
-            events: Default::default(),
-            events_rx: Some(events_rx),
-            event_loop_task: None,
-            last_content: initial_content,
-            title: None,
-            shell_name,
-            scroll_px: Pixels::ZERO,
-            process_info,
-            background_executor,
-            lifecycle: TerminalLifecycle::Running,
-            cwd: builder.cwd.clone(),
-            font_size_override: None,
-            mouse_gesture: None,
-            selection_drag: None,
-            selection_autoscroll_scheduled: false,
-        };
+    fn start(&mut self, cx: &mut Context<Self>) {
         cx.observe_global::<SettingsStore>(|_, cx| cx.notify())
             .detach();
-        terminal.spawn_event_loop(cx);
-
-        Ok(terminal)
+        self.spawn_event_loop(cx);
     }
 
     pub(crate) fn settings(&self, cx: &App) -> TerminalSettings {

@@ -83,7 +83,7 @@ impl Workspace {
     }
 
     pub fn new(
-        root: PathBuf,
+        root: AbsolutePathBuf,
         languages: Arc<LanguageRegistry>,
         window: &mut Window,
         cx: &mut Context<Self>,

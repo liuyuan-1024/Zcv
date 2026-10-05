@@ -26,6 +26,18 @@ fn empty_project_has_no_worktree_or_project_services(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn project_construction_survives_root_removed_after_validation(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("应创建临时目录");
+    let root = AbsolutePathBuf::canonicalize(directory.path()).expect("项目根目录应可规范化");
+    fs::remove_dir(directory.path()).expect("应移除已校验的项目根目录");
+
+    let project = cx.new(|cx| Project::new(root.clone(), test_languages(), cx));
+    cx.read_entity(&project, |project, _| {
+        assert_eq!(project.root(), Some(root.as_path()));
+    });
+}
+
+#[gpui::test]
 async fn background_file_load_installs_one_shared_document(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().expect("应创建临时目录");
     let first_path = directory.path().join("first.txt");
@@ -94,6 +106,7 @@ fn initial_file_watcher_error_is_buffered_until_workspace_subscribes(
             test_languages(),
             cx,
         )
+        .expect("测试项目根目录应可规范化")
     });
 
     let errors = project.update(cx, |project, _| project.take_pending_file_watcher_errors());
@@ -749,7 +762,8 @@ fn real_fs_watcher_triggers_git_refresh(cx: &mut gpui::TestAppContext) {
     // 前缀不匹配，事件会被 fs_watcher 过滤掉。
     let (root, _temp) = test_git_repo();
     let root = root.canonicalize().expect("应可 canonicalize");
-    let project = cx.new(|cx| Project::new(root.clone(), test_languages(), cx));
+    let project_root = AbsolutePathBuf::new(root.clone()).expect("测试项目根目录应为绝对路径");
+    let project = cx.new(|cx| Project::new(project_root, test_languages(), cx));
     cx.run_until_parked();
 
     // 等 notify 在后台线程建立 watch，避免写入事件丢失。

@@ -50,6 +50,7 @@ fn test_workspace(
             Arc::new(LanguageRegistry::new()),
             cx,
         )
+        .expect("测试项目根目录应可规范化")
     });
     Workspace::new_with_project(project, window, cx)
 }
@@ -65,6 +66,7 @@ fn project_search_folds_all_files_in_one_display_update(cx: &mut TestAppContext)
             registry.clone(),
             cx,
         )
+        .expect("测试项目根目录应可规范化")
     });
     let view = cx.new(|cx| ProjectSearchView::new(project, cx));
     let source = |path: &str, text: &str, cx: &mut TestAppContext| {
@@ -216,6 +218,7 @@ fn project_search_view_and_search_bar_release_together(cx: &mut TestAppContext) 
             Arc::new(LanguageRegistry::new()),
             cx,
         )
+        .expect("测试项目根目录应可规范化")
     });
     let view = cx.new(|cx| ProjectSearchView::new(project, cx));
     let search_bar = cx.read_entity(&view, |view, _| view.search_bar.clone());

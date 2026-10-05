@@ -6,6 +6,7 @@ use gpui::{
     prelude::*,
 };
 use zcv_language::LanguageRegistry;
+use zcv_path::AbsolutePathBuf;
 use zcv_project::{Project, SearchQuery};
 use zcv_workspace::{
     Breadcrumbs, Direction, Item, ItemHandle, Pane, PreviewButton, SearchEvent, SearchableItem,
@@ -159,8 +160,9 @@ impl Item for CompositeItem {
 fn document_toolbar(cx: &mut TestAppContext) -> gpui::Entity<DocumentToolbar> {
     let pane = cx.new(Pane::new);
     let preview_button = cx.new(|_| PreviewButton::new(pane.downgrade()));
-    let project =
-        cx.new(|cx| Project::new(PathBuf::from("."), Arc::new(LanguageRegistry::new()), cx));
+    let root =
+        AbsolutePathBuf::canonicalize(std::path::Path::new(".")).expect("测试项目目录应可规范化");
+    let project = cx.new(|cx| Project::new(root, Arc::new(LanguageRegistry::new()), cx));
     let language_registry = cx.read_entity(&project, |project, _| project.language_registry());
     let breadcrumbs = cx.new(|_| Breadcrumbs::new(project));
     cx.new(|cx| DocumentToolbar::new(preview_button, breadcrumbs, language_registry, cx))
@@ -255,8 +257,9 @@ fn document_toolbar_is_hidden_for_composite_items_that_expose_an_editor(cx: &mut
 /// 通用文档工具栏只服务本身就是编辑器的 Item，因此该视图的工具区由自身承担。
 #[gpui::test]
 fn project_search_view_acts_as_editor_and_owns_its_toolbar(cx: &mut TestAppContext) {
-    let project =
-        cx.new(|cx| Project::new(PathBuf::from("."), Arc::new(LanguageRegistry::new()), cx));
+    let root =
+        AbsolutePathBuf::canonicalize(std::path::Path::new(".")).expect("测试项目目录应可规范化");
+    let project = cx.new(|cx| Project::new(root, Arc::new(LanguageRegistry::new()), cx));
     let view = cx.new(|cx| crate::project_search::ProjectSearchView::new(project, cx));
     let bar = document_toolbar(cx);
     cx.add_window_view(|window, cx| {

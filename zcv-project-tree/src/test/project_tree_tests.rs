@@ -62,7 +62,10 @@ fn test_languages() -> Arc<LanguageRegistry> {
 }
 
 fn test_project(root: std::path::PathBuf, cx: &mut TestAppContext) -> gpui::Entity<Project> {
-    cx.new(|cx| Project::new_with_watcher(root, Arc::new(TestWatcher::new()), test_languages(), cx))
+    cx.new(|cx| {
+        Project::new_with_watcher(root, Arc::new(TestWatcher::new()), test_languages(), cx)
+            .expect("测试项目根目录应可规范化")
+    })
 }
 
 fn abs(path: impl Into<std::path::PathBuf>) -> AbsolutePathBuf {

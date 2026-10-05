@@ -363,7 +363,10 @@ impl Watcher for PassiveWatcher {
 
 fn test_project(root: PathBuf, cx: &mut TestAppContext) -> Entity<Project> {
     let watcher: Arc<dyn Watcher> = Arc::new(PassiveWatcher::new());
-    cx.new(|cx| Project::new_with_watcher(root, watcher, Arc::new(LanguageRegistry::new()), cx))
+    cx.new(|cx| {
+        Project::new_with_watcher(root, watcher, Arc::new(LanguageRegistry::new()), cx)
+            .expect("测试项目根目录应可规范化")
+    })
 }
 
 #[gpui::test]

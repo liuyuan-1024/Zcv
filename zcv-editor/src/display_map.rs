@@ -526,40 +526,6 @@ impl DisplaySnapshot {
         }
     }
 
-    /// 返回包含指定逻辑行的最内层折叠候选，供光标位于折叠体内部时的切换命令使用。
-    pub(crate) fn crease_containing_line(&self, line: Line) -> Option<Crease> {
-        self.syntax_crease_containing_line(line)
-    }
-
-    fn syntax_crease_containing_line(&self, line: Line) -> Option<Crease> {
-        let buffer = self.buffer_snapshot();
-        let offset = buffer.line_start_byte(line).ok()?;
-        let source = buffer.source_at(offset)?;
-        let source_text = source.text();
-
-        source
-            .syntax()
-            .fold_ranges(0..source_text.len_bytes().get(), source_text)
-            .into_iter()
-            .filter_map(|fold| {
-                let start = fold.range.start.resolve_in(source_text).ok()?;
-                let end = fold.range.end.resolve_in(source_text).ok()?;
-                source.project_range(start..end)
-            })
-            .filter_map(|range| {
-                let start = buffer.byte_to_line(range.start).ok()?;
-                let end = buffer.byte_to_line(range.end).ok()?;
-                (start <= line && line <= end).then_some((range, start, end))
-            })
-            .min_by_key(|(_, start, end)| (line.get() - start.get(), end.get() - line.get()))
-            .map(|(range, _, _)| {
-                Crease::simple(
-                    buffer.anchor_at(range.start, Affinity::Before)
-                        ..buffer.anchor_at(range.end, Affinity::After),
-                )
-            })
-    }
-
     pub(super) fn tab_width(&self) -> NonZeroUsize {
         self.wrap_snapshot().tab_snapshot().tab_width()
     }

@@ -725,63 +725,6 @@ fn indent_guides_follow_the_editor_fold_projection(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui::test]
-fn toggle_fold_action_uses_the_cursor_block_and_the_whole_folded_row(cx: &mut TestAppContext) {
-    let text = "fn main() {\n    if true {\n        let x = 1;\n    }\n}\nfn other() {}";
-    let buffer =
-        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
-    let language_buffer = cx.new(|cx| {
-        LanguageBuffer::new(
-            buffer,
-            Some(PathBuf::from("main.rs")),
-            std::sync::Arc::new(LanguageRegistry::new()),
-            cx,
-        )
-    });
-    let (editor, cx) = cx.add_window_view({
-        let language_buffer = language_buffer.clone();
-        move |_, cx| Editor::from_language_buffer(language_buffer, EditorMode::Full, cx)
-    });
-    cx.run_until_parked();
-    focus_editor(&editor, cx);
-
-    // 光标在 if 块内部时，折叠包含它的最内层范围，而不要求位于 crease 所在行。
-    editor.update(cx, |editor, cx| {
-        editor.set_selections(
-            SelectionSet::caret(MultiBufferOffset::new(
-                text.find("let x").expect("测试文本应包含 let x"),
-            )),
-            cx,
-        );
-    });
-    cx.dispatch_action(ToggleFold);
-    assert_eq!(
-        cx.read_entity(&editor, |editor, cx| editor
-            .display_snapshot(cx)
-            .line_count()),
-        4,
-        "应只折叠内层 if 块"
-    );
-
-    // 光标位于折叠占位符之后的闭合尾段时，仍按同一显示行展开。
-    editor.update(cx, |editor, cx| {
-        editor.set_selections(
-            SelectionSet::caret(MultiBufferOffset::new(
-                text.find("    }\n}").expect("测试文本应包含内层闭合括号") + 4,
-            )),
-            cx,
-        );
-    });
-    cx.dispatch_action(ToggleFold);
-    assert_eq!(
-        cx.read_entity(&editor, |editor, cx| editor
-            .display_snapshot(cx)
-            .line_count()),
-        6,
-        "折叠合并行任意位置都应能展开"
-    );
-}
-
 /// 折叠占位符的渲染描述：取首个占位符 chunk 的 renderer。
 fn first_placeholder_renderer(
     display: &DisplaySnapshot,
@@ -806,7 +749,7 @@ fn first_placeholder_renderer(
 }
 
 #[gpui::test]
-fn toggle_fold_command_and_crease_share_the_ellipsis_element(cx: &mut TestAppContext) {
+fn toggling_crease_renders_ellipsis_element(cx: &mut TestAppContext) {
     let text = "fn main() {\n    let x = 1;\n}\n";
     let buffer =
         Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
@@ -823,28 +766,7 @@ fn toggle_fold_command_and_crease_share_the_ellipsis_element(cx: &mut TestAppCon
         move |_, cx| Editor::from_language_buffer(language_buffer, EditorMode::Full, cx)
     });
     cx.run_until_parked();
-    focus_editor(&editor, cx);
 
-    editor.update(cx, |editor, cx| {
-        editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(3)), cx);
-    });
-    cx.dispatch_action(ToggleFold);
-    let command_renderer = cx.read_entity(&editor, |editor, cx| {
-        first_placeholder_renderer(&editor.display_snapshot(cx))
-    });
-    let command_renderer = command_renderer.expect("命令折叠必须产生占位符元素片段");
-    let command_is_ellipsis = cx.update(|_window, cx| {
-        (command_renderer.render)(cx)
-            .downcast_mut::<gpui::Div>()
-            .is_some()
-    });
-    assert!(
-        command_is_ellipsis,
-        "ToggleFold 命令必须渲染省略号元素，而不是默认空元素"
-    );
-
-    // 展开后改用 crease 点击路径（toggle_fold_at_line）折叠同一入口行，二者呈现必须一致。
-    cx.dispatch_action(ToggleFold);
     editor.update(cx, |editor, cx| editor.toggle_fold_at_line(Line::ZERO, cx));
     let crease_renderer = cx.read_entity(&editor, |editor, cx| {
         first_placeholder_renderer(&editor.display_snapshot(cx))
@@ -855,7 +777,7 @@ fn toggle_fold_command_and_crease_share_the_ellipsis_element(cx: &mut TestAppCon
             .downcast_mut::<gpui::Div>()
             .is_some()
     });
-    assert!(crease_is_ellipsis, "crease 折叠同样渲染省略号元素");
+    assert!(crease_is_ellipsis, "折叠指示触发的折叠应渲染省略号元素");
 }
 
 #[gpui::test]

@@ -91,10 +91,9 @@
       "alt-cmd-left": "editor::SelectSmallerSyntaxNode",
 
       // =========================
-      // 折叠与摘录
+      // 折叠
       // =========================
 
-      "alt-cmd-[": "editor::ToggleFold",
       "alt-cmd-]": "editor::UnfoldAll"
     }
   },

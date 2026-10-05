@@ -59,7 +59,6 @@ fn new_terminal_uses_the_project_root_as_working_directory(cx: &mut TestAppConte
 
 #[gpui::test]
 fn terminal_creation_failure_keeps_panel_empty(cx: &mut TestAppContext) {
-    cx.update(zcv_settings::init);
     let temporary_directory = tempfile::tempdir().expect("应创建临时项目目录");
     let project = cx.new(|cx| {
         Project::new_with_watcher(

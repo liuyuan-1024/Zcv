@@ -17,7 +17,7 @@ use gpui::{
     ShapedLine, Size, Style, TextRun, Window, div, fill, outline, point, prelude::*, px, relative,
     size,
 };
-use zcv_actions::{OpenExcerpts, ToggleFold};
+use zcv_actions::OpenExcerpts;
 use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging};
 use zcv_keymap::display_shortcut;
 use zcv_language::BracketPair;
@@ -121,7 +121,6 @@ impl EditorElement {
             .on_action(cx.listener(Editor::handle_outdent))
             .on_action(cx.listener(Editor::handle_move_line_up))
             .on_action(cx.listener(Editor::handle_move_line_down))
-            .on_action(cx.listener(Editor::handle_toggle_fold))
             .on_action(cx.listener(Editor::toggle_indent_guides))
             .on_action(cx.listener(Editor::handle_unfold_all))
             .on_action(cx.listener(Editor::handle_open_excerpts))
@@ -1051,7 +1050,6 @@ fn build_crease_toggles(
         let focus = editor.read(cx).focus_handle();
         let mut toggle = Button::icon(("gutter_crease", line.get()), path)
             .label(if folded { "展开" } else { "折叠" })
-            .shortcut(display_shortcut(&ToggleFold, cx))
             .on_click(move |_event, window, cx| {
                 window.focus(&focus, cx);
                 editor.update(cx, |editor, cx| editor.toggle_fold_at_line(line, cx));

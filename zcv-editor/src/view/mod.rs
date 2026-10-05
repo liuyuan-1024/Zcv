@@ -20,8 +20,7 @@ use zcv_actions::{
     MoveToNextWord, MoveToPreviousWord, MoveUp, Newline, OpenExcerpts, Outdent, Paste, Redo,
     SelectAll, SelectDown, SelectLargerSyntaxNode, SelectLeft, SelectPageDown, SelectPageUp,
     SelectRight, SelectSmallerSyntaxNode, SelectToBeginning, SelectToBeginningOfLine, SelectToEnd,
-    SelectToEndOfLine, SelectToNextWord, SelectToPreviousWord, SelectUp, ToggleFold, Undo,
-    UnfoldAll,
+    SelectToEndOfLine, SelectToNextWord, SelectToPreviousWord, SelectUp, Undo, UnfoldAll,
 };
 use zcv_language::{AutoClosePair, BracketPair, LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{
@@ -42,8 +41,8 @@ use crate::scrollbar::{ScrollbarMarker, ScrollbarMarkerState};
 use super::blink_manager::BlinkManager;
 use super::cursor_animation::{CursorAnimation, CursorViewport};
 use super::display_map::{
-    ChunkRendererId, DisplayColumn, DisplayMap, DisplayPoint, DisplayRow, DisplayRowEvent,
-    DisplaySnapshot, EditorHunk, FoldBias, FoldPlaceholder, HighlightStyles, HunkControlTarget,
+    ChunkRendererId, DisplayMap, DisplayPoint, DisplayRow, DisplayRowEvent, DisplaySnapshot,
+    EditorHunk, FoldBias, FoldPlaceholder, HighlightStyles, HunkControlTarget,
 };
 use super::element::{AUTOSCROLL_INTERVAL, EditorElement, EditorInputLayout};
 use super::scroll::{ScrollManager, ScrollViewport, ScrollbarThumbState};
@@ -749,10 +748,9 @@ impl Editor {
         cx.notify();
     }
 
-    /// 折叠/展开指定逻辑行（crease 点击与 ToggleFold 命令的共享实现）。
+    /// 折叠/展开指定逻辑行（gutter 折叠指示与占位符点击的共享实现）。
     ///
-    /// 该行是折叠入口行则展开覆盖它的折叠；否则折叠包含该行的最内层候选范围，
-    /// 因此光标停在折叠体内部时也能折叠包含它的块，不要求正处于 crease 所在行。
+    /// 该行是折叠入口行则展开覆盖它的折叠；否则折叠该行的语法候选范围。
     pub(crate) fn toggle_fold_at_line(&mut self, line: Line, cx: &mut Context<Self>) {
         let display_snapshot = self.display_snapshot(cx).clone();
         if display_snapshot.is_fold_anchor_line(line) {
@@ -765,10 +763,8 @@ impl Editor {
                 cx.emit(EditorEvent::Error(format!("展开折叠失败：{error:#}")));
             }
         } else {
-            // 入口行优先走派生缓存快路径；光标位于折叠体内部时退回包含该行的最内层候选。
             let range = display_snapshot
                 .crease_at_line(line)
-                .or_else(|| display_snapshot.crease_containing_line(line))
                 .map(|crease| crease.range().clone());
             if let Some(range) = range
                 && let Err(error) = self.display_map.update(cx, |map, cx| {
@@ -2253,34 +2249,6 @@ impl Editor {
         let snapshot = self.display_snapshot(cx);
         self.scroll_manager.refresh(&snapshot);
         self.processed_display_version = snapshot.version();
-    }
-
-    pub(super) fn handle_toggle_fold(
-        &mut self,
-        _: &ToggleFold,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        // 光标落在折叠合并行内时，先在该显示行内解析折叠入口行（保持展开语义）；
-        // 否则用光标逻辑行，由共享的 toggle_fold_at_line 决定折叠最内层范围。
-        let head = self.resolved_selections(cx).primary().head();
-        let display_snapshot = self.display_snapshot(cx);
-        let display_row = display_snapshot
-            .offset_to_display_point(head)
-            .map(DisplayPoint::row)
-            .ok();
-        // 光标所在显示行的行首就是该显示行（含折叠合并行）的入口逻辑行：
-        // 用显示坐标 → 组合偏移的点查询解析，不遍历全部折叠入口。
-        let offset = display_row
-            .and_then(|display_row| {
-                display_snapshot
-                    .display_point_to_offset(DisplayPoint::new(display_row, DisplayColumn::ZERO))
-                    .ok()
-            })
-            .unwrap_or(head);
-        if let Ok(line) = display_snapshot.buffer_snapshot().byte_to_line(offset) {
-            self.toggle_fold_at_line(line, cx);
-        }
     }
 
     pub(super) fn handle_unfold_all(

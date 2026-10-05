@@ -157,8 +157,6 @@ fn syntax_fold_candidates_project_across_diff_fragments(cx: &mut TestAppContext)
                 .unwrap();
             assert_eq!(buffer.byte_to_line(start).unwrap(), line);
             assert!(buffer.byte_to_line(end).unwrap() > line);
-            let inside = Line::new(line.get() + 1 + usize::from(expanded));
-            assert!(display.crease_containing_line(inside).is_some());
             assert!(
                 display
                     .foldable_lines_in_range(line..Line::new(line.get() + 1))

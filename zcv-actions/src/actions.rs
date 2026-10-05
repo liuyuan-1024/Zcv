@@ -73,7 +73,6 @@ actions!(
         Paste,
         Indent,
         Outdent,
-        ToggleFold,
         ToggleIndentGuides,
         UnfoldAll,
         OpenExcerpts,

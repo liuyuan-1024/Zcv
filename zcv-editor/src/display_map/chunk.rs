@@ -219,7 +219,7 @@ where
 pub(crate) struct HighlightStyles<'a> {
     pub(crate) spans: &'a [HighlightSpan],
     pub(crate) styles: &'a [HighlightStyle],
-    /// 背景覆盖层：命中区间优先于语法 style 的背景色。
+    /// 独立背景覆盖层；绘制时叠加在语法样式背景之上。
     pub(crate) backgrounds: &'a [(Range<usize>, gpui::Rgba)],
     pub(crate) marked: &'a [MultiBufferRange],
     /// 局部重命名期间需要淡化的文本范围。
@@ -936,9 +936,6 @@ pub(crate) fn chunk_to_run(chunk: &Chunk<'_>, base: gpui::TextRun) -> gpui::Text
         run.background_color = style.background_color;
         run.underline = style.underline;
         run.strikethrough = style.strikethrough;
-    }
-    if let Some(background) = chunk.background {
-        run.background_color = Some(background.into());
     }
     if chunk.marked {
         run.underline = Some(UnderlineStyle {

@@ -107,10 +107,14 @@ pub struct ThemeColors {
     pub search_active_match_background: Rgba,
     /// 编辑器光标颜色。
     pub editor_cursor: Rgba,
-    /// 编辑器 diff 新增行背景（与 version_control_added 同色相的半透明背景）。
+    /// 编辑器 diff 新增行实心背景。
     pub editor_diff_added_background: Rgba,
-    /// 编辑器 diff 删除行背景（与 version_control_deleted 同色相的半透明背景）。
+    /// 编辑器 diff 新增行空心背景。
+    pub editor_diff_added_hollow_background: Rgba,
+    /// 编辑器 diff 删除行实心背景。
     pub editor_diff_deleted_background: Rgba,
+    /// 编辑器 diff 删除行空心背景。
+    pub editor_diff_deleted_hollow_background: Rgba,
     /// 已暂存新增块的边框色（比行背景更实，勾出空心块轮廓）。
     pub editor_diff_added_hollow_border: Rgba,
     /// 已暂存删除块的边框色。

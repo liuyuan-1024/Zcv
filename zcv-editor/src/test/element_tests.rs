@@ -68,13 +68,27 @@ fn word_diff_background_has_character_geometry_inside_a_ligature() {
     );
     let backgrounds = LineBackgrounds {
         diffs: vec![(start..start + 1, gpui::rgba(0x22aa4444))],
+        highlights: Vec::new(),
         runs: Vec::new(),
+        selections: Vec::new(),
     };
     let line = FragmentedLine {
-        fragments: shape_text_piece(text.into(), &[run], 0, &backgrounds, px(16.), &text_system)
-            .into_iter()
-            .map(|line| LineFragment::Text(Box::new(line)))
-            .collect(),
+        fragments: shape_text_piece(
+            text.into(),
+            &[run],
+            0,
+            &backgrounds,
+            ContrastStyle {
+                editor_background: gpui::rgba(0x282c33ff),
+                selection_background: gpui::rgba(0x485369ff),
+                minimum: 45.0,
+            },
+            px(16.),
+            &text_system,
+        )
+        .into_iter()
+        .map(|line| LineFragment::Text(Box::new(line)))
+        .collect(),
         text: text.into(),
     };
     let symbol_x = line.x_for_index(start);
@@ -91,6 +105,149 @@ fn word_diff_background_has_character_geometry_inside_a_ligature() {
         line.len(),
         text.len(),
         "塑形不能改变源文本或 UTF-8 字节索引"
+    );
+}
+
+#[test]
+fn inline_highlight_adjusts_only_text_with_insufficient_contrast() {
+    let editor_background = gpui::rgba(0xfafafaff);
+    let selection_background = gpui::rgba(0x5c78e23d);
+    let deleted_word = gpui::rgba(0xe06c76cc);
+    let foreground = gpui::rgba(0xe06c76ff).into();
+    let run = TextRun {
+        len: 3,
+        font: typography::content_font(),
+        color: foreground,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let word_background =
+        inline_background_color(None, Some(deleted_word), None).expect("删除词应有背景");
+    let adjusted = text_run_with_contrast(
+        run.clone(),
+        Some(editor_background.blend(word_background).into()),
+        45.0,
+    );
+    assert_ne!(adjusted.color, run.color, "低对比度时应调整原语法颜色");
+    assert_eq!(adjusted.color.h, run.color.h, "优先保留语法色相");
+    assert_eq!(
+        text_run_with_contrast(run.clone(), None, 45.0).color,
+        run.color
+    );
+    assert_eq!(
+        text_run_with_contrast(run.clone(), Some(word_background.into()), 0.0).color,
+        run.color,
+        "设置为 0 时不调整文字"
+    );
+    assert_eq!(
+        inline_background_color(None, None, None),
+        None,
+        "整行 Git 背景不进入行内文字对比度路径"
+    );
+    assert_eq!(
+        inline_background_color(None, Some(deleted_word), Some(selection_background)),
+        Some(composite_background(deleted_word, selection_background)),
+        "选区应半透明叠加在词级背景上"
+    );
+    let run_background = gpui::rgba(0x3377aa66);
+    let contrast = ContrastStyle {
+        editor_background,
+        selection_background,
+        minimum: 45.0,
+    };
+    let mut backgrounds = LineBackgrounds {
+        runs: vec![(0..3, run_background)],
+        ..Default::default()
+    };
+    assert_eq!(
+        backgrounds.contrast_color_at(1, contrast),
+        None,
+        "语法样式背景自身不触发 Zed 的字色修正"
+    );
+    backgrounds.highlights.push((0..3, deleted_word));
+    assert_eq!(
+        backgrounds.contrast_color_at(1, contrast),
+        Some(editor_background.blend(deleted_word).into()),
+        "独立高亮的对比度计算不叠加语法样式背景"
+    );
+    let layered = inline_background_color(
+        Some(run_background),
+        Some(deleted_word),
+        Some(selection_background),
+    )
+    .unwrap();
+    let actual = editor_background.blend(layered);
+    let expected = editor_background
+        .blend(run_background)
+        .blend(deleted_word)
+        .blend(selection_background);
+    for (actual, expected) in [
+        (actual.r, expected.r),
+        (actual.g, expected.g),
+        (actual.b, expected.b),
+    ] {
+        assert!((actual - expected).abs() < 0.0001);
+    }
+    let overlapping = inline_background_color(
+        [run_background],
+        [deleted_word],
+        [selection_background, selection_background],
+    )
+    .unwrap();
+    let actual = editor_background.blend(overlapping);
+    let expected = expected.blend(selection_background);
+    for (actual, expected) in [
+        (actual.r, expected.r),
+        (actual.g, expected.g),
+        (actual.b, expected.b),
+    ] {
+        assert!((actual - expected).abs() < 0.0001);
+    }
+}
+
+#[test]
+fn selection_background_splits_multibyte_text_before_shaping() {
+    let text_system = gpui::WindowTextSystem::new(Arc::new(gpui::TextSystem::new(Arc::new(
+        ligature_text_system::LigatureTextSystem,
+    ))));
+    let text = "a世界b";
+    let selected = text.find('世').unwrap();
+    let run = TextRun {
+        len: text.len(),
+        font: typography::content_font(),
+        color: gpui::rgba(0x58585aff).into(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let backgrounds = LineBackgrounds {
+        selections: vec![selected..selected + '世'.len_utf8()],
+        ..Default::default()
+    };
+    let shaped = shape_text_piece(
+        text.into(),
+        &[run],
+        0,
+        &backgrounds,
+        ContrastStyle {
+            editor_background: gpui::rgba(0xfafafaff),
+            selection_background: gpui::rgba(0xd4d9f3ff),
+            minimum: 45.0,
+        },
+        px(16.),
+        &text_system,
+    );
+    assert_eq!(
+        shaped
+            .iter()
+            .map(|piece| piece.text.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["a", "世", "界b"]
+    );
+    assert_eq!(
+        shaped.iter().map(|piece| piece.len()).sum::<usize>(),
+        text.len()
     );
 }
 
@@ -131,6 +288,9 @@ fn layout_visible_lines(
             placeholder_mode,
             visible_source_ranges,
             visible_source_lines,
+            selection_ranges: Vec::new(),
+            minimum_contrast_for_highlights: zcv_settings::UserSettings::default()
+                .minimum_contrast_for_highlights,
         },
         presentation,
         search_decorations,
@@ -326,7 +486,11 @@ fn word_diff_background_keeps_changed_operator_out_of_adjacent_ligatures(cx: &mu
                     }],
                     selection_color,
                 );
-                assert_eq!(selected[0].color, selection_color, "选区继续覆盖词级背景");
+                assert_eq!(
+                    selected[0].color,
+                    composite_background(expected_color, selection_color),
+                    "选区应按 Zed 顺序叠加在词级背景上"
+                );
                 let mut byte = 0;
                 for fragment in &line.line.fragments {
                     let len = match fragment {
@@ -592,18 +756,18 @@ fn background_fragments_include_line_origin_x(cx: &mut TestAppContext) {
             );
             assert_eq!(layout.lines[0].row, DisplayRow::new(0));
             let line = &layout.lines[0];
-            assert_eq!(line.backgrounds.runs.len(), 2, "两个匹配都应进入背景层");
-            // 每个 run 背景的片段像素区间必须与“行原点 + 字形偏移”一致。
+            assert_eq!(line.backgrounds.highlights.len(), 2, "两个匹配都应进入独立高亮层");
+            // 每个搜索高亮的片段像素区间必须与“行原点 + 字形偏移”一致。
             let fragments = layout_line_background_fragments(line, &[], gpui::rgba(0xff0000ff));
-            assert_eq!(fragments.len(), line.backgrounds.runs.len());
-            for (fragment, (byte_range, _)) in fragments.iter().zip(&line.backgrounds.runs) {
+            assert_eq!(fragments.len(), line.backgrounds.highlights.len());
+            for (fragment, (byte_range, _)) in fragments.iter().zip(&line.backgrounds.highlights) {
                 let expected_start =
                     line.origin.x + line.line.x_for_index(byte_range.start);
                 let expected_end = line.origin.x + line.line.x_for_index(byte_range.end);
                 assert!(
                     (fragment.start_x - expected_start).abs() < px(1.)
                         && (fragment.end_x - expected_end).abs() < px(1.),
-                    "run 背景片段必须与文本对齐：片段 {fragment:?}，期望 {expected_start:?}..{expected_end:?}"
+                    "搜索高亮片段必须与文本对齐：片段 {fragment:?}，期望 {expected_start:?}..{expected_end:?}"
                 );
             }
         })
@@ -1962,15 +2126,10 @@ fn multibuffer_excerpt_uses_the_same_text_selection_geometry_as_a_single_buffer(
                 .flatten()
                 .find(|fragment| fragment.selection)
                 .expect("应有选区片段");
+            assert_eq!(selection_fragment.color, colors.editor_selection_background);
             assert_eq!(
-                selection_fragment.color,
-                colors
-                    .editor_background
-                    .blend(colors.editor_selection_background)
-            );
-            assert_eq!(
-                selection_fragment.color.a, 1.0,
-                "选区颜色应在 Editor 背景上展平"
+                selection_fragment.color.a, colors.editor_selection_background.a,
+                "选区保持半透明，使 Git 行背景仍可见"
             );
         })
         .expect("测试窗口应保持可用");

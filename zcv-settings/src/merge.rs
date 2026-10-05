@@ -28,6 +28,8 @@ pub struct UserSettings {
     pub languages: HashMap<String, LanguageOverride>,
     pub indent_guides: IndentGuideSettings,
     pub soft_wrap: SoftWrapMode,
+    /// 高亮背景上的文字最低 APCA 对比度；0 关闭修正。
+    pub minimum_contrast_for_highlights: f32,
     /// 编辑器光标形状。
     pub cursor_shape: CursorShape,
     /// 聚焦时编辑器光标是否闪烁。
@@ -165,6 +167,9 @@ impl UserSettings {
                 settings
             },
             soft_wrap: content.soft_wrap.unwrap_or(defaults.soft_wrap),
+            minimum_contrast_for_highlights: content
+                .minimum_contrast_for_highlights
+                .unwrap_or(defaults.minimum_contrast_for_highlights),
             cursor_shape: content.cursor_shape.unwrap_or(defaults.cursor_shape),
             cursor_blink: content.cursor_blink.unwrap_or(defaults.cursor_blink),
             cursor_animation_enabled: content

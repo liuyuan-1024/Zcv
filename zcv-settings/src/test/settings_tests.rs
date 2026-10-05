@@ -55,6 +55,20 @@ fn cursor_shape_setting_supports_all_zed_shapes() {
 }
 
 #[test]
+fn highlight_contrast_setting_has_zed_default_and_can_be_disabled() {
+    assert_eq!(
+        UserSettings::default().minimum_contrast_for_highlights,
+        45.0
+    );
+    let disabled = UserSettings::merge(
+        parse_user_settings(r#"{"minimum_contrast_for_highlights":0}"#).unwrap(),
+    );
+    assert_eq!(disabled.minimum_contrast_for_highlights, 0.0);
+    assert!(parse_user_settings(r#"{"minimum_contrast_for_highlights":107}"#).is_err());
+    assert!(parse_user_settings(r#"{"minimum_contrast_for_highlights":"45"}"#).is_err());
+}
+
+#[test]
 fn cursor_blink_and_animation_settings_are_independent() {
     let defaults = UserSettings::default();
     let blink_disabled =

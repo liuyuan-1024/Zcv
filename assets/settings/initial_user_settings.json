@@ -28,6 +28,9 @@
   // 可用值："none"（不换行）、"editor-width"（按编辑器宽度）、"bounded"（按目标行宽与编辑器宽度的较小值）。
   "soft_wrap": "editor-width",
 
+  // 高亮背景上的文字最低 APCA 对比度；0 关闭修正，可用范围 0 到 106。
+  "minimum_contrast_for_highlights": 45,
+
   // 可用值："bar"（竖线）、"block"（方块）、"underline"（下划线）、"hollow"（空心方块）。
   "cursor_shape": "bar",
 

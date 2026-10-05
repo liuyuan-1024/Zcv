@@ -58,6 +58,12 @@ impl SettingsStore {
         cx.try_global::<Self>().map(|store| store.settings.clone())
     }
 
+    /// 渲染热路径按引用读取标量设置；未注册 Store 时由调用方决定默认策略。
+    pub fn minimum_contrast_for_highlights(cx: &App) -> Option<f32> {
+        cx.try_global::<Self>()
+            .map(|store| store.settings.minimum_contrast_for_highlights)
+    }
+
     /// 读取扫描排除名单；SettingsStore 未初始化（如单元测试）时回退到默认名单。
     pub fn file_scan_exclusions(cx: &App) -> Vec<String> {
         cx.try_global::<Self>()

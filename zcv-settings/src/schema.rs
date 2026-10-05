@@ -51,6 +51,7 @@ pub(crate) struct BuiltinSettingsContent {
     pub(crate) insert_spaces: bool,
     pub(crate) indent_guides: BuiltinIndentGuideSettings,
     pub(crate) soft_wrap: SoftWrapMode,
+    pub(crate) minimum_contrast_for_highlights: f32,
     pub(crate) cursor_shape: CursorShape,
     pub(crate) cursor_blink: bool,
     pub(crate) cursor_animation: BuiltinCursorAnimationSettings,
@@ -192,6 +193,7 @@ pub(crate) struct UserSettingsContent {
     pub(crate) indent_guides: Option<IndentGuideSettingsContent>,
     #[serde(deserialize_with = "fallible")]
     pub(crate) soft_wrap: Option<SoftWrapMode>,
+    pub(crate) minimum_contrast_for_highlights: Option<f32>,
     #[serde(deserialize_with = "fallible")]
     pub(crate) cursor_shape: Option<CursorShape>,
     #[serde(deserialize_with = "fallible")]
@@ -229,7 +231,15 @@ pub(crate) fn parse_user_settings(content: &str) -> Result<UserSettingsContent> 
     if content.trim().is_empty() {
         return Ok(UserSettingsContent::default());
     }
-    serde_json_lenient::from_str(content).context("不是合法的 settings JSONC")
+    let settings: UserSettingsContent =
+        serde_json_lenient::from_str(content).context("不是合法的 settings JSONC")?;
+    if let Some(value) = settings.minimum_contrast_for_highlights {
+        ensure!(
+            valid_minimum_contrast(value),
+            "高亮文字最低对比度必须在 0 到 106 之间"
+        );
+    }
+    Ok(settings)
 }
 
 pub(crate) fn parse_builtin_settings(content: &str) -> Result<BuiltinSettingsContent> {
@@ -239,5 +249,13 @@ pub(crate) fn parse_builtin_settings(content: &str) -> Result<BuiltinSettingsCon
         settings.indent_guides.line_width.get() <= 10,
         "内置引导线宽度必须在 1 到 10 之间"
     );
+    ensure!(
+        valid_minimum_contrast(settings.minimum_contrast_for_highlights),
+        "内置高亮文字最低对比度必须在 0 到 106 之间"
+    );
     Ok(settings)
+}
+
+pub(crate) fn valid_minimum_contrast(value: f32) -> bool {
+    value.is_finite() && (0.0..=106.0).contains(&value)
 }

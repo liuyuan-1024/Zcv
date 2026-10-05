@@ -40,7 +40,35 @@ fn dark_theme_colors_match_migrated_values() {
         gpui::rgba(0x363c46ff)
     );
     assert_eq!(colors.version_control_word_added, gpui::rgba(0x2EA04859));
-    assert_eq!(colors.version_control_word_deleted, gpui::rgba(0xe06c76cc));
+    assert_eq!(colors.version_control_word_deleted, gpui::rgba(0x78081bcc));
+    assert_eq!(colors.version_control_added, gpui::rgba(0x27a657ff));
+    assert_eq!(colors.version_control_modified, gpui::rgba(0xd3b020ff));
+    assert_eq!(colors.version_control_deleted, gpui::rgba(0xe06c76ff));
+    assert_eq!(colors.status_conflict, gpui::rgba(0xdec184ff));
+    assert_eq!(
+        colors.editor_diff_added_background,
+        gpui::rgba(0x27a657ff).opacity(0.12)
+    );
+    assert_eq!(
+        colors.editor_diff_added_hollow_background,
+        gpui::rgba(0x27a657ff).opacity(0.06)
+    );
+    assert_eq!(
+        colors.editor_diff_added_hollow_border,
+        gpui::rgba(0x27a657ff).opacity(0.36)
+    );
+    assert_eq!(
+        colors.editor_diff_deleted_background,
+        gpui::rgba(0xe06c76ff).opacity(0.12)
+    );
+    assert_eq!(
+        colors.editor_diff_deleted_hollow_background,
+        gpui::rgba(0xe06c76ff).opacity(0.06)
+    );
+    assert_eq!(
+        colors.editor_diff_deleted_hollow_border,
+        gpui::rgba(0xe06c76ff).opacity(0.36)
+    );
     assert_ne!(
         colors.version_control_word_added,
         colors.editor_diff_added_background
@@ -73,13 +101,66 @@ fn light_theme_colors_match_migrated_values() {
     );
     assert_eq!(colors.ghost_element_hover, gpui::rgba(0xc9c9caff));
     assert_eq!(colors.version_control_word_added, gpui::rgba(0x2EA04859));
-    assert_eq!(colors.version_control_word_deleted, gpui::rgba(0xe06c76cc));
+    assert_eq!(colors.version_control_word_deleted, gpui::rgba(0xf85149cc));
+    assert_eq!(colors.version_control_added, gpui::rgba(0x27a657ff));
+    assert_eq!(colors.version_control_modified, gpui::rgba(0xd3b020ff));
+    assert_eq!(colors.version_control_deleted, gpui::rgba(0xe06c76ff));
+    assert_eq!(colors.status_conflict, gpui::rgba(0xa48819ff));
+    assert_eq!(
+        colors.editor_diff_added_background,
+        gpui::rgba(0x27a657ff).opacity(0.16)
+    );
+    assert_eq!(
+        colors.editor_diff_added_hollow_background,
+        gpui::rgba(0x27a657ff).opacity(0.08)
+    );
+    assert_eq!(
+        colors.editor_diff_added_hollow_border,
+        gpui::rgba(0x27a657ff).opacity(0.48)
+    );
+    assert_eq!(
+        colors.editor_diff_deleted_background,
+        gpui::rgba(0xe06c76ff).opacity(0.16)
+    );
+    assert_eq!(
+        colors.editor_diff_deleted_hollow_background,
+        gpui::rgba(0xe06c76ff).opacity(0.08)
+    );
+    assert_eq!(
+        colors.editor_diff_deleted_hollow_border,
+        gpui::rgba(0xe06c76ff).opacity(0.48)
+    );
     assert_ne!(
         colors.version_control_word_added,
         colors.editor_diff_added_background
     );
     assert_eq!(colors.terminal_ansi_yellow, gpui::rgba(0xd2b67cff));
     assert_eq!(colors.terminal_ansi_blue, gpui::rgba(0x2f5af3ff));
+}
+
+#[test]
+fn git_diff_syntax_colors_match_one_themes() {
+    for (id, added, deleted) in [
+        ("dark", 0x98c379ff, 0xe06c75ff),
+        ("light", 0x50a14fff, 0xe45649ff),
+    ] {
+        let theme = theme_by_id(id).expect("内置主题应存在");
+        assert_eq!(
+            theme
+                .syntax_table
+                .get("diff.plus")
+                .and_then(|style| style.color),
+            Some(gpui::rgba(added).into())
+        );
+        assert_eq!(
+            theme
+                .syntax_table
+                .get("diff.minus")
+                .and_then(|style| style.color),
+            Some(gpui::rgba(deleted).into())
+        );
+        assert!(!theme.syntax_table.contains_key("diff.delta"));
+    }
 }
 
 /// 最小合法主题：元数据 + 语法规则 + 语义色，供解析失败族测试破坏单点。
@@ -134,10 +215,6 @@ fn minimal_theme() -> String {
         "search.match_background" = "#5555558c"
         "search.active_match_background" = "#ffff0066"
         "editor.cursor" = "#555555ff"
-        "editor.diff_hunk.added_background" = "#00ff004d"
-        "editor.diff_hunk.deleted_background" = "#ff00004d"
-        "editor.diff_hunk.added_hollow_border" = "#00ff0080"
-        "editor.diff_hunk.deleted_hollow_border" = "#ff000080"
         "scrollbar.track.background" = "#00000000"
         "scrollbar.thumb.background" = "#88888873"
         "scrollbar.thumb.hover_background" = "#8888888c"

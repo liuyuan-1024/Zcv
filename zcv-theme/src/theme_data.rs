@@ -58,10 +58,11 @@ fn build_theme(id: &'static str, source: &str) -> ThemeData {
 /// 单一解析器：一次 TOML 解析产出主题的全部数据。
 fn parse_theme(id: &'static str, source: &str) -> Option<ThemeData> {
     let root: toml::Table = toml::from_str(source).ok()?;
+    let appearance = parse_appearance(&root)?;
     Some(ThemeData {
         id,
-        appearance: parse_appearance(&root)?,
-        colors: parse_colors(root.get("colors")?.as_table()?)?,
+        appearance,
+        colors: parse_colors(root.get("colors")?.as_table()?, appearance)?,
         syntax_table: Arc::new(parse_syntax_table(&root)?),
     })
 }
@@ -77,10 +78,19 @@ fn parse_appearance(root: &toml::Table) -> Option<WindowAppearance> {
 
 /// 解析 `[colors]` 语义色。
 /// 全量必填：任一 key 缺失或色值非法即解析失败。
-fn parse_colors(colors: &toml::Table) -> Option<ThemeColors> {
+fn parse_colors(colors: &toml::Table, appearance: WindowAppearance) -> Option<ThemeColors> {
     let parse = |key: &str| -> Option<gpui::Rgba> {
         let hex = colors.get(key)?.as_str()?;
         parse_hex(hex)
+    };
+    let version_control_added = parse("version_control.added")?;
+    let version_control_deleted = parse("version_control.deleted")?;
+    // One 主题的 diff hunk 色由版本控制基色推导；深浅主题使用不同透明度。
+    let (filled_opacity, hollow_opacity, border_opacity) = if appearance == WindowAppearance::Light
+    {
+        (0.16, 0.08, 0.48)
+    } else {
+        (0.12, 0.06, 0.36)
     };
     Some(ThemeColors {
         background: parse("background")?,
@@ -102,9 +112,9 @@ fn parse_colors(colors: &toml::Table) -> Option<ThemeColors> {
         icon_accent: parse("icon.accent")?,
         status_success: parse("success")?,
         status_error: parse("error")?,
-        version_control_added: parse("version_control.added")?,
+        version_control_added,
         version_control_modified: parse("version_control.modified")?,
-        version_control_deleted: parse("version_control.deleted")?,
+        version_control_deleted,
         version_control_word_added: parse("version_control.word_added")?,
         version_control_word_deleted: parse("version_control.word_deleted")?,
         status_conflict: parse("conflict")?,
@@ -129,10 +139,12 @@ fn parse_colors(colors: &toml::Table) -> Option<ThemeColors> {
         search_match_background: parse("search.match_background")?,
         search_active_match_background: parse("search.active_match_background")?,
         editor_cursor: parse("editor.cursor")?,
-        editor_diff_added_background: parse("editor.diff_hunk.added_background")?,
-        editor_diff_deleted_background: parse("editor.diff_hunk.deleted_background")?,
-        editor_diff_added_hollow_border: parse("editor.diff_hunk.added_hollow_border")?,
-        editor_diff_deleted_hollow_border: parse("editor.diff_hunk.deleted_hollow_border")?,
+        editor_diff_added_background: version_control_added.opacity(filled_opacity),
+        editor_diff_added_hollow_background: version_control_added.opacity(hollow_opacity),
+        editor_diff_deleted_background: version_control_deleted.opacity(filled_opacity),
+        editor_diff_deleted_hollow_background: version_control_deleted.opacity(hollow_opacity),
+        editor_diff_added_hollow_border: version_control_added.opacity(border_opacity),
+        editor_diff_deleted_hollow_border: version_control_deleted.opacity(border_opacity),
         scrollbar_track_background: parse("scrollbar.track.background")?,
         scrollbar_thumb_background: parse("scrollbar.thumb.background")?,
         scrollbar_thumb_hover_background: parse("scrollbar.thumb.hover_background")?,

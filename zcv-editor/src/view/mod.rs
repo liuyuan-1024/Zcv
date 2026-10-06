@@ -927,11 +927,6 @@ impl Editor {
         }
     }
 
-    /// 当前编辑器是否为单文档编辑器；与 Zed 一致，diff 与搜索的滚动条标记都只服务单文档编辑器。
-    pub(crate) fn is_singleton_document(&self, cx: &App) -> bool {
-        self.multi_buffer.read(cx).singleton_source().is_some()
-    }
-
     /// 当前缓存的滚动条标记分组（index 0 = diff，index 1 = search）。
     pub(crate) fn scrollbar_marker_groups(&self) -> [Option<Arc<[ScrollbarMarker]>>; 2] {
         self.scrollbar_marker_state.marker_groups.clone()
@@ -946,11 +941,6 @@ impl Editor {
         line_height: Pixels,
         cx: &mut Context<Self>,
     ) {
-        let is_singleton = self.is_singleton_document(cx);
-        if !is_singleton {
-            self.scrollbar_marker_state = ScrollbarMarkerState::default();
-            return;
-        }
         if !self
             .scrollbar_marker_state
             .should_refresh(track_bounds.size)
@@ -960,12 +950,7 @@ impl Editor {
         // 后台结果携带计算所用的显示版本；安装前与当前快照比较，过期即丢弃。
         let version = display_snapshot.version();
         let task = cx.background_spawn(async move {
-            display_snapshot.scrollbar_marker_groups(
-                track_bounds,
-                scroll_per_pixel,
-                line_height,
-                is_singleton,
-            )
+            display_snapshot.scrollbar_marker_groups(track_bounds, scroll_per_pixel, line_height)
         });
         let handle = cx.spawn(async move |this, cx| {
             let groups = task.await;

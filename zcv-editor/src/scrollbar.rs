@@ -22,6 +22,9 @@ const SCROLLBAR_BORDER: Pixels = px(1.);
 /// marker 最小高度。
 const MIN_MARKER_HEIGHT: Pixels = px(5.);
 
+/// 光标快速标记的固定高度（对齐 Zed `LINE_MARKER_HEIGHT`）。
+const CURSOR_MARKER_HEIGHT: Pixels = px(2.);
+
 /// 垂直滚动轴的逐帧布局：track hitbox、thumb 几何与三态。
 #[derive(Clone)]
 pub(super) struct ScrollbarLayout {
@@ -36,6 +39,9 @@ pub(super) struct ScrollbarLayout {
     pub(super) thumb_state: ScrollbarThumbState,
     /// 按装饰来源共享的 marker 快照（prepaint 只换引用，paint 顺序消费）。
     pub(super) marker_groups: [Option<Arc<[ScrollbarMarker]>>; 2],
+    /// 当前帧光标位置快速标记：满宽短标记，绘制在慢标记之上。
+    /// 随帧从光标布局得到，不进入后台缓存，也不随文档规模增长。
+    pub(super) cursor_markers: Vec<Bounds<Pixels>>,
 }
 
 /// 滚动轴上单个 diff marker：轨道内 y 区间 + 颜色类别。
@@ -116,6 +122,7 @@ impl ScrollbarLayout {
             scroll_per_pixel,
             thumb_state,
             marker_groups: [None, None],
+            cursor_markers: Vec::new(),
         }
     }
 
@@ -198,6 +205,38 @@ pub(super) fn marker_geometry(
         }
     }
     merged
+}
+
+/// 纯几何：当前帧光标显示行列表 → 轨道内满宽短标记。
+///
+/// 与 [`marker_geometry`] 共用「行 → 内容 y → 轨道 y」的绝对定位公式；
+/// 单条固定 [`CURSOR_MARKER_HEIGHT`] 高，不随文档规模变化，也不参与慢标记缓存。
+/// 落在轨道外的光标直接丢弃，只画可见段。
+pub(super) fn cursor_marker_geometry(
+    rows: impl IntoIterator<Item = usize>,
+    track_bounds: Bounds<Pixels>,
+    scroll_per_pixel: f32,
+    line_height: Pixels,
+) -> Vec<Bounds<Pixels>> {
+    let to_track_y = |content_y: Pixels| -> Pixels {
+        if scroll_per_pixel > 0.0 {
+            track_bounds.top() + content_y * (1.0 / scroll_per_pixel)
+        } else {
+            track_bounds.top() + content_y
+        }
+    };
+    rows.into_iter()
+        .filter_map(|row| {
+            let y = to_track_y(line_height * row);
+            let bottom = y + CURSOR_MARKER_HEIGHT;
+            (bottom > track_bounds.top() && y < track_bounds.bottom()).then(|| {
+                Bounds::from_corners(
+                    point(track_bounds.left() + SCROLLBAR_BORDER, y),
+                    point(track_bounds.right(), bottom),
+                )
+            })
+        })
+        .collect()
 }
 
 /// 返回 marker 列的横向区间：轨道左边 + 1px 边框起，按列等分轨道宽度。

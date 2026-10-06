@@ -283,19 +283,28 @@ impl DisplaySnapshot {
 
     /// 滚动条慢标记的轨道几何；由 Editor 在后台按显示版本计算并缓存。
     ///
-    /// 与 Zed 一致，diff 与搜索标记都只服务单文档编辑器：
-    /// 组合文档可能有数千个 hunk，逐帧绘制全部标记会让滚动随文档规模退化，因此组合文档两条标记链都不投影（Zed 的多文件 diff 同样不启用 git diff 标记）。
+    /// 标记来源由当前显示装饰决定，不按文档形态分流：
+    /// 有 diff 装饰即投影 git 标记，有搜索装饰即投影搜索标记。
+    /// 组合文档与单文档共用同一条标记链，差异只体现在各自实际持有的装饰上。
     pub(crate) fn scrollbar_marker_groups(
         &self,
         track_bounds: Bounds<Pixels>,
         scroll_per_pixel: f32,
         line_height: Pixels,
-        is_singleton: bool,
     ) -> [Option<Arc<[ScrollbarMarker]>>; 2] {
-        let diff_markers = is_singleton.then(|| {
+        let diff_markers = Some(Arc::from(
+            marker_geometry(
+                self.diff_decorations().scrollbar_marker_ranges(),
+                track_bounds,
+                scroll_per_pixel,
+                line_height,
+            )
+            .into_boxed_slice(),
+        ));
+        let search_markers = self.search_decorations().map(|search| {
             Arc::from(
                 marker_geometry(
-                    self.diff_decorations().scrollbar_marker_ranges(),
+                    search.scrollbar_marker_ranges(self),
                     track_bounds,
                     scroll_per_pixel,
                     line_height,
@@ -303,21 +312,6 @@ impl DisplaySnapshot {
                 .into_boxed_slice(),
             )
         });
-        let search_markers = is_singleton
-            .then(|| {
-                self.search_decorations().map(|search| {
-                    Arc::from(
-                        marker_geometry(
-                            search.scrollbar_marker_ranges(self),
-                            track_bounds,
-                            scroll_per_pixel,
-                            line_height,
-                        )
-                        .into_boxed_slice(),
-                    )
-                })
-            })
-            .flatten();
         [diff_markers, search_markers]
     }
 

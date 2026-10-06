@@ -1,4 +1,4 @@
-use crate::display_map::{DiffDecorationSnapshot, FoldPlaceholder};
+use crate::display_map::{DiffDecorationSnapshot, FoldPlaceholder, SearchDecorationInput};
 use zcv_multi_buffer::{ResolvedDiffHunk, WordDiffs};
 
 use super::*;
@@ -561,25 +561,11 @@ fn search_marker_rows_cover_every_current_search_range(cx: &mut TestAppContext) 
 }
 
 #[gpui::test]
-fn search_scrollbar_markers_only_render_for_singleton_documents(cx: &mut TestAppContext) {
-    // 对齐 zed：搜索命中的滚动轴标记只服务单文档编辑器；
-    // 组合文档不投影整份命中，避免结果很多时每次重建都做整份显示行投影。
-    let text = "first\n项目\nlast";
-    let singleton_source = cx.new(|cx| {
-        let buffer = Buffer::from_text(text.to_owned(), BufferConfig::default())
-            .expect("应创建单文档搜索 marker 测试 Buffer");
-        LanguageBuffer::new(
-            buffer,
-            None,
-            std::sync::Arc::new(LanguageRegistry::new()),
-            cx,
-        )
-    });
-    let singleton_buffer = cx.new(|cx| MultiBuffer::singleton(singleton_source, cx));
-    let singleton_editor = cx.new(|cx| Editor::for_multi_buffer(singleton_buffer, cx));
-
-    let combined_source = cx.new(|cx| {
-        let buffer = Buffer::from_text(text.to_owned(), BufferConfig::default())
+fn search_scrollbar_markers_render_from_search_decorations(cx: &mut TestAppContext) {
+    // 搜索标记按显示链实际持有的搜索装饰投影，与文档形态无关：
+    // 组合文档同样应得到搜索滚动条标记。
+    let source = cx.new(|cx| {
+        let buffer = Buffer::from_text("first\n项目\nlast".to_owned(), BufferConfig::default())
             .expect("应创建组合文档搜索 marker 测试 Buffer");
         LanguageBuffer::new(
             buffer,
@@ -588,14 +574,12 @@ fn search_scrollbar_markers_only_render_for_singleton_documents(cx: &mut TestApp
             cx,
         )
     });
-    let combined_buffer = cx.new(MultiBuffer::empty);
-    let source_len = cx.read_entity(&combined_source, |source, _| {
-        source.text_snapshot().len_bytes()
-    });
-    combined_buffer.update(cx, |buffer, cx| {
+    let combined = cx.new(MultiBuffer::empty);
+    let source_len = cx.read_entity(&source, |source, _| source.text_snapshot().len_bytes());
+    combined.update(cx, |buffer, cx| {
         buffer.set_excerpts_for_path(
             vec![ExcerptRange::new(
-                combined_source.clone(),
+                source.clone(),
                 zcv_text::TextRange::new(zcv_text::ByteOffset::ZERO, source_len)
                     .expect("整文件范围应合法"),
                 Vec::new(),
@@ -603,19 +587,21 @@ fn search_scrollbar_markers_only_render_for_singleton_documents(cx: &mut TestApp
             cx,
         );
     });
-    let combined_editor = cx.new(|cx| Editor::for_multi_buffer(combined_buffer, cx));
-
+    let snapshot = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    let map = new_display_map(cx, snapshot);
+    let range = MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(5))
+        .expect("搜索范围应合法");
+    cx.update_entity(&map, |map, cx| {
+        map.set_search_decorations(Some(SearchDecorationInput::new(vec![range].into(), 0)), cx);
+    });
+    let display = cx.update_entity(&map, |map, cx| map.snapshot(cx));
+    let track = Bounds::new(point(px(0.), px(0.)), size(px(15.), px(200.)));
+    let groups = display.scrollbar_marker_groups(track, 1.0, px(20.));
     assert!(
-        cx.read_entity(&singleton_editor, |editor, cx| {
-            editor.is_singleton_document(cx)
-        }),
-        "单文档编辑器应渲染搜索 marker"
-    );
-    assert!(
-        !cx.read_entity(&combined_editor, |editor, cx| {
-            editor.is_singleton_document(cx)
-        }),
-        "组合文档不应投影搜索 marker"
+        groups[1]
+            .as_ref()
+            .is_some_and(|markers| !markers.is_empty()),
+        "持有搜索装饰的组合文档必须投影搜索滚动条标记"
     );
 }
 
@@ -2707,9 +2693,9 @@ fn ellipsis_render_reads_theme_at_call_time(cx: &mut TestAppContext) {
         .expect("测试窗口应保持可用");
 }
 
-/// diff 滚动条标记只服务单文档编辑器：组合文档不投影随 hunk 数增长的标记。
+/// diff 滚动条标记按显示链实际持有的 diff 装饰投影，与文档形态无关。
 #[gpui::test]
-fn scrollbar_markers_are_projected_only_for_singleton_documents(cx: &mut TestAppContext) {
+fn diff_scrollbar_markers_render_from_diff_decorations(cx: &mut TestAppContext) {
     let snapshot: MultiBufferSnapshot = Buffer::from_text(
         "line0\nline1\nline2\nline3\n".to_owned(),
         BufferConfig::default(),
@@ -2725,18 +2711,43 @@ fn scrollbar_markers_are_projected_only_for_singleton_documents(cx: &mut TestApp
     });
     let display = cx.update_entity(&map, |map, cx| map.snapshot(cx));
     let track = Bounds::new(point(px(0.), px(0.)), size(px(15.), px(200.)));
+    let groups = display.scrollbar_marker_groups(track, 1.0, px(20.));
     assert!(
-        display
-            .scrollbar_marker_groups(track, 1.0, px(20.), false)
-            .iter()
-            .all(Option::is_none),
-        "组合文档不应投影 diff 或搜索滚动条标记"
-    );
-    let singleton_groups = display.scrollbar_marker_groups(track, 1.0, px(20.), true);
-    assert!(
-        singleton_groups[0]
+        groups[0]
             .as_ref()
             .is_some_and(|markers| !markers.is_empty()),
-        "单文档编辑器必须投影注入 hunk 的滚动条标记"
+        "持有 diff 装饰的文档必须投影注入 hunk 的滚动条标记"
+    );
+}
+
+/// 光标位置是滚动条快速标记：编辑器元素必须在任何文档形态下产出它。
+///
+/// 这里直接绘制真实 EditorElement 并检查其 prepaint 结果，
+/// 覆盖「选择集合 → 显示行 → 轨道标记」的完整接线。
+#[gpui::test]
+fn editor_element_projects_cursor_marker(cx: &mut TestAppContext) {
+    let source = cx.new(|cx| {
+        let buffer = Buffer::from_text("one\ntwo\nthree\n".to_owned(), BufferConfig::default())
+            .expect("测试 Buffer 应能创建");
+        LanguageBuffer::new(
+            buffer,
+            None,
+            std::sync::Arc::new(LanguageRegistry::new()),
+            cx,
+        )
+    });
+    let editor = cx.new(|cx| {
+        let multi_buffer = cx.new(|cx| MultiBuffer::singleton(source, cx));
+        Editor::for_multi_buffer(multi_buffer, cx)
+    });
+    let visual = cx.add_empty_window();
+    let (_, prepaint) = visual.draw(point(px(0.), px(0.)), size(px(400.), px(300.)), {
+        let editor = editor.clone();
+        move |_window, _cx| EditorElement::new(editor)
+    });
+    let scrollbar = prepaint.scrollbar.expect("Full 模式必须布局滚动条");
+    assert!(
+        !scrollbar.cursor_markers.is_empty(),
+        "完整编辑器必须为当前光标产出滚动条快速标记"
     );
 }

@@ -43,7 +43,8 @@ use super::display_map::{
 use super::gutter::{GutterDimensions, GutterLayout, GutterRow};
 use super::scroll::ScrollbarThumbState;
 use super::scrollbar::{
-    SCROLLBAR_WIDTH, ScrollbarLayout, ScrollbarMarkerKind, marker_column_x_range_at,
+    SCROLLBAR_WIDTH, ScrollbarLayout, ScrollbarMarkerKind, cursor_marker_geometry,
+    marker_column_x_range_at,
 };
 use super::view::{Editor, EditorMode, EditorPresentation, SoftWrap};
 
@@ -1907,7 +1908,7 @@ impl Element for EditorElement {
             window,
             cx,
         );
-        let scrollbar = layout_scrollbar(&mode, scrollbar_bounds, &self.editor, cx, window);
+        let mut scrollbar = layout_scrollbar(&mode, scrollbar_bounds, &self.editor, cx, window);
         // 标记缓存随显示版本失效；这里按当前轨道几何触发后台刷新，渲染帧只读缓存。
         if let Some(scrollbar) = &scrollbar {
             self.editor.update(cx, |editor, cx| {
@@ -1919,6 +1920,27 @@ impl Element for EditorElement {
                     cx,
                 );
             });
+        }
+        // 光标位置是逐帧快速标记：直接从选择集合解析显示行，不走后台慢标记缓存；
+        // 光标滚出视口时标记仍停在其文档位置，而不是随可见行消失。
+        if let Some(scrollbar) = &mut scrollbar {
+            let rows = selections
+                .as_slice()
+                .iter()
+                .copied()
+                .filter_map(|selection| {
+                    layout
+                        .display_snapshot
+                        .offset_to_display_point(selection.head())
+                        .ok()
+                        .map(|point| point.row().get())
+                });
+            scrollbar.cursor_markers = cursor_marker_geometry(
+                rows,
+                scrollbar.hitbox.bounds,
+                scrollbar.scroll_per_pixel,
+                line_height,
+            );
         }
 
         // 整行差异背景范围（内容区与 gutter 共用；未展开的修改/删除 hunk 只由竖条/三角提示）。
@@ -2484,6 +2506,10 @@ impl Element for EditorElement {
                     ),
                     marker_color,
                 ));
+            }
+            // 光标位置快速标记：满宽短标记，覆盖在慢标记之上（对齐 Zed fast markers）。
+            for bounds in &scrollbar.cursor_markers {
+                window.paint_quad(fill(*bounds, colors.editor_cursor));
             }
             if let Some(thumb_bounds) = scrollbar.thumb_bounds {
                 let thumb_color = match scrollbar.thumb_state {

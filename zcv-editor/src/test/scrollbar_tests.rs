@@ -130,6 +130,24 @@ fn marker_column_x_range_divides_track_into_three_columns() {
 }
 
 #[test]
+fn cursor_marker_geometry_uses_full_width_and_fixed_height() {
+    // per_pixel=2：行 5（content 125）→ 轨道 62.5；
+    // 光标标记满宽（1px 边框起）、固定 2px 高，与慢标记的列布局不同。
+    let track = track_bounds(100.);
+    let markers = cursor_marker_geometry([5], track, 2.0, px(25.));
+    assert_eq!(markers.len(), 1);
+    assert_eq!(markers[0].origin, point(px(1.), px(62.5)));
+    assert_eq!(markers[0].size, size(px(14.), px(2.)));
+
+    // 内容不溢出（per_pixel=0）：行 1 直接映射到 25px。
+    let markers = cursor_marker_geometry([1], track, 0.0, px(25.));
+    assert_eq!(markers[0].origin, point(px(1.), px(25.)));
+
+    // 落在轨道外的光标丢弃。
+    assert!(cursor_marker_geometry([10], track, 2.0, px(25.)).is_empty());
+}
+
+#[test]
 fn thumb_geometry_maps_scroll_range_to_track() {
     let track = Bounds {
         origin: point(px(10.), px(20.)),

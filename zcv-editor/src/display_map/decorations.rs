@@ -751,7 +751,7 @@ impl SearchDecorationSnapshot {
         index == self.active_index
     }
 
-    /// 搜索命中滚动条标记的显示行范围；仅在单文档编辑器上消费。
+    /// 搜索命中滚动条标记的显示行范围；由慢标记链按显示装饰消费。
     pub(crate) fn scrollbar_marker_ranges<'a>(
         &'a self,
         display: &'a DisplaySnapshot,

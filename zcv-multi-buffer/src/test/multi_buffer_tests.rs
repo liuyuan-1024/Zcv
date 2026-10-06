@@ -5256,3 +5256,189 @@ fn deleted_side_anchors_keep_order_and_detach_when_collapsed(cx: &mut TestAppCon
         );
     });
 }
+
+/// 参考摘要：由 zcv_text 快照的行宽索引聚合，供组合摘要对照。
+fn reference_summary(text: &zcv_text::Snapshot, start: usize, end: usize) -> MBTextSummary {
+    let range =
+        TextRange::new(ByteOffset::new(start), ByteOffset::new(end)).expect("参考范围必须正序");
+    let summary = text
+        .text_summary_for_range(range)
+        .expect("参考范围必须属于快照");
+    MBTextSummary {
+        len: summary.len,
+        chars: summary.chars,
+        len_utf16: summary.len_utf16,
+        lines: summary.lines,
+        first_line_chars: summary.first_line_chars,
+        last_line_len: if summary.lines == 0 {
+            range.len()
+        } else {
+            text.byte_to_point(range.end())
+                .expect("参考范围终点必须有效")
+                .1
+        },
+        last_line_chars: summary.last_line_chars,
+        longest_row: summary.longest_row,
+        longest_row_chars: summary.longest_row_chars,
+    }
+}
+
+/// 组合快照的任意字符边界范围摘要都必须与同一文本的 zcv_text 快照一致。
+fn assert_summary_matches_text(snapshot: &MultiBufferSnapshot, expected_text: &str) {
+    let reference = Buffer::from_text(expected_text.to_owned(), BufferConfig::default())
+        .expect("参考文本应能建立 Buffer")
+        .snapshot();
+    assert_eq!(
+        snapshot.text_bytes(),
+        expected_text.as_bytes(),
+        "组合文本必须与参考文本一致"
+    );
+    let len = snapshot.len_bytes().get();
+    for start in 0..=len {
+        if !expected_text.is_char_boundary(start) {
+            continue;
+        }
+        for end in start..=len {
+            if !expected_text.is_char_boundary(end) {
+                continue;
+            }
+            let actual = snapshot
+                .text_summary_for_range(
+                    MultiBufferRange::new(
+                        MultiBufferOffset::new(start),
+                        MultiBufferOffset::new(end),
+                    )
+                    .expect("组合范围必须正序"),
+                )
+                .expect("组合范围必须有效");
+            assert_eq!(
+                actual,
+                reference_summary(&reference, start, end),
+                "组合范围 {start}..{end} 的摘要必须与源行宽索引一致"
+            );
+        }
+    }
+}
+
+/// 单片段编辑与任意切分拼接后，组合范围摘要的行宽维度都必须与源快照一致。
+#[gpui::test]
+fn text_summary_matches_source_across_edits_and_splits(cx: &mut TestAppContext) {
+    let source = singleton("src/summary.rs", "alpha\nβeta\n\nlongest line here\nz", cx);
+    let buffer = cx.new(|cx| MultiBuffer::singleton(source.clone(), cx));
+    let before = buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
+    assert_summary_matches_text(&before, "alpha\nβeta\n\nlongest line here\nz");
+
+    source.update(cx, |source, cx| {
+        source
+            .edit(
+                [Edit::insert(ByteOffset::new(5), "XYZ").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("源编辑应成功");
+    });
+    cx.run_until_parked();
+    let middle = buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
+    assert_summary_matches_text(&middle, "alphaXYZ\nβeta\n\nlongest line here\nz");
+
+    source.update(cx, |source, cx| {
+        source
+            .edit(
+                [Edit::insert(ByteOffset::new(3), "!").unwrap()],
+                TransactionMetadata::default(),
+                cx,
+            )
+            .expect("源编辑应成功");
+    });
+    cx.run_until_parked();
+    let after = buffer.update(cx, |buffer, cx| buffer.snapshot(cx));
+    let edited = "alp!haXYZ\nβeta\n\nlongest line here\nz";
+    assert_summary_matches_text(&after, edited);
+
+    // 行宽维度不可减：任意切分处两半摘要的 AddAssign 必须等于整段摘要。
+    let total = after
+        .text_summary_for_range(
+            MultiBufferRange::new(MultiBufferOffset::ZERO, after.len_bytes())
+                .expect("全文范围必须有效"),
+        )
+        .expect("全文摘要必须有效");
+    for split in 0..=after.len_bytes().get() {
+        if !edited.is_char_boundary(split) {
+            continue;
+        }
+        let mut joined = after
+            .text_summary_for_range(
+                MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(split))
+                    .expect("左半范围必须正序"),
+            )
+            .expect("左半摘要必须有效");
+        joined += after
+            .text_summary_for_range(
+                MultiBufferRange::new(MultiBufferOffset::new(split), after.len_bytes())
+                    .expect("右半范围必须正序"),
+            )
+            .expect("右半摘要必须有效");
+        assert_eq!(joined, total, "切分点 {split} 的摘要拼接必须等于整段摘要");
+    }
+}
+
+/// 多个 excerpt 拼接后，组合全文摘要必须等于各源摘要与结构分隔换行的聚合。
+#[gpui::test]
+fn text_summary_matches_concatenated_excerpts(cx: &mut TestAppContext) {
+    let first = singleton("src/a.rs", "aa\nbbb\ncc", cx);
+    let second = singleton("src/b.rs", "无尾换行", cx);
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        buffer.set_excerpts(
+            vec![
+                ExcerptRange::line_range(first.clone(), 0..3, cx),
+                ExcerptRange::line_range(second.clone(), 0..1, cx),
+            ],
+            cx,
+        );
+    });
+    let snapshot = cx.update_entity(&combined, |buffer, cx| buffer.snapshot(cx));
+    let expected = "aa\nbbb\ncc\n无尾换行";
+    assert_summary_matches_text(&snapshot, expected);
+
+    let first_text = first.read_with(cx, |source, _| source.text_snapshot());
+    let second_text = second.read_with(cx, |source, _| source.text_snapshot());
+    let first_len = first_text.len_bytes().get();
+    let second_start = first_len + 1;
+    let second_end = second_start + second_text.len_bytes().get();
+    let first_expected = reference_summary(&first_text, 0, first_len);
+    let second_expected = reference_summary(&second_text, 0, second_text.len_bytes().get());
+    assert_eq!(
+        snapshot
+            .text_summary_for_range(
+                MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(first_len))
+                    .expect("首片段范围必须正序"),
+            )
+            .expect("首片段摘要必须有效"),
+        first_expected
+    );
+    assert_eq!(
+        snapshot
+            .text_summary_for_range(
+                MultiBufferRange::new(
+                    MultiBufferOffset::new(second_start),
+                    MultiBufferOffset::new(second_end),
+                )
+                .expect("次片段范围必须正序"),
+            )
+            .expect("次片段摘要必须有效"),
+        second_expected
+    );
+    let mut combined_expected = first_expected;
+    combined_expected += MBTextSummary::newline();
+    combined_expected += second_expected;
+    assert_eq!(
+        snapshot
+            .text_summary_for_range(
+                MultiBufferRange::new(MultiBufferOffset::ZERO, snapshot.len_bytes())
+                    .expect("全文范围必须正序"),
+            )
+            .expect("全文摘要必须有效"),
+        combined_expected
+    );
+}

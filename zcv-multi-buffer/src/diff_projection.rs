@@ -21,7 +21,7 @@ use crate::{
     DeletedHunkRegion, DiffTransform, DiffTransformHunkInfo, DiffTransformHunkSide, Excerpt,
     ExcerptContext, ExcerptDiffKind, ExcerptRange, ExcerptSummary, MBTextSummary, MultiBuffer,
     MultiBufferCursor, MultiBufferEvent, MultiBufferSnapshot, OutputRegion, PathKey,
-    SourceIncremental, SourceTexts, diff_output_text, snapshot_range_summary,
+    SourceIncremental, Sources, diff_output_text, snapshot_range_summary,
 };
 use zcv_buffer_diff::{
     BufferDiff, BufferDiffEvent, DiffHunk, DiffHunkKind, DiffHunkStaging, diff_line_boundary,
@@ -296,7 +296,7 @@ impl MultiBufferSnapshot {
         resolved_diff_hunks_in_lines(
             &self.excerpts,
             &self.diff_transforms,
-            &self.excerpt_sources,
+            Sources::Snapshot(&self.excerpt_sources),
             diff_display,
             lines,
             word_diff_range,
@@ -329,10 +329,10 @@ impl MultiBufferSnapshot {
 
 type DiffHunkKey = (gpui::EntityId, Option<Anchor>);
 
-fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
+fn resolved_diff_hunks_in_lines(
     excerpts: &SumTree<Excerpt>,
     transforms: &SumTree<DiffTransform>,
-    sources: &S,
+    sources: Sources<'_>,
     diff_display: &DiffDisplaySnapshot,
     lines: Range<usize>,
     word_diff_range: Range<usize>,
@@ -342,7 +342,7 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
     }
 
     let mut candidates = HashMap::<(PathKey, gpui::EntityId, Option<Anchor>), Vec<usize>>::new();
-    let mut cursor = MultiBufferCursor::new(excerpts, transforms);
+    let mut cursor = MultiBufferCursor::new(excerpts, transforms, sources);
     cursor.seek_output_line(lines.start, Bias::Left);
     if cursor.item().is_none() {
         cursor.prev();
@@ -372,7 +372,7 @@ fn resolved_diff_hunks_in_lines<S: SourceTexts + ?Sized>(
         let mut accum = None;
         let mut inspected = HashSet::new();
         for item_index in item_indices {
-            let mut cursor = MultiBufferCursor::new(excerpts, transforms);
+            let mut cursor = MultiBufferCursor::new(excerpts, transforms, sources);
             cursor.seek_transform_index(item_index);
             loop {
                 let mut previous = cursor.clone();
@@ -1076,7 +1076,7 @@ impl MultiBuffer {
         resolved_diff_hunks_in_lines(
             &self.state.excerpts,
             &self.state.diff_transforms,
-            self.state.sources.as_slice(),
+            Sources::Workspace(self.state.sources.as_slice()),
             diff_display,
             0..end,
             0..self.state.diff_transforms.summary().output.len,
@@ -1602,7 +1602,11 @@ impl MultiBuffer {
     fn diff_display_paths(&self) -> Vec<PathKey> {
         let mut paths = Vec::new();
         let mut seen = HashSet::new();
-        let mut cursor = MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
+        let mut cursor = MultiBufferCursor::new(
+            &self.state.excerpts,
+            &self.state.diff_transforms,
+            Sources::Workspace(self.state.sources.as_slice()),
+        );
         cursor.seek(ByteOffset::ZERO, sum_tree::Bias::Left);
         while let Some((excerpt, _)) = cursor.item() {
             if seen.insert(excerpt.path.clone()) {
@@ -1625,7 +1629,11 @@ impl MultiBuffer {
     fn derive_diff_display_for_path(&self, path: &PathKey) -> PathDiffDisplay {
         let mut seen = HashSet::<DiffHunkKey>::new();
         let mut sources = Vec::new();
-        let mut cursor = MultiBufferCursor::new(&self.state.excerpts, &self.state.diff_transforms);
+        let mut cursor = MultiBufferCursor::new(
+            &self.state.excerpts,
+            &self.state.diff_transforms,
+            Sources::Workspace(self.state.sources.as_slice()),
+        );
         // 用 Left 偏置从边界开始遍历：整份删除的零长度边界节点也必须被访问。
         cursor.seek_path(path, sum_tree::Bias::Left);
         while let Some((excerpt, transform)) = cursor.item() {

@@ -57,37 +57,6 @@ impl SourceTexts for SourceFrame<'_> {
     }
 }
 
-/// 输入前缀摘要由逻辑树和当前源快照联合解析，只读取边界 excerpt。
-fn input_summary_at<S: SourceTexts>(
-    excerpts: &SumTree<Excerpt>,
-    offset: ExcerptOffset,
-    sources: &S,
-) -> MBTextSummary {
-    let mut cursor = excerpts.cursor::<ExcerptSummary>(());
-    cursor.seek(&offset, Bias::Right);
-    if cursor.item().is_none() {
-        return excerpts.summary().text;
-    }
-    let excerpt = cursor.item().expect("输入偏移必须属于逻辑 excerpt");
-    let mut prefix = cursor.start().text;
-    let relative = offset.get() - prefix.len;
-    let content = relative.min(excerpt.text_summary.len);
-    let text = sources
-        .source_text(excerpt.source_index)
-        .expect("excerpt 必须引用源快照");
-    let end = ByteOffset::new(excerpt.source_range.start().get() + content);
-    prefix += snapshot_range_summary(
-        text,
-        TextRange::new(excerpt.source_range.start(), end).expect("输入前缀源范围必须正序"),
-    )
-    .expect("输入前缀必须属于对应源快照")
-    .0;
-    if relative > content {
-        prefix += MBTextSummary::newline();
-    }
-    prefix
-}
-
 /// 在输入坐标处拆分变换树；
 /// 内容节点可拆分，删除节点按 Bias 归入边界的一侧。
 /// 未触及的子树保持共享，不物化组合文本。
@@ -109,10 +78,10 @@ fn split_at_input<S: SourceTexts>(
     if let DiffTransform::BufferContent { summary, hunks } = transform
         && relative > 0
     {
-        let left = summary_between(
-            cursor.start().input_text,
-            input_summary_at(excerpts, offset, sources),
-        );
+        // 左右区间各自从源快照聚合；最长行等 max 维度无法由整段摘要减去前缀得到。
+        let transform_start = cursor.start().input_offset;
+        let transform_end = ExcerptOffset::new(transform_start.get() + summary.input.len);
+        let left = input_range_summary(excerpts, sources, transform_start, offset);
         let complete = relative == summary.input.len;
         let mut left_summary = summary.clone();
         left_summary.input = left;
@@ -126,9 +95,10 @@ fn split_at_input<S: SourceTexts>(
         );
         let mut suffix = SumTree::new(());
         if !complete {
+            let right = input_range_summary(excerpts, sources, offset, transform_end);
             let mut right_summary = summary.clone();
-            right_summary.input = subtract_text(summary.input, left);
-            right_summary.output = subtract_text(summary.output, left);
+            right_summary.input = right;
+            right_summary.output = right;
             suffix.push(
                 DiffTransform::BufferContent {
                     summary: right_summary,
@@ -142,25 +112,6 @@ fn split_at_input<S: SourceTexts>(
         return (prefix, suffix, output_start + relative);
     }
     (prefix, cursor.suffix(), output_start)
-}
-
-fn subtract_text(total: MBTextSummary, prefix: MBTextSummary) -> MBTextSummary {
-    MBTextSummary {
-        len: total.len - prefix.len,
-        chars: total.chars - prefix.chars,
-        len_utf16: total.len_utf16 - prefix.len_utf16,
-        lines: total.lines - prefix.lines,
-        last_line_len: if total.lines == prefix.lines {
-            total.len - prefix.len
-        } else {
-            total.last_line_len
-        },
-        last_line_chars: if total.lines == prefix.lines {
-            total.chars - prefix.chars
-        } else {
-            total.last_line_chars
-        },
-    }
 }
 
 /// 按 hunk 元数据合并相邻内容变换；读取游标独立跨越逻辑 excerpt 边界。

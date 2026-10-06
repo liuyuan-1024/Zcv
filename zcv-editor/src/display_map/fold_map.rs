@@ -1633,24 +1633,30 @@ fn text_summary_for_range(
         .expect("折叠变换区间必须落在快照内")
 }
 
+/// 折叠占位符等脱离源快照的短文本摘要。
+///
+/// 逐行测量后按 MBTextSummary 的拼接语义累加，行宽维度与源快照摘要保持一致。
 fn text_summary_of_str(text: &str) -> MBTextSummary {
-    MBTextSummary {
-        len: text.len(),
-        chars: text.chars().count(),
-        len_utf16: text.chars().map(char::len_utf16).sum(),
-        lines: text.bytes().filter(|byte| *byte == b'\n').count(),
-        last_line_len: text
-            .rsplit('\n')
-            .next()
-            .expect("文本至少有一个逻辑行")
-            .len(),
-        last_line_chars: text
-            .rsplit('\n')
-            .next()
-            .expect("文本至少有一个逻辑行")
-            .chars()
-            .count(),
+    let mut summary = MBTextSummary::default();
+    for line in text.split_inclusive('\n') {
+        let (content, terminated) = match line.strip_suffix('\n') {
+            Some(content) => (content, true),
+            None => (line, false),
+        };
+        let line_chars = content.chars().count();
+        summary += MBTextSummary {
+            len: line.len(),
+            chars: line.chars().count(),
+            len_utf16: line.chars().map(char::len_utf16).sum(),
+            lines: usize::from(terminated),
+            first_line_chars: line_chars,
+            last_line_len: if terminated { 0 } else { content.len() },
+            last_line_chars: if terminated { 0 } else { line_chars },
+            longest_row: 0,
+            longest_row_chars: line_chars,
+        };
     }
+    summary
 }
 
 /// 裁掉输出行最后一段的行终止符，使单行 shaping 输入不含终止符。

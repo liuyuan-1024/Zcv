@@ -34,7 +34,7 @@ pub use movement::{MovementDirection, MovementUnit};
 pub use position_map::{Affinity, MappingResult, PositionMap, Stickiness};
 pub use slicing::{LineContent, LineSlice, TextSlice};
 pub use snapshot::Snapshot;
-pub use storage::TextRead;
+pub use storage::{TextRead, TextSummary};
 pub use text_changes::{PatchEdit, TextChangeBatch, TextPatch, TextSubscription};
 pub use tracking::Anchor;
 pub use transaction::{

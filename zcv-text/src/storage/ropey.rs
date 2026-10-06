@@ -9,6 +9,7 @@ use ropey::Rope;
 use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
 
 use super::TextRead;
+use super::line_index::{LineIndex, TextSummary};
 use crate::{
     errors::{CoordinateError, EditError, StorageError, TextResult},
     transaction::EditList,
@@ -55,6 +56,8 @@ fn validate_byte_range_in_rope(rope: &Rope, range: TextRange) -> TextResult<()> 
 #[derive(Debug, Clone)]
 pub(crate) struct RopeyStorage {
     rope: Rope,
+    /// 行摘要派生索引；与 rope 在同一次编辑中推进，供快照按行聚合区间摘要。
+    line_index: LineIndex,
 }
 
 /// `RopeyStorage` 已完成预检的替换坐标。
@@ -69,8 +72,10 @@ pub(crate) struct RopeyPreparedReplace {
 
 impl RopeyStorage {
     pub(crate) fn new(text: String) -> Self {
+        let line_index = LineIndex::from_text(&text);
         Self {
             rope: Rope::from_str(&text),
+            line_index,
         }
     }
 }
@@ -175,6 +180,7 @@ impl RopeyStorage {
     pub(crate) fn snapshot(&self) -> RopeySnapshot {
         RopeySnapshot {
             rope: self.rope.clone(),
+            line_index: self.line_index.clone(),
         }
     }
 
@@ -232,7 +238,19 @@ impl RopeyStorage {
             .rev()
             .zip(prepared.into_iter().rev())
         {
+            // 行摘要必须与文本在同一次替换内推进：
+            // 编辑按旧坐标倒序应用，因此每条 edit 的旧范围在此刻的文本中仍然有效。
+            let old_span = self.line_index.affected_span(edit.range());
+            let prefix = edit.range().start().get() - old_span.start;
+            let suffix = old_span.end - edit.range().end().get();
             self.replace_prepared(prepared, edit.replacement());
+            let replacement_end = old_span.start + prefix + edit.replacement().len() + suffix;
+
+            let RopeyStorage { rope, line_index } = self;
+            line_index.replace_span(
+                old_span.start..old_span.end,
+                rope.byte_slice(old_span.start..replacement_end).chars(),
+            );
         }
 
         Ok(())
@@ -245,6 +263,8 @@ impl RopeyStorage {
 #[derive(Debug, Clone)]
 pub(crate) struct RopeySnapshot {
     rope: Rope,
+    /// 与 rope 同版本的行摘要派生索引：区间摘要按行聚合，不扫描中间行。
+    line_index: LineIndex,
 }
 
 impl RopeySnapshot {
@@ -271,7 +291,17 @@ impl RopeySnapshot {
     pub(crate) fn to_storage(&self) -> RopeyStorage {
         RopeyStorage {
             rope: self.rope.clone(),
+            line_index: self.line_index.clone(),
         }
+    }
+
+    /// 聚合快照 byte range 覆盖文本的多维摘要。
+    ///
+    /// 端点必须落在字符边界且不超过文本长度，否则显式失败；
+    /// 聚合只读取首尾不完整行与中间完整行的子树摘要。
+    pub(crate) fn text_summary_for_range(&self, range: TextRange) -> TextResult<TextSummary> {
+        validate_byte_range_in_rope(&self.rope, range)?;
+        Ok(self.line_index.summary_for_range(&self.rope, range))
     }
 }
 

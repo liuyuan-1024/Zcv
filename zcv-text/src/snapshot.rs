@@ -14,7 +14,7 @@ use crate::{
     position_map::PositionMap,
     slicing::{LineContent, LineSlice, TextSlice},
     slicing::{line_content_for_text, text_range_for_byte_range, text_range_for_line},
-    storage::{RopeySnapshot, TextRead, text_coordinate_gateway},
+    storage::{RopeySnapshot, TextRead, TextSummary, text_coordinate_gateway},
     tracking::{CoordinateIndex, EditLog, InsertionIndex},
 };
 
@@ -359,6 +359,14 @@ impl Snapshot {
         max_line_chars: Option<usize>,
     ) -> TextResult<LineContent<'_>> {
         line_content_for_text(&self.storage, line, max_line_chars)
+    }
+
+    /// 聚合快照 byte range 覆盖文本的多维摘要（字节、Unicode scalar、UTF-16、行数与行宽）。
+    ///
+    /// 这是上层组合文档按源范围增量维护摘要的数据来源：聚合只重测首尾不完整行，中间完整行读取按行索引的子树摘要，不扫描整个范围。
+    /// 端点必须落在字符边界且不超过文本长度，否则显式失败。
+    pub fn text_summary_for_range(&self, range: TextRange) -> TextResult<TextSummary> {
+        self.storage.text_summary_for_range(range)
     }
 }
 

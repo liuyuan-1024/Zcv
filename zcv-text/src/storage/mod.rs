@@ -6,9 +6,11 @@
 //! 它同时约束 Buffer / Snapshot 门面的坐标系纪律（字节优先、zero-copy），不代表可插拔存储承诺：
 //! `RopeyStorage` / `RopeySnapshot` 仍是唯一存储后端，所有生产代码直接以具体类型持有存储。
 
+mod line_index;
 mod ropey;
 mod traits;
 
+pub use line_index::TextSummary;
 pub(crate) use ropey::{RopeySnapshot, RopeyStorage};
 pub use traits::TextRead;
 pub(crate) use traits::text_coordinate_gateway;

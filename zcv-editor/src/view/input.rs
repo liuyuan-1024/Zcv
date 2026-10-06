@@ -758,11 +758,14 @@ impl EntityInputHandler for Editor {
             cx,
         );
         let redo_selections = self.anchored_selections();
+        let resolved = self.resolved_selections(cx);
+        let snapshot = self.text_snapshot(cx);
         if let Some(transaction_id) = history_transaction_id
             && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
         {
             // IME 组合期间同一事务的 redo 选区随候选更新推进（源锚点）。
             transaction.set_redo(redo_selections);
+            transaction.set_redo_source_points(&resolved, &snapshot);
         }
         self.composition = Some(EditorComposition {
             ranges: marked_ranges.into(),

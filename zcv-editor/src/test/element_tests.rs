@@ -2623,6 +2623,7 @@ fn windowed_selection_geometry_matches_caret(cx: &mut TestAppContext) {
                 BracketPair {
                     open: 150..151,
                     close: 151..152,
+                    newline_only: false,
                 },
                 &layout,
                 px(20.),

@@ -52,6 +52,15 @@
   // true 在已选中文本外输入配对起始字符时包裹选区；false 不包裹。
   "use_auto_surround": true,
 
+  // 可用值："none"、"preserve_indent"、"syntax_aware"。
+  "auto_indent": "syntax_aware",
+
+  // 换行时续写当前行的行注释或文档注释。
+  "extend_comment_on_newline": true,
+
+  // 换行时续写当前 Markdown 列表项。
+  "extend_list_on_newline": true,
+
   // 字符串数组；每项须为 globset 可解析的 glob，[] 表示不排除。无法解析的 glob 当前会被忽略。
   "file_scan_exclusions": [
     "**/.git",

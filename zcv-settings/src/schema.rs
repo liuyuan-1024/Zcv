@@ -21,6 +21,16 @@ pub enum SoftWrapMode {
     Bounded,
 }
 
+/// 自动缩进策略。
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoIndentMode {
+    None,
+    PreserveIndent,
+    #[default]
+    SyntaxAware,
+}
+
 /// 编辑器光标形状。
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -59,6 +69,9 @@ pub(crate) struct BuiltinSettingsContent {
     pub(crate) file_scan_exclusions: Vec<String>,
     pub(crate) use_autoclose: bool,
     pub(crate) use_auto_surround: bool,
+    pub(crate) auto_indent: AutoIndentMode,
+    pub(crate) extend_comment_on_newline: bool,
+    pub(crate) extend_list_on_newline: bool,
     pub(crate) terminal_font_size: f32,
     pub(crate) terminal_line_height: f32,
     pub(crate) terminal_max_scroll_history_lines: usize,
@@ -208,6 +221,12 @@ pub(crate) struct UserSettingsContent {
     pub(crate) use_autoclose: Option<bool>,
     #[serde(deserialize_with = "fallible")]
     pub(crate) use_auto_surround: Option<bool>,
+    #[serde(deserialize_with = "fallible")]
+    pub(crate) auto_indent: Option<AutoIndentMode>,
+    #[serde(deserialize_with = "fallible")]
+    pub(crate) extend_comment_on_newline: Option<bool>,
+    #[serde(deserialize_with = "fallible")]
+    pub(crate) extend_list_on_newline: Option<bool>,
     #[serde(deserialize_with = "fallible")]
     pub(crate) terminal_font_size: Option<f32>,
     #[serde(deserialize_with = "fallible")]

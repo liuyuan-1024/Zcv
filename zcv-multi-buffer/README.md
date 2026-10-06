@@ -16,6 +16,9 @@ excerpt 结构由 `SumTree` 承载，查询通过 summary 与连续 cursor 推�
 
 `MultiBufferSnapshot::input_scope_at` 把组合输出光标映射到可编辑 excerpt 的源字节位置，再从该源固化的文本／语法快照查询输入政策。不同源和注入语言沿同一入口向 `Editor` 提供政策；组合层不复制配对表或维护语法状态。
 
+`MultiBufferSnapshot::newline_only_bracket_at` 对一个选区查询源 excerpt 的 `brackets.scm` 元数据，并拒绝只读映射、跨 excerpt 选区、跨换行内容或括号外选区。它只返回可在当前 Editor 事务中消费的结构性额外空行事实。
+`newline_input_pair_at` 在同一可编辑源行内检查语言配置的输入配对和选区两侧空白；`MultiBufferSource::project_point` 在事务重做时把源内光标重新映射回当前 excerpt。
+
 大纲查询在源快照中固定标签及其相对语法高亮，组合层仅在同一快照内投影源范围并生成 `MultiBufferAnchor`。面板可在 diff 拓扑变化后的重算窗口继续展示旧标签；点击时由当前组合快照解析名称锚点。
 
 Anchor 查询通过路径键、源身份与 excerpt 摘要中的末端 Anchor 定位，源快照通过身份索引读取。删除侧长期位置以 working hunk 起点为主 Anchor，另携带基线 Anchor：展开时解析并排序旧侧位置，收起后投影查询失效，总坐标解析落到 working 边界。

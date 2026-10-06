@@ -4,7 +4,9 @@
 //! 可直接识别文件的语言必须提供高亮、括号、缩进和折叠查询；
 //! 注入查询只在语言存在真实嵌套语义时提供。
 
-use crate::AutoClosePair;
+use crate::{
+    AutoClosePair, BlockCommentConfig, LanguageInputConfig, OrderedListConfig, TaskListConfig,
+};
 
 /// 文件识别规则：扩展名 + 首行模式。
 pub(crate) struct LanguageMatcher {
@@ -119,6 +121,7 @@ pub(crate) struct LanguageSpec {
     pub(crate) injection_alias: Option<&'static str>,
     pub(crate) auto_close_pairs: &'static [AutoClosePair],
     pub(crate) autoclose_before: &'static str,
+    pub(crate) input: LanguageInputConfig,
     /// 除字母数字与 `_` 外，本语言额外视为词字符的字符集合（对齐 Zed 的 word_characters）。
     pub(crate) word_characters: &'static str,
 }
@@ -140,6 +143,7 @@ impl LanguageSpec {
             injection_alias,
             auto_close_pairs,
             autoclose_before,
+            input: LanguageInputConfig::empty(),
             word_characters: "",
         }
     }
@@ -152,6 +156,7 @@ impl LanguageSpec {
             injection_alias: None,
             auto_close_pairs: &[],
             autoclose_before: "",
+            input: LanguageInputConfig::empty(),
             word_characters: "",
         }
     }
@@ -159,6 +164,12 @@ impl LanguageSpec {
     /// 声明语言的额外词字符（对齐 Zed `LanguageConfig::word_characters`）。
     fn with_word_characters(mut self, word_characters: &'static str) -> Self {
         self.word_characters = word_characters;
+        self
+    }
+
+    /// 声明语言的注释与列表换行政策。
+    fn with_input(mut self, input: LanguageInputConfig) -> Self {
+        self.input = input;
         self
     }
 
@@ -229,6 +240,134 @@ const COMMON_PAIRS: &[AutoClosePair] = &[
 const DEFAULT_INPUT_FOLLOWERS: &str = ";:.,=}])>";
 const SHELL_INPUT_FOLLOWERS: &str = "}])";
 const JSON_INPUT_FOLLOWERS: &str = ",]}";
+
+const RUST_LINE_COMMENTS: &[&str] = &["// ", "/// ", "//! "];
+const SCRIPT_LINE_COMMENTS: &[&str] = &["// "];
+const HASH_LINE_COMMENTS: &[&str] = &["# "];
+const C_LINE_COMMENTS: &[&str] = &["// "];
+const CPP_LINE_COMMENTS: &[&str] = &["// ", "/// ", "//! "];
+const JSON_LINE_COMMENTS: &[&str] = &["// "];
+
+const RUST_BLOCK_COMMENT: BlockCommentConfig = BlockCommentConfig {
+    start: "/*",
+    prefix: "* ",
+    end: "*/",
+    tab_size: 1,
+};
+const SCRIPT_BLOCK_COMMENT: BlockCommentConfig = BlockCommentConfig {
+    start: "/*",
+    prefix: "* ",
+    end: "*/",
+    tab_size: 1,
+};
+const SCRIPT_DOC_COMMENT: BlockCommentConfig = BlockCommentConfig {
+    start: "/**",
+    prefix: "* ",
+    end: "*/",
+    tab_size: 1,
+};
+const MARKDOWN_BLOCK_COMMENT: BlockCommentConfig = BlockCommentConfig {
+    start: "<!--",
+    prefix: "",
+    end: "-->",
+    tab_size: 1,
+};
+const PYTHON_BLOCK_COMMENT: BlockCommentConfig = BlockCommentConfig {
+    start: "\"\"\"",
+    prefix: "",
+    end: "\"\"\"",
+    tab_size: 1,
+};
+const C_BLOCK_COMMENT: BlockCommentConfig = BlockCommentConfig {
+    start: "/*",
+    prefix: "",
+    end: "*/",
+    tab_size: 1,
+};
+const C_DOC_COMMENT: BlockCommentConfig = BlockCommentConfig {
+    start: "/*",
+    prefix: "* ",
+    end: "*/",
+    tab_size: 1,
+};
+
+const MARKDOWN_UNORDERED_LISTS: &[&str] = &["- ", "* ", "+ "];
+const MARKDOWN_ORDERED_LISTS: &[OrderedListConfig] = &[OrderedListConfig {
+    pattern: r"(\d+)\. ",
+    format: "{1}. ",
+}];
+const MARKDOWN_TASK_LIST: TaskListConfig = TaskListConfig {
+    prefixes: &["- [ ] ", "- [x] ", "- [X] "],
+    continuation: "- [ ] ",
+};
+
+const RUST_INPUT: LanguageInputConfig = LanguageInputConfig {
+    line_comments: RUST_LINE_COMMENTS,
+    block_comment: Some(RUST_BLOCK_COMMENT),
+    documentation_comment: Some(RUST_BLOCK_COMMENT),
+    ..LanguageInputConfig::empty()
+};
+const SCRIPT_INPUT: LanguageInputConfig = LanguageInputConfig {
+    line_comments: SCRIPT_LINE_COMMENTS,
+    block_comment: Some(SCRIPT_BLOCK_COMMENT),
+    documentation_comment: Some(SCRIPT_DOC_COMMENT),
+    ..LanguageInputConfig::empty()
+};
+const JSX_INPUT: LanguageInputConfig = LanguageInputConfig {
+    element_block_comment: Some(BlockCommentConfig {
+        start: "{/*",
+        prefix: "",
+        end: "*/}",
+        tab_size: 1,
+    }),
+    ..SCRIPT_INPUT
+};
+const MARKDOWN_INPUT: LanguageInputConfig = LanguageInputConfig {
+    block_comment: Some(MARKDOWN_BLOCK_COMMENT),
+    unordered_list: MARKDOWN_UNORDERED_LISTS,
+    ordered_list: MARKDOWN_ORDERED_LISTS,
+    task_list: Some(MARKDOWN_TASK_LIST),
+    ..LanguageInputConfig::empty()
+};
+const SHELL_INPUT: LanguageInputConfig = LanguageInputConfig {
+    line_comments: HASH_LINE_COMMENTS,
+    ..LanguageInputConfig::empty()
+};
+const JSON_INPUT: LanguageInputConfig = LanguageInputConfig {
+    line_comments: JSON_LINE_COMMENTS,
+    ..LanguageInputConfig::empty()
+};
+const YAML_INPUT: LanguageInputConfig = LanguageInputConfig {
+    line_comments: HASH_LINE_COMMENTS,
+    ..LanguageInputConfig::empty()
+};
+const PYTHON_INPUT: LanguageInputConfig = LanguageInputConfig {
+    line_comments: HASH_LINE_COMMENTS,
+    block_comment: Some(PYTHON_BLOCK_COMMENT),
+    ..LanguageInputConfig::empty()
+};
+const C_INPUT: LanguageInputConfig = LanguageInputConfig {
+    line_comments: C_LINE_COMMENTS,
+    block_comment: Some(C_BLOCK_COMMENT),
+    documentation_comment: Some(C_DOC_COMMENT),
+    ..LanguageInputConfig::empty()
+};
+const CPP_INPUT: LanguageInputConfig = LanguageInputConfig {
+    line_comments: CPP_LINE_COMMENTS,
+    block_comment: Some(C_BLOCK_COMMENT),
+    documentation_comment: Some(C_DOC_COMMENT),
+    ..LanguageInputConfig::empty()
+};
+const GO_INPUT: LanguageInputConfig = LanguageInputConfig {
+    line_comments: SCRIPT_LINE_COMMENTS,
+    block_comment: Some(C_BLOCK_COMMENT),
+    documentation_comment: Some(C_DOC_COMMENT),
+    ..LanguageInputConfig::empty()
+};
+const CSS_INPUT: LanguageInputConfig = LanguageInputConfig {
+    block_comment: Some(SCRIPT_BLOCK_COMMENT),
+    ..LanguageInputConfig::empty()
+};
 
 const RUST_PAIRS: &[AutoClosePair] = &[
     AutoClosePair {
@@ -543,7 +682,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             None,
             RUST_PAIRS,
             DEFAULT_INPUT_FOLLOWERS,
-        ),
+        )
+        .with_input(RUST_INPUT),
         LanguageSpec::tree_sitter(
             "C",
             LanguageMatcher {
@@ -557,7 +697,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             None,
             COMMON_PAIRS,
             DEFAULT_INPUT_FOLLOWERS,
-        ),
+        )
+        .with_input(C_INPUT),
         LanguageSpec::tree_sitter(
             "C++",
             LanguageMatcher {
@@ -574,7 +715,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             None,
             COMMON_PAIRS,
             DEFAULT_INPUT_FOLLOWERS,
-        ),
+        )
+        .with_input(CPP_INPUT),
         LanguageSpec::tree_sitter(
             "C#",
             LanguageMatcher {
@@ -600,7 +742,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             Some("golang"),
             COMMON_PAIRS,
             DEFAULT_INPUT_FOLLOWERS,
-        ),
+        )
+        .with_input(GO_INPUT),
         LanguageSpec::tree_sitter(
             "Python",
             LanguageMatcher {
@@ -617,7 +760,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             None,
             COMMON_PAIRS,
             DEFAULT_INPUT_FOLLOWERS,
-        ),
+        )
+        .with_input(PYTHON_INPUT),
         LanguageSpec::tree_sitter(
             "JavaScript",
             LanguageMatcher {
@@ -636,6 +780,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             SCRIPT_PAIRS,
             DEFAULT_INPUT_FOLLOWERS,
         )
+        .with_input(SCRIPT_INPUT)
         .with_word_characters("$#"),
         LanguageSpec::tree_sitter(
             "JSX",
@@ -653,6 +798,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             TS_PAIRS,
             DEFAULT_INPUT_FOLLOWERS,
         )
+        .with_input(JSX_INPUT)
         .with_word_characters("$#"),
         LanguageSpec::tree_sitter(
             "TypeScript",
@@ -670,6 +816,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             TS_PAIRS,
             DEFAULT_INPUT_FOLLOWERS,
         )
+        .with_input(SCRIPT_INPUT)
         .with_word_characters("$#"),
         LanguageSpec::tree_sitter(
             "TSX",
@@ -687,6 +834,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             TS_PAIRS,
             DEFAULT_INPUT_FOLLOWERS,
         )
+        .with_input(JSX_INPUT)
         .with_word_characters("$#"),
         LanguageSpec::tree_sitter(
             "Java",
@@ -725,7 +873,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             None,
             COMMON_PAIRS,
             SHELL_INPUT_FOLLOWERS,
-        ),
+        )
+        .with_input(SHELL_INPUT),
         LanguageSpec::tree_sitter(
             "Ruby",
             LanguageMatcher {
@@ -832,6 +981,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             COMMON_PAIRS,
             JSON_INPUT_FOLLOWERS,
         )
+        .with_input(JSON_INPUT)
         .with_word_characters("#"),
         LanguageSpec::tree_sitter(
             "YAML",
@@ -845,7 +995,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             None,
             COMMON_PAIRS,
             JSON_INPUT_FOLLOWERS,
-        ),
+        )
+        .with_input(YAML_INPUT),
         LanguageSpec::tree_sitter(
             "Markdown",
             LanguageMatcher {
@@ -859,7 +1010,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             None,
             MARKDOWN_PAIRS,
             DEFAULT_INPUT_FOLLOWERS,
-        ),
+        )
+        .with_input(MARKDOWN_INPUT),
         LanguageSpec::tree_sitter(
             "Markdown Inline",
             LanguageMatcher {
@@ -901,6 +1053,7 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             COMMON_PAIRS,
             DEFAULT_INPUT_FOLLOWERS,
         )
+        .with_input(CSS_INPUT)
         .with_word_characters("#"),
         LanguageSpec::plain_text(
             "纯文本",

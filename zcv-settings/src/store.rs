@@ -71,7 +71,7 @@ impl SettingsStore {
             .unwrap_or_else(|| UserSettings::default().file_scan_exclusions)
     }
 
-    pub(crate) fn set_user_settings(&mut self, content: &str) -> Result<bool> {
+    pub fn set_user_settings(&mut self, content: &str) -> Result<bool> {
         if self.last_user_settings_content.as_deref() == Some(content) {
             return Ok(false);
         }

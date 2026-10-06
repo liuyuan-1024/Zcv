@@ -13,7 +13,7 @@ use std::sync::Arc;
 use zcv_multi_buffer::{MultiBufferAnchor, MultiBufferSnapshot};
 use zcv_project::{RegexSearchResult, SearchResult, regex_replacement_for_match};
 use zcv_text::{
-    CoordinateError, Edit, PositionMap, TextError, TextRead, TextResult, TransactionId,
+    ByteOffset, CoordinateError, Edit, PositionMap, TextError, TextRead, TextResult, TransactionId,
 };
 
 use super::{Selection, SelectionSet};
@@ -279,6 +279,7 @@ fn validate_selection(
 pub(crate) struct TransactionSelections {
     undo: SelectionSet<MultiBufferAnchor>,
     redo: Option<SelectionSet<MultiBufferAnchor>>,
+    redo_source_points: Option<Vec<(Option<ByteOffset>, Option<ByteOffset>)>>,
 }
 
 impl TransactionSelections {
@@ -286,13 +287,70 @@ impl TransactionSelections {
         &self.undo
     }
 
-    pub(crate) fn redo(&self) -> Option<&SelectionSet<MultiBufferAnchor>> {
-        self.redo.as_ref()
-    }
-
     /// 事务提交后填入 redo 选区（end_transaction 时更新）。
     pub(crate) fn set_redo(&mut self, redo: SelectionSet<MultiBufferAnchor>) {
         self.redo = Some(redo);
+    }
+
+    /// 插入文本内的锚点在 undo 时会塌缩；同时保存事务提交时的源内位置供 redo 重新锚定。
+    pub(crate) fn set_redo_source_points(
+        &mut self,
+        resolved: &SelectionSet<MultiBufferOffset>,
+        snapshot: &MultiBufferSnapshot,
+    ) {
+        self.redo_source_points = Some(
+            resolved
+                .as_slice()
+                .iter()
+                .map(|selection| {
+                    (
+                        snapshot
+                            .source_at(selection.start())
+                            .map(|source| source.source_offset()),
+                        snapshot
+                            .source_at(selection.end())
+                            .map(|source| source.source_offset()),
+                    )
+                })
+                .collect(),
+        );
+    }
+
+    pub(crate) fn resolve_redo(
+        &self,
+        snapshot: &MultiBufferSnapshot,
+    ) -> TextResult<Option<SelectionSet<MultiBufferOffset>>> {
+        let Some(redo) = &self.redo else {
+            return Ok(None);
+        };
+        let resolved = redo.resolve(snapshot)?;
+        let Some(source_points) = &self.redo_source_points else {
+            return Ok(Some(resolved));
+        };
+        let selections = resolved
+            .as_slice()
+            .iter()
+            .zip(source_points)
+            .map(|(selection, &(start, end))| {
+                let project = |offset: MultiBufferOffset, source_offset: Option<ByteOffset>| {
+                    source_offset
+                        .and_then(|source_offset| {
+                            snapshot.source_at(offset)?.project_point(source_offset)
+                        })
+                        .unwrap_or(offset)
+                };
+                Selection::from_parts(
+                    project(selection.start(), start),
+                    project(selection.end(), end),
+                    selection.reversed(),
+                    selection.goal(),
+                )
+            })
+            .collect();
+        Ok(Some(SelectionSet::from_selections(
+            selections,
+            resolved.primary_index(),
+        )))
     }
 }
 
@@ -316,7 +374,11 @@ impl SelectionHistory {
     ) {
         self.selections_by_transaction
             .entry(transaction_id)
-            .or_insert_with(|| TransactionSelections { undo, redo: None });
+            .or_insert_with(|| TransactionSelections {
+                undo,
+                redo: None,
+                redo_source_points: None,
+            });
         while self.selections_by_transaction.len() > max_entries {
             self.selections_by_transaction.pop_first();
         }

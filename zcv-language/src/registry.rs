@@ -7,9 +7,11 @@ use std::sync::{Arc, Mutex};
 use tree_sitter::Query;
 use zcv_text::{BufferVersion, WordBoundaryPolicy};
 
-use crate::AutoClosePair;
 use crate::available_languages::{
     LanguageQuerySources, LanguageSpec, LanguageSupport as LanguageSupportSpec, builtin_languages,
+};
+use crate::{
+    AutoClosePair, BlockCommentConfig, LanguageInputConfig, OrderedListConfig, TaskListConfig,
 };
 
 /// 一门已加载语言。
@@ -19,6 +21,7 @@ pub struct Language {
     syntax: LanguageSyntax,
     auto_close_pairs: &'static [AutoClosePair],
     autoclose_before: &'static str,
+    input: LanguageInputConfig,
     word_characters: &'static str,
 }
 
@@ -87,6 +90,41 @@ impl InputScope<'_> {
         self.language
             .word_boundary()
             .is_identifier_continue(character)
+    }
+
+    pub fn line_comment_prefixes(&self) -> &'static [&'static str] {
+        if matches!(self.override_name, Some("string" | "element")) {
+            &[]
+        } else {
+            self.language.input.line_comments
+        }
+    }
+
+    pub fn block_comment(&self) -> Option<BlockCommentConfig> {
+        match self.override_name {
+            Some("string") => None,
+            Some("element") => self.language.input.element_block_comment,
+            _ => self.language.input.block_comment,
+        }
+    }
+
+    pub fn documentation_comment(&self) -> Option<BlockCommentConfig> {
+        match self.override_name {
+            Some("string") | Some("element") => None,
+            _ => self.language.input.documentation_comment,
+        }
+    }
+
+    pub fn unordered_list(&self) -> &'static [&'static str] {
+        self.language.input.unordered_list
+    }
+
+    pub fn ordered_list(&self) -> &'static [OrderedListConfig] {
+        self.language.input.ordered_list
+    }
+
+    pub fn task_list(&self) -> Option<TaskListConfig> {
+        self.language.input.task_list
     }
 }
 
@@ -217,6 +255,7 @@ impl LanguageSpec {
             syntax,
             auto_close_pairs: self.auto_close_pairs,
             autoclose_before: self.autoclose_before,
+            input: self.input,
             word_characters: self.word_characters,
         }
     }

@@ -8,7 +8,9 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use gpui::{App, ClipboardItem, Context, Window};
+use zcv_language::InputScope;
 use zcv_multi_buffer::MultiBufferSnapshot;
+use zcv_settings::AutoIndentMode;
 use zcv_text::{Line, MovementDirection, MovementUnit, TextError, TextResult};
 
 use super::*;
@@ -251,110 +253,80 @@ impl Editor {
         if self.is_read_only(cx) || self.propagate_if_single_line(cx) {
             return;
         }
+        let composition_active = self.composition.is_some();
         self.composition = None;
         self.advance_snapshots(cx);
         let before = self.resolved_selections(cx).normalized();
         let snapshot = self.display_snapshot(cx).buffer_snapshot().clone();
-        // 逐选区计算插入文本与光标落点：
-        // 光标处于声明了 newline 的括号对之间时，闭合符前额外补一个基准缩进空行，与自动缩进共用同一回车路径）。
-        let mut trailing_lens = Vec::new();
-        let targets = before
+        // 每个选区在同一份组合快照上读取自己的语法作用域与语言设置，最后只提交一个事务。
+        let plans = before
             .as_slice()
             .iter()
             .map(|selection| {
                 let offset = selection.start();
+                let scope = snapshot.input_scope_at(offset);
+                let settings = snapshot.language_settings_at(offset);
                 let suggestion = self
                     .display_snapshot(cx)
                     .buffer_snapshot()
                     .suggested_newline_indent(offset)?;
-                let tab = self
-                    .display_snapshot(cx)
-                    .buffer_snapshot()
-                    .language_settings_at(offset)
-                    .tab;
-                let indent = if suggestion.additional_levels > 0 {
-                    if tab.insert_spaces {
-                        " ".repeat(tab.tab_size() * suggestion.additional_levels)
+                let additional_levels = match settings.auto_indent {
+                    AutoIndentMode::SyntaxAware => suggestion.additional_levels,
+                    AutoIndentMode::PreserveIndent | AutoIndentMode::None => 0,
+                };
+                let base_indent = match settings.auto_indent {
+                    AutoIndentMode::None => String::new(),
+                    AutoIndentMode::PreserveIndent | AutoIndentMode::SyntaxAware => {
+                        suggestion.base_indent.clone()
+                    }
+                };
+                let indent = if additional_levels > 0 {
+                    if settings.tab.insert_spaces {
+                        " ".repeat(settings.tab.tab_size() * additional_levels)
                     } else {
-                        "\t".repeat(suggestion.additional_levels)
+                        "\t".repeat(additional_levels)
                     }
                 } else {
                     String::new()
                 };
-                let extra = self.extra_newline_in_pair(offset, &snapshot);
-                let text = if extra {
-                    format!(
-                        "\n{}{indent}\n{}",
-                        suggestion.base_indent, suggestion.base_indent
-                    )
-                } else {
-                    format!("\n{}{indent}", suggestion.base_indent)
-                };
-                trailing_lens.push(extra.then_some(1 + suggestion.base_indent.len()));
-                Ok((*selection, Arc::from(text)))
+                newline_plan(
+                    &snapshot,
+                    *selection,
+                    scope.as_ref(),
+                    &settings,
+                    &base_indent,
+                    &indent,
+                    !composition_active,
+                )
             })
             .collect::<TextResult<Vec<_>>>();
         let metadata = edit_metadata("插入换行");
         let _ = self.change_with_after(before.clone(), metadata.clone(), cx, |buffer| {
-            let targets = targets?;
+            let plans = plans?;
+            let targets = plans
+                .iter()
+                .map(|plan| (plan.target, Arc::clone(&plan.text)))
+                .collect();
             let outcome = apply_targeted_edits(buffer, targets)?;
             let position_map = outcome.position_map().cloned().unwrap_or_default();
-            // 括号对场景光标落在中间行行尾（回退末尾空行的长度），其余落在插入文本末尾。
             let after = SelectionSet::new(
-                before
+                plans
                     .as_slice()
                     .iter()
-                    .zip(trailing_lens.iter())
-                    .map(|(selection, trailing)| {
+                    .map(|plan| {
                         let start = position_map
-                            .map_old_position(selection.start().into())
+                            .map_old_position_with_affinity(
+                                plan.target.start().into(),
+                                Affinity::Before,
+                            )
                             .value();
-                        let offset = trailing.map_or(start, |trailing| {
-                            MultiBufferOffset::new(start.get() - trailing).into()
-                        });
-                        Selection::caret(offset.into())
+                        let offset = start.get() + plan.cursor_offset;
+                        Selection::caret(MultiBufferOffset::new(offset))
                     })
                     .collect(),
             );
             Ok((outcome, after))
         });
-    }
-
-    /// 光标处是否需要括号内额外空行：
-    /// 光标前后跳过非换行空白后，分别紧邻声明了 `newline` 的配对起始与闭合字符。
-    fn extra_newline_in_pair(
-        &self,
-        offset: MultiBufferOffset,
-        snapshot: &MultiBufferSnapshot,
-    ) -> bool {
-        let Some(scope) = snapshot.input_scope_at(offset) else {
-            return false;
-        };
-        let Ok((line, column)) = snapshot.byte_to_point(offset) else {
-            return false;
-        };
-        let Some(line_end) = (if line.get() + 1 < snapshot.line_count() {
-            snapshot.line_start_byte(Line::new(line.get() + 1)).ok()
-        } else {
-            Some(snapshot.len_bytes())
-        }) else {
-            return false;
-        };
-        let Ok(line_start) = snapshot.line_start_byte(line) else {
-            return false;
-        };
-        let Ok(range) = MultiBufferRange::new(line_start, line_end) else {
-            return false;
-        };
-        let Ok(before) = snapshot.text_for_range(range) else {
-            return false;
-        };
-        let before = &before[..column.min(before.len())];
-        scope.pairs().any(|pair| {
-            pair.newline
-                && before.trim_end().ends_with(pair.start)
-                && text_after_trim_is(snapshot, offset, pair.end)
-        })
     }
 
     fn selected_text(&self, cx: &App) -> Option<String> {
@@ -397,18 +369,21 @@ impl Editor {
             Ok(Some(outcome)) => {
                 self.composition = None;
                 self.advance_snapshots(cx);
-                if let Some(selections) = self
-                    .selection_history
-                    .transaction(outcome.transaction_id())
-                    .and_then(|history| {
-                        if redo {
-                            history.redo().cloned()
-                        } else {
-                            Some(history.undo().clone())
+                let snapshot = self.text_snapshot(cx);
+                let history = self.selection_history.transaction(outcome.transaction_id());
+                if redo {
+                    match history.map(|history| history.resolve_redo(&snapshot)) {
+                        Some(Ok(Some(selections))) => self.apply_selection_change(selections, cx),
+                        Some(Err(error)) => {
+                            cx.emit(EditorEvent::Error(format!("重做后恢复选区失败：{error:#}")))
                         }
-                    })
-                {
-                    // 历史选区是源锚点：投影是否重建都不影响解析。
+                        Some(Ok(None)) | None => {
+                            self.request_autoscroll(cx);
+                            self.input_layout = None;
+                            cx.notify();
+                        }
+                    }
+                } else if let Some(selections) = history.map(|history| history.undo().clone()) {
                     self.replace_anchored_selections(selections, cx);
                 } else {
                     self.request_autoscroll(cx);
@@ -602,6 +577,297 @@ impl Editor {
             |plans, snapshot| resolve_selection_shift(snapshot, &before, &plans),
         );
     }
+}
+
+#[derive(Clone, Debug)]
+struct NewlinePlan {
+    target: Selection<MultiBufferOffset>,
+    text: Arc<str>,
+    cursor_offset: usize,
+}
+
+fn newline_plan(
+    snapshot: &MultiBufferSnapshot,
+    selection: Selection<MultiBufferOffset>,
+    scope: Option<&InputScope<'_>>,
+    settings: &zcv_language::LanguageSettings,
+    base_indent: &str,
+    additional_indent: &str,
+    allow_continuations: bool,
+) -> TextResult<NewlinePlan> {
+    let offset = selection.start();
+    let line = snapshot.byte_to_line(offset)?;
+    let line_start = snapshot.line_start_byte(line)?;
+    let line_end = if line.get() + 1 < snapshot.line_count() {
+        snapshot.line_start_byte(Line::new(line.get() + 1))?
+    } else {
+        snapshot.len_bytes()
+    };
+    let line_range = MultiBufferRange::new(line_start, line_end).expect("逻辑行范围必须合法");
+    let line_text = snapshot.text_for_range(line_range)?;
+    let content = line_text.trim_end_matches(['\n', '\r']);
+    let cursor = offset
+        .get()
+        .saturating_sub(line_start.get())
+        .min(content.len());
+
+    if allow_continuations && selection.is_caret() {
+        if settings.extend_comment_on_newline
+            && let Some(scope) = scope
+            && let Some(prefix) = line_comment_continuation(content, cursor, scope)
+        {
+            let text = format!("\n{}{prefix}", base_indent);
+            let cursor_offset = text.len();
+            return Ok(NewlinePlan {
+                target: selection,
+                text: Arc::from(text),
+                cursor_offset,
+            });
+        }
+
+        if settings.extend_comment_on_newline
+            && let Some(scope) = scope
+            && let Some(doc) = documentation_comment_continuation(content, cursor, scope)
+        {
+            let text = format!(
+                "\n{}{additional}{prefix}{extra}",
+                base_indent,
+                additional = doc.additional_indent,
+                prefix = doc.prefix,
+                extra = doc.extra_line,
+            );
+            let cursor_offset = text.len() - doc.extra_line.len();
+            return Ok(NewlinePlan {
+                target: selection,
+                text: Arc::from(text),
+                cursor_offset,
+            });
+        }
+
+        if settings.extend_list_on_newline
+            && let Some(scope) = scope
+            && let Some(list) = list_continuation(content, cursor, scope, settings.tab.tab_size())
+        {
+            let (target, text) = match list {
+                ListContinuation::Continue(prefix) => {
+                    (selection, format!("\n{}{prefix}", base_indent))
+                }
+                ListContinuation::Clear => {
+                    (Selection::new(line_start, selection.end()), String::new())
+                }
+                ListContinuation::Unindent(prefix) => {
+                    (Selection::new(line_start, selection.end()), prefix)
+                }
+            };
+            let cursor_offset = text.len();
+            return Ok(NewlinePlan {
+                target,
+                text: Arc::from(text),
+                cursor_offset,
+            });
+        }
+    }
+
+    let range = selection.range();
+    let extra = allow_continuations
+        && extra_newline_in_pair(snapshot, range, scope)
+        && !matches!(settings.auto_indent, AutoIndentMode::None);
+    let text = if extra {
+        format!("\n{}{additional_indent}\n{}", base_indent, base_indent)
+    } else {
+        format!("\n{}{additional_indent}", base_indent)
+    };
+    let cursor_offset = if extra {
+        text.len() - 1 - base_indent.len()
+    } else {
+        text.len()
+    };
+    Ok(NewlinePlan {
+        target: selection,
+        text: Arc::from(text),
+        cursor_offset,
+    })
+}
+
+fn extra_newline_in_pair(
+    snapshot: &MultiBufferSnapshot,
+    range: MultiBufferRange,
+    scope: Option<&InputScope<'_>>,
+) -> bool {
+    let Some(scope) = scope else {
+        return false;
+    };
+    scope
+        .pairs()
+        .any(|pair| pair.newline && snapshot.newline_input_pair_at(range, pair.start, pair.end))
+        || snapshot.newline_only_bracket_at(range)
+}
+
+fn line_comment_continuation(line: &str, cursor: usize, scope: &InputScope<'_>) -> Option<String> {
+    let leading = line.len() - line.trim_start_matches([' ', '\t']).len();
+    let prefix = scope
+        .line_comment_prefixes()
+        .iter()
+        .filter(|prefix| line[leading..].starts_with(prefix.trim_end()))
+        .max_by_key(|prefix| prefix.trim_end().len())?;
+    let marker = prefix.trim_end();
+    if cursor < leading + marker.len() {
+        return None;
+    }
+    if scope.block_comment().is_some_and(|block| {
+        block.start.trim_end().starts_with(marker)
+            && line[leading..].starts_with(block.start.trim_end())
+    }) {
+        return None;
+    }
+    Some((*prefix).to_owned())
+}
+
+#[derive(Clone, Debug)]
+struct DocumentationContinuation {
+    prefix: String,
+    additional_indent: String,
+    extra_line: String,
+}
+
+fn documentation_comment_continuation(
+    line: &str,
+    cursor: usize,
+    scope: &InputScope<'_>,
+) -> Option<DocumentationContinuation> {
+    if scope.override_name() != Some("comment") {
+        return None;
+    }
+    let config = scope.documentation_comment()?;
+    let leading = line.len() - line.trim_start_matches([' ', '\t']).len();
+    let after_indent = &line[leading..];
+    let after_start =
+        after_indent.starts_with(config.start) && cursor >= leading + config.start.len();
+    let marker = config.prefix.trim_end();
+    let after_prefix =
+        !marker.is_empty() && after_indent.starts_with(marker) && cursor >= leading + marker.len();
+    if !after_start && !after_prefix {
+        return None;
+    }
+    let end_tag = line.find(config.end);
+    if end_tag.is_some_and(|end| cursor > end) {
+        return None;
+    }
+    let indent = " ".repeat(config.tab_size);
+    let extra_line = if after_start && end_tag.is_some() {
+        let closing_indent = if end_tag == Some(cursor) { &indent } else { "" };
+        format!("\n{closing_indent}")
+    } else {
+        String::new()
+    };
+    Some(DocumentationContinuation {
+        prefix: config.prefix.to_owned(),
+        additional_indent: if after_start { indent } else { String::new() },
+        extra_line,
+    })
+}
+
+#[derive(Clone, Debug)]
+enum ListContinuation {
+    Continue(String),
+    Clear,
+    Unindent(String),
+}
+
+fn list_continuation(
+    line: &str,
+    cursor: usize,
+    scope: &InputScope<'_>,
+    tab_size: usize,
+) -> Option<ListContinuation> {
+    let leading_len = line.len() - line.trim_start_matches([' ', '\t']).len();
+    let body = &line[leading_len..];
+    let task = scope.task_list().into_iter().flat_map(|task| {
+        task.prefixes
+            .iter()
+            .map(move |prefix| (*prefix, task.continuation))
+    });
+    let unordered = scope
+        .unordered_list()
+        .iter()
+        .map(|prefix| (*prefix, *prefix));
+    if let Some((marker, continuation)) = task
+        .chain(unordered)
+        .filter(|(marker, _)| body.starts_with(marker))
+        .max_by_key(|(marker, _)| marker.len())
+    {
+        return list_action(
+            line,
+            cursor,
+            leading_len,
+            marker.len(),
+            continuation,
+            continuation,
+            tab_size,
+        );
+    }
+    for config in scope.ordered_list() {
+        let regex = regex::Regex::new(config.pattern).expect("内置有序列表正则必须合法");
+        let Some(captures) = regex.captures(body) else {
+            continue;
+        };
+        let Some(matched) = captures.get(0) else {
+            continue;
+        };
+        if matched.start() != 0 {
+            continue;
+        }
+        let number = captures.get(1)?.as_str().parse::<u64>().ok()?;
+        let continuation = config
+            .format
+            .replace("{1}", &number.checked_add(1)?.to_string());
+        let empty_continuation = config.format.replace("{1}", "1");
+        return list_action(
+            line,
+            cursor,
+            leading_len,
+            matched.len(),
+            &continuation,
+            &empty_continuation,
+            tab_size,
+        );
+    }
+    None
+}
+
+fn list_action(
+    line: &str,
+    cursor: usize,
+    leading_len: usize,
+    marker_len: usize,
+    continuation: &str,
+    empty_continuation: &str,
+    tab_size: usize,
+) -> Option<ListContinuation> {
+    let marker_end = leading_len + marker_len;
+    if cursor >= marker_end
+        && line[marker_end..]
+            .chars()
+            .any(|character| !character.is_whitespace())
+    {
+        return Some(ListContinuation::Continue(continuation.to_owned()));
+    }
+    if cursor != marker_end {
+        return None;
+    }
+    if leading_len == 0 {
+        return Some(ListContinuation::Clear);
+    }
+    let outdent = if line.starts_with('\t') {
+        1
+    } else {
+        leading_len.min(tab_size)
+    };
+    Some(ListContinuation::Unindent(format!(
+        "{}{}",
+        &line[..leading_len - outdent],
+        empty_continuation
+    )))
 }
 
 /// 选区涉及的行合并为不相邻的行块（相邻行并成一块），返回 (起始行, 末行)。
@@ -806,27 +1072,4 @@ fn leading_indent_range(
     Ok(end
         .filter(|end| *end > start)
         .map(|end| Selection::new(start, end)))
-}
-
-/// `offset` 之后跳过非换行空白，是否以 `text` 开头（括号内额外空行的闭合符检查）。
-fn text_after_trim_is(
-    snapshot: &MultiBufferSnapshot,
-    offset: MultiBufferOffset,
-    text: &str,
-) -> bool {
-    let mut cursor = offset;
-    loop {
-        let Ok((chunk, chunk_start)) = snapshot.chunk_at_byte(cursor) else {
-            return false;
-        };
-        let rest = &chunk[cursor.get() - chunk_start.get()..];
-        let Some(first) = rest.chars().next() else {
-            return false;
-        };
-        if first.is_whitespace() && first != '\n' {
-            cursor = MultiBufferOffset::new(cursor.get() + first.len_utf8());
-            continue;
-        }
-        return rest.starts_with(text);
-    }
 }

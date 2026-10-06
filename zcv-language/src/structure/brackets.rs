@@ -16,6 +16,8 @@ use crate::tree_sitter_utils::{QueryCursorHandle, SnapshotTextProvider};
 pub struct BracketPair {
     pub open: Range<usize>,
     pub close: Range<usize>,
+    /// `brackets.scm` 用 `#set! newline.only` 标记的结构括号。
+    pub newline_only: bool,
 }
 
 impl SyntaxSnapshot {
@@ -35,6 +37,10 @@ impl SyntaxSnapshot {
             let mut matches =
                 cursor.matches(query, layer.tree.root_node(), SnapshotTextProvider(text));
             while let Some(query_match) = matches.next() {
+                let newline_only = query
+                    .property_settings(query_match.pattern_index)
+                    .iter()
+                    .any(|property| property.key.as_ref() == "newline.only");
                 let mut open = None;
                 let mut close = None;
                 for capture in query_match.captures {
@@ -45,7 +51,11 @@ impl SyntaxSnapshot {
                     }
                 }
                 if let (Some(open), Some(close)) = (open, close) {
-                    pairs.push(BracketPair { open, close });
+                    pairs.push(BracketPair {
+                        open,
+                        close,
+                        newline_only,
+                    });
                 }
             }
         }

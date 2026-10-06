@@ -97,9 +97,7 @@ fn editors_share_buffer_but_keep_view_state_independent(cx: &mut TestAppContext)
             SelectionSet::caret(MultiBufferOffset::ZERO)
         );
         assert_eq!(
-            history
-                .redo()
-                .map(|redo| { redo.resolve(&snapshot).expect("redo 选区应能解析") }),
+            history.resolve_redo(&snapshot).expect("redo 选区应能解析"),
             Some(SelectionSet::caret(MultiBufferOffset::new(1)))
         );
     });

@@ -32,6 +32,8 @@ EditorElement
 - `view/syntax.rs` 负责语法节点、大纲和局部绑定查询；`view/rename.rs` 负责局部重命名会话、事务、焦点生命周期和定位。
 - `view/input.rs` 负责输入法组合与输入编辑；`view/presentation.rs` 负责把输入法标记和重命名淡化范围组合成布局层消费的展示快照。
 - 自动配对、包裹、跳过闭合符与配对内换行按每个选区的组合位置读取 `MultiBufferSnapshot::input_scope_at`；`Editor` 只保存锚定的自动闭合区域，并经同一事务落地文本和选择。输入法组合期间不执行这些自动编辑。
+- 换行沿同一 `Editor::insert_newline` 事务逐选区读取 `InputScope`、`LanguageSettings` 和 `indents.scm` 建议；行／文档／块注释、Markdown 列表、输入配对与 `brackets.scm` 的 `newline.only` 规则在语言／设置层拥有，文本和新选区一次提交。`newline.only` 只对同一 excerpt 内且括号两侧为非换行空白的选区生效；输入法组合期间跳过续行和额外配对编辑。
+- 选区历史随文本事务保存源锚点；对插入文本内部的 redo 光标，另记录该事务提交时的源内位置，重做后通过当前 excerpt 投影重新锚定，避免撤销时锚点塌缩使光标回到插入点。
 - `DisplayMap` 从当前文档快照与编辑器配置派生可见行、折叠、软换行和装饰投影；搜索命中、diff hunk、宿主 hunk 与折叠候选由显示链按显示版本投影，`Editor` 只注入领域锚点，`EditorElement` 只从显示快照按视口读取；折叠状态只属于显示层，不参与文本编辑，也不是第二份文本模型。
 - 软换行的单点与批量坐标查询共用 `WrapPointCursor`；变换跨度与绝对起点分别来自节点摘要和游标前缀和，词级差异、选择及光标沿同一规则转换。
 - `EditorElement` 连接每帧布局、绘制和输入命中，不长期持有文档事实。

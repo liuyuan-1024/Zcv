@@ -46,3 +46,52 @@ pub struct AutoClosePair {
     /// 当前语法作用域包含其中任一名称时禁用该配对。
     pub not_in: &'static [&'static str],
 }
+
+/// 语言配置中的块注释续行格式。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockCommentConfig {
+    pub start: &'static str,
+    pub prefix: &'static str,
+    pub end: &'static str,
+    pub tab_size: usize,
+}
+
+/// 语言配置中的有序列表标记格式。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OrderedListConfig {
+    pub pattern: &'static str,
+    pub format: &'static str,
+}
+
+/// 语言配置中的任务列表续行格式。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TaskListConfig {
+    pub prefixes: &'static [&'static str],
+    pub continuation: &'static str,
+}
+
+/// 语言层拥有的换行、注释和列表输入政策。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LanguageInputConfig {
+    pub line_comments: &'static [&'static str],
+    pub block_comment: Option<BlockCommentConfig>,
+    pub element_block_comment: Option<BlockCommentConfig>,
+    pub documentation_comment: Option<BlockCommentConfig>,
+    pub unordered_list: &'static [&'static str],
+    pub ordered_list: &'static [OrderedListConfig],
+    pub task_list: Option<TaskListConfig>,
+}
+
+impl LanguageInputConfig {
+    pub const fn empty() -> Self {
+        Self {
+            line_comments: &[],
+            block_comment: None,
+            element_block_comment: None,
+            documentation_comment: None,
+            unordered_list: &[],
+            ordered_list: &[],
+            task_list: None,
+        }
+    }
+}

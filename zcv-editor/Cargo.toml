@@ -14,6 +14,7 @@ doctest = false
 anyhow.workspace = true
 futures-lite.workspace = true
 gpui.workspace = true
+regex.workspace = true
 sum-tree.workspace = true
 thiserror.workspace = true
 unicode-segmentation.workspace = true

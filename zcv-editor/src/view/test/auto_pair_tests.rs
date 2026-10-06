@@ -4,7 +4,7 @@ use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
 
 use std::path::PathBuf;
 
-use gpui::{AppContext, EntityInputHandler, TestAppContext, VisualTestContext};
+use gpui::{AppContext, BorrowAppContext, EntityInputHandler, TestAppContext, VisualTestContext};
 use zcv_actions::Backspace;
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
@@ -101,6 +101,29 @@ fn buffer_text(buffer: &gpui::Entity<LanguageBuffer>, cx: &VisualTestContext) ->
 
 fn primary_head(editor: &gpui::Entity<Editor>, cx: &VisualTestContext) -> MultiBufferOffset {
     cx.read_entity(editor, |editor, cx| editor.selections(cx).primary().head())
+}
+
+fn assert_newline_roundtrip(
+    buffer: &gpui::Entity<LanguageBuffer>,
+    editor: &gpui::Entity<Editor>,
+    cx: &mut VisualTestContext,
+    original: &str,
+    expected: &str,
+    before: usize,
+    after: usize,
+) {
+    cx.update_entity(editor, |editor, cx| editor.insert_newline(cx));
+    assert_eq!(buffer_text(buffer, cx), expected);
+    assert_eq!(primary_head(editor, cx), MultiBufferOffset::new(after));
+    assert!(cx.read_entity(editor, |editor, cx| {
+        editor.selections(cx).primary().is_caret()
+    }));
+    cx.update_entity(editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(buffer, cx), original);
+    assert_eq!(primary_head(editor, cx), MultiBufferOffset::new(before));
+    cx.update_entity(editor, |editor, cx| editor.redo(cx));
+    assert_eq!(buffer_text(buffer, cx), expected);
+    assert_eq!(primary_head(editor, cx), MultiBufferOffset::new(after));
 }
 
 fn type_text(editor: &gpui::Entity<Editor>, cx: &mut VisualTestContext, text: &str) {
@@ -420,7 +443,7 @@ fn markdown_fence_uses_injected_rust_pair_policy(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn markdown_list_newline_keeps_stage_zero_baseline(cx: &mut TestAppContext) {
+fn markdown_empty_list_item_ends_the_list(cx: &mut TestAppContext) {
     let source = "- ";
     let (buffer, editor, cx) = editor_with_path(
         cx,
@@ -430,11 +453,582 @@ fn markdown_list_newline_keeps_stage_zero_baseline(cx: &mut TestAppContext) {
     );
     cx.run_until_parked();
     cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
-    assert_eq!(buffer_text(&buffer, cx), "- \n");
-    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(3));
+    assert_eq!(buffer_text(&buffer, cx), "");
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::ZERO);
     cx.update_entity(&editor, |editor, cx| editor.undo(cx));
     assert_eq!(buffer_text(&buffer, cx), source);
     assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(2));
+    cx.update_entity(&editor, |editor, cx| editor.redo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "");
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::ZERO);
+}
+
+#[gpui::test]
+fn newline_continues_rust_comments_and_restores_with_undo_redo(cx: &mut TestAppContext) {
+    let source = "// item";
+    let (buffer, editor, cx) = editor_with_rust(
+        cx,
+        source,
+        SelectionSet::caret(MultiBufferOffset::new(source.len())),
+    );
+    cx.run_until_parked();
+
+    cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
+    assert_eq!(buffer_text(&buffer, cx), "// item\n// ");
+    assert_eq!(
+        primary_head(&editor, cx),
+        MultiBufferOffset::new("// item\n// ".len())
+    );
+
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), source);
+    assert_eq!(
+        primary_head(&editor, cx),
+        MultiBufferOffset::new(source.len())
+    );
+    cx.update_entity(&editor, |editor, cx| editor.redo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "// item\n// ");
+    assert_eq!(
+        primary_head(&editor, cx),
+        MultiBufferOffset::new("// item\n// ".len())
+    );
+}
+
+#[gpui::test]
+fn newline_continues_doc_and_block_comments(cx: &mut TestAppContext) {
+    for (source, expected) in [
+        ("/// item", "/// item\n/// "),
+        ("/* item */", "/* item\n * \n */"),
+    ] {
+        let (buffer, editor, cx) = editor_with_rust(
+            cx,
+            source,
+            SelectionSet::caret(MultiBufferOffset::new(source.find("item").unwrap() + 4)),
+        );
+        cx.run_until_parked();
+        cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
+        assert_eq!(buffer_text(&buffer, cx), expected);
+        assert_eq!(
+            primary_head(&editor, cx),
+            MultiBufferOffset::new(
+                source.find("item").unwrap() + 4 + if source.starts_with("/*") { 4 } else { 5 }
+            )
+        );
+        cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+        assert_eq!(buffer_text(&buffer, cx), source);
+        assert_eq!(
+            primary_head(&editor, cx),
+            MultiBufferOffset::new(source.find("item").unwrap() + 4)
+        );
+        cx.update_entity(&editor, |editor, cx| editor.redo(cx));
+        assert_eq!(buffer_text(&buffer, cx), expected);
+        assert_eq!(
+            primary_head(&editor, cx),
+            MultiBufferOffset::new(
+                source.find("item").unwrap() + 4 + if source.starts_with("/*") { 4 } else { 5 }
+            )
+        );
+    }
+}
+
+#[gpui::test]
+fn newline_respects_comment_start_and_end_boundaries(cx: &mut TestAppContext) {
+    for (source, cursor, expected, after) in [
+        ("// item", 1, "/\n/ item", 2),
+        ("/* */", 2, "/*\n * \n */", 6),
+        ("/* */", 5, "/* */\n", 6),
+    ] {
+        let (buffer, editor, cx) = editor_with_rust(
+            cx,
+            source,
+            SelectionSet::caret(MultiBufferOffset::new(cursor)),
+        );
+        cx.run_until_parked();
+        assert_newline_roundtrip(&buffer, &editor, cx, source, expected, cursor, after);
+    }
+}
+
+#[gpui::test]
+fn css_and_html_without_documentation_policy_do_not_continue_block_comments(
+    cx: &mut TestAppContext,
+) {
+    let source = "/* item */";
+    let cursor = source.find("item").unwrap() + 4;
+    let (buffer, editor, cx) = editor_with_path(
+        cx,
+        "theme.css",
+        source,
+        SelectionSet::caret(MultiBufferOffset::new(cursor)),
+    );
+    cx.run_until_parked();
+    assert_newline_roundtrip(
+        &buffer,
+        &editor,
+        cx,
+        source,
+        "/* item\n */",
+        cursor,
+        cursor + 1,
+    );
+
+    let source = "<!-- item -->";
+    let cursor = source.find("item").unwrap() + 4;
+    let (buffer, editor, cx) = editor_with_path(
+        cx,
+        "index.html",
+        source,
+        SelectionSet::caret(MultiBufferOffset::new(cursor)),
+    );
+    cx.run_until_parked();
+    assert_newline_roundtrip(
+        &buffer,
+        &editor,
+        cx,
+        source,
+        "<!-- item\n -->",
+        cursor,
+        cursor + 1,
+    );
+}
+
+#[gpui::test]
+fn markdown_lists_continue_ordered_unordered_and_tasks(cx: &mut TestAppContext) {
+    for (source, expected) in [
+        ("- item", "- item\n- "),
+        ("1. item", "1. item\n2. "),
+        ("- [x] item", "- [x] item\n- [ ] "),
+    ] {
+        let (buffer, editor, cx) = editor_with_path(
+            cx,
+            "README.md",
+            source,
+            SelectionSet::caret(MultiBufferOffset::new(source.len())),
+        );
+        cx.run_until_parked();
+        cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
+        assert_eq!(buffer_text(&buffer, cx), expected, "{source}");
+        assert_eq!(
+            primary_head(&editor, cx),
+            MultiBufferOffset::new(expected.len())
+        );
+        cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+        assert_eq!(buffer_text(&buffer, cx), source);
+        assert_eq!(
+            primary_head(&editor, cx),
+            MultiBufferOffset::new(source.len())
+        );
+        cx.update_entity(&editor, |editor, cx| editor.redo(cx));
+        assert_eq!(buffer_text(&buffer, cx), expected);
+        assert_eq!(
+            primary_head(&editor, cx),
+            MultiBufferOffset::new(expected.len())
+        );
+    }
+}
+
+#[gpui::test]
+fn markdown_empty_task_and_ordered_items_clear_or_unindent(cx: &mut TestAppContext) {
+    for (source, expected) in [
+        ("- [ ] ", ""),
+        ("3. ", ""),
+        ("  - [x] ", "- [ ] "),
+        ("  3. ", "1. "),
+    ] {
+        let (buffer, editor, cx) = editor_with_path(
+            cx,
+            "README.md",
+            source,
+            SelectionSet::caret(MultiBufferOffset::new(source.len())),
+        );
+        cx.run_until_parked();
+        assert_newline_roundtrip(
+            &buffer,
+            &editor,
+            cx,
+            source,
+            expected,
+            source.len(),
+            expected.len(),
+        );
+    }
+}
+
+#[gpui::test]
+fn newline_between_brackets_replaces_selection_with_one_transaction(cx: &mut TestAppContext) {
+    let source = "{ x }";
+    let expected = "{ \n    \n }";
+    let (buffer, editor, cx) = editor_with_rust(
+        cx,
+        source,
+        SelectionSet::new(vec![Selection::new(
+            MultiBufferOffset::new(2),
+            MultiBufferOffset::new(3),
+        )]),
+    );
+    cx.run_until_parked();
+    assert_newline_roundtrip(&buffer, &editor, cx, source, expected, 3, 7);
+}
+
+#[gpui::test]
+fn newline_applies_two_comment_scopes_in_one_undo_step(cx: &mut TestAppContext) {
+    let source = "// a\n// b";
+    let expected = "// a\n// \n// b\n// ";
+    let (buffer, editor, cx) = editor_with_rust(
+        cx,
+        source,
+        SelectionSet::new(vec![
+            Selection::caret(MultiBufferOffset::new(4)),
+            Selection::caret(MultiBufferOffset::new(9)),
+        ]),
+    );
+    cx.run_until_parked();
+    cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
+    assert_eq!(buffer_text(&buffer, cx), expected);
+    assert_eq!(
+        cx.read_entity(&editor, |editor, cx| {
+            editor
+                .selections(cx)
+                .as_slice()
+                .iter()
+                .map(|selection| selection.head())
+                .collect::<Vec<_>>()
+        }),
+        vec![MultiBufferOffset::new(8), MultiBufferOffset::new(17)]
+    );
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), source);
+    assert_eq!(
+        cx.read_entity(&editor, |editor, cx| {
+            editor
+                .selections(cx)
+                .as_slice()
+                .iter()
+                .map(|selection| selection.head())
+                .collect::<Vec<_>>()
+        }),
+        vec![MultiBufferOffset::new(4), MultiBufferOffset::new(9)]
+    );
+    cx.update_entity(&editor, |editor, cx| editor.redo(cx));
+    assert_eq!(buffer_text(&buffer, cx), expected);
+    assert_eq!(
+        cx.read_entity(&editor, |editor, cx| {
+            editor
+                .selections(cx)
+                .as_slice()
+                .iter()
+                .map(|selection| selection.head())
+                .collect::<Vec<_>>()
+        }),
+        vec![MultiBufferOffset::new(8), MultiBufferOffset::new(17)]
+    );
+}
+
+#[gpui::test]
+fn markdown_nested_empty_list_item_unindents_and_read_only_newline_is_ignored(
+    cx: &mut TestAppContext,
+) {
+    let source = "  - ";
+    let (buffer, editor, cx) = editor_with_path(
+        cx,
+        "README.md",
+        source,
+        SelectionSet::caret(MultiBufferOffset::new(source.len())),
+    );
+    cx.run_until_parked();
+    cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
+    assert_eq!(buffer_text(&buffer, cx), "- ");
+    assert_eq!(
+        primary_head(&editor, cx),
+        MultiBufferOffset::new("- ".len())
+    );
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), source);
+    assert_eq!(
+        primary_head(&editor, cx),
+        MultiBufferOffset::new(source.len())
+    );
+    cx.update_entity(&editor, |editor, cx| editor.redo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "- ");
+
+    let read_only = cx.new(MultiBuffer::empty_read_only);
+    cx.update_entity(&read_only, |combined, cx| {
+        combined.set_excerpts_for_path(
+            vec![ExcerptRange::new(
+                buffer.clone(),
+                MultiBufferRange::new(MultiBufferOffset::ZERO, MultiBufferOffset::new(2))
+                    .unwrap()
+                    .into(),
+                Vec::new(),
+            )],
+            cx,
+        );
+    });
+    let read_only_editor = cx.new({
+        let read_only = read_only.clone();
+        move |cx| {
+            let mut editor = Editor::for_multi_buffer(read_only, cx);
+            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(2)), cx);
+            editor
+        }
+    });
+    cx.update_entity(&read_only_editor, |editor, cx| editor.insert_newline(cx));
+    assert_eq!(buffer_text(&buffer, cx), "- ");
+    assert_eq!(
+        primary_head(&read_only_editor, cx),
+        MultiBufferOffset::new(2)
+    );
+    cx.update_entity(&read_only_editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "- ");
+    assert_eq!(
+        primary_head(&read_only_editor, cx),
+        MultiBufferOffset::new(2)
+    );
+    cx.update_entity(&read_only_editor, |editor, cx| editor.redo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "- ");
+    assert_eq!(
+        primary_head(&read_only_editor, cx),
+        MultiBufferOffset::new(2)
+    );
+}
+
+#[gpui::test]
+fn newline_in_markdown_injected_rust_uses_the_injected_scope(cx: &mut TestAppContext) {
+    let source = "```rust\n// item\n```\n";
+    let at = source.find("item").unwrap() + "item".len();
+    let (buffer, editor, cx) = editor_with_path(
+        cx,
+        "README.md",
+        source,
+        SelectionSet::caret(MultiBufferOffset::new(at)),
+    );
+    cx.run_until_parked();
+    assert_newline_roundtrip(
+        &buffer,
+        &editor,
+        cx,
+        source,
+        "```rust\n// item\n// \n```\n",
+        at,
+        at + 4,
+    );
+}
+
+#[gpui::test]
+fn newline_settings_can_disable_comment_and_list_continuation(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        zcv_settings::init(cx);
+        cx.update_global::<zcv_settings::SettingsStore, _>(|settings, _| {
+            settings
+                .set_user_settings(
+                    r#"{
+                        "extend_comment_on_newline": false,
+                        "extend_list_on_newline": false,
+                        "auto_indent": "none"
+                    }"#,
+                )
+                .expect("测试设置应能加载");
+        });
+    });
+
+    let (comment_buffer, comment_editor, cx) = editor_with_rust(
+        cx,
+        "// item",
+        SelectionSet::caret(MultiBufferOffset::new("// item".len())),
+    );
+    cx.run_until_parked();
+    assert_newline_roundtrip(
+        &comment_buffer,
+        &comment_editor,
+        cx,
+        "// item",
+        "// item\n",
+        7,
+        8,
+    );
+
+    let (list_buffer, list_editor, cx) = editor_with_path(
+        cx,
+        "README.md",
+        "- item",
+        SelectionSet::caret(MultiBufferOffset::new("- item".len())),
+    );
+    cx.run_until_parked();
+    assert_newline_roundtrip(&list_buffer, &list_editor, cx, "- item", "- item\n", 6, 7);
+
+    let (code_buffer, code_editor, cx) = editor_with_rust(
+        cx,
+        "fn main() {",
+        SelectionSet::caret(MultiBufferOffset::new("fn main() {".len())),
+    );
+    cx.run_until_parked();
+    assert_newline_roundtrip(
+        &code_buffer,
+        &code_editor,
+        cx,
+        "fn main() {",
+        "fn main() {\n",
+        11,
+        12,
+    );
+
+    let (pair_buffer, pair_editor, cx) =
+        editor_with_rust(cx, "{}", SelectionSet::caret(MultiBufferOffset::new(1)));
+    cx.run_until_parked();
+    assert_newline_roundtrip(&pair_buffer, &pair_editor, cx, "{}", "{\n}", 1, 2);
+}
+
+#[gpui::test]
+fn newline_during_ime_composition_skips_comment_continuation(cx: &mut TestAppContext) {
+    let (buffer, editor, cx) = editor_with_rust(
+        cx,
+        "// item",
+        SelectionSet::caret(MultiBufferOffset::new("// item".len())),
+    );
+    cx.update(|window, app| {
+        editor.update(app, |editor, cx| {
+            editor.replace_and_mark_text_in_range(None, "中", None, window, cx);
+        });
+    });
+    cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
+    assert_eq!(buffer_text(&buffer, cx), "// item中\n");
+    assert_eq!(
+        primary_head(&editor, cx),
+        MultiBufferOffset::new("// item中\n".len())
+    );
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "// item中");
+    assert_eq!(
+        primary_head(&editor, cx),
+        MultiBufferOffset::new("// item中".len())
+    );
+    cx.update_entity(&editor, |editor, cx| editor.redo(cx));
+    assert_eq!(buffer_text(&buffer, cx), "// item中\n");
+    assert_eq!(
+        primary_head(&editor, cx),
+        MultiBufferOffset::new("// item中\n".len())
+    );
+}
+
+#[gpui::test]
+fn newline_on_incomplete_rust_tree_keeps_the_observable_comment_behavior(cx: &mut TestAppContext) {
+    let source = "// item(\nfn main(\n";
+    let at = source.find('\n').unwrap();
+    let (buffer, editor, cx) =
+        editor_with_rust(cx, source, SelectionSet::caret(MultiBufferOffset::new(at)));
+    assert_newline_roundtrip(
+        &buffer,
+        &editor,
+        cx,
+        source,
+        "// item(\n// \nfn main(\n",
+        at,
+        "// item(\n// ".len(),
+    );
+}
+
+#[gpui::test]
+fn tsx_newline_only_bracket_rule_adds_a_blank_inner_line(cx: &mut TestAppContext) {
+    let source = "<main></main>";
+    let at = "<main>".len();
+    let (buffer, editor, cx) = editor_with_path(
+        cx,
+        "view.tsx",
+        source,
+        SelectionSet::caret(MultiBufferOffset::new(at)),
+    );
+    cx.run_until_parked();
+    assert_newline_roundtrip(
+        &buffer,
+        &editor,
+        cx,
+        source,
+        "<main>\n    \n</main>",
+        at,
+        "<main>\n    ".len(),
+    );
+}
+
+#[gpui::test]
+fn tsx_newline_only_respects_side_whitespace_and_newline_boundary(cx: &mut TestAppContext) {
+    for (source, cursor, expected, after) in [
+        ("<main>  </main>", 7, "<main> \n    \n </main>", 12),
+        ("<main>\n</main>", 7, "<main>\n\n    </main>", 12),
+    ] {
+        let (buffer, editor, cx) = editor_with_path(
+            cx,
+            "view.tsx",
+            source,
+            SelectionSet::caret(MultiBufferOffset::new(cursor)),
+        );
+        cx.run_until_parked();
+        assert_newline_roundtrip(&buffer, &editor, cx, source, expected, cursor, after);
+    }
+}
+
+#[gpui::test]
+fn newline_at_composite_excerpt_boundary_does_not_borrow_next_scope(cx: &mut TestAppContext) {
+    let markdown = cx.new(|cx| {
+        LanguageBuffer::new(
+            Buffer::from_text("- item".to_owned(), BufferConfig::default()).unwrap(),
+            Some(PathBuf::from("README.md")),
+            std::sync::Arc::new(LanguageRegistry::new()),
+            cx,
+        )
+    });
+    let rust = cx.new(|cx| {
+        LanguageBuffer::new(
+            Buffer::from_text("fn main() {}".to_owned(), BufferConfig::default()).unwrap(),
+            Some(PathBuf::from("main.rs")),
+            std::sync::Arc::new(LanguageRegistry::new()),
+            cx,
+        )
+    });
+    let combined = cx.new(MultiBuffer::empty);
+    cx.update_entity(&combined, |buffer, cx| {
+        for source in [&markdown, &rust] {
+            let len = source.read(cx).text_snapshot().len_bytes();
+            buffer.set_excerpts_for_path(
+                vec![ExcerptRange::new(
+                    source.clone(),
+                    MultiBufferRange::new(
+                        MultiBufferOffset::ZERO,
+                        MultiBufferOffset::new(len.get()),
+                    )
+                    .unwrap()
+                    .into(),
+                    Vec::new(),
+                )],
+                cx,
+            );
+        }
+    });
+    let (editor, cx) = cx.add_window_view({
+        let combined = combined.clone();
+        move |_, cx| {
+            let mut editor = Editor::for_multi_buffer(combined, cx);
+            editor.set_selections(SelectionSet::caret(MultiBufferOffset::new(6)), cx);
+            editor
+        }
+    });
+    cx.run_until_parked();
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(7));
+    cx.update_entity(&editor, |editor, cx| editor.insert_newline(cx));
+    assert_eq!(
+        cx.read_entity(&editor, |editor, cx| {
+            String::from_utf8(editor.display_snapshot(cx).buffer_snapshot().text_bytes())
+                .expect("组合快照应保持 UTF-8")
+        }),
+        "- item\n\nfn main() {}"
+    );
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(8));
+    cx.update_entity(&editor, |editor, cx| editor.undo(cx));
+    assert_eq!(buffer_text(&markdown, cx), "- item");
+    assert_eq!(buffer_text(&rust, cx), "fn main() {}");
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(7));
+    cx.update_entity(&editor, |editor, cx| editor.redo(cx));
+    assert_eq!(buffer_text(&markdown, cx), "- item");
+    assert_eq!(buffer_text(&rust, cx), "\nfn main() {}");
+    assert_eq!(primary_head(&editor, cx), MultiBufferOffset::new(8));
 }
 
 #[gpui::test]

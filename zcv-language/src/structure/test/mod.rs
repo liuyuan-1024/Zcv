@@ -51,6 +51,21 @@ fn rust_syntax_snapshot_exposes_zed_structure_queries() {
 }
 
 #[test]
+fn tsx_brackets_preserve_newline_only_metadata() {
+    let source = "<main><section></section></main>";
+    let (buffer, syntax) = crate::test::parsed_syntax("view.tsx", source);
+    let snapshot = buffer.snapshot();
+    let pairs = syntax
+        .snapshot()
+        .bracket_pairs(0..snapshot.len_bytes().get(), &snapshot);
+    assert!(pairs.iter().any(|pair| {
+        pair.newline_only
+            && &source[pair.open.clone()] == "<main>"
+            && &source[pair.close.clone()] == "</main>"
+    }));
+}
+
+#[test]
 fn outline_preserves_nested_same_named_unicode_definitions() {
     let source = "mod 数据 {\n    struct Item {\n        value: i32,\n    }\n    fn build() {\n        let value = 1;\n    }\n}\nfn build() {}\n";
     let (buffer, syntax) = parsed_syntax("outline.rs", source);

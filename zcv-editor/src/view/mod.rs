@@ -1968,11 +1968,14 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         let redo_selections = self.anchored_selections();
+        let resolved = self.resolved_selections(cx);
+        let snapshot = self.text_snapshot(cx);
         if let Some(transaction_id) = transaction_id
             && let Some(transaction) = self.selection_history.transaction_mut(transaction_id)
         {
             // 事务结束时记录 redo 选区（源锚点）。
             transaction.set_redo(redo_selections);
+            transaction.set_redo_source_points(&resolved, &snapshot);
         }
         self.finish_edit(cx);
         if let Some(transaction_id) = transaction_id {

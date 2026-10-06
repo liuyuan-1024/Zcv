@@ -2202,6 +2202,15 @@ impl<'a> MultiBufferSource<'a> {
         self.source_offset
     }
 
+    /// 将当前 excerpt 内的源点重新投影到组合坐标，供事务回放恢复源内光标。
+    pub fn project_point(&self, offset: ByteOffset) -> Option<MultiBufferOffset> {
+        let start = self.mapping.source_range.start().get();
+        let end = self.mapping.source_range.end().get();
+        (start <= offset.get() && offset.get() <= end).then(|| {
+            MultiBufferOffset::new(self.mapping.output_range.start().get() + offset.get() - start)
+        })
+    }
+
     /// 将连续可见的工作区源范围投影为当前快照的组合坐标范围。
     ///
     /// 范围可以跨同一源的连续 excerpt；
@@ -3567,9 +3576,109 @@ impl MultiBufferSnapshot {
                         ..(output_start + pair.open.end - excerpt_start),
                     close: (output_start + pair.close.start - excerpt_start)
                         ..(output_start + pair.close.end - excerpt_start),
+                    newline_only: pair.newline_only,
                 }
             })
             .collect()
+    }
+
+    /// 查询选区所处的 `brackets.scm` 换行括号。
+    ///
+    /// 查询使用完整 excerpt，避免开闭捕获落在光标两侧时被局部 query 范围截断；
+    /// 结果仍限制在同一可编辑源片段内，并要求括号与选区之间只有非换行空白。
+    pub fn newline_only_bracket_at(&self, range: MultiBufferRange) -> bool {
+        let start = range.start().get();
+        let end = range.end().get();
+        let Some((mapping, source, source_range)) = self.source_range(start..end) else {
+            return false;
+        };
+        if !mapping.editable {
+            return false;
+        }
+        let pairs = source.syntax.bracket_pairs(
+            mapping.source_range.start().get()..mapping.source_range.end().get(),
+            &source.text,
+        );
+        let selection_start = source_range.start;
+        let selection_end = source_range.end;
+        let pair = pairs
+            .into_iter()
+            .filter(|pair| {
+                pair.open.start >= mapping.source_range.start().get()
+                    && pair.close.end <= mapping.source_range.end().get()
+                    && pair.open.end <= selection_start
+                    && selection_end <= pair.close.start
+            })
+            .min_by_key(|pair| pair.close.end - pair.open.start);
+        let Some(pair) = pair else {
+            return false;
+        };
+        if !pair.newline_only {
+            return false;
+        }
+        let between = |range: std::ops::Range<usize>| {
+            source
+                .text
+                .slice_byte_range(ByteOffset::new(range.start), ByteOffset::new(range.end))
+                .map(|text| {
+                    text.as_str().chars().all(|character| {
+                        character.is_whitespace() && character != '\n' && character != '\r'
+                    })
+                })
+                .unwrap_or(false)
+        };
+        between(pair.open.end..selection_start) && between(selection_end..pair.close.start)
+    }
+
+    /// 在同一可编辑 excerpt 的源行内检查输入配对两侧的非换行空白。
+    pub fn newline_input_pair_at(&self, range: MultiBufferRange, open: &str, close: &str) -> bool {
+        let Some((mapping, source, source_range)) =
+            self.source_range(range.start().get()..range.end().get())
+        else {
+            return false;
+        };
+        if !mapping.editable {
+            return false;
+        }
+        let Ok(line) = source
+            .text
+            .byte_to_line(ByteOffset::new(source_range.start))
+        else {
+            return false;
+        };
+        let Ok(line_start) = source.text.line_start_byte(line) else {
+            return false;
+        };
+        let line_end = if line.get() + 1 < source.text.line_count() {
+            let Ok(next) = source.text.line_start_byte(Line::new(line.get() + 1)) else {
+                return false;
+            };
+            next.get()
+        } else {
+            source.text.len_bytes().get()
+        };
+        let start = line_start.get().max(mapping.source_range.start().get());
+        let end = line_end.min(mapping.source_range.end().get());
+        let Ok(before) = source
+            .text
+            .slice_byte_range(ByteOffset::new(start), ByteOffset::new(source_range.start))
+        else {
+            return false;
+        };
+        let Ok(after) = source
+            .text
+            .slice_byte_range(ByteOffset::new(source_range.end), ByteOffset::new(end))
+        else {
+            return false;
+        };
+        before
+            .as_str()
+            .trim_end_matches([' ', '\t'])
+            .ends_with(open.trim_end())
+            && after
+                .as_str()
+                .trim_start_matches([' ', '\t'])
+                .starts_with(close.trim_start())
     }
 
     /// 查询组合坐标中光标所在 source 的换行缩进建议。

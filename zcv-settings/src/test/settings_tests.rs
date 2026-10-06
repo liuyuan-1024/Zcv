@@ -42,6 +42,28 @@ fn missing_fields_use_defaults() {
 }
 
 #[test]
+fn newline_settings_have_explicit_defaults_and_overrides() {
+    let defaults = UserSettings::default();
+    assert_eq!(defaults.auto_indent, AutoIndentMode::SyntaxAware);
+    assert!(defaults.extend_comment_on_newline);
+    assert!(defaults.extend_list_on_newline);
+
+    let settings = UserSettings::merge(
+        parse_user_settings(
+            r#"{
+                "auto_indent": "none",
+                "extend_comment_on_newline": false,
+                "extend_list_on_newline": false
+            }"#,
+        )
+        .unwrap(),
+    );
+    assert_eq!(settings.auto_indent, AutoIndentMode::None);
+    assert!(!settings.extend_comment_on_newline);
+    assert!(!settings.extend_list_on_newline);
+}
+
+#[test]
 fn cursor_shape_setting_supports_all_zed_shapes() {
     for (name, shape) in [
         ("bar", CursorShape::Bar),

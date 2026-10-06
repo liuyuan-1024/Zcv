@@ -8,8 +8,8 @@ use std::sync::LazyLock;
 
 use super::INITIAL_USER_SETTINGS;
 use super::schema::{
-    BuiltinSettingsContent, CursorShape, IndentGuideSettings, LanguageOverride, SoftWrapMode,
-    TabConfig, UserSettingsContent, parse_builtin_settings,
+    AutoIndentMode, BuiltinSettingsContent, CursorShape, IndentGuideSettings, LanguageOverride,
+    SoftWrapMode, TabConfig, UserSettingsContent, parse_builtin_settings,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -44,6 +44,12 @@ pub struct UserSettings {
     pub use_autoclose: bool,
     /// 选中文本时键入配对起始字符是否用该对包裹选区。
     pub use_auto_surround: bool,
+    /// 自动缩进策略；语言的 `indents.scm` 在语法感知模式下生效。
+    pub auto_indent: AutoIndentMode,
+    /// 换行时是否续写行注释与文档注释。
+    pub extend_comment_on_newline: bool,
+    /// 换行时是否续写 Markdown 列表。
+    pub extend_list_on_newline: bool,
     /// 终端字体大小（像素）。
     pub terminal_font_size: f32,
     /// 终端行高（相对字号的倍数）。
@@ -186,6 +192,13 @@ impl UserSettings {
             use_auto_surround: content
                 .use_auto_surround
                 .unwrap_or(defaults.use_auto_surround),
+            auto_indent: content.auto_indent.unwrap_or(defaults.auto_indent),
+            extend_comment_on_newline: content
+                .extend_comment_on_newline
+                .unwrap_or(defaults.extend_comment_on_newline),
+            extend_list_on_newline: content
+                .extend_list_on_newline
+                .unwrap_or(defaults.extend_list_on_newline),
             terminal_font_size: content
                 .terminal_font_size
                 .unwrap_or(defaults.terminal_font_size),

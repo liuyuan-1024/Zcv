@@ -74,6 +74,8 @@ fn input_scope_uses_rust_override_boundaries_and_pair_policy() {
         .input_scope_at(ByteOffset::new(comment_start), &text)
         .unwrap();
     assert_eq!(comment.override_name(), Some("comment"));
+    assert_eq!(comment.line_comment_prefixes(), &["// ", "/// ", "//! "]);
+    assert!(comment.block_comment().is_some());
     let comment_end = source.find("comment").unwrap() + "comment".len();
     assert_eq!(
         tree.input_scope_at(ByteOffset::new(comment_end), &text)
@@ -118,6 +120,9 @@ fn markdown_list_position_uses_host_input_scope() {
     let scope = current.input_scope_at(ByteOffset::new(2), &text).unwrap();
     assert_eq!(scope.language_name(), "Markdown");
     assert_eq!(scope.override_name(), None);
+    assert_eq!(scope.unordered_list(), &["- ", "* ", "+ "]);
+    assert_eq!(scope.ordered_list()[0].format, "{1}. ");
+    assert!(scope.task_list().is_some());
 }
 
 #[test]

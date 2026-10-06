@@ -1811,6 +1811,7 @@ impl Element for EditorElement {
         let animate_caret = selections.len() == 1
             && carets.len() == 1
             && matches!(cursor_shape, CursorShape::Bar | CursorShape::Block)
+            && !cx.reduce_motion()
             && self.editor.read(cx).cursor_animation_enabled();
         if animate_caret {
             let offset = selections.primary().head();
@@ -1818,8 +1819,10 @@ impl Element for EditorElement {
             let viewport_bounds = layout.text_clip_bounds;
             carets[0].animated_bounds = self.editor.update(cx, |editor, _| {
                 let viewport = CursorViewport {
-                    bounds: viewport_bounds,
+                    text_bounds: viewport_bounds,
                     scroll: editor.scroll_offset(),
+                    line_height,
+                    em_advance,
                 };
                 editor.update_cursor_animation(offset, bounds, viewport, Instant::now())
             });

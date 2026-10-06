@@ -39,7 +39,7 @@
 
   // 光标移动动画设置对象；必须包含 enabled。
   "cursor_animation": {
-    // true 播放 VS Code 式 80ms ease 光标移动动画；false 直接显示在新位置。
+    // true 播放光标移动动画；false 直接显示在新位置。
     "enabled": true
   },
 

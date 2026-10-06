@@ -420,9 +420,9 @@ impl SyntaxSnapshot {
     }
 
     /// 同步执行真正的 tree-sitter 增量解析。
-    /// 调用方必须把该方法放到后台，再通过 `SyntaxMap::did_parse` 安装结果。
+    /// 调用方可在前台限时尝试，超时后交由后台重新解析；结果统一通过 `SyntaxMap::did_parse` 安装。
     ///
-    /// 返回 `None` 表示本次没有可安装的结果：解析被取消，或语言／范围设置失败（后者继续重试也不会成功）。
+    /// 返回 `None` 表示本次没有可安装的结果：解析被取消、预算耗尽，或语言／范围设置失败（后者继续重试也不会成功）。
     ///
     /// `edits` 是本次编辑在新坐标下的字节区间：tree-sitter 的 `changed_ranges` 对等长替换（parser 直接复用旧叶子）不可见，必须用文本编辑区间兜底。
     /// 变化区间 = 编辑区间 ∪ 树变化区间，两者都不覆盖的区域注入层原样保留。
@@ -432,7 +432,7 @@ impl SyntaxSnapshot {
         registry: &Arc<LanguageRegistry>,
         cancellation: &ParseCancellation,
     ) -> Option<Self> {
-        if cancellation.is_cancelled() {
+        if cancellation.should_stop() {
             return None;
         }
         // 编辑区间按上一次真正完成解析的版本推导，优先走不衰减坐标索引：
@@ -463,6 +463,9 @@ impl SyntaxSnapshot {
                     ) {
                         Ok(tree) => break Some(tree),
                         // 预算用尽：让出后台线程，下一片继续。
+                        Err(ParseError::BudgetExhausted) if cancellation.should_stop() => {
+                            return None;
+                        }
                         Err(ParseError::BudgetExhausted) => thread::yield_now(),
                         Err(ParseError::Cancelled) => return None,
                         // 语言或范围设置失败：继续重试不会成功，必须终止本次解析，不安装任何部分结果。
@@ -473,7 +476,7 @@ impl SyntaxSnapshot {
                 // 无语法树语言（纯文本兜底）：主树保持为空。
                 None
             };
-            if cancellation.is_cancelled() {
+            if cancellation.should_stop() {
                 return None;
             }
             // 变化区间：区间之外的注入与文本都未变，旧注入层原样保留，只在这些区间内重新收集注入。
@@ -567,7 +570,7 @@ impl SyntaxSnapshot {
         self.version = snapshot.version();
         self.parsed_version = snapshot.version();
         self.rebuild_capture_table();
-        Some(self)
+        (!cancellation.should_stop()).then_some(self)
     }
 
     /// 当前快照的 capture 名字全局表（capture index -> 名字）。
@@ -672,8 +675,11 @@ impl InjectionCollector<'_> {
         depth: u32,
     ) -> bool {
         const MAX_INJECTION_DEPTH: u32 = 8;
-        if depth > MAX_INJECTION_DEPTH || self.cancellation.is_cancelled() {
-            return !self.cancellation.is_cancelled();
+        if self.cancellation.should_stop() {
+            return false;
+        }
+        if depth > MAX_INJECTION_DEPTH {
+            return true;
         }
         let Some(query) = parent_language.injections() else {
             return true;
@@ -685,7 +691,7 @@ impl InjectionCollector<'_> {
         cursor.set_byte_range(range.clone());
         let cancellation = self.cancellation;
         let mut progress = |_: &tree_sitter::QueryCursorState| {
-            if cancellation.is_cancelled() {
+            if cancellation.should_stop() {
                 ControlFlow::Break(())
             } else {
                 ControlFlow::Continue(())
@@ -699,7 +705,7 @@ impl InjectionCollector<'_> {
             options,
         );
         while let Some(query_match) = matches.next() {
-            if self.cancellation.is_cancelled() {
+            if self.cancellation.should_stop() {
                 return false;
             }
             let mut language_name = query
@@ -759,7 +765,10 @@ impl InjectionCollector<'_> {
                 ) {
                     Ok(tree) => tree,
                     Err(ParseError::Cancelled) => return false,
-                    // 注入解析没有时间片预算；设置失败或 tree-sitter 拒绝解析时跳过该层，不安装部分树。
+                    Err(ParseError::BudgetExhausted) if self.cancellation.should_stop() => {
+                        return false;
+                    }
+                    // 注入解析没有独立时间片预算；设置失败或 tree-sitter 拒绝解析时跳过该层，不安装部分树。
                     Err(
                         ParseError::Setup(_) | ParseError::Failed | ParseError::BudgetExhausted,
                     ) => {

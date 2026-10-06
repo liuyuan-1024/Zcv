@@ -66,20 +66,61 @@ impl std::fmt::Display for ParseError {
     }
 }
 
-/// 一次语法解析的协作取消标记。
+/// 一次语法解析的协作中断条件。
 ///
-/// Tree-sitter 在解析进度回调中读取它；
-/// 任务所有者取消旧解析时无需等待整棵树完成。
+/// 后台任务由所有者取消；前台限时解析在预算耗尽后中断，随后由后台重新解析。
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ParseCancellation(Arc<AtomicBool>);
+pub(crate) struct ParseCancellation {
+    state: Arc<ParseStopState>,
+    deadline: Option<Instant>,
+}
+
+#[derive(Debug, Default)]
+struct ParseStopState {
+    cancelled: AtomicBool,
+    timed_out: AtomicBool,
+}
 
 impl ParseCancellation {
+    pub(crate) fn with_timeout(timeout: Duration) -> Self {
+        Self {
+            state: Arc::default(),
+            deadline: Some(Instant::now() + timeout),
+        }
+    }
+
     pub(crate) fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
+        self.state.cancelled.store(true, Ordering::Release);
     }
 
     pub(crate) fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        self.state.cancelled.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn is_expired(&self) -> bool {
+        let expired = self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline);
+        if expired {
+            self.state.timed_out.store(true, Ordering::Release);
+        }
+        expired
+    }
+
+    pub(crate) fn was_timed_out(&self) -> bool {
+        self.state.timed_out.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn should_stop(&self) -> bool {
+        self.is_cancelled() || self.is_expired()
+    }
+
+    fn stop_reason(&self) -> ParseError {
+        if self.is_cancelled() {
+            ParseError::Cancelled
+        } else {
+            ParseError::BudgetExhausted
+        }
     }
 }
 
@@ -132,8 +173,8 @@ impl IncrementalParser {
         cancellation: &ParseCancellation,
         budget: Duration,
     ) -> Result<tree_sitter::Tree, ParseError> {
-        if cancellation.is_cancelled() {
-            return Err(ParseError::Cancelled);
+        if cancellation.should_stop() {
+            return Err(cancellation.stop_reason());
         }
         let parser = self
             .handle
@@ -172,7 +213,7 @@ impl IncrementalParser {
         }
         let deadline = Instant::now() + budget;
         let mut progress = |_: &tree_sitter::ParseState| {
-            if cancellation.is_cancelled() || Instant::now() >= deadline {
+            if cancellation.should_stop() || Instant::now() >= deadline {
                 ControlFlow::Break(())
             } else {
                 ControlFlow::Continue(())
@@ -189,7 +230,7 @@ impl IncrementalParser {
         self.started = true;
         match tree {
             Some(tree) => Ok(tree),
-            None if cancellation.is_cancelled() => Err(ParseError::Cancelled),
+            None if cancellation.should_stop() => Err(cancellation.stop_reason()),
             // 进度回调因预算中断：parser 保留断点，调用方继续下一片。
             None => Err(ParseError::BudgetExhausted),
         }
@@ -238,8 +279,8 @@ pub(crate) fn parse_tree(
     included_range: Option<Range<usize>>,
     cancellation: &ParseCancellation,
 ) -> Result<tree_sitter::Tree, ParseError> {
-    if cancellation.is_cancelled() {
-        return Err(ParseError::Cancelled);
+    if cancellation.should_stop() {
+        return Err(cancellation.stop_reason());
     }
     let mut handle = ParserHandle::new();
     let parser = handle.0.as_mut().expect("ParserHandle 始终持有池化 parser");
@@ -269,7 +310,7 @@ pub(crate) fn parse_tree(
             .map_err(|error| ParseError::Setup(ParseSetupError::IncludedRanges(error)))?;
     }
     let mut progress = |_: &tree_sitter::ParseState| {
-        if cancellation.is_cancelled() {
+        if cancellation.should_stop() {
             ControlFlow::Break(())
         } else {
             ControlFlow::Continue(())
@@ -282,7 +323,7 @@ pub(crate) fn parse_tree(
         Some(options),
     ) {
         Some(tree) => Ok(tree),
-        None if cancellation.is_cancelled() => Err(ParseError::Cancelled),
+        None if cancellation.should_stop() => Err(cancellation.stop_reason()),
         None => Err(ParseError::Failed),
     }
 }

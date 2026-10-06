@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use gpui::{App, AppContext, Context, EventEmitter, Task};
 use zcv_settings::SettingsStore;
@@ -29,45 +29,12 @@ pub enum LanguageBufferEvent {
 
 impl EventEmitter<LanguageBufferEvent> for LanguageBuffer {}
 
-/// 后台解析 + 折叠计算的完成信号：结果放 Mutex，Condvar 唤醒可能正在等待的主线程。
-///
-/// ~1ms 同步解析预算：主线程在编辑轮内短等待极快的增量解析，完成后直接安装新鲜语法，显示不必停留在插值树。
-type ParseCompletion = (Mutex<Option<ParseOutcome>>, Condvar);
-
-type ParseOutcome = SyntaxSnapshot;
-
-/// 主线程等待后台解析的最长时间。
+/// 编辑轮在前台尝试增量解析的最长时间。
 const SYNC_PARSE_TIMEOUT: Duration = Duration::from_millis(1);
 
 struct ParseTask {
     cancellation: ParseCancellation,
     _task: Task<()>,
-    completion: Arc<ParseCompletion>,
-}
-
-impl ParseTask {
-    /// 短等待后台解析完成（超时或取消返回 None）。
-    fn wait_completion(&self, timeout: Duration) -> Option<ParseOutcome> {
-        wait_parse_completion(&self.completion, timeout)
-    }
-}
-
-/// 短等待后台解析完成：结果已就绪立即返回，否则阻塞至超时（~1ms 同步解析预算）。
-fn wait_parse_completion(completion: &ParseCompletion, timeout: Duration) -> Option<ParseOutcome> {
-    let (lock, cvar) = completion;
-    let mut guard = lock.lock().expect("解析完成信号锁不应中毒");
-    let deadline = Instant::now() + timeout;
-    while guard.is_none() {
-        let now = Instant::now();
-        if now >= deadline {
-            break;
-        }
-        let (next_guard, _) = cvar
-            .wait_timeout(guard, deadline - now)
-            .expect("解析完成信号锁不应中毒");
-        guard = next_guard;
-    }
-    guard.take()
 }
 
 impl Drop for ParseTask {
@@ -167,7 +134,7 @@ impl LanguageBuffer {
             saved_version: BufferVersion::INITIAL,
             has_unsaved_edits: Cell::new((BufferVersion::INITIAL, false)),
         };
-        this.start_reparse(cx);
+        this.start_reparse(false, cx);
         this
     }
 
@@ -314,7 +281,7 @@ impl LanguageBuffer {
             language_changed
         };
         if language_changed {
-            self.start_reparse(cx);
+            self.start_reparse(false, cx);
         }
         cx.emit(LanguageBufferEvent::MetadataChanged);
         cx.notify();
@@ -562,16 +529,16 @@ impl LanguageBuffer {
                 }
             }
         }
-        self.start_reparse(cx);
         cx.emit(LanguageBufferEvent::TextChanged);
-        // 极快增量解析赶上当前按键：编辑轮内直接安装新鲜语法（见 install_sync_parse_result）。
-        self.install_sync_parse_result(cx);
+        self.start_reparse(true, cx);
         cx.notify();
     }
 
-    fn start_reparse(&mut self, cx: &mut Context<Self>) {
-        // ParseTask::drop 会先通知 Tree-sitter 中止旧工作，再取消等待结果的前台任务。
-        self.parse_task = None;
+    /// 在途解析继续运行；期间的新编辑合并为任务完成后的一次重解析。
+    fn start_reparse(&mut self, may_block: bool, cx: &mut Context<Self>) {
+        if self.parse_task.is_some() {
+            return;
+        }
         let text = self.buffer.snapshot();
         let (syntax, registry) = {
             let state = self.state.lock().expect("语言 Buffer 状态锁不应中毒");
@@ -586,52 +553,59 @@ impl LanguageBuffer {
             (state.syntax_map.snapshot(), state.syntax_map.registry())
         };
 
+        if may_block {
+            let foreground = ParseCancellation::with_timeout(SYNC_PARSE_TIMEOUT);
+            if let Some(parsed) = syntax.clone().reparse(&text, &registry, &foreground) {
+                if self.install_parse_result(parsed, cx) {
+                    cx.notify();
+                }
+                return;
+            }
+            // 配置或解析失败不能靠无限重试掩盖；仅预算耗尽时转入后台。
+            if !foreground.was_timed_out() {
+                return;
+            }
+        }
+
+        let parsed_version = text.version();
+        let parsed_language = syntax.language.clone();
         let cancellation = ParseCancellation::default();
         let parse_cancellation = cancellation.clone();
-        let completion: Arc<ParseCompletion> = Arc::default();
-        let task_completion = Arc::clone(&completion);
-        // 完成后置入完成信号：正在主线程短等待的 did_edit 可以直接同步安装新鲜语法。
-        let parse_task = cx.background_spawn(async move {
-            let outcome = syntax.reparse(&text, &registry, &parse_cancellation);
-            let (lock, cvar) = &*task_completion;
-            *lock.lock().expect("解析完成信号锁不应中毒") = outcome.clone();
-            cvar.notify_one();
-            outcome
-        });
+        let parse_task = cx
+            .background_spawn(async move { syntax.reparse(&text, &registry, &parse_cancellation) });
         let task = cx.spawn(async move |this, cx| {
-            let Some(parsed) = parse_task.await else {
-                return;
-            };
+            let parsed = parse_task.await;
             let _ = this.update(cx, |this, cx| {
-                // 结果已被 did_edit 同步安装（parse_task 已替换为 None）时不再重复安装。
                 this.parse_task = None;
-                if this.install_parse_result(parsed, cx) {
-                    cx.notify();
+                if let Some(parsed) = parsed {
+                    if this.install_parse_result(parsed, cx) {
+                        cx.notify();
+                    } else {
+                        this.start_reparse(false, cx);
+                    }
+                } else {
+                    let language_changed = {
+                        let state = this.state.lock().expect("语言 Buffer 状态锁不应中毒");
+                        let current = state.syntax_map.language_arc();
+                        match (current, &parsed_language) {
+                            (Some(current), Some(parsed)) => !Arc::ptr_eq(&current, parsed),
+                            (None, None) => false,
+                            _ => true,
+                        }
+                    };
+                    if this.version() != parsed_version || language_changed {
+                        this.start_reparse(false, cx);
+                    }
                 }
             });
         });
         self.parse_task = Some(ParseTask {
             cancellation,
             _task: task,
-            completion,
         });
     }
 
-    /// 主线程短等待后台解析：极快增量解析（通常远小于 1ms）赶上当前按键时，在编辑轮内直接安装新鲜语法，显示不停留在插值树（~1ms 同步解析预算；超时则保持原异步路径，稍后经 Reparsed 安装）。
-    fn install_sync_parse_result(&mut self, cx: &mut Context<Self>) {
-        let Some(parse_task) = self.parse_task.as_ref() else {
-            return;
-        };
-        let Some(parsed) = parse_task.wait_completion(SYNC_PARSE_TIMEOUT) else {
-            return;
-        };
-        if self.install_parse_result(parsed, cx) {
-            // 结果已同步安装：丢弃异步安装路径（ParseTask::drop 取消后台任务）。
-            self.parse_task = None;
-        }
-    }
-
-    /// 唯一的解析安装入口：同步预算内完成与异步完成两条路径都经这里替换语法，并让高亮缓存整体失效。
+    /// 唯一的解析安装入口：前台完成与后台完成都经这里替换语法，并让高亮缓存整体失效。
     fn install_parse_result(&mut self, parsed: SyntaxSnapshot, cx: &mut Context<Self>) -> bool {
         let mut state = self.state.lock().expect("语言 Buffer 状态锁不应中毒");
         if !state.syntax_map.did_parse(parsed) {

@@ -15,32 +15,26 @@ fn test_buffer(text: &str) -> Buffer {
 }
 
 #[test]
-fn sync_parse_wait_returns_completed_result_within_timeout() {
-    // 后台解析（真实线程）完成前主线程阻塞等待，完成后立即返回结果。
-    let completion: Arc<ParseCompletion> = Arc::default();
-    let worker = Arc::clone(&completion);
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(5));
-        let (lock, cvar) = &*worker;
-        *lock.lock().expect("解析完成信号锁不应中毒") =
-            Some(SyntaxSnapshot::empty(BufferVersion::INITIAL));
-        cvar.notify_one();
-    });
-    let outcome = wait_parse_completion(&completion, Duration::from_millis(100));
-    assert!(outcome.is_some(), "已完成的解析应在超时前被主线程取到");
-}
+fn foreground_parse_obeys_budget_and_can_complete() {
+    let registry = test_registry();
+    let text = test_buffer("fn main() {}\n").snapshot();
+    let mut syntax = SyntaxMap::new(Arc::clone(&registry), &text);
+    assert!(syntax.set_language_for_file(std::path::Path::new("main.rs"), None, &text));
+    let syntax = syntax.snapshot();
 
-#[test]
-fn sync_parse_wait_times_out_when_parse_is_slow() {
-    // 超过预算的解析：等待超时返回 None，留给后台任务稍后经 Reparsed 安装。
-    let completion: Arc<ParseCompletion> = Arc::default();
-    let start = Instant::now();
-    let outcome = wait_parse_completion(&completion, Duration::from_millis(10));
-    assert!(outcome.is_none(), "慢解析等待应超时");
+    let expired = ParseCancellation::with_timeout(Duration::ZERO);
     assert!(
-        start.elapsed() >= Duration::from_millis(8),
-        "等待应消耗接近完整的预算"
+        syntax.clone().reparse(&text, &registry, &expired).is_none(),
+        "预算耗尽时不能安装未完成的语法树"
     );
+    assert!(expired.was_timed_out(), "超时必须明确标记，供后台路径判断");
+
+    let available = ParseCancellation::with_timeout(Duration::from_secs(1));
+    let parsed = syntax
+        .reparse(&text, &registry, &available)
+        .expect("预算充足时应直接完成解析");
+    assert_eq!(parsed.version(), text.version());
+    assert!(parsed.root_tree().is_some());
 }
 
 #[gpui::test]
@@ -229,6 +223,18 @@ fn rapid_edits_install_only_the_latest_parse(cx: &mut TestAppContext) {
         })
     });
 
+    language_buffer.update(cx, |language_buffer, cx| {
+        language_buffer.start_reparse(false, cx);
+    });
+    let in_flight = language_buffer.read_with(cx, |language_buffer, _| {
+        language_buffer
+            .parse_task
+            .as_ref()
+            .expect("测试重解析应在后台运行")
+            .cancellation
+            .clone()
+    });
+
     for text in ["a", "b", "c"] {
         language_buffer.update(cx, |language_buffer, cx| {
             let offset = language_buffer.len_bytes();
@@ -241,6 +247,10 @@ fn rapid_edits_install_only_the_latest_parse(cx: &mut TestAppContext) {
                 .expect("测试编辑应成功");
         });
     }
+    assert!(
+        !in_flight.is_cancelled(),
+        "连续编辑应合并到在途任务之后，不能逐次取消并重启"
+    );
     let latest_version =
         language_buffer.read_with(cx, |language_buffer, _| language_buffer.version());
     cx.run_until_parked();
@@ -256,6 +266,41 @@ fn rapid_edits_install_only_the_latest_parse(cx: &mut TestAppContext) {
             .count(),
         1
     );
+}
+
+#[gpui::test]
+fn language_switch_during_parse_installs_the_new_grammar(cx: &mut TestAppContext) {
+    let language_buffer = cx.new(|cx| {
+        LanguageBuffer::new(
+            test_buffer("print('ok')\n"),
+            Some(PathBuf::from("script.rs")),
+            test_registry(),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+
+    language_buffer.update(cx, |language_buffer, cx| {
+        language_buffer.start_reparse(false, cx);
+        language_buffer.set_file_path(PathBuf::from("script.py"), cx);
+        assert!(language_buffer.parse_task.is_some());
+    });
+    cx.run_until_parked();
+
+    language_buffer.read_with(cx, |language_buffer, _| {
+        let snapshot = language_buffer.snapshot();
+        assert_eq!(language_buffer.language_name(), Some("Python"));
+        assert_eq!(snapshot.syntax.version(), snapshot.text.version());
+        assert_eq!(
+            snapshot
+                .syntax
+                .root_tree()
+                .expect("语言切换后应完成 Python 解析")
+                .root_node()
+                .kind(),
+            "module"
+        );
+    });
 }
 
 /// 回归：文本与语法在同一实体上编辑后必须停留在同一版本，不再依赖跨实体观察者。

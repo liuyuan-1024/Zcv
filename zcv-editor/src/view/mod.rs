@@ -29,7 +29,7 @@ use zcv_multi_buffer::{
 };
 use zcv_settings::{CursorShape, SettingsStore, SoftWrapMode, TabConfig};
 use zcv_text::{
-    Affinity, Buffer, BufferConfig, BufferId, BufferVersion, Line, LineRange, LogicalColumn,
+    Affinity, Buffer, BufferConfig, BufferId, BufferVersion, Edit, Line, LineRange, LogicalColumn,
     MovementDirection, MovementUnit, Position, TextError, TextResult, TransactionId,
     TransactionMergePolicy, TransactionMetadata, TransactionSource,
 };
@@ -51,6 +51,7 @@ use super::selection::{
 };
 
 mod indent_guides;
+mod jsx_tag_auto_close;
 mod presentation;
 mod rename;
 mod search;
@@ -1811,6 +1812,96 @@ impl Editor {
         self.apply_edit_outcome(node_id, outcome, cx)
     }
 
+    /// 两段式编辑提交：首段提交后读取新快照，再在同一会话内应用第二段编辑。
+    ///
+    /// 用于必须先观察提交后语法树、再补全结构文本的输入（JSX 标签自动闭合）：
+    /// 两段共享同一个历史节点，撤销整体回退。
+    pub(super) fn change_with_post_snapshot_edits<F, S>(
+        &mut self,
+        before_selections: SelectionSet,
+        metadata: TransactionMetadata,
+        cx: &mut Context<Self>,
+        first: F,
+        second: S,
+    ) -> TextResult<EditOutcome>
+    where
+        F: FnOnce(&mut EditPlan<'_>) -> TextResult<(EditOutcome, SelectionSet)>,
+        S: FnOnce(
+            &MultiBufferSnapshot,
+            &SelectionSet,
+        ) -> TextResult<Option<(Vec<Edit>, SelectionSet)>>,
+    {
+        let operation = metadata.description().unwrap_or("编辑").to_owned();
+        let before_snapshot = self.display_snapshot(cx).buffer_snapshot().clone();
+        let session_id = self.start_transaction(cx)?;
+
+        let mut plan = EditPlan::new(&before_snapshot);
+        let (first_outcome, first_selections) = match first(&mut plan) {
+            Ok(planned) => planned,
+            Err(error) => {
+                self.abort_session(session_id, &before_selections, &operation, &error, cx);
+                return Err(error);
+            }
+        };
+        let edits = plan.into_edits();
+
+        let applied = if edits.is_empty() {
+            Ok(())
+        } else {
+            self.multi_buffer
+                .update(cx, |buffer, cx| buffer.edit(edits, metadata.clone(), cx))
+        };
+        self.advance_snapshots(cx);
+        if let Err(error) = applied {
+            self.abort_session(session_id, &before_selections, &operation, &error, cx);
+            return Err(error);
+        }
+
+        let post_snapshot = self.display_snapshot(cx).buffer_snapshot().clone();
+        let after_selections = match second(&post_snapshot, &first_selections) {
+            Ok(Some((follow_up_edits, after_selections))) => {
+                if !follow_up_edits.is_empty()
+                    && let Err(error) = self
+                        .multi_buffer
+                        .update(cx, |buffer, cx| buffer.edit(follow_up_edits, metadata, cx))
+                {
+                    self.abort_session(session_id, &before_selections, &operation, &error, cx);
+                    return Err(error);
+                }
+                self.advance_snapshots(cx);
+                after_selections
+            }
+            Ok(None) => first_selections,
+            Err(error) => {
+                self.abort_session(session_id, &before_selections, &operation, &error, cx);
+                return Err(error);
+            }
+        };
+
+        let node_id = self.end_transaction(cx);
+        if node_id != Some(session_id) {
+            self.selection_history.remove_transaction(session_id);
+        }
+        self.apply_selection_change(after_selections, cx);
+        self.finish_transaction(node_id, cx);
+        Ok(first_outcome)
+    }
+
+    /// 两段式编辑在任一段失败时统一收尾：结束空会话、清除选区记录、恢复编辑前选区并报告错误。
+    fn abort_session(
+        &mut self,
+        session_id: TransactionId,
+        before_selections: &SelectionSet,
+        operation: &str,
+        error: &TextError,
+        cx: &mut Context<Self>,
+    ) {
+        self.end_transaction(cx);
+        self.selection_history.remove_transaction(session_id);
+        cx.emit(EditorEvent::Error(format!("{operation}失败：{error:#}")));
+        self.apply_selection_change(before_selections.clone(), cx);
+    }
+
     /// 编辑后选区由闭包按编辑语义重算的变体（删除、剪切、行移动、输入等特判场景）。
     pub(super) fn change_with_after(
         &mut self,
@@ -2874,6 +2965,14 @@ mod selection_edit_tests;
 #[cfg(test)]
 #[path = "test/auto_pair_tests.rs"]
 mod auto_pair_tests;
+
+#[cfg(test)]
+#[path = "test/jsx_tag_tests.rs"]
+mod jsx_tag_tests;
+
+#[cfg(test)]
+#[path = "test/language_input_tests.rs"]
+mod language_input_tests;
 
 #[cfg(test)]
 #[path = "test/search_tests.rs"]

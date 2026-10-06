@@ -5,7 +5,8 @@
 //! 注入查询只在语言存在真实嵌套语义时提供。
 
 use crate::{
-    AutoClosePair, BlockCommentConfig, LanguageInputConfig, OrderedListConfig, TaskListConfig,
+    AutoClosePair, BlockCommentConfig, JsxTagAutoCloseConfig, LanguageInputConfig,
+    OrderedListConfig, TaskListConfig,
 };
 
 /// 文件识别规则：扩展名 + 首行模式。
@@ -126,6 +127,8 @@ pub(crate) struct LanguageSpec {
     pub(crate) word_characters: &'static str,
     /// `overrides.scm` 捕获名到额外词字符的完整覆盖值。
     pub(crate) word_character_overrides: &'static [(&'static str, &'static str)],
+    /// JSX/TSX 标签自动闭合的语法节点配置；没有该结构的语言为 `None`。
+    pub(crate) jsx_tag_auto_close: Option<JsxTagAutoCloseConfig>,
 }
 
 impl LanguageSpec {
@@ -148,6 +151,7 @@ impl LanguageSpec {
             input: LanguageInputConfig::empty(),
             word_characters: "",
             word_character_overrides: &[],
+            jsx_tag_auto_close: None,
         }
     }
 
@@ -162,6 +166,7 @@ impl LanguageSpec {
             input: LanguageInputConfig::empty(),
             word_characters: "",
             word_character_overrides: &[],
+            jsx_tag_auto_close: None,
         }
     }
 
@@ -182,6 +187,12 @@ impl LanguageSpec {
     /// 声明语言的注释与列表换行政策。
     fn with_input(mut self, input: LanguageInputConfig) -> Self {
         self.input = input;
+        self
+    }
+
+    /// 声明语言的 JSX/TSX 标签自动闭合结构。
+    fn with_jsx_tag_auto_close(mut self, config: JsxTagAutoCloseConfig) -> Self {
+        self.jsx_tag_auto_close = Some(config);
         self
     }
 
@@ -252,6 +263,7 @@ const COMMON_PAIRS: &[AutoClosePair] = &[
 const DEFAULT_INPUT_FOLLOWERS: &str = ";:.,=}])>";
 const SHELL_INPUT_FOLLOWERS: &str = "}])";
 const JSON_INPUT_FOLLOWERS: &str = ",]}";
+const HTML_INPUT_FOLLOWERS: &str = ">})";
 
 const RUST_LINE_COMMENTS: &[&str] = &["// ", "/// ", "//! "];
 const SCRIPT_LINE_COMMENTS: &[&str] = &["// "];
@@ -379,6 +391,34 @@ const GO_INPUT: LanguageInputConfig = LanguageInputConfig {
 const CSS_INPUT: LanguageInputConfig = LanguageInputConfig {
     block_comment: Some(SCRIPT_BLOCK_COMMENT),
     ..LanguageInputConfig::empty()
+};
+const HTML_BLOCK_COMMENT: BlockCommentConfig = BlockCommentConfig {
+    start: "<!--",
+    prefix: "",
+    end: "-->",
+    tab_size: 0,
+};
+const HTML_INPUT: LanguageInputConfig = LanguageInputConfig {
+    block_comment: Some(HTML_BLOCK_COMMENT),
+    ..LanguageInputConfig::empty()
+};
+
+/// JavaScript 与 JSX 的标签自动闭合节点配置（对齐 Zed `javascript/config.toml`）。
+const JAVASCRIPT_JSX_TAG_AUTO_CLOSE: JsxTagAutoCloseConfig = JsxTagAutoCloseConfig {
+    open_tag_node_name: "jsx_opening_element",
+    close_tag_node_name: "jsx_closing_element",
+    jsx_element_node_name: "jsx_element",
+    tag_name_node_name: "identifier",
+    tag_name_node_alternates: &[],
+};
+
+/// TSX 的标签自动闭合节点配置；成员表达式标签名需要额外种类（对齐 Zed `tsx/config.toml`）。
+const TSX_JSX_TAG_AUTO_CLOSE: JsxTagAutoCloseConfig = JsxTagAutoCloseConfig {
+    open_tag_node_name: "jsx_opening_element",
+    close_tag_node_name: "jsx_closing_element",
+    jsx_element_node_name: "jsx_element",
+    tag_name_node_name: "identifier",
+    tag_name_node_alternates: &["member_expression"],
 };
 
 const RUST_PAIRS: &[AutoClosePair] = &[
@@ -598,6 +638,585 @@ const TS_PAIRS: &[AutoClosePair] = &[
     },
 ];
 
+const C_PAIRS: &[AutoClosePair] = &[
+    AutoClosePair {
+        start: "{",
+        end: "}",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "[",
+        end: "]",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "(",
+        end: ")",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string"],
+    },
+    AutoClosePair {
+        start: "`",
+        end: "`",
+        close: false,
+        surround: true,
+        newline: false,
+        not_in: &["string"],
+    },
+    AutoClosePair {
+        start: "'",
+        end: "'",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "/*",
+        end: " */",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+];
+
+const CPP_PAIRS: &[AutoClosePair] = &[
+    AutoClosePair {
+        start: "{",
+        end: "}",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "[",
+        end: "]",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "(",
+        end: ")",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string"],
+    },
+    AutoClosePair {
+        start: "`",
+        end: "`",
+        close: false,
+        surround: true,
+        newline: false,
+        not_in: &["string"],
+    },
+    AutoClosePair {
+        start: "'",
+        end: "'",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "/*",
+        end: " */",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+];
+
+const GO_PAIRS: &[AutoClosePair] = &[
+    AutoClosePair {
+        start: "{",
+        end: "}",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "[",
+        end: "]",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "(",
+        end: ")",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["comment", "string"],
+    },
+    AutoClosePair {
+        start: "'",
+        end: "'",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["comment", "string"],
+    },
+    AutoClosePair {
+        start: "`",
+        end: "`",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["comment", "string"],
+    },
+    AutoClosePair {
+        start: "/*",
+        end: " */",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["comment", "string"],
+    },
+];
+
+const PYTHON_PAIRS: &[AutoClosePair] = &[
+    AutoClosePair {
+        start: "f\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "f'",
+        end: "'",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "b\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "b'",
+        end: "'",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "u\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "u'",
+        end: "'",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "r\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "r'",
+        end: "'",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "rb\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "rb'",
+        end: "'",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "t\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "t'",
+        end: "'",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "\"\"\"",
+        end: "\"\"\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string"],
+    },
+    AutoClosePair {
+        start: "'''",
+        end: "'''",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string"],
+    },
+    AutoClosePair {
+        start: "{",
+        end: "}",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "[",
+        end: "]",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "(",
+        end: ")",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string"],
+    },
+    AutoClosePair {
+        start: "'",
+        end: "'",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string"],
+    },
+];
+
+const SHELL_PAIRS: &[AutoClosePair] = &[
+    AutoClosePair {
+        start: "[",
+        end: "]",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "(",
+        end: ")",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "{",
+        end: "}",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["comment", "string"],
+    },
+    AutoClosePair {
+        start: "'",
+        end: "'",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "do",
+        end: "done",
+        close: false,
+        surround: true,
+        newline: true,
+        not_in: &["comment", "string"],
+    },
+    AutoClosePair {
+        start: "then",
+        end: "fi",
+        close: false,
+        surround: true,
+        newline: true,
+        not_in: &["comment", "string"],
+    },
+    AutoClosePair {
+        start: "then",
+        end: "else",
+        close: false,
+        surround: true,
+        newline: true,
+        not_in: &["comment", "string"],
+    },
+    AutoClosePair {
+        start: "then",
+        end: "elif",
+        close: false,
+        surround: true,
+        newline: true,
+        not_in: &["comment", "string"],
+    },
+    AutoClosePair {
+        start: "in",
+        end: "esac",
+        close: false,
+        surround: true,
+        newline: true,
+        not_in: &["comment", "string"],
+    },
+];
+
+const JSON_PAIRS: &[AutoClosePair] = &[
+    AutoClosePair {
+        start: "{",
+        end: "}",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "[",
+        end: "]",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "(",
+        end: ")",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string"],
+    },
+];
+
+const YAML_PAIRS: &[AutoClosePair] = &[
+    AutoClosePair {
+        start: "{",
+        end: "}",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "[",
+        end: "]",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string"],
+    },
+    AutoClosePair {
+        start: "'",
+        end: "'",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string"],
+    },
+];
+
+const CSS_PAIRS: &[AutoClosePair] = &[
+    AutoClosePair {
+        start: "{",
+        end: "}",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "[",
+        end: "]",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "(",
+        end: ")",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+    AutoClosePair {
+        start: "'",
+        end: "'",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["string", "comment"],
+    },
+];
+
+const HTML_PAIRS: &[AutoClosePair] = &[
+    AutoClosePair {
+        start: "{",
+        end: "}",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "[",
+        end: "]",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "(",
+        end: ")",
+        close: true,
+        surround: true,
+        newline: true,
+        not_in: &[],
+    },
+    AutoClosePair {
+        start: "\"",
+        end: "\"",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["comment", "string"],
+    },
+    AutoClosePair {
+        start: "<",
+        end: ">",
+        close: false,
+        surround: true,
+        newline: true,
+        not_in: &["comment", "string"],
+    },
+    AutoClosePair {
+        start: "!--",
+        end: " --",
+        close: true,
+        surround: true,
+        newline: false,
+        not_in: &["comment", "string"],
+    },
+];
+
 const MARKDOWN_PAIRS: &[AutoClosePair] = &[
     AutoClosePair {
         start: "{",
@@ -705,9 +1324,10 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             || tree_sitter_c::LANGUAGE.into(),
             file_language_queries!("c", tree_sitter_c::HIGHLIGHT_QUERY)
                 .with_injections(include_str!("../queries/c/injections.scm"))
-                .with_locals(include_str!("../queries/c/locals.scm")),
+                .with_locals(include_str!("../queries/c/locals.scm"))
+                .with_overrides(include_str!("../queries/c/overrides.scm")),
             None,
-            COMMON_PAIRS,
+            C_PAIRS,
             DEFAULT_INPUT_FOLLOWERS,
         )
         .with_input(C_INPUT),
@@ -723,9 +1343,10 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             || tree_sitter_cpp::LANGUAGE.into(),
             file_language_queries!("cpp")
                 .with_injections(include_str!("../queries/cpp/injections.scm"))
-                .with_locals(include_str!("../queries/cpp/locals.scm")),
+                .with_locals(include_str!("../queries/cpp/locals.scm"))
+                .with_overrides(include_str!("../queries/cpp/overrides.scm")),
             None,
-            COMMON_PAIRS,
+            CPP_PAIRS,
             DEFAULT_INPUT_FOLLOWERS,
         )
         .with_input(CPP_INPUT),
@@ -750,9 +1371,10 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             || tree_sitter_go::LANGUAGE.into(),
             file_language_queries!("go")
                 .with_injections(include_str!("../queries/go/injections.scm"))
-                .with_locals(include_str!("../queries/go/locals.scm")),
+                .with_locals(include_str!("../queries/go/locals.scm"))
+                .with_overrides(include_str!("../queries/go/overrides.scm")),
             Some("golang"),
-            COMMON_PAIRS,
+            GO_PAIRS,
             DEFAULT_INPUT_FOLLOWERS,
         )
         .with_input(GO_INPUT),
@@ -768,9 +1390,10 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             file_language_queries!("python")
                 .with_injections(include_str!("../queries/python/injections.scm"))
                 .with_outline(include_str!("../queries/python/outline.scm"))
-                .with_locals(include_str!("../queries/python/locals.scm")),
+                .with_locals(include_str!("../queries/python/locals.scm"))
+                .with_overrides(include_str!("../queries/python/overrides.scm")),
             None,
-            COMMON_PAIRS,
+            PYTHON_PAIRS,
             DEFAULT_INPUT_FOLLOWERS,
         )
         .with_input(PYTHON_INPUT),
@@ -794,7 +1417,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
         )
         .with_input(SCRIPT_INPUT)
         .with_word_characters("$#")
-        .with_word_character_overrides(&[("string", "."), ("comment", "-")]),
+        .with_word_character_overrides(&[("string", "."), ("comment", "-")])
+        .with_jsx_tag_auto_close(JAVASCRIPT_JSX_TAG_AUTO_CLOSE),
         LanguageSpec::tree_sitter(
             "JSX",
             LanguageMatcher {
@@ -808,12 +1432,13 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 .with_locals(include_str!("../queries/jsx/locals.scm"))
                 .with_overrides(include_str!("../queries/jsx/overrides.scm")),
             None,
-            TS_PAIRS,
+            SCRIPT_PAIRS,
             DEFAULT_INPUT_FOLLOWERS,
         )
         .with_input(JSX_INPUT)
         .with_word_characters("$#")
-        .with_word_character_overrides(&[("string", "."), ("comment", "-")]),
+        .with_word_character_overrides(&[("string", "."), ("comment", "-")])
+        .with_jsx_tag_auto_close(JAVASCRIPT_JSX_TAG_AUTO_CLOSE),
         LanguageSpec::tree_sitter(
             "TypeScript",
             LanguageMatcher {
@@ -849,7 +1474,8 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             DEFAULT_INPUT_FOLLOWERS,
         )
         .with_input(JSX_INPUT)
-        .with_word_characters("$#"),
+        .with_word_characters("$#")
+        .with_jsx_tag_auto_close(TSX_JSX_TAG_AUTO_CLOSE),
         LanguageSpec::tree_sitter(
             "Java",
             LanguageMatcher {
@@ -883,9 +1509,10 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 ),
             },
             || tree_sitter_bash::LANGUAGE.into(),
-            file_language_queries!("bash"),
+            file_language_queries!("bash")
+                .with_overrides(include_str!("../queries/bash/overrides.scm")),
             None,
-            COMMON_PAIRS,
+            SHELL_PAIRS,
             SHELL_INPUT_FOLLOWERS,
         )
         .with_input(SHELL_INPUT),
@@ -990,9 +1617,10 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 first_line_pattern: None,
             },
             || tree_sitter_json::LANGUAGE.into(),
-            file_language_queries!("json"),
+            file_language_queries!("json")
+                .with_overrides(include_str!("../queries/json/overrides.scm")),
             None,
-            COMMON_PAIRS,
+            JSON_PAIRS,
             JSON_INPUT_FOLLOWERS,
         )
         .with_input(JSON_INPUT)
@@ -1005,9 +1633,10 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             },
             || tree_sitter_yaml::LANGUAGE.into(),
             file_language_queries!("yaml")
-                .with_injections(include_str!("../queries/yaml/injections.scm")),
+                .with_injections(include_str!("../queries/yaml/injections.scm"))
+                .with_overrides(include_str!("../queries/yaml/overrides.scm")),
             None,
-            COMMON_PAIRS,
+            YAML_PAIRS,
             JSON_INPUT_FOLLOWERS,
         )
         .with_input(YAML_INPUT),
@@ -1050,11 +1679,13 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
             || tree_sitter_html::LANGUAGE.into(),
             file_language_queries!("html")
                 .with_injections(include_str!("../queries/html/injections.scm"))
-                .with_outline(include_str!("../queries/html/outline.scm")),
+                .with_outline(include_str!("../queries/html/outline.scm"))
+                .with_overrides(include_str!("../queries/html/overrides.scm")),
             None,
-            COMMON_PAIRS,
-            DEFAULT_INPUT_FOLLOWERS,
-        ),
+            HTML_PAIRS,
+            HTML_INPUT_FOLLOWERS,
+        )
+        .with_input(HTML_INPUT),
         LanguageSpec::tree_sitter(
             "CSS",
             LanguageMatcher {
@@ -1062,9 +1693,10 @@ pub(crate) fn builtin_languages() -> Vec<LanguageSpec> {
                 first_line_pattern: None,
             },
             || tree_sitter_css::LANGUAGE.into(),
-            file_language_queries!("css"),
+            file_language_queries!("css")
+                .with_overrides(include_str!("../queries/css/overrides.scm")),
             None,
-            COMMON_PAIRS,
+            CSS_PAIRS,
             DEFAULT_INPUT_FOLLOWERS,
         )
         .with_input(CSS_INPUT)

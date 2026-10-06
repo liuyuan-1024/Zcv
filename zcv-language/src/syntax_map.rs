@@ -420,47 +420,25 @@ impl SyntaxSnapshot {
         self.input_scope_at(query_offset, text)
     }
 
-    /// 在同版本快照上按注入深度与最窄语法节点解析光标输入政策。
-    /// 捕获只查询光标附近；普通捕获不含端点，`.inclusive` 包含端点。
-    pub fn input_scope_at<'a>(
+    /// 光标位置选中的最深语法层。
+    ///
+    /// 注入层优先；同深度取节点更窄的层。空查询按点包含语义，与 `input_scope_at` 共用同一选择规则，避免两处口径分叉。
+    pub(crate) fn selected_layer_at<'a>(
         &'a self,
-        offset: ByteOffset,
+        offset: usize,
         text: &'a Snapshot,
-    ) -> Option<InputScope<'a>> {
-        assert_eq!(
-            self.version,
-            text.version(),
-            "输入作用域查询要求文本与语法同版本"
-        );
-        let offset = offset.get();
-        if offset > text.len_bytes().get() {
-            return None;
-        }
-        let mut selected: Option<(usize, u32, &'a Language, &'a tree_sitter::Tree)> = None;
-        let mut consider = |layer: SyntaxLayerRef<'a>| {
-            let root = layer.tree.root_node();
-            let Some(node) = root.descendant_for_byte_range(offset, offset) else {
-                return;
-            };
-            if node.start_byte() > offset || node.end_byte() <= offset {
-                return;
-            }
-            let width = node.end_byte() - node.start_byte();
-            if selected
-                .as_ref()
-                .is_none_or(|(old_width, old_depth, _, _)| {
-                    layer.depth > *old_depth || (layer.depth == *old_depth && width < *old_width)
-                })
-            {
-                selected = Some((width, layer.depth, layer.language, layer.tree));
-            }
-        };
+    ) -> Option<SyntaxLayerRef<'a>> {
+        let mut selected: Option<(usize, u32, SyntaxLayerRef<'a>)> = None;
         if let (Some(language), Some(tree)) = (&self.language, &self.state.tree) {
-            consider(SyntaxLayerRef {
-                language,
-                tree,
-                depth: 0,
-            });
+            consider_layer(
+                &mut selected,
+                SyntaxLayerRef {
+                    language,
+                    tree,
+                    depth: 0,
+                },
+                offset,
+            );
         }
         // 注入层按 (深度, 起点) 排序；前缀最大终点剪除不可能覆盖光标的层。
         let layers = &self.state.injections;
@@ -488,13 +466,35 @@ impl SyntaxSnapshot {
                 if let Some(layer) =
                     resolved_layer_ref(text, &at_depth[previous], &(offset..offset))
                 {
-                    consider(layer);
+                    consider_layer(&mut selected, layer, offset);
                 }
                 index = previous;
             }
         }
-        let (language, override_name) = if let Some((_, _, language, tree)) = selected {
-            (language, override_name_at(language, tree, offset, text))
+        selected.map(|(_, _, layer)| layer)
+    }
+
+    /// 在同版本快照上按注入深度与最窄语法节点解析光标输入政策。
+    /// 捕获只查询光标附近；普通捕获不含端点，`.inclusive` 包含端点。
+    pub fn input_scope_at<'a>(
+        &'a self,
+        offset: ByteOffset,
+        text: &'a Snapshot,
+    ) -> Option<InputScope<'a>> {
+        assert_eq!(
+            self.version,
+            text.version(),
+            "输入作用域查询要求文本与语法同版本"
+        );
+        let offset = offset.get();
+        if offset > text.len_bytes().get() {
+            return None;
+        }
+        let (language, override_name) = if let Some(layer) = self.selected_layer_at(offset, text) {
+            (
+                layer.language,
+                override_name_at(layer.language, layer.tree, offset, text),
+            )
         } else {
             (self.language.as_deref()?, None)
         };
@@ -761,10 +761,32 @@ impl SyntaxSnapshot {
     }
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct SyntaxLayerRef<'a> {
     pub(crate) language: &'a Language,
     pub(crate) tree: &'a tree_sitter::Tree,
     pub(crate) depth: u32,
+}
+
+/// 候选语法层优先规则：注入深度更大者优先；同深度取覆盖光标的节点更窄者。
+fn consider_layer<'a>(
+    selected: &mut Option<(usize, u32, SyntaxLayerRef<'a>)>,
+    layer: SyntaxLayerRef<'a>,
+    offset: usize,
+) {
+    let root = layer.tree.root_node();
+    let Some(node) = root.descendant_for_byte_range(offset, offset) else {
+        return;
+    };
+    if node.start_byte() > offset || node.end_byte() <= offset {
+        return;
+    }
+    let width = node.end_byte() - node.start_byte();
+    if selected.as_ref().is_none_or(|(old_width, old_depth, _)| {
+        layer.depth > *old_depth || (layer.depth == *old_depth && width < *old_width)
+    }) {
+        *selected = Some((width, layer.depth, layer));
+    }
 }
 
 fn override_name_at<'a>(

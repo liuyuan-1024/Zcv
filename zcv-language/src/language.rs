@@ -47,6 +47,23 @@ pub struct AutoClosePair {
     pub not_in: &'static [&'static str],
 }
 
+/// JSX/TSX 标签自动闭合的语法节点配置。
+///
+/// 与通用括号配对分离：它描述的是标签结构节点的名称与命名子节点，供输入 `>` 后判断开放标签与已闭合状态使用。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JsxTagAutoCloseConfig {
+    /// 开放标签节点种类，例如 `jsx_opening_element`。
+    pub open_tag_node_name: &'static str,
+    /// 闭合标签节点种类，例如 `jsx_closing_element`。
+    pub close_tag_node_name: &'static str,
+    /// 同时包含开闭标签的完整元素节点种类，例如 `jsx_element`。
+    pub jsx_element_node_name: &'static str,
+    /// 描述标签名的命名子节点种类，例如 `identifier`。
+    pub tag_name_node_name: &'static str,
+    /// 标签名节点的替代种类，例如 TSX 的成员表达式 `member_expression`。
+    pub tag_name_node_alternates: &'static [&'static str],
+}
+
 /// 语言配置中的块注释续行格式。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockCommentConfig {

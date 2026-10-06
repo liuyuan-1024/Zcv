@@ -3581,6 +3581,17 @@ impl MultiBufferSnapshot {
         source.syntax.input_scope_at(source_offset, &source.text)
     }
 
+    /// 组合输出位置映射到可编辑源后，查询该处应补全的 JSX/TSX 闭合标签文本。
+    pub fn jsx_tag_close_text_at(&self, offset: MultiBufferOffset) -> Option<String> {
+        let (mapping, source, source_offset) = self.source_point(offset.into())?;
+        if !mapping.editable {
+            return None;
+        }
+        source
+            .syntax
+            .jsx_tag_close_text_at(source_offset, &source.text)
+    }
+
     pub fn bracket_pairs_at(&self, offset: impl Into<MultiBufferOffset>) -> Vec<BracketPair> {
         let offset: MultiBufferOffset = offset.into();
         let offset = ByteOffset::new(offset.get());

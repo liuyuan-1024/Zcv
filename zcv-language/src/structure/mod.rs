@@ -6,6 +6,7 @@
 mod brackets;
 mod folds;
 mod indent;
+mod jsx_tag;
 mod locals;
 mod nodes;
 mod outline;

@@ -87,6 +87,13 @@ impl Editor {
         {
             return;
         }
+        // JSX/TSX 标签自动闭合是独立的语法结构输入，不进入通用括号配对规则。
+        if range_utf16.is_none()
+            && composition.is_none()
+            && self.try_jsx_tag_autoclose(text, &before_selections, cx)
+        {
+            return;
+        }
         let Some((targets, text, metadata)) =
             self.commit_input_edit(composition.clone(), range_utf16, text, "输入文本", cx)
         else {
@@ -821,7 +828,10 @@ fn byte_for_utf16_offset(text: &str, target: usize) -> Option<usize> {
 }
 
 /// 输入文本的合并元数据。
-fn input_metadata(description: &'static str, merge_with_previous: bool) -> TransactionMetadata {
+pub(super) fn input_metadata(
+    description: &'static str,
+    merge_with_previous: bool,
+) -> TransactionMetadata {
     let metadata =
         TransactionMetadata::new(TransactionSource::Programmatic).with_description(description);
     if merge_with_previous {

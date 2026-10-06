@@ -783,3 +783,54 @@ fn fold_end_uses_inside_affinity_and_does_not_expand_on_boundary_insert() {
         "折叠终点在边界插入后不得后移"
     );
 }
+
+#[test]
+fn tsx_tag_autoclose_detects_zed_open_tag_cases() {
+    let cases: &[(&str, usize, Option<&str>)] = &[
+        ("<div>", 5, Some("</div>")),
+        ("<div><div>", 10, Some("</div>")),
+        ("<div><div></div>", 10, Some("</div>")),
+        ("</div>", 6, None),
+        ("const n = a>", 12, None),
+        ("<>", 2, Some("</>")),
+        ("<Component.Foo>", 15, Some("</Component.Foo>")),
+        ("<!DOCTYPE html>", 15, None),
+        ("<!-- comment -->", 16, None),
+    ];
+    for (source, offset, expected) in cases {
+        let (buffer, syntax) = crate::test::parsed_syntax("view.tsx", source);
+        let snapshot = buffer.snapshot();
+        let close = syntax
+            .snapshot()
+            .jsx_tag_close_text_at(ByteOffset::new(*offset), &snapshot);
+        assert_eq!(close.as_deref(), *expected, "样例 {source:?}");
+    }
+}
+
+#[test]
+fn jsx_tag_close_does_not_guess_without_a_current_parse() {
+    let (mut buffer, mut syntax) = crate::test::parsed_syntax("view.tsx", "<div");
+    // 输入 `>` 时只把旧树插值到新文本版本，不执行真正的增量解析。
+    buffer
+        .edit(
+            [Edit::insert(ByteOffset::new(4), ">".to_string()).unwrap()],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    let snapshot = buffer.snapshot();
+    syntax.interpolate(&snapshot);
+    let syntax_snapshot = syntax.snapshot();
+    let scope = syntax_snapshot
+        .input_scope_at(ByteOffset::new(4), &snapshot)
+        .expect("插值树仍应返回当前语言政策");
+    assert_ne!(
+        scope.version(),
+        scope.parsed_version(),
+        "插值树仍应记录尚未重新解析"
+    );
+    assert_eq!(
+        syntax_snapshot.jsx_tag_close_text_at(ByteOffset::new(5), &snapshot),
+        None,
+        "插值树没有开放标签节点时不得凭旧文本猜测闭合标签"
+    );
+}

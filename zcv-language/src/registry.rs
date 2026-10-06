@@ -11,7 +11,8 @@ use crate::available_languages::{
     LanguageQuerySources, LanguageSpec, LanguageSupport as LanguageSupportSpec, builtin_languages,
 };
 use crate::{
-    AutoClosePair, BlockCommentConfig, LanguageInputConfig, OrderedListConfig, TaskListConfig,
+    AutoClosePair, BlockCommentConfig, JsxTagAutoCloseConfig, LanguageInputConfig,
+    OrderedListConfig, TaskListConfig,
 };
 
 /// 一门已加载语言。
@@ -24,6 +25,7 @@ pub struct Language {
     input: LanguageInputConfig,
     word_characters: &'static str,
     word_character_overrides: &'static [(&'static str, &'static str)],
+    jsx_tag_auto_close: Option<JsxTagAutoCloseConfig>,
 }
 
 #[derive(Debug)]
@@ -104,6 +106,11 @@ impl InputScope<'_> {
             })
             .unwrap_or(self.language.word_characters);
         WordBoundaryPolicy { word_characters }
+    }
+
+    /// 当前语言层的 JSX/TSX 标签自动闭合结构配置。
+    pub fn jsx_tag_auto_close(&self) -> Option<JsxTagAutoCloseConfig> {
+        self.language.jsx_tag_auto_close()
     }
 
     pub fn line_comment_prefixes(&self) -> &'static [&'static str] {
@@ -217,6 +224,11 @@ impl Language {
         }
     }
 
+    /// 本语言的 JSX/TSX 标签自动闭合结构配置；没有该语法结构时为 `None`。
+    pub fn jsx_tag_auto_close(&self) -> Option<JsxTagAutoCloseConfig> {
+        self.jsx_tag_auto_close
+    }
+
     /// capture 名字表（capture index -> 名字），供跨语言全局表构建与渲染查表使用。
     pub(crate) fn capture_names(&self) -> &[Arc<str>] {
         match &self.syntax {
@@ -288,6 +300,7 @@ impl LanguageSpec {
             input: self.input,
             word_characters: self.word_characters,
             word_character_overrides: self.word_character_overrides,
+            jsx_tag_auto_close: self.jsx_tag_auto_close,
         }
     }
 }

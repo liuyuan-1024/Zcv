@@ -9,7 +9,7 @@ use crate::{ByteOffset, TextRange, TextResult, diff::diff_edits, storage::TextRe
 impl Buffer {
     /// 用外部文本更新 Buffer。
     ///
-    /// 文本变化时，和 Zed 的 reload 一样先计算旧文本到新文本的差异，再经 T-9 派生快照路径安装；
+    /// 文本变化时，和 Zed 的 reload 一样先计算旧文本到新文本的差异，再经 `snapshot_with_edits` 与 `fast_forward` 派生快照路径安装；
     /// 锚点、语法树和显示投影因此共享同一条增量坐标链。
     /// 保存点由上层文件边界在写入磁盘后显式推进，本方法不标记保存状态。
     pub fn replace_text(&mut self, text: String) -> TextResult<()> {

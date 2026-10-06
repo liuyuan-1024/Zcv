@@ -21,7 +21,7 @@ use crate::selection::{Selection, SelectionSet, apply_edits, replace_selections}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EditorComposition {
-    /// 标记范围以组合锚点保存：外部源编辑后按当前快照重新解析，不长期持有裸偏移（E-4）。
+    /// 标记范围以组合锚点保存：外部源编辑后按当前快照重新解析，不长期持有裸偏移。
     pub(super) ranges: Arc<[Range<MultiBufferAnchor>]>,
     pub(super) primary_index: usize,
     pub(super) history_transaction_id: Option<TransactionId>,

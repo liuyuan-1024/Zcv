@@ -2987,7 +2987,7 @@ fn placeholder_snapshot_requires_empty_text(cx: &mut TestAppContext) {
     );
 }
 
-/// 开启软换行时，placeholder 必须与主显示映射共用换行配置并折行（§18.4、§2.3）。
+/// 开启软换行时，placeholder 必须与主显示映射共用换行配置并折行。
 #[gpui::test]
 fn placeholder_follows_soft_wrap_width(cx: &mut TestAppContext) {
     let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));

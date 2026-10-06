@@ -585,6 +585,23 @@ fn folded_rows_have_an_immediately_derived_tab_width(cx: &mut TestAppContext) {
     assert!(longest.get() < line_count);
 }
 
+/// 透传模式的最长行必须来自下层文本摘要，而不是逐行显示列扫描。
+#[gpui::test]
+fn longest_unwrapped_row_follows_the_source_line_widths(cx: &mut TestAppContext) {
+    let text = "short
+this is a much longer line
+mid
+";
+    let buffer =
+        Buffer::from_text(text.to_owned(), BufferConfig::default()).expect("测试 Buffer 应能创建");
+    let map = cx.new(|cx| DisplayMap::new(buffer.snapshot(), cx));
+    assert_eq!(
+        cx.read_entity(&map, |map, _| map.longest_unwrapped_row()),
+        DisplayRow::new(1),
+        "最长行应取源文本摘要中字符最多的行"
+    );
+}
+
 #[gpui::test]
 fn folded_bracket_projects_close_to_merged_row(cx: &mut TestAppContext) {
     // 回归：折叠后闭合括号保留可见，光标在 `{` 上的括号高亮投影到合并行的真实 `}` 列。

@@ -1421,7 +1421,7 @@ fn set_excerpts_for_path_replaces_only_that_path(cx: &mut TestAppContext) {
     );
 }
 
-/// M-8：excerpt 增删等结构变更必须在文本事务之外，否则组合事务身份与坐标基准会错配。
+/// excerpt 增删等结构变更必须在文本事务之外，否则组合事务身份与坐标基准会错配。
 #[gpui::test]
 #[should_panic(expected = "set_excerpts_for_path 必须在文本事务之外")]
 fn structural_change_inside_a_transaction_fails(cx: &mut TestAppContext) {

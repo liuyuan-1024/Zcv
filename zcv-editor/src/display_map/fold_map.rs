@@ -604,6 +604,11 @@ impl FoldSnapshot {
         &self.input
     }
 
+    /// 折叠输出文本的完整摘要；软换行层据此取得最长行维度，不逐行扫描。
+    pub(super) fn text_summary(&self) -> MBTextSummary {
+        self.transforms.summary().output
+    }
+
     pub(super) fn point_cursor(&self) -> FoldPointCursor<'_> {
         FoldPointCursor {
             snapshot: self,

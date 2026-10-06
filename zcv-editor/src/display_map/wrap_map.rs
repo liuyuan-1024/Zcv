@@ -5,7 +5,7 @@
 //! 续行的视觉缩进是一段"假空格"，作为显示文本的前缀参与布局、命中测试与坐标换算，因此渲染端无需为续行做任何特殊定位。
 //!
 //! 与 FoldMap 一样，WrapMap 用 `SumTree<Transform>` 维护"输入 tab 行 → 输出显示行"的拓扑：Isomorphic 段把连续不换行行合并，Wrap 段把单个宽行拆成 `wrap_points.len() + 1` 个显示行。
-//! 变换树在装配时保持 D-8 规范形：相邻同构段必须归并，由 `push_isomorphic` 与 `append_canonical` 统一维护并在 `check_invariants` 中校验。
+//! 变换树在装配时保持规范形：相邻同构段必须归并，由 `push_isomorphic` 与 `append_canonical` 统一维护并在 `check_invariants` 中校验。
 //! 折叠与换行是正交的两层变换：折叠先塌缩文本，换行再按像素宽度切分。
 
 use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
@@ -35,7 +35,7 @@ use super::fold_map::{
 };
 use super::tab_map::{
     TabEdit, TabPoint, TabPointMapping, TabSnapshot, advance_display_column,
-    byte_for_display_column, display_width_for_fold_row, line_content,
+    byte_for_display_column, line_content,
 };
 use super::{WrapPoint, WrapRange, WrapRow};
 
@@ -317,7 +317,7 @@ impl WrapSnapshot {
             for transform in self.transforms.iter() {
                 match transform.kind {
                     TransformKind::Isomorphic => {
-                        assert!(!previous_isomorphic, "Wrap 变换树不得包含相邻同构段（D-8）");
+                        assert!(!previous_isomorphic, "Wrap 变换树不得包含相邻同构段");
                         assert!(transform.input.row() > 0);
                         previous_isomorphic = true;
                     }
@@ -1918,7 +1918,7 @@ fn fragment_index_for_byte(points: &[WrapPointInfo], byte: usize) -> usize {
         .unwrap_or(points.len())
 }
 
-/// 追加以 `lines` 行为输入与输出的同构段；与树尾同构段合并，维持 D-8 规范形。
+/// 追加以 `lines` 行为输入与输出的同构段；与树尾同构段合并，维持规范形。
 fn push_isomorphic(transforms: &mut SumTree<Transform>, lines: usize) {
     let mut merged = false;
     transforms.update_last(
@@ -1936,7 +1936,7 @@ fn push_isomorphic(transforms: &mut SumTree<Transform>, lines: usize) {
     }
 }
 
-/// 把 `incoming` 追加到变换树，并归并交界处的相邻同构段，维持 D-8 规范形。
+/// 把 `incoming` 追加到变换树，并归并交界处的相邻同构段，维持规范形。
 ///
 /// `tree` 与 `incoming` 内部都已是规范形，因此只可能在两棵树的交界处产生
 /// 相邻同构段；这里只处理该处，未变的前缀与后缀子树仍按 Arc 共享，不做整树重建。
@@ -1983,16 +1983,12 @@ fn isomorphic_tree(tab_snapshot: &TabSnapshot) -> SumTree<Transform> {
         SumTree::new(())
     } else {
         let input = tab_snapshot.summary_for_range(TabPoint::zero()..TabPoint::new(tab_rows, 0));
-        // 透传模式下最长行是显示宽度的派生事实：
-        // 构建 summary 时测量一次，查询端按 O(1) 读取，不在每帧重新扫描全部行（对齐 Zed `WrapSummary::longest_row`）。
-        let (longest_row, longest_row_chars) = (0..tab_rows)
-            .map(|row| display_width_for_fold_row(tab_snapshot, Line::new(row)).unwrap_or_default())
-            .enumerate()
-            .max_by_key(|(_, width)| *width)
-            .unwrap_or((0, 0));
+        // 透传模式下最长行来自下层文本摘要（按行索引随编辑增量维护）：
+        // 查询端按 O(1) 读取，不在每次同步重新扫描全部行。
+        let summary = tab_snapshot.fold_snapshot().text_summary();
         let mut transform = Transform::isomorphic(input, tab_rows);
-        transform.longest_row = longest_row;
-        transform.longest_row_chars = longest_row_chars;
+        transform.longest_row = summary.longest_row;
+        transform.longest_row_chars = summary.longest_row_chars;
         SumTree::from_item(transform, ())
     }
 }

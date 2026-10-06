@@ -1323,8 +1323,8 @@ impl DisplayMap {
 
     /// 未开启软换行时读取 Wrap 层 summary 中的最长行。
     ///
-    /// 最长行是显示投影的派生维度，由 `isomorphic_tree` 构建 summary 时测量一次；
-    /// 这里只做 O(1) 读取与 wrap 行 → 显示行换算，不在每帧扫描全部行。
+    /// 最长行来自下层文本摘要（`zcv-text` 按行增量维护），`isomorphic_tree` 只做 O(1) 转写；
+    /// 这里只做 O(1) 读取与 wrap 行 → 显示行换算，不在每次同步或每帧扫描全部行。
     pub(crate) fn longest_unwrapped_row(&self) -> DisplayRow {
         let snapshot = self
             .snapshot

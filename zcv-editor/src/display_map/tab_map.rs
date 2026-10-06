@@ -9,12 +9,10 @@ use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
 use zcv_multi_buffer::MultiBufferSnapshot;
-use zcv_text::{CoordinateError, Line};
+use zcv_text::Line;
 
-use super::chunk::{ChunkText, FoldChunks, HighlightStyles, StyledChunks};
 use super::display_width::char_width;
 use super::edit::ProjectionEdit;
-use super::error::DisplayMapResult;
 use super::fold_map::{
     FoldBias, FoldEdit, FoldPoint, FoldSnapshot, ProjectedLineIndex, ProjectedPoint,
     StreamProjectedKind,
@@ -429,58 +427,4 @@ fn byte_for_display_column_with_bias(
         byte = next_byte;
     }
     text.len()
-}
-
-/// Tab 读取时才展开硬 Tab 的连续 chunk；不存在逐行宽度缓存。
-pub(super) fn display_width_for_fold_row(
-    snapshot: &TabSnapshot,
-    row: Line,
-) -> DisplayMapResult<usize> {
-    let fold = snapshot.fold_snapshot();
-    let projected = ProjectedLineIndex::new(row.get());
-    let mut width = 0;
-    if let Some(segments) = fold.fold_row_segments(projected) {
-        let content_len = segments
-            .last()
-            .expect("折叠合并行必须至少包含一个段")
-            .merged_range()
-            .end;
-        for chunk in FoldChunks::new(
-            &segments,
-            fold.buffer_snapshot(),
-            HighlightStyles::default(),
-            0..content_len,
-        ) {
-            width = chunk.text.graphemes(true).fold(width, |column, grapheme| {
-                advance_display_column(column, grapheme, snapshot.tab_width().get())
-            });
-        }
-    } else {
-        let stream_line = snapshot
-            .stream_line_for_projected(row)
-            .ok_or(CoordinateError::LineOutOfBounds(row))?;
-        let buffer = fold.buffer_snapshot();
-        let range = buffer
-            .line_content_byte_range(stream_line)
-            .ok_or(CoordinateError::LineOutOfBounds(row))?;
-        let content_len = buffer
-            .line_content_metrics(stream_line)
-            .ok_or(CoordinateError::LineOutOfBounds(row))?
-            .0;
-        for chunk in StyledChunks::new(
-            ChunkText::Virtual {
-                snapshot: buffer,
-                range: range.clone(),
-            },
-            range.start.get(),
-            0,
-            HighlightStyles::default(),
-            0..content_len,
-        ) {
-            width = chunk.text.graphemes(true).fold(width, |column, grapheme| {
-                advance_display_column(column, grapheme, snapshot.tab_width().get())
-            });
-        }
-    }
-    Ok(width)
 }

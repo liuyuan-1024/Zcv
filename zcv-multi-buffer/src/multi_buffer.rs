@@ -4984,12 +4984,12 @@ impl MultiBuffer {
 
     /// 结构变更（excerpt 增删、diff 展开折叠）必须在文本事务之外进行。
     ///
-    /// 事务期间改变拓扑会让组合事务身份与坐标基准错配（M-8）；
+    /// 事务期间改变拓扑会让组合事务身份与坐标基准错配；
     /// 这里显式失败，而不是让 end_transaction 在已变化的拓扑上静默收尾。
     fn assert_no_active_transaction(&self, entry: &'static str) {
         assert!(
             self.state.active_transaction.is_none(),
-            "{entry} 必须在文本事务之外调用（M-8）"
+            "{entry} 必须在文本事务之外调用"
         );
     }
 

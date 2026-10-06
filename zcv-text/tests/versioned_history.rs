@@ -67,7 +67,7 @@ fn has_edits_since_reports_a_real_reinsert_after_delete() {
 
 #[test]
 fn has_edits_since_after_delete_then_undo_matches_zed() {
-    // 对齐 docs/编辑器架构.md §18.2：undo 回放按被回退的版本区间恢复原片段可见性，等价 Zed 的 undo map，
+    // undo 回放按被回退的版本区间恢复原片段可见性，等价 Zed 的 undo map，
     // 因此「删除后用 undo 原位还原同一文本」判为无编辑。
     let mut buffer = buffer("abc");
     let v0 = buffer.version();

@@ -11,6 +11,7 @@ use std::sync::Arc;
 use gpui::{
     App, Bounds, Context, EntityInputHandler, Pixels, Point, UTF16Selection, Window, px, size,
 };
+use zcv_language::InputScope;
 use zcv_multi_buffer::MultiBufferSnapshot;
 use zcv_text::{Affinity, TransactionId, Utf16Offset};
 
@@ -20,7 +21,8 @@ use crate::selection::{Selection, SelectionSet, apply_edits, replace_selections}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EditorComposition {
-    pub(super) ranges: Arc<[MultiBufferRange]>,
+    /// 标记范围以组合锚点保存：外部源编辑后按当前快照重新解析，不长期持有裸偏移（E-4）。
+    pub(super) ranges: Arc<[Range<MultiBufferAnchor>]>,
     pub(super) primary_index: usize,
     pub(super) history_transaction_id: Option<TransactionId>,
 }
@@ -152,11 +154,15 @@ impl Editor {
         cx: &App,
     ) -> Option<SelectionSet> {
         if let Some(composition) = composition {
+            let display_snapshot = self.display_snapshot(cx);
+            let snapshot = display_snapshot.buffer_snapshot();
             let ranges = composition
                 .ranges
                 .iter()
-                .copied()
                 .map(|range| {
+                    let start = snapshot.projected_anchor_offset(&range.start).ok()??;
+                    let end = snapshot.projected_anchor_offset(&range.end).ok()??;
+                    let range = MultiBufferRange::new(start, end).ok()?;
                     range_utf16.clone().map_or(Some(range), |relative_range| {
                         self.relative_utf16_range(range, relative_range, cx)
                     })
@@ -520,7 +526,7 @@ impl Editor {
 fn following_text_allows_autoclose(
     snapshot: &MultiBufferSnapshot,
     offset: MultiBufferOffset,
-    scope: &zcv_language::InputScope<'_>,
+    scope: &InputScope<'_>,
 ) -> bool {
     let Ok((chunk, chunk_start)) = snapshot.chunk_at_byte(offset) else {
         return true;
@@ -590,7 +596,7 @@ fn preceding_text_allows_autoclose(
     snapshot: &MultiBufferSnapshot,
     offset: MultiBufferOffset,
     pair: &AutoClosePair,
-    scope: &zcv_language::InputScope<'_>,
+    scope: &InputScope<'_>,
 ) -> bool {
     if pair.start != pair.end {
         return true;
@@ -730,7 +736,7 @@ impl EntityInputHandler for Editor {
         }
 
         let inserted_selections = self.resolved_selections(cx);
-        let marked_ranges = inserted_selections
+        let marked_offsets = inserted_selections
             .as_slice()
             .iter()
             .map(|selection| {
@@ -740,6 +746,18 @@ impl EntityInputHandler for Editor {
                     .expect("替换后的选区必须能够还原出 marked text 范围")
             })
             .collect::<Vec<_>>();
+        // 组合范围保存源锚点：起点吸附 Before、终点吸附 After 以吸收后续候选文本。
+        let marked_ranges = {
+            let display_snapshot = self.display_snapshot(cx);
+            let snapshot = display_snapshot.buffer_snapshot();
+            marked_offsets
+                .iter()
+                .map(|range| {
+                    snapshot.anchor_at(range.start(), Affinity::Before)
+                        ..snapshot.anchor_at(range.end(), Affinity::After)
+                })
+                .collect::<Vec<_>>()
+        };
         let text_utf16_len = utf16_len(&text);
         let selected_range_utf16 =
             new_selected_range_utf16.unwrap_or(text_utf16_len..text_utf16_len);
@@ -751,7 +769,7 @@ impl EntityInputHandler for Editor {
                 .unwrap_or(text.len());
         self.apply_selection_change(
             SelectionSet::new_with_primary(
-                marked_ranges
+                marked_offsets
                     .iter()
                     .map(|marked_range| {
                         Selection::new(

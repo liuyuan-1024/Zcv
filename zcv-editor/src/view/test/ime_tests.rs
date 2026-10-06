@@ -165,14 +165,22 @@ fn ime_candidate_remains_in_the_syntax_highlight_pipeline(cx: &mut TestAppContex
 
     cx.read_entity(&editor, |editor, cx| {
         let composition = editor.composition.as_ref().unwrap();
-        let marked = composition.ranges[composition.primary_index];
+        let marked = &composition.ranges[composition.primary_index];
         let snapshot = editor.display_snapshot(cx).buffer_snapshot().clone();
+        let marked_start = snapshot
+            .projected_anchor_offset(&marked.start)
+            .unwrap()
+            .expect("组合起点应仍在投影内");
+        let marked_end = snapshot
+            .projected_anchor_offset(&marked.end)
+            .unwrap()
+            .expect("组合终点应仍在投影内");
         let names = snapshot.capture_names();
         let highlights = snapshot.highlights(0..snapshot.len_bytes().get());
         assert!(highlights.iter().any(|highlight| {
             names[highlight.capture as usize].as_ref() == "string"
-                && highlight.range.start <= marked.start().get()
-                && highlight.range.end >= marked.end().get()
+                && highlight.range.start <= marked_start.get()
+                && highlight.range.end >= marked_end.get()
         }));
     });
 }

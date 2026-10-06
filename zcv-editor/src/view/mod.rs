@@ -534,12 +534,18 @@ impl Editor {
     ) -> bool {
         let text_system = cx.text_system().clone();
         let changed = self.display_map.update(cx, |map, cx| {
-            map.set_wrap_width(wrap_width, font, font_size, &text_system, cx)
+            map.set_wrap_width(wrap_width, font.clone(), font_size, &text_system, cx)
+        });
+        // placeholder 是空文档接入同一渲染管线的展示源，必须与主显示映射共用同一换行配置，否则开启软换行时提示文本不折行。
+        let placeholder_changed = self.placeholder_display_map.clone().is_some_and(|map| {
+            map.update(cx, |map, cx| {
+                map.set_wrap_width(wrap_width, font, font_size, &text_system, cx)
+            })
         });
         if changed {
             self.advance_snapshots(cx);
         }
-        changed
+        changed || placeholder_changed
     }
 
     /// 回写渲染层实测的行内元素宽度；变化时推进显示投影并刷新滚动几何。
@@ -941,10 +947,9 @@ impl Editor {
         line_height: Pixels,
         cx: &mut Context<Self>,
     ) {
-        if !self
-            .scrollbar_marker_state
-            .should_refresh(track_bounds.size)
-        {
+        self.scrollbar_marker_state
+            .observe_track_size(track_bounds.size);
+        if !self.scrollbar_marker_state.should_refresh() {
             return;
         }
         // 后台结果携带计算所用的显示版本；安装前与当前快照比较，过期即丢弃。
@@ -2312,22 +2317,26 @@ impl Editor {
             map.set_tab_width(tab_width, cx);
         });
         let snapshot = self.display_snapshot(cx);
-        if snapshot.version() == self.processed_display_version {
-            return;
+        if snapshot.version() != self.processed_display_version {
+            self.research_after_edit(cx);
+            self.scrollbar_marker_state.invalidate();
+            let snapshot = self.display_snapshot(cx);
+            self.scroll_manager.refresh(&snapshot);
+            self.processed_display_version = snapshot.version();
         }
-        self.research_after_edit(cx);
-        // 搜索命中是显示装饰输入：
-        // 把 Editor 拥有的匹配锚点解析结果交给显示链投影，输入未变化时 DisplayMap 快速返回。
+        // 搜索命中是独立于显示拓扑的装饰输入：查询、清空或活动匹配变化时
+        // 显示版本可能不变，但装饰必须同步，否则高亮与滚动条标记会陈旧。
+        self.sync_search_decorations(cx);
+    }
+
+    /// 把 Editor 拥有的匹配锚点解析结果交给显示链投影；输入未变化时 DisplayMap 快速返回。
+    fn sync_search_decorations(&mut self, cx: &mut Context<Self>) {
         let search = self
             .search
             .as_ref()
             .and_then(EditorSearch::decoration_input);
         self.display_map
             .update(cx, |map, cx| map.set_search_decorations(search, cx));
-        self.scrollbar_marker_state.invalidate();
-        let snapshot = self.display_snapshot(cx);
-        self.scroll_manager.refresh(&snapshot);
-        self.processed_display_version = snapshot.version();
     }
 
     pub(super) fn handle_unfold_all(

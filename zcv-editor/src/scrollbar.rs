@@ -63,16 +63,24 @@ pub(super) enum ScrollbarMarkerKind {
 /// EditorElement 只读取缓存并触发刷新，不在渲染帧内做随文档规模增长的派生。
 #[derive(Default)]
 pub(crate) struct ScrollbarMarkerState {
+    /// 已发布标记对应的轨道尺寸。
     scrollbar_size: Size<Pixels>,
+    /// 最近一帧观测到的轨道尺寸；在途结果安装时按它校验。
+    track_size: Size<Pixels>,
     dirty: bool,
     pub(crate) marker_groups: [Option<Arc<[ScrollbarMarker]>>; 2],
     pub(crate) pending_refresh: Option<Task<()>>,
 }
 
 impl ScrollbarMarkerState {
-    /// 尺寸变化或显示版本失效时重新计算；刷新任务在途时不重复排队。
-    pub(crate) fn should_refresh(&self, scrollbar_size: Size<Pixels>) -> bool {
-        self.pending_refresh.is_none() && (self.scrollbar_size != scrollbar_size || self.dirty)
+    /// 记录本帧观测到的轨道尺寸；布局在判断是否需要刷新前调用。
+    pub(crate) fn observe_track_size(&mut self, scrollbar_size: Size<Pixels>) {
+        self.track_size = scrollbar_size;
+    }
+
+    /// 轨道尺寸变化或显示版本失效时重新计算；刷新任务在途时不重复排队。
+    pub(crate) fn should_refresh(&self) -> bool {
+        self.pending_refresh.is_none() && (self.scrollbar_size != self.track_size || self.dirty)
     }
 
     /// 显示版本或标记输入变化：下次布局重新计算。
@@ -85,7 +93,7 @@ impl ScrollbarMarkerState {
         self.pending_refresh = Some(task);
     }
 
-    /// 安装后台算出的标记；计算期间显示版本已推进时丢弃过期结果。
+    /// 安装后台算出的标记；计算期间显示版本或轨道尺寸已变化时丢弃过期结果。
     pub(crate) fn finish_refresh(
         &mut self,
         scrollbar_size: Size<Pixels>,
@@ -94,8 +102,8 @@ impl ScrollbarMarkerState {
         marker_groups: [Option<Arc<[ScrollbarMarker]>>; 2],
     ) {
         self.pending_refresh = None;
-        if version != current_version {
-            // 保持 dirty，使下一次布局基于最新显示版本重新计算。
+        if version != current_version || scrollbar_size != self.track_size {
+            // 保持 dirty，使下一次布局基于最新显示版本与轨道尺寸重新计算。
             self.dirty = true;
             return;
         }

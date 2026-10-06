@@ -8,7 +8,7 @@ use gpui::{AppContext, TestAppContext, font, px};
 use zcv_buffer_diff::{BufferDiff, BufferDiffInput};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{DiffExcerptRanges, DiffFile, ExcerptRange, MultiBuffer, MultiBufferOffset};
-use zcv_text::{Affinity, Buffer, BufferConfig, Edit, Line, TransactionMetadata};
+use zcv_text::{Affinity, Buffer, BufferConfig, Edit, Line, TextRange, TransactionMetadata};
 use zcv_theme::ThemeChoice;
 
 use super::test_support::{WrapRowKind, projected_line_text};
@@ -915,7 +915,7 @@ fn metadata_only_tab_change_keeps_wrap_transform_tree(cx: &mut TestAppContext) {
     new_buffer
         .edit(
             [Edit::replace(
-                zcv_text::TextRange::new(
+                TextRange::new(
                     MultiBufferOffset::new(0).into(),
                     MultiBufferOffset::new(3).into(),
                 )
@@ -961,7 +961,7 @@ fn mixed_insert_delete_in_one_isomorphic_run_keeps_wrap_input_aligned(cx: &mut T
             [
                 Edit::insert(MultiBufferOffset::new(5 * 7).into(), "new05\n").unwrap(),
                 Edit::delete(
-                    zcv_text::TextRange::new(
+                    TextRange::new(
                         MultiBufferOffset::new(10 * 7).into(),
                         MultiBufferOffset::new(11 * 7).into(),
                     )
@@ -1040,7 +1040,7 @@ fn random_multi_edit_wrap_sync_keeps_input_coverage(cx: &mut TestAppContext) {
                 format!("r{index}")
             };
             edits.push(Edit::replace(
-                zcv_text::TextRange::new(
+                TextRange::new(
                     MultiBufferOffset::new(position).into(),
                     MultiBufferOffset::new(end).into(),
                 )

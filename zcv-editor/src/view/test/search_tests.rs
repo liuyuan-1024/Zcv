@@ -735,3 +735,33 @@ fn editing_external_search_results_keeps_them_external(cx: &mut TestAppContext) 
         );
     });
 }
+
+#[gpui::test]
+fn search_state_change_reaches_display_decorations_without_a_text_change(cx: &mut TestAppContext) {
+    let (editor, cx) = editor_with_text(cx, "abc abc abc");
+    cx.update(|window, cx| {
+        editor.update(cx, |editor, cx| {
+            editor.search(&query("abc"), window, cx);
+            let search = editor
+                .display_snapshot(cx)
+                .search_decorations()
+                .expect("搜索后必须把命中注入显示装饰");
+            assert_eq!(search.visible_ranges(0..11).count(), 3);
+            assert!(search.is_active(0));
+
+            // 仅查询变化、文本与显示拓扑不变，装饰输入仍必须拥有独立推进入口。
+            editor.search(&query("abc abc abc"), window, cx);
+            let search = editor
+                .display_snapshot(cx)
+                .search_decorations()
+                .expect("查询变化后显示装饰必须更新");
+            assert_eq!(search.visible_ranges(0..11).count(), 1);
+
+            editor.clear_search(window, cx);
+            assert!(
+                editor.display_snapshot(cx).search_decorations().is_none(),
+                "清空搜索后显示装饰必须同步移除"
+            );
+        });
+    });
+}

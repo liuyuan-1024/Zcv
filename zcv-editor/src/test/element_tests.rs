@@ -221,8 +221,9 @@ fn selection_background_splits_multibyte_text_before_shaping() {
         underline: None,
         strikethrough: None,
     };
+    let selection = selected..selected + '世'.len_utf8();
     let backgrounds = LineBackgrounds {
-        selections: vec![selected..selected + '世'.len_utf8()],
+        selections: vec![selection],
         ..Default::default()
     };
     let shaped = shape_text_piece(
@@ -308,7 +309,7 @@ use std::path::{Path, PathBuf};
 use zcv_buffer_diff::DiffHunkStaging;
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{DisplayHunk, ExcerptRange, MultiBuffer};
-use zcv_text::{Affinity, Buffer, BufferConfig, Line};
+use zcv_text::{Affinity, Buffer, BufferConfig, ByteOffset, Line, TextRange};
 use zcv_theme::{ThemeChoice, typography};
 
 fn expanded_diff_snapshot(old: &str, new: &str, cx: &mut TestAppContext) -> MultiBufferSnapshot {
@@ -580,8 +581,7 @@ fn search_scrollbar_markers_render_from_search_decorations(cx: &mut TestAppConte
         buffer.set_excerpts_for_path(
             vec![ExcerptRange::new(
                 source.clone(),
-                zcv_text::TextRange::new(zcv_text::ByteOffset::ZERO, source_len)
-                    .expect("整文件范围应合法"),
+                TextRange::new(ByteOffset::ZERO, source_len).expect("整文件范围应合法"),
                 Vec::new(),
             )],
             cx,

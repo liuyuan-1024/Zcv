@@ -135,6 +135,27 @@ impl WrapPoint {
     }
 }
 
+/// 软换行层内的有序点对范围；只表达本层坐标，不借用 fold 的投影范围类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WrapRange {
+    start: WrapPoint,
+    end: WrapPoint,
+}
+
+impl WrapRange {
+    pub(crate) const fn new(start: WrapPoint, end: WrapPoint) -> Self {
+        Self { start, end }
+    }
+
+    pub(crate) const fn start(self) -> WrapPoint {
+        self.start
+    }
+
+    pub(crate) const fn end(self) -> WrapPoint {
+        self.end
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub(crate) struct DisplayPoint {
     row: DisplayRow,

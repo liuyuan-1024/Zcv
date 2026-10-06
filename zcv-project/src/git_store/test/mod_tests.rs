@@ -14,7 +14,7 @@ fn test_registry() -> Arc<LanguageRegistry> {
 
 use gpui::AppContext;
 use zcv_buffer_diff::BufferDiffInput;
-use zcv_git::StatusCode;
+use zcv_git::{FileStatus, RealGitRepository, StatusCode};
 
 fn absolute(path: PathBuf) -> AbsolutePathBuf {
     AbsolutePathBuf::canonicalize(&path)
@@ -321,7 +321,7 @@ fn status_for_directory_aggregates_children(cx: &mut gpui::TestAppContext) {
     let docs = cx.read_entity(&git_store, |store, _| {
         store.status_for_directory(&root.join("docs"))
     });
-    assert!(docs.is_some_and(|status| matches!(status, zcv_git::FileStatus::Untracked)));
+    assert!(docs.is_some_and(|status| matches!(status, FileStatus::Untracked)));
     // 同一目录下 modified 与 untracked 并存：modified 优先（优先级更高）。
     fs::write(root.join("src/scratch.rs"), "x\n").expect("应创建文件");
     cx.update_entity(&git_store, |store, cx| {
@@ -684,7 +684,7 @@ fn ignored_directory_status_propagates_to_descendants(cx: &mut gpui::TestAppCont
                 .status_for_path(&root.join("scratch.txt"))
                 .map(|entry| entry.status)
         })
-        .is_some_and(|status| matches!(status, zcv_git::FileStatus::Untracked))
+        .is_some_and(|status| matches!(status, FileStatus::Untracked))
     );
 }
 
@@ -1241,7 +1241,7 @@ fn diff_operations_stage_hunk_writes_index_and_keeps_pending(cx: &mut gpui::Test
         Some("第一行\n已修改\n"),
         "权威扫描必须就地刷新 index 文本"
     );
-    let repository = zcv_git::RealGitRepository::open(&root.join(".git")).expect("应打开工作仓库");
+    let repository = RealGitRepository::open(&root.join(".git")).expect("应打开工作仓库");
     let index = repository
         .load_revisions(&[":tracked.txt"])
         .expect("应读取 index")
@@ -1339,7 +1339,7 @@ fn staging_resolves_hunk_anchors_on_the_current_working_snapshot(cx: &mut gpui::
         );
     });
     cx.run_until_parked();
-    let repository = zcv_git::RealGitRepository::open(&root.join(".git")).expect("应打开工作仓库");
+    let repository = RealGitRepository::open(&root.join(".git")).expect("应打开工作仓库");
     let index = repository
         .load_revisions(&[":tracked.txt"])
         .expect("应读取 index")
@@ -1431,7 +1431,7 @@ fn staging_two_hunks_without_waiting_merges_pending_edits(cx: &mut gpui::TestApp
         );
     });
     cx.run_until_parked();
-    let repository = zcv_git::RealGitRepository::open(&root.join(".git")).expect("应打开工作仓库");
+    let repository = RealGitRepository::open(&root.join(".git")).expect("应打开工作仓库");
     let index = repository
         .load_revisions(&[":two.txt"])
         .expect("应读取 index")

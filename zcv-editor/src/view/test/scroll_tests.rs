@@ -777,7 +777,7 @@ fn batch_file_folding_publishes_one_semantic_change(cx: &mut TestAppContext) {
     assert!(
         cx.read_entity(&editor, |editor, _| editor
             .scrollbar_marker_state
-            .should_refresh(Default::default())),
+            .should_refresh()),
         "显示配置提交后必须失效滚动条几何"
     );
     editor.update(cx, |editor, cx| {

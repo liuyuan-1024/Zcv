@@ -17,6 +17,8 @@ use super::input::EditorComposition;
 pub(crate) struct EditorPresentation {
     snapshot: MultiBufferSnapshot,
     composition: Option<EditorComposition>,
+    /// 组合锚点在构造快照上解析出的标记范围；退出投影时整体丢弃。
+    marked_ranges: Arc<[MultiBufferRange]>,
     dimmed_ranges: Arc<[Range<usize>]>,
 }
 
@@ -25,9 +27,13 @@ impl EditorPresentation {
         snapshot: &MultiBufferSnapshot,
         composition: Option<&EditorComposition>,
     ) -> Self {
+        let marked_ranges: Arc<[MultiBufferRange]> = composition
+            .map(|composition| resolve_marked_ranges(composition, snapshot).into())
+            .unwrap_or_default();
         Self {
             snapshot: snapshot.clone(),
             composition: composition.cloned(),
+            marked_ranges,
             dimmed_ranges: Arc::from([]),
         }
     }
@@ -42,14 +48,12 @@ impl EditorPresentation {
     }
 
     pub(crate) fn marked_ranges(&self) -> &[MultiBufferRange] {
-        self.composition
-            .as_ref()
-            .map_or(&[], |composition| composition.ranges.as_ref())
+        &self.marked_ranges
     }
 
     pub(crate) fn marked_utf16_range(&self) -> Option<Range<usize>> {
         let composition = self.composition.as_ref()?;
-        let range = composition.ranges.get(composition.primary_index)?;
+        let range = self.marked_ranges.get(composition.primary_index)?;
         Some(
             self.snapshot.byte_to_utf16_cu(range.start()).ok()?.get()
                 ..self.snapshot.byte_to_utf16_cu(range.end()).ok()?.get(),
@@ -72,4 +76,25 @@ impl EditorPresentation {
                 .collect(),
         )
     }
+}
+
+/// 把组合会话的锚点范围解析到当前快照；任一端退出投影时整体丢弃。
+fn resolve_marked_ranges(
+    composition: &EditorComposition,
+    snapshot: &MultiBufferSnapshot,
+) -> Vec<MultiBufferRange> {
+    let mut ranges = Vec::with_capacity(composition.ranges.len());
+    for range in composition.ranges.iter() {
+        let (Ok(Some(start)), Ok(Some(end))) = (
+            snapshot.projected_anchor_offset(&range.start),
+            snapshot.projected_anchor_offset(&range.end),
+        ) else {
+            return Vec::new();
+        };
+        let Ok(range) = MultiBufferRange::new(start, end) else {
+            return Vec::new();
+        };
+        ranges.push(range);
+    }
+    ranges
 }

@@ -224,8 +224,9 @@ fn search_input_drives_picker_query(cx: &mut TestAppContext) {
     cx.update(|_, cx| input.set_text("分支", cx));
     cx.run_until_parked();
 
-    cx.read_entity(&picker, |picker, _| {
-        assert_eq!(picker.query, "分支");
+    cx.read_entity(&picker, |picker, cx| {
+        // 查询文本的权威是 search_input；Picker 不再保留第二份副本。
+        assert_eq!(picker.search_input().text(cx), "分支");
         assert_eq!(picker.delegate().query, "分支");
     });
 }

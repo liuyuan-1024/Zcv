@@ -169,6 +169,8 @@ impl SearchableItem for Editor {
 
     fn clear_search(&mut self, _window: &mut gpui::Window, cx: &mut gpui::Context<Self>) {
         self.search = None;
+        // 搜索装饰是独立于显示拓扑的输入：清空搜索必须同步移除高亮与滚动条标记。
+        self.advance_snapshots(cx);
         cx.notify();
         cx.emit(SearchEvent::MatchesInvalidated);
     }

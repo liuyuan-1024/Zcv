@@ -5,6 +5,7 @@
 //! 续行的视觉缩进是一段"假空格"，作为显示文本的前缀参与布局、命中测试与坐标换算，因此渲染端无需为续行做任何特殊定位。
 //!
 //! 与 FoldMap 一样，WrapMap 用 `SumTree<Transform>` 维护"输入 tab 行 → 输出显示行"的拓扑：Isomorphic 段把连续不换行行合并，Wrap 段把单个宽行拆成 `wrap_points.len() + 1` 个显示行。
+//! 变换树在装配时保持 D-8 规范形：相邻同构段必须归并，由 `push_isomorphic` 与 `append_canonical` 统一维护并在 `check_invariants` 中校验。
 //! 折叠与换行是正交的两层变换：折叠先塌缩文本，换行再按像素宽度切分。
 
 use zcv_multi_buffer::{MultiBufferOffset, MultiBufferRange};
@@ -30,14 +31,13 @@ use super::display_width::DisplayColumn;
 use super::error::DisplayMapResult;
 use super::fold_map::{
     ChunkRendererId, FoldBias, FoldOffset, FoldRowSegment, FoldRowSegmentKind, FoldRows,
-    LogicalPoint, LogicalRange, ProjectedLineIndex, ProjectedPoint, ProjectedRange,
-    StreamProjectedKind,
+    LogicalPoint, LogicalRange, ProjectedLineIndex, ProjectedPoint, StreamProjectedKind,
 };
 use super::tab_map::{
     TabEdit, TabPoint, TabPointMapping, TabSnapshot, advance_display_column,
     byte_for_display_column, display_width_for_fold_row, line_content,
 };
-use super::{WrapPoint, WrapRow};
+use super::{WrapPoint, WrapRange, WrapRow};
 
 const WRAP_YIELD_ROW_INTERVAL: usize = 100;
 const FULL_REWRAP_BUDGET: Duration = Duration::from_millis(5);
@@ -313,12 +313,18 @@ impl WrapSnapshot {
                 TabPoint::new(tab_rows, 0),
                 "Wrap 输入点必须由当前 Tab 快照的投影边界确定"
             );
+            let mut previous_isomorphic = false;
             for transform in self.transforms.iter() {
                 match transform.kind {
-                    TransformKind::Isomorphic => assert!(transform.input.row() > 0),
+                    TransformKind::Isomorphic => {
+                        assert!(!previous_isomorphic, "Wrap 变换树不得包含相邻同构段（D-8）");
+                        assert!(transform.input.row() > 0);
+                        previous_isomorphic = true;
+                    }
                     TransformKind::Wrap => {
                         assert_eq!(transform.input, TabPoint::new(1, 0));
                         assert!(!transform.wrap_points.is_empty());
+                        previous_isomorphic = false;
                     }
                 }
             }
@@ -382,15 +388,14 @@ impl WrapSnapshot {
         let old_transforms = mem::replace(&mut self.transforms, SumTree::new(()));
         let mut cursor = old_transforms.cursor::<TabPoint>(());
         let mut new_tree = SumTree::new(());
-        let mut buffered = Vec::new();
         let mut old_ranges = Vec::with_capacity(structural.len());
         let mut measured = Vec::with_capacity(structural.len());
 
         let mut edits = structural.iter().peekable();
         if let Some((old_rows, _)) = edits.peek() {
-            new_tree.append(
+            append_canonical(
+                &mut new_tree,
                 cursor.slice(&TabPoint::new(old_rows.start, 0), Bias::Right),
-                (),
             );
         }
         while let Some((old_rows, new_rows)) = edits.next() {
@@ -399,13 +404,12 @@ impl WrapSnapshot {
                 .start
                 .saturating_sub(new_tree.summary().input.row());
             if gap > 0 {
-                push_isomorphic(&mut buffered, gap);
+                push_isomorphic(&mut new_tree, gap);
             }
             // 急切插值：新行按同构占位，等待后台真实重排。
-            push_isomorphic(&mut buffered, new_rows.len());
+            push_isomorphic(&mut new_tree, new_rows.len());
             old_ranges.push(old_rows.clone());
             measured.push(new_rows.len());
-            new_tree.extend(buffered.drain(..), ());
 
             // 旧游标只向前推进到编辑终点，不越过包含它的旧变换。
             cursor.seek_forward(&TabPoint::new(old_rows.end, 0), Bias::Right);
@@ -424,8 +428,7 @@ impl WrapSnapshot {
             } else if let Some((next_old, _)) = edits.peek() {
                 if next_old.start > cursor.end().row() {
                     if cursor.end().row() > old_rows.end {
-                        push_isomorphic(&mut buffered, cursor.end().row() - old_rows.end);
-                        new_tree.extend(buffered.drain(..), ());
+                        push_isomorphic(&mut new_tree, cursor.end().row() - old_rows.end);
                     }
                     cursor.next();
                     Some(cursor.slice(&TabPoint::new(next_old.start, 0), Bias::Right))
@@ -434,14 +437,13 @@ impl WrapSnapshot {
                 }
             } else {
                 if cursor.end().row() > old_rows.end {
-                    push_isomorphic(&mut buffered, cursor.end().row() - old_rows.end);
-                    new_tree.extend(buffered.drain(..), ());
+                    push_isomorphic(&mut new_tree, cursor.end().row() - old_rows.end);
                 }
                 cursor.next();
                 Some(cursor.suffix())
             };
             if let Some(trailing) = trailing {
-                new_tree.append(trailing, ());
+                append_canonical(&mut new_tree, trailing);
             }
         }
         debug_assert_eq!(
@@ -748,7 +750,7 @@ impl WrapSnapshot {
     pub(super) fn project_text_range(
         &self,
         range: MultiBufferRange,
-    ) -> DisplayMapResult<Vec<ProjectedRange>> {
+    ) -> DisplayMapResult<Vec<WrapRange>> {
         let buffer = self.tab_snapshot.buffer_snapshot();
         let logical = LogicalRange::new(
             LogicalPoint::from(buffer.byte_to_position(range.start())?),
@@ -771,23 +773,16 @@ impl WrapSnapshot {
 
         let breakpoints = [start, end];
 
-        breakpoints
+        Ok(breakpoints
             .windows(2)
             .filter(|window| window[0] != window[1])
             .map(|window| {
-                ProjectedRange::new(
-                    ProjectedPoint::new(
-                        ProjectedLineIndex::new(window[0].0.get()),
-                        LogicalColumn::new(window[0].1),
-                    ),
-                    ProjectedPoint::new(
-                        ProjectedLineIndex::new(window[1].0.get()),
-                        LogicalColumn::new(window[1].1),
-                    ),
+                WrapRange::new(
+                    WrapPoint::new(window[0].0, DisplayColumn::new(window[0].1)),
+                    WrapPoint::new(window[1].0, DisplayColumn::new(window[1].1)),
                 )
-                .map_err(Into::into)
             })
-            .collect()
+            .collect())
     }
 
     /// 光标所在的显示行行首（列 0）对应的字节偏移。
@@ -931,10 +926,7 @@ fn wrap_edits(
         let start = (old_before as isize + delta) as usize;
         let old_range = old_before..old_after;
         let new_range = start..start + new_len;
-        result.push(WrapEdit {
-            old: old_range,
-            new: new_range,
-        });
+        result.push(WrapEdit::new(old_range, new_range));
         delta += *new_len as isize - (old_after - old_before) as isize;
     }
     result
@@ -977,17 +969,24 @@ fn tab_edit_rows(tab_edits: &[TabEdit]) -> Vec<(Range<usize>, Range<usize>)> {
 /// 有重排时才记录旧/新区间，供 BlockMap 判断块位置是否需要重建。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct WrapEdit {
-    pub(super) old: Range<usize>,
-    pub(super) new: Range<usize>,
+    pub(super) old: Range<WrapRow>,
+    pub(super) new: Range<WrapRow>,
 }
 
 impl WrapEdit {
+    pub(super) fn new(old: Range<usize>, new: Range<usize>) -> Self {
+        Self {
+            old: WrapRow::new(old.start)..WrapRow::new(old.end),
+            new: WrapRow::new(new.start)..WrapRow::new(new.end),
+        }
+    }
+
     fn old_len(&self) -> usize {
-        self.old.end - self.old.start
+        self.old.end.get() - self.old.start.get()
     }
 
     fn new_len(&self) -> usize {
-        self.new.end - self.new.start
+        self.new.end.get() - self.new.start.get()
     }
 }
 
@@ -1037,15 +1036,15 @@ impl WrapPatch {
                     .as_ref()
                     .is_none_or(|next| edit.new.end < next.old.start)
             {
-                let unchanged = edit.old.start - old_position;
+                let unchanged = edit.old.start.get() - old_position;
                 old_position += unchanged;
                 new_position += unchanged;
                 push_wrap_edit(
                     &mut composed,
-                    WrapEdit {
-                        old: old_position..old_position + edit.old_len(),
-                        new: new_position..new_position + edit.new_len(),
-                    },
+                    WrapEdit::new(
+                        old_position..old_position + edit.old_len(),
+                        new_position..new_position + edit.new_len(),
+                    ),
                 );
                 old_position += edit.old_len();
                 new_position += edit.new_len();
@@ -1058,15 +1057,15 @@ impl WrapPatch {
                     .as_ref()
                     .is_none_or(|old| edit.old.end < old.new.start)
             {
-                let unchanged = edit.new.start - new_position;
+                let unchanged = edit.new.start.get() - new_position;
                 old_position += unchanged;
                 new_position += unchanged;
                 push_wrap_edit(
                     &mut composed,
-                    WrapEdit {
-                        old: old_position..old_position + edit.old_len(),
-                        new: new_position..new_position + edit.new_len(),
-                    },
+                    WrapEdit::new(
+                        old_position..old_position + edit.old_len(),
+                        new_position..new_position + edit.new_len(),
+                    ),
                 );
                 old_position += edit.old_len();
                 new_position += edit.new_len();
@@ -1079,39 +1078,33 @@ impl WrapPatch {
             };
 
             if old_edit.new.start < next_edit.old.start {
-                let unchanged = old_edit.old.start - old_position;
+                let unchanged = old_edit.old.start.get() - old_position;
                 old_position += unchanged;
                 new_position += unchanged;
-                let overlap_offset = next_edit.old.start - old_edit.new.start;
-                let old_end = (old_position + overlap_offset).min(old_edit.old.end);
+                let overlap_offset = next_edit.old.start.get() - old_edit.new.start.get();
+                let old_end = (old_position + overlap_offset).min(old_edit.old.end.get());
                 let new_end = new_position + overlap_offset;
                 push_wrap_edit(
                     &mut composed,
-                    WrapEdit {
-                        old: old_position..old_end,
-                        new: new_position..new_end,
-                    },
+                    WrapEdit::new(old_position..old_end, new_position..new_end),
                 );
-                old_edit.old.start = old_end;
-                old_edit.new.start += overlap_offset;
+                old_edit.old.start = WrapRow::new(old_end);
+                old_edit.new.start = WrapRow::new(old_edit.new.start.get() + overlap_offset);
                 old_position = old_end;
                 new_position = new_end;
             } else {
-                let unchanged = next_edit.new.start - new_position;
+                let unchanged = next_edit.new.start.get() - new_position;
                 old_position += unchanged;
                 new_position += unchanged;
-                let overlap_offset = old_edit.new.start - next_edit.old.start;
+                let overlap_offset = old_edit.new.start.get() - next_edit.old.start.get();
                 let old_end = old_position + overlap_offset;
-                let new_end = (new_position + overlap_offset).min(next_edit.new.end);
+                let new_end = (new_position + overlap_offset).min(next_edit.new.end.get());
                 push_wrap_edit(
                     &mut composed,
-                    WrapEdit {
-                        old: old_position..old_end,
-                        new: new_position..new_end,
-                    },
+                    WrapEdit::new(old_position..old_end, new_position..new_end),
                 );
-                next_edit.old.start += overlap_offset;
-                next_edit.new.start = new_end;
+                next_edit.old.start = WrapRow::new(next_edit.old.start.get() + overlap_offset);
+                next_edit.new.start = WrapRow::new(new_end);
                 old_position = old_end;
                 new_position = new_end;
             }
@@ -1121,12 +1114,9 @@ impl WrapPatch {
                 let new_end = new_position + next_edit.new_len();
                 push_wrap_edit(
                     &mut composed,
-                    WrapEdit {
-                        old: old_position..old_end,
-                        new: new_position..new_end,
-                    },
+                    WrapEdit::new(old_position..old_end, new_position..new_end),
                 );
-                old_edit.old.start = old_end;
+                old_edit.old.start = WrapRow::new(old_end);
                 old_edit.new.start = next_edit.old.end;
                 old_position = old_end;
                 new_position = new_end;
@@ -1136,13 +1126,10 @@ impl WrapPatch {
                 let new_end = new_position + old_edit.new_len().min(next_edit.new_len());
                 push_wrap_edit(
                     &mut composed,
-                    WrapEdit {
-                        old: old_position..old_end,
-                        new: new_position..new_end,
-                    },
+                    WrapEdit::new(old_position..old_end, new_position..new_end),
                 );
                 next_edit.old.start = old_edit.new.end;
-                next_edit.new.start = new_end;
+                next_edit.new.start = WrapRow::new(new_end);
                 old_position = old_end;
                 new_position = new_end;
                 old.next();
@@ -1344,7 +1331,7 @@ impl WrapMap {
                     .collect();
                 let edits = tab_edit_rows(&row_edits)
                     .into_iter()
-                    .map(|(old, new)| WrapEdit { old, new })
+                    .map(|(old, new)| WrapEdit::new(old, new))
                     .collect::<Vec<_>>();
                 debug_assert!(
                     !edits.is_empty()
@@ -1543,10 +1530,7 @@ impl WrapMap {
             // 不应把它伪装成显示几何编辑并强制重建 diff 装饰。
             return Vec::new();
         }
-        vec![WrapEdit {
-            old: 0..old_rows,
-            new: 0..new_rows,
-        }]
+        vec![WrapEdit::new(0..old_rows, 0..new_rows)]
     }
 }
 
@@ -1598,14 +1582,13 @@ impl WrapWorker {
         let old_transforms = std::mem::replace(&mut self.snapshot.transforms, SumTree::new(()));
         let mut cursor = old_transforms.cursor::<TabPoint>(());
         let mut new_tree = SumTree::new(());
-        let mut buffered = Vec::new();
         let mut measured = Vec::with_capacity(edits.len());
 
         let mut edits_iter = edits.iter().peekable();
         if let Some((old_rows, _)) = edits_iter.peek() {
-            new_tree.append(
+            append_canonical(
+                &mut new_tree,
                 cursor.slice(&TabPoint::new(old_rows.start, 0), Bias::Right),
-                (),
             );
         }
         while let Some((old_rows, new_rows)) = edits_iter.next() {
@@ -1614,7 +1597,7 @@ impl WrapWorker {
                 .start
                 .saturating_sub(new_tree.summary().input.row());
             if gap > 0 {
-                push_isomorphic(&mut buffered, gap);
+                push_isomorphic(&mut new_tree, gap);
             }
             let mut output_rows = 0;
             for tab_row in new_rows.clone() {
@@ -1625,7 +1608,7 @@ impl WrapWorker {
                     &mut line_cursor,
                 )
                 .expect("已投影的文本行必须能建立塑形输入");
-                output_rows += self.push_wrap_transform(&mut buffered, prepared);
+                output_rows += self.push_wrap_transform(&mut new_tree, prepared);
                 self.rows_since_yield += 1;
                 if self.rows_since_yield == WRAP_YIELD_ROW_INTERVAL {
                     // 分批让出执行权，使任务替换与实体销毁能够及时取消重排。
@@ -1634,7 +1617,6 @@ impl WrapWorker {
                 }
             }
             measured.push(output_rows);
-            new_tree.extend(buffered.drain(..), ());
 
             // 旧游标只向前推进到编辑终点，不越过包含它的旧变换。
             cursor.seek_forward(&TabPoint::new(old_rows.end, 0), Bias::Right);
@@ -1653,8 +1635,7 @@ impl WrapWorker {
             } else if let Some((next_old, _)) = edits_iter.peek() {
                 if next_old.start > cursor.end().row() {
                     if cursor.end().row() > old_rows.end {
-                        push_isomorphic(&mut buffered, cursor.end().row() - old_rows.end);
-                        new_tree.extend(buffered.drain(..), ());
+                        push_isomorphic(&mut new_tree, cursor.end().row() - old_rows.end);
                     }
                     cursor.next();
                     Some(cursor.slice(&TabPoint::new(next_old.start, 0), Bias::Right))
@@ -1663,14 +1644,13 @@ impl WrapWorker {
                 }
             } else {
                 if cursor.end().row() > old_rows.end {
-                    push_isomorphic(&mut buffered, cursor.end().row() - old_rows.end);
-                    new_tree.extend(buffered.drain(..), ());
+                    push_isomorphic(&mut new_tree, cursor.end().row() - old_rows.end);
                 }
                 cursor.next();
                 Some(cursor.suffix())
             };
             if let Some(trailing) = trailing {
-                new_tree.append(trailing, ());
+                append_canonical(&mut new_tree, trailing);
             }
             if edits_iter.peek().is_some() {
                 yield_now().await;
@@ -1700,7 +1680,7 @@ impl WrapWorker {
     /// 即使它与前一个同构变换合并，调用方仍能按行累计测量值，不依赖压入后的缓冲区切分。
     fn push_wrap_transform(
         &mut self,
-        transforms: &mut Vec<Transform>,
+        transforms: &mut SumTree<Transform>,
         prepared: PreparedWrapText,
     ) -> usize {
         let boundaries = self.wrap_points(prepared, self.wrap_width);
@@ -1710,14 +1690,17 @@ impl WrapWorker {
             1
         } else {
             let output_rows = boundaries.len() + 1;
-            transforms.push(Transform {
-                kind: TransformKind::Wrap,
-                input: TabPoint::new(1, 0),
-                output_rows,
-                longest_row: 0,
-                longest_row_chars: 0,
-                wrap_points: boundaries.into(),
-            });
+            transforms.push(
+                Transform {
+                    kind: TransformKind::Wrap,
+                    input: TabPoint::new(1, 0),
+                    output_rows,
+                    longest_row: 0,
+                    longest_row_chars: 0,
+                    wrap_points: boundaries.into(),
+                },
+                (),
+            );
             output_rows
         }
     }
@@ -1935,15 +1918,63 @@ fn fragment_index_for_byte(points: &[WrapPointInfo], byte: usize) -> usize {
         .unwrap_or(points.len())
 }
 
-fn push_isomorphic(transforms: &mut Vec<Transform>, lines: usize) {
-    if let Some(last) = transforms.last_mut()
-        && last.kind == TransformKind::Isomorphic
-    {
-        last.input = last.input.advance(TabPoint::new(lines, 0));
-        last.output_rows += lines;
+/// 追加以 `lines` 行为输入与输出的同构段；与树尾同构段合并，维持 D-8 规范形。
+fn push_isomorphic(transforms: &mut SumTree<Transform>, lines: usize) {
+    let mut merged = false;
+    transforms.update_last(
+        |last| {
+            if last.kind == TransformKind::Isomorphic {
+                last.input = last.input.advance(TabPoint::new(lines, 0));
+                last.output_rows += lines;
+                merged = true;
+            }
+        },
+        (),
+    );
+    if !merged {
+        transforms.push(Transform::isomorphic(TabPoint::new(lines, 0), lines), ());
+    }
+}
+
+/// 把 `incoming` 追加到变换树，并归并交界处的相邻同构段，维持 D-8 规范形。
+///
+/// `tree` 与 `incoming` 内部都已是规范形，因此只可能在两棵树的交界处产生
+/// 相邻同构段；这里只处理该处，未变的前缀与后缀子树仍按 Arc 共享，不做整树重建。
+fn append_canonical(tree: &mut SumTree<Transform>, incoming: SumTree<Transform>) {
+    if incoming.is_empty() {
         return;
     }
-    transforms.push(Transform::isomorphic(TabPoint::new(lines, 0), lines));
+    let merges = tree
+        .last()
+        .is_some_and(|last| last.kind == TransformKind::Isomorphic)
+        && incoming
+            .first()
+            .is_some_and(|first| first.kind == TransformKind::Isomorphic);
+    if !merges {
+        tree.append(incoming, ());
+        return;
+    }
+
+    let first = incoming.first().cloned().expect("incoming 非空必含首项");
+    let mut cursor = incoming.cursor::<TabPoint>(());
+    // slice 取走首项并推进游标；首项并入树尾，其余段原样追加。
+    let _ = cursor.slice(&first.input, Bias::Right);
+    let rest = cursor.suffix();
+    drop(cursor);
+
+    tree.update_last(
+        |last| {
+            let old_rows = last.output_rows;
+            last.input = last.input.advance(first.input);
+            last.output_rows = old_rows + first.output_rows;
+            if first.longest_row_chars > last.longest_row_chars {
+                last.longest_row = old_rows + first.longest_row;
+                last.longest_row_chars = first.longest_row_chars;
+            }
+        },
+        (),
+    );
+    tree.append(rest, ());
 }
 
 fn isomorphic_tree(tab_snapshot: &TabSnapshot) -> SumTree<Transform> {

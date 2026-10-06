@@ -612,10 +612,10 @@ impl BlockSnapshot {
             .excerpt_boundary_change(self.wrap_snapshot.buffer_snapshot());
         let mut geometry_changed = !wrap_edits.is_empty() || boundary_change.is_some();
         if let Some((old, new)) = boundary_change {
-            edits.push(WrapEdit {
-                old: wrap_span(&self.wrap_snapshot, old),
-                new: wrap_span(&wrap_snapshot, new),
-            });
+            edits.push(WrapEdit::new(
+                wrap_span(&self.wrap_snapshot, old),
+                wrap_span(&wrap_snapshot, new),
+            ));
         }
         if !Arc::ptr_eq(&self.folded_buffers, folded_buffers) {
             for id in self.folded_buffers.symmetric_difference(folded_buffers) {
@@ -623,10 +623,10 @@ impl BlockSnapshot {
                     self.wrap_snapshot.buffer_snapshot().buffer_range(*id),
                     wrap_snapshot.buffer_snapshot().buffer_range(*id),
                 ) {
-                    edits.push(WrapEdit {
-                        old: wrap_span(&self.wrap_snapshot, old),
-                        new: wrap_span(&wrap_snapshot, new),
-                    });
+                    edits.push(WrapEdit::new(
+                        wrap_span(&self.wrap_snapshot, old),
+                        wrap_span(&wrap_snapshot, new),
+                    ));
                 }
             }
         }
@@ -657,8 +657,8 @@ impl BlockSnapshot {
         let mut cursor = self.transforms.cursor::<InputRows>(());
         let mut edits = merged.into_iter().peekable();
         while let Some(edit) = edits.next() {
-            let mut old_start = edit.old.start;
-            let mut new_start = edit.new.start;
+            let mut old_start = edit.old.start.get();
+            let mut new_start = edit.new.start.get();
             append_transforms(
                 &mut transforms,
                 cursor.slice(&InputRows(old_start), Bias::Left),
@@ -681,21 +681,21 @@ impl BlockSnapshot {
                     new_start -= prefix;
                 }
             }
-            let mut old_end = edit.old.end;
-            let mut new_end = edit.new.end;
+            let mut old_end = edit.old.end.get();
+            let mut new_end = edit.new.end.get();
             loop {
                 cursor.seek(&InputRows(old_end), Bias::Left);
                 if cursor.item().is_some() {
                     cursor.next();
                 }
                 if let Some(next) = edits.peek()
-                    && next.old.start <= cursor.start().0
+                    && next.old.start.get() <= cursor.start().0
                 {
                     let next = edits.next().expect("后续 patch 必须存在");
                     // 扩展范围内的后续编辑也会改变行数；
                     // 先采用最后一段编辑的配对终点，再扩展相同的未变化尾部，不能沿用此前推算的新终点。
-                    old_end = next.old.end;
-                    new_end = next.new.end;
+                    old_end = next.old.end.get();
+                    new_end = next.new.end.get();
                     continue;
                 }
                 let extra = cursor.start().0 - old_end;
@@ -852,11 +852,11 @@ impl BlockSnapshot {
                 let end = range.end();
                 DisplayRange::new(
                     DisplayPoint::new(
-                        DisplayRow::new(self.wrap_row_to_display_row(start.line().get())),
+                        DisplayRow::new(self.wrap_row_to_display_row(start.row().get())),
                         DisplayColumn::new(start.column().get()),
                     ),
                     DisplayPoint::new(
-                        DisplayRow::new(self.wrap_row_to_display_row(end.line().get())),
+                        DisplayRow::new(self.wrap_row_to_display_row(end.row().get())),
                         DisplayColumn::new(end.column().get()),
                     ),
                 )

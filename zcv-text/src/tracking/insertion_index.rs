@@ -167,9 +167,12 @@ impl InsertionIndex {
     }
 
     /// 应用一次编辑列表，返回推进后的索引。
+    ///
+    /// 与存储层 `apply_edit_list` 使用同一排序契约：
+    /// 按旧文本坐标倒序应用，使每条 edit 的旧坐标在当前文本中仍指向同一段旧文本。正序应用会在前一条 edit 改变长度后让后一条 edit 定位到错误片段，使索引与文本分叉。
     pub(crate) fn with_edits(&self, edits: &EditList, version: BufferVersion) -> Self {
         let mut next = self.clone();
-        for edit in edits.as_slice() {
+        for edit in edits.as_slice().iter().rev() {
             next.apply_edit(
                 edit.range().start().get(),
                 edit.range().end().get(),

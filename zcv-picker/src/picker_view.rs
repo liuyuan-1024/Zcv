@@ -67,7 +67,6 @@ pub struct Picker<D: PickerDelegate> {
     search_input: Arc<dyn ErasedEditor>,
     focus_handle: FocusHandle,
     width: Pixels,
-    query: String,
     on_dismiss: Option<OnDismiss>,
     list_state: ListState,
     item_height_hint: Option<Pixels>,
@@ -92,7 +91,6 @@ impl<D: PickerDelegate> Picker<D> {
             search_input,
             focus_handle: focus,
             width,
-            query: String::new(),
             on_dismiss: None,
             list_state,
             item_height_hint: None,
@@ -106,13 +104,11 @@ impl<D: PickerDelegate> Picker<D> {
                 .subscribe(
                     Box::new(move |ErasedEditorEvent::Edited, _, cx| {
                         weak.update(cx, |picker, cx| {
+                            // 查询文本的权威是 search_input；这里只读回权威更新匹配。
                             let query = picker.search_input.text(cx);
-                            if picker.query != query {
-                                picker.query = query.clone();
-                                picker.delegate.update_matches(query);
-                                picker.matches_updated(cx);
-                                picker.scroll_to_selection();
-                            }
+                            picker.delegate.update_matches(query);
+                            picker.matches_updated(cx);
+                            picker.scroll_to_selection();
                         })
                         .ok();
                     }),
@@ -144,8 +140,10 @@ impl<D: PickerDelegate> Picker<D> {
     /// 同步设置查询、重建匹配结果并定位选中项；打开浮层时也使用此入口。
     pub fn set_query(&mut self, query: &str, cx: &mut Context<Self>) {
         self.search_input.set_text(query, cx);
-        self.query = query.to_owned();
-        self.delegate.update_matches(self.query.clone());
+        // set_text 可能同步触发 Edited；也可能因文本未变而不触发。
+        // 两种情况下都只从权威读回查询并更新匹配，不保留第二份可写副本。
+        let query = self.search_input.text(cx);
+        self.delegate.update_matches(query);
         self.matches_updated(cx);
         self.scroll_to_selection();
     }

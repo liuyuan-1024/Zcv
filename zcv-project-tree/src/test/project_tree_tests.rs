@@ -11,6 +11,7 @@ use zcv_actions::{
 };
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 
+use zcv_git::FileStatus;
 use zcv_language::LanguageRegistry;
 use zcv_path::AbsolutePathBuf;
 use zcv_project::Project;
@@ -723,7 +724,7 @@ fn expanding_directory_fills_git_status_for_new_rows(cx: &mut TestAppContext) {
             .and_then(|row| row.git_status)
     });
     assert!(
-        status.is_some_and(|status| matches!(status, zcv_git::FileStatus::Untracked)),
+        status.is_some_and(|status| matches!(status, FileStatus::Untracked)),
         "展开后新出现的文件行应补齐 git 状态"
     );
 }
@@ -762,7 +763,7 @@ fn activating_directory_fills_git_status_for_new_rows(cx: &mut TestAppContext) {
             .and_then(|row| row.git_status)
     });
     assert!(
-        status.is_some_and(|status| matches!(status, zcv_git::FileStatus::Untracked)),
+        status.is_some_and(|status| matches!(status, FileStatus::Untracked)),
         "激活展开后新出现的文件行应补齐 git 状态"
     );
 }

@@ -1,8 +1,8 @@
 use super::*;
 use crate::display_map::DisplayMap;
 use gpui::{AppContext, Empty, Entity, TestAppContext, px};
-use zcv_multi_buffer::{DisplayHunk, MultiBufferSnapshot, ResolvedDiffHunk};
-use zcv_text::{Buffer, BufferConfig};
+use zcv_multi_buffer::{DiffHunkSource, DisplayHunk, MultiBufferSnapshot, ResolvedDiffHunk};
+use zcv_text::{Buffer, BufferConfig, BufferId};
 
 /// 由绝对坐标切片构造按段解析输入，供渲染单元测试调用。
 fn resolved_hunks(
@@ -15,8 +15,8 @@ fn resolved_hunks(
         .iter()
         .enumerate()
         .map(|(index, hunk)| ResolvedDiffHunk {
-            source: zcv_multi_buffer::DiffHunkSource {
-                buffer_id: zcv_text::BufferId::new(index as u64),
+            source: DiffHunkSource {
+                buffer_id: BufferId::new(index as u64),
                 range: None,
             },
             hunk: hunk.clone(),
@@ -271,9 +271,9 @@ fn every_diff_hunk_exposes_a_control_anchor(cx: &mut TestAppContext) {
             })
             .collect::<Vec<_>>(),
         vec![
-            (0, zcv_text::BufferId::new(0)),
-            (2, zcv_text::BufferId::new(1)),
-            (4, zcv_text::BufferId::new(2)),
+            (0, BufferId::new(0)),
+            (2, BufferId::new(1)),
+            (4, BufferId::new(2)),
         ]
     );
     // 新增块默认折叠：只保留 gutter 竖条，不整行着色。
@@ -328,8 +328,8 @@ fn materialized_modified_hunk_uses_real_old_and_new_document_rows(cx: &mut TestA
         rendered.controls,
         vec![(
             1..3,
-            HunkControlTarget::Diff(zcv_multi_buffer::DiffHunkSource {
-                buffer_id: zcv_text::BufferId::new(0),
+            HunkControlTarget::Diff(DiffHunkSource {
+                buffer_id: BufferId::new(0),
                 range: None,
             })
         )]

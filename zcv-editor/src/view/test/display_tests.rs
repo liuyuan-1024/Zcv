@@ -2987,6 +2987,24 @@ fn placeholder_snapshot_requires_empty_text(cx: &mut TestAppContext) {
     );
 }
 
+/// 开启软换行时，placeholder 必须与主显示映射共用换行配置并折行（§18.4、§2.3）。
+#[gpui::test]
+fn placeholder_follows_soft_wrap_width(cx: &mut TestAppContext) {
+    let editor = cx.new(|cx| Editor::single_line(Arc::new(LanguageRegistry::new()), cx));
+    cx.update_entity(&editor, |editor, cx| {
+        editor.set_placeholder_text("这是一段足够长的提示文本，用于触发软换行折行。", cx);
+        editor.set_wrap_width(Some(px(80.)), gpui::font("Helvetica"), px(16.), cx);
+    });
+    cx.run_until_parked();
+    let rows = cx.read_entity(&editor, |editor, cx| {
+        editor
+            .placeholder_snapshot_if_empty(cx)
+            .expect("空文本应返回 placeholder 快照")
+            .line_count()
+    });
+    assert!(rows > 1, "开启软换行后 placeholder 应折成多行，实际 {rows}");
+}
+
 #[gpui::test]
 fn folding_a_section_with_soft_wrap_enabled_keeps_wrap_map_invariant(cx: &mut TestAppContext) {
     // 软换行先开启、再折叠：结构编辑必须让 Wrap 变换树的 input 行数等于折叠后的 tab 行数。

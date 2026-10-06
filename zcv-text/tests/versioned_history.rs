@@ -368,3 +368,39 @@ fn text_for_version_reports_unavailable_history_when_inverse_edits_were_not_kept
         Err(TextError::HistoryTextUnavailable { requested, .. }) if requested == v0
     ));
 }
+
+#[test]
+fn multi_edit_with_length_change_keeps_insertion_index_aligned_with_text() {
+    // 一批 Edit 以旧文本坐标为基准；存储按旧坐标倒序应用。
+    // 插入索引必须遵守同一排序契约，否则前一条 edit 改变长度后，后一条 edit 的旧坐标会在当前文本上指向错误片段，索引与文本分叉。
+    let mut buffer = buffer("abcdef");
+    let v0 = buffer.version();
+    let before = buffer.snapshot();
+    buffer
+        .edit(
+            [
+                Edit::replace(range(0, 1), "XXXX".to_string()),
+                Edit::delete(range(5, 6)),
+            ],
+            TransactionMetadata::default(),
+        )
+        .unwrap();
+    assert_eq!(buffer_text(&buffer), "XXXXbcde");
+
+    let snapshot = buffer.snapshot();
+    let anchors = |start, end| before.anchor_before(b(start))..before.anchor_before(b(end));
+    // 旧 'c'（offset 2..3）在存储中保留，应判为无编辑。
+    assert!(
+        !snapshot
+            .has_edits_since_in_range(v0, anchors(2, 3))
+            .unwrap(),
+        "保留的旧 'c' 不应被判为有编辑"
+    );
+    // 旧 'f'（offset 5..6）在存储中已删除，应判为有编辑。
+    assert!(
+        snapshot
+            .has_edits_since_in_range(v0, anchors(5, 6))
+            .unwrap(),
+        "已删除的旧 'f' 应被判为有编辑"
+    );
+}

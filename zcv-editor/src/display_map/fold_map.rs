@@ -2170,45 +2170,7 @@ impl LogicalRange {
     }
 }
 
-/// 投影空间内的有序点对范围。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct ProjectedRange {
-    start: ProjectedPoint,
-    end: ProjectedPoint,
-}
-
-impl ProjectedRange {
-    /// 要求 start <= end（按 projected line, column 字典序）。
-    pub(crate) fn new(start: ProjectedPoint, end: ProjectedPoint) -> Result<Self, CoordinateError> {
-        if !is_ordered_projected(start, end) {
-            return Err(CoordinateError::InvalidLineRange {
-                start: Line::new(start.line.get()),
-                end: Line::new(end.line.get()),
-            });
-        }
-        Ok(Self { start, end })
-    }
-
-    pub(crate) const fn start(self) -> ProjectedPoint {
-        self.start
-    }
-
-    pub(crate) const fn end(self) -> ProjectedPoint {
-        self.end
-    }
-}
-
 fn is_ordered_logical(start: LogicalPoint, end: LogicalPoint) -> bool {
-    if start.line < end.line {
-        return true;
-    }
-    if start.line == end.line {
-        return start.column <= end.column;
-    }
-    false
-}
-
-fn is_ordered_projected(start: ProjectedPoint, end: ProjectedPoint) -> bool {
     if start.line < end.line {
         return true;
     }

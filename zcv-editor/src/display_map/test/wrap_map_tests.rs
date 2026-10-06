@@ -4,7 +4,7 @@ use std::{ops::Range, sync::Arc};
 use gpui::{AppContext as _, Entity, TestAppContext, font, px};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer};
-use zcv_text::{Affinity, Buffer, BufferConfig, ByteOffset, Edit, TransactionMetadata};
+use zcv_text::{Affinity, Buffer, BufferConfig, ByteOffset, Edit, Line, TransactionMetadata};
 
 use super::super::DisplayMap;
 use super::{MultiBufferOffset, WrapMap};
@@ -66,7 +66,7 @@ fn soft_wrap_equal_total_rows_still_invalidates_decoration_geometry(cx: &mut Tes
     configure(cx, &display, Some(120.));
     cx.run_until_parked();
     let before = display.update(cx, |map, cx| map.snapshot(cx));
-    let before_second_row = before.line_to_display_row(zcv_text::Line::new(1)).unwrap();
+    let before_second_row = before.line_to_display_row(Line::new(1)).unwrap();
     let cached = before.diff_decorations();
     buffer
         .edit(
@@ -87,7 +87,7 @@ fn soft_wrap_equal_total_rows_still_invalidates_decoration_geometry(cx: &mut Tes
     assert_eq!(before.line_count(), after.line_count());
     assert_ne!(
         before_second_row,
-        after.line_to_display_row(zcv_text::Line::new(1)).unwrap(),
+        after.line_to_display_row(Line::new(1)).unwrap(),
         "行数不变但源行映射已变化"
     );
     assert!(
@@ -133,7 +133,7 @@ fn async_rewrap_startup_loads_multibyte_excerpts_before_empty_task_finishes(
     for row in [0, 1, 50, 130, 259] {
         let offset = snapshot
             .buffer_snapshot()
-            .line_start_byte(zcv_text::Line::new(row))
+            .line_start_byte(Line::new(row))
             .unwrap();
         let point = snapshot.offset_to_display_point(offset).unwrap();
         assert_eq!(snapshot.display_point_to_offset(point).unwrap(), offset);
@@ -200,7 +200,7 @@ fn async_rewrap_preserves_edits_and_anchors_through_width_replacement(cx: &mut T
     for row in [0, 3, 100, 222] {
         let offset = after
             .buffer_snapshot()
-            .line_start_byte(zcv_text::Line::new(row))
+            .line_start_byte(Line::new(row))
             .unwrap();
         assert_eq!(
             after.offset_to_display_point(offset).unwrap(),
@@ -326,7 +326,7 @@ fn async_rewrap_config_change_preserves_unconsumed_net_patch(cx: &mut TestAppCon
 }
 
 fn edit(old: Range<usize>, new: Range<usize>) -> WrapEdit {
-    WrapEdit { old, new }
+    WrapEdit::new(old, new)
 }
 
 fn compose(old: Vec<WrapEdit>, next: Vec<WrapEdit>) -> Vec<WrapEdit> {

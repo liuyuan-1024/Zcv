@@ -32,6 +32,31 @@ fn marker_geometry_maps_rows_to_track_absolutely() {
 }
 
 #[test]
+fn in_flight_marker_refresh_is_discarded_when_the_track_size_changed() {
+    let size_a = size(px(15.), px(100.));
+    let size_b = size(px(15.), px(200.));
+    let groups: [Option<Arc<[ScrollbarMarker]>>; 2] = [Some(Arc::from(Vec::new())), None];
+
+    let mut state = ScrollbarMarkerState::default();
+    state.observe_track_size(size_a);
+    assert!(state.should_refresh());
+    state.finish_refresh(size_a, 7, 7, groups);
+    assert!(!state.should_refresh());
+    assert_eq!(state.marker_groups[0].as_ref().map(|g| g.len()), Some(0));
+
+    // 窗口改变轨道尺寸后，为旧尺寸计算、显示版本仍匹配的在途结果必须丢弃。
+    state.observe_track_size(size_b);
+    assert!(state.should_refresh(), "轨道尺寸变化必须请求刷新");
+    state.finish_refresh(size_a, 7, 7, [None, None]);
+    assert!(state.dirty, "尺寸过期的在途结果必须保持 dirty");
+    assert_eq!(
+        state.marker_groups[0].as_ref().map(|g| g.len()),
+        Some(0),
+        "不得用过期尺寸的结果覆盖已发布标记"
+    );
+}
+
+#[test]
 fn marker_geometry_enforces_minimum_height() {
     // 内容高度 == 视口高度（per_pixel=0）：行 0 的 5px 高 marker 直接映射。
     let track = track_bounds(200.);
@@ -201,6 +226,7 @@ fn stale_marker_result_is_discarded_after_display_version_advances() {
         None,
     ];
 
+    state.observe_track_size(track_bounds(100.).size);
     // 计算版本 1，安装时当前显示版本已推进到 2：过期结果丢弃并保持 dirty。
     state.finish_refresh(track_bounds(100.).size, 1, 2, groups.clone());
     assert!(state.marker_groups[0].is_none());

@@ -31,7 +31,7 @@ T-9 的基线派生入口是 `Buffer::snapshot_with_edits` 与 `Buffer::fast_for
 
 ## 关键类型
 
-- `Buffer`：文本内容、版本、保存点、事务管线与历史的唯一可写所有者。
+- `Buffer`：文本内容、版本、事务管线与历史的唯一可写所有者；保存点与 dirty 归语言层 `LanguageBuffer`，文本层只提供 `has_edits_since` 查询。
 - `Snapshot`：不可变、可廉价克隆的读取边界，携带版本。
 - `EditedBufferSnapshot`：`snapshot_with_edits` 规划的完整派生状态，等待 `fast_forward` 版本校验后整体换入。
 - `Anchor`：绑定版本、吸附方向与稳定插入身份的稳定位置，不持有 Buffer；插入身份用于不解析文本坐标的文档序比较。

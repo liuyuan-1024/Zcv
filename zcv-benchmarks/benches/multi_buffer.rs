@@ -8,7 +8,7 @@ use gpui::{AppContext as _, TestAppContext, TestDispatcher};
 mod common;
 
 use common::cached_rust_document;
-use zcv_language::LanguageBuffer;
+use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{ExcerptRange, MultiBuffer, MultiBufferSnapshot};
 use zcv_text::{Buffer, BufferConfig, ByteOffset, Line};
 
@@ -30,7 +30,7 @@ fn projection_setup(
                 LanguageBuffer::new(
                     buffer,
                     Some(PathBuf::from(format!("src/source_{index}.rs"))),
-                    std::sync::Arc::new(zcv_language::LanguageRegistry::new()),
+                    std::sync::Arc::new(LanguageRegistry::new()),
                     cx,
                 )
             })
@@ -84,7 +84,7 @@ fn materialize_excerpts(c: &mut Criterion) {
 fn source_range_fixture(source_count: usize) -> MultiBufferSnapshot {
     let mut cx = TestAppContext::build(TestDispatcher::new(1), None);
     let multi_buffer = cx.new(MultiBuffer::empty);
-    let registry = std::sync::Arc::new(zcv_language::LanguageRegistry::new());
+    let registry = std::sync::Arc::new(LanguageRegistry::new());
     for index in 0..source_count {
         let source = cx.new(|cx| {
             LanguageBuffer::new(

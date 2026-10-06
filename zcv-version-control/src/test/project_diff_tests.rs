@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use gpui::{AppContext as _, TestAppContext};
 
-use zcv_buffer_diff::PendingHunk;
+use zcv_buffer_diff::{DiffHunkKind, DiffHunkStaging, PendingHunk};
 use zcv_fs_watch::{FsEventStream, FsWatcher, Watcher};
 use zcv_language::{LanguageBuffer, LanguageRegistry};
 use zcv_multi_buffer::{DiffExcerptRanges, ExcerptDiffKind};
@@ -1186,7 +1186,7 @@ fn staging_first_hunk_keeps_last_deletion_visible_after_reopening(cx: &mut TestA
             .update(cx, |buffer, cx| buffer.snapshot(cx));
         let hunks = snapshot.resolved_diff_hunks();
         assert_eq!(hunks.len(), 2);
-        assert_eq!(hunks[1].1.hunk.kind, zcv_buffer_diff::DiffHunkKind::Deleted);
+        assert_eq!(hunks[1].1.hunk.kind, DiffHunkKind::Deleted);
         hunks[0].1.source.clone()
     });
     view.update(cx, |view, cx| {
@@ -1203,11 +1203,8 @@ fn staging_first_hunk_keeps_last_deletion_visible_after_reopening(cx: &mut TestA
                 .update(cx, |buffer, cx| buffer.snapshot(cx));
             let hunks = snapshot.resolved_diff_hunks();
             assert_eq!(hunks.len(), 1, "暂存首块后必须保留最后的删除块");
-            assert_eq!(hunks[0].1.hunk.kind, zcv_buffer_diff::DiffHunkKind::Deleted);
-            assert_eq!(
-                hunks[0].1.hunk.staging,
-                zcv_buffer_diff::DiffHunkStaging::Unstaged
-            );
+            assert_eq!(hunks[0].1.hunk.kind, DiffHunkKind::Deleted);
+            assert_eq!(hunks[0].1.hunk.staging, DiffHunkStaging::Unstaged);
             assert!(hunks[0].1.old_range.is_some(), "删除块的旧侧必须可见");
             let text = String::from_utf8(snapshot.text_bytes()).expect("投影应为 UTF-8");
             assert!(text.contains("line29"), "末行删除内容必须显示：{text:?}");
@@ -1249,7 +1246,7 @@ fn initially_staged_deleted_file_displays_old_side(cx: &mut TestAppContext) {
             .update(cx, |buffer, cx| buffer.snapshot(cx));
         let hunks = snapshot.resolved_diff_hunks();
         assert_eq!(hunks.len(), 1, "已暂存删除文件必须保留删除块");
-        assert_eq!(hunks[0].1.hunk.kind, zcv_buffer_diff::DiffHunkKind::Deleted);
+        assert_eq!(hunks[0].1.hunk.kind, DiffHunkKind::Deleted);
         let text = String::from_utf8(snapshot.text_bytes()).expect("投影应为 UTF-8");
         assert!(
             text.contains("删除前的内容 0"),
@@ -1323,7 +1320,7 @@ fn staged_projection_refreshes_without_status_change_or_restart(cx: &mut TestApp
             assert!(
                 hunks
                     .iter()
-                    .all(|(_, hunk)| hunk.hunk.staging == zcv_buffer_diff::DiffHunkStaging::Staged)
+                    .all(|(_, hunk)| hunk.hunk.staging == DiffHunkStaging::Staged)
             );
             assert!(
                 view.diff_subscriptions
@@ -1429,10 +1426,7 @@ fn clearing_pending_hunk_restores_projection_without_rebuilding_files(cx: &mut T
             .update(cx, |buffer, cx| buffer.snapshot(cx));
         let hunks = snapshot.resolved_diff_hunks();
         assert_eq!(hunks.len(), 1, "暂存中的块仍须参与组合投影");
-        assert_eq!(
-            hunks[0].1.hunk.staging,
-            zcv_buffer_diff::DiffHunkStaging::StagingPending
-        );
+        assert_eq!(hunks[0].1.hunk.staging, DiffHunkStaging::StagingPending);
         let text = String::from_utf8(snapshot.text_bytes()).expect("投影应为 UTF-8");
         assert!(text.contains("原始内容"), "暂存中的旧侧文本必须保留");
     });

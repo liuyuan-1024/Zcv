@@ -5,7 +5,9 @@ use std::sync::{Arc, OnceLock};
 use std::thread;
 
 use tree_sitter::StreamingIterator;
-use zcv_text::{Anchor, BufferVersion, ByteOffset, Snapshot, TextChangeBatch, TextRange};
+use zcv_text::{
+    Anchor, BufferVersion, ByteOffset, Snapshot, TextChangeBatch, TextRange, WordBoundaryPolicy,
+};
 
 use crate::registry::LanguageRegistry;
 use crate::tree_sitter_utils::{
@@ -396,10 +398,10 @@ impl SyntaxSnapshot {
     }
 
     /// 不带位置的全局操作采用宿主语言政策，不以某个假定光标查询作用域。
-    pub fn global_word_boundary(&self) -> zcv_text::WordBoundaryPolicy {
+    pub fn global_word_boundary(&self) -> WordBoundaryPolicy {
         self.language
             .as_ref()
-            .map_or_else(zcv_text::WordBoundaryPolicy::default, |language| {
+            .map_or_else(WordBoundaryPolicy::default, |language| {
                 language.word_boundary()
             })
     }
